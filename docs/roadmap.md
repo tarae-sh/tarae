@@ -117,7 +117,16 @@ Items 1–3 are done (2026-10-16); 4 is the user's: the repository made public. 
    user's test mail arrived (2026-10-15).
 3. **The pull requests** — done: PR #4 and PR #5 merged on GitHub; Q1 (§2) is in, before the repository goes
    public.
-4. **The repository made public** — by the user.
+4. **The repository made public** — by the user. Since 2026-10-24 it lives at `tarae-sh/tarae` (transferred from
+   `ethnw/tarae`; the org's profile and the repository's description, topics and homepage filled). PR #6 merged
+   2026-10-25 (`94288cdb`: 91 commits since 10-16 — panes P3, collab C1–C3 + weave, the web reader, motion, the chat's
+   foot). Its CI rounds turned up what this Mac never shows — git 2.55's changed words, tarae not building on Linux
+   arm64, tests assuming root, a capped walk in the filesystem's order, timing on slow runners — fixed as classes
+   (`b9709487`, `c73b7c49`, `9abd8085`, `9496081d`, `565efeea`): every hang guard one shared patience, a frame that
+   says what drew it, walks in name order, tarae's own git read in English. CI is now fmt, clippy and the Linux
+   tests (`--no-fail-fast`); macOS's tests run on the maintainer's Mac at every landing (the user, 2026-10-24).
+   From here: publish in small batches (every 2–3 days), `:preflight-full` and the whole Linux suite in the VM
+   before each push.
 5. **Anthropic's Cyber Verification Program** — not applied for (user, 2026-10-19): it doesn't fit yet, because
    tarae has no users; the user applies once it does, as an individual, on the open-source track ("Maintainer of
    a widely depended-on open-source project"; an individual with maintainer authority can apply). What it needs:
@@ -583,7 +592,10 @@ bugs its reviewer found, two of tarae's own gates misbehaved in daily use, four 
 
 ### 10. The homepage
 
-tarae.sh (the user's domain, 2026-10-24). The brand it wears is in (2026-10-18, `ec987191`, [brand/](brand)): the seal — a skein's
+tarae.sh (the user's domain, 2026-10-24; its DNS on Cloudflare). Decided (user, 2026-10-24): a repository of its
+own (`tarae-sh/tarae.sh`), served by Cloudflare Workers (static assets, the `cf` CLI; each deploy asked — a preview,
+then the domain); its hero is tarae itself, a scripted scene of several sessions at work replayed as text in the
+browser (meok or hanji by the visitor's scheme), never a video there. The plan: `target/sb/home-plan.md`. The brand it wears is in (2026-10-18, `ec987191`, [brand/](brand)): the seal — a skein's
 thread carved out of an accent block, unwinding to a cursor, in hanji and meok; vector only (the start screen is
 set in type, 2026-10-19) — and the mascot, a ball of thread painted in ink, finished with the seal as its 낙관
 (small, at its lower left, 2026-10-19): the one picture at the README's top, over its title. An animation that feels like several agents working at once, and the README's demo, both from
