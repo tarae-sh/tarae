@@ -1,4 +1,4 @@
-//! Deterministic simulation (roadmap §9.2, `target/sb/detsim-plan.md`) — test builds only, nothing of it in a
+//! Deterministic simulation (roadmap §9.2, `.sb/detsim-plan.md`) — test builds only, nothing of it in a
 //! release. Every job keeps its own thread and its own code, but only one thread of a simulation runs at a
 //! time: the *baton*. The driver — the test's thread, the editor's main loop — holds it between steps and picks
 //! the next by seed: the scenario's next input, a job resumed (just spawned, or its sleep over), a result

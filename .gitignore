@@ -1,4 +1,7 @@
 /target
+# Plans, notes, measurements and commit drafts — a checkout's own, kept when its workspace ends (`.tarae.toml`'s
+# `[workspace] keep`); never under target/, which build tools treat as disposable
+/.sb/
 # `cargo xtask linux`'s probe of what a Docker sees, while it runs (xtask/src/linux.rs `Probe`)
 /.xtask-probe-*
 /.claude/

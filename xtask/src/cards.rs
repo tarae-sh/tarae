@@ -321,7 +321,7 @@ mod tests {
         );
         has("- **Removed by P3** (`shadow=none`): 4 of 6 (67 %).");
         has("- **P3 wrong yes** (`shadow=none` ∧ `n`): 1 — read each by hand");
-        has("  - 2026-10-15 09:07:00 cardauto card#5 run#13 · `rm -rf target/sb`\n");
+        has("  - 2026-10-15 09:07:00 cardauto card#5 run#13 · `rm -rf .sb`\n");
         has(
             "- **Stamp rate** by `why`: `not-a-check` 1 of 2 (50 %) · `read` 0 of 1 (0 %) · `reads-outside` 0 of 1 (0 %) · `unreadable` 0 of 1 (0 %).",
         );

@@ -942,7 +942,7 @@ fn snapshot_offer_quiet() {
 }
 
 /// frictions34's screens, for their screenshots (only with `TARAE_FRAMES_DIR` set: both themes there, 100×30;
-/// `target/sb/frictions34-shots.sh` draws them): the stuck card on a run whose output goes through `tail` — before,
+/// `.sb/frictions34-shots.sh` draws them): the stuck card on a run whose output goes through `tail` — before,
 /// and once it says why nothing shows (39 a); a failed preflight that a bring card's `p` ran — before, a toast;
 /// after, the card back naming what failed first, `v` its output (42).
 #[test]
@@ -956,9 +956,9 @@ fn frames_of_frictions34() {
         s.file("src/demo.rs", DEMO_RS);
         s
     };
-    let cmd = "cargo xtask scenes --out target/sb/shots/after shuttlecard shuttle 2>&1 | tail -15";
+    let cmd = "cargo xtask scenes --out .sb/shots/after shuttlecard shuttle 2>&1 | tail -15";
     let lines = [
-        "pid 4242 · sh -c cargo xtask scenes --out target/sb/shots/after … · 1 thread",
+        "pid 4242 · sh -c cargo xtask scenes --out .sb/shots/after … · 1 thread",
         "  sh — sleeping in do_wait · 0.01 s CPU",
         "pid 4243 · tail -15 · 1 thread",
         "  tail — sleeping in pipe_read · 0.00 s CPU",
@@ -1010,7 +1010,7 @@ fn frames_of_frictions34() {
 
 /// frictions37's screens, for their screenshots (only with `TARAE_FRAMES_DIR` set: both themes there, 80×24 and
 /// 160×40, named by `TARAE_FRAMES_WHICH` — `before` when this function is run on the tree before the batch,
-/// `target/sb/frictions37/shots.sh`): 91 the bring card back after its preflight failed; 89 the first start's trust
+/// `.sb/frictions37/shots.sh`): 91 the bring card back after its preflight failed; 89 the first start's trust
 /// card on the start screen; 83 the end's toast (its words made here, both ways).
 #[test]
 fn frictions37_frames() {
@@ -1076,7 +1076,7 @@ fn frictions37_frames() {
 
 /// frictions38's screens, for their screenshots (only with `TARAE_FRAMES_DIR` set: both themes there, 80×24 and
 /// 160×40, named by `TARAE_FRAMES_WHICH` — `before` when this function is run on main's tree,
-/// `target/sb/frictions38/shots.sh`): `bring` the bring card back after its quick preflight failed 12 tests; `toast`
+/// `.sb/frictions38/shots.sh`): `bring` the bring card back after its quick preflight failed 12 tests; `toast`
 /// that preflight's end. Written from what both trees have (the marker's words as text), so it runs on either.
 #[test]
 fn frictions38_frames() {
@@ -2352,7 +2352,7 @@ fn sessions_reviewing(w: u16) -> Shot {
 
 /// frictions29 24 (a): `space W` with three sessions — as it opens (`m` among the keys), two marked in turn (each
 /// row says its place, `B` first after `enter`), then `B`'s card. With `TARAE_FRAMES_DIR`, each in both themes
-/// (`target/sb/frictions33-shots.sh` draws them).
+/// (`.sb/frictions33-shots.sh` draws them).
 #[test]
 fn snapshot_sessions_marked_to_bring() {
     let mut s = Shot::new(112, 30);
@@ -2391,7 +2391,7 @@ fn snapshot_sessions_marked_to_bring() {
 #[test]
 fn snapshot_session_end_keeps_its_notes() {
     use crate::workspacekeep::{Folder, Plan};
-    let to = PathBuf::from("/private/tmp/tarae/target/sb/sessions/fix-login");
+    let to = PathBuf::from("/private/tmp/tarae/.sb/sessions/fix-login");
     let ending = |keep: Plan| crate::worktree::Ending {
         root: "/private/tmp/sessions/fix-login".into(),
         common: "/private/tmp/tarae/.git".into(),
@@ -2405,10 +2405,10 @@ fn snapshot_session_end_keeps_its_notes() {
             ("9f8e7d6".into(), "Say the hours in the summary".into()),
         ],
         lost: Vec::new(),
-        entries: vec!["target/sb".into()],
+        entries: vec![".sb".into()],
         keep,
     };
-    let folder = Folder { rel: "target/sb".into(), files: 14, bytes: 220 << 10, to: to.clone() };
+    let folder = Folder { rel: ".sb".into(), files: 14, bytes: 220 << 10, to: to.clone() };
     let instructions_to = Some(to.join("instructions"));
     let differ = vec!["CLAUDE.md".to_string()];
     let main = Some(PathBuf::from("/private/tmp/tarae"));
@@ -4253,7 +4253,7 @@ fn snapshot_edit_review_doc_comments() {
 /// Claude's edit under review shows the file as the editor does (#9): a breakpoint in the sign column, a
 /// diagnostic at its line's end, indent guides on its document's rows — and a proposed line's tab at the
 /// document's tab stops (#5: it was four spaces wherever it stood). With `TARAE_FRAMES_DIR` set, the frame in
-/// both themes (`target/sb/shots-step6.sh` draws them).
+/// both themes (`.sb/shots-step6.sh` draws them).
 #[test]
 fn the_edit_review_shows_the_file_as_the_editor_does() {
     let mut s = Shot::new(100, 24);
@@ -5790,7 +5790,7 @@ fn host_restricted() -> crate::sandbox::guarantees::Guarantees {
 /// a fallback's why faint under it, and (9f) where tarae's AppArmor profile would give commands namespaces of their own, that and where its
 /// step is, on rows of its own; at 60 columns the least important parts folded (`Guarantees::FOLD`); before any
 /// sandboxed run, said so in its place. Nothing blocked: the list says so where its first row would be. With
-/// `TARAE_FRAMES_DIR` set, each in both themes (`target/sb/shots-9e.sh` draws them).
+/// `TARAE_FRAMES_DIR` set, each in both themes (`.sb/shots-9e.sh` draws them).
 #[test]
 fn snapshot_sandbox_panel_tier() {
     use crate::sandbox::guarantees::{Found, Guarantees, Ns};

@@ -1,4 +1,4 @@
-//! The run panels' output as documents (panes P2c, `target/sb/panes-plan.md` §2.1e): the task's output, a
+//! The run panels' output as documents (panes P2c, `.sb/panes-plan.md` §2.1e): the task's output, a
 //! preflight's, the tests' detail (the failure picked, else the output) — each a read-only `Document` of the
 //! session's (`Workspace.outputs`), never saved, never in a buffer list or restore. Its text follows the run (`sync`,
 //! every event): what it printed appended, one transaction a batch; trimmed (`task::Run::keep`), the one change

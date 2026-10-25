@@ -135,7 +135,7 @@ risky = [
 ]
 quiet = ["*_test.go", "testdata/"]
 
-# Claude's sandbox (`sandboxpack.rs`). What Go reads in home, measured (`target/sb/p2-measured.md`, a Go
+# Claude's sandbox (`sandboxpack.rs`). What Go reads in home, measured (`.sb/p2-measured.md`, a Go
 # project): GOPATH (the module cache in it) and its settings (`os.UserConfigDir`'s `go/`) — not the user's
 # build cache: runs have one of their own (below), and the user's is never read
 [sandbox]
@@ -149,7 +149,7 @@ kept = ["{user-cache}/go-build"]
 # it would let a run change the user's Go setting. Measured in P2: one denial in every Go run's report
 quiet-writes = ["{user-config}/go/telemetry/"]
 # A `toolchain` line in go.mod newer than the go on PATH makes go run the toolchain module of that version
-# from the module cache — `go env` too (measured, `target/sb/corepack6/go-caches-toolchain.sh`: a module
+# from the module cache — `go env` too (measured, `.sb/corepack6/go-caches-toolchain.sh`: a module
 # planted there was found, and refused only by the checksum database; no variable skips that check). Runs use
 # the go on PATH: what runs isn't picked by a file in the checkout, and nothing is downloaded to switch. A
 # project needing a newer go says so ("go.mod requires go >= …; GOTOOLCHAIN=local")
@@ -206,7 +206,7 @@ keep = true
 when = ["go.mod", "go.work"]
 
 # Go's env file can hold a token (`go env -w GOPROXY=https://user:…@`): denied, Go loses its settings without a
-# word (`target/sb/tokens-checkpoint.md`) — a copy without it, at `GOENV` (`off`: none)
+# word (`.sb/tokens-checkpoint.md`) — a copy without it, at `GOENV` (`off`: none)
 [[sandbox.settings]]
 tool = "go"
 var = "GOENV"

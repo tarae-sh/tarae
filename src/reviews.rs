@@ -1,4 +1,4 @@
-//! The review record (the review lens's R — `target/sb/reviewlens-plan.md` §4): how long a person spends on
+//! The review record (the review lens's R — `.sb/reviewlens-plan.md` §4): how long a person spends on
 //! each change they review and what each change ended as, kept in `$state/reviews/<yyyy-mm>.jsonl` — the card
 //! record's twin (`cards.rs`: its folder rules and lock, `cards::KEEP_MONTHS`, written on a worker). Paths, ids,
 //! counts, grades and times only, **never a line of code**: a change is named by an HMAC-SHA256, under this

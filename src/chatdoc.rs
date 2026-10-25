@@ -1,4 +1,4 @@
-//! The chat's transcript as a document (panes P2c, `target/sb/panes-plan.md` §2.1e): the conversation's text, a
+//! The chat's transcript as a document (panes P2c, `.sb/panes-plan.md` §2.1e): the conversation's text, a
 //! read-only `Document` that follows what each frame lays out (`sync`) — one line a paragraph, as the code's lines
 //! under soft wrap: the chat's layout wraps it into its rows, and those rows are the document's (`wrap::Given`), so
 //! `j`/`k`, the pages and the `z` moves step by what's drawn, while search, `w` and `x` cross a wrap and a resize

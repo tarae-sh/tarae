@@ -1,11 +1,11 @@
-//! Step 6e′'s M5 (`target/sb/step6e-design.md`): the M4 tools — curl, cargo, npm, pip, Go, Gradle — through the
+//! Step 6e′'s M5 (`.sb/step6e-design.md`): the M4 tools — curl, cargo, npm, pip, Go, Gradle — through the
 //! real path (`sandbox::policy`, `command`, `spawn`, `after_run`), each fetching one package from a registry of the
 //! test's own. In every tier the run's way is its proxy URL: the proxy variables, and the packs' lines (Gradle's in
 //! its Gradle home). Nothing leaves the machine: the registries are the test's own servers on this machine's own address, under
 //! `example.invalid` names (`TEST_NAMES`) — curl's and cargo's plain HTTP, served here (so they run wherever curl
 //! and cargo are: the checks' own image), the others' HTTPS (`Repo.java`, its certificate trusted by each tool's
 //! own setting: they need a JDK, and run where the tools are — `cargo xtask linux --image tarae-m5`). A test whose
-//! tool isn't here skips itself, saying so. How long each takes is `target/sb/m5/m5.sh`'s to say, not a test's.
+//! tool isn't here skips itself, saying so. How long each takes is `.sb/m5/m5.sh`'s to say, not a test's.
 
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr};

@@ -1,4 +1,4 @@
-//! The chat's input as a buffer (panes P2c, `target/sb/panes-plan.md` §2.1e): a small document in insert mode, the
+//! The chat's input as a buffer (panes P2c, `.sb/panes-plan.md` §2.1e): a small document in insert mode, the
 //! one place in the chat that takes typing. Its keys are the editor's insert mode's (`[insert]`, yours too) with the
 //! chat's `[chat]` over them (`esc` → its view mode, `C-a`/`C-e` a line's ends, `A-ret` a new line), run with the
 //! document swapped in (`docpane::swap`, `Which::Input`) — what isn't bound is typed, without auto-pairs (it's

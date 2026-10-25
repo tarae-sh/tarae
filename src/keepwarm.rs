@@ -1,4 +1,4 @@
-//! A big conversation that waits on you is kept warm (`target/sb/keepwarm-design.md`, 2026-10-18): its prompt cache
+//! A big conversation that waits on you is kept warm (`.sb/keepwarm-design.md`, 2026-10-18): its prompt cache
 //! lives an hour from the last request that read or wrote it (`usage.rs`), and the turn after it went cold writes the
 //! whole context again at twice the input price, where a read is a tenth. A one-word turn a few minutes before the TTL
 //! reads it — and a read refreshes it.
@@ -6,7 +6,7 @@
 //! - **A fork, never the conversation itself**: `--resume <id> --fork-session --no-session-persistence`, on the chat
 //!   process's own command line (`Chat.launched`) with the model and effort it has now, tarae's tools listed as the
 //!   chat lists them (`tools::list`) — what comes before the history in the cache must be the same to the byte. Measured
-//!   (`target/sb/kw.sh`, Claude Code 2.1.302): the fork reads the parent's prefix, a second identical ping reads the
+//!   (`.sb/kw.sh`, Claude Code 2.1.302): the fork reads the parent's prefix, a second identical ping reads the
 //!   first one's write, and the conversation's next turn reads as if no ping was made — the fork touches neither its
 //!   history nor a transcript. The recorded system prompt (`--system-prompt-snapshot`, on by default) keeps a changed
 //!   git status from breaking the match.

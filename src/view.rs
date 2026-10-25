@@ -1,4 +1,4 @@
-//! View mode — a cursor on what a surface shows (`target/sb/quote-plan.md` §3). The chat's is normal mode on its
+//! View mode — a cursor on what a surface shows (`.sb/quote-plan.md` §3). The chat's is normal mode on its
 //! transcript, a document of its own (`chatdoc.rs`, panes P2c); here the words they share (`Surface`, `Was`,
 //! `has_keys`, `bound`) and the terminal's: its rows as a read-only document, Helix's moves, selections, search and
 //! counts on it (`COMMANDS`, the keymap's `[view]` tables), drawn by its own drawer with the selections painted
@@ -186,7 +186,7 @@ pub struct View {
     doc: Option<Document>,
     /// Its own mode (`v` selects), a key sequence, count or awaited character under way, its own search — what
     /// `n`/`N` repeat, whether its matches are shown: never the code's, and the code's never touched by it
-    /// (`target/sb/panes-plan.md` §2.3).
+    /// (`.sb/panes-plan.md` §2.3).
     pub keys: Keys,
     /// The matches on its rows (`refresh_search`).
     hits: Option<crate::search::SearchHits>,

@@ -1,4 +1,4 @@
-//! The proxy tarae itself goes out by (step 5g, `target/sb/step5g-plan.md`): where tarae's own environment names
+//! The proxy tarae itself goes out by (step 5g, `.sb/step5g-plan.md`): where tarae's own environment names
 //! one, the egress proxy chains to it, with the credentials its URL carries, sent at once. An http:// one: a
 //! tunnel becomes a `CONNECT host:port` to it, a plain request goes to it in absolute form. A SOCKS5 one
 //! (`socks5h://` and `socks5://` alike — the user's decision 2026-10-08: the name goes to it either way, never an

@@ -27,7 +27,7 @@ use crate::llm::StreamEv;
 use crate::reviewer::{Role, State};
 
 /// The seeds every `cargo test` runs, each twice — the first to catch each break the scenario keeps (picked again
-/// by bgreview's "tarae native", 2026-10-20, `target/sb/bgreview-seeds-all.sh`: every run reads its snapshot now,
+/// by bgreview's "tarae native", 2026-10-20, `.sb/bgreview-seeds-all.sh`: every run reads its snapshot now,
 /// the reading copy's coin gone, so every seed's choices moved — frictions32's `f32-board-seeds.sh` and
 /// reviewpanel's before it): 0 a board started without its card · 3 a refuted claim pinned, no stagger · 6 a
 /// review closed stopping its reviewer · 7 a stop that leaves members waiting, the line ignoring the memory · 18 a

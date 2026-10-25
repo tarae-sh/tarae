@@ -2,7 +2,7 @@
 //! checkout it made, the top git named for one — and kept; every git after runs on it with its git folder and
 //! work tree given (`--git-dir`, `--work-tree`), never found again by discovery from where the call starts.
 //! Discovery from a file's folder took a subfolder holding `HEAD`, `objects/` and `refs/` for a repository,
-//! with that folder's `config` (`target/sb/gitescape.md`); a file's git (the gutter, blame, staging, `:diff`)
+//! with that folder's `config` (`.sb/gitescape.md`); a file's git (the gutter, blame, staging, `:diff`)
 //! goes through `for_file` instead: the session's repository, or the submodule of it the file is in as the
 //! repository records it. `-c safe.bareRepository=explicit` on every run is the second guard: a bare
 //! repository only when named, also for git's own discovery (the resolving, a hook's git).

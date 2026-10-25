@@ -21,8 +21,8 @@
 18  18 }                                        │   9f8e7d6 Say the hours in the summary             │
 19                                              │ A squash merge on a forge looks unmerged here.     │
 20                                              │                                                    │
-21                                              │ Kept in main's target/sb/sessions/fix-login/:      │
-22                                              │   target/sb  14 files, 220 KB                      │
+21                                              │ Kept in main's .sb/sessions/fix-login/:            │
+22                                              │   .sb        14 files, 220 KB                      │
 23                                              │   CLAUDE.md  differs from main's                   │
 24                                              │                                                    │
 25                                              │ Removing both deletes fix-login too — its commits  │
@@ -83,8 +83,8 @@
 18  ff                                          f                                                    f
 19                                              f d dddddd ddddd dd d ddddd ddddd dddddddd ddddd     f
 20                                              f                                                    f
-21                                              f dddd dd dddddd dddddddddddddddddddddddddddddd      f
-22                                              f   ddddddddd  dd dddddd ddd dd                      f
+21                                              f dddd dd dddddd dddddddddddddddddddddddd            f
+22                                              f   ddd        dd dddddd ddd dd                      f
 23                                              f   ddddddddd  ddddddd dddd dddddd                   f
 24                                              f                                                    f
 25                                              f dddddddd dddd ddddddd ddddddddd ddd d ddd ddddddd  f

@@ -696,7 +696,7 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         path: "workspace.keep",
         kind: Kind::StrList,
-        doc: "Folders of a workspace's checkout (\"target/sb\") moved into the main checkout's <folder>/sessions/<name>/ when the workspace ends — only where git ignores that there, 64 MB at most, no links or protected names; the end card says what goes",
+        doc: "Folders of a workspace's checkout (\".sb\") moved into the main checkout's <folder>/sessions/<name>/ when the workspace ends — only where git ignores that there, 64 MB at most, no links or protected names; the end card says what goes",
         get: |c| Value::Array(c.workspace_keep.iter().map(|a| Value::from(a.as_str())).collect()),
         set: |c, v| {
             let all: Vec<String> =

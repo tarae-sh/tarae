@@ -1,4 +1,4 @@
-//! The egress proxy (`docs/design/sandbox-keeper.md` §The egress proxy, `target/sb/step5-plan.md`): one, threads in
+//! The egress proxy (`docs/design/sandbox-keeper.md` §The egress proxy, `.sb/step5-plan.md`): one, threads in
 //! tarae, for both systems' sandboxed runs. It talks only in typed, owned messages (D23): a run's connection (Linux:
 //! the proxy's end of the supervisor's TCP pair) or a run's own listener and token (macOS) come in, each with the
 //! run's rules as a read-only snapshot and the sender its refusals go out on; the user's answers come in from the

@@ -1236,8 +1236,8 @@ mod tests {
     fn shot_folders_are_absolute_and_there() {
         let tmp = std::env::temp_dir();
         let given = |p: &str| Some(std::ffi::OsString::from(p));
-        let e = folder("TARAE_SHOT_XDG", given("target/sb/shot-xdg"), true).unwrap_err();
-        assert!(e.contains("TARAE_SHOT_XDG=target/sb/shot-xdg") && e.contains("absolute"), "{e}");
+        let e = folder("TARAE_SHOT_XDG", given(".sb/shot-xdg"), true).unwrap_err();
+        assert!(e.contains("TARAE_SHOT_XDG=.sb/shot-xdg") && e.contains("absolute"), "{e}");
         assert!(folder("TARAE_SHOT_CWD", given("."), true).is_err());
         assert!(folder("TARAE_SHOT_STATE", given("state"), false).is_err());
         let missing = tmp.join(format!("tarae-shot-missing-{}", std::process::id()));

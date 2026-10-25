@@ -556,7 +556,7 @@ your `PATH`.
   kept in sight above them — (another session's a peek named in its colour, alone when none of yours waits — a press takes you
   there, its card in hand); brought back into main, a rebase's conflicts resolved by that session's Claude
   ([rebasing a session](claude-integration.md#rebasing-a-session)); its git-ignored notes (`workspace.keep`:
-  `target/sb`) moved to the main checkout's `target/sb/sessions/<name>/` when it ends; where each session's Claude
+  `.sb`) moved to the main checkout's `.sb/sessions/<name>/` when it ends; where each session's Claude
   is reading and writing shown wherever that file is, in any checkout (`▎` and a name tag, each session its own
   colour), and `space F` follows the next one at work — follow moves the view, never your cursor; two sessions'
   changes that would conflict said the moment they do (`fix ≈ main · src/term.rs L210–260`, `git merge-tree` of the

@@ -1,5 +1,5 @@
 //! What a switch of a conversation's billing, model or effort costs its prompt cache (apibill D6,
-//! `target/sb/apibill-design.md`): the next request writes the whole context again when the switch throws the
+//! `.sb/apibill-design.md`): the next request writes the whole context again when the switch throws the
 //! cache away — paid at the write price on your API key, counted toward the plan's limits on the subscription.
 //!
 //! - **Billing** always does: "Caches are isolated between organizations" (the prompt-caching docs; L3 measured

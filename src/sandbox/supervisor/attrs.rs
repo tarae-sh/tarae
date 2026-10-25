@@ -1,4 +1,4 @@
-//! A file's mode and times, for a run (linmeta, `target/sb/linmeta-design.md`): Landlock has no right for them,
+//! A file's mode and times, for a run (linmeta, `.sb/linmeta-design.md`): Landlock has no right for them,
 //! so the served filter hands tarae every call that changes them (`seccomp::serves_attr`), and they're let only where
 //! the run may write (`Policy::writes_allow`: its write places, never a protected name) — as macOS's profile has
 //! `file-write-mode` and `file-write-times`. An owner call is let only where it changes nothing — each id `-1` or

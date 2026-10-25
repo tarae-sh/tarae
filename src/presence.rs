@@ -1,5 +1,5 @@
 //! collab C1 — presence: where every session is reading and writing, shown wherever that file is shown, in any
-//! checkout of the repository (`target/sb/collab-plan.md` §2). Gathered every event from what's already there — each
+//! checkout of the repository (`.sb/collab-plan.md` §2). Gathered every event from what's already there — each
 //! Claude's gaze (`follow::Gaze`), the edit it's writing (`writing::Live`), the edits its turn wrote (the replay's
 //! stops) — never a process or a poll of its own, and nothing while one session is open. A session's presence lasts
 //! its turn: the turn over, it goes.

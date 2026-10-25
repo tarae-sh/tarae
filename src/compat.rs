@@ -1,4 +1,4 @@
-//! The "must work" compatibility suite's harness (compat piece 1, `target/sb/compat-plan.md` §2): one entry — a
+//! The "must work" compatibility suite's harness (compat piece 1, `.sb/compat-plan.md` §2): one entry — a
 //! stack's command, the settings it runs under, what it's expected to do — run exactly as Claude's run is, with no
 //! chat: `tools::run` → its card → the queue → the policy → Seatbelt or the session's keeper → the report → the
 //! snapshot, the same functions a turn calls. A scripted user answers the cards: `y` on the ones the entry lists,
@@ -355,7 +355,7 @@ pub struct Failure {
 }
 
 impl Failure {
-    /// Its class (`target/sb/compat-plan.md` §5) as far as the check tells it — the rest `unexplained`, for a
+    /// Its class (`.sb/compat-plan.md` §5) as far as the check tells it — the rest `unexplained`, for a
     /// person (a denial's place would tell `pack-data` from `core-rule`: piece 3's findings first).
     pub fn class(&self) -> &'static str {
         match self.check {

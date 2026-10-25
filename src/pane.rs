@@ -1,4 +1,4 @@
-//! Panes (panes P2b, `target/sb/panes-plan.md` §2.1–2.1d): everything the screen shows is a pane. The docked ones
+//! Panes (panes P2b, `.sb/panes-plan.md` §2.1–2.1d): everything the screen shows is a pane. The docked ones
 //! are the leaves of their session's split tree (`Workspace.split`, `split.rs`: ids and shares only) — the code's
 //! panes, the side panel, the review's rail, the bottom slot, the chat — and each shows one surface (`Shows`);
 //! term.rs lays the tree out every frame and draws each surface in its leaf's rect. The floating ones — a card,

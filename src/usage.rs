@@ -647,7 +647,7 @@ impl Usage {
     /// A ping's result (`keepwarm.rs`), its request out at `requested_ms`: the conversation's cache warm from
     /// then, and a turn of its own (`aside`). Its cost is its total when that's its own request alone (`alone`:
     /// measured live, the chat's process running — claude restored nothing of the conversation's cost); when
-    /// claude restored some (`target/sb/kw.sh`: each earlier process had exited) its own can't be told from it —
+    /// claude restored some (`.sb/kw.sh`: each earlier process had exited) its own can't be told from it —
     /// not reported, never the difference from what tarae saw: what claude restores isn't that. None: no
     /// conversation, or the ping reported no request.
     pub fn kept_warm(&mut self, mut s: Spent, requested_ms: Option<u64>, why: &'static str) -> Option<Kept> {

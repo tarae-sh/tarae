@@ -1,5 +1,5 @@
 //! `:workspace-apply [--base <rev>] <patch>` — an outside tree's change brought into this session as one change
-//! set (frictions30 5, `target/sb/sessapply-plan.md`). The patch is read on a worker — the user's own read, of
+//! set (frictions30 5, `.sb/sessapply-plan.md`). The patch is read on a worker — the user's own read, of
 //! the file they named: the card says what was read — and each file's hunks are laid on (`patch.rs`): from the
 //! patch's base when it's known (`--base`, else the diff's `index` lines; read with `git cat-file`), exactly,
 //! then merged three-way with the file as this session has it; with no base, each hunk exactly where it says

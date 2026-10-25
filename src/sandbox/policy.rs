@@ -430,7 +430,7 @@ impl Policy {
         }
         // Reads are open but where the rules below close them (srt's too). Writes are where these allow them
         // (a hard link needs these write rules to allow its source too — Seatbelt's own
-        // `forbidden-link-priv<file-write*>`, measured 2026-10-04, `target/sb/p1-links2.sh` — so a run can't
+        // `forbidden-link-priv<file-write*>`, measured 2026-10-04, `.sb/p1-links2.sh` — so a run can't
         // link a file from outside into the project, nor give a kept one a second name to write through: no
         // `file-link` rule of its own is needed)
         p.push_str("(allow file-read*)\n");
@@ -444,7 +444,7 @@ impl Policy {
         }
         // Reads in home (card model P2): the project, where it writes, and what's allowed (`Reads`). A hard
         // link's source must be readable too — Seatbelt's own `forbidden-link-priv<file-read-data>`, measured
-        // 2026-10-05 with `link(2)` itself, `target/sb/p2-links2.sh` — so nothing a run can't read comes into
+        // 2026-10-05 with `link(2)` itself, `.sb/p2-links2.sh` — so nothing a run can't read comes into
         // the project by a link, though its folder be writable: a `file-link` rule would add nothing (its
         // places would be these write rules') and costs every build a denial per object file rustc links
         if self.reads.home.is_some() {
@@ -591,7 +591,7 @@ impl Policy {
         }
         p.push_str(&deny(&kept_services()));
         // Signals and processes' details only within the run's own (F2): `same-sandbox` is this `sandbox-exec`'s
-        // processes — another run under the same profile isn't (spike M7.3, `target/sb/f2-spike.sh`). Its child,
+        // processes — another run under the same profile isn't (spike M7.3, `.sb/f2-spike.sh`). Its child,
         // group and grandchild stay signalable (`make -j`, a test runner ending its workers); tarae, another
         // session's run, the user's shell don't. (Arguments and environment aren't kept by these: spike 2)
         // (each denied here though the profile denies by default: its default doesn't cover a process's details —
@@ -924,7 +924,7 @@ impl Policy {
     }
 
     /// What the run's output says was refused where the profile denies it — the kernel's own report of a
-    /// denial is lost now and then, at random (1 in 10, measured, `target/sb/p2-measured.md` §5): a path on
+    /// denial is lost now and then, at random (1 in 10, measured, `.sb/p2-measured.md` §5): a path on
     /// a line that failed, at or just before a line saying `Operation not permitted` (cargo says the path,
     /// then `Caused by:`, then the error), that this profile doesn't let a run read or write. Those `seen`
     /// already said aren't again. Relative paths are from where the run is (`from`; `paths_in`: no disk).

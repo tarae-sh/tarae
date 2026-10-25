@@ -1,5 +1,5 @@
 //! What claude says of the plan's limits, of retries, and of the credential it runs on (apibill D2/D5's
-//! subscription half; sources in `target/sb/apibill-design.md` §2):
+//! subscription half; sources in `.sb/apibill-design.md` §2):
 //!
 //! - **`rate_limit_event`** (`rate_limit_info`): `status` `allowed` · `allowed_warning` · `rejected`,
 //!   `rateLimitType` (the window: `five_hour`, `seven_day`, `seven_day_<family>` …), `utilization` a *fraction*

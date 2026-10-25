@@ -1,4 +1,4 @@
-//! Seeded mutation for the readers' never-panic loops (V2 step 5, `target/sb/v2-fuzz-plan.md` §4): a fixed-seed
+//! Seeded mutation for the readers' never-panic loops (V2 step 5, `.sb/v2-fuzz-plan.md` §4): a fixed-seed
 //! generator, and mutators of a line of text and of a few bytes — the loops are the same every run. (The
 //! structs' readers keep their own, which know their lengths: `wire/tests.rs`, `proxy/parse/tests.rs`.)
 

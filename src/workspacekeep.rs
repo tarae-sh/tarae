@@ -1,5 +1,5 @@
 //! What a session keeps when it ends (`workspace.keep`, frictions26). `git worktree remove` deletes
-//! ignored files too: a session's notes, plans and measurements (`target/sb/`) went with its checkout, and
+//! ignored files too: a session's notes, plans and measurements (`.sb/`) went with its checkout, and
 //! 52 sessions' were copied out by hand. Each folder named there moves to the main checkout's
 //! `<folder>/sessions/<name>/` before the checkout goes:
 //!
@@ -93,9 +93,9 @@ impl Plan {
     /// The end card's lines about it: (text, warned) — a heading, then what, a row each in two columns:
     ///
     /// ```text
-    /// Kept in main's target/sb/sessions/fix-login/:        Not kept (over 64 MB) — goes with the checkout:
-    ///   target/sb  14 files, 220 KB                          target/sb  2400 files, 310 MB
-    ///   CLAUDE.md  differs from main's                       CLAUDE.md  differs from main's
+    /// Kept in main's .sb/sessions/fix-login/:     Not kept (over 64 MB) — goes with the checkout:
+    ///   .sb        14 files, 220 KB                 .sb        2400 files, 310 MB
+    ///   CLAUDE.md  differs from main's              CLAUDE.md  differs from main's
     /// ```
     ///
     /// Kept, said plainly; going with the checkout, warned. Nothing there: nothing said.
@@ -245,7 +245,7 @@ pub struct Kept {
 }
 
 impl Kept {
-    /// ` · target/sb kept in ~/…/sessions/x (14 files) · not kept: build.rs` — empty when nothing was.
+    /// ` · .sb kept in ~/…/sessions/x (14 files) · not kept: build.rs` — empty when nothing was.
     pub fn said(&self, plan: &Plan) -> String {
         let mut s = String::new();
         if let Some(to) = self.to.first() {
@@ -387,73 +387,73 @@ mod tests {
 
     use super::*;
 
-    /// A main checkout (git, `target/` ignored) and a session's folder beside it, in the test's own folder.
+    /// A main checkout (git, `.sb/` ignored) and a session's folder beside it, in the test's own folder.
     fn two(name: &str, ignore: &str) -> (crate::scratch::Scratch, PathBuf, PathBuf) {
         let s = crate::scratch::Scratch::new(&format!("keep-{name}"));
         let dir = std::fs::canonicalize(&s).unwrap();
         let (main, session) = (dir.join("main"), dir.join("session"));
         std::fs::create_dir_all(&main).unwrap();
-        std::fs::create_dir_all(session.join("target/sb/sub")).unwrap();
+        std::fs::create_dir_all(session.join(".sb/sub")).unwrap();
         let ok = std::process::Command::new("git").args(["init", "-q"]).current_dir(&main).status().unwrap();
         assert!(ok.success());
         std::fs::write(main.join(".gitignore"), ignore).unwrap();
-        std::fs::write(session.join("target/sb/plan.md"), "the plan\n").unwrap();
-        std::fs::write(session.join("target/sb/sub/numbers.txt"), "1 2 3\n").unwrap();
+        std::fs::write(session.join(".sb/plan.md"), "the plan\n").unwrap();
+        std::fs::write(session.join(".sb/sub/numbers.txt"), "1 2 3\n").unwrap();
         (s, main, session)
     }
 
     fn sb() -> Vec<PathBuf> {
-        vec![PathBuf::from("target/sb")]
+        vec![PathBuf::from(".sb")]
     }
 
     #[test]
     fn an_entry_is_a_folder_in_the_checkout() {
-        assert_eq!(entry("target/sb/"), Ok(PathBuf::from("target/sb")));
+        assert_eq!(entry(".sb/"), Ok(PathBuf::from(".sb")));
         for bad in ["/tmp/x", "~/notes", "../main/target", "./target", ".git", "a/.GIT/hooks", ""] {
             assert!(entry(bad).is_err(), "{bad}");
         }
-        let said = refused(&["target/sb".into(), "../x".into(), ".git/info".into()]).unwrap();
+        let said = refused(&[".sb".into(), "../x".into(), ".git/info".into()]).unwrap();
         assert!(said.contains("\"../x\": plain names only") && said.contains("never .git"), "{said}");
-        assert_eq!(entries(&["target/sb".into(), "/abs".into()]), sb());
+        assert_eq!(entries(&[".sb".into(), "/abs".into()]), sb());
         // As a setting: the folders kept, the rest said with the config's warnings
         let mut cfg = crate::config::EditorConfig::default();
-        let v = toml::Value::Array(vec!["target/sb".into(), "../x".into()]);
+        let v = toml::Value::Array(vec![".sb".into(), "../x".into()]);
         let said = crate::settings::apply(&mut cfg, "workspace.keep", &v).unwrap_err();
         assert!(said.starts_with("workspace.keep: left out — \"../x\""), "{said}");
-        assert_eq!(cfg.workspace_keep, ["target/sb"]);
+        assert_eq!(cfg.workspace_keep, [".sb"]);
     }
 
-    /// Its folder moves to main's `target/sb/sessions/<name>/` — a link and a protected name stay behind,
+    /// Its folder moves to main's `.sb/sessions/<name>/` — a link and a protected name stay behind,
     /// said; a second session of the name gets `<name>-2`; an instruction file of its own is copied beside it,
     /// flat.
     #[test]
     fn a_sessions_folder_moves_into_the_main_checkout() {
-        let (_s, main, session) = two("moves", "/target/\n");
-        std::os::unix::fs::symlink("/etc/hosts", session.join("target/sb/hosts")).unwrap();
-        std::fs::write(session.join("target/sb/build.rs"), "fn main() {}\n").unwrap();
+        let (_s, main, session) = two("moves", "/.sb/\n");
+        std::os::unix::fs::symlink("/etc/hosts", session.join(".sb/hosts")).unwrap();
+        std::fs::write(session.join(".sb/build.rs"), "fn main() {}\n").unwrap();
         std::fs::write(session.join("CLAUDE.md"), "mine\n").unwrap();
         let differ = vec!["CLAUDE.md".to_string()];
         let plan = plan(&session, "fix/login", &sb(), Some(&main), differ, KEEP_MAX);
-        let to = main.join("target/sb/sessions/fix-login");
+        let to = main.join(".sb/sessions/fix-login");
         assert_eq!(plan.not, None);
-        assert_eq!(plan.folders, [Folder { rel: "target/sb".into(), files: 3, bytes: 28, to: to.clone() }]);
+        assert_eq!(plan.folders, [Folder { rel: ".sb".into(), files: 3, bytes: 28, to: to.clone() }]);
         assert!(!plan.loses());
         let kept = keep(&session, "fix/login", &plan, &main).unwrap();
         assert_eq!(std::fs::read_to_string(to.join("plan.md")).unwrap(), "the plan\n");
         assert_eq!(std::fs::read_to_string(to.join("sub/numbers.txt")).unwrap(), "1 2 3\n");
         assert_eq!(std::fs::read_to_string(to.join("instructions/CLAUDE.md")).unwrap(), "mine\n");
-        assert!(!session.join("target/sb/plan.md").exists(), "moved, not copied");
+        assert!(!session.join(".sb/plan.md").exists(), "moved, not copied");
         assert!(std::fs::symlink_metadata(to.join("hosts")).is_err() && !to.join("build.rs").exists());
         assert_eq!(kept.files, 3);
-        assert_eq!(kept.left, ["target/sb/build.rs", "target/sb/hosts (a link)"].map(String::from).to_vec());
-        assert!(kept.said(&plan).contains("target/sb kept in "), "{}", kept.said(&plan));
+        assert_eq!(kept.left, [".sb/build.rs", ".sb/hosts (a link)"].map(String::from).to_vec());
+        assert!(kept.said(&plan).contains(".sb kept in "), "{}", kept.said(&plan));
         // The name taken: the next one
-        std::fs::write(session.join("target/sb/plan.md"), "again\n").unwrap();
+        std::fs::write(session.join(".sb/plan.md"), "again\n").unwrap();
         let plan = super::plan(&session, "fix/login", &sb(), Some(&main), Vec::new(), KEEP_MAX);
-        assert_eq!(plan.folders[0].to, main.join("target/sb/sessions/fix-login-2"));
+        assert_eq!(plan.folders[0].to, main.join(".sb/sessions/fix-login-2"));
         keep(&session, "fix/login", &plan, &main).unwrap();
         assert_eq!(
-            std::fs::read_to_string(main.join("target/sb/sessions/fix-login-2/plan.md")).unwrap(),
+            std::fs::read_to_string(main.join(".sb/sessions/fix-login-2/plan.md")).unwrap(),
             "again\n"
         );
     }
@@ -464,16 +464,16 @@ mod tests {
     fn nothing_is_kept_where_it_would_be_tracked_or_too_much() {
         let (_s, main, session) = two("refused", "");
         let plan = plan(&session, "s", &sb(), Some(&main), Vec::new(), KEEP_MAX);
-        assert!(plan.not.as_deref().is_some_and(|w| w.contains("git doesn't ignore target/sb/sessions/s")));
+        assert!(plan.not.as_deref().is_some_and(|w| w.contains("git doesn't ignore .sb/sessions/s")));
         assert!(plan.loses());
         let lines = plan.lines();
         assert!(lines.iter().all(|l| l.1), "warned: {lines:?}");
-        let head = "Not kept (git doesn't ignore target/sb/sessions/s in main) — goes with the checkout:";
+        let head = "Not kept (git doesn't ignore .sb/sessions/s in main) — goes with the checkout:";
         assert_eq!(lines[0].0, head);
-        assert!(lines[1].0.starts_with("  target/sb  2 files, "), "{lines:?}");
+        assert!(lines[1].0.starts_with("  .sb  2 files, "), "{lines:?}");
         assert_eq!(keep(&session, "s", &plan, &main).unwrap(), Kept::default());
-        assert!(!main.join("target").exists() && session.join("target/sb/plan.md").exists());
-        std::fs::write(main.join(".gitignore"), "/target/\n").unwrap();
+        assert!(!main.join(".sb").exists() && session.join(".sb/plan.md").exists());
+        std::fs::write(main.join(".gitignore"), "/.sb/\n").unwrap();
         let plan = super::plan(&session, "s", &sb(), Some(&main), Vec::new(), 4);
         assert!(plan.not.as_deref().is_some_and(|w| w.starts_with("over ")), "{plan:?}");
         let plan = super::plan(&session, "s", &sb(), None, vec!["CLAUDE.md".into()], KEEP_MAX);
@@ -481,11 +481,11 @@ mod tests {
         let lines = plan.lines();
         let head = "Not kept (no main checkout to keep it in) — goes with the checkout:";
         assert_eq!(lines[0], (head.to_string(), true));
-        assert_eq!(lines[1], ("  target/sb  2 files, 15 B".to_string(), true));
+        assert_eq!(lines[1], ("  .sb        2 files, 15 B".to_string(), true));
         assert_eq!(lines[2], ("  CLAUDE.md  differs from main's".to_string(), true));
         // Nothing to keep: nothing said, nothing lost
         let none = super::plan(&session, "s", &[PathBuf::from("notes")], Some(&main), Vec::new(), KEEP_MAX);
         assert!(none.folders.is_empty() && none.not.is_none() && none.lines().is_empty() && !none.loses());
-        assert!(Path::new(&session).join("target/sb").exists());
+        assert!(Path::new(&session).join(".sb").exists());
     }
 }

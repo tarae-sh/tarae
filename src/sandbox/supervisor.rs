@@ -3469,7 +3469,7 @@ mod tests {
     /// routes after are the ones before; a lookup and a dump still answer. Why: the kernel judges a netlink
     /// message sent *with an address* by the sender's capability alone (`NETLINK_SKB_DST`), and tarae, who sends
     /// it, holds `CAP_NET_ADMIN` over the session's network namespace (2026-10-07,
-    /// `target/sb/step6-checks-notes.md` §1b). Only where the run has a network namespace of its own
+    /// `.sb/step6-checks-notes.md` §1b). Only where the run has a network namespace of its own
     /// (`own_netns`): a guard that let a change through then changes a namespace made for this test.
     #[test]
     fn a_runs_netlink_reads_but_never_changes_the_sessions_network() {
@@ -3976,9 +3976,9 @@ mod tests {
     /// runs took, the supervisors' calls during run 2, and what the keeper holds after it (its daemons kept, its
     /// own children). `$TARAE_M4_VARIANT`: one change to the path (`m4_run`), `v0` without. Between pairs the
     /// keeper ends (`end_leftovers`): its daemons with it, run 1 cold. `TARAE_TEST_NO_NS`: without namespaces
-    /// (tier host), A/B in one machine. Run by `target/sb/m4-keeper.sh` in a container with a JDK and Gradle.
+    /// (tier host), A/B in one machine. Run by `.sb/m4-keeper.sh` in a container with a JDK and Gradle.
     #[test]
-    #[ignore = "a measurement (M4): run by target/sb/m4-keeper.sh"]
+    #[ignore = "a measurement (M4): run by .sb/m4-keeper.sh"]
     fn measure_gradle_pairs() {
         let (Ok(project), Ok(task)) = (std::env::var("TARAE_M4_PROJECT"), std::env::var("TARAE_M4_TASK"))
         else {
@@ -4008,9 +4008,9 @@ mod tests {
 
     /// M8: tools that look at file owners, through the session's keeper (`$TARAE_M8` lines `<project>\t<script>`):
     /// how each ended and its last lines — A/B with `TARAE_TEST_NO_NS`. Inside a user namespace root's files show
-    /// as `nobody`. Run by `target/sb/m4-keeper.sh`.
+    /// as `nobody`. Run by `.sb/m4-keeper.sh`.
     #[test]
-    #[ignore = "a measurement (M8): run by target/sb/m4-keeper.sh"]
+    #[ignore = "a measurement (M8): run by .sb/m4-keeper.sh"]
     fn measure_tools_that_look_at_owners() {
         let Ok(cases) = std::env::var("TARAE_M8") else { return };
         println!();
@@ -4028,7 +4028,7 @@ mod tests {
     /// proxy), twice: the resolvers' port 53 as D-c opens it, then closed (no resolver in the policy). How each
     /// ended, how long it took, its last lines, and how many calls named a resolver's port 53 while it was open —
     /// which tools look a name up even with a proxy, and which fail without. `TARAE_TEST_NO_NS`: tier host. Reaches
-    /// the real network: run by hand on a VM (`target/sb/step5-notes.md`), never in `cargo test`.
+    /// the real network: run by hand on a VM (`.sb/step5-notes.md`), never in `cargo test`.
     #[test]
     #[ignore = "a measurement (step 5c, Q4): run by hand on a VM"]
     fn measure_through_the_proxy() {
@@ -4063,9 +4063,9 @@ mod tests {
     /// (`$TARAE_M5` lines `<name>\t<project>\t<script>`), each beside the same script run without the sandbox:
     /// how each ended and its last lines, and the supervisors' calls (A/B with `TARAE_TEST_NO_NS`). Inside the
     /// session's netns only `lo` is configured, which `AI_ADDRCONFIG` may read as "no address of either
-    /// family". Reaches the real network: run by `target/sb/m5-lookups.sh` on a VM, never in `cargo test`.
+    /// family". Reaches the real network: run by `.sb/m5-lookups.sh` on a VM, never in `cargo test`.
     #[test]
-    #[ignore = "a measurement (M5): run by target/sb/m5-lookups.sh"]
+    #[ignore = "a measurement (M5): run by .sb/m5-lookups.sh"]
     fn measure_lookups() {
         let Ok(cases) = std::env::var("TARAE_M5") else { return };
         let any = crate::llm::Hosts::Any;

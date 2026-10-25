@@ -1,4 +1,4 @@
-//! The kernel's own reading of an address against `parse`'s (V2 step 4, `target/sb/v2-fuzz-plan.md` §3): the bytes
+//! The kernel's own reading of an address against `parse`'s (V2 step 4, `.sb/v2-fuzz-plan.md` §3): the bytes
 //! `parse` read handed to the kernel as the supervisor hands it tarae's copy — a UDP socket's `connect` (no packet
 //! goes anywhere) and `getpeername`; a unix socket's `bind` in the test's own scratch folder and the file it makes;
 //! an abstract or made-up name's `getsockname`. The kernel reads what tarae read, or refuses. Linux only: the

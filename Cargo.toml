@@ -44,7 +44,7 @@ html5ever = "=0.39.0"
 encoding_rs = "0.8"
 # The page's fetch (web/fetch.rs; the user's, 2026-10-23): TLS is the one part that can't be ours — rustls (the protocol in
 # Rust) on ring (not aws-lc: +1.4 MB for what reading pages doesn't need), verified as the OS verifies (its keychain or
-# the distro's bundle: a company's own root works) — +794 KB measured (target/sb/web-fetch-plan.md). HTTP is tarae's
+# the distro's bundle: a company's own root works) — +794 KB measured (.sb/web-fetch-plan.md). HTTP is tarae's
 # own; gzip on the miniz_oxide above, its check on png's crc32fast
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-platform-verifier = "=0.7.1"

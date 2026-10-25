@@ -1,4 +1,4 @@
-//! The packs' proxy lines through the real path, on both systems (step 5f, `target/sb/step5f-plan.md`): a run's
+//! The packs' proxy lines through the real path, on both systems (step 5f, `.sb/step5f-plan.md`): a run's
 //! policy as `sandbox::policy` makes it (its run homes, its proxy files), its environment (`command`), its start
 //! and end (`spawn`, `after_run`) — macOS through the run's own port and Seatbelt, Linux through the supervisor.
 //! Nothing leaves this machine: the outside is the test's own HTTPS server under an `example.invalid` name

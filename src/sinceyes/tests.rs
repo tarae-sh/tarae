@@ -163,15 +163,15 @@ fn the_same_run_is_what_runs_not_the_filter_after_it() {
 }
 
 /// frictions29 14: what a script reads by name is compared with it — a file its text names (`fetch.sh` curls
-/// what `urls.txt` lists), one handed to it (`vm.sh run.sh`), ignored ones under `target/sb` too. Unchanged:
+/// what `urls.txt` lists), one handed to it (`vm.sh run.sh`), ignored ones under `.sb` too. Unchanged:
 /// said so, by name; changed: its hunks shown with the script's, the card no longer "unchanged" and warned of as
 /// a changed script is. A word that's no file, or a file outside the project, isn't kept.
 #[test]
 fn the_files_a_script_names_are_compared_with_it() {
     let (dir, root) = repo("inputs");
-    std::fs::create_dir_all(root.join("target/sb")).unwrap();
-    std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
-    let sb = root.join("target/sb");
+    std::fs::create_dir_all(root.join(".sb")).unwrap();
+    std::fs::write(root.join(".gitignore"), ".sb/\n").unwrap();
+    let sb = root.join(".sb");
     std::fs::write(
         sb.join("fetch.sh"),
         "while read u; do curl -s \"$u\"; done < urls.txt\ncat ../../../other.txt\n",
@@ -181,8 +181,8 @@ fn the_files_a_script_names_are_compared_with_it() {
     std::fs::write(sb.join("vm.sh"), "scp \"$1\" vm: && ssh vm sh \"$1\"\n").unwrap();
     std::fs::write(sb.join("run.sh"), "echo one\n").unwrap();
     for (cmd, file, name) in [
-        ("sh target/sb/fetch.sh", "urls.txt", "target/sb/urls.txt"),
-        ("bash target/sb/vm.sh target/sb/run.sh --quick", "run.sh", "target/sb/run.sh"),
+        ("sh .sb/fetch.sh", "urls.txt", ".sb/urls.txt"),
+        ("bash .sb/vm.sh .sb/run.sh --quick", "run.sh", ".sb/run.sh"),
     ] {
         let y = yes(&root, cmd);
         let Kept::Scripts { inputs, .. } = &y.kept else { panic!("{:?}", y.kept) };
@@ -202,15 +202,15 @@ fn the_files_a_script_names_are_compared_with_it() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// frictions29 31: a program that isn't text, under an ignored `target/`, rebuilt between the yes and the ask — kept
+/// frictions29 31: a program that isn't text, under an ignored folder, rebuilt between the yes and the ask — kept
 /// by its digest, so "script changed" (its sizes, never its bytes), never "unchanged"; the same bytes: unchanged. One a
 /// script runs by a relative path, past what a named file is kept to, rebuilt: "files it names changed". One that
 /// can't be read then nor now: can't tell, and why.
 #[test]
 fn a_program_git_ignores_is_compared_by_its_bytes() {
     let (dir, root) = repo("program");
-    std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
-    let sb = root.join("target/sb");
+    std::fs::write(root.join(".gitignore"), ".sb/\n").unwrap();
+    let sb = root.join(".sb");
     std::fs::create_dir_all(&sb).unwrap();
     let build = |name: &str, len: usize, n: &str| {
         let mut b = b"\x7fELF\xff\x00".to_vec();
@@ -219,7 +219,7 @@ fn a_program_git_ignores_is_compared_by_its_bytes() {
         std::fs::write(sb.join(name), b).unwrap();
     };
     build("probe", 0, "one");
-    let cmd = "./target/sb/probe";
+    let cmd = "./.sb/probe";
     let y = yes(&root, cmd);
     let s = y.since(&root, &root, cmd, false);
     assert!(s.unchanged && !s.script_changed, "{s:?}");
@@ -227,15 +227,15 @@ fn a_program_git_ignores_is_compared_by_its_bytes() {
     for outside in [false, true] {
         let s = y.since(&root, &root, cmd, outside);
         assert!(!s.unchanged && s.script_changed, "{s:?}");
-        assert!(s.head().contains("\n  script changed: target/sb/probe"), "{}", s.head());
+        assert!(s.head().contains("\n  script changed: .sb/probe"), "{}", s.head());
         let Changed::Lines { lines, .. } = &s.changed else { panic!("{s:?}") };
-        let said = "target/sb/probe — not text: 9 → 18 bytes";
+        let said = ".sb/probe — not text: 9 → 18 bytes";
         assert!(lines.iter().any(|l| l == said), "{lines:#?}");
     }
     // A program a script runs, bigger than a named file is kept to: rebuilt, the same size
     std::fs::write(sb.join("run.sh"), "set -e\n./probe-big --drain\n").unwrap();
     build("probe-big", 300 << 10, "a");
-    let cmd = "sh target/sb/run.sh";
+    let cmd = "sh .sb/run.sh";
     let y = yes(&root, cmd);
     let Kept::Scripts { inputs, .. } = &y.kept else { panic!("{:?}", y.kept) };
     assert_eq!(inputs.len(), 1, "{inputs:?}");
@@ -243,11 +243,11 @@ fn a_program_git_ignores_is_compared_by_its_bytes() {
     build("probe-big", 300 << 10, "b");
     let s = y.since(&root, &root, cmd, false);
     assert!(!s.unchanged && s.script_changed, "{s:?}");
-    assert!(s.head().contains("\n  files it names changed: target/sb/probe-big"), "{}", s.head());
+    assert!(s.head().contains("\n  files it names changed: .sb/probe-big"), "{}", s.head());
     // Not there then nor now: can't tell, never unchanged
-    let cmd = "sh target/sb/gone.sh";
+    let cmd = "sh .sb/gone.sh";
     let s = yes(&root, cmd).since(&root, &root, cmd, false);
-    let why = "can't tell whether target/sb/gone.sh changed — git ignores it, and it couldn't be read";
+    let why = "can't tell whether .sb/gone.sh changed — git ignores it, and it couldn't be read";
     assert_eq!(s.changed, Changed::Unknown(why.into()), "{s:?}");
     assert!(!s.unchanged && s.head().contains("; read it as new."), "{}", s.head());
     std::fs::remove_dir_all(&dir).ok();
@@ -260,8 +260,8 @@ fn a_program_git_ignores_is_compared_by_its_bytes() {
 #[test]
 fn a_script_not_utf8_throughout_is_shown_and_a_big_one_kept_by_its_stamp() {
     let (dir, root) = repo("latin1");
-    std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
-    let sb = root.join("target/sb");
+    std::fs::write(root.join(".gitignore"), ".sb/\n").unwrap();
+    let sb = root.join(".sb");
     std::fs::create_dir_all(&sb).unwrap();
     std::fs::write(sb.join("hosts.txt"), "a\n").unwrap();
     let script = |echo: &str, byte: u8| {
@@ -271,7 +271,7 @@ fn a_script_not_utf8_throughout_is_shown_and_a_big_one_kept_by_its_stamp() {
         std::fs::write(sb.join("go.sh"), b).unwrap();
     };
     script("one", 0xe9);
-    let cmd = "sh target/sb/go.sh";
+    let cmd = "sh .sb/go.sh";
     let y = yes(&root, cmd);
     let Kept::Scripts { inputs, .. } = &y.kept else { panic!("{:?}", y.kept) };
     assert_eq!(inputs.len(), 1, "the file it names, followed: {inputs:?}");
@@ -286,7 +286,7 @@ fn a_script_not_utf8_throughout_is_shown_and_a_big_one_kept_by_its_stamp() {
     let s = y.since(&root, &root, cmd, false);
     assert!(s.script_changed && !s.unchanged, "{s:?}");
     let Changed::Lines { lines, .. } = &s.changed else { panic!("{s:?}") };
-    let said = "target/sb/go.sh — changed only in bytes that aren't UTF-8 — not shown";
+    let said = ".sb/go.sh — changed only in bytes that aren't UTF-8 — not shown";
     assert!(lines.iter().any(|l| l == said), "{lines:#?}");
     // Past the digest's limit: by its stamp
     HASH_LIMIT.with(|m| m.set(16));
@@ -307,9 +307,9 @@ fn a_script_not_utf8_throughout_is_shown_and_a_big_one_kept_by_its_stamp() {
 #[test]
 fn what_a_script_writes_made_or_keeps_secret_is_said_so() {
     let (dir, root) = repo("inputs-kinds");
-    let sb = root.join("target/sb");
+    let sb = root.join(".sb");
     std::fs::create_dir_all(&sb).unwrap();
-    std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+    std::fs::write(root.join(".gitignore"), ".sb/\n").unwrap();
     let script =
         "cat hosts.txt later.txt\nset -a; . ./run.env; set +a\necho ok > out.log\necho 2 | tee -a log.txt\n";
     std::fs::write(sb.join("go.sh"), script).unwrap();
@@ -321,11 +321,11 @@ fn what_a_script_writes_made_or_keeps_secret_is_said_so() {
     ] {
         std::fs::write(sb.join(f), text).unwrap();
     }
-    let cmd = "sh target/sb/go.sh";
+    let cmd = "sh .sb/go.sh";
     let y = yes(&root, cmd);
     let Kept::Scripts { inputs, .. } = &y.kept else { panic!("{:?}", y.kept) };
     let kept: Vec<String> = inputs.iter().map(|(p, _)| crate::chat::shown(&root, p)).collect();
-    assert_eq!(kept, ["target/sb/hosts.txt", "target/sb/run.env"], "what it writes isn't what it reads");
+    assert_eq!(kept, [".sb/hosts.txt", ".sb/run.env"], "what it writes isn't what it reads");
     let env = inputs.iter().find(|(p, _)| p.ends_with("run.env")).unwrap();
     assert!(env.1.as_deref().is_some_and(|t| !t.contains("secret")), "its hash, not its lines");
     // The run writes its own files, and makes one it names: nothing changed
@@ -348,7 +348,7 @@ fn what_a_script_writes_made_or_keeps_secret_is_said_so() {
     std::fs::remove_file(sb.join("hosts.txt")).unwrap();
     let s = y.since(&root, &root, cmd, false);
     let Changed::Lines { lines, .. } = &s.changed else { panic!("{s:?}") };
-    assert!(lines.iter().any(|l| l == "target/sb/hosts.txt — gone since"), "{lines:#?}");
+    assert!(lines.iter().any(|l| l == ".sb/hosts.txt — gone since"), "{lines:#?}");
     std::fs::remove_dir_all(&dir).ok();
 }
 

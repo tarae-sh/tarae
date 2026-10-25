@@ -1,4 +1,4 @@
-//! collab C2 — an overlap said the moment it happens (`target/sb/collab-plan.md` §2.3): two workspaces whose changes
+//! collab C2 — an overlap said the moment it happens (`.sb/collab-plan.md` §2.3): two workspaces whose changes
 //! would conflict when merged, or a workspace's changes against its base's tip — git decides, as at the rebase, but
 //! early.
 //!

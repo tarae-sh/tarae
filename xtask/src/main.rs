@@ -32,7 +32,7 @@
 //! - `turns [PATH …]` — the call-order record (`$state/calls/`) as code mode's baseline: turns by kind, round
 //!   trips in a row, which tools follow which, large results, the gate for a `code` tool (see [`turns`]).
 //! - `claude-stub serve|drive|summary` — what the `claude` program touches, measured against a fake API: the
-//!   stub, tarae's side of claude's pipes, an strace log by folder (see [`claudestub`]; `target/sb/v1b-linux.sh`).
+//!   stub, tarae's side of claude's pipes, an strace log by folder (see [`claudestub`]; `.sb/v1b-linux.sh`).
 //! - `compat [stack …] [--lane gate|quick|net] [--linux a+|c|all] [--dry-run]` — the "must work" compatibility suite:
 //!   each stack's commands run as Claude's run, here and on Linux tiers, as a table (see [`compat`]).
 //! - `glyphs [chars]` — whether JetBrains Mono, Hack, Menlo and SF Mono each map those characters, from the cmap of

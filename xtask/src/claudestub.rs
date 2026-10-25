@@ -1,5 +1,5 @@
 //! `cargo xtask claude-stub serve | drive | summary` — what the `claude` program touches on Linux, measured with
-//! no real credentials (validation 1, its Linux half; `target/sb/v1b-linux.sh` runs the three in a container):
+//! no real credentials (validation 1, its Linux half; `.sb/v1b-linux.sh` runs the three in a container):
 //!
 //! - `serve --project DIR [--port N] [--log FILE]` — a stand-in for Anthropic's Messages API on 127.0.0.1
 //!   (`ANTHROPIC_BASE_URL`), streaming or not. The chat's requests (those carrying claude's `Read` tool) get a

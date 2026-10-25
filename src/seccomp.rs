@@ -292,7 +292,7 @@ pub fn serves_attr(nr: libc::c_long) -> bool {
 const FLAG_IOCTLS: [u32; 8] =
     [0x4008_6602, 0x4004_6602, 0x4008_7602, 0x4004_7602, 0x401c_5820, 0x4080_6685, 0x800c_6613, 0x4008_941a];
 
-/// A file's attributes (linmeta, `target/sb/linmeta-design.md`): Landlock has no right for them — the kernel's
+/// A file's attributes (linmeta, `.sb/linmeta-design.md`): Landlock has no right for them — the kernel's
 /// docs list `chmod`, `chown`, `setxattr` and `utime` among what it can't restrict — so the filter takes them
 /// (`ATTR_CALLS`, `FLAG_IOCTLS`).
 /// In served tiers (own, host), mode, times and extended attribute calls go to tarae, which lets them only where the

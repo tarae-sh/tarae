@@ -1315,7 +1315,7 @@ fn perf_web_read() {
             .collect();
     pages.push(("4mb", big.into_bytes(), 400.0));
     // ECMA-262 (7.6 MB, no `<main>`: the pick scores all of it) isn't a fixture, for its size: by hand, its saved
-    // copy named by `TARAE_WEB_ECMA` (target/sb/web/more/big.html, from https://tc39.es/ecma262/)
+    // copy named by `TARAE_WEB_ECMA` (.sb/web/more/big.html, from https://tc39.es/ecma262/)
     if let Some(at) = std::env::var_os("TARAE_WEB_ECMA") {
         pages.push(("ecma262", std::fs::read(at).unwrap(), 600.0));
     }

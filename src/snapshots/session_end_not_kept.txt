@@ -22,7 +22,7 @@
 19                                              │ A squash merge on a forge looks unmerged here.     │
 20                                              │                                                    │
 21                                              │ Not kept (over 64 MB) — goes with the checkout:    │
-22                                              │   target/sb  2400 files, 310 MB                    │
+22                                              │   .sb        2400 files, 310 MB                    │
 23                                              │   CLAUDE.md  differs from main's                   │
 24                                              │                                                    │
 25                                              │ Removing both deletes fix-login too — its commits  │
@@ -84,7 +84,7 @@
 19                                              f d dddddd ddddd dd d ddddd ddddd dddddddd ddddd     f
 20                                              f                                                    f
 21                                              f www wwww wwwww ww www w wwww wwww www wwwwwwwww    f
-22                                              f   wwwwwwwww  wwww wwwwww www ww                    f
+22                                              f   www        wwww wwwwww www ww                    f
 23                                              f   wwwwwwwww  wwwwwww wwww wwwwww                   f
 24                                              f                                                    f
 25                                              f dddddddd dddd ddddddd ddddddddd ddd d ddd ddddddd  f

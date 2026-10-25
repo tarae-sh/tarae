@@ -1,11 +1,11 @@
 //! The session against PostgreSQL 17: transcripts captured once from the test server (`captured/`, written by the
 //! `#[ignore]`d `capture_transcripts`), replayed here with no database; what the test server can't show (MD5, TLS
-//! refused, a forged proof) from messages made by hand. Live tests (`#[ignore]`) need `target/sb/db/testdb`'s
+//! refused, a forged proof) from messages made by hand. Live tests (`#[ignore]`) need `.sb/db/testdb`'s
 //! compose file up: `round7.sh`.
 
 use super::*;
 
-/// The test server's account (target/sb/db/testdb/compose.yaml — fake).
+/// The test server's account (.sb/db/testdb/compose.yaml — fake).
 const LIVE: (&str, u16) = ("127.0.0.1", 55432);
 const NONCE: [u8; 18] = [7; 18];
 

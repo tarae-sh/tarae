@@ -488,7 +488,7 @@ const ANSWER: &str = "`insert` takes its key by value, so the name is cloned bef
     ```rust\nthreads\n    .entry(first.name.clone())\n    .or_insert(first);\n```\n\n\
     Nothing else reads the map, so that line is the whole change.\n";
 
-/// Every picture, by page in the order it shows them (`target/sb/docshots-plan.md` says what each is for).
+/// Every picture, by page in the order it shows them (`.sb/docshots-plan.md` says what each is for).
 const DOCS: &[DocShot] = &[
     // README.md (and features.md)
     row("hero-hanji.png", None, (140, 40)).light().at(2),

@@ -282,7 +282,7 @@ fn flags_go_right_after_the_subcommand() {
     assert!(h.args(&[]).is_empty());
 }
 
-/// The listing's format as measured (`target/sb/gittrust-zformat.sh`, stand-in configs, fake values): scope,
+/// The listing's format as measured (`.sb/gittrust-zformat.sh`, stand-in configs, fake values): scope,
 /// origin, key LF value, each NUL-ended; a key with no `=` has no LF; a value may hold a LF; the repository's
 /// own config named relative to where git ran; Apple's git lists Xcode's built-in config as `unknown`.
 const MEASURED: &str = "unknown\0file:/Applications/Xcode.app/Contents/Developer/usr/share/git-core/gitconfig\0\

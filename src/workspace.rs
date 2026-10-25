@@ -19,7 +19,7 @@ use crate::editor::{Editor, Mode, View};
 use crate::event::WorkspaceId;
 use crate::key::{Code, Key};
 
-/// Where a session's keys are — one value (panes P2a, `target/sb/panes-plan.md` §2.3): the code, a surface
+/// Where a session's keys are — one value (panes P2a, `.sb/panes-plan.md` §2.3): the code, a surface
 /// beside it, the left rail's two, or a floating pane over them (P2b, §2.1c). Inside a surface its own sub-state
 /// says the rest (the chat's input or its view mode, `Viewer.view`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -51,7 +51,7 @@ pub enum At {
 use crate::session::COLOURS;
 
 /// A workspace: a place to work — a checkout (a git worktree or the main checkout) with its branch and layout, its
-/// buffers, terminal, runs, git and review (collab C0, `target/sb/collab-plan.md` §1.1). Who works in it is its
+/// buffers, terminal, runs, git and review (collab C0, `.sb/collab-plan.md` §1.1). Who works in it is its
 /// session (`claude`, the participant: one a workspace for now); where you are in it is its `viewer`.
 pub struct Workspace {
     pub id: WorkspaceId,

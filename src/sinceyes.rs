@@ -285,7 +285,7 @@ fn written(text: &str) -> Vec<String> {
 
 /// The project's files a script run names besides the scripts: an argument (`bash vm.sh run.sh`) or a word of a
 /// script's text (`cat linmeta-price-in.sh`, `< urls.txt`) that is a file in the project — from where it runs or
-/// beside the script, ignored ones too (`target/sb/…`) — as they are now: real path, text. frictions29 14: three
+/// beside the script, ignored ones too (`.sb/…`) — as they are now: real path, text. frictions29 14: three
 /// "script unchanged" cards in a day while what the script read had changed (the hosts it curls, the script it
 /// hands on). What it reads without naming it (a variable, a glob) isn't here.
 fn inputs(

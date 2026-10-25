@@ -208,8 +208,8 @@ fn rm_r_is_excused_only_in_the_checked_form() {
         assert_eq!(j.ids(&w, cmd), ["rm-r-unchecked"], "{cmd}");
     }
     // A build's scratch: excused; anything else in the same `rm`, not
-    assert!(j.ids(&w, "rm -rf target/sb/step6c").is_empty());
-    assert_eq!(j.ids(&w, "rm -rf target/sb src"), ["rm-r-unchecked"]);
+    assert!(j.ids(&w, "rm -rf target/step6c").is_empty());
+    assert_eq!(j.ids(&w, "rm -rf target/step6c src"), ["rm-r-unchecked"]);
     assert_eq!(j.ids(&w, "rm -rf target/../src"), ["rm-r-unchecked"]);
     // Not recursive: nothing
     assert!(j.ids(&w, "rm -f a.txt").is_empty());
@@ -357,7 +357,7 @@ fn every_built_in_warning_fires_on_its_example_not_its_safe_form() {
         ),
         ("process-details", "pgrep -af tarae", "pgrep tarae"),
         ("process-env", "ps -E -p 12", "ps -p 12"),
-        ("rm-r-unchecked", "rm -rf /tmp/build", "rm -rf target/sb/x"),
+        ("rm-r-unchecked", "rm -rf /tmp/build", "rm -rf target/x"),
         ("outward", "git push origin main", "git status"),
         ("history", "git reset --hard HEAD~1", "git log -1"),
         ("cargo-publish", "cargo publish --dry-run", "cargo package"),
@@ -726,8 +726,8 @@ fn a_line_is_split_as_a_shell_splits_it() {
     assert_eq!(commands("rm -rf \"$T\"")[0].raw, "rm -rf \"$T\"", "as written, for `unless-part`");
     let root = std::path::Path::new("/p");
     let out = ["target".to_string()];
-    assert!(in_outputs(root, root, "target/sb/x", &out));
-    assert!(in_outputs(root, &root.join("target"), "sb/x", &out), "from where it runs");
+    assert!(in_outputs(root, root, "target/tmp/x", &out));
+    assert!(in_outputs(root, &root.join("target"), "tmp/x", &out), "from where it runs");
     for not in ["src", "../target/x", "/p/target/x", "target/*", "$T", "~/target"] {
         assert!(!in_outputs(root, root, not, &out), "{not}");
     }

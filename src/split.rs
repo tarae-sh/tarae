@@ -1,4 +1,4 @@
-//! The split tree (pure part, panes P2b — `target/sb/panes-plan.md` §2.1): a leaf is a pane's id, a node a
+//! The split tree (pure part, panes P2b — `.sb/panes-plan.md` §2.1): a leaf is a pane's id, a node a
 //! direction and its children, each with its share of the room. Nothing it draws: what a pane shows is
 //! `pane.rs`'s (a code pane's document and scroll, editor.rs's `View`), drawing term.rs's — which lays the tree out
 //! in the frame's size every frame (`layout`), so the tree is data: ids and shares, no cells.

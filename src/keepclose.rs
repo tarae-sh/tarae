@@ -1,4 +1,4 @@
-//! collab C3 — workspaces kept close to their base (`target/sb/collab-plan.md` §2.4): the longer one stays behind,
+//! collab C3 — workspaces kept close to their base (`.sb/collab-plan.md` §2.4): the longer one stays behind,
 //! the bigger its conflicts.
 //!
 //! - **The base watched**: a thread per base (its repository's git folder and branch — `watch`), its loose ref and

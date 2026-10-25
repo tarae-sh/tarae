@@ -1344,7 +1344,7 @@ fn other(w: &World, ed: &mut Editor, op: OtherOp, ledger: &mut Ledger, s: &str) 
 /// `TARAE_CAPS_SEEDS`, else this many seeds — and `FOUND`.
 const SEEDS: u64 = 5;
 /// Seeds that find a widening once, kept in the default run beside `SEEDS`: the review's majors broken once (picked
-/// again 2026-10-18 for `Step::Other` without a clock, `target/sb/capsloop-found.sh`) — 22 review at the end past
+/// again 2026-10-18 for `Step::Other` without a clock, `.sb/capsloop-found.sh`) — 22 review at the end past
 /// its trust (no default seed finds it); 42 the key's text after its take-back failed and 23 a read card offering
 /// `~/.claude` (`allow::read_open` without its `kept`), as seed 5 does; a run's `a` past its conversation seed 2
 /// finds. Pick them again (`TARAE_CAPS_SEEDS=60` with the break) when `Step::random` changes.

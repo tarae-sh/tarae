@@ -183,7 +183,7 @@ fn unverified_tls_is_said_in_the_tab() {
 
 // ── The connection in use, live ──
 
-/// The test server's connection (target/sb/db/testdb — fake), its password from `$PGPASSWORD`.
+/// The test server's connection (.sb/db/testdb — fake), its password from `$PGPASSWORD`.
 const LIVE_CONFIG: &str = "[[connection]]\nname = \"dev\"\nurl = \"postgres://app@127.0.0.1:55432/shop\"\npassword-env = \"PGPASSWORD\"\n";
 /// What the captured exchange's nonce was made of (`driver/postgres/wire/tests.rs`: 18 sevens).
 const SEED: [u8; 32] = [7; 32];
@@ -410,12 +410,12 @@ fn unverified_tls_is_said_on_the_badge_too() {
 
 // ── Live, against the test server (#[ignore]: round11.sh) ──
 
-/// The test databases' fake CA, and another that signed nothing (target/sb/db/testdb/certs.sh).
+/// The test databases' fake CA, and another that signed nothing (.sb/db/testdb/certs.sh).
 fn test_ca(name: &str) -> String {
     // (up from the crate — round5.sh's broken copies live elsewhere in the checkout)
     let found = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
-        .map(|a| a.join(format!("target/sb/db/testdb/certs/{name}.pem")))
+        .map(|a| a.join(format!(".sb/db/testdb/certs/{name}.pem")))
         .find(|p| p.exists());
     found.expect("the test certificates (testdb/certs.sh)").to_string_lossy().into_owned()
 }

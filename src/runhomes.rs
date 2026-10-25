@@ -1,5 +1,5 @@
 //! Kept run homes (the packs' `run-home` with `keep` — `sandbox::kept_homes`): their stamps, and the prune that
-//! takes the ones nobody needs any more (`target/sb/kept-homes-plan.md` §3, §5).
+//! takes the ones nobody needs any more (`.sb/kept-homes-plan.md` §3, §5).
 //!
 //! Each kept home `run-homes/<tool>/<key>` has a stamp beside it, `<key>.stamp`, in tarae's own folder (runs
 //! write the home, never what holds it): the project's real path, and — its mtime — the last time a run got

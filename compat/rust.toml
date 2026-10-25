@@ -1,4 +1,4 @@
-# Rust, the control (`target/sb/compat-plan.md` §6): cargo's everyday commands on a crate with one dependency
+# Rust, the control (`.sb/compat-plan.md` §6): cargo's everyday commands on a crate with one dependency
 # from the registry, fetched outside the sandbox first — they should stay green and show the harness's overhead.
 stack = "rust"
 pack = "rust"

@@ -232,7 +232,7 @@ mod tests {
         s.parse().unwrap()
     }
 
-    /// Every row of step 4's table (`target/sb/step4-plan.md` §3), in the session's netns and without one (host):
+    /// Every row of step 4's table (`.sb/step4-plan.md` §3), in the session's netns and without one (host):
     /// loopback stays the session's unless opened and nothing of the session's listens there; opened, it's this
     /// machine's; without a netns it's this machine's where opened, else refused. Beyond, with the network open but
     /// neither the proxy nor the session's network (the next tests' ways): refused as direct — nothing else goes out

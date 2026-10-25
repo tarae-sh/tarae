@@ -1,4 +1,4 @@
-//! A repository's own git config that runs commands (`target/sb/gittrust.md`): found when the repository is
+//! A repository's own git config that runs commands (`.sb/gittrust.md`): found when the repository is
 //! resolved, held on every run of tarae's git until the user trusts it on a card (`What::GitTrust`). Only the
 //! repository's own scopes — `local`, `worktree` and what they include — and the hooks in its git folder: the
 //! user's `global`/`system` config is theirs, never held, and its value is what a held key gets back. The
@@ -6,7 +6,7 @@
 //! are part of what's trusted, by their text (`cover`): one edited after a `y` is held and asked about again.
 //! A hooks folder inside the work tree is the hooks card's (`hooks.rs`); here, only the setting.
 //!
-//! How each key is held is measured, not assumed (`target/sb/gittrust-probe*.sh`, git 2.54): an empty `-c`
+//! How each key is held is measured, not assumed (`.sb/gittrust-probe*.sh`, git 2.54): an empty `-c`
 //! value isn't a general "off" — for a textconv, a diff command, a merge driver, `sshCommand` or a gpg program
 //! git then fails ("cannot run"), and for `gitProxy` and `uploadpack` the repository's own value still wins.
 

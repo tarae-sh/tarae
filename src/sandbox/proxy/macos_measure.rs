@@ -1,5 +1,5 @@
-//! Step 5d's measurements (`target/sb/step5d-plan.md` §Measurements), `#[ignore]`d — run by hand outside a
-//! sandbox (`target/sb/step5/d-outside.sh`), each writing its table to `target/sb/step5/d-*.txt`:
+//! Step 5d's measurements (`.sb/step5d-plan.md` §Measurements), `#[ignore]`d — run by hand outside a
+//! sandbox (`.sb/step5/d-outside.sh`), each writing its table to `.sb/step5/d-*.txt`:
 //! - Q4: what breaks when a run can't reach the system's resolver (mDNSResponder's socket — denied today by
 //!   the unix-socket rule), each case under the run's real profile as it is and with that socket allowed;
 //! - Q3b: whether the proxy can tell a connection to a run's port is the run's own — the peer's socket found
@@ -23,7 +23,7 @@ use crate::sandbox::{Guard, Policy, RunDir, WATCH_LAST, after_run, command, spaw
 
 /// Where a table goes.
 fn out_file(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("target/sb/step5").join(name)
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(".sb/step5").join(name)
 }
 
 /// What every measured run gets on top: `PATH` (the run's environment here holds nothing of tarae's), a home of

@@ -1,4 +1,4 @@
-//! A page's address as the fetch asks for it, and the request it sends (`target/sb/web-fetch-plan.md` §2.1, D7):
+//! A page's address as the fetch asks for it, and the request it sends (`.sb/web-fetch-plan.md` §2.1, D7):
 //! `https://` (or `http://`, made `https://` but on this machine — D4), a host by its name — never a user or password
 //! in the address, never a bare address but this machine's (the proxy names hosts, as runs reach them), not yet a name
 //! that isn't ASCII (IDNA's tables: later, their own call) —; a GET with nothing of the user's in it: no cookie, no

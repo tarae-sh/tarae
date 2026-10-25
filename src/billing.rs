@@ -1,4 +1,4 @@
-//! Who pays for a session's Claude (apibill step 5, `target/sb/apibill-design.md` D1/D3): the plan you're
+//! Who pays for a session's Claude (apibill step 5, `.sb/apibill-design.md` D1/D3): the plan you're
 //! logged in to (`Subscription`), or an Anthropic API key (`Api`). Per session (`Session.billing`, kept with it —
 //! `worktree::Kept` — so a restart keeps it); a new session takes `llm.billing`; the reviewer follows its session
 //! unless `llm.reviewer-billing` says otherwise. Only your own config sets either (`trust::YOURS_ONLY`): a project

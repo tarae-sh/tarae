@@ -1,4 +1,4 @@
-//! collab C2b — the woven view (`target/sb/collab-plan.md` §3.2): a file as every workspace's changes merge onto
+//! collab C2b — the woven view (`.sb/collab-plan.md` §3.2): a file as every workspace's changes merge onto
 //! the base's tip, in memory, unsaved changes too — a read-only document in a code pane, each change washed and
 //! barred in its participant's colour (C1's `ui.participant.N`, its name's prefix in the sign column: never the colour
 //! alone), each conflict its parts one after another (the base's lines, then each side's) — drawn side by side where

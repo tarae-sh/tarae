@@ -1,6 +1,6 @@
 //! `cargo xtask reviews [PATH …]` — the review record (`src/reviews.rs`: `$state/reviews/<yyyy-mm>.jsonl`, every
 //! file in a folder given, the state folder's when none is) summed up as the review lens's plan reads it
-//! (`target/sb/reviewlens-plan.md` §4):
+//! (`.sb/reviewlens-plan.md` §4):
 //!
 //! - **time per change** by grade and size: the median time on screen with you there, per change and per changed
 //!   line, and the share **acted on** (rejected, undone, edited or commented — the guard: faster mustn't mean

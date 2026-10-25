@@ -160,7 +160,7 @@ risky = [
 ]
 quiet = ["tests/", "test_*.py", "*_test.py", "conftest.py"]
 
-# Claude's sandbox (`sandboxpack.rs`). pip's settings files (2026-10-05, `target/sb/tokens-checkpoint.md`:
+# Claude's sandbox (`sandboxpack.rs`). pip's settings files (2026-10-05, `.sb/tokens-checkpoint.md`:
 # denied, pip loses its index and the rest without a word)
 [sandbox]
 # Its files that are code: a token-like line there is code, not a token (`tokens::not_settings`)

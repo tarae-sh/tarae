@@ -1,9 +1,9 @@
-//! macdeny's measurements (`target/sb/macdeny-plan.md` §3), `#[ignore]`d — run by hand outside a sandbox
-//! (`target/sb/macdeny/measure.sh`): what a command asks of macOS besides files and the network, run as Claude's
+//! macdeny's measurements (`.sb/macdeny-plan.md` §3), `#[ignore]`d — run by hand outside a sandbox
+//! (`.sb/macdeny/measure.sh`): what a command asks of macOS besides files and the network, run as Claude's
 //! run is (`sandbox::policy` for this checkout), each its own `log stream` by the run's tag: what was refused.
 //! (`BASE` was found with the profile's default allowed and reported — `(allow default (with report))`, the
 //! default's denies put back — through a switch that lived only while measuring.) Tables go to
-//! `$TARAE_MEASURE_OUT` (else `target/sb/macdeny`): `allow|deny  op  target  ×count  [processes]`, digits in
+//! `$TARAE_MEASURE_OUT` (else `.sb/macdeny`): `allow|deny  op  target  ×count  [processes]`, digits in
 //! targets as `N`.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,7 +17,7 @@ use crate::sandbox::{Policy, after_run, command};
 fn out_dir() -> PathBuf {
     let d = std::env::var_os("TARAE_MEASURE_OUT")
         .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("target/sb/macdeny"));
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join(".sb/macdeny"));
     std::fs::create_dir_all(&d).unwrap();
     d
 }

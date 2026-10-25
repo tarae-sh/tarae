@@ -2,7 +2,7 @@
 //! `#[ignore]`d `capture_transcripts` after seeding its keys, with Redis's own text cut out — `without_redis_text`),
 //! replayed here with no server; what it can't show (a
 //! renamed command, a keyspace past the cap, a password off this machine) by hand. Live tests (`#[ignore]`) need
-//! `target/sb/db/testdb`'s compose file up: `round11.sh`.
+//! `.sb/db/testdb`'s compose file up: `round11.sh`.
 
 use super::*;
 use crate::secret::Secret;
@@ -384,7 +384,7 @@ fn live_select_as_ro() {
 fn test_ca(name: &str) -> std::sync::Arc<tarae_plugin::tls::Config> {
     let found = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
-        .map(|a| a.join(format!("target/sb/db/testdb/certs/{name}.pem")))
+        .map(|a| a.join(format!(".sb/db/testdb/certs/{name}.pem")))
         .find(|p| p.exists())
         .expect("the test certificates (testdb/certs.sh)");
     tarae_plugin::tls::config(&std::fs::read(found).unwrap(), None).unwrap()

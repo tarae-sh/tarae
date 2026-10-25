@@ -27,7 +27,7 @@ const KEYFRAME_MS: u64 = 10_000;
 /// Sampling bucket width in milliseconds (keeps the latest screen in each 200 ms window).
 const FRAME_STEP_MS: u64 = 200;
 
-/// The six beats of "Three Claudes, one repository" (`target/sb/home-plan.md` §2).
+/// The six beats of "Three Claudes, one repository" (`.sb/home-plan.md` §2).
 const BEATS: [&str; 6] = [
     "Three Claudes, each in a workspace of its own.",
     "You see where each one reads and writes.",
@@ -384,7 +384,7 @@ struct CellState {
     wide: u8, // 0 = normal (1 col), 1 = wide start (2 cols), 2 = wide continuation
 }
 
-/// Encodes `frames` and `beats` into the homepage player's JSON format (`target/sb/home-plan.md`):
+/// Encodes `frames` and `beats` into the homepage player's JSON format (`.sb/home-plan.md`):
 /// - `palette`: array of `"#rrggbb"` strings (index 0 = default background, index 1 = default foreground)
 /// - `styles`: array of `[fgPaletteIdx, bgPaletteIdx, flags]` (`1 = bold`, `2 = italic`, `4 = underline`)
 /// - `beats`: `[{"at": ms, "label": "..."}, ...]`

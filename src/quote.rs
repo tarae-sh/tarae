@@ -1,4 +1,4 @@
-//! Quoting (인용, `target/sb/quote-plan.md` §4): part of what a surface shows — the chat's conversation, the
+//! Quoting (인용, `.sb/quote-plan.md` §4): part of what a surface shows — the chat's conversation, the
 //! terminal's scrollback, the code — taken to the chat as a chip over its input (`enter` on a view mode's
 //! selection, `space >` on the code's) and sent with the input's next message as `<quoted>`: where it came from,
 //! cut to a limit and said so, token-like lines taken out of the terminal's. The user's act — no card: what can't

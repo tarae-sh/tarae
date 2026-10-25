@@ -1,10 +1,10 @@
 use super::*;
 
-/// The marker the captures carry as their proxy password (`target/sb/step5/cap.sh`).
+/// The marker the captures carry as their proxy password (`.sb/step5/cap.sh`).
 const TOKEN: &[u8] = b"tarae-fake-token-5";
 
 /// What clients send first through a proxy, captured from the clients themselves on this machine's loopback
-/// (`target/sb/step5/cap.sh`, 2026-10-07: curl 8.7.1, git 2.54, Python 3.14's urllib, cargo 1.99, Go 1.27,
+/// (`.sb/step5/cap.sh`, 2026-10-07: curl 8.7.1, git 2.54, Python 3.14's urllib, cargo 1.99, Go 1.27,
 /// Node 26 with `NODE_USE_ENV_PROXY`, Java 25's `HttpsURLConnection`): the head and, through a tunnel, the
 /// ClientHello. (name, bytes, the host it names, whether it sent the password)
 const CAPTURED: [(&str, &[u8], &str, bool); 8] = [

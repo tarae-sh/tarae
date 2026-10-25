@@ -8472,7 +8472,7 @@ mod tests {
         for c in [
             "grep -rn fn src",
             "rg -n x",
-            "sh target/sb/x.sh",
+            "sh .sb/x.sh",
             "cargo xtask shot x.png",
             "cargo build && grep -n x src/a.rs",
             "cargo testx",

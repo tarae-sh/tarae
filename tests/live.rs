@@ -3270,7 +3270,7 @@ fn arm_webfetch(sb: &Sandbox, stream: &Path) {
 /// web-plan P0: the exact tokens of a page read each way (§3's columns) — each file of `TARAE_WEB_TOKENS`'s folder
 /// (`<page>.<column>.txt`, made by the plan's scratch `columns.sh`) after a one-word question, less that question
 /// alone: the file's own tokens (and the blank line before it). A file past 400 KB goes in parts (a request's
-/// window), cut at a newline, summed. By hand: `TARAE_WEB_TOKENS=target/sb/web/columns cargo test --test live
+/// window), cut at a newline, summed. By hand: `TARAE_WEB_TOKENS=.sb/web/columns cargo test --test live
 /// web_page_tokens -- --ignored --nocapture`.
 #[test]
 #[ignore = "live: run with `cargo live` (uses Claude)"]

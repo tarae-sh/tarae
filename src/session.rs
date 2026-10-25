@@ -1,6 +1,6 @@
 //! Sessions: the participants — who acts. A session is one Claude at work in its workspace for the workspace's whole
 //! life (`Workspace.claude`): its conversation and process, its notes and turns, the cards it asks, what it costs and
-//! who pays, the grants answered for it, its runs' keeper (collab C0, `target/sb/collab-plan.md` §1.1). You are a
+//! who pays, the grants answered for it, its runs' keeper (collab C0, `.sb/collab-plan.md` §1.1). You are a
 //! session too, visiting workspaces — where you are in one is its `Viewer` (`workspace.rs`). The place, its
 //! checkout and layout, is the workspace's.
 

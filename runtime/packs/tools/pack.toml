@@ -128,7 +128,7 @@ say = "It reads your Secret Service outside the sandbox — tarae's API key woul
 
 # What writing a model's prompt cache costs, per million tokens (`switchcost.rs`): the 5-minute and the hour-long
 # write — said as "≈ $X" when a switch of billing, model or effort throws a warm cache away. From
-# platform.claude.com/docs/en/about-claude/pricing, read 2026-10-09 (`target/sb/apibill-src/pf-pricing.md`). A model
+# platform.claude.com/docs/en/about-claude/pricing, read 2026-10-09 (`.sb/apibill-src/pf-pricing.md`). A model
 # not listed is said in tokens only. `model` is claude's id without a date; `up-to`: the row holds for prompts of
 # at most that many tokens. `effort`: what an effort change does to its cache — `keeps` (Claude Code 2.1.260 says
 # so for Fable 5.1), `rewrites`, or `unknown` (the API keeps it with per-message effort; whether Claude Code uses

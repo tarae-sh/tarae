@@ -108,7 +108,7 @@ fn region(ed: &Editor) -> String {
     ed.keys_to().region.name()
 }
 
-/// Each pane its own search (panes P2a, `target/sb/panes-plan.md` §2.3): the chat's view mode's `/` searches its
+/// Each pane its own search (panes P2a, `.sb/panes-plan.md` §2.3): the chat's view mode's `/` searches its
 /// rows only — its matches there while typed and after, `n` moving there; the code's pattern, highlights and
 /// selection as they were (they leaked: the view's `/` was the editor's register, its preview counted and
 /// scrolled the code). `esc` clears the view's matches, not the code's. And the other way round: the code's

@@ -194,7 +194,7 @@ risky = [
 quiet = ["src/test/"]
 
 # Claude's sandbox (`sandboxpack.rs`). What Java's builds read in home, measured
-# (`target/sb/java-checkpoint.md`): the JDKs `/usr/bin/java` looks for, the JDK `JAVA_HOME` names (`{jdk}`:
+# (`.sb/java-checkpoint.md`): the JDKs `/usr/bin/java` looks for, the JDK `JAVA_HOME` names (`{jdk}`:
 # sdkman, asdf, mise and CI's tool caches keep theirs in home — without it `java` can't load its own libjli),
 # Maven's downloaded repository and its wrapper's distributions — not `~/.m2/settings.xml` (a repository's
 # password lives there). In the user's Gradle home: the dependencies downloaded (`caches/modules-2`, read in
@@ -208,7 +208,7 @@ reads = [
     "{gradle}/caches/modules-2", "{gradle}/wrapper/dists",
 ]
 # The user's Gradle daemons' registry: their ports and the token each takes — kept from every run, whatever is
-# granted. Measured (`target/sb/java-checkpoint.md`, c0): with it readable and this machine's ports open, a
+# granted. Measured (`.sb/java-checkpoint.md`, c0): with it readable and this machine's ports open, a
 # sandboxed `./gradlew` hands its build to a daemon started outside, and the build runs outside the sandbox
 kept = ["{gradle}/daemon"]
 # The lock file Gradle's wrapper takes beside each distribution it unpacked (`wrapper/dists/<name>/<hash>/
@@ -230,7 +230,7 @@ pass =["JAVA_HOME", "JAVA_OPTS", "GRADLE_*", "MAVEN_OPTS", "MAVEN_ARGS", "MAVEN_
 # A JVM's sockets are IPv6 ones (dual-stack) unless told otherwise: its 127.0.0.1 is `::ffff:127.0.0.1`, which
 # macOS's Seatbelt below 27 takes as no `localhost` — every connect and bind of a JVM on this machine's ports
 # refused: the proxy, Gradle's client to its daemon and the daemon's listener, a test's server (measured on
-# 26.6.2; 27.0.1 takes it; Linux's supervisor reads the address itself — `target/sb/macos26-jvm.md`). There, the
+# 26.6.2; 27.0.1 takes it; Linux's supervisor reads the address itself — `.sb/macos26-jvm.md`). There, the
 # runs' JVMs are IPv4-only. In `JAVA_TOOL_OPTIONS`, which every JVM reads (what `java` starts: Gradle's client,
 # daemon and test workers, Maven and its forks, Java 8's; and JVMs started through JNI) — tarae's value alone:
 # the user's own is never passed (it loads agents). Each JVM says "Picked up JAVA_TOOL_OPTIONS: …" on stderr.
@@ -255,7 +255,7 @@ this machine (a download straight to 443 or 80). The network is closed to your c
 (llm.sandbox-network) they reach beyond this machine only through tarae's proxy, which Gradle and Maven are given. \
 If the build needs to fetch, tell the user.""" }
 # Gradle's client refused its daemon's port, as Gradle says it (measured: Gradle 9.8.1, OpenJDK 27, Darwin 27,
-# localhost closed, 4 of 4 — `target/sb/pieceD-gradle-measure.out`; the kernel reported none of them): it failed,
+# localhost closed, 4 of 4 — `.sb/pieceD-gradle-measure.out`; the kernel reported none of them): it failed,
 # then the daemon log's last lines name the address the daemon gave its clients. Its failing line names no port;
 # a JVM's `SocketException` none either (`--stacktrace` only)
 refused-connect = [{ when = '^Could not connect to the Gradle daemon\.$', process = "java", line = '''
@@ -276,12 +276,12 @@ jdk = { env = "JAVA_HOME", else = "~/Library/Java/JavaVirtualMachines" }
 #
 # Kept, with its daemon, for a Gradle project's runs where tarae serves and ends what a run leaves (Linux): one
 # home per project and policy, so a policy narrowed since never reuses a daemon started under a wider one
-# (measured, `target/sb/subreaper.md`: `gradle test` +6% over a plain run with the daemon kept, +411% in a
+# (measured, `.sb/subreaper.md`: `gradle test` +6% over a plain run with the daemon kept, +411% in a
 # fresh home without one). The daemon ends itself after 30 idle minutes (Gradle's default: 3 hours), and tarae
 # ends it with its session, at quit, or when the project's policy changes. The Kotlin Gradle plugin keeps its
 # compile daemon's registry in `~/.kotlin/daemon` — closed to runs, so it compiled in Gradle's daemon instead
 # (+227%); pointed into this home (`kotlin.daemon.options`, read by the plugin — a Java-only build ignores it) it
-# gets a daemon of the runs' own: within 5–10% of a plain build once warm (`target/sb/kept-homes-plan.md` §1),
+# gets a daemon of the runs' own: within 5–10% of a plain build once warm (`.sb/kept-homes-plan.md` §1),
 # also ended after 30 idle minutes (Kotlin's default: 2 hours).
 #
 # Elsewhere — macOS, or not a Gradle project — the run's own, gone with its folder, and no daemon kept after
@@ -316,11 +316,11 @@ yet fails here — tell the user; a build of theirs fetches it."""
 
 # The JVM reads no HTTPS_PROXY: Gradle takes the proxy from its home's gradle.properties — dependency resolution
 # (its own HTTP client, after a 407) and the wrapper's download (the JDK's, which sends Basic on a tunnel only
-# with `disabledSchemes` cleared) — measured, `target/sb/step5/m2-gradle.sh`. Written for each run with a proxy
+# with `disabledSchemes` cleared) — measured, `.sb/step5/m2-gradle.sh`. Written for each run with a proxy
 # URL, removed for one without; the file is tarae's whole (a line a run wrote there is gone at the next run).
 # A run whose URL is its own alone (a port and a token of its own: macOS, Linux's fallback tier) never gets the
 # kept home with its daemon — another run reads it, and the daemon serves later runs — but one of its own: its
-# build pays a daemon's start and a cold home (`target/sb/subreaper.md`: +411% for a test run without a warm
+# build pays a daemon's start and a cold home (`.sb/subreaper.md`: +411% for a test run without a warm
 # daemon). Its user and password lines are left out where the URL has none (Linux's supervised runs)
 [sandbox.run-home.gradle.proxy]
 file = "gradle.properties"
@@ -337,7 +337,7 @@ lines = [
     "systemProp.jdk.http.auth.tunneling.disabledSchemes=",
 ]
 
-# Maven 3.9+ takes the proxy from a settings file's <proxy> (measured, `target/sb/step5/l2-maven-auth.sh`) — given
+# Maven 3.9+ takes the proxy from a settings file's <proxy> (measured, `.sb/step5/l2-maven-auth.sh`) — given
 # in `MAVEN_ARGS` as the user settings (`-s`): runs never read the user's own `~/.m2/settings.xml` (repository
 # passwords live there), while `-gs` would replace the installation's `conf/settings.xml`, which they do read (an
 # admin's mirrors). Not measured: Maven 4's JDK transport (it would need `disabledSchemes` cleared in

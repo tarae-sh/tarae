@@ -3,7 +3,7 @@
 //! (`http.extraHeader`, a token in a `url.<…>.insteadOf`), Go's env file (`go env -w GOPROXY=https://user:…@`),
 //! pip's (an `index-url` with `user:pass@`) — and npm's `~/.npmrc` (`_authToken`), kept from every run
 //! (`allow::SECRETS`). Measured with fake tokens in a stand-in home under a run's profile
-//! (`target/sb/tokens-checkpoint.md`): denied, git fails at every command, and Go, npm and pip lose their
+//! (`.sb/tokens-checkpoint.md`): denied, git fails at every command, and Go, npm and pip lose their
 //! settings without a word; each takes a copy by a variable (`Tool::var`). Git is tarae's own; the others are
 //! the built-in packs' `[[sandbox.settings]]` (`sandboxpack.rs`). So where a token is there, tarae — on the
 //! policy's worker, never Claude — writes a copy without those lines in the run's own folder

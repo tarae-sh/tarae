@@ -205,7 +205,7 @@ mod tests {
     use crate::config::Config;
     use crate::key::{Code, Key};
 
-    /// The line the installed claude wrote for `/compact` (2.1.288 — `target/sb/compact.md`), whole.
+    /// The line the installed claude wrote for `/compact` (2.1.288 — `.sb/compact.md`), whole.
     const BOUNDARY: &str = r#"{"type":"system","subtype":"compact_boundary","session_id":"49a87b48-0524-43f7-b9cd-d4cfd845af0f","uuid":"13f7e73c-ed56-428c-807b-814e5afcb60c","compact_metadata":{"trigger":"manual","pre_tokens":6577,"post_tokens":795,"cumulative_dropped_tokens":5782,"duration_ms":12261},"logical_parent_uuid":"24536454-416b-41ff-9e95-26e1174c4ace"}"#;
 
     /// The same line as claude writes it near the context limit: `auto`, 812k before, 30k kept.

@@ -46,7 +46,7 @@ const READ: u64 = landlock::EXECUTE | landlock::READ_FILE | landlock::READ_DIR;
 /// Writing one file (not making or removing it).
 const WRITE_ONE: u64 = landlock::READ_FILE | landlock::WRITE_FILE | landlock::TRUNCATE | landlock::IOCTL_DEV;
 
-/// Devices programs use, and how (measured, `target/sb/measure-devices.sh`: cargo, go, npm, Maven, Gradle, a
+/// Devices programs use, and how (measured, `.sb/measure-devices.sh`: cargo, go, npm, Maven, Gradle, a
 /// pty, Python's multiprocessing): `/dev/null` read, written, created-and-truncated and asked `isatty`;
 /// terminals for a pty test (`/dev/ptmx`, then its `/dev/pts/N`, with their ioctls — this system's `/dev/pts`
 /// only the ptys tarae opened for the run, where it serves them: `sandbox::ptys`); POSIX semaphores and
@@ -940,7 +940,7 @@ pub struct There {
 /// it the run starts, the folders not reached named in its report. Measured (`perf_a_walk_of_the_key_places`, Linux
 /// 7.0 on the GCP VM, warm, the `perf` profile): 2.18 µs an entry — 20,011 of them 43.7 ms, about what a run in tier
 /// own takes to start (~39 ms); a checkout of tarae (2,314 files, 250 folders) 4.8 ms, 1,000 files 2.8 ms, an empty
-/// `/tmp` 14 µs (`target/sb/sandbox-d2-walk.md`). Each folder sorted by name before it's queued (ci5: a walk cut
+/// `/tmp` 14 µs (`.sb/sandbox-d2-walk.md`). Each folder sorted by name before it's queued (ci5: a walk cut
 /// short finds the same on every disk) adds 0.04–0.07 µs an entry — +0.8 ms in folders of 99, +1.5 ms of 999 or one
 /// of 20,000 (`sorting::tests::perf_a_listing_in_name_order`, this Mac): 2–3 % of the walk. Every run walks afresh (user decision 2026-10-20, request 3's question 4):
 /// nothing kept from one run to the next, so a key made anywhere below a place since is found.
@@ -1457,7 +1457,7 @@ pub fn served_here(user: bool) -> Result<(), String> {
 /// The rights `DEVICES` grants, on a session keeper's own device places — `devices`, the handles it opened in
 /// its mount namespace before any run existed (`keeper::DEVICE_HANDLES`). Its `devpts` and `/dev/shm` are
 /// mounts over this system's, and Landlock's walk doesn't reach a rule on a root another mount covers
-/// (measured, `target/sb/step3-notes.md`): the rules on this system's places don't hold there. `/dev/pts/ptmx`
+/// (measured, `.sb/step3-notes.md`): the rules on this system's places don't hold there. `/dev/pts/ptmx`
 /// is its `/dev/ptmx`'s file (bound over a node there, a link in a container). Without a `/dev/shm` of its own
 /// (`own_shm` false: the project or a write place is in this system's) that one is this system's, granted with
 /// the project's protected names left out as every place is — not again here, whole.
@@ -4349,9 +4349,9 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// The toolchains in the sandbox, measured (`target/sb/landlock-measured.md`, step 7): each command
+    /// The toolchains in the sandbox, measured (`.sb/landlock-measured.md`, step 7): each command
     /// `TARAE_MEASURE` lists — a file, a line each: `name<TAB>project<TAB>localhost 0|1<TAB>command`, projects
-    /// with warm caches (`target/sb/measure-toolchains.sh` makes them) — run as Claude's runs go: the
+    /// with warm caches (`.sb/measure-toolchains.sh` makes them) — run as Claude's runs go: the
     /// project's own policy (`sandbox::policy`: the toolchains' folders asked, what a first build makes made
     /// first, the protected names walked), the run's environment (`sandbox::command`), its spawn
     /// (`sandbox::spawn`: Landlock, seccomp, tarae's supervisor) — and plain, `TARAE_MEASURE_N` times each (3),

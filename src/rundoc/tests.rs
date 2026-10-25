@@ -29,7 +29,7 @@ fn task(lines: usize) -> Editor {
 /// task panel's 20,000 lines add — the run, its document following it, frames drawn — against their text, as the
 /// bytes malloc holds in use (macOS: what's kept, not the pages a freed copy leaves dirty) and the footprint. Run
 /// alone (both are the process's). Measured against the code before (P2c step 1, d95b3f13: the lines a
-/// `Vec<(bool, String)>`, the document a copy) by the same scene there — target/sb/panes/p2c2/perf.md.
+/// `Vec<(bool, String)>`, the document a copy) by the same scene there — .sb/panes/p2c2/perf.md.
 #[test]
 fn perf_run_output_memory() {
     if crate::test_results::unoptimized("rundoc::tests::perf_run_output_memory") {

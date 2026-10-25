@@ -461,7 +461,7 @@ All five recommendations taken:
 3. **Home closed by an allow-list**, the list measured in P2 (what the toolchains actually read), never
    guessed.
 4. **The network is grantable up to this session at most**; "always" stays the project's trusted
-   `llm.sandbox-network`. Built in sandbox UX piece C1 (2026-10-16, `target/sb/sandbox-ux-pieceC-plan.md`): the
+   `llm.sandbox-network`. Built in sandbox UX piece C1 (2026-10-16, `.sb/sandbox-ux-pieceC-plan.md`): the
    network closed, every host is asked — `y` this run · `a` this chat · `s` this session · `n`; `Caps::storable`
    keeps a host to the session.
 5. **This repo's `llm.sandbox-localhost` narrows to its tests' ports** (`llm.sandbox-ports`), so one
@@ -525,7 +525,7 @@ hour, each time read whole:
   snapshot, staged into tarae's own index). Kept until tarae quits, not with the conversation. It still waits
   for its key. The `card` line's `same=#41`/`same=#41:changed` counts it.
 
-**P2, as built (2026-10-05)** — measured first (`target/sb/p2-plan.md`, `p2-measured.md`, the scripts beside
+**P2, as built (2026-10-05)** — measured first (`.sb/p2-plan.md`, `p2-measured.md`, the scripts beside
 them):
 
 - **Reads in home are confined** (`sandbox::Reads`, `reads_for`, `Policy::profile`): `file-read-data` and
@@ -566,7 +566,7 @@ them):
   (24 rules, 68 parameters).
 
 **Tokens in the settings a run reads (2026-10-05, after P2; the user chose copies after measuring)** —
-`tokens.rs`, measured in `target/sb/tokens-checkpoint.md`:
+`tokens.rs`, measured in `.sb/tokens-checkpoint.md`:
 
 - Where a file a run reads holds a token-like line (`tokens::token_like`: a URL with a password, a key
   named for a secret with a value written there, an `Authorization:` header, a known prefix), the run gets a
@@ -582,7 +582,7 @@ them):
 - The read card, its folder for `a`/`A`, and `space m s`'s read grants say when the place holds a
   token-like line (`tokens::found_in`, on a worker), by file name only.
 
-**P5, as built (2026-10-05)** — plan and numbers in `target/sb/p5-plan.md`, `p5-checkpoint.md`, the scripts
+**P5, as built (2026-10-05)** — plan and numbers in `.sb/p5-plan.md`, `p5-checkpoint.md`, the scripts
 beside them:
 
 - **The snapshot** (`src/snapshot.rs`): `git add -A` + `write-tree` into **tarae's own index per checkout**
@@ -608,7 +608,7 @@ beside them:
   snapshot keeps what it had** (`add -u`, the new ones counted): 0.18 s first, 0.17 s again, 0.21 s for a
   run's whole after-side, nothing written. The report says how many weren't kept. 5,000 new files: 2.7 s
   once, then 47 ms. This repository: about 55 ms a snapshot (about 20 ms of it starting git twice).
-- **§3.4's question, decided: no `file-write-unlink` deny** (`target/sb/p5-unlink.sh`, `p5-rules.sh`). A deny
+- **§3.4's question, decided: no `file-write-unlink` deny** (`.sb/p5-unlink.sh`, `p5-rules.sh`). A deny
   on tracked literals refuses `rm`, `mv x y`, **rename-over** (`printf > tmp && mv tmp x`) and `sed -i`, which
   is how many tools save. In-place writes and `rustfmt` pass. Its cost grows faster than linearly: per run, 0 /
   1,000 / 2,000 / 5,000 literals = 9 / 189 / 726 / 4,548 ms. It breaks working tools, costs a fifth of a
@@ -622,7 +622,7 @@ beside them:
 
 **Java under P2 (2026-10-05)** — measured with Gradle 9.8.0 (Homebrew), a 9.7.1 wrapper, and Maven 3.9.16
 (the wrapper's cached distribution) on small offline projects, every read and write in home reported
-(`target/sb/java-plan.md`, `java-checkpoint.md`, the scripts beside them):
+(`.sb/java-plan.md`, `java-checkpoint.md`, the scripts beside them):
 
 - **Reads added**: `~/Library/Java/JavaVirtualMachines` (the `/usr/bin/java` stub finds no JDK without it),
   `~/.m2/repository`, `~/.m2/wrapper`, and in the Gradle home `caches/modules-2` and `wrapper/dists`.
@@ -631,9 +631,9 @@ beside them:
   (`GRADLE_RO_DEP_CACHE`), the distributions linked in (only the wrapper's `.zip.lck` files are written —
   `gradle_locks`), no daemon after the build. A small `./gradlew clean test` took 4.5 s cold and 3.7 s warm.
   (Linux, 2026-10-06: a Gradle project's home is kept per project and policy — the java pack's run home with
-  `daemon` — and its daemon lives on, tarae its last parent: `reaper.rs`, `target/sb/subreaper.md`. +0% over a
+  `daemon` — and its daemon lives on, tarae its last parent: `reaper.rs`, `.sb/subreaper.md`. +0% over a
   plain `gradle test`. Kotlin's compile daemon gets its registry there too; kept homes are pruned at start —
-  `runhomes.rs`, `target/sb/kept-homes-plan.md` §5.)
+  `runhomes.rs`, `.sb/kept-homes-plan.md` §5.)
 - **The daemons' registry is kept** (`GRADLE_KEPT`): with it readable and localhost open, a sandboxed
   `./gradlew` handed its build to a daemon started outside, and that build wrote a file the sandbox keeps.
 - **Gradle needs localhost**: its client reaches its own daemon, even with `--no-daemon`'s single-use one, over
@@ -649,7 +649,7 @@ beside them:
   adds (its default is now empty). The names go into the profile as several regexes, because Seatbelt refuses
   a string literal past about 1 KB ("Error reading string": 1032 characters refused, every run failing).
 
-**P3, as built (2026-10-15, cardauto piece 4)** — plan in `target/sb/cardauto-plan.md` §1.2–§1.3:
+**P3, as built (2026-10-15, cardauto piece 4)** — plan in `.sb/cardauto-plan.md` §1.2–§1.3:
 
 - **The gate** (`tools::run` → `in_sandbox`): sandboxed here (`cards::sandboxed`: not off, not missing, not
   partial) and nothing past it asked (no `outside_sandbox`, `unix_socket` or `also`) → `cards::decide` on a

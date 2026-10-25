@@ -2914,24 +2914,24 @@ mod tests {
     }
 
     /// frictions26: `workspace.keep`'s folders move to the main checkout as a session ends — ignored there
-    /// (`target/`), said on its toast, a quiet session ending with no card all the same. A CLAUDE.md of its own
+    /// (`.sb/`), said on its toast, a quiet session ending with no card all the same. A CLAUDE.md of its own
     /// with nowhere to keep it: the card names it, warned — it isn't quiet any more.
     #[test]
     fn an_ended_sessions_kept_folders_go_to_the_main_checkout() {
         let (repo, dir) = place("keep");
         // (as here: CLAUDE.md git-ignored, so a session's own isn't a change)
-        std::fs::write(repo.join(".git/info/exclude"), "/CLAUDE.md\n").unwrap();
+        std::fs::write(repo.join(".git/info/exclude"), "/CLAUDE.md\n/.sb/\n").unwrap();
         let mut ed = editor(&repo, &dir);
-        ed.config.workspace_keep = vec!["target/sb".into()];
+        ed.config.workspace_keep = vec![".sb".into()];
         let wt = new_session(&mut ed, "notes");
-        std::fs::create_dir_all(wt.join("target/sb")).unwrap();
-        std::fs::write(wt.join("target/sb/plan.md"), "the plan\n").unwrap();
+        std::fs::create_dir_all(wt.join(".sb")).unwrap();
+        std::fs::write(wt.join(".sb/plan.md"), "the plan\n").unwrap();
         feed(&mut ed, ":workspace-end<ret>");
         settle_until(&mut ed, |ed| says(ed, "Ended notes") || says(ed, "end notes:"));
         assert!(!wt.exists(), "{}", said(&ed));
-        let kept = repo.join("target/sb/sessions/notes/plan.md");
+        let kept = repo.join(".sb/sessions/notes/plan.md");
         assert_eq!(std::fs::read_to_string(&kept).unwrap_or_default(), "the plan\n", "{}", said(&ed));
-        assert!(says(&ed, "· target/sb kept in ") && says(&ed, "sessions/notes (1 files)"), "{}", said(&ed));
+        assert!(says(&ed, "· .sb kept in ") && says(&ed, "sessions/notes (1 files)"), "{}", said(&ed));
         // Its own CLAUDE.md, and nothing kept: the card names it
         ed.config.workspace_keep.clear();
         let wt = new_session(&mut ed, "own");

@@ -1,6 +1,6 @@
 // A stream as claude -p sends it to a subscription session near its weekly limit — written by hand for
 // `limits/tests.rs` (lines starting `//` are skipped). The shapes are the fields the user's live check L2
-// (2026-10-10, its own run outside the project) printed and shared, as target/sb/apibill-design.md §2 "Seen
+// (2026-10-10, its own run outside the project) printed and shared, as .sb/apibill-design.md §2 "Seen
 // live (L2)" records them; where a shape needs more than was shared, the value is made up. Ids are stand-ins.
 //
 // 1. `system/init` — shape from Claude Code's SDK types (sdk-ts-sdk.d.ts, SDKSystemMessage); `apiKeySource`

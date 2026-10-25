@@ -1,4 +1,4 @@
-//! macOS's runs and tarae's proxy (step 5d, `target/sb/step5d-plan.md`), through the real path: the run's own
+//! macOS's runs and tarae's proxy (step 5d, `.sb/step5d-plan.md`), through the real path: the run's own
 //! port and token (`RunPort`), its profile (`Policy::profile`), its environment (`sandbox::command`), its start
 //! and end (`sandbox::spawn`, `sandbox::after_run`). The Seatbelt ones say so and skip inside a sandbox. Nothing
 //! leaves this machine: the outside is the test's own loopback listener under an `example.invalid` name.

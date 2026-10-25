@@ -527,7 +527,7 @@ mod tests {
     /// tarae's git asked for a file (blame, the gutter, staging, `:diff`, the `.tarae.local.toml` check) works
     /// on the repository the session started in — not on a git directory that files in the project make of a
     /// subfolder (`HEAD`, `objects/`, `refs/`, `config`), nor with that config: here a marker alias, never run
-    /// (`target/sb/gitescape.md`). Each of the five is asked here, so one put back on discovery fails it.
+    /// (`.sb/gitescape.md`). Each of the five is asked here, so one put back on discovery fails it.
     #[test]
     fn git_from_a_files_folder_keeps_the_trusted_repository() {
         let scratch = crate::scratch::Scratch::new("gitescape");

@@ -1,4 +1,4 @@
-//! Docked groups (panes P3 step 6, `target/sb/panes-P3-plan.md` §3.1–3.4, §3.7): a group — the tests', a task's, a
+//! Docked groups (panes P3 step 6, `.sb/panes-P3-plan.md` §3.1–3.4, §3.7): a group — the tests', a task's, a
 //! preflight's, `:procs`' — leaves the slot and docks beside the code, a leaf of the session's tree of its own
 //! (`Shows::Group`): `C-w L` right of the code's column (left of the chat), `C-w H` left of it (right of the side
 //! panel or the rail), `C-w K` above it in its column; `C-w J` brings it back to the slot. The keys of its members are

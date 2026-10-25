@@ -1,6 +1,6 @@
-//! The egress proxy's two parsers (`docs/design/sandbox-keeper.md` §The egress proxy, `target/sb/step5-plan.md`):
+//! The egress proxy's two parsers (`docs/design/sandbox-keeper.md` §The egress proxy, `.sb/step5-plan.md`):
 //! a request's head — `CONNECT host:port`, or a plain-http request in absolute form — and the server name a TLS
-//! ClientHello carries. Beside them the fetch's (`web/fetch.rs`, `target/sb/web-fetch-plan.md` §2.2): a response's
+//! ClientHello carries. Beside them the fetch's (`web/fetch.rs`, `.sb/web-fetch-plan.md` §2.2): a response's
 //! head (`response`), and a body's data without its framing (`Body::data`, the relay's machine). Pure: bytes in, an answer out, no I/O; the proxy reads, times and relays. Each is bounded —
 //! nothing read past its limit, nothing allocated by a claimed length before what it claims is there — and
 //! answers every input with what it found, "more bytes" (None), or a refusal: never a panic (a panic aborts

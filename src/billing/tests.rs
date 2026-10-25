@@ -933,7 +933,7 @@ fn restarting_claude_from_procs_resumes_its_conversation() {
 
 // ── The key, out of money ───────────────────────────────────────────────────
 
-// What claude says when a request fails — the shapes from the sources (`target/sb/apibill-src/`): an assistant
+// What claude says when a request fails — the shapes from the sources (`.sb/apibill-src/`): an assistant
 // message carrying `error` (`sdk-ts-sdk.d.ts` `SDKAssistantMessage`, `SDKAssistantMessageError`), then the turn's
 // failed `result` (`api_error_status`); the words from Claude Code's errors reference (`Credit balance is too
 // low`, `Request rejected (429)`) and the platform's rate limits page (the spend cap's message). Made up: the ids,

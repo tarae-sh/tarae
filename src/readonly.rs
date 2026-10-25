@@ -1686,9 +1686,7 @@ mod tests {
     /// never with another option (a `-c` body, `-i`'s startup files, `-s`'s input), nor anything after it.
     #[test]
     fn a_scripts_syntax_check_only_reads() {
-        for c in
-            ["sh -n x.sh", "bash -n target/sb/a.sh", "zsh -n x.zsh", "dash -n -n x.sh", "shellcheck x.sh"]
-        {
+        for c in ["sh -n x.sh", "bash -n .sb/a.sh", "zsh -n x.zsh", "dash -n -n x.sh", "shellcheck x.sh"] {
             assert!(read_only(c), "{c}");
         }
         assert!(read_only("shellcheck -f gcc -s bash -e SC1091 --norc x.sh && sh -n x.sh"));

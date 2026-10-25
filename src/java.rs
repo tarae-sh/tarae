@@ -1,5 +1,5 @@
 //! Java debugging — java-debug runs inside jdtls, asked through a chain of jdtls commands (what data can't
-//! say: the plugin batch takes it, `target/sb/core-audit.md` B6). What jdtls itself needs — its `-data`
+//! say: the plugin batch takes it, `.sb/core-audit.md` B6). What jdtls itself needs — its `-data`
 //! folder, its options, `language/status`, `jdt://` classes, `java.apply.workspaceEdit` — is the java pack's
 //! `[server.jdtls]`; java-debug's jar is its `[install.java-debug]` (loaded as jdtls starts: `init.bundles`).
 

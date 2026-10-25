@@ -1,4 +1,4 @@
-//! The environment a sandboxed run gets (lsbenv, 2026-10-06; measured in `target/sb/lsbenv-measured.md`). Not
+//! The environment a sandboxed run gets (lsbenv, 2026-10-06; measured in `.sb/lsbenv-measured.md`). Not
 //! tarae's own: that holds whatever the user exported — API keys, cloud credentials, the Claude Code session
 //! tarae was started from — and every command Claude ran got it. Measured with fake tokens on both systems:
 //! every pack's checks (cargo test/clippy/fmt, go test/vet, python, npm test, git, gradle) passed with PATH

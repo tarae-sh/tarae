@@ -1,4 +1,4 @@
-//! tarae's AppArmor profile (step 6h, `target/sb/step6-checks-notes.md` §5): on Ubuntu with its restriction on
+//! tarae's AppArmor profile (step 6h, `.sb/step6-checks-notes.md` §5): on Ubuntu with its restriction on
 //! (`kernel.apparmor_restrict_unprivileged_userns = 1`) a user namespace made by an unconfined program holds no
 //! capability, so a session keeper gets none of its own (tier host). A profile naming tarae's binary by path with
 //! `userns,` lifts that for tarae alone — measured on 6.8, 7.0 and 7.3 (t5). It must name a **root-owned** path:

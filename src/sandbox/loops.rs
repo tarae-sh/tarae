@@ -1,4 +1,4 @@
-//! The loops of the readers of what a run says (V2 step 5, `target/sb/v2-fuzz-plan.md` §1 #8): the log's denials
+//! The loops of the readers of what a run says (V2 step 5, `.sb/v2-fuzz-plan.md` §1 #8): the log's denials
 //! (`parse_denial`) and the run's own output (`Policy::said_in_output`, through `paths_in`, `named_in` and
 //! `landlock_said_in`). The run picks the words, the paths and its process's name; what's said of them is a
 //! denial the line holds, never one the policy wouldn't make.
@@ -11,7 +11,7 @@ use crate::mutate::{self, Rng};
 /// Lines each loop reads.
 const CASES: usize = 20_000;
 
-/// `log stream`'s messages for a run tagged `tag`, as the measurements saw them (`target/sb`, the tests'): a
+/// `log stream`'s messages for a run tagged `tag`, as the measurements saw them (`.sb`, the tests'): a
 /// path with a space, a target after which the tag comes on the line, repeats, a mach service, compat's Gradle and
 /// Python ones — and a process named like a denial (a run names its program).
 fn messages(tag: &str) -> Vec<String> {
@@ -78,7 +78,7 @@ fn a_denial_read_from_the_log_is_in_its_message() {
 /// The project the output's runs ran in.
 const ROOT: &str = "/Users/u/p";
 
-/// What the measurements' runs printed (`target/sb`: compat, P2, Linux C): refusals in each tool's words, by an
+/// What the measurements' runs printed (`.sb`: compat, P2, Linux C): refusals in each tool's words, by an
 /// absolute path, one from the project, from home, a name in quotes — and lines about paths the rules allow.
 const OUTPUT: [&str; 14] = [
     "touch: cannot touch 'Makefile': Operation not permitted",

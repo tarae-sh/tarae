@@ -65,7 +65,7 @@ risky = [
 ]
 quiet = ["__tests__/", "*.test.js", "*.spec.js", "*.test.jsx", "*.spec.jsx"]
 
-# Claude's sandbox (`sandboxpack.rs`). npm's cache, measured (`target/sb/p2-measured.md`, a Node project)
+# Claude's sandbox (`sandboxpack.rs`). npm's cache, measured (`.sb/p2-measured.md`, a Node project)
 [sandbox]
 # Its files that are code: a token-like line there is code, not a token (`tokens::not_settings`)
 not-settings = ["js", "mjs", "jsx"]
@@ -107,7 +107,7 @@ any-case = ["NPM_CONFIG_USERCONFIG", "NPM_CONFIG_GLOBALCONFIG", "npm_config_stor
 # Where npm fetches from by default — words on the card that asks for a host, never a grant
 registries = ["registry.npmjs.org"]
 
-# Node's fetch and https ignore the proxy variables unless told (measured, `target/sb/step5-plan.md` M1: without
+# Node's fetch and https ignore the proxy variables unless told (measured, `.sb/step5-plan.md` M1: without
 # it, `ENOTFOUND` — it tried to go direct; Node 26 measured). A Node too old to read it can't go out: it fails
 # closed. npm itself reads the proxy variables
 [sandbox.proxy]
@@ -123,7 +123,7 @@ out = [
 
 # npm's home, wherever its cache setting moves it (npm reads `npm_config_*` in any case — both forms people
 # set): what `npx` fetched runs from its `_npx/` later, outside the sandbox, so no grant or asked folder opens
-# it (`sandbox::RunsLater`). Runs only read it — measured 2026-10-06 (`target/sb/corepack6/npm-ro`): `npm
+# it (`sandbox::RunsLater`). Runs only read it — measured 2026-10-06 (`.sb/corepack6/npm-ro`): `npm
 # ci`, `npm ci --offline` and `npm test` from the cache, read-only, wrote nothing there and were denied nothing
 # there (the network aside: the audit's lookup)
 [sandbox.homes]
@@ -134,7 +134,7 @@ npm-upper = { env = "NPM_CONFIG_CACHE", else = "~/.npm" }
 # `$XDG_CACHE_HOME/node/corepack`, else `~/.cache/node/corepack` — on macOS too
 corepack = { env = "COREPACK_HOME", else = "{xdg-cache}/node/corepack" }
 
-# pnpm's store on the project's filesystem (compat B12, measured — `target/sb/compat8-b12.md`). Where a hard link
+# pnpm's store on the project's filesystem (compat B12, measured — `.sb/compat8-b12.md`). Where a hard link
 # from the project can't reach pnpm's home (another filesystem: a devcontainer's mounted `/workspace`, a second
 # disk), pnpm keeps its store in `.pnpm-store` at the topmost folder of the project's filesystem it can link into,
 # trying each from `/` down — refused above the project, a sandboxed pnpm fell back to its home's store, empty, and

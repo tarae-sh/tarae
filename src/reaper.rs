@@ -5,7 +5,7 @@
 //! default) the supervisor can still take its sockets (`pidfd_getfd` needs a descendant) and serve its connects
 //! after its run has ended — the supervisor serves until no process of the run is left
 //! (`sandbox::supervisor::serve`). Measured: without it a reused Gradle daemon's test worker is refused
-//! (`target/sb/subreaper.md`).
+//! (`.sb/subreaper.md`).
 //!
 //! What comes with it: tarae is the parent of every orphan of every process below it (the terminal's `nohup`s
 //! too), and reaps them — on `procs`' look (`Reaper::round`). **Only those it adopted, never one it started**:

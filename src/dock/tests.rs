@@ -82,7 +82,7 @@ fn a_task_docked_at_the_top_has_no_run_card_over_its_line() {
     let mut ed = Editor::new(Config::default());
     ed.workspace.root = dir.to_path_buf();
     ed.docs[0].text = ropey::Rope::from_str("fn main() {}\n");
-    let cmd = "CARGO_TARGET_DIR=target/sb/whole cargo clippy --all-targets -q 2>&1 | grep -E 'warning|error'";
+    let cmd = "CARGO_TARGET_DIR=target/whole cargo clippy --all-targets -q 2>&1 | grep -E 'warning|error'";
     let t = crate::task::Task { name: cmd.into(), cmd: cmd.into(), cwd: dir.to_path_buf() };
     let mut r = crate::task::Run::for_test(t);
     r.state = crate::task::State::Passed;
@@ -123,7 +123,7 @@ fn a_floating_tasks_run_card_is_over_its_own_line_inside_its_columns() {
     let mut ed = Editor::new(Config::default());
     ed.workspace.root = dir.to_path_buf();
     ed.docs[0].text = ropey::Rope::from_str(&"fn main() {}\n".repeat(40));
-    let cmd = "CARGO_TARGET_DIR=target/sb/whole cargo clippy --all-targets -q 2>&1 | grep -E 'warning|error' \
+    let cmd = "CARGO_TARGET_DIR=target/whole cargo clippy --all-targets -q 2>&1 | grep -E 'warning|error' \
                | head -20 && echo farewell";
     let t = crate::task::Task { name: cmd.into(), cmd: cmd.into(), cwd: dir.to_path_buf() };
     let mut r = crate::task::Run::for_test(t);

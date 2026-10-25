@@ -1,4 +1,4 @@
-//! Where the proxy lets a request go (`target/sb/step5-plan.md` §Egress rules): a run's rules — the hosts its
+//! Where the proxy lets a request go (`.sb/step5-plan.md` §Egress rules): a run's rules — the hosts its
 //! session may reach, a read-only snapshot each message carries (D23) — and the addresses a name resolves to,
 //! each checked as `route` checks a run's own connect (this machine, the never-reached, this machine's own
 //! addresses beyond loopback; an IPv4-mapped address as its IPv4 one), the connection made to the very address

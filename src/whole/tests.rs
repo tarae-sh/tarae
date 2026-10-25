@@ -322,7 +322,7 @@ fn a_press_on_the_queued_line_lands_in_its_words() {
 /// drawer's), cut on screen, whole under the mouse; the input's line is a line again.
 #[test]
 fn the_queued_line_is_whole_in_the_transcript_and_in_hand() {
-    let msg = "Your walk-perf run (target/sb/walk) sat 30 min with no output, stop it and look at what it waited on \
+    let msg = "Your walk-perf run (target/walk) sat 30 min with no output, stop it and look at what it waited on \
                before you run it again, then say goodbye";
     let mut ed = chat(vec![Msg::new(Role::User, "walk it", "")]);
     let c = ed.workspace.claude.chat.as_mut().unwrap();
@@ -360,7 +360,7 @@ fn the_run_card_stays_inside_a_narrow_slot() {
         p.screen().rows(0, w).collect::<Vec<String>>().join("\n")
     };
     let cmd =
-        "CARGO_TARGET_DIR=target/sb/whole cargo test -q --bin tarae chatdoc 2>&1 | grep -E 'result|FAILED' \
+        "CARGO_TARGET_DIR=target/whole cargo test -q --bin tarae chatdoc 2>&1 | grep -E 'result|FAILED' \
                && cargo clippy --all-targets -q && echo and then farewell"
             .repeat(3);
     let mut ed = Editor::new(Config::default());
@@ -402,7 +402,7 @@ fn a_run_panels_command_is_whole_on_a_card_over_its_line() {
     let mut ed = Editor::new(Config::default());
     ed.workspace.root = dir.clone();
     ed.docs[0].text = ropey::Rope::from_str(&"fn main() {}\n".repeat(30));
-    let cmd = "CARGO_TARGET_DIR=target/sb/whole cargo test -q --bin tarae chatdoc 2>&1 | grep -E 'result|FAILED' \
+    let cmd = "CARGO_TARGET_DIR=target/whole cargo test -q --bin tarae chatdoc 2>&1 | grep -E 'result|FAILED' \
                && echo and then farewell";
     let task = crate::task::Task { name: cmd.into(), cmd: cmd.into(), cwd: dir.clone() };
     let mut r = crate::task::Run::for_test(task);

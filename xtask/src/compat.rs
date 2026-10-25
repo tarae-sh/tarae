@@ -1,5 +1,5 @@
 //! `cargo xtask compat [stack …] [--lane gate|quick|asks|net] [--linux own|host|all [--linux-only]] [--dry-run]` — the "must work"
-//! compatibility suite (`target/sb/compat-plan.md` §4–§5). tarae's tests built under `perf` (a debug supervisor
+//! compatibility suite (`.sb/compat-plan.md` §4–§5). tarae's tests built under `perf` (a debug supervisor
 //! serving every connect would skew the times), then the ignored driver (`compat::tests::driver`, `src/compat.rs`)
 //! run here and, asked, on Linux tiers in Docker through `cargo xtask linux` — own with `--userns`, host under Docker's
 //! own profiles (Ubuntu 24.04's restriction's tier) (`--linux-only`: not here). On Linux a stack runs in the image
@@ -644,7 +644,7 @@ fn here() -> &'static str {
 pub fn run(args: &[String]) -> Result<()> {
     let a = ask(args)?;
     if a.lane == Lane::Net {
-        println!("--lane net: the network lane is piece 5 (target/sb/compat-plan.md §3 b, §9) — nothing run");
+        println!("--lane net: the network lane is piece 5 (.sb/compat-plan.md §3 b, §9) — nothing run");
         return Ok(());
     }
     let root = root();

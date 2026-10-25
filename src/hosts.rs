@@ -1,4 +1,4 @@
-//! The egress proxy's questions, on the main loop (`target/sb/step5e-plan.md`). A host a run's rules don't name
+//! The egress proxy's questions, on the main loop (`.sb/step5e-plan.md`). A host a run's rules don't name
 //! is held by tarae's proxy, which asks here (`proxy::FromProxy::Ask`): one card per host in the run's own
 //! session (`What::Host`) — `y` once (this run) · `s` this session · `A` always here · `n` no, for the session. The
 //! answer goes back as `ToProxy::Answer` for the card's own session and run, never the session in front's: a card
@@ -10,7 +10,7 @@
 //! `Session.hosts` (`:granted` takes it back); `A` in `$state/sandbox.json` (`allow::Allowed.hosts`),
 //! which the next runs' rules carry (`tools::with_allowed`).
 //!
-//! Piece C (`target/sb/sandbox-ux-pieceC-plan.md`): with `llm.sandbox-network` off every host is asked — `y` this
+//! Piece C (`.sb/sandbox-ux-pieceC-plan.md`): with `llm.sandbox-network` off every host is asked — `y` this
 //! run · `a` this chat (`Chat.allowed`, the proxy's for the session until the conversation ends: `chat_ended`) ·
 //! `s` this session · `n`; no `A` (cards.md decision 4: always is the setting). A host that's a pack's registry
 //! is answered with the pack's other registries, listed on the card (Q6: the suggestion is words, the yes grants).

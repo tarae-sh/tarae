@@ -56,7 +56,7 @@ fn region(ed: &Editor) -> String {
     ed.keys_to().region.name()
 }
 
-/// The user walk of 2026-10-21, key by key (main's `target/sb/userwalk-2026-10-21.md`): `/tests` in the code, `C-\`
+/// The user walk of 2026-10-21, key by key (main's `.sb/userwalk-2026-10-21.md`): `/tests` in the code, `C-\`
 /// `C-\` into the terminal's view mode, `/Cargo` there with `Cargo.toml` on its screen — found, counted there (86:
 /// it said `no matches`: the status line counted the code's), then out to the code by `esc`s, each one a step in
 /// sight (87: three, the second changing nothing), and the code's `n` repeats `/tests` (85: it said
@@ -119,7 +119,7 @@ fn view_selected(ed: &Editor) -> String {
     d.text.byte_slice(r.from()..r.to()).to_string()
 }
 
-/// The terminal's view mode searches its own rows (panes P2a, `target/sb/panes-plan.md` §2.3): `/` there leaves
+/// The terminal's view mode searches its own rows (panes P2a, `.sb/panes-plan.md` §2.3): `/` there leaves
 /// the code's pattern, highlights and selection as they were, its matches and count are the view's (the status
 /// line says them while it has the keys), `n` moves there; `esc` clears them, the code's stay. And the code's
 /// search, back in the code, is still the code's.

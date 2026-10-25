@@ -5,7 +5,7 @@
 //! A plain request sent to an upstream proxy (step 5g) has one look too: the answer's head, held until its status
 //! says whether it's that proxy's 407 — meant for tarae, never passed on.
 //!
-//! Linux (step 6a, `target/sb/step6a-plan.md`): once nothing is left to judge and nothing waits in tarae, the
+//! Linux (step 6a, `.sb/step6a-plan.md`): once nothing is left to judge and nothing waits in tarae, the
 //! rest goes through a pipe each way by `splice` — the kernel moves it (R3: the direct rate, ≈ 2.0–2.5 GB/s, at
 //! ≈ 0.4 CPU-s/GiB against the pump's ≈ 1 GB/s at ≈ 1). A TLS tunnel splices both ways once its look is off. Plain
 //! http splices only the server's answer, once the request's body is whole: the client's side stays on the pump —

@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 /// The call-order record's folder in tarae's state (`$state/calls/2026-10.jsonl`, a file a month, as the card
 /// record's): a line a turn — its requests in order with their calls' tool names, and its numbers
 /// (`usage::Turn::entry`). Names and numbers only; read by `cargo xtask turns` (code mode's baseline,
-/// `target/sb/codemode-plan.md`).
+/// `.sb/codemode-plan.md`).
 pub const DIR: &str = "calls";
 /// The record's version, in each entry (`v`).
 pub const RECORD_V: u64 = 1;

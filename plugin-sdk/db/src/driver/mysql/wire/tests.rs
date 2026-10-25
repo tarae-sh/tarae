@@ -1,12 +1,12 @@
 //! The session against MySQL 8.4: transcripts captured once from the test server (`captured/`, written by the
 //! `#[ignore]`d `capture_transcripts`), replayed here with no database; what the test server can't show (a server
 //! without TLS, a 16 MB row, a request for our files, a plugin we don't speak) from packets made by hand. Live tests
-//! (`#[ignore]`) need `target/sb/db/testdb`'s compose file up: `round11.sh`.
+//! (`#[ignore]`) need `.sb/db/testdb`'s compose file up: `round11.sh`.
 
 use super::*;
 use crate::secret::Secret;
 
-/// The test server (target/sb/db/testdb/compose.yaml — fake accounts).
+/// The test server (.sb/db/testdb/compose.yaml — fake accounts).
 const LIVE: (&str, u16) = ("127.0.0.1", 53306);
 const SEED: [u8; 32] = [7; 32];
 const APP: (&str, &str) = ("app", "tarae-fake-my");
@@ -473,11 +473,11 @@ fn live_kill_query_stops_a_running_statement() {
     assert!(matches!(&events[1], Event::Rows { rows, .. } if rows == &[vec![Some("1".to_string())]]), "{events:?}");
 }
 
-/// The test databases' fake CA, and one that signed nothing (target/sb/db/testdb/certs.sh).
+/// The test databases' fake CA, and one that signed nothing (.sb/db/testdb/certs.sh).
 fn test_ca(name: &str) -> std::sync::Arc<tarae_plugin::tls::Config> {
     let found = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
-        .map(|a| a.join(format!("target/sb/db/testdb/certs/{name}.pem")))
+        .map(|a| a.join(format!(".sb/db/testdb/certs/{name}.pem")))
         .find(|p| p.exists())
         .expect("the test certificates (testdb/certs.sh)");
     tarae_plugin::tls::config(&std::fs::read(found).unwrap(), None).unwrap()

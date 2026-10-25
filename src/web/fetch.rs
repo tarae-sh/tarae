@@ -1,4 +1,4 @@
-//! A page fetched (`target/sb/web-fetch-plan.md`; the user's, 2026-10-23): tarae's own HTTP/1.1 GET, on a worker —
+//! A page fetched (`.sb/web-fetch-plan.md`; the user's, 2026-10-23): tarae's own HTTP/1.1 GET, on a worker —
 //! never the main thread — through tarae's egress proxy as a run's connection goes (`proxy::pair` and
 //! `ToProxy::Connection`, the Linux supervisor's way, on every system): every address refusal, the metadata servers'
 //! names, the ClientHello's server name and the user's upstream proxy, as for a run. This machine (`localhost`, a

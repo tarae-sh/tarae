@@ -2,7 +2,7 @@
 
 libFuzzer targets (cargo-fuzz) for tarae's readers of bytes a run controls: the supervisor's `struct sockaddr`,
 netlink batches and `struct msghdr`, the egress proxy's request heads, ClientHellos and chunked bodies
-(`target/sb/v2-fuzz-plan.md` §1, §3 "A + C").
+(`.sb/v2-fuzz-plan.md` §1, §3 "A + C").
 
 The readers' modules are included from tarae's tree as they are (`src/lib.rs`, `#[path]`), and each target is one
 call to the **property function** its in-tree loop calls too — the module's `check` (`wire/check.rs`,

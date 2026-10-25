@@ -414,7 +414,7 @@ fn report(
 /// 9.5 (2026-10-04, ~8.5 then): feature batches added 0.03–0.24 MB each, so it has room for the roadmap
 /// (queues, UI state, the RA swap) and still trips on a dependency's +0.5 MB (ripgrep's crates were).
 /// 10 (2026-10-05, 9.41 then): the user's call — a size pass comes at the roadmap's end.
-/// 12 (2026-10-09, 11.05 then; ~10.95 with std's sorts back in `sorting` — target/sb/size-2026-10.md): the
+/// 12 (2026-10-09, 11.05 then; ~10.95 with std's sorts back in `sorting` — .sb/size-2026-10.md): the
 /// user's call — features grew it ~0.4 MB a day, no one cause; the size pass stays at the roadmap's end, and a
 /// dependency's jump is `SIZE_JUMP`'s to catch, not the budget's.
 /// Bundled 17 (2026-10-14, 16.84 then): the user's call — the bundled budget follows the default's 12 plus the

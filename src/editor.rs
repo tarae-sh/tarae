@@ -11767,8 +11767,8 @@ mod tests {
         let outside = std::fs::canonicalize(&away).unwrap().join("config.toml");
         std::fs::write(&outside, "a = 1\n").unwrap();
         // #46: and one in the project's build output (a test's fixture)
-        std::fs::create_dir_all(dir.join("target/sb")).unwrap();
-        let fixture = dir.join("target/sb/fixture.toml");
+        std::fs::create_dir_all(dir.join("target/tmp")).unwrap();
+        let fixture = dir.join("target/tmp/fixture.toml");
         std::fs::write(&fixture, "b = 1\n").unwrap();
         let open = |ed: &Editor, p: &Path| ed.docs.iter().any(|d| d.path.as_deref() == Some(p));
         let mut ed = editor("");

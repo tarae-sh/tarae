@@ -1,4 +1,4 @@
-//! A document in a pane that isn't the code's (panes P2c, `target/sb/panes-plan.md` §2.1e) — a run panel's output
+//! A document in a pane that isn't the code's (panes P2c, `.sb/panes-plan.md` §2.1e) — a run panel's output
 //! (`rundoc.rs`), the chat's transcript (`chatdoc.rs`): read-only, with its own keys' state (`Keys` — its mode, a sequence,
 //! count or awaited character under way, its search: never the code's, §2.3), normal mode on it with its surface's
 //! table laid over.

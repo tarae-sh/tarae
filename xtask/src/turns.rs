@@ -1,6 +1,6 @@
 //! `cargo xtask turns [PATH …]` — the call-order record (`src/calls.rs`: `$state/calls/<yyyy-mm>.jsonl`, every
 //! file in a folder given, the state folder's when none is) summed up as code mode's baseline reads it
-//! (`target/sb/codemode-plan.md` §1, §4's gate):
+//! (`.sb/codemode-plan.md` §1, §4's gate):
 //!
 //! - **by kind** — a chat turn is a question (no change made: no `edit`, `Edit`, `Write`, `rename`, `replace` or
 //!   `commit`, every `run` read-only), a refactor (a `rename` or `replace`) or a change (the rest); a `/compact`

@@ -3,7 +3,7 @@
 //! reused — so the run's profile keeps every terminal closed to open, read and write (`TERMINALS`) and allows
 //! only ioctl on them: an ioctl needs a descriptor, and a run has none of a terminal but the ones handed in here
 //! (measured: a descriptor's read and write are checked at open, its ioctl at every call, by path —
-//! `target/sb/frictions31-plan.md`). srt's Linux sandbox gives each run a `/dev` of its own; this is that idea
+//! `.sb/frictions31-plan.md`). srt's Linux sandbox gives each run a `/dev` of its own; this is that idea
 //! on macOS.
 //!
 //! A run asks on the socket in its own `RunDir` that `pty::BROKER` names: tarae makes a pair outside the sandbox

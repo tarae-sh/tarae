@@ -2383,7 +2383,7 @@ static HELPER_SYNCED: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI3
 const WAITING: i32 = i32::MIN;
 
 /// A served run's filter and listener, its listener handed to tarae with no `pidfd_getfd` (6f′, G1 (b) — Docker's
-/// default profile refuses that call; measured in M8b on 6.1, 6.8 and 7.3, `target/sb/m8b/`). Once the filter is on,
+/// default profile refuses that call; measured in M8b on 6.1, 6.8 and 7.3, `.sb/m8b/`). Once the filter is on,
 /// a `sendmsg` goes to the listener, which nobody reads before tarae has it — so the filter goes on a helper thread of
 /// the child (`helper`) first: the main thread, still unfiltered, sends the listener on the handoff socket
 /// (`SCM_RIGHTS`), and the helper then syncs it onto its filter (`SECCOMP_FILTER_FLAG_TSYNC` with an allow-all filter
@@ -8242,7 +8242,7 @@ mod tests {
     }
 
     /// D10 under Landlock: the session's own `/dev/pts` and `/dev/shm` sit over this system's, where a rule
-    /// isn't reached through them (measured: `target/sb/step3-notes.md`), so a run's rules grant the devices on
+    /// isn't reached through them (measured: `.sb/step3-notes.md`), so a run's rules grant the devices on
     /// the keeper's own places too (the handles it gave with `Ready` — `linux::session_devices`). Under a
     /// project's real rules (`linux::confine`) a pty, a file made and removed in `/dev/shm` and `/proc/self`
     /// read all work — and a protected file is still refused: denied, not hidden.

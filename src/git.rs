@@ -448,7 +448,7 @@ mod tests {
 
     /// The gutter's base for a large file (`index_blob`, one git run each) — 100k lines (5 MB) in a
     /// repository of 3,000 tracked files: the first (the repository resolved then, once per root), and the
-    /// median of 21 after (`target/sb/gitlauncher.md`: the same as the discovery form it replaced).
+    /// median of 21 after (`.sb/gitlauncher.md`: the same as the discovery form it replaced).
     #[test]
     fn perf_gutter_base_of_a_large_file() {
         if crate::test_results::unoptimized("git::tests::perf_gutter_base_of_a_large_file") {

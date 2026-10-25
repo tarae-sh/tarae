@@ -1,4 +1,4 @@
-//! Floating groups (panes P3 step 7, `target/sb/panes-P3-plan.md` §3.1–3.3): a group — the tests', a task's, a
+//! Floating groups (panes P3 step 7, `.sb/panes-P3-plan.md` §3.1–3.3): a group — the tests', a task's, a
 //! preflight's, `:procs`' — leaves the slot or its docked side and floats over the docked panes, in a frame of its own
 //! with its name in the top line (D3, `term::draw_floating`): `C-w e` floats the group in hand and docks a floating one
 //! back where it came from (`Group.back`); `C-w H J K L` dock it on that side, `C-w J` the slot. The whole screen is

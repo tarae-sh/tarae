@@ -1,7 +1,7 @@
 //! The board — the reviewer as several readers (`space v C`, `:review-board`): one Claude per **angle**
 //! (correctness, security, tests, what the user sees …), each a process of its own reading the same diff for
 //! its own kind of fault, then one **skeptic** per group of their claims told to refute them — only what a
-//! skeptic could trace is pinned as confirmed (`docs/claude-integration.md`, `target/sb/reviewpanel-plan.md`).
+//! skeptic could trace is pinned as confirmed (`docs/claude-integration.md`, `.sb/reviewpanel-plan.md`).
 //!
 //! - The angles are data: `review.angles` (your config only) or the built-in four; each runs when its `when`
 //!   holds for the changes — any high-risk change, any change of behaviour, a file the project names as its

@@ -11,7 +11,7 @@
 //! P2) — never keys or Claude's and tarae's own (`kept_reads`), nor the clipboard or the keychain. What the
 //! user runs themselves (`space m m`, `space x x`, installs, `:restart`) isn't sandboxed.
 //!
-//! Measured on macOS 27 (2026-10-01, `target/sb/` scripts): the later of two rules on a path wins and
+//! Measured on macOS 27 (2026-10-01, `.sb/` scripts): the later of two rules on a path wins and
 //! `require-not` works · a sandboxed process can't apply a different profile (exit 71, `sandbox_apply:
 //! Operation not permitted` — so `probe` says so inside one) · `launchctl submit` is refused, Apple Events
 //! and LaunchServices are blocked by the rules below · localhost connects (by name too), other addresses
@@ -981,7 +981,7 @@ pub struct RunHomeSaid {
 /// Where a run reads (card model P2): anywhere outside home; in home the project, where it may write, and
 /// `allow` — never `kept`, whatever else holds it. Real paths. A file's metadata (`stat`) stays open in home:
 /// every program looks at home and the folders above the project, thousands of times a run (measured,
-/// `target/sb/p2-measured.md`); what's in a file or a folder's list is what's confined.
+/// `.sb/p2-measured.md`); what's in a file or a folder's list is what's confined.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Reads {
     /// Home — None: reads aren't confined (no home known; tests that don't ask).
@@ -1010,14 +1010,14 @@ impl Reads {
 }
 
 /// What every run reads in home besides what the toolchains read (the packs' `reads` — `sandboxpack.rs`),
-/// measured (`target/sb/p2-measured.md`, every read in home reported): git's settings, the text encoding
+/// measured (`.sb/p2-measured.md`, every read in home reported): git's settings, the text encoding
 /// CoreFoundation reads in every process, the fonts a shot draws with.
 const HOME_READS: [&str; 4] = [".gitconfig", ".config/git", ".CFUserTextEncoding", "Library/Fonts"];
 
 /// What a run never reads at a toolchain's default home, whatever is granted and whatever the packs say — the
 /// floor under their `kept` (which adds where a variable moved the home), as `allow::SECRETS` is: cargo's
 /// credentials, and the user's Gradle daemons' registry — their ports and the token each takes (measured,
-/// `target/sb/java-checkpoint.md` c0: with it readable and this machine's ports open, a sandboxed `./gradlew`
+/// `.sb/java-checkpoint.md` c0: with it readable and this machine's ports open, a sandboxed `./gradlew`
 /// hands its build to a daemon started outside, and the build runs outside the sandbox).
 pub const KEPT_FLOOR: [&str; 3] = [".cargo/credentials", ".cargo/credentials.toml", ".gradle/daemon"];
 
@@ -1063,7 +1063,7 @@ pub struct Here {
     pub addresses: Option<Vec<std::net::IpAddr>>,
     /// The sandbox refuses an IPv6 socket on this machine's loopback reached through a v4-mapped address
     /// (`::ffff:127.0.0.1`, what a JVM's 127.0.0.1 is): macOS's Seatbelt takes it as no `localhost`, connect and
-    /// bind alike, below 27 — measured refused on 26.6.2, taken on 27.0.1 (`target/sb/macos26-jvm.md`; older ones
+    /// bind alike, below 27 — measured refused on 26.6.2, taken on 27.0.1 (`.sb/macos26-jvm.md`; older ones
     /// taken as 26). Linux's supervisor reads the address itself: false. The packs' `env` `on = "v4-mapped-refused"`
     /// (`holds`).
     pub v4_mapped_refused: bool,
@@ -3764,7 +3764,7 @@ const DEVICES: [(&str, &str); 5] = [
 
 /// What every run may do besides files and the network (macdeny, 2026-10-17): the profile denies by default, as
 /// Anthropic's sandbox-runtime does, and these are its allows — each with what needed it, measured
-/// (`target/sb/macdeny-plan.md` §3, `macdeny_measure.rs`). A row goes in for a tool that failed without it, or
+/// (`.sb/macdeny-plan.md` §3, `macdeny_measure.rs`). A row goes in for a tool that failed without it, or
 /// for what every process asks as it starts (refused, it'd be a line in every report); never a whole operation
 /// that reaches past the run (`mach-lookup`, `sysctl-read`, `iokit-open`, `user-preference-read`) — names only
 /// (`every_base_rule_says_why_and_names_no_wildcard`). The services kept from every run stay denied after it
@@ -10136,7 +10136,7 @@ mod tests {
     }
 
     /// Gradle's client refused its daemon's port, as Gradle says it (the Java pack's `refused-connect`, measured:
-    /// `target/sb/pieceD-gradle-measure.out`, the kernel reporting none): it failed, then the daemon log's tail names
+    /// `.sb/pieceD-gradle-measure.out`, the kernel reporting none): it failed, then the daemon log's tail names
     /// the address the daemon gave its clients — that port, Gradle's card with it; the same address with no
     /// failure (a `--debug` build) isn't one, nor where this run's rules let it through.
     #[test]
@@ -11895,7 +11895,7 @@ mod tests {
     /// The live check's verdict on recorded lines, deterministic and on every system (`log stream` brings what it
     /// will, when it will: on CI's macOS the `ipc-sysv-shm` one never came, nine others did): each refusal of
     /// `DEFAULT_REFUSES` and a pty's as `log stream --style ndjson` wrote it on macOS 27 (macdeny's runs,
-    /// 2026-10-17 — `target/sb/sessions/macdeny/macdeny/discover/*.ndjson`), read by its run's tag and judged; the
+    /// 2026-10-17 — `.sb/sessions/macdeny/macdeny/discover/*.ndjson`), read by its run's tag and judged; the
     /// same line of another run never this one's; one refused besides them told apart; and the verdict without the
     /// System V one failing, as the live check's does.
     #[test]
@@ -11944,7 +11944,7 @@ mod tests {
     /// lookups, starts Apple's `java` where there's a JDK — and is refused what the base doesn't hold
     /// (`DEFAULT_REFUSES`; another program's System V segment and priority the test's own: a key of its pid's, a
     /// `sleep`, removed after). Every refusal is heard through the watch with the run's tag, and nothing else is
-    /// refused — so a `BASE` row taken out fails it (`target/sb/macdeny/break.sh`). By hand, on a Mac outside
+    /// refused — so a `BASE` row taken out fails it (`.sb/macdeny/break.sh`). By hand, on a Mac outside
     /// tarae's sandbox: `log stream` brings the kernel's reports when it will (CI's macOS never brought the System V
     /// one) — the parsing and the verdict are CI's, on recorded lines
     /// (`the_defaults_refusals_are_read_and_judged_from_their_log_lines`). `cargo test --bin tarae -- --ignored
@@ -12547,7 +12547,7 @@ mod tests {
     /// (the profile lets a run write `/dev/fd`: Seatbelt judges the file it leads to) — and so does a protected name
     /// in the project (a hook made executable runs later, outside); a file of the project's takes them all. Seatbelt's
     /// `file-write-mode`, `-times`, `-owner`, `-flags`, `-xattr` and `-acl` are `file-write*`'s, allowed only where
-    /// writes are (`target/sb/linmeta-design.md`).
+    /// writes are (`.sb/linmeta-design.md`).
     #[test]
     fn a_run_changes_no_attribute_of_a_file_outside_its_write_places() {
         #[cfg(not(target_os = "macos"))]
@@ -14572,7 +14572,7 @@ mod tests {
         );
     }
 
-    /// Not a check: a measuring aid (card model P2's confirm pass, `target/sb/p2-confirm.sh`) — prints the
+    /// Not a check: a measuring aid (card model P2's confirm pass, `.sb/p2-confirm.sh`) — prints the
     /// `sandbox-exec` arguments a run of Claude's gets in `$TARAE_PROFILE_ROOT` (else this checkout), with
     /// that project's settings (`$TARAE_PROFILE_LOCALHOST`: its `sandbox-localhost`, as a session that trusts
     /// it has), as a shell `set --` line (`PROFILE:`), and its tag (`TAG:`). Run outside a sandbox: the

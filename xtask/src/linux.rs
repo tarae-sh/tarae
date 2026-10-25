@@ -169,7 +169,7 @@ fn without_ptrace(a: Vec<String>, on: bool) -> Result<Vec<String>> {
 }
 
 /// A leading `--image NAME`, and the arguments after it: the checks run in that image instead of `rust:<pin>` —
-/// one built from it with the tools a measurement runs (step 6e′'s M5: `target/sb/m5/m5-image.sh`). It runs the
+/// one built from it with the tools a measurement runs (step 6e′'s M5: `.sb/m5/m5-image.sh`). It runs the
 /// same script, as root, with the same volumes: its `/usr/local/rustup` and the registry are the volumes'.
 fn image_named(args: &[String]) -> Result<(Option<String>, &[String])> {
     match args {

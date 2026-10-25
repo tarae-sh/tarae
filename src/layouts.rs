@@ -1,4 +1,4 @@
-//! The layout kept across quit and start (panes P2b, `target/sb/panes-plan.md` §5.1): each checkout's pane tree —
+//! The layout kept across quit and start (panes P2b, `.sb/panes-plan.md` §5.1): each checkout's pane tree —
 //! the shares you set, the surfaces' panes, the code's panes by the files they show, the one last focused — in
 //! `$state/layouts.json`, keyed by the checkout's real path (a session's own checkout its own key). Read once
 //! before the first frame (a small file); written on a worker each time it changes (a split, a close, a swap, a

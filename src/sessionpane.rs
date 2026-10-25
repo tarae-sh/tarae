@@ -1,4 +1,4 @@
-//! The session list, a floating pane (panes P3 step 7, `target/sb/panes-P3-plan.md` §3.6; CLAUDE.md "The manager's
+//! The session list, a floating pane (panes P3 step 7, `.sb/panes-P3-plan.md` §3.6; CLAUDE.md "The manager's
 //! view"): `space W` opens it in a named frame (`╭─ sessions ─…─╮`) over the code and the chat — not a modal
 //! picker: it stays while you work (`esc code` gives the keys back, it stays in sight; `space W`, a click or `C-w w`
 //! gives it them again; `q` closes it), and across switching sessions — it's the viewer's, not a workspace's. Done

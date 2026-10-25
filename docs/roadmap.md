@@ -165,7 +165,7 @@ Items 1–3 are done (2026-10-16); 4 is the user's: the repository made public. 
    · gone, the user deciding. Decided ahead (CLAUDE.md's "Cleanup" bullet): `llm.edit-tools`' other modes gone, the
    ask flow folded into the chat, keep-warm replaced by Claude Code's idle compaction (`/compact` past 200k after ~54 min idle), shuttle keys gone, the debugger and the diagram view
    out of the core, Claude's rarely used tools measured. **The plan is written and decided** (2026-10-25, main's
-   `target/sb/audit-plan.md`, from 12 days of the records: every answer as recommended, `:session-apply` kept — CLAUDE.md's
+   `.sb/audit-plan.md`, from 12 days of the records: every answer as recommended, `:session-apply` kept — CLAUDE.md's
    Cleanup bullet has them): about 11,300 lines go, in the plan's order — the diagram model, the native edit modes,
    shuttle keys (§4's shuttle part with them), the ask into the chat, keep-warm into idle compaction, four of Claude's
    tools, then the debugger to a plugin.
@@ -246,7 +246,7 @@ Done so far, under way, and the order after it (2026-10-17, brought up to 2026-1
   Piece 5 is §9.3's.
 - **The sandbox UX pass** (user direction 2026-10-16): tarae builds its own sandbox runtime, so every restriction
   it adds — a login, a card, a held setting — is tarae's to make pleasant, held against what other tools ask
-  (`target/sb/sandbox-ux-*.md`: the inventory, the comparison of six tools, the proposal, the user's decisions).
+  (`.sb/sandbox-ux-*.md`: the inventory, the comparison of six tools, the proposal, the user's decisions).
   One conversation a piece, in this order:
   - **A** — done (`f80f38f6`): the chat no longer waits for the project's Claude settings card. claude starts at
     once with them held back, and `y` gives them to it.
@@ -308,13 +308,13 @@ Done so far, under way, and the order after it (2026-10-17, brought up to 2026-1
     - applying a policy draft without review.
 - Then, in this order (decided 2026-10-15):
   1. **Code mode**: fewer round trips a turn. Each tool call reads the whole conversation again, which is most of a
-     turn's cost (measured 2026-10-14). Research: `target/sb/research-auto-code-mode.md`. The plan is in
-     (`target/sb/codemode-plan.md`: compound answers on tarae's own tools first, a `code` tool on the WebAssembly
+     turn's cost (measured 2026-10-14). Research: `.sb/research-auto-code-mode.md`. The plan is in
+     (`.sb/codemode-plan.md`: compound answers on tarae's own tools first, a `code` tool on the WebAssembly
      runtime behind a gate, Anthropic's programmatic tool calling watched), and so is the call-order record it
      turns on (`86590e44`): each turn's requests in order with their calls' tool names, `$state/calls/`, names and
      numbers only. **Next** waits on that record's data: `cargo xtask turns` over the user's real turns, held
      against the plan's gate (requests in runs of 3 or more, turns with a result over 8k tokens).
-  2. **The review lens** (below; the plan is the `reviewlens` session's target/sb/reviewlens-plan.md). R done
+  2. **The review lens** (below; the plan is the `reviewlens` session's .sb/reviewlens-plan.md). R done
      (2026-10-18, `34b21cf3`): the review record, `$state/reviews/`, a line per change seen — the time a person
      spent on it (on screen, a key within 20 s), what it ended as, its grade and high rule by name, a keyed id,
      never code text — summed up by `cargo xtask reviews`; `review.record`, on, your config only. It records from
@@ -332,7 +332,7 @@ Done so far, under way, and the order after it (2026-10-17, brought up to 2026-1
   `cargo xtask linux` proves the tree it mounts is this checkout, and a filter that matched no test fails. Left from
   it, each its own piece: such names closed to runs outside home, and on Linux outside the project (Landlock only
   grants); its item 4, the high-risk gate after a whole-file look, back on the list with a property test over
-  looks. Batch 30 (2026-10-19, `ed16927d`, `target/sb/frictions30-plan.md`, its batch 1): frictions29's small
+  looks. Batch 30 (2026-10-19, `ed16927d`, `.sb/frictions30-plan.md`, its batch 1): frictions29's small
   ones — a host card outlives its run (`y` is for the next run), `C-q` brings the card's keys with it, review notes
   and replies wait for the turn's end, a landing grades the other bring cards again, a failed preflight names the
   tools' variables it ran with, and what a card, a report or the inbox said too little of; the terminals asked
@@ -341,7 +341,7 @@ Done so far, under way, and the order after it (2026-10-17, brought up to 2026-1
   terminals' A (`5a68b5ca`): a sandboxed run's ptys come from tarae's broker, no card. Batch 32 (`bd5c6ab0`): a
   rebuilt program is never "script unchanged", a read's no holds for the turn, a search's card names its pattern,
   the board asks before it spends. Batch 33 (2026-10-19, `523fdef3`): a stop ends what left its run's group, the
-  bring queue, short e2e sockets. Batch 34 (2026-10-20, `e7911bdb`, `target/sb/frictions34-plan.md`): where a filter holds a
+  bring queue, short e2e sockets. Batch 34 (2026-10-20, `e7911bdb`, `.sb/frictions34-plan.md`): where a filter holds a
   run's output, the stuck card counts a new process at work in its tree as progress, and it says what the filter
   does to the output; a stopped rebase reaches a chat whose Claude hasn't started, or waits in the inbox; a failed
   preflight's bring card comes back naming the test and its panic, `v` its output; the edit tools' reviews are
@@ -432,9 +432,9 @@ main that has what it waits for, and the user says go:
   `mcp_image_and_pdf_reach_the_model`: a PDF an MCP tool hands Claude Code never reaches the model — it's saved
   to a file, the model told its name), so pages go as pictures or text. Options to weigh then, measured: poppler
   in tarae's sandbox (deny-default, reads listed, nothing of home), or a pure-Rust renderer in-process.
-- **A review started by itself** (bgreview P3, `target/sb/bgreview-plan.md`): at a turn's end
+- **A review started by itself** (bgreview P3, `.sb/bgreview-plan.md`): at a turn's end
   (`review.auto = "turn"`, off by default, your config only) — its own PR once P1–P2 (done) have been used.
-- **View mode, then quoting** (the quoteplan checkout's `target/sb/quote-plan.md`): every surface — the chat's
+- **View mode, then quoting** (the quoteplan checkout's `.sb/quote-plan.md`): every surface — the chat's
   transcript, the terminal panel, the task, preflight and test panels — gets a view mode, one rule: a cursor on
   its rows as read-only text, Helix's keys, to read, search and copy. Then quoting (인용): select part of any of
   them and ask about it, a chip over the input like pointing's, sent with where it came from, cut to a limit and
@@ -451,7 +451,7 @@ main that has what it waits for, and the user says go:
   quotes the selection as `<quoted from="task|preflight|test">`), held still while a run prints, `G` catches up;
   `space` in any view mode opens view mode's own which-key; the search prompt names the view (the run panels' half
   became panes P2c's documents). P4, the mouse, after panes' P2b.
-- **Panes** (the panes checkout's `target/sb/panes-plan.md`): splits as first-class, so tarae alone does what
+- **Panes** (the panes checkout's `.sb/panes-plan.md`): splits as first-class, so tarae alone does what
   zellij does for you today — several terminals, any surface in a pane, a floating terminal, shells kept across
   `:restart`. The user's direction (2026-10-20): every surface — the tree, the editor, the chat, the terminal, the
   panels — a pane on one base; focus decides the one cursor; focus moves as zellij's (`Alt`+arrows, `Alt h/j/k/l`)
@@ -512,7 +512,7 @@ main that has what it waits for, and the user says go:
   terminal → shells across `:restart`. After its own terminal engine, then images at full
   resolution (kitty graphics, iTerm2's inline images) where the terminal speaks them, the half-block view
   elsewhere (user, 2026-10-20).
-- **Orchestra, Part I** (the orchestra checkout's `target/sb/orchestra-plan.md`; the user, 2026-10-23: main's Claude
+- **Orchestra, Part I** (the orchestra checkout's `.sb/orchestra-plan.md`; the user, 2026-10-23: main's Claude
   is to do what the outside driver does today — Part III there lists the driver's steps, what covers each, and two
   decisions it needs, which cards and whether the bring; order: after P3 steps 7–8, C0 and the cleanup audit): a session's Claude starts
   sessions of its own and steers them through session tools that act on the editor's model, never on the screen —
@@ -576,7 +576,7 @@ bugs its reviewer found, two of tarae's own gates misbehaved in daily use, four 
    macOS and on every supported kernel (§2's set); a set period of building tarae with tarae with no new serious
    bug. flakyfix (2026-10-20, `5d14cf65`): ten tests that failed now and then, each fixed at its cause and pinned.
 2. **Bug hunting: deterministic simulation testing**, built in-house — no commercial service (user decision
-   2026-10-18; the plan: `target/sb/detsim-plan.md`). AI made writing code easier, not checking that it works, and
+   2026-10-18; the plan: `.sb/detsim-plan.md`). AI made writing code easier, not checking that it works, and
    the bugs left are about *when*: a kill sent to a pid already reaped and someone else's (timing), two bring cards
    for one session (event order), a grant's take-back lost when its store write failed and one made before the
    sessions list was restored (a fault, start-up order), tests that fail only under load. FoundationDB's way: every
@@ -616,7 +616,7 @@ bugs its reviewer found, two of tarae's own gates misbehaved in daily use, four 
 tarae.sh (the user's domain, 2026-10-24; its DNS on Cloudflare). Decided (user, 2026-10-24): a repository of its
 own (`tarae-sh/tarae.sh`), served by Cloudflare Workers (static assets, the `cf` CLI; each deploy asked — a preview,
 then the domain); its hero is tarae itself, a scripted scene of several sessions at work replayed as text in the
-browser (meok or hanji by the visitor's scheme), never a video there. The plan: `target/sb/home-plan.md`. Built
+browser (meok or hanji by the visitor's scheme), never a video there. The plan: `.sb/home-plan.md`. Built
 2026-10-25 by three tarae sessions on API credits (site, home, weavehead): the page's top is **the page itself as
 tarae's woven view** (the user, 2026-10-25) — main, fix and docs, each a caret in its participant colour, write its own
 text at once, a conflict shown and folded, docs asking the visitor on a card that never answers itself (untouched, it
@@ -644,7 +644,7 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
 
 ## Alongside, not ordered
 
-- **The web pane** (user, 2026-10-23; the web checkout's `target/sb/web-plan.md`): a page read as a document,
+- **The web pane** (user, 2026-10-23; the web checkout's `.sb/web-plan.md`): a page read as a document,
   Claude reading a page through `read` with an `https://` URL; the reader is core Rust (`src/web/`, Claude's tool,
   always there — no plugin), on only the essential crates (html5ever, encoding_rs). Done: plugins' `connect` got
   runs' resolved-address rule (`5dcc5fa9`); **the reader in the core** (`0914355d`: a tree of tarae's own on
@@ -688,7 +688,7 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
     (`tarae-trace`, see [CONTRIBUTING](../CONTRIBUTING.md)).
 - **One experience, all through tarae** — under way (the user's direction, 2026-10-20; CLAUDE.md's first UX
   rule): the same act has the same key, the same words and the same look on every surface. The UX audit (the
-  `uxaudit` session's `target/sb/uxaudit-plan.md`) laid every surface side by side, held against Helix and zellij
+  `uxaudit` session's `.sb/uxaudit-plan.md`) laid every surface side by side, held against Helix and zellij
   first. Decided: `q` closes every list or output panel (the review rail's `q` ends the review), `esc code` where a
   surface stays and `esc close` where it goes, line numbers absolute by default. Landed: piece 1, those words and
   keys (`c885086e`, 2026-10-21); piece 2, a card never taking the keys mid-typing (one quiet second after the last
@@ -702,7 +702,7 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
   first; the session list saying its letters are keys (what was the first-use check); 7 (`8480c8ef`), inside
   zellij — where a hinted key is one zellij takes first (its defaults, `g q p n s t h o b`; `editor.zellij-keys`, yours
   only, for a changed config), tarae says its twin in which-key, the palette, the cards, the chat, the tutor,
-  `:config-show` and the keymap reference, only inside zellij; shots drop `ZELLIJ`. The audit's eight pieces are in. Driving it logged frictions 59–81 (`target/sb/frictions29.md`: the landing's cost — repeated
+  `:config-show` and the keymap reference, only inside zellij; shots drop `ZELLIJ`. The audit's eight pieces are in. Driving it logged frictions 59–81 (`.sb/frictions29.md`: the landing's cost — repeated
   grants, viewed marks lost on a review's re-open, moved-brace re-flags, the reviewer re-reading whole, ten keys
   to commit — and tier-own tests only runnable outside); batch 36 took 66–79 and 81, 80 (the load flakes) is its own hunt.
 - **A memory card and panel**: what Claude remembers for the project, in Claude Code's own format.
@@ -717,7 +717,7 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
   for code that arrives whole (P8) is dropped (user, 2026-10-20): an invented delay, and a key eaten to end it.
 - **글타래** (*geul-tarae*, "a skein of writing"): a visual pass. Design details that suit ink (meok) and hanji
   paper, and a way of showing and generating text that suits tarae (the plan: the `geultarae` session's
-  target/sb/geultarae-plan.md). P0–P4 done: the shots as a scene list (`cargo xtask scenes`, `900833ab`), the
+  .sb/geultarae-plan.md). P0–P4 done: the shots as a scene list (`cargo xtask scenes`, `900833ab`), the
   audit's fixes (`680f9326`), the chat laying out a message once (`66bebbc5`), 번짐, the head of what Claude
   is writing as ink not yet dry (`660435df`), and weight and margins (2026-10-19, `0ceac0aa`): `● normal` for the
   solid pill, the start screen a title page set in type with no seal, the edit review's head in ink, the chat's
@@ -732,7 +732,7 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
   at start; a stream batch with live rows in a big file 0.3 ms, a native Write over 5,000 lines 1.4 ms (was 8).
   P8, 코드멍's reveal, is dropped — an invented delay, and a key eaten to end it.
 - **Design pass 2 — 선명함과 구조** (the user, 2026-10-21: tarae looked dull and without structure beside Helix with
-  ayu_evolve; the plan `target/sb/design2-plan.md`, the designer's note `target/sb/design2-D1-note.md`). D1 done
+  ayu_evolve; the plan `.sb/design2-plan.md`, the designer's note `.sb/design2-D1-note.md`). D1 done
   (`9ad62527` + `45a51568`): meok and hanji take ayu's hues fitted to ink and paper (keywords orange, types blue,
   strings green, constants magenta; the accent stays the seal's coral/vermilion; ink a step darker, `#0c0e12`;
   comments upright and readable, doc comments on the ground with the bar only; every text/ground pair at its floor,
@@ -800,9 +800,9 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
   - Java debugging → a plugin, once the plugin API has a debug-way hook.
 - **ACP**: hosting other agents inside tarae. Claude is the only agent tarae runs today.
 - **Kubernetes plugin, next parts (P1–P6)**, and a separate **fluxcd plugin**. Contexts follow kubectl, with a
-  context screen. Notes: the `k8s` session's target/sb/.
+  context screen. Notes: the `k8s` session's .sb/.
 - **Database plugin**: steps 0–2 and 8–9 landed; steps 3–7 and 10 wait for plugin API 0.3; DynamoDB on hold.
-  Notes: the `db` session's target/sb/db-plan.md.
+  Notes: the `db` session's .sb/db-plan.md.
 - **To-do plugin** (user, 2026-10-20): both kinds in one plugin — one side tab, two lists. *In the code*: the
   project's `TODO`, `FIXME`, `NOTE`… — the tags the comment grammar already colours
   (`runtime/queries/comment/highlights.scm`), found by tarae's own search and kept only where the tree puts them in

@@ -268,7 +268,7 @@ fn every_command_key_is_held_up_front_but_trusted_or_yours() {
 }
 
 /// What tarae passes claude in `--settings`, pinned in `src/snapshots/chat_settings_*.json` — and what live
-/// check L6 (`target/sb/apibill-L6.sh`) gives real claude, so it checks exactly this:
+/// check L6 (`.sb/apibill-L6.sh`) gives real claude, so it checks exactly this:
 /// - `plain`: a chat with no project settings at all — every command key held up front as "";
 /// - `held`: L6's stand-in project (a helper, `ANTHROPIC_BASE_URL`) held back (`n`), with nothing to go back to
 ///   (L6 runs claude without `ANTHROPIC_*`, and no settings of yours are read here);
