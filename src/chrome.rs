@@ -303,16 +303,16 @@ impl Editor {
         match s {
             Slot::Procs => self.procs_up(),
             Slot::Debug => self.dap.is_some(),
-            Slot::Terminal => self.session.terminal.as_ref().is_some_and(|t| t.visible || !shown),
+            Slot::Terminal => self.workspace.terminal.as_ref().is_some_and(|t| t.visible || !shown),
             Slot::Plugin => self.plugins.as_ref().is_some_and(|p| p.panel.is_some()),
-            Slot::Test => self.session.test_run.is_some(),
-            Slot::Task => self.session.task_run.is_some(),
+            Slot::Test => self.workspace.test_run.is_some(),
+            Slot::Task => self.workspace.task_run.is_some(),
         }
     }
 
     /// The panel you put in front (a tab clicked, `tab` in its view mode, one just opened), while it's there.
     pub(crate) fn slot_front(&self) -> Option<Slot> {
-        self.session.slot_front.filter(|&s| self.slot_there(s, true))
+        self.workspace.viewer.slot_front.filter(|&s| self.slot_there(s, true))
     }
 
     /// Every panel the slot has, in `ORDER`, with how it's doing — the slot's title row; a group docked in sight is
@@ -332,7 +332,7 @@ impl Editor {
             .map(|&slot| {
                 let (label, badge) = match slot {
                     Slot::Terminal => {
-                        let t = self.session.terminal.as_ref();
+                        let t = self.workspace.terminal.as_ref();
                         let badge = match t.and_then(|t| t.exited) {
                             Some(0) | None => Badge::None,
                             Some(_) => Badge::Failed,
@@ -340,7 +340,7 @@ impl Editor {
                         ("terminal".to_string(), badge)
                     }
                     Slot::Task => {
-                        let r = self.session.task_run.as_ref().expect("there");
+                        let r = self.workspace.task_run.as_ref().expect("there");
                         let badge = match r.state {
                             crate::task::State::Running => Badge::Running,
                             crate::task::State::Passed if r.found == (0, 0) => Badge::Passed,
@@ -352,7 +352,7 @@ impl Editor {
                     }
                     Slot::Test => {
                         use crate::testing::RunState as R;
-                        let r = self.session.test_run.as_ref().expect("there");
+                        let r = self.workspace.test_run.as_ref().expect("there");
                         let badge = match r.state {
                             R::Running => Badge::Running,
                             R::Passed => Badge::Passed,
@@ -392,7 +392,7 @@ impl Editor {
         }
         // (a docked group's name in its line: the keys to the member it had last)
         if self.slot_docked(s)
-            && let Some(g) = self.kind_of(s).and_then(|k| self.session.group(k))
+            && let Some(g) = self.kind_of(s).and_then(|k| self.workspace.group(k))
         {
             return match (g.front, crate::grouplist::listed(self, g.kind)) {
                 (crate::pane::Member::List, true) => self.list_focus(g.kind),
@@ -401,13 +401,13 @@ impl Editor {
         }
         let keys = self.bottom_has_keys();
         if s == Slot::Terminal
-            && let Some(t) = self.session.terminal.as_mut()
+            && let Some(t) = self.workspace.terminal.as_mut()
         {
             t.visible = true;
         }
-        self.session.slot_front = Some(s);
+        self.workspace.viewer.slot_front = Some(s);
         if s != Slot::Terminal {
-            self.session.leave(crate::session::At::Program);
+            self.workspace.leave(crate::workspace::At::Program);
         }
         if s != Slot::Procs {
             self.procs_unfocus();
@@ -430,7 +430,7 @@ impl Editor {
             if let Some(g) = self.slot_group()
                 && let Some(detail) = g.detail_pane()
             {
-                let on_list = self.session.is_at(crate::session::At::List(g.list));
+                let on_list = self.workspace.is_at(crate::workspace::At::List(g.list));
                 return self.focus_pane(if on_list { detail } else { g.list });
             }
             return self.set_status("its output is all it has yet — C-w J back to the slot");
@@ -442,8 +442,8 @@ impl Editor {
         if let Some(g) = self.slot_group()
             && let Some(detail) = g.detail_pane()
         {
-            let on_list = self.session.is_at(crate::session::At::List(g.list));
-            let on_detail = !on_list && self.session.is_at(crate::session::At::Slot);
+            let on_list = self.workspace.is_at(crate::workspace::At::List(g.list));
+            let on_detail = !on_list && self.workspace.is_at(crate::workspace::At::Slot);
             match (on_list, on_detail, by > 0) {
                 (true, _, true) => return self.focus_pane(detail),
                 (_, true, false) => return self.focus_pane(g.list),
@@ -482,25 +482,25 @@ impl Editor {
             .filter(|&&s| self.slot_there(s, true))
             .map(|&s| {
                 let at = match s {
-                    Slot::Test => self.session.test_run.as_ref().map(|r| r.started),
-                    Slot::Task => self.session.task_run.as_ref().map(|r| r.started),
+                    Slot::Test => self.workspace.test_run.as_ref().map(|r| r.started),
+                    Slot::Task => self.workspace.task_run.as_ref().map(|r| r.started),
                     _ => None,
                 };
                 (s, at)
             })
             .collect();
         let new: Vec<Slot> =
-            now.iter().filter(|n| !self.session.slot_seen.contains(n)).map(|n| n.0).collect();
+            now.iter().filter(|n| !self.workspace.viewer.slot_seen.contains(n)).map(|n| n.0).collect();
         if !new.is_empty() {
             let keys = self.bottom_has_keys();
             // (several at once: the last in `ORDER` — the rarer, asked-for ones)
             if let Some(&s) = new.iter().rev().find(|s| !(keys && matches!(s, Slot::Test | Slot::Task))) {
-                self.session.slot_front = Some(s);
+                self.workspace.viewer.slot_front = Some(s);
             }
         }
-        self.session.slot_seen = now;
+        self.workspace.viewer.slot_seen = now;
         if self.slot() != Some(Slot::Terminal) {
-            self.session.leave(crate::session::At::Program);
+            self.workspace.leave(crate::workspace::At::Program);
         }
     }
 }

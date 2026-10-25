@@ -302,7 +302,7 @@ pub fn call(ed: &mut Editor, call: Call, args: &Value) -> Result<(), String> {
         .collect::<Result<_, _>>()?;
     let offset = args["offset"].as_u64().unwrap_or(0) as usize;
     let parsed = parse(&words)?;
-    let (root, keys) = (ed.session.root.clone(), crate::reads::Keys::of(ed));
+    let (root, keys) = (ed.workspace.root.clone(), crate::reads::Keys::of(ed));
     ed.events.jobs().spawn(move || {
         let r = run(&root, &keys, &parsed, offset);
         move |ed: &mut Editor| crate::tools::answer(ed, call, r)

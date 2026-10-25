@@ -56,9 +56,9 @@ const ELSEWHERE: [(&str, &str); 11] = [
     ("llm.args", "the claude process itself"),
     ("llm.chat-settings", "what claude loads, not what its tools may do"),
     ("llm.screen-terminal", "what Claude's screen shows"),
-    ("session.worktrees", "where checkouts are made"),
-    ("session.ended", "a command at a session's end, as you"),
-    ("session.keep", "files moved at a session's end"),
+    ("workspace.worktrees", "where checkouts are made"),
+    ("workspace.ended", "a command at a session's end, as you"),
+    ("workspace.keep", "files moved at a session's end"),
     ("review.risky", "what a code review holds for a look"),
 ];
 
@@ -125,9 +125,9 @@ impl Reach {
             }
             rows(&cfg)
         });
-        let chat = ed.session.chat.as_ref();
+        let chat = ed.workspace.claude.chat.as_ref();
         let mut listed: Vec<String> = caps.grants().iter().map(crate::granted::taken_as).collect();
-        listed.extend(ed.session.hosts.iter().map(|(h, p)| crate::hosts::listed(h, *p)));
+        listed.extend(ed.workspace.claude.hosts.iter().map(|(h, p)| crate::hosts::listed(h, *p)));
         let trusted = ed.project_trust.as_ref().is_some_and(|p| {
             p.state == State::Trusted
                 || crate::trust::Store::read(ed.trust_path.as_deref()).state(&p.file, p.hash)
@@ -142,14 +142,14 @@ impl Reach {
             terminals: w.terminals,
             keys: caps.keys.iter().map(|e| e.what.clone()).chain(w.keys).collect(),
             // (a key of the session's own project: another's is read outside it, asked on its own card)
-            open_keys: (named.iter().filter(|k| k.starts_with(&ed.session.root)))
+            open_keys: (named.iter().filter(|k| k.starts_with(&ed.workspace.root)))
                 .filter(|k| caps.keys.iter().any(|e| e.what == **k) || !crate::reads::key_shut(ed, k, &[]))
                 .cloned()
                 .collect(),
             again: chat.map(|c| c.run_again.iter().map(|r| format!("{r:?}")).collect()).unwrap_or_default(),
             sees: chat.is_some_and(|c| c.sees),
-            unsandboxed: ed.session.no_sandbox == Some(crate::tools::NoSandbox::Unasked),
-            shown: ed.session.caps().cloned(),
+            unsandboxed: ed.workspace.claude.no_sandbox == Some(crate::tools::NoSandbox::Unasked),
+            shown: ed.workspace.claude.caps().cloned(),
             caps,
             listed,
             trusted,
@@ -506,7 +506,7 @@ impl World {
         crate::config::Sources { user: Some(self.user.clone()), trust: Some(self.trust.clone()) }
     }
 
-    /// An editor started in the project, on this state — the kept sessions not back yet (`sessions_restore`).
+    /// An editor started in the project, on this state — the kept sessions not back yet (`workspaces_restore`).
     fn editor(&self) -> Editor {
         self.editor_at(&self.root)
     }
@@ -518,7 +518,7 @@ impl World {
         ed.allow_path = Some(self.allow.clone());
         ed.trust_path = Some(self.trust.clone());
         ed.caps_home = Some(self.home.clone());
-        ed.session_store.dir = Some(self.sessions.clone());
+        ed.workspace_store.dir = Some(self.sessions.clone());
         ed
     }
 
@@ -584,9 +584,10 @@ fn settle(ed: &mut Editor, what: &str, from: usize, done: &dyn Fn(&Editor, &[Str
         // (and the result of every store write that landed: those held are the steps' to land — a wait met by
         // another write's result put it in a later step)
         let landed = (ed.allow_writing + ed.trust_writing) as u64 == queued_here()
-            && std::iter::once(&ed.session)
-                .chain(&ed.sessions)
-                .all(|s| s.caps_asked == 0 || s.caps.as_ref().is_some_and(|(g, _)| *g == s.caps_asked));
+            && std::iter::once(&ed.workspace).chain(&ed.workspaces).all(|s| {
+                s.claude.caps_asked == 0
+                    || s.claude.caps.as_ref().is_some_and(|(g, _)| *g == s.claude.caps_asked)
+            });
         if done && landed {
             return;
         }
@@ -604,11 +605,11 @@ fn landed(_: &Editor, _: &[String]) -> bool {
 /// Every session's `Reach`, by its checkout.
 fn reaches(ed: &mut Editor, named: &[PathBuf]) -> Vec<(PathBuf, Reach)> {
     let ids: Vec<_> =
-        std::iter::once(&ed.session).chain(&ed.sessions).map(|s| (s.id, s.root.clone())).collect();
+        std::iter::once(&ed.workspace).chain(&ed.workspaces).map(|s| (s.id, s.root.clone())).collect();
     let mut out = Vec::new();
     for (id, root) in ids {
         let mut r = None;
-        ed.with_session(id, |ed| r = Some(Reach::of(ed, named)));
+        ed.with_workspace(id, |ed| r = Some(Reach::of(ed, named)));
         out.push((root, r.unwrap()));
     }
     out
@@ -659,9 +660,9 @@ enum Step {
     },
     /// `:granted`'s `d` on the no-sandbox `s`.
     Sandboxed,
-    SessionAdd,
-    SessionSwitch(usize),
-    /// Quit, and tarae started again on the same state (`sessions_restore`) — `early`: one of the start
+    WorkspaceAdd,
+    WorkspaceSwitch(usize),
+    /// Quit, and tarae started again on the same state (`workspaces_restore`) — `early`: one of the start
     /// session's kept answers taken back before they're back (before then only it is there); `cut`: the quit
     /// gave up waiting, the writes held cut off (said on stderr — what they took back may be back).
     Restart {
@@ -749,8 +750,8 @@ impl Step {
             }
             19 if coin(rng) => Step::Untrust { failing: coin(rng) },
             19 => Step::TrustTaken { failing: coin(rng) },
-            20 if coin(rng) => Step::SessionAdd,
-            20 => Step::SessionSwitch(rng.below(4)),
+            20 if coin(rng) => Step::WorkspaceAdd,
+            20 => Step::WorkspaceSwitch(rng.below(4)),
             21 => Step::Restart { early: coin(rng).then(|| rng.below(64)), cut: false },
             22 => Step::ReExec,
             23 => Step::Checkout { linked: coin(rng) },
@@ -821,17 +822,17 @@ fn answer(ed: &mut Editor, g: &Grant, scope: Scope, read_card: bool, s: &str) {
         g => crate::allow::grant(ed, g, scope),
     }
     // (kept for the project: written on a worker, the `Caps` made again after — unless the loop holds it)
-    let asked = ed.session.caps_asked;
+    let asked = ed.workspace.claude.caps_asked;
     let held = ed.allow_path.as_deref().is_some_and(crate::storewrite::is_held);
     let kept = !held && !matches!(g, Grant::Host(..)) && scope.min(Caps::storable(g)) == Scope::Always;
-    settle(ed, s, from, &|ed, _| !kept || ed.session.caps_asked > asked);
+    settle(ed, s, from, &|ed, _| !kept || ed.workspace.claude.caps_asked > asked);
 }
 
 /// `step` applied, and settled.
 fn apply(w: &mut World, ed: &mut Editor, step: &Step, ledger: &mut Ledger, front: &Reach) -> Done {
     let from = ed.messages.len();
     let s = format!("{step:?}");
-    let root = ed.session.root.clone();
+    let root = ed.workspace.root.clone();
     match step {
         Step::Card(i, scope) => {
             let g = w.grants[*i].clone();
@@ -856,23 +857,23 @@ fn apply(w: &mut World, ed: &mut Editor, step: &Step, ledger: &mut Ledger, front
         }
         Step::KeyKept => {
             let key = w.named[0].clone();
-            if let Some(c) = ed.session.chat.as_mut() {
+            if let Some(c) = ed.workspace.claude.chat.as_mut() {
                 c.kept_keys = None;
             }
-            let asked = ed.session.caps_asked;
+            let asked = ed.workspace.claude.caps_asked;
             // (in the store as an earlier answer left it, then read as a kept answer's write is)
             let (store, project) = (ed.allow_path.clone().unwrap(), crate::sandbox::profile_path(&root));
             crate::allow::keep(&store, &project, |a| a.add(&Grant::Key(key.clone()))).unwrap();
             crate::reads::kept_keys_load(ed);
             ed.caps_sync();
             settle(ed, &s, from, &|ed, _| {
-                ed.session.caps_asked > asked
-                    && ed.session.chat.as_ref().is_none_or(|c| c.kept_keys.is_some())
+                ed.workspace.claude.caps_asked > asked
+                    && ed.workspace.claude.chat.as_ref().is_none_or(|c| c.kept_keys.is_some())
             });
             widens(Some(root), Effect::Grant(Grant::Key(key)))
         }
         Step::RunAgain => {
-            let Some(c) = ed.session.chat.as_mut() else { return narrows(Vec::new()) };
+            let Some(c) = ed.workspace.claude.chat.as_mut() else { return narrows(Vec::new()) };
             let parts = vec![vec!["docker".to_string(), "ps".to_string()]];
             let again = crate::tools::Again { parts, scripts: Vec::new() };
             let r =
@@ -884,7 +885,7 @@ fn apply(w: &mut World, ed: &mut Editor, step: &Step, ledger: &mut Ledger, front
             widens(Some(root), Effect::Again(said))
         }
         Step::Sees => {
-            let Some(c) = ed.session.chat.as_mut() else { return narrows(Vec::new()) };
+            let Some(c) = ed.workspace.claude.chat.as_mut() else { return narrows(Vec::new()) };
             c.sees = true;
             widens(Some(root), Effect::Sees)
         }
@@ -913,12 +914,12 @@ fn apply(w: &mut World, ed: &mut Editor, step: &Step, ledger: &mut Ledger, front
         }
         Step::Unsandboxed => {
             // (the card's `s`, as `tools.rs` keeps it)
-            ed.session.no_sandbox = Some(crate::tools::NoSandbox::Unasked);
+            ed.workspace.claude.no_sandbox = Some(crate::tools::NoSandbox::Unasked);
             widens(Some(root), Effect::Unsandboxed)
         }
         Step::Sandboxed => {
             // (`:granted`'s `d` on it, as `granted_take` takes it)
-            ed.session.no_sandbox = None;
+            ed.workspace.claude.no_sandbox = None;
             narrows(vec![Gone::Unsandboxed])
         }
         Step::Yours(i) => {
@@ -944,7 +945,7 @@ fn apply(w: &mut World, ed: &mut Editor, step: &Step, ledger: &mut Ledger, front
             narrows(Vec::new())
         }
         Step::ChatReset | Step::ChatClose | Step::ChatResume => {
-            if ed.session.chat.is_none() {
+            if ed.workspace.claude.chat.is_none() {
                 return narrows(Vec::new());
             }
             let gone = chat_only(ed);
@@ -1021,17 +1022,17 @@ fn apply(w: &mut World, ed: &mut Editor, step: &Step, ledger: &mut Ledger, front
             ledger.trusted.clear();
             narrows(vec![Gone::Trust])
         }
-        Step::SessionAdd => {
+        Step::WorkspaceAdd => {
             w.made += 1;
             let root = w.at.join(format!("s{}", w.made));
             repository(&root);
-            ed.session_add(root);
+            ed.workspace_add(root);
             settle(ed, &s, from, &landed);
             narrows(Vec::new())
         }
-        Step::SessionSwitch(i) => {
-            let ids: Vec<_> = std::iter::once(&ed.session).chain(&ed.sessions).map(|s| s.id).collect();
-            ed.session_switch(ids[i % ids.len()]);
+        Step::WorkspaceSwitch(i) => {
+            let ids: Vec<_> = std::iter::once(&ed.workspace).chain(&ed.workspaces).map(|s| s.id).collect();
+            ed.workspace_switch(ids[i % ids.len()]);
             settle(ed, &s, from, &landed);
             narrows(Vec::new())
         }
@@ -1065,7 +1066,7 @@ fn apply(w: &mut World, ed: &mut Editor, step: &Step, ledger: &mut Ledger, front
             let named = if *linked { wt } else { w.at.join("elsewhere") };
             std::fs::write(co.join(".git"), format!("gitdir: {}\n", named.display())).unwrap();
             // (the sessions' `Caps` made again, as the next answer would)
-            let ids: Vec<_> = std::iter::once(&ed.session).chain(&ed.sessions).map(|s| s.id).collect();
+            let ids: Vec<_> = std::iter::once(&ed.workspace).chain(&ed.workspaces).map(|s| s.id).collect();
             ids.into_iter().for_each(|id| ed.caps_sync_of(id));
             settle(ed, &s, from, &landed);
             match linked {
@@ -1082,11 +1083,12 @@ fn chat_only(ed: &Editor) -> Vec<Gone> {
     let b = ed.caps_basis();
     let none = Allowed::default();
     let rest = Caps::granted(&b.root, &b.kept().1.all, &b.session, &none).grants();
-    let hosts: Vec<String> = ed.session.hosts.iter().map(|(h, p)| crate::hosts::listed(h, *p)).collect();
+    let hosts: Vec<String> =
+        ed.workspace.claude.hosts.iter().map(|(h, p)| crate::hosts::listed(h, *p)).collect();
     let chat = Caps::granted(&b.root, &none, &none, &b.chat).grants();
     let chat = chat.iter().filter(|g| !rest.contains(g)).map(crate::granted::taken_as);
     let mut gone: Vec<Gone> = chat.filter(|g| !hosts.contains(g)).map(Gone::Listed).collect();
-    if let Some(c) = &ed.session.chat {
+    if let Some(c) = &ed.workspace.claude.chat {
         gone.extend(c.run_again.iter().map(|r| Gone::Again(format!("{r:?}"))));
         gone.extend(c.sees.then_some(Gone::Sees));
     }
@@ -1096,17 +1098,18 @@ fn chat_only(ed: &Editor) -> Vec<Gone> {
 /// `:sandbox-disallow what`, settled — `failing`: with that store's write failing (then the store put back and
 /// the `Caps` made again, as the next answer would).
 fn take_back(w: &World, ed: &mut Editor, what: &str, failing: Failing, s: &str) {
-    let root = ed.session.root.clone();
+    let root = ed.workspace.root.clone();
     let (from, taking) = (ed.messages.len(), ed.taking_for(&root).len());
-    let had = ed.session.allowed.clone();
+    let had = ed.workspace.claude.allowed.clone();
     match failing {
         Failing::Store => ed.allow_path = Some(w.broken.clone()),
-        Failing::Sessions => ed.session_store.dir = Some(w.broken_dir.clone()),
+        Failing::Sessions => ed.workspace_store.dir = Some(w.broken_dir.clone()),
         Failing::No => {}
     }
     ed.sandbox_disallow(what).unwrap();
     // (the sessions' store is written only once they're back, and only when the session's answers changed)
-    let sessions = failing == Failing::Sessions && ed.session_store.restored && ed.session.allowed != had;
+    let sessions =
+        failing == Failing::Sessions && ed.workspace_store.restored && ed.workspace.claude.allowed != had;
     settle(ed, s, from, &|ed, said| match failing {
         Failing::Store => said.iter().any(|m| m.contains("taken back until you quit")),
         Failing::Sessions if sessions => said.iter().any(|m| m.contains("couldn't write the session")),
@@ -1114,7 +1117,7 @@ fn take_back(w: &World, ed: &mut Editor, what: &str, failing: Failing, s: &str) 
         _ => w.held || ed.taking_for(&root).len() <= taking,
     });
     ed.allow_path = Some(w.allow.clone());
-    ed.session_store.dir = Some(w.sessions.clone());
+    ed.workspace_store.dir = Some(w.sessions.clone());
     ed.caps_sync();
     settle(ed, s, from, &landed);
 }
@@ -1140,7 +1143,7 @@ fn trust_take(w: &World, ed: &mut Editor, failing: bool, s: &str) {
 }
 
 /// Quit, and tarae started again on this state: a new process (no take-back of trust held), the kept sessions back
-/// from their store (`sessions_restore`) — `early`: one of the start session's answers taken back before they're
+/// from their store (`workspaces_restore`) — `early`: one of the start session's answers taken back before they're
 /// back. What a failed take-back said comes back now ("until you quit") may: no wider than its session was then.
 fn restart(
     w: &World,
@@ -1150,9 +1153,10 @@ fn restart(
     ledger: &mut Ledger,
     s: &str,
 ) -> Done {
-    let start = std::iter::once(&ed.session).chain(&ed.sessions).find(|l| l.root == w.root);
-    let of: Vec<String> =
-        start.map(|l| l.allowed.grants().iter().map(crate::granted::taken_as).collect()).unwrap_or_default();
+    let start = std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|l| l.root == w.root);
+    let of: Vec<String> = start
+        .map(|l| l.claude.allowed.grants().iter().map(crate::granted::taken_as).collect())
+        .unwrap_or_default();
     let early = early.filter(|_| !of.is_empty()).map(|i| of[i % of.len()].clone());
     // (quit as `main` quits: what's still being written lands first — or, `cut`, the quit gave up on it: what
     // it took back may be back, as said)
@@ -1175,9 +1179,9 @@ fn restart(
     if let Some(what) = &early {
         ed.sandbox_disallow(what).unwrap();
     }
-    ed.sessions_restore();
+    ed.workspaces_restore();
     let held = w.held;
-    settle(ed, s, 0, &|ed, _| ed.session_store.restored && (held || ed.allow_taking.is_empty()));
+    settle(ed, s, 0, &|ed, _| ed.workspace_store.restored && (held || ed.allow_taking.is_empty()));
     let mut done = narrows(early.into_iter().map(Gone::Listed).collect());
     done.gone_at = Some(w.root.clone());
     // (only what the failed ones named: one taken back since whose write landed isn't)
@@ -1331,7 +1335,7 @@ fn other(w: &World, ed: &mut Editor, op: OtherOp, ledger: &mut Ledger, s: &str) 
         }
     }
     // (the sessions' `Caps` made again, as the next answer would)
-    let ids: Vec<_> = std::iter::once(&ed.session).chain(&ed.sessions).map(|s| s.id).collect();
+    let ids: Vec<_> = std::iter::once(&ed.workspace).chain(&ed.workspaces).map(|s| s.id).collect();
     ids.into_iter().for_each(|id| ed.caps_sync_of(id));
     settle(ed, s, ed.messages.len(), &landed);
     narrows(Vec::new())
@@ -1374,28 +1378,29 @@ fn run_steps(
     let mut ledger = Ledger::default();
     let mut done: Vec<String> = Vec::new();
     let mut yours = w.yours_said();
-    ed.sessions_restore();
-    settle(&mut ed, "start", 0, &|ed, _| ed.session_store.restored);
+    ed.workspaces_restore();
+    settle(&mut ed, "start", 0, &|ed, _| ed.workspace_store.restored);
     // (each step's state before and after, said with a failure: what the store, the session and its chat hold, the
     // take-backs under way, each session's `Caps` asked and landed)
     let mut trace: Vec<String> = Vec::new();
     let snap = |ed: &Editor, w: &World| {
         let store = crate::allow::Store::read(Some(&w.allow));
-        let sessions = std::iter::once(&ed.session).chain(&ed.sessions).map(|s| {
-            let chat = s.chat.as_ref().map(|c| format!("{:?}", c.allowed.grants())).unwrap_or_default();
+        let sessions = std::iter::once(&ed.workspace).chain(&ed.workspaces).map(|s| {
+            let chat =
+                s.claude.chat.as_ref().map(|c| format!("{:?}", c.allowed.grants())).unwrap_or_default();
             format!(
                 "[{} {}: kept {:?} session {:?} chat {chat} caps {}/{:?}]",
                 s.id,
                 s.root.display(),
                 store.get(&crate::sandbox::profile_path(&s.root)).grants(),
-                s.allowed.grants(),
-                s.caps_asked,
-                s.caps.as_ref().map(|(g, _)| *g)
+                s.claude.allowed.grants(),
+                s.claude.caps_asked,
+                s.claude.caps.as_ref().map(|(g, _)| *g)
             )
         });
         format!(
             "front {} taking {:?} {}",
-            ed.session.id,
+            ed.workspace.id,
             ed.allow_taking,
             sessions.collect::<Vec<_>>().join(" ")
         )
@@ -1403,7 +1408,7 @@ fn run_steps(
     for (n, step) in steps.enumerate() {
         let step = step.unwrap_or_else(|| random(&w));
         let before = reaches(&mut ed, &w.named);
-        let front_root = ed.session.root.clone();
+        let front_root = ed.workspace.root.clone();
         let front = before.iter().find(|(r, _)| *r == front_root).map(|(_, r)| r.clone()).unwrap();
         trace.push(format!("{n} {step:?} before: {}", snap(&ed, &w)));
         let d = apply(&mut w, &mut ed, &step, &mut ledger, &front);
@@ -1594,7 +1599,11 @@ fn settle_waits_for_a_write_whose_turn_ends_while_it_looks() {
         true
     });
     assert_eq!(ed.allow_writing, 0, "settled before the write's result came back");
-    assert_eq!(ed.session.caps(), Some(&ed.caps_basis().build()), "the session's Caps is the one made now");
+    assert_eq!(
+        ed.workspace.claude.caps(),
+        Some(&ed.caps_basis().build()),
+        "the session's Caps is the one made now"
+    );
 }
 
 /// `f` true before long, the editor's events applied meanwhile (a background write brings none back).
@@ -1611,8 +1620,8 @@ fn until(ed: &mut Editor, what: &str, f: &dyn Fn() -> bool) {
 /// An editor whose kept sessions are back.
 fn restored(w: &World) -> Editor {
     let mut ed = w.editor();
-    ed.sessions_restore();
-    settle(&mut ed, "the sessions back", 0, &|ed, _| ed.session_store.restored);
+    ed.workspaces_restore();
+    settle(&mut ed, "the sessions back", 0, &|ed, _| ed.workspace_store.restored);
     ed
 }
 
@@ -1638,12 +1647,12 @@ fn a_take_back_before_the_sessions_are_back_stays_taken_back() {
     until(&mut ed, "kept with the session", &|| sessions_say(&w, "8080"));
     let mut ed = w.editor();
     ed.sandbox_disallow("port 8080").unwrap();
-    ed.sessions_restore();
-    settle(&mut ed, "back", 0, &|ed, _| ed.session_store.restored);
-    assert!(!ed.session.allowed.grants().contains(&Grant::Port(8080)), "back with the session");
+    ed.workspaces_restore();
+    settle(&mut ed, "back", 0, &|ed, _| ed.workspace_store.restored);
+    assert!(!ed.workspace.claude.allowed.grants().contains(&Grant::Port(8080)), "back with the session");
     assert!(!granted_now(&ed).contains(&Grant::Port(8080)));
     // (written on a worker, nothing brought back: the next start is what tells)
-    let back = || restored(&w).session.allowed.grants().contains(&Grant::Port(8080));
+    let back = || restored(&w).workspace.claude.allowed.grants().contains(&Grant::Port(8080));
     until(&mut ed, "back at the next start", &|| !back());
 }
 
@@ -1659,9 +1668,9 @@ fn a_take_back_before_the_sessions_are_back_says_when_its_write_fails() {
     // (a quit now names it: nothing written yet)
     let said = ed.unwritten(true);
     assert!(said.iter().any(|s| s.contains("without port 8080")), "{said:?}");
-    ed.sessions_restore();
+    ed.workspaces_restore();
     // (read from the store already; written to one no write reaches)
-    ed.session_store.dir = Some(w.broken_dir.clone());
+    ed.workspace_store.dir = Some(w.broken_dir.clone());
     settle(&mut ed, "said", 0, &|_, said| {
         said.iter().any(|m| m.contains("couldn't write the sessions without port 8080"))
     });
@@ -1685,17 +1694,17 @@ fn a_failed_take_back_holds_its_own_checkout_only() {
     let mut ed = w.editor();
     let port = Grant::Port(5432);
     answer(&mut ed, &port, Scope::Always, false, "kept here");
-    let (main, other) = (ed.session.id, w.at.join("s1"));
+    let (main, other) = (ed.workspace.id, w.at.join("s1"));
     repository(&other);
-    let s1 = ed.session_add(other);
-    ed.session_switch(s1);
+    let s1 = ed.workspace_add(other);
+    ed.workspace_switch(s1);
     answer(&mut ed, &port, Scope::Always, false, "kept there");
-    ed.session_switch(main);
+    ed.workspace_switch(main);
     take_back(&w, &mut ed, "port 5432", Failing::Store, "failing here");
-    ed.session_switch(s1);
+    ed.workspace_switch(s1);
     assert!(granted_now(&ed).contains(&port), "the other checkout's answer hidden");
     take_back(&w, &mut ed, "port 5432", Failing::No, "taken there");
-    ed.session_switch(main);
+    ed.workspace_switch(main);
     assert!(!granted_now(&ed).contains(&port), "the failed one ended by the other's");
 }
 
@@ -1729,7 +1738,7 @@ fn a_hosts_answer_kept_again_ends_a_failed_take_back() {
     // (the card's `A`, the network open when it asked)
     let a = |ed: &Editor| crate::hosts::Ask {
         ended: false,
-        session: ed.session.proxy_id(),
+        session: ed.workspace.proxy_id(),
         run: 0,
         host: "db.example.com".into(),
         port: 5432,
@@ -2089,9 +2098,9 @@ fn a_sessions_take_back_is_written_where_kept_or_said() {
     let w = World::new("caps-session-where");
     let mut ed = restored(&w);
     answer(&mut ed, &Grant::Port(8080), Scope::Session, false, "for the session");
-    settle(&mut ed, "kept there", 0, &|ed, _| ed.session_store.repo.is_some());
-    let kept = ed.session_store.repo.clone().unwrap();
-    let file = crate::chats::file(ed.session_store.dir.as_deref().unwrap(), &kept);
+    settle(&mut ed, "kept there", 0, &|ed, _| ed.workspace_store.repo.is_some());
+    let kept = ed.workspace_store.repo.clone().unwrap();
+    let file = crate::chats::file(ed.workspace_store.dir.as_deref().unwrap(), &kept);
     // (the list, not the take-backs kept beside it)
     let read = |f: &Path| {
         let v =
@@ -2106,7 +2115,7 @@ fn a_sessions_take_back_is_written_where_kept_or_said() {
     settle(&mut ed, "written", 0, &|_, _| !read(&file).contains("8080"));
     answer(&mut ed, &Grant::Port(8081), Scope::Session, false, "for the session");
     settle(&mut ed, "kept", 0, &|_, _| read(&file).contains("8081"));
-    ed.session_store.repo = Some(w.at.join("another/.git"));
+    ed.workspace_store.repo = Some(w.at.join("another/.git"));
     let from = ed.messages.len();
     ed.sandbox_disallow("port 8081").unwrap();
     settle(&mut ed, "said", from, &|_, said| said.iter().any(|m| m.contains("is gone")));
@@ -2298,15 +2307,15 @@ fn another_taraes_session_take_back_isnt_put_back() {
     answer(&mut ed, &Grant::Port(8080), Scope::Session, false, "for the session");
     until(&mut ed, "kept with the session", &|| sessions_say(&w, "8080"));
     // (the other tarae: the list read, written without it as taken back)
-    let common = ed.session_store.repo.clone().unwrap();
+    let common = ed.workspace_store.repo.clone().unwrap();
     let s = crate::worktree::load(&w.sessions, &common);
     let mut theirs = s.sessions.clone();
     theirs.iter_mut().for_each(|k| k.allowed.remove("port 8080"));
-    let took = [(ed.session.root.clone(), "port 8080".to_string())];
+    let took = [(ed.workspace.root.clone(), "port 8080".to_string())];
     let stored = crate::worktree::Stored { sessions: theirs, front: s.front, rev: s.rev };
     crate::worktree::save(&w.sessions, &common, stored, &took, s.rev).unwrap();
-    ed.sessions_keep();
-    let gone = |ed: &Editor, _: &[String]| !ed.session.allowed.ports.contains(&8080);
+    ed.workspaces_keep();
+    let gone = |ed: &Editor, _: &[String]| !ed.workspace.claude.allowed.ports.contains(&8080);
     settle(&mut ed, "gone here", 0, &gone);
     let put_back = sessions_say(&w, "8080");
     answer(&mut ed, &Grant::Port(8080), Scope::Session, false, "again");
@@ -2356,8 +2365,8 @@ fn a_sessions_write_cut_off_writes_nothing() {
     let w = World::new("caps-session-cut");
     let mut ed = restored(&w);
     crate::storewrite::hold(&w.sessions, Some(0));
-    ed.session.allowed.add(&Grant::Port(8080));
-    ed.sessions_keep();
+    ed.workspace.claude.allowed.add(&Grant::Port(8080));
+    ed.workspaces_keep();
     crate::storewrite::cut(&w.sessions);
     assert!(ed.writes_flush(), "the write's worker never ended");
     assert!(!sessions_say(&w, "8080"), "written though cut off");
@@ -2372,8 +2381,8 @@ fn a_sessions_write_records_its_repository_where_it_lands() {
     crate::gitrepo::forget(&w.root);
     let mut ed = restored(&w);
     std::fs::rename(w.at.join("git-later"), w.root.join(".git")).unwrap();
-    ed.session.allowed.add(&Grant::Port(8080));
-    ed.sessions_keep();
+    ed.workspace.claude.allowed.add(&Grant::Port(8080));
+    ed.workspaces_keep();
     // (landed, its result not applied)
     let end = Instant::now() + crate::test_results::PATIENCE;
     while crate::storewrite::served(&w.sessions) < crate::storewrite::given_turns(&w.sessions) {
@@ -2381,7 +2390,7 @@ fn a_sessions_write_records_its_repository_where_it_lands() {
         std::thread::yield_now();
     }
     let v = crate::worktree::snapshot(&ed);
-    assert!(ed.session_store.repo.is_none(), "its result applied");
+    assert!(ed.workspace_store.repo.is_none(), "its result applied");
     assert!(v["repo"].is_string(), "not recorded: {v}");
 }
 
@@ -2395,7 +2404,7 @@ fn a_session_answer_kept_after_git_init_records_the_repository() {
     let mut ed = restored(&w);
     std::fs::rename(w.at.join("git-later"), w.root.join(".git")).unwrap();
     answer(&mut ed, &Grant::Port(8080), Scope::Session, false, "for the session");
-    settle(&mut ed, "kept there", 0, &|ed, _| ed.session_store.repo.is_some());
+    settle(&mut ed, "kept there", 0, &|ed, _| ed.workspace_store.repo.is_some());
     std::fs::rename(w.root.join(".git"), w.root.join(".git-gone")).unwrap();
     crate::gitrepo::forget(&w.root);
     let from = ed.messages.len();
@@ -2522,7 +2531,7 @@ fn a_session_take_back_without_its_repository_says_so_after_a_restart() {
     let mut ed = w.editor();
     crate::restart::restore(&mut ed, &v);
     settle(&mut ed, "back", 0, &landed);
-    assert!(ed.session.allowed.grants().contains(&Grant::Port(8080)), "the session's answer back");
+    assert!(ed.workspace.claude.allowed.grants().contains(&Grant::Port(8080)), "the session's answer back");
     std::fs::rename(w.root.join(".git"), w.root.join(".git-gone")).unwrap();
     crate::gitrepo::forget(&w.root);
     let from = ed.messages.len();
@@ -2599,7 +2608,8 @@ fn a_key_taken_back_stays_out_of_the_message_after_its_write_failed() {
     assert!(crate::reads::key_shut(&ed, &key, &[]), "its text still goes with a message");
     crate::chat::close(&mut ed);
     crate::chat::open(&mut ed);
-    let read = |ed: &Editor, _: &[String]| ed.session.chat.as_ref().is_some_and(|c| c.kept_keys.is_some());
+    let read =
+        |ed: &Editor, _: &[String]| ed.workspace.claude.chat.as_ref().is_some_and(|c| c.kept_keys.is_some());
     settle(&mut ed, "read again", 0, &read);
     assert!(crate::reads::key_shut(&ed, &key, &[]), "open again with the chat");
 }
@@ -2636,10 +2646,10 @@ fn a_conversation_left_takes_its_answers_with_it() {
             }
         }
         settle(&mut ed, "left", 0, &landed);
-        let c = ed.session.chat.as_ref().unwrap();
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
         assert!(c.run_again.is_empty() && !c.sees, "a run's or the screen's `a` carried over ({again})");
         assert!(!granted_now(&ed).contains(&g), "a card's `a` carried over ({again})");
-        assert!(!ed.session.caps().unwrap().grants().contains(&g), "and said ({again})");
+        assert!(!ed.workspace.claude.caps().unwrap().grants().contains(&g), "and said ({again})");
     }
 }
 
@@ -2807,7 +2817,7 @@ fn a_conversation_ended_takes_its_answers_out_of_the_caps_at_once() {
     let w = World::new("caps-chat-ends");
     let mut ed = w.editor();
     let g = Grant::Read(w.at.join("out/b"));
-    let shown = |ed: &Editor| ed.session.caps().is_some_and(|c| c.grants().contains(&g));
+    let shown = |ed: &Editor| ed.workspace.claude.caps().is_some_and(|c| c.grants().contains(&g));
     for end in [crate::chat::reset as fn(&mut Editor), crate::chat::close] {
         crate::chat::open(&mut ed);
         crate::allow::grant(&mut ed, &g, Scope::ThisChat);

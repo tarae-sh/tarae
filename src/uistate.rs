@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 
 use crate::editor::{Editor, Mode};
 use crate::key::{Code, Key};
-use crate::session::At;
 use crate::sizes::Slot;
+use crate::workspace::At;
 
 /// The schema's version: a field removed, renamed or meaning something else bumps it; one added doesn't.
 /// 2: `panels.edit_review.by` went (an edit's review is always Claude's); since added: `sessions[].sandbox`, what
@@ -43,7 +43,10 @@ use crate::sizes::Slot;
 /// 14: toasts are panes (P3 §3.9): `toast#N` in `panes` (`float`), `region` `toast`; `:messages` a floating list
 /// (`list:messages`, `panels.lists`), its picker gone.
 /// 15: a toast is news, never a pane with the keys: no `toast#N` in `panes`, no `region` `toast`.
-pub const V: u64 = 15;
+/// 16: workspaces and their sessions apart (collab C0): `workspaces[]` (`w0` … — `root`, `branch`, `base`, the
+/// reviewer, `cards`, `rebasing`, `view`, `overlaps`, `panes`), each with its `sessions[]` (`s0` … — `doing`,
+/// `answer`, `usage`, `billing`, `sandbox`, `writing`, `at`, …); `front` a workspace's id; `sessions[]` gone.
+pub const V: u64 = 16;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;
@@ -412,7 +415,7 @@ impl Editor {
         }
         // `terminal_key`: the program has them all — after the window prefix taken from it (`C-w`), only the prefix
         // again (the program's one), the rest the window table's
-        let program = self.session.program_has_keys();
+        let program = self.workspace.program_has_keys();
         let prefix: Vec<Key> = self.keymaps.window_prefix().into_iter().collect();
         if !modal && program && self.pending.is_empty() {
             v.push(layer(Region::Program, Filter::All));
@@ -426,8 +429,8 @@ impl Editor {
         }
         let pending = !self.pending.is_empty();
         // `llm::review_key`: back in the chat or the code, only `C-q` returns to it
-        if let Some(rev) = self.session.review.as_ref().filter(|r| r.ready && !modal && !pending) {
-            let chat = self.session.chat_has_keys();
+        if let Some(rev) = self.workspace.claude.review.as_ref().filter(|r| r.ready && !modal && !pending) {
+            let chat = self.workspace.chat_has_keys();
             v.push(match chat || rev.away {
                 true => shortcut(Region::EditReview, Filter::Only(vec![ctrl('q')])),
                 false => layer(Region::EditReview, Filter::Except(vec![ch(' '), ch(':'), ctrl('w')])),
@@ -452,7 +455,7 @@ impl Editor {
             let chat = s == crate::view::Surface::Chat;
             let prompt = match chat {
                 true => crate::chatdoc::transcript(self).is_some_and(|t| t.pane.prompt),
-                false => self.session.view.as_ref().is_some_and(|v| v.prompt),
+                false => self.workspace.viewer.view.as_ref().is_some_and(|v| v.prompt),
             };
             if self.prompt.is_some() {
                 if prompt {
@@ -484,7 +487,7 @@ impl Editor {
         }
         // `chat::unfold_key`: minimized, what would type brings it back — its own keys (and `C-w` from an
         // empty input) go on
-        let chat = self.session.chat.as_ref().filter(|_| self.session.is_at(At::Chat));
+        let chat = self.workspace.claude.chat.as_ref().filter(|_| self.workspace.is_at(At::Chat));
         if let Some(c) = chat.filter(|c| c.compact() && !pending) {
             let mut passes: Vec<Key> = [
                 Key::plain(Code::Esc),
@@ -519,11 +522,13 @@ impl Editor {
                 v.extend_from_slice(more);
                 Filter::Except(v)
             };
-            let at = |a| self.session.is_at(a);
-            if self.review_rail_up() && at(At::Rail) && self.session.code_review.is_some() {
+            let at = |a| self.workspace.is_at(a);
+            if self.review_rail_up() && at(At::Rail) && self.workspace.code_review.is_some() {
                 v.push(layer(Region::Rail, editors(&[ctrl('w')])));
             }
-            if let Some(s) = self.session.sidebar.as_ref().filter(|_| at(At::Side) && !self.side_folded()) {
+            if let Some(s) =
+                self.workspace.viewer.sidebar.as_ref().filter(|_| at(At::Side) && !self.side_folded())
+            {
                 v.push(layer(Region::Side(s.mode), editors(&[ctrl('w')])));
             }
             if self.plugin_panel_focused() {
@@ -632,7 +637,7 @@ impl Editor {
             // (its focused pane — the one the keys go to — with room: a chat filling a narrow screen leaves
             // the code's panes laid out zero wide)
             Region::Code | Region::Weave | Region::Page => {
-                s.panes.iter().any(|p| p.0 == self.session.focus && p.1.w > 0) || self.welcome()
+                s.panes.iter().any(|p| p.0 == self.workspace.viewer.focus && p.1.w > 0) || self.welcome()
             }
             Region::Prompt => s.width.is_some(),
             Region::Picker => s.picker_list.is_some(),
@@ -666,7 +671,7 @@ impl Editor {
     fn element_id(&self, r: Region) -> String {
         match r {
             Region::Card(id) => format!("card#{id}"),
-            Region::Code | Region::Weave | Region::Page => format!("pane#{}", self.session.focus),
+            Region::Code | Region::Weave | Region::Page => format!("pane#{}", self.workspace.viewer.focus),
             Region::Side(crate::sidebar::Mode::Git) => "git".into(),
             Region::Side(_) => "side".into(),
             Region::Slot(Slot::Terminal) | Region::Program | Region::View(crate::view::Surface::Terminal) => {
@@ -674,7 +679,7 @@ impl Editor {
             }
             Region::Slot(s) => slot_name(s).into(),
             Region::List(k) if let Some(p) = self.float_list(k) => format!("pane#{}", p.list),
-            Region::List(k) => match self.session.group(k) {
+            Region::List(k) => match self.workspace.group(k) {
                 Some(g) => format!("pane#{}", g.list),
                 None => r.name(),
             },
@@ -689,8 +694,8 @@ impl Editor {
     /// (`uisocket.rs`).
     pub fn claude_pids(&self) -> Vec<u32> {
         let mut v = Vec::new();
-        for l in std::iter::once(&self.session).chain(&self.sessions) {
-            v.extend(l.chat.as_ref().and_then(|c| c.pid()));
+        for l in std::iter::once(&self.workspace).chain(&self.workspaces) {
+            v.extend(l.claude.chat.as_ref().and_then(|c| c.pid()));
             v.extend(l.task_run.as_ref().filter(|r| r.by_claude).and_then(|r| r.pid()));
             v.extend(
                 l.test_run.as_ref().filter(|r| r.guard.is_some() || r.chat.is_some()).and_then(|r| r.pid()),
@@ -719,8 +724,9 @@ pub struct UiState {
     pub keys: KeysTo,
     /// The prompt's label, and its text.
     pub prompt: Option<(String, String)>,
+    /// The workspace in front (`w0`).
     pub front: String,
-    pub sessions: Vec<SessionState>,
+    pub workspaces: Vec<WorkspaceState>,
     pub cards: Vec<CardState>,
     /// What waits for the user's answer, every session's, oldest first (`inbox.rs`) — the inbox's order.
     pub inbox: Vec<crate::inbox::Entry>,
@@ -883,7 +889,7 @@ impl ProcsState {
                 },
                 title: r.title.clone(),
                 what: r.what.clone(),
-                session: r.session.map(session_id),
+                session: r.session.map(|w| session_id(crate::session::born_with(w))),
                 up_s: r.up.map(|d| d.as_secs()),
                 cpu: r.cpu.map(|c| (c * 10.0).round() / 10.0),
                 memory: r.memory(),
@@ -953,19 +959,17 @@ impl ProcsState {
 /// Cards the state lists of the gone ring (it keeps `watch::GONE_KEPT`).
 const GONE_SHOWN: usize = 10;
 
+/// A workspace (`workspace.rs`): the place — its checkout, its reviewer, its cards, the viewer's view mode, its panes
+/// — and the sessions at work in it (its Claude's).
 #[derive(Clone, Debug, PartialEq)]
-pub struct SessionState {
+pub struct WorkspaceState {
     pub id: String,
     pub name: String,
     pub branch: Option<String>,
-    /// Its checkout — `tarae state` finds the tarae whose session holds the folder it's run in.
+    /// What it was made from (`Workspace.base`) — None: the checkout tarae started in.
+    pub base: Option<String>,
+    /// Its checkout — `tarae state` finds the tarae whose workspace holds the folder it's run in.
     pub root: String,
-    /// What its chat's Claude does.
-    pub doing: String,
-    /// Where its last answer leaves it, one line a driver can key on (frictions29 #76: the prose said "Ready" or
-    /// didn't): `ready` · `working` · `blocked: <what waits for you>`, then ` · context N %` once reported — None:
-    /// no chat.
-    pub answer: Option<String>,
     /// Its reviewer (`reviewer.rs`): `reviewing` while it reads — None else. A field of its own beside
     /// `doing`: the two are at work apart, often at once, and a driver waiting for `doing` to be `idle` waits
     /// for the chat's turn, not a review it didn't ask for (#195).
@@ -980,6 +984,29 @@ pub struct SessionState {
     pub rebasing: Option<String>,
     pub reloaded: usize,
     pub front: bool,
+    /// A surface's view mode (`view::state`: its surface, the cursor's line of how many, selections, whether
+    /// something came since — shapes, never text) — the front workspace's only; Claude's level never.
+    pub view: Option<Value>,
+    /// Where its changes would conflict with another workspace's or its base's tip (`overlap.rs`): `main · src/a.rs
+    /// L3–5`, its own lines. Claude's level never (a Claude hears nothing of one).
+    pub overlaps: Vec<String>,
+    /// Its panes (panes P2b, plan §5.2): every leaf of its tree, and over the front's the floating ones.
+    pub panes: Vec<PaneState>,
+    /// The sessions at work in it: its Claude's (`Workspace.claude`).
+    pub sessions: Vec<SessionState>,
+}
+
+/// A session (`session.rs`): a participant — its Claude's chat, what it costs and who pays, its sandbox, what it
+/// writes and where it is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionState {
+    pub id: String,
+    /// What its chat's Claude does.
+    pub doing: String,
+    /// Where its last answer leaves it, one line a driver can key on (frictions29 #76: the prose said "Ready" or
+    /// didn't): `ready` · `working` · `blocked: <what waits for you>`, then ` · context N %` once reported — None:
+    /// no chat.
+    pub answer: Option<String>,
     /// Its Claude's usage (`usage.rs`) — None: nothing reported yet.
     pub usage: Option<UsageState>,
     /// Its Claude's conversation compacted since tarae started (`compaction.rs`) — None: never.
@@ -993,9 +1020,6 @@ pub struct SessionState {
     pub billing: &'static str,
     /// What its last sandboxed run's sandbox keeps apart and shares (`Session.sandbox`) — None: none yet.
     pub sandbox: Option<crate::sandbox::guarantees::Guarantees>,
-    /// A surface's view mode (`view::state`: its surface, the cursor's line of how many, selections, whether
-    /// something came since — shapes, never text) — the front session's only; Claude's level never.
-    pub view: Option<Value>,
     /// What goes with the chat input's next message, in the order added (`Chat::with_state`: shapes, never text)
     /// — the front session's only; Claude's level never (unsent).
     pub with: Vec<Value>,
@@ -1005,11 +1029,19 @@ pub struct SessionState {
     /// Where its Claude is in its turn, as the session list says it (`presence::at`: `src/a.rs:12 · writing`) —
     /// None: between turns, or one session open. Claude's level never (collab C1: nothing of it reaches Claude).
     pub at: Option<String>,
-    /// Where its changes would conflict with another workspace's or its base's tip (`overlap.rs`): `main · src/a.rs
-    /// L3–5`, its own lines. Claude's level never (a Claude hears nothing of one).
-    pub overlaps: Vec<String>,
-    /// Its panes (panes P2b, plan §5.2): every leaf of its tree, and over the front's the floating ones.
-    pub panes: Vec<PaneState>,
+}
+
+impl UiState {
+    /// Every workspace's sessions, in the workspaces' order.
+    #[cfg(test)]
+    pub fn sessions(&self) -> impl Iterator<Item = &SessionState> {
+        self.workspaces.iter().flat_map(|w| &w.sessions)
+    }
+
+    /// The workspace in front.
+    pub fn front_workspace(&self) -> Option<&WorkspaceState> {
+        self.workspaces.iter().find(|w| w.id == self.front)
+    }
 }
 
 /// A pane: its id (`pane#N` for every leaf; a floating one's own — `card#12`, `picker`, `prompt`, `which-key`),
@@ -1050,9 +1082,9 @@ impl PaneState {
 impl Editor {
     /// Session `l`'s panes as the state lists them, the tree's order — the front's with their rects and the
     /// floating ones over them.
-    fn panes_state(&self, l: &crate::session::Session, is_front: bool) -> Vec<PaneState> {
+    fn panes_state(&self, l: &crate::workspace::Workspace, is_front: bool) -> Vec<PaneState> {
         use crate::pane::Shows;
-        let floats_keys = matches!(l.at, At::Float(_));
+        let floats_keys = matches!(l.viewer.at, At::Float(_));
         // (a session behind: its docked group in hand as it was left)
         let mut at = l.at_pane(|k| !is_front || self.out_of_slot(k)).filter(|_| !floats_keys);
         // (a group on screen: its members after its host, the host's keys its detail's)
@@ -1137,7 +1169,7 @@ impl Editor {
                 id: format!("pane#{}", p.list),
                 shows: Shows::List(kind).name(),
                 rect: rect.map(|r| (r.x, r.y, r.w, r.h)),
-                at: l.at == At::List(p.list),
+                at: l.viewer.at == At::List(p.list),
                 float: false,
                 place: Some(if docked { "docked" } else { "floating" }),
                 group: None,
@@ -1145,8 +1177,8 @@ impl Editor {
         }
         if is_front {
             for f in self.floating() {
-                let pane = l.floats.iter().find(|x| x.0 == f).map(|x| x.1);
-                let has = pane.is_some_and(|p| l.at == At::Float(p));
+                let pane = l.viewer.floats.iter().find(|x| x.0 == f).map(|x| x.1);
+                let has = pane.is_some_and(|p| l.viewer.at == At::Float(p));
                 let rect = match f {
                     crate::pane::Floating::Card(_) => self.screen.offer_card,
                     _ => None,
@@ -1162,7 +1194,7 @@ impl Editor {
                 });
             }
             // The follow card, a floating pane that takes no keys (P3 step 7d)
-            let following = l.chat.as_ref().is_some_and(|c| c.follow.on);
+            let following = l.claude.chat.as_ref().is_some_and(|c| c.follow.on);
             if let Some(rect) = self.screen.thought_card.get().filter(|_| following) {
                 out.push(PaneState {
                     id: "follow".into(),
@@ -1245,7 +1277,7 @@ pub struct ReviewerState {
 
 impl ReviewerState {
     /// Session `l`'s reviewer — None: it never had one since tarae started.
-    pub fn of(ed: &Editor, l: &crate::session::Session) -> Option<ReviewerState> {
+    pub fn of(ed: &Editor, l: &crate::workspace::Workspace) -> Option<ReviewerState> {
         use crate::reviewer::State;
         let r = l.reviewer.as_ref()?;
         let t = crate::reviewer::review_tally_in(l).unwrap_or_default();
@@ -1366,13 +1398,13 @@ pub struct UsageState {
 impl UsageState {
     /// Session `s`'s, at `now_ms`.
     pub fn of_session(
-        s: &crate::session::Session,
+        s: &crate::workspace::Workspace,
         cfg: &crate::llm::LlmConfig,
         limits: &crate::limits::Limits,
         now_ms: u64,
     ) -> Option<UsageState> {
-        let warm = crate::keepwarm::said(s, cfg, limits, now_ms).json(cfg.keep_warm, s.warm.marked);
-        Some(UsageState { keep_warm: warm, ..UsageState::of(&s.usage, now_ms)? })
+        let warm = crate::keepwarm::said(s, cfg, limits, now_ms).json(cfg.keep_warm, s.claude.warm.marked);
+        Some(UsageState { keep_warm: warm, ..UsageState::of(&s.claude.usage, now_ms)? })
     }
 
     pub fn of(u: &crate::usage::Usage, now_ms: u64) -> Option<UsageState> {
@@ -1554,8 +1586,14 @@ pub fn boot() -> String {
     .clone()
 }
 
+/// A session as the state names it: `s0`, `s2@3` (`event::Id`'s words).
 pub(crate) fn session_id(id: crate::event::SessionId) -> String {
     format!("s{id}")
+}
+
+/// A workspace as the state names it: `w0`.
+pub(crate) fn workspace_id(id: crate::event::WorkspaceId) -> String {
+    format!("w{id}")
 }
 
 fn ms(d: std::time::Duration) -> u64 {
@@ -1565,19 +1603,19 @@ fn ms(d: std::time::Duration) -> u64 {
 impl Editor {
     /// Session `l`'s `answer` (`SessionState`): from what it's doing and what waits for you — the first card of
     /// its, else an edit to review — and its context's share of the window.
-    fn answer_said(&self, l: &crate::session::Session, now_ms: u64) -> Option<String> {
-        l.chat.as_ref()?;
-        let front = l.id == self.session.id;
+    fn answer_said(&self, l: &crate::workspace::Workspace, now_ms: u64) -> Option<String> {
+        l.claude.chat.as_ref()?;
+        let front = l.id == self.workspace.id;
         let cards = front.then_some(&self.offers).into_iter().flatten().chain(&l.parked);
         let card = cards.filter(|o| !o.installing()).map(|o| o.title.clone()).next();
         let state = match self.doing(l) {
-            crate::session::Doing::Waiting => {
+            crate::workspace::Doing::Waiting => {
                 format!("blocked: {}", card.unwrap_or_else(|| "an edit to review".into()))
             }
-            crate::session::Doing::Idle | crate::session::Doing::Done => "ready".into(),
+            crate::workspace::Doing::Idle | crate::workspace::Doing::Done => "ready".into(),
             _ => "working".into(),
         };
-        let pct = UsageState::of(&l.usage, now_ms).and_then(|u| u.percent());
+        let pct = UsageState::of(&l.claude.usage, now_ms).and_then(|u| u.percent());
         Some(match pct {
             Some(p) => format!("{state} · context {} %", p.round() as u64),
             None => state,
@@ -1585,29 +1623,45 @@ impl Editor {
     }
 
     /// What a session's Claude is doing, in the state's words.
-    fn doing_said(&self, l: &crate::session::Session) -> String {
+    fn doing_said(&self, l: &crate::workspace::Workspace) -> String {
         match self.doing(l) {
-            crate::session::Doing::Idle => "idle".into(),
-            crate::session::Doing::Working => "working".into(),
-            crate::session::Doing::Waiting => "waiting".into(),
-            crate::session::Doing::Done => "done".into(),
-            d @ crate::session::Doing::Stuck { .. } => format!("stuck {}", d.said().trim()),
+            crate::workspace::Doing::Idle => "idle".into(),
+            crate::workspace::Doing::Working => "working".into(),
+            crate::workspace::Doing::Waiting => "waiting".into(),
+            crate::workspace::Doing::Done => "done".into(),
+            d @ crate::workspace::Doing::Stuck { .. } => format!("stuck {}", d.said().trim()),
             // (at work, held back in line behind another run: `queued 2nd`)
-            d @ crate::session::Doing::Queued { .. } => d.said(),
+            d @ crate::workspace::Doing::Queued { .. } => d.said(),
         }
     }
 
     /// The state as of the last frame drawn.
     pub fn ui_state(&self) -> UiState {
-        let front = &self.session;
+        let front = &self.workspace;
         let now_ms = crate::usage::now_ms();
-        let session = |l: &crate::session::Session, is_front: bool| SessionState {
-            id: session_id(l.id),
-            name: l.label().to_string(),
-            branch: l.branch.clone().or_else(|| l.git_branch.clone()),
-            root: l.root.display().to_string(),
+        let session = |l: &crate::workspace::Workspace, is_front: bool| SessionState {
+            id: session_id(l.claude.id),
             doing: self.doing_said(l),
             answer: self.answer_said(l, now_ms),
+            usage: UsageState::of_session(l, &self.config.llm, &self.limits, now_ms),
+            compacted: Some(l.claude.compacted.clone()).filter(|c| c.count > 0),
+            key_source: l.claude.usage.key_source.clone(),
+            account: l.claude.usage.account.as_ref().map(|a| (a.organization.clone(), a.plan.clone())),
+            billing: l.claude.billing.name(),
+            sandbox: l.claude.sandbox.clone(),
+            with: match (is_front, self.workspace.claude.chat.as_ref()) {
+                (true, Some(c)) => c.with_state(),
+                _ => Vec::new(),
+            },
+            writing: crate::writing::listed(l.claude.chat.as_ref(), &self.docs),
+            at: crate::presence::at(self, l.id),
+        };
+        let workspace = |l: &crate::workspace::Workspace, is_front: bool| WorkspaceState {
+            id: workspace_id(l.id),
+            name: l.label().to_string(),
+            branch: l.branch.clone().or_else(|| l.git_branch.clone()),
+            base: l.base.clone(),
+            root: l.root.display().to_string(),
             reviewer: crate::reviewer::session_said(self, l),
             reviewer_run: ReviewerState::of(self, l),
             review: crate::reviews::Run::of(self, l, is_front),
@@ -1615,29 +1669,19 @@ impl Editor {
             rebasing: l.rebase.as_ref().map(|r| r.said()),
             reloaded: l.reloaded,
             front: is_front,
-            usage: UsageState::of_session(l, &self.config.llm, &self.limits, now_ms),
-            compacted: Some(l.compacted.clone()).filter(|c| c.count > 0),
-            key_source: l.usage.key_source.clone(),
-            account: l.usage.account.as_ref().map(|a| (a.organization.clone(), a.plan.clone())),
-            billing: l.billing.name(),
-            sandbox: l.sandbox.clone(),
             view: if is_front {
                 crate::view::state(self).or_else(|| crate::rundoc::state(self))
             } else {
                 None
             },
-            with: match (is_front, self.session.chat.as_ref()) {
-                (true, Some(c)) => c.with_state(),
-                _ => Vec::new(),
-            },
-            writing: crate::writing::listed(l.chat.as_ref(), &self.docs),
-            at: crate::presence::at(self, l.id),
             overlaps: crate::overlap::listed(self, l.id),
             panes: self.panes_state(l, is_front),
+            sessions: vec![session(l, is_front)],
         };
-        let mut sessions = vec![session(front, true)];
-        sessions.extend(self.sessions.iter().map(|l| session(l, false)));
-        crate::sorting::by_key(&mut sessions, |s| s.id[1..].parse::<u64>().unwrap_or(0));
+        let mut all: Vec<_> =
+            std::iter::once((front, true)).chain(self.workspaces.iter().map(|l| (l, false))).collect();
+        crate::sorting::by_key(&mut all, |(l, _)| l.id);
+        let workspaces = all.into_iter().map(|(l, is_front)| workspace(l, is_front)).collect();
         let cards = self.ui_cards();
         let inbox = self.inbox_from(&cards);
         let on_card = self.screen.toast_card.get().is_some();
@@ -1680,8 +1724,8 @@ impl Editor {
                 .prompt
                 .as_ref()
                 .map(|p| (p.label.clone().unwrap_or_else(|| p.kind.label().to_string()), p.text.clone())),
-            front: session_id(front.id),
-            sessions,
+            front: workspace_id(front.id),
+            workspaces,
             cards,
             inbox,
             toasts,
@@ -1690,7 +1734,7 @@ impl Editor {
             gone: watch::recent(&self.ui_gone, GONE_SHOWN),
             procs: ProcsState::of(&self.procs),
             limits: self.limits.known(now_ms).into_iter().cloned().collect(),
-            notes: front.notes.list.iter().map(|n| NoteState::of(&front.root, n)).collect(),
+            notes: front.claude.notes.list.iter().map(|n| NoteState::of(&front.root, n)).collect(),
             motions: self
                 .motions
                 .iter()
@@ -1717,9 +1761,9 @@ impl Editor {
     /// sessions behind — as the state lists them. The inbox is built on these (`inbox.rs`), so the two never
     /// disagree.
     pub fn ui_cards(&self) -> Vec<CardState> {
-        let front = &self.session;
+        let front = &self.workspace;
         let quick = self.preflight_quick().is_some();
-        let card = |o: &crate::offer::Offer, sid: crate::event::SessionId, up: &'static str| {
+        let card = |o: &crate::offer::Offer, sid: crate::event::WorkspaceId, up: &'static str| {
             let is_front = up == "front";
             let (mut answers, withheld) = o.answers_held(quick);
             let whole = is_front && self.offer_seen_whole();
@@ -1741,8 +1785,8 @@ impl Editor {
             let about = o.bring_root().and_then(|r| self.session_at(r)).unwrap_or(sid);
             CardState {
                 id: format!("card#{}", o.id),
-                session: session_id(about),
-                shown_in: (about != sid).then(|| session_id(sid)),
+                session: session_id(self.claude_of(about)),
+                shown_in: (about != sid).then(|| session_id(self.claude_of(sid))),
                 refused,
                 whose: if o.claudes() { "claude" } else { "tarae" },
                 kind: o.kind(),
@@ -1784,7 +1828,7 @@ impl Editor {
             .map(|(i, o)| card(o, front.id, if i == 0 { "front" } else { "stacked" }))
             .collect();
         cards.extend(front.parked.iter().map(|o| card(o, front.id, "parked")));
-        for l in &self.sessions {
+        for l in &self.workspaces {
             cards.extend(l.parked.iter().map(|o| card(o, l.id, "parked")));
         }
         cards
@@ -1842,14 +1886,42 @@ impl UiState {
     /// The JSON drivers read (`v` is the schema's version).
     pub fn json(&self) -> Value {
         let keys = keys_json(&self.keys);
-        let sessions: Vec<Value> = self
-            .sessions
+        let session = |s: &SessionState| {
+            let mut v = json!({ "id": s.id, "doing": s.doing, "billing": s.billing, "answer": s.answer });
+            if let Some(u) = &s.usage {
+                v["usage"] = u.json();
+            }
+            if let Some(c) = &s.compacted {
+                v["compacted"] = c.json();
+            }
+            if !s.with.is_empty() {
+                v["with"] = json!(s.with);
+            }
+            if !s.writing.is_empty() {
+                v["writing"] = s.writing.iter().map(WritingState::json).collect();
+            }
+            if let Some(at) = &s.at {
+                v["at"] = json!(at);
+            }
+            if let Some(k) = &s.key_source {
+                v["key_source_seen"] = json!(k);
+            }
+            if let Some((organization, plan)) = &s.account {
+                v["account"] = json!({"organization": organization, "plan": plan});
+            }
+            v["sandbox"] = s.sandbox.as_ref().map_or(Value::Null, |g| g.json());
+            v
+        };
+        let workspaces: Vec<Value> = self
+            .workspaces
             .iter()
             .map(|s| {
-                let mut v = json!({ "id": s.id, "name": s.name, "doing": s.doing, "cards": s.cards, "root": s.root,
-                    "billing": s.billing, "answer": s.answer });
+                let mut v = json!({ "id": s.id, "name": s.name, "cards": s.cards, "root": s.root });
                 if let Some(b) = &s.branch {
                     v["branch"] = json!(b);
+                }
+                if let Some(b) = &s.base {
+                    v["base"] = json!(b);
                 }
                 if let Some(r) = s.reviewer {
                     v["reviewer"] = json!(r);
@@ -1866,35 +1938,14 @@ impl UiState {
                 if s.reloaded > 0 {
                     v["reloaded"] = json!(s.reloaded);
                 }
-                if let Some(u) = &s.usage {
-                    v["usage"] = u.json();
-                }
-                if let Some(c) = &s.compacted {
-                    v["compacted"] = c.json();
-                }
                 if let Some(view) = &s.view {
                     v["view"] = view.clone();
-                }
-                if !s.with.is_empty() {
-                    v["with"] = json!(s.with);
-                }
-                if !s.writing.is_empty() {
-                    v["writing"] = s.writing.iter().map(WritingState::json).collect();
-                }
-                if let Some(at) = &s.at {
-                    v["at"] = json!(at);
                 }
                 if !s.overlaps.is_empty() {
                     v["overlaps"] = json!(s.overlaps);
                 }
-                if let Some(k) = &s.key_source {
-                    v["key_source_seen"] = json!(k);
-                }
-                if let Some((organization, plan)) = &s.account {
-                    v["account"] = json!({"organization": organization, "plan": plan});
-                }
-                v["sandbox"] = s.sandbox.as_ref().map_or(Value::Null, |g| g.json());
                 v["panes"] = s.panes.iter().map(PaneState::json).collect();
+                v["sessions"] = s.sessions.iter().map(session).collect();
                 v
             })
             .collect();
@@ -1955,7 +2006,7 @@ impl UiState {
             "keys": keys,
             "prompt": self.prompt.as_ref().map(|(label, text)| json!({ "kind": label, "text": text })),
             "front": self.front,
-            "sessions": sessions,
+            "workspaces": workspaces,
             "cards": cards,
             "inbox": self.inbox.iter().map(crate::inbox::Entry::json).collect::<Vec<_>>(),
             "toasts": toasts,
@@ -2003,21 +2054,22 @@ impl UiState {
         out.push(format!("tarae {} · frame {} · input {}{size}", self.pid, self.frame, self.input));
         out.extend(self.keys_line());
         out.push(self.mode_line());
-        if self.sessions.len() > 1 {
+        if self.workspaces.len() > 1 {
             let s: Vec<String> = self
-                .sessions
+                .workspaces
                 .iter()
-                .map(|s| {
-                    let front = if s.front { " (front)" } else { "" };
-                    let cards = match s.cards {
+                .flat_map(|w| w.sessions.iter().map(move |s| (w, s)))
+                .map(|(w, s)| {
+                    let front = if w.front { " (front)" } else { "" };
+                    let cards = match w.cards {
                         0 => String::new(),
                         1 => " · 1 card".into(),
                         n => format!(" · {n} cards"),
                     };
-                    let reviewer = s.reviewer.map(|r| format!(" · {r}")).unwrap_or_default();
+                    let reviewer = w.reviewer.map(|r| format!(" · {r}")).unwrap_or_default();
                     // (the plan is the calm default; a key session says so)
                     let api = if s.billing == "api" { " · api" } else { "" };
-                    format!("{} {}{front}{api} · {}{reviewer}{cards}", s.id, s.name, s.doing)
+                    format!("{} {}{front}{api} · {}{reviewer}{cards}", s.id, w.name, s.doing)
                 })
                 .collect();
             out.push(format!("sessions: {}", s.join("   ")));
@@ -2026,14 +2078,14 @@ impl UiState {
             let said: Vec<String> = self.limits.iter().map(crate::limits::said).collect();
             out.push(format!("limits: {}", said.join("   ")));
         }
-        for s in &self.sessions {
+        for (w, s) in self.workspaces.iter().flat_map(|w| w.sessions.iter().map(move |s| (w, s))) {
             if let Some(u) = &s.usage {
                 out.push(format!("usage {}: {}", s.id, u.text()));
             }
             if let Some(c) = &s.compacted {
                 out.push(format!("compacted {}: {}", s.id, c.text()));
             }
-            if let Some(v) = &s.view {
+            if let Some(v) = &w.view {
                 out.push(format!(
                     "view {}: {} line {}/{} · {} selection{}{}",
                     s.id,
@@ -2045,10 +2097,10 @@ impl UiState {
                     if v["held"] == true { " · new text after" } else { "" },
                 ));
             }
-            if let Some(r) = &s.reviewer_run {
+            if let Some(r) = &w.reviewer_run {
                 out.push(format!("reviewer {}: {}", s.id, r.text()));
             }
-            if let Some(r) = &s.review {
+            if let Some(r) = &w.review {
                 out.push(format!("review {}: {}", s.id, r.text()));
             }
             if let Some(g) = &s.sandbox {
@@ -2239,7 +2291,7 @@ impl Editor {
     pub fn chat_turn(&self, which: &str) -> Result<ChatTurn, String> {
         use crate::chat::Role;
         let l = self.asked_session(which)?;
-        let msgs = l.chat.as_ref().map_or(&[][..], |c| &c.msgs[..]);
+        let msgs = l.claude.chat.as_ref().map_or(&[][..], |c| &c.msgs[..]);
         let from = msgs.iter().rposition(|m| m.role == Role::User).unwrap_or(msgs.len());
         let rows = msgs[from..]
             .iter()
@@ -2256,7 +2308,7 @@ impl Editor {
             })
             .collect();
         Ok(ChatTurn {
-            session: session_id(l.id),
+            session: session_id(l.claude.id),
             name: l.label().to_string(),
             doing: self.doing_said(l),
             rows,
@@ -2264,16 +2316,16 @@ impl Editor {
     }
 
     /// Session `which`: by id (`s1`) or name, empty for the one in front. Err names the sessions there are.
-    fn asked_session(&self, which: &str) -> Result<&crate::session::Session, String> {
-        let all = || std::iter::once(&self.session).chain(&self.sessions);
+    fn asked_session(&self, which: &str) -> Result<&crate::workspace::Workspace, String> {
+        let all = || std::iter::once(&self.workspace).chain(&self.workspaces);
         all()
             .find(|l| match which {
-                "" => l.id == self.session.id,
-                w => session_id(l.id) == w || l.label() == w,
+                "" => l.id == self.workspace.id,
+                w => session_id(l.claude.id) == w || l.label() == w,
             })
             .ok_or_else(|| {
                 let there: Vec<String> =
-                    all().map(|l| format!("{} {}", session_id(l.id), l.label())).collect();
+                    all().map(|l| format!("{} {}", session_id(l.claude.id), l.label())).collect();
                 format!("no session {which} — there are: {}", there.join(", "))
             })
     }
@@ -2284,7 +2336,7 @@ impl Editor {
         let findings = crate::reviewer::findings_in(l).unwrap_or_default();
         let root = l.reviewer.as_ref().map_or(&l.root, |r| &r.root);
         Ok(ReviewReport {
-            session: session_id(l.id),
+            session: session_id(l.claude.id),
             name: l.label().to_string(),
             reviewer: ReviewerState::of(self, l),
             verdict: l.reviewer.as_ref().map(|r| r.verdict.clone()).unwrap_or_default(),
@@ -2304,7 +2356,11 @@ impl Editor {
 
     /// Session `l`'s high-risk changes no one has looked at in its review `r`, in the rail's order — with their
     /// lines' text where the file is open (a file not open isn't read here: the main thread).
-    fn high_unseen_of(&self, l: &crate::session::Session, r: &crate::codereview::CodeReview) -> Vec<Unseen> {
+    fn high_unseen_of(
+        &self,
+        l: &crate::workspace::Workspace,
+        r: &crate::codereview::CodeReview,
+    ) -> Vec<Unseen> {
         let mut out = Vec::new();
         for i in r.rail_order() {
             let f = &r.files[i];

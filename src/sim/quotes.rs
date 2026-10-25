@@ -50,8 +50,8 @@ fn run(choices: Choices) -> Vec<String> {
         crate::chat::Msg::new(crate::chat::Role::Assistant, "It sets two names.\n\nNothing else.", ""),
     ];
     let claude = crate::chat::stand_in(&mut c);
-    ed.session.chat = Some(c);
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.claude.chat = Some(c);
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     // (the copies of what went: in the run's own folder)
     let dir = crate::scratch::Scratch::new("sim-quotes");
     ed.sent_dir = Some(dir.join("sent"));
@@ -79,14 +79,14 @@ fn keys(ed: &mut Editor, keys: &str) {
 /// A step, and what a message would carry: Claude idle, the quotes over the input; at work, the queued message's —
 /// and an Enter that queued one adds those over the input then to it.
 fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
-    let before = ed.session.chat.as_ref().map(|c| {
+    let before = ed.workspace.claude.chat.as_ref().map(|c| {
         (c.busy(), c.queued.is_some(), c.queued_n, c.quotes.iter().map(|q| q.id.clone()).collect::<Vec<_>>())
     });
     let Some((busy, was, n, over)) = before else { return step(sim, ed) };
     world.busy.set(busy);
     *world.waiting.borrow_mut() = if busy { world.queued.borrow().clone() } else { over.clone() };
     let said = step(sim, ed);
-    if let Some(c) = ed.session.chat.as_ref()
+    if let Some(c) = ed.workspace.claude.chat.as_ref()
         && busy
         && c.queued.is_some()
         && (!was || c.queued_n != n)
@@ -175,7 +175,7 @@ fn blocks(content: &str) -> Result<Vec<String>, String> {
 }
 
 fn held(ed: &Editor, world: &World, claude: &Receiver<String>) -> Result<(), String> {
-    let Some(c) = ed.session.chat.as_ref() else { return Err("the chat went".into()) };
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return Err("the chat went".into()) };
     // Over the input: each thing once, within the limits
     let items = c.pointed.len() + usize::from(c.screen.is_some()) + c.quotes.len();
     if c.with_chips().len() != items {
@@ -232,14 +232,14 @@ fn held(ed: &Editor, world: &World, claude: &Receiver<String>) -> Result<(), Str
         }
     }
     // Unsent: Claude's level never lists it
-    if ed.ui_state_claude().sessions.iter().any(|s| !s.with.is_empty()) {
+    if ed.ui_state_claude().sessions().any(|s| !s.with.is_empty()) {
         return Err("Claude's level lists what goes with the next message".into());
     }
     Ok(())
 }
 
 fn print(ed: &Editor) -> String {
-    let c = ed.session.chat.as_ref();
+    let c = ed.workspace.claude.chat.as_ref();
     let chips = c.map(|c| c.with_chips().join(", ")).unwrap_or_default();
     let queued = c.map_or(0, |c| c.queued_quotes.len());
     format!(

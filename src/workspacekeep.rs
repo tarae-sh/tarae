@@ -1,4 +1,4 @@
-//! What a session keeps when it ends (`session.keep`, frictions26). `git worktree remove` deletes
+//! What a session keeps when it ends (`workspace.keep`, frictions26). `git worktree remove` deletes
 //! ignored files too: a session's notes, plans and measurements (`target/sb/`) went with its checkout, and
 //! 52 sessions' were copied out by hand. Each folder named there moves to the main checkout's
 //! `<folder>/sessions/<name>/` before the checkout goes:
@@ -24,7 +24,7 @@ pub const KEEP_MAX: u64 = 64 << 20;
 /// Files a session keeps at most — past this it's not notes.
 const FILES_MAX: usize = 20_000;
 
-/// An entry of `session.keep` as a folder in the checkout — Err: why it's refused.
+/// An entry of `workspace.keep` as a folder in the checkout — Err: why it's refused.
 pub fn entry(s: &str) -> Result<PathBuf, String> {
     let p = Path::new(s.trim_end_matches('/'));
     if s.trim().is_empty() {
@@ -45,14 +45,14 @@ pub fn entry(s: &str) -> Result<PathBuf, String> {
     Ok(p.to_path_buf())
 }
 
-/// The entries of `session.keep` refused, said (`settings.rs`) — None: every one is a folder in the
+/// The entries of `workspace.keep` refused, said (`settings.rs`) — None: every one is a folder in the
 /// checkout.
 pub fn refused(entries: &[String]) -> Option<String> {
     let why: Vec<String> = entries.iter().filter_map(|e| entry(e).err()).collect();
     (!why.is_empty()).then(|| format!("left out — {}", why.join("; ")))
 }
 
-/// The entries kept of `session.keep`.
+/// The entries kept of `workspace.keep`.
 pub fn entries(list: &[String]) -> Vec<PathBuf> {
     list.iter().filter_map(|e| entry(e).ok()).collect()
 }
@@ -128,7 +128,7 @@ impl Plan {
                 (format!("Kept in {}:", from_main(&to)), false)
             }
             (Some(why), _) => (format!("Not kept ({why}) — goes with the checkout:"), true),
-            _ => ("Not kept (session.keep names no folder) — goes with the checkout:".into(), true),
+            _ => ("Not kept (workspace.keep names no folder) — goes with the checkout:".into(), true),
         };
         let w = rows.iter().map(|r| r.0.chars().count()).max().unwrap_or(0);
         let pad = |s: &str| format!("{s}{}", " ".repeat(w - s.chars().count()));
@@ -418,9 +418,9 @@ mod tests {
         // As a setting: the folders kept, the rest said with the config's warnings
         let mut cfg = crate::config::EditorConfig::default();
         let v = toml::Value::Array(vec!["target/sb".into(), "../x".into()]);
-        let said = crate::settings::apply(&mut cfg, "session.keep", &v).unwrap_err();
-        assert!(said.starts_with("session.keep: left out — \"../x\""), "{said}");
-        assert_eq!(cfg.session_keep, ["target/sb"]);
+        let said = crate::settings::apply(&mut cfg, "workspace.keep", &v).unwrap_err();
+        assert!(said.starts_with("workspace.keep: left out — \"../x\""), "{said}");
+        assert_eq!(cfg.workspace_keep, ["target/sb"]);
     }
 
     /// Its folder moves to main's `target/sb/sessions/<name>/` — a link and a protected name stay behind,

@@ -677,32 +677,32 @@ pub static SETTINGS: &[Setting] = &[
         set: |c, v| c.workspace_sync = v.as_str().unwrap_or("ask").to_string(),
     },
     Setting {
-        path: "session.worktrees",
+        path: "workspace.worktrees",
         kind: Kind::Str,
-        doc: "Where sessions' checkouts go, a folder per repository (\"\" = $XDG_DATA_HOME/tarae/worktrees)",
-        get: |c| Value::from(c.session_worktrees.as_str()),
-        set: |c, v| c.session_worktrees = s(v).to_string(),
+        doc: "Where workspaces' checkouts go, a folder per repository (\"\" = $XDG_DATA_HOME/tarae/worktrees)",
+        get: |c| Value::from(c.workspace_worktrees.as_str()),
+        set: |c, v| c.workspace_worktrees = s(v).to_string(),
     },
     Setting {
-        path: "session.ended",
+        path: "workspace.ended",
         kind: Kind::StrList,
-        doc: "A command, its words, run once a session's checkout is removed (:session-end) — in the checkout tarae started in, outside the sandbox, TARAE_ENDED_CHECKOUT naming the one removed; stopped after 2 minutes; how it ended goes to the log (e.g. [\"cargo\", \"xtask\", \"linux\", \"prune\"]; [] = none)",
-        get: |c| Value::Array(c.session_ended.iter().map(|a| Value::from(a.as_str())).collect()),
+        doc: "A command, its words, run once a workspace's checkout is removed (:workspace-end) — in the checkout tarae started in, outside the sandbox, TARAE_ENDED_CHECKOUT naming the one removed; stopped after 2 minutes; how it ended goes to the log (e.g. [\"cargo\", \"xtask\", \"linux\", \"prune\"]; [] = none)",
+        get: |c| Value::Array(c.workspace_ended.iter().map(|a| Value::from(a.as_str())).collect()),
         set: |c, v| {
-            c.session_ended =
+            c.workspace_ended =
                 v.as_array().into_iter().flatten().filter_map(|a| a.as_str().map(str::to_string)).collect()
         },
     },
     Setting {
-        path: "session.keep",
+        path: "workspace.keep",
         kind: Kind::StrList,
-        doc: "Folders of a session's checkout (\"target/sb\") moved into the main checkout's <folder>/sessions/<name>/ when the session ends — only where git ignores that there, 64 MB at most, no links or protected names; the end card says what goes",
-        get: |c| Value::Array(c.session_keep.iter().map(|a| Value::from(a.as_str())).collect()),
+        doc: "Folders of a workspace's checkout (\"target/sb\") moved into the main checkout's <folder>/sessions/<name>/ when the workspace ends — only where git ignores that there, 64 MB at most, no links or protected names; the end card says what goes",
+        get: |c| Value::Array(c.workspace_keep.iter().map(|a| Value::from(a.as_str())).collect()),
         set: |c, v| {
             let all: Vec<String> =
                 v.as_array().into_iter().flatten().filter_map(|a| a.as_str().map(str::to_string)).collect();
-            // (only folders in the checkout — the rest said by `apply`: `sessionkeep::refused`)
-            c.session_keep = all.into_iter().filter(|e| crate::sessionkeep::entry(e).is_ok()).collect();
+            // (only folders in the checkout — the rest said by `apply`: `workspacekeep::refused`)
+            c.workspace_keep = all.into_iter().filter(|e| crate::workspacekeep::entry(e).is_ok()).collect();
         },
     },
     Setting {
@@ -778,10 +778,10 @@ pub fn apply(cfg: &mut EditorConfig, path: &str, v: &Value) -> Result<(), String
     setting.kind.check(v).map_err(|e| format!("{path}: {e}"))?;
     (setting.set)(cfg, v);
     // (entries it refused — the rest set: said with the config's other warnings, logged with them)
-    if path == "session.keep" {
+    if path == "workspace.keep" {
         let all: Vec<String> =
             v.as_array().into_iter().flatten().filter_map(|a| a.as_str().map(str::to_string)).collect();
-        if let Some(why) = crate::sessionkeep::refused(&all) {
+        if let Some(why) = crate::workspacekeep::refused(&all) {
             return Err(format!("{path}: {why}"));
         }
     }

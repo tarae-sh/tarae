@@ -99,7 +99,7 @@
     }
   ],
   "frame": 1,
-  "front": "s0",
+  "front": "w0",
   "gone": [],
   "inbox": [
     {
@@ -213,13 +213,29 @@
       "waiting": null
     }
   ],
-  "sessions": [
+  "size": [
+    120,
+    40
+  ],
+  "tarae": {
+    "boot": "-",
+    "pid": 0,
+    "version": "-"
+  },
+  "toasts": [
     {
-      "answer": null,
-      "billing": "subscription",
+      "id": "toast#1",
+      "kind": "warning",
+      "shown": false,
+      "text": "a.rs changed on disk",
+      "where": "waiting"
+    }
+  ],
+  "v": 16,
+  "workspaces": [
+    {
       "cards": 1,
-      "doing": "waiting",
-      "id": "s0",
+      "id": "w0",
       "name": "main",
       "panes": [
         {
@@ -285,68 +301,73 @@
         "looked": null
       },
       "root": "tarae-uistate-main",
-      "sandbox": {
-        "abi": 8,
-        "attributes": {
-          "mode_times": "anywhere",
-          "owner_flags": "never",
-          "xattrs": "never"
-        },
-        "by": "landlock",
-        "hint": null,
-        "kept": [
-          {
-            "how": "but the temp folders",
-            "part": "files"
-          },
-          {
-            "part": "signals"
-          },
-          {
-            "how": "no socket",
-            "part": "loopback"
+      "sessions": [
+        {
+          "answer": null,
+          "billing": "subscription",
+          "doing": "waiting",
+          "id": "s0",
+          "sandbox": {
+            "abi": 8,
+            "attributes": {
+              "mode_times": "anywhere",
+              "owner_flags": "never",
+              "xattrs": "never"
+            },
+            "by": "landlock",
+            "hint": null,
+            "kept": [
+              {
+                "how": "but the temp folders",
+                "part": "files"
+              },
+              {
+                "part": "signals"
+              },
+              {
+                "how": "no socket",
+                "part": "loopback"
+              }
+            ],
+            "line": "tier offline · Landlock ABI 8 · loopback no socket · network no socket · attributes mode and times anywhere · shared processes, System V IPC, /dev/shm, terminals",
+            "namespaces": {
+              "net": false,
+              "netns": false,
+              "pid": false,
+              "shm": false,
+              "user": false
+            },
+            "network": {
+              "asked": false,
+              "listed": false,
+              "open": false,
+              "way": "no-socket"
+            },
+            "partial": false,
+            "shared": [
+              {
+                "how": "command lines, priority",
+                "part": "processes"
+              },
+              {
+                "part": "ipc"
+              },
+              {
+                "part": "shm"
+              },
+              {
+                "part": "ptys"
+              }
+            ],
+            "tier": "offline",
+            "why": "tarae can't serve its calls: pidfd_getfd refused (Docker's default profile) — --cap-add SYS_PTRACE serves the calls"
           }
-        ],
-        "line": "tier offline · Landlock ABI 8 · loopback no socket · network no socket · attributes mode and times anywhere · shared processes, System V IPC, /dev/shm, terminals",
-        "namespaces": {
-          "net": false,
-          "netns": false,
-          "pid": false,
-          "shm": false,
-          "user": false
-        },
-        "network": {
-          "asked": false,
-          "listed": false,
-          "open": false,
-          "way": "no-socket"
-        },
-        "partial": false,
-        "shared": [
-          {
-            "how": "command lines, priority",
-            "part": "processes"
-          },
-          {
-            "part": "ipc"
-          },
-          {
-            "part": "shm"
-          },
-          {
-            "part": "ptys"
-          }
-        ],
-        "tier": "offline",
-        "why": "tarae can't serve its calls: pidfd_getfd refused (Docker's default profile) — --cap-add SYS_PTRACE serves the calls"
-      }
+        }
+      ]
     },
     {
-      "answer": null,
-      "billing": "subscription",
       "cards": 1,
-      "doing": "waiting",
-      "id": "s1",
+      "id": "w1",
       "name": "fix-login",
       "panes": [
         {
@@ -376,150 +397,139 @@
         }
       ],
       "root": "tarae-uistate-golden",
-      "sandbox": {
-        "abi": null,
-        "attributes": {
-          "mode_times": "where-writes",
-          "owner_flags": "where-writes",
-          "xattrs": "where-writes"
-        },
-        "by": "seatbelt",
-        "hint": null,
-        "kept": [
-          {
-            "how": "but the temp folders",
-            "part": "files"
-          },
-          {
-            "part": "processes"
-          },
-          {
-            "part": "signals"
-          },
-          {
-            "part": "ipc"
-          }
-        ],
-        "line": "sandbox Seatbelt · loopback the ports it opens, whoever's · network closed · shared POSIX shared memory, loopback",
-        "namespaces": null,
-        "network": {
-          "asked": false,
-          "listed": false,
-          "open": false,
-          "way": "proxy"
-        },
-        "partial": false,
-        "shared": [
-          {
-            "part": "shm"
-          },
-          {
-            "how": "the ports it opens, whoever's",
-            "part": "loopback"
-          }
-        ],
-        "tier": null,
-        "why": null
-      },
-      "usage": {
-        "cache": "warm",
-        "context": {
-          "percent": 6.0,
-          "tokens": 12012,
-          "window": 200000
-        },
-        "keep_warm": {
-          "kept": [],
-          "marked": false,
-          "mode": "expected",
-          "next_at": null
-        },
-        "last_turn": {
-          "at_ms": 1791100000000,
-          "cache_read": 9000,
-          "cache_write": 3000,
-          "calls": {
-            "calls": 0,
-            "context": 12012,
-            "context_max": 12012,
-            "context_mean": 12012,
-            "declined": 0,
-            "ms": {
-              "model": 4200,
-              "tools": 0,
-              "waiting": 0
+      "sessions": [
+        {
+          "answer": null,
+          "billing": "subscription",
+          "doing": "waiting",
+          "id": "s1",
+          "sandbox": {
+            "abi": null,
+            "attributes": {
+              "mode_times": "where-writes",
+              "owner_flags": "where-writes",
+              "xattrs": "where-writes"
             },
-            "parallel": 0,
-            "per_request": 0.0,
-            "programs": {},
-            "read_only_runs": 0,
-            "requests": 1,
-            "tools": {},
-            "wasted": {
-              "edit_failed": 0,
-              "reread": 0,
-              "run_refused": 0
-            }
-          },
-          "cost": 0.0213,
-          "input": 12,
-          "model": "claude-opus-5-5",
-          "output": 400,
-          "requests": 1
-        },
-        "seconds_left": 3600,
-        "totals": {
-          "cache_read": 9000,
-          "cache_write": 3000,
-          "calls": {
-            "calls": 0,
-            "context": 12012,
-            "context_max": 12012,
-            "context_mean": 12012,
-            "declined": 0,
-            "ms": {
-              "model": 4200,
-              "tools": 0,
-              "waiting": 0
+            "by": "seatbelt",
+            "hint": null,
+            "kept": [
+              {
+                "how": "but the temp folders",
+                "part": "files"
+              },
+              {
+                "part": "processes"
+              },
+              {
+                "part": "signals"
+              },
+              {
+                "part": "ipc"
+              }
+            ],
+            "line": "sandbox Seatbelt · loopback the ports it opens, whoever's · network closed · shared POSIX shared memory, loopback",
+            "namespaces": null,
+            "network": {
+              "asked": false,
+              "listed": false,
+              "open": false,
+              "way": "proxy"
             },
-            "parallel": 0,
-            "per_request": 0.0,
-            "read_only_runs": 0,
-            "requests": 1,
-            "turns": 1,
-            "wasted": {
-              "edit_failed": 0,
-              "reread": 0,
-              "run_refused": 0
-            }
+            "partial": false,
+            "shared": [
+              {
+                "part": "shm"
+              },
+              {
+                "how": "the ports it opens, whoever's",
+                "part": "loopback"
+              }
+            ],
+            "tier": null,
+            "why": null
           },
-          "cost": 0.0213,
-          "input": 12,
-          "output": 400,
-          "turns": 1,
-          "unpriced": 0
-        },
-        "ttl": "1h"
-      }
+          "usage": {
+            "cache": "warm",
+            "context": {
+              "percent": 6.0,
+              "tokens": 12012,
+              "window": 200000
+            },
+            "keep_warm": {
+              "kept": [],
+              "marked": false,
+              "mode": "expected",
+              "next_at": null
+            },
+            "last_turn": {
+              "at_ms": 1791100000000,
+              "cache_read": 9000,
+              "cache_write": 3000,
+              "calls": {
+                "calls": 0,
+                "context": 12012,
+                "context_max": 12012,
+                "context_mean": 12012,
+                "declined": 0,
+                "ms": {
+                  "model": 4200,
+                  "tools": 0,
+                  "waiting": 0
+                },
+                "parallel": 0,
+                "per_request": 0.0,
+                "programs": {},
+                "read_only_runs": 0,
+                "requests": 1,
+                "tools": {},
+                "wasted": {
+                  "edit_failed": 0,
+                  "reread": 0,
+                  "run_refused": 0
+                }
+              },
+              "cost": 0.0213,
+              "input": 12,
+              "model": "claude-opus-5-5",
+              "output": 400,
+              "requests": 1
+            },
+            "seconds_left": 3600,
+            "totals": {
+              "cache_read": 9000,
+              "cache_write": 3000,
+              "calls": {
+                "calls": 0,
+                "context": 12012,
+                "context_max": 12012,
+                "context_mean": 12012,
+                "declined": 0,
+                "ms": {
+                  "model": 4200,
+                  "tools": 0,
+                  "waiting": 0
+                },
+                "parallel": 0,
+                "per_request": 0.0,
+                "read_only_runs": 0,
+                "requests": 1,
+                "turns": 1,
+                "wasted": {
+                  "edit_failed": 0,
+                  "reread": 0,
+                  "run_refused": 0
+                }
+              },
+              "cost": 0.0213,
+              "input": 12,
+              "output": 400,
+              "turns": 1,
+              "unpriced": 0
+            },
+            "ttl": "1h"
+          }
+        }
+      ]
     }
-  ],
-  "size": [
-    120,
-    40
-  ],
-  "tarae": {
-    "boot": "-",
-    "pid": 0,
-    "version": "-"
-  },
-  "toasts": [
-    {
-      "id": "toast#1",
-      "kind": "warning",
-      "shown": false,
-      "text": "a.rs changed on disk",
-      "where": "waiting"
-    }
-  ],
-  "v": 15
+  ]
 }

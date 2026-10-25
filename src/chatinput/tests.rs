@@ -7,8 +7,8 @@ use crate::config::Config;
 fn editor(code: &str) -> Editor {
     let mut ed = Editor::new(Config::default());
     ed.docs[0].text = ropey::Rope::from_str(code);
-    ed.session.chat = Some(crate::chat::Chat::new());
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     ed
 }
 
@@ -27,7 +27,7 @@ fn feed(ed: &mut Editor, keys: &str) {
 
 /// What's typed, and the cursor.
 fn input(ed: &Editor) -> (String, usize) {
-    let i = &ed.session.chat.as_ref().unwrap().input;
+    let i = &ed.workspace.claude.chat.as_ref().unwrap().input;
     (i.text(), i.cursor())
 }
 
@@ -62,13 +62,13 @@ fn an_insert_sequence_under_way_goes_with_the_message() {
     assert!(w.is_empty(), "{w:?}");
     let mut ed = Editor::new(config);
     (ed.config.llm.command, ed.config.llm.args) = ("sh".into(), vec!["-c".into(), "cat > /dev/null".into()]);
-    ed.session.chat = Some(crate::chat::Chat::new());
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     feed(&mut ed, "hej");
     assert_eq!(input(&ed).0, "he", "the j waits for the next key");
     assert_eq!(ed.pending_display(), "j", "and the status line says it");
     feed(&mut ed, "<ret>");
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert!(
         c.msgs.iter().any(|m| m.text == "hej"),
         "sent with its j: {:?}",
@@ -89,7 +89,7 @@ fn an_insert_sequence_under_way_goes_with_the_message() {
     assert_eq!(input(&ed).0, "xjjXy");
     // (the input's text replaced — a message recalled, sent, cleared: the held `j` goes with it)
     feed(&mut ed, "j");
-    ed.session.chat.as_mut().unwrap().input.set("recalled");
+    ed.workspace.claude.chat.as_mut().unwrap().input.set("recalled");
     feed(&mut ed, "!");
     assert_eq!(input(&ed).0, "recalled!");
 }
@@ -101,8 +101,8 @@ fn a_paste_breaks_off_an_insert_sequence_under_way() {
     let (config, w) = crate::config::parse("[keys.insert]\nj = { k = \"normal_mode\" }\n");
     assert!(w.is_empty(), "{w:?}");
     let mut ed = Editor::new(config);
-    ed.session.chat = Some(crate::chat::Chat::new());
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     feed(&mut ed, "hej");
     assert_eq!(ed.pending_display(), "j");
     ed.handle_event(crate::event::Event::Paste("X".into()));
@@ -121,7 +121,7 @@ fn an_unused_key_says_where_esc_goes() {
     let said = |ed: &Editor| ed.toasts.last().map(|t| t.text.clone()).unwrap_or_default();
     feed(&mut ed, "<A-z>");
     assert!(said(&ed).ends_with("esc code"), "{}", said(&ed));
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "a question", ""));
     feed(&mut ed, "<A-z>");
     assert!(said(&ed).ends_with("esc normal"), "{}", said(&ed));
@@ -131,11 +131,11 @@ fn an_unused_key_says_where_esc_goes() {
 #[test]
 fn the_codes_repeat_stays_the_codes() {
     let mut ed = editor("abc\n");
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     feed(&mut ed, "ihey<esc>");
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     feed(&mut ed, "zzz");
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     feed(&mut ed, ".");
     let code = ed.doc().text.to_string();
     assert_eq!(code.matches("hey").count(), 2, "{code:?}");

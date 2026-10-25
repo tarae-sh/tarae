@@ -37,10 +37,11 @@ pub const ROWS: [&str; 6] = ["files", "outline", "list", "git", "plugin", "revie
 // ── Claude's level ───────────────────────────────────────────────────────
 
 impl Editor {
-    /// The state at Claude's level, for the session whose chat asks (`ed.session` — a session behind is
+    /// The state at Claude's level, for the session whose chat asks (`ed.workspace` — a session behind is
     /// swapped in for its own Claude's calls).
     pub fn ui_state_claude(&self) -> UiState {
-        let own = super::session_id(self.session.id);
+        let (own, own_workspace) =
+            (super::session_id(self.workspace.claude.id), super::workspace_id(self.workspace.id));
         let mut s = self.ui_state();
         if self.behind {
             // (behind: nothing of it is on screen — no keys, panels or toasts are its; its cards wait parked)
@@ -87,39 +88,46 @@ impl Editor {
         }
         // (where each session is — presence, collab C1 — and where they'd conflict — C2 — are the person's: a
         // Claude hears nothing of the others)
-        for l in s.sessions.iter_mut() {
-            l.at = None;
-            l.overlaps.clear();
-        }
-        for l in s.sessions.iter_mut().filter(|l| l.id != own) {
-            l.branch = None;
-            l.root.clear();
-            l.rebasing = None;
-            l.compacted = None;
-            l.key_source = None;
-            l.sandbox = None;
-            l.writing = Vec::new();
-            // (its answer's word and context share, never what blocks it: a card's title — the review of
-            // frictions36)
-            if let Some(a) = l.answer.as_mut().filter(|a| a.starts_with("blocked: ")) {
-                let context = a.rfind(" · context ").map(|i| a[i..].to_string()).unwrap_or_default();
-                *a = format!("blocked{context}");
+        for w in s.workspaces.iter_mut() {
+            w.overlaps.clear();
+            for l in w.sessions.iter_mut() {
+                l.at = None;
             }
         }
-        // A reviewer — its own session's too — is how it goes and its counts, never its words: nothing of it
+        for w in s.workspaces.iter_mut().filter(|w| w.id != own_workspace) {
+            w.branch = None;
+            w.base = None;
+            w.root.clear();
+            w.rebasing = None;
+            for l in w.sessions.iter_mut() {
+                l.compacted = None;
+                l.key_source = None;
+                l.sandbox = None;
+                l.writing = Vec::new();
+                // (its answer's word and context share, never what blocks it: a card's title — the review of
+                // frictions36)
+                if let Some(a) = l.answer.as_mut().filter(|a| a.starts_with("blocked: ")) {
+                    let context = a.rfind(" · context ").map(|i| a[i..].to_string()).unwrap_or_default();
+                    *a = format!("blocked{context}");
+                }
+            }
+        }
+        // A reviewer — its own workspace's too — is how it goes and its counts, never its words: nothing of it
         // goes to the author until you send its findings (`space v s`), and its verdict never does
-        for r in s.sessions.iter_mut().filter_map(|l| l.reviewer_run.as_mut()) {
+        for r in s.workspaces.iter_mut().filter_map(|w| w.reviewer_run.as_mut()) {
             r.verdict.clear();
             r.why = None;
             r.of.clear();
         }
         // (how long you spend on a change is yours: the review record's, never Claude's)
-        for l in &mut s.sessions {
-            l.review = None;
+        for w in &mut s.workspaces {
+            w.review = None;
             // (where you read in the conversation or the scrollback: yours — nothing unsent, quote-plan §6)
-            l.view = None;
+            w.view = None;
             // (what goes with the next message: the user's until it's sent)
-            l.with = Vec::new();
+            for l in &mut w.sessions {
+                l.with = Vec::new();
+            }
         }
         s.cards.retain(|c| c.session == own);
         // (a toast that's news of another session — its turn ended, it waits: theirs, a count here; one that's the
@@ -127,13 +135,13 @@ impl Editor {
         let others: Vec<String> = self
             .toasts
             .iter()
-            .filter(|t| t.persons || t.of.is_some_and(|of| of != self.session.id))
+            .filter(|t| t.persons || t.of.is_some_and(|of| of != self.workspace.id))
             .map(|t| format!("toast#{}", t.id))
             .collect();
         s.toasts.retain(|t| !others.contains(&t.id));
         // (its card as a pane too — by the id it's known by: one that isn't its, none — and `:messages`, the person's)
-        for l in s.sessions.iter_mut() {
-            l.panes.retain(|p| !others.contains(&p.id) && p.shows != "list:messages");
+        for w in s.workspaces.iter_mut() {
+            w.panes.retain(|p| !others.contains(&p.id) && p.shows != "list:messages");
         }
         // (the inbox is every session's: only its own session's entries — the others are counts)
         s.inbox.retain(|e| e.session == own);
@@ -169,7 +177,7 @@ impl Editor {
         // (its `procs` tool says these, each process's command line and folder with them)
         s.procs = Default::default();
         s.gone = self.ui_gone.iter().rev().filter(|g| g.session == own).take(3).cloned().collect();
-        s.front = own;
+        s.front = own_workspace;
         // (a shuttle's name, in a toast or how a card went: taken out — `shuttle.rs`)
         for t in &mut s.toasts {
             t.text = crate::shuttle::for_claude(&self.shuttles, &t.text);
@@ -190,36 +198,34 @@ impl UiState {
     /// by id.
     pub fn text_claude(&self, behind: bool) -> String {
         let mut out = Vec::new();
+        let own = self.front_workspace();
         if behind {
-            out.push(format!(
-                "your session ({}) is behind another — nothing of yours is on screen",
-                self.front
-            ));
+            let session = own.and_then(|w| w.sessions.first()).map_or("", |s| s.id.as_str());
+            out.push(format!("your session ({session}) is behind another — nothing of yours is on screen"));
         } else {
             out.extend(self.keys_line());
             out.push(self.mode_line());
         }
-        if self.sessions.len() > 1 {
+        if self.workspaces.len() > 1 {
             let s: Vec<String> = self
-                .sessions
+                .workspaces
                 .iter()
-                .map(|s| {
-                    let whose = match (s.id == self.front, s.front && !behind) {
+                .flat_map(|w| w.sessions.iter().map(move |s| (w, s)))
+                .map(|(w, s)| {
+                    let whose = match (w.id == self.front, w.front && !behind) {
                         (true, _) => " (yours)",
                         (false, true) => " (in front)",
                         _ => "",
                     };
-                    let cards = if s.cards == 0 { String::new() } else { format!(" · {} cards", s.cards) };
-                    let reviewer = s.reviewer.map(|r| format!(" · {r}")).unwrap_or_default();
-                    format!("{} {}{whose} · {}{reviewer}{cards}", s.id, s.name, s.doing)
+                    let cards = if w.cards == 0 { String::new() } else { format!(" · {} cards", w.cards) };
+                    let reviewer = w.reviewer.map(|r| format!(" · {r}")).unwrap_or_default();
+                    format!("{} {}{whose} · {}{reviewer}{cards}", s.id, w.name, s.doing)
                 })
                 .collect();
             out.push(format!("sessions: {}", s.join("   ")));
         }
-        // (its own session's reviewer, how it went and its counts — the others' are their `· reviewing` above)
-        if let Some(r) =
-            self.sessions.iter().find(|s| s.id == self.front).and_then(|s| s.reviewer_run.as_ref())
-        {
+        // (its own workspace's reviewer, how it went and its counts — the others' are their `· reviewing` above)
+        if let Some(r) = own.and_then(|w| w.reviewer_run.as_ref()) {
             let unsent = match r.unsent {
                 0 => "",
                 _ => " — a finding reaches you when the user sends it (space v s)",
@@ -227,7 +233,7 @@ impl UiState {
             out.push(format!("reviewer: {}{unsent}", r.text()));
         }
         // (its edits being written, where they're drawn: what the user sees of them before the call is made)
-        if let Some(s) = self.sessions.iter().find(|s| s.id == self.front).filter(|s| !s.writing.is_empty()) {
+        if let Some(s) = own.into_iter().flat_map(|w| &w.sessions).find(|s| !s.writing.is_empty()) {
             let w: Vec<String> = s.writing.iter().map(super::WritingState::text).collect();
             out.push(format!(
                 "writing (drawn as it comes — not applied, nothing decided): {}",
@@ -242,7 +248,7 @@ impl UiState {
         }
         // (its own session's sandbox, decision 13 — here, not in the context's `ui:` line every request reads: the
         // run reports say it once a conversation)
-        if let Some(g) = self.sessions.iter().find(|s| s.id == self.front).and_then(|s| s.sandbox.as_ref()) {
+        if let Some(g) = own.into_iter().flat_map(|w| &w.sessions).find_map(|s| s.sandbox.as_ref()) {
             let why = g.why.as_ref().map(|w| format!(" — what's missing: {w}")).unwrap_or_default();
             out.push(format!("sandbox: {}{why}", g.line_after_label()));
         }
@@ -330,7 +336,7 @@ pub fn tool_call(ed: &mut Editor) -> Result<String, String> {
 
 /// Elements that went to Claude this turn (`Chat.given`) — they carry the faint `◦`.
 pub fn give(ed: &mut Editor, ids: impl IntoIterator<Item = String>) {
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     for id in ids {
         if !c.given.contains(&id) {
             c.given.push(id);
@@ -374,7 +380,7 @@ pub fn pointed(ed: &Editor, id: &str) -> String {
     // (a mark of the follow card's strip: Claude's own stop, said as its trail row says it — the state's lists are the
     // person's)
     let stop = id.strip_prefix("stop:").and_then(|call| {
-        let c = ed.session.chat.as_ref()?;
+        let c = ed.workspace.claude.chat.as_ref()?;
         let m = crate::follow::strip(c).into_iter().find(|m| m.call == call)?;
         Some(format!("{id} · {:?} — a mark of your stops on the follow card", m.said))
     });
@@ -449,7 +455,7 @@ impl Editor {
     /// taken as they're written (whether one's in its panel is found when it's followed).
     pub fn ui_known(&self, id: &str) -> bool {
         let Some((kind, n)) = numbered(id) else { return true };
-        let sessions = || std::iter::once(&self.session).chain(&self.sessions);
+        let sessions = || std::iter::once(&self.workspace).chain(&self.workspaces);
         match kind {
             "card" => {
                 self.offers.iter().any(|o| o.id == n)
@@ -459,7 +465,7 @@ impl Editor {
             "toast" => n >= 1 && n <= self.said,
             "run" => n >= 1 && n < crate::trace::next_id(),
             "pane" => sessions().any(|l| l.views.iter().any(|v| v.id == n)),
-            "note" => sessions().any(|l| l.notes.list.iter().any(|x| x.id == n)),
+            "note" => sessions().any(|l| l.claude.notes.list.iter().any(|x| x.id == n)),
             _ => false,
         }
     }
@@ -472,7 +478,7 @@ impl Editor {
     /// The mark an element carries: `•` cited by this turn's answer, `◦` given to Claude this turn — the
     /// front session's chat's, faint (never on a toast).
     pub fn ui_mark(&self, id: &str) -> Option<&'static str> {
-        let c = self.session.chat.as_ref()?;
+        let c = self.workspace.claude.chat.as_ref()?;
         if c.cited.iter().any(|x| x == id) {
             Some("•")
         } else if c.given.iter().any(|x| x == id) {
@@ -485,7 +491,7 @@ impl Editor {
     /// Whether any element is marked or flashing — drawing looks ids up only then.
     pub fn ui_lit(&self) -> bool {
         self.ui_flash.is_some()
-            || self.session.chat.as_ref().is_some_and(|c| !c.given.is_empty() || !c.cited.is_empty())
+            || self.workspace.claude.chat.as_ref().is_some_and(|c| !c.given.is_empty() || !c.cited.is_empty())
     }
 
     /// What a link to `id` says when it can't show it: how it went (the gone ring), what it said (a toast),
@@ -516,13 +522,13 @@ impl Editor {
     pub fn ui_jump(&mut self, id: &str) {
         let (session, rest) = match id.split_once('/') {
             Some((s, r)) if s.starts_with('s') && s[1..].parse::<u64>().is_ok() => {
-                (s[1..].parse::<crate::event::SessionId>().ok(), r.to_string())
+                (s[1..].parse::<crate::event::WorkspaceId>().ok(), r.to_string())
             }
             _ => (None, id.to_string()),
         };
         if let Some(s) = session
-            && s != self.session.id
-            && !self.session_switch(s)
+            && s != self.workspace.id
+            && !self.workspace_switch(s)
         {
             return self.set_status(format!("{id} — no such session"));
         }
@@ -532,11 +538,11 @@ impl Editor {
             Some(("toast", n)) => self.toasts.iter().any(|t| t.id == n && t.alive()),
             Some(("run", n)) => self.jump_run(n),
             Some(("pane", n)) => {
-                let here = self.session.views.iter().any(|v| v.id == n);
+                let here = self.workspace.views.iter().any(|v| v.id == n);
                 // (only the focused pane has a path bar to flash — another one is said)
-                if here && self.session.focus != n {
-                    let name = self.session.views.iter().find(|v| v.id == n).and_then(|v| {
-                        self.docs.iter().find(|d| d.id == v.doc).map(|d| d.display_name(&self.session.root))
+                if here && self.workspace.viewer.focus != n {
+                    let name = self.workspace.views.iter().find(|v| v.id == n).and_then(|v| {
+                        self.docs.iter().find(|d| d.id == v.doc).map(|d| d.display_name(&self.workspace.root))
                     });
                     return self.set_status(format!("{id}: {} — the other pane", name.unwrap_or_default()));
                 }
@@ -544,7 +550,7 @@ impl Editor {
             }
             _ if id.starts_with("stop:") => crate::follow::replay_stop(self, &id["stop:".len()..]),
             Some(("note", n)) => {
-                let Some(note) = self.session.notes.list.iter().find(|x| x.id == n) else {
+                let Some(note) = self.workspace.claude.notes.list.iter().find(|x| x.id == n) else {
                     return self.set_status(self.ui_gone_said(id));
                 };
                 let link = crate::chat::Link { path: note.path.clone(), line: note.lines.start };
@@ -568,16 +574,16 @@ impl Editor {
         if self.offers.iter().any(|o| o.id == n) {
             return true;
         }
-        let parked = self.sessions.iter().find(|l| l.parked.iter().any(|o| o.id == n)).map(|l| l.id);
+        let parked = self.workspaces.iter().find(|l| l.parked.iter().any(|o| o.id == n)).map(|l| l.id);
         match parked {
-            Some(s) => self.session_switch(s) && self.offers.iter().any(|o| o.id == n),
+            Some(s) => self.workspace_switch(s) && self.offers.iter().any(|o| o.id == n),
             None => false,
         }
     }
 
     /// Run `n`'s panel in front of the slot (the keys stay where they are), in its session.
     fn jump_run(&mut self, n: u64) -> bool {
-        let of = |l: &crate::session::Session| {
+        let of = |l: &crate::workspace::Workspace| {
             if l.task_run.as_ref().is_some_and(|r| r.trace.id() == n) {
                 return Some(Slot::Task);
             }
@@ -590,11 +596,11 @@ impl Editor {
                 crate::queued::Slot::Tests => Slot::Test,
             })
         };
-        let here = of(&self.session);
-        let there = self.sessions.iter().find_map(|l| of(l).map(|s| (l.id, s)));
+        let here = of(&self.workspace);
+        let there = self.workspaces.iter().find_map(|l| of(l).map(|s| (l.id, s)));
         let slot = match (here, there) {
             (Some(s), _) => s,
-            (None, Some((l, s))) if self.session_switch(l) => s,
+            (None, Some((l, s))) if self.workspace_switch(l) => s,
             _ => return false,
         };
         if self.slot_there(slot, false) {
@@ -609,7 +615,7 @@ impl Editor {
         let (tab, _) = id.split_once(':').ok_or_else(|| self.ui_gone_said(id))?;
         if tab == "review" {
             let rel = &id["review:".len()..];
-            let Some(r) = self.session.code_review.as_mut() else {
+            let Some(r) = self.workspace.code_review.as_mut() else {
                 return Err(format!("{id} — no review is open"));
             };
             let order = r.rail_rows();
@@ -630,26 +636,26 @@ impl Editor {
             "plugin" => M::Plugin,
             _ => return Err(self.ui_gone_said(id)),
         };
-        if self.session.code_review.is_some() && self.review_rail_up() {
+        if self.workspace.code_review.is_some() && self.review_rail_up() {
             return Err(format!("{id} — the review's rail has the side panel's place (space g shows it)"));
         }
-        match self.session.sidebar.as_mut() {
+        match self.workspace.viewer.sidebar.as_mut() {
             Some(s) if s.mode == mode => {}
             Some(s) => s.switch_to(mode),
             None => {
-                let s = crate::sidebar::Sidebar::new(mode, self.session.root.clone());
-                self.session.sidebar = Some(s);
+                let s = crate::sidebar::Sidebar::new(mode, self.workspace.root.clone());
+                self.workspace.viewer.sidebar = Some(s);
                 if mode == M::Files {
                     self.sidebar_list_files();
                 }
             }
         }
         self.sidebar_sync();
-        let Some(sb) = self.session.sidebar.as_ref() else { return Err(self.ui_gone_said(id)) };
+        let Some(sb) = self.workspace.viewer.sidebar.as_ref() else { return Err(self.ui_gone_said(id)) };
         let lines = sb.lines();
         let at = lines.iter().position(|l| super::panels::side_id(self, tab, l) == id);
         let Some(at) = at else { return Err(format!("{id} isn't in the {tab} tab now")) };
-        let sb = self.session.sidebar.as_mut().expect("there");
+        let sb = self.workspace.viewer.sidebar.as_mut().expect("there");
         // (scrolled so the row shows — `fit` keeps a scroll while the selection doesn't move)
         if at < sb.scroll || at >= sb.scroll + 10 {
             sb.scroll = at.saturating_sub(3);

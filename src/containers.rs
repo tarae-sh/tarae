@@ -148,7 +148,7 @@ fn config_of(v: &toml::Value) -> Result<Config, String> {
 
 /// A run's prefix: this tarae (its pid — a tarae started later numbers its runs from 1 again), the session,
 /// the run (`run#<id>`).
-pub fn prefix(session: crate::event::SessionId, run: u64) -> String {
+pub fn prefix(session: crate::event::WorkspaceId, run: u64) -> String {
     format!("tarae-{}-s{session}-r{run}", std::process::id())
 }
 

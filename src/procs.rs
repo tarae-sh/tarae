@@ -27,7 +27,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::editor::Editor;
-use crate::event::{Event, SessionId};
+use crate::event::{Event, WorkspaceId};
 use crate::lsp::ClientId;
 
 /// How often tarae looks while `:procs` is closed (`TARAE_PROCS_EVERY` ms stands in, for measurements).
@@ -812,7 +812,7 @@ pub enum Kind {
     /// Not one tarae knows (or under one it does).
     Other,
     /// A session's heading (no process): what's under it, summed.
-    Session(SessionId),
+    Session(WorkspaceId),
     /// A run waiting in its session's line (`queued.rs`) — no process yet; `s` takes it out.
     Queued(u64),
 }
@@ -854,7 +854,7 @@ pub struct Known {
     /// What for: a root, a command, a file.
     pub what: String,
     /// The session it's for — None: shared (and with one session, every one).
-    pub session: Option<SessionId>,
+    pub session: Option<WorkspaceId>,
     /// When it started (epoch seconds), when that's what tells it from a later process given its pid — a
     /// remembered one's (`Spawned`); None: the editor holds it now.
     pub at: Option<u64>,
@@ -867,7 +867,7 @@ impl Known {
     }
 }
 
-/// A process a session started (a run of Claude's, a task, tests — `Session.spawned`): kept while the OS
+/// A process a session started (a run of Claude's, a task, tests — `Workspace.spawned`): kept while the OS
 /// still shows it, so it stays its session's after its run is closed or replaced (#100: a program of Claude's
 /// run that outlived its panel was listed as nobody's, its session showing nothing).
 #[derive(Clone, Debug)]
@@ -880,17 +880,17 @@ pub struct Spawned {
 }
 
 impl Editor {
-    /// Process `pid` was just started in the session in `ed.session`, for `title` (`what`: its command).
+    /// Process `pid` was just started in the session in `ed.workspace`, for `title` (`what`: its command).
     pub(crate) fn procs_spawned(&mut self, pid: u32, title: &str, what: &str) {
         let at = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        self.session.spawned.push(Spawned { pid, at, title: title.to_string(), what: what.to_string() });
+        self.workspace.spawned.push(Spawned { pid, at, title: title.to_string(), what: what.to_string() });
     }
 }
 
 /// A session as `:procs` heads its processes: its name as its tab says it, its checkout.
 #[derive(Clone, Debug)]
 pub struct Group {
-    pub id: SessionId,
+    pub id: WorkspaceId,
     pub name: String,
     pub root: PathBuf,
 }
@@ -922,7 +922,7 @@ pub struct Row {
     /// A check holds about it now.
     pub flagged: bool,
     /// The session it's under (its heading's, for a heading) — None: shared.
-    pub session: Option<SessionId>,
+    pub session: Option<WorkspaceId>,
     /// Left by a program tarae ran, tarae only its last parent (`reaper`): not a stray of tarae's own.
     pub left: bool,
     /// Its command line and folder, while `:procs` is open (`Sampler.whole`).
@@ -1026,7 +1026,7 @@ pub fn rows(
         out.push(row(os, 0, Kind::Tarae, Kind::Tarae, "tarae".into(), "this editor".into(), None));
     }
     // (a session that isn't among `groups` is no session here)
-    let grouped = |l: Option<SessionId>| l.filter(|l| groups.iter().any(|g| g.id == *l));
+    let grouped = |l: Option<WorkspaceId>| l.filter(|l| groups.iter().any(|g| g.id == *l));
     // (one the editor can't name: the session whose checkout it works in, the innermost — #100)
     let working_in = |os: &Os| {
         let dir = os.cwd.as_ref()?;
@@ -1045,7 +1045,7 @@ pub fn rows(
             .map(|g| g.id)
     };
     let mine = by_pid.get(&me).and_then(|o| o.sid);
-    let mut top: Vec<(Kind, String, String, &Os, Option<SessionId>)> = kids
+    let mut top: Vec<(Kind, String, String, &Os, Option<WorkspaceId>)> = kids
         .get(&me)
         .into_iter()
         .flatten()
@@ -1136,7 +1136,7 @@ pub fn rows(
 /// The runs waiting in line (`Editor::procs_queued`: session, id, what, where in line) into the list, each
 /// after its session's processes (with `groups`, under its heading) — no process, so no pid, CPU or
 /// memory (a run waiting was nowhere to be seen, and taken for done — twice).
-pub fn with_queued(rows: &mut Vec<Row>, queued: &[(SessionId, u64, String, String)], groups: &[Group]) {
+pub fn with_queued(rows: &mut Vec<Row>, queued: &[(WorkspaceId, u64, String, String)], groups: &[Group]) {
     for (session, id, title, what) in queued {
         let session = groups.iter().any(|g| g.id == *session).then_some(*session);
         let at = rows.iter().rposition(|r| r.session == session).map_or(rows.len(), |i| i + 1);
@@ -1237,10 +1237,10 @@ pub fn tool_call(ed: &mut Editor, call: crate::tools::Call, args: &serde_json::V
     let all = args["all"].as_bool() == Some(true);
     let (known, groups, held) = (ed.procs_known(), ed.procs_groups(), ed.procs.held.clone());
     let queued = ed.procs_queued();
-    let (me, name) = (ed.session.id, ed.session.label().to_string());
+    let (me, name) = (ed.workspace.id, ed.workspace.label().to_string());
     // (the user's own tasks, every session's: what they run is theirs, as the terminal's is)
-    let users: Vec<u32> = std::iter::once(&ed.session)
-        .chain(&ed.sessions)
+    let users: Vec<u32> = std::iter::once(&ed.workspace)
+        .chain(&ed.workspaces)
         .filter_map(|l| l.task_run.as_ref().filter(|r| !r.by_claude)?.pid())
         .collect();
     ed.events.jobs().spawn(move || {
@@ -1784,7 +1784,7 @@ impl Editor {
         let detail = crate::rundoc::has_keys(self) == Some(crate::sizes::Slot::Procs);
         self.procs_unfocus();
         if detail {
-            self.session.leave(crate::session::At::Slot);
+            self.workspace.leave(crate::workspace::At::Slot);
         }
         self.procs.panel = None;
         self.procs_wake(Wake::Open(false));
@@ -1802,8 +1802,8 @@ impl Editor {
 
     /// The table gives the keys back (the code was clicked, another place took them).
     pub fn procs_unfocus(&mut self) {
-        if let Some(g) = self.session.group(crate::pane::GroupKind::Procs) {
-            self.session.leave(crate::session::At::List(g.list));
+        if let Some(g) = self.workspace.group(crate::pane::GroupKind::Procs) {
+            self.workspace.leave(crate::workspace::At::List(g.list));
         }
     }
 
@@ -1852,18 +1852,18 @@ impl Editor {
     pub fn procs_known(&self) -> Vec<Known> {
         let mut out = Vec::new();
         let mut add =
-            |pid: Option<u32>, kind: Kind, title: &str, what: String, session: Option<SessionId>| {
+            |pid: Option<u32>, kind: Kind, title: &str, what: String, session: Option<WorkspaceId>| {
                 if let Some(pid) = pid.filter(|&p| p > 0) {
                     out.push(Known { pid, kind, title: title.to_string(), what, session, at: None });
                 }
             };
-        let sessions = !self.sessions.is_empty();
+        let sessions = !self.workspaces.is_empty();
         for c in &self.lsp.clients {
             // (a shared server — several checkouts, or one being swapped — is no one session's)
             match self.share_procs(c) {
                 Some(what) => add(c.pid(), Kind::Lsp(c.id), &c.name, what, None),
                 None => {
-                    let session = self.session_of(&c.root).filter(|_| sessions);
+                    let session = self.workspace_of(&c.root).filter(|_| sessions);
                     add(c.pid(), Kind::Lsp(c.id), &c.name, crate::allow::tilde(&c.root), session);
                 }
             }
@@ -1873,7 +1873,7 @@ impl Editor {
             add(adapter, Kind::Debug, "debugger", d.program.clone(), None);
             add(helper, Kind::Helper, "debug helper", d.program.clone(), None);
         }
-        for l in std::iter::once(&self.session).chain(&self.sessions) {
+        for l in std::iter::once(&self.workspace).chain(&self.workspaces) {
             let session = sessions.then_some(l.id);
             if let Some(r) = &l.task_run {
                 let title = if r.by_claude { "claude's command" } else { r.task.name.as_str() };
@@ -1902,7 +1902,7 @@ impl Editor {
             if let Some(t) = &l.terminal {
                 add(t.pid(), Kind::Terminal, "terminal", t.title.clone(), session);
             }
-            if let Some(c) = &l.chat {
+            if let Some(c) = &l.claude.chat {
                 add(c.pid(), Kind::Chat, "claude", "the chat".into(), session);
             }
             if let Some(r) = &l.reviewer {
@@ -1931,11 +1931,11 @@ impl Editor {
         // (each session's keeper: its sandboxed runs, and what they left, under it — `sandbox::keeper`)
         #[cfg(target_os = "linux")]
         for k in crate::sandbox::keeper::of(None).into_iter().filter(|k| !k.is_gone()) {
-            let of = self.session_of(&k.root);
-            let g = std::iter::once(&self.session)
-                .chain(&self.sessions)
+            let of = self.workspace_of(&k.root);
+            let g = std::iter::once(&self.workspace)
+                .chain(&self.workspaces)
                 .find(|s| of == Some(s.id))
-                .and_then(|s| s.sandbox.as_ref());
+                .and_then(|s| s.claude.sandbox.as_ref());
             out.push(Known {
                 pid: k.pid,
                 kind: Kind::Helper,
@@ -1950,14 +1950,14 @@ impl Editor {
             out.push(Known {
                 pid,
                 kind: Kind::Helper,
-                title: "session.ended".into(),
+                title: "workspace.ended".into(),
                 what: cmd,
                 session: None,
                 at: None,
             });
         }
         let mut add =
-            |pid: Option<u32>, kind: Kind, title: &str, what: String, session: Option<SessionId>| {
+            |pid: Option<u32>, kind: Kind, title: &str, what: String, session: Option<WorkspaceId>| {
                 if let Some(pid) = pid.filter(|&p| p > 0) {
                     out.push(Known { pid, kind, title: title.to_string(), what, session, at: None });
                 }
@@ -1968,7 +1968,7 @@ impl Editor {
             add(Some(pid), Kind::Plugin(plugin.clone(), id), &program, format!("plugin {plugin}"), None);
         }
         // What a session started that outlived its run (closed, replaced): still its session's (#100)
-        for l in std::iter::once(&self.session).chain(&self.sessions) {
+        for l in std::iter::once(&self.workspace).chain(&self.workspaces) {
             let session = sessions.then_some(l.id);
             for s in l.spawned.iter() {
                 if out.iter().any(|k| k.pid == s.pid) {
@@ -1989,10 +1989,10 @@ impl Editor {
 
     /// The sessions as `:procs` heads them, in the tabs' order — none while there's one.
     fn procs_groups(&self) -> Vec<Group> {
-        if self.sessions.is_empty() {
+        if self.workspaces.is_empty() {
             return Vec::new();
         }
-        let group = |l: &crate::session::Session| Group {
+        let group = |l: &crate::workspace::Workspace| Group {
             id: l.id,
             name: l.label().to_string(),
             root: l.root.clone(),
@@ -2033,7 +2033,7 @@ impl Editor {
         let alive = |sp: &Spawned| {
             s.procs.iter().any(|(o, _)| o.pid == sp.pid && o.started.abs_diff(sp.at) <= 2 && !o.zombie)
         };
-        for l in std::iter::once(&mut self.session).chain(&mut self.sessions) {
+        for l in std::iter::once(&mut self.workspace).chain(&mut self.workspaces) {
             l.spawned.retain(alive);
         }
         let groups = self.procs_groups();
@@ -2192,17 +2192,17 @@ impl Editor {
 
     /// What `r` is called in a toast: from a session behind, its name first (`fix-login · claude`).
     fn procs_whose(&self, r: &Row, what: &str) -> String {
-        let behind = r.session.filter(|&id| id != self.session.id);
-        match behind.and_then(|id| self.sessions.iter().find(|l| l.id == id)) {
+        let behind = r.session.filter(|&id| id != self.workspace.id);
+        match behind.and_then(|id| self.workspaces.iter().find(|l| l.id == id)) {
             Some(l) => format!("{} · {what}", l.label()),
             None => what.to_string(),
         }
     }
 
-    /// `f` in the session `r` is under (swapped in if it's behind — `with_session`), the one in front for a
+    /// `f` in the session `r` is under (swapped in if it's behind — `with_workspace`), the one in front for a
     /// shared row.
     fn procs_in(&mut self, r: &Row, f: impl FnOnce(&mut Editor)) {
-        self.with_session(r.session.unwrap_or(self.session.id), f);
+        self.with_workspace(r.session.unwrap_or(self.workspace.id), f);
     }
 
     /// `s` on the selected row: it stops (the way its owner stops it — a run keeps its output).
@@ -2221,7 +2221,7 @@ impl Editor {
         match r.kind {
             Kind::Tarae => self.set_status("that's tarae itself — :q quits it"),
             Kind::Held(..) => self.set_status(format!("{} isn't running — r starts it", r.title)),
-            Kind::Session(_) => self.set_status(format!("{} is a session — :session-end ends it", r.title)),
+            Kind::Session(_) => self.set_status(format!("{} is a session — :workspace-end ends it", r.title)),
             Kind::Queued(id) => {
                 self.procs_in(&r, |ed| {
                     crate::queued::leave(ed, id, "the user took it out of the line in :procs")
@@ -2258,7 +2258,7 @@ impl Editor {
             }
             Kind::Chat => {
                 self.procs_in(&r, |ed| {
-                    if let Some(c) = ed.session.chat.as_mut() {
+                    if let Some(c) = ed.workspace.claude.chat.as_mut() {
                         c.stop_process();
                     }
                 });
@@ -2350,7 +2350,7 @@ impl Editor {
                 self.set_success(format!("{name} let start again"));
             }
             Kind::Task => self.procs_in(&r, |ed| {
-                match ed.session.task_run.as_ref().filter(|t| !t.by_claude && !t.install) {
+                match ed.workspace.task_run.as_ref().filter(|t| !t.by_claude && !t.install) {
                     Some(t) => {
                         let task = t.task.clone();
                         ed.task_start(task);
@@ -2374,13 +2374,13 @@ impl Editor {
     fn procs_log(&mut self) {
         let Some(r) = self.procs_selected() else { return };
         if let Kind::Session(id) = r.kind {
-            self.session_switch(id);
+            self.workspace_switch(id);
             return;
         }
         if matches!(r.under, Kind::Task | Kind::Test | Kind::Terminal | Kind::Chat)
             && let Some(id) = r.session
         {
-            self.session_switch(id);
+            self.workspace_switch(id);
         }
         match r.under {
             Kind::Task | Kind::Test => {
@@ -2649,7 +2649,7 @@ pub(crate) mod tests {
     fn after_the_wheel_s_names_a_row_in_sight() {
         use crate::event::{Mouse, MouseKind};
         let mut ed = Editor::new(crate::config::Config::default());
-        let root = ed.session.root.clone();
+        let root = ed.workspace.root.clone();
         let held = |i: usize| Held { name: format!("server{i:02}"), root: root.clone(), what: String::new() };
         ed.procs.held = (0..60).map(held).collect();
         ed.procs_toggle();
@@ -2685,7 +2685,7 @@ pub(crate) mod tests {
     }
 
     fn detail_text(ed: &Editor) -> String {
-        ed.session.outputs.doc(crate::sizes::Slot::Procs).map(|d| d.text.to_string()).unwrap_or_default()
+        ed.workspace.outputs.doc(crate::sizes::Slot::Procs).map(|d| d.text.to_string()).unwrap_or_default()
     }
 
     const CTRL_W: Key = Key { code: Code::Char('w'), ctrl: true, alt: false, shift: false };
@@ -2858,7 +2858,7 @@ pub(crate) mod tests {
         keys(&mut ed, "j");
         crate::rundoc::sync(&mut ed);
         let slot = crate::sizes::Slot::Procs;
-        let d = ed.session.outputs.get_mut(slot).and_then(|o| o.doc_in_mut()).expect("the detail");
+        let d = ed.workspace.outputs.get_mut(slot).and_then(|o| o.doc_in_mut()).expect("the detail");
         let text = d.text.to_string();
         assert!(text.contains("cpu      12.3% of a core now\n"), "{text}");
         let memory = text.find("memory   ").expect("its memory line");
@@ -2867,7 +2867,7 @@ pub(crate) mod tests {
         d.set_selection(crate::selection::Selection::point(dot));
         ed.procs_sampled(look(1.5));
         crate::rundoc::sync(&mut ed);
-        let d = ed.session.outputs.doc(slot).unwrap();
+        let d = ed.workspace.outputs.doc(slot).unwrap();
         let text = d.text.to_string();
         assert!(text.contains("cpu      1.5% of a core now\n"), "{text}");
         let at = d.selection().primary().cursor(&d.text);
@@ -2928,9 +2928,9 @@ pub(crate) mod tests {
         let r = ed.screen.run_rows.of(crate::sizes::Slot::Procs).expect("the detail drawn");
         let rows = r.3;
         let slot = crate::sizes::Slot::Procs;
-        let lines = ed.session.outputs.get(slot).unwrap().lines();
+        let lines = ed.workspace.outputs.get(slot).unwrap().lines();
         assert!(lines > rows + 3, "taller than its rows: {lines} lines in {rows}");
-        let top = |ed: &Editor| ed.session.outputs.doc(slot).unwrap().top;
+        let top = |ed: &Editor| ed.workspace.outputs.doc(slot).unwrap().top;
         let wheel = |ed: &mut Editor, kind| {
             ed.handle_mouse(Mouse { kind, x: (r.2 + 2) as u16, y: r.1 as u16, alt: false, ctrl: false });
             screen(ed, w, h);
@@ -3228,17 +3228,17 @@ pub(crate) mod tests {
             std::fs::create_dir_all(d).unwrap();
         }
         let mut ed = Editor::new(crate::config::Config::default());
-        (ed.session.root, ed.session.name) = (here.clone(), "here".into());
+        (ed.workspace.root, ed.workspace.name) = (here.clone(), "here".into());
         let task = |name: &str, dir: &Path| crate::task::Task {
             name: name.into(),
             cmd: "sleep 20".into(),
             cwd: dir.into(),
         };
         ed.task_start(task("sleeps-here", &here));
-        let other = ed.session_open(&there).unwrap();
-        ed.session.name = "there".into();
+        let other = ed.workspace_open(&there).unwrap();
+        ed.workspace.name = "there".into();
         ed.task_start(task("sleeps-there", &there));
-        assert!(ed.session_switch(0));
+        assert!(ed.workspace_switch(WorkspaceId::HOME));
         let ask = |ed: &mut Editor, n: u64, args: serde_json::Value| -> String {
             let msg = json!({"jsonrpc": "2.0", "id": n, "method": "tools/call",
                 "params": {"name": "procs", "arguments": args}});
@@ -3263,7 +3263,7 @@ pub(crate) mod tests {
         // (`sh -c` with one command runs it in its own place)
         assert!(mine.contains("command: sleep\n") || mine.contains("command: sh\n"), "{mine}");
         assert!(!mine.contains("sleep 20") && !mine.contains("folder: "), "the user's command: {mine}");
-        let pid = ed.session.task_run.as_ref().and_then(|r| r.pid()).unwrap();
+        let pid = ed.workspace.task_run.as_ref().and_then(|r| r.pid()).unwrap();
         assert!(mine.contains(&format!("pid {pid} · parent {}", std::process::id())), "{mine}");
         assert!(mine.contains("· up ") && mine.contains("· cpu "), "{mine}");
         if cfg!(target_os = "macos") {
@@ -3274,8 +3274,8 @@ pub(crate) mod tests {
         assert!(every.starts_with("The editor's processes for every session"), "{every}");
         assert!(every.contains("── here") && every.contains("── there"), "headed by session: {every}");
         assert!(every.contains("sleeps-here") && every.contains("sleeps-there"), "{every}");
-        ed.session.task_run = None;
-        ed.with_session(other, |ed| ed.session.task_run = None);
+        ed.workspace.task_run = None;
+        ed.with_workspace(other, |ed| ed.workspace.task_run = None);
     }
 
     /// #100 as met: a run of Claude's in a session behind whose program outlives its panel (closed — the
@@ -3292,9 +3292,9 @@ pub(crate) mod tests {
             std::fs::create_dir_all(d).unwrap();
         }
         let mut ed = Editor::new(crate::config::Config::default());
-        (ed.session.root, ed.session.name) = (here.clone(), "here".into());
-        let other = ed.session_open(&there).unwrap();
-        ed.session.name = "there".into();
+        (ed.workspace.root, ed.workspace.name) = (here.clone(), "here".into());
+        let other = ed.workspace_open(&there).unwrap();
+        ed.workspace.name = "there".into();
         let task = crate::task::Task {
             name: "swap".into(),
             cmd: "trap '' TERM; sleep 30".into(),
@@ -3303,7 +3303,7 @@ pub(crate) mod tests {
         assert!(
             ed.task_start_for(task, crate::tools::For::User("swap".into()), None, Default::default()).is_ok()
         );
-        let pid = ed.session.task_run.as_ref().and_then(|r| r.pid()).unwrap();
+        let pid = ed.workspace.task_run.as_ref().and_then(|r| r.pid()).unwrap();
         // (its `trap` in place before the TERM comes)
         let end = Instant::now() + crate::test_results::PATIENCE;
         while !tree(pid).iter().any(|o| o.name == "sleep") {
@@ -3312,8 +3312,8 @@ pub(crate) mod tests {
         }
         // Its panel closed: the run is gone, its program isn't
         ed.task_close();
-        assert!(ed.session.task_run.is_none());
-        assert!(ed.session_switch(0));
+        assert!(ed.workspace.task_run.is_none());
+        assert!(ed.workspace_switch(WorkspaceId::HOME));
         std::thread::sleep(Duration::from_millis(200));
         assert!(read(pid).is_some_and(|o| !o.zombie), "still running");
         let msg = json!({"jsonrpc": "2.0", "id": 990, "method": "tools/call",
@@ -3539,17 +3539,17 @@ pub(crate) mod tests {
         };
         let known = [
             k(2, Kind::Spare, "claude", None),
-            k(3, Kind::Lsp(7), "rust-analyzer", Some(0)),
-            k(5, Kind::Chat, "claude", Some(1)),
-            k(6, Kind::Terminal, "terminal", Some(1)),
+            k(3, Kind::Lsp(7), "rust-analyzer", Some(WorkspaceId::HOME)),
+            k(5, Kind::Chat, "claude", Some(WorkspaceId::here(1))),
+            k(6, Kind::Terminal, "terminal", Some(WorkspaceId::here(1))),
         ];
         let held = [Held { name: "pyright".into(), root: "/wt/fix-login/py".into(), what: String::new() }];
         let groups = [
-            Group { id: 0, name: "main".into(), root: "/w".into() },
-            Group { id: 1, name: "fix-login".into(), root: "/wt/fix-login".into() },
+            Group { id: WorkspaceId::HOME, name: "main".into(), root: "/w".into() },
+            Group { id: WorkspaceId::here(1), name: "fix-login".into(), root: "/wt/fix-login".into() },
         ];
         let rows = rows(&s, &known, 1, &held, &groups, 1_060);
-        let got: Vec<(u32, usize, &str, Option<SessionId>)> =
+        let got: Vec<(u32, usize, &str, Option<WorkspaceId>)> =
             rows.iter().map(|r| (r.pid, r.depth, r.title.as_str(), r.session)).collect();
         assert_eq!(
             got,
@@ -3557,18 +3557,26 @@ pub(crate) mod tests {
                 (1, 0, "tarae", None),
                 (2, 0, "claude", None),
                 (7, 0, "git", None),
-                (0, 0, "main", Some(0)),
-                (3, 0, "rust-analyzer", Some(0)),
-                (4, 1, "rust-analyzer-proc-macro-srv", Some(0)),
-                (0, 0, "fix-login", Some(1)),
-                (0, 0, "pyright", Some(1)),
-                (5, 0, "claude", Some(1)),
-                (6, 0, "terminal", Some(1)),
+                (0, 0, "main", Some(WorkspaceId::HOME)),
+                (3, 0, "rust-analyzer", Some(WorkspaceId::HOME)),
+                (4, 1, "rust-analyzer-proc-macro-srv", Some(WorkspaceId::HOME)),
+                (0, 0, "fix-login", Some(WorkspaceId::here(1))),
+                (0, 0, "pyright", Some(WorkspaceId::here(1))),
+                (5, 0, "claude", Some(WorkspaceId::here(1))),
+                (6, 0, "terminal", Some(WorkspaceId::here(1))),
             ]
         );
         let sums = |at: usize| (rows[at].kind.clone(), rows[at].cpu, rows[at].memory());
-        assert_eq!(sums(3), (Kind::Session(0), Some(2.5), 920 * MB), "the server with what it started");
-        assert_eq!(sums(6), (Kind::Session(1), Some(41.0), 230 * MB), "the held server has no process");
+        assert_eq!(
+            sums(3),
+            (Kind::Session(WorkspaceId::HOME), Some(2.5), 920 * MB),
+            "the server with what it started"
+        );
+        assert_eq!(
+            sums(6),
+            (Kind::Session(WorkspaceId::here(1)), Some(41.0), 230 * MB),
+            "the held server has no process"
+        );
         assert!(matches!(rows[7].kind, Kind::Held(..)) && rows[7].flagged);
         // The panel's totals and a session list's share don't count a heading twice
         assert_eq!(summed(&rows, &[5, 6]), Some((41.0, 230 * MB)));
@@ -3597,17 +3605,17 @@ pub(crate) mod tests {
             kind: Kind::Other,
             title: "claude's command · left running".into(),
             what: "ra-swap-tool swap-on".into(),
-            session: Some(1),
+            session: Some(WorkspaceId::here(1)),
             at: Some(started),
         };
         // (pid 11's start doesn't match what was remembered: another process now)
         let known = [remembered(8, 1_001), remembered(11, 500)];
         let groups = [
-            Group { id: 0, name: "main".into(), root: "/w".into() },
-            Group { id: 1, name: "ra-swap".into(), root: "/wt/ra-swap".into() },
+            Group { id: WorkspaceId::HOME, name: "main".into(), root: "/w".into() },
+            Group { id: WorkspaceId::here(1), name: "ra-swap".into(), root: "/wt/ra-swap".into() },
         ];
         let rows = rows(&s, &known, 1, &[], &groups, 1_060);
-        let got: Vec<(u32, &str, Option<SessionId>)> =
+        let got: Vec<(u32, &str, Option<WorkspaceId>)> =
             rows.iter().map(|r| (r.pid, r.title.as_str(), r.session)).collect();
         assert_eq!(
             got,
@@ -3615,10 +3623,10 @@ pub(crate) mod tests {
                 (1, "tarae", None),
                 (10, "elsewhere", None),
                 (11, "sleep", None),
-                (0, "main", Some(0)),
-                (0, "ra-swap", Some(1)),
-                (8, "claude's command · left running", Some(1)),
-                (9, "swap-helper", Some(1)),
+                (0, "main", Some(WorkspaceId::HOME)),
+                (0, "ra-swap", Some(WorkspaceId::here(1))),
+                (8, "claude's command · left running", Some(WorkspaceId::here(1))),
+                (9, "swap-helper", Some(WorkspaceId::here(1))),
             ]
         );
     }
@@ -3788,12 +3796,12 @@ pub(crate) mod tests {
             before,
         ]);
         let groups = [
-            Group { id: 0, name: "main".into(), root: "/w".into() },
-            Group { id: 1, name: "fix".into(), root: "/wt/fix".into() },
+            Group { id: WorkspaceId::HOME, name: "main".into(), root: "/w".into() },
+            Group { id: WorkspaceId::here(1), name: "fix".into(), root: "/wt/fix".into() },
         ];
         let rows = rows(&s, &[], 1, &[], &groups, 1_000 + STRAY_AFTER.as_secs() + 60);
         let r = |pid| rows.iter().find(|r| r.pid == pid).unwrap();
-        assert_eq!((r(5).title.as_str(), r(5).session), ("java · left by a run", Some(1)));
+        assert_eq!((r(5).title.as_str(), r(5).session), ("java · left by a run", Some(WorkspaceId::here(1))));
         assert_eq!(r(5).what, "left by a run of Claude's in /wt/fix/app");
         assert_eq!(r(8).what, "left by a run of Claude's before tarae restarted");
         let found = Procs::default().check(&rows, &[], Instant::now()).0;
@@ -3948,7 +3956,7 @@ pub(crate) mod tests {
         let watch = crate::sandbox::Watch::spawned_for_test("sleep", "5");
         let wpid = watch.pid().expect("its child");
         let policy = crate::sandbox::Policy::for_project(&crate::sandbox::Env::default());
-        ed.session.task_run.as_mut().unwrap().guard =
+        ed.workspace.task_run.as_mut().unwrap().guard =
             Some(crate::sandbox::Guard::In(Box::new(crate::sandbox::Policy {
                 watch: Some(watch),
                 ..policy
@@ -4117,7 +4125,7 @@ pub(crate) mod tests {
         // before the trap and it died: a Linux flake)
         let cmd = "sh -c 'trap \"\" TERM; echo $$ > left.pid; exec sleep 8' & echo started; wait".to_string();
         ed.task_start(crate::task::Task { name: "holder".into(), cmd, cwd: dir.clone() });
-        let pid = ed.session.task_run.as_ref().and_then(|r| r.pid()).expect("its process");
+        let pid = ed.workspace.task_run.as_ref().and_then(|r| r.pid()).expect("its process");
         let left = dir.join("left.pid");
         settle(&mut ed, |_| std::fs::read_to_string(&left).is_ok_and(|s| s.ends_with('\n')));
         let child: i32 = std::fs::read_to_string(&left).unwrap().trim().parse().unwrap();
@@ -4137,9 +4145,9 @@ pub(crate) mod tests {
         let reaped = gone(pid as i32);
         let still = !gone(child);
         settle(&mut ed, |ed| {
-            ed.session.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
+            ed.workspace.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
         });
-        let ended = ed.session.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running);
+        let ended = ed.workspace.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running);
         // SAFETY: the `sleep` this test's own command left behind (its pid from its own file).
         unsafe { libc::kill(child, libc::SIGKILL) };
         std::fs::remove_dir_all(&dir).ok();
@@ -4156,7 +4164,7 @@ pub(crate) mod tests {
     #[test]
     fn procs_heads_each_session_and_acts_on_the_right_ones() {
         let (mut ed, root) = with_server("groups");
-        (ed.session.root, ed.session.name) = (root.clone(), "base".into());
+        (ed.workspace.root, ed.workspace.name) = (root.clone(), "base".into());
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         let front = ed.doc().lsp.client.expect("attached");
@@ -4165,33 +4173,34 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&second).unwrap();
         std::fs::write(second.join("main.rs"), "fn main() {}\n").unwrap();
         std::fs::write(second.join("Cargo.toml"), "[package]\nname = \"t\"\n").unwrap();
-        let id = ed.session_open(&second).unwrap();
-        ed.session.name = "second".into();
-        ed.open(&ed.session.root.join("main.rs")).unwrap();
+        let id = ed.workspace_open(&second).unwrap();
+        ed.workspace.name = "second".into();
+        ed.open(&ed.workspace.root.join("main.rs")).unwrap();
         let behind = ed.doc().lsp.client.expect("its own server");
         assert_ne!(front, behind);
         crate::chat::open(&mut ed);
-        ed.session_switch(0);
-        let chat_of = |ed: &Editor, l: SessionId| {
-            let session = std::iter::once(&ed.session).chain(&ed.sessions).find(|x| x.id == l).unwrap();
-            session.chat.as_ref().and_then(crate::chat::Chat::pid)
+        ed.workspace_switch(WorkspaceId::HOME);
+        let chat_of = |ed: &Editor, l: WorkspaceId| {
+            let session = std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|x| x.id == l).unwrap();
+            session.claude.chat.as_ref().and_then(crate::chat::Chat::pid)
         };
-        let (chat0, chat1) = (chat_of(&ed, 0).expect("its claude"), chat_of(&ed, id).expect("its claude"));
+        let (chat0, chat1) =
+            (chat_of(&ed, WorkspaceId::HOME).expect("its claude"), chat_of(&ed, id).expect("its claude"));
         crate::typed::execute(&mut ed, "procs").unwrap();
         let listed = |ed: &Editor, c| ed.procs.rows.iter().position(|r| r.kind == Kind::Lsp(c));
         let has = |ed: &Editor, pid| ed.procs.rows.iter().any(|r| r.pid == pid);
         settle(&mut ed, |ed| {
             listed(ed, front).is_some() && listed(ed, behind).is_some() && has(ed, chat0) && has(ed, chat1)
         });
-        let session_of =
+        let workspace_of =
             |ed: &Editor, pid| ed.procs.rows.iter().find(|r| r.pid == pid).and_then(|r| r.session);
         assert_eq!(
-            (session_of(&ed, chat0), session_of(&ed, chat1)),
-            (Some(0), Some(id)),
+            (workspace_of(&ed, chat0), workspace_of(&ed, chat1)),
+            (Some(WorkspaceId::HOME), Some(id)),
             "each chat its own"
         );
         let at = |ed: &Editor, k: Kind| ed.procs.rows.iter().position(|r| r.kind == k).expect("listed");
-        let (head0, head1) = (at(&ed, Kind::Session(0)), at(&ed, Kind::Session(id)));
+        let (head0, head1) = (at(&ed, Kind::Session(WorkspaceId::HOME)), at(&ed, Kind::Session(id)));
         let (s0, s1) = (at(&ed, Kind::Lsp(front)), at(&ed, Kind::Lsp(behind)));
         assert!(head0 < s0 && s0 < head1 && head1 < s1, "each server under its heading: {:?}", ed.procs.rows);
         assert_eq!(ed.procs.rows[head1].title, "second");
@@ -4215,7 +4224,7 @@ pub(crate) mod tests {
         keys(&mut ed, "s");
         assert_eq!(
             ed.status.as_ref().map(|s| s.0.as_str()),
-            Some("second is a session — :session-end ends it")
+            Some("second is a session — :workspace-end ends it")
         );
         keys(&mut ed, &"j ".repeat(s1 - head1));
         keys(&mut ed, "s");
@@ -4231,7 +4240,11 @@ pub(crate) mod tests {
         keys(&mut ed, &"j ".repeat(c1));
         keys(&mut ed, "s");
         settle(&mut ed, |ed| chat_of(ed, id).is_none());
-        assert_eq!((chat_of(&ed, 0), chat_of(&ed, id)), (Some(chat0), None), "the one behind stopped");
+        assert_eq!(
+            (chat_of(&ed, WorkspaceId::HOME), chat_of(&ed, id)),
+            (Some(chat0), None),
+            "the one behind stopped"
+        );
         let said = ed.toasts.last().map(|t| t.text.as_str());
         assert_eq!(said, Some("second · claude stopped · the chat's next message starts it again"));
         // `l` on a heading: that session to the front (its row now — what the processes started since, a
@@ -4240,7 +4253,7 @@ pub(crate) mod tests {
         keys(&mut ed, "g");
         keys(&mut ed, &"j ".repeat(head1));
         keys(&mut ed, "l");
-        assert_eq!(ed.session.id, id, "brought to the front");
+        assert_eq!(ed.workspace.id, id, "brought to the front");
         drop(ed);
         std::fs::remove_dir_all(root).ok();
         std::fs::remove_dir_all(second).ok();

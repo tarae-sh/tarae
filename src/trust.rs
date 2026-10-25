@@ -47,11 +47,11 @@ pub const RISKY: [&str; 23] = [
     // (a project turning it back on when the user turned it off)
     "llm.screen-terminal",
     // (where a checkout of the project's files is written — a launch agents folder would run them)
-    "session.worktrees",
+    "workspace.worktrees",
     // (a command run outside the sandbox at every session's end)
-    "session.ended",
+    "workspace.ended",
     // (files moved into the main checkout at every session's end)
-    "session.keep",
+    "workspace.keep",
     // (what a code review holds for a person's look before a bring — `risk.rs`)
     "review.risky",
 ];
@@ -95,8 +95,8 @@ pub fn yours_only(setting: &str) -> bool {
 }
 
 /// `:` commands only your own keys run (or you, typed): they switch who pays for Claude, or read a file you name
-/// (`session-apply`'s patch). A project's key binding to one is left out (`config.rs`).
-pub const YOURS_ONLY_COMMANDS: [&str; 2] = ["session-billing", "session-apply"];
+/// (`workspace-apply`'s patch). A project's key binding to one is left out (`config.rs`).
+pub const YOURS_ONLY_COMMANDS: [&str; 2] = ["session-billing", "workspace-apply"];
 
 /// Whether the `:` line `line` (no `:`) runs one of `YOURS_ONLY_COMMANDS`.
 pub fn yours_only_command(line: &str) -> bool {
@@ -994,7 +994,7 @@ impl crate::editor::Editor {
         // (what's decided: the settings, under the line naming the file)
         crate::offer::Offer::new(
             TITLE.into(),
-            &question(&self.session.root, p),
+            &question(&self.workspace.root, p),
             "",
             "Project settings".into(),
             what,
@@ -1330,7 +1330,7 @@ mod tests {
             "editor.restart-binary",
             "llm.command",
             "llm.args",
-            "session.ended",
+            "workspace.ended",
         ];
         for s in starts {
             assert!(crate::settings::SETTINGS.iter().any(|x| x.path == s), "{s} is a setting");

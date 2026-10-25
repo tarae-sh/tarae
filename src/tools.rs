@@ -121,12 +121,12 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
         "tools/list" => {
             sandbox_look(ed);
             // (the edit tools its process was started with — `Chat.edit_tools`)
-            let arm = ed.session.chat.as_ref().map_or(ed.config.llm.edit_tools, |c| c.edit_tools);
+            let arm = ed.workspace.claude.chat.as_ref().map_or(ed.config.llm.edit_tools, |c| c.edit_tools);
             Ok(list(arm))
         }
         "tools/call" => {
             // (side by side with another call still unanswered? — `calls.rs`; `sized` sees it answered)
-            ed.session.usage.tally.mcp_came();
+            ed.workspace.claude.usage.tally.mcp_came();
             let params = &msg["params"];
             let args = &params["arguments"];
             // (a key in tarae's own namespace is never Claude's to send — what a call was granted stays on tarae's
@@ -173,13 +173,13 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
                     if matches!(name, "rename" | "replace" | "edit") {
                         crate::chat::claim_for(ed, &format!("mcp__tarae__{name}"), args, &id);
                     }
-                    // (watched while it waits — one silent too long marks its session: `session::Doing::Stuck`)
+                    // (watched while it waits — one silent too long marks its session: `workspace::Doing::Stuck`)
                     let tool = WATCHED.into_iter().find(|t| *t == name).unwrap_or("tool");
                     let wait = match name {
                         "diagnostics" => args["wait"].as_u64().unwrap_or(0).min(crate::nav::WAIT_MAX),
                         _ => 0,
                     };
-                    let after = crate::session::STUCK_AFTER + std::time::Duration::from_secs(wait);
+                    let after = crate::workspace::STUCK_AFTER + std::time::Duration::from_secs(wait);
                     ed.tool_waits(generation, id.clone(), tool, after);
                     let asked = match name {
                         "rename" => crate::refactor::rename(ed, call, args),
@@ -196,7 +196,7 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
                     match asked {
                         Ok(()) => return None,
                         Err(e) => {
-                            ed.session.tool_waits.retain(|w| !w.is(generation, &id));
+                            ed.workspace.claude.tool_waits.retain(|w| !w.is(generation, &id));
                             Err(e)
                         }
                     }
@@ -277,13 +277,13 @@ pub(crate) fn annotated(mut schema: Value) -> Value {
     schema
 }
 
-/// A result of `tool` going to the chat of `ed.session`: its size (`len` bytes of text, a picture as its tokens'
+/// A result of `tool` going to the chat of `ed.workspace`: its size (`len` bytes of text, a picture as its tokens'
 /// worth — `parts_len`) logged and counted, with how many `pictures` it carries — `output`, a run's whole output
 /// beside it.
 fn sized(ed: &mut Editor, tool: &str, len: usize, output: Option<usize>, pictures: usize) {
-    let session = ed.session.log();
-    ed.session.usage.tool_result(&session, tool, len, output, pictures);
-    ed.session.usage.tally.mcp_answered();
+    let session = ed.workspace.log();
+    ed.workspace.claude.usage.tool_result(&session, tool, len, output, pictures);
+    ed.workspace.claude.usage.tally.mcp_answered();
 }
 
 /// A tool's text as MCP content (Err = a tool error Claude can correct).
@@ -408,32 +408,33 @@ pub fn answer_parts(ed: &mut Editor, call: Call, r: Result<Vec<Part>, String>) {
     deliver(ed, call, r);
 }
 
-/// `answer`'s way to its chat: the session in `ed.session` if it's that chat's, else that session swapped in — or,
+/// `answer`'s way to its chat: the session in `ed.workspace` if it's that chat's, else that session swapped in — or,
 /// while another session behind is swapped in, from the main loop next (never a swap inside a swap). That
 /// next turn is the owner's own event (`Event::For`, swapped in for it, so delivered at once), so it's one
 /// hop, never a loop.
 fn deliver(ed: &mut Editor, call: Call, r: Result<Vec<Part>, String>) {
-    let owner = std::iter::once(&ed.session)
-        .chain(&ed.sessions)
-        .find(|l| l.chat.as_ref().is_some_and(|c| c.generation() == call.generation))
+    let owner = std::iter::once(&ed.workspace)
+        .chain(&ed.workspaces)
+        .find(|l| l.claude.chat.as_ref().is_some_and(|c| c.generation() == call.generation))
         .map(|l| l.id);
     match owner {
         // (its chat is gone, or another process took its place)
         None => {}
-        Some(session) if session == ed.session.id => {
-            ed.session.tool_waits.retain(|w| !w.is(call.generation, &call.id));
+        Some(session) if session == ed.workspace.id => {
+            ed.workspace.claude.tool_waits.retain(|w| !w.is(call.generation, &call.id));
             let (len, pictures) = r.as_ref().map_or_else(|e| (e.len(), 0), |p| (parts_len(p), pictures(p)));
             sized(ed, &call.tool, len, call.output, pictures);
             let response = response(&call, r);
             crate::chat::respond(ed, &call.request_id, json!({ "mcp_response": response }));
         }
         Some(session) if !ed.background() => {
-            ed.with_session(session, move |ed| deliver(ed, call, r));
+            ed.with_workspace(session, move |ed| deliver(ed, call, r));
         }
-        // (its own event, the answer its whole work — `for_session`: nothing of it on screen, no frame)
+        // (its own event, the answer its whole work — `for_workspace`: nothing of it on screen, no frame)
         Some(session) => {
             let later = move |ed: &mut Editor| deliver(ed, call, r);
-            let _ = ed.events.shared_sender().send(crate::event::Event::For(session, Box::new(later)));
+            let tag = ed.claude_of(session);
+            let _ = ed.events.shared_sender().send(crate::event::Event::For(session, tag, Box::new(later)));
         }
     }
 }
@@ -475,15 +476,15 @@ pub(crate) fn run_tests_schema() -> Value {
 /// the run's end (`tests_done`); tests running already, it waits for them (`queued.rs`). Err = answered now.
 fn run_tests(ed: &mut Editor, call: Call, args: &Value) -> Result<(), String> {
     let path = args["path"].as_str().filter(|p| !p.is_empty()).ok_or("path is required")?;
-    let path = crate::chat::resolve(&ed.session.root, path);
+    let path = crate::chat::resolve(&ed.workspace.root, path);
     let line = args["line"].as_u64().map(|l| l.max(1) as usize - 1);
-    let what = crate::chat::shown(&ed.session.root, &path);
+    let what = crate::chat::shown(&ed.workspace.root, &path);
     let what = line.map_or(what.clone(), |l| format!("{what}:{}", l + 1));
     let mut call = call;
     call.trace = Some(crate::trace::RunTrace::new(format!("claude's tests: {what}")));
     // The buffer's text when it's open (unsaved edits are what gets saved and run)
     let text = ed.docs.iter().find(|d| d.path.as_deref() == Some(path.as_path())).map(|d| d.text.clone());
-    let root = ed.session.root.clone();
+    let root = ed.workspace.root.clone();
     ed.events.jobs().spawn(move || {
         let found = find(&root, &path, text, line);
         move |ed: &mut Editor| match found {
@@ -567,7 +568,7 @@ fn start_tests(
     };
     // (Claude's tests, the user's run of them again too — as `task_start_for` has Claude's command)
     ed.test_start_guarded(target, guard, trace, crate::spawn::Acts::Claude);
-    match ed.session.test_run.as_mut().filter(|_| ed.test_generation != before) {
+    match ed.workspace.test_run.as_mut().filter(|_| ed.test_generation != before) {
         Some(r) => {
             match who {
                 For::Claude(call) => r.chat = Some(call),
@@ -634,21 +635,21 @@ impl Waited<'_> {
 /// shows the first failure. One the user ran again (`blocked.rs`): Claude hears how it ended with the next
 /// message.
 pub fn tests_done(ed: &mut Editor) {
-    let failed = ed.session.test_run.as_ref().is_some_and(|r| matches!(r.state, RunState::Failed(_)));
+    let failed = ed.workspace.test_run.as_ref().is_some_and(|r| matches!(r.state, RunState::Failed(_)));
     let known = rules_known(ed, failed);
-    let Some(r) = ed.session.test_run.as_mut() else { return };
+    let Some(r) = ed.workspace.test_run.as_mut() else { return };
     let said = r.guard.as_ref().map(|g| g.report_with(&r.output.to_vec(), known, !failed));
     let guard = said.as_ref().map(|s| format!("\n{}\n", s.text)).unwrap_or_default();
     let loopback = said.as_ref().filter(|_| failed).and_then(|s| loopback_of(&s.open));
     if let Some(head) = r.tell.take() {
-        let text = report(&ed.session.root, r, Waited::No) + &guard;
+        let text = report(&ed.workspace.root, r, Waited::No) + &guard;
         rules_told(ed, said.as_ref());
         return told(ed, head, text);
     }
     let joined = std::mem::take(&mut r.joined);
     let Some(call) = r.chat.take() else { return };
     let snap = r.snap.take();
-    let root = ed.session.root.clone();
+    let root = ed.workspace.root.clone();
     let text = report(&root, r, Waited::of(r.started, r.queued.as_ref(), None)) + &guard;
     let others: Vec<(Call, String)> = joined
         .into_iter()
@@ -701,16 +702,16 @@ pub fn tests_done(ed: &mut Editor) {
 /// command still waiting for the user's yes is no longer asked about. What the turn's calls left running
 /// (`Left`, for `left_running`).
 pub fn turn_over(ed: &mut Editor) -> Vec<Left> {
-    let left = left_of(&ed.session);
-    ed.session.tool_waits.clear();
+    let left = left_of(&ed.workspace);
+    ed.workspace.claude.tool_waits.clear();
     crate::queued::turn_over(ed);
     // (nothing waits on a card any more — its cards go below)
-    ed.session.asking.clear();
-    if let Some(r) = ed.session.test_run.as_mut() {
+    ed.workspace.claude.asking.clear();
+    if let Some(r) = ed.workspace.test_run.as_mut() {
         r.chat = None;
         r.joined.clear();
     }
-    if let Some(r) = ed.session.task_run.as_mut() {
+    if let Some(r) = ed.workspace.task_run.as_mut() {
         r.chat = None;
         r.joined.clear();
     }
@@ -742,7 +743,7 @@ pub struct Left {
 }
 
 /// The runs in session `l`'s slots a call of its turn waits on, still going.
-fn left_of(l: &crate::session::Session) -> Vec<Left> {
+fn left_of(l: &crate::workspace::Workspace) -> Vec<Left> {
     use crate::queued::Slot;
     let task = l.task_run.as_ref().filter(|r| r.chat.is_some() && r.state == crate::task::State::Running);
     let tests = l.test_run.as_ref().filter(|r| r.chat.is_some() && r.state == RunState::Running);
@@ -757,7 +758,7 @@ fn left_of(l: &crate::session::Session) -> Vec<Left> {
 }
 
 /// Whether `run` still goes in session `l` (the same run: started then).
-fn still_going(l: &crate::session::Session, run: &Left) -> bool {
+fn still_going(l: &crate::workspace::Workspace, run: &Left) -> bool {
     match run.slot {
         crate::queued::Slot::Task => l
             .task_run
@@ -807,7 +808,7 @@ pub fn left_running(ed: &mut Editor, left: Vec<Left>) {
 /// `y` on that card: each of its runs still going stops (as `space m c` / `space x c` do) — what waits in
 /// its slot goes next.
 pub fn left_stop(ed: &mut Editor, runs: &[Left]) {
-    let going: Vec<&Left> = runs.iter().filter(|r| still_going(&ed.session, r)).collect();
+    let going: Vec<&Left> = runs.iter().filter(|r| still_going(&ed.workspace, r)).collect();
     if going.is_empty() {
         return ed.set_status("they had ended already");
     }
@@ -825,12 +826,12 @@ pub fn left_stop(ed: &mut Editor, runs: &[Left]) {
 /// A run ended, or a slot freed (`queued::run_next`): the card about runs a stopped turn left goes once none of
 /// them goes on.
 pub fn left_sync(ed: &mut Editor) {
-    let ended = |l: &crate::session::Session, w: &crate::offer::What| matches!(w, crate::offer::What::LeftRunning { runs } if !runs.iter().any(|r| still_going(l, r)));
-    if !ed.session_cards().any(|o| ended(&ed.session, &o.what)) {
+    let ended = |l: &crate::workspace::Workspace, w: &crate::offer::What| matches!(w, crate::offer::What::LeftRunning { runs } if !runs.iter().any(|r| still_going(l, r)));
+    if !ed.session_cards().any(|o| ended(&ed.workspace, &o.what)) {
         return;
     }
     // (what goes on now, apart from the editor the drop borrows)
-    let l = &ed.session;
+    let l = &ed.workspace;
     let going: Vec<Left> = [crate::queued::Slot::Task, crate::queued::Slot::Tests]
         .into_iter()
         .filter_map(|slot| {
@@ -853,7 +854,7 @@ pub fn left_sync(ed: &mut Editor) {
 
 /// A run Claude waited on is gone before it ended (closed, or another run took its place).
 pub fn tests_dropped(ed: &mut Editor, why: &str) {
-    let Some(r) = ed.session.test_run.as_mut() else { return };
+    let Some(r) = ed.workspace.test_run.as_mut() else { return };
     let joined = std::mem::take(&mut r.joined);
     let silent = (r.state == RunState::Running)
         .then(|| crate::waits::silent_line(r.last_output, Instant::now()))
@@ -1092,8 +1093,8 @@ fn also_grant(
 /// The environment the session's last sandboxed run got (its command's or its tests', the newer) — what `also`'s
 /// variable is judged by.
 fn last_run_env(ed: &Editor) -> Option<crate::sandbox::runenv::RunEnv> {
-    let task = ed.session.task_run.as_ref().and_then(|r| Some((r.started, r.guard.as_ref()?.run_env()?)));
-    let test = ed.session.test_run.as_ref().and_then(|r| Some((r.started, r.guard.as_ref()?.run_env()?)));
+    let task = ed.workspace.task_run.as_ref().and_then(|r| Some((r.started, r.guard.as_ref()?.run_env()?)));
+    let test = ed.workspace.test_run.as_ref().and_then(|r| Some((r.started, r.guard.as_ref()?.run_env()?)));
     let newest = match (task, test) {
         (Some(a), Some(b)) => Some(if a.0 >= b.0 { a.1 } else { b.1 }),
         (a, b) => a.or(b).map(|t| t.1),
@@ -1146,8 +1147,8 @@ fn last_run_keys(ed: &Editor) -> Option<crate::sandbox::KeyRules> {
             _ => None,
         }
     }
-    let task = ed.session.task_run.as_ref().and_then(|r| Some((r.started, of(r.guard.as_ref())?)));
-    let test = ed.session.test_run.as_ref().and_then(|r| Some((r.started, of(r.guard.as_ref())?)));
+    let task = ed.workspace.task_run.as_ref().and_then(|r| Some((r.started, of(r.guard.as_ref())?)));
+    let test = ed.workspace.test_run.as_ref().and_then(|r| Some((r.started, of(r.guard.as_ref())?)));
     let newest = match (task, test) {
         (Some(a), Some(b)) => Some(if a.0 >= b.0 { a.1 } else { b.1 }),
         (a, b) => a.or(b).map(|t| t.1),
@@ -1219,18 +1220,19 @@ fn also_ask(
     }
     // (the terminals again after the user's yes on them this turn: a card as ever, but not one of the turn's
     // `ALSO_MAX` — frictions29 23: every e2e or scenes run asks, and turns ended unable to run a test again)
-    let again = matches!(ask, AlsoAsk::Terminals) && ed.session.chat.as_ref().is_some_and(|c| c.also_yes);
-    if !again && ed.session.chat.as_ref().is_some_and(|c| c.also_asked >= ALSO_MAX) {
+    let again =
+        matches!(ask, AlsoAsk::Terminals) && ed.workspace.claude.chat.as_ref().is_some_and(|c| c.also_yes);
+    if !again && ed.workspace.claude.chat.as_ref().is_some_and(|c| c.also_asked >= ALSO_MAX) {
         return Err(format!(
             "{ALSO_MAX} cards for also this turn already — tell the user what the command needs instead"
         ));
     }
     // (its place among the turn's cards taken now — calls sent together each count — given back if no card comes)
-    if let Some(c) = ed.session.chat.as_mut().filter(|_| !again) {
+    if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|_| !again) {
         c.also_asked += 1;
     }
     let give_back = move |ed: &mut Editor| {
-        if let Some(c) = ed.session.chat.as_mut().filter(|_| !again) {
+        if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|_| !again) {
             c.also_asked = c.also_asked.saturating_sub(1);
         }
     };
@@ -1240,7 +1242,7 @@ fn also_ask(
     // (its card runs the command on any answer but `n`: what `in_sandbox` looks at for a run is looked at for it —
     // D4's warnings that ask, and where a move takes an unseen file; a host's yes lets it reach out)
     let host = matches!(ask, AlsoAsk::Network(..));
-    let (unseen, reach, root) = (unseen_now(ed), could_reach_out(ed, host), ed.session.root.clone());
+    let (unseen, reach, root) = (unseen_now(ed), could_reach_out(ed, host), ed.workspace.root.clone());
     let env = last_run_env(ed);
     // (the runs' rule for the files named like keys: the last run's — none yet, as one would have it now)
     let keys = last_run_keys(ed);
@@ -1269,7 +1271,7 @@ fn also_ask(
         move |ed: &mut Editor| {
             call.step("what also asks for looked at");
             // (the turn ended meanwhile: nobody waits for it — and its count went with the turn)
-            if ed.session.chat.as_ref().is_some_and(|c| c.generation() != call.generation || !c.busy()) {
+            if ed.workspace.claude.chat.as_ref().is_some_and(|c| c.generation() != call.generation || !c.busy()) {
                 return;
             }
             let g = match grant {
@@ -1288,7 +1290,7 @@ fn also_ask(
                 }
                 Ok(Some(g)) => g,
             };
-            if ed.session.chat.as_ref().is_some_and(|c| c.also_refused.contains(&g)) {
+            if ed.workspace.claude.chat.as_ref().is_some_and(|c| c.also_refused.contains(&g)) {
                 give_back(ed);
                 let no = format!(
                     "The user said no to letting your commands {} in this chat — don't ask for it again. If the \
@@ -1866,12 +1868,13 @@ pub(crate) fn run(ed: &mut Editor, call: Call, args: &Value) -> Result<(), Strin
     // (Docker's never is: it's as much as the sandbox off — #193)
     let allowed_socket = |b: &Beyond| {
         b.socket.as_ref().is_some_and(|s| {
-            !outside_socket(s) && ed.session.chat.as_ref().is_some_and(|c| c.allowed.sockets.contains(s))
+            !outside_socket(s)
+                && ed.workspace.claude.chat.as_ref().is_some_and(|c| c.allowed.sockets.contains(s))
         })
     };
     let outside = outside.filter(|b| !allowed_socket(b));
     let also = also_of(args)?;
-    let cwd = run_cwd(&ed.session.root, args["cwd"].as_str())?;
+    let cwd = run_cwd(&ed.workspace.root, args["cwd"].as_str())?;
     let mut call = call;
     call.trace = Some(crate::trace::RunTrace::new(format!("claude's run: {}", crate::task::traced(cmd))));
     // One thing past the session's capabilities: its grant card (P3)
@@ -1887,7 +1890,7 @@ pub(crate) fn run(ed: &mut Editor, call: Call, args: &Value) -> Result<(), Strin
             return Err(format!("base {rev}: give a commit — HEAD, a branch, a sha"));
         }
         // (one at a time: they'd write the same tree)
-        let s = &ed.session;
+        let s = &ed.workspace;
         let base_run = |r: &Ride| r.extra.base.is_some();
         if s.base_writing
             || s.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running && r.base.is_some())
@@ -1903,8 +1906,8 @@ pub(crate) fn run(ed: &mut Editor, call: Call, args: &Value) -> Result<(), Strin
                  back whole): `{cmd}` isn't one. Run it in the project, or ask the user"
             ));
         }
-        let rel = cwd.strip_prefix(&ed.session.root).unwrap_or(Path::new("")).to_path_buf();
-        let folder = crate::basetree::folder_for(&ed.session.root, ed.base_trees.as_deref())
+        let rel = cwd.strip_prefix(&ed.workspace.root).unwrap_or(Path::new("")).to_path_buf();
+        let folder = crate::basetree::folder_for(&ed.workspace.root, ed.base_trees.as_deref())
             .ok_or("no cache folder for the tree (neither XDG_CACHE_HOME nor HOME)")?;
         let tree = folder.join("tree");
         let base = crate::basetree::Base { rev: rev.to_string(), tree: tree.clone(), ..Default::default() };
@@ -1918,7 +1921,7 @@ pub(crate) fn run(ed: &mut Editor, call: Call, args: &Value) -> Result<(), Strin
         Some(_) => call,
         None => {
             let key = crate::queued::key_of(
-                &ed.session.root,
+                &ed.workspace.root,
                 &Job::Command(cmd.to_string(), cwd.clone()),
                 &Extra::default(),
             );
@@ -1938,7 +1941,7 @@ pub(crate) fn run(ed: &mut Editor, call: Call, args: &Value) -> Result<(), Strin
     if outside.is_none()
         && let Some(kind) = unsandboxed_kind(ed)
     {
-        match ed.session.no_sandbox {
+        match ed.workspace.claude.no_sandbox {
             None => {
                 guarded(ed, call, Job::Command(cmd.to_string(), cwd), false);
                 return Ok(());
@@ -1952,7 +1955,7 @@ pub(crate) fn run(ed: &mut Editor, call: Call, args: &Value) -> Result<(), Strin
     // was allowed, are looked at as for any read — anything off and it's the card.
     let socket = outside.as_ref().and_then(|b| b.socket.clone());
     let whole = outside.as_ref().is_some_and(|b| b.socket.is_none());
-    let chat = ed.session.chat.as_ref();
+    let chat = ed.workspace.claude.chat.as_ref();
     let allowed_again =
         !whole && chat.is_some_and(|c| c.run_again.iter().any(|r| r.covers(&cwd, socket.as_deref(), cmd)));
     // (D2: a warning doesn't take `a` back — but one whose data says `asks`, it does: reaching beyond this
@@ -2077,7 +2080,7 @@ fn card(
     if unseen.is_empty() && scripts.is_empty() && yes.is_none() {
         return ask_with(ed, cmd, cwd, call, Default::default(), (Vec::new(), why), outside);
     }
-    let root = ed.session.root.clone();
+    let root = ed.workspace.root.clone();
     // (past the sandbox — outside it whole, or with a socket: Docker's is root's, and what any service behind
     // one does with the project the sandbox can't bound — the project's whole diff since, as outside)
     let whole = outside.is_some();
@@ -2092,7 +2095,13 @@ fn card(
         move |ed: &mut Editor| {
             call.step("files it names read");
             // (the turn ended meanwhile: nobody waits for a card)
-            if ed.session.chat.as_ref().is_some_and(|c| c.generation() != call.generation || !c.busy()) {
+            if ed
+                .workspace
+                .claude
+                .chat
+                .as_ref()
+                .is_some_and(|c| c.generation() != call.generation || !c.busy())
+            {
                 return;
             }
             carry(ed, carried);
@@ -2112,11 +2121,15 @@ fn card(
                     };
                     let asks = warned(ed, on).iter().any(|w| w.asks);
                     let request = run_request(ed, outside.as_ref(), &why, asks);
-                    let asked =
-                        crate::cards::Asked::new(why, request).ran(c.run_id(), &cmd, &cwd, &ed.session.root);
-                    let session = ed.session.log();
+                    let asked = crate::cards::Asked::new(why, request).ran(
+                        c.run_id(),
+                        &cmd,
+                        &cwd,
+                        &ed.workspace.root,
+                    );
+                    let session = ed.workspace.log();
                     let at = (session.name(), std::time::SystemTime::now());
-                    let entry = crate::cards::refused(&asked, &e, at, ed.session.caps());
+                    let entry = crate::cards::refused(&asked, &e, at, ed.workspace.claude.caps());
                     ed.cards_record(vec![entry]);
                     answer(ed, c, Err(e));
                     return;
@@ -2133,7 +2146,7 @@ fn card(
 
 /// The files Claude wrote unseen this turn, and those its moves carried that weren't text (real paths).
 fn unseen_now(ed: &Editor) -> Vec<PathBuf> {
-    let checkpoints = &ed.session.checkpoints;
+    let checkpoints = &ed.workspace.claude.checkpoints;
     let turn = checkpoints.turn.iter().filter(|t| t.unseen).map(|t| t.path.clone());
     turn.chain(checkpoints.carried.iter().cloned()).collect()
 }
@@ -2167,7 +2180,7 @@ fn carry(ed: &mut Editor, carried: Carried) {
     for (path, before) in carried {
         match before {
             Ok(before) => crate::checkpoint::record_unseen(ed, path, before, |_: &mut Editor| {}),
-            Err(()) => ed.session.checkpoints.carried.push(path),
+            Err(()) => ed.workspace.claude.checkpoints.carried.push(path),
         }
     }
 }
@@ -2196,7 +2209,7 @@ fn in_sandbox(ed: &mut Editor, call: Call, cmd: String, cwd: PathBuf) -> Result<
     if let Some(d) = crate::cards::decide_now(&request).filter(|_| !reach && !moves) {
         return in_sandbox_decided(ed, call, (cmd, cwd), d, Vec::new());
     }
-    let (basis, root) = (ed.caps_basis(), ed.session.root.clone());
+    let (basis, root) = (ed.caps_basis(), ed.workspace.root.clone());
     ed.events.jobs().spawn(move || {
         let caps = basis.build();
         let scripts = match reach {
@@ -2207,7 +2220,13 @@ fn in_sandbox(ed: &mut Editor, call: Call, cmd: String, cwd: PathBuf) -> Result<
         move |ed: &mut Editor| {
             call.step("what the session may do looked at");
             // (the turn ended meanwhile: nobody waits for it)
-            if ed.session.chat.as_ref().is_some_and(|c| c.generation() != call.generation || !c.busy()) {
+            if ed
+                .workspace
+                .claude
+                .chat
+                .as_ref()
+                .is_some_and(|c| c.generation() != call.generation || !c.busy())
+            {
                 return;
             }
             carry(ed, carried);
@@ -2274,7 +2293,13 @@ fn answered_before(
     beyond: Option<&Beyond>,
 ) -> Option<crate::sinceyes::Answered> {
     let (key, beyond) = (crate::sinceyes::key(cmd), beyond_of(beyond));
-    ed.session.answered.iter().rev().find(|a| a.key == key && a.cwd == cwd && a.beyond == beyond).cloned()
+    ed.workspace
+        .claude
+        .answered
+        .iter()
+        .rev()
+        .find(|a| a.key == key && a.cwd == cwd && a.beyond == beyond)
+        .cloned()
 }
 
 /// What a card asks past the sandbox, as an answer keeps it: outside it whole, one socket.
@@ -2489,7 +2514,7 @@ fn read_only(
     pins: Option<Vec<(PathBuf, u64)>>,
     (judge, beyond): (String, Option<Beyond>),
 ) -> Result<(), String> {
-    let (basis, root, shellcheck) = (ed.caps_basis(), ed.session.root.clone(), ed.shellcheck.clone());
+    let (basis, root, shellcheck) = (ed.caps_basis(), ed.workspace.root.clone(), ed.shellcheck.clone());
     ed.events.jobs().spawn(move || {
         let caps = basis.build();
         // (what's read unasked, as the line's reads are judged until the gate goes by `caps` itself — piece 4)
@@ -2512,7 +2537,13 @@ fn read_only(
             use crate::cards::Why;
             call.step("where it reads looked at");
             // (the turn ended meanwhile: nobody waits for it)
-            if ed.session.chat.as_ref().is_some_and(|c| c.generation() != call.generation || !c.busy()) {
+            if ed
+                .workspace
+                .claude
+                .chat
+                .as_ref()
+                .is_some_and(|c| c.generation() != call.generation || !c.busy())
+            {
                 return;
             }
             // (a check or git running outside; a script not as it was allowed: its card, as any command's —
@@ -2590,7 +2621,7 @@ pub(crate) fn warned(ed: &Editor, on: WarnOn) -> Vec<crate::cardwarn::Warned> {
                     && std::env::var_os(n).is_some())
         }
     };
-    let root = &ed.session.root;
+    let root = &ed.workspace.root;
     let in_outputs = |w: &str| crate::cardwarn::in_outputs(root, on.cwd, w, crate::sandbox::outputs());
     let facts = crate::cardwarn::Facts {
         cmd: on.cmd,
@@ -2634,7 +2665,7 @@ fn ask_with(
     // What's decided: the command (and where it runs, when not at the root), what it reads outside (one
     // place a line)
     let mut decided = 0..head.matches('\n').count() + cmd.split('\n').count();
-    let folders = runs_in(&ed.session.root, &cwd, &cmd);
+    let folders = runs_in(&ed.workspace.root, &cwd, &cmd);
     if !folders.is_empty() {
         question.push_str(&format!("\n  in {}", folders.join(", ")));
         decided.end += 1;
@@ -2644,7 +2675,7 @@ fn ask_with(
     let texts: Vec<(String, String)> = scripts
         .iter()
         .filter_map(|s| {
-            s.text.as_ref().ok().map(|t| (crate::chat::shown(&ed.session.root, &s.path), t.clone()))
+            s.text.as_ref().ok().map(|t| (crate::chat::shown(&ed.workspace.root, &s.path), t.clone()))
         })
         .collect();
     let script_changed =
@@ -2730,7 +2761,7 @@ fn ask_with(
         && !reads.is_empty()
         && reads.iter().all(|p| crate::allow::keepable(p, home.as_deref()));
     // What `a`/`A` allow: files beside each other (or beside one read once) as their folder (#102)
-    let once = ed.session.chat.as_ref().map(|c| c.read_once.clone()).unwrap_or_default();
+    let once = ed.workspace.claude.chat.as_ref().map(|c| c.read_once.clone()).unwrap_or_default();
     let grants = match keep {
         true => crate::allow::grant_places(&reads, &once, home.as_deref()),
         false => Vec::new(),
@@ -2763,7 +2794,7 @@ fn ask_with(
         let text = text.replace("\r\n", "\n").replace('\t', "    ");
         question.push_str(&format!(
             "\n\n{} — written this turn, unseen:\n{}",
-            crate::chat::shown(&ed.session.root, path),
+            crate::chat::shown(&ed.workspace.root, path),
             text.trim_end_matches('\n')
         ));
     }
@@ -2774,7 +2805,7 @@ fn ask_with(
         match &s.text {
             Ok(text) => question.push_str(&format!(
                 "\n\n{} — what it runs:\n{}",
-                crate::chat::shown(&ed.session.root, &s.path),
+                crate::chat::shown(&ed.workspace.root, &s.path),
                 text.replace("\r\n", "\n").replace('\t', "    ").trim_end_matches('\n')
             )),
             Err(why) => question.push_str(&format!("\n\n{why}")),
@@ -2809,7 +2840,7 @@ fn ask_with(
         (None, None) => "Claude wants to run".to_string(),
     };
     let request = run_request(ed, outside.as_ref(), &why, warned.iter().any(|w| w.asks));
-    let asked = crate::cards::Asked::new(why, request).ran(call.run_id(), &cmd, &cwd, &ed.session.root);
+    let asked = crate::cards::Asked::new(why, request).ran(call.run_id(), &cmd, &cwd, &ed.workspace.root);
     let same = since.as_ref().map(crate::sinceyes::Since::same_as);
     let asked = match &same {
         Some(s) => asked.same_as(s.card, s.unchanged),
@@ -2873,8 +2904,8 @@ fn run_request(
 /// the network open, or a host this session or conversation let through — piece C) — what a warning that `asks`
 /// asks about. Else it runs, and any host it reaches waits on its own card.
 fn could_reach_out(ed: &Editor, past: bool) -> bool {
-    let chat = ed.session.chat.as_ref().is_some_and(|c| !c.allowed.hosts.is_empty());
-    let granted = !ed.session.hosts.is_empty() || chat;
+    let chat = ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.allowed.hosts.is_empty());
+    let granted = !ed.workspace.claude.hosts.is_empty() || chat;
     past || !crate::cards::sandboxed(ed.config.llm.sandbox, &ed.sandbox)
         || crate::cards::reaches_out(&ed.config.llm, granted)
 }
@@ -3076,7 +3107,7 @@ fn not_started(ed: &mut Editor, who: For, joined: Vec<crate::queued::Joined>, wh
 /// conversation, with the chat idle (piece D3, the user's Q2), it goes to Claude now as a message by itself — a
 /// turn the user didn't type; otherwise Claude reads how with the next message. The panel shows it now.
 fn told(ed: &mut Editor, head: String, report: String) {
-    let key = ed.session.chat.as_mut().and_then(|c| {
+    let key = ed.workspace.claude.chat.as_mut().and_then(|c| {
         let at = c.reruns.iter().position(|(h, _)| *h == head)?;
         Some(c.reruns.remove(at).1)
     });
@@ -3087,7 +3118,7 @@ fn told(ed: &mut Editor, head: String, report: String) {
             return ed.note("how it ended went to Claude, which goes on");
         }
     }
-    ed.session.checkpoints.tell.push(text);
+    ed.workspace.claude.checkpoints.tell.push(text);
     ed.note("Claude hears how it ended with your next message");
 }
 
@@ -3097,7 +3128,7 @@ const SENT_BY_ITSELF: &str = "(tarae sent this when the run ended — the user t
 /// Whether the user's run again of `key` goes on to Claude by itself as it ends (piece D3): it was a failed run of
 /// Claude's last turn, the conversation is the one it ran in, and the chat is idle.
 pub fn goes_on(ed: &Editor, key: crate::blocked::RunKey) -> bool {
-    ed.session.chat.as_ref().is_some_and(|c| {
+    ed.workspace.claude.chat.as_ref().is_some_and(|c| {
         !c.busy()
             && c.queued.is_none()
             && c.sends.is_empty()
@@ -3108,7 +3139,7 @@ pub fn goes_on(ed: &Editor, key: crate::blocked::RunKey) -> bool {
 
 /// Claude's run `key` failed in the turn in flight (`Chat.failed`).
 fn failed_in_turn(ed: &mut Editor, key: crate::blocked::RunKey) {
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     if c.failed.0 != c.conversation {
         c.failed = (c.conversation.clone(), Vec::new());
     }
@@ -3233,7 +3264,7 @@ pub fn run_answer(ed: &mut Editor, id: u64, what: RunCard, scope: Option<crate::
         match reads_only {
             true => keep_answer(ed, answered('n', crate::sinceyes::Kept::Reads)),
             false => {
-                let (root, mut a) = (ed.session.root.clone(), answered('n', crate::sinceyes::Kept::Reads));
+                let (root, mut a) = (ed.workspace.root.clone(), answered('n', crate::sinceyes::Kept::Reads));
                 ed.events.jobs().spawn(move || {
                     a.kept = crate::sinceyes::take(&root, &a.cwd, &a.cmd);
                     move |ed: &mut Editor| keep_answer(ed, a)
@@ -3270,7 +3301,7 @@ pub fn run_answer(ed: &mut Editor, id: u64, what: RunCard, scope: Option<crate::
         crate::allow::grant_reads(ed, &grants, scope);
     }
     // (read once: a read beside one later offers their folder)
-    if let Some(c) = ed.session.chat.as_mut().filter(|_| scope == crate::allow::Scope::Once) {
+    if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|_| scope == crate::allow::Scope::Once) {
         c.read_once.extend(reads.iter().filter(|r| !c.read_once.contains(r)).cloned().collect::<Vec<_>>());
     }
     // `a` (or `A` where reads are kept too): this exact command for the rest of this chat — never for good,
@@ -3281,14 +3312,14 @@ pub fn run_answer(ed: &mut Editor, id: u64, what: RunCard, scope: Option<crate::
             .as_ref()
             .is_some_and(|a| !a.scripts.is_empty() || !crate::sinceyes::entry_files(&cmd).is_empty());
     if let (Some(a), true) = (&again, lasting)
-        && let Some(chat) = ed.session.chat.as_mut()
+        && let Some(chat) = ed.workspace.claude.chat.as_mut()
     {
         let r = RunAgain { cwd: cwd.clone(), socket: socket.clone().filter(|_| docker), again: a.clone() };
         if !chat.run_again.contains(&r) {
             chat.run_again.push(r);
         }
         if let Some(s) = socket.as_ref().filter(|_| docker) {
-            ed.session.checkpoints.tell.push(format!(
+            ed.workspace.claude.checkpoints.tell.push(format!(
                 "The user let `{cmd}` connect to the socket {} again for the rest of this conversation — that \
                  command only, word for word (filters after it that only read may differ{}); any other command \
                  with it is asked.",
@@ -3318,7 +3349,7 @@ pub fn run_answer(ed: &mut Editor, id: u64, what: RunCard, scope: Option<crate::
     if shown.is_empty() && !pin {
         return run_now(ed, (cmd, cwd), call, ride);
     }
-    let root = ed.session.root.clone();
+    let root = ed.workspace.root.clone();
     ed.events.jobs().spawn(move || {
         let changed =
             shown.iter().find(|(p, text)| std::fs::read(p).ok().as_deref() != Some(text.as_bytes()));
@@ -3329,7 +3360,7 @@ pub fn run_answer(ed: &mut Editor, id: u64, what: RunCard, scope: Option<crate::
         move |ed: &mut Editor| {
             // (its scripts as they are now, for the chat that asked — one pinned before gives way)
             if let Some(Some(pins)) = &pins
-                && let Some(c) = ed.session.chat.as_mut().filter(|c| c.generation() == call.generation)
+                && let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.generation() == call.generation)
             {
                 c.run_scripts.retain(|(p, _)| !pins.iter().any(|(q, _)| q == p));
                 c.run_scripts.extend(pins.iter().cloned());
@@ -3359,7 +3390,7 @@ pub fn run_answer(ed: &mut Editor, id: u64, what: RunCard, scope: Option<crate::
 
 /// An answer on a run card, kept in the session: the last for its run in its folder, asked the same way.
 fn keep_answer(ed: &mut Editor, a: crate::sinceyes::Answered) {
-    let kept = &mut ed.session.answered;
+    let kept = &mut ed.workspace.claude.answered;
     kept.retain(|o| (&o.key, &o.cwd, &o.beyond) != (&a.key, &a.cwd, &a.beyond));
     kept.push(a);
 }
@@ -3466,21 +3497,21 @@ fn guard_and_go_riding(ed: &mut Editor, who: For, job: Job, ride: Ride) {
 pub(crate) fn guard_then_go(ed: &mut Editor, who: For, job: Job, ride: Ride) {
     // (a protected name a run of Claude's made: its next run waits for the user's look first)
     if let For::Claude(call) = &who
-        && !ed.session.made_protected.is_empty()
+        && !ed.workspace.made_protected.is_empty()
     {
         return ask_made(ed, MadeThen::Claude { job, call: call.clone(), ride: Box::new(ride) });
     }
     // (on a commit's tree: written now, at its turn — a run before it in line may still be using the last)
     if let Some(b) = ride.extra.base.as_ref().filter(|b| b.sha.is_none()) {
-        let (root, b) = (ed.session.root.clone(), b.clone());
+        let (root, b) = (ed.workspace.root.clone(), b.clone());
         if let For::Claude(call) = &who {
             call.step("writing the commit's tree");
         }
-        ed.session.base_writing = true;
+        ed.workspace.base_writing = true;
         return ed.events.jobs().spawn(move || {
             let sha = crate::basetree::export(&root, &b);
             move |ed: &mut Editor| {
-                ed.session.base_writing = false;
+                ed.workspace.base_writing = false;
                 match sha {
                     Ok((sha, claim)) => {
                         let mut ride = ride;
@@ -3505,14 +3536,15 @@ pub(crate) fn guard_then_go(ed: &mut Editor, who: For, job: Job, ride: Ride) {
     }
     let llm = ed.config.llm.clone();
     // (on a commit's tree: that tree is the run's project — it writes there only, its build folder its own)
-    let root = ride.extra.base.as_ref().map_or_else(|| ed.session.root.clone(), |b| b.tree.clone());
+    let root = ride.extra.base.as_ref().map_or_else(|| ed.workspace.root.clone(), |b| b.tree.clone());
     let basis = crate::caps::Basis { root: root.clone(), ..ed.caps_basis() };
     let grant = ride.extra.grant.clone();
     // (a host card's `y` after its run ended: the next run of that conversation's Claude carries it — spent once it
     // goes, below; the user's own runs and one whose turn ended never take it — `hosts::next_run`)
     let next_hosts = match &who {
         For::Claude(call) => ed
-            .session
+            .workspace
+            .claude
             .chat
             .as_ref()
             .filter(|c| c.generation() == call.generation)
@@ -3523,8 +3555,8 @@ pub(crate) fn guard_then_go(ed: &mut Editor, who: For, job: Job, ride: Ride) {
     let spent = next_hosts.clone();
     let said = ed.tokens_said.clone();
     let here = run_here(ed);
-    let (job_run, base, session_root) =
-        (job.clone(), ride.extra.base.as_ref().map(|b| b.tree.clone()), ed.session.root.clone());
+    let (job_run, base, workspace_root) =
+        (job.clone(), ride.extra.base.as_ref().map(|b| b.tree.clone()), ed.workspace.root.clone());
     ed.events.jobs().spawn(move || {
         let found = match found {
             Availability::Unknown => crate::sandbox::probe(),
@@ -3541,7 +3573,7 @@ pub(crate) fn guard_then_go(ed: &mut Editor, who: For, job: Job, ride: Ride) {
             }
             let here = here();
             let mut p = crate::sandbox::policy_from(&root, w, &here)?;
-            p.cwd = run_folder(&job_run, base.as_deref(), &session_root, &p.root);
+            p.cwd = run_folder(&job_run, base.as_deref(), &workspace_root, &p.root);
             // (settings holding a token that take no copy — cargo's: the user hears once — `tokens::tell_holders`)
             told = crate::tokens::to_tell(&p.reads.copies.told, said.as_deref());
             // Its denials watched from before it starts (the stream up first — measured)
@@ -3559,12 +3591,17 @@ pub(crate) fn guard_then_go(ed: &mut Editor, who: For, job: Job, ride: Ride) {
             }
             // (Claude's turn ended meanwhile: nothing waits for it — the slot goes to the next in line)
             if let For::Claude(call) = &who
-                && ed.session.chat.as_ref().is_some_and(|c| c.generation() != call.generation || !c.busy())
+                && ed
+                    .workspace
+                    .claude
+                    .chat
+                    .as_ref()
+                    .is_some_and(|c| c.generation() != call.generation || !c.busy())
             {
                 return crate::queued::run_next(ed);
             }
-            let agreed = ride.unprotected || ed.session.no_sandbox == Some(NoSandbox::Unasked);
-            let never = !ride.unprotected && ed.session.no_sandbox == Some(NoSandbox::Never);
+            let agreed = ride.unprotected || ed.workspace.claude.no_sandbox == Some(NoSandbox::Unasked);
+            let never = !ride.unprotected && ed.workspace.claude.no_sandbox == Some(NoSandbox::Never);
             let policy = match policy {
                 Some(Err(why)) => return not_started(ed, who, ride.joined, why),
                 p => p.and_then(Result::ok),
@@ -3577,7 +3614,7 @@ pub(crate) fn guard_then_go(ed: &mut Editor, who: For, job: Job, ride: Ride) {
                     ask_unprotected(ed, call, job, Unsandboxed::Partial(why), ride)
                 }
                 (Some(p), _, who) => {
-                    if let (For::Claude(call), Some(c)) = (&who, ed.session.chat.as_mut())
+                    if let (For::Claude(call), Some(c)) = (&who, ed.workspace.claude.chat.as_mut())
                         && c.generation() == call.generation
                     {
                         c.hosts_next.retain(|h| !spent.contains(h));
@@ -3621,7 +3658,7 @@ fn go(ed: &mut Editor, who: For, job: Job, guard: Option<Guard>, ride: Ride) {
         Job::Tests(_) => " · before test",
     });
     let turn = |ed: &Editor, call: &Call| {
-        ed.session.chat.as_ref().is_some_and(|c| c.generation() == call.generation && c.busy())
+        ed.workspace.claude.chat.as_ref().is_some_and(|c| c.generation() == call.generation && c.busy())
     };
     let asked_in_turn = matches!(&who, For::Claude(call) if turn(ed, call));
     ed.after_saves(move |ed| {
@@ -3644,7 +3681,7 @@ fn go(ed: &mut Editor, who: For, job: Job, guard: Option<Guard>, ride: Ride) {
         match &who {
             For::Claude(call) if (!reads || ride.answered.is_some()) && !base && !slot_taken(ed, &job) => {
                 call.step("snapshot");
-                let root = ed.session.root.clone();
+                let root = ed.workspace.root.clone();
                 let mut ride = ride;
                 let answered = ride.answered.take();
                 ed.events.jobs().spawn(move || {
@@ -3703,9 +3740,9 @@ fn go_now(ed: &mut Editor, who: For, job: Job, guard: Option<Guard>, ride: Ride)
 fn slot_taken(ed: &Editor, job: &Job) -> bool {
     match job {
         Job::Command(..) => {
-            ed.session.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running)
+            ed.workspace.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running)
         }
-        Job::Tests(_) => ed.session.test_run.as_ref().is_some_and(|r| r.state == RunState::Running),
+        Job::Tests(_) => ed.workspace.test_run.as_ref().is_some_and(|r| r.state == RunState::Running),
     }
 }
 
@@ -3762,7 +3799,7 @@ fn ask_unprotected(ed: &mut Editor, call: Call, job: Job, kind: Unsandboxed, rid
     use crate::cards::{Past, Request, Why};
     let label = job.label();
     // (one asking for the session at a time: a test run's card beside a command's asks for its run)
-    let first = ed.session.no_sandbox.is_none()
+    let first = ed.workspace.claude.no_sandbox.is_none()
         && !ed.offers.iter().any(|o| matches!(o.what, crate::offer::What::NoSandbox { first: true, .. }));
     let (title, there) = match &kind {
         Unsandboxed::Missing(why) => (
@@ -3786,11 +3823,11 @@ fn ask_unprotected(ed: &mut Editor, call: Call, job: Job, kind: Unsandboxed, rid
     call.step("no-sandbox card up");
     let (cmd, cwd) = match &job {
         Job::Command(cmd, cwd) => (cmd.clone(), cwd.clone()),
-        _ => (label.clone(), ed.session.root.clone()),
+        _ => (label.clone(), ed.workspace.root.clone()),
     };
     let request = Request::Run { past: Past::No, sandboxed: false, reads: Vec::new(), outward: false };
     let asked =
-        crate::cards::Asked::new(Why::NoSandbox, request).ran(call.run_id(), &cmd, &cwd, &ed.session.root);
+        crate::cards::Asked::new(Why::NoSandbox, request).ran(call.run_id(), &cmd, &cwd, &ed.workspace.root);
     let what = crate::offer::What::NoSandbox { job, call, ride: Box::new(ride), kind, first };
     let o = crate::offer::Offer::new(title.into(), &question, "", String::new(), what);
     ed.push_offer(o.asked(asked));
@@ -3807,9 +3844,9 @@ pub fn unprotected_answer(
 ) {
     ed.offer_finished(id, Ok(()));
     match (first, answer_is) {
-        (_, Unprotected::ThisSession) => ed.session.no_sandbox = Some(NoSandbox::Unasked),
-        (true, Unprotected::Once) => ed.session.no_sandbox = Some(NoSandbox::Ask),
-        (true, Unprotected::No) => ed.session.no_sandbox = Some(NoSandbox::Never),
+        (_, Unprotected::ThisSession) => ed.workspace.claude.no_sandbox = Some(NoSandbox::Unasked),
+        (true, Unprotected::Once) => ed.workspace.claude.no_sandbox = Some(NoSandbox::Ask),
+        (true, Unprotected::No) => ed.workspace.claude.no_sandbox = Some(NoSandbox::Never),
         (false, _) => {}
     }
     if answer_is != Unprotected::No {
@@ -3871,12 +3908,12 @@ pub fn unprotected_answer(
 /// folder (on a commit's tree, `base`, its folder there), then the line's `cd`s before its first command. None:
 /// outside `policy_root`, a `cd` that can't be followed (a line it can't read that has one), or one after a command
 /// (no one folder holds for the whole output). On a worker (`cd_into` reads the disk).
-fn run_folder(job: &Job, base: Option<&Path>, session_root: &Path, policy_root: &Path) -> Option<PathBuf> {
+fn run_folder(job: &Job, base: Option<&Path>, workspace_root: &Path, policy_root: &Path) -> Option<PathBuf> {
     let cwd = match job {
         Job::Command(_, cwd) => cwd.clone(),
         Job::Tests(t) => t.cwd.clone(),
     };
-    let mut here = match (base, cwd.strip_prefix(session_root)) {
+    let mut here = match (base, cwd.strip_prefix(workspace_root)) {
         (Some(tree), Ok(rel)) => tree.join(rel),
         _ => cwd,
     };
@@ -3977,12 +4014,12 @@ fn made_named(made: &[String]) -> (String, &'static str) {
 }
 
 /// A run waits for the user (`What::ProtectedMade`): Claude's last run made names the sandbox keeps where none
-/// was (`Session.made_protected`) — what Landlock couldn't refuse, and what runs outside the sandbox later:
+/// was (`Workspace.made_protected`) — what Landlock couldn't refuse, and what runs outside the sandbox later:
 /// Claude's next run, or yours in this checkout (`then`) — your task, your preflight.
 pub(crate) fn ask_made(ed: &mut Editor, then: MadeThen) {
     use crate::cards::{Past, Request, Why};
     let label = then.label();
-    let made = ed.session.made_protected.clone();
+    let made = ed.workspace.made_protected.clone();
     let paths: Vec<String> = made.iter().map(|m| m.path.clone()).collect();
     let (named, it) = made_named(&paths);
     let among = if made.len() == 1 { "it's" } else { "they're" };
@@ -3990,7 +4027,7 @@ pub(crate) fn ask_made(ed: &mut Editor, then: MadeThen) {
     // theirs is put up again once that one is answered and the names still wait: `made_hold_sync`)
     if !then.servers() {
         ed.drop_cards(|w| matches!(w, crate::offer::What::ProtectedMade { then, .. } if then.servers()));
-        ed.session.servers_asked.clear();
+        ed.workspace.servers_asked.clear();
     }
     let (title, question) = match &then {
         MadeThen::Servers => (
@@ -4041,7 +4078,7 @@ pub(crate) fn ask_made(ed: &mut Editor, then: MadeThen) {
 }
 
 /// The answer on that card: `y` runs it (the names kept — not asked about again while they hold what they
-/// hold, `Session.made_kept`), `r` removes them first (on a worker, through no link —
+/// hold, `Workspace.made_kept`), `r` removes them first (on a worker, through no link —
 /// `snapshot::remove_made`; one it can't remove is asked about again), `n` doesn't run it (Claude hears no,
 /// with the calls that joined it) — asked again before the next.
 pub fn made_answer(
@@ -4057,24 +4094,24 @@ pub fn made_answer(
     match how {
         MadeAnswer::Keep => {
             ed.offer_finished(id, Ok(()));
-            ed.session.made_protected.retain(|p| !made.iter().any(|m| m.path == p.path));
-            ed.session.made_kept.retain(|p| !made.iter().any(|m| m.path == p.path));
+            ed.workspace.made_protected.retain(|p| !made.iter().any(|m| m.path == p.path));
+            ed.workspace.made_kept.retain(|p| !made.iter().any(|m| m.path == p.path));
             // (one past what's hashed isn't kept: asked about whenever a run makes it — `Made::keepable`)
-            ed.session.made_kept.extend(made.into_iter().filter(crate::snapshot::Made::keepable));
+            ed.workspace.made_kept.extend(made.into_iter().filter(crate::snapshot::Made::keepable));
             made_go(ed, then)
         }
         MadeAnswer::Remove => {
-            let root = ed.session.root.clone();
+            let root = ed.workspace.root.clone();
             ed.events.jobs().spawn(move || {
                 let gone = crate::snapshot::remove_made(&root, &made);
                 move |ed: &mut Editor| {
                     ed.offer_finished(id, Ok(()));
                     let (removed, left): (Vec<_>, Vec<_>) = gone.into_iter().partition(|(_, r)| r.is_ok());
                     let removed: Vec<String> = removed.into_iter().map(|(m, _)| m.path).collect();
-                    ed.session.made_protected.retain(|p| !removed.contains(&p.path));
+                    ed.workspace.made_protected.retain(|p| !removed.contains(&p.path));
                     if !removed.is_empty() {
                         let (named, _) = made_named(&removed);
-                        ed.session.checkpoints.tell.push(format!(
+                        ed.workspace.claude.checkpoints.tell.push(format!(
                             "The user removed {named} your last run made, which the sandbox keeps — don't make \
                              it again; to change one, use your edit tool"
                         ));
@@ -4117,9 +4154,9 @@ pub fn made_answer(
                 MadeThen::Preflight { .. } => {
                     // (`p` on the bring card: the bring waited for this preflight — said, as a failed one is)
                     let made = some_named(&paths);
-                    match std::mem::take(&mut ed.session.bring_after_preflight) {
+                    match std::mem::take(&mut ed.workspace.bring_after_preflight) {
                         true => {
-                            let name = ed.session.label().to_string();
+                            let name = ed.workspace.label().to_string();
                             ed.set_warning(format!(
                                 "{name} not brought — the preflight didn't run: Claude's last run made {made}"
                             ))
@@ -4140,10 +4177,10 @@ fn made_go(ed: &mut Editor, then: MadeThen) {
         MadeThen::Task { task, force, trace } => ed.task_start_now(task, force, Some(trace)),
         // (the servers come back once nothing waits; a name `r` left, or one made since the card went up, puts it
         // up again — `made_hold_sync`)
-        MadeThen::Servers => ed.session.servers_asked.clear(),
+        MadeThen::Servers => ed.workspace.servers_asked.clear(),
         MadeThen::Preflight { all, set } => {
             if let Err(e) = ed.preflight_run(all, set) {
-                ed.session.bring_after_preflight = false;
+                ed.workspace.bring_after_preflight = false;
                 ed.set_error(e);
             }
         }
@@ -4155,7 +4192,7 @@ fn made_go(ed: &mut Editor, then: MadeThen) {
 pub fn made_view(ed: &mut Editor) {
     let Some(o) = ed.offers.first() else { return };
     let crate::offer::What::ProtectedMade { made, .. } = &o.what else { return };
-    let (id, root, made) = (o.id, ed.session.root.clone(), made.clone());
+    let (id, root, made) = (o.id, ed.workspace.root.clone(), made.clone());
     ed.events.jobs().spawn(move || {
         let text = crate::snapshot::made_shown(&root, &made);
         move |ed: &mut Editor| {
@@ -4177,17 +4214,20 @@ pub enum Unprotected {
 /// for the session is still a sandbox).
 pub fn unsandboxed(ed: &Editor) -> bool {
     let partial = matches!(ed.sandbox, Availability::Partial(_));
-    !ed.config.llm.sandbox || (ed.session.no_sandbox == Some(NoSandbox::Unasked) && !partial)
+    !ed.config.llm.sandbox || (ed.workspace.claude.no_sandbox == Some(NoSandbox::Unasked) && !partial)
 }
 
 /// The command Claude ran ended — how, and its output, go back; the editor shows the first error. One the
 /// user ran again (`blocked.rs`): Claude hears how it ended with the next message.
 pub fn run_done(ed: &mut Editor) {
     use crate::task::State;
-    let failed =
-        ed.session.task_run.as_ref().is_some_and(|r| matches!(r.state, State::Failed(_) | State::Stopped(_)));
+    let failed = ed
+        .workspace
+        .task_run
+        .as_ref()
+        .is_some_and(|r| matches!(r.state, State::Failed(_) | State::Stopped(_)));
     let known = rules_known(ed, failed);
-    let Some(r) = ed.session.task_run.as_mut() else { return };
+    let Some(r) = ed.workspace.task_run.as_mut() else { return };
     let said = r.guard.as_ref().map(|g| g.report_with(&r.output.to_vec(), known, !failed));
     // (what a warning with `start` said as it started — a manifest tool's changes, piece F — Claude reads too)
     let started: Vec<String> = r
@@ -4204,7 +4244,7 @@ pub fn run_done(ed: &mut Editor) {
         Some(Guard::In(p)) => p.run.as_ref().map(|d| d.path().to_path_buf()),
         _ => None,
     };
-    let below: Vec<&Path> = std::iter::once(ed.session.root.as_path()).chain(run_dir.as_deref()).collect();
+    let below: Vec<&Path> = std::iter::once(ed.workspace.root.as_path()).chain(run_dir.as_deref()).collect();
     let candidates = said.as_ref().map(|s| also_candidates(failed, &s.open, &below)).unwrap_or_default();
     let keys = match r.guard.as_ref() {
         Some(Guard::In(p)) if !candidates.is_empty() => Some(p.key_rules()),
@@ -4214,7 +4254,7 @@ pub fn run_done(ed: &mut Editor) {
     // (its own places — the user's list has them only when it was a check, #28)
     if let Some(head) = r.tell.take() {
         let r = &*r;
-        let text = run_report(&ed.session.root, r, &r.places, Waited::No) + &guard;
+        let text = run_report(&ed.workspace.root, r, &r.places, Waited::No) + &guard;
         rules_told(ed, said.as_ref());
         return told(ed, head, text);
     }
@@ -4233,7 +4273,7 @@ pub fn run_done(ed: &mut Editor) {
             drop(claim);
         });
     }
-    let Some(r) = ed.session.task_run.as_mut() else { return };
+    let Some(r) = ed.workspace.task_run.as_mut() else { return };
     let Some(mut call) = r.chat.take() else { return };
     call.output = Some(r.output_bytes);
     let snap = r.snap.take();
@@ -4241,7 +4281,7 @@ pub fn run_done(ed: &mut Editor) {
     let items = &r.places;
     let on = base.map(|b| format!("On {}'s tree — a copy apart from the project, removed now:\n", b.said()));
     let text = on.unwrap_or_default()
-        + &run_report(&ed.session.root, r, items, Waited::of(r.started, r.queued.as_ref(), None))
+        + &run_report(&ed.workspace.root, r, items, Waited::of(r.started, r.queued.as_ref(), None))
         + &guard;
     // (each call that joined it: the same run, its own wait)
     let others: Vec<(Call, String)> = joined
@@ -4249,7 +4289,7 @@ pub fn run_done(ed: &mut Editor) {
         .map(|j| {
             let how = Waited::of(r.started, r.queued.as_ref(), Some((j.asked, j.running)));
             let call = Call { output: Some(r.output_bytes), ..j.call };
-            (call, run_report(&ed.session.root, r, items, how) + &guard)
+            (call, run_report(&ed.workspace.root, r, items, how) + &guard)
         })
         .collect();
     let first =
@@ -4389,11 +4429,12 @@ pub(crate) fn loopback_of(open: &[crate::sandbox::Denial]) -> Option<String> {
 /// the user said no to them in this chat: then Err gives the call back, to be answered as usual.
 fn loopback_card(ed: &mut Editor, card: &str, job: Job, call: Call, report: String) -> Result<(), Call> {
     use crate::allow::Grant;
-    let open = ed.config.llm.sandbox_localhost || ed.session.caps().is_some_and(|c| !c.localhost.is_empty());
+    let open = ed.config.llm.sandbox_localhost
+        || ed.workspace.claude.caps().is_some_and(|c| !c.localhost.is_empty());
     let waits = |c: &crate::chat::Chat| {
         c.generation() == call.generation && c.busy() && !c.also_refused.contains(&Grant::Localhost)
     };
-    if open || !ed.session.chat.as_ref().is_some_and(waits) {
+    if open || !ed.workspace.claude.chat.as_ref().is_some_and(waits) {
         return Err(call);
     }
     call.step("every port's card up");
@@ -4429,7 +4470,7 @@ const ALSO_SAID: usize = 4;
 /// after a compaction or after it changed; and the rules again after a run that failed (they may be why), the
 /// guarantees not (9b: what's kept from other sessions isn't why a run failed).
 fn rules_known(ed: &Editor, failed: bool) -> crate::sandbox::Told {
-    let Some(c) = ed.session.chat.as_ref().filter(|c| c.rules_said.0 == c.conversation) else {
+    let Some(c) = ed.workspace.claude.chat.as_ref().filter(|c| c.rules_said.0 == c.conversation) else {
         return Default::default();
     };
     let told = c.rules_said.1;
@@ -4440,14 +4481,14 @@ fn rules_known(ed: &Editor, failed: bool) -> crate::sandbox::Told {
 /// blocked is counted (`calls.rs`).
 fn rules_told(ed: &mut Editor, said: Option<&crate::sandbox::Report>) {
     let Some(r) = said else { return };
-    if let Some(c) = ed.session.chat.as_mut() {
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
         // (a run without guarantees — outside, or a probe's rules — leaves what was told as it was)
         let before = if c.rules_said.0 == c.conversation { c.rules_said.1.guarantees } else { None };
         let told = crate::sandbox::Told { rules: Some(r.rules), guarantees: r.guarantees.or(before) };
         c.rules_said = (c.conversation.clone(), told);
     }
     if r.blocked {
-        ed.session.usage.tally.blocked();
+        ed.workspace.claude.usage.tally.blocked();
     }
 }
 
@@ -4455,7 +4496,7 @@ fn rules_told(ed: &mut Editor, said: Option<&crate::sandbox::Report>) {
 /// `Editor.sandbox_here`) — with, worked out on the worker, where other sessions' runs and the write grants kept
 /// for any project may write (`Here.others_write`: a store there isn't told — compat B12).
 fn run_here(ed: &Editor) -> impl FnOnce() -> crate::sandbox::Here + Send + 'static {
-    let (here, others, store) = (ed.sandbox_here.clone(), ed.sessions_writes(), ed.allow_path.clone());
+    let (here, others, store) = (ed.sandbox_here.clone(), ed.workspaces_writes(), ed.allow_path.clone());
     move || {
         let mut here = here.map_or_else(crate::sandbox::Here::now, |h| h());
         here.others_write = others().unwrap_or_default();
@@ -4473,7 +4514,7 @@ fn env_left_out(
 ) -> String {
     let Some((e, output)) = env else { return String::new() };
     let named = e.named_in(&output).map(|s| format!("\n{s}\n")).unwrap_or_default();
-    let Some(chat) = ed.session.chat.as_mut() else { return named };
+    let Some(chat) = ed.workspace.claude.chat.as_mut() else { return named };
     if chat.env_said.0 != chat.conversation {
         chat.env_said = (chat.conversation.clone(), Vec::new());
     }
@@ -4490,7 +4531,7 @@ fn env_left_out(
 
 /// A run Claude waited on is gone before it ended (stopped, or another task took its place).
 pub fn run_dropped(ed: &mut Editor, why: &str) {
-    let Some(r) = ed.session.task_run.as_mut().filter(|r| r.state == crate::task::State::Running) else {
+    let Some(r) = ed.workspace.task_run.as_mut().filter(|r| r.state == crate::task::State::Running) else {
         return;
     };
     let joined = std::mem::take(&mut r.joined);
@@ -4571,7 +4612,7 @@ fn run_changes_now(
                     || head.is_some()
                     || !output_code.is_empty() =>
                 {
-                    let root = ed.session.root.clone();
+                    let root = ed.workspace.root.clone();
                     // (its tree moved: taken again for overlaps — `overlap.rs`)
                     if !files.is_empty() || head.is_some() {
                         crate::overlap::moved(ed, &root);
@@ -4589,15 +4630,15 @@ fn run_changes_now(
                         .collect();
                     let said = some_named(&named);
                     let turn =
-                        ed.session.chat.as_ref().is_some_and(|c| c.generation() == generation && c.busy());
+                        ed.workspace.claude.chat.as_ref().is_some_and(|c| c.generation() == generation && c.busy());
                     // HEAD moved (a merge, a checkout): the files it brought aren't the turn's — said, in the
                     // chat and in the turn's review, instead of counted with its changes
                     let moved = head.as_ref().map(crate::snapshot::HeadMove::said);
                     if let (Some(said), Some(h)) = (&moved, &head) {
                         if turn {
-                            ed.session.checkpoints.head.push(h.clone());
+                            ed.workspace.claude.checkpoints.head.push(h.clone());
                         }
-                        if let Some(c) = &mut ed.session.chat {
+                        if let Some(c) = &mut ed.workspace.claude.chat {
                             c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Note, said.clone(), ""));
                         }
                     }
@@ -4612,7 +4653,7 @@ fn run_changes_now(
                             files,
                             head.clone().into_iter().collect(),
                         )
-                        && let Some(c) = &mut ed.session.chat
+                        && let Some(c) = &mut ed.workspace.claude.chat
                     {
                         let row = format!("its run changed {n} after the turn · space v t · space u undo");
                         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Note, row, ""));
@@ -4656,7 +4697,7 @@ fn run_changes_now(
                     out.push_str(&crate::snapshot::OutputCode::said(&output_code));
                     // (kept for the card before its next run — Landlock couldn't refuse them)
                     // (one kept on its card, holding what it held then: not asked about again)
-                    let kept = &ed.session.made_kept;
+                    let kept = &ed.workspace.made_kept;
                     let protected: Vec<_> = protected.into_iter().filter(|m| !kept.contains(m)).collect();
                     if !protected.is_empty() {
                         let paths: Vec<String> = protected.iter().map(|m| m.path.clone()).collect();
@@ -4668,8 +4709,8 @@ fn run_changes_now(
                              test runs. To change one, edit it with your edit tool.\n"
                         ));
                         for p in protected {
-                            ed.session.made_protected.retain(|m| m.path != p.path);
-                            ed.session.made_protected.push(p);
+                            ed.workspace.made_protected.retain(|m| m.path != p.path);
+                            ed.workspace.made_protected.push(p);
                         }
                     }
                     out
@@ -4677,7 +4718,7 @@ fn run_changes_now(
                 Ok(_) => String::new(),
                 Err(e) => {
                     let line = format!("snapshot: what `{cmd}` changed can't be told — {e}");
-                    ed.session.log().line("tarae", "info", &line);
+                    ed.workspace.log().line("tarae", "info", &line);
                     String::new()
                 }
             };
@@ -5037,23 +5078,23 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let dir = std::fs::canonicalize(&dir).unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         let guard =
             || Guard::In(Box::new(Policy::for_project(&Env { root: dir.clone(), ..Default::default() })));
         let its = guard().guarantees().expect("a policy made for macOS has Seatbelt's");
         let before = Guarantees::seatbelt(true, true);
         assert_ne!(its, before);
-        ed.session.sandbox = Some(before.clone());
+        ed.workspace.claude.sandbox = Some(before.clone());
         let go = |ed: &mut crate::editor::Editor, cwd: std::path::PathBuf| {
             let job = super::Job::Command("true".into(), cwd);
             super::go_now(ed, super::For::User("again".into()), job, Some(guard()), Default::default());
         };
         go(&mut ed, dir.join("gone"));
-        assert!(ed.session.task_run.is_none(), "it didn't spawn");
-        assert_eq!(ed.session.sandbox.as_ref(), Some(&before), "a run that didn't start leaves it");
+        assert!(ed.workspace.task_run.is_none(), "it didn't spawn");
+        assert_eq!(ed.workspace.claude.sandbox.as_ref(), Some(&before), "a run that didn't start leaves it");
         go(&mut ed, dir.clone());
-        assert!(ed.session.task_run.is_some(), "it started");
-        assert_eq!(ed.session.sandbox.as_ref(), Some(&its), "a run that started is said");
+        assert!(ed.workspace.task_run.is_some(), "it started");
+        assert_eq!(ed.workspace.claude.sandbox.as_ref(), Some(&its), "a run that started is said");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -5109,9 +5150,9 @@ mod tests {
             ed.task_start_for(task, who, Some(crate::sandbox::Guard::Outside), Default::default()).is_ok()
         );
         pump(&mut ed, &|ed| {
-            ed.session.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
+            ed.workspace.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
         });
-        let run = printed(&ed.session.task_run.as_ref().unwrap().output);
+        let run = printed(&ed.workspace.task_run.as_ref().unwrap().output);
         // `run_tests`'
         let target = crate::testing::Target {
             label: "outside".into(),
@@ -5129,9 +5170,9 @@ mod tests {
         let who = super::For::User("outside tests".into());
         super::start_tests(&mut ed, who, target, Some(crate::sandbox::Guard::Outside), Default::default());
         pump(&mut ed, &|ed| {
-            ed.session.test_run.as_ref().is_some_and(|r| r.state != crate::testing::RunState::Running)
+            ed.workspace.test_run.as_ref().is_some_and(|r| r.state != crate::testing::RunState::Running)
         });
-        let tests = printed(&ed.session.test_run.as_ref().unwrap().output);
+        let tests = printed(&ed.workspace.test_run.as_ref().unwrap().output);
         assert!(filtered(&run), "run's command outside the sandbox:\n{run}");
         assert!(filtered(&tests), "run_tests' command outside the sandbox:\n{tests}");
     }
@@ -5567,10 +5608,10 @@ mod tests {
     fn decided(ed: &mut crate::editor::Editor, args: serde_json::Value) -> Option<String> {
         ed.offers.clear();
         // (a free slot: the same command again would join the last one's run — `queued::join`)
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
         let before = super::ADMITTED.with(|a| a.borrow().len());
         // (the open chat's call, or its worker's answer is dropped as a turn's that ended)
-        let call = match ed.session.chat.as_ref() {
+        let call = match ed.workspace.claude.chat.as_ref() {
             Some(c) => super::Call::of(c.generation(), "d1", serde_json::json!(1)),
             None => super::Call::test(1),
         };
@@ -5615,10 +5656,10 @@ mod tests {
         assert!(super::could_reach_out(&ed, true), "past the sandbox");
         let why = Why::NotACheck("git".into());
         assert_eq!(decide(&super::run_request(&ed, None, &why, true)), Decision::None);
-        ed.session.hosts.push(("crates.io".into(), 443));
+        ed.workspace.claude.hosts.push(("crates.io".into(), 443));
         assert!(super::could_reach_out(&ed, false), "closed, a host let through for the session");
         assert_eq!(decide(&super::run_request(&ed, None, &why, true)), Decision::Outward);
-        ed.session.hosts.clear();
+        ed.workspace.claude.hosts.clear();
         ed.config.llm.sandbox_network = true;
         assert!(super::could_reach_out(&ed, false), "the network open");
         assert_eq!(decide(&super::run_request(&ed, None, &why, true)), Decision::Outward);
@@ -5645,7 +5686,7 @@ mod tests {
         let scratch = crate::scratch::Scratch::new("start-warn");
         let dir = std::fs::canonicalize(&scratch).unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         let entries: toml::Value = toml::from_str(
             r#"warn = [
                 { id = "stand-in-manifest", run = ["true"], start = true, say = "It changes the stand-in's manifest." },
@@ -5668,8 +5709,8 @@ mod tests {
             link: None,
         };
         c.msgs.push(crate::chat::Msg::tool(look, "c1"));
-        ed.session.chat = Some(c);
-        ed.session.at = crate::session::At::Chat;
+        ed.workspace.claude.chat = Some(c);
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
         let task = crate::task::Task { name: "true".into(), cmd: "true".into(), cwd: dir.clone() };
         let who = super::For::Claude(super::Call::test(41));
         let toasts = |ed: &crate::editor::Editor| {
@@ -5690,7 +5731,7 @@ mod tests {
             ed.messages
         );
         assert!(!ed.messages.iter().any(|m| m.2.contains("Said on its row only")), "no start: not said");
-        let row = |ed: &crate::editor::Editor| ed.session.chat.as_ref().unwrap().msgs[0].ran.clone();
+        let row = |ed: &crate::editor::Editor| ed.workspace.claude.chat.as_ref().unwrap().msgs[0].ran.clone();
         assert_eq!(row(&ed).map(|r| r.warned.len()), Some(2), "marked from the start");
         // Its end: Claude's report says it, and nothing is said again
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
@@ -5725,14 +5766,14 @@ mod tests {
         let dir = scratch.to_path_buf();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
         no_sandbox(&mut ed);
-        ed.session.root = dir.clone();
-        ed.session.name = "cardlines".into();
+        ed.workspace.root = dir.clone();
+        ed.workspace.name = "cardlines".into();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.state = crate::chat::State::Thinking;
-        ed.session.at = crate::session::At::Code;
+        ed.workspace.viewer.at = crate::workspace::At::Code;
         let generation = c.generation();
         let lines = || crate::cards::logged_lines("card cardlines · ");
         // (its card, through the worker it may ask on — the call the chat's, or the card is moot)
@@ -5782,7 +5823,10 @@ mod tests {
             "q",
             "",
             String::new(),
-            crate::offer::What::ReviewEnd { session: 0, started: std::time::Instant::now() },
+            crate::offer::What::ReviewEnd {
+                session: crate::event::WorkspaceId::HOME,
+                started: std::time::Instant::now(),
+            },
         ));
         ed.offer_dismiss();
         let l = lines();
@@ -5802,13 +5846,13 @@ mod tests {
         let scratch = crate::scratch::Scratch::new("run-one");
         let dir = scratch.to_path_buf();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.state = crate::chat::State::Thinking;
-        ed.session.at = crate::session::At::Code;
+        ed.workspace.viewer.at = crate::workspace::At::Code;
         let generation = c.generation();
         // (the same command holds the slot a second: the others come while it runs, as parallel calls do)
         let same = "sleep 1; touch same.txt";
@@ -5829,19 +5873,19 @@ mod tests {
             };
         send(&mut ed, 1, same);
         let running =
-            |ed: &crate::editor::Editor| ed.session.task_run.as_ref().is_some_and(|r| r.task.cmd == same);
+            |ed: &crate::editor::Editor| ed.workspace.task_run.as_ref().is_some_and(|r| r.task.cmd == same);
         pump(&mut ed, "the first under way", &running);
         let before = super::ADMITTED.with(|a| a.borrow().len());
         send(&mut ed, 2, "touch other.txt");
         send(&mut ed, 3, same);
         // (the other admitted; the same one joined the run under way, before any worker — `run`'s first look)
         pump(&mut ed, "the other admitted", &|_| super::ADMITTED.with(|a| a.borrow().len()) == before + 1);
-        let r = ed.session.task_run.as_ref().unwrap();
+        let r = ed.workspace.task_run.as_ref().unwrap();
         assert!(r.task.cmd == same && r.joined.len() == 1, "the same command one run");
         let answered = |n: u64| super::ANSWERED.with(|a| a.borrow().iter().any(|(id, _)| *id == json!(n)));
         pump(&mut ed, "each caller answered", &|_| [1, 2, 3].iter().all(|n| answered(*n)));
         assert!(dir.join("same.txt").exists() && dir.join("other.txt").exists());
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -5856,13 +5900,13 @@ mod tests {
         let dir = scratch.to_path_buf();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
         no_sandbox(&mut ed);
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.state = crate::chat::State::Thinking;
-        ed.session.at = crate::session::At::Code;
+        ed.workspace.viewer.at = crate::workspace::At::Code;
         let generation = c.generation();
         let called = |id: &str, name: &str, input: serde_json::Value| Called {
             id: id.into(),
@@ -5896,14 +5940,14 @@ mod tests {
         // checkout's snapshot is taken — `snapshot.rs`)
         ed.offer_accept();
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-        while !ed.session.task_run.as_ref().is_some_and(|r| r.task.cmd == one) {
+        while !ed.workspace.task_run.as_ref().is_some_and(|r| r.task.cmd == one) {
             assert!(std::time::Instant::now() < end, "the first runs");
             if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(5)) {
                 ed.handle_event(ev);
             }
         }
         ed.offer_accept();
-        assert_eq!(ed.session.runs_next.len(), 1, "the second waits for the first to end");
+        assert_eq!(ed.workspace.runs_next.len(), 1, "the second waits for the first to end");
         while !dir.join("two.txt").exists() {
             assert!(std::time::Instant::now() < end, "the second ran after the first");
             if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(20)) {
@@ -5915,7 +5959,7 @@ mod tests {
         assert!(said(1).is_some_and(|(_, r)| r.is_ok_and(|t| t.starts_with("exit 0"))), "{:?}", said(1));
         // No card yet, one about to come (claude holds it until the call in hand is answered): said
         ed.offers.clear();
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.calls = vec![
             called("t5", "mcp__tarae__run", json!({ "command": "cargo test" })),
             called("t6", "mcp__tarae__run", json!({ "command": "git status" })),
@@ -5923,7 +5967,7 @@ mod tests {
         assert!(!c.asks_next(&[]), "a check comes next: it runs unasked");
         c.calls.push(called("t7", "mcp__tarae__run", json!({ "command": "touch x" })));
         assert!(c.asks_next(&[]));
-        ed.session.name = "solo".into();
+        ed.workspace.name = "solo".into();
         ed.handle_key("C-q".parse().unwrap());
         let status = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
         assert!(status.contains("no card yet — solo's comes once its run ends"), "{status}");
@@ -5941,13 +5985,13 @@ mod tests {
         let dir = scratch.to_path_buf();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
         no_sandbox(&mut ed);
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.state = crate::chat::State::Thinking;
-        ed.session.at = crate::session::At::Code;
+        ed.workspace.viewer.at = crate::workspace::At::Code;
         let call = super::Call::of(c.generation(), "r1", json!(41));
         let cmd = "printf '    Blocking waiting for file lock on build directory\\n' >&2; sleep 0.5; \
                    printf '   Compiling stand-in\\n' >&2; echo built";
@@ -5963,22 +6007,22 @@ mod tests {
             }
         };
         // Waiting: the panel says so, in the wave's place; cargo's line isn't output
-        pump(&mut ed, &|ed| ed.session.task_run.as_ref().is_some_and(|r| r.wait.now.is_some()));
+        pump(&mut ed, &|ed| ed.workspace.task_run.as_ref().is_some_and(|r| r.wait.now.is_some()));
         let mut bytes = Vec::new();
         crate::term::render(&mut ed, &mut bytes, 140, 36).unwrap();
         let mut vt = vt100::Parser::new(36, 140, 0);
         vt.process(&bytes);
         let s = vt.screen().contents();
         assert!(s.contains("waiting for cargo's lock · "), "{s}");
-        assert!(ed.session.task_run.as_ref().unwrap().output.is_empty(), "cargo's line isn't output");
+        assert!(ed.workspace.task_run.as_ref().unwrap().output.is_empty(), "cargo's line isn't output");
         // Its end: the answer says how much was the wait
         let running = |ed: &crate::editor::Editor| {
-            ed.session.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running)
+            ed.workspace.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running)
         };
         // (answered once what it changed is taken — `snapshot.rs`)
         let said = || super::ANSWERED.with(|a| a.borrow().iter().find(|(id, _)| *id == json!(41)).cloned());
         pump(&mut ed, &|ed| !running(ed) && said().is_some());
-        let r = ed.session.task_run.as_ref().unwrap();
+        let r = ed.workspace.task_run.as_ref().unwrap();
         assert!(r.wait.now.is_none() && !r.output.iter().any(|l| l.1.contains("Blocking")));
         let said = said();
         let text = said.expect("answered").1.unwrap();
@@ -6022,21 +6066,21 @@ mod tests {
         let scratch = crate::scratch::Scratch::new("tokcost");
         let dir = scratch.to_path_buf();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         // (its own session name: the log is shared by tests running beside it)
         let name = format!("tokcost-{}", std::process::id());
-        ed.session.name = name.clone();
-        assert_eq!(ed.session.label(), name);
+        ed.workspace.name = name.clone();
+        assert_eq!(ed.workspace.label(), name);
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        ed.session.usage.fresh("tokcost-conversation");
+        ed.workspace.claude.usage.fresh("tokcost-conversation");
         let log = crate::log::capture();
-        ed.session.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+        ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
         assert!(crate::chat::submit(&mut ed, "where do the tokens go?", None, None), "sent");
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.state = crate::chat::State::Thinking;
-        ed.session.at = crate::session::At::Code;
+        ed.workspace.viewer.at = crate::workspace::At::Code;
         let generation = c.generation();
         // Two answered at once
         let mut sent = Vec::new();
@@ -6098,7 +6142,8 @@ mod tests {
         assert!(num(run, "bytes=") < whole, "a run of 1000 lines isn't sent whole: {run}");
 
         // `:usage`: the same counts, by tool, the most bytes first, and their total
-        let report = crate::usage::report(&name, &ed.session.usage, &ed.limits, &[], crate::usage::now_ms());
+        let report =
+            crate::usage::report(&name, &ed.workspace.claude.usage, &ed.limits, &[], crate::usage::now_ms());
         let table = report.split("## Tool results\n").nth(1).unwrap_or_else(|| panic!("{report}"));
         let rows: Vec<Vec<&str>> = table
             .lines()
@@ -6136,8 +6181,8 @@ mod tests {
         std::fs::write(dir.join("evil.sh"), "echo evil\n").unwrap();
         std::fs::write(dir.join("blob.bin"), [0xff, 0xfe, 0x00]).unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
-        ed.session.checkpoints.turn.push(Touched {
+        ed.workspace.root = dir.clone();
+        ed.workspace.claude.checkpoints.turn.push(Touched {
             path: dir.join("evil.sh"),
             before: None,
             after: ropey::Rope::new(),
@@ -6171,7 +6216,7 @@ mod tests {
         let q = run_card(&mut ed, "cp -t bin evil.sh");
         assert!(shown(&q, "evil.sh"), "{q}");
         // The copy is in the turn's files: its review shows it, `space u` takes it back
-        assert!(ed.session.checkpoints.turn.iter().any(|t| t.unseen && t.path == dir.join("ok.sh")));
+        assert!(ed.workspace.claude.checkpoints.turn.iter().any(|t| t.unseen && t.path == dir.join("ok.sh")));
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -6189,7 +6234,7 @@ mod tests {
         let dir = std::fs::canonicalize(&scratch).unwrap();
         std::fs::write(dir.join("gen.sh"), "echo marker\n").unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         let lines = [
             "cat ../a/x.txt ../a/y.txt",
             "git diff --no-index --stat a.txt b.txt",
@@ -6219,7 +6264,7 @@ mod tests {
         let unseen = |ed: &mut crate::editor::Editor, f: &str| {
             let after = ropey::Rope::from_str(&std::fs::read_to_string(dir.join(f)).unwrap());
             let t = Touched { path: dir.join(f), before: None, after, unseen: true, ..Default::default() };
-            ed.session.checkpoints.turn.push(t);
+            ed.workspace.claude.checkpoints.turn.push(t);
         };
         unseen(&mut ed, "gen.sh");
         let outside = |cmd: &str| json!({ "command": cmd, "outside_sandbox": true, "reason": "stand-in" });
@@ -6230,7 +6275,7 @@ mod tests {
         std::fs::write(dir.join("long.sh"), "echo marker\n".repeat(super::SHOWN_LINES_MAX + 1)).unwrap();
         unseen(&mut ed, "long.sh");
         ed.offers.clear();
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
         super::run(&mut ed, super::Call::test(9), &outside("sh long.sh")).unwrap();
         let refused = || {
             super::ANSWERED.with(|a| {
@@ -6248,7 +6293,7 @@ mod tests {
         }
         assert!(ed.offers.is_empty(), "no card");
         assert_eq!(decided(&mut ed, json!({ "command": "sh long.sh" })), None, "in the sandbox: it runs");
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
     }
 
     /// cardauto P3: `also` asks for one thing past the session's capabilities on a grant card — Claude's reason on
@@ -6264,11 +6309,11 @@ mod tests {
         std::fs::create_dir_all(dir.join("src")).unwrap();
         let dir = std::fs::canonicalize(&dir).unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.state = crate::chat::State::Thinking;
         let generation = c.generation();
         let also =
@@ -6276,7 +6321,7 @@ mod tests {
         // A card (its question), a run (None), or refused (Err) — what `run` decided for call `n`
         let send = |ed: &mut crate::editor::Editor, n: u64, args: serde_json::Value| {
             ed.offers.clear();
-            ed.session.task_run = None;
+            ed.workspace.task_run = None;
             let before = super::ADMITTED.with(|a| a.borrow().len());
             let answered = || {
                 super::ANSWERED
@@ -6342,7 +6387,7 @@ mod tests {
         crate::reads::turn_over(&mut ed);
         assert!(send(&mut ed, 11, also(json!({ "port": 47005 }))).unwrap().is_some(), "a new turn");
         ed.offers.clear();
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
     }
 
     /// `also` grants the place it names and nothing wider (alsoread): a folder itself — never the one above it,
@@ -6444,18 +6489,18 @@ mod tests {
         let extra = super::ADMITTED.with(|a| a.borrow().last().map(|(_, e)| e.grant.clone()));
         assert_eq!(extra, Some(Some(Grant::Read(srt))), "this run's grant: the folder named");
         ed.offers.clear();
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
     }
 
     /// An editor whose chat is at work (`sh` reading nothing stands in for claude) in the project at `dir`, and its
     /// chat's generation — C2's `also` tests.
     fn also_chat(dir: &std::path::Path) -> (crate::editor::Editor, u64) {
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.to_path_buf();
+        ed.workspace.root = dir.to_path_buf();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.state = crate::chat::State::Thinking;
         let generation = c.generation();
         (ed, generation)
@@ -6471,7 +6516,7 @@ mod tests {
     ) -> Result<Option<String>, String> {
         use serde_json::json;
         ed.offers.clear();
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
         let before = super::ADMITTED.with(|a| a.borrow().len());
         let answered = || {
             super::ANSWERED
@@ -6581,21 +6626,24 @@ mod tests {
         assert!(next.hosts.is_empty(), "the next run's rules: {:?}", next.hosts);
         let lifted = |m: &ToProxy| matches!(m, ToProxy::Lifted { host, .. } if host == "index.crates.io");
         assert!(sent().iter().any(lifted), "a session's no lifted");
-        assert!(ed.session.chat.as_ref().unwrap().allowed.hosts.is_empty() && ed.session.hosts.is_empty());
+        assert!(
+            ed.workspace.claude.chat.as_ref().unwrap().allowed.hosts.is_empty()
+                && ed.workspace.claude.hosts.is_empty()
+        );
         // `a`: this conversation's — to the proxy, kept with the chat
         also_sent(&mut ed, generation, 2, also("chat.example.invalid")).unwrap().expect("its card");
         also_key(&mut ed, 'a');
         let chat = |m: &ToProxy| matches!(m, ToProxy::Answer { host, scope: Scope::Chat, .. } if host == "chat.example.invalid");
         assert!(sent().iter().any(chat), "to the proxy for the conversation");
-        let kept = &ed.session.chat.as_ref().unwrap().allowed.hosts;
+        let kept = &ed.workspace.claude.chat.as_ref().unwrap().allowed.hosts;
         assert_eq!(kept, &[("chat.example.invalid".to_string(), 443)]);
         // `s`: this session's
         also_sent(&mut ed, generation, 3, also("session.example.invalid")).unwrap().expect("its card");
         also_key(&mut ed, 's');
         let session = |m: &ToProxy| matches!(m, ToProxy::Answer { host, scope: Scope::Session, .. } if host == "session.example.invalid");
         assert!(sent().iter().any(session), "to the proxy for the session");
-        assert_eq!(ed.session.hosts, [("session.example.invalid".to_string(), 443)]);
-        ed.session.task_run = None;
+        assert_eq!(ed.workspace.claude.hosts, [("session.example.invalid".to_string(), 443)]);
+        ed.workspace.task_run = None;
     }
 
     /// C2: a host its runs reach unasked just runs, no card — the network open and the host on its list (the packs'
@@ -6624,11 +6672,11 @@ mod tests {
         assert_eq!(also_sent(&mut ed, generation, 3, also("pkg.example.invalid")), Ok(None), "any host");
         // The network closed: the session's grant, a registry's `*.domain` too
         ed.config.llm.sandbox_network = false;
-        ed.session.hosts.push(("*.crates.io".into(), 443));
+        ed.workspace.claude.hosts.push(("*.crates.io".into(), 443));
         assert_eq!(also_sent(&mut ed, generation, 4, also("static.crates.io")), Ok(None), "granted");
         assert!(also_sent(&mut ed, generation, 5, also("crates.io")).unwrap().is_some(), "not under it");
         ed.offers.clear();
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
     }
 
     /// C2: a host the proxy refused is named for `also` under a failed run's report only when its card went
@@ -6670,8 +6718,8 @@ mod tests {
         let dir = std::fs::canonicalize(&scratch).unwrap();
         std::fs::write(dir.join("deploy.sh"), "exit 0\ngit push origin main\n").unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
-        ed.session.name = "outward".into();
+        ed.workspace.root = dir.clone();
+        ed.workspace.name = "outward".into();
         ed.config.llm.sandbox_network = true;
         for cmd in ["false && git push origin main", "sh deploy.sh"] {
             let q = decided(&mut ed, json!({ "command": cmd })).unwrap_or_else(|| panic!("{cmd}: it ran"));
@@ -6682,7 +6730,7 @@ mod tests {
         let lines = crate::cards::logged_lines("card outward · ");
         assert!(lines.len() == 2 && lines.iter().all(|l| l.contains(" · why=asks:")), "{lines:?}");
         assert_eq!(decided(&mut ed, json!({ "command": "git status" })), None, "warns of nothing: it runs");
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
     }
 
     /// Review of piece 4 (5): `also` is no way around what `in_sandbox` looks at. Open already (a read in the
@@ -6699,8 +6747,8 @@ mod tests {
         let dir = std::fs::canonicalize(&dir).unwrap();
         std::fs::write(dir.join("gen.sh"), "echo marker\n").unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
-        ed.session.name = "also-open".into();
+        ed.workspace.root = dir.clone();
+        ed.workspace.name = "also-open".into();
         let also = |cmd: &str, also: serde_json::Value| json!({ "command": cmd, "also": also, "reason": "stand-in" });
         // An unseen file moved, the read open already: where it goes is unseen before it runs
         let after = ropey::Rope::from_str("echo marker\n");
@@ -6710,10 +6758,10 @@ mod tests {
             unseen: true,
             ..Default::default()
         };
-        ed.session.checkpoints.turn.push(t);
+        ed.workspace.claude.checkpoints.turn.push(t);
         assert_eq!(decided(&mut ed, also("mv gen.sh moved.sh", json!({ "read": "src" }))), None, "it runs");
         let carried = |ed: &crate::editor::Editor| {
-            ed.session.checkpoints.turn.iter().any(|t| t.unseen && t.path == dir.join("moved.sh"))
+            ed.workspace.claude.checkpoints.turn.iter().any(|t| t.unseen && t.path == dir.join("moved.sh"))
         };
         assert!(carried(&ed), "where it goes is unseen");
         // The network open: `git push` with an `also` open already comes to its card, as without `also`
@@ -6728,7 +6776,7 @@ mod tests {
         let q = decided(&mut ed, also(push, json!({ "port": 47021 }))).expect("the grant's card");
         assert!(q.contains("▲ It reaches beyond this machine"), "{q}");
         ed.offers.clear();
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
     }
 
     /// Review of piece 4 (3): `ALSO_MAX` holds for calls sent together — each counted as it comes in, not when its
@@ -6742,11 +6790,11 @@ mod tests {
         std::fs::create_dir_all(dir.join("src")).unwrap();
         let dir = std::fs::canonicalize(&dir).unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.state = crate::chat::State::Thinking;
         let generation = c.generation();
         let send = |ed: &mut crate::editor::Editor, n: u64, also: serde_json::Value| {
@@ -6769,11 +6817,11 @@ mod tests {
             send(&mut ed, n, json!({ "read": "src" })).unwrap();
         }
         // (three in flight: their places are taken until their answers land)
-        assert_eq!(ed.session.chat.as_ref().unwrap().also_asked, 3);
+        assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().also_asked, 3);
         pump(&mut ed, &|_| super::ADMITTED.with(|a| a.borrow().len()) == before + 3);
         send(&mut ed, 4, json!({ "write": "src" })).unwrap();
         pump(&mut ed, &|_| answered(4));
-        assert_eq!(ed.session.chat.as_ref().unwrap().also_asked, 0, "no card, no place taken");
+        assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().also_asked, 0, "no card, no place taken");
         // Four sent together: three cards, the fourth refused when it comes in
         let mut refused = Vec::new();
         for n in 5..=8 {
@@ -6806,13 +6854,17 @@ mod tests {
             run,
             Some(crate::allow::Scope::Once),
         );
-        assert!(ed.session.chat.as_ref().unwrap().also_yes);
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().also_yes);
         send(&mut ed, 11, terminals.clone()).expect("asked again after a yes: not refused");
         pump(&mut ed, &|ed| !ed.offers.is_empty());
-        assert_eq!(ed.session.chat.as_ref().unwrap().also_asked, 3, "none of the turn's three taken");
+        assert_eq!(
+            ed.workspace.claude.chat.as_ref().unwrap().also_asked,
+            3,
+            "none of the turn's three taken"
+        );
         // A new turn: the yes is gone with it
         crate::reads::turn_over(&mut ed);
-        assert!(!ed.session.chat.as_ref().unwrap().also_yes);
+        assert!(!ed.workspace.claude.chat.as_ref().unwrap().also_yes);
         ed.offers.clear();
     }
 
@@ -6826,12 +6878,12 @@ mod tests {
         let scratch = crate::scratch::Scratch::new("hosts-next");
         let dir = std::fs::canonicalize(scratch.path()).unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.sandbox = crate::sandbox::Availability::Ready;
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         (c.state, c.hosts_next) = (crate::chat::State::Thinking, vec![(HOST.to_string(), 443)]);
         let generation = c.generation();
         let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool| {
@@ -6845,15 +6897,15 @@ mod tests {
         };
         // The run started since `before`: whether its rules let the host through
         let carries = |ed: &crate::editor::Editor, before: u64| {
-            let r = ed.session.task_run.as_ref().filter(|_| ed.task_generation > before)?;
+            let r = ed.workspace.task_run.as_ref().filter(|_| ed.task_generation > before)?;
             match r.guard.as_ref() {
                 Some(super::Guard::In(p)) => Some(p.egress.answered(HOST, 443)),
                 _ => None,
             }
         };
-        let next = |ed: &crate::editor::Editor| ed.session.chat.as_ref().unwrap().hosts_next.clone();
+        let next = |ed: &crate::editor::Editor| ed.workspace.claude.chat.as_ref().unwrap().hosts_next.clone();
         let ended = |ed: &crate::editor::Editor| {
-            ed.session.task_run.as_ref().is_none_or(|r| r.state != crate::task::State::Running)
+            ed.workspace.task_run.as_ref().is_none_or(|r| r.state != crate::task::State::Running)
         };
         let job = || super::Job::Command("true".into(), dir.clone());
         // The user's own run: not its
@@ -6896,13 +6948,13 @@ mod tests {
         let scratch = crate::scratch::Scratch::new("unknown");
         let dir = std::fs::canonicalize(&scratch).unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.state = crate::chat::State::Thinking;
-        ed.session.no_sandbox = Some(super::NoSandbox::Unasked);
+        ed.workspace.claude.no_sandbox = Some(super::NoSandbox::Unasked);
         ed.sandbox = crate::sandbox::Availability::Unknown;
         let q = decided(&mut ed, json!({ "command": format!("touch {}", dir.join("made").display()) }));
         assert!(q.is_some(), "today's gate: its card");
@@ -6926,11 +6978,11 @@ mod tests {
         let scratch = crate::scratch::Scratch::new("loopback");
         let dir = std::fs::canonicalize(&scratch).unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.state = crate::chat::State::Thinking;
         let generation = c.generation();
         let port = |process: &str| Denial {
@@ -6959,7 +7011,7 @@ mod tests {
         let extra = super::ADMITTED.with(|a| a.borrow().last().map(|(_, e)| e.grant.clone()));
         assert_eq!(extra, Some(Some(Grant::Localhost)), "this run's grant");
         assert_eq!(answered(1), None, "its call goes with the run again");
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
         // `n`: Claude hears how the run ended, then the no — asked no more in this chat
         assert!(super::loopback_card(&mut ed, &card, job.clone(), call(2), "REPORT-2".into()).is_ok());
         ed.offer_dismiss();
@@ -6967,11 +7019,11 @@ mod tests {
         assert!(no.starts_with("REPORT-2") && no.contains("said no"), "{no}");
         assert!(super::loopback_card(&mut ed, &card, job.clone(), call(3), "R".into()).is_err(), "said no");
         // Open already, or the turn over: no card
-        ed.session.chat.as_mut().unwrap().also_refused.clear();
+        ed.workspace.claude.chat.as_mut().unwrap().also_refused.clear();
         ed.config.llm.sandbox_localhost = true;
         assert!(super::loopback_card(&mut ed, &card, job.clone(), call(4), "R".into()).is_err(), "open");
         ed.config.llm.sandbox_localhost = false;
-        ed.session.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+        ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
         assert!(super::loopback_card(&mut ed, &card, job, call(5), "R".into()).is_err(), "its turn over");
         assert!(ed.offers.is_empty());
     }
@@ -6986,7 +7038,7 @@ mod tests {
         let scratch = crate::scratch::Scratch::new("rerun-goes-on");
         let dir = std::fs::canonicalize(&scratch).unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > sent.log".into()];
         crate::chat::open(&mut ed);
@@ -6994,17 +7046,17 @@ mod tests {
         let run =
             BlockedRun { key: Some(key), ..BlockedRun::of(super::Job::Command("true".into(), dir.clone())) };
         // Claude's turn: its run failed, in conversation c1; then the turn ended
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.conversation = Some("c1".into());
         c.state = crate::chat::State::Thinking;
         super::failed_in_turn(&mut ed, key);
         assert_eq!(crate::blocked::then_said(&ed, &run), crate::blocked::NEXT_MESSAGE, "busy");
-        ed.session.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+        ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
         assert_eq!(crate::blocked::then_said(&ed, &run), crate::blocked::GOES_ON);
         let sent = || std::fs::read_to_string(dir.join("sent.log")).unwrap_or_default();
         let rerun = |ed: &mut crate::editor::Editor, n: u32| {
             let head = format!("The user ran `true` again (#{n}). How it ended:");
-            ed.session.chat.as_mut().unwrap().reruns.push((head.clone(), key));
+            ed.workspace.claude.chat.as_mut().unwrap().reruns.push((head.clone(), key));
             super::told(ed, head, format!("REPORT-{n}"));
         };
         // Idle, the same conversation: one message, now — nothing left for the next
@@ -7018,29 +7070,30 @@ mod tests {
         }
         assert!(sent().contains("the user typed nothing"), "{}", sent());
         assert!(
-            ed.session.checkpoints.tell.is_empty() && ed.session.chat.as_ref().unwrap().reruns.is_empty()
+            ed.workspace.claude.checkpoints.tell.is_empty()
+                && ed.workspace.claude.chat.as_ref().unwrap().reruns.is_empty()
         );
         // Busy (that message's turn): none — it's told with the next message
-        assert!(ed.session.chat.as_ref().unwrap().busy(), "the message is a turn");
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().busy(), "the message is a turn");
         rerun(&mut ed, 2);
-        assert!(ed.session.checkpoints.tell.iter().any(|t| t.contains("REPORT-2")));
+        assert!(ed.workspace.claude.checkpoints.tell.iter().any(|t| t.contains("REPORT-2")));
         // That turn was a newer one: the failed run is no longer the last turn's, idle or not
-        ed.session.chat.as_mut().unwrap().state = crate::chat::State::Idle;
-        ed.session.checkpoints.tell.clear();
+        ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+        ed.workspace.claude.checkpoints.tell.clear();
         assert_eq!(crate::blocked::then_said(&ed, &run), crate::blocked::NEXT_MESSAGE, "a newer turn");
         rerun(&mut ed, 3);
-        assert!(ed.session.checkpoints.tell.iter().any(|t| t.contains("REPORT-3")));
+        assert!(ed.workspace.claude.checkpoints.tell.iter().any(|t| t.contains("REPORT-3")));
         // Another conversation: none
-        ed.session.checkpoints.tell.clear();
+        ed.workspace.claude.checkpoints.tell.clear();
         super::failed_in_turn(&mut ed, key);
-        ed.session.chat.as_mut().unwrap().conversation = Some("c2".into());
+        ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("c2".into());
         assert_eq!(
             crate::blocked::then_said(&ed, &run),
             crate::blocked::NEXT_MESSAGE,
             "another conversation"
         );
         rerun(&mut ed, 4);
-        assert!(ed.session.checkpoints.tell.iter().any(|t| t.contains("REPORT-4")));
+        assert!(ed.workspace.claude.checkpoints.tell.iter().any(|t| t.contains("REPORT-4")));
         assert!(!["REPORT-2", "REPORT-3", "REPORT-4"].iter().any(|r| sent().contains(r)), "{}", sent());
     }
 
@@ -7053,11 +7106,11 @@ mod tests {
         let scratch = crate::scratch::Scratch::new("also-turn");
         let dir = std::fs::canonicalize(&scratch).unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.state = crate::chat::State::Thinking;
         let generation = c.generation();
         let args = json!({ "command": "true", "also": { "port": 47011 }, "reason": "its test server" });
@@ -7070,7 +7123,7 @@ mod tests {
             }
         }
         // The turn ends: the card goes with it
-        ed.session.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+        ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
         super::turn_over(&mut ed);
         assert!(ed.offers.is_empty(), "still up: {:?}", ed.offers.first().map(|o| &o.question));
         // An answer for a call whose turn is over: no grant kept, no refusal, nothing run
@@ -7082,7 +7135,7 @@ mod tests {
         let port = crate::allow::Grant::Port(47012);
         crate::blocked::grant_answer(&mut ed, 0, port.clone(), run(2), Some(crate::allow::Scope::ThisChat));
         crate::blocked::grant_answer(&mut ed, 0, port.clone(), run(3), None);
-        let c = ed.session.chat.as_ref().unwrap();
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
         assert!(!c.allowed.ports.contains(&47012) && c.also_refused.is_empty(), "nothing kept");
         assert_eq!(super::ADMITTED.with(|a| a.borrow().len()), before, "nothing ran");
     }
@@ -7095,11 +7148,11 @@ mod tests {
         let scratch = crate::scratch::Scratch::new("also-always");
         let dir = std::fs::canonicalize(&scratch).unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.state = crate::chat::State::Thinking;
         let generation = c.generation();
         let run = crate::blocked::BlockedRun {
@@ -7125,13 +7178,13 @@ mod tests {
             std::fs::create_dir_all(dir.join(p)).unwrap();
         }
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.join("front");
-        let other = ed.session_open(&dir.join("back")).unwrap();
-        assert!(ed.session_switch(0));
+        ed.workspace.root = dir.join("front");
+        let other = ed.workspace_open(&dir.join("back")).unwrap();
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME));
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.state = crate::chat::State::Thinking;
         let generation = c.generation();
         let args = json!({ "command": "true", "also": { "port": 47021 }, "reason": "its test server" });
@@ -7149,14 +7202,14 @@ mod tests {
                 .with(|a| a.borrow().iter().find(|(id, _)| *id == json!(21)).map(|(_, r)| r.clone()))
         };
         // Another session to the front: the card waits in its own, its call still waiting on it
-        assert!(ed.session_switch(other));
+        assert!(ed.workspace_switch(other));
         ed.asking_sync();
         assert_eq!(answered(), None, "its call was answered");
         assert!(ed.offers.iter().all(|o| o.id != card), "up in the other session");
-        let i = ed.sessions.iter().position(|s| s.id == 0).unwrap();
-        assert!(ed.sessions[i].parked.iter().any(|o| o.id == card), "not parked with its session");
+        let i = ed.workspaces.iter().position(|s| s.id == crate::event::WorkspaceId::HOME).unwrap();
+        assert!(ed.workspaces[i].parked.iter().any(|o| o.id == card), "not parked with its session");
         // Back: up again, and `y` runs it with the port open — the call waits for how the run ends
-        assert!(ed.session_switch(0));
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME));
         assert_eq!(ed.offers.first().map(|o| o.id), Some(card));
         let before = super::ADMITTED.with(|a| a.borrow().len());
         also_key(&mut ed, 'y');
@@ -7164,7 +7217,7 @@ mod tests {
         let extra = super::ADMITTED.with(|a| a.borrow().last().map(|(_, e)| e.grant.clone()));
         assert_eq!(extra, Some(Some(crate::allow::Grant::Port(47021))), "this run's grant");
         assert_eq!(answered(), None, "answered before its run ended");
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
     }
 
     /// cardauto §8.4: a report invites `also` only for what can matter — never for a run that passed (a cargo test
@@ -7299,7 +7352,7 @@ mod tests {
         let _l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
         std::fs::write(dir.join("plain"), "marker").unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
@@ -7328,11 +7381,11 @@ mod tests {
         assert!(o.lasts() && !o.keeps(), "this chat at most");
         ed.offer_for_chat();
         // (Docker's: the command's for this chat, never the socket — #193)
-        let c = ed.session.chat.as_ref().unwrap();
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
         assert!(c.allowed.sockets.is_empty(), "not the socket");
         assert_eq!(c.run_again.len(), 1, "the command, with it");
         assert!(
-            ed.session.checkpoints.tell.iter().any(|t| t.contains("connect to the socket")),
+            ed.workspace.claude.checkpoints.tell.iter().any(|t| t.contains("connect to the socket")),
             "Claude hears it"
         );
         for (socket, reason, why) in [
@@ -7361,15 +7414,15 @@ mod tests {
         let sock = dir.join("c/docker.sock");
         let _l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         // (the stand-in runs unsandboxed here — `echo`, nothing else; what's checked is what it was given)
         ed.config.llm.sandbox = false;
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.state = crate::chat::State::Thinking;
-        ed.session.at = crate::session::At::Code;
+        ed.workspace.viewer.at = crate::workspace::At::Code;
         let generation = c.generation();
         let ask = |ed: &mut crate::editor::Editor, n: u64, command: &str| {
             let args =
@@ -7397,7 +7450,7 @@ mod tests {
         assert!(q.contains("a lets this command connect again for the rest of this chat"), "{q}");
         assert!(q.contains("never another command"), "{q}");
         ed.offer_for_chat();
-        assert!(ed.session.chat.as_ref().unwrap().allowed.sockets.is_empty(), "not the socket");
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().allowed.sockets.is_empty(), "not the socket");
         pump(&mut ed, &|_| admitted(first).is_some());
         // The same command, another filter: no card, and the socket rides with it
         ed.offers.clear();
@@ -7422,10 +7475,10 @@ mod tests {
         let g = crate::allow::Grant::Socket(sock.clone());
         ed.toasts.clear();
         crate::allow::grant(&mut ed, &g, crate::allow::Scope::ThisChat);
-        assert!(ed.session.chat.as_ref().unwrap().allowed.sockets.is_empty());
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().allowed.sockets.is_empty());
         assert!(ed.toasts.is_empty(), "nothing granted, nothing said");
         // (and were it in the chat's sockets somehow, a run asking for it still gets its card)
-        ed.session.chat.as_mut().unwrap().allowed.sockets.push(sock.clone());
+        ed.workspace.claude.chat.as_mut().unwrap().allowed.sockets.push(sock.clone());
         ed.offers.clear();
         ask(&mut ed, 5, "basename five").unwrap();
         pump(&mut ed, &|ed| !ed.offers.is_empty() || admitted("basename five").is_some());
@@ -7461,12 +7514,12 @@ mod tests {
         let sock = dir.join("c/app.sock");
         let _l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
         // (a turn under way: what runs is its call's)
-        ed.session.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
+        ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
         let ask = |ed: &mut crate::editor::Editor, n: u64, command: &str| {
             let args =
                 json!({ "command": command, "unix_socket": sock.to_str().unwrap(), "reason": "docker" });
@@ -7492,7 +7545,7 @@ mod tests {
             let q = decided(&mut ed, with(command));
             assert_eq!(q, None, "{command}: asked again");
         }
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -7522,7 +7575,7 @@ mod tests {
         std::fs::write(dir.join("tool"), b"\xcf\xfa\xed\xfe\x00\x00binary").unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
         no_sandbox(&mut ed);
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         for (cmd, file, marker) in [
             ("awk -f x.awk data.txt", "x.awk", "marker-awk"),
             ("gawk --file=x.awk data.txt", "x.awk", "marker-awk"),
@@ -7566,7 +7619,7 @@ mod tests {
                 ed.handle_event(ev);
             }
         }
-        assert!(ed.session.task_run.is_none(), "nothing ran");
+        assert!(ed.workspace.task_run.is_none(), "nothing ran");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -7584,19 +7637,19 @@ mod tests {
         let (proj, other) = (dir.join("proj"), dir.join("other"));
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
         no_sandbox(&mut ed);
-        ed.session.root = proj.clone();
+        ed.workspace.root = proj.clone();
         // A card, or the run started at once — what `run` decided
         let decided = |ed: &mut crate::editor::Editor, cmd: &str| -> Option<String> {
             ed.offers.clear();
-            ed.session.task_run = None;
+            ed.workspace.task_run = None;
             super::run(ed, super::Call::test(1), &serde_json::json!({ "command": cmd })).unwrap();
             let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-            while ed.offers.is_empty() && ed.session.task_run.is_none() && std::time::Instant::now() < end {
+            while ed.offers.is_empty() && ed.workspace.task_run.is_none() && std::time::Instant::now() < end {
                 if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(50)) {
                     ed.handle_event(ev);
                 }
             }
-            assert!(!ed.offers.is_empty() || ed.session.task_run.is_some(), "{cmd}: neither");
+            assert!(!ed.offers.is_empty() || ed.workspace.task_run.is_some(), "{cmd}: neither");
             ed.offers.first().map(|o| o.question.clone())
         };
         let outside = [
@@ -7619,7 +7672,7 @@ mod tests {
                 let q =
                     decided(&mut ed, cmd).unwrap_or_else(|| panic!("{cmd} ran (reads allowed: {allowed})"));
                 assert!(q.starts_with(cmd), "the plain card, the command on it: {q}");
-                assert!(ed.session.task_run.is_none(), "{cmd}: nothing ran");
+                assert!(ed.workspace.task_run.is_none(), "{cmd}: nothing ran");
             }
         }
         // #152: and where it runs — the folder after its `cd`s, decided, under the command
@@ -7630,19 +7683,19 @@ mod tests {
         assert_eq!(ed.offers[0].decided_lines(), 0..2, "said as decided");
         // Inside the project: at once
         assert_eq!(decided(&mut ed, "cd sub && git status"), None, "inside: runs");
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
         assert_eq!(decided(&mut ed, "git --no-optional-locks -C sub status"), None, "#88 inside: runs");
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
         // #92, word for word: a pipeline of reads over a file under the git-ignored `target/` — at once,
         // whether the file is there yet or not
         let line = r#"sh -c 'grep -v "^.*note" target/ra-out/grow/grow.events | sed -n "1,200p" | grep -E "begin|end|status|stopped"'"#;
         std::fs::write(proj.join(".gitignore"), "target/\n").unwrap();
         assert_eq!(decided(&mut ed, line), None, "not there yet: runs");
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
         std::fs::create_dir_all(proj.join("target/ra-out/grow")).unwrap();
         std::fs::write(proj.join("target/ra-out/grow/grow.events"), "begin\nnote\nend\n").unwrap();
         assert_eq!(decided(&mut ed, line), None, "there: runs");
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -8052,13 +8105,13 @@ mod tests {
         std::fs::write(dir.join("target/x/setup.sh"), "touch set-up\n").unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
         no_sandbox(&mut ed);
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.state = crate::chat::State::Thinking;
-        ed.session.at = crate::session::At::Code;
+        ed.workspace.viewer.at = crate::workspace::At::Code;
         let generation = c.generation();
         let line =
             |n: u32| format!("sh target/x/setup.sh && env TARAE_BACKGROUND=dark echo shot target/x/{n}.png");
@@ -8072,7 +8125,7 @@ mod tests {
             }
         };
         let ended = |ed: &crate::editor::Editor| {
-            ed.session.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
+            ed.workspace.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
         };
         // The first time: a card, offering both
         super::run(&mut ed, super::Call::of(generation, "r1", json!(1)), &json!({ "command": line(1) }))
@@ -8088,28 +8141,28 @@ mod tests {
         ed.offer_for_chat();
         pump(&mut ed, &ended);
         assert!(dir.join("set-up").exists(), "it ran");
-        assert_eq!(ed.session.chat.as_ref().unwrap().run_scripts.len(), 1, "the script, as it was");
+        assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().run_scripts.len(), 1, "the script, as it was");
         // Again, the same line: unasked
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
         super::run(&mut ed, super::Call::of(generation, "r2", json!(2)), &json!({ "command": line(1) }))
             .unwrap();
-        pump(&mut ed, &|ed| ed.session.task_run.is_some() || !ed.offers.is_empty());
+        pump(&mut ed, &|ed| ed.workspace.task_run.is_some() || !ed.offers.is_empty());
         assert!(ed.offers.is_empty(), "no card: {:?}", ed.offers.first().map(|o| &o.question));
         pump(&mut ed, &ended);
         // Another file: asked (#193)
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
         super::run(&mut ed, super::Call::of(generation, "r5", json!(5)), &json!({ "command": line(2) }))
             .unwrap();
-        pump(&mut ed, &|ed| ed.session.task_run.is_some() || !ed.offers.is_empty());
-        assert!(ed.session.task_run.is_none() && !ed.offers.is_empty(), "another line: its card");
+        pump(&mut ed, &|ed| ed.workspace.task_run.is_some() || !ed.offers.is_empty());
+        assert!(ed.workspace.task_run.is_none() && !ed.offers.is_empty(), "another line: its card");
         ed.offer_dismiss();
         // The script changed: asked again
         std::fs::write(dir.join("target/x/setup.sh"), "touch set-up-again\n").unwrap();
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
         super::run(&mut ed, super::Call::of(generation, "r3", json!(3)), &json!({ "command": line(1) }))
             .unwrap();
-        pump(&mut ed, &|ed| ed.session.task_run.is_some() || !ed.offers.is_empty());
-        assert!(ed.session.task_run.is_none() && !ed.offers.is_empty(), "a card for the changed script");
+        pump(&mut ed, &|ed| ed.workspace.task_run.is_some() || !ed.offers.is_empty());
+        assert!(ed.workspace.task_run.is_none() && !ed.offers.is_empty(), "a card for the changed script");
         assert!(!dir.join("set-up-again").exists());
         // Review: a shell pinned by its path (as the old rule let `a` do) lets nothing through it
         ed.offer_dismiss();
@@ -8120,13 +8173,13 @@ mod tests {
             std::fs::read(&sh).unwrap().hash(&mut h);
             h.finish()
         };
-        ed.session.chat.as_mut().unwrap().run_scripts.push((sh, hash));
+        ed.workspace.claude.chat.as_mut().unwrap().run_scripts.push((sh, hash));
         let marker = dir.join("through-sh");
         let through = format!("/bin/sh -c 'touch {}'", marker.display());
         super::run(&mut ed, super::Call::of(generation, "r4", json!(4)), &json!({ "command": through }))
             .unwrap();
-        pump(&mut ed, &|ed| ed.session.task_run.is_some() || !ed.offers.is_empty());
-        assert!(ed.session.task_run.is_none() && !ed.offers.is_empty(), "a card, not a run");
+        pump(&mut ed, &|ed| ed.workspace.task_run.is_some() || !ed.offers.is_empty());
+        assert!(ed.workspace.task_run.is_none() && !ed.offers.is_empty(), "a card, not a run");
         assert!(!marker.exists());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -8150,16 +8203,16 @@ mod tests {
         std::fs::write(p.join("src/a.txt"), "working\n").unwrap();
         let status = git(&["status", "--porcelain"]);
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = p.clone();
+        ed.workspace.root = p.clone();
         ed.base_trees = Some(dir.join("base"));
         ed.config.llm.sandbox = false;
         ed.config.llm.run_allow = vec!["cat a.txt".into()];
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.state = crate::chat::State::Thinking;
-        ed.session.at = crate::session::At::Code;
+        ed.workspace.viewer.at = crate::workspace::At::Code;
         let generation = c.generation();
         let answered = |id: &str| {
             super::ANSWERED.with(|a| a.borrow().iter().find(|(i, _)| *i == json!(id)).map(|(_, r)| r.clone()))
@@ -8178,7 +8231,7 @@ mod tests {
             super::run(ed, super::Call::of(generation, id, json!(id)), &args)
         };
         run(&mut ed, "b1", json!({ "command": "cat a.txt", "cwd": "src", "base": "HEAD" })).unwrap();
-        assert!(ed.session.base_writing, "its tree being written");
+        assert!(ed.workspace.base_writing, "its tree being written");
         let e = run(&mut ed, "b2", json!({ "command": "cat a.txt", "base": "HEAD" })).unwrap_err();
         assert!(e.contains("under way"), "one at a time: {e}");
         let said = pump(&mut ed, "b1").unwrap();
@@ -8192,7 +8245,7 @@ mod tests {
             std::thread::yield_now();
         }
         assert_eq!(git(&["status", "--porcelain"]), status, "the checkout as it was");
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
         // Not a check, or past the sandbox: said at once, nothing written
         let e = run(&mut ed, "b3", json!({ "command": "touch x", "base": "HEAD" })).unwrap_err();
         assert!(e.contains("only the project's checks"), "{e}");
@@ -8225,13 +8278,13 @@ mod tests {
         std::fs::write(dir.join("xtask/src/main.rs"), "fn main() {}\n").unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
         no_sandbox(&mut ed);
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.state = crate::chat::State::Thinking;
-        ed.session.at = crate::session::At::Code;
+        ed.workspace.viewer.at = crate::workspace::At::Code;
         let generation = c.generation();
         let line = |t: &str| format!("touch ran && echo cargo xtask linux test -- {t}");
         let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool| {
@@ -8244,22 +8297,22 @@ mod tests {
             }
         };
         let ended = |ed: &crate::editor::Editor| {
-            ed.session.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
+            ed.workspace.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
         };
         let ran = dir.join("ran");
         let send = |ed: &mut crate::editor::Editor, id: &str, tests: &str| {
-            ed.session.task_run = None;
+            ed.workspace.task_run = None;
             let _ = std::fs::remove_file(&ran);
             let args = json!({ "command": line(tests) });
             super::run(ed, super::Call::of(generation, id, json!(id)), &args).unwrap();
-            pump(ed, &|ed| ed.session.task_run.is_some() || !ed.offers.is_empty());
+            pump(ed, &|ed| ed.workspace.task_run.is_some() || !ed.offers.is_empty());
         };
         send(&mut ed, "r1", "sandbox::keeper");
         assert!(!ed.offers.is_empty(), "the first time: its card");
         ed.offer_for_chat();
         pump(&mut ed, &ended);
         assert!(ran.exists(), "it ran");
-        let pins = ed.session.chat.as_ref().unwrap().run_scripts.clone();
+        let pins = ed.workspace.claude.chat.as_ref().unwrap().run_scripts.clone();
         assert_eq!(
             pins.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(),
             [dir.join("xtask")],
@@ -8273,12 +8326,12 @@ mod tests {
         assert!(ran.exists());
         // An option after `--` isn't a test name: its card
         send(&mut ed, "r4", "--ignored");
-        assert!(ed.session.task_run.is_none() && !ed.offers.is_empty(), "an option: asked");
+        assert!(ed.workspace.task_run.is_none() && !ed.offers.is_empty(), "an option: asked");
         ed.offer_dismiss();
         // xtask/ changed since: its card, nothing ran
         std::fs::write(dir.join("xtask/src/main.rs"), "fn main() { other() }\n").unwrap();
         send(&mut ed, "r3", "sandbox::keeper");
-        assert!(ed.session.task_run.is_none() && !ed.offers.is_empty(), "a card for the changed entry");
+        assert!(ed.workspace.task_run.is_none() && !ed.offers.is_empty(), "a card for the changed entry");
         assert!(!ran.exists());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -8516,8 +8569,8 @@ mod tests {
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
         let mut c = crate::chat::Chat::new();
         c.conversation = Some("c1".into());
-        ed.session.chat = Some(c);
-        ed.session.at = crate::session::At::Chat;
+        ed.workspace.claude.chat = Some(c);
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
         let report = |blocked: bool, guarantees: Option<u64>| crate::sandbox::Report {
             text: String::new(),
             blocked,
@@ -8549,9 +8602,9 @@ mod tests {
         super::rules_told(&mut ed, Some(&report(true, None)));
         assert_eq!(super::rules_known(&ed, false), Told { rules: Some(7), guarantees: None });
         super::rules_told(&mut ed, Some(&report(false, Some(9))));
-        ed.session.chat.as_mut().unwrap().conversation = Some("c2".into());
+        ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("c2".into());
         assert_eq!(super::rules_known(&ed, false), none, "another conversation hasn't heard them");
-        let calls = ed.session.usage.tally.end(&[], None, 0);
+        let calls = ed.workspace.claude.usage.tally.end(&[], None, 0);
         assert_eq!(calls.sums.run_refused, 1, "the blocked run");
     }
 
@@ -8775,7 +8828,7 @@ mod tests {
         std::fs::write(t.join("cache"), "a file where tarae's cache would be").unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
         (ed.config.llm.sandbox, ed.sandbox) = (true, crate::sandbox::Availability::Ready);
-        ed.session.root = t.join("p");
+        ed.workspace.root = t.join("p");
         let (cache, own_tmp) = (t.join("cache"), t.join("tmp"));
         ed.sandbox_here = Some(std::sync::Arc::new(move || {
             let mut here = crate::sandbox::Here::now();
@@ -8786,7 +8839,7 @@ mod tests {
         }));
         let job = || super::Job::Command("touch ran".into(), t.join("p"));
         let ran = |ed: &crate::editor::Editor| {
-            ed.session.task_run.is_some() || ed.session.test_run.is_some() || t.join("p/ran").exists()
+            ed.workspace.task_run.is_some() || ed.workspace.test_run.is_some() || t.join("p/ran").exists()
         };
         let pump =
             |ed: &mut crate::editor::Editor, what: &str, done: &dyn Fn(&crate::editor::Editor) -> bool| {
@@ -8838,8 +8891,8 @@ mod tests {
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
         let mut c = crate::chat::Chat::new();
         c.conversation = Some("c1".into());
-        ed.session.chat = Some(c);
-        ed.session.at = crate::session::At::Chat;
+        ed.workspace.claude.chat = Some(c);
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
         let e = crate::sandbox::runenv::RunEnv {
             tokens: vec!["GITHUB_TOKEN".into()],
             others: vec!["DATABASE_URL".into()],
@@ -8853,13 +8906,13 @@ mod tests {
         assert_eq!(super::env_left_out(&mut ed, ran("ok")), "", "said once");
         let named = super::env_left_out(&mut ed, ran("error: DATABASE_URL must be set"));
         assert!(named.contains("Its output names DATABASE_URL") && !named.contains("token-like"), "{named}");
-        ed.session.chat.as_mut().unwrap().conversation = Some("c2".into());
+        ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("c2".into());
         assert!(super::env_left_out(&mut ed, ran("ok")).contains("GITHUB_TOKEN"), "a new conversation");
         assert_eq!(super::env_left_out(&mut ed, None), "", "outside the sandbox");
     }
 
     /// What a run's policy is made from holds where other sessions' runs and every kept write grant may write
-    /// (`run_here`: `Editor::sessions_writes` and `allow::Store::writes`) — a store there isn't told (compat B12,
+    /// (`run_here`: `Editor::workspaces_writes` and `allow::Store::writes`) — a store there isn't told (compat B12,
     /// review note 4, verify5 N7).
     #[test]
     fn a_runs_surroundings_hold_what_other_sessions_and_kept_grants_write() {
@@ -8871,16 +8924,16 @@ mod tests {
             std::fs::create_dir_all(f).unwrap();
         }
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = front.clone();
+        ed.workspace.root = front.clone();
         ed.config.llm.sandbox = true;
         ed.sandbox = crate::sandbox::Availability::Ready;
         let store = dir.join("state/sandbox.json");
         ed.allow_path = Some(store.clone());
         crate::allow::keep(&store, &elsewhere, |a| a.write.push(kept_w.clone())).unwrap();
-        ed.session_open(&back).unwrap();
-        assert!(ed.session_switch(0));
-        let behind = ed.sessions.iter_mut().find(|s| s.root == back).expect("the session behind");
-        behind.allowed.write.push(back_w.clone());
+        ed.workspace_open(&back).unwrap();
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME));
+        let behind = ed.workspaces.iter_mut().find(|s| s.root == back).expect("the session behind");
+        behind.claude.allowed.write.push(back_w.clone());
         ed.sandbox_here = Some(std::sync::Arc::new(crate::sandbox::Here::default));
         let here = super::run_here(&ed)();
         for w in [&back, &back_w, &kept_w] {

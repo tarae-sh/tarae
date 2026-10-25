@@ -557,12 +557,12 @@ pub fn run(entry: &Entry, at: &Place) -> Verdict {
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     crate::chat::open(&mut ed);
-    let Some(c) = ed.session.chat.as_mut() else {
+    let Some(c) = ed.workspace.claude.chat.as_mut() else {
         v.fail(Check::Exit, "the chat didn't open");
         return v;
     };
     c.state = crate::chat::State::Thinking;
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     let id = json!(format!("compat-{n}"));
     let call = crate::tools::Call::of(c.generation(), &format!("compat{n}"), id.clone());
     // (what it's let change outside the project, and what's the harness's own)
@@ -584,7 +584,7 @@ pub fn run(entry: &Entry, at: &Place) -> Verdict {
     // (the proxy's questions go to a test's sender (`TEST_ASKS`): handed to the editor as its main loop takes
     // them, so each host card comes as it would — piece C, the network closed: each host asked)
     let asks = {
-        let session = ed.session.proxy_id();
+        let session = ed.workspace.proxy_id();
         let (tx, rx) = std::sync::mpsc::channel();
         let mut to = crate::sandbox::proxy::TEST_ASKS.lock().unwrap_or_else(|e| e.into_inner());
         to.retain(|(s, _)| *s != session);
@@ -599,8 +599,8 @@ pub fn run(entry: &Entry, at: &Place) -> Verdict {
     ed.cards_flush();
     // (each entry its own session at the proxy: a host refused for the session (`n`) is refused at once, with no
     // card, for the rest of it — the next entry, in the same project, is asked afresh)
-    crate::hosts::session_ended(&ed.session);
-    let run = ed.session.task_run.as_ref().filter(|r| r.by_claude && r.task.cmd == entry.run);
+    crate::hosts::workspace_ended(&ed.workspace);
+    let run = ed.workspace.task_run.as_ref().filter(|r| r.by_claude && r.task.cmd == entry.run);
     match answer {
         None => {
             let tail = run.map(|r| tail(&r.output.to_vec())).unwrap_or_default();
@@ -625,7 +625,7 @@ pub fn run(entry: &Entry, at: &Place) -> Verdict {
     if v.asked.is_some_and(|n| n > 0) {
         v.failed.retain(|f| f.check != Check::Exit);
     }
-    let made: Vec<String> = ed.session.made_protected.iter().map(|m| m.path.clone()).collect();
+    let made: Vec<String> = ed.workspace.made_protected.iter().map(|m| m.path.clone()).collect();
     judge_made(&mut v, entry, &made, cfg!(target_os = "linux"));
     // (before the baseline: what the same command writes outside the sandbox is the user's own build's)
     let after = Tree::of(&at.watched, &allowed);
@@ -962,7 +962,7 @@ impl Tree {
 
 /// A fixture's project made a git checkout of its own (one there already is kept), what's in it committed — so
 /// the snapshot runs after each run as it does in Claude's checkouts: Landlock can't refuse a protected name
-/// made where none was (G23), only the snapshot finds it (`Session.made_protected`). git with no config but its
+/// made where none was (G23), only the snapshot finds it (`Workspace.made_protected`). git with no config but its
 /// own, no hooks. Never a repository under test: its clone's history is its own.
 pub fn checkout(project: &Path) -> Result<(), String> {
     // (git's repository variables from where the tests run — a hook, a git-driven script — would point it at

@@ -43,13 +43,13 @@ const BEATS: [&str; 6] = [
 ///   starts its Claude streaming its edit on line 12 (with `review-at-end` on), docks the session list over the code
 ///   (`space W`, `C-w K`) in `main`, and sends the prompt in `main`'s chat, which stays docked right.
 /// - Beat 6: main's last edit reviewed in the buffer and accepted (`y`, its stamp on the chat's edit row), then
-///   docs brought in (`:session-bring docs`, its card).
+///   docs brought in (`:workspace-bring docs`, its card).
 /// - After `@rec`: captures the 6 beats in one continuous take.
 const HERO_KEYS: &[&str] = &[
     "@10?fn main()",
     // 1) docs: its committed doc comment on line 6, then ask to run tests in the sandbox -> host grant card
     ":",
-    "session-open ../docs",
+    "workspace-open ../docs",
     "\r",
     "@10?docs",
     ":",
@@ -66,7 +66,7 @@ const HERO_KEYS: &[&str] = &[
     "\x1b",
     // 2) fix: open src/main.rs, start `home-fix` streaming its edit on line 12 (held until main writes `or_insert`)
     ":",
-    "session-open ../fix",
+    "workspace-open ../fix",
     "\r",
     "@10?fix",
     ":",
@@ -83,7 +83,7 @@ const HERO_KEYS: &[&str] = &[
     // 3) back to main: dock the session list over the code (its rows read across), send the prompt in main's chat
     //    (docked right: the turn is read there, no follow card over the code), and start recording
     ":",
-    "session-switch 0",
+    "workspace-switch 0",
     "\r",
     "@10?tarae-demo › src › main.rs",
     " ",
@@ -128,7 +128,7 @@ const HERO_KEYS: &[&str] = &[
     "\x1b",
     "\x1b",
     ":",
-    "session-switch 0",
+    "workspace-switch 0",
     "\r",
     "@10?tarae-demo › src › main.rs",
     ":",
@@ -157,7 +157,7 @@ const HERO_KEYS: &[&str] = &[
     "\x1b",
     "\x1b",
     ":",
-    "session-bring docs",
+    "workspace-bring docs",
     "\r",
     "@20?Bring docs into main",
     "@hold:400",

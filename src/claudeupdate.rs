@@ -87,7 +87,7 @@ pub fn seen(ed: &mut Editor, version: &str) {
                 return;
             }
             ed.claude_update.said = true;
-            if let Some(c) = ed.session.chat.as_mut() {
+            if let Some(c) = ed.workspace.claude.chat.as_mut() {
                 c.note(&note);
             }
         }
@@ -141,7 +141,7 @@ pub fn started(ed: &mut Editor, cmd: &str, generation: u64) {
 /// since it started is said, looked at on a worker — the installer says "Installation complete" even when it
 /// laid out nothing (f22 k), so that's a warning. True: said here; a failed run is said as any task's.
 pub fn ran(ed: &mut Editor, passed: bool) -> bool {
-    let Some(r) = ed.session.task_run.as_ref() else { return false };
+    let Some(r) = ed.workspace.task_run.as_ref() else { return false };
     if ed.claude_update.before.as_ref().is_none_or(|b| b.run != Some(r.generation())) {
         return false;
     }
@@ -194,7 +194,7 @@ mod tests {
         let mut ed = Editor::new(Default::default());
         ed.config.llm.command = "/bin/echo".into();
         crate::typed::execute(&mut ed, "claude-update").unwrap();
-        let run = ed.session.task_run.as_ref().expect("a task");
+        let run = ed.workspace.task_run.as_ref().expect("a task");
         assert!(!run.by_claude, "yours");
         assert_eq!(run.task.cmd, "env -u DISABLE_UPDATES -u DISABLE_AUTOUPDATER '/bin/echo' update");
     }
@@ -213,7 +213,7 @@ mod tests {
         let mut ed = Editor::new(Default::default());
         ed.config.llm.command = "/bin/sh".into();
         crate::typed::execute(&mut ed, "claude-update").unwrap();
-        let cmd = ed.session.task_run.as_ref().expect("a task").task.cmd.clone();
+        let cmd = ed.workspace.task_run.as_ref().expect("a task").task.cmd.clone();
         let out = std::process::Command::new("/bin/sh")
             .args(["-c", &cmd])
             .current_dir(&dir)
@@ -256,7 +256,7 @@ mod tests {
                 cwd: PathBuf::new(),
             });
             run.output = [(false, out)].into_iter().collect();
-            ed.session.task_run = Some(run);
+            ed.workspace.task_run = Some(run);
             ed.toasts.clear();
             if !ran(ed, passed) {
                 return None;

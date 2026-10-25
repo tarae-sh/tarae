@@ -19,7 +19,7 @@ fn feed(ed: &mut Editor, keys: &str) {
 fn two_floating_lists_keep_their_own() {
     let dir = crate::scratch::Scratch::new("floatlist");
     let mut ed = Editor::new(crate::config::Config::default());
-    (ed.session.root, ed.session.name) = (dir.to_path_buf(), "main".into());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
     ed.set_status("saved a.rs");
     feed(&mut ed, " W");
     feed(&mut ed, ":messages<ret>");
@@ -46,7 +46,7 @@ fn two_floating_lists_keep_their_own() {
 fn a_floating_list_is_done_once_used() {
     let dir = crate::scratch::Scratch::new("floatlist");
     let mut ed = Editor::new(crate::config::Config::default());
-    (ed.session.root, ed.session.name) = (dir.to_path_buf(), "main".into());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
     feed(&mut ed, " Wj<esc>");
     assert!(ed.sessions_pane.is_some(), "moves and esc: it stays");
     feed(&mut ed, " W<ret>");

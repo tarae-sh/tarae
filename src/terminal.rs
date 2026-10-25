@@ -19,7 +19,7 @@ use std::sync::mpsc::Sender;
 use crate::editor::Editor;
 use crate::event::MouseKind;
 use crate::key::{Code, Key};
-use crate::session::At;
+use crate::workspace::At;
 
 pub struct Terminal {
     pub parser: vt100::Parser,
@@ -453,7 +453,7 @@ fn answer(writer: &Sender<Vec<u8>>, bytes: &[u8]) -> u64 {
 /// batch — its questions answered at once, before the batch is handed on (`output_acked`) or waits on a go-ahead.
 #[cfg(test)]
 pub(crate) fn reader_reads(ed: &Editor, bytes: &[u8]) {
-    if let Some(t) = ed.session.terminal.as_ref() {
+    if let Some(t) = ed.workspace.terminal.as_ref() {
         answer(&t.writer, bytes);
     }
 }
@@ -461,14 +461,14 @@ pub(crate) fn reader_reads(ed: &Editor, bytes: &[u8]) {
 /// Output of run `generation` — kept until the terminal is in place if it comes first (the reader starts
 /// before the worker that started the program hands it over).
 pub(crate) fn output(ed: &mut Editor, generation: u64, bytes: &[u8]) {
-    if let Some(t) = ed.session.terminal.as_mut().filter(|t| t.generation == generation) {
+    if let Some(t) = ed.workspace.terminal.as_mut().filter(|t| t.generation == generation) {
         t.take(bytes);
         // What was selected has likely moved (not while it's being dragged, nor while held still)
         if !t.selecting && t.held.is_none() {
             t.selection = None;
         }
-    } else if ed.session.terminal_run == generation {
-        ed.session.terminal_early.0.extend_from_slice(bytes);
+    } else if ed.workspace.terminal_run == generation {
+        ed.workspace.terminal_early.0.extend_from_slice(bytes);
     }
 }
 
@@ -483,7 +483,7 @@ pub(crate) fn output_acked(
     done: std::sync::mpsc::SyncSender<()>,
 ) {
     output(ed, generation, bytes);
-    match ed.session.terminal.as_mut().filter(|t| t.generation == generation && t.held.is_some()) {
+    match ed.workspace.terminal.as_mut().filter(|t| t.generation == generation && t.held.is_some()) {
         Some(t) => t.waiting.push(done),
         None => {
             let _ = done.send(());
@@ -493,29 +493,29 @@ pub(crate) fn output_acked(
 
 /// Run `generation` ended with `code`.
 fn ended(ed: &mut Editor, generation: u64, code: i32) {
-    if let Some(t) = ed.session.terminal.as_mut().filter(|t| t.generation == generation) {
+    if let Some(t) = ed.workspace.terminal.as_mut().filter(|t| t.generation == generation) {
         t.exited = Some(code);
         // (filling the screen, it goes on doing so — its last lines to read)
-        if ed.session.is_at(At::Program) {
-            let slot = ed.session.leaf(crate::pane::Shows::Slot);
-            let full = slot.is_some() && ed.session.zoom.map(|z| z.0) == slot;
-            ed.session.at = if full { At::Slot } else { At::Code };
+        if ed.workspace.is_at(At::Program) {
+            let slot = ed.workspace.leaf(crate::pane::Shows::Slot);
+            let full = slot.is_some() && ed.workspace.viewer.zoom.map(|z| z.0) == slot;
+            ed.workspace.viewer.at = if full { At::Slot } else { At::Code };
         }
-    } else if ed.session.terminal_run == generation {
-        ed.session.terminal_early.1 = Some(code);
+    } else if ed.workspace.terminal_run == generation {
+        ed.workspace.terminal_early.1 = Some(code);
     }
 }
 
 /// The started terminal in place — with what it printed (and whether it ended) before.
 fn install(ed: &mut Editor, mut t: Terminal) {
-    let (bytes, exited) = std::mem::take(&mut ed.session.terminal_early);
+    let (bytes, exited) = std::mem::take(&mut ed.workspace.terminal_early);
     t.take(&bytes);
     // (the keys its program's — unless it ended already)
     match exited {
         Some(code) => t.exited = Some(code),
-        None => ed.session.at = At::Program,
+        None => ed.workspace.viewer.at = At::Program,
     }
-    ed.session.terminal = Some(t);
+    ed.workspace.terminal = Some(t);
 }
 
 /// Output read in one go at most — a few ms for the main loop to take in.
@@ -562,20 +562,20 @@ impl Editor {
     /// the keys behind them). From the program's keys `space T` is the program's.
     pub fn terminal_toggle(&mut self) {
         let front = self.slot() == Some(crate::sizes::Slot::Terminal);
-        let inside = front && self.session.is_at(At::Slot);
-        if !inside && self.session.terminal.as_ref().is_some_and(|t| t.visible && t.exited.is_none()) {
-            self.session.slot_front = Some(crate::sizes::Slot::Terminal);
-            self.session.at = At::Program;
+        let inside = front && self.workspace.is_at(At::Slot);
+        if !inside && self.workspace.terminal.as_ref().is_some_and(|t| t.visible && t.exited.is_none()) {
+            self.workspace.viewer.slot_front = Some(crate::sizes::Slot::Terminal);
+            self.workspace.viewer.at = At::Program;
             return;
         }
-        match self.session.terminal.as_mut() {
+        match self.workspace.terminal.as_mut() {
             Some(t) if t.visible => {
                 t.visible = false;
-                self.session.leave(At::Program);
+                self.workspace.leave(At::Program);
             }
             Some(t) if t.exited.is_none() => {
                 t.visible = true;
-                self.session.at = At::Program;
+                self.workspace.viewer.at = At::Program;
             }
             _ => {
                 let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
@@ -586,11 +586,11 @@ impl Editor {
 
     /// `C-\` in the code — the keys to the terminal (showing it; starting a shell if nothing runs there).
     pub fn terminal_focus(&mut self) {
-        match self.session.terminal.as_mut() {
+        match self.workspace.terminal.as_mut() {
             Some(t) if t.exited.is_none() => {
                 t.visible = true;
-                self.session.at = At::Program;
-                self.session.slot_front = Some(crate::sizes::Slot::Terminal);
+                self.workspace.viewer.at = At::Program;
+                self.workspace.viewer.slot_front = Some(crate::sizes::Slot::Terminal);
             }
             _ => self.terminal_toggle(),
         }
@@ -599,33 +599,33 @@ impl Editor {
     /// Run `argv` in the terminal, replacing what ran there — started on a worker (a fork and exec stay off
     /// the keys' path); false if something's running there already (it isn't replaced).
     pub fn terminal_run(&mut self, argv: Vec<String>, env: Vec<(String, String)>) -> bool {
-        if self.session.terminal.as_ref().is_some_and(|t| t.exited.is_none())
-            && !self.session.terminal_starting
+        if self.workspace.terminal.as_ref().is_some_and(|t| t.exited.is_none())
+            && !self.workspace.terminal_starting
         {
             // Asked for a replacement explicitly? Only for an exited one — a live shell is never dropped here
-            if let Some(t) = self.session.terminal.as_mut() {
+            if let Some(t) = self.workspace.terminal.as_mut() {
                 t.visible = true;
-                self.session.at = At::Program;
+                self.workspace.viewer.at = At::Program;
             }
-            self.session.slot_front = Some(crate::sizes::Slot::Terminal);
+            self.workspace.viewer.slot_front = Some(crate::sizes::Slot::Terminal);
             return false;
         }
         let (rows, cols) = self.screen.terminal_size.get().unwrap_or((12, 80));
         self.terminal_generation += 1;
-        self.session.terminal_early = Default::default();
+        self.workspace.terminal_early = Default::default();
         let generation = self.terminal_generation;
-        self.session.terminal_run = generation;
-        self.session.terminal_starting = true;
-        let cwd = self.session.root.clone();
+        self.workspace.terminal_run = generation;
+        self.workspace.terminal_starting = true;
+        let cwd = self.workspace.root.clone();
         let events = self.events.sender();
         self.events.jobs().spawn(move || {
             let env = inside_env(env, crate::sandbox::inside());
             let result = spawn(&argv, &cwd, &env, rows, cols, events, generation);
             move |ed: &mut Editor| {
-                if ed.session.terminal_run != generation {
+                if ed.workspace.terminal_run != generation {
                     return;
                 }
-                ed.session.terminal_starting = false;
+                ed.workspace.terminal_starting = false;
                 match result {
                     Ok(t) => install(ed, t),
                     Err(e) => ed.set_error(format!("terminal: {e}")),
@@ -640,7 +640,7 @@ impl Editor {
     /// scroll its past a page, as every terminal emulator's do (uxaudit Z2 — the next key the program gets brings
     /// it back down); the rest go to the program.
     pub fn terminal_key(&mut self, key: Key) -> bool {
-        if !self.session.program_has_keys() {
+        if !self.workspace.program_has_keys() {
             return false;
         }
         // The window prefix taken from it (`window_keys`): its next key is the window table's — but the prefix
@@ -655,7 +655,7 @@ impl Editor {
             self.run(&cmds, None);
             return true;
         }
-        let Some(t) = self.session.terminal.as_mut() else { return false };
+        let Some(t) = self.workspace.terminal.as_mut() else { return false };
         // (a full-screen program's alternate screen keeps no past: the key is the program's, as a terminal sends it)
         if key.shift
             && !key.ctrl
@@ -679,7 +679,7 @@ impl Editor {
 
     /// `back` lines further back (forward when negative) — as far as it keeps (vt100 clamps).
     pub fn terminal_scroll_by(&mut self, back: isize) {
-        if let Some(t) = self.session.terminal.as_mut() {
+        if let Some(t) = self.workspace.terminal.as_mut() {
             let now = t.parser.screen().scrollback();
             t.parser.screen_mut().set_scrollback(now.saturating_add_signed(back));
         }
@@ -689,10 +689,10 @@ impl Editor {
     /// (a shell then doesn't run each line as it comes); newlines as the Enter key sends them. False if it
     /// isn't the terminal's.
     pub fn terminal_paste(&mut self, text: &str) -> bool {
-        if !self.session.program_has_keys() {
+        if !self.workspace.program_has_keys() {
             return false;
         }
-        let Some(t) = self.session.terminal.as_mut() else { return false };
+        let Some(t) = self.workspace.terminal.as_mut() else { return false };
         t.parser.screen_mut().set_scrollback(0);
         t.selection = None;
         let body = text.replace("\r\n", "\r").replace('\n', "\r");
@@ -729,7 +729,7 @@ impl Editor {
                 MouseKind::Up => {}
             };
         }
-        let Some(t) = self.session.terminal.as_mut() else { return };
+        let Some(t) = self.workspace.terminal.as_mut() else { return };
         let screen = t.parser.screen();
         let (rows, cols) = screen.size();
         let cell = cell.map(|(r, c)| (r.min(rows.saturating_sub(1)), c.min(cols.saturating_sub(1))));
@@ -739,7 +739,7 @@ impl Editor {
         let ours = alt && kind == MouseKind::Down;
         if live && !t.selecting && !ours && mode != vt100::MouseProtocolMode::None {
             if kind == MouseKind::Down {
-                self.session.at = At::Program;
+                self.workspace.viewer.at = At::Program;
             }
             // (what its mode doesn't ask for is dropped)
             if let Some(bytes) = cell.and_then(|c| mouse_bytes(mode, encoding, kind, c)) {
@@ -761,10 +761,10 @@ impl Editor {
             }
             MouseKind::Down => {
                 match live {
-                    true => self.session.at = At::Program,
-                    false => self.session.leave(At::Program),
+                    true => self.workspace.viewer.at = At::Program,
+                    false => self.workspace.leave(At::Program),
                 }
-                let Some(t) = self.session.terminal.as_mut() else { return };
+                let Some(t) = self.workspace.terminal.as_mut() else { return };
                 t.selection = cell.map(|c| (c, c));
                 t.selecting = cell.is_some();
             }
@@ -806,8 +806,8 @@ pub(crate) fn stand_in(
     let (writer, sent) = std::sync::mpsc::channel();
     let master = std::fs::File::open("/dev/null").expect("/dev/null").into();
     ed.terminal_generation += 1;
-    ed.session.terminal_run = ed.terminal_generation;
-    ed.session.terminal = Some(Terminal {
+    ed.workspace.terminal_run = ed.terminal_generation;
+    ed.workspace.terminal = Some(Terminal {
         parser: vt100::Parser::new(rows, cols, scrollback),
         visible: true,
         title: "sh".into(),
@@ -825,8 +825,8 @@ pub(crate) fn stand_in(
         size: (rows, cols),
         pid: 0,
     });
-    ed.session.slot_front = Some(crate::sizes::Slot::Terminal);
-    ed.session.at = At::Program;
+    ed.workspace.viewer.slot_front = Some(crate::sizes::Slot::Terminal);
+    ed.workspace.viewer.at = At::Program;
     sent
 }
 
@@ -870,19 +870,19 @@ mod tests {
             vec!["/bin/sh".to_string(), "-c".into(), "printf 'hello \\033[1mtarae\\033[0m'; exit 3".into()];
         ed.terminal_run(argv, Vec::new());
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-        while ed.session.terminal.as_ref().is_none_or(|t| t.exited.is_none())
+        while ed.workspace.terminal.as_ref().is_none_or(|t| t.exited.is_none())
             && std::time::Instant::now() < end
         {
             if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(200)) {
                 ed.handle_event(ev);
             }
         }
-        let t = ed.session.terminal.as_ref().unwrap();
+        let t = ed.workspace.terminal.as_ref().unwrap();
         assert_eq!(t.exited, Some(3));
         let screen = t.parser.screen();
         assert!(screen.contents().starts_with("hello tarae"), "{:?}", screen.contents());
         assert!(screen.cell(0, 6).is_some_and(|c| c.bold()), "bold");
-        assert!(!ed.session.is_at(At::Program), "an exited program gives the keys back");
+        assert!(!ed.workspace.is_at(At::Program), "an exited program gives the keys back");
     }
 
     /// A program that asks the terminal what it is (Primary Device Attributes — fish does, and waits 10 s for
@@ -899,14 +899,14 @@ mod tests {
             r"stty -icanon -echo min 9 time 50; printf '\033[c'; head -c 9 | tr '\033' E; printf '|'";
         ed.terminal_run(vec!["/bin/sh".to_string(), "-c".into(), script.into()], Vec::new());
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-        while ed.session.terminal.as_ref().is_none_or(|t| t.exited.is_none())
+        while ed.workspace.terminal.as_ref().is_none_or(|t| t.exited.is_none())
             && std::time::Instant::now() < end
         {
             if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(200)) {
                 ed.handle_event(ev);
             }
         }
-        let contents = ed.session.terminal.as_ref().unwrap().parser.screen().contents();
+        let contents = ed.workspace.terminal.as_ref().unwrap().parser.screen().contents();
         assert!(contents.contains("E[?62;22c|"), "{contents:?}");
         assert_eq!(answers(b"x\x1b[0cy\x1b[c"), [b"\x1b[?62;22c"; 2], "both forms, each answered");
         assert!(answers(b"\x1b[>c\x1b[?1;2c").is_empty(), "not the secondary query, nor a reply");
@@ -924,7 +924,7 @@ mod tests {
         let mut ed = Editor::new(config);
         ed.terminal_run(vec!["/bin/sh".into(), "-c".into(), "sleep 10".into()], Vec::new());
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-        while ed.session.terminal.is_none() && std::time::Instant::now() < end {
+        while ed.workspace.terminal.is_none() && std::time::Instant::now() < end {
             if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(50)) {
                 ed.handle_event(ev);
             }
@@ -934,10 +934,10 @@ mod tests {
             ed.handle_key(crate::key::Key::plain(crate::key::Code::Char('T')));
         };
         let state = |ed: &Editor| {
-            ed.session.terminal.as_ref().map(|t| (t.visible, ed.session.is_at(At::Program))).unwrap()
+            ed.workspace.terminal.as_ref().map(|t| (t.visible, ed.workspace.is_at(At::Program))).unwrap()
         };
         // Shown, in front, the keys back in the code
-        ed.session.leave(At::Program);
+        ed.workspace.leave(At::Program);
         assert_eq!(ed.slot(), Some(crate::sizes::Slot::Terminal));
         space_t(&mut ed);
         assert_eq!(state(&ed), (true, true), "shown without the keys: given them, not hidden");
@@ -947,11 +947,11 @@ mod tests {
         assert_eq!(state(&ed), (true, false), "space T in view mode: said");
         ed.handle_key(crate::key::Key::plain(crate::key::Code::Char('q')));
         assert_eq!(state(&ed), (false, false), "hidden from inside");
-        assert!(ed.session.terminal.as_ref().unwrap().exited.is_none(), "running on");
+        assert!(ed.workspace.terminal.as_ref().unwrap().exited.is_none(), "running on");
         // Hidden: shown with the keys
         space_t(&mut ed);
         assert_eq!(state(&ed), (true, true));
-        ed.session.terminal = None;
+        ed.workspace.terminal = None;
     }
 
     /// #140: inside a sandbox the terminal's `git status` leaves the index alone (`GIT_OPTIONAL_LOCKS=0`, as
@@ -994,19 +994,19 @@ mod tests {
             let before = std::fs::metadata(dir.join(".git/index")).unwrap().modified().unwrap();
             let (config, _) = crate::config::parse("");
             let mut ed = Editor::new(config);
-            (ed.terminal_generation, ed.session.terminal_run) = (1, 1);
+            (ed.terminal_generation, ed.workspace.terminal_run) = (1, 1);
             let argv = ["/bin/sh".to_string(), "-c".into(), "git status --porcelain".into()];
             let t = spawn(&argv, &dir, &inside_env(env, true), 5, 60, ed.events.sender(), 1).unwrap();
             install(&mut ed, t);
             let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-            while ed.session.terminal.as_ref().is_none_or(|t| t.exited.is_none())
+            while ed.workspace.terminal.as_ref().is_none_or(|t| t.exited.is_none())
                 && std::time::Instant::now() < end
             {
                 if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(100)) {
                     ed.handle_event(ev);
                 }
             }
-            assert_eq!(ed.session.terminal.as_ref().and_then(|t| t.exited), Some(0));
+            assert_eq!(ed.workspace.terminal.as_ref().and_then(|t| t.exited), Some(0));
             std::fs::metadata(dir.join(".git/index")).unwrap().modified().unwrap() != before
         };
         let refreshes = writes_index(vec![("GIT_OPTIONAL_LOCKS".into(), "1".into())]);
@@ -1025,14 +1025,14 @@ mod tests {
         }
         let (config, _) = crate::config::parse("");
         let mut ed = Editor::new(config);
-        (ed.terminal_generation, ed.session.terminal_run) = (7, 7);
+        (ed.terminal_generation, ed.workspace.terminal_run) = (7, 7);
         let argv = ["/bin/sh".to_string(), "-c".into(), "sleep 5".into()];
         let t = spawn(&argv, Path::new("/"), &[], 5, 40, ed.events.sender(), 7).unwrap();
         output(&mut ed, 7, b"early \x1b[1mbird");
         ended(&mut ed, 7, 0);
         output(&mut ed, 6, b"an older run's");
         install(&mut ed, t);
-        let t = ed.session.terminal.as_ref().unwrap();
+        let t = ed.workspace.terminal.as_ref().unwrap();
         assert_eq!(t.parser.screen().contents().trim(), "early bird");
         assert_eq!(t.exited, Some(0));
     }
@@ -1049,14 +1049,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let (config, _) = crate::config::parse("");
         let mut ed = Editor::new(config);
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.terminal_run(
             vec!["/bin/sh".into()],
             vec![("PS1".into(), "$ ".into()), ("HISTFILE".into(), "/dev/null".into())],
         );
-        wait(&mut ed, |ed| ed.session.terminal.is_some());
+        wait(&mut ed, |ed| ed.workspace.terminal.is_some());
         let job = dir.join("job.pid");
-        let t = ed.session.terminal.as_ref().unwrap();
+        let t = ed.workspace.terminal.as_ref().unwrap();
         // (caught, not ignored: an ignored signal would stay ignored in the job too)
         t.send(b"trap : HUP\r".to_vec());
         t.send(format!("sh -c 'echo $$ > {}; exec sleep 60'\r", job.display()).into_bytes());
@@ -1072,7 +1072,7 @@ mod tests {
         // SAFETY: signal 0 only asks whether the process is there.
         let alive = |pid: i32| unsafe { libc::kill(pid, 0) == 0 };
         assert!(alive(pid));
-        ed.session.terminal = None;
+        ed.workspace.terminal = None;
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
         while alive(pid) && std::time::Instant::now() < end {
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -1140,7 +1140,7 @@ mod tests {
     }
 
     fn shows(ed: &Editor, s: &str) -> bool {
-        ed.session.terminal.as_ref().is_some_and(|t| t.parser.screen().contents().contains(s))
+        ed.workspace.terminal.as_ref().is_some_and(|t| t.parser.screen().contents().contains(s))
     }
 
     /// A FIFO in `dir` a test's program reads a line from to go on (`read -r _ < fifo`).
@@ -1186,13 +1186,13 @@ mod tests {
             "printf 'hello world\\nsecond line\\nend'; read -r _ < '{}'; printf '\\nmore\\n'; sleep 30",
             fifo.display()
         );
-        let contents = |ed: &Editor| ed.session.terminal.as_ref().map(|t| t.parser.screen().contents());
+        let contents = |ed: &Editor| ed.workspace.terminal.as_ref().map(|t| t.parser.screen().contents());
         let mut ed = run_until(&script, |ed| shows(ed, "end"));
         assert!(shows(&ed, "end"), "its output, all in: {:?}", contents(&ed));
-        let selection = |ed: &Editor| ed.session.terminal.as_ref().unwrap().selection.is_some();
+        let selection = |ed: &Editor| ed.workspace.terminal.as_ref().unwrap().selection.is_some();
         ed.terminal_mouse(MouseKind::Down, Some((1, 5)), false);
         ed.terminal_mouse(MouseKind::Drag, Some((0, 6)), false);
-        assert_eq!(ed.session.terminal.as_ref().unwrap().selected_text(), "world\nsecond");
+        assert_eq!(ed.workspace.terminal.as_ref().unwrap().selected_text(), "world\nsecond");
         ed.terminal_mouse(MouseKind::Up, Some((0, 6)), false);
         wait(&mut ed, |ed| ed.toasts.iter().any(|t| t.text.starts_with("copied")));
         assert!(
@@ -1230,15 +1230,15 @@ mod tests {
         assert!(
             shows(&ed, "^[[<0;8;4M^[[<0;8;4m"),
             "{:?}",
-            ed.session.terminal.as_ref().unwrap().parser.screen().contents()
+            ed.workspace.terminal.as_ref().unwrap().parser.screen().contents()
         );
-        assert!(ed.session.terminal.as_ref().unwrap().selection.is_none(), "not a selection");
+        assert!(ed.workspace.terminal.as_ref().unwrap().selection.is_none(), "not a selection");
         // Alt with the press: tarae's own selection over it, nothing sent
-        let sent = ed.session.terminal.as_ref().unwrap().parser.screen().contents();
+        let sent = ed.workspace.terminal.as_ref().unwrap().parser.screen().contents();
         ed.terminal_mouse(MouseKind::Down, Some((0, 0)), true);
         ed.terminal_mouse(MouseKind::Drag, Some((0, 4)), false);
         ed.terminal_mouse(MouseKind::Up, Some((0, 4)), false);
-        assert_eq!(ed.session.terminal.as_ref().unwrap().selected_text(), "ready");
+        assert_eq!(ed.workspace.terminal.as_ref().unwrap().selected_text(), "ready");
         // (a moment for anything sent to come back)
         let end = crate::test_results::quiet_for(std::time::Duration::from_millis(300));
         while let Some(ev) = ed.events.recv_timeout(end.saturating_duration_since(std::time::Instant::now()))
@@ -1246,7 +1246,7 @@ mod tests {
             ed.handle_event(ev);
         }
         assert_eq!(
-            ed.session.terminal.as_ref().unwrap().parser.screen().contents(),
+            ed.workspace.terminal.as_ref().unwrap().parser.screen().contents(),
             sent,
             "the program got nothing"
         );
@@ -1271,7 +1271,7 @@ mod tests {
         ed.terminal_run(vec!["/bin/sh".into(), "-c".into(), script.into()], Vec::new());
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
         let shows = |ed: &Editor, s: &str| {
-            ed.session.terminal.as_ref().is_some_and(|t| t.parser.screen().contents().contains(s))
+            ed.workspace.terminal.as_ref().is_some_and(|t| t.parser.screen().contents().contains(s))
         };
         while !shows(&ed, "ready") && std::time::Instant::now() < end {
             if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(200)) {
@@ -1284,7 +1284,7 @@ mod tests {
                 ed.handle_event(ev);
             }
         }
-        let text = ed.session.terminal.as_ref().unwrap().parser.screen().contents();
+        let text = ed.workspace.terminal.as_ref().unwrap().parser.screen().contents();
         assert!(
             text.contains("^[[200~one^Mtwo^M^[[201~"),
             "newlines as Enter, between the markers: {text:?}"
@@ -1306,7 +1306,7 @@ mod tests {
             vec!["/bin/sh".into()],
             vec![("PS1".into(), "$ ".into()), ("HISTFILE".into(), "/dev/null".into())],
         );
-        while ed.session.terminal.is_none() {
+        while ed.workspace.terminal.is_none() {
             if let Some(ev) = ed.events.recv_timeout(crate::test_results::PATIENCE) {
                 ed.handle_event(ev);
             }
@@ -1320,7 +1320,7 @@ mod tests {
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
         // Its output on a line of its own — after the prompt, depending on how fast the shell started
         let seen = |ed: &Editor| {
-            ed.session.terminal.as_ref().is_some_and(|t| {
+            ed.workspace.terminal.as_ref().is_some_and(|t| {
                 t.parser.screen().contents().lines().any(|l| l.ends_with("hi-there") && !l.contains("echo"))
             })
         };
@@ -1329,35 +1329,35 @@ mod tests {
                 ed.handle_event(ev);
             }
         }
-        assert!(seen(&ed), "{:?}", ed.session.terminal.as_ref().map(|t| t.parser.screen().contents()));
+        assert!(seen(&ed), "{:?}", ed.workspace.terminal.as_ref().map(|t| t.parser.screen().contents()));
         let ctrl_backslash = Key { code: Code::Char('\\'), ctrl: true, alt: false, shift: false };
         ed.handle_key(ctrl_backslash);
-        assert!(!ed.session.is_at(crate::session::At::Program));
+        assert!(!ed.workspace.is_at(crate::workspace::At::Program));
         assert!(crate::view::terminal_viewed(&ed), "its view mode");
         ed.handle_key(ctrl_backslash);
-        assert!(!crate::view::terminal_viewed(&ed) && !ed.session.is_at(crate::session::At::Slot));
+        assert!(!crate::view::terminal_viewed(&ed) && !ed.workspace.is_at(crate::workspace::At::Slot));
         ed.handle_key(key('i'));
         assert_eq!(ed.mode, crate::editor::Mode::Insert, "the code has the keys again");
         ed.handle_key(Key::plain(Code::Esc));
         // C-\\ from the code gives the keys back to it; `q` in its view mode hides it, the shell running on — as
         // every list or output panel's `q` closes it (uxaudit D2); `space T` shows it with the keys (#144)
         ed.handle_key(ctrl_backslash);
-        assert!(ed.session.is_at(crate::session::At::Program));
+        assert!(ed.workspace.is_at(crate::workspace::At::Program));
         ed.handle_key(ctrl_backslash);
         ed.handle_key(key('q'));
-        let t = ed.session.terminal.as_ref().unwrap();
+        let t = ed.workspace.terminal.as_ref().unwrap();
         assert!(!t.visible && t.exited.is_none(), "hidden, running");
-        assert!(!ed.session.is_at(crate::session::At::Slot));
+        assert!(!ed.workspace.is_at(crate::workspace::At::Slot));
         for k in [' ', 'T'] {
             ed.handle_key(key(k));
         }
-        let t = ed.session.terminal.as_ref().unwrap();
-        assert!(t.visible && ed.session.is_at(At::Program), "shown with the keys, the same shell");
+        let t = ed.workspace.terminal.as_ref().unwrap();
+        assert!(t.visible && ed.workspace.is_at(At::Program), "shown with the keys, the same shell");
         // `C-w q` in its view mode too (D3)
         ed.handle_key(ctrl_backslash);
         ed.handle_key(Key { code: Code::Char('w'), ctrl: true, alt: false, shift: false });
         ed.handle_key(key('q'));
-        assert!(!ed.session.terminal.as_ref().unwrap().visible, "C-w q: hidden too");
+        assert!(!ed.workspace.terminal.as_ref().unwrap().visible, "C-w q: hidden too");
     }
 
     /// `S-pageup`/`S-pagedown` scroll the terminal's past a page while its program has the keys — every terminal
@@ -1373,7 +1373,7 @@ mod tests {
             vec!["/bin/sh".into()],
             vec![("PS1".into(), "$ ".into()), ("HISTFILE".into(), "/dev/null".into())],
         );
-        while ed.session.terminal.is_none() {
+        while ed.workspace.terminal.is_none() {
             if let Some(ev) = ed.events.recv_timeout(crate::test_results::PATIENCE) {
                 ed.handle_event(ev);
             }
@@ -1384,7 +1384,7 @@ mod tests {
         ed.handle_key(Key::plain(Code::Enter));
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
         let done = |ed: &Editor| {
-            ed.session.terminal.as_ref().is_some_and(|t| t.parser.screen().contents().contains("past299"))
+            ed.workspace.terminal.as_ref().is_some_and(|t| t.parser.screen().contents().contains("past299"))
         };
         while !done(&ed) && std::time::Instant::now() < end {
             if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(200)) {
@@ -1392,14 +1392,14 @@ mod tests {
             }
         }
         assert!(done(&ed), "its output came");
-        let back = |ed: &Editor| ed.session.terminal.as_ref().unwrap().parser.screen().scrollback();
-        let page = ed.session.terminal.as_ref().unwrap().parser.screen().size().0 as usize;
+        let back = |ed: &Editor| ed.workspace.terminal.as_ref().unwrap().parser.screen().scrollback();
+        let page = ed.workspace.terminal.as_ref().unwrap().parser.screen().size().0 as usize;
         ed.handle_key("S-pageup".parse().unwrap());
         ed.handle_key("S-pageup".parse().unwrap());
         assert_eq!(back(&ed), 2 * page, "two pages back");
         ed.handle_key("S-pagedown".parse().unwrap());
         assert_eq!(back(&ed), page, "one forward");
-        assert!(ed.session.is_at(crate::session::At::Program), "the keys still the program's");
+        assert!(ed.workspace.is_at(crate::workspace::At::Program), "the keys still the program's");
         ed.handle_key("pageup".parse().unwrap());
         assert_eq!(back(&ed), 0, "a key the program gets: back down");
         // A full-screen program (its alternate screen keeps no past): the key is the program's, as a terminal
@@ -1409,7 +1409,7 @@ mod tests {
             ed.handle_key(Key::plain(Code::Char(c)));
         }
         ed.handle_key(Key::plain(Code::Enter));
-        let full = |ed: &Editor| ed.session.terminal.as_ref().unwrap().parser.screen().alternate_screen();
+        let full = |ed: &Editor| ed.workspace.terminal.as_ref().unwrap().parser.screen().alternate_screen();
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
         while !full(&ed) && std::time::Instant::now() < end {
             if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(200)) {
@@ -1418,15 +1418,16 @@ mod tests {
         }
         assert!(full(&ed), "on its alternate screen");
         ed.handle_key("S-pageup".parse().unwrap());
-        let came =
-            |ed: &Editor| ed.session.terminal.as_ref().unwrap().parser.screen().contents().contains("[5;2~");
+        let came = |ed: &Editor| {
+            ed.workspace.terminal.as_ref().unwrap().parser.screen().contents().contains("[5;2~")
+        };
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
         while !came(&ed) && std::time::Instant::now() < end {
             if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(200)) {
                 ed.handle_event(ev);
             }
         }
-        assert!(came(&ed), "{:?}", ed.session.terminal.as_ref().map(|t| t.parser.screen().contents()));
+        assert!(came(&ed), "{:?}", ed.workspace.terminal.as_ref().map(|t| t.parser.screen().contents()));
         assert_eq!(back(&ed), 0, "nothing scrolled");
     }
 
@@ -1447,12 +1448,12 @@ mod tests {
              printf \"\\033[c\"; IFS= read -r -d c _; echo ANSWERED; sleep 30'",
             fifo.display()
         );
-        let mut ed = run_until(&script, |ed| ed.session.terminal.is_some());
+        let mut ed = run_until(&script, |ed| ed.workspace.terminal.is_some());
         ed.handle_key(Key { code: Code::Char('\\'), ctrl: true, alt: false, shift: false });
         assert!(crate::view::terminal_viewed(&ed));
         let_go(&fifo);
         fn term(ed: &Editor) -> &Terminal {
-            ed.session.terminal.as_ref().unwrap()
+            ed.workspace.terminal.as_ref().unwrap()
         }
         wait(&mut ed, |ed| term(ed).came());
         assert!(term(&ed).came(), "the first batch held while viewed");
@@ -1484,18 +1485,18 @@ mod tests {
             "read -r _ < '{}'; (trap '' HUP; sleep 8) & echo first-words; sleep 0.3; echo last-words; exit 3",
             fifo.display()
         );
-        let mut ed = run_until(&script, |ed| ed.session.terminal.is_some());
+        let mut ed = run_until(&script, |ed| ed.workspace.terminal.is_some());
         ed.handle_key(Key { code: Code::Char('\\'), ctrl: true, alt: false, shift: false });
         let_go(&fifo);
         // (the program gone and a whole drain run out while held — counted by its wait thread, never timed)
-        wait(&mut ed, |ed| ed.session.terminal.as_ref().is_some_and(|t| t.drains_held() > 0 && t.came()));
-        let t = ed.session.terminal.as_ref().unwrap();
+        wait(&mut ed, |ed| ed.workspace.terminal.as_ref().is_some_and(|t| t.drains_held() > 0 && t.came()));
+        let t = ed.workspace.terminal.as_ref().unwrap();
         assert_eq!(t.exited, None, "its end waits with its output");
         assert!(t.came() && !shows(&ed, "first-words"), "its output still held");
         ed.handle_key(Key::plain(Code::Esc));
-        wait(&mut ed, |ed| ed.session.terminal.as_ref().is_some_and(|t| t.exited.is_some()));
-        assert_eq!(ed.session.terminal.as_ref().unwrap().exited, Some(3), "told once the view let go");
-        let contents = ed.session.terminal.as_ref().map(|t| t.parser.screen().contents());
+        wait(&mut ed, |ed| ed.workspace.terminal.as_ref().is_some_and(|t| t.exited.is_some()));
+        assert_eq!(ed.workspace.terminal.as_ref().unwrap().exited, Some(3), "told once the view let go");
+        let contents = ed.workspace.terminal.as_ref().map(|t| t.parser.screen().contents());
         assert!(
             shows(&ed, "first-words") && shows(&ed, "last-words"),
             "its output before its end: {contents:?}"
@@ -1516,15 +1517,15 @@ mod tests {
             "trap '' HUP; read -r _ < '{}'; (trap '' HUP; sleep 14) & echo old-a; sleep 0.3; echo old-b; sleep 1.5; exit 5",
             fifo.display()
         );
-        let mut ed = run_until(&script, |ed| ed.session.terminal.is_some());
+        let mut ed = run_until(&script, |ed| ed.workspace.terminal.is_some());
         ed.handle_key(Key { code: Code::Char('\\'), ctrl: true, alt: false, shift: false });
         let_go(&fifo);
-        wait(&mut ed, |ed| ed.session.terminal.as_ref().is_some_and(|t| t.came()));
-        assert!(ed.session.terminal.as_ref().unwrap().came(), "its output held, the next in its reader");
+        wait(&mut ed, |ed| ed.workspace.terminal.as_ref().is_some_and(|t| t.came()));
+        assert!(ed.workspace.terminal.as_ref().unwrap().came(), "its output held, the next in its reader");
         // (the old run's wait thread holds the other count: it's gone once that thread has sent its end)
-        let old = ed.session.terminal.as_ref().unwrap().holds.clone();
+        let old = ed.workspace.terminal.as_ref().unwrap().holds.clone();
         // (replaced: dropped, another started)
-        ed.session.terminal = None;
+        ed.workspace.terminal = None;
         ed.terminal_run(vec!["/bin/sh".into(), "-c".into(), "echo fresh-one; sleep 30".into()], Vec::new());
         wait(&mut ed, |ed| shows(ed, "fresh-one"));
         assert!(!crate::view::terminal_viewed(&ed), "the old one's view gone with it");
@@ -1536,7 +1537,7 @@ mod tests {
         while let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(20)) {
             ed.handle_event(ev);
         }
-        let t = ed.session.terminal.as_ref().unwrap();
+        let t = ed.workspace.terminal.as_ref().unwrap();
         assert_eq!(t.exited, None, "the new one runs on");
         assert!(shows(&ed, "fresh-one") && !shows(&ed, "old-b"), "its own screen");
     }
@@ -1564,7 +1565,7 @@ mod tests {
             }
         };
         let held_and_full = |ed: &Editor| {
-            ed.session
+            ed.workspace
                 .terminal
                 .as_ref()
                 .is_some_and(|t| t.came() && !t.waiting.is_empty() && ready(t.master.as_raw_fd()))
@@ -1572,7 +1573,7 @@ mod tests {
         ed.handle_key(Key { code: Code::Char('\\'), ctrl: true, alt: false, shift: false });
         assert!(crate::view::terminal_viewed(&ed));
         wait(&mut ed, held_and_full);
-        let t = ed.session.terminal.as_ref().unwrap();
+        let t = ed.workspace.terminal.as_ref().unwrap();
         let held = t.held_len();
         assert!(t.came() && !t.waiting.is_empty(), "a batch held, its go-ahead kept");
         assert!(held <= BATCH + 64 * 1024, "one batch at most: {held} bytes");
@@ -1580,21 +1581,21 @@ mod tests {
         // (what doesn't happen is seen only over a while — the one window here; a slow machine can't make it fail)
         batches(&mut ed, 3, 300);
         assert_eq!(
-            ed.session.terminal.as_ref().unwrap().held_len(),
+            ed.workspace.terminal.as_ref().unwrap().held_len(),
             held,
             "nothing more taken in: the program waits"
         );
         ed.handle_key(Key::plain(Code::Char('G')));
-        let t = ed.session.terminal.as_ref().unwrap();
+        let t = ed.workspace.terminal.as_ref().unwrap();
         assert!(!t.came() && t.waiting.is_empty(), "caught up: the go-ahead sent");
-        wait(&mut ed, |ed| ed.session.terminal.as_ref().is_some_and(|t| t.came()));
+        wait(&mut ed, |ed| ed.workspace.terminal.as_ref().is_some_and(|t| t.came()));
         assert!(
-            ed.session.terminal.as_ref().unwrap().came(),
+            ed.workspace.terminal.as_ref().unwrap().came(),
             "the program wrote again: the next batch, held"
         );
         ed.handle_key(Key::plain(Code::Esc));
         let left = |ed: &Editor| {
-            let t = ed.session.terminal.as_ref().unwrap();
+            let t = ed.workspace.terminal.as_ref().unwrap();
             !crate::view::terminal_viewed(ed) && !t.came() && t.waiting.is_empty()
         };
         assert!(left(&ed), "left: it runs");
@@ -1613,9 +1614,9 @@ mod tests {
         let mut ed = Editor::new(config);
         let dir = std::env::temp_dir().join(format!("tarae-preflight-behind-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        ed.session.root = std::fs::canonicalize(&dir).unwrap();
+        ed.workspace.root = std::fs::canonicalize(&dir).unwrap();
         ed.terminal_run(vec!["/bin/sh".into()], vec![("HISTFILE".into(), "/dev/null".into())]);
-        while ed.session.terminal.is_none() {
+        while ed.workspace.terminal.is_none() {
             if let Some(ev) = ed.events.recv_timeout(crate::test_results::PATIENCE) {
                 ed.handle_event(ev);
             }
@@ -1645,7 +1646,7 @@ mod tests {
         let row = s.lines().find(|l| l.contains("terminal")).unwrap_or_default();
         assert!(row.contains("preflight"), "its tab beside the terminal's: {s}");
         assert_eq!(ed.slot(), Some(crate::sizes::Slot::Terminal), "the terminal stays in front");
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1664,7 +1665,7 @@ mod tests {
             vec!["/bin/sh".into()],
             vec![("PS1".into(), "$ ".into()), ("HISTFILE".into(), "/dev/null".into())],
         );
-        while ed.session.terminal.is_none() {
+        while ed.workspace.terminal.is_none() {
             if let Some(ev) = ed.events.recv_timeout(crate::test_results::PATIENCE) {
                 ed.handle_event(ev);
             }
@@ -1675,23 +1676,23 @@ mod tests {
         };
         let key = |c: char| Key { code: Code::Char(c), ctrl: false, alt: false, shift: false };
         let ctrl = |c: char| Key { code: Code::Char(c), ctrl: true, alt: false, shift: false };
-        let focus = |ed: &Editor| ed.session.is_at(crate::session::At::Program);
+        let focus = |ed: &Editor| ed.workspace.is_at(crate::workspace::At::Program);
         draw(&mut ed);
         let small = ed.screen.bottom_h;
         // `C-\\` and Esc: back to the code
         ed.handle_key(ctrl('\\'));
         ed.handle_key(Key::plain(Code::Esc));
-        assert!(!focus(&ed) && !ed.session.is_at(crate::session::At::Slot));
+        assert!(!focus(&ed) && !ed.workspace.is_at(crate::workspace::At::Slot));
         for k in [ctrl('w'), key('j'), ctrl('w'), key('z')] {
             ed.handle_key(k);
         }
-        assert!(ed.session.is_at(crate::session::At::Slot) && !focus(&ed), "tarae's keys on it");
+        assert!(ed.workspace.is_at(crate::workspace::At::Slot) && !focus(&ed), "tarae's keys on it");
         assert!(crate::view::terminal_viewed(&ed), "its view mode");
         draw(&mut ed);
         assert_eq!(ed.zoomed_shows(), Some(Shows::Slot));
         assert_eq!(ed.screen.bottom_h, ed.screen.body_h, "all the rows");
         ed.handle_key(key('i'));
-        assert!(focus(&ed) && !ed.session.is_at(crate::session::At::Slot), "the program's keys");
+        assert!(focus(&ed) && !ed.workspace.is_at(crate::workspace::At::Slot), "the program's keys");
         for c in "echo zoomed-in".chars() {
             ed.handle_key(key(c));
         }
@@ -1700,13 +1701,13 @@ mod tests {
         assert_eq!(ed.zoomed_shows(), Some(Shows::Slot), "typing in it, it still fills the screen");
         ed.handle_key(ctrl('\\'));
         assert!(
-            !focus(&ed) && ed.session.is_at(crate::session::At::Slot),
+            !focus(&ed) && ed.workspace.is_at(crate::workspace::At::Slot),
             "C-\\: the keys stay on it, its view mode"
         );
         assert_eq!(ed.zoomed_shows(), Some(Shows::Slot));
         ed.handle_key(Key::plain(Code::Esc));
-        assert!(!ed.session.is_at(crate::session::At::Slot));
-        assert_eq!(ed.session.zoom, None, "back to the code: it ended");
+        assert!(!ed.workspace.is_at(crate::workspace::At::Slot));
+        assert_eq!(ed.workspace.viewer.zoom, None, "back to the code: it ended");
         draw(&mut ed);
         assert_eq!(ed.screen.bottom_h, small);
     }

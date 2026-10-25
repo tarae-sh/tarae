@@ -54,11 +54,11 @@ fn run(choices: Choices) -> Vec<String> {
     let mut sim = Sim::new("the_run_panels_output_documents", choices, LIMIT);
     let mut ed = Editor::new(crate::config::Config::default());
     ed.docs[0].text = ropey::Rope::from_str("fn main() {}\n");
-    ed.session.task_run = Some(task(0));
+    ed.workspace.task_run = Some(task(0));
     // (the chat `enter` and a quote go to: a stand-in claude, no process)
     let mut c = crate::chat::Chat::new();
     let claude = crate::chat::stand_in(&mut c);
-    ed.session.chat = Some(c);
+    ed.workspace.claude.chat = Some(c);
     crate::term::render(&mut ed, &mut Vec::new(), W, 30).unwrap();
     let world = World::default();
     let check = |ed: &Editor| {
@@ -75,7 +75,7 @@ fn run(choices: Choices) -> Vec<String> {
 /// What's in sight of the task panel's output while it has the keys, of its first `upto` lines — and its lines.
 fn in_sight(ed: &Editor, upto: Option<usize>) -> Option<(Sight, usize)> {
     crate::rundoc::has_keys(ed).filter(|&s| s == Slot::Task)?;
-    let d = ed.session.outputs.doc(Slot::Task)?;
+    let d = ed.workspace.outputs.doc(Slot::Task)?;
     let lines = crate::movement::last_line(&d.text) + 1;
     let rows = crate::rundoc::rows(ed, Slot::Task);
     let end = (d.top + rows).min(upto.unwrap_or(lines));
@@ -89,7 +89,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
     // (by arm: the run prints 4, a key 6, the wheel 2, a frame 2, another run 1, time passing 1, a burst 1, a place 3)
     match c.weighted(&[4, 6, 2, 2, 1, 1, 1, 3]) {
         0 => {
-            let Some(r) = ed.session.task_run.as_mut() else { return "(no run)".into() };
+            let Some(r) = ed.workspace.task_run.as_mut() else { return "(no run)".into() };
             let lines = *c.pick(&[1, 3, 12]);
             let empty = r.output.is_empty();
             for _ in 0..lines {
@@ -163,7 +163,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
         }
         4 => {
             world.runs.set(world.runs.get() + 1);
-            ed.session.task_run = Some(task(world.runs.get()));
+            ed.workspace.task_run = Some(task(world.runs.get()));
             ed.focus_sync();
             "another run takes the panel".into()
         }
@@ -174,7 +174,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
         }
         7 => {
             // (a place, on a line of its own: `place <n>`, n its line too — what the check finds it by)
-            let Some(r) = ed.session.task_run.as_mut() else { return "(no run)".into() };
+            let Some(r) = ed.workspace.task_run.as_mut() else { return "(no run)".into() };
             world.printed.set(world.printed.get() + 1);
             let n = world.printed.get();
             let empty = r.output.is_empty();
@@ -195,7 +195,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
         }
         _ => {
             // (past what a step keeps: the run trims its output, a marker line saying what went)
-            let Some(r) = ed.session.task_run.as_mut() else { return "(no run)".into() };
+            let Some(r) = ed.workspace.task_run.as_mut() else { return "(no run)".into() };
             for _ in 0..1800 {
                 world.printed.set(world.printed.get() + 1);
                 r.push_line(false, format!("burst {}", world.printed.get()), false);
@@ -211,13 +211,13 @@ fn held(ed: &Editor, world: &World) -> Result<(), String> {
     if crate::rundoc::swapped(ed) {
         return Err("an output left swapped in".into());
     }
-    let Some(r) = ed.session.task_run.as_ref() else {
-        return match ed.session.outputs.doc(Slot::Task) {
+    let Some(r) = ed.workspace.task_run.as_ref() else {
+        return match ed.workspace.outputs.doc(Slot::Task) {
             Some(_) => Err("an output with no run".into()),
             None => Ok(()),
         };
     };
-    let d = ed.session.outputs.doc(Slot::Task).ok_or("a run with no output")?;
+    let d = ed.workspace.outputs.doc(Slot::Task).ok_or("a run with no output")?;
     // The run's lines, line for line — nothing a key typed or deleted stays (read-only)
     let want: String = match r.output.is_empty() {
         true => "cargo check\n".into(),
@@ -279,7 +279,7 @@ fn places(ed: &Editor, r: &crate::task::Run, world: &World) -> Result<(), String
     }
     let (Some(h), Some((frame, w, fh))) = (world.framed.get(), ed.last_frame.as_ref()) else { return Ok(()) };
     let (Some((y, rows, first)), Some(g)) =
-        (ed.screen.list(GroupKind::Task), ed.session.group(GroupKind::Task))
+        (ed.screen.list(GroupKind::Task), ed.workspace.group(GroupKind::Task))
     else {
         return Ok(());
     };
@@ -306,11 +306,11 @@ fn k_line(r: &crate::task::Run, k: usize) -> usize {
 
 fn print(ed: &Editor) -> String {
     let keys = ed.keys_to().region.name();
-    let doc = ed.session.outputs.doc(Slot::Task).map(|d| {
+    let doc = ed.workspace.outputs.doc(Slot::Task).map(|d| {
         let line = crate::movement::line_of(&d.text, d.selection().primary().cursor(&d.text));
         format!("output at {}/{} from {}", line + 1, crate::movement::last_line(&d.text) + 1, d.top)
     });
-    let r = ed.session.task_run.as_ref();
+    let r = ed.workspace.task_run.as_ref();
     format!(
         "keys {keys} · {} · run {} of {} lines",
         doc.unwrap_or_else(|| "no output".into()),

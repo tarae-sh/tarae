@@ -123,7 +123,7 @@ fn code() -> (Editor, std::sync::mpsc::Receiver<String>) {
     let mut c = crate::chat::Chat::new();
     let claude = crate::chat::stand_in(&mut c);
     // (the keys the code's)
-    ed.session.chat = Some(c);
+    ed.workspace.claude.chat = Some(c);
     frame(&mut ed);
     (ed, claude)
 }
@@ -144,8 +144,8 @@ fn space_gt_quotes_the_codes_selection_and_the_input_takes_the_keys() {
     let (mut ed, _claude) = code();
     feed(&mut ed, "jxx >");
     assert_eq!(ed.keys_to().region.name(), "chat");
-    assert!(ed.session.view.is_none(), "no view mode");
-    let c = ed.session.chat.as_ref().expect("the chat opened");
+    assert!(ed.workspace.viewer.view.is_none(), "no view mode");
+    let c = ed.workspace.claude.chat.as_ref().expect("the chat opened");
     let q = &c.quotes[..];
     assert_eq!(q.len(), 1);
     assert_eq!(q[0].text, "let code = 1;\nlet more = 2;");
@@ -156,11 +156,11 @@ fn space_gt_quotes_the_codes_selection_and_the_input_takes_the_keys() {
     assert!(shown.contains("backspace take it off"), "its way off:\n{shown}");
     assert_eq!(ed.keymaps.bindings().get("quote").map(String::as_str), Some("space >"));
     feed(&mut ed, "<backspace>");
-    assert!(ed.session.chat.as_ref().unwrap().quotes.is_empty(), "taken off");
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().quotes.is_empty(), "taken off");
     // Two selections, two chips — in the order made, beside the screen's
     let (mut ed, _claude) = code();
     feed(&mut ed, "xC >");
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.screen = Some(crate::chat::Shot { text: String::new(), cols: 80, rows: 24 });
     c.with.push(crate::chat::With::Screen);
     assert_eq!(c.with_chips(), ["[scratch] L1", "[scratch] L2", "screen 80×24"]);
@@ -175,12 +175,12 @@ fn space_gt_quotes_the_codes_selection_and_the_input_takes_the_keys() {
 fn a_file_named_like_a_key_is_refused_said() {
     let root = crate::scratch::Scratch::new("quote-key");
     let (mut ed, _claude) = code();
-    ed.session.root = root.path().to_path_buf();
+    ed.workspace.root = root.path().to_path_buf();
     ed.docs[0].path = Some(root.join(".env"));
     feed(&mut ed, "x >");
     let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
     assert!(said.contains("named like a key — point at its pane (space @)"), "{said}");
-    assert!(ed.session.chat.as_ref().is_none_or(|c| c.quotes.is_empty()));
+    assert!(ed.workspace.claude.chat.as_ref().is_none_or(|c| c.quotes.is_empty()));
 }
 
 /// Enter sends the quote with the message: its block in the content, its chip in the message's row (a link to the
@@ -205,7 +205,7 @@ fn the_message_carries_the_quote_once() {
     );
     assert!(!content.contains("<selection"), "not twice: {content}");
     assert!(content.ends_with("why one?"), "{content}");
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert!(c.quotes.is_empty() && c.with.is_empty(), "they went");
     let m = c.msgs.iter().rfind(|m| m.role == crate::chat::Role::User).unwrap();
     assert!(m.chip.ends_with(" · [scratch] L2"), "{}", m.chip);
@@ -237,7 +237,7 @@ fn the_message_carries_the_quote_once() {
     // (a test's chat with no folder for it keeps no copy — nothing written outside a test's own)
     let (mut ed, _claude) = code();
     feed(&mut ed, "jx >why one?<ret>");
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert!(c.msgs.iter().all(|m| m.attached.is_none()));
 }
 
@@ -318,10 +318,10 @@ fn up_brings_a_queued_message_back_only_whole() {
     feed(&mut ed, "<up>");
     let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
     assert!(said.starts_with("↑ would put 10 quotes over the input"), "{said}");
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert!(c.queued.is_some() && c.queued_quotes.len() == 5 && c.quotes.len() == 5, "nothing lost");
     feed(&mut ed, "<backspace><backspace><up>");
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert_eq!((c.input.text().as_str(), c.quotes.len()), ("second", 8));
 }
 
@@ -331,15 +331,15 @@ fn up_brings_a_queued_message_back_only_whole() {
 fn a_yes_for_a_pointed_key_stays_with_its_element() {
     use crate::chat::With;
     let pass = |ed: &Editor| -> Vec<String> {
-        ed.session.chat.as_ref().unwrap().key_pass.iter().map(|(id, _)| id.clone()).collect()
+        ed.workspace.claude.chat.as_ref().unwrap().key_pass.iter().map(|(id, _)| id.clone()).collect()
     };
     let (mut ed, _claude) = code();
     feed(&mut ed, "x >first<ret>");
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     (c.pointed, c.with) = (vec!["pane#1".into()], vec![With::Pointed]);
     c.key_pass.push(("pane#1".into(), "/p/.env".into()));
     feed(&mut ed, "second<ret>");
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     (c.pointed, c.with) = (vec!["card#2".into(), "card#3".into()], vec![With::Pointed, With::Pointed]);
     c.key_pass.push(("card#2".into(), "/p/a.key".into()));
     c.key_pass.push(("card#3".into(), "/p/b.key".into()));
@@ -347,7 +347,7 @@ fn a_yes_for_a_pointed_key_stays_with_its_element() {
     assert_eq!(pass(&ed), ["pane#1", "card#2"], "the queued message's stays");
     crate::chat::stand_in_done(&mut ed);
     assert_eq!(pass(&ed), ["card#2"], "the one that went is its message's now");
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     let went = c.msgs.iter().rfind(|m| m.role == crate::chat::Role::User).unwrap();
     assert_eq!(went.key_pass.len(), 1, "kept with it, should it go again");
 }
@@ -358,12 +358,12 @@ fn a_yes_for_a_pointed_key_stays_with_its_element() {
 #[test]
 fn a_queued_message_keeps_its_own_quotes() {
     let (mut ed, claude) = code();
-    let unfocus = |ed: &mut Editor| ed.session.leave(crate::session::At::Chat);
+    let unfocus = |ed: &mut Editor| ed.workspace.leave(crate::workspace::At::Chat);
     feed(&mut ed, "x >first<ret>");
-    assert!(ed.session.chat.as_ref().unwrap().busy(), "Claude works");
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().busy(), "Claude works");
     unfocus(&mut ed);
     feed(&mut ed, "jx >second<ret>");
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert_eq!((c.quotes.len(), c.queued_quotes.len(), c.with.len()), (0, 1, 0), "waits with it");
     assert_eq!(c.queued_said().map(|s| s.0).as_deref(), Some("a message with 1 quote queued"));
     unfocus(&mut ed);
@@ -374,18 +374,18 @@ fn a_queued_message_keeps_its_own_quotes() {
     // (its own quote only — line 3's waits for the next message, so the code's selection of it goes as usual)
     let quoted = |l: &str| sent[1].contains(&format!("path=\"[scratch]\" lines=\"{l}\""));
     assert!(quoted("2-2") && !quoted("3-3"), "{}", sent[1]);
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert_eq!(c.with_chips(), ["[scratch] L3"], "the one quoted since stays");
     assert!(c.queued_quotes.is_empty());
     // `↑`: the queued message back, its quote ahead of the one quoted since
     let (mut ed, _claude) = code();
-    let unfocus = |ed: &mut Editor| ed.session.leave(crate::session::At::Chat);
+    let unfocus = |ed: &mut Editor| ed.workspace.leave(crate::workspace::At::Chat);
     feed(&mut ed, "x >first<ret>");
     unfocus(&mut ed);
     feed(&mut ed, "jx >again<ret>");
     unfocus(&mut ed);
     feed(&mut ed, "jx ><up>");
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert_eq!(c.input, "again");
     assert_eq!(c.with_chips(), ["[scratch] L2", "[scratch] L3"]);
     assert!(c.queued_quotes.is_empty());
@@ -394,12 +394,12 @@ fn a_queued_message_keeps_its_own_quotes() {
     feed(&mut ed, "x >first<ret>");
     unfocus(&mut ed);
     feed(&mut ed, "jx >again<ret>");
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.screen = Some(crate::chat::Shot { text: String::new(), cols: 80, rows: 24 });
     c.with.push(crate::chat::With::Screen);
     unfocus(&mut ed);
     feed(&mut ed, "jx ><up>");
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     assert_eq!(c.with_chips(), ["[scratch] L2", "screen 80×24", "[scratch] L3"]);
     assert_eq!(c.take_off(), Some(crate::chat::With::Quote));
     assert_eq!(c.with_chips(), ["[scratch] L2", "screen 80×24"]);
@@ -415,7 +415,7 @@ fn a_message_joined_to_a_queued_one_keeps_to_the_limits() {
         add(&mut ed, (from..from + 5).map(|i| taken(&format!("q{i}"), false)).collect());
         feed(&mut ed, &format!("{word}<ret>"));
     }
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     let texts: Vec<&str> = c.queued_quotes.iter().map(|q| q.text.as_str()).collect();
     assert_eq!(texts, ["q0", "q1", "q2", "q3", "q4", "q5", "q6", "q7"], "within the limits");
     assert_eq!(c.with_chips(), ["terminal", "terminal"], "the newest two stay over the input");
@@ -432,11 +432,11 @@ fn a_queued_message_keeps_its_own_screen_and_points() {
     let shot = |t: &str| Some(Shot { text: t.into(), cols: 80, rows: 24 });
     let (mut ed, claude) = code();
     feed(&mut ed, "x >first<ret>");
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     (c.screen, c.pointed, c.with) =
         (shot("its screen"), vec!["card#1".into()], vec![With::Screen, With::Pointed]);
     feed(&mut ed, "second<ret>");
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     assert!(c.with_chips().is_empty(), "they wait with it");
     assert_eq!(c.queued_said().map(|s| s.0).as_deref(), Some("a message with the screen and card#1 queued"));
     (c.screen, c.pointed, c.with) =
@@ -445,16 +445,16 @@ fn a_queued_message_keeps_its_own_screen_and_points() {
     let sent = sent(&claude);
     assert!(sent[1].contains("its screen") && !sent[1].contains("a later screen"), "{}", sent[1]);
     assert!(sent[1].contains("card#1") && !sent[1].contains("card#2"), "{}", sent[1]);
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert_eq!(c.with_chips(), ["screen 80×24", "card#2"], "what came after stays, in its order");
     // `↑`: back over the input with its text
     let (mut ed, _claude) = code();
     feed(&mut ed, "x >first<ret>");
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     (c.screen, c.pointed, c.with) =
         (shot("its screen"), vec!["card#1".into()], vec![With::Screen, With::Pointed]);
     feed(&mut ed, "second<ret><up>");
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert_eq!(
         (c.input.text().as_str(), c.with_chips()),
         ("second", vec!["screen 80×24".to_string(), "card#1".into()])
@@ -467,14 +467,14 @@ fn a_queued_message_keeps_its_own_screen_and_points() {
 #[test]
 fn the_screen_goes_only_with_the_inputs_message() {
     let (mut ed, claude) = code();
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.screen = Some(crate::chat::Shot { text: "the screen as seen".into(), cols: 80, rows: 24 });
     c.with.push(crate::chat::With::Screen);
     assert!(crate::chat::submit(&mut ed, "a reply on a note", None, None));
     crate::chat::stand_in_done(&mut ed);
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     assert_eq!(c.with_chips(), ["screen 80×24"], "it stays");
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     feed(&mut ed, "mine<ret>");
     let sent = sent(&claude);
     assert!(!sent[0].contains("the screen as seen") && sent[1].contains("the screen as seen"), "{sent:?}");
@@ -512,7 +512,7 @@ fn enter_with_nothing_typed_says_so() {
     feed(&mut ed, "<ret>");
     let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
     assert_eq!(said, "type your question — what's over the input goes with it");
-    assert!(sent(&claude).is_empty() && ed.session.chat.as_ref().unwrap().quotes.len() == 1);
+    assert!(sent(&claude).is_empty() && ed.workspace.claude.chat.as_ref().unwrap().quotes.len() == 1);
     feed(&mut ed, "<backspace><ret>");
     let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
     assert_eq!(said, "nothing to send — type a question first");
@@ -524,11 +524,11 @@ fn enter_with_nothing_typed_says_so() {
 fn a_quote_keeps_out_only_its_own_buffers_selection() {
     let (mut ed, claude) = code();
     feed(&mut ed, "jx >");
-    ed.session.leave(crate::session::At::Chat);
+    ed.workspace.leave(crate::workspace::At::Chat);
     ed.new_scratch();
     ed.doc_mut().text = Rope::from_str("fn main() {}\nlet code = 1;\nlet more = 2;\n");
     feed(&mut ed, "jx");
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     feed(&mut ed, "why?<ret>");
     let sent = sent(&claude);
     assert!(sent[0].contains("<selection lines=\"2-2\">") && sent[0].contains("<quoted id="), "{}", sent[0]);
@@ -540,13 +540,13 @@ fn the_state_says_the_quotes_shape_and_claude_never_sees_it() {
     let (mut ed, _claude) = code();
     feed(&mut ed, "jx >");
     let s = ed.ui_state();
-    let with = &s.sessions[0].with;
+    let with = &s.workspaces[0].sessions[0].with;
     assert_eq!(with.len(), 1);
     assert_eq!(with[0]["kind"], "quote");
     assert_eq!(with[0]["from"], "code");
     assert_eq!(with[0]["lines"], 1);
     assert!(!serde_json::to_string(with).unwrap().contains("let code"), "no text");
-    assert!(ed.ui_state_claude().sessions.iter().all(|s| s.with.is_empty()), "Claude's level holds it back");
+    assert!(ed.ui_state_claude().sessions().all(|s| s.with.is_empty()), "Claude's level holds it back");
 }
 
 /// Past `QUOTES_MAX` a quote isn't taken, said where the user looks.
@@ -554,19 +554,19 @@ fn the_state_says_the_quotes_shape_and_claude_never_sees_it() {
 fn the_ninth_quote_is_refused_said() {
     let (mut ed, _claude) = code();
     add(&mut ed, (0..9).map(|_| taken("x", false)).collect());
-    assert_eq!(ed.session.chat.as_ref().unwrap().quotes.len(), QUOTES_MAX);
+    assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().quotes.len(), QUOTES_MAX);
     let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
     assert!(said.starts_with("1 not quoted — a message carries 8 quotes, 48 KB at most"), "{said}");
     // (and past the bytes: three of 16 KB fill it)
     let (mut ed, _claude) = code();
     add(&mut ed, (0..4).map(|_| taken(&"y".repeat(QUOTE_MAX), false)).collect());
-    assert_eq!(ed.session.chat.as_ref().unwrap().quotes.len(), 3);
+    assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().quotes.len(), 3);
     // (one that doesn't fit the room left is cut to it, said on its chip)
     let (mut ed, _claude) = code();
     add(&mut ed, vec![taken(&"y".repeat(QUOTE_MAX), false), taken(&"y".repeat(QUOTE_MAX), false)]);
     add(&mut ed, vec![taken(&"z".repeat(10 * 1024), false)]);
     add(&mut ed, vec![taken(&(0..2000).map(|i| format!("row {i}\n")).collect::<String>(), false)]);
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     let last = c.quotes.last().unwrap();
     assert!(last.text.len() <= QUOTES_BYTES - 2 * QUOTE_MAX - 10 * 1024, "{} bytes", last.text.len());
     assert_eq!(last.chip(), "terminal · cut");

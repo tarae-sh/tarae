@@ -452,7 +452,7 @@ impl Editor {
             return false;
         }
         self.plugin_permissions_loaded(plugin, &declared);
-        let card = self.offers.iter().chain(&self.session.parked).any(|o| {
+        let card = self.offers.iter().chain(&self.workspace.parked).any(|o| {
             matches!(&o.what, What::PluginPermissions { plugin: q, .. } if q == plugin) && !o.installing()
         });
         let Some(p) = self.plugins.as_mut().filter(|_| card) else { return false };
@@ -503,7 +503,7 @@ impl Editor {
             .iter()
             .filter_map(|p| if let Permission::Read(pat) = p { Some(pat.clone()) } else { None })
             .collect();
-        let project = declared.contains(&Permission::Project).then(|| self.session.root.clone());
+        let project = declared.contains(&Permission::Project).then(|| self.workspace.root.clone());
         if patterns.is_empty() && project.is_none() {
             return Err(Some("it didn't ask to read files (permissions())".into()));
         }
@@ -560,7 +560,7 @@ impl Editor {
     /// (another connection to that host) waits on that card's answer.
     pub(super) fn plugin_ask(&mut self, plugin: &str, ask: Ask) {
         let asked =
-            self.offers.iter_mut().chain(self.session.parked.iter_mut()).find_map(|o| match &mut o.what {
+            self.offers.iter_mut().chain(self.workspace.parked.iter_mut()).find_map(|o| match &mut o.what {
                 What::PluginAsk { plugin: p, asks }
                     if p == plugin && asks.first().map(Ask::subject) == Some(ask.subject()) =>
                 {

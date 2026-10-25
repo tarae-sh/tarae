@@ -471,14 +471,14 @@ impl crate::editor::Editor {
     /// What this session's `Caps` is made from now.
     pub fn caps_basis(&self) -> Basis {
         Basis {
-            root: self.session.root.clone(),
+            root: self.workspace.root.clone(),
             store: self.allow_path.clone(),
-            session: self.session.allowed.clone(),
-            chat: self.session.chat.as_ref().map(|c| c.allowed.clone()).unwrap_or_default(),
+            session: self.workspace.claude.allowed.clone(),
+            chat: self.workspace.claude.chat.as_ref().map(|c| c.allowed.clone()).unwrap_or_default(),
             temp: self.read_temp,
             outside: self.read_outside,
-            taking: self.taking_for(&self.session.root),
-            hosts: self.session.granted_hosts(),
+            taking: self.taking_for(&self.workspace.root),
+            hosts: self.workspace.granted_hosts(),
             #[cfg(test)]
             home: self.caps_home.clone(),
         }
@@ -510,22 +510,22 @@ impl crate::editor::Editor {
 
     /// The session in front's `Caps` made again — a chat opened, an answer given or taken back.
     pub fn caps_sync(&mut self) {
-        self.caps_sync_of(self.session.id);
+        self.caps_sync_of(self.workspace.id);
     }
 
     /// Session `id`'s `Caps` made again on a worker, as its next generation: it lands in that session wherever it
     /// is then (in front or behind; gone: dropped), and only over an older one — two out of order keep the newer.
-    pub fn caps_sync_of(&mut self, id: crate::event::SessionId) {
+    pub fn caps_sync_of(&mut self, id: crate::event::WorkspaceId) {
         let (store, temp, outside) = (self.allow_path.clone(), self.read_temp, self.read_outside);
-        let Some(root) = self.session_by_id(id).map(|s| s.root.clone()) else { return };
+        let Some(root) = self.workspace_by_id(id).map(|s| s.root.clone()) else { return };
         let taking = self.taking_for(&root);
         #[cfg(test)]
         let home = self.caps_home.clone();
-        let Some(s) = self.session_by_id(id) else { return };
-        s.caps_asked += 1;
-        let generation = s.caps_asked;
-        let chat = s.chat.as_ref().map(|c| c.allowed.clone()).unwrap_or_default();
-        let (root, session) = (s.root.clone(), s.allowed.clone());
+        let Some(s) = self.workspace_by_id(id) else { return };
+        s.claude.caps_asked += 1;
+        let generation = s.claude.caps_asked;
+        let chat = s.claude.chat.as_ref().map(|c| c.allowed.clone()).unwrap_or_default();
+        let (root, session) = (s.root.clone(), s.claude.allowed.clone());
         let hosts = s.granted_hosts();
         let basis = Basis {
             root,
@@ -560,18 +560,18 @@ impl crate::editor::Editor {
 /// A `Caps` made for session `id` as `generation`: kept unless one asked later is there already.
 fn caps_landed(
     ed: &mut crate::editor::Editor,
-    id: crate::event::SessionId,
+    id: crate::event::WorkspaceId,
     generation: u64,
     caps: Arc<Caps>,
 ) {
     // (on screen only as the chat's `› N granted`)
-    let shown = crate::granted::count(&ed.session);
-    if let Some(s) = ed.session_by_id(id)
-        && s.caps.as_ref().is_none_or(|(had, _)| *had < generation)
+    let shown = crate::granted::count(&ed.workspace);
+    if let Some(s) = ed.workspace_by_id(id)
+        && s.claude.caps.as_ref().is_none_or(|(had, _)| *had < generation)
     {
-        s.caps = Some((generation, caps));
+        s.claude.caps = Some((generation, caps));
     }
-    ed.unchanged = crate::granted::count(&ed.session) == shown;
+    ed.unchanged = crate::granted::count(&ed.workspace) == shown;
 }
 
 impl crate::session::Session {
@@ -630,15 +630,16 @@ mod tests {
     #[test]
     fn a_caps_lands_in_its_own_session_and_the_newer_stays() {
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        let (first, first_root) = (ed.session.id, ed.session.root.clone());
+        let (first, first_root) = (ed.workspace.id, ed.workspace.root.clone());
         let scratch = crate::scratch::Scratch::new("caps-sessions");
         let other = std::fs::canonicalize(&scratch).unwrap();
         // (made behind: its own asked as it's made)
-        let second = ed.session_add(other.clone());
+        let second = ed.workspace_add(other.clone());
         ed.caps_sync();
-        assert!(ed.session_switch(second));
+        assert!(ed.workspace_switch(second));
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-        let made = |ed: &mut crate::editor::Editor, id| ed.session_by_id(id).and_then(|s| s.caps.clone());
+        let made =
+            |ed: &mut crate::editor::Editor, id| ed.workspace_by_id(id).and_then(|s| s.claude.caps.clone());
         while made(&mut ed, first).is_none() || made(&mut ed, second).is_none() {
             let left = end.saturating_duration_since(std::time::Instant::now());
             let ev = ed.events.recv_timeout(left).expect("both made");
@@ -647,7 +648,7 @@ mod tests {
         let root = |ed: &mut crate::editor::Editor, id| made(ed, id).map(|(_, c)| c.root.clone()).unwrap();
         assert_eq!((root(&mut ed, first), root(&mut ed, second)), (first_root, other.clone()));
         // Two out of order
-        let asked = ed.session_by_id(first).unwrap().caps_asked;
+        let asked = ed.workspace_by_id(first).unwrap().claude.caps_asked;
         let at = |r: &str| Arc::new(Caps { root: r.into(), ..Caps::default() });
         caps_landed(&mut ed, first, asked + 2, at("/newer"));
         caps_landed(&mut ed, first, asked + 1, at("/older"));

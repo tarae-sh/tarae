@@ -101,8 +101,8 @@ impl JumpList {
 
 impl Editor {
     fn focused_jumps(&mut self) -> Option<&mut JumpList> {
-        let focus = self.session.focus;
-        self.session.views.iter_mut().find(|v| v.id == focus).map(|v| &mut v.jumps)
+        let focus = self.workspace.viewer.focus;
+        self.workspace.views.iter_mut().find(|v| v.id == focus).map(|v| &mut v.jumps)
     }
 
     /// Whether jump `j` is exactly where the cursor is now.
@@ -113,15 +113,15 @@ impl Editor {
 
     /// Remember the current spot before moving away (go-to, search, `C-s`).
     pub fn push_jump(&mut self) {
-        let focus = self.session.focus;
-        let Some(v) = self.session.views.iter().position(|v| v.id == focus) else { return };
+        let focus = self.workspace.viewer.focus;
+        let Some(v) = self.workspace.views.iter().position(|v| v.id == focus) else { return };
         self.record(v, self.doc().id);
     }
 
     /// Document `doc`'s current selection onto pane `v`'s list — not twice in a row.
     fn record(&mut self, v: usize, doc: DocId) {
         let Some(d) = self.docs.iter_mut().find(|d| d.id == doc) else { return };
-        let list = &mut self.session.views[v].jumps;
+        let list = &mut self.workspace.views[v].jumps;
         list.truncate();
         if list.last().is_some_and(|j| j.doc == doc && d.mark_raw(j.mark) == Some(d.selection())) {
             return;
@@ -137,7 +137,7 @@ impl Editor {
         let Some(path) = d.path.clone() else { return };
         let mut marks: Vec<(u64, crate::selection::Selection)> = Vec::new();
         let mut lines = Vec::new();
-        for j in self.session.views.iter().flat_map(|v| v.jumps.iter()).filter(|j| j.doc == id) {
+        for j in self.workspace.views.iter().flat_map(|v| v.jumps.iter()).filter(|j| j.doc == id) {
             if !marks.iter().any(|m| m.0 == j.mark)
                 && let Some(sel) = d.mark(j.mark)
             {
@@ -148,7 +148,7 @@ impl Editor {
             }
         }
         if !marks.is_empty() {
-            self.session.jumps_parked.insert(id, Parked { path, marks, lines });
+            self.workspace.jumps_parked.insert(id, Parked { path, marks, lines });
         }
     }
 
@@ -156,9 +156,9 @@ impl Editor {
     /// of it pointing at that buffer — the jump as it is now. None: nothing kept of it, or the file is gone (its
     /// entries go, said).
     fn unpark(&mut self, j: Jump) -> Option<Jump> {
-        let p = self.session.jumps_parked.remove(&j.doc)?;
+        let p = self.workspace.jumps_parked.remove(&j.doc)?;
         if let Err(e) = self.open_preview_travel(&p.path) {
-            for v in self.session.views.iter_mut() {
+            for v in self.workspace.views.iter_mut() {
                 v.jumps.remove_doc(j.doc);
             }
             self.set_status(format!("that jump's file can't be opened again: {e:#}"));
@@ -168,7 +168,7 @@ impl Editor {
         let d = self.doc_mut();
         let map: Vec<(u64, u64)> = p.marks.into_iter().map(|(m, sel)| (m, d.add_mark(sel))).collect();
         let to = |m: u64| map.iter().find(|x| x.0 == m).map(|x| x.1);
-        for v in self.session.views.iter_mut() {
+        for v in self.workspace.views.iter_mut() {
             v.jumps.rebind(j.doc, new, to);
         }
         let mark = to(j.mark);
@@ -181,14 +181,14 @@ impl Editor {
     /// Documents keep only the marks some pane's list (or a note) still points at — every session's panes: a
     /// session behind keeps its jumps (a jump in the one in front pruned them, and `C-o` there went nowhere).
     fn prune_marks(&mut self) {
-        let mut live: std::collections::HashSet<Jump> = std::iter::once(&self.session)
-            .chain(&self.sessions)
+        let mut live: std::collections::HashSet<Jump> = std::iter::once(&self.workspace)
+            .chain(&self.workspaces)
             .flat_map(|l| l.views.iter().flat_map(|v| v.jumps.iter().copied()))
             .collect();
         // (a parked preview's spots, while one of this session's lists still names it — each session its own)
         let front: Vec<DocId> =
-            self.session.views.iter().flat_map(|v| v.jumps.iter().map(|j| j.doc)).collect();
-        self.session.jumps_parked.retain(|id, _| front.contains(id));
+            self.workspace.views.iter().flat_map(|v| v.jumps.iter().map(|j| j.doc)).collect();
+        self.workspace.jumps_parked.retain(|id, _| front.contains(id));
         // Notes sit on marks too
         live.extend(crate::notes::marks(self).into_iter().map(|(doc, mark)| Jump { doc, mark }));
         // …and the list's items
@@ -203,13 +203,13 @@ impl Editor {
     /// behind becomes a jump, and `ga` remembers the document.
     pub fn track_doc_switch(&mut self) {
         let now = self.doc().id;
-        let focus = self.session.focus;
-        let Some(i) = self.session.views.iter().position(|v| v.id == focus) else { return };
-        let old = self.session.views[i].doc;
+        let focus = self.workspace.viewer.focus;
+        let Some(i) = self.workspace.views.iter().position(|v| v.id == focus) else { return };
+        let old = self.workspace.views[i].doc;
         if old == now {
             return;
         }
-        (self.session.views[i].doc, self.session.views[i].last_doc) = (now, Some(old));
+        (self.workspace.views[i].doc, self.workspace.views[i].last_doc) = (now, Some(old));
         self.record(i, old);
     }
 
@@ -248,8 +248,8 @@ impl Editor {
         // (one that can't go says so: a jump that does nothing in silence looks like a broken key)
         let j = match self.docs.iter().any(|d| d.id == j.doc) {
             true => j,
-            false if !self.session.jumps_parked.contains_key(&j.doc) => {
-                for v in self.session.views.iter_mut() {
+            false if !self.workspace.jumps_parked.contains_key(&j.doc) => {
+                for v in self.workspace.views.iter_mut() {
                     v.jumps.remove_doc(j.doc);
                 }
                 return self.set_status("that jump's file was closed — its jumps went with it");
@@ -266,8 +266,8 @@ impl Editor {
         self.current = di;
         self.doc_mut().set_selection(sel);
         // Switching documents here is travel, not a new jump
-        let focus = self.session.focus;
-        if let Some(v) = self.session.views.iter_mut().find(|v| v.id == focus)
+        let focus = self.workspace.viewer.focus;
+        if let Some(v) = self.workspace.views.iter_mut().find(|v| v.id == focus)
             && v.doc != j.doc
         {
             (v.doc, v.last_doc) = (j.doc, Some(old));
@@ -291,7 +291,7 @@ impl Editor {
             .enumerate()
             .rev()
             .filter_map(|(index, j)| {
-                if let Some(p) = self.session.jumps_parked.get(&j.doc) {
+                if let Some(p) = self.workspace.jumps_parked.get(&j.doc) {
                     let (_, line, text) = p.lines.iter().find(|l| l.0 == j.mark)?;
                     return Some(crate::picker::Item {
                         label: format!("{}:{}", self.shown(&p.path).display(), line + 1),
@@ -309,7 +309,7 @@ impl Editor {
                 let line = doc.text.byte_to_line(sel.primary().cursor(&doc.text));
                 let text: String = doc.text.line(line).chars().take(200).collect();
                 Some(crate::picker::Item {
-                    label: format!("{}:{}", doc.display_name(&self.session.root), line + 1),
+                    label: format!("{}:{}", doc.display_name(&self.workspace.root), line + 1),
                     action: crate::picker::Action::Jump { index, doc: j.doc, line },
                     hint: text.trim().to_string(),
                     glyph: None,
@@ -324,8 +324,8 @@ impl Editor {
 
     /// `ga` — back to the document shown before this one in this pane.
     pub fn goto_last_accessed(&mut self) {
-        let focus = self.session.focus;
-        let last = self.session.views.iter().find(|v| v.id == focus).and_then(|v| v.last_doc);
+        let focus = self.workspace.viewer.focus;
+        let last = self.workspace.views.iter().find(|v| v.id == focus).and_then(|v| v.last_doc);
         match last.and_then(|d| self.docs.iter().position(|x| x.id == d)) {
             Some(i) => self.current = i,
             None => self.set_status("no other file yet"),

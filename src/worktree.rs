@@ -1,9 +1,9 @@
 //! Sessions' checkouts: work beside the rest — a branch of its own in a checkout of its own (a git
-//! worktree), opened as a session (`session.rs`). `space W o` · `:session-new <name> [<base>]` makes one:
+//! worktree), opened as a session (`workspace.rs`). `space W o` · `:session-new <name> [<base>]` makes one:
 //! the name is the branch, made from the front session's HEAD (`C-b` in the prompt picks another base); a
-//! card says where its checkout goes and what it costs on disk before anything is made. `:session-end`
+//! card says where its checkout goes and what it costs on disk before anything is made. `:workspace-end`
 //! removes one — at once when nothing would be lost (no changes, merged into its base), else a card says
-//! what would be. `:session-bring` moves its base up to it, fast-forward only — a base that moved since is
+//! what would be. `:workspace-bring` moves its base up to it, fast-forward only — a base that moved since is
 //! rebased onto first, after a card (`rebase.rs`). The list (`space W`). The
 //! sessions are kept per repository (`$state/sessions/<hash of its git folder>.json`) and come back at
 //! startup and after `:restart`.
@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 
 use crate::builds::{BuildDir, Builds, Doomed, remove_build};
 use crate::editor::Editor;
-use crate::event::SessionId;
+use crate::event::WorkspaceId;
 use crate::gitpanel::{branch_name, commit_rows, current_branch, only_on, parse_log, top_of};
 use crate::gitrepo::{Repo, git, git_no_hooks};
 
@@ -31,7 +31,7 @@ const BIG_SHOWN: usize = 3;
 const FILES_SHOWN: usize = 6;
 
 #[derive(Default)]
-pub struct SessionStore {
+pub struct WorkspaceStore {
     /// Where the sessions are kept (`$state/sessions`) — None in tests (they set a temp folder).
     pub dir: Option<PathBuf>,
     /// The kept sessions are back (or there were none): from then on a change is written.
@@ -40,7 +40,7 @@ pub struct SessionStore {
     pub repo: Option<PathBuf>,
     /// Answers taken back before the kept sessions were back (`:sandbox-disallow`, as it names them) — each
     /// session's taken from what comes back for it too, or they'd be back with it, no card asked.
-    pub taken: Vec<(SessionId, String)>,
+    pub taken: Vec<(WorkspaceId, String)>,
     /// A key was pressed since startup — sessions coming back then stay behind (the front is where you are).
     pub keyed: bool,
     /// The file's counter as this tarae last read or wrote it: the take-backs kept there above it it hadn't seen
@@ -50,17 +50,17 @@ pub struct SessionStore {
     /// when the write's result was never applied (the loop had ended — F6).
     pub landed: std::sync::Arc<std::sync::Mutex<Option<PathBuf>>>,
     /// What git last said of each session for the list (read when it opens — shown meanwhile).
-    pub facts: std::collections::HashMap<SessionId, Facts>,
+    pub facts: std::collections::HashMap<WorkspaceId, Facts>,
     /// Where a checkout's tool builds (the built-in packs' `[builds]`): said on the create card, asked at a
     /// session's end — None in tests (they set a stand-in: never a real tool nor its home).
     pub builds: Option<crate::builds::Builds>,
     /// Each session's own build folder outside its checkout — one `builds::Builds::decide` lets go — and what it
     /// takes (#219: 26 sessions' folders filled the disk): the list's `build` column, what `x` there drops.
     /// Measured when the list opens, kept `BUILDS_KEPT` (when it was asked).
-    pub build_dirs: std::collections::HashMap<SessionId, (crate::builds::Doomed, (u64, bool))>,
+    pub build_dirs: std::collections::HashMap<WorkspaceId, (crate::builds::Doomed, (u64, bool))>,
     pub build_dirs_at: Option<Instant>,
     /// `x` pressed on a session's row — the second within `DROP_AGAIN` drops its build folder.
-    pub drop_asked: Option<(SessionId, Instant)>,
+    pub drop_asked: Option<(WorkspaceId, Instant)>,
 }
 
 /// How long the sessions' build folders as measured are shown before they're measured again.
@@ -72,9 +72,9 @@ const DROP_AGAIN: Duration = Duration::from_secs(3);
 /// takes — counted four at a time, each for `MEASURE_FOR` at most. On a worker: it runs the tools and reads disk.
 pub fn build_dirs(
     b: &crate::builds::Builds,
-    roots: &[(SessionId, PathBuf)],
-) -> Vec<(SessionId, crate::builds::Doomed, (u64, bool))> {
-    let mut by_repo: Vec<(PathBuf, Vec<(SessionId, PathBuf)>)> = Vec::new();
+    roots: &[(WorkspaceId, PathBuf)],
+) -> Vec<(WorkspaceId, crate::builds::Doomed, (u64, bool))> {
+    let mut by_repo: Vec<(PathBuf, Vec<(WorkspaceId, PathBuf)>)> = Vec::new();
     for (id, root) in roots {
         let Ok(common) = common_dir(root) else { continue };
         match by_repo.iter_mut().find(|(c, _)| *c == common) {
@@ -124,14 +124,14 @@ pub struct Kept {
 }
 
 impl Kept {
-    pub fn of(l: &crate::session::Session) -> Kept {
+    pub fn of(l: &crate::workspace::Workspace) -> Kept {
         Kept {
             root: l.root.clone(),
             name: l.name.clone(),
             branch: l.branch.clone(),
             base: l.base.clone(),
-            billing: Some(l.billing),
-            allowed: l.allowed.clone(),
+            billing: Some(l.claude.billing),
+            allowed: l.claude.allowed.clone(),
         }
     }
 
@@ -290,21 +290,21 @@ fn base_or_start(base: Option<String>, start: &Path) -> Result<String, String> {
 
 // ── Where checkouts go ───────────────────────────────────────────────────────
 
-/// `session.worktrees` ("" = `$XDG_DATA_HOME/tarae/worktrees`, `~/` from home) + a folder for the
+/// `workspace.worktrees` ("" = `$XDG_DATA_HOME/tarae/worktrees`, `~/` from home) + a folder for the
 /// repository whose git folder is `common`.
 pub fn worktrees_dir(setting: &str, common: &Path) -> Result<PathBuf, String> {
     let s = setting.trim();
     let base = if s.is_empty() {
         crate::runtime::data_dir()
-            .ok_or("no folder for sessions' checkouts — set session.worktrees")?
+            .ok_or("no folder for sessions' checkouts — set workspace.worktrees")?
             .join("worktrees")
     } else if let Some(rest) = s.strip_prefix("~/") {
-        PathBuf::from(std::env::var_os("HOME").ok_or("no HOME for session.worktrees' ~")?).join(rest)
+        PathBuf::from(std::env::var_os("HOME").ok_or("no HOME for workspace.worktrees' ~")?).join(rest)
     } else {
         PathBuf::from(s)
     };
     if !base.is_absolute() {
-        return Err(format!("session.worktrees is {s:?} — a full path or ~/… is needed"));
+        return Err(format!("workspace.worktrees is {s:?} — a full path or ~/… is needed"));
     }
     Ok(base.join(repo_folder(common)))
 }
@@ -551,7 +551,7 @@ pub fn making(
         Some(b) if b.starts_with('-') => return Err(format!("{b:?} isn't a commit")),
         Some(b) => {
             let s = sha(&top, &format!("{b}^{{commit}}")).map_err(|_| format!("there's no {b} here"))?;
-            // (a branch is kept by name — `:session-bring` moves it; anything else is the commit)
+            // (a branch is kept by name — `:workspace-bring` moves it; anything else is the commit)
             let named = sha(&top, &format!("refs/heads/{b}")).is_ok();
             (if named { b.to_string() } else { s.clone() }, s, Vec::new())
         }
@@ -690,10 +690,10 @@ pub struct Ending {
     /// Commits not in the base · commits on no other branch, remote's branch or tag (gone with the branch).
     pub ahead: Vec<(String, String)>,
     pub lost: Vec<(String, String)>,
-    /// `session.keep`'s folders (checked) · what of them, and of its instruction files, is kept in the main
-    /// checkout (`sessionkeep.rs`) — made again as it ends.
+    /// `workspace.keep`'s folders (checked) · what of them, and of its instruction files, is kept in the main
+    /// checkout (`workspacekeep.rs`) — made again as it ends.
     pub entries: Vec<PathBuf>,
-    pub keep: crate::sessionkeep::Plan,
+    pub keep: crate::workspacekeep::Plan,
 }
 
 impl Ending {
@@ -738,7 +738,7 @@ impl Ending {
             decided.end = lines.len();
             lines.push("A squash merge on a forge looks unmerged here.".into());
         }
-        // What it keeps in the main checkout (`session.keep`), a block of its own after what's decided — what
+        // What it keeps in the main checkout (`workspace.keep`), a block of its own after what's decided — what
         // goes with the checkout for good, in the tail
         let keep = self.keep.lines();
         let kept: Vec<String> = keep.iter().filter(|k| !k.1).map(|k| k.0.clone()).collect();
@@ -790,7 +790,7 @@ impl Ending {
             &lines.join("\n"),
             "Removing its checkout…",
             format!("Couldn't end {}", self.name),
-            crate::offer::What::SessionEnd(Box::new(self.clone())),
+            crate::offer::What::WorkspaceEnd(Box::new(self.clone())),
         )
         .deciding(decided);
         if let Some(w) = warning {
@@ -828,16 +828,16 @@ fn instructions_differ(root: &Path, main: Option<&Path>) -> Vec<String> {
     instructions(root).into_iter().filter(|rel| read(main.join(rel)) != read(root.join(rel))).collect()
 }
 
-/// What ending the checkout at `root` keeps (`sessionkeep::plan`) — its main checkout's, its instruction
+/// What ending the checkout at `root` keeps (`workspacekeep::plan`) — its main checkout's, its instruction
 /// files compared.
-fn keep_plan(name: &str, root: &Path, common: &Path, entries: &[PathBuf]) -> crate::sessionkeep::Plan {
+fn keep_plan(name: &str, root: &Path, common: &Path, entries: &[PathBuf]) -> crate::workspacekeep::Plan {
     let main = main_checkout(common, root);
     let differ = instructions_differ(root, main.as_deref());
-    crate::sessionkeep::plan(root, name, entries, main.as_deref(), differ, crate::sessionkeep::KEEP_MAX)
+    crate::workspacekeep::plan(root, name, entries, main.as_deref(), differ, crate::workspacekeep::KEEP_MAX)
 }
 
 /// The checks before ending (on a worker): what's changed, what's not in the base, what only its branch has,
-/// what it keeps (`entries`: `session.keep`'s).
+/// what it keeps (`entries`: `workspace.keep`'s).
 fn ending(
     name: String,
     root: &Path,
@@ -902,9 +902,9 @@ fn build_dir_fate(e: &Ending, builds: Option<&Builds>) -> Result<Doomed, BuildDi
     }
 }
 
-/// What `session.keep` names moved to the main checkout first, as planned again now (`sessionkeep::keep`) —
+/// What `workspace.keep` names moved to the main checkout first, as planned again now (`workspacekeep::keep`) —
 /// Err: nothing removed (the card said it's kept, and now it can't be).
-fn keep_first(e: &Ending) -> Result<crate::sessionkeep::Kept, String> {
+fn keep_first(e: &Ending) -> Result<crate::workspacekeep::Kept, String> {
     if e.keep.not.is_some() {
         return Ok(Default::default());
     }
@@ -913,7 +913,7 @@ fn keep_first(e: &Ending) -> Result<crate::sessionkeep::Kept, String> {
         return Err(format!("{why} since the card — nothing removed"));
     }
     let Some(main) = main_checkout(&e.common, &e.root) else { return Ok(Default::default()) };
-    crate::sessionkeep::keep(&e.root, &e.name, &now, &main)
+    crate::workspacekeep::keep(&e.root, &e.name, &now, &main)
         .map_err(|why| format!("what it keeps couldn't be kept — {why}; nothing removed"))
 }
 
@@ -924,7 +924,7 @@ fn remove(
     e: &Ending,
     both: bool,
     builds: Option<&Builds>,
-) -> Result<((u64, bool), BuildDir, crate::sessionkeep::Kept), String> {
+) -> Result<((u64, bool), BuildDir, crate::workspacekeep::Kept), String> {
     let branch = e.branch.as_deref().filter(|_| both);
     // (the repository's git folder, named: what runs here outlives the checkout)
     let common = Repo::git_folder(&e.common);
@@ -1130,18 +1130,18 @@ fn facts(root: &Path, base: Option<String>, start: &Path) -> Option<Facts> {
 
 /// A session as its row in the list says it.
 pub struct Shown {
-    pub id: SessionId,
+    pub id: WorkspaceId,
     pub name: String,
     /// The branch checked out there (said when it isn't the name).
     pub branch: Option<String>,
     pub facts: Option<Facts>,
-    pub doing: crate::session::Doing,
+    pub doing: crate::workspace::Doing,
     pub front: bool,
     /// CPU % and memory of its processes, summed (none seen yet: None).
     pub usage: Option<(f32, u64)>,
     /// A rebase under way in its checkout, as it says it (`rebasing 2/5`).
     pub rebasing: Option<String>,
-    /// Its files that came again from disk while it was behind (`Session.reloaded`, #6).
+    /// Its files that came again from disk while it was behind (`Workspace.reloaded`, #6).
     pub reloaded: usize,
     /// Its Claude compacted its conversation while it was behind (`Compacted.unseen`).
     pub compacted: bool,
@@ -1174,7 +1174,7 @@ pub struct Shown {
 
 impl Shown {
     /// `reviewer` for session `l`.
-    pub fn reviewer_of(ed: &crate::editor::Editor, l: &crate::session::Session) -> String {
+    pub fn reviewer_of(ed: &crate::editor::Editor, l: &crate::workspace::Workspace) -> String {
         use crate::reviewer::State;
         match l.reviewer.as_ref() {
             Some(r) if r.reading() && crate::reviewer::waits(ed, l) => "¶ waits to review".into(),
@@ -1273,7 +1273,7 @@ fn kept_list(v: &Value) -> Vec<Kept> {
     list.and_then(Value::as_array).into_iter().flatten().filter_map(Kept::from_json).collect()
 }
 
-/// Written (on a worker, its turn taken: this tarae's saves land in the order made — `Editor::sessions_write`).
+/// Written (on a worker, its turn taken: this tarae's saves land in the order made — `Editor::workspaces_write`).
 /// Between taraes no clock orders them: under a lock beside the file its counter goes up with each write, and the
 /// take-backs kept there (`takes`, this write's; `TAKEN_KEPT_S`) carry the counter they were written at — a list
 /// from a tarae that had seen an earlier one (`seen`) is written without them (F7). The counter written, and what
@@ -1348,46 +1348,46 @@ pub fn snapshot(ed: &Editor) -> Value {
     let sessions: Vec<Value> = ed.sessions_in_order().iter().map(|l| Kept::of(l).json()).collect();
     // (and the repository they're kept for — the last write's that landed, its result applied or not: a take-back
     // after the restart says a write it can't make — and the file's counter as seen)
-    let landed = ed.session_store.landed.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let seen = *ed.session_store.seen.lock().unwrap_or_else(|e| e.into_inner());
-    let repo = landed.or_else(|| ed.session_store.repo.clone());
-    json!({ "sessions": sessions, "front": ed.session.root, "repo": repo, "seen": seen.json() })
+    let landed = ed.workspace_store.landed.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let seen = *ed.workspace_store.seen.lock().unwrap_or_else(|e| e.into_inner());
+    let repo = landed.or_else(|| ed.workspace_store.repo.clone());
+    json!({ "sessions": sessions, "front": ed.workspace.root, "repo": repo, "seen": seen.json() })
 }
 
 /// Back from `:restart`'s state, the front one in front — before its files open. The names of those whose
 /// checkout is gone (the restart's toast says them).
 pub fn restore(ed: &mut Editor, v: &Value) -> Vec<String> {
-    ed.session_store.repo = v["repo"].as_str().map(PathBuf::from).or(ed.session_store.repo.take());
+    ed.workspace_store.repo = v["repo"].as_str().map(PathBuf::from).or(ed.workspace_store.repo.take());
     if let Some(seen) = crate::storewrite::Rev::of(&v["seen"]) {
-        *ed.session_store.seen.lock().unwrap_or_else(|e| e.into_inner()) = seen;
+        *ed.workspace_store.seen.lock().unwrap_or_else(|e| e.into_inner()) = seen;
     }
     let sessions = kept_list(v);
     if sessions.is_empty() {
         return Vec::new();
     }
     let (here, gone): (Vec<Kept>, Vec<Kept>) = sessions.into_iter().partition(|k| k.root.is_dir());
-    ed.sessions_back(here, gone, v["front"].as_str().map(PathBuf::from), true)
+    ed.workspaces_back(here, gone, v["front"].as_str().map(PathBuf::from), true)
 }
 
 /// `:restart`'s sessions' writes not landed: their take-backs written again (the sessions back by then).
 pub fn taken_again(ed: &mut Editor, carried: &Value) {
     let takes: Vec<_> = carried.as_array().into_iter().flatten().flat_map(takes_of).collect();
     if !takes.is_empty() {
-        ed.sessions_taken_back(takes);
+        ed.workspaces_taken_back(takes);
     }
 }
 
 impl Editor {
     /// Every session, the first opened first.
-    pub fn sessions_in_order(&self) -> Vec<&crate::session::Session> {
-        let mut all: Vec<&crate::session::Session> =
-            std::iter::once(&self.session).chain(&self.sessions).collect();
+    pub fn sessions_in_order(&self) -> Vec<&crate::workspace::Workspace> {
+        let mut all: Vec<&crate::workspace::Workspace> =
+            std::iter::once(&self.workspace).chain(&self.workspaces).collect();
         crate::sorting::by_key(&mut all, |l| l.id);
         all
     }
 
-    pub(crate) fn session_by_id(&mut self, id: SessionId) -> Option<&mut crate::session::Session> {
-        std::iter::once(&mut self.session).chain(&mut self.sessions).find(|l| l.id == id)
+    pub(crate) fn workspace_by_id(&mut self, id: WorkspaceId) -> Option<&mut crate::workspace::Workspace> {
+        std::iter::once(&mut self.workspace).chain(&mut self.workspaces).find(|l| l.id == id)
     }
 
     /// The checkout tarae started in (session 0's).
@@ -1401,11 +1401,11 @@ impl Editor {
     }
 
     /// The session `which` names (its number or name), else the one in front.
-    pub(crate) fn session_named(&self, which: &str) -> Result<(SessionId, String), String> {
+    pub(crate) fn session_named(&self, which: &str) -> Result<(WorkspaceId, String), String> {
         let which = which.trim();
         let all = self.sessions_in_order();
         let found = match which {
-            "" => Some(&self.session),
+            "" => Some(&self.workspace),
             w => all.iter().copied().find(|l| l.name == w || l.id.to_string() == w),
         };
         found.map(|l| (l.id, l.name.clone())).ok_or_else(|| {
@@ -1415,23 +1415,23 @@ impl Editor {
     }
 
     /// The sessions as they are now, kept for this repository (written on a worker) — the repository recorded
-    /// once a write lands there, so a later take-back that can't find it says so (`sessions_keep_then`).
-    pub fn sessions_keep(&self) {
-        self.sessions_keep_then(|ed, _| ed.unchanged = true);
+    /// once a write lands there, so a later take-back that can't find it says so (`workspaces_keep_then`).
+    pub fn workspaces_keep(&self) {
+        self.workspaces_keep_then(|ed, _| ed.unchanged = true);
     }
 
-    /// `sessions_keep`, and `then` with how the write went — for what must be said when it fails (an answer
-    /// taken back). Before the kept sessions are back nothing is written (`SessionStore.taken` holds a take-back).
-    pub fn sessions_keep_then(&self, then: impl FnOnce(&mut Editor, Result<(), String>) + Send + 'static) {
-        self.sessions_write(Vec::new(), then);
+    /// `workspaces_keep`, and `then` with how the write went — for what must be said when it fails (an answer
+    /// taken back). Before the kept sessions are back nothing is written (`WorkspaceStore.taken` holds a take-back).
+    pub fn workspaces_keep_then(&self, then: impl FnOnce(&mut Editor, Result<(), String>) + Send + 'static) {
+        self.workspaces_write(Vec::new(), then);
     }
 
     /// The sessions written without what `takes` took back (each session's checkout, what) — kept in the file as
     /// taken back, so another tarae's list written later leaves them out; until written a quit names them and
     /// `:restart` gives them again (`store_writes`), and a write that fails says so.
-    pub fn sessions_taken_back(&self, takes: Vec<(PathBuf, String)>) {
+    pub fn workspaces_taken_back(&self, takes: Vec<(PathBuf, String)>) {
         let named = takes.iter().map(|(_, w)| w.as_str()).collect::<Vec<_>>().join(", ");
-        self.sessions_write(takes, move |ed, r| {
+        self.workspaces_write(takes, move |ed, r| {
             if let Err(e) = r {
                 ed.set_error(format!(
                     "couldn't write the sessions without {named}: {e} — taken back until you quit; at the next start \
@@ -1441,15 +1441,15 @@ impl Editor {
         });
     }
 
-    /// `sessions_keep_then`, with `takes` (`sessions_taken_back`).
-    fn sessions_write(
+    /// `workspaces_keep_then`, with `takes` (`workspaces_taken_back`).
+    fn workspaces_write(
         &self,
         takes: Vec<(PathBuf, String)>,
         then: impl FnOnce(&mut Editor, Result<(), String>) + Send + 'static,
     ) {
-        let Some((dir, start, s)) = self.sessions_stored() else { return };
-        let kept_in = self.session_store.repo.clone();
-        let (seen, landed) = (self.session_store.seen.clone(), self.session_store.landed.clone());
+        let Some((dir, start, s)) = self.workspaces_stored() else { return };
+        let kept_in = self.workspace_store.repo.clone();
+        let (seen, landed) = (self.workspace_store.seen.clone(), self.workspace_store.landed.clone());
         // (in this tarae's order — and named by a quit that cuts it off; one with take-backs kept, failed, until a
         // later write lands — which writes them too)
         let said = match takes.is_empty() {
@@ -1471,7 +1471,7 @@ impl Editor {
                 let failed = crate::storewrite::pending(&dir).into_iter().filter(|p| p.failed && p.again);
                 takes.extend(failed.flat_map(|p| takes_of(&p.carry)));
                 let (r, kept) =
-                    write_sessions(&dir, &start, s, &takes, (&seen, &landed), kept_in.as_ref(), turn.fails);
+                    write_workspaces(&dir, &start, s, &takes, (&seen, &landed), kept_in.as_ref(), turn.fails);
                 turn.done(r.is_ok(), vec![SAVED.into()]);
                 (r, kept)
             });
@@ -1480,7 +1480,7 @@ impl Editor {
                 // (kept there now: a later take-back that can't find it says so)
                 let left = match (&r, kept) {
                     (Ok((_, left)), Some(common)) => {
-                        ed.session_store.repo = Some(common);
+                        ed.workspace_store.repo = Some(common);
                         left.clone()
                     }
                     _ => Vec::new(),
@@ -1488,8 +1488,8 @@ impl Editor {
                 // (taken back in another tarae, unseen: gone here too)
                 for (root, what) in &left {
                     let id = (ed.sessions_in_order().into_iter().find(|l| l.root == *root)).map(|l| l.id);
-                    if let Some(l) = id.and_then(|id| ed.session_by_id(id)) {
-                        l.allowed.remove(what);
+                    if let Some(l) = id.and_then(|id| ed.workspace_by_id(id)) {
+                        l.claude.allowed.remove(what);
                     }
                     if let Some(id) = id {
                         ed.caps_sync_of(id);
@@ -1505,11 +1505,11 @@ impl Editor {
 /// What the sessions' file's write left out of this tarae's list: each session's checkout and what.
 type Left = Vec<(PathBuf, String)>;
 
-/// `Editor::sessions_write`'s write, its turn taken (`fails`: a test's failing write) — where they're kept for
+/// `Editor::workspaces_write`'s write, its turn taken (`fails`: a test's failing write) — where they're kept for
 /// `kept_in`, the counter seen and the repository it lands for set here (`seen`, `landed`: on the worker, so
 /// `:restart`'s state has them though the result never reaches the loop — F6). How it went, and the repository it
 /// was written for.
-fn write_sessions(
+fn write_workspaces(
     dir: &Path,
     start: &Path,
     s: Stored,
@@ -1546,16 +1546,16 @@ fn write_sessions(
 
 impl Editor {
     /// Where the sessions' store is (its writes' line in `storewrite`).
-    pub fn sessions_path(&self) -> Option<PathBuf> {
-        self.session_store.dir.clone()
+    pub fn workspaces_path(&self) -> Option<PathBuf> {
+        self.workspace_store.dir.clone()
     }
 
-    /// What `sessions_keep` writes, and where — None before the kept sessions are back, or with no store.
-    fn sessions_stored(&self) -> Option<(PathBuf, PathBuf, Stored)> {
-        let dir = self.session_store.dir.clone().filter(|_| self.session_store.restored)?;
+    /// What `workspaces_keep` writes, and where — None before the kept sessions are back, or with no store.
+    fn workspaces_stored(&self) -> Option<(PathBuf, PathBuf, Stored)> {
+        let dir = self.workspace_store.dir.clone().filter(|_| self.workspace_store.restored)?;
         let s = Stored {
             sessions: self.sessions_in_order().into_iter().map(Kept::of).collect(),
-            front: Some(self.session.root.clone()),
+            front: Some(self.workspace.root.clone()),
             rev: Default::default(),
         };
         Some((dir, self.start_root(), s))
@@ -1564,9 +1564,9 @@ impl Editor {
     /// At startup: this repository's kept sessions come back behind (read on a worker); the one that was in
     /// front comes to the front too, unless a key was pressed meanwhile. Ones whose checkout is gone are
     /// dropped, said once.
-    pub fn sessions_restore(&mut self) {
-        let Some(dir) = self.session_store.dir.clone() else {
-            self.session_store.restored = true;
+    pub fn workspaces_restore(&mut self) {
+        let Some(dir) = self.workspace_store.dir.clone() else {
+            self.workspace_store.restored = true;
             return;
         };
         let start = self.start_root();
@@ -1578,11 +1578,11 @@ impl Editor {
             });
             move |ed: &mut Editor| match found {
                 Some((here, gone, front, common, rev)) => {
-                    ed.session_store.repo = Some(common);
+                    ed.workspace_store.repo = Some(common);
                     // (the take-backs kept there up to it are in what came back: seen)
-                    *ed.session_store.seen.lock().unwrap_or_else(|e| e.into_inner()) = rev;
-                    let take = !ed.session_store.keyed;
-                    let gone = ed.sessions_back(here, gone, front, take);
+                    *ed.workspace_store.seen.lock().unwrap_or_else(|e| e.into_inner()) = rev;
+                    let take = !ed.workspace_store.keyed;
+                    let gone = ed.workspaces_back(here, gone, front, take);
                     if !gone.is_empty() {
                         ed.set_warning(format!(
                             "{} — {} removed outside tarae; dropped",
@@ -1591,14 +1591,14 @@ impl Editor {
                         ));
                     }
                 }
-                None => ed.session_store.restored = true,
+                None => ed.workspace_store.restored = true,
             }
         });
     }
 
     /// Kept sessions back: session 0's name and base onto it, the others behind (not twice); `front` in front
     /// when `take_front`; the list written again without the gone ones — their names, for the caller to say.
-    pub fn sessions_back(
+    pub fn workspaces_back(
         &mut self,
         here: Vec<Kept>,
         gone: Vec<Kept>,
@@ -1609,49 +1609,54 @@ impl Editor {
         let mut changed = !gone.is_empty();
         let mut took = false;
         for mut k in here {
-            let id = match std::iter::once(&self.session).chain(&self.sessions).find(|l| l.root == k.root) {
+            let id = match std::iter::once(&self.workspace).chain(&self.workspaces).find(|l| l.root == k.root)
+            {
                 Some(l) => l.id,
                 None => {
                     changed = true;
-                    self.session_add(k.root.clone())
+                    self.workspace_add(k.root.clone())
                 }
             };
             let came = k.allowed.clone();
-            self.session_store.taken.iter().filter(|(s, _)| *s == id).for_each(|(_, w)| k.allowed.remove(w));
+            self.workspace_store
+                .taken
+                .iter()
+                .filter(|(s, _)| *s == id)
+                .for_each(|(_, w)| k.allowed.remove(w));
             // (written again without it, or it's back at the next start)
             took |= k.allowed != came;
             let granted = !k.allowed.is_empty();
-            if let Some(l) = self.session_by_id(id) {
+            if let Some(l) = self.workspace_by_id(id) {
                 (l.name, l.branch, l.base) = (k.name, k.branch, k.base);
                 // (its claude, if one already runs — session 0's chat opened before the list came back — keeps the
                 // billing it started on until its next start)
                 if let Some(b) = k.billing {
-                    l.billing = b;
+                    l.claude.billing = b;
                 }
                 // (with what was answered here before it came back)
-                l.allowed.merge(&k.allowed);
+                l.claude.allowed.merge(&k.allowed);
             }
             if granted {
                 self.caps_sync_of(id);
             }
         }
-        self.session_store.restored = true;
-        let taken: Vec<(SessionId, String)> = std::mem::take(&mut self.session_store.taken);
+        self.workspace_store.restored = true;
+        let taken: Vec<(WorkspaceId, String)> = std::mem::take(&mut self.workspace_store.taken);
         if take_front
-            && let Some(f) = front.filter(|f| *f != self.session.root && *f != start)
-            && let Some(id) = self.sessions.iter().find(|l| l.root == f).map(|l| l.id)
+            && let Some(f) = front.filter(|f| *f != self.workspace.root && *f != start)
+            && let Some(id) = self.workspaces.iter().find(|l| l.root == f).map(|l| l.id)
         {
-            self.session_switch(id);
+            self.workspace_switch(id);
         }
         // (a take-back before they came back: its write said when it fails, as `:sandbox-disallow` says its own)
         if took {
             let roots =
                 self.sessions_in_order().into_iter().map(|l| (l.id, l.root.clone())).collect::<Vec<_>>();
-            let root = |id: SessionId| roots.iter().find(|(i, _)| *i == id).map(|(_, r)| r.clone());
+            let root = |id: WorkspaceId| roots.iter().find(|(i, _)| *i == id).map(|(_, r)| r.clone());
             let takes = taken.into_iter().filter_map(|(id, w)| Some((root(id)?, w))).collect();
-            self.sessions_taken_back(takes);
+            self.workspaces_taken_back(takes);
         } else if changed {
-            self.sessions_keep();
+            self.workspaces_keep();
         }
         gone.into_iter().map(|k| k.name).collect()
     }
@@ -1674,7 +1679,7 @@ impl Editor {
             self.session_prompt();
             return self.set_status("its name first — then C-b picks what it's made from");
         }
-        let root = self.session.root.clone();
+        let root = self.workspace.root.clone();
         let picker = crate::picker::Picker::of("session-base", format!("{name} from"), Vec::new(), false)
             .without_preview();
         self.open_picker(
@@ -1705,10 +1710,10 @@ impl Editor {
         if name.is_empty() {
             return self.set_error("usage: :session-new <name> [<base>] — the name is its branch");
         }
-        let (root, base) = (self.session.root.clone(), base.map(str::to_string));
-        let setting = self.config.session_worktrees.clone();
+        let (root, base) = (self.workspace.root.clone(), base.map(str::to_string));
+        let setting = self.config.workspace_worktrees.clone();
         let said = format!("Looking at what {name} would take…");
-        let builds = self.session_store.builds.clone();
+        let builds = self.workspace_store.builds.clone();
         let work = move || making(&root, &name, base.as_deref(), &setting, builds.as_ref());
         self.step(self.events.shared_jobs(), "session", said, work, |ed, found| match found {
             Ok(mut m) => {
@@ -1736,17 +1741,17 @@ impl Editor {
             move |ed: &mut Editor| match made {
                 Ok((root, failed)) => {
                     ed.offer_finished(id, Ok(()));
-                    let session = ed.session_add(root);
-                    if let Some(l) = ed.session_by_id(session) {
+                    let session = ed.workspace_add(root);
+                    if let Some(l) = ed.workspace_by_id(session) {
                         (l.name, l.branch, l.base) =
                             (m.branch.clone(), Some(m.branch.clone()), Some(m.base.clone()));
                         // (who pays, as its card said)
-                        l.billing = m.billing;
+                        l.claude.billing = m.billing;
                     }
                     if m.billing == crate::billing::Billing::Api {
                         ed.weakness_shown();
                     }
-                    ed.session_switch(session);
+                    ed.workspace_switch(session);
                     crate::chat::open(ed);
                     ed.set_success(format!("Session {} — from {}", m.branch, m.base_said()));
                     if !failed.is_empty() {
@@ -1760,27 +1765,27 @@ impl Editor {
 
     // ── Ending ───────────────────────────────────────────────────────────────
 
-    /// `:session-end [<n|name>]` — the checks on a worker; nothing to lose: removed at once (its branch
+    /// `:workspace-end [<n|name>]` — the checks on a worker; nothing to lose: removed at once (its branch
     /// kept), else the card. Never the checkout tarae started in; not while files of it are unsaved or its
     /// Claude is answering.
-    pub fn session_end(&mut self, which: &str) -> Result<(), String> {
+    pub fn workspace_end(&mut self, which: &str) -> Result<(), String> {
         self.session_end_asking(which, false)
     }
 
-    /// `session_end` — `always`: the card even with nothing to lose (its end asked again after `:restart`
+    /// `workspace_end` — `always`: the card even with nothing to lose (its end asked again after `:restart`
     /// was never answered: asking again never acts).
     pub fn session_end_asking(&mut self, which: &str, always: bool) -> Result<(), String> {
         let (id, name) = self.session_named(which)?;
-        if id == 0 {
+        if id == WorkspaceId::HOME {
             return Err(format!("{name} is the checkout tarae started in — it stays"));
         }
         let session =
-            std::iter::once(&self.session).chain(&self.sessions).find(|l| l.id == id).expect("named");
+            std::iter::once(&self.workspace).chain(&self.workspaces).find(|l| l.id == id).expect("named");
         let root = session.root.clone();
         if let Some(r) = session.rebase.as_ref() {
             return Err(format!("end {name}: {}", r.why(&name)));
         }
-        if session.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
+        if session.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
             return Err(format!("{name}'s Claude is answering — stop it (C-c) or let it finish first"));
         }
         let unsaved: Vec<String> = self
@@ -1793,7 +1798,7 @@ impl Editor {
             return Err(format!("unsaved changes in {} — save or close them first", unsaved.join(", ")));
         }
         let (base, start) = (session.base.clone(), self.start_root());
-        let entries = crate::sessionkeep::entries(&self.config.session_keep);
+        let entries = crate::workspacekeep::entries(&self.config.workspace_keep);
         let said = format!("Looking at {name} before it ends…");
         let n = name.clone();
         let work = move || ending(n, &root, base, &start, entries);
@@ -1809,11 +1814,11 @@ impl Editor {
     /// when `both`, and its cargo build dir when only it built there (`build_dir_fate`). `card`: the end
     /// card's id (it waves meanwhile, and says a failure). A failure opens the session again.
     pub fn session_remove(&mut self, e: Ending, both: bool, card: Option<u64>) {
-        let kept = self.session_close(&e.root);
+        let kept = self.workspace_close(&e.root);
         if card.is_none() {
             self.set_step("session", format!("Ending {}…", e.name));
         }
-        let builds = self.session_store.builds.clone();
+        let builds = self.workspace_store.builds.clone();
         let allow = self.allow_path.clone();
         self.events.shared_jobs().spawn(move || {
             // (where its own kept answers are, while its checkout is there to say)
@@ -1873,11 +1878,11 @@ impl Editor {
                             ed.set_warning(format!("{}'s build dir isn't all removed — {why}", e.name));
                         }
                         // (only once its checkout is gone — what it runs may judge by that)
-                        ed.session_ended(&e.root, &e.name);
+                        ed.workspace_ended(&e.root, &e.name);
                     }
                     Err(why) => {
                         if let Some(k) = kept.filter(|k| k.root.is_dir()) {
-                            ed.sessions_back(vec![k], Vec::new(), None, false);
+                            ed.workspaces_back(vec![k], Vec::new(), None, false);
                         }
                         match card {
                             Some(id) => ed.offer_finished(id, Err(why)),
@@ -1895,11 +1900,11 @@ impl Editor {
     /// changes staged.
     pub fn session_commit_first(&mut self, e: Ending) {
         let Some(id) =
-            std::iter::once(&self.session).chain(&self.sessions).find(|l| l.root == e.root).map(|l| l.id)
+            std::iter::once(&self.workspace).chain(&self.workspaces).find(|l| l.root == e.root).map(|l| l.id)
         else {
             return self.set_error(format!("{} isn't open any more", e.name));
         };
-        self.session_switch(id);
+        self.workspace_switch(id);
         let said = format!("Staging {}'s changes…", e.name);
         let root = e.root.clone();
         let work = move || {
@@ -1911,8 +1916,8 @@ impl Editor {
         self.after_saves(move |ed| {
             ed.step(ed.events.jobs(), "session", said, work, move |ed, read| match read {
                 Ok(st) => {
-                    ed.session.git_status = Some(st);
-                    ed.session.commit_then_end = true;
+                    ed.workspace.git_status = Some(st);
+                    ed.workspace.commit_then_end = true;
                     ed.git_commit_open(false, true);
                 }
                 Err(why) => ed.set_error(format!("commit {}: {why}", e.name)),
@@ -1923,42 +1928,42 @@ impl Editor {
     /// Session `id` closes: the one tarae started in comes to the front first if it was there; what it ran
     /// stops with it (its Claude, terminal, tests and tasks are dropped), its files close (their servers stop
     /// once nothing of theirs is open). What it was, to open it again.
-    pub(crate) fn session_close(&mut self, root: &Path) -> Option<Kept> {
+    pub(crate) fn workspace_close(&mut self, root: &Path) -> Option<Kept> {
         // (by its checkout: one opened again after a failed end has another id)
-        let id = std::iter::once(&self.session).chain(&self.sessions).find(|l| l.root == root)?.id;
-        if id == 0 {
+        let id = std::iter::once(&self.workspace).chain(&self.workspaces).find(|l| l.root == root)?.id;
+        if id == WorkspaceId::HOME {
             return None;
         }
-        if self.session.id == id {
-            self.session_switch(0);
+        if self.workspace.id == id {
+            self.workspace_switch(WorkspaceId::HOME);
         }
         // (its reviews under way kept as quitting keeps them — graded, each change as it ended)
-        self.with_session(id, Editor::reviews_end);
-        let i = self.sessions.iter().position(|l| l.id == id)?;
-        let session = self.sessions.remove(i);
+        self.with_workspace(id, Editor::reviews_end);
+        let i = self.workspaces.iter().position(|l| l.id == id)?;
+        let session = self.workspaces.remove(i);
         // (the proxy's answers for it go with it, its overlaps and their folder too)
-        crate::hosts::session_ended(&session);
+        crate::hosts::workspace_ended(&session);
         crate::overlap::ended(self, id);
         let kept = Kept::of(&session);
-        // What it has now is what opening it again in this run brings back (`session_kept_back`): its notes
+        // What it has now is what opening it again in this run brings back (`workspace_kept_back`): its notes
         // where the restore reads them (with its files still open, for their anchors), its turns written
-        let notes = crate::notes::to_json(&session.notes, &self.docs);
+        let notes = crate::notes::to_json(&session.claude.notes, &self.docs);
         self.restore.set_notes(&session.root, notes);
         crate::checkpoint::keep_of(self, &session);
         let shown_elsewhere = |ed: &Editor, d| {
-            std::iter::once(&ed.session).chain(&ed.sessions).any(|l| l.views.iter().any(|v| v.doc == d))
+            std::iter::once(&ed.workspace).chain(&ed.workspaces).any(|l| l.views.iter().any(|v| v.doc == d))
         };
         // (a file outside it that only it had open — `~/.cargo/config.toml` — goes too, with its server:
         // #141; your unsaved edits keep it, in front)
         let only_its = |ed: &Editor, d: &crate::document::Document| {
             session.docs.contains(&d.id)
-                && !std::iter::once(&ed.session).chain(&ed.sessions).any(|l| l.docs.contains(&d.id))
+                && !std::iter::once(&ed.workspace).chain(&ed.workspaces).any(|l| l.docs.contains(&d.id))
                 && !shown_elsewhere(ed, d.id)
         };
         let adopt: Vec<crate::document::DocId> =
             self.docs.iter().filter(|d| only_its(self, d) && d.is_modified()).map(|d| d.id).collect();
         for d in adopt {
-            self.session_keeps(d);
+            self.workspace_keeps(d);
         }
         let gone: Vec<crate::document::DocId> = self
             .docs
@@ -1988,7 +1993,7 @@ impl Editor {
         // (and what its Claude's runs left running — a Gradle daemon: ended on a thread, it waits for them)
         let left = root.clone();
         crate::event::thread("tarae-end", move || crate::sandbox::end_leftovers(Some(&left)));
-        self.sessions_keep();
+        self.workspaces_keep();
         Some(kept)
     }
 
@@ -1999,17 +2004,17 @@ impl Editor {
     pub(crate) fn session_facts(&mut self) {
         self.procs_wake(crate::procs::Wake::Now);
         let start = self.start_root();
-        let asks: Vec<(SessionId, PathBuf, Option<String>)> =
+        let asks: Vec<(WorkspaceId, PathBuf, Option<String>)> =
             self.sessions_in_order().iter().map(|l| (l.id, l.root.clone(), l.base.clone())).collect();
         self.build_dirs_measure(&asks);
         self.events.shared_jobs().spawn(move || {
-            let found: Vec<(SessionId, Option<Facts>)> =
+            let found: Vec<(WorkspaceId, Option<Facts>)> =
                 asks.into_iter().map(|(id, root, base)| (id, facts(&root, base, &start))).collect();
             move |ed: &mut Editor| {
                 for (id, f) in found {
                     match f {
-                        Some(f) => ed.session_store.facts.insert(id, f),
-                        None => ed.session_store.facts.remove(&id),
+                        Some(f) => ed.workspace_store.facts.insert(id, f),
+                        None => ed.workspace_store.facts.remove(&id),
                     };
                 }
             }
@@ -2017,18 +2022,18 @@ impl Editor {
     }
 
     /// The sessions' own build folders measured again on a worker — unless they were within `BUILDS_KEPT`.
-    fn build_dirs_measure(&mut self, asks: &[(SessionId, PathBuf, Option<String>)]) {
-        let Some(b) = self.session_store.builds.clone() else { return };
-        let store = &mut self.session_store;
+    fn build_dirs_measure(&mut self, asks: &[(WorkspaceId, PathBuf, Option<String>)]) {
+        let Some(b) = self.workspace_store.builds.clone() else { return };
+        let store = &mut self.workspace_store;
         if store.build_dirs_at.is_some_and(|t| t.elapsed() < BUILDS_KEPT) {
             return;
         }
         store.build_dirs_at = Some(Instant::now());
-        let roots: Vec<(SessionId, PathBuf)> = asks.iter().map(|(id, r, _)| (*id, r.clone())).collect();
+        let roots: Vec<(WorkspaceId, PathBuf)> = asks.iter().map(|(id, r, _)| (*id, r.clone())).collect();
         self.events.shared_jobs().spawn(move || {
             let found = build_dirs(&b, &roots);
             move |ed: &mut Editor| {
-                ed.session_store.build_dirs =
+                ed.workspace_store.build_dirs =
                     found.into_iter().map(|(id, d, size)| (id, (d, size))).collect();
             }
         });
@@ -2037,33 +2042,33 @@ impl Editor {
     /// `x` in the list: the session's own build folder dropped — the second `x` within `DROP_AGAIN` (the first
     /// says what goes). Only a session behind with nothing running (in front, its language server builds
     /// there), and only what `Builds::decide` lets go — asked again on a worker right before.
-    fn session_build_drop(&mut self, id: SessionId) {
-        let Some(l) = self.sessions.iter().find(|l| l.id == id) else {
+    fn session_build_drop(&mut self, id: WorkspaceId) {
+        let Some(l) = self.workspaces.iter().find(|l| l.id == id) else {
             return self.set_status("x drops a build folder of a session behind — this one is in front");
         };
         let (name, root) = (l.label().to_string(), l.root.clone());
-        let idle = matches!(self.doing(l), crate::session::Doing::Idle | crate::session::Doing::Done);
+        let idle = matches!(self.doing(l), crate::workspace::Doing::Idle | crate::workspace::Doing::Done);
         if !idle || !l.spawned.is_empty() {
             return self.set_status(format!("{name} has something running — its build folder stays"));
         }
-        let Some((d, size)) = self.session_store.build_dirs.get(&id).cloned() else {
-            let why = match self.session_store.build_dirs_at {
+        let Some((d, size)) = self.workspace_store.build_dirs.get(&id).cloned() else {
+            let why = match self.workspace_store.build_dirs_at {
                 Some(t) if t.elapsed() < MEASURE_FOR * 4 => "still being measured",
                 _ => "no build folder of its own outside its checkout",
             };
             return self.set_status(format!("{name}: {why}"));
         };
         let at = crate::allow::tilde(&d.path());
-        let again = self.session_store.drop_asked.is_some_and(|(i, t)| i == id && t.elapsed() < DROP_AGAIN);
+        let again = self.workspace_store.drop_asked.is_some_and(|(i, t)| i == id && t.elapsed() < DROP_AGAIN);
         if !again {
-            self.session_store.drop_asked = Some((id, Instant::now()));
+            self.workspace_store.drop_asked = Some((id, Instant::now()));
             return self.set_status(format!(
                 "x again drops {name}'s build folder {at} ({}) — its next build starts cold",
                 size_text(size)
             ));
         }
-        self.session_store.drop_asked = None;
-        let Some(b) = self.session_store.builds.clone() else { return };
+        self.workspace_store.drop_asked = None;
+        let Some(b) = self.workspace_store.builds.clone() else { return };
         self.events.shared_jobs().spawn(move || {
             // (asked again: another checkout may build there since it was measured)
             let done = common_dir(&root).map(|common| match b.decide(&root, &common, &checkouts(&common)) {
@@ -2074,7 +2079,7 @@ impl Editor {
                 Err(why) => why,
             });
             move |ed: &mut Editor| {
-                ed.session_store.build_dirs.remove(&id);
+                ed.workspace_store.build_dirs.remove(&id);
                 ed.procs_wake(crate::procs::Wake::Now);
                 match done {
                     Ok(crate::builds::BuildDir::Freed(size)) => {
@@ -2102,7 +2107,7 @@ impl Editor {
         let now_ms = crate::usage::now_ms();
         // (what waits for your answer, the inbox's: each session's cards and edits)
         let inbox = self.inbox();
-        let waits = |id: SessionId| {
+        let waits = |id: WorkspaceId| {
             let asks = inbox.iter().filter(|e| e.asks_answer() && e.session_id() == id);
             asks.fold((0, 0), |(c, e), x| if x.card().is_some() { (c + 1, e) } else { (c, e + 1) })
         };
@@ -2116,28 +2121,28 @@ impl Editor {
                 id: l.id,
                 name: l.label().to_string(),
                 branch: l.git_branch.clone().or_else(|| l.branch.clone()),
-                facts: self.session_store.facts.get(&l.id).cloned(),
+                facts: self.workspace_store.facts.get(&l.id).cloned(),
                 doing: self.doing(l),
-                front: l.id == self.session.id,
+                front: l.id == self.workspace.id,
                 usage: crate::procs::summed(&self.procs.rows, &self.session_pids(l)),
                 rebasing: l.rebase.as_ref().map(crate::rebase::Rebase::said),
                 reloaded: l.reloaded,
-                compacted: l.compacted.unseen,
+                compacted: l.claude.compacted.unseen,
                 reviewer: Shown::reviewer_of(self, l),
                 claude: Shown::claude_of(
-                    &l.usage,
+                    &l.claude.usage,
                     &crate::keepwarm::said(l, &self.config.llm, &self.limits, now_ms),
                     now_ms,
                 ),
-                billing: l.billing,
-                build: self.session_store.build_dirs.get(&l.id).map(|(_, size)| *size),
+                billing: l.claude.billing,
+                build: self.workspace_store.build_dirs.get(&l.id).map(|(_, size)| *size),
                 queue: self.bring_said(l.id),
                 at: crate::presence::at(self, l.id).unwrap_or_default(),
-                colour: l.colour,
+                colour: l.claude.colour,
                 overlap: crate::overlap::others(self, l.id),
                 waits: waits(l.id),
-                report: crate::sessionpane::report(l.chat.as_ref()),
-                context: context(&l.usage),
+                report: crate::sessionpane::report(l.claude.chat.as_ref()),
+                context: context(&l.claude.usage),
             })
             .collect()
     }
@@ -2161,7 +2166,7 @@ impl Editor {
                     return self.set_status(format!("no session on row {c} — the list has {n}"));
                 };
                 if let Some(p) = self.sessions_pane.as_mut() {
-                    p.selected = id;
+                    p.selected = id.n;
                 }
                 self.sessions_enter();
             }
@@ -2173,7 +2178,7 @@ impl Editor {
             'd' | 'b' => {
                 let Some(id) = here else { return };
                 let which = id.to_string();
-                let done = if c == 'd' { self.session_end(&which) } else { self.session_bring(&which) };
+                let done = if c == 'd' { self.workspace_end(&which) } else { self.workspace_bring(&which) };
                 if let Err(e) = done {
                     self.set_error(e);
                 }
@@ -2207,13 +2212,13 @@ impl Editor {
             // the one it's in, the first it changed; your own row: the file in front
             'v' => {
                 let Some(id) = here else { return };
-                let me = id == self.session.id;
+                let me = id == self.workspace.id;
                 let at = crate::presence::path_of(self, id).filter(|_| !me);
                 let file = match crate::overlap::file_of(self, id) {
                     Some((rel, side)) => {
-                        Some((self.session.root.join(rel), Some(crate::weave::Land::Conflict(side))))
+                        Some((self.workspace.root.join(rel), Some(crate::weave::Land::Conflict(side))))
                     }
-                    None => at.map(|rel| (self.session.root.join(rel), None)),
+                    None => at.map(|rel| (self.workspace.root.join(rel), None)),
                 };
                 let file = file.or_else(|| me.then(|| self.doc().path.clone()).flatten().map(|p| (p, None)));
                 let Some((path, land)) = file else {
@@ -2247,22 +2252,22 @@ impl Editor {
 
     // ── Bringing ─────────────────────────────────────────────────────────────
 
-    /// `:session-bring [<n|name>]`, `b` in the list — asked on the bring card first (`y` brings · `p` the
+    /// `:workspace-bring [<n|name>]`, `b` in the list — asked on the bring card first (`y` brings · `p` the
     /// quick preflight, then brings: #155, it brought at once). The base moved since: a card offers to rebase
     /// it first (`rebase.rs`). Not while a rebase is under way there.
-    pub fn session_bring(&mut self, which: &str) -> Result<(), String> {
+    pub fn workspace_bring(&mut self, which: &str) -> Result<(), String> {
         self.bringing(which, How::Card)
     }
 
     /// The bring card's `y` (or its preflight passed): its base moved up to its branch, fast-forward only (a
     /// worker).
-    pub(crate) fn session_bring_now(&mut self, which: &str) -> Result<(), String> {
+    pub(crate) fn workspace_bring_now(&mut self, which: &str) -> Result<(), String> {
         self.bringing(which, How::Now)
     }
 
-    /// The bring queue's one under way, looked at as `:session-bring` does — what's found goes to the queue
+    /// The bring queue's one under way, looked at as `:workspace-bring` does — what's found goes to the queue
     /// (`bring_queue_looked`), never a card.
-    pub(crate) fn bringing_queued(&mut self, id: SessionId) -> Result<(), String> {
+    pub(crate) fn bringing_queued(&mut self, id: WorkspaceId) -> Result<(), String> {
         self.bringing(&id.to_string(), How::Queue)
     }
 
@@ -2270,10 +2275,10 @@ impl Editor {
     /// it are graded again against its new tip, at once — their card says the base moved and `y` rebases first,
     /// where a `y` on the old card would have been refused by the fast-forward (frictions29 24: seven brought in a
     /// row, four `n`s to keep them in order, a preflight run on a tip already gone).
-    fn bring_regrade(&mut self, landed: crate::event::SessionId, base: &str) {
+    fn bring_regrade(&mut self, landed: crate::event::WorkspaceId, base: &str) {
         // (a bring card is up wherever it was asked — its checkout says whose it is)
         let front = !self.background();
-        let waits = |l: &crate::session::Session, offers: &[crate::offer::Offer]| {
+        let waits = |l: &crate::workspace::Workspace, offers: &[crate::offer::Offer]| {
             let up = offers.iter().filter(|_| front);
             l.parked.iter().chain(up).any(|o| match &o.what {
                 crate::offer::What::Rebased(m) | crate::offer::What::UpTo(m) => {
@@ -2282,13 +2287,13 @@ impl Editor {
                 _ => false,
             })
         };
-        let names: Vec<String> = std::iter::once(&self.session)
-            .chain(&self.sessions)
-            .filter(|l| l.id != landed && l.id != 0 && waits(l, &self.offers))
+        let names: Vec<String> = std::iter::once(&self.workspace)
+            .chain(&self.workspaces)
+            .filter(|l| l.id != landed && l.id != WorkspaceId::HOME && waits(l, &self.offers))
             .map(|l| l.name.clone())
             .collect();
         for name in names {
-            if let Err(e) = self.session_bring(&name) {
+            if let Err(e) = self.workspace_bring(&name) {
                 crate::log::line("session", "info", &format!("bring {name} graded again: {e}"));
             }
         }
@@ -2296,7 +2301,7 @@ impl Editor {
 
     fn bringing(&mut self, which: &str, how: How) -> Result<(), String> {
         let (id, name) = self.session_named(which)?;
-        if id == 0 {
+        if id == WorkspaceId::HOME {
             return Err(format!("{name} is the checkout tarae started in — bring a session into it instead"));
         }
         // (the bring queue's own steps go on; a bring of one in it otherwise waits for its turn)
@@ -2312,7 +2317,7 @@ impl Editor {
         // (the queue's one under way: what keeps it from going on is an Err its caller takes it out with)
         let queued = its_turn && self.bring_queue_at(id).is_some();
         let session =
-            std::iter::once(&self.session).chain(&self.sessions).find(|l| l.id == id).expect("named");
+            std::iter::once(&self.workspace).chain(&self.workspaces).find(|l| l.id == id).expect("named");
         // (a rebase stopped there: its card, to go on or abort — #175)
         if session.rebase.is_some() {
             let offered = self.rebase_offer(id).map_err(|e| format!("bring {name}: {e}"));
@@ -2367,7 +2372,7 @@ impl Editor {
                         b.tip
                     ));
                     // (its review since the base is of nothing now: it ends, said — frictions25 R5)
-                    ed.with_session(id, crate::codereview::base_reached);
+                    ed.with_workspace(id, crate::codereview::base_reached);
                     ed.bring_regrade(id, &b.base);
                     ed.bring_queue_landed(id, what);
                 }
@@ -2376,14 +2381,14 @@ impl Editor {
                 Bringing::Ready(m) if m.ahead == 0 => ed.push_offer(m.up_card()),
                 Bringing::Ready(m) => {
                     let mut quick = None;
-                    ed.with_session(id, |ed| quick = ed.preflight_quick());
+                    ed.with_workspace(id, |ed| quick = ed.preflight_quick());
                     let (root, base) = (m.root.clone(), m.base.clone());
                     crate::codereview::push_bring_card(ed, id, m.bring_card(quick, false), root, base);
                 }
                 // (one tarae didn't start: taken up, so continue and abort know it — and its card up)
                 Bringing::Rebasing(stop) => {
-                    ed.with_session(id, |ed| {
-                        if ed.session.rebase.is_none() {
+                    ed.with_workspace(id, |ed| {
+                        if ed.workspace.rebase.is_none() {
                             ed.rebase_adopt(stop);
                         }
                     });
@@ -2400,7 +2405,7 @@ impl Editor {
     }
 }
 
-/// Who asked for a bring: `:session-bring` and `b` (a card first), the card's `y` or a preflight passed (now),
+/// Who asked for a bring: `:workspace-bring` and `b` (a card first), the card's `y` or a preflight passed (now),
 /// the bring queue (`bringqueue.rs`: what's found goes to it).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum How {
@@ -2417,7 +2422,7 @@ mod tests {
     /// Linux, in a process of its own (`TARAE_SESSION_END_SCENE` = a temp folder; it makes itself a child
     /// subreaper): a run of Claude's in each of two sessions leaves a `setsid sleep 60`. One session closes:
     /// what its run left ends, the other's stays — until tarae's quit ends it (`sandbox::end_leftovers`).
-    /// Prints `session-end: closed=<ended> other=<kept> quit=<ended>`.
+    /// Prints `workspace-end: closed=<ended> other=<kept> quit=<ended>`.
     #[cfg(target_os = "linux")]
     #[test]
     #[ignore]
@@ -2429,8 +2434,8 @@ mod tests {
             std::fs::create_dir_all(d).unwrap();
         }
         let mut ed = Editor::new(Config::default());
-        (ed.session.root, ed.session.name) = (here.clone(), "here".into());
-        ed.session_open(&there).unwrap();
+        (ed.workspace.root, ed.workspace.name) = (here.clone(), "here".into());
+        ed.workspace_open(&there).unwrap();
         let leave = |root: &Path| -> u32 {
             let p = crate::sandbox::policy(root, &crate::llm::LlmConfig::default(), &[]).unwrap();
             let file = root.join("left.pid");
@@ -2454,11 +2459,11 @@ mod tests {
             }
             !there_now(pid)
         };
-        ed.session_close(&there);
+        ed.workspace_close(&there);
         let (closed, kept) = (gone(closed), there_now(other));
         crate::sandbox::end_leftovers(None);
         let yes = |b: bool| if b { "yes" } else { "no" };
-        println!("session-end: closed={} other={} quit={}", yes(closed), yes(kept), yes(gone(other)));
+        println!("workspace-end: closed={} other={} quit={}", yes(closed), yes(kept), yes(gone(other)));
     }
 
     /// `session_end_scene`, run.
@@ -2468,7 +2473,7 @@ mod tests {
         if crate::landlock::abi().is_err() {
             return;
         }
-        let dir = std::env::temp_dir().join(format!("tarae-session-end-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tarae-workspace-end-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let dir = std::fs::canonicalize(dir).unwrap();
         let out = std::process::Command::new(std::env::current_exe().unwrap())
@@ -2484,7 +2489,7 @@ mod tests {
             .unwrap();
         std::fs::remove_dir_all(&dir).ok();
         let text = String::from_utf8_lossy(&out.stdout).into_owned();
-        let said = text.lines().find_map(|l| l.split_once("session-end: ").map(|(_, s)| s.to_string()));
+        let said = text.lines().find_map(|l| l.split_once("workspace-end: ").map(|(_, s)| s.to_string()));
         let err = String::from_utf8_lossy(&out.stderr);
         assert_eq!(said.as_deref(), Some("closed=yes other=yes quit=yes"), "{text}\n{err}");
     }
@@ -2512,7 +2517,7 @@ mod tests {
     /// asking — the hooks in a `core.hooksPath` inside the checkout are the hooks card's (`held::cover`), one
     /// card for one edit.
     fn only_the_hooks_card(ed: &Editor, root: &Path) {
-        let trust = ed.offers.iter().chain(&ed.session.parked);
+        let trust = ed.offers.iter().chain(&ed.workspace.parked);
         assert!(
             !trust.into_iter().any(|o| matches!(o.what, crate::offer::What::GitTrust(_))),
             "{}",
@@ -2554,9 +2559,9 @@ mod tests {
     /// An editor in `repo` (on main), sessions' checkouts under `dir/wt`, a chat that's a quiet stand-in.
     fn editor(repo: &Path, dir: &Path) -> Editor {
         let mut ed = Editor::new(Config::default());
-        (ed.session.root, ed.session.name) = (repo.to_path_buf(), "proj".into());
-        ed.session.git_branch = Some("main".into());
-        ed.config.session_worktrees = dir.join("wt").display().to_string();
+        (ed.workspace.root, ed.workspace.name) = (repo.to_path_buf(), "proj".into());
+        ed.workspace.git_branch = Some("main".into());
+        ed.config.workspace_worktrees = dir.join("wt").display().to_string();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         ed
@@ -2590,7 +2595,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(crate::allow::Store::read(Some(&store)).get(&wt).keys.len(), 1);
-        feed(&mut ed, ":session-end<ret>");
+        feed(&mut ed, ":workspace-end<ret>");
         settle_until(&mut ed, |ed| says(ed, "Ended own") || says(ed, "end own:"));
         assert!(!wt.exists(), "{}", said(&ed));
         // (its section, as a checkout made at its path would find it)
@@ -2622,21 +2627,21 @@ mod tests {
     /// `:session-new name [base]` from the checkout tarae started in, its card answered `y` — the session
     /// in front (its chat's input left without the keys, so the next `:` reaches the editor).
     fn new_session(ed: &mut Editor, line: &str) -> PathBuf {
-        ed.session_switch(0);
+        ed.workspace_switch(WorkspaceId::HOME);
         let cards = ed.offers.len();
         feed(ed, &format!(":session-new {line}<ret>"));
         settle_until(ed, |ed| ed.offers.len() > cards || says(ed, "new session:"));
         assert!(ed.offers.len() > cards, "{}", said(ed));
-        let sessions = ed.sessions.len();
+        let sessions = ed.workspaces.len();
         ed.offer_accept();
-        settle_until(ed, |ed| ed.sessions.len() > sessions);
-        ed.session.leave(crate::session::At::Chat);
-        ed.session.root.clone()
+        settle_until(ed, |ed| ed.workspaces.len() > sessions);
+        ed.workspace.leave(crate::workspace::At::Chat);
+        ed.workspace.root.clone()
     }
 
     fn end_card(ed: &Editor) -> Option<&Ending> {
         ed.offers.iter().find_map(|o| match &o.what {
-            crate::offer::What::SessionEnd(e) => Some(&**e),
+            crate::offer::What::WorkspaceEnd(e) => Some(&**e),
             _ => None,
         })
     }
@@ -2659,7 +2664,7 @@ mod tests {
         let o = ed.offers.first().unwrap_or_else(|| panic!("the card: {}", said(&ed)));
         assert_eq!(o.title, "New session: fix-login");
         let main = git_in(&repo, &["rev-parse", "main"]);
-        let under = worktrees_dir(&ed.config.session_worktrees, &repo.join(".git")).unwrap();
+        let under = worktrees_dir(&ed.config.workspace_worktrees, &repo.join(".git")).unwrap();
         let wt = under.join("fix-login");
         let starts = format!(
             "Branch fix-login from main ({}).\nIts checkout, fix-login/, goes in\n  {}\n",
@@ -2670,25 +2675,25 @@ mod tests {
         assert!(o.question.contains("Ignored here, so not copied:\n  21 MB  target/"), "{}", o.question);
         assert!(!has_branch(&repo, "fix-login") && !wt.exists(), "nothing made before y");
         ed.offer_accept();
-        settle_until(&mut ed, |ed| !ed.sessions.is_empty());
-        assert_eq!(ed.session.root, std::fs::canonicalize(&wt).unwrap(), "its session in front");
+        settle_until(&mut ed, |ed| !ed.workspaces.is_empty());
+        assert_eq!(ed.workspace.root, std::fs::canonicalize(&wt).unwrap(), "its session in front");
         assert_eq!(git_in(&wt, &["symbolic-ref", "--short", "HEAD"]), "fix-login");
         assert_eq!(git_in(&repo, &["rev-parse", "fix-login"]), main);
         assert_eq!(
-            (ed.session.name.as_str(), ed.session.branch.as_deref(), ed.session.base.as_deref()),
+            (ed.workspace.name.as_str(), ed.workspace.branch.as_deref(), ed.workspace.base.as_deref()),
             ("fix-login", Some("fix-login"), Some("main"))
         );
-        assert!(ed.session.chat_has_keys(), "its chat open, with the keys");
+        assert!(ed.workspace.chat_has_keys(), "its chat open, with the keys");
         assert!(says(&ed, &format!("Session fix-login — from main ({})", &main[..7])), "{}", said(&ed));
         assert!(ed.offers.is_empty());
         // Taken names: a branch there is (checked out in the session's checkout), and one git refuses
-        ed.session.leave(crate::session::At::Chat);
-        feed(&mut ed, ":session-switch 0<ret>:session-new fix-login<ret>");
+        ed.workspace.leave(crate::workspace::At::Chat);
+        feed(&mut ed, ":workspace-switch 0<ret>:session-new fix-login<ret>");
         settle_until(&mut ed, |ed| says(ed, "new session: there's a branch fix-login already"));
         assert!(says(&ed, "already, checked out in "), "says where: {}", said(&ed));
         feed(&mut ed, ":session-new a..b<ret>");
         settle_until(&mut ed, |ed| says(ed, "isn't a branch name"));
-        assert!(ed.offers.is_empty() && ed.sessions.len() == 1);
+        assert!(ed.offers.is_empty() && ed.workspaces.len() == 1);
         drop(ed);
         git_in(&repo, &["worktree", "remove", "--force", wt.to_str().unwrap()]);
         std::fs::remove_dir_all(&dir).ok();
@@ -2730,8 +2735,8 @@ mod tests {
             "{q}"
         );
         ed.offer_accept();
-        settle_until(&mut ed, |ed| !ed.sessions.is_empty());
-        let wt = ed.session.root.clone();
+        settle_until(&mut ed, |ed| !ed.workspaces.is_empty());
+        let wt = ed.workspace.root.clone();
         let read = |rel: &str| std::fs::read_to_string(wt.join(rel)).ok();
         assert_eq!(read("CLAUDE.md").as_deref(), Some("# rules\n"));
         assert_eq!(read(".claude/settings.json").as_deref(), Some("{}\n"));
@@ -2779,7 +2784,7 @@ mod tests {
             (git_in(&repo, &["rev-parse", "main"]), git_in(&first, &["rev-parse", "HEAD"]));
         assert_ne!(main, on_first);
         // From `first` in front: main by default, first offered
-        assert_eq!(ed.session.root, first);
+        assert_eq!(ed.workspace.root, first);
         feed(&mut ed, ":session-new second<ret>");
         settle_until(&mut ed, |ed| !ed.offers.is_empty() || says(ed, "new session:"));
         let q = |ed: &Editor| ed.offers.first().map(|o| o.question.clone()).unwrap_or_else(|| said(ed));
@@ -2796,11 +2801,11 @@ mod tests {
         // Made from main
         card_in_sight(&mut ed);
         feed(&mut ed, "y");
-        settle_until(&mut ed, |ed| ed.sessions.len() == 2);
+        settle_until(&mut ed, |ed| ed.workspaces.len() == 2);
         assert_eq!(git_in(&repo, &["rev-parse", "second"]), main);
         // From the checkout on main: nothing else to offer
-        ed.session.chat = None;
-        ed.session_switch(0);
+        ed.workspace.claude.chat = None;
+        ed.workspace_switch(WorkspaceId::HOME);
         feed(&mut ed, ":session-new third<ret>");
         settle_until(&mut ed, |ed| !ed.offers.is_empty() || says(ed, "new session:"));
         assert!(!q(&ed).contains("b — from"), "{}", q(&ed));
@@ -2833,7 +2838,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
-        feed(&mut ed, ":session-end<ret>");
+        feed(&mut ed, ":workspace-end<ret>");
         settle_until(&mut ed, |ed| says(ed, "Ended done") || says(ed, "end done:"));
         assert!(ed.offers.is_empty(), "no card");
         assert!(!wt.exists(), "its checkout is gone");
@@ -2842,7 +2847,10 @@ mod tests {
         assert!(toast.ends_with(" freed · branch done kept"), "{toast}");
         let mb: f64 = toast.split(" — ").nth(1).unwrap().split(' ').next().unwrap().parse().unwrap();
         assert!(mb >= 3.0, "target/'s 3 MB counted in what was freed: {toast}");
-        assert!((ed.session.id, ed.sessions.len()) == (0, 0), "the start's session in front, alone");
+        assert!(
+            (ed.workspace.id, ed.workspaces.len()) == (WorkspaceId::HOME, 0),
+            "the start's session in front, alone"
+        );
         assert!(
             !ed.docs.iter().any(|d| d.path.as_ref().is_some_and(|p| p.starts_with(&wt))),
             "its file closed"
@@ -2854,12 +2862,12 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         // The checkout tarae started in stays
-        feed(&mut ed, ":session-end<ret>");
+        feed(&mut ed, ":workspace-end<ret>");
         assert!(says(&ed, "is the checkout tarae started in — it stays"), "{}", said(&ed));
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// `session.ended` runs once a session's checkout is removed — in the checkout tarae started in, the one
+    /// `workspace.ended` runs once a session's checkout is removed — in the checkout tarae started in, the one
     /// removed named in TARAE_ENDED_CHECKOUT and gone by then (a stand-in writing a mark in the test's own
     /// folder). A removal that failed runs nothing; a command that fails says so in a warning — and its log
     /// line names the session it ran for, gone by then.
@@ -2874,16 +2882,16 @@ mod tests {
              >> '{}'",
             marks.display()
         );
-        ed.config.session_ended = vec!["sh".into(), "-c".into(), script];
+        ed.config.workspace_ended = vec!["sh".into(), "-c".into(), script];
         let read = || std::fs::read_to_string(&marks).unwrap_or_default();
         // Ended: run, after its checkout went
         let done = new_session(&mut ed, "done");
-        feed(&mut ed, ":session-end<ret>");
+        feed(&mut ed, ":workspace-end<ret>");
         settle_until(&mut ed, |ed| says(ed, "Ended done") || says(ed, "end done:"));
         assert!(!done.exists(), "{}", said(&ed));
         settle_until(&mut ed, |_| read().lines().count() >= 3);
         assert_eq!(read(), format!("{}\n{}\ngone\n", repo.display(), done.display()));
-        assert!(ed.toasts.iter().all(|t| !t.text.contains("session.ended")), "a pass says nothing");
+        assert!(ed.toasts.iter().all(|t| !t.text.contains("workspace.ended")), "a pass says nothing");
         // A removal that fails (a file made after the checks — git won't remove it unforced): nothing run
         let kept = new_session(&mut ed, "kept");
         let e = ending("kept".into(), &kept, Some("main".into()), &repo, Vec::new()).unwrap();
@@ -2893,19 +2901,19 @@ mod tests {
         assert!(says(&ed, "end kept:") && kept.exists(), "{}", said(&ed));
         // A command that fails: a warning with how it ended and its last line (and the one before ran nothing)
         let bad = new_session(&mut ed, "bad");
-        ed.config.session_ended = vec!["sh".into(), "-c".into(), "echo nope >&2; exit 3".into()];
-        feed(&mut ed, ":session-end bad<ret>");
-        settle_until(&mut ed, |ed| says(ed, "session.ended") || says(ed, "end bad:"));
+        ed.config.workspace_ended = vec!["sh".into(), "-c".into(), "echo nope >&2; exit 3".into()];
+        feed(&mut ed, ":workspace-end bad<ret>");
+        settle_until(&mut ed, |ed| says(ed, "workspace.ended") || says(ed, "end bad:"));
         assert!(!bad.exists(), "{}", said(&ed));
-        assert!(says(&ed, "session.ended `sh -c echo nope >&2; exit 3` — exit 3: nope"), "{}", said(&ed));
+        assert!(says(&ed, "workspace.ended `sh -c echo nope >&2; exit 3` — exit 3: nope"), "{}", said(&ed));
         let last = log.lines().into_iter().find(|l| l.contains(&format!("for {}:", bad.display())));
-        assert!(last.as_ref().is_some_and(|l| l.starts_with("@bad  session.ended  warn  ")), "{last:?}");
+        assert!(last.as_ref().is_some_and(|l| l.starts_with("@bad  workspace.ended  warn  ")), "{last:?}");
         assert!(!read().contains(kept.to_str().unwrap()), "not after a failed removal: {}", read());
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// frictions26: `session.keep`'s folders move to the main checkout as a session ends — ignored there
+    /// frictions26: `workspace.keep`'s folders move to the main checkout as a session ends — ignored there
     /// (`target/`), said on its toast, a quiet session ending with no card all the same. A CLAUDE.md of its own
     /// with nowhere to keep it: the card names it, warned — it isn't quiet any more.
     #[test]
@@ -2914,21 +2922,21 @@ mod tests {
         // (as here: CLAUDE.md git-ignored, so a session's own isn't a change)
         std::fs::write(repo.join(".git/info/exclude"), "/CLAUDE.md\n").unwrap();
         let mut ed = editor(&repo, &dir);
-        ed.config.session_keep = vec!["target/sb".into()];
+        ed.config.workspace_keep = vec!["target/sb".into()];
         let wt = new_session(&mut ed, "notes");
         std::fs::create_dir_all(wt.join("target/sb")).unwrap();
         std::fs::write(wt.join("target/sb/plan.md"), "the plan\n").unwrap();
-        feed(&mut ed, ":session-end<ret>");
+        feed(&mut ed, ":workspace-end<ret>");
         settle_until(&mut ed, |ed| says(ed, "Ended notes") || says(ed, "end notes:"));
         assert!(!wt.exists(), "{}", said(&ed));
         let kept = repo.join("target/sb/sessions/notes/plan.md");
         assert_eq!(std::fs::read_to_string(&kept).unwrap_or_default(), "the plan\n", "{}", said(&ed));
         assert!(says(&ed, "· target/sb kept in ") && says(&ed, "sessions/notes (1 files)"), "{}", said(&ed));
         // Its own CLAUDE.md, and nothing kept: the card names it
-        ed.config.session_keep.clear();
+        ed.config.workspace_keep.clear();
         let wt = new_session(&mut ed, "own");
         std::fs::write(wt.join("CLAUDE.md"), "mine\n").unwrap();
-        feed(&mut ed, ":session-end<ret>");
+        feed(&mut ed, ":workspace-end<ret>");
         settle_until(&mut ed, |ed| !ed.offers.is_empty() || says(ed, "Ended own"));
         let o = ed.offers.first().unwrap_or_else(|| panic!("a card: {}", said(&ed)));
         let q = o.question.clone();
@@ -2949,11 +2957,11 @@ mod tests {
         let mut ed = editor(&repo, &dir);
         ed.turns_dir = Some(store.clone());
         let wt = new_session(&mut ed, "gone");
-        settle_until(&mut ed, |ed| ed.session.checkpoints.dir.is_some());
+        settle_until(&mut ed, |ed| ed.workspace.claude.checkpoints.dir.is_some());
         crate::notes::add(&mut ed, &wt.join("a.txt"), 0..1, crate::notes::By::Author, "a note");
         let (before, after) = (Some(ropey::Rope::from_str("one\n")), ropey::Rope::from_str("two\n"));
         let t = Touched { path: wt.join("a.txt"), before, after, ..Default::default() };
-        ed.session.checkpoints.list.push(Checkpoint::new("a turn".into(), vec![t]));
+        ed.workspace.claude.checkpoints.list.push(Checkpoint::new("a turn".into(), vec![t]));
         crate::checkpoint::keep(&ed);
         let kept = |n: usize| crate::checkpoint::load(&store, &wt).list.len() == n;
         let wait = |what: &str, done: &dyn Fn() -> bool| {
@@ -2965,21 +2973,25 @@ mod tests {
         };
         wait("its turn kept", &|| kept(1));
         // (a viewed mark kept for it in the restore file — the review of frictions36)
-        let root = ed.session.root.clone();
+        let root = ed.workspace.root.clone();
         let mark = serde_json::json!({ "path": wt.join("a.txt"), "keys": [], "added": [] });
         ed.restore.set_viewed(&root, vec![mark]);
         assert_eq!(ed.restore.viewed(&root).len(), 1);
-        feed(&mut ed, ":session-end<ret>");
+        feed(&mut ed, ":workspace-end<ret>");
         settle_until(&mut ed, |ed| says(ed, "Ended gone") || says(ed, "end gone:"));
         assert!(!wt.exists(), "{}", said(&ed));
         wait("its turns forgotten", &|| kept(0));
         assert!(ed.restore.viewed(&root).is_empty(), "its viewed marks went with it");
         // Another checkout at the same path, a session for it
         git_in(&repo, &["worktree", "add", "-q", wt.to_str().unwrap(), "gone"]);
-        let id = ed.session_open(&wt).unwrap();
-        settle_until(&mut ed, |ed| ed.session.id == id && ed.session.checkpoints.dir.is_some());
-        assert!(ed.session.notes.list.is_empty(), "no note back: {:?}", ed.session.notes.list);
-        assert!(ed.session.checkpoints.list.is_empty(), "no turn back");
+        let id = ed.workspace_open(&wt).unwrap();
+        settle_until(&mut ed, |ed| ed.workspace.id == id && ed.workspace.claude.checkpoints.dir.is_some());
+        assert!(
+            ed.workspace.claude.notes.list.is_empty(),
+            "no note back: {:?}",
+            ed.workspace.claude.notes.list
+        );
+        assert!(ed.workspace.claude.checkpoints.list.is_empty(), "no turn back");
         git_in(&repo, &["worktree", "remove", "--force", wt.to_str().unwrap()]);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -3014,7 +3026,7 @@ mod tests {
     /// can write; a link in the cargo home's `build/`, which sandboxed runs can make) — so a build dir
     /// goes only when it's plainly the cargo home's `build/xx/yyyy`: no `..`, no link at any level, two
     /// folders below `build/`, not set by the checkout's own config. Each case leaves its marker. Through
-    /// what `:session-end` runs: the stand-in cargo, the fate, the removal.
+    /// what `:workspace-end` runs: the stand-in cargo, the fate, the removal.
     #[test]
     fn a_build_dir_that_isnt_plainly_the_cargo_homes_build_xx_yyyy_is_never_removed() {
         use std::os::unix::fs::symlink;
@@ -3112,7 +3124,7 @@ mod tests {
         std::fs::write(build.join("debug/marker"), vec![1u8; mb << 20]).unwrap();
     }
 
-    /// `:session-end` asks cargo (on its worker, before the checkout goes) where the session built: its own
+    /// `:workspace-end` asks cargo (on its worker, before the checkout goes) where the session built: its own
     /// build dir in the cargo home's `build/` goes, its size within what was freed — a file with hard links
     /// counted once, and only when every link goes (frictions29 83: per link, a 20 GB build folder was 63 GB) — the
     /// main checkout's beside it stays. One the main checkout builds in too stays, and the end note says why.
@@ -3125,9 +3137,9 @@ mod tests {
         let main_build = builds.join("aa/main");
         builds_in(&repo, &main_build, 1);
         let mut ed = editor(&repo, &dir);
-        ed.session_store.builds = Some(cargo);
+        ed.workspace_store.builds = Some(cargo);
         let ended = |ed: &mut Editor, name: &str| {
-            feed(ed, ":session-end<ret>");
+            feed(ed, ":workspace-end<ret>");
             settle_until(ed, |ed| says(ed, &format!("Ended {name}")) || says(ed, &format!("end {name}:")));
             let said: Vec<String> = ed.messages.iter().map(|m| m.2.clone()).collect();
             let ended = said.iter().find(|m| m.contains(&format!("Ended {name}"))).cloned();
@@ -3184,7 +3196,10 @@ mod tests {
                 && m.2.starts_with("stuck's build dir isn't all removed — ")
         });
         assert!(warned, "a warning says it: {}", said(&ed));
-        assert!(!wt.exists() && (ed.session.id, ed.sessions.len()) == (0, 0), "it ended all the same");
+        assert!(
+            !wt.exists() && (ed.workspace.id, ed.workspaces.len()) == (WorkspaceId::HOME, 0),
+            "it ended all the same"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3199,22 +3214,22 @@ mod tests {
         let main_build = builds.join("aa/main");
         builds_in(&repo, &main_build, 1);
         let mut ed = editor(&repo, &dir);
-        ed.session_store.builds = Some(cargo);
+        ed.workspace_store.builds = Some(cargo);
         let (own, shared) = (builds.join("bb/own"), builds.join("aa/main"));
         let wt = new_session(&mut ed, "own");
         builds_in(&wt, &own, 2);
         let wt2 = new_session(&mut ed, "shared");
         builds_in(&wt2, &shared, 1);
-        ed.session_switch(0);
-        let id = |ed: &Editor, name: &str| ed.sessions.iter().find(|l| l.name == name).unwrap().id;
+        ed.workspace_switch(WorkspaceId::HOME);
+        let id = |ed: &Editor, name: &str| ed.workspaces.iter().find(|l| l.name == name).unwrap().id;
         let (own_id, shared_id) = (id(&ed, "own"), id(&ed, "shared"));
         ed.session_list();
-        settle_until(&mut ed, |ed| ed.session_store.build_dirs.contains_key(&own_id));
-        assert!(!ed.session_store.build_dirs.contains_key(&shared_id), "shared with the main checkout");
+        settle_until(&mut ed, |ed| ed.workspace_store.build_dirs.contains_key(&own_id));
+        assert!(!ed.workspace_store.build_dirs.contains_key(&shared_id), "shared with the main checkout");
         let row = |ed: &Editor, id| ed.sessions_rows().iter().find(|r| r.id == id).unwrap().line();
         assert!(row(&ed, own_id).contains("build 2 MB"), "{}", row(&ed, own_id));
         // The first `x` says what goes; the second drops it
-        ed.sessions_pane.as_mut().unwrap().selected = own_id;
+        ed.sessions_pane.as_mut().unwrap().selected = own_id.n;
         ed.session_list_key('x');
         assert!(says(&ed, "x again drops own's build folder"), "{}", said(&ed));
         assert!(own.join("debug/marker").is_file(), "not yet");
@@ -3223,7 +3238,7 @@ mod tests {
         assert!(!own.exists() && wt.is_dir(), "its build folder gone, the session stays");
         assert!(main_build.join("debug/marker").is_file(), "every other one stays");
         // In front: not dropped
-        ed.session_switch(own_id);
+        ed.workspace_switch(own_id);
         builds_in(&wt, &own, 1);
         ed.session_build_drop(own_id);
         ed.session_build_drop(own_id);
@@ -3268,9 +3283,9 @@ mod tests {
         let kept = server(&mut ed, &shared);
         let pids: Vec<u32> = [early, md, toml].iter().filter_map(|&c| ed.client(c)?.pid()).collect();
         assert_eq!(pids.len(), 3);
-        feed(&mut ed, ":session-end<ret>");
+        feed(&mut ed, ":workspace-end<ret>");
         // (at its end — nothing waited for)
-        settle_until(&mut ed, |ed| ed.sessions.is_empty() || says(ed, "end docs:"));
+        settle_until(&mut ed, |ed| ed.workspaces.is_empty() || says(ed, "end docs:"));
         for (cid, what) in [(early, "its toml one"), (md, "its markdown one"), (toml, "the outside file's")] {
             assert!(ed.client(cid).is_none(), "{what} stopped with it");
         }
@@ -3380,7 +3395,7 @@ mod tests {
         std::fs::write(wt.join("a.txt"), "one\ntwo\n").unwrap();
         git_in(&wt, &["commit", "-qam", "half done"]);
         std::fs::write(wt.join("notes.md"), "todo\n").unwrap();
-        feed(&mut ed, ":session-end<ret>");
+        feed(&mut ed, ":workspace-end<ret>");
         settle_until(&mut ed, |ed| end_card(ed).is_some() || says(ed, "end wip:"));
         let o = ed.offers.first().unwrap();
         assert_eq!(o.title, "End wip?");
@@ -3402,15 +3417,15 @@ mod tests {
         assert!(end_card(&ed).is_some() && !ed.offers[0].installing(), "still asking: {}", said(&ed));
         assert!(says(&ed, "its changes are in no commit — c commits them first, R removes them anyway"));
         feed(&mut ed, "n");
-        assert!(says(&ed, "Kept wip as it is") && wt.exists() && ed.sessions.len() == 1);
+        assert!(says(&ed, "Kept wip as it is") && wt.exists() && ed.workspaces.len() == 1);
         // c: committed on wip (Claude's draft, read and accepted, `:w`), then asked again — with only
         // commits to lose now, y removes the checkout and keeps the branch
         let reply = json!({"type": "result", "result": "Add the notes"});
         ed.config.llm.args = vec!["-c".into(), format!("read -r line; printf '%s\\n' '{reply}'")];
-        ed.session_switch(0);
+        ed.workspace_switch(WorkspaceId::HOME);
         ed.open(&wt.join("notes.md")).unwrap();
         let notes = ed.doc().id;
-        feed(&mut ed, ":session-end wip<ret>");
+        feed(&mut ed, ":workspace-end wip<ret>");
         settle_until(&mut ed, |ed| end_card(ed).is_some());
         card_in_sight(&mut ed);
         // (a save of notes.md asked once the card is up — an edit landing, auto-save — still being written as
@@ -3427,9 +3442,9 @@ mod tests {
         feed(&mut ed, "c");
         let saving = ed.docs.iter().find(|d| d.id == notes).unwrap().saving;
         assert_eq!(saving, 1, "still being written as c was pressed");
-        assert_eq!(ed.session.root, wt, "to its session");
-        settle_until(&mut ed, |ed| ed.session.review.as_ref().is_some_and(|r| r.ready));
-        assert!(ed.session.committing.as_ref().is_some_and(|c| c.then_end));
+        assert_eq!(ed.workspace.root, wt, "to its session");
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        assert!(ed.workspace.committing.as_ref().is_some_and(|c| c.then_end));
         assert_eq!(git_in(&wt, &["show", ":notes.md"]), "saved\ntodo", "staged what was saved");
         assert!(!git_in(&wt, &["ls-files"]).contains(".tmp"), "no temp file staged");
         std::fs::remove_file(&stray).unwrap();
@@ -3452,7 +3467,7 @@ mod tests {
         // R: work in no commit, removed anyway — the branch stays
         let wt = new_session(&mut ed, "scrap");
         std::fs::write(wt.join("scratch.txt"), "x\n").unwrap();
-        feed(&mut ed, ":session-end<ret>");
+        feed(&mut ed, ":workspace-end<ret>");
         settle_until(&mut ed, |ed| end_card(ed).is_some());
         card_in_sight(&mut ed);
         feed(&mut ed, "R");
@@ -3462,7 +3477,7 @@ mod tests {
         let wt = new_session(&mut ed, "drop");
         git_in(&wt, &["commit", "-q", "--allow-empty", "-m", "throwaway"]);
         let tip = git_in(&wt, &["rev-parse", "HEAD"]);
-        feed(&mut ed, ":session-end drop<ret>");
+        feed(&mut ed, ":workspace-end drop<ret>");
         settle_until(&mut ed, |ed| end_card(ed).is_some());
         card_in_sight(&mut ed);
         feed(&mut ed, "D");
@@ -3472,11 +3487,11 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// `:session-bring` (or `b` in the list) on a session its base hasn't moved from: the bring card, as after
+    /// `:workspace-bring` (or `b` in the list) on a session its base hasn't moved from: the bring card, as after
     /// a rebase (#155: it brought at once) — `y` brings it.
     fn bring_asked(ed: &mut Editor, branch: &str, base: &str) {
         let title = format!("Bring {branch} into {base}");
-        feed(ed, ":session-bring<ret>");
+        feed(ed, ":workspace-bring<ret>");
         settle_until(ed, |ed| card(ed, &title).is_some() || says(ed, &format!("bring {branch}:")));
         assert_eq!(card_in_sight(ed), ['y', 'p', 'n'], "{}", said(ed));
         feed(ed, "y");
@@ -3492,8 +3507,11 @@ mod tests {
         let wt = new_session(&mut ed, "feat");
         std::fs::write(wt.join("a.txt"), "feat\n").unwrap();
         git_in(&wt, &["commit", "-qam", "feat"]);
-        assert!(ed.session_switch(0) && ed.sessions.iter().any(|l| l.root == wt), "feat behind");
-        ed.session_bring("feat").unwrap();
+        assert!(
+            ed.workspace_switch(WorkspaceId::HOME) && ed.workspaces.iter().any(|l| l.root == wt),
+            "feat behind"
+        );
+        ed.workspace_bring("feat").unwrap();
         let title = "Bring feat into main";
         let end = Instant::now() + crate::test_results::PATIENCE;
         while card(&ed, title).is_none() {
@@ -3536,7 +3554,7 @@ mod tests {
         let (user, trust) = (dir.join("config.toml"), dir.join("trust.json"));
         let worktrees = toml::Value::from(dir.join("wt").display().to_string());
         let mine = format!(
-            "[session]\nworktrees = {worktrees}\n[llm]\ncommand = \"sh\"\nargs = [\"-c\", \"cat > /dev/null\"]\n"
+            "[workspace]\nworktrees = {worktrees}\n[llm]\ncommand = \"sh\"\nargs = [\"-c\", \"cat > /dev/null\"]\n"
         );
         std::fs::write(&user, mine).unwrap();
         let sources = Sources { user: Some(user.clone()), trust: Some(trust.clone()) };
@@ -3547,7 +3565,7 @@ mod tests {
         (ed.config_file, ed.trust_path) = (Some(user), Some(trust));
         let (c, w) = load(&repo, &ed.config_sources());
         ed.reload_config(c, w);
-        assert_eq!(ed.config.session_worktrees, dir.join("wt").display().to_string(), "{}", said(&ed));
+        assert_eq!(ed.config.workspace_worktrees, dir.join("wt").display().to_string(), "{}", said(&ed));
         assert_eq!(ed.preflight_quick(), Some(vec!["fmt".to_string()]), "the project's quick set");
         // `p` on the bring card of a commit made in `wt`: the steps run, or what came instead
         let mut n = 0;
@@ -3557,23 +3575,23 @@ mod tests {
             git_in(wt, &["commit", "-qam", &format!("change {n}")]);
             ed.offers.clear();
             let said_before = ed.messages.len();
-            feed(ed, ":session-bring<ret>");
-            let title = format!("Bring {} into ", ed.session.name);
+            feed(ed, ":workspace-bring<ret>");
+            let title = format!("Bring {} into ", ed.workspace.name);
             let up = |ed: &Editor| ed.offers.iter().any(|o| o.title.starts_with(&title));
             settle_until(ed, |ed| up(ed) || says(ed, "bring "));
             assert_eq!(card_in_sight(ed), ['y', 'p', 'n'], "{}", said(ed));
-            ed.session.preflight = None;
+            ed.workspace.preflight = None;
             feed(ed, "p");
             let defaults = |ed: &Editor| card(ed, "Run these checks?").is_some();
             let refused = |ed: &Editor| ed.messages[said_before..].iter().any(|m| m.2.contains("preflight"));
-            settle_until(ed, |ed| ed.session.preflight.is_some() || defaults(ed) || refused(ed));
+            settle_until(ed, |ed| ed.workspace.preflight.is_some() || defaults(ed) || refused(ed));
             if defaults(ed) {
                 return Err(format!(
                     "the packs' defaults: {}",
                     card(ed, "Run these checks?").unwrap().question
                 ));
             }
-            let Some(p) = ed.session.preflight.as_ref() else {
+            let Some(p) = ed.workspace.preflight.as_ref() else {
                 return Err(ed.messages[said_before..]
                     .iter()
                     .map(|m| m.2.clone())
@@ -3622,7 +3640,7 @@ mod tests {
         reload(&mut ed);
         assert!(ed.config.preflight_local.is_empty());
         // A session from a base older than the project's `[preflight]` (its checkout's `.tarae.toml` has none)
-        assert!(ed.config.session_worktrees.starts_with(&*dir.to_string_lossy()), "the test's own folder");
+        assert!(ed.config.workspace_worktrees.starts_with(&*dir.to_string_lossy()), "the test's own folder");
         git_in(&repo, &["branch", "older", &older]);
         let old = new_session(&mut ed, "old older");
         assert!(!old.join(".tarae.toml").exists());
@@ -3684,7 +3702,7 @@ mod tests {
         git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "main moves"]);
         git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "and again"]);
         let main = git_in(&repo, &["rev-parse", "main"]);
-        feed(&mut ed, ":session-bring<ret>");
+        feed(&mut ed, ":workspace-bring<ret>");
         settle_until(&mut ed, |ed| card(ed, "Bring late: main moved").is_some() || says(ed, "bring late:"));
         let q = &card(&ed, "Bring late: main moved").unwrap().question;
         assert!(
@@ -3724,7 +3742,7 @@ mod tests {
         own_settings_trusted(&wt);
         ed.git_refresh();
         settle_until(&mut ed, |ed| {
-            ed.session.git_status.as_ref().is_some_and(|s| s.generation == ed.session.git_reads)
+            ed.workspace.git_status.as_ref().is_some_and(|s| s.generation == ed.workspace.git_reads)
         });
         git_in(&wt, &["commit", "-q", "--allow-empty", "-m", "topic"]);
         marked_by_hand(&marks);
@@ -3734,13 +3752,13 @@ mod tests {
         assert_eq!(git_in(&repo, &["rev-parse", "side"]), tip, "{}", said(&ed));
         assert!(!marks.exists(), "a hook ran: {}", std::fs::read_to_string(&marks).unwrap_or_default());
         // Nothing to bring
-        feed(&mut ed, ":session-bring<ret>");
+        feed(&mut ed, ":workspace-bring<ret>");
         settle_until(&mut ed, |ed| says(ed, "nothing to bring"));
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// #186: a session with nothing of its own, behind its base — `:session-bring` offers to move it up (a
+    /// #186: a session with nothing of its own, behind its base — `:workspace-bring` offers to move it up (a
     /// fast-forward, its card says so) and `y` does; with changes in its checkout it says why it can't.
     #[test]
     fn a_clean_session_behind_its_base_is_moved_up_to_it() {
@@ -3752,7 +3770,7 @@ mod tests {
         git_in(&repo, &["commit", "-qm", "main moves"]);
         git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "and again"]);
         let main = git_in(&repo, &["rev-parse", "main"]);
-        feed(&mut ed, ":session-bring<ret>");
+        feed(&mut ed, ":workspace-bring<ret>");
         let title = "Move behind up to main";
         settle_until(&mut ed, |ed| card(ed, title).is_some() || says(ed, "bring behind:"));
         let q = &card(&ed, title).unwrap_or_else(|| panic!("{}", said(&ed))).question;
@@ -3770,7 +3788,7 @@ mod tests {
         // Changes in its checkout: said why not, nothing moves
         git_in(&repo, &["commit", "-q", "--allow-empty", "-m", "main again"]);
         std::fs::write(wt.join("a.txt"), "mine\n").unwrap();
-        feed(&mut ed, ":session-bring<ret>");
+        feed(&mut ed, ":workspace-bring<ret>");
         settle_until(&mut ed, |ed| says(ed, "bring behind:") || card(ed, title).is_some());
         assert!(
             says(
@@ -3818,20 +3836,20 @@ mod tests {
         (wt.clone(), git_in(&wt, &["rev-parse", "HEAD"]))
     }
 
-    /// `:session-bring`, the rebase card up and answered `y` — the rebase under way.
+    /// `:workspace-bring`, the rebase card up and answered `y` — the rebase under way.
     fn rebase_asked(ed: &mut Editor) {
-        feed(ed, ":session-bring<ret>");
+        feed(ed, ":workspace-bring<ret>");
         settle_until(ed, |ed| card(ed, "Bring feat: main moved").is_some() || says(ed, "bring feat:"));
         assert_eq!(card_in_sight(ed), ['y', 'n'], "{}", said(ed));
         feed(ed, "y");
         // (its checkout looked at first, on a worker — #188)
         settle_until(ed, |ed| {
-            ed.session.rebase.is_some() || says(ed, "rebase feat:") || !ed.offers.is_empty()
+            ed.workspace.rebase.is_some() || says(ed, "rebase feat:") || !ed.offers.is_empty()
         });
-        assert!(ed.session.rebase.is_some(), "under way: {}", said(ed));
+        assert!(ed.workspace.rebase.is_some(), "under way: {}", said(ed));
     }
 
-    /// Roadmap #3, clean: main moved, so `:session-bring` offers a rebase first; `y` runs `git rebase main`
+    /// Roadmap #3, clean: main moved, so `:workspace-bring` offers a rebase first; `y` runs `git rebase main`
     /// in the session's checkout (tarae's own run, in the task panel); its commits land on main's tip, and the
     /// bring card offers to bring them now — `y` does.
     #[test]
@@ -3842,8 +3860,8 @@ mod tests {
         rebase_asked(&mut ed);
         // (its line made on a worker when the repository was resolved too soon after a change to be kept —
         // `gitrepo::RACY`)
-        settle_until(&mut ed, |ed| ed.session.task_run.is_some() || says(ed, "rebase feat:"));
-        let task = ed.session.task_run.as_ref().map(|r| (r.task.name.clone(), r.task.cmd.clone()));
+        settle_until(&mut ed, |ed| ed.workspace.task_run.is_some() || says(ed, "rebase feat:"));
+        let task = ed.workspace.task_run.as_ref().map(|r| (r.task.name.clone(), r.task.cmd.clone()));
         // (on the session's repository, named — `gitrepo`)
         let named = crate::gitrepo::repo(&wt).unwrap().shell_line().text;
         assert!(named.contains(" --work-tree "), "{named}");
@@ -3853,7 +3871,7 @@ mod tests {
         let main = git_in(&repo, &["rev-parse", "main"]);
         assert_eq!(git_in(&wt, &["merge-base", "main", "HEAD"]), main, "on main's tip");
         assert_eq!(git_in(&wt, &["log", "--format=%s", "main..HEAD"]), "add b\nfeat a");
-        assert!(ed.session.rebase.is_none() && crate::rebase::under_way(&wt).is_none());
+        assert!(ed.workspace.rebase.is_none() && crate::rebase::under_way(&wt).is_none());
         assert!(says(&ed, "Rebased feat onto main — 2 commits on top, now at "), "{}", said(&ed));
         let q = &card(&ed, "Rebased feat onto main").unwrap().question;
         assert!(q.starts_with("2 commits on main's tip now.\n\nBring them into main"), "{q}");
@@ -3896,9 +3914,9 @@ mod tests {
         feed(&mut ed, "p");
         // (it starts once the commit it tests is read — on a worker)
         settle_until(&mut ed, |ed| {
-            ed.session.task_run.as_ref().is_some_and(|r| r.task.name != "rebase onto main")
+            ed.workspace.task_run.as_ref().is_some_and(|r| r.task.name != "rebase onto main")
         });
-        let run = ed.session.task_run.as_ref().map(|r| (r.task.name.clone(), r.task.cwd.clone()));
+        let run = ed.workspace.task_run.as_ref().map(|r| (r.task.name.clone(), r.task.cwd.clone()));
         assert_eq!(run, Some(("quick preflight".into(), wt.clone())), "{}", said(&ed));
         settle_until(&mut ed, |ed| says(ed, "Brought") || says(ed, "not brought") || says(ed, "bring feat:"));
         assert!(says(&ed, "Brought 2 commits of feat into main"), "{}", said(&ed));
@@ -3953,7 +3971,7 @@ mod tests {
             ed.task_start_for(task, crate::tools::For::User("o".into()), None, Default::default()).is_ok()
         );
         settle_until(&mut ed, |ed| {
-            ed.session.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
+            ed.workspace.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
         });
         // Cut to fit a short screen: `v` is the card's text with the output after it (the review of 42: it was
         // the card's text alone)
@@ -3992,7 +4010,7 @@ mod tests {
         // `v` (frictions29 91: a regrade did that, and a failing commit was brought)
         let again = |ed: &mut Editor| {
             let id = card(ed, "Bring feat into main").unwrap().id;
-            ed.session_bring("feat").unwrap();
+            ed.workspace_bring("feat").unwrap();
             settle_until(ed, |ed| card(ed, "Bring feat into main").is_some_and(|o| o.id != id));
             card(ed, "Bring feat into main").unwrap().clone()
         };
@@ -4019,7 +4037,8 @@ mod tests {
         let failed = |ed: &Editor| card(ed, "Bring feat into main").is_some_and(|o| !o.warnings.is_empty());
         settle_until(&mut ed, |ed| failed(ed) || says(ed, "not brought"));
         assert_ne!(git_in(&wt, &["rev-parse", "HEAD"]).trim(), tested, "a commit made while it ran");
-        let recorded = std::iter::once(&ed.session).chain(&ed.sessions).find_map(|l| l.bring_failed.clone());
+        let recorded =
+            std::iter::once(&ed.workspace).chain(&ed.workspaces).find_map(|l| l.bring_failed.clone());
         assert_eq!(recorded.and_then(|f| f.head), Some(tested), "the failure is the commit it tested");
         let o = again(&mut ed);
         assert!(o.warnings.is_empty() && !o.question.contains("failed"), "never tested: {}", o.question);
@@ -4043,9 +4062,9 @@ mod tests {
         settle_until(&mut ed, |ed| {
             card(ed, "feat: conflicts resolved").is_some() || says(ed, "rebase feat:")
         });
-        assert!(ed.session.code_review.is_some(), "the card comes once the review is open");
+        assert!(ed.workspace.code_review.is_some(), "the card comes once the review is open");
         // The panel: stopped at its conflict, not failed
-        let state = ed.session.task_run.as_ref().map(|r| r.state.clone());
+        let state = ed.workspace.task_run.as_ref().map(|r| r.state.clone());
         assert_eq!(state, Some(crate::task::State::Stopped("1 conflict".into())));
         // Claude was asked: the file, both sides, what not to do
         let heard = std::fs::read_to_string(&log).unwrap();
@@ -4059,13 +4078,13 @@ mod tests {
         ] {
             assert!(heard.contains(part), "{part:?} in {heard}");
         }
-        let r = ed.session.rebase.as_ref().expect("under way");
+        let r = ed.workspace.rebase.as_ref().expect("under way");
         assert_eq!(
             (r.stage, r.step, r.stop.files.clone()),
             (crate::rebase::Stage::Resolved, Some((1, 2)), vec!["a.txt".to_string()])
         );
         // The review: the resolved file against the commit being replayed
-        let review = ed.session.code_review.as_ref().expect("the review");
+        let review = ed.workspace.code_review.as_ref().expect("the review");
         assert!(
             matches!(&review.base, crate::codereview::Base::Replay { label, .. } if label.ends_with(" feat a")),
             "{:?}",
@@ -4094,12 +4113,12 @@ mod tests {
         assert!(shown.contains("stopped: 1 conflict") && !shown.contains("failed"), "{shown}");
         assert!(ed.session_items()[1].hint.contains("rebasing 1/2"), "{}", ed.session_items()[1].hint);
         // What would get in its way waits for it — bringing it puts its card up again (one, not two)
-        feed(&mut ed, ":session-bring<ret>");
+        feed(&mut ed, ":workspace-bring<ret>");
         assert!(!says(&ed, "bring feat:"), "{}", said(&ed));
         let resolved = |o: &&crate::offer::Offer| matches!(o.what, crate::offer::What::RebaseResolved { .. });
         assert_eq!(ed.offers.iter().filter(resolved).count(), 1);
         assert!(card(&ed, "feat: conflicts resolved").is_some());
-        feed(&mut ed, ":session-end<ret>");
+        feed(&mut ed, ":workspace-end<ret>");
         assert!(says(&ed, "end feat: feat is rebasing 1/2"), "{}", said(&ed));
         let restart = crate::restart::start(&mut ed, false).unwrap_err();
         assert_eq!(restart, "can't restart: feat is rebasing 1/2 — :rebase-continue or :rebase-abort first");
@@ -4123,7 +4142,7 @@ mod tests {
         settle_until(&mut ed, |ed| ed.in_rebase_message() || says(ed, "the commit's message:"));
         feed(&mut ed, ":bc!<ret>");
         assert!(says(&ed, "the commit's message was closed"), "{}", said(&ed));
-        assert!(ed.session.rebase.as_ref().is_some_and(|r| r.messages.editing.is_none()));
+        assert!(ed.workspace.rebase.as_ref().is_some_and(|r| r.messages.editing.is_none()));
         assert!(card(&ed, "feat: conflicts resolved").is_some(), "the card is back");
         // y: staged, and on to the end
         assert_eq!(card_in_sight(&mut ed), ['y', 'm', 'X', 'n']);
@@ -4143,7 +4162,7 @@ mod tests {
             "Claude's resolution, committed"
         );
         assert_eq!(git_in(&wt, &["log", "-1", "--format=%s", "HEAD~1"]), "feat a", "its message kept");
-        assert!(ed.session.rebase.is_none() && ed.session.code_review.is_none());
+        assert!(ed.workspace.rebase.is_none() && ed.workspace.code_review.is_none());
         assert!(card(&ed, "feat: conflicts resolved").is_none());
         // (#25: kept through a resolution — named before it's brought)
         let q = &card(&ed, "Rebased feat onto main").unwrap().question;
@@ -4230,11 +4249,11 @@ mod tests {
         std::fs::write(repo.join("CLAUDE.md"), "rule zero\nrule one\nrule two\n").unwrap();
         let title = "CLAUDE.md: this session's changes for the main checkout";
         // (a bring refused — nothing of its own yet — asks nothing: the card comes with the bring's)
-        let _ = ed.session_bring("feat");
+        let _ = ed.workspace_bring("feat");
         settle_until(&mut ed, |ed| says(ed, "nothing to bring"));
         assert!(card(&ed, title).is_none(), "a refused bring raises no card");
         git_in(&wt, &["commit", "-q", "--allow-empty", "-m", "its own"]);
-        let _ = ed.session_bring("feat");
+        let _ = ed.workspace_bring("feat");
         settle_until(&mut ed, |ed| card(ed, title).is_some());
         let q = card(&ed, title).unwrap().question.clone();
         assert!(q.starts_with("This session changed its CLAUDE.md since its copy (1 line added)."), "{q}");
@@ -4273,7 +4292,7 @@ mod tests {
         std::fs::write(repo.join("CLAUDE.md"), "rule one\nrule two\nrule three\nmain\n").unwrap();
         git_in(&wt, &["commit", "-q", "--allow-empty", "-m", "its own"]);
         let title = "CLAUDE.md: this session's changes for the main checkout";
-        let _ = ed.session_bring("feat");
+        let _ = ed.workspace_bring("feat");
         settle_until(&mut ed, |ed| card(ed, title).is_some());
         while ed.offers.first().is_some_and(|o| o.title != title) {
             let o = ed.offers.remove(0);
@@ -4305,25 +4324,30 @@ mod tests {
         std::fs::write(repo.join("CLAUDE.md"), "rule\n").unwrap();
         let mut ed = editor(&repo, &dir);
         let wt = new_session(&mut ed, "feat");
-        let feat = ed.session.id;
+        let feat = ed.workspace.id;
         new_session(&mut ed, "other");
-        let other = ed.session.id;
+        let other = ed.workspace.id;
         std::fs::write(wt.join("CLAUDE.md"), "rule\nmine\n").unwrap();
         let cards = |ed: &Editor| -> Vec<u64> {
-            let all =
-                std::iter::once(&ed.session).chain(&ed.sessions).flat_map(|l| &l.parked).chain(&ed.offers);
+            let all = std::iter::once(&ed.workspace)
+                .chain(&ed.workspaces)
+                .flat_map(|l| &l.parked)
+                .chain(&ed.offers);
             all.filter(|o| matches!(&o.what, crate::offer::What::Instructions(b) if b.out.is_some()))
                 .map(|o| o.id)
                 .collect()
         };
         // Asked from feat, which goes behind before the look lands: its card waits there
-        ed.session_switch(feat);
+        ed.workspace_switch(feat);
         crate::instructions::carry_out(&mut ed, wt.clone());
-        ed.session_switch(other);
+        ed.workspace_switch(other);
         settle_until(&mut ed, |ed| !cards(ed).is_empty());
         let first = cards(&ed)[0];
-        let parked =
-            ed.sessions.iter().find(|l| l.id == feat).is_some_and(|l| l.parked.iter().any(|o| o.id == first));
+        let parked = ed
+            .workspaces
+            .iter()
+            .find(|l| l.id == feat)
+            .is_some_and(|l| l.parked.iter().any(|o| o.id == first));
         assert!(parked, "parked in feat");
         // Asked again from the session in front
         crate::instructions::carry_out(&mut ed, wt.clone());
@@ -4437,7 +4461,7 @@ mod tests {
         assert!(!out[0].view_text().contains("- main"), "{}", out[0].view_text());
         git_in(&wt, &["commit", "-q", "--allow-empty", "-m", "its own"]);
         let title = "CLAUDE.md: this session's changes for the main checkout";
-        let _ = ed.session_bring("feat");
+        let _ = ed.workspace_bring("feat");
         settle_until(&mut ed, |ed| card(ed, title).is_some());
         while ed.offers.first().is_some_and(|o| o.title != title) {
             let o = ed.offers.remove(0);
@@ -4466,10 +4490,11 @@ mod tests {
         let wt = new_session(&mut ed, "feat");
         std::fs::write(wt.join("CLAUDE.md"), "rule one\nmine\n").unwrap();
         let title = "CLAUDE.md: this session's changes for the main checkout";
-        feed(&mut ed, ":session-end<ret>");
+        feed(&mut ed, ":workspace-end<ret>");
         // (its end card, when it asks one: `y`)
-        let ending =
-            |ed: &Editor| ed.offers.iter().position(|o| matches!(o.what, crate::offer::What::SessionEnd(_)));
+        let ending = |ed: &Editor| {
+            ed.offers.iter().position(|o| matches!(o.what, crate::offer::What::WorkspaceEnd(_)))
+        };
         settle_until(&mut ed, |ed| {
             ending(ed).is_some() || card(ed, title).is_some() || says(ed, "end feat:")
         });
@@ -4528,11 +4553,13 @@ mod tests {
         // Untouched here, changed there: taken, said, told — as the session's claude starts (a new conversation)
         std::fs::write(repo.join("CLAUDE.md"), "rule one\nrule two\n").unwrap();
         crate::chat::reset(&mut ed);
-        ed.session.leave(crate::session::At::Chat);
+        ed.workspace.leave(crate::workspace::At::Chat);
         settle_until(&mut ed, |ed| says(ed, "updated from the main checkout") || says(ed, "not updated"));
         assert!(says(&ed, "CLAUDE.md updated from the main checkout"), "{}", said(&ed));
         assert_eq!(read(&wt.join("CLAUDE.md")), "rule one\nrule two\n");
-        assert!(ed.session.checkpoints.tell.iter().any(|t| t.contains("CLAUDE.md were updated here")));
+        assert!(
+            ed.workspace.claude.checkpoints.tell.iter().any(|t| t.contains("CLAUDE.md were updated here"))
+        );
         // Changed only here: the session's own, left
         std::fs::write(wt.join("CLAUDE.md"), "rule one\nrule two\nmine\n").unwrap();
         // Changed on both sides: the card — `y` takes the main checkout's beside the session's own
@@ -4546,14 +4573,14 @@ mod tests {
         assert!(ed.offers.iter().all(|o| !o.title.starts_with("CLAUDE.md")), "the session's own isn't asked");
         // Answered while a look is out that read the file before the answer wrote it (the write held till that
         // look is back, as a loaded machine may): its card isn't put up again — it's looked at after the write
-        settle_until(&mut ed, |ed| !ed.session.instructions.under_way());
+        settle_until(&mut ed, |ed| !ed.workspace.instructions.under_way());
         let (write, held) = std::sync::mpsc::channel();
-        ed.session.instructions.held = Some(held);
+        ed.workspace.instructions.held = Some(held);
         crate::instructions::follow(&mut ed);
         ed.offer_accept();
-        settle_until(&mut ed, |ed| !ed.session.instructions.looking());
+        settle_until(&mut ed, |ed| !ed.workspace.instructions.looking());
         write.send(()).unwrap();
-        settle_until(&mut ed, |ed| !ed.session.instructions.under_way());
+        settle_until(&mut ed, |ed| !ed.workspace.instructions.under_way());
         assert!(says(&ed, "AGENTS.md takes the main checkout's changes"), "{}", said(&ed));
         assert!(
             ed.offers.iter().all(|o| !o.title.starts_with("AGENTS.md")),
@@ -4566,7 +4593,7 @@ mod tests {
         assert!(found.updated.is_empty() && found.both.is_empty() && found.failed.is_empty(), "{found:?}");
         // Unsaved in a buffer: left alone — not looked at, and `y` on its card refuses (the looks asked since
         // the chat started settled first: one at a time, a look asked meanwhile runs after)
-        settle_until(&mut ed, |ed| !ed.session.instructions.under_way());
+        settle_until(&mut ed, |ed| !ed.workspace.instructions.under_way());
         let agents = wt.join("AGENTS.md");
         ed.open(&agents).unwrap();
         feed(&mut ed, "ggiX<esc>");
@@ -4620,7 +4647,7 @@ mod tests {
     }
 
     /// #175: the rebase stopped in `feat`, its card answered `n`, and the user went to another session (as an
-    /// inbox jump does): `:session-bring feat` from there puts its card up in front — saying the file isn't
+    /// inbox jump does): `:workspace-bring feat` from there puts its card up in front — saying the file isn't
     /// staged, `y` going on — and `:rebase-continue` typed there goes on in feat, not "no rebase under way" in
     /// the session in front.
     #[test]
@@ -4631,7 +4658,7 @@ mod tests {
         let mut ed = editor(&repo, &dir);
         claude_does(&mut ed, &log, &format!("cp '{}' a.txt;", answer.display()));
         let (wt, _) = moved_apart(&mut ed, &repo, false);
-        let feat = ed.session.id;
+        let feat = ed.workspace.id;
         rebase_asked(&mut ed);
         settle_until(&mut ed, |ed| {
             card(ed, "feat: conflicts resolved").is_some() || says(ed, "rebase feat:")
@@ -4639,9 +4666,9 @@ mod tests {
         card_in_sight(&mut ed);
         feed(&mut ed, "n");
         assert!(says(&ed, "the rebase waits"), "{}", said(&ed));
-        assert!(ed.session_switch(0));
+        assert!(ed.workspace_switch(WorkspaceId::HOME));
         // Bringing feat from here: its card, in front
-        feed(&mut ed, ":session-bring feat<ret>");
+        feed(&mut ed, ":workspace-bring feat<ret>");
         assert!(!says(&ed, "bring feat:"), "{}", said(&ed));
         let q = card(&ed, "feat: conflicts resolved").expect("its card, here").question.clone();
         assert!(q.contains("not staged yet: y stages it and goes on"), "{q}");
@@ -4650,11 +4677,11 @@ mod tests {
         // Typed here: feat's rebase goes on, the front staying where it is
         feed(&mut ed, ":rebase-continue<ret>");
         let rebasing = |ed: &Editor| {
-            std::iter::once(&ed.session).chain(&ed.sessions).any(|l| l.id == feat && l.rebase.is_some())
+            std::iter::once(&ed.workspace).chain(&ed.workspaces).any(|l| l.id == feat && l.rebase.is_some())
         };
         settle_until(&mut ed, |ed| !rebasing(ed) || says(ed, "rebase: ") || says(ed, "no rebase under way"));
         assert!(!says(&ed, "no rebase under way"), "{}", said(&ed));
-        assert_eq!(ed.session.id, 0, "the front stays");
+        assert_eq!(ed.workspace.id, WorkspaceId::HOME, "the front stays");
         assert!(says(&ed, "feat's rebase goes on — its task panel shows it"), "{}", said(&ed));
         assert_eq!(git_in(&wt, &["log", "--format=%s", "main..HEAD"]), "add b\nfeat a", "{}", said(&ed));
         assert_eq!(git_in(&wt, &["show", "HEAD~1:a.txt"]), "one\nmain\nfeat", "Claude's resolution, staged");
@@ -4663,7 +4690,7 @@ mod tests {
     }
 
     /// frictions14: a rebase brought back after a restart — tarae's part of it gone, git's state all there is —
-    /// is taken up where it stopped (`:session-bring`), and its card put away (`n`) waits in the inbox from
+    /// is taken up where it stopped (`:workspace-bring`), and its card put away (`n`) waits in the inbox from
     /// when git stopped, not from when it was taken up: its real wait, listed before a card that came since.
     /// One `C-q` brings its card back with the keys.
     #[test]
@@ -4671,7 +4698,7 @@ mod tests {
         let (repo, dir) = place("rebase-taken-up");
         let mut ed = editor(&repo, &dir);
         let (wt, _) = moved_apart(&mut ed, &repo, false);
-        let feat = ed.session.id;
+        let feat = ed.workspace.id;
         // Stopped at its conflict by a tarae before this one — ten minutes ago, as git's files say
         let out =
             std::process::Command::new("git").arg("-C").arg(&wt).args(["rebase", "main"]).output().unwrap();
@@ -4684,15 +4711,15 @@ mod tests {
         let msgnum = std::fs::File::options().write(true).open(step.join("msgnum")).unwrap();
         msgnum.set_modified(ten).unwrap();
         // Taken up: its card; put away
-        feed(&mut ed, ":session-bring<ret>");
+        feed(&mut ed, ":workspace-bring<ret>");
         settle_until(&mut ed, |ed| card(ed, "feat: rebasing 1/2").is_some() || says(ed, "bring feat:"));
-        assert!(ed.session.rebase.is_some(), "taken up: {}", said(&ed));
+        assert!(ed.workspace.rebase.is_some(), "taken up: {}", said(&ed));
         card_in_sight(&mut ed);
         feed(&mut ed, "n");
         assert!(card(&ed, "feat: rebasing 1/2").is_none());
         // A card that came since, in the session tarae started in — one nobody's key asked for (one of the
         // user's own, in front, would rank first: #205)
-        assert!(ed.session_switch(0));
+        assert!(ed.workspace_switch(WorkspaceId::HOME));
         let later = crate::offer::What::Grammars { lang: "Lua".into(), names: Vec::new(), then: None };
         ed.push_offer(crate::offer::Offer::new("Later".into(), "…", "", String::new(), later));
         let inbox = ed.inbox();
@@ -4703,7 +4730,7 @@ mod tests {
         // One `C-q` (the card here put away first — this session's own go first): there, with the keys
         ed.offers.clear();
         feed(&mut ed, "<C-q>");
-        assert_eq!(ed.session.id, feat);
+        assert_eq!(ed.workspace.id, feat);
         assert_eq!(ed.offers.first().map(|o| o.title.as_str()), Some("feat: rebasing 1/2"));
         assert!(ed.card_has_keys(), "with the keys");
         drop(ed);
@@ -4721,7 +4748,7 @@ mod tests {
         let mut ed = editor(&repo, &dir);
         claude_does(&mut ed, &log, &format!("cp '{}' a.txt;", answer.display()));
         moved_apart(&mut ed, &repo, false);
-        let feat = ed.session.id;
+        let feat = ed.workspace.id;
         rebase_asked(&mut ed);
         settle_until(&mut ed, |ed| {
             card(ed, "feat: conflicts resolved").is_some() || says(ed, "rebase feat:")
@@ -4736,10 +4763,10 @@ mod tests {
         assert!(e.asks.starts_with("feat: conflicts resolved") && e.asks_answer(), "{e:?}");
         let id = e.id.clone();
         // From another session: enter on it — feat in front, its card up with the keys
-        assert!(ed.session_switch(0));
+        assert!(ed.workspace_switch(WorkspaceId::HOME));
         assert!(ed.inbox().iter().any(|e| e.id == id), "listed from every session");
         ed.inbox_go(&id);
-        assert_eq!(ed.session.id, feat);
+        assert_eq!(ed.workspace.id, feat);
         let up = ed.offers.first().map(|o| o.title.as_str());
         assert_eq!(up, Some("feat: conflicts resolved"), "its card, in front");
         assert!(ed.card_has_keys(), "with the keys");
@@ -4748,9 +4775,9 @@ mod tests {
         card_in_sight(&mut ed);
         feed(&mut ed, "n");
         assert_eq!(put_away(&ed).len(), 1, "put away again");
-        assert!(ed.session_switch(0));
+        assert!(ed.workspace_switch(WorkspaceId::HOME));
         feed(&mut ed, "<C-q>");
-        assert_eq!(ed.session.id, feat, "C-q: there");
+        assert_eq!(ed.workspace.id, feat, "C-q: there");
         assert_eq!(ed.offers.first().map(|o| o.title.as_str()), Some("feat: conflicts resolved"));
         assert!(ed.card_has_keys(), "C-q: with the keys");
         drop(ed);
@@ -4818,7 +4845,7 @@ mod tests {
         settle_until(&mut ed, |ed| {
             card(ed, "feat: conflicts resolved").is_some() || says(ed, "rebase feat:")
         });
-        let review = ed.session.code_review.as_ref().expect("the review");
+        let review = ed.workspace.code_review.as_ref().expect("the review");
         let mut files: Vec<&str> = review.files.iter().map(|f| f.rel.as_str()).collect();
         files.sort_unstable();
         assert_eq!(files, [".gitignore", "a.txt"], "what else it changed is in the review");
@@ -4868,7 +4895,7 @@ mod tests {
             "{}",
             said(&ed)
         );
-        assert!(card(&ed, "feat: conflicts resolved").is_none() && ed.session.code_review.is_none());
+        assert!(card(&ed, "feat: conflicts resolved").is_none() && ed.workspace.code_review.is_none());
         feed(&mut ed, ":rebase-continue<ret>");
         settle_until(&mut ed, |ed| says(ed, "not going on"));
         assert!(says(&ed, "conflict markers still in a.txt — not going on"));
@@ -4877,21 +4904,21 @@ mod tests {
         // in the other session by the time it's read: the abort goes on in feat's, not the one in front)
         crate::gitrepo::forget(&wt);
         feed(&mut ed, ":rebase-abort<ret>");
-        let feat = ed.session.id;
-        let main = ed.sessions.iter().map(|s| s.id).find(|&id| id != feat).expect("the other session");
-        assert!(ed.session_switch(main));
+        let feat = ed.workspace.id;
+        let main = ed.workspaces.iter().map(|s| s.id).find(|&id| id != feat).expect("the other session");
+        assert!(ed.workspace_switch(main));
         settle_until(&mut ed, |ed| {
             // (`rebase: 1 file reloaded` is its reloads, said earlier — frictions29 #68)
             let failed = ed.messages.iter().any(|m| m.2.contains("rebase:") && !m.2.contains(" reloaded"));
             says(ed, "Rebase aborted") || says(ed, "rebase feat:") || failed
         });
         assert!(says(&ed, "Rebase aborted — feat is back where it was"), "{}", said(&ed));
-        assert!(ed.session.task_run.is_none(), "nothing ran in the session in front");
-        assert!(ed.session_switch(feat));
-        assert!(ed.session.task_run.as_ref().is_some_and(|r| r.task.name == "rebase --abort"));
+        assert!(ed.workspace.task_run.is_none(), "nothing ran in the session in front");
+        assert!(ed.workspace_switch(feat));
+        assert!(ed.workspace.task_run.as_ref().is_some_and(|r| r.task.name == "rebase --abort"));
         assert_eq!(git_in(&wt, &["rev-parse", "HEAD"]), tip);
         assert_eq!(std::fs::read_to_string(wt.join("a.txt")).unwrap(), "one\nfeat\n");
-        assert!(ed.session.rebase.is_none() && crate::rebase::under_way(&wt).is_none());
+        assert!(ed.workspace.rebase.is_none() && crate::rebase::under_way(&wt).is_none());
         // None under way now
         feed(&mut ed, ":rebase-abort<ret>");
         settle_until(&mut ed, |ed| says(ed, "no rebase under way"));
@@ -4900,7 +4927,7 @@ mod tests {
     }
 
     /// A rebase step whose line is read on a worker (its repository not kept), for a session gone by the time
-    /// it's read: dropped — not started in the session in front (`with_session` applies a gone session's
+    /// it's read: dropped — not started in the session in front (`with_workspace` applies a gone session's
     /// result there).
     #[test]
     fn a_rebase_step_for_a_session_gone_meanwhile_is_dropped() {
@@ -4913,14 +4940,14 @@ mod tests {
         assert!(crate::rebase::under_way(&wt).is_some(), "stopped on its conflict: {}", said(&ed));
         crate::gitrepo::forget(&wt);
         feed(&mut ed, ":rebase-abort<ret>");
-        let feat = ed.session.id;
-        let main = ed.sessions.iter().map(|s| s.id).find(|&id| id != feat).expect("the other session");
-        assert!(ed.session_switch(main));
+        let feat = ed.workspace.id;
+        let main = ed.workspaces.iter().map(|s| s.id).find(|&id| id != feat).expect("the other session");
+        assert!(ed.workspace_switch(main));
         // Gone — taken out as nothing in tarae can while it rebases (ending one is refused then)
-        ed.sessions.retain(|s| s.id != feat);
+        ed.workspaces.retain(|s| s.id != feat);
         let read = ed.rebase_lines_read;
         settle_until(&mut ed, |ed| ed.rebase_lines_read > read);
-        assert!(ed.session.task_run.is_none(), "nothing started in the session in front");
+        assert!(ed.workspace.task_run.is_none(), "nothing started in the session in front");
         assert!(crate::rebase::under_way(&wt).is_some(), "not aborted in someone else's name");
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
@@ -5031,7 +5058,7 @@ mod tests {
         // are what the trust card covers there — its own answer)
         own_settings_trusted(&wt);
         ed.offers.clear();
-        feed(&mut ed, ":session-end<ret>");
+        feed(&mut ed, ":workspace-end<ret>");
         settle_until(&mut ed, |ed| end_card(ed).is_some() || says(ed, "end feat:"));
         card_in_sight(&mut ed);
         feed(&mut ed, "D");
@@ -5075,7 +5102,7 @@ mod tests {
             git_in(&wt, &["add", "a.txt"]);
             // (the last message in a buffer, as `A` opens it: `:w` amends)
             feed(ed, ":git-amend<ret>");
-            settle_until(ed, |ed| ed.session.committing.is_some() || says(ed, "amend:"));
+            settle_until(ed, |ed| ed.workspace.committing.is_some() || says(ed, "amend:"));
             feed(ed, ":w<ret>");
         };
         // As its base has it: runs, no card
@@ -5188,7 +5215,7 @@ mod tests {
         own_settings_trusted(&repo);
         let mut ed = editor(&repo, &dir);
         ed.git_refresh();
-        settle_until(&mut ed, |ed| ed.session.git_status.is_some());
+        settle_until(&mut ed, |ed| ed.workspace.git_status.is_some());
         let pulled = |ed: &Editor| ed.messages.iter().filter(|m| m.2.starts_with("Pulled")).count();
         for (k, (config, name)) in
             [("false", "pre-merge-commit"), ("true", "pre-rebase")].into_iter().enumerate()
@@ -5239,7 +5266,7 @@ mod tests {
         feed(&mut ed, ":review origin/main<ret>");
         // (past its step's own "gathering…": no changes, an error, or the review)
         let after = |ed: &Editor| ed.messages.iter().filter(|m| m.2.starts_with("review:")).count() > 1;
-        settle_until(&mut ed, |ed| after(ed) || ed.session.code_review.is_some());
+        settle_until(&mut ed, |ed| after(ed) || ed.workspace.code_review.is_some());
         assert_eq!(git_in(&repo, &["rev-parse", "origin/main"]), up, "fetched: {}", said(&ed));
         assert!(!marks.exists(), "a hook ran: {}", std::fs::read_to_string(&marks).unwrap_or_default());
         drop(ed);
@@ -5260,14 +5287,17 @@ mod tests {
         // (its line made on a worker when the repository was resolved too soon after a change to be kept —
         // `gitrepo::RACY`: the rebase just moved `HEAD`)
         let running = |ed: &Editor| {
-            matches!(ed.session.rebase.as_ref().map(|r| &r.stage), Some(crate::rebase::Stage::Running { .. }))
+            matches!(
+                ed.workspace.rebase.as_ref().map(|r| &r.stage),
+                Some(crate::rebase::Stage::Running { .. })
+            )
         };
         settle_until(&mut ed, |ed| running(ed) || says(ed, "rebase feat:"));
         assert!(running(&ed), "{}", said(&ed));
         ed.task_close();
-        settle_until(&mut ed, |ed| ed.session.rebase.as_ref().is_none_or(|r| r.stopped()));
+        settle_until(&mut ed, |ed| ed.workspace.rebase.as_ref().is_none_or(|r| r.stopped()));
         assert!(says(&ed, "the rebase's git was stopped — it's read as git left it"), "{}", said(&ed));
-        if ed.session.rebase.is_some() {
+        if ed.workspace.rebase.is_some() {
             feed(&mut ed, ":rebase-abort<ret>");
             settle_until(&mut ed, |ed| says(ed, "Rebase aborted") || says(ed, "rebase feat:"));
         }
@@ -5287,7 +5317,7 @@ mod tests {
         let out =
             std::process::Command::new("git").arg("-C").arg(&wt).args(["rebase", "main"]).output().unwrap();
         assert!(!out.status.success(), "stopped at the conflict");
-        feed(&mut ed, ":session-bring<ret>");
+        feed(&mut ed, ":workspace-bring<ret>");
         settle_until(&mut ed, |ed| card(ed, "feat: rebasing 1/2").is_some() || says(ed, "bring feat:"));
         let q = &card(&ed, "feat: rebasing 1/2").unwrap().question;
         assert!(q.starts_with("Rebasing feat onto main stopped at commit 1 of 2 ("), "{q}");
@@ -5298,7 +5328,7 @@ mod tests {
             ),
             "{q}"
         );
-        let r = ed.session.rebase.as_ref().expect("taken up");
+        let r = ed.workspace.rebase.as_ref().expect("taken up");
         assert_eq!((r.branch.as_str(), r.stop.files.clone()), ("feat", vec!["a.txt".to_string()]));
         assert_eq!(card_in_sight(&mut ed), ['y', 'X', 'n']);
         feed(&mut ed, "X");
@@ -5319,7 +5349,7 @@ mod tests {
         let (wt, _) = moved_apart(&mut ed, &repo, true);
         let held = "Rebase feat: changes in no commit";
         let yes = |ed: &mut Editor| {
-            feed(ed, ":session-bring<ret>");
+            feed(ed, ":workspace-bring<ret>");
             settle_until(ed, |ed| card(ed, "Bring feat: main moved").is_some() || says(ed, "bring feat:"));
             assert_eq!(card_in_sight(ed), ['y', 'n'], "{}", said(ed));
             feed(ed, "y");
@@ -5334,10 +5364,10 @@ mod tests {
         // Changes in no commit: named, nothing run; `s` stashes them, rebases, and puts them back
         std::fs::write(wt.join("a.txt"), "one\nfeat\nmine\n").unwrap();
         yes(&mut ed);
-        settle_until(&mut ed, |ed| card(ed, held).is_some() || ed.session.rebase.is_some());
+        settle_until(&mut ed, |ed| card(ed, held).is_some() || ed.workspace.rebase.is_some());
         let q = &card(&ed, held).unwrap_or_else(|| panic!("{}", said(&ed))).question;
         assert!(q.starts_with("a.txt changed and isn't in a commit — git won't rebase feat over it."), "{q}");
-        assert!(ed.session.task_run.is_none() && ed.session.rebase.is_none(), "no git ran");
+        assert!(ed.workspace.task_run.is_none() && ed.workspace.rebase.is_none(), "no git ran");
         assert_eq!(card_in_sight(&mut ed), ['s', 'g', 'n']);
         feed(&mut ed, "s");
         rebased(&mut ed);
@@ -5351,14 +5381,18 @@ mod tests {
         ed.open(&wt.join("b.txt")).unwrap();
         feed(&mut ed, "ix<esc>");
         yes(&mut ed);
-        settle_until(&mut ed, |ed| card(ed, held).is_some() || ed.session.rebase.is_some());
+        settle_until(&mut ed, |ed| card(ed, held).is_some() || ed.workspace.rebase.is_some());
         let q = &card(&ed, held).unwrap_or_else(|| panic!("{}", said(&ed))).question;
         assert!(q.starts_with("b.txt is unsaved here — save it (:w) first"), "{q}");
         assert_eq!(card_in_sight(&mut ed), ['g', 'n']);
         feed(&mut ed, "g");
         assert!(card(&ed, held).is_none());
-        let git_tab =
-            ed.session.sidebar.as_ref().map(|s| (s.mode, ed.session.is_at(crate::session::At::Side)));
+        let git_tab = ed
+            .workspace
+            .viewer
+            .sidebar
+            .as_ref()
+            .map(|s| (s.mode, ed.workspace.is_at(crate::workspace::At::Side)));
         assert_eq!(git_tab, Some((crate::sidebar::Mode::Git, true)));
         feed(&mut ed, ":w<ret>");
         ed.flush_saves(); // (saving is in the background: on disk before git commits it)
@@ -5368,11 +5402,11 @@ mod tests {
         let cmd = format!("while [ ! -e '{}' ]; do sleep 0.02; done", marker.display());
         ed.task_start(crate::task::Task { name: "holder".into(), cmd, cwd: wt.clone() });
         yes(&mut ed);
-        settle_until(&mut ed, |ed| !ed.session.runs_next.is_empty() || ed.session.rebase.is_some());
+        settle_until(&mut ed, |ed| !ed.workspace.runs_next.is_empty() || ed.workspace.rebase.is_some());
         assert!(says(&ed, "rebase feat onto main waits behind holder"), "{}", said(&ed));
-        assert!(ed.session.rebase.is_none(), "not under way while it waits");
+        assert!(ed.workspace.rebase.is_none(), "not under way while it waits");
         std::fs::write(&marker, "").unwrap();
-        settle_until(&mut ed, |ed| ed.session.rebase.is_some() || says(ed, "rebase feat:"));
+        settle_until(&mut ed, |ed| ed.workspace.rebase.is_some() || says(ed, "rebase feat:"));
         settle_until(&mut ed, |ed| card(ed, "Rebased feat onto main").is_some() || says(ed, "rebase feat:"));
         assert!(says(&ed, "Rebased feat onto main — 4 commits on top"), "{}", said(&ed));
         drop(ed);
@@ -5414,15 +5448,15 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// `:session-bring`, its rebase card's `y`, then `s` on the card holding it back for changes in no commit.
+    /// `:workspace-bring`, its rebase card's `y`, then `s` on the card holding it back for changes in no commit.
     fn bring_set_aside(ed: &mut Editor) {
-        feed(ed, ":session-bring<ret>");
+        feed(ed, ":workspace-bring<ret>");
         settle_until(ed, |ed| card(ed, "Bring feat: main moved").is_some() || says(ed, "bring feat:"));
         card_in_sight(ed);
         feed(ed, "y");
         let held = "Rebase feat: changes in no commit";
         settle_until(ed, |ed| {
-            card(ed, held).is_some() || ed.session.rebase.is_some() || says(ed, "rebase feat:")
+            card(ed, held).is_some() || ed.workspace.rebase.is_some() || says(ed, "rebase feat:")
         });
         assert_eq!(card_in_sight(ed), ['s', 'g', 'n'], "{}", said(ed));
         feed(ed, "s");
@@ -5479,7 +5513,7 @@ mod tests {
         std::fs::remove_file(wt.join("c.txt")).unwrap();
         let earlier = git_in(&wt, &["rev-parse", "HEAD~1"]);
         git_in(&wt, &["update-ref", crate::aside::REBASE, &earlier]);
-        feed(&mut ed, ":session-bring<ret>");
+        feed(&mut ed, ":workspace-bring<ret>");
         settle_until(&mut ed, |ed| card(ed, "Bring feat: main moved").is_some() || says(ed, "bring feat:"));
         card_in_sight(&mut ed);
         feed(&mut ed, "y");
@@ -5488,7 +5522,7 @@ mod tests {
         let held = "Rebase feat: changes in no commit";
         settle_until(&mut ed, |ed| says(ed, "rebase feat: not started") || card(ed, held).is_some());
         assert!(says(&ed, refused), "{}", said(&ed));
-        assert!(ed.session.rebase.is_none(), "nothing under way");
+        assert!(ed.workspace.rebase.is_none(), "nothing under way");
         assert_eq!(
             crate::aside::kept(&wt, crate::aside::REBASE).as_deref(),
             Some(earlier.as_str()),
@@ -5509,10 +5543,10 @@ mod tests {
         let (repo, dir) = place("kept");
         let store = dir.join("sessions");
         let mut ed = editor(&repo, &dir);
-        (ed.session_store.dir, ed.session_store.restored) = (Some(store.clone()), true);
+        (ed.workspace_store.dir, ed.workspace_store.restored) = (Some(store.clone()), true);
         let one = new_session(&mut ed, "one");
         let two = new_session(&mut ed, "two");
-        feed(&mut ed, ":session-switch 1<ret>");
+        feed(&mut ed, ":workspace-switch 1<ret>");
         let common = common_dir(&repo).unwrap();
         let written = |n: usize, front: &Path| {
             let s = load(&store, &common);
@@ -5528,20 +5562,24 @@ mod tests {
         // A new start: back behind, `one` in front
         let start = |keyed: bool| {
             let mut ed = editor(&repo, &dir);
-            ed.session_store.dir = Some(store.clone());
-            ed.session_store.keyed = keyed;
-            ed.sessions_restore();
-            settle_until(&mut ed, |ed| ed.session_store.restored);
+            ed.workspace_store.dir = Some(store.clone());
+            ed.workspace_store.keyed = keyed;
+            ed.workspaces_restore();
+            settle_until(&mut ed, |ed| ed.workspace_store.restored);
             ed
         };
         let ed = start(false);
-        assert_eq!(ed.session.root, one, "the one in front");
+        assert_eq!(ed.workspace.root, one, "the one in front");
         let names: Vec<(&str, Option<&str>)> =
             ed.sessions_in_order().iter().map(|l| (l.name.as_str(), l.base.as_deref())).collect();
         assert_eq!(names, [("proj", None), ("one", Some("main")), ("two", Some("main"))]);
         drop(ed);
         let ed = start(true);
-        assert_eq!((ed.session.id, ed.sessions.len()), (0, 2), "a key pressed: they stay behind");
+        assert_eq!(
+            (ed.workspace.id, ed.workspaces.len()),
+            (crate::event::WorkspaceId::HOME, 2),
+            "a key pressed: they stay behind"
+        );
         drop(ed);
         // :restart: the sessions, and the files in the one in front
         std::fs::write(one.join("b.txt"), "b\n").unwrap();
@@ -5551,9 +5589,9 @@ mod tests {
         (block["docs"], block["current"]) = (json!([{ "path": one.join("b.txt") }]), json!(0));
         let mut ed = editor(&repo, &dir);
         crate::restart::restore(&mut ed, &snapshot);
-        assert_eq!(ed.session.root, one);
+        assert_eq!(ed.workspace.root, one);
         assert_eq!(ed.doc().path.as_deref(), Some(one.join("b.txt").as_path()), "its file, in its session");
-        assert_eq!(ed.sessions.len(), 2);
+        assert_eq!(ed.workspaces.len(), 2);
         drop(ed);
         // Removed outside: dropped, said once
         git_in(&repo, &["worktree", "remove", "--force", two.to_str().unwrap()]);
@@ -5592,37 +5630,37 @@ mod tests {
         let note = |line: usize, text: &str| json!({ "path": file, "lines": [line, line + 1], "thread": [["claude", text, false]] });
         let notes = json!({ back.to_str().unwrap(): [note(0, "keep me"), note(1, "remove me")] });
         ed.restore = crate::restore::State::from_json(json!({ "notes": notes }));
-        let id = ed.session_add(back.clone());
+        let id = ed.workspace_add(back.clone());
         let turns_back = |ed: &mut Editor, id| {
             settle_until(ed, |ed| {
-                std::iter::once(&ed.session)
-                    .chain(&ed.sessions)
-                    .any(|l| l.id == id && l.checkpoints.dir.is_some())
+                std::iter::once(&ed.workspace)
+                    .chain(&ed.workspaces)
+                    .any(|l| l.id == id && l.claude.checkpoints.dir.is_some())
             })
         };
         turns_back(&mut ed, id);
         // A turn (not written yet), and one note removed
-        ed.with_session(id, |ed| {
+        ed.with_workspace(id, |ed| {
             let (before, after) = (Some(ropey::Rope::from_str("one\n")), ropey::Rope::from_str("two\n"));
             let t = Touched { path: file.clone(), before, after, ..Default::default() };
-            ed.session.checkpoints.list.push(Checkpoint::new("a turn".into(), vec![t]));
-            ed.session.notes.list.retain(|n| n.gist() != "remove me");
+            ed.workspace.claude.checkpoints.list.push(Checkpoint::new("a turn".into(), vec![t]));
+            ed.workspace.claude.notes.list.retain(|n| n.gist() != "remove me");
         });
         // Ended: what it had is written as it goes — then back (as a failed end brings it back)
-        let kept = ed.session_close(&back).expect("closed");
-        assert!(ed.sessions.is_empty());
+        let kept = ed.workspace_close(&back).expect("closed");
+        assert!(ed.workspaces.is_empty());
         let end = Instant::now() + crate::test_results::PATIENCE;
         while crate::checkpoint::load(&store, &back).list.is_empty() {
             assert!(Instant::now() < end, "its turns written as it ended");
             std::thread::sleep(Duration::from_millis(10));
         }
-        ed.sessions_back(vec![kept], Vec::new(), None, false);
-        let id = ed.sessions[0].id;
+        ed.workspaces_back(vec![kept], Vec::new(), None, false);
+        let id = ed.workspaces[0].id;
         turns_back(&mut ed, id);
-        let l = &ed.sessions[0];
-        let gists: Vec<&str> = l.notes.list.iter().map(|n| n.gist()).collect();
+        let l = &ed.workspaces[0];
+        let gists: Vec<&str> = l.claude.notes.list.iter().map(|n| n.gist()).collect();
         assert_eq!(gists, ["keep me"], "the removed note stays removed");
-        let turns: Vec<&str> = l.checkpoints.list.iter().map(|c| c.question.as_str()).collect();
+        let turns: Vec<&str> = l.claude.checkpoints.list.iter().map(|c| c.question.as_str()).collect();
         assert_eq!(turns, ["a turn"], "once");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -5770,13 +5808,13 @@ mod tests {
         let state = scratch.to_path_buf();
         let (dir, common) = (state.join(DIR), Path::new("/repo/.git"));
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.root = state.clone();
-        ed.session.allowed.add(&crate::allow::Grant::Write("/t/w".into()));
-        ed.session.allowed.add(&crate::allow::Grant::Port(5432));
+        ed.workspace.root = state.clone();
+        ed.workspace.claude.allowed.add(&crate::allow::Grant::Write("/t/w".into()));
+        ed.workspace.claude.allowed.add(&crate::allow::Grant::Port(5432));
         // (an `A` on a token-like variable, cut to the session's: its key kept with it — 글타래 P5)
         let token = crate::allow::Grant::Env("GITHUB_TOKEN".into());
-        ed.session.allowed.give(&token, 'A');
-        let k = Kept::of(&ed.session);
+        ed.workspace.claude.allowed.give(&token, 'A');
+        let k = Kept::of(&ed.workspace);
         let v = k.json();
         assert!(
             v["allowed"].as_array().unwrap().iter().all(|e| e["scope"] == "session" && e["granted"].is_u64())
@@ -5792,14 +5830,18 @@ mod tests {
         assert_eq!(load(&dir, common).sessions, std::slice::from_ref(&k), "read back, times and all");
         assert_eq!(kept_list(&snapshot(&ed))[0].allowed, k.allowed, ":restart's state");
         // Back onto the session, beside an answer given meanwhile
-        ed.session.allowed = Default::default();
-        ed.session.allowed.add(&crate::allow::Grant::Port(8080));
-        ed.sessions_back(vec![k.clone()], Vec::new(), None, false);
-        assert_eq!(ed.session.allowed.ports, [8080, 5432]);
-        assert_eq!(ed.session.allowed.write, [PathBuf::from("/t/w")]);
+        ed.workspace.claude.allowed = Default::default();
+        ed.workspace.claude.allowed.add(&crate::allow::Grant::Port(8080));
+        ed.workspaces_back(vec![k.clone()], Vec::new(), None, false);
+        assert_eq!(ed.workspace.claude.allowed.ports, [8080, 5432]);
+        assert_eq!(ed.workspace.claude.allowed.write, [PathBuf::from("/t/w")]);
         let w = crate::allow::Grant::Write("/t/w".into());
-        assert_eq!(ed.session.allowed.granted.get(&w), k.allowed.granted.get(&w), "its own time");
-        assert_eq!(ed.session.allowed.given.get(&token), Some(&'A'), "its key, through the file and back");
+        assert_eq!(ed.workspace.claude.allowed.granted.get(&w), k.allowed.granted.get(&w), "its own time");
+        assert_eq!(
+            ed.workspace.claude.allowed.given.get(&token),
+            Some(&'A'),
+            "its key, through the file and back"
+        );
         assert_eq!(load(&dir, common).sessions[0].allowed.given.get(&token), Some(&'A'));
         // An earlier build's: none
         let old = json!({ "root": "/wt/a", "name": "a" });
@@ -5813,25 +5855,25 @@ mod tests {
     fn a_restored_sessions_answer_keeps_the_latest_key() {
         let scratch = crate::scratch::Scratch::new("kept-latest");
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.root = scratch.to_path_buf();
+        ed.workspace.root = scratch.to_path_buf();
         let token = crate::allow::Grant::Env("GITHUB_TOKEN".into());
-        let mut k = Kept::of(&ed.session);
+        let mut k = Kept::of(&ed.workspace);
         k.allowed.give(&token, 'A');
         k.allowed.granted.insert(token.clone(), 1_000);
         let answer = |ed: &Editor| {
-            let a = &ed.session.allowed;
+            let a = &ed.workspace.claude.allowed;
             (a.given.get(&token).copied(), a.granted.get(&token).copied())
         };
         // (given since it was kept: newer)
-        ed.session.allowed.give(&token, 's');
-        let now = ed.session.allowed.granted[&token];
-        ed.sessions_back(vec![k.clone()], Vec::new(), None, false);
+        ed.workspace.claude.allowed.give(&token, 's');
+        let now = ed.workspace.claude.allowed.granted[&token];
+        ed.workspaces_back(vec![k.clone()], Vec::new(), None, false);
         assert_eq!(answer(&ed), (Some('s'), Some(now)), "the latest: given since");
         // (given before it was kept: older)
-        ed.session.allowed = Default::default();
-        ed.session.allowed.give(&token, 's');
-        ed.session.allowed.granted.insert(token.clone(), 500);
-        ed.sessions_back(vec![k], Vec::new(), None, false);
+        ed.workspace.claude.allowed = Default::default();
+        ed.workspace.claude.allowed.give(&token, 's');
+        ed.workspace.claude.allowed.granted.insert(token.clone(), 500);
+        ed.workspaces_back(vec![k], Vec::new(), None, false);
         assert_eq!(answer(&ed), (Some('A'), Some(1_000)), "the latest: the kept one");
     }
 
@@ -5857,10 +5899,10 @@ mod tests {
             "unsafe, unsaid why",
         );
         let done = crate::reviewer::State::Done;
-        ed.session.reviewer =
+        ed.workspace.reviewer =
             Some(crate::reviewer::Reviewer::for_test(wt.clone(), done, vec![id], "One risk."));
         let title = "Bring risky into main";
-        feed(&mut ed, ":session-bring<ret>");
+        feed(&mut ed, ":workspace-bring<ret>");
         settle_until(&mut ed, |ed| card(ed, title).is_some() || says(ed, "bring risky:"));
         let q = card(&ed, title).unwrap().question.clone();
         assert!(q.contains("reviewer: 1 ▲ of 1 finding"), "{q}");
@@ -5874,32 +5916,32 @@ mod tests {
         assert_eq!(git_in(&repo, &["rev-parse", "main"]), main_was, "nothing brought");
         // Brought anyway (as the card's yes would): refused where it's done
         feed(&mut ed, "n");
-        ed.session_bring_now("risky").unwrap();
+        ed.workspace_bring_now("risky").unwrap();
         settle_until(&mut ed, |ed| says(ed, "bring risky:") || says(ed, "Brought"));
         assert!(says(&ed, "bring risky: 1 high-risk change not looked at"), "{}", said(&ed));
         assert_eq!(git_in(&repo, &["rev-parse", "main"]), main_was);
         // #196: the card's `h` — a review since main, on the change (going there is no look); `space v h`
         // there gives the card its yes back — then brought
-        feed(&mut ed, ":session-bring<ret>");
+        feed(&mut ed, ":workspace-bring<ret>");
         settle_until(&mut ed, |ed| card(ed, title).is_some());
         assert_eq!(card_in_sight(&mut ed), ['h', 'n']);
         feed(&mut ed, "h");
         settle_until(&mut ed, |ed| {
             let d = ed.doc();
-            ed.session.code_review.is_some()
+            ed.workspace.code_review.is_some()
                 && d.review_base.is_some()
                 && d.git_version == d.version()
                 && d.path.as_deref() == Some(wt.join("a.rs").as_path())
         });
-        let base = ed.session.code_review.as_ref().map(|r| r.base.label());
+        let base = ed.workspace.code_review.as_ref().map(|r| r.base.label());
         assert_eq!(base.as_deref(), Some("since main"));
         assert_eq!(ed.cursor_line(), 0, "on the change");
-        assert!(ed.session.looked.is_empty(), "going is no look");
+        assert!(ed.workspace.looked.is_empty(), "going is no look");
         assert!(card(&ed, title).is_some(), "the card stays");
         // (on screen: the frame after the key that went there — the one before drew another file)
         crate::term::render(&mut ed, &mut Vec::new(), 100, 30).unwrap();
         feed(&mut ed, "<space>vh");
-        assert!(!ed.session.looked.is_empty(), "{}", said(&ed));
+        assert!(!ed.workspace.looked.is_empty(), "{}", said(&ed));
         assert!(card(&ed, title).is_some_and(|o| o.held.is_none()), "its yes is back");
         assert_eq!(card_in_sight(&mut ed), ['y', 'p', 'n']);
         ed.offers.clear();
@@ -5917,7 +5959,7 @@ mod tests {
         git_in(&wt, &["commit", "-qam", "again"]);
         ed.offers.clear();
         ed.messages.clear();
-        feed(&mut ed, "<esc>:session-bring<ret>");
+        feed(&mut ed, "<esc>:workspace-bring<ret>");
         settle_until(&mut ed, |ed| card(ed, title).is_some() || says(ed, "bring risky:"));
         assert_eq!(
             card(&ed, title).and_then(|o| o.held.clone()).as_deref(),
@@ -5940,17 +5982,17 @@ mod tests {
             std::fs::write(wt.join(format!("{name}.txt")), "x\n").unwrap();
             git_in(&wt, &["add", "-A"]);
             git_in(&wt, &["commit", "-qm", name]);
-            made.push(ed.session.id);
+            made.push(ed.workspace.id);
         }
         let titles = |ed: &Editor| -> Vec<String> {
-            let parked = std::iter::once(&ed.session).chain(&ed.sessions).flat_map(|l| &l.parked);
+            let parked = std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked);
             ed.offers.iter().chain(parked).map(|o| o.title.clone()).collect()
         };
         // Both waiting to be brought; the first asked is in front, the other behind it (`1`)
-        ed.session_bring("two").unwrap();
+        ed.workspace_bring("two").unwrap();
         settle_until(&mut ed, |ed| card(ed, "Bring two into main").is_some());
-        assert!(ed.session_switch(made[0]));
-        ed.session_bring("one").unwrap();
+        assert!(ed.workspace_switch(made[0]));
+        ed.workspace_bring("one").unwrap();
         settle_until(&mut ed, |ed| card(ed, "Bring one into main").is_some());
         assert_eq!(card_in_sight(&mut ed), ['y', 'p', 'n', '1'], "{}", said(&ed));
         assert_eq!(ed.offers[0].title, "Bring two into main");
@@ -5991,7 +6033,7 @@ mod tests {
             git_in(&wt, &["commit", "-qm", name]);
             wts.push(wt);
         }
-        ed.session_switch(0);
+        ed.workspace_switch(WorkspaceId::HOME);
         // The list: `m` on each, in turn — each row says its place
         feed(&mut ed, "<space>W");
         assert!(ed.sessions_list_keys());
@@ -6036,7 +6078,7 @@ mod tests {
     }
 
     /// A queue of `names`' sessions (ids), started as its card's `y` does.
-    fn queue_of(ed: &mut Editor, ids: &[SessionId], names: &[&str]) {
+    fn queue_of(ed: &mut Editor, ids: &[WorkspaceId], names: &[&str]) {
         let names = names.iter().map(|n| n.to_string()).collect();
         ed.bring_queue_start(crate::bringqueue::Ask { ids: ids.to_vec(), names, bases: vec!["main".into()] });
     }
@@ -6075,16 +6117,16 @@ mod tests {
                 git_in(&wt, &["add", "-A"]);
                 git_in(&wt, &["commit", "-qm", name]);
             }
-            ids.push(ed.session.id);
+            ids.push(ed.workspace.id);
             wts.push(wt);
         }
         std::fs::write(wts[1].join("a.txt"), "not in a commit\n").unwrap();
         std::fs::write(repo.join("c.txt"), "c\n").unwrap();
         git_in(&repo, &["add", "-A"]);
         git_in(&repo, &["commit", "-qm", "main moves"]);
-        ed.session_switch(0);
+        ed.workspace_switch(WorkspaceId::HOME);
         queue_of(&mut ed, &ids, &["behind", "held", "gone", "one"]);
-        ed.session_close(&wts[2]);
+        ed.workspace_close(&wts[2]);
         queue_over(&mut ed);
         let out = ed.messages.iter().rev().find(|m| m.2.starts_with("Bring queue done")).map(|m| m.2.clone());
         let out = out.unwrap_or_else(|| panic!("{}", said(&ed)));
@@ -6093,7 +6135,7 @@ mod tests {
         assert!(out.contains("held (changes not in a commit in its checkout — its card asks)"), "{out}");
         assert!(out.contains("gone ("), "{out}");
         // (up or parked with its session, wherever it was asked)
-        let parked = std::iter::once(&ed.session).chain(&ed.sessions).flat_map(|l| &l.parked);
+        let parked = std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked);
         let titles: Vec<&str> = ed.offers.iter().chain(parked).map(|o| o.title.as_str()).collect();
         assert!(titles.iter().any(|t| t.contains("held")), "held's card stays: {titles:?}");
         assert_eq!(git_in(&repo, &["log", "-1", "--format=%s", "main"]), "one");
@@ -6116,12 +6158,12 @@ mod tests {
             std::fs::write(wt.join(format!("{name}.txt")), "x\n").unwrap();
             git_in(&wt, &["add", "-A"]);
             git_in(&wt, &["commit", "-qm", name]);
-            ids.push(ed.session.id);
+            ids.push(ed.workspace.id);
         }
-        ed.session_switch(0);
+        ed.workspace_switch(WorkspaceId::HOME);
         queue_of(&mut ed, &ids, &["a", "b"]);
         settle_until(&mut ed, |ed| ed.bring_queue_at(ids[0]) == Some(Stage::Preflight));
-        ed.with_session(ids[0], |ed| {
+        ed.with_workspace(ids[0], |ed| {
             crate::rebase::resolved_for_test(ed, "a", None);
             ed.rebase_preflight_done(true, "quick preflight");
         });
@@ -6135,7 +6177,7 @@ mod tests {
             said(&ed)
         );
         assert!(ed.bring_queue_at(ids[1]).is_some(), "b's turn: {}", said(&ed));
-        let parked = std::iter::once(&ed.session).chain(&ed.sessions).flat_map(|l| &l.parked);
+        let parked = std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked);
         let rebase_card =
             |o: &crate::offer::Offer| matches!(o.what, crate::offer::What::RebaseResolved { .. });
         assert!(ed.offers.iter().chain(parked).any(rebase_card), "a's rebase card up");
@@ -6159,10 +6201,10 @@ mod tests {
             std::fs::write(wt.join(format!("{name}.txt")), "x\n").unwrap();
             git_in(&wt, &["add", "-A"]);
             git_in(&wt, &["commit", "-qm", name]);
-            ids.push(ed.session.id);
+            ids.push(ed.workspace.id);
             wts.push(wt);
         }
-        ed.session_switch(0);
+        ed.workspace_switch(WorkspaceId::HOME);
         let at = |ed: &Editor, i: usize| ed.bring_queue_at(ids[i]);
         queue_of(&mut ed, &ids, &["a", "b", "c"]);
         settle_until(&mut ed, |ed| at(ed, 0) == Some(Stage::Preflight));
@@ -6170,28 +6212,28 @@ mod tests {
         std::fs::write(repo.join("m.txt"), "m\n").unwrap();
         git_in(&repo, &["add", "-A"]);
         git_in(&repo, &["commit", "-qm", "main moves"]);
-        ed.with_session(ids[0], |ed| ed.rebase_preflight_done(true, "quick preflight"));
+        ed.with_workspace(ids[0], |ed| ed.rebase_preflight_done(true, "quick preflight"));
         settle_until(&mut ed, |ed| at(ed, 0) == Some(Stage::Rebasing) || at(ed, 0).is_none());
         assert_eq!(at(&ed, 0), Some(Stage::Rebasing), "{}", said(&ed));
         git_in(&wts[0], &["rebase", "-q", "main"]);
-        ed.with_session(ids[0], |ed| {
+        ed.with_workspace(ids[0], |ed| {
             ed.bring_queue_rebased(Ok(()));
         });
         settle_until(&mut ed, |ed| at(ed, 0) == Some(Stage::Preflight));
-        ed.with_session(ids[0], |ed| ed.rebase_preflight_done(true, "quick preflight"));
+        ed.with_workspace(ids[0], |ed| ed.rebase_preflight_done(true, "quick preflight"));
         // b: its preflight dropped on the way — out
         settle_until(&mut ed, |ed| at(ed, 1) == Some(Stage::Rebasing));
         assert_eq!(git_in(&repo, &["log", "-1", "--format=%s", "main"]), "a");
         git_in(&wts[1], &["rebase", "-q", "main"]);
-        ed.with_session(ids[1], |ed| {
+        ed.with_workspace(ids[1], |ed| {
             ed.bring_queue_rebased(Ok(()));
         });
         settle_until(&mut ed, |ed| at(ed, 1) == Some(Stage::Preflight));
-        ed.with_session(ids[1], |ed| ed.session.bring_after_preflight = false);
+        ed.with_workspace(ids[1], |ed| ed.workspace.bring_after_preflight = false);
         ed.bring_queue_sync();
         // c: its session ends under way — out, and the queue's over
         settle_until(&mut ed, |ed| at(ed, 2).is_some_and(|s| s != Stage::Looking));
-        ed.session_close(&wts[2]);
+        ed.workspace_close(&wts[2]);
         ed.bring_queue_sync();
         assert!(ed.bring_queue.run.is_none(), "{}", said(&ed));
         assert!(
@@ -6218,7 +6260,7 @@ mod tests {
         std::fs::write(wt.join("a.rs"), "fn a() {\n    unsafe { b() }\n}\n").unwrap();
         git_in(&wt, &["add", "a.rs"]);
         git_in(&wt, &["commit", "-qm", "risky"]);
-        let sid = ed.session.id;
+        let sid = ed.workspace.id;
         let brings = |ed: &Editor| ed.offers.iter().filter(|o| o.bring_root() == Some(wt.as_path())).count();
         // The card a rebase leaves (as `rebase_ended` pushes it): held
         let rebased = |ed: &mut Editor| {
@@ -6246,7 +6288,7 @@ mod tests {
         );
         assert_eq!(s.json()["cards"][0]["withheld"], json!(["y", "p"]));
         // A bring asked while it waits: one card, still held (nothing looked at yet), the old one's going said
-        ed.session_bring("risky").unwrap();
+        ed.workspace_bring("risky").unwrap();
         settle_until(&mut ed, |ed| card(ed, b).is_some());
         assert_eq!((brings(&ed), card(&ed, r).is_none()), (1, true), "{:?}", ed.offers);
         assert!(card(&ed, b).unwrap().held.is_some());
@@ -6262,7 +6304,7 @@ mod tests {
         feed(&mut ed, "h");
         settle_until(&mut ed, |ed| {
             let d = ed.doc();
-            ed.session.code_review.is_some()
+            ed.workspace.code_review.is_some()
                 && d.git_version == d.version()
                 && d.path.as_deref() == Some(wt.join("a.rs").as_path())
         });
@@ -6271,11 +6313,43 @@ mod tests {
         assert!(card(&ed, r).is_some_and(|o| o.held.is_none()), "its yes is back: {}", said(&ed));
         assert_eq!(card_in_sight(&mut ed), ['y', 'p', 'n']);
         // A bring asked now: one card, graded against the look — not held
-        ed.session_bring("risky").unwrap();
+        ed.workspace_bring("risky").unwrap();
         settle_until(&mut ed, |ed| card(ed, b).is_some());
         assert_eq!(brings(&ed), 1);
         assert!(card(&ed, b).is_some_and(|o| o.held.is_none()));
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// C0 (collab-plan decision 13): the workspaces are kept in the store's file as the sessions were — its folder,
+    /// its name and its keys — so what every live workspace kept comes back across the split, and a file the build
+    /// before it wrote reads back whole.
+    #[test]
+    fn the_store_keeps_its_file_and_keys_across_the_split() {
+        let scratch = crate::scratch::Scratch::new("c0-store");
+        let (dir, common) = (scratch.join("sessions"), scratch.join("repo.git"));
+        let kept = Kept {
+            root: "/wt/a".into(),
+            name: "a".into(),
+            branch: Some("a".into()),
+            base: Some("main".into()),
+            billing: Some(crate::billing::Billing::Api),
+            allowed: Default::default(),
+        };
+        let s = Stored { sessions: vec![kept.clone()], front: Some("/wt/a".into()), rev: Default::default() };
+        save(&dir, &common, s, &[], Default::default()).unwrap();
+        assert_eq!(default_dir().map(|d| d.ends_with("sessions")), Some(true), "$state/sessions, as before");
+        let file = crate::chats::file(&dir, &common);
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["front", "repo", "rev", "sessions", "taken"]);
+        let one = json!([{ "root": "/wt/a", "name": "a", "branch": "a", "base": "main", "billing": "api" }]);
+        assert_eq!(v["sessions"], one);
+        // (as the build before the split wrote it)
+        let before =
+            json!({ "repo": common, "front": "/wt/a", "sessions": one, "rev": v["rev"], "taken": [] });
+        std::fs::write(&file, before.to_string()).unwrap();
+        let back = load(&dir, &common);
+        assert_eq!((back.sessions, back.front), (vec![kept], Some(PathBuf::from("/wt/a"))));
     }
 }

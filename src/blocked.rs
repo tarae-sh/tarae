@@ -245,7 +245,7 @@ impl Editor {
         };
         // (a run on a commit's tree: not offered — its tree is gone, so neither a grant nor a run outside could
         // run it again where it ran — review of #212)
-        let task = self.session.task_run.as_ref().filter(|r| r.base.is_none()).and_then(|r| {
+        let task = self.workspace.task_run.as_ref().filter(|r| r.base.is_none()).and_then(|r| {
             let (denials, env) = denials(r.guard.as_ref(), &r.output.to_vec())?;
             Some((
                 r.started,
@@ -259,7 +259,7 @@ impl Editor {
                 },
             ))
         });
-        let test = self.session.test_run.as_ref().and_then(|r| {
+        let test = self.workspace.test_run.as_ref().and_then(|r| {
             let job = Job::Tests(Box::new(r.target.clone()));
             let from = from(r.guard.as_ref());
             let (denials, env) = denials(r.guard.as_ref(), &r.output.to_vec())?;
@@ -281,9 +281,9 @@ impl Editor {
     /// run: a list; Enter puts one on its card.
     pub fn sandbox_blocked(&mut self, which: Which) {
         // (the run meant was on a commit's tree: said, before what it was refused — review of #212)
-        let base = self.session.task_run.as_ref().filter(|r| r.base.is_some());
+        let base = self.workspace.task_run.as_ref().filter(|r| r.base.is_some());
         let newer =
-            |t: &crate::task::Run| self.session.test_run.as_ref().is_none_or(|x| t.started >= x.started);
+            |t: &crate::task::Run| self.workspace.test_run.as_ref().is_none_or(|x| t.started >= x.started);
         let on_base = match which {
             Which::Task => base.is_some(),
             Which::Test => false,
@@ -338,7 +338,7 @@ impl Editor {
             });
         }
         // (9f: where tarae's AppArmor profile would raise the tier, its step to copy — after what was blocked)
-        let step = self.session.sandbox.as_ref().and_then(|g| g.step_row());
+        let step = self.workspace.claude.sandbox.as_ref().and_then(|g| g.step_row());
         let nothing = run.is_none();
         items.extend(step.map(|(label, hint)| Item {
             label,
@@ -346,12 +346,12 @@ impl Editor {
             hint: hint.into(),
             glyph: Some(("◦", "ui.virtual")),
         }));
-        self.session.blocked = run.map(|run| (run, list));
+        self.workspace.blocked = run.map(|run| (run, list));
         let mut p =
             crate::picker::Picker::of("blocked", "what the sandbox blocked", items, false).without_preview();
         // (before any sandboxed run, one thing said: no header, and the list's row one says there's been none)
-        p.head = self.session.sandbox.as_ref().map(head);
-        let empty = if self.session.sandbox.is_some() { NOTHING_BLOCKED } else { NO_RUN_YET };
+        p.head = self.workspace.claude.sandbox.as_ref().map(head);
+        let empty = if self.workspace.claude.sandbox.is_some() { NOTHING_BLOCKED } else { NO_RUN_YET };
         // (nothing blocked but a step to copy: said where the list's first row would be, the step's row under it)
         let listed = !p.items().is_empty();
         match (&mut p.head, nothing && listed) {
@@ -365,14 +365,14 @@ impl Editor {
     /// (`PROFILE_STEP`) copied, and said so (`clipboard::copy`: the system clipboard, as `space y`).
     pub fn sandbox_grant(&mut self, arg: &str) -> Result<(), String> {
         if arg == PROFILE_STEP {
-            let hint = self.session.sandbox.as_ref().and_then(|g| g.hint.as_ref());
+            let hint = self.workspace.claude.sandbox.as_ref().and_then(|g| g.hint.as_ref());
             let step = hint.and_then(|h| h.step.clone()).ok_or("no step to copy")?;
             let what = "the step for own namespaces — run it in a terminal, then restart tarae";
             crate::clipboard::copy(&self.events.jobs(), step, what.to_string());
             return Ok(());
         }
         let (run, list) =
-            self.session.blocked.clone().ok_or("nothing blocked to act on — space m s on a run's panel")?;
+            self.workspace.blocked.clone().ok_or("nothing blocked to act on — space m s on a run's panel")?;
         use crate::cards::{Asked, Past, Request, Why};
         let cmd = run.label();
         let then = then_said(self, &run);
@@ -577,11 +577,11 @@ pub fn grant_answer(ed: &mut Editor, id: u64, grant: Grant, mut run: BlockedRun,
     if let Some(call) = run.claude.take() {
         // (its turn over: nobody waits — nothing kept, no refusal recorded, nothing runs)
         let waits = |c: &crate::chat::Chat| c.generation() == call.generation() && c.busy();
-        if !ed.session.chat.as_ref().is_some_and(waits) {
+        if !ed.workspace.claude.chat.as_ref().is_some_and(waits) {
             return;
         }
         let Some(scope) = scope else {
-            if let Some(c) = ed.session.chat.as_mut() {
+            if let Some(c) = ed.workspace.claude.chat.as_mut() {
                 c.also_refused.push(grant.clone());
             }
             let no = format!(
@@ -602,7 +602,7 @@ pub fn grant_answer(ed: &mut Editor, id: u64, grant: Grant, mut run: BlockedRun,
         }
         // (a yes on the terminals: asked again this turn, it takes no more of the turn's `also` cards — frictions29
         // 23, the user's interim decision 2026-10-19)
-        if let Some(c) = ed.session.chat.as_mut().filter(|_| grant == Grant::Terminals) {
+        if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|_| grant == Grant::Terminals) {
             c.also_yes = true;
         }
         // (the answer rides along whatever its scope, as the user's own run below: a failed take-back of it hides it
@@ -634,7 +634,7 @@ pub fn grant_answer(ed: &mut Editor, id: u64, grant: Grant, mut run: BlockedRun,
 /// The user's run again of `run` is told with `head` as it ends (`tools::told`): which run it was, for whether it
 /// goes on to Claude by itself.
 fn rerun_of(ed: &mut Editor, run: &BlockedRun, head: &str) {
-    if let (Some(key), Some(c)) = (run.key, ed.session.chat.as_mut()) {
+    if let (Some(key), Some(c)) = (run.key, ed.workspace.claude.chat.as_mut()) {
         c.reruns.retain(|(h, _)| h != head);
         c.reruns.push((head.to_string(), key));
     }
@@ -700,7 +700,7 @@ mod tests {
         let hint = Hint::of(Tier::Host, &place);
         let step = hint.step.clone().expect("a root-owned plain path: a step");
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.sandbox = Some(Guarantees::landlock(Found {
+        ed.workspace.claude.sandbox = Some(Guarantees::landlock(Found {
             ns: Ns::NONE,
             served: Ok(()),
             abi: 4,
@@ -729,7 +729,7 @@ mod tests {
         assert!(crate::clipboard::written(&step), "the whole step copied: {step}");
         // (Seatbelt's: no tiers, no step — the list says the run blocked nothing in its first row)
         ed.picker = None;
-        ed.session.sandbox = Some(Guarantees::seatbelt(false, false));
+        ed.workspace.claude.sandbox = Some(Guarantees::seatbelt(false, false));
         ed.sandbox_blocked(Which::Either);
         let p = ed.picker.as_ref().expect("the panel");
         assert!(p.items().is_empty() && p.head.as_ref().is_some_and(|h| h.note.is_none()));
@@ -746,7 +746,7 @@ mod tests {
             crate::task::Task { name: "cargo test".into(), cmd: "cargo test".into(), cwd: tree.clone() };
         let mut r = crate::task::Run::for_test(task);
         r.base = Some(crate::basetree::Base { rev: "HEAD".into(), tree, ..Default::default() });
-        ed.session.task_run = Some(r);
+        ed.workspace.task_run = Some(r);
         ed.sandbox_blocked(Which::Task);
         assert!(ed.picker.is_none());
         let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
@@ -1118,7 +1118,7 @@ mod tests {
             hint: String::new(),
             why: "cat was reading …/x in it".into(),
         };
-        ed.session.blocked = Some((run, vec![choice("conf"), choice("plain")]));
+        ed.workspace.blocked = Some((run, vec![choice("conf"), choice("plain")]));
         let card = |ed: &mut Editor, row: &str| {
             ed.offers.clear();
             ed.sandbox_grant(row).unwrap();
@@ -1175,7 +1175,7 @@ mod tests {
             assert_eq!(answers, keys, "{g:?}");
             // (what the keys take: each letter shown is taken, `s` among them)
             assert_eq!(o.lasts(), keys.contains('a'), "{g:?}");
-            assert_eq!(o.for_session(), keys.contains('s'), "{g:?}");
+            assert_eq!(o.for_workspace(), keys.contains('s'), "{g:?}");
             assert_eq!(o.keeps(), keys.contains('A'), "{g:?}");
         }
     }

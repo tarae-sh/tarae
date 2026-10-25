@@ -74,8 +74,8 @@ fn gf_opens_the_path_or_page_named_here() {
     std::fs::write(root.join("src/b.rs"), "bee\n").unwrap();
     std::fs::write(root.join("lib.rs"), "one\ntwo three\n").unwrap();
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = std::fs::canonicalize(root.path()).unwrap();
-    let a = ed.session.root.join("src/a.rs");
+    ed.workspace.root = std::fs::canonicalize(root.path()).unwrap();
+    let a = ed.workspace.root.join("src/a.rs");
     ed.open(&a).unwrap();
     let name = |ed: &Editor| {
         ed.doc().path.as_deref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned())
@@ -122,8 +122,8 @@ fn gf_opens_a_folders_files_and_each_of_several_selections() {
     std::fs::write(root.join("b.rs"), "bee\n").unwrap();
     std::fs::write(root.join("c.rs"), "sea\n").unwrap();
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = std::fs::canonicalize(root.path()).unwrap();
-    ed.open(&ed.session.root.join("a.rs")).unwrap();
+    ed.workspace.root = std::fs::canonicalize(root.path()).unwrap();
+    ed.open(&ed.workspace.root.join("a.rs")).unwrap();
     let name = |ed: &Editor| {
         ed.doc().path.as_deref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned())
     };
@@ -184,8 +184,8 @@ fn ctrl_click_on_an_address_in_code_opens_the_page() {
     let text = "fn main() {}\n// see https://page.test/b for it\n";
     std::fs::write(root.join("a.rs"), text).unwrap();
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = std::fs::canonicalize(root.path()).unwrap();
-    ed.open(&ed.session.root.join("a.rs")).unwrap();
+    ed.workspace.root = std::fs::canonicalize(root.path()).unwrap();
+    ed.open(&ed.workspace.root.join("a.rs")).unwrap();
     bee_kept(&mut ed);
     let mut bytes = Vec::new();
     crate::term::render(&mut ed, &mut bytes, 80, 24).unwrap();
@@ -224,5 +224,5 @@ fn bee_kept(ed: &mut Editor) {
         took: Duration::from_millis(30),
         elsewhere: None,
     };
-    let _ = ed.session.pages.put(std::sync::Arc::new(b), crate::clock::now());
+    let _ = ed.workspace.pages.put(std::sync::Arc::new(b), crate::clock::now());
 }

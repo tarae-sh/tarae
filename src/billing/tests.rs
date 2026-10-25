@@ -85,8 +85,8 @@ impl Place {
         ed.api_key_helper = Some(self.helper.clone());
         ed.api_key_query = query(true);
         ed.chats_dir = Some(self.state.join("chats"));
-        ed.session_store.dir = Some(self.state.join("sessions"));
-        ed.session_store.restored = true;
+        ed.workspace_store.dir = Some(self.state.join("sessions"));
+        ed.workspace_store.restored = true;
         ed
     }
 
@@ -128,23 +128,23 @@ fn until(ed: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) {
 }
 
 fn send(ed: &mut Editor, text: &str) {
-    ed.session.chat.as_mut().unwrap().input = text.into();
+    ed.workspace.claude.chat.as_mut().unwrap().input = text.into();
     crate::chat::send(ed);
 }
 
 fn notes(ed: &Editor) -> Vec<String> {
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     c.msgs.iter().filter(|m| m.role == crate::chat::Role::Note).map(|m| m.text.clone()).collect()
 }
 
 fn idle(ed: &Editor) -> bool {
-    ed.session.chat.as_ref().is_some_and(|c| !c.busy())
+    ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.busy())
 }
 
 /// `:session-billing api` — on the key once the key check (`api_check`, on a worker) has found it.
 fn on_key(ed: &mut Editor) {
     ed.session_billing("api").unwrap();
-    until(ed, "the session on the key", |ed| ed.session.billing == Billing::Api);
+    until(ed, "the session on the key", |ed| ed.workspace.claude.billing == Billing::Api);
 }
 
 /// Every file under `dir`, read whole.
@@ -179,7 +179,7 @@ fn an_api_sessions_key_goes_through_its_helper_and_never_through_tarae() {
     on_key(&mut ed);
     crate::chat::open(&mut ed);
     send(&mut ed, "hello");
-    until(&mut ed, "the turn's end", |ed| idle(ed) && ed.session.usage.key_source.is_some());
+    until(&mut ed, "the turn's end", |ed| idle(ed) && ed.workspace.claude.usage.key_source.is_some());
     assert_eq!(place.read("got.key"), place.key, "the helper's key reached claude");
     let starts = place.starts();
     assert_eq!(starts.len(), 1, "{starts:?}");
@@ -195,10 +195,10 @@ fn an_api_sessions_key_goes_through_its_helper_and_never_through_tarae() {
         !names.lines().any(|n| n == "ANTHROPIC_API_KEY"),
         "no key from the environment: it'd outrank the helper"
     );
-    assert_eq!(ed.session.usage.key_source.as_deref(), Some("apiKeyHelper"));
+    assert_eq!(ed.workspace.claude.usage.key_source.as_deref(), Some("apiKeyHelper"));
     assert!(!notes(&ed).iter().any(|n| n.starts_with("Stopped:")), "{:?}", notes(&ed));
     let state = ed.ui_state();
-    assert_eq!(state.json()["sessions"][0]["billing"], "api");
+    assert_eq!(state.json()["workspaces"][0]["sessions"][0]["billing"], "api");
     // (what's kept is written on workers: the chat and the session list there before looking — the sessions' own
     // file, not its lock beside it nor a write's temp file, holding the write that kept the session as an API one)
     until(&mut ed, "the chat kept, and the session kept as an API session", |_| {
@@ -223,7 +223,8 @@ fn an_api_sessions_key_goes_through_its_helper_and_never_through_tarae() {
         "the key in tarae state"
     );
     assert!(!ed.messages.iter().any(|(_, _, m)| m.contains(nonce)), "the key in :messages");
-    let rows = ed.session.chat.as_ref().unwrap().msgs.iter().map(|m| m.text.clone()).collect::<Vec<_>>();
+    let rows =
+        ed.workspace.claude.chat.as_ref().unwrap().msgs.iter().map(|m| m.text.clone()).collect::<Vec<_>>();
     assert!(!rows.iter().any(|t| t.contains(nonce)), "the key in the chat");
 }
 
@@ -237,8 +238,8 @@ fn switching_billing_resumes_the_same_conversation_and_the_spare_follows() {
     crate::llm::prewarm(&mut ed);
     crate::chat::open(&mut ed);
     send(&mut ed, "hello");
-    until(&mut ed, "the first turn", |ed| idle(ed) && ed.session.usage.key_source.is_some());
-    assert_eq!(ed.session.chat.as_ref().unwrap().conversation.as_deref(), Some("conv-1"));
+    until(&mut ed, "the first turn", |ed| idle(ed) && ed.workspace.claude.usage.key_source.is_some());
+    assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().conversation.as_deref(), Some("conv-1"));
     let before = place.starts();
     assert_eq!(before.len(), 2, "the spare and the chat: {before:?}");
     assert!(before.iter().all(|(r, s)| r.is_none() && s.get("apiKeyHelper").is_none()), "{before:?}");
@@ -252,19 +253,19 @@ fn switching_billing_resumes_the_same_conversation_and_the_spare_follows() {
     let spare = after.iter().find(|(r, _)| r.is_none()).expect("the spare again");
     assert_eq!(spare.1["apiKeyHelper"], json!(place.helper), "the spare on the key too");
     assert!(spare.1.get("promptCacheTtl").is_none(), "the ask's: one turn, no hour-long cache");
-    assert_eq!(ed.session.chat.as_ref().unwrap().billing, Some(Billing::Api));
+    assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().billing, Some(Billing::Api));
     // The next turn goes on in the same conversation
     send(&mut ed, "again");
     until(&mut ed, "the turn on the key", |ed| {
-        idle(ed) && ed.session.usage.key_source.as_deref() == Some("apiKeyHelper")
+        idle(ed) && ed.workspace.claude.usage.key_source.as_deref() == Some("apiKeyHelper")
     });
-    assert_eq!(ed.session.chat.as_ref().unwrap().conversation.as_deref(), Some("conv-1"));
+    assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().conversation.as_deref(), Some("conv-1"));
     // While Claude answers: refused, as it was
     std::fs::write(place.root.join("turn.hold"), "").unwrap();
     send(&mut ed, "a long one");
-    assert!(ed.session.chat.as_ref().unwrap().busy());
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().busy());
     assert!(ed.session_billing("subscription").unwrap_err().contains("answering"));
-    assert_eq!(ed.session.billing, Billing::Api, "unchanged");
+    assert_eq!(ed.workspace.claude.billing, Billing::Api, "unchanged");
 }
 
 /// claude says it runs on another credential than its session's billing: said in the chat with what it
@@ -286,7 +287,7 @@ fn a_credential_other_than_its_billings_stops_claude_and_says_so() {
     };
     until(&mut ed, "the note", |ed| said(ed, "ANTHROPIC_API_KEY"));
     until(&mut ed, "the turn interrupted, and its claude gone at its end", |ed| {
-        idle(ed) && !ed.session.chat.as_ref().unwrap().running()
+        idle(ed) && !ed.workspace.claude.chat.as_ref().unwrap().running()
     });
     let note = notes(&ed).into_iter().find(|n| n.starts_with("Stopped:")).unwrap();
     assert!(note.contains("bills api") && note.contains("env block"), "{note}");
@@ -294,11 +295,11 @@ fn a_credential_other_than_its_billings_stops_claude_and_says_so() {
     assert_eq!(notes(&ed).last().map(String::as_str), Some("stopped"), "{:?}", notes(&ed));
     assert!(log.lines().iter().any(|l| l.contains("reported its credential as ANTHROPIC_API_KEY")));
     // A subscription session whose claude says it runs on a helper, as it starts: gone before any turn
-    ed.session.billing = Billing::Subscription;
+    ed.workspace.claude.billing = Billing::Subscription;
     std::fs::write(place.root.join("init.source"), "apiKeyHelper").unwrap();
     crate::chat::reset(&mut ed);
     until(&mut ed, "the note", |ed| said(ed, "apiKeyHelper"));
-    assert!(!ed.session.chat.as_ref().unwrap().running(), "stopped as it started");
+    assert!(!ed.workspace.claude.chat.as_ref().unwrap().running(), "stopped as it started");
     let note = notes(&ed).into_iter().rfind(|n| n.starts_with("Stopped:")).unwrap();
     assert!(note.contains("bills subscription") && note.contains("your own Claude settings"), "{note}");
 }
@@ -312,7 +313,7 @@ fn the_asks_claude_is_billed_and_checked_as_the_chats() {
     on_key(&mut ed);
     std::fs::write(place.root.join("turn.source"), "none").unwrap();
     crate::llm::ask(&mut ed, "rename it").unwrap();
-    until(&mut ed, "the ask stopped", |ed| ed.session.review.is_none());
+    until(&mut ed, "the ask stopped", |ed| ed.workspace.claude.review.is_none());
     assert_eq!(place.starts()[0].1["apiKeyHelper"], json!(place.helper));
     let warned = ed.toasts.iter().any(|t| t.text.contains("reported its credential as none"));
     assert!(warned, "{:?}", ed.toasts.iter().map(|t| &t.text).collect::<Vec<_>>());
@@ -327,30 +328,34 @@ fn billing_is_kept_with_its_session_and_a_new_one_takes_the_setting() {
     on_key(&mut ed);
     let carried = crate::worktree::snapshot(&ed);
     let mut back = place.editor();
-    assert_eq!(back.session.billing, Billing::Subscription);
+    assert_eq!(back.workspace.claude.billing, Billing::Subscription);
     crate::worktree::restore(&mut back, &carried);
-    assert_eq!(back.session.billing, Billing::Api, "back after a restart");
+    assert_eq!(back.workspace.claude.billing, Billing::Api, "back after a restart");
     let other = place.dir.join("other");
     std::fs::create_dir_all(&other).unwrap();
     back.config.llm.billing = Billing::Subscription;
-    let id = back.session_add(other.clone());
-    assert_eq!(back.sessions.iter().find(|l| l.id == id).unwrap().billing, Billing::Subscription);
+    let id = back.workspace_add(other.clone());
+    assert_eq!(back.workspaces.iter().find(|l| l.id == id).unwrap().claude.billing, Billing::Subscription);
     back.config.llm.billing = Billing::Api;
-    let id = back.session_add(place.dir.clone());
-    assert_eq!(back.sessions.iter().find(|l| l.id == id).unwrap().billing, Billing::Api, "llm.billing");
+    let id = back.workspace_add(place.dir.clone());
+    assert_eq!(
+        back.workspaces.iter().find(|l| l.id == id).unwrap().claude.billing,
+        Billing::Api,
+        "llm.billing"
+    );
     // (`tarae state` says it: each session's, and in its line a key session's `api` — the plan's nothing)
     let state = back.ui_state();
-    let billed: Vec<&str> = state.sessions.iter().map(|s| s.billing).collect();
+    let billed: Vec<&str> = state.sessions().map(|s| s.billing).collect();
     assert_eq!(billed, ["api", "subscription", "api"]);
     let line = state.text().lines().find(|l| l.starts_with("sessions:")).unwrap().to_string();
     assert_eq!(line.matches(" · api · ").count(), 2, "{line}");
     // (a list kept by an older build: no billing — the setting's)
     let mut old = place.editor();
     old.config.llm.billing = Billing::Api;
-    old.session.billing = Billing::Api;
+    old.workspace.claude.billing = Billing::Api;
     let v = json!({"sessions": [{"root": place.root, "name": "project"}], "front": place.root});
     crate::worktree::restore(&mut old, &v);
-    assert_eq!(old.session.billing, Billing::Api);
+    assert_eq!(old.workspace.claude.billing, Billing::Api);
 }
 
 /// The helper is the Keychain's `security` reading tarae's item for you — your login name on its command line as
@@ -427,7 +432,7 @@ fn each_billing_has_the_one_credential_it_accepts() {
 /// hour-long write `ago_ms` ago — warm for an hour from then.
 fn cache(ed: &mut Editor, model: &str, tokens: u64, ago_ms: u64) {
     let now = crate::usage::now_ms();
-    let u = &mut ed.session.usage;
+    let u = &mut ed.workspace.claude.usage;
     u.requesting(now - ago_ms);
     let counts =
         crate::usage::Counts { input: Some(10), write: Some(tokens - 10), read: Some(0), output: Some(5) };
@@ -462,7 +467,7 @@ fn talking(place: &Place) -> Editor {
     ed.billing_kept.path = Some(place.state.join("billing.json"));
     crate::chat::open(&mut ed);
     send(&mut ed, "hello");
-    until(&mut ed, "the first turn", |ed| idle(ed) && ed.session.usage.key_source.is_some());
+    until(&mut ed, "the first turn", |ed| idle(ed) && ed.workspace.claude.usage.key_source.is_some());
     cache(&mut ed, "claude-opus-5-5", 150_000, 60_000);
     ed
 }
@@ -493,14 +498,14 @@ fn dollar_in_the_list_asks_first_on_a_conversation_saying_what_it_costs() {
     assert_eq!(ed.offers.len(), 1, "Esc never answers it");
     key(&mut ed, crate::key::Code::Char('n'));
     assert!(ed.offers.is_empty());
-    assert_eq!(ed.session.billing, Billing::Subscription, "n keeps it");
+    assert_eq!(ed.workspace.claude.billing, Billing::Subscription, "n keeps it");
     assert_eq!(place.starts().len(), 1, "nothing started again");
     ed.session_list();
     ed.session_list_key('$');
     until(&mut ed, "the card again", |ed| !ed.offers.is_empty());
     settled(&mut ed);
     key(&mut ed, crate::key::Code::Char('y'));
-    assert_eq!(ed.session.billing, Billing::Api);
+    assert_eq!(ed.workspace.claude.billing, Billing::Api);
     until(&mut ed, "the conversation resumed on the key", |_| place.starts().len() == 2);
     assert_eq!(place.starts()[1].0.as_deref(), Some("conv-1"));
     assert!(!toasts(&ed).contains(WEAKNESS), "the card said it — not again as a toast");
@@ -521,7 +526,7 @@ fn dollar_in_the_list_asks_first_on_a_conversation_saying_what_it_costs() {
     ed.billing_kept.path = Some(kept.clone());
     ed.session_list();
     ed.session_list_key('$');
-    until(&mut ed, "on the key", |ed| ed.session.billing == Billing::Api);
+    until(&mut ed, "on the key", |ed| ed.workspace.claude.billing == Billing::Api);
     assert!(ed.offers.is_empty(), "nothing to cost: no card");
     assert!(toasts(&ed).contains(WEAKNESS), "{}", toasts(&ed));
     until(&mut ed, "the weakness kept as said", |_| Kept::read(Some(kept.clone())).weakness_told);
@@ -551,7 +556,7 @@ fn a_switch_says_what_the_next_message_costs_until_it_goes() {
         info("sonnet", "claude-sonnet-5-5"),
         info("fable", "claude-fable-5-1"),
     ];
-    ed.session.chat.as_mut().unwrap().models = models.clone();
+    ed.workspace.claude.chat.as_mut().unwrap().models = models.clone();
     ed.config.llm.model = Some("opus".into());
     on_key(&mut ed);
     let said = "bills api — Claude runs on your API key from now — next message rewrites ≈ $1.20";
@@ -562,7 +567,7 @@ fn a_switch_says_what_the_next_message_costs_until_it_goes() {
         Some("next message rewrites ≈ $1.20 (billing changed) · switching back costs nothing")
     );
     until(&mut ed, "the chat on the key", |_| place.starts().len() == 2);
-    ed.session.chat.as_mut().unwrap().models = models;
+    ed.workspace.claude.chat.as_mut().unwrap().models = models;
     // The model too: Sonnet 5.5's prices ($4/MTok) now — what changed said, still since the last message
     crate::models::set(&mut ed, "sonnet").unwrap();
     assert!(toasts(&ed).contains("next message rewrites ≈ $0.60"), "{}", toasts(&ed));
@@ -635,13 +640,13 @@ fn a_weekly_refusal_asks_once_and_a_reaches_new_sessions_until_the_reset() {
     assert!(o.title.starts_with("Weekly limit reached · resets "), "{}", o.title);
     assert!(o.question.contains("The first message rewrites ≈ $1.20 of cached context"), "{}", o.question);
     assert_eq!(o.answers(false), [('y', "This session"), ('a', "New sessions too"), ('n', "Wait")]);
-    assert!(o.goes_with_session(), "its session's");
+    assert!(o.goes_with_workspace(), "its session's");
     settled(&mut ed);
     key(&mut ed, crate::key::Code::Esc);
     assert_eq!(ed.offers.len(), 1, "Esc never answers it");
     key(&mut ed, crate::key::Code::Char('a'));
     assert!(ed.offers.is_empty(), "answered");
-    until(&mut ed, "this session on the key", |ed| ed.session.billing == Billing::Api);
+    until(&mut ed, "this session on the key", |ed| ed.workspace.claude.billing == Billing::Api);
     until(&mut ed, "resumed on the key", |_| {
         place
             .starts()
@@ -650,8 +655,12 @@ fn a_weekly_refusal_asks_once_and_a_reaches_new_sessions_until_the_reset() {
     });
     let other = place.dir.join("other");
     std::fs::create_dir_all(&other).unwrap();
-    let id = ed.session_add(other);
-    assert_eq!(ed.sessions.iter().find(|l| l.id == id).unwrap().billing, Billing::Api, "a new session");
+    let id = ed.workspace_add(other);
+    assert_eq!(
+        ed.workspaces.iter().find(|l| l.id == id).unwrap().claude.billing,
+        Billing::Api,
+        "a new session"
+    );
     ed.config.llm.reviewer_billing = Some(Billing::Subscription);
     assert_eq!(ed.reviewer_billing(), Billing::Api, "the reviewer too");
     let kept = place.state.join("billing.json");
@@ -666,7 +675,7 @@ fn a_weekly_refusal_asks_once_and_a_reaches_new_sessions_until_the_reset() {
     until(&mut ed, "the turn", idle);
     assert!(ed.offers.is_empty(), "asked once a period");
     // Claude Code's own words end a turn: refused too — a new period's card
-    ed.session.limit_asked = None;
+    ed.workspace.claude.limit_asked = None;
     std::fs::remove_file(place.root.join("turn.limit")).unwrap();
     std::fs::write(place.root.join("turn.refused"), "You've hit your weekly limit · resets Mon 12:00am")
         .unwrap();
@@ -690,7 +699,7 @@ fn the_limit_cards_yes_mid_turn_waits_for_the_turns_end() {
     assert_eq!(refused, Err(true), "refused as it's typed, not later as a toast");
     yes_mid_turn(&mut ed);
     crate::chat::stop(&mut ed);
-    until(&mut ed, "the turn's end", |ed| idle(ed) && ed.session.billing == Billing::Api);
+    until(&mut ed, "the turn's end", |ed| idle(ed) && ed.workspace.claude.billing == Billing::Api);
     until(&mut ed, "resumed on the key", |_| {
         place.starts().last().is_some_and(|s| s.0.as_deref() == Some("conv-1"))
     });
@@ -704,7 +713,7 @@ fn yes_mid_turn(ed: &mut Editor) {
     assert!(!ed.offers[0].limit_all(), "no reset known: no `a`");
     ed.offer_accept();
     until(ed, "the answer", |ed| toasts(ed).contains("Your API key pays once this turn is over"));
-    assert_eq!(ed.session.billing, Billing::Subscription, "not mid-turn");
+    assert_eq!(ed.workspace.claude.billing, Billing::Subscription, "not mid-turn");
 }
 
 /// The limit card's `y` mid-turn, then claude exits before the turn's result: the turn is over all the same, and
@@ -720,8 +729,10 @@ fn a_switch_waiting_for_the_turn_goes_on_when_claude_exits_and_not_into_a_new_co
     // (told to stop, the stand-in exits — no result ends the turn)
     std::fs::write(place.root.join("turn.exit"), "").unwrap();
     crate::chat::stop(&mut ed);
-    until(&mut ed, "the exit ends the turn on the key", |ed| idle(ed) && ed.session.billing == Billing::Api);
-    assert_eq!(ed.session.billing_next, None);
+    until(&mut ed, "the exit ends the turn on the key", |ed| {
+        idle(ed) && ed.workspace.claude.billing == Billing::Api
+    });
+    assert_eq!(ed.workspace.claude.billing_next, None);
     // A new conversation instead: the switch waiting for the old one's turn goes with it
     let place = Place::new("limit-reset");
     let mut ed = talking(&place);
@@ -729,11 +740,11 @@ fn a_switch_waiting_for_the_turn_goes_on_when_claude_exits_and_not_into_a_new_co
     send(&mut ed, "long");
     yes_mid_turn(&mut ed);
     crate::chat::reset(&mut ed);
-    assert_eq!(ed.session.billing_next, None, "dropped with the conversation");
+    assert_eq!(ed.workspace.claude.billing_next, None, "dropped with the conversation");
     std::fs::remove_file(place.root.join("turn.wait")).unwrap();
     send(&mut ed, "fresh");
     until(&mut ed, "the new conversation's turn", |ed| idle(ed) && place.read("stdin").contains("fresh"));
-    assert_eq!(ed.session.billing, Billing::Subscription, "still the plan");
+    assert_eq!(ed.workspace.claude.billing, Billing::Subscription, "still the plan");
     assert_eq!(place.starts().last().unwrap().1["apiKeyHelper"], Value::Null, "{:?}", place.starts());
 }
 
@@ -856,12 +867,12 @@ fn where_the_key_cant_be_used_nothing_offers_or_keeps_it() {
     ed.session_list();
     ed.session_list_key('$');
     until(&mut ed, "`$` refused", |ed| toasts(ed).contains(add));
-    assert_eq!(ed.session.billing, Billing::Subscription);
+    assert_eq!(ed.workspace.claude.billing, Billing::Subscription);
     // `:session-billing api` the same: said why and how to add the key, nothing changed
     ed.toasts.clear();
     ed.session_billing("api").unwrap();
     until(&mut ed, "`:session-billing api` refused", |ed| toasts(ed).contains(add));
-    assert_eq!(ed.session.billing, Billing::Subscription, "nothing changed");
+    assert_eq!(ed.workspace.claude.billing, Billing::Subscription, "nothing changed");
     // The key there for the card, gone by its `a`
     ed.api_key_query = query(true);
     ed.limit_hit("seven_day", Some(week + 1000));
@@ -870,7 +881,7 @@ fn where_the_key_cant_be_used_nothing_offers_or_keeps_it() {
     settled(&mut ed);
     key(&mut ed, crate::key::Code::Char('a'));
     until(&mut ed, "the answer refused", |ed| toasts(ed).contains("Still on your plan"));
-    assert_eq!(ed.session.billing, Billing::Subscription);
+    assert_eq!(ed.workspace.claude.billing, Billing::Subscription);
     assert_eq!(ed.billing_kept.api_until_ms, None, "nothing kept");
     assert!(!kept.exists(), "nothing written");
 }
@@ -1009,7 +1020,7 @@ fn credits_running_out_offers_the_plan_back() {
     key(&mut ed, crate::key::Code::Esc);
     assert_eq!(ed.offers.len(), 1, "Esc never answers it");
     key(&mut ed, crate::key::Code::Char('y'));
-    assert_eq!(ed.session.billing, Billing::Subscription);
+    assert_eq!(ed.workspace.claude.billing, Billing::Subscription);
     until(&mut ed, "the conversation resumed on the plan", |_| place.starts().len() == 3);
     let (resume, settings) = place.starts()[2].clone();
     assert_eq!(resume.as_deref(), Some("conv-1"));
@@ -1072,7 +1083,7 @@ fn a_spend_cap_offers_the_plan_only_where_the_plan_takes_it() {
     settled(&mut ed);
     key(&mut ed, crate::key::Code::Char('n'));
     assert!(ed.offers.is_empty());
-    assert_eq!(ed.session.billing, Billing::Api, "n stays on the key");
+    assert_eq!(ed.workspace.claude.billing, Billing::Api, "n stays on the key");
 }
 
 /// A refusal for money counts only for the turn it ends, on its error: a turn that's answered after all, or one
@@ -1094,7 +1105,7 @@ fn a_money_refusal_counts_only_for_the_turn_it_ends() {
     // Stopped
     std::fs::write(place.root.join("turn.wait"), "").unwrap();
     send(&mut ed, "stopped");
-    until(&mut ed, "the refusal read", |ed| ed.session.chat.as_ref().unwrap().money.is_some());
+    until(&mut ed, "the refusal read", |ed| ed.workspace.claude.chat.as_ref().unwrap().money.is_some());
     crate::chat::stop(&mut ed);
     until(&mut ed, "the turn", idle);
     assert_eq!(notes(&ed).last().map(String::as_str), Some("stopped"));
@@ -1103,7 +1114,7 @@ fn a_money_refusal_counts_only_for_the_turn_it_ends() {
     std::fs::remove_file(place.root.join("turn.wait")).unwrap();
     std::fs::write(place.root.join("turn.die"), "").unwrap();
     send(&mut ed, "cut off");
-    until(&mut ed, "claude gone", |ed| idle(ed) && !ed.session.chat.as_ref().unwrap().running());
+    until(&mut ed, "claude gone", |ed| idle(ed) && !ed.workspace.claude.chat.as_ref().unwrap().running());
     std::fs::remove_file(place.root.join("turn.die")).unwrap();
     std::fs::remove_file(place.root.join("turn.limit")).unwrap();
     std::fs::write(place.root.join("turn.refused"), "Overloaded").unwrap();
@@ -1118,7 +1129,7 @@ fn a_money_refusal_counts_only_for_the_turn_it_ends() {
     std::fs::write(place.root.join("turn.limit"), &error_line).unwrap();
     std::fs::write(place.root.join("turn.wait"), "").unwrap();
     send(&mut ed, "before the new chat");
-    until(&mut ed, "the refusal read", |ed| ed.session.chat.as_ref().unwrap().money.is_some());
+    until(&mut ed, "the refusal read", |ed| ed.workspace.claude.chat.as_ref().unwrap().money.is_some());
     crate::chat::reset(&mut ed);
     std::fs::remove_file(place.root.join("turn.wait")).unwrap();
     std::fs::remove_file(place.root.join("turn.limit")).unwrap();
@@ -1139,19 +1150,20 @@ fn a_session_behind_refused_twice_for_money_has_one_card() {
     let mut ed = talking(&place);
     on_key(&mut ed);
     until(&mut ed, "the chat on the key", |_| place.starts().len() == 2);
-    let sid = ed.session.id;
+    let sid = ed.workspace.id;
     std::fs::create_dir_all(place.dir.join("other")).unwrap();
-    let other = ed.session_add(place.dir.join("other"));
-    assert!(ed.session_switch(other));
+    let other = ed.workspace_add(place.dir.join("other"));
+    assert!(ed.workspace_switch(other));
     failing(&place, "billing_error", CREDITS);
     let parked = |ed: &Editor| {
-        let s = ed.sessions.iter().find(|s| s.id == sid).unwrap();
+        let s = ed.workspaces.iter().find(|s| s.id == sid).unwrap();
         s.parked.iter().filter(|o| matches!(o.what, crate::offer::What::BillingSwitch { .. })).count()
     };
-    let busy_behind =
-        |ed: &Editor| ed.sessions.iter().find(|s| s.id == sid).unwrap().chat.as_ref().unwrap().busy();
+    let busy_behind = |ed: &Editor| {
+        ed.workspaces.iter().find(|s| s.id == sid).unwrap().claude.chat.as_ref().unwrap().busy()
+    };
     for text in ["one", "two"] {
-        ed.with_session(sid, |ed| send(ed, text));
+        ed.with_workspace(sid, |ed| send(ed, text));
         until(&mut ed, "the turn behind", |ed| !busy_behind(ed) && parked(ed) > 0);
     }
     assert!(place.read("stdin").contains("two"), "the second turn went");
@@ -1171,19 +1183,19 @@ fn a_message_queued_behind_a_refusal_for_money_waits_for_the_billing() {
     send(&mut ed, "one");
     send(&mut ed, "queued two");
     assert_eq!(
-        ed.session.chat.as_ref().unwrap().queued.as_deref(),
+        ed.workspace.claude.chat.as_ref().unwrap().queued.as_deref(),
         Some("queued two"),
         "Claude was answering"
     );
     until(&mut ed, "the turn and its card", |ed| idle(ed) && !ed.offers.is_empty());
     assert!(!place.read("stdin").contains("queued two"), "not sent into the refusal");
-    assert_eq!(ed.session.chat.as_ref().unwrap().queued.as_deref(), Some("queued two"));
+    assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().queued.as_deref(), Some("queued two"));
     assert!(notes(&ed).iter().any(|n| n.starts_with("Your queued message waits")), "{:?}", notes(&ed));
     std::fs::remove_file(place.root.join("turn.limit")).unwrap();
     std::fs::remove_file(place.root.join("turn.refused")).unwrap();
     settled(&mut ed);
     key(&mut ed, crate::key::Code::Char('y'));
-    assert_eq!(ed.session.billing, Billing::Subscription);
+    assert_eq!(ed.workspace.claude.billing, Billing::Subscription);
     until(&mut ed, "the queued message sent on the plan", |_| place.read("stdin").contains("queued two"));
-    assert_eq!(ed.session.chat.as_ref().unwrap().queued, None);
+    assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().queued, None);
 }

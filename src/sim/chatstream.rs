@@ -130,9 +130,9 @@ fn run(choices: Choices) -> Vec<String> {
         Msg::new(Role::User, "and the second?", ""),
     ];
     let claude = crate::chat::stand_in(&mut c);
-    ed.session.chat = Some(c);
+    ed.workspace.claude.chat = Some(c);
     ed.motion_drawn = true;
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     let world = World::default();
     world.size.set(SIZES[0]);
     frame(&mut ed, &world);
@@ -207,7 +207,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
                 "한글 넓은 글자 ",
             ]);
             *world.before.borrow_mut() = in_sight(ed);
-            let Some(c) = ed.session.chat.as_mut() else { return "(no chat)".into() };
+            let Some(c) = ed.workspace.claude.chat.as_mut() else { return "(no chat)".into() };
             if c.msgs.last().is_none_or(|m| m.role != Role::Assistant) || c.state == State::Idle {
                 c.msgs.push(Msg::new(Role::Assistant, "", ""));
             }
@@ -245,7 +245,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
             format!("keys {k}")
         }
         2 => {
-            let Some(c) = ed.session.chat.as_mut() else { return "(no chat)".into() };
+            let Some(c) = ed.workspace.claude.chat.as_mut() else { return "(no chat)".into() };
             c.msgs.push(Msg::new(Role::User, "and then?", ""));
             c.msgs.push(Msg::new(Role::Assistant, "", ""));
             c.state = State::Thinking;
@@ -292,7 +292,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
                 op: crate::refactor::Op::Text,
                 protected: false,
             };
-            let generation = ed.session.chat.as_ref().map_or(0, |c| c.generation());
+            let generation = ed.workspace.claude.chat.as_ref().map_or(0, |c| c.generation());
             let whose = crate::refactor::Whose::Claude(generation);
             crate::refactor::landed(ed, &f, Some(stamp(world)), whose, None);
             *world.stuck.borrow_mut() = wet_as_written(ed, &before, &after);
@@ -524,7 +524,7 @@ fn print(ed: &Editor) -> String {
             t.top_row()
         ))
     });
-    let c = ed.session.chat.as_ref();
+    let c = ed.workspace.claude.chat.as_ref();
     format!(
         "keys {keys} · {} · {} messages, {:?}",
         doc.unwrap_or_else(|| "no transcript".into()),

@@ -63,7 +63,7 @@ fn patch_file(text: &str) -> (Scratch, PathBuf) {
 
 fn editor(dir: &Path) -> Editor {
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = dir.to_path_buf();
+    ed.workspace.root = dir.to_path_buf();
     ed
 }
 
@@ -94,10 +94,10 @@ fn card(ed: &Editor) -> Option<(u64, String, usize, bool)> {
     })
 }
 
-/// `:session-apply <args>`, then events until its card is up or it's refused (Err: what it said).
+/// `:workspace-apply <args>`, then events until its card is up or it's refused (Err: what it said).
 fn apply(ed: &mut Editor, args: &str) -> Result<(u64, String, usize, bool), String> {
     let before = ed.messages.len();
-    crate::typed::execute(ed, &format!("session-apply {args}"))?;
+    crate::typed::execute(ed, &format!("workspace-apply {args}"))?;
     let refused = |ed: &Editor| {
         ed.messages[before..]
             .iter()
@@ -111,14 +111,14 @@ fn apply(ed: &mut Editor, args: &str) -> Result<(u64, String, usize, bool), Stri
 /// `y` on the card, then events until every file is done.
 fn accept(ed: &mut Editor, id: u64) {
     crate::refactor::accept_all(ed, id, Whose::Yours);
-    pump(ed, "the files written", |ed| ed.session.applying.is_none());
+    pump(ed, "the files written", |ed| ed.workspace.applying.is_none());
 }
 
 /// `n` on the card.
 fn decline(ed: &mut Editor) {
     ed.offers.clear();
     crate::refactor::decline_all(ed, Whose::Yours);
-    pump(ed, "declined", |ed| ed.session.applying.is_none());
+    pump(ed, "declined", |ed| ed.workspace.applying.is_none());
 }
 
 fn read(dir: &Path, p: &str) -> Option<String> {
@@ -147,14 +147,14 @@ fn a_clean_patch_lands_on_its_card_and_is_one_step_back() {
     assert_eq!(read(dir, "b.txt").as_deref(), Some("one\nTWO\n"));
     assert!(said(&ed).contains("apply x.patch — 2 files changed"), "{}", said(&ed));
     // One step of its own, back with `space u`
-    let last = ed.session.checkpoints.list.last().map(|c| (c.question.clone(), c.files.len()));
+    let last = ed.workspace.claude.checkpoints.list.last().map(|c| (c.question.clone(), c.files.len()));
     assert_eq!(last, Some(("apply x.patch".into(), 2)));
     crate::checkpoint::step(&mut ed, true).unwrap();
     pump(&mut ed, "taken back", |_| read(dir, "b.txt").as_deref() == Some("one\ntwo\n"));
     assert_eq!(read(dir, "src/a.rs").as_deref(), Some("fn a() {}\nfn b() {}\n"));
     // One patch at a time
     let (_id, ..) = apply(&mut ed, &patch.display().to_string()).unwrap();
-    let again = crate::typed::execute(&mut ed, &format!("session-apply {}", patch.display()));
+    let again = crate::typed::execute(&mut ed, &format!("workspace-apply {}", patch.display()));
     assert!(again.unwrap_err().contains("a patch is landing here already"));
 }
 
@@ -195,7 +195,7 @@ fn context_that_moved_merges_from_the_base_or_is_found_once_or_refused() {
     let e = apply(&mut ed, &format!("--base nosuch {}", patch.display())).unwrap_err();
     assert!(e.contains("there's no commit nosuch here"), "{e}");
     assert!(
-        crate::typed::execute(&mut ed, "session-apply --base -x p").unwrap_err().contains("isn't a commit")
+        crate::typed::execute(&mut ed, "workspace-apply --base -x p").unwrap_err().contains("isn't a commit")
     );
 }
 
@@ -367,16 +367,16 @@ fn reviewed_one_by_one_each_file_joins_one_step_and_a_turns_end_leaves_it() {
     assert!(!ops);
     crate::refactor::one_by_one(&mut ed, id, Whose::Yours);
     for (f, after) in [("a.txt", "A\n"), ("b.txt", "B\n")] {
-        pump(&mut ed, "its review", |ed| ed.session.review.as_ref().is_some_and(|r| r.ready));
+        pump(&mut ed, "its review", |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
         assert_eq!(ed.doc().path.as_deref(), Some(dir.join(f).as_path()));
         crate::refactor::turn_over(&mut ed);
-        assert!(ed.session.review.is_some() && ed.session.applying.is_some(), "{f}: still up");
+        assert!(ed.workspace.claude.review.is_some() && ed.workspace.applying.is_some(), "{f}: still up");
         assert!(crate::llm::review_key(&mut ed, Key::plain(Code::Char('y'))));
         pump(&mut ed, "saved", |_| read(dir, f).as_deref() == Some(after));
     }
-    pump(&mut ed, "done", |ed| ed.session.applying.is_none());
+    pump(&mut ed, "done", |ed| ed.workspace.applying.is_none());
     assert!(said(&ed).contains("apply x.patch — 2 files changed"), "{}", said(&ed));
-    let last = ed.session.checkpoints.list.last().map(|c| (c.question.clone(), c.files.len()));
+    let last = ed.workspace.claude.checkpoints.list.last().map(|c| (c.question.clone(), c.files.len()));
     assert_eq!(last, Some(("apply x.patch".into(), 2)), "one step, both files");
     crate::checkpoint::step(&mut ed, true).unwrap();
     pump(&mut ed, "taken back", |_| read(dir, "a.txt").as_deref() == Some("a\n"));
@@ -393,8 +393,9 @@ fn a_protected_name_is_marked_and_never_deleted_and_a_binary_change_is_refused()
     let text = diff_of(dir, &[("Cargo.toml", Some("[package]\nname = \"b\"\n")), ("src/a.rs", Some("b\n"))]);
     let (_p, patch) = patch_file(&text);
     apply(&mut ed, &patch.display().to_string()).unwrap();
-    let protected: Vec<(String, bool)> =
-        (ed.session.applying.as_ref().unwrap().review.iter()).map(|f| (f.rel.clone(), f.protected)).collect();
+    let protected: Vec<(String, bool)> = (ed.workspace.applying.as_ref().unwrap().review.iter())
+        .map(|f| (f.rel.clone(), f.protected))
+        .collect();
     assert_eq!(protected, [("Cargo.toml".into(), true), ("src/a.rs".into(), false)]);
     decline(&mut ed);
     assert_eq!(read(dir, "src/a.rs").as_deref(), Some("a\n"), "declined: as it was");

@@ -32,7 +32,7 @@ fn scene(name: &str, other: bool) -> Scene {
     std::fs::write(dir.join("b.rs"), "fn b() {}\n").unwrap();
     std::fs::write(dir.join("c.rs"), "fn c() {}\nfn d() {}\n").unwrap();
     let mut ed = Editor::new(Config::default());
-    ed.session.root = dir.to_path_buf();
+    ed.workspace.root = dir.to_path_buf();
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     ed.open(&dir.join("a.rs")).unwrap();
@@ -40,13 +40,13 @@ fn scene(name: &str, other: bool) -> Scene {
     let _ = crate::chat::stand_in(&mut c);
     c.state = crate::chat::State::Thinking;
     c.follow.on = true;
-    let a = ed.session.focus;
+    let a = ed.workspace.viewer.focus;
     c.follow.pane = Some(a);
     let g = c.generation();
-    ed.session.chat = Some(c);
+    ed.workspace.claude.chat = Some(c);
     frame(&mut ed);
     press(&mut ed, "<C-w>v");
-    let b = ed.session.focus;
+    let b = ed.workspace.viewer.focus;
     assert_ne!(a, b);
     if other {
         ed.open(&dir.join("b.rs")).unwrap();
@@ -81,7 +81,7 @@ fn read(ed: &mut Editor, g: u64, dir: &Path, file: &str, line: usize) {
 }
 
 fn follow(ed: &Editor) -> &crate::follow::Follow {
-    &ed.session.chat.as_ref().unwrap().follow
+    &ed.workspace.claude.chat.as_ref().unwrap().follow
 }
 
 /// The lines pane `id` drew in the last frame.
@@ -92,8 +92,8 @@ fn drawn(ed: &Editor, id: PaneId) -> Vec<usize> {
 
 /// The file pane `id` shows (the focused one's: the document in front — its view syncs at the event's end).
 fn shows(ed: &Editor, id: PaneId) -> String {
-    let v = ed.session.views.iter().find(|v| v.id == id).unwrap();
-    let d = match id == ed.session.focus {
+    let v = ed.workspace.views.iter().find(|v| v.id == id).unwrap();
+    let d = match id == ed.workspace.viewer.focus {
         true => ed.doc(),
         false => ed.docs.iter().find(|d| d.id == v.doc).unwrap(),
     };
@@ -141,7 +141,7 @@ fn your_keys_in_another_pane_leave_follow_its_own() {
     read(&mut ed, g, &dir, "a.rs", 50);
     let rows = frame(&mut ed);
     assert!(!follow(&ed).paused && follow(&ed).pane == Some(a));
-    assert_eq!(ed.session.focus, b, "the keys stay in your pane");
+    assert_eq!(ed.workspace.viewer.focus, b, "the keys stay in your pane");
     assert_eq!(ed.doc().selection(), &mine, "your selection where you left it");
     assert!(drawn(&ed, a).contains(&49), "the followed pane on the line read: {:?}", drawn(&ed, a));
     assert_eq!((drawn(&ed, b)[0], ed.cursor_line()), (0, 3), "your pane's view yours");
@@ -223,7 +223,7 @@ fn c_f_moves_follow_to_the_pane_you_are_in() {
     assert!(!follow(&ed).on && said(&ed, "follow off"));
     // A turn begun with the keys in the other pane takes that one
     press(&mut ed, "<C-w>h");
-    ed.session.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+    ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
     assert!(crate::chat::submit(&mut ed, "next", None, None), "sent");
     assert_eq!(follow(&ed).pane, Some(a), "a turn takes the pane with the code's keys");
 }
@@ -282,7 +282,7 @@ fn in_the_followed_pane_a_move_of_yours_takes_over() {
     let Scene { mut ed, dir, g, a, .. } = scene("pane-follow-in", true);
     read(&mut ed, g, &dir, "a.rs", 40);
     press(&mut ed, "<C-w>h");
-    assert_eq!(ed.session.focus, a);
+    assert_eq!(ed.workspace.viewer.focus, a);
     assert!(!follow(&ed).paused, "the hop isn't a move");
     assert_eq!(crate::follow::view_line(&ed), Some(39), "led here as ever");
     press(&mut ed, "j");
@@ -302,7 +302,7 @@ fn zoomed_on_the_same_file_your_view_stays() {
     writing_into(&mut ed, g, "let x45 = 45;\n", "let x45 = 45;\nlet y = 0;\nlet z = 0;\n", 12);
     frame(&mut ed);
     assert_eq!(
-        (ed.session.focus, ed.doc().top, ed.cursor_line()),
+        (ed.workspace.viewer.focus, ed.doc().top, ed.cursor_line()),
         (b, top, 40),
         "your zoomed view untouched"
     );
@@ -340,14 +340,14 @@ fn your_cursor_elsewhere_doesnt_hold_the_writing_back() {
     press(&mut ed, ":21<ret>");
     assert_eq!(ed.cursor_line(), 20);
     // (follow off while it's written: nothing moves the pane before the look)
-    ed.session.chat.as_mut().unwrap().follow.on = false;
+    ed.workspace.claude.chat.as_mut().unwrap().follow.on = false;
     frame(&mut ed);
     let new: String = std::iter::once("let x21 = 21;\n".to_string())
         .chain((0..20).map(|i| format!("let w{i} = {i};\n")))
         .collect();
     writing_into(&mut ed, g, "let x21 = 21;\n", &new, 12);
     frame(&mut ed);
-    ed.session.chat.as_mut().unwrap().follow.on = true;
+    ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
     let past = ed.in_pane(a, |ed| super::past_sight(ed));
     assert_eq!(past.map(|l| l.start), Some(20), "its head below the followed pane's bottom");
 }

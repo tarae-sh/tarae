@@ -738,8 +738,9 @@ mod tests {
         std::fs::write(&file, "one\ntwo\n").unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
         let id = crate::notes::add(&mut ed, &file, 1..2, crate::notes::By::You, "on two");
-        let note =
-            |ed: &crate::editor::Editor| ed.session.notes.list.iter().find(|n| n.id == id).cloned().unwrap();
+        let note = |ed: &crate::editor::Editor| {
+            ed.workspace.claude.notes.list.iter().find(|n| n.id == id).cloned().unwrap()
+        };
         // (its lines read on a worker, the file not open — in: nothing left on its way)
         settle_until(&mut ed, |ed| note(ed).pinned.is_some());
         assert!(note(&ed).at.is_none(), "no mark while its file isn't open");

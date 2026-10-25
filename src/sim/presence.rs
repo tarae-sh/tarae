@@ -30,7 +30,7 @@ fn presence_follows_sessions_across_checkouts() {
 struct World {
     /// The second checkout (the session behind's) and its session — None while it's closed.
     fix: PathBuf,
-    session: Option<crate::event::SessionId>,
+    session: Option<crate::event::WorkspaceId>,
     turns: usize,
 }
 
@@ -49,7 +49,7 @@ fn run(choices: Choices) -> Vec<String> {
     let fix = std::fs::canonicalize(dir.join("fix")).unwrap();
     std::fs::write(fix.join("a.rs"), format!("// fix\n{TEXT}")).unwrap();
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = main.clone();
+    ed.workspace.root = main.clone();
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     ed.open(&main.join("a.rs")).unwrap();
@@ -66,21 +66,21 @@ fn run(choices: Choices) -> Vec<String> {
 
 /// The second checkout's session, behind, its Claude in a turn (as the stand-in has it).
 fn open(ed: &mut Editor, w: &mut World) {
-    let id = ed.session_add(w.fix.clone());
-    if let Some(l) = ed.session_by_id(id) {
+    let id = ed.workspace_add(w.fix.clone());
+    if let Some(l) = ed.workspace_by_id(id) {
         l.name = "fix".into();
         let mut c = crate::chat::Chat::new();
         let _ = crate::chat::stand_in(&mut c);
         c.state = crate::chat::State::Thinking;
         c.follow.on = true;
-        l.chat = Some(c);
+        l.claude.chat = Some(c);
     }
     w.session = Some(id);
 }
 
 fn chat<'a>(ed: &'a mut Editor, w: &World) -> Option<&'a mut crate::chat::Chat> {
     let id = w.session?;
-    ed.sessions.iter_mut().find(|l| l.id == id)?.chat.as_mut()
+    ed.workspaces.iter_mut().find(|l| l.id == id)?.claude.chat.as_mut()
 }
 
 fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
@@ -153,7 +153,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
             if w.session.take().is_none() {
                 return "(no session to close)".into();
             }
-            let _ = ed.session_close(&w.fix.clone());
+            let _ = ed.workspace_close(&w.fix.clone());
             "its session closes".into()
         }
         7 => {
@@ -227,24 +227,24 @@ fn held(ed: &Editor, w: &World) -> Result<(), String> {
         return Err("a mark of a session closed".into());
     }
     // (what was gathered lags a session closed until the next event: what's drawn and said doesn't)
-    if ed.sessions.is_empty() && (!marks.is_empty() || crate::presence::at(ed, ed.session.id).is_some()) {
+    if ed.workspaces.is_empty() && (!marks.is_empty() || crate::presence::at(ed, ed.workspace.id).is_some()) {
         return Err("a presence drawn with one session open".into());
     }
     // (the line maps kept: each for a buffer in sight)
-    let sight: Vec<_> = ed.session.views.iter().map(|v| v.doc).chain([ed.doc().id]).collect();
+    let sight: Vec<_> = ed.workspace.views.iter().map(|v| v.doc).chain([ed.doc().id]).collect();
     if let Some(d) = ed.presence.mapped().into_iter().find(|d| !sight.contains(d)) {
         return Err(format!("a line map kept for a buffer out of sight: {d:?}"));
     }
     Ok(())
 }
 
-fn chat_of(ed: &Editor, id: crate::event::SessionId) -> Option<&crate::chat::Chat> {
-    std::iter::once(&ed.session).chain(&ed.sessions).find(|l| l.id == id)?.chat.as_ref()
+fn chat_of(ed: &Editor, id: crate::event::WorkspaceId) -> Option<&crate::chat::Chat> {
+    std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|l| l.id == id)?.claude.chat.as_ref()
 }
 
 fn print(ed: &Editor) -> String {
     let marks = crate::presence::marks(ed, ed.doc());
     let said: Vec<String> =
         marks.iter().map(|m| format!("{} {:?} {}", m.name, m.lines, m.act.word())).collect();
-    format!("{} sessions · marks [{}]", ed.sessions.len() + 1, said.join(", "))
+    format!("{} sessions · marks [{}]", ed.workspaces.len() + 1, said.join(", "))
 }

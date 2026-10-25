@@ -542,7 +542,7 @@ impl Editor {
                 }
                 // (the removed rows' lines: in a pane of the last frame?)
                 let gone = |l: usize| d.git_hunks.iter().any(|h| h.removed > 0 && h.lines.start == l);
-                let views = &ed.session.views;
+                let views = &ed.workspace.views;
                 let seen = ed.screen.panes.iter().any(|(view, _, _, rows)| {
                     views.iter().any(|v| v.id == *view && v.doc == id) && rows.iter().any(|r| gone(r.0))
                 });

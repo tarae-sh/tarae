@@ -203,7 +203,7 @@ fn a_saves_temp_file_isnt_the_runs() {
 fn a_runs_changes_wait_for_a_save_still_being_written() {
     let dir = repo("saving");
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-    ed.session.root = dir.clone();
+    ed.workspace.root = dir.clone();
     ed.config.llm.sandbox = false;
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
@@ -211,9 +211,9 @@ fn a_runs_changes_wait_for_a_save_still_being_written() {
     ed.open(&dir.join("src/a.txt")).unwrap();
     let doc = ed.doc().id;
     crate::chat::open(&mut ed);
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     let generation = c.generation();
     let answered = || {
         crate::tools::ANSWERED
@@ -235,7 +235,7 @@ fn a_runs_changes_wait_for_a_save_still_being_written() {
     crate::tools::guard_and_go(&mut ed, crate::tools::For::Claude(call), job, false, Default::default());
     pump(
         &mut ed,
-        &|ed| ed.session.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running),
+        &|ed| ed.workspace.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running),
         "it runs",
     );
     let d = ed.docs.iter_mut().find(|d| d.id == doc).unwrap();
@@ -252,7 +252,7 @@ fn a_runs_changes_wait_for_a_save_still_being_written() {
         changed.is_some_and(|l| l.starts_with("It changed in the checkout: made.txt (new) —")),
         "the save isn't the run's: {report}"
     );
-    let turn: Vec<_> = ed.session.checkpoints.turn.iter().map(|t| t.path.clone()).collect();
+    let turn: Vec<_> = ed.workspace.claude.checkpoints.turn.iter().map(|t| t.path.clone()).collect();
     assert_eq!(turn, [dir.join("made.txt")]);
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -704,13 +704,13 @@ fn perf_snapshot_around_a_check() {
 fn a_runs_changes_join_the_turn_and_undo_takes_them_back() {
     let dir = repo("undo");
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-    ed.session.root = dir.clone();
+    ed.workspace.root = dir.clone();
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     crate::chat::open(&mut ed);
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     let generation = c.generation();
     let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool, what: &str| {
         let end = Instant::now() + crate::test_results::PATIENCE;
@@ -742,17 +742,17 @@ fn a_runs_changes_join_the_turn_and_undo_takes_them_back() {
                 .all(|n| report.contains(n)),
         "{report}"
     );
-    let turn = &ed.session.checkpoints.turn;
+    let turn = &ed.workspace.claude.checkpoints.turn;
     assert_eq!(turn.len(), 4, "{turn:#?}");
     assert!(turn.iter().all(|t| t.unseen), "{turn:#?}");
     let gone = turn.iter().find(|t| t.path.ends_with("gone.txt")).unwrap();
     assert!(gone.gone && gone.before.as_ref().is_some_and(|b| b == "kept-marker\n"), "{gone:?}");
     assert!(turn.iter().any(|t| t.path.ends_with("b.bin") && t.bytes.is_some() && t.gone));
     // The turn ends: a checkpoint (its review not open here — the files are what's checked)
-    ed.session.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+    ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
     assert!(crate::checkpoint::gather(&mut ed, "tidy up"), "written unseen: gathered");
-    pump(&mut ed, &|ed| ed.session.checkpoints.list.len() == 1, "its checkpoint");
-    assert!(!ed.session.checkpoints.list[0].seen, "reviewed at the turn's end, like Claude's edits");
+    pump(&mut ed, &|ed| ed.workspace.claude.checkpoints.list.len() == 1, "its checkpoint");
+    assert!(!ed.workspace.claude.checkpoints.list[0].seen, "reviewed at the turn's end, like Claude's edits");
     // space u: back as they were
     crate::checkpoint::step(&mut ed, true).unwrap();
     pump(&mut ed, &|_| dir.join("b.bin").exists(), "the blob written back");
@@ -789,13 +789,13 @@ fn what_came_with_heads_move_isnt_the_turns() {
     let short = String::from_utf8(short.unwrap().stdout).unwrap().trim().to_string();
     let said = format!("HEAD moved: fast-forward to {short}");
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-    ed.session.root = dir.clone();
+    ed.workspace.root = dir.clone();
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     crate::chat::open(&mut ed);
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     let generation = c.generation();
     let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool, what: &str| {
         let end = Instant::now() + crate::test_results::PATIENCE;
@@ -828,26 +828,26 @@ fn what_came_with_heads_move_isnt_the_turns() {
     );
     assert!(!report.contains("came.txt"), "{report}");
     // The turn: the run's own changes only — a.txt's from what the move brought
-    let turn = &ed.session.checkpoints.turn;
+    let turn = &ed.workspace.claude.checkpoints.turn;
     let mut paths: Vec<&Path> = turn.iter().map(|t| t.path.strip_prefix(&dir).unwrap()).collect();
     paths.sort();
     assert_eq!(paths, [Path::new("src/a.txt"), Path::new("untracked.txt")], "{turn:#?}");
     let a = turn.iter().find(|t| t.path.ends_with("a.txt")).unwrap();
     assert_eq!(a.before.as_ref().map(|b| b.to_string()).as_deref(), Some("one\nSIDE\n"));
     let saids = |h: &[HeadMove]| h.iter().map(HeadMove::said).collect::<Vec<_>>();
-    assert_eq!(saids(&ed.session.checkpoints.head), std::slice::from_ref(&said));
+    assert_eq!(saids(&ed.workspace.claude.checkpoints.head), std::slice::from_ref(&said));
     // Said in the chat
-    let chat = ed.session.chat.as_ref().unwrap();
+    let chat = ed.workspace.claude.chat.as_ref().unwrap();
     assert!(chat.msgs.iter().any(|m| m.role == crate::chat::Role::Note && m.text == said));
     // The turn ends: its checkpoint has the two files and says the move — at the head of its review
-    ed.session.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+    ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
     assert!(crate::checkpoint::gather(&mut ed, "bring main in"), "written unseen: gathered");
-    pump(&mut ed, &|ed| ed.session.checkpoints.list.len() == 1, "its checkpoint");
-    let cp = &ed.session.checkpoints.list[0];
+    pump(&mut ed, &|ed| ed.workspace.claude.checkpoints.list.len() == 1, "its checkpoint");
+    let cp = &ed.workspace.claude.checkpoints.list[0];
     assert_eq!((cp.files.len(), saids(&cp.head)), (2, vec![said.clone()]));
-    assert!(ed.session.checkpoints.head.is_empty(), "the next turn starts with none");
+    assert!(ed.workspace.claude.checkpoints.head.is_empty(), "the next turn starts with none");
     crate::codereview::start_turn(&mut ed, 0);
-    pump(&mut ed, &|ed| ed.session.code_review.as_ref().is_some_and(|r| r.files.len() == 2), "its review");
+    pump(&mut ed, &|ed| ed.workspace.code_review.as_ref().is_some_and(|r| r.files.len() == 2), "its review");
     // (said as it opens too: a pane too narrow for the rail shows no head)
     let toast = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
     let not = format!("review: 2 files Claude changed (not the 1 file that came with HEAD → {short})");
@@ -970,13 +970,13 @@ fn a_merge_and_a_move_back_keep_their_files() {
 fn an_edit_and_its_commit_in_one_run_stay_the_turns() {
     let dir = repo("editcommit");
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-    ed.session.root = dir.clone();
+    ed.workspace.root = dir.clone();
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     crate::chat::open(&mut ed);
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     let generation = c.generation();
     let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool, what: &str| {
         let end = Instant::now() + crate::test_results::PATIENCE;
@@ -1004,16 +1004,16 @@ fn an_edit_and_its_commit_in_one_run_stay_the_turns() {
     // Said to Claude and in the chat as the run's own; its file the turn's
     assert!(report.contains(&format!("{said}.")), "{report}");
     assert!(report.contains("It changed in the checkout: src/a.txt"), "{report}");
-    let chat = ed.session.chat.as_ref().unwrap();
+    let chat = ed.workspace.claude.chat.as_ref().unwrap();
     assert!(chat.msgs.iter().any(|m| m.role == crate::chat::Role::Note && m.text == said));
-    let turn = &ed.session.checkpoints.turn;
+    let turn = &ed.workspace.claude.checkpoints.turn;
     assert_eq!(turn.iter().map(|t| t.path.clone()).collect::<Vec<_>>(), [dir.join("src/a.txt")]);
     assert_eq!(turn[0].before.as_ref().map(|b| b.to_string()).as_deref(), Some("one\ntwo\n"));
     // The turn ends: its review has the file; `space u` takes the edit back
-    ed.session.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+    ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
     assert!(crate::checkpoint::gather(&mut ed, "fix and commit"), "written unseen: gathered");
-    pump(&mut ed, &|ed| ed.session.checkpoints.list.len() == 1, "its checkpoint");
-    assert_eq!(ed.session.checkpoints.list[0].files.len(), 1);
+    pump(&mut ed, &|ed| ed.workspace.claude.checkpoints.list.len() == 1, "its checkpoint");
+    assert_eq!(ed.workspace.claude.checkpoints.list[0].files.len(), 1);
     crate::checkpoint::step(&mut ed, true).unwrap();
     pump(&mut ed, &|_| std::fs::read_to_string(dir.join("src/a.txt")).unwrap() == "one\ntwo\n", "undone");
     std::fs::remove_dir_all(&dir).ok();
@@ -1028,14 +1028,14 @@ fn checks_and_tests_are_covered_and_ignored_deletions_said() {
     let dir = repo("checks");
     std::fs::write(dir.join("del.mk"), "all:\n\trm -f src/gone.txt .env.local\n").unwrap();
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-    ed.session.root = dir.clone();
+    ed.workspace.root = dir.clone();
     ed.config.llm.sandbox = false;
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     crate::chat::open(&mut ed);
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     let generation = c.generation();
     let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool, what: &str| {
         let end = Instant::now() + crate::test_results::PATIENCE;
@@ -1087,12 +1087,13 @@ fn checks_and_tests_are_covered_and_ignored_deletions_said() {
     pump(&mut ed, &|_| answered(2).is_some(), "the tests ran");
     let report = answered(2).unwrap().unwrap();
     assert!(report.contains("It changed in the checkout: src/a.txt (deleted)"), "{report}");
-    let turn: Vec<_> = ed.session.checkpoints.turn.iter().map(|t| (t.path.clone(), t.gone)).collect();
+    let turn: Vec<_> =
+        ed.workspace.claude.checkpoints.turn.iter().map(|t| (t.path.clone(), t.gone)).collect();
     assert_eq!(turn, [(dir.join("src/gone.txt"), true), (dir.join("src/a.txt"), true)]);
     // space u: both back
-    ed.session.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+    ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
     assert!(crate::checkpoint::gather(&mut ed, "run the tests"));
-    pump(&mut ed, &|ed| ed.session.checkpoints.list.len() == 1, "its checkpoint");
+    pump(&mut ed, &|ed| ed.workspace.claude.checkpoints.list.len() == 1, "its checkpoint");
     crate::checkpoint::step(&mut ed, true).unwrap();
     assert_eq!(std::fs::read_to_string(dir.join("src/gone.txt")).unwrap(), "kept-marker\n");
     assert_eq!(std::fs::read_to_string(dir.join("src/a.txt")).unwrap(), "one\ntwo\n");
@@ -1107,14 +1108,14 @@ fn checks_and_tests_are_covered_and_ignored_deletions_said() {
 fn a_protected_name_a_run_made_is_asked_about_before_the_next_run() {
     let dir = repo("made");
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-    ed.session.root = dir.clone();
+    ed.workspace.root = dir.clone();
     ed.config.llm.sandbox = false;
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     crate::chat::open(&mut ed);
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     let generation = c.generation();
     let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool, what: &str| {
         let end = Instant::now() + crate::test_results::PATIENCE;
@@ -1155,7 +1156,7 @@ fn a_protected_name_a_run_made_is_asked_about_before_the_next_run() {
     pump(&mut ed, &|ed| !ed.offers.is_empty(), "the card again");
     ed.offer_accept();
     pump(&mut ed, &|_| answered(3).is_some(), "the third run");
-    assert!(dir.join("three").exists() && ed.session.made_protected.is_empty());
+    assert!(dir.join("three").exists() && ed.workspace.made_protected.is_empty());
     run(&mut ed, 4, "touch four .envrc sub/build.rs");
     pump(&mut ed, &|_| answered(4).is_some(), "the fourth run, unasked");
     assert!(dir.join("four").exists());
@@ -1176,14 +1177,14 @@ fn a_protected_name_a_run_made_is_asked_about_before_the_next_run() {
 /// harmless, in that folder) — and its chat's generation.
 fn turn_in(dir: &Path) -> (crate::editor::Editor, u64) {
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-    ed.session.root = dir.to_path_buf();
+    ed.workspace.root = dir.to_path_buf();
     ed.config.llm.sandbox = false;
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     crate::chat::open(&mut ed);
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     let generation = c.generation();
     (ed, generation)
 }
@@ -1244,13 +1245,13 @@ fn your_task_and_preflight_wait_on_what_claudes_run_made() {
         full: false,
     };
     // (`p` on the bring card: `n` here says the session wasn't brought, and nothing waits to bring it)
-    ed.session.bring_after_preflight = true;
+    ed.workspace.bring_after_preflight = true;
     let runs = ed.task_generation;
     ed.preflight_run(vec![step("touch checked")], crate::preflight::Set::Quick).unwrap();
     pump_until(&mut ed, &|ed| !ed.offers.is_empty(), "the card before the preflight, to bring");
     ed.offer_dismiss();
-    assert!(!ed.session.bring_after_preflight, "nothing waits to bring it");
-    assert!(ed.session.preflight.is_none() && ed.task_generation == runs, "no preflight started");
+    assert!(!ed.workspace.bring_after_preflight, "nothing waits to bring it");
+    assert!(ed.workspace.preflight.is_none() && ed.task_generation == runs, "no preflight started");
     let said = ed.toasts.iter().map(|t| t.text.as_str()).collect::<Vec<_>>().join(" | ");
     assert!(said.contains("not brought — the preflight didn't run"), "{said}");
     ed.preflight_run(vec![step("touch checked")], crate::preflight::Set::Quick).unwrap();
@@ -1261,7 +1262,7 @@ fn your_task_and_preflight_wait_on_what_claudes_run_made() {
     settled(&mut ed);
     ed.offer_accept();
     let ended = |ed: &crate::editor::Editor| {
-        ed.session.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
+        ed.workspace.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
     };
     pump_until(&mut ed, &|ed| dir.join("checked").exists() && ended(ed), "the preflight");
     // Kept: your task runs unasked
@@ -1340,8 +1341,10 @@ fn the_cards_answers_view_remove_and_keep_by_content() {
     assert!(dir.join("two").exists(), "it ran");
     assert!(!dir.join("sub/Cargo.toml").exists() && std::fs::symlink_metadata(dir.join("sub/up")).is_err());
     assert!(dir.join("src/a.txt").exists(), "not what the link led to");
-    assert!(ed.session.made_protected.is_empty());
-    assert!(ed.session.checkpoints.tell.iter().any(|t| t.contains("The user removed sub/Cargo.toml")));
+    assert!(ed.workspace.made_protected.is_empty());
+    assert!(
+        ed.workspace.claude.checkpoints.tell.iter().any(|t| t.contains("The user removed sub/Cargo.toml"))
+    );
     // y: kept as it is
     claude_runs(&mut ed, me, 3, "printf 'all:\\n' > Makefile");
     pump_until(&mut ed, &|_| answered(3).is_some(), "the third run");
@@ -1353,13 +1356,13 @@ fn the_cards_answers_view_remove_and_keep_by_content() {
     // Made again, the same: not asked
     claude_runs(&mut ed, me, 5, "printf 'all:\\n' > Makefile");
     pump_until(&mut ed, &|_| answered(5).is_some(), "the fifth run");
-    assert!(ed.session.made_protected.is_empty(), "kept, holding the same");
+    assert!(ed.workspace.made_protected.is_empty(), "kept, holding the same");
     // Made again, holding something else: asked
     claude_runs(&mut ed, me, 6, "rm Makefile");
     pump_until(&mut ed, &|_| answered(6).is_some(), "the sixth run");
     claude_runs(&mut ed, me, 7, "printf 'all: x\\n' > Makefile");
     pump_until(&mut ed, &|_| answered(7).is_some(), "the seventh run");
-    assert_eq!(paths(&ed.session.made_protected), ["Makefile"], "changed: asked again");
+    assert_eq!(paths(&ed.workspace.made_protected), ["Makefile"], "changed: asked again");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -1370,13 +1373,13 @@ fn the_cards_answers_view_remove_and_keep_by_content() {
 fn a_stopped_run_and_one_past_its_turn_are_kept_too() {
     let dir = repo("stopped");
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-    ed.session.root = dir.clone();
+    ed.workspace.root = dir.clone();
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     crate::chat::open(&mut ed);
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     let generation = c.generation();
     let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool, what: &str| {
         let end = Instant::now() + crate::test_results::PATIENCE;
@@ -1395,25 +1398,25 @@ fn a_stopped_run_and_one_past_its_turn_are_kept_too() {
         ed.offer_accept();
     };
     let running = |ed: &crate::editor::Editor| {
-        ed.session.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running)
+        ed.workspace.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running)
     };
     // Stopped by the user after it deleted a file
     run(&mut ed, 1, "rm src/gone.txt && sleep 30");
     pump(&mut ed, &|ed| running(ed) && !dir.join("src/gone.txt").exists(), "it deleted it");
     ed.task_close();
-    pump(&mut ed, &|ed| !ed.session.checkpoints.turn.is_empty(), "what it changed, recorded");
-    let t = &ed.session.checkpoints.turn[0];
+    pump(&mut ed, &|ed| !ed.workspace.claude.checkpoints.turn.is_empty(), "what it changed, recorded");
+    let t = &ed.workspace.claude.checkpoints.turn[0];
     assert!(t.path.ends_with("src/gone.txt") && t.gone && t.unseen, "{t:?}");
     // Its turn over while it runs: a checkpoint of its own
     run(&mut ed, 2, "sleep 0.4 && printf 'late\\n' > src/late.txt");
     pump(&mut ed, &running, "it runs");
-    ed.session.chat.as_mut().unwrap().state = crate::chat::State::Idle;
-    pump(&mut ed, &|ed| !ed.session.checkpoints.list.is_empty(), "a checkpoint of its own");
-    let cp = &ed.session.checkpoints.list[0];
+    ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+    pump(&mut ed, &|ed| !ed.workspace.claude.checkpoints.list.is_empty(), "a checkpoint of its own");
+    let cp = &ed.workspace.claude.checkpoints.list[0];
     assert!(cp.question.starts_with("ran `sleep 0.4") && !cp.seen, "{cp:?}");
     assert!(cp.files.len() == 1 && cp.files.paths()[0].ends_with("src/late.txt"), "{cp:?}");
-    assert_eq!(ed.session.checkpoints.turn.len(), 1, "the turn in flight keeps only its own");
-    let row = ed.session.chat.as_ref().unwrap().msgs.last().unwrap().text.clone();
+    assert_eq!(ed.workspace.claude.checkpoints.turn.len(), 1, "the turn in flight keeps only its own");
+    let row = ed.workspace.claude.chat.as_ref().unwrap().msgs.last().unwrap().text.clone();
     assert!(row.contains("late.txt after the turn"), "{row}");
     std::fs::remove_dir_all(&dir).ok();
 }

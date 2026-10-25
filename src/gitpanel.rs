@@ -561,7 +561,11 @@ pub struct Committing {
 impl Editor {
     /// Where git runs: the side panel's folder, else the editor's root.
     pub(crate) fn git_cwd(&self) -> PathBuf {
-        self.session.sidebar.as_ref().map_or_else(|| self.session.root.clone(), |s| s.root().to_path_buf())
+        self.workspace
+            .viewer
+            .sidebar
+            .as_ref()
+            .map_or_else(|| self.workspace.root.clone(), |s| s.root().to_path_buf())
     }
 
     /// `space g` — the side panel's git tab, with the keys; from the code, on the row for what's under the
@@ -569,25 +573,25 @@ impl Editor {
     /// review the tab and the review's rail take turns in the column: again = the rail back, with the keys
     /// (so the next one doesn't land in the code — `d` there would delete the selected change).
     pub fn git_panel(&mut self) {
-        use crate::session::At;
-        if self.session.code_review.is_some() && !self.review_rail_up() {
+        use crate::workspace::At;
+        if self.workspace.code_review.is_some() && !self.review_rail_up() {
             return crate::codereview::rail_focus(self);
         }
-        let review = self.session.code_review.is_some();
-        if let Some(r) = self.session.code_review.as_mut() {
+        let review = self.workspace.code_review.is_some();
+        if let Some(r) = self.workspace.code_review.as_mut() {
             r.behind = true;
             // (a tab focused behind the rail would close instead of coming to the front)
-            self.session.leave(At::Rail);
-            self.session.leave(At::Side);
-        } else if self.session.is_at(At::Side)
-            && self.session.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Git)
+            self.workspace.leave(At::Rail);
+            self.workspace.leave(At::Side);
+        } else if self.workspace.is_at(At::Side)
+            && self.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Git)
         {
-            self.session.sidebar = None;
+            self.workspace.viewer.sidebar = None;
             return;
         }
         let aim = self.doc().path.clone().map(|p| (p, self.cursor_line()));
         self.sidebar_show(crate::sidebar::Mode::Git);
-        if let Some(s) = self.session.sidebar.as_mut() {
+        if let Some(s) = self.workspace.viewer.sidebar.as_mut() {
             s.aim = aim;
             // (no quick `s`/`d` on the change under the cursor in a review: it's against the review's base)
             s.from_code = !review;
@@ -619,7 +623,7 @@ impl Editor {
         let args: &'static [&'static str] =
             if pop { &["stash", "pop"] } else { &["stash", "push", "--include-untracked"] };
         self.git_hooked("stash", hooks::STASH, move |ed, pre| {
-            if ed.session.git_status.is_none() {
+            if ed.workspace.git_status.is_none() {
                 return ed.set_warning("not a git repository");
             }
             // (whether it stashed: `refs/stash` before and after — never git's words, in the user's language here)
@@ -663,8 +667,8 @@ impl Editor {
     /// their own, the changed ones washed); the keys gone from the tab, the gutter is the index's again. Only a
     /// buffer with no other base: a review's file or one under `:diff` keeps that, and the tab ends only its own.
     pub fn git_inline_sync(&mut self) {
-        let tab = self.session.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Git)
-            && self.session.is_at(crate::session::At::Side);
+        let tab = self.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Git)
+            && self.workspace.is_at(crate::workspace::At::Side);
         let doc = self.doc();
         let changed = |st: &Status| {
             let rel = doc.path.as_deref().and_then(|p| p.strip_prefix(&st.top).ok());
@@ -673,7 +677,7 @@ impl Editor {
         let wanted = (tab
             && !doc.own_base()
             && doc.git_base.is_some()
-            && self.session.git_status.as_ref().is_some_and(changed))
+            && self.workspace.git_status.as_ref().is_some_and(changed))
         .then_some(doc.id);
         for d in self.docs.iter_mut() {
             if Some(d.id) == wanted {
@@ -691,13 +695,13 @@ impl Editor {
             }
         }
         // A file the tab's selection moved onto: its first change selected and centred once its diff is there
-        let Some(id) = self.session.sidebar.as_ref().and_then(|s| s.land) else { return };
+        let Some(id) = self.workspace.viewer.sidebar.as_ref().and_then(|s| s.land) else { return };
         let d = self.doc();
         let (here, first) = (tab && d.id == id, d.git_hunks.first().cloned());
         if here && (d.git_base.is_none() || d.loading || d.git_version != d.version()) {
             return;
         }
-        if let Some(s) = self.session.sidebar.as_mut() {
+        if let Some(s) = self.workspace.viewer.sidebar.as_mut() {
             s.land = None;
         }
         if here && let Some(h) = first {
@@ -710,7 +714,7 @@ impl Editor {
     /// slot (`open_preview`; `enter` on its row makes it a buffer of its own) — at its first change once its diff is there (`land`: a changed file
     /// the index has, `git_inline_sync`). A deleted one has nothing to show: its row says `D`.
     pub(crate) fn git_show_file(&mut self, rel: &str, land: bool) {
-        let Some(top) = self.session.git_status.as_ref().map(|s| s.top.clone()) else { return };
+        let Some(top) = self.workspace.git_status.as_ref().map(|s| s.top.clone()) else { return };
         let path = top.join(rel);
         if !path.is_file() {
             return;
@@ -719,7 +723,7 @@ impl Editor {
             return self.set_error(format!("{e:#}"));
         }
         let id = self.doc().id;
-        if let Some(s) = self.session.sidebar.as_mut() {
+        if let Some(s) = self.workspace.viewer.sidebar.as_mut() {
             s.land = land.then_some(id);
         }
     }
@@ -727,7 +731,7 @@ impl Editor {
     /// Something changed files outside the editor's own saves — Claude's edit, write or command, a turn's
     /// end (#29): the git tab, when it's shown, reads the status again.
     pub fn git_tab_follow(&mut self) {
-        if self.session.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Git) {
+        if self.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Git) {
             self.git_refresh();
         }
     }
@@ -753,17 +757,17 @@ impl Editor {
     /// A status read starting: where it reads, the session's base, and its number (only the latest lands).
     fn git_read(&mut self) -> (PathBuf, Option<String>, u64) {
         let cwd = self.git_cwd();
-        self.session.git_reads += 1;
+        self.workspace.git_reads += 1;
         // (a session's base, as bring takes it — in its own checkout only)
-        let base = (cwd == self.session.root && self.session.id != 0)
-            .then(|| self.session.base.clone().or_else(|| self.start_branch()))
+        let base = (cwd == self.workspace.root && self.workspace.id != crate::event::WorkspaceId::HOME)
+            .then(|| self.workspace.base.clone().or_else(|| self.start_branch()))
             .flatten();
-        (cwd, base, self.session.git_reads)
+        (cwd, base, self.workspace.git_reads)
     }
 
     /// What status read `read` found — dropped when a later one started.
     fn git_read_landed(&mut self, read: u64, result: Result<Status, String>) {
-        if read != self.session.git_reads {
+        if read != self.workspace.git_reads {
             return;
         }
         match result {
@@ -772,11 +776,12 @@ impl Editor {
                 for r in &st.asks {
                     self.git_trust_check(r);
                 }
-                self.session.git_status = Some(st);
+                self.workspace.git_status = Some(st);
             }
             Err(e) => {
-                self.session.git_status = None;
-                if self.session.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Git) {
+                self.workspace.git_status = None;
+                if self.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Git)
+                {
                     self.set_warning(format!("git: {e}"));
                 }
             }
@@ -786,7 +791,7 @@ impl Editor {
     /// Queue work in the repository (on a worker, one at a time — two `git add`s at once fight over the
     /// index lock); `done` says how it went, then the status is read again.
     fn git_do(&mut self, work: GitWork, done: GitDone) {
-        if self.session.git_status.is_none() {
+        if self.workspace.git_status.is_none() {
             return self.set_warning("not a git repository");
         }
         self.git_queued(work, done);
@@ -796,7 +801,7 @@ impl Editor {
     /// line while it runs (`disk::DiskBatch`, frictions29 #68) — never a push's or a stage's (the review of
     /// frictions36: a slow push held the session's reloads, then blamed git for them).
     fn git_do_rewriting(&mut self, work: GitWork, done: GitDone) {
-        if self.session.git_status.is_none() {
+        if self.workspace.git_status.is_none() {
             return self.set_warning("not a git repository");
         }
         self.git_queued_as(true, work, done);
@@ -818,7 +823,7 @@ impl Editor {
         work: impl FnOnce(&Path) -> T + Send + 'static,
         done: impl FnOnce(&mut Editor, T) + Send + 'static,
     ) {
-        self.session.git_queue.push_back((
+        self.workspace.git_queue.push_back((
             rewrites,
             Box::new(move |top| {
                 let result = work(top);
@@ -829,12 +834,12 @@ impl Editor {
     }
 
     fn git_next(&mut self) {
-        if self.session.git_busy {
+        if self.workspace.git_busy {
             return;
         }
-        let top = self.session.git_status.as_ref().map_or_else(|| self.git_cwd(), |s| s.top.clone());
-        let Some((rewrites, job)) = self.session.git_queue.pop_front() else { return };
-        self.session.git_busy = true;
+        let top = self.workspace.git_status.as_ref().map_or_else(|| self.git_cwd(), |s| s.top.clone());
+        let Some((rewrites, job)) = self.workspace.git_queue.pop_front() else { return };
+        self.workspace.git_busy = true;
         // (what it rewrites in the checkout said as one line, from its start — frictions29 #68)
         let token = crate::disk::batch_token();
         if rewrites {
@@ -843,11 +848,11 @@ impl Editor {
         self.events.jobs().spawn(move || {
             let done = job(&top);
             move |ed: &mut Editor| {
-                ed.session.git_busy = false;
+                ed.workspace.git_busy = false;
                 ed.disk_batch_end(token);
                 done(ed);
                 ed.git_next();
-                if ed.session.git_queue.is_empty() {
+                if ed.workspace.git_queue.is_empty() {
                     ed.git_refresh();
                     ed.git_reload_bases();
                 }
@@ -889,7 +894,7 @@ impl Editor {
     /// one reloads, its old text one `u` away), the untracked files it lists are deleted, file by file (and
     /// folders that end up empty) — never a folder whole, never the repository.
     pub fn git_discard(&mut self, rel: &str) {
-        let Some(st) = self.session.git_status.as_ref() else { return };
+        let Some(st) = self.workspace.git_status.as_ref() else { return };
         let under = |e: &&Entry| rel.is_empty() || e.rel == rel || e.rel.starts_with(&format!("{rel}/"));
         let tracked: Vec<String> =
             st.unstaged.iter().filter(under).filter(|e| e.letter != '?').map(|e| e.rel.clone()).collect();
@@ -899,12 +904,12 @@ impl Editor {
             return;
         }
         let fresh = self
-            .session
+            .workspace
             .git_discard_asked
             .as_ref()
             .is_some_and(|(r, t)| r == rel && t.elapsed().as_secs() < 3);
         if !fresh {
-            self.session.git_discard_asked = Some((rel.to_string(), Instant::now()));
+            self.workspace.git_discard_asked = Some((rel.to_string(), Instant::now()));
             let what = if rel.is_empty() { "all changes".to_string() } else { rel.to_string() };
             let mut parts = Vec::new();
             if !tracked.is_empty() {
@@ -923,7 +928,7 @@ impl Editor {
             }
             return self.set_warning(format!("d again {} — {what}", parts.join(" and ")));
         }
-        self.session.git_discard_asked = None;
+        self.workspace.git_discard_asked = None;
         let n = tracked.len() + untracked.len();
         self.git_do_rewriting(
             Box::new(move |top| {
@@ -960,12 +965,12 @@ impl Editor {
     }
 
     pub fn git_commit_open(&mut self, amend: bool, draft: bool) {
-        let Some(st) = self.session.git_status.as_ref() else {
+        let Some(st) = self.workspace.git_status.as_ref() else {
             return self.set_warning("not a git repository");
         };
         // A code review open keeps every buffer in its REVIEW keys: the message couldn't be typed, and a
         // draft landed as an edit waiting there — ended first, said
-        if self.session.code_review.is_some() {
+        if self.workspace.code_review.is_some() {
             let key = if draft { "C" } else { "c" };
             return self.set_warning(format!(
                 "a code review is open — end it first (space v q), then {key} writes the commit message"
@@ -1013,9 +1018,9 @@ impl Editor {
             }),
             Box::new(move |ed, r| match r {
                 Ok(file) if file.is_empty() => {
-                    ed.session.commit_then_end = false;
+                    ed.workspace.commit_then_end = false;
                     // (what's to stage, as the tab last read it — the commit's own read found nothing staged)
-                    let changed = ed.session.git_status.as_ref().is_some_and(|s| !s.unstaged.is_empty());
+                    let changed = ed.workspace.git_status.as_ref().is_some_and(|s| !s.unstaged.is_empty());
                     let then = if draft { "C" } else { "c" };
                     ed.set_warning(match changed {
                         true => format!(
@@ -1025,7 +1030,7 @@ impl Editor {
                     })
                 }
                 Ok(file) => {
-                    let then_end = std::mem::take(&mut ed.session.commit_then_end);
+                    let then_end = std::mem::take(&mut ed.workspace.commit_then_end);
                     if let Err(e) = ed.open(std::path::Path::new(&file)) {
                         return ed.set_error(format!("{e:#}"));
                     }
@@ -1033,8 +1038,8 @@ impl Editor {
                     doc.throwaway = true;
                     doc.set_selection(crate::selection::Selection::point(0));
                     let id = doc.id;
-                    ed.session.committing = Some(Committing { doc: id, top, amend, then_end });
-                    ed.session.leave(crate::session::At::Side);
+                    ed.workspace.committing = Some(Committing { doc: id, top, amend, then_end });
+                    ed.workspace.leave(crate::workspace::At::Side);
                     // A new message: typed at once. Amending: the last message is there to change, not to
                     // type over the top of — normal mode
                     if draft {
@@ -1044,7 +1049,7 @@ impl Editor {
                     }
                 }
                 Err(e) => {
-                    ed.session.commit_then_end = false;
+                    ed.workspace.commit_then_end = false;
                     ed.set_error(format!("commit: {e}"))
                 }
             }),
@@ -1054,7 +1059,7 @@ impl Editor {
     /// A buffer was saved: the commit message's commits (and its buffer closes); the panel reads the status
     /// again.
     pub fn git_saved(&mut self, id: DocId) {
-        if let Some(c) = self.session.committing.take_if(|c| c.doc == id) {
+        if let Some(c) = self.workspace.committing.take_if(|c| c.doc == id) {
             let Some(file) = self.docs.iter().find(|d| d.id == id).and_then(|d| d.path.clone()) else {
                 return;
             };
@@ -1079,13 +1084,13 @@ impl Editor {
                             ed.set_success(format!("{did} {}", line.trim()));
                             ed.close_doc(id);
                             // (its session asked to end once its changes were in: asked again, now with none)
-                            if then_end && let Err(e) = ed.session_end("") {
+                            if then_end && let Err(e) = ed.workspace_end("") {
                                 ed.set_error(e);
                             }
                         }
                         // An empty message aborts — the buffer stays for another try
                         Err(e) => {
-                            ed.session.committing = Some(Committing { doc: id, top, amend, then_end });
+                            ed.workspace.committing = Some(Committing { doc: id, top, amend, then_end });
                             ed.set_error(format!("commit: {e}"));
                         }
                     }),
@@ -1093,7 +1098,7 @@ impl Editor {
             });
             return;
         }
-        if self.session.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Git) {
+        if self.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Git) {
             self.git_refresh();
         }
     }
@@ -1113,7 +1118,7 @@ impl Editor {
         if file.is_empty() {
             return Err("name the commit message's file — :commit <file>".into());
         }
-        let Some(r) = self.session.code_review.as_ref() else {
+        let Some(r) = self.workspace.code_review.as_ref() else {
             return Err(
                 ":commit commits from a code review once every file is viewed — space v v opens one".into()
             );
@@ -1133,10 +1138,10 @@ impl Editor {
             let more = if left.len() > 1 { format!(" and {} more", left.len() - 1) } else { String::new() };
             return Err(format!("nothing committed — {first}{more} not viewed (]u goes to them)"));
         }
-        if self.session.chat.as_ref().is_some_and(|c| c.busy()) {
+        if self.workspace.claude.chat.as_ref().is_some_and(|c| c.busy()) {
             return Err("nothing committed — Claude is working; :commit once its turn is over".into());
         }
-        let (path, root) = (self.session.root.join(file), r.root.clone());
+        let (path, root) = (self.workspace.root.join(file), r.root.clone());
         // (the message's file, in the checkout — its `..` taken: `../m.txt` is beside it — never staged with the rest)
         let exclude = rel_inside(&root, &path);
         let rels: Vec<String> = r.files.iter().map(|f| f.rel.clone()).collect();
@@ -1161,7 +1166,7 @@ impl Editor {
             work,
             move |ed, tree| {
                 // (the review it was typed in, still open)
-                if ed.session.code_review.as_ref().is_none_or(|r| r.started != started) {
+                if ed.workspace.code_review.as_ref().is_none_or(|r| r.started != started) {
                     return ed.set_warning("commit: the review changed meanwhile — nothing committed");
                 }
                 let tree = match tree {
@@ -1240,19 +1245,20 @@ impl Editor {
                     },
                     move |ed: &mut Editor, result: Result<String, String>| match result {
                         Ok(line) => {
-                            if ed.session.code_review.as_ref().is_some_and(|r| r.started == started) {
+                            if ed.workspace.code_review.as_ref().is_some_and(|r| r.started == started) {
                                 crate::codereview::close(ed);
                             }
                             ed.set_success(format!("Committed {} — the review ended", line.trim()));
                             // (a session's: on to its bring card, as `space W` `b`)
-                            if ed.session.id != 0
-                                && let Err(e) = ed.session_bring("")
+                            if ed.workspace.id != crate::event::WorkspaceId::HOME
+                                && let Err(e) = ed.workspace_bring("")
                             {
                                 ed.set_warning(format!("bring: {e}"));
                             }
                         }
                         Err(e) => {
-                            let open = ed.session.code_review.as_ref().is_some_and(|r| r.started == started);
+                            let open =
+                                ed.workspace.code_review.as_ref().is_some_and(|r| r.started == started);
                             let review = if open { " — the review stays open" } else { "" };
                             ed.set_error(format!("commit: {e}{review}"))
                         }
@@ -1266,12 +1272,12 @@ impl Editor {
     /// commit), in the style of the repository's recent messages. Read on a worker; the draft streams in and
     /// lands as the in-buffer review of the message part (above the `#` lines).
     pub fn commit_draft(&mut self) {
-        let Some(c) = self.session.committing.as_ref().filter(|c| c.doc == self.doc().id) else {
+        let Some(c) = self.workspace.committing.as_ref().filter(|c| c.doc == self.doc().id) else {
             return self
                 .set_status("open a commit message first — c in the git tab (or C: Claude drafts it)");
         };
         let (top, amend, id) = (c.top.clone(), c.amend, c.doc);
-        if self.session.code_review.is_some() {
+        if self.workspace.code_review.is_some() {
             return self.set_warning("a code review is open — end it first (space v q), then :commit-draft");
         }
         let said = "Claude is drafting the commit message…";
@@ -1293,7 +1299,7 @@ impl Editor {
             match crate::llm::draft(ed, id, "a commit message", &prompt, 0, end) {
                 // (its body at 72, like every message — Claude doesn't always: #21)
                 Ok(()) => {
-                    if let Some(r) = ed.session.review.as_mut() {
+                    if let Some(r) = ed.workspace.claude.review.as_mut() {
                         r.wrap = Some(72);
                     }
                 }
@@ -1304,14 +1310,14 @@ impl Editor {
 
     /// Whether the current buffer is a commit message being written.
     pub fn in_commit_message(&self) -> bool {
-        self.session.committing.as_ref().is_some_and(|c| c.doc == self.doc().id)
+        self.workspace.committing.as_ref().is_some_and(|c| c.doc == self.doc().id)
     }
 
     /// `P` / `p` — push (setting the upstream the first time) / pull fast-forward only. A branch gone a
     /// different way from its upstream (after an amend or a rebase) — or a push refused for it — gets the
     /// force card instead (`git_force_ask`).
     pub fn git_push_pull(&mut self, push: bool) {
-        let Some(st) = self.session.git_status.clone() else {
+        let Some(st) = self.workspace.git_status.clone() else {
             return self.set_warning("not a git repository");
         };
         if push && st.upstream.is_some() && st.ahead > 0 && st.behind > 0 {
@@ -1352,7 +1358,7 @@ impl Editor {
     /// there — and `y` pushes with a lease on exactly that (`git_force_push`). `refused` = why the push
     /// before it was refused (said if the card can't be made).
     pub fn git_force_ask(&mut self, refused: Option<String>) {
-        let Some(top) = self.session.git_status.as_ref().map(|s| s.top.clone()) else { return };
+        let Some(top) = self.workspace.git_status.as_ref().map(|s| s.top.clone()) else { return };
         let said = "reading what the remote has…";
         self.step(
             self.events.jobs(),
@@ -1419,7 +1425,7 @@ impl Editor {
     /// (`:w` amends, `:q` cancels; warned when that commit is pushed already) — as `c`/`C` open a new one.
     /// The repository's status is read first when the git tab hasn't.
     pub fn git_amend(&mut self) {
-        if self.session.git_status.is_some() {
+        if self.workspace.git_status.is_some() {
             return self.git_commit_start(true);
         }
         let cwd = self.git_cwd();
@@ -1427,7 +1433,7 @@ impl Editor {
             let read = status(&cwd, None).map(Status::with_rows);
             move |ed: &mut Editor| match read {
                 Ok(st) => {
-                    ed.session.git_status = Some(st);
+                    ed.workspace.git_status = Some(st);
                     ed.git_commit_start(true);
                 }
                 Err(e) => ed.set_warning(format!("amend: {e}")),
@@ -2119,10 +2125,11 @@ mod tests {
         );
         // Drawn: the tab says it in the list's place
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
-        ed.session.sidebar = Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Git, dir.clone()));
-        ed.session.at = crate::session::At::Side;
-        ed.session.git_status = Some(st.with_rows());
+        ed.workspace.root = dir.clone();
+        ed.workspace.viewer.sidebar =
+            Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Git, dir.clone()));
+        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.workspace.git_status = Some(st.with_rows());
         let mut bytes = Vec::new();
         crate::term::render(&mut ed, &mut bytes, 120, 30).unwrap();
         let mut vt = vt100::Parser::new(30, 120, 0);
@@ -2141,7 +2148,7 @@ mod tests {
         assert!(!s.contains("last commit"), "the last commit is the first listed — not twice: {s}");
         // Nothing past the base: said, and the last commit under it
         let st = status(&dir, Some("feat".into())).unwrap();
-        ed.session.git_status = Some(st.with_rows());
+        ed.workspace.git_status = Some(st.with_rows());
         let mut bytes = Vec::new();
         crate::term::render(&mut ed, &mut bytes, 120, 30).unwrap();
         vt.process(&bytes);
@@ -2176,9 +2183,9 @@ mod tests {
         std::fs::write(dir.join(format!(".b.txt.tarae-{}-99.tmp", std::process::id())), "half").unwrap();
         std::fs::write(dir.join("sub/.c.rs.tarae-1-0.tmp"), "half").unwrap();
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.open(&dir.join("a.txt")).unwrap();
-        ed.session.git_status = Some(status(&dir, None).unwrap().with_rows());
+        ed.workspace.git_status = Some(status(&dir, None).unwrap().with_rows());
         ed.saver.slow = std::time::Duration::from_millis(600);
         for k in ["c", "T", "W", "O", "esc", ":", "w", "ret"] {
             ed.handle_key(k.parse().unwrap());

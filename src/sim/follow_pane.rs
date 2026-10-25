@@ -52,20 +52,20 @@ fn run(choices: Choices) -> Vec<String> {
     let text: String = (1..=60).map(|i| format!("    let x{i} = {i};\n")).collect();
     std::fs::write(dir.join("a.rs"), text).unwrap();
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = dir.to_path_buf();
+    ed.workspace.root = dir.to_path_buf();
     ed.open(&dir.join("a.rs")).unwrap();
     let mut c = crate::chat::Chat::new();
     let _claude = crate::chat::stand_in(&mut c);
     c.state = crate::chat::State::Thinking;
     c.follow.on = true;
     // (follow took the pane that had the code's keys as the turn began)
-    let a = ed.session.focus;
+    let a = ed.workspace.viewer.focus;
     c.follow.pane = Some(a);
-    ed.session.chat = Some(c);
+    ed.workspace.claude.chat = Some(c);
     crate::term::render(&mut ed, &mut Vec::new(), 120, 32).unwrap();
     // Your keys to a pane of their own, on the same file
     keys(&mut ed, "<C-w>v");
-    let b = ed.session.focus;
+    let b = ed.workspace.viewer.focus;
     assert_ne!(a, b);
     crate::term::render(&mut ed, &mut Vec::new(), 120, 32).unwrap();
     let world = RefCell::new(World::default());
@@ -80,7 +80,7 @@ fn run(choices: Choices) -> Vec<String> {
 }
 
 fn generation(ed: &Editor) -> u64 {
-    ed.session.chat.as_ref().map_or(0, crate::chat::Chat::generation)
+    ed.workspace.claude.chat.as_ref().map_or(0, crate::chat::Chat::generation)
 }
 
 /// B's selection and top (B has the keys: the document in front, its scroll the document's).
@@ -90,7 +90,7 @@ fn mine(ed: &Editor) -> (crate::selection::Selection, usize) {
 
 /// The next edit: line `line` kept, two written under it — the keys in the order the model writes them.
 fn begin(ed: &mut Editor, w: &mut World, line: usize) {
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     c.state = crate::chat::State::Thinking;
     let doc = ed.doc();
     let old = doc.text.line(line.min(crate::movement::last_line(&doc.text))).to_string();
@@ -115,7 +115,7 @@ fn keys(ed: &mut Editor, keys: &str) {
 }
 
 fn step(sim: &mut Sim, ed: &mut Editor, a: PaneId, w: &mut World) -> String {
-    let busy = ed.session.chat.as_ref().is_some_and(|c| c.state != crate::chat::State::Idle);
+    let busy = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.state != crate::chat::State::Idle);
     let g = generation(ed);
     w.inputs += 1;
     let c = &mut sim.choices;
@@ -164,7 +164,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, a: PaneId, w: &mut World) -> String {
         }
         3 => {
             let line = *c.pick(&[2, 20, 40, 58]);
-            let path = ed.session.root.join("a.rs");
+            let path = ed.workspace.root.join("a.rs");
             let input = serde_json::json!({"file_path": path, "offset": line + 1, "limit": 1});
             let id = format!("r{}", w.inputs);
             crate::chat::stream_event(ed, g, StreamEv::Tool { id, name: "Read".into(), input });
@@ -194,10 +194,14 @@ fn step(sim: &mut Sim, ed: &mut Editor, a: PaneId, w: &mut World) -> String {
 }
 
 fn held(ed: &Editor, a: PaneId, b: PaneId, w: &mut World) -> Result<(), String> {
-    if ed.session.focus != b || ed.keys_to().region.name() != "code" {
-        return Err(format!("the keys left B: pane {} · {}", ed.session.focus, ed.keys_to().region.name()));
+    if ed.workspace.viewer.focus != b || ed.keys_to().region.name() != "code" {
+        return Err(format!(
+            "the keys left B: pane {} · {}",
+            ed.workspace.viewer.focus,
+            ed.keys_to().region.name()
+        ));
     }
-    let f = &ed.session.chat.as_ref().ok_or("the chat went")?.follow;
+    let f = &ed.workspace.claude.chat.as_ref().ok_or("the chat went")?.follow;
     if f.paused || f.pane != Some(a) || !f.on {
         return Err(format!("follow left A or paused: {:?} · paused {} · on {}", f.pane, f.paused, f.on));
     }
@@ -231,7 +235,7 @@ fn held(ed: &Editor, a: PaneId, b: PaneId, w: &mut World) -> Result<(), String> 
 }
 
 fn print(ed: &Editor) -> String {
-    let c = ed.session.chat.as_ref();
+    let c = ed.workspace.claude.chat.as_ref();
     let led = c.and_then(|c| c.follow.pane).and_then(|a| crate::follow::led_in(ed, a));
     format!(
         "{} · {:?} · A led {led:?} · B at line {} top {}",

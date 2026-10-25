@@ -714,7 +714,7 @@ pub fn compare(ed: &mut Editor) {
     let Some(What::Recover(f)) = ed.offers.first().map(|o| &o.what) else { return };
     let (path, text, base) = (f.path.clone(), f.text.clone(), f.base.clone());
     compare_close(ed, &path);
-    let id = ed.open_virtual(&format!("{COMPARE}{}", shown(&path, &ed.session.root)), "");
+    let id = ed.open_virtual(&format!("{COMPARE}{}", shown(&path, &ed.workspace.root)), "");
     let Some(doc) = ed.docs.iter_mut().find(|d| d.id == id) else { return };
     doc.text = text.clone();
     let version = doc.version();
@@ -735,14 +735,14 @@ pub fn compare(ed: &mut Editor) {
 pub fn discard(ed: &mut Editor, f: Found) {
     compare_close(ed, &f.path);
     forget(ed, &f);
-    ed.set_status(format!("Discarded the unsaved edits of {}", shown(&f.path, &ed.session.root)));
+    ed.set_status(format!("Discarded the unsaved edits of {}", shown(&f.path, &ed.workspace.root)));
 }
 
 /// `n`: the copy stays, asked about at the next start.
 pub fn not_now(ed: &mut Editor, f: Found) {
     compare_close(ed, &f.path);
     drop(release(ed, &f.dir));
-    let name = shown(&f.path, &ed.session.root);
+    let name = shown(&f.path, &ed.workspace.root);
     ed.set_status(format!("Kept the unsaved edits of {name} — asked again when tarae next starts"));
 }
 
@@ -777,7 +777,7 @@ impl Editor {
     /// whose version moved.
     pub(crate) fn recovery_sync(&mut self) {
         let Some(r) = self.recovery.as_mut() else { return };
-        let roots = std::iter::once(&self.session).chain(&self.sessions).map(|s| &s.root);
+        let roots = std::iter::once(&self.workspace).chain(&self.workspaces).map(|s| &s.root);
         if !roots.clone().eq(r.rules.roots.iter()) || self.config.recovery_skip != r.rules.skip {
             r.rules.roots = roots.cloned().collect();
             r.rules.skip = self.config.recovery_skip.clone();
@@ -843,7 +843,7 @@ impl Editor {
         let Some(r) = &self.recovery else { return };
         let (dir, own, origin) = (r.dir.clone(), r.run.clone(), r.root.clone());
         let roots: Vec<PathBuf> =
-            std::iter::once(&self.session).chain(&self.sessions).map(|s| s.root.clone()).collect();
+            std::iter::once(&self.workspace).chain(&self.workspaces).map(|s| s.root.clone()).collect();
         self.events.shared_jobs().spawn(move || {
             let (held, found) = scan(&dir, &own, &origin, &roots);
             move |ed: &mut Editor| ed.recovery_found(held, found)
@@ -864,7 +864,7 @@ impl Editor {
             let cards = found.iter().filter(|f| f.dir == dir).count();
             r.held.push(Held { dir, lock, cards });
         }
-        let root = self.session.root.clone();
+        let root = self.workspace.root.clone();
         for f in found {
             self.push_offer(card(f, &root));
         }

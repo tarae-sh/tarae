@@ -34,7 +34,7 @@ fn run(choices: Choices) -> Vec<String> {
     }
     let mut sim = Sim::new("the_newest_index_read_is_the_base", choices, LIMIT);
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = repo.clone();
+    ed.workspace.root = repo.clone();
     ed.git_auto = true;
     ed.open(&repo.join("a.txt")).unwrap();
     let mut staged = 0;

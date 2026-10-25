@@ -107,14 +107,9 @@ The name is also the `:set` path: `:set editor.scrolloff 8` changes it until you
 | Setting | Type | Default | Description |
 |---|---|---|---|
 | `workspace.sync` | `"ask"` · `"idle"` · `"off"` | `"ask"` | When a workspace's base branch moves: "ask" — one card for every workspace behind it (what would conflict, and where), y moving the clean ones onto its tip once each is idle, their changes in no commit taken along; "idle" — the clean ones moved unasked, a card for the conflicting ones; "off" — left where they are. Only your own config sets it |
-
-## `[session]`
-
-| Setting | Type | Default | Description |
-|---|---|---|---|
-| `session.worktrees` | string | `""` | Where sessions' checkouts go, a folder per repository ("" = $XDG_DATA_HOME/tarae/worktrees) |
-| `session.ended` | list of strings | `[]` | A command, its words, run once a session's checkout is removed (:session-end) — in the checkout tarae started in, outside the sandbox, TARAE_ENDED_CHECKOUT naming the one removed; stopped after 2 minutes; how it ended goes to the log (e.g. ["cargo", "xtask", "linux", "prune"]; [] = none) |
-| `session.keep` | list of strings | `[]` | Folders of a session's checkout ("target/sb") moved into the main checkout's &lt;folder>/sessions/&lt;name>/ when the session ends — only where git ignores that there, 64 MB at most, no links or protected names; the end card says what goes |
+| `workspace.worktrees` | string | `""` | Where workspaces' checkouts go, a folder per repository ("" = $XDG_DATA_HOME/tarae/worktrees) |
+| `workspace.ended` | list of strings | `[]` | A command, its words, run once a workspace's checkout is removed (:workspace-end) — in the checkout tarae started in, outside the sandbox, TARAE_ENDED_CHECKOUT naming the one removed; stopped after 2 minutes; how it ended goes to the log (e.g. ["cargo", "xtask", "linux", "prune"]; [] = none) |
+| `workspace.keep` | list of strings | `[]` | Folders of a workspace's checkout ("target/sb") moved into the main checkout's &lt;folder>/sessions/&lt;name>/ when the workspace ends — only where git ignores that there, 64 MB at most, no links or protected names; the end card says what goes |
 
 ## `[review]`
 

@@ -380,7 +380,7 @@ fn newest(written: &mut Vec<(std::path::PathBuf, u64)>, path: &std::path::Path, 
 /// which resets at `resets_at_ms` (None: not said).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LimitAsk {
-    pub session: crate::event::SessionId,
+    pub session: crate::event::WorkspaceId,
     pub window: String,
     pub resets_at_ms: Option<u64>,
 }
@@ -451,7 +451,7 @@ impl Editor {
         }
         if !shown {
             self.set_warning(WEAKNESS);
-            if let Some(c) = self.session.chat.as_mut() {
+            if let Some(c) = self.workspace.claude.chat.as_mut() {
                 c.note(WEAKNESS);
             }
         }
@@ -557,7 +557,7 @@ impl Editor {
     pub fn reviewer_billing(&self) -> Billing {
         match self.api_for_new() {
             true => Billing::Api,
-            false => self.config.llm.reviewer_billing.unwrap_or(self.session.billing),
+            false => self.config.llm.reviewer_billing.unwrap_or(self.workspace.claude.billing),
         }
     }
 
@@ -567,17 +567,17 @@ impl Editor {
     pub fn session_billing(&mut self, arg: &str) -> Result<(), String> {
         let arg = arg.trim();
         if arg.is_empty() {
-            let b = self.session.billing.name();
-            self.set_status(format!("{} bills {b} — :session-billing api|subscription", self.session.name));
+            let b = self.workspace.claude.billing.name();
+            self.set_status(format!("{} bills {b} — :session-billing api|subscription", self.workspace.name));
             return Ok(());
         }
         let billing = Billing::parse(arg).ok_or("usage: :session-billing api|subscription")?;
-        let sid = self.session.id;
+        let sid = self.workspace.id;
         if billing == Billing::Subscription {
             return self.billing_set(sid, billing, false);
         }
-        if self.session.chat.as_ref().is_some_and(|c| c.busy()) {
-            return Err(answering(&self.session.name));
+        if self.workspace.claude.chat.as_ref().is_some_and(|c| c.busy()) {
+            return Err(answering(&self.workspace.name));
         }
         self.api_check(self.events.jobs(), move |ed, usable| {
             if let Err(e) = usable.and_then(|()| ed.billing_set(sid, billing, false)) {
@@ -594,33 +594,33 @@ impl Editor {
     /// Claude is answering.
     pub fn billing_set(
         &mut self,
-        sid: crate::event::SessionId,
+        sid: crate::event::WorkspaceId,
         to: Billing,
         shown: bool,
     ) -> Result<(), String> {
         // (where an API session can't start, said before anything changes)
         self.credential(to, Role::Chat)?;
         let mut done = Ok(false);
-        self.with_session(sid, |ed| done = ed.billing_here(to));
+        self.with_workspace(sid, |ed| done = ed.billing_here(to));
         if done.clone()? && to == Billing::Api {
-            self.with_session(sid, |ed| ed.weakness_said(shown));
+            self.with_workspace(sid, |ed| ed.weakness_said(shown));
         }
         done.map(|_| ())
     }
 
     /// `billing_set` in the session in front — whether it changed anything.
     fn billing_here(&mut self, to: Billing) -> Result<bool, String> {
-        let name = self.session.name.clone();
-        if to == self.session.billing {
+        let name = self.workspace.name.clone();
+        if to == self.workspace.claude.billing {
             self.set_status(format!("{name} bills {} already", to.name()));
             return Ok(false);
         }
-        if self.session.chat.as_ref().is_some_and(|c| c.busy()) {
+        if self.workspace.claude.chat.as_ref().is_some_and(|c| c.busy()) {
             return Err(answering(&name));
         }
         self.switching();
-        self.session.billing = to;
-        self.sessions_keep();
+        self.workspace.claude.billing = to;
+        self.workspaces_keep();
         crate::chat::billing_changed(self);
         crate::llm::spare_billing_changed(self);
         let said = match to {
@@ -635,16 +635,16 @@ impl Editor {
     /// `$` in the session list (`space W`): session `sid`'s billing the other way — asked first on a card when
     /// it has a conversation going (its cache, warm or cold, makes the cost), else switched at once. To the key:
     /// only once `api_check` found it usable (else an error says why).
-    pub fn billing_toggle(&mut self, sid: crate::event::SessionId) -> Result<(), String> {
-        let l = std::iter::once(&self.session)
-            .chain(&self.sessions)
+    pub fn billing_toggle(&mut self, sid: crate::event::WorkspaceId) -> Result<(), String> {
+        let l = std::iter::once(&self.workspace)
+            .chain(&self.workspaces)
             .find(|l| l.id == sid)
             .ok_or("no such session")?;
-        let to = match l.billing {
+        let to = match l.claude.billing {
             Billing::Subscription => Billing::Api,
             Billing::Api => Billing::Subscription,
         };
-        if l.chat.as_ref().is_some_and(|c| c.busy()) {
+        if l.claude.chat.as_ref().is_some_and(|c| c.busy()) {
             return Err(answering(&l.name));
         }
         match to {
@@ -659,17 +659,17 @@ impl Editor {
     }
 
     /// `billing_toggle` going on: the card, or switched at once.
-    fn billing_toggled(&mut self, sid: crate::event::SessionId, to: Billing) -> Result<(), String> {
-        let l = std::iter::once(&self.session)
-            .chain(&self.sessions)
+    fn billing_toggled(&mut self, sid: crate::event::WorkspaceId, to: Billing) -> Result<(), String> {
+        let l = std::iter::once(&self.workspace)
+            .chain(&self.workspaces)
             .find(|l| l.id == sid)
             .ok_or("no such session")?;
-        let talking = l.chat.as_ref().is_some_and(|c| c.conversation.is_some());
+        let talking = l.claude.chat.as_ref().is_some_and(|c| c.conversation.is_some());
         if !talking {
             return self.billing_set(sid, to, false);
         }
         let mut card = None;
-        self.with_session(sid, |ed| card = Some(ed.switch_card(to)));
+        self.with_workspace(sid, |ed| card = Some(ed.switch_card(to)));
         if let Some(card) = card {
             self.push_offer(card);
         }
@@ -680,7 +680,7 @@ impl Editor {
     /// by the cache's state, when the cache goes cold (wait, and it costs nothing extra), the weakness the first
     /// time API goes on.
     fn switch_card(&self, to: Billing) -> crate::offer::Offer {
-        let name = &self.session.name;
+        let name = &self.workspace.name;
         let cost = self.billing_cost(to);
         let (title, on, other) = match to {
             Billing::Api => (
@@ -706,7 +706,7 @@ impl Editor {
             _ => q += ".",
         }
         let mut o = self.weakness_on(q, to);
-        o.what = crate::offer::What::BillingSwitch { session: self.session.id, to, money: false };
+        o.what = crate::offer::What::BillingSwitch { session: self.workspace.id, to, money: false };
         o.title = title;
         o
     }
@@ -719,7 +719,7 @@ impl Editor {
             q += &format!("\n\n{WEAKNESS}");
             at..at + 1
         });
-        let what = crate::offer::What::BillingSwitch { session: self.session.id, to, money: false };
+        let what = crate::offer::What::BillingSwitch { session: self.workspace.id, to, money: false };
         let mut o = crate::offer::Offer::new(String::new(), &q, "Switching…", "Couldn't switch".into(), what)
             .asked(crate::cards::Asked::new(crate::cards::Why::Spend, crate::cards::Request::Own));
         if let Some(lines) = warn {
@@ -733,11 +733,11 @@ impl Editor {
         let now = self.setup();
         let model = self.model_id(&now.model, &now);
         let prices = &crate::sandboxpack::get().price;
-        crate::switchcost::cost(&self.session.usage, crate::usage::now_ms(), to, &model, prices)
+        crate::switchcost::cost(&self.workspace.claude.usage, crate::usage::now_ms(), to, &model, prices)
     }
 
     /// `y` on the `$` card: session `sid` goes on `to`.
-    pub(crate) fn switch_answer(&mut self, id: u64, sid: crate::event::SessionId, to: Billing) {
+    pub(crate) fn switch_answer(&mut self, id: u64, sid: crate::event::WorkspaceId, to: Billing) {
         self.offer_finished(id, Ok(()));
         if let Err(e) = self.billing_set(sid, to, true) {
             self.set_error(e);
@@ -763,14 +763,14 @@ impl Editor {
             }
             return;
         }
-        if !window.starts_with("seven_day") || self.session.billing == Billing::Api {
+        if !window.starts_with("seven_day") || self.workspace.claude.billing == Billing::Api {
             return;
         }
-        if self.session.limit_asked == Some(period) {
+        if self.workspace.claude.limit_asked == Some(period) {
             return;
         }
-        self.session.limit_asked = Some(period);
-        let ask = LimitAsk { session: self.session.id, window: window.to_string(), resets_at_ms };
+        self.workspace.claude.limit_asked = Some(period);
+        let ask = LimitAsk { session: self.workspace.id, window: window.to_string(), resets_at_ms };
         // (the key offered only where it can be used — else wait, said why)
         self.api_check(self.events.jobs(), move |ed, usable| match usable {
             Ok(()) => {
@@ -831,9 +831,9 @@ impl Editor {
             self.billing_kept.save(&self.events.jobs());
         }
         let mut later = false;
-        self.with_session(ask.session, |ed| {
-            if ed.session.chat.as_ref().is_some_and(|c| c.busy()) {
-                ed.session.billing_next = Some(Billing::Api);
+        self.with_workspace(ask.session, |ed| {
+            if ed.workspace.claude.chat.as_ref().is_some_and(|c| c.busy()) {
+                ed.workspace.claude.billing_next = Some(Billing::Api);
                 later = true;
             }
         });
@@ -877,15 +877,15 @@ impl Editor {
     /// conversation resumed · `n` stays. One such card a session at a time.
     pub fn money_out(&mut self, m: Money) {
         let said = m.said();
-        self.session.log().line("claude", "warn", &said);
+        self.workspace.log().line("claude", "warn", &said);
         let refused = self.plan_refused().map(crate::limits::said);
-        if let Some(c) = self.session.chat.as_mut() {
+        if let Some(c) = self.workspace.claude.chat.as_mut() {
             c.note(&match &refused {
                 Some(r) => format!("{said} — and the plan refuses it too ({r})"),
                 None => said.clone(),
             });
         }
-        let sid = self.session.id;
+        let sid = self.workspace.id;
         // (up in front, or parked while the session is behind — #211: a session behind got one per refused turn)
         let up = self.session_cards().any(|o| {
             matches!(o.what, crate::offer::What::BillingSwitch { session, money: true, .. } if session == sid)
@@ -903,7 +903,7 @@ impl Editor {
             _ => ".",
         };
         let mut o = self.weakness_on(q, Billing::Subscription);
-        o.title = format!("{}: {said}", self.session.name);
+        o.title = format!("{}: {said}", self.workspace.name);
         o.what = crate::offer::What::BillingSwitch { session: sid, to: Billing::Subscription, money: true };
         self.push_offer(o);
     }
@@ -911,8 +911,8 @@ impl Editor {
 
 /// The session in front's turn is over: a billing that waited for it (the limit card's `y` mid-turn) goes on.
 pub fn turn_over(ed: &mut Editor) {
-    let Some(to) = ed.session.billing_next.take() else { return };
-    if let Err(e) = ed.billing_set(ed.session.id, to, true) {
+    let Some(to) = ed.workspace.claude.billing_next.take() else { return };
+    if let Err(e) = ed.billing_set(ed.workspace.id, to, true) {
         ed.set_error(e);
     }
 }

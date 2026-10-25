@@ -1452,7 +1452,8 @@ fn keep_queued(
             if kept {
                 crate::reads::kept_keys_load(ed);
                 // (every session's: one on another checkout of the repository may use what changed — piece J)
-                let ids: Vec<_> = std::iter::once(&ed.session).chain(&ed.sessions).map(|s| s.id).collect();
+                let ids: Vec<_> =
+                    std::iter::once(&ed.workspace).chain(&ed.workspaces).map(|s| s.id).collect();
                 ids.into_iter().for_each(|id| ed.caps_sync_of(id));
             }
         }
@@ -1489,11 +1490,11 @@ fn add_for(ed: &mut crate::editor::Editor, grants: &[Grant], scope: Scope, key: 
     match scope {
         Scope::Once => return,
         Scope::Session => {
-            grants.iter().for_each(|g| ed.session.allowed.give(g, key));
-            ed.sessions_keep();
+            grants.iter().for_each(|g| ed.workspace.claude.allowed.give(g, key));
+            ed.workspaces_keep();
         }
         Scope::ThisChat | Scope::Always => {
-            if let Some(c) = ed.session.chat.as_mut() {
+            if let Some(c) = ed.workspace.claude.chat.as_mut() {
                 grants.iter().for_each(|g| c.allowed.give(g, key));
             }
         }
@@ -1508,7 +1509,7 @@ fn add_for(ed: &mut crate::editor::Editor, grants: &[Grant], scope: Scope, key: 
 /// answer after them; once on disk they're over (a failed one no longer hides what's answered again), but a
 /// take-back of the same name made while this write is under way is its own.
 pub(crate) fn keep_answer(ed: &mut crate::editor::Editor, grants: Vec<Grant>, key: char) {
-    let root = ed.session.root.clone();
+    let root = ed.workspace.root.clone();
     let (ids, remove): (Vec<u64>, Vec<String>) = ed.taking_ids(&root).into_iter().unzip();
     let seen = ed.allow_path.as_deref().map(crate::storewrite::seen_now).unwrap_or_default();
     let c = Change { remove, add: grants, key: Some(key), given: crate::storewrite::given(), seen };
@@ -1541,7 +1542,7 @@ pub(crate) fn takes_back(what: &str, g: &Grant) -> bool {
 /// checkout: every checkout of it, or this checkout (`Caps::always_for`, piece J).
 pub(crate) fn lasting(ed: &crate::editor::Editor, scope: Scope, grants: &[Grant]) -> (String, String) {
     match scope {
-        Scope::Always => match ed.session.caps().and_then(|c| c.always_for(grants)) {
+        Scope::Always => match ed.workspace.claude.caps().and_then(|c| c.always_for(grants)) {
             Some(at) => {
                 (format!("for {at}, until they take it back"), format!(" for {at} — :granted lists it"))
             }
@@ -1592,7 +1593,7 @@ pub fn grant_keys(ed: &mut crate::editor::Editor, keys: &[PathBuf], scope: Scope
     let (when, toast) = lasting(ed, scope, &grants);
     // (Claude's read was answered; that its commands may read it too is news to it — as `grant` says)
     let tell = format!("The user let you and your commands read {shown}, named like a key — {when}.");
-    ed.session.checkpoints.tell.push(tell);
+    ed.workspace.claude.checkpoints.tell.push(tell);
     ed.set_success(format!("Claude and its commands may read {shown}{toast}"));
 }
 
@@ -1608,7 +1609,7 @@ pub fn grant(ed: &mut crate::editor::Editor, g: &Grant, scope: Scope) {
     }
     add_for(ed, std::slice::from_ref(g), scope, key);
     let (when, toast) = lasting(ed, scope, std::slice::from_ref(g));
-    ed.session.checkpoints.tell.push(format!("The user let your commands {} — {when}.", g.shown()));
+    ed.workspace.claude.checkpoints.tell.push(format!("The user let your commands {} — {when}.", g.shown()));
     ed.set_success(format!("Claude's commands may {}{toast}", g.shown()));
 }
 
@@ -1636,30 +1637,30 @@ impl crate::editor::Editor {
         // (what goes, as Claude was told it: every answer `what` names, whichever scope — the session's `Caps` has
         // the kept ones too)
         let named = |g: &Grant| takes_back(&what, g);
-        let gone_in = |s: &crate::session::Session| -> Vec<String> {
-            let mut gone: Vec<String> = s.caps().map_or_else(Vec::new, |c| {
+        let gone_in = |s: &crate::workspace::Workspace| -> Vec<String> {
+            let mut gone: Vec<String> = s.claude.caps().map_or_else(Vec::new, |c| {
                 c.grants().iter().filter(|g| named(g)).map(Grant::shown).collect()
             });
             gone.dedup();
             gone
         };
-        let (gone, self_id) = (gone_in(&self.session), self.session.id);
+        let (gone, self_id) = (gone_in(&self.workspace), self.workspace.id);
         // Every session's: a kept answer may be every checkout's (piece J), and the conversation that answered it
         // in another session holds a copy meanwhile (review J 8) — each taken out, each Claude told
         let mut takes = Vec::new();
-        let sessions = std::iter::once(&mut self.session).chain(self.sessions.iter_mut());
+        let sessions = std::iter::once(&mut self.workspace).chain(self.workspaces.iter_mut());
         for s in sessions {
             let theirs = gone_in(s);
-            let had = (s.allowed.clone(), s.chat.as_ref().map(|c| c.allowed.clone()));
-            if let Some(c) = s.chat.as_mut() {
+            let had = (s.claude.allowed.clone(), s.claude.chat.as_ref().map(|c| c.allowed.clone()));
+            if let Some(c) = s.claude.chat.as_mut() {
                 c.allowed.remove(&what);
                 // (the chat's copy of the keys kept open, at once — the message's context reads it: `reads::key_shut`)
                 if let Some(k) = c.kept_keys.as_mut() {
                     k.retain(|p| !takes_back(&what, &Grant::Key(p.clone())));
                 }
             }
-            s.allowed.remove(&what);
-            if s.allowed != had.0 {
+            s.claude.allowed.remove(&what);
+            if s.claude.allowed != had.0 {
                 takes.push((s.root.clone(), what.clone()));
             }
             // (a grant riding with a run that waits its turn goes too: the run starts with what's allowed then —
@@ -1671,30 +1672,30 @@ impl crate::editor::Editor {
                     ride.extra.grant = None;
                 }
             }
-            let chat_had = had.1 != s.chat.as_ref().map(|c| c.allowed.clone());
-            if s.id != self_id && (!theirs.is_empty() || chat_had || s.allowed != had.0) {
+            let chat_had = had.1 != s.claude.chat.as_ref().map(|c| c.allowed.clone());
+            if s.id != self_id && (!theirs.is_empty() || chat_had || s.claude.allowed != had.0) {
                 let said = if theirs.is_empty() { what.clone() } else { theirs.join("; ") };
-                s.checkpoints.tell.push(format!(
+                s.claude.checkpoints.tell.push(format!(
                     "The user took back what they had let you and your commands do: {said} — it's asked again from \
                      the next run and the next read on."
                 ));
             }
         }
         if !takes.is_empty() {
-            self.sessions_taken_back(takes);
+            self.workspaces_taken_back(takes);
         }
         if let Some((h, p)) = host {
-            self.session.hosts.retain(|(sh, sp)| (sh, *sp) != (&h, p));
-            self.session.hosts_given.remove(&(h.clone(), p));
-            crate::hosts::taken(&self.session, &h, p);
+            self.workspace.claude.hosts.retain(|(sh, sp)| (sh, *sp) != (&h, p));
+            self.workspace.claude.hosts_given.remove(&(h.clone(), p));
+            crate::hosts::taken(&self.workspace, &h, p);
         }
-        // (what comes back with the kept sessions stays taken back — `worktree::SessionStore.taken`)
-        if !self.session_store.restored {
-            self.session_store.taken.push((self.session.id, what.clone()));
+        // (what comes back with the kept sessions stays taken back — `worktree::WorkspaceStore.taken`)
+        if !self.workspace_store.restored {
+            self.workspace_store.taken.push((self.workspace.id, what.clone()));
         }
         // (a run's `Caps` made before the write lands leaves it out too: `caps::Basis.taking` — and after it
         // failed, until you quit: the store still keeps it, and the next `Caps` would have it again)
-        let root = self.session.root.clone();
+        let root = self.workspace.root.clone();
         // (its id is its given: what's taken back orders by it, and its own write ends it)
         let id = crate::storewrite::given();
         self.taking(root.clone(), what.clone(), id);
@@ -1715,7 +1716,7 @@ impl crate::editor::Editor {
         });
         self.caps_sync();
         let said = if gone.is_empty() { what.clone() } else { gone.join("; ") };
-        self.session.checkpoints.tell.push(format!(
+        self.workspace.claude.checkpoints.tell.push(format!(
             "The user took back what they had let you and your commands do: {said} — it's asked again from the \
              next run and the next read on."
         ));
@@ -1906,15 +1907,15 @@ pub(crate) mod tests {
         assert_eq!(Store::read(Some(&path)).get(&root).hosts.len(), 1);
         // Taken back
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        (ed.session.root, ed.allow_path) = (root.clone(), Some(path.clone()));
-        ed.session.hosts.push(("static.example.invalid".into(), 443));
+        (ed.workspace.root, ed.allow_path) = (root.clone(), Some(path.clone()));
+        ed.workspace.claude.hosts.push(("static.example.invalid".into(), 443));
         crate::hosts::SENT.with(|s| s.borrow_mut().clear());
         ed.sandbox_disallow("host static.example.invalid:443").unwrap();
-        assert!(ed.session.hosts.is_empty(), "the session's");
+        assert!(ed.workspace.claude.hosts.is_empty(), "the session's");
         let taken = crate::hosts::SENT.with(|s| {
             s.borrow().iter().any(|m| {
                 matches!(m, crate::sandbox::proxy::ToProxy::Taken { session, host, port: 443 }
-                    if *session == crate::sandbox::proxy::session_of(&root) && host == "static.example.invalid")
+                    if *session == crate::sandbox::proxy::workspace_of(&root) && host == "static.example.invalid")
             })
         });
         assert!(taken, "the proxy told");
@@ -2033,7 +2034,7 @@ pub(crate) mod tests {
         let store = dir.join("state/sandbox.json");
         keep(&store, &main, |a| a.add_port(8080)).unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        (ed.session.root, ed.allow_path) = (main.clone(), Some(store.clone()));
+        (ed.workspace.root, ed.allow_path) = (main.clone(), Some(store.clone()));
         let settle = |ed: &mut crate::editor::Editor| {
             let end = std::time::Instant::now() + crate::test_results::PATIENCE;
             while ed.allow_writing > 0 {
@@ -2047,8 +2048,8 @@ pub(crate) mod tests {
         ed.sandbox_disallow("port 8080").unwrap();
         settle(&mut ed);
         let failed = crate::storewrite::pending(&store).len();
-        let id = ed.session_add(wt.clone());
-        assert!(ed.session_switch(id));
+        let id = ed.workspace_add(wt.clone());
+        assert!(ed.workspace_switch(id));
         ed.sandbox_disallow("port 8080").unwrap();
         settle(&mut ed);
         let left = crate::storewrite::pending(&store).len();
@@ -2462,10 +2463,13 @@ pub(crate) mod tests {
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
         let g = Grant::Write("/t/w".into());
         grant(&mut ed, &g, Scope::Session);
-        assert_eq!(ed.session.allowed.write, [PathBuf::from("/t/w")]);
-        assert!(ed.session.allowed.granted.contains_key(&g), "with its time");
-        assert!(ed.session.chat.as_ref().is_none_or(|c| c.allowed.is_empty()), "not the conversation's");
-        let told = ed.session.checkpoints.tell.last().cloned().unwrap_or_default();
+        assert_eq!(ed.workspace.claude.allowed.write, [PathBuf::from("/t/w")]);
+        assert!(ed.workspace.claude.allowed.granted.contains_key(&g), "with its time");
+        assert!(
+            ed.workspace.claude.chat.as_ref().is_none_or(|c| c.allowed.is_empty()),
+            "not the conversation's"
+        );
+        let told = ed.workspace.claude.checkpoints.tell.last().cloned().unwrap_or_default();
         assert!(told.contains("in this session, until it ends"), "{told}");
         let caps = ed.caps_basis().granted();
         assert!(caps.grants().contains(&g), "in the runs' policy");
@@ -2475,9 +2479,9 @@ pub(crate) mod tests {
         grant(&mut ed, &Grant::Socket("/run/docker.sock".into()), Scope::Session);
         grant(&mut ed, &Grant::Key("/t/.env".into()), Scope::Session);
         grant(&mut ed, &Grant::Socket("/t/s.sock".into()), Scope::Session);
-        assert_eq!(ed.session.allowed.grants(), [g], "nothing else the session's");
+        assert_eq!(ed.workspace.claude.allowed.grants(), [g], "nothing else the session's");
         // Taken back
         ed.sandbox_disallow("/t/w").unwrap();
-        assert!(ed.session.allowed.is_empty() && ed.session.allowed.granted.is_empty());
+        assert!(ed.workspace.claude.allowed.is_empty() && ed.workspace.claude.allowed.granted.is_empty());
     }
 }

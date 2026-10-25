@@ -1,6 +1,6 @@
 //! A resolved rebase's commit message, simulated (frictions29 #25): a session's rebase stopped at a conflict
 //! its Claude resolved — and, by seed, proposed another message for — and at random its card put up (as
-//! `:session-bring` does), `m` on the card in front (the message written to the git folder on a worker, then
+//! `:workspace-bring` does), `m` on the card in front (the message written to the git folder on a worker, then
 //! opened), `:q` in that message, a frame, a switch of sessions, the user taking their time. After every step:
 //! at most one resolved card a checkout, and a message being written is an open buffer. `:wq` runs
 //! `git rebase --continue` as a task, which this scenario doesn't model (`worktree.rs`'s tests run it).
@@ -29,17 +29,17 @@ fn run(choices: Choices) -> Vec<String> {
     let world = World::new();
     let mut sim = Sim::new("a_resolved_rebases_message", choices, LIMIT);
     let mut ed = Editor::new(crate::config::Config::default());
-    (ed.session.root, ed.session.name) = (world.repo.clone(), "proj".into());
+    (ed.workspace.root, ed.workspace.name) = (world.repo.clone(), "proj".into());
     let mut ids = Vec::new();
     for (name, wt) in &world.sessions {
-        let id = ed.session_open(wt).unwrap();
-        ed.session_switch(id);
-        ed.session.name = name.clone();
+        let id = ed.workspace_open(wt).unwrap();
+        ed.workspace_switch(id);
+        ed.workspace.name = name.clone();
         let proposed = (name == "risky").then_some("risky, beside main\n\nKeeps both.");
         crate::rebase::resolved_for_test(&mut ed, name, proposed);
         ids.push((id, wt.clone()));
     }
-    ed.session_switch(0);
+    ed.workspace_switch(crate::event::WorkspaceId::HOME);
     let dir = world.dir.display().to_string();
     sim.walk(&mut ed, INPUTS, |sim, ed| input(sim, ed, &ids), held, |ed| print(ed, &dir));
     let trace = sim.trace().to_vec();
@@ -48,7 +48,7 @@ fn run(choices: Choices) -> Vec<String> {
     trace
 }
 
-fn input(sim: &mut Sim, ed: &mut Editor, ids: &[(u64, PathBuf)]) -> String {
+fn input(sim: &mut Sim, ed: &mut Editor, ids: &[(crate::event::WorkspaceId, PathBuf)]) -> String {
     let c = &mut sim.choices;
     let (sid, _) = c.pick(ids).clone();
     // (by arm: its card up 3, `m` on the card in front 3, `:q` 2, a frame 2, a switch 2, time passing 2, the
@@ -78,8 +78,8 @@ fn input(sim: &mut Sim, ed: &mut Editor, ids: &[(u64, PathBuf)]) -> String {
             "a frame".into()
         }
         4 => {
-            let to = *c.pick(&[0, ids[0].0, ids[1].0]);
-            ed.session_switch(to);
+            let to = *c.pick(&[crate::event::WorkspaceId::HOME, ids[0].0, ids[1].0]);
+            ed.workspace_switch(to);
             format!("session {to} in front")
         }
         5 => {
@@ -89,8 +89,8 @@ fn input(sim: &mut Sim, ed: &mut Editor, ids: &[(u64, PathBuf)]) -> String {
         }
         // (as `:bd` or a session's end does — not `:w`/`:q`)
         6 => {
-            let writing = std::iter::once(&ed.session)
-                .chain(&ed.sessions)
+            let writing = std::iter::once(&ed.workspace)
+                .chain(&ed.workspaces)
                 .find_map(|l| l.rebase.as_ref()?.messages.editing.as_ref().map(|e| (l.id, e.0)));
             match writing {
                 Some((id, doc)) => {
@@ -107,7 +107,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, ids: &[(u64, PathBuf)]) -> String {
 /// At most one resolved card a checkout, up or parked, in any session — and a message being written is a buffer
 /// that's open.
 fn held(ed: &Editor) -> Result<(), String> {
-    let parked = std::iter::once(&ed.session).chain(&ed.sessions).flat_map(|l| &l.parked);
+    let parked = std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked);
     let mut roots: Vec<&std::path::Path> = ed
         .offers
         .iter()
@@ -122,7 +122,7 @@ fn held(ed: &Editor) -> Result<(), String> {
         return Err(format!("two resolved cards for {}", w[0].display()));
     }
     // (every session's: the documents are the editor's, whichever session holds them)
-    for l in std::iter::once(&ed.session).chain(&ed.sessions) {
+    for l in std::iter::once(&ed.workspace).chain(&ed.workspaces) {
         let editing = l.rebase.as_ref().and_then(|r| r.messages.editing.as_ref());
         if let Some((doc, _)) = editing
             && !ed.docs.iter().any(|d| d.id == *doc)

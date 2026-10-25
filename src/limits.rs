@@ -526,7 +526,7 @@ pub fn ask_chat(ed: &mut Editor) {
 /// `ask_chat` — `readings`: a fresh reading of another window holds it too; else (a window said with no figure)
 /// only a question asked lately does.
 fn ask(ed: &mut Editor, readings: bool) {
-    let Some(c) = ed.session.chat.as_ref().filter(|c| c.running()) else { return };
+    let Some(c) = ed.workspace.claude.chat.as_ref().filter(|c| c.running()) else { return };
     let (now, l) = (crate::usage::now_ms(), &mut ed.limits);
     let asked = l.asked_ms.is_some_and(|at| now.saturating_sub(at) < FRESH_MS);
     if !l.ask || l.pending == Some(c.generation()) || asked || (readings && l.fresh(now)) {

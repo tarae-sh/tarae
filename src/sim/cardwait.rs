@@ -38,7 +38,7 @@ struct Model {
     focused: Option<(u64, u64)>,
     next: Option<(u64, u64)>,
     frames: u64,
-    sessions: (crate::event::SessionId, crate::event::SessionId),
+    sessions: (crate::event::WorkspaceId, crate::event::WorkspaceId),
 }
 
 impl Model {
@@ -58,9 +58,9 @@ fn run(choices: Choices) -> Vec<String> {
     let mut sim = Sim::new("a_card_takes_the_keys_only_once_focused", choices, LIMIT);
     sim.frames = Some((100, 24));
     let mut ed = Editor::new(crate::config::Config::default());
-    let main = ed.session.id;
-    let other = ed.session_open(dir.path()).unwrap();
-    ed.session_switch(main);
+    let main = ed.workspace.id;
+    let other = ed.workspace_open(dir.path()).unwrap();
+    ed.workspace_switch(main);
     let model = RefCell::new(Model { sessions: (main, other), ..Model::default() });
     let wrong = Cell::new(None);
     let check = |ed: &Editor| held(ed, &model.borrow(), &wrong);
@@ -87,7 +87,7 @@ fn key(
     framed: bool,
 ) {
     let before = front(ed);
-    let session = ed.session.id;
+    let session = ed.workspace.id;
     let event = crate::event::Event::Key(k.parse::<Key>().unwrap());
     match framed {
         true => sim.batch(ed, event),
@@ -117,7 +117,7 @@ fn key(
         "C-q" => {
             let here = before.is_some();
             m.focused = match front(ed) {
-                Some(f) if here || ed.session.id != session => Some((f.0, f.1)),
+                Some(f) if here || ed.workspace.id != session => Some((f.0, f.1)),
                 _ => None,
             };
         }
@@ -151,7 +151,8 @@ fn step(sim: &mut Sim, ed: &mut Editor, model: &RefCell<Model>, wrong: &Cell<Opt
         1 => {
             // (asked by the key just before — the user's own — or come from elsewhere)
             let yours = *c.pick(&[false, false, true]);
-            let what = What::ReviewEnd { session: 0, started: crate::clock::now() };
+            let what =
+                What::ReviewEnd { session: crate::event::WorkspaceId::HOME, started: crate::clock::now() };
             let was = ed.events.set_asked(yours.then_some(ed.input_seq));
             // (a title of its own: one with the same title would be merged into the card up)
             let title = format!("End review {}?", ed.offer_seq + 1);
@@ -169,7 +170,8 @@ fn step(sim: &mut Sim, ed: &mut Editor, model: &RefCell<Model>, wrong: &Cell<Opt
             let Some(title) = ed.offers.first().map(|o| o.title.clone()) else {
                 return "nothing to rewrite".into();
             };
-            let what = What::ReviewEnd { session: 0, started: crate::clock::now() };
+            let what =
+                What::ReviewEnd { session: crate::event::WorkspaceId::HOME, started: crate::clock::now() };
             ed.push_offer(Offer::new(title, "3 files not viewed.", "", String::new(), what));
             format!("card#{} rewritten", ed.offers[0].id)
         }
@@ -200,8 +202,8 @@ fn step(sim: &mut Sim, ed: &mut Editor, model: &RefCell<Model>, wrong: &Cell<Opt
         }
         4 => {
             let (main, other) = model.borrow().sessions;
-            let to = if ed.session.id == main { other } else { main };
-            ed.session_switch(to);
+            let to = if ed.workspace.id == main { other } else { main };
+            ed.workspace_switch(to);
             (model.borrow_mut().focused, model.borrow_mut().next) = (None, None);
             // (as the key that switches would: a frame after it)
             crate::term::render(ed, &mut Vec::new(), 100, 24).unwrap();
@@ -237,6 +239,6 @@ fn held(ed: &Editor, m: &Model, wrong: &Cell<Option<String>>) -> Result<(), Stri
 }
 
 fn print(ed: &Editor) -> String {
-    let parked = ed.session.parked.len() + ed.sessions.iter().map(|l| l.parked.len()).sum::<usize>();
+    let parked = ed.workspace.parked.len() + ed.workspaces.iter().map(|l| l.parked.len()).sum::<usize>();
     format!("cards {} · parked {parked} · card has the keys {}", ed.offers.len(), ed.card_has_keys())
 }

@@ -26,8 +26,8 @@ fn chat(msgs: Vec<Msg>) -> Editor {
     ed.docs[0].text = ropey::Rope::from_str("fn main() {}\n");
     let mut c = Chat::new();
     c.msgs = msgs;
-    ed.session.chat = Some(c);
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.claude.chat = Some(c);
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     frame(&mut ed);
     ed
 }
@@ -150,7 +150,7 @@ fn a_row_that_isnt_cut_stays_as_it_is_under_the_cursor() {
 #[test]
 fn the_mouse_over_a_cut_row_draws_it_whole() {
     let mut ed = chat(convo());
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     let screen = frame(&mut ed);
     let cut = Cut::Call("call-1".into());
     let (x, y) = spot(&ed, &cut);
@@ -232,8 +232,8 @@ fn the_last_row_held_in_a_full_chat_shows_whole() {
                again, then say goodbye";
     let long = (0..30).map(|i| format!("Paragraph {i} of the answer.")).collect::<Vec<_>>().join("\n\n");
     let mut ed = chat(vec![Msg::new(Role::User, "walk it", ""), Msg::new(Role::Assistant, long, "")]);
-    ed.session.at = crate::session::At::Code;
-    let c = ed.session.chat.as_mut().unwrap();
+    ed.workspace.viewer.at = crate::workspace::At::Code;
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
     c.queue(msg.to_string(), false);
     let before = frame(&mut ed);
@@ -266,14 +266,14 @@ fn a_held_row_folds_when_it_leaves_a_still_mouse() {
         ]
     };
     let mut ed = chat(msgs());
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     frame(&mut ed);
     let (x, y) = spot(&ed, &Cut::Call("call-1".into()));
     ed.handle_event(Event::Hover(x as u16 + 3, y as u16));
     frame(&mut ed);
     assert!(rows_of(&ed, Of::Msg(2)) > 1, "whole under the mouse");
     // (what comes pushes it up from under the mouse: folded)
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.msgs.push(Msg::new(Role::User, "and more?", ""));
     c.msgs.push(Msg::new(Role::Assistant, "One.\n\nTwo.\n\nThree.\n\nFour.", ""));
     let screen = frame(&mut ed);
@@ -281,7 +281,7 @@ fn a_held_row_folds_when_it_leaves_a_still_mouse() {
     assert_eq!(rows_of(&ed, Of::Msg(2)), 1, "folded:\n{screen}");
     // (the focus gone, the mouse with it)
     let mut ed = chat(msgs());
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     frame(&mut ed);
     ed.handle_event(Event::Hover(x as u16 + 3, y as u16));
     assert!(ed.cut_hover.is_some());
@@ -296,7 +296,7 @@ fn a_press_on_the_queued_line_lands_in_its_words() {
     let msg = "Your walk-perf run sat 30 min with no output, stop it and look at what it waited on before you run it \
                again, then say goodbye";
     let mut ed = chat(vec![Msg::new(Role::User, "walk it", "")]);
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
     c.queue(msg.to_string(), false);
     frame(&mut ed);
@@ -325,7 +325,7 @@ fn the_queued_line_is_whole_in_the_transcript_and_in_hand() {
     let msg = "Your walk-perf run (target/sb/walk) sat 30 min with no output, stop it and look at what it waited on \
                before you run it again, then say goodbye";
     let mut ed = chat(vec![Msg::new(Role::User, "walk it", "")]);
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
     c.queue(msg.to_string(), false);
     let screen = frame(&mut ed);
@@ -369,7 +369,7 @@ fn the_run_card_stays_inside_a_narrow_slot() {
     let mut r = crate::task::Run::for_test(task);
     r.state = crate::task::State::Passed;
     r.push_line(false, "test result: ok".into(), false);
-    ed.session.task_run = Some(r);
+    ed.workspace.task_run = Some(r);
     for (w, h) in [(30u16, 12u16), (12, 12)] {
         let before = render(&mut ed, w, h);
         let Some((x, y)) =
@@ -400,7 +400,7 @@ fn a_run_panels_command_is_whole_on_a_card_over_its_line() {
     let scratch = crate::scratch::Scratch::new("whole-run");
     let dir = std::fs::canonicalize(scratch.path()).unwrap();
     let mut ed = Editor::new(Config::default());
-    ed.session.root = dir.clone();
+    ed.workspace.root = dir.clone();
     ed.docs[0].text = ropey::Rope::from_str(&"fn main() {}\n".repeat(30));
     let cmd = "CARGO_TARGET_DIR=target/sb/whole cargo test -q --bin tarae chatdoc 2>&1 | grep -E 'result|FAILED' \
                && echo and then farewell";
@@ -410,7 +410,7 @@ fn a_run_panels_command_is_whole_on_a_card_over_its_line() {
     r.by_claude = true;
     r.ran = Some(crate::chat::Ran::of(&crate::sandbox::Guard::Outside, Some(7), None, Vec::new()));
     r.push_line(false, "test result: ok".into(), false);
-    ed.session.task_run = Some(r);
+    ed.workspace.task_run = Some(r);
     let before = frame(&mut ed);
     assert!(!before.contains("farewell"), "its label cut:\n{before}");
     let (x, y) = spot(&ed, &Cut::Run(Slot::Task));
@@ -421,7 +421,7 @@ fn a_run_panels_command_is_whole_on_a_card_over_its_line() {
     ed.handle_key("K".parse().unwrap());
     let said = ed.messages.last().map(|m| m.2.clone()).unwrap_or_default();
     assert!(said.starts_with(&format!("{cmd} — ran outside")), "{said}");
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     let before = frame(&mut ed);
     // (the mouse over the label: the card, right over the line, its words whole)
     ed.handle_event(Event::Hover(x as u16, y as u16));

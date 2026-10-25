@@ -171,18 +171,18 @@ pub fn tool_schema() -> Value {
 }
 
 fn find(ed: &Editor, id: u64) -> Option<&Note> {
-    ed.session.notes.list.iter().find(|n| n.id == id)
+    ed.workspace.claude.notes.list.iter().find(|n| n.id == id)
 }
 
 fn find_mut(ed: &mut Editor, id: u64) -> Option<&mut Note> {
-    ed.session.notes.list.iter_mut().find(|n| n.id == id)
+    ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id)
 }
 
 /// A new note on `lines` of `path`.
 pub fn add(ed: &mut Editor, path: &Path, lines: Range<usize>, by: By, text: &str) -> u64 {
-    ed.session.notes.next += 1;
-    let id = ed.session.notes.next;
-    ed.session.notes.list.push(Note {
+    ed.workspace.claude.notes.next += 1;
+    let id = ed.workspace.claude.notes.next;
+    ed.workspace.claude.notes.list.push(Note {
         id,
         path: path.to_path_buf(),
         at: None,
@@ -194,7 +194,7 @@ pub fn add(ed: &mut Editor, path: &Path, lines: Range<usize>, by: By, text: &str
         board: None,
         placing: false,
     });
-    ed.session.notes.focus = Some(id);
+    ed.workspace.claude.notes.focus = Some(id);
     attach(ed);
     // (a file not open — a finding of the reviewer's: its lines as they are now, read on a worker)
     if find(ed, id).is_some_and(|n| n.pinned.is_none()) {
@@ -239,8 +239,8 @@ fn of_hex(s: &str) -> Option<[u8; 32]> {
 
 /// Every event: open documents get marks for their notes, and every note's lines follow its mark.
 pub fn attach(ed: &mut Editor) {
-    let Editor { session, docs, .. } = ed;
-    attach_in(&mut session.notes, docs);
+    let Editor { workspace: session, docs, .. } = ed;
+    attach_in(&mut session.claude.notes, docs);
 }
 
 /// `attach` for one session's notes.
@@ -327,12 +327,12 @@ pub fn to_json(notes: &Notes, docs: &[crate::document::Document]) -> Vec<Value> 
 }
 
 /// Session `id`'s notes from last time, kept for its checkout — session 0's at start, each other one's as
-/// it's made (`session_add`: back at a start or a restart, or opened again).
-pub fn restore_in(ed: &mut Editor, id: crate::event::SessionId) {
-    let Editor { session, sessions, docs, restore, .. } = ed;
+/// it's made (`workspace_add`: back at a start or a restart, or opened again).
+pub fn restore_in(ed: &mut Editor, id: crate::event::WorkspaceId) {
+    let Editor { workspace: session, workspaces: sessions, docs, restore, .. } = ed;
     let Some(s) = std::iter::once(session).chain(sessions.iter_mut()).find(|l| l.id == id) else { return };
     let saved = restore.notes(&s.root);
-    restore_from(&mut s.notes, docs, saved);
+    restore_from(&mut s.claude.notes, docs, saved);
     // (and the lines looked at in its reviews — `risk.rs` — with the added ones' text)
     s.looked.extend(restore.looked(&s.root));
     // (and its viewed marks — one made since, in this run, stays: frictions29 #73)
@@ -397,7 +397,7 @@ fn restore_from(notes: &mut Notes, docs: &mut [crate::document::Document], saved
 
 /// Marks notes point at (the jump list's pruning keeps them).
 pub fn marks(ed: &Editor) -> Vec<(DocId, u64)> {
-    ed.session.notes.list.iter().filter_map(|n| n.at).collect()
+    ed.workspace.claude.notes.list.iter().filter_map(|n| n.at).collect()
 }
 
 /// Notes over the cursor line in the current document — while follow holds the view, over Claude's place there
@@ -406,7 +406,7 @@ pub fn all_here(ed: &Editor) -> Vec<&Note> {
     let Some(path) = ed.doc().path.as_deref() else { return Vec::new() };
     let line = crate::follow::view_line(ed).unwrap_or_else(|| ed.cursor_line());
     let mut v: Vec<&Note> =
-        ed.session.notes.list.iter().filter(|n| n.path == path && n.lines.contains(&line)).collect();
+        ed.workspace.claude.notes.list.iter().filter(|n| n.path == path && n.lines.contains(&line)).collect();
     crate::sorting::by_key(&mut v, |n| (n.lines.start, n.id));
     v
 }
@@ -415,7 +415,7 @@ pub fn all_here(ed: &Editor) -> Vec<&Note> {
 /// so `]n` reads a crowded line in order.
 pub fn here(ed: &Editor) -> Option<&Note> {
     let v = all_here(ed);
-    v.iter().find(|n| Some(n.id) == ed.session.notes.focus).or(v.first()).copied()
+    v.iter().find(|n| Some(n.id) == ed.workspace.claude.notes.focus).or(v.first()).copied()
 }
 
 // ── The tool ────────────────────────────────────────────────────────────────
@@ -433,10 +433,10 @@ pub fn tool_call(ed: &mut Editor, args: &Value) -> Result<String, String> {
         n.waiting = false;
         return Ok(format!("replied on note #{id}"));
     }
-    let (path, lines) = placed(&ed.session.root, args)?;
+    let (path, lines) = placed(&ed.workspace.root, args)?;
     let line = lines.start;
     let id = add(ed, &path, lines, By::Author, text);
-    Ok(format!("note #{id} pinned at {}:{}", crate::chat::shown(&ed.session.root, &path), line + 1))
+    Ok(format!("note #{id} pinned at {}:{}", crate::chat::shown(&ed.workspace.root, &path), line + 1))
 }
 
 /// Where a new note goes: `path` (relative to `root`) and its lines, 0-based. In `root` only, by its real path,
@@ -532,9 +532,9 @@ pub fn pin_finding(
         }
         return id;
     };
-    ed.session.notes.next += 1;
-    let id = ed.session.notes.next;
-    ed.session.notes.list.push(Note {
+    ed.workspace.claude.notes.next += 1;
+    let id = ed.workspace.claude.notes.next;
+    ed.workspace.claude.notes.list.push(Note {
         id,
         path: path.to_path_buf(),
         at: None,
@@ -597,7 +597,7 @@ fn place(
                 (n.lines, n.pinned, n.placing) = (to, pinned, false);
             }
             if changed {
-                ed.session.notes.since_read.push(id);
+                ed.workspace.claude.notes.since_read.push(id);
             }
             attach(ed);
             crate::reviewer::placed(ed, id, changed);
@@ -608,7 +608,7 @@ fn place(
 /// Whether finding `id` was placed on lines changed since its reviewer read them (`place`).
 #[cfg(test)]
 pub fn changed_since_read(ed: &Editor, id: u64) -> bool {
-    ed.session.notes.since_read.contains(&id)
+    ed.workspace.claude.notes.since_read.contains(&id)
 }
 
 /// The open document of `path` (loaded): its id, version and text.
@@ -676,7 +676,7 @@ pub fn placed_lines(then: &str, now: &str, lines: &Range<usize>) -> (Range<usize
 /// The chat turn ended: notes still waiting stop waiting — a single one gets Claude's plain answer (it didn't
 /// use `reply_to`); a review's are answered in the chat.
 pub fn turn_done(ed: &mut Editor, answer: Option<String>) {
-    let ids = std::mem::take(&mut ed.session.notes.turn);
+    let ids = std::mem::take(&mut ed.workspace.claude.notes.turn);
     let single = ids.len() == 1;
     for id in ids {
         let Some(n) = find_mut(ed, id) else { continue };
@@ -710,7 +710,7 @@ fn as_pinned(text: &ropey::Rope, lines: &Range<usize>, pinned: &[u8; 32]) -> boo
 /// it is (its notes follow their marks), a file not open read from disk.
 pub fn stale_check(ed: &mut Editor) {
     type Wanted = (u64, PathBuf, Range<usize>, [u8; 32], Option<(ropey::Rope, bool)>);
-    let (notes, docs) = (&ed.session.notes, &ed.docs);
+    let (notes, docs) = (&ed.workspace.claude.notes, &ed.docs);
     let wanted: Vec<Wanted> = notes
         .list
         .iter()
@@ -753,7 +753,7 @@ const STALE_SHOWN: usize = 6;
 /// by one, `n` keeps them. One card a session (cardburden 6 — a card each turn's end, before): a later turn's
 /// drafts join the card up, its list grown in place — read again before its `y` counts (`rev`).
 pub(crate) fn stale_card(ed: &mut Editor, ids: Vec<u64>) {
-    let notes = &ed.session.notes;
+    let notes = &ed.workspace.claude.notes;
     let new: Vec<u64> = notes
         .list
         .iter()
@@ -764,7 +764,7 @@ pub(crate) fn stale_card(ed: &mut Editor, ids: Vec<u64>) {
         ed.unchanged = true;
         return;
     }
-    ed.session.notes.stale_asked.extend(&new);
+    ed.workspace.claude.notes.stale_asked.extend(&new);
     let up = stale_ids(ed).unwrap_or_default();
     let all: Vec<u64> =
         up.iter().chain(&new).copied().filter(|&id| find(ed, id).is_some_and(is_draft)).collect();
@@ -793,7 +793,7 @@ fn stale_text(ed: &Editor, ids: &[u64]) -> (String, String, Range<usize>) {
     let stale: Vec<&Note> = ids.iter().filter_map(|&id| find(ed, id)).collect();
     let k = stale.len();
     // (findings placed on lines changed since their reviewer read them — bgreview — or drafts since pinned)
-    let read = stale.iter().filter(|n| ed.session.notes.since_read.contains(&n.id)).count();
+    let read = stale.iter().filter(|n| ed.workspace.claude.notes.since_read.contains(&n.id)).count();
     let mut q = String::from(match read {
         0 => "Their lines changed since they were pinned — fixed in the chat, maybe:\n",
         r if r == k => "Their lines changed since the reviewer read them:\n",
@@ -801,7 +801,7 @@ fn stale_text(ed: &Editor, ids: &[u64]) -> (String, String, Range<usize>) {
     });
     for n in stale.iter().take(STALE_SHOWN) {
         let by = n.thread.first().map_or(By::Author, |e| e.by).label();
-        let at = format!("{}:{}", crate::chat::shown(&ed.session.root, &n.path), n.lines.start + 1);
+        let at = format!("{}:{}", crate::chat::shown(&ed.workspace.root, &n.path), n.lines.start + 1);
         q.push_str(&format!("\n  {at} · {by} · {}", n.gist()));
     }
     if k > STALE_SHOWN {
@@ -817,7 +817,7 @@ fn stale_text(ed: &Editor, ids: &[u64]) -> (String, String, Range<usize>) {
 fn stale_offer(ed: &mut Editor) -> Option<&mut crate::offer::Offer> {
     let is = |o: &crate::offer::Offer| matches!(o.what, crate::offer::What::NotesStale { .. });
     match ed.background() {
-        true => ed.session.parked.iter_mut().find(|o| is(o)),
+        true => ed.workspace.parked.iter_mut().find(|o| is(o)),
         false => ed.offers.iter_mut().find(|o| is(o)),
     }
 }
@@ -854,12 +854,12 @@ pub fn stale_sync(ed: &mut Editor) {
     if left.is_empty() {
         let is = |o: &crate::offer::Offer| matches!(o.what, crate::offer::What::NotesStale { .. });
         let gone = match ed.background() {
-            true => ed.session.parked.iter().find(|o| is(o)).map(|o| o.id),
+            true => ed.workspace.parked.iter().find(|o| is(o)).map(|o| o.id),
             false => ed.offers.iter().find(|o| is(o)).map(|o| o.id),
         };
         if let Some(id) = gone {
             ed.card_how(id, "its drafts closed or sent");
-            ed.session.parked.retain(|o| o.id != id);
+            ed.workspace.parked.retain(|o| o.id != id);
             ed.offer_finished(id, Ok(()));
         }
         return;
@@ -902,9 +902,9 @@ pub fn stale_answer(ed: &mut Editor, card: u64, ids: Vec<u64>, yes: bool) {
     if !yes {
         return ed.set_status("kept — space v s still sends them, :note-close drops one");
     }
-    let before = ed.session.notes.list.len();
-    ed.session.notes.list.retain(|n| !ids.contains(&n.id));
-    let k = before - ed.session.notes.list.len();
+    let before = ed.workspace.claude.notes.list.len();
+    ed.workspace.claude.notes.list.retain(|n| !ids.contains(&n.id));
+    let k = before - ed.workspace.claude.notes.list.len();
     ed.set_status(format!("{} closed", crate::nav::count(k, "draft")));
 }
 
@@ -913,9 +913,10 @@ pub fn stale_answer(ed: &mut Editor, card: u64, ids: Vec<u64>, yes: bool) {
 /// notes as they are now, one added later isn't among them. Whether it asked.
 pub fn close_by(ed: &mut Editor, by: Option<By>) -> bool {
     let whose = |n: &Note| by.is_none() || n.thread.first().map(|e| e.by) == by;
-    let ids: Vec<u64> = ed.session.notes.list.iter().filter(|n| whose(n)).map(|n| n.id).collect();
+    let ids: Vec<u64> = ed.workspace.claude.notes.list.iter().filter(|n| whose(n)).map(|n| n.id).collect();
     let drafts: Vec<&Note> = ed
-        .session
+        .workspace
+        .claude
         .notes
         .list
         .iter()
@@ -931,7 +932,7 @@ pub fn close_by(ed: &mut Editor, by: Option<By>) -> bool {
         if k == 1 { "One holds" } else { "These hold" }
     );
     for n in drafts.iter().take(STALE_SHOWN) {
-        let at = format!("{}:{}", crate::chat::shown(&ed.session.root, &n.path), n.lines.start + 1);
+        let at = format!("{}:{}", crate::chat::shown(&ed.workspace.root, &n.path), n.lines.start + 1);
         q.push_str(&format!("\n  {at} · {}", n.gist()));
     }
     if k > STALE_SHOWN {
@@ -958,9 +959,9 @@ pub fn close_by_answer(ed: &mut Editor, card: u64, by: Option<By>, ids: Vec<u64>
 
 /// Notes `ids` closed, said as whose they were.
 fn close_ids(ed: &mut Editor, by: Option<By>, ids: &[u64]) {
-    let before = ed.session.notes.list.len();
-    ed.session.notes.list.retain(|n| !ids.contains(&n.id));
-    let n = before - ed.session.notes.list.len();
+    let before = ed.workspace.claude.notes.list.len();
+    ed.workspace.claude.notes.list.retain(|n| !ids.contains(&n.id));
+    let n = before - ed.workspace.claude.notes.list.len();
     ed.set_status(match by {
         Some(by) => format!("{n} of the {}'s notes closed", by.label()),
         None => format!("{} closed", crate::nav::count(n, "note")),
@@ -969,7 +970,7 @@ fn close_ids(ed: &mut Editor, by: Option<By>, ids: &[u64]) {
 
 /// Note `id` closed, said.
 pub fn close(ed: &mut Editor, id: u64) {
-    ed.session.notes.list.retain(|n| n.id != id);
+    ed.workspace.claude.notes.list.retain(|n| n.id != id);
     ed.set_status(format!("note #{id} closed"));
 }
 
@@ -978,7 +979,7 @@ pub const NOTES: &str = "notes";
 
 /// A note's row in the notes list: where it is and what it says first.
 fn row_label(ed: &Editor, n: &Note) -> String {
-    format!("{}:{}  {}", crate::chat::shown(&ed.session.root, &n.path), n.lines.start + 1, n.gist())
+    format!("{}:{}  {}", crate::chat::shown(&ed.workspace.root, &n.path), n.lines.start + 1, n.gist())
 }
 
 /// The note on a row of the notes list (`C-x`, `A-x`): by the id the row carries — two notes saying the
@@ -1027,7 +1028,8 @@ pub fn submit(ed: &mut Editor, target: Option<u64>, text: &str) {
         return;
     }
     // (Claude answering: the reply is in its thread now and goes at the turn's end — frictions29 18)
-    let busy = ed.session.chat.as_ref().is_some_and(|c| c.busy()) && !crate::codereview::drafting(ed);
+    let busy =
+        ed.workspace.claude.chat.as_ref().is_some_and(|c| c.busy()) && !crate::codereview::drafting(ed);
     // During a review it's a draft: it goes with the rest (`space v s`), nothing is sent now
     let draft = crate::codereview::drafting(ed);
     let fresh = target.filter(|&id| find(ed, id).is_some()).is_none();
@@ -1063,16 +1065,16 @@ pub fn submit(ed: &mut Editor, target: Option<u64>, text: &str) {
         }
     };
     if draft {
-        let k = ed.session.notes.list.iter().filter(|n| n.thread.iter().any(|e| e.draft)).count();
+        let k = ed.workspace.claude.notes.list.iter().filter(|n| n.thread.iter().any(|e| e.draft)).count();
         // (outside a review too, while drafts wait — a background reviewer's findings among them: bgreview)
         // (in a review the rail counts them; outside one it's said where you look, the user's decision 2026-10-19)
-        return match ed.session.code_review.is_some() {
+        return match ed.workspace.code_review.is_some() {
             true => ed.note(format!("draft saved — {k} in this review · space v s sends them")),
             false => ed.set_status(format!("draft saved — {k} waiting · space v s sends them")),
         };
     }
     let why = stop.map(|(_, _, why)| why.to_string());
-    if busy && let Some(c) = ed.session.chat.as_mut() {
+    if busy && let Some(c) = ed.workspace.claude.chat.as_mut() {
         c.sends.push(crate::chat::Later::Reply { id, text: text.to_string(), fresh, why });
         return ed.set_status("reply queued — it goes when Claude's turn ends");
     }
@@ -1085,11 +1087,11 @@ pub fn submit(ed: &mut Editor, target: Option<u64>, text: &str) {
 /// with the file's name only (None: not asked yet).
 pub fn send(ed: &mut Editor, id: u64, text: &str, fresh: bool, why: Option<String>, lines: Option<bool>) {
     // The chat panel carries the conversation — opened in the background if closed; the keys stay here
-    if ed.session.chat.is_none() {
-        let at = ed.session.at;
+    if ed.workspace.claude.chat.is_none() {
+        let at = ed.workspace.viewer.at;
         crate::chat::open(ed);
-        ed.session.at = at;
-        if let Some(c) = &mut ed.session.chat {
+        ed.workspace.viewer.at = at;
+        if let Some(c) = &mut ed.workspace.claude.chat {
             c.unfolded = false;
         }
     }
@@ -1115,17 +1117,17 @@ pub fn send(ed: &mut Editor, id: u64, text: &str, fresh: bool, why: Option<Strin
         about.insert_str(at, &format!("(a stop of your walk-through — you said: {why})\n"));
     }
     if crate::chat::submit(ed, text, Some(about), Some(chip)) {
-        ed.session.notes.turn = vec![id];
+        ed.workspace.claude.notes.turn = vec![id];
         return;
     }
     // (its claude starting — the project's settings read first: the reply waits for it, frictions29 #67)
-    if let Some(c) = ed.session.chat.as_mut().filter(|c| c.settings.waiting()) {
+    if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.settings.waiting()) {
         c.sends.push(crate::chat::Later::Reply { id, text: text.to_string(), fresh, why });
         return ed.set_status("reply queued — claude is starting; it goes once it's up");
     }
     // Claude never saw it — take it back (the chat panel says why)
     if fresh {
-        ed.session.notes.list.retain(|n| n.id != id);
+        ed.workspace.claude.notes.list.retain(|n| n.id != id);
     } else if let Some(n) = find_mut(ed, id) {
         // (this reply — the last of yours with its text, not merely the last: one queued while Claude worked may
         // have others after it by now)
@@ -1157,7 +1159,7 @@ fn message(ed: &Editor, n: &Note, code: bool) -> String {
     let mut s = format!(
         "<note id=\"{}\" path=\"{}\" lines=\"{}-{}\">\n<code>\n{}</code>\n",
         n.id,
-        crate::chat::shown(&ed.session.root, &n.path),
+        crate::chat::shown(&ed.workspace.root, &n.path),
         n.lines.start + 1,
         n.lines.end,
         code
@@ -1187,7 +1189,7 @@ pub fn step(ed: &mut Editor, forward: bool) {
     let path = ed.doc().path.clone().unwrap_or_default();
     // From the note shown here, else from the cursor line
     let here = here(ed).map(key).unwrap_or((path, ed.cursor_line(), 0));
-    let mut all: Vec<(PathBuf, usize, u64)> = ed.session.notes.list.iter().map(key).collect();
+    let mut all: Vec<(PathBuf, usize, u64)> = ed.workspace.claude.notes.list.iter().map(key).collect();
     crate::sorting::sort(&mut all);
     let target = if forward {
         all.iter().find(|t| **t > here).or(all.first())
@@ -1196,7 +1198,7 @@ pub fn step(ed: &mut Editor, forward: bool) {
     };
     match target.cloned() {
         Some((p, l, id)) => {
-            ed.session.notes.focus = Some(id);
+            ed.workspace.claude.notes.focus = Some(id);
             if let Err(e) = ed.open_at(&p, l, 0) {
                 ed.set_error(format!("{e:#}"));
             }
@@ -1210,7 +1212,7 @@ pub fn step(ed: &mut Editor, forward: bool) {
 /// `space N` — every note, newest first. `C-x` closes the note on its row, `A-x` every note its author began
 /// (#197).
 pub fn picker(ed: &mut Editor) {
-    if ed.session.notes.list.is_empty() {
+    if ed.workspace.claude.notes.list.is_empty() {
         return ed
             .set_status("no notes yet — Claude pins them while it explores, or space n asks about a line");
     }
@@ -1221,7 +1223,8 @@ pub fn picker(ed: &mut Editor) {
 /// The notes list's rows, newest first.
 pub fn picker_items(ed: &Editor) -> Vec<crate::picker::Item> {
     use crate::picker::{Action, Item};
-    ed.session
+    ed.workspace
+        .claude
         .notes
         .list
         .iter()
@@ -1262,7 +1265,7 @@ mod tests {
     fn a_reply_that_never_went_takes_back_itself_not_the_last() {
         let s = crate::scratch::Scratch::new("notes-take-back");
         let mut ed = editor();
-        ed.session.root = s.to_path_buf();
+        ed.workspace.root = s.to_path_buf();
         ed.config.llm.command = s.join("no-claude-here").display().to_string();
         let id = add(&mut ed, &s.join("a.rs"), 0..1, By::You, "first");
         for t in ["queued reply", "a later one"] {
@@ -1283,7 +1286,7 @@ mod tests {
         let f = dir.join("a.rs");
         std::fs::write(&f, "one\ntwo\nthree\n").unwrap();
         let mut ed = editor();
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.open(&f).unwrap();
         tool_call(&mut ed, &json!({"path": f, "line": 1, "text": "the author's"})).unwrap();
         let (found, _) =
@@ -1292,17 +1295,17 @@ mod tests {
         ed.goto_line(2);
         submit(&mut ed, None, "mine");
         let by: Vec<(By, bool)> =
-            ed.session.notes.list.iter().map(|n| (n.thread[0].by, n.thread[0].draft)).collect();
+            ed.workspace.claude.notes.list.iter().map(|n| (n.thread[0].by, n.thread[0].draft)).collect();
         assert_eq!(by, [(By::Author, false), (By::Reviewer, true), (By::You, true)]);
-        assert_eq!(ed.session.notes.list[1].id, found);
-        let mut saved = to_json(&ed.session.notes, &ed.docs);
+        assert_eq!(ed.workspace.claude.notes.list[1].id, found);
+        let mut saved = to_json(&ed.workspace.claude.notes, &ed.docs);
         let words: Vec<&str> = saved.iter().map(|n| n["thread"][0][0].as_str().unwrap()).collect();
         assert_eq!(words, ["claude", "reviewer", "you"]);
         saved.push(json!({"path": f, "lines": [0, 1], "thread": [["claude", "from an older tarae"]]}));
         let mut ed = editor();
-        restore_from(&mut ed.session.notes, &mut ed.docs, saved);
+        restore_from(&mut ed.workspace.claude.notes, &mut ed.docs, saved);
         let by: Vec<(By, bool)> =
-            ed.session.notes.list.iter().map(|n| (n.thread[0].by, n.thread[0].draft)).collect();
+            ed.workspace.claude.notes.list.iter().map(|n| (n.thread[0].by, n.thread[0].draft)).collect();
         assert_eq!(by, [(By::Author, false), (By::Reviewer, true), (By::You, true), (By::Author, false)]);
         // The reviewer pins findings in the checkout only, and answers no thread
         let away = crate::scratch::Scratch::new("notes-by-out");
@@ -1324,7 +1327,7 @@ mod tests {
         std::fs::write(root.join("a.rs"), "one\n").unwrap();
         std::fs::write(out.join("hosts"), "127.0.0.1 stand-in\n").unwrap();
         let mut ed = editor();
-        ed.session.root = root.clone();
+        ed.workspace.root = root.clone();
         let pin =
             |ed: &mut Editor, path: &Path| tool_call(ed, &json!({"path": path, "line": 1, "text": "t"}));
         let there = pin(&mut ed, &out.join("hosts")).unwrap_err();
@@ -1334,9 +1337,9 @@ mod tests {
         // (through a link in the project too)
         std::os::unix::fs::symlink(&out, root.join("away")).unwrap();
         assert_eq!(pin(&mut ed, Path::new("away/hosts")).unwrap_err(), there);
-        assert!(ed.session.notes.list.is_empty());
+        assert!(ed.workspace.claude.notes.list.is_empty());
         pin(&mut ed, Path::new("a.rs")).unwrap();
-        assert_eq!(ed.session.notes.list.len(), 1);
+        assert_eq!(ed.workspace.claude.notes.list.len(), 1);
     }
 
     fn feed(ed: &mut Editor, keys: &str) {
@@ -1361,7 +1364,7 @@ mod tests {
     }
 
     fn gists(ed: &Editor) -> Vec<&str> {
-        ed.session.notes.list.iter().map(Note::gist).collect()
+        ed.workspace.claude.notes.list.iter().map(Note::gist).collect()
     }
 
     /// The front card drawn and in sight past its settling time, then `keys` (a weighty card takes them only
@@ -1386,7 +1389,7 @@ mod tests {
         std::fs::write(&f, "one\ntwo\nthree\nfour\n").unwrap();
         std::fs::write(&g, "alpha\nbeta\n").unwrap();
         let mut ed = editor();
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.open(&f).unwrap();
         tool_call(&mut ed, &json!({"path": f, "line": 1, "text": "the author's"})).unwrap();
         let find = |ed: &mut Editor, path: &str, line: u64, text: &str| {
@@ -1396,7 +1399,9 @@ mod tests {
         find(&mut ed, "a.rs", 4, "four too");
         // (b.rs isn't open: its lines are read as the finding is pinned)
         let beta = find(&mut ed, "b.rs", 2, "beta");
-        settle_until(&mut ed, |ed| ed.session.notes.list.iter().any(|n| n.id == beta && n.pinned.is_some()));
+        settle_until(&mut ed, |ed| {
+            ed.workspace.claude.notes.list.iter().any(|n| n.id == beta && n.pinned.is_some())
+        });
         // The author fixes line 2 in the buffer, and b.rs's line on disk
         ed.goto_line(1);
         feed(&mut ed, "Afixed<esc>");
@@ -1509,17 +1514,17 @@ mod tests {
         let back_root = dir.join("back");
         std::fs::write(back_root.join("a.rs"), "one\ntwo\nthree\n").unwrap();
         let mut ed = editor();
-        ed.session.root = dir.clone();
-        let back = ed.session_add(back_root.clone());
+        ed.workspace.root = dir.clone();
+        let back = ed.workspace_add(back_root.clone());
         let mut ids = Vec::new();
-        ed.with_session(back, |ed| {
+        ed.with_workspace(back, |ed| {
             for line in [1, 2] {
                 let args = json!({"path": "a.rs", "line": line, "text": format!("found {line}")});
                 ids.push(finding(ed, &back_root, &args).unwrap().0);
             }
         });
         let parked = |ed: &Editor| -> Vec<(u64, u64, Vec<u64>)> {
-            let l = ed.sessions.iter().find(|l| l.id == back).expect("behind");
+            let l = ed.workspaces.iter().find(|l| l.id == back).expect("behind");
             l.parked
                 .iter()
                 .filter_map(|o| match &o.what {
@@ -1528,7 +1533,7 @@ mod tests {
                 })
                 .collect()
         };
-        ed.with_session(back, |ed| {
+        ed.with_workspace(back, |ed| {
             assert!(ed.background());
             stale_card(ed, vec![ids[0]]);
         });
@@ -1536,7 +1541,7 @@ mod tests {
         assert_eq!(first.len(), 1, "parked behind");
         assert!(ed.offers.is_empty(), "nothing in front");
         // A later turn behind: the same card, grown, to be read again
-        ed.with_session(back, |ed| stale_card(ed, vec![ids[1]]));
+        ed.with_workspace(back, |ed| stale_card(ed, vec![ids[1]]));
         let grown = parked(&ed);
         assert_eq!(grown.len(), 1, "one card");
         assert_eq!(grown[0].0, first[0].0, "the same card");
@@ -1544,12 +1549,12 @@ mod tests {
         assert!(grown[0].1 > first[0].1);
         assert!(ed.offers.is_empty(), "nothing in front");
         // Its drafts closed, still behind: it goes
-        ed.with_session(back, |ed| {
+        ed.with_workspace(back, |ed| {
             close(ed, ids[0]);
             stale_sync(ed);
         });
         assert_eq!(parked(&ed)[0].2, [ids[1]], "its list follows");
-        ed.with_session(back, |ed| {
+        ed.with_workspace(back, |ed| {
             close(ed, ids[1]);
             stale_sync(ed);
         });
@@ -1568,7 +1573,7 @@ mod tests {
         let f = dir.join("a.rs");
         std::fs::write(&f, "one\ntwo\nthree\nfour\nfive\n").unwrap();
         let mut ed = editor();
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.open(&f).unwrap();
         tool_call(&mut ed, &json!({"path": f, "line": 1, "text": "the author's"})).unwrap();
         finding(&mut ed, &dir, &json!({"path": "a.rs", "line": 2, "text": "found one"})).unwrap();
@@ -1585,7 +1590,7 @@ mod tests {
         assert_eq!(gists(&ed), ["the author's", "the author's again"]);
         feed(&mut ed, "<esc>");
         crate::typed::execute(&mut ed, "notes-clear author").unwrap();
-        assert!(ed.session.notes.list.is_empty());
+        assert!(ed.workspace.claude.notes.list.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1600,7 +1605,7 @@ mod tests {
         let f = dir.join("a.rs");
         std::fs::write(&f, "one\ntwo\nthree\nfour\nfive\n").unwrap();
         let mut ed = editor();
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.open(&f).unwrap();
         let one = finding(&mut ed, &dir, &json!({"path": "a.rs", "line": 2, "text": "found one"})).unwrap().0;
         finding(&mut ed, &dir, &json!({"path": "a.rs", "line": 3, "text": "found two"})).unwrap();
@@ -1609,7 +1614,7 @@ mod tests {
         tool_call(&mut ed, &json!({"path": f, "line": 5, "text": "the author's"})).unwrap();
         // (your draft reply on a finding, and your own comment a draft — as a review writes them)
         let draft = |text: &str| Entry { by: By::You, text: text.into(), draft: true };
-        let list = &mut ed.session.notes.list;
+        let list = &mut ed.workspace.claude.notes.list;
         list.iter_mut().find(|n| n.id == one).unwrap().thread.push(draft("my reply"));
         list.iter_mut().find(|n| n.gist() == "mine").unwrap().thread[0].draft = true;
         // The command line: asked, `n` keeps them
@@ -1649,7 +1654,7 @@ mod tests {
         assert_eq!(gists(&ed), ["the author's"]);
         // None of yours: at once, bare too
         crate::typed::execute(&mut ed, "notes-clear").unwrap();
-        assert!(ed.offers.is_empty() && ed.session.notes.list.is_empty());
+        assert!(ed.offers.is_empty() && ed.workspace.claude.notes.list.is_empty());
         assert!(ed.toasts.iter().any(|t| t.text.contains("1 note closed")), "said");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1663,11 +1668,11 @@ mod tests {
         let f = dir.join("a.rs");
         std::fs::write(&f, "one\ntwo\n").unwrap();
         let mut ed = editor();
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.open(&f).unwrap();
         tool_call(&mut ed, &json!({"path": f, "line": 2, "text": "same"})).unwrap();
         tool_call(&mut ed, &json!({"path": f, "line": 2, "text": "same"})).unwrap();
-        let ids = |ed: &Editor| ed.session.notes.list.iter().map(|n| n.id).collect::<Vec<_>>();
+        let ids = |ed: &Editor| ed.workspace.claude.notes.list.iter().map(|n| n.id).collect::<Vec<_>>();
         let (older, newer) = (ids(&ed)[0], ids(&ed)[1]);
         // (newest first: the second row is the older note)
         feed(&mut ed, "<space>N<C-n><C-x>");
@@ -1685,11 +1690,11 @@ mod tests {
         let f = dir.join("a.rs");
         std::fs::write(&f, "a\nb\ntarget();\nc\n").unwrap();
         let mut ed = editor();
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.open(&f).unwrap();
         tool_call(&mut ed, &json!({"path": f, "line": 3, "text": "look here"})).unwrap();
         tool_call(&mut ed, &json!({"reply_to": 1, "text": "and here"})).unwrap();
-        let mut saved = to_json(&ed.session.notes, &ed.docs);
+        let mut saved = to_json(&ed.workspace.claude.notes, &ed.docs);
         assert_eq!(saved[0]["anchor"], "target();");
         // Edited outside tarae: two lines above
         std::fs::write(&f, "x\ny\na\nb\ntarget();\nc\n").unwrap();
@@ -1697,13 +1702,13 @@ mod tests {
             json!({"path": f, "lines": [50, 52], "anchor": "gone", "thread": [["claude", "past the end"]]}),
         );
         let mut ed = editor();
-        restore_from(&mut ed.session.notes, &mut ed.docs, saved);
-        assert_eq!(ed.session.notes.list.len(), 2);
+        restore_from(&mut ed.workspace.claude.notes, &mut ed.docs, saved);
+        assert_eq!(ed.workspace.claude.notes.list.len(), 2);
         ed.open(&f).unwrap();
         attach(&mut ed);
-        let n = &ed.session.notes.list[0];
+        let n = &ed.workspace.claude.notes.list[0];
         assert_eq!((n.lines.clone(), n.thread.len()), (4..5, 2), "re-anchored on its line's text");
-        assert_eq!(ed.session.notes.list[1].lines, 5..6, "clamped to the last line");
+        assert_eq!(ed.workspace.claude.notes.list[1].lines, 5..6, "clamped to the last line");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

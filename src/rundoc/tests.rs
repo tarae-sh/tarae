@@ -14,13 +14,13 @@ fn task(lines: usize) -> Editor {
     ed.docs[0].text = ropey::Rope::from_str("fn main() {}\n");
     (ed.config.llm.command, ed.config.llm.args) = ("sh".into(), vec!["-c".into(), "cat > /dev/null".into()]);
     let t =
-        crate::task::Task { name: "check".into(), cmd: "cargo check".into(), cwd: ed.session.root.clone() };
+        crate::task::Task { name: "check".into(), cmd: "cargo check".into(), cwd: ed.workspace.root.clone() };
     let mut r = crate::task::Run::for_test(t);
     for i in 0..lines {
         r.push_line(i % 7 == 3, format!("out {i}"), false);
     }
     r.state = crate::task::State::Passed;
-    ed.session.task_run = Some(r);
+    ed.workspace.task_run = Some(r);
     frame(&mut ed);
     ed
 }
@@ -62,10 +62,10 @@ fn perf_run_output_memory() {
         r.push_line(i % 9 == 0, line(i), false);
     }
     let run = in_use();
-    ed.session.task_run = Some(r);
+    ed.workspace.task_run = Some(r);
     frame(&mut ed);
     frame(&mut ed);
-    let lines = ed.session.outputs.doc(Slot::Task).map_or(0, |d| d.text.len_lines());
+    let lines = ed.workspace.outputs.doc(Slot::Task).map_or(0, |d| d.text.len_lines());
     let after = (in_use(), footprint());
     let more = |a: u64, b: u64| a.saturating_sub(b);
     eprintln!(
@@ -86,7 +86,7 @@ fn perf_run_output_memory() {
 fn tests(dir: &std::path::Path) -> Editor {
     use crate::test_results::{Case, Status};
     let mut ed = task(0);
-    ed.session.task_run = None;
+    ed.workspace.task_run = None;
     std::fs::write(dir.join("math.rs"), "fn a() {}\n".repeat(20)).unwrap();
     // (as the document's path is kept: a real path — `]x` tells it's at the failure by it)
     let file = std::fs::canonicalize(dir.join("math.rs")).unwrap();
@@ -104,7 +104,7 @@ fn tests(dir: &std::path::Path) -> Editor {
     ];
     let mut r = crate::testing::TestRun::finished("math::*", cases, vec!["running 3 tests".into()]);
     r.selected = 1;
-    ed.session.test_run = Some(r);
+    ed.workspace.test_run = Some(r);
     frame(&mut ed);
     ed
 }
@@ -141,7 +141,7 @@ fn region(ed: &Editor) -> String {
 }
 
 fn output(ed: &Editor, slot: Slot) -> &Document {
-    ed.session.outputs.doc(slot).expect("a run panel's output")
+    ed.workspace.outputs.doc(slot).expect("a run panel's output")
 }
 
 /// The task output's cursor line, and what's selected.
@@ -190,7 +190,7 @@ fn the_task_panels_keys_are_normal_mode_on_its_output() {
     feed(&mut ed, "<esc>");
     assert_eq!(region(&ed), "code");
     feed(&mut ed, "<C-w>jq");
-    assert!(ed.session.task_run.is_none() && ed.session.outputs.doc(Slot::Task).is_none(), "q: closed");
+    assert!(ed.workspace.task_run.is_none() && ed.workspace.outputs.doc(Slot::Task).is_none(), "q: closed");
     assert_eq!(region(&ed), "code");
 }
 
@@ -207,7 +207,7 @@ fn it_refuses_edits_and_says_so_and_y_copies() {
         assert_eq!(said(&ed), "the task's output is read-only — esc code", "{keys}");
         assert_eq!(ed.mode, Mode::Normal, "{keys}: the code's mode");
         assert_eq!(region(&ed), "output:task", "{keys}: the keys stay");
-        let o = ed.session.outputs.get(Slot::Task).unwrap();
+        let o = ed.workspace.outputs.get(Slot::Task).unwrap();
         assert_eq!(o.keys.mode, Mode::Normal, "{keys}: never insert mode there");
         feed(&mut ed, "<esc><esc>");
     }
@@ -229,7 +229,7 @@ fn enter_quotes_a_selection_and_without_one_goes_to_the_chat() {
     let mut ed = task(12);
     feed(&mut ed, "<C-w>jkxx<ret>");
     assert_eq!(region(&ed), "chat");
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert_eq!(c.quotes.len(), 1);
     let q = &c.quotes[0];
     assert_eq!((q.label.as_str(), q.text.as_str()), ("task output 2 lines", "out 10\nout 11"));
@@ -239,11 +239,11 @@ fn enter_quotes_a_selection_and_without_one_goes_to_the_chat() {
     let mut ed = task(12);
     feed(&mut ed, "<C-w>j<ret>");
     assert_eq!(region(&ed), "chat");
-    assert!(ed.session.chat.as_ref().unwrap().quotes.is_empty(), "nothing quoted");
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().quotes.is_empty(), "nothing quoted");
     // (`space >`, as `enter`)
     let mut ed = task(12);
     feed(&mut ed, "<C-w>jx<space>>");
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert_eq!((region(&ed).as_str(), c.quotes.len()), ("chat", 1), "space >: quoted");
 }
 
@@ -252,14 +252,14 @@ fn enter_quotes_a_selection_and_without_one_goes_to_the_chat() {
 #[test]
 fn enter_runs_your_waiting_run_now() {
     let mut ed = task(12);
-    ed.session.task_run.as_mut().unwrap().state = crate::task::State::Running;
-    let mine = crate::task::Task { name: "mine".into(), cmd: "true".into(), cwd: ed.session.root.clone() };
+    ed.workspace.task_run.as_mut().unwrap().state = crate::task::State::Running;
+    let mine = crate::task::Task { name: "mine".into(), cmd: "true".into(), cwd: ed.workspace.root.clone() };
     crate::queued::push(&mut ed, crate::queued::What::Task(mine));
-    assert_eq!(ed.session.runs_next.len(), 1, "it waits");
+    assert_eq!(ed.workspace.runs_next.len(), 1, "it waits");
     feed(&mut ed, "<C-w>j");
     assert!(status(&frame(&mut ed)).contains("enter run now"));
     feed(&mut ed, "<ret>");
-    assert!(ed.session.runs_next.is_empty(), "out of line: it runs");
+    assert!(ed.workspace.runs_next.is_empty(), "out of line: it runs");
     assert_ne!(region(&ed), "chat", "not the chat's input");
 }
 
@@ -274,10 +274,10 @@ fn the_tests_detail_is_the_failure_picked_and_follows_x() {
     feed(&mut ed, "<C-w>j");
     assert_eq!(region(&ed), "output:tests");
     assert!(status(&frame(&mut ed)).contains("● normal · tests"));
-    assert!(ed.session.outputs.get(Slot::Test).unwrap().failure());
+    assert!(ed.workspace.outputs.get(Slot::Test).unwrap().failure());
     assert_eq!(at(&ed, Slot::Test).0, 0, "the message's first line");
     feed(&mut ed, "jx<ret>");
-    let q = ed.session.chat.as_ref().unwrap().quotes[0].clone();
+    let q = ed.workspace.claude.chat.as_ref().unwrap().quotes[0].clone();
     assert_eq!((q.label.as_str(), q.text.as_str()), ("failure 1 line", "  left: 3"));
     assert!(q.block().contains(r#"from="test" title="math::*" test="math::divides""#), "{}", q.block());
     ed.bottom_take_keys();
@@ -288,7 +288,7 @@ fn the_tests_detail_is_the_failure_picked_and_follows_x() {
         ed.handle_key(k.parse().unwrap());
         frame(&mut ed);
     }
-    assert_eq!(ed.session.test_run.as_ref().unwrap().selected, 2, "]x: the next failure");
+    assert_eq!(ed.workspace.test_run.as_ref().unwrap().selected, 2, "]x: the next failure");
     assert_eq!(region(&ed), "output:tests", "the keys stay on the detail");
     assert_eq!(
         output(&ed, Slot::Test).text.to_string(),
@@ -308,7 +308,7 @@ fn the_tests_detail_is_the_failure_picked_and_follows_x() {
 #[test]
 fn a_preflights_o_and_k_and_tab_to_the_tests() {
     let mut ed = task(0);
-    let r = ed.session.task_run.as_mut().unwrap();
+    let r = ed.workspace.task_run.as_mut().unwrap();
     r.push_line(false, "── fmt ──".into(), true);
     r.push_line(false, "fmt-says-ok".into(), false);
     let steps = [crate::preflight::Step {
@@ -320,8 +320,8 @@ fn a_preflights_o_and_k_and_tab_to_the_tests() {
     }];
     let mut p = crate::preflight::Preflight::new(0, &steps, crate::preflight::Set::Full, "k".into());
     p.steps[0].state = crate::preflight::State::Passed;
-    ed.session.preflight = Some(p);
-    ed.session.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), vec!["ok".into()]));
+    ed.workspace.preflight = Some(p);
+    ed.workspace.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), vec!["ok".into()]));
     frame(&mut ed);
     let faint = crate::syntax::capture_id("ui.linenr");
     assert!(
@@ -368,7 +368,7 @@ fn tab_goes_round_the_slot_from_procs_too() {
 #[test]
 fn a_step_row_shows_its_heading_at_the_top() {
     let mut ed = task(0);
-    let r = ed.session.task_run.as_mut().unwrap();
+    let r = ed.workspace.task_run.as_mut().unwrap();
     for name in ["fmt", "test", "clippy"] {
         r.push_line(false, format!("── {name} ──"), true);
         for i in 0..30 {
@@ -387,7 +387,7 @@ fn a_step_row_shows_its_heading_at_the_top() {
         .collect();
     let mut p = crate::preflight::Preflight::new(0, &steps, crate::preflight::Set::Full, "k".into());
     p.steps.iter_mut().for_each(|s| s.state = crate::preflight::State::Passed);
-    ed.session.preflight = Some(p);
+    ed.workspace.preflight = Some(p);
     frame(&mut ed);
     feed(&mut ed, "<C-w>j");
     let (y, _, first) = ed.screen.list(crate::pane::GroupKind::Preflight).expect("the steps' list");
@@ -422,23 +422,27 @@ fn a_trimmed_run_keeps_what_you_read() {
         d.text.line(at(ed, Slot::Task).0).to_string()
     };
     assert_eq!(line(&ed), "out 2999\n");
-    let r = ed.session.task_run.as_mut().unwrap();
+    let r = ed.workspace.task_run.as_mut().unwrap();
     r.keep(0);
     let kept = r.output.len();
     frame(&mut ed);
     let d = output(&ed, Slot::Task);
     assert_eq!(mv::last_line(&d.text) + 1, kept, "the run's lines again");
     assert_eq!(line(&ed), "out 2999\n", "the cursor on the line it was on");
-    let trims = ed.session.task_run.as_ref().unwrap().trims();
+    let trims = ed.workspace.task_run.as_ref().unwrap().trims();
     assert!(trims.count() > 0 && trims.held() == 0, "replayed, the run keeps none of them");
     let top = d.top;
     assert_eq!(
-        ed.session.task_run.as_ref().unwrap().top(rows(&ed, Slot::Task)),
+        ed.workspace.task_run.as_ref().unwrap().top(rows(&ed, Slot::Task)),
         top,
         "the run's scroll its top"
     );
     feed(&mut ed, "<esc>");
-    assert_eq!(ed.session.task_run.as_ref().unwrap().top(rows(&ed, Slot::Task)), top, "left where you read");
+    assert_eq!(
+        ed.workspace.task_run.as_ref().unwrap().top(rows(&ed, Slot::Task)),
+        top,
+        "left where you read"
+    );
 }
 
 /// Held still: what the run prints while the keys are in it comes below, the rows in sight as they were (`↓ output
@@ -449,7 +453,7 @@ fn it_holds_still_and_g_catches_up_and_its_search_is_its_own() {
     let mut ed = task(30);
     feed(&mut ed, "<C-w>j");
     let top = output(&ed, Slot::Task).top;
-    ed.session.task_run.as_mut().unwrap().push_line(false, "came-later".into(), false);
+    ed.workspace.task_run.as_mut().unwrap().push_line(false, "came-later".into(), false);
     let shown = frame(&mut ed);
     assert!(!shown.contains("came-later") && shown.contains("↓ output after"), "{shown}");
     assert_eq!(output(&ed, Slot::Task).top, top, "held");
@@ -474,19 +478,19 @@ fn it_holds_still_and_g_catches_up_and_its_search_is_its_own() {
 #[test]
 fn the_tests_output_follows_its_run_past_its_cut() {
     let mut ed = task(0);
-    ed.session.task_run = None;
+    ed.workspace.task_run = None;
     let lines: Vec<String> = (0..4990).map(|i| format!("line {i}")).collect();
     let mut r = crate::testing::TestRun::finished("all", Vec::new(), lines);
     r.state = crate::testing::RunState::Running;
-    ed.session.test_run = Some(r);
+    ed.workspace.test_run = Some(r);
     frame(&mut ed);
     feed(&mut ed, "<C-w>j4900G");
     let text = |ed: &Editor| {
-        let r = ed.session.test_run.as_ref().unwrap();
+        let r = ed.workspace.test_run.as_ref().unwrap();
         r.output.iter().map(|(_, l)| format!("{l}\n")).collect::<String>()
     };
     for batch in 0..6 {
-        let r = ed.session.test_run.as_mut().unwrap();
+        let r = ed.workspace.test_run.as_mut().unwrap();
         for i in 0..20 {
             r.output.push(false, &format!("line {}", 4990 + batch * 20 + i));
         }
@@ -500,7 +504,7 @@ fn the_tests_output_follows_its_run_past_its_cut() {
     }
     let d = output(&ed, Slot::Test);
     assert_eq!(d.text.line(at(&ed, Slot::Test).0).to_string(), "line 4899\n", "the line you were on");
-    let trims = &ed.session.test_run.as_ref().unwrap().trims;
+    let trims = &ed.workspace.test_run.as_ref().unwrap().trims;
     assert!(trims.count() > 0 && trims.held() == 0, "cut, replayed, none kept");
 }
 
@@ -509,13 +513,13 @@ fn the_tests_output_follows_its_run_past_its_cut() {
 #[test]
 fn into_a_run_still_printing_the_first_key_moves_no_rows() {
     let mut ed = task(30);
-    ed.session.task_run.as_mut().unwrap().state = crate::task::State::Running;
+    ed.workspace.task_run.as_mut().unwrap().state = crate::task::State::Running;
     frame(&mut ed);
     feed(&mut ed, "<C-w>j");
     let (top, line) = (output(&ed, Slot::Task).top, at(&ed, Slot::Task).0);
     assert!(line < 29, "above the margin, not on the last line: {line}");
     for i in 0..5 {
-        ed.session.task_run.as_mut().unwrap().push_line(false, format!("came {i}"), false);
+        ed.workspace.task_run.as_mut().unwrap().push_line(false, format!("came {i}"), false);
         frame(&mut ed);
     }
     feed(&mut ed, "k");
@@ -551,12 +555,12 @@ fn the_wheel_scrolls_and_a_press_puts_the_cursor() {
     let wheel = |ed: &mut Editor, kind| {
         ed.handle_mouse(Mouse { kind, x: x as u16 + 2, y: (y + 2) as u16, alt: false, ctrl: false })
     };
-    let top = |ed: &Editor| ed.session.task_run.as_ref().unwrap().top(rows);
+    let top = |ed: &Editor| ed.workspace.task_run.as_ref().unwrap().top(rows);
     wheel(&mut ed, K::ScrollUp);
     frame(&mut ed);
     assert_eq!((region(&ed).as_str(), top(&ed)), ("code", 40 - rows - 3), "scrolled, the keys the code's");
     wheel(&mut ed, K::ScrollDown);
-    assert_eq!(ed.session.task_run.as_ref().unwrap().scroll, None, "at the end: it follows again");
+    assert_eq!(ed.workspace.task_run.as_ref().unwrap().scroll, None, "at the end: it follows again");
     // A press on a row: the keys, the cursor there — the rows under the pointer where they were
     ed.handle_mouse(Mouse { kind: K::Down, x: (x + 1) as u16, y: (y + 1) as u16, alt: false, ctrl: false });
     assert_eq!(region(&ed), "output:task");
@@ -595,7 +599,7 @@ fn a_key_that_shows_the_code_another_buffer_gives_it_the_keys() {
     assert!(ed.doc().text.to_string().starts_with("// a.rs"), "{}", ed.doc().text);
     assert!(ed.docs.iter().all(|d| d.id != output(&ed, Slot::Task).id), "the output never a buffer");
     // (the pane's own record kept: what it showed before is the code's, never the output)
-    let view = ed.session.views.iter().find(|v| v.id == ed.session.focus).unwrap();
+    let view = ed.workspace.views.iter().find(|v| v.id == ed.workspace.viewer.focus).unwrap();
     assert_eq!(view.last_doc, Some(b), "the buffer before it, b.rs");
     for k in ["g", "a"] {
         ed.handle_key(k.parse().unwrap());
@@ -610,8 +614,8 @@ fn the_window_keys_from_the_output_split_the_code() {
     let mut ed = task(12);
     let code = ed.doc().id;
     feed(&mut ed, "<C-w>j<space>wv");
-    assert_eq!(ed.session.views.len(), 2, "split");
-    assert!(ed.session.views.iter().all(|v| v.doc == code), "both the code's");
+    assert_eq!(ed.workspace.views.len(), 2, "split");
+    assert!(ed.workspace.views.iter().all(|v| v.doc == code), "both the code's");
     assert_eq!(region(&ed), "code", "the keys to the new pane");
 }
 
@@ -620,20 +624,20 @@ fn the_window_keys_from_the_output_split_the_code() {
 #[test]
 fn its_document_holds_the_runs_own_rope_and_a_tab_as_printed() {
     let mut ed = task(2000);
-    let r = ed.session.task_run.as_mut().unwrap();
+    let r = ed.workspace.task_run.as_mut().unwrap();
     r.push_line(false, "\tleft: 3".into(), false);
     frame(&mut ed);
     // (the same storage, not an equal copy: every chunk of the document's text is the run's own, at its address)
     let chunks = |t: &ropey::Rope| t.chunks().map(|c| (c.as_ptr(), c.len())).collect::<Vec<_>>();
-    let run = chunks(ed.session.task_run.as_ref().unwrap().output.text());
+    let run = chunks(ed.workspace.task_run.as_ref().unwrap().output.text());
     assert!(run.len() > 1, "a rope of several nodes");
     assert_eq!(chunks(&output(&ed, Slot::Task).text), run, "the run's rope, shared");
     // (held after more comes, and after a trim)
-    let r = ed.session.task_run.as_mut().unwrap();
+    let r = ed.workspace.task_run.as_mut().unwrap();
     r.push_line(false, "more".into(), false);
     r.keep(0);
     frame(&mut ed);
-    let run = chunks(ed.session.task_run.as_ref().unwrap().output.text());
+    let run = chunks(ed.workspace.task_run.as_ref().unwrap().output.text());
     assert_eq!(chunks(&output(&ed, Slot::Task).text), run, "still the run's own");
     let d = output(&ed, Slot::Task);
     let last = mv::last_line(&d.text);
@@ -644,7 +648,7 @@ fn its_document_holds_the_runs_own_rope_and_a_tab_as_printed() {
 #[test]
 fn its_lines_are_coloured_as_the_panel_coloured_them() {
     let mut ed = task(0);
-    let r = ed.session.task_run.as_mut().unwrap();
+    let r = ed.workspace.task_run.as_mut().unwrap();
     for (err, l) in
         [(false, "test a ... ok"), (false, "error: it broke"), (true, "on stderr"), (false, "plain")]
     {

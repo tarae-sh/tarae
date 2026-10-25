@@ -117,24 +117,24 @@ pub struct Compacted {
 
 /// Session `l`'s Claude is compacting right now: said so where "thinking" would be. (One said in an earlier
 /// turn and never ended — the process gone mid-way — isn't this turn's.)
-pub fn under_way(l: &crate::session::Session) -> bool {
-    let Some(since) = l.compacted.since else { return false };
-    l.chat.as_ref().is_some_and(|c| c.busy() && since >= c.started)
+pub fn under_way(l: &crate::workspace::Workspace) -> bool {
+    let Some(since) = l.claude.compacted.since else { return false };
+    l.claude.chat.as_ref().is_some_and(|c| c.busy() && since >= c.started)
 }
 
-/// A stream line of compacting (`Ev`), in session `ed.session`.
+/// A stream line of compacting (`Ev`), in session `ed.workspace`.
 pub fn on_event(ed: &mut Editor, e: Ev) {
-    let was = under_way(&ed.session);
+    let was = under_way(&ed.workspace);
     match e {
-        Ev::Started => ed.session.compacted.since = Some(crate::clock::now()),
-        Ev::Ended => ed.session.compacted.since = None,
+        Ev::Started => ed.workspace.claude.compacted.since = Some(crate::clock::now()),
+        Ev::Ended => ed.workspace.claude.compacted.since = None,
         Ev::Boundary(k) => {
-            ed.session.compacted.since = None;
+            ed.workspace.claude.compacted.since = None;
             return on_compacted(ed, k);
         }
     }
     // (behind, nothing of it is on screen; a line saying again what's so changes nothing)
-    if ed.background() || was == under_way(&ed.session) {
+    if ed.background() || was == under_way(&ed.workspace) {
         ed.unchanged = true;
     }
 }
@@ -158,19 +158,19 @@ impl Compacted {
     }
 }
 
-/// Session `ed.session`'s Claude compacted its conversation: a note in its chat where it happened, counted,
+/// Session `ed.workspace`'s Claude compacted its conversation: a note in its chat where it happened, counted,
 /// the context figure follows; behind, said (named) and its row in the list says so until it's in front.
 pub fn on_compacted(ed: &mut Editor, k: Compaction) {
-    if let Some(c) = ed.session.chat.as_mut() {
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Note, k.note(), ""));
         // (the sandbox's rules and guarantees a run told may be gone from what it kept: the next run says them)
         c.rules_said = (None, Default::default());
     }
-    ed.session.usage.compacted(&k);
+    ed.workspace.claude.usage.compacted(&k);
     let how = k.how();
     let automatic = k.automatic();
     let behind = ed.background();
-    let s = &mut ed.session.compacted;
+    let s = &mut ed.workspace.claude.compacted;
     s.count += 1;
     s.last = Some(k);
     if behind {
@@ -276,13 +276,13 @@ mod tests {
     }
 
     /// Events handled until session `id`'s Claude is idle again.
-    fn turn_ends(ed: &mut Editor, id: crate::event::SessionId) {
+    fn turn_ends(ed: &mut Editor, id: crate::event::WorkspaceId) {
         let end = Instant::now() + crate::test_results::PATIENCE;
         let busy = |ed: &Editor| {
-            std::iter::once(&ed.session)
-                .chain(&ed.sessions)
+            std::iter::once(&ed.workspace)
+                .chain(&ed.workspaces)
                 .find(|l| l.id == id)
-                .and_then(|l| l.chat.as_ref())
+                .and_then(|l| l.claude.chat.as_ref())
                 .is_some_and(|c| c.busy())
         };
         while busy(ed) {
@@ -321,8 +321,8 @@ mod tests {
         std::fs::create_dir_all(dir.join("front")).unwrap();
         std::fs::create_dir_all(dir.join("back")).unwrap();
         let mut ed = Editor::new(Config::default());
-        ed.session.root = dir.join("front");
-        ed.session.name = "front".into();
+        ed.workspace.root = dir.join("front");
+        ed.workspace.name = "front".into();
         (ed, dir)
     }
 
@@ -384,9 +384,9 @@ mod tests {
             ],
         );
         feed(&mut ed, "<space>lgo<ret>");
-        turn_ends(&mut ed, 0);
+        turn_ends(&mut ed, crate::event::WorkspaceId::HOME);
         let said: Vec<(Role, String)> = {
-            let c = ed.session.chat.as_ref().unwrap();
+            let c = ed.workspace.claude.chat.as_ref().unwrap();
             c.msgs.iter().map(|m| (m.role, m.text.clone())).collect()
         };
         let auto = "Claude compacted this conversation (automatic, 812k tokens before) — what it worked out \
@@ -401,17 +401,17 @@ mod tests {
         let at = shown.iter().position(|r| r.contains("≈ Claude compacted")).expect("drawn");
         assert!(shown[at - 2].contains("before") && !shown[at - 1].contains("before"), "{shown:#?}");
         // (the request after it says what the context holds)
-        assert_eq!(ed.session.usage.context(), Some((31_000, Some(1_000_000))));
-        assert_eq!(ed.session.usage.turns[0].compacted.as_deref(), Some("auto"));
+        assert_eq!(ed.workspace.claude.usage.context(), Some((31_000, Some(1_000_000))));
+        assert_eq!(ed.workspace.claude.usage.turns[0].compacted.as_deref(), Some("auto"));
         // Asked: said so, and the context is what it kept until a request says
         feed(&mut ed, "/compact<ret>");
-        turn_ends(&mut ed, 0);
-        let c = ed.session.chat.as_ref().unwrap();
+        turn_ends(&mut ed, crate::event::WorkspaceId::HOME);
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
         let manual = "Claude compacted this conversation (manual, 6.6k tokens before) — what it worked out \
                       before may be only in its summary now";
         let at = c.msgs.iter().rposition(|m| m.text == "/compact").expect("asked");
         assert_eq!(c.msgs.get(at + 1).map(|m| (m.role, m.text.as_str())), Some((Role::Note, manual)));
-        assert_eq!(ed.session.usage.context(), Some((795, Some(1_000_000))));
+        assert_eq!(ed.workspace.claude.usage.context(), Some((795, Some(1_000_000))));
         let wide = rows(&mut ed, 240);
         let footer = wide.iter().find(|r| r.contains("ctx ")).unwrap_or_else(|| panic!("{wide:#?}"));
         assert!(footer.contains("ctx 0% of 1M") && footer.contains("compacted"), "{footer:?}");
@@ -436,36 +436,36 @@ mod tests {
             ],
         );
         feed(&mut ed, "<space>l<esc><esc>");
-        ed.session.chat.as_mut().unwrap().follow.on = false;
+        ed.workspace.claude.chat.as_mut().unwrap().follow.on = false;
         let said = |rows: &[String], w: &str| rows.iter().any(|r| r.contains(w));
         // Begun: said in the chat, title and body
         feed(&mut ed, "<space>lone<ret>");
-        until(&mut ed, "it begins", |ed| under_way(&ed.session));
+        until(&mut ed, "it begins", |ed| under_way(&ed.workspace));
         let shown = rows(&mut ed, 160);
         assert!(said(&shown, "compacting…") && said(&shown, " compacting "), "{shown:#?}");
         assert!(!said(&shown, "thinking"), "{shown:#?}");
         // Over (`compact_result`): thinking again
-        until(&mut ed, "it ends", |ed| ed.session.compacted.since.is_none());
+        until(&mut ed, "it ends", |ed| ed.workspace.claude.compacted.since.is_none());
         let shown = rows(&mut ed, 160);
         assert!(!said(&shown, "compacting") && said(&shown, "thinking…"), "{shown:#?}");
-        turn_ends(&mut ed, 0);
+        turn_ends(&mut ed, crate::event::WorkspaceId::HOME);
         // Following: the card beside the code says it (code: the start screen has no card)
         let notes = dir.join("front/notes.txt");
         std::fs::write(&notes, "one\ntwo\n").unwrap();
         ed.open(&notes).unwrap();
-        ed.session.chat.as_mut().unwrap().follow.on = true;
+        ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
         feed(&mut ed, "two<ret>");
-        until(&mut ed, "it begins", |ed| under_way(&ed.session));
+        until(&mut ed, "it begins", |ed| under_way(&ed.workspace));
         let shown = rows(&mut ed, 160);
         assert!(said(&shown, "compacting"), "{shown:#?}");
-        turn_ends(&mut ed, 0);
-        assert!(ed.session.compacted.since.is_some(), "never said to end");
+        turn_ends(&mut ed, crate::event::WorkspaceId::HOME);
+        assert!(ed.workspace.claude.compacted.since.is_some(), "never said to end");
         // The next turn isn't compacting
         feed(&mut ed, "three<ret>");
-        assert!(ed.session.chat.as_ref().unwrap().busy() && !under_way(&ed.session));
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().busy() && !under_way(&ed.workspace));
         let shown = rows(&mut ed, 160);
         assert!(!said(&shown, "compacting"), "{shown:#?}");
-        turn_ends(&mut ed, 0);
+        turn_ends(&mut ed, crate::event::WorkspaceId::HOME);
         cleanup(&dir);
     }
 
@@ -486,31 +486,31 @@ mod tests {
                 .collect()
         };
         feed(&mut ed, "<space>l<esc>");
-        ed.session.chat.as_mut().unwrap().follow.on = false;
+        ed.workspace.claude.chat.as_mut().unwrap().follow.on = false;
         // In sight
         feed(&mut ed, "<space>lone<ret>");
         rows(&mut ed, 160);
         assert!(ed.screen.chat_x.is_some());
-        turn_ends(&mut ed, 0);
+        turn_ends(&mut ed, crate::event::WorkspaceId::HOME);
         assert_eq!(told(&ed), [], "{:?}", ed.toasts);
         // Minimized by following while Claude works (code in sight, so the card is drawn)
         let notes = dir.join("front/notes.txt");
         std::fs::write(&notes, "one\n").unwrap();
         ed.open(&notes).unwrap();
-        ed.session.chat.as_mut().unwrap().follow.on = true;
+        ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
         feed(&mut ed, "<space>lthree<ret>");
         rows(&mut ed, 160);
         assert!(ed.screen.chat_x.is_none(), "minimized while it works");
-        turn_ends(&mut ed, 0);
+        turn_ends(&mut ed, crate::event::WorkspaceId::HOME);
         assert_eq!(told(&ed), [], "{:?}", ed.toasts);
-        ed.session.chat.as_mut().unwrap().follow.on = false;
+        ed.workspace.claude.chat.as_mut().unwrap().follow.on = false;
         // The code zoomed: said
         feed(&mut ed, "<space>ltwo<ret><esc><esc>");
         rows(&mut ed, 160);
         feed(&mut ed, "<C-w>z");
         rows(&mut ed, 160);
         assert!(ed.zoomed().is_some() && ed.screen.chat_x.is_none());
-        turn_ends(&mut ed, 0);
+        turn_ends(&mut ed, crate::event::WorkspaceId::HOME);
         let msg = "Claude compacted its conversation (automatic, 812k tokens before) — space l shows it";
         assert_eq!(told(&ed), [(msg.to_string(), ToastKind::Warning)], "{:?}", ed.toasts);
         cleanup(&dir);
@@ -522,13 +522,17 @@ mod tests {
     fn the_state_has_each_sessions_compactions() {
         let (mut ed, dir) = editor("state");
         claude_answers(&mut ed, &[vec![automatic(), result(None, 0.1)], vec![manual(), result(None, 0.2)]]);
-        assert_eq!(ed.ui_state().json()["sessions"][0].get("compacted"), None, "never: not said");
+        assert_eq!(
+            ed.ui_state().json()["workspaces"][0]["sessions"][0].get("compacted"),
+            None,
+            "never: not said"
+        );
         feed(&mut ed, "<space>lone<ret>");
-        turn_ends(&mut ed, 0);
+        turn_ends(&mut ed, crate::event::WorkspaceId::HOME);
         feed(&mut ed, "two<ret>");
-        turn_ends(&mut ed, 0);
+        turn_ends(&mut ed, crate::event::WorkspaceId::HOME);
         let state = ed.ui_state();
-        let k = &state.json()["sessions"][0]["compacted"];
+        let k = &state.json()["workspaces"][0]["sessions"][0]["compacted"];
         assert_eq!(k["count"], 2, "{k}");
         assert_eq!(k["last"]["trigger"], "manual", "{k}");
         assert_eq!(
@@ -545,10 +549,13 @@ mod tests {
             "{text}"
         );
         // Claude's own session's; another's isn't its business
-        assert_eq!(ed.ui_state_claude().sessions[0].compacted.as_ref().map(|c| c.count), Some(2));
-        let back = ed.session_open(&dir.join("back")).unwrap();
-        assert!(ed.ui_state_claude().sessions.iter().all(|s| s.compacted.is_none()), "s0 is another's now");
-        assert_eq!(ed.session.id, back);
+        assert_eq!(
+            ed.ui_state_claude().workspaces[0].sessions[0].compacted.as_ref().map(|c| c.count),
+            Some(2)
+        );
+        let back = ed.workspace_open(&dir.join("back")).unwrap();
+        assert!(ed.ui_state_claude().sessions().all(|s| s.compacted.is_none()), "s0 is another's now");
+        assert_eq!(ed.workspace.id, back);
         cleanup(&dir);
     }
 
@@ -559,9 +566,9 @@ mod tests {
         use crate::editor::ToastKind;
         let (mut ed, dir) = editor("behind");
         claude_answers(&mut ed, &[vec![text("working"), automatic(), result(None, 0.1)]]);
-        let back = ed.session_open(&dir.join("back")).unwrap();
+        let back = ed.workspace_open(&dir.join("back")).unwrap();
         feed(&mut ed, "<space>lgo<ret><esc>");
-        assert!(ed.session_switch(0));
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME));
         turn_ends(&mut ed, back);
         let msg = "back · Claude compacted its conversation (automatic, 812k tokens before)";
         let toasts: Vec<_> = ed.toasts.iter().filter(|t| t.text == msg).collect();
@@ -575,12 +582,16 @@ mod tests {
         };
         let row = listed(&mut ed);
         assert!(row.contains("≈ compacted"), "{row:?}");
-        assert_eq!(ed.ui_state().json()["sessions"][1]["compacted"]["unseen"], true);
+        assert_eq!(ed.ui_state().json()["workspaces"][1]["sessions"][0]["compacted"]["unseen"], true);
         // Seen once it's in front
-        assert!(ed.session_switch(back) && ed.session_switch(0));
+        assert!(ed.workspace_switch(back) && ed.workspace_switch(crate::event::WorkspaceId::HOME));
         let row = listed(&mut ed);
         assert!(!row.contains("compacted"), "{row:?}");
-        assert_eq!(ed.ui_state().json()["sessions"][1]["compacted"]["count"], 1, "still counted");
+        assert_eq!(
+            ed.ui_state().json()["workspaces"][1]["sessions"][0]["compacted"]["count"],
+            1,
+            "still counted"
+        );
         cleanup(&dir);
     }
 }

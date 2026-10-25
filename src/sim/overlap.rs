@@ -31,7 +31,7 @@ struct World {
     main: PathBuf,
     fix: PathBuf,
     /// fix's session — None while it's closed — and its folder as it was last open.
-    session: Option<crate::event::SessionId>,
+    session: Option<crate::event::WorkspaceId>,
     folder: Option<PathBuf>,
     /// That folder seen removed since fix ended (its removal is a job of its own: a later step).
     gone: Cell<bool>,
@@ -67,9 +67,9 @@ fn run(choices: Choices) -> Vec<String> {
     super::sessions::git(&main, &["worktree", "add", "-q", "../fix"]);
     let fix = std::fs::canonicalize(dir.join("fix")).unwrap();
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = main.clone();
-    ed.session.name = "main".into();
-    ed.session.git_branch = Some("main".into());
+    ed.workspace.root = main.clone();
+    ed.workspace.name = "main".into();
+    ed.workspace.git_branch = Some("main".into());
     ed.overlap.dir = Some(dir.join("overlap"));
     ed.open(&main.join("a.rs")).unwrap();
     let world = RefCell::new(World {
@@ -93,8 +93,8 @@ fn run(choices: Choices) -> Vec<String> {
 
 /// fix's session, behind, its base `main`.
 fn open(ed: &mut Editor, w: &mut World) {
-    let id = ed.session_add(w.fix.clone());
-    if let Some(l) = ed.session_by_id(id) {
+    let id = ed.workspace_add(w.fix.clone());
+    if let Some(l) = ed.workspace_by_id(id) {
         l.name = "fix".into();
         l.base = Some("main".into());
     }
@@ -138,7 +138,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
         4 => {
             let Some(id) = w.session.take() else { return "(fix is closed)".into() };
             w.folder = ed.overlap.folder(id);
-            let _ = ed.session_close(&w.fix.clone());
+            let _ = ed.workspace_close(&w.fix.clone());
             "fix's workspace ends".into()
         }
         5 => {
@@ -177,7 +177,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
 }
 
 fn held(ed: &Editor, w: &World) -> Result<(), String> {
-    let open: Vec<_> = std::iter::once(&ed.session).chain(&ed.sessions).map(|l| l.id).collect();
+    let open: Vec<_> = std::iter::once(&ed.workspace).chain(&ed.workspaces).map(|l| l.id).collect();
     for o in &ed.overlap.now {
         let b = match &o.b {
             crate::overlap::Other::Session(b) => Some(*b),
@@ -221,7 +221,7 @@ fn print(ed: &Editor) -> String {
     let now: Vec<String> = ed.overlap.now.iter().map(|o| format!("{} {:?}", o.path, o.lines)).collect();
     format!(
         "{} sessions · {} rounds · overlaps [{}]",
-        ed.sessions.len() + 1,
+        ed.workspaces.len() + 1,
         ed.overlap.rounds,
         now.join(", ")
     )

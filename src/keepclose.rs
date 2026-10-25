@@ -17,7 +17,7 @@
 //!   (`aside.rs` — never `--autostash`), `git rebase` onto the tip read as it starts — the newest wins — and the
 //!   changes put back; a conflict after all, the rebase's or changes that don't go onto the tip, puts the checkout
 //!   back exactly as it was (HEAD, the changes, the index) and is said. While it runs the workspace's messages, runs and saves wait
-//!   (`Session.moving`, `hold_save`), what else would write there is refused, said (`refused`: `space u`, `:w` to a
+//!   (`Workspace.moving`, `hold_save`), what else would write there is refused, said (`refused`: `space u`, `:w` to a
 //!   new name, a change set); its reloads are one line (`disk_batch_start`).
 //!
 //! Claude hears nothing of it (the user, 2026-10-23): a file a move changed is "changed since you last read it".
@@ -28,9 +28,9 @@ use std::path::{Path, PathBuf};
 
 use crate::document::DocId;
 use crate::editor::{Editor, ToastKind};
-use crate::event::SessionId;
+use crate::event::WorkspaceId;
 use crate::offer::{Offer, What};
-use crate::session::Session;
+use crate::workspace::Workspace;
 
 /// `workspace.sync`'s values: a card for every move · the clean idle ones moved unasked, a card for the conflicting
 /// ones · nothing.
@@ -50,7 +50,7 @@ pub struct State {
     /// Workspaces to move once idle (answered, or unasked by `idle`), in the order they came.
     pub waits: Vec<Wait>,
     /// The one move under way.
-    pub moving: Option<SessionId>,
+    pub moving: Option<WorkspaceId>,
     /// The overlap round last landed (`overlap::State.started` as it began).
     round: u64,
     /// Whether bases are watched (a thread each) — never in tests.
@@ -70,7 +70,7 @@ pub struct State {
 #[derive(Debug)]
 pub struct Held {
     pub id: DocId,
-    session: SessionId,
+    session: WorkspaceId,
     force: bool,
     then: crate::saver::Then,
     beneath: Option<PathBuf>,
@@ -150,7 +150,7 @@ pub type Conflicts = Vec<(String, Option<Range<usize>>)>;
 /// A workspace behind its base's new tip.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ws {
-    pub id: SessionId,
+    pub id: WorkspaceId,
     pub name: String,
     pub root: PathBuf,
     pub branch: String,
@@ -336,8 +336,8 @@ impl Moves {
 }
 
 /// The sessions, the front one first.
-fn sessions(ed: &Editor) -> impl Iterator<Item = &Session> {
-    std::iter::once(&ed.session).chain(&ed.sessions)
+fn sessions(ed: &Editor) -> impl Iterator<Item = &Workspace> {
+    std::iter::once(&ed.workspace).chain(&ed.workspaces)
 }
 
 fn mode(ed: &Editor) -> &str {
@@ -345,10 +345,10 @@ fn mode(ed: &Editor) -> &str {
 }
 
 /// A session's base branch: its own, else the branch of the checkout tarae started in (the home one has none).
-fn base_of(ed: &Editor, l: &Session) -> Option<String> {
-    let home = || sessions(ed).find(|s| s.id == 0).and_then(|s| s.git_branch.clone());
+fn base_of(ed: &Editor, l: &Workspace) -> Option<String> {
+    let home = || sessions(ed).find(|s| s.id == WorkspaceId::HOME).and_then(|s| s.git_branch.clone());
     match l.id {
-        0 => None,
+        WorkspaceId::HOME => None,
         _ => l.base.clone().or_else(home),
     }
 }
@@ -356,7 +356,7 @@ fn base_of(ed: &Editor, l: &Session) -> Option<String> {
 /// Every event: each base watched (its repository known — `gitrepo::cached`, no git here), and the next workspace
 /// waiting moved once it's idle.
 pub fn sync(ed: &mut Editor) {
-    if mode(ed) == "off" || ed.sessions.is_empty() {
+    if mode(ed) == "off" || ed.workspaces.is_empty() {
         return;
     }
     if ed.keep_close.watch {
@@ -430,7 +430,7 @@ pub fn tip(ed: &mut Editor, base: Base, tip: String) {
     });
     (p.to, p.after) = (tip, after);
     // (no rounds — overlaps off, or one session: nothing to predict by, looked at now)
-    if ed.overlap.dir.is_none() || ed.sessions.is_empty() {
+    if ed.overlap.dir.is_none() || ed.workspaces.is_empty() {
         return look(ed, &base);
     }
     crate::overlap::ask(ed);
@@ -458,7 +458,7 @@ fn look(ed: &mut Editor, base: &Base) {
     let Some(p) = ed.keep_close.pending.get_mut(base) else { return };
     p.looking = true;
     let (from, to) = (p.from.clone(), p.to.clone());
-    let on: Vec<(SessionId, String, PathBuf, Conflicts)> = sessions(ed)
+    let on: Vec<(WorkspaceId, String, PathBuf, Conflicts)> = sessions(ed)
         .filter(|l| base_of(ed, l).as_deref() == Some(base.1.as_str()))
         .map(|l| (l.id, l.label().to_string(), l.root.clone(), conflicts(ed, l.id, &base.1)))
         .collect();
@@ -493,7 +493,7 @@ fn look(ed: &mut Editor, base: &Base) {
 
 /// Where session `id`'s workspace would conflict on its base `branch`'s tip — the last round's overlaps against
 /// the tip, or the checkout that has it (the home one).
-fn conflicts(ed: &Editor, id: SessionId, branch: &str) -> Conflicts {
+fn conflicts(ed: &Editor, id: WorkspaceId, branch: &str) -> Conflicts {
     use crate::overlap::Other;
     let tip_side = |o: &Other| match o {
         Other::Branch(b) => b == branch,
@@ -525,12 +525,12 @@ fn looked(ed: &mut Editor, mut moves: Moves) {
     let Some(p) = ed.keep_close.pending.get_mut(&base) else { return };
     p.looking = false;
     if p.to != moves.to {
-        if ed.keep_close.round > p.after || ed.overlap.dir.is_none() || ed.sessions.is_empty() {
+        if ed.keep_close.round > p.after || ed.overlap.dir.is_none() || ed.workspaces.is_empty() {
             look(ed, &base);
         }
         return;
     }
-    let open: Vec<SessionId> = sessions(ed).map(|l| l.id).collect();
+    let open: Vec<WorkspaceId> = sessions(ed).map(|l| l.id).collect();
     moves.ws.retain(|w| w.behind > 0 && open.contains(&w.id));
     if mode(ed) == "idle" {
         let (clean, conflicting): (Vec<Ws>, Vec<Ws>) =
@@ -551,8 +551,8 @@ fn looked(ed: &mut Editor, mut moves: Moves) {
     let mut card = moves.card();
     card.paint = (moves.ws.iter())
         .filter_map(|w| {
-            let l = std::iter::once(&ed.session).chain(&ed.sessions).find(|l| l.id == w.id)?;
-            let scope = crate::session::PARTICIPANTS[l.colour as usize % crate::session::COLOURS];
+            let l = std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|l| l.id == w.id)?;
+            let scope = crate::session::PARTICIPANTS[l.claude.colour as usize % crate::session::COLOURS];
             Some((w.name.clone(), scope))
         })
         .collect();
@@ -610,19 +610,19 @@ pub fn answered(ed: &mut Editor, m: Moves, c: char) {
 pub fn dismissed(ed: &mut Editor, m: &Moves) {
     ed.keep_close.pending.remove(&m.base);
     let base = &m.base.1;
-    ed.set_status(format!("Left behind {base} — its next move asks again (or :session-bring one)"));
+    ed.set_status(format!("Left behind {base} — its next move asks again (or :workspace-bring one)"));
 }
 
 /// Why session `l`'s workspace isn't moved now — None: it's idle.
-pub fn busy(ed: &Editor, l: &Session) -> Option<&'static str> {
-    use crate::session::Doing;
+pub fn busy(ed: &Editor, l: &Workspace) -> Option<&'static str> {
+    use crate::workspace::Doing;
     if l.rebase.is_some() || l.moving.is_some() {
         return Some("a rebase under way");
     }
     if !matches!(ed.doing(l), Doing::Idle | Doing::Done) {
         return Some("its Claude at work");
     }
-    if l.review.is_some() || l.code_review.is_some() {
+    if l.claude.review.is_some() || l.code_review.is_some() {
         return Some("a review open");
     }
     let task = l.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running);
@@ -651,7 +651,7 @@ fn next(ed: &mut Editor) {
     if ed.keep_close.moving.is_some() || ed.keep_close.waits.is_empty() {
         return;
     }
-    let open: Vec<SessionId> = sessions(ed).map(|l| l.id).collect();
+    let open: Vec<WorkspaceId> = sessions(ed).map(|l| l.id).collect();
     ed.keep_close.waits.retain(|w| open.contains(&w.ws.id));
     let idle = ed
         .keep_close
@@ -670,7 +670,7 @@ fn next(ed: &mut Editor) {
             moved: w.ws.behind,
             ahead: w.ws.ahead,
         };
-        ed.with_session(w.ws.id, |ed| ed.rebase_check(m, true));
+        ed.with_workspace(w.ws.id, |ed| ed.rebase_check(m, true));
         return next(ed);
     }
     start(ed, w);
@@ -683,8 +683,8 @@ fn start(ed: &mut Editor, w: Wait) {
     ed.keep_close.moving = Some(id);
     let under = |d: &&crate::document::Document| d.path.as_ref().is_some_and(|p| p.starts_with(&w.ws.root));
     ed.keep_close.stamps = ed.docs.iter().filter(under).map(|d| (d.id, d.disk)).collect();
-    ed.with_session(id, |ed| {
-        ed.session.moving = Some(base.clone());
+    ed.with_workspace(id, |ed| {
+        ed.workspace.moving = Some(base.clone());
         ed.disk_batch_start(&format!("moved onto {base}"), token);
     });
     let (root, branch) = (w.ws.root.clone(), base);
@@ -694,10 +694,10 @@ fn start(ed: &mut Editor, w: Wait) {
     });
 }
 
-/// The session whose checkout is being moved with `path` in it (`Session.moving`): its id, name and base. What
+/// The session whose checkout is being moved with `path` in it (`Workspace.moving`): its id, name and base. What
 /// writes into a checkout asks: a save is held (`hold_save`); `space u`, a change set, `:w` to a new name, the
 /// watch's write-back are refused or left until it lands (`refused`).
-pub fn moving_at(ed: &Editor, path: &Path) -> Option<(SessionId, String, String)> {
+pub fn moving_at(ed: &Editor, path: &Path) -> Option<(WorkspaceId, String, String)> {
     sessions(ed).find_map(|l| {
         let base = l.moving.as_ref().filter(|_| path.starts_with(&l.root))?;
         Some((l.id, l.label().to_string(), base.clone()))
@@ -711,7 +711,7 @@ pub fn refused<'p>(ed: &Editor, paths: impl IntoIterator<Item = &'p Path>, then:
     Some(format!("{name} is moving onto {base} — {then} once it lands"))
 }
 
-/// A save into a checkout being moved (`Session.moving`) held until the move lands, said — whether it was. Every
+/// A save into a checkout being moved (`Workspace.moving`) held until the move lands, said — whether it was. Every
 /// save asks (`Editor::save_job`): `:w`, auto-save, one Claude caused.
 pub fn hold_save(
     ed: &mut Editor,
@@ -737,7 +737,7 @@ pub fn hold_save(
 /// was (`same`), takes the file's stamp now — git rewrote it with the same text (its autostash; a stat, as the
 /// save's own check makes): a save or `space u` then isn't refused as "changed on disk". Else the save's check, or
 /// the watch, says what changed.
-fn release(ed: &mut Editor, id: SessionId, open: bool, same: &dyn Fn(&Path) -> bool) {
+fn release(ed: &mut Editor, id: WorkspaceId, open: bool, same: &dyn Fn(&Path) -> bool) {
     let stamps = std::mem::take(&mut ed.keep_close.stamps);
     for d in ed.docs.iter_mut().filter(|d| stamps.get(&d.id).is_some_and(|s| *s == d.disk)) {
         if let Some(p) = d.path.clone().filter(|p| same(p)) {
@@ -910,12 +910,12 @@ fn moved(ed: &mut Editor, w: Wait, token: u64, r: Landed) {
     let mut name = w.ws.name.clone();
     let open = sessions(ed).any(|l| l.id == id);
     if open {
-        ed.with_session(id, |ed| {
-            ed.session.moving = None;
-            name = ed.session.label().to_string();
+        ed.with_workspace(id, |ed| {
+            ed.workspace.moving = None;
+            name = ed.workspace.label().to_string();
             ed.disk_batch_end(token);
             if matches!(r, Landed::Done { .. }) {
-                let root = ed.session.root.clone();
+                let root = ed.workspace.root.clone();
                 ed.git_refresh();
                 ed.git_reload_bases_in(&root);
                 crate::instructions::follow(ed);
@@ -944,7 +944,7 @@ fn moved(ed: &mut Editor, w: Wait, token: u64, r: Landed) {
         Landed::Conflicts => (
             ToastKind::Warning,
             format!(
-                "{name} · would conflict on {base} after all — left as it was; :session-bring {name} rebases it, \
+                "{name} · would conflict on {base} after all — left as it was; :workspace-bring {name} rebases it, \
                  its Claude resolving"
             ),
         ),

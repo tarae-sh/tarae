@@ -37,10 +37,10 @@ fn run(choices: Choices) -> Vec<String> {
     let base = way(at, yours_rules());
     let mut sim = Sim::new("a_page_read_twice_is_one_buffer", choices, LIMIT);
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = dir.path().to_path_buf();
-    ed.session.chat = Some(crate::chat::Chat::new());
+    ed.workspace.root = dir.path().to_path_buf();
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
     ed.config.llm.sandbox_ports.push(at.port());
-    ed.session.web_way =
+    ed.workspace.web_way =
         Some(std::sync::Arc::new(move |stop| crate::web::fetch::Way { stop, ..base.clone() }));
     let fetched = format!("web http://localhost:{}/", at.port());
     let kept = crate::web::fetch::Fetched {
@@ -57,7 +57,7 @@ fn run(choices: Choices) -> Vec<String> {
         took: Duration::from_millis(30),
         elsewhere: None,
     };
-    let _ = ed.session.pages.put(std::sync::Arc::new(kept), crate::clock::now());
+    let _ = ed.workspace.pages.put(std::sync::Arc::new(kept), crate::clock::now());
     let mut n = 0u64;
     let input = move |sim: &mut Sim, ed: &mut Editor| {
         n += 1;
@@ -132,7 +132,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, fetched: &str, n: u64) -> String {
 
 /// Claude's `read` of `url`, call `n`.
 fn claude_reads(ed: &mut Editor, n: u64, url: &str) -> String {
-    let Some(generation) = ed.session.chat.as_ref().map(|c| c.generation()) else {
+    let Some(generation) = ed.workspace.claude.chat.as_ref().map(|c| c.generation()) else {
         return "(no chat)".into();
     };
     let call = crate::tools::Call::of(generation, "", serde_json::json!(n));
@@ -167,9 +167,10 @@ fn held(ed: &Editor) -> Result<(), String> {
     // (a card a call; but none for a host this session or conversation answered)
     let answered = |h: &str| {
         let at = (h.to_string(), 443);
-        ed.session.web_hosts.contains(&at)
+        ed.workspace.claude.web_hosts.contains(&at)
             || ed
-                .session
+                .workspace
+                .claude
                 .chat
                 .as_ref()
                 .is_some_and(|c| c.web_refused.contains(&at) || c.web_hosts.contains(&at))

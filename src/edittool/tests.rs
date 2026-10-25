@@ -195,7 +195,7 @@ fn a_whole_rewrite_is_one_text_change_never_a_delete() {
 fn under_review_at_the_end_a_whole_rewrite_asks_no_card() {
     let dir = project("whole-at-end", &[("msg.txt", "first draft\n")]);
     let mut ed = chat_for(&dir, &dir.join("stdin.log"));
-    ed.session.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
+    ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
     let args = json!({"edits": [{"file_path": "msg.txt", "whole": true, "new_string": "second draft\n"}]});
     call(&mut ed, Call::test(43), &args).unwrap();
     pump(&mut ed, "the answer", |_| answered(43).is_some());
@@ -312,7 +312,7 @@ fn the_buffer_is_matched_and_a_file_changed_since_seen_is_said() {
 /// An editor on `dir` with a chat whose stand-in claude keeps what it's sent in `log`.
 fn chat_for(dir: &Path, log: &Path) -> Editor {
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = dir.to_path_buf();
+    ed.workspace.root = dir.to_path_buf();
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), format!("cat > '{}'", log.display())];
     crate::chat::open(&mut ed);
@@ -338,7 +338,7 @@ fn pump(ed: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) {
 fn the_edit_tools_take_effect_with_the_next_chat() {
     let dir = project("setting", &[]);
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = dir.clone();
+    ed.workspace.root = dir.clone();
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "printf '%s\\n' \"$0\" \"$@\" > argv; cat >> stdin".into()];
     let tools_arg = |dir: &Path| {
@@ -390,7 +390,7 @@ fn answered(id: u64) -> Option<Result<String, String>> {
 fn under_review_at_the_end_a_delete_still_waits_on_the_card() {
     let dir = project("at-end", &[("a.rs", "one\n"), ("b.rs", "gone soon\n")]);
     let mut ed = chat_for(&dir, &dir.join("stdin.log"));
-    ed.session.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
+    ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
     let args = json!({"edits": [
         {"file_path": "a.rs", "old_string": "one", "new_string": "two"},
         {"file_path": "b.rs", "delete": true},
@@ -425,7 +425,7 @@ fn claudes_unwatched_write_is_wet_and_one_you_reviewed_isnt() {
     let dir = std::fs::canonicalize(project("wet-at-end", &[("a.rs", text)])).unwrap();
     let mut ed = chat_for(&dir, &dir.join("stdin.log"));
     ed.open(&dir.join("a.rs")).unwrap();
-    ed.session.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
+    ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
     call(&mut ed, Call::test(61), &two).unwrap();
     pump(&mut ed, "the answer", |_| answered(61).is_some());
     assert_eq!(wet(&ed, &dir.join("a.rs")), ["TWO\n"], "written unseen: wet");
@@ -463,12 +463,12 @@ fn claudes_unwatched_write_is_wet_and_one_you_reviewed_isnt() {
 fn the_edit_tools_review_quotes_what_you_asked() {
     let dir = project("asked", &[("a.rs", "fn hi() {}\n"), ("b.rs", "fn bye() {}\n")]);
     let mut ed = chat_for(&dir, &dir.join("stdin.log"));
-    let title = |ed: &Editor| ed.session.review.as_ref().map(|r| r.instruction.clone());
-    let c = ed.session.chat.as_mut().unwrap();
+    let title = |ed: &Editor| ed.workspace.claude.review.as_ref().map(|r| r.instruction.clone());
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "tidy the greeting\nand keep it short", ""));
     let args = json!({"edits": [{"file_path": "a.rs", "old_string": "fn hi()", "new_string": "fn hello()"}]});
     call(&mut ed, Call::test(43), &args).unwrap();
-    pump(&mut ed, "the review", |ed| ed.session.review.is_some());
+    pump(&mut ed, "the review", |ed| ed.workspace.claude.review.is_some());
     assert_eq!(title(&ed).as_deref(), Some("tidy the greeting"));
     // (the answer still names the change, not what was asked: `n`, and Claude hears `edit a.rs`)
     let end = std::time::Instant::now() + crate::test_results::PATIENCE;
@@ -485,7 +485,7 @@ fn the_edit_tools_review_quotes_what_you_asked() {
     let mut ed = chat_for(&dir, &dir.join("stdin2.log"));
     let args = json!({"edits": [{"file_path": "b.rs", "old_string": "fn bye()", "new_string": "fn ciao()"}]});
     call(&mut ed, Call::test(44), &args).unwrap();
-    pump(&mut ed, "the other review", |ed| ed.session.review.is_some());
+    pump(&mut ed, "the other review", |ed| ed.workspace.claude.review.is_some());
     assert_eq!(title(&ed).as_deref(), Some("edit b.rs"));
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -503,7 +503,7 @@ fn answer_reviews(ed: &mut Editor, key: char, done: impl Fn(&Editor) -> bool) {
     let end = std::time::Instant::now() + crate::test_results::PATIENCE;
     while !done(ed) {
         assert!(std::time::Instant::now() < end, "the reviews answered `{key}`");
-        if ed.session.review.as_ref().is_some_and(|r| r.ready) {
+        if ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready) {
             crate::llm::review_key(ed, crate::key::Key::plain(crate::key::Code::Char(key)));
             crate::refactor::next(ed);
         }
@@ -523,14 +523,14 @@ fn an_edit_answered_is_stamped_on_its_knot_with_the_key() {
     ]});
     let one = json!({"edits": [{"file_path": "a.rs", "old_string": "one", "new_string": "uno"}]});
     let stamps = |ed: &Editor| -> String {
-        let c = ed.session.chat.as_ref().unwrap();
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
         c.msgs.iter().find(|m| m.call == "t1").unwrap().stamps.iter().map(|s| s.0).collect()
     };
     for (key, n, args) in [("y", 45, &args), ("n", 46, &args), ("review n", 47, &one)] {
         let dir = project(&format!("stamped-{n}"), &[("a.rs", "one\n"), ("b.rs", "two\n")]);
         let mut ed = chat_for(&dir, &dir.join("stdin.log"));
         // (its call, as claude's stream made it: the call waiting, its row)
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.calls.push(crate::chat::Called {
             id: "t1".into(),
             name: "mcp__tarae__edit".into(),
@@ -548,9 +548,9 @@ fn an_edit_answered_is_stamped_on_its_knot_with_the_key() {
         call(&mut ed, asked, args).unwrap();
         match key {
             "review n" => {
-                pump(&mut ed, "the review", |ed| ed.session.review.is_some());
+                pump(&mut ed, "the review", |ed| ed.workspace.claude.review.is_some());
                 assert_eq!(stamps(&ed), "", "undecided: none");
-                answer_reviews(&mut ed, 'n', |ed| ed.session.review.is_none());
+                answer_reviews(&mut ed, 'n', |ed| ed.workspace.claude.review.is_none());
             }
             _ => {
                 pump(&mut ed, "the card", |ed| change_card(ed).is_some() || answered(n).is_some());
@@ -577,14 +577,14 @@ fn an_edit_answered_is_stamped_on_its_knot_with_the_key() {
 fn a_reviews_keys_go_only_on_the_call_its_for() {
     use crate::chat::{Called, Look, Msg};
     let waiting = |ed: &mut Editor, id: &str, name: &str, input: Value| {
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.calls.push(Called { id: id.into(), name: name.into(), input });
         let look =
             Look { verb: "edit", what: "a.rs".into(), pattern: false, range: String::new(), link: None };
         c.msgs.push(Msg::tool(look, id));
     };
     let stamps = |ed: &Editor, id: &str| -> String {
-        let c = ed.session.chat.as_ref().unwrap();
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
         c.msgs.iter().find(|m| m.call == id).unwrap().stamps.iter().map(|s| s.0).collect()
     };
     let edit = json!({"edits": [{"file_path": "a.rs", "old_string": "one", "new_string": "uno"}]});
@@ -610,12 +610,12 @@ fn a_reviews_keys_go_only_on_the_call_its_for() {
         String::new(),
     );
     // (its card first: `r`, one by one — into its review)
-    pump(&mut ed, "your card", |ed| change_card(ed).is_some() || ed.session.review.is_some());
+    pump(&mut ed, "your card", |ed| change_card(ed).is_some() || ed.workspace.claude.review.is_some());
     if let Some((id, whose, _)) = change_card(&ed) {
         crate::refactor::one_by_one(&mut ed, id, whose);
     }
-    pump(&mut ed, "your review", |ed| ed.session.review.as_ref().is_some_and(|r| r.ready));
-    answer_reviews(&mut ed, 'y', |ed| ed.session.review.is_none());
+    pump(&mut ed, "your review", |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+    answer_reviews(&mut ed, 'y', |ed| ed.workspace.claude.review.is_none());
     assert_eq!(stamps(&ed, "t1"), "", "your answer is no key of Claude's call");
     std::fs::remove_dir_all(&dir).ok();
     // A batch: a rename waiting first, then the edit — the edit's `n` goes on the edit's row
@@ -648,7 +648,7 @@ fn a_tool_call_claims_its_row_as_it_comes() {
     let dir = project("through-mcp", &[("a.rs", "one\n")]);
     let mut ed = chat_for(&dir, &dir.join("stdin.log"));
     let edit = json!({"edits": [{"file_path": "a.rs", "old_string": "one", "new_string": "uno"}]});
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.calls.push(crate::chat::Called {
         id: "t1".into(),
         name: "mcp__tarae__edit".into(),
@@ -667,7 +667,7 @@ fn a_tool_call_claims_its_row_as_it_comes() {
         "params": {"name": "edit", "arguments": edit}});
     assert!(crate::tools::mcp(&mut ed, generation, "r61", &msg).is_none(), "answered after its review");
     answer_reviews(&mut ed, 'n', |_| answered(61).is_some());
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     let stamps: String = c.msgs.iter().find(|m| m.call == "t1").unwrap().stamps.iter().map(|s| s.0).collect();
     assert_eq!(stamps, "n");
     std::fs::remove_dir_all(&dir).ok();
@@ -680,14 +680,14 @@ fn a_tool_call_claims_its_row_as_it_comes() {
 fn a_cards_key_goes_on_its_own_tools_call() {
     use crate::chat::{Called, Look, Msg};
     let waiting = |ed: &mut Editor, id: &str, name: &str, input: Value| {
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.calls.push(Called { id: id.into(), name: name.into(), input });
         let look =
             Look { verb: "edit", what: "a.rs".into(), pattern: false, range: String::new(), link: None };
         c.msgs.push(Msg::tool(look, id));
     };
     let stamps = |ed: &Editor, id: &str| -> String {
-        let c = ed.session.chat.as_ref().unwrap();
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
         c.msgs.iter().find(|m| m.call == id).unwrap().stamps.iter().map(|s| s.0).collect()
     };
     let change = |dir: &Path, rel: &str| crate::refactor::FileChange {
@@ -786,7 +786,7 @@ fn a_cards_key_goes_on_its_own_tools_call() {
 fn a_lone_delete_is_never_written_unseen() {
     let dir = project("lone", &[("b.rs", "kept\n")]);
     let mut ed = chat_for(&dir, &dir.join("stdin.log"));
-    ed.session.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
+    ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
     call(&mut ed, Call::test(42), &json!({"edits": [{"file_path": "b.rs", "delete": true}]})).unwrap();
     pump(&mut ed, "the card", |ed| change_card(ed).is_some());
     let (_, generation, _) = change_card(&ed).unwrap();

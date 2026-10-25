@@ -18,7 +18,7 @@ fn scene(name: &str) -> (Editor, crate::scratch::Scratch, u64) {
     let dir = crate::scratch::Scratch::new(name);
     std::fs::write(dir.join("a.rs"), TEXT).unwrap();
     let mut ed = Editor::new(Config::default());
-    ed.session.root = dir.to_path_buf();
+    ed.workspace.root = dir.to_path_buf();
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     ed.open(&dir.join("a.rs")).unwrap();
@@ -28,7 +28,7 @@ fn scene(name: &str) -> (Editor, crate::scratch::Scratch, u64) {
     c.follow.on = true;
     // (you in the code while Claude works: the keys stay `At::Code`)
     let g = c.generation();
-    ed.session.chat = Some(c);
+    ed.workspace.claude.chat = Some(c);
     (ed, dir, g)
 }
 
@@ -162,7 +162,7 @@ fn an_edit_is_drawn_as_it_is_written() {
     let mid = input.find("let c").unwrap() + "let c = a".len();
     // (its place in sight: the screen holds still — the view held on the line under the row it writes, your cursor
     // where it was, the keys in the chat or not)
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     frame(&mut ed, 100, 30);
     let mut w = Writer::new("t1", Tool::Edit);
     w.send(&mut ed, g, &input[..mid], &[20, 60], false);
@@ -174,7 +174,7 @@ fn an_edit_is_drawn_as_it_is_written() {
         (Some(2), 0, 0),
         "the view on the line it rewrites, your cursor where it was, the screen still"
     );
-    ed.session.leave(crate::session::At::Chat);
+    ed.workspace.leave(crate::workspace::At::Chat);
     crate::term::BLEED_SEEN.with_borrow_mut(Vec::clear);
     let rows = frame(&mut ed, 100, 30);
     let at =
@@ -193,11 +193,11 @@ fn an_edit_is_drawn_as_it_is_written() {
     assert_eq!(ed.keys_to().region.name(), "code");
     keys(&mut ed, "j");
     assert_ne!(ed.doc().selection().primary().head, before, "j moved");
-    assert!(ed.session.review.is_none());
+    assert!(ed.workspace.claude.review.is_none());
     // The state says it, and Claude's level
     let s = ed.ui_state();
-    assert_eq!(s.sessions[0].writing[0].lines, Some((3, 3)));
-    assert!(!s.sessions[0].writing[0].whole);
+    assert_eq!(s.workspaces[0].sessions[0].writing[0].lines, Some((3, 3)));
+    assert!(!s.workspaces[0].sessions[0].writing[0].whole);
     assert!(ed.ui_state_claude().text_claude(false).contains("writing (drawn as it comes"));
     // Its text whole: dry
     w.send(&mut ed, g, &input[mid..], &[], true);
@@ -238,7 +238,7 @@ fn the_review_opens_on_the_same_rows() {
     let request = json!({"subtype": "mcp_message", "server_name": "tarae", "message": {"jsonrpc": "2.0",
         "id": 2, "method": "tools/call", "params": {"name": "edit", "arguments": input}}});
     crate::chat::stream_event(&mut ed, g, StreamEv::Control { request_id: "c1".into(), request });
-    settle(&mut ed, |ed| ed.session.review.is_some());
+    settle(&mut ed, |ed| ed.workspace.claude.review.is_some());
     let review = frame(&mut ed, 100, 30);
     let rows = |f: &[String], t: &str| f.iter().position(|r| r.ends_with(t));
     for t in ["let b = 2;", "let b = 20;", "let c = a + b;", r#"println!("{a} {b}");"#] {
@@ -259,12 +259,12 @@ fn an_edit_with_no_one_place_is_not_drawn() {
     let outside = json!({"file_path": "/etc/hosts", "old_string": "localhost", "new_string": "x"});
     write(&mut ed, g, "t2", Tool::NativeEdit, &outside.to_string(), &[]);
     let looked = |ed: &Editor| {
-        let c = ed.session.chat.as_ref().unwrap();
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
         c.writing.calls.iter().flat_map(|c| &c.items).all(|it| matches!(it.place, Place::Nowhere))
     };
     settle(&mut ed, looked);
     assert!(ed.doc().writing.is_none());
-    assert_eq!(ed.ui_state().sessions[0].writing[0].lines, None);
+    assert_eq!(ed.ui_state().workspaces[0].sessions[0].writing[0].lines, None);
     // One place; your line above it: still drawn, a line lower
     let once = edit_input("    let b = 3;\n");
     let mut w = Writer::new("t3", Tool::Edit);
@@ -447,7 +447,7 @@ fn follow_keeps_the_line_being_rewritten_in_sight() {
     // Your key: follow pauses, says so, leads no more; it acted at your cursor, and the view is yours again
     press(&mut ed, "j");
     assert_eq!((ed.cursor_line(), led(&ed)), (1, None));
-    let f = &ed.session.chat.as_ref().unwrap().follow;
+    let f = &ed.workspace.claude.chat.as_ref().unwrap().follow;
     assert!(f.paused, "your key paused it");
     assert!(ed.toasts.iter().any(|t| t.text.contains("you took over")), "said");
     assert!(status(&frame(&mut ed, 100, 30)).contains("● normal"));
@@ -491,10 +491,10 @@ fn the_caret_is_a_bar_that_reads_on_the_writing_rows_wash() {
         c => panic!("a true colour: {c:?}"),
     };
     for theme in ["meok", "hanji"] {
-        for at in [crate::session::At::Code, crate::session::At::Chat] {
+        for at in [crate::workspace::At::Code, crate::workspace::At::Chat] {
             let (mut ed, _dir, g) = scene("writing-caret-reads");
             ed.theme = crate::theme::load(theme).unwrap();
-            ed.session.at = at;
+            ed.workspace.viewer.at = at;
             frame(&mut ed, 100, 30);
             let input = edit_input("    let b = 20;\n    let c = a");
             let mut w = Writer::new("t1", Tool::Edit);
@@ -507,7 +507,7 @@ fn the_caret_is_a_bar_that_reads_on_the_writing_rows_wash() {
             let r = crate::chrome::contrast(rgb(a.fg), rgb(a.bg));
             assert!(r >= 3.0, "{theme} {at:?}: the caret on the wash {r:.2} (floor 3)");
             // The person's cursor, where it was (follow never moves it): a block of the cursor's colour, never a bar
-            if at == crate::session::At::Code {
+            if at == crate::workspace::At::Code {
                 let mut bytes = Vec::new();
                 crate::term::render(&mut ed, &mut bytes, 100, 30).unwrap();
                 let mut parser = vt100::Parser::new(30, 100, 0);
@@ -546,13 +546,13 @@ fn a_key_sequence_under_way_holds_the_cursor_and_its_end_decides() {
         w.send(&mut ed, g, &input[..upto(r"let a = 1;\n")], &[], false);
         settle(&mut ed, |ed| shown(ed.doc()).is_some());
         w.send(&mut ed, g, "", &[], false);
-        assert!(!ed.session.chat.as_ref().unwrap().follow.paused, "{prefix}: not paused");
+        assert!(!ed.workspace.claude.chat.as_ref().unwrap().follow.paused, "{prefix}: not paused");
         assert!(!ed.toasts.iter().any(|t| t.text.contains("you took over")), "{prefix}: nothing said");
         assert_eq!((led(&ed), ed.cursor_line()), (None, 0), "{prefix}: the view held while it's under way");
         // Its end without a move: follow leads on, the next piece takes the view to the line rewritten
         press(&mut ed, "<esc>");
         w.send(&mut ed, g, &input[upto(r"let a = 1;\n")..upto(r"let b = 2;\n")], &[], false);
-        assert!(!ed.session.chat.as_ref().unwrap().follow.paused, "{prefix}: still on");
+        assert!(!ed.workspace.claude.chat.as_ref().unwrap().follow.paused, "{prefix}: still on");
         assert_eq!(
             (led(&ed), ed.cursor_line()),
             (Some(3), 0),
@@ -569,10 +569,10 @@ fn a_key_sequence_under_way_holds_the_cursor_and_its_end_decides() {
         StreamEv::Tool { id: "r1".into(), name: "Read".into(), input: read },
     );
     press(&mut ed, "2");
-    assert!(!ed.session.chat.as_ref().unwrap().follow.paused, "a count alone: not yet");
+    assert!(!ed.workspace.claude.chat.as_ref().unwrap().follow.paused, "a count alone: not yet");
     press(&mut ed, "j");
     assert_eq!(ed.cursor_line(), 2);
-    assert!(ed.session.chat.as_ref().unwrap().follow.paused, "2j: paused");
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().follow.paused, "2j: paused");
 }
 
 /// A motion that leaves a selection, as Helix's do (`w`, a search `/let` and its `enter`), pauses follow like any
@@ -597,9 +597,9 @@ fn follow_comes_back_after_a_word_motion_or_a_search() {
             let r = ed.doc().selection().primary();
             assert!(r.to() - r.from() > 1, "{keys}: a selection wider than a character");
             let mine = (r.from(), r.to());
-            assert!(ed.session.chat.as_ref().unwrap().follow.paused, "{keys}: you took over");
+            assert!(ed.workspace.claude.chat.as_ref().unwrap().follow.paused, "{keys}: you took over");
             match by {
-                "quiet" => settle(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().follow.paused),
+                "quiet" => settle(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().follow.paused),
                 _ => crate::follow::toggle(&mut ed),
             }
             assert!(crate::follow::leads(&ed), "{keys}, {by}: leading again");
@@ -629,12 +629,12 @@ fn select_holds_follow_until_you_leave_it() {
         StreamEv::Tool { id: "r1".into(), name: "Read".into(), input: read },
     );
     press(&mut ed, "vl");
-    assert!(ed.session.chat.as_ref().unwrap().follow.paused, "SELECT: you took over");
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().follow.paused, "SELECT: you took over");
     // The quiet while's wake comes and goes (every event until none for a while): follow still waits
     while let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(300)) {
         ed.handle_event(ev);
     }
-    assert!(ed.session.chat.as_ref().unwrap().follow.paused, "SELECT holds it past the quiet while");
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().follow.paused, "SELECT holds it past the quiet while");
     let read = json!({"file_path": dir.join("a.rs"), "offset": 5, "limit": 1});
     crate::chat::stream_event(
         &mut ed,
@@ -646,7 +646,7 @@ fn select_holds_follow_until_you_leave_it() {
     assert!(r.to() - r.from() > 1, "your selection stays");
     // Out of SELECT: the quiet while after it, follow leads again
     press(&mut ed, "<esc>");
-    settle(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().follow.paused);
+    settle(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().follow.paused);
     assert!(crate::follow::leads(&ed));
     assert_eq!((led(&ed), ed.cursor_line()), (Some(4), 0), "the view on Claude's line, its last stop");
 }
@@ -659,7 +659,7 @@ fn a_key_left_under_way_pauses_follow() {
         let (mut ed, _dir, g) = scene("writing-midway");
         frame(&mut ed, 100, 30);
         press(&mut ed, keys);
-        assert!(ed.session.chat.as_ref().unwrap().follow.paused, "{keys}: paused");
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().follow.paused, "{keys}: paused");
         let input = kept_lines_input();
         Writer::new("t1", Tool::Edit).send(&mut ed, g, &input[..input.len() - 20], &[], false);
         settle(&mut ed, |ed| shown(ed.doc()).is_some());
@@ -686,7 +686,7 @@ fn an_edit_of_yours_where_the_cursor_is_pauses_follow() {
         let before = ed.doc().text.to_string();
         press(&mut ed, keys);
         assert_ne!(ed.doc().text.to_string(), before, "{keys}: an edit");
-        let f = &ed.session.chat.as_ref().unwrap().follow;
+        let f = &ed.workspace.claude.chat.as_ref().unwrap().follow;
         assert!(f.paused, "{keys}: paused");
         assert!(ed.toasts.iter().any(|t| t.text.contains("you took over")), "{keys}: said");
         assert!(status(&frame(&mut ed, 100, 30)).contains("● normal"), "{keys}");
@@ -718,7 +718,7 @@ fn fg_before(ed: &mut Editor, needle: &str) -> (vt100::Color, String) {
 /// The front session's Claude's colour: its participant colour (`ui.participant.1` for the session tarae started in
 /// — collab C1), at full strength while you follow it.
 fn claude_colour(ed: &Editor) -> vt100::Color {
-    let k = crate::session::PARTICIPANTS[ed.session.colour as usize];
+    let k = crate::session::PARTICIPANTS[ed.workspace.claude.colour as usize];
     match ed.theme.try_get(k).and_then(|s| s.fg) {
         Some(crossterm::style::Color::Rgb { r, g, b }) => vt100::Color::Rgb(r, g, b),
         c => panic!("{k}: {c:?}"),
@@ -732,7 +732,7 @@ fn claude_colour(ed: &Editor) -> vt100::Color {
 #[test]
 fn with_the_keys_in_the_chat_claudes_place_is_a_mark() {
     let (mut ed, dir, g) = scene("writing-mark");
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     frame(&mut ed, 100, 30);
     let input = edit_input("    let b = 20;\n    let c = a");
     let mut w = Writer::new("t1", Tool::Edit);
@@ -756,7 +756,7 @@ fn with_the_keys_in_the_chat_claudes_place_is_a_mark() {
     assert!(status(&frame(&mut ed, 100, 30)).contains("● chat · follow"));
     // Nothing written any more, a read: the accent bar on its line
     crate::chat::stream_event(&mut ed, g, StreamEv::Done(Ok(String::new())));
-    ed.session.chat.as_mut().unwrap().state = State::Thinking;
+    ed.workspace.claude.chat.as_mut().unwrap().state = State::Thinking;
     let read = json!({"file_path": dir.join("a.rs"), "offset": 4, "limit": 1});
     crate::chat::stream_event(
         &mut ed,
@@ -769,7 +769,7 @@ fn with_the_keys_in_the_chat_claudes_place_is_a_mark() {
     let (other, bar) = fg_before(&mut ed, "    let a = 1;");
     assert!(other != claude_colour(&ed) || bar != "▎", "one line marked");
     // The keys back in the code: your cursor where it was, Claude's place still marked (your cursor isn't on it)
-    ed.session.leave(crate::session::At::Chat);
+    ed.workspace.leave(crate::workspace::At::Chat);
     assert_eq!((led(&ed), ed.cursor_line()), (Some(3), 0));
     let (mark, bar) = fg_before(&mut ed, r#"    println!("{a} {b}");"#);
     assert_eq!((mark, bar.as_str()), (claude_colour(&ed), "▎"), "still Claude's place");
@@ -864,7 +864,7 @@ fn a_view_key_of_yours_takes_the_view_back_to_your_cursor() {
             k => press(&mut ed, k),
         }
         frame(&mut ed, 100, 30);
-        let f = &ed.session.chat.as_ref().unwrap().follow;
+        let f = &ed.workspace.claude.chat.as_ref().unwrap().follow;
         assert!(f.paused, "{k}: you took over");
         assert!(ed.toasts.iter().any(|t| t.text.contains("you took over")), "{k}: said");
         assert_eq!(led(&ed), None, "{k}: the view yours");
@@ -921,7 +921,7 @@ fn a_landed_edit_follow_wont_follow_leaves_your_selection() {
 #[test]
 fn an_added_lines_cursor_stays_put_when_it_lands() {
     let (mut ed, dir, g) = scene("writing-adds");
-    ed.session.chat.as_mut().unwrap().edits.at_end = Some(dir.to_path_buf());
+    ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.to_path_buf());
     frame(&mut ed, 100, 30);
     let s = |t: &str| serde_json::to_string(t).unwrap();
     let (old, new) = ("    let b = 2;\n", "    let b = 2;\n    let c = 3;\n");
@@ -955,7 +955,7 @@ fn an_edit_landing_unseen_leads_the_view_there() {
     text.insert_str(text.find("    let x40").unwrap(), TEXT);
     std::fs::write(dir.join("a.rs"), &text).unwrap();
     crate::typed::execute(&mut ed, "reload").unwrap();
-    ed.session.chat.as_mut().unwrap().edits.at_end = Some(dir.to_path_buf());
+    ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.to_path_buf());
     frame(&mut ed, 100, 30);
     let input: Value = serde_json::from_str(&edit_input("    let b = 20;\n")).unwrap();
     ed.doc_mut().set_selection(crate::selection::Selection::point(0));
@@ -968,7 +968,7 @@ fn an_edit_landing_unseen_leads_the_view_there() {
         "id": 2, "method": "tools/call", "params": {"name": "edit", "arguments": input}}});
     crate::chat::stream_event(&mut ed, g, StreamEv::Control { request_id: "c1".into(), request });
     settle(&mut ed, |ed| ed.doc().text.to_string().contains("let b = 20;"));
-    assert!(ed.session.review.is_none(), "unseen");
+    assert!(ed.workspace.claude.review.is_none(), "unseen");
     let changed = ed.doc().text.to_string().lines().position(|l| l == "    let b = 20;").unwrap();
     assert_eq!((led(&ed), ed.cursor_line()), (Some(changed), 0), "the view on its first changed line");
     assert!(status(&frame(&mut ed, 100, 30)).contains("● follow"));
@@ -995,16 +995,19 @@ fn an_edit_accepted_in_its_review_leads_the_cursor_there() {
     let request = json!({"subtype": "mcp_message", "server_name": "tarae", "message": {"jsonrpc": "2.0",
         "id": 2, "method": "tools/call", "params": {"name": "edit", "arguments": input}}});
     crate::chat::stream_event(&mut ed, g, StreamEv::Control { request_id: "c1".into(), request });
-    settle(&mut ed, |ed| ed.session.review.is_some());
+    settle(&mut ed, |ed| ed.workspace.claude.review.is_some());
     frame(&mut ed, 100, 30);
     // (the cursor somewhere else meanwhile, as a reload or your own look may leave it)
     ed.doc_mut().set_selection(crate::selection::Selection::point(0));
     crate::follow::settle(&mut ed);
     press(&mut ed, "y");
-    settle(&mut ed, |ed| ed.session.review.is_none());
+    settle(&mut ed, |ed| ed.workspace.claude.review.is_none());
     let changed = ed.doc().text.to_string().lines().position(|l| l == "    let b = 20;").unwrap();
     assert_eq!(led(&ed), Some(changed), "the view on its first changed line");
-    assert!(!ed.session.chat.as_ref().unwrap().follow.paused, "your `y` answered the review: still led");
+    assert!(
+        !ed.workspace.claude.chat.as_ref().unwrap().follow.paused,
+        "your `y` answered the review: still led"
+    );
     assert!(status(&frame(&mut ed, 100, 30)).contains("● follow"));
 }
 
@@ -1030,7 +1033,7 @@ fn tall_scene(name: &str) -> (Editor, crate::scratch::Scratch, u64) {
     let text: String = (1..=80).map(|i| format!("    let x{i} = {i};\n")).collect();
     std::fs::write(dir.join("a.rs"), &text).unwrap();
     crate::typed::execute(&mut ed, "reload").unwrap();
-    ed.session.chat.as_mut().unwrap().edits.at_end = Some(dir.to_path_buf());
+    ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.to_path_buf());
     frame(&mut ed, 100, 30);
     (ed, dir, g)
 }
@@ -1080,7 +1083,7 @@ fn a_streamed_edit_landing_leaves_the_view_where_its_writing_ended() {
     let (mut ed, _dir, g, input, row) = written_down("writing-stays");
     call_edit(&mut ed, g, "t1", 2, &input);
     settle(&mut ed, |ed| ed.doc().text.to_string().contains("let y40 = 40;"));
-    assert!(ed.session.review.is_none(), "unseen");
+    assert!(ed.workspace.claude.review.is_none(), "unseen");
     let last = ed.doc().text.to_string().lines().position(|l| l == "    let y40 = 40;").unwrap();
     assert_eq!((led(&ed), ed.cursor_line()), (Some(last), 0), "on the last line it wrote");
     let rows = frame(&mut ed, 100, 30);
@@ -1097,9 +1100,9 @@ fn a_streamed_edit_landing_leaves_the_view_where_its_writing_ended() {
 fn an_edit_whose_end_you_did_not_watch_goes_to_its_first_line() {
     let (mut ed, _dir, g) = tall_scene("writing-stays-unled");
     let input = write_tall(&mut ed, g, "j", "");
-    assert!(ed.session.chat.as_ref().unwrap().follow.paused, "j: you took over");
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().follow.paused, "j: you took over");
     crate::follow::toggle(&mut ed);
-    assert!(!ed.session.chat.as_ref().unwrap().follow.paused, "C-f: following again");
+    assert!(!ed.workspace.claude.chat.as_ref().unwrap().follow.paused, "C-f: following again");
     // (a call made beside it streams on: what's drawn is laid out again, follow leading now)
     Writer::new("t2", Tool::Edit).send(&mut ed, g, r#"{"edits":[{"file_path":"a.rs""#, &[], false);
     call_edit(&mut ed, g, "t1", 2, &input);
@@ -1112,7 +1115,7 @@ fn an_edit_whose_end_you_did_not_watch_goes_to_its_first_line() {
 fn on_its_card(name: &str, keys: &str) -> (Editor, crate::scratch::Scratch, u64) {
     let (mut ed, dir, g) = tall_scene(name);
     std::fs::write(dir.join("c.rs"), "gone soon\n").unwrap();
-    ed.session.chat.as_mut().unwrap().edits.at_end = None;
+    ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = None;
     let input = write_tall(&mut ed, g, "", r#",{"file_path":"c.rs","delete":true}"#);
     call_edit(&mut ed, g, "t1", 2, &input);
     let card = |ed: &Editor| {
@@ -1145,7 +1148,7 @@ fn an_edit_from_its_card_stays_where_its_writing_ended() {
 #[test]
 fn an_edit_from_its_card_leaves_your_view_yours_once_you_moved() {
     let (mut ed, _dir, _g) = on_its_card("writing-stays-card-moved", "G");
-    assert!(ed.session.chat.as_ref().unwrap().follow.paused, "G: you took over");
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().follow.paused, "G: you took over");
     let end = crate::movement::last_line(&ed.doc().text);
     assert_eq!((led(&ed), ed.cursor_line()), (None, end), "your cursor, your view");
     let rows = frame(&mut ed, 100, 30);
@@ -1160,7 +1163,7 @@ fn a_key_sequence_under_way_holds_the_view_where_the_writing_ended() {
     press(&mut ed, "g");
     call_edit(&mut ed, g, "t1", 2, &input);
     settle(&mut ed, |ed| ed.doc().text.to_string().contains("let y40 = 40;"));
-    assert!(!ed.session.chat.as_ref().unwrap().follow.paused, "g: not paused");
+    assert!(!ed.workspace.claude.chat.as_ref().unwrap().follow.paused, "g: not paused");
     let last = ed.doc().text.to_string().lines().position(|l| l == "    let y40 = 40;").unwrap();
     assert_eq!((led(&ed), ed.cursor_line()), (Some(last), 0), "held where it was");
     let rows = frame(&mut ed, 100, 30);
@@ -1172,7 +1175,7 @@ fn a_key_sequence_under_way_holds_the_view_where_the_writing_ended() {
 #[test]
 fn a_whole_block_follow_does_not_lead_leaves_your_cursor_in_sight() {
     let (mut ed, _dir, g) = tall_scene("writing-tall-unled");
-    ed.session.chat.as_mut().unwrap().follow.on = false;
+    ed.workspace.claude.chat.as_mut().unwrap().follow.on = false;
     let at = ed.doc().text.line_to_byte(9);
     ed.doc_mut().set_selection(crate::selection::Selection::point(at));
     frame(&mut ed, 100, 30);
@@ -1243,7 +1246,7 @@ fn an_edit_landing_in_another_file_takes_the_view_to_its_first_line() {
     let (mut ed, dir, g) = scene("writing-elsewhere");
     let text: String = (1..=80).map(|i| format!("    let x{i} = {i};\n")).collect();
     std::fs::write(dir.join("b.rs"), &text).unwrap();
-    ed.session.chat.as_mut().unwrap().edits.at_end = Some(dir.to_path_buf());
+    ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.to_path_buf());
     frame(&mut ed, 100, 30);
     call_edit(&mut ed, g, "t1", 2, &edit_of("b.rs", "    let x50 = 50;\n", "    let x50 = 500;\n"));
     settle(&mut ed, |ed| ed.doc().text.to_string().contains("let x50 = 500;"));
@@ -1333,7 +1336,7 @@ fn perf_budget_reveal_frame_with_live_rows() {
     let mut best = vec![Duration::MAX; frames];
     for _ in 0..3 {
         let (mut ed, dir, g) = scene("writing-perf-reveal");
-        ed.session.chat.as_mut().unwrap().writing.paced = true;
+        ed.workspace.claude.chat.as_mut().unwrap().writing.paced = true;
         std::fs::write(dir.join("a.rs"), &text).unwrap();
         crate::typed::execute(&mut ed, "reload").unwrap();
         let mut buf = Vec::with_capacity(1 << 16);
@@ -1428,7 +1431,7 @@ fn a_place_found_after_its_review_is_not_drawn() {
     crate::llm::review_with(&mut ed, id, "an edit", vec![change], None);
     crate::llm::close_review(&mut ed);
     let looked = |ed: &Editor| {
-        let c = ed.session.chat.as_ref().unwrap();
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
         c.writing.calls.iter().flat_map(|c| &c.items).all(|it| !matches!(it.place, Place::Looking))
     };
     settle(&mut ed, looked);
@@ -1575,7 +1578,7 @@ fn an_edit_ending_in_a_wide_character_is_placed() {
     let text = "fn main() {\n    let a = 1; // one —\n}\n";
     std::fs::write(dir.join("a.rs"), text).unwrap();
     let mut ed = Editor::new(Config::default());
-    ed.session.root = dir.to_path_buf();
+    ed.workspace.root = dir.to_path_buf();
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     ed.open(&dir.join("a.rs")).unwrap();
@@ -1584,7 +1587,7 @@ fn an_edit_ending_in_a_wide_character_is_placed() {
     c.state = State::Thinking;
     c.follow.on = true;
     let g = c.generation();
-    ed.session.chat = Some(c);
+    ed.workspace.claude.chat = Some(c);
     ed.bleed_ink = true;
     let s = |t: &str| serde_json::to_string(t).unwrap();
     let input = format!(
@@ -1693,7 +1696,7 @@ fn row_with(ed: &mut Editor, text: &str) -> Option<String> {
 #[test]
 fn a_piece_is_drawn_as_typed_at_the_streams_pace() {
     let (mut ed, _dir, g) = scene("writing-paced");
-    ed.session.chat.as_mut().unwrap().writing.paced = true;
+    ed.workspace.claude.chat.as_mut().unwrap().writing.paced = true;
     frame(&mut ed, 100, 30);
     let input = edit_input("    let b = 2000000000;\n");
     let head = input.find("2000").unwrap();
@@ -1734,7 +1737,7 @@ fn a_piece_is_drawn_as_typed_at_the_streams_pace() {
 #[test]
 fn an_unfocused_tarae_asks_no_reveal_frames_and_catches_up() {
     let (mut ed, _dir, g) = scene("writing-paced-unfocused");
-    ed.session.chat.as_mut().unwrap().writing.paced = true;
+    ed.workspace.claude.chat.as_mut().unwrap().writing.paced = true;
     frame(&mut ed, 100, 30);
     let input = edit_input("    let b = 2000000000;\n");
     let head = input.find("2000").unwrap();
@@ -1765,7 +1768,7 @@ fn an_unfocused_tarae_asks_no_reveal_frames_and_catches_up() {
 #[test]
 fn without_motion_the_writing_is_shown_as_it_comes() {
     let (mut ed, _dir, g) = scene("writing-paced-still");
-    ed.session.chat.as_mut().unwrap().writing.paced = true;
+    ed.workspace.claude.chat.as_mut().unwrap().writing.paced = true;
     ed.config.motion = "none".into();
     frame(&mut ed, 100, 30);
     let input = edit_input("    let b = 3000;\n");
@@ -1788,7 +1791,7 @@ fn without_motion_the_writing_is_shown_as_it_comes() {
 #[test]
 fn an_edit_landing_mid_reveal_shows_what_landed() {
     let (mut ed, dir, g) = scene("writing-paced-lands");
-    ed.session.chat.as_mut().unwrap().writing.paced = true;
+    ed.workspace.claude.chat.as_mut().unwrap().writing.paced = true;
     frame(&mut ed, 100, 30);
     let input = edit_input("    let b = 2000000000;\n");
     let head = input.find("2000").unwrap();

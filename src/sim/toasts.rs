@@ -27,7 +27,7 @@ fn a_toast_never_takes_a_key() {
 /// What the scenario knows from its own steps: the two sessions, and what the last step should have left.
 #[derive(Default)]
 struct Model {
-    sessions: (crate::event::SessionId, crate::event::SessionId),
+    sessions: (crate::event::WorkspaceId, crate::event::WorkspaceId),
     /// The last step pressed a card that was drawn, after message N was said: `:messages` should be up, the toasts
     /// up then gone (one said after it — a job landing — is news of its own).
     pressed: Option<u64>,
@@ -41,9 +41,9 @@ fn run(choices: Choices) -> Vec<String> {
     sim.frames = Some((100, 24));
     let mut ed = Editor::new(crate::config::Config::default());
     ed.docs[0].text = ropey::Rope::from_str("one\ntwo\n");
-    let main = ed.session.id;
-    let other = ed.session_open(dir.path()).unwrap();
-    ed.session_switch(main);
+    let main = ed.workspace.id;
+    let other = ed.workspace_open(dir.path()).unwrap();
+    ed.workspace_switch(main);
     let model = RefCell::new(Model { sessions: (main, other), ..Model::default() });
     let check = |ed: &Editor| held(ed, &model.borrow());
     sim.walk(&mut ed, INPUTS, |sim, ed| step(sim, ed, &model), check, print);
@@ -108,8 +108,8 @@ fn step(sim: &mut Sim, ed: &mut Editor, model: &RefCell<Model>) -> String {
         }
         6 => {
             let (main, other) = m.sessions;
-            let to = if ed.session.id == main { other } else { main };
-            ed.session_switch(to);
+            let to = if ed.workspace.id == main { other } else { main };
+            ed.workspace_switch(to);
             crate::term::render(ed, &mut Vec::new(), 100, 24).unwrap();
             format!("to session {to}")
         }

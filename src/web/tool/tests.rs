@@ -183,10 +183,10 @@ fn editor(
 ) -> (Editor, u64, std::sync::mpsc::Receiver<String>) {
     let (at, heads) = server(true, answer);
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.chat = Some(crate::chat::Chat::new());
-    ed.session.at = crate::session::At::Chat;
-    ed.session.web_way = Some(Arc::new(move |stop| fetch::Way { stop, ..way(at, yours_rules()) }));
-    let generation = ed.session.chat.as_ref().unwrap().generation();
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.workspace.web_way = Some(Arc::new(move |stop| fetch::Way { stop, ..way(at, yours_rules()) }));
+    let generation = ed.workspace.claude.chat.as_ref().unwrap().generation();
     (ed, generation, heads)
 }
 
@@ -215,7 +215,7 @@ fn a_read_asks_by_host_and_its_answers_are_reads_alone() {
     assert!(heads.try_recv().is_err(), "nothing fetched before the answer");
     ed.offer_accept();
     settle(&mut ed, &|_| answered(1).is_some());
-    assert!(ed.session.web_once.is_empty(), "the y gone with its read");
+    assert!(ed.workspace.claude.web_once.is_empty(), "the y gone with its read");
     let t = answered(1).unwrap().unwrap();
     assert!(t.contains("1: # A page\n3: Its text.\n</page"), "blank lines left out, numbers kept: {t}");
     // `y` was that read's: the next asks again
@@ -223,9 +223,9 @@ fn a_read_asks_by_host_and_its_answers_are_reads_alone() {
     assert!(card(&ed).is_some(), "y was once");
     ed.offer_for_session();
     settle(&mut ed, &|_| answered(2).is_some());
-    assert_eq!(ed.session.web_hosts, vec![("page.test".to_string(), 443)]);
-    assert!(ed.session.hosts.is_empty(), "a read's yes is no run's");
-    assert_eq!(crate::granted::count(&ed.session), 1, ":granted lists it");
+    assert_eq!(ed.workspace.claude.web_hosts, vec![("page.test".to_string(), 443)]);
+    assert!(ed.workspace.claude.hosts.is_empty(), "a read's yes is no run's");
+    assert_eq!(crate::granted::count(&ed.workspace), 1, ":granted lists it");
     let more = crate::granted::More { reads: vec![("page.test".into(), 443, true)], ..Default::default() };
     let none = crate::allow::Allowed::default();
     let caps = crate::caps::Caps::answered(&[&none]);
@@ -245,11 +245,11 @@ fn a_read_asks_by_host_and_its_answers_are_reads_alone() {
     assert!(t.contains("it redirects to another host: https://other.test/x — read that"), "{t}");
 
     // a run's answer opens reads of that host
-    ed.session.hosts.push(("other.test".into(), 443));
+    ed.workspace.claude.hosts.push(("other.test".into(), 443));
     read(&mut ed, generation, 5, &["https://other.test/x"]);
     assert!(card(&ed).is_none(), "a run's grant opens reads");
     settle(&mut ed, &|_| answered(5).is_some());
-    ed.session.hosts.clear();
+    ed.workspace.claude.hosts.clear();
 
     // `n`: refused for the conversation, with no card again
     read(&mut ed, generation, 6, &["https://refused.test/p"]);
@@ -264,7 +264,7 @@ fn a_read_asks_by_host_and_its_answers_are_reads_alone() {
 
     // the session's copy: no card, no network
     let (f, _) = fetched("https://kept.test/p", "<title>K</title><main><h1>Kept</h1><p>Copy.</p></main>");
-    let _ = ed.session.pages.put(Arc::new(f), crate::clock::now());
+    let _ = ed.workspace.pages.put(Arc::new(f), crate::clock::now());
     while heads.try_recv().is_ok() {}
     read(&mut ed, generation, 8, &["https://kept.test/p"]);
     assert!(card(&ed).is_none());
@@ -298,16 +298,16 @@ fn claude_cant_send_itself_a_yes() {
 #[test]
 fn the_turns_end_stops_a_read_under_way() {
     let (mut ed, generation, heads) = editor(|_| Reply { hold: true, ..reply("") });
-    ed.session.web_hosts.push(("page.test".into(), 443));
+    ed.workspace.claude.web_hosts.push(("page.test".into(), 443));
     read(&mut ed, generation, 51, &["https://page.test/slow"]);
-    assert_eq!(ed.session.web_reads.len(), 1, "its stop kept while it reads");
+    assert_eq!(ed.workspace.claude.web_reads.len(), 1, "its stop kept while it reads");
     heads.recv_timeout(crate::test_results::PATIENCE).expect("the request reached the server");
     crate::tools::turn_over(&mut ed);
     settle(&mut ed, &|_| answered(51).is_some());
     // (stopped, not left to its deadline: that one's answer would say no whole answer came)
     let said = format!("{:?}", answered(51));
     assert!(said.contains("stopped") && !said.contains("no whole answer"), "{said}");
-    assert!(ed.session.web_reads.is_empty(), "its stop dropped as it lands");
+    assert!(ed.workspace.claude.web_reads.is_empty(), "its stop dropped as it lands");
 }
 
 /// Two calls asking for one host each wait on a card of their own (as Claude's commands do); an answer that holds for
@@ -327,7 +327,7 @@ fn an_answer_for_the_host_settles_every_call_asking_for_it() {
     ed.offer_for_chat();
     settle(&mut ed, &|_| [31, 32, 33].iter().all(|&n| answered(n).is_some()));
     assert_eq!(cards(&ed), 0, "a: every call for the host read");
-    assert!(ed.session.asking.is_empty(), "no call left waiting on a card");
+    assert!(ed.workspace.claude.asking.is_empty(), "no call left waiting on a card");
 }
 
 /// D14: a page read is a replay stop with the copy Claude read — the chat row's stop shows that copy at the lines
@@ -336,7 +336,7 @@ fn an_answer_for_the_host_settles_every_call_asking_for_it() {
 fn a_page_read_is_a_stop_showing_the_copy_read() {
     let (mut ed, generation, heads) =
         editor(|_| ok("<title>A</title><main><h1>A page</h1><p>one</p><p>two</p></main>"));
-    ed.session.web_hosts.push(("page.test".into(), 443));
+    ed.workspace.claude.web_hosts.push(("page.test".into(), 443));
     let input = json!({ "files": ["https://page.test/a:3-3"] });
     let look = crate::chat::Look {
         verb: "read",
@@ -349,7 +349,8 @@ fn a_page_read_is_a_stop_showing_the_copy_read() {
     read(&mut ed, generation, 21, &["https://page.test/a:3-3"]);
     settle(&mut ed, &|_| answered(21).is_some());
     heads.recv_timeout(crate::test_results::PATIENCE).expect("fetched once");
-    let stop = ed.session.chat.as_ref().unwrap().follow.replay.turns.back().unwrap().stops[0].clone();
+    let stop =
+        ed.workspace.claude.chat.as_ref().unwrap().follow.replay.turns.back().unwrap().stops[0].clone();
     let copy = stop.page.as_ref().and_then(|p| p.copy.clone()).expect("the stop has its copy");
     assert_eq!(copy.0, "https://page.test/a");
     assert_eq!(stop.lines, Some(2..3));
@@ -359,7 +360,7 @@ fn a_page_read_is_a_stop_showing_the_copy_read() {
     assert_eq!(crate::movement::line_of(&ed.doc().text, at), 2, "at the lines read");
     assert!(heads.try_recv().is_err(), "never fetched again");
     // gone from the session: said, nothing fetched
-    ed.session.pages = Default::default();
+    ed.workspace.pages = Default::default();
     assert!(crate::follow::replay_call(&mut ed, "t1"));
     assert!(
         ed.toasts.iter().any(|t| t.text.contains("isn't kept — :web! https://page.test/a fetches it now"))
@@ -373,7 +374,7 @@ fn a_page_read_is_a_stop_showing_the_copy_read() {
 fn follow_shows_a_page_read_only_while_it_leads() {
     let (mut ed, generation, _heads) =
         editor(|_| ok("<title>A</title><main><h1>A page</h1><p>one</p><p>two</p></main>"));
-    ed.session.web_hosts.push(("page.test".into(), 443));
+    ed.workspace.claude.web_hosts.push(("page.test".into(), 443));
     let look = |what: &str| crate::chat::Look {
         verb: "read",
         what: what.into(),
@@ -381,7 +382,7 @@ fn follow_shows_a_page_read_only_while_it_leads() {
         range: String::new(),
         link: None,
     };
-    ed.session.chat.as_mut().unwrap().follow.on = true;
+    ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
     let input = json!({ "files": ["https://page.test/a:3-3"] });
     crate::follow::on_tool(&mut ed, "t1", "mcp__tarae__read", &input, &look("page.test/a:3-3"));
     read(&mut ed, generation, 31, &["https://page.test/a:3-3"]);
@@ -392,7 +393,7 @@ fn follow_shows_a_page_read_only_while_it_leads() {
 
     ed.new_scratch();
     let code = ed.doc().id;
-    ed.session.chat.as_mut().unwrap().follow.paused = true;
+    ed.workspace.claude.chat.as_mut().unwrap().follow.paused = true;
     let input = json!({ "files": ["https://page.test/b"] });
     crate::follow::on_tool(&mut ed, "t2", "mcp__tarae__read", &input, &look("page.test/b"));
     read(&mut ed, generation, 32, &["https://page.test/b"]);

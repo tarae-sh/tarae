@@ -110,7 +110,7 @@ struct Shared {
 /// What waits for the saves asked before it (`Editor::after_saves`), in the session that asked.
 struct Wait {
     asked: u64,
-    session: crate::event::SessionId,
+    session: crate::event::WorkspaceId,
     /// The user's input it was asked under (`Queue.asked`): `then` runs as asked by it, as a job's result
     /// does — what it makes (`:restart`'s card) is still the user's (#205).
     input: Option<u64>,
@@ -370,7 +370,7 @@ impl Editor {
             // (a file the session's reviewer read, saved: what changed since is looked at again — the rail's
             // `read … at`, whether a board read a review's ▲ changes)
             let read = self
-                .session
+                .workspace
                 .reviewer
                 .as_ref()
                 .is_some_and(|r| done.iter().any(|d| r.digests.iter().any(|(p, _)| d.path == *p)));
@@ -390,7 +390,7 @@ impl Editor {
         }
         for w in ready {
             let was = self.events.set_asked(w.input);
-            quiet &= self.with_session(w.session, w.then);
+            quiet &= self.with_workspace(w.session, w.then);
             self.events.set_asked(was);
         }
         quiet
@@ -409,7 +409,7 @@ impl Editor {
         }
         let first = self.saver.waits.is_empty();
         let input = self.events.asked();
-        self.saver.waits.push(Wait { asked, session: self.session.id, input, then: Box::new(then) });
+        self.saver.waits.push(Wait { asked, session: self.workspace.id, input, then: Box::new(then) });
         if first {
             self.events.jobs().spawn(|| {
                 std::thread::sleep(SAY_WAITING);
@@ -468,7 +468,7 @@ impl Editor {
                 if let Some(doc) = self.docs.iter().find(|d| d.id == *one) {
                     let msg = format!(
                         "Saved {} · {} lines",
-                        doc.display_name(&self.session.root),
+                        doc.display_name(&self.workspace.root),
                         doc.text.len_lines()
                     );
                     self.set_success(msg);
@@ -615,7 +615,7 @@ mod tests {
         assert!(e.contains("a link"), "{e}");
         // As the review's save: the same
         let mut ed = Editor::new(Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.open(&dir.join("sub.aside/a.txt")).unwrap();
         std::fs::remove_file(dir.join("sub")).unwrap();
         std::os::unix::fs::symlink(&outside, dir.join("sub")).unwrap();
@@ -648,7 +648,7 @@ mod tests {
         std::fs::write(outside.join("a.txt"), "theirs\n").unwrap();
         std::fs::write(apart.join("b.txt"), "one\n").unwrap();
         let mut ed = Editor::new(Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         // Claude's accepted edit, its write never come — and the folder swapped for a link meanwhile
         let missed = |ed: &mut Editor, path: &Path| {
             ed.open(path).unwrap();
@@ -750,12 +750,12 @@ mod tests {
             0,
             "the main loop waited on the saves"
         );
-        assert!(ed.session.task_run.is_none(), "started before its save was written");
+        assert!(ed.workspace.task_run.is_none(), "started before its save was written");
         ed.saver.held.release();
         settle_until(&mut ed, |ed| {
-            ed.session.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
+            ed.workspace.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
         });
-        let r = ed.session.task_run.as_ref().unwrap();
+        let r = ed.workspace.task_run.as_ref().unwrap();
         assert_eq!(r.state, crate::task::State::Passed);
         let out: Vec<String> = r.output.iter().map(|(_, l)| l.into_owned()).collect();
         assert_eq!(out, ["TWOne"], "it read the saved file");
@@ -770,20 +770,20 @@ mod tests {
         let dir = path.parent().unwrap().to_path_buf();
         let other = dir.join("other");
         std::fs::create_dir_all(&other).unwrap();
-        let first = ed.session.id;
-        let second = ed.session_add(other.canonicalize().unwrap());
+        let first = ed.workspace.id;
+        let second = ed.workspace_add(other.canonicalize().unwrap());
         ed.saver.slow = Duration::from_millis(300);
         feed(&mut ed, "cTWO<esc>");
         ed.task_start(crate::task::Task { name: "cat".into(), cmd: "cat a.txt".into(), cwd: dir.clone() });
-        assert!(ed.session_switch(second));
+        assert!(ed.workspace_switch(second));
         let ended = |ed: &Editor| {
-            let s = std::iter::once(&ed.session).chain(&ed.sessions).find(|s| s.id == first).unwrap();
+            let s = std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|s| s.id == first).unwrap();
             s.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
         };
         settle_until(&mut ed, ended);
-        assert_eq!(ed.session.id, second);
-        assert!(ed.session.task_run.is_none(), "not the session in front's");
-        let s = ed.sessions.iter().find(|s| s.id == first).unwrap();
+        assert_eq!(ed.workspace.id, second);
+        assert!(ed.workspace.task_run.is_none(), "not the session in front's");
+        let s = ed.workspaces.iter().find(|s| s.id == first).unwrap();
         let out: Vec<String> =
             s.task_run.as_ref().unwrap().output.iter().map(|(_, l)| l.into_owned()).collect();
         assert_eq!(out, ["TWOne"]);
@@ -796,11 +796,11 @@ mod tests {
     #[test]
     fn the_wake_up_for_a_session_behind_draws_nothing() {
         let mut ed = Editor::new(Config::default());
-        let back = ed.session_add(std::env::temp_dir());
+        let back = ed.workspace_add(std::env::temp_dir());
         let ran = std::rc::Rc::new(std::cell::Cell::new(None));
         let woke = |ed: &mut Editor, session, step: bool| {
             let r = ran.clone();
-            let then = Box::new(move |ed: &mut Editor| r.set(Some(ed.session.id)));
+            let then = Box::new(move |ed: &mut Editor| r.set(Some(ed.workspace.id)));
             ed.saver.waits.push(Wait { asked: 0, session, input: None, then });
             if step {
                 ed.set_step(WAITING, "still writing files");
@@ -811,7 +811,7 @@ mod tests {
         };
         assert!(woke(&mut ed, back, false), "started behind: nothing drawn");
         assert_eq!(ran.take(), Some(back), "in its session");
-        let front = ed.session.id;
+        let front = ed.workspace.id;
         assert!(!woke(&mut ed, front, false), "started in front: drawn");
         assert_eq!(ran.take(), Some(front));
         assert!(!woke(&mut ed, back, true), "the step went: drawn");
@@ -829,8 +829,8 @@ mod tests {
         ed.task_start(crate::task::Task { name: "cat".into(), cmd: "cat a.txt".into(), cwd: dir.clone() });
         let said = |ed: &Editor| ed.toasts.iter().any(|t| t.text.starts_with("still writing files"));
         settle_until(&mut ed, said);
-        assert!(ed.session.task_run.is_none());
-        settle_until(&mut ed, |ed| ed.session.task_run.is_some());
+        assert!(ed.workspace.task_run.is_none());
+        settle_until(&mut ed, |ed| ed.workspace.task_run.is_some());
         assert!(!said(&ed), "gone once it started");
         std::fs::remove_dir_all(dir).ok();
     }

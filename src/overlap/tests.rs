@@ -35,7 +35,7 @@ struct Scene {
     /// The repository's first checkout (the home session's, `main`) and a second (`fix`, a worktree, in front).
     main: PathBuf,
     fix: PathBuf,
-    fix_id: SessionId,
+    fix_id: WorkspaceId,
     dir: Scratch,
 }
 
@@ -72,20 +72,20 @@ fn scene_with(name: &str, more: &[(&str, &str)], user: Option<&str>) -> Scene {
 }
 
 /// A tarae on the two checkouts — its own folder in `base` (`own_in`), you in `fix` with its `a.rs` open.
-fn editor_on(main: &Path, fix: &Path, base: &Path) -> (Editor, SessionId) {
+fn editor_on(main: &Path, fix: &Path, base: &Path) -> (Editor, WorkspaceId) {
     let mut ed = Editor::new(Config::default());
-    ed.session.root = main.to_path_buf();
-    ed.session.name = "main".into();
-    ed.session.git_branch = Some("main".into());
+    ed.workspace.root = main.to_path_buf();
+    ed.workspace.name = "main".into();
+    ed.workspace.git_branch = Some("main".into());
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     ed.overlap.dir = Some(own_in(base));
     ed.overlap.quiet = Duration::ZERO;
-    let fix_id = ed.session_add(fix.to_path_buf());
-    let l = ed.session_by_id(fix_id).unwrap();
+    let fix_id = ed.workspace_add(fix.to_path_buf());
+    let l = ed.workspace_by_id(fix_id).unwrap();
     l.name = "fix".into();
     l.base = Some("main".into());
-    assert!(ed.session_switch(fix_id));
+    assert!(ed.workspace_switch(fix_id));
     ed.open(&fix.join("a.rs")).unwrap();
     (ed, fix_id)
 }
@@ -210,7 +210,7 @@ fn perf_overlap_round() {
         edit(&main.join(f), 100, "// main was here");
     }
     let dir = s.join("overlap");
-    let ws = |id: SessionId, root: &Path, base: Option<&str>, had: Option<Snap>| Ws {
+    let ws = |id: WorkspaceId, root: &Path, base: Option<&str>, had: Option<Snap>| Ws {
         id,
         root: root.to_path_buf(),
         base: base.map(str::to_string),
@@ -221,25 +221,29 @@ fn perf_overlap_round() {
     };
     let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
     let t = Instant::now();
-    let r = round(vec![ws(0, &main, None, None), ws(1, &fix, Some("main"), None)], &HashMap::new(), None);
+    let r = round(
+        vec![ws(WorkspaceId::HOME, &main, None, None), ws(WorkspaceId::here(1), &fix, Some("main"), None)],
+        &HashMap::new(),
+        None,
+    );
     let cold = ms(t);
     assert_eq!(
         r.now.iter().map(|o| o.path.as_str()).collect::<Vec<_>>(),
         ["src/term.rs"],
         "the fixture conflicts"
     );
-    let snap = |r: &Round, id: SessionId| r.snaps.iter().find(|s| s.0 == id).and_then(|s| s.2.clone());
-    let (mut main_snap, mut merges) = (snap(&r, 0), r.merges);
+    let snap = |r: &Round, id: WorkspaceId| r.snaps.iter().find(|s| s.0 == id).and_then(|s| s.2.clone());
+    let (mut main_snap, mut merges) = (snap(&r, WorkspaceId::HOME), r.merges);
     let mut warm = Vec::new();
     for k in 0..5 {
         edit(&fix.join("src/chat.rs"), 200, &format!("// fix, again {k}"));
-        let mut a = ws(0, &main, None, main_snap.clone());
+        let mut a = ws(WorkspaceId::HOME, &main, None, main_snap.clone());
         a.take = false;
         let t = Instant::now();
-        let r = round(vec![a, ws(1, &fix, Some("main"), None)], &merges, None);
+        let r = round(vec![a, ws(WorkspaceId::here(1), &fix, Some("main"), None)], &merges, None);
         warm.push(ms(t));
         assert_eq!(r.merged, 1, "only the pair whose side moved");
-        (main_snap, merges) = (snap(&r, 0), r.merges);
+        (main_snap, merges) = (snap(&r, WorkspaceId::HOME), r.merges);
     }
     warm.sort_by(f64::total_cmp);
     let line = format!(
@@ -307,7 +311,7 @@ fn an_overlap_is_said_once_far_apart_isnt() {
     assert_eq!(said(&ed, "would conflict").last().unwrap(), "fix ≈ main · a.rs L10 — would conflict");
     assert_eq!(said(&ed, "would conflict").len(), 4);
     // fix renamed: the same session — found again, not said again
-    ed.session_by_id(fix_id).unwrap().name = "repair".into();
+    ed.workspace_by_id(fix_id).unwrap().name = "repair".into();
     change(&mut ed, &fix.join("a.rs"), 10, "ten, as repair has it");
     settle(&mut ed, 8);
     assert_eq!(ed.overlap.now.len(), 2);
@@ -330,7 +334,7 @@ fn nothing_lands_in_the_repository_and_the_folder_goes_with_the_workspace() {
     assert_eq!(files(&main.join(".git")), before, "nothing written in the repository");
     let folder = ed.overlap.folder(fix_id).unwrap();
     assert!(files(&folder.join("objects")).len() > 2, "its objects are tarae's");
-    let _ = ed.session_close(&fix);
+    let _ = ed.workspace_close(&fix);
     assert!(ed.overlap.now.is_empty(), "its overlaps went with it");
     let end = std::time::Instant::now() + crate::test_results::PATIENCE;
     while folder.exists() {
@@ -369,9 +373,13 @@ fn the_bases_tip_counts_and_a_key_named_file_is_never_named() {
     settle(&mut ed, 1);
     let paths: Vec<&str> = ed.overlap.now.iter().map(|o| o.path.as_str()).collect();
     assert_eq!(paths, ["a.rs"], "the key-named file left out");
-    assert_eq!(ed.overlap.now[0].b, Other::Session(0), "main's tip, as the main checkout's session");
+    assert_eq!(
+        ed.overlap.now[0].b,
+        Other::Session(WorkspaceId::HOME),
+        "main's tip, as the main checkout's session"
+    );
     assert!(said(&ed, "server.pem").is_empty());
-    assert!(listed(&ed, ed.session.id).iter().all(|l| !l.contains("pem")));
+    assert!(listed(&ed, ed.workspace.id).iter().all(|l| !l.contains("pem")));
 }
 
 /// Call `n`'s answer (a change's review answered `y` as it comes).
@@ -384,7 +392,7 @@ fn answer(ed: &mut Editor, n: u64) -> String {
             return r.unwrap_or_else(|e| e);
         }
         assert!(std::time::Instant::now() < end, "call {n} answered");
-        if ed.session.review.as_ref().is_some_and(|r| r.ready) {
+        if ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready) {
             crate::llm::review_key(ed, Key::plain(Code::Char('y')));
             crate::refactor::next(ed);
         }
@@ -411,7 +419,7 @@ fn edit(ed: &mut Editor, n: u64, file: &str, from: &str, to: &str) -> String {
 fn chat_in(ed: &mut Editor) -> std::sync::mpsc::Receiver<String> {
     let mut c = crate::chat::Chat::new();
     let rx = crate::chat::stand_in(&mut c);
-    ed.session.chat = Some(c);
+    ed.workspace.claude.chat = Some(c);
     rx
 }
 
@@ -432,7 +440,7 @@ fn message(ed: &mut Editor, rx: &std::sync::mpsc::Receiver<String>) -> String {
 fn claude_hears_nothing_of_the_others() {
     let Scene { mut ed, main, dir: _dir, .. } = scene("overlap-unheard");
     let rx = chat_in(&mut ed);
-    ed.session.git_branch = Some("fix".into());
+    ed.workspace.git_branch = Some("fix".into());
     change(&mut ed, &main.join("a.rs"), 3, "three, main");
     // (fix's typed in its buffer and saved: the woven view reads the buffer)
     press(&mut ed, "3ggA, three, fix<esc>:w<ret>");
@@ -467,11 +475,11 @@ fn claude_hears_nothing_of_the_others() {
     assert!(of_it(&m).is_empty(), "{:?}: {m}", of_it(&m));
     // Quoted, it goes: the person's act
     press(&mut ed, "<space>>");
-    assert!(ed.session.chat.as_ref().is_some_and(|c| c.quotes.len() == 1), "quoted");
+    assert!(ed.workspace.claude.chat.as_ref().is_some_and(|c| c.quotes.len() == 1), "quoted");
     press(&mut ed, "see<ret>");
     let m = message(&mut ed, &rx);
     assert!(m.contains("<quoted") && m.contains("three, main"), "{m}");
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     let heard = |s: &str| ["conflict", "main's", "merged with"].iter().any(|w| s.contains(w));
     let a = read(&mut ed, 71, "a.rs");
     assert!(a.contains("three, fix") && !heard(&a), "{a}");
@@ -480,13 +488,13 @@ fn claude_hears_nothing_of_the_others() {
     let a = read(&mut ed, 73, "a.rs");
     assert!(a.contains("three, fixed") && !heard(&a), "{a}");
     // (the state at Claude's level: never — nor its toast, nor the context's `ui:` line)
-    assert!(ed.ui_state_claude().sessions.iter().all(|l| l.overlaps.is_empty()));
+    assert!(ed.ui_state_claude().workspaces.iter().all(|l| l.overlaps.is_empty()));
     assert!(ed.toasts.iter().any(|t| t.text.contains("would conflict")), "the toast is up");
     let claudes = ed.ui_state_claude();
     assert!(claudes.toasts.iter().all(|t| !t.text.contains("conflict")), "{:?}", claudes.toasts);
     let line = claudes.context_line().map(|l| l.0).unwrap_or_default();
     assert!(!line.contains("conflict"), "{line}");
-    assert!(!ed.ui_state().sessions.iter().all(|l| l.overlaps.is_empty()), "the person's level lists it");
+    assert!(!ed.ui_state().workspaces.iter().all(|l| l.overlaps.is_empty()), "the person's level lists it");
 }
 
 /// A theme scope's colour as the frame paints it.
@@ -528,8 +536,8 @@ fn the_strip_the_list_and_the_tree_say_it() {
     change(&mut ed, &fix.join("a.rs"), 3, "three, fix");
     settle(&mut ed, 1);
     let (fix_c, main_c, warning) = (
-        fg(&ed, crate::session::PARTICIPANTS[ed.session.colour as usize]),
-        fg(&ed, crate::session::PARTICIPANTS[ed.sessions[0].colour as usize]),
+        fg(&ed, crate::session::PARTICIPANTS[ed.workspace.claude.colour as usize]),
+        fg(&ed, crate::session::PARTICIPANTS[ed.workspaces[0].claude.colour as usize]),
         fg(&ed, "warning"),
     );
     // The toast (whole, not fading in: what's read is its colours)
@@ -540,20 +548,24 @@ fn the_strip_the_list_and_the_tree_say_it() {
     assert_eq!(fg_at(&p, toast, "", "≈"), warning, "the toast's ≈");
     assert_eq!(fg_at(&p, toast, "≈", "main"), main_c, "the toast's main");
     assert_ne!(fg_at(&p, toast, "a.rs", "L3"), main_c, "the rest as the text");
-    assert_eq!(others(&ed, fix_id), [("main".to_string(), Some(ed.sessions[0].colour))]);
-    assert_eq!(others(&ed, 0), [("fix".to_string(), Some(ed.session.colour))], "both sides");
+    assert_eq!(others(&ed, fix_id), [("main".to_string(), Some(ed.workspaces[0].claude.colour))]);
+    assert_eq!(
+        others(&ed, WorkspaceId::HOME),
+        [("fix".to_string(), Some(ed.workspace.claude.colour))],
+        "both sides"
+    );
     // The list
     let rows = ed.sessions_rows();
     let fix_row = rows.iter().find(|r| r.name == "fix").unwrap();
     use crate::sessionpane::{Col, Ink};
-    let main_colour = ed.sessions[0].colour;
+    let main_colour = ed.workspaces[0].claude.colour;
     let overlap = fix_row.cell(Col::Overlap);
     assert_eq!(overlap, [("≈ ".to_string(), Ink::Warn), ("main".to_string(), Ink::Participant(main_colour))]);
     let main_row = rows.iter().find(|r| r.name == "main").unwrap();
     assert_eq!(main_row.text(Col::Overlap), "≈ fix");
     // The strip over a chat
-    ed.session.chat = Some(crate::chat::Chat::new());
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     let mut bytes = Vec::new();
     crate::term::render(&mut ed, &mut bytes, 160, 30).unwrap();
     let mut p = vt100::Parser::new(30, 160, 0);
@@ -565,8 +577,8 @@ fn the_strip_the_list_and_the_tree_say_it() {
     assert_eq!(fg_at(&p, "fix ≈ main ·", "", "≈"), warning, "the strip's ≈");
     assert_eq!(fg_at(&p, "fix ≈ main ·", "≈", "main"), main_c, "the strip's main");
     // The tree
-    ed.session.chat = None;
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.claude.chat = None;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     press(&mut ed, "<space>e");
     let end = std::time::Instant::now() + crate::test_results::PATIENCE;
     let p = loop {
@@ -609,8 +621,8 @@ fn two_taraes_keep_their_own_folders_and_a_gone_ones_is_pruned() {
     let b_folder = b.overlap.folder(b_fix).unwrap();
     assert_ne!(a.overlap.dir, b.overlap.dir, "each its own");
     // (a ends its fix: its folder goes on a worker)
-    let a_fix = a.overlap.folder(a.session.id).unwrap();
-    let _ = a.session_close(&fix);
+    let a_fix = a.overlap.folder(a.workspace.id).unwrap();
+    let _ = a.workspace_close(&fix);
     let end = std::time::Instant::now() + crate::test_results::PATIENCE;
     while a_fix.exists() {
         assert!(std::time::Instant::now() < end, "a's fix folder removed");
@@ -818,7 +830,7 @@ fn a_partial_clones_missing_blob_is_never_fetched() {
     };
     assert!(missing(), "the stand-in: side's blob not in the clone");
     let (mut ed, fix_id) = editor_on(&clone, &fix, &dir.join("overlap"));
-    ed.session_by_id(fix_id).unwrap().base = Some("side".into());
+    ed.workspace_by_id(fix_id).unwrap().base = Some("side".into());
     change(&mut ed, &fix.join("a.rs"), 3, "three, fix");
     settle(&mut ed, 1);
     assert_eq!(ed.overlap.merged, 1, "the merge that needs the blob was run");

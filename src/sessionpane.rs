@@ -19,7 +19,7 @@
 //! `v` woven, `f` follow, digits, …).
 
 use crate::editor::Editor;
-use crate::event::SessionId;
+use crate::event::WorkspaceId;
 use crate::pane::GroupKind;
 use unicode_width::UnicodeWidthStr as _;
 
@@ -115,7 +115,7 @@ pub type Part = (String, Ink);
 /// A session's row: who it is and its cells, by column (empty ones left out).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
-    pub id: SessionId,
+    pub id: WorkspaceId,
     pub name: String,
     pub colour: u8,
     /// The session in front — its name bold, as the strip's.
@@ -143,7 +143,7 @@ impl Row {
 
 /// Session `l`'s row as `shown` says it.
 pub fn row(l: &crate::worktree::Shown) -> Row {
-    use crate::session::Doing;
+    use crate::workspace::Doing;
     let mut cells: Vec<(Col, Vec<Part>)> = Vec::new();
     let mut put = |c: Col, parts: Vec<Part>| {
         if parts.iter().any(|p| !p.0.is_empty()) {
@@ -279,7 +279,7 @@ impl Editor {
     /// the keys to it. Git's part of each row is read again on a worker (the last read shown meanwhile); the
     /// processes looked at once.
     pub fn session_list(&mut self) {
-        self.float_list_open(GroupKind::Sessions, self.session.id, None);
+        self.float_list_open(GroupKind::Sessions, self.workspace.id.n, None);
         self.session_facts();
     }
 
@@ -295,8 +295,8 @@ impl Editor {
     }
 
     /// The session the list's selection is on (by its id, else the row it was on).
-    pub fn sessions_here(&self) -> Option<SessionId> {
-        self.float_list_here(GroupKind::Sessions)
+    pub fn sessions_here(&self) -> Option<WorkspaceId> {
+        self.float_list_here(GroupKind::Sessions).map(WorkspaceId::here)
     }
 
     /// `enter` on the list (a digit, a double click): to the selected session — the list done once used, so it
@@ -304,11 +304,11 @@ impl Editor {
     pub(crate) fn sessions_enter(&mut self) {
         let Some(id) = self.sessions_here() else { return };
         self.float_list_used(GroupKind::Sessions);
-        if id != self.session.id {
-            self.session_switch(id);
+        if id != self.workspace.id {
+            self.workspace_switch(id);
         } else if self.docked_in_sight(GroupKind::Sessions) {
             // (docked it stays: nothing to switch to, said — no silent key)
-            self.set_status(format!("{} is in front — q closes the list", self.session.label()));
+            self.set_status(format!("{} is in front — q closes the list", self.workspace.label()));
         }
     }
 }
@@ -323,15 +323,16 @@ pub(crate) fn matches(row: &Row, re: &regex::Regex) -> bool {
 /// `o` new, `d` end and `b` bring (not the checkout tarae started in), `m` mark, `x` its build folder once measured,
 /// `w` keep warm, `$` who pays; `esc code`, `q close`. The line folds them from the last.
 pub fn hints(ed: &Editor) -> Vec<(&'static str, String)> {
-    use crate::session::Doing;
+    use crate::workspace::Doing;
     let here = ed.sessions_here();
     let order = ed.sessions_in_order();
     let l = here.and_then(|id| order.iter().find(|l| l.id == id));
     let working = l.is_some_and(|l| matches!(ed.doing(l), Doing::Working));
-    let woven = here.is_some_and(|id| !ed.sessions.is_empty() && crate::overlap::file_of(ed, id).is_some());
+    let woven = here.is_some_and(|id| !ed.workspaces.is_empty() && crate::overlap::file_of(ed, id).is_some());
     let marked = ed.bring_queue.marks.len();
-    let started = here == Some(0);
-    let build = here.is_some_and(|id| id != ed.session.id && ed.session_store.build_dirs.contains_key(&id));
+    let started = here == Some(WorkspaceId::HOME);
+    let build =
+        here.is_some_and(|id| id != ed.workspace.id && ed.workspace_store.build_dirs.contains_key(&id));
     // (`/` second: how the list is searched stays in sight as the line folds)
     let mut v: Vec<(&'static str, String)> = vec![("enter", "switch".into()), ("/", "search".into())];
     v.extend(woven.then(|| ("v", "woven".into())));

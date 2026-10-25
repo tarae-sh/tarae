@@ -213,7 +213,7 @@ fn in_stand_in_home() {
     write_file(
         &root.join(".tarae.toml"),
         "[llm]\nsandbox = false\nsandbox-network = true\nsandbox-hosts = \"*\"\nsandbox-write = [\"..\"]\n\n\
-         [session]\nended = [\"true\"]\n",
+         [workspace]\nended = [\"true\"]\n",
     );
     for d in ["new1", "new2", "new3", "crates"] {
         fs::create_dir_all(root.join(d)).unwrap();
@@ -234,7 +234,7 @@ fn in_stand_in_home() {
         && !loaded.editor.llm.sandbox_network
         && loaded.editor.llm.sandbox_hosts == crate::llm::Hosts::Registries
         && loaded.editor.llm.sandbox_write.is_empty()
-        && loaded.editor.session_ended.is_empty();
+        && loaded.editor.workspace_ended.is_empty();
 
     // Build `Here` with fake secret variables in tarae's environment (must be scrubbed from the run)
     let mut here = Here { tmp: Some(shared_tmp.clone()), runs: Some(runs.clone()), ..Here::now() };
@@ -1930,7 +1930,7 @@ fn run_proxy_row(
     // Register TEST_ASKS for net_a's session and pre-answer `refused.invalid:443` with Scope::Refused when asked
     let answer_thread = if has_proxy {
         let (asks, asked) = std::sync::mpsc::channel();
-        let session = super::proxy::session_of(root);
+        let session = super::proxy::workspace_of(root);
         super::proxy::TEST_ASKS.lock().unwrap().push((session, asks));
         Some(
             std::thread::Builder::new()

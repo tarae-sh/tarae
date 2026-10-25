@@ -100,7 +100,7 @@ pub struct LspState {
     waits_sight: std::collections::HashSet<DocId>,
     pub(crate) unseen_later: bool,
     /// While a session behind comes back after `:restart`: its files' servers wait until it's used — in
-    /// front, or its Claude answering (`Session.asleep`).
+    /// front, or its Claude answering (`Workspace.asleep`).
     pub(crate) attach_later: bool,
     /// How long `g r`'s text matches wait for a busy server's answer — `TEXT_GRACE` unless a test says.
     pub(crate) text_grace: Option<std::time::Duration>,
@@ -477,7 +477,7 @@ pub struct Pending {
     head: usize,
     /// The session that asked — Claude's tools are answered there (a server's reply lands in whichever session is
     /// in front; a call of a session behind waited forever).
-    session: crate::event::SessionId,
+    session: crate::event::WorkspaceId,
 }
 
 impl Editor {
@@ -518,11 +518,12 @@ impl Editor {
         let Some(path) = doc.path.clone() else { return };
         let Some(spec) = crate::syntax::detect(&path) else { return };
         // (its session's servers paused: protected names a run made wait for their card — `made_hold_sync`)
-        let held = self.session_of(&path).filter(|s| {
-            std::iter::once(&self.session).chain(&self.sessions).any(|l| l.id == *s && l.servers_held)
+        let held = self.workspace_of(&path).filter(|s| {
+            std::iter::once(&self.workspace).chain(&self.workspaces).any(|l| l.id == *s && l.servers_held)
         });
         if let Some(s) = held
-            && let Some(l) = std::iter::once(&mut self.session).chain(&mut self.sessions).find(|l| l.id == s)
+            && let Some(l) =
+                std::iter::once(&mut self.workspace).chain(&mut self.workspaces).find(|l| l.id == s)
         {
             if !l.asleep.contains(&id) {
                 l.asleep.push(id);
@@ -530,8 +531,8 @@ impl Editor {
             return;
         }
         if self.lsp.attach_later {
-            if !self.session.asleep.contains(&id) {
-                self.session.asleep.push(id);
+            if !self.workspace.asleep.contains(&id) {
+                self.workspace.asleep.push(id);
             }
             return;
         }
@@ -895,9 +896,12 @@ impl Editor {
     /// A command or tests of Claude's are running — a check started now would hold the build dir's lock
     /// against its build (one build dir on this machine).
     fn claude_building(&self) -> bool {
-        self.session.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running && r.by_claude)
+        self.workspace
+            .task_run
+            .as_ref()
+            .is_some_and(|r| r.state == crate::task::State::Running && r.by_claude)
             || self
-                .session
+                .workspace
                 .test_run
                 .as_ref()
                 .is_some_and(|r| r.state == crate::testing::RunState::Running && r.chat.is_some())
@@ -978,25 +982,25 @@ impl Editor {
                     Kind::Virtual { uri, pos } => self.server_doc_reply(cid, uri.clone(), pos, error, result),
                     Kind::InlayHint { range } => self.on_inlay(cid, &p, *range, result),
                     &Kind::ToolRefs { ask } => {
-                        self.for_session(session, |ed| crate::nav::refs_answered(ed, ask, answered))
+                        self.for_workspace(session, |ed| crate::nav::refs_answered(ed, ask, answered))
                     }
-                    &Kind::ToolDeclared { ask } => self.for_session(session, |ed| {
+                    &Kind::ToolDeclared { ask } => self.for_workspace(session, |ed| {
                         crate::nav::declared_answered(ed, ask, error.is_none().then_some(result))
                     }),
                     &Kind::ToolSymbols { ask } => {
-                        self.for_session(session, |ed| crate::nav::symbols_answered(ed, ask, answered))
+                        self.for_workspace(session, |ed| crate::nav::symbols_answered(ed, ask, answered))
                     }
                     &Kind::ToolGoto { ask, .. } | &Kind::ToolNamed { ask } => {
-                        self.for_session(session, |ed| crate::nav::def_answered(ed, ask, cid, answered))
+                        self.for_workspace(session, |ed| crate::nav::def_answered(ed, ask, cid, answered))
                     }
                     &Kind::ToolHover { ask } => {
-                        self.for_session(session, |ed| crate::nav::hover_answered(ed, ask, answered))
+                        self.for_workspace(session, |ed| crate::nav::hover_answered(ed, ask, answered))
                     }
                     &Kind::ToolPrepareRename { ask } => {
-                        self.for_session(session, |ed| crate::refactor::prepared(ed, ask, answered))
+                        self.for_workspace(session, |ed| crate::refactor::prepared(ed, ask, answered))
                     }
                     &Kind::ToolRename { ask } => {
-                        self.for_session(session, |ed| crate::refactor::renamed(ed, ask, answered))
+                        self.for_workspace(session, |ed| crate::refactor::renamed(ed, ask, answered))
                     }
                     // One server failing leaves the others' actions (it's logged)
                     &Kind::CodeAction { list } if error.is_some() => {
@@ -1492,7 +1496,7 @@ impl Editor {
                 if let Some((id, places)) = self.lsp.refs.shown.clone()
                     && let Some(p) = self.picker.as_mut().filter(|p| p.id == id)
                 {
-                    p.set_items(place_items(&self.session.root, places, &declared));
+                    p.set_items(place_items(&self.workspace.root, places, &declared));
                 }
                 // (none while the server is busy: asked again with the references)
                 self.lsp.refs.declared = (!declared.is_empty()).then_some(declared);
@@ -1517,7 +1521,7 @@ impl Editor {
     ) -> Option<u64> {
         let doc = self.docs.iter().find(|d| d.id == id)?;
         let head = doc.selection().primary().cursor(&doc.text);
-        let p = Pending { kind, doc: doc.id, version: doc.version(), head, session: self.session.id };
+        let p = Pending { kind, doc: doc.id, version: doc.version(), head, session: self.workspace.id };
         let id = self.client_mut(cid).filter(|c| c.ready)?.request(method, params);
         self.lsp.pending.insert((cid, id), p);
         self.lsp_own_serve(cid);
@@ -1634,7 +1638,7 @@ impl Editor {
         // (a shared server answers for every checkout it serves — only this session's are its)
         let roots = self.client(cid).map(|c| c.roots.clone()).unwrap_or_default();
         let Some(p) = self.picker.as_mut().filter(|p| p.requery) else { return };
-        let root = &self.session.root;
+        let root = &self.workspace.root;
         let items: Vec<Item> = result
             .as_array()
             .into_iter()
@@ -2088,7 +2092,7 @@ impl Editor {
                 && let Some(l) = doc.lsp.link(cid)
                 && (i64::from(l.version) != v || l.behind())
             {
-                let name = doc.display_name(&self.session.root);
+                let name = doc.display_name(&self.workspace.root);
                 return Err(format!("{name} changed since the server computed this edit"));
             }
         }
@@ -2262,9 +2266,9 @@ impl Editor {
         });
     }
 
-    /// Every event, with sessions behind (`sessions_sync`): their servers whose Claude is idle rest — after
+    /// Every event, with sessions behind (`workspaces_sync`): their servers whose Claude is idle rest — after
     /// `rest_after` each stops, as if its files were closed (they stay open; the session gets it back at the
-    /// front, or when its Claude starts a turn — `Session.asleep`). One no longer resting (its session came to
+    /// front, or when its Claude starts a turn — `Workspace.asleep`). One no longer resting (its session came to
     /// the front, its Claude is answering) has its wait called off.
     pub(crate) fn lsp_rest(&mut self, resting: &[(ClientId, bool)]) {
         for &(cid, rest) in resting {
@@ -2300,17 +2304,17 @@ impl Editor {
         self.lsp.resting.remove(&cid);
         let Some(root) = self.client(cid).map(|c| c.root.clone()) else { return };
         // (each file's own session — a shared server serves several)
-        let served: Vec<(DocId, Option<crate::event::SessionId>)> = self
+        let served: Vec<(DocId, Option<crate::event::WorkspaceId>)> = self
             .docs
             .iter()
             .filter(|d| d.lsp.clients().any(|c| c == cid))
-            .map(|d| (d.id, d.path.as_deref().and_then(|p| self.session_of(p))))
+            .map(|d| (d.id, d.path.as_deref().and_then(|p| self.workspace_of(p))))
             .collect();
         let log = self.server_log(cid);
         let Some(name) = self.lsp_stopped(cid) else { return };
         // (its files get it back when their session is in front again, or its Claude asks)
         for (d, owner) in served {
-            if let Some(l) = self.sessions.iter_mut().find(|l| Some(l.id) == owner)
+            if let Some(l) = self.workspaces.iter_mut().find(|l| Some(l.id) == owner)
                 && !l.asleep.contains(&d)
             {
                 l.asleep.push(d);
@@ -2325,7 +2329,7 @@ impl Editor {
 
     /// Whether `path` is in one of the sessions' checkouts.
     fn in_a_checkout(&self, path: &std::path::Path) -> bool {
-        std::iter::once(&self.session).chain(&self.sessions).any(|l| path.starts_with(&l.root))
+        std::iter::once(&self.workspace).chain(&self.workspaces).any(|l| path.starts_with(&l.root))
     }
 
     /// Every event (#141 — servers for one-off files outside the project, reopened at startup and never
@@ -2336,14 +2340,14 @@ impl Editor {
     pub(crate) fn servers_follow_sight(&mut self, now: std::time::Instant) {
         let current = self.doc().id;
         let shown: Vec<DocId> =
-            std::iter::once(current).chain(self.session.views.iter().map(|v| v.doc)).collect();
+            std::iter::once(current).chain(self.workspace.views.iter().map(|v| v.doc)).collect();
         for &id in &shown {
             if self.lsp.waits_sight.remove(&id) {
                 self.attach_lsp(id);
             }
         }
         let roots: Vec<&std::path::Path> =
-            std::iter::once(&self.session).chain(&self.sessions).map(|l| l.root.as_path()).collect();
+            std::iter::once(&self.workspace).chain(&self.workspaces).map(|l| l.root.as_path()).collect();
         let in_sight: Vec<ClientId> = self
             .docs
             .iter()
@@ -2912,7 +2916,7 @@ impl Editor {
                 doc: d.id,
                 version: d.version(),
                 head,
-                session: self.session.id,
+                session: self.workspace.id,
             };
             self.put_off(cid, &p);
             self.text_matches(cid);
@@ -2966,7 +2970,7 @@ impl Editor {
             return;
         }
         let generation = self.lsp.refs.generation;
-        let here = self.session.root.clone();
+        let here = self.workspace.root.clone();
         let (asked, grace) = (std::time::Instant::now(), self.lsp.text_grace.unwrap_or(TEXT_GRACE));
         self.events.jobs().spawn(move || {
             // (paths as the server's list shows them — from the editor's root, not the server's)
@@ -3273,7 +3277,7 @@ impl Editor {
                     t.step("lines read");
                 }
                 let declared = ed.lsp.refs.declared.clone().unwrap_or_default();
-                let items = place_items(&ed.session.root, places.clone(), &declared);
+                let items = place_items(&ed.workspace.root, places.clone(), &declared);
                 // The text matches shown while the server loaded (N3): its answer takes their place — said;
                 // once they were left (one picked, or closed), the answer isn't pushed on you
                 if let Some(id) = ed.lsp.refs.texts {
@@ -3291,7 +3295,7 @@ impl Editor {
                     return;
                 }
                 let mut picker =
-                    Picker::of("places", goto.noun(), items, true).grouped(ed.session.root.clone());
+                    Picker::of("places", goto.noun(), items, true).grouped(ed.workspace.root.clone());
                 let name = &ed.lsp.refs.name;
                 picker.emphasis = (!name.is_empty())
                     .then(|| regex::Regex::new(&format!(r"\b{}\b", regex::escape(name))).ok())
@@ -3387,7 +3391,7 @@ impl Editor {
     /// `space D` — diagnostics in every file the servers reported: open ones (live), then the rest; errors
     /// first.
     pub fn workspace_diagnostics_picker(&mut self) {
-        let root = self.session.root.clone();
+        let root = self.workspace.root.clone();
         let rel = |p: &std::path::Path| p.strip_prefix(&root).unwrap_or(p).display().to_string();
         let mut rows: Vec<(u8, String, Item)> = Vec::new();
         let mut push = |sev: u8, path: &std::path::Path, line: usize, col: usize, msg: &str| {
@@ -3481,9 +3485,9 @@ impl Editor {
         }
         // No main server: why (paused, failed, not installed) — it's what matters, even with one beside it
         let lang = &doc.path.as_deref().and_then(crate::syntax::detect)?.name;
-        let session = doc.path.as_deref().and_then(|p| self.session_of(p));
-        if std::iter::once(&self.session)
-            .chain(&self.sessions)
+        let session = doc.path.as_deref().and_then(|p| self.workspace_of(p));
+        if std::iter::once(&self.workspace)
+            .chain(&self.workspaces)
             .any(|l| Some(l.id) == session && l.servers_held)
         {
             return Some((LspDot::Paused, lang.clone()));
@@ -3684,12 +3688,13 @@ mod tests {
     fn servers_pause_while_a_runs_protected_names_wait() {
         let (mut ed, file, _log) = setup("made-hold", "fn main() {}\n");
         let dir = file.parent().unwrap().to_path_buf();
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         let first = ready(&mut ed);
-        ed.session.made_protected = vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into() }];
-        ed.sessions_sync();
+        ed.workspace.made_protected =
+            vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into() }];
+        ed.workspaces_sync();
         assert!(ed.lsp.clients.is_empty() && ed.doc().lsp.client.is_none(), "stopped");
-        assert!(ed.session.servers_held && ed.session.asleep.contains(&ed.doc().id));
+        assert!(ed.workspace.servers_held && ed.workspace.asleep.contains(&ed.doc().id));
         // (said at once, and for as long as it lasts — compat7 review 11)
         let said = |ed: &Editor| ed.toasts.iter().any(|t| t.text.contains(crate::tools::MADE_PAUSED));
         assert!(said(&ed), "said as they pause");
@@ -3703,12 +3708,12 @@ mod tests {
             "{}",
             card.question
         );
-        ed.sessions_sync();
+        ed.workspaces_sync();
         assert_eq!(ed.offers.len(), 1, "asked once");
         ed.offer_accept();
-        ed.sessions_sync();
+        ed.workspaces_sync();
         let back = ed.doc().lsp.client.expect("back once answered");
-        assert!(back != first && !ed.session.servers_held && ed.offers.is_empty());
+        assert!(back != first && !ed.workspace.servers_held && ed.offers.is_empty());
         assert_eq!(ed.lsp_state().map(|s| s.0), Some(LspDot::Starting));
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -3719,24 +3724,25 @@ mod tests {
     fn the_paused_servers_card_goes_with_its_session() {
         let (mut ed, file, _log) = setup("made-hold-switch", "fn main() {}\n");
         let dir = file.parent().unwrap().to_path_buf();
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ready(&mut ed);
-        let a = ed.session.id;
-        ed.session.made_protected = vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into() }];
-        ed.sessions_sync();
+        let a = ed.workspace.id;
+        ed.workspace.made_protected =
+            vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into() }];
+        ed.workspaces_sync();
         assert!(ed.offers.first().is_some_and(crate::offer::Offer::made), "the card");
         let other = crate::scratch::Scratch::new("made-hold-other").into_path();
-        let b = ed.session_add(other.clone());
-        assert!(ed.session_switch(b) && ed.session.id == b, "another session in front");
-        ed.sessions_sync();
+        let b = ed.workspace_add(other.clone());
+        assert!(ed.workspace_switch(b) && ed.workspace.id == b, "another session in front");
+        ed.workspaces_sync();
         assert!(!ed.offers.iter().any(crate::offer::Offer::made), "not in front of another session");
-        assert!(ed.session_switch(a));
-        ed.sessions_sync();
+        assert!(ed.workspace_switch(a));
+        ed.workspaces_sync();
         assert!(ed.offers.first().is_some_and(crate::offer::Offer::made), "up again with its session");
         ed.offer_accept();
-        ed.sessions_sync();
-        assert!(!ed.session.servers_held && ed.doc().lsp.client.is_some(), "answered there");
-        ed.sessions.clear();
+        ed.workspaces_sync();
+        assert!(!ed.workspace.servers_held && ed.doc().lsp.client.is_some(), "answered there");
+        ed.workspaces.clear();
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&other).ok();
     }
@@ -3747,11 +3753,12 @@ mod tests {
     fn the_paused_servers_card_comes_back_while_the_names_wait() {
         let (mut ed, file, _log) = setup("made-hold-again", "fn main() {}\n");
         let dir = file.parent().unwrap().to_path_buf();
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ready(&mut ed);
         std::fs::create_dir_all(dir.join("build.rs")).unwrap();
-        ed.session.made_protected = vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into() }];
-        ed.sessions_sync();
+        ed.workspace.made_protected =
+            vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into() }];
+        ed.workspaces_sync();
         let servers = |ed: &Editor| {
             ed.offers
                 .iter()
@@ -3763,7 +3770,7 @@ mod tests {
         crate::tools::ask_made(&mut ed, then);
         assert!(!servers(&ed) && ed.offers.first().is_some_and(crate::offer::Offer::made));
         ed.offer_dismiss();
-        ed.sessions_sync();
+        ed.workspaces_sync();
         assert!(servers(&ed), "back once that one is answered");
         // (`r`: a folder isn't removed — asked about again)
         ed.offer_accept_by('r');
@@ -3774,9 +3781,9 @@ mod tests {
                 ed.handle_event(ev);
             }
         }
-        ed.sessions_sync();
+        ed.workspaces_sync();
         assert!(told(&ed), "a folder isn't removed");
-        assert!(ed.session.servers_held && servers(&ed), "asked about again");
+        assert!(ed.workspace.servers_held && servers(&ed), "asked about again");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3837,7 +3844,7 @@ mod tests {
         let on = |name: &'static str| {
             move |ed: &Editor| {
                 let d = ed.doc();
-                ed.session.code_review.is_some()
+                ed.workspace.code_review.is_some()
                     && d.path.as_ref().is_some_and(|p| p.ends_with(name))
                     && d.review_base.is_some()
                     && d.git_version == d.version()
@@ -3901,7 +3908,7 @@ mod tests {
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
-        ed.session.leave(crate::session::At::Chat);
+        ed.workspace.leave(crate::workspace::At::Chat);
         // (alone: messages said together keep their card)
         ed.toasts.clear();
         ed.set_success("Saved src/sidebar.rs · 1204 lines");
@@ -4071,12 +4078,12 @@ mod tests {
         let (config, w) = crate::config::parse(cfg);
         assert!(w.is_empty(), "{w:?}");
         let mut ed = Editor::new(config);
-        ed.session.root = dir.join("front");
+        ed.workspace.root = dir.join("front");
         ed.lsp.rest_after = Some(Duration::from_millis(50));
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         let server_of = |ed: &mut Editor, session: &str| {
-            let id = ed.session_open(&dir.join(session)).unwrap();
+            let id = ed.workspace_open(&dir.join(session)).unwrap();
             ed.open(std::path::Path::new("main.rs")).unwrap();
             (id, ed.doc().lsp.client.expect("its server"))
         };
@@ -4084,8 +4091,8 @@ mod tests {
         let (busy, busy_srv) = server_of(&mut ed, "busy");
         // The busy one's Claude is answering (a stand-in that reads and says nothing)
         crate::chat::open(&mut ed);
-        ed.session.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
-        ed.session_switch(0);
+        ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
+        ed.workspace_switch(crate::event::WorkspaceId::HOME);
         ed.handle_event(crate::event::Event::Resize);
         settle_until(&mut ed, |ed| ed.client(idle_srv).is_none());
         assert!(ed.client(idle_srv).is_none(), "the idle session's server stopped");
@@ -4094,15 +4101,15 @@ mod tests {
         assert!(!ed.lsp.failed.contains_key("rust-analyzer"), "a rest isn't a failure");
         assert!(ed.docs.iter().any(|d| d.path == Some(dir.join("idle/main.rs"))), "its file stays open");
         // Its turn over: it rests too
-        let l = ed.sessions.iter_mut().find(|l| l.id == busy).unwrap();
-        l.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+        let l = ed.workspaces.iter_mut().find(|l| l.id == busy).unwrap();
+        l.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
         ed.handle_event(crate::event::Event::Resize);
         settle_until(&mut ed, |ed| ed.client(busy_srv).is_none());
         assert!(ed.client(busy_srv).is_none(), "stopped once its Claude was idle");
         // In front again: its file gets a server back
-        ed.session_switch(idle);
+        ed.workspace_switch(idle);
         assert!(ed.doc().lsp.client.is_some_and(|c| c != idle_srv), "a new one for its file");
-        ed.sessions.clear();
+        ed.workspaces.clear();
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -4123,7 +4130,7 @@ mod tests {
         let (config, w) = crate::config::parse(cfg);
         assert!(w.is_empty(), "{w:?}");
         let mut ed = Editor::new(config);
-        ed.session.root = dir.join("proj");
+        ed.workspace.root = dir.join("proj");
         ed.lsp.sight_after = Some(Duration::from_millis(50));
         let (outside, inside) = (dir.join("elsewhere/a.toml"), dir.join("proj/a.toml"));
         ed.open(&outside).unwrap();
@@ -5290,7 +5297,7 @@ mod tests {
         let other = dir.join("other.rs");
         std::fs::write(&other, "// other\nuse crate::a;\n\npub fn a() {}\n").unwrap();
         let other = std::fs::canonicalize(&other).unwrap();
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         let cid = ed.doc().lsp.client.unwrap();
         let caps =
             json!({ "positionEncoding": "utf-8", "definitionProvider": true, "referencesProvider": true });
@@ -5347,7 +5354,7 @@ mod tests {
     fn the_references_tool_gives_text_matches_while_the_server_cannot() {
         let (mut ed, file, _log) = setup("tool-refs-loading", "fn a() {}\nfn b() { a() }\n// ab, A\n");
         let dir = file.parent().unwrap().to_path_buf();
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         let args = json!({"path": "main.rs", "symbol": "a"});
         let t = ask_tool(&mut ed, 1, args.clone()).unwrap();
         assert!(t.contains("— fake is starting, so these are the whole-word text matches of `a`"), "{t}");
@@ -5381,7 +5388,7 @@ mod tests {
         let (mut ed, file, log) =
             setup("tool-syms", "struct S;\nimpl S {\n    fn f(&self) {\n        1;\n    }\n}\n");
         let dir = file.parent().unwrap().to_path_buf();
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         let syms = |ed: &mut Editor, id: u64, args: Value| {
             crate::nav::symbols(ed, crate::tools::Call::test(id), &args).unwrap();
             settle_until(ed, |_| tool_answer(id).is_some());
@@ -5432,7 +5439,7 @@ mod tests {
             "// other\nuse crate::a;\n\npub fn a(\n    x: usize,\n) -> usize {\n    x\n}\n",
         )
         .unwrap();
-        ed.session.root = dir;
+        ed.workspace.root = dir;
         (ed, file, std::fs::canonicalize(&other).unwrap(), log)
     }
 
@@ -5472,7 +5479,7 @@ mod tests {
     fn rust_analyzers_extensions_are_its_packs() {
         for (server, theirs) in [("rust-analyzer", true), ("fake", false)] {
             let (mut ed, file, log) = setup_as(server, &format!("traits-{server}"), "fn a() {}\n");
-            ed.session.root = file.parent().unwrap().to_path_buf();
+            ed.workspace.root = file.parent().unwrap().to_path_buf();
             let out = sent_until(&log, &["initialize"]);
             assert_eq!(out.contains(r#""serverStatusNotification":true"#), theirs, "{server}: {out}");
             let cid = up(&mut ed, json!({ "workspaceSymbolProvider": true }));
@@ -5896,7 +5903,7 @@ mod tests {
         assert!(e.contains("also moves other.rs to alpha.rs — this tool only changes text"), "{e}");
         assert_eq!([read(&file), read(&other), read(&third)], originals, "nothing changed yet");
         // Review at the end: written at once, kept for `space u` as unseen; the open buffer takes it
-        ed.session.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
+        ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
         crate::refactor::rename(&mut ed, crate::tools::Call::test(6), &args("alpha")).unwrap();
         settle_until(&mut ed, |ed| has(ed, &prepare));
         let n = pending_of(&ed, prepare.clone());
@@ -5917,7 +5924,8 @@ mod tests {
         let main_doc = ed.docs.iter().find(|d| d.path.as_ref() == Some(&file)).unwrap();
         assert_eq!(main_doc.text.to_string(), read(&file), "the open buffer took it");
         let kept: Vec<(String, bool)> = ed
-            .session
+            .workspace
+            .claude
             .checkpoints
             .turn
             .iter()
@@ -5926,9 +5934,9 @@ mod tests {
         assert_eq!(kept.len(), 3);
         assert!(kept.iter().all(|(b, unseen)| *unseen && originals.contains(b)), "{kept:?}");
         // One at a time: a review per file — accepted, declined, and into a buffer with unsaved edits
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.edits.at_end = None;
-        ed.session.at = crate::session::At::Code;
+        ed.workspace.viewer.at = crate::workspace::At::Code;
         ed.open(&third).unwrap();
         feed(&mut ed, "A // mine<esc>");
         ed.open(&file).unwrap();
@@ -5949,21 +5957,21 @@ mod tests {
             lsp::uri(&other): [te5(1, 11), te5(3, 7)],
             lsp::uri(&std::fs::canonicalize(&third).unwrap()): [te5(0, 16)] } });
         ed.on_lsp_message(cid, json!({ "id": n, "result": changes }));
-        let title = |ed: &Editor| ed.session.review.as_ref().map(|r| r.instruction.clone());
+        let title = |ed: &Editor| ed.workspace.claude.review.as_ref().map(|r| r.instruction.clone());
         // Several files: one card for them all first (#75) — `r`, one by one
         settle_until(&mut ed, |ed| !ed.offers.is_empty());
-        assert!(ed.session.review.is_none());
+        assert!(ed.workspace.claude.review.is_none());
         let q = &ed.offers[0].question;
         assert!(q.starts_with("rename `alpha` → `beta`\n\n6 places in 3 files:"), "{q}");
         ed.offer_one_by_one();
-        settle_until(&mut ed, |ed| ed.session.review.is_some());
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
         assert_eq!(title(&ed).as_deref(), Some("rename `alpha` → `beta` · 1 of 3"));
         assert_eq!(ed.doc().path.as_ref(), Some(&file));
         feed(&mut ed, "a");
-        settle_until(&mut ed, |ed| ed.session.review.is_some());
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
         assert_eq!(title(&ed).as_deref(), Some("rename `alpha` → `beta` · 2 of 3"));
         feed(&mut ed, "q");
-        settle_until(&mut ed, |ed| ed.session.review.is_some());
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
         assert_eq!(ed.doc().path.as_deref(), Some(std::fs::canonicalize(&third).unwrap().as_path()));
         feed(&mut ed, "a");
         settle_until(&mut ed, |_| tool_answer(7).is_some());
@@ -6053,7 +6061,7 @@ mod tests {
             after: ropey::Rope::new(),
             ..Default::default()
         };
-        ed.session.checkpoints.turn.push(touched);
+        ed.workspace.claude.checkpoints.turn.push(touched);
         let t = tool(&mut ed, 4, diags, json!({})).unwrap();
         assert!(t.starts_with("1 warning in 1 of 1 file (the files you edited this turn):"), "{t}");
         // Waiting: not while the check runs — answered once it's over and published

@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::config::Config;
-use crate::session::At;
 use crate::terminal::output;
+use crate::workspace::At;
 
 const W: u16 = 120;
 const H: u16 = 34;
@@ -24,7 +24,7 @@ fn term(config: Config, lines: usize) -> (Editor, std::sync::mpsc::Receiver<Vec<
 
 /// What the program prints.
 fn print(ed: &mut Editor, s: &str) {
-    let generation = ed.session.terminal.as_ref().unwrap().generation();
+    let generation = ed.workspace.terminal.as_ref().unwrap().generation();
     output(ed, generation, s.as_bytes());
     frame(ed);
 }
@@ -65,7 +65,7 @@ fn region(ed: &Editor) -> String {
 fn the_walks_search_in_the_terminal_leaves_the_codes_alone() {
     let (mut ed, _sent) = term(Config::default(), 3);
     ed.docs[0].text = ropey::Rope::from_str("fn tests() {}\n// the tests\nmod tests;\n");
-    ed.session.at = At::Code;
+    ed.workspace.viewer.at = At::Code;
     feed(&mut ed, "/tests<ret>");
     let status = |ed: &mut Editor| frame(ed).lines().last().unwrap_or_default().to_string();
     assert!(status(&mut ed).contains("1/3"), "{}", status(&mut ed));
@@ -127,7 +127,7 @@ fn view_selected(ed: &Editor) -> String {
 fn the_terminals_view_mode_searches_its_own_rows() {
     let (mut ed, _sent) = term(Config::default(), 40);
     ed.docs[0].text = ropey::Rope::from_str("fn main() {}\nfn line() {}\n");
-    ed.session.at = At::Code;
+    ed.workspace.viewer.at = At::Code;
     feed(&mut ed, "/main<ret>");
     let code_sel = ed.doc().selection().primary();
     let code = |ed: &Editor| {
@@ -139,7 +139,7 @@ fn the_terminals_view_mode_searches_its_own_rows() {
         (before.0.as_deref(), before.1, before.2.clone()),
         (Some("main"), true, Some(("main".into(), 1)))
     );
-    ed.session.at = At::Program;
+    ed.workspace.viewer.at = At::Program;
     feed(&mut ed, "<C-\\>");
     assert_eq!(region(&ed), "view:terminal");
     feed(&mut ed, "/line 3");
@@ -183,7 +183,7 @@ fn status(shown: &str) -> String {
 }
 
 fn program(ed: &Editor) -> bool {
-    ed.session.is_at(crate::session::At::Program)
+    ed.workspace.is_at(crate::workspace::At::Program)
 }
 
 /// `C-s` sends the screen as the `screen` tool sees it: with `llm.screen-terminal` off the terminal's rows are left
@@ -197,7 +197,7 @@ fn ctrl_s_leaves_the_terminal_out_when_its_rows_dont_go() {
         ed.config.llm.screen_terminal = on;
         print(&mut ed, "a-row-only-the-terminal-has\r\n$ ");
         crate::chat::attach_screen(&mut ed).unwrap();
-        let text = ed.session.chat.as_ref().unwrap().screen.as_ref().unwrap().text.clone();
+        let text = ed.workspace.claude.chat.as_ref().unwrap().screen.as_ref().unwrap().text.clone();
         assert_eq!(text.contains("a-row-only-the-terminal-has"), on, "{on}: {text}");
     }
 }
@@ -212,7 +212,7 @@ fn enter_quotes_the_selected_rows_to_the_chat() {
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     let long = "w".repeat(300);
     // (and a line whose wrap falls right after a space: the row before ends on it — a blank the document trims)
-    let cols = usize::from(ed.session.terminal.as_ref().unwrap().parser.screen().size().1);
+    let cols = usize::from(ed.workspace.terminal.as_ref().unwrap().parser.screen().size().1);
     let spaced = format!("{} {}", "a".repeat(cols - 1), "tail");
     print(&mut ed, &format!("API_TOKEN=tarae-fake-token-0123456789abcdef\r\n{long}\r\n{spaced}\r\n$ "));
     feed(&mut ed, "<C-\\>%");
@@ -223,8 +223,11 @@ fn enter_quotes_the_selected_rows_to_the_chat() {
     assert_eq!(shown.lines().filter(|l| l.contains("enter quote")).count(), 2, "{shown}");
     feed(&mut ed, "<ret>");
     assert_eq!(region(&ed), "chat");
-    assert!(ed.session.view.is_none() && !ed.session.is_at(crate::session::At::Slot), "the view left");
-    let q = &ed.session.chat.as_ref().unwrap().quotes[0];
+    assert!(
+        ed.workspace.viewer.view.is_none() && !ed.workspace.is_at(crate::workspace::At::Slot),
+        "the view left"
+    );
+    let q = &ed.workspace.claude.chat.as_ref().unwrap().quotes[0];
     assert!(q.text.contains(&format!("\n{long}\n{spaced}\n$")), "joined, its space kept: {:?}", q.text);
     assert!(q.text.starts_with("line 1\nline 2\n") && q.text.ends_with('$'), "{:?}", q.text);
     assert!(!q.text.contains("tarae-fake-token"), "{:?}", q.text);
@@ -242,7 +245,7 @@ fn enter_quotes_the_selected_rows_to_the_chat() {
     assert_eq!(region(&ed), "view:terminal");
     let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
     assert!(said.contains("llm.screen-terminal"), "{said}");
-    assert!(ed.session.chat.as_ref().is_none_or(|c| c.quotes.is_empty()));
+    assert!(ed.workspace.claude.chat.as_ref().is_none_or(|c| c.quotes.is_empty()));
     // `enter` with nothing selected (`esc` collapsed it): the program, as before
     feed(&mut ed, "<esc><ret>");
     assert_eq!(region(&ed), "terminal-program");
@@ -264,10 +267,10 @@ fn ctrl_backslash_goes_round() {
     assert!(!program(&ed));
     feed(&mut ed, "i");
     assert_eq!(region(&ed), "terminal-program");
-    assert!(ed.session.view.is_none());
+    assert!(ed.workspace.viewer.view.is_none());
     feed(&mut ed, "<C-\\><C-\\>");
     assert_eq!(region(&ed), "code", "the view's C-\\: the code");
-    assert!(ed.session.view.is_none() && !ed.session.is_at(crate::session::At::Slot));
+    assert!(ed.workspace.viewer.view.is_none() && !ed.workspace.is_at(crate::workspace::At::Slot));
     feed(&mut ed, "<C-\\>");
     assert_eq!(region(&ed), "terminal-program", "the code's C-\\: the program");
     feed(&mut ed, "<C-\\><esc>");
@@ -289,7 +292,7 @@ fn a_flood_while_searching_leaves_the_search_and_the_view_as_they_are() {
     assert_eq!(ed.doc().text.to_string(), "fn main() {}\n", "the code untouched");
     feed(&mut ed, "G");
     assert_eq!(view(&ed).keys.mode, Mode::Select, "its `v` came along as it caught up");
-    assert!(!ed.session.terminal.as_ref().unwrap().came(), "caught up");
+    assert!(!ed.workspace.terminal.as_ref().unwrap().came(), "caught up");
 }
 
 /// The wheel across surfaces: over the chat while the terminal is viewed, the chat's view mode — the terminal's
@@ -307,7 +310,7 @@ fn the_wheel_crosses_surfaces_and_back_to_the_view_it_left() {
             _ => Msg::new(Role::Assistant, format!("answer {i}"), ""),
         })
         .collect();
-    ed.session.chat = Some(c);
+    ed.workspace.claude.chat = Some(c);
     // (the keys the terminal's program's)
     frame(&mut ed);
     let chat_wheel = |ed: &mut Editor, kind| {
@@ -320,14 +323,14 @@ fn the_wheel_crosses_surfaces_and_back_to_the_view_it_left() {
     print(&mut ed, "\r\nwhile-reading-the-chat\r\n$ ");
     chat_wheel(&mut ed, K::ScrollUp);
     assert_eq!(region(&ed), "view:chat");
-    let t = ed.session.terminal.as_ref().unwrap();
+    let t = ed.workspace.terminal.as_ref().unwrap();
     assert!(!t.holding(), "the terminal's view left: nothing held");
     assert!(t.parser.screen().contents().contains("while-reading-the-chat"), "what it held taken in");
     chat_wheel(&mut ed, K::ScrollDown);
     assert_eq!(region(&ed), "view:terminal", "back at the end: the view the keys were in");
     // (the other way: the chat's view mode, the terminal's wheel, back)
     feed(&mut ed, "<esc>");
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     feed(&mut ed, "<esc>");
     assert_eq!(region(&ed), "view:chat");
     ed.terminal_mouse(K::ScrollUp, Some((2, 0)), false);
@@ -347,7 +350,7 @@ fn another_conversation_leaves_the_terminals_view_alone() {
     print(&mut ed, "\r\nlater-output\r\n$ ");
     crate::chatdoc::forget(&mut ed);
     assert!(terminal_viewed(&ed), "still viewed");
-    assert!(ed.session.terminal.as_ref().unwrap().came(), "its output still held");
+    assert!(ed.workspace.terminal.as_ref().unwrap().came(), "its output still held");
     feed(&mut ed, "<C-\\>");
     assert!(frame(&mut ed).contains("later-output"), "taken in as it's left");
 }
@@ -358,25 +361,25 @@ fn another_conversation_leaves_the_terminals_view_alone() {
 #[test]
 fn tab_steps_to_the_slots_other_tab_and_back() {
     let (mut ed, _sent) = term(Config::default(), 3);
-    let task = crate::task::Task { name: "check".into(), cmd: "true".into(), cwd: ed.session.root.clone() };
-    ed.session.task_run = Some(crate::task::Run::for_test(task));
-    ed.session.slot_front = Some(crate::sizes::Slot::Terminal);
+    let task = crate::task::Task { name: "check".into(), cmd: "true".into(), cwd: ed.workspace.root.clone() };
+    ed.workspace.task_run = Some(crate::task::Run::for_test(task));
+    ed.workspace.viewer.slot_front = Some(crate::sizes::Slot::Terminal);
     frame(&mut ed);
     feed(&mut ed, "<C-\\>");
     print(&mut ed, "\r\nwhile-on-the-task\r\n$ ");
     feed(&mut ed, "<tab>");
     assert_eq!(ed.slot(), Some(crate::sizes::Slot::Task));
     assert_eq!(region(&ed), "output:task", "the task panel's output");
-    let t = ed.session.terminal.as_ref().unwrap();
-    assert!(ed.session.view.is_none() && !t.holding(), "the terminal's view gone, nothing held");
+    let t = ed.workspace.terminal.as_ref().unwrap();
+    assert!(ed.workspace.viewer.view.is_none() && !t.holding(), "the terminal's view gone, nothing held");
     assert!(t.parser.screen().contents().contains("while-on-the-task"), "what came taken in");
     feed(&mut ed, "<S-tab>");
     assert_eq!(ed.slot(), Some(crate::sizes::Slot::Terminal));
     assert_eq!(region(&ed), "view:terminal", "back: its view mode");
     // (a third tab — a test run's: `S-tab` from the terminal is the one before it, not the next)
-    ed.session.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), vec!["ok".into()]));
+    ed.workspace.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), vec!["ok".into()]));
     frame(&mut ed);
-    ed.session.slot_front = Some(crate::sizes::Slot::Terminal);
+    ed.workspace.viewer.slot_front = Some(crate::sizes::Slot::Terminal);
     ed.bottom_take_keys();
     frame(&mut ed);
     assert_eq!(region(&ed), "view:terminal");
@@ -394,13 +397,13 @@ fn tab_steps_to_the_slots_other_tab_and_back() {
 fn space_in_view_mode_is_said() {
     let (mut ed, _sent) = term(Config::default(), 3);
     feed(&mut ed, "<C-\\><space>");
-    assert_eq!(ed.session.view.as_ref().unwrap().keys.pending.len(), 1, "a prefix under way");
+    assert_eq!(ed.workspace.viewer.view.as_ref().unwrap().keys.pending.len(), 1, "a prefix under way");
     assert!(frame(&mut ed).contains("Quote or view chat"), "its which-key: view mode's rows");
     feed(&mut ed, "T");
     let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
     assert_eq!(said, "space T isn't in view mode — i types in the program, esc to the code");
     assert_eq!(region(&ed), "view:terminal");
-    assert!(ed.session.terminal.as_ref().unwrap().visible, "nothing hidden");
+    assert!(ed.workspace.terminal.as_ref().unwrap().visible, "nothing hidden");
 }
 
 /// A blank row at the screen's bottom is a line of its own: the view's last rows are the screen's, `G` shows it
@@ -411,7 +414,7 @@ fn the_screens_blank_last_rows_are_lines_too() {
     print(&mut ed, "\r\n");
     feed(&mut ed, "<C-\\>");
     feed(&mut ed, "ggG");
-    let (v, t) = (view(&ed), ed.session.terminal.as_ref().unwrap());
+    let (v, t) = (view(&ed), ed.workspace.terminal.as_ref().unwrap());
     // (60 lines, the prompt's, the blank one under it)
     assert_eq!(v.rows(), 62, "every row of the scrollback and the screen");
     assert_eq!(t.parser.screen().scrollback(), 0, "the bottom: the screen as it is");
@@ -456,7 +459,7 @@ fn a_click_in_view_mode_moves_its_cursor_and_sends_the_program_nothing() {
     // (the second cell of `字`, past the 30 lines and the prompt's row: on the character)
     feed(&mut ed, "G");
     let row = ed
-        .session
+        .workspace
         .terminal
         .as_ref()
         .unwrap()
@@ -538,7 +541,7 @@ fn it_holds_still_until_g_catches_up() {
 #[test]
 fn its_questions_are_answered_while_held() {
     let (mut ed, sent) = term(Config::default(), 3);
-    let generation = ed.session.terminal.as_ref().unwrap().generation();
+    let generation = ed.workspace.terminal.as_ref().unwrap().generation();
     feed(&mut ed, "<C-\\>");
     while sent.try_recv().is_ok() {}
     // (the first batch while viewed: held, its go-ahead kept)
@@ -551,7 +554,7 @@ fn its_questions_are_answered_while_held() {
     let second = "\x1b[c";
     crate::terminal::reader_reads(&ed, second.as_bytes());
     assert_eq!(sent.try_recv().ok().as_deref(), Some(&b"\x1b[?62;22c"[..]), "answered as it's read");
-    assert!(ed.session.terminal.as_ref().unwrap().came(), "the output still held");
+    assert!(ed.workspace.terminal.as_ref().unwrap().came(), "the output still held");
     feed(&mut ed, "G");
     assert!(go.try_recv().is_ok());
     let (done, _go) = std::sync::mpsc::sync_channel(1);
@@ -571,7 +574,7 @@ fn leaving_keeps_the_rows_you_read() {
     feed(&mut ed, "<C-\\>");
     assert_eq!(region(&ed), "terminal-program");
     feed(&mut ed, "<C-\\>i");
-    assert_eq!(ed.session.terminal.as_ref().unwrap().parser.screen().scrollback(), 0, "typing: the bottom");
+    assert_eq!(ed.workspace.terminal.as_ref().unwrap().parser.screen().scrollback(), 0, "typing: the bottom");
 }
 
 /// A key view mode has no use for is said, with the two ways on; nothing reaches the program.
@@ -634,12 +637,12 @@ fn ctrl_w_j_views_it_and_q_hides_it() {
     feed(&mut ed, "<C-\\><esc><C-w>j");
     assert_eq!(region(&ed), "view:terminal");
     feed(&mut ed, "q");
-    let t = ed.session.terminal.as_ref().unwrap();
+    let t = ed.workspace.terminal.as_ref().unwrap();
     assert!(!t.visible && t.exited.is_none(), "hidden, running");
     assert_eq!(region(&ed), "code");
-    assert!(ed.session.view.is_none());
+    assert!(ed.workspace.viewer.view.is_none());
     feed(&mut ed, "<C-\\><C-\\><C-w>q");
-    assert!(!ed.session.terminal.as_ref().unwrap().visible, "C-w q: hidden too");
+    assert!(!ed.workspace.terminal.as_ref().unwrap().visible, "C-w q: hidden too");
 }
 
 /// An ended program's output is read in view mode; `i` has nowhere to type, said.
@@ -647,7 +650,7 @@ fn ctrl_w_j_views_it_and_q_hides_it() {
 fn an_ended_program_is_read_not_typed_in() {
     let (mut ed, _sent) = term(Config::default(), 3);
     feed(&mut ed, "<C-\\>");
-    ed.session.terminal.as_mut().unwrap().exited = Some(0);
+    ed.workspace.terminal.as_mut().unwrap().exited = Some(0);
     feed(&mut ed, "i");
     assert_eq!(region(&ed), "view:terminal");
     let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
@@ -694,7 +697,7 @@ fn to_program_gives_a_key_back_to_the_program() {
 #[test]
 fn while_viewed_the_reader_waits_until_you_catch_up() {
     let (mut ed, _sent) = term(Config::default(), 3);
-    let generation = ed.session.terminal.as_ref().unwrap().generation();
+    let generation = ed.workspace.terminal.as_ref().unwrap().generation();
     let batch = |ed: &mut Editor, s: &str| {
         let (done, go) = std::sync::mpsc::sync_channel(1);
         crate::terminal::output_acked(ed, generation, s.as_bytes(), done);
@@ -714,7 +717,7 @@ fn while_viewed_the_reader_waits_until_you_catch_up() {
     feed(&mut ed, "<esc>");
     assert_eq!(region(&ed), "code");
     assert!(second.try_recv().is_ok(), "left: it goes on");
-    assert!(!ed.session.terminal.as_ref().unwrap().came());
+    assert!(!ed.workspace.terminal.as_ref().unwrap().came());
 }
 
 /// Its view mode on a full scrollback — 5,000 rows of 100 characters and a 40-row screen — read a page at a time
@@ -727,7 +730,7 @@ fn perf_budget_view_terminal() {
     }
     let mut ed = Editor::new(Config::default());
     let _sent = crate::terminal::stand_in(&mut ed, 40, 120, 5000);
-    let generation = ed.session.terminal.as_ref().unwrap().generation();
+    let generation = ed.workspace.terminal.as_ref().unwrap().generation();
     let row = "x".repeat(96);
     let text: String = (0..5100).map(|i| format!("{i:04}{row}\r\n")).collect();
     output(&mut ed, generation, text.as_bytes());
@@ -787,7 +790,7 @@ fn a_new_size_reads_it_again_and_the_cursor_is_drawn_on_its_cell() {
     assert!(terminal_settling(&ed), "back at its size, but changed since the last frame");
     crate::term::render(&mut ed, &mut bytes, W, H + 6).unwrap();
     assert!(!terminal_settling(&ed));
-    let (d, screen) = (view(&ed).doc(), ed.session.terminal.as_ref().unwrap().parser.screen());
+    let (d, screen) = (view(&ed).doc(), ed.workspace.terminal.as_ref().unwrap().parser.screen());
     for (r, row) in screen.rows(0, screen.size().1).enumerate() {
         let line = d.text.get_line(d.top + r).map(|l| l.to_string().trim_end().to_string());
         assert_eq!(line.as_deref(), Some(row.trim_end()), "row {r}: the view as the screen");

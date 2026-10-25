@@ -83,7 +83,7 @@ pub struct Offer {
     pub output: Option<(String, Vec<String>)>,
     /// The session it asks about (`push_offer`, `Editor::offer_about`): its frame is named by it with two sessions or
     /// more (`main asks · Run cargo test`), its peek in another session's stack too. None: about no one session.
-    pub about: Option<crate::event::SessionId>,
+    pub about: Option<crate::event::WorkspaceId>,
     /// Words of its text painted in a theme scope, in order — each the first found after the one before (`Toast.paint`'s
     /// rule): BaseMoved's workspaces in their participant colours.
     pub paint: Vec<(String, &'static str)>,
@@ -196,21 +196,21 @@ pub enum What {
     SessionNew(Box<crate::worktree::Making>),
     /// Ending a session that has something to lose (`worktree.rs`): `y` removes its checkout and keeps its
     /// branch, `D` deletes the branch too, `n` keeps it all.
-    SessionEnd(Box<crate::worktree::Ending>),
+    WorkspaceEnd(Box<crate::worktree::Ending>),
     /// Closing a buffer whose change is under review (#54): `y` declines the change and closes it, `n` keeps
     /// both. Not `force`d, unsaved edits of yours keep it open still.
     CloseReviewed { doc: crate::document::DocId, force: bool },
     /// Claude's rename, replace or edit across several files, or with a move or delete (`refactor.rs`, #75):
     /// `y` accepts them all, `r` reviews them one by one (not with `ops` — a move or delete among them, which
     /// no buffer shows), `v` shows every change, `n` declines them all. `whose`: Claude's (its chat's generation)
-    /// or the user's own (`:session-apply`).
+    /// or the user's own (`:workspace-apply`).
     ChangeSet { whose: crate::refactor::Whose, ops: bool },
     /// Claude's `commit` (`committool.rs`): `y` commits exactly the tree the card shows on the HEAD it names, no
     /// hooks, `v` shows the whole diff, `n` tells Claude no.
     Commit(Box<crate::committool::Commit>),
     /// Ending a code review with files not viewed (`codereview.rs`, #10): `y` ends it, `n` keeps reviewing.
     /// Its session's, and that review's (`started`) only — #159.
-    ReviewEnd { session: crate::event::SessionId, started: Instant },
+    ReviewEnd { session: crate::event::WorkspaceId, started: Instant },
     /// Bringing a session whose base moved since it left it (`rebase.rs`): `y` rebases it onto its base
     /// first, `n` leaves it.
     Rebase(Box<crate::rebase::Moved>),
@@ -271,7 +271,7 @@ pub enum What {
     /// `$` in the session list on a session with a conversation going (`billing.rs`): `y` switches its billing to
     /// `to`, the card having said what the next message costs · `n` keeps it. `money`: the key was refused for
     /// money (`Editor::money_out`) — the plan offered back, `y` this session · `n` stay.
-    BillingSwitch { session: crate::event::SessionId, to: crate::billing::Billing, money: bool },
+    BillingSwitch { session: crate::event::WorkspaceId, to: crate::billing::Billing, money: bool },
     /// The plan's weekly window refused a session's Claude (`billing.rs`): `y` that session on your key · `a` new
     /// sessions and the reviewer too, until the reset (when it's known) · `n` waits. Its session's.
     Limit(Box<crate::billing::LimitAsk>),
@@ -280,7 +280,7 @@ pub enum What {
     /// The chat's claude has no login and tarae held a key of its environment back (`envkey.rs`): `y` Claude
     /// takes it until session `session` ends — `message`, the one that failed, goes again · `A` always (your
     /// config) · `n` not asked again this session.
-    EnvKey { session: crate::event::SessionId, message: Option<String> },
+    EnvKey { session: crate::event::WorkspaceId, message: Option<String> },
     /// The user stopped a turn and the runs its calls waited on go on (`tools::left_running`): `y` stops them ·
     /// `n` lets them run. Light; it goes by itself once they've ended (`tools::left_sync`). Its session's.
     LeftRunning { runs: Vec<crate::tools::Left> },
@@ -318,7 +318,7 @@ pub const KINDS: &[&str] = &[
     "branch-delete",
     "force-push",
     "session-new",
-    "session-end",
+    "workspace-end",
     "close-reviewed",
     "change-set",
     "commit",
@@ -419,8 +419,8 @@ impl What {
         match self {
             What::Preflight { set: crate::preflight::Set::Quick, .. } => Again("preflight".into()),
             What::Preflight { set: crate::preflight::Set::Full, .. } => Again("preflight-full".into()),
-            What::SessionEnd(e) => Again(format!("session-end {}", e.name)),
-            What::Rebase(m) | What::Rebased(m) | What::UpTo(m) => Again(format!("session-bring {}", m.name)),
+            What::WorkspaceEnd(e) => Again(format!("workspace-end {}", e.name)),
+            What::Rebase(m) | What::Rebased(m) | What::UpTo(m) => Again(format!("workspace-bring {}", m.name)),
             What::BranchDelete { branch, .. } => Again(format!("git-branch-delete {branch}")),
             What::FeaturesReset => Again("features-reset".into()),
             What::Grammars { .. }
@@ -451,7 +451,7 @@ impl What {
             | What::BringQueue(_)
             // (the tips are read anew after it, as baselines: the next move asks again)
             | What::BaseMoved(_)
-            // (about the checkout as it was then — `:session-bring` looks at it afresh and raises it again)
+            // (about the checkout as it was then — `:workspace-bring` looks at it afresh and raises it again)
             | What::RebaseHeld(_)
             // (Claude's: a run's job can't be run again blind — its call ends with the turn)
             | What::Run(_)
@@ -659,7 +659,7 @@ impl Offer {
                     | What::BranchDelete { .. }
                     | What::ForcePush(_)
                     | What::SessionNew(_)
-                    | What::SessionEnd(_)
+                    | What::WorkspaceEnd(_)
                     | What::CloseReviewed { .. }
                     | What::ReviewEnd { .. }
                     | What::Rebase(_)
@@ -747,7 +747,7 @@ impl Offer {
                 | What::BranchDelete { .. }
                 | What::ForcePush(_)
                 | What::SessionNew(_)
-                | What::SessionEnd(_)
+                | What::WorkspaceEnd(_)
                 | What::ChangeSet { .. }
                 | What::Commit(_)
                 | What::Rebase(_)
@@ -816,7 +816,7 @@ impl Offer {
 
     /// Whether `s` answers it — for this session: a host's card, or a card that grants what may be kept that
     /// long (`top`).
-    pub fn for_session(&self) -> bool {
+    pub fn for_workspace(&self) -> bool {
         self.host().is_some()
             || matches!(self.what, What::WebRead(_))
             || self.top() >= Some(crate::allow::Scope::Session)
@@ -908,7 +908,7 @@ impl Offer {
                 && (self.limit_all()
                     || self.lasts()
                     || self.weighty()
-                    || self.for_session()
+                    || self.for_workspace()
                     || matches!(self.what, What::NoSandbox { .. } | What::EnvKey { .. })))
             || (c == 'A'
                 && (self.keeps()
@@ -919,7 +919,7 @@ impl Offer {
             || (c == '$' && self.bills())
             || (c == 'p' && self.preflights())
             || (c == 'm' && self.messages())
-            || (c == 's' && (self.stashes() || self.for_session()))
+            || (c == 's' && (self.stashes() || self.for_workspace()))
             || (c == 'g' && self.held().is_some())
             || (c == 'X' && self.aborts())
             || (c == 'b' && self.base_steps())
@@ -934,7 +934,7 @@ impl Offer {
         matches!(c, 'y' | 'a' | 'A' | 'D' | 'R' | 'c')
             || (c == 'Y' && !self.like.is_empty())
             || (c == 'r' && self.made())
-            || (c == 's' && (self.stashes() || self.for_session()))
+            || (c == 's' && (self.stashes() || self.for_workspace()))
             || (c == 'p' && self.preflights())
             || (c == 'X' && self.aborts())
             || (c == 'f' && self.restart_other())
@@ -1000,10 +1000,10 @@ impl Offer {
             'm' if self.messages() => A::Message,
             's' if self.stashes() => A::Held('s'),
             'g' if self.held().is_some() => A::Held('g'),
-            's' if self.for_session() => A::ForSession,
+            's' if self.for_workspace() => A::ForSession,
             'a' | 'A' if matches!(self.what, What::NoSandbox { .. }) => A::Say("this card asks y, s or n"),
             'a' if matches!(self.what, What::EnvKey { .. }) => A::Say("this card asks y, A or n"),
-            'a' if self.for_session() => A::Say("this card asks y, s, A or n"),
+            'a' if self.for_workspace() => A::Say("this card asks y, s, A or n"),
             'X' if self.aborts() => A::Abort,
             'b' if self.base_steps() => A::SessionBase,
             'f' if self.restart_other() => A::RestartOther,
@@ -1058,18 +1058,18 @@ impl Offer {
 
     /// Whether `D` answers it: the end card of a session on a branch (removes both).
     pub fn both(&self) -> bool {
-        matches!(&self.what, What::SessionEnd(e) if e.branch.is_some())
+        matches!(&self.what, What::WorkspaceEnd(e) if e.branch.is_some())
     }
 
     /// The end card of a session with work in no commit: no `y` (a reflex would throw it away) — `R`
     /// removes the checkout, `c` commits first (`commits_first`).
     pub fn end_dirty(&self) -> bool {
-        matches!(&self.what, What::SessionEnd(e) if e.dirty())
+        matches!(&self.what, What::WorkspaceEnd(e) if e.dirty())
     }
 
     /// Whether `c` answers it: that card, on a branch to commit on.
     pub fn commits_first(&self) -> bool {
-        matches!(&self.what, What::SessionEnd(e) if e.dirty() && e.branch.is_some())
+        matches!(&self.what, What::WorkspaceEnd(e) if e.dirty() && e.branch.is_some())
     }
 
     /// Whether its answer can last longer than once (`a` this chat · `A` always — `A` only for reads).
@@ -1126,10 +1126,10 @@ impl Offer {
 
     /// Whether it parks with its session when another comes to the front: Claude's, and a review's end
     /// (#159: it stayed up in the other session, and `y` there ended that one's review).
-    pub fn goes_with_session(&self) -> bool {
+    pub fn goes_with_workspace(&self) -> bool {
         // (the repository's trust: with its session while Claude's part is in it)
         if let What::RepoTrust { parts, .. } = &self.what {
-            return parts.iter().any(Offer::goes_with_session);
+            return parts.iter().any(Offer::goes_with_workspace);
         }
         self.claudes()
             || matches!(
@@ -1367,17 +1367,17 @@ impl Offer {
                 v
             }
             // (work in no commit: no `y` — committing leads, removing takes a capital)
-            W::SessionEnd(_) if self.commits_first() => vec![
+            W::WorkspaceEnd(_) if self.commits_first() => vec![
                 lasts('c', "Commit, then end"),
                 lasts('R', "Remove"),
                 lasts('D', "Remove both"),
                 plain('n', "Cancel"),
             ],
-            W::SessionEnd(_) if self.end_dirty() => vec![lasts('R', "Remove"), plain('n', "Cancel")],
-            W::SessionEnd(_) if self.both() => {
+            W::WorkspaceEnd(_) if self.end_dirty() => vec![lasts('R', "Remove"), plain('n', "Cancel")],
+            W::WorkspaceEnd(_) if self.both() => {
                 vec![lasts('y', "Remove checkout"), lasts('D', "Remove both"), plain('n', "Cancel")]
             }
-            W::SessionEnd(_) => vec![lasts('y', "Remove it"), plain('n', "Cancel")],
+            W::WorkspaceEnd(_) => vec![lasts('y', "Remove it"), plain('n', "Cancel")],
             // (it fell to the download's row once: `y Install` on a card whose `y` declines Claude's change)
             W::CloseReviewed { .. } => vec![lasts('y', "Decline and close"), plain('n', "Keep both")],
             W::Screen { .. } => vec![plain('y', "Once"), lasts('a', "This chat"), plain('n', "No")],
@@ -1548,7 +1548,7 @@ impl Offer {
             W::BranchDelete { .. } => "branch-delete",
             W::ForcePush(_) => "force-push",
             W::SessionNew(_) => "session-new",
-            W::SessionEnd(_) => "session-end",
+            W::WorkspaceEnd(_) => "workspace-end",
             W::CloseReviewed { .. } => "close-reviewed",
             W::ChangeSet { .. } => "change-set",
             W::Commit(_) => "commit",
@@ -1596,16 +1596,16 @@ impl crate::editor::Editor {
 
     /// Card `id` was answered by the user: the call it held is the answer's now, no longer waiting on it.
     fn card_answered(&mut self, id: u64) {
-        self.session.asking.retain(|a| a.card != id);
+        self.workspace.claude.asking.retain(|a| a.card != id);
     }
 
-    /// The cards of the session in `ed.session`: up in front, parked behind.
+    /// The cards of the session in `ed.workspace`: up in front, parked behind.
     pub fn session_cards(&self) -> impl Iterator<Item = &Offer> {
         let front = !self.background();
-        self.session.parked.iter().chain(self.offers.iter().filter(move |_| front))
+        self.workspace.parked.iter().chain(self.offers.iter().filter(move |_| front))
     }
 
-    /// The cards of the session in `ed.session` that `gone` picks go: up in front, parked behind (#86: a
+    /// The cards of the session in `ed.workspace` that `gone` picks go: up in front, parked behind (#86: a
     /// session behind ended its turn swapped in, so its cards were parked — they stayed, its tab said `▲`
     /// after its turn was over, and the front's cards went instead).
     pub fn drop_cards(&mut self, gone: impl Fn(&What) -> bool) {
@@ -1615,11 +1615,11 @@ impl crate::editor::Editor {
     /// `drop_cards`, the gone ring told `why`.
     pub fn drop_cards_for(&mut self, gone: impl Fn(&What) -> bool, why: &str) {
         let front = !self.background();
-        let session = self.session.log();
+        let session = self.workspace.log();
         let (mut dropped, mut kept) = (Vec::new(), Vec::new());
-        for o in self.session.parked.iter().chain(self.offers.iter().filter(|_| front)) {
+        for o in self.workspace.parked.iter().chain(self.offers.iter().filter(|_| front)) {
             if gone(&o.what) {
-                kept.push(o.said(&session, ("dropped", None), self.session.caps()));
+                kept.push(o.said(&session, ("dropped", None), self.workspace.claude.caps()));
                 dropped.push(o.id);
             }
         }
@@ -1627,7 +1627,7 @@ impl crate::editor::Editor {
         for id in dropped {
             self.card_how(id, why);
         }
-        self.session.parked.retain(|o| !gone(&o.what));
+        self.workspace.parked.retain(|o| !gone(&o.what));
         if front {
             self.offers.retain(|o| !gone(&o.what));
         }
@@ -1652,7 +1652,7 @@ impl crate::editor::Editor {
                 .collect(),
             _ => return None,
         };
-        self.session.caps()?.always_said(&grants)
+        self.workspace.claude.caps()?.always_said(&grants)
     }
 
     /// Stacks an offer (at the back). If one with the same title exists, keeps it (untouched while
@@ -1674,8 +1674,8 @@ impl crate::editor::Editor {
         // waits — its going said (the gone ring: one card replaced); one whose bring is under way stays
         if let Some(root) = o.bring_root().map(std::path::Path::to_path_buf) {
             let same = |x: &Offer| x.bring_root() == Some(root.as_path());
-            let waiting: Vec<(u64, bool)> = std::iter::once(&self.session)
-                .chain(&self.sessions)
+            let waiting: Vec<(u64, bool)> = std::iter::once(&self.workspace)
+                .chain(&self.workspaces)
                 .flat_map(|l| &l.parked)
                 .chain(&self.offers)
                 .filter(|x| same(x))
@@ -1688,20 +1688,20 @@ impl crate::editor::Editor {
                 self.card_how(id, format!("replaced by card#{}", o.id));
             }
             self.offers.retain(|x| !same(x));
-            for l in std::iter::once(&mut self.session).chain(&mut self.sessions) {
+            for l in std::iter::once(&mut self.workspace).chain(&mut self.workspaces) {
                 l.parked.retain(|x| !same(x));
             }
         }
         // (the call it holds waits on it — watched until it's answered: `asking_sync`)
         if let Some(asker) = o.asker() {
-            self.session.asking.push(Asking { card: o.id, asker, what: o.title.clone() });
+            self.workspace.claude.asking.push(Asking { card: o.id, asker, what: o.title.clone() });
         }
-        // From a session behind: it waits in that session, and comes up when the session is in front (`session_in`)
+        // From a session behind: it waits in that session, and comes up when the session is in front (`workspace_in`)
         if self.background() {
             self.count(crate::features::Area::Card, o.kind());
             // (still waiting a while later: one warning names it — `card_nudge`)
-            self.nudge_later(self.session.id, o.id);
-            return self.session.parked.push(o);
+            self.nudge_later(self.workspace.id, o.id);
+            return self.workspace.parked.push(o);
         }
         // (one holding a call isn't merged into another by its title — the other's call would be lost; nor is a
         // plugin's ask — the other's request would be: one asking the same joins its card, `plugin_ask`; nor a
@@ -1774,18 +1774,18 @@ impl crate::editor::Editor {
     /// The session card `o` asks about (P3 step 7d): one that goes with its session — the one it's pushed in (a session
     /// behind pushes as itself in front, `background`) —; a bring's, a rebase's, its resolve's, an end's — the session
     /// whose checkout it names. Else none (a grammar, a server, a trust, a base that moved, a restart).
-    fn offer_about(&self, o: &Offer) -> Option<crate::event::SessionId> {
-        if o.goes_with_session() {
-            return Some(self.session.id);
+    fn offer_about(&self, o: &Offer) -> Option<crate::event::WorkspaceId> {
+        if o.goes_with_workspace() {
+            return Some(self.workspace.id);
         }
         let root = match &o.what {
             What::RebaseResolved { root, .. } => root.as_path(),
-            What::SessionEnd(e) => e.root.as_path(),
+            What::WorkspaceEnd(e) => e.root.as_path(),
             _ => o.bring_root()?,
         };
         let real = crate::paths::real(root).unwrap_or_else(|| root.to_path_buf());
-        std::iter::once(&self.session)
-            .chain(&self.sessions)
+        std::iter::once(&self.workspace)
+            .chain(&self.workspaces)
             .find(|l| l.root == real || l.root == root)
             .map(|l| l.id)
     }
@@ -1880,7 +1880,7 @@ impl crate::editor::Editor {
             return self.offer_see_all_first();
         }
         let (members, run) = (front.like.clone(), front.groupable().cloned());
-        let root = self.session.root.clone();
+        let root = self.workspace.root.clone();
         self.offer_accept_by('Y');
         for id in members {
             let still = |o: &Offer| {
@@ -1985,7 +1985,7 @@ impl crate::editor::Editor {
             What::BranchDelete { top, branch, tip } => self.git_branch_delete_answer(id, top, branch, tip),
             What::ForcePush(f) => self.git_force_push(id, *f),
             What::SessionNew(m) => self.session_make(id, *m),
-            What::SessionEnd(e) => self.session_remove(*e, false, Some(id)),
+            What::WorkspaceEnd(e) => self.session_remove(*e, false, Some(id)),
             What::CloseReviewed { doc, force } => {
                 self.offer_finished(id, Ok(()));
                 self.close_reviewed(doc, force);
@@ -2081,7 +2081,7 @@ impl crate::editor::Editor {
     /// `s`: yes for this session — a host for every run of it, or what a grant's, a read's or a run's card
     /// opens, kept with the session (`Session.allowed`).
     pub fn offer_for_session(&mut self) {
-        if !self.offers.first().is_some_and(Offer::for_session) {
+        if !self.offers.first().is_some_and(Offer::for_workspace) {
             return;
         }
         let o = self.offers.remove(0);
@@ -2222,7 +2222,7 @@ impl crate::editor::Editor {
         o.state = OfferState::Installing(crate::clock::now());
         let (id, what) = (o.id, o.what.clone());
         self.offers.push(o);
-        if let What::SessionEnd(e) = what {
+        if let What::WorkspaceEnd(e) = what {
             self.session_remove(*e, both, Some(id));
         }
     }
@@ -2248,7 +2248,7 @@ impl crate::editor::Editor {
         }
         let o = self.offers.remove(0);
         self.offer_answered(&o, 'c');
-        if let What::SessionEnd(e) = o.what {
+        if let What::WorkspaceEnd(e) = o.what {
             self.session_commit_first(*e);
         }
     }
@@ -2332,8 +2332,8 @@ impl crate::editor::Editor {
             self.offer_views.clear();
             return;
         }
-        let cards: Vec<(u64, &str)> = std::iter::once(&self.session)
-            .chain(&self.sessions)
+        let cards: Vec<(u64, &str)> = std::iter::once(&self.workspace)
+            .chain(&self.workspaces)
             .flat_map(|s| &s.parked)
             .chain(&self.offers)
             .map(|o| (o.id, o.title.as_str()))
@@ -2361,7 +2361,7 @@ impl crate::editor::Editor {
     /// that changed makes it a new card to read (`rev`): `Y` waits until it's been seen as it is. No other card
     /// keeps a list.
     pub(crate) fn offer_group_sync(&mut self) {
-        let root = self.session.root.clone();
+        let root = self.workspace.root.clone();
         let want: Vec<u64> = match self.offers.first().and_then(Offer::groupable) {
             Some(front) => self.offers[1..]
                 .iter()
@@ -2499,8 +2499,8 @@ impl crate::editor::Editor {
         self.offer_views.push((doc, id));
         // The code has the keys, to read it (#55: the review's rail kept them, and keys did nothing)
         // (a panel in the slot `:procs`, a plugin's, keeps them as it did)
-        if !(self.procs_focused() || self.session.is_at(crate::session::At::Plugin)) {
-            self.session.at = crate::session::At::Code;
+        if !(self.procs_focused() || self.workspace.is_at(crate::workspace::At::Plugin)) {
+            self.workspace.viewer.at = crate::workspace::At::Code;
         }
         // The card keeps the keys while it's read: the keys that read reach the buffer through it (`card_reads`),
         // its answers answer it. In its buffer those are the card's only while it holds them — Esc gives them
@@ -2581,7 +2581,8 @@ impl crate::editor::Editor {
             Some(name) => format!("shuttle:{name}"),
             None => "you".to_string(),
         };
-        let entry = o.said(&self.session.log(), (&key.to_string(), Some(&by)), self.session.caps());
+        let entry =
+            o.said(&self.workspace.log(), (&key.to_string(), Some(&by)), self.workspace.claude.caps());
         self.cards_record(vec![entry]);
         let how = match &self.shuttles.stepping {
             Some(name) => format!("answered {key} by shuttle {name}"),
@@ -2640,7 +2641,7 @@ impl crate::editor::Editor {
             What::BranchDelete { branch, .. } => self.set_status(format!("Kept {branch}")),
             What::ForcePush(f) => self.set_status(format!("Not pushed — {} as it was", f.upstream())),
             What::SessionNew(m) => self.set_status(format!("No session {} — nothing was made", m.branch)),
-            What::SessionEnd(e) => self.set_status(format!("Kept {} as it is", e.name)),
+            What::WorkspaceEnd(e) => self.set_status(format!("Kept {} as it is", e.name)),
             What::CloseReviewed { .. } => {
                 self.set_status("kept open — Claude's change still waits for y or n")
             }
@@ -2655,7 +2656,7 @@ impl crate::editor::Editor {
                 self.set_status(format!("Not rebased — {} as it is, nothing brought", h.moved.branch))
             }
             What::Rebased(m) => {
-                self.set_status(format!("Not brought — :session-bring {} when you're ready", m.name))
+                self.set_status(format!("Not brought — :workspace-bring {} when you're ready", m.name))
             }
             What::RebaseResolved { .. } => {
                 self.set_status("the rebase waits — its card is in the inbox (space I), or :rebase-continue")
@@ -2677,8 +2678,8 @@ impl crate::editor::Editor {
             What::Host(a) => crate::hosts::answer(self, o.id, *a, crate::sandbox::proxy::Scope::Refused),
             What::Containers(a) => crate::containers::answer(self, o.id, *a, false),
             What::BillingSwitch { session, to, .. } => {
-                let name = std::iter::once(&self.session)
-                    .chain(&self.sessions)
+                let name = std::iter::once(&self.workspace)
+                    .chain(&self.workspaces)
                     .find(|l| l.id == session)
                     .map_or_else(String::new, |l| l.name.clone());
                 let stays = match to {
@@ -2699,8 +2700,8 @@ impl crate::editor::Editor {
 
     /// Other sessions' cards waiting, oldest first (P3 step 7d: every session's asks in one stack — each a peek behind
     /// this session's, named in its colour).
-    pub fn asks_elsewhere(&self) -> Vec<(&crate::session::Session, &Offer)> {
-        let mut v: Vec<_> = (self.sessions.iter())
+    pub fn asks_elsewhere(&self) -> Vec<(&crate::workspace::Workspace, &Offer)> {
+        let mut v: Vec<_> = (self.workspaces.iter())
             .flat_map(|l| l.parked.iter().filter(|o| !o.installing()).map(move |o| (l, o)))
             .collect();
         crate::sorting::by_key(&mut v, |(_, o)| (o.since, o.id));

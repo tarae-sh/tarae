@@ -211,30 +211,30 @@ impl Follow {
 }
 
 fn follow(ed: &mut Editor) -> Option<&mut Follow> {
-    ed.session.chat.as_mut().map(|c| &mut c.follow)
+    ed.workspace.claude.chat.as_mut().map(|c| &mut c.follow)
 }
 
 /// The code pane follow leads: the one it took (`Follow.pane`) while it's there, else the focused one.
 pub fn pane(ed: &Editor) -> crate::split::PaneId {
-    let views = &ed.session.views;
-    let taken = ed.session.chat.as_ref().and_then(|c| c.follow.pane);
-    taken.filter(|p| views.iter().any(|v| v.id == *p)).unwrap_or(ed.session.focus)
+    let views = &ed.workspace.views;
+    let taken = ed.workspace.claude.chat.as_ref().and_then(|c| c.follow.pane);
+    taken.filter(|p| views.iter().any(|v| v.id == *p)).unwrap_or(ed.workspace.viewer.focus)
 }
 
 /// Follow leads a pane that isn't the focused one (your keys' code is elsewhere) — that pane, outside an `in_pane`.
 pub fn aside(ed: &Editor) -> Option<crate::split::PaneId> {
-    let on = ed.session.chat.as_ref().is_some_and(|c| c.follow.on);
+    let on = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.follow.on);
     let p = pane(ed);
-    (on && ed.session.pane_swapped.is_none() && p != ed.session.focus).then_some(p)
+    (on && ed.workspace.viewer.pane_swapped.is_none() && p != ed.workspace.viewer.focus).then_some(p)
 }
 
 /// Whether code pane `id`, showing `doc`, draws Claude's caret as it writes there: the pane follow leads when that one
 /// shows the document, else every pane that does — one caret for one writer wherever it can be told.
 pub fn caret_in(ed: &Editor, id: crate::split::PaneId, doc: &crate::document::Document) -> bool {
     let p = pane(ed);
-    let shown = match p == ed.session.focus {
+    let shown = match p == ed.workspace.viewer.focus {
         true => Some(ed.doc().id),
-        false => ed.session.views.iter().find(|v| v.id == p).map(|v| v.doc),
+        false => ed.workspace.views.iter().find(|v| v.id == p).map(|v| v.doc),
     };
     id == p || shown != Some(doc.id)
 }
@@ -255,7 +255,7 @@ fn cursor_key(ed: &Editor) -> (DocId, usize, usize) {
 /// once it's written, a search at its first hit once its answer is in).
 pub fn on_tool(ed: &mut Editor, id: &str, name: &str, input: &serde_json::Value, look: &Look) {
     // (its words right before this call — the replay's card says them at this stop)
-    let said = ed.session.chat.as_ref().map(crate::edits::reason).unwrap_or_default();
+    let said = ed.workspace.claude.chat.as_ref().map(crate::edits::reason).unwrap_or_default();
     let Some(f) = follow(ed) else { return };
     f.calls.push((id.to_string(), name.to_string(), input.clone()));
     let mut page = None;
@@ -362,7 +362,7 @@ fn writing_here(ed: &mut Editor, path: &Path, lines: Range<usize>) {
     {
         f.block_jump = Some(crate::clock::now());
     }
-    let following = ed.session.chat.as_ref().is_some_and(|c| c.follow.active()) && !ed.background();
+    let following = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.follow.active()) && !ed.background();
     let doc = ed.doc_mut();
     if following && doc.path.as_deref() == Some(path) && !doc.loading {
         doc.writing_align = Some(start);
@@ -402,7 +402,7 @@ fn writing_at_here(ed: &mut Editor, path: &Path, lines: Range<usize>, place: usi
     if past {
         go_range(ed, path, lines);
     }
-    let Some(f) = ed.session.chat.as_ref().map(|c| &c.follow) else { return };
+    let Some(f) = ed.workspace.claude.chat.as_ref().map(|c| &c.follow) else { return };
     let doc = ed.doc();
     let line = place.min(crate::movement::last_line(&doc.text));
     // (a block's jump waits for PACE: the view goes with it)
@@ -430,21 +430,21 @@ fn view_key(ed: &Editor) -> (DocId, usize) {
 /// in front, in the focused pane — on, not paused, the view it took (`led`) there. None: the cursor's, as ever (and
 /// in a pane follow doesn't lead: your keys' while it leads another — `aside`).
 pub fn view_line(ed: &Editor) -> Option<usize> {
-    led_in(ed, ed.session.focus)
+    led_in(ed, ed.workspace.viewer.focus)
 }
 
 /// The line follow keeps in sight in code pane `id`: the pane it leads, on, not paused, the view it took (`led`) on
 /// the document that pane shows.
 pub fn led_in(ed: &Editor, id: crate::split::PaneId) -> Option<usize> {
-    let f = &ed.session.chat.as_ref()?.follow;
+    let f = &ed.workspace.claude.chat.as_ref()?.follow;
     let (doc_id, line) = f.led?;
     if !f.active() || ed.background() || pane(ed) != id {
         return None;
     }
-    let doc = match id == ed.session.focus {
+    let doc = match id == ed.workspace.viewer.focus {
         true => ed.doc(),
         false => {
-            let shows = ed.session.views.iter().find(|v| v.id == id)?.doc;
+            let shows = ed.workspace.views.iter().find(|v| v.id == id)?.doc;
             ed.docs.iter().find(|d| d.id == shows)?
         }
     };
@@ -462,7 +462,7 @@ pub fn your_view(ed: &mut Editor) {
     }
     let line = ed.cursor_line();
     ed.show_range(line..line + 1);
-    if ed.session.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
+    if ed.workspace.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
         ed.set_status("you took over — C-f follows Claude again");
     }
 }
@@ -473,7 +473,7 @@ pub fn your_view(ed: &mut Editor) {
 /// SELECT — follow, leading again, puts its cursor (a point) where Claude is.
 pub fn free(ed: &Editor) -> bool {
     // (leading a pane your keys aren't in: what's under way is yours, there — nothing holds this one)
-    ed.session.pane_swapped.is_some()
+    ed.workspace.viewer.pane_swapped.is_some()
         || aside(ed).is_some()
         || ed.mode == crate::editor::Mode::Normal
             && ed.pending.is_empty()
@@ -484,8 +484,8 @@ pub fn free(ed: &Editor) -> bool {
 /// Follow is leading the view: on, not paused, a turn under way, the view held where Claude is and nothing of yours
 /// under way — the status line says `● follow`, and the code marks Claude's place.
 pub fn leads(ed: &Editor) -> bool {
-    let Some(c) = ed.session.chat.as_ref() else { return false };
-    c.busy() && ed.session.review.is_none() && led_in(ed, pane(ed)).is_some() && free(ed)
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return false };
+    c.busy() && ed.workspace.claude.review.is_none() && led_in(ed, pane(ed)).is_some() && free(ed)
 }
 
 /// The line of `doc`, shown in code pane `id`, marked as Claude's place (`codeview::Shows.claude`): the one follow
@@ -507,7 +507,7 @@ pub fn wrote(ed: &mut Editor, call: Option<&str>, path: &Path, before: &ropey::R
 }
 
 fn wrote_here(ed: &mut Editor, call: Option<&str>, path: &Path, before: &ropey::Rope, after: &ropey::Rope) {
-    if !ed.session.chat.as_ref().is_some_and(|c| c.follow.active())
+    if !ed.workspace.claude.chat.as_ref().is_some_and(|c| c.follow.active())
         || ed.background()
         || !path.is_file()
         || !in_project(ed, path)
@@ -573,10 +573,10 @@ pub fn last_difference(a: &ropey::Rope, b: &ropey::Rope) -> usize {
 /// to: its rows as drawn).
 fn in_sight(ed: &Editor, path: &Path, lines: &Range<usize>) -> bool {
     let doc = ed.doc();
-    let shown: Vec<usize> = match ed.session.pane_swapped {
+    let shown: Vec<usize> = match ed.workspace.viewer.pane_swapped {
         None => ed.view.iter().map(crate::codeview::Row::line).collect(),
         Some(_) => {
-            let drawn = ed.screen.panes.iter().find(|p| p.0 == ed.session.focus);
+            let drawn = ed.screen.panes.iter().find(|p| p.0 == ed.workspace.viewer.focus);
             drawn.map(|p| p.3.iter().map(|o| o.0).collect()).unwrap_or_default()
         }
     };
@@ -594,7 +594,7 @@ pub fn before_edit(ed: &mut Editor, real: PathBuf, before: Option<String>) {
 /// The walk-through's stop the cursor is on, or the view while follow holds it (its file, lines and why) — `space n`
 /// there asks about it.
 pub fn stop_here(ed: &Editor) -> Option<(PathBuf, Range<usize>, String)> {
-    let g = ed.session.chat.as_ref()?.follow.gaze.as_ref()?;
+    let g = ed.workspace.claude.chat.as_ref()?.follow.gaze.as_ref()?;
     let (path, lines, why) = (g.path.as_ref()?, g.lines.clone()?, g.why.clone()?);
     g.step?;
     let doc = ed.doc();
@@ -694,7 +694,7 @@ fn mentions(root: &Path, text: &str, in_code: bool) -> Vec<(usize, Mention)> {
 /// look — the editor goes there. Words are read up to their last blank (a half-written one waits) — all of
 /// them once the turn is over (`all`).
 pub fn on_words(ed: &mut Editor, all: bool) {
-    let Some(c) = ed.session.chat.as_ref() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return };
     if !c.follow.active() {
         return;
     }
@@ -717,7 +717,7 @@ pub fn on_words(ed: &mut Editor, all: bool) {
         .enumerate()
         .skip(seen)
         .filter_map(|(k, (_, at, why))| {
-            let (_, m) = mentions(&ed.session.root, at, false)
+            let (_, m) = mentions(&ed.workspace.root, at, false)
                 .into_iter()
                 .find(|m| matches!(m.1, Mention::Place(..)))?;
             let Mention::Place(path, lines) = m else { return None };
@@ -727,7 +727,7 @@ pub fn on_words(ed: &mut Editor, all: bool) {
         .collect();
     let taken = tags.len();
     // Places inside a tag are the tag's
-    let found: Vec<(usize, Mention)> = mentions(&ed.session.root, &text[from..cut], in_code)
+    let found: Vec<(usize, Mention)> = mentions(&ed.workspace.root, &text[from..cut], in_code)
         .into_iter()
         .filter(|(at, _)| !tags.iter().any(|t| t.0.contains(&(from + at - 1))))
         .collect();
@@ -771,7 +771,7 @@ fn look_at(ed: &mut Editor, path: &Path, lines: Range<usize>, why: String, paced
     if !path.is_file() || !in_project(ed, path) {
         return;
     }
-    let what = crate::chat::shown(&ed.session.root, path);
+    let what = crate::chat::shown(&ed.workspace.root, path);
     let Some(f) = follow(ed) else { return };
     f.wanted = None;
     let stop = Stop { path: path.to_path_buf(), lines: lines.clone(), why, shown: false };
@@ -806,13 +806,13 @@ fn look_at(ed: &mut Editor, path: &Path, lines: Range<usize>, why: String, paced
 /// The walk-through's next stop, once the one showing has had its time (the explanation after it, at
 /// reading speed: 2.5–8 s) — then it wakes itself for the one after. Not while the user has taken over.
 fn play(ed: &mut Editor) {
-    let root = ed.session.root.clone();
+    let root = ed.workspace.root.clone();
     let background = ed.background();
     let Some(f) = follow(ed) else { return };
     if !f.active() || f.playing.is_some_and(|(until, _)| crate::clock::now() < until) {
         return;
     }
-    // A session behind: the tour waits where it is, and goes on when the session is in front (`session_in`)
+    // A session behind: the tour waits where it is, and goes on when the session is in front (`workspace_in`)
     if background {
         f.playing = None;
         return;
@@ -820,7 +820,7 @@ fn play(ed: &mut Editor) {
     let Some((msg, k, stop, step)) = f.queue.pop_front() else {
         f.playing = None;
         // The tour is over: now the list it left says how to walk it again
-        if std::mem::take(&mut f.announce) && ed.session.qlist.as_ref().is_some_and(|l| l.title == TOUR) {
+        if std::mem::take(&mut f.announce) && ed.workspace.qlist.as_ref().is_some_and(|l| l.title == TOUR) {
             ed.qlist_announce();
         }
         return;
@@ -847,7 +847,7 @@ fn play(ed: &mut Editor) {
     f.tour_gen += 1;
     let generation = f.tour_gen;
     // How long its explanation is — the words from its tag to the next (or the end, so far)
-    let said = ed.session.chat.as_ref().and_then(|c| c.msgs.get(msg)).map_or(0, |m| {
+    let said = ed.workspace.claude.chat.as_ref().and_then(|c| c.msgs.get(msg)).map_or(0, |m| {
         let tags = crate::chat::show_tags(&m.text);
         let from = tags.get(k).map_or(m.text.len(), |t| t.0.end);
         let to = tags.get(k + 1).map_or(m.text.len(), |t| t.0.start);
@@ -862,7 +862,7 @@ fn play(ed: &mut Editor) {
         f.playing = Some((crate::clock::now() + dwell, generation));
     }
     // The list (a finished turn's) marks where the tour is
-    if let Some(l) = ed.session.qlist.as_mut().filter(|l| l.title == TOUR) {
+    if let Some(l) = ed.workspace.qlist.as_mut().filter(|l| l.title == TOUR) {
         l.current = l.items.iter().position(|it| it.path == stop.path && it.line == lines.start);
     }
     go_range(ed, &stop.path, lines);
@@ -882,7 +882,7 @@ fn play(ed: &mut Editor) {
 /// taking over — it once stayed paused for nine minutes after a tab click), it catches up with where
 /// Claude is now, a walk-through that waited behind goes on, and one paused takes over again a quiet while
 /// after you came back (never while behind).
-pub fn session_in(ed: &mut Editor) {
+pub fn workspace_in(ed: &mut Editor) {
     let now = cursor_key(ed);
     let input = ed.person_seq;
     let Some(f) = follow(ed) else { return };
@@ -907,7 +907,8 @@ pub fn session_in(ed: &mut Editor) {
 /// The `name` Claude last mentioned, in the outline of a file open here (the one shown first) — worked out
 /// on a worker when it isn't yet, and looked for again when it lands.
 fn find_wanted(ed: &mut Editor) {
-    let Some((name, parent, why, paced)) = ed.session.chat.as_ref().and_then(|c| c.follow.wanted.clone())
+    let Some((name, parent, why, paced)) =
+        ed.workspace.claude.chat.as_ref().and_then(|c| c.follow.wanted.clone())
     else {
         return;
     };
@@ -922,7 +923,7 @@ fn find_wanted(ed: &mut Editor) {
             continue;
         };
         let version = doc.version();
-        let Some(f) = ed.session.chat.as_ref().map(|c| &c.follow) else { return };
+        let Some(f) = ed.workspace.claude.chat.as_ref().map(|c| &c.follow) else { return };
         let Some((_, _, defs)) = f.defs.iter().find(|d| d.0 == id && d.1 == version) else {
             if !f.outlining.contains(&(id, version)) {
                 missing.push((id, version, tree, doc.text.clone()));
@@ -966,7 +967,8 @@ fn find_wanted(ed: &mut Editor) {
 pub fn on_result(ed: &mut Editor, id: &str, text: &str, error: bool) {
     // The row's verdict (a run's `ok`, `12 references in 3 files`) is the stop's too
     let row = ed
-        .session
+        .workspace
+        .claude
         .chat
         .as_ref()
         .and_then(|c| c.msgs.iter().rev().find(|m| m.call == id))
@@ -980,7 +982,7 @@ pub fn on_result(ed: &mut Editor, id: &str, text: &str, error: bool) {
     match name.as_str() {
         "Edit" | "Write" => {
             let path =
-                crate::chat::resolve(&ed.session.root, input["file_path"].as_str().unwrap_or_default());
+                crate::chat::resolve(&ed.workspace.root, input["file_path"].as_str().unwrap_or_default());
             edit_written(ed, id, &name, &input, path, error);
         }
         "Grep" | "Glob" | "mcp__tarae__search" | "mcp__tarae__references" | "mcp__tarae__definition"
@@ -995,11 +997,12 @@ pub fn on_result(ed: &mut Editor, id: &str, text: &str, error: bool) {
 /// A search's or a lookup's answer: its first hit and its count — on its stop, its row and (while it's
 /// still where Claude is) the card, the editor at the hit.
 fn found(ed: &mut Editor, id: &str, text: &str) {
-    let root = ed.session.root.clone();
+    let root = ed.workspace.root.clone();
     let hits = crate::replay::hits(&root, text);
     let count = crate::replay::count(text, &hits, text.len() >= 4000);
     let first = hits.into_iter().find(|(p, _)| p.starts_with(&root) || !p.is_absolute());
-    if let Some(m) = ed.session.chat.as_mut().and_then(|c| c.msgs.iter_mut().rev().find(|m| m.call == id))
+    if let Some(m) =
+        ed.workspace.claude.chat.as_mut().and_then(|c| c.msgs.iter_mut().rev().find(|m| m.call == id))
         && let Some(l) = m.look.as_mut()
     {
         if !count.is_empty() {
@@ -1044,7 +1047,7 @@ fn edit_written(
     path: PathBuf,
     error: bool,
 ) {
-    let generation = ed.session.chat.as_ref().map(crate::chat::Chat::generation);
+    let generation = ed.workspace.claude.chat.as_ref().map(crate::chat::Chat::generation);
     let (id, write) = (id.to_string(), name == "Write");
     let s = |k: &str| input[k].as_str().unwrap_or_default().to_string();
     let (old, new, all) = (s("old_string"), s("new_string"), input["replace_all"].as_bool() == Some(true));
@@ -1053,7 +1056,7 @@ fn edit_written(
         let now = (!error).then(|| std::fs::read_to_string(&real).ok()).flatten();
         let stamp = crate::disk::stamp(&real);
         move |ed: &mut Editor| {
-            if ed.session.chat.as_ref().map(crate::chat::Chat::generation) != generation {
+            if ed.workspace.claude.chat.as_ref().map(crate::chat::Chat::generation) != generation {
                 return;
             }
             let Some(f) = follow(ed) else { return };
@@ -1105,7 +1108,8 @@ fn landed(
         (_, n) => format!("L{}–{}{}", lines.start + 1, lines.end, more(n)),
     };
     // The row says where (it was the file's top until now)
-    if let Some(m) = ed.session.chat.as_mut().and_then(|c| c.msgs.iter_mut().rev().find(|m| m.call == id))
+    if let Some(m) =
+        ed.workspace.claude.chat.as_mut().and_then(|c| c.msgs.iter_mut().rev().find(|m| m.call == id))
         && let Some(l) = m.look.as_mut()
     {
         l.range = range.clone();
@@ -1170,7 +1174,7 @@ fn more(n: usize) -> String {
 /// Scrolling the chat from now on moves the editor (`reading`).
 pub fn on_done(ed: &mut Editor) {
     on_words(ed, true);
-    let scroll = ed.session.chat.as_ref().map(|c| c.scroll);
+    let scroll = ed.workspace.claude.chat.as_ref().map(|c| c.scroll);
     let Some(f) = follow(ed) else { return };
     let mut stops = std::mem::take(&mut f.stops);
     let touring = f.touring();
@@ -1184,25 +1188,26 @@ pub fn on_done(ed: &mut Editor) {
         stops.retain(|s| s.shown);
     } else {
         // (the last of its words this turn that point anywhere — a closing line may not)
-        let first = ed.session.chat.as_ref().and_then(|c| {
+        let first = ed.workspace.claude.chat.as_ref().and_then(|c| {
             let turn = c.msgs.iter().rposition(|m| m.role == Role::User).map_or(0, |i| i + 1);
             c.msgs[turn..]
                 .iter()
                 .rev()
                 .filter(|m| m.role == Role::Assistant)
-                .find_map(|m| refs_in(&ed.session.root, &m.text).into_iter().next())
+                .find_map(|m| refs_in(&ed.workspace.root, &m.text).into_iter().next())
                 .map(|(_, l)| l)
         });
         if let Some(link) = &first {
             go(ed, &link.path, link.line);
         }
     }
-    let free = ed.session.qlist.as_ref().is_none_or(|l| l.items.is_empty() || l.title == TOUR);
+    let free = ed.workspace.qlist.as_ref().is_none_or(|l| l.items.is_empty() || l.title == TOUR);
     if stops.len() < 2 || !free {
         return;
     }
     let showing = ed
-        .session
+        .workspace
+        .claude
         .chat
         .as_ref()
         .and_then(|c| c.follow.gaze.as_ref())
@@ -1220,7 +1225,7 @@ pub fn on_done(ed: &mut Editor) {
         .collect();
     let at = showing.and_then(|(p, l)| items.iter().position(|it| it.path == p && it.line == l));
     // While the tour plays, its card has the screen — the list says itself when the tour is over
-    let touring = ed.session.chat.as_ref().is_some_and(|c| c.follow.touring());
+    let touring = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.follow.touring());
     if touring {
         ed.qlist_put(TOUR, items);
     } else {
@@ -1229,7 +1234,7 @@ pub fn on_done(ed: &mut Editor) {
     if let Some(f) = follow(ed) {
         f.announce = touring;
     }
-    if let Some(l) = ed.session.qlist.as_mut() {
+    if let Some(l) = ed.workspace.qlist.as_mut() {
         l.current = at;
     }
 }
@@ -1237,7 +1242,7 @@ pub fn on_done(ed: &mut Editor) {
 /// After the turn, while you read the answer: when the chat scrolls, the editor shows the first place the
 /// chat now shows (its links, as the last frame drew them). True when it moved — draw again.
 pub fn reading(ed: &mut Editor) -> bool {
-    let Some(c) = ed.session.chat.as_ref() else { return false };
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return false };
     // (read_at is set when a turn ends — before that there's no answer to read along)
     if c.busy()
         || !c.follow.active()
@@ -1272,7 +1277,7 @@ const TOUR: &str = "Claude's walk-through";
 /// follow goes nowhere else — a file Claude reads elsewhere (its memory under `~/.claude`, a temp file)
 /// isn't opened; the card still says what it reads.
 fn in_project(ed: &Editor, path: &Path) -> bool {
-    std::fs::canonicalize(path).is_ok_and(|p| p.starts_with(&ed.session.root))
+    std::fs::canonicalize(path).is_ok_and(|p| p.starts_with(&ed.workspace.root))
 }
 
 /// Moves the editor to `line` (when following and the user hasn't taken over) — in the project only.
@@ -1289,7 +1294,7 @@ fn go_range(ed: &mut Editor, path: &Path, lines: Range<usize>) {
 fn go_range_here(ed: &mut Editor, path: &Path, lines: Range<usize>) {
     // (a session behind keeps its trail; the editor in front is someone else's)
     if ed.background()
-        || !ed.session.chat.as_ref().is_some_and(|c| c.follow.active())
+        || !ed.workspace.claude.chat.as_ref().is_some_and(|c| c.follow.active())
         || !free(ed)
         || !path.is_file()
         || !in_project(ed, path)
@@ -1304,7 +1309,7 @@ fn go_range_here(ed: &mut Editor, path: &Path, lines: Range<usize>) {
     }
     sync_shown(ed);
     let already = ed.docs.iter().any(|d| d.path.as_deref() == Some(path));
-    if !ed.session.chat.as_ref().is_some_and(|c| c.follow.jumped) {
+    if !ed.workspace.claude.chat.as_ref().is_some_and(|c| c.follow.jumped) {
         ed.push_jump();
     }
     if let Err(e) = ed.open_for_claude(path) {
@@ -1312,7 +1317,7 @@ fn go_range_here(ed: &mut Editor, path: &Path, lines: Range<usize>) {
     }
     let here = ed.doc().id;
     // (one in the build output goes when the turn ends, unless you take it up — #46)
-    let aside = ed.doc().path.as_deref().is_some_and(|p| crate::edits::aside_path(&ed.session.root, p));
+    let aside = ed.doc().path.as_deref().is_some_and(|p| crate::edits::aside_path(&ed.workspace.root, p));
     if !already && aside {
         ed.doc_mut().aside = true;
     }
@@ -1338,7 +1343,7 @@ fn go_range_here(ed: &mut Editor, path: &Path, lines: Range<usize>) {
     }
     for id in stale {
         // (one another pane shows is that pane's — yours: kept)
-        let elsewhere = ed.session.views.iter().any(|v| v.id != ed.session.focus && v.doc == id);
+        let elsewhere = ed.workspace.views.iter().any(|v| v.id != ed.workspace.viewer.focus && v.doc == id);
         if ed.docs.iter().any(|d| d.id == id && !d.is_modified()) && !elsewhere {
             ed.close_doc(id);
         }
@@ -1356,7 +1361,7 @@ pub fn watch(ed: &mut Editor) {
     let input_seq = ed.person_seq;
     sync_shown(ed);
     // Waiting for a big file: once loaded, the frame takes follow's line into sight (`view_line`)
-    if let Some(id) = ed.session.chat.as_ref().and_then(|c| c.follow.awaiting) {
+    if let Some(id) = ed.workspace.claude.chat.as_ref().and_then(|c| c.follow.awaiting) {
         let loaded = ed.docs.iter().any(|d| d.id == id && !d.loading);
         let gone = !ed.docs.iter().any(|d| d.id == id);
         if let Some(f) = follow(ed) {
@@ -1373,12 +1378,13 @@ pub fn watch(ed: &mut Editor) {
     // (a key of yours in the code that leaves INSERT or SELECT is you taking over, though the cursor stays. A key
     // sequence under way — `g`…, a count, `space`, `C-w` — isn't yet: follow only holds the cursor still meanwhile
     // (`free`), and the sequence's end decides — a move or an edit pauses, a hop to the chat or a picker doesn't)
-    let in_code = matches!(ed.session.at, crate::session::At::Code | crate::session::At::Float(_));
+    let in_code =
+        matches!(ed.workspace.viewer.at, crate::workspace::At::Code | crate::workspace::At::Float(_));
     let under_way = in_code && ed.mode != crate::editor::Mode::Normal;
     // (your keys in a pane follow doesn't lead never pause it — its view moves, yours stays; a hop between the code's
     // panes isn't a move: where the cursor is there counts as seen — panes P3 step 8)
     let aside = aside(ed).is_some();
-    let focus = ed.session.focus;
+    let focus = ed.workspace.viewer.focus;
     let Some(f) = follow(ed) else { return };
     let hopped = f.seen_pane.replace(focus).is_some_and(|p| p != focus);
     if aside || hopped {
@@ -1407,7 +1413,7 @@ pub fn watch(ed: &mut Editor) {
         arm_resume(ed);
     }
     // Said: the status line's `● follow` goes, and why
-    if paused && ed.session.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
+    if paused && ed.workspace.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
         ed.set_status("you took over — C-f follows Claude again");
     }
 }
@@ -1415,7 +1421,7 @@ pub fn watch(ed: &mut Editor) {
 /// Follow's edit on the document it's in: its changes on the review's wash, the lines they replaced above
 /// them (`Document::shown`) — while the buffer is still the version they were seen in; none elsewhere.
 fn sync_shown(ed: &mut Editor) {
-    let want = ed.session.chat.as_ref().and_then(|c| c.follow.shown()).and_then(|g| {
+    let want = ed.workspace.claude.chat.as_ref().and_then(|c| c.follow.shown()).and_then(|g| {
         let (id, version) = g.shown_in?;
         (!g.edit.is_empty()).then(|| (id, version, g.edit.clone()))
     });
@@ -1445,13 +1451,13 @@ fn arm_resume(ed: &mut Editor) {
     let since = f.last_input.map_or(wait, crate::clock::since);
     f.resume_armed = true;
     let left = wait.saturating_sub(since).max(std::time::Duration::from_millis(10));
-    let session = ed.session.id;
+    let session = ed.workspace.id;
     ed.events.jobs().spawn(move || {
         crate::event::sleep(left);
         move |ed: &mut Editor| {
-            // The session behind now (swapped in for this — `with_session`) or gone: its follow waits for it to
-            // come back, and `session_in` arms it again (left armed, no wake-up would ever come for it)
-            let here = ed.session.id == session;
+            // The session behind now (swapped in for this — `with_workspace`) or gone: its follow waits for it to
+            // come back, and `workspace_in` arms it again (left armed, no wake-up would ever come for it)
+            let here = ed.workspace.id == session;
             if !here || ed.background() {
                 if let Some(f) = follow(ed).filter(|_| here) {
                     f.resume_armed = false;
@@ -1464,12 +1470,13 @@ fn arm_resume(ed: &mut Editor) {
 }
 
 fn resume_due(ed: &mut Editor) {
-    let busy = ed.session.chat.as_ref().is_some_and(|c| c.busy());
+    let busy = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.busy());
     let free = free(ed)
         && ed.prompt.is_none()
         && ed.picker.is_none()
-        && ed.session.review.is_none()
-        && !(ed.session.chat_has_keys() && ed.session.chat.as_ref().is_some_and(|c| !c.input.is_empty()));
+        && ed.workspace.claude.review.is_none()
+        && !(ed.workspace.chat_has_keys()
+            && ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.input.is_empty()));
     let wait = quiet(ed);
     let Some(f) = follow(ed) else { return };
     f.resume_armed = false;
@@ -1506,7 +1513,9 @@ fn resume_due(ed: &mut Editor) {
 /// changes shown as the review shows them, the card saying which stop of how many. While Claude works it
 /// holds follow (you're looking back); past the newest stop it follows again.
 pub fn replay_step(ed: &mut Editor, forward: bool) {
-    let Some(c) = ed.session.chat.as_mut() else { return ed.set_status("no chat — nothing to replay") };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else {
+        return ed.set_status("no chat — nothing to replay");
+    };
     let busy = c.busy();
     let f = &mut c.follow;
     match f.replay.step(forward) {
@@ -1580,7 +1589,7 @@ pub fn strip_hovered(ed: &mut Editor, x: usize, y: usize) -> bool {
 /// A frame drawn while the mouse is over a mark of the strip (`term::render`): still under it? A new stop shifts the
 /// strip under a mouse that didn't move — then the one there now is named. Whether it changed (the frame drawn again).
 pub fn strip_drawn(ed: &mut Editor) -> bool {
-    if ed.session.chat.as_ref().is_none_or(|c| c.follow.hover.is_none()) {
+    if ed.workspace.claude.chat.as_ref().is_none_or(|c| c.follow.hover.is_none()) {
         return false;
     }
     let over = ed.presence.hover_at.and_then(|(x, y)| strip_under(ed, x, y));
@@ -1588,7 +1597,7 @@ pub fn strip_drawn(ed: &mut Editor) -> bool {
 }
 
 fn strip_hovered_to(ed: &mut Editor, over: Option<String>) -> bool {
-    let Some(c) = ed.session.chat.as_mut() else { return false };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return false };
     let changed = c.follow.hover != over;
     c.follow.hover = over;
     changed
@@ -1596,7 +1605,7 @@ fn strip_hovered_to(ed: &mut Editor, over: Option<String>) -> bool {
 
 /// A press on a mark of the strip: that stop's replay, as `]r`/`[r` step to it. False: its stop is gone.
 pub fn replay_stop(ed: &mut Editor, call: &str) -> bool {
-    let Some(at) = ed.session.chat.as_ref().and_then(|c| c.follow.replay.place_of(call)) else {
+    let Some(at) = ed.workspace.claude.chat.as_ref().and_then(|c| c.follow.replay.place_of(call)) else {
         return false;
     };
     show_stop(ed, at);
@@ -1605,11 +1614,12 @@ pub fn replay_stop(ed: &mut Editor, call: &str) -> bool {
 
 /// A click on a chat row of a call, or `C-]` there: that call's stop. False: it has none.
 pub fn replay_call(ed: &mut Editor, call: &str) -> bool {
-    let Some(at) = ed.session.chat.as_ref().and_then(|c| c.follow.replay.place_of(call)) else {
+    let Some(at) = ed.workspace.claude.chat.as_ref().and_then(|c| c.follow.replay.place_of(call)) else {
         return false;
     };
     let has_place = ed
-        .session
+        .workspace
+        .claude
         .chat
         .as_ref()
         .and_then(|c| c.follow.replay.get(at))
@@ -1623,10 +1633,10 @@ pub fn replay_call(ed: &mut Editor, call: &str) -> bool {
 /// Shows stop `at`: its file and lines (in the project), its changes if the buffer still has them as they
 /// were written, the card on it.
 fn show_stop(ed: &mut Editor, at: (usize, usize)) {
-    let root = ed.session.root.clone();
+    let root = ed.workspace.root.clone();
     // (a stop shows where the key was pressed: in a pane follow doesn't lead, that one goes on following)
     let aside = aside(ed).is_some();
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     let busy = c.busy();
     let f = &mut c.follow;
     let Some(stop) = f.replay.get(at).cloned() else { return };
@@ -1727,7 +1737,7 @@ pub fn page_read(
 /// (web-plan D14): it was fetched through the gate the user answered, opens no file and runs nothing, and shows
 /// read-only. Never fetched again: a copy the session no longer keeps is said.
 fn show_page(ed: &mut Editor, url: &str, at: std::time::Instant, lines: Range<usize>) {
-    match ed.session.pages.kept(url, at) {
+    match ed.workspace.pages.kept(url, at) {
         Some(f) => crate::web::page::open_copy(ed, f, at, lines),
         None => ed.set_status(format!(
             "the page Claude read {} isn't kept — :web! {url} fetches it now",
@@ -1782,7 +1792,7 @@ pub fn panes_gone(ed: &mut Editor, gone: &[crate::split::PaneId]) {
 
 /// Follow on and leading again, in the code pane last focused, the editor where Claude is now.
 fn resume(ed: &mut Editor) {
-    let focus = ed.session.focus;
+    let focus = ed.workspace.viewer.focus;
     let Some(f) = follow(ed) else { return };
     f.on = true;
     f.paused = false;
@@ -1801,12 +1811,12 @@ fn resume(ed: &mut Editor) {
 /// Follow session `id` (collab C1 — one session at a time: the one whose workspace you're in): into its workspace when
 /// it's another (your session moves there), its follow on and leading — a click on its name tag, `f` on its row in the
 /// list, `space F`. The first key of yours stops it there, as ever (`watch`); `C-f` in its chat follows again.
-pub fn follow_session(ed: &mut Editor, id: crate::event::SessionId) {
-    if id != ed.session.id && !ed.session_switch(id) {
+pub fn follow_session(ed: &mut Editor, id: crate::event::WorkspaceId) {
+    if id != ed.workspace.id && !ed.workspace_switch(id) {
         return ed.set_status("that session is gone");
     }
-    let name = ed.session.label().to_string();
-    if ed.session.chat.is_none() {
+    let name = ed.workspace.label().to_string();
+    if ed.workspace.claude.chat.is_none() {
         return ed.set_status(format!("{name} has no Claude to follow"));
     }
     resume(ed);
@@ -1816,19 +1826,19 @@ pub fn follow_session(ed: &mut Editor, id: crate::event::SessionId) {
 /// `space F`: follow the next session at work after the one in front (Zed's "follow next collaborator") — the one in
 /// front too, last, when it's the only one at work and you aren't following it.
 pub fn follow_next(ed: &mut Editor) {
-    let order: Vec<(crate::event::SessionId, bool)> = ed
+    let order: Vec<(crate::event::WorkspaceId, bool)> = ed
         .sessions_in_order()
         .iter()
-        .map(|l| (l.id, matches!(ed.doing(l), crate::session::Doing::Working)))
+        .map(|l| (l.id, matches!(ed.doing(l), crate::workspace::Doing::Working)))
         .collect();
-    let at = order.iter().position(|(id, _)| *id == ed.session.id).unwrap_or(0);
+    let at = order.iter().position(|(id, _)| *id == ed.workspace.id).unwrap_or(0);
     let next = (1..=order.len()).map(|k| order[(at + k) % order.len()]).find(|&(id, working)| {
-        working && (id != ed.session.id || !crate::presence::followed(ed).is_some_and(|f| f == id))
+        working && (id != ed.workspace.id || !crate::presence::followed(ed).is_some_and(|f| f == id))
     });
     match next {
         Some((id, _)) => follow_session(ed, id),
         None if order.iter().any(|(_, w)| *w) => {
-            ed.set_status(format!("already following {} — no other session is at work", ed.session.label()))
+            ed.set_status(format!("already following {} — no other session is at work", ed.workspace.label()))
         }
         None => ed.set_status("no session is at work"),
     }

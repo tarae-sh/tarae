@@ -1,6 +1,6 @@
 //! Runs that wait for their slot — phase 1 of docs/design/async.md, "wait, don't refuse". A session has two
 //! slots, the task panel and the test pane, each running one run at a time. A run asked while its slot is
-//! busy waits in the session's line (`Session.runs_next`) instead of being refused, and starts when the slot
+//! busy waits in the session's line (`Workspace.runs_next`) instead of being refused, and starts when the slot
 //! frees (`run_next`, from a run's end, close, or a start that came to nothing) — Claude's call waits with it
 //! and its answer says how long (`waits::Waiting::said`).
 //!
@@ -9,7 +9,7 @@
 //!   Claude's (`run_now`).
 //! - **One run, every caller answered** (`join`, §3.4): Claude sending the same command again (the same
 //!   checkout, folder, words and grants) joins the one waiting, or the one under way while nothing in that
-//!   checkout was saved or written since it started (`Session.wrote`) and nothing there is unsaved.
+//!   checkout was saved or written since it started (`Workspace.wrote`) and nothing there is unsaved.
 //! - **Seen** (§3.6): a row per waiting run in its panel (`rows` — `queued · 2nd · behind cargo test ·
 //!   0:12`), `Doing::Queued` on the session's tab and in the list (`position`), and a row in `:procs`
 //!   (`Editor::procs_queued`).
@@ -21,8 +21,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use crate::editor::Editor;
-use crate::session::Session;
 use crate::tools::{Call, Extra, For, Job};
+use crate::workspace::Workspace;
 
 /// Where a run runs: the task panel, or the test pane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -140,7 +140,7 @@ pub struct Next {
 
 /// Whether `slot` is running a run now — or the checkout is being moved onto its base (`keepclose.rs`): every run
 /// waits for that.
-fn busy(l: &Session, slot: Slot) -> bool {
+fn busy(l: &Workspace, slot: Slot) -> bool {
     if l.moving.is_some() {
         return true;
     }
@@ -151,7 +151,7 @@ fn busy(l: &Session, slot: Slot) -> bool {
 }
 
 /// What runs in `slot` now, as a waiting row names it (`cargo test`, `tests editor::tests::undo`).
-fn holder(l: &Session, slot: Slot) -> Option<String> {
+fn holder(l: &Workspace, slot: Slot) -> Option<String> {
     if let Some(base) = &l.moving {
         return Some(format!("moving onto {base}"));
     }
@@ -171,7 +171,7 @@ fn holder(l: &Session, slot: Slot) -> Option<String> {
 
 /// Whether Claude's run in `slot` is what runs there now — what the user's own run waits behind rather
 /// than stops.
-pub fn claudes_running(l: &Session, slot: Slot) -> bool {
+pub fn claudes_running(l: &Workspace, slot: Slot) -> bool {
     // (the checkout moved onto its base: the user's run waits for that too — `keepclose.rs`)
     if l.moving.is_some() {
         return true;
@@ -204,7 +204,7 @@ pub fn key_of(root: &Path, job: &Job, extra: &Extra) -> String {
 pub fn admit(ed: &mut Editor, who: For, job: Job, mut ride: Ride) {
     let who = match who {
         For::Claude(call) => {
-            let key = key_of(&ed.session.root, &job, &ride.extra);
+            let key = key_of(&ed.workspace.root, &job, &ride.extra);
             let call = match join(ed, &key, call) {
                 Ok(()) => return,
                 Err(call) => call,
@@ -216,8 +216,9 @@ pub fn admit(ed: &mut Editor, who: For, job: Job, mut ride: Ride) {
     };
     let slot = What::Guarded { who: who.clone(), job: job.clone(), ride: Ride::default() }.slot();
     // (Claude's waits its turn behind what's in line; the user's goes first)
-    let behind = matches!(who, For::Claude(_)) && ed.session.runs_next.iter().any(|n| n.what.slot() == slot);
-    if busy(&ed.session, slot) || behind {
+    let behind =
+        matches!(who, For::Claude(_)) && ed.workspace.runs_next.iter().any(|n| n.what.slot() == slot);
+    if busy(&ed.workspace, slot) || behind {
         return push(ed, What::Guarded { who, job, ride });
     }
     crate::tools::guard_then_go(ed, who, job, ride);
@@ -228,7 +229,7 @@ pub fn admit(ed: &mut Editor, who: For, job: Job, mut ride: Ride) {
 /// to join, the call back.
 pub fn join(ed: &mut Editor, key: &str, call: Call) -> Result<(), Call> {
     let now = Instant::now();
-    let waiting = ed.session.runs_next.iter_mut().find_map(|n| match &mut n.what {
+    let waiting = ed.workspace.runs_next.iter_mut().find_map(|n| match &mut n.what {
         What::Guarded { who: For::Claude(_), ride, .. } if ride.key.as_deref() == Some(key) => Some(ride),
         _ => None,
     });
@@ -237,19 +238,19 @@ pub fn join(ed: &mut Editor, key: &str, call: Call) -> Result<(), Call> {
         ride.joined.push(Joined { call, asked: now, running: None });
         return Ok(());
     }
-    let root = ed.session.root.clone();
+    let root = ed.workspace.root.clone();
     let unsaved =
         ed.docs.iter().any(|d| d.is_modified() && d.path.as_ref().is_some_and(|p| p.starts_with(&root)));
-    let wrote = ed.session.wrote;
+    let wrote = ed.workspace.wrote;
     let fresh = |started: Instant| !unsaved && wrote.is_none_or(|w| w < started);
-    if let Some(r) = ed.session.task_run.as_mut().filter(|r| {
+    if let Some(r) = ed.workspace.task_run.as_mut().filter(|r| {
         r.state == crate::task::State::Running && r.key.as_deref() == Some(key) && fresh(r.started)
     }) {
         call.step("joined the same run, under way");
         r.joined.push(Joined { call, asked: now, running: Some(r.started.elapsed()) });
         return Ok(());
     }
-    if let Some(r) = ed.session.test_run.as_mut().filter(|r| {
+    if let Some(r) = ed.workspace.test_run.as_mut().filter(|r| {
         r.state == crate::testing::RunState::Running && r.key.as_deref() == Some(key) && fresh(r.started)
     }) {
         call.step("joined the same run, under way");
@@ -274,7 +275,7 @@ pub fn again(ed: &mut Editor, what: What, trace: Option<crate::trace::RunTrace>)
 
 fn push_at(ed: &mut Editor, mut what: What, front: bool, trace: Option<crate::trace::RunTrace>) {
     let slot = what.slot();
-    let holder = holder(&ed.session, slot);
+    let holder = holder(&ed.workspace, slot);
     // (back in line: its time and what it waited behind go on)
     let earlier = match &mut what {
         What::Guarded { ride, .. } => ride.queued.take(),
@@ -305,7 +306,7 @@ fn push_at(ed: &mut Editor, mut what: What, front: bool, trace: Option<crate::tr
     });
     trace.step("queued");
     let next = Next { id: trace.id(), what, queued, trace };
-    let line = &mut ed.session.runs_next;
+    let line = &mut ed.workspace.runs_next;
     if users {
         line.retain(|n| !mine(n, slot));
     }
@@ -330,14 +331,18 @@ fn push_at(ed: &mut Editor, mut what: What, front: bool, trace: Option<crate::tr
 pub fn run_next(ed: &mut Editor) {
     crate::tools::left_sync(ed);
     for slot in [Slot::Task, Slot::Tests] {
-        if busy(&ed.session, slot) {
+        if busy(&ed.workspace, slot) {
             continue;
         }
-        while let Some(i) = ed.session.runs_next.iter().position(|n| n.what.slot() == slot) {
-            let Some(next) = ed.session.runs_next.remove(i) else { break };
+        while let Some(i) = ed.workspace.runs_next.iter().position(|n| n.what.slot() == slot) {
+            let Some(next) = ed.workspace.runs_next.remove(i) else { break };
             // (as `tools.rs` checks a turn: another chat process, or one done, waits for nothing)
             let wanted = next.what.calls().first().is_none_or(|c| {
-                !ed.session.chat.as_ref().is_some_and(|ch| ch.generation() != c.generation() || !ch.busy())
+                !ed.workspace
+                    .claude
+                    .chat
+                    .as_ref()
+                    .is_some_and(|ch| ch.generation() != c.generation() || !ch.busy())
             });
             if wanted {
                 start(ed, next);
@@ -369,7 +374,7 @@ fn start(ed: &mut Editor, next: Next) {
 
 /// A run started in `slot` (`name`, as rows say it): what waits there waits behind it too.
 pub fn started(ed: &mut Editor, slot: Slot, name: &str) {
-    for n in ed.session.runs_next.iter_mut().filter(|n| n.what.slot() == slot) {
+    for n in ed.workspace.runs_next.iter_mut().filter(|n| n.what.slot() == slot) {
         if n.queued.behind.last().map(String::as_str) != Some(name) {
             n.queued.behind.push(name.to_string());
         }
@@ -383,16 +388,16 @@ fn mine(n: &Next, slot: Slot) -> bool {
 
 /// The user's own run waits in `slot`'s line (`enter run now` on its panel's view).
 pub fn mine_waits(ed: &Editor, slot: Slot) -> bool {
-    ed.session.runs_next.iter().any(|n| mine(n, slot))
+    ed.workspace.runs_next.iter().any(|n| mine(n, slot))
 }
 
 /// `enter` in the panel: the user's own run waiting in `slot` starts now — Claude's under way stops. False:
 /// none of theirs waits there.
 pub fn run_now(ed: &mut Editor, slot: Slot) -> bool {
-    let Some(i) = ed.session.runs_next.iter().position(|n| mine(n, slot)) else {
+    let Some(i) = ed.workspace.runs_next.iter().position(|n| mine(n, slot)) else {
         return false;
     };
-    match ed.session.runs_next.remove(i).map(|n| (n.what, n.trace)) {
+    match ed.workspace.runs_next.remove(i).map(|n| (n.what, n.trace)) {
         Some((What::Task(t), trace)) => ed.task_start_now(t, true, Some(trace)),
         Some((What::Tests(t), trace)) => ed.test_start_now(t, true, Some(trace)),
         _ => {}
@@ -403,8 +408,8 @@ pub fn run_now(ed: &mut Editor, slot: Slot) -> bool {
 /// Run `id` leaves the line (`s` on its row in `:procs`): Claude's calls on it are told it didn't run, and
 /// `why`.
 pub fn leave(ed: &mut Editor, id: u64, why: &str) {
-    let Some(i) = ed.session.runs_next.iter().position(|n| n.id == id) else { return };
-    let Some(n) = ed.session.runs_next.remove(i) else { return };
+    let Some(i) = ed.workspace.runs_next.iter().position(|n| n.id == id) else { return };
+    let Some(n) = ed.workspace.runs_next.remove(i) else { return };
     let label = n.what.label();
     if let What::Guarded { who: For::Claude(call), ride, .. } = n.what {
         for c in std::iter::once(call).chain(ride.joined.into_iter().map(|j| j.call)) {
@@ -416,7 +421,7 @@ pub fn leave(ed: &mut Editor, id: u64, why: &str) {
 
 /// Claude's turn ended: its runs waiting go (nobody waits for them); the user's stay.
 pub fn turn_over(ed: &mut Editor) {
-    ed.session.runs_next.retain(|n| n.what.users());
+    ed.workspace.runs_next.retain(|n| n.what.users());
 }
 
 /// A waiting run's row: what it is, where it is in line, behind what, for how long (`said`: `queued · 2nd ·
@@ -442,7 +447,7 @@ impl Row {
 }
 
 /// The rows of what waits in session `l`'s `slot`, first in line first.
-pub fn rows(l: &Session, slot: Slot, now: Instant) -> Vec<Row> {
+pub fn rows(l: &Workspace, slot: Slot, now: Instant) -> Vec<Row> {
     let holder = holder(l, slot);
     line(&l.runs_next, slot)
         .enumerate()
@@ -461,9 +466,9 @@ fn line(q: &VecDeque<Next>, slot: Slot) -> impl Iterator<Item = &Next> {
 }
 
 /// Where session `l`'s Claude's first waiting call is in its line (1 = next) — its tab and its row in the
-/// list say `queued 2nd` (`session::Doing::Queued`), not working nor stuck.
-pub fn position(l: &Session) -> Option<usize> {
-    let chat = l.chat.as_ref().filter(|c| c.busy())?;
+/// list say `queued 2nd` (`workspace::Doing::Queued`), not working nor stuck.
+pub fn position(l: &Workspace) -> Option<usize> {
+    let chat = l.claude.chat.as_ref().filter(|c| c.busy())?;
     [Slot::Task, Slot::Tests]
         .into_iter()
         .filter_map(|slot| {
@@ -488,8 +493,8 @@ pub struct ChatWait {
 /// (frictions26: a run a stopped turn left going held the next turn's, and the chat said nothing). One no turn
 /// waits on any more is said apart, with how it stops. Its times running ones (`term::timer`, `calm` its whole
 /// seconds): the key after them doesn't slide as they count.
-pub fn chat_said(l: &Session, now: Instant, calm: bool) -> Option<ChatWait> {
-    let chat = l.chat.as_ref().filter(|c| c.busy())?;
+pub fn chat_said(l: &Workspace, now: Instant, calm: bool) -> Option<ChatWait> {
+    let chat = l.claude.chat.as_ref().filter(|c| c.busy())?;
     let (slot, pos, n) = [Slot::Task, Slot::Tests].into_iter().find_map(|slot| {
         line(&l.runs_next, slot)
             .enumerate()
@@ -535,9 +540,9 @@ impl Editor {
     /// A file at `path` was saved or written (Claude's edit, a change set): its session's runs under way no
     /// longer run what's in the checkout — the same command asked from now on isn't joined to them.
     pub(crate) fn wrote(&mut self, path: &Path) {
-        let Some(id) = self.session_of(path) else { return };
+        let Some(id) = self.workspace_of(path) else { return };
         let now = Instant::now();
-        for l in std::iter::once(&mut self.session).chain(&mut self.sessions).filter(|l| l.id == id) {
+        for l in std::iter::once(&mut self.workspace).chain(&mut self.workspaces).filter(|l| l.id == id) {
             l.wrote = Some(now);
             // (a run under way whose changes are taken: this one isn't its)
             let snaps = [
@@ -552,10 +557,10 @@ impl Editor {
 
     /// What waits in every session's line, as `:procs` lists it: (its session, its id, what it is, where it
     /// is in line — `1st · behind cargo test · 0:12`; its age column says `queued`).
-    pub fn procs_queued(&self) -> Vec<(crate::event::SessionId, u64, String, String)> {
+    pub fn procs_queued(&self) -> Vec<(crate::event::WorkspaceId, u64, String, String)> {
         let now = Instant::now();
         let mut out = Vec::new();
-        for l in std::iter::once(&self.session).chain(&self.sessions) {
+        for l in std::iter::once(&self.workspace).chain(&self.workspaces) {
             for slot in [Slot::Task, Slot::Tests] {
                 let ids = line(&l.runs_next, slot).map(|n| n.id);
                 for (id, r) in ids.zip(rows(l, slot, now)) {
@@ -583,14 +588,14 @@ mod tests {
     fn at_work(name: &str) -> (Editor, PathBuf, u64) {
         let dir = crate::scratch::Scratch::new(&format!("queued-{name}")).into_path();
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         ed.config.llm.run_allow = vec!["sh".into()];
         crate::chat::open(&mut ed);
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.state = crate::chat::State::Thinking;
-        ed.session.at = crate::session::At::Code;
+        ed.workspace.viewer.at = crate::workspace::At::Code;
         let generation = c.generation();
         (ed, dir, generation)
     }
@@ -639,7 +644,7 @@ mod tests {
     }
 
     fn running(ed: &Editor) -> bool {
-        ed.session.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running)
+        ed.workspace.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running)
     }
 
     /// Phase 1 (docs/design/async.md): a command that runs unasked while another runs waits in line — not
@@ -655,8 +660,8 @@ mod tests {
         pump(&mut ed, "the first started", running);
         run(&mut ed, generation, 2, "sh fast.sh");
         assert_eq!(answered(2), None, "not refused");
-        assert_eq!(ed.session.runs_next.len(), 1, "in line");
-        assert_eq!(ed.doing(&ed.session), crate::session::Doing::Queued { pos: 1 });
+        assert_eq!(ed.workspace.runs_next.len(), 1, "in line");
+        assert_eq!(ed.doing(&ed.workspace), crate::workspace::Doing::Queued { pos: 1 });
         let s = screen(&mut ed);
         assert!(s.contains("claude · sh fast.sh   queued · 1st · behind sh slow.sh · "), "{s}");
         let procs = ed.procs_queued();
@@ -679,7 +684,9 @@ mod tests {
         assert!(waited.unwrap() > std::time::Duration::from_millis(400), "{text}");
         // The first's answer has no wait in it
         assert!(!answered(1).unwrap().unwrap().contains("Waited"));
-        assert!(ed.session.runs_next.is_empty() && ed.doing(&ed.session) == crate::session::Doing::Working);
+        assert!(
+            ed.workspace.runs_next.is_empty() && ed.doing(&ed.workspace) == crate::workspace::Doing::Working
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -694,7 +701,7 @@ mod tests {
         pump(&mut ed, "the first started", running);
         run(&mut ed, generation, 2, "sh fast.sh");
         fn riding(ed: &mut Editor) -> Option<&mut Option<crate::allow::Grant>> {
-            match ed.session.runs_next.front_mut().map(|n| &mut n.what) {
+            match ed.workspace.runs_next.front_mut().map(|n| &mut n.what) {
                 Some(super::What::Guarded { ride, .. }) => Some(&mut ride.extra.grant),
                 _ => None,
             }
@@ -716,18 +723,18 @@ mod tests {
         run(&mut ed, generation, 1, "sh slow.sh");
         pump(&mut ed, "the first started", running);
         run(&mut ed, generation, 2, "sh fast.sh");
-        let mut next = ed.session.runs_next.pop_front().expect("in line");
+        let mut next = ed.workspace.runs_next.pop_front().expect("in line");
         if let super::What::Guarded { ride, .. } = &mut next.what {
             ride.extra.grant = Some(crate::allow::Grant::Port(8080));
         }
         // (in line in another checkout's session)
         let other = dir.join("other");
         std::fs::create_dir_all(&other).unwrap();
-        let id = ed.session_add(other);
-        let s = ed.sessions.iter_mut().find(|s| s.id == id).unwrap();
+        let id = ed.workspace_add(other);
+        let s = ed.workspaces.iter_mut().find(|s| s.id == id).unwrap();
         s.runs_next.push_back(next);
         ed.sandbox_disallow("port 8080").unwrap();
-        let s = ed.sessions.iter().find(|s| s.id == id).unwrap();
+        let s = ed.workspaces.iter().find(|s| s.id == id).unwrap();
         let kept = s.runs_next.front().map(|n| match &n.what {
             super::What::Guarded { ride, .. } => ride.extra.grant.clone(),
             _ => None,
@@ -750,7 +757,7 @@ mod tests {
         pump(&mut ed, "the user's task started", running);
         crate::tools::guard_then_go(&mut ed, crate::tools::For::Claude(call), job, Default::default());
         assert_eq!(answered(1), None, "not refused");
-        assert_eq!(ed.session.runs_next.len(), 1);
+        assert_eq!(ed.workspace.runs_next.len(), 1);
         pump(&mut ed, "Claude's ran", |_| answered(1).is_some());
         assert_eq!(order(&dir), ["mine", "claudes"]);
         assert!(
@@ -788,12 +795,12 @@ mod tests {
         };
         go(&mut ed, 1, target(&dir, "first", "sleep 0.6; echo first >> order.txt"));
         let testing = |ed: &Editor| {
-            ed.session.test_run.as_ref().is_some_and(|r| r.state == crate::testing::RunState::Running)
+            ed.workspace.test_run.as_ref().is_some_and(|r| r.state == crate::testing::RunState::Running)
         };
         pump(&mut ed, "the first started", testing);
         go(&mut ed, 2, target(&dir, "second", "echo second >> order.txt"));
         assert_eq!(answered(2), None, "not refused");
-        assert_eq!(ed.doing(&ed.session), crate::session::Doing::Queued { pos: 1 });
+        assert_eq!(ed.doing(&ed.workspace), crate::workspace::Doing::Queued { pos: 1 });
         let s = screen(&mut ed);
         assert!(s.contains("claude · tests second   queued · 1st · behind tests first"), "{s}");
         pump(&mut ed, "the second ran", |_| answered(2).is_some());
@@ -815,7 +822,7 @@ mod tests {
         pump(&mut ed, "the first started", running);
         run(&mut ed, generation, 2, "sh fast.sh");
         run(&mut ed, generation, 3, "sh   fast.sh");
-        assert_eq!(ed.session.runs_next.len(), 1, "one waits, the other joined it");
+        assert_eq!(ed.workspace.runs_next.len(), 1, "one waits, the other joined it");
         // Under way: joined too
         run(&mut ed, generation, 4, "sh slow.sh");
         pump(&mut ed, "all answered", |_| (1..=4).all(|i| answered(i).is_some()));
@@ -840,7 +847,7 @@ mod tests {
         }
         assert!(ed.flush_saves());
         run(&mut ed, generation, 6, "sh slow.sh");
-        assert_eq!(ed.session.runs_next.len(), 1, "not joined: it waits to run again");
+        assert_eq!(ed.workspace.runs_next.len(), 1, "not joined: it waits to run again");
         pump(&mut ed, "both answered", |_| answered(5).is_some() && answered(6).is_some());
         assert_eq!(order(&dir), ["slow", "slow"]);
         std::fs::remove_dir_all(&dir).ok();
@@ -860,18 +867,18 @@ mod tests {
         run(&mut ed, generation, 2, "sh fast.sh");
         ed.task_start(mine.clone());
         assert!(
-            ed.session
+            ed.workspace
                 .task_run
                 .as_ref()
                 .is_some_and(|r| r.by_claude && r.state == crate::task::State::Running)
         );
         assert!(
-            matches!(ed.session.runs_next.front().map(|n| &n.what), Some(super::What::Task(_))),
+            matches!(ed.workspace.runs_next.front().map(|n| &n.what), Some(super::What::Task(_))),
             "first in line"
         );
         // (its time read at a pinned clock: how long it has waited, as a running time says it)
         let held = crate::clock::hold();
-        let waited = held.saturating_duration_since(ed.session.runs_next[0].queued.since);
+        let waited = held.saturating_duration_since(ed.workspace.runs_next[0].queued.since);
         let s = screen(&mut ed);
         crate::clock::release();
         let row = s.lines().find(|l| l.trim_start().starts_with("mine ")).unwrap_or_default();
@@ -889,12 +896,12 @@ mod tests {
         run(&mut ed, generation, 3, "sh slow.sh");
         pump(&mut ed, "Claude's started", running);
         ed.task_start(mine);
-        ed.session.at = crate::session::At::Slot;
+        ed.workspace.viewer.at = crate::workspace::At::Slot;
         assert!(screen(&mut ed).contains("enter run now — stops sh slow.sh"));
         ed.handle_key("ret".parse().unwrap());
         pump(&mut ed, "the user's ran", |ed| order(&dir) == ["mine"] && !running(ed));
         assert!(answered(3).unwrap().is_err_and(|e| e.contains("stopped")), "{:?}", answered(3));
-        assert!(ed.session.runs_next.is_empty());
+        assert!(ed.workspace.runs_next.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -908,7 +915,7 @@ mod tests {
         run(&mut ed, generation, 1, "sh slow.sh");
         pump(&mut ed, "the first started", running);
         run(&mut ed, generation, 2, "sh fast.sh");
-        let id = ed.session.runs_next.front().map(|n| n.id).unwrap();
+        let id = ed.workspace.runs_next.front().map(|n| n.id).unwrap();
         super::leave(&mut ed, id, "the user took it out of the line in :procs");
         assert!(
             answered(2).is_some_and(|r| r.is_err_and(|e| e.starts_with("not run — the user took it out")))
@@ -935,9 +942,9 @@ mod tests {
         assert!(!o.weighty(), "light: no settling");
         assert!(running(&ed), "not cut short");
         // The next turn's run waits behind it — the chat says so
-        ed.session.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
+        ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
         run(&mut ed, generation, 2, "sh fast.sh");
-        let said = super::chat_said(&ed.session, Instant::now(), false).unwrap();
+        let said = super::chat_said(&ed.workspace, Instant::now(), false).unwrap();
         assert_eq!(said.said, "queued 1st, behind a stopped turn's run");
         assert!(
             said.left.as_ref().is_some_and(|(l, ran, k)| l == "sh slow.sh"
@@ -960,7 +967,7 @@ mod tests {
         pump(&mut ed, "it ended", |ed| !running(ed));
         assert!(ed.offers.is_empty(), "gone with its run");
         // A turn that ends on its own offers nothing
-        ed.session.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
+        ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
         script(&dir, "long", 2.0);
         run(&mut ed, generation, 4, "sh long.sh");
         pump(&mut ed, "it started", running);
@@ -977,6 +984,6 @@ mod tests {
             ["1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "103rd"]
         );
         // (as a session's tab and its row in the list say where its Claude's run is)
-        assert_eq!(crate::session::Doing::Queued { pos: 2 }.said(), "queued 2nd");
+        assert_eq!(crate::workspace::Doing::Queued { pos: 2 }.said(), "queued 2nd");
     }
 }

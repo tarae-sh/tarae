@@ -246,7 +246,7 @@ pub struct Policy {
     pub egress: proxy::egress::Egress,
     /// The run, as the proxy and the main loop name it (`next_run`; a copy of the policy is the same run's).
     pub run_id: u64,
-    /// Its session, as the proxy and the main loop name it (`proxy::session_of` its root).
+    /// Its session, as the proxy and the main loop name it (`proxy::workspace_of` its root).
     pub session: u64,
     /// What the sandbox denied this run, watched while it goes (`Watch`).
     pub watch: Option<std::sync::Arc<Watch>>,
@@ -1248,7 +1248,7 @@ impl Policy {
         crate::sorting::sort(&mut ports);
         ports.dedup();
         ports.truncate(PORTS_MAX);
-        let session = proxy::session_of(&root);
+        let session = proxy::workspace_of(&root);
         Policy {
             root,
             protect,

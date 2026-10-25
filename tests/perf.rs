@@ -391,7 +391,7 @@ fn perf_e2e_waiting_for_claude() {
     report("e2e_waiting_bytes_per_frame", bytes / frames.max(1.0), 400.0, 20.0);
 }
 
-/// Two sessions (`:session-open` on a worktree), Claude streaming a word every 50 ms in the one behind: tarae's
+/// Two sessions (`:workspace-open` on a worktree), Claude streaming a word every 50 ms in the one behind: tarae's
 /// CPU and its frames a second in front, which shows nothing of it — the session's results are applied
 /// (swapped in and out) but draw nothing.
 #[test]
@@ -418,7 +418,7 @@ fn perf_e2e_busy_session_behind() {
     sb.write_config(&format!("{BASE_CONFIG}[llm]\ncommand = \"sh\"\nargs = [\"{}\"]\n", script.display()));
     let mut t = Term::spawn(&sb, &["a.rs"], 160, 50);
     t.wait_text("fn f1(");
-    t.send(&format!(":session-open {}\r", wt.display()));
+    t.send(&format!(":workspace-open {}\r", wt.display()));
     // (in front, the new session shows its blank scratch — whatever the toast says)
     t.wait_for("the new session in front", |s| !s.contains("fn f1("));
     t.send(" l");
@@ -431,7 +431,7 @@ fn perf_e2e_busy_session_behind() {
     // saying the code has the keys)
     t.wait_state("the chat minimized, working", |s| s["keys"]["region"] == "chat-minimized");
     t.esc_state("the chat let go of the keys", |s| s["keys"]["region"] == "code");
-    t.send(":session-switch 0\r");
+    t.send(":workspace-switch 0\r");
     t.wait_for("the first session in front", |s| !s.contains("word word") && s.contains("fn f1("));
     // (past the toasts' fade and the switch's frames: none up, nothing on a clock, every frame owed read —
     // `Term::settle`, never a fixed wait)
@@ -920,7 +920,7 @@ fn restored_sessions(n: usize) -> Restored {
         }
         t.wait_state(what, |s| front(s) == Some(true))
     };
-    let sessions = |s: &serde_json::Value| s["sessions"].as_array().map_or(0, Vec::len);
+    let sessions = |s: &serde_json::Value| s["workspaces"].as_array().map_or(0, Vec::len);
     // (what it opened read and drawn: nothing on a clock, no toast up, every frame owed read — `Term::settle`)
     let settled = |t: &mut Term| {
         t.settle("settled", |s| {
@@ -936,7 +936,7 @@ fn restored_sessions(n: usize) -> Restored {
         t.command(&format!("session-new s{i}"));
         front_card(&mut t, "the new session's card", "");
         t.send("y");
-        t.wait_state("the session made, in front", |s| sessions(s) == i + 1 && s["front"] == format!("s{i}"));
+        t.wait_state("the session made, in front", |s| sessions(s) == i + 1 && s["front"] == format!("w{i}"));
         // (a new session opens with its chat's input focused: the keys back to the code first — its view mode,
         // then the code)
         t.wait_state("its chat's input", |s| s["keys"]["region"] == "chat");

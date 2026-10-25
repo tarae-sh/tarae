@@ -152,7 +152,7 @@ pub fn call(ed: &mut Editor, call: Call, args: &Value) -> Result<(), String> {
     if ed.session_cards().any(|o| matches!(o.what, What::Commit(_))) {
         return Err("a commit is already waiting for the user's answer — wait for that one".into());
     }
-    let root = ed.session.root.clone();
+    let root = ed.workspace.root.clone();
     let unsaved: Vec<PathBuf> =
         ed.docs.iter().filter(|d| d.is_modified()).filter_map(|d| d.path.clone()).collect();
     ed.events.jobs().spawn(move || {

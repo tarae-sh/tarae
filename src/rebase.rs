@@ -1,4 +1,4 @@
-//! Rebasing a session onto its base (roadmap #3): `:session-bring` when the base moved since the session
+//! Rebasing a session onto its base (roadmap #3): `:workspace-bring` when the base moved since the session
 //! left it — a card says how far (`What::Rebase`), and `y` rebases in the session's checkout once it's been
 //! looked at (`rebase_check`: changes in no commit → `What::RebaseHeld`, `s` sets them aside for it · `g` the git
 //! tab; a run
@@ -9,7 +9,7 @@
 //! them, a review shows them against the commit being replayed and a card (`What::RebaseResolved`) offers
 //! continue (staged, `git rebase --continue` — it may stop again: the same loop) or abort. Markers left: the
 //! files are named. While it's under way the session's tab, chip and row say `rebasing n/m`, and
-//! `:session-end` and `:restart` wait for it; `:session-bring` puts its card up again. `:rebase-continue` ·
+//! `:workspace-end` and `:restart` wait for it; `:workspace-bring` puts its card up again. `:rebase-continue` ·
 //! `:rebase-abort` do the card's work by hand, in the session rebasing whichever is in front — and take up a
 //! rebase tarae didn't start (one from before a restart).
 
@@ -41,7 +41,7 @@ fn git_line(repo: &crate::gitrepo::Repo) -> crate::gitrepo::Line {
 /// What a rebase step that didn't start does: says why (and a start leaves no rebase behind).
 type Unstarted = Box<dyn FnOnce(&mut Editor, String) + Send>;
 
-/// A preflight a bring card's `p` ran that failed (`Session.bring_failed`): which (`title`), its failed step's
+/// A preflight a bring card's `p` ran that failed (`Workspace.bring_failed`): which (`title`), its failed step's
 /// output, and the commit it tested (read as `p` started it — else, none read, the HEAD its card was graded at).
 #[derive(Clone, Debug)]
 pub struct Failed {
@@ -211,7 +211,7 @@ impl Held {
             false => {
                 let u = &self.unsaved;
                 let mut q = format!(
-                    "{} {} unsaved here — save {} (:w) first, then :session-bring {} again.",
+                    "{} {} unsaved here — save {} (:w) first, then :workspace-bring {} again.",
                     named(u),
                     if it(u) { "is" } else { "are" },
                     them(u),
@@ -274,7 +274,7 @@ fn move_up(m: &Moved, unsaved: &[PathBuf]) -> Result<String, String> {
     let base_tip = crate::worktree::sha(&m.root, &format!("refs/heads/{}", m.base))?;
     let head = crate::worktree::sha(&m.root, "HEAD")?;
     if crate::worktree::count(&m.root, &format!("{base_tip}..{head}")) > 0 {
-        return Err(format!("{} has commits of its own since — :session-bring again", m.branch));
+        return Err(format!("{} has commits of its own since — :workspace-bring again", m.branch));
     }
     if let Some(why) = held_up(&m.root, unsaved) {
         return Err(why);
@@ -314,7 +314,7 @@ impl Stop {
     }
 }
 
-/// A rebase under way in a session's checkout (`Session.rebase`).
+/// A rebase under way in a session's checkout (`Workspace.rebase`).
 pub struct Rebase {
     pub branch: String,
     pub base: String,
@@ -686,7 +686,7 @@ fn named(files: &[String]) -> String {
 /// The task panel's run is closed or replaced (`space m c`, another task) while it runs: if it's the
 /// rebase's git, what git left is read as at its end — else the session would say `rebasing` for good.
 pub fn run_dropped(ed: &mut Editor) {
-    let Some(t) = ed.session.task_run.as_ref().filter(|t| t.state == crate::task::State::Running) else {
+    let Some(t) = ed.workspace.task_run.as_ref().filter(|t| t.state == crate::task::State::Running) else {
         return;
     };
     let generation = t.generation();
@@ -697,15 +697,15 @@ pub fn run_dropped(ed: &mut Editor) {
 
 /// A git run of the rebase's ended (`task.rs`) — true if it was one (what's next is decided on a worker).
 pub fn ran(ed: &mut Editor, generation: u64) -> bool {
-    let Some(r) = ed.session.rebase.as_ref() else { return false };
+    let Some(r) = ed.workspace.rebase.as_ref() else { return false };
     let Stage::Running { generation: g, aborting } = r.stage else { return false };
     if g != generation {
         return false;
     }
-    let (root, branch, base) = (ed.session.root.clone(), r.branch.clone(), r.base.clone());
+    let (root, branch, base) = (ed.workspace.root.clone(), r.branch.clone(), r.base.clone());
     // (git's exit says too little — a stop at conflicts exits 1 — so the run reads as under way until its end
     // is read, then as git left it: `rebase_ended`)
-    let exit = match ed.session.task_run.as_mut().filter(|t| t.generation() == generation) {
+    let exit = match ed.workspace.task_run.as_mut().filter(|t| t.generation() == generation) {
         Some(t) => std::mem::replace(&mut t.state, crate::task::State::Running),
         None => crate::task::State::Failed(None),
     };
@@ -724,12 +724,12 @@ fn poll(ed: &Editor, root: PathBuf, generation: u64, dir: Option<PathBuf>) {
         let step = dir.as_deref().and_then(state_dir).as_deref().and_then(step_of);
         move |ed: &mut Editor| {
             let running = ed
-                .session
+                .workspace
                 .task_run
                 .as_ref()
                 .is_some_and(|t| t.generation() == generation && t.state == crate::task::State::Running);
             let Some(r) = ed
-                .session
+                .workspace
                 .rebase
                 .as_mut()
                 .filter(|r| matches!(r.stage, Stage::Running { generation: g, .. } if g == generation))
@@ -749,7 +749,7 @@ fn poll(ed: &Editor, root: PathBuf, generation: u64, dir: Option<PathBuf>) {
 
 /// The session's chat has its claude now (`chat::gate_opened`): an ask that waited for it to start goes.
 pub fn chat_ready(ed: &mut Editor) {
-    if let Some(a) = ed.session.rebase.as_mut().and_then(|r| r.waiting.take()) {
+    if let Some(a) = ed.workspace.rebase.as_mut().and_then(|r| r.waiting.take()) {
         ed.rebase_ask(a);
     }
 }
@@ -757,7 +757,7 @@ pub fn chat_ready(ed: &mut Editor) {
 /// The session's Claude was asked, and its turn ended (`chat.rs`): an ask that waited for it goes now;
 /// else, while the rebase is stopped at what it was asked about, its files are looked at for markers.
 pub fn turn_over(ed: &mut Editor) {
-    let Some(r) = ed.session.rebase.as_mut() else { return };
+    let Some(r) = ed.workspace.rebase.as_mut() else { return };
     if let Some(a) = r.waiting.take() {
         return ed.rebase_ask(a);
     }
@@ -765,11 +765,11 @@ pub fn turn_over(ed: &mut Editor) {
         return;
     }
     // (what its answer says of the commit's message: a version of it when it no longer holds)
-    let answer = ed.session.chat.as_ref().map(|c| c.last_answer()).unwrap_or_default();
+    let answer = ed.workspace.claude.chat.as_ref().map(|c| c.last_answer()).unwrap_or_default();
     r.messages.proposed = proposed_message(&answer);
     let conflicted = r.stop.files.clone();
     let files = ed.rebase_texts(&conflicted);
-    let root = ed.session.root.clone();
+    let root = ed.workspace.root.clone();
     ed.events.jobs().spawn(move || {
         let left = marked(&root, files);
         // (what else the resolution changed — a snapshot blessed again: #129, left unstaged it stopped git)
@@ -780,13 +780,13 @@ pub fn turn_over(ed: &mut Editor) {
 
 impl Editor {
     /// A session by its checkout.
-    pub(crate) fn session_at(&self, root: &Path) -> Option<crate::event::SessionId> {
-        std::iter::once(&self.session).chain(&self.sessions).find(|l| l.root == root).map(|l| l.id)
+    pub(crate) fn session_at(&self, root: &Path) -> Option<crate::event::WorkspaceId> {
+        std::iter::once(&self.workspace).chain(&self.workspaces).find(|l| l.root == root).map(|l| l.id)
     }
 
     /// What keeps git from running in the session in front now: its files unsaved, a task in the panel.
     fn rebase_free(&self) -> Result<(), String> {
-        let root = &self.session.root;
+        let root = &self.workspace.root;
         let unsaved: Vec<String> = self
             .docs
             .iter()
@@ -796,7 +796,7 @@ impl Editor {
         if !unsaved.is_empty() {
             return Err(format!("unsaved changes in {} — save them first", unsaved.join(", ")));
         }
-        match self.session.task_run.as_ref().filter(|r| r.state == crate::task::State::Running) {
+        match self.workspace.task_run.as_ref().filter(|r| r.state == crate::task::State::Running) {
             Some(r) => Err(format!("{} is running — let it finish, or stop it (space m c)", r.task.name)),
             None => Ok(()),
         }
@@ -806,7 +806,7 @@ impl Editor {
     /// is the disk's (read on the worker): its reload can lag the write — Claude's resolution was on disk while
     /// the buffer still showed the markers (a shot, 2026-10-04).
     fn rebase_texts(&self, files: &[String]) -> Vec<(String, Option<ropey::Rope>)> {
-        let root = &self.session.root;
+        let root = &self.workspace.root;
         files
             .iter()
             .map(|rel| {
@@ -828,7 +828,7 @@ impl Editor {
         aborting: bool,
         unstarted: Unstarted,
     ) {
-        let root = self.session.root.clone();
+        let root = self.workspace.root.clone();
         if let Some(repo) = crate::gitrepo::cached(&root) {
             let line = git_line(&repo);
             if let Err(e) = self.rebase_run(name, cmd(&line.text), line.env, aborting) {
@@ -836,14 +836,14 @@ impl Editor {
             }
             return;
         }
-        let (name, asked) = (name.to_string(), self.session.id);
-        // (`jobs()`: applied in the session that asked, swapped in if it's behind by then — `with_session`; one
+        let (name, asked) = (name.to_string(), self.workspace.id);
+        // (`jobs()`: applied in the session that asked, swapped in if it's behind by then — `with_workspace`; one
         // gone meanwhile would have it applied in front instead: dropped)
         self.events.jobs().spawn(move || {
             let line = crate::gitrepo::repo(&root).map(|r| git_line(&r));
             move |ed: &mut Editor| {
                 ed.rebase_lines_read += 1;
-                if ed.session.id != asked {
+                if ed.workspace.id != asked {
                     return;
                 }
                 if let Err(e) = line.and_then(|g| ed.rebase_run(&name, cmd(&g.text), g.env, aborting)) {
@@ -861,10 +861,10 @@ impl Editor {
         env: Vec<(String, String)>,
         aborting: bool,
     ) -> Result<(), String> {
-        let root = self.session.root.clone();
+        let root = self.workspace.root.clone();
         let task = crate::task::Task { name: name.into(), cmd, cwd: root.clone() };
         let generation = self.task_start_git(task, &env).ok_or("git didn't start")?;
-        if let Some(r) = self.session.rebase.as_mut() {
+        if let Some(r) = self.workspace.rebase.as_mut() {
             r.stage = Stage::Running { generation, aborting };
         }
         // (its reloads said as one line once it's over — frictions29 #68; this run's, by its generation)
@@ -878,7 +878,7 @@ impl Editor {
         let Some(id) = self.session_at(&m.root) else {
             return self.offer_finished(card, Err(format!("{} isn't open any more", m.name)));
         };
-        self.session_switch(id);
+        self.workspace_switch(id);
         self.offer_finished(card, Ok(()));
         self.rebase_check(m, false);
     }
@@ -889,8 +889,8 @@ impl Editor {
     /// no commit, or unsaved buffers there — named on a card (`Held`) offering what fits. `stash`: its changes
     /// are set aside for it (the card's `s`, `rebase_go`) — only unsaved buffers hold it then.
     pub(crate) fn rebase_check(&mut self, m: Moved, stash: bool) {
-        let id = self.session.id;
-        if self.session.rebase.is_some() {
+        let id = self.workspace.id;
+        if self.workspace.rebase.is_some() {
             if let Err(e) = self.rebase_offer(id) {
                 self.set_status(e);
             }
@@ -899,7 +899,7 @@ impl Editor {
         if self.rebase_queued(&m, stash) {
             return;
         }
-        let root = self.session.root.clone();
+        let root = self.workspace.root.clone();
         let unsaved: Vec<String> = self
             .docs
             .iter()
@@ -947,8 +947,8 @@ impl Editor {
     /// A run in the front session's task panel (or its checkout being moved onto its base — `keepclose.rs`): the
     /// rebase waits its turn behind it — true if it does.
     fn rebase_queued(&mut self, m: &Moved, stash: bool) -> bool {
-        let busy = self.session.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running)
-            || self.session.moving.is_some();
+        let busy = self.workspace.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running)
+            || self.workspace.moving.is_some();
         if busy {
             crate::queued::push(self, crate::queued::What::Rebase { moved: Box::new(m.clone()), stash });
         }
@@ -960,11 +960,11 @@ impl Editor {
     /// `--autostash` takes them, never its stash), put back at its end (`changes_back`).
     fn rebase_go(&mut self, m: Moved, stashed: Vec<String>) {
         // (a run took the panel while the checkout was looked at: behind it)
-        if self.session.rebase.is_some() || self.rebase_queued(&m, !stashed.is_empty()) {
+        if self.workspace.rebase.is_some() || self.rebase_queued(&m, !stashed.is_empty()) {
             return;
         }
         let aside = !stashed.is_empty();
-        self.session.rebase = Some(Rebase {
+        self.workspace.rebase = Some(Rebase {
             branch: m.branch.clone(),
             base: m.base.clone(),
             stage: Stage::Stopped,
@@ -992,7 +992,7 @@ impl Editor {
             },
             false,
             Box::new(move |ed, e| {
-                ed.session.rebase = None;
+                ed.workspace.rebase = None;
                 if !ed.bring_queue_rebased(Err(format!("the rebase didn't start: {e}"))) {
                     ed.set_error(format!("rebase {branch}: {e}"));
                 }
@@ -1003,16 +1003,17 @@ impl Editor {
     /// `s` on the held card: the rebase, its changes stashed for it and put back after.
     pub fn rebase_held_stash(&mut self, h: Held) {
         let Some(id) = self.session_at(&h.moved.root) else { return };
-        self.session_switch(id);
+        self.workspace_switch(id);
         self.rebase_check(h.moved, true);
     }
 
     /// `g` on the held card: its session's git tab, with the keys — the changes to commit, stash or drop.
     pub fn rebase_held_show(&mut self, h: Held) {
         let Some(id) = self.session_at(&h.moved.root) else { return };
-        self.session_switch(id);
-        let shown = self.session.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Git)
-            && self.session.is_at(crate::session::At::Side);
+        self.workspace_switch(id);
+        let shown =
+            self.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Git)
+                && self.workspace.is_at(crate::workspace::At::Side);
         if !shown {
             self.sidebar_show(crate::sidebar::Mode::Git);
         }
@@ -1025,7 +1026,7 @@ impl Editor {
         self.disk_batch_end(generation);
         let running = |r: &Rebase| matches!(r.stage, Stage::Running { generation: g, .. } if g == generation);
         let Some((branch, base)) =
-            self.session.rebase.as_ref().filter(|r| running(r)).map(|r| (r.branch.clone(), r.base.clone()))
+            self.workspace.rebase.as_ref().filter(|r| running(r)).map(|r| (r.branch.clone(), r.base.clone()))
         else {
             return;
         };
@@ -1038,18 +1039,18 @@ impl Editor {
             Ended::Done { .. } | Ended::Aborted => State::Passed,
             _ => exit,
         };
-        if let Some(t) = self.session.task_run.as_mut().filter(|t| t.generation() == generation) {
+        if let Some(t) = self.workspace.task_run.as_mut().filter(|t| t.generation() == generation) {
             t.state = state;
         }
-        let name = self.session.label().to_string();
+        let name = self.workspace.label().to_string();
         self.git_refresh();
         // (HEAD moved: its buffers' git bases and the blame, now — not when the watch next looks)
-        let root = self.session.root.clone();
+        let root = self.workspace.root.clone();
         self.git_reload_bases_in(&root);
         match end {
             Ended::Stopped(stop, ask) => {
                 let at = stop.at();
-                if let Some(r) = self.session.rebase.as_mut() {
+                if let Some(r) = self.workspace.rebase.as_mut() {
                     (r.stage, r.step, r.asked) = (Stage::Stopped, stop.step, false);
                     r.stop = *stop;
                     r.also.clear();
@@ -1068,7 +1069,7 @@ impl Editor {
             }
             Ended::Done { ahead, tip } => {
                 let (stashed, kept) =
-                    self.session.rebase.take().map(|r| (r.stashed, r.messages.kept)).unwrap_or_default();
+                    self.workspace.rebase.take().map(|r| (r.stashed, r.messages.kept)).unwrap_or_default();
                 self.rebase_cards_gone();
                 let said = format!(
                     "Rebased {branch} onto {base} — {} on top, now at {tip}{}",
@@ -1083,9 +1084,9 @@ impl Editor {
                 crate::instructions::follow(self);
                 // (a session's: bring it now? The checkout tarae started in has no base to go into — the bring
                 // queue's one under way goes on to its preflight instead)
-                if self.session.id != 0 && !self.bring_queue_rebased(Ok(())) {
+                if self.workspace.id != crate::event::WorkspaceId::HOME && !self.bring_queue_rebased(Ok(())) {
                     let (root, quick, sid) =
-                        (self.session.root.clone(), self.preflight_quick(), self.session.id);
+                        (self.workspace.root.clone(), self.preflight_quick(), self.workspace.id);
                     let mut card =
                         Moved { root: root.clone(), name, branch, base: base.clone(), moved: 0, ahead }
                             .bring_card(quick, true);
@@ -1104,7 +1105,7 @@ impl Editor {
                 }
             }
             Ended::Aborted => {
-                let stashed = self.session.rebase.take().map(|r| r.stashed).unwrap_or_default();
+                let stashed = self.workspace.rebase.take().map(|r| r.stashed).unwrap_or_default();
                 self.rebase_cards_gone();
                 let said =
                     format!("Rebase aborted — {branch} is back where it was{}", aside_said(&aside, &stashed));
@@ -1116,9 +1117,9 @@ impl Editor {
             }
             // (git's own words, its `error:`/`fatal:` lines — #188: "the task panel says why" sent you looking)
             Ended::Failed => {
-                let stashed = self.session.rebase.take().map(|r| r.stashed).unwrap_or_default();
+                let stashed = self.workspace.rebase.take().map(|r| r.stashed).unwrap_or_default();
                 let why: Vec<String> = self
-                    .session
+                    .workspace
                     .task_run
                     .as_ref()
                     .filter(|t| t.generation() == generation)
@@ -1145,17 +1146,17 @@ impl Editor {
     /// The session's Claude asked to resolve the conflicts (its chat opened if it wasn't) — or, while it's
     /// answering something else, once that turn ends.
     fn rebase_ask(&mut self, a: Ask) {
-        if self.session.chat.is_none() {
-            let at = self.session.at;
+        if self.workspace.claude.chat.is_none() {
+            let at = self.workspace.viewer.at;
             crate::chat::open(self);
-            self.session.at = at;
-            if let Some(c) = &mut self.session.chat {
+            self.workspace.viewer.at = at;
+            if let Some(c) = &mut self.workspace.claude.chat {
                 c.unfolded = false;
             }
         }
-        let Some(r) = self.session.rebase.as_mut() else { return };
+        let Some(r) = self.workspace.rebase.as_mut() else { return };
         let files = named(&r.stop.files);
-        if self.session.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
+        if self.workspace.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
             r.waiting = Some(a);
             return self.set_status(format!("conflicts in {files} — Claude is asked once its turn ends"));
         }
@@ -1163,8 +1164,8 @@ impl Editor {
         // (frictions34 41: a chat whose claude isn't running — none started since tarae did — starts it once the
         // project's Claude settings are read, which the send began — only that first read sets `waiting`, and its
         // end opens the gate: the ask goes then, `chat_ready`)
-        let starting = !sent && self.session.chat.as_ref().is_some_and(|c| c.settings.waiting());
-        let Some(r) = self.session.rebase.as_mut() else { return };
+        let starting = !sent && self.workspace.claude.chat.as_ref().is_some_and(|c| c.settings.waiting());
+        let Some(r) = self.workspace.rebase.as_mut() else { return };
         match (sent, starting) {
             (true, _) => {
                 r.asked = true;
@@ -1188,7 +1189,7 @@ impl Editor {
     /// files, and of what else it changed (`also`, staged with them), against the commit being replayed, and
     /// the card.
     fn rebase_checked(&mut self, left: Vec<String>, also: Vec<String>) {
-        let Some(r) = self.session.rebase.as_mut().filter(|r| r.stage == Stage::Stopped) else { return };
+        let Some(r) = self.workspace.rebase.as_mut().filter(|r| r.stage == Stage::Stopped) else { return };
         if !left.is_empty() {
             return self.set_warning(format!(
                 "conflict markers still in {} — ask Claude again, or fix them and :rebase-continue",
@@ -1203,8 +1204,8 @@ impl Editor {
         match stop.commit {
             // (the card once the review is open — it's about what the review shows)
             Some((sha, short, subject)) => {
-                self.session.leave(crate::session::At::Chat);
-                let root = self.session.root.clone();
+                self.workspace.leave(crate::workspace::At::Chat);
+                let root = self.workspace.root.clone();
                 let label = format!("{short} {subject}");
                 crate::codereview::start_replay(
                     self,
@@ -1221,7 +1222,7 @@ impl Editor {
 
     /// The resolved card: continue · abort · not now — while the rebase is still resolved and waiting.
     fn rebase_resolved_card(&mut self) {
-        if self.session.rebase.as_ref().is_some_and(|r| r.stage == Stage::Resolved) {
+        if self.workspace.rebase.as_ref().is_some_and(|r| r.stage == Stage::Resolved) {
             let o = self.rebase_card();
             self.push_offer(o);
         }
@@ -1232,8 +1233,8 @@ impl Editor {
     /// stopped. Either way it says the files aren't staged yet — `y` stages them (#175: the card offered to
     /// continue while the git tab showed them unmerged, and nothing said `y` would stage them).
     fn rebase_card(&self) -> Offer {
-        let r = self.session.rebase.as_ref().expect("a rebase");
-        let (stop, branch, name) = (&r.stop, &r.branch, self.session.label());
+        let r = self.workspace.rebase.as_ref().expect("a rebase");
+        let (stop, branch, name) = (&r.stop, &r.branch, self.workspace.label());
         let n = stop.files.len() + r.also.len();
         let them = if n == 1 { "it" } else { "them" };
         // (short: the card shares the code's room with the review it's about and the task panel — what `y`
@@ -1287,7 +1288,7 @@ impl Editor {
         };
         let q = format!("{first}\n\n{said}X aborts the rebase: {branch} goes back as it was.");
         let x = q.lines().count() - 1;
-        let root = self.session.root.clone();
+        let root = self.workspace.root.clone();
         Offer::new(
             title,
             &q,
@@ -1298,15 +1299,15 @@ impl Editor {
         .warning(x..x + 1)
     }
 
-    /// Session `id`'s rebase met where it's in the way (`:session-bring`, #175): its card up in front — `y`
+    /// Session `id`'s rebase met where it's in the way (`:workspace-bring`, #175): its card up in front — `y`
     /// goes on, `X` aborts — instead of a line saying what to type. Git at work there: Err says so.
-    pub(crate) fn rebase_offer(&mut self, id: crate::event::SessionId) -> Result<(), String> {
+    pub(crate) fn rebase_offer(&mut self, id: crate::event::WorkspaceId) -> Result<(), String> {
         let mut card = Err(String::new());
-        self.with_session(id, |ed| {
-            let name = ed.session.label().to_string();
-            card = match ed.session.rebase.as_ref() {
+        self.with_workspace(id, |ed| {
+            let name = ed.workspace.label().to_string();
+            card = match ed.workspace.rebase.as_ref() {
                 Some(r) if !r.stopped() => Err(r.why(&name)),
-                Some(_) => Ok((ed.session.root.clone(), ed.rebase_card())),
+                Some(_) => Ok((ed.workspace.root.clone(), ed.rebase_card())),
                 None => Err(format!("no rebase under way in {name}")),
             };
         });
@@ -1314,7 +1315,7 @@ impl Editor {
         // (one card for it: one left from before goes)
         let mine = |o: &Offer| matches!(&o.what, What::RebaseResolved { root: r, .. } if *r == root);
         self.offers.retain(|o| !mine(o));
-        for l in std::iter::once(&mut self.session).chain(&mut self.sessions) {
+        for l in std::iter::once(&mut self.workspace).chain(&mut self.workspaces) {
             l.parked.retain(|o| !mine(o));
         }
         self.push_offer(o);
@@ -1330,24 +1331,26 @@ impl Editor {
             let (id, _) = self.session_named(which)?;
             return self.rebase_in(id, go_on);
         }
-        let rebasing: Vec<_> = std::iter::once(&self.session)
-            .chain(&self.sessions)
+        let rebasing: Vec<_> = std::iter::once(&self.workspace)
+            .chain(&self.workspaces)
             .filter(|l| l.rebase.is_some())
             .map(|l| l.id)
             .collect();
         if !rebasing.is_empty() {
             return self.rebase_choose(&rebasing, go_on);
         }
-        let roots: Vec<_> =
-            std::iter::once(&self.session).chain(&self.sessions).map(|l| (l.id, l.root.clone())).collect();
+        let roots: Vec<_> = std::iter::once(&self.workspace)
+            .chain(&self.workspaces)
+            .map(|l| (l.id, l.root.clone()))
+            .collect();
         self.events.shared_jobs().spawn(move || {
             let found: Vec<_> =
                 roots.into_iter().filter_map(|(id, r)| under_way(&r).map(|s| (id, s))).collect();
             move |ed: &mut Editor| {
                 let ids: Vec<_> = found.iter().map(|f| f.0).collect();
                 for (id, stop) in found {
-                    ed.with_session(id, |ed| {
-                        if ed.session.rebase.is_none() {
+                    ed.with_workspace(id, |ed| {
+                        if ed.workspace.rebase.is_none() {
                             ed.rebase_adopt(stop);
                         }
                     });
@@ -1362,10 +1365,12 @@ impl Editor {
 
     /// Of the sessions rebasing (`ids`), the one to go on with or abort: the front one, the only one, or
     /// the user's pick.
-    fn rebase_choose(&mut self, ids: &[crate::event::SessionId], go_on: bool) -> Result<(), String> {
-        let front = self.session.id;
+    fn rebase_choose(&mut self, ids: &[crate::event::WorkspaceId], go_on: bool) -> Result<(), String> {
+        let front = self.workspace.id;
         match ids {
-            [] if self.sessions.is_empty() => Err(format!("no rebase under way in {}", self.session.label())),
+            [] if self.workspaces.is_empty() => {
+                Err(format!("no rebase under way in {}", self.workspace.label()))
+            }
             [] => Err("no rebase under way in any session".into()),
             _ if ids.contains(&front) => self.rebase_in(front, go_on),
             [id] => self.rebase_in(*id, go_on),
@@ -1401,14 +1406,14 @@ impl Editor {
     }
 
     /// Session `id`'s rebase gone on with (`go_on`) or aborted — in its own task panel; from behind, said.
-    fn rebase_in(&mut self, id: crate::event::SessionId, go_on: bool) -> Result<(), String> {
+    fn rebase_in(&mut self, id: crate::event::WorkspaceId, go_on: bool) -> Result<(), String> {
         let mut done = Ok(());
         let mut name = String::new();
-        self.with_session(id, |ed| {
-            name = ed.session.label().to_string();
+        self.with_workspace(id, |ed| {
+            name = ed.workspace.label().to_string();
             done = if go_on { ed.rebase_continue() } else { ed.rebase_abort() };
         });
-        if done.is_ok() && id != self.session.id {
+        if done.is_ok() && id != self.workspace.id {
             let what = if go_on { "goes on" } else { "is aborted" };
             self.set_status(format!("{name}'s rebase {what} — its task panel shows it (space W goes there)"));
         }
@@ -1420,11 +1425,11 @@ impl Editor {
     /// `:w` goes on with it (`rebase_saved`), `:q` puts the card back (`rebase_message_left`).
     pub fn rebase_message(&mut self, root: &Path) {
         let Some(id) = self.session_at(root) else { return };
-        self.with_session(id, |ed| {
-            let Some(r) = ed.session.rebase.as_ref().filter(|r| r.stage == Stage::Resolved) else { return };
+        self.with_workspace(id, |ed| {
+            let Some(r) = ed.workspace.rebase.as_ref().filter(|r| r.stage == Stage::Resolved) else { return };
             let (proposed, own) = (r.messages.proposed.clone(), r.stop.message.clone().unwrap_or_default());
             let at = r.stop.at();
-            let root = ed.session.root.clone();
+            let root = ed.workspace.root.clone();
             let said = "writing the commit's message…";
             let work = move || -> Result<PathBuf, String> {
                 let dir = git_dir(&root).ok_or("no git folder")?;
@@ -1449,7 +1454,7 @@ impl Editor {
                         return ed.rebase_resolved_card();
                     }
                 };
-                if ed.session.rebase.as_ref().is_none_or(|r| r.stage != Stage::Resolved) {
+                if ed.workspace.rebase.as_ref().is_none_or(|r| r.stage != Stage::Resolved) {
                     return;
                 }
                 if let Err(e) = ed.open(&file) {
@@ -1460,7 +1465,7 @@ impl Editor {
                 doc.throwaway = true;
                 doc.set_selection(crate::selection::Selection::point(0));
                 let doc = doc.id;
-                if let Some(r) = ed.session.rebase.as_mut() {
+                if let Some(r) = ed.workspace.rebase.as_mut() {
                     r.messages.editing = Some((doc, file));
                 }
                 ed.set_status(":w goes on with this message · :q leaves it as it was");
@@ -1471,18 +1476,18 @@ impl Editor {
     /// Whether the buffer in front is a rebase's commit message being written (`m`).
     pub fn in_rebase_message(&self) -> bool {
         let id = self.doc().id;
-        self.session.rebase.as_ref().is_some_and(|r| r.messages.editing.as_ref().is_some_and(|e| e.0 == id))
+        self.workspace.rebase.as_ref().is_some_and(|r| r.messages.editing.as_ref().is_some_and(|e| e.0 == id))
     }
 
     /// `:q` in the message being written: it closes, the message stays as it was, and the card is back.
     pub fn rebase_message_left(&mut self) -> Result<(), String> {
-        if let Some(r) = self.session.rebase.as_mut() {
+        if let Some(r) = self.workspace.rebase.as_mut() {
             r.messages.editing = None;
         }
         self.close_current(true).map_err(|e| format!("{e:#}"))?;
         self.set_status("the commit's message stays as it was — the rebase's card is back");
         // (one card for it: put up again meanwhile by a bring, it isn't doubled)
-        let id = self.session.id;
+        let id = self.workspace.id;
         self.rebase_offer(id)
     }
 
@@ -1490,23 +1495,23 @@ impl Editor {
     /// was — said, and the resolved card back (the review of frictions31: closed by `:bd` or a session's end, the
     /// card `m` took away never came back).
     pub(crate) fn rebase_message_closed(&mut self, gone: crate::document::DocId) {
-        let writing = |l: &crate::session::Session| {
+        let writing = |l: &crate::workspace::Workspace| {
             l.rebase.as_ref().and_then(|r| r.messages.editing.as_ref()).is_some_and(|e| e.0 == gone)
         };
-        let ids: Vec<_> = std::iter::once(&self.session)
-            .chain(&self.sessions)
+        let ids: Vec<_> = std::iter::once(&self.workspace)
+            .chain(&self.workspaces)
             .filter(|l| writing(l))
             .map(|l| l.id)
             .collect();
         for id in ids {
-            self.with_session(id, |ed| {
-                if let Some(r) = ed.session.rebase.as_mut() {
+            self.with_workspace(id, |ed| {
+                if let Some(r) = ed.workspace.rebase.as_mut() {
                     r.messages.editing = None;
                 }
                 ed.set_status(
                     "the commit's message was closed — it stays as it was; the rebase's card is back",
                 );
-                let id = ed.session.id;
+                let id = ed.workspace.id;
                 if let Err(e) = ed.rebase_offer(id) {
                     ed.set_warning(e);
                 }
@@ -1517,7 +1522,7 @@ impl Editor {
     /// A buffer was saved: the rebase's message being written goes on with it — its buffer closes, the files
     /// are staged and the rebase continues with that message.
     pub fn rebase_saved(&mut self, id: crate::document::DocId) {
-        let Some(r) = self.session.rebase.as_mut() else { return };
+        let Some(r) = self.workspace.rebase.as_mut() else { return };
         let Some((_, file)) = r.messages.editing.take_if(|e| e.0 == id) else { return };
         r.messages.written = Some(file);
         self.close_doc(id);
@@ -1529,7 +1534,7 @@ impl Editor {
     /// The resolved card's, a session's rebase (wherever it is): `y` continue · `X` abort.
     pub fn rebase_answer(&mut self, root: &Path, go_on: bool) {
         let Some(id) = self.session_at(root) else { return };
-        self.with_session(id, |ed| {
+        self.with_workspace(id, |ed| {
             let done = if go_on { ed.rebase_continue() } else { ed.rebase_abort() };
             if let Err(e) = done {
                 ed.set_error(e);
@@ -1545,8 +1550,8 @@ impl Editor {
     /// The replayed commit goes on with the message written with `m` (`Messages.written`), else as it is — a
     /// resolved stop's then named on the bring card (`Messages.kept`).
     pub fn rebase_continue(&mut self) -> Result<(), String> {
-        let name = self.session.label().to_string();
-        let Some(r) = self.session.rebase.as_ref() else {
+        let name = self.workspace.label().to_string();
+        let Some(r) = self.workspace.rebase.as_ref() else {
             return self.rebase_find(true);
         };
         if let Stage::Running { .. } = r.stage {
@@ -1556,7 +1561,7 @@ impl Editor {
         let mut files = r.stop.files.clone();
         files.extend(r.also.iter().cloned());
         let texts = self.rebase_texts(&r.stop.files);
-        let root = self.session.root.clone();
+        let root = self.workspace.root.clone();
         let written = r.messages.written.clone();
         self.events.jobs().spawn(move || {
             let left = marked(&root, texts);
@@ -1569,7 +1574,7 @@ impl Editor {
             });
             let unseen: Vec<String> = unstaged(&root).into_iter().filter(|f| !files.contains(f)).collect();
             move |ed: &mut Editor| {
-                let Some(r) = ed.session.rebase.as_mut().filter(|r| r.stopped()) else { return };
+                let Some(r) = ed.workspace.rebase.as_mut().filter(|r| r.stopped()) else { return };
                 if !left.is_empty() {
                     return ed
                         .set_warning(format!("conflict markers still in {} — not going on", named(&left)));
@@ -1632,8 +1637,8 @@ impl Editor {
 
     /// `:rebase-abort` — `git rebase --abort`: the branch back where it was before the rebase.
     pub fn rebase_abort(&mut self) -> Result<(), String> {
-        let name = self.session.label().to_string();
-        let Some(r) = self.session.rebase.as_ref() else {
+        let name = self.workspace.label().to_string();
+        let Some(r) = self.workspace.rebase.as_ref() else {
             return self.rebase_find(false);
         };
         if let Stage::Running { .. } = r.stage {
@@ -1650,15 +1655,15 @@ impl Editor {
     /// `:rebase-continue`/`:rebase-abort` with no rebase of tarae's here: one under way in the checkout
     /// (from before a restart, or started by hand) is taken up, then gone on with (`go_on`) or aborted.
     fn rebase_find(&mut self, go_on: bool) -> Result<(), String> {
-        let root = self.session.root.clone();
+        let root = self.workspace.root.clone();
         self.events.jobs().spawn(move || {
             let stop = under_way(&root);
             move |ed: &mut Editor| {
                 let Some(stop) = stop else {
-                    let name = ed.session.label().to_string();
+                    let name = ed.workspace.label().to_string();
                     return ed.set_error(format!("no rebase under way in {name}"));
                 };
-                if ed.session.rebase.is_none() {
+                if ed.workspace.rebase.is_none() {
                     ed.rebase_adopt(stop);
                 }
                 let done = if go_on { ed.rebase_continue() } else { ed.rebase_abort() };
@@ -1672,10 +1677,10 @@ impl Editor {
 
     /// A rebase found under way in the front session's checkout, taken up as stopped there.
     pub(crate) fn rebase_adopt(&mut self, stop: Stop) {
-        let s = &self.session;
+        let s = &self.workspace;
         let branch = stop.head.clone().or_else(|| s.branch.clone()).unwrap_or_else(|| "HEAD".into());
         let base = s.base.clone().or_else(|| stop.onto.clone()).unwrap_or_default();
-        self.session.rebase = Some(Rebase {
+        self.workspace.rebase = Some(Rebase {
             branch,
             base,
             stage: Stage::Stopped,
@@ -1695,7 +1700,7 @@ impl Editor {
     /// The review of a stop's resolution ends (the rebase goes on, or is aborted).
     fn rebase_review_gone(&mut self) {
         let replay = self
-            .session
+            .workspace
             .code_review
             .as_ref()
             .is_some_and(|r| matches!(r.base, crate::codereview::Base::Replay { .. }));
@@ -1706,16 +1711,16 @@ impl Editor {
 
     /// The resolved card of the front session's rebase goes (answered by hand).
     fn rebase_cards_gone(&mut self) {
-        let root = self.session.root.clone();
+        let root = self.workspace.root.clone();
         let mine = |o: &Offer| matches!(&o.what, What::RebaseResolved { root: r, .. } if *r == root);
         self.offers.retain(|o| !mine(o));
-        self.session.parked.retain(|o| !mine(o));
+        self.workspace.parked.retain(|o| !mine(o));
     }
 
     /// `y` on the bring card.
     pub fn rebase_bring(&mut self, m: Moved) {
         let Some(id) = self.session_at(&m.root) else { return };
-        if let Err(e) = self.session_bring_now(&id.to_string()) {
+        if let Err(e) = self.workspace_bring_now(&id.to_string()) {
             self.set_error(e);
         }
     }
@@ -1744,18 +1749,18 @@ impl Editor {
     /// the output went with the task panel's next run): the first test that failed and why, in the warning
     /// colour, and `v` for the failed step's output (`Offer.output` — kept on the card, whatever runs next).
     fn rebase_bring_failed(&mut self, m: Moved, title: &str) {
-        let failed = self.session.preflight.as_ref().and_then(|p| p.step_text("", None, &p.kept).ok());
+        let failed = self.workspace.preflight.as_ref().and_then(|p| p.step_text("", None, &p.kept).ok());
         let output = failed.clone();
-        let head = self.session.bring_tested.take();
-        self.session.bring_failed = Some(Failed { title: title.into(), output, head });
+        let head = self.workspace.bring_tested.take();
+        self.workspace.bring_failed = Some(Failed { title: title.into(), output, head });
         let card = m.failed_card(title, failed);
-        let (sid, root, base) = (self.session.id, m.root.clone(), m.base.clone());
+        let (sid, root, base) = (self.workspace.id, m.root.clone(), m.base.clone());
         crate::codereview::push_bring_card(self, sid, card, root, base);
     }
 
     /// `p` on the bring card: the quick preflight in its session, and the bring once it passes (the full one
     /// is for before publishing). The commit it tests is read first, on a worker, and the preflight starts once
-    /// it's in: should it fail, the failure is that commit's (`Session.bring_tested` → `Failed.head`) — not one
+    /// it's in: should it fail, the failure is that commit's (`Workspace.bring_tested` → `Failed.head`) — not one
     /// Claude made while it ran, which the review of frictions29 91 found recorded as the failing one, the
     /// commit that failed getting the plain card again.
     pub fn rebase_preflight_then_bring(&mut self, m: Moved) {
@@ -1764,12 +1769,12 @@ impl Editor {
         self.events.shared_jobs().spawn(move || {
             let head = git(&root, &["rev-parse", "HEAD"], None).ok().map(|h| h.trim().to_string());
             move |ed: &mut Editor| {
-                ed.with_session(id, |ed| {
-                    ed.session.bring_after_preflight = true;
-                    ed.session.bring_card_after = Some(Box::new(m));
-                    ed.session.bring_tested = head;
+                ed.with_workspace(id, |ed| {
+                    ed.workspace.bring_after_preflight = true;
+                    ed.workspace.bring_card_after = Some(Box::new(m));
+                    ed.workspace.bring_tested = head;
                     if let Err(e) = ed.preflight_start(crate::preflight::Set::Quick) {
-                        ed.session.bring_after_preflight = false;
+                        ed.workspace.bring_after_preflight = false;
                         ed.set_error(e);
                     }
                 });
@@ -1781,14 +1786,14 @@ impl Editor {
     /// one its card's `p` asked for gets the card back, saying what failed.
     pub(crate) fn rebase_preflight_done(&mut self, passed: bool, title: &str) {
         // (taken whatever happens: one left from a preflight that didn't start isn't the next one's)
-        let card = self.session.bring_card_after.take();
+        let card = self.workspace.bring_card_after.take();
         if passed {
-            (self.session.bring_failed, self.session.bring_tested) = (None, None);
+            (self.workspace.bring_failed, self.workspace.bring_tested) = (None, None);
         }
-        if !std::mem::take(&mut self.session.bring_after_preflight) {
+        if !std::mem::take(&mut self.workspace.bring_after_preflight) {
             return;
         }
-        let (id, name) = (self.session.id, self.session.label().to_string());
+        let (id, name) = (self.workspace.id, self.workspace.label().to_string());
         // (the bring queue's one under way: said there, the next going on if it failed)
         if self.bring_queue_at(id) == Some(crate::bringqueue::Stage::Preflight) {
             self.bring_queue_preflight(passed, title);
@@ -1801,7 +1806,7 @@ impl Editor {
             }
             return self.set_warning(format!("{name} not brought — the {title} didn't pass"));
         }
-        if let Err(e) = self.session_bring_now(&id.to_string()) {
+        if let Err(e) = self.workspace_bring_now(&id.to_string()) {
             // (the queue's one under way: out, the next going on — else it waited at its bring for good)
             match self.bring_queue_at(id) {
                 Some(_) => self.bring_queue_out(id, e),
@@ -1815,7 +1820,7 @@ impl Editor {
 /// what reaches Claude with it (`chat::tests`).
 #[cfg(test)]
 pub(crate) fn ask_for_test(ed: &mut Editor, question: &str) {
-    ed.session.rebase = Some(Rebase {
+    ed.workspace.rebase = Some(Rebase {
         branch: "dev".into(),
         base: "main".into(),
         stage: Stage::Stopped,
@@ -1843,7 +1848,7 @@ pub(crate) fn resolved_for_test(ed: &mut Editor, message: &str, proposed: Option
         message: Some(message.into()),
         ..Stop::default()
     };
-    ed.session.rebase = Some(Rebase {
+    ed.workspace.rebase = Some(Rebase {
         branch: "dev".into(),
         base: "main".into(),
         stage: Stage::Resolved,
@@ -1945,10 +1950,10 @@ mod tests {
         }
         let dir = std::fs::canonicalize(dir).unwrap();
         let mut ed = Editor::new(crate::config::Config::default());
-        (ed.session.root, ed.session.name) = (dir.join("front"), "front".into());
-        let a = ed.session_open(&dir.join("a")).unwrap();
-        let b = ed.session_open(&dir.join("b")).unwrap();
-        assert!(ed.session_switch(0));
+        (ed.workspace.root, ed.workspace.name) = (dir.join("front"), "front".into());
+        let a = ed.workspace_open(&dir.join("a")).unwrap();
+        let b = ed.workspace_open(&dir.join("b")).unwrap();
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME));
         // (git at work in each: the answer says so — nothing runs)
         let running = |base: &str| Rebase {
             branch: "x".into(),
@@ -1963,17 +1968,17 @@ mod tests {
             resolved_at: None,
             messages: Default::default(),
         };
-        ed.with_session(a, |ed| ed.session.rebase = Some(running("main")));
+        ed.with_workspace(a, |ed| ed.workspace.rebase = Some(running("main")));
         let label = |ed: &mut Editor, id| {
             let mut n = String::new();
-            ed.with_session(id, |ed| n = ed.session.label().to_string());
+            ed.with_workspace(id, |ed| n = ed.workspace.label().to_string());
             n
         };
         let name_a = label(&mut ed, a);
         // One, behind: that one
         assert_eq!(ed.rebase_by_hand("", true), Err(format!("{name_a} is rebasing 1/3 — let it finish")));
         // Two, behind: asked which
-        ed.with_session(b, |ed| ed.session.rebase = Some(running("dev")));
+        ed.with_workspace(b, |ed| ed.workspace.rebase = Some(running("dev")));
         assert_eq!(ed.rebase_by_hand("", false), Ok(()));
         let p = ed.picker.take().expect("a pick");
         assert_eq!(p.title, "rebase-abort: which session?");
@@ -1992,7 +1997,7 @@ mod tests {
             Err(format!("{name_b} is rebasing 1/3 — let it finish"))
         );
         // The front one rebasing too: the front's
-        ed.session.rebase = Some(running("main"));
+        ed.workspace.rebase = Some(running("main"));
         assert_eq!(ed.rebase_by_hand("", true), Err("front is rebasing 1/3 — let it finish".to_string()));
         std::fs::remove_dir_all(&dir).ok();
     }

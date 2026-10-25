@@ -164,7 +164,7 @@ struct Scene {
     main: PathBuf,
     fix: PathBuf,
     docs: PathBuf,
-    ids: [SessionId; 3],
+    ids: [WorkspaceId; 3],
     dir: Scratch,
 }
 
@@ -185,21 +185,21 @@ fn scene(name: &str) -> Scene {
     let fix = std::fs::canonicalize(dir.join("fix")).unwrap();
     let docs = std::fs::canonicalize(dir.join("docs")).unwrap();
     let mut ed = Editor::new(Config::default());
-    ed.session.root = main.clone();
-    ed.session.name = "main".into();
-    ed.session.git_branch = Some("main".into());
+    ed.workspace.root = main.clone();
+    ed.workspace.name = "main".into();
+    ed.workspace.git_branch = Some("main".into());
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    let mut ids = [0; 3];
+    let mut ids = [WorkspaceId::HOME; 3];
     for (k, (root, name)) in [(&fix, "fix"), (&docs, "docs")].into_iter().enumerate() {
-        let id = ed.session_add(root.clone());
-        let l = ed.session_by_id(id).unwrap();
+        let id = ed.workspace_add(root.clone());
+        let l = ed.workspace_by_id(id).unwrap();
         l.name = name.into();
         l.base = Some("main".into());
         l.git_branch = Some(name.into());
         ids[k + 1] = id;
     }
-    assert!(ed.session_switch(ids[1]));
+    assert!(ed.workspace_switch(ids[1]));
     ed.open(&fix.join("a.rs")).unwrap();
     Scene { ed, main, fix, docs, ids, dir }
 }
@@ -297,8 +297,8 @@ fn three_workspaces_merge_clean_each_change_in_its_colour() {
     git(&other, &["add", "-A"]);
     git(&other, &["commit", "-qm", "elsewhere"]);
     std::fs::write(other.join("a.rs"), with(8, "eight, elsewhere")).unwrap();
-    let id = ed.session_add(other.clone());
-    ed.session_by_id(id).unwrap().name = "other".into();
+    let id = ed.workspace_add(other.clone());
+    ed.workspace_by_id(id).unwrap().name = "other".into();
     let before = files(&main.join(".git"));
     save_line(&mut ed, &main.join("a.rs"), 2, "two, main");
     save_line(&mut ed, &docs.join("a.rs"), 11, "eleven, docs");
@@ -324,8 +324,10 @@ fn three_workspaces_merge_clean_each_change_in_its_colour() {
     assert!(line("six, fix").trim_start().starts_with('f'), "{}", line("six, fix"));
     assert!(line("two, main").trim_start().starts_with('m'));
     assert!(line("woven · a.rs").contains("fix unsaved · main · docs"), "{}", line("woven · a.rs"));
-    let colours = |ids: &[SessionId]| -> Vec<u8> {
-        ids.iter().map(|id| ed.sessions_in_order().iter().find(|l| l.id == *id).unwrap().colour).collect()
+    let colours = |ids: &[WorkspaceId]| -> Vec<u8> {
+        ids.iter()
+            .map(|id| ed.sessions_in_order().iter().find(|l| l.id == *id).unwrap().claude.colour)
+            .collect()
     };
     let c = colours(&ids);
     let prefix = |p: &vt100::Parser, row: &str| {
@@ -422,7 +424,7 @@ fn the_lists_v_opens_the_overlaps_file_at_that_sessions_conflict() {
         lines: Some(8..9),
         other_lines: Some(8..9),
     });
-    let to_row = |ed: &mut Editor, id: SessionId| {
+    let to_row = |ed: &mut Editor, id: WorkspaceId| {
         // (from its first row: a list's moves stop at its ends)
         press(ed, " Wg");
         for _ in 0..4 {
@@ -492,7 +494,7 @@ fn a_conflict_shows_side_by_side_wide_and_stacked_narrow() {
     let cols = r.iter().find(|l| l.contains("five, fix")).unwrap();
     assert!(cols.contains("line 5") && cols.contains("│") && cols.contains("five, main"), "{cols}");
     assert!(head.trim_start().starts_with('≈'), "{head}");
-    let colour = ed.sessions_in_order().iter().find(|l| l.id == ids[0]).unwrap().colour;
+    let colour = ed.sessions_in_order().iter().find(|l| l.id == ids[0]).unwrap().claude.colour;
     assert_eq!(cell_of(&p, "─ main").fgcolor(), cell_of(&p, "─ fix").fgcolor(), "the rules faint");
     let name = {
         let rows = rows(&p);
@@ -529,8 +531,8 @@ fn a_conflict_shows_side_by_side_wide_and_stacked_narrow() {
 #[test]
 fn a_branch_not_read_yet_is_read_with_the_merge() {
     let Scene { mut ed, main, docs, ids, dir: _dir, .. } = scene("weave-branch");
-    assert!(ed.session_switch(ids[0]));
-    ed.session.git_branch = None;
+    assert!(ed.workspace_switch(ids[0]));
+    ed.workspace.git_branch = None;
     ed.open(&main.join("a.rs")).unwrap();
     save_line(&mut ed, &docs.join("a.rs"), 4, "four, docs");
     crate::typed::execute(&mut ed, "weave").unwrap();
@@ -590,16 +592,16 @@ fn space_v_w_and_the_lists_v_open_it() {
 }
 
 /// The woven view of `view` in front again, in fix's workspace (after an `enter` took you elsewhere).
-fn back(ed: &mut Editor, fix: SessionId, view: crate::document::DocId) {
-    if ed.session.id != fix {
-        assert!(ed.session_switch(fix));
+fn back(ed: &mut Editor, fix: WorkspaceId, view: crate::document::DocId) {
+    if ed.workspace.id != fix {
+        assert!(ed.workspace_switch(fix));
     }
     ed.current = ed.docs.iter().position(|d| d.id == view).expect("the view");
 }
 
 /// Where `enter` took you: the session, the file, the line.
-fn went(ed: &Editor) -> (SessionId, PathBuf, usize) {
-    (ed.session.id, ed.doc().path.clone().unwrap_or_default(), ed.cursor_line())
+fn went(ed: &Editor) -> (WorkspaceId, PathBuf, usize) {
+    (ed.workspace.id, ed.doc().path.clone().unwrap_or_default(), ed.cursor_line())
 }
 
 /// `enter` on a change's line: that session's workspace, its file at that line of its own text (not the woven view's
@@ -621,7 +623,7 @@ fn enter_on_a_change_goes_to_its_workspace_at_its_own_line() {
     assert_eq!(at, 7, "two of docs's lines above it here");
     ed.goto_line(at + 2);
     press(&mut ed, "<ret>");
-    assert_eq!((ed.session.id, ed.doc().id), (ids[1], view), "nothing moved");
+    assert_eq!((ed.workspace.id, ed.doc().id), (ids[1], view), "nothing moved");
     assert!(ed.messages.iter().any(|m| m.2.contains("nobody changed this line")), "{:?}", ed.messages);
     ed.goto_line(at);
     press(&mut ed, "<ret>");
@@ -716,16 +718,16 @@ fn enter_on_a_conflicts_part_goes_to_whose_it_is() {
     assert_eq!(went(&ed), (ids[2], docs.join("a.rs"), 5));
     // The tip's part where no checkout has the branch: said
     back(&mut ed, ids[1], view);
-    ed.session_by_id(ids[0]).unwrap().git_branch = Some("elsewhere".into());
+    ed.workspace_by_id(ids[0]).unwrap().git_branch = Some("elsewhere".into());
     ed.goto_line(c.base.start);
     press(&mut ed, "<ret>");
-    assert_eq!((ed.session.id, ed.doc().id), (ids[1], view));
+    assert_eq!((ed.workspace.id, ed.doc().id), (ids[1], view));
     assert!(ed.messages.iter().any(|m| m.2.contains("no workspace here has main")), "{:?}", ed.messages);
     // docs's workspace ended meanwhile (its side still in the last weave): said
-    let _ = ed.session_close(&docs);
+    let _ = ed.workspace_close(&docs);
     ed.goto_line(part(&ed, "docs"));
     press(&mut ed, "<ret>");
-    assert_eq!((ed.session.id, ed.doc().id), (ids[1], view));
+    assert_eq!((ed.workspace.id, ed.doc().id), (ids[1], view));
     assert!(ed.messages.iter().any(|m| m.2.contains("docs's workspace has ended")), "{:?}", ed.messages);
 }
 
@@ -750,7 +752,7 @@ fn a_removal_shows_its_head_and_enter_goes_there() {
         assert!(rule.ends_with('─'), "{}", r[head]);
     }
     let p = frame(&mut ed, 80);
-    let colour = ed.sessions_in_order().iter().find(|l| l.id == ids[0]).unwrap().colour;
+    let colour = ed.sessions_in_order().iter().find(|l| l.id == ids[0]).unwrap().claude.colour;
     assert_eq!(cell_of(&p, "main · 2").fgcolor(), participant(&ed, colour), "its name in its colour");
     // Its row counted where the view scrolls: from the top of a short pane down past it, the cursor's line in sight
     let short = |ed: &mut Editor| {
@@ -858,7 +860,7 @@ fn an_empty_column_is_picked_by_its_click() {
     // Used, the pick is gone: the tip's part again
     back(&mut ed, ids[1], view);
     press(&mut ed, "<ret>");
-    assert_eq!(ed.session.id, ids[0], "the tip's part: main's checkout");
+    assert_eq!(ed.workspace.id, ids[0], "the tip's part: main's checkout");
 }
 
 /// A click, `x` the cell and `y` the row.
@@ -890,7 +892,7 @@ fn enter_never_goes_through_a_link() {
     assert_eq!(shown(&ed).left, [("main".to_string(), "not a plain file")]);
     let c = shown(&ed).merge.conflicts[0].clone();
     let refused = |ed: &Editor, n: usize, what: &str| {
-        assert_eq!((ed.session.id, ed.doc().id), (ids[1], view), "{what}: nothing moved");
+        assert_eq!((ed.workspace.id, ed.doc().id), (ids[1], view), "{what}: nothing moved");
         let said = ed.messages.iter().filter(|m| m.2.contains("isn't a plain file — not opened")).count();
         assert_eq!(said, n, "{what}: said {:?}", ed.messages);
         assert!(!ed.docs.iter().any(|d| d.text.to_string().contains("SECRET")), "{what}: in no buffer");

@@ -243,7 +243,7 @@ impl Editor {
         let root = file
             .as_deref()
             .map(|f| crate::lsp::find_root_for(&lang, f))
-            .unwrap_or_else(|| self.session.root.clone());
+            .unwrap_or_else(|| self.workspace.root.clone());
         let root = std::fs::canonicalize(&root).unwrap_or(root);
         self.dap_test = None;
         self.dap_resume = Some(crate::offer::Resume::Attach(t.clone()));

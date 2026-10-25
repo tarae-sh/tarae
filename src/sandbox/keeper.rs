@@ -3044,9 +3044,9 @@ mod tests {
             // (a stand-in claude: it reads what it's sent and says nothing)
             ed.config.llm.command = "sh".into();
             ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-            ed.session.root = root.clone();
+            ed.workspace.root = root.clone();
             crate::chat::open(&mut ed);
-            ed.session.chat.as_mut().unwrap().conversation = Some(format!("{name}-1"));
+            ed.workspace.claude.chat.as_mut().unwrap().conversation = Some(format!("{name}-1"));
             let cache = base.join("cache");
             ed.sandbox_here = Some(Arc::new(move || {
                 let mut here = super::super::Here::now();
@@ -3064,7 +3064,7 @@ mod tests {
             static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let n = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let id = serde_json::json!(n);
-            let c = self.ed.session.chat.as_mut().unwrap();
+            let c = self.ed.workspace.claude.chat.as_mut().unwrap();
             c.state = crate::chat::State::Thinking;
             let call = Call::of(c.generation(), &format!("r{n}"), id.clone());
             let job = Job::Command(command.into(), self.root.clone());
@@ -3078,7 +3078,7 @@ mod tests {
                 }
                 if Instant::now() >= end {
                     let toasts: Vec<_> = self.ed.toasts.iter().map(|t| t.text.clone()).collect();
-                    let (cards, task) = (self.ed.offers.len(), self.ed.session.task_run.is_some());
+                    let (cards, task) = (self.ed.offers.len(), self.ed.workspace.task_run.is_some());
                     panic!("{command}: no answer — toasts {toasts:?}, {cards} cards, a task run: {task}");
                 }
                 if let Some(ev) = self.ed.events.recv_timeout(Duration::from_millis(20)) {
@@ -3143,7 +3143,7 @@ mod tests {
         let their_daemon = theirs.daemon();
         assert_ne!(theirs.keeper().pid, k.pid, "each session its own keeper");
         crate::chat::reset(&mut mine.ed);
-        assert!(mine.ed.session.chat.as_ref().unwrap().conversation.is_none(), "a new conversation");
+        assert!(mine.ed.workspace.claude.chat.as_ref().unwrap().conversation.is_none(), "a new conversation");
         let said = mine.run("true");
         assert_eq!(mine.keeper().pid, k.pid, "the same keeper: {said}");
         assert!(!k.is_gone());
@@ -3203,12 +3203,12 @@ mod tests {
         let mut mine = Lived::new(&base, "mine");
         let granted = base.join("granted");
         std::fs::create_dir_all(&granted).unwrap();
-        mine.ed.session.chat.as_mut().unwrap().allowed.write.push(granted);
+        mine.ed.workspace.claude.chat.as_mut().unwrap().allowed.write.push(granted);
         let daemon = mine.daemon();
         let old = mine.keeper();
         crate::chat::reset(&mut mine.ed);
         assert!(
-            mine.ed.session.chat.as_ref().unwrap().allowed.write.is_empty(),
+            mine.ed.workspace.claude.chat.as_ref().unwrap().allowed.write.is_empty(),
             "the grant was the last one's"
         );
         let said = mine.run("true");
@@ -4585,9 +4585,9 @@ mod tests {
         ed.terminal_run(argv, vec![(HELPER.into(), "userns".into())]);
         let end = Instant::now() + crate::test_results::PATIENCE;
         let screen = |ed: &crate::editor::Editor| {
-            ed.session.terminal.as_ref().map(|t| t.parser.screen().contents()).unwrap_or_default()
+            ed.workspace.terminal.as_ref().map(|t| t.parser.screen().contents()).unwrap_or_default()
         };
-        while ed.session.terminal.as_ref().is_none_or(|t| t.exited.is_none()) && Instant::now() < end {
+        while ed.workspace.terminal.as_ref().is_none_or(|t| t.exited.is_none()) && Instant::now() < end {
             if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(100)) {
                 ed.handle_event(ev);
             }
@@ -8976,7 +8976,7 @@ mod tests {
             let name = format!("asked-{tier}");
             let k = keeper_for(&name, ns);
             let (p, c, root) = project_served(&name, Vec::new(), Some(&k), &[], Ok(()));
-            let session = proxy::session_of(&p.root);
+            let session = proxy::workspace_of(&p.root);
             let (asks, asked) = std::sync::mpsc::channel();
             proxy::TEST_ASKS.lock().unwrap().push((session, asks));
             // (two runs of the session, ids of their own; their rules name no host)
@@ -9064,7 +9064,7 @@ mod tests {
             let abi = crate::landlock::abi().unwrap();
             let c = super::super::linux::confine(&p, abi, Err("not watched".into()), false, Some(&k), Ok(()))
                 .unwrap();
-            let session = proxy::session_of(&p.root);
+            let session = proxy::workspace_of(&p.root);
             let (asks, asked) = std::sync::mpsc::channel();
             proxy::TEST_ASKS.lock().unwrap().push((session, asks));
             let of_run = |run_id| {

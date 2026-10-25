@@ -485,7 +485,7 @@ const DIFF_WRITING_MAX: usize = 32 * 1024;
 
 /// Pieces of chat `generation`'s edit call: kept, its places looked for once they can be, its rows drawn.
 pub fn on_delta(ed: &mut Editor, d: Delta) {
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     let live = &mut c.writing;
     let k = match live.calls.iter().position(|c| c.id == d.call) {
         Some(k) => k,
@@ -582,7 +582,7 @@ fn look(ed: &mut Editor, call: String, i: usize, tool: Tool, file: String, old: 
         .filter(|d| !d.loading)
         .filter_map(|d| Some((d.path.clone()?, d.id, d.version(), d.text.clone())))
         .collect();
-    let generation = ed.session.chat.as_ref().map(crate::chat::Chat::generation);
+    let generation = ed.workspace.claude.chat.as_ref().map(crate::chat::Chat::generation);
     ed.events.jobs().spawn(move || {
         let found = (|| {
             let real_root = std::fs::canonicalize(&root).ok()?;
@@ -600,7 +600,8 @@ fn look(ed: &mut Editor, call: String, i: usize, tool: Tool, file: String, old: 
             Some(Found { path, from, to, seen, bound: None, held: String::new(), lines, protected })
         })();
         move |ed: &mut Editor| {
-            let Some(c) = ed.session.chat.as_mut().filter(|c| Some(c.generation()) == generation) else {
+            let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| Some(c.generation()) == generation)
+            else {
                 return;
             };
             let Some(call) = c.writing.calls.iter_mut().find(|c| c.id == call) else { return };
@@ -642,11 +643,11 @@ impl Cow {
 /// what it replaces (follow taken there the first time), unbound for good once that buffer changed or a review
 /// opened on it; each buffer's blocks laid out again.
 pub fn sync(ed: &mut Editor) {
-    let review = ed.session.review.as_ref().map(|r| r.doc_id);
+    let review = ed.workspace.claude.review.as_ref().map(|r| r.doc_id);
     let mut bound_now: Vec<(PathBuf, usize, usize)> = Vec::new();
     let mut want: Vec<(DocId, Arc<Block>)> = Vec::new();
-    let others: Vec<DocId> = ed.sessions.iter().flat_map(|l| l.docs.iter().copied()).collect();
-    if let Some(c) = ed.session.chat.as_mut() {
+    let others: Vec<DocId> = ed.workspaces.iter().flat_map(|l| l.docs.iter().copied()).collect();
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
         for call in &mut c.writing.calls {
             for it in &mut call.items {
                 let Place::Found(f) = &mut it.place else { continue };
@@ -756,7 +757,7 @@ pub fn sync(ed: &mut Editor) {
         // whole: whether it was watched to its end (`written_end`)
         (ed.doc().id, crate::follow::view_line(ed).is_some())
     });
-    if let Some(c) = ed.session.chat.as_mut() {
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
         for it in c.writing.calls.iter_mut().flat_map(|c| &mut c.items).filter(|it| !it.ended) {
             let bound = match &it.place {
                 Place::Found(f) => f.bound.map(|b| b.0),
@@ -772,7 +773,9 @@ pub fn sync(ed: &mut Editor) {
 /// as far as its pace has come, its rows laid out again where that moved (follow's caret and view with them) or where
 /// its buffer changed since (an edit landed mid-reveal: its rows go, and the frames).
 pub fn reveal(ed: &mut Editor) {
-    let Some(c) = ed.session.chat.as_ref().filter(|c| c.writing.paced && !c.writing.calls.is_empty()) else {
+    let Some(c) =
+        ed.workspace.claude.chat.as_ref().filter(|c| c.writing.paced && !c.writing.calls.is_empty())
+    else {
         return;
     };
     let changed = c.writing.calls.iter().flat_map(|c| &c.items).any(|it| match &it.place {
@@ -783,7 +786,7 @@ pub fn reveal(ed: &mut Editor) {
     });
     // (`editor.motion = "none"`: shown as it comes — what's left, at once)
     let still = ed.motion() == crate::motion::Motion::None;
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     let now = crate::clock::now();
     let mut moved = changed;
     for it in c.writing.calls.iter_mut().flat_map(|c| &mut c.items) {
@@ -800,8 +803,12 @@ pub fn reveal(ed: &mut Editor) {
 
 /// When the reveal moves next while an item drawn has text left to show — None: nothing left, no frame.
 pub fn reveal_wake(ed: &Editor) -> Option<Duration> {
-    let c =
-        ed.session.chat.as_ref().filter(|c| c.writing.paced && ed.motion() != crate::motion::Motion::None)?;
+    let c = ed
+        .workspace
+        .claude
+        .chat
+        .as_ref()
+        .filter(|c| c.writing.paced && ed.motion() != crate::motion::Motion::None)?;
     c.writing
         .calls
         .iter()
@@ -847,7 +854,7 @@ fn past_sight(ed: &Editor) -> Option<std::ops::Range<usize>> {
     let cursor = crate::movement::line_of(&doc.text, doc.selection().primary().head);
     // (the pane follow leads lent the focus while your keys are in another: the selection is the document's, so its
     // cursor is yours there — not one on this block)
-    let on_it = ed.session.pane_swapped.is_none() && (b.first..=b.last + 1).contains(&cursor);
+    let on_it = ed.workspace.viewer.pane_swapped.is_none() && (b.first..=b.last + 1).contains(&cursor);
     let (rows, cols) = ed.viewport;
     if on_it || rows == 0 || b.first < doc.top {
         return None;
@@ -861,7 +868,7 @@ fn past_sight(ed: &Editor) -> Option<std::ops::Range<usize>> {
 /// Where Claude is writing now: the newest item still being written that's bound to a buffer — its file and lines
 /// (`follow::resume` goes there: following again, the editor where the writing is).
 pub fn writing_now(ed: &Editor) -> Option<(std::path::PathBuf, std::ops::Range<usize>)> {
-    let c = ed.session.chat.as_ref()?;
+    let c = ed.workspace.claude.chat.as_ref()?;
     let items = c.writing.calls.iter().rev().flat_map(|c| c.items.iter().rev());
     items.filter(|it| !it.ended).find_map(|it| match &it.place {
         Place::Found(f) if f.bound.is_some() => Some((f.path.clone(), f.lines.0..f.lines.1 + 1)),
@@ -872,7 +879,7 @@ pub fn writing_now(ed: &Editor) -> Option<(std::path::PathBuf, std::ops::Range<u
 /// Whether Claude is still writing a change over `lines` of `path` (an item of a call under way, its place there):
 /// a jump to it that waited is still worth taking (`follow::writing_due`).
 pub fn being_written(ed: &Editor, path: &std::path::Path, lines: &std::ops::Range<usize>) -> bool {
-    let Some(c) = ed.session.chat.as_ref() else { return false };
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return false };
     c.writing.calls.iter().flat_map(|c| &c.items).any(|it| match &it.place {
         Place::Found(f) => f.path == path && f.lines.0 < lines.end && lines.start <= f.lines.1,
         _ => false,
@@ -892,7 +899,7 @@ pub fn written_end(
     before: &Rope,
     after: &Rope,
 ) -> Option<usize> {
-    let c = ed.session.chat.as_ref()?;
+    let c = ed.workspace.claude.chat.as_ref()?;
     let doc = ed.doc();
     let call = c.writing.calls.iter().find(|k| k.id == call).filter(|_| doc.path.as_deref() == Some(path))?;
     // (its items drawn there, in the order they were written)
@@ -1001,7 +1008,7 @@ pub fn block(text: &Rope, (from, to): (usize, usize), new: &str, closed: bool) -
 /// by a call that's whole (its place found later is the review's too: `Call.reviewed`).
 pub fn reviewed(ed: &mut Editor, doc: DocId) {
     let path = ed.docs.iter().find(|d| d.id == doc).and_then(|d| d.path.clone());
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     for call in &mut c.writing.calls {
         if let Some(p) = path.as_ref().filter(|_| call.done) {
             call.reviewed.push(p.clone());
@@ -1021,7 +1028,7 @@ pub fn reviewed(ed: &mut Editor, doc: DocId) {
 
 /// Call `id` answered (its result came): its rows go.
 pub fn answered(ed: &mut Editor, id: &str) {
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     let before = c.writing.calls.len();
     c.writing.calls.retain(|c| c.id != id);
     if c.writing.calls.len() != before {
@@ -1032,10 +1039,10 @@ pub fn answered(ed: &mut Editor, id: &str) {
 /// The turn is over, the chat closed or its process replaced: nothing is being written — in this session's
 /// buffers (another session's rows are its own chat's).
 pub fn over(ed: &mut Editor) {
-    if let Some(c) = ed.session.chat.as_mut() {
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
         c.writing.calls.clear();
     }
-    let others: Vec<DocId> = ed.sessions.iter().flat_map(|l| l.docs.iter().copied()).collect();
+    let others: Vec<DocId> = ed.workspaces.iter().flat_map(|l| l.docs.iter().copied()).collect();
     for d in ed.docs.iter_mut().filter(|d| !others.contains(&d.id)) {
         d.writing = None;
     }

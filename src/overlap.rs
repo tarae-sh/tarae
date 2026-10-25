@@ -3,7 +3,7 @@
 //! early.
 //!
 //! A round (one `shared_jobs` job, on a worker — never git on the main thread) once a workspace's tree moved
-//! (`Session.wrote`: a save, Claude's edit, a change set; its HEAD moved) and stayed quiet `QUIET`:
+//! (`Workspace.wrote`: a save, Claude's edit, a change set; its HEAD moved) and stayed quiet `QUIET`:
 //! 1. each moved workspace's working tree as a commit on its HEAD (`snapshot::snap_apart` + `commit-tree`) — its
 //!    index and every object git writes in a folder of tarae's own (`Folder`, in tarae's cache), the repository's
 //!    objects read as an alternate: nothing is written in the repository, and the folder goes when the workspace
@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::editor::Editor;
-use crate::event::SessionId;
+use crate::event::WorkspaceId;
 
 /// How long a workspace's tree stays still before it's taken (a save, then another: one round).
 pub const QUIET: Duration = Duration::from_secs(3);
@@ -174,7 +174,7 @@ struct Base {
 /// The other side of an overlap: another session's workspace, or the base's tip (its branch).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Other {
-    Session(SessionId),
+    Session(WorkspaceId),
     Branch(String),
 }
 
@@ -182,7 +182,7 @@ pub enum Other {
 /// against a change, a mode, lines too far apart to tell).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Overlap {
-    pub a: SessionId,
+    pub a: WorkspaceId,
     pub b: Other,
     /// From the checkout's top.
     pub path: String,
@@ -201,7 +201,7 @@ pub struct Conflict {
 /// A workspace as the main loop keeps it.
 struct Place {
     folder: Arc<Folder>,
-    /// `Session.wrote` as last seen.
+    /// `Workspace.wrote` as last seen.
     wrote: Option<Instant>,
     /// Moved since it was last taken — when (`clock`): it's taken once it has been still `quiet`.
     moved: Option<Instant>,
@@ -213,7 +213,7 @@ struct Place {
 /// Every workspace's overlaps (`Editor.overlap`).
 pub struct State {
     pub now: Vec<Overlap>,
-    places: HashMap<SessionId, Place>,
+    places: HashMap<WorkspaceId, Place>,
     /// Said while it lasts, by its two sides (in order) and its file, with the lines it was said at: one whose lines
     /// no longer meet those is another conflict, said again; one gone is dropped (back later: said again).
     said: HashMap<Said, Option<Range<usize>>>,
@@ -241,7 +241,7 @@ pub struct State {
 }
 
 /// What a said overlap is kept by: its sides (the lower session first) and its file.
-type Said = (SessionId, Other, String);
+type Said = (WorkspaceId, Other, String);
 
 impl Default for State {
     fn default() -> State {
@@ -271,14 +271,15 @@ impl Default for State {
 #[cfg(test)]
 impl State {
     /// The folder of session `id`'s workspace, while it's kept (tests look in it).
-    pub fn folder(&self, id: SessionId) -> Option<PathBuf> {
+    pub fn folder(&self, id: WorkspaceId) -> Option<PathBuf> {
         self.places.get(&id).map(|p| p.folder.path.clone())
     }
 
     /// Whether every workspace's tree is as last taken — no save since that the next event will see — and no
     /// round waits or runs.
     pub fn settled(&self, ed: &Editor) -> bool {
-        let seen = |l: &crate::session::Session| self.places.get(&l.id).is_some_and(|p| p.wrote == l.wrote);
+        let seen =
+            |l: &crate::workspace::Workspace| self.places.get(&l.id).is_some_and(|p| p.wrote == l.wrote);
         !self.waiting
             && !self.running
             && self.places.values().all(|p| p.moved.is_none() && p.snap.is_some())
@@ -288,8 +289,9 @@ impl State {
     /// A tree moved with no round coming for it — said.
     pub fn unarmed(&self, ed: &Editor) -> Option<String> {
         // (one session, or one not seen yet — opened, or saved, since the last event: the next arms it)
-        let seen = |l: &crate::session::Session| self.places.get(&l.id).is_some_and(|p| p.wrote == l.wrote);
-        if ed.sessions.is_empty() || !sessions(ed).all(seen) {
+        let seen =
+            |l: &crate::workspace::Workspace| self.places.get(&l.id).is_some_and(|p| p.wrote == l.wrote);
+        if ed.workspaces.is_empty() || !sessions(ed).all(seen) {
             return None;
         }
         let moved = self.places.iter().find(|(_, p)| p.moved.is_some()).map(|(id, _)| *id);
@@ -300,22 +302,22 @@ impl State {
 }
 
 /// The sessions, the front one first.
-fn sessions(ed: &Editor) -> impl Iterator<Item = &crate::session::Session> {
-    std::iter::once(&ed.session).chain(&ed.sessions)
+fn sessions(ed: &Editor) -> impl Iterator<Item = &crate::workspace::Workspace> {
+    std::iter::once(&ed.workspace).chain(&ed.workspaces)
 }
 
 /// Every event: the workspaces whose tree moved noted, and a round armed once they're quiet — nothing with one
 /// session open, nothing while nothing moved (an idle tarae isn't woken).
 pub fn sync(ed: &mut Editor) {
     let Some(dir) = ed.overlap.dir.clone() else { return };
-    if ed.sessions.is_empty() {
+    if ed.workspaces.is_empty() {
         if !ed.overlap.now.is_empty() {
             ed.overlap.now.clear();
         }
         return;
     }
     let now = crate::clock::now();
-    let seen: Vec<(SessionId, PathBuf, Option<Instant>)> =
+    let seen: Vec<(WorkspaceId, PathBuf, Option<Instant>)> =
         sessions(ed).map(|l| (l.id, l.root.clone(), l.wrote)).collect();
     for (id, root, wrote) in seen {
         let p = ed.overlap.places.entry(id).or_insert_with(|| Place {
@@ -337,7 +339,7 @@ pub fn sync(ed: &mut Editor) {
 /// A tree moved without a save tarae saw: the checkouts under `dir` (its HEAD moved — a commit, a rebase, a bring).
 pub fn moved(ed: &mut Editor, dir: &Path) {
     let now = crate::clock::now();
-    let ids: Vec<SessionId> = sessions(ed).filter(|l| l.root.starts_with(dir)).map(|l| l.id).collect();
+    let ids: Vec<WorkspaceId> = sessions(ed).filter(|l| l.root.starts_with(dir)).map(|l| l.id).collect();
     for id in ids {
         if let Some(p) = ed.overlap.places.get_mut(&id) {
             p.moved = Some(now);
@@ -379,7 +381,7 @@ fn arm(ed: &mut Editor) {
 fn start(ed: &mut Editor) {
     let quiet = ed.overlap.quiet;
     // (one session left: nothing to compare — nothing armed until a second opens: `sync`)
-    if ed.sessions.is_empty() {
+    if ed.workspaces.is_empty() {
         return;
     }
     let stirring =
@@ -387,13 +389,13 @@ fn start(ed: &mut Editor) {
     if stirring {
         return arm(ed);
     }
-    let home = sessions(ed).find(|l| l.id == 0).and_then(|l| l.git_branch.clone());
+    let home = sessions(ed).find(|l| l.id == WorkspaceId::HOME).and_then(|l| l.git_branch.clone());
     let mut ws = Vec::new();
-    for l in std::iter::once(&ed.session).chain(&ed.sessions) {
+    for l in std::iter::once(&ed.workspace).chain(&ed.workspaces) {
         let Some(p) = ed.overlap.places.get(&l.id) else { continue };
         // (a workspace's base: its own, else the branch of the checkout tarae started in — the home one has none)
         let base = match l.id {
-            0 => None,
+            WorkspaceId::HOME => None,
             _ => l.base.clone().or_else(|| home.clone()),
         };
         ws.push(Ws {
@@ -425,7 +427,7 @@ fn start(ed: &mut Editor) {
 
 /// A workspace as a round takes it.
 struct Ws {
-    id: SessionId,
+    id: WorkspaceId,
     root: PathBuf,
     base: Option<String>,
     folder: Arc<Folder>,
@@ -438,11 +440,11 @@ struct Ws {
 
 /// What a round found.
 pub struct Round {
-    snaps: Vec<(SessionId, Arc<Folder>, Option<Snap>)>,
+    snaps: Vec<(WorkspaceId, Arc<Folder>, Option<Snap>)>,
     /// The workspaces whose take failed (all of them when its lock couldn't be taken): taken again on the quiet.
-    failed: Vec<SessionId>,
+    failed: Vec<WorkspaceId>,
     /// The two sides of each merge that failed: their overlaps as the last round found them stand.
-    unknown: Vec<(SessionId, Other)>,
+    unknown: Vec<(WorkspaceId, Other)>,
     /// Folders started anew (`renew`).
     renewed: u64,
     now: Vec<Overlap>,
@@ -997,7 +999,7 @@ fn landed(ed: &mut Editor, r: Round, seq: u64) {
         }
     }
     ed.overlap.merges = r.merges;
-    let open: HashSet<SessionId> = sessions(ed).map(|l| l.id).collect();
+    let open: HashSet<WorkspaceId> = sessions(ed).map(|l| l.id).collect();
     let mut now: Vec<Overlap> = Vec::new();
     for mut o in r.now.into_iter().filter(|o| open.contains(&o.a)) {
         o.b = as_session(ed, o.a, o.b);
@@ -1009,7 +1011,7 @@ fn landed(ed: &mut Editor, r: Round, seq: u64) {
         }
     }
     // (a merge that failed: its two sides' overlaps as found before stand — not gone, not said again)
-    let unknown: Vec<(SessionId, Other)> =
+    let unknown: Vec<(WorkspaceId, Other)> =
         r.unknown.into_iter().map(|(a, b)| (a, as_session(ed, a, b))).collect();
     let stood: Vec<Overlap> = ed
         .overlap
@@ -1057,7 +1059,7 @@ fn landed(ed: &mut Editor, r: Round, seq: u64) {
 }
 
 /// The other side as said: the base's tip as the session whose checkout has that branch (its name, its colour).
-fn as_session(ed: &Editor, a: SessionId, b: Other) -> Other {
+fn as_session(ed: &Editor, a: WorkspaceId, b: Other) -> Other {
     match &b {
         Other::Branch(br) => {
             match sessions(ed).find(|l| l.id != a && l.git_branch.as_deref() == Some(br.as_str())) {
@@ -1070,7 +1072,7 @@ fn as_session(ed: &Editor, a: SessionId, b: Other) -> Other {
 }
 
 /// Whether overlap `o` is of sides `a` and `b` (either way round).
-fn same_pair(o: &Overlap, a: SessionId, b: &Other) -> bool {
+fn same_pair(o: &Overlap, a: WorkspaceId, b: &Other) -> bool {
     (o.a == a && o.b == *b) || (*b == Other::Session(o.a) && o.b == Other::Session(a))
 }
 
@@ -1102,13 +1104,13 @@ fn apart(x: &Option<Range<usize>>, y: &Option<Range<usize>>) -> bool {
 
 /// The base's branch as said: the session whose checkout has it (its name, its colour), else the branch, plain.
 pub fn named_branch(ed: &Editor, branch: &str) -> (String, Option<u8>) {
-    name(ed, &as_session(ed, ed.session.id, Other::Branch(branch.to_string())))
+    name(ed, &as_session(ed, ed.workspace.id, Other::Branch(branch.to_string())))
 }
 
 /// A file of session `id`'s to show merged (the session list's `v`): one where it would conflict — with the front
 /// session first — and the other side there; else the first it changed (no side).
-pub fn file_of(ed: &Editor, id: SessionId) -> Option<(String, Option<Other>)> {
-    let me = ed.session.id;
+pub fn file_of(ed: &Editor, id: WorkspaceId) -> Option<(String, Option<Other>)> {
+    let me = ed.workspace.id;
     let with = |o: &&Overlap| o.a == id || o.b == Other::Session(id);
     let theirs = |o: &Overlap| match o.a == id {
         true => as_session(ed, id, o.b.clone()),
@@ -1127,12 +1129,12 @@ pub fn file_of(ed: &Editor, id: SessionId) -> Option<(String, Option<Other>)> {
 }
 
 /// Session `id`'s working tree as last taken (its commit) — the woven view asks again when it moves.
-pub fn snapshot_commit(ed: &Editor, id: SessionId) -> Option<String> {
+pub fn snapshot_commit(ed: &Editor, id: WorkspaceId) -> Option<String> {
     ed.overlap.places.get(&id)?.snap.as_ref().map(|s| s.commit.clone())
 }
 
 /// Session `id`'s working tree as last taken, to read a file of (`weave.rs`, when its disk text can't be read).
-pub fn snapshot_reader(ed: &Editor, id: SessionId) -> Option<SnapRead> {
+pub fn snapshot_reader(ed: &Editor, id: WorkspaceId) -> Option<SnapRead> {
     let p = ed.overlap.places.get(&id)?;
     let s = p.snap.as_ref()?;
     Some(SnapRead {
@@ -1170,7 +1172,7 @@ impl SnapRead {
 pub fn name(ed: &Editor, side: &Other) -> (String, Option<u8>) {
     match side {
         Other::Session(id) => match sessions(ed).find(|l| l.id == *id) {
-            Some(l) => (l.label().to_string(), Some(l.colour)),
+            Some(l) => (l.label().to_string(), Some(l.claude.colour)),
             None => (String::new(), None),
         },
         Other::Branch(b) => (b.clone(), None),
@@ -1187,7 +1189,7 @@ pub fn lines_said(r: &Range<usize>) -> String {
 
 /// The two sides as said, the front session's first when it's one of the two — and the first's lines.
 fn sides<'o>(ed: &Editor, o: &'o Overlap) -> (Other, Other, &'o Option<Range<usize>>) {
-    match o.b == Other::Session(ed.session.id) {
+    match o.b == Other::Session(ed.workspace.id) {
         true => (o.b.clone(), Other::Session(o.a), &o.other_lines),
         false => (Other::Session(o.a), o.b.clone(), &o.lines),
     }
@@ -1217,7 +1219,7 @@ fn toast(ed: &Editor, o: &Overlap) -> String {
 }
 
 /// The other sides session `id`'s workspace would conflict with, each once (the strip and the list: `≈ main`).
-pub fn others(ed: &Editor, id: SessionId) -> Vec<(String, Option<u8>)> {
+pub fn others(ed: &Editor, id: WorkspaceId) -> Vec<(String, Option<u8>)> {
     let mut out: Vec<(String, Option<u8>)> = Vec::new();
     for o in &ed.overlap.now {
         let other = match &o.b {
@@ -1234,7 +1236,7 @@ pub fn others(ed: &Editor, id: SessionId) -> Vec<(String, Option<u8>)> {
 }
 
 /// Session `id`'s overlaps as the UI state lists them: `main · src/a.rs L3–5` (its own lines).
-pub fn listed(ed: &Editor, id: SessionId) -> Vec<String> {
+pub fn listed(ed: &Editor, id: WorkspaceId) -> Vec<String> {
     ed.overlap
         .now
         .iter()
@@ -1251,7 +1253,7 @@ pub fn listed(ed: &Editor, id: SessionId) -> Vec<String> {
 }
 
 /// Session `id`'s overlaps in file `rel` (from its checkout's top): the other side and the lines on `id`'s side.
-fn in_file_of(ed: &Editor, id: SessionId, rel: &str) -> Vec<(Other, Option<Range<usize>>)> {
+fn in_file_of(ed: &Editor, id: WorkspaceId, rel: &str) -> Vec<(Other, Option<Range<usize>>)> {
     ed.overlap
         .now
         .iter()
@@ -1269,7 +1271,7 @@ fn in_file_of(ed: &Editor, id: SessionId, rel: &str) -> Vec<(Other, Option<Range
 pub fn in_file(ed: &Editor, rel: &Path) -> Vec<(String, Option<u8>, Option<Range<usize>>)> {
     let rel = rel.to_string_lossy();
     let mut out: Vec<(String, Option<u8>, Option<Range<usize>>)> = Vec::new();
-    for (other, lines) in in_file_of(ed, ed.session.id, &rel) {
+    for (other, lines) in in_file_of(ed, ed.workspace.id, &rel) {
         let (n, c) = name(ed, &other);
         if !out.iter().any(|x| x.0 == n) {
             out.push((n, c, lines));
@@ -1278,9 +1280,9 @@ pub fn in_file(ed: &Editor, rel: &Path) -> Vec<(String, Option<u8>, Option<Range
     out
 }
 
-/// Session `id`'s workspace ended (`session_close`): its overlaps gone, its folder removed on a worker — once no
+/// Session `id`'s workspace ended (`workspace_close`): its overlaps gone, its folder removed on a worker — once no
 /// round is writing in it, and never written again (`Folder.ended`).
-pub fn ended(ed: &mut Editor, id: SessionId) {
+pub fn ended(ed: &mut Editor, id: WorkspaceId) {
     ed.overlap.now.retain(|o| o.a != id && o.b != Other::Session(id));
     ed.overlap.said.retain(|k, _| k.0 != id && k.1 != Other::Session(id));
     let Some(p) = ed.overlap.places.remove(&id) else { return };

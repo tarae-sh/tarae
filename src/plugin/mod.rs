@@ -352,7 +352,7 @@ impl Editor {
             ranges: sel.ranges().iter().map(|r| (r.anchor, r.head)).collect(),
             primary: sel.primary_index(),
             path: doc.path.as_ref().map(|p| p.display().to_string()),
-            name: doc.display_name(&self.session.root),
+            name: doc.display_name(&self.workspace.root),
             language: doc.lang_name().map(str::to_string),
             version: doc.version(),
             modified: doc.is_modified(),
@@ -841,7 +841,7 @@ mod tests {
         // Its panel shown meanwhile doesn't take the keys: they're the card's
         ed.plugin_run("table", "").unwrap();
         settle_until(&mut ed, |ed| panel(ed).is_some());
-        assert!(panel(&ed).is_some() && !ed.session.is_at(crate::session::At::Plugin));
+        assert!(panel(&ed).is_some() && !ed.workspace.is_at(crate::workspace::At::Plugin));
         answer(&mut ed, ask, true);
         until_said(&mut ed, "connected 20");
         // (the bytes and the close go to the plugin undrawn; its answers, which say them, drawn)
@@ -1032,7 +1032,7 @@ mod tests {
         ed.plugin_run("table", "").unwrap();
         settle_until(&mut ed, |ed| panel(ed).is_some());
         assert!(
-            panel(&ed).is_some() && ed.session.is_at(crate::session::At::Plugin),
+            panel(&ed).is_some() && ed.workspace.is_at(crate::workspace::At::Plugin),
             "shown by a command: it has the keys"
         );
         // tarae moves through the rows
@@ -1057,21 +1057,24 @@ mod tests {
         // …but `C-w q` doesn't close it, as its own `q` doesn't (the plugin's): said, the keys kept
         key(&mut ed, "q");
         assert!(
-            panel(&ed).is_some() && ed.session.is_at(crate::session::At::Plugin),
+            panel(&ed).is_some() && ed.workspace.is_at(crate::workspace::At::Plugin),
             "the panel stays, with the keys"
         );
         let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
         assert!(said.contains("closes by its own keys"), "{said}");
         // esc: the keys go back to the code, the panel stays
         key(&mut ed, "esc");
-        assert!(panel(&ed).is_some() && !ed.session.is_at(crate::session::At::Plugin));
+        assert!(panel(&ed).is_some() && !ed.workspace.is_at(crate::workspace::At::Plugin));
         ed.toasts.clear();
         key(&mut ed, "d");
         settle_for(&mut ed, Duration::from_millis(100));
         assert!(!toasts(&ed).contains("key d"), "{}", toasts(&ed));
         // A click on a row: the keys, and that row
         ed.plugin_panel_click(Some(5));
-        assert_eq!((ed.session.is_at(crate::session::At::Plugin), panel(&ed).unwrap().selected), (true, 5));
+        assert_eq!(
+            (ed.workspace.is_at(crate::workspace::At::Plugin), panel(&ed).unwrap().selected),
+            (true, 5)
+        );
         // Rows that moved: the selection stays on its row (by id)
         let mut moved = panel(&ed).unwrap().panel.clone();
         moved.rows.rotate_left(3);
@@ -1203,7 +1206,7 @@ mod tests {
         // (a panel it shows along with it doesn't take the keys back from the buffer)
         ed.plugin_run("view-and-panel", "").unwrap();
         settle_until(&mut ed, |ed| panel(ed).is_some());
-        assert!(panel(&ed).is_some() && !ed.session.is_at(crate::session::At::Plugin));
+        assert!(panel(&ed).is_some() && !ed.workspace.is_at(crate::workspace::At::Plugin));
         assert_eq!(text(&ed), ["kind: Pod\n"]);
         assert_eq!(ed.doc().title.as_deref(), Some(title), "in front");
         ed.plugin_run("more", "").unwrap();
@@ -1416,12 +1419,22 @@ mod tests {
         std::fs::write(&path, "kind: Deployment\nreplicas: 3\n").unwrap();
         ed.open(&path).unwrap();
         ed.plugin_run("side", "").unwrap();
-        settle_until(&mut ed, |ed| ed.session.sidebar.as_ref().is_some_and(|s| s.mode == SMode::Plugin));
-        let s = ed.session.sidebar.as_ref().unwrap();
-        assert!(!ed.session.is_at(crate::session::At::Side), "shown, without the keys");
+        settle_until(&mut ed, |ed| {
+            ed.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == SMode::Plugin)
+        });
+        let s = ed.workspace.viewer.sidebar.as_ref().unwrap();
+        assert!(!ed.workspace.is_at(crate::workspace::At::Side), "shown, without the keys");
 
         let labels = |ed: &Editor| {
-            ed.session.sidebar.as_ref().unwrap().lines().iter().map(|l| l.label.clone()).collect::<Vec<_>>()
+            ed.workspace
+                .viewer
+                .sidebar
+                .as_ref()
+                .unwrap()
+                .lines()
+                .iter()
+                .map(|l| l.label.clone())
+                .collect::<Vec<_>>()
         };
         assert_eq!(
             labels(&ed),
@@ -1436,24 +1449,24 @@ mod tests {
         // Asked to: with the keys, on the row for the code under the cursor — its name cut short, whole
         // (and its state after it) over the code
         ed.plugin_run("side", "focus").unwrap();
-        settle_until(&mut ed, |ed| ed.session.is_at(crate::session::At::Side));
-        assert_eq!(ed.session.sidebar.as_ref().unwrap().selected, 1);
+        settle_until(&mut ed, |ed| ed.workspace.is_at(crate::workspace::At::Side));
+        assert_eq!(ed.workspace.viewer.sidebar.as_ref().unwrap().selected, 1);
         let mut frame = Vec::new();
         crate::term::render(&mut ed, &mut frame, 140, 20).unwrap();
         let frame = String::from_utf8_lossy(&frame).into_owned();
         let whole = frame.find("payment-gateway-reconciler-canary").expect("its whole name");
         assert!(frame[whole..].contains("deploy detail"), "and its state");
         // h folds, l unfolds, enter on a row with no place and other keys go to the plugin
-        ed.session.sidebar.as_mut().unwrap().selected = 0;
+        ed.workspace.viewer.sidebar.as_mut().unwrap().selected = 0;
         key(&mut ed, "h");
         assert_eq!(labels(&ed), ["web.txt …"], "folded, and saying so");
         key(&mut ed, "l");
         assert_eq!(labels(&ed).len(), 4);
         // (a note isn't a row to land on)
-        ed.session.sidebar.as_mut().unwrap().selected = 2;
+        ed.workspace.viewer.sidebar.as_mut().unwrap().selected = 2;
         key(&mut ed, "j");
-        assert_eq!(ed.session.sidebar.as_ref().unwrap().selected, 2);
-        ed.session.sidebar.as_mut().unwrap().selected = 2;
+        assert_eq!(ed.workspace.viewer.sidebar.as_ref().unwrap().selected, 2);
+        ed.workspace.viewer.sidebar.as_mut().unwrap().selected = 2;
         key(&mut ed, "ret");
         until_said(&mut ed, r#"key ret Some(2) Some("pod")"#);
         key(&mut ed, "e");
@@ -1461,12 +1474,12 @@ mod tests {
         // A buffer it shows then takes the keys from its tab
         ed.plugin_run("view", "").unwrap();
         settle_until(&mut ed, |ed| ed.doc().title.as_deref() == Some("web-1 · demo"));
-        assert!(!ed.session.is_at(crate::session::At::Side));
-        ed.session.at = crate::session::At::Side;
+        assert!(!ed.workspace.is_at(crate::workspace::At::Side));
+        ed.workspace.viewer.at = crate::workspace::At::Side;
         // Enter on a row with a place: there, in the code
-        ed.session.sidebar.as_mut().unwrap().selected = 1;
+        ed.workspace.viewer.sidebar.as_mut().unwrap().selected = 1;
         key(&mut ed, "ret");
-        assert!(!ed.session.is_at(crate::session::At::Side), "the code has the keys");
+        assert!(!ed.workspace.is_at(crate::workspace::At::Side), "the code has the keys");
         ed.plugin_run("unside", "").unwrap();
         settle_until(&mut ed, |ed| {
             ed.plugins.as_ref().is_some_and(|p| p.side.is_none() && p.badge.is_none())
@@ -1491,7 +1504,7 @@ mod tests {
             let ok = std::process::Command::new("git").args(args).current_dir(&project).output().unwrap();
             assert!(ok.status.success(), "git {args:?}");
         }
-        ed.session.root = project.clone();
+        ed.workspace.root = project.clone();
         ed.plugin_run("find", "**").unwrap();
         until_said(&mut ed, r#"found 50 ["#);
         let said = toasts(&ed);
@@ -1532,7 +1545,7 @@ mod tests {
             let ok = std::process::Command::new("git").args(args).current_dir(&project).output().unwrap();
             assert!(ok.status.success(), "git {args:?}");
         }
-        ed.session.root = project.clone();
+        ed.workspace.root = project.clone();
         ed.plugin_run("find", "**/Cargo.toml").unwrap();
         until_said(&mut ed, r#"found 50 ["Cargo.toml""#);
         assert!(!toasts(&ed).contains("ignored/"), "{}", toasts(&ed));

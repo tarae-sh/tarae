@@ -31,7 +31,7 @@ fn place(name: &str) -> PathBuf {
 /// An editor keeping its copies in `dir/state`, after a pause of 20 ms, with `dir/home` as home.
 fn editor(dir: &Path) -> Editor {
     let mut ed = Editor::new(Config::default());
-    let mut r = Recovery::new(dir.join("state"), ed.session.root.clone());
+    let mut r = Recovery::new(dir.join("state"), ed.workspace.root.clone());
     r.quiet = Duration::from_millis(20);
     r.rules.home = Some(dir.join("home"));
     ed.recovery = Some(r);

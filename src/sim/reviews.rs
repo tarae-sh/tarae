@@ -144,7 +144,7 @@ fn run(choices: Choices) -> Vec<String> {
     let world = World::new();
     let mut sim = Sim::new("review_record", choices, LIMIT);
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = world.repo.clone();
+    ed.workspace.root = world.repo.clone();
     ed.reviews_dir = Some(world.record.clone());
     crate::codereview::start_in(&mut ed, world.repo.clone(), None);
     let seen = RefCell::new(Seen::default());
@@ -185,7 +185,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World, seen: &RefCell<Seen>) ->
             format!("keys {keys}")
         }
         2 => {
-            let Some(r) = ed.session.code_review.as_ref() else {
+            let Some(r) = ed.workspace.code_review.as_ref() else {
                 return "(no review: no file to show)".into();
             };
             let all: Vec<usize> = (0..r.files.len()).collect();
@@ -201,14 +201,14 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World, seen: &RefCell<Seen>) ->
             sim.wait(Duration::from_millis(ms));
             format!("{ms} ms pass")
         }
-        4 => match ed.session.code_review.is_some() {
+        4 => match ed.workspace.code_review.is_some() {
             true => {
                 crate::codereview::close(ed);
                 "the review closed".into()
             }
             false => "(no review to close)".into(),
         },
-        5 => match ed.session.code_review.is_some() {
+        5 => match ed.workspace.code_review.is_some() {
             true => "(a review open)".into(),
             false => {
                 crate::codereview::start_in(ed, world.repo.clone(), None);
@@ -397,7 +397,7 @@ fn print(ed: &Editor, world: &World) -> String {
         name.unwrap_or_default(),
         d.version(),
         d.git_version,
-        if ed.session.code_review.is_some() { "open" } else { "none" },
+        if ed.workspace.code_review.is_some() { "open" } else { "none" },
         watches.join("; "),
         record(&world.record).lines().count()
     )

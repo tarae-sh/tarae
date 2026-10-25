@@ -255,7 +255,7 @@ the keeper — and in the session's user namespace Yama 1 and 2 let tarae throug
 
 ### When it ends
 
-- **The session ends** (`:session-end`), or **tarae quits, restarts or crashes**: `End`, or EOF on its channel, which
+- **The session ends** (`:workspace-end`), or **tarae quits, restarts or crashes**: `End`, or EOF on its channel, which
   is close-on-exec.
 - **The session's policy key changes** (D14): a daemon started under the old key would keep its rights, narrower or
   wider. The old keeper takes no run more. What its runs left ends at once, and it ends itself after its last run

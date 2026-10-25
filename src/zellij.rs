@@ -86,7 +86,7 @@ impl Editor {
     /// line read later from wherever the keys are by then (a toast about a session behind).
     pub fn c_q_place(&self, reach: Reach) -> String {
         match reach {
-            Reach::Sessions => bound_key(self, "session_list", ":session-switch"),
+            Reach::Sessions => bound_key(self, "session_list", ":workspace-switch"),
             Reach::Inbox | Reach::Next => inbox(self),
         }
     }
@@ -157,7 +157,7 @@ fn from(ed: &Editor, region: Region) -> Vec<String> {
     match region {
         Region::Chat => {
             let view = bound(&km.chat, "chat_view", "esc");
-            match ed.session.chat.as_ref() {
+            match ed.workspace.claude.chat.as_ref() {
                 Some(c) if !c.msgs.is_empty() && !c.compact() => vec![view, leave(Surface::Chat)],
                 _ => vec![view],
             }
@@ -206,7 +206,7 @@ fn c_q_tail(ed: &Editor, reach: Reach) -> String {
         r => r,
     };
     match reach {
-        Reach::Sessions => bound_key(ed, "session_list", ":session-switch"),
+        Reach::Sessions => bound_key(ed, "session_list", ":workspace-switch"),
         _ => inbox(ed),
     }
 }

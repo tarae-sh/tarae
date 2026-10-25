@@ -27,8 +27,9 @@ pub enum Event {
     /// Text pasted into the terminal tarae runs in (bracketed paste) — one event, not a key per character.
     Paste(String),
     Job(Apply),
-    /// A job's result for a session (`Tx` makes these): applied in that session (`Editor::with_session`).
-    For(SessionId, Apply),
+    /// A job's result for a workspace and the session at work there that it's of (`Tx` makes these): applied in that
+    /// workspace (`Editor::with_workspace`).
+    For(WorkspaceId, SessionId, Apply),
 }
 
 /// One mouse action (screen cell coordinates). Press, drag, release, wheel.
@@ -54,16 +55,84 @@ pub enum MouseKind {
     ScrollDown,
 }
 
-/// Which session a result belongs to (`session.rs`).
-pub type SessionId = u64;
+/// Which workspace a result belongs to (`workspace.rs`).
+pub type WorkspaceId = Id<OfWorkspace>;
+
+/// Which session — a participant (`session.rs`).
+pub type SessionId = Id<OfSession>;
+
+/// What an `Id` names: a workspace or a session.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct OfWorkspace;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct OfSession;
+
+/// A workspace's or a session's id: the machine it was made on and its number there (collab §4: unique across
+/// machines — a second machine's never reuses this one's). This machine's is 0, numbered in the order they're
+/// made from 0, the checkout tarae started in; said by its number alone (`:workspace-switch 2`, `s2`), another
+/// machine's as `2@3`.
+#[derive(Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Id<K> {
+    pub machine: u32,
+    pub n: u64,
+    of: std::marker::PhantomData<K>,
+}
+
+impl<K> Clone for Id<K> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<K> Copy for Id<K> {}
+
+impl<K> Id<K> {
+    /// This machine's `n`th.
+    pub const fn here(n: u64) -> Id<K> {
+        Id { machine: 0, n, of: std::marker::PhantomData }
+    }
+
+    /// The checkout tarae started in (its Claude, for a session).
+    pub const HOME: Id<K> = Id::here(0);
+
+    /// The one made after it, on the same machine.
+    pub fn next(self) -> Id<K> {
+        Id { n: self.n + 1, ..self }
+    }
+
+    /// The same machine and number, naming the other kind — a workspace's Claude is born with it (`session::born_with`).
+    pub fn twin<J>(self) -> Id<J> {
+        Id { machine: self.machine, n: self.n, of: std::marker::PhantomData }
+    }
+}
+
+impl<K> std::fmt::Display for Id<K> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.machine {
+            0 => write!(f, "{}", self.n),
+            m => write!(f, "{}@{m}", self.n),
+        }
+    }
+}
+
+impl<K> std::str::FromStr for Id<K> {
+    type Err = std::num::ParseIntError;
+
+    /// As `Display` says it: `2`, `2@3`.
+    fn from_str(s: &str) -> Result<Id<K>, Self::Err> {
+        let (n, machine) = s.split_once('@').map_or((s, None), |(n, m)| (n, Some(m)));
+        let machine = machine.map(str::parse).transpose()?.unwrap_or(0);
+        Ok(Id { machine, n: n.parse()?, of: std::marker::PhantomData })
+    }
+}
 
 /// The queue the editor holds. The sending side is cloned and handed out to threads.
 pub struct Queue {
     tx: Sender<Event>,
     rx: Receiver<Event>,
-    /// The session in front — what `sender` and `jobs` tag their results with (set on a switch, and while a
-    /// background session's result is applied).
-    session: std::cell::Cell<SessionId>,
+    /// The workspace in front and its session — what `sender` and `jobs` tag their results with (set on a switch, and
+    /// while a result for a workspace behind is applied).
+    at: std::cell::Cell<(WorkspaceId, SessionId)>,
     /// The user's input (its `input_seq`) whose handling is under way — or a job's result it started, through
     /// jobs it started in turn (`Jobs` carries it): what a card it makes was asked by (#205).
     asked: std::cell::Cell<Option<u64>>,
@@ -81,7 +150,7 @@ impl Default for Queue {
         Self {
             tx,
             rx,
-            session: Default::default(),
+            at: Default::default(),
             asked: Default::default(),
             writes: Writes::default(),
             #[cfg(test)]
@@ -91,15 +160,15 @@ impl Default for Queue {
 }
 
 impl Queue {
-    /// A sender whose results are applied in the session in front now, wherever the user is when they land.
+    /// A sender whose results are applied in the workspace in front now, wherever the user is when they land.
     pub fn sender(&self) -> Tx {
-        self.tx_for(Some(self.session.get()))
+        self.tx_for(Some(self.at.get()))
     }
 
-    fn tx_for(&self, session: Option<SessionId>) -> Tx {
+    fn tx_for(&self, to: Option<(WorkspaceId, SessionId)>) -> Tx {
         Tx {
             tx: self.tx.clone(),
-            session,
+            to,
             #[cfg(test)]
             sim: self.sim.clone(),
         }
@@ -126,9 +195,9 @@ impl Queue {
         Jobs { tx: self.shared_sender(), asked: self.asked.get(), writes: self.writes.clone() }
     }
 
-    /// Results made from now on are for `session`.
-    pub fn set_session(&self, session: SessionId) {
-        self.session.set(session);
+    /// Results made from now on are for workspace `w` and its session `s`.
+    pub fn set_workspace(&self, w: WorkspaceId, s: SessionId) {
+        self.at.set((w, s));
     }
 
     /// The user's input that what runs now was asked by (`Queue.asked`) — None: nobody's just now (a task's
@@ -165,12 +234,12 @@ impl Queue {
     }
 }
 
-/// The sending side: a job's result sent through it is applied in the session it was made for (`None`: the
-/// one in front when it lands).
+/// The sending side: a job's result sent through it is applied in the workspace it was made for, tagged with its
+/// session too (`None`: the one in front when it lands).
 #[derive(Clone)]
 pub struct Tx {
     tx: Sender<Event>,
-    session: Option<SessionId>,
+    to: Option<(WorkspaceId, SessionId)>,
     #[cfg(test)]
     sim: Option<crate::sim::Handle>,
 }
@@ -191,8 +260,8 @@ impl Tx {
             })),
             ev => ev,
         };
-        let ev = match (ev, self.session) {
-            (Event::Job(apply), Some(session)) => Event::For(session, apply),
+        let ev = match (ev, self.to) {
+            (Event::Job(apply), Some((w, s))) => Event::For(w, s, apply),
             (ev, _) => ev,
         };
         // (in a simulation: its inbox, landed when the seed says — and a sender made outside it, used in it, is
@@ -341,10 +410,10 @@ impl Editor {
         let stores: Vec<std::path::PathBuf> = [self.trust_path.clone(), self.allow_path.clone()]
             .into_iter()
             .flatten()
-            .chain(self.sessions_path())
+            .chain(self.workspaces_path())
             .collect();
         let stores: Vec<&std::path::Path> = stores.iter().map(std::path::PathBuf::as_path).collect();
-        let before = self.session_store.taken.iter().map(|(_, w)| format!("the sessions kept without {w}"));
+        let before = self.workspace_store.taken.iter().map(|(_, w)| format!("the sessions kept without {w}"));
         let said = crate::storewrite::pending_said(&stores).into_iter().chain(before);
         said.map(|said| match flushed {
             true => format!("tarae: not written: {said}"),
@@ -549,6 +618,49 @@ mod tests {
         assert!(long.is_empty(), "names Linux cuts at {THREAD_NAME_MAX} bytes:\n{long:#?}");
     }
 
+    /// A workspace's and a session's ids (collab §4: unique across machines): this machine's said by their number
+    /// alone, as they were before the split — `:workspace-switch 2`, `s2` — another machine's with it; made in order,
+    /// a workspace's Claude born with its number.
+    #[test]
+    fn ids_say_their_number_and_their_machine() {
+        let (home, next) = (WorkspaceId::HOME, WorkspaceId::HOME.next());
+        assert_eq!((home.to_string(), next.to_string()), ("0".to_string(), "1".to_string()));
+        assert!(home < next && next < WorkspaceId::here(2));
+        let theirs = WorkspaceId { machine: 3, n: 2, of: std::marker::PhantomData };
+        assert_eq!(theirs.to_string(), "2@3");
+        assert_eq!(
+            ["2", "2@3"].map(|s| s.parse::<WorkspaceId>().ok()),
+            [Some(WorkspaceId::here(2)), Some(theirs)]
+        );
+        assert!("x".parse::<WorkspaceId>().is_err() && "2@".parse::<WorkspaceId>().is_err());
+        let claude: SessionId = theirs.twin();
+        assert_eq!((claude.machine, claude.n), (3, 2));
+        assert_eq!(crate::session::born_with(next), SessionId::here(1));
+    }
+
+    /// A result made for a workspace is tagged with it and its session (`Event::For`): one made while a workspace
+    /// behind is swapped in is that one's and its Claude's, then the front's again.
+    #[test]
+    fn a_result_carries_its_workspace_and_its_session() {
+        let root = crate::scratch::Scratch::new("c0-tags");
+        let mut ed = Editor::new(crate::config::Config::default());
+        let behind = ed.workspace_add(std::fs::canonicalize(&root).unwrap());
+        let tag = |ed: &Editor| {
+            ed.events.sender().send(Event::Job(Box::new(|_| {}))).unwrap();
+            match ed.events.recv_timeout(crate::test_results::PATIENCE) {
+                Some(Event::For(w, s, _)) => (w, s),
+                _ => panic!("a tagged result"),
+            }
+        };
+        let front = (ed.workspace.id, ed.workspace.claude.id);
+        assert_eq!(tag(&ed), front);
+        let made = std::cell::Cell::new(None);
+        ed.with_workspace(behind, |ed| made.set(Some(tag(ed))));
+        assert_eq!(made.get(), Some((behind, ed.claude_of(behind))));
+        assert_eq!(ed.claude_of(behind), crate::session::born_with(behind));
+        assert_eq!(tag(&ed), front, "the front's again");
+    }
+
     /// A job's work waits through `event::sleep` — in a simulation the clock moves instead of the thread
     /// sleeping (`sim.rs`). What still calls `thread::sleep` is on this list, which only shrinks.
     #[test]
@@ -585,7 +697,7 @@ mod tests {
         ("sandbox/keeper.rs", 1),
         ("sandbox/proxy.rs", 1),
         ("saver.rs", 1),
-        ("session.rs", 1),
+        ("workspace.rs", 1),
         ("share.rs", 5),
         ("task.rs", 1),
         ("testing.rs", 1),

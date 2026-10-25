@@ -16,7 +16,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::editor::Editor;
-use crate::event::SessionId;
+use crate::event::WorkspaceId;
 use crate::gitrepo::git;
 use crate::offer::{Offer, What};
 
@@ -153,7 +153,7 @@ type Go = Box<dyn FnOnce(&mut Editor, Pre) + Send>;
 /// A git-tab action waiting on its card: the card, the session it's in, the action.
 pub struct Wait {
     card: u64,
-    session: SessionId,
+    session: WorkspaceId,
     go: Go,
 }
 
@@ -275,10 +275,10 @@ impl Editor {
         names: &'static [&'static str],
         go: impl FnOnce(&mut Editor, Pre) + Send + 'static,
     ) {
-        let cwd = self.session.git_status.as_ref().map_or_else(|| self.git_cwd(), |s| s.top.clone());
+        let cwd = self.workspace.git_status.as_ref().map_or_else(|| self.git_cwd(), |s| s.top.clone());
         // (against the session's base — else what its checkout has committed)
-        let base = self.session.base.clone().unwrap_or_else(|| "HEAD".into());
-        let (what, session, store) = (what.to_string(), self.session.id, self.trust_path.clone());
+        let base = self.workspace.base.clone().unwrap_or_else(|| "HEAD".into());
+        let (what, session, store) = (what.to_string(), self.workspace.id, self.trust_path.clone());
         self.events.jobs().spawn(move || {
             let top = crate::gitpanel::top_of(&cwd).ok();
             let hooks =
@@ -293,7 +293,7 @@ impl Editor {
                 // (its id — a card of that title up already took this one's text and keeps its id: the action
                 // waiting on it before is the one this replaces)
                 let Some(card) =
-                    ed.offers.iter().chain(&ed.session.parked).find(|o| o.title == title).map(|o| o.id)
+                    ed.offers.iter().chain(&ed.workspace.parked).find(|o| o.title == title).map(|o| o.id)
                 else {
                     return;
                 };
@@ -314,7 +314,7 @@ impl Editor {
             self.note(format!("{} without hooks this time", ask.what));
         }
         let go = move |ed: &mut Editor| {
-            ed.with_session(w.session, |ed| (w.go)(ed, pre));
+            ed.with_workspace(w.session, |ed| (w.go)(ed, pre));
         };
         let Some(path) = self.trust_path.clone().filter(|_| run) else { return go(self) };
         let (given, seen) = (crate::trust::given(), crate::storewrite::seen_now(&path));

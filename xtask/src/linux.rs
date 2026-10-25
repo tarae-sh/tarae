@@ -19,7 +19,7 @@
 //! every checkout's clone is /work/tarae, so one shared target let a session's tests run another session's
 //! build (its e2e ran another's `target/debug/tarae`). Each run drops this machine's volumes whose checkout is
 //! gone — its whole repository deleted too (`prunable`); `cargo xtask linux prune` does that now, and drops
-//! the old shared `tarae-target-<pin>` too — tarae's `session.ended` runs it when a session's checkout is
+//! the old shared `tarae-target-<pin>` too — tarae's `workspace.ended` runs it when a session's checkout is
 //! removed. It lists the targets of checkouts that landed too (`landed`: nothing changed, the branch in the
 //! main branch — sessions brought in but not ended held 34 GB of colima's 30 GB disk, 2026-10-17), dropped only
 //! with `--yes`, each said. "This machine" is tarae's own id for it (`machine_id`: random, made once in tarae's data folder,
@@ -29,7 +29,7 @@
 //! A volume carries the id when the run that made it had one: a run outside tarae's sandbox always (the data
 //! folder's, which it also copies to the git folder, `GIT_COPY`); a run inside it — which can't read the data
 //! folder but can read the git folder — once a run outside has made that copy for this repository (any
-//! `cargo xtask linux` or `prune` of yours, or `session.ended`'s). A sandboxed run before then says so and
+//! `cargo xtask linux` or `prune` of yours, or `workspace.ended`'s). A sandboxed run before then says so and
 //! makes its volume without one. A volume without the id — made so, or made before ids — is judged by its
 //! checkout's path alone, as this machine's, for as long as it lives (`docker volume create` leaves an existing
 //! volume's labels as they are, so it's never relabelled) — but only with `prune --mine` (`local`): nothing a
@@ -982,18 +982,16 @@ fn tarae_sessions(ui: Option<std::ffi::OsString>) -> std::result::Result<Vec<Pat
     if let Some(e) = v["error"].as_str() {
         return Err(e.to_string());
     }
-    Ok(sessions_in(&v))
+    sessions_in(&v)
 }
 
-/// The sessions' checkouts in `tarae state --json`'s answer.
-fn sessions_in(v: &serde_json::Value) -> Vec<PathBuf> {
-    v["sessions"]
+/// The workspaces' checkouts in `tarae state --json`'s answer — Err: it lists none, an older tarae's state (`v`
+/// below 16 says `sessions`, not read: then a checkout is live by its folder alone, never "nothing open").
+fn sessions_in(v: &serde_json::Value) -> std::result::Result<Vec<PathBuf>, String> {
+    let list = v["workspaces"]
         .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|s| s["root"].as_str())
-        .map(PathBuf::from)
-        .collect()
+        .ok_or_else(|| format!("an older tarae's state (v {}): no workspaces", v["v"]))?;
+    Ok(list.iter().filter_map(|s| s["root"].as_str()).map(PathBuf::from).collect())
 }
 
 /// Why a target volume's checkout is live — `prune --all` keeps it: a session of a running tarae has it open
@@ -1256,7 +1254,7 @@ fn size_line(volumes: &[(String, u64, String)], over: u64, disk: Option<Disk>) -
     if !targets.is_empty() {
         parts.push(format!(
             "checkouts' targets {} — a gone checkout's goes with `cargo xtask linux prune` (and each run), a \
-             session's with its end where `session.ended` runs it",
+             session's with its end where `workspace.ended` runs it",
             part(targets)
         ));
     }
@@ -1559,7 +1557,7 @@ enum Landed {
     Unknown(String),
 }
 
-/// Whether `checkout` landed, as `:session-end` reads nothing to lose (`worktree::Ending::quiet`): nothing
+/// Whether `checkout` landed, as `:workspace-end` reads nothing to lose (`worktree::Ending::quiet`): nothing
 /// changed (`git status`, untracked files too) and its HEAD in the base — the repository's main branch, as
 /// tarae's sessions find it (`origin/HEAD`'s, else `main`, else `master`). The base's own checkout never (its
 /// target is the base's); a squash merge's branch reads as not landed (its commits aren't the base's).
@@ -2734,8 +2732,9 @@ mod tests {
         let sock = dir.join("ui.sock");
         let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
         let answers = [
-            r#"{"sessions":[{"id":"s0","root":"/w/wt/tproxy6"},{"id":"s1"}]}"#,
+            r#"{"workspaces":[{"id":"w0","root":"/w/wt/tproxy6"},{"id":"w1"}]}"#,
             r#"{"error":"unknown request"}"#,
+            r#"{"v":15,"sessions":[{"id":"s0","root":"/w/wt/tproxy6"}]}"#,
         ];
         let served = std::thread::spawn(move || {
             let mut asked = Vec::new();
@@ -2750,7 +2749,10 @@ mod tests {
             asked
         });
         assert_eq!(tarae_sessions(Some(sock.clone().into())), Ok(open.to_vec()));
-        assert_eq!(tarae_sessions(Some(sock.into())), Err("unknown request".to_string()));
+        assert_eq!(tarae_sessions(Some(sock.clone().into())), Err("unknown request".to_string()));
+        // (an older tarae's state lists `sessions`: not read — said, never "nothing open")
+        let older = tarae_sessions(Some(sock.into()));
+        assert_eq!(older, Err("an older tarae's state (v 15): no workspaces".to_string()));
         let asked = served.join().unwrap();
         let req: serde_json::Value = serde_json::from_str(&asked[0]).unwrap();
         assert_eq!(req["get"], "state", "the request `tarae state` sends");
@@ -2902,7 +2904,7 @@ mod tests {
             ),
             "{line}"
         );
-        assert!(targets.contains("cargo xtask linux prune") && targets.contains("session.ended"), "{line}");
+        assert!(targets.contains("cargo xtask linux prune") && targets.contains("workspace.ended"), "{line}");
         assert_eq!(
             shared,
             "shared 10.4 GB (tarae-trace-target-1.99.0 9.5 GB, tarae-rustup-1.99.0 0.7 GB, tarae-registry \
@@ -2913,7 +2915,7 @@ mod tests {
         // (only shared ones: only that advice; more than three: counted)
         let shared_only = sizes("tarae-trace-target-1.99.0\t40GB\t\n");
         let line = size_line(&shared_only, VOLUMES_SAY, None).unwrap();
-        assert!(!line.contains("session.ended") && line.contains("prune --all"), "{line}");
+        assert!(!line.contains("workspace.ended") && line.contains("prune --all"), "{line}");
         let many: Vec<_> =
             (0..5).map(|i| (format!("tarae-target-1.99.0-{i}"), 7_000_000_000, String::new())).collect();
         assert!(size_line(&many, VOLUMES_SAY, None).unwrap().contains(" and 2 more)"));

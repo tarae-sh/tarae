@@ -11,8 +11,8 @@
 use crate::editor::Editor;
 use crate::key::{Code, Key, ListMove};
 use crate::pane::{Group, GroupKind};
-use crate::session::At;
 use crate::sizes::Slot;
+use crate::workspace::At;
 
 impl GroupKind {
     /// The slot's panel it's shown in while the slot hosts it.
@@ -54,11 +54,11 @@ impl List {
         let rows = ed.screen.list(kind).map_or(0, |l| l.1);
         match kind {
             GroupKind::Tests => {
-                let r = ed.session.test_run.as_ref()?;
+                let r = ed.workspace.test_run.as_ref()?;
                 Some(List { n: r.cases.len(), selected: r.selected, top: r.list_top.get(), rows })
             }
             GroupKind::Task => {
-                let r = ed.session.task_run.as_ref()?;
+                let r = ed.workspace.task_run.as_ref()?;
                 let order = r.place_rows();
                 let selected = order.iter().position(|&i| i == r.picked).unwrap_or(0);
                 Some(List { n: order.len(), selected, top: r.list_top.get(), rows })
@@ -82,7 +82,7 @@ impl List {
     fn set(ed: &mut Editor, kind: GroupKind, selected: usize, top: usize) {
         match kind {
             GroupKind::Tests => {
-                let Some(r) = ed.session.test_run.as_mut() else { return };
+                let Some(r) = ed.workspace.test_run.as_mut() else { return };
                 r.list_top.set(top);
                 if r.selected != selected {
                     r.scroll = None;
@@ -90,7 +90,7 @@ impl List {
                 r.selected = selected;
             }
             GroupKind::Task => {
-                let Some(r) = ed.session.task_run.as_mut() else { return };
+                let Some(r) = ed.workspace.task_run.as_mut() else { return };
                 r.list_top.set(top);
                 // (by identity: the place, whatever row the list's growing puts it on)
                 let Some(&i) = r.place_rows().get(selected) else { return };
@@ -100,7 +100,7 @@ impl List {
                 }
             }
             GroupKind::Preflight => {
-                let Some(p) = ed.session.preflight.as_mut() else { return };
+                let Some(p) = ed.workspace.preflight.as_mut() else { return };
                 p.list_top.set(top);
                 if p.selected != selected && selected < p.steps.len() {
                     p.selected = selected;
@@ -129,17 +129,17 @@ impl List {
 
 /// The preflight whose run the task panel shows.
 pub fn preflight(ed: &Editor) -> Option<&crate::preflight::Preflight> {
-    let r = ed.session.task_run.as_ref()?;
-    ed.session.preflight.as_ref().filter(|p| p.generation == r.generation())
+    let r = ed.workspace.task_run.as_ref()?;
+    ed.workspace.preflight.as_ref().filter(|p| p.generation == r.generation())
 }
 
 /// Kind `kind` has something to list beside its detail (else its host shows the detail alone, one pane): the tests'
 /// results; the task's places, two or more; a preflight's steps, two or more.
 pub fn listed(ed: &Editor, kind: GroupKind) -> bool {
     match kind {
-        GroupKind::Tests => ed.session.test_run.as_ref().is_some_and(|r| !r.cases.is_empty()),
+        GroupKind::Tests => ed.workspace.test_run.as_ref().is_some_and(|r| !r.cases.is_empty()),
         GroupKind::Task => {
-            preflight(ed).is_none() && ed.session.task_run.as_ref().is_some_and(|r| r.places.len() > 1)
+            preflight(ed).is_none() && ed.workspace.task_run.as_ref().is_some_and(|r| r.places.len() > 1)
         }
         GroupKind::Preflight => preflight(ed).is_some_and(|p| p.steps.len() > 1),
         GroupKind::Procs => ed.procs_up(),
@@ -152,14 +152,14 @@ pub fn listed(ed: &Editor, kind: GroupKind) -> bool {
 fn link(ed: &mut Editor, kind: GroupKind) {
     match kind {
         GroupKind::Task => {
-            let Some(r) = ed.session.task_run.as_ref() else { return };
+            let Some(r) = ed.workspace.task_run.as_ref() else { return };
             match r.origin(r.picked).line {
                 Some(line) => crate::rundoc::show_line(ed, line, false),
                 None => ed.set_status("that place's line was cut from the output — enter goes to the place"),
             }
         }
         GroupKind::Preflight => {
-            let Some((p, r)) = preflight(ed).zip(ed.session.task_run.as_ref()) else { return };
+            let Some((p, r)) = preflight(ed).zip(ed.workspace.task_run.as_ref()) else { return };
             match p.heading_at(p.selected, &r.output) {
                 Some(at) => crate::rundoc::show_line(ed, at, true),
                 None => ed.set_status(format!("{} hasn't printed anything yet", p.steps[p.selected].name)),
@@ -188,17 +188,17 @@ pub fn wheel(ed: &mut Editor, kind: GroupKind, by: isize) {
 /// `o` on a preflight's output beside its steps: the step in view (the cursor's) selected in the list, the keys
 /// there — false when the panel isn't a preflight's group.
 pub fn step_in_view(ed: &mut Editor) -> bool {
-    if !ed.session.groups.iter().any(|g| g.kind == GroupKind::Preflight && ed.group_laid(g)) {
+    if !ed.workspace.groups.iter().any(|g| g.kind == GroupKind::Preflight && ed.group_laid(g)) {
         return false;
     }
     let at = crate::rundoc::cursor_line(ed, Slot::Task);
-    let k = preflight(ed).zip(ed.session.task_run.as_ref()).and_then(|(p, r)| p.step_at(at?, &r.output));
+    let k = preflight(ed).zip(ed.workspace.task_run.as_ref()).and_then(|(p, r)| p.step_at(at?, &r.output));
     let Some(k) = k else {
         ed.set_status("no step has printed anything yet");
         return true;
     };
     ed.list_focus(GroupKind::Preflight);
-    if let Some(p) = ed.session.preflight.as_mut() {
+    if let Some(p) = ed.workspace.preflight.as_mut() {
         p.selected = k;
     }
     true
@@ -213,7 +213,7 @@ impl Editor {
                 // (docked in sight: its own leaf; else the slot's, its panel the one in front there)
                 let there = self.out_of_slot(g.kind)
                     || (g.kind.slot().is_some_and(|s| self.slot_shown() == Some(s))
-                        && self.session.leaf(crate::pane::Shows::Slot).is_some());
+                        && self.workspace.leaf(crate::pane::Shows::Slot).is_some());
                 there && listed(self, g.kind)
             }
             _ => false,
@@ -227,8 +227,8 @@ impl Editor {
         if self.procs_up() {
             self.group_made(GroupKind::Procs);
         }
-        let Some(r) = self.session.task_run.as_ref() else { return };
-        let kind = match self.session.preflight.as_ref().is_some_and(|p| p.generation == r.generation()) {
+        let Some(r) = self.workspace.task_run.as_ref() else { return };
+        let kind = match self.workspace.preflight.as_ref().is_some_and(|p| p.generation == r.generation()) {
             true => GroupKind::Preflight,
             false => GroupKind::Task,
         };
@@ -237,12 +237,12 @@ impl Editor {
 
     /// Kind `kind`'s group in the slot's leaf, made if it isn't yet — None when the session has no slot.
     pub fn group_made(&mut self, kind: GroupKind) -> Option<Group> {
-        if let Some(g) = self.session.group(kind) {
+        if let Some(g) = self.workspace.group(kind) {
             return Some(g);
         }
-        let host = self.session.leaf(crate::pane::Shows::Slot)?;
+        let host = self.workspace.leaf(crate::pane::Shows::Slot)?;
         let g = Group::new(kind, host, self.next_pane);
-        self.session.groups.push(g);
+        self.workspace.groups.push(g);
         self.next_pane += Group::ids(kind);
         Some(g)
     }
@@ -250,9 +250,9 @@ impl Editor {
     /// Every event: the member of a group that has the keys is its front (`Group.front`) — the one in sight while it's
     /// stacked, kept once the keys leave.
     pub fn groups_front(&mut self) {
-        let detail = self.slot_group().filter(|_| self.session.is_at(At::Slot)).map(|g| g.kind);
-        let at = self.session.docked();
-        for g in &mut self.session.groups {
+        let detail = self.slot_group().filter(|_| self.workspace.is_at(At::Slot)).map(|g| g.kind);
+        let at = self.workspace.docked();
+        for g in &mut self.workspace.groups {
             if at == At::List(g.list) {
                 g.front = crate::pane::Member::List;
             } else if detail == Some(g.kind) {
@@ -270,7 +270,7 @@ impl Editor {
         leaves: &[(crate::split::PaneId, crate::split::Rect)],
     ) -> Option<(crate::split::PaneId, i32)> {
         let laid = |p: crate::split::PaneId| leaves.iter().any(|l| l.0 == p);
-        self.session.groups.iter().filter(|g| self.group_laid(g)).find_map(|g| {
+        self.workspace.groups.iter().filter(|g| self.group_laid(g)).find_map(|g| {
             let detail = g.detail_pane()?;
             let (other, way) = match id {
                 _ if id == g.list => (detail, 1),
@@ -284,13 +284,13 @@ impl Editor {
     /// The group the slot lays out now, its panel in front.
     pub fn slot_group(&self) -> Option<Group> {
         let slot = self.slot()?;
-        self.session.groups.iter().find(|g| g.kind.slot() == Some(slot) && self.group_laid(g)).copied()
+        self.workspace.groups.iter().find(|g| g.kind.slot() == Some(slot) && self.group_laid(g)).copied()
     }
 
     /// The group whose list has the keys (normal mode, the group laid out).
     pub fn list_focused(&self) -> Option<Group> {
-        let At::List(id) = self.session.docked() else { return None };
-        self.session.groups.iter().find(|g| g.list == id && self.group_laid(g)).copied()
+        let At::List(id) = self.workspace.docked() else { return None };
+        self.workspace.groups.iter().find(|g| g.list == id && self.group_laid(g)).copied()
     }
 
     /// The keys to kind `kind`'s list (`C-w h` from its detail, `S-tab`, a click on its rows).
@@ -308,7 +308,7 @@ impl Editor {
         let Some(g) = self.group_made(kind) else { return };
         self.hand_to(kind);
         self.plugin_panel_unfocus();
-        self.session.at = At::List(g.list);
+        self.workspace.viewer.at = At::List(g.list);
         crate::rundoc::sync(self);
     }
 
@@ -317,18 +317,18 @@ impl Editor {
         if kind.slot().is_some() {
             self.hand_to(kind);
             self.plugin_panel_unfocus();
-            self.session.at = At::Slot;
+            self.workspace.viewer.at = At::Slot;
             crate::rundoc::sync(self);
         }
     }
 
-    /// The keys go to a member of kind `kind`'s group: docked, it's in hand (`Session.hand` — folded into the slot
+    /// The keys go to a member of kind `kind`'s group: docked, it's in hand (`Viewer.hand` — folded into the slot
     /// too, for when it's back); in the slot, its panel comes to the slot's front.
     fn hand_to(&mut self, kind: GroupKind) {
-        let apart = self.session.group(kind).is_some_and(|g| g.place != crate::pane::Place::Slot);
-        self.session.hand = apart.then_some(kind);
+        let apart = self.workspace.group(kind).is_some_and(|g| g.place != crate::pane::Place::Slot);
+        self.workspace.viewer.hand = apart.then_some(kind);
         if !self.out_of_slot(kind) {
-            self.session.slot_front = kind.slot();
+            self.workspace.viewer.slot_front = kind.slot();
         }
     }
 
@@ -340,7 +340,7 @@ impl Editor {
         leaves: &[(crate::split::PaneId, crate::split::Rect)],
     ) -> Option<crate::split::PaneId> {
         let laid = |id: &crate::split::PaneId| leaves.iter().any(|l| l.0 == *id);
-        self.session
+        self.workspace
             .groups
             .iter()
             .filter(|g| self.group_host(g) == Some(host))
@@ -357,7 +357,7 @@ pub fn drawn(ed: &Editor, kind: GroupKind) -> bool {
 /// review (asked when files are unviewed).
 pub fn close(ed: &mut Editor, kind: GroupKind) {
     match kind {
-        GroupKind::Git => ed.session.sidebar = None,
+        GroupKind::Git => ed.workspace.viewer.sidebar = None,
         GroupKind::Review => crate::codereview::close_asked(ed),
         k => {
             if let Some(s) = k.slot() {
@@ -373,9 +373,9 @@ fn open(ed: &mut Editor, kind: GroupKind) {
     let place = match kind {
         GroupKind::Tests => return ed.tests_list_open(),
         GroupKind::Procs => return ed.detail_focus(kind),
-        GroupKind::Task => ed.session.task_run.as_ref().and_then(|r| r.places.get(r.picked)).cloned(),
+        GroupKind::Task => ed.workspace.task_run.as_ref().and_then(|r| r.places.get(r.picked)).cloned(),
         GroupKind::Preflight => {
-            let Some((p, r)) = preflight(ed).zip(ed.session.task_run.as_ref()) else { return };
+            let Some((p, r)) = preflight(ed).zip(ed.workspace.task_run.as_ref()) else { return };
             let first = (0..r.places.len()).find(|&i| r.origin(i).step == Some(p.selected));
             match first {
                 Some(i) => r.places.get(i).cloned(),
@@ -388,7 +388,7 @@ fn open(ed: &mut Editor, kind: GroupKind) {
         _ => return,
     };
     let Some(it) = place else { return };
-    ed.session.at = At::Code;
+    ed.workspace.viewer.at = At::Code;
     if let Err(e) = ed.open_at(&it.path, it.line, it.col) {
         ed.set_error(format!("{e:#}"));
     }
@@ -431,7 +431,7 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
     }
     match (key.code, key.ctrl, key.alt) {
         (Code::Char(' ' | ':'), false, false) | (Code::Char('w'), true, false) => return false,
-        (Code::Esc, ..) => ed.session.at = At::Code,
+        (Code::Esc, ..) => ed.workspace.viewer.at = At::Code,
         (Code::Char('q'), false, false) => close(ed, g.kind),
         (Code::Enter, false, false) => open(ed, g.kind),
         (Code::Char('o'), false, false) if output(ed, g.kind) => {}

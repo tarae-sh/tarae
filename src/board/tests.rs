@@ -5,7 +5,7 @@ use super::*;
 #[test]
 fn the_boards_card_asks_then_says_the_cost() {
     let ask = |estimate| Ask {
-        session: 0,
+        session: crate::event::WorkspaceId::HOME,
         name: "frictions31".into(),
         conversation: None,
         taken: Box::new(crate::codereview::Taken::for_test("/p".into())),

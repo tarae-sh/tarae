@@ -773,7 +773,13 @@ fn find() -> anyhow::Result<PathBuf> {
         return Ok(PathBuf::from(p));
     }
     let dir = crate::config::state_dir().ok_or_else(|| anyhow::anyhow!("no state folder"))?.join("ui");
-    let socks: Vec<PathBuf> = std::fs::read_dir(&dir)
+    let here = std::env::current_dir().ok().map(|d| std::fs::canonicalize(&d).unwrap_or(d));
+    find_in(&dir, here.as_deref())
+}
+
+/// `find` among the sockets in `dir`, for the folder `here`.
+fn find_in(dir: &Path, here: Option<&Path>) -> anyhow::Result<PathBuf> {
+    let socks: Vec<PathBuf> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
@@ -783,24 +789,14 @@ fn find() -> anyhow::Result<PathBuf> {
     // (by pid's name: two that fit alike pick the same one, and the list reads the same, every time)
     let mut socks = socks;
     crate::sorting::sort(&mut socks);
-    let here = std::env::current_dir().ok().map(|d| std::fs::canonicalize(&d).unwrap_or(d));
     let mut live = Vec::new();
     for p in socks {
         // (one that doesn't answer is a dead tarae's — left as it is: only its pid's next tarae removes it)
         let Ok(v) = ask(&p, &json!({ "get": "state", "timeout_ms": 2000 })) else { continue };
-        if v.get("error").is_some() {
-            continue;
-        }
-        let roots: Vec<PathBuf> = v["sessions"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|s| s["root"].as_str())
-            .map(PathBuf::from)
-            .collect();
-        let fit = here
-            .as_ref()
-            .and_then(|h| roots.iter().filter(|r| h.starts_with(r)).map(|r| r.as_os_str().len()).max());
+        // (one that answers an error or a state this build can't read — an older tarae's: passed over alike)
+        let Ok(roots) = roots_in(&v) else { continue };
+        let fit =
+            here.and_then(|h| roots.iter().filter(|r| h.starts_with(r)).map(|r| r.as_os_str().len()).max());
         live.push((p, v, fit));
     }
     if live.len() == 1 {
@@ -815,10 +811,61 @@ fn find() -> anyhow::Result<PathBuf> {
     let mut list = String::from("several tarae run, none in this folder — --pid PID:\n");
     for (_, v, _) in &live {
         let front = v["front"].as_str().unwrap_or_default();
-        let s = v["sessions"].as_array().into_iter().flatten().find(|s| s["id"] == front);
+        let s = v["workspaces"].as_array().into_iter().flatten().find(|s| s["id"] == front);
         let name = s.and_then(|s| s["name"].as_str()).unwrap_or_default();
         let root = s.and_then(|s| s["root"].as_str()).unwrap_or_default();
         list += &format!("  {:>7}  {name}  {root}\n", v["tarae"]["pid"]);
     }
     anyhow::bail!("{}", list.trim_end())
+}
+
+/// The workspaces' checkouts in a state's answer — Err: an error, or no `workspaces` (an older tarae's state, `v`
+/// below 16: its `sessions` aren't read — never taken for a tarae with nothing open).
+fn roots_in(v: &Value) -> Result<Vec<PathBuf>, String> {
+    if let Some(e) = v.get("error") {
+        return Err(e.to_string());
+    }
+    let list = v["workspaces"]
+        .as_array()
+        .ok_or_else(|| format!("an older tarae's state (v {}): no workspaces", v["v"]))?;
+    Ok(list.iter().filter_map(|w| w["root"].as_str()).map(PathBuf::from).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `tarae state` finds its tarae among those answering — one whose state lists no `workspaces` (an older tarae's,
+    /// `sessions` before V 16) is passed over as one that doesn't answer, never read as a tarae with nothing open.
+    #[test]
+    fn find_passes_over_a_state_it_cant_read() {
+        let dir = crate::scratch::Scratch::new("uisocket-find");
+        // (a stand-in answering each request with its line)
+        let serve = |name: &str, answer: &'static str, times: usize| {
+            let path = dir.join(name);
+            let listener = at(&path, |p: &Path| UnixListener::bind(p)).unwrap();
+            std::thread::spawn(move || {
+                for _ in 0..times {
+                    let (mut s, _) = listener.accept().unwrap();
+                    let mut line = String::new();
+                    BufReader::new(&s).read_line(&mut line).unwrap();
+                    writeln!(s, "{answer}").unwrap();
+                }
+            });
+            path
+        };
+        let older = r#"{"v":15,"sessions":[{"id":"s0","root":"/w/a"}]}"#;
+        serve("1.sock", older, 2);
+        let new = serve("2.sock", r#"{"v":16,"workspaces":[{"id":"w0","root":"/w/b"}]}"#, 1);
+        assert_eq!(
+            find_in(&dir, Some(Path::new("/w/a/src"))).unwrap(),
+            new,
+            "the one it can read, the only one"
+        );
+        std::fs::remove_file(&new).unwrap();
+        let alone = find_in(&dir, None).unwrap_err().to_string();
+        assert!(alone.starts_with("no tarae is running"), "{alone}");
+        let said = roots_in(&serde_json::from_str(older).unwrap()).unwrap_err();
+        assert_eq!(said, "an older tarae's state (v 15): no workspaces");
+    }
 }

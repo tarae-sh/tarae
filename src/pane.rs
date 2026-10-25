@@ -1,9 +1,9 @@
 //! Panes (panes P2b, `target/sb/panes-plan.md` §2.1–2.1d): everything the screen shows is a pane. The docked ones
-//! are the leaves of their session's split tree (`Session.split`, `split.rs`: ids and shares only) — the code's
+//! are the leaves of their session's split tree (`Workspace.split`, `split.rs`: ids and shares only) — the code's
 //! panes, the side panel, the review's rail, the bottom slot, the chat — and each shows one surface (`Shows`);
 //! term.rs lays the tree out every frame and draws each surface in its leaf's rect. The floating ones — a card,
 //! a picker, which-key, a prompt — come and go by their keys over the docked ones (`floating`); while one has the
-//! keys, as `Editor::keys_to()` says, `Session.at` is `At::Float` with its pane id and `Session.under` the docked
+//! keys, as `Editor::keys_to()` says, `Viewer.at` is `At::Float` with its pane id and `Viewer.under` the docked
 //! pane they go back to (`float_sync`).
 //!
 //! The default tree is today's screen, cell for cell (§2.5): the side panel or the rail on the left, the code over
@@ -15,7 +15,7 @@ use crate::split::{Dir, PaneId, Share, Split};
 /// What a pane shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Shows {
-    /// A file: its `View` in `Session.views` under the pane's id (document, scroll, jumps).
+    /// A file: its `View` in `Workspace.views` under the pane's id (document, scroll, jumps).
     Code,
     /// The side panel — files, outline, the list, git, a plugin's tab (`sidebar.rs`).
     Side,
@@ -50,7 +50,7 @@ impl Shows {
     }
 
     /// A surface of the tree's (`SURFACES`, the code, a docked group's host) by its name — a group's members aren't
-    /// kept by name: the group comes with its host (`Session.groups`).
+    /// kept by name: the group comes with its host (`Workspace.groups`).
     pub fn of_name(s: &str) -> Option<Self> {
         if let Some(k) = s.strip_prefix("group:").and_then(GroupKind::of_name) {
             return k.dockable().then_some(Shows::Group(k));
@@ -62,7 +62,7 @@ impl Shows {
 /// What a linked group lists (§2.1–2.2): one model for every master–detail surface. The tests', the task's, the
 /// preflight's and `:procs`' are built — in the slot or docked beside the code (step 6, `Place`). The git tab and the
 /// review's rail drive the code as `Detail::Code` says (step 5: `Editor::git_inline_sync`, `codereview::show`) from the
-/// left column, and stay outside `Session.groups`: what's there is what moves between places (`Group.place`, its host
+/// left column, and stay outside `Workspace.groups`: what's there is what moves between places (`Group.place`, its host
 /// leaf, its own detail pane), and these two have no place to move to — the side panel and the rail stay the left
 /// column (§3.7: how you move, not what you look at), their detail is the code pane itself, never a pane of theirs.
 /// Their kinds name them where the keys go (`Region::List`), as the others'.
@@ -75,7 +75,7 @@ pub enum GroupKind {
     Git,
     Review,
     /// The session list (step 7, `sessionpane.rs`): a list alone (`Detail::None`), floating — the viewer's, not a
-    /// session's: it's no member of `Session.groups`, its kind names it where the keys go and where it's drawn.
+    /// session's: it's no member of `Workspace.groups`, its kind names it where the keys go and where it's drawn.
     Sessions,
     /// `:messages` (step 7c, `messages.rs`): a floating list alone, the viewer's, as the session list.
     Messages,
@@ -114,7 +114,7 @@ impl GroupKind {
         Self::ALL.into_iter().find(|k| k.name() == s)
     }
 
-    /// Its detail is the code pane last focused (`Session.focus`) — the git tab's and the review's — not a pane of
+    /// Its detail is the code pane last focused (`Viewer.focus`) — the git tab's and the review's — not a pane of
     /// its own.
     fn detail_is_code(self) -> bool {
         matches!(self, GroupKind::Git | GroupKind::Review)
@@ -320,7 +320,7 @@ pub enum Detail {
 /// is a pane of its own: hopped to (`C-w h/l`, `tab`), its own keys and selection. They aren't the tree's leaves —
 /// `host` is (the slot shows one panel at a time); term.rs lays them out in the host's rect while the group has
 /// something to list (`group_members`: `Screen.leaves` has them there, the host's leaf not). One a kind, in
-/// `Session.groups`; one made again (a new run) keeps its ids.
+/// `Workspace.groups`; one made again (a new run) keeps its ids.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Group {
     pub kind: GroupKind,
@@ -551,45 +551,51 @@ impl crate::editor::Editor {
         }
     }
 
-    /// Every key and event (`focus_sync`): `Session.at` is the floating pane with the keys while one has them —
-    /// risen over the docked pane (`Session.under`), its id the one it rose with — and the docked pane's again once
+    /// Every key and event (`focus_sync`): `Viewer.at` is the floating pane with the keys while one has them —
+    /// risen over the docked pane (`Viewer.under`), its id the one it rose with — and the docked pane's again once
     /// it goes (answered, closed, `esc`). A docked pane given the keys while a floating one is up goes under it.
     pub fn float_sync(&mut self) {
-        use crate::session::At;
+        use crate::workspace::At;
         let front = self.float_front();
         let mut up = self.floating();
         up.extend(front);
         // (a card keeps its pane while it's asked, drawn or not — a bar, stepped aside, behind another)
         let asked = |f: &Floating| matches!(f, Floating::Card(n) if self.offers.iter().any(|o| o.id == *n));
-        let kept: Vec<_> =
-            self.session.floats.iter().filter(|(f, _)| up.contains(f) || asked(f)).copied().collect();
-        self.session.floats = kept;
+        let kept: Vec<_> = self
+            .workspace
+            .viewer
+            .floats
+            .iter()
+            .filter(|(f, _)| up.contains(f) || asked(f))
+            .copied()
+            .collect();
+        self.workspace.viewer.floats = kept;
         let Some(f) = front else {
-            if let At::Float(_) = self.session.at {
-                self.session.at = self.session.under;
+            if let At::Float(_) = self.workspace.viewer.at {
+                self.workspace.viewer.at = self.workspace.viewer.under;
             }
             return;
         };
-        let id = match self.session.floats.iter().find(|x| x.0 == f) {
+        let id = match self.workspace.viewer.floats.iter().find(|x| x.0 == f) {
             Some(x) => x.1,
             None => {
                 let id = self.next_pane;
                 self.next_pane += 1;
-                self.session.floats.push((f, id));
+                self.workspace.viewer.floats.push((f, id));
                 id
             }
         };
-        let s = &mut self.session;
-        if !matches!(s.at, At::Float(_)) {
-            s.under = s.at;
+        let s = &mut self.workspace;
+        if !matches!(s.viewer.at, At::Float(_)) {
+            s.viewer.under = s.viewer.at;
         }
-        s.at = At::Float(id);
+        s.viewer.at = At::Float(id);
     }
 
     /// The floating pane `id` (`At::Float`'s), while it's up.
     #[cfg(test)]
     pub fn float_of(&self, id: crate::split::PaneId) -> Option<Floating> {
-        self.session.floats.iter().find(|x| x.1 == id).map(|x| x.0)
+        self.workspace.viewer.floats.iter().find(|x| x.1 == id).map(|x| x.0)
     }
 }
 

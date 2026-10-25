@@ -96,11 +96,11 @@ fn run(choices: Choices) -> Vec<String> {
     *PRESSURE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     let mut sim = Sim::new("the_board_and_its_line", choices, LIMIT);
     let mut ed = Editor::new(crate::config::Config::default());
-    (ed.session.root, ed.session.name) = (repo.clone(), "proj".into());
+    (ed.workspace.root, ed.workspace.name) = (repo.clone(), "proj".into());
     // (half the runs in a conversation whose board was said yes to already: boards start at once, as before the
     // card, and reach their skeptics as often; the other half ask on it first — frictions32)
     if sim.choices.below(2) == 0 {
-        ed.session.board_yes = Some(None);
+        ed.workspace.claude.board_yes = Some(None);
     }
     (ed.reviewer_stand_in, ed.reviewer_room) = (true, room);
     ed.config.review_board_at_once = AT_ONCE;
@@ -164,7 +164,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, repo: &std::path::Path, seen: &mut Seen
                 // (any claim of its group, at times the same failure as another — refused unless that one was
                 // confirmed first, as `judge` says)
                 Role::Skeptic(g) => {
-                    let b = ed.session.reviewer.as_ref().and_then(|r| r.board.as_deref());
+                    let b = ed.workspace.reviewer.as_ref().and_then(|r| r.board.as_deref());
                     let group = b.and_then(|b| b.groups.get(g)).cloned().unwrap_or_default();
                     let k = group.len().max(1);
                     let claim = 1 + c.below(k);
@@ -208,7 +208,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, repo: &std::path::Path, seen: &mut Seen
         // (bgreview: nothing a review does starts or stops a member — checked at once, the step's own part)
         6 => {
             let states = |ed: &Editor| {
-                ed.session
+                ed.workspace
                     .reviewer
                     .as_ref()
                     .map(|r| r.members.iter().map(|m| m.state.clone()).collect::<Vec<_>>())
@@ -277,14 +277,14 @@ fn input(sim: &mut Sim, ed: &mut Editor, repo: &std::path::Path, seen: &mut Seen
 
 /// A member reading, picked: its index, its events' generation, its role.
 fn reading(ed: &Editor, c: &mut Choices) -> Option<(usize, u64, Role)> {
-    let r = ed.session.reviewer.as_ref()?;
+    let r = ed.workspace.reviewer.as_ref()?;
     let at: Vec<usize> = (0..r.members.len()).filter(|&i| r.members[i].state == State::Reading).collect();
     let i = *c.pick(at.as_slice().get(..).filter(|a| !a.is_empty())?);
     Some((i, r.members[i].generation, r.members[i].role))
 }
 
 fn member(ed: &Editor, i: usize) -> String {
-    ed.session.reviewer.as_ref().map_or_else(String::new, |r| r.member_name(i))
+    ed.workspace.reviewer.as_ref().map_or_else(String::new, |r| r.member_name(i))
 }
 
 /// What holds after every step: no more members read than may at once — and a member that started in it
@@ -300,10 +300,12 @@ fn held(ed: &Editor, repo: &std::path::Path, seen: &mut Seen) -> Result<(), Stri
     placed(ed, repo, seen)?;
     let started = &mut seen.started;
     // (the key that spends money: no board reads without a yes on its card — frictions29 32)
-    if ed.session.reviewer.as_ref().is_some_and(|r| r.board.is_some()) && ed.session.board_yes.is_none() {
+    if ed.workspace.reviewer.as_ref().is_some_and(|r| r.board.is_some())
+        && ed.workspace.claude.board_yes.is_none()
+    {
         return Err("a board started with no yes on its card".into());
     }
-    let Some(r) = ed.session.reviewer.as_ref() else { return Ok(()) };
+    let Some(r) = ed.workspace.reviewer.as_ref() else { return Ok(()) };
     let reading = r.members.iter().filter(|m| m.state == State::Reading).count();
     if reading > AT_ONCE {
         return Err(format!("{reading} members read at once, past {AT_ONCE}"));
@@ -375,7 +377,7 @@ fn placed(ed: &Editor, repo: &std::path::Path, seen: &mut Seen) -> Result<(), St
         Some(d) => d.text.clone(),
         None => ropey::Rope::from_str(&std::fs::read_to_string(&path).unwrap_or_default()),
     };
-    for n in crate::reviewer::findings_in(&ed.session).unwrap_or_default() {
+    for n in crate::reviewer::findings_in(&ed.workspace).unwrap_or_default() {
         let step = seen.step;
         let (at, checked) = *seen.pinned.entry(n.id).or_insert((step, false));
         if n.placing || checked {
@@ -398,7 +400,7 @@ fn placed(ed: &Editor, repo: &std::path::Path, seen: &mut Seen) -> Result<(), St
                 n.id,
                 n.lines,
                 text.get_line(n.lines.start).map(|l| l.to_string()),
-                ed.session.reviewer.as_ref().map(|r| r.snap.is_some()),
+                ed.workspace.reviewer.as_ref().map(|r| r.snap.is_some()),
             ));
         }
     }
@@ -410,7 +412,9 @@ fn print(ed: &Editor, dir: &str) -> String {
     let last = ed.messages.last().map(|m| m.2.replace(dir, "<dir>")).unwrap_or_default();
     let up = ed.offers.iter().any(|o| matches!(o.what, crate::offer::What::Board(_)));
     let card = if up { " · the board's card up" } else { "" };
-    let Some(r) = ed.session.reviewer.as_ref() else { return format!("no reviewer · said {last:?}{card}") };
+    let Some(r) = ed.workspace.reviewer.as_ref() else {
+        return format!("no reviewer · said {last:?}{card}");
+    };
     let word = |s: &State| match s {
         State::Waiting => "waits".to_string(),
         State::Reading => "reads".to_string(),

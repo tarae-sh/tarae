@@ -1,4 +1,4 @@
-//! `session.ended` — a command of the user's, run once a session's checkout is removed (`session_remove`):
+//! `workspace.ended` — a command of the user's, run once a session's checkout is removed (`session_remove`):
 //! for what lived outside the checkout on its behalf (tarae's own repository sets `cargo xtask linux prune`,
 //! which drops the Docker volume its Linux checks built in). A trusted setting (`trust::RISKY`): it runs
 //! outside the sandbox, in the checkout tarae started in, `VAR` naming the one removed — on a worker, so the end
@@ -102,10 +102,10 @@ pub fn run(cmd: &[String], cwd: &Path, ended: &Path, limit: Duration) -> Ran {
 }
 
 impl Editor {
-    /// `session.ended`, if set, for `root` — session `name`'s checkout just removed (the session itself gone:
+    /// `workspace.ended`, if set, for `root` — session `name`'s checkout just removed (the session itself gone:
     /// its name comes along for its last log line).
-    pub fn session_ended(&mut self, root: &Path, name: &str) {
-        let cmd = self.config.session_ended.clone();
+    pub fn workspace_ended(&mut self, root: &Path, name: &str) {
+        let cmd = self.config.workspace_ended.clone();
         if cmd.is_empty() {
             return;
         }
@@ -120,11 +120,11 @@ impl Editor {
             };
             let printed: Vec<&str> = ran.out.iter().chain(&ran.err).map(String::as_str).collect();
             let text = format!("{shown} for {}: {how}\n{}", ended.display(), printed.join("\n"));
-            log.line("session.ended", level, &text);
+            log.line("workspace.ended", level, &text);
             move |ed: &mut Editor| match ran.result {
                 // (nothing on screen changed — the log has it)
                 Ok(_) => ed.unchanged = true,
-                Err(why) => ed.set_warning(format!("session.ended `{shown}` — {why}")),
+                Err(why) => ed.set_warning(format!("workspace.ended `{shown}` — {why}")),
             }
         });
     }
@@ -191,7 +191,7 @@ mod tests {
         assert!(running().iter().any(|(_, c)| *c == shown), "{:?}", running());
         let ed = Editor::new(crate::config::Config::default());
         let known = ed.procs_known();
-        assert!(known.iter().any(|k| k.title == "session.ended" && k.what == shown), "in :procs");
+        assert!(known.iter().any(|k| k.title == "workspace.ended" && k.what == shown), "in :procs");
         let ran = ran.recv_timeout(crate::test_results::PATIENCE).expect("not waited for past its stop");
         assert_eq!(ran.result, Err("stopped after 1.5s: waiting".into()));
         assert!(!running().iter().any(|(_, c)| *c == shown), "gone from :procs");

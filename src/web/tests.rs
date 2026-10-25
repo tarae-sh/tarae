@@ -801,7 +801,7 @@ fn web_reads_a_saved_page_into_a_buffer_named_by_its_title() {
     std::fs::copy(dir().join("pages/issue.html"), root.join("saved/issue page.html")).unwrap();
     std::fs::write(root.join("saved/a.pdf"), b"%PDF-1.7\n").unwrap();
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-    ed.session.root = std::fs::canonicalize(root.path()).unwrap();
+    ed.workspace.root = std::fs::canonicalize(root.path()).unwrap();
     let first = ed.doc().id;
 
     feed(&mut ed, ":web 'saved/issue page.html' https://github.com/ethnw/tarae/issues/12<ret>");
@@ -858,7 +858,7 @@ fn web_fetches_a_page_or_takes_the_session_s_copy() {
         took: std::time::Duration::from_millis(40),
         elsewhere: None,
     };
-    let gone = ed.session.pages.put(std::sync::Arc::new(f), crate::clock::now());
+    let gone = ed.workspace.pages.put(std::sync::Arc::new(f), crate::clock::now());
     assert!(gone.is_empty());
     feed(&mut ed, ":web https://kept.test/a<ret>");
     assert_eq!(ed.doc().title.as_deref(), Some("web · kept.test"), "made at once");
@@ -898,7 +898,7 @@ fn web_keeps_only_whole_pages_and_web_bang_fetches_again() {
         _ => ok("<title>A</title><main><h1>A page</h1><p>Its text.</p></main>"),
     });
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-    ed.session.web_way =
+    ed.workspace.web_way =
         Some(std::sync::Arc::new(move |stop| super::fetch::Way { stop, ..way(at, yours_rules()) }));
     // (how many requests the server had for what `typed` opened, its buffer closed after)
     let opened = |ed: &mut crate::editor::Editor, typed: &str| {
@@ -912,7 +912,7 @@ fn web_keeps_only_whole_pages_and_web_bang_fetches_again() {
         n
     };
     let kept =
-        |ed: &crate::editor::Editor, url: &str| ed.session.pages.get(url, crate::clock::now()).is_some();
+        |ed: &crate::editor::Editor, url: &str| ed.workspace.pages.get(url, crate::clock::now()).is_some();
     let local = format!("https://localhost:{}/a", at.port());
     for (url, keeps) in [
         ("https://page.test/a", true),
@@ -929,12 +929,12 @@ fn web_keeps_only_whole_pages_and_web_bang_fetches_again() {
     assert_eq!((missing, opened(&mut ed, ":web https://page.test/missing")), (1, 0), "its buffer: no fetch");
     assert_eq!((ed.doc().id, ed.docs.len()), (page, docs));
 
-    let before = ed.session.pages.get("https://page.test/a", crate::clock::now()).map(|(at, _)| at);
+    let before = ed.workspace.pages.get("https://page.test/a", crate::clock::now()).map(|(at, _)| at);
     assert_eq!(opened(&mut ed, ":web https://page.test/a"), 0, "the copy");
     let (page, docs) = (ed.doc().id, ed.docs.len());
     assert_eq!(opened(&mut ed, ":web! https://page.test/a"), 1, ":web! fetches again");
     assert_eq!((ed.doc().id, ed.docs.len()), (page, docs), "into its buffer");
-    let after = ed.session.pages.get("https://page.test/a", crate::clock::now()).map(|(at, _)| at);
+    let after = ed.workspace.pages.get("https://page.test/a", crate::clock::now()).map(|(at, _)| at);
     assert!(after > before, "the new copy kept in its place");
 }
 
@@ -949,8 +949,8 @@ fn a_saved_page_read_into_a_fetched_pages_buffer_is_its_source_from_then_on() {
     let root = crate::scratch::Scratch::new("web-saved-into");
     std::fs::copy(dir().join("pages/issue.html"), root.join("issue.html")).unwrap();
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-    ed.session.root = std::fs::canonicalize(root.path()).unwrap();
-    ed.session.web_way =
+    ed.workspace.root = std::fs::canonicalize(root.path()).unwrap();
+    ed.workspace.web_way =
         Some(std::sync::Arc::new(move |stop| super::fetch::Way { stop, ..way(at, yours_rules()) }));
     let opened = |ed: &mut crate::editor::Editor, typed: &str| {
         feed(ed, &format!("{typed}<ret>"));
@@ -1000,7 +1000,7 @@ fn a_redirect_to_an_open_page_shows_it_and_closes_only_a_buffer_that_never_lande
         }
     });
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-    ed.session.web_way =
+    ed.workspace.web_way =
         Some(std::sync::Arc::new(move |stop| super::fetch::Way { stop, ..way(at, yours_rules()) }));
     let opened = |ed: &mut crate::editor::Editor, typed: &str| {
         feed(ed, &format!("{typed}<ret>"));
@@ -1034,7 +1034,7 @@ fn a_failed_read_says_its_why_short_on_its_line_and_whole_on_its_first_row() {
     let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
     let at = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    ed.session.web_way =
+    ed.workspace.web_way =
         Some(std::sync::Arc::new(move |stop| super::fetch::Way { stop, ..way(at, yours_rules()) }));
     feed(&mut ed, &format!(":web http://localhost:{port}/<ret>"));
     settle_until(&mut ed, none_reading);
@@ -1077,8 +1077,8 @@ fn a_pages_commands_read_it_again_reload_it_and_hand_it_to_the_browser() {
     let root = crate::scratch::Scratch::new("web-commands");
     std::fs::copy(dir().join("pages/spa.html"), root.join("spa.html")).unwrap();
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-    ed.session.root = std::fs::canonicalize(root.path()).unwrap();
-    ed.session.web_way =
+    ed.workspace.root = std::fs::canonicalize(root.path()).unwrap();
+    ed.workspace.web_way =
         Some(std::sync::Arc::new(move |stop| super::fetch::Way { stop, ..way(at, yours_rules()) }));
     let said = |ed: &mut crate::editor::Editor, typed: &str, words: &str| {
         let before = toasts(ed).len();
@@ -1101,7 +1101,7 @@ fn a_pages_commands_read_it_again_reload_it_and_hand_it_to_the_browser() {
     assert_eq!(said(&mut ed, ":reload", "page · "), 1, "fetched anew");
     assert_eq!((ed.doc().id, ed.docs.len()), (page, docs), "into its buffer");
     said(&mut ed, ":web-open", "web: https://page.test/a handed to your browser");
-    assert_eq!(ed.session.web_opened, ["https://page.test/a"]);
+    assert_eq!(ed.workspace.web_opened, ["https://page.test/a"]);
 
     said(
         &mut ed,
@@ -1112,7 +1112,7 @@ fn a_pages_commands_read_it_again_reload_it_and_hand_it_to_the_browser() {
     ed.new_scratch();
     feed(&mut ed, ":web-open<ret>");
     assert!(toasts(&ed).iter().any(|t| t == "not a web page — :web <url> reads one"), "{:?}", toasts(&ed));
-    assert_eq!(ed.session.web_opened.len(), 1, "nothing else handed over");
+    assert_eq!(ed.workspace.web_opened.len(), 1, "nothing else handed over");
 }
 
 /// `:web https://…` through its way (servers and a proxy of the test's own standing in for yours): its buffer made at
@@ -1134,8 +1134,8 @@ fn web_reads_into_its_buffer_and_c_c_or_closing_it_stops_the_read() {
         _ => Reply { hold: true, ..reply("") },
     });
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-    ed.session.web_way = Some(Arc::new(move |stop| super::fetch::Way { stop, ..way(at, yours_rules()) }));
-    let dropped = |n: usize| move |ed: &crate::editor::Editor| ed.session.web_dropped == n;
+    ed.workspace.web_way = Some(Arc::new(move |stop| super::fetch::Way { stop, ..way(at, yours_rules()) }));
+    let dropped = |n: usize| move |ed: &crate::editor::Editor| ed.workspace.web_dropped == n;
     let wait = |what: &str| heads.recv_timeout(crate::test_results::PATIENCE).expect(what);
     let errors = |ed: &crate::editor::Editor| toasts(ed).iter().filter(|t| t.starts_with("web: ")).count();
 
@@ -1151,7 +1151,7 @@ fn web_reads_into_its_buffer_and_c_c_or_closing_it_stops_the_read() {
     assert!(ed.doc().text.to_string().contains("# A page"));
     assert!(!page_layer(&ed), "landed: C-c is the code's");
     assert_eq!(
-        ed.session.pages.get("https://page.test/a", crate::clock::now()).map(|(_, f)| f.status),
+        ed.workspace.pages.get("https://page.test/a", crate::clock::now()).map(|(_, f)| f.status),
         Some(200)
     );
     wait("a's request");
@@ -1235,7 +1235,7 @@ fn a_pages_buffer_is_read_only_and_read_again_in_place() {
     let root = crate::scratch::Scratch::new("web-read-only");
     std::fs::copy(dir().join("pages/issue.html"), root.join("issue.html")).unwrap();
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-    ed.session.root = std::fs::canonicalize(root.path()).unwrap();
+    ed.workspace.root = std::fs::canonicalize(root.path()).unwrap();
     let first = ed.doc().id;
     feed(&mut ed, ":web issue.html<ret>");
     settle_until(&mut ed, |ed| ed.doc().id != first && landed(ed));
@@ -1270,7 +1270,7 @@ fn w_saves_a_copy_of_a_page_saying_where_it_came_from() {
     let root = crate::scratch::Scratch::new("web-w");
     std::fs::copy(dir().join("pages/issue.html"), root.join("issue.html")).unwrap();
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-    ed.session.root = std::fs::canonicalize(root.path()).unwrap();
+    ed.workspace.root = std::fs::canonicalize(root.path()).unwrap();
     feed(&mut ed, ":web issue.html https://github.com/ethnw/tarae/issues/12<ret>");
     settle_until(&mut ed, landed);
     let said = |ed: &crate::editor::Editor, start: &str| toasts(ed).iter().any(|t| t.starts_with(start));

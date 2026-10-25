@@ -606,7 +606,7 @@ watches each base branch (its ref file, no git run) and, when it moves — a bri
 checkout — asks once for every workspace behind it, on one card (`main moved`: `3 new commits — 3 workspaces behind
 it`), a row each (`fix — 4 behind, its 2 changed files go with it`, `db — 12 behind, would conflict in src/term.rs
 L210–260`), what would conflict found as overlaps are, on the new tip. `y` moves the clean ones onto the tip; `c`
-rebases the conflicting ones too, each through its own Claude as `:session-bring`'s rebase does, while it's small;
+rebases the conflicting ones too, each through its own Claude as `:workspace-bring`'s rebase does, while it's small;
 `v` shows the main checkout's changes to their instruction files (taken as the move lands, never over a line the
 workspace changed); `n` leaves them — the base's next move asks again. A newer move takes the card's place, and the
 newest tip wins. A workspace moves only once it's idle — its Claude between turns, no review, rebase or run under
@@ -2228,7 +2228,7 @@ of repeating itself, and the log says where.
 
 ## Rebasing a session
 
-A session (`space W`) is a branch in a checkout of its own. `:session-bring` (or `b` in the session list) moves
+A session (`space W`) is a branch in a checkout of its own. `:workspace-bring` (or `b` in the session list) moves
 its base up to it, fast-forward only. When the base has moved since the session left it, a card says how far
 (`main moved 3 commits since fix-login left it; fix-login is 2 commits ahead`) and offers to rebase first:
 
@@ -2268,7 +2268,7 @@ its base up to it, fast-forward only. When the base has moved since the session 
   through a resolved conflict: «Add login» — read it before bringing`)
 
 While it's under way the session's tab, the status line's chip and its row in the list say `rebasing 2/5`, and
-`:session-end` and `:restart` wait for it (they say why). `:session-bring` on a session whose rebase stopped
+`:workspace-end` and `:restart` wait for it (they say why). `:workspace-bring` on a session whose rebase stopped
 puts its card up again — `y` goes on, `X` aborts. Its card put away (`n`), a rebase waiting on you — resolved, or
 stopped with nothing asked of its Claude (one taken up after a restart) — stays in the inbox (`space I`, the
 status line's `▲ waiting`) until it goes on or is aborted, waited since it began to wait (for one taken up, since
@@ -2294,7 +2294,7 @@ in the queue asked another way waits for its turn, and the end says who was brou
 One marked alone is a single bring.
 
 A session with no commits of its own, behind its base (it was made, nothing was committed, and the base moved
-on), has nothing to bring. `:session-bring` then offers to move it up to its base's tip instead: the card says
+on), has nothing to bring. `:workspace-bring` then offers to move it up to its base's tip instead: the card says
 it's a fast-forward in its checkout (`behind has no commits past main — nothing to bring. It's 2 commits
 behind: move it up to main's tip?`), `y` moves it, `n` leaves it. With changes in its checkout (files git has
 changed, or buffers unsaved there) it says which, and that they need a commit or a stash first.
@@ -2309,7 +2309,7 @@ restart.
 
 ## Bringing in a patch
 
-`:session-apply [--base <rev>] <patch>` brings a change made in another tree (another agent's checkout, a mail)
+`:workspace-apply [--base <rev>] <patch>` brings a change made in another tree (another agent's checkout, a mail)
 into the session in front as one change set of your own. tarae reads the file you name (`~` works; a project's key
 binding can't run it), reads `git diff`'s and `diff -u`'s form (a mail's headers, a commit message and a diffstat
 before it are skipped), and works out each file:

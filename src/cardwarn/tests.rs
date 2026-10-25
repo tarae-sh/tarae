@@ -452,13 +452,13 @@ fn chat_in(name: &str, project: &str) -> (crate::editor::Editor, u64, PathBuf) {
     let mut ed = crate::editor::Editor::new(config);
     // (today's gate, where every command here has a card: in the sandbox they'd run — P3)
     ed.config.llm.sandbox = false;
-    ed.session.root = dir.clone();
+    ed.workspace.root = dir.clone();
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     crate::chat::open(&mut ed);
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     let generation = c.generation();
     (ed, generation, dir)
 }
@@ -481,7 +481,7 @@ fn answered(n: u64) -> Option<Result<String, String>> {
 /// Claude's `run` of `cmd` (call `n`), its tool row in the chat as claude's stream would make it — answered
 /// at once (None) or waiting for its card (its id).
 fn ask(ed: &mut crate::editor::Editor, generation: u64, n: u64, cmd: &str) -> Option<u64> {
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     let id = format!("toolu_{n}");
     let input = serde_json::json!({ "command": cmd });
     c.calls.push(crate::chat::Called {
@@ -530,7 +530,7 @@ say = "cargo xtask linux runs Docker: {missing}."
     let line = line.expect("its card line");
     assert!(line.contains(" · warn=docker-own-config,xtask-linux-docker · n · "), "{line}");
     // The same again: `Same as …` first, and its warnings still under the command
-    pump_until(&mut ed, &|ed| ed.session.answered.iter().any(|a| a.card == id), "the no kept");
+    pump_until(&mut ed, &|ed| ed.workspace.claude.answered.iter().any(|a| a.card == id), "the no kept");
     ask(&mut ed, generation, 2, "docker ps && cargo xtask linux clippy").expect("its card");
     let q = ed.offers[0].question.clone();
     assert!(
@@ -655,7 +655,7 @@ fn only_a_warning_that_asks_takes_a_back() {
         assert!(dir.join("made.txt").exists(), "{:?}", answered(first));
         // (its row: where it ran, and what it warned of — the card's)
         let row_of = |ed: &crate::editor::Editor, n: u64| {
-            let c = ed.session.chat.as_ref().unwrap();
+            let c = ed.workspace.claude.chat.as_ref().unwrap();
             c.msgs
                 .iter()
                 .find(|m| m.call == format!("toolu_{n}"))

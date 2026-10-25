@@ -146,7 +146,7 @@ type MakeWay = Box<dyn Fn((&str, u16), Stop) -> Result<fetch::Way, String> + Sen
 pub fn plan(ed: &mut Editor, items: Vec<Item>, call: &Call, args: &Value) -> Option<Reads> {
     // (this call's `y`s ride with the call, tarae's side — never in its arguments, which are Claude's)
     let once: Vec<(String, u16)> =
-        ed.session.web_once.iter().filter(|(c, _)| c.same(call)).map(|(_, at)| at.clone()).collect();
+        ed.workspace.claude.web_once.iter().filter(|(c, _)| c.same(call)).map(|(_, at)| at.clone()).collect();
     let now = crate::clock::now();
     let mut out = Vec::new();
     for it in items {
@@ -157,7 +157,7 @@ pub fn plan(ed: &mut Editor, items: Vec<Item>, call: &Call, args: &Value) -> Opt
                 continue;
             }
         };
-        if let Some((at, f)) = ed.session.pages.get(&it.url, now) {
+        if let Some((at, f)) = ed.workspace.pages.get(&it.url, now) {
             out.push((it, How::Kept(at, f)));
             continue;
         }
@@ -191,27 +191,27 @@ pub fn plan(ed: &mut Editor, items: Vec<Item>, call: &Call, args: &Value) -> Opt
     }
     let stop = Stop::default();
     if out.iter().any(|(_, h)| matches!(h, How::Fetch(..))) {
-        ed.session.web_reads.push(stop.clone());
+        ed.workspace.claude.web_reads.push(stop.clone());
     }
     Some(Reads { items: out, make: way_of(ed), stop })
 }
 
 /// The chat turn ended: Claude's reads under way stopped (their sockets shut) — none is left to its deadline.
 pub fn turn_over(ed: &mut Editor) {
-    for s in ed.session.web_reads.drain(..) {
+    for s in ed.workspace.claude.web_reads.drain(..) {
         s.stop();
     }
-    ed.session.web_once.clear();
+    ed.workspace.claude.web_once.clear();
 }
 
 /// `call`'s read is answered: its `y`s go.
 pub fn answered(ed: &mut Editor, call: &Call) {
-    ed.session.web_once.retain(|(c, _)| !c.same(call));
+    ed.workspace.claude.web_once.retain(|(c, _)| !c.same(call));
 }
 
 /// Whether the user said no to Claude's reads of `host:port` in this conversation.
 fn refused(ed: &Editor, at: &(String, u16)) -> bool {
-    ed.session.chat.as_ref().is_some_and(|c| c.web_refused.contains(at))
+    ed.workspace.claude.chat.as_ref().is_some_and(|c| c.web_refused.contains(at))
 }
 
 /// Whether Claude's read of `host:port` goes unasked: a read's own answers (this chat's, this session's), else what
@@ -220,8 +220,9 @@ fn refused(ed: &Editor, at: &(String, u16)) -> bool {
 fn reads_unasked(ed: &Editor, (host, port): &(String, u16)) -> bool {
     use crate::sandbox::proxy::egress::covers;
     let named = |(h, p): &(String, u16)| p == port && covers(h, host);
-    let chat = ed.session.chat.as_ref();
-    if chat.is_some_and(|c| c.web_hosts.iter().any(named)) || ed.session.web_hosts.iter().any(named) {
+    let chat = ed.workspace.claude.chat.as_ref();
+    if chat.is_some_and(|c| c.web_hosts.iter().any(named)) || ed.workspace.claude.web_hosts.iter().any(named)
+    {
         return true;
     }
     let llm = &ed.config.llm;
@@ -232,8 +233,8 @@ fn reads_unasked(ed: &Editor, (host, port): &(String, u16)) -> bool {
             Some(_) => {}
         }
     }
-    let runs = ed.session.hosts.iter().chain(chat.into_iter().flat_map(|c| &c.allowed.hosts));
-    let kept = ed.session.caps().map(|c| c.run_grants(llm.sandbox_network)).unwrap_or_default();
+    let runs = ed.workspace.claude.hosts.iter().chain(chat.into_iter().flat_map(|c| &c.allowed.hosts));
+    let kept = ed.workspace.claude.caps().map(|c| c.run_grants(llm.sandbox_network)).unwrap_or_default();
     let kept = kept.into_iter().filter_map(|g| match g {
         crate::allow::Grant::Host(h, p) => Some((h, p)),
         _ => None,
@@ -247,7 +248,7 @@ fn runs_reach_here(ed: &Editor, port: u16) -> bool {
     if llm.sandbox_localhost || llm.sandbox_ports.contains(&port) {
         return true;
     }
-    let kept = ed.session.caps().map(|c| c.run_grants(llm.sandbox_network)).unwrap_or_default();
+    let kept = ed.workspace.claude.caps().map(|c| c.run_grants(llm.sandbox_network)).unwrap_or_default();
     kept.iter().any(|g| match g {
         crate::allow::Grant::Port(p) => *p == port,
         crate::allow::Grant::Localhost => true,
@@ -255,16 +256,16 @@ fn runs_reach_here(ed: &Editor, port: u16) -> bool {
     })
 }
 
-/// How the worker makes Claude's way: `fetch::claudes`, or a test's stand-in (`Session.web_way`) made Claude's.
+/// How the worker makes Claude's way: `fetch::claudes`, or a test's stand-in (`Workspace.web_way`) made Claude's.
 fn way_of(ed: &Editor) -> MakeWay {
     #[cfg(test)]
-    if let Some(make) = ed.session.web_way.clone() {
+    if let Some(make) = ed.workspace.web_way.clone() {
         return Box::new(move |_, stop| {
             let w = make(stop);
             Ok(fetch::Way { others: false, process: "read".into(), ..w })
         });
     }
-    let (root, upstream) = (ed.session.root.clone(), ed.config.llm.sandbox_upstream);
+    let (root, upstream) = (ed.workspace.root.clone(), ed.config.llm.sandbox_upstream);
     Box::new(move |at, stop| fetch::claudes(&root, crate::sandbox::upstream_now(upstream), at, stop))
 }
 
@@ -303,21 +304,21 @@ pub fn answer(ed: &mut Editor, id: u64, a: Ask, scope: Option<crate::allow::Scop
     let at = (a.host.clone(), a.port);
     let call = a.call;
     match scope {
-        Some(Scope::Once) => ed.session.web_once.push((call.clone(), at.clone())),
+        Some(Scope::Once) => ed.workspace.claude.web_once.push((call.clone(), at.clone())),
         Some(Scope::ThisChat) => {
-            if let Some(c) = ed.session.chat.as_mut().filter(|c| !c.web_hosts.contains(&at)) {
+            if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| !c.web_hosts.contains(&at)) {
                 c.web_hosts.push(at.clone());
             }
             ed.set_success(format!("Claude may read pages at {} in this conversation", a.host));
         }
         Some(Scope::Session | Scope::Always) => {
-            if !ed.session.web_hosts.contains(&at) {
-                ed.session.web_hosts.push(at.clone());
+            if !ed.workspace.claude.web_hosts.contains(&at) {
+                ed.workspace.claude.web_hosts.push(at.clone());
             }
             ed.set_success(format!("Claude may read pages at {} in this session", a.host));
         }
         None => {
-            if let Some(c) = ed.session.chat.as_mut().filter(|c| !c.web_refused.contains(&at)) {
+            if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| !c.web_refused.contains(&at)) {
                 c.web_refused.push(at.clone());
             }
         }
@@ -347,7 +348,7 @@ fn settle_others(ed: &mut Editor, at: &(String, u16)) -> Vec<Ask> {
         })
         .collect();
     for (id, _) in &others {
-        ed.session.asking.retain(|a| a.card != *id);
+        ed.workspace.claude.asking.retain(|a| a.card != *id);
     }
     ed.drop_cards_for(same, "answered with another card for its host");
     others.into_iter().map(|(_, a)| a).collect()
@@ -417,7 +418,7 @@ pub fn landed(ed: &mut Editor, got: Vec<Got>) {
             None => match kept.iter().find(|(u, _)| *u == g.f.url) {
                 Some((_, at)) => *at,
                 None => {
-                    let gone = ed.session.pages.keep(g.f.clone(), now, super::open::keeps(&g.f));
+                    let gone = ed.workspace.pages.keep(g.f.clone(), now, super::open::keeps(&g.f));
                     crate::event::drop_later(gone);
                     kept.push((g.f.url.clone(), now));
                     now

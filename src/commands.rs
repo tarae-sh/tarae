@@ -1893,7 +1893,7 @@ fn diagnostics_picker(cx: &mut Context) {
 
 fn file_picker(cx: &mut Context) {
     // (the root is a real path, as buffers' are)
-    let root = cx.editor.session.root.clone();
+    let root = cx.editor.workspace.root.clone();
     let title = format!("files in {}", root.file_name().map(|n| n.to_string_lossy()).unwrap_or_default());
     // Nothing typed: a folder tree opened up to the file being edited
     let reveal = cx
@@ -1925,8 +1925,8 @@ const TYPED_IN_PALETTE: &[(&str, &str)] = &[
     ("Close buffer", "bc"),
     ("Next buffer", "bn"),
     ("Previous buffer", "bp"),
-    ("End this session", "session-end"),
-    ("Bring this session into its base", "session-bring"),
+    ("End this workspace", "workspace-end"),
+    ("Bring this workspace into its base", "workspace-bring"),
     ("Go on with the rebase", "rebase-continue"),
     ("Abort the rebase", "rebase-abort"),
 ];
@@ -2134,7 +2134,7 @@ fn goto_prev_quickfix(cx: &mut Context) {
 }
 
 fn quickfix_panel(cx: &mut Context) {
-    if cx.editor.session.qlist.as_ref().is_none_or(|l| l.items.is_empty()) {
+    if cx.editor.workspace.qlist.as_ref().is_none_or(|l| l.items.is_empty()) {
         return cx
             .editor
             .set_status("the list is empty — C-q in a picker keeps its places, space m runs a task");
@@ -2377,7 +2377,7 @@ fn buffer_picker(cx: &mut Context) {
         .map(|d| crate::picker::Item {
             label: format!(
                 "{}{}",
-                d.display_name(&cx.editor.session.root),
+                d.display_name(&cx.editor.workspace.root),
                 if d.is_modified() { " [+]" } else { "" }
             ),
             action: crate::picker::Action::Buffer(d.id),

@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use super::{Choices, Sim};
 use crate::editor::Editor;
-use crate::event::SessionId;
+use crate::event::WorkspaceId;
 use crate::key::{Code, Key};
 use crate::offer::What;
 
@@ -37,8 +37,8 @@ fn workspaces_follow_their_base_only_when_idle() {
 
 struct World {
     main: PathBuf,
-    fix: SessionId,
-    up: SessionId,
+    fix: WorkspaceId,
+    up: WorkspaceId,
     base: crate::keepclose::Base,
     /// main's tips, oldest first — the last the newest.
     tips: Vec<String>,
@@ -56,23 +56,23 @@ fn run(choices: Choices) -> Vec<String> {
     let world = super::sessions::World::new();
     let main = world.repo.clone();
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = std::fs::canonicalize(&main).unwrap();
-    ed.session.name = "main".into();
-    ed.session.git_branch = Some("main".into());
+    ed.workspace.root = std::fs::canonicalize(&main).unwrap();
+    ed.workspace.name = "main".into();
+    ed.workspace.git_branch = Some("main".into());
     ed.overlap.dir = Some(world.dir.join("overlap"));
     ed.overlap.quiet = Duration::ZERO;
     let mut ids = Vec::new();
     let mut rx = None;
     for (name, root) in &world.sessions {
-        let id = ed.session_add(std::fs::canonicalize(root).unwrap());
-        let l = ed.session_by_id(id).unwrap();
+        let id = ed.workspace_add(std::fs::canonicalize(root).unwrap());
+        let l = ed.workspace_by_id(id).unwrap();
         l.base = Some("main".into());
         l.git_branch = Some(name.clone());
         l.name = if ids.is_empty() { "fix" } else { "up" }.into();
         if ids.is_empty() {
             let mut c = crate::chat::Chat::new();
             rx = Some(crate::chat::stand_in(&mut c));
-            l.chat = Some(c);
+            l.claude.chat = Some(c);
         }
         ids.push(id);
     }
@@ -109,8 +109,8 @@ fn tip_of(dir: &std::path::Path) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-fn session(ed: &Editor, id: SessionId) -> &crate::session::Session {
-    std::iter::once(&ed.session).chain(&ed.sessions).find(|l| l.id == id).unwrap()
+fn session(ed: &Editor, id: WorkspaceId) -> &crate::workspace::Workspace {
+    std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|l| l.id == id).unwrap()
 }
 
 fn card(ed: &Editor) -> Option<&crate::offer::Offer> {
@@ -137,8 +137,8 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
         }
         1 => {
             let moving = session(ed, w.fix).moving.is_some();
-            ed.with_session(w.fix, |ed| {
-                if let Some(c) = ed.session.chat.as_mut() {
+            ed.with_workspace(w.fix, |ed| {
+                if let Some(c) = ed.workspace.claude.chat.as_mut() {
                     c.input.set("go on");
                 }
                 crate::chat::send(ed);
@@ -146,10 +146,10 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
             format!("a message to fix{}", if moving { " (it moves)" } else { "" })
         }
         2 => {
-            if !session(ed, w.fix).chat.as_ref().is_some_and(crate::chat::Chat::busy) {
+            if !session(ed, w.fix).claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
                 return "(fix's Claude is idle)".into();
             }
-            ed.with_session(w.fix, crate::chat::stand_in_done);
+            ed.with_workspace(w.fix, crate::chat::stand_in_done);
             "fix's turn ends".into()
         }
         3 => {
@@ -157,9 +157,9 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
             let running = l.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running);
             let moving = l.moving.is_some();
             let task = crate::task::Task { name: "build".into(), cmd: "true".into(), cwd: l.root.clone() };
-            ed.with_session(w.fix, |ed| match (running, moving) {
+            ed.with_workspace(w.fix, |ed| match (running, moving) {
                 (true, _) => {
-                    if let Some(r) = ed.session.task_run.as_mut() {
+                    if let Some(r) = ed.workspace.task_run.as_mut() {
                         r.state = crate::task::State::Passed;
                     }
                     crate::queued::run_next(ed);
@@ -168,16 +168,19 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
                 // scenario runs no process)
                 (false, true) => {
                     ed.task_start(task);
-                    let ran =
-                        ed.session.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running);
+                    let ran = ed
+                        .workspace
+                        .task_run
+                        .as_ref()
+                        .is_some_and(|r| r.state == crate::task::State::Running);
                     assert!(!ran, "a run started while fix moved");
-                    let id = ed.session.runs_next.front().map(|n| n.id).expect("the run waits in line");
+                    let id = ed.workspace.runs_next.front().map(|n| n.id).expect("the run waits in line");
                     crate::queued::leave(ed, id, "the scenario's");
                 }
                 (false, false) => {
                     let mut r = crate::task::Run::for_test(task);
                     r.state = crate::task::State::Running;
-                    ed.session.task_run = Some(r);
+                    ed.workspace.task_run = Some(r);
                 }
             });
             match (running, moving) {
@@ -241,14 +244,14 @@ fn held(ed: &Editor, w: &World) -> Result<(), String> {
     }
     let fix = session(ed, w.fix);
     if fix.moving.is_some() {
-        if fix.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
+        if fix.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
             return Err("fix moves while its Claude is at work".into());
         }
         if fix.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running) {
             return Err("fix moves while a run is under way there".into());
         }
     }
-    if fix.chat.as_ref().is_some_and(|c| c.queued.is_some() && !c.busy()) && fix.moving.is_none() {
+    if fix.claude.chat.as_ref().is_some_and(|c| c.queued.is_some() && !c.busy()) && fix.moving.is_none() {
         return Err("a message waits with nothing holding it".into());
     }
     if session(ed, w.up).moving.is_some() && fix.moving.is_some() {

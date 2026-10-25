@@ -351,11 +351,11 @@ fn asked(name: &str, settings: &str, store: bool) -> (Editor, PathBuf) {
 }
 
 fn pid(ed: &Editor) -> Option<u32> {
-    ed.session.chat.as_ref().and_then(|c| c.pid())
+    ed.workspace.claude.chat.as_ref().and_then(|c| c.pid())
 }
 
 fn noted(ed: &Editor, text: &str) -> bool {
-    ed.session.chat.as_ref().is_some_and(|c| c.msgs.iter().any(|m| m.text.contains(text)))
+    ed.workspace.claude.chat.as_ref().is_some_and(|c| c.msgs.iter().any(|m| m.text.contains(text)))
 }
 
 /// A change while claude runs that needs other overrides but no card — the file now says what was answered
@@ -429,7 +429,7 @@ fn a_yes_restarts_claude_at_idle_with_resume() {
     let settings: Json = serde_json::from_str(&arg_after(&root, "--settings").unwrap()).unwrap();
     assert_eq!(settings["env"]["THIRD_ZQ7"], "", "held back while the card waits: {settings}");
     // (a conversation going, as claude's `init` names it)
-    ed.session.chat.as_mut().unwrap().conversation = Some("conv-zq7".into());
+    ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("conv-zq7".into());
     std::fs::remove_file(root.join("argv")).unwrap();
     ed.offer_accept();
     until(&mut ed, "the trusted start", |ed| running(ed) && pid(ed) != first);
@@ -449,18 +449,18 @@ fn a_yes_restarts_claude_at_idle_with_resume() {
 fn a_change_mid_chat_restarts_it_held_back_at_once() {
     let (mut ed, root) = asked("change", r#"{"env": {"FOURTH_ZQ7": "1"}}"#, false);
     until(&mut ed, "the held-back start", |ed| running(ed) && arg_after(&root, "--settings").is_some());
-    ed.session.chat.as_mut().unwrap().conversation = Some("conv-zq7".into());
+    ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("conv-zq7".into());
     let first = pid(&ed);
     ed.offer_accept();
     until(&mut ed, "the trusted start", |ed| running(ed) && pid(ed) != first);
     let trusted = pid(&ed);
     // A turn under way (the stand-in never answers)
-    ed.session.chat.as_mut().unwrap().input = "mid-turn from the test".into();
+    ed.workspace.claude.chat.as_mut().unwrap().input = "mid-turn from the test".into();
     crate::chat::send(&mut ed);
     until(&mut ed, "the message", |_| {
         std::fs::read_to_string(root.join("stdin")).is_ok_and(|s| s.contains("mid-turn from the test"))
     });
-    assert!(ed.session.chat.as_ref().unwrap().busy(), "{}", state(&ed));
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().busy(), "{}", state(&ed));
     std::fs::remove_file(root.join("argv")).unwrap();
     std::fs::write(root.join(PROJECT), r#"{"env": {"FIFTH_ZQ7": "1"}}"#).unwrap();
     until(&mut ed, "held back again, the card up", |ed| {
@@ -469,7 +469,7 @@ fn a_change_mid_chat_restarts_it_held_back_at_once() {
     let settings: Json = serde_json::from_str(&arg_after(&root, "--settings").unwrap()).unwrap();
     assert_eq!(settings["env"]["FIFTH_ZQ7"], "", "held back: {settings}");
     assert_eq!(arg_after(&root, "--resume").as_deref(), Some("conv-zq7"), "the same conversation");
-    assert!(!ed.session.chat.as_ref().unwrap().busy(), "the cut turn is over");
+    assert!(!ed.workspace.claude.chat.as_ref().unwrap().busy(), "the cut turn is over");
     assert!(noted(&ed, "Claude started again with them held back"), "{}", state(&ed));
     assert!(!noted(&ed, "claude exited"), "said once, as why: {}", state(&ed));
     drop(ed);
@@ -483,17 +483,19 @@ fn a_change_mid_chat_restarts_it_held_back_at_once() {
 fn the_card_stays_with_its_session() {
     let (mut ed, root) = asked("session-a", r#"{"apiKeyHelper": "printf theirs-zq7"}"#, false);
     let other = temp("session-b");
-    let b = ed.session_add(other.clone());
+    let b = ed.workspace_add(other.clone());
     // (its chat opened behind: its read lands in it — nothing to ask there)
-    ed.with_session(b, crate::chat::open);
+    ed.with_workspace(b, crate::chat::open);
     until(&mut ed, "the other chat's read", |ed| {
-        ed.sessions.iter().any(|s| s.id == b && s.chat.as_ref().is_some_and(|c| c.settings.seen.is_some()))
+        ed.workspaces
+            .iter()
+            .any(|s| s.id == b && s.claude.chat.as_ref().is_some_and(|c| c.settings.seen.is_some()))
     });
     assert!(card(&ed).is_some(), "the other session's read leaves this card alone");
-    assert!(ed.session_switch(b));
+    assert!(ed.workspace_switch(b));
     assert!(card(&ed).is_none(), "not up in the other session");
-    let a = ed.sessions.iter().find(|s| s.root == root).map(|s| s.id).unwrap();
-    assert!(ed.session_switch(a));
+    let a = ed.workspaces.iter().find(|s| s.root == root).map(|s| s.id).unwrap();
+    assert!(ed.workspace_switch(a));
     assert!(card(&ed).is_some(), "up again with its session");
     ed.offer_dismiss();
     until(&mut ed, "this session's claude", |_| arg_after(&root, "--settings").is_some());
@@ -547,7 +549,8 @@ fn a_look_read_before_a_take_back_isnt_trusted() {
     stand_in(&mut ed);
     crate::chat::open(&mut ed);
     until(&mut ed, "trusted", |ed| {
-        ed.session
+        ed.workspace
+            .claude
             .chat
             .as_ref()
             .and_then(|c| c.settings.seen.as_ref())
@@ -560,9 +563,9 @@ fn a_look_read_before_a_take_back_isnt_trusted() {
     crate::storewrite::hold(&store, Some(0));
     let place = crate::trust::place_of(&root.join(PROJECT));
     ed.trust_take(kind, place.clone());
-    let id = ed.session.chat.as_ref().unwrap().settings.id;
+    let id = ed.workspace.claude.chat.as_ref().unwrap().settings.id;
     seen_now(&mut ed, id, seen, since);
-    let now = ed.session.chat.as_ref().and_then(|c| c.settings.seen.as_ref()).map(|s| s.state);
+    let now = ed.workspace.claude.chat.as_ref().and_then(|c| c.settings.seen.as_ref()).map(|s| s.state);
     crate::storewrite::hold(&store, None);
     crate::trust::untake_all(&place);
     assert_eq!(read, State::Trusted, "read before the take-back");
@@ -585,7 +588,7 @@ fn until(ed: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) {
 /// What a timed-out wait says: the cards, the chat's claude, its gate, its last lines.
 fn state(ed: &Editor) -> String {
     let cards: Vec<&str> = ed.offers.iter().map(|o| o.title.as_str()).collect();
-    let chat = ed.session.chat.as_ref().map(|c| {
+    let chat = ed.workspace.claude.chat.as_ref().map(|c| {
         let last: Vec<&str> = c.msgs.iter().rev().take(3).map(|m| m.text.as_str()).collect();
         format!(
             "running {} · waiting {} · queued {:?} · seen {:?} · last {last:?}",
@@ -600,7 +603,7 @@ fn state(ed: &Editor) -> String {
 }
 
 fn running(ed: &Editor) -> bool {
-    ed.session.chat.as_ref().is_some_and(|c| c.running())
+    ed.workspace.claude.chat.as_ref().is_some_and(|c| c.running())
 }
 
 fn card(ed: &Editor) -> Option<Digest> {
@@ -630,7 +633,7 @@ fn a_reply_sent_while_claude_starts_waits_for_it() {
     stand_in(&mut ed);
     ed.open(&root.join("a.rs")).unwrap();
     crate::chat::open(&mut ed);
-    assert!(ed.session.chat.as_ref().is_some_and(|c| c.settings.waiting()), "{}", state(&ed));
+    assert!(ed.workspace.claude.chat.as_ref().is_some_and(|c| c.settings.waiting()), "{}", state(&ed));
     let mut bytes = Vec::new();
     crate::term::render(&mut ed, &mut bytes, 140, 30).unwrap();
     let mut vt = vt100::Parser::new(30, 140, 0);
@@ -643,7 +646,7 @@ fn a_reply_sent_while_claude_starts_waits_for_it() {
     // (what sends what waits while it's still starting — `:session-billing`'s `billing_changed` — returns, the reply
     // still waiting: it queued itself again, and the loop took it again, for good — the review of frictions36)
     crate::chat::send_queued(&mut ed);
-    assert_eq!(ed.session.chat.as_ref().map(|c| c.sends.len()), Some(1), "{}", state(&ed));
+    assert_eq!(ed.workspace.claude.chat.as_ref().map(|c| c.sends.len()), Some(1), "{}", state(&ed));
     until(&mut ed, "the reply", |_| {
         std::fs::read_to_string(root.join("stdin")).is_ok_and(|s| s.contains("why this?"))
     });
@@ -662,16 +665,16 @@ fn a_re_read_while_claude_runs_holds_no_send() {
     ed.claude_lines = Some(tx);
     ed.open(&root.join("a.rs")).unwrap();
     crate::chat::open(&mut ed);
-    assert!(ed.session.chat.as_ref().is_some_and(|c| c.running()), "{}", state(&ed));
+    assert!(ed.workspace.claude.chat.as_ref().is_some_and(|c| c.running()), "{}", state(&ed));
     let id = crate::notes::add(&mut ed, &root.join("a.rs"), 0..1, crate::notes::By::You, "and this?");
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.settings.reading_since(crate::clock::now());
     c.sends.push(crate::chat::Later::Reply { id, text: "and this?".into(), fresh: true, why: None });
     // (its turn over, the re-read still under way)
     crate::chat::send_queued(&mut ed);
     let sent: Vec<String> = rx.try_iter().collect();
     assert!(sent.iter().any(|l| l.contains("and this?")), "{sent:?}");
-    assert!(ed.session.chat.as_ref().unwrap().sends.is_empty());
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().sends.is_empty());
     drop(ed);
     std::fs::remove_dir_all(&root).ok();
 }
@@ -687,9 +690,9 @@ fn a_review_sent_while_claude_starts_waits_for_it() {
     stand_in(&mut ed);
     ed.open(&root.join("a.rs")).unwrap();
     crate::chat::open(&mut ed);
-    assert!(ed.session.chat.as_ref().is_some_and(|c| c.settings.waiting()), "{}", state(&ed));
+    assert!(ed.workspace.claude.chat.as_ref().is_some_and(|c| c.settings.waiting()), "{}", state(&ed));
     let id = crate::notes::add(&mut ed, &root.join("a.rs"), 0..1, crate::notes::By::You, "is this right?");
-    if let Some(n) = ed.session.notes.list.iter_mut().find(|n| n.id == id) {
+    if let Some(n) = ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id) {
         n.thread[0].draft = true;
     }
     crate::codereview::send_as(&mut ed, Some(true));
@@ -733,9 +736,9 @@ fn a_chat_starts_held_back_while_its_card_waits() {
         "{q}"
     );
     assert!(!q.contains("theirs-zq7.invalid"), "a variable's value isn't shown: {q}");
-    assert!(ed.session.chat_has_keys() && !ed.card_has_keys(), "the chat keeps its keys beside the card");
+    assert!(ed.workspace.chat_has_keys() && !ed.card_has_keys(), "the chat keeps its keys beside the card");
     // Typed before any answer: it goes to claude
-    ed.session.chat.as_mut().unwrap().input = "hello from the test".into();
+    ed.workspace.claude.chat.as_mut().unwrap().input = "hello from the test".into();
     crate::chat::send(&mut ed);
     until(&mut ed, "the message", |_| {
         std::fs::read_to_string(root.join("stdin")).is_ok_and(|s| s.contains("hello from the test"))

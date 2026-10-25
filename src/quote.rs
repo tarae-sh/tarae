@@ -226,7 +226,7 @@ pub fn from_code(ed: &Editor) -> Option<Result<Vec<Taken>, String>> {
     if wide.is_empty() {
         return None;
     }
-    let name = d.display_name(&ed.session.root);
+    let name = d.display_name(&ed.workspace.root);
     if d.path.as_ref().is_some_and(|p| crate::reads::key_shut(ed, p, &[])) {
         return Some(Err(format!("{name} is named like a key — point at its pane (space @) to choose")));
     }
@@ -270,11 +270,11 @@ pub fn add(ed: &mut Editor, taken: Vec<Taken>) {
     if taken.is_empty() {
         return;
     }
-    if ed.session.chat.is_none() {
+    if ed.workspace.claude.chat.is_none() {
         crate::chat::open(ed);
     }
-    let Some(c) = ed.session.chat.as_mut() else { return };
-    ed.session.at = crate::session::At::Chat;
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     c.unfolded = true;
     let mut left = 0;
     for t in taken {

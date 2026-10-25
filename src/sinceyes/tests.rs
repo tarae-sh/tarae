@@ -424,13 +424,13 @@ fn a_script_that_runs_the_projects_code_shows_the_projects_changes_too() {
 fn the_card_says_what_changed_since_your_y() {
     let (dir, root) = repo("card");
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-    ed.session.root = root.clone();
+    ed.workspace.root = root.clone();
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     crate::chat::open(&mut ed);
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     let generation = c.generation();
     let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool, what: &str| {
         let end = Instant::now() + crate::test_results::PATIENCE;
@@ -502,7 +502,7 @@ fn the_card_says_what_changed_since_your_y() {
     ed.offer_dismiss();
     pump(&mut ed, &|_| answered(3).is_some(), "told no");
     // (a no is kept too, once what it would have run is taken — on a worker)
-    pump(&mut ed, &|ed| ed.session.answered.iter().any(|a| a.card == third), "the no kept");
+    pump(&mut ed, &|ed| ed.workspace.claude.answered.iter().any(|a| a.card == third), "the no kept");
     // Another command: a first card
     let q = ask(&mut ed, 4, "true && true");
     assert!(!q.contains("Same as card#"), "{q}");
@@ -530,13 +530,13 @@ fn the_same_run_in_the_sandbox_says_what_changed_in_what_it_runs() {
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
     // (today's gate, for the cards: in the sandbox they run — P3; piece 5 keeps `sinceyes` for runs past it)
     ed.config.llm.sandbox = false;
-    ed.session.root = root.clone();
+    ed.workspace.root = root.clone();
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     crate::chat::open(&mut ed);
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     let generation = c.generation();
     let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool, what: &str| {
         let end = Instant::now() + crate::test_results::PATIENCE;
@@ -560,7 +560,7 @@ fn the_same_run_in_the_sandbox_says_what_changed_in_what_it_runs() {
         assert!(!answered(n) && !ed.offers.is_empty(), "never answered for the user");
         ed.offer_dismiss();
         pump(ed, &|_| answered(n), "told no");
-        pump(ed, &|ed| ed.session.answered.iter().any(|a| a.card == card), "the no kept");
+        pump(ed, &|ed| ed.workspace.claude.answered.iter().any(|a| a.card == card), "the no kept");
     };
     // (card `card`'s own `card` line, by its id)
     let logged = |card: u64| {
@@ -644,13 +644,13 @@ fn what_a_run_made_is_a_change_since_its_answer() {
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
     // (today's gate, for its card: in the sandbox it runs — P3)
     ed.config.llm.sandbox = false;
-    ed.session.root = root.clone();
+    ed.workspace.root = root.clone();
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     crate::chat::open(&mut ed);
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     let generation = c.generation();
     let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool, what: &str| {
         let end = Instant::now() + crate::test_results::PATIENCE;
@@ -689,13 +689,13 @@ fn chat_in(root: &Path) -> (crate::editor::Editor, u64) {
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
     // (today's gate, where a run card comes for each command here: in the sandbox they run — P3)
     ed.config.llm.sandbox = false;
-    ed.session.root = root.to_path_buf();
+    ed.workspace.root = root.to_path_buf();
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     crate::chat::open(&mut ed);
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     let generation = c.generation();
     (ed, generation)
 }
@@ -732,7 +732,7 @@ fn no_to(ed: &mut crate::editor::Editor, n: u64, card: u64) {
         &|_| crate::tools::ANSWERED.with(|a| a.borrow().iter().any(|(id, _)| *id == json!(n))),
         "told no",
     );
-    pump_until(ed, &|ed| ed.session.answered.iter().any(|a| a.card == card), "the no kept");
+    pump_until(ed, &|ed| ed.workspace.claude.answered.iter().any(|a| a.card == card), "the no kept");
 }
 
 /// cardburden 3 (the reviewer, item 3): a card with a socket — Docker's is root's — is compared as one
@@ -846,8 +846,12 @@ fn the_answer_kept_is_the_key_pressed() {
         let crate::offer::What::Run(card) = &ed.offers[0].what else { panic!("a run card") };
         let card = (**card).clone();
         crate::tools::run_answer(&mut ed, id, card, Some(scope));
-        pump_until(&mut ed, &|ed| ed.session.answered.iter().any(|a| a.card == id), "the answer kept");
-        let a = ed.session.answered.iter().find(|a| a.card == id).unwrap();
+        pump_until(
+            &mut ed,
+            &|ed| ed.workspace.claude.answered.iter().any(|a| a.card == id),
+            "the answer kept",
+        );
+        let a = ed.workspace.claude.answered.iter().find(|a| a.card == id).unwrap();
         assert_eq!(a.answer, letter, "{scope:?}");
         pump_until(&mut ed, &|_| root.join(format!("made{n}.txt")).exists(), "it ran");
     }
@@ -864,9 +868,9 @@ fn an_answer_outlasts_the_conversation() {
     let (first, _) = ask_run(&mut ed, generation, 1, args.clone());
     no_to(&mut ed, 1, first);
     crate::chat::reset(&mut ed);
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     let generation = c.generation();
     let (_, q) = ask_run(&mut ed, generation, 2, args);
     assert!(q.starts_with(&format!("Same as card#{first} — n at ")), "{q}");

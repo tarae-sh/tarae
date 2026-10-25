@@ -304,15 +304,15 @@ const PREFLIGHT: &str = "run the packs' default steps";
 
 /// How many answers the list has — the chat's `› N granted`: what the session's last `Caps` has past the
 /// defaults (each once), and its hosts.
-pub fn count(s: &crate::session::Session) -> usize {
+pub fn count(s: &crate::workspace::Workspace) -> usize {
     let mut seen: Vec<Grant> = Vec::new();
-    for g in s.caps().map(Caps::grants).unwrap_or_default() {
+    for g in s.claude.caps().map(Caps::grants).unwrap_or_default() {
         if !seen.contains(&g) {
             seen.push(g);
         }
     }
-    let reads = s.web_hosts.len() + s.chat.as_ref().map_or(0, |c| c.web_hosts.len());
-    seen.len() + s.hosts.len() + reads
+    let reads = s.claude.web_hosts.len() + s.claude.chat.as_ref().map_or(0, |c| c.web_hosts.len());
+    seen.len() + s.claude.hosts.len() + reads
 }
 
 impl Editor {
@@ -325,27 +325,28 @@ impl Editor {
     /// The list made again: opened (`again`: only if it's still open — after a `d`).
     fn granted_list(&mut self, again: bool) {
         let basis = self.caps_basis();
-        let given = &self.session.hosts_given;
+        let given = &self.workspace.claude.hosts_given;
         let hosts: Vec<(String, u16, Option<char>)> = self
-            .session
+            .workspace
+            .claude
             .hosts
             .iter()
             .map(|(h, p)| (h.clone(), *p, given.get(&(h.clone(), *p)).copied()))
             .collect();
-        let chat_reads = self.session.chat.as_ref().map(|c| c.web_hosts.clone()).unwrap_or_default();
+        let chat_reads = self.workspace.claude.chat.as_ref().map(|c| c.web_hosts.clone()).unwrap_or_default();
         let reads: Vec<(String, u16, bool)> =
-            (self.session.web_hosts.iter().map(|(h, p)| (h.clone(), *p, true)))
+            (self.workspace.claude.web_hosts.iter().map(|(h, p)| (h.clone(), *p, true)))
                 .chain(chat_reads.into_iter().map(|(h, p)| (h, p, false)))
                 .collect();
         let look = Look {
-            root: self.session.root.clone(),
-            no_sandbox: self.session.no_sandbox == Some(crate::tools::NoSandbox::Unasked),
+            root: self.workspace.root.clone(),
+            no_sandbox: self.workspace.claude.no_sandbox == Some(crate::tools::NoSandbox::Unasked),
             trust: self.trust_path.clone(),
             allow: self.allow_path.clone(),
             plugins: self.plugin_approvals_store(),
             preflight: (self.config.preflight.is_empty())
                 .then(|| {
-                    self.session.preflight_kept.clone().map(|k| (k, self.config.preflight_local.clone()))
+                    self.workspace.preflight_kept.clone().map(|k| (k, self.config.preflight_local.clone()))
                 })
                 .flatten(),
         };
@@ -414,21 +415,21 @@ impl Editor {
             Taken::Grant(what) => self.sandbox_disallow(&what)?,
             Taken::Plugin(name) => self.plugin_revoke(&name)?,
             Taken::NoSandbox => {
-                self.session.no_sandbox = None;
+                self.workspace.claude.no_sandbox = None;
                 self.set_status("Without a sandbox, each run asks again");
             }
             // (only the row picked: the session's, or this chat's — the other, if there, still holds)
             Taken::Reads(h, p, of_session) => {
                 let at = (h.clone(), p);
-                let in_chat = self.session.chat.as_ref().is_some_and(|c| c.web_hosts.contains(&at));
+                let in_chat = self.workspace.claude.chat.as_ref().is_some_and(|c| c.web_hosts.contains(&at));
                 let (was, other) = match of_session {
                     true => ("This session", in_chat),
-                    false => ("This conversation", self.session.web_hosts.contains(&at)),
+                    false => ("This conversation", self.workspace.claude.web_hosts.contains(&at)),
                 };
                 match of_session {
-                    true => self.session.web_hosts.retain(|a| *a != at),
+                    true => self.workspace.claude.web_hosts.retain(|a| *a != at),
                     false => {
-                        if let Some(c) = self.session.chat.as_mut() {
+                        if let Some(c) = self.workspace.claude.chat.as_mut() {
                             c.web_hosts.retain(|a| *a != at);
                         }
                     }
@@ -439,8 +440,8 @@ impl Editor {
                 });
             }
             Taken::Preflight(keys) => {
-                self.preflight_told.remove(&self.session.root);
-                let Some(kept) = self.session.preflight_kept.clone() else { return Ok(()) };
+                self.preflight_told.remove(&self.workspace.root);
+                let Some(kept) = self.workspace.preflight_kept.clone() else { return Ok(()) };
                 self.events.jobs().spawn(move || {
                     let r = crate::preflight::told_forget(&kept, &keys);
                     move |ed: &mut Editor| {
@@ -476,9 +477,9 @@ impl Editor {
         }
         let store = self.trust_path.clone();
         let project = self.project_trust.as_ref().map(|p| p.file.clone());
-        let chats: Vec<(crate::event::SessionId, PathBuf)> = std::iter::once(&self.session)
-            .chain(&self.sessions)
-            .filter_map(|s| Some((s.id, s.chat.as_ref()?.settings.seen.as_ref()?.file.clone())))
+        let chats: Vec<(crate::event::WorkspaceId, PathBuf)> = std::iter::once(&self.workspace)
+            .chain(&self.workspaces)
+            .filter_map(|s| Some((s.id, s.claude.chat.as_ref()?.settings.seen.as_ref()?.file.clone())))
             .collect();
         // The store's write queued now, not from the result below: a quit right after the `d` waits for it (the
         // loop that would apply a result has ended), `:restart` gives it again. The mark holds the store's answer
@@ -513,12 +514,12 @@ impl Editor {
 
     /// The running state follows a trust answer taken back (`trust_take`): `project` — the open project's
     /// `.tarae.toml` was it; `chats` — the sessions whose chat read those Claude settings.
-    fn trust_taken(&mut self, kind: Kind, project: bool, chats: Vec<crate::event::SessionId>) {
+    fn trust_taken(&mut self, kind: Kind, project: bool, chats: Vec<crate::event::WorkspaceId>) {
         if project {
             self.project_trust_forgotten();
         }
         for id in chats {
-            self.with_session(id, crate::claudetrust::forgotten);
+            self.with_workspace(id, crate::claudetrust::forgotten);
         }
         self.set_status(match kind {
             Kind::Tarae => {
@@ -561,10 +562,10 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let root = std::fs::canonicalize(root).unwrap();
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.root = root.clone();
+        ed.workspace.root = root.clone();
         ed.allow_path = Some(s.path().join("sandbox.json"));
-        ed.session.chat = Some(crate::chat::Chat::new());
-        ed.session.at = crate::session::At::Chat;
+        ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
         (ed, root, s.path().join("sandbox.json"))
     }
 
@@ -600,7 +601,9 @@ mod tests {
         assert_eq!(w.llm.sandbox_write, [shown(&kept), shown(&chat)]);
         assert_eq!(w.llm.sandbox_ports, [5432]);
         // (what Claude is told names it as the session's last `Caps` has it)
-        until(&mut ed, "the session's Caps", |ed| ed.session.caps().is_some_and(|c| c.write.len() == 2));
+        until(&mut ed, "the session's Caps", |ed| {
+            ed.workspace.claude.caps().is_some_and(|c| c.write.len() == 2)
+        });
         open(&mut ed);
         let labels: Vec<String> = rows(&ed).into_iter().map(|r| r.0).collect();
         let at = |l: &str| labels.iter().position(|x| x == l).unwrap_or_else(|| panic!("{l} in {labels:?}"));
@@ -636,8 +639,8 @@ mod tests {
         key(&mut ed, 'd');
         let w = next_run(&ed);
         assert!(w.llm.sandbox_write.is_empty() && w.llm.sandbox_ports.is_empty() && w.granted.is_empty());
-        assert!(ed.session.allowed.is_empty(), "the session's kept so too");
-        let told = ed.session.checkpoints.tell.join("\n");
+        assert!(ed.workspace.claude.allowed.is_empty(), "the session's kept so too");
+        let told = ed.workspace.claude.checkpoints.tell.join("\n");
         for gone in [
             format!("write in {}", said(&kept)),
             "connect to port 5432".into(),
@@ -685,8 +688,8 @@ mod tests {
         assert_eq!(of(&got, "connect to port 5432"), Some('A'));
         assert_eq!(of(&got, "reach db.example.invalid:5432"), Some('s'));
         // (the project's alone: the conversation's copy of the `A` gone — read from `sandbox.json`)
-        ed.session.chat = Some(crate::chat::Chat::new());
-        ed.session.at = crate::session::At::Chat;
+        ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
         assert!(std::fs::read_to_string(&store).unwrap().contains("\"key\": \"A\""), "written with its key");
         assert_eq!(of(&stamps(&mut ed), "connect to port 5432"), Some('A'), "read back");
         // An entry kept with no key: no stamp
@@ -714,8 +717,9 @@ mod tests {
         let s = crate::scratch::Scratch::new("granted-again");
         let (mut ed, _, store) = editor(&s);
         crate::allow::grant(&mut ed, &Grant::Port(7000), Scope::ThisChat);
-        let chat =
-            |ed: &Editor| ed.session.chat.as_ref().unwrap().allowed.given.get(&Grant::Port(7000)).copied();
+        let chat = |ed: &Editor| {
+            ed.workspace.claude.chat.as_ref().unwrap().allowed.given.get(&Grant::Port(7000)).copied()
+        };
         assert_eq!(chat(&ed), Some('a'));
         crate::allow::grant(&mut ed, &Grant::Port(7000), Scope::Always);
         assert_eq!(chat(&ed), Some('A'), "the latest answer's");
@@ -735,7 +739,7 @@ mod tests {
         let (main, _) = crate::allow::tests::repo_with_worktree(s.path());
         let store = s.path().join("sandbox.json");
         let mut ed = Editor::new(crate::config::Config::default());
-        (ed.session.root, ed.allow_path) = (main.clone(), Some(store.clone()));
+        (ed.workspace.root, ed.allow_path) = (main.clone(), Some(store.clone()));
         // (kept already, with no key — before keys were recorded: the answer again writes its key)
         crate::allow::keep(&store, &main, |a| a.add(&Grant::Port(6379))).unwrap();
         crate::allow::grant(&mut ed, &Grant::Port(6379), Scope::Always);
@@ -768,12 +772,12 @@ mod tests {
         // (an `A` is the chat's meanwhile, until it's kept)
         let always = Source::Grant(Scope::Always);
         until(&mut ed, "kept", |ed| {
-            ed.session.caps().is_some_and(|c| {
+            ed.workspace.claude.caps().is_some_and(|c| {
                 c.localhost.contains(&always)
                     && c.env.iter().any(|e| e.what == "DATABASE_URL" && e.source == always)
             })
         });
-        let caps = ed.session.caps().unwrap().clone();
+        let caps = ed.workspace.claude.caps().unwrap().clone();
         let of = |n: &str| caps.env.iter().filter(|e| e.what == n).map(|e| e.source).collect::<Vec<_>>();
         assert!(!of("GITHUB_TOKEN").contains(&always), "{:?}", caps.env);
         assert!(of("GITHUB_TOKEN").contains(&Source::Grant(Scope::Session)), "{:?}", caps.env);
@@ -790,12 +794,12 @@ mod tests {
         ed.picker = None;
         ed.sandbox_disallow("env DATABASE_URL").unwrap();
         ed.sandbox_disallow("localhost").unwrap();
-        let project = crate::sandbox::profile_path(&ed.session.root);
+        let project = crate::sandbox::profile_path(&ed.workspace.root);
         until(&mut ed, "taken back", |ed| {
             let kept = crate::allow::Store::read(Some(&store)).get(&project);
             !kept.env.iter().any(|e| e == "DATABASE_URL")
                 && !kept.localhost
-                && ed.session.caps().is_some_and(|c| c.localhost.is_empty())
+                && ed.workspace.claude.caps().is_some_and(|c| c.localhost.is_empty())
         });
         let w = next_run(&ed);
         assert!(!w.llm.sandbox_localhost && !w.llm.sandbox_env.iter().any(|e| e == "DATABASE_URL"));
@@ -814,7 +818,7 @@ mod tests {
         crate::allow::grant(&mut ed, &Grant::Port(8080), Scope::ThisChat);
         crate::allow::grant(&mut ed, &Grant::Terminals, Scope::Always);
         until(&mut ed, "kept", |ed| {
-            ed.session.caps().is_some_and(|c| c.terminals.contains(&Source::Grant(Scope::Always)))
+            ed.workspace.claude.caps().is_some_and(|c| c.terminals.contains(&Source::Grant(Scope::Always)))
         });
         open(&mut ed);
         let rows = rows(&ed);
@@ -828,7 +832,7 @@ mod tests {
         assert!(at(ALWAYS) < at(terminals) && at(terminals) < at("this session"));
         assert!(at("this session") < at("write in /t/w") && at("write in /t/w") < at("this chat"));
         assert!(at("this chat") < at("connect to port 8080"));
-        assert_eq!(count(&ed.session), 3, "the chip's count: the answers, each once");
+        assert_eq!(count(&ed.workspace), 3, "the chip's count: the answers, each once");
         // Never on a heading, every row in reach
         let p = ed.picker.as_mut().unwrap();
         // (the toolchains' found here are this machine's: counted as they come; a heading's hint is empty)
@@ -848,7 +852,7 @@ mod tests {
         let p = ed.picker.as_ref().unwrap();
         assert_eq!(p.current().map(|i| i.hint.as_str()), Some(NOT_YOURS));
         assert_eq!(p.counts(), (n, n));
-        assert_eq!(count(&ed.session), 3);
+        assert_eq!(count(&ed.workspace), 3);
         key(&mut ed, 'x');
         let said = ed.toasts.last().map(|t| t.text.clone()).unwrap_or_default();
         assert!(said.contains("does nothing in the list of grants"), "{said}");
@@ -867,14 +871,14 @@ mod tests {
         ed.trust_path = Some(trust.clone());
         let hook = root.join(".githooks/pre-commit");
         crate::trust::record(trust.clone(), Kind::Hook, hook.clone(), [7; 32], true).unwrap();
-        ed.session.no_sandbox = Some(crate::tools::NoSandbox::Unasked);
+        ed.workspace.claude.no_sandbox = Some(crate::tools::NoSandbox::Unasked);
         std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"p\"\n").unwrap();
         let told = s.path().join("preflight-told");
         let steps = crate::packs::preflight(&root).steps;
         assert!(!steps.is_empty(), "the packs' steps for a Cargo project");
         let line = crate::preflight::told_key(&root, &steps).expect("a clone told apart");
         std::fs::write(&told, format!("other\n{line}\n")).unwrap();
-        ed.session.preflight_kept = Some(told.clone());
+        ed.workspace.preflight_kept = Some(told.clone());
         ed.preflight_told.insert(root.clone());
         open(&mut ed);
         let listed = rows(&ed);
@@ -905,7 +909,7 @@ mod tests {
             key(ed, 'd');
         };
         take(&mut ed, &|t| matches!(t, Taken::NoSandbox));
-        assert_eq!(ed.session.no_sandbox, None, "the card asks before the next run");
+        assert_eq!(ed.workspace.claude.no_sandbox, None, "the card asks before the next run");
         until(&mut ed, "the list again", |ed| !rows(ed).iter().any(|r| r.0 == no_sandbox));
         take(&mut ed, &|t| matches!(t, Taken::Trust(Kind::Hook, _)));
         // (the store written, not only the mark `Store::state` reads meanwhile)
@@ -924,17 +928,21 @@ mod tests {
     #[test]
     fn d_takes_back_only_the_reads_row_picked() {
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.chat = Some(crate::chat::Chat::new());
+        ed.workspace.claude.chat = Some(crate::chat::Chat::new());
         let at = ("docs.rs".to_string(), 443);
-        ed.session.web_hosts.push(at.clone());
-        ed.session.chat.as_mut().unwrap().web_hosts.push(at.clone());
+        ed.workspace.claude.web_hosts.push(at.clone());
+        ed.workspace.claude.chat.as_mut().unwrap().web_hosts.push(at.clone());
         ed.granted_take(Taken::Reads(at.0.clone(), at.1, true)).unwrap();
-        assert!(ed.session.web_hosts.is_empty());
-        assert_eq!(ed.session.chat.as_ref().unwrap().web_hosts, vec![at.clone()], "this chat's stays");
+        assert!(ed.workspace.claude.web_hosts.is_empty());
+        assert_eq!(
+            ed.workspace.claude.chat.as_ref().unwrap().web_hosts,
+            vec![at.clone()],
+            "this chat's stays"
+        );
         let said = |ed: &Editor, s: &str| ed.toasts.iter().any(|t| t.text.contains(s));
         assert!(said(&ed, "This session's yes for pages at docs.rs taken back — the other still"));
         ed.granted_take(Taken::Reads(at.0.clone(), at.1, false)).unwrap();
-        assert!(ed.session.chat.as_ref().unwrap().web_hosts.is_empty());
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().web_hosts.is_empty());
         assert!(said(&ed, "Claude's reads of pages at docs.rs ask again"));
     }
 
@@ -977,9 +985,9 @@ mod tests {
         .unwrap();
         crate::allow::keep(&store, &wt, |a| a.add(&Grant::Key(wt.join(".env")))).unwrap();
         let mut ed = Editor::new(crate::config::Config::default());
-        (ed.session.root, ed.allow_path) = (main.clone(), Some(store.clone()));
-        ed.session.chat = Some(crate::chat::Chat::new());
-        ed.session.at = crate::session::At::Chat;
+        (ed.workspace.root, ed.allow_path) = (main.clone(), Some(store.clone()));
+        ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
         open(&mut ed);
         let listed = rows(&ed);
         let at =
@@ -1011,22 +1019,24 @@ mod tests {
         let store = s.path().join("sandbox.json");
         let outside = PathBuf::from("/opt/tarae-stand-in");
         let mut ed = Editor::new(crate::config::Config::default());
-        (ed.session.root, ed.allow_path) = (main.clone(), Some(store.clone()));
-        ed.session.chat = Some(crate::chat::Chat::new());
-        ed.session.at = crate::session::At::Chat;
+        (ed.workspace.root, ed.allow_path) = (main.clone(), Some(store.clone()));
+        ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
         crate::allow::grant_reads(&mut ed, std::slice::from_ref(&outside), Scope::Always);
         until(&mut ed, "kept", |_| crate::allow::Store::read(Some(&store)).get(&wt).reads(&outside));
-        let main_id = ed.session.id;
-        let other = ed.session_add(wt.clone());
-        assert!(ed.session_switch(other));
+        let main_id = ed.workspace.id;
+        let other = ed.workspace_add(wt.clone());
+        assert!(ed.workspace_switch(other));
         ed.sandbox_disallow(&outside.display().to_string()).unwrap();
         until(&mut ed, "taken back", |_| !crate::allow::Store::read(Some(&store)).get(&main).reads(&outside));
-        let m = ed.session_by_id(main_id).unwrap();
-        assert!(!m.chat.as_ref().unwrap().allowed.reads(&outside), "its conversation's copy");
-        assert!(m.checkpoints.tell.iter().any(|t| t.contains("took back") && t.contains("tarae-stand-in")));
+        let m = ed.workspace_by_id(main_id).unwrap();
+        assert!(!m.claude.chat.as_ref().unwrap().allowed.reads(&outside), "its conversation's copy");
+        assert!(
+            m.claude.checkpoints.tell.iter().any(|t| t.contains("took back") && t.contains("tarae-stand-in"))
+        );
         until(&mut ed, "its caps", |ed| {
-            let m = ed.sessions.iter().find(|s| s.id == main_id).unwrap();
-            m.caps().is_some_and(|c| !c.reads(&outside))
+            let m = ed.workspaces.iter().find(|s| s.id == main_id).unwrap();
+            m.claude.caps().is_some_and(|c| !c.reads(&outside))
         });
     }
 }

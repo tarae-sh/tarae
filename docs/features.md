@@ -538,8 +538,10 @@ your `PATH`.
 
 ## Sessions, review and the sandbox
 
-- **Sessions** `space W` — several branches of work side by side, each a checkout of its own with its own Claude,
-  chat, terminal and tests; the session list a floating pane that stays while you work (`esc` gives the keys back,
+- **Sessions** `space W` — several branches of work side by side, each a checkout of its own — a **workspace**: its
+  branch, panes, terminal and tests — with its own Claude at work in it, its **session** (tarae's word for a
+  participant, as Claude Code's for one agent; Live Share, Code With Me and zellij call the place a session) and its
+  chat; the session list a floating pane that stays while you work (`esc` gives the keys back,
   `q` closes it) and closes once used — `enter`, a digit, `o`, `f` or `v` takes you to a session and the list goes, as
   zellij's session manager and tmux's choose-tree do —, or docked beside or above the code (`C-w H`/`L`/`K`, `C-w e`
   floats it again), where it stays after `enter` — the overview kept in sight —, its side kept as its width is, and
@@ -553,7 +555,7 @@ your `PATH`.
   stack at the bottom right, over the chat's foot — or, the chat closed, a session list docked right, its selected row
   kept in sight above them — (another session's a peek named in its colour, alone when none of yours waits — a press takes you
   there, its card in hand); brought back into main, a rebase's conflicts resolved by that session's Claude
-  ([rebasing a session](claude-integration.md#rebasing-a-session)); its git-ignored notes (`session.keep`:
+  ([rebasing a session](claude-integration.md#rebasing-a-session)); its git-ignored notes (`workspace.keep`:
   `target/sb`) moved to the main checkout's `target/sb/sessions/<name>/` when it ends; where each session's Claude
   is reading and writing shown wherever that file is, in any checkout (`▎` and a name tag, each session its own
   colour), and `space F` follows the next one at work — follow moves the view, never your cursor; two sessions'

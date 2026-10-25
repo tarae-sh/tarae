@@ -58,7 +58,7 @@ is judged by its checkout's path alone, as this machine's, and is never relabell
 nothing a Docker says tells it's this machine's alone (a socket may be forwarded from another machine, a host's
 name collides), so otherwise only volumes carrying this machine's id are dropped. `cargo xtask linux prune` says
 how many it judged by path, or kept. It also lists the targets of checkouts that landed — nothing changed there
-and their branch in the main branch, what `:session-end` reads as nothing to lose; never the main branch's own
+and their branch in the main branch, what `:workspace-end` reads as nothing to lose; never the main branch's own
 checkout nor the one running it — and drops them, each said, only with `--yes`. Past
 30 GB a run says what tarae's volumes take (or that Docker couldn't measure them), the
 checkouts' targets apart from the shared ones (registry, toolchains), which only `cargo xtask linux prune --all`
@@ -69,7 +69,7 @@ when run again with `--yes`; the next run builds them again. A live checkout's t
 stays, said why — its folder is there, or the tarae it's run from has its session open (asked of its UI-state
 socket, `TARAE_UI`, set for tarae's terminal and your tasks; run elsewhere, or by Claude, the folders alone
 say). To drop a
-session's volume as the session ends, put `[session] ended = ["cargo", "xtask", "linux", "prune"]` in that
+session's volume as the session ends, put `[workspace] ended = ["cargo", "xtask", "linux", "prune"]` in that
 `.tarae.local.toml`.
 
 A test that fails only now and then on Linux: `cargo xtask linux test --repeat 20 --bin tarae recovery::` runs

@@ -21,7 +21,7 @@
 //! `C-w j` or a click: they're its panel's view mode (`view.rs` — `q` closes it, Esc or `C-w k` back to the
 //! code).
 
-use crate::session::At;
+use crate::workspace::At;
 
 use std::path::{Path, PathBuf};
 
@@ -251,10 +251,10 @@ impl crate::editor::Editor {
         use crate::task::State;
         match slot {
             Slot::Test => {
-                self.session.test_run.as_ref().is_some_and(|r| r.state != crate::testing::RunState::Running)
+                self.workspace.test_run.as_ref().is_some_and(|r| r.state != crate::testing::RunState::Running)
             }
             Slot::Task => self
-                .session
+                .workspace
                 .task_run
                 .as_ref()
                 .is_some_and(|r| matches!(r.state, State::Passed | State::Failed(_))),
@@ -269,17 +269,17 @@ impl crate::editor::Editor {
     pub fn slot_close(&mut self, slot: Slot) {
         match slot {
             Slot::Terminal => {
-                if let Some(t) = self.session.terminal.as_mut() {
+                if let Some(t) = self.workspace.terminal.as_mut() {
                     t.visible = false;
                 }
-                self.session.leave(At::Program);
-                self.session.leave(At::Slot);
+                self.workspace.leave(At::Program);
+                self.workspace.leave(At::Slot);
             }
             // A rebase stopped at its conflicts isn't running: it waits on them, and its panel with it — `space m c`
             // isn't the way out there (it drops the run the rebase is), `:rebase-abort` is
             Slot::Task
                 if let Some(crate::task::State::Stopped(why)) =
-                    self.session.task_run.as_ref().map(|r| &r.state) =>
+                    self.workspace.task_run.as_ref().map(|r| &r.state) =>
             {
                 let why = why.clone();
                 self.set_status(format!(
@@ -295,11 +295,11 @@ impl crate::editor::Editor {
             }
             Slot::Test => {
                 self.test_close();
-                self.session.leave(At::Slot);
+                self.workspace.leave(At::Slot);
             }
             Slot::Task => {
                 self.task_close();
-                self.session.leave(At::Slot);
+                self.workspace.leave(At::Slot);
             }
             Slot::Procs => self.procs_close(),
             Slot::Debug | Slot::Plugin => {}
@@ -315,7 +315,7 @@ impl crate::editor::Editor {
     pub fn close_focused(&mut self) -> bool {
         use crate::uistate::Region;
         match self.keys_to().region {
-            Region::Side(_) => self.session.sidebar = None,
+            Region::Side(_) => self.workspace.viewer.sidebar = None,
             Region::Rail => crate::codereview::close_asked(self),
             Region::Slot(Slot::Plugin) => self.set_status("a plugin's panel closes by its own keys"),
             Region::Slot(s) => self.slot_close(s),
@@ -335,12 +335,13 @@ impl crate::editor::Editor {
     /// What `C-w <`/`>` acts on: the chat or the side panel, whichever has the keys — from the code, the
     /// chat if it's shown as a panel, else the side panel.
     fn sized(&self) -> Option<Which> {
-        let chat = self.screen.chat_w > 0 && self.session.chat.as_ref().is_some_and(|c| !c.compact());
-        let side = self.session.sidebar.is_some() && !self.review_rail_up();
-        if chat && self.session.is_at(At::Chat) {
+        let chat =
+            self.screen.chat_w > 0 && self.workspace.claude.chat.as_ref().is_some_and(|c| !c.compact());
+        let side = self.workspace.viewer.sidebar.is_some() && !self.review_rail_up();
+        if chat && self.workspace.is_at(At::Chat) {
             return Some(Which::Chat);
         }
-        if side && self.session.is_at(At::Side) {
+        if side && self.workspace.is_at(At::Side) {
             return Some(Which::Side);
         }
         if chat { Some(Which::Chat) } else { side.then_some(Which::Side) }
@@ -400,7 +401,7 @@ impl crate::editor::Editor {
             return Some(Border::Bottom);
         }
         // (between two code panes side by side: the cell after the left one's last, the right one starting past it)
-        let code = |id: &crate::split::PaneId| self.session.views.iter().any(|v| v.id == *id);
+        let code = |id: &crate::split::PaneId| self.workspace.views.iter().any(|v| v.id == *id);
         let left = s.leaves.iter().filter(|l| code(&l.0)).find(|(_, r)| {
             r.x + r.w == x
                 && (r.y..r.y + r.h).contains(&y)
@@ -414,7 +415,7 @@ impl crate::editor::Editor {
     /// code pane beside it that way — the surfaces' sizes are sized instead).
     fn own_split(&self, id: crate::split::PaneId, dir: crate::split::Dir) -> Option<(usize, usize, usize)> {
         use crate::split::{Dir, Share, Split};
-        let mut tree = self.session.split.clone();
+        let mut tree = self.workspace.split.clone();
         let (kids, i) = tree.parent_along(id, dir)?;
         let along = |s: &Split| {
             let rects: Vec<crate::split::Rect> =
@@ -451,7 +452,7 @@ impl crate::editor::Editor {
         room: usize,
     ) -> usize {
         let n = n.clamp(Self::pane_min(dir), room.max(Self::pane_min(dir)));
-        if let Some((kids, i)) = self.session.split.parent_along(id, dir) {
+        if let Some((kids, i)) = self.workspace.split.parent_along(id, dir) {
             kids[i].0 = crate::split::Share::Cells(n as u16);
         }
         n
@@ -460,8 +461,8 @@ impl crate::editor::Editor {
     /// `C-w < > - +` from a code pane with another beside it that way: that pane `STEP_COLS`/`STEP_ROWS` bigger or
     /// smaller. False: no split of yours that way — the surfaces' sizes are the keys'.
     fn size_own(&mut self, dir: crate::split::Dir, more: bool) -> bool {
-        let id = self.session.focus;
-        if !self.session.is_at(At::Code) {
+        let id = self.workspace.viewer.focus;
+        if !self.workspace.is_at(At::Code) {
             return false;
         }
         let Some((_, now, room)) = self.own_split(id, dir) else { return false };
@@ -524,14 +525,14 @@ impl crate::editor::Editor {
             Border::Side => ("side panel", self.sizes.side, "columns"),
             Border::Bottom => ("bottom panel", self.sizes.bottom, "rows"),
             Border::Leaf(kind) => {
-                let unit = match self.session.group(kind).map(|g| g.place) {
+                let unit = match self.workspace.group(kind).map(|g| g.place) {
                     Some(crate::pane::Place::Docked(crate::pane::Side::Top)) => "rows",
                     _ => "columns",
                 };
                 (kind.name(), self.sizes.docked[kind.dock_index()], unit)
             }
             Border::Divider(id) => {
-                let mut tree = self.session.split.clone();
+                let mut tree = self.workspace.split.clone();
                 let n = match tree.parent_along(id, crate::split::Dir::Vertical) {
                     Some((kids, i)) => match kids[i].0 {
                         crate::split::Share::Cells(n) => Some(n),
@@ -622,7 +623,7 @@ impl crate::editor::Editor {
     pub fn side_folded(&self) -> bool {
         let Some(total) = self.screen.width else { return false };
         let chat_open = self.chat_panel(total);
-        self.session.sidebar.is_some()
+        self.workspace.viewer.sidebar.is_some()
             && !self.review_rail_up()
             && widths(total, chat_open, true, self.sizes).side == 0
     }
@@ -635,10 +636,10 @@ impl crate::editor::Editor {
     /// the card stays where it waited — swapping in the code under it left a 57-column card, drawn while it waited,
     /// with no room once focused, every key refused (the review of cardkeys).
     pub fn chat_panel(&self, total: usize) -> bool {
-        if !self.session.chat.as_ref().is_some_and(|c| !c.compact()) {
+        if !self.workspace.claude.chat.as_ref().is_some_and(|c| !c.compact()) {
             return false;
         }
-        self.session.is_at(At::Chat) || widths(total, true, false, self.sizes).chat < total
+        self.workspace.is_at(At::Chat) || widths(total, true, false, self.sizes).chat < total
     }
 
     /// `C-w =` — every size automatic again, and how each group lays its members (`C-w t`'s).
@@ -655,8 +656,8 @@ impl crate::editor::Editor {
             sessions_dock: s.sessions_dock,
             ..Sizes::default()
         };
-        self.session.split.even();
-        for g in &mut self.session.groups {
+        self.workspace.split.even();
+        for g in &mut self.workspace.groups {
             g.laid = crate::pane::Laid::Auto;
         }
         self.sizes_keep();
@@ -673,9 +674,9 @@ impl crate::editor::Editor {
     /// A docked group's panel while its list or its detail has the keys (P3 §3.3: where a group is doesn't change
     /// what its keys do — `At::List`, `At::Slot` as in the slot).
     pub fn slot_in_hand(&self) -> Option<Slot> {
-        let kind = self.session.hand?;
-        let g = self.session.group(kind)?;
-        let keys = self.session.is_at(At::Slot) || self.session.is_at(At::List(g.list));
+        let kind = self.workspace.viewer.hand?;
+        let g = self.workspace.group(kind)?;
+        let keys = self.workspace.is_at(At::Slot) || self.workspace.is_at(At::List(g.list));
         keys.then_some(()).filter(|_| self.out_of_slot(kind)).and(kind.slot())
     }
 
@@ -693,14 +694,14 @@ impl crate::editor::Editor {
         if self.dap.is_some() {
             return Some(Slot::Debug);
         }
-        if self.session.terminal.as_ref().is_some_and(|t| t.visible) {
+        if self.workspace.terminal.as_ref().is_some_and(|t| t.visible) {
             return Some(Slot::Terminal);
         }
         if self.plugins.as_ref().is_some_and(|p| p.panel.is_some()) {
             return Some(Slot::Plugin);
         }
-        let test = self.session.test_run.as_ref().filter(|_| free(&Slot::Test));
-        let task = self.session.task_run.as_ref().filter(|_| free(&Slot::Task));
+        let test = self.workspace.test_run.as_ref().filter(|_| free(&Slot::Test));
+        let task = self.workspace.task_run.as_ref().filter(|_| free(&Slot::Task));
         match (test, task) {
             (Some(t), Some(k)) if k.started > t.started => Some(Slot::Task),
             (Some(_), _) => Some(Slot::Test),
@@ -717,11 +718,11 @@ impl crate::editor::Editor {
             return false;
         }
         // (a group's list in the slot is the slot's: the tests', a task's places, a preflight's steps, `:procs`')
-        let listing = || self.slot_group().is_some_and(|g| self.session.is_at(At::List(g.list)));
+        let listing = || self.slot_group().is_some_and(|g| self.workspace.is_at(At::List(g.list)));
         match self.slot() {
-            Some(Slot::Terminal) => self.session.is_at(At::Slot) || self.session.is_at(At::Program),
+            Some(Slot::Terminal) => self.workspace.is_at(At::Slot) || self.workspace.is_at(At::Program),
             Some(Slot::Plugin) => self.plugin_panel_focused(),
-            Some(Slot::Procs | Slot::Test | Slot::Task) => self.session.is_at(At::Slot) || listing(),
+            Some(Slot::Procs | Slot::Test | Slot::Task) => self.workspace.is_at(At::Slot) || listing(),
             Some(Slot::Debug) | None => false,
         }
     }
@@ -729,7 +730,7 @@ impl crate::editor::Editor {
     /// `C-w j` below the lowest pane, or a click on the panel: the keys to the bottom slot (on the terminal,
     /// tarae's — `i` then types in it). The debugger's panel takes none (its keys work from the code).
     pub fn bottom_take_keys(&mut self) {
-        self.session.hand = self.hand_of(self.slot_shown());
+        self.workspace.viewer.hand = self.hand_of(self.slot_shown());
         match self.slot_shown() {
             None => self.set_status("nothing at the bottom — tests, tasks and the terminal show there"),
             Some(Slot::Debug) => {
@@ -738,7 +739,7 @@ impl crate::editor::Editor {
             Some(Slot::Plugin) => self.plugin_panel_click(None),
             Some(Slot::Procs) => self.procs_click(None),
             Some(_) => {
-                self.session.at = At::Slot;
+                self.workspace.viewer.at = At::Slot;
                 // (the terminal's: its view mode, at once — what has the keys is said before the next key; a run
                 // panel's output, its cursor landed in sight)
                 crate::view::sync(self);
@@ -751,14 +752,14 @@ impl crate::editor::Editor {
     /// its width).
     pub fn focused_area(&self) -> Option<Zoom> {
         use crate::pane::Shows;
-        let s = &self.session;
-        let shows = if s.is_at(At::Chat) && s.chat.as_ref().is_some_and(|c| !c.compact()) {
+        let s = &self.workspace;
+        let shows = if s.is_at(At::Chat) && s.claude.chat.as_ref().is_some_and(|c| !c.compact()) {
             Shows::Chat
         } else if self.review_rail_up() && s.is_at(At::Rail) && s.code_review.is_some() {
             return None;
-        } else if !self.review_rail_up() && s.is_at(At::Side) && s.sidebar.is_some() {
+        } else if !self.review_rail_up() && s.is_at(At::Side) && s.viewer.sidebar.is_some() {
             Shows::Side
-        } else if let Some(g) = self.slot_in_hand().and(s.hand).and_then(|k| s.group(k)) {
+        } else if let Some(g) = self.slot_in_hand().and(s.viewer.hand).and_then(|k| s.group(k)) {
             return Some(Zoom(g.host));
         } else if let Some(p) = self.float_list_in_hand().and_then(|k| self.float_list(k)) {
             return Some(Zoom(p.list));
@@ -772,36 +773,36 @@ impl crate::editor::Editor {
 
     /// What fills the screen now: `C-w z`'s, while it still has the keys.
     pub fn zoomed(&self) -> Option<Zoom> {
-        self.session.zoom.filter(|z| Some(*z) == self.focused_area())
+        self.workspace.viewer.zoom.filter(|z| Some(*z) == self.focused_area())
     }
 
     /// What the pane filling the screen shows (`zoomed`'s).
     pub fn zoomed_shows(&self) -> Option<crate::pane::Shows> {
-        self.zoomed().and_then(|z| self.session.shows(z.0))
+        self.zoomed().and_then(|z| self.workspace.shows(z.0))
     }
 
     /// `C-w z` — what has the keys fills the screen; again, back as it was.
     pub fn zoom_toggle(&mut self) {
         if self.zoomed().is_some() {
-            self.session.zoom = None;
+            self.workspace.viewer.zoom = None;
             return;
         }
         let Some(z) = self.focused_area() else {
             return self.set_status("the review's file list keeps its width — C-w z from the code");
         };
         let s = &self.screen;
-        let alone = self.session.views.len() == 1
+        let alone = self.workspace.views.len() == 1
             && s.chat_w == 0
             && s.side_w == 0
             && s.bottom_h == 0
-            && !(self.session.code_review.is_some() && self.review_rail_up());
-        if self.session.shows(z.0) == Some(crate::pane::Shows::Code) && alone {
+            && !(self.workspace.code_review.is_some() && self.review_rail_up());
+        if self.workspace.shows(z.0) == Some(crate::pane::Shows::Code) && alone {
             return self.set_status("the code has the whole screen already");
         }
-        self.session.zoom = Some(z);
+        self.workspace.viewer.zoom = Some(z);
     }
 
-    /// Every key and event: the keys are still where `Session.at` says — what it names is still there (the
+    /// Every key and event: the keys are still where `Viewer.at` says — what it names is still there (the
     /// chat open, the terminal shown and running, the slot showing a panel that takes them), else they're the
     /// code's; `C-w z` ends once what it filled the screen with doesn't have them.
     pub fn focus_sync(&mut self) {
@@ -814,10 +815,10 @@ impl crate::editor::Editor {
         // (a docked group folded into the slot puts its panel in front first, while the keys are still in it — judged
         // against an older front, its list or output wasn't there and they fell to the code)
         self.hand_sync();
-        let s = &self.session;
+        let s = &self.workspace;
         let there = match s.docked() {
             At::Code | At::Float(_) => true,
-            At::Chat => s.chat.is_some(),
+            At::Chat => s.claude.chat.is_some(),
             At::Program => s.terminal.as_ref().is_some_and(|t| t.visible && t.exited.is_none()),
             At::Slot => matches!(self.slot(), Some(Slot::Terminal | Slot::Test | Slot::Task | Slot::Procs)),
             At::List(id) => {
@@ -825,11 +826,11 @@ impl crate::editor::Editor {
                     || self.float_list_of(id).is_some()
             }
             At::Plugin => self.plugins.as_ref().is_some_and(|p| p.panel.is_some()),
-            At::Side => s.sidebar.is_some(),
+            At::Side => s.viewer.sidebar.is_some(),
             At::Rail => s.code_review.is_some(),
         };
         if !there {
-            self.session.leave(self.session.docked());
+            self.workspace.leave(self.workspace.docked());
             // (the keys gone from its group: the hand let go)
             self.hand_sync();
         }
@@ -837,15 +838,15 @@ impl crate::editor::Editor {
         self.float_move_sync();
         self.groups_front();
         // `:procs`' panel gives the slot to the terminal given the keys (`C-\`), which it covered
-        if self.procs_up() && self.session.program_has_keys() {
+        if self.procs_up() && self.workspace.program_has_keys() {
             self.procs_close();
         }
         // (a view whose surface lost the keys ends; the terminal given tarae's keys is in its view mode; the run
         // panels' documents follow their runs, the keys coming or going taken in)
         crate::view::sync(self);
         crate::rundoc::sync(self);
-        if self.session.zoom.is_some() && self.zoomed().is_none() {
-            self.session.zoom = None;
+        if self.workspace.viewer.zoom.is_some() && self.zoomed().is_none() {
+            self.workspace.viewer.zoom = None;
         }
         // (a card, the picker, a prompt, which-key: the keys' while up, the docked pane's again once gone)
         self.float_sync();
@@ -874,40 +875,47 @@ mod tests {
         sessions_dock: None,
     };
 
-    /// Panes P2a: where the keys are is one value (`Session.at`) — once what it names is gone (the chat closed,
+    /// Panes P2a: where the keys are is one value (`Viewer.at`) — once what it names is gone (the chat closed,
     /// the side panel closed, the terminal hidden, the slot showing nothing that takes them) the next event
     /// gives them to the code; a pane still there keeps them; `C-w z` ends with them.
     #[test]
     fn the_keys_go_to_the_code_once_what_had_them_is_gone() {
-        use crate::session::At;
+        use crate::workspace::At;
         let dir = crate::scratch::Scratch::new("keys-gone");
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.path().to_path_buf();
+        ed.workspace.root = dir.path().to_path_buf();
         use crate::key::{Code, Key};
         let key = |ed: &mut crate::editor::Editor| ed.handle_key(Key::plain(Code::Char('l')));
-        ed.session.chat = Some(crate::chat::Chat::new());
-        ed.session.at = At::Chat;
+        ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        ed.workspace.viewer.at = At::Chat;
         ed.focus_sync();
-        assert_eq!(ed.session.at, At::Chat);
-        ed.session.chat = None;
+        assert_eq!(ed.workspace.viewer.at, At::Chat);
+        ed.workspace.claude.chat = None;
         ed.focus_sync();
-        assert_eq!(ed.session.at, At::Code, "the chat closed");
+        assert_eq!(ed.workspace.viewer.at, At::Code, "the chat closed");
         ed.sidebar_show(crate::sidebar::Mode::Files);
-        assert_eq!(ed.session.at, At::Side);
+        assert_eq!(ed.workspace.viewer.at, At::Side);
         key(&mut ed);
-        assert_eq!(ed.session.at, At::Side, "a pane still there keeps them");
-        ed.session.sidebar = None;
+        assert_eq!(ed.workspace.viewer.at, At::Side, "a pane still there keeps them");
+        ed.workspace.viewer.sidebar = None;
         key(&mut ed);
-        assert_eq!(ed.session.at, At::Code, "the side panel closed");
+        assert_eq!(ed.workspace.viewer.at, At::Code, "the side panel closed");
         let _sent = crate::terminal::stand_in(&mut ed, 10, 80, 100);
-        ed.session.zoom = ed.focused_area();
-        assert_eq!((ed.session.at, ed.zoomed_shows()), (At::Program, Some(crate::pane::Shows::Slot)));
-        ed.session.terminal.as_mut().unwrap().visible = false;
+        ed.workspace.viewer.zoom = ed.focused_area();
+        assert_eq!(
+            (ed.workspace.viewer.at, ed.zoomed_shows()),
+            (At::Program, Some(crate::pane::Shows::Slot))
+        );
+        ed.workspace.terminal.as_mut().unwrap().visible = false;
         ed.focus_sync();
-        assert_eq!((ed.session.at, ed.session.zoom), (At::Code, None), "hidden: the code's, the zoom over");
-        ed.session.at = At::Slot;
+        assert_eq!(
+            (ed.workspace.viewer.at, ed.workspace.viewer.zoom),
+            (At::Code, None),
+            "hidden: the code's, the zoom over"
+        );
+        ed.workspace.viewer.at = At::Slot;
         ed.focus_sync();
-        assert_eq!(ed.session.at, At::Code, "nothing in the slot takes them");
+        assert_eq!(ed.workspace.viewer.at, At::Code, "nothing in the slot takes them");
     }
 
     /// cardburden 4b: `K` in the task panel's view mode says where Claude's command in it ran and why — its
@@ -918,7 +926,7 @@ mod tests {
         let scratch = crate::scratch::Scratch::new("k-ran");
         let dir = std::fs::canonicalize(scratch.path()).unwrap();
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         let task = crate::task::Task { name: "t".into(), cmd: "sleep 30".into(), cwd: dir.clone() };
         assert!(
             ed.task_start_for(task, crate::tools::For::User("t".into()), None, Default::default()).is_ok()
@@ -929,7 +937,7 @@ mod tests {
         ed.handle_key(k);
         assert_eq!(crate::uistate::TOOK.get(), Some(crate::uistate::Handler::Output));
         assert!(said(&ed).contains("this run isn't one"), "{}", said(&ed));
-        let r = ed.session.task_run.as_mut().unwrap();
+        let r = ed.workspace.task_run.as_mut().unwrap();
         r.by_claude = true;
         r.ran = Some(crate::chat::Ran::of(&crate::sandbox::Guard::Outside, Some(7), None, Vec::new()));
         let mut bytes = Vec::new();
@@ -942,7 +950,7 @@ mod tests {
             said(&ed),
             "sleep 30 — ran outside\nOutside the sandbox, with all your permissions — said yes to. From card#7."
         );
-        ed.session.task_run = None;
+        ed.workspace.task_run = None;
     }
 
     /// Automatic: the chat 2/5 up to 96 (U3); at 140 with the side panel, the chat narrows so the code keeps

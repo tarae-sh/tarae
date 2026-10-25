@@ -24,7 +24,7 @@ fn a_write_keeps_the_other_checkouts_layouts_and_a_later_editors_wins() {
     let key = root.to_str().unwrap().to_string();
     let editor = || {
         let mut ed = Editor::new(Config::default());
-        ed.session.root = root.clone();
+        ed.workspace.root = root.clone();
         ed.layouts_path = Some(file.clone());
         ed.layouts = read(Some(&file));
         ed.open(&a).unwrap();
@@ -62,7 +62,7 @@ fn the_layout_is_kept_as_it_changes_and_comes_back_with_the_files() {
     let file = root.join("layouts.json");
     let started = |files: &[&Path]| {
         let mut ed = Editor::new(Config::default());
-        ed.session.root = root.clone();
+        ed.workspace.root = root.clone();
         ed.layouts_path = Some(file.clone());
         ed.layouts = read(Some(&file));
         let files: Vec<&str> = files.iter().map(|f| f.to_str().unwrap()).collect();
@@ -90,22 +90,29 @@ fn the_layout_is_kept_as_it_changes_and_comes_back_with_the_files() {
     // Started again, the files reopened: the two panes, the one last focused on b
     let mut ed = started(&[&a, &b]);
     assert_eq!(ed.restore_files(), 2);
-    assert_eq!(ed.session.views.len(), 2, "both panes back");
+    assert_eq!(ed.workspace.views.len(), 2, "both panes back");
     assert_eq!(ed.doc().path.as_deref(), Some(b.as_path()));
     let shown: Vec<_> = ed
-        .session
+        .workspace
         .views
         .iter()
         .filter_map(|v| ed.docs.iter().find(|d| d.id == v.doc)?.path.clone())
         .collect();
     assert!(shown.contains(&a) && shown.contains(&b), "{shown:?}");
-    assert!(ed.session.split.leaves().iter().all(|id| ed.session.shows(*id).is_some()), "every leaf a pane");
-    let tests = ed.session.group(crate::pane::GroupKind::Tests).map(|g| g.host);
-    assert_eq!(tests, ed.session.leaf(crate::pane::Shows::Slot), "the tests group kept, in the slot's leaf");
+    assert!(
+        ed.workspace.split.leaves().iter().all(|id| ed.workspace.shows(*id).is_some()),
+        "every leaf a pane"
+    );
+    let tests = ed.workspace.group(crate::pane::GroupKind::Tests).map(|g| g.host);
+    assert_eq!(
+        tests,
+        ed.workspace.leaf(crate::pane::Shows::Slot),
+        "the tests group kept, in the slot's leaf"
+    );
     // A file gone: its pane with it, the other taking the room
     std::fs::remove_file(&b).unwrap();
     let mut ed = started(&[&a, &b]);
     assert_eq!(ed.restore_files(), 1);
-    assert_eq!(ed.session.views.len(), 1);
+    assert_eq!(ed.workspace.views.len(), 1);
     assert_eq!(ed.doc().path.as_deref(), Some(a.as_path()));
 }

@@ -232,7 +232,7 @@ pub fn call(ed: &mut Editor, call: Call, args: &Value) -> Result<(), String> {
             .filter(|d| d.is_modified() && !d.unsaved_is_claudes())
             .filter_map(|d| d.path.clone())
             .collect(),
-        seen: ed.session.chat.as_ref().map(|c| c.edits.seen.clone()).unwrap_or_default(),
+        seen: ed.workspace.claude.chat.as_ref().map(|c| c.edits.seen.clone()).unwrap_or_default(),
         keys: crate::reads::Keys::of(ed),
     };
     ed.events.jobs().spawn(move || {
@@ -268,7 +268,7 @@ pub fn call(ed: &mut Editor, call: Call, args: &Value) -> Result<(), String> {
 
 /// What `call` saw of `path` once Claude's change there is written: its stamp (None: no claim).
 pub fn saw(ed: &mut Editor, path: &Path, stamp: Option<crate::disk::Stamp>) {
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     match stamp {
         Some(s) => c.edits.seen.insert(path.to_path_buf(), s),
         None => c.edits.seen.remove(path),

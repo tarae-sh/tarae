@@ -32,7 +32,7 @@ struct Scene {
     main: PathBuf,
     other: PathBuf,
     /// The second's session (in front).
-    fix: SessionId,
+    fix: WorkspaceId,
     _dir: Scratch,
 }
 
@@ -53,32 +53,38 @@ fn scene(name: &str) -> Scene {
     let other = std::fs::canonicalize(dir.join("fix")).unwrap();
     std::fs::write(other.join("a.rs"), format!("// one\n// two\n{TEXT}")).unwrap();
     let mut ed = Editor::new(Config::default());
-    ed.session.root = main.clone();
-    ed.session.name = "main".into();
+    ed.workspace.root = main.clone();
+    ed.workspace.name = "main".into();
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     let mut c = crate::chat::Chat::new();
     let _ = crate::chat::stand_in(&mut c);
     c.state = State::Thinking;
     c.follow.on = true;
-    ed.session.chat = Some(c);
-    let fix = ed.session_add(other.clone());
-    ed.session_by_id(fix).unwrap().name = "fix".into();
-    assert!(ed.session_switch(fix));
+    ed.workspace.claude.chat = Some(c);
+    let fix = ed.workspace_add(other.clone());
+    ed.workspace_by_id(fix).unwrap().name = "fix".into();
+    assert!(ed.workspace_switch(fix));
     ed.open(&other.join("a.rs")).unwrap();
     Scene { ed, main, other, fix, _dir: dir }
 }
 
 /// The main checkout's Claude looks at `lines` of its `file` (a read's gaze).
 fn gaze(ed: &mut Editor, path: PathBuf, lines: Range<usize>) {
-    let l = ed.sessions.iter_mut().chain(std::iter::once(&mut ed.session)).find(|l| l.id == 0).unwrap();
+    let l = ed
+        .workspaces
+        .iter_mut()
+        .chain(std::iter::once(&mut ed.workspace))
+        .find(|l| l.id == WorkspaceId::HOME)
+        .unwrap();
     let look = Look { verb: "read", what: String::new(), pattern: false, range: String::new(), link: None };
-    l.chat.as_mut().unwrap().follow.gaze = Some(crate::follow::Gaze::new(look, Some(path), Some(lines)));
+    l.claude.chat.as_mut().unwrap().follow.gaze =
+        Some(crate::follow::Gaze::new(look, Some(path), Some(lines)));
 }
 
 /// The main checkout's Claude wrote `path` a moment ago: its tag shows there for `TAG_STAY`.
 fn just_wrote(ed: &mut Editor, path: PathBuf) {
-    ed.presence.wrote.insert((0, path), crate::clock::now());
+    ed.presence.wrote.insert((WorkspaceId::HOME, path), crate::clock::now());
 }
 
 /// Events until `done` holds (a line map is worked out on a worker).
@@ -127,9 +133,9 @@ fn rows(p: &vt100::Parser) -> Vec<String> {
 }
 
 /// Session `id`'s participant colour at full strength, as the frame paints it.
-fn colour_of(ed: &Editor, id: SessionId) -> vt100::Color {
-    let l = std::iter::once(&ed.session).chain(&ed.sessions).find(|l| l.id == id).unwrap();
-    let k = crate::session::PARTICIPANTS[l.colour as usize];
+fn colour_of(ed: &Editor, id: WorkspaceId) -> vt100::Color {
+    let l = std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|l| l.id == id).unwrap();
+    let k = crate::session::PARTICIPANTS[l.claude.colour as usize];
     match ed.theme.try_get(k).and_then(|s| s.fg) {
         Some(crossterm::style::Color::Rgb { r, g, b }) => vt100::Color::Rgb(r, g, b),
         c => panic!("{k}: {c:?}"),
@@ -149,7 +155,7 @@ fn sign(p: &vt100::Parser, y: usize) -> (String, vt100::Color) {
 
 /// A's lines in sight in the front pane, mapped: the marks of the main checkout's Claude.
 fn main_marks(ed: &Editor) -> Vec<Mark> {
-    marks(ed, ed.doc()).into_iter().filter(|m| m.session == 0).collect()
+    marks(ed, ed.doc()).into_iter().filter(|m| m.session == WorkspaceId::HOME).collect()
 }
 
 /// A Claude's gaze in another checkout of the repository is drawn on the same file here at its lines as they are
@@ -170,8 +176,8 @@ fn presence_maps_lines_across_checkouts() {
     assert!(r[a].trim_end().ends_with("let a = 1;   ‹main reading›"), "{}", r[a]);
     assert!(!r[b].contains('‹'), "the tag on its first line only: {}", r[b]);
     // (each session its own colour, for its life — main's not fix's)
-    assert_ne!(ed.session.colour, ed.sessions[0].colour);
-    let accent = colour_of(&ed, 0);
+    assert_ne!(ed.workspace.claude.colour, ed.workspaces[0].claude.colour);
+    let accent = colour_of(&ed, WorkspaceId::HOME);
     for y in [a, b] {
         let (g, fg) = sign(&p, y);
         assert_eq!(g, "▎", "row {y}: {}", r[y]);
@@ -183,23 +189,24 @@ fn presence_maps_lines_across_checkouts() {
     let at = ed.session_items();
     assert!(at.iter().any(|i| i.label == "main" && i.hint.contains("a.rs:2 · reading")), "{at:#?}");
     // …the UI state's; never Claude's level (C1 tells Claude nothing)
-    let main_at =
-        |s: crate::uistate::UiState| s.sessions.iter().find(|s| s.name == "main").and_then(|s| s.at.clone());
+    let main_at = |s: crate::uistate::UiState| {
+        s.workspaces.iter().find(|s| s.name == "main").and_then(|s| s.sessions[0].at.clone())
+    };
     assert_eq!(main_at(ed.ui_state()).as_deref(), Some("a.rs:2 · reading"));
     assert_eq!(main_at(ed.ui_state_claude()), None);
-    assert!(ed.ui_state().json()["sessions"].to_string().contains("a.rs:2 · reading"));
+    assert!(ed.ui_state().json()["workspaces"].to_string().contains("a.rs:2 · reading"));
     // The files tab: main's initial on the file
-    ed.session.sidebar =
+    ed.workspace.viewer.sidebar =
         Some(crate::sidebar::Sidebar::with_files(other.clone(), vec!["a.rs".into(), "b.rs".into()]));
     let r = rows(&frame(&mut ed, 100));
     let last_word = |r: &str| r.split('│').next().unwrap_or(r).split_whitespace().last().map(str::to_string);
     assert!(r.iter().any(|r| r.contains("a.rs") && last_word(r).as_deref() == Some("m")), "{r:#?}");
     assert!(r.iter().any(|r| r.contains("b.rs") && last_word(r).as_deref() == Some("b.rs")), "{r:#?}");
     // The strip over a chat: its file after its mark (where the chat's line has room for it)
-    ed.session.chat = Some(crate::chat::Chat::new());
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
     let r = rows(&frame(&mut ed, 160));
     assert!(r.iter().any(|r| r.contains("main working a.rs")), "{r:#?}");
-    ed.session.chat = None;
+    ed.workspace.claude.chat = None;
     // A file it isn't in: nothing
     gaze(&mut ed, main.join("only.rs"), 0..1);
     sync(&mut ed);
@@ -224,8 +231,8 @@ fn the_mark_follows_the_buffer_and_goes_with_the_turn() {
     press(&mut ed, "ggO// three<esc>");
     settle(&mut ed, |ed| main_marks(ed).first().is_some_and(|m| m.lines == (4..5)));
     // The turn over: gone
-    let l = ed.sessions.iter_mut().find(|l| l.id == 0).unwrap();
-    l.chat.as_mut().unwrap().state = State::Idle;
+    let l = ed.workspaces.iter_mut().find(|l| l.id == WorkspaceId::HOME).unwrap();
+    l.claude.chat.as_mut().unwrap().state = State::Idle;
     sync(&mut ed);
     assert!(main_marks(&ed).is_empty());
     let r = rows(&frame(&mut ed, 100));
@@ -253,8 +260,8 @@ fn a_change_on_disk_from_elsewhere_maps_the_lines_again() {
 #[test]
 fn one_session_shows_no_presence() {
     let Scene { mut ed, main, fix, _dir, .. } = scene("presence-one");
-    assert!(ed.session_switch(0));
-    ed.sessions.retain(|l| l.id != fix);
+    assert!(ed.workspace_switch(WorkspaceId::HOME));
+    ed.workspaces.retain(|l| l.id != fix);
     gaze(&mut ed, main.join("a.rs"), 1..2);
     ed.open(&main.join("a.rs")).unwrap();
     sync(&mut ed);
@@ -269,15 +276,15 @@ fn space_f_follows_the_next_session_at_work() {
     let Scene { mut ed, main, fix, _dir, .. } = scene("presence-follow-next");
     gaze(&mut ed, main.join("a.rs"), 2..3);
     settle(&mut ed, |ed| !main_marks(ed).is_empty());
-    assert_eq!(ed.session.id, fix);
+    assert_eq!(ed.workspace.id, fix);
     press(&mut ed, "<space>F");
-    assert_eq!(ed.session.id, 0, "into its checkout");
+    assert_eq!(ed.workspace.id, WorkspaceId::HOME, "into its checkout");
     assert_eq!(
         (ed.doc().path.clone(), crate::follow::view_line(&ed), ed.cursor_line()),
         (Some(main.join("a.rs")), Some(2), 0),
         "the view where its Claude is, your cursor where it was"
     );
-    assert_eq!(followed(&ed), Some(0));
+    assert_eq!(followed(&ed), Some(crate::event::WorkspaceId::HOME));
     just_wrote(&mut ed, main.join("a.rs"));
     let p = frame(&mut ed, 100);
     let r = rows(&p);
@@ -285,17 +292,24 @@ fn space_f_follows_the_next_session_at_work() {
     assert!(status.contains("● follow   main"), "the word alone, whom the chip: {status}");
     let b = row_of(&r, "let b = 2;");
     assert!(r[b].trim_end().ends_with("‹main reading›"), "{}", r[b]);
-    assert_eq!(sign(&p, b), ("▎".to_string(), colour_of(&ed, 0)), "the one you follow: its colour, full");
+    assert_eq!(
+        sign(&p, b),
+        ("▎".to_string(), colour_of(&ed, WorkspaceId::HOME)),
+        "the one you follow: its colour, full"
+    );
     // Your key: stopped there, acting at your cursor
     press(&mut ed, "j");
-    assert_eq!((ed.session.id, ed.cursor_line()), (0, 1));
+    assert_eq!((ed.workspace.id, ed.cursor_line()), (crate::event::WorkspaceId::HOME, 1));
     assert_eq!(followed(&ed), None);
     assert!(ed.toasts.iter().any(|t| t.text.contains("you took over")), "said");
     let r = rows(&frame(&mut ed, 100));
     assert!(r.last().unwrap().contains("● normal"), "{}", r.last().unwrap());
     // Again: followed again (the only one at work)
     press(&mut ed, "<space>F");
-    assert_eq!((followed(&ed), crate::follow::view_line(&ed), ed.cursor_line()), (Some(0), Some(2), 1));
+    assert_eq!(
+        (followed(&ed), crate::follow::view_line(&ed), ed.cursor_line()),
+        (Some(crate::event::WorkspaceId::HOME), Some(2), 1)
+    );
 }
 
 /// Two Claudes on one line — fix's own, reading its file, followed, and main's in its checkout — each its tag in its
@@ -311,13 +325,13 @@ fn two_sessions_on_one_line_each_its_colour() {
     c.follow.on = true;
     let look = Look { verb: "read", what: String::new(), pattern: false, range: String::new(), link: None };
     c.follow.gaze = Some(crate::follow::Gaze::new(look, Some(other.join("a.rs")), Some(3..5)));
-    ed.session.chat = Some(c);
+    ed.workspace.claude.chat = Some(c);
     sync(&mut ed);
     // (both wrote there a moment ago: each its tag)
     let at = crate::clock::now();
-    ed.presence.wrote.insert((0, main.join("a.rs")), at);
+    ed.presence.wrote.insert((WorkspaceId::HOME, main.join("a.rs")), at);
     ed.presence.wrote.insert((fix, other.join("a.rs")), at);
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     let p = frame(&mut ed, 120);
     let r = rows(&p);
     let y = row_of(&r, "let a = 1;");
@@ -328,7 +342,7 @@ fn two_sessions_on_one_line_each_its_colour() {
     };
     let (theirs, mine) = (fg_at("‹main"), fg_at("‹fix"));
     assert_eq!(mine, colour_of(&ed, fix), "the one you follow: its colour, full");
-    assert_ne!(theirs, colour_of(&ed, 0), "the other: its colour, dim");
+    assert_ne!(theirs, colour_of(&ed, WorkspaceId::HOME), "the other: its colour, dim");
     assert_ne!(theirs, mine, "each its own");
     assert_ne!(mine, claude_accent(&ed), "never the accent");
 }
@@ -350,16 +364,16 @@ fn every_session_is_named_one_way_in_the_chrome() {
     gaze(&mut ed, main.join("a.rs"), 1..2);
     let docs = _dir.join("docs");
     std::fs::create_dir_all(&docs).unwrap();
-    let third = ed.session_add(docs);
-    ed.session_by_id(third).unwrap().name = "docs".into();
-    let all: Vec<(SessionId, String)> =
+    let third = ed.workspace_add(docs);
+    ed.workspace_by_id(third).unwrap().name = "docs".into();
+    let all: Vec<(WorkspaceId, String)> =
         ed.sessions_in_order().iter().map(|l| (l.id, l.label().to_string())).collect();
     let colours: Vec<vt100::Color> = all.iter().map(|(id, _)| colour_of(&ed, *id)).collect();
     assert!(colours[0] != colours[1] && colours[1] != colours[2] && colours[0] != colours[2], "each its own");
     // (docs waits on a card of its Claude's, behind)
     let what = crate::offer::What::Screen { call: crate::tools::Call::test(1) };
     let card = crate::offer::Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what);
-    ed.session_by_id(third).unwrap().parked.push(card);
+    ed.workspace_by_id(third).unwrap().parked.push(card);
     let warning = match ed.theme.try_get("warning").and_then(|s| s.fg) {
         Some(crossterm::style::Color::Rgb { r, g, b }) => vt100::Color::Rgb(r, g, b),
         c => panic!("warning: {c:?}"),
@@ -390,8 +404,8 @@ fn every_session_is_named_one_way_in_the_chrome() {
     press(&mut ed, "q");
     // The strip over a chat: each name in its colour, its state after it — docs' `▲ waits` in warning (the chat with
     // the keys: a surface without them fades all its text alike)
-    ed.session.chat = Some(crate::chat::Chat::new());
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     let p = frame(&mut ed, 160);
     let r = rows(&p);
     let y = r.iter().position(|r| r.contains("main working") && r.contains("· docs")).expect("the strip");
@@ -410,7 +424,7 @@ fn every_session_is_named_one_way_in_the_chrome() {
     let ink = |c: &vt100::Color| !colours.contains(c);
     // The status line with the chat open (no chip): a branch is a branch — the one that is the session's name too
     let branch_fg = |ed: &mut Editor, b: &str| {
-        ed.session.git_branch = Some(b.into());
+        ed.workspace.git_branch = Some(b.into());
         let p = frame(ed, 160);
         let status = rows(&p).pop().unwrap();
         let x = status.rfind(&format!("   {b}")).unwrap_or_else(|| panic!("the branch: {status}")) + 3;
@@ -419,10 +433,10 @@ fn every_session_is_named_one_way_in_the_chrome() {
     for b in ["fix", "login-form"] {
         assert!(ink(&branch_fg(&mut ed, b)), "the branch {b}: no participant's colour");
     }
-    ed.session.git_branch = None;
+    ed.workspace.git_branch = None;
     // The chat closed: the chip names the front session as the strip does, `fix` in its colour — the one `●` the mode's
-    ed.session.chat = None;
-    ed.session.at = crate::session::At::Code;
+    ed.workspace.claude.chat = None;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
     let chip = |ed: &mut Editor, name: &str, mode: &str| {
         let p = frame(ed, 160);
         let r = rows(&p);
@@ -435,8 +449,8 @@ fn every_session_is_named_one_way_in_the_chrome() {
     assert_eq!(status.matches('●').count(), 1, "the mode's dot only: {status}");
     // Following main (`space F`: into its workspace): `● follow` alone, the chip after it `main` in its colour
     press(&mut ed, "<space>F");
-    assert_eq!(followed(&ed), Some(0));
-    let main = all.iter().position(|(id, _)| *id == 0).unwrap();
+    assert_eq!(followed(&ed), Some(crate::event::WorkspaceId::HOME));
+    let main = all.iter().position(|(id, _)| *id == WorkspaceId::HOME).unwrap();
     let (fg, status) = chip(&mut ed, "main", "follow");
     assert!(status.contains("● follow   main") && status.matches('●').count() == 1, "{status}");
     assert_eq!(fg, colours[main], "followed: {status}");
@@ -453,9 +467,10 @@ fn a_click_on_the_tag_or_f_in_the_list_follows() {
     let y = row_of(&r, "‹main reading›");
     let x = r[y][..r[y].find('‹').unwrap()].chars().count() + 3;
     ed.handle_mouse(Mouse { kind: MouseKind::Down, x: x as u16, y: y as u16, alt: false, ctrl: false });
-    assert_eq!((ed.session.id, followed(&ed)), (0, Some(0)), "followed from its tag");
+    let home = crate::event::WorkspaceId::HOME;
+    assert_eq!((ed.workspace.id, followed(&ed)), (home, Some(home)), "followed from its tag");
     // Back in fix; the list's `f`
-    assert!(ed.session_switch(fix));
+    assert!(ed.workspace_switch(fix));
     press(&mut ed, "<space>W");
     let main_row = ed.session_items().iter().position(|i| i.label == "main").unwrap();
     let here = ed.session_items().iter().position(|i| i.label == "fix").unwrap();
@@ -465,7 +480,7 @@ fn a_click_on_the_tag_or_f_in_the_list_follows() {
     assert!(r.iter().any(|r| r.contains("f follow")), "the list says it: {r:#?}");
     press(&mut ed, "f");
     assert!(!ed.sessions_list_keys(), "the keys there");
-    assert_eq!((ed.session.id, followed(&ed)), (0, Some(0)), "followed from the list");
+    assert_eq!((ed.workspace.id, followed(&ed)), (home, Some(home)), "followed from the list");
 }
 
 /// A session's name tag shows only while it says something new (the user, 2026-10-22): a Claude only reading there —
@@ -521,7 +536,7 @@ fn a_tag_shows_only_while_it_says_something_new() {
     press(&mut ed, "gg");
     assert!(!tag(&mut ed));
     // A write there: its tag, then its stay, its fade, gone
-    ed.presence.wrote.insert((0, main.join("a.rs")), crate::clock::now());
+    ed.presence.wrote.insert((WorkspaceId::HOME, main.join("a.rs")), crate::clock::now());
     assert!(tag(&mut ed), "just wrote: its tag");
     let stay =
         |w: std::time::Duration| w <= TAG_STAY + std::time::Duration::from_millis(2) && w > TAG_STAY / 2;
@@ -569,7 +584,7 @@ fn perf_budget_hover_burst() {
     let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
     // (and it saw them: over the bar, its tag; away, none)
     ed.handle_event(crate::event::Event::Hover(0, y));
-    assert_eq!(ed.presence.hover, Some(0));
+    assert_eq!(ed.presence.hover, Some(crate::event::WorkspaceId::HOME));
     ed.handle_event(crate::event::Event::Hover(0, 0));
     assert_eq!(ed.presence.hover, None);
     assert!(ns < 200.0, "{ns:.0} ns a hover (budget 200)");
@@ -604,8 +619,8 @@ fn the_side_panel_says_each_session_by_its_initial() {
     settle(&mut ed, |ed| !main_marks(ed).is_empty());
     let mut sb = crate::sidebar::Sidebar::with_files(other.clone(), vec!["a.rs".into(), "b.rs".into()]);
     sb.selected = 0;
-    ed.session.sidebar = Some(sb);
-    ed.session.at = crate::session::At::Side;
+    ed.workspace.viewer.sidebar = Some(sb);
+    ed.workspace.viewer.at = crate::workspace::At::Side;
     let r = rows(&frame(&mut ed, 100));
     assert!(r.iter().any(|r| r.contains("a.rs — main reading")), "the row in hand in words: {r:#?}");
 }

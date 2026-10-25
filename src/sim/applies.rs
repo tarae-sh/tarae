@@ -1,5 +1,5 @@
 //! The user's own patch landing, simulated (sessapply): a project of the scenario's own, a patch made in it by
-//! git and kept outside it, and at random `:session-apply` asked (worked out on a worker), `y`, `n` or `r` on the
+//! git and kept outside it, and at random `:workspace-apply` asked (worked out on a worker), `y`, `n` or `r` on the
 //! card in front after a frame, another program writing a file the patch changes, a Claude turn ending
 //! (`refactor::turn_over` — Claude's change sets go, the user's stays), the project put back, a frame, the user
 //! taking their time. After every step: the user's landing asks exactly while its card is up or parked, and every
@@ -80,7 +80,7 @@ fn run(choices: Choices) -> Vec<String> {
     std::fs::write(&patch, &out.stdout).unwrap();
     let mut sim = Sim::new("the_users_patch_never_writes_half_a_file_or_over_a_change", choices, LIMIT);
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = repo.clone();
+    ed.workspace.root = repo.clone();
     let d = [dir.path().display().to_string(), crate::allow::tilde(dir.path())];
     sim.walk(
         &mut ed,
@@ -100,9 +100,9 @@ fn input(sim: &mut Sim, ed: &mut Editor, repo: &Path, patch: &Path) -> String {
     // (by arm: asked 3, a key on the card 4, another program's write 1, a turn's end 1, put back 1, a frame 1,
     // time passing 2)
     match c.weighted(&[3, 4, 1, 1, 1, 1, 2]) {
-        0 => match crate::typed::execute(ed, &format!("session-apply {}", patch.display())) {
-            Ok(()) => ":session-apply".into(),
-            Err(e) => format!(":session-apply: {e}"),
+        0 => match crate::typed::execute(ed, &format!("workspace-apply {}", patch.display())) {
+            Ok(()) => ":workspace-apply".into(),
+            Err(e) => format!(":workspace-apply: {e}"),
         },
         // (most after the card has settled — a key as it appears is swallowed)
         1 => {
@@ -150,9 +150,9 @@ fn yours(o: &Offer) -> bool {
 /// The landing asks exactly while its card is up or parked (one card); each file as it was or as the patch has
 /// it, every line another program wrote still there.
 fn check(ed: &Editor, repo: &Path) -> Result<(), String> {
-    let parked = std::iter::once(&ed.session).chain(&ed.sessions).flat_map(|l| &l.parked);
+    let parked = std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked);
     let cards = ed.offers.iter().chain(parked).filter(|o| yours(o)).count();
-    let asking = ed.session.applying.as_ref().is_some_and(|l| l.asking());
+    let asking = ed.workspace.applying.as_ref().is_some_and(|l| l.asking());
     if cards != usize::from(asking) {
         return Err(format!("{cards} change set cards of the user's, its landing asking: {asking}"));
     }
@@ -175,7 +175,7 @@ fn check(ed: &Editor, repo: &Path) -> Result<(), String> {
 /// What a trace line ends with: the cards up, the landing's stage, the last thing said.
 fn print(ed: &Editor, dir: &[String; 2]) -> String {
     let up: Vec<String> = ed.offers.iter().map(|o| format!("#{} {}", o.id, o.title)).collect();
-    let landing = match &ed.session.applying {
+    let landing = match &ed.workspace.applying {
         None => "none",
         Some(l) if l.asking() => "asking",
         Some(_) => "going",

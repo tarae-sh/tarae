@@ -11,7 +11,7 @@ use super::{Choices, Sim};
 use crate::editor::Editor;
 use crate::key::{Code, Key};
 use crate::offer::Offer;
-use crate::sandbox::proxy::{FromProxy, session_of};
+use crate::sandbox::proxy::{FromProxy, workspace_of};
 
 /// The seeds every `cargo test` runs, each twice (no git, no process: a run is quick).
 const SEEDS: &[u64] = &[0, 1, 2, 3];
@@ -35,11 +35,11 @@ fn run(choices: Choices) -> Vec<String> {
     let root = std::fs::canonicalize(dir.path()).unwrap();
     let mut sim = Sim::new("a_host_card_through_its_runs_end", choices, LIMIT);
     let mut ed = Editor::new(crate::config::Config::default());
-    (ed.session.root, ed.session.name) = (root.clone(), "proj".into());
+    (ed.workspace.root, ed.workspace.name) = (root.clone(), "proj".into());
     ed.allow_path = Some(root.join("state/sandbox.json"));
     // (the conversation whose runs they are: an ended card's `y` is its next run's)
-    ed.session.chat = Some(crate::chat::Chat::new());
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     let granted = std::cell::RefCell::new(Vec::new());
     let check = |ed: &Editor| held(ed, &granted.borrow());
     let mut runs = Vec::new();
@@ -59,13 +59,13 @@ fn start(ed: &mut Editor, root: &std::path::Path) -> u64 {
     let mut r = crate::task::Run::for_test(task);
     (r.by_claude, r.state) = (true, crate::task::State::Running);
     r.guard = Some(crate::sandbox::Guard::In(Box::new(p)));
-    ed.session.task_run = Some(r);
+    ed.workspace.task_run = Some(r);
     id
 }
 
 /// The run going now, if one is (its id).
 fn going(ed: &Editor) -> Option<u64> {
-    let r = ed.session.task_run.as_ref().filter(|r| r.state == crate::task::State::Running)?;
+    let r = ed.workspace.task_run.as_ref().filter(|r| r.state == crate::task::State::Running)?;
     match r.guard.as_ref() {
         Some(crate::sandbox::Guard::In(p)) => Some(p.run_id),
         _ => None,
@@ -92,7 +92,7 @@ fn input(
             let Some(&run) = going(ed).as_ref().or(runs.last()) else { return "(no run yet)".into() };
             let host = *c.pick(&HOSTS);
             let ask = FromProxy::Ask {
-                session: session_of(root),
+                session: workspace_of(root),
                 run,
                 host: host.into(),
                 port: 443,
@@ -105,7 +105,7 @@ fn input(
         }
         2 => match going(ed) {
             Some(run) => {
-                if let Some(r) = ed.session.task_run.as_mut() {
+                if let Some(r) = ed.workspace.task_run.as_mut() {
                     r.state = crate::task::State::Failed(Some(1));
                 }
                 crate::hosts::run_ended(ed, Some(run));
@@ -144,7 +144,7 @@ fn input(
 
 /// The host cards, up and parked.
 fn cards(ed: &Editor) -> impl Iterator<Item = &crate::hosts::Ask> {
-    ed.offers.iter().chain(&ed.session.parked).filter_map(Offer::host)
+    ed.offers.iter().chain(&ed.workspace.parked).filter_map(Offer::host)
 }
 
 fn held(ed: &Editor, granted: &[(String, u16)]) -> Result<(), String> {
@@ -162,7 +162,7 @@ fn held(ed: &Editor, granted: &[(String, u16)]) -> Result<(), String> {
             return Err(format!("{}'s card for run {}, over, doesn't say so", a.at(), a.run));
         }
     }
-    let next = ed.session.chat.as_ref().map_or(&[][..], |c| &c.hosts_next[..]);
+    let next = ed.workspace.claude.chat.as_ref().map_or(&[][..], |c| &c.hosts_next[..]);
     if let Some(h) = next.iter().find(|h| !granted.contains(h)) {
         return Err(format!("{}:{} on the next run's list with no `y` on an ended card", h.0, h.1));
     }
@@ -173,7 +173,8 @@ fn held(ed: &Editor, granted: &[(String, u16)]) -> Result<(), String> {
 fn print(ed: &Editor) -> String {
     let cards: Vec<String> =
         cards(ed).map(|a| format!("{}{}", a.host, if a.ended { " (ended)" } else { "" })).collect();
-    let next: Vec<&str> = ed.session.chat.iter().flat_map(|c| &c.hosts_next).map(|h| h.0.as_str()).collect();
+    let next: Vec<&str> =
+        ed.workspace.claude.chat.iter().flat_map(|c| &c.hosts_next).map(|h| h.0.as_str()).collect();
     let going = if going(ed).is_some() { "a run going" } else { "none going" };
     format!("{going} · cards [{}] · next [{}]", cards.join(", "), next.join(", "))
 }

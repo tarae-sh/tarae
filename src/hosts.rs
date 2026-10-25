@@ -18,14 +18,14 @@
 //! (`Policy::open_granted_caches`).
 
 use crate::editor::Editor;
-use crate::event::SessionId;
+use crate::event::WorkspaceId;
 use crate::offer::{Offer, What};
 use crate::sandbox::proxy::{FromProxy, Scope, ToProxy};
 
 /// A host a run asked to reach, as its card holds it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ask {
-    /// The proxy's session (`proxy::session_of` its project) and run — what the answer names.
+    /// The proxy's session (`proxy::workspace_of` its project) and run — what the answer names.
     pub session: u64,
     pub run: u64,
     pub host: String,
@@ -90,9 +90,9 @@ pub fn listen(tx: crate::event::Tx) {
 
 /// The session a run going on (by its policy's id, `Policy.run_id`) is in, what its panel calls it, and whether
 /// it's the user's own. A run over — its record kept after its end — isn't one.
-fn find_run(ed: &Editor, run: u64) -> Option<(SessionId, String, bool)> {
+fn find_run(ed: &Editor, run: u64) -> Option<(WorkspaceId, String, bool)> {
     let ours = |g: Option<&crate::sandbox::Guard>| matches!(g, Some(crate::sandbox::Guard::In(p)) if p.run_id == run);
-    for s in std::iter::once(&ed.session).chain(&ed.sessions) {
+    for s in std::iter::once(&ed.workspace).chain(&ed.workspaces) {
         let task = s.task_run.as_ref().filter(|r| r.state == crate::task::State::Running);
         if let Some(r) = task.filter(|r| ours(r.guard.as_ref())) {
             return Some((s.id, r.task.cmd.clone(), r.tell.is_some()));
@@ -113,7 +113,7 @@ fn find_run(ed: &Editor, run: u64) -> Option<(SessionId, String, bool)> {
 pub fn asked(ed: &mut Editor, ask: FromProxy) {
     let FromProxy::Ask { session, run, host, port, process } = ask;
     let found = find_run(ed, run).map(|(id, label, users)| (id, label, users, false)).or_else(|| {
-        let s = std::iter::once(&ed.session).chain(&ed.sessions);
+        let s = std::iter::once(&ed.workspace).chain(&ed.workspaces);
         let id = s.into_iter().find(|s| s.proxy_id() == session)?.id;
         Some((id, String::new(), false, true))
     });
@@ -124,9 +124,9 @@ pub fn asked(ed: &mut Editor, ask: FromProxy) {
     let also = suggested(&crate::sandboxpack::get().registries, &host, port);
     let (open, hosts) = (ed.config.llm.sandbox_network, ed.config.llm.sandbox_hosts.clone());
     let a = Ask { session, run, host, port, process, label, users, left, open, hosts, also, ended: false };
-    ed.with_session(id, move |ed| {
+    ed.with_workspace(id, move |ed| {
         let front = !ed.background();
-        let cards = ed.session.parked.iter_mut().chain(ed.offers.iter_mut().filter(|_| front));
+        let cards = ed.workspace.parked.iter_mut().chain(ed.offers.iter_mut().filter(|_| front));
         for o in cards {
             if let Some(h) = o.host()
                 && h.same(&a)
@@ -385,8 +385,8 @@ pub fn answer(ed: &mut Editor, id: u64, a: Ask, scope: Scope) {
     let key = key_of(scope);
     let scope = if scope == Scope::Project && !a.open { Scope::Session } else { scope };
     // (C2: a no on Claude's command is its `also`'s too — that conversation asks for the host on no card again)
-    let ours = ed.session.proxy_id() == a.session;
-    if let Some(c) = ed.session.chat.as_mut().filter(|_| ours && scope == Scope::Refused)
+    let ours = ed.workspace.proxy_id() == a.session;
+    if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|_| ours && scope == Scope::Refused)
         && !a.users
     {
         let g = crate::allow::Grant::Host(a.host.clone(), a.port);
@@ -430,14 +430,15 @@ fn keep(
     }
     if scope == Scope::Chat {
         // (the conversation's: its runs' rules carry it, and its end takes it back from the proxy — `chat_ended`)
-        let ours = ed.session.proxy_id() == session;
-        if let Some(c) = ed.session.chat.as_mut().filter(|_| ours) {
+        let ours = ed.workspace.proxy_id() == session;
+        if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|_| ours) {
             for h in std::iter::once(host).chain(also.iter().map(String::as_str)) {
                 c.allowed.give(&crate::allow::Grant::Host(h.into(), port), key);
             }
         }
         ed.caps_sync();
-        ed.session
+        ed.workspace
+            .claude
             .checkpoints
             .tell
             .push(format!("The user let your commands {doing} — for this conversation."));
@@ -450,7 +451,8 @@ fn keep(
     match scope {
         Scope::Run => ed.set_success(format!("Commands may {doing} in this run")),
         Scope::Session => {
-            ed.session
+            ed.workspace
+                .claude
                 .checkpoints
                 .tell
                 .push(format!("The user let your commands {doing} — for this session."));
@@ -463,11 +465,15 @@ fn keep(
                 .map(|h| crate::allow::Grant::Host(h.into(), port))
                 .collect();
             let (when, toast) = crate::allow::lasting(ed, crate::allow::Scope::Always, &grants);
-            ed.session.checkpoints.tell.push(format!("The user let your commands {doing} — {when}."));
+            ed.workspace
+                .claude
+                .checkpoints
+                .tell
+                .push(format!("The user let your commands {doing} — {when}."));
             ed.set_success(format!("Commands may {doing}{toast}"));
         }
         Scope::Refused => {
-            ed.session.checkpoints.tell.push(format!(
+            ed.workspace.claude.checkpoints.tell.push(format!(
                 "The user refused your commands to {doing} for this session: don't try it again."
             ));
             ed.set_status(format!("{at} refused for this session — space m s on the run lets it through"));
@@ -480,22 +486,22 @@ fn keep(
 /// project's (`A`).
 fn keep_one(ed: &mut Editor, session: u64, host: &str, port: u16, (scope, key): (Scope, char)) {
     // (the card's session is the one in front — it parks otherwise; what's kept here is that session's)
-    let ours = ed.session.proxy_id() == session;
+    let ours = ed.workspace.proxy_id() == session;
     let this = |(h, p): &(String, u16)| h == host && *p == port;
     match scope {
         Scope::Session if ours => {
-            if !ed.session.hosts.iter().any(this) {
-                ed.session.hosts.push((host.into(), port));
+            if !ed.workspace.claude.hosts.iter().any(this) {
+                ed.workspace.claude.hosts.push((host.into(), port));
             }
-            ed.session.hosts_given.insert((host.into(), port), key);
+            ed.workspace.claude.hosts_given.insert((host.into(), port), key);
         }
         // (as a card's other `A`s: a failed take-back of it ends once this is written — `allow::keep_answer`)
         Scope::Project => {
             crate::allow::keep_answer(ed, vec![crate::allow::Grant::Host(host.into(), port)], key)
         }
         Scope::Refused if ours => {
-            ed.session.hosts.retain(|e| !this(e));
-            ed.session.hosts_given.remove(&(host.to_string(), port));
+            ed.workspace.claude.hosts.retain(|e| !this(e));
+            ed.workspace.claude.hosts_given.remove(&(host.to_string(), port));
         }
         _ => {}
     }
@@ -508,10 +514,10 @@ fn keep_one(ed: &mut Editor, session: u64, host: &str, port: u16, (scope, key): 
 /// `hosts_next` (`Chat::conversation_left`).
 pub fn chat_ended(ed: &mut Editor) {
     ed.drop_cards(|w| matches!(w, What::Host(h) if h.ended));
-    let Some(c) = ed.session.chat.as_ref() else { return };
-    let session = ed.session.proxy_id();
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return };
+    let session = ed.workspace.proxy_id();
     for (host, port) in &c.allowed.hosts {
-        if !ed.session.hosts.iter().any(|(h, p)| h == host && p == port) {
+        if !ed.workspace.claude.hosts.iter().any(|(h, p)| h == host && p == port) {
             send(ToProxy::Taken { session, host: host.clone(), port: *port });
         }
     }
@@ -521,7 +527,7 @@ pub fn chat_ended(ed: &mut Editor) {
 /// what a yes on it lets in (`with_suggested`): `Once` lifts a refusal for the session (the run's own rules carry
 /// the hosts — `Extra.grant`, `tools::with_allowed`), the others as the card's `a` and `s`.
 pub fn granted(ed: &mut Editor, host: &str, port: u16, scope: crate::allow::Scope) {
-    let session = ed.session.proxy_id();
+    let session = ed.workspace.proxy_id();
     let also = &with_suggested(host, port)[1..];
     match scope {
         crate::allow::Scope::Once => send(ToProxy::Lifted { session, host: host.into(), port }),
@@ -540,15 +546,15 @@ pub fn granted(ed: &mut Editor, host: &str, port: u16, scope: crate::allow::Scop
 /// went with it (`chat_ended`).
 fn next_run(ed: &mut Editor, a: &Ask) {
     let hosts: Vec<String> = std::iter::once(&a.host).chain(&a.also).cloned().collect();
-    let ours = ed.session.proxy_id() == a.session;
-    let Some(c) = ed.session.chat.as_mut().filter(|_| ours) else { return };
+    let ours = ed.workspace.proxy_id() == a.session;
+    let Some(c) = ed.workspace.claude.chat.as_mut().filter(|_| ours) else { return };
     for h in &hosts {
         if !c.hosts_next.iter().any(|(n, p)| n == h && *p == a.port) {
             c.hosts_next.push((h.clone(), a.port));
         }
     }
     let doing = format!("reach {}:{}", a.host, a.port);
-    ed.session.checkpoints.tell.push(format!(
+    ed.workspace.claude.checkpoints.tell.push(format!(
         "The user let your next command {doing} — its run had ended before they answered. Run it again if you \
          still need it."
     ));
@@ -564,7 +570,7 @@ pub fn run_ended(ed: &mut Editor, run: Option<u64>) {
     let yours = |w: &What| matches!(w, What::Host(h) if h.run == run && h.users && !h.left);
     ed.drop_cards_for(yours, "its run ended");
     let front = !ed.background();
-    let cards = ed.session.parked.iter_mut().chain(ed.offers.iter_mut().filter(|_| front));
+    let cards = ed.workspace.parked.iter_mut().chain(ed.offers.iter_mut().filter(|_| front));
     for o in cards {
         let Some(a) = o.host().filter(|h| h.run == run && !h.ended && !h.left).cloned() else { continue };
         let fresh = card(Ask { ended: true, ..a });
@@ -576,12 +582,12 @@ pub fn run_ended(ed: &mut Editor, run: Option<u64>) {
 }
 
 /// Session `s` ended: the proxy drops its answers.
-pub fn session_ended(s: &crate::session::Session) {
-    send(ToProxy::SessionEnded { session: s.proxy_id() });
+pub fn workspace_ended(s: &crate::workspace::Workspace) {
+    send(ToProxy::WorkspaceEnded { session: s.proxy_id() });
 }
 
 /// The user took back `host:port` for session `s` (and what the project keeps): asked again.
-pub fn taken(s: &crate::session::Session, host: &str, port: u16) {
+pub fn taken(s: &crate::workspace::Workspace, host: &str, port: u16) {
     send(ToProxy::Taken { session: s.proxy_id(), host: host.into(), port });
 }
 
@@ -616,7 +622,7 @@ fn copied(m: &ToProxy) -> Option<ToProxy> {
         ToProxy::Lifted { session, host, port } => {
             ToProxy::Lifted { session: *session, host: host.clone(), port: *port }
         }
-        ToProxy::SessionEnded { session } => ToProxy::SessionEnded { session: *session },
+        ToProxy::WorkspaceEnded { session } => ToProxy::WorkspaceEnded { session: *session },
         _ => return None,
     })
 }

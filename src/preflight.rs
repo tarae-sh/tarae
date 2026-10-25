@@ -717,14 +717,14 @@ impl Editor {
     /// failed step's output was hard to reach — the panel is a few rows, and the `▲ test` that was clicked
     /// was the test panel's tab).
     pub fn preflight_output(&mut self, which: &str) -> Result<(), String> {
-        let p = self.session.preflight.as_ref();
+        let p = self.workspace.preflight.as_ref();
         let run =
-            self.session.task_run.as_ref().filter(|r| p.is_some_and(|p| p.generation == r.generation()));
+            self.workspace.task_run.as_ref().filter(|r| p.is_some_and(|p| p.generation == r.generation()));
         let (title, lines) = match (p, run) {
             (Some(p), Some(run)) => p.step_text(which, run.scroll, &run.output)?,
             // (frictions34 42: a failed one's, kept after another run took the panel)
             (Some(p), None) if !p.kept.is_empty() => p.step_text(which, None, &p.kept)?,
-            _ if self.session.task_run.is_some() => {
+            _ if self.workspace.task_run.is_some() => {
                 return Err("the task panel's run isn't a preflight".into());
             }
             _ => return Err("no preflight in the task panel — :preflight runs one".into()),
@@ -749,7 +749,7 @@ impl Editor {
             self.close_doc(id);
         }
         self.open_virtual(title, &text);
-        self.session.leave(crate::session::At::Slot);
+        self.workspace.leave(crate::workspace::At::Slot);
         let at = lines
             .iter()
             .rposition(|l| l.contains("FAILED") || l.contains("panicked") || l.starts_with("error"));
@@ -798,7 +798,7 @@ impl Editor {
             return self.preflight_run(steps, set);
         }
         let root = self.preflight_root();
-        let kept = self.session.preflight_kept.clone();
+        let kept = self.workspace.preflight_kept.clone();
         self.events.jobs().spawn(move || {
             let packs = defaults(&root);
             // (the card for these very steps answered before in this clone, at any start of tarae's)
@@ -807,7 +807,7 @@ impl Editor {
             move |ed: &mut Editor| match packs.held.first() {
                 // (a kind of project the packs know, but it runs its checks its own way: say how)
                 Some(why) if packs.steps.is_empty() && local.is_empty() => {
-                    ed.session.bring_after_preflight = false;
+                    ed.workspace.bring_after_preflight = false;
                     ed.set_error(format!("no preflight steps — {why}"));
                 }
                 _ => ed.preflight_found_asking(root, packs.steps, local, set, always, told),
@@ -838,7 +838,7 @@ impl Editor {
         set: Set,
     ) {
         let all = [&packs[..], &local[..]].concat();
-        let told = told_before(self.session.preflight_kept.as_deref(), &root, &all, set);
+        let told = told_before(self.workspace.preflight_kept.as_deref(), &root, &all, set);
         self.preflight_found_asking(root, packs, local, set, false, told);
     }
 
@@ -857,7 +857,7 @@ impl Editor {
         told: Option<bool>,
     ) {
         if packs.is_empty() && local.is_empty() {
-            self.session.bring_after_preflight = false;
+            self.workspace.bring_after_preflight = false;
             return self.set_error(
                 "no preflight steps — no language pack knows this kind of project; add [preflight] steps = \
                  [{ name = \"…\", cmd = \"…\" }, …] to .tarae.toml",
@@ -870,7 +870,7 @@ impl Editor {
             return self.preflight_ask(root, steps, set, defaults);
         }
         if let Err(e) = self.preflight_run(steps, set) {
-            self.session.bring_after_preflight = false;
+            self.workspace.bring_after_preflight = false;
             self.set_error(e);
         }
     }
@@ -916,11 +916,11 @@ impl Editor {
     ) {
         self.offer_finished(id, Ok(()));
         if !yes {
-            self.session.bring_after_preflight = false;
+            self.workspace.bring_after_preflight = false;
             return self.set_status("preflight not run");
         }
         let listed = set.of(&steps);
-        if let Some(kept) = self.session.preflight_kept.clone() {
+        if let Some(kept) = self.workspace.preflight_kept.clone() {
             let (root, listed) = (root.clone(), listed.clone());
             self.events.jobs().background(move || {
                 let Some(key) = told_key(&root, &listed) else { return };
@@ -935,19 +935,19 @@ impl Editor {
             self.preflight_told.insert(root);
         }
         if let Err(e) = self.preflight_run(steps, set) {
-            self.session.bring_after_preflight = false;
+            self.workspace.bring_after_preflight = false;
             self.set_error(e);
         }
     }
 
     /// Where the preflight runs: the project.
     fn preflight_root(&self) -> std::path::PathBuf {
-        self.session.root.clone()
+        self.workspace.root.clone()
     }
 
     /// Err while a task runs (the panel is one run's).
     fn preflight_free(&self) -> Result<(), String> {
-        match self.session.task_run.as_ref().filter(|r| r.state == crate::task::State::Running) {
+        match self.workspace.task_run.as_ref().filter(|r| r.state == crate::task::State::Running) {
             Some(r) => Err(format!("{} is running — let it finish, or stop it (space m c)", r.task.name)),
             None => Ok(()),
         }
@@ -963,7 +963,7 @@ impl Editor {
         }
         // (it runs what's there outside the sandbox: what Claude's runs made that the sandbox keeps, looked at
         // first — G23)
-        if !self.session.made_protected.is_empty() {
+        if !self.workspace.made_protected.is_empty() {
             crate::tools::ask_made(self, crate::tools::MadeThen::Preflight { all, set });
             return Ok(());
         }
@@ -991,9 +991,9 @@ impl Editor {
                 }
             };
             match started {
-                Ok(generation) => ed.session.preflight = Some(Preflight::new(generation, &all, set, key)),
+                Ok(generation) => ed.workspace.preflight = Some(Preflight::new(generation, &all, set, key)),
                 Err(e) => {
-                    ed.session.bring_after_preflight = false;
+                    ed.workspace.bring_after_preflight = false;
                     ed.set_error(e);
                 }
             }
@@ -1003,11 +1003,11 @@ impl Editor {
 
     /// The task run `generation` ended — true if it was the preflight's (then its summary is said).
     pub fn preflight_done(&mut self, generation: u64) -> bool {
-        let Some(p) = self.session.preflight.as_mut().filter(|p| p.generation == generation) else {
+        let Some(p) = self.workspace.preflight.as_mut().filter(|p| p.generation == generation) else {
             return false;
         };
         p.finish();
-        let run = self.session.task_run.as_ref().filter(|r| r.generation() == generation);
+        let run = self.workspace.task_run.as_ref().filter(|r| r.generation() == generation);
         let places = run.map_or(0, |r| r.found.0 + r.found.1);
         let output = run.map(|r| r.output.clone()).unwrap_or_default();
         let (said, passed, title) = (p.said(places, &output), p.passed(), p.title);
@@ -1560,7 +1560,7 @@ mod tests {
         let soak = Step { from: ".tarae.local.toml".into(), full: true, ..step("soak", "echo soak") };
         let tarae = |root: &std::path::Path| {
             let mut ed = Editor::new(crate::config::Config::default());
-            (ed.session.root, ed.session.preflight_kept) = (root.to_path_buf(), Some(kept.clone()));
+            (ed.workspace.root, ed.workspace.preflight_kept) = (root.to_path_buf(), Some(kept.clone()));
             ed.config.preflight_local = vec![soak.clone()];
             ed
         };
@@ -1578,18 +1578,18 @@ mod tests {
         // `:preflight` as typed: its card, or its run (stopped: the test's `echo`)
         let asks = |ed: &mut Editor, set: Set, packs: fn(&std::path::Path) -> crate::packs::Defaults| {
             ed.preflight_start_with(set, false, packs).unwrap();
-            pump(ed, "a card or a run", &|ed| carded(ed) || ed.session.task_run.is_some());
+            pump(ed, "a card or a run", &|ed| carded(ed) || ed.workspace.task_run.is_some());
             let card = carded(ed);
             if !card {
-                ed.session.task_run = None;
+                ed.workspace.task_run = None;
             }
             card
         };
         let lines = || std::fs::read_to_string(&kept).map_or(0, |t| t.lines().count());
         let yes = |ed: &mut Editor, n: usize| {
             ed.offer_accept();
-            pump(ed, "kept after y, and run", &|ed| lines() == n && ed.session.task_run.is_some());
-            ed.session.task_run = None;
+            pump(ed, "kept after y, and run", &|ed| lines() == n && ed.workspace.task_run.is_some());
+            ed.workspace.task_run = None;
         };
         let mut ed = tarae(&repo);
         assert!(asks(&mut ed, Set::Quick, pack_a), "the first time: its card");
@@ -1673,18 +1673,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tarae-preflight-trace-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         let waits =
             "printf '    Blocking waiting for file lock on build directory\\n' >&2; sleep 0.2; echo built";
         ed.preflight_run(vec![step("first", waits), step("second", "exit 3")], Set::Quick).unwrap();
         let end = Instant::now() + crate::test_results::PATIENCE;
-        while ed.session.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running) {
+        while ed.workspace.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running) {
             assert!(Instant::now() < end, "it ended");
             if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(10)) {
                 ed.handle_event(ev);
             }
         }
-        let r = ed.session.task_run.as_ref().unwrap();
+        let r = ed.workspace.task_run.as_ref().unwrap();
         assert!(!r.output.iter().any(|l| l.1.contains("Blocking")), "{:?}", r.output);
         assert!(r.output.iter().any(|l| l.1 == "built"));
         let line = crate::trace::LOGGED
@@ -1715,11 +1715,11 @@ mod tests {
         let s = crate::scratch::Scratch::new("preflight-env");
         let run = |env: &[(&str, &str)], cmd: &str| {
             let mut ed = Editor::new(crate::config::Config::default());
-            ed.session.root = s.to_path_buf();
+            ed.workspace.root = s.to_path_buf();
             ed.claude_env = Some(env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect());
             ed.preflight_run(vec![step("test", cmd)], Set::Quick).unwrap();
             let end = Instant::now() + crate::test_results::PATIENCE;
-            while ed.session.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running) {
+            while ed.workspace.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running) {
                 assert!(Instant::now() < end, "it ended");
                 if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(10)) {
                     ed.handle_event(ev);
@@ -1749,7 +1749,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tarae-preflight-output-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         let failing = "echo 'running 3 tests'; echo 'test a ... ok'; echo 'test b ... FAILED'; echo 'failures:'; exit 101";
         let steps = vec![
             step("fmt", "echo formatted"),
@@ -1758,20 +1758,20 @@ mod tests {
         ];
         ed.preflight_run(steps, Set::Quick).unwrap();
         let end = Instant::now() + crate::test_results::PATIENCE;
-        while ed.session.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running) {
+        while ed.workspace.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running) {
             assert!(Instant::now() < end, "it ended");
             if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(10)) {
                 ed.handle_event(ev);
             }
         }
         // The output has the keys (a click on it, `C-w j`), its cursor at its end: `o` — the step in view selected
-        ed.session.at = crate::session::At::Slot;
+        ed.workspace.viewer.at = crate::workspace::At::Slot;
         ed.focus_sync();
         let key = |ed: &mut Editor, c: char| ed.handle_key(crate::key::Key::plain(crate::key::Code::Char(c)));
         key(&mut ed, 'o');
         let listed = ed.list_focused().map(|g| g.kind);
         assert_eq!(listed, Some(crate::pane::GroupKind::Preflight), "the steps' list has the keys");
-        assert_eq!(ed.session.preflight.as_ref().map(|p| p.selected), Some(2), "test bundled, in view");
+        assert_eq!(ed.workspace.preflight.as_ref().map(|p| p.selected), Some(2), "test bundled, in view");
         // …then the step above, and `o` there
         key(&mut ed, 'k');
         key(&mut ed, 'o');
@@ -1780,7 +1780,7 @@ mod tests {
         let text = ed.doc().text.to_string();
         assert_eq!(text, "running 3 tests\ntest a ... ok\ntest b ... FAILED\nfailures:\n", "its lines alone");
         assert_eq!(ed.cursor_line(), 2, "on its failure");
-        assert!(!ed.session.is_at(crate::session::At::Slot), "the keys in the buffer");
+        assert!(!ed.workspace.is_at(crate::workspace::At::Slot), "the keys in the buffer");
         // Any step by name
         crate::typed::execute(&mut ed, "preflight-output test bundled").unwrap();
         assert_eq!(ed.doc().title.as_deref(), Some("preflight · test bundled"));

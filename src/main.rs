@@ -167,7 +167,6 @@ mod secretnames;
 mod seeing;
 mod selection;
 mod session;
-mod sessionkeep;
 mod sessionpane;
 mod settings;
 mod sha256;
@@ -220,6 +219,8 @@ mod wasm;
 mod weave;
 mod web;
 mod whole;
+mod workspace;
+mod workspacekeep;
 mod worktree;
 mod wrap;
 mod writing;
@@ -392,13 +393,13 @@ fn main() -> Result<()> {
         }
     }
     // This repository's sessions from last time — a restart brought them already
-    if !editor.session_store.restored {
-        editor.sessions_restore();
+    if !editor.workspace_store.restored {
+        editor.workspaces_restore();
     }
     // Claude's notes from last time in this folder (the open files get them right away), and its turns, for
     // `space u` and `space v t` (a restart's, or ones a crash cut short) — the checkout tarae started in;
     // the other sessions' came back with them
-    editor.session_kept_back(0);
+    editor.workspace_kept_back(crate::event::WorkspaceId::HOME);
     // Unsaved edits a tarae that's gone kept (a crash, a kill) — a card each (`recovery.rs`)
     editor.recovery_scan();
     // Kept run homes no run needs any more — unused, replaced, their project gone (`runhomes.rs`; a worker's)

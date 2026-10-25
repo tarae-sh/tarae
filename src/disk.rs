@@ -261,7 +261,7 @@ type Stat = (DocId, Option<Stamp>, Option<Stamp>, Option<Rope>);
 /// ever (the review of frictions36: one batch for the editor quieted every session's).
 #[derive(Debug)]
 pub struct DiskBatch {
-    session: crate::event::SessionId,
+    session: crate::event::WorkspaceId,
     what: String,
     /// Its actions under way, each by its token (`disk_batch_start`): one ended is that one, never another's.
     open: Vec<u64>,
@@ -374,8 +374,8 @@ impl Editor {
         let mut said: Vec<(DocId, String, bool)> = Vec::new();
         // (each reload or deletion, by document: counted into its own session's batch)
         let mut counted: Vec<(DocId, bool)> = Vec::new();
-        let moving: Vec<std::path::PathBuf> = std::iter::once(&self.session)
-            .chain(&self.sessions)
+        let moving: Vec<std::path::PathBuf> = std::iter::once(&self.workspace)
+            .chain(&self.workspaces)
             .filter(|l| l.moving.is_some())
             .map(|l| l.root.clone())
             .collect();
@@ -484,10 +484,12 @@ impl Editor {
     }
 
     /// The session document `id` is of (the one in front when none says so).
-    fn doc_session(&self, id: DocId) -> crate::event::SessionId {
-        match self.session.docs.contains(&id) {
-            true => self.session.id,
-            false => self.sessions.iter().find(|l| l.docs.contains(&id)).map_or(self.session.id, |l| l.id),
+    fn doc_session(&self, id: DocId) -> crate::event::WorkspaceId {
+        match self.workspace.docs.contains(&id) {
+            true => self.workspace.id,
+            false => {
+                self.workspaces.iter().find(|l| l.docs.contains(&id)).map_or(self.workspace.id, |l| l.id)
+            }
         }
     }
 
@@ -495,7 +497,7 @@ impl Editor {
     /// git-tab action: `batch_token`): that session's reloads are one line (`DiskBatch`). One under way there
     /// already: both are.
     pub(crate) fn disk_batch_start(&mut self, what: &str, token: u64) {
-        let session = self.session.id;
+        let session = self.workspace.id;
         match self.disk_batch.iter_mut().find(|b| b.session == session) {
             Some(b) => {
                 b.open.push(token);
@@ -561,12 +563,13 @@ impl Editor {
                 continue;
             }
             let msg = format!("{}: {}", b.what, parts.join(", "));
-            if self.sessions.is_empty() {
+            if self.workspaces.is_empty() {
                 self.set_status(msg);
                 continue;
             }
-            let behind = self.sessions.iter_mut().find(|l| l.id == b.session && b.session != self.session.id);
-            let label = behind.as_deref().map_or_else(|| self.session.label(), |l| l.label()).to_string();
+            let behind =
+                self.workspaces.iter_mut().find(|l| l.id == b.session && b.session != self.workspace.id);
+            let label = behind.as_deref().map_or_else(|| self.workspace.label(), |l| l.label()).to_string();
             let msg = format!("{label} · {msg}");
             match behind {
                 Some(l) => {
@@ -580,21 +583,21 @@ impl Editor {
 
     /// What became of document `id` on disk, said for its session (#59): with several sessions, named after
     /// it; shown only when it's the one in front — a session behind's goes to `:messages`, and its tab, the
-    /// chip and its row in the list get a `•` (#6, `Session.reloaded`).
+    /// chip and its row in the list get a `•` (#6, `Workspace.reloaded`).
     fn disk_said(&mut self, id: DocId, msg: String, warn: bool, quiet: bool) {
-        if self.sessions.is_empty() {
+        if self.workspaces.is_empty() {
             return match (warn, quiet) {
                 (true, _) => self.set_warning(msg),
                 (false, true) => self.recorded(crate::editor::ToastKind::Info, msg),
                 (false, false) => self.set_status(msg),
             };
         }
-        let front = self.session.docs.contains(&id);
-        let mut behind = self.sessions.iter_mut().find(|l| l.docs.contains(&id) && !front);
+        let front = self.workspace.docs.contains(&id);
+        let mut behind = self.workspaces.iter_mut().find(|l| l.docs.contains(&id) && !front);
         if let Some(l) = behind.as_deref_mut() {
             l.reloaded += 1;
         }
-        let label = behind.as_deref().map_or_else(|| self.session.label(), |l| l.label()).to_string();
+        let label = behind.as_deref().map_or_else(|| self.workspace.label(), |l| l.label()).to_string();
         let msg = format!("{label} · {msg}");
         let kind = if warn { crate::editor::ToastKind::Warning } else { crate::editor::ToastKind::Info };
         match (behind.is_some() || quiet, warn) {
@@ -668,10 +671,10 @@ impl Editor {
         d.agent_writes = None;
         // (Claude's change, so saved as one: beneath the project through no link — one outside it, accepted on
         // its review, by path)
-        let inside = d.path.as_deref().is_some_and(|p| crate::paths::written_inside(&self.session.root, p));
+        let inside = d.path.as_deref().is_some_and(|p| crate::paths::written_inside(&self.workspace.root, p));
         let then = crate::saver::Then::Auto(" — Claude's write didn't come");
         let saved = match inside {
-            true => self.save_beneath(id, self.session.root.clone(), then),
+            true => self.save_beneath(id, self.workspace.root.clone(), then),
             false => self.save_in_background(id, false, then),
         };
         if let Err(e) = saved {
@@ -891,7 +894,7 @@ mod tests {
             let (config, _) = crate::config::parse(&cfg);
             let mut ed = Editor::new(config);
             ed.open(&file).unwrap();
-            ed.session.root = dir.clone();
+            ed.workspace.root = dir.clone();
             let (id, cid) = (ed.doc().id, ed.doc().lsp.client.expect("attached"));
             ed.on_lsp_message(cid, serde_json::json!({ "id": 0, "result": { "capabilities": {} } }));
             let file = std::fs::canonicalize(&file).unwrap();
@@ -954,19 +957,19 @@ mod tests {
         let file = root.join("a.txt");
         std::fs::write(&file, "one\n").unwrap();
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.root = root.clone();
+        ed.workspace.root = root.clone();
         ed.open(&file).unwrap();
         for c in ['i', 'x'] {
             ed.handle_key(crate::key::Key::plain(crate::key::Code::Char(c)));
         }
         ed.handle_key(crate::key::Key::plain(crate::key::Code::Esc));
         let (id, known) = (ed.doc().id, ed.doc().disk);
-        ed.session.moving = Some("main".into());
+        ed.workspace.moving = Some("main".into());
         std::fs::write(&file, "one, mid-rebase\n").unwrap();
         ed.on_disk(vec![(id, known, stamp(&file), Some("one, mid-rebase\n".into()))]);
         assert!(!ed.doc().disk_conflict && ed.doc().disk == known, "left alone while it moves");
         assert!(!ed.messages.iter().any(|m| m.2.contains("changed on disk")));
-        ed.session.moving = None;
+        ed.workspace.moving = None;
         ed.on_disk(vec![(id, known, stamp(&file), Some("one, mid-rebase\n".into()))]);
         assert!(ed.doc().disk_conflict, "outside a move it's a conflict");
     }
@@ -1126,22 +1129,22 @@ mod tests {
         let task = crate::task::Task { name: "cargo test".into(), cmd: "true".into(), cwd: s.dir.clone() };
         let mut run = crate::task::Run::for_test(task);
         (run.state, run.by_claude) = (crate::task::State::Running, true);
-        s.ed.session.task_run = Some(run);
+        s.ed.workspace.task_run = Some(run);
         s.outside("fn b() {}\n");
         s.pump(PAST_QUIET);
         assert_eq!(s.saves(), 0, "not while it builds");
         // Its end comes as an event, as a real run's does
         s.ed.events.jobs().spawn(|| {
             |ed: &mut Editor| {
-                if let Some(r) = ed.session.task_run.as_mut() {
+                if let Some(r) = ed.workspace.task_run.as_mut() {
                     r.state = crate::task::State::Passed;
                 }
             }
         });
         assert_eq!(s.saves_reach(1, true), 1, "at its end");
         // The user's own run doesn't hold it
-        s.ed.session.task_run.as_mut().unwrap().state = crate::task::State::Running;
-        s.ed.session.task_run.as_mut().unwrap().by_claude = false;
+        s.ed.workspace.task_run.as_mut().unwrap().state = crate::task::State::Running;
+        s.ed.workspace.task_run.as_mut().unwrap().by_claude = false;
         s.outside("fn c() {}\n");
         assert_eq!(s.saves_reach(2, true), 2);
         std::fs::remove_dir_all(&s.dir).ok();
@@ -1182,11 +1185,11 @@ mod tests {
         }
         let dir = std::fs::canonicalize(&dir).unwrap();
         let mut ed = Editor::new(Config::default());
-        ed.session.root = dir.join("front");
-        let back = ed.session_open(&dir.join("back")).unwrap();
+        ed.workspace.root = dir.join("front");
+        let back = ed.workspace_open(&dir.join("back")).unwrap();
         ed.open(&dir.join("back/back.txt")).unwrap();
         let back_doc = ed.doc().id;
-        assert!(ed.session_switch(0));
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME));
         ed.open(&dir.join("front/front.txt")).unwrap();
         let front_doc = ed.doc().id;
         let stats: Vec<Stat> = [(front_doc, "front"), (back_doc, "back")]
@@ -1201,9 +1204,9 @@ mod tests {
         ed.toasts.clear();
         ed.on_disk(stats);
         let shown: Vec<String> = ed.toasts.iter().map(|t| t.text.clone()).collect();
-        let front = ed.session.label().to_string();
+        let front = ed.workspace.label().to_string();
         assert_eq!(shown, [format!("{front} · front.txt reloaded from disk · +1 lines")]);
-        let back_label = ed.sessions.iter().find(|l| l.id == back).unwrap().label().to_string();
+        let back_label = ed.workspaces.iter().find(|l| l.id == back).unwrap().label().to_string();
         assert!(
             ed.messages
                 .iter()
@@ -1219,8 +1222,8 @@ mod tests {
             parser.process(&bytes);
             parser.screen().contents()
         };
-        assert_eq!(ed.sessions.iter().find(|l| l.id == back).unwrap().reloaded, 1);
-        assert_eq!(ed.session.reloaded, 0, "the front's was said");
+        assert_eq!(ed.workspaces.iter().find(|l| l.id == back).unwrap().reloaded, 1);
+        assert_eq!(ed.workspace.reloaded, 0, "the front's was said");
         // (the status line: the screen's last row)
         let chip = |ed: &mut Editor| screen(ed).lines().nth(23).unwrap_or_default().to_string();
         assert!(chip(&mut ed).contains(&format!("{front} •1")), "{}", chip(&mut ed));
@@ -1229,15 +1232,15 @@ mod tests {
         let row = s.lines().find(|l| l.contains(&back_label)).unwrap_or_default();
         assert!(row.contains("• 1 reloaded"), "{s}");
         ed.picker = None;
-        assert!(ed.session_switch(back));
-        assert!(ed.session_switch(0));
+        assert!(ed.workspace_switch(back));
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME));
         assert!(!chip(&mut ed).contains('•'), "seen: {}", chip(&mut ed));
         // A round started while the other session was in front lands in the one in front now — said there,
         // named after it (not swapped into the one that started it)
-        assert!(ed.session_switch(back));
+        assert!(ed.workspace_switch(back));
         std::fs::write(dir.join("front/front.txt"), "one\ntwo\nthree\n").unwrap();
         ed.disk_poll(false);
-        assert!(ed.session_switch(0));
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME));
         ed.toasts.clear();
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
         let reloaded = |ed: &Editor| ed.docs.iter().any(|d| d.id == front_doc && d.text.len_lines() == 4);
@@ -1417,8 +1420,8 @@ mod tests {
         }
         let mut ed = Editor::new(Config::default());
         ed.open(&front.join("f.txt")).unwrap();
-        let id = ed.session_add(back.clone());
-        ed.with_session(id, |ed| {
+        let id = ed.workspace_add(back.clone());
+        ed.with_workspace(id, |ed| {
             ed.open(&back.join("f.txt")).unwrap();
             ed.disk_batch_start("rebase", 7);
         });

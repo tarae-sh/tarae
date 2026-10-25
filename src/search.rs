@@ -180,7 +180,7 @@ impl SearchHits {
 impl Editor {
     /// The code's `/`·`?` being typed — not a view mode's (its prompt searches its own rows, `view::refresh_search`).
     fn code_search_prompt(&self) -> Option<&crate::editor::Prompt> {
-        let viewing = self.session.view.as_ref().is_some_and(|v| v.prompt)
+        let viewing = self.workspace.viewer.view.as_ref().is_some_and(|v| v.prompt)
             || crate::floatlist::searching(self)
             || crate::chatdoc::transcript(self).is_some_and(|t| t.keyed && t.pane.prompt)
             || crate::rundoc::keyed(self).is_some_and(|(_, o)| o.prompt);

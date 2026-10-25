@@ -64,12 +64,12 @@ fn run(choices: Choices) -> Vec<String> {
     let dir = crate::scratch::Scratch::new("sim-writing");
     std::fs::write(dir.join("a.rs"), TEXT).unwrap();
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = dir.to_path_buf();
+    ed.workspace.root = dir.to_path_buf();
     ed.open(&dir.join("a.rs")).unwrap();
     let mut c = crate::chat::Chat::new();
     let _claude = crate::chat::stand_in(&mut c);
     c.follow.on = true;
-    ed.session.chat = Some(c);
+    ed.workspace.claude.chat = Some(c);
     crate::term::render(&mut ed, &mut Vec::new(), 100, 32).unwrap();
     let world = RefCell::new(World::default());
     begin(&mut ed, &mut world.borrow_mut(), 2);
@@ -87,14 +87,14 @@ fn texts(ed: &Editor) -> Vec<(crate::document::DocId, String)> {
 }
 
 fn generation(ed: &Editor) -> u64 {
-    ed.session.chat.as_ref().map_or(0, crate::chat::Chat::generation)
+    ed.workspace.claude.chat.as_ref().map_or(0, crate::chat::Chat::generation)
 }
 
 /// A turn begins (a message sent, as the stand-in has it): its edit replaces lines `line` and the next of the text as
 /// it is now, keeping the first (its head moves from line to line as it's written) — the keys in the order the
 /// model writes them.
 fn begin(ed: &mut Editor, w: &mut World, line: usize) {
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     c.state = crate::chat::State::Thinking;
     let doc = ed.doc();
     let last = crate::movement::last_line(&doc.text);
@@ -149,7 +149,7 @@ fn led_right(ed: &Editor, could: bool) -> Result<(), String> {
 }
 
 fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
-    let busy = ed.session.chat.as_ref().is_some_and(|c| c.state != crate::chat::State::Idle);
+    let busy = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.state != crate::chat::State::Idle);
     let g = generation(ed);
     w.keyed = false;
     w.inputs += 1;
@@ -174,8 +174,8 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
             scan.feed(&piece);
             let d = Delta { call, tool: Tool::Edit, pieces: scan.take(), done: end == chars.len() };
             let region = ed.keys_to().region.name().to_string();
-            let could =
-                ed.session.chat.as_ref().is_some_and(|c| c.follow.active()) && crate::follow::free(ed);
+            let could = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.follow.active())
+                && crate::follow::free(ed);
             let before = (cursor(ed), could, crate::follow::view_line(ed), ed.doc().id);
             crate::chat::stream_event(ed, g, StreamEv::Writing(d));
             if ed.keys_to().region.name() != region {
@@ -218,7 +218,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
             let at = cursor(ed);
             keys(ed, k);
             // (`y`/`n` answer a review, which may lead the cursor to what it took: follow's, not yours)
-            let paused = ed.session.chat.as_ref().is_none_or(|c| !c.follow.active());
+            let paused = ed.workspace.claude.chat.as_ref().is_none_or(|c| !c.follow.active());
             if leading && cursor(ed) != at && !paused {
                 w.led_wrong = Some(format!("keys {k} moved the cursor and follow still leads"));
             }
@@ -285,8 +285,8 @@ fn held(ed: &Editor, w: &mut World) -> Result<(), String> {
             return Err(format!("{} unsaved on disk, its buffer saying it's saved", path.display()));
         }
     }
-    let review = ed.session.review.as_ref();
-    let c = ed.session.chat.as_ref().ok_or("the chat went")?;
+    let review = ed.workspace.claude.review.as_ref();
+    let c = ed.workspace.claude.chat.as_ref().ok_or("the chat went")?;
     for d in &ed.docs {
         let Some(shown) = crate::writing::shown(d) else { continue };
         if review.is_some_and(|r| r.doc_id == d.id) {
@@ -351,11 +351,11 @@ fn changed(r: &crate::codeview::Row) -> bool {
 fn print(ed: &Editor) -> String {
     let rows: usize =
         ed.docs.iter().filter_map(crate::writing::shown).flat_map(|s| &s.blocks).map(|b| b.rows.len()).sum();
-    let c = ed.session.chat.as_ref();
+    let c = ed.workspace.claude.chat.as_ref();
     format!(
         "{} · {:?} · {rows} rows drawn · review {}",
         ed.keys_to().region.name(),
         c.map(|c| c.state),
-        if ed.session.review.is_some() { "open" } else { "none" }
+        if ed.workspace.claude.review.is_some() { "open" } else { "none" }
     )
 }

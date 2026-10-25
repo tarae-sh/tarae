@@ -1035,7 +1035,7 @@ pub fn def_answered(ed: &mut Editor, n: u64, cid: ClientId, result: Result<&Valu
     });
     // (a shared server answers by name for every checkout it serves — only the asking session's are its)
     let roots = ed.client(cid).map(|c| c.roots.clone()).unwrap_or_default();
-    let mine = ed.session.root.clone();
+    let mine = ed.workspace.root.clone();
     let Some(a) = ed.lsp.tool_defs.get_mut(&n) else { return };
     let Some(i) = a.waiting.iter().position(|w| w.0 == cid) else { return };
     let (_, server) = a.waiting.remove(i);
@@ -1133,7 +1133,7 @@ impl Lines {
         Lines { root, real: std::sync::OnceLock::new(), gate }
     }
 
-    /// For session `ed.session`'s chat.
+    /// For session `ed.workspace`'s chat.
     pub fn of(ed: &Editor) -> Lines {
         Lines::new(project_root(ed), crate::reads::Gate::of(ed, Vec::new()))
     }
@@ -1632,7 +1632,7 @@ pub struct DiagWait {
     since: std::time::Instant,
     until: std::time::Instant,
     /// The session whose chat asked — answered there.
-    session: crate::event::SessionId,
+    session: crate::event::WorkspaceId,
 }
 
 /// The tool: the files checked on a worker, then what's published for them — now, or once their servers
@@ -1651,8 +1651,8 @@ pub fn diagnostics(ed: &mut Editor, call: Call, args: &Value) -> Result<(), Stri
     };
     let (paths, which) = match given.is_empty() {
         false => (given, ""),
-        true if !ed.session.checkpoints.turn.is_empty() => (
-            ed.session.checkpoints.turn.iter().map(|t| t.path.clone()).collect(),
+        true if !ed.workspace.claude.checkpoints.turn.is_empty() => (
+            ed.workspace.claude.checkpoints.turn.iter().map(|t| t.path.clone()).collect(),
             " (the files you edited this turn)",
         ),
         true => {
@@ -1684,7 +1684,7 @@ pub fn diagnostics(ed: &mut Editor, call: Call, args: &Value) -> Result<(), Stri
                 which,
                 since,
                 until: since + wait,
-                session: ed.session.id,
+                session: ed.workspace.id,
             };
             if wait.is_zero() {
                 let text = diags_text(ed, &w, None);
@@ -1712,24 +1712,24 @@ pub fn diagnostics_moved(ed: &mut Editor) {
         return;
     }
     // (a session that's gone has no chat to answer)
-    let sessions: Vec<crate::event::SessionId> =
-        std::iter::once(&ed.session).chain(&ed.sessions).map(|l| l.id).collect();
+    let sessions: Vec<crate::event::WorkspaceId> =
+        std::iter::once(&ed.workspace).chain(&ed.workspaces).map(|l| l.id).collect();
     ed.lsp.tool_diags.retain(|w| sessions.contains(&w.session));
-    let mut asking: Vec<crate::event::SessionId> = ed.lsp.tool_diags.iter().map(|w| w.session).collect();
+    let mut asking: Vec<crate::event::WorkspaceId> = ed.lsp.tool_diags.iter().map(|w| w.session).collect();
     crate::sorting::sort(&mut asking);
     asking.dedup();
     for session in asking {
-        if session == ed.session.id {
+        if session == ed.workspace.id {
             diagnostics_moved_here(ed);
         } else if !ed.background() {
-            ed.with_session(session, diagnostics_moved_here);
+            ed.with_workspace(session, diagnostics_moved_here);
         }
     }
 }
 
-/// `diagnostics_moved` for the calls of the session in `ed.session`.
+/// `diagnostics_moved` for the calls of the session in `ed.workspace`.
 fn diagnostics_moved_here(ed: &mut Editor) {
-    let (now, here) = (std::time::Instant::now(), ed.session.id);
+    let (now, here) = (std::time::Instant::now(), ed.workspace.id);
     let (mine, others): (Vec<DiagWait>, Vec<DiagWait>) =
         std::mem::take(&mut ed.lsp.tool_diags).into_iter().partition(|w| w.session == here);
     ed.lsp.tool_diags = others;
@@ -2608,7 +2608,7 @@ fn files_text(rows: Vec<(String, bool)>, tests: bool, kind: Output, offset: usiz
 
 /// The project — where both tools look.
 pub(crate) fn project_root(ed: &Editor) -> PathBuf {
-    ed.session.root.clone()
+    ed.workspace.root.clone()
 }
 
 /// `path` relative to `root` when inside it.
@@ -2669,7 +2669,7 @@ mod tests {
     #[test]
     fn a_call_answered_behind_leaves_the_news_drawn() {
         let mut ed = Editor::new(crate::config::Config::default());
-        let back = ed.session_add(std::env::temp_dir());
+        let back = ed.workspace_add(std::env::temp_dir());
         let now = std::time::Instant::now();
         let call = Call::of(1, "r", json!(1));
         let (paths, unread, which, session) = (Vec::new(), Vec::new(), "", back);

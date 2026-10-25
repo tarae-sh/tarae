@@ -19,7 +19,7 @@ screen = [
 
 # A session's plans, measurements and commit drafts (target/sb/, git-ignored) go to the main checkout's
 # target/sb/sessions/<name>/ when it ends — git worktree remove deletes ignored files too
-[session]
+[workspace]
 keep = ["target/sb"]
 
 [llm]

@@ -253,18 +253,18 @@ fn a_ping_keeps_the_cache_warm_from_its_request_at_its_own_cost() {
 #[test]
 fn what_waits_is_read_from_the_session() {
     let mut ed = crate::editor::Editor::new(crate::config::Config::default());
-    assert_eq!(back(&ed.session), None);
-    let root = ed.session.root.clone();
-    ed.session.reviewer =
+    assert_eq!(back(&ed.workspace), None);
+    let root = ed.workspace.root.clone();
+    ed.workspace.reviewer =
         Some(crate::reviewer::Reviewer::for_test(root, crate::reviewer::State::Reading, Vec::new(), ""));
-    assert_eq!(back(&ed.session), Some(Back::UnderReview));
-    ed.session.reviewer.as_mut().unwrap().state = crate::reviewer::State::Done;
-    assert_eq!(back(&ed.session), None, "done reading: nothing waits on it");
+    assert_eq!(back(&ed.workspace), Some(Back::UnderReview));
+    ed.workspace.reviewer.as_mut().unwrap().state = crate::reviewer::State::Done;
+    assert_eq!(back(&ed.workspace), None, "done reading: nothing waits on it");
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     crate::chat::open(&mut ed);
-    ed.session.chat.as_mut().unwrap().queued = Some("next".into());
-    assert_eq!(back(&ed.session), Some(Back::Queued));
+    ed.workspace.claude.chat.as_mut().unwrap().queued = Some("next".into());
+    assert_eq!(back(&ed.workspace), Some(Back::Queued));
 }
 
 /// The ping's command line is the chat process's own with the fork's three, and the model it has now.
@@ -378,14 +378,14 @@ fn until(ed: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) {
 fn waiting(place: &Place) -> Editor {
     let mut ed = place.editor();
     crate::chat::open(&mut ed);
-    ed.session.chat.as_mut().unwrap().input = "hello".into();
+    ed.workspace.claude.chat.as_mut().unwrap().input = "hello".into();
     crate::chat::send(&mut ed);
     until(&mut ed, "the turn", |ed| {
-        ed.session.chat.as_ref().is_some_and(|c| !c.busy())
-            && ed.session.usage.conv.as_ref().is_some_and(|c| c.ttl.is_some())
+        ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.busy())
+            && ed.workspace.claude.usage.conv.as_ref().is_some_and(|c| c.ttl.is_some())
     });
     let near = crate::usage::now_ms() - Ttl::Hour1.ms() + 4 * 60_000;
-    ed.session.usage.conv.as_mut().unwrap().touched_ms = Some(near);
+    ed.workspace.claude.usage.conv.as_mut().unwrap().touched_ms = Some(near);
     ed
 }
 
@@ -396,20 +396,20 @@ fn waiting(place: &Place) -> Editor {
 fn a_ping_forks_the_conversation_and_says_what_it_cost() {
     let place = Place::new("ping");
     let mut ed = waiting(&place);
-    let before = ed.session.usage.cold_at().unwrap();
+    let before = ed.workspace.claude.usage.cold_at().unwrap();
     // (no ping yet: the turn's cost alone on the row keeps its short form somewhere)
     let short = (18..160).map(|w| row_text(&ed, w)).any(|r| r.contains("≈$1.00") && !r.contains("turn"));
     assert!(short, "`≈$1.00` alone");
     // Nothing waits on you: nothing goes
     woke(&mut ed);
-    assert!(ed.session.warm.ping.is_none() && place.argv(1).is_empty(), "not expected back");
+    assert!(ed.workspace.claude.warm.ping.is_none() && place.argv(1).is_empty(), "not expected back");
     // Marked, with a model this chat switched to since it started (`:model`): a ping — on that model, not the
     // setting another session's `:model` saved since
     crate::models::set(&mut ed, "claude-later").unwrap();
     ed.config.llm.model = Some("claude-other".into());
     mark(&mut ed, Some(true));
-    assert!(ed.session.warm.ping.is_some(), "inside the window: at once");
-    until(&mut ed, "the ping's end", |ed| ed.session.warm.ping.is_none());
+    assert!(ed.workspace.claude.warm.ping.is_some(), "inside the window: at once");
+    until(&mut ed, "the ping's end", |ed| ed.workspace.claude.warm.ping.is_none());
     // Its command line: the chat's, forked, on the model of now
     let (chat, fork) = (place.argv(0), place.argv(1));
     let model = fork.iter().position(|a| a == "--model").expect("a model");
@@ -437,7 +437,7 @@ fn a_ping_forks_the_conversation_and_says_what_it_cost() {
     assert_eq!(place.answer(1, "kw-call")["mcp_response"]["result"]["isError"], true);
     assert_eq!(place.answer(1, "kw-edit")["behavior"], "deny");
     // Kept warm: from its request, at its own cost, said
-    let u = &ed.session.usage;
+    let u = &ed.workspace.claude.usage;
     let k = u.stretch();
     assert_eq!(k.len(), 1);
     assert!((k[0].cost.unwrap() - 0.12).abs() < 1e-9, "{:?}", k[0].cost);
@@ -479,7 +479,7 @@ fn a_ping_forks_the_conversation_and_says_what_it_cost() {
     let report = crate::usage::report("s", u, &ed.limits, &[], crate::usage::now_ms());
     assert!(report.contains("## Kept warm") && report.contains("marked"), "{report}");
     let state =
-        crate::uistate::UsageState::of_session(&ed.session, &ed.config.llm, &ed.limits, 0).unwrap().json();
+        crate::uistate::UsageState::of_session(&ed.workspace, &ed.config.llm, &ed.limits, 0).unwrap().json();
     assert_eq!(state["keep_warm"]["kept"][0]["cache_read"], 9000, "{state}");
     assert_eq!(state["keep_warm"]["marked"], true);
     let told = |ed: &Editor| ed.toasts.iter().any(|t| t.text.contains("Claude's cache kept warm: read 9k"));
@@ -487,11 +487,14 @@ fn a_ping_forks_the_conversation_and_says_what_it_cost() {
     assert!(!ed.toasts.iter().any(|t| t.text.contains("didn't match")), "it read the cache");
     // The next one waits for its window — unless you ask for it now
     woke(&mut ed);
-    assert!(ed.session.warm.ping.is_none(), "an hour from now");
+    assert!(ed.workspace.claude.warm.ping.is_none(), "an hour from now");
     now(&mut ed).expect("asked");
     assert!(now(&mut ed).is_err(), "one at a time");
-    until(&mut ed, "the asked ping's end", |ed| ed.session.warm.ping.is_none());
-    assert_eq!(ed.session.usage.stretch().iter().map(|k| k.why).collect::<Vec<_>>(), ["marked", "asked"]);
+    until(&mut ed, "the asked ping's end", |ed| ed.workspace.claude.warm.ping.is_none());
+    assert_eq!(
+        ed.workspace.claude.usage.stretch().iter().map(|k| k.why).collect::<Vec<_>>(),
+        ["marked", "asked"]
+    );
 }
 
 /// A turn waiting on you — a tool call of its unanswered (a review, a card, a run) — sends no request until it's
@@ -500,15 +503,15 @@ fn a_ping_forks_the_conversation_and_says_what_it_cost() {
 fn a_turn_waiting_on_a_tool_call_is_not_a_request_in_flight() {
     let place = Place::new("waits");
     let mut ed = waiting(&place);
-    let busy = |ed: &Editor| facts(&ed.session, &ed.config.llm, &ed.limits, 0).busy;
+    let busy = |ed: &Editor| facts(&ed.workspace, &ed.config.llm, &ed.limits, 0).busy;
     assert!(!busy(&ed), "idle");
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
     assert!(busy(&ed), "a request in flight");
     let call = crate::chat::Called { id: "t1".into(), name: "mcp__tarae__edit".into(), input: json!({}) };
-    ed.session.chat.as_mut().unwrap().calls.push(call);
+    ed.workspace.claude.chat.as_mut().unwrap().calls.push(call);
     assert!(!busy(&ed), "waiting for its call's result");
-    ed.session.warm.checking = true;
+    ed.workspace.claude.warm.checking = true;
     assert!(busy(&ed), "a ping's check under way");
 }
 
@@ -525,25 +528,27 @@ fn a_ping_waits_for_the_projects_claude_settings_to_hold() {
     ed.config.llm.chat_settings = true;
     crate::chat::open(&mut ed);
     until(&mut ed, "the settings read", |ed| {
-        ed.session.chat.as_ref().is_some_and(|c| c.settings.seen.is_some())
+        ed.workspace.claude.chat.as_ref().is_some_and(|c| c.settings.seen.is_some())
     });
-    ed.session.chat.as_mut().unwrap().input = "hello".into();
+    ed.workspace.claude.chat.as_mut().unwrap().input = "hello".into();
     crate::chat::send(&mut ed);
     until(&mut ed, "the turn", |ed| {
-        ed.session.chat.as_ref().is_some_and(|c| !c.busy())
-            && ed.session.usage.conv.as_ref().is_some_and(|c| c.ttl.is_some())
+        ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.busy())
+            && ed.workspace.claude.usage.conv.as_ref().is_some_and(|c| c.ttl.is_some())
     });
     let starts = |p: &Place| (0..9).filter(|n| !p.argv(*n).is_empty()).count();
     assert_eq!(starts(&place), 1, "the chat");
     now(&mut ed).expect("asked");
-    until(&mut ed, "the ping", |ed| !ed.session.warm.checking && ed.session.warm.ping.is_none());
+    until(&mut ed, "the ping", |ed| {
+        !ed.workspace.claude.warm.checking && ed.workspace.claude.warm.ping.is_none()
+    });
     assert_eq!(starts(&place), 2, "held back as the chat's claude was started: it went");
     // What the gate saw is no longer what's there (a change its watch hasn't read yet)
-    let seen = ed.session.chat.as_mut().unwrap().settings.seen.as_mut().unwrap();
+    let seen = ed.workspace.claude.chat.as_mut().unwrap().settings.seen.as_mut().unwrap();
     seen.file = place.root.join(".claude/other.json");
     now(&mut ed).expect("asked");
-    until(&mut ed, "the check", |ed| !ed.session.warm.checking);
-    assert!(ed.session.warm.ping.is_none() && starts(&place) == 2, "no fork");
+    until(&mut ed, "the check", |ed| !ed.workspace.claude.warm.checking);
+    assert!(ed.workspace.claude.warm.ping.is_none() && starts(&place) == 2, "no fork");
     assert!(ed.toasts.iter().any(|t| t.text.contains("settings changed since Claude started")), "said");
 }
 
@@ -555,10 +560,10 @@ fn a_ping_on_another_credential_sends_nothing() {
     let mut ed = waiting(&place);
     std::fs::write(place.root.join("fork.source"), "ANTHROPIC_API_KEY").unwrap();
     now(&mut ed).expect("asked");
-    until(&mut ed, "the ping's end", |ed| ed.session.warm.ping.is_none());
+    until(&mut ed, "the ping's end", |ed| ed.workspace.claude.warm.ping.is_none());
     let sent = std::fs::read_to_string(place.root.join("stdin.1")).unwrap_or_default();
     assert!(sent.contains("tarae-init") && !sent.contains("\"type\":\"user\""), "no message: {sent}");
-    assert!(ed.session.usage.stretch().is_empty(), "nothing kept");
+    assert!(ed.workspace.claude.usage.stretch().is_empty(), "nothing kept");
     assert!(ed.toasts.iter().any(|t| t.text.starts_with("Couldn't keep Claude's cache warm")), "said");
 }
 
@@ -598,25 +603,28 @@ fn a_ping_behind_lands_in_its_own_session() {
     let mut ed = waiting(&place);
     ed.claude_settings_gate = true;
     ed.config.llm.chat_settings = true;
-    let a = ed.session.id;
+    let a = ed.workspace.id;
     // (the gate's first read, as the chat's start would have had it)
-    ed.session.chat.as_mut().unwrap().settings.seen = None;
-    let read = |ed: &Editor| ed.session.chat.as_ref().is_some_and(|c| c.settings.seen.is_some());
+    ed.workspace.claude.chat.as_mut().unwrap().settings.seen = None;
+    let read = |ed: &Editor| ed.workspace.claude.chat.as_ref().is_some_and(|c| c.settings.seen.is_some());
     crate::claudetrust::ready(&mut ed, crate::chat::CHAT_SETTINGS);
     until(&mut ed, "the settings read", read);
     crate::claudetrust::ready(&mut ed, crate::chat::CHAT_SETTINGS);
     now(&mut ed).expect("asked");
-    assert!(ed.session.warm.checking, "its check under way");
+    assert!(ed.workspace.claude.warm.checking, "its check under way");
     // Another session to the front before the check lands
-    let b = ed.session_open(other.path()).unwrap();
-    assert_eq!(ed.session.id, b);
+    let b = ed.workspace_open(other.path()).unwrap();
+    assert_eq!(ed.workspace.id, b);
     let a_of = |ed: &Editor| -> (bool, bool, usize) {
-        let s = ed.sessions.iter().find(|s| s.id == a).expect("behind");
-        (s.warm.checking, s.warm.ping.is_some(), s.usage.stretch().len())
+        let s = ed.workspaces.iter().find(|s| s.id == a).expect("behind");
+        (s.claude.warm.checking, s.claude.warm.ping.is_some(), s.claude.usage.stretch().len())
     };
     until(&mut ed, "the ping kept behind", |ed| a_of(ed) == (false, false, 1));
-    assert!(!ed.session.warm.checking && ed.session.warm.ping.is_none(), "nothing of it in front");
-    assert!(ed.session.usage.kept.is_empty(), "the front's usage untouched");
+    assert!(
+        !ed.workspace.claude.warm.checking && ed.workspace.claude.warm.ping.is_none(),
+        "nothing of it in front"
+    );
+    assert!(ed.workspace.claude.usage.kept.is_empty(), "the front's usage untouched");
     // (the gate's read may start the chat again as the fork starts — two starts can take one `argv.<n>`: the
     // stand-in's own line per fork counts them)
     let forks = std::fs::read_to_string(place.root.join("forks")).unwrap_or_default();
@@ -630,13 +638,13 @@ fn a_ping_that_missed_the_cache_is_a_warning() {
     let mut ed = waiting(&place);
     std::fs::write(place.root.join("fork.miss"), "").unwrap();
     mark(&mut ed, Some(true));
-    until(&mut ed, "the ping's end", |ed| ed.session.warm.ping.is_none());
+    until(&mut ed, "the ping's end", |ed| ed.workspace.claude.warm.ping.is_none());
     assert!(ed.toasts.iter().any(|t| t.text.contains("didn't match the conversation's cache")), "warned");
 }
 
 /// The chat's last row, as text, at `w` cells.
 fn row_text(ed: &Editor, w: usize) -> String {
-    let warm = said(&ed.session, &ed.config.llm, &ed.limits, crate::usage::now_ms());
+    let warm = said(&ed.workspace, &ed.config.llm, &ed.limits, crate::usage::now_ms());
     let spans = crate::term::usage_row_for_test(ed, &warm, w);
     spans.into_iter().map(|s| s.text).collect()
 }

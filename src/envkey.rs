@@ -8,7 +8,7 @@
 use crate::billing::Billing;
 use crate::chat::Role;
 use crate::editor::Editor;
-use crate::event::SessionId;
+use crate::event::WorkspaceId;
 use crate::offer::{Offer, What};
 
 pub const TITLE: &str = "Claude isn't logged in";
@@ -24,8 +24,8 @@ pub enum Answer {
 /// Whether the session in front's login failure is the card's — a key of `env` held back, and the session's to
 /// ask (subscription, not answered yet): the card is up or comes now, and the chat only points at it.
 pub fn offered(ed: &Editor, env: &crate::llm::ClaudeEnv) -> bool {
-    ed.session.billing == Billing::Subscription
-        && ed.session.env_key.is_none()
+    ed.workspace.claude.billing == Billing::Subscription
+        && ed.workspace.claude.env_key.is_none()
         && !env.nested
         && !env.keys().is_empty()
 }
@@ -37,7 +37,8 @@ pub fn ask(ed: &mut Editor) {
     if !offered(ed, &env) || ed.session_cards().any(|o| matches!(o.what, What::EnvKey { .. })) {
         return;
     }
-    let message = ed.session.chat.as_ref().and_then(|c| c.msgs.iter().rfind(|m| m.role == Role::User));
+    let message =
+        ed.workspace.claude.chat.as_ref().and_then(|c| c.msgs.iter().rfind(|m| m.role == Role::User));
     let message = message.map(|m| m.text.clone());
     let q = format!(
         "Use {} from tarae's environment for Claude? Its requests then bill that key's API account by the token, \
@@ -45,12 +46,12 @@ pub fn ask(ed: &mut Editor) {
          llm.environment-key = \"keep\" in your own config.",
         keys.join(" and ")
     );
-    let what = What::EnvKey { session: ed.session.id, message };
+    let what = What::EnvKey { session: ed.workspace.id, message };
     ed.push_offer(Offer::new(TITLE.into(), &q, "", String::new(), what));
 }
 
 /// The answer on that card, for session `sid`: `message` is the one that failed, sent again on a yes.
-pub fn answer(ed: &mut Editor, id: u64, (sid, message): (SessionId, Option<String>), how: Answer) {
+pub fn answer(ed: &mut Editor, id: u64, (sid, message): (WorkspaceId, Option<String>), how: Answer) {
     ed.offer_finished(id, Ok(()));
     if how == Answer::Always {
         ed.config.llm.keep_env_key = true;
@@ -66,8 +67,8 @@ pub fn answer(ed: &mut Editor, id: u64, (sid, message): (SessionId, Option<Strin
             Some(Ok(())) => {}
         }
     }
-    ed.with_session(sid, |ed| {
-        ed.session.env_key = Some(how != Answer::No);
+    ed.with_workspace(sid, |ed| {
+        ed.workspace.claude.env_key = Some(how != Answer::No);
         match how {
             Answer::No => {
                 ed.set_status("Claude stays on your Claude Code login — not asked again this session")
@@ -107,7 +108,7 @@ mod tests {
             ),
         ];
         crate::chat::open(&mut ed);
-        ed.session.chat.as_mut().unwrap().input = "hello".into();
+        ed.workspace.claude.chat.as_mut().unwrap().input = "hello".into();
         crate::chat::send(&mut ed);
         ed
     }
@@ -117,7 +118,7 @@ mod tests {
         crate::test_results::settle_saying(ed, done, |ed| {
             format!(
                 "{:?}",
-                ed.session.chat.as_ref().map(|c| c.msgs.iter().map(|m| &m.text).collect::<Vec<_>>())
+                ed.workspace.claude.chat.as_ref().map(|c| c.msgs.iter().map(|m| &m.text).collect::<Vec<_>>())
             )
         });
     }
@@ -128,7 +129,8 @@ mod tests {
 
     /// Answered: the message went again, to a claude that had the key — and one row of it in the chat.
     fn sent_again_with_the_key(ed: &mut Editor, log: &std::path::Path) {
-        let answered = |ed: &Editor| ed.session.chat.as_ref().unwrap().msgs.iter().any(|m| m.text == "hi");
+        let answered =
+            |ed: &Editor| ed.workspace.claude.chat.as_ref().unwrap().msgs.iter().any(|m| m.text == "hi");
         settle_for(ed, answered);
         let lines = std::fs::read_to_string(log).unwrap();
         let lines: Vec<&str> = lines.lines().collect();
@@ -138,7 +140,7 @@ mod tests {
             ["key= hello", "key=set hello"],
             "held back, then the next claude has it, the message again"
         );
-        let c = ed.session.chat.as_ref().unwrap();
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
         assert_eq!(c.msgs.iter().filter(|m| m.role == Role::User).count(), 1, "one row of it");
     }
 
@@ -165,7 +167,7 @@ mod tests {
         assert!(o.weighty() && o.keeps());
         // (the chat points at the card: the long form — the setting, how to log in — is the card's to say)
         let notes: Vec<&str> =
-            ed.session.chat.as_ref().unwrap().msgs.iter().map(|m| m.text.as_str()).collect();
+            ed.workspace.claude.chat.as_ref().unwrap().msgs.iter().map(|m| m.text.as_str()).collect();
         assert!(
             notes.contains(&"A card asks whether Claude takes ANTHROPIC_API_KEY from tarae's environment."),
             "{notes:?}"
@@ -173,7 +175,7 @@ mod tests {
         assert!(!notes.iter().any(|n| n.contains("no login of its own")), "{notes:?}");
         ed.offer_accept();
         sent_again_with_the_key(&mut ed, &log);
-        assert_eq!(ed.session.env_key, Some(true));
+        assert_eq!(ed.workspace.claude.env_key, Some(true));
         assert!(!ed.config.llm.keep_env_key, "this session only");
     }
 
@@ -207,10 +209,10 @@ mod tests {
         let mut ed = Editor::with_root(crate::config::Config::default(), std::env::temp_dir());
         let key = ("ANTHROPIC_API_KEY".to_string(), "tarae-fake-key".to_string());
         ed.claude_env = Some(crate::llm::Env::from([key.clone()]));
-        ed.session.billing = Billing::Api;
+        ed.workspace.claude.billing = Billing::Api;
         ask(&mut ed);
         assert!(!card_up(&ed), "an API session: never");
-        ed.session.billing = Billing::Subscription;
+        ed.workspace.claude.billing = Billing::Subscription;
         ed.claude_env =
             Some(crate::llm::Env::from([key.clone(), ("CLAUDE_CODE_SESSION_ID".into(), "x".into())]));
         ask(&mut ed);
@@ -223,7 +225,7 @@ mod tests {
         ask(&mut ed);
         assert_eq!(ed.offers.iter().filter(|o| matches!(o.what, What::EnvKey { .. })).count(), 1, "one card");
         ed.offer_dismiss();
-        assert_eq!(ed.session.env_key, Some(false));
+        assert_eq!(ed.workspace.claude.env_key, Some(false));
         ask(&mut ed);
         assert!(!card_up(&ed), "not asked again this session");
     }

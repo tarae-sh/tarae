@@ -114,8 +114,8 @@ impl Editor {
         if !repo.asks || crate::gitrepo::answered_since(&config, repo.local.digest()) {
             return false;
         }
-        let parked = self.sessions.iter().flat_map(|s| &s.parked);
-        let up = self.offers.iter().chain(&self.session.parked).chain(parked).any(|o| match &o.what {
+        let parked = self.workspaces.iter().flat_map(|s| &s.parked);
+        let up = self.offers.iter().chain(&self.workspace.parked).chain(parked).any(|o| match &o.what {
             What::GitTrust(a) => a.config == config,
             What::RepoTrust { parts, .. } => {
                 parts.iter().any(|p| matches!(&p.what, What::GitTrust(a) if a.config == config))
@@ -123,7 +123,7 @@ impl Editor {
             _ => false,
         });
         if !up {
-            let o = Ask::of(repo).card(&self.session.root);
+            let o = Ask::of(repo).card(&self.workspace.root);
             self.trust_offer(o);
         }
         !up
@@ -132,7 +132,7 @@ impl Editor {
     /// `:git-trust` — the card for the checkout's repository as it is now, answered before or not: resolved on a
     /// worker, the card alone (out of the repository's card, if it's there).
     pub fn git_trust_ask(&mut self) -> Result<(), String> {
-        let root = self.session.root.clone();
+        let root = self.workspace.root.clone();
         self.events.jobs().spawn(move || {
             let r = crate::gitrepo::repo(&root);
             move |ed: &mut Editor| match r {
@@ -149,7 +149,7 @@ impl Editor {
                     );
                     // (the one up already, if any, makes way: one card a repository)
                     ed.offers.retain(|o| !matches!(&o.what, What::GitTrust(a) if a.config == config));
-                    let o = Ask::of(&r).card(&ed.session.root);
+                    let o = Ask::of(&r).card(&ed.workspace.root);
                     ed.push_offer(o);
                 }
             }
@@ -205,7 +205,7 @@ impl Editor {
         }
         self.git_reload_bases();
         // (a submodule's answer: the git tab shows its changes now, or says they stay hidden)
-        if self.session.git_status.is_some() {
+        if self.workspace.git_status.is_some() {
             self.git_refresh();
         }
     }

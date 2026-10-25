@@ -72,7 +72,7 @@ pub fn goto_file(ed: &mut Editor) {
     // (where a relative path is looked for: the document's folder, then the project's)
     let mut places: Vec<PathBuf> =
         doc.path.as_deref().and_then(Path::parent).map(Path::to_path_buf).into_iter().collect();
-    places.push(ed.session.root.clone());
+    places.push(ed.workspace.root.clone());
     let home = crate::allow::home();
     ed.events.jobs().spawn(move || {
         let found: Vec<Found> = names.iter().map(|n| found(n, &places, home.as_deref())).collect();

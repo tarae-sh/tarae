@@ -32,19 +32,19 @@ fn run(choices: Choices) -> Vec<String> {
     MINE.with(|m| m.borrow_mut().clear());
     let mut sim = Sim::new("instruction_files_follow", choices, LIMIT);
     let mut ed = Editor::new(crate::config::Config::default());
-    (ed.session.root, ed.session.name) = (world.repo.clone(), "proj".into());
+    (ed.workspace.root, ed.workspace.name) = (world.repo.clone(), "proj".into());
     std::fs::write(world.repo.join("CLAUDE.md"), "rule\n").unwrap();
     let mut ids = Vec::new();
     for (name, wt) in &world.sessions {
         std::fs::write(wt.join("CLAUDE.md"), "rule\n").unwrap();
         crate::instructions::keep_bases(&world.repo, wt, &["CLAUDE.md".into()]);
-        let id = ed.session_open(wt).unwrap();
-        if let Some(l) = ed.session_by_id(id) {
+        let id = ed.workspace_open(wt).unwrap();
+        if let Some(l) = ed.workspace_by_id(id) {
             l.name = name.clone();
         }
         ids.push((id, wt.clone()));
     }
-    ed.session_switch(0);
+    ed.workspace_switch(crate::event::WorkspaceId::HOME);
     let dir = world.dir.display().to_string();
     let repo = world.repo.clone();
     let mut lines = 0;
@@ -65,7 +65,7 @@ fn run(choices: Choices) -> Vec<String> {
 fn input(
     sim: &mut Sim,
     ed: &mut Editor,
-    ids: &[(u64, PathBuf)],
+    ids: &[(crate::event::WorkspaceId, PathBuf)],
     repo: &std::path::Path,
     n: &mut usize,
 ) -> String {
@@ -86,7 +86,7 @@ fn input(
             format!("session {sid}: a line of its own")
         }
         2 => {
-            ed.session_switch(sid);
+            ed.workspace_switch(sid);
             crate::instructions::follow(ed);
             format!("session {sid}: a look")
         }
@@ -104,8 +104,8 @@ fn input(
             "a frame".into()
         }
         6 => {
-            let to = *c.pick(&[0, ids[0].0, ids[1].0]);
-            ed.session_switch(to);
+            let to = *c.pick(&[crate::event::WorkspaceId::HOME, ids[0].0, ids[1].0]);
+            ed.workspace_switch(to);
             format!("session {to} in front")
         }
         7 => {
@@ -143,7 +143,7 @@ fn held(ed: &Editor, roots: &[PathBuf], repo: &std::path::Path) -> Result<(), St
         }
         MINE.with(|m| m.borrow_mut().insert(root.clone(), mine));
     }
-    let parked = std::iter::once(&ed.session).chain(&ed.sessions).flat_map(|l| &l.parked);
+    let parked = std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked);
     // (and the main checkout's own lines — a session's carried in never takes one away: frictions29 #79)
     let text = std::fs::read_to_string(repo.join("CLAUDE.md")).unwrap_or_default();
     let mains = text.lines().filter(|l| l.starts_with("main ")).count();

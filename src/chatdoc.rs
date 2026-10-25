@@ -33,9 +33,9 @@ use crate::key::{Code, Key};
 use crate::keymap::MappableCommand;
 use crate::movement as mv;
 use crate::selection::{Range, Selection};
-use crate::session::At;
 use crate::transaction::{Assoc, Change, Transaction};
 use crate::view::{Surface, Was};
+use crate::workspace::At;
 use crate::wrap::{Given, Part, Row};
 
 /// What a run of the chat's rows is (`Laid`).
@@ -290,11 +290,11 @@ pub struct Shown {
 /// from the first piece that isn't what it was (another conversation, a message gone), the rest made again. One
 /// transaction: selections and the view's top follow it. Never inside a key's command (its document swapped in).
 pub fn sync(ed: &mut Editor, laid: &Laid) {
-    if ed.session.chat.as_ref().is_some_and(|c| c.transcript.is_none()) {
+    if ed.workspace.claude.chat.as_ref().is_some_and(|c| c.transcript.is_none()) {
         let t = Transcript::new(ed.alloc_id());
-        ed.session.chat.as_mut().expect("a chat, above").transcript = Some(t);
+        ed.workspace.claude.chat.as_mut().expect("a chat, above").transcript = Some(t);
     }
-    if let Some(t) = ed.session.chat.as_mut().and_then(|c| c.transcript.as_mut()) {
+    if let Some(t) = ed.workspace.claude.chat.as_mut().and_then(|c| c.transcript.as_mut()) {
         follow(t, laid);
     }
 }
@@ -514,7 +514,7 @@ pub fn cursor_on(ed: &Editor) -> Option<crate::whole::Cut> {
     if !has_keys(ed) {
         return None;
     }
-    let c = ed.session.chat.as_ref()?;
+    let c = ed.workspace.claude.chat.as_ref()?;
     let t = c.transcript.as_ref()?;
     let d = t.pane.doc_in()?;
     let line = mv::line_of(&d.text, d.selection().primary().cursor(&d.text));
@@ -529,11 +529,11 @@ pub fn cursor_on(ed: &Editor) -> Option<crate::whole::Cut> {
 
 /// The chat's transcript.
 pub fn transcript(ed: &Editor) -> Option<&Transcript> {
-    ed.session.chat.as_ref()?.transcript.as_ref()
+    ed.workspace.claude.chat.as_ref()?.transcript.as_ref()
 }
 
 fn transcript_mut(ed: &mut Editor) -> Option<&mut Transcript> {
-    ed.session.chat.as_mut()?.transcript.as_mut()
+    ed.workspace.claude.chat.as_mut()?.transcript.as_mut()
 }
 
 /// Its view mode is on (it has the keys whenever the chat has them).
@@ -543,7 +543,9 @@ pub fn keyed(ed: &Editor) -> bool {
 
 /// The chat's view mode has the keys now: on, the chat's keys, the chat unfolded.
 pub fn has_keys(ed: &Editor) -> bool {
-    keyed(ed) && ed.session.is_at(At::Chat) && ed.session.chat.as_ref().is_some_and(|c| !c.compact())
+    keyed(ed)
+        && ed.workspace.is_at(At::Chat)
+        && ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.compact())
 }
 
 /// What the conversation holds now, as one number: what came changes it.
@@ -560,7 +562,7 @@ pub fn seen(c: &Chat) -> u64 {
 
 /// Something came since the view came or caught up (`● normal · new text after`).
 pub fn came(ed: &Editor) -> bool {
-    let Some(c) = ed.session.chat.as_ref() else { return false };
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return false };
     c.transcript.as_ref().is_some_and(|t| t.keyed && t.seen != seen(c))
 }
 
@@ -608,14 +610,14 @@ pub fn passes(ed: &Editor) -> Vec<Key> {
 /// chat keeps its `esc` (to the code); `space >` brings it back. A chat not drawn yet (closed, minimized) is
 /// viewed once the frame lays its rows out (`wanted`).
 pub fn view(ed: &mut Editor) {
-    let from_input = ed.session.is_at(At::Chat);
-    let Some(c) = ed.session.chat.as_mut() else {
+    let from_input = ed.workspace.is_at(At::Chat);
+    let Some(c) = ed.workspace.claude.chat.as_mut() else {
         crate::chat::open(ed);
         return want(ed);
     };
     if c.compact() {
         match from_input {
-            true => ed.session.at = At::Code,
+            true => ed.workspace.viewer.at = At::Code,
             false => {
                 c.unfolded = true;
                 want(ed);
@@ -624,7 +626,7 @@ pub fn view(ed: &mut Editor) {
         return;
     }
     if c.msgs.is_empty() {
-        ed.session.at = if from_input { At::Code } else { At::Chat };
+        ed.workspace.viewer.at = if from_input { At::Code } else { At::Chat };
         if !from_input {
             ed.set_status("nothing to view yet — the conversation is empty: type a question");
         }
@@ -633,7 +635,7 @@ pub fn view(ed: &mut Editor) {
     // (`space >` from elsewhere with the chat out of sight: once a frame lays it out; the input's `esc` has it in
     // sight — its transcript what the last frame laid; none laid yet, nothing to read: to the code)
     match (from_input, c.transcript.is_some()) {
-        (true, false) => return ed.session.at = At::Code,
+        (true, false) => return ed.workspace.viewer.at = At::Code,
         (false, false) => return want(ed),
         (false, true) if ed.screen.chat_view.get().is_none() => return want(ed),
         _ => {}
@@ -643,17 +645,17 @@ pub fn view(ed: &mut Editor) {
 
 /// Its view mode asked for before its rows were laid out: made once a frame has (`wanted`).
 fn want(ed: &mut Editor) {
-    if let Some(c) = ed.session.chat.as_mut() {
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
         c.view_wanted = true;
-        ed.session.at = At::Chat;
+        ed.workspace.viewer.at = At::Chat;
     }
 }
 
 /// After a frame (`term::render`): the view asked for before the chat was drawn, made now — true when it was
 /// (the frame is drawn again with it).
 pub fn wanted(ed: &mut Editor) -> bool {
-    let chat_keys = ed.session.is_at(At::Chat);
-    let Some(c) = ed.session.chat.as_mut().filter(|c| c.view_wanted) else { return false };
+    let chat_keys = ed.workspace.is_at(At::Chat);
+    let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.view_wanted) else { return false };
     c.view_wanted = false;
     if !chat_keys || ed.screen.chat_view.get().is_none() || c.transcript.is_none() {
         return false;
@@ -689,7 +691,7 @@ fn come(ed: &mut Editor, row: Option<usize>, by_wheel: Option<Was>) {
     crate::view::leave(ed);
     let shown = ed.screen.chat_view.get().map_or(0, |a| a.3);
     let shown = doc_row_from(&ed.screen.chat_laid.borrow(), shown);
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     let now = seen(c);
     let answer = last_answer(c);
     let Some(t) = c.transcript.as_mut() else { return };
@@ -708,7 +710,7 @@ fn come(ed: &mut Editor, row: Option<usize>, by_wheel: Option<Was>) {
     if let Some(r) = land.and_then(|r| g.get(r)) {
         d.set_selection(Selection::point(r.start));
     }
-    ed.session.at = At::Chat;
+    ed.workspace.viewer.at = At::Chat;
 }
 
 /// A press on the conversation's row `row` (counted as `Screen.chat_view`'s) at column `col` of its text: its view
@@ -717,7 +719,7 @@ fn come(ed: &mut Editor, row: Option<usize>, by_wheel: Option<Was>) {
 /// else its last. In sight already: the rows under the pointer don't move. A row of the frame's own (what a run
 /// waits on) or an empty conversation: false, nothing placed.
 pub fn click(ed: &mut Editor, row: usize, col: usize) -> bool {
-    if ed.session.chat.as_ref().is_none_or(|c| c.msgs.is_empty()) {
+    if ed.workspace.claude.chat.as_ref().is_none_or(|c| c.msgs.is_empty()) {
         return false;
     }
     let Some(row) = doc_row(&ed.screen.chat_laid.borrow(), row) else { return false };
@@ -788,7 +790,7 @@ pub fn leave(ed: &mut Editor) {
     // (the chat's scroll counts from the live bottom: every row the last frame laid out, its own included)
     let laid = ed.screen.chat_laid.borrow().clone();
     let total: usize = laid.iter().map(|(_, r)| r.len()).sum();
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     let Some(t) = c.transcript.as_mut().filter(|t| t.keyed && t.pane.doc_in().is_some()) else { return };
     t.keyed = false;
     t.by_wheel = None;
@@ -818,7 +820,7 @@ pub fn sync_keys(ed: &mut Editor) {
 /// Caught up: the cursor on the latest line, at the bottom of what's in sight, what came taken in.
 fn catch_up(ed: &mut Editor) {
     let (area, _) = viewport(ed);
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     let now = seen(c);
     let Some(t) = c.transcript.as_mut() else { return };
     t.seen = now;
@@ -902,7 +904,7 @@ fn after(ed: &mut Editor) {
     match a {
         After::Leave => {
             leave(ed);
-            ed.session.leave(At::Chat);
+            ed.workspace.leave(At::Chat);
         }
         // (the input: the keys stay the chat's)
         After::Input | After::Enter => leave(ed),
@@ -920,7 +922,7 @@ fn after(ed: &mut Editor) {
 fn take(ed: &mut Editor) {
     use crate::chat::Role;
     use crate::quote::{Taken, lines, text_of};
-    let Some(c) = ed.session.chat.as_ref() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return };
     let Some(t) = c.transcript.as_ref() else { return };
     let Some(d) = t.pane.doc_in() else { return };
     let quote = |r: &Range| {
@@ -992,12 +994,12 @@ pub fn search_unshown(ed: &mut Editor) {
 /// selected, the keys go back where they were. Without the keys, down scrolls the chat. An empty conversation:
 /// nothing to read, nothing done.
 pub fn wheel(ed: &mut Editor, row: Option<usize>, up: bool) {
-    if ed.session.chat.as_ref().is_none_or(|c| c.msgs.is_empty() || c.transcript.is_none()) {
+    if ed.workspace.claude.chat.as_ref().is_none_or(|c| c.msgs.is_empty() || c.transcript.is_none()) {
         return;
     }
     if !has_keys(ed) {
         if !up {
-            if let Some(c) = ed.session.chat.as_mut() {
+            if let Some(c) = ed.workspace.claude.chat.as_mut() {
                 c.scroll = c.scroll.saturating_sub(3);
             }
             return;
@@ -1006,7 +1008,7 @@ pub fn wheel(ed: &mut Editor, row: Option<usize>, up: bool) {
         let row = row.map(|r| doc_row_from(&ed.screen.chat_laid.borrow(), r));
         enter(ed, row, Some(was));
     }
-    ed.session.at = At::Chat;
+    ed.workspace.viewer.at = At::Chat;
     // (three rows — `scroll_view` counts the transcript's rows, a paragraph's each its own)
     swap(ed, |ed| ed.scroll_view(if up { -3 } else { 3 }, false));
     let (area, _) = viewport(ed);

@@ -196,7 +196,7 @@ impl Editor {
     /// What the session in front's conversation runs on now.
     pub fn setup(&self) -> Setup {
         Setup {
-            billing: self.session.billing,
+            billing: self.workspace.claude.billing,
             model: self.config.llm.model.clone().unwrap_or_else(|| "default".into()),
             effort: self.config.llm.effort.clone(),
         }
@@ -205,9 +205,9 @@ impl Editor {
     /// The id of the model value `value` stands for, as claude named it (its `initialize` answer) — else, the
     /// value as it was, what answered last.
     pub(crate) fn model_id(&self, value: &str, before: &Setup) -> String {
-        let usage = &self.session.usage;
+        let usage = &self.workspace.claude.usage;
         let last = usage.conv.as_ref().and_then(|c| c.last.as_ref()).map(|r| r.model.clone());
-        let chat = self.session.chat.as_ref();
+        let chat = self.workspace.claude.chat.as_ref();
         let resolved = chat
             .and_then(|c| c.models.iter().find(|m| m.value == value))
             .map(|m| m.resolved.clone())
@@ -234,7 +234,7 @@ impl Editor {
             return None;
         }
         let prices = &crate::sandboxpack::get().price;
-        let (u, at) = (&self.session.usage, crate::usage::now_ms());
+        let (u, at) = (&self.workspace.claude.usage, crate::usage::now_ms());
         let model = self.model_id(&now.model, before);
         let mut s = Switch { cost: cost(u, at, now.billing, &model, prices), changed, maybe: false };
         if s.cost == Cost::Nothing {
@@ -256,7 +256,7 @@ impl Editor {
     /// on until now is kept for the line over the input — the first switch since the last message counts.
     pub fn switching(&mut self) {
         let now = self.setup();
-        if let Some(c) = self.session.chat.as_mut().filter(|c| c.conversation.is_some()) {
+        if let Some(c) = self.workspace.claude.chat.as_mut().filter(|c| c.conversation.is_some()) {
             c.switched.get_or_insert(now);
         }
     }
@@ -285,7 +285,7 @@ impl Editor {
     }
 
     fn switch_now(&self) -> Option<Switch> {
-        self.switch_cost(self.session.chat.as_ref()?.switched.as_ref()?)
+        self.switch_cost(self.workspace.claude.chat.as_ref()?.switched.as_ref()?)
     }
 }
 

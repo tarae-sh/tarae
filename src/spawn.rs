@@ -652,7 +652,7 @@ mod tests {
         ed.terminal_run(vec!["/bin/sh".into(), "-c".into(), "echo up; sleep 30".into()], Vec::new());
         let end = Instant::now() + crate::test_results::PATIENCE;
         let shows = |ed: &crate::editor::Editor, s: &str| {
-            ed.session.terminal.as_ref().is_some_and(|t| t.parser.screen().contents().contains(s))
+            ed.workspace.terminal.as_ref().is_some_and(|t| t.parser.screen().contents().contains(s))
         };
         while !shows(&ed, "up") && Instant::now() < end {
             if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(50)) {
@@ -704,12 +704,13 @@ mod tests {
                 let mut t = crate::editor::Editor::new(crate::config::parse("").0);
                 t.terminal_run(vec!["/bin/sh".into(), "-c".into(), LIST_FDS.into()], Vec::new());
                 let end = Instant::now() + crate::test_results::PATIENCE;
-                while t.session.terminal.as_ref().is_none_or(|t| t.exited.is_none()) && Instant::now() < end {
+                while t.workspace.terminal.as_ref().is_none_or(|t| t.exited.is_none()) && Instant::now() < end
+                {
                     if let Some(ev) = t.events.recv_timeout(Duration::from_millis(50)) {
                         t.handle_event(ev);
                     }
                 }
-                t.session.terminal.as_ref().map(|t| t.parser.screen().contents()).unwrap_or_default()
+                t.workspace.terminal.as_ref().map(|t| t.parser.screen().contents()).unwrap_or_default()
             }),
         ];
         let mut leaked = Vec::new();

@@ -3,8 +3,8 @@ use crate::event::{Mouse, MouseKind};
 use crate::key::{Code, Key};
 use crate::offer::{Offer, What};
 use crate::pane::GroupKind;
-use crate::session::At;
 use crate::uistate::Region;
+use crate::workspace::At;
 
 fn frame(ed: &mut Editor) -> String {
     ed.focus_sync();
@@ -65,11 +65,14 @@ fn a_toast_takes_no_key_and_has_no_frame() {
     );
     assert_eq!(ed.keys_to().region, Region::Code);
     let state = ed.ui_state();
-    assert!(state.sessions[0].panes.iter().all(|p| !p.id.starts_with("toast#")), "never a pane in the state");
+    assert!(
+        state.workspaces[0].panes.iter().all(|p| !p.id.starts_with("toast#")),
+        "never a pane in the state"
+    );
     assert!(state.toasts.len() == 2, "listed as toasts");
     feed(&mut ed, "y");
     assert!(ed.messages.last().unwrap().2.starts_with("yanked"), "y: the code's yank");
-    assert_eq!(ed.session.at, At::Code);
+    assert_eq!(ed.workspace.viewer.at, At::Code);
 }
 
 /// `C-w w`'s round never stops on a toast: the panes, then a card waiting, then round again — one pane on screen, the
@@ -81,7 +84,7 @@ fn the_round_never_stops_on_a_toast() {
     frame(&mut ed);
     feed(&mut ed, "<C-w>w");
     assert_eq!(
-        (ed.session.at, ed.keys_to().region),
+        (ed.workspace.viewer.at, ed.keys_to().region),
         (At::Code, Region::Code),
         "one pane: no stop on the toast"
     );
@@ -91,7 +94,7 @@ fn the_round_never_stops_on_a_toast() {
         "2 files not viewed.",
         "",
         String::new(),
-        What::ReviewEnd { session: 0, started: std::time::Instant::now() },
+        What::ReviewEnd { session: crate::event::WorkspaceId::HOME, started: std::time::Instant::now() },
     );
     ed.push_offer(o);
     // (the cursor off the top rows: the toast takes the top right, the card the bottom)
@@ -103,7 +106,10 @@ fn the_round_never_stops_on_a_toast() {
     feed(&mut ed, "<C-w>w");
     assert!(ed.card_has_keys(), "the card");
     feed(&mut ed, "<C-w>w");
-    assert!(!ed.card_has_keys() && ed.session.at == At::Code, "then round to the code, past the toast");
+    assert!(
+        !ed.card_has_keys() && ed.workspace.viewer.at == At::Code,
+        "then round to the code, past the toast"
+    );
     feed(&mut ed, "<C-w>w");
     assert!(ed.card_has_keys(), "the card again");
 }
@@ -150,7 +156,8 @@ fn a_press_on_a_toast_opens_messages() {
 #[test]
 fn a_press_on_a_toast_takes_the_keys_from_a_focused_card() {
     let mut ed = editor();
-    let what = What::ReviewEnd { session: 0, started: std::time::Instant::now() };
+    let what =
+        What::ReviewEnd { session: crate::event::WorkspaceId::HOME, started: std::time::Instant::now() };
     ed.push_offer(Offer::new("End the review?".into(), "2 files not viewed.", "", String::new(), what));
     // (the cursor off the top rows: the toast takes the top right, the card the bottom)
     ed.docs[0].text = ropey::Rope::from_str(&"line\n".repeat(30));

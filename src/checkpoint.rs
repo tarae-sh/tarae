@@ -202,7 +202,7 @@ pub fn record(ed: &mut Editor, id: crate::document::DocId, before: Option<Rope>)
     else {
         return;
     };
-    let turn = &mut ed.session.checkpoints.turn;
+    let turn = &mut ed.workspace.claude.checkpoints.turn;
     match turn.iter_mut().find(|t| t.path == path) {
         Some(t) => t.after = after,
         None => {
@@ -221,7 +221,7 @@ pub fn record_unseen(
     before: Option<Rope>,
     then: impl FnOnce(&mut Editor) + Send + 'static,
 ) {
-    let turn = &mut ed.session.checkpoints.turn;
+    let turn = &mut ed.workspace.claude.checkpoints.turn;
     match turn.iter_mut().find(|t| t.path == path) {
         Some(t) if t.unseen => then(ed),
         Some(t) => {
@@ -243,7 +243,7 @@ pub fn record_unseen_all(
     files: Vec<(PathBuf, Option<Rope>)>,
     then: impl FnOnce(&mut Editor) + Send + 'static,
 ) {
-    let turn = &mut ed.session.checkpoints.turn;
+    let turn = &mut ed.workspace.claude.checkpoints.turn;
     let mut new = false;
     for (path, before) in files {
         match turn.iter_mut().find(|t| t.path == path) {
@@ -271,7 +271,7 @@ pub fn record_all(
     files: Vec<(PathBuf, Option<Rope>, Option<Rope>)>,
     then: impl FnOnce(&mut Editor) + Send + 'static,
 ) {
-    let turn = &mut ed.session.checkpoints.turn;
+    let turn = &mut ed.workspace.claude.checkpoints.turn;
     for (path, before, after) in files {
         let gone = after.is_none();
         let after = after.unwrap_or_default();
@@ -283,7 +283,7 @@ pub fn record_all(
     keep_then(ed, then);
 }
 
-/// A change of the user's own across files (`:session-apply`, `refactor::land_yours`): a step of its own for
+/// A change of the user's own across files (`:workspace-apply`, `refactor::land_yours`): a step of its own for
 /// `space u`, `question` its title — its files join `step` when that's the one it made already (else a new one).
 /// Each `(path, before, after)` as `record_all`'s; `then` once what each was is on disk, before any is written.
 /// The step's id.
@@ -301,7 +301,7 @@ pub fn own(
         after: after.unwrap_or_default(),
         ..Default::default()
     });
-    let list = &mut ed.session.checkpoints.list;
+    let list = &mut ed.workspace.claude.checkpoints.list;
     let id = match list.iter_mut().find(|c| Some(c.id) == step) {
         Some(c) => {
             if let Files::Here(fs) = &mut c.files {
@@ -330,7 +330,7 @@ pub fn own_drop(ed: &mut Editor, step: u64, paths: &[PathBuf]) {
     if paths.is_empty() {
         return;
     }
-    let list = &mut ed.session.checkpoints.list;
+    let list = &mut ed.workspace.claude.checkpoints.list;
     if let Some(c) = list.iter_mut().find(|c| c.id == step)
         && let Files::Here(fs) = &mut c.files
     {
@@ -344,7 +344,7 @@ pub fn own_drop(ed: &mut Editor, step: u64, paths: &[PathBuf]) {
 /// file's text before this turn kept the first time (one the turn touched already keeps its own), a deleted
 /// one marked gone, one that isn't text kept by its blobs. What they are after is read when the turn ends.
 pub fn record_run(ed: &mut Editor, changes: Vec<crate::snapshot::Change>) {
-    add_run(&mut ed.session.checkpoints.turn, changes);
+    add_run(&mut ed.workspace.claude.checkpoints.turn, changes);
     keep(ed);
 }
 
@@ -402,16 +402,16 @@ pub fn single(ed: &mut Editor, id: crate::document::DocId, before: Rope, what: &
     }
     let question = what.lines().next().unwrap_or_default().to_string();
     let files = vec![Touched { path, before: Some(before), after, ..Default::default() }];
-    ed.session.checkpoints.list.push(Checkpoint::new(question, files));
+    ed.workspace.claude.checkpoints.list.push(Checkpoint::new(question, files));
     keep(ed);
 }
 
 /// The chat turn ended: its changes become a checkpoint (a chat row says so). The files it changed, as
 /// the row names them (`lib.rs, sub.rs` · `4 files`), if any.
 pub fn turn_over(ed: &mut Editor, question: &str) -> Option<String> {
-    ed.session.checkpoints.carried.clear();
-    let files = std::mem::take(&mut ed.session.checkpoints.turn);
-    let head = std::mem::take(&mut ed.session.checkpoints.head);
+    ed.workspace.claude.checkpoints.carried.clear();
+    let files = std::mem::take(&mut ed.workspace.claude.checkpoints.turn);
+    let head = std::mem::take(&mut ed.workspace.claude.checkpoints.head);
     finish(ed, question, files, head)
 }
 
@@ -419,13 +419,13 @@ pub fn turn_over(ed: &mut Editor, question: &str) -> Option<String> {
 /// worker, then the checkpoint is made and `chat::turn_gathered` takes it on. False: nothing unseen —
 /// `turn_over` it is.
 pub fn gather(ed: &mut Editor, question: &str) -> bool {
-    if !ed.session.checkpoints.turn.iter().any(|t| t.unseen) {
+    if !ed.workspace.claude.checkpoints.turn.iter().any(|t| t.unseen) {
         return false;
     }
-    ed.session.checkpoints.carried.clear();
-    let files = std::mem::take(&mut ed.session.checkpoints.turn);
-    let head = std::mem::take(&mut ed.session.checkpoints.head);
-    ed.session.checkpoints.gathering = true;
+    ed.workspace.claude.checkpoints.carried.clear();
+    let files = std::mem::take(&mut ed.workspace.claude.checkpoints.turn);
+    let head = std::mem::take(&mut ed.workspace.claude.checkpoints.head);
+    ed.workspace.claude.checkpoints.gathering = true;
     let question = question.to_string();
     let paths: Vec<PathBuf> = files.iter().filter(|t| t.unseen).map(|t| t.path.clone()).collect();
     ed.events.jobs().spawn(move || {
@@ -453,7 +453,7 @@ pub fn gather(ed: &mut Editor, question: &str) -> bool {
                     (t.after, t.gone) = (now, gone);
                 }
             }
-            ed.session.checkpoints.gathering = false;
+            ed.workspace.claude.checkpoints.gathering = false;
             let n = finish(ed, &question, files, head);
             crate::chat::turn_gathered(ed, n);
         }
@@ -482,28 +482,30 @@ fn finish(
         .collect();
     let n = if names.len() <= 2 { names.join(", ") } else { format!("{} files", names.len()) };
     let question = question.lines().next().unwrap_or_default().to_string();
-    ed.session.checkpoints.list.push(Checkpoint { head, ..Checkpoint::new(question, files) });
+    ed.workspace.claude.checkpoints.list.push(Checkpoint { head, ..Checkpoint::new(question, files) });
     keep(ed);
     Some(n)
 }
 
 /// Whether there's a turn to undo (the chat's `C-z` hint).
 pub fn can_undo(ed: &Editor) -> bool {
-    ed.session.checkpoints.list.iter().any(|c| !c.undone)
+    ed.workspace.claude.checkpoints.list.iter().any(|c| !c.undone)
 }
 
 /// `C-z` · `:undo-turn` (`undo`) · `:redo-turn`.
 pub fn step(ed: &mut Editor, undo: bool) -> Result<(), String> {
-    if !ed.session.checkpoints.turn.is_empty() || ed.session.chat.as_ref().is_some_and(|c| c.busy()) {
+    if !ed.workspace.claude.checkpoints.turn.is_empty()
+        || ed.workspace.claude.chat.as_ref().is_some_and(|c| c.busy())
+    {
         return Err("Claude is still working — stop it (C-c in the chat) or wait for the turn to end".into());
     }
-    if ed.session.checkpoints.gathering {
+    if ed.workspace.claude.checkpoints.gathering {
         return Err("reading what Claude wrote this turn — a moment".into());
     }
-    if ed.session.checkpoints.reading {
+    if ed.workspace.claude.checkpoints.reading {
         return Err("reading that turn's changes — a moment".into());
     }
-    let list = &ed.session.checkpoints.list;
+    let list = &ed.workspace.claude.checkpoints.list;
     let i = if undo {
         list.iter().rposition(|c| !c.undone).ok_or("no turn of Claude's changed files — nothing to undo")?
     } else {
@@ -534,21 +536,21 @@ pub fn step(ed: &mut Editor, undo: bool) -> Result<(), String> {
         if let Some(b) = &f.bytes {
             let (expect, put) = if undo { (&b.after, &b.before) } else { (&b.before, &b.after) };
             blobs.push((f.path.clone(), expect.clone(), put.clone()));
-            changed.push(crate::chat::shown(&ed.session.root, &f.path));
+            changed.push(crate::chat::shown(&ed.workspace.root, &f.path));
             continue;
         }
         let after = (!f.gone).then_some(&f.after);
         let (from, to) = if undo { (after, f.before.as_ref()) } else { (f.before.as_ref(), after) };
         match file(ed, &f.path, from, to) {
             Ok((true, k)) => {
-                changed.push(crate::chat::shown(&ed.session.root, &f.path));
+                changed.push(crate::chat::shown(&ed.workspace.root, &f.path));
                 kept += k;
             }
             Ok((false, k)) => kept += k,
             Err(e) => problems.push(e),
         }
     }
-    ed.session.checkpoints.list[i].undone = undo;
+    ed.workspace.claude.checkpoints.list[i].undone = undo;
     keep(ed);
     put_blobs(ed, blobs);
     let what = if undo { "undid" } else { "brought back" };
@@ -560,7 +562,7 @@ pub fn step(ed: &mut Editor, undo: bool) -> Result<(), String> {
     if kept > 0 {
         msg.push_str(&format!(" · {kept} change(s) left as they are: you edited there since"));
     }
-    ed.session.checkpoints.tell.push(format!(
+    ed.workspace.claude.checkpoints.tell.push(format!(
         "The user {} your changes from the turn \"{}\" in {} — {}.",
         if undo { "undid" } else { "brought back" },
         question,
@@ -568,7 +570,7 @@ pub fn step(ed: &mut Editor, undo: bool) -> Result<(), String> {
         if undo { "those files are as they were before that turn" } else { "they're applied again" },
     ));
     // The chat has the question right above: its row says only what happened
-    if let Some(c) = &mut ed.session.chat {
+    if let Some(c) = &mut ed.workspace.claude.chat {
         let row = match (undo, changed.as_slice()) {
             (_, []) => format!("{what} the turn — nothing to change"),
             (true, _) => format!("undid the turn ({files}) · space U brings it back"),
@@ -590,7 +592,7 @@ fn put_blobs(ed: &mut Editor, blobs: Vec<(PathBuf, Option<String>, Option<String
     if blobs.is_empty() {
         return;
     }
-    let root = ed.session.root.clone();
+    let root = ed.workspace.root.clone();
     ed.events.jobs().spawn(move || {
         let problems: Vec<String> = blobs
             .iter()
@@ -618,7 +620,7 @@ pub(crate) fn file(
     from: Option<&Rope>,
     to: Option<&Rope>,
 ) -> Result<(bool, usize), String> {
-    let shown = crate::chat::shown(&ed.session.root, path);
+    let shown = crate::chat::shown(&ed.workspace.root, path);
     let open = ed.docs.iter().any(|d| d.path.as_deref() == Some(path));
     if !open && !path.exists() && from.is_some() {
         return Err(format!("{shown} is gone"));
@@ -632,7 +634,7 @@ pub(crate) fn file(
     let (target, kept) = rebase(&from.unwrap_or(&empty).to_string(), &to.unwrap_or(&empty).to_string(), &now);
     // In the project, written through no link from its root (`beneath.rs`): a run of Claude's may have swapped
     // a folder for a link to outside since the turn. A file outside it (accepted on its review) by its path.
-    let root = Some(ed.session.root.clone()).filter(|r| crate::paths::written_inside(r, path));
+    let root = Some(ed.workspace.root.clone()).filter(|r| crate::paths::written_inside(r, path));
     // A file the turn made, with nothing else in it now: it goes
     if to.is_none() && kept == 0 && target.is_empty() {
         let id = ed.doc().id;
@@ -990,11 +992,11 @@ fn save(dir: &Path, root: &Path, s: Stored) -> bool {
 
 /// The turns as they are now, kept (the texts are written out on a worker).
 pub(crate) fn keep(ed: &Editor) {
-    keep_of(ed, &ed.session);
+    keep_of(ed, &ed.workspace);
 }
 
 /// `keep` for session `l` — one that's ending (out of the editor already) too.
-pub(crate) fn keep_of(ed: &Editor, l: &crate::session::Session) {
+pub(crate) fn keep_of(ed: &Editor, l: &crate::workspace::Workspace) {
     if let Some(save) = saving(l) {
         ed.events.jobs().background(save);
     }
@@ -1002,7 +1004,7 @@ pub(crate) fn keep_of(ed: &Editor, l: &crate::session::Session) {
 
 /// Tests: session `l`'s turns written now, on this thread (`keep_of` writes on a worker, unseen by events).
 #[cfg(test)]
-pub(crate) fn keep_now(l: &crate::session::Session) {
+pub(crate) fn keep_now(l: &crate::workspace::Workspace) {
     if let Some(save) = saving(l) {
         save();
     }
@@ -1024,7 +1026,7 @@ pub(crate) fn forget(ed: &Editor, root: PathBuf) {
 /// `keep`, then `then` on the main loop once it's written (at once when nothing is kept — tests, or
 /// before `restore` has them back).
 fn keep_then(ed: &mut Editor, then: impl FnOnce(&mut Editor) + Send + 'static) {
-    let Some(save) = saving(&ed.session) else { return then(ed) };
+    let Some(save) = saving(&ed.workspace) else { return then(ed) };
     ed.events.jobs().spawn(move || {
         save();
         then
@@ -1032,11 +1034,12 @@ fn keep_then(ed: &mut Editor, then: impl FnOnce(&mut Editor) + Send + 'static) {
 }
 
 /// Writing session `l`'s turns as they are now (for a worker) — None when they aren't kept.
-fn saving(l: &crate::session::Session) -> Option<impl FnOnce() + Send + 'static> {
-    let dir = l.checkpoints.dir.clone()?;
+fn saving(l: &crate::workspace::Workspace) -> Option<impl FnOnce() + Send + 'static> {
+    let dir = l.claude.checkpoints.dir.clone()?;
     let root = l.root.clone();
-    let list = &l.checkpoints.list;
+    let list = &l.claude.checkpoints.list;
     let question = l
+        .claude
         .chat
         .as_ref()
         .and_then(|c| c.msgs.iter().rev().find(|m| m.role == crate::chat::Role::User))
@@ -1044,8 +1047,8 @@ fn saving(l: &crate::session::Session) -> Option<impl FnOnce() + Send + 'static>
         .unwrap_or_default();
     let s = Stored {
         list: list[list.len().saturating_sub(KEEP)..].to_vec(),
-        turn: l.checkpoints.turn.clone(),
-        head: l.checkpoints.head.clone(),
+        turn: l.claude.checkpoints.turn.clone(),
+        head: l.claude.checkpoints.head.clone(),
         question,
         seq: crate::chats::seq(),
     };
@@ -1081,7 +1084,7 @@ fn texts_then(
     quiet: bool,
     then: impl FnOnce(&mut Editor, usize) + Send + 'static,
 ) {
-    let cps = &ed.session.checkpoints;
+    let cps = &ed.workspace.claude.checkpoints;
     let Some(cp) = cps.list.get(at) else { return };
     let Files::Kept(files) = &cp.files else { return then(ed, at) };
     if cps.reading {
@@ -1093,12 +1096,12 @@ fn texts_then(
     // (a kept turn came from `dir`: it's set as they come back)
     let Some(dir) = cps.dir.clone() else { return };
     let (id, files) = (cp.id, files.clone());
-    let path = folder(&dir, &ed.session.root).join(format!("{id}.json"));
-    ed.session.checkpoints.reading = true;
+    let path = folder(&dir, &ed.workspace.root).join(format!("{id}.json"));
+    ed.workspace.claude.checkpoints.reading = true;
     ed.events.jobs().spawn(move || {
         let texts = read_texts(&path, &files);
         move |ed: &mut Editor| {
-            let cps = &mut ed.session.checkpoints;
+            let cps = &mut ed.workspace.claude.checkpoints;
             cps.reading = false;
             let Some(at) = cps.list.iter().position(|c| c.id == id) else { return };
             match texts {
@@ -1124,17 +1127,17 @@ fn texts_then(
                 Err((true, e)) => {
                     // (a review on it — its texts are held while one is open, so none is: closed all the same)
                     let on_it = |ed: &Editor| {
-                        matches!(ed.session.code_review.as_ref().map(|r| &r.base),
+                        matches!(ed.workspace.code_review.as_ref().map(|r| &r.base),
                             Some(crate::codereview::Base::Turn { at: open, .. }) if *open == at)
                     };
                     if on_it(ed) {
                         crate::codereview::close(ed);
                     }
-                    let cps = &mut ed.session.checkpoints;
+                    let cps = &mut ed.workspace.claude.checkpoints;
                     let question = cps.list.remove(at).question;
                     cps.restored -= usize::from(at < cps.restored);
                     if let Some(crate::codereview::Base::Turn { at: open, .. }) =
-                        ed.session.code_review.as_mut().map(|r| &mut r.base)
+                        ed.workspace.code_review.as_mut().map(|r| &mut r.base)
                         && *open > at
                     {
                         *open -= 1;
@@ -1157,13 +1160,13 @@ fn texts_then(
 /// Session `l` goes behind: the texts read back from disk go again (their files still have them) — not the
 /// turn its review is open on (that reads them as it shows), nor one past the newest `KEEP` (the next save
 /// removes its file).
-pub(crate) fn shed(l: &mut crate::session::Session) {
+pub(crate) fn shed(l: &mut crate::workspace::Workspace) {
     let open = match l.code_review.as_ref().map(|r| &r.base) {
         Some(crate::codereview::Base::Turn { at, .. }) => Some(*at),
         _ => None,
     };
-    let from = l.checkpoints.list.len().saturating_sub(KEEP);
-    for (i, c) in l.checkpoints.list.iter_mut().enumerate().skip(from) {
+    let from = l.claude.checkpoints.list.len().saturating_sub(KEEP);
+    for (i, c) in l.claude.checkpoints.list.iter_mut().enumerate().skip(from) {
         if c.read && Some(i) != open {
             (c.files, c.read) = (Files::Kept(c.files.kept()), false);
         }
@@ -1173,12 +1176,12 @@ pub(crate) fn shed(l: &mut crate::session::Session) {
 /// `restore_from` the front session's own `dir` (tests set one; nothing is kept until they're back).
 #[cfg(test)]
 pub fn restore(ed: &mut Editor) {
-    let Some(dir) = ed.session.checkpoints.dir.take() else { return };
-    ed.session.checkpoints.restoring = true;
-    restore_from(ed, dir, ed.session.root.clone());
+    let Some(dir) = ed.workspace.claude.checkpoints.dir.take() else { return };
+    ed.workspace.claude.checkpoints.restoring = true;
+    restore_from(ed, dir, ed.workspace.root.clone());
 }
 
-/// As a session is made (`Editor::session_kept_back`): the kept turns of the checkout in `root` come back
+/// As a session is made (`Editor::workspace_kept_back`): the kept turns of the checkout in `root` come back
 /// from `dir` (read on a worker), before any made since, into the session the editor's results are for now
 /// — its `dir` set once they're back (a save before would write over them). They come back as kept (paths
 /// only); an earlier tarae's file's are kept as this one keeps them first, and the file goes. A turn tarae
@@ -1220,22 +1223,22 @@ pub fn restore_from(ed: &Editor, dir: PathBuf, root: PathBuf) {
             s.list.push(Checkpoint { head, ..Checkpoint::new(question, cut) });
         }
         move |ed: &mut Editor| {
-            ed.session.checkpoints.dir = Some(back);
-            ed.session.checkpoints.restored = kept;
-            ed.session.checkpoints.restoring = false;
+            ed.workspace.claude.checkpoints.dir = Some(back);
+            ed.workspace.claude.checkpoints.restored = kept;
+            ed.workspace.claude.checkpoints.restoring = false;
             let n = s.list.len();
             if n > 0 {
-                let since = std::mem::take(&mut ed.session.checkpoints.list);
-                ed.session.checkpoints.list = s.list.into_iter().chain(since).collect();
+                let since = std::mem::take(&mut ed.workspace.claude.checkpoints.list);
+                ed.workspace.claude.checkpoints.list = s.list.into_iter().chain(since).collect();
                 // (a turn's review open already points past the ones put before it)
                 if let Some(crate::codereview::Base::Turn { at, .. }) =
-                    ed.session.code_review.as_mut().map(|r| &mut r.base)
+                    ed.workspace.code_review.as_mut().map(|r| &mut r.base)
                 {
                     *at += n;
                 }
             }
             // (a turn's review `:restart` carried: open again now its turn is back)
-            if let Some(v) = ed.session.turn_review_back.take() {
+            if let Some(v) = ed.workspace.turn_review_back.take() {
                 crate::codereview::reopen_turn(ed, &v);
             }
             keep(ed);
@@ -1394,7 +1397,7 @@ mod tests {
         std::fs::create_dir_all(&outside).unwrap();
         let (dir, outside) = (std::fs::canonicalize(&dir).unwrap(), std::fs::canonicalize(&outside).unwrap());
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         for f in ["a.txt", "new.txt"] {
             std::fs::write(dir.join("sub").join(f), "after\n").unwrap();
             std::fs::write(outside.join(f), "after\n").unwrap();
@@ -1475,13 +1478,13 @@ mod tests {
         }
         // A new tarae: the session in front and two behind, each with its kept turn
         let mut ed = Editor::new(crate::config::Config::default());
-        (ed.session.root, ed.turns_dir) = (dir.join("front"), Some(store.clone()));
-        ed.session_kept_back(ed.session.id);
-        let ids = [ed.session.id, ed.session_add(dir.join("b1")), ed.session_add(dir.join("b2"))];
+        (ed.workspace.root, ed.turns_dir) = (dir.join("front"), Some(store.clone()));
+        ed.workspace_kept_back(ed.workspace.id);
+        let ids = [ed.workspace.id, ed.workspace_add(dir.join("b1")), ed.workspace_add(dir.join("b2"))];
         assert!(ed.restoring(), "reading them back");
         let turns = |ed: &Editor, id| {
-            let l = std::iter::once(&ed.session).chain(&ed.sessions).find(|l| l.id == id).unwrap();
-            l.checkpoints.list.clone()
+            let l = std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|l| l.id == id).unwrap();
+            l.claude.checkpoints.list.clone()
         };
         settle(&mut ed, "every session's turn back", |ed| {
             !ed.restoring() && ids.iter().all(|&id| turns(ed, id).len() == 1)
@@ -1496,17 +1499,17 @@ mod tests {
                 let a = a.clone();
                 move |_: &Editor| std::fs::read_to_string(&a).unwrap() == want
             };
-            ed.with_session(id, |ed| step(ed, true).unwrap());
+            ed.with_workspace(id, |ed| step(ed, true).unwrap());
             settle(&mut ed, &format!("{n}: undone"), now("one\n"));
-            ed.with_session(id, |ed| step(ed, false).unwrap());
+            ed.with_workspace(id, |ed| step(ed, false).unwrap());
             settle(&mut ed, &format!("{n}: brought back"), now("two\n"));
             assert!(held(&ed, id), "{n}: read once, held while it's where it was");
         }
         // The front one goes behind: what it read goes; b1, in front now, keeps its own
-        assert!(ed.session_switch(ids[1]));
+        assert!(ed.workspace_switch(ids[1]));
         assert!(!held(&ed, ids[0]) && held(&ed, ids[1]));
         // …and is read again when asked
-        ed.with_session(ids[0], |ed| step(ed, true).unwrap());
+        ed.with_workspace(ids[0], |ed| step(ed, true).unwrap());
         let a = dir.join("front/a.txt");
         settle(&mut ed, "front: undone again", |_| std::fs::read_to_string(&a).unwrap() == "one\n");
         std::fs::remove_dir_all(&dir).ok();
@@ -1527,16 +1530,16 @@ mod tests {
         write_old(&store, &root, &["first", "second"], crate::chats::seq());
         let start = |root: &Path| {
             let mut ed = Editor::new(crate::config::Config::default());
-            (ed.session.root, ed.turns_dir) = (root.to_path_buf(), Some(store.clone()));
-            ed.session_kept_back(ed.session.id);
+            (ed.workspace.root, ed.turns_dir) = (root.to_path_buf(), Some(store.clone()));
+            ed.workspace_kept_back(ed.workspace.id);
             settle(&mut ed, "its turns back", |ed| !ed.restoring());
             ed
         };
         let questions = |l: &[Checkpoint]| l.iter().map(|c| c.question.clone()).collect::<Vec<_>>();
         let mut ed = start(&root);
-        assert_eq!(questions(&ed.session.checkpoints.list), ["first", "second"]);
+        assert_eq!(questions(&ed.workspace.claude.checkpoints.list), ["first", "second"]);
         assert!(
-            ed.session.checkpoints.list.iter().all(|c| c.files.here().is_none()),
+            ed.workspace.claude.checkpoints.list.iter().all(|c| c.files.here().is_none()),
             "kept as this tarae keeps them"
         );
         assert!(!old_file(&store, &root).exists(), "the earlier file went");
@@ -1566,9 +1569,9 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&index).unwrap(), ours, "never written over");
         // Back in this tarae: its turn after ours, moved over too
         let ed = start(&root);
-        assert_eq!(questions(&ed.session.checkpoints.list), ["first", "second", "third"]);
+        assert_eq!(questions(&ed.workspace.claude.checkpoints.list), ["first", "second", "third"]);
         assert_eq!(
-            ed.session.checkpoints.list.iter().map(|c| c.undone).collect::<Vec<_>>(),
+            ed.workspace.claude.checkpoints.list.iter().map(|c| c.undone).collect::<Vec<_>>(),
             [false, true, false]
         );
         assert!(!old_file(&store, &root).exists());
@@ -1610,10 +1613,10 @@ mod tests {
         assert_eq!((&s.list[0].head, &s.head), (&vec![done.clone()], &vec![flying.clone()]));
         // A start: the turn cut short is a checkpoint, its HEAD move with it
         let mut ed = Editor::new(crate::config::Config::default());
-        (ed.session.root, ed.turns_dir) = (root.clone(), Some(store.clone()));
-        ed.session_kept_back(ed.session.id);
+        (ed.workspace.root, ed.turns_dir) = (root.clone(), Some(store.clone()));
+        ed.workspace_kept_back(ed.workspace.id);
         settle(&mut ed, "its turns back", |ed| !ed.restoring());
-        let list = &ed.session.checkpoints.list;
+        let list = &ed.workspace.claude.checkpoints.list;
         let got: Vec<_> = list.iter().map(|c| (c.question.as_str(), c.head.clone())).collect();
         assert_eq!(got, [("q", vec![done]), ("mid-turn", vec![flying])]);
         std::fs::remove_dir_all(&dir).ok();
@@ -1631,17 +1634,20 @@ mod tests {
         let list = vec![one_to_two(&root, "q")];
         assert!(save(&store, &root, Stored { list, seq: crate::chats::seq(), ..Default::default() }));
         let mut ed = Editor::new(crate::config::Config::default());
-        (ed.session.root, ed.turns_dir) = (root.clone(), Some(store.clone()));
-        ed.session_kept_back(ed.session.id);
+        (ed.workspace.root, ed.turns_dir) = (root.clone(), Some(store.clone()));
+        ed.workspace_kept_back(ed.workspace.id);
         settle(&mut ed, "its turn back", |ed| !ed.restoring());
-        assert!(ed.session.checkpoints.list[0].files.here().is_none());
+        assert!(ed.workspace.claude.checkpoints.list[0].files.here().is_none());
         crate::codereview::review_turn(&mut ed);
-        settle(&mut ed, "its review open", |ed| ed.session.code_review.is_some());
-        let r = ed.session.code_review.as_ref().unwrap();
+        settle(&mut ed, "its review open", |ed| ed.workspace.code_review.is_some());
+        let r = ed.workspace.code_review.as_ref().unwrap();
         let files: Vec<_> = r.files.iter().map(|f| (f.rel.as_str(), f.added, f.removed, f.new)).collect();
         assert_eq!(files, [("a.txt", 1, 1, false)]);
-        shed(&mut ed.session);
-        assert!(ed.session.checkpoints.list[0].files.here().is_some(), "held while its review is open");
+        shed(&mut ed.workspace);
+        assert!(
+            ed.workspace.claude.checkpoints.list[0].files.here().is_some(),
+            "held while its review is open"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1659,24 +1665,25 @@ mod tests {
         let list = vec![first, second];
         assert!(save(&store, &root, Stored { list, seq: crate::chats::seq(), ..Default::default() }));
         let mut ed = Editor::new(crate::config::Config::default());
-        (ed.session.root, ed.turns_dir) = (root.clone(), Some(store.clone()));
-        ed.session_kept_back(ed.session.id);
+        (ed.workspace.root, ed.turns_dir) = (root.clone(), Some(store.clone()));
+        ed.workspace_kept_back(ed.workspace.id);
         settle(&mut ed, "its turns back", |ed| !ed.restoring());
-        let questions =
-            |ed: &Editor| ed.session.checkpoints.list.iter().map(|c| c.question.clone()).collect::<Vec<_>>();
+        let questions = |ed: &Editor| {
+            ed.workspace.claude.checkpoints.list.iter().map(|c| c.question.clone()).collect::<Vec<_>>()
+        };
         let said = |ed: &Editor| ed.toasts.iter().map(|t| t.text.clone()).collect::<Vec<_>>().join(" | ");
         // Can't be read just now
         std::fs::remove_file(&texts).unwrap();
         std::fs::create_dir(&texts).unwrap();
         step(&mut ed, true).unwrap();
-        settle(&mut ed, "read", |ed| !ed.session.checkpoints.reading);
+        settle(&mut ed, "read", |ed| !ed.workspace.claude.checkpoints.reading);
         assert_eq!(questions(&ed), ["first", "second"], "{}", said(&ed));
         assert!(said(&ed).contains("couldn't read the turn “second”'s changes just now"), "{}", said(&ed));
         assert!(texts.is_dir(), "left as it is");
         // Gone for good
         std::fs::remove_dir(&texts).unwrap();
         step(&mut ed, true).unwrap();
-        settle(&mut ed, "read again", |ed| !ed.session.checkpoints.reading);
+        settle(&mut ed, "read again", |ed| !ed.workspace.claude.checkpoints.reading);
         assert_eq!(questions(&ed), ["first"]);
         assert!(said(&ed).contains("the turn “second” isn't kept any more"), "{}", said(&ed));
         step(&mut ed, true).unwrap();
@@ -1746,18 +1753,18 @@ mod tests {
         };
         save(&store, &back, earlier);
         let mut ed = Editor::new(crate::config::Config::default());
-        (ed.session.root, ed.turns_dir) = (front, Some(store.clone()));
-        let id = ed.session_add(back.clone());
+        (ed.workspace.root, ed.turns_dir) = (front, Some(store.clone()));
+        let id = ed.workspace_add(back.clone());
         // A turn there right away, before anything else came
-        ed.with_session(id, |ed| {
-            ed.session.checkpoints.list.push(turn("third"));
+        ed.with_workspace(id, |ed| {
+            ed.workspace.claude.checkpoints.list.push(turn("third"));
             keep(ed);
         });
         let questions = |l: &[Checkpoint]| l.iter().map(|c| c.question.clone()).collect::<Vec<_>>();
         let want = ["first", "second", "third"];
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
         loop {
-            let here = questions(&ed.session_by_id(id).unwrap().checkpoints.list);
+            let here = questions(&ed.workspace_by_id(id).unwrap().claude.checkpoints.list);
             let kept = questions(&load(&store, &back).list);
             if here == want && kept == want {
                 break;

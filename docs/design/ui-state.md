@@ -35,12 +35,12 @@ The state is mostly gathering. Most of it exists, spread around:
 | What | Where | What it lacks for this |
 |---|---|---|
 | Where the keys go | `chrome::Keys` / `Editor::keys_at` (status-line label) | Not the dispatcher. `handle_key` is its own chain: `card_key`, `C-q`, `terminal_key`, `offer_key`, completion, then `handle_key_inner` (`review_key`, picker, `chat::key`, `rail_key`, `sidebar::key`, procs, plugin, `bottom_key`, start screen, prompt…). `keys_at` has no prompt over the code, no pending prefix (`Editor.pending`), and gives the terminal's *program* and tarae's keys on the terminal panel the same `Slot(Terminal)` — the very difference behind slip 2 |
-| Cards | `offer::Offer` (`id` from `offer_seq`, unique in the process; `rev`, `since`), `Editor.offers` (up, front first), `Session.parked`, `Editor.offer_seen` (in sight since), `Session.asking` + `asking_sync` (a lost card is found and said) | The answer keys aren't data: the card's hint row works them out from `lasts`/`keeps`/`preflights`/`aborts`/`end_dirty`… |
+| Cards | `offer::Offer` (`id` from `offer_seq`, unique in the process; `rev`, `since`), `Editor.offers` (up, front first), `Workspace.parked`, `Editor.offer_seen` (in sight since), `Session.asking` + `asking_sync` (a lost card is found and said) | The answer keys aren't data: the card's hint row works them out from `lasts`/`keeps`/`preflights`/`aborts`/`end_dirty`… |
 | Sessions | `Session`, `Editor::doing` → `Doing`, `cards_waiting`, `session_spots` | — |
 | Geometry of the last frame | `editor::Screen` (panes and their line origins, `chat_x`, `picker_list`, `sidebar`, `review_rail`, `slot_tabs`, `toast_card`, `note_card`, `thought_card`, `terminal_rows`, …) | Filled by `term.rs` every frame. Most panels have their visible rows here already |
 | After a frame | `term::render` → `toasts_drawn`, `trace_drawn`, `frame_drawn`, `last_frame`, `seeing::after_frame` | The hook point for "state as drawn" |
 | Did my input land | `Editor.input_seq` (keys, clicks, the wheel, pastes) | Not visible from outside |
-| Runs | `trace::RunTrace` steps, `waits::Waiting::shown`, `Session.runs_next` (queued) | No run id |
+| Runs | `trace::RunTrace` steps, `waits::Waiting::shown`, `Workspace.runs_next` (queued) | No run id |
 | What Claude was given | `chat::context` (`on screen:` / `also on screen:`), `follow::Gaze`, replay stops | UI elements aren't in it |
 | Ids in answers | `chat::refs_in` (`path:line` → links), `<show at=…>` | Only places in code |
 | Pointing | `labels.rs` (`gw` labels) | Only code positions |
@@ -65,7 +65,7 @@ JSON for programs, and a short text form for people and Claude, from the same st
 
 ```json
 {
-  "v": 15,
+  "v": 16,
   "tarae": { "pid": 4182, "boot": "9f3ac1d0", "version": "0.9.0" },
   "frame": 4812,
   "input": 1033,
@@ -76,10 +76,11 @@ JSON for programs, and a short text form for people and Claude, from the same st
     "answers": ["y", "a", "n", "v"], "pending": "", "drawn": true, "under": "chat"
   },
   "prompt": null,
-  "front": "s1",
-  "sessions": [
-    { "id": "s0", "name": "main", "doing": "idle", "cards": 0 },
-    { "id": "s1", "name": "uistate", "branch": "uistate", "doing": "waiting", "cards": 1 }
+  "front": "w1",
+  "workspaces": [
+    { "id": "w0", "name": "main", "cards": 0, "sessions": [{ "id": "s0", "doing": "idle" }] },
+    { "id": "w1", "name": "uistate", "branch": "uistate", "base": "main", "cards": 1,
+      "sessions": [{ "id": "s1", "doing": "waiting" }] }
   ],
   "cards": [
     { "id": "card#12", "session": "s1", "whose": "claude", "kind": "run",
@@ -148,16 +149,20 @@ side git · 4 rows · in hand git:src/term.rs
 
   `keys` comes from one new `Editor::keys_to()`, and the routing test (phase 1) holds `handle_key` to it.
 - **`mode`, `prompt`** — mode, and the prompt's kind (`PromptKind::label`) and text (full level only).
-- **`sessions[].view`** (V 8, the front session's only) — a surface's view mode (`chat` · `terminal`), or a run's
+- **`workspaces[].view`** (V 8, the front workspace's only) — a surface's view mode (`chat` · `terminal`), or a run's
   output with the keys (`task` · `preflight` · `tests` — `rundoc::state`, the same shape): `surface`,
   the cursor's `line` of `lines` (V 11: the chat's count its transcript's lines, a paragraph each — a drawn row
   before), `selections`, `selects` (wider than a character), `mode` (`normal` · `select`),
   `held` (something came since it was made — the terminal's: its program's output waiting). Shapes, never text; Claude's level never has it.
-- **`sessions[].with`** (the front session's only; absent when empty) — what goes with the chat input's next
+- **`workspaces[].sessions[].with`** (the front workspace's only; absent when empty) — what goes with the chat input's next
   message, in the order added: `{kind: "pointed", id}` · `{kind: "screen", cols, rows}` · `{kind: "quote", from,
   lines, cut, hidden}` (`chat::Chat::with_state`). Shapes, never text; Claude's level never has it (unsent).
-- **`sessions`** — id, name, branch, `doing` (`Doing`: `idle` · `working` · `waiting` · `done` ·
-  `stuck {tool, secs}` — its chat's Claude), `reviewer: "reviewing"` while its reviewer reads, `"waits to review"`
+- **`workspaces`** (V 16, collab C0: the place and the participants apart) — each a checkout: `w0` …, its name,
+  branch, `base`, root, `cards`, `rebasing`, the reviewer's fields below, `overlaps`, `panes`, and its `sessions`
+  (one each for now: its Claude) — `s0` …, `doing`, `answer`, `usage`, `billing`, `sandbox`, `writing`, `at`, …;
+  `front` is a workspace's id. A card's `session`, an inbox entry's and a run's stay the session's (`s1`).
+- **a workspace's session's `doing`** (`Doing`: `idle` · `working` · `waiting` · `done` ·
+  `stuck {tool, secs}` — its chat's Claude); **the workspace's** `reviewer: "reviewing"` while its reviewer reads, `"waits to review"`
   while it waits its turn in the line (`reviewer.rs`, #195; absent else — a field of its own, not a `doing`: the two work apart and often at once, and a driver
   waiting for `doing: idle` waits for the chat's turn, not a review), and `reviewer_run`, how its reviewer's
   last run went, from its start until the next one, whether or not its review is open:
@@ -286,10 +291,10 @@ side git · 4 rows · in hand git:src/term.rs
   - Where the keys are is one value, the session's `at` (panes P2a, `session::At`: the code, the chat, the
     terminal's program, the slot, a group's list, a plugin's panel, the side panel, the review's rail): `side`'s,
     `review`'s and `chat`'s `focused` and `slot`'s has-the-keys read it, so at most one is true — the one `keys`
-    names. A code pane's `focused` is the pane the code means (`Session.focus`), wherever the keys are.
+    names. A code pane's `focused` is the pane the code means (`Viewer.focus`), wherever the keys are.
     Panes P2b: a floating pane with the keys — a card (held, or taking its answers), the picker, a prompt,
-    which-key — is `at` itself (`At::Float(pane id)`), the docked pane it rose over `Session.under`, the keys' again
-    once it goes (`Editor::float_sync`, every key and event); a linked group's list (panes P3 §2.1, `Session.groups` —
+    which-key — is `at` itself (`At::Float(pane id)`), the docked pane it rose over `Viewer.under`, the keys' again
+    once it goes (`Editor::float_sync`, every key and event); a linked group's list (panes P3 §2.1, `Workspace.groups` —
     the tests', the task's places, a preflight's steps, `:procs`' table) is `At::List(pane id)`, `keys.region`
     `list:<kind>` (`list:tests`, `list:task`, `list:preflight`, `list:procs`, `grouplist::key`), its detail the slot's
     output document (`At::Slot`, P2c; `:procs`' since P3 step 4, `output:procs`).

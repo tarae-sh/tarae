@@ -34,7 +34,7 @@ fn fallback() -> Vec<ModelInfo> {
 }
 
 fn offered(ed: &Editor) -> Vec<ModelInfo> {
-    match ed.session.chat.as_ref().map(|c| &c.models).filter(|m| !m.is_empty()) {
+    match ed.workspace.claude.chat.as_ref().map(|c| &c.models).filter(|m| !m.is_empty()) {
         Some(m) => m.clone(),
         None => fallback(),
     }
@@ -49,7 +49,7 @@ fn chosen(ed: &Editor) -> String {
 /// when the model takes one — `Opus 5.5 · high`. When what answered isn't what's asked for (a chat started
 /// before `llm.model` changed), both: `claude-sonnet-5-5 · asked opus`. None before anything's known.
 pub fn label(ed: &Editor) -> Option<String> {
-    let c = ed.session.chat.as_ref()?;
+    let c = ed.workspace.claude.chat.as_ref()?;
     let models = &c.models;
     let value = chosen(ed);
     let m = models.iter().find(|m| m.value == value);
@@ -164,7 +164,7 @@ pub fn set(ed: &mut Editor, value: &str) -> Result<(), String> {
     crate::chat::request(ed, json!({ "subtype": "set_model", "model": value }));
     // (what answers is known again from the next answer — until then the title says what was asked for; what it
     // runs on now is this chat's — a ping that keeps it warm forks on it, `keepwarm.rs`)
-    if let Some(c) = ed.session.chat.as_mut() {
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
         c.model.clear();
         c.runs_on.0 = Some(value.clone()).filter(|v| v != "default");
     }
@@ -172,7 +172,7 @@ pub fn set(ed: &mut Editor, value: &str) -> Result<(), String> {
     let effort = ed.config.llm.effort.clone();
     if m.is_some_and(|m| !m.resolved.is_empty() && !effort.is_empty() && !m.efforts.contains(&effort)) {
         save(ed, "llm.effort", "")?;
-        if let Some(c) = ed.session.chat.as_mut() {
+        if let Some(c) = ed.workspace.claude.chat.as_mut() {
             c.runs_on.1.clear();
         }
     }
@@ -193,7 +193,7 @@ pub fn set_effort(ed: &mut Editor, level: &str) -> Result<(), String> {
         ed,
         json!({ "subtype": "apply_flag_settings", "settings": { "effortLevel": effort } }),
     );
-    if let Some(c) = ed.session.chat.as_mut() {
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
         c.runs_on.1 = level.to_string();
     }
     let what = if level.is_empty() { "the model's default".to_string() } else { level.to_string() };

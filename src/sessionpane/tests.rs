@@ -1,17 +1,17 @@
 use super::*;
 use crate::key::{Code, Key};
-use crate::session::{At, Doing};
+use crate::workspace::{At, Doing};
 use crate::worktree::{Facts, Shown};
 
 /// A session as the list says it, every column filled.
-fn full(id: SessionId, name: &str, doing: Doing) -> Shown {
+fn full(id: WorkspaceId, name: &str, doing: Doing) -> Shown {
     Shown {
         id,
         name: name.into(),
         branch: Some(format!("{name}-branch")),
         facts: Some(Facts { ahead: 2, behind: 3, changed: 4 }),
         doing,
-        front: id == 0,
+        front: id == WorkspaceId::HOME,
         usage: Some((12.0, 300 << 20)),
         rebasing: None,
         reloaded: 1,
@@ -22,7 +22,7 @@ fn full(id: SessionId, name: &str, doing: Doing) -> Shown {
         build: Some((2 << 20, true)),
         queue: None,
         at: "src/a.rs:12 · writing".into(),
-        colour: id as u8,
+        colour: id.n as u8,
         overlap: vec![("main".into(), Some(0))],
         waits: (2, 1),
         report: "I will switch it to the entry API so a repeat keeps the first strand".into(),
@@ -44,7 +44,7 @@ fn cols(laid: &(usize, Vec<(Col, usize)>)) -> Vec<Col> {
 /// the list always said — empty cells left out.
 #[test]
 fn a_row_says_what_the_manager_needs() {
-    let r = row(&full(1, "fix", Doing::Waiting));
+    let r = row(&full(WorkspaceId::here(1), "fix", Doing::Waiting));
     assert_eq!(r.cell(Col::State), [("▲ waits".to_string(), Ink::Warn)]);
     assert_eq!(r.text(Col::Waits), "2 cards · 1 edit");
     assert_eq!(r.cell(Col::Overlap), [("≈ ".into(), Ink::Warn), ("main".into(), Ink::Participant(0))]);
@@ -57,16 +57,25 @@ fn a_row_says_what_the_manager_needs() {
         (Doing::Queued { pos: 2 }, "queued 2nd", Ink::Faint),
         (Doing::Stuck { tool: "symbols", secs: 42 }, "◦ stuck? symbols 42s", Ink::Warn),
     ] {
-        assert_eq!(row(&full(1, "fix", doing)).cell(Col::State), [(said.to_string(), ink)]);
+        assert_eq!(
+            row(&full(WorkspaceId::here(1), "fix", doing)).cell(Col::State),
+            [(said.to_string(), ink)]
+        );
     }
-    let idle = Shown { waits: (0, 0), overlap: Vec::new(), context: None, ..full(0, "main", Doing::Idle) };
+    let idle = Shown {
+        waits: (0, 0),
+        overlap: Vec::new(),
+        context: None,
+        ..full(WorkspaceId::HOME, "main", Doing::Idle)
+    };
     let r = row(&idle);
     assert!(
         r.cell(Col::State).is_empty() && r.cell(Col::Waits).is_empty() && r.cell(Col::Overlap).is_empty()
     );
     assert!(r.front, "the front's name bold");
     // (a rebase and the bring queue before the state)
-    let rebasing = Shown { rebasing: Some("rebasing 1/2".into()), ..full(1, "fix", Doing::Working) };
+    let rebasing =
+        Shown { rebasing: Some("rebasing 1/2".into()), ..full(WorkspaceId::here(1), "fix", Doing::Working) };
     assert_eq!(row(&rebasing).text(Col::State), "rebasing 1/2 · working");
 }
 
@@ -75,7 +84,10 @@ fn a_row_says_what_the_manager_needs() {
 /// state last, the name never. Every narrower room shows a subset of the wider's.
 #[test]
 fn the_row_folds_at_80_in_its_order() {
-    let rows = [row(&full(0, "main", Doing::Working)), row(&full(1, "fix-login", Doing::Waiting))];
+    let rows = [
+        row(&full(WorkspaceId::HOME, "main", Doing::Working)),
+        row(&full(WorkspaceId::here(1), "fix-login", Doing::Waiting)),
+    ];
     // (the rows' room in a frame `w` wide: its sides, the bar's cells, a cell before the side)
     let room = |w: usize| w - 2 - 2 - 1;
     let wide = lay(&rows, 400);
@@ -159,10 +171,10 @@ fn feed(ed: &mut Editor, keys: &str) {
 fn the_session_list_floats_and_stays_while_you_work() {
     let dir = crate::scratch::Scratch::new("sessionpane");
     let mut ed = Editor::new(crate::config::Config::default());
-    (ed.session.root, ed.session.name) = (dir.to_path_buf(), "main".into());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
     feed(&mut ed, " W");
     let p = ed.sessions_pane.clone().expect("up");
-    assert_eq!(ed.session.at, At::List(p.list));
+    assert_eq!(ed.workspace.viewer.at, At::List(p.list));
     let s = frame(&mut ed, 160, 40);
     let f = ed.screen.floating.borrow().iter().find(|f| f.0 == GroupKind::Sessions).unwrap().1;
     assert_eq!(
@@ -174,7 +186,7 @@ fn the_session_list_floats_and_stays_while_you_work() {
     assert!(top.contains("╭─ sessions ── 1 session") && top.contains("enter switch"), "{top}");
     assert!(s.lines().nth(f.y + 1).unwrap().contains("▎ main"), "its row, selected");
     feed(&mut ed, "<esc>");
-    assert!(ed.sessions_pane.is_some() && ed.session.at == At::Code, "esc: the keys back, it stays");
+    assert!(ed.sessions_pane.is_some() && ed.workspace.viewer.at == At::Code, "esc: the keys back, it stays");
     assert!(
         !frame(&mut ed, 160, 40).lines().nth(f.y).unwrap().contains("enter switch"),
         "its keys only with them"
@@ -191,7 +203,7 @@ fn the_session_list_floats_and_stays_while_you_work() {
     feed(&mut ed, "<esc><C-w>w");
     assert!(ed.sessions_list_keys(), "C-w w: the list");
     feed(&mut ed, "<C-w>w");
-    assert_eq!(ed.session.at, At::Code, "C-w w on: round to the code");
+    assert_eq!(ed.workspace.viewer.at, At::Code, "C-w w on: round to the code");
     feed(&mut ed, " W");
     assert!(ed.sessions_list_keys(), "space W again");
     feed(&mut ed, "<C-w>e");
@@ -219,12 +231,12 @@ fn the_session_list_floats_and_stays_while_you_work() {
 fn the_session_list_docks_and_stays_after_enter() {
     let dir = crate::scratch::Scratch::new("sessiondock");
     let mut ed = Editor::new(crate::config::Config::default());
-    (ed.session.root, ed.session.name) = (dir.to_path_buf(), "main".into());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
     let other = dir.join("fix");
     std::fs::create_dir_all(&other).unwrap();
-    let fix = ed.session_open(&other).unwrap();
-    ed.session.name = "fix".into();
-    assert!(ed.session_switch(0));
+    let fix = ed.workspace_open(&other).unwrap();
+    ed.workspace.name = "fix".into();
+    assert!(ed.workspace_switch(WorkspaceId::HOME));
     feed(&mut ed, " W<C-w>L");
     assert_eq!(ed.sizes.sessions_dock, Some(crate::pane::Side::Right));
     let s = frame(&mut ed, 160, 40);
@@ -233,7 +245,7 @@ fn the_session_list_docks_and_stays_after_enter() {
     assert!(s.lines().nth(r.y).unwrap().contains("sessions"), "its top line\n{s}");
     assert!(ed.sessions_list_keys(), "the keys stay with it");
     feed(&mut ed, "j<ret>");
-    assert_eq!(ed.session.id, fix, "switched");
+    assert_eq!(ed.workspace.id, fix, "switched");
     assert!(
         ed.sessions_pane.is_some() && !ed.sessions_list_keys(),
         "docked, it stays — the keys to the code"
@@ -249,7 +261,7 @@ fn the_session_list_docks_and_stays_after_enter() {
         alt: false,
         ctrl: false,
     });
-    assert!(ed.sessions_list_keys() && ed.sessions_here() == Some(0), "a press on its row");
+    assert!(ed.sessions_list_keys() && ed.sessions_here() == Some(WorkspaceId::HOME), "a press on its row");
     feed(&mut ed, "<C-w>e");
     assert!(ed.sizes.sessions_dock.is_none(), "floating again");
     frame(&mut ed, 160, 40);
@@ -263,12 +275,12 @@ fn the_session_list_docks_and_stays_after_enter() {
 fn a_docked_list_with_no_room_floats_so_the_keys_go_to_a_list_in_sight() {
     let dir = crate::scratch::Scratch::new("sessiondocknarrow");
     let mut ed = Editor::new(crate::config::Config::default());
-    (ed.session.root, ed.session.name) = (dir.to_path_buf(), "main".into());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
     let other = dir.join("fix");
     std::fs::create_dir_all(&other).unwrap();
-    ed.session_open(&other).unwrap();
-    ed.session.name = "fix".into();
-    assert!(ed.session_switch(0));
+    ed.workspace_open(&other).unwrap();
+    ed.workspace.name = "fix".into();
+    assert!(ed.workspace_switch(WorkspaceId::HOME));
     feed(&mut ed, " W<C-w>L");
     frame(&mut ed, 160, 40);
     assert!(ed.dock_rect(GroupKind::Sessions).is_some(), "docked at 160");
@@ -278,7 +290,7 @@ fn a_docked_list_with_no_room_floats_so_the_keys_go_to_a_list_in_sight() {
     let listed = |ed: &Editor| {
         let state = ed.ui_state();
         let panes: Vec<_> =
-            state.sessions.iter().flat_map(|l| &l.panes).filter(|p| p.shows == "list:sessions").collect();
+            state.workspaces.iter().flat_map(|l| &l.panes).filter(|p| p.shows == "list:sessions").collect();
         assert_eq!(panes.len(), 1, "listed once: {panes:#?}");
         (panes[0].place, panes[0].rect)
     };
@@ -321,15 +333,15 @@ fn the_asks_float_over_a_docked_lists_foot_its_selected_row_above_them() {
     use crate::offer::{Offer, What};
     let dir = crate::scratch::Scratch::new("sessiondockasks");
     let mut ed = Editor::new(crate::config::Config::default());
-    (ed.session.root, ed.session.name) = (dir.to_path_buf(), "main".into());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
     // (more than the leaf has rows: the last one would be under the stack)
     for k in 0..30 {
         let other = dir.join(format!("s{k:02}"));
         std::fs::create_dir_all(&other).unwrap();
-        ed.session_open(&other).unwrap();
-        ed.session.name = format!("s{k:02}");
+        ed.workspace_open(&other).unwrap();
+        ed.workspace.name = format!("s{k:02}");
     }
-    assert!(ed.session_switch(0));
+    assert!(ed.workspace_switch(WorkspaceId::HOME));
     feed(&mut ed, " W<C-w>LG");
     let what = What::Screen { call: crate::tools::Call::test(1) };
     ed.push_offer(Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what));
@@ -356,7 +368,7 @@ fn a_docked_session_lists_side_is_kept_across_restart() {
     let path = dir.join("sizes.json");
     let mut ed = Editor::new(crate::config::Config::default());
     ed.sizes_path = Some(path.clone());
-    (ed.session.root, ed.session.name) = (dir.to_path_buf(), "main".into());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
     feed(&mut ed, " W<C-w>H");
     frame(&mut ed, 160, 40);
     feed(&mut ed, "<C-w>=");
@@ -373,7 +385,7 @@ fn a_docked_session_lists_side_is_kept_across_restart() {
     // The next tarae: its sizes read from the file, the list opened — docked left, not floating
     let mut ed = Editor::new(crate::config::Config::default());
     ed.sizes = crate::sizes::Sizes::read(Some(&path));
-    (ed.session.root, ed.session.name) = (dir.to_path_buf(), "main".into());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
     feed(&mut ed, " W");
     frame(&mut ed, 160, 40);
     assert!(ed.screen.floating.borrow().iter().all(|f| f.0 != GroupKind::Sessions), "not floating");
@@ -388,14 +400,14 @@ fn a_docked_session_lists_side_is_kept_across_restart() {
 fn a_card_waits_while_the_session_list_has_the_keys() {
     let dir = crate::scratch::Scratch::new("sessionpane");
     let mut ed = Editor::new(crate::config::Config::default());
-    (ed.session.root, ed.session.name) = (dir.to_path_buf(), "main".into());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
     feed(&mut ed, " W");
     ed.push_offer(crate::offer::Offer::new(
         "End the review?".into(),
         "2 files not viewed.",
         "",
         String::new(),
-        crate::offer::What::ReviewEnd { session: 0, started: std::time::Instant::now() },
+        crate::offer::What::ReviewEnd { session: WorkspaceId::HOME, started: std::time::Instant::now() },
     ));
     let s = frame(&mut ed, 160, 40);
     assert!(!ed.card_has_keys(), "the card waits");
@@ -419,7 +431,7 @@ fn a_card_waits_while_the_session_list_has_the_keys() {
         "2 files not viewed.",
         "",
         String::new(),
-        crate::offer::What::ReviewEnd { session: 0, started: std::time::Instant::now() },
+        crate::offer::What::ReviewEnd { session: WorkspaceId::HOME, started: std::time::Instant::now() },
     ));
     ed.events.set_asked(was);
     frame(&mut ed, 160, 40);
@@ -436,10 +448,10 @@ fn a_card_waits_while_the_session_list_has_the_keys() {
 fn the_session_list_is_searched_with_slash() {
     let dir = crate::scratch::Scratch::new("sessionpane");
     let mut ed = Editor::new(crate::config::Config::default());
-    (ed.session.root, ed.session.name) = (dir.to_path_buf(), "main".into());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
     for name in ["fix-login", "docs"] {
-        ed.session_add(dir.join(name));
-        ed.sessions.last_mut().unwrap().name = name.into();
+        ed.workspace_add(dir.join(name));
+        ed.workspaces.last_mut().unwrap().name = name.into();
     }
     let at = |ed: &Editor| {
         let id = ed.sessions_here().unwrap();
@@ -496,7 +508,7 @@ fn the_session_list_is_searched_with_slash() {
 fn the_list_is_as_tall_as_its_rows() {
     let dir = crate::scratch::Scratch::new("sessionpane");
     let mut ed = Editor::new(crate::config::Config::default());
-    (ed.session.root, ed.session.name) = (dir.to_path_buf(), "main".into());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
     let rect = |ed: &mut Editor| {
         frame(ed, 160, 40);
         ed.screen.floating.borrow().iter().find(|f| f.0 == GroupKind::Sessions).unwrap().1
@@ -507,23 +519,23 @@ fn the_list_is_as_tall_as_its_rows() {
     let rect_of = |y, h| crate::split::Rect { x: 32, y, w: 96, h };
     feed(&mut ed, " W");
     assert_eq!(rect(&mut ed), rect_of(full.y, 3), "one row: its top a full one's");
-    ed.session_add(dir.join("a"));
-    ed.session_add(dir.join("b"));
+    ed.workspace_add(dir.join("a"));
+    ed.workspace_add(dir.join("b"));
     assert_eq!(rect(&mut ed), rect_of(full.y, 5), "three: grown downward, its top line staying");
     feed(&mut ed, "q W");
     assert_eq!(rect(&mut ed), rect_of(full.y, 5), "opened again: the same line");
     for i in 0..30 {
-        ed.session_add(dir.join(format!("s{i}")));
+        ed.workspace_add(dir.join(format!("s{i}")));
     }
     assert_eq!(rect(&mut ed), rect_of(full.y, 19), "many: up to half the screen (39 rows), the same top");
     for _ in 0..30 {
-        let id = ed.sessions.last().unwrap().id;
-        ed.sessions.retain(|l| l.id != id);
+        let id = ed.workspaces.last().unwrap().id;
+        ed.workspaces.retain(|l| l.id != id);
     }
     // A move and a width: still as tall as its rows
     feed(&mut ed, "<C-w>mj<ret><C-w>>");
     assert_eq!(ed.sizes.sessions.map(|f| f.h), Some(0), "kept, its height its rows'");
-    ed.session_add(dir.join("c"));
+    ed.workspace_add(dir.join("c"));
     assert_eq!(rect(&mut ed), crate::split::Rect { x: 32, y: 12, w: 100, h: 6 }, "moved 2, wider 4, grown");
     // As short as it goes: `C-w -` says so, never taller
     feed(&mut ed, "<C-w>-");
@@ -533,7 +545,7 @@ fn the_list_is_as_tall_as_its_rows() {
     feed(&mut ed, "<C-w>+");
     let set = rect(&mut ed);
     assert_eq!(set.h, 8);
-    ed.session_add(dir.join("d"));
+    ed.workspace_add(dir.join("d"));
     assert_eq!(rect(&mut ed), set, "the height you set");
     feed(&mut ed, "<C-w>=");
     assert_eq!(

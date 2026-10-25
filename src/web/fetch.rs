@@ -47,7 +47,7 @@ const PAGES_BYTES: usize = 64 << 20;
 #[derive(Clone)]
 pub struct Way {
     pub proxy: Proxy,
-    /// The session as the proxy names it (`proxy::session_of`).
+    /// The session as the proxy names it (`proxy::workspace_of`).
     pub session: u64,
     pub rules: Arc<Egress>,
     /// How this machine's names are looked up (the system's resolver; a stand-in in tests) — the proxy looks up
@@ -65,7 +65,7 @@ pub struct Way {
     pub stop: Stop,
 }
 
-/// Tests: a stand-in for `yours` — a way made for the fetch's `Stop` (`Session.web_way`).
+/// Tests: a stand-in for `yours` — a way made for the fetch's `Stop` (`Workspace.web_way`).
 #[cfg(test)]
 pub type MakeWay = Arc<dyn Fn(Stop) -> Way + Send + Sync>;
 
@@ -84,7 +84,7 @@ pub fn yours(
     let rules = Egress { any: true, own_addresses: own, upstream, ..Egress::default() };
     Ok(Way {
         proxy: proxy::get().clone(),
-        session: proxy::session_of(root),
+        session: proxy::workspace_of(root),
         rules: Arc::new(rules),
         resolve: egress::system(),
         tls: tls()?,

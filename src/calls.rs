@@ -163,7 +163,7 @@ pub struct Tally {
     denied: BTreeMap<String, u64>,
     /// What the conversation read since anything was written, by file: line ranges, merged.
     reads: BTreeMap<PathBuf, Vec<(u64, u64)>>,
-    /// The session's last write (`Session.wrote`) as the reads above knew it.
+    /// The session's last write (`Workspace.wrote`) as the reads above knew it.
     wrote: Option<Instant>,
     /// Calls of tarae's tools come and not answered yet (`tools::mcp` → `tools::sized`).
     mcp_open: usize,
@@ -371,7 +371,7 @@ impl crate::editor::Editor {
     /// Hands the turns ended in the session in front to the call-order record (`DIR`), on a worker with
     /// nothing to bring back — none kept where there's no record (tests: none unless given).
     pub fn calls_record(&mut self) {
-        let entries = std::mem::take(&mut self.session.usage.to_record);
+        let entries = std::mem::take(&mut self.workspace.claude.usage.to_record);
         let Some(dir) = self.calls_dir.clone().filter(|_| !entries.is_empty()) else { return };
         let file = crate::cards::month_file(std::time::SystemTime::now());
         self.events.jobs().background(move || {

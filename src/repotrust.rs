@@ -138,12 +138,12 @@ impl Editor {
     /// A part's own card, just found: it joins the card of another part of this checkout waiting unanswered —
     /// up (in front or stacked) or parked with its session — else it goes up on its own.
     pub(crate) fn trust_offer(&mut self, o: Offer) {
-        let root = self.session.root.clone();
+        let root = self.workspace.root.clone();
         if !of_checkout(self, &root, &o.what) {
             return self.push_offer(o);
         }
         let front = !self.background();
-        let list = if front { &self.offers } else { &self.session.parked };
+        let list = if front { &self.offers } else { &self.workspace.parked };
         let with = |x: &Offer| {
             matches!(x.state, OfferState::Asking)
                 && match &x.what {
@@ -166,7 +166,7 @@ impl Editor {
         crate::sorting::by_key(&mut parts, order);
         let project = self.project_trust.as_ref().map(|p| p.file.clone());
         let card = card(&root, parts, joined, project.as_deref());
-        let list = if front { &mut self.offers } else { &mut self.session.parked };
+        let list = if front { &mut self.offers } else { &mut self.workspace.parked };
         replace(&mut list[at], card);
     }
 }
@@ -177,12 +177,12 @@ impl Editor {
 pub(crate) fn drop_part(ed: &mut Editor, gone: impl Fn(&What) -> bool, everywhere: bool) {
     let project = ed.project_trust.as_ref().map(|p| p.file.clone());
     let front = !ed.background();
-    let mut lists: Vec<&mut Vec<Offer>> = vec![&mut ed.session.parked];
+    let mut lists: Vec<&mut Vec<Offer>> = vec![&mut ed.workspace.parked];
     if front || everywhere {
         lists.push(&mut ed.offers);
     }
     if everywhere {
-        lists.extend(ed.sessions.iter_mut().map(|s| &mut s.parked));
+        lists.extend(ed.workspaces.iter_mut().map(|s| &mut s.parked));
     }
     let mut emptied = false;
     for list in lists {
@@ -206,7 +206,7 @@ pub(crate) fn drop_part(ed: &mut Editor, gone: impl Fn(&What) -> bool, everywher
         let empty = |w: &What| matches!(w, What::RepoTrust { parts, .. } if parts.is_empty());
         ed.drop_cards(empty);
         ed.offers.retain(|o| !empty(&o.what));
-        ed.sessions.iter_mut().for_each(|s| s.parked.retain(|o| !empty(&o.what)));
+        ed.workspaces.iter_mut().for_each(|s| s.parked.retain(|o| !empty(&o.what)));
     }
 }
 
@@ -245,7 +245,7 @@ pub(crate) fn answer(ed: &mut Editor, id: u64, parts: Vec<Offer>, trusted: bool)
 
 /// What `v` adds after the card's text: each part's own card whole, and Claude's detail.
 pub(crate) fn view_text(ed: &Editor, parts: &[Offer]) -> String {
-    let seen = ed.session.chat.as_ref().and_then(|c| c.settings.seen.as_ref());
+    let seen = ed.workspace.claude.chat.as_ref().and_then(|c| c.settings.seen.as_ref());
     let mut more = String::new();
     for p in parts {
         more += &format!("\n── {}\n\n{}\n", p.title, p.question);

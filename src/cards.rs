@@ -1013,7 +1013,7 @@ mod tests {
     /// way out waits for the writes under way. 0700 the folder, 0600 the file; `llm.card-record` off, nothing.
     /// Review of piece 3: the shadow is the session's `Caps` as made on a worker. With none made yet (a session's
     /// first moments) it says `unbuilt` where a made one could decide otherwise, never a guess — the rest as
-    /// ever. Made as the session is (`session_kept_back`: at start, and after `:restart` before its chat is
+    /// ever. Made as the session is (`workspace_kept_back`: at start, and after `:restart` before its chat is
     /// restored), a read outside home where tarae reads it is `none` — on a card (`offer_said`) and on a run
     /// refused with no card (`refused` with the session's `caps()`, as `tools::card` gives it).
     #[test]
@@ -1030,12 +1030,12 @@ mod tests {
             ed.offer_dismiss();
         };
         let run = |reads: Vec<Class>| Request::Run { past: Past::No, sandboxed: true, reads, outward: false };
-        assert!(ed.session.caps.is_none(), "none made yet");
+        assert!(ed.workspace.claude.caps.is_none(), "none made yet");
         card(&mut ed, Request::Read(Class::Elsewhere), "read, none made");
         card(&mut ed, run(Vec::new()), "run, none made");
-        ed.session_kept_back(ed.session.id);
+        ed.workspace_kept_back(ed.workspace.id);
         let end = Instant::now() + crate::test_results::PATIENCE;
-        while ed.session.caps.is_none() {
+        while ed.workspace.claude.caps.is_none() {
             let ev =
                 ed.events.recv_timeout(end.saturating_duration_since(Instant::now())).expect("caps made");
             ed.handle_event(ev);
@@ -1043,7 +1043,7 @@ mod tests {
         card(&mut ed, Request::Read(Class::Elsewhere), "read, made");
         let asked = Asked::new(Why::ReadsOutside(vec![Class::Elsewhere]), run(vec![Class::Elsewhere]))
             .about("refused, made");
-        let e = refused(&asked, "not run", (None, SystemTime::now()), ed.session.caps());
+        let e = refused(&asked, "not run", (None, SystemTime::now()), ed.workspace.claude.caps());
         ed.cards_record(vec![e]);
         ed.cards_flush();
         let mut shadows: Vec<(String, String)> = read_record(&dir)
@@ -1078,7 +1078,7 @@ mod tests {
             ed
         };
         let mut ed = started();
-        let root = ed.session.root.clone();
+        let root = ed.workspace.root.clone();
         let run = Request::Run { past: Past::No, sandboxed: true, reads: Vec::new(), outward: false };
         let asked = Asked::new(Why::NotACheck("awk".into()), run.clone()).ran(
             Some(7),

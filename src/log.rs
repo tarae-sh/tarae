@@ -171,7 +171,7 @@ impl Kept {
 pub struct Session(Option<Arc<str>>);
 
 impl Session {
-    /// The session called `name` (`session::Session::log`).
+    /// The session called `name` (`workspace::Workspace::log`).
     pub fn named(name: &str) -> Self {
         Self(Some(name.into()))
     }
@@ -207,7 +207,7 @@ fn checkouts() -> std::sync::MutexGuard<'static, Vec<(u64, PathBuf, Arc<str>)>> 
     CHECKOUTS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// A session's checkout, known to the log while it lives (`session::Session::new`): lines about a path in it
+/// A session's checkout, known to the log while it lives (`workspace::Workspace::new`): lines about a path in it
 /// name it. Dropped with its session, it's forgotten.
 #[derive(Debug)]
 pub struct Checkout(u64);
@@ -436,7 +436,7 @@ mod tests {
     }
 
     /// A line about one session names it in its own column, whichever way it comes: from the session in hand
-    /// (a card answered, a message's size — `session::Session::log`), or on a worker from a path in its
+    /// (a card answered, a message's size — `workspace::Workspace::log`), or on a worker from a path in its
     /// checkout (a run's root, a keeper's, a server's — `Session::of`), the innermost checkout when they nest;
     /// a server several sessions share is none of theirs alone, and an ended session's checkout names it no
     /// more. The checkout tarae started in goes by its branch, as the session list has it. tarae's own lines
@@ -448,9 +448,9 @@ mod tests {
         let (main, nested) =
             (base.join(format!("{tag}-main")), base.join(format!("{tag}-main/wt/{tag}-fix")));
         let other = base.join(format!("{tag}-other"));
-        let front = crate::session::Session::new(1, main.clone(), 1);
-        let inner = crate::session::Session::new(2, nested.clone(), 2);
-        let behind = crate::session::Session::new(3, other.clone(), 3);
+        let front = crate::workspace::Workspace::new(crate::event::WorkspaceId::here(1), main.clone(), 1);
+        let inner = crate::workspace::Workspace::new(crate::event::WorkspaceId::here(2), nested.clone(), 2);
+        let behind = crate::workspace::Workspace::new(crate::event::WorkspaceId::here(3), other.clone(), 3);
         let (m, f, o) = (format!("{tag}-main"), format!("{tag}-fix"), format!("{tag}-other"));
         let captured = capture();
         let mine = || -> Vec<String> { captured.lines().into_iter().filter(|l| l.contains(&tag)).collect() };
@@ -513,7 +513,7 @@ mod tests {
 
         // The checkout tarae started in, as the list calls it: by its branch once known — in hand and from a path
         let started = base.join(format!("{tag}-started"));
-        let mut first = crate::session::Session::new(0, started.clone(), 4);
+        let mut first = crate::workspace::Workspace::new(crate::event::WorkspaceId::HOME, started.clone(), 4);
         let branch = format!("{tag}-feature");
         first.git_branch = Some(branch.clone());
         first.in_log.named(first.label());

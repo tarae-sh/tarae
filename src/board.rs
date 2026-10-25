@@ -258,7 +258,7 @@ pub fn start(ed: &mut crate::editor::Editor, t: crate::codereview::Taken, estima
         return ed.set_status("no angle's `when` holds for these changes — space v c reads them in one pass");
     }
     // (asked once for this session and its conversation — a second board in the same work starts unasked)
-    if ed.session.board_yes.as_ref() == Some(&conversation(ed)) {
+    if ed.workspace.claude.board_yes.as_ref() == Some(&conversation(ed)) {
         return crate::reviewer::begin(ed, t, Some(Board { estimate, ..Board::new(chosen) }));
     }
     ask(ed, chosen, t, estimate);
@@ -271,7 +271,7 @@ pub fn start(ed: &mut crate::editor::Editor, t: crate::codereview::Taken, estima
 /// past a restart.
 #[derive(Clone, Debug)]
 pub struct Ask {
-    pub session: crate::event::SessionId,
+    pub session: crate::event::WorkspaceId,
     /// The session's name, as the card says it.
     pub name: String,
     /// The chat's conversation it was asked in (None: no chat, or none begun).
@@ -285,7 +285,7 @@ pub struct Ask {
 
 /// The conversation a yes on the board's card holds for: the session's chat's, if one's begun.
 fn conversation(ed: &crate::editor::Editor) -> Option<String> {
-    ed.session.chat.as_ref().and_then(|c| c.conversation.clone())
+    ed.workspace.claude.chat.as_ref().and_then(|c| c.conversation.clone())
 }
 
 /// The card — one a session (the snapshot taken and what the last boards cost read already, `reviewer::ask_in`).
@@ -299,8 +299,8 @@ fn ask(
         return ed.set_status("the board's card is up — y starts it, n doesn't");
     }
     ed.push_offer(card(Ask {
-        session: ed.session.id,
-        name: ed.session.name.clone(),
+        session: ed.workspace.id,
+        name: ed.workspace.name.clone(),
         conversation: conversation(ed),
         taken: Box::new(t),
         angles,
@@ -346,13 +346,13 @@ pub fn answer(ed: &mut crate::editor::Editor, a: Ask, yes: bool) {
     if !yes {
         return ed.set_status("no board — space v C asks again");
     }
-    if ed.session.id != a.session {
+    if ed.workspace.id != a.session {
         return ed.set_status("that session isn't in front — no board started");
     }
-    if ed.session.reviewer.as_ref().is_some_and(crate::reviewer::Reviewer::reading) {
+    if ed.workspace.reviewer.as_ref().is_some_and(crate::reviewer::Reviewer::reading) {
         return ed.set_status("the reviewer is still reading — :reviewer-stop stops it");
     }
-    ed.session.board_yes = Some(a.conversation.clone());
+    ed.workspace.claude.board_yes = Some(a.conversation.clone());
     let (root, tree, head) = (a.taken.root.clone(), a.taken.tree.clone(), a.taken.head.clone());
     // (of the base the card said, whatever review is open now)
     let again = crate::codereview::retaking(ed, &a.taken);
@@ -363,7 +363,7 @@ pub fn answer(ed: &mut crate::editor::Editor, a: Ask, yes: bool) {
         (!same).then(again)
     };
     ed.step(ed.events.jobs(), "board", "the board checks the changes…", work, move |ed, again| {
-        if ed.session.reviewer.as_ref().is_some_and(crate::reviewer::Reviewer::reading) {
+        if ed.workspace.reviewer.as_ref().is_some_and(crate::reviewer::Reviewer::reading) {
             return ed.set_status("the reviewer is still reading — :reviewer-stop stops it");
         }
         let (t, angles) = match again {

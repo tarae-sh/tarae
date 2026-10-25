@@ -1,4 +1,4 @@
-//! Unified diffs, for `:session-apply` (`apply.rs`): `parse` reads git's (`diff --git`, its extended headers)
+//! Unified diffs, for `:workspace-apply` (`apply.rs`): `parse` reads git's (`diff --git`, its extended headers)
 //! and plain ones (`--- a` / `+++ b`); `lay` puts a file's hunks on a text — exactly where they say, or (asked)
 //! the one place their lines all are, never loosened; `merge3` merges a base's two descendants by lines, what
 //! both changed differently as a diff3 conflict block (`conflict.rs` finds those). Pure: no disk, no git.

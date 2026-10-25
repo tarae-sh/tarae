@@ -246,7 +246,7 @@ fn the_card_says_what_goes_in_and_y_commits_n_doesnt() {
     std::fs::write(dir.join("Makefile"), "all:\n").unwrap();
     std::fs::write(dir.join(".env"), "X=1\n").unwrap();
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = dir.clone();
+    ed.workspace.root = dir.clone();
     let args = json!({"message": "Build it", "paths": ["a.txt", "Makefile", ".env"]});
     call(&mut ed, Call::test(51), &args).unwrap();
     pump(&mut ed, "the card", |ed| ed.offers.iter().any(|o| o.kind() == "commit"));

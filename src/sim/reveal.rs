@@ -53,14 +53,14 @@ fn run(choices: Choices) -> Vec<String> {
     let dir = crate::scratch::Scratch::new("sim-reveal");
     std::fs::write(dir.join("a.rs"), TEXT).unwrap();
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = dir.to_path_buf();
+    ed.workspace.root = dir.to_path_buf();
     ed.open(&dir.join("a.rs")).unwrap();
     let mut c = crate::chat::Chat::new();
     let _claude = crate::chat::stand_in(&mut c);
     c.follow.on = true;
     c.state = crate::chat::State::Thinking;
     c.writing.paced = true;
-    ed.session.chat = Some(c);
+    ed.workspace.claude.chat = Some(c);
     crate::term::render(&mut ed, &mut Vec::new(), 100, 32).unwrap();
     let s = |t: &str| serde_json::to_string(t).unwrap();
     let input =
@@ -76,11 +76,11 @@ fn run(choices: Choices) -> Vec<String> {
 }
 
 fn busy(ed: &Editor) -> bool {
-    ed.session.chat.as_ref().is_some_and(|c| c.state != crate::chat::State::Idle)
+    ed.workspace.claude.chat.as_ref().is_some_and(|c| c.state != crate::chat::State::Idle)
 }
 
 fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World, root: &std::path::Path) -> String {
-    let g = ed.session.chat.as_ref().map_or(0, crate::chat::Chat::generation);
+    let g = ed.workspace.claude.chat.as_ref().map_or(0, crate::chat::Chat::generation);
     w.inputs += 1;
     w.ticked = false;
     let c = &mut sim.choices;
@@ -148,7 +148,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World, root: &std::path::Path) -
 }
 
 fn held(ed: &Editor, w: &mut World) -> Result<(), String> {
-    let Some(c) = ed.session.chat.as_ref() else { return Err("the chat went".into()) };
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return Err("the chat went".into()) };
     let item = c.writing.calls.iter().flat_map(|c| &c.items).next();
     let Some(it) = item else {
         if crate::writing::reveal_wake(ed).is_some() {
@@ -209,7 +209,7 @@ fn held(ed: &Editor, w: &mut World) -> Result<(), String> {
 }
 
 fn print(ed: &Editor) -> String {
-    let c = ed.session.chat.as_ref();
+    let c = ed.workspace.claude.chat.as_ref();
     let it = c.and_then(|c| c.writing.calls.iter().flat_map(|c| &c.items).next());
     format!(
         "{:?} · {} of {} shown · wake {:?}",

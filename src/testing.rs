@@ -14,7 +14,7 @@ use serde_json::Value;
 use tree_sitter::Tree;
 
 use crate::editor::Editor;
-use crate::session::At;
+use crate::workspace::At;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
@@ -527,7 +527,7 @@ impl Editor {
 
     /// `space x l` — rerun the last one (as debug if it was debug).
     pub fn test_rerun(&mut self) {
-        match self.session.test_last.clone() {
+        match self.workspace.test_last.clone() {
             Some((t, false)) => self.test_start(t),
             Some((t, true)) => self.test_debug_target(t),
             None => self.set_status("no test run yet — space x x runs the test at the cursor"),
@@ -537,13 +537,13 @@ impl Editor {
     /// `enter` on the tests' list: the selected test's place in the code — the code gets the keys (as the side
     /// panel's files do); one with no place says so.
     pub(crate) fn tests_list_open(&mut self) {
-        let Some(c) = self.session.test_run.as_ref().and_then(|r| r.cases.get(r.selected)).cloned() else {
+        let Some(c) = self.workspace.test_run.as_ref().and_then(|r| r.cases.get(r.selected)).cloned() else {
             return;
         };
         let Some((path, line)) = c.at else {
             return self.set_status(format!("{} has no place to go to — the runner named none", c.name));
         };
-        self.session.at = At::Code;
+        self.workspace.viewer.at = At::Code;
         if let Err(e) = self.open_at(&path, line, 0) {
             self.set_error(format!("{e:#}"));
         }
@@ -556,7 +556,7 @@ impl Editor {
             let d = self.doc();
             (p, d.text.byte_to_line(d.selection().primary().cursor(&d.text)))
         });
-        let Some(r) = self.session.test_run.as_mut() else {
+        let Some(r) = self.workspace.test_run.as_mut() else {
             return self.set_status("no test results — space x x runs a test");
         };
         let fails = r.failures();
@@ -591,7 +591,7 @@ impl Editor {
 
     /// `space x o` — the run's whole output in a buffer (search it, copy from it; the pane shows a window).
     pub fn test_output(&mut self) {
-        let Some(r) = &self.session.test_run else {
+        let Some(r) = &self.workspace.test_run else {
             return self.set_status("no test run yet — space x x runs the test at the cursor");
         };
         let mut text = r.output.text().to_string();
@@ -623,7 +623,7 @@ impl Editor {
     /// `space x c` — closes the test pane (stops the run if it's going).
     pub fn test_close(&mut self) {
         crate::tools::tests_dropped(self, "the user closed it");
-        self.session.test_run = None;
+        self.workspace.test_run = None;
         // (the pane is free: what waits for it starts)
         crate::queued::run_next(self);
     }
@@ -631,8 +631,8 @@ impl Editor {
     /// The user's tests — Claude's running in the pane aren't stopped: these wait first in line
     /// (`queued.rs`; `enter` in the pane runs them now).
     pub fn test_start(&mut self, target: Target) {
-        if crate::queued::claudes_running(&self.session, crate::queued::Slot::Tests) {
-            self.session.test_last = Some((target.clone(), false));
+        if crate::queued::claudes_running(&self.workspace, crate::queued::Slot::Tests) {
+            self.workspace.test_last = Some((target.clone(), false));
             return crate::queued::push(self, crate::queued::What::Tests(target));
         }
         self.test_start_now(target, false, None);
@@ -652,7 +652,7 @@ impl Editor {
         // Save modified files first — tests run the code on disk (started once they're written)
         self.auto_save(" · before test");
         self.after_saves(move |ed| {
-            if !force && crate::queued::claudes_running(&ed.session, crate::queued::Slot::Tests) {
+            if !force && crate::queued::claudes_running(&ed.workspace, crate::queued::Slot::Tests) {
                 return crate::queued::again(ed, crate::queued::What::Tests(target), Some(trace));
             }
             let before = ed.test_generation;
@@ -677,7 +677,7 @@ impl Editor {
     ) {
         let trace = trace.unwrap_or_else(|| crate::trace::RunTrace::new(format!("tests: {}", target.label)));
         trace.step("saved");
-        self.session.test_last = Some((target.clone(), false));
+        self.workspace.test_last = Some((target.clone(), false));
         let argv = target.argv();
         let policy = match &guard {
             Some(crate::sandbox::Guard::In(p)) => Some(&**p),
@@ -691,7 +691,7 @@ impl Editor {
         crate::task::color_off(&mut cmd);
         // (Claude's: the prefix its containers are named from, stopped with it — `containers.rs`)
         let claudes = acts == crate::spawn::Acts::Claude;
-        let containers = claudes.then(|| crate::containers::prefix(self.session.id, trace.id()));
+        let containers = claudes.then(|| crate::containers::prefix(self.workspace.id, trace.id()));
         match &containers {
             Some(p) => cmd.env(crate::containers::VAR, p),
             None => cmd.env_remove(crate::containers::VAR),
@@ -735,7 +735,8 @@ impl Editor {
                     })
                     .collect();
                 let apply = move |ed: &mut Editor| {
-                    let Some(r) = ed.session.test_run.as_mut().filter(|r| r.generation == generation) else {
+                    let Some(r) = ed.workspace.test_run.as_mut().filter(|r| r.generation == generation)
+                    else {
                         return;
                     };
                     let mut attach = None;
@@ -800,8 +801,8 @@ impl Editor {
             let done = move |ed: &mut Editor| {
                 // (a host its proxy holds for it has no one left to ask for — its card goes)
                 crate::hosts::run_ended(ed, run_id);
-                let session = ed.session.log();
-                let Some(r) = ed.session.test_run.as_mut().filter(|r| r.generation == generation) else {
+                let session = ed.workspace.log();
+                let Some(r) = ed.workspace.test_run.as_mut().filter(|r| r.generation == generation) else {
                     return;
                 };
                 if r.state != RunState::Running {
@@ -836,7 +837,7 @@ impl Editor {
                 });
                 // (what waits for the pane goes next — once this one's end is told; once what it changed is
                 // taken, for Claude's — `tools::tests_done`)
-                if !ed.session.runs_next.is_empty() && !(r.snap.is_some() && r.chat.is_some()) {
+                if !ed.workspace.runs_next.is_empty() && !(r.snap.is_some() && r.chat.is_some()) {
                     let next = crate::event::Event::Job(Box::new(crate::queued::run_next));
                     let _ = ed.events.sender().send(next);
                 }
@@ -850,7 +851,7 @@ impl Editor {
         let label = format!("Claude's tests {}", target.label);
         let containers =
             containers.map(|(p, reach)| crate::containers::Run::new(p, label, self.events.sender(), reach));
-        self.session.test_run = Some(TestRun {
+        self.workspace.test_run = Some(TestRun {
             target,
             state: RunState::Running,
             output: Default::default(),
@@ -896,9 +897,9 @@ impl Editor {
         if self.test_generation == before {
             return; // couldn't launch (reason shown)
         }
-        self.session.test_last = Some((target.clone(), true));
+        self.workspace.test_last = Some((target.clone(), true));
         self.dap_test = Some(target);
-        if let Some(r) = self.session.test_run.as_mut() {
+        if let Some(r) = self.workspace.test_run.as_mut() {
             r.attach = Some((wait, file, root));
         }
         self.set_status("Building and starting the test JVM — attaching when it's ready");
@@ -916,7 +917,7 @@ impl Editor {
     }
 
     fn test_debug_saved(&mut self, target: Target) {
-        self.session.test_last = Some((target.clone(), true));
+        self.workspace.test_last = Some((target.clone(), true));
         self.dap_test = Some(target.clone());
         self.dap_resume = Some(crate::offer::Resume::TestTarget(Box::new(target.clone())));
         let lang = lang_of(&target.how).to_string();
@@ -1394,13 +1395,13 @@ mod tests {
         let mut ed = Editor::new(crate::config::Config::default());
         ed.open(&d.join("src/term_snapshots.rs")).unwrap();
         ed.test_run(Scope::Nearest);
-        assert!(ed.session.test_run.is_none(), "found on a worker, not while the key is handled");
+        assert!(ed.workspace.test_run.is_none(), "found on a worker, not while the key is handled");
         let end = Instant::now() + crate::test_results::PATIENCE;
-        while ed.session.test_run.is_none() {
+        while ed.workspace.test_run.is_none() {
             let ev = ed.events.recv_timeout(end.saturating_duration_since(Instant::now())).expect("event");
             ed.handle_event(ev);
         }
-        assert_eq!(ed.session.test_run.as_ref().unwrap().target.label, "term::snapshot_tests::shows");
+        assert_eq!(ed.workspace.test_run.as_ref().unwrap().target.label, "term::snapshot_tests::shows");
         ed.test_close();
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -1426,12 +1427,12 @@ mod tests {
                 },
             });
             let end = Instant::now() + crate::test_results::PATIENCE;
-            while ed.session.test_run.as_ref().is_some_and(|r| r.state == RunState::Running) {
+            while ed.workspace.test_run.as_ref().is_some_and(|r| r.state == RunState::Running) {
                 let ev =
                     ed.events.recv_timeout(end.saturating_duration_since(Instant::now())).expect("event");
                 ed.handle_event(ev);
             }
-            ed.session.test_run.as_ref().unwrap().state.clone()
+            ed.workspace.test_run.as_ref().unwrap().state.clone()
         };
         let none = "printf 'running 0 tests\\n\\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out\\n'";
         assert_eq!(run(&mut ed, "rust", none), RunState::NoTests);
@@ -1470,20 +1471,20 @@ mod tests {
                 junit: None,
             },
         });
-        ed.session.test_run.as_mut().unwrap().chat = Some(crate::tools::Call::test(73));
+        ed.workspace.test_run.as_mut().unwrap().chat = Some(crate::tools::Call::test(73));
         let end = Instant::now() + crate::test_results::PATIENCE;
         let mut seen = false;
-        while ed.session.test_run.as_ref().is_some_and(|r| r.state == RunState::Running) {
+        while ed.workspace.test_run.as_ref().is_some_and(|r| r.state == RunState::Running) {
             let ev = ed.events.recv_timeout(end.saturating_duration_since(Instant::now())).expect("event");
             ed.handle_event(ev);
-            let r = ed.session.test_run.as_ref().unwrap();
+            let r = ed.workspace.test_run.as_ref().unwrap();
             seen |= r
                 .wait
                 .shown(Instant::now(), crate::term::run_duration)
                 .is_some_and(|w| w.starts_with("waiting for cargo's lock · "));
         }
         assert!(seen, "the wait was the run's state");
-        let r = ed.session.test_run.as_ref().unwrap();
+        let r = ed.workspace.test_run.as_ref().unwrap();
         assert_eq!(r.state, RunState::Passed);
         assert!(!r.output.iter().any(|l| l.1.contains("Blocking")), "{:?}", r.output);
         let answered = crate::tools::ANSWERED
@@ -1532,10 +1533,10 @@ mod tests {
         ed.test_start(target("sh"));
         ed.test_start(target("/nonexistent/python"));
         assert!(ed.status.as_ref().is_some_and(|s| s.0.contains("/nonexistent/python")), "{:?}", ed.status);
-        assert_eq!(ed.session.test_run.as_ref().map(|r| r.generation), Some(ed.test_generation));
+        assert_eq!(ed.workspace.test_run.as_ref().map(|r| r.generation), Some(ed.test_generation));
         // …so its end still lands (not "running" forever)
         let end = Instant::now() + crate::test_results::PATIENCE;
-        while ed.session.test_run.as_ref().is_some_and(|r| r.state == RunState::Running) {
+        while ed.workspace.test_run.as_ref().is_some_and(|r| r.state == RunState::Running) {
             let ev = ed.events.recv_timeout(end.saturating_duration_since(Instant::now())).expect("event");
             ed.handle_event(ev);
         }
@@ -1597,7 +1598,7 @@ mod tests {
         let file = std::fs::canonicalize(file).unwrap();
         let mut ed = Editor::new(crate::config::Config::default());
         let output = ["collected 2", "a line 0", "a line 1", "b line 0", "2 failed"];
-        ed.session.test_run = Some(finished(
+        ed.workspace.test_run = Some(finished(
             vec![failed("a", 30, Some((file.clone(), 0))), failed("b", 3, Some((file.clone(), 1)))],
             output.iter().map(|l| l.to_string()).collect(),
         ));
@@ -1606,18 +1607,18 @@ mod tests {
             ed.handle_mouse(Mouse { kind: K::ScrollDown, x: 5, y, alt: false, ctrl: false })
         };
         wheel(&mut ed, 25);
-        assert_eq!(ed.session.test_run.as_ref().unwrap().detail_top(9), 3);
+        assert_eq!(ed.workspace.test_run.as_ref().unwrap().detail_top(9), 3);
         wheel(&mut ed, 5);
         assert_eq!(
-            ed.session.test_run.as_ref().unwrap().detail_top(9),
+            ed.workspace.test_run.as_ref().unwrap().detail_top(9),
             3,
             "the wheel over the code isn't the panel's"
         );
         // First `]x` goes to the picked one (a), the next to b — whose message starts at its top
         ed.test_failure_step(true);
-        assert_eq!(ed.session.test_run.as_ref().unwrap().detail_top(9), 3, "still a");
+        assert_eq!(ed.workspace.test_run.as_ref().unwrap().detail_top(9), 3, "still a");
         ed.test_failure_step(true);
-        let r = ed.session.test_run.as_ref().unwrap();
+        let r = ed.workspace.test_run.as_ref().unwrap();
         assert_eq!((r.selected, r.scroll), (1, None));
 
         ed.test_output();

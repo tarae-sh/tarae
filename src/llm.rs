@@ -25,8 +25,8 @@ use crate::editor::Editor;
 use crate::event::{Apply, Event};
 use crate::key::{Code, Key};
 use crate::selection::{Range, Selection};
-use crate::session::At;
 use crate::transaction::{Assoc, Change, Transaction};
+use crate::workspace::At;
 
 /// Speed options: no tools (pure transform), skip MCP·user settings, no conversation kept by claude (keeps /resume clean).
 const DEFAULT_ARGS: &[&str] = &[
@@ -617,7 +617,7 @@ impl ClaudeEnv {
 /// Whether the session in front's chat passes a key from tarae's environment on: `llm.environment-key = "keep"`,
 /// or `y` on the key card until the session ends (`envkey.rs`).
 pub fn keeps_key(ed: &Editor) -> bool {
-    ed.config.llm.keep_env_key || ed.session.env_key == Some(true)
+    ed.config.llm.keep_env_key || ed.workspace.claude.env_key == Some(true)
 }
 
 /// What claude's environment leaves out, said once since tarae started: one log line, and the chat's note — None:
@@ -1403,7 +1403,7 @@ pub type OnDone = Box<dyn FnOnce(&mut Editor, bool)>;
 /// Closes the open review as rejected (before another review takes its place — so the waiter gets an answer).
 /// An ask still waiting for its answer is killed (its result would no longer find its review).
 pub fn close_review(ed: &mut Editor) {
-    let Some(mut rev) = ed.session.review.take() else { return };
+    let Some(mut rev) = ed.workspace.claude.review.take() else { return };
     if !rev.ready
         && let Some(pid) = ed.llm_pid.take()
     {
@@ -1523,8 +1523,8 @@ impl Review {
 pub fn prewarm(ed: &mut Editor) {
     let cfg = ed.config.llm.clone();
     let warmed = ed
-        .credential(ed.session.billing, crate::billing::Role::Ask)
-        .and_then(|cred| ed.llm_warm.ensure(&cfg, &ed.session.root, ed.claude_env.as_ref(), &cred));
+        .credential(ed.workspace.claude.billing, crate::billing::Role::Ask)
+        .and_then(|cred| ed.llm_warm.ensure(&cfg, &ed.workspace.root, ed.claude_env.as_ref(), &cred));
     if let Err(e) = warmed {
         ed.set_error(e);
     }
@@ -1535,7 +1535,7 @@ pub fn ask(ed: &mut Editor, instruction: &str) -> Result<(), String> {
     if instruction.is_empty() {
         return Err("usage: :ask <instruction>".into());
     }
-    if ed.session.review.is_some() {
+    if ed.workspace.claude.review.is_some() {
         return Err("an ask is already in progress (:ask-cancel)".into());
     }
     let cfg = ed.config.llm.clone();
@@ -1549,8 +1549,13 @@ pub fn ask(ed: &mut Editor, instruction: &str) -> Result<(), String> {
             (r.from(), r.to())
         })
         .collect();
-    let prompt =
-        build_prompt(instruction, &doc.display_name(&ed.session.root), &doc.text, &ranges, cfg.context_lines);
+    let prompt = build_prompt(
+        instruction,
+        &doc.display_name(&ed.workspace.root),
+        &doc.text,
+        &ranges,
+        cfg.context_lines,
+    );
     let hunks = ranges
         .iter()
         .map(|&(from, to)| Hunk {
@@ -1576,7 +1581,7 @@ pub fn draft(
     from: usize,
     to: usize,
 ) -> Result<(), String> {
-    if ed.session.review.is_some() {
+    if ed.workspace.claude.review.is_some() {
         return Err("Claude is already answering (:ask-cancel)".into());
     }
     let doc = ed.docs.iter().find(|d| d.id == doc_id).ok_or("the buffer is gone")?;
@@ -1603,19 +1608,23 @@ const DRAFT_LIMIT_SAID: &str = "still writing after 2 minutes — stopped, nothi
 /// Whether Esc now stops the answer being waited for (a draft, `space i`) — the code has the keys in normal
 /// mode (`review_key`; the waiting card says `esc stop` then).
 pub fn esc_stops(ed: &Editor) -> bool {
-    ed.session.review.as_ref().is_some_and(|r| !r.ready)
+    ed.workspace.claude.review.as_ref().is_some_and(|r| !r.ready)
         && ed.mode == crate::editor::Mode::Normal
         && ed.picker.is_none()
         && ed.prompt.is_none()
         && ed.pending.is_empty()
-        && !ed.session.chat_has_keys()
+        && !ed.workspace.chat_has_keys()
 }
 
 /// The answer being waited for (of `generation`, or any) is stopped — its process killed, nothing applied —
 /// and `said` says why. Nothing waiting (it answered first): nothing happens.
 pub fn stop_waiting(ed: &mut Editor, generation: Option<u64>, said: &str) {
-    let waiting =
-        ed.session.review.as_ref().filter(|r| !r.ready && generation.is_none_or(|g| r.generation == g));
+    let waiting = ed
+        .workspace
+        .claude
+        .review
+        .as_ref()
+        .filter(|r| !r.ready && generation.is_none_or(|g| r.generation == g));
     let Some(what) = waiting.map(|r| r.instruction.clone()) else {
         ed.unchanged = true;
         return;
@@ -1640,8 +1649,8 @@ fn start(
     what: &'static str,
 ) -> Result<(), String> {
     let cfg = ed.config.llm.clone();
-    let cred = ed.credential(ed.session.billing, crate::billing::Role::Ask)?;
-    let mut child = ed.llm_warm.take(&cfg, &ed.session.root, ed.claude_env.as_ref(), &cred)?;
+    let cred = ed.credential(ed.workspace.claude.billing, crate::billing::Role::Ask)?;
+    let mut child = ed.llm_warm.take(&cfg, &ed.workspace.root, ed.claude_env.as_ref(), &cred)?;
     let (billing, keep) = (cred.billing(), cfg.keep_env_key);
     // Write the message and close stdin — the process exits on its own after this one turn (written off the
     // main loop: a commit draft's prompt can be 80 KB, and a spare still starting reads nothing yet).
@@ -1661,17 +1670,17 @@ fn start(
     ed.llm_generation += 1;
     let generation = ed.llm_generation;
     let n = hunks.len();
-    ed.session.review = Some(Review::new(generation, doc_id, instruction, hunks));
+    ed.workspace.claude.review = Some(Review::new(generation, doc_id, instruction, hunks));
     ed.llm_pid = Some(child.id());
     pump(child, true, ed.events.sender(), move |ev| {
         Some(match ev {
             StreamEv::Thinking | StreamEv::Thought(_) => Box::new(move |ed: &mut Editor| {
-                if let Some(r) = ed.session.review.as_mut().filter(|r| r.generation == generation) {
+                if let Some(r) = ed.workspace.claude.review.as_mut().filter(|r| r.generation == generation) {
                     r.thinking = true;
                 }
             }),
             StreamEv::Text(t) => Box::new(move |ed: &mut Editor| {
-                if let Some(r) = ed.session.review.as_mut().filter(|r| r.generation == generation) {
+                if let Some(r) = ed.workspace.claude.review.as_mut().filter(|r| r.generation == generation) {
                     r.thinking = false;
                     r.streamed.push_str(&t);
                 }
@@ -1684,7 +1693,7 @@ fn start(
             // result that reports nothing has nothing to add)
             StreamEv::Spent(s) if !s.counts.any() && s.total_cost.is_none() => return None,
             StreamEv::Spent(s) => Box::new(move |ed: &mut Editor| {
-                ed.session.usage.aside(s, what);
+                ed.workspace.claude.usage.aside(s, what);
                 ed.calls_record();
                 crate::usage::view_sync(ed);
             }),
@@ -1725,7 +1734,7 @@ pub fn cancel(ed: &mut Editor) {
     if let Some(pid) = ed.llm_pid.take() {
         kill(pid);
     }
-    if ed.session.review.is_some() {
+    if ed.workspace.claude.review.is_some() {
         close_review(ed);
         ed.llm_generation += 1;
         ed.set_status("claude: cancelled");
@@ -1767,7 +1776,7 @@ pub fn review_with(
     // (on the first change still to answer — a no-op change before it is decided already, and `y` there
     // answered nothing: #216)
     rev.current = rev.hunks.iter().position(|h| h.decision == Decision::Undecided).unwrap_or(0);
-    ed.session.review = Some(rev);
+    ed.workspace.claude.review = Some(rev);
 }
 
 /// A commit message with its body wrapped at `width` (git's convention, 72): the subject line stays as it
@@ -1817,19 +1826,21 @@ pub fn preview(streamed: &str, rows: usize) -> Vec<&str> {
 }
 
 fn on_result(ed: &mut Editor, generation: u64, result: Result<Vec<String>, String>) {
-    let Some(rev) = ed.session.review.as_mut().filter(|r| r.generation == generation) else { return };
+    let Some(rev) = ed.workspace.claude.review.as_mut().filter(|r| r.generation == generation) else {
+        return;
+    };
     ed.llm_pid = None;
     let took = rev.started.elapsed();
     let replies = match result {
         Ok(r) => r,
         Err(e) => {
-            ed.session.review = None;
+            ed.workspace.claude.review = None;
             ed.set_error(format!("claude: {e}"));
             return;
         }
     };
     let Some(doc_idx) = ed.docs.iter().position(|d| d.id == rev.doc_id) else {
-        ed.session.review = None;
+        ed.workspace.claude.review = None;
         ed.set_error("claude: buffer was closed");
         return;
     };
@@ -1853,7 +1864,7 @@ fn on_result(ed: &mut Editor, generation: u64, result: Result<Vec<String>, Strin
         } else {
             "claude: no changes"
         };
-        ed.session.review = None;
+        ed.workspace.claude.review = None;
         ed.set_status(msg);
         return;
     }
@@ -1897,19 +1908,19 @@ pub fn review_key(ed: &mut Editor, key: Key) -> bool {
         return false;
     }
     let page = ed.viewport.0.max(2) as isize;
-    let chat = ed.session.chat_has_keys();
+    let chat = ed.workspace.chat_has_keys();
     // Still waiting for the answer: Esc stops it (the card says so)
     if key == Key::plain(Code::Esc) && esc_stops(ed) {
         stop_waiting(ed, None, "stopped — nothing changed");
         return true;
     }
-    let Some(rev) = ed.session.review.as_mut().filter(|r| r.ready) else { return false };
+    let Some(rev) = ed.workspace.claude.review.as_mut().filter(|r| r.ready) else { return false };
     let c_q = key.ctrl && !key.alt && key.code == Code::Char('q');
     // Back in the chat: its keys are the chat's until `C-q`
     if chat {
         if c_q {
             rev.away = false;
-            ed.session.at = At::Code;
+            ed.workspace.viewer.at = At::Code;
             return true;
         }
         return false;
@@ -1933,9 +1944,9 @@ pub fn review_key(ed: &mut Editor, key: Key) -> bool {
         (Code::Char('e'), true, false) => scroll(rev, 1),
         (Code::Char('y'), true, false) => scroll(rev, -1),
         (Code::Esc, ..) => {
-            match ed.session.chat.as_mut().filter(|_| rev.from_chat) {
+            match ed.workspace.claude.chat.as_mut().filter(|_| rev.from_chat) {
                 Some(_) => {
-                    ed.session.at = At::Chat;
+                    ed.workspace.viewer.at = At::Chat;
                     let key = ed.key_said("C-q");
                     ed.set_status(format!(
                         "back to the chat — the change waits unanswered, {key} answers it"
@@ -1966,9 +1977,9 @@ const SIDEWAYS: usize = 8;
 /// The review's own keys: `y` `n` `a` answer, `q` ends it, `j` `k` scroll, `h` `l` sideways (lines not
 /// wrapped), `tab` goes to the next change.
 fn review_answer(ed: &mut Editor, key: Key) -> bool {
-    let doc = ed.session.review.as_ref().and_then(|r| ed.docs.iter().find(|d| d.id == r.doc_id));
+    let doc = ed.workspace.claude.review.as_ref().and_then(|r| ed.docs.iter().find(|d| d.id == r.doc_id));
     let wraps = doc.is_some_and(|d| ed.wraps(d));
-    let Some(rev) = ed.session.review.as_mut().filter(|r| r.ready) else { return false };
+    let Some(rev) = ed.workspace.claude.review.as_mut().filter(|r| r.ready) else { return false };
     // (the change answered: its head's stamp pressed once the review moves on — §5)
     let answered = crate::motion::Place::Head { doc: rev.doc_id, change: rev.current };
     let decide = |rev: &mut Review, d: Decision| {
@@ -2043,7 +2054,7 @@ fn review_answer(ed: &mut Editor, key: Key) -> bool {
 
 /// Accepted changes as one transaction (= one undo).
 fn finish(ed: &mut Editor) {
-    let Some(mut rev) = ed.session.review.take() else { return };
+    let Some(mut rev) = ed.workspace.claude.review.take() else { return };
     let on_done = rev.on_done.take();
     let before = ed.docs.iter().find(|d| d.id == rev.doc_id).map(|d| d.text.clone());
     // (the editor's keys work while it waits — #61: a change of the text since is found again, or skipped)
@@ -2066,8 +2077,8 @@ fn finish(ed: &mut Editor) {
     crate::reviews::edit_ended(ed, &rev, false, applied);
     // Answered here, the keys go back to the chat it took them from — as its Esc gives them (they stayed in
     // the code: `keys → pane#29 (commands)` after an edit review's `y`)
-    if rev.from_chat && !rev.away && ed.session.chat.is_some() {
-        ed.session.at = At::Chat;
+    if rev.from_chat && !rev.away && ed.workspace.claude.chat.is_some() {
+        ed.workspace.viewer.at = At::Chat;
     }
     // A step `space u` takes back on its own
     if applied
@@ -2664,7 +2675,7 @@ pub(crate) mod tests {
         let root = scratch.to_path_buf();
         let mut ed = Editor::with_root(crate::config::Config::default(), root.clone());
         ed.claude_env = Some(Env::from([("ANTHROPIC_API_KEY".into(), "tarae-fake-key-zq7".into())]));
-        ed.session.env_key = Some(false);
+        ed.workspace.claude.env_key = Some(false);
         // (a stand-in claude with no login: each message answered as Claude Code does under `-p`)
         let failed = r#"{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login"}"#;
         ed.config.llm.command = "sh".into();
@@ -2675,10 +2686,11 @@ pub(crate) mod tests {
             ),
         ];
         crate::chat::open(&mut ed);
-        ed.session.chat.as_mut().unwrap().input = "hello".into();
+        ed.workspace.claude.chat.as_mut().unwrap().input = "hello".into();
         crate::chat::send(&mut ed);
         let hint = |ed: &Editor| {
-            ed.session
+            ed.workspace
+                .claude
                 .chat
                 .as_ref()
                 .unwrap()
@@ -2692,7 +2704,7 @@ pub(crate) mod tests {
             assert!(
                 Instant::now() < end,
                 "no hint: {:?}",
-                ed.session.chat.as_ref().unwrap().msgs.iter().map(|m| &m.text).collect::<Vec<_>>()
+                ed.workspace.claude.chat.as_ref().unwrap().msgs.iter().map(|m| &m.text).collect::<Vec<_>>()
             );
             if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(20)) {
                 ed.handle_event(ev);
@@ -2741,7 +2753,7 @@ pub(crate) mod tests {
         crate::chat::open(&mut ed);
         check(names_in(&mut ed, &root), "the chat");
         let notes = |ed: &Editor| -> Vec<String> {
-            let c = ed.session.chat.as_ref().unwrap();
+            let c = ed.workspace.claude.chat.as_ref().unwrap();
             c.msgs
                 .iter()
                 .filter(|m| m.text.contains("CLAUDE_CODE_CHILD_SESSION"))

@@ -116,15 +116,15 @@ fn the_three_waiting_together_are_one_card_and_the_chat_doesnt_wait() {
     let monitor = lines.iter().position(|l| l.starts_with("  core.fsmonitor = ")).unwrap();
     assert!(decided.start == 2 && decided.contains(&monitor) && lines[decided.end].is_empty(), "{lines:?}");
     assert_eq!(o.answers(false), [('y', "Trust"), ('v', "Details"), ('n', "Hold back")]);
-    assert!(o.weighty() && o.goes_with_session(), "settled before y; with its session (Claude's part)");
+    assert!(o.weighty() && o.goes_with_workspace(), "settled before y; with its session (Claude's part)");
     // Claude sees it by its title
     let s = ed.ui_state_claude();
     let card = s.cards.iter().find(|c| c.kind == "repo-trust").unwrap();
     assert_eq!(card.asks, TITLE);
     assert!(!s.text_claude(false).contains("marker"), "none of its lines");
     // The chat didn't wait: its claude runs held back, and gets what's typed
-    until(&mut ed, "claude", |ed| ed.session.chat.as_ref().is_some_and(|c| c.running()));
-    ed.session.chat.as_mut().unwrap().input = "hello while it waits".into();
+    until(&mut ed, "claude", |ed| ed.workspace.claude.chat.as_ref().is_some_and(|c| c.running()));
+    ed.workspace.claude.chat.as_mut().unwrap().input = "hello while it waits".into();
     crate::chat::send(&mut ed);
     until(&mut ed, "the message", |_| {
         std::fs::read_to_string(root.join("stdin")).is_ok_and(|s| s.contains("hello while it waits"))
@@ -152,7 +152,7 @@ fn yes_trusts_each_part_in_its_own_store_and_a_change_asks_its_part_alone() {
     assert!(said.contains("Trusted — this repository's settings apply: tarae's "), "{said}");
     assert!(said.contains("Claude's 1, git's 1"), "{said}");
     assert_eq!(ed.config.restart_build, "touch marker", "tarae's part applies");
-    let seen = ed.session.chat.as_ref().and_then(|c| c.settings.seen.clone()).unwrap();
+    let seen = ed.workspace.claude.chat.as_ref().and_then(|c| c.settings.seen.clone()).unwrap();
     assert_eq!(seen.state, State::Trusted);
     for p in &parts {
         let (file, hash) = match &p.what {
@@ -170,7 +170,7 @@ fn yes_trusts_each_part_in_its_own_store_and_a_change_asks_its_part_alone() {
     std::fs::write(root.join(".claude/settings.json"), r#"{"apiKeyHelper": "printf other-marker"}"#).unwrap();
     until(&mut ed, "Claude's card again", claude_card);
     assert_eq!(kinds(&ed), ["claude-settings"], "that part alone");
-    let seen = ed.session.chat.as_ref().and_then(|c| c.settings.seen.clone()).unwrap();
+    let seen = ed.workspace.claude.chat.as_ref().and_then(|c| c.settings.seen.clone()).unwrap();
     assert_eq!(ed.offers[0].question, crate::claudetrust::question(&seen).0);
     assert_eq!(ed.offers[0].title, crate::claudetrust::TITLE);
     // tarae's changed (Claude's answered): its own card alone too
@@ -194,7 +194,7 @@ fn granted_takes_each_part_back_and_what_it_let_run_follows() {
     all_three(&mut ed, &root);
     let What::RepoTrust { parts, .. } = ed.offers[0].what.clone() else { panic!("{:?}", kinds(&ed)) };
     ed.offer_accept();
-    let seen = ed.session.chat.as_ref().and_then(|c| c.settings.seen.clone()).unwrap();
+    let seen = ed.workspace.claude.chat.as_ref().and_then(|c| c.settings.seen.clone()).unwrap();
     let kept_at: Vec<(PathBuf, crate::trust::Digest)> = parts
         .iter()
         .map(|p| match &p.what {
@@ -210,7 +210,7 @@ fn granted_takes_each_part_back_and_what_it_let_run_follows() {
     let held = "\"apiKeyHelper\":\"\"";
     let argv = || std::fs::read_to_string(root.join("argv")).unwrap_or_default();
     until(&mut ed, "claude with them", |ed| {
-        ed.session.chat.as_ref().is_some_and(|c| c.running()) && !argv().contains(held)
+        ed.workspace.claude.chat.as_ref().is_some_and(|c| c.running()) && !argv().contains(held)
     });
     assert_eq!(ed.config.restart_build, "touch marker");
     ed.granted();
@@ -243,10 +243,10 @@ fn granted_takes_each_part_back_and_what_it_let_run_follows() {
         ed.picker.as_ref().is_some_and(|p| !p.items().iter().any(|i| i.label == ".git/config"))
     });
     assert_eq!(ed.config.restart_build, "", "tarae's part held back at once");
-    let seen = ed.session.chat.as_ref().and_then(|c| c.settings.seen.clone()).unwrap();
+    let seen = ed.workspace.claude.chat.as_ref().and_then(|c| c.settings.seen.clone()).unwrap();
     assert_eq!(seen.state, State::Ask);
     until(&mut ed, "claude started again held back", |ed| {
-        ed.session.chat.as_ref().is_some_and(|c| c.running()) && argv().contains(held)
+        ed.workspace.claude.chat.as_ref().is_some_and(|c| c.running()) && argv().contains(held)
     });
     let r = crate::gitrepo::repo(&root).unwrap();
     assert!(r.asks, "git's commands wait for the card again");
@@ -362,7 +362,7 @@ fn a_command_asks_its_part_alone() {
     crate::typed::execute(&mut ed, "claude-settings").unwrap();
     assert_eq!(kinds(&ed), ["git-trust", "project-trust", "claude-settings"], "git's own card again");
     let r = crate::gitrepo::repo(&root).unwrap();
-    let own = crate::gittrust::Ask::of(&r).card(&ed.session.root);
+    let own = crate::gittrust::Ask::of(&r).card(&ed.workspace.root);
     assert_eq!((ed.offers[0].title.as_str(), &ed.offers[0].question), (own.title.as_str(), &own.question));
 }
 
@@ -401,7 +401,7 @@ fn another_checkouts_part_stays_its_own_card() {
 
 /// Keys to the code (the chat opened with them).
 fn feed(ed: &mut Editor, keys: &str) {
-    ed.session.leave(crate::session::At::Chat);
+    ed.workspace.leave(crate::workspace::At::Chat);
     let mut chars = keys.chars();
     while let Some(c) = chars.next() {
         let key: crate::key::Key = match c {

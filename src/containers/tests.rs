@@ -58,7 +58,7 @@ fn a_container_is_the_runs_by_its_prefix() {
     let p = "tarae-42-s0-r1";
     assert!(ours("tarae-42-s0-r1", p) && ours("tarae-42-s0-r1-checks", p));
     assert!(!ours("tarae-42-s0-r12-checks", p) && !ours("x-tarae-42-s0-r1", p) && !ours("eager_turing", p));
-    let made = prefix(3, 7);
+    let made = prefix(crate::event::WorkspaceId::here(3), 7);
     assert!(made.starts_with(&format!("tarae-{}-s3-r7", std::process::id())));
     assert!(made.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'), "a name an engine takes");
 }
@@ -103,7 +103,10 @@ fn a_look_sorts_the_runs_own_from_the_others_made_while_it_ran() {
 /// a name merely like it isn't one.
 #[test]
 fn a_runs_prefix_is_known_on_any_container() {
-    assert!(a_runs(&prefix(3, 7)) && a_runs(&format!("{}-checks", prefix(3, 7))));
+    assert!(
+        a_runs(&prefix(crate::event::WorkspaceId::here(3), 7))
+            && a_runs(&format!("{}-checks", prefix(crate::event::WorkspaceId::here(3), 7)))
+    );
     assert!(a_runs(ANOTHER_RUNS) && a_runs("tarae-1-s0-r9"));
     for not in
         ["tarae-x-s0-r1", "tarae-1-s0", "tarae-1-s0-r", "tarae-1-s0-r1x", "my-tarae-1-s0-r1", "eager_turing"]
@@ -247,7 +250,7 @@ fn live_a_stopped_xtask_linux_run_leaves_no_container() {
     let task = crate::task::Task { name: "live".into(), cmd: line, cwd: env!("CARGO_MANIFEST_DIR").into() };
     let who = crate::tools::For::User("ran it outside the sandbox".into());
     assert!(ed.task_start_for(task, who, None, crate::queued::Ride::default()).is_ok());
-    let r = ed.session.task_run.as_mut().unwrap();
+    let r = ed.workspace.task_run.as_mut().unwrap();
     let path = std::env::var_os("PATH").unwrap_or_default();
     r.containers.as_mut().expect("Claude's").find_on(&path);
     let prefix = r.containers.as_ref().unwrap().prefix.clone();
@@ -255,8 +258,8 @@ fn live_a_stopped_xtask_linux_run_leaves_no_container() {
     // (mid-way: the checkout in, its checks starting — the container's script says `toolchain: …` then. Before
     // that, a client cut off mid-stream takes the checkout's tar down with it, and the container ends itself)
     let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-    while !ed.session.task_run.as_ref().unwrap().output.iter().any(|l| l.1.starts_with("toolchain: ")) {
-        let r = ed.session.task_run.as_ref().unwrap();
+    while !ed.workspace.task_run.as_ref().unwrap().output.iter().any(|l| l.1.starts_with("toolchain: ")) {
+        let r = ed.workspace.task_run.as_ref().unwrap();
         assert!(r.state == crate::task::State::Running, "it ended: {:?}", r.output);
         assert!(std::time::Instant::now() < end, "its checks never started");
         if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(100)) {
@@ -266,7 +269,7 @@ fn live_a_stopped_xtask_linux_run_leaves_no_container() {
     assert!(names().lines().any(|n| n == checks), "named from the prefix: {}", names());
     // Its process group killed, as a run that didn't end on TERM is: its container runs on. (Its end isn't
     // heard yet — no event handled — so the run is closed as a running one, as the stuck card's stop does.)
-    let pid = ed.session.task_run.as_ref().unwrap().pid().expect("running");
+    let pid = ed.workspace.task_run.as_ref().unwrap().pid().expect("running");
     // SAFETY: a KILL to the process group of the run this test started (setsid: a group of its own).
     unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
     std::thread::sleep(std::time::Duration::from_secs(2));

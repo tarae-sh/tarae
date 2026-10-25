@@ -75,7 +75,7 @@ const TELL_OFF: &str = "Your edits are shown to the user one at a time again, be
 
 /// Whether the chat's edits are reviewed at the end of its turn.
 pub fn at_end(ed: &Editor) -> bool {
-    ed.session.chat.as_ref().is_some_and(|c| c.edits.at_end.is_some())
+    ed.workspace.claude.chat.as_ref().is_some_and(|c| c.edits.at_end.is_some())
 }
 
 /// `space v a` · `:review-at-end [on|off]` (`want`; None flips it): on asks first, on its card.
@@ -100,11 +100,11 @@ pub fn at_end_toggle(ed: &mut Editor, want: Option<bool>) {
 /// says — on, Claude hears it with its first message.
 pub fn at_end_new_chat(ed: &mut Editor) {
     let on = ed.config.llm.review_at_end;
-    let root = ed.session.root.clone();
-    let Some(c) = &mut ed.session.chat else { return };
+    let root = ed.workspace.root.clone();
+    let Some(c) = &mut ed.workspace.claude.chat else { return };
     c.edits.at_end = on.then_some(root);
     c.edits.at_end_yours = false;
-    let tell = &mut ed.session.checkpoints.tell;
+    let tell = &mut ed.workspace.claude.checkpoints.tell;
     tell.retain(|t| t != TELL_ON && t != TELL_OFF);
     if on {
         tell.push(TELL_ON.to_string());
@@ -114,7 +114,7 @@ pub fn at_end_new_chat(ed: &mut Editor) {
 /// Claude hears the change with its next message — unless it never heard of the other.
 fn at_end_told(ed: &mut Editor, on: bool) {
     let (say, unsay) = if on { (TELL_ON, TELL_OFF) } else { (TELL_OFF, TELL_ON) };
-    let tell = &mut ed.session.checkpoints.tell;
+    let tell = &mut ed.workspace.claude.checkpoints.tell;
     match tell.iter().position(|t| t == unsay) {
         Some(i) => {
             tell.remove(i);
@@ -131,14 +131,14 @@ pub fn at_end_follow_config(ed: &mut Editor) {
     if ed.config.llm.review_at_end {
         return;
     }
-    let on = |s: &crate::session::Session| {
-        s.chat.as_ref().is_some_and(|c| c.edits.at_end.is_some() && !c.edits.at_end_yours)
+    let on = |s: &crate::workspace::Workspace| {
+        s.claude.chat.as_ref().is_some_and(|c| c.edits.at_end.is_some() && !c.edits.at_end_yours)
     };
     let ids: Vec<_> =
-        std::iter::once(&ed.session).chain(&ed.sessions).filter(|s| on(s)).map(|s| s.id).collect();
+        std::iter::once(&ed.workspace).chain(&ed.workspaces).filter(|s| on(s)).map(|s| s.id).collect();
     for id in ids {
-        ed.with_session(id, |ed| {
-            let Some(c) = &mut ed.session.chat else { return };
+        ed.with_workspace(id, |ed| {
+            let Some(c) = &mut ed.workspace.claude.chat else { return };
             c.edits.at_end = None;
             let row = "Claude's edits come one at a time again — the settings that turned review at the end on went";
             c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Note, row, ""));
@@ -151,12 +151,12 @@ pub fn at_end_follow_config(ed: &mut Editor) {
 /// chats after it (`llm.review-at-end`, kept in the config file).
 pub fn at_end_set(ed: &mut Editor, on: bool) {
     // (opened as it was set — it's told below)
-    if ed.session.chat.is_none() {
+    if ed.workspace.claude.chat.is_none() {
         // (opened without the keys: they stay where they were)
-        let at = ed.session.at;
+        let at = ed.workspace.viewer.at;
         crate::chat::open(ed);
-        ed.session.at = at;
-        if let Some(c) = &mut ed.session.chat {
+        ed.workspace.viewer.at = at;
+        if let Some(c) = &mut ed.workspace.claude.chat {
             c.unfolded = false;
         }
     }
@@ -168,8 +168,8 @@ pub fn at_end_set(ed: &mut Editor, on: bool) {
     if let Some(Err(e)) = kept {
         ed.set_error(format!("review at the end isn't kept for the next chats: {e}"));
     }
-    let root = ed.session.root.clone();
-    let Some(c) = &mut ed.session.chat else { return };
+    let root = ed.workspace.root.clone();
+    let Some(c) = &mut ed.workspace.claude.chat else { return };
     c.edits.at_end = on.then_some(root);
     c.edits.at_end_yours = on;
     let row = match on {
@@ -196,7 +196,7 @@ pub fn request(ed: &mut Editor, request_id: &str, req: &Value) -> Option<Value> 
         return Some(deny(&format!("{tool} isn't available in tarae's chat")));
     }
     let row = crate::chat::claim_call(ed, tool, &req["input"]);
-    let c = ed.session.chat.as_mut()?;
+    let c = ed.workspace.claude.chat.as_mut()?;
     // Its words right before this call, this turn — taken now, so each queued edit keeps its own
     let reason = reason(c);
     let p = Pending {
@@ -222,15 +222,17 @@ pub fn request(ed: &mut Editor, request_id: &str, req: &Value) -> Option<Value> 
 /// Works out on a worker whether the queued edit `request_id` changes a protected name (`protected`), then
 /// shows the next edit (it may be this one).
 fn judge_later(ed: &mut Editor, request_id: &str) {
-    let Some(c) = ed.session.chat.as_ref() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return };
     let Some(p) = c.edits.queue.iter().find(|p| p.request_id == request_id) else { return };
-    let root = ed.session.root.clone();
+    let root = ed.workspace.root.clone();
     let path = crate::chat::resolve(&root, p.input["file_path"].as_str().unwrap_or_default());
     let (id, generation) = (request_id.to_string(), c.generation());
     ed.events.jobs().spawn(move || {
         let protected = protected(&root, &path);
         move |ed: &mut Editor| {
-            let Some(c) = ed.session.chat.as_mut().filter(|c| c.generation() == generation) else { return };
+            let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.generation() == generation) else {
+                return;
+            };
             if let Some(p) = c.edits.queue.iter_mut().find(|p| p.request_id == id) {
                 p.protected = Some(protected);
             }
@@ -323,9 +325,9 @@ fn prose(text: &str) -> String {
 /// leads, and the file's text before it — then it's allowed as claude asked (claude writes it; the watch
 /// brings an open buffer along), or shown as a review after all.
 fn unasked(ed: &mut Editor, root: PathBuf, p: Pending) {
-    let path = crate::chat::resolve(&ed.session.root, p.input["file_path"].as_str().unwrap_or_default());
+    let path = crate::chat::resolve(&ed.workspace.root, p.input["file_path"].as_str().unwrap_or_default());
     let ask = ed.config.llm.review_ask.clone();
-    let generation = ed.session.chat.as_ref().map(crate::chat::Chat::generation);
+    let generation = ed.workspace.claude.chat.as_ref().map(crate::chat::Chat::generation);
     ed.events.jobs().spawn(move || {
         // (a name that runs later outside the sandbox, where it really leads: always asked, with its warning)
         let protected = protected(&root, &path);
@@ -337,7 +339,7 @@ fn unasked(ed: &mut Editor, root: PathBuf, p: Pending) {
         p.protected = Some(protected);
         move |ed: &mut Editor| {
             // (a new chat, claude restarted: no one waits for this answer)
-            if ed.session.chat.as_ref().map(crate::chat::Chat::generation) != generation {
+            if ed.workspace.claude.chat.as_ref().map(crate::chat::Chat::generation) != generation {
                 return;
             }
             // Unsaved edits of the user's: disk isn't what they see — the usual review
@@ -353,13 +355,14 @@ fn unasked(ed: &mut Editor, root: PathBuf, p: Pending) {
                     // (allowed once what it was is on disk)
                     let before = before.map(ropey::Rope::from);
                     crate::checkpoint::record_unseen(ed, real, before, move |ed: &mut Editor| {
-                        if ed.session.chat.as_ref().map(crate::chat::Chat::generation) == generation {
+                        if ed.workspace.claude.chat.as_ref().map(crate::chat::Chat::generation) == generation
+                        {
                             answer(ed, &p.request_id, allow(p.input));
                         }
                     });
                 }
                 _ => {
-                    if let Some(c) = &mut ed.session.chat {
+                    if let Some(c) = &mut ed.workspace.claude.chat {
                         c.edits.queue.push_back(p);
                     }
                     next(ed);
@@ -409,23 +412,30 @@ fn deny(message: &str) -> Value {
 pub fn next(ed: &mut Editor) {
     // A review whose buffer is gone draws nothing: it doesn't keep the keys, it ends and says so (#149 — one
     // held them, invisible, for 80 minutes; `Editor::close_doc` ends them, this is what's left if it didn't)
-    if ed.session.review.as_ref().is_some_and(|r| r.ready && !ed.docs.iter().any(|d| d.id == r.doc_id)) {
+    if ed
+        .workspace
+        .claude
+        .review
+        .as_ref()
+        .is_some_and(|r| r.ready && !ed.docs.iter().any(|d| d.id == r.doc_id))
+    {
         crate::llm::close_review(ed);
         ed.set_error(
             "a change under review lost its buffer and can't be shown — it was declined, Claude was told",
         );
     }
     // (a session behind: its edits wait in their queue until it's in front)
-    if ed.session.review.is_some() || ed.background() {
+    if ed.workspace.claude.review.is_some() || ed.background() {
         return;
     }
     let typing = ed.mode == crate::editor::Mode::Insert || ed.prompt.is_some() || ed.picker.is_some();
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     if typing {
         let Some(p) = c.edits.queue.front().filter(|_| !c.edits.waiting_told) else { return };
         c.edits.waiting_told = true;
-        let path = crate::chat::resolve(&ed.session.root, p.input["file_path"].as_str().unwrap_or_default());
-        let shown = crate::chat::shown(&ed.session.root, &path);
+        let path =
+            crate::chat::resolve(&ed.workspace.root, p.input["file_path"].as_str().unwrap_or_default());
+        let shown = crate::chat::shown(&ed.workspace.root, &path);
         return ed
             .set_status(format!("Claude's edit to {shown} waits — it opens when you stop typing (esc)"));
     }
@@ -440,7 +450,7 @@ pub fn next(ed: &mut Editor) {
 
 fn show(ed: &mut Editor, p: Pending) {
     let s = |k: &str| p.input[k].as_str().unwrap_or_default().to_string();
-    let path = crate::chat::resolve(&ed.session.root, &s("file_path"));
+    let path = crate::chat::resolve(&ed.workspace.root, &s("file_path"));
     // (a file Claude creates goes again when its turn is undone)
     let open_before = ed.docs.iter().any(|d| d.path.as_deref() == Some(path.as_path()));
     let existed = open_before || path.exists();
@@ -449,7 +459,7 @@ fn show(ed: &mut Editor, p: Pending) {
     }
     // Outside the project (#37) or in its build output (#46), and opened for this: it goes when the turn
     // ends, unless you take it up
-    let root = ed.session.root.clone();
+    let root = ed.workspace.root.clone();
     let doc = ed.doc_mut();
     if !open_before && doc.path.as_ref().is_some_and(|p| aside_path(&root, p)) {
         doc.aside = true;
@@ -492,20 +502,21 @@ fn show(ed: &mut Editor, p: Pending) {
     }
     // The header quotes what you asked for (the file is in the path bar above)
     let title = ed
-        .session
+        .workspace
+        .claude
         .chat
         .as_ref()
         .and_then(asked)
-        .unwrap_or_else(|| format!("an edit to {}", crate::chat::shown(&ed.session.root, &path)));
+        .unwrap_or_else(|| format!("an edit to {}", crate::chat::shown(&ed.workspace.root, &path)));
     let (mut reason, since) = (p.reason.clone(), p.since);
-    if let Some(note) = (!existed).then(|| folder_outside(&ed.session.root, &path)).flatten() {
+    if let Some(note) = (!existed).then(|| folder_outside(&ed.workspace.root, &path)).flatten() {
         reason = if reason.is_empty() { note } else { format!("{reason}\n\n{note}") };
     }
     let warnings = if p.protected == Some(true) { warned(ed) } else { Vec::new() };
     // The keys go to the review; the file is the user's now (follow won't close it as a preview)
-    let from_chat = ed.session.chat_has_keys();
-    ed.session.leave(crate::session::At::Chat);
-    if let Some(c) = &mut ed.session.chat {
+    let from_chat = ed.workspace.chat_has_keys();
+    ed.workspace.leave(crate::workspace::At::Chat);
+    if let Some(c) = &mut ed.workspace.claude.chat {
         c.follow.keep(doc_id);
     }
     let row = p.row.clone();
@@ -518,7 +529,7 @@ fn show(ed: &mut Editor, p: Pending) {
             done(ed, p, doc_id, base, dirty, existed, applied)
         })),
     );
-    if let Some(r) = &mut ed.session.review {
+    if let Some(r) = &mut ed.workspace.claude.review {
         r.answers = row;
         r.from_chat = from_chat;
         r.reason = reason;
@@ -527,7 +538,7 @@ fn show(ed: &mut Editor, p: Pending) {
         // (its turn in the chat is the step)
         r.own_turn = false;
         let g = r.generation;
-        if let Some(c) = &mut ed.session.chat {
+        if let Some(c) = &mut ed.workspace.claude.chat {
             c.edits.review = Some(g);
         }
     }
@@ -568,13 +579,13 @@ fn folder_outside(root: &Path, path: &Path) -> Option<String> {
 
 /// The review ended: tell claude what to write (or not).
 fn done(ed: &mut Editor, p: Pending, doc_id: DocId, base: String, dirty: bool, existed: bool, applied: bool) {
-    if let Some(c) = &mut ed.session.chat {
+    if let Some(c) = &mut ed.workspace.claude.chat {
         c.edits.review = None;
     }
     if applied {
         crate::checkpoint::record(ed, doc_id, existed.then(|| ropey::Rope::from_str(&base)));
         // (a new file: if tarae saves it before Claude writes it — or Claude never does — its folders are made)
-        let root = ed.session.root.clone();
+        let root = ed.workspace.root.clone();
         if let Some(doc) = ed.docs.iter_mut().find(|d| d.id == doc_id).filter(|_| !existed) {
             doc.make_folders = Some(root);
         }
@@ -661,7 +672,7 @@ fn answer(ed: &mut Editor, request_id: &str, response: Value) {
     if response["behavior"] == "allow"
         && let Some(path) = response["updatedInput"]["file_path"].as_str()
     {
-        let path = crate::chat::resolve(&ed.session.root, path);
+        let path = crate::chat::resolve(&ed.workspace.root, path);
         ed.wrote(&path);
     }
     crate::chat::respond(ed, request_id, response);
@@ -672,22 +683,22 @@ fn answer(ed: &mut Editor, request_id: &str, response: Value) {
 /// edits of yours, nor ones you worked in since; an accepted edit Claude is still writing is its own). Only
 /// this session's: buffers are shared, and another session's Claude may be showing one in its review (#149).
 pub fn turn_over(ed: &mut Editor) {
-    let Some(c) = &mut ed.session.chat else { return };
+    let Some(c) = &mut ed.workspace.claude.chat else { return };
     c.edits.queue.clear();
     if let Some(g) = c.edits.review.take()
-        && ed.session.review.as_ref().is_some_and(|r| r.generation == g)
+        && ed.workspace.claude.review.as_ref().is_some_and(|r| r.generation == g)
     {
         crate::llm::close_review(ed);
     }
-    let reviewed: Vec<DocId> = std::iter::once(&ed.session)
-        .chain(&ed.sessions)
-        .filter_map(|l| l.review.as_ref().map(|r| r.doc_id))
+    let reviewed: Vec<DocId> = std::iter::once(&ed.workspace)
+        .chain(&ed.workspaces)
+        .filter_map(|l| l.claude.review.as_ref().map(|r| r.doc_id))
         .collect();
     let aside: Vec<_> = ed
         .docs
         .iter()
         .filter(|d| d.aside && (!d.is_modified() || d.unsaved_is_claudes()))
-        .filter(|d| ed.session.docs.contains(&d.id) && !reviewed.contains(&d.id))
+        .filter(|d| ed.workspace.docs.contains(&d.id) && !reviewed.contains(&d.id))
         .map(|d| d.id)
         .collect();
     for id in aside {
@@ -697,12 +708,15 @@ pub fn turn_over(ed: &mut Editor) {
 
 /// The code pane before a key, click or paste: its session, document, version and selection — None while what
 /// you press goes to a review (its answer moves and edits the file, but isn't you going there).
-pub struct Before(Option<(crate::event::SessionId, DocId, u64, crate::selection::Selection)>);
+pub struct Before(Option<(crate::event::WorkspaceId, DocId, u64, crate::selection::Selection)>);
 
 /// Before every key, click or paste (`taken_up` after it).
 pub fn before_input(ed: &Editor) -> Before {
     let d = ed.doc();
-    Before((ed.session.review.is_none()).then(|| (ed.session.id, d.id, d.version(), d.selection().clone())))
+    Before(
+        (ed.workspace.claude.review.is_none())
+            .then(|| (ed.workspace.id, d.id, d.version(), d.selection().clone())),
+    )
 }
 
 /// After every key, click or paste: the file in the code pane, if Claude's turn opened it aside, is yours
@@ -715,14 +729,14 @@ pub fn before_input(ed: &Editor) -> Before {
 pub fn taken_up(ed: &mut Editor, before: Before) {
     let Before(Some((session, id, version, sel))) = before else { return };
     let d = ed.doc();
-    if !(d.aside || d.claudes_only || d.review_only) || ed.session.review.is_some() {
+    if !(d.aside || d.claudes_only || d.review_only) || ed.workspace.claude.review.is_some() {
         return;
     }
-    let switched = d.id != id && ed.session.id == session && ed.docs.iter().any(|d| d.id == id);
+    let switched = d.id != id && ed.workspace.id == session && ed.docs.iter().any(|d| d.id == id);
     let edited = d.id == id && d.version() != version;
     // (one only a code review opened, while it's up: reading it is going there and moving in it — an edit
     // takes it up; after the review, as any other — frictions25 R7)
-    let reading = d.review_only && !d.aside && !d.claudes_only && ed.session.code_review.is_some();
+    let reading = d.review_only && !d.aside && !d.claudes_only && ed.workspace.code_review.is_some();
     let took = match reading {
         true => edited,
         false => switched || edited || (d.id == id && *d.selection() != sel),
@@ -828,7 +842,7 @@ mod tests {
     /// claude that keeps what it's sent in `log`.
     fn chat_for(dir: &Path, log: &Path) -> Editor {
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.root = dir.to_path_buf();
+        ed.workspace.root = dir.to_path_buf();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), format!("cat > '{}'", log.display())];
         crate::chat::open(&mut ed);
@@ -842,7 +856,7 @@ mod tests {
         use crate::chat::{Msg, Role};
         let dir = crate::scratch::Scratch::new("edits-reason");
         let mut ed = chat_for(&dir, &dir.join("log"));
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.msgs.push(Msg::new(Role::User, "why?", ""));
         let said = "Keying by the name replaces the first:\n\n```rust\nlet x = 1;\n```\n\nI will switch it to `entry`.\n\n~~~\nmore\n~~~";
         c.msgs.push(Msg::new(Role::Assistant, said, ""));
@@ -879,13 +893,13 @@ mod tests {
         std::fs::write(dir.join("src/a.txt"), "one\n").unwrap();
         std::os::unix::fs::symlink("../build.rs", dir.join("src/x.rs")).unwrap();
         let mut ed = chat_for(&dir, &dir.join("stdin.log"));
-        let reviewed = |ed: &Editor| ed.session.review.is_some();
+        let reviewed = |ed: &Editor| ed.workspace.claude.review.is_some();
         ask(&mut ed, "p1", dir.join("build.rs"), "fn main() {}", "fn main() { }");
         // (not shown before it's judged: another event first leaves it waiting)
         ed.handle_event(crate::event::Event::Resize);
-        assert!(ed.session.review.is_none(), "waits for where it leads");
+        assert!(ed.workspace.claude.review.is_none(), "waits for where it leads");
         pump(&mut ed, "its review", reviewed);
-        let r = ed.session.review.as_ref().expect("its review");
+        let r = ed.workspace.claude.review.as_ref().expect("its review");
         let ids: Vec<&str> = r.warnings.iter().map(|w| w.id.as_str()).collect();
         assert_eq!(ids, ["edit-protected"]);
         let mut bytes = Vec::new();
@@ -907,12 +921,12 @@ mod tests {
         // Through a link to it: the same
         ask(&mut ed, "p2", dir.join("src/x.rs"), "fn main() {}", "fn main() { }");
         pump(&mut ed, "its review", reviewed);
-        assert_eq!(ed.session.review.as_ref().unwrap().warnings.len(), 1, "src/x.rs -> ../build.rs");
+        assert_eq!(ed.workspace.claude.review.as_ref().unwrap().warnings.len(), 1, "src/x.rs -> ../build.rs");
         crate::llm::close_review(&mut ed);
         // Another file: no warning
         ask(&mut ed, "p3", dir.join("src/a.txt"), "one", "ONE");
         pump(&mut ed, "its review", reviewed);
-        assert!(ed.session.review.as_ref().expect("its review").warnings.is_empty());
+        assert!(ed.workspace.claude.review.as_ref().expect("its review").warnings.is_empty());
         crate::llm::close_review(&mut ed);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -931,11 +945,11 @@ mod tests {
         let log = dir.join("stdin.log");
         let mut ed = chat_for(&dir, &log);
         assert!(ed.config.llm.review_ask.is_empty());
-        ed.session.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
+        ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
         ask(&mut ed, "p1", dir.join("build.rs"), "fn main() {}", "fn main() { }");
-        pump(&mut ed, "its review", |ed| ed.session.review.is_some());
+        pump(&mut ed, "its review", |ed| ed.workspace.claude.review.is_some());
         let ids: Vec<String> =
-            ed.session.review.as_ref().unwrap().warnings.iter().map(|w| w.id.clone()).collect();
+            ed.workspace.claude.review.as_ref().unwrap().warnings.iter().map(|w| w.id.clone()).collect();
         assert_eq!(ids, ["edit-protected"]);
         crate::llm::close_review(&mut ed);
         // Another file: in, unasked
@@ -947,7 +961,7 @@ mod tests {
                 .any(|l| l.contains("\"p2\"") && l.contains("\"allow\""))
         };
         pump(&mut ed, "allowed unasked", |_| allowed(&log));
-        assert!(ed.session.review.is_none(), "no review for it");
+        assert!(ed.workspace.claude.review.is_none(), "no review for it");
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -84,7 +84,7 @@ pub struct EditorConfig {
     pub offer_installs: bool,
     pub scrollbar: bool,
     /// Where sessions' checkouts go ("" = `$XDG_DATA_HOME/tarae/worktrees`; `worktree.rs`).
-    pub session_worktrees: String,
+    pub workspace_worktrees: String,
     /// Count which features get used, on this machine only (`features.rs`) — only your own config turns it on.
     pub features_count: bool,
     /// A program may type into tarae over its UI socket (`shuttle.rs`): off, light or weighty answers — only your
@@ -94,9 +94,9 @@ pub struct EditorConfig {
     /// `$state/reviews/`) — only your own config sets it (`trust::YOURS_ONLY`).
     pub review_record: bool,
     /// A command (its words) run once a session's checkout is removed (empty = none; `ended.rs`).
-    pub session_ended: Vec<String>,
-    /// Folders of a session's checkout kept in the main checkout when it ends (`sessionkeep.rs`).
-    pub session_keep: Vec<String>,
+    pub workspace_ended: Vec<String>,
+    /// Folders of a session's checkout kept in the main checkout when it ends (`workspacekeep.rs`).
+    pub workspace_keep: Vec<String>,
     pub theme: String,
     pub llm: LlmConfig,
     pub lsp: crate::lsp::LspConfig,
@@ -160,12 +160,12 @@ impl Default for EditorConfig {
             offer_grammars: true,
             offer_installs: true,
             scrollbar: true,
-            session_worktrees: String::new(),
+            workspace_worktrees: String::new(),
             features_count: false,
             shuttle_keys: crate::shuttle::Level::Off,
             review_record: true,
-            session_ended: Vec::new(),
-            session_keep: Vec::new(),
+            workspace_ended: Vec::new(),
+            workspace_keep: Vec::new(),
             theme: "default".into(),
             llm: LlmConfig::default(),
             lsp: crate::lsp::LspConfig { enabled: true, ..Default::default() },
@@ -857,7 +857,7 @@ restart-build = "touch marker"
 [llm]
 run-allow = ["make"]
 review-at-end = true
-[session]
+[workspace]
 ended = ["touch", "marker"]
 [task.build]
 cmd = "touch marker"
@@ -1165,7 +1165,7 @@ Z = ["move_line_down", ":sh touch marker"]
         assert_eq!(c.editor.restart_binary, "");
         assert!(c.editor.llm.run_allow.is_empty());
         assert!(!c.editor.llm.review_at_end, "edits going in unseen, their checks run: not unasked");
-        assert!(c.editor.session_ended.is_empty(), "nothing run at a session's end");
+        assert!(c.editor.workspace_ended.is_empty(), "nothing run at a session's end");
         assert!(c.editor.tasks.iter().all(|t| t.name != "build"));
         assert!(c.editor.preflight.is_empty(), "no preflight steps");
         assert!(!c.editor.lsp.servers.contains_key("mine"));
@@ -1179,7 +1179,7 @@ Z = ["move_line_down", ":sh touch marker"]
             "editor.restart-build",
             "llm.run-allow",
             "llm.review-at-end",
-            "session.ended",
+            "workspace.ended",
             "task.build",
             "preflight.check",
             "lsp.mine",
@@ -1197,7 +1197,7 @@ Z = ["move_line_down", ":sh touch marker"]
         assert_eq!(t.editor.restart_build, "touch marker");
         assert_eq!(t.editor.restart_binary, "bin/marker");
         assert_eq!(t.editor.llm.run_allow, ["make"]);
-        assert_eq!(t.editor.session_ended, ["touch", "marker"]);
+        assert_eq!(t.editor.workspace_ended, ["touch", "marker"]);
         assert!(t.editor.llm.review_at_end);
         assert!(t.editor.tasks.iter().any(|t| t.name == "build"));
         assert_eq!(t.editor.preflight.iter().map(|s| s.cmd.as_str()).collect::<Vec<_>>(), ["touch marker"]);

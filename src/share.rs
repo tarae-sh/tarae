@@ -522,8 +522,8 @@ impl Editor {
     /// Whether folder `root` is a checkout whose servers are paused (`Editor::made_hold_sync`): no shared server
     /// takes it in until its names are answered.
     pub(crate) fn share_held(&self, root: &Path) -> bool {
-        let id = self.session_of(root);
-        std::iter::once(&self.session).chain(&self.sessions).any(|l| Some(l.id) == id && l.servers_held)
+        let id = self.workspace_of(root);
+        std::iter::once(&self.workspace).chain(&self.workspaces).any(|l| Some(l.id) == id && l.servers_held)
     }
 
     fn share_session_key(&mut self, root: PathBuf, server: &str, key: Key) {
@@ -634,7 +634,7 @@ impl Editor {
                     let open = self.docs.iter().any(|d| {
                         d.lsp.client == Some(a) && d.path.as_deref().is_some_and(|p| p.starts_with(r))
                     });
-                    (open || self.session_of(r).is_some()) && !self.share_held(r)
+                    (open || self.workspace_of(r).is_some()) && !self.share_held(r)
                 })
                 .cloned()
                 .collect();
@@ -1239,7 +1239,7 @@ mod tests {
         let (config, w) = crate::config::parse(&cfg);
         assert!(w.is_empty(), "{w:?}");
         let mut ed = Editor::new(config);
-        ed.session.root = t.join("main");
+        ed.workspace.root = t.join("main");
         ed.lsp.share.room = Some(room);
         (t, ed)
     }
@@ -1445,14 +1445,14 @@ mod tests {
         let a = a.unwrap();
         up(&mut ed, a);
         quiescent(&mut ed, a);
-        let id = ed.session_add(t.join("wt1"));
+        let id = ed.workspace_add(t.join("wt1"));
         settle(&mut ed, "a swap began with no file of it open", |ed| the_swap(ed).is_some());
         let (_, b) = the_swap(&ed).unwrap();
         assert_eq!(ed.client(b).unwrap().roots, [t.join("main"), t.join("wt1")]);
-        ed.session_switch(id);
+        ed.workspace_switch(id);
         let (_, got) = open(&mut ed, &t.join("wt1/src/main.rs"));
         assert_eq!(got, Some(b), "its first file: the new server's");
-        ed.sessions.clear();
+        ed.workspaces.clear();
         let _ = std::fs::remove_dir_all(&t);
     }
 
@@ -1467,7 +1467,7 @@ mod tests {
         let a = a.unwrap();
         up(&mut ed, a);
         quiescent(&mut ed, a);
-        let wt = ed.session_add(t.join("wt1"));
+        let wt = ed.workspace_add(t.join("wt1"));
         settle(&mut ed, "a swap began", |ed| the_swap(ed).is_some());
         let (_, b) = the_swap(&ed).unwrap();
         up(&mut ed, b);
@@ -1478,9 +1478,9 @@ mod tests {
         assert_eq!(main_of(&ed, main), Some(b));
         assert_eq!(ed.client(b).unwrap().roots, [t.join("main"), t.join("wt1")], "shared by both");
 
-        let held = ed.sessions.iter_mut().find(|l| l.id == wt).unwrap();
+        let held = ed.workspaces.iter_mut().find(|l| l.id == wt).unwrap();
         held.made_protected = vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into() }];
-        ed.sessions_sync();
+        ed.workspaces_sync();
         assert!(ed.client(b).is_none(), "the shared server stopped");
         let c = main_of(&ed, main).expect("main's file has a server again at once");
         assert_eq!(ed.client(c).unwrap().roots, [t.join("main")], "its own folder's");
@@ -1489,14 +1489,14 @@ mod tests {
         quiet(&mut ed, (GATHER + ms(100)).as_millis() as u64, |ed| the_swap(ed).is_some());
         assert!(the_swap(&ed).is_none(), "the held checkout isn't taken back in");
 
-        ed.sessions.iter_mut().find(|l| l.id == wt).unwrap().made_protected.clear();
-        ed.sessions_sync();
-        ed.session_switch(wt);
+        ed.workspaces.iter_mut().find(|l| l.id == wt).unwrap().made_protected.clear();
+        ed.workspaces_sync();
+        ed.workspace_switch(wt);
         ed.open(&t.join("wt1/src/main.rs")).unwrap();
         settle(&mut ed, "answered, its files join again", |ed| the_swap(ed).is_some());
         let (_, d) = the_swap(&ed).unwrap();
         assert_eq!(ed.client(d).unwrap().roots, [t.join("main"), t.join("wt1")]);
-        ed.sessions.clear();
+        ed.workspaces.clear();
         let _ = std::fs::remove_dir_all(&t);
     }
 
@@ -1509,10 +1509,10 @@ mod tests {
         let a = a.unwrap();
         up(&mut ed, a);
         quiescent(&mut ed, a);
-        let wt = ed.session_add(t.join("wt1"));
-        let held = ed.sessions.iter_mut().find(|l| l.id == wt).unwrap();
+        let wt = ed.workspace_add(t.join("wt1"));
+        let held = ed.workspaces.iter_mut().find(|l| l.id == wt).unwrap();
         held.made_protected = vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into() }];
-        ed.sessions_sync();
+        ed.workspaces_sync();
         assert!(ed.share_held(&t.join("wt1")));
         // (the decision as the worker brings it back, its list made before the pause)
         ed.share_decided(a, vec![t.join("main"), t.join("wt1")], "a folder joins".into(), plenty(), None);
@@ -1522,7 +1522,7 @@ mod tests {
             "the paused checkout taken in: {swap:?}"
         );
         assert_eq!(ed.client(a).unwrap().roots, [t.join("main")], "main's server as it was");
-        ed.sessions.clear();
+        ed.workspaces.clear();
         let _ = std::fs::remove_dir_all(&t);
     }
 

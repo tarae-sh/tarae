@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 
 use crate::document::DocId;
 use crate::editor::{Editor, View};
-use crate::event::SessionId;
+use crate::event::WorkspaceId;
 use crate::selection::{Range, Selection};
 use crate::sidebar::Mode;
 use crate::split::{Dir, Split};
@@ -73,7 +73,7 @@ pub struct Restart {
     anyway: Vec<Work>,
     /// The session that asked — where it's said when it's called off (frictions29 #66: said in the session whose
     /// run was ended, behind, it went unseen) — and its build's run (`RunTrace` id): only that one's end stops it.
-    asked: SessionId,
+    asked: WorkspaceId,
     build_run: Option<u64>,
 }
 
@@ -81,7 +81,7 @@ pub struct Restart {
 /// whether an edit of it waits for an answer — ended with it), a command or tests by when they started.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Work {
-    Turn { session: SessionId, edits: bool },
+    Turn { session: WorkspaceId, edits: bool },
     Run(Instant),
 }
 
@@ -168,7 +168,7 @@ impl Restart {
             target: None,
             kept: None,
             anyway: Vec::new(),
-            asked: 0,
+            asked: WorkspaceId::HOME,
             build_run: None,
         }
     }
@@ -208,7 +208,7 @@ pub fn start(ed: &mut Editor, build: bool) -> Result<(), String> {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let stage = Stage::Turn;
-    let asked = ed.session.id;
+    let asked = ed.workspace.id;
     let anyway = Vec::new();
     ed.restart = Some(Restart { id, build, stage, target: None, kept: None, anyway, asked, build_run: None });
     // What's under way in any session — Claude's turns (#109), commands, tests — is named on its card:
@@ -227,7 +227,7 @@ fn under_way(ed: &Editor) -> Vec<String> {
 /// `under_way`, each told apart (`Work`) — `ending`: as a restart now would end it (its card, the toast of
 /// its yes), a turn naming its edits waiting for an answer, dropped with it (`edits_waiting`).
 fn under_way_of(ed: &Editor, ending: bool) -> Vec<(Work, String)> {
-    let several = !ed.sessions.is_empty();
+    let several = !ed.workspaces.is_empty();
     let build = match ed.restart.as_ref().map(|r| &r.stage) {
         Some(Stage::Building(g)) => Some(*g),
         _ => None,
@@ -235,7 +235,7 @@ fn under_way_of(ed: &Editor, ending: bool) -> Vec<(Work, String)> {
     let mut out = Vec::new();
     for l in ed.sessions_in_order() {
         let at = |what: String| if several { format!("{}: {what}", l.label()) } else { what };
-        if l.chat.as_ref().is_some_and(crate::chat::Chat::busy) || l.checkpoints.gathering {
+        if l.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) || l.claude.checkpoints.gathering {
             let (edits, files) = edits_waiting(ed, l);
             let said = match edits {
                 _ if !ending || edits == 0 => "Claude's turn".to_string(),
@@ -263,9 +263,9 @@ fn under_way_of(ed: &Editor, ending: bool) -> Vec<(Work, String)> {
 /// Claude's edits in session `l` waiting for an answer — the one in its review, those queued behind it — and
 /// their files, each once. A restart drops them unanswered: the claude that asked is gone after it, and its
 /// conversation resumed can't take an answer to a request of the old process's.
-fn edits_waiting(ed: &Editor, l: &crate::session::Session) -> (usize, Vec<String>) {
-    let Some(c) = l.chat.as_ref() else { return (0, Vec::new()) };
-    let reviewed = c.edits.review.and(l.review.as_ref()).map(|r| r.doc_id);
+fn edits_waiting(ed: &Editor, l: &crate::workspace::Workspace) -> (usize, Vec<String>) {
+    let Some(c) = l.claude.chat.as_ref() else { return (0, Vec::new()) };
+    let reviewed = c.edits.review.and(l.claude.review.as_ref()).map(|r| r.doc_id);
     let shown = reviewed.and_then(|id| ed.docs.iter().find(|d| d.id == id)).and_then(|d| d.path.clone());
     let queued = c
         .edits
@@ -363,19 +363,19 @@ fn blocker(ed: &Editor, waiting: bool) -> Option<String> {
         .docs
         .iter()
         .filter(|d| d.is_modified() && !d.throwaway && (d.path.is_none() || d.disk_conflict))
-        .map(|d| d.display_name(&ed.session.root))
+        .map(|d| d.display_name(&ed.workspace.root))
         .collect();
     if !stuck.is_empty() {
         return Some(format!("unsaved changes in {} — save or close them first", stuck.join(", ")));
     }
     // A session's rebase under way: tarae's part of it (the review, the card, Claude's ask) wouldn't come back
-    let rebasing = std::iter::once(&ed.session)
-        .chain(&ed.sessions)
+    let rebasing = std::iter::once(&ed.workspace)
+        .chain(&ed.workspaces)
         .find_map(|l| Some(l.rebase.as_ref()?.why(l.label())));
     if rebasing.is_some() {
         return rebasing;
     }
-    let several = !ed.sessions.is_empty();
+    let several = !ed.workspaces.is_empty();
     let in_session = ed.sessions_in_order().into_iter().find_map(|l| {
         let why = session_blocker(l, waiting)?;
         Some(if several { format!("{}: {why}", l.label()) } else { why })
@@ -390,12 +390,13 @@ fn blocker(ed: &Editor, waiting: bool) -> Option<String> {
 }
 
 /// `blocker`'s part in session `l`, front or behind.
-fn session_blocker(l: &crate::session::Session, waiting: bool) -> Option<String> {
+fn session_blocker(l: &crate::workspace::Workspace, waiting: bool) -> Option<String> {
     // (a turn's files still being read belong to it)
-    let in_turn =
-        waiting && (l.chat.as_ref().is_some_and(crate::chat::Chat::busy) || l.checkpoints.gathering);
+    let in_turn = waiting
+        && (l.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) || l.claude.checkpoints.gathering);
     let claudes = |yes: bool| in_turn && yes;
-    if l.review.is_some() && !claudes(l.chat.as_ref().is_some_and(|c| c.edits.review.is_some())) {
+    if l.claude.review.is_some() && !claudes(l.claude.chat.as_ref().is_some_and(|c| c.edits.review.is_some()))
+    {
         return Some("a review is open — answer it first".into());
     }
     // (a code review comes along, its drafts with the notes — a turn's too, by its place from the newest turn
@@ -472,9 +473,9 @@ fn clear_to_go(ed: &mut Editor) -> bool {
         .map(|d| match d.path.as_deref().and_then(|p| crate::disk::unparsed_config(p, &d.text)) {
             // (held back by auto-save, #19)
             Some(_) => {
-                format!("{} (it doesn't parse — :w writes it anyway)", d.display_name(&ed.session.root))
+                format!("{} (it doesn't parse — :w writes it anyway)", d.display_name(&ed.workspace.root))
             }
-            None => d.display_name(&ed.session.root),
+            None => d.display_name(&ed.workspace.root),
         })
         .collect();
     // (before its card, or told to restart anyway, a turn's own review isn't in the way: the turn is named,
@@ -511,10 +512,13 @@ fn find(ed: &mut Editor, id: u64) {
     }
     r.stage = Stage::Finding;
     let binary = ed.config.restart_binary.clone();
-    let first = std::iter::once(&ed.session).chain(&ed.sessions).find(|l| l.id == 0).unwrap_or(&ed.session);
+    let first = std::iter::once(&ed.workspace)
+        .chain(&ed.workspaces)
+        .find(|l| l.id == WorkspaceId::HOME)
+        .unwrap_or(&ed.workspace);
     let mut places = vec![(first.label().to_string(), first.root.clone())];
-    if ed.session.root != first.root {
-        places.push((ed.session.label().to_string(), ed.session.root.clone()));
+    if ed.workspace.root != first.root {
+        places.push((ed.workspace.label().to_string(), ed.workspace.root.clone()));
     }
     ed.events.jobs().spawn(move || {
         let targets: Result<Vec<Target>, String> =
@@ -650,7 +654,7 @@ pub fn chosen(ed: &mut Editor, card: u64, choice: Choice, which: Option<usize>) 
     let Some(generation) = ed.task_start_restart(task) else {
         return cancel(ed, "the build didn't start".into());
     };
-    let run = ed.session.task_run.as_ref().filter(|r| r.generation() == generation).map(|r| r.trace.id());
+    let run = ed.workspace.task_run.as_ref().filter(|r| r.generation() == generation).map(|r| r.trace.id());
     if let Some(r) = ed.restart.as_mut() {
         (r.stage, r.build_run) = (Stage::Building(generation), run);
     }
@@ -736,7 +740,7 @@ pub fn run_dropped(ed: &mut Editor, run: Option<u64>) {
     }
     let asked = r.asked;
     ed.restart = None;
-    ed.with_session(asked, |ed| ed.set_warning("restart canceled — its build was stopped"));
+    ed.with_workspace(asked, |ed| ed.set_warning("restart canceled — its build was stopped"));
 }
 
 /// The binary answers `--version` as a tarae (on a worker) — then the loop ends and main runs it. One the
@@ -992,13 +996,13 @@ pub fn wait_for(pids: Vec<u32>) {
 pub fn snapshot(ed: &mut Editor) -> Value {
     ed.sync_focus_view();
     let docs: Vec<&crate::document::Document> = ed.docs.iter().filter(|d| carried(d)).collect();
-    let mut state = session_json(&ed.session, &docs, ed.doc().id);
+    let mut state = session_json(&ed.workspace, &docs, ed.doc().id);
     let overrides: Vec<Value> = ed.overrides.iter().map(|(p, v)| json!([p, v.to_string()])).collect();
     // (every session, and which is in front — each with its block)
     let mut sessions = crate::worktree::snapshot(ed);
     let all = ed.sessions_in_order();
     for (block, l) in sessions["sessions"].as_array_mut().into_iter().flatten().zip(&all) {
-        let current = if l.id == ed.session.id { ed.doc().id } else { l.current_doc };
+        let current = if l.id == ed.workspace.id { ed.doc().id } else { l.viewer.current_doc };
         let own: Vec<&crate::document::Document> =
             docs.iter().filter(|d| l.docs.contains(&d.id)).copied().collect();
         if let (Some(block), Value::Object(fields)) = (block.as_object_mut(), session_json(l, &own, current))
@@ -1033,7 +1037,7 @@ pub fn snapshot(ed: &mut Editor) -> Value {
             ("store_writes".into(), json!({
                 "trust": ed.trust_path.as_deref().map(crate::storewrite::pending_carried).unwrap_or_default(),
                 "allow": ed.allow_path.as_deref().map(crate::storewrite::pending_carried).unwrap_or_default(),
-                "sessions": ed.sessions_path().as_deref().map(crate::storewrite::pending_carried).unwrap_or_default(),
+                "sessions": ed.workspaces_path().as_deref().map(crate::storewrite::pending_carried).unwrap_or_default(),
             })),
             ("given_last".into(), json!(crate::storewrite::last())),
             ("sessions".into(), sessions),
@@ -1077,9 +1081,9 @@ fn symbols_said(v: &Value, pid: u32) -> Vec<(&'static str, String)> {
 /// Session `l`'s cards waiting: those up (and stacked) when it's in front, those parked when it's behind.
 fn cards_of<'a>(
     ed: &'a Editor,
-    l: &'a crate::session::Session,
+    l: &'a crate::workspace::Workspace,
 ) -> impl Iterator<Item = &'a crate::offer::Offer> {
-    let up = if l.id == ed.session.id { ed.offers.as_slice() } else { &[] };
+    let up = if l.id == ed.workspace.id { ed.offers.as_slice() } else { &[] };
     up.iter().chain(&l.parked)
 }
 
@@ -1091,7 +1095,11 @@ fn carried(d: &crate::document::Document) -> bool {
 
 /// Session `l`'s part of the state: `docs` (its files, `current` the one it shows), its panes, side panel,
 /// chat, and whether its shell was open (it can't come along — the next tarae says so).
-fn session_json(l: &crate::session::Session, docs: &[&crate::document::Document], current: DocId) -> Value {
+fn session_json(
+    l: &crate::workspace::Workspace,
+    docs: &[&crate::document::Document],
+    current: DocId,
+) -> Value {
     let index = |id| docs.iter().position(|d| d.id == id);
     let files: Vec<Value> = docs
         .iter()
@@ -1111,22 +1119,23 @@ fn session_json(l: &crate::session::Session, docs: &[&crate::document::Document]
         .views
         .iter()
         .map(|v| {
-            let (doc, top, left) = shown.filter(|_| v.id == l.focus).unwrap_or((v.doc, v.top, v.left));
+            let (doc, top, left) = shown.filter(|_| v.id == l.viewer.focus).unwrap_or((v.doc, v.top, v.left));
             json!({ "id": v.id, "doc": index(doc), "top": top, "left": left })
         })
         .collect();
-    use crate::session::At;
+    use crate::workspace::At;
     let sidebar = l
+        .viewer
         .sidebar
         .as_ref()
         .and_then(|s| Some(json!({ "mode": mode_name(s.mode)?, "focus": l.is_at(At::Side) })));
-    let chat = l.chat.as_ref().map(|c| {
+    let chat = l.claude.chat.as_ref().map(|c| {
         json!({ "conversation": c.conversation, "input": c.input.text(), "cursor": c.input.cursor(), "focused": l.is_at(At::Chat),
                 "scroll": c.scroll, "follow": c.follow.on, "at_end": c.edits.at_end,
                 "at_end_yours": c.edits.at_end_yours })
     });
     let on = docs.iter().find(|d| d.id == current).and_then(|d| d.path.as_deref());
-    let turns = l.checkpoints.list.len();
+    let turns = l.claude.checkpoints.list.len();
     let review = l.code_review.as_ref().and_then(|r| crate::codereview::carried(r, on, turns));
     json!({
         "docs": files,
@@ -1135,7 +1144,7 @@ fn session_json(l: &crate::session::Session, docs: &[&crate::document::Document]
         "panes": panes_json(l),
         "split": split_json(&l.split),
         "groups": groups_json(l),
-        "focus": l.focus,
+        "focus": l.viewer.focus,
         "sidebar": sidebar,
         "chat": chat,
         "review": review,
@@ -1261,18 +1270,18 @@ fn restore_quietly(ed: &mut Editor, v: &Value) -> Back {
             back.shells.push(None);
         }
     } else {
-        // Each session in its own (`with_session`), the front's last — the one in sight
-        let front = ed.session.id;
+        // Each session in its own (`with_workspace`), the front's last — the one in sight
+        let front = ed.workspace.id;
         let at = |ed: &Editor, b: &Value| {
             let root = b["root"].as_str().map(Path::new)?;
             ed.sessions_in_order().iter().find(|l| l.root == root).map(|l| (l.id, l.label().to_string()))
         };
-        let mut found: Vec<(SessionId, String, &Value)> =
+        let mut found: Vec<(WorkspaceId, String, &Value)> =
             blocks.into_iter().filter_map(|b| at(ed, b).map(|(id, name)| (id, name, b))).collect();
         crate::sorting::by_key(&mut found, |(id, ..)| *id == front);
         for (id, name, b) in &found {
             let behind = *id != front;
-            ed.with_session(*id, |ed| restore_session(ed, b, behind, &mut back));
+            ed.with_workspace(*id, |ed| restore_session(ed, b, behind, &mut back));
             if b["terminal"].as_bool() == Some(true) {
                 back.shells.push(behind.then(|| name.clone()));
             }
@@ -1282,7 +1291,7 @@ fn restore_quietly(ed: &mut Editor, v: &Value) -> Back {
         for (id, name, b) in &found {
             for line in b["cards"].as_array().into_iter().flatten().filter_map(|c| c["again"].as_str()) {
                 let mut failed = None;
-                ed.with_session(*id, |ed| failed = ask_again(ed, line).err());
+                ed.with_workspace(*id, |ed| failed = ask_again(ed, line).err());
                 if let Some(why) = failed {
                     ed.set_warning(format!("{name}: :{line} not asked again — {why}"));
                 }
@@ -1292,14 +1301,14 @@ fn restore_quietly(ed: &mut Editor, v: &Value) -> Back {
     // The session list docked comes back up on its side (P3 step 7d, the user 2026-10-24: part of the layout — the
     // overview kept in sight is why one docks it), the keys where they were
     if let Some(side) = v["session_list"].as_str().and_then(crate::pane::Side::of_name) {
-        let at = ed.session.at;
+        let at = ed.workspace.viewer.at;
         ed.sizes.sessions_dock = Some(side);
         ed.session_list();
-        ed.session.at = at;
+        ed.workspace.viewer.at = at;
         ed.dock_sync();
     }
     back.gone_checkouts = gone;
-    back.sessions = 1 + ed.sessions.len();
+    back.sessions = 1 + ed.workspaces.len();
     back
 }
 
@@ -1307,21 +1316,21 @@ fn restore_quietly(ed: &mut Editor, v: &Value) -> Back {
 /// or a delete with nothing to lose by now is asked on its card all the same, not done at once.
 fn ask_again(ed: &mut Editor, line: &str) -> Result<(), String> {
     match line.split_once(' ') {
-        Some(("session-end", which)) => ed.session_end_asking(which, true),
+        Some(("workspace-end", which)) => ed.session_end_asking(which, true),
         Some(("git-branch-delete", branch)) => {
             ed.git_branch_delete_asking(branch, false, true);
             Ok(())
         }
         None if line == "preflight" => ed.preflight_start_asking(crate::preflight::Set::Quick, true),
         None if line == "preflight-full" => ed.preflight_start_asking(crate::preflight::Set::Full, true),
-        // (`:session-bring` asks on its card first, whatever it finds)
+        // (`:workspace-bring` asks on its card first, whatever it finds)
         _ => crate::typed::execute(ed, line),
     }
 }
 
 /// One session's files, panes, side panel and chat back (`session_json`, or an earlier build's top-level
 /// fields), in the session in front — swapped in for one `behind`, whose files' servers and claude wait
-/// until it's used (`LspState.attach_later` → `Session.asleep`; a lazy chat).
+/// until it's used (`LspState.attach_later` → `Workspace.asleep`; a lazy chat).
 fn restore_session(ed: &mut Editor, v: &Value, behind: bool, back: &mut Back) {
     // Saved index → the document it is now (outside the checkouts, a file's server waits until it's
     // shown — #141)
@@ -1368,10 +1377,10 @@ fn restore_session(ed: &mut Editor, v: &Value, behind: bool, back: &mut Back) {
     }
     let sidebar = &v["sidebar"];
     if let Some(mode) = sidebar["mode"].as_str().and_then(mode_of) {
-        let at = ed.session.at;
+        let at = ed.workspace.viewer.at;
         ed.sidebar_show(mode);
         if !sidebar["focus"].as_bool().unwrap_or(false) {
-            ed.session.at = at;
+            ed.workspace.viewer.at = at;
         }
     }
     let chat = &v["chat"];
@@ -1465,7 +1474,7 @@ pub(crate) fn layout(ed: &mut Editor, v: &Value, ids: &[Option<crate::document::
                     g
                 })
                 .collect();
-            ed.session.groups = groups;
+            ed.workspace.groups = groups;
             let mut views = views;
             for v in &mut views {
                 v.id = new(v.id);
@@ -1476,7 +1485,7 @@ pub(crate) fn layout(ed: &mut Editor, v: &Value, ids: &[Option<crate::document::
             }
             let mut split = split;
             split.renumber(&new);
-            (ed.session.views, ed.session.panes, ed.session.split, ed.session.focus) =
+            (ed.workspace.views, ed.workspace.panes, ed.workspace.split, ed.workspace.viewer.focus) =
                 (views, panes, split, new(focus));
         }
     }
@@ -1527,14 +1536,14 @@ pub(crate) fn split_json(s: &Split) -> Value {
 }
 
 /// A session's panes as kept: the tree's — a floating group's own pane is made anew (`float_groups_sync`).
-pub(crate) fn panes_json(l: &crate::session::Session) -> Vec<Value> {
+pub(crate) fn panes_json(l: &crate::workspace::Workspace) -> Vec<Value> {
     let kept = l.panes.iter().filter(|p| l.split.holds(p.id));
     kept.map(|p| json!({ "id": p.id, "shows": p.shows.name() })).collect()
 }
 
 /// A session's linked groups as kept: each one's kind and the leaf that holds it — its members' ids are made anew; a
 /// floating one's, the slot's (its own pane is out of the tree), with its frame and where `C-w e` docks it back.
-pub(crate) fn groups_json(l: &crate::session::Session) -> Value {
+pub(crate) fn groups_json(l: &crate::workspace::Workspace) -> Value {
     let slot = l.leaf(crate::pane::Shows::Slot);
     json!(
         l.groups
@@ -1667,7 +1676,7 @@ mod tests {
         assert_eq!(ed.doc().path.as_deref(), Some(b.as_path()), "the focused pane's file is current");
         assert_eq!(ed.doc().selection().primary().head, 3);
         assert_eq!(ed.code_leaves().len(), 2, "both panes");
-        let other = ed.session.views.iter().find(|v| v.id != ed.session.focus).unwrap();
+        let other = ed.workspace.views.iter().find(|v| v.id != ed.workspace.viewer.focus).unwrap();
         assert_eq!(other.doc, ed.doc().id, "the pane that showed the gone file shows the current one");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1783,7 +1792,7 @@ mod tests {
         keep("s-2", 0, "Another one.");
         let argv = dir.join("argv.log");
         let mut ed = Editor::new(Config::default());
-        ed.session.root = cwd;
+        ed.workspace.root = cwd;
         ed.chats_dir = Some(store);
         ed.config.llm.command = "sh".into();
         ed.config.llm.args =
@@ -1793,11 +1802,16 @@ mod tests {
                                       "scroll": 2, "follow": false, "at_end": dir } });
         assert_eq!(restore(&mut ed, &state), 0, "no files — the chat comes back all the same");
         settle_until(&mut ed, |ed| {
-            ed.session.chat.as_ref().unwrap().msgs.iter().any(|m| m.text == "Hello back.")
+            ed.workspace.claude.chat.as_ref().unwrap().msgs.iter().any(|m| m.text == "Hello back.")
         });
-        let c = ed.session.chat.as_ref().unwrap();
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
         assert_eq!(
-            (c.input.text().as_str(), c.input.cursor(), ed.session.is_at(crate::session::At::Chat), c.scroll),
+            (
+                c.input.text().as_str(),
+                c.input.cursor(),
+                ed.workspace.is_at(crate::workspace::At::Chat),
+                c.scroll
+            ),
             ("half 한", 5, true, 2)
         );
         assert!(!c.follow.on);
@@ -1848,7 +1862,7 @@ mod tests {
     /// A new editor as `:restart`'s binary starts: in `front`, the test's stand-ins.
     fn started_in(dir: &Path, front: &Path) -> Editor {
         let mut ed = Editor::new(Config::default());
-        (ed.session.root, ed.session.name) = (front.to_path_buf(), "front".into());
+        (ed.workspace.root, ed.workspace.name) = (front.to_path_buf(), "front".into());
         ed.chats_dir = Some(dir.join("chats"));
         ed.config.llm.command = "sh".into();
         let argv = dir.join("argv.log");
@@ -1857,11 +1871,11 @@ mod tests {
         ed
     }
 
-    fn session_at<'a>(ed: &'a Editor, root: &Path) -> &'a crate::session::Session {
+    fn session_at<'a>(ed: &'a Editor, root: &Path) -> &'a crate::workspace::Workspace {
         ed.sessions_in_order().into_iter().find(|l| l.root == root).expect("the session")
     }
 
-    fn paths_of(ed: &Editor, l: &crate::session::Session) -> Vec<String> {
+    fn paths_of(ed: &Editor, l: &crate::workspace::Workspace) -> Vec<String> {
         let mut v: Vec<String> = ed
             .docs
             .iter()
@@ -1899,14 +1913,14 @@ mod tests {
         started(&mut ed);
         assert_eq!(ed.preflight_quick(), Some(vec!["fmt".to_string()]), "before: the project's quick set");
         // The other checkout in front, then `:restart`
-        let id = ed.session_add(back.clone());
-        assert!(ed.session_switch(id));
+        let id = ed.workspace_add(back.clone());
+        assert!(ed.workspace_switch(id));
         let state = snapshot(&mut ed);
         drop(ed);
         let mut ed = started_in(&dir, &front);
         started(&mut ed);
         restore(&mut ed, &state);
-        assert_eq!(ed.session.root, back, "the other checkout in front");
+        assert_eq!(ed.workspace.root, back, "the other checkout in front");
         // As the event loop starts: then your config changes (again, until the watch has seen it)
         ed.watches_start();
         let (mut n, end) = (1, std::time::Instant::now() + crate::test_results::PATIENCE);
@@ -1970,8 +1984,8 @@ mod tests {
         let (front, back, dir, mut ed) = two_sessions("every");
         keep_conversation(&dir.join("chats"), &back, "c-back", "Hello from back.");
         ed.open(&front.join("f.txt")).unwrap();
-        let id = ed.session_add(back.clone());
-        ed.with_session(id, |ed| {
+        let id = ed.workspace_add(back.clone());
+        ed.with_workspace(id, |ed| {
             ed.open(&back.join("a.txt")).unwrap();
             ed.doc_mut().set_selection(Selection::single(Range::new(0, 3)));
             ed.split_view(Dir::Vertical);
@@ -1980,33 +1994,33 @@ mod tests {
             let mut c = crate::chat::Chat::new();
             c.conversation = Some("c-back".into());
             c.input.set_at("half a thought", 4);
-            ed.session.chat = Some(c);
-            ed.session.at = crate::session::At::Chat;
+            ed.workspace.claude.chat = Some(c);
+            ed.workspace.viewer.at = crate::workspace::At::Chat;
         });
         let state = snapshot(&mut ed);
         drop(ed);
         let mut ed = started_in(&dir, &front);
         restore(&mut ed, &state);
-        assert_eq!(ed.session.root, front, "the front in front");
-        assert_eq!(paths_of(&ed, &ed.session), ["f.txt"], "none of back's in the front's buffers");
+        assert_eq!(ed.workspace.root, front, "the front in front");
+        assert_eq!(paths_of(&ed, &ed.workspace), ["f.txt"], "none of back's in the front's buffers");
         let l = session_at(&ed, &back);
         assert_eq!(paths_of(&ed, l), ["a.txt", "b.txt"]);
-        let current = ed.docs.iter().find(|d| d.id == l.current_doc).unwrap();
+        let current = ed.docs.iter().find(|d| d.id == l.viewer.current_doc).unwrap();
         assert_eq!(current.path.as_deref(), Some(back.join("b.txt").as_path()), "its current file");
         let a = ed.docs.iter().find(|d| d.path.as_deref() == Some(back.join("a.txt").as_path())).unwrap();
         assert_eq!(a.selection().primary(), Range::new(0, 3));
         assert_eq!(l.views.len(), 2, "its two panes");
         assert_eq!(l.split.leaves().len(), 2 + crate::pane::SURFACES.len(), "in its tree with its surfaces");
-        assert_eq!(l.sidebar.as_ref().map(|s| s.mode), Some(Mode::Files), "its side panel");
-        let c = l.chat.as_ref().expect("its chat");
+        assert_eq!(l.viewer.sidebar.as_ref().map(|s| s.mode), Some(Mode::Files), "its side panel");
+        let c = l.claude.chat.as_ref().expect("its chat");
         assert_eq!((c.input.text().as_str(), c.input.cursor()), ("half a thought", 4), "its draft");
         settle_until(&mut ed, |ed| {
-            let c = session_at(ed, &back).chat.as_ref().unwrap();
+            let c = session_at(ed, &back).claude.chat.as_ref().unwrap();
             c.msgs.iter().any(|m| m.text == "Hello from back.")
         });
-        let c = session_at(&ed, &back).chat.as_ref().unwrap();
+        let c = session_at(&ed, &back).claude.chat.as_ref().unwrap();
         assert_eq!(c.conversation.as_deref(), Some("c-back"), "its own conversation");
-        assert!(ed.session.chat.is_none(), "none in front — there was none");
+        assert!(ed.workspace.claude.chat.is_none(), "none in front — there was none");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2021,13 +2035,13 @@ mod tests {
         let (config, w) = crate::config::parse(cfg);
         assert!(w.is_empty(), "{w:?}");
         keep_conversation(&dir.join("chats"), &back, "c-back", "Hello from back.");
-        let id = ed.session_add(back.clone());
-        ed.with_session(id, |ed| {
+        let id = ed.workspace_add(back.clone());
+        ed.with_workspace(id, |ed| {
             ed.open(&back.join("c.md")).unwrap();
             let mut c = crate::chat::Chat::new();
             c.conversation = Some("c-back".into());
-            ed.session.chat = Some(c);
-            ed.session.at = crate::session::At::Chat;
+            ed.workspace.claude.chat = Some(c);
+            ed.workspace.viewer.at = crate::workspace::At::Chat;
         });
         let state = snapshot(&mut ed);
         drop(ed);
@@ -2035,7 +2049,7 @@ mod tests {
         ed.config.lsp = config.editor.lsp.clone();
         restore(&mut ed, &state);
         settle_until(&mut ed, |ed| {
-            let c = session_at(ed, &back).chat.as_ref();
+            let c = session_at(ed, &back).claude.chat.as_ref();
             c.is_some_and(|c| c.msgs.iter().any(|m| m.text == "Hello from back."))
         });
         let md = |ed: &Editor| {
@@ -2047,15 +2061,15 @@ mod tests {
                 .client
         };
         assert_eq!(md(&ed), None, "no server for a session behind");
-        let c = session_at(&ed, &back).chat.as_ref().unwrap();
+        let c = session_at(&ed, &back).claude.chat.as_ref().unwrap();
         assert!(!c.running(), "no claude for a chat behind");
         let argv = || std::fs::read_to_string(dir.join("argv.log")).unwrap_or_default();
         // To the front: its server; a message: its claude, resuming its conversation
         let id = session_at(&ed, &back).id;
-        ed.session_switch(id);
+        ed.workspace_switch(id);
         assert!(md(&ed).is_some(), "its server, now it's in front");
-        assert!(!ed.session.chat.as_ref().unwrap().running(), "its claude waits for a message");
-        let c = ed.session.chat.as_mut().unwrap();
+        assert!(!ed.workspace.claude.chat.as_ref().unwrap().running(), "its claude waits for a message");
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.input.set("go on");
         crate::chat::send(&mut ed);
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
@@ -2080,10 +2094,10 @@ mod tests {
             c.msgs = vec![Msg::new(Role::User, said, ""), Msg::new(Role::Assistant, "ok", "")];
             c
         };
-        ed.session.chat = Some(chat("c-front", "in front"));
-        ed.session.at = crate::session::At::Chat;
-        let id = ed.session_add(back.clone());
-        ed.session_by_id(id).unwrap().chat = Some(chat("c-back", "behind"));
+        ed.workspace.claude.chat = Some(chat("c-front", "in front"));
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        let id = ed.workspace_add(back.clone());
+        ed.workspace_by_id(id).unwrap().claude.chat = Some(chat("c-back", "behind"));
         crate::chat::keep_now(&ed);
         let store = dir.join("chats");
         let ids =
@@ -2100,8 +2114,8 @@ mod tests {
     fn state_files_of_earlier_and_later_builds_restore() {
         let (front, back, dir, mut ed) = two_sessions("compat");
         ed.open(&front.join("f.txt")).unwrap();
-        let id = ed.session_add(back.clone());
-        ed.with_session(id, |ed| ed.open(&back.join("a.txt")).unwrap());
+        let id = ed.workspace_add(back.clone());
+        ed.with_workspace(id, |ed| ed.open(&back.join("a.txt")).unwrap());
         let state = snapshot(&mut ed);
         drop(ed);
         // Read as an earlier build reads it: the top-level fields
@@ -2115,8 +2129,8 @@ mod tests {
         }
         let mut ed = started_in(&dir, &front);
         assert_eq!(restore(&mut ed, &old), 2);
-        assert_eq!(paths_of(&ed, &ed.session), ["a.txt", "f.txt"], "an earlier build's: all in front");
-        assert_eq!(ed.sessions.len(), 1);
+        assert_eq!(paths_of(&ed, &ed.workspace), ["a.txt", "f.txt"], "an earlier build's: all in front");
+        assert_eq!(ed.workspaces.len(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2128,12 +2142,12 @@ mod tests {
         let old = dir.join("old");
         std::fs::create_dir_all(&old).unwrap();
         ed.open(&front.join("f.txt")).unwrap();
-        let id = ed.session_add(back.clone());
-        ed.with_session(id, |ed| {
+        let id = ed.workspace_add(back.clone());
+        ed.with_workspace(id, |ed| {
             ed.open(&back.join("a.txt")).unwrap();
             ed.open(&back.join("b.txt")).unwrap();
         });
-        ed.session_add(old.clone());
+        ed.workspace_add(old.clone());
         let mut state = snapshot(&mut ed);
         drop(ed);
         let blocks = state["sessions"]["sessions"].as_array_mut().unwrap();
@@ -2180,16 +2194,16 @@ mod tests {
             ed
         };
         let ed = again(&state);
-        assert_eq!(ed.session.views.len(), 2, "the tree taken");
-        let g = ed.session.group(GroupKind::Tests).unwrap();
-        assert_eq!(Some(g.host), ed.session.leaf(Shows::Slot), "in the slot's leaf, renumbered with it");
+        assert_eq!(ed.workspace.views.len(), 2, "the tree taken");
+        let g = ed.workspace.group(GroupKind::Tests).unwrap();
+        assert_eq!(Some(g.host), ed.workspace.leaf(Shows::Slot), "in the slot's leaf, renumbered with it");
         let detail = g.detail_pane().unwrap();
         let panes: Vec<u64> =
-            ed.session.views.iter().map(|v| v.id).chain(ed.session.panes.iter().map(|p| p.id)).collect();
+            ed.workspace.views.iter().map(|v| v.id).chain(ed.workspace.panes.iter().map(|p| p.id)).collect();
         assert!(!panes.contains(&g.list) && !panes.contains(&detail) && g.list != detail, "{g:?} {panes:?}");
         assert!(ed.next_pane > g.list.max(detail), "the next id past them");
         assert_eq!(
-            (ed.session.shows(g.list), ed.session.shows(detail)),
+            (ed.workspace.shows(g.list), ed.workspace.shows(detail)),
             (Some(Shows::List(GroupKind::Tests)), Some(Shows::Detail(GroupKind::Tests)))
         );
         let twice = json!([{ "kind": "tests", "host": host }, { "kind": "tests", "host": host }]);
@@ -2199,8 +2213,8 @@ mod tests {
             let blocks = s["sessions"]["sessions"].as_array_mut().unwrap();
             blocks.iter_mut().find(|b| b["root"] == json!(front)).unwrap()["groups"] = broken.clone();
             let ed = again(&s);
-            assert_eq!(ed.session.views.len(), 1, "{broken}: the default layout");
-            assert!(ed.session.group(GroupKind::Tests).is_some(), "{broken}: its tests group still");
+            assert_eq!(ed.workspace.views.len(), 1, "{broken}: the default layout");
+            assert!(ed.workspace.group(GroupKind::Tests).is_some(), "{broken}: its tests group still");
         }
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -2213,7 +2227,7 @@ mod tests {
         use crate::pane::{GroupKind, Laid, Place, Shows, Side};
         let (front, _back, dir, mut ed) = two_sessions("docked");
         ed.open(&front.join("f.txt")).unwrap();
-        ed.session.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), vec!["ok".into()]));
+        ed.workspace.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), vec!["ok".into()]));
         ed.focus_sync();
         ed.dock(GroupKind::Tests, Side::Right);
         ed.group_turn(GroupKind::Tests);
@@ -2223,14 +2237,14 @@ mod tests {
         assert_eq!((&kept["place"], &kept["laid"]), (&json!("right"), &json!("over")), "{kept}");
         let mut ed = started_in(&dir, &front);
         restore(&mut ed, &state);
-        let g = ed.session.group(GroupKind::Tests).unwrap();
+        let g = ed.workspace.group(GroupKind::Tests).unwrap();
         assert_eq!((g.place, g.laid), (Place::Docked(Side::Right), Laid::Over));
-        assert_eq!(ed.session.shows(g.host), Some(Shows::Group(GroupKind::Tests)), "its leaf, renumbered");
+        assert_eq!(ed.workspace.shows(g.host), Some(Shows::Group(GroupKind::Tests)), "its leaf, renumbered");
         ed.focus_sync();
-        let g = ed.session.group(GroupKind::Tests).unwrap();
+        let g = ed.workspace.group(GroupKind::Tests).unwrap();
         assert!(!ed.dock_leaf(&g), "no run: its leaf goes");
-        assert_eq!((g.place, Some(g.host)), (Place::Docked(Side::Right), ed.session.leaf(Shows::Slot)));
-        ed.session.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), vec!["ok".into()]));
+        assert_eq!((g.place, Some(g.host)), (Place::Docked(Side::Right), ed.workspace.leaf(Shows::Slot)));
+        ed.workspace.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), vec!["ok".into()]));
         ed.focus_sync();
         assert!(ed.docked_in_sight(GroupKind::Tests), "the next run lands docked");
         std::fs::remove_dir_all(&dir).ok();
@@ -2243,8 +2257,8 @@ mod tests {
         let (front, back, dir, mut ed) = two_sessions("view-ids");
         ed.open(&front.join("f.txt")).unwrap();
         ed.split_view(Dir::Vertical);
-        let id = ed.session_add(back.clone());
-        ed.with_session(id, |ed| {
+        let id = ed.workspace_add(back.clone());
+        ed.with_workspace(id, |ed| {
             ed.open(&back.join("a.txt")).unwrap();
             ed.split_view(Dir::Horizontal);
             ed.open(&back.join("b.txt")).unwrap();
@@ -2286,7 +2300,7 @@ mod tests {
             ids.sort_unstable();
             assert_eq!(l.views.len(), 2, "{}: its two code panes", l.name);
             assert_eq!(leaves, ids, "{}: its split over every pane", l.name);
-            assert!(l.views.iter().any(|v| v.id == l.focus), "{}: its focus one of them", l.name);
+            assert!(l.views.iter().any(|v| v.id == l.viewer.focus), "{}: its focus one of them", l.name);
         }
         assert!(ed.next_pane > *distinct.last().unwrap(), "the next one past them all");
         std::fs::remove_dir_all(&dir).ok();
@@ -2302,13 +2316,13 @@ mod tests {
             std::fs::create_dir_all(g).unwrap();
         }
         ed.open(&front.join("f.txt")).unwrap();
-        let id = ed.session_add(back.clone());
-        ed.with_session(id, |ed| {
+        let id = ed.workspace_add(back.clone());
+        ed.with_workspace(id, |ed| {
             ed.open(&back.join("a.txt")).unwrap();
             ed.open(&back.join("b.txt")).unwrap();
         });
         for g in &gone {
-            ed.session_add(g.clone());
+            ed.workspace_add(g.clone());
         }
         let mut state = snapshot(&mut ed);
         drop(ed);
@@ -2352,8 +2366,8 @@ mod tests {
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
         assert_eq!(snapshot(&mut ed)["chat"]["at_end"], Value::Null);
-        ed.session.chat.as_mut().unwrap().edits.at_end = Some("/p".into());
-        ed.session.chat.as_mut().unwrap().conversation = Some("c-1".into());
+        ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some("/p".into());
+        ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("c-1".into());
         let state = snapshot(&mut ed);
         assert_eq!((&state["chat"]["at_end"], &state["chat"]["conversation"]), (&json!("/p"), &json!("c-1")));
     }
@@ -2388,7 +2402,7 @@ mod tests {
         let file = dir.join("a.txt");
         std::fs::write(&file, "one\n").unwrap();
         let mut ed = Editor::new(Config::default());
-        ed.session.root = dir.to_path_buf();
+        ed.workspace.root = dir.to_path_buf();
         ed.open(&file).unwrap();
         feed(&mut ed, "iX<esc>");
         ed.config.restart_build = build.into();
@@ -2407,9 +2421,9 @@ mod tests {
         settle_answering(&mut ed, |ed| ed.should_quit || ed.restart.is_none());
         assert_eq!(ed.restart.as_ref().and_then(Restart::ready), Some(bin.as_path()), "{}", toasts(&ed));
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "Xone\n", "saved first");
-        let run = ed.session.task_run.as_ref().expect("the build ran as a task");
+        let run = ed.workspace.task_run.as_ref().expect("the build ran as a task");
         assert_eq!((run.task.cmd.as_str(), &run.state), ("true", &crate::task::State::Passed));
-        assert!(ed.session.task_last.is_none(), "not the task space m m runs again");
+        assert!(ed.workspace.task_last.is_none(), "not the task space m m runs again");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -2569,18 +2583,18 @@ mod tests {
             assert!(err.contains(why), "{err}");
             assert!(ed.restart.is_none());
         };
-        ed.session.committing = Some(crate::gitpanel::Committing {
+        ed.workspace.committing = Some(crate::gitpanel::Committing {
             doc: ed.doc().id,
             top: dir.clone(),
             amend: false,
             then_end: false,
         });
         try_it(&mut ed, "a commit message is open");
-        ed.session.committing = None;
+        ed.workspace.committing = None;
         let task = crate::task::Task { name: "slow".into(), cmd: "sleep 5".into(), cwd: dir.clone() };
         ed.task_start(task);
         // (it starts once the modified file is saved)
-        settle_until(&mut ed, |ed| ed.session.task_run.is_some());
+        settle_until(&mut ed, |ed| ed.workspace.task_run.is_some());
         assert_eq!(blocker(&ed, true), None, "a run is named on its card, not a refusal");
         ed.task_close();
         ed.dap = Some(crate::dap::Dap::placeholder(crate::dap::State::Starting, "app".into()));
@@ -2608,7 +2622,7 @@ mod tests {
         let back = dir.join("fix-login");
         std::fs::create_dir_all(&back).unwrap();
         std::fs::write(back.join("b.txt"), "one\n").unwrap();
-        let id = ed.session_add(back.clone());
+        let id = ed.workspace_add(back.clone());
         let try_it = |ed: &mut Editor, why: &str| {
             let err = crate::typed::execute(ed, "restart!").unwrap_err();
             assert!(err.contains(&format!("fix-login: {why}")), "{err}");
@@ -2618,23 +2632,23 @@ mod tests {
         let task = crate::task::Task { name: "rust-analyzer".into(), cmd: "true".into(), cwd: back.clone() };
         let mut run = crate::task::Run::for_test(task);
         (run.state, run.install) = (crate::task::State::Running, true);
-        ed.session_by_id(id).unwrap().task_run = Some(run);
+        ed.workspace_by_id(id).unwrap().task_run = Some(run);
         try_it(&mut ed, "rust-analyzer is installing — let it finish");
-        ed.session_by_id(id).unwrap().task_run = None;
+        ed.workspace_by_id(id).unwrap().task_run = None;
         // A commit message, an edit's review
         let doc = ed.doc().id;
-        ed.session_by_id(id).unwrap().committing =
+        ed.workspace_by_id(id).unwrap().committing =
             Some(crate::gitpanel::Committing { doc, top: back.clone(), amend: false, then_end: false });
         try_it(&mut ed, "a commit message is open");
-        ed.session_by_id(id).unwrap().committing = None;
-        ed.with_session(id, |ed| {
+        ed.workspace_by_id(id).unwrap().committing = None;
+        ed.with_workspace(id, |ed| {
             ed.open(&back.join("b.txt")).unwrap();
             let doc = ed.doc().id;
             crate::llm::review_with(ed, doc, "x", vec![(0, 3, "one".into(), "uno".into())], None);
         });
-        assert!(ed.session_by_id(id).unwrap().review.is_some());
+        assert!(ed.workspace_by_id(id).unwrap().claude.review.is_some());
         try_it(&mut ed, "a review is open");
-        ed.session_by_id(id).unwrap().review = None;
+        ed.workspace_by_id(id).unwrap().claude.review = None;
         // Nothing anywhere: on its way
         crate::typed::execute(&mut ed, "restart!").unwrap();
         assert!(ed.restart.is_some());
@@ -2654,8 +2668,8 @@ mod tests {
         // (frictions29 #66: another session's run stopped — as "restart anyway" ends one — isn't its build)
         let back = dir.join("back");
         std::fs::create_dir_all(&back).unwrap();
-        let id = ed.session_add(back.clone());
-        ed.with_session(id, |ed| {
+        let id = ed.workspace_add(back.clone());
+        ed.with_workspace(id, |ed| {
             let task = crate::task::Task { name: "long".into(), cmd: "sleep 30".into(), cwd: back.clone() };
             let who = crate::tools::For::User("long".into());
             assert!(ed.task_start_for(task, who, None, Default::default()).is_ok());
@@ -2764,7 +2778,7 @@ mod tests {
             "tool_name": "Write", "input": {"file_path": file, "content": "TWO\n"}}});
         let result = json!({"type": "result", "result": ""});
         let mut ed = Editor::new(Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.open(&file).unwrap();
         ed.disk_watch();
         ed.config.restart_binary = bin.display().to_string();
@@ -2779,7 +2793,7 @@ mod tests {
             ),
         ];
         feed(&mut ed, "<space>lwrite it<ret>");
-        settle_until(&mut ed, |ed| ed.session.review.is_some());
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
         crate::typed::execute(&mut ed, "restart!").unwrap();
         wait_on_card(&mut ed, "Claude's turn");
         feed(&mut ed, "y");
@@ -2799,17 +2813,17 @@ mod tests {
         let dir = temp("gather");
         let bin = fake_tarae(&dir, "tarae 9.9.9");
         let mut ed = Editor::new(Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.config.restart_binary = bin.display().to_string();
-        ed.session.checkpoints.gathering = true;
+        ed.workspace.claude.checkpoints.gathering = true;
         crate::typed::execute(&mut ed, "restart!").unwrap();
         wait_on_card(&mut ed, "Claude's turn");
         turn_over(&mut ed);
         assert_eq!(ed.restart.as_ref().unwrap().stage, Stage::Turn, "still reading");
         let file = dir.join("a.txt");
         std::fs::write(&file, "two\n").unwrap();
-        ed.session.checkpoints.gathering = false;
-        ed.session.checkpoints.list.push(crate::checkpoint::Checkpoint::new(
+        ed.workspace.claude.checkpoints.gathering = false;
+        ed.workspace.claude.checkpoints.list.push(crate::checkpoint::Checkpoint::new(
             "q".into(),
             vec![crate::checkpoint::Touched {
                 path: file,
@@ -2820,7 +2834,7 @@ mod tests {
             }],
         ));
         crate::chat::turn_gathered(&mut ed, Some("a.txt".into()));
-        assert!(ed.session.code_review.is_none(), "not over the restart");
+        assert!(ed.workspace.code_review.is_none(), "not over the restart");
         settle_answering(&mut ed, |ed| ed.should_quit || ed.restart.is_none());
         assert_eq!(ed.restart.as_ref().and_then(Restart::ready), Some(bin.as_path()), "{}", toasts(&ed));
         std::fs::remove_dir_all(&dir).ok();
@@ -2833,7 +2847,7 @@ mod tests {
         let dir = temp("turn");
         let bin = fake_tarae(&dir, "tarae 9.9.9");
         let mut ed = Editor::new(Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.config.restart_binary = bin.display().to_string();
         let init = json!({"type": "system", "subtype": "init", "session_id": "s-1"});
         let result = json!({"type": "result", "result": "done"});
@@ -2846,7 +2860,7 @@ mod tests {
             ),
         ];
         feed(&mut ed, "<space>lhello<ret>");
-        assert!(ed.session.chat.as_ref().unwrap().busy());
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().busy());
         crate::typed::execute(&mut ed, "restart!").unwrap();
         wait_on_card(&mut ed, "Claude's turn");
         crate::typed::execute(&mut ed, "restart!").unwrap();
@@ -2857,7 +2871,7 @@ mod tests {
         wait_on_card(&mut ed, "Claude's turn");
         assert!(toasts(&ed).contains("tarae restarts once these end: Claude's turn"), "{}", toasts(&ed));
         settle_answering(&mut ed, |ed| ed.should_quit || ed.restart.is_none());
-        assert!(!ed.session.chat.as_ref().unwrap().busy(), "only after the turn");
+        assert!(!ed.workspace.claude.chat.as_ref().unwrap().busy(), "only after the turn");
         assert_eq!(ed.restart.as_ref().and_then(Restart::ready), Some(bin.as_path()), "{}", toasts(&ed));
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
@@ -2868,13 +2882,13 @@ mod tests {
     fn restart_card_with_chat(dir: &Path, busy: bool) -> (Editor, PathBuf) {
         let bin = fake_tarae(dir, "tarae 9.9.9");
         let mut ed = Editor::new(Config::default());
-        ed.session.root = dir.to_path_buf();
+        ed.workspace.root = dir.to_path_buf();
         ed.config.restart_binary = bin.display().to_string();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
         if busy {
-            ed.session.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
+            ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
         }
         crate::typed::execute(&mut ed, "restart!").unwrap();
         settle_until(&mut ed, |ed| restart_card(ed).is_some());
@@ -2902,7 +2916,7 @@ mod tests {
         assert!(q.lines().any(|l| l == "  Claude's turn"), "{q}");
         // Claude asks to write two files while the card is up
         for (id, name) in [("e1", "a.txt"), ("e2", "b.txt")] {
-            ed.session.chat.as_mut().unwrap().edits.queue.push_back(crate::edits::Pending {
+            ed.workspace.claude.chat.as_mut().unwrap().edits.queue.push_back(crate::edits::Pending {
                 request_id: id.into(),
                 tool: "Write".into(),
                 input: json!({ "file_path": dir.join(name), "content": "TWO\n" }),
@@ -2923,10 +2937,10 @@ mod tests {
         assert!(q.lines().any(|l| l == format!("  {dropped}")), "{q}");
         // The first opens in its review meanwhile: named all the same
         ed.handle_event(crate::event::Event::Resize);
-        assert!(ed.session.review.is_some(), "a.txt's edit in its review");
+        assert!(ed.workspace.claude.review.is_some(), "a.txt's edit in its review");
         settle_answering(&mut ed, |ed| ed.should_quit || ed.restart.is_none());
         assert_eq!(ed.restart.as_ref().and_then(Restart::ready), Some(bin.as_path()), "{}", toasts(&ed));
-        assert!(ed.session.chat.as_ref().unwrap().busy(), "the turn wasn't waited for");
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().busy(), "the turn wasn't waited for");
         assert!(toasts(&ed).contains(&format!("restarting anyway — it ends {dropped}")), "{}", toasts(&ed));
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "one\n", "the edit wasn't made");
         drop(ed);
@@ -2960,7 +2974,7 @@ mod tests {
         settle_until(&mut ed, |ed| ed.should_quit || ed.restart.is_none());
         assert_eq!(ed.restart.as_ref().and_then(Restart::ready), Some(bin.as_path()), "{}", toasts(&ed));
         assert!(toasts(&ed).contains("once Claude's edits are on disk"), "it waited: {}", toasts(&ed));
-        assert!(ed.session.chat.as_ref().unwrap().busy(), "the turn wasn't waited for");
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().busy(), "the turn wasn't waited for");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "TWO\none\n", "written before it restarts");
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
@@ -2975,12 +2989,12 @@ mod tests {
         assert!(!restart_card(&ed).unwrap().contains("Under way"));
         ed.offer_accept();
         // (the binary's check is on a worker: asked before its answer lands)
-        ed.session.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
+        ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
         settle_until(&mut ed, |ed| ed.restart.as_ref().is_some_and(|r| r.stage == Stage::Turn));
         assert!(toasts(&ed).contains("tarae restarts once these end: Claude's turn"), "{}", toasts(&ed));
         ed.handle_event(crate::event::Event::Resize);
         assert_eq!(ed.restart.as_ref().unwrap().stage, Stage::Turn, "still at work");
-        ed.session.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+        ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
         ed.handle_event(crate::event::Event::Resize);
         settle_answering(&mut ed, |ed| ed.should_quit || ed.restart.is_none());
         assert_eq!(ed.restart.as_ref().and_then(Restart::ready), Some(bin.as_path()), "{}", toasts(&ed));
@@ -3064,18 +3078,18 @@ mod tests {
         settle_until(&mut ed, |ed| reviewing(ed, &front));
         // In front, on its second file
         crate::codereview::show(&mut ed, 1, false);
-        let id = ed.session_add(back.clone());
-        ed.with_session(id, |ed| crate::codereview::start(ed, Some("main".into())));
+        let id = ed.workspace_add(back.clone());
+        ed.with_workspace(id, |ed| crate::codereview::start(ed, Some("main".into())));
         settle_until(&mut ed, |ed| reviewing(ed, &back));
         // Behind: its review's file closed meanwhile, another one shown (the review opens it again)
-        ed.with_session(id, |ed| {
+        ed.with_workspace(id, |ed| {
             let md = ed.doc().id;
             ed.open(&back.join("b.txt")).unwrap();
             ed.close_doc(md);
         });
         // A draft in front
         crate::notes::add(&mut ed, &front.join("f.txt"), 0..1, crate::notes::By::You, "why?");
-        ed.session.notes.list[0].thread[0].draft = true;
+        ed.workspace.claude.notes.list[0].thread[0].draft = true;
         let blocked = |ed: &Editor| blocker(ed, true);
         assert_eq!(blocked(&ed), None, "a review and its drafts come along");
         let state = snapshot(&mut ed);
@@ -3084,7 +3098,7 @@ mod tests {
         ed.config.lsp = config.editor.lsp.clone();
         restore(&mut ed, &state);
         settle_until(&mut ed, |ed| reviewing(ed, &front) && reviewing(ed, &back));
-        let r = ed.session.code_review.as_ref().unwrap();
+        let r = ed.workspace.code_review.as_ref().unwrap();
         assert_eq!((&r.base, r.files.len()), (&Base::Head, 2), "in front: the uncommitted changes");
         assert_eq!(ed.doc().path.as_deref(), Some(front.join("g.txt").as_path()), "on the file it was on");
         assert!(
@@ -3094,7 +3108,7 @@ mod tests {
         let l = session_at(&ed, &back);
         let r = l.code_review.as_ref().unwrap();
         assert_eq!(r.base, Base::Branch { name: "main".into(), commit: merge_base }, "behind: since main");
-        let current = ed.docs.iter().find(|d| d.id == l.current_doc).unwrap();
+        let current = ed.docs.iter().find(|d| d.id == l.viewer.current_doc).unwrap();
         assert_eq!(current.path.as_deref(), Some(back.join("c.md").as_path()), "its file, opened again");
         assert!(r.docs.contains(&current.id), "in the review");
         assert_eq!(current.lsp.client, None, "behind: its server waits");
@@ -3103,7 +3117,7 @@ mod tests {
         assert!(!said.iter().any(|m| m.contains("review:")), "{said:?}");
         // A turn's review comes along too (frictions15 — `a_turns_review_comes_back_after_a_restart`)
         let turn = Base::Turn { at: 0, question: "do it".into() };
-        ed.session.code_review = Some(CodeReview::for_test(turn, front.clone(), Vec::new()));
+        ed.workspace.code_review = Some(CodeReview::for_test(turn, front.clone(), Vec::new()));
         assert_eq!(blocked(&ed), None);
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
@@ -3122,8 +3136,8 @@ mod tests {
         std::fs::write(back.join("a.txt"), "only on side\n").unwrap();
         git(&["commit", "-q", "-am", "side"]);
         git(&["checkout", "-q", "main"]);
-        let id = ed.session_add(back.clone());
-        ed.with_session(id, |ed| crate::typed::execute(ed, "git-branch-delete side").unwrap());
+        let id = ed.workspace_add(back.clone());
+        ed.with_workspace(id, |ed| crate::typed::execute(ed, "git-branch-delete side").unwrap());
         let asked = |ed: &Editor| {
             session_at(ed, &back).parked.iter().any(|o| matches!(o.what, What::BranchDelete { .. }))
         };
@@ -3160,8 +3174,8 @@ mod tests {
         std::fs::write(back.join("a.txt"), "only on side\n").unwrap();
         git(&["commit", "-q", "-am", "side"]);
         git(&["checkout", "-q", "main"]);
-        let id = ed.session_add(back.clone());
-        ed.with_session(id, |ed| crate::typed::execute(ed, "git-branch-delete side").unwrap());
+        let id = ed.workspace_add(back.clone());
+        ed.with_workspace(id, |ed| crate::typed::execute(ed, "git-branch-delete side").unwrap());
         let asked = |ed: &Editor| {
             session_at(ed, &back).parked.iter().any(|o| matches!(o.what, What::BranchDelete { .. }))
         };
@@ -3180,7 +3194,7 @@ mod tests {
     }
 
     /// …and a session whose end was asked, with nothing to lose by the time the restart lands (its change
-    /// gone meanwhile — `:session-end` would end it at once), still gets its card.
+    /// gone meanwhile — `:workspace-end` would end it at once), still gets its card.
     #[test]
     fn a_session_end_asked_again_asks_even_when_nothing_would_be_lost() {
         use crate::offer::What;
@@ -3189,12 +3203,12 @@ mod tests {
         repo(&front);
         let wt = dir.join("wt");
         git(&front, &["worktree", "add", "-q", "-b", "wt", wt.to_str().unwrap()]);
-        let id = ed.session_add(wt.clone());
-        ed.session_by_id(id).unwrap().base = Some("main".into());
+        let id = ed.workspace_add(wt.clone());
+        ed.workspace_by_id(id).unwrap().base = Some("main".into());
         // Something to lose: a new file
         std::fs::write(wt.join("new.txt"), "mine\n").unwrap();
-        crate::typed::execute(&mut ed, "session-end wt").unwrap();
-        let asked = |ed: &Editor| ed.offers.iter().any(|o| matches!(o.what, What::SessionEnd(_)));
+        crate::typed::execute(&mut ed, "workspace-end wt").unwrap();
+        let asked = |ed: &Editor| ed.offers.iter().any(|o| matches!(o.what, What::WorkspaceEnd(_)));
         settle_until(&mut ed, asked);
         let state = snapshot(&mut ed);
         drop(ed);
@@ -3237,13 +3251,13 @@ mod tests {
         ed.config.preflight = vec![step("mine", &format!("touch '{}'", marker.display()), ".tarae.toml")];
         restore(&mut ed, &state);
         let asked = |ed: &Editor| ed.offers.iter().any(|o| matches!(o.what, What::Preflight { .. }));
-        settle_until(&mut ed, |ed| asked(ed) || ed.session.task_run.is_some());
-        assert!(ed.session.task_run.is_none() && !marker.exists(), "ran without its card");
+        settle_until(&mut ed, |ed| asked(ed) || ed.workspace.task_run.is_some());
+        assert!(ed.workspace.task_run.is_none() && !marker.exists(), "ran without its card");
         let o = ed.offers.iter().find(|o| matches!(o.what, What::Preflight { .. })).unwrap();
         assert!(o.question.contains("touch"), "the steps it would run: {}", o.question);
         // `y` there runs them
         ed.offer_accept();
-        settle_until(&mut ed, |ed| ed.session.task_run.is_some());
+        settle_until(&mut ed, |ed| ed.workspace.task_run.is_some());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3254,7 +3268,7 @@ mod tests {
     fn the_restart_card_names_what_wont_come_back() {
         use crate::offer::{Offer, What};
         let (front, back, dir, mut ed) = two_sessions("lost");
-        let id = ed.session_add(back.clone());
+        let id = ed.workspace_add(back.clone());
         let card = |title: &str, what| Offer::new(title.into(), "…", "", String::new(), what);
         ed.push_offer(card("Close a.txt?", What::CloseReviewed { doc: 0, force: false }));
         let tip = "0".repeat(40);
@@ -3263,7 +3277,7 @@ mod tests {
             What::BranchDelete { top: front.clone(), branch: "side".into(), tip },
         ));
         let ended = What::ReviewEnd { session: id, started: std::time::Instant::now() };
-        ed.session_by_id(id).unwrap().parked.push(card("End the review?", ended));
+        ed.workspace_by_id(id).unwrap().parked.push(card("End the review?", ended));
         // (a run of Claude's held after its last made a protected name: its job isn't run again blind)
         let made = What::ProtectedMade {
             then: Box::new(crate::tools::MadeThen::Claude {
@@ -3273,8 +3287,8 @@ mod tests {
             }),
             made: vec![crate::snapshot::Made { path: "Makefile".into(), hash: String::new() }],
         };
-        ed.session_by_id(id).unwrap().parked.push(card("Run it after it made Makefile?", made));
-        // (a rebase held back by its checkout's changes: `:session-bring` raises it again, looking afresh)
+        ed.workspace_by_id(id).unwrap().parked.push(card("Run it after it made Makefile?", made));
+        // (a rebase held back by its checkout's changes: `:workspace-bring` raises it again, looking afresh)
         let moved = crate::rebase::Moved {
             root: back.clone(),
             name: "feat".into(),
@@ -3284,7 +3298,7 @@ mod tests {
             ahead: 1,
         };
         let held = crate::rebase::Held { moved, changed: vec!["a.txt".into()], unsaved: Vec::new() };
-        ed.session_by_id(id).unwrap().parked.push(held.card());
+        ed.workspace_by_id(id).unwrap().parked.push(held.card());
         ed.restart = Some(Restart {
             id: 7,
             build: false,
@@ -3292,7 +3306,7 @@ mod tests {
             target: None,
             kept: None,
             anyway: Vec::new(),
-            asked: 0,
+            asked: WorkspaceId::HOME,
             build_run: None,
         });
         let t = Target {
@@ -3336,7 +3350,7 @@ mod tests {
         }
         let bin = fake_tarae(&dir, "tarae 9.9.9");
         let mut ed = Editor::new(Config::default());
-        (ed.session.root, ed.session.name) = (main.clone(), "main".into());
+        (ed.workspace.root, ed.workspace.name) = (main.clone(), "main".into());
         ed.config.restart_build = "pwd > built-here".into();
         ed.config.restart_binary = bin.display().to_string();
         let card = |ed: &mut Editor| {
@@ -3355,7 +3369,7 @@ mod tests {
         ed.offer_dismiss();
         assert!(ed.restart.is_none() && !main.join("built-here").exists(), "n: nothing built");
         // Another session in front: the card still starts where tarae started, the front's is `f`
-        ed.session_open(&other).unwrap();
+        ed.workspace_open(&other).unwrap();
         crate::typed::execute(&mut ed, "restart").unwrap();
         let (title, q, other_too) = card(&mut ed);
         assert_eq!(title, format!("Restart into main's build ({})?", heads[0]), "{q}");
@@ -3370,10 +3384,10 @@ mod tests {
         drop(ed);
         // `y`: where tarae started, the front another
         let mut ed = Editor::new(Config::default());
-        (ed.session.root, ed.session.name) = (main.clone(), "main".into());
+        (ed.workspace.root, ed.workspace.name) = (main.clone(), "main".into());
         ed.config.restart_build = "pwd > built-here".into();
         ed.config.restart_binary = bin.display().to_string();
-        ed.session_open(&other).unwrap();
+        ed.workspace_open(&other).unwrap();
         std::fs::remove_file(other.join("built-here")).unwrap();
         crate::typed::execute(&mut ed, "restart").unwrap();
         card(&mut ed);
@@ -3402,7 +3416,7 @@ mod tests {
             |bin: &Path| std::fs::File::options().write(true).open(bin).unwrap().set_modified(an_hour_ago);
         age(&bin).unwrap();
         let mut ed = Editor::new(Config::default());
-        (ed.session.root, ed.session.name) = (main.clone(), "main".into());
+        (ed.workspace.root, ed.workspace.name) = (main.clone(), "main".into());
         ed.config.restart_build = "true".into();
         ed.config.restart_binary = bin.display().to_string();
         let same = |ed: &Editor| {
@@ -3434,7 +3448,7 @@ mod tests {
         );
         // A build that writes it: on at once
         let mut ed = Editor::new(Config::default());
-        (ed.session.root, ed.session.name) = (main.clone(), "main".into());
+        (ed.workspace.root, ed.workspace.name) = (main.clone(), "main".into());
         ed.config.restart_build = format!("touch '{}'", bin.display());
         ed.config.restart_binary = bin.display().to_string();
         crate::typed::execute(&mut ed, "restart").unwrap();
@@ -3455,18 +3469,18 @@ mod tests {
         let bin = fake_tarae(&dir, "tarae 9.9.9");
         ed.config.restart_binary = bin.display().to_string();
         use crate::codereview::{Base, CodeReview};
-        let id = ed.session_add(back.clone());
+        let id = ed.workspace_add(back.clone());
         let turn = Base::Turn { at: 0, question: "do it".into() };
-        ed.session_by_id(id).unwrap().code_review =
+        ed.workspace_by_id(id).unwrap().code_review =
             Some(CodeReview::for_test(turn, back.clone(), Vec::new()));
         let long = |ed: &mut Editor| -> u32 {
             let mut pid = 0;
-            ed.with_session(id, |ed| {
+            ed.with_workspace(id, |ed| {
                 let task =
                     crate::task::Task { name: "long".into(), cmd: "sleep 30".into(), cwd: back.clone() };
                 let who = crate::tools::For::User("long".into());
                 assert!(ed.task_start_for(task, who, None, Default::default()).is_ok());
-                pid = ed.session.task_run.as_ref().unwrap().pid().unwrap();
+                pid = ed.workspace.task_run.as_ref().unwrap().pid().unwrap();
             });
             pid
         };
@@ -3482,7 +3496,7 @@ mod tests {
         };
         assert!(toasts(&ed).contains("tarae restarts once these end: back: sleep 30"), "{}", toasts(&ed));
         // It ends: the card again, nothing under way
-        ed.with_session(id, |ed| ed.session.task_run = None);
+        ed.with_workspace(id, |ed| ed.workspace.task_run = None);
         ed.handle_event(crate::event::Event::Resize);
         settle_until(&mut ed, |ed| o(ed).is_some());
         let card = o(&ed).unwrap();
@@ -3522,8 +3536,8 @@ mod tests {
         let (front, back, dir, mut ed) = two_sessions("turn-back");
         let turns = dir.join("turns");
         ed.turns_dir = Some(turns.clone());
-        let id = ed.session_add(back.clone());
-        settle_until(&mut ed, |ed| session_at(ed, &back).checkpoints.dir.is_some());
+        let id = ed.workspace_add(back.clone());
+        settle_until(&mut ed, |ed| session_at(ed, &back).claude.checkpoints.dir.is_some());
         // Its two turns: the review is of the first ("loud"), on b.txt
         let touched = |name: &str, after: &str| crate::checkpoint::Touched {
             path: back.join(name),
@@ -3535,7 +3549,7 @@ mod tests {
         std::fs::write(back.join("b.txt"), "one\nTWO\nthree\n").unwrap();
         std::fs::write(back.join("c.md"), "one\ntwo\nTHREE\n").unwrap();
         let cp = |q: &str, files| crate::checkpoint::Checkpoint::new(q.into(), files);
-        ed.session_by_id(id).unwrap().checkpoints.list = vec![
+        ed.workspace_by_id(id).unwrap().claude.checkpoints.list = vec![
             cp(
                 "make it loud",
                 vec![touched("a.txt", "ONE\ntwo\nthree\n"), touched("b.txt", "one\nTWO\nthree\n")],
@@ -3544,11 +3558,11 @@ mod tests {
         ];
         let reviewing =
             |ed: &Editor| session_at(ed, &back).code_review.as_ref().is_some_and(|r| !r.docs.is_empty());
-        ed.with_session(id, |ed| crate::codereview::start_turn(ed, 0));
+        ed.with_workspace(id, |ed| crate::codereview::start_turn(ed, 0));
         settle_until(&mut ed, reviewing);
-        ed.with_session(id, |ed| _ = crate::codereview::show(ed, 1, false));
+        ed.with_workspace(id, |ed| _ = crate::codereview::show(ed, 1, false));
         // A third turn under way, cut by the restart: c.md changed since it began
-        ed.session_by_id(id).unwrap().checkpoints.turn = vec![crate::checkpoint::Touched {
+        ed.workspace_by_id(id).unwrap().claude.checkpoints.turn = vec![crate::checkpoint::Touched {
             path: back.join("c.md"),
             before: Some(ropey::Rope::from_str("one\ntwo\nTHREE\n")),
             after: ropey::Rope::from_str("one\ntwo\nTHREE\n"),
@@ -3561,9 +3575,9 @@ mod tests {
         // back's Claude still at work: restart anyway — its turn is cut
         let bin = fake_tarae(&dir, "tarae 9.9.9");
         ed.config.restart_binary = bin.display().to_string();
-        ed.with_session(id, |ed| {
+        ed.with_workspace(id, |ed| {
             crate::chat::open(ed);
-            ed.session.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
+            ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
         });
         crate::typed::execute(&mut ed, "restart!").unwrap();
         settle_until(&mut ed, |ed| restart_card(ed).is_some());
@@ -3582,10 +3596,10 @@ mod tests {
         let r = l.code_review.as_ref().unwrap();
         let crate::codereview::Base::Turn { at, question } = &r.base else { panic!("{:?}", r.base) };
         assert_eq!((*at, question.as_str()), (0, "make it loud"), "the same turn");
-        assert_eq!(l.checkpoints.list[*at].question, "make it loud");
-        let questions: Vec<&str> = l.checkpoints.list.iter().map(|c| c.question.as_str()).collect();
+        assert_eq!(l.claude.checkpoints.list[*at].question, "make it loud");
+        let questions: Vec<&str> = l.claude.checkpoints.list.iter().map(|c| c.question.as_str()).collect();
         assert_eq!(questions, ["make it loud", "and the notes", "a turn cut short"], "the cut one after");
-        let current = ed.docs.iter().find(|d| d.id == l.current_doc).unwrap();
+        let current = ed.docs.iter().find(|d| d.id == l.viewer.current_doc).unwrap();
         assert_eq!(current.path.as_deref(), Some(back.join("b.txt").as_path()), "on the file it was on");
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
@@ -3602,14 +3616,14 @@ mod tests {
         }
         let bin = fake_tarae(&dir, "tarae 9.9.9");
         let mut ed = Editor::new(Config::default());
-        (ed.session.root, ed.session.name) = (main.clone(), "main".into());
+        (ed.workspace.root, ed.workspace.name) = (main.clone(), "main".into());
         ed.config.restart_binary = bin.display().to_string();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-        let id = ed.session_open(&back).unwrap();
+        let id = ed.workspace_open(&back).unwrap();
         crate::chat::open(&mut ed);
-        ed.session.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
-        assert!(ed.session_switch(0));
+        ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
+        assert!(ed.workspace_switch(WorkspaceId::HOME));
         crate::typed::execute(&mut ed, "restart!").unwrap();
         wait_on_card(&mut ed, "back: Claude's turn");
         assert!(
@@ -3619,7 +3633,8 @@ mod tests {
         );
         ed.handle_event(crate::event::Event::Resize);
         assert_eq!(ed.restart.as_ref().unwrap().stage, Stage::Turn, "back's still at work");
-        let back_chat = ed.sessions.iter_mut().find(|l| l.id == id).and_then(|l| l.chat.as_mut()).unwrap();
+        let back_chat =
+            ed.workspaces.iter_mut().find(|l| l.id == id).and_then(|l| l.claude.chat.as_mut()).unwrap();
         back_chat.state = crate::chat::State::Idle;
         ed.handle_event(crate::event::Event::Resize);
         settle_answering(&mut ed, |ed| ed.should_quit || ed.restart.is_none());
@@ -3640,14 +3655,14 @@ mod tests {
         }
         let bin = fake_tarae(&dir, "tarae 9.9.9");
         let mut ed = Editor::new(Config::default());
-        (ed.session.root, ed.session.name) = (main.clone(), "main".into());
+        (ed.workspace.root, ed.workspace.name) = (main.clone(), "main".into());
         ed.config.restart_binary = bin.display().to_string();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-        let id = ed.session_open(&back).unwrap();
+        let id = ed.workspace_open(&back).unwrap();
         crate::chat::open(&mut ed);
-        ed.session.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
-        assert!(ed.session_switch(0));
+        ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
+        assert!(ed.workspace_switch(WorkspaceId::HOME));
         let status = |ed: &mut Editor| {
             let mut bytes = Vec::new();
             crate::term::render(ed, &mut bytes, 160, 30).unwrap();
@@ -3683,7 +3698,8 @@ mod tests {
         assert!(toasts(&ed).contains("restart canceled"), "{}", toasts(&ed));
         assert!(!status(&mut ed).contains("restart"));
         // (back's turn ends: nothing restarts)
-        let back_chat = ed.sessions.iter_mut().find(|l| l.id == id).and_then(|l| l.chat.as_mut()).unwrap();
+        let back_chat =
+            ed.workspaces.iter_mut().find(|l| l.id == id).and_then(|l| l.claude.chat.as_mut()).unwrap();
         back_chat.state = crate::chat::State::Idle;
         ed.handle_event(crate::event::Event::Resize);
         assert!(ed.restart.is_none() && !ed.should_quit);
@@ -3712,7 +3728,7 @@ mod tests {
             target: None,
             kept: None,
             anyway,
-            asked: 0,
+            asked: WorkspaceId::HOME,
             build_run: None,
         });
         let line = status(&mut ed);

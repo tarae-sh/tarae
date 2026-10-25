@@ -1642,7 +1642,7 @@ fn two_sessions_rules_stay_apart() {
     );
     drop(c);
     // A session that ended takes its answers with it
-    assert!(f.proxy.send(ToProxy::SessionEnded { session: 7 }));
+    assert!(f.proxy.send(ToProxy::WorkspaceEnded { session: 7 }));
     let (mut c, _) = connection(&f.proxy, 7, 2, rules(&[]));
     c.write_all(connect_head("ask.test:443").as_bytes()).unwrap();
     let asked = f.asks.recv_timeout(WAIT).expect("asked again once its session ended");

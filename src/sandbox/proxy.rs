@@ -106,7 +106,7 @@ pub enum ToProxy {
     /// a refusal no longer holds; a run's rules that name it let it through, the others ask.
     Lifted { session: u64, host: String, port: u16 },
     /// The session ended: its answers go.
-    SessionEnded { session: u64 },
+    WorkspaceEnded { session: u64 },
 }
 
 /// What goes out, to the main loop.
@@ -400,7 +400,7 @@ impl State {
                 In::Msg(ToProxy::Lifted { session, host, port }) => {
                     self.latest.remove(&Key { session, host, port });
                 }
-                In::Msg(ToProxy::SessionEnded { session }) => {
+                In::Msg(ToProxy::WorkspaceEnded { session }) => {
                     self.latest.retain(|k, _| k.session != session);
                     self.run_allowed.retain(|(_, k)| k.session != session);
                     self.waiting.retain(|k, _| k.session != session);
@@ -1097,7 +1097,7 @@ fn git_basic(count: usize) -> [(String, String); 3] {
 /// (`sandbox::profile_path` — a path through a link is its real one), hashed. The one way both sides name it: the
 /// policy's (`Policy.session`, on its worker) and the main loop's (`Session::proxy_id`, once per root). It looks at
 /// the disk: never on the key path.
-pub fn session_of(root: &std::path::Path) -> u64 {
+pub fn workspace_of(root: &std::path::Path) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     super::profile_path(root).hash(&mut h);

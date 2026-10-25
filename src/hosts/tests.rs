@@ -6,16 +6,16 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use super::*;
-use crate::event::SessionId;
+use crate::event::WorkspaceId;
 use crate::key::{Code, Key};
-use crate::sandbox::proxy::session_of;
+use crate::sandbox::proxy::workspace_of;
 use crate::sandbox::{Env, Guard, Policy};
 
 const HOST: &str = "static.example.invalid";
 
 /// An editor in `front` with a session for `back` behind it — folders in the test's own temp folder — each with
 /// a sandboxed run of Claude's under way: their policies' run ids.
-fn two(name: &str) -> (Editor, PathBuf, SessionId, u64, u64) {
+fn two(name: &str) -> (Editor, PathBuf, WorkspaceId, u64, u64) {
     let dir = crate::scratch::Scratch::new(&format!("hosts-{name}")).into_path();
     for p in ["front", "back"] {
         std::fs::create_dir_all(dir.join(p)).unwrap();
@@ -25,19 +25,19 @@ fn two(name: &str) -> (Editor, PathBuf, SessionId, u64, u64) {
     // (as their runs' policies: the network open with a host list — the closed network's cards are
     // `the_closed_network_asks_each_host_for_a_session_at_most`'s)
     ed.config.llm.sandbox_network = true;
-    (ed.session.root, ed.session.name) = (dir.join("front"), "front".into());
+    (ed.workspace.root, ed.workspace.name) = (dir.join("front"), "front".into());
     ed.allow_path = Some(dir.join("state/sandbox.json"));
-    let back = ed.session_open(&dir.join("back")).unwrap();
-    assert!(ed.session_switch(0));
-    let front_run = running(&mut ed.session, "cargo build");
-    let i = ed.sessions.iter().position(|s| s.id == back).unwrap();
-    let back_run = running(&mut ed.sessions[i], "npm install");
+    let back = ed.workspace_open(&dir.join("back")).unwrap();
+    assert!(ed.workspace_switch(WorkspaceId::HOME));
+    let front_run = running(&mut ed.workspace, "cargo build");
+    let i = ed.workspaces.iter().position(|s| s.id == back).unwrap();
+    let back_run = running(&mut ed.workspaces[i], "npm install");
     (ed, dir, back, front_run, back_run)
 }
 
 /// A run of Claude's under way in `s` (no process), sandboxed with the network open and a list of hosts: its
 /// policy's run id.
-fn running(s: &mut crate::session::Session, cmd: &str) -> u64 {
+fn running(s: &mut crate::workspace::Workspace, cmd: &str) -> u64 {
     let env = Env { root: s.root.clone(), network: true, hosts: Some(Vec::new()), ..Default::default() };
     let p = Policy::for_project(&env);
     let id = p.run_id;
@@ -50,7 +50,7 @@ fn running(s: &mut crate::session::Session, cmd: &str) -> u64 {
 
 /// The proxy asking, for run `run` of the project at `root`.
 fn ask(root: &Path, run: u64, host: &str) -> FromProxy {
-    FromProxy::Ask { session: session_of(root), run, host: host.into(), port: 443, process: "curl".into() }
+    FromProxy::Ask { session: workspace_of(root), run, host: host.into(), port: 443, process: "curl".into() }
 }
 
 fn hosts_cards(o: &[Offer]) -> Vec<&Ask> {
@@ -100,14 +100,18 @@ fn a_host_refused_on_its_card_isnt_asked_again_by_also() {
     asked(&mut ed, ask(&front, run, HOST));
     settled(&mut ed);
     key(&mut ed, 'n');
-    let refused = &ed.session.chat.as_ref().unwrap().also_refused;
+    let refused = &ed.workspace.claude.chat.as_ref().unwrap().also_refused;
     assert_eq!(refused, &[crate::allow::Grant::Host(HOST.into(), 443)]);
     // (the user's own command: their no, not Claude's)
-    ed.session.task_run.as_mut().unwrap().tell = Some(Default::default());
+    ed.workspace.task_run.as_mut().unwrap().tell = Some(Default::default());
     asked(&mut ed, ask(&front, run, "own.example.invalid"));
     settled(&mut ed);
     key(&mut ed, 'n');
-    assert_eq!(ed.session.chat.as_ref().unwrap().also_refused.len(), 1, "the user's own: not Claude's no");
+    assert_eq!(
+        ed.workspace.claude.chat.as_ref().unwrap().also_refused.len(),
+        1,
+        "the user's own: not Claude's no"
+    );
 }
 
 /// Piece C: with `llm.sandbox-network` off every host is asked, `y` this run · `a` this chat · `s` this session ·
@@ -197,10 +201,10 @@ fn a_chat_answer_is_taken_back_when_the_conversation_ends() {
     // (the new conversation's claude a stand-in that reads nothing)
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    ed.session.chat = Some(crate::chat::Chat::new());
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     let front = dir.join("front");
-    let session = session_of(&front);
+    let session = workspace_of(&front);
     for h in [HOST, "kept.example.invalid"] {
         asked(&mut ed, ask(&front, run, h));
         let o = ed.offers.iter().find(|o| o.host().is_some_and(|a| a.host == h)).unwrap();
@@ -209,9 +213,9 @@ fn a_chat_answer_is_taken_back_when_the_conversation_ends() {
     }
     let told: Vec<_> = sent().iter().filter_map(answered).map(|t| (t.2, t.4)).collect();
     assert_eq!(told, [(HOST.to_string(), Scope::Chat), ("kept.example.invalid".to_string(), Scope::Chat)]);
-    let chat = &ed.session.chat.as_ref().unwrap().allowed.hosts;
+    let chat = &ed.workspace.claude.chat.as_ref().unwrap().allowed.hosts;
     assert_eq!(chat, &[(HOST.to_string(), 443), ("kept.example.invalid".to_string(), 443)]);
-    assert!(ed.session.hosts.is_empty(), "not the session's");
+    assert!(ed.workspace.claude.hosts.is_empty(), "not the session's");
     // `s` on one of them too: the conversation's end leaves that one
     granted(&mut ed, "kept.example.invalid", 443, crate::allow::Scope::Session);
     let _ = sent();
@@ -224,7 +228,10 @@ fn a_chat_answer_is_taken_back_when_the_conversation_ends() {
         })
         .collect();
     assert_eq!(taken, [HOST], "the chat's hosts but the session's");
-    assert!(ed.session.chat.as_ref().unwrap().allowed.hosts.is_empty(), "the new conversation has none");
+    assert!(
+        ed.workspace.claude.chat.as_ref().unwrap().allowed.hosts.is_empty(),
+        "the new conversation has none"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -244,9 +251,9 @@ fn one_card_per_host_in_its_runs_session() {
     assert!(ed.offers[0].question.starts_with("on port 443, through tarae's proxy\n"));
     asked(&mut ed, ask(&dir.join("back"), back_run, HOST));
     assert_eq!(hosts_cards(&ed.offers).len(), 1, "the session behind's isn't in front");
-    let parked = &ed.sessions.iter().find(|s| s.id == back).unwrap().parked;
+    let parked = &ed.workspaces.iter().find(|s| s.id == back).unwrap().parked;
     let parked = hosts_cards(parked);
-    assert_eq!((parked.len(), parked[0].session), (1, session_of(&dir.join("back"))));
+    assert_eq!((parked.len(), parked[0].session), (1, workspace_of(&dir.join("back"))));
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -256,13 +263,13 @@ fn one_card_per_host_in_its_runs_session() {
 #[test]
 fn the_card_moves_to_the_run_asking_now() {
     let (mut ed, dir, ..) = two("moves");
-    let first = ed.session.task_run.as_ref().map(|r| match &r.guard {
+    let first = ed.workspace.task_run.as_ref().map(|r| match &r.guard {
         Some(Guard::In(p)) => p.run_id,
         _ => 0,
     });
     asked(&mut ed, ask(&dir.join("front"), first.unwrap(), HOST));
     let rev = ed.offers[0].rev;
-    let next = running(&mut ed.session, "cargo test");
+    let next = running(&mut ed.workspace, "cargo test");
     asked(&mut ed, ask(&dir.join("front"), next, HOST));
     let up = hosts_cards(&ed.offers);
     assert_eq!(
@@ -291,8 +298,8 @@ fn a_process_left_by_a_run_thats_over_gets_a_card() {
     assert_eq!((up.len(), up[0].run, up[0].left), (1, 999_999, true));
     assert!(ed.offers[0].question.contains("asked by curl, left running by a run that's over"));
     // (a run whose record is kept after its end is over too)
-    let ended = running(&mut ed.session, "cargo build");
-    ed.session.task_run.as_mut().unwrap().state = crate::task::State::Passed;
+    let ended = running(&mut ed.workspace, "cargo build");
+    ed.workspace.task_run.as_mut().unwrap().state = crate::task::State::Passed;
     asked(&mut ed, ask(&dir.join("front"), ended, "other.example.invalid"));
     assert!(
         hosts_cards(&ed.offers).iter().any(|a| a.run == ended && a.left),
@@ -312,7 +319,7 @@ fn a_hosts_always_in_a_repository_is_every_checkouts_and_says_so() {
     let store = s.path().join("state/sandbox.json");
     let mut ed = Editor::new(crate::config::Config::default());
     ed.config.llm.sandbox_network = true;
-    (ed.session.root, ed.allow_path) = (main.clone(), Some(store.clone()));
+    (ed.workspace.root, ed.allow_path) = (main.clone(), Some(store.clone()));
     let until = |ed: &mut Editor, what: &str, done: &dyn Fn(&Editor) -> bool| {
         let end = Instant::now() + crate::test_results::PATIENCE;
         while !done(ed) {
@@ -323,9 +330,9 @@ fn a_hosts_always_in_a_repository_is_every_checkouts_and_says_so() {
         }
     };
     ed.caps_sync();
-    until(&mut ed, "the caps", &|ed| ed.session.caps().is_some_and(|c| c.here.repository.is_some()));
+    until(&mut ed, "the caps", &|ed| ed.workspace.claude.caps().is_some_and(|c| c.here.repository.is_some()));
     let a = Ask {
-        session: ed.session.proxy_id(),
+        session: ed.workspace.proxy_id(),
         run: 1,
         host: HOST.into(),
         port: 443,
@@ -348,7 +355,7 @@ fn a_hosts_always_in_a_repository_is_every_checkouts_and_says_so() {
         toast,
         format!("Commands may reach {HOST}:443 for every checkout of main — :granted lists it")
     );
-    let tell = ed.session.checkpoints.tell.join("\n");
+    let tell = ed.workspace.claude.checkpoints.tell.join("\n");
     assert!(tell.contains("for every checkout of main, until they take it back"), "{tell}");
     until(&mut ed, "kept", &|_| !crate::allow::Store::read(Some(&store)).get(&wt).hosts.is_empty());
 }
@@ -359,7 +366,7 @@ fn a_hosts_always_in_a_repository_is_every_checkouts_and_says_so() {
 #[test]
 fn each_answer_reaches_as_far_as_its_key() {
     let (mut ed, dir, _, run, _) = two("keys");
-    let session = session_of(&dir.join("front"));
+    let session = workspace_of(&dir.join("front"));
     let _ = sent();
     let keys = [
         ('y', Scope::Run),
@@ -375,11 +382,11 @@ fn each_answer_reaches_as_far_as_its_key() {
         assert!(hosts_cards(&ed.offers).is_empty(), "{k}: answered");
         let told: Vec<_> = sent().iter().filter_map(answered).collect();
         assert_eq!(told, [(session, run, HOST.to_string(), 443, scope)], "{k}");
-        let listed = ed.session.hosts.contains(&(HOST.to_string(), 443));
+        let listed = ed.workspace.claude.hosts.contains(&(HOST.to_string(), 443));
         // (`s` lists it; `A` keeps it for the project instead, the `s` before still listed; `n` takes it off)
         assert_eq!(listed, matches!(scope, Scope::Session | Scope::Project), "{k}: the session's list");
     }
-    let tell = ed.session.checkpoints.tell.join("\n");
+    let tell = ed.workspace.claude.checkpoints.tell.join("\n");
     assert!(tell.contains(&format!("reach {HOST}:443 — for this session")), "{tell}");
     assert!(tell.contains(&format!("reach {HOST}:443 — in this project")), "{tell}");
     assert!(tell.contains(&format!("refused your commands to reach {HOST}:443 for this session")), "{tell}");
@@ -387,7 +394,7 @@ fn each_answer_reaches_as_far_as_its_key() {
     let path = ed.allow_path.clone().unwrap();
     let end = Instant::now() + crate::test_results::PATIENCE;
     let kept = loop {
-        let k = crate::allow::Store::read(Some(&path)).get(&ed.session.root).hosts;
+        let k = crate::allow::Store::read(Some(&path)).get(&ed.workspace.root).hosts;
         if !k.is_empty() || Instant::now() > end {
             break k;
         }
@@ -405,8 +412,8 @@ fn each_answer_reaches_as_far_as_its_key() {
 #[test]
 fn a_hosts_answer_records_the_key_that_gave_it() {
     let (mut ed, dir, _, run, _) = two("keys-recorded");
-    ed.session.chat = Some(crate::chat::Chat::new());
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     let front = dir.join("front");
     for (h, k) in
         [("chat.example.invalid", 'a'), ("session.example.invalid", 's'), ("project.example.invalid", 'A')]
@@ -415,16 +422,16 @@ fn a_hosts_answer_records_the_key_that_gave_it() {
         settled(&mut ed);
         key(&mut ed, k);
     }
-    let chat = &ed.session.chat.as_ref().unwrap().allowed.given;
+    let chat = &ed.workspace.claude.chat.as_ref().unwrap().allowed.given;
     assert_eq!(chat.get(&crate::allow::Grant::Host("chat.example.invalid".into(), 443)), Some(&'a'));
-    let session = |h: &str| ed.session.hosts_given.get(&(h.to_string(), 443)).copied();
+    let session = |h: &str| ed.workspace.claude.hosts_given.get(&(h.to_string(), 443)).copied();
     assert_eq!(session("session.example.invalid"), Some('s'));
     // The project's, read back from `sandbox.json`
     let path = ed.allow_path.clone().unwrap();
     let end = Instant::now() + crate::test_results::PATIENCE;
     let project = crate::allow::Grant::Host("project.example.invalid".into(), 443);
     let kept = loop {
-        let k = crate::allow::Store::read(Some(&path)).get(&ed.session.root).given.get(&project).copied();
+        let k = crate::allow::Store::read(Some(&path)).get(&ed.workspace.root).given.get(&project).copied();
         if k.is_some() || Instant::now() > end {
             break k;
         }
@@ -438,8 +445,11 @@ fn a_hosts_answer_records_the_key_that_gave_it() {
     let o = ed.offers.iter().find(|o| o.host().is_some_and(|a| a.host == "closed.example.invalid")).unwrap();
     let (id, a) = (o.id, Ask { open: false, ..o.host().unwrap().clone() });
     answer(&mut ed, id, a, Scope::Project);
-    assert!(ed.session.hosts.contains(&("closed.example.invalid".to_string(), 443)), "the session's");
-    assert_eq!(ed.session.hosts_given.get(&("closed.example.invalid".to_string(), 443)), Some(&'A'));
+    assert!(
+        ed.workspace.claude.hosts.contains(&("closed.example.invalid".to_string(), 443)),
+        "the session's"
+    );
+    assert_eq!(ed.workspace.claude.hosts_given.get(&("closed.example.invalid".to_string(), 443)), Some(&'A'));
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -455,19 +465,19 @@ fn a_peer_sessions_key_never_answers_it() {
         key(&mut ed, k);
     }
     assert!(sent().iter().all(|m| answered(m).is_none()), "the front's keys answered nothing");
-    assert!(ed.session_switch(back));
+    assert!(ed.workspace_switch(back));
     settled(&mut ed);
     key(&mut ed, 'y');
     let told: Vec<_> = sent().iter().filter_map(answered).collect();
-    assert_eq!(told, [(session_of(&dir.join("back")), back_run, HOST.to_string(), 443, Scope::Run)]);
+    assert_eq!(told, [(workspace_of(&dir.join("back")), back_run, HOST.to_string(), 443, Scope::Run)]);
     // Its session ended: the proxy drops that session's answers
-    assert!(ed.session_switch(0));
+    assert!(ed.workspace_switch(WorkspaceId::HOME));
     let _ = sent();
-    ed.session_close(&dir.join("back")).expect("closed");
-    let ended = sent()
-        .into_iter()
-        .any(|m| matches!(m, ToProxy::SessionEnded { session } if session == session_of(&dir.join("back"))));
-    assert!(ended, "SessionEnded sent");
+    ed.workspace_close(&dir.join("back")).expect("closed");
+    let ended = sent().into_iter().any(
+        |m| matches!(m, ToProxy::WorkspaceEnded { session } if session == workspace_of(&dir.join("back"))),
+    );
+    assert!(ended, "WorkspaceEnded sent");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -478,7 +488,7 @@ fn a_peer_sessions_key_never_answers_it() {
 #[test]
 fn a_grant_from_a_refused_run_reaches_as_far_as_its_key() {
     let (mut ed, dir, ..) = two("grant");
-    let session = session_of(&dir.join("front"));
+    let session = workspace_of(&dir.join("front"));
     let _ = sent();
     granted(&mut ed, HOST, 443, crate::allow::Scope::Once);
     let lifted = sent();
@@ -490,12 +500,12 @@ fn a_grant_from_a_refused_run_reaches_as_far_as_its_key() {
     granted(&mut ed, HOST, 443, crate::allow::Scope::Always);
     let told: Vec<_> = sent().iter().filter_map(answered).map(|t| (t.0, t.4)).collect();
     assert_eq!(told, [(session, Scope::Session), (session, Scope::Session)]);
-    assert_eq!(ed.session.hosts, [(HOST.to_string(), 443)]);
+    assert_eq!(ed.workspace.claude.hosts, [(HOST.to_string(), 443)]);
     std::fs::remove_dir_all(&dir).ok();
 }
 
 /// A project opened through a link (its root as given, not resolved): the main loop names its session as the
-/// proxy does — by the real path a run's policy holds (`proxy::session_of`, one way for both) — so a take-back
+/// proxy does — by the real path a run's policy holds (`proxy::workspace_of`, one way for both) — so a take-back
 /// reaches the session the runs' connections are of, a card for a process left running lands in that session,
 /// and an `A` is kept under the path the next run reads it by.
 #[test]
@@ -503,12 +513,12 @@ fn a_project_opened_through_a_link_is_one_session_to_both() {
     let (mut ed, dir, ..) = two("link");
     let link = dir.join("link");
     std::os::unix::fs::symlink(dir.join("front"), &link).unwrap();
-    ed.session.root = link.clone();
+    ed.workspace.root = link.clone();
     // (the policy's root as `env_in` makes it: the real path)
     let real = crate::sandbox::profile_path(&link);
     assert_ne!(real, link, "a root through a link");
     let theirs = Policy::for_project(&Env { root: real.clone(), ..Default::default() }).session;
-    assert_eq!(ed.session.proxy_id(), theirs, "one session to both");
+    assert_eq!(ed.workspace.proxy_id(), theirs, "one session to both");
     let _ = sent();
     ed.sandbox_disallow(&format!("host {HOST}:443")).unwrap();
     let taken = sent().into_iter().any(|m| matches!(m, ToProxy::Taken { session, .. } if session == theirs));
@@ -626,7 +636,7 @@ fn a_cut_card_with_five_answers_keeps_its_width_once_read() {
     let mut ed = Editor::new(crate::config::Config::default());
     ed.offer_popups = true;
     let a = Ask {
-        session: ed.session.proxy_id(),
+        session: ed.workspace.proxy_id(),
         run: 1,
         host: HOST.into(),
         port: 443,
@@ -673,8 +683,8 @@ fn a_cut_card_with_five_answers_keeps_its_width_once_read() {
 #[test]
 fn a_card_too_narrow_for_its_lasting_answers_says_the_width_it_needs() {
     let (mut ed, dir, _, run, _) = two("narrow");
-    ed.session.chat = Some(crate::chat::Chat::new());
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     asked(&mut ed, ask(&dir.join("front"), run, HOST));
     let status = |ed: &mut Editor, w: u16| {
         let mut bytes = Vec::new();
@@ -747,12 +757,12 @@ fn a_card_too_narrow_for_its_lasting_answers_says_the_width_it_needs() {
 #[test]
 fn the_card_stays_when_its_run_ends_and_y_is_for_the_next_run() {
     let (mut ed, dir, _, run, _) = two("ends");
-    ed.session.chat = Some(crate::chat::Chat::new());
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     asked(&mut ed, ask(&dir.join("front"), run, HOST));
-    let other = running(&mut ed.session, "cargo test");
+    let other = running(&mut ed.workspace, "cargo test");
     asked(&mut ed, ask(&dir.join("front"), other, "other.example.invalid"));
     assert_eq!(hosts_cards(&ed.offers).len(), 2);
     let _ = sent();
@@ -783,16 +793,26 @@ fn the_card_stays_when_its_run_ends_and_y_is_for_the_next_run() {
     assert!(s.contains("│ 1 more waits — 1 here ") && !s.contains("lists them"), "{s}");
     key(&mut ed, 'y');
     assert_eq!(hosts_cards(&ed.offers).iter().map(|a| a.run).collect::<Vec<_>>(), [other]);
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert_eq!(c.hosts_next, [(HOST.to_string(), 443)]);
     assert!(sent().iter().all(|m| answered(m).is_none()), "no answer for a run that's over");
-    assert!(ed.session.checkpoints.tell.iter().any(|t| t.contains("next command reach") && t.contains(HOST)));
-    assert!(ed.session.hosts.is_empty() && c.allowed.hosts.is_empty(), "nothing wider than the next run");
+    assert!(
+        ed.workspace
+            .claude
+            .checkpoints
+            .tell
+            .iter()
+            .any(|t| t.contains("next command reach") && t.contains(HOST))
+    );
+    assert!(
+        ed.workspace.claude.hosts.is_empty() && c.allowed.hosts.is_empty(),
+        "nothing wider than the next run"
+    );
     // Another ended card, then a new run asks for that host: the card is the new run's again — whole
-    let third = running(&mut ed.session, "npm install");
+    let third = running(&mut ed.workspace, "npm install");
     asked(&mut ed, ask(&dir.join("front"), third, "third.example.invalid"));
     run_ended(&mut ed, Some(third));
-    let fourth = running(&mut ed.session, "npm install");
+    let fourth = running(&mut ed.workspace, "npm install");
     asked(&mut ed, ask(&dir.join("front"), fourth, "third.example.invalid"));
     let o = ed.offers.iter().find(|o| o.host().is_some_and(|a| a.host == "third.example.invalid")).unwrap();
     let a = o.host().unwrap().clone();
@@ -803,10 +823,10 @@ fn the_card_stays_when_its_run_ends_and_y_is_for_the_next_run() {
     run_ended(&mut ed, Some(fourth));
     crate::chat::reset(&mut ed);
     assert!(hosts_cards(&ed.offers).iter().all(|a| !a.ended), "{:?}", hosts_cards(&ed.offers));
-    assert!(ed.session.chat.as_ref().unwrap().hosts_next.is_empty());
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().hosts_next.is_empty());
     // The user's own run: its card goes with the run
-    let mine = running(&mut ed.session, "curl x");
-    ed.session.task_run.as_mut().unwrap().tell = Some("the user ran it again".into());
+    let mine = running(&mut ed.workspace, "curl x");
+    ed.workspace.task_run.as_mut().unwrap().tell = Some("the user ran it again".into());
     asked(&mut ed, ask(&dir.join("front"), mine, "mine.example.invalid"));
     assert!(hosts_cards(&ed.offers).iter().any(|a| a.host == "mine.example.invalid" && a.users));
     run_ended(&mut ed, Some(mine));

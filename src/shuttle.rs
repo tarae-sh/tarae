@@ -467,8 +467,8 @@ pub fn asking_sync(ed: &mut Editor) {
         return;
     }
     let up = |id: u64| {
-        std::iter::once(&ed.session)
-            .chain(&ed.sessions)
+        std::iter::once(&ed.workspace)
+            .chain(&ed.workspaces)
             .flat_map(|l| &l.parked)
             .chain(&ed.offers)
             .any(|o| o.id == id)

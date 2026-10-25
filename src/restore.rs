@@ -79,7 +79,7 @@ impl State {
             .unwrap_or_default()
     }
 
-    /// The changed lines a person looked at in this folder's reviews (`Session.looked` — `risk.rs`), kept as
+    /// The changed lines a person looked at in this folder's reviews (`Workspace.looked` — `risk.rs`), kept as
     /// 32 hex digits each; anything else (an earlier build's FNV numbers) counts for nothing — its changes ask
     /// for a look again.
     pub fn looked(&self, cwd: &Path) -> std::collections::HashSet<crate::risk::Key> {
@@ -102,7 +102,7 @@ impl State {
         }
     }
 
-    /// The files marked viewed in this folder's reviews (`Session.viewed`, `codereview::viewed_json`) — kept
+    /// The files marked viewed in this folder's reviews (`Workspace.viewed`, `codereview::viewed_json`) — kept
     /// past a quit and a session ended and opened again (frictions29 #73), each checked against its diff.
     pub fn viewed(&self, cwd: &Path) -> Vec<(std::path::PathBuf, crate::codereview::Viewed)> {
         let files = self.root.get("viewed").and_then(|n| n.get(cwd.to_str()?));
@@ -121,7 +121,7 @@ impl State {
         }
     }
 
-    /// The added lines looked at in this folder's reviews (`Session.looked_lines` — `risk::LookedLine`): by
+    /// The added lines looked at in this folder's reviews (`Workspace.looked_lines` — `risk::LookedLine`): by
     /// file, each `[line then, text, how many times the file had it]`.
     pub fn looked_lines(
         &self,
@@ -134,7 +134,7 @@ impl State {
         self.by_file("looked_lines", cwd, line)
     }
 
-    /// The high-risk changes looked at in this folder's reviews (`Session.looked_orders`): by file, each its
+    /// The high-risk changes looked at in this folder's reviews (`Workspace.looked_orders`): by file, each its
     /// added lines' keys in order (hex) and the lines just above and below it.
     pub fn looked_orders(
         &self,
@@ -247,14 +247,15 @@ impl Editor {
     /// The files last open in this folder, if any of them are still there — the start screen offers them
     /// (`r`). Read once at startup (a stat per file; never while drawing).
     pub fn find_restorable(&mut self) {
-        let found = self.restore.files(&self.session.root);
-        self.session.restorable = found.map(|(files, _)| files.into_iter().filter(|f| f.is_file()).collect());
-        self.session.restorable.take_if(|f| f.is_empty());
+        let found = self.restore.files(&self.workspace.root);
+        self.workspace.restorable =
+            found.map(|(files, _)| files.into_iter().filter(|f| f.is_file()).collect());
+        self.workspace.restorable.take_if(|f| f.is_empty());
     }
 
     /// The files last open in this folder, opened again (existing ones only). Number of files opened.
     pub fn restore_files(&mut self) -> usize {
-        let Some((files, current)) = self.restore.files(&self.session.root) else { return 0 };
+        let Some((files, current)) = self.restore.files(&self.workspace.root) else { return 0 };
         let mut opened = 0;
         // Saved `current` indexes the saved list — missing files shift it. Take the file itself, or the
         // nearest opened one before it (else the first).
@@ -301,7 +302,7 @@ impl Editor {
         let notes: Vec<(PathBuf, Vec<Value>)> = self
             .sessions_in_order()
             .iter()
-            .map(|l| (l.root.clone(), crate::notes::to_json(&l.notes, &self.docs)))
+            .map(|l| (l.root.clone(), crate::notes::to_json(&l.claude.notes, &self.docs)))
             .collect();
         for (cwd, notes) in notes {
             self.restore.set_notes(&cwd, notes);
@@ -334,7 +335,7 @@ impl Editor {
             self.restore.set_looked_lines(&cwd, &lines, &orders);
         }
         let opened = self.restore.opened;
-        let folder = self.session.root.to_str().map(str::to_string);
+        let folder = self.workspace.root.to_str().map(str::to_string);
         let root = &mut self.restore.root;
         // Sequence: each entry is [cursor, top line, seq] — on overflow, drop the smallest (oldest) seq first
         let mut seq = root.get("seq").and_then(Value::as_u64).unwrap_or(0);
@@ -420,7 +421,7 @@ mod tests {
         // (the files are the editor's root's — here the test's own folder)
         let cwd = std::fs::canonicalize(&dir).unwrap();
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.root = cwd.clone();
+        ed.workspace.root = cwd.clone();
         ed.restore = State::from_json(json!({
             "positions": { c.to_str().unwrap(): [1, 0] }, // on the combining mark
             "folders": { cwd.to_str().unwrap(): {
@@ -459,7 +460,7 @@ mod tests {
             std::fs::write(dir.join(f), "x\n").unwrap();
         }
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         ed.open(&dir.join("kept.txt")).unwrap();
         ed.open_preview(&dir.join("looked.txt")).unwrap();
         assert!(ed.doc().preview);
@@ -470,7 +471,7 @@ mod tests {
 
     /// Wave 3, gap 1: the notes of a session behind (a review's drafts too) were saved only for the front's
     /// folder — gone on every quit and restart. Each session's are kept under its own checkout, and come back
-    /// in its session when it does (`sessions_back` → `session_add`), none in another's.
+    /// in its session when it does (`workspaces_back` → `workspace_add`), none in another's.
     #[test]
     fn notes_of_a_session_behind_outlive_a_quit() {
         use crate::notes::{By, Note};
@@ -483,13 +484,13 @@ mod tests {
         let dir = std::fs::canonicalize(&dir).unwrap();
         let (front, back) = (dir.join("front"), dir.join("back"));
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.root = front.clone();
+        ed.workspace.root = front.clone();
         crate::notes::add(&mut ed, &front.join("a.txt"), 0..1, By::Author, "in front");
-        let id = ed.session_add(back.clone());
-        ed.with_session(id, |ed| {
+        let id = ed.workspace_add(back.clone());
+        ed.with_workspace(id, |ed| {
             crate::notes::add(ed, &back.join("a.txt"), 1..2, By::Author, "behind");
             // (a review's draft, not sent yet)
-            let n = ed.session.notes.list.last_mut().unwrap();
+            let n = ed.workspace.claude.notes.list.last_mut().unwrap();
             n.thread.push(crate::notes::Entry { by: By::You, text: "my draft".into(), draft: true });
         });
         ed.restore_record();
@@ -497,13 +498,13 @@ mod tests {
         drop(ed);
         // The next start: the front's at once (`main.rs`), the one behind as its session comes back
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.root = front.clone();
+        ed.workspace.root = front.clone();
         ed.restore = kept;
-        ed.session_kept_back(0);
-        let id = ed.session_add(back.clone());
+        ed.workspace_kept_back(crate::event::WorkspaceId::HOME);
+        let id = ed.workspace_add(back.clone());
         let gists = |l: &[Note]| l.iter().map(|n| n.gist().to_string()).collect::<Vec<_>>();
-        assert_eq!(gists(&ed.session.notes.list), ["in front"]);
-        let behind = &ed.sessions.iter().find(|l| l.id == id).unwrap().notes.list;
+        assert_eq!(gists(&ed.workspace.claude.notes.list), ["in front"]);
+        let behind = &ed.workspaces.iter().find(|l| l.id == id).unwrap().claude.notes.list;
         assert_eq!(gists(behind), ["behind"], "its own, in its own session");
         assert_eq!((behind[0].lines.clone(), behind[0].path.clone()), (1..2, back.join("a.txt")));
         assert!(behind[0].thread.get(1).is_some_and(|e| e.draft && e.text == "my draft"), "the draft too");

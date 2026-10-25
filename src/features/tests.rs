@@ -6,7 +6,7 @@ use crate::test_results::settle_until;
 /// An editor not counting (the default), its project the temp folder — never this repository (its git).
 fn editor() -> Editor {
     let mut ed = Editor::new(Config::default());
-    ed.session.root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    ed.workspace.root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
     ed
 }
 

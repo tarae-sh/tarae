@@ -96,14 +96,17 @@ fn summary(s: &super::UiState) -> Summary {
             })
             .collect(),
         sessions: s
-            .sessions
+            .workspaces
             .iter()
-            .map(|x| (x.id.clone(), x.name.clone(), x.doing.clone(), x.reviewer))
+            .flat_map(|w| {
+                w.sessions.iter().map(|x| (x.id.clone(), w.name.clone(), x.doing.clone(), w.reviewer))
+            })
             .collect(),
+        // (said by its workspace's session, as before the two were apart)
         reviewers: s
-            .sessions
+            .workspaces
             .iter()
-            .filter_map(|x| Some((x.id.clone(), x.name.clone(), x.reviewer_run.clone()?)))
+            .filter_map(|w| Some((w.sessions.first()?.id.clone(), w.name.clone(), w.reviewer_run.clone()?)))
             .collect(),
         toasts: s.toasts.iter().map(|t| (t.id.clone(), t.kind, t.text.clone())).collect(),
         card_whole: s
@@ -222,9 +225,9 @@ impl Editor {
         if self.cards_same() {
             return;
         }
-        let now: Vec<(u64, String, crate::event::SessionId)> =
+        let now: Vec<(u64, String, crate::event::WorkspaceId)> =
             self.cards_all().map(|(id, t, l)| (id, t.to_string(), l)).collect();
-        let went: Vec<(u64, String, crate::event::SessionId)> =
+        let went: Vec<(u64, String, crate::event::WorkspaceId)> =
             self.ui_cards_seen.iter().filter(|s| !now.iter().any(|n| n.0 == s.0)).cloned().collect();
         self.ui_cards_seen = now;
         for (id, title, session) in went {
@@ -238,7 +241,7 @@ impl Editor {
                 title,
                 how,
                 at: std::time::Instant::now(),
-                session: super::session_id(session),
+                session: super::session_id(crate::session::born_with(session)),
             });
             if self.ui_gone.len() > GONE_KEPT {
                 self.ui_gone.pop_front();
@@ -250,10 +253,10 @@ impl Editor {
     }
 
     /// Every card, up or parked: (id, title, its session).
-    fn cards_all(&self) -> impl Iterator<Item = (u64, &str, crate::event::SessionId)> {
-        let front = self.session.id;
-        std::iter::once(&self.session)
-            .chain(&self.sessions)
+    fn cards_all(&self) -> impl Iterator<Item = (u64, &str, crate::event::WorkspaceId)> {
+        let front = self.workspace.id;
+        std::iter::once(&self.workspace)
+            .chain(&self.workspaces)
             .flat_map(|l| l.parked.iter().map(move |o| (o, l.id)))
             .chain(self.offers.iter().map(move |o| (o, front)))
             .map(|(o, l)| (o.id, o.title.as_str(), l))
@@ -279,12 +282,12 @@ impl Editor {
     }
 }
 
-/// A turn of session `ed.session`'s Claude began or ended — for watchers.
+/// A turn of session `ed.workspace`'s Claude began or ended — for watchers.
 pub fn turn(ed: &mut Editor, what: &str, calls: usize, took: Option<std::time::Duration>) {
     if !ed.ui_watch.watching() {
         return;
     }
-    let (id, name) = (super::session_id(ed.session.id), ed.session.label().to_string());
+    let (id, name) = (super::session_id(ed.workspace.claude.id), ed.workspace.label().to_string());
     let said = match (what, took) {
         ("ended", Some(t)) => {
             format!("{id} {name}: Claude's turn ended — {calls} calls, {}", crate::term::run_duration(t))
@@ -296,7 +299,7 @@ pub fn turn(ed: &mut Editor, what: &str, calls: usize, took: Option<std::time::D
                        "said": said }));
 }
 
-/// Session `ed.session`'s usage changed — a turn's result came (`turn`), its cache went cold (`cold`), a ping
+/// Session `ed.workspace`'s usage changed — a turn's result came (`turn`), its cache went cold (`cold`), a ping
 /// kept it warm (`kept-warm`, `keepwarm.rs`), or its Claude compacted the conversation (`compacted`: the context
 /// dropped) — for watchers. Its own kind,
 /// said where it happens rather than diffed frame to frame: the seconds left change every frame, and a
@@ -306,11 +309,11 @@ pub fn usage(ed: &mut Editor, what: &str) {
         return;
     }
     let now_ms = crate::usage::now_ms();
-    let Some(u) = super::UsageState::of_session(&ed.session, &ed.config.llm, &ed.limits, now_ms) else {
+    let Some(u) = super::UsageState::of_session(&ed.workspace, &ed.config.llm, &ed.limits, now_ms) else {
         return;
     };
-    let (id, name) = (super::session_id(ed.session.id), ed.session.label().to_string());
-    let said = match (what, &ed.session.compacted.last) {
+    let (id, name) = (super::session_id(ed.workspace.claude.id), ed.workspace.label().to_string());
+    let said = match (what, &ed.workspace.claude.compacted.last) {
         ("cold", _) => format!("{id} {name}: Claude's cache went cold"),
         ("kept-warm", _) => format!("{id} {name}: Claude's cache kept warm — {}", u.text()),
         ("compacted", Some(k)) => format!("{id} {name}: Claude compacted its conversation ({})", k.how()),
@@ -324,19 +327,19 @@ pub fn usage(ed: &mut Editor, what: &str) {
     ed.ui_said(ev);
 }
 
-/// Session `ed.session`'s run starts with sandbox `g` (`tools::go_now`, 9d): the session keeps it (`Session.sandbox`)
+/// Session `ed.workspace`'s run starts with sandbox `g` (`tools::go_now`, 9d): the session keeps it (`Session.sandbox`)
 /// — and when it isn't what the session had (its first run, a keeper born with other namespaces, a policy that opens
 /// or closes something) watchers of `sandbox` hear the state's new object; a run like the last says nothing.
 pub fn sandbox(ed: &mut Editor, g: crate::sandbox::guarantees::Guarantees) {
-    if ed.session.sandbox.as_ref() == Some(&g) {
+    if ed.workspace.claude.sandbox.as_ref() == Some(&g) {
         return;
     }
-    let was = ed.session.sandbox.replace(g).map(|w| w.line());
+    let was = ed.workspace.claude.sandbox.replace(g).map(|w| w.line());
     if !ed.ui_watch.watching() {
         return;
     }
-    let Some(g) = &ed.session.sandbox else { return };
-    let (id, name) = (super::session_id(ed.session.id), ed.session.label());
+    let Some(g) = &ed.workspace.claude.sandbox else { return };
+    let (id, name) = (super::session_id(ed.workspace.claude.id), ed.workspace.label());
     let mut ev = g.json();
     ev["said"] = json!(format!("{id} {name}: sandbox {}", g.line()));
     ev["event"] = json!("sandbox");

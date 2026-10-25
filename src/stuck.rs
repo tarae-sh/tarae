@@ -24,7 +24,7 @@
 use std::time::{Duration, Instant};
 
 use crate::editor::Editor;
-use crate::event::SessionId;
+use crate::event::WorkspaceId;
 use crate::procs::{Row, Thread};
 use crate::sizes::Slot;
 
@@ -58,7 +58,7 @@ pub struct Stuck {
 /// what it was let reach (`Guard::reaches_out`) and whether its work may go on elsewhere (`away`).
 type Running<'a> = (u32, u64, Instant, &'a mut crate::waits::Waiting, Option<crate::sandbox::ReachOut>, bool);
 
-fn running(l: &mut crate::session::Session, slot: Slot) -> Option<Running<'_>> {
+fn running(l: &mut crate::workspace::Workspace, slot: Slot) -> Option<Running<'_>> {
     let reach = |g: &Option<crate::sandbox::Guard>| g.as_ref().and_then(crate::sandbox::Guard::reaches_out);
     match slot {
         Slot::Task => {
@@ -94,8 +94,8 @@ fn running(l: &mut crate::session::Session, slot: Slot) -> Option<Running<'_>> {
 /// has its threads read, then asked about — in its own session.
 pub fn look(ed: &mut Editor, rows: &[Row], now: Instant) {
     let (after, outside) = afters(&ed.config.llm);
-    let mut due: Vec<(SessionId, Stuck)> = Vec::new();
-    for l in std::iter::once(&mut ed.session).chain(&mut ed.sessions) {
+    let mut due: Vec<(WorkspaceId, Stuck)> = Vec::new();
+    for l in std::iter::once(&mut ed.workspace).chain(&mut ed.workspaces) {
         for slot in [Slot::Task, Slot::Test] {
             // (its output held by a filter — `| tail`, `| grep`, in the run's pipe: no line may show its work)
             let held = slot == Slot::Task
@@ -122,7 +122,7 @@ pub fn look(ed: &mut Editor, rows: &[Row], now: Instant) {
         }
     }
     for (session, s) in due {
-        ed.with_session(session, |ed| {
+        ed.with_workspace(session, |ed| {
             ed.events.jobs().spawn(move || {
                 let lines = waits_in(s.pid);
                 let peers = connected_outside(s.pid);
@@ -344,7 +344,7 @@ fn ask(ed: &mut Editor, mut s: Stuck, lines: Vec<String>, peers: Vec<String>) {
     // isn't asked before `llm.stuck-after-outside`; marked so, the next looks wait that long)
     let (_, outside) = afters(&ed.config.llm);
     if !peers.is_empty() && s.quiet < outside {
-        ed.session.log().line(
+        ed.workspace.log().line(
             "stuck",
             "held",
             &format!("pid {}: {} — connected to {}", s.pid, said(&s), peers.join(", ")),
@@ -358,7 +358,7 @@ fn ask(ed: &mut Editor, mut s: Stuck, lines: Vec<String>, peers: Vec<String>) {
     let still = |at: Instant| at <= s.asked;
     let label = match s.slot {
         Slot::Task => {
-            let Some(r) = ed.session.task_run.as_mut().filter(|r| {
+            let Some(r) = ed.workspace.task_run.as_mut().filter(|r| {
                 r.state == crate::task::State::Running
                     && r.trace.id() == s.run
                     && still(r.wait.progress(r.last_output))
@@ -372,7 +372,7 @@ fn ask(ed: &mut Editor, mut s: Stuck, lines: Vec<String>, peers: Vec<String>) {
             task_label(&r.task.cmd)
         }
         _ => {
-            let Some(r) = ed.session.test_run.as_mut().filter(|r| {
+            let Some(r) = ed.workspace.test_run.as_mut().filter(|r| {
                 r.state == crate::testing::RunState::Running
                     && r.trace.id() == s.run
                     && still(r.wait.progress(r.last_output))
@@ -386,7 +386,7 @@ fn ask(ed: &mut Editor, mut s: Stuck, lines: Vec<String>, peers: Vec<String>) {
     };
     let o = card(s, &label, &lines, &peers);
     let asks = format!("{label}: {}", o.question.lines().next().unwrap_or_default());
-    ed.session.log().line("stuck", "ask", &asks);
+    ed.workspace.log().line("stuck", "ask", &asks);
     ed.push_offer(o);
 }
 
@@ -407,8 +407,8 @@ pub fn task_label(cmd: &str) -> String {
 /// The waits of the run `s` is about, while it's still that run.
 fn run_wait<'a>(ed: &'a mut Editor, s: &Stuck) -> Option<&'a mut crate::waits::Waiting> {
     match s.slot {
-        Slot::Task => ed.session.task_run.as_mut().filter(|r| r.trace.id() == s.run).map(|r| &mut r.wait),
-        _ => ed.session.test_run.as_mut().filter(|r| r.trace.id() == s.run).map(|r| &mut r.wait),
+        Slot::Task => ed.workspace.task_run.as_mut().filter(|r| r.trace.id() == s.run).map(|r| &mut r.wait),
+        _ => ed.workspace.test_run.as_mut().filter(|r| r.trace.id() == s.run).map(|r| &mut r.wait),
     }
 }
 
@@ -460,12 +460,12 @@ pub fn card(s: Stuck, label: &str, lines: &[String], peers: &[String]) -> crate:
 pub fn show(ed: &mut Editor, s: &Stuck) {
     match s.slot {
         Slot::Task => {
-            if let Some(r) = ed.session.task_run.as_mut().filter(|r| r.trace.id() == s.run) {
+            if let Some(r) = ed.workspace.task_run.as_mut().filter(|r| r.trace.id() == s.run) {
                 r.scroll = Some(s.at);
             }
         }
         _ => {
-            if let Some(r) = ed.session.test_run.as_mut().filter(|r| r.trace.id() == s.run) {
+            if let Some(r) = ed.workspace.test_run.as_mut().filter(|r| r.trace.id() == s.run) {
                 r.scroll = Some(s.at);
             }
         }
@@ -480,18 +480,18 @@ pub fn show(ed: &mut Editor, s: &Stuck) {
 pub fn stop(ed: &mut Editor, s: &Stuck) {
     let line = format!("── stopped from tarae's card: {} ──", said(s));
     let (pid, containers) = match s.slot {
-        Slot::Task => ed.session.task_run.as_mut().filter(|r| r.trace.id() == s.run).map(|r| {
+        Slot::Task => ed.workspace.task_run.as_mut().filter(|r| r.trace.id() == s.run).map(|r| {
             r.push_line(false, line, false);
             (r.pid(), r.containers.take())
         }),
-        _ => ed.session.test_run.as_mut().filter(|r| r.trace.id() == s.run).map(|r| {
+        _ => ed.workspace.test_run.as_mut().filter(|r| r.trace.id() == s.run).map(|r| {
             r.output.push(false, &line);
             (r.pid(), r.containers.take())
         }),
     }
     .unwrap_or((None, None));
     let Some(pid) = pid else { return ed.set_status("that run ended already") };
-    ed.session.log().line("stuck", "stop", &format!("pid {pid}: {}", said(s)));
+    ed.workspace.log().line("stuck", "stop", &format!("pid {pid}: {}", said(s)));
     // (what it started in a container engine — a quiet `docker run`'s work goes on there — with it, by name:
     // `containers.rs`)
     if let Some(c) = containers {
@@ -536,18 +536,18 @@ fn stopped(ed: &mut Editor, slot: Slot, run: u64, pid: u32, done: crate::procs::
     let lines: Vec<String> = apart.into_iter().chain(outlived.iter().map(|o| format!("── {o} ──"))).collect();
     match slot {
         Slot::Task => {
-            if let Some(r) = ed.session.task_run.as_mut().filter(|r| r.trace.id() == run) {
+            if let Some(r) = ed.workspace.task_run.as_mut().filter(|r| r.trace.id() == run) {
                 lines.into_iter().for_each(|l| r.push_line(false, l, false));
             }
         }
         _ => {
-            if let Some(r) = ed.session.test_run.as_mut().filter(|r| r.trace.id() == run) {
+            if let Some(r) = ed.workspace.test_run.as_mut().filter(|r| r.trace.id() == run) {
                 r.output.extend(lines.into_iter().map(|l| (false, l)));
             }
         }
     }
     let log = format!("pid {pid}: {} apart, {n} outlived {:?}", done.apart, done.outlived);
-    ed.session.log().line("stuck", "stopped", &log);
+    ed.workspace.log().line("stuck", "stopped", &log);
     match outlived {
         Some(o) => ed.set_warning(format!("Stopped Claude's run — but {o}")),
         // (nothing apart, nothing left: nothing new on screen)
@@ -560,8 +560,8 @@ fn stopped(ed: &mut Editor, slot: Slot, run: u64, pid: u32, done: crate::procs::
 pub fn keep_waiting(ed: &mut Editor, s: &Stuck) {
     let now = Instant::now();
     let found = match s.slot {
-        Slot::Task => ed.session.task_run.as_mut().filter(|r| r.trace.id() == s.run).map(|r| &mut r.wait),
-        _ => ed.session.test_run.as_mut().filter(|r| r.trace.id() == s.run).map(|r| &mut r.wait),
+        Slot::Task => ed.workspace.task_run.as_mut().filter(|r| r.trace.id() == s.run).map(|r| &mut r.wait),
+        _ => ed.workspace.test_run.as_mut().filter(|r| r.trace.id() == s.run).map(|r| &mut r.wait),
     };
     if let Some(w) = found {
         w.stuck_asked = Some(now);
@@ -575,22 +575,22 @@ pub fn keep_waiting(ed: &mut Editor, s: &Stuck) {
 /// in every session.
 pub fn sync(ed: &mut Editor) {
     let any = |o: &crate::offer::Offer| o.stuck().is_some();
-    let behind: Vec<SessionId> =
-        ed.sessions.iter().filter(|l| l.parked.iter().any(any)).map(|l| l.id).collect();
-    if ed.offers.iter().any(any) || ed.session.parked.iter().any(any) {
+    let behind: Vec<WorkspaceId> =
+        ed.workspaces.iter().filter(|l| l.parked.iter().any(any)).map(|l| l.id).collect();
+    if ed.offers.iter().any(any) || ed.workspace.parked.iter().any(any) {
         drop_gone(ed);
     }
     for id in behind {
-        ed.with_session(id, drop_gone);
+        ed.with_workspace(id, drop_gone);
     }
 }
 
-/// The session in `ed.session`'s stuck cards whose run isn't stuck any more.
+/// The session in `ed.workspace`'s stuck cards whose run isn't stuck any more.
 fn drop_gone(ed: &mut Editor) {
     let mut live = Vec::new();
     for slot in [Slot::Task, Slot::Test] {
         // (a new process at work since is as good as a line)
-        if let Some((_, run, last, wait, ..)) = running(&mut ed.session, slot) {
+        if let Some((_, run, last, wait, ..)) = running(&mut ed.workspace, slot) {
             live.push((run, wait.progress(last)));
         }
     }

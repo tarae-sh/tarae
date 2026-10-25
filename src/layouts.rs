@@ -29,12 +29,12 @@ pub fn read(path: Option<&Path>) -> Map<String, Value> {
 /// Session `l`'s layout as kept, the pane last focused showing `current` — None while none of its code panes shows
 /// a file.
 pub fn of(
-    l: &crate::session::Session,
+    l: &crate::workspace::Workspace,
     docs: &[crate::document::Document],
     current: crate::document::DocId,
 ) -> Option<Value> {
     let path = |id| docs.iter().find(|d| d.id == id).and_then(|d| d.path.as_ref()).and_then(|p| p.to_str());
-    let doc = |v: &crate::editor::View| if v.id == l.focus { current } else { v.doc };
+    let doc = |v: &crate::editor::View| if v.id == l.viewer.focus { current } else { v.doc };
     let views: Vec<Value> = l.views.iter().map(|v| json!({ "id": v.id, "path": path(doc(v)) })).collect();
     if views.iter().all(|v| v["path"].is_null()) {
         return None;
@@ -42,7 +42,7 @@ pub fn of(
     let panes = crate::restart::panes_json(l);
     Some(
         json!({ "split": crate::restart::split_json(&l.split), "panes": panes, "groups": crate::restart::groups_json(l),
-                "views": views, "focus": l.focus }),
+                "views": views, "focus": l.viewer.focus }),
     )
 }
 
@@ -90,8 +90,8 @@ impl Editor {
     /// back to the loop, no frame).
     pub fn layout_keep(&mut self) {
         let Some(path) = self.layouts_path.clone() else { return };
-        let Some(now) = of(&self.session, &self.docs, self.doc().id) else { return };
-        let Some(key) = self.session.root.to_str().map(str::to_string) else { return };
+        let Some(now) = of(&self.workspace, &self.docs, self.doc().id) else { return };
+        let Some(key) = self.workspace.root.to_str().map(str::to_string) else { return };
         if self.layouts.get(&key) == Some(&now) {
             return;
         }
@@ -105,7 +105,7 @@ impl Editor {
     /// (`restart::layout`'s rule: the tree exactly its code panes and one pane of each surface). A pane whose file
     /// isn't open now goes, its neighbours taking the room. Said when it came back with more than one pane.
     pub fn layout_restore(&mut self) {
-        let Some(key) = self.session.root.to_str() else { return };
+        let Some(key) = self.workspace.root.to_str() else { return };
         let Some(kept) = self.layouts.get(key).cloned() else { return };
         let docs: Vec<Option<crate::document::DocId>> = self.docs.iter().map(|d| Some(d.id)).collect();
         let index =
@@ -132,9 +132,9 @@ impl Editor {
             "current": current, "views": views, "panes": kept["panes"], "groups": kept["groups"],
             "split": crate::restart::split_json(&split), "focus": focus,
         });
-        let before = self.session.split.clone();
+        let before = self.workspace.split.clone();
         crate::restart::layout(self, &v, &docs);
-        if self.session.split != before && n > 1 {
+        if self.workspace.split != before && n > 1 {
             self.note(format!("Your {n} panes from last time are back"));
         }
     }

@@ -508,7 +508,7 @@ fn rust_analyzer_shared_by_sessions() {
 
     let sb = Sandbox::live("ra-share");
     sb.write_config(&format!(
-        "{LIVE_CONFIG}auto-save = \"off\"\n[session]\nworktrees = \"{}/wt\"\n\
+        "{LIVE_CONFIG}auto-save = \"off\"\n[workspace]\nworktrees = \"{}/wt\"\n\
          [llm]\ncommand = \"sh\"\nargs = [\"-c\", \"exit 0\"]\n",
         base.display()
     ));
@@ -585,7 +585,7 @@ fn rust_analyzer_shared_by_sessions() {
     // B. Another new session; the first one in front asks all through its swap
     let n = logged("switched to the new");
     let made = new_session(&mut t, "s2");
-    t.command("session-switch 0");
+    t.command("workspace-switch 0");
     let all = asking(&mut t, LIVE_TIMEOUT, |_| logged("switched to the new") > n);
     let more = asking(&mut t, Duration::from_secs(5), |_| false);
     let all: Vec<_> = all.into_iter().chain(more).collect();
@@ -598,7 +598,7 @@ fn rust_analyzer_shared_by_sessions() {
     quiet(&mut t, 5);
 
     // C. A switch to s2 (its server warm since the swap)
-    t.command("session-switch 2");
+    t.command("workspace-switch 2");
     let at = Instant::now();
     let all = asking(&mut t, LIVE_TIMEOUT, right_once);
     let got = all.last().and_then(|a| a.1).expect("s2's gd never right");
@@ -609,14 +609,14 @@ fn rust_analyzer_shared_by_sessions() {
     );
 
     // D. s1 ended: the swap with the shorter list; main asks all through it
-    t.command("session-switch 0");
+    t.command("workspace-switch 0");
     let n = logged("switched to the new");
     let at = Instant::now();
-    t.command("session-end s1");
+    t.command("workspace-end s1");
     // (its checkout removed — a card if it had anything to lose; it hasn't)
     let gone = |s: &Screen| s.contains("Ended s1") || s.contains("s1 ended") || s.contains("removed");
     if t.poll_for(Duration::from_secs(10), gone).is_none() {
-        eprintln!("LIVE D. after :session-end s1 —\n{}", t.screen());
+        eprintln!("LIVE D. after :workspace-end s1 —\n{}", t.screen());
     }
     let all = asking(&mut t, LIVE_TIMEOUT, |_| logged("switched to the new") > n);
     let more = asking(&mut t, Duration::from_secs(5), |_| false);
@@ -1103,8 +1103,10 @@ fn a_ping_reads_the_chats_cache() {
     );
     assert!(read * 100 >= prompt * 95, "the fork read {read} of the chat's {prompt} (wrote {write})");
     let kept = |s: &serde_json::Value| {
-        let sessions = s["sessions"].as_array().cloned().unwrap_or_default();
-        sessions.into_iter().find_map(|x| x["usage"]["keep_warm"]["kept"].as_array()?.first().cloned())
+        let workspaces = s["workspaces"].as_array().cloned().unwrap_or_default();
+        workspaces
+            .into_iter()
+            .find_map(|x| x["sessions"][0]["usage"]["keep_warm"]["kept"].as_array()?.first().cloned())
     };
     let state = t.wait_state("the state says it", |s| kept(s).is_some());
     let k = kept(&state).unwrap();
@@ -1701,7 +1703,7 @@ fn chat_tools_ab() {
                 spent += m.cost;
                 // (the new build counts its own calls — `calls.rs`; said beside the stream's, a check of it)
                 let st = t.state_json(0);
-                let own = &st["sessions"][0]["usage"]["last_turn"]["calls"];
+                let own = &st["workspaces"][0]["sessions"][0]["usage"]["last_turn"]["calls"];
                 let said = format!(
                     "TOOLS_AB {} {build} run {}: {} requests, {} calls {:?}, prompt mean {:.0} max {}, {} tokens, \
                      ${:.3}, tools {} ms of {} ms, read-only runs {}, wasted {}, errors {}, cards {}, capped {}, \
@@ -2502,7 +2504,7 @@ fn reviewer_tools_ab() {
             let deadline = started + Duration::from_secs(20 * 60);
             let state = loop {
                 std::thread::sleep(Duration::from_secs(3));
-                let run = t.state_json(0)["sessions"][0]["reviewer_run"].clone();
+                let run = t.state_json(0)["workspaces"][0]["reviewer_run"].clone();
                 if run.is_object() && run["state"] != "reading" {
                     break run["state"].as_str().unwrap_or_default().to_string();
                 }
@@ -2635,7 +2637,7 @@ fn a_board_reads_its_diff_from_the_cache() {
     let deadline = Instant::now() + LIVE_TIMEOUT * 5;
     let run = loop {
         let st = t.state_json(0);
-        let run = st["sessions"][0]["reviewer_run"].clone();
+        let run = st["workspaces"][0]["reviewer_run"].clone();
         if run["board"].is_object() && run["state"] != "reading" {
             break run;
         }

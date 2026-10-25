@@ -24,7 +24,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::session::Session;
+use crate::workspace::Workspace;
 
 /// Bytes of the stream a cell of the band's travel.
 pub const BYTES_A_CELL: usize = 16;
@@ -96,8 +96,8 @@ impl Band {
 }
 
 /// What session `l`'s turn is doing — None: no turn under way.
-pub fn pace(l: &Session) -> Option<Pace> {
-    let c = l.chat.as_ref().filter(|c| c.busy())?;
+pub fn pace(l: &Workspace) -> Option<Pace> {
+    let c = l.claude.chat.as_ref().filter(|c| c.busy())?;
     let p = &c.pace;
     let compacting = crate::compaction::under_way(l);
     if !compacting && p.last.is_some_and(|t| crate::clock::since(t) < STILL_AFTER) {

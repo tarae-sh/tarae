@@ -187,7 +187,7 @@ fn go(ed: &mut Editor, call: Call, items: Vec<Item>, args: Value, granted: Vec<P
         };
         move |ed: &mut Editor| {
             if let Some(stop) = &stop {
-                ed.session.web_reads.retain(|s| !s.same(stop));
+                ed.workspace.claude.web_reads.retain(|s| !s.same(stop));
             }
             match r {
                 Ok(Ok(parts)) => {
@@ -886,10 +886,10 @@ mod tests {
         }
         let elsewhere = crate::paths::real(&elsewhere).unwrap();
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
-        ed.session.chat = Some(crate::chat::Chat::new());
-        ed.session.at = crate::session::At::Chat;
-        let generation = ed.session.chat.as_ref().unwrap().generation();
+        ed.workspace.root = dir.clone();
+        ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        let generation = ed.workspace.claude.chat.as_ref().unwrap().generation();
         let settle = |ed: &mut Editor, done: &dyn Fn(&Editor) -> bool| {
             let end = std::time::Instant::now() + crate::test_results::PATIENCE;
             while !done(ed) {
@@ -904,7 +904,7 @@ mod tests {
                 _ => None,
             })
         };
-        let queued = |ed: &Editor| ed.session.chat.as_ref().map_or(0, |c| c.reads.len());
+        let queued = |ed: &Editor| ed.workspace.claude.chat.as_ref().map_or(0, |c| c.reads.len());
         let answered = |id: u64| {
             crate::tools::ANSWERED
                 .with(|a| a.borrow().iter().find(|(k, _)| *k == json!(id)).map(|(_, r)| r.clone()))
@@ -936,7 +936,7 @@ mod tests {
         crate::reads::turn_over(&mut ed);
         let ended = answered(behind).expect("the one queued: answered at once");
         assert_eq!(ended, Err("the turn ended before the user answered".to_string()));
-        ed.sessions_sync();
+        ed.workspaces_sync();
         settle(&mut ed, &|_| answered(up).is_some());
         assert_eq!(answered(up).unwrap(), Err(crate::offer::LOST.to_string()), "the one on the card");
         std::fs::remove_dir_all(&base).unwrap();
@@ -949,10 +949,10 @@ mod tests {
     fn a_searchs_card_names_its_pattern() {
         let (dir, outside, base) = places("search-card");
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
-        ed.session.chat = Some(crate::chat::Chat::new());
-        ed.session.at = crate::session::At::Chat;
-        let generation = ed.session.chat.as_ref().unwrap().generation();
+        ed.workspace.root = dir.clone();
+        ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        let generation = ed.workspace.claude.chat.as_ref().unwrap().generation();
         let settle = |ed: &mut Editor| {
             let end = std::time::Instant::now() + crate::test_results::PATIENCE;
             while !ed.offers.iter().any(|o| matches!(o.what, crate::offer::What::Read { .. })) {
@@ -994,10 +994,10 @@ mod tests {
     fn a_read_outside_waits_on_the_card_and_is_answered() {
         let (dir, outside, base) = places("card");
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.root = dir.clone();
-        ed.session.chat = Some(crate::chat::Chat::new());
-        ed.session.at = crate::session::At::Chat;
-        let generation = ed.session.chat.as_ref().unwrap().generation();
+        ed.workspace.root = dir.clone();
+        ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        let generation = ed.workspace.claude.chat.as_ref().unwrap().generation();
         let o = outside.join("o.txt");
         let settle = |ed: &mut Editor, done: &dyn Fn(&Editor) -> bool| {
             let end = std::time::Instant::now() + crate::test_results::PATIENCE;

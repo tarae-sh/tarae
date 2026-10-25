@@ -1,6 +1,6 @@
 use super::*;
 use crate::key::{Code, Key};
-use crate::session::At;
+use crate::workspace::At;
 
 fn frame(ed: &mut Editor) -> String {
     ed.focus_sync();
@@ -78,7 +78,7 @@ fn messages_is_a_floating_list_at_the_newest() {
     feed(&mut ed, "k");
     assert_eq!(here(&ed).as_deref(), Some("no messages yet"));
     feed(&mut ed, "<esc>");
-    assert!(ed.messages_pane.is_some() && ed.session.at == At::Code, "esc code: it stays");
+    assert!(ed.messages_pane.is_some() && ed.workspace.viewer.at == At::Code, "esc code: it stays");
     feed(&mut ed, ":messages<ret>");
     assert_eq!(here(&ed).as_deref(), Some("no messages yet"), "up already: where it was");
     feed(&mut ed, "q");
@@ -193,7 +193,10 @@ fn a_message_under_a_waiting_card_comes_as_a_toast() {
     feed(&mut ed, "jjjjjjjj");
     let y = list_of(&mut ed, 16);
     let q = (1..=12).map(|i| format!("file {i} not viewed")).collect::<Vec<_>>().join("\n");
-    let what = crate::offer::What::ReviewEnd { session: 0, started: std::time::Instant::now() };
+    let what = crate::offer::What::ReviewEnd {
+        session: crate::event::WorkspaceId::HOME,
+        started: std::time::Instant::now(),
+    };
     ed.push_offer(crate::offer::Offer::new("End the review?".into(), &q, "", String::new(), what));
     frame(&mut ed);
     let card = ed.screen.offer_card.expect("the card drawn");

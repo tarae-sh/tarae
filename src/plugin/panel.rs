@@ -28,7 +28,7 @@ use super::abi::{Hints, HostEvent, Panel, Pick, Side, Tone, View};
 use super::shown;
 use crate::editor::{Editor, Mode, PromptKind};
 use crate::key::{Code, Key};
-use crate::session::At;
+use crate::workspace::At;
 
 /// The most rows a panel holds (past that, what it sent is cut).
 const MAX_ROWS: usize = 50_000;
@@ -72,7 +72,7 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
     if ed.mode != Mode::Normal || !ed.pending.is_empty() || ed.prompt.is_some() {
         return false;
     }
-    if !ed.session.is_at(At::Plugin) || !ed.plugin_panel_in_sight() {
+    if !ed.workspace.is_at(At::Plugin) || !ed.plugin_panel_in_sight() {
         return false;
     }
     let Some(st) = ed.plugins.as_mut().and_then(|p| p.panel.as_mut()) else {
@@ -95,7 +95,7 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
     match (key.code, key.ctrl, key.alt) {
         // Still the editor's: the space menu, the command line, the windows
         (Code::Char(' ') | Code::Char(':'), false, false) | (Code::Char('w'), true, false) => return false,
-        (Code::Esc, ..) => ed.session.at = At::Code,
+        (Code::Esc, ..) => ed.workspace.viewer.at = At::Code,
         _ => {
             let (plugin, row) = (st.plugin.clone(), (n > 0).then_some(st.selected as u64));
             let id = row.and_then(|_| st.panel.ids.get(st.selected).cloned());
@@ -155,7 +155,7 @@ impl Editor {
 
     /// The panel took the keys: nothing else keeps them.
     fn plugin_panel_took_keys(&mut self) {
-        self.session.at = At::Plugin;
+        self.workspace.viewer.at = At::Plugin;
     }
 
     /// A click on the panel's row `row` (None: its header): focused, that row selected.
@@ -181,7 +181,7 @@ impl Editor {
 
     /// Whether the panel has the keys.
     pub fn plugin_panel_focused(&self) -> bool {
-        self.session.is_at(At::Plugin)
+        self.workspace.is_at(At::Plugin)
             && self.plugins.as_ref().is_some_and(|p| p.panel.is_some())
             && self.plugin_panel_in_sight()
     }
@@ -193,7 +193,7 @@ impl Editor {
 
     /// Code clicked: the panel gives the keys back.
     pub fn plugin_panel_unfocus(&mut self) {
-        self.session.leave(At::Plugin);
+        self.workspace.leave(At::Plugin);
     }
 
     /// A plugin's `prompt`: the command line with its name and label — if it's answering you, and no line
@@ -278,26 +278,28 @@ impl Editor {
         let (open, focus) = (std::mem::take(&mut side.open), std::mem::take(&mut side.focus));
         p.side = Some((plugin.to_string(), side));
         if open || focus {
-            match self.session.sidebar.as_mut() {
+            match self.workspace.viewer.sidebar.as_mut() {
                 Some(s) => {
                     s.mode = crate::sidebar::Mode::Plugin;
                     s.shown = None;
                 }
                 None => {
-                    let s =
-                        crate::sidebar::Sidebar::new(crate::sidebar::Mode::Plugin, self.session.root.clone());
-                    self.session.sidebar = Some(s);
+                    let s = crate::sidebar::Sidebar::new(
+                        crate::sidebar::Mode::Plugin,
+                        self.workspace.root.clone(),
+                    );
+                    self.workspace.viewer.sidebar = Some(s);
                 }
             }
             if focus {
-                self.session.at = At::Side;
+                self.workspace.viewer.at = At::Side;
             }
         }
         self.sidebar_sync();
         // Given the keys: on the row for the code under the cursor
         if focus
-            && let Some(h) = self.session.sidebar.as_ref().and_then(|s| s.here(self))
-            && let Some(s) = self.session.sidebar.as_mut()
+            && let Some(h) = self.workspace.viewer.sidebar.as_ref().and_then(|s| s.here(self))
+            && let Some(s) = self.workspace.viewer.sidebar.as_mut()
         {
             s.selected = h;
         }
@@ -372,8 +374,8 @@ impl Editor {
         // The buffer is what you're looking at now: its keys, not the panel's or the side tab's — not even
         // if this answer shows the panel again after it
         self.plugin_panel_unfocus();
-        if self.session.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Plugin) {
-            self.session.leave(At::Side);
+        if self.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Plugin) {
+            self.workspace.leave(At::Side);
         }
         if let Some(p) = &mut self.plugins {
             p.answering = None;

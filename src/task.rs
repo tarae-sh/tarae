@@ -648,7 +648,7 @@ fn ended(state: &State) -> String {
 impl Editor {
     /// `space m m` — run the last task again (or pick one, the first time).
     pub fn task_again(&mut self) {
-        match self.session.task_last.clone() {
+        match self.workspace.task_last.clone() {
             Some(t) => self.task_start(t),
             None => self.task_picker(),
         }
@@ -657,8 +657,8 @@ impl Editor {
     /// `space m p` — pick a task (the last one first). The project is looked at on a worker.
     pub fn task_picker(&mut self) {
         let (configured, last) =
-            (self.config.tasks.clone(), self.session.task_last.as_ref().map(|t| t.name.clone()));
-        let root = self.session.root.clone();
+            (self.config.tasks.clone(), self.workspace.task_last.as_ref().map(|t| t.name.clone()));
+        let root = self.workspace.root.clone();
         let fill = move || {
             let mut tasks = all_tasks(configured, &root);
             if let Some(i) = last.and_then(|l| tasks.iter().position(|t| t.name == l)) {
@@ -687,7 +687,7 @@ impl Editor {
     /// `:task <name>` — found on a worker, then started.
     pub fn task_named(&mut self, name: &str) -> Result<(), String> {
         let (configured, name, root) =
-            (self.config.tasks.clone(), name.to_string(), self.session.root.clone());
+            (self.config.tasks.clone(), name.to_string(), self.workspace.root.clone());
         self.events.jobs().spawn(move || {
             let found = all_tasks(configured, &root).into_iter().find(|t| t.name == name);
             move |ed: &mut Editor| match found {
@@ -701,15 +701,19 @@ impl Editor {
     /// `space m c` — stop the task and close its panel.
     pub fn task_close(&mut self) {
         // An install stopped half-way: its card says so (and `y` tries again)
-        if let Some(a) =
-            self.session.task_run.as_mut().filter(|r| r.state == State::Running).and_then(|r| r.after.take())
+        if let Some(a) = self
+            .workspace
+            .task_run
+            .as_mut()
+            .filter(|r| r.state == State::Running)
+            .and_then(|r| r.after.take())
         {
             self.offer_finished(a.offer, Err("stopped before it finished".into()));
         }
         crate::tools::run_dropped(self, "the user stopped it");
-        crate::restart::run_dropped(self, self.session.task_run.as_ref().map(|r| r.trace.id()));
+        crate::restart::run_dropped(self, self.workspace.task_run.as_ref().map(|r| r.trace.id()));
         crate::rebase::run_dropped(self);
-        self.session.task_run = None;
+        self.workspace.task_run = None;
         // (the panel is free: what waits for it starts)
         crate::queued::run_next(self);
     }
@@ -720,8 +724,8 @@ impl Editor {
         if self.install_running() {
             return;
         }
-        self.session.task_last = Some(task.clone());
-        if crate::queued::claudes_running(&self.session, crate::queued::Slot::Task) {
+        self.workspace.task_last = Some(task.clone());
+        if crate::queued::claudes_running(&self.workspace, crate::queued::Slot::Task) {
             return crate::queued::push(self, crate::queued::What::Task(task));
         }
         self.task_start_now(task, false, None);
@@ -734,7 +738,7 @@ impl Editor {
         let trace = trace.unwrap_or_else(|| crate::trace::RunTrace::new(format!("task: {}", task.name)));
         // (it runs what's there outside the sandbox: what Claude's runs made that the sandbox keeps, looked at
         // first — G23)
-        if !self.session.made_protected.is_empty() {
+        if !self.workspace.made_protected.is_empty() {
             trace.step("protected-made card up");
             return crate::tools::ask_made(self, crate::tools::MadeThen::Task { task, force, trace });
         }
@@ -745,7 +749,7 @@ impl Editor {
             if ed.install_running() {
                 return trace.end("an install was running");
             }
-            if !force && crate::queued::claudes_running(&ed.session, crate::queued::Slot::Task) {
+            if !force && crate::queued::claudes_running(&ed.workspace, crate::queued::Slot::Task) {
                 return crate::queued::again(ed, crate::queued::What::Task(task), Some(trace));
             }
             ed.task_spawn(task, None, None, true, false, &[], trace, None);
@@ -754,7 +758,8 @@ impl Editor {
 
     /// Not over an install: stopping it half-way can leave a tool broken (said).
     fn install_running(&mut self) -> bool {
-        let running = self.session.task_run.as_ref().is_some_and(|r| r.install && r.state == State::Running);
+        let running =
+            self.workspace.task_run.as_ref().is_some_and(|r| r.install && r.state == State::Running);
         if running {
             self.set_status("an install is running — space m c stops it");
         }
@@ -774,7 +779,7 @@ impl Editor {
         guard: Option<crate::sandbox::Guard>,
         ride: crate::queued::Ride,
     ) -> Result<(), Box<(crate::tools::For, crate::queued::Ride)>> {
-        if self.session.task_run.as_ref().is_some_and(|r| r.state == State::Running) {
+        if self.workspace.task_run.as_ref().is_some_and(|r| r.state == State::Running) {
             return Err(Box::new((who, ride)));
         }
         // (Claude's call's trace goes on — from its ask; the user's run again of it starts here)
@@ -798,7 +803,7 @@ impl Editor {
         // unasked: said only on its chat row and in the log — D2)
         let ran = guard.as_ref().map(|g| {
             let warned = ride.warned.clone().unwrap_or_else(|| {
-                let cwd = self.session.root.join(&task.cwd);
+                let cwd = self.workspace.root.join(&task.cwd);
                 let outside = matches!(g, crate::sandbox::Guard::Outside);
                 let on = crate::tools::WarnOn {
                     cmd: &task.cmd,
@@ -809,7 +814,7 @@ impl Editor {
                     outside,
                 };
                 let warned = crate::tools::warned(self, on);
-                crate::cards::ran_warned(&self.session.log(), &task.cmd, &warned);
+                crate::cards::ran_warned(&self.workspace.log(), &task.cmd, &warned);
                 warned
             });
             crate::chat::Ran::of(g, ride.card, ride.reason.as_deref(), warned)
@@ -821,7 +826,7 @@ impl Editor {
             _ => None,
         };
         self.task_spawn(task, None, policy, feeds, true, &[], trace, None);
-        let out = match self.session.task_run.as_mut().filter(|_| self.task_generation != before) {
+        let out = match self.workspace.task_run.as_mut().filter(|_| self.task_generation != before) {
             Some(r) => {
                 match who {
                     crate::tools::For::Claude(call) => r.chat = Some(call),
@@ -851,7 +856,7 @@ impl Editor {
     /// `:restart`'s build (`restart.rs`): not the task `space m m` runs again — the restart waits for its
     /// end. Its generation; None if it didn't start (an install is running, or it couldn't spawn).
     pub(crate) fn task_start_restart(&mut self, task: Task) -> Option<u64> {
-        if self.session.task_run.as_ref().is_some_and(|r| r.install && r.state == State::Running) {
+        if self.workspace.task_run.as_ref().is_some_and(|r| r.install && r.state == State::Running) {
             return None;
         }
         let before = self.task_generation;
@@ -881,7 +886,7 @@ impl Editor {
         let before = self.task_generation;
         let trace = crate::trace::RunTrace::new(format!("tarae's git: {}", traced(&task.cmd)));
         self.task_spawn(task, None, None, false, false, env, trace, None);
-        let r = self.session.task_run.as_mut().filter(|_| self.task_generation != before)?;
+        let r = self.workspace.task_run.as_mut().filter(|_| self.task_generation != before)?;
         r.git = true;
         Some(self.task_generation)
     }
@@ -927,7 +932,7 @@ impl Editor {
             cmd.env_remove("CDPATH");
         }
         // (Claude's: the prefix its containers are named from, stopped with it — `containers.rs`)
-        let containers = claudes.then(|| crate::containers::prefix(self.session.id, trace.id()));
+        let containers = claudes.then(|| crate::containers::prefix(self.workspace.id, trace.id()));
         match &containers {
             Some(p) => cmd.env(crate::containers::VAR, p),
             None => cmd.env_remove(crate::containers::VAR),
@@ -966,11 +971,11 @@ impl Editor {
         };
         trace.step("spawned");
         // A finished test run gives the panel over
-        if self.session.test_run.as_ref().is_some_and(|r| r.state != crate::testing::RunState::Running) {
-            self.session.test_run = None;
+        if self.workspace.test_run.as_ref().is_some_and(|r| r.state != crate::testing::RunState::Running) {
+            self.workspace.test_run = None;
         }
         crate::tools::run_dropped(self, "another task took its place");
-        crate::restart::run_dropped(self, self.session.task_run.as_ref().map(|r| r.trace.id()));
+        crate::restart::run_dropped(self, self.workspace.task_run.as_ref().map(|r| r.trace.id()));
         crate::rebase::run_dropped(self);
         self.task_generation += 1;
         let generation = self.task_generation;
@@ -1007,11 +1012,11 @@ impl Editor {
                 })
                 .collect();
             let apply = move |ed: &mut Editor| {
-                let Some(r) = ed.session.task_run.as_mut().filter(|r| r.generation == generation) else {
+                let Some(r) = ed.workspace.task_run.as_mut().filter(|r| r.generation == generation) else {
                     return;
                 };
                 // (a preflight's markers move its steps on, and aren't shown — `preflight.rs`)
-                let mut preflight = ed.session.preflight.as_mut().filter(|p| p.generation == generation);
+                let mut preflight = ed.workspace.preflight.as_mut().filter(|p| p.generation == generation);
                 let mut fed = Vec::new();
                 r.last_output = Instant::now();
                 for (line, found, hit) in lines {
@@ -1077,8 +1082,8 @@ impl Editor {
             let done = move |ed: &mut Editor| {
                 // (a host its proxy holds for it has no one left to ask for — its card goes)
                 crate::hosts::run_ended(ed, run_id);
-                let session = ed.session.log();
-                let Some(r) = ed.session.task_run.as_mut().filter(|r| r.generation == generation) else {
+                let session = ed.workspace.log();
+                let Some(r) = ed.workspace.task_run.as_mut().filter(|r| r.generation == generation) else {
                     return;
                 };
                 if let Some(w) = r.guard.as_ref().and_then(|g| g.watch()) {
@@ -1097,13 +1102,13 @@ impl Editor {
                 r.trace.end(ended(&r.state));
                 // (what waits for the panel goes next — once this one's end is told; once what it changed is
                 // taken, for a run whose changes are — `tools::run_done`)
-                if !ed.session.runs_next.is_empty() && !(r.snap.is_some() && r.chat.is_some()) {
+                if !ed.workspace.runs_next.is_empty() && !(r.snap.is_some() && r.chat.is_some()) {
                     let next = crate::event::Event::Job(Box::new(crate::queued::run_next));
                     let _ = ed.events.sender().send(next);
                 }
                 // (a stopped turn's run: the card offering to stop it goes)
                 crate::tools::left_sync(ed);
-                let Some(r) = ed.session.task_run.as_mut() else { return };
+                let Some(r) = ed.workspace.task_run.as_mut() else { return };
                 let (passed, errors) = (r.state == State::Passed, r.found.0);
                 if crate::restart::built(ed, generation, passed, errors)
                     || ed.preflight_done(generation)
@@ -1112,7 +1117,7 @@ impl Editor {
                 {
                     return;
                 }
-                let Some(r) = ed.session.task_run.as_mut() else { return };
+                let Some(r) = ed.workspace.task_run.as_mut() else { return };
                 if let Some(after) = r.after.take() {
                     let passed = r.state == State::Passed;
                     return ed.install_done(after, passed);
@@ -1140,11 +1145,11 @@ impl Editor {
         }
         // The same task again: its panel starts as tall as it was (no shrink and grow back)
         let tall =
-            self.session.task_run.as_ref().filter(|r| r.task.name == task.name).map_or(0, |r| r.tall.get());
+            self.workspace.task_run.as_ref().filter(|r| r.task.name == task.name).map_or(0, |r| r.tall.get());
         let label = format!("Claude's command `{}`", traced(&task.cmd));
         let containers =
             containers.map(|(p, reach)| crate::containers::Run::new(p, label, self.events.sender(), reach));
-        self.session.task_run = Some(Run {
+        self.workspace.task_run = Some(Run {
             task,
             state: State::Running,
             output: Default::default(),
@@ -1279,14 +1284,14 @@ mod tests {
         let cmd = r"printf 'Rebasing (2/2)\r\033[1mSuccessfully\033[0m rebased\n'".to_string();
         ed.task_start(Task { name: "redrawn".into(), cmd, cwd: std::env::temp_dir() });
         let end = Instant::now() + crate::test_results::PATIENCE;
-        while ed.session.task_run.as_ref().is_some_and(|r| r.state == State::Running) {
+        while ed.workspace.task_run.as_ref().is_some_and(|r| r.state == State::Running) {
             assert!(Instant::now() < end, "the run ended");
             if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(20)) {
                 ed.handle_event(ev);
             }
         }
         let out: Vec<String> =
-            ed.session.task_run.as_ref().unwrap().output.iter().map(|l| l.1.into_owned()).collect();
+            ed.workspace.task_run.as_ref().unwrap().output.iter().map(|l| l.1.into_owned()).collect();
         assert_eq!(out, ["Successfully rebased"]);
     }
 

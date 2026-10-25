@@ -246,7 +246,7 @@ fn page_editor_of(html: &str) -> (Editor, crate::scratch::Scratch) {
     let root = crate::scratch::Scratch::new("web-serve");
     std::fs::write(root.join("a.html"), html).unwrap();
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = std::fs::canonicalize(root.path()).unwrap();
+    ed.workspace.root = std::fs::canonicalize(root.path()).unwrap();
     feed(&mut ed, &format!(":web a.html {URL}<ret>"));
     let ready = |ed: &Editor| ed.lsp.web.as_ref().and_then(|(c, _)| ed.client(*c)).is_some_and(|c| c.ready);
     settle_until(&mut ed, "landed, its server ready", |ed| {
@@ -330,7 +330,7 @@ fn ctrl_click_on_words_that_are_an_address_follows_the_link() {
         took: Duration::from_millis(30),
         elsewhere: None,
     };
-    let _ = ed.session.pages.put(Arc::new(b), crate::clock::now());
+    let _ = ed.workspace.pages.put(Arc::new(b), crate::clock::now());
     let mut bytes = Vec::new();
     crate::term::render(&mut ed, &mut bytes, 80, 24).unwrap();
     let mut p = vt100::Parser::new(24, 80, 0);
@@ -394,7 +394,7 @@ fn a_page_s_language_keys_follow_its_links() {
         took: Duration::from_millis(30),
         elsewhere: None,
     };
-    let _ = ed.session.pages.put(Arc::new(b), crate::clock::now());
+    let _ = ed.workspace.pages.put(Arc::new(b), crate::clock::now());
     put(&mut ed, on(&text, "bee"));
     feed(&mut ed, "gd");
     settle_until(&mut ed, "the other page", |ed| ed.doc().title.as_deref() == Some("web · page.test › Bee"));

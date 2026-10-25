@@ -10,7 +10,7 @@
 //!
 //! Its host is a pane of its own out of the tree (`Shows::Group`, `float_groups_sync`) — its members laid out in its
 //! rect as the slot lays them out, their keys the ones they have there (§3.3: `At::List`, `At::Slot` with
-//! `Session.hand`). Several float in a stack: the one with the keys on top (`Group.raised`), the others in their order.
+//! `Viewer.hand`). Several float in a stack: the one with the keys on top (`Group.raised`), the others in their order.
 //! A hop `C-w h/j/k/l` from one goes by its rect's centre; `C-w w` goes round them after the docked panes.
 
 use crate::editor::Editor;
@@ -38,7 +38,7 @@ impl Editor {
         if crate::floatlist::is_list(kind) {
             return self.float_list(kind).is_some() && !self.docked_in_sight(kind);
         }
-        let Some(g) = self.session.group(kind) else { return false };
+        let Some(g) = self.workspace.group(kind) else { return false };
         matches!(g.place, Place::Floating(_)) && self.kind_there(kind) && self.float_host(&g)
     }
 
@@ -50,39 +50,39 @@ impl Editor {
 
     /// Group `g`'s host is its own pane, out of the tree.
     fn float_host(&self, g: &Group) -> bool {
-        self.session.shows(g.host) == Some(Shows::Group(g.kind)) && !self.session.split.holds(g.host)
+        self.workspace.shows(g.host) == Some(Shows::Group(g.kind)) && !self.workspace.split.holds(g.host)
     }
 
     /// The floating groups in sight, bottom first (`Group.raised`).
     pub fn floats_up(&self) -> Vec<Group> {
         let mut v: Vec<Group> =
-            self.session.groups.iter().filter(|g| self.floating_in_sight(g.kind)).copied().collect();
+            self.workspace.groups.iter().filter(|g| self.floating_in_sight(g.kind)).copied().collect();
         crate::sorting::by_key(&mut v, |g| g.raised);
         v
     }
 
     /// Kind `kind`'s own pane (`Shows::Group`): the one it has, else made.
     pub(crate) fn group_pane(&mut self, kind: GroupKind) -> PaneId {
-        if let Some(p) = self.session.panes.iter().find(|p| p.shows == Shows::Group(kind)) {
+        if let Some(p) = self.workspace.panes.iter().find(|p| p.shows == Shows::Group(kind)) {
             return p.id;
         }
         let id = self.next_pane;
         self.next_pane += 1;
-        self.session.panes.push(Pane { id, shows: Shows::Group(kind) });
+        self.workspace.panes.push(Pane { id, shows: Shows::Group(kind) });
         id
     }
 
     /// Every event: a floating group's host is its own pane, out of the tree — made when it floats, after a restart
     /// (whose file kept the slot's leaf as its host).
     pub fn float_groups_sync(&mut self) {
-        for i in 0..self.session.groups.len() {
-            let g = self.session.groups[i];
+        for i in 0..self.workspace.groups.len() {
+            let g = self.workspace.groups[i];
             if !matches!(g.place, Place::Floating(_)) || self.float_host(&g) {
                 continue;
             }
             let host = self.group_pane(g.kind);
-            self.session.split.remove(host);
-            self.session.groups[i].host = host;
+            self.workspace.split.remove(host);
+            self.workspace.groups[i].host = host;
         }
     }
 
@@ -103,7 +103,7 @@ impl Editor {
                 .set_status(format!("the {} list floats — C-w m moves it, q closes it", list_name(k)));
         }
         let Some(kind) = self.group_in_hand() else {
-            if self.bottom_has_keys() || self.session.is_at(crate::session::At::Program) {
+            if self.bottom_has_keys() || self.workspace.is_at(crate::workspace::At::Program) {
                 return self.set_status(
                     "this panel stays in the slot — the tests, a task, a preflight and :procs float",
                 );
@@ -111,7 +111,7 @@ impl Editor {
             return self
                 .set_status("nothing here floats — C-w e floats the tests, a task, a preflight, :procs");
         };
-        match self.session.group(kind).map(|g| g.place) {
+        match self.workspace.group(kind).map(|g| g.place) {
             Some(Place::Floating(_)) => self.unfloat(kind),
             _ => self.float(kind),
         }
@@ -123,7 +123,7 @@ impl Editor {
         let Some(mut g) = self.group_made(kind) else { return };
         let keys = self.group_keys(&g);
         if self.dock_leaf(&g) {
-            self.session.split.remove(g.host);
+            self.workspace.split.remove(g.host);
         }
         g.back = match g.place {
             Place::Floating(_) => g.back,
@@ -133,14 +133,14 @@ impl Editor {
         g.raised = self.float_top() + 1;
         self.group_set(g);
         self.float_groups_sync();
-        let Some(g) = self.session.group(kind) else { return };
+        let Some(g) = self.workspace.group(kind) else { return };
         self.keys_back(&g, keys);
         self.set_status(format!("{} floating — C-w m moves it, C-w e docks it back", kind.name()));
     }
 
     /// Kind `kind`'s floating group docked back where it came from (`Group.back`): its side, else the slot.
     fn unfloat(&mut self, kind: GroupKind) {
-        let Some(g) = self.session.group(kind) else { return };
+        let Some(g) = self.workspace.group(kind) else { return };
         match g.back {
             Place::Docked(side) => self.dock(kind, side),
             _ => self.undock(kind),
@@ -149,14 +149,14 @@ impl Editor {
 
     /// The highest stacking turn among the floating groups.
     fn float_top(&self) -> u32 {
-        self.session.groups.iter().map(|g| g.raised).max().unwrap_or(0)
+        self.workspace.groups.iter().map(|g| g.raised).max().unwrap_or(0)
     }
 
     /// Every event: a floating group whose member has the keys is on top of the others (§3.3), the rest in their order.
     pub fn float_raise(&mut self) {
-        let Some(kind) = self.session.hand.filter(|&k| self.floating_in_sight(k)) else { return };
+        let Some(kind) = self.workspace.viewer.hand.filter(|&k| self.floating_in_sight(k)) else { return };
         let top = self.float_top();
-        if let Some(g) = self.session.groups.iter_mut().find(|g| g.kind == kind)
+        if let Some(g) = self.workspace.groups.iter_mut().find(|g| g.kind == kind)
             && (g.raised < top || top == 0)
         {
             g.raised = top + 1;
@@ -174,7 +174,7 @@ impl Editor {
         let (w, h) = self.float_screen();
         match kind {
             k if crate::floatlist::is_list(k) => self.float_list_rect(k, w, h),
-            _ => Some(self.session.group(kind)?.place.frame()?.rect(w, h)),
+            _ => Some(self.workspace.group(kind)?.place.frame()?.rect(w, h)),
         }
     }
 
@@ -190,7 +190,7 @@ impl Editor {
             self.float_list_frame_set(kind, Some(if rows { Frame { h: 0, ..f } } else { f }));
             return;
         }
-        if let Some(g) = self.session.groups.iter_mut().find(|g| g.kind == kind)
+        if let Some(g) = self.workspace.groups.iter_mut().find(|g| g.kind == kind)
             && matches!(g.place, Place::Floating(_))
         {
             g.place = Place::Floating(f);
@@ -327,7 +327,7 @@ impl Editor {
         match kind {
             k if crate::floatlist::is_list(k) => self.float_list_frame_set(k, None),
             _ => {
-                if let Some(g) = self.session.groups.iter_mut().find(|g| g.kind == kind) {
+                if let Some(g) = self.workspace.groups.iter_mut().find(|g| g.kind == kind) {
                     g.place = Place::Floating(Frame::CENTRED);
                     g.laid = crate::pane::Laid::Auto;
                 }

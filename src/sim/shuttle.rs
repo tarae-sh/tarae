@@ -61,7 +61,10 @@ fn input(sim: &mut Sim, ed: &mut Editor, wrong: &Wrong) -> String {
         0 => {
             // (asked again under its title: the same card, its rev bumped; another's put in front)
             let title = *c.pick(&["End the review?", "End the other review?"]);
-            let what = What::ReviewEnd { session: 0, started: std::time::Instant::now() };
+            let what = What::ReviewEnd {
+                session: crate::event::WorkspaceId::HOME,
+                started: std::time::Instant::now(),
+            };
             ed.push_offer(Offer::new(title.into(), "2 files not viewed.", "", String::new(), what));
             format!("card {title:?} asked · front {:?}", front(ed))
         }

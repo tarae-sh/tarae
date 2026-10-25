@@ -443,7 +443,7 @@ impl Account {
 /// makes the plan's limits unknown (they were the other account's) and is said on every chat still on another.
 pub fn account_seen(ed: &mut Editor, a: Account) {
     let login = a.login;
-    ed.session.usage.account = Some(a);
+    ed.workspace.claude.usage.account = Some(a);
     if ed.limits.login == Some(login) {
         return;
     }
@@ -452,9 +452,9 @@ pub fn account_seen(ed: &mut Editor, a: Account) {
         return;
     }
     ed.limits.forget();
-    for l in std::iter::once(&mut ed.session).chain(&mut ed.sessions) {
-        let other = l.usage.account.as_ref().is_some_and(|a| a.login != login);
-        if let Some(c) = l.chat.as_mut().filter(|c| other && c.running()) {
+    for l in std::iter::once(&mut ed.workspace).chain(&mut ed.workspaces) {
+        let other = l.claude.usage.account.as_ref().is_some_and(|a| a.login != login);
+        if let Some(c) = l.claude.chat.as_mut().filter(|c| other && c.running()) {
             c.note("another Claude login since this claude started — :claude-restart moves every chat to it");
         }
     }
@@ -1194,17 +1194,17 @@ fn table(head: &[&str], rows: &[Vec<String>], left: usize) -> String {
 }
 
 /// The report for session `sid` as things are now.
-fn report_now(ed: &Editor, sid: crate::event::SessionId) -> Option<String> {
+fn report_now(ed: &Editor, sid: crate::event::WorkspaceId) -> Option<String> {
     let sessions = ed.sessions_in_order();
-    let all: Vec<(&str, &Usage)> = sessions.iter().map(|l| (l.label(), &l.usage)).collect();
+    let all: Vec<(&str, &Usage)> = sessions.iter().map(|l| (l.label(), &l.claude.usage)).collect();
     let l = sessions.iter().find(|l| l.id == sid)?;
-    Some(report(l.label(), &l.usage, &ed.limits, &all, now_ms()))
+    Some(report(l.label(), &l.claude.usage, &ed.limits, &all, now_ms()))
 }
 
 /// `:usage` — the front session's usage in a buffer of its own (Markdown, nothing to save); said again as
 /// its turns end while it's open, and as the plan's limits come — asked of its chat's claude when nothing is fresh.
 pub fn open(ed: &mut Editor) {
-    let sid = ed.session.id;
+    let sid = ed.workspace.id;
     crate::limits::ask_chat(ed);
     let Some(text) = report_now(ed, sid) else { return };
     let at = ed.usage_view.and_then(|(id, _)| ed.docs.iter().position(|d| d.id == id));
@@ -1222,7 +1222,7 @@ pub fn open(ed: &mut Editor) {
             id
         }
     };
-    ed.session_keeps(id);
+    ed.workspace_keeps(id);
     ed.usage_view = Some((id, sid));
 }
 
@@ -1275,7 +1275,7 @@ fn kept_section(u: &Usage) -> String {
 /// window before (`keepwarm.rs`), to decide. One watch asleep per session: one that wakes no later looks again
 /// when it wakes.
 pub fn watch(ed: &mut Editor) {
-    if let Some(at) = wakes_at(&ed.session.usage, ed.config.llm.keep_warm, now_ms()) {
+    if let Some(at) = wakes_at(&ed.workspace.claude.usage, ed.config.llm.keep_warm, now_ms()) {
         sleep_until(ed, at);
     }
 }
@@ -1293,10 +1293,10 @@ pub fn wakes_at(u: &Usage, keep_warm: crate::keepwarm::Mode, now_ms: u64) -> Opt
 /// The session's watch wakes at `at` (unix ms) — unless one sleeping wakes no later.
 pub fn sleep_until(ed: &mut Editor, at: u64) {
     let now = now_ms();
-    if at <= now || ed.session.usage.watch.is_some_and(|w| w <= at) || cfg!(test) {
+    if at <= now || ed.workspace.claude.usage.watch.is_some_and(|w| w <= at) || cfg!(test) {
         return;
     }
-    ed.session.usage.watch = Some(at);
+    ed.workspace.claude.usage.watch = Some(at);
     ed.events.jobs().spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(at - now));
         woke
@@ -1323,7 +1323,7 @@ pub fn woke_at(u: &mut Usage, now_ms: u64) -> Woke {
 }
 
 fn woke(ed: &mut Editor) {
-    match woke_at(&mut ed.session.usage, now_ms()) {
+    match woke_at(&mut ed.workspace.claude.usage, now_ms()) {
         Woke::Cold => {
             crate::uistate::watch::usage(ed, "cold");
             view_sync(ed);

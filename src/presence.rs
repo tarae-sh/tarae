@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use crate::document::{DocId, Document};
 use crate::editor::Editor;
-use crate::event::SessionId;
+use crate::event::WorkspaceId;
 
 /// What a session does at a place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,7 +48,7 @@ impl Act {
 /// One session at one place of one file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Presence {
-    pub session: SessionId,
+    pub session: WorkspaceId,
     /// What the tabs and the list call it (`Session::label`), and its participant colour (`Session.colour`).
     pub name: String,
     pub colour: u8,
@@ -145,9 +145,9 @@ pub struct State {
     /// By the file: the disk's stamps of the files the maps are worked out from.
     disk: HashMap<PathBuf, Seen>,
     /// When each session was last seen writing in each file (`clock`) — its tag stays `TAG_STAY` after.
-    wrote: HashMap<(SessionId, PathBuf), std::time::Instant>,
+    wrote: HashMap<(WorkspaceId, PathBuf), std::time::Instant>,
     /// The session whose mark (its sign column bar, its tag) the mouse is over — its tag shows (`hovered`).
-    pub hover: Option<SessionId>,
+    pub hover: Option<WorkspaceId>,
     /// The mouse's cell as it last moved (column, row) — None: away (the terminal lost focus).
     pub hover_at: Option<(usize, usize)>,
 }
@@ -170,7 +170,7 @@ impl State {
     }
 
     /// How long since session `s` was last seen writing, in any file — None: not within its tag's stay and fade.
-    pub fn wrote_since(&self, s: SessionId) -> Option<std::time::Duration> {
+    pub fn wrote_since(&self, s: WorkspaceId) -> Option<std::time::Duration> {
         self.wrote.iter().filter(|((w, _), _)| *w == s).map(|(_, t)| crate::clock::since(*t)).min()
     }
 }
@@ -183,11 +183,11 @@ fn pair(a: &Path, b: &Path) -> (PathBuf, PathBuf) {
 /// Every session's place now — none with one session open (there's no one else to show).
 fn gather(ed: &Editor) -> Vec<Presence> {
     let mut out = Vec::new();
-    if ed.sessions.is_empty() {
+    if ed.workspaces.is_empty() {
         return out;
     }
-    for l in std::iter::once(&ed.session).chain(&ed.sessions) {
-        let Some(c) = l.chat.as_ref().filter(|c| c.busy()) else { continue };
+    for l in std::iter::once(&ed.workspace).chain(&ed.workspaces) {
+        let Some(c) = l.claude.chat.as_ref().filter(|c| c.busy()) else { continue };
         let at = |p: &Path| if p.is_absolute() { p.to_path_buf() } else { l.root.join(p) };
         let turn = c.follow.replay.turns.back();
         let written = |path: &Path| {
@@ -207,7 +207,7 @@ fn gather(ed: &Editor) -> Vec<Presence> {
             out.push(Presence {
                 session: l.id,
                 name: l.label().to_string(),
-                colour: l.colour,
+                colour: l.claude.colour,
                 root: l.root.clone(),
                 path,
                 lines,
@@ -253,16 +253,16 @@ fn gather(ed: &Editor) -> Vec<Presence> {
 /// Whether `p`'s session is still there with its turn under way — what was gathered at the last event, read by a frame
 /// that may come before the next (a session closed, a turn ended between): never drawn then.
 fn live(ed: &Editor, p: &Presence) -> bool {
-    std::iter::once(&ed.session)
-        .chain(&ed.sessions)
-        .any(|l| l.id == p.session && l.chat.as_ref().is_some_and(|c| c.busy()))
+    std::iter::once(&ed.workspace)
+        .chain(&ed.workspaces)
+        .any(|l| l.id == p.session && l.claude.chat.as_ref().is_some_and(|c| c.busy()))
 }
 
 /// The session you follow: the Claude of the workspace in front while its follow is on (following another takes you
 /// into its workspace — `follow::follow_session`).
-pub fn followed(ed: &Editor) -> Option<SessionId> {
-    let c = ed.session.chat.as_ref()?;
-    (c.follow.active() && !ed.background()).then_some(ed.session.id)
+pub fn followed(ed: &Editor) -> Option<WorkspaceId> {
+    let c = ed.workspace.claude.chat.as_ref()?;
+    (c.follow.active() && !ed.background()).then_some(ed.workspace.id)
 }
 
 /// Every event (`handle_event`): the presence as things are now, and the line maps the buffers in sight need asked for
@@ -274,7 +274,7 @@ pub fn sync(ed: &mut Editor) {
     }
     // (each session's writing, where: its tag stays a while after — the rest forgotten once past it)
     let at = crate::clock::now();
-    let writing: Vec<(SessionId, PathBuf)> = ed
+    let writing: Vec<(WorkspaceId, PathBuf)> = ed
         .presence
         .now
         .iter()
@@ -299,9 +299,9 @@ pub fn hovered(ed: &mut Editor, x: usize, y: usize) -> bool {
 }
 
 /// The session whose mark is at (`x`, `y`) on the frame last drawn.
-fn under(ed: &Editor, x: usize, y: usize) -> Option<SessionId> {
+fn under(ed: &Editor, x: usize, y: usize) -> Option<WorkspaceId> {
     ed.screen.session_spots.borrow().iter().find_map(|&(row, a, b, spot)| match spot {
-        crate::session::Spot::Follow(s) if row == y && (a..b).contains(&x) => Some(s),
+        crate::workspace::Spot::Follow(s) if row == y && (a..b).contains(&x) => Some(s),
         _ => None,
     })
 }
@@ -346,7 +346,7 @@ fn tag_shows(ed: &Editor, p: &Presence, lines: &Range<usize>, cursor: usize) -> 
 /// When a frame is next wanted for a tag (`Editor::tick_wanted`): as its stay ends, then every `TAG_STEP` while it
 /// fades — None when no tag is on its clock (an idle tarae isn't woken).
 pub fn tag_wake(ed: &Editor) -> Option<std::time::Duration> {
-    let live = |s: SessionId| ed.presence.now.iter().any(|p| p.session == s && p.here && live(ed, p));
+    let live = |s: WorkspaceId| ed.presence.now.iter().any(|p| p.session == s && p.here && live(ed, p));
     ed.presence
         .wrote
         .iter()
@@ -364,7 +364,7 @@ pub fn tag_wake(ed: &Editor) -> Option<std::time::Duration> {
 
 /// The documents of the panes in front, by id.
 fn in_sight(ed: &Editor) -> Vec<&Document> {
-    let mut ids: Vec<DocId> = ed.session.views.iter().map(|v| v.doc).collect();
+    let mut ids: Vec<DocId> = ed.workspace.views.iter().map(|v| v.doc).collect();
     ids.push(ed.doc().id);
     crate::sorting::sort(&mut ids);
     ids.dedup();
@@ -384,7 +384,7 @@ type Wanted = ((PathBuf, DocId), (Stamp, u64), PathBuf, ropey::Rope);
 /// Line maps for what's in sight: a presence in another checkout at a file shown here, worked out on a worker when
 /// its text or the buffer moved (one at a time each: the last one draws meanwhile); the ones nothing needs dropped.
 fn ask(ed: &mut Editor) {
-    let root = ed.session.root.clone();
+    let root = ed.workspace.root.clone();
     let mut wanted: Vec<Wanted> = Vec::new();
     for d in in_sight(ed) {
         let Some(path) = d.path.as_deref() else { continue };
@@ -511,7 +511,7 @@ fn same_repository(a: &Path, b: &Path) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mark {
     pub lines: Range<usize>,
-    pub session: SessionId,
+    pub session: WorkspaceId,
     pub name: String,
     pub act: Act,
     /// Its participant colour — at full strength for the session you follow (`followed`), the others dim.
@@ -536,7 +536,7 @@ impl Mark {
 /// The presences drawn in `doc` — its own checkout's at their lines, another checkout's of the repository through its
 /// line map (none until that's worked out). None with one session open.
 pub fn marks(ed: &Editor, doc: &Document) -> Vec<Mark> {
-    if ed.sessions.is_empty() || ed.presence.now.is_empty() {
+    if ed.workspaces.is_empty() || ed.presence.now.is_empty() {
         return Vec::new();
     }
     let Some(path) = doc.path.as_deref() else { return Vec::new() };
@@ -576,17 +576,17 @@ pub fn marks(ed: &Editor, doc: &Document) -> Vec<Mark> {
 /// Whose caret and place `doc` shows (`term::draw_text`): the participant colour of the session whose checkout holds
 /// it (the front's for one with no path, or in none), and whether you follow that session.
 pub fn colour_of(ed: &Editor, doc: &Document) -> (u8, bool) {
-    let sessions = || std::iter::once(&ed.session).chain(&ed.sessions);
+    let sessions = || std::iter::once(&ed.workspace).chain(&ed.workspaces);
     let owner = doc
         .path
         .as_deref()
         .and_then(|p| sessions().filter(|l| p.starts_with(&l.root)).max_by_key(|l| l.root.as_os_str().len()))
-        .unwrap_or(&ed.session);
-    (owner.colour, followed(ed) == Some(owner.id))
+        .unwrap_or(&ed.workspace);
+    (owner.claude.colour, followed(ed) == Some(owner.id))
 }
 
 /// Where session `id` is now, as the list says it: `src/term.rs:3614 · writing` (its path from its checkout).
-pub fn at(ed: &Editor, id: SessionId) -> Option<String> {
+pub fn at(ed: &Editor, id: WorkspaceId) -> Option<String> {
     let p = ed.presence.now.iter().find(|p| p.session == id && p.here && live(ed, p))?;
     let rel = p.path.strip_prefix(&p.root).unwrap_or(&p.path).display().to_string();
     Some(match &p.lines {
@@ -596,13 +596,13 @@ pub fn at(ed: &Editor, id: SessionId) -> Option<String> {
 }
 
 /// The file session `id` is in now, from its checkout's top (the session list's `v` — `weave.rs`).
-pub fn path_of(ed: &Editor, id: SessionId) -> Option<String> {
+pub fn path_of(ed: &Editor, id: WorkspaceId) -> Option<String> {
     let p = ed.presence.now.iter().find(|p| p.session == id && p.here && live(ed, p))?;
     Some(p.path.strip_prefix(&p.root).ok()?.to_string_lossy().into_owned())
 }
 
 /// The file session `id` is in now, by its name (`term.rs` — the strip).
-pub fn file_of(ed: &Editor, id: SessionId) -> Option<String> {
+pub fn file_of(ed: &Editor, id: WorkspaceId) -> Option<String> {
     let p = ed.presence.now.iter().find(|p| p.session == id && p.here && live(ed, p))?;
     Some(p.path.file_name()?.to_string_lossy().into_owned())
 }
@@ -610,10 +610,10 @@ pub fn file_of(ed: &Editor, id: SessionId) -> Option<String> {
 /// The other sessions in file `rel` (from the front checkout's top) — its own checkout's or another of the repository's,
 /// each once, where it is first: its name, its colour, what it does there.
 pub fn in_file(ed: &Editor, rel: &Path) -> Vec<(String, u8, Act)> {
-    let root = &ed.session.root;
+    let root = &ed.workspace.root;
     let mut out: Vec<(String, u8, Act)> = Vec::new();
     let mut ps: Vec<&Presence> =
-        ed.presence.now.iter().filter(|p| p.session != ed.session.id && live(ed, p)).collect();
+        ed.presence.now.iter().filter(|p| p.session != ed.workspace.id && live(ed, p)).collect();
     crate::sorting::by_key(&mut ps, |p| !p.here);
     for p in ps {
         let same = p.root == *root || ed.presence.same.get(&pair(root, &p.root)).copied().unwrap_or(false);
@@ -682,7 +682,7 @@ pub fn file_marks(ed: &Editor, rel: &Path) -> (Vec<FileMark>, Vec<String>) {
     }
     // (told apart from every open session, and from a branch named here)
     let mut names: Vec<String> =
-        std::iter::once(&ed.session).chain(&ed.sessions).map(|l| l.label().to_string()).collect();
+        std::iter::once(&ed.workspace).chain(&ed.workspaces).map(|l| l.label().to_string()).collect();
     for w in &who {
         if !names.contains(&w.0) {
             names.push(w.0.clone());

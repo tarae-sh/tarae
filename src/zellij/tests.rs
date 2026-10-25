@@ -46,8 +46,8 @@ fn chatting(ed: &mut Editor) {
     let mut c = Chat::new();
     c.msgs.push(Msg::new(Role::User, "hi", ""));
     c.msgs.push(Msg::new(Role::Assistant, "hello", ""));
-    ed.session.chat = Some(c);
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.claude.chat = Some(c);
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
 }
 
 /// Keys, a frame after each (the chat's view mode is laid out of the last frame).
@@ -74,15 +74,15 @@ fn the_chats_command_twins_run_the_command() {
             true => chatting(&mut ed),
             false => {
                 let c = Chat::new();
-                ed.session.chat = Some(c);
-                ed.session.at = crate::session::At::Chat;
+                ed.workspace.claude.chat = Some(c);
+                ed.workspace.viewer.at = crate::workspace::At::Chat;
             }
         }
         drawn(&mut ed, 160, 40);
         let twin = ed.key_said("C-s");
         assert_eq!(twin, if said { "esc esc :chat-screen" } else { "esc :chat-screen" });
         keys(&mut ed, &format!("{twin} ret"));
-        let c = ed.session.chat.as_ref().unwrap();
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
         assert!(
             c.screen.is_some(),
             "{said}: the screen goes with the next message: {:?}",
@@ -126,7 +126,7 @@ fn a_card_holding_the_keys_lets_go_first() {
     let mut ed = editor(true);
     chatting(&mut ed);
     // (Claude at work: the row where the chat says `answer card`)
-    ed.session.chat.as_mut().unwrap().state = State::Thinking;
+    ed.workspace.claude.chat.as_mut().unwrap().state = State::Thinking;
     card(&mut ed);
     assert!(drawn(&mut ed, 160, 40).contains("esc esc space I answer card"), "the card not holding them yet");
     keys(&mut ed, "C-q");
@@ -135,12 +135,12 @@ fn a_card_holding_the_keys_lets_go_first() {
     let twin = ed.key_said("C-s");
     assert_eq!(twin, "esc esc esc :chat-screen");
     keys(&mut ed, &format!("{twin} ret"));
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert!(c.screen.is_some(), "it ran: {}", said(&ed));
     assert!(c.input.is_empty() && c.msgs.len() == 2, "nothing typed, nothing sent");
     assert_eq!(ed.offers.len(), 1, "the card waits, unanswered");
     // Given the keys again, then back: said the chat's way
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     keys(&mut ed, "C-q C-q");
     assert!(!ed.card_has_keys());
     assert!(said(&ed).contains("keys back — the card waits, esc esc space I answers it"), "{}", said(&ed));
@@ -162,7 +162,7 @@ fn the_edit_review_left_for_the_code_says_the_inbox_and_it_brings_it_back() {
     let mut ed = editor(true);
     reviewing(&mut ed);
     keys(&mut ed, "esc");
-    assert!(ed.session.review.as_ref().is_some_and(|r| r.away), "left, unanswered");
+    assert!(ed.workspace.claude.review.as_ref().is_some_and(|r| r.away), "left, unanswered");
     assert!(
         said(&ed).contains("back to the code — the change waits unanswered, space I answers it"),
         "{}",
@@ -170,7 +170,7 @@ fn the_edit_review_left_for_the_code_says_the_inbox_and_it_brings_it_back() {
     );
     assert!(drawn(&mut ed, 160, 40).contains("space I answer it"), "the header says it too");
     keys(&mut ed, "space I ret");
-    assert!(ed.session.review.as_ref().is_some_and(|r| !r.away), "back in it: {}", said(&ed));
+    assert!(ed.workspace.claude.review.as_ref().is_some_and(|r| !r.away), "back in it: {}", said(&ed));
     assert_eq!(ed.keys_to().region, Region::EditReview);
 }
 
@@ -180,9 +180,9 @@ fn the_edit_review_left_for_the_code_says_the_inbox_and_it_brings_it_back() {
 fn the_edit_review_left_for_the_chat_says_the_chats_way_and_it_brings_it_back() {
     let mut ed = editor(true);
     chatting(&mut ed);
-    ed.session.leave(crate::session::At::Chat);
+    ed.workspace.leave(crate::workspace::At::Chat);
     reviewing(&mut ed);
-    ed.session.review.as_mut().unwrap().from_chat = true;
+    ed.workspace.claude.review.as_mut().unwrap().from_chat = true;
     keys(&mut ed, "esc");
     assert_eq!(ed.keys_to().region, Region::Chat);
     let twin = ed.key_said("C-q");
@@ -192,7 +192,7 @@ fn the_edit_review_left_for_the_chat_says_the_chats_way_and_it_brings_it_back() 
     );
     keys(&mut ed, &format!("{twin} ret"));
     assert_eq!(ed.keys_to().region, Region::EditReview, "back in it: {}", said(&ed));
-    assert!(ed.session.chat.as_ref().unwrap().input.is_empty(), "nothing typed into the chat");
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().input.is_empty(), "nothing typed into the chat");
 }
 
 /// A card stepped aside (`Offer.aside`) isn't the one the way back reaches: the inbox is — and `space I` `enter`
@@ -215,8 +215,8 @@ fn an_aside_card_is_the_inboxs() {
 fn the_chat_taking_the_screen_says_its_way_back_to_the_card() {
     let mut ed = editor(true);
     let c = Chat::new();
-    ed.session.chat = Some(c);
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.claude.chat = Some(c);
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     let what = What::ChangeSet { whose: crate::refactor::Whose::Claude(7), ops: false };
     ed.push_offer(Offer::new(
         "Claude changes 3 files".into(),
@@ -352,12 +352,12 @@ fn the_keys_zellij_takes_are_the_settings() {
         let at = if mine { "session on C-y" } else { "zellij's defaults" };
         // The chat's `C-o point`: zellij's own default takes it, a `C-y` config leaves it
         let c = Chat::new();
-        ed.session.chat = Some(c);
-        ed.session.at = crate::session::At::Chat;
+        ed.workspace.claude.chat = Some(c);
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
         let s = drawn(&mut ed, 160, 40);
         let point = if mine { "C-o point" } else { "esc :chat-point" };
         assert!(s.contains(point), "{at}: {point}\n{s}");
-        ed.session.chat = None;
+        ed.workspace.claude.chat = None;
         // A twin that is a key: the inbox bound to `C-y` too — said where zellij leaves it
         let keys: toml::Table = toml::from_str("[normal]\nC-y = \"inbox\"\n").unwrap();
         ed.keymaps.merge_user(&keys, &mut Vec::new());
@@ -462,8 +462,8 @@ fn the_chats_twin_of_c_q_gives_the_card_the_keys() {
         c.state = State::Thinking;
         c.msgs.push(Msg::new(Role::User, "hi", ""));
         c.msgs.push(Msg::new(Role::Assistant, "hello", ""));
-        ed.session.chat = Some(c);
-        ed.session.at = crate::session::At::Chat;
+        ed.workspace.claude.chat = Some(c);
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
         card(&mut ed);
         let s = drawn(&mut ed, 160, 40);
         let says = if zellij { "esc esc space I answer card" } else { "C-q answer card" };
@@ -482,7 +482,7 @@ fn the_chats_twin_of_c_q_gives_the_card_the_keys() {
         }
         feed(&mut ed, "n");
         assert!(ed.offers.is_empty(), "its n answered it: {:?}", ed.messages.last());
-        assert!(ed.session.chat.as_ref().unwrap().input.is_empty(), "nothing typed into the chat");
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().input.is_empty(), "nothing typed into the chat");
     }
 }
 
@@ -513,9 +513,9 @@ fn the_chats_message_waiting_on_its_card_says_the_way_to_it() {
         let mut ed = editor(zellij);
         let mut c = Chat::new();
         c.input = "look at this".into();
-        ed.session.chat = Some(c);
-        ed.session.at = crate::session::At::Chat;
-        let key_file = ed.session.root.join(".env");
+        ed.workspace.claude.chat = Some(c);
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        let key_file = ed.workspace.root.join(".env");
         crate::reads::ask_own(&mut ed, vec![key_file], crate::reads::Own::Chip("pane#1".into()));
         assert!(crate::reads::pointing_asks(&ed), "its card");
         drawn(&mut ed, 160, 40);
@@ -578,8 +578,8 @@ fn the_empty_chat_says_its_commands_inside_zellij() {
     for zellij in [false, true] {
         let mut ed = editor(zellij);
         let c = Chat::new();
-        ed.session.chat = Some(c);
-        ed.session.at = crate::session::At::Chat;
+        ed.workspace.claude.chat = Some(c);
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
         let s = drawn(&mut ed, 160, 40);
         // (a `:` command says what it does: alone, never `:model for another model`; from the chat's input the
         // way back to the code first — nothing said yet, one `esc`)

@@ -1,5 +1,5 @@
 //! The floating lists (panes P3 steps 7a and 7c): the session list (`sessionpane.rs`) and `:messages`
-//! (`messages.rs`) — the viewer's, not a session's (no member of `Session.groups`), each in a named frame over the
+//! (`messages.rs`) — the viewer's, not a session's (no member of `Workspace.groups`), each in a named frame over the
 //! code and the chat (`Frame::LIST`: 3/5 wide, as tall as its rows up to half the screen, its top at 1/4). One list's
 //! state, keys, search and mouse for both, so the two never drift apart; each kind gives its rows' ids, what its
 //! search matches, its `enter` and its own letters.
@@ -15,8 +15,8 @@
 use crate::editor::Editor;
 use crate::key::{Code, Key, ListMove};
 use crate::pane::GroupKind;
-use crate::session::At;
 use crate::split::PaneId;
+use crate::workspace::At;
 
 /// A floating list while it's up.
 #[derive(Clone, Debug)]
@@ -73,10 +73,10 @@ impl Editor {
         }
     }
 
-    /// Its rows' ids, in its order.
+    /// Its rows' ids, in its order (the session list's: its workspaces' numbers — all this machine's).
     pub fn float_list_ids(&self, kind: GroupKind) -> Vec<u64> {
         match kind {
-            GroupKind::Sessions => self.sessions_in_order().iter().map(|l| l.id).collect(),
+            GroupKind::Sessions => self.sessions_in_order().iter().map(|l| l.id.n).collect(),
             GroupKind::Messages => self.message_ids(),
             _ => Vec::new(),
         }
@@ -117,12 +117,12 @@ impl Editor {
     /// focuses it again), else `card_key`, first in `handle_key`, would still take every key while the list looks lit.
     fn list_takes_keys(&mut self, list: crate::split::PaneId) {
         self.card_focus = None;
-        self.session.at = At::List(list);
+        self.workspace.viewer.at = At::List(list);
     }
 
     /// Kind `kind`'s list has the keys.
     pub fn float_list_keys(&self, kind: GroupKind) -> bool {
-        self.float_list(kind).is_some_and(|p| self.session.docked() == At::List(p.list))
+        self.float_list(kind).is_some_and(|p| self.workspace.docked() == At::List(p.list))
     }
 
     /// The floating list with the keys, if one has them.
@@ -138,7 +138,7 @@ impl Editor {
     /// `q` on a list: it goes, the keys to the code.
     pub fn float_list_close(&mut self, kind: GroupKind) {
         if let Some(p) = self.float_list_place(kind).and_then(Option::take) {
-            self.session.leave(At::List(p.list));
+            self.workspace.leave(At::List(p.list));
         }
         self.float_moving = self.float_moving.filter(|&k| k != kind);
     }
@@ -147,7 +147,7 @@ impl Editor {
     pub(crate) fn float_list_leave(&mut self, kind: GroupKind) {
         if let Some(p) = self.float_list(kind) {
             let list = p.list;
-            self.session.leave(At::List(list));
+            self.workspace.leave(At::List(list));
         }
     }
 

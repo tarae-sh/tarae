@@ -150,7 +150,7 @@ pub fn open(
         start(ed, id, source);
         return Ok(());
     }
-    let kept = ed.session.pages.get(key, crate::clock::now()).filter(|_| !again && saved.is_none());
+    let kept = ed.workspace.pages.get(key, crate::clock::now()).filter(|_| !again && saved.is_none());
     let place =
         super::url::host(key).or_else(|| saved.as_deref().map(name_of)).unwrap_or_else(|| key.to_string());
     let id = made(ed, &place, key, PageOf::new(key, prefer, saved.clone(), want));
@@ -224,7 +224,7 @@ fn start(ed: &mut Editor, id: DocId, source: Source) {
     let way = matches!(source, Source::Fetch).then(|| way_of(ed));
     #[cfg(test)]
     {
-        ed.session.web_fetches += usize::from(way.is_some());
+        ed.workspace.web_fetches += usize::from(way.is_some());
     }
     let Some(p) = page_mut(ed, id) else { return };
     let stop = Stop::default();
@@ -265,10 +265,10 @@ fn got(page: Page, copy: Option<(Instant, Arc<Fetched>)>, fresh: bool) -> Got {
 /// config: never on the main loop); a test's stand-in where it set one.
 fn way_of(ed: &Editor) -> Box<dyn FnOnce(Stop) -> Result<fetch::Way, String> + Send> {
     #[cfg(test)]
-    if let Some(make) = ed.session.web_way.clone() {
+    if let Some(make) = ed.workspace.web_way.clone() {
         return Box::new(move |stop| Ok(make(stop)));
     }
-    let (root, upstream) = (ed.session.root.clone(), ed.config.llm.sandbox_upstream);
+    let (root, upstream) = (ed.workspace.root.clone(), ed.config.llm.sandbox_upstream);
     Box::new(move |stop| fetch::yours(&root, crate::sandbox::upstream_now(upstream), stop))
 }
 
@@ -280,7 +280,7 @@ fn landed(ed: &mut Editor, id: DocId, mine: &Stop, got: Result<Got, String>) {
         crate::event::drop_later(got);
         #[cfg(test)]
         {
-            ed.session.web_dropped += 1;
+            ed.workspace.web_dropped += 1;
         }
         return crate::log::line("web", "info", "a stopped read's result dropped");
     };
@@ -363,7 +363,7 @@ fn filled(ed: &mut Editor, id: DocId, g: Got) {
         && super::open::keeps(f)
     {
         let now = crate::clock::now();
-        let gone = ed.session.pages.put(f.clone(), now);
+        let gone = ed.workspace.pages.put(f.clone(), now);
         crate::event::drop_later(gone);
         super::serve::kept(ed, split_fragment(&f.url).0, now);
     }
@@ -583,7 +583,7 @@ pub fn web_open(ed: &mut Editor) -> Result<(), String> {
     }
     #[cfg(test)]
     {
-        ed.session.web_opened.push(url.clone());
+        ed.workspace.web_opened.push(url.clone());
         ed.set_status(format!("web: {url} handed to your browser"));
         Ok(())
     }
@@ -649,7 +649,7 @@ pub fn stand_in(ed: &mut Editor, url: &str, text: &str) -> DocId {
 pub fn reading_in_sight(ed: &Editor) -> bool {
     let fetching =
         |id: DocId| ed.docs.iter().any(|d| d.id == id && of(d).is_some_and(|p| p.fetching.is_some()));
-    fetching(ed.doc().id) || ed.session.views.iter().any(|v| fetching(v.doc))
+    fetching(ed.doc().id) || ed.workspace.views.iter().any(|v| fetching(v.doc))
 }
 
 /// `:w <path>` on a page: its text as shown, after a first line saying where it came from — an HTML comment, so the

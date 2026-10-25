@@ -1,5 +1,5 @@
 //! Sessions and their bring cards, simulated (detsim P1): two sessions with commits of their own, and at random
-//! the card a rebase leaves pushed (as `rebase_ended` does), `:session-bring`, a frame drawn, `n` or `y` on the
+//! the card a rebase leaves pushed (as `rebase_ended` does), `:workspace-bring`, a frame drawn, `n` or `y` on the
 //! card in front, a switch of sessions, the user taking their time, a new commit in a session — each step's jobs
 //! and their results interleaved by seed. After every step: one bring card a session (frictions28 S1,
 //! `b56cdf41` — the card a rebase left and a later bring's stood side by side). A landing that grades the others
@@ -126,18 +126,18 @@ fn run(choices: Choices) -> Vec<String> {
     let world = World::new();
     let mut sim = Sim::new("sessions_and_bring_cards", choices, LIMIT);
     let mut ed = Editor::new(crate::config::Config::default());
-    (ed.session.root, ed.session.name) = (world.repo.clone(), "proj".into());
-    ed.session.git_branch = Some("main".into());
-    ed.config.session_worktrees = world.dir.join("wt").display().to_string();
+    (ed.workspace.root, ed.workspace.name) = (world.repo.clone(), "proj".into());
+    ed.workspace.git_branch = Some("main".into());
+    ed.config.workspace_worktrees = world.dir.join("wt").display().to_string();
     let mut ids = Vec::new();
     for (name, wt) in &world.sessions {
-        let id = ed.session_open(wt).unwrap();
-        if let Some(l) = ed.session_by_id(id) {
+        let id = ed.workspace_open(wt).unwrap();
+        if let Some(l) = ed.workspace_by_id(id) {
             (l.name, l.branch, l.base) = (name.clone(), Some(name.clone()), Some("main".into()));
         }
         ids.push((id, name.clone(), wt.clone()));
     }
-    ed.session_switch(0);
+    ed.workspace_switch(crate::event::WorkspaceId::HOME);
     let dir = world.dir.display().to_string();
     sim.walk(&mut ed, INPUTS, |sim, ed| input(sim, ed, &ids), one_bring_card, |ed| print(ed, &dir));
     let trace = sim.trace().to_vec();
@@ -147,7 +147,7 @@ fn run(choices: Choices) -> Vec<String> {
 }
 
 /// One of the scenario's steps, said.
-fn input(sim: &mut Sim, ed: &mut Editor, ids: &[(u64, String, PathBuf)]) -> String {
+fn input(sim: &mut Sim, ed: &mut Editor, ids: &[(crate::event::WorkspaceId, String, PathBuf)]) -> String {
     let c = &mut sim.choices;
     let (sid, name, root) = c.pick(ids).clone();
     // (by arm: a rebase's card 3, a bring 3, a frame 3, `n` at once 1, `y` after a frame 1, a switch 2, time
@@ -166,9 +166,9 @@ fn input(sim: &mut Sim, ed: &mut Editor, ids: &[(u64, String, PathBuf)]) -> Stri
             crate::codereview::push_bring_card(ed, sid, m.bring_card(None, true), root, "main".into());
             format!("{name} rebased")
         }
-        1 => match ed.session_bring(&name) {
-            Ok(()) => format!(":session-bring {name}"),
-            Err(e) => format!(":session-bring {name}: {e}"),
+        1 => match ed.workspace_bring(&name) {
+            Ok(()) => format!(":workspace-bring {name}"),
+            Err(e) => format!(":workspace-bring {name}: {e}"),
         },
         2 => {
             crate::term::render(ed, &mut Vec::new(), 112, 30).unwrap();
@@ -181,8 +181,8 @@ fn input(sim: &mut Sim, ed: &mut Editor, ids: &[(u64, String, PathBuf)]) -> Stri
         }
         4 => answer(ed, 'y'),
         5 => {
-            let to = *c.pick(&[0, ids[0].0, ids[1].0]);
-            ed.session_switch(to);
+            let to = *c.pick(&[crate::event::WorkspaceId::HOME, ids[0].0, ids[1].0]);
+            ed.workspace_switch(to);
             format!("session {to} in front")
         }
         6 => {
@@ -223,7 +223,7 @@ fn answer(ed: &mut Editor, key: char) -> String {
 
 /// The cards up and parked, by every session.
 fn cards(ed: &Editor) -> impl Iterator<Item = &Offer> {
-    let parked = std::iter::once(&ed.session).chain(&ed.sessions).flat_map(|l| &l.parked);
+    let parked = std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked);
     ed.offers.iter().chain(parked)
 }
 
@@ -247,15 +247,15 @@ pub(super) fn print(ed: &Editor, dir: &str) -> String {
         let held = |o: &Offer| if o.held.is_some() { " (held)" } else { "" };
         os.iter().map(|o| format!("#{} {}{}", o.id, o.title, held(o))).collect::<Vec<_>>().join(", ")
     };
-    let parked: Vec<String> = std::iter::once(&ed.session)
-        .chain(&ed.sessions)
+    let parked: Vec<String> = std::iter::once(&ed.workspace)
+        .chain(&ed.workspaces)
         .filter(|l| !l.parked.is_empty())
         .map(|l| format!("{}: {}", l.id, said(&l.parked)))
         .collect();
     let last = ed.messages.last().map(|m| m.2.replace(dir, "<dir>")).unwrap_or_default();
     format!(
         "front {} · up [{}] · parked [{}] · said {last:?}",
-        ed.session.id,
+        ed.workspace.id,
         said(&ed.offers),
         parked.join("; ")
     )

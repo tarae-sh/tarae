@@ -80,7 +80,7 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
         "theme" => set(editor, &format!("theme {rest}"), false),
         // A commit message: `:q` cancels (closes it), `:wq`/`:x` commits — not the whole editor
         "q" | "quit" | "q!" | "quit!" if editor.in_commit_message() => {
-            let then_end = editor.session.committing.take().is_some_and(|c| c.then_end);
+            let then_end = editor.workspace.committing.take().is_some_and(|c| c.then_end);
             editor.close_current(true)?;
             editor.set_status(match then_end {
                 true => "commit canceled — the session stays, its changes staged",
@@ -145,33 +145,33 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
         "diff" => editor.diff_against(rest.trim()),
         "diff-off" => editor.diff_off(),
         "weave" => {
-            let path = Some(rest.trim()).filter(|p| !p.is_empty()).map(|p| editor.session.root.join(p));
+            let path = Some(rest.trim()).filter(|p| !p.is_empty()).map(|p| editor.workspace.root.join(p));
             crate::weave::open(editor, path, None)
         }
         "web" => crate::web::open::web(editor, rest, false),
         "web!" => crate::web::open::web(editor, rest, true),
         "web-reader" => crate::web::page::reader(editor, rest),
         "web-open" => crate::web::page::web_open(editor),
-        "session-open" if !rest.trim().is_empty() => {
-            let id = editor.session_open(Path::new(rest.trim()))?;
+        "workspace-open" if !rest.trim().is_empty() => {
+            let id = editor.workspace_open(Path::new(rest.trim()))?;
             let all = editor.sessions_in_order();
             let at = all.iter().position(|l| l.id == id).map_or(all.len(), |i| i + 1);
             let msg =
-                format!("{} · session {at} of {} — space W lists them", editor.session.label(), all.len());
+                format!("{} · session {at} of {} — space W lists them", editor.workspace.label(), all.len());
             editor.set_status(msg);
             Ok(())
         }
-        "session-open" => Err("usage: :session-open <folder> (a worktree or another checkout)".into()),
-        "session-switch" => {
-            let sessions = editor.sessions_listed();
+        "workspace-open" => Err("usage: :workspace-open <folder> (a worktree or another checkout)".into()),
+        "workspace-switch" => {
+            let sessions = editor.workspaces_listed();
             match rest.trim().parse() {
-                Ok(id) if editor.session_switch(id) => Ok(()),
+                Ok(id) if editor.workspace_switch(id) => Ok(()),
                 _ => {
                     let list: Vec<String> = sessions
                         .iter()
                         .map(|(id, name, front)| format!("{id} {name}{}", if *front { " ●" } else { "" }))
                         .collect();
-                    Err(format!("usage: :session-switch <n> — {}", list.join(" · ")))
+                    Err(format!("usage: :workspace-switch <n> — {}", list.join(" · ")))
                 }
             }
         }
@@ -185,9 +185,9 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
             }
             Ok(())
         }
-        "session-end" => editor.session_end(rest),
-        "session-bring" => editor.session_bring(rest),
-        "session-apply" => editor.session_apply(rest),
+        "workspace-end" => editor.workspace_end(rest),
+        "workspace-bring" => editor.workspace_bring(rest),
+        "workspace-apply" => editor.workspace_apply(rest),
         "session-billing" => editor.session_billing(rest),
         // A session's rebase stopped at a conflict (rebase.rs)
         "rebase-continue" => editor.rebase_by_hand(rest, true),
@@ -372,7 +372,7 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
         "chat" => {
             crate::chat::open(editor);
             if !rest.is_empty()
-                && let Some(c) = &mut editor.session.chat
+                && let Some(c) = &mut editor.workspace.claude.chat
             {
                 c.input.set(rest);
                 crate::chat::send(editor);
@@ -645,7 +645,7 @@ pub(crate) fn save_doc(editor: &mut Editor, id: crate::document::DocId, force: b
 
 fn saved(editor: &mut Editor, id: crate::document::DocId) {
     let Some(doc) = editor.docs.iter().find(|d| d.id == id) else { return };
-    let msg = format!("Saved {} · {} lines", doc.display_name(&editor.session.root), doc.text.len_lines());
+    let msg = format!("Saved {} · {} lines", doc.display_name(&editor.workspace.root), doc.text.len_lines());
     editor.set_success(msg);
     editor.lsp_did_save(id);
     editor.undo_persist(id);
@@ -665,7 +665,7 @@ pub(crate) fn quit(editor: &mut Editor, force: bool) -> Result<(), String> {
             .docs
             .iter()
             .filter(|d| d.is_modified() && !d.throwaway)
-            .map(|d| d.display_name(&editor.session.root))
+            .map(|d| d.display_name(&editor.workspace.root))
             .collect();
         if !dirty.is_empty() {
             return Err(format!("unsaved changes: {} (use :q! to discard)", dirty.join(", ")));
@@ -682,7 +682,7 @@ fn shell(editor: &mut Editor, cmd: &str) -> Result<(), String> {
     if cmd.is_empty() {
         return Err("usage: :sh <command>".into());
     }
-    let (cmd, dir) = (cmd.to_string(), editor.session.root.clone());
+    let (cmd, dir) = (cmd.to_string(), editor.workspace.root.clone());
     editor.events.jobs().spawn(move || {
         let result = run_shell(&cmd, &dir);
         move |ed: &mut Editor| match result {
@@ -837,7 +837,7 @@ mod tests {
         let dir = scratch.to_path_buf();
         std::fs::write(dir.join("a.txt"), "one\ntwo\nthree\n").unwrap();
         let mut ed = Editor::new(config::Config::default());
-        ed.session.root = dir.clone();
+        ed.workspace.root = dir.clone();
         execute(&mut ed, "open a.txt:3:2").unwrap();
         assert_eq!(ed.doc().path.as_deref(), Some(dir.join("a.txt").as_path()));
         let head = ed.doc().selection().primary().head;

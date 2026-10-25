@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::editor::Editor;
-use crate::event::SessionId;
+use crate::event::WorkspaceId;
 use crate::sizes::Slot;
 use crate::uistate::{CardState, session_id};
 
@@ -53,9 +53,9 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// Its session's id.
-    pub fn session_id(&self) -> SessionId {
-        self.session[1..].parse().unwrap_or(0)
+    /// The workspace its session works in (the one its Claude was born with — `session::born_with`).
+    pub fn session_id(&self) -> WorkspaceId {
+        self.session[1..].parse::<crate::event::SessionId>().map_or(WorkspaceId::HOME, |s| s.twin())
     }
 
     /// Whether it asks for an answer — a card, an edit, a read, a change set — rather than being news to look
@@ -89,7 +89,7 @@ pub enum Next {
     Go(Box<Entry>),
     /// Nothing waits, and this session behind ended its turn unseen — the first of them to end (its tab's
     /// `done`). Not an entry of the inbox (nothing there asks for an answer): a tail after it.
-    Done(SessionId),
+    Done(WorkspaceId),
     /// Nothing waits, no turn ended unseen.
     None,
 }
@@ -115,7 +115,10 @@ fn ms(since: Instant, now: Instant) -> u64 {
 /// A session's runs of Claude's that have printed nothing for `waits::SILENT` or more, and aren't busy at it
 /// (`Waiting::worth_a_look`): (id as the state names it, the slot it's in, its label, when it last printed,
 /// `no output for 27:04`, and `· its output goes through tail` when a filter holds it).
-fn silent_runs(l: &crate::session::Session, now: Instant) -> Vec<(String, Slot, String, Instant, String)> {
+fn silent_runs(
+    l: &crate::workspace::Workspace,
+    now: Instant,
+) -> Vec<(String, Slot, String, Instant, String)> {
     let mut out = Vec::new();
     if let Some(r) = l.task_run.as_ref().filter(|r| r.by_claude && r.state == crate::task::State::Running)
         && r.wait.worth_a_look(r.started, r.last_output, now)
@@ -187,8 +190,8 @@ impl Editor {
                 (e, now.saturating_duration_since(c.since), seq)
             })
             .collect();
-        for l in std::iter::once(&self.session).chain(&self.sessions) {
-            let s = session_id(l.id);
+        for l in std::iter::once(&self.workspace).chain(&self.workspaces) {
+            let s = session_id(l.claude.id);
             let entry = |id: String, kind, asks: String, since, up| {
                 (
                     Entry { id, session: s.clone(), kind, asks, waited_ms: ms(since, real), up },
@@ -196,7 +199,7 @@ impl Editor {
                     u64::MAX,
                 )
             };
-            if let Some(r) = l.review.as_ref().filter(|r| r.ready) {
+            if let Some(r) = l.claude.review.as_ref().filter(|r| r.ready) {
                 let file = self.docs.iter().find(|d| d.id == r.doc_id).map(|d| d.display_name(&l.root));
                 let change = format!("Change {} of {}", r.current + 1, r.hunks.len());
                 let asks = match file {
@@ -230,7 +233,7 @@ impl Editor {
                 };
                 v.push(entry(format!("rebase#{s}"), "rebase", asks, since, "put-away"));
             }
-            // The user's own change set (`:session-apply`), its files waiting for their review — on logic's
+            // The user's own change set (`:workspace-apply`), its files waiting for their review — on logic's
             // clock, as a card's
             if let Some(set) = l.applying.as_ref().filter(|set| set.waiting() > 0) {
                 let ((what, since), n) = (set.what(), set.waiting());
@@ -246,7 +249,7 @@ impl Editor {
                 };
                 v.push((e, now.saturating_duration_since(since), u64::MAX));
             }
-            let Some(c) = l.chat.as_ref() else { continue };
+            let Some(c) = l.claude.chat.as_ref() else { continue };
             for p in &c.edits.queue {
                 let path = crate::chat::resolve(&l.root, p.input["file_path"].as_str().unwrap_or_default());
                 let asks = format!("Claude's edit to {}", crate::chat::shown(&l.root, &path));
@@ -280,7 +283,7 @@ impl Editor {
     pub(crate) fn silent_wake(&self) -> Option<std::time::Duration> {
         let now = Instant::now();
         let mut next: Option<std::time::Duration> = None;
-        for l in std::iter::once(&self.session).chain(&self.sessions) {
+        for l in std::iter::once(&self.workspace).chain(&self.workspaces) {
             let task = l.task_run.as_ref().filter(|r| r.by_claude && r.state == crate::task::State::Running);
             let test =
                 l.test_run.as_ref().filter(|r| r.by_claude && r.state == crate::testing::RunState::Running);
@@ -300,11 +303,11 @@ impl Editor {
     pub fn next_up(&self) -> Next {
         let inbox = self.inbox();
         let front = !self.background();
-        let own = inbox.iter().position(|e| front && e.asks_answer() && e.session_id() == self.session.id);
+        let own = inbox.iter().position(|e| front && e.asks_answer() && e.session_id() == self.workspace.id);
         let Some(e) = inbox.into_iter().nth(own.unwrap_or(0)) else {
             return self.turns_ended().first().map_or(Next::None, |&id| Next::Done(id));
         };
-        let here = e.session_id() == self.session.id && front;
+        let here = e.session_id() == self.workspace.id && front;
         match e.card() {
             Some(id) if here && self.offers.first().is_some_and(|o| o.id == id && !o.installing()) => {
                 Next::Card(id)
@@ -330,11 +333,11 @@ impl Editor {
                 true
             }
             Next::Done(id) => {
-                let Some(l) = self.sessions.iter().find(|l| l.id == id) else { return false };
-                let ago = l.turn_end.as_ref().map_or(0, |t| ms(t.0, Instant::now()));
+                let Some(l) = self.workspaces.iter().find(|l| l.id == id) else { return false };
+                let ago = l.claude.turn_end.as_ref().map_or(0, |t| ms(t.0, Instant::now()));
                 let ended = crate::term::ago(Duration::from_millis(ago), false);
                 let said = format!("{} · its turn ended {ended}", l.label());
-                self.session_switch(id);
+                self.workspace_switch(id);
                 self.set_status(said);
                 true
             }
@@ -345,10 +348,10 @@ impl Editor {
 
     /// To entry `e`: its session to the front, its card up front (stacked behind another: brought forward),
     /// an edit's review up with the keys, or the next of its queue shown. What was being typed there waits
-    /// (`session_switch` leaves insert mode, a prompt, a picker as it always does).
+    /// (`workspace_switch` leaves insert mode, a prompt, a picker as it always does).
     fn inbox_to(&mut self, e: &Entry) {
         let id = e.session_id();
-        if id != self.session.id && !self.session_switch(id) {
+        if id != self.workspace.id && !self.workspace_switch(id) {
             return;
         }
         if let Some(card) = e.card() {
@@ -357,7 +360,7 @@ impl Editor {
             }
             return;
         }
-        // A reviewer that ended: there now — coming said it (`reviewer::session_in`)
+        // A reviewer that ended: there now — coming said it (`reviewer::workspace_in`)
         if e.kind == "reviewer" {
             return;
         }
@@ -377,7 +380,7 @@ impl Editor {
         // A silent run: its panel in front with the keys — stopping it is the user's call there
         if e.kind == "silent-run" {
             let Some((_, slot, _, _, said)) =
-                silent_runs(&self.session, Instant::now()).into_iter().find(|r| r.0 == e.id)
+                silent_runs(&self.workspace, Instant::now()).into_iter().find(|r| r.0 == e.id)
             else {
                 return self.set_status("that run isn't quiet any more — it printed, or ended");
             };
@@ -394,9 +397,9 @@ impl Editor {
         }
         crate::edits::next(self);
         crate::refactor::next(self);
-        if let Some(r) = self.session.review.as_mut() {
+        if let Some(r) = self.workspace.claude.review.as_mut() {
             r.away = false;
-            self.session.leave(crate::session::At::Chat);
+            self.workspace.leave(crate::workspace::At::Chat);
         }
         // (one behind another of its kind: it comes once that one is answered — said)
         if self.inbox().iter().any(|x| x.id == e.id && x.up == "queued") {
@@ -418,11 +421,11 @@ impl Editor {
 
     /// The inbox's rows: session (with more than one), what it asks · kind and how long it has waited.
     fn inbox_items(&self) -> Vec<crate::picker::Item> {
-        let names: Vec<(String, String)> = std::iter::once(&self.session)
-            .chain(&self.sessions)
-            .map(|l| (session_id(l.id), l.label().to_string()))
+        let names: Vec<(String, String)> = std::iter::once(&self.workspace)
+            .chain(&self.workspaces)
+            .map(|l| (session_id(l.claude.id), l.label().to_string()))
             .collect();
-        let many = !self.sessions.is_empty();
+        let many = !self.workspaces.is_empty();
         self.inbox()
             .into_iter()
             .map(|e| {

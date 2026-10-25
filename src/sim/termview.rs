@@ -98,7 +98,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
     // (by arm: the program prints 4, a key 6, the wheel 2, a frame 2, time passing 1)
     match c.weighted(&[4, 6, 2, 2, 1]) {
         0 => {
-            let Some(generation) = ed.session.terminal.as_ref().map(|t| t.generation()) else {
+            let Some(generation) = ed.workspace.terminal.as_ref().map(|t| t.generation()) else {
                 return "(no terminal)".into();
             };
             // (the reader, as `spawn`'s: a batch is answered as it's read, then handed on once the last one's
@@ -154,7 +154,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
             let up = c.below(2) == 0;
             let row = c.below(8) as u16;
             let kind = if up { MouseKind::ScrollUp } else { MouseKind::ScrollDown };
-            if !ed.session.terminal.as_ref().is_some_and(|t| t.visible) {
+            if !ed.workspace.terminal.as_ref().is_some_and(|t| t.visible) {
                 return "(the terminal's hidden: no wheel over it)".into();
             }
             ed.terminal_mouse(kind, Some((row, 2)), false);
@@ -182,7 +182,7 @@ fn row_text(row: &str) -> String {
 }
 
 fn held(ed: &Editor, world: &World) -> Result<(), String> {
-    let Some(t) = ed.session.terminal.as_ref() else { return Ok(()) };
+    let Some(t) = ed.workspace.terminal.as_ref() else { return Ok(()) };
     let viewed = crate::view::terminal_viewed(ed);
     if t.holding() != viewed {
         return Err(format!("output held {} while viewed {viewed}", t.holding()));
@@ -231,7 +231,9 @@ fn held(ed: &Editor, world: &World) -> Result<(), String> {
                 return Err(format!("row {r}: on the panel {row:?}, the document's line {line} {doc:?}"));
             }
         }
-        if !(ed.session.is_at(crate::session::At::Slot) && ed.slot() == Some(crate::sizes::Slot::Terminal)) {
+        if !(ed.workspace.is_at(crate::workspace::At::Slot)
+            && ed.slot() == Some(crate::sizes::Slot::Terminal))
+        {
             return Err("viewed, its panel without tarae's keys".into());
         }
     }
@@ -239,7 +241,7 @@ fn held(ed: &Editor, world: &World) -> Result<(), String> {
 }
 
 fn print(ed: &Editor) -> String {
-    let t = ed.session.terminal.as_ref();
+    let t = ed.workspace.terminal.as_ref();
     let keys = ed.keys_to().region.name();
     let view = crate::view::terminal_view_of(ed).map(|v| {
         let d = v.doc();

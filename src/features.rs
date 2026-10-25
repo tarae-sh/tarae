@@ -883,7 +883,7 @@ impl Editor {
                     if let Some(spec) = crate::syntax::spec("markdown") {
                         ed.load_language(id, spec);
                     }
-                    ed.session_keeps(id);
+                    ed.workspace_keeps(id);
                 }
             }
         });

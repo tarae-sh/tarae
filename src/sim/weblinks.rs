@@ -44,7 +44,7 @@ fn run(choices: Choices) -> Vec<String> {
     let mut sim = Sim::new("a_link_followed_mid_read_lands_in_its_own_buffer", choices, LIMIT);
     let mut ed = Editor::new(crate::config::Config::default());
     ed.config.llm.sandbox_ports.push(at.port());
-    ed.session.web_way =
+    ed.workspace.web_way =
         Some(std::sync::Arc::new(move |stop| crate::web::fetch::Way { stop, ..base.clone() }));
     let a = format!("web http://localhost:{}/a", at.port());
     let seen = Rc::new(Seen::default());
@@ -54,7 +54,7 @@ fn run(choices: Choices) -> Vec<String> {
         input(sim, ed, &a)
     };
     sim.walk(&mut ed, INPUTS, input, |ed| held(ed, &seen), print);
-    let (fetches, requests) = (ed.session.web_fetches, heads.try_iter().count());
+    let (fetches, requests) = (ed.workspace.web_fetches, heads.try_iter().count());
     sim.at_end(|| match requests <= fetches {
         true => Ok(()),
         false => Err(format!("{requests} requests for {fetches} fetches started")),
@@ -77,7 +77,7 @@ fn print(ed: &Editor) -> String {
         Some(format!("{path}:{state}"))
     };
     let pages: Vec<String> = ed.docs.iter().filter_map(page).collect();
-    format!("front {:?} · pages {pages:?} · dropped {}", page(ed.doc()), ed.session.web_dropped)
+    format!("front {:?} · pages {pages:?} · dropped {}", page(ed.doc()), ed.workspace.web_dropped)
 }
 
 fn input(sim: &mut Sim, ed: &mut Editor, a: &str) -> String {
@@ -104,9 +104,9 @@ fn input(sim: &mut Sim, ed: &mut Editor, a: &str) -> String {
         2 | 3 => {
             let back = *c.pick(&[true, false]) || c.below(2) == 0;
             let (key, said) = if back { ('o', "C-o") } else { ('i', "C-i") };
-            let before = ed.session.web_fetches;
+            let before = ed.workspace.web_fetches;
             keys(ed, &[(key, true)]);
-            assert_eq!(ed.session.web_fetches, before, "{said} fetched");
+            assert_eq!(ed.workspace.web_fetches, before, "{said} fetched");
             said.into()
         }
         4 if ed.docs.len() > 1 => typed(ed, "buffer-close"),

@@ -284,10 +284,10 @@ fn retries_are_said_in_place_in_the_chat() {
     let (mut ed, root) =
         chat_with("retry", &format!("*'\"type\":\"user\"'*) printf '%s\\n' '{}' '{}';;", retry(1), retry(2)));
     crate::chat::open(&mut ed);
-    ed.session.chat.as_mut().unwrap().input = "hello".into();
+    ed.workspace.claude.chat.as_mut().unwrap().input = "hello".into();
     crate::chat::send(&mut ed);
     let said = |ed: &Editor| -> Vec<String> {
-        let c = ed.session.chat.as_ref().unwrap();
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
         c.msgs.iter().filter(|m| m.text.starts_with(RETRY_SAID)).map(|m| m.text.clone()).collect()
     };
     until(&mut ed, "the second retry", |ed| said(ed).iter().any(|s| s.starts_with("API retry 2")));
@@ -333,15 +333,15 @@ fn the_chats_row_says_the_weekly_window_while_on_the_plan() {
         vt.screen().contents()
     };
     ed.limits.seen(Report { readings: vec![weekly], ..Report::default() });
-    assert!(ed.session.chat.as_ref().unwrap().running() && silent != ed.config.llm.args);
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().running() && silent != ed.config.llm.args);
     assert!(!rows(&mut ed).contains("weekly"), "its claude said no credential: no row");
     // (a new conversation — a new claude, one that answers initialize as Claude Code does)
     crate::chat::reset(&mut ed);
-    until(&mut ed, "its answer to initialize", |ed| ed.session.usage.key_source.is_some());
+    until(&mut ed, "its answer to initialize", |ed| ed.workspace.claude.usage.key_source.is_some());
     let shown = format!("weekly 93 % · resets {}", resets(far));
     assert!(rows(&mut ed).contains(&shown), "{shown:?} in\n{}", rows(&mut ed));
     assert!(!rows(&mut ed).contains("not reported"), "before a turn, the weekly window alone");
-    ed.session.usage.key_source = Some("apiKeyHelper".into());
+    ed.workspace.claude.usage.key_source = Some("apiKeyHelper".into());
     assert!(!rows(&mut ed).contains("weekly"), "on a key: not this session's limits");
 }
 
@@ -352,12 +352,12 @@ fn a_new_claude_starts_with_no_credential_said() {
     let mut ed = Editor::new(crate::config::Config::default());
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
-    ed.session.usage.key_source = Some("none".into());
-    ed.session.usage.plan_event = true;
+    ed.workspace.claude.usage.key_source = Some("none".into());
+    ed.workspace.claude.usage.plan_event = true;
     crate::chat::open(&mut ed);
-    assert!(ed.session.chat.as_ref().unwrap().running());
-    assert_eq!(ed.session.usage.key_source, None, "the last claude's credential isn't this one's");
-    assert!(!ed.session.usage.plan_event, "nor its rate_limit_event");
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().running());
+    assert_eq!(ed.workspace.claude.usage.key_source, None, "the last claude's credential isn't this one's");
+    assert!(!ed.workspace.claude.usage.plan_event, "nor its rate_limit_event");
 }
 
 /// A reading that names no reset (`get_usage`'s `five_hour` with nothing used) is current for `FRESH_MS` after
@@ -504,7 +504,7 @@ fn opening_usage_asks_get_usage_only_when_nothing_is_fresh_and_never_twice_in_fl
         crate::usage::open(ed);
         n += 1;
         let sentinel = format!("{{\"sentinel\":{n}}}");
-        assert!(ed.session.chat.as_ref().unwrap().to_claude(sentinel.clone()));
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().to_claude(sentinel.clone()));
         until(ed, "the sentinel", |_| {
             std::fs::read_to_string(root.join("stdin")).is_ok_and(|s| s.contains(&sentinel))
         });
@@ -544,10 +544,10 @@ fn its_own_rate_limit_event_puts_a_session_on_the_plan() {
     };
     // (another claude's reading of the plan, this session's claude not started yet)
     seen(&mut ed, of_event(&event, crate::usage::now_ms()).unwrap());
-    assert!(!ed.session.usage.plan_event);
+    assert!(!ed.workspace.claude.usage.plan_event);
     crate::chat::open(&mut ed);
-    until(&mut ed, "its own event", |ed| ed.session.usage.plan_event);
-    assert_eq!(ed.session.usage.key_source, None, "it said no credential");
+    until(&mut ed, "its own event", |ed| ed.workspace.claude.usage.plan_event);
+    assert_eq!(ed.workspace.claude.usage.key_source, None, "it said no credential");
     assert!(rows(&mut ed).contains("weekly 92 %"), "{}", rows(&mut ed));
     drop(ed);
     std::fs::remove_dir_all(&root).ok();
@@ -565,7 +565,7 @@ fn near_the_limit_the_reset_outlasts_the_turns_cost() {
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
         let now = crate::usage::now_ms();
-        let u = &mut ed.session.usage;
+        let u = &mut ed.workspace.claude.usage;
         // (its claude said it runs on the plan)
         u.key_source = Some("none".into());
         u.fresh("c");
@@ -632,8 +632,8 @@ fn a_chat_says_its_account_and_another_login_is_said_and_restarted_into() {
     let mut ed = Editor::new(crate::config::Config::default());
     on_login(&mut ed, "first@example.test", "Acme");
     crate::chat::open(&mut ed);
-    until(&mut ed, "its account", |ed| ed.session.usage.account.is_some());
-    let a = ed.session.usage.account.clone().unwrap();
+    until(&mut ed, "its account", |ed| ed.workspace.claude.usage.account.is_some());
+    let a = ed.workspace.claude.usage.account.clone().unwrap();
     assert_eq!((a.organization.as_deref(), a.plan.as_deref()), (Some("Acme"), Some("max")));
     // Said: the organization and the plan — the email nowhere
     let far = iso_ms("2099-01-06T01:00:00Z").unwrap();
@@ -653,30 +653,33 @@ fn a_chat_says_its_account_and_another_login_is_said_and_restarted_into() {
     let shown = vt.screen().contents();
     assert!(shown.contains("weekly 93 %") && !shown.contains("max · "), "{shown}");
     let now = crate::usage::now_ms();
-    let r = crate::usage::report("s", &ed.session.usage, &ed.limits, &[], now);
+    let r = crate::usage::report("s", &ed.workspace.claude.usage, &ed.limits, &[], now);
     assert!(r.contains("Account: Acme · plan max."), "{r}");
     let state = ed.ui_state().json();
-    assert_eq!(state["sessions"][0]["account"], json!({"organization": "Acme", "plan": "max"}));
+    assert_eq!(
+        state["workspaces"][0]["sessions"][0]["account"],
+        json!({"organization": "Acme", "plan": "max"})
+    );
     for said in [shown, r, state.to_string(), ed.ui_state_claude().json().to_string(), format!("{a:?}")] {
         assert!(!said.contains("first@"), "the email: {said}");
     }
     // Another session's claude on another login: the limits unknown, said on the chat still on the first
-    let first = ed.session.id;
-    let other = ed.session_open(scratch.path()).unwrap();
-    ed.session_switch(other);
+    let first = ed.workspace.id;
+    let other = ed.workspace_open(scratch.path()).unwrap();
+    ed.workspace_switch(other);
     on_login(&mut ed, "second@example.test", "Acme");
     crate::chat::open(&mut ed);
-    until(&mut ed, "the other's account", |ed| ed.session.usage.account.is_some());
+    until(&mut ed, "the other's account", |ed| ed.workspace.claude.usage.account.is_some());
     assert!(ed.limits.get(WEEKLY, crate::usage::now_ms()).is_none(), "the other account's limits");
-    ed.session_switch(first);
+    ed.workspace_switch(first);
     let note = "another Claude login since this claude started — :claude-restart moves every chat to it";
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert!(
         c.msgs.iter().any(|m| m.text == note),
         "{:?}",
         c.msgs.iter().map(|m| &m.text).collect::<Vec<_>>()
     );
-    let r = crate::usage::report("s", &ed.session.usage, &ed.limits, &[], now);
+    let r = crate::usage::report("s", &ed.workspace.claude.usage, &ed.limits, &[], now);
     assert!(r.contains("Another login since this claude started"), "{r}");
     // The new login's reading (93 %): its own chat's row shows it, the one still on the old login doesn't
     let rows = |ed: &mut Editor| -> String {
@@ -696,29 +699,33 @@ fn a_chat_says_its_account_and_another_login_is_said_and_restarted_into() {
     };
     ed.limits.seen(Report { readings: vec![weekly], ..Report::default() });
     assert!(!rows(&mut ed).contains("weekly"), "the old login's row: {}", rows(&mut ed));
-    ed.session_switch(other);
+    ed.workspace_switch(other);
     assert!(rows(&mut ed).contains("weekly 93 %"), "{}", rows(&mut ed));
-    ed.session_switch(first);
+    ed.workspace_switch(first);
     // A turn of the chat still on the old login: its claude's reading (50 %) is that account's — not kept
-    let generation = ed.session.chat.as_ref().unwrap().generation();
+    let generation = ed.workspace.claude.chat.as_ref().unwrap().generation();
     assert!(crate::chat::submit(&mut ed, "hello", None, None));
     // `:claude-restart` meanwhile: the idle one (the other) started again at once, this busy one at its turn's
     // end — counted apart (typed in the code, not the chat's input)
-    ed.session.leave(crate::session::At::Chat);
+    ed.workspace.leave(crate::workspace::At::Chat);
     for c in ":claude-restart".chars() {
         ed.handle_key(crate::key::Key::plain(crate::key::Code::Char(c)));
     }
     ed.handle_key(crate::key::Key::plain(crate::key::Code::Enter));
     let status = "1 chat started again on the current login · 1 once its turn ends";
     assert!(ed.messages.iter().any(|m| m.2 == status), "{:?}", ed.messages);
-    assert_eq!(ed.session.chat.as_ref().unwrap().generation(), generation, "not before its turn ends");
+    assert_eq!(
+        ed.workspace.claude.chat.as_ref().unwrap().generation(),
+        generation,
+        "not before its turn ends"
+    );
     until(&mut ed, "a new claude after its turn", |ed| {
-        ed.session.chat.as_ref().is_some_and(|c| c.generation() != generation)
+        ed.workspace.claude.chat.as_ref().is_some_and(|c| c.generation() != generation)
     });
     let kept = ed.limits.get(WEEKLY, crate::usage::now_ms()).and_then(|r| r.percent);
     assert_eq!(kept, Some(93), "the old login's 50 % isn't the new account's");
     until(&mut ed, "its account again", |ed| {
-        ed.session.usage.account.as_ref().is_some_and(|b| b.login != a.login)
+        ed.workspace.claude.usage.account.as_ref().is_some_and(|b| b.login != a.login)
     });
 }
 
@@ -733,15 +740,19 @@ fn claude_restart_says_what_it_did_with_none_and_with_a_busy_one() {
     );
     on_login(&mut ed, "first@example.test", "Acme");
     crate::chat::open(&mut ed);
-    until(&mut ed, "its account", |ed| ed.session.usage.account.is_some());
-    let generation = ed.session.chat.as_ref().unwrap().generation();
+    until(&mut ed, "its account", |ed| ed.workspace.claude.usage.account.is_some());
+    let generation = ed.workspace.claude.chat.as_ref().unwrap().generation();
     assert!(crate::chat::submit(&mut ed, "hello", None, None));
     crate::chat::restart_all(&mut ed);
     let said = "1 chat starts again on the current login once its turn ends";
     assert!(ed.messages.iter().any(|m| m.2 == said), "{:?}", ed.messages);
-    assert_eq!(ed.session.chat.as_ref().unwrap().generation(), generation, "not before its turn ends");
+    assert_eq!(
+        ed.workspace.claude.chat.as_ref().unwrap().generation(),
+        generation,
+        "not before its turn ends"
+    );
     until(&mut ed, "a new claude", |ed| {
-        ed.session.chat.as_ref().is_some_and(|c| c.generation() != generation)
+        ed.workspace.claude.chat.as_ref().is_some_and(|c| c.generation() != generation)
     });
 }
 
@@ -752,7 +763,7 @@ fn a_claude_started_on_a_key_keeps_no_account_of_before() {
     let mut ed = Editor::new(crate::config::Config::default());
     on_login(&mut ed, "first@example.test", "Acme");
     crate::chat::open(&mut ed);
-    until(&mut ed, "its account", |ed| ed.session.usage.account.is_some());
+    until(&mut ed, "its account", |ed| ed.workspace.claude.usage.account.is_some());
     let initialized = json!({"type": "control_response", "response": {"subtype": "success",
         "request_id": "tarae-init", "response": {"models": [], "account": {"apiKeySource": "apiKeyHelper"}}}});
     ed.config.llm.args = vec![
@@ -762,11 +773,13 @@ fn a_claude_started_on_a_key_keeps_no_account_of_before() {
         ),
     ];
     crate::chat::reset(&mut ed);
-    until(&mut ed, "its credential", |ed| ed.session.usage.key_source.as_deref() == Some("apiKeyHelper"));
-    assert_eq!(ed.session.usage.account, None);
-    let r = crate::usage::report("s", &ed.session.usage, &ed.limits, &[], crate::usage::now_ms());
+    until(&mut ed, "its credential", |ed| {
+        ed.workspace.claude.usage.key_source.as_deref() == Some("apiKeyHelper")
+    });
+    assert_eq!(ed.workspace.claude.usage.account, None);
+    let r = crate::usage::report("s", &ed.workspace.claude.usage, &ed.limits, &[], crate::usage::now_ms());
     assert!(!r.contains("Account:"), "{r}");
-    assert_eq!(ed.ui_state().json()["sessions"][0]["account"], Value::Null);
+    assert_eq!(ed.ui_state().json()["workspaces"][0]["sessions"][0]["account"], Value::Null);
 }
 
 /// `tarae state` says the account's `limits` (whole percents, unix ms) and each session's `key_source_seen`;
@@ -788,7 +801,7 @@ fn the_state_and_usage_say_the_limits_and_the_credential() {
         readings: vec![reading("seven_day", 93), reading("five_hour", 4)],
         ..Report::default()
     });
-    ed.session.usage.key_source = Some("none".into());
+    ed.workspace.claude.usage.key_source = Some("none".into());
     let v = ed.ui_state().json();
     assert_eq!(
         v["limits"]["seven_day"],
@@ -796,11 +809,11 @@ fn the_state_and_usage_say_the_limits_and_the_credential() {
                                                  "from": "get_usage"})
     );
     assert_eq!(v["limits"]["five_hour"]["percent"], 4);
-    assert_eq!(v["sessions"][0]["key_source_seen"], "none");
-    let report = |ed: &Editor| crate::usage::report("s", &ed.session.usage, &ed.limits, &[], now);
+    assert_eq!(v["workspaces"][0]["sessions"][0]["key_source_seen"], "none");
+    let report = |ed: &Editor| crate::usage::report("s", &ed.workspace.claude.usage, &ed.limits, &[], now);
     let r = report(&ed);
     assert!(r.contains("| 5-hour ") && r.contains("| weekly ") && r.contains("| 93 %"), "{r}");
     assert!(r.contains("`apiKeySource` `none`") && !r.contains("Console"), "{r}");
-    ed.session.usage.key_source = Some("apiKeyHelper".into());
+    ed.workspace.claude.usage.key_source = Some("apiKeyHelper".into());
     assert!(report(&ed).contains("Console, not tarae, is where billing is authoritative"), "{}", report(&ed));
 }

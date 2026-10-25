@@ -43,7 +43,7 @@ fn key(s: &str) -> Key {
 /// A light card: `y` ends the code review (none here — nothing happens). `yours`: asked by the person's last
 /// input — it comes in front of the others. Its id.
 fn light_card(ed: &mut Editor, title: &str, yours: bool) -> u64 {
-    let what = What::ReviewEnd { session: 0, started: Instant::now() };
+    let what = What::ReviewEnd { session: crate::event::WorkspaceId::HOME, started: Instant::now() };
     // (the person's command that asked for it came after the card in front: `offer_place`)
     ed.person_seq += u64::from(yours);
     let was = ed.events.set_asked(yours.then_some(ed.input_seq));
@@ -253,12 +253,12 @@ fn a_review_key_goes_only_from_the_state_it_was_written_for() {
         gone: false,
         binary: false,
     };
-    ed.session.code_review = Some(CodeReview::for_test(Base::Head, dir.to_path_buf(), vec![file]));
+    ed.workspace.code_review = Some(CodeReview::for_test(Base::Head, dir.to_path_buf(), vec![file]));
     for k in ["space", "v", "m"] {
         ed.handle_key(key(k));
     }
     let viewed = |ed: &Editor| {
-        let r = ed.session.code_review.as_ref().unwrap();
+        let r = ed.workspace.code_review.as_ref().unwrap();
         r.viewed(ed, &r.files[0])
     };
     assert!(viewed(&ed), "marked by the person");
@@ -404,11 +404,11 @@ fn a_shuttles_key_doesnt_pause_follow() {
     let id = connect_for_test(&mut ed, "t", Level::Light);
     let mut c = crate::chat::Chat::new();
     c.follow.on = true;
-    ed.session.chat = Some(c);
+    ed.workspace.claude.chat = Some(c);
     assert!(to(&ed).starts_with("pane#"), "the code has the keys");
     crate::follow::watch(&mut ed);
     crate::follow::settle(&mut ed);
-    let paused = |ed: &Editor| ed.session.chat.as_ref().unwrap().follow.paused;
+    let paused = |ed: &Editor| ed.workspace.claude.chat.as_ref().unwrap().follow.paused;
     assert!(here(&mut ed, id, "j").1);
     crate::follow::watch(&mut ed);
     assert!(!paused(&ed), "still following");
@@ -541,7 +541,7 @@ fn a_shuttles_keys_never_edit_taraes_config() {
         std::fs::write(f, "x = 1\n").unwrap();
     }
     let mut ed = editor();
-    ed.session.root = proj.clone();
+    ed.workspace.root = proj.clone();
     // (your change to one, unsaved: `:wa` would write it)
     ed.open(&files[0]).unwrap();
     for k in ["i", "w", "esc"] {
@@ -610,7 +610,7 @@ fn a_key_bound_to_a_lasting_line_runs_nothing_from_a_shuttle() {
     assert!(warnings.is_empty(), "{warnings:?}");
     let id = connect_for_test(&mut ed, "t", Level::Light);
     let before = ed.config.scrolloff;
-    let billing = ed.session.billing;
+    let billing = ed.workspace.claude.billing;
     for (k, line) in [
         ("F9", "set! editor.scrolloff 3"),
         ("F7", "set ui.shuttle-keys weighty"),
@@ -626,7 +626,7 @@ fn a_key_bound_to_a_lasting_line_runs_nothing_from_a_shuttle() {
         assert!(said["why"].as_str().unwrap().ends_with("— not from shuttle t"), "{said}");
     }
     assert_eq!((ed.config.scrolloff, ed.config.shuttle_keys), (before, Level::Light), "nothing ran");
-    assert_eq!(ed.session.billing, billing, "who pays, as it was");
+    assert_eq!(ed.workspace.claude.billing, billing, "who pays, as it was");
     assert!(ed.toasts.iter().any(|t| t.text.contains("a command only your own keys run")), "said");
     assert_eq!(ed.cursor_line(), 0, "the step stopped: no j after it");
     assert!(ed.toasts.iter().any(|t| t.text.contains("saves to your config: yours only")), "said");
@@ -796,7 +796,7 @@ fn a_steps_second_key_finds_the_review_its_first_brought_up() {
     assert_eq!(to(&ed), "edit-review", "the first file's review");
     let (said, landed) = here(&mut ed, id, "y y");
     assert!(landed && said["refused"].is_null(), "both reviews answered: {said}");
-    assert!(ed.session.review.is_none(), "none left");
+    assert!(ed.workspace.claude.review.is_none(), "none left");
 }
 
 /// The grant card is the program's to bring up — so a `y` you were typing as it came (a yank) isn't an answer: it
@@ -817,7 +817,7 @@ fn the_grant_card_takes_no_y_typed_as_it_came() {
 }
 
 /// A grant card dropped unanswered tells the hello waiting on it at once, said in `:messages` — by every path a
-/// card goes: dropped (`drop_cards_for`), parked in a session that ends (`session_close`), lost to a restart
+/// card goes: dropped (`drop_cards_for`), parked in a session that ends (`workspace_close`), lost to a restart
 /// (`restarting`, what `restart::exec` calls before the process is replaced).
 #[test]
 fn a_grant_card_dropped_unanswered_says_so_at_once() {
@@ -833,14 +833,14 @@ fn a_grant_card_dropped_unanswered_says_so_at_once() {
     assert!(ed.messages.iter().any(|m| m.2.starts_with("shuttle one: its card went unanswered (card#")));
     // Parked in a session that ends
     let (_, rx) = say_hello(&mut ed, "two", 42);
-    let other = ed.session_open(dir.path()).unwrap();
-    assert!(ed.session_switch(0) && ed.session.id != other);
+    let other = ed.workspace_open(dir.path()).unwrap();
+    assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME) && ed.workspace.id != other);
     let card = ed.offers.iter().position(|o| o.kind() == "shuttle").unwrap();
     let card = ed.offers.remove(card);
-    ed.sessions.iter_mut().find(|l| l.id == other).unwrap().parked.push(card);
+    ed.workspaces.iter_mut().find(|l| l.id == other).unwrap().parked.push(card);
     ed.handle_event(crate::event::Event::Resize);
     assert_eq!(why(&rx), None, "parked, still up");
-    ed.session_close(dir.path());
+    ed.workspace_close(dir.path());
     ed.handle_event(crate::event::Event::Resize);
     assert_eq!(why(&rx).as_deref(), Some("its card went unanswered — say hello again"));
     // Lost to a restart
@@ -979,7 +979,7 @@ fn every_card() -> Vec<Offer> {
         ahead: Vec::new(),
         lost: Vec::new(),
         entries: Vec::new(),
-        keep: crate::sessionkeep::Plan {
+        keep: crate::workspacekeep::Plan {
             folders: Vec::new(),
             differ: Vec::new(),
             instructions_to: None,
@@ -1041,7 +1041,7 @@ fn every_card() -> Vec<Offer> {
         reach: None,
     };
     let limit = |resets_at_ms: Option<u64>| crate::billing::LimitAsk {
-        session: 0,
+        session: crate::event::WorkspaceId::HOME,
         window: "weekly".into(),
         resets_at_ms,
     };
@@ -1099,12 +1099,12 @@ fn every_card() -> Vec<Offer> {
         })),
         W::SessionNew(Box::new(making(Some("weekly 84 %".into()), vec![("dev".into(), sha())]))),
         W::SessionNew(Box::new(making(None, Vec::new()))),
-        W::SessionEnd(Box::new(ending(Some("b".into()), vec![" M a".into()]))),
-        W::SessionEnd(Box::new(ending(None, Vec::new()))),
+        W::WorkspaceEnd(Box::new(ending(Some("b".into()), vec![" M a".into()]))),
+        W::WorkspaceEnd(Box::new(ending(None, Vec::new()))),
         W::CloseReviewed { doc: 0, force: false },
         W::ChangeSet { whose: crate::refactor::Whose::Claude(999), ops: false },
         W::Commit(Box::new(commit)),
-        W::ReviewEnd { session: 0, started: Instant::now() },
+        W::ReviewEnd { session: crate::event::WorkspaceId::HOME, started: Instant::now() },
         W::Rebase(Box::new(moved())),
         W::RebaseHeld(Box::new(held(Vec::new()))),
         W::RebaseHeld(Box::new(held(vec!["a".into()]))),
@@ -1142,7 +1142,7 @@ fn every_card() -> Vec<Offer> {
                 .into_iter()
                 .enumerate()
                 .map(|(i, conflicts)| crate::keepclose::Ws {
-                    id: i as u64 + 1,
+                    id: crate::event::WorkspaceId::here(i as u64 + 1),
                     name: format!("s{i}"),
                     root: p(),
                     branch: format!("s{i}"),
@@ -1161,7 +1161,7 @@ fn every_card() -> Vec<Offer> {
             bases: vec!["main".into()],
         })),
         W::Board(Box::new(crate::board::Ask {
-            session: 0,
+            session: crate::event::WorkspaceId::HOME,
             name: "s".into(),
             conversation: None,
             taken: Box::new(crate::codereview::Taken::for_test("/p".into())),
@@ -1185,8 +1185,12 @@ fn every_card() -> Vec<Offer> {
         W::Host(Box::new(host(true))),
         W::Host(Box::new(host(false))),
         W::Containers(Box::new(crate::containers::Ask::for_test(vec!["c".into()]))),
-        W::BillingSwitch { session: 0, to: crate::billing::Billing::Subscription, money: false },
-        W::EnvKey { session: 0, message: None },
+        W::BillingSwitch {
+            session: crate::event::WorkspaceId::HOME,
+            to: crate::billing::Billing::Subscription,
+            money: false,
+        },
+        W::EnvKey { session: crate::event::WorkspaceId::HOME, message: None },
         W::Limit(Box::new(limit(Some(1)))),
         W::Limit(Box::new(limit(None))),
         W::FeaturesReset,
@@ -1315,11 +1319,11 @@ fn who_may_not_type() {
     // (a parent of its own, under pid 1 further up: not refused for it — a card asks)
     assert!(hello_as(&mut ed, "t", me, vec![me.pid, 4243, 1]).is_none());
     answer_card(&mut ed, "n");
-    let task = crate::task::Task { name: "check".into(), cmd: "true".into(), cwd: ed.session.root.clone() };
-    ed.session.task_run = Some(crate::task::Run::for_test(task).with_pid(4242));
+    let task = crate::task::Task { name: "check".into(), cmd: "true".into(), cwd: ed.workspace.root.clone() };
+    ed.workspace.task_run = Some(crate::task::Run::for_test(task).with_pid(4242));
     let said = hello_as(&mut ed, "t", me, vec![me.pid, 4242, 1]).unwrap();
     assert_eq!(said["why"], "under a process that runs the project's code (pid 4242)");
-    ed.session.task_run = None;
+    ed.workspace.task_run = None;
     // This tarae is 500, under its shell 501, under the terminal 900. Never a `for`: tarae itself, its shell,
     // its terminal — the last from a peer outside tarae too (one the terminal also runs)
     ed.shuttles.above = Some(vec![500, 501, 900]);
@@ -1395,7 +1399,7 @@ fn a_lit_step_moves_nothing_on_the_status_line() {
     let id = connect_for_test(&mut ed, "claude-code", Level::Light);
     ed.toasts.clear();
     // (a segment after the chip: the branch)
-    ed.session.git_branch = Some("main".into());
+    ed.workspace.git_branch = Some("main".into());
     let status = |ed: &mut Editor| {
         frame(ed);
         let text = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();

@@ -136,7 +136,7 @@ fn turn_review(ed: &mut Editor) {
     let turn = Base::Turn { at: 0, question: "do it".into() };
     let mut r = CodeReview::for_test(turn, "/nowhere/sim".into(), vec![file]);
     r.docs.push(id);
-    ed.session.code_review = Some(r);
+    ed.workspace.code_review = Some(r);
     // (its diff set here, as a diff landing)
     ed.diff_landed(id, ed.doc().version());
 }

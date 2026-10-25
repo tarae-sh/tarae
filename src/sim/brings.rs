@@ -1,6 +1,6 @@
 //! Brought one after another, simulated (frictions29 24): the world of `sim/sessions.rs` — two sessions with
-//! commits of their own — and at random a bring asked (`:session-bring`, its card graded on a worker), one brought
-//! as its card's `y` does (`session_bring_now`, fast-forward only), a new commit in a session, a frame, the user
+//! commits of their own — and at random a bring asked (`:workspace-bring`, its card graded on a worker), one brought
+//! as its card's `y` does (`workspace_bring_now`, fast-forward only), a new commit in a session, a frame, the user
 //! taking their time. A landing grades the other sessions' waiting bring cards again (`bring_regrade`) — its jobs
 //! among the rest, a bring asked meanwhile, another landing. And the bring queue (24 a, `bringqueue.rs`): both
 //! marked, `B`, its card's `y` — the rebase and the quick preflight it starts as tasks stood in for by the
@@ -32,18 +32,18 @@ fn run(choices: Choices) -> Vec<String> {
     let world = World::new();
     let mut sim = Sim::new("brought_one_after_another", choices, LIMIT);
     let mut ed = Editor::new(crate::config::Config::default());
-    (ed.session.root, ed.session.name) = (world.repo.clone(), "proj".into());
-    ed.session.git_branch = Some("main".into());
-    ed.config.session_worktrees = world.dir.join("wt").display().to_string();
+    (ed.workspace.root, ed.workspace.name) = (world.repo.clone(), "proj".into());
+    ed.workspace.git_branch = Some("main".into());
+    ed.config.workspace_worktrees = world.dir.join("wt").display().to_string();
     let mut names = Vec::new();
     for (name, wt) in &world.sessions {
-        let id = ed.session_open(wt).unwrap();
-        if let Some(l) = ed.session_by_id(id) {
+        let id = ed.workspace_open(wt).unwrap();
+        if let Some(l) = ed.workspace_by_id(id) {
             (l.name, l.branch, l.base) = (name.clone(), Some(name.clone()), Some("main".into()));
         }
         names.push((name.clone(), wt.clone()));
     }
-    ed.session_switch(0);
+    ed.workspace_switch(crate::event::WorkspaceId::HOME);
     ed.bring_queue.stand_in = true;
     let dir = world.dir.display().to_string();
     let check = |ed: &Editor| one_bring_card(ed).and_then(|()| queue_held(ed)).and_then(|()| failed_said(ed));
@@ -61,11 +61,11 @@ fn input(sim: &mut Sim, ed: &mut Editor, names: &[(String, std::path::PathBuf)])
     // (by arm: a bring asked 4, one brought 2, a commit 2, a frame 1, time passing 1, the queue asked 1, the
     // queue's task stood in for 3, a bring card's failed preflight 1)
     match c.weighted(&[4, 2, 2, 1, 1, 1, 3, 1]) {
-        0 => match ed.session_bring(&name) {
-            Ok(()) => format!(":session-bring {name}"),
-            Err(e) => format!(":session-bring {name}: {e}"),
+        0 => match ed.workspace_bring(&name) {
+            Ok(()) => format!(":workspace-bring {name}"),
+            Err(e) => format!(":workspace-bring {name}: {e}"),
         },
-        1 => match ed.session_bring_now(&name) {
+        1 => match ed.workspace_bring_now(&name) {
             Ok(()) => format!("{name} brought (its card's y)"),
             Err(e) => format!("{name} brought: {e}"),
         },
@@ -110,8 +110,8 @@ fn preflight_failed(ed: &mut Editor, name: &str, root: &std::path::Path) -> Stri
         moved: 0,
         ahead: 1,
     };
-    ed.with_session(id, |ed| {
-        (ed.session.bring_after_preflight, ed.session.bring_card_after) = (true, Some(Box::new(m)));
+    ed.with_workspace(id, |ed| {
+        (ed.workspace.bring_after_preflight, ed.workspace.bring_card_after) = (true, Some(Box::new(m)));
         ed.rebase_preflight_done(false, "quick preflight");
     });
     format!("{name}'s bring card: p, its preflight failed")
@@ -156,13 +156,13 @@ fn stand_in(ed: &mut Editor, names: &[(String, std::path::PathBuf)], passes: boo
         Stage::Rebasing => {
             let rebased = rebase(root);
             let done = if rebased { Ok(()) } else { Err("its rebase stopped at a conflict".into()) };
-            ed.with_session(id, |ed| {
+            ed.with_workspace(id, |ed| {
                 ed.bring_queue_rebased(done);
             });
             format!("{name}'s rebase {}", if rebased { "done" } else { "stopped: aborted" })
         }
         Stage::Preflight => {
-            ed.with_session(id, |ed| ed.rebase_preflight_done(passes, "quick preflight"));
+            ed.with_workspace(id, |ed| ed.rebase_preflight_done(passes, "quick preflight"));
             format!("{name}'s preflight {}", if passes { "passed" } else { "failed" })
         }
         s => format!("({name}: {s:?}, nothing to stand in for)"),
@@ -193,7 +193,7 @@ fn rebase(root: &std::path::Path) -> bool {
 /// and none says the plain card's words with the failed one's output behind `v` (frictions29 91: a bring asked
 /// again put them over it).
 fn failed_said(ed: &Editor) -> Result<(), String> {
-    let parked = std::iter::once(&ed.session).chain(&ed.sessions).flat_map(|l| &l.parked);
+    let parked = std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked);
     for o in ed.offers.iter().chain(parked) {
         if !matches!(o.what, crate::offer::What::Rebased(_)) {
             continue;
@@ -212,7 +212,8 @@ fn failed_said(ed: &Editor) -> Result<(), String> {
 /// The queue holds each session once, and one under way at most.
 fn queue_held(ed: &Editor) -> Result<(), String> {
     let Some(run) = ed.bring_queue.run.as_ref() else { return Ok(()) };
-    let mut all: Vec<u64> = run.left.iter().copied().chain(run.now.map(|(id, _)| id)).collect();
+    let mut all: Vec<crate::event::WorkspaceId> =
+        run.left.iter().copied().chain(run.now.map(|(id, _)| id)).collect();
     let n = all.len();
     all.sort_unstable();
     all.dedup();

@@ -5,23 +5,23 @@ use std::time::{Duration, Instant};
 
 use super::NOTHING;
 use crate::editor::Editor;
-use crate::event::SessionId;
+use crate::event::WorkspaceId;
 use crate::key::{Code, Key};
 use crate::offer::{Offer, What};
 
 /// An editor in `front`, with sessions for `back` and `third` behind it — folders in the test's own temp
 /// folder.
-fn three(name: &str) -> (Editor, PathBuf, SessionId, SessionId) {
+fn three(name: &str) -> (Editor, PathBuf, WorkspaceId, WorkspaceId) {
     let dir = crate::scratch::Scratch::new(&format!("inbox-{name}")).into_path();
     for p in ["front", "back", "third"] {
         std::fs::create_dir_all(dir.join(p)).unwrap();
     }
     let dir = std::fs::canonicalize(dir).unwrap();
     let mut ed = Editor::new(crate::config::Config::default());
-    (ed.session.root, ed.session.name) = (dir.join("front"), "front".into());
-    let back = ed.session_open(&dir.join("back")).unwrap();
-    let third = ed.session_open(&dir.join("third")).unwrap();
-    assert!(ed.session_switch(0));
+    (ed.workspace.root, ed.workspace.name) = (dir.join("front"), "front".into());
+    let back = ed.workspace_open(&dir.join("back")).unwrap();
+    let third = ed.workspace_open(&dir.join("third")).unwrap();
+    assert!(ed.workspace_switch(WorkspaceId::HOME));
     (ed, dir, back, third)
 }
 
@@ -42,12 +42,12 @@ fn tarae(ago: u64) -> Offer {
     o
 }
 
-fn session(ed: &mut Editor, id: SessionId) -> &mut crate::session::Session {
-    std::iter::once(&mut ed.session).chain(&mut ed.sessions).find(|l| l.id == id).expect("the session")
+fn session(ed: &mut Editor, id: WorkspaceId) -> &mut crate::workspace::Workspace {
+    std::iter::once(&mut ed.workspace).chain(&mut ed.workspaces).find(|l| l.id == id).expect("the session")
 }
 
 /// Card `o` waiting in session `id` (behind), with an id of its own as `push_offer` gives one.
-fn park(ed: &mut Editor, id: SessionId, mut o: Offer) {
+fn park(ed: &mut Editor, id: WorkspaceId, mut o: Offer) {
     ed.offer_seq += 1;
     o.id = ed.offer_seq;
     session(ed, id).parked.push(o);
@@ -102,7 +102,7 @@ fn the_inbox_is_every_sessions_waiting_things_oldest_first() {
         row: None,
         protected: Some(false),
     });
-    session(&mut ed, back).chat = Some(chat);
+    session(&mut ed, back).claude.chat = Some(chat);
     // One downloading: waits for nobody
     let mut busy = tarae(900);
     busy.state = crate::offer::OfferState::Installing(Instant::now());
@@ -176,15 +176,15 @@ fn c_q_goes_to_the_oldest_in_any_session() {
     park(&mut ed, back, claudes(2, 60));
     // (#94: tarae's own card, parked in a session whose turn ended behind)
     park(&mut ed, third, tarae(30));
-    session(&mut ed, third).turn_end = Some((Instant::now(), Ok(())));
+    session(&mut ed, third).claude.turn_end = Some((Instant::now(), Ok(())));
     // The status line counts all of them, every session's
     let rows = screen(&mut ed, 160, 30);
     assert!(rows[29].contains("▲2 waiting"), "{}", rows[29]);
     // C-q: to back's (the oldest), its card up
     feed(&mut ed, "<C-q>");
     // (front's comes meanwhile, the newest: it waits behind)
-    park(&mut ed, 0, claudes(1, 5));
-    assert_eq!(ed.session.id, back, "the one that waited longest");
+    park(&mut ed, WorkspaceId::HOME, claudes(1, 5));
+    assert_eq!(ed.workspace.id, back, "the one that waited longest");
     assert_eq!(ed.offers.first().map(|o| o.title.as_str()), Some("Claude asks 2"));
     assert!(ed.card_has_keys(), "the keys with it");
     assert_eq!(
@@ -197,12 +197,15 @@ fn c_q_goes_to_the_oldest_in_any_session() {
     // C-q: third's — tarae's own card, its turn over (#94) — before front's newer one
     assert!(ed.status.as_ref().is_none_or(|s| s.0 != NOTHING));
     feed(&mut ed, "<C-q>");
-    assert_eq!(ed.session.id, third, "#94: found");
+    assert_eq!(ed.workspace.id, third, "#94: found");
     assert_eq!(ed.offers.first().map(|o| o.title.as_str()), Some("Trust this project's settings?"));
     ed.offers.clear();
     // …then front's
     feed(&mut ed, "<C-q>");
-    assert_eq!((ed.session.id, ed.offers.first().map(|o| o.title.as_str())), (0, Some("Claude asks 1")));
+    assert_eq!(
+        (ed.workspace.id, ed.offers.first().map(|o| o.title.as_str())),
+        (crate::event::WorkspaceId::HOME, Some("Claude asks 1"))
+    );
     assert!(ed.card_has_keys());
     // Nothing anywhere: said
     ed.offers.clear();
@@ -221,14 +224,14 @@ fn c_q_takes_this_sessions_own_card_first() {
     up(&mut ed, claudes(2, 5));
     assert_eq!(ed.inbox()[0].session_id(), back, "the list: oldest first");
     feed(&mut ed, "<C-q>");
-    assert_eq!(ed.session.id, 0, "stays here");
+    assert_eq!(ed.workspace.id, WorkspaceId::HOME, "stays here");
     assert!(ed.card_has_keys(), "this session's card has the keys");
     assert_eq!(ed.offers.first().map(|o| o.title.as_str()), Some("Claude asks 2"));
     feed(&mut ed, "n");
     assert!(ed.offers.is_empty() && !ed.card_has_keys());
     // Answered: then the rest, by age
     feed(&mut ed, "<C-q>");
-    assert_eq!((ed.session.id, ed.offers.first().map(|o| o.title.as_str())), (back, Some("Claude asks 1")));
+    assert_eq!((ed.workspace.id, ed.offers.first().map(|o| o.title.as_str())), (back, Some("Claude asks 1")));
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -278,7 +281,7 @@ fn the_order_is_by_each_ones_wait_on_its_own_clock() {
         row: None,
         protected: Some(false),
     });
-    session(&mut ed, back).chat = Some(chat);
+    session(&mut ed, back).claude.chat = Some(chat);
     sim.wait(Duration::from_secs(600));
     let ids: Vec<String> = ed.inbox().into_iter().map(|e| e.id).collect();
     assert_eq!(ids, [format!("card#{}", ed.offers[0].id), format!("edit#s{back}:e1")]);
@@ -295,7 +298,7 @@ fn inside_zellij_space_i_enter_reaches_the_card_as_c_q_does() {
     park(&mut ed, back, claudes(1, 20));
     assert_eq!(ed.key_said("C-q"), "space I");
     feed(&mut ed, "<space>I<ret>");
-    assert_eq!(ed.session.id, back, "went to the card's session");
+    assert_eq!(ed.workspace.id, back, "went to the card's session");
     assert_eq!(ed.offers.first().map(|o| o.title.as_str()), Some("Claude asks 1"));
     feed(&mut ed, "n");
     assert!(ed.offers.is_empty(), "its n answered it: {:?}", ed.messages.last());
@@ -312,19 +315,19 @@ fn inside_zellij_c_qs_twin_reaches_what_c_q_goes_to() {
     let mut c = crate::chat::Chat::new();
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "hi", ""));
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "hello", ""));
-    ed.session.chat = Some(c);
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.claude.chat = Some(c);
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     park(&mut ed, back, claudes(1, 20));
     assert_eq!(ed.key_said("C-q"), "esc esc space I");
     screen(&mut ed, 160, 30);
     feed(&mut ed, "<esc>");
     screen(&mut ed, 160, 30);
     feed(&mut ed, "<esc><space>I<ret>");
-    assert_eq!(ed.session.id, back, "went to the card's session");
+    assert_eq!(ed.workspace.id, back, "went to the card's session");
     feed(&mut ed, "n");
     assert!(ed.offers.is_empty(), "its n answered it: {:?}", ed.messages.last());
     // Nothing waits, third's turn ended: the session list
-    session(&mut ed, third).turn_end = Some((Instant::now() - Duration::from_secs(30), Ok(())));
+    session(&mut ed, third).claude.turn_end = Some((Instant::now() - Duration::from_secs(30), Ok(())));
     assert_eq!(ed.next_up(), super::Next::Done(third));
     assert_eq!(ed.key_said("C-q"), "space W");
     assert_eq!(ed.c_q_place(crate::zellij::Reach::Sessions), "space W");
@@ -347,10 +350,10 @@ fn inside_zellij_or_not_the_toast_for_a_session_left_waiting_says_its_key() {
         // `esc esc space I` — read later, from anywhere, the toast names only the inbox)
         let mut c = crate::chat::Chat::new();
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "hi", ""));
-        session(&mut ed, back).chat = Some(c);
-        session(&mut ed, back).at = crate::session::At::Chat;
+        session(&mut ed, back).claude.chat = Some(c);
+        session(&mut ed, back).viewer.at = crate::workspace::At::Chat;
         up(&mut ed, claudes(1, 20));
-        assert!(ed.session_switch(back));
+        assert!(ed.workspace_switch(back));
         let says = if twins {
             "front · waits for you — space I lists it"
         } else {
@@ -376,7 +379,7 @@ fn inside_zellij_a_panels_twin_of_c_q_goes_back_first() {
     feed(&mut ed, "<esc>");
     assert!(matches!(ed.keys_to().region, crate::uistate::Region::Code), "esc: the code");
     feed(&mut ed, "<space>I<ret>");
-    assert_eq!(ed.session.id, back, "went to the card's session");
+    assert_eq!(ed.workspace.id, back, "went to the card's session");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -394,28 +397,28 @@ fn c_q_from_a_chat_holding_the_keys_reaches_the_card() {
         c
     };
     // The chat open and focused here; the card parked behind
-    ed.session.chat = Some(chat(false));
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.claude.chat = Some(chat(false));
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     park(&mut ed, back, claudes(1, 20));
     assert!(ed.ui_state().text().contains("keys → chat"), "{}", ed.ui_state().text());
     // (that session's own chat holding the keys too)
-    session(&mut ed, back).chat = Some(chat(false));
-    session(&mut ed, back).at = crate::session::At::Chat;
+    session(&mut ed, back).claude.chat = Some(chat(false));
+    session(&mut ed, back).viewer.at = crate::workspace::At::Chat;
     feed(&mut ed, "<C-q>");
-    assert_eq!(ed.session.id, back, "C-q went to the card's session");
+    assert_eq!(ed.workspace.id, back, "C-q went to the card's session");
     assert_eq!(ed.offers.first().map(|o| o.title.as_str()), Some("Claude asks 1"));
     // …and the card has the keys: one C-q, not one to get there and another to answer
     feed(&mut ed, "n");
     assert!(ed.offers.is_empty(), "its n answered it: {:?}", ed.messages.last());
-    assert!(ed.session.chat.as_ref().unwrap().input.is_empty(), "nothing typed into the chat there");
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().input.is_empty(), "nothing typed into the chat there");
     // Minimized while Claude works, holding the keys: a card up here
-    ed.session.chat = Some(chat(true));
-    ed.session.at = crate::session::At::Chat;
-    assert!(ed.session.chat.as_ref().unwrap().compact());
+    ed.workspace.claude.chat = Some(chat(true));
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().compact());
     up(&mut ed, claudes(2, 5));
     feed(&mut ed, "<C-q>n");
     assert!(ed.offers.is_empty(), "its n answered it: {:?}", ed.messages.last());
-    assert!(ed.session.chat.as_ref().unwrap().input.is_empty(), "nothing typed into the chat");
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().input.is_empty(), "nothing typed into the chat");
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -436,14 +439,14 @@ fn a_quiet_run_still_working_stays_out_of_the_inbox() {
     // Working: out
     let mut r = run("cargo test 2>&1 | grep -E 'result' | tail -60");
     r.wait.looked(240.0, Instant::now());
-    ed.session.task_run = Some(r);
+    ed.workspace.task_run = Some(r);
     assert_eq!(said(&ed), None, "a run using the CPU behind its filter");
     // Its own time limit half gone: in, working or not
-    let r = ed.session.task_run.as_mut().unwrap();
+    let r = ed.workspace.task_run.as_mut().unwrap();
     r.wait.limited(then, Some(Duration::from_secs(600)));
     assert!(said(&ed).is_some_and(|l| l.contains("its output goes through grep")), "{:?}", said(&ed));
     // Idle for minutes as well: in, the filter said
-    let r = ed.session.task_run.as_mut().unwrap();
+    let r = ed.workspace.task_run.as_mut().unwrap();
     r.wait.limited(then, None);
     r.wait.looked(0.0, then);
     let l = said(&ed).expect("idle and quiet: in the inbox");
@@ -451,7 +454,7 @@ fn a_quiet_run_still_working_stays_out_of_the_inbox() {
     // No filter: said as before
     let mut r = run("cargo test");
     r.wait.looked(0.0, then);
-    ed.session.task_run = Some(r);
+    ed.workspace.task_run = Some(r);
     assert!(said(&ed).is_some_and(|l| !l.contains("goes through")), "{:?}", said(&ed));
     // `C-q` takes the user to its panel, as for any quiet run
     feed(&mut ed, "<C-q>");
@@ -471,7 +474,7 @@ fn a_card_waiting_comes_before_a_run_only_quiet() {
     (r.state, r.by_claude) = (State::Running, true);
     let Some(then) = Instant::now().checked_sub(Duration::from_secs(228)) else { return };
     r.last_output = then;
-    ed.session.task_run = Some(r);
+    ed.workspace.task_run = Some(r);
     park(&mut ed, back, claudes(1, 20));
     let inbox = ed.inbox();
     let kinds: Vec<&str> = inbox.iter().map(|e| e.kind).collect();
@@ -480,14 +483,14 @@ fn a_card_waiting_comes_before_a_run_only_quiet() {
     assert_eq!(ed.ui_state().inbox.iter().map(|e| e.kind).collect::<Vec<_>>(), kinds);
     // C-q: to back's card, not the quiet run's panel here
     feed(&mut ed, "<C-q>");
-    assert_eq!(ed.session.id, back);
+    assert_eq!(ed.workspace.id, back);
     assert_eq!(ed.offers.first().map(|o| o.title.as_str()), Some("Claude asks 1"));
     assert!(ed.card_has_keys(), "focused there");
     feed(&mut ed, "n");
     assert!(ed.offers.is_empty());
     // Answered: C-q now goes to the quiet run, its panel with the keys
     feed(&mut ed, "<C-q>");
-    assert_eq!(ed.session.id, 0);
+    assert_eq!(ed.workspace.id, WorkspaceId::HOME);
     assert_eq!(ed.slot(), Some(crate::sizes::Slot::Task));
     assert!(ed.bottom_has_keys());
     std::fs::remove_dir_all(&dir).ok();
@@ -500,24 +503,24 @@ fn a_card_waiting_comes_before_a_run_only_quiet() {
 fn c_q_goes_to_a_finished_session_when_nothing_waits() {
     let (mut ed, dir, back, third) = three("done");
     let ago = |s: u64| Some((Instant::now() - Duration::from_secs(s), Ok(())));
-    session(&mut ed, back).turn_end = ago(30);
-    session(&mut ed, third).turn_end = ago(200);
+    session(&mut ed, back).claude.turn_end = ago(30);
+    session(&mut ed, third).claude.turn_end = ago(200);
     assert!(ed.inbox().is_empty(), "a turn's end asks nothing");
     assert_eq!(ed.next_up(), super::Next::Done(third));
     // A card comes meanwhile: it goes first
     park(&mut ed, back, claudes(1, 1));
     feed(&mut ed, "<C-q>");
-    assert_eq!((ed.session.id, ed.offers.first().map(|o| o.title.as_str())), (back, Some("Claude asks 1")));
+    assert_eq!((ed.workspace.id, ed.offers.first().map(|o| o.title.as_str())), (back, Some("Claude asks 1")));
     ed.offers.clear();
     // (back was looked at with it: its `done` went)
-    assert!(session(&mut ed, back).turn_end.is_none());
+    assert!(session(&mut ed, back).claude.turn_end.is_none());
     // Then third's turn end, said with how long ago
     feed(&mut ed, "<C-q>");
-    assert_eq!(ed.session.id, third);
+    assert_eq!(ed.workspace.id, third);
     assert!(ed.status.as_ref().is_some_and(|s| s.0 == "third · its turn ended 3m ago"), "{:?}", ed.status);
     // Nothing left
     feed(&mut ed, "<C-q>");
-    assert_eq!(ed.session.id, third);
+    assert_eq!(ed.workspace.id, third);
     assert!(ed.status.as_ref().is_some_and(|s| s.0 == NOTHING), "{:?}", ed.status);
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -554,7 +557,7 @@ fn the_list_goes_to_the_one_picked_and_its_card_takes_the_keys() {
     // The second row, enter: back in front, its card up with the keys — `y` answers it there
     feed(&mut ed, "<down><ret>");
     assert!(ed.picker.is_none());
-    assert_eq!(ed.session.id, back);
+    assert_eq!(ed.workspace.id, back);
     assert_eq!(ed.offers.first().map(|o| o.title.as_str()), Some("Claude asks 1"));
     assert!(ed.card_has_keys(), "answered there");
     // Answered meanwhile: the list follows; empty, it closes and says so

@@ -132,7 +132,7 @@ pub struct Run {
 }
 
 fn rel(ed: &Editor, p: &std::path::Path) -> String {
-    p.strip_prefix(&ed.session.root).unwrap_or(p).display().to_string()
+    p.strip_prefix(&ed.workspace.root).unwrap_or(p).display().to_string()
 }
 
 /// A side panel row's id: what it stands for, in its tab's words.
@@ -146,7 +146,7 @@ pub(crate) fn side_id(ed: &Editor, tab: &str, l: &crate::sidebar::Line) -> Strin
             let line = doc.text.byte_to_line((*at).min(doc.text.len_bytes())) + 1;
             format!("{tab}:{}@{line}", l.label)
         }
-        T::Item(i) => match ed.session.qlist.as_ref().and_then(|q| q.items.get(*i)) {
+        T::Item(i) => match ed.workspace.qlist.as_ref().and_then(|q| q.items.get(*i)) {
             Some(it) => format!("{tab}:{}:{}", rel(ed, &it.path), it.line + 1),
             None => format!("{tab}:{}", l.label),
         },
@@ -177,22 +177,22 @@ impl Editor {
         p.covered = covered;
         // The code: each pane, its lines on screen
         for (view, _, _, rows) in &s.panes {
-            let Some(v) = self.session.views.iter().find(|v| v.id == *view) else { continue };
+            let Some(v) = self.workspace.views.iter().find(|v| v.id == *view) else { continue };
             let Some(doc) = self.docs.iter().find(|d| d.id == v.doc) else { continue };
             let lines = rows.iter().map(|r| r.0);
             let (lo, hi) = (lines.clone().min().unwrap_or(0), lines.max().unwrap_or(0));
             let head = doc.selection().primary().cursor(&doc.text).min(doc.text.len_bytes());
             p.code.push(Pane {
                 id: format!("pane#{view}"),
-                path: doc.display_name(&self.session.root),
+                path: doc.display_name(&self.workspace.root),
                 lines: (lo + 1, hi + 1),
-                focused: *view == self.session.focus,
+                focused: *view == self.workspace.viewer.focus,
                 cursor_line: doc.text.byte_to_line(head) + 1,
                 version: doc.version(),
             });
         }
         // The side panel: the rows `term.rs` drew (screen row, list row)
-        if let Some(sb) = self.session.sidebar.as_ref().filter(|_| s.side_w > 0) {
+        if let Some(sb) = self.workspace.viewer.sidebar.as_ref().filter(|_| s.side_w > 0) {
             let tab = super::side_tab(sb.mode);
             let lines = sb.lines();
             let rows = s
@@ -210,10 +210,11 @@ impl Editor {
                     })
                 })
                 .collect();
-            p.side = Some((tab.to_string(), self.session.is_at(crate::session::At::Side), rows, lines.len()));
+            p.side =
+                Some((tab.to_string(), self.workspace.is_at(crate::workspace::At::Side), rows, lines.len()));
         }
         // The code review: its rail's file rows as drawn
-        if let Some(r) = self.session.code_review.as_ref() {
+        if let Some(r) = self.workspace.code_review.as_ref() {
             let marked = r.marked(self);
             let rows = s
                 .review_rail
@@ -236,7 +237,7 @@ impl Editor {
                 files: r.files.len(),
                 viewed: r.files.iter().filter(|f| r.viewed(self, f)).count(),
                 file: marked.and_then(|i| r.files.get(i)).map(|f| f.rel.clone()),
-                focused: self.session.is_at(crate::session::At::Rail),
+                focused: self.workspace.is_at(crate::workspace::At::Rail),
                 rows,
                 high: r
                     .high_unseen(self)
@@ -244,10 +245,10 @@ impl Editor {
                     .map(|(i, at)| format!("{}:{}", r.files[i].rel, at + 1))
                     .collect(),
                 // (the session's last run, whatever review is open: it reads a snapshot of its own — bgreview)
-                reviewer: self.session.reviewer.as_ref().map(|v| {
+                reviewer: self.workspace.reviewer.as_ref().map(|v| {
                     let state = match v.state {
                         crate::reviewer::State::Waiting | crate::reviewer::State::Reading
-                            if crate::reviewer::waits(self, &self.session) =>
+                            if crate::reviewer::waits(self, &self.workspace) =>
                         {
                             "waiting"
                         }
@@ -259,9 +260,9 @@ impl Editor {
                 }),
             });
         }
-        if let Some(r) = self.session.review.as_ref().filter(|r| r.ready) {
+        if let Some(r) = self.workspace.claude.review.as_ref().filter(|r| r.ready) {
             let file =
-                self.docs.iter().find(|d| d.id == r.doc_id).map(|d| d.display_name(&self.session.root));
+                self.docs.iter().find(|d| d.id == r.doc_id).map(|d| d.display_name(&self.workspace.root));
             p.edit_review = Some(EditReview {
                 id: r.generation,
                 file: file.unwrap_or_default(),
@@ -297,7 +298,7 @@ impl Editor {
             }
         }
         // The follow card's strip (motion §4): its marks on screen — `stop:<call>`, what a hover says, the one in hand
-        if let Some(c) = self.session.chat.as_ref() {
+        if let Some(c) = self.workspace.claude.chat.as_ref() {
             let marks = crate::follow::strip(c);
             let rows: Vec<Row> = s
                 .stop_marks
@@ -334,9 +335,9 @@ impl Editor {
             let front = self.slot().map(|f| super::slot_name(f).to_string());
             p.slot = Some(SlotPanel { tabs, front, keys: self.bottom_has_keys() });
         }
-        if let Some(c) = self.session.chat.as_ref() {
+        if let Some(c) = self.workspace.claude.chat.as_ref() {
             p.chat = Some(Chat {
-                focused: self.session.is_at(crate::session::At::Chat),
+                focused: self.workspace.is_at(crate::workspace::At::Chat),
                 minimized: c.compact(),
                 busy: c.busy(),
                 queued: c.queued.is_some() || !c.sends.is_empty(),
@@ -354,8 +355,8 @@ impl Editor {
         let now = std::time::Instant::now();
         let ms = |d: std::time::Duration| d.as_millis() as u64;
         let mut out = Vec::new();
-        for l in std::iter::once(&self.session).chain(&self.sessions) {
-            let session = super::session_id(l.id);
+        for l in std::iter::once(&self.workspace).chain(&self.workspaces) {
+            let session = super::session_id(l.claude.id);
             if let Some(r) = &l.task_run {
                 use crate::task::State as S;
                 let preflight = l.preflight.as_ref().is_some_and(|p| p.generation == r.generation());

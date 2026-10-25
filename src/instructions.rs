@@ -391,15 +391,15 @@ pub fn look_out_of(root: &Path) -> Vec<Both> {
 pub(crate) fn push_card(ed: &mut Editor, b: Both) {
     let ended = b.ended;
     let mine = |o: &Offer| matches!(&o.what, What::Instructions(x) if x.root == b.root && x.rel == b.rel && x.out == b.out);
-    let waiting: Vec<u64> = std::iter::once(&ed.session)
-        .chain(&ed.sessions)
+    let waiting: Vec<u64> = std::iter::once(&ed.workspace)
+        .chain(&ed.workspaces)
         .flat_map(|l| &l.parked)
         .chain(&ed.offers)
         .filter(|o| mine(o))
         .map(|o| o.id)
         .collect();
     ed.offers.retain(|o| !mine(o));
-    for l in std::iter::once(&mut ed.session).chain(&mut ed.sessions) {
+    for l in std::iter::once(&mut ed.workspace).chain(&mut ed.workspaces) {
         l.parked.retain(|o| !mine(o));
     }
     let mut card = b.card();
@@ -452,17 +452,17 @@ impl Look {
 /// The front session's checkout, a session's own (not the main checkout), looked at on a worker — as its
 /// claude starts (`chat::ensure_proc`) and after its rebase (`rebase.rs`).
 pub fn follow(ed: &mut Editor) {
-    if ed.session.id == 0 {
+    if ed.workspace.id == crate::event::WorkspaceId::HOME {
         return;
     }
-    let state = &mut ed.session.instructions;
+    let state = &mut ed.workspace.instructions;
     if state.under_way || state.answering > 0 {
         state.again = true;
         return;
     }
     state.under_way = true;
     let asked = state.answered;
-    let root = ed.session.root.clone();
+    let root = ed.workspace.root.clone();
     let dirty: Vec<PathBuf> =
         ed.docs.iter().filter(|d| d.is_modified()).filter_map(|d| d.path.clone()).collect();
     ed.events.jobs().spawn(move || {
@@ -472,7 +472,7 @@ pub fn follow(ed: &mut Editor) {
             .and_then(|r| crate::worktree::main_checkout(&r.common_dir, &real));
         let found = main.map(|main| look(&real, &main, &dirty)).unwrap_or_default();
         move |ed: &mut Editor| {
-            let (state, mut found) = (&mut ed.session.instructions, found);
+            let (state, mut found) = (&mut ed.workspace.instructions, found);
             state.under_way = false;
             // (answered meanwhile: what it read may be from before the answer's write — looked at again after it)
             if state.answered != asked {
@@ -487,7 +487,7 @@ pub fn follow(ed: &mut Editor) {
 
 /// A look asked meanwhile, once nothing's being written.
 fn again(ed: &mut Editor) {
-    let state = &mut ed.session.instructions;
+    let state = &mut ed.workspace.instructions;
     if state.answering == 0 && std::mem::take(&mut state.again) {
         follow(ed);
     }
@@ -506,7 +506,7 @@ fn said(ed: &mut Editor, found: Found) {
         ed.set_success(format!(
             "{names} updated from the main checkout — Claude reads it from its next start"
         ));
-        ed.session.checkpoints.tell.push(format!(
+        ed.workspace.claude.checkpoints.tell.push(format!(
             "The user's instruction files {names} were updated here from the main checkout (this session's copy \
              was untouched); what you were started with is older — read them again before you rely on them."
         ));
@@ -597,7 +597,7 @@ pub fn answer(ed: &mut Editor, b: Both, take: bool) {
         };
         keep_both(&dir, &b.rel, &b.main, &own).map(|_| false).map_err(|e| e.to_string())
     };
-    let state = &mut ed.session.instructions;
+    let state = &mut ed.workspace.instructions;
     (state.answered, state.answering) = (state.answered + 1, state.answering + 1);
     #[cfg(test)]
     let held = state.held.take();
@@ -608,7 +608,7 @@ pub fn answer(ed: &mut Editor, b: Both, take: bool) {
         }
         let done = work();
         move |ed: &mut Editor| {
-            ed.session.instructions.answering -= 1;
+            ed.workspace.instructions.answering -= 1;
             match out {
                 true => answered_out(ed, rel, done, take),
                 false => answered(ed, rel, done.map(|_| ()), take),
@@ -641,7 +641,7 @@ fn answered(ed: &mut Editor, rel: String, done: Result<(), String>, take: bool) 
             ed.set_success(format!(
                 "{rel} takes the main checkout's changes — Claude reads it from its next start"
             ));
-            ed.session.checkpoints.tell.push(format!(
+            ed.workspace.claude.checkpoints.tell.push(format!(
                 "The user took the main checkout's changes to {rel} into this session's; what you were started \
                  with is older — read it again before you rely on it."
             ));

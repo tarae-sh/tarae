@@ -2,7 +2,7 @@
 //! preflight's, `:procs`' — leaves the slot and docks beside the code, a leaf of the session's tree of its own
 //! (`Shows::Group`): `C-w L` right of the code's column (left of the chat), `C-w H` left of it (right of the side
 //! panel or the rail), `C-w K` above it in its column; `C-w J` brings it back to the slot. The keys of its members are
-//! the ones they have in the slot (§3.3: `At::List`, `At::Slot` with `Session.hand`); the slot leaves it out of its
+//! the ones they have in the slot (§3.3: `At::List`, `At::Slot` with `Viewer.hand`); the slot leaves it out of its
 //! tabs (`slot_shown`) while it's docked in sight.
 //!
 //! Its place is kept per kind (`Group.place`) while its runs come and go: closed, its leaf takes no room (the code
@@ -13,9 +13,9 @@
 
 use crate::editor::Editor;
 use crate::pane::{Group, GroupKind, Pane, Place, Shows, Side};
-use crate::session::At;
 use crate::sizes::{CODE_MIN, CODE_ROOM, Slot};
 use crate::split::{Dir, PaneId, Share, Split};
+use crate::workspace::At;
 
 /// A group docked beside the code is at least this wide (its edge cell in it) — narrower, it folds into the slot.
 pub const DOCK_MIN: usize = 36;
@@ -27,9 +27,9 @@ impl Editor {
     pub fn kind_there(&self, kind: GroupKind) -> bool {
         let preflight = crate::grouplist::preflight(self).is_some();
         match kind {
-            GroupKind::Tests => self.session.test_run.is_some(),
-            GroupKind::Task => self.session.task_run.is_some() && !preflight,
-            GroupKind::Preflight => self.session.task_run.is_some() && preflight,
+            GroupKind::Tests => self.workspace.test_run.is_some(),
+            GroupKind::Task => self.workspace.task_run.is_some() && !preflight,
+            GroupKind::Preflight => self.workspace.task_run.is_some() && preflight,
             GroupKind::Procs => self.procs_up(),
             GroupKind::Sessions => self.sessions_pane.is_some(),
             GroupKind::Messages => self.messages_pane.is_some(),
@@ -52,7 +52,7 @@ impl Editor {
     /// this screen — beside the code, by the frame's width; over it, the rows it gets (`Screen.over_folded`, as last
     /// drawn) — before the first frame, room.
     pub fn docked_in_sight(&self, kind: GroupKind) -> bool {
-        let Some(g) = self.session.group(kind) else { return false };
+        let Some(g) = self.workspace.group(kind) else { return false };
         let Place::Docked(side) = g.place else { return false };
         if !self.kind_there(kind) || !self.dock_leaf(&g) {
             return false;
@@ -73,7 +73,7 @@ impl Editor {
     pub fn group_host(&self, g: &Group) -> Option<PaneId> {
         match self.out_of_slot(g.kind) {
             true => Some(g.host),
-            false => self.session.leaf(Shows::Slot),
+            false => self.workspace.leaf(Shows::Slot),
         }
     }
 
@@ -84,7 +84,7 @@ impl Editor {
     /// side are stacked in one column (`place`), as wide as the wider, its width taken off the room once.
     pub fn dock_widths(&self, total: usize) -> [usize; crate::pane::DOCKABLE] {
         let mut out = [0; crate::pane::DOCKABLE];
-        let side_open = self.session.sidebar.is_some() && !self.review_rail_up();
+        let side_open = self.workspace.viewer.sidebar.is_some() && !self.review_rail_up();
         let w = crate::sizes::widths(total, self.chat_panel(total), side_open, self.sizes);
         let rail = if self.review_rail_up() { self.screen.rail_w } else { 0 };
         let mut left = total.saturating_sub(w.chat + w.side + rail);
@@ -94,7 +94,7 @@ impl Editor {
         // (each side's column as wide as taken so far: left, right)
         let mut column = [0; 2];
         for kind in GroupKind::ALL.into_iter().filter(|k| k.dockable()) {
-            let Some(g) = self.session.group(kind) else { continue };
+            let Some(g) = self.workspace.group(kind) else { continue };
             let Place::Docked(side) = g.place else { continue };
             if !side.beside() || !self.kind_there(kind) || !self.dock_leaf(&g) {
                 continue;
@@ -131,7 +131,7 @@ impl Editor {
 
     /// Group `g`'s own leaf is in the tree (it's docked and its kind has something to show — `dock_sync`).
     pub fn dock_leaf(&self, g: &Group) -> bool {
-        self.session.shows(g.host) == Some(Shows::Group(g.kind)) && self.session.split.holds(g.host)
+        self.workspace.shows(g.host) == Some(Shows::Group(g.kind)) && self.workspace.split.holds(g.host)
     }
 
     /// Every event: a docked group's leaf is in the tree while its kind has something to show (§3.4: closed, the
@@ -139,8 +139,8 @@ impl Editor {
     /// its place kept.
     pub fn dock_sync(&mut self) {
         self.list_dock_sync();
-        for i in 0..self.session.groups.len() {
-            let g = self.session.groups[i];
+        for i in 0..self.workspace.groups.len() {
+            let g = self.workspace.groups[i];
             let Place::Docked(side) = g.place else { continue };
             match (self.kind_there(g.kind), self.dock_leaf(&g)) {
                 (true, false) => {
@@ -158,7 +158,7 @@ impl Editor {
     fn list_dock_sync(&mut self) {
         let kind = GroupKind::Sessions;
         let want = self.sizes.sessions_dock.zip(self.sessions_pane.as_ref().map(|p| p.list));
-        let have = self.session.group(kind);
+        let have = self.workspace.group(kind);
         if let (Some((side, list)), Some(g)) = (want, have)
             && g.list == list
             && g.place == Place::Docked(side)
@@ -167,44 +167,44 @@ impl Editor {
         }
         if let Some(g) = have {
             if self.dock_leaf(&g) {
-                self.session.split.remove(g.host);
+                self.workspace.split.remove(g.host);
             }
-            self.session.panes.retain(|p| p.shows != Shows::Group(kind));
-            self.session.groups.retain(|g| g.kind != kind);
+            self.workspace.panes.retain(|p| p.shows != Shows::Group(kind));
+            self.workspace.groups.retain(|g| g.kind != kind);
         }
-        if let (Some((side, list)), Some(host)) = (want, self.session.leaf(Shows::Slot)) {
+        if let (Some((side, list)), Some(host)) = (want, self.workspace.leaf(Shows::Slot)) {
             let mut g = Group::new(kind, host, list);
             g.place = Place::Docked(side);
-            self.session.groups.push(g);
+            self.workspace.groups.push(g);
         }
     }
 
     /// Kind `kind`'s leaf into the tree on `side` (its pane made, `Share::Auto`) — false where the tree has no such
     /// place.
     fn dock_in(&mut self, kind: GroupKind, side: Side) -> bool {
-        let Some(mut g) = self.session.group(kind) else { return false };
-        let host = match self.session.panes.iter().find(|p| p.shows == Shows::Group(kind)) {
+        let Some(mut g) = self.workspace.group(kind) else { return false };
+        let host = match self.workspace.panes.iter().find(|p| p.shows == Shows::Group(kind)) {
             Some(p) => p.id,
             None => {
                 let id = self.next_pane;
                 self.next_pane += 1;
-                self.session.panes.push(Pane { id, shows: Shows::Group(kind) });
+                self.workspace.panes.push(Pane { id, shows: Shows::Group(kind) });
                 id
             }
         };
-        self.session.split.remove(host);
+        self.workspace.split.remove(host);
         let there: Vec<PaneId> = self
-            .session
+            .workspace
             .groups
             .iter()
             .filter(|o| o.kind != kind && o.place == Place::Docked(side) && self.dock_leaf(o))
             .map(|o| o.host)
             .collect();
-        let mut split = std::mem::replace(&mut self.session.split, Split::Leaf(0));
-        let placed = place(&mut split, host, side, &|p| there.contains(&p), &self.session);
-        self.session.split = split;
+        let mut split = std::mem::replace(&mut self.workspace.split, Split::Leaf(0));
+        let placed = place(&mut split, host, side, &|p| there.contains(&p), &self.workspace);
+        self.workspace.split = split;
         if !placed {
-            self.session.panes.retain(|p| p.id != host);
+            self.workspace.panes.retain(|p| p.id != host);
             return false;
         }
         g.host = host;
@@ -215,29 +215,29 @@ impl Editor {
 
     /// Kind `kind`'s leaf out of the tree, its pane gone, its group's host the slot's leaf — its place as it was.
     fn dock_out(&mut self, kind: GroupKind) {
-        let Some(mut g) = self.session.group(kind) else { return };
+        let Some(mut g) = self.workspace.group(kind) else { return };
         if self.dock_leaf(&g) {
-            self.session.split.remove(g.host);
+            self.workspace.split.remove(g.host);
         }
-        self.session.panes.retain(|p| p.shows != Shows::Group(kind));
-        if let Some(slot) = self.session.leaf(Shows::Slot) {
+        self.workspace.panes.retain(|p| p.shows != Shows::Group(kind));
+        if let Some(slot) = self.workspace.leaf(Shows::Slot) {
             g.host = slot;
         }
         self.group_set(g);
     }
 
-    /// Every event and frame: `Session.hand` is let go once the keys aren't in its group. Folded into the slot since
+    /// Every event and frame: `Viewer.hand` is let go once the keys aren't in its group. Folded into the slot since
     /// it was last drawn (`Screen.docked`), the keys stay with it there — its panel in the slot's front, once — and the
     /// hand stays, inert while it's folded (`slot_in_hand`), its own again when it's back beside the code.
     pub fn hand_sync(&mut self) {
-        let Some(kind) = self.session.hand else { return };
-        let Some(g) = self.session.group(kind) else { return self.session.hand = None };
-        let keys = self.session.is_at(At::Slot) || self.session.is_at(At::List(g.list));
+        let Some(kind) = self.workspace.viewer.hand else { return };
+        let Some(g) = self.workspace.group(kind) else { return self.workspace.viewer.hand = None };
+        let keys = self.workspace.is_at(At::Slot) || self.workspace.is_at(At::List(g.list));
         if !keys || g.place == Place::Slot {
-            return self.session.hand = None;
+            return self.workspace.viewer.hand = None;
         }
         if !self.out_of_slot(kind) && self.screen.docked.borrow().iter().any(|d| d.0 == kind) {
-            self.session.slot_front = kind.slot();
+            self.workspace.viewer.slot_front = kind.slot();
         }
     }
 
@@ -245,14 +245,14 @@ impl Editor {
     /// it isn't the slot's).
     pub fn hand_of(&self, slot: Option<Slot>) -> Option<GroupKind> {
         let kind = self.kind_of(slot?)?;
-        let g = self.session.group(kind)?;
+        let g = self.workspace.group(kind)?;
         (g.place != Place::Slot).then_some(kind)
     }
 
     /// The pane the keys are in (`Session::at_pane`): a docked group's own leaf only while it's in sight — folded into
     /// the slot, its detail is the slot's there (`slot_in_hand`, `focused_area`).
     pub fn at_pane(&self) -> Option<PaneId> {
-        self.session.at_pane(|k| self.out_of_slot(k))
+        self.workspace.at_pane(|k| self.out_of_slot(k))
     }
 
     /// `C-w t` from group `kind`'s member: its members turned as `C-w t` turns a split — side by side ↔ over and under,
@@ -261,7 +261,7 @@ impl Editor {
     /// said.
     pub fn group_turn(&mut self, kind: GroupKind) {
         use crate::pane::{Laid, Shape};
-        let Some(mut g) = self.session.group(kind) else { return };
+        let Some(mut g) = self.workspace.group(kind) else { return };
         let shown = self.screen.shapes.iter().find(|s| s.0 == kind).map(|s| s.1);
         let (to, shape) = match (shown, g.laid) {
             (Some(Shape::Beside), _) | (Some(Shape::Stacked) | None, Laid::Beside | Laid::Auto) => {
@@ -282,10 +282,10 @@ impl Editor {
     /// The group a docking key acts on: the one whose list or detail has the keys — in the slot (with nothing to list
     /// yet, its panel's output alone is the group's detail) or docked.
     pub fn group_in_hand(&self) -> Option<GroupKind> {
-        if let At::List(id) = self.session.docked() {
-            return self.session.groups.iter().find(|g| g.list == id).map(|g| g.kind);
+        if let At::List(id) = self.workspace.docked() {
+            return self.workspace.groups.iter().find(|g| g.list == id).map(|g| g.kind);
         }
-        if !self.session.is_at(At::Slot) {
+        if !self.workspace.is_at(At::Slot) {
             return None;
         }
         self.slot().and_then(|s| self.kind_of(s))
@@ -319,7 +319,7 @@ impl Editor {
         }
         let Some(kind) = self.group_in_hand() else {
             // (the slot's other panels stay in it: said)
-            if self.bottom_has_keys() || self.session.is_at(At::Program) {
+            if self.bottom_has_keys() || self.workspace.is_at(At::Program) {
                 let what = match self.slot() {
                     Some(Slot::Terminal) => {
                         "the terminal stays in the slot — a terminal pane comes with the terminal work"
@@ -359,7 +359,7 @@ impl Editor {
         if !self.dock_in(kind, side) {
             return self.set_status("no place for it beside the code in this layout");
         }
-        let Some(g) = self.session.group(kind) else { return };
+        let Some(g) = self.workspace.group(kind) else { return };
         self.keys_back(&g, keys);
         let room = self.docked_in_sight(kind) || self.screen.width.is_none();
         let said = match room {
@@ -374,13 +374,13 @@ impl Editor {
     /// Kind `kind`'s group back in the slot, in front, the keys staying with its member; its leaf goes. In the slot
     /// already: said.
     pub fn undock(&mut self, kind: GroupKind) {
-        let Some(mut g) = self.session.group(kind) else { return };
+        let Some(mut g) = self.workspace.group(kind) else { return };
         if g.place == Place::Slot {
             return self.set_status(format!("{} is in the slot — C-w H K L dock it", kind.name()));
         }
         let keys = self.group_keys(&g);
         self.dock_out(kind);
-        let Some(slot) = self.session.leaf(Shows::Slot) else { return };
+        let Some(slot) = self.workspace.leaf(Shows::Slot) else { return };
         g.host = slot;
         g.place = Place::Slot;
         self.group_set(g);
@@ -391,7 +391,7 @@ impl Editor {
 
     /// Kind `kind`'s docked group as last drawn: its side and its leaf's rect.
     pub fn dock_rect(&self, kind: GroupKind) -> Option<(Side, crate::split::Rect)> {
-        let Place::Docked(side) = self.session.group(kind)?.place else { return None };
+        let Place::Docked(side) = self.workspace.group(kind)?.place else { return None };
         let r = self.screen.docked.borrow().iter().find(|d| d.0 == kind)?.1;
         Some((side, r))
     }
@@ -453,7 +453,7 @@ impl Editor {
     /// `C-w < > - +` from a docked group's member: its size `STEP_COLS`/`STEP_ROWS` more or less — `< >` beside the
     /// code, `- +` over it (the other pair said). False: the keys aren't in a docked group.
     pub fn size_dock(&mut self, dir: Dir, more: bool) -> bool {
-        let Some(kind) = self.slot_in_hand().and(self.session.hand) else { return false };
+        let Some(kind) = self.slot_in_hand().and(self.workspace.viewer.hand) else { return false };
         let Some((side, r)) = self.dock_rect(kind) else { return false };
         let beside = side.beside();
         if beside != (dir == Dir::Vertical) {
@@ -482,10 +482,10 @@ impl Editor {
 
     /// Which of group `g`'s members has the keys.
     pub(crate) fn group_keys(&self, g: &Group) -> Option<crate::pane::Member> {
-        if self.session.is_at(At::List(g.list)) {
+        if self.workspace.is_at(At::List(g.list)) {
             return Some(crate::pane::Member::List);
         }
-        (self.session.is_at(At::Slot) && self.slot().and_then(|s| self.kind_of(s)) == Some(g.kind))
+        (self.workspace.is_at(At::Slot) && self.slot().and_then(|s| self.kind_of(s)) == Some(g.kind))
             .then_some(crate::pane::Member::Detail)
     }
 
@@ -499,7 +499,7 @@ impl Editor {
     }
 
     pub(crate) fn group_set(&mut self, g: Group) {
-        if let Some(at) = self.session.groups.iter_mut().find(|x| x.kind == g.kind) {
+        if let Some(at) = self.workspace.groups.iter_mut().find(|x| x.kind == g.kind) {
             *at = g;
         }
     }
@@ -528,7 +528,7 @@ fn place(
     host: PaneId,
     side: Side,
     docked: &impl Fn(PaneId) -> bool,
-    s: &crate::session::Session,
+    s: &crate::workspace::Workspace,
 ) -> bool {
     let leaf = |shows: Shows| s.leaf(shows);
     match side {
@@ -582,7 +582,7 @@ fn beside(
 fn over_column(
     split: &mut Split,
     host: PaneId,
-    s: &crate::session::Session,
+    s: &crate::workspace::Workspace,
     docked: &impl Fn(PaneId) -> bool,
 ) -> bool {
     let mut want: Vec<PaneId> = s.views.iter().map(|v| v.id).collect();

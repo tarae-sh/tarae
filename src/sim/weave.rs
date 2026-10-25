@@ -30,14 +30,14 @@ fn the_woven_view_follows_the_buffers_and_the_workspaces() {
 struct World {
     fix: PathBuf,
     /// fix's session — None while it's closed.
-    session: Option<crate::event::SessionId>,
+    session: Option<crate::event::WorkspaceId>,
     /// The woven view's document and main's own `a.rs` buffer.
     view: crate::document::DocId,
     buffer: crate::document::DocId,
     /// Line 3 of `a.rs` as each has it (`LINE`'s index): main's buffer, fix's disk.
     lines: [usize; 2],
     /// main's session, and what the last `enter` did wrong (None: nothing).
-    main: crate::event::SessionId,
+    main: crate::event::WorkspaceId,
     enter: Option<String>,
 }
 
@@ -58,14 +58,14 @@ fn run(choices: Choices) -> Vec<String> {
     super::sessions::git(&main, &["worktree", "add", "-q", "../fix"]);
     let fix = std::fs::canonicalize(dir.join("fix")).unwrap();
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = main.clone();
-    ed.session.name = "main".into();
-    ed.session.git_branch = Some("main".into());
+    ed.workspace.root = main.clone();
+    ed.workspace.name = "main".into();
+    ed.workspace.git_branch = Some("main".into());
     ed.open(&main.join("a.rs")).unwrap();
     let buffer = ed.doc().id;
     crate::weave::open(&mut ed, None, None).unwrap();
     let view = ed.doc().id;
-    let main = ed.session.id;
+    let main = ed.workspace.id;
     let world = RefCell::new(World { fix, session: None, view, buffer, lines: [0, 0], main, enter: None });
     open(&mut ed, &mut world.borrow_mut());
     let check = |ed: &Editor| held(ed, &world.borrow());
@@ -78,8 +78,8 @@ fn run(choices: Choices) -> Vec<String> {
 
 /// fix's session, behind, its base `main` — its line 3 as its disk has it.
 fn open(ed: &mut Editor, w: &mut World) {
-    let id = ed.session_add(w.fix.clone());
-    if let Some(l) = ed.session_by_id(id) {
+    let id = ed.workspace_add(w.fix.clone());
+    if let Some(l) = ed.workspace_by_id(id) {
         l.name = "fix".into();
         l.base = Some("main".into());
     }
@@ -124,7 +124,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
             if w.session.take().is_none() {
                 return "(fix is closed)".into();
             }
-            let _ = ed.session_close(&w.fix.clone());
+            let _ = ed.workspace_close(&w.fix.clone());
             ed.handle_event(crate::event::Event::Resize);
             "fix's workspace ends".into()
         }
@@ -154,12 +154,12 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
             w.enter = went(ed, w, said);
             let to = match ed.doc().id == w.view {
                 true => "stays".to_string(),
-                false => format!("{}'s a.rs:{}", ed.session.label(), ed.cursor_line() + 1),
+                false => format!("{}'s a.rs:{}", ed.workspace.label(), ed.cursor_line() + 1),
             };
             // (back in main's workspace with the view in front — fix's buffer of it closed: its disk stays the truth)
-            if ed.session.id != w.main {
+            if ed.workspace.id != w.main {
                 ed.close_current(true).ok();
-                ed.session_switch(w.main);
+                ed.workspace_switch(w.main);
             }
             if let Some(i) = ed.docs.iter().position(|d| d.id == w.view) {
                 ed.current = i;
@@ -176,7 +176,7 @@ fn went(ed: &Editor, w: &World, said: u64) -> Option<String> {
     if ed.doc().id == w.view {
         return (ed.said == said).then(|| "enter stayed, unsaid".to_string());
     }
-    let want = ed.session.root.join("a.rs");
+    let want = ed.workspace.root.join("a.rs");
     if ed.doc().path.as_deref() != Some(want.as_path()) {
         return Some(format!("enter landed in {:?}", ed.doc().path));
     }
@@ -203,7 +203,7 @@ fn held(ed: &Editor, w: &World) -> Result<(), String> {
             false => Err("what it's merged from moved, and no merge is coming".into()),
         };
     }
-    let open: Vec<_> = std::iter::once(&ed.session).chain(&ed.sessions).map(|l| l.id).collect();
+    let open: Vec<_> = std::iter::once(&ed.workspace).chain(&ed.workspaces).map(|l| l.id).collect();
     if let Some(s) = m.sides.iter().find(|s| !open.contains(&s.session)) {
         return Err(format!("still, a side of a session closed: {}", s.name));
     }

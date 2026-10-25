@@ -152,9 +152,9 @@ impl Gate {
         self
     }
 
-    /// For session `ed.session`'s chat, with what the user already let this call read.
+    /// For session `ed.workspace`'s chat, with what the user already let this call read.
     pub fn of(ed: &Editor, granted: Vec<PathBuf>) -> Gate {
-        let made = ed.session.chat.as_ref().map(|c| Made::of(&c.ran)).unwrap_or_default();
+        let made = ed.workspace.claude.chat.as_ref().map(|c| Made::of(&c.ran)).unwrap_or_default();
         Gate { basis: ed.caps_basis(), made, granted }
     }
 
@@ -184,7 +184,7 @@ impl Gate {
 /// A call of tarae's own tools waits on the read card for `ask` (`Then`).
 pub fn tool_ask(ed: &mut Editor, then: Then, ask: Ask) {
     let generation = then.call.generation();
-    let Some(c) = ed.session.chat.as_mut().filter(|c| c.generation() == generation) else {
+    let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.generation() == generation) else {
         return crate::tools::answer(ed, then.call, Err("the chat it came from is gone".into()));
     };
     let Ask { mut look, class, found, repository, not_whole } = ask;
@@ -494,8 +494,8 @@ pub struct Keys {
 impl Keys {
     pub fn of(ed: &Editor) -> Keys {
         Keys {
-            root: ed.session.root.clone(),
-            chat: ed.session.chat.as_ref().map(|c| c.allowed.keys.clone()).unwrap_or_default(),
+            root: ed.workspace.root.clone(),
+            chat: ed.workspace.claude.chat.as_ref().map(|c| c.allowed.keys.clone()).unwrap_or_default(),
             store: ed.allow_path.clone(),
             kept: Default::default(),
         }
@@ -545,11 +545,11 @@ pub const NOT_SENT: &str = "named like a key — not sent";
 /// — `input_pass`). The main thread's, for the message's context and the screen: no disk — the kept ones are
 /// the chat's copy (`Chat.kept_keys`; not read yet, none counts as kept).
 pub fn key_shut(ed: &Editor, path: &Path, pass: &[PathBuf]) -> bool {
-    if !crate::sandbox::key_named(&ed.session.root, path) {
+    if !crate::sandbox::key_named(&ed.workspace.root, path) {
         return false;
     }
     let path = path.to_path_buf();
-    let Some(c) = ed.session.chat.as_ref() else { return true };
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return true };
     !(c.allowed.keys.contains(&path)
         || pass.contains(&path)
         || c.kept_keys.as_ref().is_some_and(|k| k.contains(&path)))
@@ -558,7 +558,7 @@ pub fn key_shut(ed: &Editor, path: &Path, pass: &[PathBuf]) -> bool {
 /// The files the chat input's next message may carry on a `y` (`Chat.key_pass`) — each only while the chip it
 /// was given for is still in the input. Nothing else sent uses them (`chat::submit`).
 pub fn input_pass(ed: &Editor) -> Vec<PathBuf> {
-    let Some(c) = ed.session.chat.as_ref() else { return Vec::new() };
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return Vec::new() };
     c.key_pass.iter().filter(|(id, _)| c.pointed.contains(id)).map(|(_, k)| k.clone()).collect()
 }
 
@@ -571,7 +571,7 @@ pub fn key_panes(ed: &Editor) -> Vec<crate::screen::Hidden> {
         if !key_shut(ed, &path, &[]) || h == 0 || w == 0 {
             return None;
         }
-        let name = path.strip_prefix(&ed.session.root).unwrap_or(&path).display().to_string();
+        let name = path.strip_prefix(&ed.workspace.root).unwrap_or(&path).display().to_string();
         // (too narrow for the file's name — the side panel: the marker alone, its heading names the file)
         let note = match format!("[{name} — {NOT_SENT}]") {
             n if n.chars().count() <= w => n,
@@ -582,7 +582,7 @@ pub fn key_panes(ed: &Editor) -> Vec<crate::screen::Hidden> {
     let docs = s.pane_docs.iter().map(Some).chain(std::iter::repeat(None));
     let panes = s.panes.iter().zip(docs).filter_map(|((view, rect, _, _), doc)| {
         // (the document the pane drew, else the one its view shows)
-        let id = doc.copied().or_else(|| ed.session.views.iter().find(|v| v.id == *view).map(|v| v.doc))?;
+        let id = doc.copied().or_else(|| ed.workspace.views.iter().find(|v| v.id == *view).map(|v| v.doc))?;
         let path = ed.docs.iter().find(|d| d.id == id)?.path.clone()?;
         hidden(path, (rect.x, rect.y, rect.w, rect.h))
     });
@@ -601,8 +601,13 @@ pub fn key_panes(ed: &Editor) -> Vec<crate::screen::Hidden> {
         })
     });
     // So are the side panel's (the list's items, the git tab's hunks), as drawn — not under a picker
-    let lines =
-        ed.session.sidebar.as_ref().filter(|_| s.side_w > 0 && s.picker_list.is_none()).map(|sb| sb.lines());
+    let lines = ed
+        .workspace
+        .viewer
+        .sidebar
+        .as_ref()
+        .filter(|_| s.side_w > 0 && s.picker_list.is_none())
+        .map(|sb| sb.lines());
     let side: Vec<_> = match &lines {
         Some(lines) => s
             .sidebar
@@ -638,7 +643,7 @@ pub fn row_file(ed: &Editor, row: Row) -> Option<(PathBuf, Option<usize>)> {
         }
         Row::Picker(A::Jump { doc: id, line, .. }) => Some((doc(*id)?, Some(*line))),
         Row::Side(T::Item(i)) => {
-            ed.session.qlist.as_ref()?.items.get(*i).map(|it| (it.path.clone(), Some(it.line)))
+            ed.workspace.qlist.as_ref()?.items.get(*i).map(|it| (it.path.clone(), Some(it.line)))
         }
         Row::Side(T::Hunk { doc: id, .. }) => Some((doc(*id)?, None)),
         _ => None,
@@ -650,7 +655,7 @@ pub fn row_file(ed: &Editor, row: Row) -> Option<(PathBuf, Option<usize>)> {
 /// (`uistate/claude.rs`) — None: the row as it is.
 pub fn row_shut(ed: &Editor, row: Row) -> Option<String> {
     let (path, at) = row_file(ed, row)?;
-    let name = path.strip_prefix(&ed.session.root).unwrap_or(&path).display().to_string();
+    let name = path.strip_prefix(&ed.workspace.root).unwrap_or(&path).display().to_string();
     let at = at.map(|l| format!(":{}", l + 1)).unwrap_or_default();
     key_shut(ed, &path, &[]).then(|| format!("{name}{at}: ({NOT_SENT})"))
 }
@@ -663,7 +668,7 @@ pub fn picker_row_shut(ed: &Editor, line: usize) -> Option<String> {
 
 /// `row_shut` for each side panel row drawn, by its id (`uistate::panels::side_id`).
 pub fn side_rows_shut(ed: &Editor) -> Vec<(String, String)> {
-    let Some(sb) = ed.session.sidebar.as_ref() else { return Vec::new() };
+    let Some(sb) = ed.workspace.viewer.sidebar.as_ref() else { return Vec::new() };
     let tab = crate::uistate::side_tab(sb.mode);
     let lines = sb.lines();
     let drawn = ed.screen.sidebar.borrow();
@@ -684,7 +689,7 @@ fn previewed(ed: &Editor, action: &crate::picker::Action) -> Vec<PathBuf> {
     match action {
         A::Open(p) | A::Goto { path: p, .. } | A::Note { path: p, .. } => vec![p.clone()],
         A::Buffer(id) | A::Jump { doc: id, .. } => doc(*id).into_iter().collect(),
-        A::ChangedFile(n) => ed.session.changed_files.get(*n).map(|c| c.path.clone()).into_iter().collect(),
+        A::ChangedFile(n) => ed.workspace.changed_files.get(*n).map(|c| c.path.clone()).into_iter().collect(),
         A::ReplaceFile(n) => ed.replace_plan.get(*n).map(|f| f.path.clone()).into_iter().collect(),
         A::Code(i) => match ed.action_preview(*i) {
             Some(crate::lsp_editor::ActionPreview::Ready(files)) => {
@@ -699,10 +704,10 @@ fn previewed(ed: &Editor, action: &crate::picker::Action) -> Vec<PathBuf> {
 /// Reads the files named like keys the project keeps open (`A`) into the chat's copy, on a worker — when the
 /// chat opens and after every change to what's kept (`allow::keep_queued`), so `key_shut` never waits on disk.
 pub fn kept_keys_load(ed: &mut Editor) {
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     c.kept_keys_asked += 1;
     let asked = c.kept_keys_asked;
-    let (store, root) = (ed.allow_path.clone(), ed.session.root.clone());
+    let (store, root) = (ed.allow_path.clone(), ed.workspace.root.clone());
     // (but those taken back, their write not landed or failed — as the `Caps` leaves them out)
     let taking = ed.taking_for(&root);
     // (the project's, whatever claude process runs by then)
@@ -711,7 +716,7 @@ pub fn kept_keys_load(ed: &mut Editor) {
         taking.iter().for_each(|w| kept.remove(w));
         move |ed: &mut Editor| {
             let taking = ed.taking_for(&root);
-            let Some(c) = ed.session.chat.as_mut() else { return };
+            let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
             // (one asked since read what's kept after this — a take-back's write landed)
             if c.kept_keys_asked != asked {
                 return;
@@ -736,8 +741,8 @@ pub fn kept_keys_load(ed: &mut Editor) {
 /// a file named like a key, and the chat's copy (`Chat.kept_keys`) isn't read yet (the chat just opened): it'd
 /// ask about one already opened for the project (`A`). It goes when they're read (`kept_keys_load`).
 pub fn wait_for_kept(ed: &mut Editor, paths: &[PathBuf], own: Own) -> bool {
-    let root = ed.session.root.clone();
-    let Some(c) = ed.session.chat.as_mut() else { return false };
+    let root = ed.workspace.root.clone();
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return false };
     if c.kept_keys.is_some() || !paths.iter().any(|p| crate::sandbox::key_named(&root, p)) {
         return false;
     }
@@ -753,8 +758,8 @@ pub fn wait_for_kept(ed: &mut Editor, paths: &[PathBuf], own: Own) -> bool {
 /// The message went without these files' text (`chat::context`): said once a conversation in the chat, with
 /// how to send it.
 pub fn not_sent(ed: &mut Editor, keys: &[PathBuf]) {
-    let root = ed.session.root.clone();
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let root = ed.workspace.root.clone();
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     let new: Vec<&PathBuf> = keys.iter().filter(|k| !c.keys_said.contains(k)).collect();
     if new.is_empty() {
         return;
@@ -777,12 +782,12 @@ pub fn not_sent(ed: &mut Editor, keys: &[PathBuf]) {
 pub fn pointed_key(ed: &Editor, id: &str, pass: &[PathBuf]) -> Option<PathBuf> {
     let path = match id.strip_prefix("pane#") {
         Some(_) => {
-            let v = ed.session.views.iter().find(|v| format!("pane#{}", v.id) == id)?;
+            let v = ed.workspace.views.iter().find(|v| format!("pane#{}", v.id) == id)?;
             ed.docs.iter().find(|d| d.id == v.doc)?.path.clone()?
         }
         None => {
             use crate::sidebar::Target as T;
-            let sb = ed.session.sidebar.as_ref()?;
+            let sb = ed.workspace.viewer.sidebar.as_ref()?;
             let tab = crate::uistate::side_tab(sb.mode);
             let lines = sb.lines();
             let l = lines.iter().find(|l| crate::uistate::panels::side_id(ed, tab, l) == id)?;
@@ -813,7 +818,7 @@ pub fn point(ed: &mut Editor, id: &str) {
 /// act, so they aren't sent silently, nor left out silently: the read card asks first, holding `own` until
 /// the answer (`own_answer`) — `y` this one thing · `a` this conversation · `A` always · `n` their names only.
 pub fn ask_own(ed: &mut Editor, keys: Vec<PathBuf>, own: Own) {
-    let Some(c) = ed.session.chat.as_ref() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return };
     // (one card for the same thing — a chip, a note, the review)
     let same = |o: &Own| match (o, &own) {
         (Own::Chip(a), Own::Chip(b)) => a == b,
@@ -824,7 +829,7 @@ pub fn ask_own(ed: &mut Editor, keys: Vec<PathBuf>, own: Own) {
     if ed.session_cards().any(|o| own_card(&o.what, same)) {
         return;
     }
-    let root = &ed.session.root;
+    let root = &ed.workspace.root;
     let names: Vec<String> =
         keys.iter().map(|k| k.strip_prefix(root).unwrap_or(k).display().to_string()).collect();
     let given = names.join(", ");
@@ -884,7 +889,7 @@ pub fn ask_own(ed: &mut Editor, keys: Vec<PathBuf>, own: Own) {
 /// A chip taken off the chat's input: its `y` goes, and a card its pointing raised goes with it — never those of an
 /// element a queued message waits with (`Chat.queued_pointed`).
 pub fn unpointed(ed: &mut Editor) {
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     let pointed: Vec<String> = c.pointed.iter().chain(&c.queued_pointed).cloned().collect();
     c.key_pass.retain(|(id, _)| pointed.contains(id));
     ed.drop_cards_for(
@@ -896,7 +901,7 @@ pub fn unpointed(ed: &mut Editor) {
 /// A new conversation: a `y` given for the last one's message goes, and so does a card pointing raised (a
 /// note's or the review's waits — they go into the new one).
 pub fn conversation_new(ed: &mut Editor) {
-    if let Some(c) = ed.session.chat.as_mut() {
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
         (c.key_pass, c.keys_said) = (Vec::new(), Vec::new());
     }
     ed.drop_cards_for(|w| own_card(w, |o| matches!(o, Own::Chip(_))), "dropped — a new conversation");
@@ -926,7 +931,7 @@ fn place_covered(look: &Look, caps: &crate::caps::Caps, made: &Made) -> bool {
 /// One of Claude's runs started (`tools::go`) — by the clock its files are stamped by (`file_clock`).
 pub fn run_started(ed: &mut Editor, dir: Option<std::sync::Arc<crate::sandbox::RunDir>>) {
     let from = ed.run_clock.unwrap_or(file_clock)();
-    if let Some(c) = ed.session.chat.as_mut() {
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
         c.ran.push(Ran { from, to: None, dir });
     }
 }
@@ -952,7 +957,7 @@ pub fn file_clock() -> SystemTime {
 
 /// Claude's run ended (or was dropped): its time is over.
 pub fn run_ended(ed: &mut Editor) {
-    if let Some(c) = ed.session.chat.as_mut() {
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
         let now = SystemTime::now();
         for r in c.ran.iter_mut().filter(|r| r.to.is_none()) {
             r.to = Some(now);
@@ -964,7 +969,7 @@ pub fn run_ended(ed: &mut Editor) {
 /// then allowed, or put to the user.
 pub fn request(ed: &mut Editor, request_id: &str, req: &Value) -> Option<Value> {
     let tool = req["tool_name"].as_str().unwrap_or_default().to_string();
-    let c = ed.session.chat.as_ref()?;
+    let c = ed.workspace.claude.chat.as_ref()?;
     let (generation, made) = (c.generation(), Made::of(&c.ran));
     let input = req["input"].clone();
     let request_id = request_id.to_string();
@@ -983,7 +988,9 @@ pub fn request(ed: &mut Editor, request_id: &str, req: &Value) -> Option<Value> 
             _ => Default::default(),
         };
         Box::new(move |ed: &mut Editor| {
-            let Some(c) = ed.session.chat.as_mut().filter(|c| c.generation() == generation) else { return };
+            let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.generation() == generation) else {
+                return;
+            };
             if ok {
                 return crate::chat::respond(ed, &request_id, allow(&input));
             }
@@ -1162,13 +1169,13 @@ fn class_of(look: &Look, caps: &crate::caps::Caps) -> crate::cards::Class {
 /// now — said on it, and settled again before `a` counts (#102: Claude's reads come one after another) —
 /// once the folder's been looked through for tokens (`scanned`), so the card says what it holds first.
 fn refold(ed: &mut Editor) {
-    let Some(c) = ed.session.chat.as_ref() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return };
     let others = others(c);
     let home = crate::allow::home();
     let front = !ed.background();
     // (each card offering its place alone)
     let alone: Vec<(u64, Pending)> = ed
-        .session
+        .workspace
         .parked
         .iter()
         .chain(ed.offers.iter().filter(|_| front))
@@ -1193,7 +1200,7 @@ fn refold(ed: &mut Editor) {
         if let Some(line) = ed.always_line(&what) {
             q.push_str(&format!("\n\n{line}"));
         }
-        let cards = ed.session.parked.iter_mut().chain(ed.offers.iter_mut().filter(|_| front));
+        let cards = ed.workspace.parked.iter_mut().chain(ed.offers.iter_mut().filter(|_| front));
         for o in cards.filter(|o| o.id == id && o.question != q) {
             let crate::offer::What::Read { folder, .. } = &mut o.what else { continue };
             (o.question, o.warning) = (q.clone(), warning.clone());
@@ -1216,7 +1223,7 @@ fn not_whole(ed: &Editor, p: &Pending, folder: Option<&Path>) -> Option<String> 
         return Some(format!("Not offered whole, the repository {}: {why}.", crate::allow::tilde(top)));
     }
     let r = p.repository.as_ref().filter(|r| folder != Some(r.as_path()))?;
-    let found = ed.session.chat.as_ref()?.scanned.get(r)?.as_ref()?;
+    let found = ed.workspace.claude.chat.as_ref()?.scanned.get(r)?.as_ref()?;
     let n = found.files.len() + found.named.len();
     let why = match (found.cut, n) {
         (true, _) => "too big to look through for tokens".to_string(),
@@ -1311,7 +1318,7 @@ fn split(r: Option<Result<PathBuf, (PathBuf, String)>>) -> (Option<PathBuf>, Opt
 /// What folder `f` holds that looks like a token, once it's been looked through; else None — and it's
 /// looked through on a worker, the cards offering it once it has (`refold`).
 fn scanned(ed: &mut Editor, f: &Path) -> Option<crate::tokens::Found> {
-    let c = ed.session.chat.as_mut()?;
+    let c = ed.workspace.claude.chat.as_mut()?;
     if let Some(found) = c.scanned.get(f) {
         return found.clone();
     }
@@ -1320,7 +1327,9 @@ fn scanned(ed: &mut Editor, f: &Path) -> Option<crate::tokens::Found> {
     ed.events.jobs().spawn(move || {
         let found = crate::tokens::found_in(&f);
         move |ed: &mut Editor| {
-            let Some(c) = ed.session.chat.as_mut().filter(|c| c.generation() == generation) else { return };
+            let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.generation() == generation) else {
+                return;
+            };
             c.scanned.insert(f, Some(found));
             refold(ed);
         }
@@ -1377,7 +1386,7 @@ pub fn next(ed: &mut Editor) {
     if ed.session_cards().any(|o| matches!(o.what, crate::offer::What::Read { .. })) {
         return;
     }
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     let Some(p) = c.reads.pop_front() else { return };
     let home = crate::allow::home();
     let keepable = |at: &Path| crate::allow::keepable(at, home.as_deref());
@@ -1511,7 +1520,7 @@ pub fn answer(
     if let Some(own) = p.own.clone() {
         return own_answer(ed, p, own, scope, keep);
     }
-    if ed.session.chat.as_ref().is_none_or(|c| c.generation() != p.generation) {
+    if ed.workspace.claude.chat.as_ref().is_none_or(|c| c.generation() != p.generation) {
         return;
     }
     let shown = p.look.at.as_ref().map_or_else(|| p.look.given.clone(), |a| a.display().to_string());
@@ -1535,8 +1544,8 @@ pub fn answer(
         // (the no holds for that place until the turn ends: an ask for it waiting, or come again, is told so — no card)
         // (outside the project, what's under it too; in it, that file or search — the project isn't refused whole)
         let mut again = Vec::new();
-        let root = ed.session.root.clone();
-        if let (Some(c), Some(at)) = (ed.session.chat.as_mut(), p.look.at.clone()) {
+        let root = ed.workspace.root.clone();
+        if let (Some(c), Some(at)) = (ed.workspace.claude.chat.as_mut(), p.look.at.clone()) {
             c.read_no.push((at.clone(), !at.starts_with(&root)));
             let read_no = c.read_no.clone();
             let (no, wait): (Vec<_>, Vec<_>) =
@@ -1553,12 +1562,12 @@ pub fn answer(
     reply(ed, p.clone(), true, "");
     if scope == Scope::Once
         && p.look.keys.is_empty()
-        && let (Some(c), Some(at)) = (ed.session.chat.as_mut(), p.look.at.clone())
+        && let (Some(c), Some(at)) = (ed.workspace.claude.chat.as_mut(), p.look.at.clone())
         && !c.read_once.contains(&at)
     {
         c.read_once.push(at);
     }
-    let root = ed.session.root.clone();
+    let root = ed.workspace.root.clone();
     let longer = keep && scope != Scope::Once;
     // (in the project only its files named like keys are opened; outside, the place too)
     let at = folder.or_else(|| p.look.at.clone()).filter(|at| longer && !at.starts_with(&root));
@@ -1569,8 +1578,8 @@ pub fn answer(
         crate::allow::grant_keys(ed, &p.look.keys, scope);
     }
     // The ones waiting that this lets through
-    let session = ed.session.allowed.clone();
-    if let Some(c) = ed.session.chat.as_mut().filter(|_| longer) {
+    let session = ed.workspace.claude.allowed.clone();
+    if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|_| longer) {
         let opened = |w: &Pending| {
             w.look.at.as_ref().is_some_and(|a| a.starts_with(&root) || c.allowed.reads(a) || session.reads(a))
                 && w.look.keys.iter().all(|k| c.allowed.keys.contains(k) || session.keys.contains(k))
@@ -1595,7 +1604,7 @@ fn own_answer(ed: &mut Editor, p: Pending, own: Own, scope: Option<Scope>, keep:
     let lines = scope.is_some();
     match own {
         Own::Chip(id) => {
-            let Some(c) = ed.session.chat.as_mut() else { return };
+            let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
             match scope {
                 None => ed.set_status(format!("{} stays out — your message names it only", p.look.given)),
                 Some(Scope::Once) => {
@@ -1610,7 +1619,7 @@ fn own_answer(ed: &mut Editor, p: Pending, own: Own, scope: Option<Scope>, keep:
     }
     next(ed);
     // (a message sent while Claude worked waited for this answer too)
-    if ed.session.chat.as_ref().is_some_and(|c| !c.busy()) {
+    if ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.busy()) {
         crate::chat::send_queued(ed);
     }
 }
@@ -1619,7 +1628,7 @@ fn own_answer(ed: &mut Editor, p: Pending, own: Own, scope: Option<Scope>, keep:
 /// user's pointing raised waits for them, not for the turn.)
 pub fn turn_over(ed: &mut Editor) {
     let mut waiting = Vec::new();
-    if let Some(c) = ed.session.chat.as_mut() {
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
         waiting.extend(c.reads.drain(..).filter_map(|p| p.then));
         c.ran.clear();
         c.read_no.clear();
@@ -1685,9 +1694,9 @@ mod tests {
             std::fs::write(base.join(f), text).unwrap();
         }
         let mut ed = Editor::new(crate::config::Config::default());
-        ed.session.root = base.join("p");
-        ed.session.chat = Some(crate::chat::Chat::new());
-        ed.session.at = crate::session::At::Chat;
+        ed.workspace.root = base.join("p");
+        ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
         let settle = |ed: &mut Editor, done: &dyn Fn(&Editor) -> bool| {
             let end = std::time::Instant::now() + crate::test_results::PATIENCE;
             while !done(ed) {
@@ -1862,12 +1871,12 @@ mod tests {
         assert!(born(&shot).unwrap() < fine_start(), "stamped before the fine start");
         let mut ed = Editor::new(crate::config::Config::default());
         let mut made = |clock: fn() -> SystemTime| {
-            ed.session.chat = Some(crate::chat::Chat::new());
-            ed.session.at = crate::session::At::Chat;
+            ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+            ed.workspace.viewer.at = crate::workspace::At::Chat;
             ed.run_clock = Some(clock);
             run_started(&mut ed, None);
             run_ended(&mut ed);
-            Made { temp: vec![temp.clone()], ..Made::of(&ed.session.chat.as_ref().unwrap().ran) }
+            Made { temp: vec![temp.clone()], ..Made::of(&ed.workspace.claude.chat.as_ref().unwrap().ran) }
         };
         let now = SystemTime::now();
         assert!(made(coarse_start).covers_with(&shot, now, born), "by the coarse clock: the run's");

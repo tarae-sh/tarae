@@ -1248,7 +1248,7 @@ fn an_idle_editor_draws_nothing_and_sleeps() {
         // (`RESTING_REDRAW`) gone out, and every frame written read here (`Term::settle`). Each scene waited
         // for its own text before.
         let s = t.settle(what, |s| {
-            s["sessions"][0]["branch"] == "main" && s["motions"].as_array().is_some_and(Vec::is_empty)
+            s["workspaces"][0]["branch"] == "main" && s["motions"].as_array().is_some_and(Vec::is_empty)
         });
         let (frames, before, was, threads) = (t.frames(), t.usage(), t.screen(), t.threads());
         let settled = format!(
@@ -1444,7 +1444,7 @@ fn a_driver_reads_where_the_keys_go() {
     let mut t = sb.spawn(&["a.txt"]);
     t.wait_text("one");
     let s = t.state_json(0);
-    assert_eq!(s["v"], 15, "the schema's version (`uistate::V`)");
+    assert_eq!(s["v"], 16, "the schema's version (`uistate::V`)");
     assert_eq!((s["keys"]["region"].as_str(), s["keys"]["takes"].as_str()), (Some("code"), Some("commands")));
     assert_eq!(s["tarae"]["pid"], t.pid());
     let input = s["input"].as_u64().unwrap();
@@ -1678,7 +1678,7 @@ fn bleeding_ink_draws_no_frame_after_the_turn() {
         t.screen()
     );
     t.wait_for("the answer, whole", |s| s.contains("the key by value."));
-    t.wait_state("the turn ended", |s| s["sessions"][0]["doing"] == "idle");
+    t.wait_state("the turn ended", |s| s["workspaces"][0]["sessions"][0]["doing"] == "idle");
     t.wait_for("the answer in the panel", |s| s.contains("value.") && !s.contains("C-c stop"));
     let (head, rest) = (t.fg_of("value."), t.fg_of("cloned"));
     assert_eq!(head, rest, "the turn ended: the head in the ink of the rest\n{}", t.screen());
@@ -1754,8 +1754,9 @@ fn a_turns_usage_shows_under_the_chat_and_in_usage() {
     t.wait_for("the usage line", |s| {
         s.rows.iter().any(|r| r.contains("● warm until ") && r.contains("ctx 2%  ≈$0.041"))
     });
-    let s = t.wait_state("the session's usage", |s| s["sessions"][0]["usage"]["cache"] == "warm");
-    let u = &s["sessions"][0]["usage"];
+    let s = t
+        .wait_state("the session's usage", |s| s["workspaces"][0]["sessions"][0]["usage"]["cache"] == "warm");
+    let u = &s["workspaces"][0]["sessions"][0]["usage"];
     assert_eq!((u["ttl"].as_str(), u["context"]["tokens"].as_u64()), (Some("5m"), Some(24_006)), "{u}");
     assert_eq!(u["last_turn"]["cost"], 0.0412);
     // (`esc` the chat's view mode — the conversation under a cursor — `esc` again the code)

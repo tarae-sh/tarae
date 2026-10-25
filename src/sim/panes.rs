@@ -6,7 +6,7 @@
 //! P3 step 6: the tests group docked and back (`C-w H`/`L`/`K`/`J` from its list) racing its run's end and a new run
 //! — the place is part of the layout written, so the newest place wins the file. After every step a docked group's
 //! leaf is in the tree exactly while its run is there, once; the slot's tabs never list a group docked in sight; the
-//! keys are a docked group's (`Session.hand`) only while they're in it.
+//! keys are a docked group's (`Viewer.hand`) only while they're in it.
 //!
 //! P3 step 7: floated and back (`C-w e`), moved (`C-w m`, `l`, `j`), its run's `q` racing its end and a card coming
 //! over it. After every step a floating group's own pane is out of the tree, once, while it floats; drawn, its frame is
@@ -49,10 +49,10 @@ fn run(choices: Choices) -> Vec<String> {
     }
     let file = root.join("layouts.json");
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = root.clone();
+    ed.workspace.root = root.clone();
     ed.layouts_path = Some(file.clone());
     ed.open(&root.join("a.txt")).unwrap();
-    ed.session.test_run = Some(tests());
+    ed.workspace.test_run = Some(tests());
     crate::term::render(&mut ed, &mut Vec::new(), 120, 40).unwrap();
     let world = World::default();
     let key = root.to_str().unwrap().to_string();
@@ -64,7 +64,7 @@ fn run(choices: Choices) -> Vec<String> {
     assert_eq!(kept, newest, "once quiet, the file holds the newest layout");
     // (…and its place for the tests group, the editor's now)
     if let Some(kept) = kept {
-        let place = ed.session.group(crate::pane::GroupKind::Tests).map(|g| g.place.name());
+        let place = ed.workspace.group(crate::pane::GroupKind::Tests).map(|g| g.place.name());
         let tests =
             kept["groups"].as_array().and_then(|gs| gs.iter().find(|g| g["kind"] == "tests").cloned());
         assert_eq!(tests.map(|g| g["place"].clone()), place.map(Value::from), "the newest place wins");
@@ -121,7 +121,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, world: &World, key: &str) -> String {
         }
         1 => {
             let f = *sim.choices.pick(&["a.txt", "b.txt"]);
-            let path = ed.session.root.join(f);
+            let path = ed.workspace.root.join(f);
             keys(sim, ed, world, key, &format!("<esc>:open {}<ret>", path.display()));
             format!("{f} opened in the pane")
         }
@@ -148,14 +148,14 @@ fn step(sim: &mut Sim, ed: &mut Editor, world: &World, key: &str) -> String {
             keys(sim, ed, world, key, k);
             format!("the tests' list, {k}")
         }
-        5 => match ed.session.test_run.take() {
+        5 => match ed.workspace.test_run.take() {
             Some(_) => {
                 sim.batch(ed, Event::Resize);
                 record(ed, world, key);
                 "the run closed".into()
             }
             None => {
-                ed.session.test_run = Some(tests());
+                ed.workspace.test_run = Some(tests());
                 sim.batch(ed, Event::Resize);
                 record(ed, world, key);
                 "a new run".into()
@@ -168,7 +168,10 @@ fn step(sim: &mut Sim, ed: &mut Editor, world: &World, key: &str) -> String {
                 "2 files not viewed.",
                 "",
                 String::new(),
-                crate::offer::What::ReviewEnd { session: 0, started: std::time::Instant::now() },
+                crate::offer::What::ReviewEnd {
+                    session: crate::event::WorkspaceId::HOME,
+                    started: std::time::Instant::now(),
+                },
             );
             ed.push_offer(o);
             sim.batch(ed, Event::Resize);
@@ -207,15 +210,15 @@ fn held(ed: &Editor, world: &World, file: &std::path::Path, key: &str) -> Result
 }
 
 /// A docked group's leaf is in the tree exactly while its run is there, once, its pane with it; the slot's tabs never
-/// list it while it's docked in sight; `Session.hand` names it only while the keys are in it.
+/// list it while it's docked in sight; `Viewer.hand` names it only while the keys are in it.
 fn docked_held(ed: &Editor) -> Result<(), String> {
     use crate::pane::{GroupKind, Place, Shows};
-    let g = ed.session.group(GroupKind::Tests).ok_or("no tests group")?;
-    let leaves = ed.session.split.leaves();
+    let g = ed.workspace.group(GroupKind::Tests).ok_or("no tests group")?;
+    let leaves = ed.workspace.split.leaves();
     let hosts: Vec<_> =
-        ed.session.panes.iter().filter(|p| p.shows == Shows::Group(GroupKind::Tests)).collect();
+        ed.workspace.panes.iter().filter(|p| p.shows == Shows::Group(GroupKind::Tests)).collect();
     let in_tree = hosts.iter().filter(|p| leaves.contains(&p.id)).count();
-    let docked = matches!(g.place, Place::Docked(_)) && ed.session.test_run.is_some();
+    let docked = matches!(g.place, Place::Docked(_)) && ed.workspace.test_run.is_some();
     let floating = matches!(g.place, Place::Floating(_));
     // (floating: its own pane, out of the tree — kept while it floats, its run there or not)
     let want = (usize::from(docked), usize::from(docked || floating));
@@ -240,16 +243,22 @@ fn docked_held(ed: &Editor) -> Result<(), String> {
     if ed.float_moving.is_some_and(|k| !ed.floating_in_sight(k)) {
         return Err("C-w m moving a pane not floating in sight".into());
     }
-    let keys =
-        ed.session.is_at(crate::session::At::Slot) || ed.session.is_at(crate::session::At::List(g.list));
+    let keys = ed.workspace.is_at(crate::workspace::At::Slot)
+        || ed.workspace.is_at(crate::workspace::At::List(g.list));
     // (a card over it: the hand stays under it)
-    if ed.session.hand.is_some() && !keys && !matches!(ed.session.at, crate::session::At::Float(_)) {
-        return Err(format!("the hand {:?} with the keys at {:?}", ed.session.hand, ed.session.at));
+    if ed.workspace.viewer.hand.is_some()
+        && !keys
+        && !matches!(ed.workspace.viewer.at, crate::workspace::At::Float(_))
+    {
+        return Err(format!(
+            "the hand {:?} with the keys at {:?}",
+            ed.workspace.viewer.hand, ed.workspace.viewer.at
+        ));
     }
     Ok(())
 }
 
 fn print(ed: &Editor) -> String {
-    let place = ed.session.group(crate::pane::GroupKind::Tests).map(|g| g.place.name()).unwrap_or("-");
-    format!("{} code panes · tests {place} · layout {}", ed.session.views.len(), ed.layouts_seq)
+    let place = ed.workspace.group(crate::pane::GroupKind::Tests).map(|g| g.place.name()).unwrap_or("-");
+    format!("{} code panes · tests {place} · layout {}", ed.workspace.views.len(), ed.layouts_seq)
 }

@@ -11,13 +11,13 @@
 use std::collections::VecDeque;
 
 use crate::editor::Editor;
-use crate::event::SessionId;
+use crate::event::WorkspaceId;
 
 /// What `space W` marked and the queue going, if one is.
 #[derive(Default)]
 pub struct Queue {
     /// Marked to bring, in the order marked.
-    pub marks: Vec<SessionId>,
+    pub marks: Vec<WorkspaceId>,
     pub run: Option<Run>,
     /// Tests: the rebase and the preflight it would start as tasks are left to a simulation (which models no
     /// task) — it says how each ended (`bring_queue_rebased`, `rebase_preflight_done`).
@@ -27,8 +27,8 @@ pub struct Queue {
 
 /// A queue going: those still to come, the one under way and where it is, and what became of the rest.
 pub struct Run {
-    pub left: VecDeque<SessionId>,
-    pub now: Option<(SessionId, Stage)>,
+    pub left: VecDeque<WorkspaceId>,
+    pub now: Option<(WorkspaceId, Stage)>,
     /// Brought: (name, what it said — `3 commits, now at 1a2b3c4`).
     pub brought: Vec<(String, String)>,
     /// Not brought: (name, why).
@@ -37,7 +37,7 @@ pub struct Run {
     pub again: bool,
     pub total: usize,
     /// Each one's name as the card said it — one whose session ended is still said by it.
-    pub names: Vec<(SessionId, String)>,
+    pub names: Vec<(WorkspaceId, String)>,
 }
 
 /// Where the one under way is.
@@ -67,7 +67,7 @@ impl Stage {
 /// What the card asks about: the sessions, in the order they come.
 #[derive(Clone, Debug)]
 pub struct Ask {
-    pub ids: Vec<SessionId>,
+    pub ids: Vec<WorkspaceId>,
     pub names: Vec<String>,
     /// Their bases, each once (`main`).
     pub bases: Vec<String>,
@@ -118,8 +118,8 @@ pub fn card(ask: Ask) -> crate::offer::Offer {
 
 impl Editor {
     /// `m` in the list: session `id` marked to bring (again: unmarked) — said, with what `B` does.
-    pub(crate) fn bring_mark(&mut self, id: SessionId) {
-        if id == 0 {
+    pub(crate) fn bring_mark(&mut self, id: WorkspaceId) {
+        if id == WorkspaceId::HOME {
             return self.set_status("that's the checkout tarae started in — sessions are brought into it");
         }
         let name = self.bring_name(id);
@@ -145,20 +145,21 @@ impl Editor {
         if self.bring_queue.run.is_some() {
             return Err("a bring queue is under way — the list says where".into());
         }
-        let live =
-            |ed: &Editor, id: SessionId| std::iter::once(&ed.session).chain(&ed.sessions).any(|l| l.id == id);
-        let marks: Vec<SessionId> =
+        let live = |ed: &Editor, id: WorkspaceId| {
+            std::iter::once(&ed.workspace).chain(&ed.workspaces).any(|l| l.id == id)
+        };
+        let marks: Vec<WorkspaceId> =
             self.bring_queue.marks.iter().copied().filter(|id| live(self, *id)).collect();
         self.bring_queue.marks.clone_from(&marks);
         match marks.as_slice() {
             [] => Err("nothing marked — m marks the sessions to bring in turn, then B".into()),
             [one] => {
                 self.bring_queue.marks.clear();
-                self.session_bring(&one.to_string())
+                self.workspace_bring(&one.to_string())
             }
             _ => {
                 let start = self.start_root();
-                let all = std::iter::once(&self.session).chain(&self.sessions);
+                let all = std::iter::once(&self.workspace).chain(&self.workspaces);
                 let mut bases: Vec<String> = Vec::new();
                 let mut names = Vec::new();
                 for id in &marks {
@@ -228,7 +229,7 @@ impl Editor {
     }
 
     /// The one under way (`id`) is out of the queue — `why` said — and the next goes on.
-    pub(crate) fn bring_queue_out(&mut self, id: SessionId, why: String) {
+    pub(crate) fn bring_queue_out(&mut self, id: WorkspaceId, why: String) {
         let Some(run) = self.bring_queue.run.as_mut().filter(|r| r.now.is_some_and(|(n, _)| n == id)) else {
             return;
         };
@@ -244,11 +245,11 @@ impl Editor {
     }
 
     /// The stage session `id` is at in the queue, if it's the one under way.
-    pub(crate) fn bring_queue_at(&self, id: SessionId) -> Option<Stage> {
+    pub(crate) fn bring_queue_at(&self, id: WorkspaceId) -> Option<Stage> {
         self.bring_queue.run.as_ref()?.now.filter(|(n, _)| *n == id).map(|(_, s)| s)
     }
 
-    fn bring_queue_stage(&mut self, id: SessionId, stage: Stage) {
+    fn bring_queue_stage(&mut self, id: WorkspaceId, stage: Stage) {
         if let Some(run) = self.bring_queue.run.as_mut()
             && let Some(now) = run.now.as_mut().filter(|(n, _)| *n == id)
         {
@@ -257,7 +258,7 @@ impl Editor {
     }
 
     /// Whether session `id` is in the queue going (under way or still to come).
-    pub(crate) fn bring_queued(&self, id: SessionId) -> bool {
+    pub(crate) fn bring_queued(&self, id: WorkspaceId) -> bool {
         self.bring_queue
             .run
             .as_ref()
@@ -265,7 +266,7 @@ impl Editor {
     }
 
     /// What the list says of session `id`: marked (`bring 2nd`), or where it is in the queue going.
-    pub(crate) fn bring_said(&self, id: SessionId) -> Option<String> {
+    pub(crate) fn bring_said(&self, id: WorkspaceId) -> Option<String> {
         if let Some(run) = self.bring_queue.run.as_ref() {
             if let Some((_, stage)) = run.now.filter(|(n, _)| *n == id) {
                 let at = run.brought.len() + run.out.len() + 1;
@@ -289,8 +290,8 @@ impl Editor {
         false
     }
 
-    fn bring_name(&self, id: SessionId) -> String {
-        let all = std::iter::once(&self.session).chain(&self.sessions);
+    fn bring_name(&self, id: WorkspaceId) -> String {
+        let all = std::iter::once(&self.workspace).chain(&self.workspaces);
         let queued = || {
             let run = self.bring_queue.run.as_ref()?;
             run.names.iter().find(|(n, _)| *n == id).map(|(_, name)| name.clone())
@@ -304,7 +305,7 @@ impl Editor {
     // ── What the bring's steps say back ──
 
     /// The checkout of the one under way looked at (`bringing_queued`'s worker): what comes next for it.
-    pub(crate) fn bring_queue_looked(&mut self, id: SessionId, found: crate::worktree::Bringing) {
+    pub(crate) fn bring_queue_looked(&mut self, id: WorkspaceId, found: crate::worktree::Bringing) {
         use crate::worktree::Bringing;
         if self.bring_queue_at(id) != Some(Stage::Looking) {
             return;
@@ -314,7 +315,7 @@ impl Editor {
             Bringing::Moved(m) => {
                 self.bring_queue_stage(id, Stage::Rebasing);
                 if !self.bring_queue_stands_in() {
-                    self.with_session(id, |ed| ed.rebase_check(m, false));
+                    self.with_workspace(id, |ed| ed.rebase_check(m, false));
                 }
             }
             Bringing::Ready(m) if m.ahead == 0 => {
@@ -324,13 +325,13 @@ impl Editor {
                 self.bring_queue_stage(id, Stage::Preflight);
                 let mut failed = None;
                 let stands_in = self.bring_queue_stands_in();
-                self.with_session(id, |ed| {
-                    ed.session.bring_after_preflight = true;
+                self.with_workspace(id, |ed| {
+                    ed.workspace.bring_after_preflight = true;
                     if stands_in {
                         return;
                     }
                     if let Err(e) = ed.preflight_start(crate::preflight::Set::Quick) {
-                        ed.session.bring_after_preflight = false;
+                        ed.workspace.bring_after_preflight = false;
                         failed = Some(e);
                     }
                 });
@@ -340,8 +341,8 @@ impl Editor {
             }
             // (one tarae didn't start: taken up, its card up — as a single bring has it)
             Bringing::Rebasing(stop) => {
-                self.with_session(id, |ed| {
-                    if ed.session.rebase.is_none() {
+                self.with_workspace(id, |ed| {
+                    if ed.workspace.rebase.is_none() {
                         ed.rebase_adopt(stop);
                     }
                 });
@@ -354,7 +355,7 @@ impl Editor {
     }
 
     /// Session `id` brought in (`said`: its commits and tip): the next goes on.
-    pub(crate) fn bring_queue_landed(&mut self, id: SessionId, said: String) {
+    pub(crate) fn bring_queue_landed(&mut self, id: WorkspaceId, said: String) {
         if self.bring_queue_at(id).is_none() {
             return;
         }
@@ -369,7 +370,7 @@ impl Editor {
     /// Session `id`'s bring after its preflight didn't land (`found`): its base moved during the preflight
     /// (`Moved` — the check before the fast-forward) or under the fast-forward itself (`Refused`) — looked at once
     /// more, rebased again then; a rebase found there (its card up), or the base moved again, out.
-    pub(crate) fn bring_queue_not_brought(&mut self, id: SessionId, found: crate::worktree::Bringing) {
+    pub(crate) fn bring_queue_not_brought(&mut self, id: WorkspaceId, found: crate::worktree::Bringing) {
         use crate::worktree::Bringing;
         if self.bring_queue_at(id) != Some(Stage::Bringing) {
             return;
@@ -380,8 +381,8 @@ impl Editor {
             Bringing::Refused(e) => e,
             Bringing::Ready(m) => format!("not brought into {}", m.base),
             Bringing::Rebasing(stop) => {
-                self.with_session(id, |ed| {
-                    if ed.session.rebase.is_none() {
+                self.with_workspace(id, |ed| {
+                    if ed.workspace.rebase.is_none() {
                         ed.rebase_adopt(stop);
                     }
                 });
@@ -403,7 +404,7 @@ impl Editor {
     /// The front session's rebase is over (`done`: rebased onto its base's tip; else why not): the one under way
     /// looked at again (its preflight next), or out. True when the queue took it — no bring card then.
     pub(crate) fn bring_queue_rebased(&mut self, done: Result<(), String>) -> bool {
-        let id = self.session.id;
+        let id = self.workspace.id;
         if self.bring_queue_at(id) != Some(Stage::Rebasing) {
             return false;
         }
@@ -421,7 +422,7 @@ impl Editor {
 
     /// The front session's preflight for a bring ended (`passed`): brought next, or out.
     pub(crate) fn bring_queue_preflight(&mut self, passed: bool, title: &str) {
-        let id = self.session.id;
+        let id = self.workspace.id;
         if self.bring_queue_at(id) != Some(Stage::Preflight) {
             return;
         }
@@ -435,7 +436,7 @@ impl Editor {
     /// declined, it didn't start — `bring_after_preflight` cleared with no end said), is out.
     pub(crate) fn bring_queue_sync(&mut self) {
         let Some((id, stage)) = self.bring_queue.run.as_ref().and_then(|r| r.now) else { return };
-        let session = std::iter::once(&self.session).chain(&self.sessions).find(|l| l.id == id);
+        let session = std::iter::once(&self.workspace).chain(&self.workspaces).find(|l| l.id == id);
         match session {
             None => self.bring_queue_out(id, "its session ended".into()),
             Some(l) if stage == Stage::Preflight && !l.bring_after_preflight => {
@@ -448,6 +449,6 @@ impl Editor {
 
 /// The branch of the checkout tarae started in (a session's base when it names none).
 fn start_branch(ed: &Editor, start: &std::path::Path) -> String {
-    let main = std::iter::once(&ed.session).chain(&ed.sessions).find(|l| l.root == start);
+    let main = std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|l| l.root == start);
     main.and_then(|l| l.git_branch.clone()).unwrap_or_else(|| "its base".into())
 }

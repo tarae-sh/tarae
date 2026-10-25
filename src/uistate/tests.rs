@@ -8,7 +8,7 @@ use crate::offer::{Offer, What};
 fn editor() -> Editor {
     let mut ed = Editor::new(Config::default());
     ed.docs[0].text = ropey::Rope::from_str("one\ntwo\nthree\n");
-    ed.session.root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    ed.workspace.root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
     // (a message sent in a scene starts Claude: a stand-in, never the real one)
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
@@ -52,7 +52,7 @@ fn light_card(ed: &mut Editor) {
         "2 files not viewed.",
         "",
         String::new(),
-        What::ReviewEnd { session: 0, started: std::time::Instant::now() },
+        What::ReviewEnd { session: crate::event::WorkspaceId::HOME, started: std::time::Instant::now() },
     );
     ed.push_offer(o);
 }
@@ -67,7 +67,7 @@ fn a_held_cards_line_says_why_its_yes_is_missing() {
         "1 high-risk change not looked at.",
         "",
         String::new(),
-        What::ReviewEnd { session: 0, started: std::time::Instant::now() },
+        What::ReviewEnd { session: crate::event::WorkspaceId::HOME, started: std::time::Instant::now() },
     );
     o.held = Some(crate::codereview::held_said(1));
     ed.push_offer(o);
@@ -99,17 +99,17 @@ fn a_held_cards_line_says_why_its_yes_is_missing() {
 fn older_card_behind(ed: &mut Editor) {
     let dir = std::env::temp_dir().join(format!("tarae-uistate-behind-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let id = ed.session_open(&dir).unwrap();
+    let id = ed.workspace_open(&dir).unwrap();
     let mut o = Offer::new(
         "Restart anyway?".into(),
         "It's the binary it was.",
         "",
         String::new(),
-        What::ReviewEnd { session: 0, started: std::time::Instant::now() },
+        What::ReviewEnd { session: crate::event::WorkspaceId::HOME, started: std::time::Instant::now() },
     );
     o.since = Instant::now() - Duration::from_secs(60);
-    ed.session.parked.push(o);
-    assert!(ed.session_switch(0) && ed.session.id != id);
+    ed.workspace.parked.push(o);
+    assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME) && ed.workspace.id != id);
     light_card(ed);
 }
 
@@ -183,7 +183,7 @@ fn the_state_says_a_refused_y_whose_card_it_is_and_where_an_answer_leaves_a_sess
     ed.offers.clear();
     // A bring card of another session's, standing in front
     let back = crate::scratch::Scratch::new("state-bring").into_path();
-    let id = ed.session_add(back.clone());
+    let id = ed.workspace_add(back.clone());
     let moved = crate::rebase::Moved {
         root: back.clone(),
         name: "back".into(),
@@ -200,11 +200,11 @@ fn the_state_says_a_refused_y_whose_card_it_is_and_where_an_answer_leaves_a_sess
         What::UpTo(Box::new(moved)),
     ));
     let card = front(&ed);
-    assert_eq!(card["session"], session_id(id), "{card}");
-    assert_eq!(card["shown_in"], session_id(ed.session.id), "{card}");
+    assert_eq!(card["session"], session_id(ed.claude_of(id)), "{card}");
+    assert_eq!(card["shown_in"], session_id(ed.workspace.claude.id), "{card}");
     // A session's answer: none without a chat; ready once there is one, blocked while a card of its waits
     ed.offers.clear();
-    let answer = |ed: &Editor| ed.ui_state().json()["sessions"][0]["answer"].clone();
+    let answer = |ed: &Editor| ed.ui_state().json()["workspaces"][0]["sessions"][0]["answer"].clone();
     assert!(answer(&ed).is_null());
     chat(&mut ed, "");
     assert_eq!(answer(&ed), "ready");
@@ -275,14 +275,14 @@ fn focus(ed: &mut Editor) {
 fn chat(ed: &mut Editor, draft: &str) {
     let mut c = crate::chat::Chat::new();
     c.input = draft.into();
-    ed.session.chat = Some(c);
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.claude.chat = Some(c);
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
 }
 
 /// Minimized while Claude works (follow on): the panel is a small card, its input not on screen.
 fn chat_minimized(ed: &mut Editor) {
     chat(ed, "");
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
     c.follow.on = true;
     c.unfolded = false;
@@ -294,8 +294,8 @@ fn edit_review(ed: &mut Editor) {
 }
 
 fn task_panel(ed: &mut Editor) {
-    let task = crate::task::Task { name: "check".into(), cmd: "true".into(), cwd: ed.session.root.clone() };
-    ed.session.task_run = Some(crate::task::Run::for_test(task));
+    let task = crate::task::Task { name: "check".into(), cmd: "true".into(), cwd: ed.workspace.root.clone() };
+    ed.workspace.task_run = Some(crate::task::Run::for_test(task));
 }
 
 /// Whether `test` (its name in this module) skips itself, saying why: it starts a terminal (`terminal`, or a
@@ -309,23 +309,23 @@ fn no_pty_here(test: &str) -> bool {
 fn terminal(ed: &mut Editor) {
     ed.terminal_run(vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()], Vec::new());
     let end = Instant::now() + crate::test_results::PATIENCE;
-    while ed.session.terminal.is_none() {
+    while ed.workspace.terminal.is_none() {
         assert!(Instant::now() < end, "the terminal started");
         if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(20)) {
             ed.handle_event(ev);
         }
     }
-    let t = ed.session.terminal.as_mut().unwrap();
+    let t = ed.workspace.terminal.as_mut().unwrap();
     t.visible = true;
-    ed.session.at = crate::session::At::Program;
-    ed.session.slot_front = Some(Slot::Terminal);
+    ed.workspace.viewer.at = crate::workspace::At::Program;
+    ed.workspace.viewer.slot_front = Some(Slot::Terminal);
 }
 
 fn rail(ed: &mut Editor) {
-    let root = ed.session.root.clone();
+    let root = ed.workspace.root.clone();
     let r = crate::codereview::CodeReview::for_test(crate::codereview::Base::Head, root, Vec::new());
-    ed.session.code_review = Some(r);
-    ed.session.at = crate::session::At::Rail;
+    ed.workspace.code_review = Some(r);
+    ed.workspace.viewer.at = crate::workspace::At::Rail;
 }
 
 type Scene = (&'static str, fn(&mut Editor));
@@ -357,19 +357,19 @@ const SCENES: &[Scene] = &[
     // (bgreview: the reviewer reads in the background, no review open — its segment on the status line takes no key)
     ("the reviewer reading, no review open", |ed| {
         let rv = crate::reviewer::Reviewer::for_test(
-            ed.session.root.clone(),
+            ed.workspace.root.clone(),
             crate::reviewer::State::Reading,
             Vec::new(),
             "",
         );
-        ed.session.reviewer = Some(rv);
+        ed.workspace.reviewer = Some(rv);
     }),
     ("the chat, empty", |ed| chat(ed, "")),
     ("the chat, a draft", |ed| chat(ed, "hello")),
     ("the chat minimized while Claude works", chat_minimized),
     ("the chat minimized, a draft in it", |ed| {
         chat_minimized(ed);
-        let c = ed.session.chat.as_mut().unwrap();
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.input.set("half a thought");
     }),
     ("the chat, a prompt opened over it", |ed| {
@@ -490,10 +490,10 @@ const SCENES: &[Scene] = &[
     ("nothing waits, a turn ended in a session behind", |ed| {
         let dir = std::env::temp_dir().join(format!("tarae-uistate-done-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let id = ed.session_open(&dir).unwrap();
-        assert!(ed.session_switch(0) && ed.session.id != id);
-        let l = ed.sessions.iter_mut().find(|l| l.id == id).unwrap();
-        l.turn_end = Some((Instant::now(), Ok(())));
+        let id = ed.workspace_open(&dir).unwrap();
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME) && ed.workspace.id != id);
+        let l = ed.workspaces.iter_mut().find(|l| l.id == id).unwrap();
+        l.claude.turn_end = Some((Instant::now(), Ok(())));
         assert_eq!(ed.next_up(), crate::inbox::Next::Done(id));
     }),
     ("a card up, an older one behind, the chat's draft", |ed| {
@@ -509,7 +509,7 @@ const SCENES: &[Scene] = &[
     ("an edit's review, the chat back", |ed| {
         edit_review(ed);
         chat(ed, "");
-        ed.session.review.as_mut().unwrap().from_chat = true;
+        ed.workspace.claude.review.as_mut().unwrap().from_chat = true;
     }),
     ("an edit's review, left with Esc", |ed| {
         edit_review(ed);
@@ -526,12 +526,12 @@ const SCENES: &[Scene] = &[
             decision: crate::llm::Decision::Undecided,
             conflict: false,
         };
-        ed.session.review = Some(crate::llm::Review::new(1, id, "a commit message", vec![hunk]));
+        ed.workspace.claude.review = Some(crate::llm::Review::new(1, id, "a commit message", vec![hunk]));
     }),
     ("a draft being written, the chat's draft", |ed| {
         chat(ed, "hello");
         let id = ed.doc().id;
-        ed.session.review = Some(crate::llm::Review::new(1, id, "a commit message", Vec::new()));
+        ed.workspace.claude.review = Some(crate::llm::Review::new(1, id, "a commit message", Vec::new()));
     }),
     ("an edit's review under the side panel", |ed| {
         edit_review(ed);
@@ -552,7 +552,7 @@ const SCENES: &[Scene] = &[
     (":procs behind another tab", |ed| {
         ed.procs_toggle();
         task_panel(ed);
-        ed.session.slot_front = Some(Slot::Task);
+        ed.workspace.viewer.slot_front = Some(Slot::Task);
     }),
     // (panes P2c: a run panel's output — normal mode on its document, the panel's keys over it)
     ("the task panel's output, by C-w j", |ed| {
@@ -601,11 +601,11 @@ const SCENES: &[Scene] = &[
             full: false,
         }];
         let p = crate::preflight::Preflight::new(0, &steps, crate::preflight::Set::Full, "k".into());
-        ed.session.preflight = Some(p);
+        ed.workspace.preflight = Some(p);
         ed.bottom_take_keys();
     }),
     ("the test panel's output", |ed| {
-        ed.session.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), vec!["ok".into()]));
+        ed.workspace.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), vec!["ok".into()]));
         ed.bottom_take_keys();
     }),
     // (panes P2b, P3 §2.1: the tests' group — its list a pane of its own, beside the detail; `list:tests`)
@@ -707,7 +707,7 @@ const SCENES: &[Scene] = &[
     // (P3 §2.2: the task's places, a preflight's steps — `list:task`, `list:preflight`)
     ("list:task, the task's places", |ed| {
         task_panel(ed);
-        let r = ed.session.task_run.as_mut().unwrap();
+        let r = ed.workspace.task_run.as_mut().unwrap();
         for n in 0..2 {
             r.push_line(true, format!("a.rs:{n}: error: e"), false);
             let path = std::path::PathBuf::from("a.rs");
@@ -729,7 +729,7 @@ const SCENES: &[Scene] = &[
         };
         let steps = [step("fmt"), step("test")];
         let p = crate::preflight::Preflight::new(0, &steps, crate::preflight::Set::Full, "k".into());
-        ed.session.preflight = Some(p);
+        ed.workspace.preflight = Some(p);
         frame(ed);
         ed.list_focus(crate::pane::GroupKind::Preflight);
     }),
@@ -803,7 +803,7 @@ const SCENES: &[Scene] = &[
 fn chat_view(ed: &mut Editor) {
     use crate::chat::{Msg, Role};
     chat(ed, "a draft");
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.msgs.push(Msg::new(Role::User, "a question", ""));
     c.msgs.push(Msg::new(Role::Assistant, "An answer, in a few words.", ""));
     frame(ed);
@@ -866,7 +866,7 @@ fn tests_group_list(ed: &mut Editor) {
         at: None,
     };
     let run = crate::testing::TestRun::finished("t", vec![case.clone(), case], vec!["ok".into()]);
-    ed.session.test_run = Some(run);
+    ed.workspace.test_run = Some(run);
     frame(ed);
     ed.list_focus(crate::pane::GroupKind::Tests);
 }
@@ -1339,8 +1339,8 @@ fn slip_3_the_minimized_chat_comes_back_before_anything_is_typed() {
     assert!(ed.ui_state().text().contains("keys → chat (unfold)"));
     let said = ed.said;
     feed(&mut ed, &[" ", "W"]);
-    let c = ed.session.chat.as_ref().unwrap();
-    assert!(!c.compact() && ed.session.is_at(crate::session::At::Chat), "back, with the keys");
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert!(!c.compact() && ed.workspace.is_at(crate::workspace::At::Chat), "back, with the keys");
     assert_eq!(c.input, "W", "the first key brought it back; the next typed");
     assert!(ed.said > said, "said");
     frame(&mut ed);
@@ -1355,18 +1355,18 @@ fn the_first_letter_into_the_minimized_chat_is_typed() {
     chat_minimized(&mut ed);
     frame(&mut ed);
     feed(&mut ed, &["h", "i"]);
-    let c = ed.session.chat.as_ref().unwrap();
-    assert!(!c.compact() && ed.session.is_at(crate::session::At::Chat), "back, with the keys");
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert!(!c.compact() && ed.workspace.is_at(crate::workspace::At::Chat), "back, with the keys");
     assert_eq!(c.input, "hi", "the first letter isn't swallowed");
     frame(&mut ed);
     assert!(ed.screen.chat_w > 0, "in sight");
     // Minimized again: Enter brings it back, sends nothing
     chat_minimized(&mut ed);
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.input.set("hi");
     let queued = c.queued.clone();
     feed(&mut ed, &["<ret>"]);
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert!(!c.compact() && c.queued == queued && c.input == "hi", "not sent: {:?}", c.queued);
 }
 
@@ -1377,7 +1377,7 @@ fn slip_4_every_card_is_in_the_state_wherever_it_waits() {
     let mut ed = editor();
     light_card(&mut ed);
     weighty_card(&mut ed);
-    let id = ed.session_add(std::env::temp_dir().join("tarae-uistate-behind"));
+    let id = ed.workspace_add(std::env::temp_dir().join("tarae-uistate-behind"));
     let o =
         Offer::new("Review at the end?".into(), "Edits land unseen.", "", String::new(), What::ReviewAtEnd);
     park(&mut ed, id, o);
@@ -1387,7 +1387,7 @@ fn slip_4_every_card_is_in_the_state_wherever_it_waits() {
     let behind = format!("s{id}");
     assert_eq!(ups, vec![("front", "s0"), ("stacked", "s0"), ("parked", behind.as_str())]);
     assert!(s.cards[0].in_sight_ms.is_some() && s.cards[1].in_sight_ms.is_none());
-    let row = s.sessions.iter().find(|x| x.id == behind).unwrap();
+    let row = s.workspaces.iter().find(|x| x.id == format!("w{id}")).unwrap();
     assert_eq!(row.cards, 1, "the session behind counts its card");
     let text = s.text();
     assert!(text.contains(&format!("in {behind} · parked")), "{text}");
@@ -1442,7 +1442,10 @@ fn keys_out_of_a_chat_filling_a_narrow_screen_go_to_code_in_sight() {
     let k = ed.keys_to();
     assert_eq!(k.region, Region::Code);
     assert!(k.drawn, "the code the keys went to is on screen");
-    assert!(ed.screen.panes.iter().any(|p| p.0 == ed.session.focus && p.1.w > 0), "its focused pane drawn");
+    assert!(
+        ed.screen.panes.iter().any(|p| p.0 == ed.workspace.viewer.focus && p.1.w > 0),
+        "its focused pane drawn"
+    );
     assert_eq!(ed.screen.chat_w, 0);
     // `space l`: the chat again, filling it
     feed(&mut ed, &[" ", "l"]);
@@ -1461,7 +1464,7 @@ fn the_claude_settings_card_and_the_chat_input_each_keep_their_keys() {
     frame(&mut ed);
     assert_eq!(ed.keys_to().region, Region::Chat);
     feed(&mut ed, &["n"]);
-    assert_eq!(ed.session.chat.as_ref().unwrap().input, "n", "typed, not an answer");
+    assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().input, "n", "typed, not an answer");
     assert_eq!(ed.offers.len(), 1, "the card still up");
     feed(&mut ed, &["<C-q>"]);
     frame(&mut ed);
@@ -1485,10 +1488,10 @@ fn a_card_come_mid_turn_leaves_the_empty_chat_its_keys() {
     feed(&mut ed, &["a", "n", "d"]);
     frame(&mut ed);
     assert_eq!(ed.offers.len(), 1, "unanswered");
-    assert_eq!(ed.session.chat.as_ref().unwrap().input, "and", "typed");
+    assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().input, "and", "typed");
     assert!(shown(&mut ed).contains("╰─ C-q answer · "), "the card says how, first on its bottom line");
     // `C-q`: the card's, `n` answers it, the chat has them again
-    ed.session.chat.as_mut().unwrap().input.clear();
+    ed.workspace.claude.chat.as_mut().unwrap().input.clear();
     feed(&mut ed, &["<C-q>"]);
     assert!(matches!(ed.keys_to().region, Region::Card(_)), "{:?}", ed.keys_to().region);
     feed(&mut ed, &["n"]);
@@ -1506,28 +1509,31 @@ fn the_keys_go_back_to_the_chat_once_its_review_is_answered() {
     let mut code = editor();
     code.focus_sync();
     let said = code.ui_state().text();
-    assert!(said.contains(&format!("keys → pane#{}, the code (commands)", code.session.focus)), "{said}");
+    assert!(
+        said.contains(&format!("keys → pane#{}, the code (commands)", code.workspace.viewer.focus)),
+        "{said}"
+    );
     // An edit's review that took them from the chat (`edits::show`): its `y` gives them back too
     let mut ed = editor();
     chat(&mut ed, "");
     edit_review(&mut ed);
-    ed.session.leave(crate::session::At::Chat);
-    ed.session.review.as_mut().unwrap().from_chat = true;
+    ed.workspace.leave(crate::workspace::At::Chat);
+    ed.workspace.claude.review.as_mut().unwrap().from_chat = true;
     frame(&mut ed);
     assert_eq!(ed.keys_to().region, Region::EditReview);
     feed(&mut ed, &["y"]);
     frame(&mut ed);
-    assert!(ed.session.review.is_none(), "answered");
+    assert!(ed.workspace.claude.review.is_none(), "answered");
     assert_eq!(ed.keys_to().region, Region::Chat, "back where they were");
 }
 
 // ── The state ────────────────────────────────────────────────────────────
 
 /// A card waiting in session `id`, behind — numbered as `push_offer` numbers them.
-fn park(ed: &mut Editor, id: crate::event::SessionId, mut o: Offer) {
+fn park(ed: &mut Editor, id: crate::event::WorkspaceId, mut o: Offer) {
     ed.offer_seq += 1;
     o.id = ed.offer_seq;
-    ed.session_by_id(id).unwrap().parked.push(o);
+    ed.workspace_by_id(id).unwrap().parked.push(o);
 }
 
 /// What doesn't stay put from run to run (pid, boot, times) — out of the golden JSON.
@@ -1545,8 +1551,9 @@ fn steady(mut v: Value) -> Value {
     for e in v["inbox"].as_array_mut().into_iter().flatten() {
         e["waited_ms"] = json!(0);
     }
-    for s in v["sessions"].as_array_mut().unwrap() {
-        s["root"] = json!(Path::new(s["root"].as_str().unwrap()).file_name().unwrap().to_string_lossy());
+    for w in v["workspaces"].as_array_mut().unwrap() {
+        w["root"] = json!(Path::new(w["root"].as_str().unwrap()).file_name().unwrap().to_string_lossy());
+        let s = &mut w["sessions"][0];
         if s["usage"]["seconds_left"].is_u64() {
             s["usage"]["seconds_left"] = json!(3600);
         }
@@ -1598,9 +1605,9 @@ fn usage_turn(u: &mut crate::usage::Usage) {
 #[test]
 fn the_state_as_json_is_pinned() {
     let mut ed = editor();
-    (ed.session.name, ed.session.root) = ("main".into(), std::env::temp_dir().join("tarae-uistate-main"));
-    let id = ed.session_add(std::env::temp_dir().join("tarae-uistate-golden"));
-    ed.session_by_id(id).unwrap().name = "fix-login".into();
+    (ed.workspace.name, ed.workspace.root) = ("main".into(), std::env::temp_dir().join("tarae-uistate-main"));
+    let id = ed.workspace_add(std::env::temp_dir().join("tarae-uistate-golden"));
+    ed.workspace_by_id(id).unwrap().name = "fix-login".into();
     park(
         &mut ed,
         id,
@@ -1613,13 +1620,13 @@ fn the_state_as_json_is_pinned() {
         ),
     );
     // (its Claude had a turn: a request writing to the 1h cache, then the result — `usage.rs`)
-    let u = &mut ed.session_by_id(id).unwrap().usage;
+    let u = &mut ed.workspace_by_id(id).unwrap().claude.usage;
     usage_turn(u);
     // (its runs' sandboxes: in front a Linux keeper not served — pidfd_getfd refused —, behind macOS's with ports
     // open — 9d)
     let offline = landlock_run(crate::sandbox::guarantees::Ns::NONE, false);
-    ed.session.sandbox = Some(offline);
-    ed.session_by_id(id).unwrap().sandbox =
+    ed.workspace.claude.sandbox = Some(offline);
+    ed.workspace_by_id(id).unwrap().claude.sandbox =
         Some(crate::sandbox::guarantees::Guarantees::seatbelt(true, false));
     edit_review(&mut ed);
     task_panel(&mut ed);
@@ -1647,9 +1654,9 @@ fn the_state_as_json_is_pinned() {
 fn a_sessions_last_turn_is_pinned() {
     use crate::chat::{Chat, Look, Msg, Role};
     let mut ed = editor();
-    (ed.session.name, ed.session.root) = ("main".into(), std::env::temp_dir().join("tarae-uistate-main"));
-    let id = ed.session_add(std::env::temp_dir().join("tarae-uistate-chat"));
-    let l = ed.session_by_id(id).unwrap();
+    (ed.workspace.name, ed.workspace.root) = ("main".into(), std::env::temp_dir().join("tarae-uistate-main"));
+    let id = ed.workspace_add(std::env::temp_dir().join("tarae-uistate-chat"));
+    let l = ed.workspace_by_id(id).unwrap();
     l.name = "fix-login".into();
     let mut c = Chat::new();
     c.msgs.push(Msg::new(Role::User, "an earlier question", ""));
@@ -1661,8 +1668,8 @@ fn a_sessions_last_turn_is_pinned() {
         };
     c.msgs.push(Msg::tool(look, "t1"));
     c.msgs.push(Msg::new(Role::Assistant, "The token check runs before the refresh: src/login.rs:12.", ""));
-    l.chat = Some(c);
-    l.at = crate::session::At::Chat;
+    l.claude.chat = Some(c);
+    l.viewer.at = crate::workspace::At::Chat;
     frame(&mut ed);
     let t = ed.chat_turn(&format!("s{id}")).unwrap();
     assert_eq!(ed.chat_turn("fix-login").unwrap().rows, t.rows, "by name too");
@@ -2307,7 +2314,7 @@ fn a_paste_in_normal_mode_is_never_silent() {
     feed(&mut ed, &["<esc>"]);
     chat_minimized(&mut ed);
     ed.handle_paste("for claude".into());
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert!(c.input == "for claude" && !c.compact(), "the chat back, with it");
 }
 
@@ -2320,12 +2327,12 @@ fn a_paste_in_normal_mode_is_never_silent() {
 fn every_row_the_state_lists_is_on_the_frame() {
     let dir = sock_dir("rows");
     let mut ed = editor();
-    ed.session.root = dir.clone();
+    ed.workspace.root = dir.clone();
     let rels = vec!["Cargo.toml".to_string(), "src/main.rs".into(), "src/panels.rs".into()];
     let mut side = crate::sidebar::Sidebar::with_files(dir.clone(), rels);
     side.set_open(["src"], true);
-    ed.session.sidebar = Some(side);
-    ed.session.at = crate::session::At::Side;
+    ed.workspace.viewer.sidebar = Some(side);
+    ed.workspace.viewer.at = crate::workspace::At::Side;
     task_panel(&mut ed);
     let w = 160;
     let check = |ed: &mut Editor, what: &str| {
@@ -2363,7 +2370,7 @@ fn every_row_the_state_lists_is_on_the_frame() {
         dir.clone(),
         vec![file("src/main.rs"), file("README.md")],
     );
-    ed.session.code_review = Some(review);
+    ed.workspace.code_review = Some(review);
     let rail = check(&mut ed, "the review's rail");
     assert!(rail.iter().any(|r| r.id == "review:src/main.rs" && r.label == "main.rs"), "{rail:?}");
     // A picker over it all
@@ -2384,17 +2391,17 @@ fn a_run_keeps_its_id_from_the_line_to_its_end() {
     let task = |name: &str| crate::task::Task { name: name.into(), cmd: "true".into(), cwd: ed_root() };
     let mut claudes = crate::task::Run::for_test(task("claude's"));
     (claudes.state, claudes.by_claude) = (crate::task::State::Running, true);
-    ed.session.task_run = Some(claudes);
+    ed.workspace.task_run = Some(claudes);
     ed.task_start(task("check"));
     let runs = ed.ui_runs();
     let queued = runs.iter().find(|r| r.state == "queued").expect("waiting in line");
     assert_eq!((queued.of, queued.label.as_str(), queued.waiting.as_deref()), ("user", "check", Some("1st")));
     let id = queued.id.clone();
     // Claude's ends; the line moves
-    ed.session.task_run.as_mut().unwrap().state = crate::task::State::Passed;
+    ed.workspace.task_run.as_mut().unwrap().state = crate::task::State::Passed;
     crate::queued::run_next(&mut ed);
     let end = Instant::now() + crate::test_results::PATIENCE;
-    while !ed.session.task_run.as_ref().is_some_and(|r| r.task.name == "check") {
+    while !ed.workspace.task_run.as_ref().is_some_and(|r| r.task.name == "check") {
         assert!(Instant::now() < end, "the task started");
         if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(10)) {
             ed.handle_event(ev);
@@ -2508,7 +2515,7 @@ fn a_watcher_of_usage_hears_a_turn_and_the_cache_going_cold() {
         rx
     };
     let (usage, sessions) = (watcher(&mut ed, &["usage"]), watcher(&mut ed, &["sessions"]));
-    usage_turn(&mut ed.session.usage);
+    usage_turn(&mut ed.workspace.claude.usage);
     watch::usage(&mut ed, "turn");
     frame(&mut ed);
     let e: Vec<Value> = usage.try_iter().map(|l| serde_json::from_str(&l).unwrap()).collect();
@@ -2520,8 +2527,8 @@ fn a_watcher_of_usage_hears_a_turn_and_the_cache_going_cold() {
     assert_eq!(e[0]["last_turn"]["cost"], 0.0213);
     assert!(e[0]["said"].as_str().unwrap().contains("cache warm 60m (1h) · context 6% of 200k"), "{e:?}");
     // At its TTL: cold, said once
-    let at = ed.session.usage.cold_at().unwrap();
-    assert_eq!(crate::usage::woke_at(&mut ed.session.usage, at), crate::usage::Woke::Cold);
+    let at = ed.workspace.claude.usage.cold_at().unwrap();
+    assert_eq!(crate::usage::woke_at(&mut ed.workspace.claude.usage, at), crate::usage::Woke::Cold);
     watch::usage(&mut ed, "cold");
     frame(&mut ed);
     let e: Vec<Value> = usage.try_iter().map(|l| serde_json::from_str(&l).unwrap()).collect();
@@ -2555,7 +2562,11 @@ fn tarae_state_says_the_sandbox() {
     use crate::sandbox::guarantees::{Guarantees, Ns};
     let mut ed = editor();
     frame(&mut ed);
-    assert_eq!(ed.ui_state().json()["sessions"][0]["sandbox"], Value::Null, "no sandboxed run yet");
+    assert_eq!(
+        ed.ui_state().json()["workspaces"][0]["sessions"][0]["sandbox"],
+        Value::Null,
+        "no sandboxed run yet"
+    );
     let watcher = |ed: &mut Editor, kind: &str| {
         let (tx, rx) = std::sync::mpsc::sync_channel(watch::UNREAD);
         let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -2577,14 +2588,14 @@ fn tarae_state_says_the_sandbox() {
         (&e[0]["event"], &e[0]["session"], &e[0]["was"]),
         (&json!("sandbox"), &json!("s0"), &Value::Null)
     );
-    assert_eq!(e[0]["said"], format!("s0 {}: sandbox {line}", ed.session.label()));
+    assert_eq!(e[0]["said"], format!("s0 {}: sandbox {line}", ed.workspace.label()));
     let kept = ["files", "processes", "signals", "ipc", "shm", "ptys", "loopback"].map(|p| match p {
         "files" => json!({ "part": p, "how": "but the temp folders" }),
         "loopback" => json!({ "part": p, "how": "its own" }),
         _ => json!({ "part": p }),
     });
     assert_eq!(
-        ed.ui_state().json()["sessions"][0]["sandbox"],
+        ed.ui_state().json()["workspaces"][0]["sessions"][0]["sandbox"],
         json!({
             "by": "landlock", "tier": "own", "abi": 8, "partial": false,
             "namespaces": { "user": true, "net": true, "pid": true, "shm": true, "netns": true },
@@ -2628,17 +2639,17 @@ fn tarae_state_says_the_sandbox() {
     );
     assert!(sessions.try_iter().next().is_none(), "a watcher of sessions isn't told the sandbox");
     // The text forms; Claude's level: its own session's, why included — not another's, not in the `ui:` line
-    let id = ed.session_add(std::env::temp_dir().join("tarae-uistate-sandbox"));
-    ed.session_by_id(id).unwrap().sandbox = Some(own);
-    ed.session.sandbox = Some(landlock_run(Ns::NONE, false));
-    let mine = ed.session.sandbox.clone().unwrap();
+    let id = ed.workspace_add(std::env::temp_dir().join("tarae-uistate-sandbox"));
+    ed.workspace_by_id(id).unwrap().claude.sandbox = Some(own);
+    ed.workspace.claude.sandbox = Some(landlock_run(Ns::NONE, false));
+    let mine = ed.workspace.claude.sandbox.clone().unwrap();
     frame(&mut ed);
-    ed.session_by_id(id).unwrap().sandbox = Some(Guarantees::seatbelt(false, false));
+    ed.workspace_by_id(id).unwrap().claude.sandbox = Some(Guarantees::seatbelt(false, false));
     let text = ed.ui_state().text();
     let seatbelt = "sandbox s1: Seatbelt · loopback none of its ports open · network closed · shared POSIX shared \
                     memory\n";
     assert!(text.contains(seatbelt), "{text}");
-    ed.session_by_id(id).unwrap().sandbox = Some(landlock_run(Ns::session(true, true), true));
+    ed.workspace_by_id(id).unwrap().claude.sandbox = Some(landlock_run(Ns::session(true, true), true));
     let text = ed.ui_state().text();
     assert!(
         text.contains(&format!("sandbox s0: {}\n", mine.line()))
@@ -2649,7 +2660,11 @@ fn tarae_state_says_the_sandbox() {
     let text = c.text_claude(false);
     let said = format!("sandbox: {} — what's missing: {}\n", mine.line(), mine.why.as_ref().unwrap());
     assert!(text.contains(&said) && !text.contains(line), "{text}");
-    assert_eq!(c.json()["sessions"][1]["sandbox"], Value::Null, "another session's: not Claude's");
+    assert_eq!(
+        c.json()["workspaces"][1]["sessions"][0]["sandbox"],
+        Value::Null,
+        "another session's: not Claude's"
+    );
     assert!(c.context_line().is_none_or(|(l, _)| !l.contains("sandbox")), "{:?}", c.context_line());
 }
 
@@ -2739,13 +2754,13 @@ fn perf_ui_state_quiet_batch_watched() {
         return;
     }
     let mut ed = busy_scene();
-    let behind = ed.sessions.iter().find(|l| l.name == "fix-login").unwrap().id;
+    let behind = ed.workspaces.iter().find(|l| l.name == "fix-login").unwrap().id;
     let generation = {
         let mut c = crate::chat::Chat::new();
         // (a turn under way: its words come in)
         c.state = crate::chat::State::Thinking;
         let g = c.generation();
-        ed.session_by_id(behind).unwrap().chat = Some(c);
+        ed.workspace_by_id(behind).unwrap().claude.chat = Some(c);
         g
     };
     frame(&mut ed);
@@ -2753,7 +2768,8 @@ fn perf_ui_state_quiet_batch_watched() {
         let word = move |ed: &mut Editor| {
             crate::chat::stream_event(ed, generation, crate::llm::StreamEv::Text("word ".into()))
         };
-        let unchanged = crate::term::handle_noting(ed, crate::event::Event::For(behind, Box::new(word)));
+        let tag = ed.claude_of(behind);
+        let unchanged = crate::term::handle_noting(ed, crate::event::Event::For(behind, tag, Box::new(word)));
         assert!(!crate::term::batch_done(ed, unchanged), "a word behind draws nothing");
     };
     let median = |ed: &mut Editor, f: &dyn Fn(&mut Editor)| {
@@ -2798,7 +2814,7 @@ fn claudes_answer_stays_small_on_a_busy_scene() {
     assert!(!text.contains("cargo test -p tarae") && !line.contains("cargo test"), "{text}\n{line}");
     // (its sandbox: one line of the answer, nothing in the context's line every request reads — 9d)
     let mut bare = busy_scene();
-    bare.session.sandbox = None;
+    bare.workspace.claude.sandbox = None;
     let b = bare.ui_state_claude();
     let sandbox = text.lines().find(|l| l.starts_with("sandbox: ")).expect("its sandbox said");
     assert_eq!(b.text_claude(false).len() + sandbox.len() + 1, text.len(), "{text}");
@@ -2808,8 +2824,8 @@ fn claudes_answer_stays_small_on_a_busy_scene() {
 fn busy_scene() -> Editor {
     let mut ed = editor();
     for name in ["fix-login", "uistate"] {
-        let id = ed.session_add(std::env::temp_dir().join(format!("tarae-uistate-busy-{name}")));
-        ed.session_by_id(id).unwrap().name = name.into();
+        let id = ed.workspace_add(std::env::temp_dir().join(format!("tarae-uistate-busy-{name}")));
+        ed.workspace_by_id(id).unwrap().name = name.into();
         if name == "uistate" {
             let q = "cargo test -p tarae\n\nIn the project, sandboxed.";
             park(
@@ -2824,7 +2840,7 @@ fn busy_scene() -> Editor {
     light_card(&mut ed);
     weighty_card(&mut ed);
     // (its runs' sandbox: a keeper not served — the longest line Claude's answer gets, a fallback's why with it)
-    ed.session.sandbox = Some(landlock_run(crate::sandbox::guarantees::Ns::NONE, false));
+    ed.workspace.claude.sandbox = Some(landlock_run(crate::sandbox::guarantees::Ns::NONE, false));
     ed.set_warning("src/term.rs changed on disk — reloaded");
     ed.set_status("check passed");
     frame(&mut ed);

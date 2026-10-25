@@ -15,13 +15,13 @@ use crate::key::{Code, Key};
 use crate::keymap::{Lookup, MappableCommand};
 use crate::movement as mv;
 use crate::selection::{Range, Selection};
-use crate::session::At;
 use crate::sizes::Slot;
+use crate::workspace::At;
 
 /// Which document pane — where its `Pane` is kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Which {
-    /// A run panel's output (`Session.outputs`): the task panel's, the tests'.
+    /// A run panel's output (`Workspace.outputs`): the task panel's, the tests'.
     Output(Slot),
     /// The chat's transcript (`Chat.transcript`).
     Chat,
@@ -235,15 +235,15 @@ impl Pane {
 /// The pane `which` names.
 pub fn pane_mut(ed: &mut Editor, which: Which) -> Option<&mut Pane> {
     match which {
-        Which::Output(slot) => ed.session.outputs.get_mut(slot).map(|o| &mut o.pane),
-        Which::Chat => ed.session.chat.as_mut()?.transcript.as_mut().map(|t| &mut t.pane),
-        Which::Input => ed.session.chat.as_mut().map(|c| &mut c.input.pane),
+        Which::Output(slot) => ed.workspace.outputs.get_mut(slot).map(|o| &mut o.pane),
+        Which::Chat => ed.workspace.claude.chat.as_mut()?.transcript.as_mut().map(|t| &mut t.pane),
+        Which::Input => ed.workspace.claude.chat.as_mut().map(|c| &mut c.input.pane),
     }
 }
 
 /// The pane a key's command has swapped in as `current` (`commands.rs` asks before it acts on a surface).
 pub fn swapped(ed: &Editor) -> Option<Which> {
-    ed.session.swapped
+    ed.workspace.viewer.swapped
 }
 
 /// A range of `doc`'s selection is wider than a character — what `enter` quotes (several plain cursors aren't).
@@ -303,15 +303,15 @@ pub fn swap<R>(
     ed.docs.push(doc);
     ed.current = ed.docs.len() - 1;
     trade(ed, &mut keys);
-    ed.session.swapped = Some(which);
+    ed.workspace.viewer.swapped = Some(which);
     let viewport = std::mem::replace(&mut ed.viewport, size);
-    let focus = ed.session.focus;
-    let jumps = ed.session.views.iter().find(|w| w.id == focus).map(|w| w.jumps.clone());
+    let focus = ed.workspace.viewer.focus;
+    let jumps = ed.workspace.views.iter().find(|w| w.id == focus).map(|w| w.jumps.clone());
     let prompt = ed.prompt.is_some();
     let input = which == Which::Input;
     let r = f(ed);
     ed.viewport = viewport;
-    ed.session.swapped = None;
+    ed.workspace.viewer.swapped = None;
     let at = ed.docs.iter().rposition(|d| d.id == id).expect("the pane's document is still in");
     // (a command that showed the code another buffer — `C-o`, `ga`, `gf` — left it current)
     let moved = ed.current != at;
@@ -320,7 +320,7 @@ pub fn swap<R>(
     let back = if moved { now } else { code };
     let index = |id| ed.docs.iter().position(|d| d.id == id);
     ed.current = index(back).or_else(|| index(code)).unwrap_or(0);
-    if !moved && let (Some(jumps), Some(w)) = (jumps, ed.session.views.iter_mut().find(|w| w.id == focus)) {
+    if !moved && let (Some(jumps), Some(w)) = (jumps, ed.workspace.views.iter_mut().find(|w| w.id == focus)) {
         w.jumps = jumps;
     }
     trade(ed, &mut keys);
@@ -348,7 +348,7 @@ pub fn swap<R>(
         false => false,
     };
     if moved {
-        ed.session.at = At::Code;
+        ed.workspace.viewer.at = At::Code;
     }
     Some((r, Swapped { edited, typing }))
 }

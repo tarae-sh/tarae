@@ -16,7 +16,7 @@
 //! `Editor::review_input`); an edit review's end (`llm::finish`, `llm::close_review` → `edit_ended`); a code
 //! review's end (`codereview::end` → `code_ended`, which reads the grades, looks, viewed marks and notes
 //! through their public functions); every take-back of a change (`Editor::git_reset_hunk`: `space v u`, the git
-//! tab's `d`, the palette's "Undo this change" → `undo_asked`); a session's end (`worktree::session_close` →
+//! tab's `d`, the palette's "Undo this change" → `undo_asked`); a session's end (`worktree::workspace_close` →
 //! `Editor::reviews_end`); quitting and `:restart` (`Editor::reviews_flush`). Your own edits are told apart where
 //! keys and pastes are handled (`Document.own`).
 
@@ -693,12 +693,12 @@ fn found_of(
 /// A path as the record names it: from the session's root, else whole.
 fn rel(ed: &Editor, path: Option<&std::path::Path>) -> String {
     let Some(p) = path else { return String::new() };
-    p.strip_prefix(&ed.session.root).unwrap_or(p).display().to_string()
+    p.strip_prefix(&ed.workspace.root).unwrap_or(p).display().to_string()
 }
 
 /// The newest note's id (0: none).
 fn notes_max(ed: &Editor) -> u64 {
-    ed.session.notes.list.iter().map(|n| n.id).max().unwrap_or(0)
+    ed.workspace.claude.notes.list.iter().map(|n| n.id).max().unwrap_or(0)
 }
 
 /// A watch over edit review `rev`: a change per hunk that changes something.
@@ -717,7 +717,7 @@ fn edit_watch(ed: &Editor, rev: &crate::llm::Review, now: Instant) -> Watch {
         });
         let i = w.add(&file, (text, nth), (h.new.lines().count(), h.old.lines().count()), lines);
         let path = doc.and_then(|d| d.path.as_deref());
-        w.changes[i].secret = secret(&ed.session.root, path, h.old.lines().chain(h.new.lines()));
+        w.changes[i].secret = secret(&ed.workspace.root, path, h.old.lines().chain(h.new.lines()));
         w.hunks.push(k);
         w.decided.push(h.decision);
     }
@@ -738,7 +738,7 @@ fn kind_of(base: &crate::codereview::Base) -> &'static str {
 pub fn after_frame(ed: &mut Editor) {
     let now = crate::clock::now();
     // (a session gone behind: its reviews stop counting — the time in another session isn't theirs)
-    for l in &mut ed.sessions {
+    for l in &mut ed.workspaces {
         for w in [l.reviews.edit.as_mut(), l.reviews.code.as_mut()].into_iter().flatten() {
             if w.mark.is_some() {
                 w.pause(now);
@@ -750,21 +750,23 @@ pub fn after_frame(ed: &mut Editor) {
 }
 
 fn edit_frame(ed: &mut Editor, now: Instant) {
-    let generation = ed.session.review.as_ref().filter(|r| r.ready && r.hunks.iter().any(|h| h.old != h.new));
+    let generation =
+        ed.workspace.claude.review.as_ref().filter(|r| r.ready && r.hunks.iter().any(|h| h.old != h.new));
     let generation = generation.map(|r| r.generation);
-    let same = ed.session.reviews.edit.as_ref().map(|w| w.of) == generation.map(Of::Edit);
+    let same = ed.workspace.reviews.edit.as_ref().map(|w| w.of) == generation.map(Of::Edit);
     if !same {
         // (one that went another way than `edit_ended`: what it was is gone with it — left)
-        if let Some(w) = ed.session.reviews.edit.take() {
+        if let Some(w) = ed.workspace.reviews.edit.take() {
             ended(ed, w, now);
         }
-        if let Some(rev) = ed.session.review.as_ref().filter(|_| generation.is_some()) {
+        if let Some(rev) = ed.workspace.claude.review.as_ref().filter(|_| generation.is_some()) {
             let w = edit_watch(ed, rev, now);
             began(ed, &w);
-            ed.session.reviews.edit = Some(w);
+            ed.workspace.reviews.edit = Some(w);
         }
     }
-    let (Some(rev), Some(mut w)) = (ed.session.review.as_ref(), ed.session.reviews.edit.take()) else {
+    let (Some(rev), Some(mut w)) = (ed.workspace.claude.review.as_ref(), ed.workspace.reviews.edit.take())
+    else {
         return;
     };
     let rows = ed.screen.review_rows.borrow();
@@ -788,7 +790,7 @@ fn edit_frame(ed: &mut Editor, now: Instant) {
         say(ed, ev);
     }
     w.frame(now, shown, hand);
-    ed.session.reviews.edit = Some(w);
+    ed.workspace.reviews.edit = Some(w);
 }
 
 fn decision_word(d: crate::llm::Decision, conflict: bool) -> &'static str {
@@ -800,21 +802,21 @@ fn decision_word(d: crate::llm::Decision, conflict: bool) -> &'static str {
 }
 
 fn code_frame(ed: &mut Editor, now: Instant) {
-    let Some(r) = ed.session.code_review.as_ref() else {
+    let Some(r) = ed.workspace.code_review.as_ref() else {
         // (one that ended another way than `codereview::end`: left)
-        if let Some(w) = ed.session.reviews.code.take() {
+        if let Some(w) = ed.workspace.reviews.code.take() {
             ended(ed, w, now);
         }
         return;
     };
     let (of, kind) = (Of::Code(r.started), kind_of(&r.base));
-    if ed.session.reviews.code.as_ref().is_none_or(|w| w.of != of) {
-        if let Some(w) = ed.session.reviews.code.take() {
+    if ed.workspace.reviews.code.as_ref().is_none_or(|w| w.of != of) {
+        if let Some(w) = ed.workspace.reviews.code.take() {
             ended(ed, w, now);
         }
         let w = Watch::new(of, kind, now, notes_max(ed));
         began(ed, &w);
-        ed.session.reviews.code = Some(w);
+        ed.workspace.reviews.code = Some(w);
     }
     look(ed, now);
 }
@@ -831,7 +833,7 @@ struct Ask {
 /// on screen then) — and a worker asked to find the changes of each file in sight whose changes aren't found
 /// for its text yet.
 fn look(ed: &mut Editor, now: Instant) {
-    let Some(mut w) = ed.session.reviews.code.take() else { return };
+    let Some(mut w) = ed.workspace.reviews.code.take() else { return };
     // (an edit's review drawn over it: none of its changes is in sight)
     let (shown, hand, asks) = match ed.screen.review_rows.borrow().is_empty() {
         true => code_shown(ed, &mut w),
@@ -841,7 +843,7 @@ fn look(ed: &mut Editor, now: Instant) {
         }
     };
     w.frame(now, shown, hand);
-    if let Some(r) = ed.session.code_review.as_ref() {
+    if let Some(r) = ed.workspace.code_review.as_ref() {
         for a in asks {
             w.asked.insert(a.file.clone(), a.at);
             let (of, root, rules) = (w.of, r.root.clone(), r.rules.clone());
@@ -853,7 +855,7 @@ fn look(ed: &mut Editor, now: Instant) {
             });
         }
     }
-    ed.session.reviews.code = Some(w);
+    ed.workspace.reviews.code = Some(w);
 }
 
 /// A worker found file `file`'s changes (`at` the text it was given): followed — only while the document is
@@ -861,8 +863,8 @@ fn look(ed: &mut Editor, now: Instant) {
 /// graded as they are now, and what's in sight looked at again on the frame on screen — nothing on screen
 /// changed for it.
 fn landed(ed: &mut Editor, of: Of, file: String, at: Stamp, found: Vec<Found>) {
-    let Some(mut w) = ed.session.reviews.code.take() else { return };
-    let mode = ed.session.code_review.as_ref().filter(|r| Of::Code(r.started) == of).and_then(|r| {
+    let Some(mut w) = ed.workspace.reviews.code.take() else { return };
+    let mode = ed.workspace.code_review.as_ref().filter(|r| Of::Code(r.started) == of).and_then(|r| {
         let f = r.files.iter().find(|f| f.rel == file)?;
         Some(mode_rule(r, &f.path))
     });
@@ -883,7 +885,7 @@ fn landed(ed: &mut Editor, of: Of, file: String, at: Stamp, found: Vec<Found>) {
             w.sight = None;
         }
     }
-    ed.session.reviews.code = Some(w);
+    ed.workspace.reviews.code = Some(w);
     if !ed.behind {
         look(ed, crate::clock::now());
     }
@@ -898,7 +900,7 @@ fn mode_rule(r: &crate::codereview::CodeReview, path: &std::path::Path) -> Optio
 
 /// File `file`'s changes in its diff graded as the review grades them now — one gone keeps its last.
 fn grade_file(ed: &Editor, w: &mut Watch, file: &str) {
-    let Some(r) = ed.session.code_review.as_ref() else { return };
+    let Some(r) = ed.workspace.code_review.as_ref() else { return };
     let Some(f) = r.files.iter().find(|f| f.rel == file) else { return };
     let graded = r.graded(ed, f);
     let lines = of_lines(&graded);
@@ -913,7 +915,7 @@ fn grade_file(ed: &Editor, w: &mut Watch, file: &str) {
 /// changes aren't found for its text yet keeps what it showed — and is asked of a worker (`Ask`). Worked out
 /// again only when a document's text or diff, the rows drawn or the cursor changed.
 fn code_shown(ed: &Editor, w: &mut Watch) -> (Vec<usize>, Option<usize>, Vec<Ask>) {
-    let Some(r) = ed.session.code_review.as_ref() else { return (Vec::new(), None, Vec::new()) };
+    let Some(r) = ed.workspace.code_review.as_ref() else { return (Vec::new(), None, Vec::new()) };
     let (focused, cursor) = (ed.doc().id, ed.cursor_line());
     let mut sight = Sight { panes: Vec::new(), focused, cursor };
     for ((_, _, _, rows), doc) in ed.screen.panes.iter().zip(&ed.screen.pane_docs) {
@@ -987,7 +989,7 @@ pub fn undo_asked(ed: &mut Editor, reset: impl FnOnce(&mut Editor)) {
     if ed.doc().version() == version {
         return;
     }
-    let (Some((i, grade, rule)), Some(w)) = (asked, ed.session.reviews.code.as_mut()) else { return };
+    let (Some((i, grade, rule)), Some(w)) = (asked, ed.workspace.reviews.code.as_mut()) else { return };
     let c = &mut w.changes[i];
     (c.undo, c.seen, c.grade, c.rule) = (true, true, grade, rule);
 }
@@ -996,7 +998,7 @@ pub fn undo_asked(ed: &mut Editor, reset: impl FnOnce(&mut Editor)) {
 /// there as the review last found the file's changes (their places moved with every edit since: `was`), and
 /// its grade and rule now. None found there yet: none — no change's text is hashed on a key.
 fn asked_back(ed: &Editor) -> Option<(usize, Option<&'static str>, Option<String>)> {
-    let (r, w, d) = (ed.session.code_review.as_ref()?, ed.session.reviews.code.as_ref()?, ed.doc());
+    let (r, w, d) = (ed.workspace.code_review.as_ref()?, ed.workspace.reviews.code.as_ref()?, ed.doc());
     let f = r.files.iter().find(|f| d.path.as_ref() == Some(&f.path))?;
     let h = crate::gitmenu::hunk_at(&d.git_hunks, ed.cursor_line())?;
     let file = w.found.get(&f.rel).filter(|x| x.stamp.0 == d.id)?;
@@ -1082,7 +1084,7 @@ pub fn edit_ended(ed: &mut Editor, rev: &crate::llm::Review, closed: bool, appli
         return;
     }
     let now = crate::clock::now();
-    let mut w = match ed.session.reviews.edit.take() {
+    let mut w = match ed.workspace.reviews.edit.take() {
         Some(w) if w.of == Of::Edit(rev.generation) => w,
         other => {
             if let Some(o) = other {
@@ -1106,14 +1108,14 @@ pub fn edit_ended(ed: &mut Editor, rev: &crate::llm::Review, closed: bool, appli
 
 /// The code review ends (`codereview::end`, before it's taken): each change's grade and what it ended as.
 pub fn code_ended(ed: &mut Editor) {
-    let Some(mut w) = ed.session.reviews.code.take() else { return };
+    let Some(mut w) = ed.workspace.reviews.code.take() else { return };
     // (no review follows its documents now: their edits move nothing for it)
     for d in ed.docs.iter_mut().filter(|d| d.own.followed()) {
         d.own = crate::document::Own::default();
     }
     let now = crate::clock::now();
     w.finish(now);
-    if let Some(r) = ed.session.code_review.as_ref().filter(|r| Of::Code(r.started) == w.of) {
+    if let Some(r) = ed.workspace.code_review.as_ref().filter(|r| Of::Code(r.started) == w.of) {
         outcomes(ed, r, &mut w);
     }
     ended(ed, w, now);
@@ -1150,9 +1152,14 @@ fn outcomes(ed: &Editor, r: &crate::codereview::CodeReview, w: &mut Watch) {
                 (c.grade, c.rule) = grade_rule(&on, c.rule.take());
             }
             let high: Vec<&&crate::risk::Graded> = on.iter().filter(|g| g.grade == Grade::High).collect();
-            let looked = !high.is_empty() && high.iter().all(|g| g.looked_at(&ed.session.looked));
-            let notes =
-                ed.session.notes.list.iter().filter(|n| n.path == f.path && overlaps(&n.lines, &c.lines));
+            let looked = !high.is_empty() && high.iter().all(|g| g.looked_at(&ed.workspace.looked));
+            let notes = ed
+                .workspace
+                .claude
+                .notes
+                .list
+                .iter()
+                .filter(|n| n.path == f.path && overlaps(&n.lines, &c.lines));
             let notes: Vec<&crate::notes::Note> = notes.collect();
             let yours =
                 |n: &&crate::notes::Note| n.id > w.notes_before && n.thread.iter().any(|e| e.by == By::You);
@@ -1171,8 +1178,8 @@ fn outcomes(ed: &Editor, r: &crate::codereview::CodeReview, w: &mut Watch) {
     w.total = Some(total);
     // (each finding of its reviewer's — when the reviewer read for this review: of its base, begun while it was
     // open or this one opened while it read; never an earlier run's into a later review)
-    if ed.session.reviewer.as_ref().is_some_and(|x| x.review == Some(r.started)) {
-        for n in crate::reviewer::findings_in(&ed.session).unwrap_or_default() {
+    if ed.workspace.reviewer.as_ref().is_some_and(|x| x.review == Some(r.started)) {
+        for n in crate::reviewer::findings_in(&ed.workspace).unwrap_or_default() {
             let file = match r.files.iter().find(|f| f.path == n.path) {
                 Some(f) => f.rel.clone(),
                 None => rel(ed, Some(&n.path)),
@@ -1191,7 +1198,7 @@ fn outcomes(ed: &Editor, r: &crate::codereview::CodeReview, w: &mut Watch) {
 /// Its entries into the record, said to watchers.
 fn ended(ed: &mut Editor, mut w: Watch, now: Instant) {
     w.finish(now);
-    let session = ed.session.label().to_string();
+    let session = ed.workspace.label().to_string();
     let entries = entries(&w, &session, crate::clock::system(), review_findings(ed, &w));
     let mut counts: Vec<(&str, usize)> = Vec::new();
     let changes = w.kept().count();
@@ -1228,8 +1235,8 @@ fn began(ed: &mut Editor, w: &Watch) {
 
 /// A `review` event for watchers (`tarae state --watch review`), its session's.
 fn say(ed: &mut Editor, mut ev: Value) {
-    let id = crate::uistate::session_id(ed.session.id);
-    let said = format!("{id} {}: {}", ed.session.label(), ev["said"].as_str().unwrap_or_default());
+    let id = crate::uistate::session_id(ed.workspace.claude.id);
+    let said = format!("{id} {}: {}", ed.workspace.label(), ev["said"].as_str().unwrap_or_default());
     ev["event"] = json!("review");
     ev["session"] = json!(id);
     ev["said"] = json!(said);
@@ -1238,7 +1245,7 @@ fn say(ed: &mut Editor, mut ev: Value) {
 
 /// The reviewer's findings and those not sent yet — when it read for this review (`Reviewer.review`).
 fn review_findings(ed: &Editor, w: &Watch) -> Option<(usize, usize)> {
-    let review = ed.session.reviewer.as_ref()?.review?;
+    let review = ed.workspace.reviewer.as_ref()?.review?;
     (w.of == Of::Code(review))
         .then(|| crate::reviewer::review_tally(ed))
         .flatten()
@@ -1331,12 +1338,12 @@ pub struct Run {
 }
 
 impl Run {
-    /// Session `l`'s review under way (`front`: it's `ed.session`, whose grades can be read) — None: none.
-    pub fn of(ed: &Editor, l: &crate::session::Session, front: bool) -> Option<Run> {
+    /// Session `l`'s review under way (`front`: it's `ed.workspace`, whose grades can be read) — None: none.
+    pub fn of(ed: &Editor, l: &crate::workspace::Workspace, front: bool) -> Option<Run> {
         let w = l.reviews.edit.as_ref().or(l.reviews.code.as_ref())?;
         let decided = match w.of {
             Of::Edit(_) => {
-                let rev = l.review.as_ref();
+                let rev = l.claude.review.as_ref();
                 let undecided = |&k: &usize| rev.and_then(|r| r.hunks.get(k)).map(|h| h.decision);
                 w.hunks
                     .iter()
@@ -1505,7 +1512,7 @@ fn keyed_entry(key: &[u8; 32], mut e: Value) -> Value {
 impl Editor {
     /// A key, click, wheel or paste: the front session's reviews count the time before it.
     pub fn review_input(&mut self) {
-        let w = &mut self.session.reviews;
+        let w = &mut self.workspace.reviews;
         if w.edit.is_none() && w.code.is_none() {
             return;
         }
@@ -1541,21 +1548,21 @@ impl Editor {
     /// nothing of one is carried across processes.
     pub fn reviews_flush(&mut self) {
         let restarted = self.restart.as_ref().is_some_and(|r| r.ready().is_some());
-        let sessions = std::iter::once(&mut self.session).chain(&mut self.sessions);
+        let sessions = std::iter::once(&mut self.workspace).chain(&mut self.workspaces);
         for w in sessions.flat_map(|l| [l.reviews.edit.as_mut(), l.reviews.code.as_mut()]).flatten() {
             w.restarted = restarted;
         }
         self.reviews_end();
-        let behind: Vec<_> = self.sessions.iter().map(|l| l.id).collect();
+        let behind: Vec<_> = self.workspaces.iter().map(|l| l.id).collect();
         for id in behind {
-            self.with_session(id, Editor::reviews_end);
+            self.with_workspace(id, Editor::reviews_end);
         }
     }
 
-    /// This session's reviews under way kept as they stand — it ends (`session_close`) or tarae does: its edit
+    /// This session's reviews under way kept as they stand — it ends (`workspace_close`) or tarae does: its edit
     /// review applies nothing (`left`, a `y` too), its code review graded as `codereview::end` does it.
     pub fn reviews_end(&mut self) {
-        if let Some(w) = self.session.reviews.edit.take() {
+        if let Some(w) = self.workspace.reviews.edit.take() {
             ended(self, w, crate::clock::now());
         }
         code_ended(self);
@@ -1576,7 +1583,8 @@ pub mod probe {
     /// Each file's changes as the code review last found them: its name, the text they were found in (`Stamp`)
     /// and — while its document is still at that text — whether they're the changes that text has.
     pub fn landed(ed: &Editor) -> Vec<Landed> {
-        let (Some(r), Some(w)) = (ed.session.code_review.as_ref(), ed.session.reviews.code.as_ref()) else {
+        let (Some(r), Some(w)) = (ed.workspace.code_review.as_ref(), ed.workspace.reviews.code.as_ref())
+        else {
             return Vec::new();
         };
         let key =
@@ -1597,7 +1605,7 @@ pub mod probe {
 
     /// The front session's watches' times.
     pub fn times(ed: &Editor) -> Vec<Times> {
-        let w = &ed.session.reviews;
+        let w = &ed.workspace.reviews;
         [w.edit.as_ref(), w.code.as_ref()]
             .into_iter()
             .flatten()
@@ -1611,7 +1619,7 @@ pub mod probe {
     /// The front session's followed changes of lines: each one's id (made from its first text) and its text's
     /// hash now — a change followed keeps its id as its text changes.
     pub fn followed(ed: &Editor) -> Vec<(String, String)> {
-        let w = &ed.session.reviews;
+        let w = &ed.workspace.reviews;
         let all = [w.edit.as_ref(), w.code.as_ref()].into_iter().flatten().flat_map(|w| &w.changes);
         all.filter(|c| !c.mode).map(|c| (c.id.clone(), c.text.clone())).collect()
     }
@@ -1619,7 +1627,7 @@ pub mod probe {
     /// The changes of the code review's documents whose diff is of their text now, worked out here: each one's
     /// file, its text's hash and its id in memory (`text_id`, `change_id`), its lines removed then added.
     pub fn changes_now(ed: &Editor) -> Vec<(String, String, String, Vec<String>)> {
-        let Some(r) = ed.session.code_review.as_ref() else { return Vec::new() };
+        let Some(r) = ed.workspace.code_review.as_ref() else { return Vec::new() };
         let mut out = Vec::new();
         for f in &r.files {
             let Some(d) = ed.docs.iter().find(|d| d.path.as_deref() == Some(f.path.as_path())) else {

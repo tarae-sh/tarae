@@ -64,7 +64,7 @@ impl Editor {
         }
         // (a picker covers the side panel and the rail — their rows aren't in sight)
         let covered = s.picker_list.is_some();
-        if let Some(sb) = self.session.sidebar.as_ref().filter(|_| s.side_w > 0 && !covered) {
+        if let Some(sb) = self.workspace.viewer.sidebar.as_ref().filter(|_| s.side_w > 0 && !covered) {
             let tab = super::side_tab(sb.mode);
             let lines = sb.lines();
             for &(y, i) in s.sidebar.borrow().iter() {
@@ -74,7 +74,7 @@ impl Editor {
                 }
             }
         }
-        if let Some(r) = self.session.code_review.as_ref().filter(|_| s.rail_w > 0 && !covered) {
+        if let Some(r) = self.workspace.code_review.as_ref().filter(|_| s.rail_w > 0 && !covered) {
             for &(y, i) in s.review_rail.borrow().iter() {
                 if let Some(f) = r.files.get(i) {
                     out.push(Target { id: format!("review:{}", f.rel), x: 0, y, w: s.rail_w, at: (0, y) });
@@ -84,10 +84,10 @@ impl Editor {
         for &(y, a, b, slot) in s.slot_tabs.borrow().iter() {
             let id = match slot {
                 crate::sizes::Slot::Task => {
-                    self.session.task_run.as_ref().map(|r| format!("run#{}", r.trace.id()))
+                    self.workspace.task_run.as_ref().map(|r| format!("run#{}", r.trace.id()))
                 }
                 crate::sizes::Slot::Test => {
-                    self.session.test_run.as_ref().map(|r| format!("run#{}", r.trace.id()))
+                    self.workspace.test_run.as_ref().map(|r| format!("run#{}", r.trace.id()))
                 }
                 other => Some(super::slot_name(other).to_string()),
             };
@@ -173,11 +173,11 @@ pub fn click(ed: &mut Editor, x: usize, y: usize) -> bool {
 /// one carrying a file named like a key Claude may not read asks first (`reads::point`).
 fn pick(ed: &mut Editor, id: String) {
     ed.pointing = None;
-    if ed.session.chat.is_none() {
+    if ed.workspace.claude.chat.is_none() {
         crate::chat::open(ed);
     }
-    let Some(c) = ed.session.chat.as_mut() else { return };
-    ed.session.at = crate::session::At::Chat;
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     c.unfolded = true;
     if !c.pointed.contains(&id) {
         c.pointed.push(id.clone());

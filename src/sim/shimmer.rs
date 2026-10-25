@@ -92,9 +92,9 @@ fn run(choices: Choices) -> Vec<String> {
     let mut c = crate::chat::Chat::new();
     c.msgs = vec![Msg::new(Role::User, "why does insert clone the name?", "")];
     let claude = crate::chat::stand_in(&mut c);
-    ed.session.chat = Some(c);
+    ed.workspace.claude.chat = Some(c);
     ed.motion_drawn = true;
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
     let world = World::default();
     assert!(crate::chat::submit(&mut ed, "and the second?", None, None), "the first turn asked");
     let check = |ed: &Editor| {
@@ -109,16 +109,16 @@ fn run(choices: Choices) -> Vec<String> {
 }
 
 fn send(ed: &mut Editor, ev: StreamEv) {
-    let g = ed.session.chat.as_ref().map_or(0, crate::chat::Chat::generation);
+    let g = ed.workspace.claude.chat.as_ref().map_or(0, crate::chat::Chat::generation);
     crate::chat::stream_event(ed, g, ev);
 }
 
 fn at(ed: &Editor) -> f32 {
-    ed.session.chat.as_ref().map_or(0.0, |c| c.pace.at)
+    ed.workspace.claude.chat.as_ref().map_or(0.0, |c| c.pace.at)
 }
 
 fn pace(ed: &Editor) -> Option<Pace> {
-    crate::shimmer::pace(&ed.session)
+    crate::shimmer::pace(&ed.workspace)
 }
 
 fn frame(ed: &mut Editor, world: &World) {
@@ -359,6 +359,6 @@ fn held(ed: &Editor, world: &World) -> Result<(), String> {
 }
 
 fn print(ed: &Editor) -> String {
-    let c = ed.session.chat.as_ref();
+    let c = ed.workspace.claude.chat.as_ref();
     format!("band at {:.2} · {:?} · {:?}", at(ed), pace(ed), c.map(|c| c.state))
 }

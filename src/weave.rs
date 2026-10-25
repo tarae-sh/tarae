@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use crate::document::DocId;
 use crate::editor::Editor;
-use crate::event::SessionId;
+use crate::event::WorkspaceId;
 
 #[cfg(test)]
 mod tests;
@@ -37,9 +37,9 @@ const NOT_PLAIN: &str = "not a plain file";
 /// A side by side column's width at least (narrower: the conflict stacked).
 pub const COLUMN_MIN: usize = 28;
 
-/// What a merge was worked out from: each workspace's buffer (its id and version) or its last save (`Session.wrote`),
+/// What a merge was worked out from: each workspace's buffer (its id and version) or its last save (`Workspace.wrote`),
 /// and its tree as C2 last took it (a run's changes, a HEAD moving) — one moving asks again.
-type Key = Vec<(SessionId, Option<(DocId, u64)>, Option<std::time::Instant>, Option<String>)>;
+type Key = Vec<(WorkspaceId, Option<(DocId, u64)>, Option<std::time::Instant>, Option<String>)>;
 
 /// Where the cursor goes once the first merge lands: the first conflict with that session (C2's `≈`), else none.
 #[derive(Clone, Debug, PartialEq)]
@@ -86,7 +86,7 @@ pub struct Shown {
 /// A side of the merge: a workspace's text of the file, its session's name and colour.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Side {
-    pub session: SessionId,
+    pub session: WorkspaceId,
     pub name: String,
     pub colour: u8,
     /// Commits its HEAD is behind the base's tip (None: not known).
@@ -272,16 +272,16 @@ pub fn signs(doc: &crate::document::Document) -> usize {
 }
 
 /// The sessions, the front one first.
-fn sessions(ed: &Editor) -> impl Iterator<Item = &crate::session::Session> {
-    std::iter::once(&ed.session).chain(&ed.sessions)
+fn sessions(ed: &Editor) -> impl Iterator<Item = &crate::workspace::Workspace> {
+    std::iter::once(&ed.workspace).chain(&ed.workspaces)
 }
 
 /// The base's branch the workspaces land on: the front one's (its own, else the home checkout's branch), as C2's.
 fn branch(ed: &Editor) -> Option<String> {
-    let home = sessions(ed).find(|l| l.id == 0).and_then(|l| l.git_branch.clone());
-    match ed.session.id {
-        0 => home,
-        _ => ed.session.base.clone().or(home),
+    let home = sessions(ed).find(|l| l.id == WorkspaceId::HOME).and_then(|l| l.git_branch.clone());
+    match ed.workspace.id {
+        WorkspaceId::HOME => home,
+        _ => ed.workspace.base.clone().or(home),
     }
 }
 
@@ -291,21 +291,21 @@ pub fn open(ed: &mut Editor, path: Option<PathBuf>, land: Option<Land>) -> Resul
     let path = match path {
         Some(p) => p,
         None => match (ed.doc().path.clone(), of(ed.doc())) {
-            (_, Some(m)) => ed.session.root.join(&m.rel),
+            (_, Some(m)) => ed.workspace.root.join(&m.rel),
             (Some(p), None) => p,
             (None, None) => return Err("no file here to weave — open one".into()),
         },
     };
-    let rel = match path.strip_prefix(&ed.session.root) {
+    let rel = match path.strip_prefix(&ed.workspace.root) {
         Ok(r) if !r.as_os_str().is_empty() => r.to_string_lossy().into_owned(),
         _ => return Err(format!("{} isn't in this workspace", path.display())),
     };
-    if crate::sandbox::key_named_in(&ed.session.root, &path) {
+    if crate::sandbox::key_named_in(&ed.workspace.root, &path) {
         return Err(format!("{rel} is named like a key — it isn't woven"));
     }
     // (not known yet — a session just opened or switched to, its branch not read yet: the merge reads it)
     let branch = branch(ed);
-    let mine: Vec<DocId> = ed.session.docs.clone();
+    let mine: Vec<DocId> = ed.workspace.docs.clone();
     if let Some(i) = ed.docs.iter().position(|d| mine.contains(&d.id) && of(d).is_some_and(|m| m.rel == rel))
     {
         ed.current = i;
@@ -378,7 +378,7 @@ pub fn sync(ed: &mut Editor) {
         return;
     }
     read_only(ed);
-    let mut ids: Vec<DocId> = ed.session.views.iter().map(|v| v.doc).collect();
+    let mut ids: Vec<DocId> = ed.workspace.views.iter().map(|v| v.doc).collect();
     ids.push(ed.doc().id);
     ids.dedup();
     for id in ids {
@@ -445,7 +445,7 @@ pub fn settled(ed: &Editor, id: DocId) -> bool {
 
 /// A workspace as the worker reads it.
 struct In {
-    id: SessionId,
+    id: WorkspaceId,
     name: String,
     colour: u8,
     root: PathBuf,
@@ -470,8 +470,9 @@ fn ask(ed: &mut Editor, id: DocId, key: Key) {
     let Some(m) = ed.docs.iter_mut().find(|d| d.id == id).and_then(|d| d.woven.as_mut()) else { return };
     m.asking = true;
     let (rel, branch, tip) = (m.rel.clone(), m.branch.clone(), m.tip.clone());
-    let top = ed.session.root.clone();
-    let home = sessions(ed).find(|l| l.id == 0).map_or_else(|| top.clone(), |l| l.root.clone());
+    let top = ed.workspace.root.clone();
+    let home =
+        sessions(ed).find(|l| l.id == WorkspaceId::HOME).map_or_else(|| top.clone(), |l| l.root.clone());
     let ins: Vec<In> = sessions(ed)
         .map(|l| {
             let path = l.root.join(&rel);
@@ -479,7 +480,7 @@ fn ask(ed: &mut Editor, id: DocId, key: Key) {
             In {
                 id: l.id,
                 name: l.label().to_string(),
-                colour: l.colour,
+                colour: l.claude.colour,
                 root: l.root.clone(),
                 buffer: doc.map(|d| (d.text.clone(), d.is_modified())),
                 snap: crate::overlap::snapshot_reader(ed, l.id),
@@ -967,7 +968,7 @@ pub fn go(ed: &mut Editor) {
         Err(Read::Failed(e)) => return ed.set_error(format!("{rel} in {name}'s workspace: {e}")),
         Err(Read::Text(_) | Read::TooLarge) => {}
     }
-    if id != ed.session.id && !ed.session_switch(id) {
+    if id != ed.workspace.id && !ed.workspace_switch(id) {
         return ed.set_status(format!("{name}'s workspace has ended"));
     }
     // (its file may have changed since the weave: the line kept to it)

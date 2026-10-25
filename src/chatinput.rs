@@ -125,7 +125,8 @@ impl Input {
 pub fn key(ed: &mut Editor, key: Key) -> bool {
     let cols = ed.screen.chat_view.get().map_or(60, |a| a.1).saturating_sub(2).max(1);
     crate::docpane::swap(ed, Which::Input, (ROWS, cols), |ed| typed(ed, key));
-    let Some((a, deferred)) = ed.session.chat.as_mut().and_then(|c| c.input.pane.take_after()) else {
+    let Some((a, deferred)) = ed.workspace.claude.chat.as_mut().and_then(|c| c.input.pane.take_after())
+    else {
         return true;
     };
     if a == After::Editor {
@@ -139,7 +140,7 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
 /// the code: the chat's own key after it (`enter` sends) takes the input with it, never leaves it for the next.
 pub fn under_way(ed: &mut Editor, key: Key) -> bool {
     let Some(pending) =
-        ed.session.chat.as_ref().map(|c| &c.input.pane.keys.pending).filter(|p| !p.is_empty())
+        ed.workspace.claude.chat.as_ref().map(|c| &c.input.pane.keys.pending).filter(|p| !p.is_empty())
     else {
         return false;
     };
@@ -148,7 +149,7 @@ pub fn under_way(ed: &mut Editor, key: Key) -> bool {
     if !matches!(lookup(ed, &keys), Lookup::NotFound) {
         return true;
     }
-    let Some(c) = ed.session.chat.as_mut() else { return false };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return false };
     // (what it typed so far goes in first: `insert_str` puts it before what it's given — here nothing)
     c.input.insert_str("");
     false
@@ -159,7 +160,7 @@ pub fn under_way(ed: &mut Editor, key: Key) -> bool {
 pub fn esc_said(ed: &Editor) -> (String, &'static str) {
     let to_view = ed.keymaps.chat.keys_for("chat_view").into_iter().next();
     match to_view {
-        Some(k) if ed.session.chat.as_ref().is_some_and(|c| !c.msgs.is_empty()) => (k, "normal"),
+        Some(k) if ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.msgs.is_empty()) => (k, "normal"),
         // (`esc code` where the surface stays, `esc close` where it goes — the user, 2026-10-20)
         _ => ("esc".into(), "code"),
     }
@@ -177,7 +178,7 @@ fn typed(ed: &mut Editor, key: Key) {
     match cmds {
         // (the editor's own — `esc` to its view mode, the window table's, a `:` line — once it's put back)
         Some(cmds) if cmds.iter().all(|c| editors(ed, c)) => {
-            if let Some(p) = ed.session.chat.as_mut().map(|c| &mut c.input.pane) {
+            if let Some(p) = ed.workspace.claude.chat.as_mut().map(|c| &mut c.input.pane) {
                 p.deferred(cmds);
             }
             crate::docpane::ask(ed, After::Editor);

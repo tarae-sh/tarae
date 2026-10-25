@@ -61,11 +61,11 @@ fn input(sim: &mut Sim, ed: &mut Editor, _root: &Path, seen: &RefCell<Seen>) -> 
     let c = &mut sim.choices;
     // (by arm: the chat opened 2, a reply 4, a frame 1, time passing 1)
     match c.weighted(&[2, 4, 1, 1]) {
-        0 => match ed.session.chat.is_some() {
+        0 => match ed.workspace.claude.chat.is_some() {
             true => "(the chat is open)".into(),
             false => {
                 crate::chat::open(ed);
-                ed.session.leave(crate::session::At::Chat);
+                ed.workspace.leave(crate::workspace::At::Chat);
                 "the chat opened".into()
             }
         },
@@ -83,7 +83,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, _root: &Path, seen: &RefCell<Seen>) -> 
             crate::term::render(ed, &mut bytes, 112, 30).unwrap();
             let mut vt = vt100::Parser::new(30, 112, 0);
             vt.process(&bytes);
-            let starting = ed.session.chat.as_ref().is_some_and(|c| c.settings.waiting());
+            let starting = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.settings.waiting());
             if starting && !vt.screen().contents().contains(" starting ") {
                 seen.borrow_mut().unsaid = Some(vt.screen().contents());
             }
@@ -108,7 +108,7 @@ fn held(ed: &Editor, rx: &Receiver<String>, seen: &mut Seen) -> Result<(), Strin
         return Err(format!("refused: {}", t.text));
     }
     let waits = |text: &str| {
-        ed.session.chat.as_ref().is_some_and(|c| {
+        ed.workspace.claude.chat.as_ref().is_some_and(|c| {
             c.sends.iter().any(|l| matches!(l, crate::chat::Later::Reply { text: t, .. } if t == text))
         })
     };
@@ -121,7 +121,7 @@ fn held(ed: &Editor, rx: &Receiver<String>, seen: &mut Seen) -> Result<(), Strin
 }
 
 fn print(ed: &Editor) -> String {
-    match ed.session.chat.as_ref() {
+    match ed.workspace.claude.chat.as_ref() {
         None => "no chat".into(),
         Some(c) => format!(
             "chat: {}{}, {} waiting",

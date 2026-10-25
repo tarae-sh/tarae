@@ -686,12 +686,12 @@ Type `:` in normal mode. `Tab` completes command names and their arguments (path
 | `:web!` |  | Fetch a web page again, not the kept copy |
 | `:web-reader` |  | Read the page as main\|article\|page |
 | `:web-open` |  | Open the page in your browser |
-| `:session-open` |  | Work in another checkout beside this one |
-| `:session-switch` |  | Bring another session to the front |
+| `:workspace-open` |  | Work in another checkout beside this one |
+| `:workspace-switch` |  | Bring another workspace to the front |
 | `:session-new` |  | New session: a branch in its own checkout |
-| `:session-end` |  | End a session (its checkout goes) |
-| `:session-bring` |  | Move a session's base up to it (rebase first if it moved) |
-| `:session-apply` |  | Bring a patch in as one reviewed change set ([--base &lt;rev>] &lt;patch>) |
+| `:workspace-end` |  | End a workspace (its checkout goes) |
+| `:workspace-bring` |  | Move a workspace's base up to it (rebase first if it moved) |
+| `:workspace-apply` |  | Bring a patch in as one reviewed change set ([--base &lt;rev>] &lt;patch>) |
 | `:session-billing` |  | Who pays for this session's Claude: api (your API key) or subscription — the conversation goes on |
 | `:rebase-continue` |  | Stage the resolved files and go on with the rebase |
 | `:rebase-abort` |  | Abort the rebase: back to where it was |

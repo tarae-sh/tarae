@@ -101,12 +101,12 @@ pub fn watch(tx: crate::event::Tx, dir: PathBuf) {
 /// session's — a late first round drew a frame of nothing in an idle test, CI's macOS).
 pub(crate) fn watch_round(ed: &mut Editor, dir: &Path, branch: Option<String>, moved: bool) {
     ed.drawn_for("a git watch round");
-    if ed.session.root != dir || (!moved && ed.session.git_branch == branch) {
+    if ed.workspace.root != dir || (!moved && ed.workspace.git_branch == branch) {
         return ed.unchanged = true;
     }
-    ed.session.git_branch = branch;
+    ed.workspace.git_branch = branch;
     // (the log names it as the list does: the checkout tarae started in by its branch)
-    ed.session.in_log.named(ed.session.label());
+    ed.workspace.in_log.named(ed.workspace.label());
     if moved {
         ed.git_reload_bases_in(dir);
         // (moved into the branch a review is since: that review may be of nothing now)
@@ -216,29 +216,29 @@ impl Editor {
     /// worked out on the worker, only then). Runs not sandboxed (`llm.sandbox` off, no sandbox here): none —
     /// such a file's own repository is found from its folder, nothing held back.
     pub(crate) fn git_places(&self, path: &Path) -> crate::gitrepo::Places {
-        let id = self.session_of(path);
-        let all = || std::iter::once(&self.session).chain(&self.sessions);
+        let id = self.workspace_of(path);
+        let all = || std::iter::once(&self.workspace).chain(&self.workspaces);
         let mut roots: Vec<PathBuf> = all().filter(|s| Some(s.id) == id).map(|s| s.root.clone()).collect();
         for s in all() {
             if !roots.contains(&s.root) {
                 roots.push(s.root.clone());
             }
         }
-        crate::gitrepo::Places { roots, writes: self.sessions_writes() }
+        crate::gitrepo::Places { roots, writes: self.workspaces_writes() }
     }
 
     /// Where a sandboxed run of any session may write (`sandbox::write_places`, with what's been granted: kept for
     /// its project, its chat's) — worked out when it's called (a worker's). None: runs aren't sandboxed.
-    pub(crate) fn sessions_writes(&self) -> crate::gitrepo::Writes {
+    pub(crate) fn workspaces_writes(&self) -> crate::gitrepo::Writes {
         use crate::sandbox::Availability;
-        let all = || std::iter::once(&self.session).chain(&self.sessions);
+        let all = || std::iter::once(&self.workspace).chain(&self.workspaces);
         let sandboxed = self.config.llm.sandbox
             && !matches!(self.sandbox, Availability::Missing(_) | Availability::Bypass);
         let (llm, store) = (self.config.llm.clone(), self.allow_path.clone());
         let chats: Vec<(PathBuf, crate::allow::Allowed, crate::allow::Allowed)> = all()
             .map(|s| {
-                let chat = s.chat.as_ref().map(|c| c.allowed.clone()).unwrap_or_default();
-                (s.root.clone(), s.allowed.clone(), chat)
+                let chat = s.claude.chat.as_ref().map(|c| c.allowed.clone()).unwrap_or_default();
+                (s.root.clone(), s.claude.allowed.clone(), chat)
             })
             .collect();
         std::sync::Arc::new(move || {
@@ -265,7 +265,7 @@ impl Editor {
         }
         // In a code review the base is the review's (codereview.rs), not the index — also before it lands
         let reviewed =
-            move |ed: &Editor| ed.session.code_review.as_ref().is_some_and(|r| r.docs.contains(&id));
+            move |ed: &Editor| ed.workspace.code_review.as_ref().is_some_and(|r| r.docs.contains(&id));
         let Some(path) = self.docs.iter().find(|d| d.id == id && !d.own_base()).and_then(|d| d.path.clone())
         else {
             return;
@@ -377,17 +377,17 @@ mod tests {
     #[test]
     fn a_watch_round_that_changes_nothing_draws_nothing() {
         let mut ed = Editor::new(crate::config::Config::default());
-        let dir = ed.session.root.clone();
+        let dir = ed.workspace.root.clone();
         let round = |ed: &mut Editor, dir: &Path, branch: &str, moved| {
             ed.unchanged = false;
             watch_round(ed, dir, Some(branch.into()), moved);
             std::mem::take(&mut ed.unchanged)
         };
         assert!(!round(&mut ed, &dir, "main", false), "the first: the branch learnt");
-        assert_eq!(ed.session.git_branch.as_deref(), Some("main"));
+        assert_eq!(ed.workspace.git_branch.as_deref(), Some("main"));
         assert!(round(&mut ed, &dir, "main", false), "the same branch again");
         assert!(round(&mut ed, Path::new("/elsewhere"), "fix", true), "another session's");
-        assert_eq!(ed.session.git_branch.as_deref(), Some("main"));
+        assert_eq!(ed.workspace.git_branch.as_deref(), Some("main"));
         assert!(!round(&mut ed, &dir, "fix", false), "another branch");
         assert!(!round(&mut ed, &dir, "fix", true), "HEAD moved: the index again");
     }

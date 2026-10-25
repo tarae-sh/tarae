@@ -504,7 +504,7 @@ pub fn settings(base: &str, seen: &Seen) -> (String, String) {
 /// read them: held back now — a claude running with them started again without (mid-turn stopped, as `n` does);
 /// the card asks when a chat reads them next.
 pub(crate) fn forgotten(ed: &mut Editor) {
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     let Some(seen) = c.settings.seen.as_mut().filter(|s| s.state == State::Trusted) else { return };
     seen.state = State::Ask;
     let now = settings(crate::chat::CHAT_SETTINGS, seen);
@@ -523,7 +523,7 @@ pub fn ready(ed: &mut Editor, base: &str) -> Option<(String, String)> {
     if !ed.claude_settings_gate {
         return Some((base.into(), SOURCES.into()));
     }
-    let c = ed.session.chat.as_mut()?;
+    let c = ed.workspace.claude.chat.as_mut()?;
     let start = match &c.settings.seen {
         None => {
             if c.settings.reading.is_none() {
@@ -545,18 +545,18 @@ pub fn ready(ed: &mut Editor, base: &str) -> Option<(String, String)> {
 /// is a new claude reading the files as they are, and a key added since isn't held by the chat's `--settings`.
 /// The gate off (no project settings read, or tests'): they hold. None: no chat (closed, or closed meanwhile).
 pub fn still_holds(ed: &mut Editor, then: impl FnOnce(&mut Editor, Option<bool>) + Send + 'static) {
-    if ed.session.chat.is_none() {
+    if ed.workspace.claude.chat.is_none() {
         return then(ed, None);
     }
     if !ed.claude_settings_gate || !ed.config.llm.chat_settings {
         return then(ed, Some(true));
     }
-    let Some(id) = ed.session.chat.as_ref().map(|c| c.settings.id) else { return then(ed, None) };
+    let Some(id) = ed.workspace.claude.chat.as_ref().map(|c| c.settings.id) else { return then(ed, None) };
     let places = Places::of(ed);
     ed.events.jobs().spawn(move || {
         let seen = places.look();
         move |ed: &mut Editor| {
-            let c = ed.session.chat.as_ref().filter(|c| c.settings.id == id);
+            let c = ed.workspace.claude.chat.as_ref().filter(|c| c.settings.id == id);
             let holds = c.map(|c| {
                 let now = settings(crate::chat::CHAT_SETTINGS, &seen);
                 c.settings.seen.as_ref() == Some(&seen) && c.settings.started.as_ref() == Some(&now)
@@ -568,7 +568,7 @@ pub fn still_holds(ed: &mut Editor, then: impl FnOnce(&mut Editor, Option<bool>)
 
 /// Reads the project's settings on a worker — the chat's gate gets them.
 fn read(ed: &mut Editor) {
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     c.settings.reading.get_or_insert_with(crate::clock::now);
     let id = c.settings.id;
     let places = Places::of(ed);
@@ -591,7 +591,7 @@ struct Places {
 impl Places {
     fn of(ed: &Editor) -> Places {
         Places {
-            root: ed.session.root.clone(),
+            root: ed.workspace.root.clone(),
             store: ed.trust_path.clone(),
             user: ed.claude_user_settings.clone(),
             env: ed.claude_env.clone(),
@@ -639,7 +639,7 @@ fn seen_now(ed: &mut Editor, id: u64, mut seen: Seen, (key, at): (String, u64)) 
         seen.state = State::Ask;
     }
     let gate_on = ed.claude_settings_gate;
-    let Some(c) = ed.session.chat.as_mut().filter(|c| c.settings.id == id) else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.settings.id == id) else { return };
     c.settings.reading = None;
     let first = c.settings.seen.is_none();
     // The same content: the answer in hand holds — the store may not have it yet (kept on a worker)
@@ -674,7 +674,7 @@ fn seen_now(ed: &mut Editor, id: u64, mut seen: Seen, (key, at): (String, u64)) 
             true,
         ),
         (false, ask) => {
-            if ask && let Some(c) = ed.session.chat.as_mut() {
+            if ask && let Some(c) = ed.workspace.claude.chat.as_mut() {
                 c.note(
                     "The project's Claude settings run commands as you — Claude started with them held back",
                 );
@@ -692,7 +692,7 @@ fn watch(ed: &mut Editor, id: u64) {
         return;
     }
     let waker = crate::fswatch::Waker::new();
-    let Some(c) = ed.session.chat.as_mut() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     c.settings.watch = Some(waker.clone());
     let tx = ed.events.sender();
     let places = Places::of(ed);
@@ -820,7 +820,7 @@ impl Editor {
     /// The answer for what the settings say (`hash`), on their card or the repository's: kept, claude started as
     /// answered — how many settings it was about (None: no chat, or they say something else now).
     pub(crate) fn claude_settings_answered(&mut self, hash: Digest, trusted: bool) -> Option<usize> {
-        let c = self.session.chat.as_mut()?;
+        let c = self.workspace.claude.chat.as_mut()?;
         let seen = c.settings.seen.as_mut().filter(|s| s.digest() == Some(hash))?;
         seen.state = if trusted { State::Trusted } else { State::Ignored };
         let (seen, n) = (seen.clone(), seen.scan.as_ref().map_or(0, |s| s.items.len()));
@@ -858,7 +858,7 @@ impl Editor {
     /// A yes on the project's Claude settings not written: changed in another tarae before it, unseen — held
     /// back again (Claude started again without them), the card asking.
     fn claude_settings_skipped(&mut self, hash: Digest) {
-        let Some(c) = self.session.chat.as_mut() else { return };
+        let Some(c) = self.workspace.claude.chat.as_mut() else { return };
         let Some(seen) =
             c.settings.seen.as_mut().filter(|s| s.digest() == Some(hash) && s.state == State::Trusted)
         else {
@@ -876,14 +876,14 @@ impl Editor {
     /// `v` on the card: its text and `detail` in its buffer — for what the card shows (`hash`), else (read again
     /// since) its text alone.
     pub fn claude_settings_view(&mut self, hash: Digest) {
-        let seen = self.session.chat.as_ref().and_then(|c| c.settings.seen.as_ref());
+        let seen = self.workspace.claude.chat.as_ref().and_then(|c| c.settings.seen.as_ref());
         let more = seen.filter(|s| s.digest() == Some(hash)).map(detail).unwrap_or_default();
         self.offer_view_with(more);
     }
 
     /// `:claude-settings` — the card again, for what the project's Claude settings held when last read.
     pub fn claude_settings_ask(&mut self) -> Result<(), String> {
-        let c = self.session.chat.as_ref().ok_or("the chat reads them when it opens — space l")?;
+        let c = self.workspace.claude.chat.as_ref().ok_or("the chat reads them when it opens — space l")?;
         let seen = match &c.settings.seen {
             Some(s) => s.clone(),
             None if c.settings.reading.is_some() => return Err("still reading them — a moment".into()),

@@ -1,6 +1,6 @@
 //! The run panels' output as documents (panes P2c, `target/sb/panes-plan.md` §2.1e): the task's output, a
 //! preflight's, the tests' detail (the failure picked, else the output) — each a read-only `Document` of the
-//! session's (`Session.outputs`), never saved, never in a buffer list or restore. Its text follows the run (`sync`,
+//! session's (`Workspace.outputs`), never saved, never in a buffer list or restore. Its text follows the run (`sync`,
 //! every event): what it printed appended, one transaction a batch; trimmed (`task::Run::keep`), the one change
 //! between the two texts — positions, marks and the view's top follow it; another run or failure, made anew. The
 //! code's drawer draws it (`term::draw_output`), its lines coloured as the panels coloured them (`Document.paint`).
@@ -26,9 +26,9 @@ use crate::key::{Code, Key};
 use crate::keymap::MappableCommand;
 use crate::movement as mv;
 use crate::selection::{Range, Selection};
-use crate::session::At;
 use crate::sizes::Slot;
 use crate::transaction::{Assoc, Change, Transaction};
+use crate::workspace::At;
 
 /// What a run panel's document is of: the task's output, a preflight's, the tests' detail — and `:procs`' detail,
 /// what its table selected (no run: a panel's document all the same, `procs::detail`).
@@ -257,8 +257,8 @@ pub fn swapped(ed: &Editor) -> bool {
 
 /// What the task panel's run is: a preflight's while the preflight's run is it.
 fn task_run(ed: &Editor) -> Option<Run> {
-    let r = ed.session.task_run.as_ref()?;
-    Some(match ed.session.preflight.as_ref().is_some_and(|p| p.generation == r.generation()) {
+    let r = ed.workspace.task_run.as_ref()?;
+    Some(match ed.workspace.preflight.as_ref().is_some_and(|p| p.generation == r.generation()) {
         true => Run::Preflight,
         false => Run::Task,
     })
@@ -268,7 +268,7 @@ fn task_run(ed: &Editor) -> Option<Run> {
 pub fn run_of(ed: &Editor, slot: Slot) -> Option<Run> {
     match slot {
         Slot::Task => task_run(ed),
-        Slot::Test => ed.session.test_run.as_ref().map(|_| Run::Tests),
+        Slot::Test => ed.workspace.test_run.as_ref().map(|_| Run::Tests),
         Slot::Procs => ed.procs_up().then_some(Run::Procs),
         _ => None,
     }
@@ -277,17 +277,17 @@ pub fn run_of(ed: &Editor, slot: Slot) -> Option<Run> {
 /// The run panel whose document has the keys now: tarae's keys on the slot, in front, a run panel with its
 /// document (the tests' detail, `:procs`' — the list beside it is a pane of its own, `At::List`).
 pub fn has_keys(ed: &Editor) -> Option<Slot> {
-    if !ed.session.is_at(At::Slot) {
+    if !ed.workspace.is_at(At::Slot) {
         return None;
     }
     let slot = ed.slot().filter(|s| matches!(s, Slot::Task | Slot::Test | Slot::Procs))?;
-    ed.session.outputs.get(slot).map(|_| slot)
+    ed.workspace.outputs.get(slot).map(|_| slot)
 }
 
 /// The output with the keys, and what it's of.
 pub fn keyed(ed: &Editor) -> Option<(Run, &Output)> {
     let slot = has_keys(ed)?;
-    Some((run_of(ed, slot)?, ed.session.outputs.get(slot)?))
+    Some((run_of(ed, slot)?, ed.workspace.outputs.get(slot)?))
 }
 
 /// The rows a run panel shows its output (the tests' detail) in, as the last frame drew it (not drawn yet: ten).
@@ -315,7 +315,7 @@ fn viewport(ed: &Editor, slot: Slot) -> (usize, usize) {
 fn made(ed: &Editor, slot: Slot) -> Option<Made> {
     match slot {
         Slot::Test => {
-            let r = ed.session.test_run.as_ref()?;
+            let r = ed.workspace.test_run.as_ref()?;
             let picked = r.picked().map(|_| r.selected);
             let lines = r.picked().map_or(r.output.len(), |c| c.message.len().max(1));
             let waiting = picked.is_none() && r.output.is_empty();
@@ -323,7 +323,7 @@ fn made(ed: &Editor, slot: Slot) -> Option<Made> {
             Some(Made { generation: r.generation(), picked, waiting, preflight: false, trimmed, lines })
         }
         _ => {
-            let r = ed.session.task_run.as_ref()?;
+            let r = ed.workspace.task_run.as_ref()?;
             Some(Made {
                 generation: r.generation(),
                 picked: None,
@@ -345,7 +345,7 @@ fn lines(ed: &Editor, slot: Slot, from: usize) -> Vec<(Kind, Cow<'_, str>)> {
     }
     match slot {
         Slot::Test => {
-            let Some(r) = ed.session.test_run.as_ref() else { return Vec::new() };
+            let Some(r) = ed.workspace.test_run.as_ref() else { return Vec::new() };
             match r.picked() {
                 Some(c) if c.message.is_empty() => vec![(Kind::Faint, "failed (no message)".into())],
                 Some(c) => (c.message.iter().enumerate().skip(from))
@@ -355,16 +355,16 @@ fn lines(ed: &Editor, slot: Slot, from: usize) -> Vec<(Kind, Cow<'_, str>)> {
                 None => out(&r.output, from),
             }
         }
-        _ => ed.session.task_run.as_ref().map_or_else(Vec::new, |r| out(&r.output, from)),
+        _ => ed.workspace.task_run.as_ref().map_or_else(Vec::new, |r| out(&r.output, from)),
     }
 }
 
 /// The command a run panel shows while nothing is printed.
 fn command(ed: &Editor, slot: Slot) -> String {
     match slot {
-        Slot::Test => ed.session.test_run.as_ref().map_or_else(String::new, |r| r.target.argv().join(" ")),
+        Slot::Test => ed.workspace.test_run.as_ref().map_or_else(String::new, |r| r.target.argv().join(" ")),
         _ => {
-            let cmd = ed.session.task_run.as_ref().map_or("", |r| r.task.cmd.as_str());
+            let cmd = ed.workspace.task_run.as_ref().map_or("", |r| r.task.cmd.as_str());
             let mut lines = cmd.lines();
             let first = lines.next().unwrap_or_default();
             if lines.next().is_some() { format!("{first} …") } else { first.to_string() }
@@ -423,8 +423,8 @@ fn shared(ed: &Editor, slot: Slot, m: Made) -> Option<&crate::runout::Output> {
         return None;
     }
     match slot {
-        Slot::Test => ed.session.test_run.as_ref().map(|r| &r.output),
-        _ => ed.session.task_run.as_ref().map(|r| &r.output),
+        Slot::Test => ed.workspace.test_run.as_ref().map(|r| &r.output),
+        _ => ed.workspace.task_run.as_ref().map(|r| &r.output),
     }
 }
 
@@ -462,13 +462,13 @@ pub fn sync(ed: &mut Editor) {
 fn follow_procs(ed: &mut Editor) {
     let width = viewport(ed, Slot::Procs).1;
     let Some((of, (text, paint))) = crate::procs::detail::of(ed, width) else {
-        if let Some(o) = ed.session.outputs.procs.take() {
+        if let Some(o) = ed.workspace.outputs.procs.take() {
             crate::event::drop_later(o.pane.into_doc());
         }
         return;
     };
     let made = Made { generation: 0, picked: None, waiting: false, preflight: false, trimmed: 0, lines: 0 };
-    if let Some(o) = ed.session.outputs.procs.as_mut().filter(|o| o.of.as_ref() == Some(&of)) {
+    if let Some(o) = ed.workspace.outputs.procs.as_mut().filter(|o| o.of.as_ref() == Some(&of)) {
         let d = o.doc_mut();
         let new = ropey::Rope::from_str(&text);
         if let Some(change) = crate::disk::minimal_change(&d.text, &new) {
@@ -489,14 +489,14 @@ fn follow_procs(ed: &mut Editor) {
     doc.wrap = Some(false);
     doc.throwaway = true;
     doc.paint = paint;
-    match ed.session.outputs.procs.as_mut() {
+    match ed.workspace.outputs.procs.as_mut() {
         Some(o) => {
             crate::event::drop_later(o.pane.replace(doc));
             (o.of, o.keyed, o.placed) = (Some(of), false, false);
         }
         None => {
             let pane = Pane::new(doc);
-            ed.session.outputs.procs =
+            ed.workspace.outputs.procs =
                 Some(Output { pane, made, of: Some(of), keyed: false, seen: 0, placed: false });
         }
     }
@@ -554,18 +554,18 @@ fn replay(d: &mut Document, mut lines: usize, trims: &[crate::task::Trim], mut t
 /// first lines printed — made anew. No run: gone (freed on a worker).
 fn follow(ed: &mut Editor, slot: Slot) {
     let Some(m) = made(ed, slot) else {
-        if let Some(o) = ed.session.outputs.place(slot).take() {
+        if let Some(o) = ed.workspace.outputs.place(slot).take() {
             crate::event::drop_later(o.pane.into_doc());
         }
         return;
     };
-    let was = ed.session.outputs.get(slot).map(|o| o.made);
+    let was = ed.workspace.outputs.get(slot).map(|o| o.made);
     // (the run's trims after the document's first `from` — None: some forgotten, made anew; a failure's message has
     // none)
     let trims = |ed: &Editor, from: usize| {
         let t = match slot {
-            Slot::Task => ed.session.task_run.as_ref().map(|r| r.trims()),
-            _ => ed.session.test_run.as_ref().filter(|_| m.picked.is_none()).map(|r| &r.trims),
+            Slot::Task => ed.workspace.task_run.as_ref().map(|r| r.trims()),
+            _ => ed.workspace.test_run.as_ref().filter(|_| m.picked.is_none()).map(|r| &r.trims),
         };
         t.map_or(Some(Vec::new()), |t| t.since(from).map(<[_]>::to_vec))
     };
@@ -575,8 +575,8 @@ fn follow(ed: &mut Editor, slot: Slot) {
     };
     // (the document has them all now, one way or the other: the run keeps none of them)
     let forget = |ed: &mut Editor| match slot {
-        Slot::Task => ed.session.task_run.as_mut().map(|r| r.trims_mut().forget(m.trimmed)),
-        _ => ed.session.test_run.as_mut().map(|r| r.trims.forget(m.trimmed)),
+        Slot::Task => ed.workspace.task_run.as_mut().map(|r| r.trims_mut().forget(m.trimmed)),
+        _ => ed.workspace.test_run.as_mut().map(|r| r.trims.forget(m.trimmed)),
     };
     forget(ed);
     match held {
@@ -584,7 +584,7 @@ fn follow(ed: &mut Editor, slot: Slot) {
         Some(w) if after_trims(w.lines, &trims) <= m.lines => {
             let kept = after_trims(w.lines, &trims);
             let (text, paint) = text_of(&lines(ed, slot, kept), 0, m.preflight);
-            let o = ed.session.outputs.get_mut(slot).expect("an output, above");
+            let o = ed.workspace.outputs.get_mut(slot).expect("an output, above");
             let d = o.doc_mut();
             if !trims.is_empty() {
                 let top = mv::line_start(&d.text, d.top.min(mv::last_line(&d.text)));
@@ -615,7 +615,7 @@ fn follow(ed: &mut Editor, slot: Slot) {
             doc.wrap = Some(false);
             doc.throwaway = true;
             doc.paint = paint;
-            let place = ed.session.outputs.place(slot);
+            let place = ed.workspace.outputs.place(slot);
             match place.as_mut() {
                 Some(o) => {
                     // (its search stays the pane's; the keys land on it again, as they came)
@@ -637,7 +637,7 @@ fn follow(ed: &mut Editor, slot: Slot) {
 /// slip left unshared rather than shown wrong.)
 fn share(ed: &mut Editor, slot: Slot, m: Made) {
     let Some(rope) = shared(ed, slot, m).map(|o| o.text().clone()) else { return };
-    if let Some(d) = ed.session.outputs.get_mut(slot).and_then(|o| o.doc_in_mut())
+    if let Some(d) = ed.workspace.outputs.get_mut(slot).and_then(|o| o.doc_in_mut())
         && d.text.len_bytes() == rope.len_bytes()
     {
         d.text = rope;
@@ -653,17 +653,17 @@ fn keys_moved(ed: &mut Editor, slot: Slot) {
     let so = ed.config.scrolloff.min((rows - 1) / 2);
     let (shown, running) = match slot {
         // (`:procs`' detail is drawn from its own top, with the keys or not)
-        Slot::Procs => (ed.session.outputs.doc(slot).map(|d| d.top), false),
+        Slot::Procs => (ed.workspace.outputs.doc(slot).map(|d| d.top), false),
         Slot::Test => (
-            ed.session.test_run.as_ref().map(|r| r.detail_top(rows)),
-            ed.session.test_run.as_ref().is_some_and(|r| r.state == crate::testing::RunState::Running),
+            ed.workspace.test_run.as_ref().map(|r| r.detail_top(rows)),
+            ed.workspace.test_run.as_ref().is_some_and(|r| r.state == crate::testing::RunState::Running),
         ),
         _ => (
-            ed.session.task_run.as_ref().map(|r| r.top(rows)),
-            ed.session.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running),
+            ed.workspace.task_run.as_ref().map(|r| r.top(rows)),
+            ed.workspace.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running),
         ),
     };
-    let Some(o) = ed.session.outputs.get_mut(slot).filter(|o| o.keyed != keys) else { return };
+    let Some(o) = ed.workspace.outputs.get_mut(slot).filter(|o| o.keyed != keys) else { return };
     o.keyed = keys;
     if !keys {
         let top = o.doc().top;
@@ -671,8 +671,8 @@ fn keys_moved(ed: &mut Editor, slot: Slot) {
             ed.prompt = None;
         }
         match slot {
-            Slot::Test => ed.session.test_run.as_mut().map(|r| r.scroll_to(top, rows)),
-            Slot::Task => ed.session.task_run.as_mut().map(|r| r.scroll_to(top, rows)),
+            Slot::Test => ed.workspace.test_run.as_mut().map(|r| r.scroll_to(top, rows)),
+            Slot::Task => ed.workspace.task_run.as_mut().map(|r| r.scroll_to(top, rows)),
             _ => None,
         };
         return;
@@ -711,7 +711,7 @@ fn in_sight(ed: &mut Editor, slot: Slot) {
 fn sight(ed: &mut Editor, slot: Slot, so: usize) {
     let size = viewport(ed, slot);
     let tab = ed.config.tab_width;
-    let Some(o) = ed.session.outputs.get_mut(slot) else { return };
+    let Some(o) = ed.workspace.outputs.get_mut(slot) else { return };
     o.size = Some(size);
     let Some(d) = o.doc_in_mut() else { return };
     crate::docpane::in_sight(d, size, so, tab);
@@ -722,10 +722,10 @@ fn sight(ed: &mut Editor, slot: Slot, so: usize) {
 /// `o` reads as the step in view, where it's left; at the end, it follows its run again.
 fn pin(ed: &mut Editor, slot: Slot) {
     let rows = rows(ed, slot);
-    let Some(top) = ed.session.outputs.doc(slot).map(|d| d.top) else { return };
+    let Some(top) = ed.workspace.outputs.doc(slot).map(|d| d.top) else { return };
     match slot {
-        Slot::Test => ed.session.test_run.as_mut().map(|r| r.scroll_to(top, rows)),
-        Slot::Task => ed.session.task_run.as_mut().map(|r| r.scroll_to(top, rows)),
+        Slot::Test => ed.workspace.test_run.as_mut().map(|r| r.scroll_to(top, rows)),
+        Slot::Task => ed.workspace.task_run.as_mut().map(|r| r.scroll_to(top, rows)),
         _ => None,
     };
 }
@@ -736,10 +736,10 @@ fn pin(ed: &mut Editor, slot: Slot) {
 pub fn resized(ed: &mut Editor) -> bool {
     let Some(slot) = has_keys(ed) else { return false };
     let size = viewport(ed, slot);
-    if ed.session.outputs.get(slot).is_none_or(|o| o.size == Some(size)) {
+    if ed.workspace.outputs.get(slot).is_none_or(|o| o.size == Some(size)) {
         return false;
     }
-    let at = |ed: &Editor| ed.session.outputs.doc(slot).map(|d| (d.top, d.left));
+    let at = |ed: &Editor| ed.workspace.outputs.doc(slot).map(|d| (d.top, d.left));
     let before = at(ed);
     in_sight(ed, slot);
     at(ed) != before
@@ -769,7 +769,7 @@ fn same_place(old: &ropey::Rope, new: &ropey::Rope, pos: usize) -> usize {
 /// After a frame: `:procs`' detail laid out at another width than its text was wrapped for (its first frame, the
 /// slot resized) made again at it — true when that changed it (drawn again).
 pub fn procs_rewrapped(ed: &mut Editor) -> bool {
-    let version = |ed: &Editor| ed.session.outputs.doc(Slot::Procs).map(|d| (d.id, d.version()));
+    let version = |ed: &Editor| ed.workspace.outputs.doc(Slot::Procs).map(|d| (d.id, d.version()));
     let before = version(ed);
     if before.is_none() || swapped(ed) {
         return false;
@@ -784,14 +784,14 @@ pub fn refresh_search(ed: &mut Editor) {
     let typed = ed.prompt.as_ref().filter(|p| matches!(p.kind, crate::editor::PromptKind::Search { .. }));
     let typed = typed.map(|p| p.text.clone());
     let Some(slot) = has_keys(ed) else { return };
-    if let Some(o) = ed.session.outputs.get_mut(slot) {
+    if let Some(o) = ed.workspace.outputs.get_mut(slot) {
         o.pane.refresh_search(typed);
     }
 }
 
 /// `esc` with its keys: its matches no longer shown (the code's stay as they are).
 pub fn search_unshown(ed: &mut Editor) {
-    if let Some(o) = has_keys(ed).and_then(|s| ed.session.outputs.get_mut(s)) {
+    if let Some(o) = has_keys(ed).and_then(|s| ed.workspace.outputs.get_mut(s)) {
         o.keys.search_hl = false;
     }
 }
@@ -839,7 +839,7 @@ pub fn key(ed: &mut Editor, key: Key) -> Option<crate::uistate::Handler> {
     if !ed.pending.is_empty() {
         return None;
     }
-    let o = ed.session.outputs.get(slot)?;
+    let o = ed.workspace.outputs.get(slot)?;
     if ed.prompt.is_some() {
         if !o.prompt {
             return None;
@@ -867,12 +867,12 @@ fn editors(ed: &Editor, c: &MappableCommand) -> bool {
 
 /// What a command asked for, once its key is done.
 fn after(ed: &mut Editor, slot: Slot) {
-    let Some(o) = ed.session.outputs.get_mut(slot) else { return };
+    let Some(o) = ed.workspace.outputs.get_mut(slot) else { return };
     let Some((a, deferred)) = o.take_after() else { return };
     match a {
-        After::Leave => ed.session.leave(At::Slot),
+        After::Leave => ed.workspace.leave(At::Slot),
         After::Latest => {
-            if let Some(o) = ed.session.outputs.get_mut(slot) {
+            if let Some(o) = ed.workspace.outputs.get_mut(slot) {
                 o.seen = o.lines();
                 let d = o.doc_mut();
                 let last = mv::last_line(&d.text);
@@ -886,13 +886,13 @@ fn after(ed: &mut Editor, slot: Slot) {
         After::Enter => {
             let line = run_of(ed, slot).map_or(Some(crate::queued::Slot::Task), Run::line);
             if !line.is_some_and(|l| crate::queued::run_now(ed, l)) {
-                ed.session.leave(At::Slot);
+                ed.workspace.leave(At::Slot);
                 crate::chat::open(ed);
             }
         }
         // (`i` isn't bound on an output — normal mode's, refused — but bound by yours: the chat's input)
         After::Input => {
-            ed.session.leave(At::Slot);
+            ed.workspace.leave(At::Slot);
             crate::chat::open(ed);
         }
         After::ChatView => crate::chatdoc::view(ed),
@@ -904,16 +904,16 @@ fn after(ed: &mut Editor, slot: Slot) {
 /// keys — tagged with what ran (the task's name, the tests' target, the failure the detail is of) and its lines.
 fn take(ed: &mut Editor, slot: Slot) {
     let Some(run) = run_of(ed, slot) else { return };
-    let Some(d) = ed.session.outputs.doc(slot) else { return };
+    let Some(d) = ed.workspace.outputs.doc(slot) else { return };
     let (from, title, case) = match run {
         Run::Procs => ("procs", crate::procs::detail::title(ed).unwrap_or_default(), None),
         Run::Tests => {
-            let r = ed.session.test_run.as_ref();
+            let r = ed.workspace.test_run.as_ref();
             let case = r.and_then(|r| r.picked().map(|c| c.name.clone()));
             ("test", r.map_or_else(String::new, |r| r.target.label.clone()), case)
         }
         _ => {
-            let name = ed.session.task_run.as_ref().map_or_else(String::new, |r| r.task.name.clone());
+            let name = ed.workspace.task_run.as_ref().map_or_else(String::new, |r| r.task.name.clone());
             (if run == Run::Preflight { "preflight" } else { "task" }, name, None)
         }
     };
@@ -952,7 +952,7 @@ fn take(ed: &mut Editor, slot: Slot) {
 pub fn run_where(ed: &mut Editor) {
     let ran = match has_keys(ed).and_then(|s| run_of(ed, s)) {
         Some(Run::Task | Run::Preflight) => ed
-            .session
+            .workspace
             .task_run
             .as_ref()
             // (the command whole — its tab's label is cut, `whole.rs`)
@@ -1002,10 +1002,10 @@ pub fn wheel(ed: &mut Editor, slot: Slot, up: bool) {
     let rows = rows(ed, slot);
     let by = if up { -3 } else { 3 };
     match slot {
-        Slot::Test => ed.session.test_run.as_mut().map(|r| r.scroll_by(by, rows)),
-        Slot::Task => ed.session.task_run.as_mut().map(|r| r.scroll_by(by, rows)),
+        Slot::Test => ed.workspace.test_run.as_mut().map(|r| r.scroll_by(by, rows)),
+        Slot::Task => ed.workspace.task_run.as_mut().map(|r| r.scroll_by(by, rows)),
         // (`:procs`' detail: its own top, within its lines)
-        _ => ed.session.outputs.get_mut(slot).and_then(|o| o.doc_in_mut()).map(|d| {
+        _ => ed.workspace.outputs.get_mut(slot).and_then(|o| o.doc_in_mut()).map(|d| {
             let last = (mv::last_line(&d.text) + 1).saturating_sub(rows);
             d.set_top(d.top.saturating_add_signed(by).min(last));
         }),
@@ -1019,7 +1019,7 @@ pub fn click(ed: &mut Editor, slot: Slot, row: usize, col: usize) {
         Slot::Procs => ed.detail_focus(crate::pane::GroupKind::Procs),
         _ => ed.panel_take_keys(slot),
     }
-    let Some(d) = ed.session.outputs.get_mut(slot).and_then(|o| o.doc_in_mut()) else { return };
+    let Some(d) = ed.workspace.outputs.get_mut(slot).and_then(|o| o.doc_in_mut()) else { return };
     let line = (d.top + row).min(mv::last_line(&d.text));
     let (ls, le) = (mv::line_start(&d.text, line), mv::line_end(&d.text, line));
     let text = d.text.byte_slice(ls..le).to_string();
@@ -1040,7 +1040,7 @@ pub fn click(ed: &mut Editor, slot: Slot, row: usize, col: usize) {
 /// it — said when the step hasn't printed yet.
 pub fn step(ed: &mut Editor, name: &str) {
     let heading = format!("── {name} ──");
-    let at = ed.session.task_run.as_ref().and_then(|r| r.output.iter().position(|l| l.1 == heading));
+    let at = ed.workspace.task_run.as_ref().and_then(|r| r.output.iter().position(|l| l.1 == heading));
     let Some(at) = at else { return ed.set_status("that step hasn't printed anything yet") };
     ed.panel_take_keys(Slot::Task);
     show_line(ed, at, true);
@@ -1052,7 +1052,7 @@ pub fn step(ed: &mut Editor, name: &str) {
 pub fn show_line(ed: &mut Editor, at: usize, top: bool) {
     let rows = rows(ed, Slot::Task);
     let so = ed.config.scrolloff.min((rows - 1) / 2);
-    let Some(o) = ed.session.outputs.get_mut(Slot::Task) else { return };
+    let Some(o) = ed.workspace.outputs.get_mut(Slot::Task) else { return };
     // (for the keys coming — with them here already, it's where they are)
     o.placed = !o.keyed;
     let Some(d) = o.doc_in_mut() else { return };
@@ -1063,14 +1063,14 @@ pub fn show_line(ed: &mut Editor, at: usize, top: bool) {
     let want = if top { at } else { at.saturating_sub(so) };
     let top = want.min((last + 1).saturating_sub(rows));
     d.set_top(top);
-    if let Some(r) = ed.session.task_run.as_mut() {
+    if let Some(r) = ed.workspace.task_run.as_mut() {
         r.scroll_to(top, rows);
     }
 }
 
 /// The line of `slot`'s document its cursor is on.
 pub fn cursor_line(ed: &Editor, slot: Slot) -> Option<usize> {
-    let d = ed.session.outputs.doc(slot)?;
+    let d = ed.workspace.outputs.doc(slot)?;
     Some(mv::line_of(&d.text, d.selection().primary().cursor(&d.text)))
 }
 

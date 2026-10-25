@@ -23,8 +23,8 @@ use serde_json::{Value, json};
 
 use crate::editor::Editor;
 use crate::llm::{self, StreamEv};
-use crate::session::Session;
 use crate::usage::Ttl;
+use crate::workspace::Workspace;
 
 /// The window: from this long before the cache goes cold…
 pub const LEAD_MS: u64 = 5 * 60_000;
@@ -220,11 +220,16 @@ pub struct Ping {
 }
 
 /// The facts of session `s` at `now_ms`.
-pub fn facts(s: &Session, cfg: &crate::llm::LlmConfig, limits: &crate::limits::Limits, now_ms: u64) -> Facts {
-    let u = &s.usage;
-    let chat = s.chat.as_ref();
+pub fn facts(
+    s: &Workspace,
+    cfg: &crate::llm::LlmConfig,
+    limits: &crate::limits::Limits,
+    now_ms: u64,
+) -> Facts {
+    let u = &s.claude.usage;
+    let chat = s.claude.chat.as_ref();
     let conv = u.conv.as_ref();
-    let on_plan = s.billing == crate::billing::Billing::Subscription;
+    let on_plan = s.claude.billing == crate::billing::Billing::Subscription;
     let pressing = limits.known(now_ms).into_iter().find(|r| crate::limits::pressing(r));
     Facts {
         now_ms,
@@ -235,12 +240,12 @@ pub fn facts(s: &Session, cfg: &crate::llm::LlmConfig, limits: &crate::limits::L
         // (a request in flight: its turn under way with no tool call waiting for its result — a turn waiting on a
         // review, a card or a run of its sends nothing until it's answered, and its cache goes cold meanwhile)
         busy: chat.is_some_and(|c| c.busy() && c.calls.is_empty())
-            || s.warm.ping.is_some()
-            || s.warm.checking,
+            || s.claude.warm.ping.is_some()
+            || s.claude.warm.checking,
         tokens: u.context().map(|c| c.0),
         min_tokens: cfg.keep_warm_min_tokens,
         back: back(s),
-        marked: s.warm.marked,
+        marked: s.claude.warm.marked,
         pressing: pressing.filter(|_| on_plan).map(|r| crate::limits::label(&r.window)),
         kept: u.stretch().len() as u32,
         max: cfg.keep_warm_max,
@@ -248,15 +253,15 @@ pub fn facts(s: &Session, cfg: &crate::llm::LlmConfig, limits: &crate::limits::L
 }
 
 /// What reads the session's change for it — the reviewer (`space v c`); the board (`space v C`) is one more line.
-fn readers(s: &Session) -> [bool; 1] {
+fn readers(s: &Workspace) -> [bool; 1] {
     [s.reviewer.as_ref().is_some_and(|r| r.reading())]
 }
 
 /// What of session `s` waits on you (but a mark), the first in this order.
-pub fn back(s: &Session) -> Option<Back> {
-    let chat = s.chat.as_ref();
+pub fn back(s: &Workspace) -> Option<Back> {
+    let chat = s.claude.chat.as_ref();
     let review = chat.is_some_and(|c| !c.edits.queue.is_empty() || !c.edits.sets.is_empty())
-        || s.review.is_some()
+        || s.claude.review.is_some()
         || s.code_review.is_some();
     let claudes_test =
         s.test_run.as_ref().is_some_and(|r| r.by_claude && r.state == crate::testing::RunState::Running);
@@ -265,12 +270,12 @@ pub fn back(s: &Session) -> Option<Back> {
     let run = claudes_test
         || claudes_task
         || !s.runs_next.is_empty()
-        || !s.tool_waits.is_empty()
+        || !s.claude.tool_waits.is_empty()
         || chat.is_some_and(|c| !c.reruns.is_empty());
     [
         (review, Back::Review),
         (readers(s).into_iter().any(|r| r), Back::UnderReview),
-        (!s.asking.is_empty() || !s.parked.is_empty(), Back::Card),
+        (!s.claude.asking.is_empty() || !s.parked.is_empty(), Back::Card),
         (s.rebase.is_some(), Back::Rebase),
         (run, Back::Run),
         (chat.is_some_and(|c| c.queued.is_some() || !c.sends.is_empty()), Back::Queued),
@@ -288,7 +293,7 @@ pub struct Said<'a> {
 }
 
 pub fn said<'a>(
-    s: &'a Session,
+    s: &'a Workspace,
     cfg: &crate::llm::LlmConfig,
     limits: &crate::limits::Limits,
     now_ms: u64,
@@ -297,7 +302,7 @@ pub fn said<'a>(
     // (as things stand now, would the window's start ping? — inside it, now)
     let at = f.cold_at.map_or(now_ms, |c| c.saturating_sub(LEAD_MS).max(now_ms));
     let next_at = matches!(decide(&Facts { now_ms: at, ..f }), Decision::Ping(_)).then_some(at);
-    Said { next_at, kept: s.usage.stretch() }
+    Said { next_at, kept: s.claude.usage.stretch() }
 }
 
 impl Said<'_> {
@@ -331,7 +336,7 @@ impl Said<'_> {
 /// The usage watch woke inside the cache's life (`usage::woke`): ping, look again later, or let it go.
 pub fn woke(ed: &mut Editor) {
     let now = crate::usage::now_ms();
-    match decide(&facts(&ed.session, &ed.config.llm, &ed.limits, now)) {
+    match decide(&facts(&ed.workspace, &ed.config.llm, &ed.limits, now)) {
         Decision::Ping(back) => checked_ping(ed, back),
         Decision::WakeAt(at) => crate::usage::sleep_until(ed, at),
         Decision::LetGo(_) => {}
@@ -342,9 +347,9 @@ pub fn woke(ed: &mut Editor) {
 /// now — only when the chat's claude was started as they hold now does the fork run as it does (and match its
 /// cache); else the chat starts again with them first (`claudetrust.rs`), and no ping goes.
 fn checked_ping(ed: &mut Editor, back: Back) {
-    ed.session.warm.checking = true;
+    ed.workspace.claude.warm.checking = true;
     crate::claudetrust::still_holds(ed, move |ed: &mut Editor, holds: Option<bool>| {
-        ed.session.warm.checking = false;
+        ed.workspace.claude.warm.checking = false;
         match holds {
             Some(true) => ping(ed, back),
             Some(false) => {
@@ -376,14 +381,14 @@ pub fn command(
 
 /// Starts a ping of the session's conversation, because of `back`.
 fn ping(ed: &mut Editor, back: Back) {
-    let Some(c) = ed.session.chat.as_ref() else { return };
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return };
     let Some((launched, extra)) = c.launched.clone() else { return };
-    let Some(id) = ed.session.usage.conv.as_ref().map(|c| c.id.clone()) else { return };
-    let billing = c.billing.unwrap_or(ed.session.billing);
+    let Some(id) = ed.workspace.claude.usage.conv.as_ref().map(|c| c.id.clone()) else { return };
+    let billing = c.billing.unwrap_or(ed.workspace.claude.billing);
     let cfg = command(&launched, &c.runs_on, &id);
     let extra: Vec<&str> = extra.iter().map(String::as_str).collect();
     let started = ed.credential(billing, crate::billing::Role::Chat).and_then(|cred| {
-        llm::spawn(&cfg, &extra, &ed.session.root, ed.claude_env.as_ref(), &cred)
+        llm::spawn(&cfg, &extra, &ed.workspace.root, ed.claude_env.as_ref(), &cred)
             .map_err(|e| e.said(&cfg.command, false))
     });
     let mut child = match started {
@@ -403,7 +408,7 @@ fn ping(ed: &mut Editor, back: Back) {
     static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let generation = GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let pid = child.id();
-    ed.session.warm.ping =
+    ed.workspace.claude.warm.ping =
         Some(Ping { pid, stdin, generation, back, requested: None, billing, kept: false, sent: false });
     crate::log::line("claude", "info", &format!("keep-warm: a ping of {id} ({})", back.name()));
     llm::pump(child, true, ed.events.sender(), move |ev| {
@@ -417,7 +422,7 @@ fn ping(ed: &mut Editor, back: Back) {
         crate::event::sleep(PING_MAX);
         move |ed: &mut Editor| {
             ed.unchanged = true;
-            if ed.session.warm.ping.as_ref().is_some_and(|p| p.generation == generation) {
+            if ed.workspace.claude.warm.ping.as_ref().is_some_and(|p| p.generation == generation) {
                 llm::kill(pid);
             }
         }
@@ -425,18 +430,20 @@ fn ping(ed: &mut Editor, back: Back) {
 }
 
 fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
-    let Some(p) = ed.session.warm.ping.as_mut().filter(|p| p.generation == generation) else { return };
+    let Some(p) = ed.workspace.claude.warm.ping.as_mut().filter(|p| p.generation == generation) else {
+        return;
+    };
     match ev {
         StreamEv::Requesting(at) => {
             p.requested.get_or_insert(at);
         }
         StreamEv::Control { request_id, request } => {
-            let arm = ed.session.chat.as_ref().map_or(ed.config.llm.edit_tools, |c| c.edit_tools);
+            let arm = ed.workspace.claude.chat.as_ref().map_or(ed.config.llm.edit_tools, |c| c.edit_tools);
             let _ = p.stdin.send(llm::control_response(&request_id, control(arm, &request)));
         }
         StreamEv::Spent(s) => {
             let (back, requested) = (p.back, p.requested);
-            let Some(k) = ed.session.usage.kept_warm(s, requested, back.name()) else { return };
+            let Some(k) = ed.workspace.claude.usage.kept_warm(s, requested, back.name()) else { return };
             p.kept = true;
             // (it wrote more than it read: what comes before the history didn't match the chat's)
             if k.counts.write.unwrap_or(0) > k.counts.read.unwrap_or(0) {
@@ -473,7 +480,7 @@ fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
         }
         StreamEv::Done(r) => {
             let kept = p.kept;
-            ed.session.warm.ping = None;
+            ed.workspace.claude.warm.ping = None;
             // (ended past its one turn — a tool it tried — after its request read the cache: kept all the same)
             if let Err(e) = r
                 && !kept
@@ -540,11 +547,11 @@ fn control(arm: crate::edittool::Arm, req: &Value) -> Value {
 
 /// `:keep-warm [on|off]` — marks the session's conversation to be kept warm while it waits (None flips it).
 pub fn mark(ed: &mut Editor, want: Option<bool>) {
-    let on = want.unwrap_or(!ed.session.warm.marked);
-    ed.session.warm.marked = on;
+    let on = want.unwrap_or(!ed.workspace.claude.warm.marked);
+    ed.workspace.claude.warm.marked = on;
     let mode = ed.config.llm.keep_warm;
     // (what will happen, and when the next ping goes — none due: the sentence alone)
-    let next = said(&ed.session, &ed.config.llm, &ed.limits, crate::usage::now_ms()).next_at;
+    let next = said(&ed.workspace, &ed.config.llm, &ed.limits, crate::usage::now_ms()).next_at;
     let when = next.map_or_else(String::new, |at| format!(" — next at {}", crate::usage::until(at)));
     let said = match (on, mode) {
         (true, Mode::Off) => "Marked to keep warm — but llm.keep-warm is off".to_string(),
@@ -563,7 +570,7 @@ pub fn mark(ed: &mut Editor, want: Option<bool>) {
 /// `:keep-warm now` — a ping at once, asked for: past the window and the size, but never over a turn or a ping
 /// under way, nor with nothing to fork.
 pub fn now(ed: &mut Editor) -> Result<(), String> {
-    let f = facts(&ed.session, &ed.config.llm, &ed.limits, crate::usage::now_ms());
+    let f = facts(&ed.workspace, &ed.config.llm, &ed.limits, crate::usage::now_ms());
     if !f.forkable || f.cold_at.is_none() {
         return Err("keep-warm: no conversation here to keep warm yet".into());
     }
@@ -576,13 +583,13 @@ pub fn now(ed: &mut Editor) -> Result<(), String> {
 
 /// `w` in the sessions list: session `id`'s mark flipped — the one in front as `:keep-warm`, one behind kept for
 /// its next look (its window looks again each minute).
-pub fn mark_in(ed: &mut Editor, id: crate::event::SessionId) {
-    if ed.session.id == id {
+pub fn mark_in(ed: &mut Editor, id: crate::event::WorkspaceId) {
+    if ed.workspace.id == id {
         return mark(ed, None);
     }
-    let Some(s) = ed.sessions.iter_mut().find(|s| s.id == id) else { return };
-    s.warm.marked = !s.warm.marked;
-    let (on, name) = (s.warm.marked, s.label().to_string());
+    let Some(s) = ed.workspaces.iter_mut().find(|s| s.id == id) else { return };
+    s.claude.warm.marked = !s.claude.warm.marked;
+    let (on, name) = (s.claude.warm.marked, s.label().to_string());
     ed.set_success(match (on, ed.config.llm.keep_warm) {
         (true, Mode::Off) => format!("{name}: marked to keep warm — but llm.keep-warm is off"),
         (true, _) => format!("{name}: Claude's cache will be kept warm while it waits"),

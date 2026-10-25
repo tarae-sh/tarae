@@ -370,7 +370,7 @@ fn with_the_network_closed_a_host_waits_and_yes_lets_it_through() {
     let name = "ask-c1.example.invalid";
     let (port, seen) = outside(name, root);
     let (asks, asked) = std::sync::mpsc::channel();
-    let session = super::session_of(root);
+    let session = super::workspace_of(root);
     super::TEST_ASKS.lock().unwrap().push((session, asks));
     let closed = || {
         let listed = Some(vec![super::egress::Pattern::parse(name).unwrap()]);
@@ -426,7 +426,7 @@ fn an_unknown_host_waits_for_the_answer() {
     let name = "ask-5e.example.invalid";
     let (port, seen) = outside(name, root);
     let (asks, asked) = std::sync::mpsc::channel();
-    let session = super::session_of(root);
+    let session = super::workspace_of(root);
     super::TEST_ASKS.lock().unwrap().push((session, asks));
     let listed = || {
         let env = crate::sandbox::Env { network: true, hosts: Some(Vec::new()), ..env(root) };

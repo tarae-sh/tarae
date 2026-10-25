@@ -45,13 +45,13 @@ struct Scene {
     ed: Editor,
     main: PathBuf,
     /// fix, up, db: (session, checkout).
-    ws: Vec<(SessionId, PathBuf)>,
+    ws: Vec<(WorkspaceId, PathBuf)>,
     base: Base,
     _dir: Scratch,
 }
 
 impl Scene {
-    fn id(&self, name: &str) -> SessionId {
+    fn id(&self, name: &str) -> WorkspaceId {
         self.ws[["fix", "up", "db"].iter().position(|n| *n == name).unwrap()].0
     }
 
@@ -97,9 +97,9 @@ fn scene(name: &str) -> Scene {
     git(&main, &["add", "-A"]);
     git(&main, &["commit", "-qm", "first"]);
     let mut ed = Editor::new(Config::default());
-    ed.session.root = main.clone();
-    ed.session.name = "main".into();
-    ed.session.git_branch = Some("main".into());
+    ed.workspace.root = main.clone();
+    ed.workspace.name = "main".into();
+    ed.workspace.git_branch = Some("main".into());
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     ed.overlap.dir = Some(crate::overlap::own_in(&dir.join("overlap")));
@@ -108,8 +108,8 @@ fn scene(name: &str) -> Scene {
     for name in ["fix", "up", "db"] {
         git(&main, &["worktree", "add", "-q", "-b", name, &format!("../{name}")]);
         let root = std::fs::canonicalize(dir.join(name)).unwrap();
-        let id = ed.session_add(root.clone());
-        let l = ed.session_by_id(id).unwrap();
+        let id = ed.workspace_add(root.clone());
+        let l = ed.workspace_by_id(id).unwrap();
         l.name = name.into();
         l.base = Some("main".into());
         l.git_branch = Some(name.into());
@@ -190,7 +190,7 @@ fn one_card_names_every_workspace_behind_and_what_would_conflict_where() {
     assert_eq!(answers, ['y', 'c', 'n']);
     // Each workspace named in its own colour, as the strip and the list name it (`Offer.paint`)
     let colour = |name: &str| {
-        let c = s.ed.sessions.iter().find(|l| l.id == s.id(name)).unwrap().colour;
+        let c = s.ed.workspaces.iter().find(|l| l.id == s.id(name)).unwrap().claude.colour;
         crate::session::PARTICIPANTS[c as usize % crate::session::COLOURS]
     };
     let want: Vec<(String, &str)> = ["fix", "up", "db"].iter().map(|n| (n.to_string(), colour(n))).collect();
@@ -209,7 +209,8 @@ fn y_moves_the_clean_ones_their_changes_along_and_says_each_once() {
     assert!(card(&s.ed).is_none(), "{:?}", s.ed.messages.last());
     // (one at a time: never two checkouts moving at once)
     until(&mut s.ed, "two moves", |ed| {
-        let moving = std::iter::once(&ed.session).chain(&ed.sessions).filter(|l| l.moving.is_some()).count();
+        let moving =
+            std::iter::once(&ed.workspace).chain(&ed.workspaces).filter(|l| l.moving.is_some()).count();
         assert!(moving <= 1, "{moving} checkouts moving at once");
         ed.keep_close.moved == 2 && ed.keep_close.moving.is_none()
     });
@@ -233,7 +234,7 @@ fn c_rebases_the_conflicting_one_too_through_its_resolve_loop() {
     key(&mut s.ed, 'c');
     let db = s.id("db");
     until(&mut s.ed, "db's rebase stopped at its conflict", |ed| {
-        let l = std::iter::once(&ed.session).chain(&ed.sessions).find(|l| l.id == db).unwrap();
+        let l = std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|l| l.id == db).unwrap();
         l.rebase.as_ref().is_some_and(|r| r.stop.files == ["a.rs"])
     });
     until(&mut s.ed, "the clean ones", |ed| ed.keep_close.moved == 2 && ed.keep_close.moving.is_none());
@@ -283,8 +284,8 @@ fn guards() -> Vec<(&'static str, Guard)> {
     vec![
         ("its Claude at work", |s, on| {
             let id = s.id("fix");
-            let l = s.ed.session_by_id(id).unwrap();
-            let c = l.chat.get_or_insert_with(|| {
+            let l = s.ed.workspace_by_id(id).unwrap();
+            let c = l.claude.chat.get_or_insert_with(|| {
                 let mut c = crate::chat::Chat::new();
                 let _ = crate::chat::stand_in(&mut c);
                 c
@@ -293,7 +294,7 @@ fn guards() -> Vec<(&'static str, Guard)> {
         }),
         ("unsaved buffers there", |s, on| {
             let path = s.root("fix").join("a.rs");
-            s.ed.session_switch(s.id("fix"));
+            s.ed.workspace_switch(s.id("fix"));
             s.ed.open(&path).unwrap();
             match on {
                 true => {
@@ -305,12 +306,12 @@ fn guards() -> Vec<(&'static str, Guard)> {
                 }
                 false => s.ed.doc_mut().mark_saved(),
             }
-            s.ed.session_switch(0);
+            s.ed.workspace_switch(WorkspaceId::HOME);
         }),
         ("a review open", |s, on| {
             let (id, root) = (s.id("fix"), s.root("fix"));
             let turn = crate::codereview::Base::Turn { at: 0, question: "do it".into() };
-            s.ed.session_by_id(id).unwrap().code_review =
+            s.ed.workspace_by_id(id).unwrap().code_review =
                 on.then(|| crate::codereview::CodeReview::for_test(turn, root, Vec::new()));
         }),
         ("a run under way", |s, on| {
@@ -318,7 +319,7 @@ fn guards() -> Vec<(&'static str, Guard)> {
             let task = crate::task::Task { name: "build".into(), cmd: "true".into(), cwd: root };
             let mut r = crate::task::Run::for_test(task);
             r.state = if on { crate::task::State::Running } else { crate::task::State::Passed };
-            s.ed.session_by_id(id).unwrap().task_run = Some(r);
+            s.ed.workspace_by_id(id).unwrap().task_run = Some(r);
         }),
         ("in the bring queue", |s, on| {
             s.ed.bring_queue.run = on.then(|| crate::bringqueue::Run {
@@ -343,10 +344,10 @@ fn guards() -> Vec<(&'static str, Guard)> {
                     let editor = format!("sequence.editor={}", editor.display());
                     git(&root, &["-c", &editor, "rebase", "-i", "--autostash", "HEAD"]);
                     let stop = crate::rebase::under_way(&root).expect("fix's rebase stopped");
-                    s.ed.with_session(id, |ed| ed.rebase_adopt(stop));
+                    s.ed.with_workspace(id, |ed| ed.rebase_adopt(stop));
                 }
                 false => {
-                    s.ed.with_session(id, |ed| ed.rebase_abort().unwrap());
+                    s.ed.with_workspace(id, |ed| ed.rebase_abort().unwrap());
                 }
             }
         }),
@@ -360,7 +361,7 @@ fn a_busy_workspace_waits_until_its_idle() {
         asked(&mut s);
         set(&mut s, true);
         let fix = s.id("fix");
-        let l = std::iter::once(&s.ed.session).chain(&s.ed.sessions).find(|l| l.id == fix).unwrap();
+        let l = std::iter::once(&s.ed.workspace).chain(&s.ed.workspaces).find(|l| l.id == fix).unwrap();
         assert_eq!(busy(&s.ed, l), Some(why));
         key(&mut s.ed, 'y');
         until(&mut s.ed, why, |ed| ed.keep_close.moved == 1 && ed.keep_close.moving.is_none());
@@ -378,23 +379,23 @@ fn a_busy_workspace_waits_until_its_idle() {
 fn while_it_moves_its_messages_and_runs_wait() {
     let mut s = scene("keepclose-holds");
     let fix = s.id("fix");
-    s.ed.session_switch(fix);
+    s.ed.workspace_switch(fix);
     crate::chat::open(&mut s.ed);
-    let rx = crate::chat::stand_in(s.ed.session.chat.as_mut().unwrap());
-    s.ed.session.moving = Some("main".into());
-    s.ed.session.chat.as_mut().unwrap().input.set("go on");
+    let rx = crate::chat::stand_in(s.ed.workspace.claude.chat.as_mut().unwrap());
+    s.ed.workspace.moving = Some("main".into());
+    s.ed.workspace.claude.chat.as_mut().unwrap().input.set("go on");
     crate::chat::send(&mut s.ed);
-    let c = s.ed.session.chat.as_ref().unwrap();
+    let c = s.ed.workspace.claude.chat.as_ref().unwrap();
     assert!(c.queued.is_some() && !c.busy(), "the message waits for the move");
     crate::chat::send_queued(&mut s.ed);
-    assert!(s.ed.session.chat.as_ref().unwrap().queued.is_some(), "still waits");
+    assert!(s.ed.workspace.claude.chat.as_ref().unwrap().queued.is_some(), "still waits");
     let task = crate::task::Task { name: "build".into(), cmd: "true".into(), cwd: s.root("fix") };
     s.ed.task_start(task);
-    assert_eq!(s.ed.session.runs_next.len(), 1, "the run waits too");
-    assert!(s.ed.session.task_run.is_none());
-    s.ed.session.moving = None;
+    assert_eq!(s.ed.workspace.runs_next.len(), 1, "the run waits too");
+    assert!(s.ed.workspace.task_run.is_none());
+    s.ed.workspace.moving = None;
     crate::chat::send_queued(&mut s.ed);
-    assert!(s.ed.session.chat.as_ref().unwrap().busy(), "sent once it's moved");
+    assert!(s.ed.workspace.claude.chat.as_ref().unwrap().busy(), "sent once it's moved");
     assert!(rx.try_iter().any(|l| l.contains("go on")));
 }
 
@@ -403,14 +404,14 @@ fn a_save_while_it_moves_waits_and_is_written_once_it_lands() {
     let mut s = scene("keepclose-save");
     let fix = s.id("fix");
     let path = s.root("fix").join("b.rs");
-    s.ed.session_switch(fix);
+    s.ed.workspace_switch(fix);
     s.ed.open(&path).unwrap();
-    s.ed.session_switch(0);
+    s.ed.workspace_switch(WorkspaceId::HOME);
     asked(&mut s);
     key(&mut s.ed, 'y');
     assert_eq!(s.ed.keep_close.moving, Some(fix), "fix moves first");
     // (typed and saved while git rebases its checkout)
-    s.ed.session_switch(fix);
+    s.ed.workspace_switch(fix);
     for c in ['g', 'g', 'O', 'n', 'e', 'w'] {
         s.ed.handle_key(Key::plain(Code::Char(c)));
     }
@@ -420,7 +421,7 @@ fn a_save_while_it_moves_waits_and_is_written_once_it_lands() {
     assert!(s.ed.doc().is_modified(), "held, not written mid-move");
     assert_eq!(s.ed.keep_close.saves.len(), 1);
     assert_eq!(said(&s.ed, "b.rs waits — fix is moving onto main; written once it lands"), 1);
-    s.ed.session_switch(0);
+    s.ed.workspace_switch(WorkspaceId::HOME);
     until(&mut s.ed, "both moved, the save written", |ed| {
         ed.keep_close.moved == 2 && ed.docs.iter().find(|d| d.id == id).is_some_and(|d| !d.is_modified())
     });
@@ -447,19 +448,19 @@ fn space_u_while_it_moves_is_refused_and_said_and_takes_it_back_once_it_lands() 
         ..Default::default()
     };
     let turn = crate::checkpoint::Checkpoint::new("line 10".into(), vec![t]);
-    s.ed.session_by_id(fix).unwrap().checkpoints.list.push(turn);
-    s.ed.session_switch(fix);
+    s.ed.workspace_by_id(fix).unwrap().claude.checkpoints.list.push(turn);
+    s.ed.workspace_switch(fix);
     s.ed.open(&path).unwrap();
-    s.ed.session_switch(0);
+    s.ed.workspace_switch(WorkspaceId::HOME);
     asked(&mut s);
     key(&mut s.ed, 'y');
     assert_eq!(s.ed.keep_close.moving, Some(fix), "fix moves first");
-    s.ed.session_switch(fix);
+    s.ed.workspace_switch(fix);
     for c in [' ', 'u'] {
         s.ed.handle_key(Key::plain(Code::Char(c)));
     }
     assert_eq!(said(&s.ed, "fix is moving onto main — take it back once it lands"), 1);
-    assert!(!s.ed.session.checkpoints.list[0].undone, "refused, nothing queued");
+    assert!(!s.ed.workspace.claude.checkpoints.list[0].undone, "refused, nothing queued");
     // (`:w` to a new name there: refused the same way)
     for c in ":w c.rs".chars() {
         s.ed.handle_key(Key::plain(Code::Char(c)));
@@ -467,13 +468,13 @@ fn space_u_while_it_moves_is_refused_and_said_and_takes_it_back_once_it_lands() 
     s.ed.handle_key(Key::plain(Code::Enter));
     assert_eq!(said(&s.ed, "fix is moving onto main — write it once it lands"), 1);
     assert!(!s.root("fix").join("c.rs").exists());
-    s.ed.session_switch(0);
+    s.ed.workspace_switch(WorkspaceId::HOME);
     until(&mut s.ed, "both moved", |ed| ed.keep_close.moved == 2 && ed.keep_close.moving.is_none());
     quiet(&mut s.ed);
     assert!(s.on_tip("fix"));
     let b = std::fs::read_to_string(&path).unwrap();
     assert!(b.contains("line 10, fix's own"), "not taken back by itself: {b}");
-    s.ed.session_switch(fix);
+    s.ed.workspace_switch(fix);
     crate::checkpoint::step(&mut s.ed, true).unwrap();
     let b = std::fs::read_to_string(&path).unwrap();
     assert!(!b.contains("fix's own") && b.contains("line 10\n"), "taken back once it landed: {b}");

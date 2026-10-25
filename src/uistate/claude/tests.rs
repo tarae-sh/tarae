@@ -8,7 +8,7 @@ use crate::offer::{Offer, What};
 fn editor() -> Editor {
     let mut ed = Editor::new(Config::default());
     ed.docs[0].text = ropey::Rope::from_str("one\ntwo\nthree\n");
-    ed.session.root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+    ed.workspace.root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
     ed
 }
 
@@ -19,7 +19,7 @@ fn card(ed: &mut Editor, title: &str) -> u64 {
         "2 files not viewed.",
         "",
         String::new(),
-        What::ReviewEnd { session: 0, started: std::time::Instant::now() },
+        What::ReviewEnd { session: crate::event::WorkspaceId::HOME, started: std::time::Instant::now() },
     );
     let id = o.id;
     ed.push_offer(o);
@@ -29,8 +29,8 @@ fn card(ed: &mut Editor, title: &str) -> u64 {
 fn chat(ed: &mut Editor, draft: &str) {
     let mut c = crate::chat::Chat::new();
     c.input = draft.into();
-    ed.session.chat = Some(c);
-    ed.session.at = crate::session::At::Chat;
+    ed.workspace.claude.chat = Some(c);
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
 }
 
 fn frame(ed: &mut Editor) -> String {
@@ -47,9 +47,9 @@ fn key(s: &str) -> Key {
 }
 
 /// A session behind, named `name`, in folder `root` — its id.
-fn behind(ed: &mut Editor, name: &str, root: std::path::PathBuf) -> crate::event::SessionId {
-    let id = ed.session_add(root);
-    ed.session_by_id(id).unwrap().name = name.into();
+fn behind(ed: &mut Editor, name: &str, root: std::path::PathBuf) -> crate::event::WorkspaceId {
+    let id = ed.workspace_add(root);
+    ed.workspace_by_id(id).unwrap().name = name.into();
     id
 }
 
@@ -105,18 +105,18 @@ fn claudes_level_holds_back_unsent_text_and_other_sessions() {
         "theirs",
         "",
         String::new(),
-        What::ReviewEnd { session: 0, started: std::time::Instant::now() },
+        What::ReviewEnd { session: crate::event::WorkspaceId::HOME, started: std::time::Instant::now() },
     );
     (ed.offer_seq, parked.id) = (ed.offer_seq + 1, ed.offer_seq + 1);
     let theirs = format!("card#{}", parked.id);
-    let l = ed.sessions.iter_mut().find(|l| l.id == other).unwrap();
+    let l = ed.workspaces.iter_mut().find(|l| l.id == other).unwrap();
     l.parked.push(parked);
     // (its Claude's answer: the user's to read — `tarae state --chat`, #204 — never this Claude's)
     let mut c = crate::chat::Chat::new();
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "q", ""));
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "their own answer", ""));
-    l.chat = Some(c);
-    l.at = crate::session::At::Chat;
+    l.claude.chat = Some(c);
+    l.viewer.at = crate::workspace::At::Chat;
     card(&mut ed, "End the review?");
     // (a toast on its card: how strong the frame drew it is the drivers', never Claude's)
     ed.set_warning("a toast on its card");
@@ -155,8 +155,8 @@ fn claudes_level_holds_back_unsent_text_and_other_sessions() {
     assert_eq!(strength(&s.json()), None, "the card's strength at Claude's level: {}", s.json()["toasts"]);
     assert!(!json.contains("A secret owed card") && !json.contains("job src/"), "{json}");
     let theirs =
-        s.json()["sessions"].as_array().unwrap().iter().find(|l| l["name"] == "other").cloned().unwrap();
-    assert_eq!(theirs["answer"], "blocked", "{theirs}");
+        s.json()["workspaces"].as_array().unwrap().iter().find(|l| l["name"] == "other").cloned().unwrap();
+    assert_eq!(theirs["sessions"][0]["answer"], "blocked", "{theirs}");
     assert!(full.contains("Their own card"), "the full level names it");
     assert!(text.contains("End the review?"), "its own session's card:\n{text}");
     assert!(!text.contains("frame"), "no pid, frame, input:\n{text}");
@@ -190,9 +190,9 @@ fn the_ui_tool_answers_at_once_and_gives_what_it_names() {
     chat(&mut ed, "");
     let id = card(&mut ed, "End the review?");
     let files = vec!["a.rs".into(), "b.rs".into()];
-    ed.session.sidebar = Some(crate::sidebar::Sidebar::with_files(ed.session.root.clone(), files));
-    ed.session.at = crate::session::At::Side;
-    ed.session.leave(crate::session::At::Side);
+    ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(ed.workspace.root.clone(), files));
+    ed.workspace.viewer.at = crate::workspace::At::Side;
+    ed.workspace.leave(crate::workspace::At::Side);
     frame(&mut ed);
     let msg = serde_json::json!({ "jsonrpc": "2.0", "id": 9, "method": "tools/call",
         "params": { "name": "ui", "arguments": {} } });
@@ -200,7 +200,7 @@ fn the_ui_tool_answers_at_once_and_gives_what_it_names() {
     let text = answer["result"]["content"][0]["text"].as_str().unwrap().to_string();
     assert!(text.contains(&format!("card#{id} tarae · review-end")), "{text}");
     assert!(text.contains("rows files: files:a.rs files:b.rs"), "the rows on screen by id:\n{text}");
-    let given = &ed.session.chat.as_ref().unwrap().given;
+    let given = &ed.workspace.claude.chat.as_ref().unwrap().given;
     assert!(given.contains(&format!("card#{id}")) && given.contains(&"files:a.rs".into()), "{given:?}");
     assert!(!given.contains(&"files:b.rs".into()), "rows named as a list aren't given: {given:?}");
 }
@@ -250,12 +250,12 @@ fn a_link_to_another_sessions_card_brings_that_session_forward() {
         "theirs",
         "",
         String::new(),
-        What::ReviewEnd { session: 0, started: std::time::Instant::now() },
+        What::ReviewEnd { session: crate::event::WorkspaceId::HOME, started: std::time::Instant::now() },
     );
     let id = parked.id;
-    ed.sessions.iter_mut().find(|l| l.id == other).unwrap().parked.push(parked);
+    ed.workspaces.iter_mut().find(|l| l.id == other).unwrap().parked.push(parked);
     ed.ui_jump(&format!("card#{id}"));
-    assert_eq!(ed.session.id, other, "its session in front");
+    assert_eq!(ed.workspace.id, other, "its session in front");
     assert!(ed.offers.iter().any(|o| o.id == id) && ed.ui_flashing(&format!("card#{id}")));
 }
 
@@ -266,14 +266,14 @@ fn a_link_to_a_row_shows_its_tab_without_the_keys() {
     let mut ed = editor();
     chat(&mut ed, "");
     let files: Vec<String> = (0..80).map(|i| format!("f{i:02}.rs")).collect();
-    let sb = crate::sidebar::Sidebar::with_files(ed.session.root.clone(), files);
-    ed.session.sidebar = Some(sb);
+    let sb = crate::sidebar::Sidebar::with_files(ed.workspace.root.clone(), files);
+    ed.workspace.viewer.sidebar = Some(sb);
     frame(&mut ed);
     ed.ui_jump("files:f70.rs");
     assert!(ed.ui_flashing("files:f70.rs"));
     let text = frame(&mut ed);
     assert!(text.contains("f70.rs"), "scrolled into sight:\n{text}");
-    assert!(ed.session.is_at(crate::session::At::Chat), "the keys stay the chat's");
+    assert!(ed.workspace.is_at(crate::workspace::At::Chat), "the keys stay the chat's");
     assert_eq!(ed.keys_to().region, crate::uistate::Region::Chat);
     ed.ui_flash = None;
     ed.ui_jump("files:nope.rs");
@@ -306,10 +306,10 @@ fn an_id_in_the_answer_is_a_link() {
     let id = card(&mut ed, "End the review?");
     chat(&mut ed, "");
     let answer = format!("It came up for src/a.rs:3 — card#{id} asks whether to end it.");
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "why?", ""));
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, answer, ""));
-    let hops = c.hops(&ed.session.root.clone());
+    let hops = c.hops(&ed.workspace.root.clone());
     assert!(
         matches!(&hops[..], [crate::chat::Hop::Place(..), crate::chat::Hop::Element(e)] if *e == format!("card#{id}")),
         "{hops:?}"
@@ -345,12 +345,12 @@ fn given_and_cited_marks_last_one_turn_and_never_sit_on_toasts() {
     let title =
         |text: &str| text.lines().find(|l| l.contains("End the review?")).unwrap_or_default().to_string();
     assert!(!title(&frame(&mut ed)).contains('◦'), "nothing given yet");
-    ed.session.chat.as_mut().unwrap().given = vec![format!("card#{id}"), toast];
+    ed.workspace.claude.chat.as_mut().unwrap().given = vec![format!("card#{id}"), toast];
     let text = frame(&mut ed);
     assert!(title(&text).contains('◦'), "given:\n{text}");
     let saved = text.lines().find(|l| l.contains("saved a.rs")).unwrap_or_default();
     assert!(!saved.contains('◦'), "never on a toast:\n{text}");
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, format!("card#{id} asks it"), ""));
     cite(c);
     assert!(title(&frame(&mut ed)).contains('•'), "cited");
@@ -382,13 +382,13 @@ fn pointing_puts_an_elements_id_in_the_chat() {
     ed.handle_key(key(&a.to_string()));
     ed.handle_key(key(&b.to_string()));
     assert!(ed.pointing.is_none());
-    assert_eq!(ed.session.chat.as_ref().unwrap().pointed, [format!("card#{id}")]);
+    assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().pointed, [format!("card#{id}")]);
     assert!(frame(&mut ed).contains(&format!("card#{id} goes with it")), "the chip over the input");
     ed.handle_key(key("<backspace>"));
-    assert!(ed.session.chat.as_ref().unwrap().pointed.is_empty(), "taken off");
+    assert!(ed.workspace.claude.chat.as_ref().unwrap().pointed.is_empty(), "taken off");
     ed.handle_key(key("<C-o>"));
     ed.handle_key(key("<esc>"));
-    assert!(ed.pointing.is_none() && ed.session.is_at(crate::session::At::Chat));
+    assert!(ed.pointing.is_none() && ed.workspace.is_at(crate::workspace::At::Chat));
 }
 
 /// A framed card's label sits on its title's row — the frame's top line, where its name
@@ -418,8 +418,9 @@ fn a_framed_cards_label_is_on_its_title_row() {
 fn pointing_by_a_click() {
     let mut ed = editor();
     chat(&mut ed, "");
-    let sb = crate::sidebar::Sidebar::with_files(ed.session.root.clone(), vec!["a.rs".into(), "b.rs".into()]);
-    ed.session.sidebar = Some(sb);
+    let sb =
+        crate::sidebar::Sidebar::with_files(ed.workspace.root.clone(), vec!["a.rs".into(), "b.rs".into()]);
+    ed.workspace.viewer.sidebar = Some(sb);
     frame(&mut ed);
     crate::uistate::point::start(&mut ed);
     let t = ed
@@ -438,7 +439,7 @@ fn pointing_by_a_click() {
         x: t.x as u16 + 3,
         y: t.y as u16,
     });
-    assert_eq!(ed.session.chat.as_ref().unwrap().pointed, ["files:b.rs"]);
+    assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().pointed, ["files:b.rs"]);
 }
 
 /// The message carries what was pointed at (`<pointed>`) and the `ui:` line; both are given to Claude for
@@ -455,7 +456,7 @@ fn the_message_carries_what_was_pointed_at_and_the_ui_line() {
     let id = card(&mut ed, "End the review?");
     crate::chat::open(&mut ed);
     frame(&mut ed);
-    let c = ed.session.chat.as_mut().unwrap();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.pointed = vec![format!("card#{id}")];
     c.input = "why did this come up?".into();
     crate::chat::send(&mut ed);
@@ -474,7 +475,7 @@ fn the_message_carries_what_was_pointed_at_and_the_ui_line() {
         content.contains(&format!("<pointed id=\"card#{id}\">card#{id} tarae · review-end")),
         "{content}"
     );
-    let c = ed.session.chat.as_ref().unwrap();
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
     assert!(c.pointed.is_empty() && c.given == [format!("card#{id}")], "{:?}", c.given);
     std::fs::remove_dir_all(&dir).ok();
 }

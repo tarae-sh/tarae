@@ -1,4 +1,4 @@
-//! `:session-apply [--base <rev>] <patch>` — an outside tree's change brought into this session as one change
+//! `:workspace-apply [--base <rev>] <patch>` — an outside tree's change brought into this session as one change
 //! set (frictions30 5, `target/sb/sessapply-plan.md`). The patch is read on a worker — the user's own read, of
 //! the file they named: the card says what was read — and each file's hunks are laid on (`patch.rs`): from the
 //! patch's base when it's known (`--base`, else the diff's `index` lines; read with `git cat-file`), exactly,
@@ -22,7 +22,7 @@ use crate::refactor::{FileChange, Op};
 /// A patch bigger than this isn't read.
 const PATCH_MAX: u64 = 16 << 20;
 
-const USAGE: &str = "usage: :session-apply [--base <rev>] <patch>";
+const USAGE: &str = "usage: :workspace-apply [--base <rev>] <patch>";
 
 /// What the worker needs from the main loop.
 struct Here {
@@ -43,10 +43,10 @@ struct Worked {
 }
 
 impl Editor {
-    /// `:session-apply [--base <rev>] <patch>` (see the module's doc). One patch at a time.
-    pub fn session_apply(&mut self, args: &str) -> Result<(), String> {
+    /// `:workspace-apply [--base <rev>] <patch>` (see the module's doc). One patch at a time.
+    pub fn workspace_apply(&mut self, args: &str) -> Result<(), String> {
         let (base, file) = args_of(args)?;
-        if self.session.applying.is_some() {
+        if self.workspace.applying.is_some() {
             return Err("a patch is landing here already — answer its card (or end its review) first".into());
         }
         let path = crate::typed::typed_path(self, file);
@@ -67,7 +67,7 @@ impl Editor {
         let label = name.clone();
         let work = move || work(&here, &path, base.as_deref(), &label);
         self.step(jobs, "apply", said, work, move |ed: &mut Editor, r: Result<Worked, String>| match r {
-            Ok(_) if ed.session.applying.is_some() => {
+            Ok(_) if ed.workspace.applying.is_some() => {
                 ed.set_error(format!("{name}: another patch is landing here — nothing changed"))
             }
             Ok(w) => crate::refactor::land_yours(

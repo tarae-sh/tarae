@@ -342,7 +342,7 @@ pub fn moved(
     }
 }
 
-/// One high-risk change looked at (`Session.looked_orders`): its added lines' keys in the order a person
+/// One high-risk change looked at (`Workspace.looked_orders`): its added lines' keys in the order a person
 /// looked at them — a line found out of that order since is a change to look at (`moved`) — and the lines just
 /// above and below it then, its place: one of its lines missing since is counted between them as they're
 /// found now (`codereview::taken_out_of` — a line the diff now pairs with another copy is still there).
@@ -430,7 +430,7 @@ pub fn trivial(line: &str) -> bool {
     line.trim().chars().all(|c| c.is_ascii_punctuation())
 }
 
-/// An added line a person looked at (`Session.looked_lines`): where it was then, its text, its key as added
+/// An added line a person looked at (`Workspace.looked_lines`): where it was then, its text, its key as added
 /// (`+`, the diff's), and how many times the file had that text then — fewer now, one was taken out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LookedLine {
@@ -470,7 +470,7 @@ pub fn key(rel: &str, sign: u8, line: &str) -> Key {
     Key::from_be_bytes(d[..16].try_into().expect("16 of 32 bytes"))
 }
 
-/// Every changed line's key — kept (`Session.looked`, the restore file), the same in every build.
+/// Every changed line's key — kept (`Workspace.looked`, the restore file), the same in every build.
 pub fn keys(rel: &str, h: &Hunk) -> Vec<Key> {
     let key = |sign: u8, line: &str| key(rel, sign, line);
     // (a change of mode: its modes, sign `m`)

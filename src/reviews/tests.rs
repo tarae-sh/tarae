@@ -45,7 +45,7 @@ fn a_change_alike_turning_up_ahead_of_a_followed_one_has_its_own_id() {
 fn frame(ed: &mut Editor) {
     crate::term::render(ed, &mut Vec::new(), 120, 30).unwrap();
     // (a file in sight has its changes found on a worker: they land as the main loop would take them)
-    let found = |ed: &Editor| ed.session.reviews.code.as_ref().is_none_or(|w| w.asked.is_empty());
+    let found = |ed: &Editor| ed.workspace.reviews.code.as_ref().is_none_or(|w| w.asked.is_empty());
     settle_until(ed, "the review's changes found", found);
 }
 
@@ -72,7 +72,7 @@ fn editor_on(name: &str, file: &str, text: &str) -> (Editor, PathBuf) {
     let dir = std::fs::canonicalize(&dir).unwrap();
     std::fs::write(dir.join(file), text).unwrap();
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = dir.clone();
+    ed.workspace.root = dir.clone();
     ed.reviews_dir = Some(dir.join(DIR));
     ed.open(&dir.join(file)).unwrap();
     (ed, dir)
@@ -128,7 +128,7 @@ fn the_record_holds_no_code_text() {
     frame(&mut ed);
     feed(&mut ed, "a");
     frame(&mut ed);
-    assert!(ed.session.review.is_none(), "answered");
+    assert!(ed.workspace.claude.review.is_none(), "answered");
     let (entries, raw) = record(&dir.join(DIR));
     for word in ["zebra", "kiwi", "renamed", "hidden", "quokka", "fn ", "let "] {
         assert!(!raw.contains(word), "{word:?} is code — in the record:\n{raw}");
@@ -269,14 +269,14 @@ fn an_edit_review_writes_a_line_per_change_and_its_own() {
         vec![(0, 4, "one\n".to_string(), "ONE\n".to_string()), (4, 8, "two\n".into(), "TWO\n".into())];
     crate::llm::review_with(&mut ed, id, "upper", changes, None);
     frame(&mut ed);
-    let run = Run::of(&ed, &ed.session, true).expect("the state has it");
+    let run = Run::of(&ed, &ed.workspace, true).expect("the state has it");
     assert_eq!((run.kind, run.changes, run.decided), ("edit", 2, 0));
     feed(&mut ed, "y");
     frame(&mut ed);
-    assert_eq!(Run::of(&ed, &ed.session, true).map(|r| r.decided), Some(1), "one answered");
+    assert_eq!(Run::of(&ed, &ed.workspace, true).map(|r| r.decided), Some(1), "one answered");
     feed(&mut ed, "n");
     frame(&mut ed);
-    assert!(ed.session.review.is_none() && ed.session.reviews.edit.is_none(), "over");
+    assert!(ed.workspace.claude.review.is_none() && ed.workspace.reviews.edit.is_none(), "over");
     let (entries, raw) = record(&dir.join(DIR));
     let kinds: Vec<(&str, &str)> =
         entries.iter().map(|e| (e["entry"].as_str().unwrap(), e["outcome"].as_str().unwrap_or(""))).collect();
@@ -301,7 +301,7 @@ fn an_edit_review_writes_a_line_per_change_and_its_own() {
 /// The review open on file `path`, its diff there.
 fn landed_on(ed: &Editor, path: &Path) -> bool {
     let d = ed.doc();
-    ed.session.code_review.is_some()
+    ed.workspace.code_review.is_some()
         && d.review_base.is_some()
         && d.git_version == d.version()
         && d.path.as_deref() == Some(path)
@@ -357,7 +357,7 @@ fn inside_zellij_or_not_a_brings_change_in_the_review_says_the_way_back_to_its_c
     for zellij in [false, true] {
         let (mut ed, dir) = reviewing(&format!("zellij-held-{zellij}"), &["a.txt"], &["a.txt"]);
         ed.zellij = zellij;
-        let r = ed.session.code_review.as_ref().expect("the review");
+        let r = ed.workspace.code_review.as_ref().expect("the review");
         let graded = r.graded(&ed, &r.files[0]);
         let high = graded.iter().find(|g| g.grade == crate::risk::Grade::High).expect("a high-risk change");
         let held = crate::codereview::Held {
@@ -393,7 +393,7 @@ fn reviewing_texts(name: &str, files: &[(&str, &str, &str)], risky: &[&str]) -> 
 fn open_review(ed: &mut Editor, dir: &Path, files: &[(&str, &str, &str)]) {
     crate::codereview::start_in(ed, dir.to_path_buf(), None);
     settle_until(ed, "the review opens", |ed| {
-        ed.session.code_review.is_some() && files.iter().any(|f| landed_on(ed, &dir.join(f.0)))
+        ed.workspace.code_review.is_some() && files.iter().any(|f| landed_on(ed, &dir.join(f.0)))
     });
     frame(ed);
 }
@@ -442,7 +442,7 @@ fn test_git(dir: &Path) -> std::process::Command {
 /// File `name` of the review open, its diff there, a frame drawn (`_i`: where the caller thinks it is).
 fn show(ed: &mut Editor, dir: &Path, _i: usize, name: &str) {
     let path = dir.join(name);
-    let files = &ed.session.code_review.as_ref().expect("a review").files;
+    let files = &ed.workspace.code_review.as_ref().expect("a review").files;
     let i = files.iter().position(|f| f.path == path).expect("one of its files");
     crate::codereview::show(ed, i, false);
     settle_until(ed, name, |ed| landed_on(ed, &path));
@@ -455,7 +455,7 @@ fn show(ed: &mut Editor, dir: &Path, _i: usize, name: &str) {
 fn a_code_review_writes_what_each_change_ended_as() {
     let (mut ed, dir) = reviewing("code", &["a.txt", "b.txt"], &[]);
     assert_eq!(ed.doc().path.as_deref(), Some(dir.join("a.txt").as_path()));
-    let run = Run::of(&ed, &ed.session, true).expect("the state has it");
+    let run = Run::of(&ed, &ed.workspace, true).expect("the state has it");
     assert_eq!((run.kind, run.changes), ("uncommitted", 1));
     assert_eq!(run.in_hand.as_ref().map(|h| (h.0.as_str(), h.1)), Some(("a.txt", 1)), "the change in hand");
     feed(&mut ed, "<space>vu");
@@ -511,9 +511,9 @@ fn the_state_says_the_review_and_a_watch_hears_it() {
     assert!(text.contains(": edit · 2 changes · 0 decided · active "), "{text}");
     assert!(text.contains("in hand a.txt:1"), "{text}");
     let json = state.json();
-    assert_eq!(json["sessions"][0]["review"]["kind"], "edit", "{json}");
+    assert_eq!(json["workspaces"][0]["review"]["kind"], "edit", "{json}");
     let claudes = ed.ui_state_claude();
-    assert!(claudes.sessions.iter().all(|s| s.review.is_none()), "Claude's level never has it");
+    assert!(claudes.workspaces.iter().all(|s| s.review.is_none()), "Claude's level never has it");
     feed(&mut ed, "y");
     let decided = heard(&mut ed);
     assert!(
@@ -554,12 +554,12 @@ fn a_code_review_writes_edited_commented_looked_and_its_findings() {
         crate::notes::By::Reviewer,
         "a numbat-shaped bug",
     );
-    ed.session.notes.list.iter_mut().filter(|n| n.id == id).for_each(|n| n.thread[0].draft = true);
+    ed.workspace.claude.notes.list.iter_mut().filter(|n| n.id == id).for_each(|n| n.thread[0].draft = true);
     let done = crate::reviewer::State::Done;
     let mut rv = crate::reviewer::Reviewer::for_test(dir.clone(), done, vec![id], "ok");
     // (it read for this review: its findings go to this one's record)
-    rv.review = ed.session.code_review.as_ref().map(|r| r.started);
-    ed.session.reviewer = Some(rv);
+    rv.review = ed.workspace.code_review.as_ref().map(|r| r.started);
+    ed.workspace.reviewer = Some(rv);
     crate::codereview::close(&mut ed);
     let (entries, raw) = record(&dir.join("state"));
     let change = |file: &str| {
@@ -637,11 +637,11 @@ fn time_in_another_session_isnt_counted() {
     frame(&mut ed);
     feed(&mut ed, "j");
     frame(&mut ed);
-    let mine = ed.session.id;
-    let other = ed.session_add(dir.clone());
-    ed.session_switch(other);
+    let mine = ed.workspace.id;
+    let other = ed.workspace_add(dir.clone());
+    ed.workspace_switch(other);
     frame(&mut ed);
-    let behind = ed.sessions.iter().find(|l| l.id == mine).expect("behind");
+    let behind = ed.workspaces.iter().find(|l| l.id == mine).expect("behind");
     let w = behind.reviews.edit.as_ref().expect("its review's watch");
     assert!(w.mark.is_none() && w.shown.is_empty() && w.last_input.is_none(), "paused: {w:?}");
     std::fs::remove_dir_all(&dir).ok();
@@ -660,8 +660,8 @@ fn quitting_keeps_the_reviews_under_way() {
     frame(&mut ed);
     feed(&mut ed, "y");
     frame(&mut ed);
-    let other = ed.session_add(dir.clone());
-    let l = ed.sessions.iter_mut().find(|l| l.id == other).unwrap();
+    let other = ed.workspace_add(dir.clone());
+    let l = ed.workspaces.iter_mut().find(|l| l.id == other).unwrap();
     let mut w = Watch::new(Of::Code(Instant::now()), "branch", Instant::now(), 0);
     w.add("b.rs", ("b1".into(), 0), (2, 0), 0..2);
     l.reviews.code = Some(w);
@@ -732,7 +732,7 @@ fn a_key_named_file_outside_the_checkout_has_no_id() {
     std::fs::create_dir(dir.join("other")).unwrap();
     let env = dir.join("other").join(".env");
     std::fs::write(&env, "PASS=\n").unwrap();
-    ed.session.root = dir.join("proj");
+    ed.workspace.root = dir.join("proj");
     ed.open(&env).unwrap();
     let id = ed.doc().id;
     crate::llm::review_with(&mut ed, id, "set it", vec![(0, 6, "PASS=\n".into(), "PASS=abc\n".into())], None);
@@ -874,7 +874,7 @@ fn an_alike_change_off_screen_is_never_taken_for_the_one_taken_back() {
     let now: String = (0..100).map(|l| line(l, "x") + "\n").collect();
     let (mut ed, dir) = reviewing_texts("twin", &[("t.txt", &then, &now)], &[]);
     assert_eq!(ed.cursor_line(), 1, "in the first");
-    let w = ed.session.reviews.code.as_ref().expect("its watch");
+    let w = ed.workspace.reviews.code.as_ref().expect("its watch");
     assert_eq!((w.changes.len(), w.kept().count()), (2, 1), "both followed, the twin off screen");
     feed(&mut ed, "<space>vu");
     rediffed(&mut ed, "the diff after the undo");
@@ -923,8 +923,8 @@ fn a_file_opened_again_has_the_same_changes() {
 fn undone_in_a_session(name: &str) -> (Editor, PathBuf) {
     let files = [("c.txt", "c one\n", "c ONE\n")];
     let (mut ed, dir) = repo(name, &files, &["c.txt"]);
-    let other = ed.session_add(dir.clone());
-    ed.session_switch(other);
+    let other = ed.workspace_add(dir.clone());
+    ed.workspace_switch(other);
     open_review(&mut ed, &dir, &files);
     feed(&mut ed, "<space>vu");
     (ed, dir)
@@ -948,7 +948,7 @@ fn assert_undone_graded(dir: &Path) {
 #[test]
 fn a_session_ending_keeps_its_review_graded() {
     let (mut ed, dir) = undone_in_a_session("ending");
-    ed.session_close(&dir).expect("it ends");
+    ed.workspace_close(&dir).expect("it ends");
     assert_undone_graded(&dir);
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -957,7 +957,7 @@ fn a_session_ending_keeps_its_review_graded() {
 #[test]
 fn quitting_keeps_a_review_behind_graded() {
     let (mut ed, dir) = undone_in_a_session("behind-quit");
-    ed.session_switch(0);
+    ed.workspace_switch(crate::event::WorkspaceId::HOME);
     frame(&mut ed);
     ed.reviews_flush();
     assert_undone_graded(&dir);
@@ -1246,8 +1246,11 @@ fn a_change_reset_another_way_is_undone() {
 fn a_finding_of_a_text_gone_is_never_applied() {
     let (mut ed, dir) = reviewing_texts("stale", &[("s.txt", "a\nb\n", "A\nb\n")], &[]);
     let (of, at, file, stale) = {
-        let (r, w, d) =
-            (ed.session.code_review.as_ref().unwrap(), ed.session.reviews.code.as_ref().unwrap(), ed.doc());
+        let (r, w, d) = (
+            ed.workspace.code_review.as_ref().unwrap(),
+            ed.workspace.reviews.code.as_ref().unwrap(),
+            ed.doc(),
+        );
         let f = &r.files[0];
         let stale = found_of(&Text::of(d), (&f.rel, &f.path, &r.root), &r.rules);
         (w.of, (d.id, d.version(), d.git_version), f.rel.clone(), stale)
@@ -1351,7 +1354,7 @@ fn state_id_line(entries: &[Value], dir: &Path, removed: &[&str], added: &[&str]
 fn a_restart_ends_the_review_under_way_and_the_one_back_is_new() {
     let files = [("a.txt", "a.txt one\n", "a.txt ONE\n")];
     let (mut ed, dir) = reviewing_texts("restart", &files, &[]);
-    let id = ed.session.reviews.code.as_ref().expect("its watch").id.clone();
+    let id = ed.workspace.reviews.code.as_ref().expect("its watch").id.clone();
     ed.restart = Some(crate::restart::Restart::ready_to(dir.join("tarae")));
     ed.reviews_flush();
     let state = crate::restart::snapshot(&mut ed);
@@ -1369,7 +1372,7 @@ fn a_restart_ends_the_review_under_way_and_the_one_back_is_new() {
     crate::restart::restore(&mut ed, &state);
     settle_until(&mut ed, "the review back", |ed| landed_on(ed, &dir.join("a.txt")));
     frame(&mut ed);
-    let back = ed.session.reviews.code.as_ref().expect("a watch").id.clone();
+    let back = ed.workspace.reviews.code.as_ref().expect("a watch").id.clone();
     assert_ne!(back, id, "a new review");
     crate::codereview::close(&mut ed);
     let (entries, raw) = record(&dir.join("state"));
@@ -1429,7 +1432,7 @@ fn a_frame_finds_no_changes_itself() {
     let (mut ed, dir) = reviewing("off-frame", &["a.txt", "b.txt"], &[]);
     show(&mut ed, &dir, 1, "b.txt");
     assert_eq!(FOUND_HERE.with(|n| n.get()), 0, "found in a frame");
-    assert_eq!(ed.session.reviews.code.as_ref().map(|w| w.kept().count()), Some(2), "found on a worker");
+    assert_eq!(ed.workspace.reviews.code.as_ref().map(|w| w.kept().count()), Some(2), "found on a worker");
     std::fs::remove_dir_all(&dir).ok();
 }
 

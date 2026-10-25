@@ -185,16 +185,16 @@ fn an_answered_change_presses_its_stamp_and_it_dries() {
     ed.motion_at = Some(PRESS);
     assert_eq!((seen(&mut ed), ed.pressed(&head)), (vec![], 0.0), "dry at its end");
     ed.motion_at = Some(Duration::from_millis(100));
-    ed.session.review.as_mut().unwrap().current = 0;
+    ed.workspace.claude.review.as_mut().unwrap().current = 0;
     assert_eq!(seen(&mut ed), [], "back in hand: lit, not pressed");
-    ed.session.review.as_mut().unwrap().current = 1;
+    ed.workspace.claude.review.as_mut().unwrap().current = 1;
     ed.motion_at = None;
     crate::clock::advance(PRESS);
     assert_eq!(ms(ed.motion_wake()), Some(0), "over: the frame that draws it dry");
     ed.schedule_tick();
     assert_eq!((ed.motions.len(), ed.motion_wake()), (0, None), "and nothing more");
     feed(&mut ed, "n");
-    assert!(ed.session.review.is_none(), "the second answer ends it");
+    assert!(ed.workspace.claude.review.is_none(), "the second answer ends it");
     crate::clock::release();
     for level in ["calm", "none"] {
         let mut ed = editor("one\ntwo\nthree\n");
@@ -215,7 +215,7 @@ fn a_knot_stamped_by_your_keys_is_pressed() {
     let mut m = crate::chat::Msg::new(crate::chat::Role::Tool, "edit", "");
     m.call = "c1".into();
     c.msgs.push(m);
-    ed.session.chat = Some(c);
+    ed.workspace.claude.chat = Some(c);
     crate::chat::stamp_call(&mut ed, "c1", &[]);
     assert!(ed.motions.is_empty(), "no keys: nothing pressed");
     crate::chat::stamp_call(&mut ed, "c1", &[crate::stamp::Stamp('y')]);
@@ -419,7 +419,7 @@ fn a_runs_rewrite_of_an_open_file_dries_as_the_watch_reloads_it() {
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "base"]);
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = dir.clone();
+    ed.workspace.root = dir.clone();
     ed.open(&file).unwrap();
     let pump = |ed: &mut Editor, what: &str, done: &dyn Fn(&Editor) -> bool| {
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;

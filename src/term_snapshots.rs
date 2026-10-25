@@ -147,7 +147,7 @@ impl Shot {
     /// The session rooted at `project()` from here on (its files too) — returned, for the side panel.
     fn in_project(&mut self) -> PathBuf {
         self.root = project();
-        self.ed.session.root = self.root.clone();
+        self.ed.workspace.root = self.root.clone();
         self.root.clone()
     }
 
@@ -489,7 +489,7 @@ fn snapshot_statusline_widths() {
     ] {
         let mut s = Shot::new(w, 6);
         s.file("src/demo.rs", DEMO_RS);
-        s.ed.session.git_branch = Some("main".into());
+        s.ed.workspace.git_branch = Some("main".into());
         let diag = |from, to, severity, message: &str| crate::lsp::Diagnostic {
             from,
             to,
@@ -707,7 +707,7 @@ fn snapshot_command_palette() {
 fn snapshot_file_picker() {
     let mut s = Shot::new(100, 30);
     let (base, root) = demo_copy("file-picker");
-    s.ed.session.root = base;
+    s.ed.workspace.root = base;
     s.ed.open_picker(
         crate::picker::Picker::new("files in demo", Vec::new(), true).with_tree(root.clone(), None),
         Some(Box::new(move || Ok(crate::picker::file_items(&root)))),
@@ -1093,7 +1093,7 @@ fn frictions38_frames() {
         "preflight::tests::the_end_says_which_set_ran",
         "rebase::tests::a_stop_says_where_it_is",
         "sandbox::tests::a_run_writes_only_its_own_run_folder",
-        "session::tests::a_call_silent_too_long_marks_its_session",
+        "workspace::tests::a_call_silent_too_long_marks_its_session",
         "tools::tests::failures_past_the_first_ten_come_by_name",
     ];
     let mut lines: Vec<String> = vec!["running 2746 tests".into()];
@@ -1163,13 +1163,13 @@ fn snapshot_rebase_message_card() {
     let mut s = Shot::new(100, 30);
     s.ed.offer_popups = true;
     s.file("src/demo.rs", DEMO_RS);
-    s.ed.session.name = "feat".into();
+    s.ed.workspace.name = "feat".into();
     crate::rebase::resolved_for_test(
         &mut s.ed,
         "Take grants back in every session",
         Some("Keep grants per repository\n\nThe resolution keeps main's per-repository answers."),
     );
-    let id = s.ed.session.id;
+    let id = s.ed.workspace.id;
     s.ed.rebase_offer(id).unwrap();
     s.check("rebase_message_card");
     s.frames_both("rebase_message_card");
@@ -1241,8 +1241,8 @@ fn frictions36_frames() {
             if starting {
                 c.settings.reading_since(crate::clock::now() - std::time::Duration::from_millis(1200));
             }
-            s.ed.session.chat = Some(c);
-            s.ed.session.at = crate::session::At::Chat;
+            s.ed.workspace.claude.chat = Some(c);
+            s.ed.workspace.viewer.at = crate::workspace::At::Chat;
         };
         let mut s = shot();
         chat(&mut s, false);
@@ -1307,7 +1307,7 @@ fn snapshot_card_reading_bar() {
 fn snapshot_card_says_who_waits_behind_it() {
     let mut s = Shot::new(100, 30);
     s.ed.offer_popups = true;
-    s.ed.session.name = "main".into();
+    s.ed.workspace.name = "main".into();
     s.file("src/demo.rs", DEMO_RS);
     let card = |n: u64| {
         let what = crate::offer::What::Screen { call: crate::tools::Call::test(n) };
@@ -1321,8 +1321,8 @@ fn snapshot_card_says_who_waits_behind_it() {
     };
     s.ed.push_offer(card(1));
     s.ed.push_offer(card(2));
-    let back = s.ed.session_add(std::env::temp_dir());
-    if let Some(l) = s.ed.sessions.iter_mut().find(|l| l.id == back) {
+    let back = s.ed.workspace_add(std::env::temp_dir());
+    if let Some(l) = s.ed.workspaces.iter_mut().find(|l| l.id == back) {
         l.name = "fix-login".into();
         s.ed.offer_seq += 1;
         let mut o = card(3);
@@ -1342,7 +1342,7 @@ fn snapshot_host_card_closed() {
         s.ed.offer_popups = true;
         s.file("src/demo.rs", DEMO_RS);
         let a = crate::hosts::Ask {
-            session: s.ed.session.proxy_id(),
+            session: s.ed.workspace.proxy_id(),
             run: 1,
             host: "index.crates.io".into(),
             port: 443,
@@ -1430,14 +1430,14 @@ fn frames_of_the_answer_words() {
     // No sandbox here, asked each time: `y Once · s This session · n No`
     shot("f_no_sandbox", &|s| {
         s.ed.sandbox = crate::sandbox::Availability::Missing("not on this system".into());
-        s.ed.session.no_sandbox = Some(crate::tools::NoSandbox::Ask);
+        s.ed.workspace.claude.no_sandbox = Some(crate::tools::NoSandbox::Ask);
         run(s, "cargo build");
         s.until("its card", |ed| !ed.offers.is_empty());
     });
     // The network open: `y Once … A Always here`
     shot("f_host_open", &|s| {
         let a = crate::hosts::Ask {
-            session: s.ed.session.proxy_id(),
+            session: s.ed.workspace.proxy_id(),
             run: 1,
             host: "api.example.com".into(),
             port: 443,
@@ -1469,7 +1469,7 @@ fn frames_of_the_answer_words() {
             files: Vec::new(),
             filters: false,
         };
-        let root = s.ed.session.root.clone();
+        let root = s.ed.workspace.root.clone();
         s.ed.push_offer(ask.card(&root));
     });
     // The binary the build left: `n Not now`
@@ -1499,7 +1499,7 @@ fn frames_of_the_answer_words() {
                 text: Some("#!/bin/sh\ncargo fmt --check\n".into()),
                 hash: [0; 32],
             }],
-            top: s.ed.session.root.clone(),
+            top: s.ed.workspace.root.clone(),
         };
         s.ed.push_offer(ask.card());
     });
@@ -1528,7 +1528,7 @@ fn frames_of_frictions30() {
         c.state = crate::chat::State::Thinking;
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "run the steps", ""));
         let generation = c.generation();
-        s.ed.session.chat = Some(c);
+        s.ed.workspace.claude.chat = Some(c);
         // (a script the card shows whole: taller than the screen at either size)
         let root = s.in_project();
         let script: String = (1..=60).map(|i| format!("echo step {i}\n")).collect();
@@ -1553,14 +1553,14 @@ fn frames_of_frictions30() {
         c.queue("and keep the first one".into(), false);
         c.queue("then add a test for it".into(), false);
         c.sends.push(crate::chat::Later::Review(None));
-        s.ed.session.chat = Some(c);
-        s.ed.session.at = crate::session::At::Chat;
+        s.ed.workspace.claude.chat = Some(c);
+        s.ed.workspace.viewer.at = crate::workspace::At::Chat;
         s.frame();
         s.frames_both(&format!("f30_queued-{w}"));
         // 16: a host card whose run ended before it was answered (the network closed)
         let mut s = shot();
         let a = crate::hosts::Ask {
-            session: s.ed.session.proxy_id(),
+            session: s.ed.workspace.proxy_id(),
             run: 1,
             host: "registry.npmjs.org".into(),
             port: 443,
@@ -1579,8 +1579,8 @@ fn frames_of_frictions30() {
         let mut s = shot();
         let (root, repo) =
             (PathBuf::from("/Users/me/src/tarae"), PathBuf::from("/Users/me/src/sandbox-runtime"));
-        s.ed.session.chat = Some(crate::chat::Chat::new());
-        s.ed.session.at = crate::session::At::Chat;
+        s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        s.ed.workspace.viewer.at = crate::workspace::At::Chat;
         let input = json!({ "file_path": repo.join("README.md") });
         let mut look = crate::reads::look("Read", &input, &root);
         look.at = Some(repo.join("README.md"));
@@ -1597,7 +1597,7 @@ fn frames_of_frictions30() {
             own: None,
             then: None,
         };
-        s.ed.session.chat.as_mut().unwrap().reads.push_back(p);
+        s.ed.workspace.claude.chat.as_mut().unwrap().reads.push_back(p);
         crate::reads::next(&mut s.ed);
         assert!(
             s.ed.offers.first().is_some_and(|o| o.question.contains("Not offered whole")),
@@ -1629,9 +1629,9 @@ fn frames_of_the_read_card_with_its_repository() {
             main_unknown: false,
         };
         let caps = crate::caps::Caps { root: root.clone(), here, ..Default::default() };
-        s.ed.session.caps = Some((1, std::sync::Arc::new(caps)));
-        s.ed.session.chat = Some(crate::chat::Chat::new());
-        s.ed.session.at = crate::session::At::Chat;
+        s.ed.workspace.claude.caps = Some((1, std::sync::Arc::new(caps)));
+        s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        s.ed.workspace.viewer.at = crate::workspace::At::Chat;
         let input = json!({ "file_path": repo.join("src/layout/flex.rs") });
         let mut look = crate::reads::look("Read", &input, &root);
         look.at = Some(repo.join("src/layout/flex.rs"));
@@ -1664,7 +1664,7 @@ fn frames_of_the_repository_card() {
         let mut s = Shot::new(w, 30);
         s.ed.offer_popups = true;
         s.file("src/demo.rs", DEMO_RS);
-        let root = s.ed.session.root.clone();
+        let root = s.ed.workspace.root.clone();
         let both = Box::new((s.ed.config.clone(), s.ed.keymaps.clone()));
         let items = vec![("task.release".to_string(), "./scripts/release.sh".to_string())];
         let project = crate::trust::Project {
@@ -1746,7 +1746,7 @@ fn snapshot_ask_review() {
     s.ed.config.llm.args = vec!["-c".into(), format!("read -r line; printf '%s\\n' '{json}'")];
     s.keys("17ggx i");
     s.keys("show the text too<ret>");
-    s.until("review", |ed| ed.session.review.as_ref().is_some_and(|r| r.ready));
+    s.until("review", |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
     s.ed.toasts.clear(); // "claude answered in 0.0s" — wall-clock time
     s.check("ask_review");
 }
@@ -1759,7 +1759,10 @@ fn snapshot_chat_empty() {
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     s.keys(" l");
-    assert!(s.ed.session.chat.as_ref().is_some_and(|c| c.msgs.is_empty()), "chat opened without a note");
+    assert!(
+        s.ed.workspace.claude.chat.as_ref().is_some_and(|c| c.msgs.is_empty()),
+        "chat opened without a note"
+    );
     s.check("chat_empty");
 }
 
@@ -1782,8 +1785,8 @@ fn snapshot_chat_explore() {
         Some(Look { verb, what: what.into(), pattern, range: range.into(), link })
     };
     let lib = std::path::PathBuf::from("/p/src/lib.rs");
-    s.ed.session.chat.as_mut().unwrap().follow.on = true;
-    s.ed.session.chat.as_mut().unwrap().msgs = vec![
+    s.ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
+    s.ed.workspace.claude.chat.as_mut().unwrap().msgs = vec![
         msg(Role::User, "Who calls word_counts?", "demo.rs · L5", None),
         msg(
             Role::Thought,
@@ -1832,7 +1835,7 @@ fn snapshot_chat_table() {
                   And a wide one, row by row:\n\n\
                   | 설정 | 기본값 | 범위 | 설명 | 예시 | 비고 |\n|---|---|---|---|---|---|\n\
                   | `chat.width` | `0.4` | `0.2–0.6` | 채팅 패널이 차지하는 화면 비율 | `:set chat.width 0.5` | 좁으면 전체 화면 |";
-    s.ed.session.chat.as_mut().unwrap().msgs =
+    s.ed.workspace.claude.chat.as_mut().unwrap().msgs =
         vec![msg(Role::User, "표는 어떻게 그릴까?"), msg(Role::Assistant, answer), msg(Role::Note, "3.1s")];
     s.check("chat_table");
 }
@@ -1857,7 +1860,7 @@ fn snapshot_chat_measure() {
                   ```rust\n\
                   let counts: HashMap<String, Vec<Thread>> = threads.into_iter().fold(HashMap::new(), |mut m, t| { m.entry(t.name.clone()).or_default().push(t); m });\n\
                   ```";
-    s.ed.session.chat.as_mut().unwrap().msgs =
+    s.ed.workspace.claude.chat.as_mut().unwrap().msgs =
         vec![msg(Role::User, question), msg(Role::Assistant, answer), msg(Role::Note, "2.0s")];
     let shown = screen_text(&mut s);
     let x = s.ed.screen.chat_x.unwrap() + GAP + PAD;
@@ -1887,14 +1890,14 @@ fn chat_minimizes_while_following() {
     let docked = s.ed.screen.chat_x;
     assert!(docked.is_some());
     s.keys("why?<ret>");
-    assert!(s.ed.session.chat.as_ref().unwrap().busy());
+    assert!(s.ed.workspace.claude.chat.as_ref().unwrap().busy());
     s.frame();
     assert_eq!(s.ed.screen.chat_x, None, "minimized: no docked panel");
     assert!(s.ed.screen.chat_mini.get().is_some(), "a floating card instead");
     s.keys("<esc> l");
     assert_eq!(s.ed.screen.chat_x, docked, "space l brings the panel back for this turn");
-    s.ed.session.chat.as_mut().unwrap().unfolded = false;
-    s.ed.session.chat.as_mut().unwrap().follow.on = false;
+    s.ed.workspace.claude.chat.as_mut().unwrap().unfolded = false;
+    s.ed.workspace.claude.chat.as_mut().unwrap().follow.on = false;
     s.frame();
     assert_eq!(s.ed.screen.chat_x, docked, "not following = docked");
 }
@@ -1992,10 +1995,10 @@ fn snapshot_review_notes_by_their_author() {
     let id =
         crate::notes::add(&mut s.ed, &path, 11..12, By::Reviewer, "This value is never checked before use.");
     crate::notes::add(&mut s.ed, &path, 22..23, By::You, "Name this better.");
-    for n in &mut s.ed.session.notes.list {
+    for n in &mut s.ed.workspace.claude.notes.list {
         (n.thread[0].draft, n.waiting) = (true, false);
     }
-    let n = s.ed.session.notes.list.iter_mut().find(|n| n.id == id).unwrap();
+    let n = s.ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id).unwrap();
     n.thread
         .push(crate::notes::Entry { by: By::Author, text: "It is — two lines up.".into(), draft: false });
     s.ed.goto_line(11);
@@ -2028,7 +2031,7 @@ fn snapshot_review_risk_and_the_reviewer() {
         .collect();
     let mut s = review_of(112, 30, &base, &format!("{base}{added}"));
     let path = s.ed.doc().path.clone().unwrap();
-    let r = s.ed.session.code_review.as_mut().unwrap();
+    let r = s.ed.workspace.code_review.as_mut().unwrap();
     r.set_rules(crate::risk::Rules::with(&[("rust", &["rust"], &[r"\bunsafe\b"], &[])], &[], &[]));
     let root = r.root.clone();
     let id = crate::notes::add(&mut s.ed, &path, 11..12, By::Reviewer, "unsafe without a SAFETY comment.");
@@ -2040,7 +2043,7 @@ fn snapshot_review_risk_and_the_reviewer() {
     );
     // (on a high-risk change by the snapshot it read — decided as it was pinned, `reviewer::pin_at`)
     rv.high = vec![id];
-    s.ed.session.reviewer = Some(rv);
+    s.ed.workspace.reviewer = Some(rv);
     s.ed.goto_line(3);
     let mut parser = vt100::Parser::new(s.h, s.w, 0);
     parser.process(&s.frame());
@@ -2056,13 +2059,13 @@ fn snapshot_review_risk_and_the_reviewer() {
     // first piece's foot is below the pane, at first
     s.ed.goto_line(6);
     crate::codereview::hunk_seen(&mut s.ed);
-    assert_eq!(s.ed.session.looked.len(), 0, "not all of it was on screen");
+    assert_eq!(s.ed.workspace.looked.len(), 0, "not all of it was on screen");
     s.ed.goto_line(34);
     s.frame();
     s.ed.goto_line(6);
     s.frame();
     crate::codereview::hunk_seen(&mut s.ed);
-    let left = |s: &Shot| s.ed.session.code_review.as_ref().map_or(0, |r| r.high_unseen(&s.ed).len());
+    let left = |s: &Shot| s.ed.workspace.code_review.as_ref().map_or(0, |r| r.high_unseen(&s.ed).len());
     assert_eq!(left(&s), 1, "the first piece, all of it drawn: looked at");
     s.ed.goto_line(34);
     crate::codereview::hunk_seen(&mut s.ed);
@@ -2086,21 +2089,21 @@ fn the_reviewers_verdict_and_findings_go_to_a_driver_whole() {
     let added = "let pid = unsafe { getpid() };\nlet quiet = 1;\n";
     let mut s = review_of(112, 30, &base, &format!("{base}{added}"));
     let path = s.ed.doc().path.clone().unwrap();
-    let r = s.ed.session.code_review.as_mut().unwrap();
+    let r = s.ed.workspace.code_review.as_mut().unwrap();
     r.set_rules(crate::risk::Rules::with(&[("rust", &["rust"], &[r"\bunsafe\b"], &[])], &[], &[]));
     let root = r.root.clone();
     let high = crate::notes::add(&mut s.ed, &path, 5..6, By::Reviewer, "unsafe without a SAFETY comment.");
     // (on a line the review didn't change: no grade)
     let low =
         crate::notes::add(&mut s.ed, &path, 1..2, By::Reviewer, "A name that says nothing.\nRename it.");
-    let n = s.ed.session.notes.list.iter_mut().find(|n| n.id == low).unwrap();
+    let n = s.ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == low).unwrap();
     n.thread.push(crate::notes::Entry { by: By::You, text: "Kept on purpose.".into(), draft: false });
     let verdict = "One risk: the unsafe call has no SAFETY comment.\nThe rest reads fine.";
     let mut rv =
         crate::reviewer::Reviewer::for_test(root, crate::reviewer::State::Done, vec![high, low], verdict);
     rv.high = vec![high];
-    s.ed.session.reviewer = Some(rv);
-    let other = s.ed.session_add(std::env::temp_dir().join("tarae-review-report-other"));
+    s.ed.workspace.reviewer = Some(rv);
+    let other = s.ed.workspace_add(std::env::temp_dir().join("tarae-review-report-other"));
 
     let (tx, rx) = std::sync::mpsc::channel();
     let until = std::time::Instant::now() + crate::test_results::PATIENCE;
@@ -2170,11 +2173,11 @@ fn the_rail_says_how_long_the_reviewer_has_read() {
     use crate::reviewer::{Reviewer, State};
     let (base, now) = five_and_thirty_added();
     let mut s = review_of(112, 30, &base, &now);
-    let r = s.ed.session.code_review.as_ref().unwrap();
+    let r = s.ed.workspace.code_review.as_ref().unwrap();
     let mut rv = Reviewer::for_test(r.root.clone(), State::Reading, Vec::new(), "");
     rv.started -= Duration::from_secs(80);
     rv.reads = 14;
-    s.ed.session.reviewer = Some(rv);
+    s.ed.workspace.reviewer = Some(rv);
     let mut parser = vt100::Parser::new(s.h, s.w, 0);
     parser.process(&s.frame());
     let rows: Vec<String> = parser.screen().rows(0, s.w).collect();
@@ -2184,7 +2187,7 @@ fn the_rail_says_how_long_the_reviewer_has_read() {
     // Its reads hold their column as its time counts (a running one, `timer`'s width) — the clock held for each
     let held = crate::clock::hold();
     let reads_at = |s: &mut Shot, ms: u64| {
-        s.ed.session.reviewer.as_mut().unwrap().started = held - Duration::from_millis(ms);
+        s.ed.workspace.reviewer.as_mut().unwrap().started = held - Duration::from_millis(ms);
         let mut parser = vt100::Parser::new(s.h, s.w, 0);
         parser.process(&s.frame());
         let row = parser.screen().rows(0, s.w).nth(at + 1).unwrap_or_default();
@@ -2199,7 +2202,7 @@ fn the_rail_says_how_long_the_reviewer_has_read() {
     crate::clock::release();
     // Under a minute, no reads yet: seconds only (the clock held: a frame drawn later reads the same 7 s)
     let held = crate::clock::hold();
-    let rv = s.ed.session.reviewer.as_mut().unwrap();
+    let rv = s.ed.workspace.reviewer.as_mut().unwrap();
     (rv.started, rv.reads) = (held - Duration::from_secs(7), 0);
     let mut parser = vt100::Parser::new(s.h, s.w, 0);
     parser.process(&s.frame());
@@ -2219,22 +2222,22 @@ fn the_rail_says_how_long_the_reviewer_has_read() {
     assert!(next > Duration::from_millis(102), "calm: a frame a second, not ten: {next:?}");
     crate::clock::release();
     s.ed.config.motion = "full".into();
-    s.ed.session.code_review.as_mut().unwrap().wide = true;
+    s.ed.workspace.code_review.as_mut().unwrap().wide = true;
     s.frame();
     assert_eq!(s.ed.tick_wanted(), None, "the rail out of sight (space v z)");
-    s.ed.session.code_review.as_mut().unwrap().wide = false;
-    s.ed.session.reviewer.as_mut().unwrap().state = State::Done;
+    s.ed.workspace.code_review.as_mut().unwrap().wide = false;
+    s.ed.workspace.reviewer.as_mut().unwrap().state = State::Done;
     s.frame();
     assert_eq!(s.ed.tick_wanted(), None, "done");
     // A rail wide enough: all on one row
     let mut s = review_of(160, 30, &base, &now);
-    let r = s.ed.session.code_review.as_mut().unwrap();
+    let r = s.ed.workspace.code_review.as_mut().unwrap();
     r.rail_need.take();
     r.rail_need.get_or_init(|| 44);
     let mut rv = Reviewer::for_test(r.root.clone(), State::Reading, Vec::new(), "");
     rv.started -= Duration::from_secs(80);
     rv.reads = 14;
-    s.ed.session.reviewer = Some(rv);
+    s.ed.workspace.reviewer = Some(rv);
     let mut parser = vt100::Parser::new(s.h, s.w, 0);
     parser.process(&s.frame());
     let rows: Vec<String> = parser.screen().rows(0, s.w).collect();
@@ -2291,15 +2294,15 @@ fn elapsed_time_frames() {
         "",
     ));
     let generation = chat.generation();
-    s.ed.session.chat = Some(chat);
-    s.ed.session.at = crate::session::At::Chat;
+    s.ed.workspace.claude.chat = Some(chat);
+    s.ed.workspace.viewer.at = crate::workspace::At::Chat;
     s.frames_both("time-running");
     crate::chat::stream_event(&mut s.ed, generation, crate::llm::StreamEv::Done(Ok(String::new())));
     s.frames_both("time-ended");
     let (base, text) = five_and_thirty_added();
     for (secs, name) in [(7.4, "time-review-7s"), (80.0, "time-review-80s")] {
         let mut s = review_of(160, 40, &base, &text);
-        let r = s.ed.session.code_review.as_ref().unwrap();
+        let r = s.ed.workspace.code_review.as_ref().unwrap();
         let mut rv = crate::reviewer::Reviewer::for_test(
             r.root.clone(),
             crate::reviewer::State::Reading,
@@ -2307,7 +2310,7 @@ fn elapsed_time_frames() {
             "",
         );
         (rv.started, rv.reads) = (now - Duration::from_secs_f32(secs), 14);
-        s.ed.session.reviewer = Some(rv);
+        s.ed.workspace.reviewer = Some(rv);
         s.frames_both(name);
     }
 }
@@ -2321,29 +2324,29 @@ fn sessions_reviewing(w: u16) -> Shot {
     let root = s.in_project();
     let reviewer =
         |root: &std::path::Path, state| Reviewer::for_test(root.to_path_buf(), state, Vec::new(), "");
-    (s.ed.session.name, s.ed.session.git_branch) = ("main".into(), None);
-    s.ed.session.reviewer = Some(reviewer(&root, State::Reading));
+    (s.ed.workspace.name, s.ed.workspace.git_branch) = ("main".into(), None);
+    s.ed.workspace.reviewer = Some(reviewer(&root, State::Reading));
     let chat = crate::chat::Chat::new();
-    s.ed.session.chat = Some(chat);
+    s.ed.workspace.claude.chat = Some(chat);
     // (behind, named so: their folders beside the project's)
     let behind = |ed: &mut Editor, name: &str| -> PathBuf {
         let dir = root.with_file_name(name);
         std::fs::create_dir_all(&dir).unwrap();
-        let id = ed.session_add(dir.clone());
-        ed.sessions.iter_mut().find(|l| l.id == id).unwrap().name = name.into();
+        let id = ed.workspace_add(dir.clone());
+        ed.workspaces.iter_mut().find(|l| l.id == id).unwrap().name = name.into();
         dir
     };
     let dir = behind(&mut s.ed, "fix-login");
-    let l = s.ed.sessions.last_mut().unwrap();
+    let l = s.ed.workspaces.last_mut().unwrap();
     let mut chat = crate::chat::Chat::new();
     chat.state = crate::chat::State::Thinking;
-    l.chat = Some(chat);
-    l.at = crate::session::At::Chat;
+    l.claude.chat = Some(chat);
+    l.viewer.at = crate::workspace::At::Chat;
     l.reviewer = Some(reviewer(&dir, State::Reading));
     let dir = behind(&mut s.ed, "docs");
     let mut done = reviewer(&dir, State::Done);
     done.unseen = true;
-    s.ed.sessions.last_mut().unwrap().reviewer = Some(done);
+    s.ed.workspaces.last_mut().unwrap().reviewer = Some(done);
     s
 }
 
@@ -2354,12 +2357,12 @@ fn sessions_reviewing(w: u16) -> Shot {
 fn snapshot_sessions_marked_to_bring() {
     let mut s = Shot::new(112, 30);
     let root = s.in_project();
-    (s.ed.session.name, s.ed.session.git_branch) = ("main".into(), Some("main".into()));
+    (s.ed.workspace.name, s.ed.workspace.git_branch) = ("main".into(), Some("main".into()));
     for name in ["fix-login", "docs", "parser"] {
         let dir = root.with_file_name(name);
         std::fs::create_dir_all(&dir).unwrap();
-        let id = s.ed.session_add(dir);
-        let l = s.ed.sessions.iter_mut().find(|l| l.id == id).unwrap();
+        let id = s.ed.workspace_add(dir);
+        let l = s.ed.workspaces.iter_mut().find(|l| l.id == id).unwrap();
         (l.name, l.base) = (name.into(), Some("main".into()));
     }
     s.ed.session_list();
@@ -2382,12 +2385,12 @@ fn snapshot_sessions_marked_to_bring() {
     s.frames_both("f33_bring_queue_card");
 }
 
-/// frictions26 S1: a session's end card when what `session.keep` names is kept — the kept line decided, its own
+/// frictions26 S1: a session's end card when what `workspace.keep` names is kept — the kept line decided, its own
 /// CLAUDE.md copied beside it — and when nothing can be (over the size): said in the warning colour, with what
 /// goes with the checkout.
 #[test]
 fn snapshot_session_end_keeps_its_notes() {
-    use crate::sessionkeep::{Folder, Plan};
+    use crate::workspacekeep::{Folder, Plan};
     let to = PathBuf::from("/private/tmp/tarae/target/sb/sessions/fix-login");
     let ending = |keep: Plan| crate::worktree::Ending {
         root: "/private/tmp/sessions/fix-login".into(),
@@ -2437,18 +2440,18 @@ fn snapshot_sessions_cards_waiting_behind() {
     let mut s = Shot::new(120, 30);
     let root = s.in_project();
     s.file("src/demo.rs", DEMO_RS);
-    (s.ed.session.name, s.ed.session.git_branch) = ("main".into(), None);
+    (s.ed.workspace.name, s.ed.workspace.git_branch) = ("main".into(), None);
     let chat = crate::chat::Chat::new();
-    s.ed.session.chat = Some(chat);
+    s.ed.workspace.claude.chat = Some(chat);
     let dir = root.with_file_name("fix-login");
     std::fs::create_dir_all(&dir).unwrap();
-    let id = s.ed.session_add(dir);
-    let ago = crate::session::NUDGE_AFTER + Duration::from_secs(60);
+    let id = s.ed.workspace_add(dir);
+    let ago = crate::workspace::NUDGE_AFTER + Duration::from_secs(60);
     let card = |ed: &mut Editor, title: &str, what: crate::offer::What| {
         let mut o = crate::offer::Offer::new(title.into(), "…", "", String::new(), what);
         (ed.offer_seq, o.since) = (ed.offer_seq + 1, Instant::now() - ago);
         o.id = ed.offer_seq;
-        let l = ed.sessions.iter_mut().find(|l| l.id == id).unwrap();
+        let l = ed.workspaces.iter_mut().find(|l| l.id == id).unwrap();
         (l.name, l.git_branch) = ("fix-login".into(), None);
         l.parked.push(o);
         ed.offer_seq
@@ -2522,8 +2525,8 @@ fn the_chats_earlier_conversations_line_up_their_ages() {
         ("a".into(), "why does adds() fail?".into(), now - 2 * 3_600 - 1_234),
         ("b".into(), "can average overflow?".into(), now - 16 * 86_400),
     ];
-    s.ed.session.chat = Some(chat);
-    s.ed.session.at = crate::session::At::Chat;
+    s.ed.workspace.claude.chat = Some(chat);
+    s.ed.workspace.viewer.at = crate::workspace::At::Chat;
     let mut parser = vt100::Parser::new(s.h, s.w, 0);
     parser.process(&s.frame());
     let rows: Vec<String> = parser.screen().rows(0, s.w).collect();
@@ -2590,7 +2593,7 @@ fn queued_behind_a_stopped_turn(ran: Duration, w: u16) -> Shot {
     // (its time so far in its header: the clock held still while the frame is drawn)
     r.started = crate::clock::hold() - ran;
     r.last_output = Instant::now();
-    s.ed.session.task_run = Some(r);
+    s.ed.workspace.task_run = Some(r);
     let mut chat = crate::chat::Chat::new();
     (chat.state, chat.unfolded) = (crate::chat::State::Thinking, true);
     chat.msgs.push(Msg::new(Role::User, "now run the tests", ""));
@@ -2604,8 +2607,8 @@ fn queued_behind_a_stopped_turn(ran: Duration, w: u16) -> Shot {
     // (its row, with its call's id as claude's stream gives it: the knot in hand)
     chat.msgs.push(Msg::tool(look, "toolu_r1"));
     let generation = chat.generation();
-    s.ed.session.chat = Some(chat);
-    s.ed.session.at = crate::session::At::Chat;
+    s.ed.workspace.claude.chat = Some(chat);
+    s.ed.workspace.viewer.at = crate::workspace::At::Chat;
     let call = crate::tools::Call::of(generation, "r1", json!(1));
     let job = crate::tools::Job::Command("cargo test -p tarae".into(), cwd);
     let who = crate::tools::For::Claude(call);
@@ -2625,9 +2628,9 @@ fn the_chats_rows_start_under_its_line_with_sessions_or_not() {
     for i in 0..30 {
         chat.msgs.push(Msg::new(Role::Assistant, format!("answer line {i}"), ""));
     }
-    s.ed.session.chat = Some(chat);
+    s.ed.workspace.claude.chat = Some(chat);
     let rows = |s: &mut Shot, scroll: usize| {
-        s.ed.session.chat.as_mut().unwrap().scroll = scroll;
+        s.ed.workspace.claude.chat.as_mut().unwrap().scroll = scroll;
         let mut p = vt100::Parser::new(s.h, s.w, 0);
         p.process(&s.frame());
         p.screen().rows(0, s.w).collect::<Vec<String>>()
@@ -2640,7 +2643,7 @@ fn the_chats_rows_start_under_its_line_with_sessions_or_not() {
     assert_eq!(at(&one, "claude"), Some(0), "its line, the screen's first row\n{one:#?}");
     assert_eq!(at(&one, "lib.rs"), Some(1), "one session: the chip under its line\n{one:#?}");
     let input = at(&one, "Ask about").expect("the input");
-    s.ed.session_add(std::env::temp_dir().join("tarae-chat-air-other"));
+    s.ed.workspace_add(std::env::temp_dir().join("tarae-chat-air-other"));
     let top = rows(&mut s, 1000);
     let line = at(&top, " · +").expect("the sessions on its line");
     let x = col(&top[line], " · +");
@@ -2658,8 +2661,8 @@ fn the_chats_rows_start_under_its_line_with_sessions_or_not() {
     // An empty chat's start text taller than its room (16 rows): from its first line — what doesn't fit is its end
     // (the suggestions, the model's key), never its heading
     let mut e = Shot::new(120, 16);
-    e.ed.session.chat = Some(crate::chat::Chat::new());
-    e.ed.session_add(std::env::temp_dir().join("tarae-chat-air-other"));
+    e.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    e.ed.workspace_add(std::env::temp_dir().join("tarae-chat-air-other"));
     let empty = rows(&mut e, 0);
     assert_eq!(at(&empty, " · +"), Some(0), "the sessions on its line\n{empty:#?}");
     let first = at(&empty, "Ask Claude").expect("the start text's first line");
@@ -2700,7 +2703,7 @@ fn snapshot_sessions_with_the_reviewer_reading() {
 #[test]
 fn snapshot_sessions_folded_with_the_reviewer_reading() {
     let mut s = sessions_reviewing(100);
-    s.ed.session.name = "main-with-a-long-feature".into();
+    s.ed.workspace.name = "main-with-a-long-feature".into();
     let mut parser = vt100::Parser::new(s.h, s.w, 0);
     parser.process(&s.frame());
     let row = parser.screen().rows(0, s.w).find(|r| r.contains(" · +")).unwrap_or_default();
@@ -2709,8 +2712,8 @@ fn snapshot_sessions_folded_with_the_reviewer_reading() {
     assert!(status.contains("¶ reviewing"), "{status}");
     s.check("sessions_reviewing_folded");
     // A draft in fix-login's chat: `+2` says it too, each kind once, the overlap's `≈` last when there is one
-    let fix = s.ed.sessions.iter_mut().find(|l| l.name == "fix-login").unwrap();
-    fix.chat.as_mut().unwrap().input = "and the tests".into();
+    let fix = s.ed.workspaces.iter_mut().find(|l| l.name == "fix-login").unwrap();
+    fix.claude.chat.as_mut().unwrap().input = "and the tests".into();
     let mut parser = vt100::Parser::new(s.h, s.w, 0);
     parser.process(&s.frame());
     let row = parser.screen().rows(0, s.w).find(|r| r.contains(" · +")).unwrap_or_default();
@@ -2727,11 +2730,11 @@ fn plus_n_frames() {
     }
     for w in [100, 80] {
         let mut s = sessions_reviewing(w);
-        s.ed.session.name = "main-with-a-long-feature".into();
-        let dir = s.ed.session.root.with_file_name("parser");
+        s.ed.workspace.name = "main-with-a-long-feature".into();
+        let dir = s.ed.workspace.root.with_file_name("parser");
         std::fs::create_dir_all(&dir).unwrap();
-        let id = s.ed.session_add(dir);
-        s.ed.sessions.iter_mut().find(|l| l.id == id).unwrap().name = "parser".into();
+        let id = s.ed.workspace_add(dir);
+        s.ed.workspaces.iter_mut().find(|l| l.id == id).unwrap().name = "parser".into();
         s.frame();
         s.frames_both(&format!("plus-n-{w}"));
     }
@@ -2743,7 +2746,7 @@ fn plus_n_frames() {
 fn the_boards_card_folds_its_angles_rather_than_be_cut() {
     let card = || {
         crate::board::card(crate::board::Ask {
-            session: 0,
+            session: crate::event::WorkspaceId::HOME,
             name: "tarae-demo".into(),
             conversation: None,
             taken: Box::new(crate::codereview::Taken::for_test("/p".into())),
@@ -2793,7 +2796,7 @@ fn snapshot_review_end_held_by_a_high_change() {
     let base: String = (1..=5).map(|i| format!("let line_{i} = {i};\n")).collect();
     let now = format!("{base}let pid = unsafe {{ getpid() }};\n");
     let mut s = review_of(112, 30, &base, &now);
-    let r = s.ed.session.code_review.as_mut().unwrap();
+    let r = s.ed.workspace.code_review.as_mut().unwrap();
     r.set_rules(crate::risk::Rules::with(&[("rust", &["rust"], &[r"\bunsafe\b"], &[])], &[], &[]));
     crate::codereview::close_asked(&mut s.ed);
     let o = s.ed.offers.first().expect("the end card");
@@ -2807,7 +2810,7 @@ fn review_of(w: u16, h: u16, base: &str, now: &str) -> Shot {
     use crate::codereview::{Base, CodeReview, File};
     let mut s = Shot::new(w, h);
     // (the session's label is the checkout folder's name — `tarae`, as `project()`'s, wherever the tests run)
-    (s.ed.session.name, s.ed.session.git_branch) = ("tarae".into(), None);
+    (s.ed.workspace.name, s.ed.workspace.git_branch) = ("tarae".into(), None);
     s.file("src/demo.rs", now);
     let cwd = std::env::current_dir().unwrap();
     let file = File {
@@ -2819,7 +2822,7 @@ fn review_of(w: u16, h: u16, base: &str, now: &str) -> Shot {
         gone: false,
         binary: false,
     };
-    s.ed.session.code_review = Some(CodeReview::for_test(Base::Head, cwd, vec![file]));
+    s.ed.workspace.code_review = Some(CodeReview::for_test(Base::Head, cwd, vec![file]));
     let doc = s.ed.doc_mut();
     doc.review_base = Some(Rope::from_str(base));
     doc.git_base = Some(std::sync::Arc::new(base.to_string()));
@@ -2885,7 +2888,7 @@ fn a_note_card_stays_in_its_pane() {
         s.ed.goto_line(11);
         s.frame();
         let (x, _, w, _) = s.ed.screen.note_card.get().unwrap_or_else(|| panic!("{what}: the note card"));
-        let focused = s.ed.session.focus;
+        let focused = s.ed.workspace.viewer.focus;
         let pane = s.ed.screen.panes.iter().find(|p| p.0 == focused).expect("the focused pane").1;
         assert!(
             pane.x <= x && x + w <= pane.x + pane.w,
@@ -2917,7 +2920,7 @@ fn a_users_message_keeps_its_lines() {
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     s.keys(" l");
-    let c = s.ed.session.chat.as_mut().unwrap();
+    let c = s.ed.workspace.claude.chat.as_mut().unwrap();
     c.msgs.push(Msg::new(Role::User, "First paragraph here.\n\nSecond paragraph\r\nthird line", ""));
     let mut parser = vt100::Parser::new(s.h, s.w, 0);
     parser.process(&s.frame());
@@ -2940,7 +2943,7 @@ fn the_thought_card_keeps_the_turns_thinking() {
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     s.keys(" lhow?<ret>");
-    let c = s.ed.session.chat.as_mut().unwrap();
+    let c = s.ed.workspace.claude.chat.as_mut().unwrap();
     c.follow.on = true;
     c.msgs.push(Msg::new(Role::Thought, "The user asks how the list is filtered, so I read the picker.", ""));
     c.msgs.push(Msg::new(Role::Assistant, "Let me check the worker side.", ""));
@@ -2984,7 +2987,7 @@ fn follow_is_one_card_in_one_place() {
             range: format!("L{}–{}", lines.start + 1, lines.end),
             link: None,
         };
-        let c = s.ed.session.chat.as_mut().unwrap();
+        let c = s.ed.workspace.claude.chat.as_mut().unwrap();
         c.follow.on = true;
         c.msgs.push(Msg::new(Role::Thought, "Reading where it starts.", ""));
         c.follow.gaze = Some(crate::follow::Gaze::new(look, Some(path.clone()), Some(lines)));
@@ -3026,7 +3029,7 @@ fn floating_cards_never_overlap() {
             crate::notes::add(&mut s.ed, &path, 39..40, crate::notes::By::Author, long);
         }
         s.ed.goto_line(39);
-        let c = s.ed.session.chat.as_mut().unwrap();
+        let c = s.ed.workspace.claude.chat.as_mut().unwrap();
         c.msgs.push(Msg::new(Role::Thought, "Thinking hard about it for a while.\n".repeat(6), ""));
         let look = Look {
             verb: "read",
@@ -3109,7 +3112,7 @@ fn snapshot_review() {
         file("src/lib.rs", 40, 0, true),
         file("README.md", 2, 1, false),
     ];
-    s.ed.session.code_review = Some(CodeReview::for_test(Base::Head, cwd.clone(), files));
+    s.ed.workspace.code_review = Some(CodeReview::for_test(Base::Head, cwd.clone(), files));
     let doc = s.ed.doc_mut();
     doc.review_base = Some(Rope::from_str(DEMO_RS));
     doc.git_base = Some(std::sync::Arc::new(DEMO_RS.to_string()));
@@ -3118,8 +3121,8 @@ fn snapshot_review() {
     let path = doc.path.clone().unwrap();
     s.keys(":9<ret> vm");
     crate::notes::add(&mut s.ed, &path, 8..9, crate::notes::By::You, "Why split this into two lines?");
-    s.ed.session.notes.list[0].thread[0].draft = true;
-    s.ed.session.notes.list[0].waiting = false;
+    s.ed.workspace.claude.notes.list[0].thread[0].draft = true;
+    s.ed.workspace.claude.notes.list[0].waiting = false;
     s.keys("gg");
     s.check("review");
 }
@@ -3148,13 +3151,13 @@ fn space_n_in_a_review_opens_a_comment() {
             gone: false,
             binary: false,
         }];
-        s.ed.session.code_review = Some(CodeReview::for_test(Base::Head, cwd.clone(), files));
+        s.ed.workspace.code_review = Some(CodeReview::for_test(Base::Head, cwd.clone(), files));
         s.keys(":6<ret>");
         s.keys(keys);
         let text = screen(&mut s);
         assert!(text.contains("comment on line 6: "), "{keys}\n{text}");
         s.keys("why?<ret>");
-        let n = s.ed.session.notes.list.last().expect("a note");
+        let n = s.ed.workspace.claude.notes.list.last().expect("a note");
         assert!(n.thread[0].draft && n.lines == (5..6), "{keys}: a draft on its line");
     }
     // Outside a review: a question to Claude, as before
@@ -3193,22 +3196,22 @@ fn the_rail_marks_a_deleted_binary_file_viewed() {
             binary: false,
         },
     ];
-    s.ed.session.code_review = Some(CodeReview::for_test(Base::Head, cwd.clone(), files));
+    s.ed.workspace.code_review = Some(CodeReview::for_test(Base::Head, cwd.clone(), files));
     let doc = s.ed.doc_mut();
     doc.review_base = Some(Rope::from_str(DEMO_RS));
     doc.git_base = Some(std::sync::Arc::new(DEMO_RS.to_string()));
     s.keys("<space>e");
     let viewed = |s: &Shot| {
-        let r = s.ed.session.code_review.as_ref().unwrap();
+        let r = s.ed.workspace.code_review.as_ref().unwrap();
         r.files.iter().filter(|f| r.viewed(&s.ed, f)).map(|f| f.rel.clone()).collect::<Vec<_>>()
     };
-    let order = s.ed.session.code_review.as_ref().unwrap().rail_order();
+    let order = s.ed.workspace.code_review.as_ref().unwrap().rail_order();
     let png = order.iter().position(|&i| i == 0).unwrap();
     s.keys("gg");
     for _ in 0..png {
         s.keys("j");
     }
-    assert_eq!(s.ed.session.code_review.as_ref().unwrap().selected, 0, "on the binary file's row");
+    assert_eq!(s.ed.workspace.code_review.as_ref().unwrap().selected, 0, "on the binary file's row");
     s.keys("m");
     assert_eq!(viewed(&s), ["assets/logo.png"], "{:?}", s.ed.messages.last());
     s.keys("gg");
@@ -3217,7 +3220,7 @@ fn the_rail_marks_a_deleted_binary_file_viewed() {
     }
     s.keys("m");
     s.until("demo.rs's mark", |ed| {
-        let r = ed.session.code_review.as_ref().unwrap();
+        let r = ed.workspace.code_review.as_ref().unwrap();
         r.files.iter().all(|f| r.viewed(ed, f))
     });
     let mut vt = vt100::Parser::new(30, 112, 0);
@@ -3248,7 +3251,7 @@ fn the_rail_says_which_files_are_outside_the_checkout() {
         file(outside.clone(), outside.display().to_string()),
     ];
     let base = Base::Turn { at: 0, question: "set it up".into() };
-    s.ed.session.code_review = Some(CodeReview::for_test(base, cwd.clone(), files));
+    s.ed.workspace.code_review = Some(CodeReview::for_test(base, cwd.clone(), files));
     let mut vt = vt100::Parser::new(30, 112, 0);
     vt.process(&s.frame());
     let rows: Vec<String> = vt.screen().rows(0, 112).collect();
@@ -3268,7 +3271,7 @@ fn review_keeps_the_cursor_on_screen_below_a_big_deletion() {
     let base: String = (0..60).map(|i| format!("line {i}\n")).collect();
     let now: String = (0..60).filter(|i| !(10..50).contains(i)).map(|i| format!("line {i}\n")).collect();
     s.file("src/demo.rs", &now);
-    s.ed.session.code_review =
+    s.ed.workspace.code_review =
         Some(CodeReview::for_test(Base::Head, std::env::current_dir().unwrap(), Vec::new()));
     let doc = s.ed.doc_mut();
     doc.review_base = Some(Rope::from_str(&base));
@@ -3607,7 +3610,7 @@ fn a_click_in_the_edit_review_takes_a_change_in_hand() {
         vec![hunk(4, "    text.split(' ').count()\n"), hunk(13, "    let text = \"proposed here\";\n")];
     let mut rev = crate::llm::Review::new(1, id, "two", hunks);
     (rev.ready, rev.follow) = (true, false);
-    s.ed.session.review = Some(rev);
+    s.ed.workspace.claude.review = Some(rev);
     // (the row showing `needle`, on the screen as it is now)
     let click = |s: &mut Shot, needle: &str| {
         let shown = screen_text(s);
@@ -3622,7 +3625,7 @@ fn a_click_in_the_edit_review_takes_a_change_in_hand() {
             }));
         }
         s.frame();
-        s.ed.session.review.as_ref().unwrap().current
+        s.ed.workspace.claude.review.as_ref().unwrap().current
     };
     assert_eq!(click(&mut s, "proposed here"), 1, "the line it proposes");
     // (after change 1 is in hand: a click that took change 0 would show)
@@ -3665,15 +3668,16 @@ fn a_decided_change_is_stamped_where_its_answer_was_asked() {
     ];
     let mut rev = crate::llm::Review::new(1, id, "three", hunks);
     (rev.ready, rev.follow) = (true, false);
-    s.ed.session.review = Some(rev);
+    s.ed.workspace.claude.review = Some(rev);
     let p = cells(&s.frame(), s.w, s.h);
     assert!((0..s.h as usize).all(|y| stamp_in(&p, y, s.w).is_none()), "no stamp before a decision");
     s.keys("yn");
-    let decided: Vec<_> = s.ed.session.review.as_ref().unwrap().hunks.iter().map(|h| h.decision).collect();
+    let decided: Vec<_> =
+        s.ed.workspace.claude.review.as_ref().unwrap().hunks.iter().map(|h| h.decision).collect();
     use crate::llm::Decision::{Accept, Reject, Undecided};
     assert_eq!(decided, [Accept, Reject, Undecided]);
     // (from the top again: following, the change in hand took the view)
-    let rev = s.ed.session.review.as_mut().unwrap();
+    let rev = s.ed.workspace.claude.review.as_mut().unwrap();
     (rev.scroll, rev.follow) = (0, false);
     let ui = Ui::new(&s.ed);
     let p = cells(&s.frame(), s.w, s.h);
@@ -3809,7 +3813,7 @@ fn doc_comments_in_split_panes() {
     let mut s = Shot::new(140, 24);
     s.file("src/words.rs", DOCS_BASE);
     s.keys("<C-w>vggi");
-    assert_eq!(s.ed.session.views.len(), 2);
+    assert_eq!(s.ed.workspace.views.len(), 2);
     let shown = screen_text(&mut s);
     let n = |t: &str| shown.matches(t).count();
     assert_eq!(
@@ -3829,7 +3833,7 @@ fn split_on_two_files(keys: &str) -> (Shot, Vec<(char, vt100::Color)>) {
     s.keys("<C-w>v:new<ret>");
     s.file("b.txt", "xxxxxxxx foo\n");
     s.keys(keys);
-    assert_eq!(s.ed.session.views.len(), 2);
+    assert_eq!(s.ed.workspace.views.len(), 2);
     let p = cells(&s.frame(), s.w, s.h);
     let rows: Vec<String> = p.screen().rows(0, s.w).collect();
     let y = rows.iter().position(|r| r.contains(A)).expect("a.txt's line");
@@ -4238,7 +4242,7 @@ fn snapshot_edit_review_doc_comments() {
     let mut rev = crate::llm::Review::new(1, id, "say what it does on a tie", vec![hunk]);
     // (from the top: following, the change sits a quarter down and the first block's rows go above)
     (rev.ready, rev.follow) = (true, false);
-    s.ed.session.review = Some(rev);
+    s.ed.workspace.claude.review = Some(rev);
     let shown = screen_text(&mut s);
     assert!(!shown.contains("/// Counts") && shown.contains("Counts the words in text."), "{shown}");
     assert!(shown.contains("/// The longest word.") && shown.contains("/// Ties go"), "raw: {shown}");
@@ -4278,7 +4282,7 @@ fn the_edit_review_shows_the_file_as_the_editor_does() {
     };
     let mut rev = crate::llm::Review::new(1, id, "tab it", vec![hunk]);
     (rev.ready, rev.follow) = (true, false);
-    s.ed.session.review = Some(rev);
+    s.ed.workspace.claude.review = Some(rev);
     let shown = screen_text(&mut s);
     let row = |has: &str| shown.lines().find(|l| l.contains(has)).unwrap_or_default().to_string();
     let mut missing = Vec::new();
@@ -4319,7 +4323,7 @@ fn the_edit_review_shows_none_of_the_documents_selection() {
         };
         let mut rev = crate::llm::Review::new(1, id, "spell it", vec![hunk]);
         (rev.ready, rev.follow) = (true, false);
-        s.ed.session.review = Some(rev);
+        s.ed.workspace.claude.review = Some(rev);
         s.ed.doc_mut().set_selection(sel);
         let p = cells(&s.frame(), s.w, s.h);
         // (the status line says where the cursor is: left out)
@@ -4370,7 +4374,7 @@ fn a_control_character_in_a_row_not_the_documents_shows_as_a_replacement() {
     };
     let mut rev = crate::llm::Review::new(1, id, "bell it", vec![hunk]);
     (rev.ready, rev.follow) = (true, false);
-    s.ed.session.review = Some(rev);
+    s.ed.workspace.claude.review = Some(rev);
     let proposed = s.frame();
     let text = |f: &[u8]| String::from_utf8_lossy(f).into_owned();
     assert!(has(&removed, "t\u{fffd}wo"), "the removed row: {}", text(&removed));
@@ -4385,7 +4389,7 @@ fn a_turns_rail_says_what_else_differs_from_head() {
     let (base, now) = five_and_thirty_added();
     for (need, rows_want) in [(None, 2), (Some(44), 1)] {
         let mut s = review_of(160, 30, &base, &now);
-        let r = s.ed.session.code_review.as_mut().unwrap();
+        let r = s.ed.workspace.code_review.as_mut().unwrap();
         r.base = crate::codereview::Base::Turn { at: 0, question: "fix it".into() };
         r.beyond = Some((9, "space v v".into()));
         // (measured again: `review_of` measured it for a review of HEAD)
@@ -4426,7 +4430,7 @@ fn a_buffer_the_review_didnt_open_is_not_taken_back() {
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("src/knot.rs"), now).unwrap();
     let mut s = Shot::new(160, 30);
-    s.ed.session.root = dir.clone();
+    s.ed.workspace.root = dir.clone();
     s.ed.open(&dir.join("src/knot.rs")).unwrap();
     // (the gutter's diff: against HEAD, the turn's commit — empty)
     let doc = s.ed.doc_mut();
@@ -4442,7 +4446,7 @@ fn a_buffer_the_review_didnt_open_is_not_taken_back() {
         binary: false,
     };
     let base = Base::Turn { at: 0, question: "tie the knots".into() };
-    s.ed.session.code_review = Some(CodeReview::for_test(base, dir.clone(), vec![file("src/knot.rs")]));
+    s.ed.workspace.code_review = Some(CodeReview::for_test(base, dir.clone(), vec![file("src/knot.rs")]));
     let stamp = |s: &mut Shot| {
         let p = cells(&s.frame(), s.w, s.h);
         let rows: Vec<String> = p.screen().rows(0, s.w).collect();
@@ -4456,7 +4460,7 @@ fn a_buffer_the_review_didnt_open_is_not_taken_back() {
         let d = ed.doc();
         d.review_base.is_some() && d.git_version == d.version()
     });
-    assert!(s.ed.session.code_review.as_ref().unwrap().docs.contains(&id), "the review's own now");
+    assert!(s.ed.workspace.code_review.as_ref().unwrap().docs.contains(&id), "the review's own now");
     assert_eq!(stamp(&mut s), (None, true), "its change there: still left");
     s.ed.goto_line(0);
     s.keys(" vu");
@@ -4490,7 +4494,7 @@ fn a_turns_file_is_stamped_once_kept_or_taken_back() {
     let (stamp, head_room) = look(&mut s);
     assert_eq!(stamp, None, "a review of HEAD: viewed, no stamp");
     let mut s = review_of(160, 30, &base, &now);
-    let r = s.ed.session.code_review.as_mut().unwrap();
+    let r = s.ed.workspace.code_review.as_mut().unwrap();
     r.base = Base::Turn { at: 0, question: "fix it".into() };
     r.rail_need.take();
     let ui = Ui::new(&s.ed);
@@ -4505,7 +4509,7 @@ fn a_turns_file_is_stamped_once_kept_or_taken_back() {
     assert_eq!(look(&mut s).0, None, "not the review's diff: no `u`");
     s.ed.doc_mut().git_hunks = hunks;
     // (the review's own from here, as `show_at` makes it)
-    s.ed.session.code_review.as_mut().unwrap().docs.push(id);
+    s.ed.workspace.code_review.as_mut().unwrap().docs.push(id);
     s.keys(" vm");
     assert_eq!(look(&mut s), (Some(("m".into(), accent)), room), "kept");
     // (its change, lines 6 to 35, taken back from inside it — its diff worked out again)
@@ -4525,9 +4529,9 @@ fn a_turns_file_is_stamped_once_kept_or_taken_back() {
         gone: false,
         binary: false,
     };
-    s.ed.session.code_review.as_mut().unwrap().files.push(other);
+    s.ed.workspace.code_review.as_mut().unwrap().files.push(other);
     s.keys(" ej");
-    assert_eq!(s.ed.session.code_review.as_ref().unwrap().selected, 1, "the hand on other.rs");
+    assert_eq!(s.ed.workspace.code_review.as_ref().unwrap().selected, 1, "the hand on other.rs");
     assert_eq!(look(&mut s).0, Some(("u".into(), dry)), "dry: not the row in hand");
 }
 
@@ -4541,7 +4545,7 @@ fn a_turns_rail_stamp_is_pressed_as_it_first_shows() {
     let (base, now) = five_and_thirty_added();
     let mut s = review_of(160, 30, &base, &now);
     let (id, cwd) = (s.ed.doc().id, std::env::current_dir().unwrap());
-    let r = s.ed.session.code_review.as_mut().unwrap();
+    let r = s.ed.workspace.code_review.as_mut().unwrap();
     r.base = Base::Turn { at: 0, question: "fix it".into() };
     r.rail_need.take();
     r.docs.push(id);
@@ -4558,13 +4562,13 @@ fn a_turns_rail_stamp_is_pressed_as_it_first_shows() {
     let place = Place::File(cwd.join("src/demo.rs"));
     // The presses the rail drew at `at` ms, its keys' hand on other.rs: (strength in hundredths, its letter)
     let drawn = |s: &mut Shot, at: u64| {
-        let was = std::mem::replace(&mut s.ed.session.at, crate::session::At::Rail);
-        s.ed.session.code_review.as_mut().unwrap().selected = 1;
+        let was = std::mem::replace(&mut s.ed.workspace.viewer.at, crate::workspace::At::Rail);
+        s.ed.workspace.code_review.as_mut().unwrap().selected = 1;
         s.ed.motion_at = Some(Duration::from_millis(at));
         super::MOTION_SEEN.with_borrow_mut(Vec::clear);
         s.frame();
-        (s.ed.motion_at, s.ed.session.at) = (None, was);
-        s.ed.session.code_review.as_mut().unwrap().selected = 0;
+        (s.ed.motion_at, s.ed.workspace.viewer.at) = (None, was);
+        s.ed.workspace.code_review.as_mut().unwrap().selected = 0;
         super::MOTION_SEEN.with_borrow(|seen| {
             let presses = seen.iter().filter(|(k, ..)| *k == "press");
             presses.map(|(_, k, ink)| (*k, ink.chars().next().unwrap())).collect::<Vec<_>>()
@@ -4593,7 +4597,7 @@ fn a_turns_rail_stamp_is_pressed_as_it_first_shows() {
 fn the_rail_says_what_moved() {
     let (base, now) = five_and_thirty_added();
     let mut s = review_of(160, 30, &base, &now);
-    let r = s.ed.session.code_review.as_mut().unwrap();
+    let r = s.ed.workspace.code_review.as_mut().unwrap();
     let path = r.files[0].path.clone();
     r.moved.insert(path.clone(), 30);
     // (graded as the review's worker grades it: a behaviour change, its `•` measured with the rest)
@@ -4631,7 +4635,7 @@ fn the_rail_measures_the_grade_it_draws() {
     let (base, now) = five_and_thirty_added();
     let now = format!("{now}let pid = unsafe {{ getpid() }};\n");
     let mut s = review_of(160, 30, &base, &now);
-    let r = s.ed.session.code_review.as_mut().unwrap();
+    let r = s.ed.workspace.code_review.as_mut().unwrap();
     assert!(r.grades.is_empty(), "the review opened with no grade");
     r.set_rules(crate::risk::Rules::with(&[("rust", &["rust"], &[r"\bunsafe\b"], &[])], &[], &[]));
     r.moved.insert(r.files[0].path.clone(), 30000);
@@ -4668,7 +4672,7 @@ fn a_click_on_the_rails_file_names_opens_them_in_a_full_layout() {
         })
         .collect();
     let mut s = Shot::new(188, 57);
-    s.ed.session.root = dir.clone();
+    s.ed.workspace.root = dir.clone();
     s.ed.open(&dir.join("src/f05.rs")).unwrap();
     let base = Base::Turn { at: 0, question: "fix the frictions".into() };
     let mut r = CodeReview::for_test(base, dir.clone(), files);
@@ -4687,20 +4691,20 @@ fn a_click_on_the_rails_file_names_opens_them_in_a_full_layout() {
         r.grades.insert(dir.join(rel), std::sync::Arc::from(vec![high]));
     }
     let root = r.root.clone();
-    s.ed.session.code_review = Some(r);
-    s.ed.session.reviewer = Some(crate::reviewer::Reviewer::for_test(
+    s.ed.workspace.code_review = Some(r);
+    s.ed.workspace.reviewer = Some(crate::reviewer::Reviewer::for_test(
         root,
         crate::reviewer::State::Done,
         Vec::new(),
         "Two risks.",
     ));
     let chat = crate::chat::Chat::new();
-    s.ed.session.chat = Some(chat);
-    s.ed.session.at = crate::session::At::Chat;
+    s.ed.workspace.claude.chat = Some(chat);
+    s.ed.workspace.viewer.at = crate::workspace::At::Chat;
     for name in ["b", "c", "d", "e"] {
         let other = dir.join(format!("session-{name}"));
         std::fs::create_dir_all(&other).unwrap();
-        s.ed.session_add(other);
+        s.ed.workspace_add(other);
     }
     let screen = |s: &mut Shot| {
         let mut p = vt100::Parser::new(s.h, s.w, 0);
@@ -4716,12 +4720,12 @@ fn a_click_on_the_rails_file_names_opens_them_in_a_full_layout() {
     let (y, i) = rail[0];
     s.ed.handle_mouse(Mouse { kind: MouseKind::Down, x: 11, y: y as u16, alt: false, ctrl: false });
     s.ed.handle_mouse(Mouse { kind: MouseKind::Up, x: 11, y: y as u16, alt: false, ctrl: false });
-    let want = s.ed.session.code_review.as_ref().unwrap().files[i].path.clone();
+    let want = s.ed.workspace.code_review.as_ref().unwrap().files[i].path.clone();
     assert_eq!(opened(&s), Some(want), "the first row's file: {rows:#?}");
     // Every row, on its name
     for (y, i) in rail {
         let rows = screen(&mut s);
-        let f = s.ed.session.code_review.as_ref().unwrap().files[i].clone();
+        let f = s.ed.workspace.code_review.as_ref().unwrap().files[i].clone();
         let name = f.rel.rsplit('/').next().unwrap();
         let x = rows[y].find(name).map(|b| rows[y][..b].chars().count()).expect("its name");
         s.ed.handle_mouse(Mouse {
@@ -4762,7 +4766,7 @@ fn review_rail_scrolls_by_itself_only_to_show_the_file() {
         .collect();
     let mut s = Shot::new(100, 24);
     s.ed.open(&dir.join("f00.txt")).unwrap();
-    s.ed.session.code_review = Some(CodeReview::for_test(Base::Head, dir.clone(), files));
+    s.ed.workspace.code_review = Some(CodeReview::for_test(Base::Head, dir.clone(), files));
     s.frame();
     let rail = |s: &Shot| s.ed.screen.review_rail.borrow().clone();
     let click = |s: &mut Shot, kind, y: usize| {
@@ -4820,12 +4824,12 @@ fn review_rail_c_e_scrolls_it_and_keeps_the_file_in_hand() {
         .collect();
     let mut s = Shot::new(100, 24);
     s.ed.open(&dir.join("f00.txt")).unwrap();
-    s.ed.session.code_review = Some(CodeReview::for_test(Base::Head, dir.clone(), files));
+    s.ed.workspace.code_review = Some(CodeReview::for_test(Base::Head, dir.clone(), files));
     s.frame();
     crate::codereview::rail_focus(&mut s.ed);
     s.frame();
     let first = |s: &Shot| s.ed.screen.review_rail.borrow()[0].1;
-    let hand = |s: &Shot| s.ed.session.code_review.as_ref().unwrap().selected;
+    let hand = |s: &Shot| s.ed.workspace.code_review.as_ref().unwrap().selected;
     s.keys("gj");
     assert_eq!((first(&s), hand(&s)), (0, 1));
     s.keys("<C-e>");
@@ -4853,12 +4857,12 @@ fn review_rail_c_e_counts_its_folders_rows() {
         .collect();
     let mut s = Shot::new(100, 24);
     s.ed.open(&dir.join("d0/f00.txt")).unwrap();
-    s.ed.session.code_review = Some(CodeReview::for_test(Base::Head, dir.clone(), files));
+    s.ed.workspace.code_review = Some(CodeReview::for_test(Base::Head, dir.clone(), files));
     s.frame();
     crate::codereview::rail_focus(&mut s.ed);
     s.frame();
     let drawn = |s: &Shot| s.ed.screen.review_rail.borrow().iter().map(|r| r.1).collect::<Vec<_>>();
-    let hand = |s: &Shot| s.ed.session.code_review.as_ref().unwrap().selected;
+    let hand = |s: &Shot| s.ed.workspace.code_review.as_ref().unwrap().selected;
     // `C-d`/`C-f` move the hand by the files in sight (half, all) — a file at a time, the folders' rows between
     // them not counted: from the top, `C-f` lands on the first file below the screen
     s.keys("g");
@@ -4917,7 +4921,7 @@ fn every_rail_row_clicks_the_file_drawn_on_it_while_its_head_grows() {
         src/offer.rs src/sandbox.rs src/sandbox/golden.rs src/sandbox/guarantees.rs src/sandbox/keeper.rs \
         src/sandbox/linux.rs src/sandbox/policy.rs src/sandbox/proxy.rs src/sandbox/proxy/egress.rs \
         src/sandbox/proxy/macos_tests.rs src/sandbox/proxy/tests.rs src/sandboxpack.rs src/sandboxpack/tests.rs \
-        src/session.rs src/snapshots/host_closed.txt src/snapshots/host_closed_narrow.txt \
+        src/workspace.rs src/snapshots/host_closed.txt src/snapshots/host_closed_narrow.txt \
         src/snapshots/sandbox_blocked_card.txt src/snapshots/sandbox_landlock.txt src/snapshots/sandbox_policy.txt \
         src/snapshots/sandbox_report.txt src/snapshots/ui_state.json src/term.rs src/term_snapshots.rs \
         src/tools.rs src/uistate/tests.rs xtask/src/compat.rs";
@@ -4933,14 +4937,14 @@ fn every_rail_row_clicks_the_file_drawn_on_it_while_its_head_grows() {
     assert_eq!(files.len(), 50);
     for (w, h) in [(160, 30), (200, 40)] {
         let mut s = Shot::new(w, h);
-        s.ed.session.root = dir.clone();
+        s.ed.workspace.root = dir.clone();
         s.ed.open(&files[0].path).unwrap();
         let mut r = CodeReview::for_test(Base::Head, dir.clone(), files.clone());
         for f in files.iter().step_by(3).take(14) {
             r.moved.insert(f.path.clone(), 123);
         }
         let root = r.root.clone();
-        s.ed.session.code_review = Some(r);
+        s.ed.workspace.code_review = Some(r);
         // (in the middle: src/compat.rs's neighbours, hosts/ among them)
         crate::codereview::show(&mut s.ed, 21, false);
         let screen = |s: &mut Shot| -> Vec<String> {
@@ -4969,7 +4973,7 @@ fn every_rail_row_clicks_the_file_drawn_on_it_while_its_head_grows() {
         let before = rail(&s);
         check(&rows, &before, "as it opened");
         // The head grows by three rows: the reviewer done, its verdict, and a file changed since viewed
-        s.ed.session.reviewer = Some(crate::reviewer::Reviewer::for_test(
+        s.ed.workspace.reviewer = Some(crate::reviewer::Reviewer::for_test(
             root.clone(),
             crate::reviewer::State::Done,
             Vec::new(),
@@ -4991,7 +4995,7 @@ fn every_rail_row_clicks_the_file_drawn_on_it_while_its_head_grows() {
         assert!(rail(&s).contains(&(y, i)), "opened, it stays where it was clicked");
         s.keys("<space>vm");
         let viewed = |s: &Shot, k: usize| {
-            let r = s.ed.session.code_review.as_ref().unwrap();
+            let r = s.ed.workspace.code_review.as_ref().unwrap();
             r.viewed(&s.ed, &r.files[k])
         };
         assert!(viewed(&s, i), "{w}×{h}: space v m marked the file clicked, {}", files[i].rel);
@@ -4999,7 +5003,7 @@ fn every_rail_row_clicks_the_file_drawn_on_it_while_its_head_grows() {
         let rows = screen(&mut s);
         assert!(rows.iter().any(|r| r.contains("1 of 50 viewed · 49 unviewed")), "{}", rows.join("\n"));
         // …and the head shrinks again: still there
-        s.ed.session.reviewer = None;
+        s.ed.workspace.reviewer = None;
         screen(&mut s);
         assert!(rail(&s).contains(&(y, i)), "{w}×{h}: the head shrunk, row {y} kept {}", files[i].rel);
     }
@@ -5025,16 +5029,16 @@ fn the_chat_narrows_for_the_review_rail_only_where_the_rail_is_drawn() {
         .collect();
     for (w, review_chat, rail) in [(120, 48, false), (160, crate::sizes::CHAT_MIN, true)] {
         let mut s = Shot::new(w, 30);
-        s.ed.session.root = dir.clone();
+        s.ed.workspace.root = dir.clone();
         s.ed.config.llm.command = "sh".into();
         s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut s.ed);
-        s.ed.session.leave(crate::session::At::Chat);
+        s.ed.workspace.leave(crate::workspace::At::Chat);
         s.ed.open(&files[0].path).unwrap();
         s.frame();
         let alone = s.ed.screen.chat_w;
         assert_eq!(alone, crate::sizes::widths(w as usize, true, false, Default::default()).chat);
-        s.ed.session.code_review = Some(CodeReview::for_test(Base::Head, dir.clone(), files.clone()));
+        s.ed.workspace.code_review = Some(CodeReview::for_test(Base::Head, dir.clone(), files.clone()));
         s.frame();
         assert_eq!(
             s.ed.screen.chat_w, review_chat,
@@ -5075,14 +5079,14 @@ fn review_rail_with_80_files_scrolls_and_keeps_its_counts() {
     });
     for (w, h, keys) in [(160, 16, false), (160, 20, true), (160, 30, false), (200, 50, true)] {
         let mut s = Shot::new(w, h);
-        s.ed.session.root = dir.clone();
+        s.ed.workspace.root = dir.clone();
         s.ed.config.llm.command = "sh".into();
         s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut s.ed);
-        s.ed.session.leave(crate::session::At::Chat);
+        s.ed.workspace.leave(crate::workspace::At::Chat);
         s.ed.open(&dir.join(rel(0))).unwrap();
         let turn = Base::Turn { at: 0, question: "split the modules".into() };
-        s.ed.session.code_review = Some(CodeReview::for_test(turn, dir.clone(), files.clone()));
+        s.ed.workspace.code_review = Some(CodeReview::for_test(turn, dir.clone(), files.clone()));
         // (the rail with the keys: its own hints — `]F file` last)
         if keys {
             crate::codereview::rail_focus(&mut s.ed);
@@ -5125,7 +5129,7 @@ fn review_rail_with_80_files_scrolls_and_keeps_its_counts() {
         assert!(down > 0, "{h} rows: more below");
         // The last file, then one in the middle: in view (the row in hand, `▎`), the head and keys where they
         // were — shown from the code, or moved to with the rail's own keys while it has them
-        let order = s.ed.session.code_review.as_ref().unwrap().rail_order();
+        let order = s.ed.workspace.code_review.as_ref().unwrap().rail_order();
         for at_ in [order.len() - 1, 41] {
             let i = order[at_];
             match keys {
@@ -5172,13 +5176,13 @@ fn review_rail_scrolls_by_click_and_marks_by_click() {
         })
         .collect();
     let mut s = Shot::new(160, 24);
-    s.ed.session.root = dir.clone();
+    s.ed.workspace.root = dir.clone();
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     crate::chat::open(&mut s.ed);
     s.ed.open(&dir.join("src/m0/f00.txt")).unwrap();
     let turn = Base::Turn { at: 0, question: "tidy the modules".into() };
-    s.ed.session.code_review = Some(CodeReview::for_test(turn, dir.clone(), files));
+    s.ed.workspace.code_review = Some(CodeReview::for_test(turn, dir.clone(), files));
     s.frame();
     let rail = |s: &Shot| s.ed.screen.review_rail.borrow().clone();
     let more = |s: &Shot| s.ed.screen.review_rail_more.borrow().clone();
@@ -5196,7 +5200,7 @@ fn review_rail_scrolls_by_click_and_marks_by_click() {
     // `↓ N more`: a page down; then `↑ N more`: back
     let (down, by) = *more(&s).iter().find(|m| m.1 > 0).expect("a ↓ row");
     at(&mut s, MouseKind::Down, 4, down);
-    assert_eq!(s.ed.session.code_review.as_ref().unwrap().scroll, by as usize, "a page");
+    assert_eq!(s.ed.workspace.code_review.as_ref().unwrap().scroll, by as usize, "a page");
     assert_ne!(rail(&s), before);
     let (up, _) = *more(&s).iter().find(|m| m.1 < 0).expect("an ↑ row");
     at(&mut s, MouseKind::Down, 4, up);
@@ -5209,12 +5213,12 @@ fn review_rail_scrolls_by_click_and_marks_by_click() {
     assert_eq!(s.ed.doc().path.as_deref(), Some(path.as_path()), "opened");
     s.until("its base", |ed| ed.doc().review_base.is_some());
     let viewed = |s: &Shot| {
-        let r = s.ed.session.code_review.as_ref().unwrap();
+        let r = s.ed.workspace.code_review.as_ref().unwrap();
         r.files.iter().filter(|f| r.viewed(&s.ed, f)).count()
     };
     assert_eq!(viewed(&s), 1, "marked once, not toggled back");
     // A click on its name opens it, nothing more; `space v m` keeps the mark (set-only), `space v M` takes it back
-    s.ed.session.leave(crate::session::At::Chat);
+    s.ed.workspace.leave(crate::workspace::At::Chat);
     s.keys(" vm");
     assert_eq!(viewed(&s), 1, "space v m only marks");
     s.keys(" vM");
@@ -5290,7 +5294,7 @@ fn snapshot_side_panel_files() {
         "tests/e2e.rs",
     ];
     let sb = crate::sidebar::Sidebar::with_files(root, rels.iter().map(|r| r.to_string()).collect());
-    s.ed.session.sidebar = Some(sb);
+    s.ed.workspace.viewer.sidebar = Some(sb);
     s.keys("j");
     s.check("side_panel_files");
 }
@@ -5301,7 +5305,7 @@ fn snapshot_side_panel_outline() {
     let mut s = Shot::new(112, 24);
     s.file("src/demo.rs", DEMO_RS);
     s.ed.sidebar_show(crate::sidebar::Mode::Outline);
-    s.until("outline", |ed| ed.session.sidebar.as_ref().is_some_and(|sb| !sb.lines().is_empty()));
+    s.until("outline", |ed| ed.workspace.viewer.sidebar.as_ref().is_some_and(|sb| !sb.lines().is_empty()));
     s.keys("j");
     s.check("side_panel_outline");
 }
@@ -5314,8 +5318,8 @@ fn side_panel_c_e_scrolls_the_view_and_keeps_the_selection() {
     let many: String = (0..80).map(|i| format!("fn f{i}() {{}}\n")).collect();
     s.file("src/many.rs", &many);
     s.ed.sidebar_show(crate::sidebar::Mode::Outline);
-    s.until("outline", |ed| ed.session.sidebar.as_ref().is_some_and(|sb| sb.lines().len() >= 80));
-    let at = |s: &Shot| s.ed.session.sidebar.as_ref().map(|sb| (sb.scroll, sb.selected)).unwrap();
+    s.until("outline", |ed| ed.workspace.viewer.sidebar.as_ref().is_some_and(|sb| sb.lines().len() >= 80));
+    let at = |s: &Shot| s.ed.workspace.viewer.sidebar.as_ref().map(|sb| (sb.scroll, sb.selected)).unwrap();
     s.keys("gjj");
     assert_eq!(at(&s), (0, 2));
     s.keys("<C-e><C-e>");
@@ -5363,7 +5367,7 @@ fn side_panel_c_e_over_headings_keeps_the_selection_on_a_row_in_sight() {
     s.ed.sidebar_show(crate::sidebar::Mode::List);
     s.keys("g");
     let check = |s: &Shot, key: &str| {
-        let sb = s.ed.session.sidebar.as_ref().unwrap();
+        let sb = s.ed.workspace.viewer.sidebar.as_ref().unwrap();
         let rows = s.ed.screen.sidebar.borrow().len();
         let lines = sb.lines();
         assert!(
@@ -5383,7 +5387,7 @@ fn side_panel_c_e_over_headings_keeps_the_selection_on_a_row_in_sight() {
         s.keys("<C-e>");
         check(&s, "C-e");
     }
-    assert!(s.ed.session.sidebar.as_ref().unwrap().scroll > 10, "it scrolled");
+    assert!(s.ed.workspace.viewer.sidebar.as_ref().unwrap().scroll > 10, "it scrolled");
     for _ in 0..40 {
         s.keys("<C-y>");
         check(&s, "C-y");
@@ -5443,9 +5447,9 @@ fn snapshot_side_panel_git() {
     (st.staged[0].added, st.staged[0].removed) = (Some(2), Some(0));
     st.top = cwd.clone();
     st.generation = 1;
-    s.ed.session.git_status = Some(st.with_rows());
-    s.ed.session.sidebar = Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Git, cwd));
-    s.ed.session.at = crate::session::At::Side;
+    s.ed.workspace.git_status = Some(st.with_rows());
+    s.ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Git, cwd));
+    s.ed.workspace.viewer.at = crate::workspace::At::Side;
     s.keys("j");
     s.check("side_panel_git");
 }
@@ -5474,7 +5478,7 @@ fn the_draft_card_stays_in_the_codes_room() {
             None => {
                 let files =
                     vec![file("src/demo.rs"), file("src/a_rather_long_name_for_a_module_of_the_review.rs")];
-                s.ed.session.code_review = Some(CodeReview::for_test(Base::Head, cwd.clone(), files));
+                s.ed.workspace.code_review = Some(CodeReview::for_test(Base::Head, cwd.clone(), files));
             }
             Some(k) => {
                 s.ed.sizes.side = Some(k);
@@ -5484,14 +5488,14 @@ fn the_draft_card_stays_in_the_codes_room() {
             }
         }
         s.ed.task_start(crate::task::Task { name: "check".into(), cmd: "echo built".into(), cwd });
-        s.until("task", |ed| ed.session.task_run.as_ref().is_some_and(|r| r.took.is_some()));
+        s.until("task", |ed| ed.workspace.task_run.as_ref().is_some_and(|r| r.took.is_some()));
         // (a claude that hears the prompt and says nothing yet: the card says it's thinking — the chat open
         // beside the code, as in #139)
         s.ed.config.llm.command = "sh".into();
         s.ed.config.llm.args = vec!["-c".into(), "read -r line; sleep 5".into()];
         if side.is_none() {
             crate::chat::open(&mut s.ed);
-            s.ed.session.leave(crate::session::At::Chat);
+            s.ed.workspace.leave(crate::workspace::At::Chat);
         }
         crate::llm::draft(&mut s.ed, doc, "a commit message", "draft it", 0, 0).unwrap();
         let mut vt = vt100::Parser::new(h, w, 0);
@@ -5537,8 +5541,8 @@ fn snapshot_task_panel() {
             .into(),
         cwd,
     });
-    s.until("task", |ed| ed.session.task_run.as_ref().is_some_and(|r| r.took.is_some()));
-    s.ed.session.task_run.as_mut().unwrap().took = Some(Duration::from_millis(1830));
+    s.until("task", |ed| ed.workspace.task_run.as_ref().is_some_and(|r| r.took.is_some()));
+    s.ed.workspace.task_run.as_mut().unwrap().took = Some(Duration::from_millis(1830));
     s.ed.toasts.clear();
     s.check("task_panel");
 }
@@ -5553,7 +5557,7 @@ fn snapshot_sandbox_blocked() {
     let mut s = Shot::new(100, 30);
     blocked_npm_run(&mut s);
     // (the run's sandbox, as `tools::go_now` keeps it: the list's state line — 9e)
-    s.ed.session.sandbox = Some(crate::sandbox::guarantees::Guarantees::seatbelt(false, false));
+    s.ed.workspace.claude.sandbox = Some(crate::sandbox::guarantees::Guarantees::seatbelt(false, false));
     let dump = |s: &mut Shot, name: &str| {
         if let Some(dir) = std::env::var_os("TARAE_FRAMES_DIR") {
             std::fs::create_dir_all(&dir).unwrap();
@@ -5582,7 +5586,7 @@ fn snapshot_sandbox_blocked_with_step() {
     for (w, h) in [(120, 30), (60, 24)] {
         let mut s = Shot::new(w, h);
         blocked_npm_run(&mut s);
-        s.ed.session.sandbox = Some(host_restricted());
+        s.ed.workspace.claude.sandbox = Some(host_restricted());
         s.keys(" ms");
         s.until("the list", |ed| ed.picker.is_some());
         let p = s.ed.picker.as_ref().unwrap();
@@ -5599,7 +5603,8 @@ fn snapshot_sandbox_blocked_with_step() {
         s.check(&name);
         s.frames_both(&name);
         // (the step's row, last: Enter copies the step — no card)
-        let step = s.ed.session.sandbox.as_ref().and_then(|g| g.hint.as_ref()?.step.clone()).unwrap();
+        let step =
+            s.ed.workspace.claude.sandbox.as_ref().and_then(|g| g.hint.as_ref()?.step.clone()).unwrap();
         s.keys(&"<down>".repeat(labels.len() - 1));
         let at = s.ed.picker.as_ref().and_then(|p| p.current()).map(|i| i.label.clone());
         assert_eq!(at.as_deref(), labels.last().map(String::as_str), "on the step's row");
@@ -5659,9 +5664,9 @@ fn snapshot_granted() {
     let scene = |w: u16, h: u16, answers: [&Allowed; 3], hosts: &[(String, u16)]| {
         let mut s = Shot::new(w, h);
         s.file("src/demo.rs", DEMO_RS);
-        s.ed.session.chat = Some(crate::chat::Chat::new());
-        s.ed.session.caps = Some((1, std::sync::Arc::new(caps(answers))));
-        s.ed.session.hosts = hosts.to_vec();
+        s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        s.ed.workspace.claude.caps = Some((1, std::sync::Arc::new(caps(answers))));
+        s.ed.workspace.claude.hosts = hosts.to_vec();
         s
     };
     // Piece E: the trust answers, a plugin, the preflight told, the no-sandbox `s`, other checkouts' count
@@ -5738,7 +5743,7 @@ fn blocked_npm_run(s: &mut Shot) {
     r.by_claude = true;
     r.guard = Some(crate::sandbox::Guard::In(Box::new(policy)));
     r.output = [(true, "npm ERR! code EPERM"), (true, "npm ERR! syscall open")].into_iter().collect();
-    s.ed.session.task_run = Some(r);
+    s.ed.workspace.task_run = Some(r);
 }
 
 /// Tier offline in a container under Docker's default profile (no user namespaces, `pidfd_getfd` refused, Landlock
@@ -5810,7 +5815,7 @@ fn snapshot_sandbox_panel_tier() {
         for (name, g) in scenes {
             let mut s = Shot::new(w, h);
             s.file("src/demo.rs", DEMO_RS);
-            s.ed.session.sandbox = g;
+            s.ed.workspace.claude.sandbox = g;
             s.keys(" ms");
             assert!(
                 s.ed.picker.as_ref().is_some_and(|p| p.kind == "blocked"),
@@ -5867,7 +5872,7 @@ fn claudes_command_offers_no_again() {
         let task = crate::task::Task { name: "cargo build".into(), cmd: "true".into(), cwd: "/p".into() };
         let mut r = crate::task::Run::for_test(task);
         (r.by_claude, r.found, r.took) = (by_claude, found, Some(Duration::from_millis(40)));
-        s.ed.session.task_run = Some(r);
+        s.ed.workspace.task_run = Some(r);
         let mut vt = vt100::Parser::new(24, 100, 0);
         vt.process(&s.frame());
         let row = vt
@@ -5916,7 +5921,7 @@ fn snapshot_test_panel_scrolled() {
     run.target.cwd = std::env::current_dir().unwrap();
     run.selected = 1;
     run.took = Some(Duration::from_millis(1240));
-    s.ed.session.test_run = Some(run);
+    s.ed.workspace.test_run = Some(run);
     s.frame();
     let (y0, _, _) = s.ed.screen.test_panel.get().expect("the panel is drawn");
     for _ in 0..4 {
@@ -5945,7 +5950,7 @@ fn test_panel_says_when_no_test_ran() {
     ];
     let mut run = crate::testing::TestRun::finished("orphan::forgotten", Vec::new(), output);
     run.state = crate::testing::RunState::NoTests;
-    s.ed.session.test_run = Some(run);
+    s.ed.workspace.test_run = Some(run);
     let mut p = vt100::Parser::new(s.h, s.w, 0);
     p.process(&s.frame());
     let text = p.screen().contents();
@@ -5970,7 +5975,7 @@ fn snapshot_terminal_panel() {
     s.ed.terminal_run(vec!["/bin/sh".into(), "-c".into(), script.into()], Vec::new());
     // All of it — the line break after the last line too (it can come in a read of its own)
     s.until("output", |ed| {
-        ed.session.terminal.as_ref().is_some_and(|t| {
+        ed.workspace.terminal.as_ref().is_some_and(|t| {
             let screen = t.parser.screen();
             screen.contents().contains("FAILED") && screen.cursor_position() == (4, 0)
         })
@@ -5988,7 +5993,7 @@ fn snapshot_terminal_panel() {
     mouse(&mut s, K::Down, 2);
     mouse(&mut s, K::Drag, 13);
     let bytes = mouse(&mut s, K::Up, 13);
-    assert_eq!(s.ed.session.terminal.as_ref().unwrap().selected_text(), "$ cargo test");
+    assert_eq!(s.ed.workspace.terminal.as_ref().unwrap().selected_text(), "$ cargo test");
     s.until("the copy", |ed| ed.toasts.iter().any(|t| t.text == "copied 12 characters"));
     let shot = snapshot(&s.ed, "t", &bytes, s.w, s.h);
     let bg_row = shot.lines().skip_while(|l| !l.starts_with("## bg")).nth(first + 1).unwrap();
@@ -6001,22 +6006,22 @@ fn snapshot_terminal_panel() {
     };
     at(&mut s, K::Down, 10, 3);
     assert!(
-        s.ed.session.terminal.as_ref().unwrap().selection.is_none()
-            && !s.ed.session.is_at(crate::session::At::Program)
+        s.ed.workspace.terminal.as_ref().unwrap().selection.is_none()
+            && !s.ed.workspace.is_at(crate::workspace::At::Program)
     );
     at(&mut s, K::Drag, 10, y + 1);
     at(&mut s, K::Up, 10, y + 1);
-    assert!(s.ed.session.terminal.as_ref().unwrap().selection.is_none(), "not a terminal selection");
+    assert!(s.ed.workspace.terminal.as_ref().unwrap().selection.is_none(), "not a terminal selection");
     // A drag begun in it (its second line) goes on outside it (clamped to its edge) and ends there
     at(&mut s, K::Down, 2, y + 1);
     at(&mut s, K::Drag, 31, 3);
     assert_eq!(
-        s.ed.session.terminal.as_ref().unwrap().selected(),
+        s.ed.workspace.terminal.as_ref().unwrap().selected(),
         Some(((0, 29), (1, 0))),
         "clamped to its first row"
     );
     at(&mut s, K::Up, 31, 3);
-    assert!(!s.ed.session.terminal.as_ref().unwrap().selecting, "released outside — done");
+    assert!(!s.ed.workspace.terminal.as_ref().unwrap().selecting, "released outside — done");
     let cursor = s.ed.doc().selection().primary();
     at(&mut s, K::Drag, 40, 5);
     assert_eq!(
@@ -6028,8 +6033,8 @@ fn snapshot_terminal_panel() {
     at(&mut s, K::Down, 2, 17);
     at(&mut s, K::Drag, 7, 17);
     at(&mut s, K::Down, 10, 3);
-    assert!(!s.ed.session.terminal.as_ref().unwrap().selecting);
-    s.ed.session.terminal = None; // hangs it up
+    assert!(!s.ed.workspace.terminal.as_ref().unwrap().selecting);
+    s.ed.workspace.terminal = None; // hangs it up
 }
 
 /// A merge conflict: ours on the green wash, theirs on the changed one, the card with the keys at the
@@ -6168,21 +6173,21 @@ fn reading_the_answer_moves_the_editor() {
     let answer = format!(
         "The tree is built in src/filetree.rs:30.\n\n{filler}The side panel keeps it at src/sidebar.rs:60."
     );
-    let c = s.ed.session.chat.as_mut().unwrap();
+    let c = s.ed.workspace.claude.chat.as_mut().unwrap();
     c.msgs = vec![Msg::new(Role::User, "how?", ""), Msg::new(Role::Assistant, answer, "")];
     c.follow.on = true;
     s.frame();
     // As a turn leaves it: at the bottom (the last place shows), read from here on
-    let c = s.ed.session.chat.as_mut().unwrap();
+    let c = s.ed.workspace.claude.chat.as_mut().unwrap();
     c.follow.read_at = Some(c.scroll);
     // (the view's place — follow moves the view, never your cursor: collab C1)
     let at =
         |s: &Shot| (s.ed.doc().path.clone().unwrap(), crate::follow::view_line(&s.ed).unwrap_or(usize::MAX));
     let cwd = std::env::current_dir().unwrap();
-    s.ed.session.chat.as_mut().unwrap().scroll = 1000; // to the top
+    s.ed.workspace.claude.chat.as_mut().unwrap().scroll = 1000; // to the top
     s.frame();
     assert_eq!(at(&s), (cwd.join("src/filetree.rs"), 29), "the top of the answer");
-    s.ed.session.chat.as_mut().unwrap().scroll = 0;
+    s.ed.workspace.claude.chat.as_mut().unwrap().scroll = 0;
     s.frame();
     assert_eq!(at(&s), (cwd.join("src/sidebar.rs"), 59), "its end");
 }
@@ -6197,7 +6202,7 @@ fn a_long_name_shows_whole_when_selected() {
     let long = "src/components/user_profile_settings_view_controller.tsx";
     let mut sb = crate::sidebar::Sidebar::with_files(root, vec![long.to_string(), "src/demo.rs".into()]);
     sb.set_open(["src", "src/components"], true);
-    s.ed.session.sidebar = Some(sb);
+    s.ed.workspace.viewer.sidebar = Some(sb);
     let text = |s: &mut Shot| {
         let bytes = s.frame();
         snapshot(&s.ed, "t", &bytes, s.w, s.h)
@@ -6208,7 +6213,8 @@ fn a_long_name_shows_whole_when_selected() {
         "the end stays: {unfocused}"
     );
     let row =
-        s.ed.session
+        s.ed.workspace
+            .viewer
             .sidebar
             .as_ref()
             .unwrap()
@@ -6216,8 +6222,8 @@ fn a_long_name_shows_whole_when_selected() {
             .iter()
             .position(|l| l.label.ends_with(".tsx"))
             .unwrap();
-    s.ed.session.at = crate::session::At::Side;
-    let sb = s.ed.session.sidebar.as_mut().unwrap();
+    s.ed.workspace.viewer.at = crate::workspace::At::Side;
+    let sb = s.ed.workspace.viewer.sidebar.as_mut().unwrap();
     sb.selected = row;
     assert!(text(&mut s).contains("user_profile_settings_view_controller.tsx"), "whole when selected");
 }
@@ -6259,7 +6265,7 @@ fn redraw_asks_for_a_whole_frame() {
 fn picker_query_shows_past_a_long_title() {
     let mut s = Shot::new(100, 20);
     let (base, root) = demo_copy("long-title");
-    s.ed.session.root = base;
+    s.ed.workspace.root = base;
     let title = "files in a-folder-whose-name-is-as-long-as-a-worktree-ebpf-performance-7e75ab";
     s.ed.open_picker(
         crate::picker::Picker::new(title, Vec::new(), true).with_tree(root.clone(), None),
@@ -6333,12 +6339,12 @@ fn the_panels_follow_one_set_of_rules() {
     let cwd = s.in_project();
     s.file("src/demo.rs", DEMO_RS);
     let sb = crate::sidebar::Sidebar::with_files(cwd.clone(), vec!["src/demo.rs".into(), "README.md".into()]);
-    s.ed.session.sidebar = Some(sb);
+    s.ed.workspace.viewer.sidebar = Some(sb);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     s.keys(" l<esc>");
     s.ed.task_start(crate::task::Task { name: "check".into(), cmd: "echo all good".into(), cwd });
-    s.until("task", |ed| ed.session.task_run.as_ref().is_some_and(|r| r.took.is_some()));
+    s.until("task", |ed| ed.workspace.task_run.as_ref().is_some_and(|r| r.took.is_some()));
     s.ed.toasts.clear();
     let (_, _, accent) = chrome_colors(&s.ed);
     let p = cells(&s.frame(), w, h);
@@ -6419,12 +6425,12 @@ fn the_edges_light_with_the_keys() {
     let cwd = s.in_project();
     s.file("src/demo.rs", DEMO_RS);
     let sb = crate::sidebar::Sidebar::with_files(cwd.clone(), vec!["src/demo.rs".into(), "README.md".into()]);
-    s.ed.session.sidebar = Some(sb);
+    s.ed.workspace.viewer.sidebar = Some(sb);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     s.keys(" l<esc>");
     s.ed.task_start(crate::task::Task { name: "check".into(), cmd: "echo all good".into(), cwd });
-    s.until("task", |ed| ed.session.task_run.as_ref().is_some_and(|r| r.took.is_some()));
+    s.until("task", |ed| ed.workspace.task_run.as_ref().is_some_and(|r| r.took.is_some()));
     s.ed.toasts.clear();
     let ui = Ui::new(&s.ed);
     let (accent, window) = (vt_color(ui.accent.fg).unwrap(), vt_color(ui.window).unwrap());
@@ -6497,7 +6503,7 @@ fn the_slots_header_is_the_line_where_it_meets_the_code() {
     let cwd = s.in_project();
     s.file("src/demo.rs", DEMO_RS);
     s.ed.task_start(crate::task::Task { name: "check".into(), cmd: "echo all good".into(), cwd });
-    s.until("task", |ed| ed.session.task_run.as_ref().is_some_and(|r| r.took.is_some()));
+    s.until("task", |ed| ed.workspace.task_run.as_ref().is_some_and(|r| r.took.is_some()));
     s.ed.toasts.clear();
     let at = |s: &mut Shot| {
         let rows: Vec<String> = cells(&s.frame(), w, h).screen().rows(0, w).collect();
@@ -6746,8 +6752,8 @@ fn an_ask_too_wide_for_the_chats_foot_grows_left_over_the_code() {
         let mut s = Shot::new(112, 30);
         s.ed.offer_popups = true;
         s.file("src/demo.rs", DEMO_RS);
-        s.ed.session.chat = Some(crate::chat::Chat::new());
-        s.ed.session.at = crate::session::At::Chat;
+        s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        s.ed.workspace.viewer.at = crate::workspace::At::Chat;
         s.ed.push_offer(card);
         s.frame();
         let (x, _, w, _) = s.ed.screen.offer_card.unwrap_or_else(|| panic!("{name}: drawn"));
@@ -6774,8 +6780,8 @@ fn a_card_grown_left_wraps_its_text_at_its_own_width() {
         let mut s = Shot::new(112, 30);
         s.ed.offer_popups = true;
         s.file("src/demo.rs", DEMO_RS);
-        s.ed.session.chat = Some(crate::chat::Chat::new());
-        s.ed.session.at = crate::session::At::Chat;
+        s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        s.ed.workspace.viewer.at = crate::workspace::At::Chat;
         s.ed.push_offer(card);
         let p = cells(&s.frame(), 112, 30);
         let (x, y, w, h) = s.ed.screen.offer_card.unwrap_or_else(|| panic!("{name}: drawn"));
@@ -6830,8 +6836,8 @@ fn an_ask_over_the_chat_stands_on_its_inputs_rule() {
         let mut s = Shot::new(112, 30);
         s.ed.offer_popups = true;
         s.file("src/demo.rs", DEMO_RS);
-        s.ed.session.chat = Some(crate::chat::Chat::new());
-        s.ed.session.at = crate::session::At::Chat;
+        s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        s.ed.workspace.viewer.at = crate::workspace::At::Chat;
         s
     };
     let rows = |s: &mut Shot| -> Vec<String> { cells(&s.frame(), 112, 30).screen().rows(0, 112).collect() };
@@ -6876,11 +6882,11 @@ fn chat112_cards() -> Vec<(&'static str, crate::offer::Offer, &'static str)> {
         branch: Some("fix-login".into()),
         tip: sha.clone(),
         base: "main".into(),
-        changed: vec![" M src/login.rs".into(), " M src/session.rs".into()],
+        changed: vec![" M src/login.rs".into(), " M src/workspace.rs".into()],
         ahead: Vec::new(),
         lost: Vec::new(),
         entries: Vec::new(),
-        keep: crate::sessionkeep::Plan {
+        keep: crate::workspacekeep::Plan {
             folders: Vec::new(),
             differ: Vec::new(),
             instructions_to: None,
@@ -6955,8 +6961,8 @@ fn frames_of_cardkeys() {
         let mut s = Shot::new(w, 30);
         s.ed.offer_popups = true;
         s.file("src/demo.rs", DEMO_RS);
-        s.ed.session.chat = Some(crate::chat::Chat::new());
-        s.ed.session.at = crate::session::At::Chat;
+        s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        s.ed.workspace.viewer.at = crate::workspace::At::Chat;
         s.ed.push_offer(base_moved(true).card());
         s.frames_both(&format!("cardkeys-moved-chat-{w}"));
         // The chat taking a narrow screen whole: the card waits over its foot, and focused it stays there
@@ -6964,8 +6970,8 @@ fn frames_of_cardkeys() {
             let mut s = Shot::new(57, 30);
             s.ed.offer_popups = true;
             s.file("src/demo.rs", DEMO_RS);
-            s.ed.session.chat = Some(crate::chat::Chat::new());
-            s.ed.session.at = crate::session::At::Chat;
+            s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+            s.ed.workspace.viewer.at = crate::workspace::At::Chat;
             s.ed.push_offer(chat112_cards().swap_remove(2).1);
             s.frames_both("cardkeys-narrow-57-waiting");
             s.keys("<C-q>");
@@ -6978,7 +6984,7 @@ fn frames_of_cardkeys() {
         s.ed.config.llm.command = "sh".into();
         s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         s.keys(" lwhy does the count stall?<ret>");
-        let c = s.ed.session.chat.as_mut().unwrap();
+        let c = s.ed.workspace.claude.chat.as_mut().unwrap();
         let look = |verb, what: &str, range: &str| crate::chat::Look {
             verb,
             what: what.into(),
@@ -6993,7 +6999,7 @@ fn frames_of_cardkeys() {
         c.msgs.push(Msg::tool(look("run", "cargo xtask linux test", ""), "t2"));
         s.ed.push_offer(quiet_card());
         s.frames_both(&format!("cardkeys-follow-{w}"));
-        s.ed.session.chat.as_mut().unwrap().follow.paused = true;
+        s.ed.workspace.claude.chat.as_mut().unwrap().follow.paused = true;
         s.frames_both(&format!("cardkeys-follow-paused-{w}"));
     }
 }
@@ -7032,7 +7038,7 @@ fn base_moved(instructions: bool) -> crate::keepclose::Moves {
             .into_iter()
             .enumerate()
             .map(|(i, conflicts)| crate::keepclose::Ws {
-                id: i as u64 + 1,
+                id: crate::event::WorkspaceId::here(i as u64 + 1),
                 name: ["fix", "db"][i].into(),
                 root: std::path::PathBuf::from("/tmp/tarae-not-there"),
                 branch: ["fix", "db"][i].into(),
@@ -7059,9 +7065,9 @@ fn a_group_names_its_members_one_lit() {
     let cwd = s.in_project();
     s.file("src/demo.rs", DEMO_RS);
     let sb = crate::sidebar::Sidebar::with_files(cwd.clone(), vec!["src/demo.rs".into()]);
-    s.ed.session.sidebar = Some(sb);
+    s.ed.workspace.viewer.sidebar = Some(sb);
     s.ed.task_start(crate::task::Task { name: "check".into(), cmd: "echo all good".into(), cwd });
-    s.until("task", |ed| ed.session.task_run.as_ref().is_some_and(|r| r.took.is_some()));
+    s.until("task", |ed| ed.workspace.task_run.as_ref().is_some_and(|r| r.took.is_some()));
     s.keys(":procs<ret>");
     s.ed.toasts.clear();
     let ui = Ui::new(&s.ed);
@@ -7156,7 +7162,7 @@ fn floating_cards_leave_nothing_against_their_edges() {
         s.keys("gl");
         s.frame();
         let Some((x, ..)) = s.ed.screen.note_card.get() else { continue };
-        let focused = s.ed.session.focus;
+        let focused = s.ed.workspace.viewer.focus;
         let &(_, pane, gutter, _) = s.ed.screen.panes.iter().find(|p| p.0 == focused).expect("the pane");
         assert!(
             x <= pane.x || x > pane.x + gutter,
@@ -7262,12 +7268,12 @@ fn every_panel_starts_its_text_the_same_distance_in() {
     s.file("src/demo.rs", DEMO_RS);
     let rels = vec!["src/demo.rs".into(), "README.md".into()];
     let sb = crate::sidebar::Sidebar::with_files(cwd.clone(), rels);
-    s.ed.session.sidebar = Some(sb);
+    s.ed.workspace.viewer.sidebar = Some(sb);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     s.keys(" l<esc>");
     s.ed.task_start(crate::task::Task { name: "check".into(), cmd: "echo all good".into(), cwd });
-    s.until("task", |ed| ed.session.task_run.as_ref().is_some_and(|r| r.took.is_some()));
+    s.until("task", |ed| ed.workspace.task_run.as_ref().is_some_and(|r| r.took.is_some()));
     s.ed.toasts.clear();
     let p = cells(&s.frame(), w, h);
     let sc = &s.ed.screen;
@@ -7318,8 +7324,8 @@ fn chat_of(w: u16, h: u16, n: usize) -> Shot {
     for i in 0..n {
         chat.msgs.push(Msg::new(Role::Assistant, format!("answer {i}: {}", "strand ".repeat(12)), ""));
     }
-    s.ed.session.chat = Some(chat);
-    s.ed.session.usage.key_source = Some("none".into());
+    s.ed.workspace.claude.chat = Some(chat);
+    s.ed.workspace.claude.usage.key_source = Some("none".into());
     let now = crate::usage::now_ms();
     let weekly = Reading {
         window: WEEKLY.into(),
@@ -7391,7 +7397,7 @@ fn words_on(rows: &[(String, Option<usize>)], stem: &str) -> Vec<String> {
 fn chat_cut(w: u16, h: u16, live: bool) -> Shot {
     use crate::chat::{Look, Msg, Role, State};
     let mut s = chat_of(w, h, 0);
-    let c = s.ed.session.chat.as_mut().unwrap();
+    let c = s.ed.workspace.claude.chat.as_mut().unwrap();
     (c.state, c.unfolded) = (State::Thinking, true);
     c.msgs.push(Msg::new(Role::Thought, words_of("strands", 160).join(" "), ""));
     let look = |verb, what: String, range: &str| Look {
@@ -7420,7 +7426,7 @@ fn chat_cut(w: u16, h: u16, live: bool) -> Shot {
     r.last_output =
         now.checked_sub(crate::waits::BUSY + Duration::from_secs(3)).expect("a machine up a while");
     r.wait.looked(100.0, now);
-    s.ed.session.task_run = Some(r);
+    s.ed.workspace.task_run = Some(r);
     s
 }
 
@@ -7495,7 +7501,7 @@ fn the_chats_thumb_shows_only_while_its_transcript_overflows() {
     let mut long = chat_of(w, h, 30);
     let newest = thumb(&mut long);
     assert!(!newest.is_empty(), "a long transcript: its thumb");
-    long.ed.session.chat.as_mut().unwrap().scroll = 10_000;
+    long.ed.workspace.claude.chat.as_mut().unwrap().scroll = 10_000;
     let first = thumb(&mut long);
     assert!(
         !first.is_empty() && first[0] < newest[0],
@@ -7568,7 +7574,7 @@ fn a_slot_headers_lines_down_start_at_a_join() {
         let mut run = crate::testing::TestRun::finished("all tests", cases, Vec::new());
         run.target.cwd = std::env::current_dir().unwrap();
         run.took = Some(Duration::from_millis(648));
-        s.ed.session.test_run = Some(run);
+        s.ed.workspace.test_run = Some(run);
         let line = header(&mut s, w, "the tests");
         // (the members' names stand, the details fold before them — step 1's order, step 3b: ` › results` at every
         // width, the counts once the list's stretch has room for them, ~100 columns)
@@ -7604,7 +7610,7 @@ fn the_gutters_hold_at_their_edges() {
     }];
     let rels = ["Cargo.toml", "README.md", "src/demo.rs"].map(String::from).to_vec();
     let sb = crate::sidebar::Sidebar::with_files(cwd, rels);
-    s.ed.session.sidebar = Some(sb);
+    s.ed.workspace.viewer.sidebar = Some(sb);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     s.keys(" l<esc>");
@@ -7779,10 +7785,10 @@ fn the_bottom_slot_shows_its_panels_as_tabs() {
     let script = "printf 'hi\\r\\n'; sleep 30";
     s.ed.terminal_run(vec!["/bin/sh".into(), "-c".into(), script.into()], Vec::new());
     s.until("the terminal", |ed| {
-        ed.session.terminal.as_ref().is_some_and(|t| t.parser.screen().contents().contains("hi"))
+        ed.workspace.terminal.as_ref().is_some_and(|t| t.parser.screen().contents().contains("hi"))
     });
     s.ed.terminal_focus();
-    let typing = |ed: &Editor| ed.session.is_at(crate::session::At::Program);
+    let typing = |ed: &Editor| ed.workspace.is_at(crate::workspace::At::Program);
     assert!(typing(&s.ed));
     // A task started meanwhile (harmless: a pause and a failure) — a tab, running
     let cwd = std::env::temp_dir();
@@ -7801,7 +7807,7 @@ fn the_bottom_slot_shows_its_panels_as_tabs() {
     );
     assert_eq!((s.ed.slot(), typing(&s.ed)), (Some(Slot::Terminal), true), "the terminal keeps it all");
     // It fails behind the terminal: its tab says so, in the error colour — nothing else moves
-    s.until("the task", |ed| ed.session.task_run.as_ref().is_some_and(|r| r.took.is_some()));
+    s.until("the task", |ed| ed.workspace.task_run.as_ref().is_some_and(|r| r.took.is_some()));
     s.ed.toasts.clear();
     let (row, spots, p) = tabs(&mut s);
     let at = row.find("check ▲").map(|b| row[..b].chars().count() + "check ".len()).expect(&row);
@@ -7820,7 +7826,7 @@ fn the_bottom_slot_shows_its_panels_as_tabs() {
     }));
     s.frame();
     assert_eq!(
-        (s.ed.slot(), s.ed.session.is_at(crate::session::At::Slot), typing(&s.ed)),
+        (s.ed.slot(), s.ed.workspace.is_at(crate::workspace::At::Slot), typing(&s.ed)),
         (Some(Slot::Task), true, false)
     );
     // `tab` while the slot has the keys: the next tab, round to the first (`C-w t` is Helix's transpose again)
@@ -7828,8 +7834,8 @@ fn the_bottom_slot_shows_its_panels_as_tabs() {
     assert_eq!(s.ed.slot(), Some(Slot::Terminal));
     s.keys("<tab>");
     assert_eq!(s.ed.slot(), Some(Slot::Task));
-    assert!(s.ed.session.is_at(crate::session::At::Slot), "the keys stayed in the slot");
-    s.ed.session.terminal = None; // hangs it up
+    assert!(s.ed.workspace.is_at(crate::workspace::At::Slot), "the keys stayed in the slot");
+    s.ed.workspace.terminal = None; // hangs it up
 }
 
 // ── 글타래 P1: what the scenes showed cut, covered or misplaced ──────────────────────────────────
@@ -7856,7 +7862,7 @@ fn a_cut_follow_log_loses_no_words() {
     let said = "The name is cloned because insert takes the key by value, and first moves into the map in the \
                 same call. Keying by the name alone means a second strand with the same name replaces the \
                 first, so the entry API keeps the strand that came first and drops the one that repeats it.";
-    let c = s.ed.session.chat.as_mut().unwrap();
+    let c = s.ed.workspace.claude.chat.as_mut().unwrap();
     c.follow.on = true;
     c.msgs.push(Msg::new(Role::Assistant, said, ""));
     s.frame();
@@ -7908,7 +7914,7 @@ fn a_one_row_follow_log_still_says_its_cut() {
     s.keys(" lwhy does insert clone the name?<ret>");
     let said = "The name is cloned because insert takes the key by value, and first moves into the map in the \
                 same call. Keying by the name alone means a second strand with the same name replaces it.";
-    let c = s.ed.session.chat.as_mut().unwrap();
+    let c = s.ed.workspace.claude.chat.as_mut().unwrap();
     c.follow.on = true;
     c.msgs.push(Msg::new(Role::Assistant, said, ""));
     s.frame();
@@ -7951,12 +7957,12 @@ fn an_edit_reviews_reason_is_whole_sentences() {
     s.ed.config.llm.args = vec!["-c".into(), format!("read -r line; printf '%s\\n' '{json}'")];
     s.keys("17ggx i");
     s.keys("show the text too<ret>");
-    s.until("review", |ed| ed.session.review.as_ref().is_some_and(|r| r.ready));
+    s.until("review", |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
     s.ed.toasts.clear();
     let reason = "Keying by the name alone means a second strand with the same name replaces the first one in \
                   the map. The entry API keeps the one that came first. I will switch it so a repeat keeps the \
                   first strand, and since nothing else reads the map, no other line has to change.";
-    s.ed.session.review.as_mut().unwrap().reason = reason.into();
+    s.ed.workspace.claude.review.as_mut().unwrap().reason = reason.into();
     let top = s.ed.screen.review_rows.borrow().first().map_or(3, |r| r.0);
     // (the title's row, then the reason's: up to the first change's head)
     let rows = rows_of(&mut s, (0, 2, 100, top.saturating_sub(2)));
@@ -7974,7 +7980,7 @@ fn an_edit_reviews_reason_is_whole_sentences() {
     // A last sentence longer than the two rows alone: its end, `…` in front, no row past the code's width (one-
     // letter words: wrapped at the full width, its first row fills it — the mark would push it past)
     let long = format!("Short one. {}word end.", "a ".repeat(200));
-    s.ed.session.review.as_mut().unwrap().reason = long.clone();
+    s.ed.workspace.claude.review.as_mut().unwrap().reason = long.clone();
     let top = s.ed.screen.review_rows.borrow().first().map_or(3, |r| r.0);
     let rows = rows_of(&mut s, (0, 2, 100, top.saturating_sub(2)));
     let reason_rows: Vec<&String> = rows
@@ -8001,12 +8007,12 @@ fn the_git_tab_opens_on_a_file() {
     );
     st.top = root.clone();
     st.generation = 1;
-    s.ed.session.git_status = Some(st.with_rows());
-    s.ed.session.sidebar = Some(Sidebar::new(Mode::Git, root));
-    s.ed.session.at = crate::session::At::Side;
+    s.ed.workspace.git_status = Some(st.with_rows());
+    s.ed.workspace.viewer.sidebar = Some(Sidebar::new(Mode::Git, root));
+    s.ed.workspace.viewer.at = crate::workspace::At::Side;
     s.ed.sidebar_sync();
     s.frame();
-    let sb = s.ed.session.sidebar.as_ref().unwrap();
+    let sb = s.ed.workspace.viewer.sidebar.as_ref().unwrap();
     let on = &sb.lines()[sb.selected].target;
     assert!(matches!(on, Target::Change { file: true, .. }), "on {on:?}");
 }
@@ -8027,9 +8033,9 @@ fn the_git_tab_reopened_starts_fresh_or_keeps_your_row() {
     );
     st.top = root;
     st.generation = 1;
-    s.ed.session.git_status = Some(st.with_rows());
+    s.ed.workspace.git_status = Some(st.with_rows());
     let on = |s: &Shot| {
-        let sb = s.ed.session.sidebar.as_ref().unwrap();
+        let sb = s.ed.workspace.viewer.sidebar.as_ref().unwrap();
         sb.lines()[sb.selected].target.clone()
     };
     s.ed.sidebar_show(Mode::Git);
@@ -8044,21 +8050,21 @@ fn the_git_tab_reopened_starts_fresh_or_keeps_your_row() {
     // (the files tab, a row far down, then git again: its first file)
     s.ed.sidebar_show(Mode::Files);
     s.frame();
-    s.ed.session.sidebar.as_mut().unwrap().selected = 4;
+    s.ed.workspace.viewer.sidebar.as_mut().unwrap().selected = 4;
     s.ed.sidebar_show(Mode::Git);
     s.frame();
     assert!(matches!(on(&s), Target::Change { file: true, .. }), "back from files: {:?}", on(&s));
     // (Claude's link into the git tab from the files tab: its rows read again, not the files' row kept)
     s.ed.sidebar_show(Mode::Files);
     s.frame();
-    s.ed.session.sidebar.as_mut().unwrap().selected = 4;
+    s.ed.workspace.viewer.sidebar.as_mut().unwrap().selected = 4;
     s.ed.ui_jump("git:src/knot.rs");
     s.frame();
     assert!(matches!(on(&s), Target::Change { file: true, .. }), "a link in: {:?}", on(&s));
     // A tab built while it hadn't the keys (`:restart`, a link) and never had them: on a file too
-    s.ed.session.sidebar = None;
-    s.ed.session.sidebar = Some(crate::sidebar::Sidebar::new(Mode::Git, s.root.clone()));
-    s.ed.session.at = crate::session::At::Code;
+    s.ed.workspace.viewer.sidebar = None;
+    s.ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::new(Mode::Git, s.root.clone()));
+    s.ed.workspace.viewer.at = crate::workspace::At::Code;
     s.ed.sidebar_sync();
     s.ed.sidebar_show(Mode::Git);
     s.frame();
@@ -8101,7 +8107,7 @@ fn granted_rows_cut_the_same_when_scrolled() {
     for h in 8..=12u16 {
         let mut s = Shot::new(80, h);
         s.file("src/demo.rs", DEMO_RS);
-        s.ed.session.caps = Some((1, std::sync::Arc::new(made())));
+        s.ed.workspace.claude.caps = Some((1, std::sync::Arc::new(made())));
         s.ed.granted_open(
             crate::granted::items(&caps, [&none, &none, &none], &[], &more, 1_792_000_000),
             false,
@@ -8252,7 +8258,7 @@ fn granted_rows_cut_keep_what_differs() {
     let caps = made();
     let mut s = Shot::new(80, 24);
     s.file("src/demo.rs", DEMO_RS);
-    s.ed.session.caps = Some((1, std::sync::Arc::new(made())));
+    s.ed.workspace.claude.caps = Some((1, std::sync::Arc::new(made())));
     let more = crate::granted::More {
         no_sandbox: false,
         repository: false,
@@ -8277,7 +8283,7 @@ fn three_columns(w: u16, h: u16) -> Shot {
     let cwd = s.in_project();
     s.file("src/demo.rs", DEMO_RS);
     let rels = ["Cargo.toml", "README.md", "src/demo.rs"].map(String::from).to_vec();
-    s.ed.session.sidebar = Some(crate::sidebar::Sidebar::with_files(cwd, rels));
+    s.ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(cwd, rels));
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     s.keys(" l<esc>");
@@ -8372,9 +8378,9 @@ fn a_split_starts_at_a_join() {
     assert_eq!(fg(divider + 1), accent, "the pane with the keys: its line lit");
     assert_ne!(fg(side), accent, "the other's the wash");
     // The slot under them: the divider ends on its line (`┴`), never past it
-    let cwd = s.ed.session.root.clone();
+    let cwd = s.ed.workspace.root.clone();
     s.ed.task_start(crate::task::Task { name: "check".into(), cmd: "echo all good".into(), cwd });
-    s.until("task", |ed| ed.session.task_run.as_ref().is_some_and(|r| r.took.is_some()));
+    s.until("task", |ed| ed.workspace.task_run.as_ref().is_some_and(|r| r.took.is_some()));
     s.ed.toasts.clear();
     let (rows, at) = frame_text(&mut s, w, h);
     let sc = &s.ed.screen;
@@ -8410,10 +8416,10 @@ fn the_chats_line_names_the_sessions() {
         (chat + 1..w as usize).map(|x| at(0, x)).collect()
     };
     assert!(line(&at).starts_with("─ claude"), "one session: {:?}", line(&at));
-    let fix = s.ed.session.root.join("fix");
+    let fix = s.ed.workspace.root.join("fix");
     std::fs::create_dir_all(&fix).unwrap();
-    let id = s.ed.session_add(fix);
-    let name = s.ed.sessions.iter().find(|l| l.id == id).unwrap().label().to_string();
+    let id = s.ed.workspace_add(fix);
+    let name = s.ed.workspaces.iter().find(|l| l.id == id).unwrap().label().to_string();
     let (rows, at) = frame_text(&mut s, w, h);
     let top = line(&at);
     assert!(
@@ -8455,7 +8461,7 @@ fn frames_of_cardkeys_more() {
         // Two asks here, one in another session
         let mut s = Shot::new(w, 24);
         s.ed.offer_popups = true;
-        s.ed.session.name = "main".into();
+        s.ed.workspace.name = "main".into();
         s.file("src/demo.rs", DEMO_RS);
         let card = |n: u64| {
             let what = crate::offer::What::Screen { call: crate::tools::Call::test(n) };
@@ -8469,8 +8475,8 @@ fn frames_of_cardkeys_more() {
         };
         s.ed.push_offer(card(1));
         s.ed.push_offer(card(2));
-        let back = s.ed.session_add(std::env::temp_dir());
-        if let Some(l) = s.ed.sessions.iter_mut().find(|l| l.id == back) {
+        let back = s.ed.workspace_add(std::env::temp_dir());
+        if let Some(l) = s.ed.workspaces.iter_mut().find(|l| l.id == back) {
             l.name = "fix-login".into();
             s.ed.offer_seq += 1;
             let mut o = card(3);

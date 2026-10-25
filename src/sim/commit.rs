@@ -61,7 +61,7 @@ fn run(choices: Choices) -> Vec<String> {
     std::fs::write(&msg, "The change\n\nWhy.\n# left out\n").unwrap();
     let mut sim = Sim::new("commit_from_a_review", choices, LIMIT);
     let mut ed = Editor::new(crate::config::Config::default());
-    ed.session.root = repo.clone();
+    ed.workspace.root = repo.clone();
     crate::codereview::start_in(&mut ed, repo.clone(), None);
     let seen = RefCell::new(Seen { taken: 0, early: None, msg, n: 0, marked: Default::default() });
     sim.walk(
@@ -92,7 +92,7 @@ fn ended(ed: &Editor, repo: &std::path::Path, seen: &Seen) -> Result<(), String>
         return Err("staged, unsaid".into());
     }
     // (frictions29 82: a file changed since its mark — open or closed — isn't viewed once the jobs ran)
-    if let Some(r) = ed.session.code_review.as_ref() {
+    if let Some(r) = ed.workspace.code_review.as_ref() {
         for f in r.files.iter().filter(|f| r.viewed(ed, f)) {
             let now = std::fs::read_to_string(&f.path).unwrap_or_default();
             if seen.marked.get(&f.path) != Some(&now) {
@@ -112,13 +112,13 @@ fn input(sim: &mut Sim, ed: &mut Editor, repo: &std::path::Path, seen: &RefCell<
     // (by arm: a file shown and marked 4, `:commit` 3, a file changed again 2, the review again 1, a frame 1, time 1)
     match c.weighted(&[4, 3, 2, 1, 1, 1]) {
         0 => {
-            let Some(n) = ed.session.code_review.as_ref().map(|r| r.files.len()).filter(|&n| n > 0) else {
+            let Some(n) = ed.workspace.code_review.as_ref().map(|r| r.files.len()).filter(|&n| n > 0) else {
                 return "(no review)".into();
             };
             let i = *c.pick(&(0..n).collect::<Vec<_>>());
             crate::codereview::show(ed, i, false);
             crate::codereview::mark_viewed(ed);
-            if let Some(f) = ed.session.code_review.as_ref().map(|r| r.files[i].path.clone()) {
+            if let Some(f) = ed.workspace.code_review.as_ref().map(|r| r.files[i].path.clone()) {
                 let text = std::fs::read_to_string(&f).unwrap_or_default();
                 seen.borrow_mut().marked.insert(f, text);
             }
@@ -126,7 +126,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, repo: &std::path::Path, seen: &RefCell<
         }
         1 => {
             let all = ed
-                .session
+                .workspace
                 .code_review
                 .as_ref()
                 .map(|r| (r.files.iter().all(|f| r.viewed(ed, f)), r.files.len()));
@@ -195,7 +195,7 @@ fn held(_: &Editor, repo: &std::path::Path, seen: &Seen) -> Result<(), String> {
 }
 
 fn print(ed: &Editor, repo: &std::path::Path) -> String {
-    let viewed = ed.session.code_review.as_ref().map_or("no review".to_string(), |r| {
+    let viewed = ed.workspace.code_review.as_ref().map_or("no review".to_string(), |r| {
         format!("{} of {} viewed", r.files.iter().filter(|f| r.viewed(ed, f)).count(), r.files.len())
     });
     format!("{viewed} · {} commits", out(repo, &["rev-list", "--count", "HEAD"]))

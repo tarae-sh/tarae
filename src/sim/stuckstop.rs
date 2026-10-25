@@ -34,11 +34,11 @@ fn run(choices: Choices) -> Vec<String> {
     let pid = crate::spawn::setsid(&c).unwrap().pid;
     let mut sim = Sim::new("a_stuck_run_stopped_from_its_card", choices, LIMIT);
     let mut ed = Editor::new(crate::config::Config::default());
-    (ed.session.root, ed.session.name) = (root.clone(), "proj".into());
+    (ed.workspace.root, ed.workspace.name) = (root.clone(), "proj".into());
     let task = crate::task::Task { name: "hangs".into(), cmd: "sleep 60".into(), cwd: root };
     let mut r = crate::task::Run::for_test(task).running_as(pid);
     r.by_claude = true;
-    ed.session.task_run = Some(r);
+    ed.workspace.task_run = Some(r);
     let ys = std::cell::Cell::new(0);
     let check = |ed: &Editor| held(ed, ys.get());
     sim.walk(&mut ed, INPUTS, |sim, ed| input(sim, ed, pid, &ys), check, print);
@@ -53,11 +53,11 @@ fn run(choices: Choices) -> Vec<String> {
 }
 
 fn stuck_cards(ed: &Editor) -> usize {
-    ed.offers.iter().chain(&ed.session.parked).filter(|o| o.stuck().is_some()).count()
+    ed.offers.iter().chain(&ed.workspace.parked).filter(|o| o.stuck().is_some()).count()
 }
 
 fn stops_said(ed: &Editor) -> usize {
-    let Some(r) = ed.session.task_run.as_ref() else { return 0 };
+    let Some(r) = ed.workspace.task_run.as_ref() else { return 0 };
     r.output.iter().filter(|(_, l)| l.starts_with(STOPPED)).count()
 }
 
@@ -66,7 +66,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, pid: u32, ys: &std::cell::Cell<usize>) 
     // (by arm: the card asked 3, a frame 2, `y` 3, the run prints 1, time passing 1)
     match c.weighted(&[3, 2, 3, 1, 1]) {
         0 if stuck_cards(ed) == 0 => {
-            let Some(r) = ed.session.task_run.as_ref() else { return "(no run)".into() };
+            let Some(r) = ed.workspace.task_run.as_ref() else { return "(no run)".into() };
             let s = crate::stuck::Stuck {
                 slot: Slot::Task,
                 run: r.trace.id(),
@@ -77,7 +77,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, pid: u32, ys: &std::cell::Cell<usize>) 
                 at: 0,
                 reach: None,
             };
-            if let Some(r) = ed.session.task_run.as_mut()
+            if let Some(r) = ed.workspace.task_run.as_mut()
                 && let Some(t) = crate::clock::now().checked_sub(Duration::from_secs(11 * 60))
             {
                 r.last_output = t;
@@ -106,7 +106,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, pid: u32, ys: &std::cell::Cell<usize>) 
         }
         2 => "(no stuck card in front)".into(),
         3 => {
-            if let Some(r) = ed.session.task_run.as_mut() {
+            if let Some(r) = ed.workspace.task_run.as_mut() {
                 r.last_output = crate::clock::now();
             }
             crate::stuck::sync(ed);

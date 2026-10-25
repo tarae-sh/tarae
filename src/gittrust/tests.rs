@@ -58,7 +58,7 @@ fn the_card_names_what_runs_once_per_repository() {
         .unwrap();
     let r = crate::gitrepo::repo(&repo).unwrap();
     let mut ed = Editor::new(Config::default());
-    ed.session.root = dir.clone();
+    ed.workspace.root = dir.clone();
     ed.git_trust_check(&r);
     ed.git_trust_check(&r);
     assert_eq!(git_trust_cards(&ed), 1, "one per repository");
@@ -149,7 +149,7 @@ fn each_repository_asking_has_its_own_card() {
 fn a_command_added_mid_session_brings_its_card() {
     let (dir, repo) = plain_repository("later");
     let mut ed = Editor::new(Config::default());
-    ed.session.root = repo.clone();
+    ed.workspace.root = repo.clone();
     crate::gitrepo::set_asker(&dir, ed.events.shared_sender());
     assert!(!crate::gitrepo::repo(&repo).unwrap().asks);
     settle(&mut ed);
@@ -173,7 +173,7 @@ fn a_command_added_mid_session_brings_its_card() {
     ed.offers.clear();
     ed.git_refresh();
     let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-    while ed.session.git_status.is_none() {
+    while ed.workspace.git_status.is_none() {
         let ev =
             ed.events.recv_timeout(end.saturating_duration_since(std::time::Instant::now())).expect("read");
         ed.handle_event(ev);
@@ -246,7 +246,7 @@ fn claude_sees_the_card_by_its_title_only() {
     assert!(ok.status.success());
     let r = crate::gitrepo::repo(&repo).unwrap();
     let mut ed = Editor::new(Config::default());
-    ed.session.root = dir.clone();
+    ed.workspace.root = dir.clone();
     ed.git_trust_check(&r);
     let full = ed.ui_state();
     let card = full.cards.iter().find(|c| c.kind == "git-trust").expect("the card");
@@ -275,7 +275,7 @@ fn claude_sees_the_card_by_its_title_only() {
 fn opening_a_file_there_asks() {
     let (dir, repo) = repository("open");
     let mut ed = Editor::new(Config::default());
-    ed.session.root = repo.clone();
+    ed.workspace.root = repo.clone();
     ed.git_auto = true;
     ed.open(&repo.join("a.txt")).unwrap();
     let end = std::time::Instant::now() + crate::test_results::PATIENCE;
