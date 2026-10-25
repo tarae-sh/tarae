@@ -10872,6 +10872,73 @@ pub(crate) fn card_line(ed: &Editor) -> Option<String> {
     p.screen().rows(x as u16, w as u16).nth(y + h - 1)
 }
 
+/// The front card's bottom line in the last frame drawn checked against the rule that lays it, on any system — for a
+/// test whose card holds a path (`/private/tmp/…` on macOS, `/tmp/…` on Linux, a pid's digits: the card's width
+/// isn't one number): `says` (its way in, its answers, what lists the cards behind) after `╰─ ` — a run before it
+/// only where `esc back` took the way in's place, as long as their difference (`way_w`) — then a run to the corner,
+/// the line as wide as the card; and the card as wide as what lays it (`OfferCard::laid`): over the chat's foot, the
+/// chat's width; else the widest of its text (and 4 cells) and its title (and 6) — where a line of what it says
+/// wrapped, its reading width from the layout (up to `CARD_SLACK` more, for fewer rows) — or that line's own need,
+/// whichever is wider. So a run of more than one `─` before the corner is the text's, the title's, the reading
+/// width's or the chat's, never slack. Err: what differs, with the card.
+#[cfg(test)]
+pub(crate) fn card_line_holds(ed: &Editor, says: &str) -> Result<(), String> {
+    let (x, y, w, h) = ed.screen.offer_card.ok_or("no card drawn")?;
+    let (bytes, cols, rows) = ed.last_frame.as_ref().ok_or("no frame drawn")?;
+    let mut p = vt100::Parser::new(*rows, *cols, 0);
+    p.process(bytes);
+    let card: Vec<String> = p.screen().rows(x as u16, w as u16).skip(y).take(h).collect();
+    let shown = card.join("\n");
+    let line = card.last().map(String::as_str).unwrap_or_default();
+    // (the line: `╰─`, a run where `esc back` took the way in's place — the cells between them —, `says`, a run, `╯`)
+    let back = format!("{} {}", ESC_BACK.0, ESC_BACK.1);
+    let lead = match says.starts_with(&back) {
+        true => way_w(&ed.key_said("C-q")).saturating_sub(back.width()),
+        false => 0,
+    };
+    let head = format!("╰─{} {says} ", "─".repeat(lead));
+    let run = (line.strip_prefix(&head).and_then(|l| l.strip_suffix('╯')))
+        .filter(|r| !r.is_empty() && r.chars().all(|c| c == '─'))
+        .ok_or_else(|| format!("its bottom line isn't `{head}─╯`:\n{shown}"))?;
+    if line.width() != w {
+        return Err(format!("its bottom line is {} wide, the card {w}:\n{shown}", line.width()));
+    }
+    // (what else lays its width: its text — a cell of padding and its edge each side — and its title on the top line)
+    let body = &card[1..h.saturating_sub(1)];
+    let text = (body.iter().map(|r| r.chars().skip(2).collect::<String>()))
+        .map(|r| r.trim_end_matches('│').trim_end().width())
+        .max()
+        .unwrap_or(0);
+    let title = card[0].strip_prefix("╭─ ").unwrap_or_default();
+    let title = title.trim_end_matches('╮').trim_end_matches('─').trim_end().width();
+    let lay = Layout::new(ed, *cols, *rows);
+    // (what lays it but its line: the widths it may be — one, or the reading width's span where its text wrapped)
+    let (least, most) = match asks_foot(ed, &lay) {
+        Some((_, aw, ..)) => (aw.saturating_sub(2), aw.saturating_sub(2)),
+        None => {
+            let o = ed.offers.first().ok_or("no card up")?;
+            let need = (text + 4).max(title + 6);
+            match o.question.lines().any(|l| l.trim_end().width() > text) {
+                // (wrapped: its rows ragged under its reading width, `laid`'s; a title wider than that, the title's)
+                true => {
+                    let reading = (lay.edit_w / 2).clamp(30, 56).min(lay.edit_w.saturating_sub(8)) + 4;
+                    (need.max(reading), need.max(reading + CARD_SLACK))
+                }
+                false => (need, need),
+            }
+        }
+    };
+    match run.chars().count() == 1 {
+        // (its line decides: the card no narrower than the rest would make it)
+        true if w < least => Err(format!("the card is {w} wide, narrower than its text's {least}:\n{shown}")),
+        false if w < least || w > most => {
+            let span = if least == most { least.to_string() } else { format!("{least}–{most}") };
+            Err(format!("a run before its corner, yet the card is {w} wide, not its text's {span}:\n{shown}"))
+        }
+        _ => Ok(()),
+    }
+}
+
 /// The chat's queued row keeps at least this much of the last message's start, narrow (`Chat::queued_said`).
 const QUEUED_LAST_MIN: usize = 12;
 
@@ -18475,6 +18542,121 @@ mod tests {
             let name = r.split(' ').next().unwrap();
             assert!(before.iter().any(|b| b.split(' ').next() == Some(name)), "{name} moved in: {text}");
         }
+    }
+
+    /// `card_line_holds` reads the rule, not a width (#126: a path's length is the system's): a card's text narrower
+    /// than its bottom line, as wide as it, wider (a run before the corner), wrapped, and over the chat's foot — each
+    /// holds; another form doesn't.
+    #[test]
+    fn a_cards_bottom_line_is_checked_by_its_rule_whatever_its_texts_width() {
+        use crate::offer::{Offer, What};
+        // (the form each width gives is its own test's: here what's drawn, its width checked)
+        let says = |line: &str| {
+            let l = line.trim_start_matches("╰─ ").trim_end_matches('╯').trim_end_matches('─');
+            l.trim_end().to_string()
+        };
+        for (n, chat) in [(4, false), (14, false), (40, false), (50, false), (90, false), (40, true)] {
+            let mut ed = Editor::new(crate::config::Config::default());
+            let what = What::Screen { call: crate::tools::Call::test(1) };
+            ed.push_offer(Offer::new("Asks".into(), &"x".repeat(n), "", String::new(), what));
+            if chat {
+                ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+            }
+            render(&mut ed, &mut Vec::new(), 140, 40).unwrap();
+            let line = card_line(&ed).unwrap();
+            assert_eq!(card_line_holds(&ed, &says(&line)), Ok(()), "{n} {chat}: {line}");
+            let fewer = says(&line).rsplit_once(" · ").unwrap().0.to_string();
+            assert!(card_line_holds(&ed, &fewer).is_err(), "{n}: another form");
+            // (the text wider than the line: a run before the corner, the card its text's width)
+            if n == 50 {
+                assert!(line.ends_with("──╯"), "{line}");
+            }
+            // The same card drawn wider than what lays it — a cell, or past the reading width's slack where it
+            // wrapped — and, where a run before its corner leaves room, a cell narrower: the width refused
+            let wrapped = n == 90;
+            let by = if wrapped { CARD_SLACK as isize + 1 } else { 1 };
+            let mut wide = redrawn(&ed, by);
+            let said = card_line_holds(&wide, &says(&card_line(&wide).unwrap()));
+            assert!(
+                said.as_ref().is_err_and(|e| e.contains("the card is")),
+                "{n} {chat}: {by} wider: {said:?}"
+            );
+            if line.ends_with("──╯") && !wrapped {
+                wide = redrawn(&ed, -1);
+                let said = card_line_holds(&wide, &says(&card_line(&wide).unwrap()));
+                assert!(
+                    said.as_ref().is_err_and(|e| e.contains("the card is")),
+                    "{n} {chat}: narrower: {said:?}"
+                );
+            }
+        }
+        // (`esc back`'s run before it is its own, the way in's cells less its own: never on `C-q answer`)
+        let mut ed = Editor::new(crate::config::Config::default());
+        let what = What::Screen { call: crate::tools::Call::test(1) };
+        ed.push_offer(Offer::new("Asks".into(), "xxxx", "", String::new(), what));
+        ed.card_focus_front();
+        render(&mut ed, &mut Vec::new(), 140, 40).unwrap();
+        let line = card_line(&ed).unwrap();
+        assert!(line.starts_with("╰─── esc back · "), "{line}");
+        let back = line.trim_start_matches('╰').trim_start_matches('─').trim_start();
+        let back = back.trim_end_matches('╯').trim_end_matches('─').trim_end();
+        assert_eq!(card_line_holds(&ed, back), Ok(()), "{line}");
+        let way = back.replacen("esc back", "C-q answer", 1);
+        let drifted = redrawn_line(&ed, &format!("╰─── {way} ─╯"));
+        assert!(card_line_holds(&drifted, &way).is_err(), "a run before `C-q answer`");
+    }
+
+    /// The editor's last frame with its front card redrawn `by` cells wider (less, narrower) — its right edge kept,
+    /// a `─` or a blank more or fewer before each row's last cell — for `card_line_holds`' own test.
+    fn redrawn(ed: &Editor, by: isize) -> Editor {
+        let (x, y, w, h) = ed.screen.offer_card.unwrap();
+        let (bytes, cols, rows) = ed.last_frame.clone().unwrap();
+        let mut p = vt100::Parser::new(rows, cols, 0);
+        p.process(&bytes);
+        let card: Vec<String> = p.screen().rows(x as u16, w as u16).skip(y).take(h).collect();
+        let card: Vec<String> = (card.iter().enumerate())
+            .map(|(i, r)| {
+                let mut c: Vec<char> = r.chars().collect();
+                let end = c.pop().unwrap();
+                match by {
+                    1.. => c.extend(std::iter::repeat_n(
+                        if i == 0 || i == h - 1 { '─' } else { ' ' },
+                        by as usize,
+                    )),
+                    _ => c.truncate(c.len() - by.unsigned_abs()),
+                }
+                c.push(end);
+                c.into_iter().collect()
+            })
+            .collect();
+        let x = (x as isize - by) as usize;
+        framed(ed, (x, y, (w as isize + by) as usize, h), &card)
+    }
+
+    /// The editor's last frame with its front card's bottom line `line` (the card as drawn else).
+    fn redrawn_line(ed: &Editor, line: &str) -> Editor {
+        let (x, y, w, h) = ed.screen.offer_card.unwrap();
+        let (bytes, cols, rows) = ed.last_frame.clone().unwrap();
+        let mut p = vt100::Parser::new(rows, cols, 0);
+        p.process(&bytes);
+        let mut card: Vec<String> = p.screen().rows(x as u16, w as u16).skip(y).take(h).collect();
+        *card.last_mut().unwrap() = line.into();
+        framed(ed, (x, y, w, h), &card)
+    }
+
+    /// An editor like `ed` whose last frame is `card`'s rows at `rect` on a blank screen of the same size.
+    fn framed(ed: &Editor, rect: Rect4, card: &[String]) -> Editor {
+        let (_, cols, rows) = ed.last_frame.clone().unwrap();
+        let mut bytes = b"\x1b[2J".to_vec();
+        for (i, r) in card.iter().enumerate() {
+            bytes.extend(format!("\x1b[{};{}H{r}", rect.1 + i + 1, rect.0 + 1).into_bytes());
+        }
+        let mut out = Editor::new(crate::config::Config::default());
+        out.offers = ed.offers.clone();
+        out.workspace.claude.chat = ed.workspace.claude.chat.as_ref().map(|_| crate::chat::Chat::new());
+        out.screen.offer_card = Some(rect);
+        out.last_frame = Some((bytes, cols, rows));
+        out
     }
 
     /// Where the asks float (P3 step 7d): the chat open, over its foot at its width — a cell in from its line and the

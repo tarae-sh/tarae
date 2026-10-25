@@ -8130,9 +8130,10 @@ mod tests {
         crate::term::render(&mut ed, &mut bytes, 140, 40).unwrap();
         let mut parser = vt100::Parser::new(40, 140, 0);
         parser.process(&bytes);
-        // (its answers on its bottom line, the form its width gives)
-        let line = "╰─ C-q answer · y once · a chat · s session · A always · n no ─────╯";
-        assert_eq!(crate::term::card_line(&ed).as_deref(), Some(line), "{}", parser.screen().contents());
+        // (its answers on its bottom line, the form its width gives — the card as wide as what it reads makes it)
+        let says = "C-q answer · y once · a chat · s session · A always · n no";
+        let s = parser.screen().contents();
+        crate::term::card_line_holds(&ed, says).unwrap_or_else(|e| panic!("{e}\n{s}"));
         let o = ed.offers.first().map(|o| (o.id, o.rev)).unwrap();
         ed.card_focus = Some((o.0, o.1));
         answer(&mut ed, "a");
@@ -9889,9 +9890,10 @@ mod tests {
         // `a`: this conversation — and it runs again now
         feed(&mut ed, "<ret>");
         let s = settled(&mut ed, crate::blocked::GRANT_TITLE);
-        // (its answers on its bottom line, the form its width gives — `a`, `s`, `A` never a bare letter)
-        let line = "╰─── esc back · y once · a chat · s session · A always · n ─╯";
-        assert_eq!(crate::term::card_line(&ed).as_deref(), Some(line), "{s}");
+        // (its answers on its bottom line, the form its width gives — `a`, `s`, `A` never a bare letter; the card as
+        // wide as the folder it names makes it)
+        let says = "esc back · y once · a chat · s session · A always · n";
+        crate::term::card_line_holds(&ed, says).unwrap_or_else(|e| panic!("{e}\n{s}"));
         feed(&mut ed, "a");
         assert!(ed.workspace.claude.chat.as_ref().unwrap().allowed.write.contains(&deep));
         assert!(told(&ed, "The user let your commands write in"));
@@ -10294,9 +10296,10 @@ mod tests {
             "{q}"
         );
         assert!(s.contains("marker.txt"), "{s}");
-        // (its answers on its bottom line, the form its width gives — `a`, `s`, `A` never a bare letter)
-        let line = "╰─ C-q answer · y · a chat · s session · A always · n ─────╯";
-        assert_eq!(crate::term::card_line(&ed).as_deref(), Some(line), "{s}");
+        // (its answers on its bottom line, the form its width gives — `a`, `s`, `A` never a bare letter; the card as
+        // wide as its path makes it, whatever the system's temp folder: #126, `/tmp/…` on Linux)
+        let says = "C-q answer · y · a chat · s session · A always · n";
+        crate::term::card_line_holds(&ed, says).unwrap_or_else(|e| panic!("{e}\n{s}"));
         answer(&mut ed, "n");
         let a = answered(&mut ed, "p2");
         assert_eq!(a["behavior"], "deny");
