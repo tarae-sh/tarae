@@ -104,11 +104,12 @@ recipe, and the tests runnable without a cloud VM.
 
 In this order.
 
-**The main line from here** (user, 2026-10-25): panes P3's last steps (the toast look on shots, then step 8, follow
-per pane) → C0 (the workspace split out of the session) → the cleanup audit (§1 item 7: its plan written meanwhile,
-the user deciding each line) → the crate split (§1 item 6) → Orchestra Part I → P3b and the terminal line (§4). Beside
-it, in sessions of their own: motion's next pieces (the drying ink landing, then the honest shimmer), what PR #6's
-merge left (a race suspected in one test, `tests/perf.rs`'s scenarios, the size baseline), frictions. Code mode (§3)
+**The main line from here** (user, 2026-10-25): panes P3's last step (step 8, follow per pane — the toast
+became news on the way: never focused, no frame, a press opens `:messages`, `6a7c457e`) → C0 (the workspace split out of
+the session) → the cleanup audit (§1 item 7, its plan decided) → the crate split (§1 item 6) → Orchestra Part I → P3b and
+the terminal line (§4). Beside it, in sessions of their own: motion's next pieces (the honest shimmer, then the strip),
+what PR #6's merge left (`8059c6d8`: a test helper's settle, a restarted tarae's frames, trace's sorts — and two found on
+the way: the other tests' own settles with the same gap, a file's git base read that may land out of order), frictions. Code mode (§3)
 and the review lens's A + E wait on their records' data.
 
 ### 1. Publishing
@@ -156,7 +157,11 @@ Items 1–3 are done (2026-10-16); 4 is the user's: the repository made public. 
    plan first — each feature's use (`:features`' counts, the card record), its code, its fit — keep · fold · a plugin
    · gone, the user deciding. Decided ahead (CLAUDE.md's "Cleanup" bullet): `llm.edit-tools`' other modes gone, the
    ask flow folded into the chat, keep-warm replaced by Claude Code's idle compaction (`/compact` past 200k after ~54 min idle), shuttle keys gone, the debugger and the diagram view
-   out of the core, Claude's rarely used tools measured.
+   out of the core, Claude's rarely used tools measured. **The plan is written and decided** (2026-10-25, main's
+   `target/sb/audit-plan.md`, from 12 days of the records: every answer as recommended, `:session-apply` kept — CLAUDE.md's
+   Cleanup bullet has them): about 11,300 lines go, in the plan's order — the diagram model, the native edit modes,
+   shuttle keys (§4's shuttle part with them), the ask into the chat, keep-warm into idle compaction, four of Claude's
+   tools, then the debugger to a plugin.
 
 After it, the rest goes on in this order.
 
@@ -655,8 +660,10 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
   flashes (undo/redo, `.`, a paste that doesn't select), Claude's fresh writing dries, an honest shimmer on the turn's
   word (moved by the stream), the turn's stops as a strip of marks (one vocabulary with the knots), a card's answer
   pressed as a stamp — `editor.motion` yours, contact sheets for the user's look. Built: the flash (`01b1f1b8`: undo,
-  redo, `.`, a yank — its "yanked" then a note), the stamp's press (`4bee0287`); the drying ink built, its sheets with
-  the user; next the honest shimmer (the stream measured first) and the strip.
+  redo, `.`, a yank — its "yanked" then a note), the stamp's press (`4bee0287`); the drying ink (`48872cdf`); the honest
+  shimmer under way (the stream measured first: summarized thinking lands whole after a silence, so the wave stays where
+  nothing streams by nature — a think, a run, a request on its way — and the band, its centre the accent, moves only as
+  deltas come); then the strip.
 - **Short videos, made ahead** (user, 2026-10-23): scripted scenes as docshots are — 16:9, English captions, no
   voice — for YouTube, the homepage and the README; a live stream once orchestra drives (Part I) and there's a
   homepage and a release to point at. Planned and measured (collab's spike: 1080p, MP4 ~600 KB a clip); made — `cargo xtask
