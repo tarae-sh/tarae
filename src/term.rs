@@ -5655,10 +5655,23 @@ fn draw_text(
     // are rows of their own (red) — and so an edit of Claude's that follow or replay shows. One diff a view:
     // the signs, washes and rows all from `shows.changes`
     let hunks = shows.changes.hunks(doc);
-    let added_bg = blend(ui.diff_plus.fg, ui.tint, 0.10).or(ui.base.bg);
-    let added_here_bg = blend(ui.diff_plus.fg, ui.tint, 0.18).or(ui.base.bg);
+    let added_bg = blend(ui.diff_plus.fg, ui.tint, ADDED_MIX).or(ui.base.bg);
+    let added_here_bg = blend(ui.diff_plus.fg, ui.tint, ADDED_HERE_MIX).or(ui.base.bg);
     let removed_bg = blend(ui.diff_minus.fg, ui.tint, 0.14).or(ui.base.bg);
     let added = |line: usize| shows.changes.washed(&hunks, line);
+    // Claude's fresh writing drying (§2, `motion.rs`: a pane's own text) — one sign: on a line already on a change's
+    // wash that wash lands deeper and dries to its own; elsewhere the change's green over the line's ground, drying
+    let wet = editor.wet_on(doc).filter(|_| std::ptr::eq(text, &doc.text));
+    let wet_at = |line: usize| -> Option<f32> {
+        let (lines, k) = wet?;
+        let (a, b) = (text.line_to_byte(line), text.line_to_byte((line + 1).min(text.len_lines())));
+        let i = lines.partition_point(|r| r.end <= a);
+        lines.get(i).is_some_and(|r| r.start < b).then_some(k)
+    };
+    #[cfg(test)]
+    let seen_wet = |line: usize, how: &str, bg: Option<Color>| {
+        MOTION_SEEN.with_borrow_mut(|s| s.push(("wet", line, format!("{how} {bg:?}"))))
+    };
     // Merge conflicts: ours on the green wash, theirs on the changed one's, the base and markers fainter
     let delta_fg = editor.theme.try_get("diff.delta").and_then(|s| s.fg);
     let conflict_bg = |line: usize| -> Option<Style> {
@@ -6024,18 +6037,35 @@ fn draw_text(
             // A line the edit under review takes out
             Style { bg: removed_bg, ..ui.base }
         } else if added(line) {
-            // A change shown is never hidden by the cursor line: on it, its wash a step stronger
-            Style { bg: if here { added_here_bg } else { added_bg }, ..ui.base }
-        } else if here {
-            ui.cursorline
+            // A change shown is never hidden by the cursor line: on it, its wash a step stronger — deeper still
+            // while Claude's writing on it dries
+            let (bg, mix) = if here { (added_here_bg, ADDED_HERE_MIX) } else { (added_bg, ADDED_MIX) };
+            let deeper = wet_at(line).and_then(|k| wet_deeper(ui, mix, k));
+            #[cfg(test)]
+            if deeper.is_some() {
+                seen_wet(line, "deeper", deeper);
+            }
+            Style { bg: deeper.or(bg), ..ui.base }
         } else {
-            // Error/warning lines get a very faint wash of that color — so problems stand out when skimming
-            match line_message_here {
-                Some((sev @ 1..=2, ..)) => {
-                    Style { bg: blend(ui.sign[sev as usize].fg, ui.tint, 0.07).or(ui.base.bg), ..ui.base }
+            let st = if here {
+                ui.cursorline
+            } else {
+                // Error/warning lines get a very faint wash of that color — so problems stand out when skimming
+                match line_message_here {
+                    Some((sev @ 1..=2, ..)) => {
+                        Style { bg: blend(ui.sign[sev as usize].fg, ui.tint, 0.07).or(ui.base.bg), ..ui.base }
+                    }
+                    _ if gaze.as_ref().is_some_and(|g| g.contains(&line)) => Style { bg: gaze_bg, ..ui.base },
+                    _ => ui.base,
                 }
-                _ if gaze.as_ref().is_some_and(|g| g.contains(&line)) => Style { bg: gaze_bg, ..ui.base },
-                _ => ui.base,
+            };
+            match wet_at(line).and_then(|k| wet_bg(ui, st.bg, k)) {
+                Some(bg) => {
+                    #[cfg(test)]
+                    seen_wet(line, "wash", Some(bg));
+                    Style { bg: Some(bg), ..st }
+                }
+                None => st,
             }
         };
         ground(out, lay, y, line_base)?;
@@ -7400,6 +7430,31 @@ fn flash_bg(ui: &Ui, ground: Option<Color>, k: f32) -> Option<Color> {
     let accent = rgb(ui.accent.fg?)?;
     let wet = drying(accent, rest, FLASH_MIX);
     let [r, g, b] = drying(wet, rest, k);
+    Some(Color::Rgb { r, g, b })
+}
+
+/// A change's wash over the ground (code review, a shown edit): its green's mix — a step stronger on the cursor line.
+const ADDED_MIX: f32 = 0.10;
+const ADDED_HERE_MIX: f32 = 0.18;
+/// How strong Claude's fresh writing's green is over a line's ground as it lands (§2), where no wash is.
+const WET_MIX: f32 = 0.16;
+
+/// A line Claude just wrote, where no wash is (§2): the change's green at `WET_MIX` over `ground` (the line's own,
+/// else the theme's, else `ui.tint` — a transparent theme), dried by `k`. None where a colour is a named one.
+fn wet_bg(ui: &Ui, ground: Option<Color>, k: f32) -> Option<Color> {
+    use crate::chrome::rgb;
+    let rest = rgb(ground.or(ui.base.bg).or(ui.tint)?)?;
+    let plus = rgb(ui.diff_plus.fg?)?;
+    let [r, g, b] = drying(drying(plus, rest, WET_MIX), rest, k);
+    Some(Color::Rgb { r, g, b })
+}
+
+/// A change's wash where Claude just wrote (§2): its own `mix` doubled as it lands, dried by `k` to its usual — the
+/// one wash, deeper, never a second. None where a colour is a named one.
+fn wet_deeper(ui: &Ui, mix: f32, k: f32) -> Option<Color> {
+    use crate::chrome::rgb;
+    let (plus, tint) = (rgb(ui.diff_plus.fg?)?, rgb(ui.tint?)?);
+    let [r, g, b] = drying(drying(plus, tint, 2.0 * mix), drying(plus, tint, mix), k);
     Some(Color::Rgb { r, g, b })
 }
 
@@ -19623,7 +19678,7 @@ mod tests {
     /// keys between them (each hop a layout kept: no write here, `layouts_path` is None in tests) within a frame.
     /// P3 step 6: with the tests group docked right of them (a run of 300 results, side by side), 200 columns wide —
     /// at 160 beside the side panel and the chat it would fold into the slot. Step 7: a task's group and the session list
-    /// floating over them.
+    /// floating over them. Motion §2: a 200-line write of Claude's drying in the front pane.
     #[test]
     fn perf_budget_key_to_frame_with_four_panes() {
         if crate::test_results::unoptimized("term::tests::perf_budget_key_to_frame_with_four_panes") {
@@ -19704,6 +19759,23 @@ mod tests {
             assert!(ed.docked_in_sight(crate::pane::GroupKind::Tests), "the tests group docked beside them");
             assert!(ed.floating_in_sight(crate::pane::GroupKind::Task), "the task's floating over them");
             assert_eq!(ed.screen.floating.borrow().len(), 2, "and the session list");
+            // (motion §2: a 200-line write of Claude's drying where the front pane is — its age pinned mid-drying)
+            ed.motion_drawn = true;
+            ed.motion_at = Some(std::time::Duration::from_millis(300));
+            let before = ed.doc().text.clone();
+            let written: String = (0..20_000)
+                .map(|i| match (11_900..12_100).contains(&i) {
+                    true => format!("fn f{i}(x: u32) -> u32 {{ x * {i} }}\n"),
+                    false => format!("fn f{i}(x: u32) -> u32 {{ x + {i} }}\n"),
+                })
+                .collect();
+            crate::disk::reload_text(ed.doc_mut(), &Rope::from_str(&written));
+            let id = ed.doc().id;
+            ed.wet(id, &before);
+            assert_eq!(ed.doc().wet.as_ref().map(Vec::len), Some(1), "its 200 lines wet");
+            MOTION_SEEN.with_borrow_mut(Vec::clear);
+            render(&mut ed, &mut buf, 200, 48).unwrap();
+            assert!(MOTION_SEEN.with_borrow(|s| s.iter().any(|(k, ..)| *k == "wet")), "and drawn drying");
             keys.iter().map(|k| key_to_frame(&mut ed, &mut buf, k, 200, 48)).collect()
         });
         measured("key_to_frame_with_four_panes", worst, budget);

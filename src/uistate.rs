@@ -768,7 +768,8 @@ pub struct UiState {
     pub unfocused: bool,
 }
 
-/// A motion as the state lists it: its kind (`flash`), what it shows (`undo`, `yank`, …), the ms until it's gone.
+/// A motion as the state lists it: its kind (`flash`, `press`, `wet`), what it shows (`undo`, `yank`, `stamp`, `write`,
+/// …), the ms until it's gone.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MotionState {
     pub kind: &'static str,

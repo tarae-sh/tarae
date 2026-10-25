@@ -18,6 +18,13 @@
 //! flash's drying (`pressed`, `term::stamp_spans`); on the row still in hand it stays lit. Only at `full`: at `calm`
 //! and `none` it's dry at once (nothing on a clock).
 //!
+//! Claude's fresh writing dries (§2: `wet`, `What::Wet` by document, its lines `Document.wet`): where a write you
+//! didn't watch land is in an open buffer — review at the end's unasked edit, a change set's `y` all, a run of Claude's
+//! that rewrote the file (`run_wrote`, as the buffer takes it: `wet_sync`) — the lines it left (`written`; a pure
+//! deletion none) land on the change's green and dry over `WET` (`term::wet_bg`); on a line already on a change's wash
+//! that wash lands deeper and dries to its own instead (`term::wet_deeper` — one sign). None after your `y` in its
+//! review (the stamp's press says that act). Only at `full`.
+//!
 //! What a flash says (`flash_saying`: a yank's "yanked …") is a note only where a frame drew that flash: kept in
 //! `:messages` at once, its toast after the frame that didn't draw it (the chat's transcript draws no flash, a
 //! buffer moved or out of sight, named colours) or as it goes undrawn (`words_drawn`, `words_unseen`).
@@ -107,6 +114,7 @@ impl Editor {
         let life = match what {
             What::Flash { .. } => FLASH,
             What::Press(_) => PRESS,
+            What::Wet(_) => WET,
         };
         self.motions.push(Moving {
             what,
@@ -123,6 +131,79 @@ impl Editor {
         if self.motion() == Motion::Full {
             self.motion_start(What::Press(place));
         }
+    }
+
+    /// Claude's write landed in `path` unwatched (§2: review at the end's unasked edit, a change set's `y` all, a
+    /// run of Claude's that rewrote it): where an open buffer is the file as written (`after`), the lines it left
+    /// are wet (`Document.wet`) and dry over `WET`, a newer write's in their place. Pure deletions leave none (no ink
+    /// left). Only at `full` — at `calm` and `none` there's no wet ink.
+    pub fn wet_landed(&mut self, path: &std::path::Path, before: &ropey::Rope, after: &ropey::Rope) {
+        if !self.moving() {
+            return;
+        }
+        let Some(id) = (self.docs.iter())
+            .find(|d| d.path.as_deref() == Some(path) && !d.loading && d.text == *after)
+            .map(|d| d.id)
+        else {
+            return;
+        };
+        self.wet(id, before);
+    }
+
+    /// Document `id` took Claude's write over `before` (its text now the write's): the lines it left are wet, a
+    /// newer write's in their place; a pure deletion leaves what was wet as it is. Only at `full`.
+    pub fn wet(&mut self, id: DocId, before: &ropey::Rope) {
+        if !self.moving() {
+            return;
+        }
+        let Some(doc) = self.docs.iter_mut().find(|d| d.id == id) else { return };
+        let lines = written(before, &doc.text);
+        if lines.is_empty() {
+            return;
+        }
+        doc.wet = Some(lines);
+        self.motion_start(What::Wet(id));
+    }
+
+    /// A run of Claude's changed `files` (`snapshot::Change`, `tools.rs`): each open buffer it rewrote is wet as it
+    /// takes the text — now if it has (`wet_landed`), else once it does (the disk watch's reload, the turn's
+    /// gather: `wet_sync`). A buffer with your unsaved edits takes nothing; none waits past its next version.
+    pub fn run_wrote(&mut self, files: &[crate::snapshot::Change]) {
+        if !self.moving() {
+            return;
+        }
+        for c in files {
+            let (Some(was), Some(now)) = (
+                c.before.as_ref().and_then(|b| b.text.as_deref()),
+                c.after.as_ref().and_then(|b| b.text.as_deref()),
+            ) else {
+                continue;
+            };
+            // (the open buffer first: a run that rewrote the tree builds ropes only for the files open)
+            let Some(doc) = self.docs.iter().find(|d| d.path.as_deref() == Some(c.path.as_path())) else {
+                continue;
+            };
+            let taken = doc.text == now;
+            if !taken && doc.is_modified() {
+                continue;
+            }
+            let (doc, version) = (doc.id, doc.version());
+            let (before, after) = (ropey::Rope::from_str(was), ropey::Rope::from_str(now));
+            if taken {
+                self.wet_landed(&c.path, &before, &after);
+            } else {
+                self.wet_waiting.retain(|w| w.doc != doc);
+                self.wet_waiting.push(Waiting { doc, version, path: c.path.clone(), before, after });
+            }
+        }
+    }
+
+    /// The lines of `doc` drying now, and how wet (0 ‥ 1) — none where nothing is drawn or it's dry.
+    pub fn wet_on<'d>(&self, doc: &'d crate::document::Document) -> Option<(&'d [Range<usize>], f32)> {
+        let lines = doc.wet.as_deref()?;
+        let m = self.motions.iter().find(|m| m.what == What::Wet(doc.id))?;
+        let k = self.motion_strength(m);
+        (k > 0.0).then_some((lines, k))
     }
 
     /// The diff of `doc` at `version` landed (`git_schedule`): a hunk reset waiting on it (`press_on_diff`) presses
@@ -248,13 +329,46 @@ impl Editor {
         if self.motion_at.is_some() || self.motions.is_empty() {
             return false;
         }
-        let (gone, kept): (Vec<Moving>, Vec<Moving>) = std::mem::take(&mut self.motions)
-            .into_iter()
-            .partition(|m| crate::clock::since(m.born) >= shown_for(m.life));
+        // (and a document's drying whose lines went — an undo put another text back: nothing left to draw)
+        let docs = &self.docs;
+        let dry = |id: DocId| docs.iter().find(|d| d.id == id).is_none_or(|d| d.wet.is_none());
+        let (gone, kept): (Vec<Moving>, Vec<Moving>) =
+            std::mem::take(&mut self.motions).into_iter().partition(|m| {
+                crate::clock::since(m.born) >= shown_for(m.life) || matches!(m.what, What::Wet(id) if dry(id))
+            });
         self.motions = kept;
         let any = !gone.is_empty();
+        for m in &gone {
+            if let What::Wet(id) = m.what
+                && let Some(d) = self.docs.iter_mut().find(|d| d.id == id)
+            {
+                d.wet = None;
+            }
+        }
         self.words_unseen(gone);
         any
+    }
+}
+
+/// Every event (`handle_event`): a buffer a run of Claude's rewrote (`run_wrote`) whose version moved — wet if it's
+/// now the file as the run left it, else let go (your edit, another write).
+pub fn wet_sync(ed: &mut Editor) {
+    if ed.wet_waiting.is_empty() {
+        return;
+    }
+    let mut landed = Vec::new();
+    ed.wet_waiting.retain(|w| match ed.docs.iter().find(|d| d.id == w.doc) {
+        Some(d) if d.version() == w.version => true,
+        Some(d) => {
+            if d.text == w.after {
+                landed.push((w.path.clone(), w.before.clone(), w.after.clone()));
+            }
+            false
+        }
+        None => false,
+    });
+    for (path, before, after) in landed {
+        ed.wet_landed(&path, &before, &after);
     }
 }
 
@@ -267,6 +381,8 @@ mod tests;
 pub const FLASH: Duration = Duration::from_millis(300);
 /// How long a stamp's press dries (§5): lit on its key's frame, dry at its end — the flash's drying, its time.
 pub const PRESS: Duration = Duration::from_millis(300);
+/// How long Claude's fresh writing dries (§2): drying ink is slow — ten `TICK` steps on the ease-out.
+pub const WET: Duration = Duration::from_secs(1);
 /// The most ranges a flash keeps (a `.` over thousands of cursors flashes none).
 pub const RANGES_MAX: usize = 256;
 /// The most lines an undo's span may cover and still flash (past it, its line diff would be the cost).
@@ -301,6 +417,19 @@ pub enum What {
     Flash { doc: DocId, version: u64, ranges: Vec<Range<usize>>, act: Act },
     /// A stamp your key pressed (§5), where it's drawn.
     Press(Place),
+    /// Claude's fresh writing in a document (§2) — its lines are the document's own (`Document.wet`).
+    Wet(DocId),
+}
+
+/// A buffer a run of Claude's rewrote on disk, waiting to take that text (`Editor::run_wrote`, `wet_sync`): its
+/// version when the run's result came, the file before and after the run.
+#[derive(Clone, Debug)]
+pub struct Waiting {
+    pub(crate) doc: DocId,
+    pub(crate) version: u64,
+    path: std::path::PathBuf,
+    before: ropey::Rope,
+    after: ropey::Rope,
 }
 
 impl What {
@@ -310,6 +439,7 @@ impl What {
         match (self, other) {
             (What::Flash { doc: a, .. }, What::Flash { doc: b, .. }) => a == b,
             (What::Press(a), What::Press(b)) => a == b,
+            (What::Wet(a), What::Wet(b)) => a == b,
             _ => false,
         }
     }
@@ -319,6 +449,7 @@ impl What {
         match self {
             What::Flash { act, .. } => act.name(),
             What::Press(_) => "stamp",
+            What::Wet(_) => "write",
         }
     }
 }
@@ -362,6 +493,7 @@ impl Moving {
         match self.what {
             What::Flash { .. } => "flash",
             What::Press(_) => "press",
+            What::Wet(_) => "wet",
         }
     }
 }
@@ -460,6 +592,38 @@ pub fn undone(old: &ropey::Rope, new: &ropey::Rope) -> Vec<Range<usize>> {
         }
     }
     out
+}
+
+/// The lines a write left, from the text before it to the text after (the one span between their common ends): whole
+/// lines as byte ranges of `new` — within one line that line; across lines each hunk's new lines of a line diff of the
+/// span's lines, what it only took out none (no ink left). Past `LINES_MAX` lines, or `RANGES_MAX` hunks, none.
+pub fn written(old: &ropey::Rope, new: &ropey::Rope) -> Vec<Range<usize>> {
+    let Some(c) = crate::disk::minimal_change(old, new).filter(|c| !c.insert.is_empty()) else {
+        return Vec::new();
+    };
+    let line = |l: usize| new.line_to_byte(l.min(new.len_lines()));
+    let (from, to) = (c.from, c.from + c.insert.len());
+    let (l0, l1) = (new.byte_to_line(from), new.byte_to_line(to));
+    if l0 == l1 {
+        return std::iter::once(line(l0)..line(l0 + 1)).filter(|r| !r.is_empty()).collect();
+    }
+    let (o0, o1) = (old.byte_to_line(c.from), old.byte_to_line(c.to));
+    if l1 - l0 > LINES_MAX || o1 - o0 > LINES_MAX {
+        return Vec::new();
+    }
+    let line_end = |t: &ropey::Rope, l: usize| t.line_to_byte((l + 1).min(t.len_lines()));
+    let a = old.byte_slice(old.line_to_byte(o0)..line_end(old, o1)).to_string();
+    let b = new.byte_slice(new.line_to_byte(l0)..line_end(new, l1)).to_string();
+    let mut out: Vec<Range<usize>> = Vec::new();
+    for (_, h) in crate::replay::hunks(&a, &b).into_iter().filter(|(_, h)| !h.lines.is_empty()) {
+        let r = line(l0 + h.lines.start)..line(l0 + h.lines.end);
+        match out.last_mut() {
+            Some(l) if r.start <= l.end => l.end = l.end.max(r.end),
+            _ if r.is_empty() => {}
+            _ => out.push(r),
+        }
+    }
+    if out.len() > RANGES_MAX { Vec::new() } else { out }
 }
 
 /// Whether macOS's Reduce Motion is on: `defaults read com.apple.universalaccess reduceMotion` says `1` (the

@@ -4601,6 +4601,8 @@ fn run_changes_now(
                             c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Note, said.clone(), ""));
                         }
                     }
+                    // (an open buffer it rewrote dries as it takes the text — §2)
+                    ed.run_wrote(&files);
                     if turn && !files.is_empty() {
                         crate::checkpoint::record_run(ed, files);
                     } else if !files.is_empty()

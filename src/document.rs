@@ -318,6 +318,10 @@ pub struct Document {
     /// While an act that flashes what it touched runs (`.`, a paste): what each transaction wrote, the earlier
     /// ones mapped forward — empty where it only took out (`motion.rs`, `Editor::recording`).
     pub touched: Option<Vec<std::ops::Range<usize>>>,
+    /// Claude's fresh writing here, drying (§2, `motion.rs`: `Editor::wet`): the whole lines a write you didn't
+    /// watch land left, as byte ranges mapped forward by every edit since — one record, a newer write's in its
+    /// place; its time is its motion's (`What::Wet`), let go with it.
+    pub wet: Option<Vec<std::ops::Range<usize>>>,
     /// Display name of an unnamed buffer (tutorial etc.) · disposable (quit isn't blocked as "unsaved").
     pub title: Option<String>,
     pub throwaway: bool,
@@ -464,6 +468,7 @@ impl Document {
             git_version: u64::MAX,
             own: Own::default(),
             touched: None,
+            wet: None,
             title: None,
             throwaway: false,
             paint: Vec::new(),
@@ -570,6 +575,13 @@ impl Document {
                 *r = start..tx.map_pos(r.end, Assoc::Before).max(start);
             }
             t.extend(tx.changed());
+        }
+        if let Some(w) = &mut self.wet {
+            for r in w.iter_mut() {
+                let start = tx.map_pos(r.start, Assoc::After);
+                *r = start..tx.map_pos(r.end, Assoc::Before).max(start);
+            }
+            w.retain(|r| !r.is_empty());
         }
         self.set_selection(sel);
         self.next_version += 1;
@@ -750,6 +762,8 @@ impl Document {
         self.selection = snap.selection;
         self.version = snap.version;
         self.paint = snap.paint;
+        // (what was wet isn't where it was in the text put back — undo's own flash says what it took back)
+        self.wet = None;
         if let (Some(s), Some(e)) = (&mut self.syntax, edit) {
             s.edit(&[e]);
         }

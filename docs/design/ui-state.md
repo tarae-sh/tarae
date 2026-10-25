@@ -192,8 +192,8 @@ side git · 4 rows · in hand git:src/term.rs
   `comment` yours · `claude` its Claude's), `sent` (not a draft `space v s` hasn't sent), `state` (`waiting` for
   Claude's answer · `answered` · `open`). Claude's level lists only the sent ones (`notes sent to you: …`) —
   what `reply_to` answers; `reply_to` on a draft is refused.
-- **`motions`** (motion, `motion.rs`) — motions on a clock under way: `kind` (`flash`), `act` (`undo` · `redo` ·
-  `repeat` · `yank` · `paste`), `until_ms` (left until it's gone) — a driver waits for one to end, never sleeps.
+- **`motions`** (motion, `motion.rs`) — motions on a clock under way: `kind` (`flash` · `press` · `wet`), `act` (a flash's `undo` ·
+  `redo` · `repeat` · `yank` · `paste`, a press's `stamp`, Claude's fresh writing's `write`), `until_ms` (left until it's gone) — a driver waits for one to end, never sleeps.
   Not at Claude's level.
 - **`redraw_due`**, **`frames_written`** (ci, 2026-10-24) — how the terminal is written to, as of the frame the
   answer came after, once it went out: `redraw_due` (only while true) the last frame went in parts and the whole

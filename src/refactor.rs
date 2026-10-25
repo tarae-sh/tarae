@@ -334,7 +334,7 @@ fn write(ed: &mut Editor, mut l: Landing, unseen: Vec<FileChange>) {
 /// A change written: an open buffer takes the new text (a deleted or moved file's buffer closes — it never
 /// has the user's unsaved edits: `edittool` refuses those), what Claude knows of the file is its new stamp
 /// (Claude's change only: of the user's it has seen nothing). `row`: Claude's call it is (`Landing.row`).
-fn landed(
+pub(crate) fn landed(
     ed: &mut Editor,
     f: &FileChange,
     stamp: Option<crate::disk::Stamp>,
@@ -356,8 +356,10 @@ fn landed(
         Op::Text | Op::Create => {
             ed.disk_take(&f.path, &f.after, stamp);
             saw(ed, &f.path);
-            // (Claude's, landed unseen: follow where its writing ended, else at its first changed line)
+            // (Claude's, landed unseen: its lines dry — §2 —, follow where its writing ended, else at its first
+            // changed line)
             if let Whose::Claude(_) = whose {
+                ed.wet_landed(&f.path, &f.before, &f.after);
                 crate::follow::wrote(ed, row, &f.path, &f.before, &f.after);
             }
         }

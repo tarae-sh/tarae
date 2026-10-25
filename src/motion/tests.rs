@@ -254,6 +254,199 @@ fn a_flash_is_drawn_on_its_cells_and_dries() {
     assert_eq!(strength(FLASH, m.life), 0.0);
 }
 
+/// §2: the lines a write left — within one line that line, across lines each hunk's new lines whole (not the ones
+/// between), what it only took out none.
+#[test]
+fn a_writes_wet_lines_are_the_lines_it_left() {
+    let lines = |old: &str, new: &str| -> Vec<String> {
+        let n = ropey::Rope::from_str(new);
+        written(&ropey::Rope::from_str(old), &n).iter().map(|r| n.byte_slice(r.clone()).to_string()).collect()
+    };
+    assert_eq!(lines("a\nb\nc\n", "a\nB!\nc\n"), ["B!\n"]);
+    assert_eq!(lines("a\nb\nc\nd\ne\n", "A\nb\nc\nd\nE\n"), ["A\n", "E\n"], "not the lines between");
+    assert_eq!(lines("a\nb\nc\n", "a\nb\nx\ny\nc\n"), ["x\ny\n"]);
+    assert_eq!(lines("a\nb", "a\nbc"), ["bc"], "the last line, no newline after it");
+    assert!(lines("a\nb\nc\n", "a\nc\n").is_empty(), "a pure deletion: no ink left");
+    assert!(lines("one two\n", "one\n").is_empty());
+    assert!(lines("a\n", "a\n").is_empty());
+}
+
+/// The lines of the current document's wet record, as text.
+fn wet(ed: &Editor) -> Vec<String> {
+    let d = ed.doc();
+    d.wet.iter().flatten().map(|r| d.text.byte_slice(r.clone()).to_string()).collect()
+}
+
+/// §2, drawn: Claude's lines landed unwatched are on the change's green over their ground, drying (not drawn in tests
+/// unless turned on); where the edit is shown (`Document::shown`) its own wash lands deeper instead, never a second;
+/// dry at its end, let go with its lines by the tick, its wakes a `TICK` step of its own clock, then none; your edits
+/// since move its lines along; at `calm` and `none` no wet ink, nor for a pure deletion.
+#[test]
+fn claudes_fresh_writing_dries() {
+    let seen = |ed: &mut Editor| -> Vec<(usize, String)> {
+        crate::term::MOTION_SEEN.with_borrow_mut(Vec::clear);
+        crate::term::render(ed, &mut Vec::new(), 80, 12).unwrap();
+        crate::term::MOTION_SEEN.with_borrow(|s| {
+            s.iter().filter(|(k, ..)| *k == "wet").map(|(_, l, how)| (*l, how.clone())).collect()
+        })
+    };
+    let how = |s: &[(usize, String)]| -> Vec<(usize, String)> {
+        s.iter().map(|(l, h)| (*l, h.split(' ').next().unwrap_or_default().to_string())).collect()
+    };
+    let land = |ed: &mut Editor, after: &str| {
+        let before = ed.doc().text.clone();
+        crate::disk::reload_text(ed.doc_mut(), &ropey::Rope::from_str(after));
+        let id = ed.doc().id;
+        ed.wet(id, &before);
+    };
+    let mut ed = editor("a\nb\nc\nd\n");
+    crate::clock::hold();
+    land(&mut ed, "a\nB\nc\nD\n");
+    assert_eq!(wet(&ed), ["B\n", "D\n"]);
+    assert!(seen(&mut ed).is_empty(), "not drawn in tests unless turned on");
+    ed.motion_drawn = true;
+    let landed = seen(&mut ed);
+    assert_eq!(how(&landed), [(1, "wash".into()), (3, "wash".into())], "the green over its lines alone");
+    assert_eq!(ed.motion_wake().map(|d| d.as_millis()), Some(102), "a full TICK on");
+    crate::clock::advance(Duration::from_millis(300));
+    let later = seen(&mut ed);
+    assert_eq!(how(&later), how(&landed));
+    assert_ne!(later[0].1, landed[0].1, "drying");
+    assert_eq!(ed.motion_wake().map(|d| d.as_millis()), Some(102), "on its own clock");
+    // (shown: its wash deeper, not a second one; drying too)
+    let hunk = |l: usize, was: &str, now: &str| crate::replay::Hunk {
+        lines: l..l + 1,
+        removed: vec![was.into()],
+        added: vec![now.into()],
+    };
+    ed.doc_mut().shown = Some(vec![hunk(1, "b", "B"), hunk(3, "d", "D")]);
+    let deeper = seen(&mut ed);
+    assert_eq!(
+        how(&deeper),
+        [(1, "deeper".into()), (3, "deeper".into())],
+        "the shown wash, deeper: one sign"
+    );
+    crate::clock::advance(Duration::from_millis(100));
+    assert_ne!(seen(&mut ed)[0].1, deeper[0].1, "drying to its usual");
+    ed.doc_mut().shown = None;
+    // (dry at its end: nothing drawn, one wake to draw it gone, let go with its lines)
+    crate::clock::advance(Duration::from_millis(400));
+    assert!(seen(&mut ed).is_empty(), "dry at its end");
+    assert_eq!(ed.motion_wake(), Some(Duration::ZERO));
+    ed.schedule_tick();
+    assert!(ed.motions.is_empty() && ed.doc().wet.is_none(), "let go with its lines");
+    assert_eq!(ed.motion_wake(), None, "the wake ends");
+    // (your edit since moves its lines along; a newer write takes its place; a pure deletion leaves none)
+    land(&mut ed, "a\nB\nc\nD!\n");
+    feed(&mut ed, "ggOnew<esc>");
+    assert_eq!(wet(&ed), ["D!\n"]);
+    land(&mut ed, "new\na\nB?\nc\nD!\n");
+    assert_eq!((wet(&ed), ed.motions.len()), (vec!["B?\n".to_string()], 1), "the newer write in its place");
+    ed.schedule_tick();
+    crate::clock::advance(Duration::from_secs(1));
+    ed.schedule_tick();
+    land(&mut ed, "new\na\nc\nD!\n");
+    assert!(ed.doc().wet.is_none() && ed.motions.is_empty(), "a pure deletion: no ink");
+    land(&mut ed, "undo me\nnew\na\nc\nD!\n");
+    feed(&mut ed, "u");
+    assert!(ed.doc().wet.is_none(), "undone: its lines went (undo's flash says what it took back)");
+    ed.schedule_tick();
+    assert!(!ed.motions.iter().any(|m| matches!(m.what, What::Wet(_))), "its drying with them, at the tick");
+    for m in ["calm", "none"] {
+        crate::typed::execute(&mut ed, &format!("set editor.motion {m}")).unwrap();
+        land(&mut ed, &format!("{m}\nnew\na\nc\nD!\n"));
+        let drying = ed.motions.iter().any(|m| matches!(m.what, What::Wet(_)));
+        assert!(ed.doc().wet.is_none() && !drying, "{m}: no wet ink");
+    }
+    crate::clock::release();
+}
+
+/// §2: a run of Claude's that rewrote an open file — its buffer wet as it takes the run's text (the disk watch's
+/// reload, a version later), now where it has already; one with your unsaved edits, or that took another text, none.
+#[test]
+fn a_run_that_rewrote_an_open_file_dries_as_it_reloads() {
+    let (was, now) = ("fn a() {}\nfn b() {}\n", "fn a() {}\nfn b() { 1 }\n");
+    let path = std::path::PathBuf::from("/nowhere/run/a.rs");
+    let blob = |t: &str| Some(crate::snapshot::Blob { id: String::new(), text: Some(t.into()) });
+    let change = crate::snapshot::Change { path: path.clone(), before: blob(was), after: blob(now) };
+    let at = |text: &str| {
+        let mut ed = editor(text);
+        ed.doc_mut().path = Some(path.clone());
+        ed
+    };
+    let mut ed = at(was);
+    ed.run_wrote(std::slice::from_ref(&change));
+    crate::motion::wet_sync(&mut ed);
+    assert!(ed.doc().wet.is_none() && ed.wet_waiting.len() == 1, "waiting for the buffer to take it");
+    crate::disk::reload_text(ed.doc_mut(), &ropey::Rope::from_str(now));
+    crate::motion::wet_sync(&mut ed);
+    assert_eq!((wet(&ed), ed.wet_waiting.len()), (vec!["fn b() { 1 }\n".to_string()], 0));
+    let mut ed = at(now);
+    ed.run_wrote(std::slice::from_ref(&change));
+    assert_eq!(wet(&ed), ["fn b() { 1 }\n"], "taken already: wet now");
+    let mut ed = at(was);
+    feed(&mut ed, "ix<esc>");
+    ed.run_wrote(std::slice::from_ref(&change));
+    assert!(ed.wet_waiting.is_empty(), "your unsaved edits: the buffer takes nothing");
+    let mut ed = at(was);
+    ed.run_wrote(std::slice::from_ref(&change));
+    crate::disk::reload_text(ed.doc_mut(), &ropey::Rope::from_str("other\n"));
+    crate::motion::wet_sync(&mut ed);
+    assert!(ed.doc().wet.is_none() && ed.wet_waiting.is_empty(), "another text: let go");
+}
+
+/// §2, wired: a run of Claude's that rewrote an open file (as `cargo fmt` does), through `tools::run_changes` — its
+/// result first, the buffer still as it was: waiting, nothing wet; then the disk watch's round (focus back) reloads
+/// it, and the lines the run left are wet. (The repository and its file are the test's own.)
+#[test]
+fn a_runs_rewrite_of_an_open_file_dries_as_the_watch_reloads_it() {
+    let s = crate::scratch::Scratch::new("motion-run-wet");
+    let dir = std::fs::canonicalize(s.path()).unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false"])
+            .args(["-c", "user.email=t@example.invalid", "-c", "user.name=t"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    let file = dir.join("a.rs");
+    std::fs::write(&file, "fn a() {}\nfn b()  {  }\nfn c() {}\n").unwrap();
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "base"]);
+    let mut ed = Editor::new(crate::config::Config::default());
+    ed.session.root = dir.clone();
+    ed.open(&file).unwrap();
+    let pump = |ed: &mut Editor, what: &str, done: &dyn Fn(&Editor) -> bool| {
+        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+        while !done(ed) {
+            assert!(std::time::Instant::now() < end, "{what}");
+            if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(20)) {
+                ed.handle_event(ev);
+            }
+        }
+    };
+    // (the run: its snapshot before, the file rewritten as a formatter would)
+    let snap = crate::snapshot::Before::take(&dir);
+    std::fs::write(&file, "fn a() {}\nfn b() {}\nfn c() {}\n").unwrap();
+    let told = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let t = told.clone();
+    crate::tools::run_changes(&mut ed, snap, 0, "cargo fmt".into(), move |_, _| {
+        t.store(true, std::sync::atomic::Ordering::Relaxed)
+    });
+    pump(&mut ed, "the run's result", &|_| told.load(std::sync::atomic::Ordering::Relaxed));
+    assert_eq!(ed.doc().text.to_string(), "fn a() {}\nfn b()  {  }\nfn c() {}\n", "not reloaded yet");
+    assert!(ed.doc().wet.is_none() && ed.wet_waiting.len() == 1, "waiting for the buffer to take it");
+    // (the watch's round: focus back)
+    ed.handle_event(crate::event::Event::Focus(true));
+    pump(&mut ed, "the reload", &|ed| ed.doc().text == "fn a() {}\nfn b() {}\nfn c() {}\n");
+    assert_eq!((wet(&ed), ed.wet_waiting.len()), (vec!["fn b() {}\n".to_string()], 0), "wet as it reloaded");
+}
+
 /// The curve: an ease-out at whole steps, over under `GONE`.
 #[test]
 fn the_drying_eases_out_and_ends() {

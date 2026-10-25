@@ -412,6 +412,51 @@ fn under_review_at_the_end_a_delete_still_waits_on_the_card() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// §2: an edit written unseen (review at the end) leaves its lines wet in the open buffer, and so does a change set's
+/// `y` all; one your `y` gave in its review none (the stamp's press says that act).
+#[test]
+fn claudes_unwatched_write_is_wet_and_one_you_reviewed_isnt() {
+    let wet = |ed: &Editor, p: &Path| -> Vec<String> {
+        let d = ed.docs.iter().find(|d| d.path.as_deref() == Some(p)).unwrap();
+        d.wet.iter().flatten().map(|r| d.text.byte_slice(r.clone()).to_string()).collect()
+    };
+    let text = "one\ntwo\nthree\n";
+    let two = json!({"edits": [{"file_path": "a.rs", "old_string": "two", "new_string": "TWO"}]});
+    let dir = std::fs::canonicalize(project("wet-at-end", &[("a.rs", text)])).unwrap();
+    let mut ed = chat_for(&dir, &dir.join("stdin.log"));
+    ed.open(&dir.join("a.rs")).unwrap();
+    ed.session.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
+    call(&mut ed, Call::test(61), &two).unwrap();
+    pump(&mut ed, "the answer", |_| answered(61).is_some());
+    assert_eq!(wet(&ed, &dir.join("a.rs")), ["TWO\n"], "written unseen: wet");
+    std::fs::remove_dir_all(&dir).ok();
+    let dir = std::fs::canonicalize(project("wet-reviewed", &[("a.rs", text)])).unwrap();
+    let mut ed = chat_for(&dir, &dir.join("stdin.log"));
+    ed.open(&dir.join("a.rs")).unwrap();
+    call(&mut ed, Call::test(62), &two).unwrap();
+    answer_reviews(&mut ed, 'y', |_| answered(62).is_some());
+    assert_eq!(ed.doc().text.to_string(), "one\nTWO\nthree\n");
+    assert!(wet(&ed, &dir.join("a.rs")).is_empty(), "your `y` in its review: nothing wet");
+    assert!(!ed.motions.iter().any(|m| matches!(m.what, crate::motion::What::Wet(_))));
+    std::fs::remove_dir_all(&dir).ok();
+    let dir = std::fs::canonicalize(project("wet-all", &[("a.rs", text), ("b.rs", text)])).unwrap();
+    let mut ed = chat_for(&dir, &dir.join("stdin.log"));
+    ed.open(&dir.join("a.rs")).unwrap();
+    ed.open(&dir.join("b.rs")).unwrap();
+    let both = json!({"edits": [
+        {"file_path": "a.rs", "old_string": "one", "new_string": "ONE"},
+        {"file_path": "b.rs", "old_string": "three", "new_string": "THREE"},
+    ]});
+    call(&mut ed, Call::test(63), &both).unwrap();
+    pump(&mut ed, "the card", |ed| change_card(ed).is_some());
+    let (id, whose, _) = change_card(&ed).unwrap();
+    crate::refactor::accept_all(&mut ed, id, whose);
+    pump(&mut ed, "the answer", |_| answered(63).is_some());
+    assert_eq!(wet(&ed, &dir.join("a.rs")), ["ONE\n"], "a change set's `y` all: wet");
+    assert_eq!(wet(&ed, &dir.join("b.rs")), ["THREE\n"]);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// frictions34 43: the review of an `edit` is titled with what the user asked, as the native Edit's is — not
 /// `edit a.rs` (that stays the answer's and a card's); with nothing asked yet, the change itself.
 #[test]

@@ -38,6 +38,10 @@ struct Scene {
 
 const MAIN: &[&str] = &["src/main.rs"];
 
+/// Motion §2's scenes: the chat, a question — every frame kept from its `enter` through the edit's landing (~1.1 s)
+/// until it's dry — and the picture then, before `six`'s turn ends (`TARAE_MOTION_AT` pins the drying's step).
+const WET_KEYS: &[&str] = &["@1", " ", "l", "@1", "keep the first strand", "@~2600", "\r", "@?in one go"];
+
 /// Claude asked to run outside the sandbox, the keys back in the code (`C-w h`) as its card comes; then `j j` there.
 const FOCUS_CARD: &[&str] =
     &["@1", " ", "l", "@1", "run the tests", "\r", "\x17", "h", "@?Its reason", "@1", "j", "j", "@1"];
@@ -1489,6 +1493,11 @@ const SCENES: &[Scene] = &[
             "@0.3",
         ],
     },
+    // (motion §2's sheets: review at the end, Claude's edit of six lines lands unwatched and dries — follow off; follow
+    // on; and the turn ending at once, its review opening over the lines still drying: the review's wash deeper)
+    Scene { name: "wet", claude: "six", files: MAIN, keys: WET_KEYS },
+    Scene { name: "wetfollow", claude: "sixfollow", files: MAIN, keys: WET_KEYS },
+    Scene { name: "wetreview", claude: "sixend", files: MAIN, keys: WET_KEYS },
     // (Claude's edit of three changes: the first accepted, the second refused, the third in hand)
     Scene {
         name: "decided",
@@ -2647,8 +2656,14 @@ pub(crate) fn config_toml(me: &Path, script: &str) -> String {
         "boarddone" => "\n[review]\nrisky = [\"knot.rs\"]\n",
         _ => "",
     };
+    // (motion §2's: review at the end, following or not)
+    let llm = match script {
+        "six" | "sixend" => "review-at-end = true\nfollow = false\n",
+        "sixfollow" => "review-at-end = true\nfollow = true\n",
+        _ => "",
+    };
     format!(
-        "[editor]\nlsp = false\n\n[llm]\ncommand = {}\nargs = [\"scenes\", \"--claude\", {}]\n{review}",
+        "[editor]\nlsp = false\n\n[llm]\ncommand = {}\nargs = [\"scenes\", \"--claude\", {}]\n{llm}{review}",
         quoted(&me.to_string_lossy()),
         quoted(script)
     )
@@ -2934,6 +2949,9 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "three" => turn.explain(true, true)?,
             // (two changes: the press's sheet — the first answered, the second in hand)
             "two" => turn.explain_items(2)?,
+            // (motion §2: an edit of six lines in one go, then a pause — or, `sixend`, the turn's end at once)
+            "six" | "sixfollow" => turn.six(true)?,
+            "sixend" => turn.six(false)?,
             // (its three-item edit being written: the third item's new text held mid-line)
             "writemid" => turn.explain_held(true, true, Some("nots.len());\\n\"}"))?,
             "mid" => turn.explain(false, false)?,
@@ -3092,6 +3110,26 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.call(2, "edit", serde_json::from_str(&input).map_err(io::Error::other)?)?;
         self.words("Done — **main.rs** now keeps the first strand when a name repeats.")?;
         self.words("Nothing else reads the map, so no other change is needed.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// Motion §2's turn: a word, then one edit rewriting six lines of the loop, sent whole (no input streamed: the
+    /// frames kept are the landing's and its drying's) — then, with `pause`, three seconds before its last words and
+    /// the result (the drying runs out before the turn's review opens), else the result at once.
+    fn six(&mut self, pause: bool) -> io::Result<()> {
+        self.words("I will make the loop keep the first strand, in one go.")?;
+        std::thread::sleep(Duration::from_millis(500));
+        let old = "    let first = Thread { name: \"타래\".into(), knots: vec![1, 2, 3] };\n    threads.insert(first.name.clone(), first);\n    for (name, t) in &threads {\n        println!(\"{name}: {} knots, {} long\", t.knots.len(), t.length());\n";
+        let new = "    let first = Thread { name: \"타래\".into(), knots: vec![1, 2, 3, 5] };\n    threads.entry(first.name.clone()).or_insert(first);\n    for (name, t) in threads.iter() {\n        let long = t.length();\n        println!(\"{name}: {} knots, {long} long\", t.knots.len());\n        debug_assert!(long > 0);\n";
+        self.call(
+            2,
+            "edit",
+            json!({"edits": [{"file_path": "src/main.rs", "old_string": old, "new_string": new}]}),
+        )?;
+        if pause {
+            std::thread::sleep(Duration::from_secs(3));
+        }
+        self.words("Done.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

@@ -733,6 +733,9 @@ pub struct Editor {
     /// A hunk reset waiting on its diff (§5): (the document, the version it left) — a turn's file's `u` shows once
     /// that version's diff lands empty, and is pressed then (`Editor::diff_landed`).
     pub press_on_diff: Option<(crate::document::DocId, u64)>,
+    /// Buffers a run of Claude's rewrote on disk, wet once they take its text (§2: `Editor::run_wrote`,
+    /// `motion::wet_sync`).
+    pub wet_waiting: Vec<crate::motion::Waiting>,
     /// Whether motions are drawn — off in tests, as the animation is (a test that looks at one turns it on).
     pub motion_drawn: bool,
     /// `TARAE_MOTION_AT`: every motion drawn at this age, none ending (shots — read once at start).
@@ -1113,6 +1116,7 @@ impl Editor {
             bleed_ink: !cfg!(test),
             motions: Vec::new(),
             press_on_diff: None,
+            wet_waiting: Vec::new(),
             motion_drawn: !cfg!(test),
             motion_at: if cfg!(test) { None } else { crate::motion::pinned_age() },
             reduce_motion: false,
@@ -2465,6 +2469,7 @@ impl Editor {
         crate::overlap::sync(self);
         crate::keepclose::sync(self);
         crate::weave::sync(self);
+        crate::motion::wet_sync(self);
         crate::web::open::sync(self);
         crate::notes::attach(self);
         crate::edits::next(self);

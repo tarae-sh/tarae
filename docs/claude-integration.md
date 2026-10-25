@@ -680,6 +680,13 @@ them, before you see them, and the checks it runs (`cargo test`, `cargo build`) 
 this chat. The chat's title says `› review at end` while it's on, and `space v a` turns it off. A new chat
 (`C-l`) starts with it off.
 
+An edit that goes in this way, in a file you have open, lands on a green wash over the lines it wrote that dries to
+nothing in under a second: which lines are new, just now, with no mark left to read later. A change set's `y` all
+and a command of Claude's that rewrites an open file (`cargo fmt`) land the same way; an edit you just said `y` to in
+its review doesn't (you watched it), and what only took lines out leaves nothing to dry. Where the lines are already
+on a change's wash (a shown edit, a code review), that wash lands deeper and dries to its own instead of a second
+one. Only at [`editor.motion = "full"`](reference/settings.md).
+
 ![The card that turns it on: edits go into your files before you see them, and the checks run that code; you review all of it at the end, and space u takes the turn back](screenshots/chat-review-at-end.png)
 
 When the turn ends, the files Claude changed open as a [code review](#code-review), each against what it was before
