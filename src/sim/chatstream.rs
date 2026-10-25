@@ -41,8 +41,38 @@ fn the_chats_transcript_follows_an_answer_being_written() {
 
 /// What's in sight of the transcript while its view has the keys: its top row, its selection (what arrives at it goes
 /// under and after it: on the line being written too, it keeps its bytes), and the text of the rows in sight above
-/// its last line (the line an answer grows at).
-type Sight = (usize, crate::selection::Selection, Vec<String>);
+/// the line an answer grows at.
+type Sight = (usize, Vec<(Place, Place)>, Vec<String>);
+
+/// A place in the transcript as text arriving leaves it: up to the end of the line an answer grows at, its byte — it
+/// stays; past it (the queued line and its air, after the answer — or, the turn over, the question it became) it goes
+/// down with what arrives, kept in sight (`held`'s cursor check).
+#[derive(Debug, PartialEq, Eq)]
+enum Place {
+    At(usize),
+    Past,
+}
+
+impl Place {
+    fn same(&self, now: &Place) -> bool {
+        match self {
+            Place::At(_) => self == now,
+            Place::Past => true,
+        }
+    }
+}
+
+/// The line an answer grows at: the last message's last — the queued line, and its air, come after it.
+fn growing_line(ed: &Editor) -> usize {
+    let laid = ed.screen.chat_laid.borrow();
+    let upto = laid.iter().rposition(|(of, _)| matches!(of, Of::Msg(_))).map_or(laid.len(), |l| l + 1);
+    let lines: usize = laid[..upto]
+        .iter()
+        .filter(|(of, _)| *of != Of::Own)
+        .map(|(_, rows)| chatdoc::lines_of(rows).0.lines().count())
+        .sum();
+    lines.saturating_sub(1)
+}
 
 /// What the scenario keeps between steps: what was in sight before text arrived while the view had the keys, and
 /// the frame's size (the last one drawn, and whether this step drew it).
@@ -138,13 +168,16 @@ fn in_sight(ed: &Editor) -> Option<Sight> {
     let t = chatdoc::transcript(ed)?;
     let d = t.pane.doc_in()?;
     let (_, _, area, _) = ed.screen.chat_view.get()?;
-    let last = crate::movement::last_line(&d.text);
+    let growing = growing_line(ed).min(crate::movement::last_line(&d.text));
     let top = t.top_row();
     let rows = (top..(top + area).min(t.rows()))
-        .filter(|&i| t.row(i).is_some_and(|s| s.line < last))
+        .filter(|&i| t.row(i).is_some_and(|s| s.line < growing))
         .filter_map(|i| row_text(ed, i))
         .collect();
-    Some((top, d.selection().clone(), rows))
+    let end = crate::movement::line_end(&d.text, growing);
+    let place = |p: usize| if p <= end { Place::At(p) } else { Place::Past };
+    let ranges = d.selection().ranges().iter().map(|r| (place(r.anchor), place(r.head))).collect();
+    Some((top, ranges, rows))
 }
 
 fn keys(ed: &mut Editor, keys: &str) {
@@ -425,13 +458,19 @@ fn held(ed: &Editor, world: &World) -> Result<(), String> {
     if let Some(before) = world.before.borrow_mut().take()
         && let Some(now) = in_sight(ed)
     {
-        if (before.0, &before.1) != (now.0, &now.1) {
+        // (a cursor past the line an answer grows at — on the queued line — goes down with it, kept in sight)
+        let below = matches!(before.1.first(), Some((_, Place::Past)));
+        let same = before.1.len() == now.1.len()
+            && before.1.iter().zip(&now.1).all(|(a, b)| a.0.same(&b.0) && a.1.same(&b.1));
+        if (!below && before.0 != now.0) || !same {
             return Err(format!(
                 "text arriving moved the view: top {} → {}, {:?} → {:?}",
                 before.0, now.0, before.1, now.1
             ));
         }
-        if let Some(i) = (0..before.2.len().min(now.2.len())).find(|&i| before.2[i] != now.2[i]) {
+        if let Some(i) =
+            (0..before.2.len().min(now.2.len())).filter(|_| !below).find(|&i| before.2[i] != now.2[i])
+        {
             return Err(format!("text arriving changed a row in sight: {:?} → {:?}", before.2[i], now.2[i]));
         }
         if !chatdoc::came(ed) {
@@ -455,16 +494,19 @@ fn held(ed: &Editor, world: &World) -> Result<(), String> {
     if !world.framed.get() || (*w, *h) != world.size.get() {
         return Ok(());
     }
-    if from != top {
-        return Err(format!("drawn from row {from}, the view's top is {top}"));
+    // (the frame's rows: the document's, the frame's own among them — `thinking…` before the queued line — skipped)
+    let first = chatdoc::laid_row(&laid, top);
+    if from != first {
+        return Err(format!("drawn from row {from}, the view's top is {top} (row {first} of the frame's)"));
     }
     let screen = crate::screen::text(frame, *w, *h).unwrap_or_default();
     for (i, shown) in screen.lines().skip(y).take(area).enumerate() {
-        let Some(want) = row_text(ed, top + i) else { break };
+        let Some(row) = chatdoc::doc_row(&laid, first + i) else { continue };
+        let Some(want) = row_text(ed, row) else { break };
         let shown: String = shown.chars().skip(x).collect();
         let want: String = want.trim().chars().take(16).collect();
         if !shown.contains(&want) {
-            return Err(format!("row {i}: drawn {shown:?}, the document's row {} {want:?}", top + i));
+            return Err(format!("row {i}: drawn {shown:?}, the document's row {row} {want:?}"));
         }
     }
     Ok(())

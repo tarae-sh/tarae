@@ -407,6 +407,12 @@ pub struct Screen {
     pub chat_links: std::cell::RefCell<Vec<(usize, usize, usize, crate::chat::Link)>>,
     /// The chat's rows of tool calls: (row, call id) — a click goes to that call's replay stop.
     pub chat_calls: std::cell::RefCell<Vec<(usize, String)>>,
+    /// Where a row that's cut, or drawn whole while in hand, is: (row, start col, end col, which) — the mouse over
+    /// it takes it in hand (`whole.rs`).
+    pub cut_spots: std::cell::RefCell<Vec<(usize, usize, usize, crate::whole::Cut)>>,
+    /// The columns of the panel whose line holds a run's cut command (from, to) — the slot's, a docked or floating
+    /// group's own: its run card stays inside them (`term::run_card`).
+    pub run_line: std::cell::Cell<Option<(usize, usize)>>,
     /// Where a command of Claude's ran, at its row's end: (row, start col, end col, its call id) — a click says
     /// why (`chat::said_ran`).
     pub chat_ran: std::cell::RefCell<Vec<(usize, usize, usize, String)>>,
@@ -592,6 +598,8 @@ pub struct Editor {
     pub(crate) next_session: crate::event::SessionId,
     /// Where every session is reading and writing, and what draws it in other checkouts (`presence.rs`).
     pub presence: crate::presence::State,
+    /// The cut row the mouse is over — drawn whole while it stays there (`whole.rs`).
+    pub cut_hover: Option<crate::whole::Cut>,
     /// Where two workspaces' changes would conflict, and what each was last taken as (`overlap.rs`).
     pub overlap: crate::overlap::State,
     /// The workspaces kept close to their base: its tips watched, its moves asked and made (`keepclose.rs`).
@@ -1051,6 +1059,7 @@ impl Editor {
             sessions: Vec::new(),
             next_session: 0,
             presence: Default::default(),
+            cut_hover: None,
             overlap: Default::default(),
             keep_close: Default::default(),
             behind: false,
@@ -2420,7 +2429,8 @@ impl Editor {
             let (x, y) = (x as usize, y as usize);
             let tag = crate::presence::hovered(self, x, y);
             let mark = crate::follow::strip_hovered(self, x, y);
-            self.unchanged = !(tag || mark);
+            let cut = crate::whole::hovered(self, x, y);
+            self.unchanged = !(tag || mark || cut);
             return;
         }
         // Input means the terminal has focus, whatever it said last (a focus-in lost on the way)
@@ -2447,6 +2457,8 @@ impl Editor {
                 self.unfocused = !gained;
                 if !gained {
                     crate::presence::away(self);
+                    // (the mouse gone with the focus: a row it held whole folds — `whole.rs`)
+                    self.cut_hover = None;
                     if let Some(c) = self.session.chat.as_mut() {
                         c.follow.hover = None;
                     }

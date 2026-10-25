@@ -301,7 +301,8 @@ impl Look {
     pub fn said(&self) -> String {
         let mut s = format!("{} {}", label(self.verb), self.what).trim().to_string();
         if !self.range.is_empty() {
-            s.push_str(&format!(" · {}", self.range));
+            // (a note's words, its lines one paragraph)
+            s.push_str(&format!(" · {}", self.range.replace('\n', " ")));
         }
         s
     }
@@ -383,6 +384,8 @@ pub struct ChatRow {
     /// Its last characters that aren't the text's either — a change's stamps, the writing caret, a folded
     /// thought's `…` (`chatdoc.rs` leaves them out of the transcript's document).
     pub tail: usize,
+    /// A row cut to one, or drawn whole while in hand: which (`whole.rs` — the mouse over it takes it in hand).
+    pub cut: Option<crate::whole::Cut>,
 }
 
 /// What goes with the input's next message, each kind in the order added (`Chat.with`).
@@ -562,6 +565,9 @@ pub struct Chat {
     /// What waits for this turn's end besides the message, in order: the review's notes (`space v s`), a reply on
     /// a note — they were refused while Claude answered (frictions29 18), and go first, one a turn.
     pub sends: Vec<Later>,
+    /// The queued line's rows as last laid out (`term::chat_laid`), and what they were laid out for — the same rows
+    /// while nothing changed, so the transcript keeps its piece (`chatdoc::follow`).
+    pub queued_laid: RefCell<Option<(u64, std::sync::Arc<[ChatRow]>)>>,
     /// Hosts the next run of this conversation's Claude that starts reaches, then spent — `y` on a host card whose
     /// run had ended (`hosts::next_run`, frictions29 16); the conversation over, gone (`conversation_left`).
     pub hosts_next: Vec<(String, u16)>,
@@ -935,6 +941,7 @@ impl Chat {
             view_wanted: false,
             transcript: None,
             sends: Vec::new(),
+            queued_laid: RefCell::new(None),
             hosts_next: Vec::new(),
             screen: None,
             conversation: None,
@@ -3044,12 +3051,11 @@ fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
             }
         }
         "mcp__tarae__note" => {
-            let gist = s("text").lines().next().unwrap_or_default().to_string();
-            let gist = if gist.chars().count() > 48 {
-                format!("{}…", gist.chars().take(47).collect::<String>())
-            } else {
-                gist
-            };
+            // (all of it, a line each — its row cuts it, a line break a space there, and shows it whole in hand, a row
+            // each line: `whole.rs`)
+            let text = s("text");
+            let lines = text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty());
+            let gist = lines.collect::<Vec<_>>().join("\n");
             match n("reply_to") {
                 Some(id) => {
                     Look { verb: "reply", what: format!("#{id}"), pattern: false, range: gist, link: None }
@@ -3082,12 +3088,8 @@ fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
             Look { verb: "test", what, pattern: false, range: String::new(), link: Some(Link { path, line }) }
         }
         "mcp__tarae__run" => {
-            let cmd = s("command").split_whitespace().collect::<Vec<_>>().join(" ");
-            let what = if cmd.chars().count() > 48 {
-                format!("{}…", cmd.chars().take(47).collect::<String>())
-            } else {
-                cmd
-            };
+            // (whole: its row cuts it, and shows it whole in hand — `whole.rs`)
+            let what = s("command").split_whitespace().collect::<Vec<_>>().join(" ");
             Look { verb: "run", what, pattern: true, range: String::new(), link: None }
         }
         "mcp__tarae__screen" => {
@@ -4949,7 +4951,8 @@ mod tests {
         assert_eq!(claim_call(&mut ed, "Edit", &call).as_deref(), Some("e1"));
     }
 
-    /// A command's row: the command in a line, ended by how it ended once its result comes.
+    /// A command's row: the command in a line, whole (its row cuts it, whole in hand — `whole.rs`), ended by how it
+    /// ended once its result comes.
     #[test]
     fn a_command_row_ends_with_how_it_ended() {
         let root = Path::new("/proj");
@@ -4959,7 +4962,12 @@ mod tests {
             ("run", "cargo test -p tarae", true, true)
         );
         let long = look(root, "mcp__tarae__run", &serde_json::json!({"command": "x".repeat(60)}));
-        assert_eq!(long.what.chars().count(), 48);
+        assert_eq!(long.what.chars().count(), 60, "whole");
+        // (a note's words whole too, a line each — blank lines and trailing blanks out)
+        let note = serde_json::json!({"path": "a.rs", "line": 3, "text": "first line  \n\n second line\n"});
+        assert_eq!(look(root, "mcp__tarae__note", &note).range, "first line\n second line");
+        let reply = serde_json::json!({"reply_to": 4, "text": "yes\nand more"});
+        assert_eq!(look(root, "mcp__tarae__note", &reply).range, "yes\nand more");
         let mut ed = editor("");
         let mut c = Chat::new();
         c.msgs.push(Msg::tool(r, "t1"));

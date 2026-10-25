@@ -349,7 +349,7 @@ each one while the chat keeps the keys.
 
 | Key | In the chat |
 |---|---|
-| `enter` | Send. While Claude works, it queues the message: the line over the input says `queued …`, and it goes when the turn ends. `↑` in the empty input takes it back to edit or drop |
+| `enter` | Send. While Claude works, it queues the message: the conversation's last line says `queued …` (whole under the mouse or the view mode's cursor), and it goes when the turn ends. `↑` in the empty input takes it back to edit or drop |
 | `alt-enter` / `C-j` | New line |
 | `C-c` | Stop the answer (the conversation stays). A command or tests it ran go on; a card offers to stop them (`y`), since the next turn's runs would wait behind them — the chat's row then says `queued 1st, behind a stopped turn's run` and, under it, the run, how long it has run and `space m c stop it` |
 | `C-q` | Give a card that asks mid-turn the keys — the chat keeps them till then |
@@ -1292,10 +1292,17 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
   or the socket granted, `+ network`; `outside`, `no sandbox`, `sandbox off` — past the sandbox (a Docker socket
   counts) in the warning color — and `▲2` for what it warned of. A click on that end of the row (`ok · sandbox
   ▲2`, from its verdict on), or `K` in the task panel
-  while the command's run is in it (`K where it ran` on its header), says why: the command, where it ran, how
+  while the command's run is in it (`K where it ran` on its header), says why: the command whole, where it ran, how
   (the sandbox, a socket granted and whose, the network), the card it ran from with Claude's reason there, and
   each warning — as a warning when it was past the sandbox. `tarae state` gives each run's `ran`: where, why and
   the warnings
+- **What's cut is whole where you look at it.** A row cut to one line — a tool call's row (`▸ run  cargo fmt …`),
+  a note's or reply's, the queued line — unfolds whole, wrapped under its words, while it's the row in hand: the
+  chat's view mode's cursor on it, or the mouse over it; moving on folds it back, and only the rows under it move.
+  The conversation keeps the whole words, so `/` finds a word past the cut and `y` copies all of it. A run panel's
+  command, cut to its tab's label in the panel's top line, shows whole on a borderless card over the line while the
+  mouse is over the label (`$ …`, wrapped) — nothing under it moves, it takes no keys, and it goes as the mouse
+  leaves; `K` in the panel says it whole
 
 - git's read-only commands run with `GIT_OPTIONAL_LOCKS=0`, so `git status` doesn't try to refresh the index
   in `.git` (a write the sandbox would deny and report)

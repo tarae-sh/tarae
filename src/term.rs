@@ -20,7 +20,7 @@ use crossterm::terminal::{
 use crossterm::{execute, queue};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::cut::{fit, fit_ellipsis};
+use crate::cut::{fit, fit_ellipsis, fit_left};
 
 use crate::chrome::Keys;
 use crate::codeview::{Changes, Shows, Source};
@@ -500,6 +500,8 @@ fn render_drawn(editor: &mut Editor, out: &mut impl Write, w: u16, h: u16) -> io
         // of the follow card's strip, its words — `follow::strip_drawn`)
         | crate::presence::hover_drawn(editor)
         | crate::follow::strip_drawn(editor)
+        // (and a cut row the mouse took in hand gone from under it: folded again — `whole::drawn`)
+        | crate::whole::drawn(editor)
         // (and a flash's words that it didn't draw: their toast — `motion.rs`)
         | editor.words_drawn()
     {
@@ -633,6 +635,8 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         offer_cut: offer.as_ref().filter(|c| !c.bar).map(|c| c.cut),
         chat_links: Default::default(),
         chat_calls: Default::default(),
+        cut_spots: Default::default(),
+        run_line: Default::default(),
         chat_ran: Default::default(),
         chat_ids: Default::default(),
         chat_mini: Default::default(),
@@ -2156,6 +2160,18 @@ fn slot_header(
             Some(last) if last.3 == slot => last.2 = b,
             _ => spots.push((y0, a, b, slot)),
         }
+    }
+    // (a run's command cut to its tab's label: the mouse over it shows it whole on a card over the line — `run_card`)
+    let cut: Vec<crate::sizes::Slot> = tabs
+        .iter()
+        .zip(&shown)
+        .filter(|(t, l)| t.slot == crate::sizes::Slot::Task && (**l != t.label || t.label.contains('\n')))
+        .map(|(t, _)| t.slot)
+        .collect();
+    for s in spots.iter().filter(|s| s.0 == y0 && cut.contains(&s.3)) {
+        editor.screen.cut_spots.borrow_mut().push((s.0, s.1, s.2, crate::whole::Cut::Run(s.3)));
+        // (this panel's own columns — the slot's, or a docked or floating group's: its card stays inside them)
+        editor.screen.run_line.set(Some((x0, x0 + w)));
     }
     if let Some(m) = members {
         let mut named = editor.screen.member_names.borrow_mut();
@@ -4893,6 +4909,7 @@ fn draw(
     let cards = [note_rect, follow_rect, offer_rect, ask_rect].into_iter().flatten().map(kept_apart);
     let taken: Vec<Rect4> = cards.chain([cursor_row, change].into_iter().flatten()).collect();
     let toast_folded = !draw_toasts(editor, ui, lay, &taken, out)?;
+    run_card(editor, ui, lay, out)?;
     if let Some(card) = offer {
         card.draw(editor, ui, out)?;
     }
@@ -14305,6 +14322,10 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
     let last_user = c.msgs.iter().rposition(|m| m.role == Role::User);
     let turn_end = |i: usize| !c.busy() && last_user.is_none_or(|u| u < i);
     let stops = c.follow.replay.latest();
+    // What's in hand, worked out once a frame (`whole.rs`): the row the mouse is over, the view mode's cursor's
+    let held = crate::whole::held(editor);
+    let call_held =
+        |call: &str| held.iter().any(|h| matches!(h, Some(crate::whole::Cut::Call(id)) if id == call));
     // What a message's rows depend on beyond its text and the look: being written, live, a turn's end
     let state = |i: usize, m: &crate::chat::Msg| -> u64 {
         let last = i + 1 == n;
@@ -14312,8 +14333,12 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
             Role::User => 0,
             Role::Assistant => u64::from(last && c.state == State::Writing),
             Role::Thought => u64::from(last && c.busy()),
-            // (and a press drying on its stamps: a step a layout — §5)
-            Role::Tool => u64::from(m.is_call(hand)) | (((knot_lit(editor, m, false) * 1000.0) as u64) << 1),
+            // (and a press drying on its stamps: a step a layout — §5; and whole, in hand — `whole.rs`)
+            Role::Tool => {
+                u64::from(m.is_call(hand))
+                    | (((knot_lit(editor, m, false) * 1000.0) as u64) << 1)
+                    | (u64::from(call_held(&m.call)) << 32)
+            }
             // (the replay's stops, and its keys — which the chat's focus changes)
             Role::Note if turn_end(i) => {
                 1 | (u64::from(editor.session.is_at(At::Chat)) << 1) | ((stops as u64) << 2)
@@ -14426,18 +14451,13 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
                 let in_hand = m.is_call(hand);
                 let stamps = knot_stamps(ui, &m.stamps, knot_lit(editor, m, in_hand), card);
                 let glyph = knot(look, in_hand, &styles);
-                let (spans, ran, tail) =
-                    trail_row_at(look, m.ran.as_ref(), glyph, &stamps, w, false, &styles);
-                // (its knot and the space after it, and its stamps, aren't the text's)
-                lines.push(ChatRow {
-                    spans,
-                    link: look.link.clone(),
-                    call: Some(m.call.clone()),
-                    ran,
-                    skip: 2,
-                    tail,
-                    ..ChatRow::default()
-                });
+                // (its words whole: the transcript keeps them, the row in hand shows them — `whole.rs`)
+                let (cut, whole) = (crate::whole::Cut::Call(m.call.clone()), call_held(&m.call));
+                let mut rows = tool_rows(look, m.ran.as_ref(), glyph, &stamps, w, &styles, whole, cut);
+                for r in &mut rows {
+                    (r.link, r.call) = (look.link.clone(), Some(m.call.clone()));
+                }
+                lines.extend(rows);
             }
             // Elapsed time dimmed at the right end; stopped/error on the left
             Role::Note => {
@@ -14586,7 +14606,77 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
             }
         }
     }
+    // A message waiting for this turn's end (#23): the transcript's last line, a row of air over it — what's queued in
+    // the accent, the message's words faint, whole in hand (`whole.rs`); `draw_chat` puts its own rows before it
+    if let Some((said, last)) = c.queued_said().filter(|_| w > 14) {
+        let cut = crate::whole::Cut::Queued;
+        let whole = held.contains(&Some(cut.clone()));
+        let key = hash_of((&said, &last, w, look, whole));
+        let kept = c.queued_laid.borrow().as_ref().filter(|(k, _)| *k == key).map(|(_, rows)| rows.clone());
+        let rows = kept.unwrap_or_else(|| {
+            let n = c.queued_n.max(1) + c.sends.len();
+            let rows: std::sync::Arc<[ChatRow]> =
+                queued_rows(&said, &last, (w, n), (accent, faint), whole, cut).into();
+            *c.queued_laid.borrow_mut() = Some((key, rows.clone()));
+            rows
+        });
+        pieces.push((Of::Air, blank.clone()));
+        pieces.push((Of::Queued, rows));
+    }
     pieces
+}
+
+/// The queued line's rows (`chat_laid`): what waits (`2 messages queued · `, accent — the drawer's, not the text), then
+/// the last message's words (`Chat::queued_said`) — folded, its start cut to the row, the transcript keeping it whole
+/// (`chatdoc::keep_whole`); `whole` (in hand), every row it takes, hanging under its words. Rows cut or whole for being
+/// in hand carry `cut`.
+fn queued_rows(
+    said: &str,
+    last: &str,
+    (w, n): (usize, usize),
+    (accent, faint): (Style, Style),
+    whole: bool,
+    cut: crate::whole::Cut,
+) -> Vec<crate::chat::ChatRow> {
+    use crate::chat::ChatRow;
+    use crate::markdown::Span;
+    let first = last.lines().next().unwrap_or_default();
+    let lead = match (said, last.is_empty()) {
+        ("a message queued", _) => "queued ".to_string(),
+        (_, true) => format!("{said} "),
+        // (narrow: how many, so the last one's start still shows — at 80 columns the words took the row)
+        (_, false) if said.width() + 3 + first.width().min(QUEUED_LAST_MIN) > w.saturating_sub(4) => {
+            format!("{n} queued · ")
+        }
+        (_, false) => format!("{said} · "),
+    };
+    let lead = fit_ellipsis(&lead, w - 4);
+    let (hang, room) = (lead.chars().count(), w.saturating_sub(lead.width()).max(1));
+    let row = |k: usize, text: String, space: bool| {
+        let head = if k == 0 {
+            Span { text: lead.clone(), style: accent }
+        } else {
+            Span { text: " ".repeat(hang), style: faint }
+        };
+        let spans = vec![head, Span { text, style: faint }];
+        ChatRow { spans, skip: hang, join: (k > 0).then_some(space), ..ChatRow::default() }
+    };
+    let rows: Vec<ChatRow> = crate::cut::fit_in_hand(last, room, false, true)
+        .into_iter()
+        .enumerate()
+        .map(|(k, p)| row(k, p.text, p.space))
+        .collect();
+    let words = crate::chatdoc::lines_of(&rows).0.trim_end_matches('\n').to_string();
+    let shown = crate::cut::fit_in_hand(last, room, false, false).remove(0);
+    let mut folded = row(0, shown.text, false);
+    crate::chatdoc::keep_whole(&mut folded, &words);
+    let is_cut = folded.rest.is_some();
+    // (not cut: nothing to unfold — the row as it is, in hand or not, never laid out another way under the cursor)
+    if !whole || !is_cut {
+        folded.cut = is_cut.then_some(cut);
+        return vec![folded];
+    }
+    rows.into_iter().map(|r| ChatRow { cut: Some(cut.clone()), ..r }).collect()
 }
 
 /// The chat's text width `chat_w` wide (the gutter, the padding on both sides off) and its measure — prose keeps
@@ -14795,7 +14885,10 @@ fn draw_chat(
         lines = std::iter::repeat_n(Vec::new(), pad).chain(intro).collect();
     }
     total += lines.len();
-    pieces.extend(lines.into_iter().map(|l| (Of::Own, own(plain(l)))));
+    // (before the queued line and its air: it stays the last, over the input)
+    let at =
+        pieces.iter().position(|(of, _)| *of == Of::Queued).map_or(pieces.len(), |q| q.saturating_sub(1));
+    pieces.splice(at..at, lines.into_iter().map(|l| (Of::Own, own(plain(l)))));
     // In its view mode the chat holds still: from its transcript's top row (the frame's own rows trail its rows) —
     // else the newest, `scroll` up from the bottom
     let view = crate::chatdoc::transcript(editor).filter(|t| t.keyed && t.pane.doc_in().is_some());
@@ -14809,12 +14902,29 @@ fn draw_chat(
     };
     let (from, to) = match view {
         Some(t) => {
-            let from = t.top_row().min(total.saturating_sub(1));
+            let from = crate::chatdoc::laid_row(&pieces, t.top_row()).min(total.saturating_sub(1));
             (from, (from + area).min(total))
         }
+        // (a row the mouse holds whole: the rows over it stay where they were, those under it go down — as a wrap;
+        // past the bottom — the queued line, a full chat's last row — up just enough to show it whole, never past its
+        // first row: the mouse stays on it, its rows went up under it)
         None => {
-            let scroll = c.scroll.min(total.saturating_sub(area_shown));
-            (total.saturating_sub(area_shown + scroll), total - scroll)
+            let held = editor.cut_hover.as_ref().and_then(|h| {
+                let mut at = 0;
+                pieces.iter().find_map(|(_, r)| {
+                    let held = r.first().is_some_and(|r| r.cut.as_ref() == Some(h));
+                    at += r.len();
+                    held.then(|| (at - r.len(), r.len()))
+                })
+            });
+            let folded = total - held.map_or(0, |(_, n)| n.saturating_sub(1));
+            let scroll = c.scroll.min(folded.saturating_sub(area_shown));
+            let mut from = folded.saturating_sub(area_shown + scroll);
+            if let Some((first, n)) = held {
+                let past = (first + n).saturating_sub(from + area_shown);
+                from = (from + past).min(first.max(from)).min(total.saturating_sub(area_shown));
+            }
+            (from, (from + area_shown).min(total))
         }
     };
     // (only the rows on screen are looked at again — the rest stays where it's kept)
@@ -14994,6 +15104,8 @@ fn draw_chat(
     let view_cursor = editor.cursor_in() == Some(crate::chrome::CursorIn::View);
     let painted = |row: usize, r: Option<&ChatRow>, spans: &[Span], y: usize| -> Option<Vec<Span>> {
         let t = view?;
+        // (the frame's row as the transcript's — none for one of the frame's own among them)
+        let row = crate::chatdoc::doc_row(&pieces, row)?;
         let (d, s) = (t.pane.doc_in()?, t.row(row)?);
         let skip = r.map_or(0, |r| r.skip);
         let (p, cursors) = chat_paint(d, t.pane.hits(), s, skip, spans, ui, view_cursor)?;
@@ -15005,8 +15117,12 @@ fn draw_chat(
     // (the transcript taller than its rows: its thumb in the outer cell, as the code's last column says its view)
     let (area_top, thumb_x) = (y, x0 + lay.chat_w.saturating_sub(1));
     let bar = (total > area && area > 0).then(|| scroll_thumb(area, total, from));
+    let mut cut_spots = editor.screen.cut_spots.borrow_mut();
     for i in 0..area {
         chat_row_start(out, x0, y, edge(y), card)?;
+        if let Some(cut) = shown.get(i).and_then(|r| r.cut.clone()) {
+            cut_spots.push((y, text_x, text_x + w, cut));
+        }
         if let Some((a, b)) = shown.get(i).and_then(|r| r.ran) {
             chat_ran.push((y, text_x + a, text_x + b, shown[i].call.clone().unwrap_or_default()));
         }
@@ -15052,36 +15168,9 @@ fn draw_chat(
     // Input — the line over it says when the screen goes with the message (`C-s`)
     chat_row_start(out, x0, y, edge(y), card)?;
     let mut used = 0;
-    // A message waiting for this turn's end (#23): its start, faint, over the input
+    // (a message waiting for this turn's end is the transcript's last line, right over this one — `chat_laid`)
     let switched = editor.switch_parts();
-    // (more than one, or the review's notes: how many and what, then the last message's start — frictions29 18)
-    if let Some((said, last)) = c.queued_said()
-        && w > 14
-    {
-        let lead = match (said.as_str(), last.is_empty()) {
-            ("a message queued", _) => "queued ".to_string(),
-            (_, true) => format!("{said} "),
-            // (narrow: how many, so the last one's start still shows — at 80 columns the words took the row)
-            (_, false)
-                if said.width()
-                    + 3
-                    + last.lines().next().unwrap_or_default().width().min(QUEUED_LAST_MIN)
-                    > w.saturating_sub(4) =>
-            {
-                format!("{} queued · ", c.queued_n.max(1) + c.sends.len())
-            }
-            (_, false) => format!("{said} · "),
-        };
-        let lead = fit_ellipsis(&lead, w - 4);
-        let first = last.lines().next().unwrap_or_default();
-        let shown = fit_ellipsis(first, w.saturating_sub(lead.width() + 3));
-        apply(out, accent)?;
-        queue!(out, Print(&lead))?;
-        apply(out, faint)?;
-        queue!(out, Print(&shown))?;
-        queue!(out, Print(" "))?;
-        used = lead.width() + shown.width() + 1;
-    } else if let Some((what, changed, back)) = switched.filter(|_| w > 16) {
+    if let Some((what, changed, back)) = switched.filter(|_| w > 16) {
         // A switch of billing, model or effort since the last message: what the next one costs, until it goes
         // (`switchcost.rs`) — the cost in the warning colour, the rest faint. Narrow: what changed folds first (it
         // was just done), then that going back costs nothing says it shorter, then goes; then the cost is cut
@@ -15910,7 +15999,9 @@ fn trail_spans(
         Some(f) if slim && !look.pattern && look.link.is_some() => f.to_string_lossy().into_owned(),
         _ => look.what.clone(),
     };
-    let mut range = if look.range.is_empty() { String::new() } else { format!("  {}", look.range) };
+    // (a note's words: its lines one paragraph on the row — `tool_rows` gives each its own in hand)
+    let mut range =
+        if look.range.is_empty() { String::new() } else { format!("  {}", look.range.replace('\n', " ")) };
     if slim && w.saturating_sub(1 + head.width() + name.width()) < range.width() {
         range.clear();
     }
@@ -15947,6 +16038,176 @@ fn trail_spans(
         mark = Some((trail_at.unwrap_or(used + sep_w), used + tail_w));
     }
     (row, mark)
+}
+
+/// A tool call's rows in the chat, its words whole in the transcript (`whole.rs`): folded, `trail_row_at`'s one row,
+/// what it cut kept as the document's (`chatdoc::keep_whole`); `whole` (in hand), its words — the target, then the
+/// suffix (a range, a note's words) and where it ran — wrapped as one text, each row after the first hanging under the
+/// target, each piece in its own colour, the knot and the stamps on the first — the transcript's line the same words
+/// either way. Rows that are cut, or whole for being in hand, carry `cut` (the mouse takes them in hand —
+/// `Screen.cut_spots`).
+#[allow(clippy::too_many_arguments)]
+fn tool_rows(
+    look: &crate::chat::Look,
+    ran: Option<&crate::chat::Ran>,
+    knot: crate::markdown::Span,
+    stamps: &[crate::markdown::Span],
+    w: usize,
+    st: &TrailStyles,
+    whole: bool,
+    cut: crate::whole::Cut,
+) -> Vec<crate::chat::ChatRow> {
+    use crate::chat::ChatRow;
+    use crate::markdown::Span;
+    let sp = |text: String, style: Style| Span { text, style };
+    let width = |spans: &[Span]| spans.iter().map(|s| s.text.width()).sum::<usize>();
+    let head = format!(" {:<6} ", crate::chat::label(look.verb));
+    let hang = knot.text.chars().count() + head.chars().count();
+    // (its suffix — the line range, a note's words — then where it ran and what it warned of, as `trail_spans`)
+    let mut suffix: Vec<Span> = Vec::new();
+    if !look.range.is_empty() {
+        suffix.push(sp(format!("  {}", look.range), st.faint));
+    }
+    if let Some(r) = ran {
+        let sep = if look.range.is_empty() { "  " } else { " · " };
+        suffix.push(sp(format!("{sep}{}", r.mark), if r.past { st.warn } else { st.faint }));
+        if !r.warned.is_empty() {
+            suffix.push(sp(format!(" ▲{}", r.warned.len()), st.warn));
+        }
+    }
+    let end = w.min(crate::chrome::MEASURE);
+    let stamps_w = width(stamps);
+    let verb_w = 2 + crate::chat::label(look.verb).width().max(6);
+    let stamped = stamps_w > 0 && end >= stamps_w + 2 + 1 + verb_w + 8;
+    let row_w = if stamped { end - stamps_w - 2 } else { w };
+    let room = row_w.saturating_sub(hang).max(4);
+    let style = if look.pattern { st.string } else { st.dim };
+    // (its words as one text, each piece's bytes and colour — wrapped together, a break taking one space, so the
+    // transcript's line is the same at every width)
+    let mut pieces = vec![(look.what.clone(), style)];
+    pieces.extend(suffix.into_iter().map(|s| (s.text, s.style)));
+    let text: String = pieces.iter().map(|p| p.0.as_str()).collect();
+    let mut segs = Vec::new();
+    for (t, s) in &pieces {
+        let at = segs.last().map_or(0, |&(_, b, _)| b);
+        segs.push((at, at + t.len(), *s));
+    }
+    // (where a click says where it ran: the suffix's words, on the row its end is on)
+    let words_at =
+        look.what.len() + (text.len() - look.what.len() - text[look.what.len()..].trim_start().len());
+    let mut rows: Vec<ChatRow> = Vec::new();
+    let mut pos = 0;
+    for (k, part) in crate::cut::fit_in_hand(&text, room, false, true).into_iter().enumerate() {
+        pos += usize::from(k > 0 && part.space);
+        let (a, b) = (pos, pos + part.text.len());
+        pos = b;
+        let mut spans = match k {
+            0 => vec![knot.clone(), sp(head.clone(), st.faint)],
+            _ => vec![sp(" ".repeat(hang), st.faint)],
+        };
+        for &(x, y, s) in &segs {
+            let (x, y) = (x.max(a), y.min(b));
+            if x < y {
+                spans.push(sp(text[x..y].to_string(), s));
+            }
+        }
+        let at = |p: usize| hang + text[a..p.clamp(a, b)].width();
+        let ran = (ran.is_some() && b == text.len() && words_at < b).then(|| (at(words_at), at(b)));
+        let (skip, join) = if k == 0 { (2, None) } else { (hang, Some(part.space)) };
+        rows.push(ChatRow { spans, skip, join, ran, ..ChatRow::default() });
+    }
+    if stamped {
+        let first = &mut rows[0];
+        let used = width(&first.spans);
+        first.spans.push(sp(" ".repeat(end.saturating_sub(stamps_w + used)), st.faint));
+        first.spans.extend(stamps.iter().cloned());
+        first.tail = stamps.iter().map(|s| s.text.chars().count()).sum();
+    }
+    // (the transcript's line: these rows' words — the folded row stands for them)
+    let words = crate::chatdoc::lines_of(&rows).0.trim_end_matches('\n').to_string();
+    let (spans, ran, tail) = trail_row_at(look, ran, knot, stamps, w, false, st);
+    let mut folded = ChatRow { spans, ran, skip: 2, tail, ..ChatRow::default() };
+    crate::chatdoc::keep_whole(&mut folded, &words);
+    let is_cut = folded.rest.is_some();
+    // (not cut: nothing to unfold — the row as it is, in hand or not, never laid out another way under the cursor)
+    if !whole || !is_cut {
+        folded.cut = is_cut.then_some(cut);
+        return vec![folded];
+    }
+    for r in &mut rows {
+        r.cut = Some(cut.clone());
+    }
+    rows
+}
+
+/// The most rows the run card (`run_card`) takes — past them its last says where the rest is.
+const RUN_CARD_MAX: usize = 12;
+
+/// A run panel's command cut to its tab's label in its top line, whole while the mouse is over that label (`whole.rs`;
+/// the user, 2026-10-25 — the line is one row of structure and the panel never shrinks mid-run, so the whole floats
+/// rather than unfolds): a card over the line, right above it and over the code, inside the columns of the panel
+/// whose line it is (the slot's, a docked or floating group's — `Screen.run_line`), borderless on the waiting cards'
+/// peek's slight ground as a toast is (it takes no keys, so no frame), the command wrapped after a `$ ` hanging under
+/// it, its words where the label's start, as tall as it takes — up to `RUN_CARD_MAX` and the code's rows, past them
+/// its last row naming `K`. Nothing under it moves; the mouse leaving lets it go (`whole::drawn`).
+fn run_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io::Result<()> {
+    let cut = crate::whole::Cut::Run(crate::sizes::Slot::Task);
+    if editor.cut_hover.as_ref() != Some(&cut) {
+        return Ok(());
+    }
+    let spot = editor.screen.cut_spots.borrow().iter().find(|s| s.3 == cut).map(|s| (s.0, s.1));
+    let (Some((y, a)), Some(r)) = (spot, editor.session.task_run.as_ref()) else { return Ok(()) };
+    let card = card_style(ui, editor, "ui.popup");
+    let ground = Style { bg: blend(card.bg, ui.tint, 1.0 - PEEK_STEP).or(card.bg), ..card };
+    let faint = Style { fg: ui.linenr.fg.or(card.fg), ..ground };
+    let string = Style { fg: editor.theme.try_get("string").and_then(|s| s.fg).or(card.fg), ..ground };
+    // (inside the columns of the panel whose line it is — the slot's, a floating group's frame's)
+    let Some((left, right)) = editor.screen.run_line.get() else { return Ok(()) };
+    // (a cell of the ground either side, `$ ` before the words — inside those columns, never past them: a panel with
+    // no room for a card has none, `K` says it)
+    let room = right.saturating_sub(left + 6);
+    if room < 8 {
+        return Ok(());
+    }
+    let room = room.min(96);
+    let mut rows: Vec<(String, Style)> = crate::cut::fit_in_hand(r.task.cmd.trim(), room, false, true)
+        .into_iter()
+        .enumerate()
+        .map(|(k, p)| (format!("{}{}", if k == 0 { "$ " } else { "  " }, p.text), string))
+        .collect();
+    // (no room over the line — a group docked over the code or beside it has its line on the screen's first row: none,
+    // `K` says it)
+    let above = y.saturating_sub(lay.text_top as usize);
+    if above == 0 {
+        return Ok(());
+    }
+    let cap = above.min(RUN_CARD_MAX);
+    if rows.len() > cap {
+        rows.truncate(cap - 1);
+        rows.push((fit_ellipsis("  … K in the panel says all of it", room + 2), faint));
+    }
+    let inner = rows.iter().map(|(t, _)| t.width()).max().unwrap_or(0);
+    let width = inner + 2;
+    // (its words over the label's: the `$ ` and a cell to the left of it, kept inside the slot's columns)
+    let x = a.saturating_sub(3).max(left).min(right.saturating_sub(width).max(left));
+    let top = y - rows.len();
+    for (k, (text, style)) in rows.iter().enumerate() {
+        queue!(out, MoveTo(x as u16, (top + k) as u16))?;
+        apply(out, ground)?;
+        queue!(out, Print(" "))?;
+        if let Some(words) = text.strip_prefix("$ ") {
+            apply(out, faint)?;
+            queue!(out, Print("$ "))?;
+            apply(out, *style)?;
+            queue!(out, Print(words))?;
+        } else {
+            apply(out, *style)?;
+            queue!(out, Print(text))?;
+        }
+        apply(out, ground)?;
+        queue!(out, Spaces(width - 1 - text.width()))?;
+    }
+    Ok(())
 }
 
 /// A card's place: (x, y, width, height).
@@ -16490,28 +16751,6 @@ fn fit_path_left(s: &str, width: usize) -> String {
         // (no folder left to cut at: mid-name, all the room)
         None => format!("{lead}{}", fit_left(rest, room)),
     }
-}
-
-/// Keeps the end (file name) of a path that doesn't fit: `…/editor/mod.rs`. No room at all: nothing (a
-/// lone `…` would still take a cell).
-fn fit_left(s: &str, width: usize) -> String {
-    if s.width() <= width {
-        return s.to_string();
-    }
-    if width == 0 {
-        return String::new();
-    }
-    let mut w = 1;
-    let mut tail: Vec<char> = Vec::new();
-    for ch in s.chars().rev() {
-        let cw = ch.width().unwrap_or(0);
-        if w + cw > width {
-            break;
-        }
-        w += cw;
-        tail.push(ch);
-    }
-    std::iter::once('…').chain(tail.into_iter().rev()).collect()
 }
 
 /// A chat row's start: the gutter (`gutter`), then the padding.

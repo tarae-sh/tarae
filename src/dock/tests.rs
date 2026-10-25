@@ -73,6 +73,115 @@ fn tests_and_a_task() -> (crate::scratch::Scratch, Editor) {
     (dir, ed)
 }
 
+/// A task group docked over the code (`C-w K`) has its line on the screen's first row: the mouse over its cut command
+/// there has no room above for the run card (`term::run_card`) — none, nothing drawn past the screen's top, the frame
+/// as it was; `K` in the panel still says the command whole.
+#[test]
+fn a_task_docked_at_the_top_has_no_run_card_over_its_line() {
+    let dir = crate::scratch::Scratch::new("dock-card");
+    let mut ed = Editor::new(Config::default());
+    ed.session.root = dir.to_path_buf();
+    ed.docs[0].text = ropey::Rope::from_str("fn main() {}\n");
+    let cmd = "CARGO_TARGET_DIR=target/sb/whole cargo clippy --all-targets -q 2>&1 | grep -E 'warning|error'";
+    let t = crate::task::Task { name: cmd.into(), cmd: cmd.into(), cwd: dir.to_path_buf() };
+    let mut r = crate::task::Run::for_test(t);
+    r.state = crate::task::State::Passed;
+    let a = dir.join("a.rs");
+    for (line, severity) in [(0, 2), (2, 1)] {
+        let it = crate::quickfix::Item {
+            path: a.clone(),
+            line,
+            col: 0,
+            message: "m".into(),
+            severity,
+            mark: None,
+        };
+        r.push_line(true, format!("{}:{}: m", a.display(), line + 1), false);
+        r.place(it, None);
+    }
+    ed.session.task_run = Some(r);
+    frame(&mut ed, W);
+    ed.list_focus(GroupKind::Task);
+    feed(&mut ed, "<C-w>K");
+    assert_eq!(ed.session.group(GroupKind::Task).map(|g| g.place), Some(Place::Docked(Side::Top)));
+    ed.session.at = At::Code;
+    let before = shown(&mut ed, W);
+    let spot =
+        ed.screen.cut_spots.borrow().iter().find(|s| s.3 == crate::whole::Cut::Run(Slot::Task)).cloned();
+    let (y, x) = spot.map(|s| (s.0, s.1)).expect("its cut label in the docked line");
+    assert_eq!(y, 0, "its line the screen's first row");
+    ed.handle_event(crate::event::Event::Hover(x as u16, y as u16));
+    assert_eq!(shown(&mut ed, W), before, "no card: no room over the line");
+}
+
+/// A task group floating (`C-w e`): the mouse over its cut command on its frame's top line shows the run card over that
+/// line, inside its frame's columns — placed by the panel whose line it is, not the slot's — and nothing else on the
+/// frame changes.
+#[test]
+fn a_floating_tasks_run_card_is_over_its_own_line_inside_its_columns() {
+    let dir = crate::scratch::Scratch::new("float-card");
+    let mut ed = Editor::new(Config::default());
+    ed.session.root = dir.to_path_buf();
+    ed.docs[0].text = ropey::Rope::from_str(&"fn main() {}\n".repeat(40));
+    let cmd = "CARGO_TARGET_DIR=target/sb/whole cargo clippy --all-targets -q 2>&1 | grep -E 'warning|error' \
+               | head -20 && echo farewell";
+    let t = crate::task::Task { name: cmd.into(), cmd: cmd.into(), cwd: dir.to_path_buf() };
+    let mut r = crate::task::Run::for_test(t);
+    r.state = crate::task::State::Passed;
+    let a = dir.join("a.rs");
+    for (line, severity) in [(0, 2), (2, 1)] {
+        let it = crate::quickfix::Item {
+            path: a.clone(),
+            line,
+            col: 0,
+            message: "m".into(),
+            severity,
+            mark: None,
+        };
+        r.push_line(true, format!("{}:{}: m", a.display(), line + 1), false);
+        r.place(it, None);
+    }
+    ed.session.task_run = Some(r);
+    frame(&mut ed, W);
+    ed.list_focus(GroupKind::Task);
+    feed(&mut ed, "<C-w>e");
+    assert!(
+        matches!(ed.session.group(GroupKind::Task).map(|g| g.place), Some(Place::Floating(_))),
+        "floating"
+    );
+    ed.session.at = At::Code;
+    let before = shown(&mut ed, W);
+    let f =
+        ed.screen.floating.borrow().iter().find(|f| f.0 == GroupKind::Task).map(|f| f.1).expect("floating");
+    let spot =
+        ed.screen.cut_spots.borrow().iter().find(|s| s.3 == crate::whole::Cut::Run(Slot::Task)).cloned();
+    let (y, x) = spot.map(|s| (s.0, s.1)).expect("its cut label on its frame's line");
+    assert_eq!(y, f.y, "its frame's top line");
+    ed.handle_event(crate::event::Event::Hover(x as u16, y as u16));
+    let screen = shown(&mut ed, W);
+    let (was, now): (Vec<&str>, Vec<&str>) = (before.lines().collect(), screen.lines().collect());
+    let top = (0..y)
+        .find(|&i| now[i].contains("$ CARGO"))
+        .unwrap_or_else(|| panic!("its card over the line:\n{screen}"));
+    assert!((top..y).any(|i| now[i].contains("farewell")), "whole:\n{screen}");
+    // (inside the frame's columns; every cell outside the card's rows and columns as it was)
+    let cols = |l: &str, a: usize, b: usize| l.chars().skip(a).take(b - a).collect::<String>();
+    for i in 0..was.len() {
+        if (top..y).contains(&i) {
+            let (l, r) = (f.x, f.x + f.w);
+            assert_eq!(cols(was[i], 0, l), cols(now[i], 0, l), "row {i} left of the frame:\n{screen}");
+            assert_eq!(
+                cols(was[i], r, W as usize),
+                cols(now[i], r, W as usize),
+                "row {i} right of it:\n{screen}"
+            );
+            assert!(now[i].chars().skip(l).take(r - l).any(|c| c != ' '), "row {i}: the card");
+        } else {
+            assert_eq!(was[i], now[i], "row {i} changed:\n{screen}");
+        }
+    }
+}
+
 fn rect(ed: &Editor, id: crate::split::PaneId) -> crate::split::Rect {
     ed.screen.leaves.iter().find(|l| l.0 == id).map(|l| l.1).unwrap_or_default()
 }

@@ -955,7 +955,8 @@ pub fn run_where(ed: &mut Editor) {
             .session
             .task_run
             .as_ref()
-            .and_then(|r| Some((crate::task::traced(&r.task.cmd), r.ran.clone()?))),
+            // (the command whole — its tab's label is cut, `whole.rs`)
+            .and_then(|r| Some((r.task.cmd.trim().to_string(), r.ran.clone()?))),
         _ => None,
     };
     match ran {

@@ -45,6 +45,9 @@ pub enum Of {
     Msg(usize),
     /// The air before a question or a run of tool rows — where a message is, not what it is: an empty line.
     Air,
+    /// The message waiting for this turn's end (`Chat.queued`): its words, the transcript's last — drawn after the
+    /// frame's own rows (what a run waits on, `thinking…`), right over the input.
+    Queued,
     /// The frame's own: no text of the document.
     Own,
 }
@@ -75,12 +78,36 @@ fn body(r: &ChatRow) -> (String, Option<&str>) {
     // (a code well's padding after a cut row's `…` isn't the text either)
     s.truncate(s.trim_end().len());
     match r.rest.as_deref() {
-        Some(rest) if s.ends_with('…') => {
-            s.truncate(s.len() - '…'.len_utf8());
+        Some(rest) => {
+            if s.ends_with('…') {
+                s.truncate(s.len() - '…'.len_utf8());
+            }
             (s, Some(rest))
         }
-        _ => (s, None),
+        None => (s, None),
     }
+}
+
+/// A row drawn cut whose text is `whole` (`whole.rs`: what's cut is whole where you look at it): the document keeps
+/// `whole` — the drawn text's start that is `whole`'s is the row's text, the rest of `whole` what it stands for
+/// (`ChatRow.rest`), and what's drawn past that start (the `…`, a kept end, what follows it) the drawer's
+/// (`ChatRow.tail`): never painted, never under the cursor — a cursor on the row draws it whole. Not cut: as it is.
+pub fn keep_whole(r: &mut ChatRow, whole: &str) {
+    if body(r).0 == whole {
+        return;
+    }
+    let n: usize = r.spans.iter().map(|s| s.text.chars().count()).sum();
+    let drawn: Vec<char> =
+        r.spans.iter().flat_map(|s| s.text.chars()).take(n.saturating_sub(r.tail)).collect();
+    let drawn = drawn.get(r.skip.min(drawn.len())..).unwrap_or_default();
+    let mut same = drawn.iter().zip(whole.chars()).take_while(|(a, b)| **a == *b).count();
+    // (never ending in blanks or a `…`: `body` trims the one and takes the other for a cut's)
+    while same > 0 && (drawn[same - 1].is_whitespace() || drawn[same - 1] == '…') {
+        same -= 1;
+    }
+    let at: usize = whole.chars().take(same).map(char::len_utf8).sum();
+    r.rest = Some(whole[at..].into());
+    r.tail = n - (r.skip + same).min(n);
 }
 
 /// The cells of `r`'s first `skip` characters — what the drawer put before its text.
@@ -201,6 +228,18 @@ impl Transcript {
     pub fn top_row(&self) -> usize {
         let Some(d) = self.pane.doc_in() else { return 0 };
         d.rows.as_deref().map_or(0, |g| g.index(d.top, d.top_skip()))
+    }
+
+    /// The piece the document's `line` is in.
+    fn piece_at(&self, line: usize) -> Option<Of> {
+        let mut base = 0;
+        for p in &self.pieces {
+            if line < base + p.lines {
+                return Some(p.of);
+            }
+            base += p.lines;
+        }
+        None
     }
 
     /// The message whose words the document's `line` is (the air before one: the message before it).
@@ -420,6 +459,72 @@ pub fn in_sight(d: &mut Document, rows: usize, so: usize) {
     d.top_rows = (k > 0).then_some((line, k));
 }
 
+/// The frame's own rows that come before the last of the document's (`Of::Own` before the queued line): drawn among
+/// its rows, not of them.
+fn own_inside(laid: &Laid) -> usize {
+    let last = laid.iter().rposition(|(of, _)| *of != Of::Own).unwrap_or(0);
+    laid[..last].iter().filter(|(of, _)| *of == Of::Own).map(|(_, r)| r.len()).sum()
+}
+
+/// The transcript's row that the frame's row `row` is (`laid`, as `Screen.chat_laid` keeps it) — None: one of the
+/// frame's own drawn among them (what a run waits on, `thinking…`, before the queued line). Past the document's last
+/// piece, counted on from it (an empty conversation's cursor row).
+pub fn doc_row(laid: &Laid, row: usize) -> Option<usize> {
+    let (mut at, mut doc) = (0, 0);
+    let last = laid.iter().rposition(|(of, _)| *of != Of::Own);
+    for (k, (of, rows)) in laid.iter().enumerate() {
+        if last.is_none_or(|l| k > l) {
+            break;
+        }
+        if row < at + rows.len() {
+            return (*of != Of::Own).then_some(doc + row - at);
+        }
+        at += rows.len();
+        if *of != Of::Own {
+            doc += rows.len();
+        }
+    }
+    Some(row - (at - doc))
+}
+
+/// `doc_row`, a row of the frame's own taken as the document's next.
+fn doc_row_from(laid: &Laid, row: usize) -> usize {
+    (row..row + own_inside(laid) + 1).find_map(|r| doc_row(laid, r)).unwrap_or(row)
+}
+
+/// The frame's row that the transcript's row `row` is drawn in.
+pub fn laid_row(laid: &Laid, row: usize) -> usize {
+    let (mut at, mut doc) = (0, 0);
+    for (of, rows) in laid {
+        if *of != Of::Own {
+            if row < doc + rows.len() {
+                return at + row - doc;
+            }
+            doc += rows.len();
+        }
+        at += rows.len();
+    }
+    row + own_inside(laid)
+}
+
+/// The cut row its view mode's cursor is on while it has the keys — drawn whole (`whole::in_hand`): a tool call's
+/// row, the queued line.
+pub fn cursor_on(ed: &Editor) -> Option<crate::whole::Cut> {
+    use crate::whole::Cut;
+    if !has_keys(ed) {
+        return None;
+    }
+    let c = ed.session.chat.as_ref()?;
+    let t = c.transcript.as_ref()?;
+    let d = t.pane.doc_in()?;
+    let line = mv::line_of(&d.text, d.selection().primary().cursor(&d.text));
+    match t.piece_at(line)? {
+        Of::Msg(i) => c.msgs.get(i).filter(|m| m.look.is_some()).map(|m| Cut::Call(m.call.clone())),
+        Of::Queued => Some(Cut::Queued),
+        _ => None,
+    }
+}
+
 // ── Its view mode ────────────────────────────────────────────────────────────────────────────────────────
 
 /// The chat's transcript.
@@ -461,7 +566,9 @@ pub fn came(ed: &Editor) -> bool {
 
 /// The rows and columns the chat shows its conversation in, as the last frame drew it.
 fn viewport(ed: &Editor) -> (usize, usize) {
-    ed.screen.chat_view.get().map_or((20, 60), |a| (a.2.max(1), a.1.max(1)))
+    // (the frame's own rows drawn among its rows take theirs)
+    let own = own_inside(&ed.screen.chat_laid.borrow());
+    ed.screen.chat_view.get().map_or((20, 60), |a| (a.2.saturating_sub(own).max(1), a.1.max(1)))
 }
 
 /// The chat's chords — the screen, pointing, the last code block, a new or earlier conversation, models, the
@@ -581,6 +688,7 @@ fn enter(ed: &mut Editor, row: Option<usize>, by_wheel: Option<Was>) {
 fn come(ed: &mut Editor, row: Option<usize>, by_wheel: Option<Was>) {
     crate::view::leave(ed);
     let shown = ed.screen.chat_view.get().map_or(0, |a| a.3);
+    let shown = doc_row_from(&ed.screen.chat_laid.borrow(), shown);
     let Some(c) = ed.session.chat.as_mut() else { return };
     let now = seen(c);
     let answer = last_answer(c);
@@ -612,6 +720,7 @@ pub fn click(ed: &mut Editor, row: usize, col: usize) -> bool {
     if ed.session.chat.as_ref().is_none_or(|c| c.msgs.is_empty()) {
         return false;
     }
+    let Some(row) = doc_row(&ed.screen.chat_laid.borrow(), row) else { return false };
     let Some(s) = transcript(ed).filter(|t| row < t.rows()).and_then(|t| t.row(row)) else { return false };
     if !has_keys(ed) {
         come(ed, Some(row), None);
@@ -641,11 +750,22 @@ pub fn resized(ed: &mut Editor) -> bool {
         return false;
     }
     let size = viewport(ed);
-    let Some(before) = transcript(ed).filter(|t| t.pane.size != Some(size)).map(Transcript::top_row) else {
+    if let Some(before) = transcript(ed).filter(|t| t.pane.size != Some(size)).map(Transcript::top_row) {
+        in_sight_now(ed);
+        return transcript(ed).map(Transcript::top_row) != Some(before);
+    }
+    // (a cursor past what arrives — on the queued line, under the answer being written — went down with it: kept in
+    // sight, the rows over it moving only then; anywhere else what arrives moves nothing)
+    let Some(d) = transcript_mut(ed).and_then(|t| t.pane.doc_in_mut()) else { return false };
+    let Some(g) = d.rows.clone() else { return false };
+    let cursor = d.selection().primary().cursor(&d.text);
+    let line = mv::line_of(&d.text, cursor);
+    let at = g.index(line, crate::wrap::row_of(g.of(line), cursor));
+    if at < g.index(d.top, d.top_skip()) + size.0 {
         return false;
-    };
-    in_sight_now(ed);
-    transcript(ed).map(Transcript::top_row) != Some(before)
+    }
+    in_sight(d, size.0, 0);
+    true
 }
 
 /// The cursor's row in sight in the rows the chat shows, the scrolloff margin kept.
@@ -663,14 +783,16 @@ fn in_sight_now(ed: &mut Editor) {
 /// chat showing the rows you read — `Chat.scroll` from the bottom, what came while it held below them; a prompt
 /// of its goes. The keys stay where they are — the caller says where they go.
 pub fn leave(ed: &mut Editor) {
-    let (area, _) = viewport(ed);
+    // (the rows the chat shows, its own among them: `scroll` counts the frame's rows)
+    let area = ed.screen.chat_view.get().map_or(20, |a| a.2.max(1));
     // (the chat's scroll counts from the live bottom: every row the last frame laid out, its own included)
-    let total: usize = ed.screen.chat_laid.borrow().iter().map(|(_, r)| r.len()).sum();
+    let laid = ed.screen.chat_laid.borrow().clone();
+    let total: usize = laid.iter().map(|(_, r)| r.len()).sum();
     let Some(c) = ed.session.chat.as_mut() else { return };
     let Some(t) = c.transcript.as_mut().filter(|t| t.keyed && t.pane.doc_in().is_some()) else { return };
     t.keyed = false;
     t.by_wheel = None;
-    c.scroll = total.max(t.rows()).saturating_sub(t.top_row() + area);
+    c.scroll = total.max(t.rows()).saturating_sub(laid_row(&laid, t.top_row()) + area);
     if t.pane.dropped() {
         ed.prompt = None;
     }
@@ -881,6 +1003,7 @@ pub fn wheel(ed: &mut Editor, row: Option<usize>, up: bool) {
             return;
         }
         let was = crate::view::was(ed);
+        let row = row.map(|r| doc_row_from(&ed.screen.chat_laid.borrow(), r));
         enter(ed, row, Some(was));
     }
     ed.session.at = At::Chat;

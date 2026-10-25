@@ -219,6 +219,7 @@ mod waits;
 mod wasm;
 mod weave;
 mod web;
+mod whole;
 mod worktree;
 mod wrap;
 mod writing;
