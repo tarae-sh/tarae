@@ -596,8 +596,6 @@ pub enum Spot {
     New,
     /// The chat's `› N granted`: the list of what Claude may do without asking (`:granted`).
     Granted,
-    /// The status line's `◦ shuttle`: the program typing into tarae is ended (`:shuttle-end`).
-    Shuttle,
     /// The chat's line's `+N`, the status line's chip: the list (`space W`).
     List,
     /// The status line's `▲3 waiting`: the inbox.
@@ -1413,7 +1411,6 @@ impl Editor {
             Spot::List => self.session_list(),
             Spot::Inbox => self.inbox_open(),
             Spot::Granted => self.granted(),
-            Spot::Shuttle => crate::shuttle::end(self),
             Spot::Reviewer => crate::reviewer::verdict(self),
             Spot::Follow(id) => crate::follow::follow_session(self, id),
         }
@@ -1479,8 +1476,7 @@ mod tests {
         // late cases; the real wiring — keys through `handle_event`, the jobs and the saver's wait they start —
         // is `restart::tests::restarts_card_typed_while_claudes_is_up_comes_in_front_of_it`.)
         let asked = |ed: &mut Editor, o: Offer| {
-            // (the person's: `person_seq` too — a shuttle's keys count only as input)
-            (ed.input_seq, ed.person_seq) = (ed.input_seq + 1, ed.person_seq + 1);
+            ed.input_seq += 1;
             let was = ed.events.set_asked(Some(ed.input_seq));
             ed.events.jobs().spawn(move || move |ed: &mut Editor| ed.push_offer(o));
             ed.events.set_asked(was);
@@ -1520,7 +1516,7 @@ mod tests {
             // Asked, but more was typed before it came — maybe toward the card up
             ("typed since", &|ed: &mut Editor| {
                 asked(ed, yours());
-                (ed.input_seq, ed.person_seq) = (ed.input_seq + 1, ed.person_seq + 1);
+                ed.input_seq += 1;
                 land(ed);
             }),
             // Asked, and Claude's card came while its work ran — maybe read now

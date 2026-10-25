@@ -654,13 +654,6 @@ pub static SETTINGS: &[Setting] = &[
         set: |c, v| c.features_count = b(v),
     },
     Setting {
-        path: "ui.shuttle-keys",
-        kind: Kind::Enum(crate::shuttle::Level::NAMES),
-        doc: "Let a program you run (an assistant, a test script) type into tarae over its UI socket (tarae keys), each step saying where it must land — off · light: keys outside cards, light cards' answers, every n · weighty: weighty answers too, once read (not built yet: as light). A card asks once for each program; your own key pauses it, :shuttle-end ends it. Only your own config sets it",
-        get: |c| Value::from(c.shuttle_keys.name()),
-        set: |c, v| c.shuttle_keys = crate::shuttle::Level::of(s(v)),
-    },
-    Setting {
         path: "workspace.sync",
         kind: Kind::Enum(crate::keepclose::MODES),
         doc: "When a workspace's base branch moves: \"ask\" — one card for every workspace behind it (what would conflict, and where), y moving the clean ones onto its tip once each is idle, their changes in no commit taken along; \"idle\" — the clean ones moved unasked, a card for the conflicting ones; \"off\" — left where they are. Only your own config sets it",

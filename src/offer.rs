@@ -72,7 +72,7 @@ pub struct Offer {
     /// The front run card's group (cardburden 6): the cards stacked behind it asking for the very same run
     /// (`same_run`), by id — its last paragraph lists them, and `Y` answers them with it (`offer_group_sync`).
     pub like: Vec<u64>,
-    /// The person's input count (`Editor.person_seq` — not a shuttle's keys) when it came (`push_offer`).
+    /// The input count (`Editor.input_seq`) when it came (`push_offer`).
     pub came: u64,
     /// The user's own (`Offer::rank`, #205): a kind a command of theirs asks for, made by the input the user
     /// gave last (`Queue.asked` — the key, or a job it started; nothing typed since). Focused as it comes to the
@@ -287,10 +287,6 @@ pub enum What {
     /// A board asked for (`board::Ask`, frictions29 32 — the key that spends money): `y` starts it, holding for its
     /// session and conversation · `n` starts none. Its session's.
     Board(Box<crate::board::Ask>),
-    /// A program asks to type into tarae over its socket (`shuttle.rs`), the first time from its process: `y` it
-    /// may until that process ends · `n` not. Weighty (settled, drawn: when it comes is the program's), no
-    /// `a`/`A`: the grant is never kept; no shuttle answers it.
-    Shuttle,
 }
 
 /// Every card's kind (`Offer::kind`) — what `:features` lists, so a card never asked shows as 0
@@ -347,7 +343,6 @@ pub const KINDS: &[&str] = &[
     "features-reset",
     "left-running",
     "board",
-    "shuttle",
 ];
 
 /// What a letter does to the front card (`Offer::act`, done by `offer_key`).
@@ -479,9 +474,7 @@ impl What {
             | What::EnvKey { .. }
             // (the review it's for ends with the restart)
             | What::Board(_)
-            | What::Limit(_)
-            // (its connection ends with the restart — a hello asks again)
-            | What::Shuttle => Lost,
+            | What::Limit(_) => Lost,
         }
     }
 }
@@ -685,12 +678,11 @@ impl Offer {
         self
     }
 
-    /// Its `card` line: answered (`y` `a` `A` `n`, `by` whom) or dropped — in `session`; its entry for the record
-    /// back.
+    /// Its `card` line: answered (`y` `a` `A` `n`) or dropped — in `session`; its entry for the record back.
     fn said(
         &self,
         session: &crate::log::Session,
-        answer: (&str, Option<&str>),
+        answer: &str,
         caps: Option<&crate::caps::Caps>,
     ) -> serde_json::Value {
         crate::cards::said(session, self, answer, caps)
@@ -774,8 +766,6 @@ impl Offer {
                 | What::Limit(_)
                 // (its yes spends money — a key sent as it came up never starts a board)
                 | What::Board(_)
-                // (its yes lets a program type — when it comes is the program's: a `y` typed as it came isn't one)
-                | What::Shuttle
             )
     }
 
@@ -887,8 +877,7 @@ impl Offer {
     }
 
     /// Every letter it acts on as it may stand (`act` — `Editor::offer_key` takes no other: a letter outside
-    /// these goes on to the code). A shuttle's key is checked against these before the card sees it
-    /// (`shuttle::card_refused`). Kept apart from `act` and checked against it for every card kind
+    /// these goes on to the code). Kept apart from `act` and checked against it for every card kind
     /// (`acts_on_is_every_letter_a_card_acts_on`).
     pub fn acts_on(&self, c: char) -> bool {
         matches!(c, 'y' | 'n')
@@ -1518,7 +1507,6 @@ impl Offer {
             W::Limit(_) => vec![lasts('y', "This session"), plain('n', "Wait")],
             W::FeaturesReset => vec![lasts('y', "Empty them"), plain('n', "Keep them")],
             W::Board(_) => vec![lasts('y', "Start it"), plain('n', "Not now")],
-            W::Shuttle => vec![lasts('y', "Until it ends"), plain('n', "No")],
         }
     }
 
@@ -1577,7 +1565,6 @@ impl Offer {
             W::Limit(_) => "limit",
             W::FeaturesReset => "features-reset",
             W::Board(_) => "board",
-            W::Shuttle => "shuttle",
         }
     }
 }
@@ -1619,7 +1606,7 @@ impl crate::editor::Editor {
         let (mut dropped, mut kept) = (Vec::new(), Vec::new());
         for o in self.workspace.parked.iter().chain(self.offers.iter().filter(|_| front)) {
             if gone(&o.what) {
-                kept.push(o.said(&session, ("dropped", None), self.workspace.claude.caps()));
+                kept.push(o.said(&session, "dropped", self.workspace.claude.caps()));
                 dropped.push(o.id);
             }
         }
@@ -1667,7 +1654,7 @@ impl crate::editor::Editor {
         o.since = crate::clock::now();
         // (the user's own: the input that asked is the last one given — a card that comes after more typing,
         // or from work nobody's input started, waits its turn: #205)
-        o.came = self.person_seq;
+        o.came = self.input_seq;
         o.yours = o.yours_kind() && self.events.asked() == Some(self.input_seq);
         o.about = o.about.or_else(|| self.offer_about(&o));
         // One bring card a session: a new one takes the place of the one waiting for that checkout, wherever it
@@ -1713,11 +1700,7 @@ impl crate::editor::Editor {
             || o.host().is_some()
             || matches!(
                 o.what,
-                What::PluginAsk { .. }
-                    | What::GitTrust(_)
-                    | What::RepoTrust { .. }
-                    | What::Shuttle
-                    | What::Instructions(_)
+                What::PluginAsk { .. } | What::GitTrust(_) | What::RepoTrust { .. } | What::Instructions(_)
             );
         if let Some(old) = self.offers.iter_mut().find(|x| x.title == o.title).filter(|_| !own) {
             // Replaced whole — what it says with what it does — its focus gone with its `rev` (`card_focus`): a key
@@ -1799,7 +1782,7 @@ impl crate::editor::Editor {
             return false;
         }
         let Code::Char(c) = key.code else { return false };
-        // (only the letters it acts on — the list a shuttle's keys are checked against: `acts_on`)
+        // (only the letters it acts on: `acts_on`)
         if !o.acts_on(c) {
             return false;
         }
@@ -2047,7 +2030,6 @@ impl crate::editor::Editor {
             }
             What::Limit(a) => self.limit_answer(id, *a, false),
             What::FeaturesReset => self.features_reset_answer(id, true),
-            What::Shuttle => crate::shuttle::answer(self, id, true),
         }
     }
 
@@ -2576,19 +2558,9 @@ impl crate::editor::Editor {
     /// Card `o` answered by key `key`: its `card` line, how it went for the gone ring, its answer counted
     /// (`features.rs`) — every answer goes through here.
     fn offer_said(&mut self, o: &Offer, key: char) {
-        // (whose key: the person's, or a shuttle's step — `shuttle.rs`)
-        let by = match &self.shuttles.stepping {
-            Some(name) => format!("shuttle:{name}"),
-            None => "you".to_string(),
-        };
-        let entry =
-            o.said(&self.workspace.log(), (&key.to_string(), Some(&by)), self.workspace.claude.caps());
+        let entry = o.said(&self.workspace.log(), &key.to_string(), self.workspace.claude.caps());
         self.cards_record(vec![entry]);
-        let how = match &self.shuttles.stepping {
-            Some(name) => format!("answered {key} by shuttle {name}"),
-            None => format!("answered {key}"),
-        };
-        self.card_how(o.id, how);
+        self.card_how(o.id, format!("answered {key}"));
         if self.counting() {
             self.features.answer(o.kind(), key);
         }
@@ -2694,7 +2666,6 @@ impl crate::editor::Editor {
             What::Limit(a) => self.limit_wait(&a),
             What::FeaturesReset => self.features_reset_answer(o.id, false),
             What::Board(a) => crate::board::answer(self, *a, false),
-            What::Shuttle => crate::shuttle::answer(self, o.id, false),
         }
     }
 

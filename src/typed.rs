@@ -7,11 +7,6 @@ use crate::{config, settings};
 
 pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
     let line = line.trim();
-    // (a shuttle's key never runs a line that changes what tarae may do — however it came: typed, a key bound to
-    // it, the palette; `shuttle.rs`)
-    if let Some(why) = crate::shuttle::typed_refused(editor, line) {
-        return Err(why);
-    }
     let (cmd, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
     let rest = rest.trim();
     match cmd {
@@ -322,10 +317,6 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
         }
         "features" => {
             editor.features_open();
-            Ok(())
-        }
-        "shuttle-end" => {
-            crate::shuttle::end(editor);
             Ok(())
         }
         "features-reset" => {

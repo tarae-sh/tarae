@@ -9534,18 +9534,6 @@ fn draw_statusline(
             });
         }
     }
-    // A program typing into tarae (`shuttle.rs`): faint, its name, `paused` once your key paused it; a click ends
-    // it (`:shuttle-end`). Its step in the accent a moment after each (`y → card#12`) goes last on the left, below
-    // — coming and going, it moves nothing beside it
-    let shuttle = crate::shuttle::keys_said(editor);
-    if let Some((name, paused)) = &shuttle {
-        let faint = Style { fg: ui.linenr.fg, ..ui.status };
-        left.push(Seg { text: "  ◦ shuttle".into(), style: faint, keep: SHUTTLE });
-        left.push(Seg { text: format!(" {name}"), style: dim, keep: SHUTTLE });
-        if *paused {
-            left.push(Seg { text: " paused".into(), style: faint, keep: SHUTTLE });
-        }
-    }
     // The session in front, when there's more than one and the chat (whose top row has them all) isn't
     // up: its name — a click opens the list — and how the others are
     let chip = !editor.workspaces.is_empty() && lay.chat_w == 0;
@@ -9713,10 +9701,6 @@ fn draw_statusline(
     // What plugins show for this buffer (`status-bar`): first to go when the line runs short
     for s in editor.plugin_status() {
         left.push(Seg { text: format!("   {s}"), style: dim, keep: 70 });
-    }
-    // (the shuttle's step, lit: last on the left — its chip above keeps its width)
-    if let Some(step) = crate::shuttle::lit(editor).filter(|_| shuttle.as_ref().is_some_and(|s| !s.1)) {
-        left.push(Seg { text: format!("   {}", fit_ellipsis(step, 32)), style: accent, keep: SHUTTLE_LIT });
     }
 
     // (in a view mode or on a run's output, where its cursor is on its document — the row and column, the
@@ -9925,19 +9909,15 @@ fn draw_statusline(
     queue!(out, MoveTo(0, lay.status_y))?;
     let mut used = 0;
     let mut chip_at: Option<(usize, usize)> = None;
-    let mut shuttle_at: Option<(usize, usize)> = None;
     let mut reviewer_at: Option<(usize, usize)> = None;
     for s in &left {
         apply(out, s.style)?;
         queue!(out, Print(&s.text))?;
-        // (a click on the name: the list; on the count: the inbox; on the shuttle: it ends — not the gap before them)
+        // (a click on the name: the list; on the count: the inbox — not the gap before them)
         let lead = s.text.len() - s.text.trim_start().len();
         let (a, b) = (used + lead, used + s.text.width());
         if s.keep == CHIP {
             chip_at = Some(chip_at.map_or((a, b), |(a0, _)| (a0, b)));
-        }
-        if s.keep == SHUTTLE {
-            shuttle_at = Some(shuttle_at.map_or((a, b), |(a0, _)| (a0, b)));
         }
         if (REVIEWER - 2..=REVIEWER).contains(&s.keep) {
             reviewer_at = Some(reviewer_at.map_or((a, b), |(a0, _)| (a0, b)));
@@ -9955,10 +9935,6 @@ fn draw_statusline(
             b,
             crate::workspace::Spot::List,
         ));
-    }
-    if let Some((a, b)) = shuttle_at {
-        let spot = (lay.status_y as usize, a, b, crate::workspace::Spot::Shuttle);
-        editor.screen.session_spots.borrow_mut().push(spot);
     }
     if let Some((a, b)) = reviewer_at {
         let spot = (lay.status_y as usize, a, b, crate::workspace::Spot::Reviewer);
@@ -9982,20 +9958,13 @@ const CHIP: u8 = 235;
 /// is what's left when the room runs out.
 const INBOX: u8 = 245;
 
-/// The status line's `◦ shuttle claude-code` (`shuttle.rs`): a program typing into tarae is said while anything
-/// but the mode, the position, the inbox and a list's keys is — it outlasts the session chip.
-const SHUTTLE: u8 = 238;
-
 /// The status line's view-mode hints (`i type  esc code`): the first to fold when narrow — below the branch and
-/// the hunks; the mode word (`● normal · chat`) and a shuttle's name never (quote-plan §6).
+/// the hunks; the mode word (`● normal · chat`) never (quote-plan §6).
 const VIEW_HINTS: u8 = 70;
 
 /// A code pane's top line's key hint (`enter go there`, `C-c stop`): a blank, then `hint_spans`' key and words, all
 /// this `keep` — folded before the line's details, the gap with them (`fit_segments`: a blank that leads its run).
 const PATH_HINTS: u8 = 238;
-
-/// …and its step lit a moment after each: as long-lived on the line, apart from the chip (not its click).
-const SHUTTLE_LIT: u8 = 237;
 
 /// The status line's `¶ reviewing` (bgreview, `reviewer::status_said`): below the session chip (a typing
 /// program and the session's name outlast it); its counts one below, its key two — the key folds first, the
@@ -23529,7 +23498,7 @@ mod tests {
         ("sandbox/tier.rs", 1),           // the probe's limit
         ("workspace.rs", 2),              // a stuck call's mark (`Doing::said`), seconds then minutes
         ("term.rs", 8), // `run_duration` itself (5); `ago` itself; a `:procs` look's tenths of a ms; its settings
-        ("uisocket.rs", 2), // a driver's waits, as it asked them
+        ("uisocket.rs", 1), // a driver's waits, as it asked them
         ("usage.rs", 1), // the cache's time left, a time to come in whole minutes
     ];
 

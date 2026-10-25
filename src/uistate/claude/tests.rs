@@ -129,7 +129,7 @@ fn claudes_level_holds_back_unsent_text_and_other_sessions() {
         "the full level has it: {}",
         ed.ui_state().json()["toasts"]
     );
-    // (what drew the frames: a job's line — a shuttle's watch, say — and what was owed, a card's title: the
+    // (what drew the frames: a job's line — a watcher's, say — and what was owed, a card's title: the
     // drivers', never Claude's)
     let owed = crate::editor::DrawnFor::Owed("card \"A secret owed card\"".into());
     ed.frames_for.push_back((7, vec![crate::editor::DrawnFor::Job(std::panic::Location::caller()), owed]));

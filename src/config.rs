@@ -87,9 +87,6 @@ pub struct EditorConfig {
     pub workspace_worktrees: String,
     /// Count which features get used, on this machine only (`features.rs`) — only your own config turns it on.
     pub features_count: bool,
-    /// A program may type into tarae over its UI socket (`shuttle.rs`): off, light or weighty answers — only your
-    /// own config sets it (`trust::YOURS_ONLY`).
-    pub shuttle_keys: crate::shuttle::Level,
     /// Keep how long each reviewed change was looked at and what it ended as (`reviews.rs`:
     /// `$state/reviews/`) — only your own config sets it (`trust::YOURS_ONLY`).
     pub review_record: bool,
@@ -162,7 +159,6 @@ impl Default for EditorConfig {
             scrollbar: true,
             workspace_worktrees: String::new(),
             features_count: false,
-            shuttle_keys: crate::shuttle::Level::Off,
             review_record: true,
             workspace_ended: Vec::new(),
             workspace_keep: Vec::new(),

@@ -46,7 +46,8 @@ use crate::workspace::At;
 /// 16: workspaces and their sessions apart (collab C0): `workspaces[]` (`w0` … — `root`, `branch`, `base`, the
 /// reviewer, `cards`, `rebasing`, `view`, `overlaps`, `panes`), each with its `sessions[]` (`s0` … — `doing`,
 /// `answer`, `usage`, `billing`, `sandbox`, `writing`, `at`, …); `front` a workspace's id; `sessions[]` gone.
-pub const V: u64 = 16;
+/// 17: shuttle keys gone (audit 2.D): `keys.shuttle` and the `shuttle` card kind.
+pub const V: u64 = 17;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;
@@ -175,8 +176,7 @@ fn slot_name(s: Slot) -> &'static str {
     }
 }
 
-/// Which handler of `handle_key`'s chain took a key (`took`) — the routing test reads it, and a shuttle's answer
-/// says it (`shuttle.rs`).
+/// Which handler of `handle_key`'s chain took a key (`took`) — the routing test reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Handler {
     Point,
@@ -202,38 +202,9 @@ pub enum Handler {
     Code,
 }
 
-impl Handler {
-    /// Its name in a shuttle's answer (`took`).
-    pub fn name(self) -> &'static str {
-        match self {
-            Handler::Point => "point",
-            Handler::Card => "card",
-            Handler::NextCard => "next-card",
-            Handler::Program => "terminal-program",
-            Handler::Popup => "popup",
-            Handler::EditReview => "edit-review",
-            Handler::Picker => "picker",
-            Handler::ChatView => "chat-view",
-            Handler::TerminalView => "terminal-view",
-            Handler::Output => "output",
-            Handler::Unfold => "chat-minimized",
-            Handler::Chat => "chat",
-            Handler::Rail => "review",
-            Handler::Side => "side",
-            Handler::PluginPanel => "plugin",
-            Handler::List => "list",
-            Handler::Prompt => "prompt",
-            Handler::Weave => "weave",
-            Handler::Page => "page",
-            Handler::Move => "move",
-            Handler::Code => "code",
-        }
-    }
-}
-
 thread_local!(pub static TOOK: std::cell::Cell<Option<Handler>> = const { std::cell::Cell::new(None) });
 
-/// `handle_key`'s handler `h` took the key — the routing test reads it, a shuttle's step says it.
+/// `handle_key`'s handler `h` took the key — the routing test reads it.
 #[inline]
 pub fn took(h: Handler) {
     TOOK.set(Some(h));
@@ -280,6 +251,7 @@ pub enum Filter {
 }
 
 impl Filter {
+    #[cfg(test)]
     fn takes(&self, key: Key) -> bool {
         match self {
             Filter::All => true,
@@ -320,22 +292,20 @@ pub struct KeysTo {
     pub under: Option<Region>,
     /// The element id that takes the next key.
     pub to: String,
-    /// A program typing over the UI socket (`shuttle.rs`): its name, and whether your key paused it.
-    pub shuttle: Option<(String, bool)>,
     /// The front card waiting to be focused (P3 §3.8, `Editor::card_waits`): up, without the keys — they go where
     /// `region` says; `C-q`, a click on it or `C-w w` focuses it.
     pub waiting: Option<String>,
 }
 
 impl KeysTo {
-    /// Where `key` goes now (the routing test's model — `handle_key` takes the same way; a shuttle's step asks it
-    /// which card a key would answer).
+    /// Where `key` goes now (the routing test's model — `handle_key` takes the same way).
+    #[cfg(test)]
     pub fn route(&self, key: Key) -> Region {
         self.chain.iter().find(|l| l.filter.takes(key)).map_or(Region::Code, |l| l.region)
     }
 }
 
-/// Where the keys go, as the state's JSON says it (`keys`) — what a shuttle's `expect.keys` is compared with.
+/// Where the keys go, as the state's JSON says it (`keys`).
 pub fn keys_json(k: &KeysTo) -> Value {
     json!({
         "to": k.to,
@@ -347,7 +317,6 @@ pub fn keys_json(k: &KeysTo) -> Value {
         "char_next": k.char_next,
         "drawn": k.drawn,
         "under": k.under.map(Region::name),
-        "shuttle": k.shuttle.as_ref().map(|(name, paused)| json!({ "name": name, "paused": paused })),
         "waiting": k.waiting,
     })
 }
@@ -625,7 +594,6 @@ impl Editor {
             under,
             to: self.element_id(region),
             chain,
-            shuttle: crate::shuttle::keys_said(self),
             waiting: self.offers.first().filter(|_| self.card_waits()).map(|o| format!("card#{}", o.id)),
         }
     }
@@ -2141,9 +2109,6 @@ impl UiState {
         if let Some(u) = k.under {
             keys += &format!(" · under it: {}", u.name());
         }
-        if let Some((name, paused)) = &k.shuttle {
-            keys += &format!(" · shuttle {name}{}", if *paused { " (paused)" } else { "" });
-        }
         if let Some(card) = &k.waiting {
             keys += &format!(" · {card} waits — C-q focuses it");
         }
@@ -2243,8 +2208,6 @@ pub enum Asked {
     /// Which features get used (`tarae state --features`, `features.rs`) — the file read on a worker, answered
     /// from there.
     Features,
-    /// A shuttle's step that landed (`shuttle.rs`): its answer as JSON text, the frame that drew it put in.
-    Shuttle(String),
 }
 
 /// A session's last turn as its chat shows it (#204: a driver read the conversation's own files to know
@@ -2587,11 +2550,6 @@ pub fn after_frame(ed: &mut Editor) {
             (Asked::Features, _) => {
                 ed.features_answer(a.json, a.reply);
                 continue;
-            }
-            (Asked::Shuttle(said), _) => {
-                let mut v: Value = serde_json::from_str(said).unwrap_or_default();
-                v["frame"] = json!(ed.frames);
-                v.to_string()
             }
             // (after a frame: there is one)
             (Asked::Frame, _) => {

@@ -946,7 +946,7 @@ fn play(ed: &mut Editor) {
 /// after you came back (never while behind).
 pub fn workspace_in(ed: &mut Editor) {
     let now = cursor_key(ed);
-    let input = ed.person_seq;
+    let input = ed.input_seq;
     let Some(f) = follow(ed) else { return };
     f.seen_input = input;
     f.seen_cursor = Some(now);
@@ -1281,8 +1281,7 @@ fn go_range_here(ed: &mut Editor, path: &Path, lines: Range<usize>) {
 pub fn watch(ed: &mut Editor) {
     let now = cursor_key(ed);
     let text = (ed.doc().id, ed.doc().version());
-    // (the person's: a shuttle moving the cursor isn't you taking over — `shuttle.rs`)
-    let input_seq = ed.person_seq;
+    let input_seq = ed.input_seq;
     sync_shown(ed);
     // Waiting for a big file: once loaded, the frame takes follow's line into sight (`view_line`)
     if let Some(id) = ed.workspace.claude.chat.as_ref().and_then(|c| c.follow.awaiting) {

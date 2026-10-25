@@ -1,7 +1,7 @@
 # UI state — what's on screen, as data
 
 Status: design approved (2026-10-04) with the five recommendations (see "Decided"); phases 1, 2 and 3 built;
-phase 4's guarded keys came back as **shuttle keys** (user decision 2026-10-19, phase 1 built — "Shuttle
+phase 4's guarded keys came back as shuttle keys (2026-10-19) and went with the audit (2026-10-26 — "Shuttle
 keys"), its speaking still dropped. The direction was approved after queue phase 0 (1085db8).
 
 ## Why
@@ -65,7 +65,7 @@ JSON for programs, and a short text form for people and Claude, from the same st
 
 ```json
 {
-  "v": 16,
+  "v": 17,
   "tarae": { "pid": 4182, "boot": "9f3ac1d0", "version": "0.9.0" },
   "frame": 4812,
   "input": 1033,
@@ -145,7 +145,7 @@ side git · 4 rows · in hand git:src/term.rs
   - `under`: what has the keys once a `C-q` card lets go.
   - `waiting` (V 13): the front card waiting to be focused — the keys go where `region` says (text form: `card#3
     waits — C-q focuses it`). A driver about to answer it sends `C-q` first (or a click), and reads the next state's
-    `held`; a shuttle's step checked as the code's lands in the code.
+    `held`.
 
   `keys` comes from one new `Editor::keys_to()`, and the routing test (phase 1) holds `handle_key` to it.
 - **`mode`, `prompt`** — mode, and the prompt's kind (`PromptKind::label`) and text (full level only).
@@ -211,7 +211,7 @@ side git · 4 rows · in hand git:src/term.rs
   frame read past an answer may be another than the one it owed). Not at Claude's level.
 - **`frames_for`** (ci, 2026-10-24) — the last 16 frames written, each `{frame, for}`: its number (as
   `frames_written` counts) and what drew it — each event of the batch before it that changed something (`key`,
-  `mouse`, `focus`, …; a job's result by the line that sent or spawned it, `job src/shuttle.rs:535`, or the name it
+  `mouse`, `focus`, …; a job's result by the line that sent or spawned it, `job src/<file>.rs:<line>`, or the name it
   gives itself: `a tick`, `a git watch round`, `a UI-state ask`), `owed: …` when none did, `the resting redraw`,
   `the first frame`. A late frame in an idle check says its cause the first time. Said only when there are any;
   not at Claude's level.
@@ -556,14 +556,12 @@ meok and hanji, a narrow screen, the stacked-card case, and a mark next to the `
 
 - **Not a way for Claude to act.** No `ui` call answers, focuses, scrolls or presses. A cited link moves
   things only when the user clicks it.
-- **Remote control only as keys, checked where they land.** Drivers act with keys — through the terminal, or as
-  a shuttle over the socket ("Shuttle keys") — so what they do goes through the UX a person uses, and any
-  friction shows up as friction. No actions (`answer card N`), no clicks.
+- **Remote control only as keys.** Drivers act with keys through the terminal, so what they do goes through the
+  UX a person uses, and any friction shows up as friction. No actions (`answer card N`), no clicks.
 - **Not a screen dump.** Contents stay on the screen; `screen` and zellij dumps remain for that.
 - **Not a plugin API.** Plugins have their own (0.2). A read-only state permission could come later.
 
-**Should drivers get a narrow "answer card N"?** No: keys, each saying where it must land — shuttle keys,
-below.
+**Should drivers get a narrow "answer card N"?** No: keys, as a person's.
 
 ## Phases
 
@@ -682,84 +680,15 @@ of code, ~525 of tests.
 - **Guarded keys** came back once phases 1–2 showed that `after_input` plus checking `keys` before sending
   isn't enough: three slips in a week, each the gap between the check and the key (a `y` answering the card
   that came in front as it was typed, a paste before the commit buffer opened, a toggle sent to a state the
-  script never saw). Built as shuttle keys — below.
+  script never saw). Built as shuttle keys, then removed — below.
 
-### Shuttle keys — phase 1 built (2026-10-19, `shuttle.rs`)
+### Shuttle keys — built (2026-10-19, `aebf0bfd`), removed (2026-10-26)
 
-A **shuttle** is a program the user runs that works tarae from outside — an assistant, a test script. Over the
-same socket, one connection carries one shuttle: a hello, then a step a line, each answered.
-
-```json
-{"shuttle": {"name": "claude-code", "for": 51234}}
-{"keys": "space v m", "expect": {"keys": {"to": "pane#4", "pending": ""}, "review:src/a.rs": {"viewed": false}}}
-{"text": "fix: …", "expect": {"keys": {"to": "pane#7", "takes": "text"}, "pane#7": {"path": "COMMIT_EDITMSG"}}}
-{"resume": true}
-```
-
-- **Checked and handled in one step.** The socket's thread sends the step to the main loop as one job: the
-  guards, then `expect` compared with what the state would say now (`keys` with `keys_to`, any other id with that
-  element's fields — a card's `rev`, a pane's `path` and `version`, a review row's `viewed` and `in_hand`), then
-  the keys in one by one, each an event of its own as a person's are (what runs after every event runs between
-  them), each after the first still going where the step began. No key, job or
-  timer runs between the check and the key. An empty `expect`, or one without `keys.to`, is refused: every step
-  says where it goes. `text` is one paste with a person's paste rules (a `:` line opens the command line, never
-  runs).
-- **The answers.** Landed (after the frame that draws it): `{"landed": "card#12", "took": "card", "input": …,
-  "frame": …, "said": "card#12 went: answered y by shuttle claude-code"}`. A key the card swallowed is never
-  landed: `{"took": "card", "taken": false, "said": …}`. Refused, nothing done: `{"refused": reason, "why": …,
-  "keys": what has them now}` — `expect`, `moved` (a sequence stopped partway; `landed_keys`), `paused`
-  (`retry_after_ms` on a resume), `weighty`, `never`, `config`, `off`, `ended`; at hello also `name`, `for`, `peer`, `another`,
-  `no`.
-- **Who.** `ui.shuttle-keys` (`off` · `light` · `weighty`), your own config only (`trust::YOURS_ONLY`). A peer
-  of this user, not under Claude's processes nor under what runs the project's code (tasks, tests, servers,
-  debuggers, plugins — `TARAE_UI` is in your tasks; the terminal panel is yours); never a `for` that is tarae or
-  runs it (its shell, its terminal, the login session), whoever asks; under tarae only from its terminal panel, its
-  `for` at or under the panel's shell (never a child no list knows of — a hook, a formatter). A peer whose parent
-  is pid 1 — one that daemonized or forked twice, re-parented to launchd/init — is refused ("not started from a
-  shell or a program you run"). What the parent chain can't guarantee: "under" is as far as it shows at hello. A
-  process that leaves it another way isn't seen — re-parented to a subreaper (systemd's user manager, some
-  terminals and multiplexers) rather than pid 1, or started by something Claude or a task asked another program
-  to start (a launch agent, `at`, a terminal's new window). For those the card is the guard: it names the
-  executable, which the program can't dress up. Without a `for` the
-  grant is the connecting process's own (each `tarae keys` asked for on its own, until it exits); `--for` widens it
-  to that process and every program it starts — the card then names both by their executables and says, in the
-  warning colour, that every program the `for` process starts may type until it ends (a `for` that is an
-  interactive shell isn't told apart: the warning is what you read). The card is weighty — when it comes is the
-  program's, so a `y` typed as it came isn't one — and a hello whose card goes unanswered (dropped, a restart)
-  hears so at once. The card shows the process's name with only the characters a
-  shuttle's name may have, its executable's path (cut from the left), and its start dated when it isn't today. The first hello under a `for`
-  process (by pid and start) brings the card — `y` until that process ends, kept in memory only; its end is
-  waited on with no polling. One shuttle at a time.
-- **Your key wins.** Any key, click or paste of yours pauses it (said once in `:messages`, the chip says
-  `paused`); it goes on when it asks after you've been idle 5 s. `:shuttle-end`, or a click on its chip, cuts it
-  off with its grant.
-- **What stays yours.** Phase 1 lets a shuttle answer light cards and every `n` — checked against every letter
-  the card acts on (`Offer::acts_on`, the one list `offer_key` takes: `Y` on a run card's group, `s`, `$` …), on the
-  card the key routes to or the front one whenever it has the keys; a weighty card's answers wait for
-  phase 2 (`read`: a digest of the card's text the shuttle computes), and those that widen trust or outlive the
-  session never (`A`, `s`, `N`, a project's or a repository's trust, Claude's settings, hooks, no-sandbox, the run
-  outside, a made file kept, the shuttle's own card; `:set!`, `:set` of a risky or yours-only setting,
-  `:sandbox-blocked` — refused where typed lines run, so a key bound to one or the palette runs it no more than
-  Enter does). What only a person's look may do goes by `person_seq`, which counts only your input:
-  follow's pause, a card's place among yours, an error read; a review's looks (`space v h`) refuse a shuttle.
-  **tarae's config files** are yours to edit: a key or paste that would land in the buffer of a file in your
-  config folder (`config.toml`, keys, themes — as written and its real path, read at hello) or of a
-  `.tarae.toml` / `.tarae.local.toml` (by name, anywhere) is refused (`config: yours to edit`) — any key there,
-  moving ones too: the person moves the keys away; and where typed lines run, `:config-open`, `:e`/`:o`/a split
-  naming one (`path:12` too), `:w` to one or of one, `:wa` with one changed. What these guard is what a
-  shuttle's *keys* reach in tarae — tarae isn't the tool that edits your config, answers trust or saves a setting
-  for a program. What they can't: the program runs as you, with your permissions, as everything you start does —
-  it can write those files itself (`ui.shuttle-keys` included), tarae's state, or run the commands itself; the
-  git tab's and a review's keys on a config file's changes aren't buffer keys and aren't refused. The grant card
-  is the boundary: say `y` only to a program you'd let do that anyway.
-- **Seen and recorded.** `◦ shuttle claude-code` on the status line, its step in the accent a moment after each,
-  last on the left (nothing beside it moves); `keys.shuttle` in the state (Claude's level: `connected` — its name
-  taken out of toasts and the gone ring too, `shuttle::for_claude`); `by=shuttle:<name>` in the
-  card line and `by` in the record; `By::Shuttle` in the feature counts.
-- **Tests**: the routing matrix's second entrance (every scene × probe as a step lands where a person's key would,
-  refused written for another place — broken once), the three slips as key-sequence tests, a simulation of steps
-  among the person's keys, a card asked again and the process ending, the socket, and the idle test with a
-  shuttle connected and paused.
+A program the user ran (an assistant, a test script) could type into tarae over the socket (`tarae keys`), each
+step checked where it landed, a card granting it; removed by the audit (user, 2026-10-25, audit 2.D) — nothing
+used it but its own tests and scenes, the driving Claude types through the terminal, a shuttle could never
+answer a weighty card by design, and Orchestra steers its children through session tools, never keys; git has
+it. With it went `person_seq` (every input is the person's again: `input_seq`).
 
 ## What to measure
 
@@ -844,8 +773,8 @@ Whatever changes state the user didn't see change, or refuses a key, says so whe
 
 1. **`ui` tool:** asks no card — it's less than `screen` sends, and its own session only.
 2. **The socket:** on by default — same uid, 0600, Claude's sandbox can't reach it, nothing idle.
-3. **Guarded keys for drivers:** replaced by the user's decisions on shuttle keys (2026-10-19): keys only, no
-   direct actions; `YOURS_ONLY`; a card per program; the person's key pauses it ("Shuttle keys").
+3. **Guarded keys for drivers:** replaced by shuttle keys (2026-10-19), which went with the audit (2026-10-26):
+   drivers type through the terminal, no direct actions ("Shuttle keys").
 4. **Pointing's key** in the chat: decided in phase 3 — `C-o` in the chat, `space @` from the code (see
    "Phase 3").
 5. **Other sessions in Claude's view:** counts only (name, `doing`, how many cards), never their titles.

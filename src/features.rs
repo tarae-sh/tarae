@@ -8,8 +8,7 @@
 //!
 //! - **Who**: keys are one count (`By::Keys`) — a person's typing and a driver's keys (zellij's `write-chars`)
 //!   reach tarae alike, as the terminal's input, so they aren't told apart, and no guess (timing, bursts) is
-//!   passed off as telling. Claude's tool calls come over its stream: their own count, exact. A shuttle's steps
-//!   (`shuttle.rs`) come over the UI socket: their own count too (`By::Shuttle`), where the socket hands them in.
+//!   passed off as telling. Claude's tool calls come over its stream: their own count, exact.
 //! - **Cost**: the key path adds a number at an index (`Counts::key`); the day is read once a batch of events
 //!   (`Editor::features_turn`). Nothing wakes tarae for it: what's counted goes to disk on a worker with the
 //!   first batch `SAVE_EVERY_S` after the last save, and when tarae ends (`Editor::features_flush`).
@@ -55,12 +54,10 @@ pub enum Area {
     Picker,
     /// A tool Claude called in the chat.
     Claude,
-    /// A shuttle's step that landed (`shuttle.rs`): keys or text.
-    Shuttle,
 }
 
 impl Area {
-    pub const ALL: [Area; 10] = [
+    pub const ALL: [Area; 9] = [
         Area::Command,
         Area::Palette,
         Area::Typed,
@@ -70,7 +67,6 @@ impl Area {
         Area::Panel,
         Area::Picker,
         Area::Claude,
-        Area::Shuttle,
     ];
 
     pub fn name(self) -> &'static str {
@@ -84,7 +80,6 @@ impl Area {
             Area::Panel => "panel",
             Area::Picker => "picker",
             Area::Claude => "claude",
-            Area::Shuttle => "shuttle",
         }
     }
 
@@ -95,20 +90,17 @@ impl Area {
     pub fn by(self) -> By {
         match self {
             Area::Claude => By::Claude,
-            Area::Shuttle => By::Shuttle,
             _ => By::Keys,
         }
     }
 }
 
 /// Whose a count is. `Keys`: a person's or a driver's — both reach tarae as the terminal's input, and nothing in
-/// a key says which. `Shuttle`: keys a program sent over the UI socket (`shuttle.rs`) — known to be a program's,
-/// counted where the socket hands them in.
+/// a key says which.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum By {
     Keys,
     Claude,
-    Shuttle,
 }
 
 impl By {
@@ -116,7 +108,6 @@ impl By {
         match self {
             By::Keys => "keys",
             By::Claude => "claude",
-            By::Shuttle => "shuttle",
         }
     }
 }
@@ -474,7 +465,6 @@ impl Universe {
         rows.extend(PANELS.iter().map(|p| (Area::Panel, p.to_string(), None)));
         rows.extend(PICKERS.iter().map(|p| (Area::Picker, p.to_string(), None)));
         rows.extend(CLAUDE_TOOLS.iter().map(|t| (Area::Claude, t.to_string(), None)));
-        rows.extend(crate::shuttle::STEPS.iter().map(|s| (Area::Shuttle, s.to_string(), None)));
         Universe { rows }
     }
 }

@@ -167,8 +167,8 @@ Items 1–3 are done (2026-10-16); 4 is the user's: the repository made public. 
    out of the core, Claude's rarely used tools measured. **The plan is written and decided** (2026-10-25, main's
    `.sb/audit-plan.md`, from 12 days of the records: every answer as recommended, `:session-apply` kept — CLAUDE.md's
    Cleanup bullet has them): about 11,300 lines go, in the plan's order — the diagram model, the native edit modes,
-   shuttle keys (§4's shuttle part with them), the ask into the chat, keep-warm into idle compaction, four of Claude's
-   tools, then the debugger to a plugin.
+   shuttle keys (done 2026-10-26, §4's shuttle part with them), the ask into the chat, keep-warm into idle
+   compaction, four of Claude's tools, then the debugger to a plugin.
 
 After it, the rest goes on in this order.
 
@@ -402,30 +402,9 @@ regularly, exactly as Claude's runs are, on macOS and on Linux's tiers, with a t
 breakage is found before a user meets it, fixed in pack data or the core, and kept from coming back by an entry the
 suite runs again.
 
-### 4. Shuttle keys
+### 4. Panes, the terminal line and Orchestra
 
-A **shuttle** is a program that works a running tarae from outside: an AI assistant, a test script. ("Agent" in
-tarae means a session's own Claude.) Today a shuttle reads tarae's state as data (`tarae state`). Shuttle keys
-let it send keys too, in a way that can't land somewhere it didn't mean:
-
-- Each key says where it must land (`card#N` at a given revision), or it is refused.
-- Off by default. On only through the user's own config (`ui.shuttle-keys`, `trust::YOURS_ONLY`); never a
-  project's, trusted or not.
-- While one is connected, the status line says so (`shuttle connected — a program is typing into tarae`), the
-  person's key pauses it, `:shuttle-end` cuts it off, and each card's record says who answered it: you or the
-  shuttle.
-
-The person at the keyboard already has the same guards: a card ignores keys typed as it appears, `y` counts only
-after the text was in sight, and no key changes state in silence. This was "guarded keys", phase 4 of
-[design/ui-state.md](design/ui-state.md), dropped there and now back under its new name. Phase 1 is done
-(2026-10-19, `aebf0bfd`: the protocol and its guards — [design/ui-state.md](design/ui-state.md#shuttle-keys--phase-1-built-2026-10-19-shuttlers)):
-`tarae keys` types over the UI socket, each step's `expect` checked in the job that hands its keys on; the grant
-card is for the connecting process alone (`--for <pid>` widens it, said); a shuttle answers light cards and a
-weighty card's `n`/`v` only, nothing that widens trust. Before it, watchers hear what a batch that drew nothing
-changed (`41910769`). Weighty answers with proof the card was read (`read`) come next, then the zellij scripts
-move over.
-
-**Then, before the remote split** — plans decided 2026-10-19, each built only once its checkout is rebased on a
+**Before the remote split** — plans decided 2026-10-19, each built only once its checkout is rebased on a
 main that has what it waits for, and the user says go:
 
 - **PDFs in `read`**, later (user, 2026-10-20): its own piece after images (readimg, [done](#done)), starting from readimg's measurement (tests/live.rs
@@ -539,9 +518,8 @@ kept outside the loop. After Part I's P1–P3 and this split.
 
 ### 6. Working together
 
-Two or more at one tarae — a person and a person, a person and a shuttle, two shuttles (pair or mob
-programming). Builds on the remote split — one host, several interfaces, people and shuttles through the same
-protocol — and on shuttle keys.
+Two or more people at one tarae (pair or mob programming). Builds on the remote split — one host, several
+interfaces, people through the same protocol.
 
 - Everyone gathers in the main session by default. Each edits the code directly and sees the others' edits as
   they happen: one host holds the buffers, and each person has their own cursor, selection and mode.
@@ -550,8 +528,7 @@ protocol — and on shuttle keys.
   so is the bill.
 - Anyone can open a session of their own for work apart, and bring it back as today.
 - The shared room chat is for the people to talk. What an agent made goes there only when its person sends it.
-- A session's cards are its owner's, or a shuttle's working for them. In the main session, a Claude's cards are
-  its person's.
+- A session's cards are its owner's. In the main session, a Claude's cards are its person's.
 - Open, for the plan: how one joins and is let in, two people (and two Claudes) changing the same lines, how
   agents in the room are paced.
 
@@ -822,7 +799,7 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
   matter; one store or separate from the memory card and panel ([alongside](#alongside-not-ordered)) and
   Orchestra's library of lessons in `.tarae/` (Part II, [§5](#5-a-remote-split)). It waits on two pieces not
   built yet: the half-block image view ([alongside](#alongside-not-ordered)) and view mode's quoting
-  ([§4](#4-shuttle-keys)). Beyond API 0.2/0.3 it needs a search through tarae's engine (as
+  ([§4](#4-panes-the-terminal-line-and-orchestra)). Beyond API 0.2/0.3 it needs a search through tarae's engine (as
   the to-do plugin), a project file written on a reviewed edit, and a link followed by `gd`/`enter`.
 - **Viewport-bounded injections**: branch `viewport-injections` (10 commits past main, last 2026-10-02; draft PR
   #1 on ethnw/tarae). Rebase and land, or drop: to decide with the user.

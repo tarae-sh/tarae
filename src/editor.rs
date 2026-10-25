@@ -167,7 +167,7 @@ const MESSAGES_KEPT: usize = 300;
 pub(crate) const ERROR_MIN: std::time::Duration = std::time::Duration::from_secs(4);
 
 /// Whether `key` submits a prompt (the command line runs its line) — Enter, with any modifier. The one test:
-/// `handle_prompt_key` goes by it, and so does a shuttle's guard on `:` lines (`shuttle.rs`).
+/// `handle_prompt_key` goes by it.
 pub(crate) fn prompt_submits(key: Key) -> bool {
     key.code == Code::Enter
 }
@@ -696,13 +696,9 @@ pub struct Editor {
     /// (document, line, byte column) to put the cursor on once that document finishes loading.
     pub goto_after_load: Option<(DocId, usize, usize)>,
     /// Keys, clicks, drags, the wheel over the code and pastes so far — follow tells the user moving the
-    /// cursor from a reload moving it.
+    /// cursor from a reload moving it; what only a person's look may do goes by it (follow's pause, a card's place
+    /// among yours).
     pub input_seq: u64,
-    /// The person's own keys, clicks and pastes — the terminal's input, not a shuttle's steps (`shuttle.rs`): what
-    /// only a person's look may do goes by it (follow's pause, a card's place among yours).
-    pub person_seq: u64,
-    /// A program typing over the UI socket, its grants, the step under way (`shuttle.rs`).
-    pub shuttles: crate::shuttle::Shuttles,
     /// Debug run · breakpoints (kept without a debug run) · debug run generation (drops late messages).
     pub dap: Option<crate::dap::Dap>,
     pub breakpoints: crate::dap::Breakpoints,
@@ -1111,8 +1107,6 @@ impl Editor {
             usage_view: None,
             goto_after_load: None,
             input_seq: 0,
-            person_seq: 0,
-            shuttles: Default::default(),
             dap: None,
             breakpoints: Default::default(),
             plugins: None,
@@ -2450,15 +2444,12 @@ impl Editor {
         // Input means the terminal has focus, whatever it said last (a focus-in lost on the way)
         let input = matches!(ev, Event::Key(_) | Event::Mouse(_) | Event::Paste(_));
         let before = input.then(|| crate::edits::before_input(self));
-        // (a shuttle's step hands its keys in through here too, one event each — `shuttle.rs`: they say nothing
-        // of the terminal's focus, and what they ask for isn't the person's own)
-        let person = input && self.shuttles.stepping.is_none();
-        if person {
+        if input {
             self.unfocused = false;
         }
         // (what it asks for — now, or through jobs it starts — was asked by this input: the count it's about to
         // take, first thing in `handle_key`/`handle_paste`, at a click's press — #205)
-        let asked = person.then(|| self.events.set_asked(Some(self.input_seq + 1)));
+        let asked = input.then(|| self.events.set_asked(Some(self.input_seq + 1)));
         match ev {
             Event::Key(k) => {
                 self.handle_key(k);
@@ -2532,7 +2523,6 @@ impl Editor {
         crate::codereview::land(self);
         self.offer_view_sync();
         self.offer_group_sync();
-        crate::shuttle::asking_sync(self);
         crate::notes::stale_sync(self);
         crate::stuck::sync(self);
         self.bring_queue_sync();
@@ -3460,8 +3450,7 @@ impl Editor {
             let left = crate::uistate::claude::FLASH.checked_sub(at.elapsed())?;
             Some(left + std::time::Duration::from_millis(2))
         });
-        // A run of Claude's going silent, in any session: one frame then — the inbox counts it (#157); a shuttle's
-        // step lit on its chip: one frame when it goes faint (`shuttle::LIT`)
+        // A run of Claude's going silent, in any session: one frame then — the inbox counts it (#157)
         // The terminal's view at a new panel size: one frame once it has held (`view::terminal_resized`)
         let settle = crate::view::terminal_settling(self).then_some(crate::view::SETTLE);
         // A session's name tag on its clock: as its stay ends, then while it fades (`presence::tag_wake`)
@@ -3470,10 +3459,7 @@ impl Editor {
         let reveal = crate::writing::reveal_wake(self).filter(|_| !self.unfocused);
         // A motion on its own clock (`motion.rs`): a frame each step while it dries, one as it goes
         let motion = self.motion_wake();
-        [next, flash, self.silent_wake(), crate::shuttle::lit_wake(self), settle, tag, reveal, motion]
-            .into_iter()
-            .flatten()
-            .min()
+        [next, flash, self.silent_wake(), settle, tag, reveal, motion].into_iter().flatten().min()
     }
 
     /// Whether the main loop draws after a batch of events (`unchanged`: every one of them said it changed
@@ -4514,12 +4500,10 @@ impl Editor {
     pub fn handle_key(&mut self, key: Key) {
         let begun = crate::document::input_begin();
         // (what it asks for — now, or through jobs it starts — was asked by this key, the count `input_came` is about
-        // to take: a card it asks for is yours, focused as it comes — #205, P3 §3.8; a shuttle's isn't the person's)
-        let asked = self.shuttles.stepping.is_none().then(|| self.events.set_asked(Some(self.input_seq + 1)));
+        // to take: a card it asks for is yours, focused as it comes — #205, P3 §3.8)
+        let was = self.events.set_asked(Some(self.input_seq + 1));
         self.handle_key_now(key);
-        if let Some(was) = asked {
-            self.events.set_asked(was);
-        }
+        self.events.set_asked(was);
         self.typed(begun);
     }
 
@@ -4542,10 +4526,9 @@ impl Editor {
         // (each handler below that takes the key says so — the routing test holds `keys_to` to it)
         took(Handler::Code);
         self.workspace_store.keyed = true;
-        // A key of the person's after an error has been read (`ERROR_MIN`) lets it go — it fades out (a shuttle's
-        // key isn't someone reading it); the key goes on to wherever it goes — a toast takes none (`toast.rs`)
-        let person = self.shuttles.stepping.is_none();
-        for t in self.toasts.iter_mut().filter(|t| person && t.kind == ToastKind::Error) {
+        // A key after an error has been read (`ERROR_MIN`) lets it go — it fades out; the key goes on to wherever it
+        // goes — a toast takes none (`toast.rs`)
+        for t in self.toasts.iter_mut().filter(|t| t.kind == ToastKind::Error) {
             let age = t.age();
             if age >= ERROR_MIN && t.life > age + TOAST_FADE {
                 t.life = age + TOAST_FADE;
@@ -4638,16 +4621,11 @@ impl Editor {
         }
     }
 
-    /// A key, click, wheel or paste is being handled: counted (`input_seq` — what drivers wait on) — and, unless a
-    /// shuttle's step sent it, as the person's (`person_seq`): their reviews count the time before it, and a
-    /// shuttle typing pauses (`shuttle::person_typed`).
+    /// A key, click, wheel or paste is being handled: counted (`input_seq` — what drivers wait on); reviews count
+    /// the time before it.
     fn input_came(&mut self) {
         self.input_seq += 1;
-        if self.shuttles.stepping.is_none() {
-            self.person_seq += 1;
-            self.review_input();
-            crate::shuttle::person_typed(self);
-        }
+        self.review_input();
     }
 
     fn handle_key_inner(&mut self, key: Key) {
@@ -6995,13 +6973,13 @@ mod tests {
         settle_until(&mut ed, |ed| ed.doc().path.as_deref() == Some(util.as_path()));
         let (a, b) = (ed.workspace.id, ed.workspace_add(other.clone()));
         // A click on the other session's tab (the person's input), then back while the file changed under the first
-        (ed.input_seq, ed.person_seq) = (ed.input_seq + 1, ed.person_seq + 1);
+        ed.input_seq += 1;
         assert!(ed.workspace_switch(b));
         ed.handle_event(crate::event::Event::Resize);
         let grown = format!("new top\n{}", std::fs::read_to_string(&util).unwrap());
         std::fs::write(&util, &grown).unwrap();
         ed.disk_take(&util, &ropey::Rope::from_str(&grown), crate::disk::stamp(&util));
-        (ed.input_seq, ed.person_seq) = (ed.input_seq + 1, ed.person_seq + 1);
+        ed.input_seq += 1;
         assert!(ed.workspace_switch(a));
         ed.handle_event(crate::event::Event::Resize);
         assert!(

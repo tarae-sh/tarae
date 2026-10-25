@@ -140,7 +140,6 @@
     "held": false,
     "pending": "",
     "region": "edit-review",
-    "shuttle": null,
     "takes": "answers",
     "to": "edit-review",
     "under": null,
@@ -231,7 +230,7 @@
       "where": "waiting"
     }
   ],
-  "v": 16,
+  "v": 17,
   "workspaces": [
     {
       "cards": 1,

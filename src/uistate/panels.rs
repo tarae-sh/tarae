@@ -13,7 +13,7 @@ pub struct Row {
     pub id: String,
     pub label: String,
     pub selected: bool,
-    /// A review's file row: marked viewed (`space v m`) — a shuttle's step can expect it (`shuttle.rs`).
+    /// A review's file row: marked viewed (`space v m`).
     pub viewed: Option<bool>,
 }
 
@@ -25,8 +25,7 @@ pub struct Pane {
     pub lines: (usize, usize),
     pub focused: bool,
     pub cursor_line: usize,
-    /// Its document's version: bumped by every change, undo and redo too — what a shuttle's step expects text was
-    /// written for (`shuttle.rs`).
+    /// Its document's version: bumped by every change, undo and redo too.
     pub version: u64,
 }
 
