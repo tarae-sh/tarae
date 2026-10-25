@@ -32,6 +32,7 @@ mod chatstream;
 mod claudestart;
 mod commit;
 mod diskwatch;
+mod gitbase;
 mod hosts;
 mod instructions;
 mod keepclose;

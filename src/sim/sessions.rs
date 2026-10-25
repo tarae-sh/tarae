@@ -76,6 +76,11 @@ impl World {
 /// at all) — two runs of a seed see the same git, wherever they run — and no hook, the repository's or anyone's.
 /// The board's and the review record's scenarios' too (`sim/board.rs`, `sim/reviews.rs`).
 pub(super) fn git(dir: &Path, args: &[&str]) {
+    git_out(dir, args);
+}
+
+/// `git`, its output given back (`sim/gitbase.rs`: a blob's id, the index's text).
+pub(super) fn git_out(dir: &Path, args: &[&str]) -> String {
     let out = std::process::Command::new("git")
         .args(["-c", "core.hooksPath=/dev/null", "-C"])
         .arg(dir)
@@ -88,6 +93,7 @@ pub(super) fn git(dir: &Path, args: &[&str]) {
         .output()
         .unwrap();
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 /// Review note 7: the scenario's commits run no hook — here the repository's own `core.hooksPath`, whose

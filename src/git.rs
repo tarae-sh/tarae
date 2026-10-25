@@ -274,6 +274,9 @@ impl Editor {
             return;
         }
         let places = self.git_places(&path);
+        let Some(d) = self.docs.iter_mut().find(|d| d.id == id) else { return };
+        d.git_asked += 1;
+        let asked = d.git_asked;
         self.events.jobs().spawn(move || {
             let (read, asks) = index_read(&places, &path);
             move |ed: &mut Editor| {
@@ -289,8 +292,11 @@ impl Editor {
                 if reviewed(ed) {
                     return;
                 }
-                // (the git tab's inline diff follows the index: made again from this base — `git_inline_sync`)
+                // Only the newest read asked: an older one landing last would put back an index that's gone, and
+                // nothing would ask again. (The git tab's inline diff follows the index: made again from this
+                // base — `git_inline_sync`.)
                 if let Some(d) = ed.docs.iter_mut().find(|d| d.id == id && !d.own_base())
+                    && d.git_asked == asked
                     && d.git_base.as_deref() != base.as_deref()
                 {
                     d.git_base = base;

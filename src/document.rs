@@ -313,6 +313,9 @@ pub struct Document {
     /// A scan for this version is out (on a worker).
     pub conflicts_asked: Option<u64>,
     pub git_version: u64,
+    /// Index reads asked for its gutter (`Editor::git_load_base`): a read lands only while it's the newest asked —
+    /// each runs on its own thread, so an older one, from before a stage or a commit, may land last.
+    pub git_asked: u64,
     /// Where your own keys and pastes changed it since a code review last found its changes (`Own`).
     pub own: Own,
     /// While an act that flashes what it touched runs (`.`, a paste): what each transaction wrote, the earlier
@@ -466,6 +469,7 @@ impl Document {
             conflicts_of: u64::MAX,
             conflicts_asked: None,
             git_version: u64::MAX,
+            git_asked: 0,
             own: Own::default(),
             touched: None,
             wet: None,
