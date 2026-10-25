@@ -939,8 +939,10 @@ pub fn go(ed: &mut Editor) {
         }
         There::Tip { line } => {
             let branch = m.branch.clone().unwrap_or_default();
-            match sessions(ed).find(|l| l.git_branch.as_deref() == Some(branch.as_str())) {
-                Some(l) => (Some(l.id), l.label().to_string(), line),
+            // (the tip's branch is the woven file's repository's — the front workspace's)
+            let on = ed.on_branch(ed.workspace.id, &branch).next().map(|l| (l.id, l.label().to_string()));
+            match on {
+                Some((id, name)) => (Some(id), name, line),
                 None => (None, branch, line),
             }
         }

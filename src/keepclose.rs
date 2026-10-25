@@ -497,7 +497,7 @@ fn conflicts(ed: &Editor, id: WorkspaceId, branch: &str) -> Conflicts {
     use crate::overlap::Other;
     let tip_side = |o: &Other| match o {
         Other::Branch(b) => b == branch,
-        Other::Session(s) => sessions(ed).any(|l| l.id == *s && l.git_branch.as_deref() == Some(branch)),
+        Other::Session(s) => ed.on_branch(id, branch).any(|l| l.id == *s),
     };
     let mut v: Conflicts = Vec::new();
     for o in &ed.overlap.now {

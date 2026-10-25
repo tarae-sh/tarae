@@ -187,7 +187,7 @@ fn scene(name: &str) -> Scene {
     let mut ed = Editor::new(Config::default());
     ed.workspace.root = main.clone();
     ed.workspace.name = "main".into();
-    ed.workspace.git_branch = Some("main".into());
+    crate::git::watched(&mut ed.workspace, "main");
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     let mut ids = [WorkspaceId::HOME; 3];
@@ -196,7 +196,7 @@ fn scene(name: &str) -> Scene {
         let l = ed.workspace_by_id(id).unwrap();
         l.name = name.into();
         l.base = Some("main".into());
-        l.git_branch = Some(name.into());
+        crate::git::watched(l, name);
         ids[k + 1] = id;
     }
     assert!(ed.workspace_switch(ids[1]));
@@ -633,6 +633,37 @@ fn enter_on_a_change_goes_to_its_workspace_at_its_own_line() {
     ed.goto_line(1);
     press(&mut ed, "<ret>");
     assert_eq!(went(&ed), (ids[2], docs.join("a.rs"), 1));
+}
+
+/// `enter` on the tip's part goes to the checkout on the base's branch in the woven file's repository — never one of
+/// another repository's whose branch has that name, listed before it (#128: the homepage's checkout on its own `main`).
+#[test]
+fn enter_on_the_tips_part_stays_in_its_repository() {
+    let Scene { mut ed, main, docs, ids, dir, .. } = scene("weave-enter-repo");
+    let site = dir.join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    let site = std::fs::canonicalize(site).unwrap();
+    std::fs::write(site.join("a.rs"), twelve()).unwrap();
+    git(&site, &["init", "-q"]);
+    git(&site, &["add", "-A"]);
+    git(&site, &["commit", "-qm", "first"]);
+    let site_id = ed.workspace_add(site.clone());
+    let l = ed.workspace_by_id(site_id).unwrap();
+    l.name = "site".into();
+    crate::git::watched(l, "main");
+    // (its workspace before main's in the list's order: the front, then the list a switch swaps into)
+    assert!(ed.workspace_switch(site_id) && ed.workspace_switch(ids[0]) && ed.workspace_switch(ids[1]));
+    assert_eq!(ed.workspaces.first().map(|l| l.id), Some(site_id));
+    std::fs::write(docs.join("a.rs"), twelve().replace("line 5\n", "five, docs\n")).unwrap();
+    ed.wrote(&docs.join("a.rs"));
+    type_line(&mut ed, 5, "five, fix");
+    crate::typed::execute(&mut ed, "weave").unwrap();
+    woven_to(&mut ed, 1);
+    let c = shown(&ed).merge.conflicts[0].clone();
+    frame(&mut ed, 80);
+    ed.goto_line(c.base.start);
+    press(&mut ed, "<ret>");
+    assert_eq!(went(&ed), (ids[0], main.join("a.rs"), 4), "main's checkout, not site's");
 }
 
 /// The path bar with a conflict at 120 columns: its count, then the key hint two cells after it, as every hint; narrower,

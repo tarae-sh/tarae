@@ -58,7 +58,7 @@ fn run(choices: Choices) -> Vec<String> {
     let mut ed = Editor::new(crate::config::Config::default());
     ed.workspace.root = std::fs::canonicalize(&main).unwrap();
     ed.workspace.name = "main".into();
-    ed.workspace.git_branch = Some("main".into());
+    crate::git::watched(&mut ed.workspace, "main");
     ed.overlap.dir = Some(world.dir.join("overlap"));
     ed.overlap.quiet = Duration::ZERO;
     let mut ids = Vec::new();
@@ -67,7 +67,7 @@ fn run(choices: Choices) -> Vec<String> {
         let id = ed.workspace_add(std::fs::canonicalize(root).unwrap());
         let l = ed.workspace_by_id(id).unwrap();
         l.base = Some("main".into());
-        l.git_branch = Some(name.clone());
+        crate::git::watched(l, name);
         l.name = if ids.is_empty() { "fix" } else { "up" }.into();
         if ids.is_empty() {
             let mut c = crate::chat::Chat::new();

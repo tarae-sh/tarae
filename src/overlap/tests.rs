@@ -76,13 +76,14 @@ fn editor_on(main: &Path, fix: &Path, base: &Path) -> (Editor, WorkspaceId) {
     let mut ed = Editor::new(Config::default());
     ed.workspace.root = main.to_path_buf();
     ed.workspace.name = "main".into();
-    ed.workspace.git_branch = Some("main".into());
+    crate::git::watched(&mut ed.workspace, "main");
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     ed.overlap.dir = Some(own_in(base));
     ed.overlap.quiet = Duration::ZERO;
     let fix_id = ed.workspace_add(fix.to_path_buf());
     let l = ed.workspace_by_id(fix_id).unwrap();
+    crate::git::watched(l, "fix");
     l.name = "fix".into();
     l.base = Some("main".into());
     assert!(ed.workspace_switch(fix_id));
@@ -380,6 +381,43 @@ fn the_bases_tip_counts_and_a_key_named_file_is_never_named() {
     );
     assert!(said(&ed, "server.pem").is_empty());
     assert!(listed(&ed, ed.workspace.id).iter().all(|l| !l.contains("pem")));
+}
+
+/// The base's branch is named by the session on it in the same repository — never one of another repository whose
+/// branch has that name (#128: after a restart, `sbspeed ≈ tarae.sh`, the homepage's checkout on its own `main`, as
+/// it came before the home session in the list's order).
+#[test]
+fn the_bases_tip_is_named_by_its_own_repositorys_session() {
+    let Scene { mut ed, main, fix, fix_id, dir } = scene("overlap-two-repos");
+    // (another repository, its branch `main` too)
+    let site = dir.join("site");
+    std::fs::create_dir_all(&site).unwrap();
+    let site = std::fs::canonicalize(site).unwrap();
+    std::fs::write(site.join("a.rs"), twelve()).unwrap();
+    git(&site, &["init", "-q"]);
+    git(&site, &["add", "-A"]);
+    git(&site, &["commit", "-qm", "first"]);
+    let site_id = ed.workspace_add(site.clone());
+    let l = ed.workspace_by_id(site_id).unwrap();
+    l.name = "site".into();
+    crate::git::watched(l, "main");
+    // (its workspace before the home one in the list's order: the front, then the list a switch swaps into)
+    assert!(
+        ed.workspace_switch(site_id) && ed.workspace_switch(WorkspaceId::HOME) && ed.workspace_switch(fix_id)
+    );
+    assert_eq!(ed.workspaces.iter().map(|l| l.id).collect::<Vec<_>>(), [site_id, WorkspaceId::HOME]);
+    change(&mut ed, &main.join("a.rs"), 5, "five, committed on main");
+    git(&main, &["commit", "-qam", "five"]);
+    change(&mut ed, &fix.join("a.rs"), 5, "five, fix");
+    settle(&mut ed, 1);
+    let sides: Vec<&Other> = ed.overlap.now.iter().map(|o| &o.b).collect();
+    assert_eq!(sides, [&Other::Session(WorkspaceId::HOME)], "main's tip, as this repository's main checkout");
+    assert_eq!(
+        named_branch(&ed, "main").0,
+        "main",
+        "the base said by its session's name (the woven view's tip line)"
+    );
+    assert!(said(&ed, "site").is_empty());
 }
 
 /// Call `n`'s answer (a change's review answered `y` as it comes).

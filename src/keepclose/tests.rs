@@ -99,7 +99,7 @@ fn scene(name: &str) -> Scene {
     let mut ed = Editor::new(Config::default());
     ed.workspace.root = main.clone();
     ed.workspace.name = "main".into();
-    ed.workspace.git_branch = Some("main".into());
+    crate::git::watched(&mut ed.workspace, "main");
     ed.config.llm.command = "sh".into();
     ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     ed.overlap.dir = Some(crate::overlap::own_in(&dir.join("overlap")));
@@ -112,7 +112,7 @@ fn scene(name: &str) -> Scene {
         let l = ed.workspace_by_id(id).unwrap();
         l.name = name.into();
         l.base = Some("main".into());
-        l.git_branch = Some(name.into());
+        crate::git::watched(l, name);
         ws.push((id, root));
     }
     // (db's own commit on the line main changes — a conflict; fix's change in no commit, far from it)

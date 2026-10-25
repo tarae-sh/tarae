@@ -62,9 +62,14 @@ pub fn watch(tx: crate::event::Tx, dir: PathBuf) {
     crate::event::thread("tarae-git-watch", move || {
         let Some(head) = find_head(&dir) else { return };
         // (its own commands held until answered: the card, once — `gittrust.rs`; a submodule's its own)
-        for r in crate::gitrepo::repo(&dir).map(|r| r.asking()).unwrap_or_default() {
+        let repo = crate::gitrepo::repo(&dir).ok();
+        for r in repo.as_ref().map(|r| r.asking()).unwrap_or_default() {
             let _ = tx.send(Event::Job(Box::new(move |ed: &mut Editor| ed.git_trust_told(&r))));
         }
+        // (what tells this repository's branches from another's: resolved again each round until it is — a
+        // workspace without it is on no base's branch, `Editor::on_branch`)
+        let mut common = repo.map(|r| r.common_dir.clone());
+        let mut told = false;
         let mtime = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
         let (mut last, mut first) = (None, true);
         loop {
@@ -84,8 +89,18 @@ pub fn watch(tx: crate::event::Tx, dir: PathBuf) {
                 let moved = !first;
                 (last, first) = (Some(now), false);
                 let branch = read_branch(&head);
-                let dir = dir.clone();
-                let apply = move |ed: &mut Editor| watch_round(ed, &dir, branch, moved);
+                if common.is_none() {
+                    match crate::gitrepo::repo(&dir) {
+                        Ok(r) => common = Some(r.common_dir.clone()),
+                        Err(e) if !std::mem::replace(&mut told, true) => {
+                            let why = format!("{}: its repository not resolved — {e}", dir.display());
+                            crate::log::line("git", "warn", &why);
+                        }
+                        Err(_) => {}
+                    }
+                }
+                let (dir, common) = (dir.clone(), common.clone());
+                let apply = move |ed: &mut Editor| watch_round(ed, &dir, (branch, common), moved);
                 if tx.send(Event::Job(Box::new(apply))).is_err() {
                     break;
                 }
@@ -95,13 +110,23 @@ pub fn watch(tx: crate::event::Tx, dir: PathBuf) {
     });
 }
 
-/// A watch round of `dir`'s, applied: the branch read then (`branch`), and whether HEAD moved since the last
-/// round (`moved`) — the index taken again then. Only the session it's for (one ended meanwhile sends it to
-/// the front); a round that changed nothing draws nothing (`unchanged`: the branch already known, another
-/// session's — a late first round drew a frame of nothing in an idle test, CI's macOS).
-pub(crate) fn watch_round(ed: &mut Editor, dir: &Path, branch: Option<String>, moved: bool) {
+/// A watch round of `dir`'s, applied: the branch read then and the repository's common folder (`branch`), and
+/// whether HEAD moved since the last round (`moved`) — the index taken again then. Only the session it's for (one
+/// ended meanwhile sends it to the front); a round that changed nothing draws nothing (`unchanged`: the branch
+/// already known, another session's — a late first round drew a frame of nothing in an idle test, CI's macOS).
+pub(crate) fn watch_round(
+    ed: &mut Editor,
+    dir: &Path,
+    (branch, common): (Option<String>, Option<PathBuf>),
+    moved: bool,
+) {
     ed.drawn_for("a git watch round");
-    if ed.workspace.root != dir || (!moved && ed.workspace.git_branch == branch) {
+    if ed.workspace.root != dir {
+        return ed.unchanged = true;
+    }
+    // (nothing on screen says it: learnt without a frame)
+    ed.workspace.git_common = common;
+    if !moved && ed.workspace.git_branch == branch {
         return ed.unchanged = true;
     }
     ed.workspace.git_branch = branch;
@@ -368,6 +393,14 @@ impl Editor {
     }
 }
 
+/// A watch round stood in for (the watch is off in tests — `git_auto`): `l` on `branch`, its repository's common
+/// folder read as the watch reads it.
+#[cfg(test)]
+pub fn watched(l: &mut crate::workspace::Workspace, branch: &str) {
+    l.git_branch = Some(branch.into());
+    l.git_common = crate::gitrepo::repo(&l.root).ok().map(|r| r.common_dir.clone());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,7 +413,7 @@ mod tests {
         let dir = ed.workspace.root.clone();
         let round = |ed: &mut Editor, dir: &Path, branch: &str, moved| {
             ed.unchanged = false;
-            watch_round(ed, dir, Some(branch.into()), moved);
+            watch_round(ed, dir, (Some(branch.into()), None), moved);
             std::mem::take(&mut ed.unchanged)
         };
         assert!(!round(&mut ed, &dir, "main", false), "the first: the branch learnt");

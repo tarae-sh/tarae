@@ -1062,10 +1062,8 @@ fn landed(ed: &mut Editor, r: Round, seq: u64) {
 fn as_session(ed: &Editor, a: WorkspaceId, b: Other) -> Other {
     match &b {
         Other::Branch(br) => {
-            match sessions(ed).find(|l| l.id != a && l.git_branch.as_deref() == Some(br.as_str())) {
-                Some(l) => Other::Session(l.id),
-                None => b,
-            }
+            let on = ed.on_branch(a, br).find(|l| l.id != a).map(|l| l.id);
+            on.map_or(b, Other::Session)
         }
         Other::Session(_) => b,
     }

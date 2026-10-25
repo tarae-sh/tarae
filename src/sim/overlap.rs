@@ -69,7 +69,7 @@ fn run(choices: Choices) -> Vec<String> {
     let mut ed = Editor::new(crate::config::Config::default());
     ed.workspace.root = main.clone();
     ed.workspace.name = "main".into();
-    ed.workspace.git_branch = Some("main".into());
+    crate::git::watched(&mut ed.workspace, "main");
     ed.overlap.dir = Some(dir.join("overlap"));
     ed.open(&main.join("a.rs")).unwrap();
     let world = RefCell::new(World {

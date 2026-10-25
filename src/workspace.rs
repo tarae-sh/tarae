@@ -141,6 +141,9 @@ pub struct Workspace {
     pub git_reads: u64,
     /// Current git branch (filled by the watcher thread — for the status line).
     pub git_branch: Option<String>,
+    /// The repository's git common folder (a real path), filled by the watcher thread with the branch — what tells
+    /// one repository's `main` from another's (`Editor::on_branch`).
+    pub git_common: Option<PathBuf>,
     /// `space g f`: per file, its path, first changed line and diff against HEAD.
     pub(crate) changed_files: Vec<crate::gitmenu::Changed>,
     /// The run whose denials `space m s` listed, and what could open (`blocked.rs`).
@@ -383,6 +386,7 @@ impl Workspace {
             git_busy: false,
             git_reads: 0,
             git_branch: None,
+            git_common: None,
             changed_files: Vec::new(),
             blocked: None,
             preflight: None,
@@ -885,6 +889,21 @@ impl Editor {
             .filter(|l| path.starts_with(&l.root))
             .max_by_key(|l| l.root.as_os_str().len())
             .map(|l| l.id)
+    }
+
+    /// The workspaces whose checkout is on `branch` of workspace `of`'s repository (`of` among them when it is) —
+    /// one git common folder, never another repository's branch of that name (#128: a homepage's `main` named as
+    /// tarae's base). A checkout whose repository the git watch hasn't read yet (`git_common`) is none of them.
+    pub fn on_branch<'a>(
+        &'a self,
+        of: WorkspaceId,
+        branch: &'a str,
+    ) -> impl Iterator<Item = &'a Workspace> + 'a {
+        let all = || std::iter::once(&self.workspace).chain(&self.workspaces);
+        let repo = all().find(|l| l.id == of).and_then(|l| l.git_common.as_ref());
+        all().filter(move |l| {
+            l.git_branch.as_deref() == Some(branch) && repo.is_some() && l.git_common.as_ref() == repo
+        })
     }
 
     /// Session `l`'s processes: its chat, terminal, task, tests, and its checkout's language servers.
