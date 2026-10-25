@@ -581,9 +581,11 @@ rebases the conflicting ones too, each through its own Claude as `:session-bring
 `v` shows the main checkout's changes to their instruction files (taken as the move lands, never over a line the
 workspace changed); `n` leaves them — the base's next move asks again. A newer move takes the card's place, and the
 newest tip wins. A workspace moves only once it's idle — its Claude between turns, no review, rebase or run under
-way, no unsaved buffer there — one at a time: `git rebase --autostash` in its checkout, no hooks, its changes in no
-commit taken along (one that can't go back cleanly stays in git's stash, said); one that conflicts after all is put
-back as it was and said. While it moves, a message to its Claude, a run there and a save of a file there (`:w`,
+way, no unsaved buffer there — one at a time: `git rebase` in its checkout, no hooks, its changes in no commit taken
+along (set aside as a commit of their own at `refs/worktree/tarae/moving`, the checkout's own ref, never git's
+stash). One that conflicts after all — its commits, or changes that don't go onto the tip — is put back exactly as
+it was (its commit, its changes and its index) and said, never left with conflict markers; a file there in no commit
+(untracked or ignored) where the tip brings one leaves it as it was too, named. While it moves, a message to its Claude, a run there and a save of a file there (`:w`,
 auto-save) wait for it — the save is written once it lands, unless the move changed that file; `space u`, `:w` to a
 new name there and a change set into it are refused until it lands, said (`fix is moving onto main — take it back
 once it lands`). Each is said once:
@@ -2199,7 +2201,9 @@ its base up to it, fast-forward only. When the base has moved since the session 
   write, and this git runs outside the sandbox. A stop at conflicts reads `stopped: 2 conflicts` there, not failed
 - Before git runs, its checkout is looked at. Changes in no commit: a card names the files (`a.txt changed and
   isn't in a commit — git won't rebase feat over it`) and offers `s` — stash them for the rebase and put them
-  back after (git's `--autostash`; if they don't go back cleanly they stay in git's stash, and the end says so)
+  back after (set aside at `refs/worktree/tarae/rebasing`, the checkout's own ref, through any stop; if they don't
+  go back cleanly onto the rebased branch, the rebase stays done, the files as it has them — never conflict markers —
+  and the changes are kept in git's stash as an entry of their own, named, which the end says)
   — or `g`, the git tab, to commit or drop them yourself. Unsaved buffers there: named, saving them comes first
   (no `s`). A run in the task panel: the rebase waits its turn behind it (a `queued` row there). A rebase
   already stopped there: its card, to go on or abort. Should git refuse anyway, its own `error:` lines are said

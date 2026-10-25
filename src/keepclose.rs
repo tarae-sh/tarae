@@ -13,9 +13,10 @@
 //!   place (one title a base). `workspace.sync = "idle"`: the clean ones move unasked, a card only for the
 //!   conflicting; `"off"`: nothing.
 //! - **Moved only when idle** (`busy`): never mid-turn, mid-review, mid-rebase or mid-run, nor with unsaved buffers
-//!   there; one at a time (`next`, every event). The move (`move_onto`, a worker): `git rebase --autostash` onto the
-//!   tip read as it starts — the newest wins; a conflict after all is aborted (its changes back) and said; changes
-//!   that didn't go back are said from git's own words. While it runs the workspace's messages, runs and saves wait
+//!   there; one at a time (`next`, every event). The move (`move_onto`, a worker): its changes in no commit set aside
+//!   (`aside.rs` — never `--autostash`), `git rebase` onto the tip read as it starts — the newest wins — and the
+//!   changes put back; a conflict after all, the rebase's or changes that don't go onto the tip, puts the checkout
+//!   back exactly as it was (HEAD, the changes, the index) and is said. While it runs the workspace's messages, runs and saves wait
 //!   (`Session.moving`, `hold_save`), what else would write there is refused, said (`refused`: `space u`, `:w` to a
 //!   new name, a change set); its reloads are one line (`disk_batch_start`).
 //!
@@ -156,7 +157,7 @@ pub struct Ws {
     /// The base's commits it hasn't · its own the base hasn't.
     pub behind: usize,
     pub ahead: usize,
-    /// Files changed in no commit there (they go with it: git's autostash).
+    /// Files changed in no commit there (they go with it: `aside.rs`).
     pub changed: usize,
     /// Where it would conflict on the new tip — a file and its lines there (None: the file as a whole), as the
     /// overlap round on that tip found.
@@ -265,8 +266,7 @@ impl Moves {
         };
         q.push(match (self.clean().count(), self.conflicting().count()) {
             (_, 0) => format!(
-                "y moves {} onto {base}'s tip {}: {} commits replayed there, {} changes in no commit taken along \
-                 (git's autostash).",
+                "y moves {} onto {base}'s tip {}: {} commits replayed there, {} changes in no commit taken along.",
                 one(n, "it", "them"),
                 idle(n),
                 one(n, "its", "their"),
@@ -280,7 +280,7 @@ impl Moves {
                 one(c, "its", "each one's"),
             ),
             (k, c) => format!(
-                "y moves the clean {} onto {base}'s tip {}, changes in no commit taken along (git's autostash). c \
+                "y moves the clean {} onto {base}'s tip {}, changes in no commit taken along. c \
                  rebases the conflicting {} too, {} own Claude resolving it, while it's small.",
                 one(k, "one", "ones"),
                 idle(k),
@@ -752,24 +752,27 @@ fn release(ed: &mut Editor, id: SessionId, open: bool, same: &dyn Fn(&Path) -> b
 /// How a move ended.
 #[derive(Debug)]
 enum Landed {
-    /// Onto `tip` (short), the base's `under` commits now under it; its changes put back — or, `kept`, left in git's
-    /// stash (they didn't go back cleanly). `changed`: the files the commits under it changed (None: can't tell).
+    /// Onto `tip` (short), the base's `under` commits now under it; its changes back. `changed`: the files the
+    /// commits under it changed (None: can't tell).
     Done {
         tip: String,
         under: usize,
-        kept: bool,
         changed: Option<Vec<PathBuf>>,
     },
     /// On its tip already.
     There,
-    /// It would conflict after all: aborted, as it was.
+    /// It would conflict after all — its commits or its changes in no commit: as it was.
     Conflicts,
+    /// A file there in no commit (untracked or ignored) where the tip has one: as it was.
+    InTheWay(String),
     Failed(String),
 }
 
 /// The checkout at `root` rebased onto `base`'s tip as it is now — the newest wins — its changes in no commit
-/// taken along (`--autostash`), no hooks (a worker). `between` runs as the rebase starts (a test's stash pushed
-/// elsewhere then).
+/// taken along, no hooks (a worker). Set aside first (`aside::take`), the rebase without `--autostash`, then put
+/// back; on a conflict after all — the rebase's, or changes that don't go onto the tip — the checkout is put back
+/// exactly as it was (`aside::put_back`: HEAD at its old commit, the changes and the index as they were): never
+/// markers left, never git's stash read. `between` runs as the rebase starts (a test's stash pushed elsewhere then).
 fn move_onto(root: &Path, base: &str, between: &dyn Fn()) -> Landed {
     let tip = match crate::worktree::sha(root, &format!("refs/heads/{base}^{{commit}}")) {
         Ok(t) => t,
@@ -790,48 +793,100 @@ fn move_onto(root: &Path, base: &str, between: &dyn Fn()) -> Landed {
         Ok(h) => h,
         Err(e) => return Landed::Failed(e),
     };
-    between();
-    let args: Vec<&str> =
-        crate::gitrepo::NO_HOOKS.iter().copied().chain(["rebase", "--autostash", "--quiet", &tip]).collect();
-    let mut cmd = repo.command(&args);
-    // (git's own words, read below: an autostash that didn't go back is said only there — `refs/stash` is every
-    // checkout's, a stash pushed in another meanwhile isn't this one's)
-    cmd.env("LC_ALL", "C").env_remove("LANGUAGE");
-    let r = match crate::gitrepo::ran(&cmd, None) {
-        Ok(r) => r,
+    let top = repo.work_tree.clone().unwrap_or_else(|| root.to_path_buf());
+    const AT: &str = crate::aside::MOVE;
+    let aside = match crate::aside::take(root, AT) {
+        Ok(a) => a,
         Err(e) => return Landed::Failed(e),
     };
-    let said = String::from_utf8_lossy(&r.stderr);
-    match r.ok {
-        true => {
-            let kept = autostash_kept(&said);
-            let top = repo.work_tree.clone().unwrap_or_else(|| root.to_path_buf());
-            let names = ["diff-tree", "-r", "--name-only", "--no-renames", "-z", &old, "HEAD"];
-            let changed = crate::gitrepo::git_no_hooks(root, &names)
-                .ok()
-                .map(|o| o.split('\0').filter(|p| !p.is_empty()).map(|p| top.join(p)).collect());
-            Landed::Done { tip: tip.chars().take(7).collect(), under, kept, changed }
-        }
-        false if crate::rebase::under_way(root).is_some() => {
-            // (puts back what it stashed, and the branch where it was)
-            match crate::gitrepo::git_no_hooks(root, &["rebase", "--abort"]) {
-                Ok(_) => Landed::Conflicts,
-                Err(e) => Landed::Failed(format!("it conflicted, and the abort failed: {e}")),
-            }
-        }
-        false => {
-            let why = said.lines().find(|l| !l.trim().is_empty()).unwrap_or("git rebase failed");
-            Landed::Failed(why.to_string())
+    // (as it was: the changes put back where they were made — none set aside, HEAD never moved)
+    let as_it_was = |l: Landed| match &aside {
+        Some(sha) => crate::aside::put_back(root, AT, sha).map_or_else(Landed::Failed, |()| l),
+        None => l,
+    };
+    // (the tracked files as HEAD has them now: what's left on disk there is untracked or ignored)
+    match in_the_way(root, &top, &old, &tip) {
+        Ok(None) => {}
+        Ok(Some(p)) => return as_it_was(Landed::InTheWay(p)),
+        Err(e) => {
+            return as_it_was(Landed::Failed(format!("can't tell what {base}'s tip would write over: {e}")));
         }
     }
+    between();
+    let args: Vec<&str> =
+        crate::gitrepo::NO_HOOKS.iter().copied().chain(["rebase", "--quiet", &tip]).collect();
+    let r = match crate::gitrepo::ran(&repo.command(&args), None) {
+        Ok(r) => r,
+        Err(e) => return as_it_was(Landed::Failed(e)),
+    };
+    if !r.ok {
+        let said = String::from_utf8_lossy(&r.stderr);
+        let why = said.lines().find(|l| !l.trim().is_empty()).unwrap_or("git rebase failed").to_string();
+        if crate::rebase::under_way(root).is_none() {
+            return as_it_was(Landed::Failed(why));
+        }
+        // (the branch where it was, the tracked files as it had them — then its changes)
+        if let Err(e) = crate::gitrepo::git_no_hooks(root, &["rebase", "--abort"]) {
+            let kept = aside.as_deref().map(|sha| format!(" — {}", crate::aside::kept_at(root, AT, sha)));
+            return Landed::Failed(format!(
+                "it conflicted, and the abort failed: {e}{}",
+                kept.unwrap_or_default()
+            ));
+        }
+        return as_it_was(Landed::Conflicts);
+    }
+    // (changes that don't go onto the tip: a conflict after all — their markers go with the reset)
+    if let Some(sha) = &aside
+        && crate::aside::back(root, AT, sha).is_err()
+    {
+        return as_it_was(Landed::Conflicts);
+    }
+    let names = ["diff-tree", "-r", "--name-only", "--no-renames", "-z", &old, "HEAD"];
+    let changed = crate::gitrepo::git_no_hooks(root, &names)
+        .ok()
+        .map(|o| o.split('\0').filter(|p| !p.is_empty()).map(|p| top.join(p)).collect());
+    Landed::Done { tip: tip.chars().take(7).collect(), under, changed }
 }
 
-/// Whether git's words after `rebase --autostash` say its changes stayed in the stash (they didn't go back cleanly):
-/// git ≤ 2.54 says "Applying autostash resulted in conflicts.", 2.55 on "Your local changes are stashed, however
-/// applying them\nresulted in conflicts." — the stash itself is `autostash` in both.
-fn autostash_kept(said: &str) -> bool {
-    said.contains("Applying autostash resulted in conflicts")
-        || said.contains("Your local changes are stashed, however applying them")
+/// A file the tip has and `old` hasn't where the checkout has one in no commit (untracked or ignored — asked with
+/// the tracked files as HEAD has them), or such a file where the tip has a folder: git would refuse the move for it,
+/// or, ignored, write over it. What the index has there (a file the tip makes a folder) is git's to move — named as
+/// git names it: on a disk that doesn't tell case apart (`core.ignorecase`, git's own word for it) a tracked
+/// `readme.md` is the tip's `README.md`. An error: git couldn't say, never taken as clear.
+fn in_the_way(root: &Path, top: &Path, old: &str, tip: &str) -> Result<Option<String>, String> {
+    let args = ["diff-tree", "-r", "-z", "--name-only", "--no-renames", "--diff-filter=A", old, tip];
+    let added = crate::gitrepo::git_no_hooks(root, &args)?;
+    let there: Vec<String> = added
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .filter_map(|p| {
+            let path = top.join(p);
+            if path.symlink_metadata().is_ok() {
+                return Some(p.to_string());
+            }
+            let file = path.ancestors().skip(1).take_while(|a| *a != top);
+            let mut file = file.filter(|a| a.symlink_metadata().is_ok_and(|m| !m.is_dir()));
+            file.next().map(|a| a.strip_prefix(top).unwrap_or(a).to_string_lossy().into_owned())
+        })
+        .collect();
+    if there.is_empty() {
+        return Ok(None);
+    }
+    // (unset: git's default, case told apart)
+    let icase = crate::gitrepo::git_no_hooks(root, &["config", "--type=bool", "--get", "core.ignorecase"])
+        .is_ok_and(|v| v.trim() == "true");
+    let magic = if icase { "top,literal,icase" } else { "top,literal" };
+    let specs: Vec<String> = there.iter().map(|p| format!(":({magic}){p}")).collect();
+    let mut args = vec!["ls-files", "-z", "--full-name", "--"];
+    args.extend(specs.iter().map(String::as_str));
+    let tracked = crate::gitrepo::git_no_hooks(root, &args)?;
+    let fold = |s: &str| if icase { s.to_lowercase() } else { s.to_string() };
+    let tracked: Vec<String> = tracked.split('\0').filter(|t| !t.is_empty()).map(fold).collect();
+    let has = |p: &str| {
+        let p = fold(p);
+        tracked.iter().any(|t| *t == p || t.strip_prefix(p.as_str()).is_some_and(|r| r.starts_with('/')))
+    };
+    Ok(there.into_iter().find(|p| !has(p)))
 }
 
 /// A move landed: in its session, the reloads said as one line, its buffers' git bases and its instruction files
@@ -859,25 +914,17 @@ fn moved(ed: &mut Editor, w: Wait, token: u64, r: Landed) {
     }
     // (its saves held meanwhile written — a file the move left as it was: as is; aborted, it's as it was)
     let same = |p: &Path| match &r {
-        Landed::Done { kept: false, changed: Some(c), .. } => !c.iter().any(|x| x == p),
-        Landed::There | Landed::Conflicts => true,
+        Landed::Done { changed: Some(c), .. } => !c.iter().any(|x| x == p),
+        Landed::There | Landed::Conflicts | Landed::InTheWay(_) => true,
         _ => false,
     };
     release(ed, id, open, &same);
     let by = if w.unasked { " (workspace.sync = \"idle\")" } else { "" };
     let (kind, msg) = match r {
-        Landed::Done { tip, under, kept: false, .. } => (
+        Landed::Done { tip, under, .. } => (
             ToastKind::Success,
             format!(
                 "{name} · moved onto {base}{by} — {} under it, now at {tip}",
-                crate::worktree::commits(under)
-            ),
-        ),
-        Landed::Done { tip, under, kept: true, .. } => (
-            ToastKind::Warning,
-            format!(
-                "{name} · moved onto {base}{by} — {} under it, now at {tip}; its changes didn't go back cleanly — \
-                 they're in git's stash (git stash list)",
                 crate::worktree::commits(under)
             ),
         ),
@@ -887,6 +934,12 @@ fn moved(ed: &mut Editor, w: Wait, token: u64, r: Landed) {
             format!(
                 "{name} · would conflict on {base} after all — left as it was; :session-bring {name} rebases it, \
                  its Claude resolving"
+            ),
+        ),
+        Landed::InTheWay(p) => (
+            ToastKind::Warning,
+            format!(
+                "{name} · not moved onto {base} — {p} is there in no commit and {base}'s tip has it; left as it was"
             ),
         ),
         Landed::Failed(e) => (ToastKind::Error, format!("{name} · not moved onto {base}: {e}")),

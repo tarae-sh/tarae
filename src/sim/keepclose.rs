@@ -3,9 +3,13 @@
 //! card is answered `y` or `n` or left, fix's turns start and end and its runs come and go, time passes and frames are
 //! drawn: the overlap rounds, looks and moves on their workers landing among the steps.
 //!
+//! Once, fix changes `a.txt` in no commit — a file main's every move rewrites too: a move judged before that conflicts
+//! after all, and must leave fix as it was.
+//!
 //! After every step: at most one card a base, on a tip read; while fix moves its Claude isn't at work and nothing runs
-//! there (a message or a run asked meanwhile waits); a message waiting goes once nothing holds it. Once all is still,
-//! a `y` given on the newest tip has both workspaces on it.
+//! there (a message or a run asked meanwhile waits); a message waiting goes once nothing holds it; fix, not moving,
+//! holds no conflict marker, nothing left set aside, and its change as written. Once all is still, a `y` given on the
+//! newest tip has both workspaces on it (fix but with its change, which can't go onto any later tip).
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -17,9 +21,10 @@ use crate::event::SessionId;
 use crate::key::{Code, Key};
 use crate::offer::What;
 
-/// Two seeds, ~7 s each at opt-level 0 (2026-10-23, macOS): seed 7 asks a run in fix while it moves (of seeds 0–7 the
-/// one that does — a move is in flight one job's time).
-const SEEDS: &[u64] = &[0, 7];
+/// Two seeds, ~7 s each at opt-level 0 (2026-10-23, macOS): seed 2 asks a run in fix while it moves, and moves fix
+/// after its change in no commit, a conflict after all (2026-10-25: of seeds 0–9 the one that does either — a move
+/// is in flight one job's time).
+const SEEDS: &[u64] = &[0, 2];
 
 const INPUTS: usize = 40;
 
@@ -40,6 +45,8 @@ struct World {
     /// The tip a `y` was given on (cleared when main moves past it).
     yes: Option<String>,
     moves: usize,
+    /// fix's `a.txt` changed in no commit.
+    changed: bool,
     /// The stand-in claude's lines (kept: a dropped receiver fails its writes).
     _rx: std::sync::mpsc::Receiver<String>,
 }
@@ -81,6 +88,7 @@ fn run(choices: Choices) -> Vec<String> {
         tips: vec![t],
         yes: None,
         moves: 0,
+        changed: false,
         _rx: rx.unwrap(),
     });
     let check = |ed: &Editor| held(ed, &w.borrow());
@@ -111,14 +119,15 @@ fn card(ed: &Editor) -> Option<&crate::offer::Offer> {
 
 fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
     let c = &mut sim.choices;
-    // (by arm: main moves 3, a message to fix 3, fix's turn ends 2, a run in fix 3, y 4, n 1, time 1, a frame 1 — `y`
-    // and fix's asks weighed up: a move is in flight one job's time, and they're what must meet it)
-    match c.weighted(&[3, 3, 2, 3, 4, 1, 1, 1]) {
+    // (by arm: main moves 3, a message to fix 3, fix's turn ends 2, a run in fix 3, y 4, n 1, time 1, a frame 1, fix's
+    // change 1 — `y` and fix's asks weighed up: a move is in flight one job's time, and they're what must meet it)
+    match c.weighted(&[3, 3, 2, 3, 4, 1, 1, 1, 1]) {
         0 => {
             w.moves += 1;
             let file = w.main.join("main.txt");
             std::fs::write(&file, format!("move {}\n", w.moves)).unwrap();
-            super::sessions::git(&w.main, &["add", "main.txt"]);
+            std::fs::write(w.main.join("a.txt"), format!("one, move {}\n", w.moves)).unwrap();
+            super::sessions::git(&w.main, &["add", "main.txt", "a.txt"]);
             super::sessions::git(&w.main, &["commit", "-q", "-m", &format!("move {}", w.moves)]);
             let t = tip_of(&w.main);
             w.tips.push(t.clone());
@@ -199,12 +208,25 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
             sim.wait(Duration::from_millis(ms));
             format!("{ms} ms pass")
         }
-        _ => {
+        7 => {
             crate::term::render(ed, &mut Vec::new(), 100, 30).unwrap();
             "a frame".into()
         }
+        // (the person's own write, never mid-move: theirs are held then — `hold_save`)
+        _ => {
+            let l = session(ed, w.fix);
+            if w.changed || l.moving.is_some() {
+                return "(fix's change is there, or it moves)".into();
+            }
+            std::fs::write(l.root.join("a.txt"), FIXS).unwrap();
+            w.changed = true;
+            "fix changes a.txt, in no commit".into()
+        }
     }
 }
+
+/// fix's change to `a.txt`.
+const FIXS: &str = "fix's own\n";
 
 fn held(ed: &Editor, w: &World) -> Result<(), String> {
     let cards: Vec<&crate::offer::Offer> =
@@ -232,6 +254,18 @@ fn held(ed: &Editor, w: &World) -> Result<(), String> {
     if session(ed, w.up).moving.is_some() && fix.moving.is_some() {
         return Err("two moves at once".into());
     }
+    if fix.moving.is_none() {
+        let text = std::fs::read_to_string(fix.root.join("a.txt")).unwrap_or_default();
+        if text.contains("<<<<<<<") || text.contains(">>>>>>>") {
+            return Err(format!("conflict markers in fix's a.txt: {text:?}"));
+        }
+        if w.changed && text != FIXS {
+            return Err(format!("fix's change in no commit is gone: a.txt is {text:?}"));
+        }
+        if let Some(sha) = crate::aside::kept(&fix.root, crate::aside::MOVE) {
+            return Err(format!("fix's changes left set aside at {sha}"));
+        }
+    }
     Ok(())
 }
 
@@ -242,7 +276,7 @@ fn still(ed: &Editor, w: &World) -> Result<(), String> {
     if ed.keep_close.moving.is_some() || busy.is_some() {
         return Ok(());
     }
-    for id in [w.fix, w.up] {
+    for id in [w.fix, w.up].into_iter().filter(|id| !(w.changed && *id == w.fix)) {
         let l = session(ed, id);
         let on = std::process::Command::new("git")
             .args(["merge-base", "--is-ancestor", yes, "HEAD"])

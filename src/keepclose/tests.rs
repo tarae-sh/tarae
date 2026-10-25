@@ -490,28 +490,152 @@ fn a_stash_pushed_in_another_checkout_meanwhile_isnt_the_moves() {
         git(&up, &["stash", "push", "-q", "-m", "up's own"]);
     };
     let r = move_onto(&s.root("fix"), "main", &elsewhere);
-    assert!(matches!(r, Landed::Done { kept: false, .. }), "{r:?}");
+    assert!(matches!(r, Landed::Done { .. }), "{r:?}");
     assert!(s.on_tip("fix"));
     let b = std::fs::read_to_string(s.root("fix").join("b.rs")).unwrap();
     assert!(b.contains("line 10, fix's own"), "{b}");
-    assert!(git(&s.main, &["stash", "list"]).contains("up's own"), "up's stash left as it is");
+    assert_eq!(
+        git(&s.main, &["stash", "list", "--format=%gs"]),
+        "On up: up's own",
+        "up's stash left as it is"
+    );
+    assert_eq!(crate::aside::kept(&s.root("fix"), crate::aside::MOVE), None, "nothing left set aside");
 }
 
+/// A checkout as git and the eye see it: HEAD, the index's every entry, what differs where, the bytes of its files
+/// (tracked or not).
+fn as_it_is(root: &Path, files: &[&str]) -> Vec<String> {
+    let mut v = vec![
+        git(root, &["rev-parse", "HEAD"]),
+        git(root, &["ls-files", "--stage"]),
+        git(root, &["status", "--porcelain=v2", "--untracked-files=all", "--ignored"]),
+    ];
+    v.extend(files.iter().map(|f| format!("{f}: {:?}", std::fs::read(root.join(f)).ok())));
+    v
+}
+
+/// Changes in no commit that go onto the tip the card judged but not onto the one there when the move runs (main
+/// moved again on fix's changed line, unseen by any round): a conflict after all — fix put back exactly as it was,
+/// HEAD, index (a staged change and a staged new file) and files, an untracked one and an ignored one untouched;
+/// nothing in git's stash, nothing left set aside, never a marker; said as a conflict after all.
 #[test]
-fn changes_that_dont_go_back_after_the_move_are_said_in_the_stash() {
+fn changes_that_dont_go_onto_the_tip_after_all_leave_it_as_it_was() {
     let mut s = scene("keepclose-kept");
+    let fix = s.root("fix");
+    line(&fix.join("b.rs"), 1, "line 1, fix's staged");
+    std::fs::write(fix.join("c.rs"), "fix's new, staged\n").unwrap();
+    git(&fix, &["add", "b.rs", "c.rs"]);
+    line(&fix.join("b.rs"), 10, "line 10, fix's own");
+    std::fs::write(fix.join("notes.txt"), "fix's untracked\n").unwrap();
+    std::fs::write(fix.join("build.log"), "fix's ignored\n").unwrap();
+    let exclude = git(&fix, &["rev-parse", "--git-path", "info/exclude"]);
+    std::fs::create_dir_all(fix.join(&exclude).parent().unwrap()).unwrap();
+    std::fs::write(fix.join(&exclude), "build.log\n").unwrap();
+    let files = ["a.rs", "b.rs", "c.rs", "notes.txt", "build.log"];
+    let before = as_it_is(&fix, &files);
     asked(&mut s);
-    // (main moves again on fix's changed line, unseen by any round: clean as predicted, its change won't go back)
     line(&s.main.join("b.rs"), 10, "line 10, main's");
     git(&s.main, &["commit", "-qam", "main on b.rs"]);
     key(&mut s.ed, 'y');
-    until(&mut s.ed, "both moved", |ed| ed.keep_close.moved == 2 && ed.keep_close.moving.is_none());
-    assert!(s.on_tip("fix"));
+    until(&mut s.ed, "both looked at", |ed| ed.keep_close.moved == 2 && ed.keep_close.moving.is_none());
     let all: Vec<&String> = s.ed.messages.iter().map(|m| &m.2).collect();
-    assert_eq!(said(&s.ed, "fix · moved onto main"), 1, "{all:#?}");
-    assert_eq!(said(&s.ed, "its changes didn't go back cleanly — they're in git's stash"), 1, "{all:#?}");
+    assert_eq!(said(&s.ed, "fix · would conflict on main after all — left as it was"), 1, "{all:#?}");
+    assert_eq!(said(&s.ed, "fix · moved"), 0, "{all:#?}");
+    assert_eq!(as_it_is(&fix, &files), before, "fix as it was, byte for byte");
+    let b = std::fs::read_to_string(fix.join("b.rs")).unwrap();
+    assert!(!b.contains("<<<<<<<") && !b.contains(">>>>>>>"), "{b}");
+    assert_eq!(git(&s.main, &["stash", "list"]), "", "nothing in git's stash");
+    assert_eq!(crate::aside::kept(&fix, crate::aside::MOVE), None, "nothing left set aside");
     assert_eq!(said(&s.ed, "up · moved onto main — 2 commits under it, now at "), 1, "{all:#?}");
-    assert!(git(&s.main, &["stash", "list"]).contains("autostash"));
+}
+
+/// A file in no commit (here ignored) where the tip brings one: git would write over it — not moved, as it was, said.
+/// A file the tip turns into a folder, tracked, is git's to move.
+#[test]
+fn a_file_in_no_commit_where_the_tip_has_one_is_left_as_it_was() {
+    let s = scene("keepclose-in-the-way");
+    let fix = s.root("fix");
+    let exclude = git(&fix, &["rev-parse", "--git-path", "info/exclude"]);
+    std::fs::create_dir_all(fix.join(&exclude).parent().unwrap()).unwrap();
+    std::fs::write(fix.join(&exclude), "gen.rs\n").unwrap();
+    std::fs::write(fix.join("gen.rs"), "fix's own, ignored\n").unwrap();
+    std::fs::write(s.main.join("gen.rs"), "main's\n").unwrap();
+    git(&s.main, &["add", "-f", "gen.rs"]);
+    git(&s.main, &["commit", "-qm", "gen"]);
+    let files = ["b.rs", "gen.rs"];
+    let before = as_it_is(&fix, &files);
+    let r = move_onto(&fix, "main", &|| {});
+    assert!(matches!(&r, Landed::InTheWay(p) if p == "gen.rs"), "{r:?}");
+    assert_eq!(as_it_is(&fix, &files), before);
+    assert_eq!(crate::aside::kept(&fix, crate::aside::MOVE), None);
+    // (main turns a.rs into a folder: tracked in fix, not in the way)
+    git(&s.main, &["rm", "-q", "a.rs"]);
+    std::fs::create_dir_all(s.main.join("a.rs")).unwrap();
+    std::fs::write(s.main.join("a.rs/x.rs"), "x\n").unwrap();
+    git(&s.main, &["add", "a.rs/x.rs"]);
+    git(&s.main, &["commit", "-qm", "a folder"]);
+    std::fs::remove_file(fix.join("gen.rs")).unwrap();
+    let r = move_onto(&fix, "main", &|| {});
+    assert!(matches!(r, Landed::Done { under: 2, .. }), "{r:?}");
+    assert!(std::fs::read_to_string(fix.join("b.rs")).unwrap().contains("line 10, fix's own"));
+}
+
+/// Changes an earlier move left set aside (tarae gone midway): the next move isn't made — said with where they are
+/// kept and how to bring them back — and the ref, HEAD and the files are left as they are; once they're brought back
+/// and the ref dropped, it moves.
+#[test]
+fn a_move_with_changes_left_set_aside_earlier_isnt_made_and_leaves_them() {
+    let s = scene("keepclose-leftover");
+    let fix = s.root("fix");
+    line(&s.main.join("a.rs"), 3, "line 3, main's");
+    git(&s.main, &["commit", "-qam", "main"]);
+    std::fs::write(fix.join("c.rs"), "fix's earlier\n").unwrap();
+    git(&fix, &["add", "c.rs"]);
+    let earlier = git(&fix, &["stash", "create"]);
+    git(&fix, &["reset", "-q", "--hard"]);
+    git(&fix, &["update-ref", crate::aside::MOVE, &earlier]);
+    // (the scene's b.rs change and c.rs are in the earlier ones; today's is a.rs's, far from main's line 3)
+    line(&fix.join("a.rs"), 8, "line 8, fix's today");
+    let files = ["a.rs", "b.rs", "c.rs"];
+    let before = as_it_is(&fix, &files);
+    let r = move_onto(&fix, "main", &|| {});
+    let said = "changes set aside earlier are still there — your changes in no commit are kept at \
+                refs/worktree/tarae/moving (";
+    assert!(
+        matches!(&r, Landed::Failed(e) if e.starts_with(said) && e.contains("git stash apply --index")),
+        "{r:?}"
+    );
+    assert_eq!(as_it_is(&fix, &files), before, "nothing touched");
+    assert_eq!(crate::aside::kept(&fix, crate::aside::MOVE).as_deref(), Some(earlier.as_str()), "left there");
+    // (brought back as it says, the ref dropped: the next one moves, every change along)
+    git(&fix, &["stash", "apply", "--index", "-q", crate::aside::MOVE]);
+    git(&fix, &["update-ref", "-d", crate::aside::MOVE]);
+    let r = move_onto(&fix, "main", &|| {});
+    assert!(matches!(r, Landed::Done { .. }), "{r:?}");
+    assert_eq!(std::fs::read_to_string(fix.join("c.rs")).unwrap(), "fix's earlier\n");
+    assert!(std::fs::read_to_string(fix.join("b.rs")).unwrap().contains("line 10, fix's own"));
+    let a = std::fs::read_to_string(fix.join("a.rs")).unwrap();
+    assert!(a.contains("line 3, main's") && a.contains("line 8, fix's today"), "{a}");
+}
+
+/// A tracked file the tip only renames by case (`readme.md` → `README.md`): on a disk that doesn't tell case apart
+/// (git's `core.ignorecase`) it's that file, git's to move, never in the way; on one that does, no `README.md` is
+/// there. And git unable to say what the tip adds is never taken as clear.
+#[test]
+fn a_file_the_tip_renames_by_case_isnt_in_the_way_and_git_unsure_isnt_clear() {
+    let s = scene("keepclose-case");
+    let fix = s.root("fix");
+    std::fs::write(s.main.join("readme.md"), "read me\n").unwrap();
+    git(&s.main, &["add", "readme.md"]);
+    git(&s.main, &["commit", "-qm", "readme"]);
+    let r = move_onto(&fix, "main", &|| {});
+    assert!(matches!(r, Landed::Done { .. }), "{r:?}");
+    git(&s.main, &["mv", "readme.md", "tmp.md"]);
+    git(&s.main, &["mv", "tmp.md", "README.md"]);
+    git(&s.main, &["commit", "-qm", "README"]);
+    let (old, tip) = (git(&fix, &["rev-parse", "HEAD"]), git(&s.main, &["rev-parse", "main"]));
+    assert_eq!(in_the_way(&fix, &fix, &old, &tip), Ok(None));
+    assert!(in_the_way(&fix, &fix, "not-a-commit", &tip).is_err());
 }
 
 #[test]
@@ -534,6 +658,8 @@ fn a_clean_one_that_conflicts_after_all_is_put_back_and_said() {
     assert_eq!(git(&up, &["rev-parse", "HEAD"]), head, "its branch where it was");
     let b = std::fs::read_to_string(up.join("b.rs")).unwrap();
     assert!(b.contains("line 1, up's own"), "its change in no commit back: {b}");
+    assert_eq!(git(&s.main, &["stash", "list"]), "", "nothing in git's stash");
+    assert_eq!(crate::aside::kept(&up, crate::aside::MOVE), None, "nothing left set aside");
     assert!(s.on_tip("fix"), "the other clean one moved");
 }
 
@@ -604,16 +730,4 @@ fn the_tip_is_read_from_the_loose_ref_or_packed_refs_and_never_past_refs_heads()
         assert_eq!(read_tip(common, bad), None, "{bad}");
     }
     assert_eq!(read_tip(common, "nope"), None);
-}
-
-/// Git's words for an autostash that didn't go back, before 2.55 and since (CI's 2.55 and 2.56 said the new ones; the
-/// move's message missed them) — and a clean one's.
-#[test]
-fn an_autostash_left_in_the_stash_is_read_in_either_gits_words() {
-    let old = "Applying autostash resulted in conflicts.\nYour changes are safe in the stash.\nYou can run \"git stash pop\" or \"git stash drop\" at any time.\n";
-    let new = "Your local changes are stashed, however applying them\nresulted in conflicts.  You can either resolve the conflicts\nand then discard the stash with \"git stash drop\", or, if you\ndo not want to resolve them now, run \"git reset --hard\" and\napply the local changes later by running \"git stash pop\".\n";
-    assert!(super::autostash_kept(old));
-    assert!(super::autostash_kept(new));
-    assert!(!super::autostash_kept("Applied autostash.\n"));
-    assert!(!super::autostash_kept(""));
 }

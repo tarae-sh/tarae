@@ -1,6 +1,7 @@
 //! Rebasing a session onto its base (roadmap #3): `:session-bring` when the base moved since the session
 //! left it — a card says how far (`What::Rebase`), and `y` rebases in the session's checkout once it's been
-//! looked at (`rebase_check`: changes in no commit → `What::RebaseHeld`, `s` autostash · `g` the git tab; a run
+//! looked at (`rebase_check`: changes in no commit → `What::RebaseHeld`, `s` sets them aside for it · `g` the git
+//! tab; a run
 //! in the panel → it waits its turn). tarae runs git itself (Claude's sandbox can't write `.git`), in the task
 //! panel. Clean: the bring card (`What::Rebased` —
 //! bring · preflight, then bring · not now). A conflict: the rebase stops, and the session's own Claude is
@@ -196,8 +197,8 @@ impl Held {
                 let c = &self.changed;
                 format!(
                     "{} changed and {} in a commit — git won't rebase {} over {}.\n\ns stashes {} for the \
-                     rebase and puts {} back after (git's autostash — kept in the stash if {} can't go back \
-                     cleanly).",
+                     rebase and puts {} back after (kept in git's stash, named, if {} can't go back cleanly — \
+                     never left half merged).",
                     named(c),
                     if it(c) { "isn't" } else { "aren't" },
                     m.branch,
@@ -326,7 +327,8 @@ pub struct Rebase {
     waiting: Option<Ask>,
     /// What the resolution changed besides the conflicted files (#129): in its review, staged with them.
     pub also: Vec<String>,
-    /// The changes stashed for it (`--autostash`, #188) — put back at its end, and said.
+    /// The files whose changes in no commit were set aside for it (#188, `aside::REBASE`) — put back at its end,
+    /// and said.
     pub stashed: Vec<String>,
     /// When its stop was resolved (`Stage::Resolved`) — from then it waits on you (`waits_on_you`).
     pub resolved_at: Option<std::time::Instant>,
@@ -499,34 +501,78 @@ pub fn under_way(root: &Path) -> Option<Stop> {
 pub enum Ended {
     /// Stopped (at a conflict — Claude's ask made ready — or for a reason the panel says).
     Stopped(Box<Stop>, Option<Ask>),
-    /// Done: the branch's commits on the base's tip, at `tip` — and, changes stashed for it, the files
-    /// changed after git put them back (`back`).
+    /// Done: the branch's commits on the base's tip, at `tip`.
     Done {
         ahead: usize,
         tip: String,
-        back: Vec<String>,
     },
     Aborted,
     /// Nothing under way and not done: git stopped before it began (the panel says why).
     Failed,
 }
 
-fn ended(root: &Path, branch: &str, base: &str, aborting: bool, stashed: bool) -> Ended {
+/// What became of the changes in no commit set aside for the rebase (`aside::REBASE`, `rebase_go`) at its end.
+#[derive(Debug, PartialEq)]
+pub enum Aside {
+    /// None were.
+    None,
+    Back,
+    /// They didn't go back cleanly (or couldn't be tried) — where they are, said.
+    Kept(String),
+}
+
+fn ended(root: &Path, branch: &str, base: &str, aborting: bool) -> (Ended, Aside) {
     if let Some(stop) = under_way(root) {
         let ask = (!stop.files.is_empty()).then(|| ask(root, branch, base, &stop));
-        return Ended::Stopped(Box::new(stop), ask);
+        return (Ended::Stopped(Box::new(stop), ask), Aside::None);
     }
+    let aside = changes_back(root, branch, base);
     if aborting {
-        return Ended::Aborted;
+        return (Ended::Aborted, aside);
     }
     let base_tip = crate::worktree::sha(root, &format!("{base}^{{commit}}"));
-    match (base_tip, crate::worktree::sha(root, "HEAD")) {
-        (Ok(b), Ok(t)) if crate::worktree::is_ancestor(root, &b, &t) => Ended::Done {
-            ahead: crate::worktree::count(root, &format!("{b}..{t}")),
-            tip: t[..7].to_string(),
-            back: if stashed { changed(root).unwrap_or_default() } else { Vec::new() },
-        },
+    let end = match (base_tip, crate::worktree::sha(root, "HEAD")) {
+        (Ok(b), Ok(t)) if crate::worktree::is_ancestor(root, &b, &t) => {
+            Ended::Done { ahead: crate::worktree::count(root, &format!("{b}..{t}")), tip: t[..7].to_string() }
+        }
         _ => Ended::Failed,
+    };
+    (end, aside)
+}
+
+/// What the rebase's end says of the changes set aside for it (`stashed`: their files, as looked at before).
+fn aside_said(aside: &Aside, stashed: &[String]) -> String {
+    let them = if stashed.is_empty() { "no commit".to_string() } else { named(stashed) };
+    match aside {
+        Aside::None => String::new(),
+        Aside::Back => format!("; your changes in {them} are back"),
+        Aside::Kept(why) => format!("; your changes in {them} didn't go back cleanly — {why}"),
+    }
+}
+
+/// The changes set aside for the rebase put back where it ended (done, aborted, or never begun) — applied only onto
+/// the tracked files as HEAD has them, so the reset after one that didn't go back takes nothing but its markers;
+/// then, not back, kept in git's stash as an entry of their own, named (never applied by anyone's `pop`). A
+/// conflict there leaves the rebase as it is: it may hold a resolution of Claude's.
+fn changes_back(root: &Path, branch: &str, base: &str) -> Aside {
+    const AT: &str = crate::aside::REBASE;
+    let Some(sha) = crate::aside::kept(root, AT) else { return Aside::None };
+    let clean = changed(root).is_some_and(|c| c.is_empty());
+    if clean {
+        if crate::aside::back(root, AT, &sha).is_ok() {
+            return Aside::Back;
+        }
+        if let Err(e) = crate::gitrepo::git_no_hooks(root, &["reset", "--quiet", "--hard"]) {
+            return Aside::Kept(format!("{e} — {}", crate::aside::kept_at(root, AT, &sha)));
+        }
+    }
+    let message = format!("tarae: {branch}'s changes in no commit, set aside for its rebase onto {base}");
+    match crate::aside::store(root, AT, &sha, &message) {
+        Ok(()) => Aside::Kept(format!(
+            "they're in git's stash as «{message}» — git stash apply {} brings them back",
+            sha.get(..7).unwrap_or(&sha)
+        )),
+        Err(e) => Aside::Kept(e),
     }
 }
 
@@ -657,7 +703,6 @@ pub fn ran(ed: &mut Editor, generation: u64) -> bool {
         return false;
     }
     let (root, branch, base) = (ed.session.root.clone(), r.branch.clone(), r.base.clone());
-    let stashed = !r.stashed.is_empty();
     // (git's exit says too little — a stop at conflicts exits 1 — so the run reads as under way until its end
     // is read, then as git left it: `rebase_ended`)
     let exit = match ed.session.task_run.as_mut().filter(|t| t.generation() == generation) {
@@ -665,8 +710,8 @@ pub fn ran(ed: &mut Editor, generation: u64) -> bool {
         None => crate::task::State::Failed(None),
     };
     ed.events.jobs().spawn(move || {
-        let end = ended(&root, &branch, &base, aborting, stashed);
-        move |ed: &mut Editor| ed.rebase_ended(generation, end, exit)
+        let (end, aside) = ended(&root, &branch, &base, aborting);
+        move |ed: &mut Editor| ed.rebase_ended(generation, end, aside, exit)
     });
     true
 }
@@ -842,7 +887,7 @@ impl Editor {
     /// failed in the task panel, the card offering only a retry): a rebase already there — its card, to go
     /// on or abort; a run in the task panel — the rebase waits its turn behind it (`queued.rs`); changes in
     /// no commit, or unsaved buffers there — named on a card (`Held`) offering what fits. `stash`: its changes
-    /// go into git's autostash (the card's `s`) — only unsaved buffers hold it then.
+    /// are set aside for it (the card's `s`, `rebase_go`) — only unsaved buffers hold it then.
     pub(crate) fn rebase_check(&mut self, m: Moved, stash: bool) {
         let id = self.session.id;
         if self.session.rebase.is_some() {
@@ -863,23 +908,38 @@ impl Editor {
             .collect();
         self.events.jobs().spawn(move || {
             let found = under_way(&root).ok_or_else(|| changed(&root).unwrap_or_default());
-            move |ed: &mut Editor| match found {
+            // (changes an earlier rebase set aside, still there — tarae gone midway, a stash entry that failed: this
+            // one's end would take them for its own; under way, they're its own)
+            let at = crate::aside::REBASE;
+            let leftover = match found {
+                Ok(_) => None,
+                Err(_) => crate::aside::kept(&root, at).map(|sha| crate::aside::kept_at(&root, at, &sha)),
+            };
+            move |ed: &mut Editor| match (found, leftover) {
                 // (one tarae didn't start, or from before a restart: taken up, its card up)
-                Ok(stop) => {
+                (Ok(stop), _) => {
                     ed.rebase_adopt(stop);
                     if let Err(e) = ed.rebase_offer(id) {
                         ed.set_error(format!("rebase {}: {e}", m.branch));
                     }
                     ed.bring_queue_rebased(Err("a rebase was under way there — its card".into()));
                 }
-                Err(changed) if !unsaved.is_empty() || (!stash && !changed.is_empty()) => {
+                (Err(_), Some(kept)) => {
+                    ed.set_error(format!(
+                        "rebase {}: not started — an earlier rebase's changes in no commit are still set aside \
+                         there: {kept}",
+                        m.branch
+                    ));
+                    ed.bring_queue_rebased(Err("changes an earlier rebase set aside are still there".into()));
+                }
+                (Err(changed), None) if !unsaved.is_empty() || (!stash && !changed.is_empty()) => {
                     ed.push_offer(Held { moved: m, changed, unsaved }.card());
                     // (the queue never stashes for you: its card asks, a single bring after)
                     ed.bring_queue_rebased(Err(
                         "changes not in a commit in its checkout — its card asks".into()
                     ));
                 }
-                Err(changed) => ed.rebase_go(m, if stash { changed } else { Vec::new() }),
+                (Err(changed), None) => ed.rebase_go(m, if stash { changed } else { Vec::new() }),
             }
         });
     }
@@ -895,14 +955,15 @@ impl Editor {
         busy
     }
 
-    /// The rebase started in the front session's task panel — its changes `stashed` for it first (git's
-    /// autostash) when there are some.
+    /// The rebase started in the front session's task panel — its changes `stashed` for it first when there are
+    /// some: set aside on a commit object of their own at `aside::REBASE` as git starts (the same moment
+    /// `--autostash` takes them, never its stash), put back at its end (`changes_back`).
     fn rebase_go(&mut self, m: Moved, stashed: Vec<String>) {
         // (a run took the panel while the checkout was looked at: behind it)
         if self.session.rebase.is_some() || self.rebase_queued(&m, !stashed.is_empty()) {
             return;
         }
-        let autostash = if stashed.is_empty() { "" } else { " --autostash" };
+        let aside = !stashed.is_empty();
         self.session.rebase = Some(Rebase {
             branch: m.branch.clone(),
             base: m.base.clone(),
@@ -920,7 +981,15 @@ impl Editor {
         let branch = m.branch.clone();
         self.rebase_git(
             &format!("rebase onto {}", m.base),
-            move |git| format!("{git} rebase{autostash} {base}"),
+            move |git| match aside {
+                false => format!("{git} rebase {base}"),
+                // (none to take, nothing made; a ref already there refuses it, git's words in the panel)
+                true => format!(
+                    "c=$({git} stash create) && {{ [ -z \"$c\" ] || {{ {git} update-ref -m 'tarae: set aside' {at} \
+                     \"$c\" '' && {git} reset --quiet --hard; }}; }} && {git} rebase {base}",
+                    at = crate::aside::REBASE,
+                ),
+            },
             false,
             Box::new(move |ed, e| {
                 ed.session.rebase = None;
@@ -950,7 +1019,7 @@ impl Editor {
     }
 
     /// A git run of the rebase ended — `end` as git left it, `exit` as its process did.
-    fn rebase_ended(&mut self, generation: u64, end: Ended, exit: crate::task::State) {
+    fn rebase_ended(&mut self, generation: u64, end: Ended, aside: Aside, exit: crate::task::State) {
         use crate::task::State;
         // (this run's reloads, whatever became of the rebase meanwhile: never left holding its session's toasts)
         self.disk_batch_end(generation);
@@ -997,27 +1066,18 @@ impl Editor {
                     "its rebase stopped at {at} — bring it once it's resolved"
                 )));
             }
-            Ended::Done { ahead, tip, back } => {
+            Ended::Done { ahead, tip } => {
                 let (stashed, kept) =
                     self.session.rebase.take().map(|r| (r.stashed, r.messages.kept)).unwrap_or_default();
                 self.rebase_cards_gone();
-                // (stashed for it: put back by git — or, not cleanly, kept in git's stash, which it said)
-                let lost: Vec<String> = stashed.iter().filter(|f| !back.contains(f)).cloned().collect();
-                let stash = match (stashed.is_empty(), lost.is_empty()) {
-                    (true, _) => String::new(),
-                    (false, true) => format!("; your changes in {} are back", named(&stashed)),
-                    (false, false) => format!(
-                        "; your changes in {} didn't go back cleanly — they're in git's stash (git stash list)",
-                        named(&lost)
-                    ),
-                };
                 let said = format!(
-                    "Rebased {branch} onto {base} — {} on top, now at {tip}{stash}",
-                    crate::worktree::commits(ahead)
+                    "Rebased {branch} onto {base} — {} on top, now at {tip}{}",
+                    crate::worktree::commits(ahead),
+                    aside_said(&aside, &stashed)
                 );
-                match lost.is_empty() {
-                    true => self.set_success(said),
-                    false => self.set_warning(said),
+                match aside {
+                    Aside::Kept(_) => self.set_warning(said),
+                    _ => self.set_success(said),
                 }
                 // (its instruction files: the main checkout's changes since its copy — #27)
                 crate::instructions::follow(self);
@@ -1044,14 +1104,19 @@ impl Editor {
                 }
             }
             Ended::Aborted => {
-                self.session.rebase = None;
+                let stashed = self.session.rebase.take().map(|r| r.stashed).unwrap_or_default();
                 self.rebase_cards_gone();
-                self.set_status(format!("Rebase aborted — {branch} is back where it was"));
+                let said =
+                    format!("Rebase aborted — {branch} is back where it was{}", aside_said(&aside, &stashed));
+                match aside {
+                    Aside::Kept(_) => self.set_warning(said),
+                    _ => self.set_status(said),
+                }
                 self.bring_queue_rebased(Err("its rebase was aborted".into()));
             }
             // (git's own words, its `error:`/`fatal:` lines — #188: "the task panel says why" sent you looking)
             Ended::Failed => {
-                self.session.rebase = None;
+                let stashed = self.session.rebase.take().map(|r| r.stashed).unwrap_or_default();
                 let why: Vec<String> = self
                     .session
                     .task_run
@@ -1068,7 +1133,10 @@ impl Editor {
                     true => "the task panel says why".to_string(),
                     false => format!("git said: {}", why.join(" ")),
                 };
-                self.set_error(format!("rebase {branch}: git stopped before it began — {why}"));
+                self.set_error(format!(
+                    "rebase {branch}: git stopped before it began — {why}{}",
+                    aside_said(&aside, &stashed)
+                ));
                 self.bring_queue_rebased(Err("its rebase failed before it began".into()));
             }
         }
@@ -1616,7 +1684,8 @@ impl Editor {
             asked: false,
             waiting: None,
             also: Vec::new(),
-            // (one tarae didn't start: whether git stashed for it is git's to say at its end)
+            // (one tarae didn't start, or started before a restart: changes set aside for it are found at its end
+            // by their ref — `changes_back`)
             stashed: Vec::new(),
             resolved_at: None,
             messages: Default::default(),

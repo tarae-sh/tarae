@@ -82,7 +82,7 @@ pub enum What {
     /// The user's tests.
     Tests(crate::testing::Target),
     /// A session's rebase the user asked for (`rebase.rs`, #188): looked at again when its turn comes
-    /// (`stash`: its changes go into git's autostash).
+    /// (`stash`: its changes set aside for it — `aside.rs`).
     Rebase { moved: Box<crate::rebase::Moved>, stash: bool },
 }
 

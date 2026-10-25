@@ -5309,8 +5309,8 @@ mod tests {
     }
 
     /// #188: a rebase held back by its checkout says why before git runs — and offers what fits, not a bare
-    /// "retry". Changes in no commit: named; `s` stashes them for the rebase and puts them back after (git's
-    /// autostash), `g` shows them in the git tab. Unsaved buffers there: named, and no `s` (their text isn't
+    /// "retry". Changes in no commit: named; `s` sets them aside for the rebase and puts them back after
+    /// (`aside.rs`), `g` shows them in the git tab. Unsaved buffers there: named, and no `s` (their text isn't
     /// on disk). A run in the task panel: the rebase waits its turn behind it.
     #[test]
     fn a_rebase_held_back_says_why_and_offers_what_fits() {
@@ -5375,6 +5375,128 @@ mod tests {
         settle_until(&mut ed, |ed| ed.session.rebase.is_some() || says(ed, "rebase feat:"));
         settle_until(&mut ed, |ed| card(ed, "Rebased feat onto main").is_some() || says(ed, "rebase feat:"));
         assert!(says(&ed, "Rebased feat onto main — 4 commits on top"), "{}", said(&ed));
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `s` on the held card, the changes in no commit not going onto the rebased branch (main changed the same line
+    /// meanwhile): the rebase stays done, the checkout as its new HEAD has it — never a conflict marker — and the
+    /// changes kept in git's stash as an entry of their own, named and said; nothing left set aside.
+    #[test]
+    fn a_brings_changes_that_dont_go_back_are_kept_in_the_stash_never_as_markers() {
+        let (repo, dir) = place("rebase-kept");
+        std::fs::write(repo.join("d.txt"), "d\n").unwrap();
+        git_in(&repo, &["add", "d.txt"]);
+        git_in(&repo, &["commit", "-qm", "d"]);
+        let mut ed = editor(&repo, &dir);
+        let (wt, _) = moved_apart(&mut ed, &repo, true);
+        std::fs::write(repo.join("d.txt"), "d, main's\n").unwrap();
+        git_in(&repo, &["commit", "-qam", "main on d"]);
+        std::fs::write(wt.join("d.txt"), "d, mine\n").unwrap();
+        bring_set_aside(&mut ed);
+        settle_until(&mut ed, |ed| card(ed, "Rebased feat onto main").is_some() || says(ed, "rebase feat:"));
+        let kept = "tarae: feat's changes in no commit, set aside for its rebase onto main";
+        let why =
+            format!("; your changes in d.txt didn't go back cleanly — they're in git's stash as «{kept}»");
+        assert!(
+            says(&ed, "Rebased feat onto main — 2 commits on top, now at ") && says(&ed, &why),
+            "{}",
+            said(&ed)
+        );
+        assert_eq!(ed.messages.last().map(|m| m.1), Some(crate::editor::ToastKind::Warning), "{}", said(&ed));
+        assert_eq!(git_in(&wt, &["log", "--format=%s", "main..HEAD"]), "add b\nfeat a");
+        assert_eq!(std::fs::read_to_string(wt.join("d.txt")).unwrap(), "d, main's\n", "no markers");
+        assert_eq!(git_in(&wt, &["status", "--porcelain", "--untracked-files=no"]), "");
+        assert_eq!(git_in(&wt, &["stash", "list", "--format=%gs"]), kept);
+        assert_eq!(git_in(&wt, &["show", "stash@{0}:d.txt"]), "d, mine", "the changes whole in it");
+        assert_eq!(crate::aside::kept(&wt, crate::aside::REBASE), None, "nothing left set aside");
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `:session-bring`, its rebase card's `y`, then `s` on the card holding it back for changes in no commit.
+    fn bring_set_aside(ed: &mut Editor) {
+        feed(ed, ":session-bring<ret>");
+        settle_until(ed, |ed| card(ed, "Bring feat: main moved").is_some() || says(ed, "bring feat:"));
+        card_in_sight(ed);
+        feed(ed, "y");
+        let held = "Rebase feat: changes in no commit";
+        settle_until(ed, |ed| {
+            card(ed, held).is_some() || ed.session.rebase.is_some() || says(ed, "rebase feat:")
+        });
+        assert_eq!(card_in_sight(ed), ['s', 'g', 'n'], "{}", said(ed));
+        feed(ed, "s");
+    }
+
+    /// Changes set aside for a bring's rebase, the rebase aborted at its stop: back onto the commit they were made
+    /// on, as they were, said; held at their ref while it's stopped, nothing left after, nothing in git's stash.
+    #[test]
+    fn a_brings_changes_set_aside_come_back_when_its_rebase_is_aborted() {
+        let (repo, dir) = place("rebase-aside-abort");
+        let mut ed = editor(&repo, &dir);
+        claude_does(&mut ed, &dir.join("claude.log"), "");
+        let (wt, tip) = moved_apart(&mut ed, &repo, false);
+        std::fs::write(wt.join("b.txt"), "b, mine\n").unwrap();
+        bring_set_aside(&mut ed);
+        settle_until(&mut ed, |ed| says(ed, "conflict markers still in") || says(ed, "rebase feat:"));
+        assert!(crate::rebase::under_way(&wt).is_some(), "stopped at its conflict: {}", said(&ed));
+        assert!(crate::aside::kept(&wt, crate::aside::REBASE).is_some(), "held while it's stopped");
+        feed(&mut ed, ":rebase-abort<ret>");
+        settle_until(&mut ed, |ed| says(ed, "Rebase aborted") || says(ed, "rebase feat:"));
+        let back = "Rebase aborted — feat is back where it was; your changes in b.txt are back";
+        assert!(says(&ed, back), "{}", said(&ed));
+        assert_eq!(git_in(&wt, &["rev-parse", "HEAD"]), tip);
+        assert_eq!(std::fs::read_to_string(wt.join("b.txt")).unwrap(), "b, mine\n");
+        assert_eq!(git_in(&wt, &["stash", "list"]), "");
+        assert_eq!(crate::aside::kept(&wt, crate::aside::REBASE), None);
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Git refusing a bring's rebase before it begins (an untracked file where main brings one): the changes set
+    /// aside for it back, said with git's words. Changes an earlier rebase left set aside (a tarae gone midway): the
+    /// next rebase isn't started — said with where they are — and they stay there, never taken for its own.
+    #[test]
+    fn a_brings_changes_set_aside_come_back_when_git_never_begins_and_a_leftover_holds_the_next() {
+        let (repo, dir) = place("rebase-aside-failed");
+        let mut ed = editor(&repo, &dir);
+        let (wt, tip) = moved_apart(&mut ed, &repo, true);
+        std::fs::write(wt.join("b.txt"), "b, mine\n").unwrap();
+        std::fs::write(wt.join("c.txt"), "c, mine, untracked\n").unwrap();
+        bring_set_aside(&mut ed);
+        settle_until(&mut ed, |ed| says(ed, "rebase feat:") || card(ed, "Rebased feat onto main").is_some());
+        assert!(
+            says(&ed, "rebase feat: git stopped before it began — ")
+                && says(&ed, "; your changes in b.txt are back"),
+            "{}",
+            said(&ed)
+        );
+        assert_eq!(git_in(&wt, &["rev-parse", "HEAD"]), tip);
+        assert_eq!(std::fs::read_to_string(wt.join("b.txt")).unwrap(), "b, mine\n");
+        assert_eq!(std::fs::read_to_string(wt.join("c.txt")).unwrap(), "c, mine, untracked\n");
+        assert_eq!(crate::aside::kept(&wt, crate::aside::REBASE), None);
+        // A leftover at the ref: refused before anything runs, said, left there
+        std::fs::remove_file(wt.join("c.txt")).unwrap();
+        let earlier = git_in(&wt, &["rev-parse", "HEAD~1"]);
+        git_in(&wt, &["update-ref", crate::aside::REBASE, &earlier]);
+        feed(&mut ed, ":session-bring<ret>");
+        settle_until(&mut ed, |ed| card(ed, "Bring feat: main moved").is_some() || says(ed, "bring feat:"));
+        card_in_sight(&mut ed);
+        feed(&mut ed, "y");
+        let refused = "rebase feat: not started — an earlier rebase's changes in no commit are still set aside \
+                       there: your changes in no commit are kept at refs/worktree/tarae/rebasing";
+        let held = "Rebase feat: changes in no commit";
+        settle_until(&mut ed, |ed| says(ed, "rebase feat: not started") || card(ed, held).is_some());
+        assert!(says(&ed, refused), "{}", said(&ed));
+        assert!(ed.session.rebase.is_none(), "nothing under way");
+        assert_eq!(
+            crate::aside::kept(&wt, crate::aside::REBASE).as_deref(),
+            Some(earlier.as_str()),
+            "left there"
+        );
+        assert_eq!(git_in(&wt, &["rev-parse", "HEAD"]), tip);
+        assert_eq!(std::fs::read_to_string(wt.join("b.txt")).unwrap(), "b, mine\n");
+        assert_eq!(git_in(&wt, &["stash", "list"]), "");
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
     }
