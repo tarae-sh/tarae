@@ -48,6 +48,7 @@ mod reveal;
 mod reviews;
 mod rundoc;
 mod sessions;
+mod shimmer;
 mod shuttle;
 mod stuckstop;
 mod termview;

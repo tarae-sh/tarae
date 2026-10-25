@@ -1043,6 +1043,7 @@ pub(crate) fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
         | StreamEv::Retry(_)
         | StreamEv::Money(_)
         | StreamEv::Thought(_)
+        | StreamEv::ThinkingBlock(_)
         | StreamEv::Text(_)
         | StreamEv::Writing(_)
         | StreamEv::ToolResult { .. }

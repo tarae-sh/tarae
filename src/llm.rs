@@ -775,6 +775,9 @@ pub enum StreamEv {
     Thinking,
     /// Summarized thinking text (chat with `--thinking-display summarized` — batched like `Text`).
     Thought(String),
+    /// A thinking block began (true) or ended in the stream — its summary comes whole near its end, so the turn's word
+    /// says it works meanwhile (`shimmer.rs`).
+    ThinkingBlock(bool),
     /// Answer text fragment (batched every 25 ms).
     Text(String),
     /// An edit's input as it's written (`writing.rs`, batched as text is).
@@ -859,6 +862,8 @@ pub fn pump(
         };
         let mut last_flush = crate::clock::now();
         let mut thinking_sent = false;
+        // (the thinking block open in the message under way: its index)
+        let mut thinking_block = None;
         let mut done = false;
         let mut model = String::new();
         let (line_tx, lines) = channel::<String>();
@@ -936,6 +941,13 @@ pub fn pump(
                 }
                 thinking_sent = false;
                 if !tools.into_iter().all(&send) {
+                    break;
+                }
+                continue;
+            }
+            // A thinking block's start and end — its summary, held, goes before its end
+            if let Some(open) = thinking_edge(&ev, &mut thinking_block) {
+                if !flush(&mut pending, pending_thought) || !send(StreamEv::ThinkingBlock(open)) {
                     break;
                 }
                 continue;
@@ -1150,6 +1162,28 @@ pub fn with_tools(args: &[String], tools: &str, allowed: &str) -> Vec<String> {
     }
     out.extend(["--tools", tools, "--allowedTools", allowed].map(String::from));
     out
+}
+
+/// Whether a stream line starts a thinking block (true) or ends the one open (`open`: its index, kept here).
+fn thinking_edge(ev: &serde_json::Value, open: &mut Option<u64>) -> Option<bool> {
+    if ev["type"] != "stream_event" {
+        return None;
+    }
+    let e = &ev["event"];
+    let index = e["index"].as_u64().unwrap_or(0);
+    match e["type"].as_str()? {
+        "content_block_start"
+            if matches!(e["content_block"]["type"].as_str(), Some("thinking" | "redacted_thinking")) =>
+        {
+            *open = Some(index);
+            Some(true)
+        }
+        "content_block_stop" if *open == Some(index) => {
+            *open = None;
+            Some(false)
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn parse_line(ev: &serde_json::Value) -> Option<StreamEv> {
@@ -1674,6 +1708,7 @@ fn start(
             | StreamEv::Initialized { .. }
             | StreamEv::Tool { .. }
             | StreamEv::Writing(_)
+            | StreamEv::ThinkingBlock(_)
             | StreamEv::ToolResult { .. }
             | StreamEv::Control { .. }
             | StreamEv::Compaction(_)
@@ -2200,6 +2235,56 @@ pub(crate) mod tests {
                 "{kind} …{end} went out before the pause ended: {got:?}"
             );
         }
+    }
+
+    /// A thinking block's lines as the reader sends them, in their order: its start, its summary (held, then sent)
+    /// before its end — the turn's word waves until the summary lands (`shimmer.rs`).
+    #[test]
+    fn a_thinking_blocks_summary_goes_before_its_end() {
+        let ev = |e: serde_json::Value| serde_json::json!({"type": "stream_event", "event": e}).to_string();
+        let lines = [
+            ev(serde_json::json!({"type": "content_block_start", "index": 0,
+                "content_block": {"type": "thinking", "thinking": "", "signature": ""}})),
+            ev(serde_json::json!({"type": "content_block_delta", "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "Checking "}})),
+            ev(serde_json::json!({"type": "content_block_delta", "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "the map."}})),
+            ev(serde_json::json!({"type": "content_block_stop", "index": 0})),
+            ev(serde_json::json!({"type": "content_block_delta", "index": 1,
+                "delta": {"type": "text_delta", "text": "It clones."}})),
+        ];
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", r#"printf '%s\n' "$@""#, "sh"])
+            .args(lines)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (tx, rx) = channel::<String>();
+        let ed = crate::editor::Editor::new(crate::config::Config::default());
+        let _ = child.stdin.take();
+        pump(child, false, ed.events.sender(), move |ev| {
+            let said = match ev {
+                StreamEv::ThinkingBlock(open) => format!("block {}", if open { "open" } else { "closed" }),
+                StreamEv::Thought(t) => format!("thought {t}"),
+                StreamEv::Text(t) => format!("text {t}"),
+                _ => return None,
+            };
+            let _ = tx.send(said);
+            None
+        });
+        let mut got = Vec::new();
+        while !got.iter().any(|g: &String| g.starts_with("text")) {
+            got.push(rx.recv_timeout(crate::test_results::PATIENCE).expect("the stream's lines"));
+        }
+        // (the summary in one batch or two, as the reader's time falls)
+        let mut kinds: Vec<&str> = got.iter().map(|g| g.split(' ').next().unwrap_or_default()).collect();
+        kinds.dedup();
+        assert_eq!(kinds, ["block", "thought", "block", "text"], "{got:?}");
+        assert_eq!((got[0].as_str(), got[got.len() - 2].as_str()), ("block open", "block closed"));
+        let thought: String = got.iter().filter_map(|g| g.strip_prefix("thought ")).collect();
+        assert_eq!(thought, "Checking the map.");
     }
 
     /// Tests never start the real claude (card model P2 caught one reading ~/.claude.json and the keychain):
@@ -2805,6 +2890,30 @@ pub(crate) mod tests {
         let p = build_prompt("upper", "x.txt", &text, &[(4, 8)], 1);
         assert!(p.contains("lines=\"2-2\""), "{p}");
         assert!(p.contains("<after>three\n</after>"), "{p}");
+    }
+
+    /// A thinking block's start and its own end are told (the turn's word waves meanwhile — `shimmer.rs`); another
+    /// block's are not.
+    #[test]
+    fn a_thinking_blocks_start_and_end_are_told() {
+        let line = |e: serde_json::Value| serde_json::json!({"type": "stream_event", "event": e});
+        let start = |i: u64, kind: &str| {
+            line(serde_json::json!({"type": "content_block_start", "index": i,
+                "content_block": {"type": kind, "thinking": "", "signature": ""}}))
+        };
+        let stop = |i: u64| line(serde_json::json!({"type": "content_block_stop", "index": i}));
+        let mut open = None;
+        assert_eq!(thinking_edge(&stop(0), &mut open), None, "no block open");
+        assert_eq!(thinking_edge(&start(0, "thinking"), &mut open), Some(true));
+        let delta = line(serde_json::json!({"type": "content_block_delta", "index": 0,
+            "delta": {"type": "thinking_delta", "thinking": "Checking"}}));
+        assert_eq!(thinking_edge(&delta, &mut open), None);
+        assert_eq!(thinking_edge(&stop(1), &mut open), None, "another block's end");
+        assert_eq!(thinking_edge(&stop(0), &mut open), Some(false));
+        assert_eq!(thinking_edge(&start(1, "text"), &mut open), None);
+        assert_eq!(thinking_edge(&stop(1), &mut open), None, "a text block's end");
+        assert_eq!(thinking_edge(&start(2, "redacted_thinking"), &mut open), Some(true));
+        assert_eq!(open, Some(2));
     }
 
     #[test]

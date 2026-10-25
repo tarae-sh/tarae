@@ -11834,6 +11834,47 @@ fn wave_step(editor: &Editor) -> usize {
     (step % WAVE.len() as u128) as usize
 }
 
+/// Whether the wave stands beside the turn's word now: only where nothing streams by nature (`shimmer::Pace::Wave` —
+/// a thinking block open, a run, the turn's start, a compaction); where deltas come or stopped coming, the word's band
+/// says it instead (`turn_word`) — one sign, never both.
+fn wave_beside(editor: &Editor) -> bool {
+    crate::shimmer::pace(&editor.session) == Some(crate::shimmer::Pace::Wave)
+}
+
+/// The turn's word as its pace draws it (motion §3, `shimmer.rs`): while deltas come or the stream stands still
+/// (`Pace::Shimmer`, `Pace::Still`), the band over `style`'s dim ink, a cell at a time — the accent at its centre,
+/// blended toward the word's dim to its edges; named colours step dim · the accent · the accent bold. Plain beside the
+/// wave (`Pace::Wave`), at `calm` and `none`, and where motion isn't drawn.
+fn turn_word(editor: &Editor, ui: &Ui, word: &str, style: Style) -> Vec<(String, Style)> {
+    use crate::shimmer::Pace;
+    use unicode_width::UnicodeWidthChar;
+    let pace = crate::shimmer::pace(&editor.session);
+    let banded = editor.motion_drawn && editor.moving() && matches!(pace, Some(Pace::Shimmer | Pace::Still));
+    let at = editor.session.chat.as_ref().map_or(0.0, |c| c.pace.at);
+    if !banded || word.is_empty() {
+        return vec![(word.to_string(), style)];
+    }
+    let peak = ui.accent.fg;
+    let w = word.width();
+    let mut out: Vec<(String, Style)> = Vec::new();
+    let mut col = 0;
+    for ch in word.chars() {
+        let k = crate::shimmer::ink(at, col, w);
+        col += ch.width().unwrap_or(0);
+        let st = match blend(peak, style.fg, k) {
+            Some(fg) => Style { fg: Some(fg), ..style },
+            None if k >= 0.66 => Style { fg: peak.or(style.fg), bold: true, ..style },
+            None if k >= 0.33 => Style { fg: peak.or(style.fg), ..style },
+            None => style,
+        };
+        match out.last_mut() {
+            Some((s, last)) if *last == st => s.push(ch),
+            _ => out.push((ch.to_string(), st)),
+        }
+    }
+    out
+}
+
 /// The wave in one cell, for a list row's mark (`●`, `▲`, `◦` are one): its middle block, rising and falling on
 /// the same clock — held still at `▅` where nothing moves. The three-cell wave stays where there's room (a header's
 /// badge, a card).
@@ -12178,7 +12219,7 @@ fn draw_follow_card(
     // (waiting on you: the word in the accent — a `●` there read as a second knot beside the one in hand)
     let mark = match () {
         _ if waiting => String::new(),
-        _ if compacting || c.busy() && !replaying => wave(editor),
+        _ if (compacting || c.busy() && !replaying) && wave_beside(editor) => wave(editor),
         _ => String::new(),
     };
     let bares: &[&str] = match compact && crate::tools::unsandboxed(editor) {
@@ -12232,12 +12273,17 @@ fn draw_follow_card(
     }
     // (what it's at and how long, a blank between — waiting on you, its state says so: not twice)
     let doing = if waiting { "" } else { doing.trim_start() };
+    // (the word as the turn's pace draws it: its band while the stream comes or stands still)
     let mut right: Vec<(String, Style)> = Vec::new();
-    for (part, style) in [(mark.as_str(), accent), (doing, dim), (secs.as_str(), faint)] {
-        if !part.is_empty() {
-            let gap = if right.is_empty() { "" } else { " " };
-            right.push((format!("{gap}{part}"), style));
+    let word = turn_word(editor, ui, doing, dim);
+    for part in [vec![(mark.clone(), accent)], word, vec![(secs.clone(), faint)]] {
+        if part.iter().all(|(s, _)| s.is_empty()) {
+            continue;
         }
+        if !right.is_empty() {
+            right.push((" ".into(), dim));
+        }
+        right.extend(part);
     }
     // The turn of the stop in hand, its knots and words — the newest at the bottom
     let st = TrailStyles { faint, dim, string, accent, warn };
@@ -14517,7 +14563,11 @@ fn draw_chat(
         lines.push(vec![sp(wave(editor), accent), sp(" compacting…".into(), dim)]);
     } else if c.state == State::Thinking && !exploring && !thought_live {
         lines.push(Vec::new());
-        lines.push(vec![sp(wave(editor), accent), sp(" thinking…".into(), dim)]);
+        // (the wave where nothing streams, else its cells kept and the word's band: the word never slides)
+        let mark = if wave_beside(editor) { wave(editor) } else { "   ".into() };
+        let mut row = vec![sp(mark, accent), sp(" ".into(), dim)];
+        row.extend(turn_word(editor, ui, "thinking…", dim).into_iter().map(|(text, style)| sp(text, style)));
+        lines.push(row);
     }
     // Empty chat: guidance + example questions in the middle
     if c.msgs.is_empty() && !c.busy() {
@@ -14684,25 +14734,25 @@ fn draw_chat(
             None if left >= 5 => vec![sp("ready".into(), faint)],
             _ => Vec::new(),
         },
-        s => vec![
-            sp(wave(editor), accent),
-            sp(
-                format!(
-                    " {} {}",
-                    if crate::compaction::under_way(&editor.session) {
-                        "compacting"
-                    } else if exploring {
-                        "exploring"
-                    } else if s == State::Thinking {
-                        "thinking"
-                    } else {
-                        "writing"
-                    },
-                    timer(crate::clock::since(c.started), !editor.moving())
-                ),
-                dim,
-            ),
-        ],
+        s => {
+            let word = if crate::compaction::under_way(&editor.session) {
+                "compacting"
+            } else if exploring {
+                "exploring"
+            } else if s == State::Thinking {
+                "thinking"
+            } else {
+                "writing"
+            };
+            // (the wave where nothing streams by nature, else the word's band — `turn_word`)
+            let mut v = match wave_beside(editor) {
+                true => vec![sp(wave(editor), accent), sp(" ".into(), dim)],
+                false => Vec::new(),
+            };
+            v.extend(turn_word(editor, ui, word, dim).into_iter().map(|(text, style)| sp(text, style)));
+            v.push(sp(format!(" {}", timer(crate::clock::since(c.started), !editor.moving())), dim));
+            v
+        }
     };
     let right: Vec<(String, Style)> = status.into_iter().map(|s| (s.text, s.style)).collect();
     let right_w: usize = right.iter().map(|s| s.0.width()).sum();
@@ -20533,6 +20583,60 @@ mod tests {
         }
         crate::clock::release();
         assert_eq!(steps, [vec![], vec![(44, 'y')], vec![(11, 'y')], vec![]], "lit, drying, dry");
+    }
+
+    /// §3: the turn's word as its pace draws it — beside the wave plain; once deltas came, the band where the stream
+    /// left it: the accent on the cell its centre reached, a blend beside it, the word's dim past its half width; with
+    /// a named colour the steps dim · accent · accent bold; at `calm` a plain word and no wave (the stream came: the
+    /// wave isn't its sign).
+    #[test]
+    fn the_turns_word_takes_the_band_where_the_stream_left_it() {
+        use crossterm::style::Color::Rgb;
+        let mut ed = Editor::new(crate::config::Config::default());
+        let mut c = crate::chat::Chat::new();
+        c.state = crate::chat::State::Writing;
+        ed.session.chat = Some(c);
+        ed.motion_drawn = true;
+        let ui = Ui::new(&ed);
+        let dim = Style { fg: Some(Rgb { r: 100, g: 100, b: 100 }), ..Style::default() };
+        let accent = ui.accent.fg;
+        assert!(matches!(accent, Some(Rgb { .. })), "the default theme's accent is a colour of its own");
+        let plain = vec![("writing".to_string(), dim)];
+        assert!(wave_beside(&ed), "the turn's start: the wave");
+        assert_eq!(turn_word(&ed, &ui, "writing", dim), plain);
+        // (five batches of 16 bytes: five cells on — the centre on the word's third cell)
+        let p = &mut ed.session.chat.as_mut().unwrap().pace;
+        (0..5).for_each(|_| p.delta(16));
+        assert!(!wave_beside(&ed), "deltas came: the band, not the wave");
+        let cells = |dim: Style| -> Vec<(char, Style)> {
+            turn_word(&ed, &ui, "writing", dim)
+                .into_iter()
+                .flat_map(|(s, st)| s.chars().map(move |c| (c, st)).collect::<Vec<_>>())
+                .collect()
+        };
+        let band = cells(dim);
+        assert_eq!(band.iter().map(|c| c.0).collect::<String>(), "writing");
+        assert_eq!((band[2].0, band[2].1.fg), ('i', accent), "its centre the accent");
+        assert!(band[1].1.fg != dim.fg && band[1].1.fg != accent, "beside it, a blend");
+        assert_eq!((band[5].1, band[6].1), (dim, dim), "past its half width, the word's dim");
+        // (a named colour: no blend — the steps)
+        let named = Style { fg: Some(crossterm::style::Color::DarkGrey), ..Style::default() };
+        let steps = |ed: &Editor| -> Vec<(Option<crossterm::style::Color>, bool)> {
+            let word = turn_word(ed, &ui, "writing", named);
+            word.iter().flat_map(|(s, st)| s.chars().map(|_| (st.fg, st.bold)).collect::<Vec<_>>()).collect()
+        };
+        let (dark, lit, bold) = ((named.fg, false), (accent, false), (accent, true));
+        assert_eq!(
+            steps(&ed),
+            [dark, bold, bold, bold, dark, dark, dark],
+            "its centre on a cell: k .75 beside it"
+        );
+        // (half a cell on: the centre between the third and fourth — all three steps)
+        ed.session.chat.as_mut().unwrap().pace.delta(8);
+        assert_eq!(steps(&ed), [dark, lit, bold, bold, lit, dark, dark], "dim · accent · accent bold");
+        ed.config.motion = "calm".into();
+        assert_eq!(turn_word(&ed, &ui, "writing", dim), plain, "calm: a plain word");
+        assert!(!wave_beside(&ed));
     }
 
     /// Every card at the code's foot stands on one line (the user, 2026-10-24: "why are the two cards' bottoms at

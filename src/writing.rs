@@ -31,6 +31,26 @@ pub struct Delta {
     pub done: bool,
 }
 
+impl Delta {
+    /// About how much of the stream it came in: its text's bytes, a flag's word (the turn's band moves by it —
+    /// `shimmer.rs`).
+    pub fn bytes(&self) -> usize {
+        self.pieces
+            .iter()
+            .map(|p| match p {
+                Piece::Text { add, .. } => add.len(),
+                Piece::Flag { on, .. } => {
+                    if *on {
+                        4
+                    } else {
+                        5
+                    }
+                }
+            })
+            .sum()
+    }
+}
+
 /// The reader thread's (`llm::pump`): the tool calls whose input is streaming, by content block, and what
 /// came of them that the next batch sends.
 #[derive(Default)]

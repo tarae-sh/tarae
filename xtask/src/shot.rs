@@ -9,7 +9,8 @@
 //! on screen (a language server indexing …) — at most 120 s, or `@30?ready` 30; `@!ready` (`@30!ready`) until it's
 //! gone from it. `@~300` sends the key after it and keeps every frame drawn in the 300 ms after it: `out-01.png` (the
 //! screen before the key), `out-02.png` … and `out-sheet.png`, all side by side — a motion's contact sheet
-//! (`TARAE_MOTION_AT=<ms>` instead pins every motion at that age, for one picture of a step). A wait that times out
+//! (`TARAE_MOTION_AT=<ms>` instead pins every motion at that age, for one picture of a step; `TARAE_SHOT_SHEET_ROWS=0,5-6`
+//! makes the sheet those rows of each frame, one frame's strip under the one before). A wait that times out
 //! fails the shot (the picture is still saved, of the screen as it was then):
 //! a shot of the wrong frame never passes as one that worked.
 //!
@@ -379,6 +380,9 @@ fn contact_sheet(vt: &Vt, scale: usize, out: &Path) -> Result<()> {
         println!("saved {} ({when})", path.display());
     }
     let gap = PAD * scale;
+    if let Some(rows) = sheet_rows(std::env::var("TARAE_SHOT_SHEET_ROWS").ok().as_deref())? {
+        return strips(&pictures, &rows, scale, &named("sheet"));
+    }
     let (fw, fh) = (pictures[0].0, pictures.iter().map(|p| p.1).max().unwrap_or(0));
     let n = pictures.len();
     let (w, h) = (n * fw + (n - 1) * gap, fh);
@@ -395,6 +399,53 @@ fn contact_sheet(vt: &Vt, scale: usize, out: &Path) -> Result<()> {
     let path = named("sheet");
     save_png(&path, w, h, &sheet)?;
     println!("saved {} ({n} frames)", path.display());
+    Ok(())
+}
+
+/// `TARAE_SHOT_SHEET_ROWS` (`0,5-6`): the screen rows a contact sheet keeps of each frame — None: the frames whole.
+fn sheet_rows(given: Option<&str>) -> Result<Option<Vec<usize>>> {
+    let Some(given) = given.filter(|g| !g.trim().is_empty()) else { return Ok(None) };
+    let bad = || format!("TARAE_SHOT_SHEET_ROWS={given}: rows as `0,5-6`");
+    let mut rows = Vec::new();
+    for part in given.split(',') {
+        let (a, b) = part.trim().split_once('-').unwrap_or((part.trim(), part.trim()));
+        let (a, b): (usize, usize) = (a.parse().map_err(|_| bad())?, b.parse().map_err(|_| bad())?);
+        if b < a {
+            return Err(bad());
+        }
+        rows.extend(a..=b);
+    }
+    Ok(Some(rows))
+}
+
+/// A contact sheet of `rows` of each frame: a frame's strip (those rows, one under another) under the one before, a gap
+/// between — a few cells' motion read down the sheet (`TARAE_SHOT_SHEET_ROWS`).
+fn strips(pictures: &[(usize, usize, Vec<u8>)], rows: &[usize], scale: usize, path: &Path) -> Result<()> {
+    let (ch, pad, gap) = ((SIZE * 1.45) as usize * scale, PAD * scale, PAD * scale / 2);
+    let w = pictures.iter().map(|p| p.0).max().unwrap_or(0);
+    let strip: Vec<Vec<u8>> = pictures
+        .iter()
+        .map(|(pw, ph, px)| {
+            rows.iter()
+                .filter(|r| pad + (*r + 1) * ch <= *ph)
+                .flat_map(|r| px[(pad + r * ch) * pw * 3..(pad + (r + 1) * ch) * pw * 3].iter().copied())
+                .collect()
+        })
+        .collect();
+    let h =
+        strip.iter().map(|s| s.len() / (w * 3).max(1)).sum::<usize>() + gap * strip.len().saturating_sub(1);
+    // (the gaps a mid grey: apart from a dark and a light theme alike)
+    let mut sheet = vec![0x80u8; w * h * 3];
+    let mut y = 0;
+    for (s, (pw, ..)) in strip.iter().zip(pictures) {
+        for (k, row) in s.chunks(pw * 3).enumerate() {
+            let at = ((y + k) * w) * 3;
+            sheet[at..at + row.len()].copy_from_slice(row);
+        }
+        y += s.len() / (pw * 3) + gap;
+    }
+    save_png(path, w, h, &sheet)?;
+    println!("saved {} ({} frames, rows {rows:?})", path.display(), pictures.len());
     Ok(())
 }
 
@@ -996,6 +1047,17 @@ mod tests {
         assert_eq!(capture_key("@~0"), None);
         assert_eq!(capture_key("@3"), None);
         assert_eq!(capture_key("@?ready"), None);
+    }
+
+    #[test]
+    fn a_sheets_rows_are_single_rows_and_ranges() {
+        assert_eq!(sheet_rows(None), Ok(None));
+        assert_eq!(sheet_rows(Some(" ")), Ok(None));
+        assert_eq!(sheet_rows(Some("0,4")), Ok(Some(vec![0, 4])));
+        assert_eq!(sheet_rows(Some("0, 17-19")), Ok(Some(vec![0, 17, 18, 19])));
+        for bad in ["a", "5-3", "1,"] {
+            assert_eq!(sheet_rows(Some(bad)), Err(format!("TARAE_SHOT_SHEET_ROWS={bad}: rows as `0,5-6`")));
+        }
     }
 
     #[test]

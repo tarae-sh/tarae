@@ -406,6 +406,8 @@ pub struct Chat {
     pub input: crate::chatinput::Input,
     pub state: State,
     pub started: Instant,
+    /// The turn's stream so far — what its word says it's doing (`shimmer.rs`).
+    pub pace: crate::shimmer::Band,
     /// How many lines scrolled up from the bottom (0 = follow the bottom).
     pub scroll: usize,
     proc: Option<Proc>,
@@ -832,6 +834,7 @@ impl Chat {
             input: Default::default(),
             state: State::Idle,
             started: crate::clock::now(),
+            pace: Default::default(),
             scroll: 0,
             proc: None,
             generation: 0,
@@ -1700,11 +1703,21 @@ fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             }
             c.state = State::Thinking;
         }
+        StreamEv::ThinkingBlock(open) => {
+            if c.state == State::Idle {
+                return;
+            }
+            if open {
+                c.state = State::Thinking;
+            }
+            c.pace.thinking(open);
+        }
         StreamEv::Thought(t) => {
             if c.state == State::Idle {
                 return;
             }
             c.state = State::Thinking;
+            c.pace.delta(t.len());
             match c.msgs.last_mut() {
                 Some(m) if m.role == Role::Thought => {
                     m.text.push_str(&t);
@@ -1719,6 +1732,7 @@ fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 return;
             }
             c.state = State::Thinking;
+            c.pace.event();
             c.calls.push(Called { id: id.clone(), name: name.clone(), input: input.clone() });
             if ed.config.features_count {
                 ed.features.bump(crate::features::Area::Claude, crate::features::claude_tool(&name));
@@ -1795,7 +1809,12 @@ fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
         // What it costs (`usage.rs`) — a request going out changes nothing on screen yet
         StreamEv::Requesting(at) => {
             ed.session.usage.requesting(at);
-            ed.unchanged = true;
+            // (the turn's word waves until something of its answer comes — `shimmer.rs`)
+            let before = crate::shimmer::pace(&ed.session);
+            if let Some(c) = ed.session.chat.as_mut().filter(|c| c.busy()) {
+                c.pace.asked();
+            }
+            ed.unchanged = crate::shimmer::pace(&ed.session) == before;
         }
         StreamEv::Usage(seen) => ed.session.usage.seen(seen),
         StreamEv::Spent(spent) => {
@@ -1853,12 +1872,17 @@ fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             if c.state == State::Idle {
                 return;
             }
+            c.pace.delta(d.bytes());
             crate::writing::on_delta(ed, d);
         }
         StreamEv::ToolResult { id, text, error } => {
             crate::writing::answered(ed, &id);
             let Some(c) = ed.session.chat.as_mut() else { return };
             c.calls.retain(|k| k.id != id);
+            // (its result goes back to Claude: the wave until something of the answer comes — `shimmer.rs`)
+            if c.busy() {
+                c.pace.asked();
+            }
             ed.session.usage.tally.answered(&id, error, crate::usage::now_ms());
             // What it did on disk (an edit, a write, a command): the git tab reads the status again (#29 — it
             // said "the tree is clean" over files Claude had changed, until reopened)
@@ -1920,6 +1944,7 @@ fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 return;
             }
             c.state = State::Writing;
+            c.pace.delta(t.len());
             // (an id cited marks its element as it's written — the whole answer is read again at its end)
             let ids = t.contains(['#', ':']);
             match c.msgs.last_mut() {
@@ -2615,6 +2640,7 @@ fn submit_as(
     c.scroll = 0;
     c.state = State::Thinking;
     c.started = crate::clock::now();
+    c.pace = Default::default();
     crate::reads::not_sent(ed, &withheld);
     crate::uistate::watch::turn(ed, "started", 0, None);
     true

@@ -486,6 +486,7 @@ fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
         StreamEv::Limits(r) => crate::limits::seen(ed, r),
         StreamEv::Thinking
         | StreamEv::Thought(_)
+        | StreamEv::ThinkingBlock(_)
         | StreamEv::Text(_)
         | StreamEv::Writing(_)
         | StreamEv::Tool { .. }

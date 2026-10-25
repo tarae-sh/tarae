@@ -54,6 +54,13 @@ type. Enter → diff takes about 3.4 s with the default model.
 closes it and `:chat-new` starts over. One
 process lives for the whole conversation, so Claude remembers what came before.
 
+**While it works** the chat's title (and the follow card's) says what the turn is at and for how long (`thinking 3.2s`,
+`writing`, `exploring`) and whether anything is arriving. As Claude's words, its thinking's summary or an edit come in,
+a band in the accent moves across that word at the pace they come, and it stands still the moment they stop: it moves with
+the stream, never on a clock. Where nothing streams by nature, the wave `▂▅▇` beside the word says Claude is working
+instead, never both. That's the turn's first seconds, Claude thinking (its summary comes whole once it's done), the
+wait for its next answer after a tool's result went back, and a run of Claude's. A call that hangs still says `◦ stuck?`. At `editor.motion = "calm"` or `"none"` the word is plain.
+
 **The model** is named in the chat's title while it's idle (`Opus 5.5 · high`). `C-t` in the chat (or `:model`,
 or "Choose Claude's model" in the palette) lists the models your `claude` offers, with the one in use marked
 ([screenshot](screenshots/chat-model.png)). `:effort` sets how hard it thinks, for models that take it. The

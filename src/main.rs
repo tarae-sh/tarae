@@ -172,6 +172,7 @@ mod settings;
 mod sha256;
 mod share;
 mod shell;
+mod shimmer;
 mod shuttle;
 mod sidebar;
 mod signature;

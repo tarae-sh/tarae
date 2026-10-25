@@ -42,6 +42,17 @@ const MAIN: &[&str] = &["src/main.rs"];
 /// until it's dry — and the picture then, before `six`'s turn ends (`TARAE_MOTION_AT` pins the drying's step).
 const WET_KEYS: &[&str] = &["@1", " ", "l", "@1", "keep the first strand", "@~2600", "\r", "@?in one go"];
 
+/// Motion §3's scenes: the chat, follow off (`C-f`: the chat stays open), a question, every frame kept from its `enter` —
+/// 1 s of prose, 2.4 s of a think and its landing, 3.2 s of prose, a stall and prose again; the think with follow on
+/// (the follow card's head); 4.2 s of prose, a read, the wait for the next answer and the answer.
+const SHIMMER_KEYS: [&[&str]; 5] = [
+    &["@1", " ", "l", "@1", "\x06", "how is the map filled?", "@~1000", "\r", "@3"],
+    &["@1", " ", "l", "@1", "\x06", "how is the map filled?", "@~2400", "\r", "@3"],
+    &["@1", " ", "l", "@1", "\x06", "how is the map filled?", "@~3200", "\r", "@3"],
+    &["@1", " ", "l", "@1", "how is the map filled?", "@~2400", "\r", "@3"],
+    &["@1", " ", "l", "@1", "\x06", "how is the map filled?", "@~4200", "\r", "@3"],
+];
+
 /// Claude asked to run outside the sandbox, the keys back in the code (`C-w h`) as its card comes; then `j j` there.
 const FOCUS_CARD: &[&str] =
     &["@1", " ", "l", "@1", "run the tests", "\r", "\x17", "h", "@?Its reason", "@1", "j", "j", "@1"];
@@ -1495,6 +1506,13 @@ const SCENES: &[Scene] = &[
     // (motion §2's sheets: review at the end, Claude's edit of six lines lands unwatched and dries — follow off; follow
     // on; and the turn ending at once, its review opening over the lines still drying: the review's wash deeper)
     Scene { name: "wet", claude: "six", files: MAIN, keys: WET_KEYS },
+    // (motion §3's sheets: the turn's word from the question's `enter` — prose streaming for 1 s; a think, silent then
+    // landing; prose, a stall, prose again; the think in the follow card; prose, a read and the wait for the next answer)
+    Scene { name: "shimmer-prose", claude: "shimmer-prose", files: MAIN, keys: SHIMMER_KEYS[0] },
+    Scene { name: "shimmer-think", claude: "shimmer-think", files: MAIN, keys: SHIMMER_KEYS[1] },
+    Scene { name: "shimmer-stall", claude: "shimmer-stall", files: MAIN, keys: SHIMMER_KEYS[2] },
+    Scene { name: "shimmer-follow", claude: "shimmer-think", files: MAIN, keys: SHIMMER_KEYS[3] },
+    Scene { name: "shimmer-read", claude: "shimmer-read", files: MAIN, keys: SHIMMER_KEYS[4] },
     Scene { name: "wetfollow", claude: "sixfollow", files: MAIN, keys: WET_KEYS },
     Scene { name: "wetreview", claude: "sixend", files: MAIN, keys: WET_KEYS },
     // (Claude's edit of three changes: the first accepted, the second refused, the third in hand)
@@ -2946,6 +2964,10 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             // (motion §2: an edit of six lines in one go, then a pause — or, `sixend`, the turn's end at once)
             "six" | "sixfollow" => turn.six(true)?,
             "sixend" => turn.six(false)?,
+            // (motion §3: a turn timed as the stream measured — prose from the start, a think, a stall)
+            "shimmer-prose" | "shimmer-think" | "shimmer-stall" | "shimmer-read" => {
+                turn.shimmer(&script[8..])?
+            }
             // (its three-item edit being written: the third item's new text held mid-line)
             "writemid" => turn.explain_held(true, true, Some("nots.len());\\n\"}"))?,
             "mid" => turn.explain(false, false)?,
@@ -3104,6 +3126,55 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.call(2, "edit", serde_json::from_str(&input).map_err(io::Error::other)?)?;
         self.words("Done — **main.rs** now keeps the first strand when a name repeats.")?;
         self.words("Nothing else reads the map, so no other change is needed.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// Motion §3's turns, timed as `cargo xtask stream` measured them (2026-10-25: prose about 13 characters every 50 ms;
+    /// summarized thinking silent while its block is open, then landing whole): `prose` from the first moment; `think` a
+    /// thinking block open and silent 1.2 s, its summary at once, then the prose; `stall` the prose 0.6 s, 2 s of
+    /// nothing, the prose again; `read` a few words, a read of tarae's, its result back to Claude and a request out as
+    /// claude says them, 2.5 s before the next answer's first words (2.75 s measured), the rest.
+    fn shimmer(&mut self, shape: &str) -> io::Result<()> {
+        let ev = |e: Value| json!({"type": "stream_event", "event": e});
+        let prose = "The name is cloned because insert takes the key by value, and the first strand moves into the \
+                     map in the same call, so the map keeps a key of its own while the thread keeps its name.";
+        let pieces: Vec<String> =
+            prose.chars().collect::<Vec<_>>().chunks(13).map(|c| c.iter().collect()).collect();
+        let stream = |turn: &mut Self, pieces: &[String]| -> io::Result<()> {
+            for p in pieces {
+                let delta = json!({"type": "text_delta", "text": p});
+                turn.line(ev(json!({"type": "content_block_delta", "index": 1, "delta": delta})))?;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(())
+        };
+        if shape == "think" {
+            let block = json!({"type": "thinking", "thinking": "", "signature": ""});
+            self.line(ev(json!({"type": "content_block_start", "index": 0, "content_block": block})))?;
+            std::thread::sleep(Duration::from_millis(1200));
+            for t in ["Checking how the map ", "keeps its keys, ", "then why the name is cloned."] {
+                let delta = json!({"type": "thinking_delta", "thinking": t});
+                self.line(ev(json!({"type": "content_block_delta", "index": 0, "delta": delta})))?;
+            }
+            self.line(ev(json!({"type": "content_block_stop", "index": 0})))?;
+        }
+        match shape {
+            "stall" => {
+                stream(self, &pieces[..12])?;
+                std::thread::sleep(Duration::from_secs(2));
+                stream(self, &pieces[12..])?;
+            }
+            "read" => {
+                stream(self, &pieces[..4])?;
+                self.call(1, "read", json!({"files": ["src/main.rs:7-14"]}))?;
+                let result = json!({"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "fn main() {"}]});
+                self.line(json!({"type": "user", "message": {"role": "user", "content": [result]}}))?;
+                self.line(json!({"type": "system", "subtype": "status", "status": "requesting"}))?;
+                std::thread::sleep(Duration::from_millis(2500));
+                stream(self, &pieces[4..])?;
+            }
+            _ => stream(self, &pieces)?,
+        }
         self.line(json!({"type": "result", "result": "done"}))
     }
 
