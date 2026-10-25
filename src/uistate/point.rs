@@ -1,7 +1,8 @@
 //! Pointing (`docs/design/ui-state.md`, phase 3 (c)): the user shows Claude an element — "why did this come
 //! up?" about the card on screen. `C-o` in the chat (`space @` in the code, `:chat-point`) puts a two-letter
 //! label, in the `gw` look, on every element on screen that has an id: the cards' title rows, the toasts,
-//! the side panel's and the review's rows, the bottom slot's tabs, the path bar. Typing a label (or clicking
+//! the side panel's and the review's rows, the bottom slot's tabs, the path bar, the follow card's marks of a turn's
+//! stops. Typing a label (or clicking
 //! the element) puts its id in the chat's input as a chip; the message carries `<pointed id=…>` with what
 //! the element is (`claude::pointed`), and it's given to Claude for the turn.
 //!
@@ -95,6 +96,12 @@ impl Editor {
                 out.push(Target { id, x: a, y, w: b - a, at: (a, y + 1) });
             }
         }
+        // The follow card's strip (motion §4): a mark a cell, its label above it and the next one's below — two letters
+        // each, side by side on two rows, never over each other
+        for (i, (y, x, call)) in s.stop_marks.borrow().iter().enumerate() {
+            let at = if i % 2 == 0 { (*x, y.saturating_sub(1)) } else { (*x, y + 1) };
+            out.push(Target { id: super::panels::stop_id(call), x: *x, y: *y, w: 1, at });
+        }
         crate::sorting::by_key(&mut out, |t| (t.at.1, t.at.0));
         out.dedup_by(|a, b| a.id == b.id);
         out.truncate(ALPHABET.len() * ALPHABET.len());
@@ -104,7 +111,11 @@ impl Editor {
     /// The element whose cells hold (`x`, `y`) — a click while pointing.
     fn point_at(&self, x: usize, y: usize) -> Option<String> {
         let p = self.pointing.as_ref()?;
-        p.targets.iter().find(|t| t.y == y && (t.x..t.x + t.w.max(2)).contains(&x)).map(|t| t.id.clone())
+        // (its own cells first: a strip's marks a cell apart — then a narrow one's label's two)
+        let on = |t: &&Target, w: usize| t.y == y && (t.x..t.x + w).contains(&x);
+        let hit =
+            p.targets.iter().find(|t| on(t, t.w)).or_else(|| p.targets.iter().find(|t| on(t, t.w.max(2))));
+        hit.map(|t| t.id.clone())
     }
 }
 

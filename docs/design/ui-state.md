@@ -329,6 +329,7 @@ Short, so they can be read in prose and typed. Unique within one tarae process.
 | run | `run#7` | new sequence, given with the `RunTrace` |
 | Claude's tool call | `call#5` | new per-turn index (claude's `toolu_…` ids are too long to read) |
 | note | `note#4` | `notes` ids |
+| a stop's mark | `stop:toolu_01…` | its call's id — a mark of the follow card's strip (motion §4), listed with the floating lists (`"kind": "follow"`, its label what its stop was, `selected` the one in hand), never at Claude's level; pointing labels it, a link to it is its stop's replay |
 | panel | `chat`, `side`, `git`, `review`, `tests`, `task`, `terminal`, `picker`, `prompt` | singletons of a session |
 | panel row | `git:src/a.rs`, `review:src/a.rs`, `tests:editor::tests::x`, `list:src/a.rs:12`, `files:src/` | **its content key, never its index** (indexes move as lists change) |
 

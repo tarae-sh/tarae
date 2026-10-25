@@ -149,7 +149,7 @@ pub struct State {
     /// The session whose mark (its sign column bar, its tag) the mouse is over — its tag shows (`hovered`).
     pub hover: Option<SessionId>,
     /// The mouse's cell as it last moved (column, row) — None: away (the terminal lost focus).
-    hover_at: Option<(usize, usize)>,
+    pub hover_at: Option<(usize, usize)>,
 }
 
 /// How long a session's name tag stays after its last write there (the user, 2026-10-22: the tag shows only while
@@ -289,14 +289,13 @@ pub fn sync(ed: &mut Editor) {
 }
 
 /// The mouse at (`x`, `y`): over a session's mark (its bar in the sign column, its tag — `Screen.session_spots`), its
-/// tag shows. A move that changes nothing draws nothing.
-pub fn hovered(ed: &mut Editor, x: usize, y: usize) {
+/// tag shows. Whether that changed (a move that changes nothing draws nothing — `Editor::handle_event`).
+pub fn hovered(ed: &mut Editor, x: usize, y: usize) -> bool {
     ed.presence.hover_at = Some((x, y));
     let over = under(ed, x, y);
-    match over == ed.presence.hover {
-        true => ed.unchanged = true,
-        false => ed.presence.hover = over,
-    }
+    let changed = over != ed.presence.hover;
+    ed.presence.hover = over;
+    changed
 }
 
 /// The session whose mark is at (`x`, `y`) on the frame last drawn.

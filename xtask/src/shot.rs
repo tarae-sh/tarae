@@ -585,6 +585,17 @@ fn drive(
             }
             continue;
         }
+        // (`@hover?text`: the mouse moved onto the first cell of `text` on screen, no button down — a hover)
+        if let Some(text) = k.strip_prefix("@hover?") {
+            match cell_of(vt.parser.screen(), text) {
+                Some((row, col)) => {
+                    let _ = master.write_all(format!("\x1b[<35;{};{}M", col + 1, row + 1).as_bytes());
+                    pump(vt, 0.35);
+                }
+                None => missed.push(format!("hover: {text:?} not on screen")),
+            }
+            continue;
+        }
         if let Some((max, text)) = gone_key(k) {
             let t = Instant::now();
             if pump_until(vt, text, max, true) {
@@ -624,6 +635,22 @@ fn wait_key(key: &str) -> Option<(f64, &str)> {
     let (secs, text) = key.strip_prefix('@')?.split_once('?')?;
     let max = if secs.is_empty() { WAIT_MAX } else { secs.parse().ok()? };
     (!text.is_empty()).then_some((max, text))
+}
+
+/// Where `text` starts on `screen` (row, column), the first from the top left — a wide character's second cell not counted.
+fn cell_of(screen: &vt100::Screen, text: &str) -> Option<(u16, u16)> {
+    let (rows, cols) = screen.size();
+    (0..rows).find_map(|r| {
+        let cells: Vec<(u16, &str)> = (0..cols)
+            .filter_map(|c| {
+                screen.cell(r, c).filter(|x| !x.is_wide_continuation()).map(|x| (c, x.contents()))
+            })
+            .collect();
+        let line: String = cells.iter().map(|(_, s)| if s.is_empty() { " " } else { s }).collect();
+        let at = line.find(text)?;
+        let k = line[..at].chars().count();
+        cells.get(k).map(|(c, _)| (r, *c))
+    })
 }
 
 /// `@!text` / `@30!text`: wait until `text` is gone from the screen — as `wait_key`'s limits.
@@ -1047,6 +1074,16 @@ mod tests {
         assert_eq!(capture_key("@~0"), None);
         assert_eq!(capture_key("@3"), None);
         assert_eq!(capture_key("@?ready"), None);
+    }
+
+    /// `@hover?text`'s cell: where the text starts, a wide character before it two cells.
+    #[test]
+    fn a_hovers_text_is_found_at_its_first_cell() {
+        let mut p = vt100::Parser::new(3, 20, 0);
+        p.process("ab\r\n한x▲◦●".as_bytes());
+        assert_eq!(cell_of(p.screen(), "▲◦"), Some((1, 3)));
+        assert_eq!(cell_of(p.screen(), "b"), Some((0, 1)));
+        assert_eq!(cell_of(p.screen(), "zz"), None);
     }
 
     #[test]

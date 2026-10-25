@@ -483,6 +483,9 @@ pub struct Screen {
     /// The elements Claude can be told about, where they're drawn (a card's title row, a toast's, a panel
     /// row, the path bar, a slot tab) — pointing labels them (`uistate/point.rs`).
     pub spots: std::cell::RefCell<Vec<crate::uistate::point::Spot>>,
+    /// The follow card's strip as drawn (motion §4): each mark's (row, column, its stop's call) — a hover names it, a
+    /// press replays it, the state lists it (`stop:<call>`) and pointing labels it.
+    pub stop_marks: std::cell::RefCell<Vec<(usize, usize, String)>>,
     /// The prompt's card (x, y, width, height) — a click on it is its own, not the code's under it.
     pub prompt_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
     /// The front card wasn't drawn this frame only because a key sequence is under way (`C-w` of `C-w w`: a card
@@ -2414,7 +2417,11 @@ impl Editor {
         // A hover moves nothing: only what's under the mouse says (`presence::hovered` — a frame only when that
         // changed), none of the work every other event does below (a sweep sends dozens a second)
         if let Event::Hover(x, y) = ev {
-            return crate::presence::hovered(self, x as usize, y as usize);
+            let (x, y) = (x as usize, y as usize);
+            let tag = crate::presence::hovered(self, x, y);
+            let mark = crate::follow::strip_hovered(self, x, y);
+            self.unchanged = !(tag || mark);
+            return;
         }
         // Input means the terminal has focus, whatever it said last (a focus-in lost on the way)
         let input = matches!(ev, Event::Key(_) | Event::Mouse(_) | Event::Paste(_));
@@ -2440,6 +2447,9 @@ impl Editor {
                 self.unfocused = !gained;
                 if !gained {
                     crate::presence::away(self);
+                    if let Some(c) = self.session.chat.as_mut() {
+                        c.follow.hover = None;
+                    }
                 }
                 self.on_focus(gained)
             }
@@ -3083,6 +3093,13 @@ impl Editor {
                 K::ScrollDown => sb.scroll += 3,
                 K::ScrollUp => sb.scroll = sb.scroll.saturating_sub(3),
                 _ => {}
+            }
+            return;
+        }
+        // A mark of the follow card's strip: its stop's replay, as `]r`/`[r` step to it (motion §4)
+        if let Some(call) = crate::follow::strip_under(self, x, y) {
+            if m.kind == K::Down && !crate::follow::replay_stop(self, &call) {
+                self.set_status("that stop is no longer kept");
             }
             return;
         }
@@ -8380,8 +8397,8 @@ mod tests {
         ed.offer_accept();
         settle_until(&mut ed, |ed| ed.session.task_run.is_some());
         let screen = draw(&mut ed);
-        // (the card names the tool, as its chat row does)
-        assert!(screen.contains("● run    sleep 1") && !screen.contains("waiting"), "{screen}");
+        // (the card names the tool, as its chat row does — its mark a run's)
+        assert!(screen.contains("▸ run    sleep 1") && !screen.contains("waiting"), "{screen}");
         settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         std::fs::remove_dir_all(&dir).ok();
     }

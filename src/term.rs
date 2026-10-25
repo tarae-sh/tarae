@@ -496,8 +496,10 @@ fn render_drawn(editor: &mut Editor, out: &mut impl Write, w: u16, h: u16) -> io
         | crate::rundoc::resized(editor)
         | crate::rundoc::procs_rewrapped(editor)
         | crate::chatdoc::resized(editor)
-        // (and the mark the mouse was over gone from under it: its tag with it — `presence::hover_drawn`)
+        // (and the mark the mouse was over gone from under it: its tag with it — `presence::hover_drawn`; a mark
+        // of the follow card's strip, its words — `follow::strip_drawn`)
         | crate::presence::hover_drawn(editor)
+        | crate::follow::strip_drawn(editor)
         // (and a flash's words that it didn't draw: their toast — `motion.rs`)
         | editor.words_drawn()
     {
@@ -686,6 +688,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         toast_said: Default::default(),
         prompt_card: Default::default(),
         spots: Default::default(),
+        stop_marks: Default::default(),
         // (kept from the frame before until the list draws again)
         messages_room: std::cell::Cell::new(editor.screen.messages_room.get()),
         toast_rows: Default::default(),
@@ -12339,8 +12342,25 @@ fn draw_follow_card(
         }
         right.extend(part);
     }
+    let plus = Style { fg: ui.diff_plus.fg, ..card };
+    let st = TrailStyles { faint, dim, string, accent, warn, plus };
+    // The turn's stops as a strip of marks (motion §4): the details' last piece, its newest by the turn's word; folded at
+    // its front to `+N`, the first piece the line gives up
+    // (the stop in hand as a list's row in hand: its row the selected row, its mark on that ground)
+    let sel = selected_row(ui, editor, card);
+    let marks = crate::follow::strip(c);
+    let room = strip_room(inner + 4, &names, &details, &right);
+    let (strip, lead, shown) = strip_spans(&marks, room, &st, (faint, sel));
+    // (a blank after the details before it, theirs — a mark in hand first gets no selected ground beside it)
+    if !strip.is_empty()
+        && let Some(last) = details.last_mut()
+    {
+        last.0.push(' ');
+    }
+    // (where its first mark is among the spans the line returns the columns of: the names', then the details')
+    let strip_at = names.len() + details.len() + lead;
+    details.extend(strip);
     // The turn of the stop in hand, its knots and words — the newest at the bottom
-    let st = TrailStyles { faint, dim, string, accent, warn };
     let (turn_rows, hand_row, knots) = follow_thread(c, editor, ui, inner, card, &st, compact);
     let why = gaze.and_then(|g| g.why.as_deref()).filter(|w| !w.is_empty());
     // A walk-through's stop: how to ask about it, under its words
@@ -12458,7 +12478,8 @@ fn draw_follow_card(
     };
     let room = gap_end - gap_top;
     let body_max = BODY.min((ph / 2).saturating_sub(fixed)).min(room - fixed).max(1);
-    let body = turn_window(turn_rows, &knots, hand_row, body_max, replaying, inner, faint);
+    let (body, hand_at) = turn_window(turn_rows, &knots, hand_row, body_max, replaying, inner, faint);
+    let hand_at = hand_at.map(|k| top.len() + k);
     let mut rows: Vec<(Vec<Span>, Option<crate::chat::Link>)> = top.into_iter().map(|r| (r, None)).collect();
     rows.extend(body);
     if let Some(h) = hint {
@@ -12473,19 +12494,38 @@ fn draw_follow_card(
         editor.screen.chat_mini.set(Some(rect));
     }
     let mut links = editor.screen.chat_links.borrow_mut();
-    for (y, (row, link)) in (y0 + pad..).zip(&rows) {
+    for (k, (y, (row, link))) in (y0 + pad..).zip(&rows).enumerate() {
         queue!(out, MoveTo(x0 as u16, y as u16))?;
         apply(out, card)?;
-        queue!(out, Print("  "))?;
-        let used = chat_spans(out, row, card, inner)?;
+        queue!(out, Print(" "))?;
+        // (the knot in hand's row: the selected row, as every list's — `▎` in the padding, its ground to the frame;
+        // what's on the card's ground takes it, a stamp's own fill stays)
+        let hand = hand_at == Some(k);
+        let ground = if hand { sel } else { card };
+        apply(out, Style { fg: ui.accent.fg, ..ground })?;
+        queue!(out, Print(if hand { "▎" } else { " " }))?;
+        let on_sel = |s: &Span| Span {
+            text: s.text.clone(),
+            style: if s.style.bg == card.bg { Style { bg: sel.bg, ..s.style } } else { s.style },
+        };
+        let used = match hand {
+            true => chat_spans(out, &row.iter().map(on_sel).collect::<Vec<_>>(), ground, inner)?,
+            false => chat_spans(out, row, card, inner)?,
+        };
+        apply(out, ground)?;
+        queue!(out, Spaces(inner.saturating_sub(used) + 1))?;
         apply(out, card)?;
-        queue!(out, Spaces(inner.saturating_sub(used) + 2))?;
+        queue!(out, Print(" "))?;
         if let Some(l) = link {
             links.push((y, x0 + 2, x0 + 2 + inner, l.clone()));
         }
     }
-    // Its frame (P3 step 7d): takes no keys — its lines the faint wash always; its name, details and time its top line
-    draw_frame(out, ui, card, rect, &[], &[], &[], false)?;
+    // Its frame (P3 step 7d): takes no keys — its lines the faint wash always; its name, details and time its top line;
+    // the strip's mark under the mouse in words on its bottom line (motion §4)
+    let shown_marks = &marks[shown];
+    let hovered = c.follow.hover.as_deref().and_then(|h| shown_marks.iter().find(|m| m.call == h));
+    let words: Vec<(String, Style)> = hovered.map(|m| (m.said.clone(), dim)).into_iter().collect();
+    draw_frame(out, ui, card, rect, &[], &words, &[], false)?;
     let head = TopLine {
         names: &names,
         details: &details,
@@ -12496,8 +12536,86 @@ fn draw_follow_card(
         keep_right: true,
         ..TopLine::default()
     };
-    top_line(out, frame_line(ui, card), card, (x0, y0, width), ("╭", "╮", "┬"), &[], true, &head)?;
+    let cols = top_line(out, frame_line(ui, card), card, (x0, y0, width), ("╭", "╮", "┬"), &[], true, &head)?;
+    // (each mark's cell, for the mouse, the state and pointing: a mark is its span's last cell)
+    let mut taken = editor.screen.stop_marks.borrow_mut();
+    for (m, &(_, b)) in shown_marks.iter().zip(cols.iter().skip(strip_at)) {
+        taken.push((y0, b - 1, m.call.clone()));
+    }
     Ok(Some(rect))
+}
+
+/// The cells a follow card's strip of marks has on its top line (motion §4), `width` cells across: what the details have
+/// as `top_line` lays them — `╭─ `, the names, ` ── ` before the details, the right end's room and ` ─╮` — less the
+/// details there before it and the blank after them. None under the details' least room (`DETAILS_MIN`): the line shows
+/// none.
+fn strip_room(
+    width: usize,
+    names: &[(String, Style)],
+    details: &[(String, Style)],
+    right: &[(String, Style)],
+) -> usize {
+    let w = |spans: &[(String, Style)]| spans.iter().map(|s| s.0.width()).sum::<usize>();
+    let room = width.saturating_sub(3 + w(names) + 3);
+    let keep_right = if w(right) > 0 { w(right) + 3 } else { 0 };
+    let most = room.saturating_sub(4 + keep_right);
+    if room < 4 + DETAILS_MIN || most < DETAILS_MIN {
+        return 0;
+    }
+    let before = w(details);
+    most.saturating_sub(before + usize::from(before > 0))
+}
+
+/// A turn's marks as the follow card's strip draws them in `room` cells (motion §4): every one, else the newest that fit
+/// after a faint `+N ` saying how many went before — and where the stop in hand is older than those (replay), the marks
+/// up to it and two after it at most, a faint ` +M` saying how many came after: the mark in hand always in sight. None
+/// where no mark would fit. The one in hand on `sel`, the selected row's ground. Its spans, how many lead its marks (the
+/// `+N`), which marks it shows.
+fn strip_spans(
+    marks: &[crate::follow::StripMark],
+    room: usize,
+    st: &TrailStyles,
+    (faint, sel): (Style, Style),
+) -> (Vec<(String, Style)>, usize, std::ops::Range<usize>) {
+    let n = marks.len();
+    let hand = marks.iter().position(|m| m.in_hand);
+    // (`k` marks ending at `e`, `after` of them past the one in hand: `+N ` before them, ` +M` after — fewer show,
+    // fewer after it first)
+    let window = |k: usize, after: usize| {
+        let e = hand.map_or(n, |h| (h + 1 + after).min(n)).max(k);
+        e - k..e
+    };
+    let fits = |r: &std::ops::Range<usize>| {
+        let count = |c: usize, w: usize| if c > 0 { format!("+{c}").width() + w } else { 0 };
+        count(r.start, 1) + r.len() + count(n - r.end, 1) <= room
+    };
+    let shown = match n <= room {
+        true => 0..n,
+        false => (1..n)
+            .rev()
+            .flat_map(|k| [2, 1, 0].map(|a| window(k, a)))
+            .filter(|r| hand.is_none_or(|h| r.contains(&h)))
+            .find(fits)
+            .unwrap_or(0..0),
+    };
+    if shown.is_empty() {
+        return (Vec::new(), 0, 0..0);
+    }
+    let mut out = Vec::new();
+    if shown.start > 0 {
+        out.push((format!("+{} ", shown.start), faint));
+    }
+    let lead = out.len();
+    for m in &marks[shown.clone()] {
+        let (glyph, style) = mark_span(m.mark, m.in_hand, st);
+        // (the one in hand on the selected ground of its row in the card — never an accent fill, a second cursor)
+        let style = if m.in_hand { Style { bg: sel.bg, ..style } } else { style };
+        out.push((glyph.to_string(), style));
+    }
+    if shown.end < n {
+        out.push((format!(" +{}", n - shown.end), faint));
+    }
+    (out, lead, shown)
 }
 
 /// The side panel's row saying a code review is behind it, `w` cells: `review behind  space g back to it` — the
@@ -14165,8 +14283,9 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
     let string = card.patch(t.try_get("string").unwrap_or(dim));
     // The newest tool call is marked while Claude is still at it
     let exploring = c.busy() && c.msgs.last().is_some_and(|m| m.role == Role::Tool);
-    let styles = TrailStyles { faint, dim, string, accent, warn: warn_fg };
-    // A stop's row is its knot (글타래 P6, `knot`), the follow card's stop in hand `●`. No line between them
+    let plus = Style { fg: ui.diff_plus.fg, ..card };
+    let styles = TrailStyles { faint, dim, string, accent, warn: warn_fg, plus };
+    // A stop's row is its knot (글타래 P6, `knot`: its mark, the follow card's stop in hand in the accent). No line between them
     // here: tried in the padding left of the text (2026-10-20), its first cell read as an inner border hugging
     // the panel's edge, the knots perched on it; its second glued the knots to the verbs (`●read`) — the
     // follow card keeps its thread
@@ -14176,7 +14295,7 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
     // (`Laid.lang`)
     let look = hash_of((
         t.id,
-        [card, dim, faint, accent, strong, string, warn_fg],
+        [card, dim, faint, accent, strong, string, warn_fg, plus],
         ui.base.bg,
         ui.tint,
         editor.bleeds(),
@@ -15599,8 +15718,10 @@ struct TrailStyles {
     dim: Style,
     string: Style,
     accent: Style,
-    /// Where a command ran past the sandbox, and its warnings (`chat::Ran`).
+    /// Where a command ran past the sandbox, and its warnings (`chat::Ran`); a failure's mark.
     warn: Style,
+    /// An edit's mark: the change's green.
+    plus: Style,
 }
 
 /// Most rows the chat's plan takes (its title and steps).
@@ -15700,15 +15821,24 @@ fn trail_row(
     trail_row_at(look, ran, knot(look, live, st), &[], w, slim, st).0
 }
 
-/// A stop's knot in a turn (글타래 P6) — the diagrams' marks: `●` the stop in hand (the one the follow card shows),
-/// `▲` a change (in hand too), `◦` every other; the one in hand in the accent, the rest dim.
+/// A stop's knot in a turn (글타래 P6) — its mark (motion §4's one vocabulary, `chat::Mark`), as the follow card's
+/// strip draws it.
 fn knot(look: &crate::chat::Look, in_hand: bool, st: &TrailStyles) -> crate::markdown::Span {
-    let glyph = match (look.changes(), in_hand) {
-        (true, _) => "▲",
-        (false, true) => "●",
-        (false, false) => "◦",
+    let (glyph, style) = mark_span(look.mark(), in_hand, st);
+    crate::markdown::Span { text: glyph.into(), style }
+}
+
+/// A mark as drawn (motion §4): the one in hand (the stop the follow card shows) in the accent, bold; else an edit
+/// in the change's green, a failure in warning, the rest dim.
+fn mark_span(mark: crate::chat::Mark, in_hand: bool, st: &TrailStyles) -> (&'static str, Style) {
+    use crate::chat::Mark;
+    let style = match mark {
+        _ if in_hand => Style { bold: true, ..st.accent },
+        Mark::Edit => st.plus,
+        Mark::Failed => st.warn,
+        Mark::Read | Mark::Lookup | Mark::Run => st.dim,
     };
-    crate::markdown::Span { text: glyph.into(), style: if in_hand { st.accent } else { st.dim } }
+    (mark.glyph(), style)
 }
 
 /// How lit a knot row's stamps are: whole on the row in hand, else their press drying (§5).
@@ -15867,7 +15997,6 @@ fn follow_thread(
     links: bool,
 ) -> (Vec<CardRow>, Option<usize>, Vec<bool>) {
     use crate::chat::Role;
-    use crate::markdown::Span;
     const ENOUGH: usize = 8;
     let gaze = c.follow.shown();
     let hand = c.in_hand();
@@ -15878,13 +16007,11 @@ fn follow_thread(
     if let (Some(g), Some(why)) = (gaze, why)
         && (g.call.is_empty() || at.is_none())
     {
-        // (a failure speaks like the test pane's: `▲` in the error colour)
-        let (look, glyph) = match g.look.verb {
-            "failed" => (
-                crate::chat::Look { verb: "test failed", ..g.look.clone() },
-                Span { text: "▲".into(), style: Style { fg: ui.error.fg, ..card } },
-            ),
-            _ => (g.look.clone(), knot(&g.look, true, st)),
+        // (a failure: `▲`, its mark in hand)
+        let glyph = knot(&g.look, true, st);
+        let look = match g.look.verb {
+            "failed" => crate::chat::Look { verb: "test failed", ..g.look.clone() },
+            _ => g.look.clone(),
         };
         let (row, ..) = trail_row_at(&look, None, glyph, &[], inner, false, st);
         let mut rows = vec![(row, g.look.link.clone().filter(|_| links))];
@@ -15978,7 +16105,8 @@ fn follow_thread(
 /// replay: the knot in hand with the words before it (its why) and the start of what came after. `knots`: which
 /// rows are a stop's. Cut on top: a
 /// row of its own says so (`…`) — put in front of a row already as wide as the card, it pushed that row's end out
-/// (`in the same cal`); one row only: `…` in front of its end, the row cut on its left so the two fit.
+/// (`in the same cal`); one row only: `…` in front of its end, the row cut on its left so the two fit. And where the
+/// knot in hand is among them (its row the card's selected row — motion §4).
 #[allow(clippy::too_many_arguments)]
 fn turn_window(
     rows: Vec<CardRow>,
@@ -15988,16 +16116,18 @@ fn turn_window(
     replaying: bool,
     inner: usize,
     faint: Style,
-) -> Vec<CardRow> {
+) -> (Vec<CardRow>, Option<usize>) {
     use crate::markdown::Span;
     let n = rows.len();
     let cut = || (vec![Span { text: "…".into(), style: faint }], None);
     let bare = |i: usize| blank(&rows[i].0);
+    // (the knot in hand's place in what shows: rows from `start` on shown from `at`)
+    let placed = |start: usize, at: usize| hand.filter(|&h| h >= start).map(|h| h - start + at);
     if let Some(h) = hand.filter(|_| replaying && max >= 3) {
         let end = (h + 1 + (max - 1) / 2).min(n);
         let from = end.saturating_sub(max);
         if from == 0 {
-            return rows[..end].to_vec();
+            return (rows[..end].to_vec(), Some(h));
         }
         let mut from = (end - (max - 1)).min(h);
         // (as the live log's cut: a paragraph's last row alone says little — from the next one, or the knot;
@@ -16011,7 +16141,7 @@ fn turn_window(
         }
         let mut out = vec![cut()];
         out.extend(rows[from..end].iter().cloned());
-        return out;
+        return (out, placed(from, 1));
     }
     let newest = |m: usize| {
         let from = log_cut_by(n, bare, m);
@@ -16024,26 +16154,26 @@ fn turn_window(
             let from = log_cut_by(n, bare, max - 2).max(h + 1);
             let mut out = vec![rows[h].clone(), cut()];
             out.extend(rows[from..].iter().cloned());
-            out
+            (out, Some(0))
         }
         Some(h) if h < from => {
             let mut out = vec![rows[h].clone()];
             out.extend(rows[n.saturating_sub(max - 1).max(h + 1)..].iter().cloned());
-            out
+            (out, Some(0))
         }
         _ if from > 0 && max > 1 => {
             let mut out = vec![cut()];
             out.extend(rows[from..].iter().cloned());
-            out
+            (out, placed(from, 1))
         }
         _ if from > 0 => {
             let mut row = rows[from].clone();
             let mut kept = spans_left(&row.0, inner.saturating_sub(2));
             kept.insert(0, Span { text: "… ".into(), style: faint });
             row.0 = kept;
-            vec![row]
+            (vec![row], hand.filter(|&h| h == from).map(|_| 0))
         }
-        _ => rows,
+        _ => (rows, hand),
     }
 }
 
@@ -18131,6 +18261,7 @@ mod tests {
             string: Style::default(),
             accent: Style::default(),
             warn: Style::default(),
+            plus: Style::default(),
         };
         let look = |range: &str| crate::chat::Look {
             verb: "run",
@@ -18163,6 +18294,7 @@ mod tests {
             string: Style::default(),
             accent: Style::default(),
             warn,
+            plus: Style::default(),
         };
         let look = crate::chat::Look {
             verb: "run",
@@ -20577,44 +20709,61 @@ mod tests {
         vt
     }
 
-    /// 글타래 P6: in the chat a turn's stops are knots, each its row's own first cell — `◦` a stop, `▲` a change
-    /// with the key that decided it, `●` the stop in hand: none at rest, the one replay shows, the newest while it
-    /// works. No line between them (the follow card's thread is its own): the words at the question's column.
+    /// 글타래 P6, on motion §4's one vocabulary: in the chat a turn's stops are knots, each its row's own first cell —
+    /// its mark: `◦` a read, `●` a change with the key that decided it, `▸` a run; the stop in hand by the accent, bold,
+    /// never another glyph: none at rest, the one replay shows, the newest while it works. No line between them (the
+    /// follow card's thread is its own): the words at the question's column.
     #[test]
     fn a_turns_stops_are_knots_in_the_chat() {
         let mut ed = threaded_turn();
-        let edit = format!("  ▲ edit   src/main.rs{}▐y▌", " ".repeat(20));
-        let turn = |hand: [&str; 2]| {
-            vec![
-                "  ▎ why does insert clone the name?".to_string(),
-                String::new(),
-                "  Opening words.".into(),
-                String::new(),
-                format!("  {} read   src/main.rs", hand[0]),
-                String::new(),
-                "  Between the stops.".into(),
-                String::new(),
-                edit.clone(),
-                format!("  {} run    cargo test", hand[1]),
-                String::new(),
-                "  Done now.".into(),
-                format!("  {}5.2s", " ".repeat(39)),
-            ]
-        };
-        assert_eq!(chat_rows(&mut ed, 120, "5.2s"), turn(["◦", "◦"]), "at rest: no stop in hand");
-        // (replay at the read: its knot in hand)
+        let edit = format!("  ● edit   src/main.rs{}▐y▌", " ".repeat(20));
+        let turn = vec![
+            "  ▎ why does insert clone the name?".to_string(),
+            String::new(),
+            "  Opening words.".into(),
+            String::new(),
+            "  ◦ read   src/main.rs".into(),
+            String::new(),
+            "  Between the stops.".into(),
+            String::new(),
+            edit.clone(),
+            "  ▸ run    cargo test".into(),
+            String::new(),
+            "  Done now.".into(),
+            format!("  {}5.2s", " ".repeat(39)),
+        ];
+        assert_eq!(chat_rows(&mut ed, 120, "5.2s"), turn, "at rest");
+        assert_eq!(knots_bold(&mut ed, 120), [false, false, false], "at rest: no stop in hand");
+        // (replay at the read: its knot in hand — the same mark)
         let c = ed.session.chat.as_mut().unwrap();
         let look = c.msgs[2].look.clone().unwrap();
         c.follow.replaying =
             Some(crate::follow::Gaze { call: "r1".into(), ..crate::follow::Gaze::new(look, None, None) });
-        assert_eq!(chat_rows(&mut ed, 120, "5.2s"), turn(["●", "◦"]), "the stop replay shows");
+        assert_eq!(chat_rows(&mut ed, 120, "5.2s"), turn, "the stop replay shows");
+        assert_eq!(knots_bold(&mut ed, 120), [true, false, false], "the stop replay shows");
         // (working, its newest call is where it is)
         let c = ed.session.chat.as_mut().unwrap();
         c.follow.replaying = None;
         c.msgs.truncate(6);
         c.state = crate::chat::State::Thinking;
         let rows = chat_rows(&mut ed, 120, "cargo test");
-        assert_eq!(rows.last().unwrap(), "  ● run    cargo test", "{rows:#?}");
+        assert_eq!(rows.last().unwrap(), "  ▸ run    cargo test", "{rows:#?}");
+        assert_eq!(knots_bold(&mut ed, 120), [false, false, true], "the newest while it works");
+    }
+
+    /// The chat's knots top to bottom (a row's first cell past its padding, a mark): whether each is bold — the one in
+    /// hand.
+    fn knots_bold(ed: &mut Editor, w: u16) -> Vec<bool> {
+        let vt = screen_at(ed, w);
+        let x =
+            (ed.screen.chat_x.expect("the chat is open") + crate::chrome::GAP + crate::chrome::PAD) as u16;
+        (0..40)
+            .filter_map(|y| {
+                let mark = |c: &&vt100::Cell| !c.contents().is_empty() && "◦•●▸▲".contains(c.contents());
+                vt.screen().cell(y, x).filter(mark)
+            })
+            .map(|c| c.bold())
+            .collect()
     }
 
     /// §5: a knot row's stamp your key made dries in the chat, step by step — its rows laid out again each step (the
@@ -20808,7 +20957,7 @@ mod tests {
     }
 
     /// 글타래 P6: the follow card shows the turn as its knots and words — its title says what Claude is at, the stop
-    /// in hand is its `●`, the words at the card's full width with no line beside them; a long run of words keeps
+    /// in hand its mark in the accent (motion §4), the words at the card's full width with no line beside them; a long run of words keeps
     /// that knot pinned on top; replay shows the stop with the words before it; a walk-through's stop is its knot
     /// and its words.
     #[test]
@@ -20826,7 +20975,7 @@ mod tests {
         assert!(c.compact(), "minimized: follow's card");
         let card = follow_card(&mut ed, 160);
         assert!(card[0].contains(" writing ") && card[0].ends_with('s'), "what it's at, how long: {card:#?}");
-        let edit = format!("▲ edit   src/main.rs{}▐y▌", " ".repeat(30));
+        let edit = format!("● edit   src/main.rs{}▐y▌", " ".repeat(30));
         assert_eq!(
             card[1..],
             [
@@ -20835,7 +20984,7 @@ mod tests {
                 "◦ read   src/main.rs",
                 "Between the stops.",
                 &edit,
-                "● run    cargo test",
+                "▸ run    cargo test",
                 "Done now.",
             ],
             "the question, then the turn"
@@ -20858,7 +21007,7 @@ mod tests {
         let card = follow_card(&mut ed, 160);
         assert_eq!(
             card[2..],
-            ["● run    cargo test", "…", "Line 10.", "", "Line 11.", "", "Line 12."],
+            ["▸ run    cargo test", "…", "Line 10.", "", "Line 11.", "", "Line 12."],
             "{card:#?}"
         );
         // Replay at the read, the turn over: the stop with the words before it and after
@@ -20873,10 +21022,10 @@ mod tests {
         let card = follow_card(&mut ed, 160);
         assert!(card[0].ends_with(" 1/3"), "which stop: {card:#?}");
         // (the turn over, the panel's back: the card beside it, no question)
-        let edit = format!("▲ edit   src/main.rs{}▐y▌", " ".repeat(11));
+        let edit = format!("● edit   src/main.rs{}▐y▌", " ".repeat(11));
         assert_eq!(
             card[1..],
-            ["Opening words.", "● read   src/main.rs", "Between the stops.", &edit, "◦ run    cargo test"],
+            ["Opening words.", "◦ read   src/main.rs", "Between the stops.", &edit, "▸ run    cargo test"],
             "{card:#?}"
         );
         // Replay at the run, the paragraph before it cut: not its last row alone — from the knot after it
@@ -20892,7 +21041,7 @@ mod tests {
         let card = follow_card(&mut ed, 160);
         assert_eq!(
             card[1..],
-            ["…", &edit, "● run    cargo test", "Line 1.", "", "Line 2."],
+            ["…", &edit, "▸ run    cargo test", "Line 1.", "", "Line 2."],
             "no lone fragment on top: {card:#?}"
         );
         // A walk-through's stop: no call's — its knot, its words
@@ -20903,7 +21052,7 @@ mod tests {
             ..crate::follow::Gaze::new(look, None, None)
         });
         let card = follow_card(&mut ed, 160);
-        assert_eq!(card[1..], ["● read   src/main.rs", "Where the name is cloned."], "{card:#?}");
+        assert_eq!(card[1..], ["◦ read   src/main.rs", "Where the name is cloned."], "{card:#?}");
         // A test's failure the editor went to while Claude still works (`follow::point`, no call's — its run the
         // newest call): the failure's knot and why, not the turn
         let c = ed.session.chat.as_mut().unwrap();
@@ -20925,6 +21074,365 @@ mod tests {
         let rows: Vec<String> =
             card[2..].iter().map(|r| r.split_whitespace().collect::<Vec<_>>().join(" ")).collect();
         assert_eq!(rows, ["▲ test failed tests::adds", "left: 4, right: 5"], "{card:#?}");
+    }
+
+    /// The marks of `STRIP_STOPS`, oldest first.
+    const STRIP_MARKS: &str = "◦•◦••◦●▸◦•●•▲◦●▸◦•●◦";
+
+    /// A turn of twenty stops (verb, what, its row's suffix): reads, lookups, edits, runs — the 13th a run that failed.
+    const STRIP_STOPS: [(&str, &str, &str); 20] = [
+        ("read", "src/main.rs", "L1–20"),
+        ("search", "Thread", "1 hit in 1 file"),
+        ("read", "src/main.rs", "L20–40"),
+        ("references", "Thread", "4 references in 1 file"),
+        ("definition", "length", ""),
+        ("read", "src/main.rs", "L7–14"),
+        ("edit", "src/main.rs", ""),
+        ("run", "cargo build -q", "ok"),
+        ("read", "src/main.rs", "L1–12"),
+        ("search", "knots", ""),
+        ("edit", "src/main.rs", ""),
+        ("symbols", "src/main.rs", "3 symbols"),
+        ("run", "cargo test -q", "exit 101"),
+        ("read", "src/main.rs", "L14–30"),
+        ("edit", "src/main.rs", ""),
+        ("run", "cargo test -q", "ok"),
+        ("read", "src/main.rs", "L1–40"),
+        ("search", "clone", ""),
+        ("edit", "src/main.rs", ""),
+        ("read", "src/main.rs", "L7–14"),
+    ];
+
+    /// `threaded_turn` at work, follow on, the chat minimized — its turn's stops in replay the first `n` of
+    /// `STRIP_STOPS` (calls `s0`, `s1`, …), the newest where it is.
+    fn strip_turn(n: usize) -> Editor {
+        let mut ed = threaded_turn();
+        let c = ed.session.chat.as_mut().unwrap();
+        (c.unfolded, c.follow.on, c.state) = (false, true, crate::chat::State::Thinking);
+        c.follow.replay.begin();
+        for (i, (verb, what, range)) in STRIP_STOPS.into_iter().take(n).enumerate() {
+            let look = crate::chat::Look {
+                verb,
+                what: what.into(),
+                pattern: false,
+                range: range.into(),
+                link: None,
+            };
+            c.follow.replay.add(crate::replay::Stop {
+                call: format!("s{i}"),
+                look: look.clone(),
+                path: None,
+                lines: None,
+                hunks: Vec::new(),
+                why: String::new(),
+                page: None,
+            });
+            c.follow.gaze = Some(crate::follow::Gaze {
+                call: format!("s{i}"),
+                ..crate::follow::Gaze::new(look, None, None)
+            });
+        }
+        ed
+    }
+
+    /// The follow card's strip as its top line says it: how many went before (`+N`), the marks shown, how many came
+    /// after (` +M`) — and what's right after it.
+    fn strip_of(top: &str) -> (usize, String, usize, String) {
+        let details = top.split_once(" ── ").map_or("", |p| p.1);
+        let details = details.strip_prefix("paused ").unwrap_or(details);
+        let count = |s: &str| -> (usize, String) {
+            let digits: String = s.chars().take_while(char::is_ascii_digit).collect();
+            (digits.parse().expect("a count"), s[digits.len()..].to_string())
+        };
+        let (before, rest) = match details.strip_prefix('+') {
+            Some(r) => count(r),
+            None => (0, format!(" {details}")),
+        };
+        let rest = rest.strip_prefix(' ').unwrap_or(&rest);
+        let marks: String = rest.chars().take_while(|c| "◦•●▸▲".contains(*c)).collect();
+        let rest = &rest[marks.len()..];
+        let (after, rest) = match rest.strip_prefix(" +") {
+            Some(r) => count(r),
+            None => (0, rest.to_string()),
+        };
+        (before, marks, after, rest)
+    }
+
+    /// Motion §4: the turn's stops as a strip of marks on the follow card's top line, between its name and the turn's
+    /// word — one a stop, by its kind (`◦` read · `•` a lookup · `●` an edit · `▸` a run · `▲` the run that failed),
+    /// the newest at its right end; past its room folded at the front to `+N`, the first piece the line gives up —
+    /// narrower, fewer marks, the narrowest card none while the turn's word and time take its line (in replay, its
+    /// stop's `13/20` leaves it room). The one in hand bold in the accent, an edit in the change's green, the failure
+    /// in warning, the rest dim.
+    #[test]
+    fn the_follow_cards_strip_marks_the_turns_stops() {
+        let all: Vec<char> = STRIP_MARKS.chars().collect();
+        let told = |ed: &mut Editor, w: u16, what: &str| {
+            let top = follow_card(ed, w)[0].clone();
+            let (hidden, marks, later, rest) = strip_of(&top);
+            let n = marks.chars().count();
+            assert_eq!(hidden + n + later, 20, "{what}: every stop told — {top:?}");
+            assert!(n >= 1, "{what}: marks shown: {top:?}");
+            let theirs: String = all[hidden..hidden + n].iter().collect();
+            assert_eq!(marks, theirs, "{what}: in order: {top:?}");
+            assert!(rest.starts_with(" ─"), "{what}: the line after it: {top:?}");
+            assert_eq!(ed.screen.stop_marks.borrow().len(), n, "{what}: each mark's spot recorded");
+            (hidden, n, later, top)
+        };
+        let (_, wide, later, top) = told(&mut strip_turn(20), 160, "wide");
+        assert!(top.contains("thinking") && later == 0, "the word whole, the newest by it: {top:?}");
+        let (hidden, narrower, later, top) = told(&mut strip_turn(20), 140, "narrower");
+        assert!(hidden > 0 && later == 0, "folded at its front: {top:?}");
+        assert!(top.contains(&format!(" ── +{hidden} ")), "its count first: {top:?}");
+        assert!(wide > narrower, "narrower, fewer: {wide} {narrower}");
+        // The narrowest card at work: no strip, the word whole
+        let mut ed = strip_turn(20);
+        let top = follow_card(&mut ed, 100)[0].clone();
+        assert_eq!(strip_of(&top).1, "", "{top:?}");
+        assert!(top.contains("thinking") && ed.screen.stop_marks.borrow().is_empty(), "{top:?}");
+        // Replaying a stop older than the newest it shows: the strip up to it and two after, its mark in sight — a
+        // count at both ends
+        let mut ed = strip_turn(20);
+        assert!(crate::follow::replay_stop(&mut ed, "s3"));
+        let (hidden, n, later, top) = told(&mut ed, 110, "replaying");
+        assert!(later > 0 && (hidden..hidden + n).contains(&3) && hidden + n < 20, "{top:?}");
+        // A turn of three stops: all of them, no count
+        let mut ed = strip_turn(3);
+        let (hidden, marks, ..) = strip_of(&follow_card(&mut ed, 160)[0]);
+        assert_eq!((hidden, marks.as_str()), (0, "◦•◦"));
+        // Its looks, cell by cell: the newest (in hand) bold in the accent, the edit green, the failure in warning
+        // (crossterm drops every color under NO_COLOR, which tarae's test runner sets)
+        crossterm::style::force_color_output(true);
+        let mut ed = strip_turn(20);
+        let vt = screen_at(&mut ed, 160);
+        let marks = ed.screen.stop_marks.borrow().clone();
+        let cell = |call: &str| {
+            let &(y, x, _) = marks.iter().find(|m| m.2 == call).expect("its mark drawn");
+            vt.screen().cell(y as u16, x as u16).unwrap().clone()
+        };
+        let (newest, edit, failed, read) = (cell("s19"), cell("s18"), cell("s12"), cell("s16"));
+        assert_eq!(
+            [newest.contents(), edit.contents(), failed.contents(), read.contents()],
+            ["◦", "●", "▲", "◦"]
+        );
+        assert!(newest.bold() && !edit.bold() && !failed.bold() && !read.bold(), "only the one in hand bold");
+        let fg = |c: &vt100::Cell| format!("{:?}", c.fgcolor());
+        let colours = [fg(&newest), fg(&edit), fg(&failed), fg(&read)];
+        for (i, a) in colours.iter().enumerate() {
+            assert!(!colours[i + 1..].contains(a), "accent, green, warning, dim — four inks: {colours:?}");
+        }
+    }
+
+    /// Motion §4: a link to a mark (`stop:<call>`, followed as any element's id — `ui_jump`) is its stop's replay; one
+    /// no longer kept is said, nothing moved. A pointed mark tells Claude its stop as its row says it.
+    #[test]
+    fn a_link_to_a_mark_is_its_replay_and_pointing_says_its_stop() {
+        let mut ed = strip_turn(20);
+        screen_at(&mut ed, 160);
+        ed.ui_jump("stop:s12");
+        let c = ed.session.chat.as_ref().unwrap();
+        assert_eq!((c.follow.replay.at.map(|a| a.1), c.in_hand()), (Some(12), Some("s12")), "its replay");
+        ed.ui_jump("stop:gone");
+        let said = ed.messages.last().map(|m| m.2.clone()).unwrap_or_default();
+        assert!(said.contains("stop:gone"), "said: {said:?}");
+        assert_eq!(
+            ed.session.chat.as_ref().unwrap().follow.replay.at.map(|a| a.1),
+            Some(12),
+            "nothing moved"
+        );
+        let pointed = crate::uistate::claude::pointed(&ed, "stop:s12");
+        assert!(
+            pointed.starts_with("<pointed id=\"stop:s12\">")
+                && pointed
+                    .contains("\"run cargo test -q · exit 101\" — a mark of your stops on the follow card"),
+            "{pointed}"
+        );
+    }
+
+    /// Motion §4: the mouse still over the strip while a new stop shifts it (folded at its front, the marks move left)
+    /// — the frame names the mark under it now, never the one that was; the terminal losing focus lets the words go.
+    #[test]
+    fn the_strips_words_follow_what_is_under_a_still_mouse() {
+        use crate::event::Event;
+        let mut ed = strip_turn(20);
+        let bottom = |ed: &mut Editor| -> String {
+            let vt = screen_at(ed, 140);
+            let (x, y, w, h) = ed.screen.thought_card.get().expect("the card");
+            vt.screen().rows(x as u16, w as u16).nth(y + h - 1).unwrap_or_default()
+        };
+        bottom(&mut ed);
+        let &(y, x, _) =
+            ed.screen.stop_marks.borrow().iter().find(|m| m.2 == "s12").expect("folded, s12 shown");
+        ed.handle_event(Event::Hover(x as u16, y as u16));
+        assert!(bottom(&mut ed).contains("run cargo test -q · exit 101"));
+        // A 21st stop, a search: the strip one mark further left — under the mouse now the read after the run
+        let c = ed.session.chat.as_mut().unwrap();
+        let look = crate::chat::Look {
+            verb: "search",
+            what: "strand".into(),
+            pattern: true,
+            range: String::new(),
+            link: None,
+        };
+        c.follow.replay.add(crate::replay::Stop {
+            call: "s20".into(),
+            look: look.clone(),
+            path: None,
+            lines: None,
+            hunks: Vec::new(),
+            why: String::new(),
+            page: None,
+        });
+        c.follow.gaze =
+            Some(crate::follow::Gaze { call: "s20".into(), ..crate::follow::Gaze::new(look, None, None) });
+        let words = bottom(&mut ed);
+        let under = ed.screen.stop_marks.borrow().iter().find(|m| (m.0, m.1) == (y, x)).map(|m| m.2.clone());
+        assert_eq!(under.as_deref(), Some("s13"), "the strip moved under the mouse");
+        assert_eq!(ed.session.chat.as_ref().unwrap().follow.hover.as_deref(), Some("s13"));
+        assert!(words.contains("read src/main.rs · L14–30") && !words.contains("exit 101"), "{words:?}");
+        // The terminal loses focus: the mouse is somewhere else
+        ed.handle_event(Event::Focus(false));
+        assert_eq!(ed.session.chat.as_ref().unwrap().follow.hover, None);
+        assert!(!bottom(&mut ed).contains("L14–30"), "no words left on the card");
+    }
+
+    /// Motion §4, the stop in hand as a list's row in hand (the user, 2026-10-25, on §4's shots): its row in the
+    /// follow card is the card's selected row — the accent `▎` in its padding, `ui.menu.selected` from there to the
+    /// frame, its mark bold in the accent — and its mark in the strip sits on that same ground, bold in the accent; never
+    /// an accent fill. The others on the card's ground. In replay and while it works alike.
+    #[test]
+    fn the_stop_in_hand_is_the_cards_selected_row() {
+        // (crossterm drops every color under NO_COLOR, which tarae's test runner sets)
+        crossterm::style::force_color_output(true);
+        let mut ed = threaded_turn();
+        let c = ed.session.chat.as_mut().unwrap();
+        (c.unfolded, c.follow.on, c.state) = (false, true, crate::chat::State::Thinking);
+        c.msgs.truncate(6);
+        c.follow.replay.begin();
+        for m in &c.msgs[2..6] {
+            let Some(look) = m.look.clone() else { continue };
+            c.follow.replay.add(crate::replay::Stop {
+                call: m.call.clone(),
+                look,
+                path: None,
+                lines: None,
+                hunks: Vec::new(),
+                why: String::new(),
+                page: None,
+            });
+        }
+        let check = |ed: &mut Editor, hand: &str, row: &str, other: &str, what: &str| {
+            let vt = screen_at(ed, 160);
+            let s = vt.screen();
+            let (x0, y0, w, h) = ed.screen.thought_card.get().expect("the card");
+            let (x0, w) = (x0 as u16, w as u16);
+            let y_of = |text: &str| {
+                (y0..y0 + h).map(|y| y as u16).find(|&y| s.contents_between(y, x0, y, x0 + w).contains(text))
+            };
+            let cell = |y: u16, x: u16| s.cell(y, x).unwrap().clone();
+            let (y, y_other) = (y_of(row).expect(row), y_of(other).expect(other));
+            let ground = cell(y_other, x0 + 3).bgcolor();
+            let (bar, knot, text, end) =
+                (cell(y, x0 + 1), cell(y, x0 + 2), cell(y, x0 + 6), cell(y, x0 + w - 2));
+            assert_eq!(bar.contents(), "▎", "{what}: the bar in its padding");
+            let sel = text.bgcolor();
+            assert!(sel != ground, "{what}: its row on the selected ground");
+            assert!(
+                [bar.bgcolor(), knot.bgcolor(), end.bgcolor()].iter().all(|b| *b == sel),
+                "{what}: to the frame"
+            );
+            assert!(cell(y, x0).bgcolor() != sel, "{what}: the frame's cell not");
+            assert!(
+                bar.fgcolor() == knot.fgcolor() && knot.bold() && bar.fgcolor() != sel,
+                "{what}: the accent, no fill"
+            );
+            assert_eq!(cell(y_other, x0 + 1).contents(), " ", "{what}: the others no bar");
+            // The strip: the one in hand on the same ground, bold in the accent; the others on the card's
+            let marks = ed.screen.stop_marks.borrow().clone();
+            assert_eq!(marks.len(), 3, "{what}: the strip");
+            for &(my, mx, ref call) in &marks {
+                let m = cell(my as u16, mx as u16);
+                match call == hand {
+                    true => assert!(
+                        m.bgcolor() == sel && m.bold() && m.fgcolor() == bar.fgcolor(),
+                        "{what}: {call} in hand on the selected ground"
+                    ),
+                    false => assert!(m.bgcolor() != sel && !m.bold(), "{what}: {call} on the card's ground"),
+                }
+            }
+        };
+        // While it works: the newest
+        check(&mut ed, "x1", "run    cargo test", "read   src/main.rs", "live");
+        // In replay: the read a press or `[r` lit
+        assert!(crate::follow::replay_stop(&mut ed, "r1"));
+        check(&mut ed, "r1", "read   src/main.rs", "run    cargo test", "replay");
+    }
+
+    /// Motion §4: each mark of the strip is a door — the state lists it (`stop:<call>`, what it was, the one in hand),
+    /// never at Claude's level; pointing labels it, no label over another's; the mouse over it names it on the card's
+    /// bottom line (the same hover again changes nothing; away, gone); a press is that stop's replay, its mark the one in
+    /// hand, and `]r` from there lights the next — the keys and the strip agree.
+    #[test]
+    fn a_mark_of_the_strip_is_named_listed_and_pressed_into_its_replay() {
+        use crate::event::{Event, Mouse, MouseKind};
+        let mut ed = strip_turn(20);
+        ed.session.at = At::Code;
+        screen_at(&mut ed, 160);
+        let marks = ed.screen.stop_marks.borrow().clone();
+        let calls: Vec<String> = marks.iter().map(|m| m.2.clone()).collect();
+        // The state: the follow card's marks, in order
+        let in_hand = |ed: &Editor| -> Vec<String> {
+            let p = ed.ui_state().panels;
+            let rows = p.lists.iter().find(|l| l.0 == "follow").map(|l| l.1.clone()).unwrap_or_default();
+            rows.iter().filter(|r| r.selected).map(|r| r.id.clone()).collect()
+        };
+        let p = ed.ui_state().panels;
+        let rows = &p.lists.iter().find(|l| l.0 == "follow").expect("the strip listed").1;
+        let ids: Vec<String> = calls.iter().map(|c| format!("stop:{c}")).collect();
+        assert_eq!(rows.iter().map(|r| r.id.clone()).collect::<Vec<_>>(), ids);
+        let failed = rows.iter().find(|r| r.id == "stop:s12").expect("the failed run's mark");
+        assert_eq!(failed.label, "run cargo test -q · exit 101");
+        assert_eq!(in_hand(&ed), ["stop:s19"], "the newest in hand");
+        assert!(ed.ui_state_claude().panels.lists.is_empty(), "not at Claude's level");
+        // Pointing: a label a mark, above and below the line by turns — two letters each, never over each other
+        let labels: Vec<(usize, usize)> =
+            ed.point_targets().into_iter().filter(|t| t.id.starts_with("stop:")).map(|t| t.at).collect();
+        assert_eq!(labels.len(), marks.len());
+        for (i, a) in labels.iter().enumerate() {
+            for b in &labels[i + 1..] {
+                assert!(a.1 != b.1 || a.0.abs_diff(b.0) >= 2, "labels over each other: {labels:?}");
+            }
+        }
+        // The mouse over the failed run's mark: its words on the card's bottom line
+        let bottom = |ed: &mut Editor| -> String {
+            let vt = screen_at(ed, 160);
+            let (x, y, w, h) = ed.screen.thought_card.get().expect("the card");
+            vt.screen().rows(x as u16, w as u16).nth(y + h - 1).unwrap_or_default()
+        };
+        let &(y, x, _) = marks.iter().find(|m| m.2 == "s12").unwrap();
+        ed.handle_event(Event::Hover(x as u16, y as u16));
+        assert!(!ed.unchanged, "a frame: the card says it");
+        assert!(bottom(&mut ed).contains("run cargo test -q · exit 101"), "{:?}", bottom(&mut ed));
+        ed.handle_event(Event::Hover(x as u16, y as u16));
+        assert!(ed.unchanged, "the same mark again: no frame");
+        ed.handle_event(Event::Hover(0, 0));
+        assert!(!ed.unchanged && !bottom(&mut ed).contains("exit 101"), "away: gone");
+        // A press: that stop's replay, its mark in hand
+        screen_at(&mut ed, 160);
+        let at =
+            |ed: &Editor, call: &str| ed.screen.stop_marks.borrow().iter().find(|m| m.2 == call).cloned();
+        let (y, x, _) = at(&ed, "s12").unwrap();
+        ed.handle_mouse(Mouse { kind: MouseKind::Down, x: x as u16, y: y as u16, alt: false, ctrl: false });
+        let c = ed.session.chat.as_ref().unwrap();
+        assert_eq!((c.follow.replay.at.map(|a| a.1), c.in_hand()), (Some(12), Some("s12")), "its replay");
+        screen_at(&mut ed, 160);
+        assert_eq!(in_hand(&ed), ["stop:s12"], "lit on the strip");
+        // `]r` from there: the next, lit
+        for k in ["]", "r"] {
+            ed.handle_key(k.parse().unwrap());
+        }
+        screen_at(&mut ed, 160);
+        assert_eq!(in_hand(&ed), ["stop:s13"], "`]r` lights the mark it lands on");
     }
 
     /// The code's cursor under the follow card in replay (`[r`) is hidden — never drawn inside the card — and

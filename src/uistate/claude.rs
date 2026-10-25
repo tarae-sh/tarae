@@ -371,7 +371,14 @@ pub fn pointed(ed: &Editor, id: &str) -> String {
         let front = if s.front.as_deref() == Some(id) { ", in front" } else { "" };
         format!("{id} — the bottom slot's panel{front} {tab}").trim_end().to_string()
     });
-    let body = own.or(row).or(slot).unwrap_or_else(|| ed.ui_gone_said(id));
+    // (a mark of the follow card's strip: Claude's own stop, said as its trail row says it — the state's lists are the
+    // person's)
+    let stop = id.strip_prefix("stop:").and_then(|call| {
+        let c = ed.session.chat.as_ref()?;
+        let m = crate::follow::strip(c).into_iter().find(|m| m.call == call)?;
+        Some(format!("{id} · {:?} — a mark of your stops on the follow card", m.said))
+    });
+    let body = own.or(row).or(slot).or(stop).unwrap_or_else(|| ed.ui_gone_said(id));
     format!("<pointed id=\"{id}\">{body}</pointed>")
 }
 
@@ -535,6 +542,7 @@ impl Editor {
                 }
                 here
             }
+            _ if id.starts_with("stop:") => crate::follow::replay_stop(self, &id["stop:".len()..]),
             Some(("note", n)) => {
                 let Some(note) = self.session.notes.list.iter().find(|x| x.id == n) else {
                     return self.set_status(self.ui_gone_said(id));

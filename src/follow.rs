@@ -91,6 +91,9 @@ pub struct Follow {
     /// This turn's and the last few turns' stops (`]r`/`[r`) · the one showing while you step through them.
     pub replay: crate::replay::Replay,
     pub replaying: Option<Gaze>,
+    /// The call whose mark on the follow card's strip the mouse is over (motion §4, `strip_hovered`): its words on
+    /// the card's bottom line.
+    pub hover: Option<String>,
     /// Where replay put the cursor — you moving away ends its showing.
     replay_placed: Option<(DocId, usize, usize)>,
     /// The stop showing (`replaying`) was taken in a pane follow doesn't lead (`aside`): Claude moving on there leaves
@@ -1530,6 +1533,74 @@ pub fn replay_step(ed: &mut Editor, forward: bool) {
         }
         None => ed.set_status("that was the first stop kept"),
     }
+}
+
+/// One mark of the follow card's strip (motion §4): its stop's call, its mark, its words (a hover's), whether it's the
+/// stop in hand.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StripMark {
+    pub call: String,
+    pub mark: crate::chat::Mark,
+    pub said: String,
+    pub in_hand: bool,
+}
+
+/// The turn's stops as the follow card's strip says them, oldest first: the turn of the stop replay shows, else the
+/// latest — each a call's (a failure the editor went to is no call's: its run's mark says it) but a note's.
+pub fn strip(c: &crate::chat::Chat) -> Vec<StripMark> {
+    let replay = &c.follow.replay;
+    let turn = match replay.at {
+        Some((t, _)) => replay.turns.get(t),
+        None => replay.turns.back(),
+    };
+    let hand = c.in_hand();
+    turn.into_iter()
+        .flat_map(|t| &t.stops)
+        .filter(|s| !s.call.is_empty() && s.look.marked())
+        .map(|s| StripMark {
+            call: s.call.clone(),
+            mark: s.look.mark(),
+            said: s.look.said(),
+            in_hand: hand == Some(s.call.as_str()),
+        })
+        .collect()
+}
+
+/// The call whose mark on the follow card's strip is at (`x`, `y`) on the frame last drawn.
+pub fn strip_under(ed: &Editor, x: usize, y: usize) -> Option<String> {
+    ed.screen.stop_marks.borrow().iter().find(|m| m.0 == y && m.1 == x).map(|m| m.2.clone())
+}
+
+/// The mouse at (`x`, `y`): over a mark of the follow card's strip, the card's bottom line says it. Whether that changed.
+pub fn strip_hovered(ed: &mut Editor, x: usize, y: usize) -> bool {
+    let over = strip_under(ed, x, y);
+    strip_hovered_to(ed, over)
+}
+
+/// A frame drawn while the mouse is over a mark of the strip (`term::render`): still under it? A new stop shifts the
+/// strip under a mouse that didn't move — then the one there now is named. Whether it changed (the frame drawn again).
+pub fn strip_drawn(ed: &mut Editor) -> bool {
+    if ed.session.chat.as_ref().is_none_or(|c| c.follow.hover.is_none()) {
+        return false;
+    }
+    let over = ed.presence.hover_at.and_then(|(x, y)| strip_under(ed, x, y));
+    strip_hovered_to(ed, over)
+}
+
+fn strip_hovered_to(ed: &mut Editor, over: Option<String>) -> bool {
+    let Some(c) = ed.session.chat.as_mut() else { return false };
+    let changed = c.follow.hover != over;
+    c.follow.hover = over;
+    changed
+}
+
+/// A press on a mark of the strip: that stop's replay, as `]r`/`[r` step to it. False: its stop is gone.
+pub fn replay_stop(ed: &mut Editor, call: &str) -> bool {
+    let Some(at) = ed.session.chat.as_ref().and_then(|c| c.follow.replay.place_of(call)) else {
+        return false;
+    };
+    show_stop(ed, at);
+    true
 }
 
 /// A click on a chat row of a call, or `C-]` there: that call's stop. False: it has none.

@@ -161,6 +161,11 @@ pub(crate) fn side_id(ed: &Editor, tab: &str, l: &crate::sidebar::Line) -> Strin
     }
 }
 
+/// A mark of the follow card's strip by its stop's call (motion §4).
+pub fn stop_id(call: &str) -> String {
+    format!("stop:{call}")
+}
+
 impl Editor {
     /// The panels of the session in front, as last drawn.
     pub fn ui_panels(&self) -> Panels {
@@ -289,6 +294,25 @@ impl Editor {
             match p.lists.iter_mut().find(|l| l.0 == kind.name()) {
                 Some(l) => l.1.push(row.clone()),
                 None => p.lists.push((kind.name().to_string(), vec![row.clone()])),
+            }
+        }
+        // The follow card's strip (motion §4): its marks on screen — `stop:<call>`, what a hover says, the one in hand
+        if let Some(c) = self.session.chat.as_ref() {
+            let marks = crate::follow::strip(c);
+            let rows: Vec<Row> = s
+                .stop_marks
+                .borrow()
+                .iter()
+                .filter_map(|(.., call)| marks.iter().find(|m| &m.call == call))
+                .map(|m| Row {
+                    id: stop_id(&m.call),
+                    label: m.said.clone(),
+                    selected: m.in_hand,
+                    viewed: None,
+                })
+                .collect();
+            if !rows.is_empty() {
+                p.lists.push(("follow".into(), rows));
             }
         }
         if s.bottom_h > 0 {

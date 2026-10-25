@@ -7,8 +7,8 @@
 04     ▎                                                       │  ▎ Finding the callers
 05     ▎ Words are split on whitespace; case is kept.          │  ▎ It's public, so other modules…
 06   6 pub fn word_counts(text: &str) -> HashMap<&str, usize>  │
-07     {                                                       │  ◦ grep   word_counts\(  in src
-08   7     let mut counts = HashMap::new();                    │  ◦ glob   src/**/*.rs
+07     {                                                       │  • grep   word_counts\(  in src
+08   7     let mut counts = HashMap::new();                    │  • glob   src/**/*.rs
 09   8     for word in text.split_whitespace() {               │  ◦ read   src/lib.rs  L1–40
 10   9     │   *counts.entry(word).or_insert(0) += 1;          │
 11  10     }                                                   │  Only main does, at src/demo.rs:15.

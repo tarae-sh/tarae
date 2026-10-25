@@ -234,15 +234,76 @@ pub struct Look {
     pub link: Option<Link>,
 }
 
+/// A stop's mark (motion §4, one vocabulary): the follow card's strip, the knots of its turn and the chat's trail rows
+/// alike — `◦` read · `•` a search, a lookup or any other tool · `●` an edit (green) · `▸` a run · `▲` a failure only
+/// (`▲` is a warning everywhere); the one in hand by the accent (`term::mark_span`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mark {
+    Read,
+    Lookup,
+    Edit,
+    Run,
+    Failed,
+}
+
+impl Mark {
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Mark::Read => "◦",
+            Mark::Lookup => "•",
+            Mark::Edit => "●",
+            Mark::Run => "▸",
+            Mark::Failed => "▲",
+        }
+    }
+}
+
 impl Look {
-    /// It changes files — its knot on the turn's thread is `▲` (`term::knot`): an edit, a write, a rename, a
-    /// replace (not its preview).
+    /// It changes files — its mark is `●` (`Mark::Edit`): an edit, a write, a rename, a replace (not its preview),
+    /// a move or a delete.
     pub fn changes(&self) -> bool {
         match self.verb {
             "edit" | "write" | "rename" => true,
             "replace" => !self.range.ends_with("preview"),
             _ => false,
         }
+    }
+
+    /// A command or a test run whose verdict says it failed (its row's suffix — `tools::run_verdict`'s `exit 101`,
+    /// `killed`; `tools::verdict`'s `1 failed`, `failed`), or a failure the editor went to (`follow::point`).
+    pub fn failed(&self) -> bool {
+        match self.verb {
+            "run" => self.range.starts_with("exit ") || self.range == "killed",
+            "test" => self.range.ends_with("failed"),
+            "failed" => true,
+            _ => false,
+        }
+    }
+
+    /// Its mark (`Mark`): by its kind, a failure over a run's.
+    pub fn mark(&self) -> Mark {
+        match self.verb {
+            _ if self.failed() => Mark::Failed,
+            _ if self.changes() => Mark::Edit,
+            "read" | "show" | "look" => Mark::Read,
+            "run" | "test" => Mark::Run,
+            _ => Mark::Lookup,
+        }
+    }
+
+    /// Its stop is a place to go back to, a mark on the follow card's strip — not a note or the plan (words left,
+    /// not places gone to).
+    pub fn marked(&self) -> bool {
+        !matches!(self.verb, "note" | "reply" | "plan")
+    }
+
+    /// In words, as the strip's hover says it: `read src/term.rs · L120–180`, `run cargo test -q · exit 101`.
+    pub fn said(&self) -> String {
+        let mut s = format!("{} {}", label(self.verb), self.what).trim().to_string();
+        if !self.range.is_empty() {
+            s.push_str(&format!(" · {}", self.range));
+        }
+        s
     }
 }
 
@@ -4816,7 +4877,29 @@ mod tests {
         assert!(refs_in(root, "no refs: 1, v1.2:3").is_empty());
     }
 
-    /// A row's knot is `▲` for what changes files (`Look::changes`, `term::knot`): an Edit, a Write, tarae's
+    /// Motion §4: a run's mark is `▲` exactly when its verdict says it failed — read from the verdicts as `tools.rs`
+    /// words them (a command's exit status, a test run's counts), so a change in their wording can't take the warning away
+    /// unseen; a failure the editor went to too.
+    #[test]
+    fn a_failed_run_is_marked_by_its_verdict() {
+        let mark = |verb: &'static str, range: String| {
+            Look { verb, what: "cargo test".into(), pattern: true, range, link: None }.mark()
+        };
+        let run = |out: &str| mark("run", crate::tools::run_verdict(out));
+        assert_eq!(run("exit 101\nthread 'main' panicked"), Mark::Failed, "a command that exited non-zero");
+        assert_eq!(run("killed after 600s\n"), Mark::Failed, "one killed");
+        assert_eq!(run("exit 0\n(no output)"), Mark::Run, "one that passed");
+        assert_eq!(run("refused: outside the project"), Mark::Run, "one not run");
+        let test = |out: &str| mark("test", crate::tools::verdict(out));
+        assert_eq!(test("failed\ncargo test\n1 passed, 2 failed"), Mark::Failed, "failures counted");
+        assert_eq!(test("failed\nerror[E0308]: mismatched types"), Mark::Failed, "a build that failed");
+        assert_eq!(test("passed\ncargo test\n3 passed"), Mark::Run, "all passed");
+        assert_eq!(test("no tests ran\n"), Mark::Run, "none ran");
+        assert_eq!(mark("failed", String::new()), Mark::Failed, "a failure the editor went to");
+        assert_eq!(mark("run", String::new()), Mark::Run, "under way: no verdict yet");
+    }
+
+    /// A row's knot is `●` for what changes files (`Look::changes`, `Mark::Edit`): an Edit, a Write, tarae's
     /// edit, rename, replace — not a replace's preview, nor a read, a search or a run. Read off the rows the
     /// calls really make, so a preview worded otherwise can't pass for a change.
     #[test]

@@ -53,6 +53,56 @@ const SHIMMER_KEYS: [&[&str]; 5] = [
     &["@1", " ", "l", "@1", "\x06", "how is the map filled?", "@~4200", "\r", "@3"],
 ];
 
+/// Motion §4's scenes: the stand-in's 20-stop turn (one run failing), held at its last stop — the chat open, follow off
+/// (its trail rows); follow on (the follow card's top line, its strip); and the strip's second mark hovered (its words on
+/// the card's bottom line); the keys in the code (`C-w h`) and `[r` back to the failed run (its replay: the strip around
+/// it); `[r` back to the read before the last edit (a `◦` in hand, replaying).
+const STRIP_KEYS: [&[&str]; 5] = [
+    &["@1", " ", "l", "@1", "\x06", "tidy the threads", "\r", "@?One more look", "@1"],
+    &["@1", " ", "l", "@1", "tidy the threads", "\r", "@?One more look", "@1"],
+    &["@1", " ", "l", "@1", "tidy the threads", "\r", "@?One more look", "@1", "@hover?▲◦●▸", "@1"],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "tidy the threads",
+        "\r",
+        "@?One more look",
+        "@1",
+        "\x17",
+        "h",
+        "[r",
+        "[r",
+        "[r",
+        "[r",
+        "[r",
+        "[r",
+        "[r",
+        "[r",
+        "@?13/20",
+        "@1",
+    ],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "tidy the threads",
+        "\r",
+        "@?One more look",
+        "@1",
+        "\x17",
+        "h",
+        "[r",
+        "[r",
+        "[r",
+        "[r",
+        "@?17/20",
+        "@1",
+    ],
+];
+
 /// Claude asked to run outside the sandbox, the keys back in the code (`C-w h`) as its card comes; then `j j` there.
 const FOCUS_CARD: &[&str] =
     &["@1", " ", "l", "@1", "run the tests", "\r", "\x17", "h", "@?Its reason", "@1", "j", "j", "@1"];
@@ -1593,6 +1643,12 @@ const SCENES: &[Scene] = &[
     Scene { name: "shimmer-follow", claude: "shimmer-think", files: MAIN, keys: SHIMMER_KEYS[3] },
     Scene { name: "shimmer-read", claude: "shimmer-read", files: MAIN, keys: SHIMMER_KEYS[4] },
     Scene { name: "wetfollow", claude: "sixfollow", files: MAIN, keys: WET_KEYS },
+    // (motion §4: a turn of 20 stops — reads, lookups, edits, runs, one failing — its trail rows; the follow card's strip)
+    Scene { name: "strip-trail", claude: "strip", files: MAIN, keys: STRIP_KEYS[0] },
+    Scene { name: "strip", claude: "strip", files: MAIN, keys: STRIP_KEYS[1] },
+    Scene { name: "strip-hover", claude: "strip", files: MAIN, keys: STRIP_KEYS[2] },
+    Scene { name: "strip-replay", claude: "strip", files: MAIN, keys: STRIP_KEYS[3] },
+    Scene { name: "strip-inhand", claude: "strip", files: MAIN, keys: STRIP_KEYS[4] },
     Scene { name: "wetreview", claude: "sixend", files: MAIN, keys: WET_KEYS },
     // (Claude's edit of three changes: the first accepted, the second refused, the third in hand)
     Scene {
@@ -3047,6 +3103,8 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             // (motion §2: an edit of six lines in one go, then a pause — or, `sixend`, the turn's end at once)
             "six" | "sixfollow" => turn.six(true)?,
             "sixend" => turn.six(false)?,
+            // (motion §4: twenty stops, one run failing, held at the last)
+            "strip" => turn.strip()?,
             // (motion §3: a turn timed as the stream measured — prose from the start, a think, a stall)
             "shimmer-prose" | "shimmer-think" | "shimmer-stall" | "shimmer-read" => {
                 turn.shimmer(&script[8..])?
@@ -3279,6 +3337,71 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         }
         self.words("Done.")?;
         self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// Motion §4's turn: twenty stops — reads, lookups, edits, runs, the second-to-last run failing — each a call and its
+    /// result as claude's stream says them (no request of tarae's: nothing runs, no edit waits on a review), a few words
+    /// before the last; then held there until tarae goes (the follow card's strip of a turn at work).
+    fn strip(&mut self) -> io::Result<()> {
+        let stops: [(&str, Value, &str); 20] = [
+            ("read", json!({"files": ["src/main.rs:1-20"]}), "fn main() {"),
+            ("search", json!({"pattern": "Thread"}), "src/main.rs:3: struct Thread"),
+            ("read", json!({"files": ["src/main.rs:20-40"]}), "}"),
+            (
+                "references",
+                json!({"path": "src/main.rs", "symbol": "Thread", "line": 3}),
+                "4 references in 1 file",
+            ),
+            ("definition", json!({"symbol": "length"}), "1 definition"),
+            ("read", json!({"files": ["src/main.rs:7-14"]}), "let first"),
+            (
+                "edit",
+                json!({"edits": [{"file_path": "src/main.rs", "old_string": "a", "new_string": "b"}]}),
+                "edited",
+            ),
+            ("run", json!({"command": "cargo build -q"}), "exit 0"),
+            ("read", json!({"files": ["src/main.rs:1-12"]}), "use std"),
+            ("search", json!({"pattern": "knots"}), "src/main.rs:5: knots"),
+            (
+                "edit",
+                json!({"edits": [{"file_path": "src/main.rs", "old_string": "c", "new_string": "d"}]}),
+                "edited",
+            ),
+            ("symbols", json!({"path": "src/main.rs"}), "3 symbols"),
+            ("run", json!({"command": "cargo test -q"}), "exit 101\nthread 'main' panicked"),
+            ("read", json!({"files": ["src/main.rs:14-30"]}), "println"),
+            (
+                "edit",
+                json!({"edits": [{"file_path": "src/main.rs", "old_string": "e", "new_string": "f"}]}),
+                "edited",
+            ),
+            ("run", json!({"command": "cargo test -q"}), "exit 0"),
+            ("read", json!({"files": ["src/main.rs:1-40"]}), "fn main"),
+            ("search", json!({"pattern": "clone"}), "src/main.rs:9: clone"),
+            (
+                "edit",
+                json!({"edits": [{"file_path": "src/main.rs", "old_string": "g", "new_string": "h"}]}),
+                "edited",
+            ),
+            ("read", json!({"files": ["src/main.rs:7-14"]}), "let first"),
+        ];
+        self.words("I will read the loop, then tidy how the threads are kept.")?;
+        self.text("\n\n")?;
+        for (n, (name, args, said)) in stops.into_iter().enumerate() {
+            let id = format!("s{n}");
+            if n == 19 {
+                self.words("One more look, then I will wait here.")?;
+                self.text("\n\n")?;
+            }
+            let tool =
+                json!({"type": "tool_use", "id": id, "name": format!("mcp__tarae__{name}"), "input": args});
+            self.line(json!({"type": "assistant", "message": {"id": format!("ms{n}"), "content": [tool]}}))?;
+            std::thread::sleep(Duration::from_millis(40));
+            let result = json!({"type": "tool_result", "tool_use_id": id, "content": [{"type": "text", "text": said}]});
+            self.line(json!({"type": "user", "message": {"role": "user", "content": [result]}}))?;
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        self.lines.by_ref().try_for_each(|l| l.map(drop))
     }
 
     /// `explain`'s start, then a quote and a list, stopping in its last item — and waiting until tarae goes.
