@@ -526,6 +526,10 @@ fn drive(
                 eprintln!("shot: {text:?} on screen after {:.1}s", t.elapsed().as_secs_f64());
             } else {
                 eprintln!("shot: {text:?} not on screen after {max}s — going on, the shot will fail");
+                // (the first miss's screen, to tell why — the later ones mostly follow from it)
+                if missed.is_empty() {
+                    eprintln!("shot: the screen then:\n{}", vt.parser.screen().contents());
+                }
                 missed.push(format!("waited {max} s for {text:?}: never on screen"));
             }
             continue;

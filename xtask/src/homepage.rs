@@ -38,14 +38,16 @@ const BEATS: [&str; 6] = [
 ];
 
 /// Keys driving the hero scene:
-/// - Before `@rec`: opens `../docs` and `../fix` worktrees, edits line 6 in `docs` with an English doc-comment and
-///   triggers `docs`'s sandbox host-grant card (`Open the sandbox a little?` for `index.crates.io`), starts `fix`'s
-///   Claude streaming its edit on line 12 (with `review-at-end` on), docks the session list right (`space W`, `C-w L`)
-///   in `main`, and sends the prompt in `main`'s chat.
+/// - Before `@rec`: opens the `../docs` session (its doc comment on line 6 already a commit, `record_theme`) and
+///   triggers its sandbox host-grant card (`Open the sandbox a little?` for `index.crates.io`), opens `../fix` and
+///   starts its Claude streaming its edit on line 12 (with `review-at-end` on), docks the session list over the code
+///   (`space W`, `C-w K`) in `main`, and sends the prompt in `main`'s chat, which stays docked right.
+/// - Beat 6: main's last edit reviewed in the buffer and accepted (`y`, its stamp on the chat's edit row), then
+///   docs brought in (`:session-bring docs`, its card).
 /// - After `@rec`: captures the 6 beats in one continuous take.
 const HERO_KEYS: &[&str] = &[
     "@10?fn main()",
-    // 1) docs: clean English doc-comment change on line 6, saved, then ask to run tests in the sandbox -> host grant card
+    // 1) docs: its committed doc comment on line 6, then ask to run tests in the sandbox -> host grant card
     ":",
     "session-open ../docs",
     "\r",
@@ -54,17 +56,7 @@ const HERO_KEYS: &[&str] = &[
     "e src/main.rs",
     "\r",
     "@10?docs › src › main.rs",
-    "6",
-    "G",
-    "x",
-    "c",
-    "/// First strand kept for each name in the skein.\n",
-    "\x1b",
     "@10?First strand kept",
-    ":",
-    "w",
-    "\r",
-    "@10?Saved",
     " ",
     "l",
     "@10?Ask about",
@@ -88,7 +80,8 @@ const HERO_KEYS: &[&str] = &[
     "\r",
     "@20?knots\", t.k",
     "\x1b",
-    // 3) back to main: dock the session list on the right, focus main's chat, send prompt, and start recording
+    // 3) back to main: dock the session list over the code (its rows read across), send the prompt in main's chat
+    //    (docked right: the turn is read there, no follow card over the code), and start recording
     ":",
     "session-switch 0",
     "\r",
@@ -97,8 +90,8 @@ const HERO_KEYS: &[&str] = &[
     "W",
     "@10?sessions",
     "\x17",
-    "L",
-    "@10?sessions docked right",
+    "K",
+    "@10?sessions docked top",
     "\x1b",
     " ",
     "l",
@@ -116,7 +109,8 @@ const HERO_KEYS: &[&str] = &[
     "@beat",
     "@hold:2800",
     // Beat 3: The moment two would conflict, tarae says so.
-    "@20?would conflict",
+    // (the overlap's toast: its words wrap in the card, so its file and line, which only it says)
+    "@20?src/main.rs L10",
     "@beat",
     "@hold:3200",
     // Beat 4: Its commands run sandboxed; the rest asks you.
@@ -130,6 +124,9 @@ const HERO_KEYS: &[&str] = &[
     "@10!Open the sandbox a little?",
     "@hold:1400",
     // Beat 5: Every workspace's thread woven into one view.
+    // (the keys back to the code from wherever the card left them — docs' chat stays open)
+    "\x1b",
+    "\x1b",
     ":",
     "session-switch 0",
     "\r",
@@ -152,12 +149,20 @@ const HERO_KEYS: &[&str] = &[
     "\r",
     "@20?Change 1 of 1",
     "@10!config reloaded",
-    "@hold:400",
-    "@beat",
     "@hold:2200",
     "y",
     "@20?Done —",
-    "@hold:2000",
+    "@hold:800",
+    // docs' doc comment, a clean commit: its bring card beside the review's stamp
+    "\x1b",
+    "\x1b",
+    ":",
+    "session-bring docs",
+    "\r",
+    "@20?Bring docs into main",
+    "@hold:400",
+    "@beat",
+    "@hold:2600",
 ];
 
 pub fn run(args: &[String]) -> Result<()> {
@@ -184,8 +189,9 @@ fn record_theme(bg: Bg, bin: &Path, me: &Path, out: &Path) -> Result<()> {
     let home = real.join("home");
     let cwd = home.join("tarae-demo");
     let passing_tests = MAIN_TESTS.replace("assert_eq!(t.length(), 8,", "assert_eq!(t.length(), 7,");
+    let main_rs = english(&format!("{MAIN_RS}{passing_tests}"))?;
     let extra = [
-        ("src/main.rs", format!("{MAIN_RS}{passing_tests}")),
+        ("src/main.rs", main_rs.clone()),
         (".cargo/config.toml", "[build]\nbuild-dir = \"target/build\"\n".into()),
     ];
     demo_crate_with(&cwd, false, &extra)?;
@@ -199,10 +205,19 @@ fn record_theme(bg: Bg, bin: &Path, me: &Path, out: &Path) -> Result<()> {
             return Err(format!("git worktree add {wt} exited with {status}"));
         }
     }
+    // (docs' doc comment, committed: the clean session beat 6 brings in)
+    let docs = home.join("docs");
+    write(&docs.join("src/main.rs"), &main_rs.replace(DOC_LINE, DOCS_DOC_LINE))?;
+    commit_in(&docs, "Say which strand is kept")?;
     let state = real.join("state");
+    // (the session list docked over the code as short as it goes — its three rows, kept as a size you set is: the
+    // docked list's `C-w -` doesn't reach it)
+    write(&state.join("tarae/sizes.json"), r#"{"docked":{"sessions":5}}"#)?;
     let config = real.join("xdg");
     let claude_spec = "main=home-main,fix=home-fix,docs=home-docs";
-    let cfg = format!("{}review-at-end = true\n", config_toml(me, claude_spec));
+    // (no follow: main's chat stays docked right and tells its turn there — the follow card would float over the
+    // code each beat is about)
+    let cfg = format!("{}review-at-end = true\nfollow = false\n", config_toml(me, claude_spec));
     write(&config.join("tarae/config.toml"), &cfg)?;
     let setup = Setup {
         bin: bin.to_path_buf(),
@@ -247,6 +262,46 @@ fn record_theme(bg: Bg, bin: &Path, me: &Path, out: &Path) -> Result<()> {
     }
     let fonts_1x = Fonts::load(1)?;
     save_beats_sheet(&beats, &fonts_1x, &out.join(format!("beats-{theme}.png")))?;
+    Ok(())
+}
+
+/// `MAIN_RS`'s doc comment of `main`, once in English (`english`), and the one docs' session writes over it.
+const DOC_LINE: &str = "/// A skein: one thread for each name.";
+const DOCS_DOC_LINE: &str = "/// First strand kept for each name in the skein.";
+
+/// The shared fixture's text in English — the site is English only; docshots' pictures keep `MAIN_RS` as it is.
+/// Refused if any Hangul is left (the fixture changed under it).
+fn english(text: &str) -> Result<String> {
+    let text = text
+        .replace("/// 실타래 — 이어진 실 한 가닥.", DOC_LINE)
+        .replace("\"타래\"", "\"linen\"")
+        .replace("\"실\"", "\"silk\"");
+    match text.lines().find(|l| {
+        l.chars().any(|c| ('\u{1100}'..='\u{11FF}').contains(&c) || ('\u{AC00}'..='\u{D7A3}').contains(&c))
+    }) {
+        Some(l) => Err(format!("the homepage's fixture still has Hangul: {l:?}")),
+        None => Ok(text),
+    }
+}
+
+/// Everything in `dir` committed as the demo's author (no hooks, none of your git config).
+fn commit_in(dir: &Path, message: &str) -> Result<()> {
+    for args in [&["add", "-A"][..], &["commit", "-q", "-m", message]] {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=demo", "-c", "user.email=demo@example.com", "-c", "commit.gpgsign=false"])
+            .args(["-c", "core.hooksPath=/dev/null"])
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdout(std::process::Stdio::null())
+            .status()
+            .map_err(|e| format!("git {}: {e}", args.join(" ")))?;
+        if !status.success() {
+            return Err(format!("git {} exited with {status} in {}", args.join(" "), dir.display()));
+        }
+    }
     Ok(())
 }
 
@@ -566,6 +621,14 @@ fn diff_row_runs(prev: &[CellState], cur: &[CellState]) -> Vec<(u16, u16, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hero's code is English: the shared fixture's Hangul all said otherwise, docs' line there to replace.
+    #[test]
+    fn the_heros_fixture_is_english() {
+        let text = english(&format!("{MAIN_RS}{MAIN_TESTS}")).unwrap();
+        assert!(text.contains(DOC_LINE), "{text}");
+        assert!(english("let t = \"실타래\";").is_err());
+    }
 
     #[test]
     fn encodes_keyframes_and_changed_row_runs() {
