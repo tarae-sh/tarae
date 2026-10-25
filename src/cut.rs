@@ -1,5 +1,5 @@
-//! Text cut to a number of cells — by display width, for whatever lays text out in cells: the terminal's
-//! drawing (`term.rs`) and the model's layouts (`diagram::layout`), which don't know the terminal.
+//! Text cut to a number of cells — by display width, for whatever lays text out in cells, the terminal's
+//! drawing (`term.rs`) first.
 
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 

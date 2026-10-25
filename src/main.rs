@@ -45,7 +45,6 @@ mod containers;
 mod cut;
 mod dap;
 mod debugpack;
-mod diagram;
 mod diffview;
 mod disk;
 mod doccomment;

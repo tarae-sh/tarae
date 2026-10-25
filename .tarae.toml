@@ -13,7 +13,7 @@ risky = [
 quiet = ["src/snapshots/", "docs/"]
 # What draws the screen: a change there brings the board's design angle (space v C)
 screen = [
-  "src/term.rs", "src/chrome.rs", "src/screen.rs", "src/codeview.rs", "src/markdown.rs", "src/diagram.rs",
+  "src/term.rs", "src/chrome.rs", "src/screen.rs", "src/codeview.rs", "src/markdown.rs",
   "src/themes/",
 ]
 

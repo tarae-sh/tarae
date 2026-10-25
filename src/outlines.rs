@@ -148,8 +148,8 @@ mod tests {
         assert_eq!(syms[2].said(), "fn open (7–11)");
     }
 
-    /// A variant is found by its enum's name (`read path:Stage::Stopped`, a diagram's anchor), but a line in it
-    /// is in its enum — search's "in …" doesn't change.
+    /// A variant is found by its enum's name (`read path:Stage::Stopped`), but a line in it is in its enum —
+    /// search's "in …" doesn't change.
     #[test]
     fn variants_are_found_by_name_and_hold_no_line() {
         let syms = [

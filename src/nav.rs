@@ -539,7 +539,7 @@ pub(crate) struct Sym {
     pub(crate) lines: (usize, usize),
 }
 
-/// An enum's variant's kind: found by name (`outlines::named` — `read path:Stage::Stopped`, a diagram's anchor),
+/// An enum's variant's kind: found by name (`outlines::named` — `read path:Stage::Stopped`),
 /// never listed nor said to hold a line (`Sym::listed`).
 pub(crate) const VARIANT: &str = "variant";
 
