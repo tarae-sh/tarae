@@ -398,6 +398,85 @@ const FOLLOW_ONE: &[&str] = &[
     "\x1b",
     "@2",
 ];
+/// Per-pane follow (panes P3 step 8): the turn asked from the left pane of two on main.rs, then `C-w l` and moves in the
+/// right one — the left pane's view on the writing, Claude's caret there and `● follow` on its line, your cursor yours
+/// (`follow-pane`).
+const FOLLOW_PANE: &[&str] = &[
+    "@1",
+    "\x17",
+    "v",
+    "\x17",
+    "h",
+    " ",
+    "l",
+    "@1",
+    "why does insert clone the name?",
+    "\r",
+    "@20?knots\", t.k",
+    "\x1b",
+    "\x1b",
+    "\x17",
+    "l",
+    "j",
+    "j",
+    "j",
+    "@2",
+];
+/// …the right pane on thread.rs (`follow-pane-files`).
+const FOLLOW_PANE_FILES: &[&str] = &[
+    "@1",
+    "\x17",
+    "v",
+    ":",
+    "open src/thread.rs",
+    "\r",
+    "@1",
+    "\x17",
+    "h",
+    " ",
+    "l",
+    "@1",
+    "why does insert clone the name?",
+    "\r",
+    "@20?knots\", t.k",
+    "\x1b",
+    "\x1b",
+    "\x17",
+    "l",
+    "j",
+    "j",
+    "@2",
+];
+/// …then `C-f` from the chat with the right pane the code's last: follow moves into it, said, at the writing
+/// (`follow-pane-cf`).
+const FOLLOW_PANE_CF: &[&str] = &[
+    "@1",
+    "\x17",
+    "v",
+    ":",
+    "open src/thread.rs",
+    "\r",
+    "@1",
+    "\x17",
+    "h",
+    " ",
+    "l",
+    "@1",
+    "why does insert clone the name?",
+    "\r",
+    "@20?knots\", t.k",
+    "\x1b",
+    "\x1b",
+    "\x17",
+    "l",
+    " ",
+    "l",
+    "@1",
+    "\x06",
+    "@1",
+    "\x1b",
+    "@2",
+];
 /// The session list docked right (`C-w L`), `j` and `enter`: in fix, the list staying (`sessions-docked`).
 const SESSIONS_DOCKED: &[&str] = waits_keys!(" ", "W", "@1", "\x17", "L", "@1", "k", "\r", "@2");
 /// Nine sessions (`strip-nine`): main and fix overlapping, seven more checkouts — docs and parser waiting on their
@@ -2254,6 +2333,10 @@ const SCENES: &[Scene] = &[
     Scene { name: "asks-stack", claude: "card", files: MAIN, keys: ASKS_STACK },
     // (…the follow card framed, one session: named `follow`, the turn's time at its line's right)
     Scene { name: "follow-one", claude: "writemid", files: MAIN, keys: FOLLOW_ONE },
+    // (panes P3 step 8: per-pane follow — your keys in the other pane on the same file, on another, and `C-f` moving it)
+    Scene { name: "follow-pane", claude: "writemid", files: MAIN, keys: FOLLOW_PANE },
+    Scene { name: "follow-pane-files", claude: "writemid", files: MAIN, keys: FOLLOW_PANE_FILES },
+    Scene { name: "follow-pane-cf", claude: "writemid", files: MAIN, keys: FOLLOW_PANE_CF },
     // (…the chat's top line with nine sessions: three waiting, two overlapping, one done — whole names, `+N`)
     Scene { name: "strip-nine", claude: "nine", files: MAIN, keys: STRIP_NINE },
     // (…the session list docked right, `enter` on the next row: switched, the list still there)

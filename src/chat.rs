@@ -2578,6 +2578,8 @@ fn submit_as(
     // (a new turn: the last one's failed runs are no longer what Claude ended on)
     c.failed.1.clear();
     c.follow.new_turn();
+    // (follow takes the code pane with the code's keys — panes P3 step 8)
+    c.follow.pane = Some(ed.session.focus);
     c.unfolded = false;
     // (a switch's cost is this message's now — the line over the input goes)
     c.switched = None;

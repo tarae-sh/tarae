@@ -352,7 +352,9 @@ pub struct Screen {
     /// The document each of `panes` drew (in their order) — its rows are that one's lines, whatever the pane
     /// shows since (`rows_of`).
     pub pane_docs: Vec<DocId>,
-    /// The focused pane's edit being written (`writing.rs`): its rows of changes on screen and the one being
+    /// Each code pane's text area (rows, columns) — the viewport `Editor::in_pane` lends it.
+    pub pane_sizes: Vec<(crate::split::PaneId, (usize, usize))>,
+    /// The followed pane's edit being written (`writing.rs`): its rows of changes on screen and the one being
     /// written (screen rows) — the follow card keeps off them as off a review's changes.
     pub writing_rows: Vec<usize>,
     pub writing_head: Option<usize>,
@@ -1765,6 +1767,48 @@ impl Editor {
         self.popup = None;
     }
 
+    /// Runs `f` with code pane `id` as the focused one — its document `current`, its scroll the document's, its size the
+    /// viewport — and puts the focus back after, always (the `docpane::swap` pattern, panes P3 step 8: follow leads its
+    /// own pane while your keys are in another). What `f` did to that pane's view (its document, its top) stays the
+    /// pane's; the selection is the document's and nothing here touches it. The pane focused already, gone, or a swap
+    /// under way: `f` as it is.
+    pub fn in_pane<R>(&mut self, id: crate::split::PaneId, f: impl FnOnce(&mut Editor) -> R) -> R {
+        let focus = self.session.focus;
+        let doc_of = |ed: &Editor, id| ed.session.views.iter().find(|v| v.id == id).map(|v| v.doc);
+        let at = doc_of(self, id).and_then(|d| self.docs.iter().position(|x| x.id == d));
+        let Some(i) = at.filter(|_| id != focus && self.session.pane_swapped.is_none()) else {
+            return f(self);
+        };
+        self.sync_focus_view();
+        let code = self.doc().id;
+        let v = self.session.views.iter().find(|v| v.id == id).cloned().expect("its view, found above");
+        self.session.focus = id;
+        self.session.pane_swapped = Some(focus);
+        self.current = i;
+        let d = &mut self.docs[i];
+        (d.top, d.left, d.top_rows) = (v.top, v.left, v.top_rows);
+        let size = self.screen.pane_sizes.iter().find(|s| s.0 == id).map(|s| s.1);
+        let viewport = size.map(|s| std::mem::replace(&mut self.viewport, s));
+        let r = f(self);
+        if let Some(v) = viewport {
+            self.viewport = v;
+        }
+        // (the pane's view as `f` left it: its document, its scroll)
+        self.sync_focus_view();
+        self.session.pane_swapped = None;
+        self.session.focus = focus;
+        let back = doc_of(self, focus).unwrap_or(code);
+        let index = |id| self.docs.iter().position(|d| d.id == id);
+        self.current = index(back).or_else(|| index(code)).unwrap_or(0);
+        if let Some(w) = self.session.views.iter().find(|v| v.id == focus).cloned() {
+            let d = &mut self.docs[self.current];
+            if d.id == w.doc {
+                (d.top, d.left, d.top_rows) = (w.top, w.left, w.top_rows);
+            }
+        }
+        r
+    }
+
     /// Splits the current pane — the new pane shows the same document at the same spot; focus moves to it. From
     /// another surface (§2.6: the chat, a run, the side panel) it's the code pane last focused that splits, the keys
     /// to the new one; from the terminal it's said — a second terminal comes with the terminal work (P1).
@@ -1801,6 +1845,7 @@ impl Editor {
         self.session.views.retain(|v| v.id != gone);
         let next = self.code_leaves()[i.saturating_sub(1).min(self.session.views.len() - 1)];
         self.focus_view(next); // syncing the gone pane finds nothing
+        crate::follow::panes_gone(self, &[gone]);
         true
     }
 
@@ -1814,10 +1859,12 @@ impl Editor {
     pub fn only_view(&mut self) {
         self.sync_focus_view();
         let focus = self.session.focus;
-        for id in self.code_leaves().into_iter().filter(|&id| id != focus) {
+        let gone: Vec<_> = self.code_leaves().into_iter().filter(|&id| id != focus).collect();
+        for &id in &gone {
             self.session.split.remove(id);
         }
         self.session.views.retain(|v| v.id == focus);
+        crate::follow::panes_gone(self, &gone);
     }
 
     /// `C-w w`: the next pane, every kind (§2.6) — in the tree's order as the last frame laid them out with room

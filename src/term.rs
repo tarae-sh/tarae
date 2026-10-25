@@ -598,6 +598,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         leaves: screen_leaves(editor, &lay),
         shapes: group_shapes(editor, &lay),
         pane_docs: Vec::new(),
+        pane_sizes: Vec::new(),
         writing_rows: Vec::new(),
         writing_head: None,
         chat_x: (lay.chat_w > 0).then_some(lay.edit_w),
@@ -703,6 +704,32 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
     crate::view::refresh_search(editor);
     crate::chatdoc::refresh_search(editor);
     crate::rundoc::refresh_search(editor);
+    // Follow leading a code pane your keys aren't in (panes P3 step 8): that pane's view kept on Claude's place as the
+    // focused one's is below — lent the focus for it (`Editor::in_pane`), the writing's rows placed first (a document
+    // both panes show keeps the placing for the pane follow leads); the selection, yours, untouched
+    // (that pane out of sight — another zoomed: the placing its writing asked for is its own, dropped — never taken by
+    // the focused pane below, on the same file yours)
+    let aside = crate::follow::aside(editor);
+    let laid = aside.and_then(|p| panes(editor, &lay).into_iter().find(|x| x.0 == p).map(|x| x.2));
+    if let Some(p) = aside.filter(|_| laid.is_none()) {
+        editor.in_pane(p, |ed| ed.doc_mut().writing_align = None);
+    }
+    if let (Some(p), Some(pl)) = (aside, laid) {
+        editor.in_pane(p, |ed| {
+            let viewport = std::mem::replace(&mut ed.viewport, (pl.text_rows, pl.text_cols));
+            if let Some(line) = ed.doc_mut().writing_align.take() {
+                let line =
+                    crate::writing::shown(ed.doc()).and_then(|s| s.blocks.first()).map_or(line, |b| b.first);
+                let above = review_lead(ed, &ui, &pl);
+                ed.align_writing(line, above);
+            }
+            if let Some(l) = crate::follow::view_line(ed) {
+                let at = mv::line_start(&ed.doc().text, l);
+                scroll_to(ed, &pl, Some(at));
+            }
+            ed.viewport = viewport;
+        });
+    }
     // Follow took the editor to an edit being written: its rows where the review will show them (`writing.rs`) —
     // the topmost item's, the change the review opens on
     if let Some(line) = editor.doc_mut().writing_align.take() {
@@ -789,14 +816,17 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         }
         rev.scroll = rev.scroll.min(rows.len().saturating_sub(1));
     }
-    // Per pane, screen row → doc line (for the mouse); the focused pane's also goes into editor.view
+    // Per pane, screen row → doc line (for the mouse); the focused pane's also goes into editor.view, the followed
+    // pane's writing rows into the screen (the follow card keeps off them)
     let (mut screen_panes, mut pane_docs) = (Vec::new(), Vec::new());
+    let followed = crate::follow::pane(editor);
     for (id, r, pl, idx, top, left, focused) in panes(editor, &lay) {
         let doc = &editor.docs[idx];
-        let view = rows_pane(editor, doc, top, &Shows::pane(editor, doc, focused, left), &pl);
+        let view = rows_pane(editor, doc, top, &Shows::pane(editor, id, doc, focused, left), &pl);
         screen_panes.push((id, r, pl.gutter, view.iter().map(|v| v.origin(left)).collect()));
         pane_docs.push(editor.docs[idx].id);
-        if focused {
+        editor.screen.pane_sizes.push((id, (pl.text_rows, pl.text_cols)));
+        if id == followed {
             // (an edit being written: its rows of changes and the one being written — the follow card keeps off them)
             let live = |r: &crate::codeview::Row| match r {
                 crate::codeview::Row::Text { line, edit: Some(e), .. }
@@ -822,6 +852,8 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
                 )
             });
             editor.screen.writing_head = editor.screen.writing_head.map(y);
+        }
+        if focused {
             editor.view = view;
         }
     }
@@ -4045,10 +4077,10 @@ fn draw_panes(
 ) -> io::Result<Option<(u16, u16)>> {
     let ps = panes(editor, lay);
     let mut cursor = None;
-    for (_, _, pl, idx, top, left, focused) in &ps {
+    for (id, _, pl, idx, top, left, focused) in &ps {
         let _fade = Fade::unless(keys.code() && *focused, ui);
         let doc = &editor.docs[*idx];
-        let shows = Shows::pane(editor, doc, *focused, *left);
+        let shows = Shows::pane(editor, *id, doc, *focused, *left);
         let own;
         let view = if *focused {
             &editor.view
@@ -5418,7 +5450,7 @@ fn draw_text(
     // The phantom line (after the final newline) shows only when the cursor is there.
     let max_line = mv::last_line(text).max(cur_line);
     // Claude's caret on a line it keeps, at that line's end (a pane's only — a review or a preview has no writing)
-    let caret_line = crate::writing::caret_line(doc).filter(|_| shows.cursor);
+    let caret_line = crate::writing::caret_line(doc).filter(|_| shows.cursor && shows.caret);
     // Screen row → doc line (not 1:1: folded doc-comment blocks). Per-line tables index by "Nth row from top"
     let span = view.iter().map(|v| v.last_line()).max().map_or(1, |m| m + 1 - top.min(m)).max(1);
     // Syntax highlight: capture name → theme style once per frame (hundreds of lookups, µs).
@@ -5996,6 +6028,7 @@ fn draw_text(
                 if matches!(kind, OtherKind::Writing { head: true })
                     && part.is_none_or(|p| p.last)
                     && room > 0
+                    && shows.caret
                 {
                     apply_full(out, caret_style(caret_fg, base))?;
                     queue!(out, Print(CARET))?;
@@ -9101,6 +9134,12 @@ fn code_line(
     if let Some((m, st)) = ui_mark(ui, editor, &pane, ui.base) {
         left.push(Seg { text: format!(" {m}"), style: st, keep: 245 });
     }
+    // The pane follow leads, among two or more (panes P3 step 8; one pane: the status line says it): `● follow`, as the
+    // status line's word — the dot in the accent, the word faint
+    if editor.session.views.len() > 1 && crate::follow::pane(editor) == id && crate::follow::leads(editor) {
+        left.push(Seg { text: "  ●".into(), style: ui.base.patch(ui.accent), keep: 246 });
+        left.push(Seg { text: " follow".into(), style: dim, keep: 246 });
+    }
     // A review with no room for its rail (the chat beside it, a phone): which of its files this is
     if let Some(r) = editor.session.code_review.as_ref().filter(|_| focused && railless)
         && let Some(i) = r.current(editor)
@@ -12151,8 +12190,15 @@ fn draw_follow_card(
     use crate::markdown::Span;
     const BODY: usize = 7;
     let compact = c.compact();
-    // The focused pane (else the editing area — a review in place of the panes)
-    let pane = editor.screen.panes.iter().find(|p| p.0 == editor.session.focus);
+    // The pane follow leads, the focused one or not (panes P3 step 8; else the editing area — a review in place of the
+    // panes, or that pane out of sight: another zoomed)
+    let followed = crate::follow::pane(editor);
+    let at = editor.screen.panes.iter().position(|p| p.0 == followed);
+    let pane = at.map(|i| &editor.screen.panes[i]);
+    let shows = editor.session.views.iter().find(|v| v.id == followed && v.id != editor.session.focus);
+    let doc = shows.and_then(|v| editor.docs.iter().find(|d| d.id == v.doc)).unwrap_or_else(|| editor.doc());
+    // (it leads a pane out of sight — another fills the screen, `C-w z`: where, said on its line)
+    let unseen = (pane.is_none() && shows.is_some()).then(|| format!("in {}", doc.display_name_short()));
     let (px, py, pw, ph) = match pane {
         Some((_, rect, ..)) => {
             let title = usize::from(editor.session.views.len() > 1 && lay.zoom.is_none());
@@ -12252,7 +12298,9 @@ fn draw_follow_card(
     };
     let mut names = vec![(who, who_st)];
     names.extend(state);
-    let left_w = names.iter().map(|n| n.0.width()).sum::<usize>() + if paused { 9 } else { 0 };
+    let left_w = names.iter().map(|n| n.0.width()).sum::<usize>()
+        + if paused { 9 } else { 0 }
+        + unseen.as_ref().map_or(0, |u| u.width() + 3);
     let right_w = |d: &str| mark.width() + d.width() + 1 + secs.width();
     // (the line's own cells: `─ ` before the names, ` ─` and the ends round what stands at its right)
     let room = inner.saturating_sub(TOP_LINE_OWN + 2);
@@ -12264,6 +12312,12 @@ fn draw_follow_card(
     let mut details: Vec<(String, Style)> = Vec::new();
     if paused {
         details.push(("paused".into(), faint));
+    }
+    if let Some(u) = unseen {
+        if !details.is_empty() {
+            details.push((NAMES_SEP.into(), faint));
+        }
+        details.push((u, faint));
     }
     if let Some(b) = bare.strip_prefix(" › ").filter(|b| !b.is_empty()) {
         if !details.is_empty() {
@@ -12332,7 +12386,6 @@ fn draw_follow_card(
     let width = inner + 4;
     let x0 = (px + pw).saturating_sub(width + 1);
     // The lines being read stay readable: their rows, where their text reaches into the card's columns
-    let doc = editor.doc();
     let read: Vec<usize> = match (pane, gaze.filter(|g| g.path.is_some() && g.path == doc.path)) {
         (Some((_, _, gutter, view)), Some(g)) => g
             .lines

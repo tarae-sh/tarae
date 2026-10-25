@@ -148,6 +148,8 @@ pub struct Session {
     pub outputs: crate::rundoc::Outputs,
     /// The document pane a key's command has swapped in as `current` (`docpane::swap`).
     pub swapped: Option<crate::docpane::Which>,
+    /// While `Editor::in_pane` lends another code pane the focus: the one it took it from (where the keys' code is).
+    pub pane_swapped: Option<crate::split::PaneId>,
     /// A terminal is being started (on a worker) · what it printed and its exit code, if they came before
     /// it was in place.
     pub terminal_starting: bool,
@@ -424,6 +426,7 @@ impl Session {
             view: None,
             outputs: Default::default(),
             swapped: None,
+            pane_swapped: None,
             terminal_run: 0,
             terminal_starting: false,
             terminal_early: Default::default(),

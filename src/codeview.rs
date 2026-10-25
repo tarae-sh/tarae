@@ -148,6 +148,9 @@ pub struct Shows {
     /// Claude's place, the line follow keeps in sight (`follow::place`): its line's bar — a mark, not a cursor
     /// (follow never moves yours).
     pub claude: Option<usize>,
+    /// Claude's caret drawn where it writes (`follow::caret_in`): one caret for one writer — of two panes on the
+    /// document, the one follow leads.
+    pub caret: bool,
     /// Where the sessions are in it (`presence::marks`): `▎` in the sign column on their lines, a name tag at the
     /// first line's end of where each is now — a pane's only.
     pub presence: Vec<crate::presence::Mark>,
@@ -550,8 +553,14 @@ impl Editor {
 }
 
 impl Shows {
-    /// A pane of the editor showing `doc`.
-    pub fn pane(editor: &Editor, doc: &Document, focused: bool, left: usize) -> Shows {
+    /// Code pane `id` of the editor showing `doc`.
+    pub fn pane(
+        editor: &Editor,
+        id: crate::split::PaneId,
+        doc: &Document,
+        focused: bool,
+        left: usize,
+    ) -> Shows {
         let not_insert = editor.mode != Mode::Insert;
         let config = &editor.config;
         let cursors = focused && editor.cursor_in() == Some(crate::chrome::CursorIn::Code);
@@ -573,7 +582,9 @@ impl Shows {
             inlay: config.inlay_hints && left == 0,
             guides: config.indent_guides && left == 0,
             blame: focused && not_insert,
-            claude: focused.then(|| crate::follow::place(editor, doc)).flatten(),
+            // (in the pane follow leads, whether it has the keys or not — panes P3 step 8)
+            claude: crate::follow::place(editor, id, doc),
+            caret: crate::follow::caret_in(editor, id, doc),
             presence: crate::presence::marks(editor, doc),
         }
     }
@@ -601,6 +612,7 @@ impl Shows {
             guides: config.indent_guides && left == 0,
             blame: false,
             claude: None,
+            caret: true,
             presence: Vec::new(),
         }
     }
@@ -625,6 +637,7 @@ impl Shows {
             guides: false,
             blame: false,
             claude: None,
+            caret: true,
             presence: Vec::new(),
         }
     }
@@ -654,6 +667,7 @@ impl Shows {
             guides: config.indent_guides,
             blame: false,
             claude: None,
+            caret: true,
             presence: Vec::new(),
         }
     }

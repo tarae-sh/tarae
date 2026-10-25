@@ -489,6 +489,17 @@ Claude's edit reloading the file you're in doesn't pause it, and neither does sw
 by itself `llm.follow-resume` seconds (20 by default; 0 = only `C-f`) after your last key if Claude is still
 working. The next question also turns it back on.
 
+**Split panes: follow leads one.** With the code split (`C-w v`, `C-w s`), follow leads the pane that had the code's
+keys when it started — the turn, `C-f`, a session followed — and that pane's top line says `● follow`. Your keys in
+another pane never pause it: what Claude reads and writes opens and scrolls in the pane follow leads, its caret drawn
+there (on a file both panes show, only there), while your pane, your cursor and your selection stay as you left them;
+what it opened goes as it moves on, never a file another pane shows. Hopping into its pane isn't taking over — a
+move of yours there is, as above. `C-f` in the chat with another code pane last in hand moves follow into that one
+(`following in this pane`), at the edit being written if there is one; again, it turns follow off. Closing the pane
+follow leads (`C-w q`, `C-w o`) turns follow off, said; `C-f` follows in the pane you're in. With another pane filling
+the screen (`C-w z`) follow goes on unseen, its card saying which file (`in main.rs`). It's a turn's, never kept
+across a restart.
+
 **Several sessions: where each is, and following one.** With more than one session open, every session's Claude
 shows where it is in its turn — the lines it reads, the edit it's writing, the lines its edits changed — wherever
 that file is shown, in any checkout of the repository: a `▎` in the code's sign column on those lines and a name

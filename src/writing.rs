@@ -742,18 +742,20 @@ pub fn sync(ed: &mut Editor) {
     crate::follow::writing_due(ed);
     // What's written in the document in front (the block being written, else the first): follow puts the cursor on the
     // line it rewrites — the editor taken onto its block first when the line being written went past the screen's
-    // end (its block begun on screen, the cursor elsewhere)
-    let block = shown(ed.doc()).and_then(|s| {
-        let b = s.blocks.iter().find(|b| b.head.is_some()).or(s.blocks.first())?;
-        Some((b.first..b.last + 1, b.place()))
+    // end (its block begun on screen, the cursor elsewhere). In front = in the pane follow leads (panes P3 step 8)
+    let (front, leads) = crate::follow::in_followed(ed, |ed| {
+        let block = shown(ed.doc()).and_then(|s| {
+            let b = s.blocks.iter().find(|b| b.head.is_some()).or(s.blocks.first())?;
+            Some((b.first..b.last + 1, b.place()))
+        });
+        if let (Some((lines, line)), Some(path)) = (block, ed.doc().path.clone()) {
+            let past = past_sight(ed).is_some();
+            crate::follow::writing_at(ed, &path, lines, line, past);
+        }
+        // Whether follow leads the view on what's drawn in front now — kept from the first time an item is drawn
+        // whole: whether it was watched to its end (`written_end`)
+        (ed.doc().id, crate::follow::view_line(ed).is_some())
     });
-    if let (Some((lines, line)), Some(path)) = (block, ed.doc().path.clone()) {
-        let past = past_sight(ed).is_some();
-        crate::follow::writing_at(ed, &path, lines, line, past);
-    }
-    // Whether follow leads the view on what's drawn in front now — kept from the first time an item is drawn whole:
-    // whether it was watched to its end (`written_end`)
-    let (front, leads) = (ed.doc().id, crate::follow::view_line(ed).is_some());
     if let Some(c) = ed.session.chat.as_mut() {
         for it in c.writing.calls.iter_mut().flat_map(|c| &mut c.items).filter(|it| !it.ended) {
             let bound = match &it.place {
@@ -843,14 +845,28 @@ fn past_sight(ed: &Editor) -> Option<std::ops::Range<usize>> {
     let doc = ed.doc();
     let b = shown(doc)?.blocks.iter().find(|b| b.head.is_some())?;
     let cursor = crate::movement::line_of(&doc.text, doc.selection().primary().head);
+    // (the pane follow leads lent the focus while your keys are in another: the selection is the document's, so its
+    // cursor is yours there — not one on this block)
+    let on_it = ed.session.pane_swapped.is_none() && (b.first..=b.last + 1).contains(&cursor);
     let (rows, cols) = ed.viewport;
-    if (b.first..=b.last + 1).contains(&cursor) || rows == 0 || b.first < doc.top {
+    if on_it || rows == 0 || b.first < doc.top {
         return None;
     }
     let wrap = ed.wraps(doc).then_some(cols);
     let m = crate::codeview::Measure::new(ed, doc, ed.editing_in(true), (wrap, cols), b.first, rows);
     let above = (doc.top..b.first).map(|l| m.rows(l)).sum::<usize>().saturating_sub(doc.top_skip());
     (above < rows && above + m.removed(b.first) + m.head(b.first) >= rows).then_some(b.first..b.last + 1)
+}
+
+/// Where Claude is writing now: the newest item still being written that's bound to a buffer — its file and lines
+/// (`follow::resume` goes there: following again, the editor where the writing is).
+pub fn writing_now(ed: &Editor) -> Option<(std::path::PathBuf, std::ops::Range<usize>)> {
+    let c = ed.session.chat.as_ref()?;
+    let items = c.writing.calls.iter().rev().flat_map(|c| c.items.iter().rev());
+    items.filter(|it| !it.ended).find_map(|it| match &it.place {
+        Place::Found(f) if f.bound.is_some() => Some((f.path.clone(), f.lines.0..f.lines.1 + 1)),
+        _ => None,
+    })
 }
 
 /// Whether Claude is still writing a change over `lines` of `path` (an item of a call under way, its place there):
@@ -1054,5 +1070,7 @@ pub fn listed(
         .collect()
 }
 
+#[cfg(test)]
+mod pane_tests;
 #[cfg(test)]
 mod tests;

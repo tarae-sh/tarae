@@ -93,6 +93,9 @@ pub struct Follow {
     pub replaying: Option<Gaze>,
     /// Where replay put the cursor — you moving away ends its showing.
     replay_placed: Option<(DocId, usize, usize)>,
+    /// The stop showing (`replaying`) was taken in a pane follow doesn't lead (`aside`): Claude moving on there leaves
+    /// it showing in yours — you moving away, `]r` past the newest or the next turn end it.
+    replay_aside: bool,
     /// The texts files had before an edit allowed this turn (real path; None = no such file) — its stop's
     /// changes are worked out against them once it's written.
     befores: Vec<(PathBuf, Option<String>)>,
@@ -142,6 +145,12 @@ pub struct Follow {
     /// The document in front and its version as `watch` last saw it: a key of yours that changed it (`d`, `r`, `~`
     /// with the cursor where it was) is you taking over, as a move is.
     seen_text: Option<(DocId, u64)>,
+    /// The code pane follow leads (panes P3 step 8): the one that had the code's keys when it started — a turn, `C-f`,
+    /// a session followed; None: the focused one. Your keys in another pane never pause it: its view moves, Claude's
+    /// caret drawn there, your selection untouched (`aside`). A turn's, never kept across a restart.
+    pub pane: Option<crate::split::PaneId>,
+    /// The code pane focused at the last event: a hop between panes isn't a move of yours (`watch`).
+    seen_pane: Option<crate::split::PaneId>,
 }
 
 /// While the answer streams, the editor moves at most this often (it records every place — `]q`).
@@ -200,6 +209,37 @@ impl Follow {
 
 fn follow(ed: &mut Editor) -> Option<&mut Follow> {
     ed.session.chat.as_mut().map(|c| &mut c.follow)
+}
+
+/// The code pane follow leads: the one it took (`Follow.pane`) while it's there, else the focused one.
+pub fn pane(ed: &Editor) -> crate::split::PaneId {
+    let views = &ed.session.views;
+    let taken = ed.session.chat.as_ref().and_then(|c| c.follow.pane);
+    taken.filter(|p| views.iter().any(|v| v.id == *p)).unwrap_or(ed.session.focus)
+}
+
+/// Follow leads a pane that isn't the focused one (your keys' code is elsewhere) — that pane, outside an `in_pane`.
+pub fn aside(ed: &Editor) -> Option<crate::split::PaneId> {
+    let on = ed.session.chat.as_ref().is_some_and(|c| c.follow.on);
+    let p = pane(ed);
+    (on && ed.session.pane_swapped.is_none() && p != ed.session.focus).then_some(p)
+}
+
+/// Whether code pane `id`, showing `doc`, draws Claude's caret as it writes there: the pane follow leads when that one
+/// shows the document, else every pane that does — one caret for one writer wherever it can be told.
+pub fn caret_in(ed: &Editor, id: crate::split::PaneId, doc: &crate::document::Document) -> bool {
+    let p = pane(ed);
+    let shown = match p == ed.session.focus {
+        true => Some(ed.doc().id),
+        false => ed.session.views.iter().find(|v| v.id == p).map(|v| v.doc),
+    };
+    id == p || shown != Some(doc.id)
+}
+
+/// `f` with the followed pane as the focus (`Editor::in_pane`): what follow moves is that pane's view.
+pub fn in_followed<R>(ed: &mut Editor, f: impl FnOnce(&mut Editor) -> R) -> R {
+    let p = pane(ed);
+    ed.in_pane(p, f)
 }
 
 /// Where the cursor is (document, selection) — compared with `seen_cursor`.
@@ -294,6 +334,10 @@ pub fn on_tool(ed: &mut Editor, id: &str, name: &str, input: &serde_json::Value,
 /// of the last one waits (`writing_due`): the view moves at most that often. Either way the cursor goes to the line
 /// it rewrites at once (`writing_at`).
 pub fn writing(ed: &mut Editor, path: &Path, lines: Range<usize>) {
+    in_followed(ed, |ed| writing_here(ed, path, lines))
+}
+
+fn writing_here(ed: &mut Editor, path: &Path, lines: Range<usize>) {
     let start = lines.start;
     if in_sight(ed, path, &lines) {
         // (the newest block is where Claude writes: one still waiting for its jump is behind it now)
@@ -348,6 +392,10 @@ pub fn writing_due(ed: &mut Editor) {
 /// (`term::draw_text`); your cursor stays where it is. `past`: that row went past what's in sight — the editor onto
 /// the block first, as for a stop.
 pub fn writing_at(ed: &mut Editor, path: &Path, lines: Range<usize>, place: usize, past: bool) {
+    in_followed(ed, |ed| writing_at_here(ed, path, lines, place, past))
+}
+
+fn writing_at_here(ed: &mut Editor, path: &Path, lines: Range<usize>, place: usize, past: bool) {
     if past {
         go_range(ed, path, lines);
     }
@@ -376,13 +424,28 @@ fn view_key(ed: &Editor) -> (DocId, usize) {
 }
 
 /// The line the frame keeps in sight instead of the cursor (`term::render_frame`): while follow leads the document
-/// in front — on, not paused, the view it took (`led`) there. None: the cursor's, as ever.
+/// in front, in the focused pane — on, not paused, the view it took (`led`) there. None: the cursor's, as ever (and
+/// in a pane follow doesn't lead: your keys' while it leads another — `aside`).
 pub fn view_line(ed: &Editor) -> Option<usize> {
+    led_in(ed, ed.session.focus)
+}
+
+/// The line follow keeps in sight in code pane `id`: the pane it leads, on, not paused, the view it took (`led`) on
+/// the document that pane shows.
+pub fn led_in(ed: &Editor, id: crate::split::PaneId) -> Option<usize> {
     let f = &ed.session.chat.as_ref()?.follow;
-    let (id, line) = f.led?;
-    let doc = ed.doc();
-    (f.active() && !ed.background() && id == doc.id && !doc.loading)
-        .then(|| line.min(crate::movement::last_line(&doc.text)))
+    let (doc_id, line) = f.led?;
+    if !f.active() || ed.background() || pane(ed) != id {
+        return None;
+    }
+    let doc = match id == ed.session.focus {
+        true => ed.doc(),
+        false => {
+            let shows = ed.session.views.iter().find(|v| v.id == id)?.doc;
+            ed.docs.iter().find(|d| d.id == shows)?
+        }
+    };
+    (doc_id == doc.id && !doc.loading).then(|| line.min(crate::movement::last_line(&doc.text)))
 }
 
 /// A key of yours that moves the view (`C-e`/`C-y`, the pages, `z…`, the wheel) while follow holds it: follow pauses,
@@ -406,24 +469,27 @@ pub fn your_view(ed: &mut Editor) {
 /// character isn't something under way: Helix's motions leave one (`w`, `e`, `x`, `/`…`n`), and extending one is
 /// SELECT — follow, leading again, puts its cursor (a point) where Claude is.
 pub fn free(ed: &Editor) -> bool {
-    ed.mode == crate::editor::Mode::Normal
-        && ed.pending.is_empty()
-        && ed.count.is_none()
-        && ed.on_next_char.is_none()
+    // (leading a pane your keys aren't in: what's under way is yours, there — nothing holds this one)
+    ed.session.pane_swapped.is_some()
+        || aside(ed).is_some()
+        || ed.mode == crate::editor::Mode::Normal
+            && ed.pending.is_empty()
+            && ed.count.is_none()
+            && ed.on_next_char.is_none()
 }
 
 /// Follow is leading the view: on, not paused, a turn under way, the view held where Claude is and nothing of yours
 /// under way — the status line says `● follow`, and the code marks Claude's place.
 pub fn leads(ed: &Editor) -> bool {
     let Some(c) = ed.session.chat.as_ref() else { return false };
-    c.busy() && ed.session.review.is_none() && view_line(ed).is_some() && free(ed)
+    c.busy() && ed.session.review.is_none() && led_in(ed, pane(ed)).is_some() && free(ed)
 }
 
-/// The line of `doc` marked as Claude's place (`codeview::Shows.claude`): the one follow keeps in sight — none while
-/// an edit is written there (its head's row carries the caret).
-pub fn place(ed: &Editor, doc: &crate::document::Document) -> Option<usize> {
+/// The line of `doc`, shown in code pane `id`, marked as Claude's place (`codeview::Shows.claude`): the one follow
+/// keeps in sight in the pane it leads — none while an edit is written there (its head's row carries the caret).
+pub fn place(ed: &Editor, id: crate::split::PaneId, doc: &crate::document::Document) -> Option<usize> {
     let writing = crate::writing::shown(doc).is_some_and(|s| s.blocks.iter().any(|b| b.head.is_some()));
-    (doc.id == ed.doc().id && !writing && leads(ed)).then(|| view_line(ed)).flatten()
+    (!writing && leads(ed)).then(|| led_in(ed, id)).flatten()
 }
 
 /// tarae's `edit` — Claude's call `call` (None: not known) — landed in `path`, unseen, from its card or through its
@@ -434,6 +500,10 @@ pub fn place(ed: &Editor, doc: &crate::document::Document) -> Option<usize> {
 /// follow not leading there, a review's rows): the view on its first changed line, as an Edit is once written
 /// (`landed`), so it's seen at all. The selection the review left stays yours.
 pub fn wrote(ed: &mut Editor, call: Option<&str>, path: &Path, before: &ropey::Rope, after: &ropey::Rope) {
+    in_followed(ed, |ed| wrote_here(ed, call, path, before, after))
+}
+
+fn wrote_here(ed: &mut Editor, call: Option<&str>, path: &Path, before: &ropey::Rope, after: &ropey::Rope) {
     if !ed.session.chat.as_ref().is_some_and(|c| c.follow.active())
         || ed.background()
         || !path.is_file()
@@ -496,13 +566,18 @@ pub fn last_difference(a: &ropey::Rope, b: &ropey::Rope) -> usize {
     if kept { line.saturating_sub(1).max(first) } else { line }
 }
 
-/// Whether `lines` of `path` are all in the focused pane as the last frame drew it.
+/// Whether `lines` of `path` are all in the focused pane as the last frame drew it (the pane `in_pane` lent the focus
+/// to: its rows as drawn).
 fn in_sight(ed: &Editor, path: &Path, lines: &Range<usize>) -> bool {
     let doc = ed.doc();
-    doc.path.as_deref() == Some(path) && {
-        let shown: Vec<usize> = ed.view.iter().map(crate::codeview::Row::line).collect();
-        lines.clone().all(|l| shown.contains(&l)) && !ed.view.is_empty()
-    }
+    let shown: Vec<usize> = match ed.session.pane_swapped {
+        None => ed.view.iter().map(crate::codeview::Row::line).collect(),
+        Some(_) => {
+            let drawn = ed.screen.panes.iter().find(|p| p.0 == ed.session.focus);
+            drawn.map(|p| p.3.iter().map(|o| o.0).collect()).unwrap_or_default()
+        }
+    };
+    doc.path.as_deref() == Some(path) && lines.clone().all(|l| shown.contains(&l)) && !shown.is_empty()
 }
 
 /// An edit to `real` (its real path) was allowed: what the file is now (None: no such file) — its stop's
@@ -1074,9 +1149,11 @@ fn landed(
     }
     sync_shown(ed);
     // (placed again: its removed rows above it count now)
-    if shown_in.is_some() && ed.doc().path.as_deref() == Some(real.as_path()) {
-        ed.show_range(lines);
-    }
+    in_followed(ed, |ed| {
+        if shown_in.is_some() && ed.doc().path.as_deref() == Some(real.as_path()) {
+            ed.show_range(lines);
+        }
+    });
 }
 
 /// `+2` — more changes in the edit than the first, which the range names.
@@ -1178,9 +1255,11 @@ pub fn reading(ed: &mut Editor) -> bool {
         f.playing = None;
         f.gaze = None;
     }
-    let before = view_key(ed);
-    go(ed, &link.path, link.line);
-    view_key(ed) != before
+    in_followed(ed, |ed| {
+        let before = view_key(ed);
+        go(ed, &link.path, link.line);
+        view_key(ed) != before
+    })
 }
 
 /// The list a walk-through leaves.
@@ -1201,6 +1280,10 @@ fn go(ed: &mut Editor, path: &Path, line: usize) {
 /// Moves the view to `lines` of `path`, the range placed as a whole (`Editor::show_range`) and its first line kept in
 /// sight (`led`) — your cursor stays where it is — when following and the user hasn't taken over, in the project only.
 fn go_range(ed: &mut Editor, path: &Path, lines: Range<usize>) {
+    in_followed(ed, |ed| go_range_here(ed, path, lines))
+}
+
+fn go_range_here(ed: &mut Editor, path: &Path, lines: Range<usize>) {
     // (a session behind keeps its trail; the editor in front is someone else's)
     if ed.background()
         || !ed.session.chat.as_ref().is_some_and(|c| c.follow.active())
@@ -1211,8 +1294,8 @@ fn go_range(ed: &mut Editor, path: &Path, lines: Range<usize>) {
         return;
     }
     let line = lines.start;
-    // (live again: a replay's stop isn't what's showing any more)
-    if let Some(f) = follow(ed) {
+    // (live again: a replay's stop isn't what's showing any more — unless it shows in your pane, not this one)
+    if let Some(f) = follow(ed).filter(|f| !(f.replay_aside && f.replaying.is_some())) {
         f.replaying = None;
         f.replay.at = None;
     }
@@ -1251,7 +1334,9 @@ fn go_range(ed: &mut Editor, path: &Path, lines: Range<usize>) {
         f.previews.push(here);
     }
     for id in stale {
-        if ed.docs.iter().any(|d| d.id == id && !d.is_modified()) {
+        // (one another pane shows is that pane's — yours: kept)
+        let elsewhere = ed.session.views.iter().any(|v| v.id != ed.session.focus && v.doc == id);
+        if ed.docs.iter().any(|d| d.id == id && !d.is_modified()) && !elsewhere {
             ed.close_doc(id);
         }
     }
@@ -1287,7 +1372,16 @@ pub fn watch(ed: &mut Editor) {
     // (`free`), and the sequence's end decides — a move or an edit pauses, a hop to the chat or a picker doesn't)
     let in_code = matches!(ed.session.at, crate::session::At::Code | crate::session::At::Float(_));
     let under_way = in_code && ed.mode != crate::editor::Mode::Normal;
+    // (your keys in a pane follow doesn't lead never pause it — its view moves, yours stays; a hop between the code's
+    // panes isn't a move: where the cursor is there counts as seen — panes P3 step 8)
+    let aside = aside(ed).is_some();
+    let focus = ed.session.focus;
     let Some(f) = follow(ed) else { return };
+    let hopped = f.seen_pane.replace(focus).is_some_and(|p| p != focus);
+    if aside || hopped {
+        f.seen_cursor = Some(now);
+        f.seen_text = Some(text);
+    }
     let input = std::mem::replace(&mut f.seen_input, input_seq) != input_seq;
     let was = f.active();
     // (the text in front changed since: by a key of yours in the code, it's you editing there)
@@ -1301,7 +1395,7 @@ pub fn watch(ed: &mut Editor) {
         f.replaying = None;
         f.replay_placed = None;
     }
-    if input && f.active() && (under_way || moved || edited) {
+    if input && f.active() && !aside && (under_way || moved || edited) {
         f.paused = true;
     }
     let paused = was && f.paused;
@@ -1459,14 +1553,17 @@ pub fn replay_call(ed: &mut Editor, call: &str) -> bool {
 /// were written, the card on it.
 fn show_stop(ed: &mut Editor, at: (usize, usize)) {
     let root = ed.session.root.clone();
+    // (a stop shows where the key was pressed: in a pane follow doesn't lead, that one goes on following)
+    let aside = aside(ed).is_some();
     let Some(c) = ed.session.chat.as_mut() else { return };
     let busy = c.busy();
     let f = &mut c.follow;
     let Some(stop) = f.replay.get(at).cloned() else { return };
     let (k, n, _) = f.replay.position(at);
     f.replay.at = Some(at);
+    f.replay_aside = aside;
     // Looking back while Claude works holds follow (it takes over again a quiet while after your last key)
-    if busy && f.active() {
+    if busy && f.active() && !aside {
         f.paused = true;
     }
     if f.paused {
@@ -1581,9 +1678,15 @@ pub fn settle(ed: &mut Editor) {
     }
 }
 
-/// `C-f`: off → on · paused → following again · on → off. Turning it on goes to the current gaze.
+/// `C-f`: off → on · paused → following again · on → off — in the code pane last focused: on in another pane, follow
+/// moves there (panes P3 step 8). Turning it on goes to the current gaze.
 pub fn toggle(ed: &mut Editor) {
+    let aside = aside(ed).is_some();
     let Some(f) = follow(ed) else { return };
+    if f.active() && aside {
+        resume(ed);
+        return ed.set_status("following in this pane — C-f again stops it");
+    }
     if f.active() {
         f.on = false;
         return ed.set_status("follow off");
@@ -1592,13 +1695,32 @@ pub fn toggle(ed: &mut Editor) {
     ed.set_status("following Claude — move in the editor to take over");
 }
 
-/// Follow on and leading again, the editor where Claude is now.
+/// Code panes `gone` closed (`C-w q`, `C-w o`): the one follow leads among them ends it, said — `C-f` follows in
+/// the pane you're in.
+pub fn panes_gone(ed: &mut Editor, gone: &[crate::split::PaneId]) {
+    let Some(f) = follow(ed) else { return };
+    if !f.pane.is_some_and(|p| gone.contains(&p)) {
+        return;
+    }
+    let was = f.on;
+    (f.on, f.pane, f.led) = (false, None, None);
+    if was {
+        ed.set_status("the pane follow led closed — follow off · C-f follows in the one you're in");
+    }
+}
+
+/// Follow on and leading again, in the code pane last focused, the editor where Claude is now.
 fn resume(ed: &mut Editor) {
+    let focus = ed.session.focus;
     let Some(f) = follow(ed) else { return };
     f.on = true;
     f.paused = false;
-    let target =
-        f.gaze.as_ref().and_then(|g| Some((g.path.clone()?, g.lines.as_ref().map_or(0, |l| l.start))));
+    f.pane = Some(focus);
+    // (a stop taken aside is in the pane follow leads now: live again as anywhere — the next move ends its showing)
+    f.replay_aside = false;
+    let gaze = f.gaze.as_ref().and_then(|g| Some((g.path.clone()?, g.lines.as_ref().map_or(0, |l| l.start))));
+    // (an edit being written is where Claude is now: there first — a pane C-f took follows it at once)
+    let target = crate::writing::writing_now(ed).map(|(p, l)| (p, l.start)).or(gaze);
     if let Some((path, line)) = target {
         go(ed, &path, line);
     }
