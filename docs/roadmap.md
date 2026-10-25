@@ -104,6 +104,13 @@ recipe, and the tests runnable without a cloud VM.
 
 In this order.
 
+**The main line from here** (user, 2026-10-25): panes P3's last steps (the toast look on shots, then step 8, follow
+per pane) → C0 (the workspace split out of the session) → the cleanup audit (§1 item 7: its plan written meanwhile,
+the user deciding each line) → the crate split (§1 item 6) → Orchestra Part I → P3b and the terminal line (§4). Beside
+it, in sessions of their own: motion's next pieces (the drying ink landing, then the honest shimmer), what PR #6's
+merge left (a race suspected in one test, `tests/perf.rs`'s scenarios, the size baseline), frictions. Code mode (§3)
+and the review lens's A + E wait on their records' data.
+
 ### 1. Publishing
 
 First (decided 2026-10-15); stabilization (§9) waits. The Cyber Verification Program, meant to unblock the
@@ -601,13 +608,14 @@ tarae's woven view** (the user, 2026-10-25) — main, fix and docs, each a caret
 text at once, a conflict shown and folded, docs asking the visitor on a card that never answers itself (untouched, it
 folds to its peek and waits), then all brought in and the page plain; under it "The real thing", `cargo xtask
 homepage`'s six-beat recording (`3c8c7143`, `d67e4610`; the woven top line's gap fixed on the way, `4eda18dd`).
-tarae.sh `dd683e6`, not deployed yet. The brand it wears is in (2026-10-18, `ec987191`, [brand/](brand)): the seal — a skein's
+Served at https://tarae.sh since 2026-10-25 (tarae.sh `507b012`: a preview first, then the domain — the worker's
+custom domain; the player lays each glyph in its own cell, so a phone's own system face can't break the recording's
+grid; the top line stays at the top as you scroll). The brand it wears is in (2026-10-18, `ec987191`, [brand/](brand)): the seal — a skein's
 thread carved out of an accent block, unwinding to a cursor, in hanji and meok; vector only (the start screen is
 set in type, 2026-10-19) — and the mascot, a ball of thread painted in ink, finished with the seal as its 낙관
 (small, at its lower left, 2026-10-19): the one picture at the README's top, over its title. An animation that feels like several agents working at once, and the README's demo, both from
 one scripted recording: `cargo xtask shot` extended to record frames, Claude's parts played by the tests' fake
-claude, so it can be recorded again when the UI changes. To do: the deploy (a preview, then the domain) and the
-README's demo from the same recording. The scenes are picked with the user: a chat edit and its card, the end-of-turn review, a commit from the
+claude, so it can be recorded again when the UI changes. To do: the README's demo from the same recording. The scenes are picked with the user: a chat edit and its card, the end-of-turn review, a commit from the
 git tab, search, a short Kubernetes one.
 
 The line over the tarae-makes-tarae video (the user's draft, 2026-10-23: "…an editor designed to be fully controlled
