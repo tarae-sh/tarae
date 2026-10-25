@@ -55,7 +55,7 @@ const FG: Rgb = [248, 248, 242];
 /// capture never lands mid-frame (cards half overdrawn while an animation ticks).
 const FRAME_END: &[u8] = b"\x1b[?2026l";
 
-type Rgb = [u8; 3];
+pub(crate) type Rgb = [u8; 3];
 
 pub fn run(args: &[String]) -> Result<()> {
     if args.first().is_some_and(|a| a == "--live") {
@@ -66,12 +66,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let num = |k: &str, d: u16| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
     let (cols, rows) = (num("TARAE_SHOT_COLS", 112), num("TARAE_SHOT_ROWS", 30));
     let scale = scale(std::env::var("TARAE_SHOT_SCALE").ok().as_deref())?;
-    let mut vt = Vt {
-        parser: vt100::Parser::new(rows, cols, 0),
-        held: Vec::new(),
-        capturing: None,
-        captured: Vec::new(),
-    };
+    let mut vt = Vt::new(rows, cols);
 
     if let Some(replay) = std::env::var_os("TARAE_SHOT_REPLAY") {
         let bytes = std::fs::read(&replay).map_err(|e| format!("{}: {e}", Path::new(&replay).display()))?;
@@ -137,12 +132,7 @@ fn shot_env(zellij: Option<std::ffi::OsString>) -> Vec<(&'static str, Option<&'s
 /// in `state` (left there), the screen saved to `out`.
 pub fn take(setup: &Setup, keys: &[String], size: (u16, u16), state: &Path, out: &Path) -> Result<()> {
     let (cols, rows) = size;
-    let mut vt = Vt {
-        parser: vt100::Parser::new(rows, cols, 0),
-        held: Vec::new(),
-        capturing: None,
-        captured: Vec::new(),
-    };
+    let mut vt = Vt::new(rows, cols);
     let missed = drive(&mut vt, setup, keys, state, &[], cols, rows)?;
     // (a scene's `@~N` frames too, as `cargo xtask shot` keeps them)
     contact_sheet(&vt, 1, out)?;
@@ -163,17 +153,35 @@ pub fn take_at(
     out: &Path,
 ) -> Result<Vec<Vec<String>>> {
     let (cols, rows) = size;
-    let mut vt = Vt {
-        parser: vt100::Parser::new(rows, cols, 0),
-        held: Vec::new(),
-        capturing: None,
-        captured: Vec::new(),
-    };
+    let mut vt = Vt::new(rows, cols);
     let missed = drive(&mut vt, setup, keys, state, homes, cols, rows)?;
     picture_of(&vt, scale, out, &missed)?;
     let screen = vt.parser.screen();
     let text = |r, c| screen.cell(r, c).map(|c| c.contents().to_string()).unwrap_or_default();
     Ok((0..rows).map(|r| (0..cols).map(|c| text(r, c)).collect()).collect())
+}
+
+pub(crate) type Frames = Vec<(u64, vt100::Screen)>;
+
+/// Drives `setup` on a `cols`×`rows` pty with `homes` (`@rec` starts frame capture, `@beat` marks a beat,
+/// `@hold:<ms>` holds for `<ms>` milliseconds), returning the captured `(ms, Screen)` frames and beat snapshots.
+pub(crate) fn record_at(
+    setup: &Setup,
+    keys: &[String],
+    size: (u16, u16),
+    state: &Path,
+    homes: &[(&str, std::ffi::OsString)],
+) -> Result<(Frames, Frames)> {
+    let (cols, rows) = size;
+    let mut vt = Vt::new(rows, cols);
+    let missed = drive(&mut vt, setup, keys, state, homes, cols, rows)?;
+    if !missed.is_empty() {
+        return Err(missed.join("; "));
+    }
+    let ms = |list: Vec<(Duration, vt100::Screen)>| {
+        list.into_iter().map(|(d, s)| (d.as_millis() as u64, s)).collect()
+    };
+    Ok((ms(vt.captured), ms(vt.beats)))
 }
 
 /// The picture of a driven screen, saved either way — and an error when a wait in its keys timed out (`missed`):
@@ -229,12 +237,7 @@ fn live(args: &[String]) -> Result<()> {
     let (Some(cols), Some(rows)) = (size("cols"), size("rows")) else {
         return Err(format!("{}: no frame in its answer", sock.display()));
     };
-    let mut vt = Vt {
-        parser: vt100::Parser::new(rows, cols, 0),
-        held: Vec::new(),
-        capturing: None,
-        captured: Vec::new(),
-    };
+    let mut vt = Vt::new(rows, cols);
     vt.feed(f["bytes"].as_str().unwrap_or_default().as_bytes());
     // (the frame as tarae drew it, before the terminal's update markers: ended here)
     vt.feed(FRAME_END);
@@ -310,13 +313,25 @@ fn ui_ask(sock: &Path, req: &serde_json::Value) -> Result<serde_json::Value> {
 struct Vt {
     parser: vt100::Parser,
     held: Vec<u8>,
-    /// `@~N`: since when every whole frame is kept (`captured`), for N ms after the key it went with.
+    /// `@~N` or `@rec`: since when every whole frame is kept (`captured`).
     capturing: Option<Instant>,
-    /// The frames `@~N` kept: the screen before its key, then each frame drawn, with when it came.
+    /// The frames `@~N` or `@rec` kept: the screen before its key, then each frame drawn, with when it came.
     captured: Vec<(Duration, vt100::Screen)>,
+    /// The beat snapshots `@beat` marked during `@rec`.
+    beats: Vec<(Duration, vt100::Screen)>,
 }
 
 impl Vt {
+    fn new(rows: u16, cols: u16) -> Self {
+        Self {
+            parser: vt100::Parser::new(rows, cols, 0),
+            held: Vec::new(),
+            capturing: None,
+            captured: Vec::new(),
+            beats: Vec::new(),
+        }
+    }
+
     fn feed(&mut self, data: &[u8]) {
         self.held.extend_from_slice(data);
         let Some(cut) = self.held.windows(FRAME_END.len()).rposition(|w| w == FRAME_END) else { return };
@@ -482,6 +497,25 @@ fn drive(
     let mut missed = Vec::new();
     let mut capture = None;
     for k in keys {
+        if k == "@rec" {
+            let since = Instant::now();
+            vt.captured.clear();
+            vt.beats.clear();
+            vt.captured.push((Duration::ZERO, vt.parser.screen().clone()));
+            vt.capturing = Some(since);
+            continue;
+        }
+        if k == "@beat" {
+            let d = vt.capturing.map_or(Duration::ZERO, |s| s.elapsed());
+            let s = vt.parser.screen().clone();
+            vt.captured.push((d, s.clone()));
+            vt.beats.push((d, s));
+            continue;
+        }
+        if let Some(ms) = k.strip_prefix("@hold:").and_then(|s| s.parse::<u64>().ok()) {
+            pump(vt, ms as f64 / 1000.0);
+            continue;
+        }
         if let Some(secs) = capture_key(k) {
             capture = Some(secs);
             continue;
@@ -631,7 +665,7 @@ fn unescape(k: &str) -> Vec<u8> {
 
 // ── Fonts ────────────────────────────────────────────────────────────────────
 
-struct Fonts {
+pub(crate) struct Fonts {
     regular: fontdue::Font,
     bold: fontdue::Font,
     italic: fontdue::Font,
@@ -663,7 +697,7 @@ const WIDE_FONTS: [(&str, u32, &str, u32); 3] = [
 
 impl Fonts {
     /// The fonts, tuned for `SIZE` at `scale`.
-    fn load(scale: usize) -> Result<Fonts> {
+    pub(crate) fn load(scale: usize) -> Result<Fonts> {
         let size = SIZE * scale as f32;
         let open_at = |name: &str, index: u32| -> Option<fontdue::Font> {
             let bytes = std::fs::read(find_font(name)?).ok()?;
@@ -786,7 +820,7 @@ fn block(c: &str) -> Option<(f32, f32, f32, f32)> {
     })
 }
 
-fn color(c: vt100::Color, default: Rgb) -> Rgb {
+pub(crate) fn color(c: vt100::Color, default: Rgb) -> Rgb {
     const BASE: [Rgb; 8] = [
         [33, 34, 44],
         [255, 85, 85],
@@ -812,7 +846,7 @@ fn color(c: vt100::Color, default: Rgb) -> Rgb {
 
 /// The screen as RGB pixels at `s` times the size: glyphs drawn at `SIZE` × `s`, every other measure the 1×
 /// picture's times `s` — so 2× is the 1× layout at twice the pixels, lines and blocks on whole pixels.
-fn render(screen: &vt100::Screen, fonts: &Fonts, s: usize) -> (usize, usize, Vec<u8>) {
+pub(crate) fn render(screen: &vt100::Screen, fonts: &Fonts, s: usize) -> (usize, usize, Vec<u8>) {
     let (rows, cols) = screen.size();
     let (rows, cols) = (rows as usize, cols as usize);
     let size = SIZE * s as f32;
@@ -937,7 +971,7 @@ fn baseline(font: &fontdue::Font, ch1: usize) -> usize {
     at.round() as usize
 }
 
-fn save_png(path: &Path, w: usize, h: usize, px: &[u8]) -> Result<()> {
+pub(crate) fn save_png(path: &Path, w: usize, h: usize, px: &[u8]) -> Result<()> {
     let err = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
     let file = File::create(path).map_err(|e| err(&e))?;
     let mut enc = png::Encoder::new(io::BufWriter::new(file), w as u32, h as u32);
@@ -977,12 +1011,7 @@ mod tests {
         );
         assert_eq!((gone_key("@!lit"), gone_key("@5!a b")), (Some((WAIT_MAX, "lit")), Some((5.0, "a b"))));
         assert_eq!((gone_key("@?x"), gone_key("@!")), (None, None));
-        let mut vt = Vt {
-            parser: vt100::Parser::new(2, 10, 0),
-            held: Vec::new(),
-            capturing: None,
-            captured: Vec::new(),
-        };
+        let mut vt = Vt::new(2, 10);
         vt.feed(b"\x1b[?2026hab\x1b[?2026l\x1b[?2026hcd");
         assert_eq!(vt.parser.screen().contents(), "ab");
         vt.feed(b"\x1b[?2026l");
@@ -1159,12 +1188,7 @@ mod tests {
         let v = ui_ask(&sock, &serde_json::json!({ "get": "frame" })).unwrap();
         server.join().unwrap();
         let f = &v["frame"];
-        let mut vt = Vt {
-            parser: vt100::Parser::new(2, 10, 0),
-            held: Vec::new(),
-            capturing: None,
-            captured: Vec::new(),
-        };
+        let mut vt = Vt::new(2, 10);
         vt.feed(f["bytes"].as_str().unwrap().as_bytes());
         assert_eq!(vt.parser.screen().contents(), "", "held until a frame's end");
         vt.feed(FRAME_END);

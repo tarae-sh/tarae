@@ -22,7 +22,7 @@ use crate::shot::{self, Setup};
 use crate::{Result, root};
 
 // (`scenes --docs`: the docs' pictures, each from a scene here)
-mod docshots;
+pub(crate) mod docshots;
 
 const USAGE: &str = "usage: cargo xtask scenes [--out DIR] [--size COLSxROWS] [--transparent] [--bin TARAE] [scene …] | scenes --list | scenes --compare A B";
 
@@ -2640,7 +2640,7 @@ fn one(
 
 /// The shot's config: language servers off, this xtask as claude running `script` — and for the board's
 /// scripts, the review settings that bring their angles (`knot.rs` high-risk, `thread.rs` the screen's).
-fn config_toml(me: &Path, script: &str) -> String {
+pub(crate) fn config_toml(me: &Path, script: &str) -> String {
     let quoted = |s: &str| toml::Value::String(s.to_string()).to_string();
     let review = match script {
         "boardmid" => "\n[review]\nrisky = [\"knot.rs\"]\nscreen = [\"thread.rs\"]\nboard-at-once = 2\n",
@@ -2682,7 +2682,7 @@ impl Drop for Fresh {
     }
 }
 
-fn write(path: &Path, text: &str) -> Result<()> {
+pub(crate) fn write(path: &Path, text: &str) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
@@ -2694,7 +2694,7 @@ fn write(path: &Path, text: &str) -> Result<()> {
 const CARGO_TOML: &str =
     "[package]\nname = \"tarae-demo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[workspace]\n";
 
-const MAIN_RS: &str = r#"use std::collections::HashMap;
+pub(crate) const MAIN_RS: &str = r#"use std::collections::HashMap;
 
 mod thread;
 use thread::Thread;
@@ -2754,7 +2754,7 @@ fn demo_crate(dir: &Path, trusted: bool) -> Result<()> {
 }
 
 /// `demo_crate` with `extra` files committed beside its own (over them where named alike).
-fn demo_crate_with(dir: &Path, trusted: bool, extra: &[(&str, String)]) -> Result<()> {
+pub(crate) fn demo_crate_with(dir: &Path, trusted: bool, extra: &[(&str, String)]) -> Result<()> {
     demo_files(dir, false, trusted)?;
     for (path, text) in extra {
         write(&dir.join(path), text)?;
@@ -2786,7 +2786,7 @@ fn demo_crate_with(dir: &Path, trusted: bool, extra: &[(&str, String)]) -> Resul
 }
 
 /// A failing test and one that passes, below `main` (`cargo test` on the bin): the tests panel's failure.
-const MAIN_TESTS: &str = r#"
+pub(crate) const MAIN_TESTS: &str = r#"
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2884,6 +2884,20 @@ fn run_files(scene: &str) -> Vec<(&'static str, String)> {
 
 // ── The stand-in claude ──────────────────────────────────────────────────────
 
+/// A script specification that names each session's checkout (`main=home-main,fix=home-fix,docs=card`) picks the
+/// script for `cwd`'s folder (`tarae-demo` is `main`); a plain script name stands as given.
+pub(crate) fn script_for<'a>(spec: &'a str, cwd: Option<&Path>) -> &'a str {
+    if !spec.contains('=') {
+        return spec;
+    }
+    let folder = cwd.and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or_default();
+    let session = if folder == "tarae-demo" { "main" } else { folder };
+    spec.split(',')
+        .filter_map(|pair| pair.trim().split_once('='))
+        .find_map(|(k, v)| (k.trim() == session).then_some(v.trim()))
+        .unwrap_or("idle")
+}
+
 /// Reads tarae's lines from `input` and answers each user message (the line that starts `{"message"` — tarae's
 /// JSON has its keys sorted) with `script`'s turn on `out`, `pause` after each piece of text: `full` explains,
 /// reads and edits (its calls wait for tarae's answers), `three` the same with three changes; `mid` stops in the
@@ -2894,6 +2908,8 @@ fn run_files(scene: &str) -> Vec<(&'static str, String)> {
 /// `warmfork` as a ping's fork of it; `boardmid` / `boarddone` are a board's members (each by what its message
 /// asks — `board`); `idle` never answers.
 fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Duration) -> io::Result<()> {
+    let cwd = std::env::current_dir().ok();
+    let script = script_for(script, cwd.as_deref());
     let mut lines = input.lines();
     while let Some(line) = lines.next() {
         let line = line?;
@@ -2944,6 +2960,9 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "reviewing" => turn.reviewer(false)?,
             "reviewdone" => turn.reviewer(true)?,
             "reviewfull" => turn.reviewer_full()?,
+            "home-main" => turn.home_main()?,
+            "home-fix" => turn.home_fix()?,
+            "home-docs" => turn.home_docs()?,
             _ => {}
         }
     }
@@ -3369,6 +3388,139 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.call(1, "search", search)?;
         self.line(json!({"type": "result", "result": "done"}))
     }
+
+    /// Streams `json` as `input_json_delta` on block `idx` up to `hold`, flushing and running `on_hold` there so a
+    /// scene beat sees the edit mid-line before the rest of `json` finishes.
+    fn input_pause(
+        &mut self,
+        idx: u64,
+        n: u64,
+        name: &str,
+        json: &str,
+        hold: &str,
+        on_hold: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<()> {
+        let block = json!({"type": "tool_use", "id": format!("t{n}"), "name": format!("mcp__tarae__{name}"), "input": {}});
+        self.line(json!({"type": "stream_event", "event": {"type": "content_block_start", "index": idx, "content_block": block}}))?;
+        let mid = json.find(hold).unwrap_or(json.len());
+        for piece in json[..mid].chars().collect::<Vec<_>>().chunks(10) {
+            let delta = json!({"type": "input_json_delta", "partial_json": piece.iter().collect::<String>()});
+            self.line(json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": idx, "delta": delta}}))?;
+            std::thread::sleep(self.pause / 2);
+        }
+        let empty = json!({"type": "input_json_delta", "partial_json": ""});
+        self.line(json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": idx, "delta": empty}}))?;
+        if !self.pause.is_zero() {
+            on_hold()?;
+        }
+        for piece in json[mid..].chars().collect::<Vec<_>>().chunks(12) {
+            let delta = json!({"type": "input_json_delta", "partial_json": piece.iter().collect::<String>()});
+            self.line(json!({"type": "stream_event", "event": {"type": "content_block_delta", "index": idx, "delta": delta}}))?;
+            std::thread::sleep(self.pause / 2);
+        }
+        self.line(json!({"type": "stream_event", "event": {"type": "content_block_stop", "index": idx}}))
+    }
+
+    /// Homepage hero (`main` checkout): Beat 1 reads and explains; Beat 2 streams the `entry`/`or_insert` edit on
+    /// line 10 while `fix` writes line 12; Beat 3 writes line 10 to disk (triggering `main ≈ fix`); Beat 6 opens
+    /// the inline review (`Change 1 of 1`) once `:weave` closes and `:review-at-end off` reloads the config.
+    fn home_main(&mut self) -> io::Result<()> {
+        self.words("Let me look at how the map is filled first.")?;
+        self.text("\n\n")?;
+        self.call(1, "read", json!({"files": ["src/main.rs:7-14"]}))?;
+        self.words(
+            "The name is cloned because **insert** takes the key by value, and `first` moves into the map",
+        )?;
+        self.words("in the same call. Switching to `entry` keeps the first strand when a name repeats.")?;
+        self.text("\n")?;
+        let item = |old: &str, new: &str| {
+            let s = |t: &str| Value::from(t).to_string();
+            format!(r#"{{"file_path": "src/main.rs", "old_string": {}, "new_string": {}}}"#, s(old), s(new))
+        };
+        let edit1 = format!(
+            r#"{{"edits": [{}]}}"#,
+            item(
+                "    threads.insert(first.name.clone(), first);\n",
+                "    threads.entry(first.name.clone()).or_insert(first);\n",
+            )
+        );
+        self.input_pause(1, 2, "edit", &edit1, "_insert(first);", || {
+            std::thread::sleep(Duration::from_millis(2600));
+            Ok(())
+        })?;
+        self.call(2, "edit", serde_json::from_str(&edit1).map_err(io::Error::other)?)?;
+        if !self.pause.is_zero() {
+            let cfg = std::env::var_os("XDG_CONFIG_HOME")
+                .map(|p| PathBuf::from(p).join("tarae/config.toml"))
+                .unwrap_or_else(|| PathBuf::from("../../xdg/tarae/config.toml"));
+            wait_file_contains(&cfg, "review-at-end = false", Duration::from_secs(35))?;
+        }
+        self.words("I will also trim the redundant length from the summary line.")?;
+        self.text("\n")?;
+        let edit2 = format!(
+            r#"{{"edits": [{}]}}"#,
+            item(
+                "        println!(\"{name}: {} knots, {} long\", t.knots.len(), t.length());\n",
+                "        println!(\"{name}: {} knots\", t.knots.len());\n",
+            )
+        );
+        self.call(3, "edit", serde_json::from_str(&edit2).map_err(io::Error::other)?)?;
+        self.words("Done — **main.rs** keeps the first strand when a name repeats.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// Homepage hero (`fix` checkout): holds its `input_json_delta` on `src/main.rs` line 12 (`‹fix writing›` in
+    /// blue) while `main` writes line 10, then writes its own change on lines 10 and 12 once `main`'s edit lands,
+    /// so `overlap.rs` reports `main ≈ fix · src/main.rs L10 — would conflict`.
+    fn home_fix(&mut self) -> io::Result<()> {
+        self.words("Simplifying the summary line in `fix`.")?;
+        self.text("\n")?;
+        let item = |old: &str, new: &str| {
+            let s = |t: &str| Value::from(t).to_string();
+            format!(r#"{{"file_path": "src/main.rs", "old_string": {}, "new_string": {}}}"#, s(old), s(new))
+        };
+        let print = item(
+            "        println!(\"{name}: {} knots, {} long\", t.knots.len(), t.length());\n",
+            "        println!(\"{name}: {} knots\", t.knots.len());\n",
+        );
+        let conflict = item(
+            "    threads.insert(first.name.clone(), first);\n",
+            "    let _ = threads.insert(first.name.clone(), first);\n",
+        );
+        let input = format!(r#"{{"edits": [{print}, {conflict}]}}"#);
+        self.input_pause(1, 1, "edit", &input, "nots.len());\\n\"}", || {
+            wait_file_contains(Path::new("../tarae-demo/src/main.rs"), "or_insert", Duration::from_secs(25))
+        })?;
+        self.call(1, "edit", serde_json::from_str(&input).map_err(io::Error::other)?)?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// Homepage hero (`docs` checkout): runs a sandboxed command first, then asks on a sandbox grant card (`In the
+    /// sandbox`) to reach `index.crates.io` for `cargo test --quiet`.
+    fn home_docs(&mut self) -> io::Result<()> {
+        self.words("Checking the doc examples in the sandbox.")?;
+        self.text("\n")?;
+        self.call(1, "run", json!({"command": "true"}))?;
+        let also = json!({"command": "cargo test --quiet", "also": {"network": "index.crates.io"},
+            "reason": "cargo needs the registry index"});
+        self.call(2, "run", also)?;
+        self.words("All doc tests pass in the sandbox.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+}
+
+fn wait_file_contains(path: &Path, needle: &str, timeout: Duration) -> io::Result<()> {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if std::fs::read_to_string(path).is_ok_and(|s| s.contains(needle)) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(80));
+    }
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("timed out waiting for {needle:?} in {}", path.display()),
+    ))
 }
 
 #[cfg(test)]
@@ -3455,5 +3607,17 @@ mod tests {
         let path = a.0.clone();
         drop(a);
         assert!(!path.exists());
+    }
+
+    /// A per-session script specification picks each session's script by its checkout folder (`tarae-demo` →
+    /// `main`), falling back to `idle` for unlisted folders, and leaves plain script names untouched.
+    #[test]
+    fn script_for_picks_each_sessions_script_by_checkout_folder() {
+        let spec = "main=home-main,fix=home-fix,docs=card";
+        assert_eq!(script_for(spec, Some(Path::new("/tmp/home/tarae-demo"))), "home-main");
+        assert_eq!(script_for(spec, Some(Path::new("/tmp/home/fix"))), "home-fix");
+        assert_eq!(script_for(spec, Some(Path::new("/tmp/home/docs"))), "card");
+        assert_eq!(script_for(spec, Some(Path::new("/tmp/home/other"))), "idle");
+        assert_eq!(script_for("full", Some(Path::new("/tmp/home/fix"))), "full");
     }
 }

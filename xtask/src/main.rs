@@ -37,6 +37,8 @@
 //!   each stack's commands run as Claude's run, here and on Linux tiers, as a table (see [`compat`]).
 //! - `glyphs [chars]` — whether JetBrains Mono, Hack, Menlo and SF Mono each map those characters, from the cmap of
 //!   the fonts installed here (see [`glyphs`]) — the check behind CLAUDE.md's glyph list.
+//! - `homepage [<out-dir>]` — the homepage hero scene ("Three Claudes, one repository") recorded in both themes
+//!   (`hero-meok.json`, `hero-hanji.json`), first-frame PNGs, and 6-beat contact sheets (see [`homepage`]).
 
 // (clippy.toml's sort rule is for the tarae binary's size: these tasks aren't in it)
 #![allow(clippy::disallowed_methods, reason = "dev tasks: not in the release binary")]
@@ -51,6 +53,7 @@ mod claudestub;
 mod compat;
 mod deb;
 mod glyphs;
+mod homepage;
 mod linux;
 mod perf;
 // (tarae's own: a pty close-on-exec from the start)
@@ -90,8 +93,9 @@ fn main() {
         Some("turns") => turns::run(&args[1..]),
         Some("compat") => compat::run(&args[1..]),
         Some("glyphs") => glyphs::run(&args[1..]),
+        Some("homepage") => homepage::run(&args[1..]),
         _ => Err(
-            "usage: cargo xtask vendor-grammars | shot out.png [keys …] | scenes [--out DIR] [scene …] | perf | linux [--platform P] [clippy|test] | deb [--binary PATH] | stream [--model M] [--edit] [prompt] | stream --file F | trace [offcpu|syscalls|pty] [scenario …] | trace test|clippy | claude-stub serve|drive|summary | cards [PATH …] | reviews [PATH …] | turns [PATH …] | compat [stack …] [--lane gate|quick|net] [--linux a+|c|all] [--dry-run] | glyphs [chars]"
+            "usage: cargo xtask vendor-grammars | shot out.png [keys …] | scenes [--out DIR] [scene …] | homepage [DIR] | perf | linux [--platform P] [clippy|test] | deb [--binary PATH] | stream [--model M] [--edit] [prompt] | stream --file F | trace [offcpu|syscalls|pty] [scenario …] | trace test|clippy | claude-stub serve|drive|summary | cards [PATH …] | reviews [PATH …] | turns [PATH …] | compat [stack …] [--lane gate|quick|net] [--linux a+|c|all] [--dry-run] | glyphs [chars]"
                 .into(),
         ),
     };

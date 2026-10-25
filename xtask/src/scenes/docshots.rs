@@ -40,13 +40,13 @@ const USAGE: &str = "usage: cargo xtask scenes --docs [--out DIR] [--both] [pict
 
 /// The theme a picture is in: meok on a dark ground, hanji on a light one.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Bg {
+pub(crate) enum Bg {
     Dark,
     Light,
 }
 
 impl Bg {
-    fn word(self) -> &'static str {
+    pub(crate) fn word(self) -> &'static str {
         match self {
             Bg::Dark => "dark",
             Bg::Light => "light",
@@ -61,7 +61,7 @@ impl Bg {
     }
 
     /// The theme tarae picks on it.
-    fn theme(self) -> &'static str {
+    pub(crate) fn theme(self) -> &'static str {
         match self {
             Bg::Dark => "meok",
             Bg::Light => "hanji",
@@ -804,7 +804,7 @@ fn one(scene: &DocScene, d: &DocShot, bg: Bg, bin: &Path, me: &Path, out: &Path)
 /// A docs picture names nothing of yours: your home's path never shows on its screen (`yours`, the `HOME` the shot
 /// is taken in — the toolchains' homes are still reached there, `homes`, and this xtask runs from there as the
 /// stand-in claude), nor your name as a folder in a path cut from the left (`…/you/.cargo`).
-fn none_of_yours(screen: &[Vec<String>], yours: Option<&std::ffi::OsStr>) -> Result<()> {
+pub(crate) fn none_of_yours(screen: &[Vec<String>], yours: Option<&std::ffi::OsStr>) -> Result<()> {
     let Some(home) = yours.and_then(|h| h.to_str()).filter(|h| h.len() > 1) else { return Ok(()) };
     let name = Path::new(home).file_name().and_then(|n| n.to_str()).map(|n| format!("/{n}/"));
     for (i, row) in screen.iter().enumerate() {
@@ -858,7 +858,7 @@ const SHOT_CLOCK: u64 = 14 * 3600 + 27 * 60;
 
 /// A POSIX `TZ` whose local time is `SHOT_CLOCK` at `now` (Unix seconds): an offset from UTC to the second, within
 /// ±12 h (POSIX's sign is west of UTC, so a zone east of it reads `-`).
-fn fixed_clock(now: u64) -> String {
+pub(crate) fn fixed_clock(now: u64) -> String {
     const DAY: i64 = 86_400;
     let east = (SHOT_CLOCK as i64 - (now as i64).rem_euclid(DAY)).rem_euclid(DAY);
     let east = if east > DAY / 2 { east - DAY } else { east };
@@ -866,14 +866,14 @@ fn fixed_clock(now: u64) -> String {
     format!("SHT{sign}{:02}:{:02}:{:02}", a / 3600, a / 60 % 60, a % 60)
 }
 
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 /// A docs shot's homes in its folder `dir` (`var`: the environment it's taken in): `HOME`, `XDG_DATA_HOME`,
 /// `XDG_CACHE_HOME` its own — and the toolchains' homes yours, named, so what runs cargo there still finds its
 /// toolchain (rustup's and cargo's homes default to `~`).
-fn homes(
+pub(crate) fn homes(
     dir: &Path,
     var: &dyn Fn(&str) -> Option<std::ffi::OsString>,
 ) -> Result<Vec<(&'static str, std::ffi::OsString)>> {
@@ -890,10 +890,10 @@ fn homes(
 
 /// `<temp>/tarae-docs/<name>`, made new — never one that was there: a docs shot that didn't finish, or someone
 /// else, left it, and it's said rather than cleared. Removed on drop, and only it.
-struct Named(PathBuf);
+pub(crate) struct Named(pub(crate) PathBuf);
 
 impl Named {
-    fn new(name: &str) -> Result<Named> {
+    pub(crate) fn new(name: &str) -> Result<Named> {
         Named::under(&std::env::temp_dir().join("tarae-docs"), name)
     }
 
