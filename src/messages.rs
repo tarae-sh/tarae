@@ -51,7 +51,7 @@ impl Editor {
         (first..first + n).collect()
     }
 
-    /// `:messages` (or a focused toast's `enter`, `select` its message): the list up with the keys, at the newest —
+    /// `:messages` (or a press on a toast, `select` the message pressed): the list up with the keys, at the newest —
     /// nothing said yet, said instead.
     pub fn messages_open(&mut self, select: Option<u64>) {
         let Some(&newest) = self.message_ids().last() else {

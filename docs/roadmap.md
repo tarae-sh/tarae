@@ -487,7 +487,9 @@ main that has what it waits for, and the user says go:
   line with whole names and `+N` carrying the folded ones' signs, the session list docking (`C-w H/J/K/L`, kept across
   `:restart`, floating for a frame with no room); the chat's foot (`f9d9d59e`): its text `PAD` from the screen's edge, the
   outer cell the transcript's thumb, the usage row the conversation's (the weekly window only while it presses — user,
-  2026-10-24); next the toast look (borderless rows beside the faint frame, on shots), then step 8, follow per pane),
+  2026-10-24); the toast news, never a pane with the keys (the user, 2026-10-25, on the shots of borderless rows beside
+  the faint frame: 7c's focus, keys and frame gone; the peek's look, a press opening `:messages`); next step 8, follow
+  per pane),
   beside it **C1–C3** of the participants plan (the user, 2026-10-22:
   a session = one participant, a workspace = a checkout with its layout; C1 (`1eb04ee5`) where
   every session reads and writes, shown wherever that file is, each session its name in its colour; C2 (`c4513975`) an overlap between workspaces said the moment it

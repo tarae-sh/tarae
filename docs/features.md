@@ -180,11 +180,11 @@ configs carry over as they are.
   fails for space says the disk is full first. The session list (`space W`) shows each session's own build folder
   outside its checkout (`build 12.0 GB`) — one its end would remove — and `x` twice on a session behind with
   nothing running drops it (its next build starts cold)
-- **Toasts** — status messages fade in as cards at the top right, the left bar colored by kind (info, saved, warning,
-  error). The more serious, the longer they stay ([screenshot](screenshots/ux-toasts-sync.png)). A toast floats in a
-  faint frame named `messages` and takes no key until you focus it — a click on it, or `C-w w`'s round (after a card
-  waiting): then it stays, its frame lit, its keys in its bottom line as its width holds them (`enter` `:messages` at
-  that message, `esc` closes, `y` copies it, `j`/`k` between its messages); let go, it fades out at once (a press as it fades takes it back)
+- **Toasts** — status messages fade in at the top right, a message a row on a slight ground, no frame, the left bar
+  colored by kind (info, saved, warning, error) — the look of another session's ask waiting at the bottom right. The
+  more serious, the longer they stay ([screenshot](screenshots/ux-toasts-sync.png)); an error stays until a key of
+  yours goes by, and that key does what it does. A toast is news: it never takes a key (`C-w w` passes it by); a click
+  on it opens `:messages` at that message, where it's read whole, scrolled and copied
 - **`:messages`** — everything said since tarae started, as a floating list in the session list's frame: oldest first,
   opened at the newest, `▲` before an error or a warning, each one's age; `/` searches it, `y` copies a message,
   `enter` opens one too long for its row whole in a buffer. Opened, the toasts go (their words are its rows); what's

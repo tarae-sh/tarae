@@ -970,14 +970,9 @@ pub struct Editor {
     /// The front card as the last frame drew it (id, `rev`) — a weighty card's answers count only for it
     /// (`Stands.drawn`).
     pub offer_drawn: std::cell::Cell<Option<(u64, u64)>>,
-    /// The floating pane a window prefix just took the keys from (a card's `card_key`, a toast's `toast_key`): `C-w w`
-    /// from it goes on round the panes, not back to it.
+    /// The floating pane a window prefix just took the keys from (a card's `card_key`): `C-w w` from it goes on round
+    /// the panes, not back to it.
     pub float_left: Option<crate::pane::Floating>,
-    /// The notification card that has the keys (P3 §3.9, `toast.rs`): focused by a press on it or `C-w w`'s round —
-    /// its time held while it has them, its keys on its frame's bottom line; let go, it fades out.
-    pub toast_focus: Option<crate::toast::Focus>,
-    /// When the focused card was let go — it fades out over `toast::LETGO`, then goes.
-    pub toast_letgo: Option<std::time::Instant>,
     /// The terminal said its focus went elsewhere (CSI ?1004 — tmux passes it on only with `focus-events
     /// on`), and no input came since: the waiting animation rests (`tick_wanted`). A terminal that never
     /// says keeps it going.
@@ -1260,8 +1255,6 @@ impl Editor {
             card_next: None,
             offer_drawn: Default::default(),
             float_left: None,
-            toast_focus: None,
-            toast_letgo: None,
             screen_sends: Vec::new(),
             frames: 0,
             ui_asks: Vec::new(),
@@ -1835,25 +1828,18 @@ impl Editor {
         if order.is_empty() {
             order = self.code_leaves();
         }
-        // The floating panes in sight are the round's last stops (P3 §3.8–3.9): a card waiting, then the toast —
-        // `C-w w` from the last pane focuses the card, from the card the toast (backwards the other way round); from
-        // the one a window prefix just took the keys from the round goes on (never back to it)
+        // A card waiting in sight is the round's last stop (P3 §3.8): `C-w w` from the last pane focuses it (backwards
+        // from the first); from the card a window prefix just took the keys from the round goes on (never back to it).
+        // A toast is never a stop: it takes no key (`toast.rs`)
         use crate::pane::Floating;
         let left = self.float_left.take();
         let card = (self.screen.offer_card.is_some() || self.screen.offer_held)
             && self.card_waits()
             && !matches!(left, Some(Floating::Card(l)) if self.offers.first().is_some_and(|o| o.id == l));
-        let toast = self.toast_up() && !matches!(left, Some(Floating::Toast(_)));
-        let from_card = matches!(left, Some(Floating::Card(_)));
-        let from_toast = matches!(left, Some(Floating::Toast(_)));
         let edge = |end: Option<&crate::split::PaneId>| self.at_pane().is_some_and(|h| end == Some(&h));
         let (last, first) = (edge(order.last()) && left.is_none(), edge(order.first()) && left.is_none());
-        match delta > 0 {
-            true if last && card => return self.card_focus_front(),
-            true if (last || from_card) && toast => return self.toast_focus_take(),
-            false if first && toast => return self.toast_focus_take(),
-            false if (first || from_toast) && card => return self.card_focus_front(),
-            _ => {}
+        if card && (if delta > 0 { last } else { first }) {
+            return self.card_focus_front();
         }
         let mut here = self.at_pane().unwrap_or(self.session.focus);
         // (the slot's keys on a group: its detail's)
@@ -2202,31 +2188,18 @@ impl Editor {
         // (`:messages` up: said there, a row of it — never the same words twice — once the frame shows that row; else
         // a toast as usual, an error never only on the status line: `messages::rows_drawn`)
         let row = self.messages_pane.is_some();
-        // The card is gone (all had their time), or fading out after it lost the focus (`toast.rs`) → this one
-        // starts a new card
-        let fading = self.toast_letgo.take().is_some();
-        if fading || !self.toasts.iter().any(Toast::alive) {
+        // The card is gone (all had their time) → this one starts a new card
+        if !self.toasts.iter().any(Toast::alive) {
             self.toasts.clear();
             self.screen.toast_narrow.set(None);
         }
-        // (the card focused: what joins it is held with it)
-        let held = |mut t: Toast, focused: bool| {
-            if focused {
-                t.life = crate::toast::HELD;
-            }
-            t
-        };
-        let focused = self.toast_focus.is_some();
         // The same message again: its time starts over, where it is (moving it would make the card jump)
         let id = self.said;
         if let Some(t) = self.toasts.iter_mut().find(|t| t.text == text && t.kind == kind) {
-            *t = held(Toast { id, of, row, ..Toast::new(kind, text) }, focused);
-            if let Some(f) = self.toast_focus.as_mut().filter(|f| f.selected == t.id) {
-                f.selected = id;
-            }
+            *t = Toast { id, of, row, ..Toast::new(kind, text) };
             return;
         }
-        self.toasts.push(held(Toast { id, of, row, ..Toast::new(kind, text) }, focused));
+        self.toasts.push(Toast { id, of, row, ..Toast::new(kind, text) });
         // (the card shows the newest few and counts the rest — all of them are in `:messages`)
         if self.toasts.len() > MESSAGES_KEPT {
             self.toasts.remove(0);
@@ -2269,11 +2242,6 @@ impl Editor {
         let Some(oldest) = toasts.iter().map(|t| t.age()).max() else { return 0.0 };
         if !self.moving() {
             return 1.0;
-        }
-        // (let go of the keys: its own short fade, from half strength — `toast::LETGO`)
-        if let Some(at) = self.toast_letgo {
-            let left = 1.0 - crate::clock::since(at).as_secs_f32() / crate::toast::LETGO.as_secs_f32();
-            return (0.5 * left).clamp(0.0, 0.5);
         }
         let left = toasts.iter().map(|t| t.life.saturating_sub(t.age())).max().unwrap_or_default();
         (oldest.as_secs_f32() / TOAST_FADE_IN.as_secs_f32())
@@ -2636,23 +2604,18 @@ impl Editor {
         let on_card = s
             .offer_card
             .is_some_and(|(cx, cy, cw, ch)| (cx..cx + cw).contains(&x) && (cy..cy + ch).contains(&y));
-        // The notification card: a press on it focuses it, focused one on a message takes it in hand (`toast.rs`); a
-        // press anywhere else lets a focused one go
+        // The notification card: a press on it (fading too) opens `:messages` at the message pressed (`toast.rs`)
         let on_toast = s
             .toast_card
             .get()
             .is_some_and(|(tx, ty, tw, th)| (tx..tx + tw).contains(&x) && (ty..ty + th).contains(&y));
         if m.kind == K::Down && on_toast && !on_card && button.is_none() && self.picker.is_none() {
-            // (a prompt open has the keys: the press is its — the code's under it isn't clicked either — said, never a
-            // focus the prompt takes back the same frame, `toast_sync`)
+            // (a prompt open has the keys: the press is its — the code's under it isn't clicked either — said)
             if self.prompt.is_some() {
                 return self
-                    .set_status("the prompt has the keys — esc close, then a press takes the message");
+                    .set_status("the prompt has the keys — esc close, then a press opens the messages");
             }
             return self.toast_press(y);
-        }
-        if m.kind == K::Down && self.toast_focus.is_some() {
-            self.toast_let_go();
         }
         if m.kind == K::Down && (button.is_some() || on_card) {
             let has = self.card_has_keys();
@@ -3335,14 +3298,6 @@ impl Editor {
     /// When the notification card next needs a frame: a `TICK` while it fades in or out, else when its
     /// fade-out starts — None without one. One waiting for a card (`Toast::waiting`) needs none.
     pub(crate) fn toast_wake(&self) -> Option<std::time::Duration> {
-        // (focused, it's held: no time runs — let go, one frame as its fade ends)
-        if self.toast_focus.is_some() {
-            return None;
-        }
-        if let Some(at) = self.toast_letgo.filter(|_| !self.toasts.is_empty()) {
-            let left = crate::toast::LETGO.saturating_sub(crate::clock::since(at));
-            return Some(left + std::time::Duration::from_millis(2));
-        }
         let running = || self.toasts.iter().filter(|t| !t.waiting());
         let oldest = running().map(Toast::age).max()?;
         let left = running().map(|t| t.life.saturating_sub(t.age())).max();
@@ -3492,9 +3447,6 @@ impl Editor {
         if !self.toasts.is_empty() && !self.toasts.iter().any(Toast::alive) {
             self.toasts.clear();
             self.unchanged = false; // gone from the screen — whatever event this is, it's drawn
-        }
-        if self.toasts.is_empty() {
-            (self.toast_letgo, self.toast_focus) = (None, None);
         }
         self.tick_ask();
     }
@@ -4491,9 +4443,8 @@ impl Editor {
         took(Handler::Code);
         self.session_store.keyed = true;
         // A key of the person's after an error has been read (`ERROR_MIN`) lets it go — it fades out (a shuttle's
-        // key isn't someone reading it)
-        // (a focused card's are held: its own keys let it go)
-        let person = self.shuttles.stepping.is_none() && self.toast_focus.is_none();
+        // key isn't someone reading it); the key goes on to wherever it goes — a toast takes none (`toast.rs`)
+        let person = self.shuttles.stepping.is_none();
         for t in self.toasts.iter_mut().filter(|t| person && t.kind == ToastKind::Error) {
             let age = t.age();
             if age >= ERROR_MIN && t.life > age + TOAST_FADE {
@@ -4509,11 +4460,6 @@ impl Editor {
         // A card is answered from anywhere (#24): `C-q` gives it the keys — what you were typing stays
         if self.card_key(key) {
             return took(Handler::Card);
-        }
-        // The notification card, focused (`toast.rs`): every key its but the window prefix
-        if crate::toast::key(self, key) {
-            took(Handler::Toast);
-            return self.focus_sync();
         }
         // …else to the next up — nothing here, the one that has waited longest, wherever it is (#7, #90, #94,
         // #198) — the front's own edit review

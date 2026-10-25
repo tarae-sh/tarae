@@ -42,7 +42,8 @@ use crate::sizes::Slot;
 /// is `focus` (`keys quiet` and `session list` gone); `keys.waiting` names the front card waiting to be focused.
 /// 14: toasts are panes (P3 §3.9): `toast#N` in `panes` (`float`), `region` `toast`; `:messages` a floating list
 /// (`list:messages`, `panels.lists`), its picker gone.
-pub const V: u64 = 14;
+/// 15: a toast is news, never a pane with the keys: no `toast#N` in `panes`, no `region` `toast`.
+pub const V: u64 = 15;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;
@@ -72,8 +73,6 @@ pub enum Region {
     Program,
     /// Card `id`: its answers (`offer_key`), or every key once `C-q` gave it them (`card_key`).
     Card(u64),
-    /// The notification card, focused (`toast.rs`): every key its but the window prefix — by its newest message.
-    Toast(u64),
     /// `C-q` to the one that has waited longest, elsewhere (`inbox.rs`).
     NextCard,
     /// Floating text (hover): Esc closes it, `C-d`/`C-u` scroll it.
@@ -108,7 +107,6 @@ impl Region {
             Region::List(k) => format!("list:{}", k.name()),
             Region::Program => "terminal-program".into(),
             Region::Card(_) => "card".into(),
-            Region::Toast(_) => "toast".into(),
             Region::NextCard => "next-card".into(),
             Region::Popup => "popup".into(),
             Region::Point => "point".into(),
@@ -138,7 +136,6 @@ impl Region {
             Region::List(_) => Handler::List,
             Region::Program => Handler::Program,
             Region::Card(_) => Handler::Card,
-            Region::Toast(_) => Handler::Toast,
             Region::NextCard => Handler::NextCard,
             Region::Popup => Handler::Popup,
             Region::Point => Handler::Point,
@@ -181,7 +178,6 @@ fn slot_name(s: Slot) -> &'static str {
 pub enum Handler {
     Point,
     Card,
-    Toast,
     NextCard,
     Program,
     Popup,
@@ -209,7 +205,6 @@ impl Handler {
         match self {
             Handler::Point => "point",
             Handler::Card => "card",
-            Handler::Toast => "toast",
             Handler::NextCard => "next-card",
             Handler::Program => "terminal-program",
             Handler::Popup => "popup",
@@ -405,11 +400,6 @@ impl Editor {
             } else if next == crate::inbox::Next::Card(o.id) {
                 v.push(shortcut(Region::Card(o.id), Filter::Only(vec![ctrl('q')])));
             }
-        }
-        // `toast::key`: the notification card focused — every key its but the window prefix (P3 §3.9)
-        if let Some(f) = self.toast_focus.filter(|_| !held) {
-            let prefix = self.keymaps.window_prefix().filter(|_| self.pending.is_empty());
-            v.push(layer(Region::Toast(f.id), Filter::Except(prefix.into_iter().collect())));
         }
         // `C-q` to the one that has waited longest, elsewhere (the front's edit review takes its own) — nothing
         // waiting, to a session whose turn ended
@@ -659,7 +649,6 @@ impl Editor {
             Region::Slot(Slot::Plugin) => s.plugin_panel.get().is_some(),
             Region::Slot(Slot::Debug) => s.bottom_h > 0,
             Region::Card(id) => s.offer_card.is_some() && self.offers.first().is_some_and(|o| o.id == id),
-            Region::Toast(_) => s.toast_card.get().is_some(),
             Region::NextCard => true,
             Region::Popup => s.popup.get().is_some(),
             Region::Point => self.pointing.is_some(),
@@ -675,7 +664,6 @@ impl Editor {
     fn element_id(&self, r: Region) -> String {
         match r {
             Region::Card(id) => format!("card#{id}"),
-            Region::Toast(id) => format!("toast#{id}"),
             Region::Code | Region::Weave | Region::Page => format!("pane#{}", self.session.focus),
             Region::Side(crate::sidebar::Mode::Git) => "git".into(),
             Region::Side(_) => "side".into(),
@@ -1159,7 +1147,6 @@ impl Editor {
                 let has = pane.is_some_and(|p| l.at == At::Float(p));
                 let rect = match f {
                     crate::pane::Floating::Card(_) => self.screen.offer_card,
-                    crate::pane::Floating::Toast(_) => self.screen.toast_card.get(),
                     _ => None,
                 };
                 out.push(PaneState {

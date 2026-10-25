@@ -103,14 +103,21 @@ impl Editor {
         if made {
             self.next_pane += 1;
         }
-        self.session.at = At::List(list);
+        self.list_takes_keys(list);
     }
 
     /// The keys to kind `kind`'s list, up (a press on it, `C-w w`).
     pub fn float_list_focus(&mut self, kind: GroupKind) {
-        if let Some(p) = self.float_list(kind) {
-            self.session.at = At::List(p.list);
+        if let Some(list) = self.float_list(kind).map(|p| p.list) {
+            self.list_takes_keys(list);
         }
+    }
+
+    /// A floating list takes the keys: only one floating pane has them — a card that had them lets go (it waits, `C-q`
+    /// focuses it again), else `card_key`, first in `handle_key`, would still take every key while the list looks lit.
+    fn list_takes_keys(&mut self, list: crate::split::PaneId) {
+        self.card_focus = None;
+        self.session.at = At::List(list);
     }
 
     /// Kind `kind`'s list has the keys.

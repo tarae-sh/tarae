@@ -85,7 +85,7 @@ fn messages_is_a_floating_list_at_the_newest() {
     assert!(ed.messages_pane.is_none(), "q closes it");
 }
 
-/// While `:messages` is up, what's said is a row of it, no toast; closed, a toast again. From a focused toast's `enter`
+/// While `:messages` is up, what's said is a row of it, no toast; closed, a toast again. Opened by a press on a toast
 /// too, the card goes.
 #[test]
 fn while_the_list_is_up_a_message_is_its_row() {
@@ -102,10 +102,13 @@ fn while_the_list_is_up_a_message_is_its_row() {
     ed.set_status("saved c.rs");
     assert_eq!(ed.toasts.len(), 1, "closed: a toast again");
     frame(&mut ed);
-    feed(&mut ed, "<C-w>w<ret>");
+    let (x, y, ..) = ed.screen.toast_card.get().expect("a toast");
+    let kind = crate::event::MouseKind::Down;
+    ed.handle_mouse(crate::event::Mouse { kind, x: x as u16 + 2, y: y as u16, alt: false, ctrl: false });
+    frame(&mut ed);
     assert!(
         ed.float_list_keys(GroupKind::Messages) && ed.toasts.is_empty(),
-        "the toast's enter: its home, the card gone"
+        "a press on the toast: its home, the card gone"
     );
 }
 

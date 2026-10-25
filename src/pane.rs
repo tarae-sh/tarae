@@ -491,8 +491,6 @@ pub fn default_layout(code: PaneId) -> (Vec<Pane>, Split) {
 pub enum Floating {
     /// A card — a pane that asks (`offer.rs`), by its id.
     Card(u64),
-    /// The notification card (`toast.rs`), by its newest message's id (`toast#N`).
-    Toast(u64),
     Picker,
     Prompt,
     WhichKey,
@@ -504,7 +502,6 @@ impl Floating {
     pub fn kind(self) -> &'static str {
         match self {
             Floating::Card(_) => "card",
-            Floating::Toast(_) => "toast",
             Floating::Picker => "picker",
             Floating::Prompt => "prompt",
             Floating::WhichKey => "which-key",
@@ -514,7 +511,6 @@ impl Floating {
     pub fn id(self) -> String {
         match self {
             Floating::Card(n) => format!("card#{n}"),
-            Floating::Toast(n) => format!("toast#{n}"),
             Floating::Picker => "picker".into(),
             Floating::Prompt => "prompt".into(),
             Floating::WhichKey => "which-key".into(),
@@ -528,10 +524,6 @@ impl crate::editor::Editor {
         let mut out = Vec::new();
         if let Some(o) = self.offers.first().filter(|_| self.screen.offer_card.is_some()) {
             out.push(Floating::Card(o.id));
-        }
-        // (the notification card: its newest message's id — focused, the one it was focused with)
-        if let Some(t) = self.toasts.last().filter(|_| self.screen.toast_card.get().is_some()) {
-            out.push(Floating::Toast(self.toast_focus.map_or(t.id, |f| f.id)));
         }
         let viewing = crate::view::viewing(self).is_some_and(|(_, k)| !k.pending.is_empty());
         let output = crate::rundoc::keyed(self).is_some_and(|(_, o)| !o.keys.pending.is_empty());
@@ -553,7 +545,6 @@ impl crate::editor::Editor {
         use crate::uistate::Region;
         match self.keys_region() {
             Region::Card(n) => Some(Floating::Card(n)),
-            Region::Toast(n) => Some(Floating::Toast(n)),
             Region::Picker => Some(Floating::Picker),
             Region::Prompt => Some(Floating::Prompt),
             _ => self.floating().into_iter().find(|f| *f == Floating::WhichKey),

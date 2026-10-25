@@ -60,9 +60,6 @@ const FOOT: &[&str] = &["@1", " ", "l", "@1", "how is the map filled?", "\r", "@
 /// Three messages said one after another: a save, two commands that don't exist (errors, so they stay).
 const TOAST_THREE: &[&str] = &["@1", ":w\r", "@1", ":nope\r", "@1", ":wat\r", "@1"];
 
-/// `TOAST_THREE`, then `C-w w` to the card.
-const TOAST_THREE_FOCUS: &[&str] = &["@1", ":w\r", "@1", ":nope\r", "@1", ":wat\r", "@1", "\x17", "w", "@1"];
-
 /// `TOAST_THREE`, then `:messages`.
 const MESSAGES: &[&str] =
     &["@1", ":w\r", "@1", ":nope\r", "@1", ":wat\r", "@1", ":messages\r", "@?messages", "@1"];
@@ -204,6 +201,8 @@ macro_rules! waits_keys {
         ]
     };
 }
+// (in fix, main's card waiting as a peek: a file saved, its cursor off the top — the toast at the top right)
+const TOAST_PEEK: &[&str] = waits_keys!(":e src/main.rs\r", "@1", "G", ":w\r", "@1");
 // (fix's chat open: the strip over it — main's `▲ waits` in warning, each name in its colour)
 const PRESENCE_WAITS: &[&str] = waits_keys!(" ", "l", "@2");
 // (…the list: main's `▲ waits for you` in warning, each name in its colour)
@@ -2049,19 +2048,14 @@ const SCENES: &[Scene] = &[
     Scene { name: "focus-card-q", claude: "card", files: MAIN, keys: FOCUS_CARD_Q },
     // (…a card your own key asked for over it — `:features-reset` — focused at once)
     Scene { name: "focus-card-yours", claude: "card", files: MAIN, keys: FOCUS_CARD_YOURS },
-    // (P3 step 7c: one toast as it comes — news, in its faint frame named `messages`, no keys of its own; `toast-focus`
-    // the same, focused)
+    // (one toast as it comes — news, never a pane with the keys: borderless on the peek's ground, a message a row)
     Scene { name: "toast-one", claude: "idle", files: MAIN, keys: &["@1", ":w\r", "@1"] },
     // (…three said together, two errors among them: one card, the newest on top)
     Scene { name: "toast-three", claude: "idle", files: MAIN, keys: TOAST_THREE },
-    // (…`C-w w`'s round reaches it: its frame lit, named, its keys in the bottom line)
-    Scene {
-        name: "toast-focus",
-        claude: "idle",
-        files: MAIN,
-        keys: &["@1", ":w\r", "@1", "\x17", "w", "@1"],
-    },
-    Scene { name: "toast-three-focus", claude: "idle", files: MAIN, keys: TOAST_THREE_FOCUS },
+    // (…an error alone, waiting for a key of yours)
+    Scene { name: "toast-error", claude: "idle", files: MAIN, keys: &["@1", ":nope\r", "@3"] },
+    // (…top right, beside main's ask waiting bottom right as a peek: the two one-row looks one family)
+    Scene { name: "toast-peek", claude: "card", files: MAIN, keys: TOAST_PEEK },
     // (`:messages`, a floating list at the newest — the session list's frame)
     Scene { name: "messages", claude: "idle", files: MAIN, keys: MESSAGES },
     // (the same run asked again after a yes, the program it runs rebuilt since — git ignores it: the card's "Same as")

@@ -115,8 +115,6 @@ pub enum Keys {
     Program,
     /// A card given the keys with `C-q` (#78: the status line still said CHAT).
     Card,
-    /// The notification card, focused (`toast.rs`).
-    Toast,
     /// Labels up for pointing at an element: letters pick one (`uistate/point.rs`).
     Point,
     /// A surface's view mode (`view.rs`).
@@ -150,7 +148,6 @@ impl Keys {
             Keys::Slot(Slot::Debug) => "DEBUG",
             Keys::Slot(Slot::Plugin) => "PANEL",
             Keys::Card => "CARD",
-            Keys::Toast => "MESSAGE",
             Keys::Point => "POINT",
             Keys::View(crate::view::Surface::Chat) => "CHAT",
             Keys::View(crate::view::Surface::Terminal) => "VIEW · TERMINAL",
@@ -252,7 +249,6 @@ impl Editor {
         match region {
             R::Picker => Keys::Picker,
             R::Card(_) => Keys::Card,
-            R::Toast(_) => Keys::Toast,
             R::Chat | R::Unfold => Keys::Chat,
             R::Rail => Keys::Review,
             R::EditReview => Keys::Change,

@@ -65,7 +65,7 @@ JSON for programs, and a short text form for people and Claude, from the same st
 
 ```json
 {
-  "v": 14,
+  "v": 15,
   "tarae": { "pid": 4182, "boot": "9f3ac1d0", "version": "0.9.0" },
   "frame": 4812,
   "input": 1033,
@@ -323,7 +323,7 @@ Short, so they can be read in prose and typed. Unique within one tarae process.
 | Kind | Id | From |
 |---|---|---|
 | card | `card#12` | `Offer.id` (`offer_seq`) |
-| toast | `toast#311` | its count among the messages said (`Editor.said`) — a row of `:messages` (`messages:toast#311`), the notification card a floating pane by its newest (`panes`, `float: true`; `keys.region` `toast` while focused) |
+| toast | `toast#311` | its count among the messages said (`Editor.said`) — a row of `:messages` (`messages:toast#311`); the notification card is news, never a pane (no `panes` entry, never `keys.region`) |
 | session | `s1` | `SessionId` |
 | pane | `pane#3` | `PaneId` — one counter for every pane: the code's, the surfaces', the tests' two, a floating one's |
 | run | `run#7` | new sequence, given with the `RunTrace` |

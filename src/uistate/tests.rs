@@ -448,34 +448,29 @@ const SCENES: &[Scene] = &[
         light_card(ed);
         feed(ed, &["i"]);
     }),
-    // (P3 §3.9: a toast is a floating pane — unfocused it takes no key, `y` the code's yank)
+    // (a toast is news, never a pane with the keys: every key the code's, `y` its yank)
     ("a toast", |ed| {
         ed.set_status("saved a.rs");
         frame(ed);
     }),
-    // (`C-w w`'s round: the code, then the toast — every key its but the window prefix)
-    ("a toast focused by C-w w", |ed| {
+    // (…an error waiting for a key of yours: the key goes on to the code, never the toast's)
+    ("an error toast", |ed| {
+        ed.set_error("no such command: 'wat'");
+        frame(ed);
+    }),
+    // (`C-w w` with a toast up: no stop on it)
+    ("a toast past C-w w", |ed| {
         ed.set_status("saved a.rs");
         frame(ed);
         feed(ed, &["<C-w>", "w"]);
     }),
-    ("a toast focused by a press", |ed| {
+    // (a press on it: `:messages`, its home, with the keys)
+    ("a toast pressed", |ed| {
         ed.set_status("saved a.rs");
         frame(ed);
         let (x, y, ..) = ed.screen.toast_card.get().unwrap();
         let kind = crate::event::MouseKind::Down;
-        ed.handle_mouse(crate::event::Mouse {
-            kind,
-            x: x as u16 + 2,
-            y: y as u16 + 1,
-            alt: false,
-            ctrl: false,
-        });
-    }),
-    ("a toast focused, then C-w", |ed| {
-        ed.set_status("saved a.rs");
-        frame(ed);
-        feed(ed, &["<C-w>", "w", "<C-w>"]);
+        ed.handle_mouse(crate::event::Mouse { kind, x: x as u16 + 2, y: y as u16, alt: false, ctrl: false });
     }),
     ("a card under the command line", |ed| {
         light_card(ed);
@@ -1063,20 +1058,6 @@ fn the_routing_test_sees_each_case_broken() {
     let waiting: Vec<Scene> = SCENES.iter().filter(|s| s.0 == "a light card").copied().collect();
     assert_eq!(waiting.len(), 1);
     assert!(!mismatches(&waiting, takes_answers).is_empty(), "a card that waits took y, and the test passes");
-    // A toast not focused taking `y` (P3 §3.9: it copies only once focused) — the test says so
-    let toast_takes = |ed: &Editor| {
-        let mut k = ed.keys_to();
-        if let Some(t) = ed.toasts.last().filter(|_| ed.toast_focus.is_none()) {
-            let layer =
-                Layer { region: Region::Toast(t.id), filter: Filter::Only(vec![ch('y')]), shortcut: false };
-            let at = main(&k);
-            k.chain.insert(at, layer);
-        }
-        k
-    };
-    let toast: Vec<Scene> = SCENES.iter().filter(|s| s.0 == "a toast").copied().collect();
-    assert_eq!(toast.len(), 1);
-    assert!(!mismatches(&toast, toast_takes).is_empty(), "an unfocused toast took y, and the test passes");
     // The shuttle's entrance, its check skipped: a step written for another place lands — and the test says so
     crate::shuttle::SKIP_EXPECT.set(true);
     let off = shuttle_mismatches(&SCENES[..2]);
@@ -1122,14 +1103,14 @@ fn no_key_is_refused_in_silence() {
     }
     let quiet = |k: &str, name: &str| match k {
         "<esc>" | "<C-w>" => true,
-        // (view mode's copy, an output's — `:procs`' detail is one —, the messages list's, a focused toast's: said
-        // once the clipboard has it, its job's toast)
+        // (view mode's copy, an output's — `:procs`' detail is one —, the messages list's (a toast pressed opens it):
+        // said once the clipboard has it, its job's toast)
         "y" => {
             (name.contains("view mode")
                 || name.contains("output")
                 || name.contains("its detail")
                 || name.contains("messages list")
-                || name.contains("a toast focused by"))
+                || name.contains("a toast pressed"))
                 && !name.contains("prompt")
         }
         // (`x` again on the conversation's last row: no row below to take — `j` at a list's end)

@@ -4444,7 +4444,7 @@ impl Region {
                     None => Some(Region::Slot),
                 }
             }
-            Keys::Picker | Keys::Card | Keys::Toast | Keys::Point | Keys::Chat => None,
+            Keys::Picker | Keys::Card | Keys::Point | Keys::Chat => None,
         }
     }
 }
@@ -10351,33 +10351,45 @@ fn toast_color(editor: &Editor, ui: &Ui, kind: crate::editor::ToastKind) -> Opti
     }
 }
 
-/// The notification card's row: the top of the editing rows `[top, bottom)`, else their bottom (its lower edge
-/// the half row of air over what's below), wherever it overlaps none of `taken` — None if neither is free.
+/// The notification card's first row, its rows `(x, w, h)`: at the top of the editing rows `[top, bottom)` a row of air
+/// above and below them, else at their bottom — its last row on the floor every card at the code's foot stands on
+/// (`card_floor`), a row of air above it —, wherever that overlaps none of `taken` — None if neither is free.
 fn toast_place(
     (x, w, h): (usize, usize, usize),
     (top, bottom): (usize, usize),
     taken: &[Rect4],
 ) -> Option<usize> {
-    let free = |y: usize| y >= top && y + h <= bottom && taken.iter().all(|&r| !overlaps((x, y, w, h), r));
-    [top, bottom.saturating_sub(h)].into_iter().find(|&y| free(y))
+    let pad = CARD_PAD;
+    let free =
+        |y: usize, h: usize| y >= top && y + h <= bottom && taken.iter().all(|&r| !overlaps((x, y, w, h), r));
+    if free(top, h + 2 * pad) {
+        return Some(top + pad);
+    }
+    let y = bottom.checked_sub(h + pad)?;
+    free(y, h + pad).then_some(y + pad)
 }
 
 /// Older messages a card shows under the newest (one row each) — more are counted.
 pub(crate) const TOAST_OLDER: usize = 2;
 
-/// The notification card: what came together is one card — the newest message on top (its kind's bar,
-/// wrapped up to three rows), the ones before it under it, dimmer, a row each, the rest counted. It fades
-/// in with its first message and out with its last. It keeps out of the other cards' way (`taken`: the
-/// note, the minimized chat, the thought card, a grammar offer): the top right of the editing area or its
-/// bottom right. No free place, or code too narrow to keep off for a routine message → false (the status line
-/// carries the newest message).
+/// What a card's ground gives to the tint each step behind the front: a peek one deep (`OfferCard::draw`) — and a
+/// toast, on the same slight ground.
+const PEEK_STEP: f32 = 0.3;
+
+/// The notification card — news, never a pane with the keys (`toast.rs`): what came together is one card, borderless
+/// on the peek's slight ground — the newest message on top (its kind's bar, wrapped up to three rows), the ones before
+/// it under it, dimmer, a row each, the rest counted. It fades in with its first message and out with its last. It
+/// keeps out of the other cards' way (`taken`: the note, the minimized chat, the thought card, a grammar offer, the
+/// cursor's row, the change in hand), a row of air between: the top right of the editing area or its bottom right. No
+/// free place, or code too narrow to keep off for a routine message → false (the status line carries the newest
+/// message).
 ///
 /// ```text
-///  ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+///                                     ← air: kept free, not drawn
 ///   ▎ Saved lib.rs · 42 lines
 ///   ▎ rust-analyzer ready            ← older: dim
 ///     +2 earlier · :messages
-///  ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+///
 /// ```
 fn draw_toasts(
     editor: &Editor,
@@ -10400,11 +10412,10 @@ fn draw_toasts(
     if editor.picker.is_some() {
         return Ok(false);
     }
-    // (a floating pane that can take the keys: framed on the ground as a card is — its lines the faint wash, lit once
-    // focused; a line in a cell of the card's colour would leave half a cell of it outside the line all round, D3)
-    let focus = editor.toast_focus;
-    let card = on_ground(ui, card_style(ui, editor, "ui.popup"));
-    let pad = CARD_PAD;
+    // (news, never a pane with the keys: no frame — a frame says "this has the keys" — but the waiting cards' peek's
+    // slight ground, the two one-row looks one family, `OfferCard::draw`)
+    let card = card_style(ui, editor, "ui.popup");
+    let card = Style { bg: blend(card.bg, ui.tint, 1.0 - PEEK_STEP).or(card.bg), ..card };
     let max_inner = (lay.edit_w / 2).clamp(24, 56).min(lay.edit_w.saturating_sub(8));
     let a = editor.toast_alpha();
     let bg = blend(card.bg, ui.tint, a).or(card.bg);
@@ -10461,24 +10472,10 @@ fn draw_toasts(
     }
     let scope_fg = |scope: &str| fade(editor.theme.try_get(scope).and_then(|s| s.fg));
     let inner = rows.iter().map(|r| r.1.width()).max().unwrap_or(0);
-    // Its air rows are its frame's lines (`toast.rs`), named `messages` — as wide as its messages, the name whole; the
-    // same rect focused or not (nothing moves): focused, its keys in the bottom line as many whole pairs as its width
-    // holds, the most useful first (`toast::hints`)
-    // (the way out — `esc close` — always said: the card at least as wide as it and the name)
-    let name = "messages";
-    let pair_w = |(k, d): &(&str, &str)| k.width() + 1 + d.width();
-    let floor = (name.width() + 6).max(pair_w(&crate::toast::ESC) + 6);
-    let inner = inner.max(floor.saturating_sub(5));
     let width = inner + 5; // margin 1 · bar · margin 1 · text · margin 2
-    // (in their order, one that doesn't fit skipped for the next that does)
-    let mut keys: Vec<(&str, &str)> = Vec::new();
-    for p in if focus.is_some() { crate::toast::hints(editor) } else { Vec::new() } {
-        let used = keys.iter().map(pair_w).sum::<usize>() + 3 * keys.len();
-        if used + pair_w(&p) + 6 <= width {
-            keys.push(p);
-        }
-    }
-    let h = rows.len() + 2 * pad;
+    // Its rect is its rows; placed with a row of air kept free of the other cards, the cursor's row and the change in
+    // hand (`toast_place`) — never touching, as two cards never do
+    let h = rows.len();
     let x0 = lay.edit_w.saturating_sub(width + 1 + usize::from(lay.scrollbar));
     let rows_at = (lay.text_top as usize, card_floor(lay));
     // Code too narrow to keep off (the card over half its width — beside the chat at 80 columns): a routine
@@ -10501,31 +10498,20 @@ fn draw_toasts(
     let Some(y0) = toast_place((x0, width, h), rows_at, taken) else { return Ok(false) };
     editor.screen.toast_card.set(Some((x0, y0, width, h)));
     editor.screen.toast_strength.set(Some((a * 100.0).floor() as u8));
-    let edge_card = Style { bg, ..card };
-    card_edge(out, edge_card, x0, y0, width)?;
     let mut spots = editor.screen.spots.borrow_mut();
-    // (focused with more than one message: the one in hand on the selected row's ground)
-    let sel = selected_row(ui, editor, Style { bg, ..card });
-    let in_hand = focus.filter(|_| starts.iter().filter(|s| s.1 > 0).count() > 1).map(|f| f.selected);
     // (a toast's rows: from the one it starts on to the next one's — the `+N earlier` row is none's)
     let mut of = None;
-    let mut this = 0;
     for (i, (b, text, style)) in rows.iter().enumerate() {
-        let y = y0 + pad + i;
+        let y = y0 + i;
         if let Some(&(_, id)) = starts.iter().find(|s| s.0 == i) {
             of = (id > 0).then(|| format!("toast#{id}"));
-            this = id;
             if id > 0 {
                 let of = crate::uistate::point::Of::Toast(id);
                 spots.push(crate::uistate::point::Spot { of, x: x0, y, w: width, at: (x0, y) });
                 editor.screen.toast_rows.borrow_mut().push((y, id));
             }
         }
-        let held = this > 0 && in_hand == Some(this);
-        let lit = |s: Style| {
-            let s = if held { Style { bg: sel.bg, ..s } } else { s };
-            of.as_deref().map_or(s, |id| flashed(ui, editor, id, s))
-        };
+        let lit = |s: Style| of.as_deref().map_or(s, |id| flashed(ui, editor, id, s));
         queue!(out, MoveTo(x0 as u16, y as u16))?;
         apply(out, lit(body))?;
         queue!(out, Print(" "))?;
@@ -10548,24 +10534,6 @@ fn draw_toasts(
         }
         apply(out, lit(*style))?;
         queue!(out, Spaces(inner - text.width() + 2))?;
-    }
-    card_edge(out, edge_card, x0, y0 + pad + rows.len(), width)?;
-    {
-        let key = Style { fg: ui.accent.fg, bold: true, ..body };
-        let mut spans: Vec<(String, Style)> = Vec::new();
-        for (i, (k, d)) in keys.iter().enumerate() {
-            if i > 0 {
-                spans.push((" · ".into(), faint));
-            }
-            spans.push((k.to_string(), key));
-            spans.push((format!(" {d}"), if i == 0 { body } else { dim }));
-        }
-        let named = [(name.to_string(), Style { bold: true, ..body })];
-        // (its lines fade with it, as its words do)
-        let mut faded = ui.clone();
-        faded.window = fade(ui.window);
-        faded.accent.fg = fade(ui.accent.fg);
-        draw_frame(out, &faded, edge_card, (x0, y0, width, h), &named, &spans, &[], focus.is_some())?;
     }
     Ok(true)
 }
@@ -11440,7 +11408,7 @@ impl OfferCard {
         }
         let width = self.width();
         // Back cards first (deeper = narrower, dimmer) — one title row each, the topmost up to the top edge
-        let peek_bg = |k: usize| blend(surface.bg, ui.tint, 1.0 - 0.3 * k as f32).or(surface.bg);
+        let peek_bg = |k: usize| blend(surface.bg, ui.tint, 1.0 - PEEK_STEP * k as f32).or(surface.bg);
         let air = self.air();
         if air > 0 {
             let air_style = ui.base;
@@ -18135,19 +18103,26 @@ mod tests {
         assert!(!narrow.contains("Docker") && narrow.width() <= 24, "{narrow}");
     }
 
-    /// The notification card takes the top right, else the bottom right, never over another card; with
-    /// both taken it has no place (the status line carries it).
+    /// The notification card takes the top right (a row of air above and below its rows), else the bottom right (its
+    /// last row the editing rows' last, a row of air above), never over another card; with both taken it has no place
+    /// (the status line carries it).
     #[test]
     fn toast_card_keeps_out_of_the_other_cards() {
-        let card = (60, 30, 4); // x, width, height
+        let card = (60, 30, 2); // x, width, its rows
         let rows = (1, 29);
-        assert_eq!(toast_place(card, rows, &[]), Some(1));
+        assert_eq!(toast_place(card, rows, &[]), Some(2));
         let thought = (50, 2, 40, 8);
-        // (its last row, the lower edge, is the editing rows' last: the half row of air)
-        assert_eq!(toast_place(card, rows, &[thought]), Some(25), "under the thought card: the bottom");
+        assert_eq!(toast_place(card, rows, &[thought]), Some(27), "under the thought card: the bottom");
+        assert_eq!(toast_place(card, rows, &[(50, 4, 40, 8)]), Some(27), "its air row below kept free too");
         let mini = (58, 20, 36, 8);
         assert_eq!(toast_place(card, rows, &[thought, mini]), None, "no room left");
-        assert_eq!(toast_place(card, rows, &[(0, 2, 20, 8)]), Some(1), "a card elsewhere doesn't matter");
+        let low = (50, 26, 40, 1);
+        assert_eq!(
+            toast_place(card, rows, &[thought, low]),
+            None,
+            "nor on the air row above the bottom spot"
+        );
+        assert_eq!(toast_place(card, rows, &[(0, 2, 20, 8)]), Some(2), "a card elsewhere doesn't matter");
     }
 
     /// The path bar's parts go whole when room runs short: a definition (` › ` · `ƒ ` · its name) never loses
@@ -18472,7 +18447,7 @@ mod tests {
         let row = top + ed.cursor_line() - ed.doc().top;
         let card = ed.screen.toast_card.get().expect("a card");
         assert!(!rows_of(card).contains(&row), "the cursor's row {row} is under {card:?}");
-        assert_eq!(card.1, top, "the top right when it's free");
+        assert_eq!(card.1, top + 1, "the top right when it's free, its rows under a row of air");
         // A review whose change in hand is at the top: the card keeps off its rows
         let id = ed.doc().id;
         let at = crate::movement::line_start(&ed.doc().text, 1);

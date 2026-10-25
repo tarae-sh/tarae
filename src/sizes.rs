@@ -847,8 +847,6 @@ impl crate::editor::Editor {
         if self.session.zoom.is_some() && self.zoomed().is_none() {
             self.session.zoom = None;
         }
-        // (a focused toast lets go once something else takes the keys, or goes with its card)
-        self.toast_sync();
         // (a card, the picker, a prompt, which-key: the keys' while up, the docked pane's again once gone)
         self.float_sync();
     }
