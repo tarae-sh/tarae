@@ -5875,9 +5875,17 @@ mod tests {
         ed.config.llm.args = vec!["-c".into(), format!("read line; printf '%s\\n' '{json}'")];
     }
 
-    /// Processes events until the condition holds (a streamed answer is several events).
+    /// Processes events until the condition holds (a streamed answer is several events). What the test did by
+    /// hand (`feed`'s keys go to `handle_key`, `ed.open`) is followed first by the work every event ends with
+    /// (`handle_event`'s: the front buffer's diff, the side panel's rows), as the loop follows the input that did
+    /// it — else a condition only that work meets waits for an event that may never come (a preview's index read
+    /// landed while another file was in front, `ed.open` brought it to the front: no diff was ever asked).
+    #[track_caller]
     fn settle_until(ed: &mut Editor, done: impl Fn(&Editor) -> bool) {
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+        if !done(ed) {
+            ed.handle_event(Event::Job(Box::new(|_| {})));
+        }
         while !done(ed) {
             let left = end.saturating_duration_since(std::time::Instant::now());
             let ev = ed.events.recv_timeout(left).expect("event before timeout");
@@ -14440,6 +14448,42 @@ mod tests {
         assert_eq!(ed.mode, Mode::Normal);
         let b = ed.docs.iter().find(|d| d.path.as_ref().is_some_and(|p| p.ends_with("b.txt"))).unwrap();
         assert_eq!(b.text.to_string(), b_before, "none landed in the code");
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    /// A buffer's index read that lands while another file is in front gets no diff (`git_schedule` is the front
+    /// one's); brought to the front by hand (`ed.open`, no event), its diff comes with `settle_until`'s first pass of
+    /// the work every event ends with — the order that left `space_g_on_a_change_keeps_the_keys_for_moving` waiting
+    /// out its patience under load (`b.txt` a preview the tab's `j` opened, its read in once `a.txt` was back).
+    #[test]
+    fn a_diff_comes_for_a_buffer_brought_to_the_front_after_its_index_read() {
+        let repo = git_repo("gitfront", &[("a.txt", "a\n"), ("b.txt", "b\n")]);
+        std::fs::write(repo.join("b.txt"), "b\nmore\n").unwrap();
+        let mut ed = editor("");
+        ed.session.root = repo.clone();
+        ed.git_auto = true;
+        // (no blame: its job, 250 ms after the front file's version, is an event that would hide a diff never asked)
+        ed.config.git_blame = false;
+        ed.open(&repo.join("b.txt")).unwrap();
+        ed.open(&repo.join("a.txt")).unwrap();
+        let b_read = |ed: &Editor| {
+            ed.docs
+                .iter()
+                .any(|d| d.path.as_ref().is_some_and(|p| p.ends_with("b.txt")) && d.git_base.is_some())
+        };
+        // Both read, a.txt's diff and both conflict scans in: nothing on its way that could stand in for the event
+        // `open` isn't
+        let a_diffed = |ed: &Editor| ed.doc().git_version == ed.doc().version() && !ed.git_diffing;
+        let scanned = |ed: &Editor| ed.docs.iter().all(|d| d.conflicts_of == d.version());
+        settle_until(&mut ed, |ed| b_read(ed) && ed.git_bases_read == 2 && a_diffed(ed) && scanned(ed));
+        assert!(
+            ed.doc().path.as_ref().is_some_and(|p| p.ends_with("a.txt")),
+            "a.txt in front as b.txt's read landed"
+        );
+        let b = ed.docs.iter().find(|d| d.path.as_ref().is_some_and(|p| p.ends_with("b.txt"))).unwrap();
+        assert_ne!(b.git_version, b.version(), "no diff for b.txt while it wasn't in front");
+        ed.open(&repo.join("b.txt")).unwrap();
+        settle_until(&mut ed, |ed| ed.doc().git_hunks.len() == 1);
         std::fs::remove_dir_all(&repo).ok();
     }
 

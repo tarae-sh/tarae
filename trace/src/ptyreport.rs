@@ -59,7 +59,7 @@ pub fn quantile_us(hist: &[u64; BUCKETS], q: f64) -> u64 {
 
 impl PtyReport {
     pub fn sorted(mut self) -> Self {
-        self.writes.sort_by(|a, b| b.ns.cmp(&a.ns).then(a.tid.cmp(&b.tid)));
+        crate::sorting::by(&mut self.writes, |a, b| b.ns.cmp(&a.ns).then(a.tid.cmp(&b.tid)));
         self
     }
 
@@ -86,7 +86,7 @@ impl PtyReport {
             }
         }
         let mut v: Vec<Writes> = by.into_values().collect();
-        v.sort_by_key(|w| std::cmp::Reverse(w.ns));
+        crate::sorting::by_key(&mut v, |w| std::cmp::Reverse(w.ns));
         v
     }
 }

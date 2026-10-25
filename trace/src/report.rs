@@ -74,7 +74,7 @@ impl Report {
             }
         }
         self.stacks = by.into_values().collect();
-        self.stacks.sort_by(|a, b| b.ns.cmp(&a.ns).then(a.tid.cmp(&b.tid)));
+        crate::sorting::by(&mut self.stacks, |a, b| b.ns.cmp(&a.ns).then(a.tid.cmp(&b.tid)));
         self
     }
 
@@ -98,7 +98,7 @@ impl Report {
             t.switches += s.count;
         }
         let mut v: Vec<Thread> = by.into_values().collect();
-        v.sort_by_key(|t| std::cmp::Reverse(t.blocked_ns + t.preempted_ns));
+        crate::sorting::by_key(&mut v, |t| std::cmp::Reverse(t.blocked_ns + t.preempted_ns));
         v
     }
 

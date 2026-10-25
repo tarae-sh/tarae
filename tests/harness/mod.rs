@@ -353,6 +353,9 @@ pub struct Output {
     /// Frames ended so far (`FRAME_END`), and when the first and the latest came — counted as bytes
     /// arrive, so timing a key to its frame doesn't rescan everything.
     frames: usize,
+    /// Frames the running tarae has ended (`frames_after`): from its start (`TARAE_START`) — a `:restart` is a
+    /// new tarae on the same terminal, counting from 0 as the state's `frames_written` does.
+    tarae_frames: usize,
     first_frame_at: Option<Instant>,
     last_frame_at: Option<Instant>,
     /// Panics of the vt100 parser itself (it overflows on a 1-column screen). The parser is replaced with a
@@ -479,6 +482,7 @@ impl Term {
             parser: vt100::Parser::new(rows, cols, 0),
             raw: Vec::new(),
             frames: 0,
+            tarae_frames: 0,
             first_frame_at: None,
             last_frame_at: None,
             parser_panics: Vec::new(),
@@ -513,6 +517,7 @@ impl Term {
                             o.first_frame_at.get_or_insert(at);
                             o.last_frame_at = Some(at);
                         }
+                        o.tarae_frames = frames_after(&o.raw[from..], o.tarae_frames);
                         // (with the parser, under the one lock: never one without the other)
                         o.in_frame = in_frame_after(&o.raw[from..], o.in_frame);
                         let (rows, cols) = o.parser.screen().size();
@@ -664,6 +669,11 @@ impl Term {
     /// Frames tarae has written so far (each ends its synchronized update).
     pub fn frames(&self) -> usize {
         lock(&self.out).frames
+    }
+
+    /// Frames the running tarae has written — since its start: after a `:restart`, the new one's only.
+    pub fn tarae_frames(&self) -> usize {
+        lock(&self.out).tarae_frames
     }
 
     /// When the first frame ended (startup's end).
@@ -848,7 +858,8 @@ impl Term {
         let owes = |s: &serde_json::Value| {
             (s["frames_written"].as_u64().unwrap_or(0), s.get("redraw_due").is_some())
         };
-        settle_on(self, |t| t.wait_state(what, &done), owes, |t| t.frames(), deadline)
+        // (the running tarae's frames: after a `:restart` the last one's are on the terminal too, never in its count)
+        settle_on(self, |t| t.wait_state(what, &done), owes, |t| t.tarae_frames(), deadline)
             .unwrap_or_else(|e| panic!("{what}: {e} after {:?}", self.timeout))
     }
 
@@ -978,6 +989,20 @@ pub fn settle_on<T, A>(
 /// Where a frame ends (`CSI ?2026l`, the synchronized update's end) — and where one starts.
 pub const FRAME_END: &[u8] = b"\x1b[?2026l";
 pub const FRAME_START: &[u8] = b"\x1b[?2026h";
+/// Where a tarae starts: it enters the alternate screen once, first thing (`term::run`) — a `:restart` execs a new
+/// one on the same terminal. As long as `FRAME_END`, so the reader's look back from before the new bytes holds both.
+pub const TARAE_START: &[u8] = b"\x1b[?1049h";
+
+/// The running tarae's frames once `bytes` came (`was`: before them) — the frames ended after its start when one
+/// is among them, else `was` and those ended in them. `bytes` start a mark's length less one before the new ones,
+/// as `in_frame_after`'s.
+pub fn frames_after(bytes: &[u8], was: usize) -> usize {
+    let ends = |b: &[u8]| b.windows(FRAME_END.len()).filter(|w| *w == FRAME_END).count();
+    match bytes.windows(TARAE_START.len()).rposition(|w| w == TARAE_START) {
+        Some(at) => ends(&bytes[at..]),
+        None => was + ends(bytes),
+    }
+}
 
 /// Inside a frame or not after `bytes` (`was`: before them) — whichever of its marks came last; neither:
 /// as it was. `bytes` start a mark's length less one before the new ones, so a mark split across reads is
@@ -1211,5 +1236,26 @@ mod tests {
         assert_eq!(settle(vec![((5, false), 5)]), (Ok((5, false)), 1));
         // (a frame read past an answer that owed none: its redraw may be to come — asked again)
         assert_eq!(settle(vec![((5, false), 6), ((6, false), 6)]), (Ok((6, false)), 2));
+    }
+
+    /// The frames a settle compares with the state's `frames_written` are the running tarae's: after a `:restart`
+    /// (perf's restored sessions: 29 written, 67 read — the first tarae's too, never settled) the new one's from its
+    /// start, a start mark split across two reads seen once its last byte comes.
+    #[test]
+    fn a_restarted_tarae_s_frames_count_from_its_start() {
+        let frame = [FRAME_START, b"rows", FRAME_END].concat();
+        let old = [TARAE_START, &frame, &frame, &frame].concat();
+        assert_eq!(frames_after(&old, 0), 3);
+        assert_eq!(frames_after(&frame, 3), 4, "no start among them: added");
+        let restarted = [&frame, b"\x1b[?1049l".as_slice(), TARAE_START, &frame].concat();
+        assert_eq!(frames_after(&restarted, 4), 1, "the old one's last frame not the new one's");
+        assert_eq!(frames_after(TARAE_START, 9), 0, "started, no frame yet");
+        // (split: the reader looks again from a mark's length less one before the new bytes)
+        let (first, second) = (&TARAE_START[..5], [&TARAE_START[5..], &frame].concat());
+        assert_eq!(frames_after(first, 7), 7, "not yet a start");
+        let mut seen = first[first.len().saturating_sub(TARAE_START.len() - 1)..].to_vec();
+        seen.extend_from_slice(&second);
+        assert_eq!(frames_after(&seen, 7), 1, "its last byte come: started, one frame since");
+        assert_eq!(TARAE_START.len(), FRAME_END.len(), "one look back holds both marks");
     }
 }

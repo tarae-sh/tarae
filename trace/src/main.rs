@@ -92,6 +92,7 @@ fn parse(args: Vec<String>) -> Result<Args, String> {
     Ok(a)
 }
 
+#[cfg(any(target_os = "linux", test))]
 impl Args {
     /// The output's name: given, else what's traced.
     fn name(&self) -> String {

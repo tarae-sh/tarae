@@ -52,7 +52,9 @@ pub struct ThreadCalls {
 
 impl SyscallReport {
     pub fn sorted(mut self) -> Self {
-        self.calls.sort_by(|a, b| b.ns.cmp(&a.ns).then(b.count.cmp(&a.count)).then(a.tid.cmp(&b.tid)));
+        crate::sorting::by(&mut self.calls, |a, b| {
+            b.ns.cmp(&a.ns).then(b.count.cmp(&a.count)).then(a.tid.cmp(&b.tid))
+        });
         self
     }
 
@@ -71,7 +73,7 @@ impl SyscallReport {
             t.ns += c.ns;
         }
         let mut v: Vec<ThreadCalls> = by.into_values().collect();
-        v.sort_by_key(|t| std::cmp::Reverse(t.ns));
+        crate::sorting::by_key(&mut v, |t| std::cmp::Reverse(t.ns));
         v
     }
 
@@ -86,7 +88,7 @@ impl SyscallReport {
         }
         let mut v: Vec<_> = by.into_iter().map(|(n, (c, ns, f))| (n.to_string(), c, ns, f)).collect();
         // (the most time first)
-        v.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
+        crate::sorting::by(&mut v, |a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
         v
     }
 
@@ -99,7 +101,7 @@ impl SyscallReport {
             e.1 += c.ns;
         }
         let mut v: Vec<_> = by.into_iter().map(|(n, (c, ns))| (n, c, ns)).collect();
-        v.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
+        crate::sorting::by(&mut v, |a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
         v
     }
 }
@@ -160,7 +162,7 @@ impl crate::Output for SyscallReport {
         let total: u64 = mix.iter().map(|m| m.1).sum();
         s += &format!("  mix — {total} calls; by count\n");
         let mut by_count = mix.clone();
-        by_count.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        crate::sorting::by(&mut by_count, |a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         for (n, c, ns, f) in by_count.iter().take(top) {
             let failed = if *f > 0 { format!("  ({f} failed)") } else { String::new() };
             s += &format!("    {n:<20} {c:>8}×  {:>9.2} ms{failed}\n", ms(*ns));
@@ -184,7 +186,7 @@ impl crate::Output for SyscallReport {
         }
         let mut stacked: Vec<&Call> = self.calls.iter().filter(|c| !c.user.is_empty()).collect();
         if !stacked.is_empty() {
-            stacked.sort_by(|a, b| b.count.cmp(&a.count).then(b.ns.cmp(&a.ns)));
+            crate::sorting::by(&mut stacked, |a, b| b.count.cmp(&a.count).then(b.ns.cmp(&a.ns)));
             s += &format!("  where they're called from — top {top} by calls\n");
             for c in stacked.iter().take(top) {
                 s += &format!(

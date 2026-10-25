@@ -8,6 +8,7 @@ pub mod maps;
 pub mod procs;
 pub mod ptyreport;
 pub mod report;
+pub mod sorting;
 pub mod sysreport;
 pub mod unwind;
 

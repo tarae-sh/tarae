@@ -3,7 +3,7 @@
 //! from the file `TARAE_TRACE_VMLINUX_H` names; CO-RE relocations fit the object to other kernels at load.
 //! Also the syscall names (`sysnames.rs`, see `syscall_names`).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -68,7 +68,8 @@ fn syscall_names(out: &Path) {
             Some((w.next()?.to_string(), w.next()?.to_string()))
         })
         .collect();
-    let mut names: Vec<(u32, &str)> = defines
+    // (in number order, then name — a set's order, no sort; one name a number: the first)
+    let names: BTreeSet<(u32, &str)> = defines
         .iter()
         .filter_map(|(k, v)| {
             let name =
@@ -83,7 +84,7 @@ fn syscall_names(out: &Path) {
             None
         })
         .collect();
-    names.sort();
+    let mut names: Vec<(u32, &str)> = names.into_iter().collect();
     names.dedup_by_key(|(n, _)| *n);
     assert!(names.len() > 200, "only {} syscall names from <asm/unistd.h>", names.len());
     let rows: String = names.iter().map(|(n, s)| format!("    ({n}, {s:?}),\n")).collect();
