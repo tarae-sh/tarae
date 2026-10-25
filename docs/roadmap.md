@@ -107,9 +107,12 @@ In this order.
 **The main line from here** (user, 2026-10-25): panes P3 is done — its last step, follow per pane (`f3afdbd9`), and on
 the way the toast became news (`6a7c457e`: never focused, no frame, a press opens `:messages`) and a floating card's keys
 went to its bottom line (`1d5161f5`: one order for what that line gives up, the card growing left only as far as its
-line needs, always bottom-right, over the chat standing on the input's rule) → C0 (the workspace split out of the
-session) → the cleanup audit (§1 item 7, its plan decided) → the crate split (§1 item 6) → Orchestra Part I → P3b and
-the terminal line (§4). Done beside it, in sessions of their own: motion's last pieces (the honest shimmer `cfbf2a7b`,
+line needs, always bottom-right, over the chat standing on the input's rule) → C0, the workspace split out of the
+session, is done (`621acbd8`, 2026-10-26: `Workspace` the place, its Claude's `Session` the participant, where you are in
+it the `Viewer`; ids (machine, n), events tagged with both, `:workspace-*`, `[workspace]`, the state's
+`workspaces[].sessions[]`; no visible change but the words) → the cleanup audit (§1 item 7, its plan decided) → the
+crate split (§1 item 6) → Orchestra Part I → P3b and the terminal line (§4). Two Linux tests red on main before the next
+push: the Read card's width pinned at macOS's path (`1d5161f5`) and an xattr error's order on kernel 6.8. Done beside it, in sessions of their own: motion's last pieces (the honest shimmer `cfbf2a7b`,
 the strip of marks `4c56cb6f`), what PR #6's merge left (`8059c6d8`, the git base read's race `0b105abe`, the tests' one
 settle `b935aac6`), what's cut shown whole where you look (`f48b2be8`), and a move onto the base that never leaves
 conflict markers (`305ef94d`: `--autostash` had left two checkouts half moved — the changes now set aside on a ref of
