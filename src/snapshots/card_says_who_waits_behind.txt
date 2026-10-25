@@ -18,16 +18,16 @@
 15  15     let text = "the quick brown fox jumps over the lazy dog";
 16  16     let counts = word_counts(text);
 17  17     println!("{} distinct words", counts.len()); // 타래
-18  18 }                                          ▎ fix-login asks · Claude asks to see the scr…
-19                                              ▎ main asks · Claude asks to see the screen
-20
-21                                           ╭─ main asks · Claude asks to see the screen  1/2 · +1 ─╮
-22                                           │ As text, once.                                        │
-23                                           │                                                       │
-24                                           │ 2 more wait — 1 here, 1 in fix-login                  │
-25                                           │ space I lists them                                    │
-26                                           │ C-q to answer it                                      │
-27                                           ╰─ y Once · a This chat · n No ─────────────────────────╯
+18  18 }
+19
+20                                                ▎ fix-login asks · Claude asks to see the scr…
+21                                              ▎ main asks · Claude asks to see the screen
+22
+23                                           ╭─ main asks · Claude asks to see the screen  1/2 · +1 ─╮
+24                                           │ As text, once.                                        │
+25                                           │                                                       │
+26                                           │ 2 more wait — 1 here, 1 in fix-login                  │
+27                                           ╰─ C-q answer · y once · a chat · n no · space I list ──╯
 28
 29  ● normal   main ▲3 waiting · C-q                                            rust   utf-8 LF   1:1
 ## bg · surface per cell, blank = ui.background
@@ -49,10 +49,10 @@
 15
 16
 17
-18                                               1111111111111111111111111111111111111111111111111
-19                                             22222222222222222222222222222222222222222222222222222
-20
-21
+18
+19
+20                                               1111111111111111111111111111111111111111111111111
+21                                             22222222222222222222222222222222222222222222222222222
 22
 23
 24
@@ -83,13 +83,13 @@
 18  ff
 19
 20
-21                                           ff BBBB TTTT T TTTTTT TTTT TT TTT TTT TTTTTT  ddd d dd ff
-22                                           f dd ddddd ddddd                                        f
-23                                           f                                                       f
-24                                           f d dddd dddd d d ddddd d dd ddddddddd                  f
-25                                           f ddddd d ddddd dddd                                    f
-26                                           f ddd dd dddddd dd                                      f
-27                                           ff F ffff f F ffff ffff f F ff ffffffffffffffffffffffffff
+21
+22
+23                                           ff BBBB TTTT T TTTTTT TTTT TT TTT TTT TTTTTT  ddd d dd ff
+24                                           f dd ddddd ddddd                                        f
+25                                           f                                                       f
+26                                           f d dddd dddd d d ddddd d dd ddddddddd                  f
+27                                           ff FFF ffffff f F ffff f F ffff f F ff f FFFFF F ffff fff
 28
 29  a TTTTTT   BBBB ww wwwwwww w www                                            dddd   ddddd dd   TTT
 ## legend

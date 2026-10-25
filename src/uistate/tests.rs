@@ -391,6 +391,12 @@ const SCENES: &[Scene] = &[
         light_card(ed);
         feed(ed, &["<C-q>"]);
     }),
+    // (the review of cardkeys: a card nothing shows — `C-q` gives it the keys as ever, no key answers it, said)
+    ("a card with no room on screen", light_card),
+    ("a card focused, then no room on screen", |ed| {
+        light_card(ed);
+        feed(ed, &["<C-q>"]);
+    }),
     ("a card given the keys over the chat", |ed| {
         chat(ed, "hello");
         light_card(ed);
@@ -828,6 +834,15 @@ fn mismatches(scenes: &[Scene], model: impl Fn(&Editor) -> KeysTo) -> Vec<String
             if name.contains("settled") {
                 focus(&mut ed);
             }
+            // (a scene with no room for its card: as a frame too small for it leaves it — `Editor::offer_unshown`)
+            if name.contains("no room") {
+                ed.offer_unshown.set(ed.offers.first().map(|o| (o.id, o.rev)));
+                // (and it says no key answers it — every one is refused)
+                let answers = ed.keys_to().answers;
+                if !answers.is_empty() {
+                    off.push(format!("{name}: keys_to says {answers:?} answer it, card_key refuses them"));
+                }
+            }
             ed.focus_sync();
             let said = model(&ed).route(key(probe)).handler();
             TOOK.set(None);
@@ -1036,6 +1051,10 @@ fn the_routing_test_sees_each_case_broken() {
         let mut ed = editor();
         setup(&mut ed);
         frame(&mut ed);
+        // (as `mismatches` leaves a scene with no room for its card)
+        if name.contains("no room") {
+            ed.offer_unshown.set(ed.offers.first().map(|o| (o.id, o.rev)));
+        }
         let k = ed.keys_to();
         if matches!(k.chain[main(&k)].filter, Filter::Except(_)) {
             leaves += 1;
@@ -1467,7 +1486,7 @@ fn a_card_come_mid_turn_leaves_the_empty_chat_its_keys() {
     frame(&mut ed);
     assert_eq!(ed.offers.len(), 1, "unanswered");
     assert_eq!(ed.session.chat.as_ref().unwrap().input, "and", "typed");
-    assert!(shown(&mut ed).contains("C-q to answer it"), "the card says how");
+    assert!(shown(&mut ed).contains("╰─ C-q answer · "), "the card says how, first on its bottom line");
     // `C-q`: the card's, `n` answers it, the chat has them again
     ed.session.chat.as_mut().unwrap().input.clear();
     feed(&mut ed, &["<C-q>"]);

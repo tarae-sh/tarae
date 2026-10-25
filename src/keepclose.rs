@@ -233,6 +233,18 @@ impl Moves {
         v
     }
 
+    /// Its answers' short words, where its bottom line can't take them whole (`Offer::answers_short`):
+    /// `y move · c all · v files · n not now`.
+    pub fn short(&self, k: char) -> Option<&'static str> {
+        match k {
+            'y' if self.clean().next().is_none() => Some("rebase"),
+            'y' => Some("move"),
+            'c' => Some("all"),
+            'v' => Some("files"),
+            _ => None,
+        }
+    }
+
     /// The card: the base's move, a row a workspace — in words, what would conflict and where — and what each
     /// answer does. One title a base, so a newer tip's card takes its place.
     pub fn card(&self) -> Offer {

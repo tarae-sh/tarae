@@ -17,17 +17,17 @@
 14
 15
 16
-17                                                    ╭─ Bring 2 into main ──────────────────────────────────────╮
-18                                                    │ Bring 2 sessions into main, one after another?           │
-19                                                    │ fix-login, then parser.                                  │
-20                                                    │                                                          │
-21                                                    │ Each in turn: rebased onto main's tip if it moved, its   │
-22                                                    │ quick preflight run there, then brought — the next       │
-23                                                    │ starts once it lands. A conflict or a failed preflight   │
-24                                                    │ stops only that one; the rest go on.                     │
-25                                                    │                                                          │
-26                                                    │ esc goes back, unanswered                                │
-27                                                    ╰─ y Bring them in turn · n Not now ───────────────────────╯
+17
+18
+19                                                    ╭─ Bring 2 into main ──────────────────────────────────────╮
+20                                                    │ Bring 2 sessions into main, one after another?           │
+21                                                    │ fix-login, then parser.                                  │
+22                                                    │                                                          │
+23                                                    │ Each in turn: rebased onto main's tip if it moved, its   │
+24                                                    │ quick preflight run there, then brought — the next       │
+25                                                    │ starts once it lands. A conflict or a failed preflight   │
+26                                                    │ stops only that one; the rest go on.                     │
+27                                                    ╰─── esc back · y Bring them in turn · n Not now ──────────╯
 28
 29  ● card   main   ▎ parser marked to bring 2nd — B brings the 2 in turn · +…                     utf-8 LF   1:1
 ## bg · surface per cell, blank = ui.background
@@ -79,17 +79,17 @@
 14
 15
 16
-17                                                    aa TTTTT T TTTT TTTT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-18                                                    a                                                          a
-19                                                    a                                                          a
+17
+18
+19                                                    aa TTTTT T TTTT TTTT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 20                                                    a                                                          a
-21                                                    a dddd dd ddddd ddddddd dddd dddddd ddd dd dd dddddd ddd   a
-22                                                    a ddddd ddddddddd ddd dddddd dddd ddddddd d ddd dddd       a
-23                                                    a dddddd dddd dd dddddd d dddddddd dd d dddddd ddddddddd   a
-24                                                    a ddddd dddd dddd dddd ddd dddd dd ddd                     a
-25                                                    a                                                          a
-26                                                    a ddd dddd ddddd dddddddddd                                a
-27                                                    aa A                    f A ddd ddd aaaaaaaaaaaaaaaaaaaaaaaa
+21                                                    a                                                          a
+22                                                    a                                                          a
+23                                                    a dddd dd ddddd ddddddd dddd dddddd ddd dd dd dddddd ddd   a
+24                                                    a ddddd ddddddddd ddd dddddd dddd ddddddd d ddd dddd       a
+25                                                    a dddddd dddd dd dddddd d dddddddd dd d dddddd ddddddddd   a
+26                                                    a ddddd dddd dddd dddd ddd dddd dd ddd                     a
+27                                                    aaaa AAA dddd f A                    f A ddd ddd aaaaaaaaaaa
 28
 29  a TTTT   BBBB   a                                                                              ddddd dd   TTT
 ## legend

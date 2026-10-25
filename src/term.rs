@@ -880,6 +880,12 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         editor.screen.offer_card = offer.as_ref().map(OfferCard::rect);
         editor.screen.offer_cut = offer.as_ref().filter(|c| !c.bar).map(|c| c.cut);
     }
+    // (the front card this frame had no room for — the status line says the size it needs: nothing of yours answers a
+    // card nothing shows, `Editor::card_key`)
+    let unshown = (editor.offers.first())
+        .filter(|_| offer.is_none() && card_short(editor, &lay).is_some())
+        .map(|o| (o.id, o.rev));
+    editor.offer_unshown.set(unshown);
     draw(editor, &lay, &ui, review_rows.as_deref().map(Vec::as_slice), offer.as_ref(), out)
 }
 
@@ -2369,9 +2375,14 @@ fn top_line(
     };
     let mut buf = Vec::new();
     queue!(buf, MoveTo(x as u16, y as u16))?;
-    let said = !head.names.is_empty() || head.details.iter().any(|(s, _)| !s.trim().is_empty());
-    put(&mut buf, line, &format!("{l}─{}", if said { " " } else { "" }))?;
-    let mut col = l.width() + 1 + usize::from(said);
+    // (a run of the line first, where the text starts further in: a card's `esc back` where its `C-q answer` stood)
+    let (run, own) = match head.names.split_first() {
+        Some(((t, _), rest)) if !t.is_empty() && t.chars().all(|c| c == '─') => (t.as_str(), rest),
+        _ => ("", head.names),
+    };
+    let said = !own.is_empty() || head.details.iter().any(|(s, _)| !s.trim().is_empty());
+    put(&mut buf, line, &format!("{l}─{run}{}", if said { " " } else { "" }))?;
+    let mut col = l.width() + 1 + run.width() + usize::from(said);
     // (what's left for the text: the line's own cells and its ends kept)
     let room = |col: usize| w.saturating_sub(col + 2 + r.width());
     let mut cols = Vec::new();
@@ -2391,7 +2402,7 @@ fn top_line(
         }
         Ok(())
     };
-    names(&mut buf, head.names, &mut col)?;
+    names(&mut buf, own, &mut col)?;
     // The lines down from it past the names (`splits`, from `x`): no text over one — the details end short of the
     // first, the keys start past the last, each a blank and a `─` from its `join` (one under a name stays unjoined:
     // the names fold last)
@@ -5161,7 +5172,8 @@ fn draw_sessions_pane(
     // (docked right, the asks over its foot — `asks_foot`: the selected row kept in sight above the stack, a row of air
     // between)
     let asks =
-        editor.screen.offer_card.filter(|c| !framed && c.0 >= x0 && c.1 + c.3 > y0 && c.1 < y0 + inner);
+        // (a card grown left past the list's edge for its bottom line still stands over its foot)
+        editor.screen.offer_card.filter(|c| !framed && c.0 + c.2 > x0 && c.1 + c.3 > y0 && c.1 < y0 + inner);
     let shown = asks.map_or(inner, |c| c.1.saturating_sub(y0 + 1).clamp(1, inner));
     let mut top = crate::key::in_sight(0, top, selected, rows.len(), shown, 0).0;
     if asks.is_some() {
@@ -10646,14 +10658,17 @@ struct OfferCard {
     /// Rows of `lines` that are a diff's (`Offer::diff`) and their sign: `+` added, `-` removed, `@` a hunk's
     /// header and ` ` the lines around (dim), `f` a file's path.
     diff: Vec<(usize, char)>,
-    /// The first button row (None while downloading)
-    buttons_row: Option<usize>,
-    /// The buttons' rows from there: each row's range of `labels` (`button_rows`).
-    button_rows: Vec<std::ops::Range<usize>>,
     /// (row, start col, end col, key) — for mouse (`Screen.offer_buttons`; digit = bring back card N forward)
     buttons: Vec<(usize, usize, usize, char)>,
-    /// The buttons: (key, label) — the first bright, the rest dim.
-    labels: Vec<(char, &'static str)>,
+    /// The buttons: (key, label) as its bottom line says them (`answer_forms`: whole, short or the key alone) — the
+    /// first bright, the rest dim.
+    labels: Vec<(char, String)>,
+    /// Its way in, first on that line while it waits (`C-q` as said now — `C-q answer`; focused, `esc back` in its
+    /// place); None where the line has no room for it.
+    way: Option<String>,
+    /// The key that lists every card waiting, its line's last pair while others wait behind it (`INBOX_SAYS`), where
+    /// there's room after its answers.
+    inbox: Option<String>,
     /// The answer whose label says it waits to be read whole (`READ_FIRST`), and whether a key came early for
     /// it (then in the warning colour).
     waits: Option<(usize, bool)>,
@@ -10672,8 +10687,6 @@ struct OfferCard {
     paint: Vec<(String, &'static str)>,
     /// Lines left out for want of room (0: shown whole).
     cut: usize,
-    /// Its answers set into the frame's bottom line (they make one row), not rows of their own.
-    keys_in_line: bool,
     /// Stepped aside to a one-row bar while its text is read in its buffer (U8): `lines` = title, how far. Else in
     /// a frame (D3) — its title (`lines[0]`) the frame's name, one cell of padding inside.
     bar: bool,
@@ -10727,18 +10740,28 @@ fn card_short(editor: &Editor, lay: &Layout) -> Option<String> {
         return None;
     }
     let height = lay.status_y as usize + 1;
-    let answer = o.answers(editor.preflight_quick().is_some()).iter().map(|(_, l)| 2 + l.width()).max();
+    // (its narrowest bottom line, as `answers_fit`'s last try: its way in, then its answers' keys alone but what lasts
+    // in its short words — `answer_forms` — and what lists the cards behind it)
+    let short = o.answers_short(editor.preflight_quick().is_some());
+    let keys = short.iter().map(|(k, l)| pair_w(if o.lasting(*k) { l } else { "" }));
+    let way = way_w(&editor.key_said("C-q")) + 3;
+    let behind = editor.cards_behind_said().map_or(0, |_| inbox_w(&editor.inbox_key()) + 3);
+    let answer = keys.map(|w| w + 3).sum::<usize>().checked_sub(3).map(|w| w + way + behind);
     let side = editor.session.sidebar.is_some();
     let chat = |w: usize| crate::sizes::widths(w, editor.chat_panel(w), side, editor.sizes).chat;
     // (over the chat's foot or a docked list's: as wide as that column — its text 6 cells less, at least
     // `CARD_MIN_INNER`; the rows from its top line down to the input's line)
-    if let Some((_, aw, _, arows)) = asks_foot(editor, lay) {
+    if let Some((ax, aw, _, arows)) = asks_foot(editor, lay) {
+        // (its text at least `CARD_MIN_INNER` over the column; its narrowest bottom line from the column's right edge
+        // leftward — the card grows over the code for it, its frame's own cells and a cell of air at the screen's left)
         let need = CARD_MIN_INNER + 6;
-        if aw < need {
-            // (the window width that gives the chat that much, as it's laid out — `sizes::widths` —, its edge and
-            // margins as now)
+        let line = answer.unwrap_or(0) + 2 + 4 + 1;
+        if aw < need || ax + aw < line {
+            // (the window width that gives both, the column as it's laid out — `sizes::widths` —, its edges as now)
             let edge = chat(lay.width).min(lay.width).saturating_sub(aw);
-            let cols = (lay.width..lay.width + 400).find(|&w| chat(w).min(w) >= need + edge);
+            let right = lay.width.saturating_sub(ax + aw);
+            let fits = |w: usize| chat(w).min(w) >= need + edge && w.saturating_sub(right) >= line;
+            let cols = (lay.width..lay.width + 400).find(|&w| fits(w));
             return Some(cols.map_or("card needs a wider chat".into(), |c| format!("card needs {c} cols")));
         }
         return Some(match arows < 8 {
@@ -10750,8 +10773,9 @@ fn card_short(editor: &Editor, lay: &Layout) -> Option<String> {
         return Some(format!("card needs {} rows", height + 8 - lay.text_rows));
     }
     // (as `OfferCard::new` lays it out: its text at least `CARD_MIN_INNER` wide — 8 cells less than the code —
-    // and each answer whole on a row of the widest it can be — 6 cells less, and the scrollbar's)
-    let edit_w = (CARD_MIN_INNER + 8).max(answer.unwrap_or(0) + 6 + usize::from(lay.scrollbar));
+    // and its answers' keys on its bottom line at the widest it can be — 6 cells less, and the scrollbar's)
+    // (its line, the frame's own cells and a cell of air: `OfferCard::new`'s `room_w`)
+    let edit_w = (CARD_MIN_INNER + 8).max(answer.unwrap_or(0) + 7 + usize::from(lay.scrollbar));
     if edit_w <= lay.edit_w {
         // (too few rows for its text and answers — how many depends on the card)
         return Some("card needs more rows".into());
@@ -10762,32 +10786,114 @@ fn card_short(editor: &Editor, lay: &Layout) -> Option<String> {
     Some(format!("card needs {cols} cols"))
 }
 
-/// A card's answers laid out in rows `room` cells wide — whole pairs, three cells between: each row's range of
-/// `labels`. One too wide for a row alone has a row of its own (and the card is too wide to draw).
-fn button_rows(labels: &[(char, &str)], room: usize) -> Vec<std::ops::Range<usize>> {
-    let mut rows = Vec::new();
-    let mut start = 0;
-    for i in 1..=labels.len() {
-        if i == labels.len() || buttons_width(&labels[start..=i]) > room {
-            rows.push(start..i);
-            start = i;
+/// A card's answers in the forms its frame's bottom line takes them, the first that fits (`answers_fit` — the user,
+/// 2026-10-25: a floating card's keys are always in its bottom line, never rows inside): whole, each its short words
+/// (`Offer::answers_short`), then the others — the last first — their keys alone one by one. `kept` (by index): what
+/// keeps its short words in every form — what lasts (`Offer::lasting`: holds past this once or can't be taken back),
+/// a cut card's yes saying what it waits for (`read`: `READ_FIRST` in its meaning's place, `READ_FIRST_SHORT` past
+/// the whole form) and its `v read all` (the review of cardkeys: `N` alone was a permanent no nothing on the card
+/// named).
+fn answer_forms(
+    whole: &[(char, &'static str)],
+    short: &[(char, String)],
+    read: Option<usize>,
+    kept: &[usize],
+) -> Vec<Vec<(char, String)>> {
+    let said = |mut v: Vec<(char, String)>, form: &str| {
+        if let Some(a) = read.and_then(|i| v.get_mut(i)) {
+            a.1 = form.to_string();
         }
+        v
+    };
+    let whole: Vec<(char, String)> = whole.iter().map(|(k, l)| (*k, l.to_string())).collect();
+    let mut forms = vec![said(whole, READ_FIRST)];
+    let mut v = short.to_vec();
+    forms.push(said(v.clone(), READ_FIRST_SHORT));
+    for i in (0..v.len()).rev().filter(|i| Some(*i) != read && !kept.contains(i)) {
+        v[i].1.clear();
+        forms.push(said(v.clone(), READ_FIRST_SHORT));
     }
-    rows
+    forms
+}
+
+/// What a card's way in says after its key, first on its bottom line while it waits: `C-q answer`.
+const WAY_IN: &str = "answer";
+
+/// The way in's place once the card has the keys: esc gives them back where they came from, the card left unanswered.
+const ESC_BACK: (&str, &str) = ("esc", "back");
+
+/// The way in's cells (`WAY_IN`) for `key` as said now.
+fn way_w(key: &str) -> usize {
+    key.width() + 1 + WAY_IN.width()
+}
+
+/// A bottom line's cells: the way in (`key`), ` · `, the answers.
+fn answers_line_w(key: &str, labels: &[(char, String)]) -> usize {
+    way_w(key) + 3 + buttons_width(labels)
+}
+
+/// A bottom line's cells in form `form`, with a last pair `last` cells wide after the answers when given.
+fn line_w_with(key: &str, form: &[(char, String)], last: Option<usize>) -> usize {
+    answers_line_w(key, form) + last.map_or(0, |w| w + 3)
+}
+
+/// The form of a card's answers (`answer_forms`' index) its bottom line takes within `room` cells, a last pair `last`
+/// cells wide after them — the key that lists what waits behind it (`INBOX_SAYS`), on every form. One order for what
+/// the line gives up (the user, 2026-10-25), kept longest first: (1) its way in (`key`, `C-q answer`) — without it
+/// nothing on the card says a key typed now doesn't answer it; (2) what keeps its short words (`answer_forms`'
+/// `kept`); (3) that last pair; (4) the other answers' short words, then their keys alone, the last first. Past (4),
+/// None: the card grows left for its narrowest form (`OfferCard::laid`) — no key is ever said in a card's body.
+fn answers_fit(key: &str, forms: &[Vec<(char, String)>], room: usize, last: Option<usize>) -> Option<usize> {
+    (0..forms.len()).find(|&f| line_w_with(key, &forms[f], last) <= room)
+}
+
+/// The front card's bottom line in the last frame drawn (its way in, its answers, what lists the cards behind) — for a
+/// test pinning the form each width gives. None: no card drawn.
+#[cfg(test)]
+pub(crate) fn card_line(ed: &Editor) -> Option<String> {
+    let (x, y, w, h) = ed.screen.offer_card?;
+    let (bytes, cols, rows) = ed.last_frame.as_ref()?;
+    let mut p = vt100::Parser::new(*rows, *cols, 0);
+    p.process(bytes);
+    p.screen().rows(x as u16, w as u16).nth(y + h - 1)
 }
 
 /// The chat's queued row keeps at least this much of the last message's start, narrow (`Chat::queued_said`).
 const QUEUED_LAST_MIN: usize = 12;
 
-/// A cut card's yes, while it waits to be read whole — in place of its meaning on the hint row.
-const READ_FIRST: &str = "read it first — v";
+/// A cut card's yes, while it waits to be read whole — in place of its meaning on its bottom line.
+const READ_FIRST: &str = "once it's read";
 
-/// `READ_FIRST` where the answers' row has no room for it.
-const READ_FIRST_SHORT: &str = "after v";
+/// `READ_FIRST` in the short words.
+const READ_FIRST_SHORT: &str = "once read";
 
-/// The width of a row of answers: "y Install   n Not now".
-fn buttons_width(labels: &[(char, &str)]) -> usize {
-    labels.iter().map(|(_, l)| 2 + l.width()).sum::<usize>() + 3 * labels.len().saturating_sub(1)
+/// A cut card's way to all of it, on its bottom line (`v`, unless an answer of its own is `v`).
+const READ_ALL: (char, &str) = ('v', "read it all");
+
+/// `READ_ALL` in the short words.
+const READ_ALL_SHORT: &str = "read all";
+
+/// A cut card's row, after how many lines are left out: not read yet, open in its buffer, read whole.
+const CUT_UNREAD: &str = "not read yet";
+const CUT_OPEN: &str = "open but not read to its end";
+const CUT_READ: &str = "read whole";
+
+/// What the key that lists every card waiting does, the last pair of a card's bottom line when others wait behind it.
+const INBOX_SAYS: &str = "list";
+
+/// That pair's cells, `key` as the keymap has it.
+fn inbox_w(key: &str) -> usize {
+    key.width() + 1 + INBOX_SAYS.width()
+}
+
+/// The width of a row of answers: "y Install · n Not now" (a key alone, `y · n`, without its blank).
+fn buttons_width<S: AsRef<str>>(labels: &[(char, S)]) -> usize {
+    labels.iter().map(|(_, l)| pair_w(l.as_ref())).sum::<usize>() + 3 * labels.len().saturating_sub(1)
+}
+
+/// One answer's cells: its key, then a blank and `label` — the key alone when it has none.
+fn pair_w(label: &str) -> usize {
+    if label.is_empty() { 1 } else { 2 + label.width() }
 }
 
 /// Who card `o` is about as the stack names it (P3 step 7d): with two sessions or more — one draws no names — the
@@ -10893,10 +10999,10 @@ impl OfferCard {
             lines: Vec::new(),
             warn: Vec::new(),
             diff: Vec::new(),
-            buttons_row: None,
-            button_rows: Vec::new(),
             buttons,
             labels: Vec::new(),
+            way: None,
+            inbox: None,
             waits: None,
             pad: 0,
             failed: false,
@@ -10906,7 +11012,6 @@ impl OfferCard {
             about: None,
             paint: Vec::new(),
             cut: 0,
-            keys_in_line: false,
             bar: false,
         })
     }
@@ -10916,10 +11021,25 @@ impl OfferCard {
         self.lines.is_empty() && !self.bar
     }
 
+    /// The card up, laid out where it goes. One whose bottom line made it grow past its column (`laid`'s `true`) is
+    /// laid again at that width: its text wraps to the frame it has — no empty stretch at its right, its rows as few
+    /// as that width needs, its corner where it was.
     fn new(editor: &Editor, lay: &Layout) -> Option<Self> {
+        let (card, grown) = Self::laid(editor, lay, None)?;
+        match grown {
+            true => Self::laid(editor, lay, Some(card.inner)).map(|c| c.0).or(Some(card)),
+            false => Some(card),
+        }
+    }
+
+    /// `new`'s layout, its text wrapped at `wrap` when given (else its column's reading width), and whether its
+    /// bottom line made it wider than that.
+    fn laid(editor: &Editor, lay: &Layout, wrap: Option<usize>) -> Option<(Self, bool)> {
         use crate::offer::OfferState;
         // (none of this session's: another's waiting are the stack still — its peeks alone)
-        let Some(o) = editor.offers.first() else { return Self::peeks_alone(editor, lay) };
+        let Some(o) = editor.offers.first() else {
+            return Self::peeks_alone(editor, lay).map(|c| (c, false));
+        };
         let (foot, (ax, aw, atop, arows)) = asks_area(editor, lay);
         if lay.offer_bar.is_none()
             && (editor.picker.is_some() || !editor.pending.is_empty() || arows < 8 || aw == 0)
@@ -10928,16 +11048,18 @@ impl OfferCard {
         }
         let pad = CARD_PAD;
         // (over the chat: as wide as the chat, a cell in from each side — its text that minus the frame's)
-        let fixed = foot.map(|_| aw.saturating_sub(6));
+        // (laid again at the width its bottom line grew it to: that its text's width)
+        let fixed = wrap.or(foot.map(|_| aw.saturating_sub(6)));
         let reading = fixed.unwrap_or((lay.edit_w / 2).clamp(30, 56).min(lay.edit_w.saturating_sub(8)));
         // The widest it can be — its answers and its cut row may take it past `reading`, never past the code
-        let widest = aw.saturating_sub(6);
+        // (laid again at its grown width: that its widest too — its text wraps at it, never a slack wider)
+        let widest = wrap.unwrap_or(aw.saturating_sub(6));
         // (and the most cells it takes, its frame's sides and padding with it — a cell of air beside it)
         let room_w = if foot.is_some() { aw.saturating_sub(2) } else { lay.edit_w.saturating_sub(1) };
-        // Its text as wide as its answers' row already makes it (narrow, a host card's five answers were 64
-        // cells over text wrapped at 37 — its title cut, its rows doubled)
-        let answers_w = buttons_width(&o.answers(editor.preflight_quick().is_some())).min(widest);
-        let mut max_inner = reading.max(answers_w);
+        // (its text at its reading width: its answers fit the card, never the card its answers — the user, 2026-10-25)
+        let quick = editor.preflight_quick().is_some();
+        let way_key = editor.key_said("C-q");
+        let mut max_inner = reading;
         // Paragraphs' last rows left a word or two (`proxy`, `run.`): up to `CARD_SLACK` cells wider, never past
         // `widest`, when that takes rows back — the narrowest as short as the widest (piece F: `y Once` made the
         // host card's answers row shorter, and its text wrapped to widows)
@@ -10988,7 +11110,7 @@ impl OfferCard {
         let mut diff = Vec::new();
         let (mut lines, labels) = match &o.state {
             OfferState::Asking => {
-                let b = o.answers(editor.preflight_quick().is_some());
+                let b = o.answers(quick);
                 // One that runs something is shown whole — cut to the room below if it must be, with `v`
                 // to see all of it (and `y` waits for that)
                 let most = if o.weighty() { usize::MAX } else { 4 };
@@ -11004,8 +11126,8 @@ impl OfferCard {
                     Some(s) => 1 + card_rows(s, max_inner).len().min(2),
                     None => 0,
                 };
-                // (and a row of air under it — `bottom` below)
-                let room = arows.saturating_sub(1 + button_rows(&b, widest).len() + 2 * pad + said_rows + 1);
+                // (and a row of air under it — `bottom` below; its answers are its frame's bottom line)
+                let room = arows.saturating_sub(2 * pad + said_rows + 1);
                 // (the card's rows with the question's lines `skip` left out — their warning and diff rows marked)
                 let build = |skip: &[usize], warn: &mut Vec<usize>, diff: &mut Vec<(usize, char)>| {
                     let mut v = vec![(title.clone(), false)];
@@ -11056,36 +11178,17 @@ impl OfferCard {
                             ));
                         }
                     }
-                    // Where its answers go (#24/#25, P3 §3.8): not focused, the keys where they are (the code, the
-                    // chat's input, a review) — `C-q` brings them here, what's being typed stays; focused — Esc goes back
-                    // (one short row: every card that waits says it — the status line's `▲1 waiting · C-q` too)
-                    let typing;
-                    let whose = match editor.card_has_keys() {
-                        true => "esc goes back, unanswered",
-                        false => {
-                            typing = format!("{} to answer it", editor.key_said("C-q"));
-                            typing.as_str()
-                        }
-                    };
-                    let whose = Some(whose);
+                    // (how its answers are reached — `C-q` while it waits, esc back once focused — is its bottom
+                    // line's first pair, never a row: `draw`)
                     // What waits behind it, and where (frictions15 #5: `C-q` takes the oldest here — the rest
                     // were a queue the card didn't name)
                     let behind = editor.cards_behind_said();
-                    if behind.is_some() || whose.is_some() {
+                    if behind.is_some() {
                         v.push((String::new(), true));
                     }
-                    // (too long for a row: where they are, then the key — not the key's words cut off alone)
+                    // (the key that lists them is its bottom line's last pair)
                     if let Some(behind) = &behind {
-                        match behind.split_once(" · ").filter(|_| behind.width() > max_inner) {
-                            Some((wheres, key)) => {
-                                v.extend(wrapped(wheres, 2));
-                                v.extend(wrapped(key, 1));
-                            }
-                            None => v.extend(wrapped(behind, 2)),
-                        }
-                    }
-                    if let Some(whose) = whose {
-                        v.extend(wrapped(whose, 2));
+                        v.extend(wrapped(behind, 2));
                     }
                     v
                 };
@@ -11114,7 +11217,7 @@ impl OfferCard {
         for (i, l) in lines.iter_mut().enumerate() {
             l.0 = fit_ellipsis(&l.0, max_inner.saturating_sub(if i == 0 { badge_w } else { 0 }));
         }
-        let mut labels = labels.unwrap_or_default();
+        let labels = labels.unwrap_or_default();
         // Its text being read in its buffer: a bar over the status line — the title, how far the reading
         // is, the answers at the right (clickable as ever)
         if let Some(y) = lay.offer_bar.map(usize::from) {
@@ -11150,36 +11253,34 @@ impl OfferCard {
                 _ => lines.get(1).map(|l| l.0.clone()).unwrap_or_default(),
             };
             let title = lines.first().map(|l| l.0.clone()).unwrap_or_default();
-            return Some(Self {
-                id: o.id,
-                x: 0,
-                y,
-                inner: width.saturating_sub(5),
-                lines: vec![(title, false), (how, true)],
-                warn: if said.is_some() { vec![1] } else { Vec::new() },
-                diff: Vec::new(),
-                buttons_row: Some(y),
-                button_rows: Vec::new(),
-                buttons,
-                labels,
-                waits: None,
-                pad: 0,
-                failed: matches!(o.state, OfferState::Failed(_)),
-                badge,
-                busy: o.installing(),
-                peeks: Vec::new(),
-                about,
-                paint: Vec::new(),
-                cut: 0,
-                keys_in_line: false,
-                bar: true,
-            });
+            return Some((
+                Self {
+                    id: o.id,
+                    x: 0,
+                    y,
+                    inner: width.saturating_sub(5),
+                    lines: vec![(title, false), (how, true)],
+                    warn: if said.is_some() { vec![1] } else { Vec::new() },
+                    diff: Vec::new(),
+                    buttons,
+                    labels: labels.iter().map(|(k, l)| (*k, l.to_string())).collect(),
+                    way: None,
+                    inbox: None,
+                    waits: None,
+                    pad: 0,
+                    failed: matches!(o.state, OfferState::Failed(_)),
+                    badge,
+                    busy: o.installing(),
+                    peeks: Vec::new(),
+                    about,
+                    paint: Vec::new(),
+                    cut: 0,
+                    bar: true,
+                },
+                false,
+            ));
         }
         let has_buttons = !labels.is_empty();
-        // The answers in rows as wide as the card can be (#201: `:restart`'s four didn't fit 50 columns on
-        // one, so the card wasn't drawn and couldn't be answered) — a blank row above them
-        let mut button_rows = button_rows(&labels, widest);
-        let buttons_h = if has_buttons { 1 + button_rows.len() } else { 0 };
         // A key it refused: why, over its answers in the warning colour — never cut away with its body (no
         // silent refusal; the status line's flash was missed)
         let said: Vec<(String, bool)> = match editor.offer_said_now() {
@@ -11191,8 +11292,8 @@ impl OfferCard {
             _ => Vec::new(),
         };
         // Taller than the room: the body cut to fit, its last row saying how much is left (`v` views it all);
-        // the buttons stay (#14: an 88-line card wasn't drawn at all, so it couldn't be answered)
-        let room = arows.saturating_sub(buttons_h + 2 * pad + said.len() + 1);
+        // the buttons stay, its bottom line (#14: an 88-line card wasn't drawn at all, so it couldn't be answered)
+        let room = arows.saturating_sub(2 * pad + said.len() + 1);
         let mut cut = 0;
         // (the cut row's forms all fit: the card keeps its width as it says another)
         let mut cut_floor = 0;
@@ -11202,53 +11303,22 @@ impl OfferCard {
             }
             cut = lines.len() - (room - 1);
             lines.truncate(room - 1);
-            // (what `y` waits for, said where it's cut — #84: a `y` before was taken in silence; once its `v`
-            // buffer has been read to the end, it says so — `y` answers now)
+            // (how much is cut and whether it's been read, in words — the keys are its bottom line's: `v` reads it
+            // all, a weighty yes says it waits `once it's read`; #84: a `y` before was taken in silence — one now
+            // turns this row and that yes to the warning colour)
             let early = editor.offer_early.get() == Some((o.id, o.rev));
-            let row = |then: &str| format!("↓ {cut} more lines · {then}");
-            // (narrow: the short forms — `v` kept, not cut off at the end, #201)
-            let (before, after) = match row("y once you've seen it all — v").width() > widest {
-                false => ("y once you've seen it all — v", "y waits — v shows all of it"),
-                true => ("v, then y", "y waits — v"),
+            let row = |then: &str| format!("↓ {cut} more lines, {then}");
+            let then = match (editor.offer_seen_whole(), editor.offer_viewing()) {
+                (true, _) => CUT_READ,
+                (false, true) => CUT_OPEN,
+                (false, false) => CUT_UNREAD,
             };
-            let then = if editor.offer_seen_whole() {
-                "seen in full — y answers".to_string()
-            } else if editor.offer_viewing() {
-                format!("y once read to the end — {} there", editor.end_key())
-            } else if early {
-                after.to_string()
-            } else {
-                before.to_string()
-            };
-            cut_floor = row(before).width().max(row(after).width()).min(widest);
-            lines.push((fit_ellipsis(&row(&then), widest), true));
+            cut_floor =
+                [CUT_UNREAD, CUT_OPEN, CUT_READ].map(|t| row(t).width()).into_iter().max().unwrap_or(0);
+            cut_floor = cut_floor.min(widest);
+            lines.push((fit_ellipsis(&row(then), widest), true));
             if early && !editor.offer_seen_whole() && !editor.offer_viewing() {
                 warn.push(lines.len() - 1);
-            }
-        }
-        // Its yes waiting for `v`: the hint row says so where `y`'s meaning was, in the warning colour once a `y`
-        // came early (frictions29 13: the cut row's turn to the warning colour was missed four times in a day,
-        // the row under it still saying `y Once`). Only where the answers keep their rows.
-        // The card keeps the width of the wider form once it's seen whole too — it doesn't narrow under the pointer as
-        // `y` gets its meaning back (review 7; `cut_floor` as for the cut row).
-        let mut waits = None;
-        let mut btn_floor = 0;
-        // (narrow: the short form — at 80 columns the long one took a row of its own, and the row said `y Once`)
-        let waiting = labels.iter().position(|(k, _)| *k == 'y' && o.weighty_answer(*k)).filter(|_| cut > 0);
-        if let Some(i) = waiting {
-            for form in [READ_FIRST, READ_FIRST_SHORT] {
-                let mut said = labels.clone();
-                said[i].1 = form;
-                let rows = self::button_rows(&said, widest);
-                if rows.len() != button_rows.len() {
-                    continue;
-                }
-                btn_floor = rows.iter().map(|r| buttons_width(&said[r.clone()])).max().unwrap_or(0);
-                if !editor.offer_seen_whole() && !editor.offer_viewing() {
-                    let early = editor.offer_early.get() == Some((o.id, o.rev));
-                    (labels, button_rows, waits) = (said, rows, Some((i, early)));
-                }
-                break;
             }
         }
         // (the body's rows only: not the cut row, nor what's said under it)
@@ -11260,8 +11330,6 @@ impl OfferCard {
             }
             lines.push((fit_ellipsis(&row.0, max_inner), row.1));
         }
-        // Button rows: "y Install   n Not now" — each "k label", three spaces between
-        let btn_w = button_rows.iter().map(|r| buttons_width(&labels[r.clone()])).max().unwrap_or(0);
         // Keep card width steady across states (ask → downloading → failed): ask text width is the floor
         // The longer of the ask and downloading texts (including the four wave cells)
         let ask = o.question.split('\n').map(|l| l.width()).max().unwrap_or(0).max(o.working.width() + 4);
@@ -11271,35 +11339,85 @@ impl OfferCard {
             .map(|(i, l)| l.0.width() + if i == 0 { badge_w } else { 0 })
             .max()
             .unwrap_or(0)
-            .max(if has_buttons { btn_w } else { 0 })
             .max(ask.min(max_inner))
-            .max(cut_floor)
-            .max(if has_buttons { btn_floor } else { 0 });
-        // Framed (D3) while it has the keys: its title the frame's name, its answers in the bottom line when they
-        // make one row — a cell of padding each side
+            .max(cut_floor);
+        // Framed (D3): its title the frame's name, its answers its bottom line — a cell of padding each side
         // (one layout, keys or not — only the frame's lines come with them: nothing moves)
-        // (its name whole on the frame's top line: `╭─ ` and ` ─╮` round it, a cell more than the title row had)
+        // (its name whole on the frame's top line: `╭─ ` and ` ─╮` round it, a cell more than the title row had; its
+        // bottom line whole: `╰─ ` and ` ─╯` round it)
         let inner = match lines.first() {
             Some(t) => inner.max(t.0.width() + badge_w + 2),
             None => inner,
         };
-        // (and its answers, when they make one row, whole in its bottom line: `╰─ ` and ` ─╯` round them — as
-        // wide as their widest form, so a card read whole doesn't change size; too wide for the code beside, rows)
-        let in_line = inner.max(btn_w + 2).max(btn_floor + 2);
-        let keys_in_line = has_buttons && button_rows.len() == 1 && in_line + 4 <= room_w;
-        let inner = if keys_in_line { in_line } else { inner };
-        // (over the chat: its width whatever it says)
-        let inner = fixed.unwrap_or(inner);
+        // Its bottom line (the user, 2026-10-25: a floating card's keys are always there, its body only what it says):
+        // its way in first (`C-q answer`), then its answers — whole, else each its short words, else the last ones their
+        // key alone — the first form that fits the card: its text's width, up to its reading width (over the chat, its
+        // width); never wider for them. A card cut short adds `v read it all` (unless an answer of its own is `v`),
+        // and its weighty yes says it waits `once it's read`, in the warning colour once a `y` came early (frictions29
+        // 13). What gives way, in `answers_fit`'s one order: the other answers' words down to their keys — never its
+        // way in, what lasts (`Offer::lasting`), what a cut yes waits for, nor what lists the cards behind it; past
+        // that the card grows left for its line, and only a screen too narrow for that draws none.
+        let room = fixed.unwrap_or_else(|| inner.max(reading)).saturating_sub(2);
+        let read = labels.iter().position(|(k, _)| *k == 'y' && o.weighty_answer(*k)).filter(|_| cut > 0);
+        let (mut whole, mut short) = (labels.clone(), o.answers_short(quick));
+        let mut keep = None;
+        if cut > 0 && o.acts_on('v') && !labels.iter().any(|a| a.0 == 'v') {
+            let at = read.map_or(1, |i| i + 1).min(whole.len());
+            whole.insert(at, READ_ALL);
+            short.insert(at.min(short.len()), (READ_ALL.0, READ_ALL_SHORT.into()));
+            keep = Some(at);
+        }
+        let kept: Vec<usize> = (whole.iter().enumerate())
+            .filter(|(i, a)| o.lasting(a.0) || Some(*i) == keep || Some(*i) == read)
+            .map(|(i, _)| i)
+            .collect();
+        let forms = answer_forms(&whole, &short, read, &kept);
+        let inbox = editor.cards_behind_said().filter(|_| has_buttons).map(|_| editor.inbox_key());
+        // (where even its narrowest line doesn't fit, the card grows left by just the cells that line needs — still
+        // bottom-right, over the code beside the chat or a docked list (the user, 2026-10-25: asks are always
+        // bottom-right, never another place by width); the most it may take: from its corner's column to the
+        // screen's left, a cell of air there — else not drawn, the status line saying the size it needs)
+        let most_w = if foot.is_some() { (ax + aw).saturating_sub(1) } else { room_w };
+        let last = inbox.as_deref().map(inbox_w);
+        let form = match has_buttons {
+            true => match answers_fit(&way_key, &forms, room, last) {
+                Some(fit) => fit,
+                None => {
+                    let need = line_w_with(&way_key, forms.last()?, last);
+                    (need + 2 + 4 <= most_w).then(|| answers_fit(&way_key, &forms, need, last)).flatten()?
+                }
+            },
+            false => 0,
+        };
+        let line_w = if has_buttons { answers_line_w(&way_key, &forms[form]) } else { 0 };
+        let way = has_buttons.then_some(way_key);
+        let reads = read.is_some() && !editor.offer_seen_whole() && !editor.offer_viewing();
+        let waits = read.filter(|_| reads).map(|i| (i, editor.offer_early.get() == Some((o.id, o.rev))));
+        // (read whole, or open in its buffer: its yes says its meaning again, in the form it had — the card's width kept)
+        let mut labels = forms[form].clone();
+        if let Some(a) = read.filter(|_| !reads).and_then(|i| labels.get_mut(i).map(|a| (i, a))) {
+            let (i, a) = a;
+            a.1 = match a.1.as_str() {
+                READ_FIRST => whole[i].1.to_string(),
+                READ_FIRST_SHORT => short[i].1.clone(),
+                _ => String::new(),
+            };
+        }
+        let line_w = line_w + inbox.as_deref().map_or(0, |k| inbox_w(k) + 3);
+        let line_inner = if has_buttons { line_w + 2 } else { 0 };
+        // (over the chat: its width whatever it says — wider only for its bottom line's narrowest form)
+        let inner = fixed.unwrap_or(inner).max(line_inner);
+        // (wider than its text's width for its bottom line: `new` lays it again at this width, its text wrapped to it)
+        let grown = line_inner > max_inner;
         let width = inner + 4;
-        let (body_rows, inside) =
-            (lines.len() - 1, if has_buttons && !keys_in_line { 1 + button_rows.len() } else { 0 });
+        let body_rows = lines.len() - 1;
         // Too narrow for it: not drawn (and an install's `y` isn't taken — `offer_key`)
-        if width > room_w {
+        if width > most_w {
             return None;
         }
-        let h = body_rows + inside + 2 * pad;
-        // (a row of air over what's below — the chat's input, the slot, the status line — whether its bottom row is the
-        // frame's line or, without the keys, its answers: it never sits on what's below)
+        let h = body_rows + 2 * pad;
+        // (the area's last row left free: over the chat's foot the input's rule, the card's frame right on it; over the
+        // slot or the status line a row of air — `asks_foot`)
         let bottom = atop + arows - 1;
         let y = bottom.checked_sub(h)?.max(atop);
         let x = (ax + aw).saturating_sub(width + 1);
@@ -11324,17 +11442,15 @@ impl OfferCard {
                 (k + 1, title, started, matches!(p.state, OfferState::Failed(_)), p.id, about)
             })
             .collect::<Vec<_>>();
-        let buttons_row =
-            has_buttons.then_some(if keys_in_line { y + h - 1 } else { y + pad + body_rows + 1 });
+        // (its bottom line: `╰─ `, its way in and ` · ` when it stands, then each answer — ` · ` between)
         let mut buttons = Vec::new();
-        if let Some(first) = buttons_row {
-            for (j, r) in button_rows.iter().enumerate() {
-                let mut at = x + 3;
-                for (k, l) in &labels[r.clone()] {
-                    let end = at + 2 + l.width();
-                    buttons.push((first + j, at, end, *k));
-                    at = end + 3;
-                }
+        if has_buttons {
+            let row = y + h - 1;
+            let mut at = x + 3 + way.as_deref().map_or(0, |k| way_w(k) + 3);
+            for (k, l) in &labels {
+                let end = at + pair_w(l);
+                buttons.push((row, at, end, *k));
+                at = end + 3;
             }
         }
         for (k, ..) in &peeks {
@@ -11350,30 +11466,32 @@ impl OfferCard {
         let busy = o.installing();
         // (a row cut away isn't drawn — nor its color)
         warn.retain(|&i| i < lines.len());
-        Some(Self {
-            id: o.id,
-            x,
-            y,
-            inner,
-            lines,
-            warn,
-            diff,
-            buttons_row,
-            button_rows,
-            buttons,
-            labels,
-            waits,
-            pad,
-            failed,
-            badge,
-            busy,
-            peeks,
-            about,
-            paint: o.paint.clone(),
-            cut,
-            keys_in_line,
-            bar: false,
-        })
+        Some((
+            Self {
+                id: o.id,
+                x,
+                y,
+                inner,
+                lines,
+                warn,
+                diff,
+                buttons,
+                labels,
+                way,
+                inbox,
+                waits,
+                pad,
+                failed,
+                badge,
+                busy,
+                peeks,
+                about,
+                paint: o.paint.clone(),
+                cut,
+                bar: false,
+            },
+            grown,
+        ))
     }
 
     /// Its width: its text, the bar and the padding — framed, the frame's sides and a cell of padding each.
@@ -11386,11 +11504,7 @@ impl OfferCard {
         if self.alone() {
             return 0;
         }
-        let inside = match self.buttons_row {
-            Some(_) if !self.keys_in_line => 1 + self.button_rows.len(),
-            _ => 0,
-        };
-        self.lines.len() - usize::from(!self.bar) + inside + 2 * self.pad
+        self.lines.len() - usize::from(!self.bar) + 2 * self.pad
     }
 
     /// Where it sits, back cards included — the notification card keeps out of it.
@@ -11407,9 +11521,11 @@ impl OfferCard {
         usize::from(!self.bar && !self.alone() && !self.peeks.is_empty())
     }
 
-    /// Its answers as a frame's bottom line has them (`draw_frame`): each key in the accent, what it does after it —
-    /// the first in the body's colour, the rest dim, the one waiting to be read whole in the warning's once a key
-    /// came early — `·` between.
+    /// Its answers as a frame's bottom line has them (`draw_frame`): its way in first (`way`) — `C-q answer` while it
+    /// waits, `esc back` in its place once `held` (the line running on before it: the answers stay where they were) —
+    /// then each key in the accent, what it does after it — the first in the body's colour, the rest dim, the one
+    /// waiting to be read whole in the warning's once a key came early — `·` between.
+    #[allow(clippy::too_many_arguments)]
     fn answer_spans(
         &self,
         key: Style,
@@ -11417,10 +11533,24 @@ impl OfferCard {
         dim: Style,
         warning: Style,
         line: Style,
+        held: bool,
     ) -> Vec<(String, Style)> {
         let mut spans = Vec::new();
+        if let Some(way) = &self.way {
+            let (k, what) = match held {
+                true => (ESC_BACK.0.to_string(), ESC_BACK.1),
+                false => (way.clone(), WAY_IN),
+            };
+            // (a run of the line where the way in was longer: `top_line` sets it before the blank)
+            let lead = way_w(way).saturating_sub(k.width() + 1 + what.width());
+            if lead > 0 {
+                spans.push(("─".repeat(lead), line));
+            }
+            spans.push((k, key));
+            spans.push((format!(" {what}"), dim));
+        }
         for (i, (k, l)) in self.labels.iter().enumerate() {
-            if i > 0 {
+            if i > 0 || self.way.is_some() {
                 spans.push((" · ".to_string(), line));
             }
             let what = match self.waits {
@@ -11429,7 +11559,14 @@ impl OfferCard {
                 _ => dim,
             };
             spans.push((k.to_string(), key));
-            spans.push((format!(" {l}"), what));
+            if !l.is_empty() {
+                spans.push((format!(" {l}"), what));
+            }
+        }
+        if let Some(k) = &self.inbox {
+            spans.push((" · ".to_string(), line));
+            spans.push((k.clone(), key));
+            spans.push((format!(" {INBOX_SAYS}"), dim));
         }
         spans
     }
@@ -11612,39 +11749,6 @@ impl OfferCard {
             queue!(out, Print("  "))?;
             row += 1;
         }
-        if self.buttons_row.is_some() && !self.keys_in_line {
-            apply(out, body)?;
-            queue!(out, MoveTo(self.x as u16, row as u16), Spaces(width))?;
-            row += 1;
-            for r in &self.button_rows {
-                queue!(out, MoveTo(self.x as u16, row as u16))?;
-                apply(out, body)?;
-                queue!(out, Print("   "))?;
-                let mut used = 3;
-                for (i, (k, l)) in self.labels.iter().enumerate().take(r.end).skip(r.start) {
-                    if i > r.start {
-                        apply(out, body)?;
-                        queue!(out, Print("   "))?;
-                        used += 3;
-                    }
-                    apply(out, key)?;
-                    queue!(out, Print(k))?;
-                    apply(
-                        out,
-                        match self.waits {
-                            Some((w, true)) if w == i => warning,
-                            _ if i == 0 => body,
-                            _ => dim,
-                        },
-                    )?;
-                    queue!(out, Print(" "), Print(l))?;
-                    used += 2 + l.width();
-                }
-                apply(out, body)?;
-                queue!(out, Spaces(width.saturating_sub(used)))?;
-                row += 1;
-            }
-        }
         if self.pad > 0 {
             card_edge(out, card, self.x, row, width)?;
         }
@@ -11671,10 +11775,12 @@ impl OfferCard {
         // (its answers as its frame: in the faint frame's ink while it waits, the key in the accent once focused — user,
         // 2026-10-23)
         let faint = frame_line(ui, card);
-        let answers = match (self.keys_in_line, held) {
-            (true, true) => self.answer_spans(key, body, dim, warning, faint),
-            (true, false) => self.answer_spans(Style { bold: true, ..faint }, faint, faint, warning, faint),
-            (false, _) => Vec::new(),
+        let answers = match (self.labels.is_empty(), held) {
+            (false, true) => self.answer_spans(key, body, dim, warning, faint, true),
+            (false, false) => {
+                self.answer_spans(Style { bold: true, ..faint }, faint, faint, warning, faint, false)
+            }
+            (true, _) => Vec::new(),
         };
         draw_frame(out, ui, card, (self.x, self.y, width, self.rows()), &named, &answers, &[], held)?;
         Ok(())
@@ -12193,8 +12299,7 @@ fn draw_ask_stream(
 ///      │ The chat swaps the empty tool list here;     │
 ///      │ ● read    src/llm.rs  L230–249                │
 ///      │ ask never calls it, so it stays tool-less.   │
-///      │ C-c stop  C-f unfollow                       │  ← minimized only
-///      ╰─────────────────────────────────────────────╯
+///      ╰─ C-c stop · C-f unfollow ───────────────────╯  ← its keys: minimized, these
 ///
 /// Its frame's top line names whom it follows as the chrome does (one session: `follow`); it takes no keys.
 /// ```
@@ -12386,23 +12491,20 @@ fn draw_follow_card(
         && gaze.is_some_and(|g| g.step.is_some() && why.is_some())
         && crate::follow::stop_here(editor).is_some()
         && !crate::codereview::drafting(editor);
-    // Its keys: a stop's question after the turn; minimized, how to stop it or bring the panel back; the
+    // Its keys, on its bottom line in order of use (the user, 2026-10-25: a floating card's keys are always there,
+    // never a row inside): a stop's question after the turn; minimized, how to stop it or bring the panel back; the
     // replay's pair once there are stops (in the code — the chat's input would take them as letters)
     let stops = c.follow.replay.latest() > 0 && !editor.session.is_at(At::Chat);
-    let hint = if replaying {
-        Some(vec![sp("[r", key), sp(" ", faint), sp("]r", key), sp(" stop by stop", faint)])
-    } else if compact {
-        Some(match editor.session.is_at(At::Chat) {
-            true => vec![sp("C-c", key), sp(" stop  ", faint), sp("C-f", key), sp(" unfollow", faint)],
-            false if stops => {
-                vec![sp("space l", key), sp(" open the chat  ", faint), sp("[r", key), sp(" replay", faint)]
-            }
-            false => vec![sp("space l", key), sp(" open the chat", faint)],
-        })
-    } else if asking {
-        Some(vec![sp("space n", key), sp(" ask about this", faint)])
-    } else {
-        (stops && c.busy()).then(|| vec![sp("[r", key), sp(" replay what it did", faint)])
+    // (`C-f` as the chat's hints say it: paused, it follows again)
+    let follows = if c.follow.active() { "unfollow" } else { "follow" };
+    let keys: &[(&str, &str)] = match () {
+        _ if replaying => &[("[r ]r", "stop by stop")],
+        _ if compact && editor.session.is_at(At::Chat) => &[("C-c", "stop"), ("C-f", follows)],
+        _ if compact && stops => &[("space l", "open the chat"), ("[r", "replay")],
+        _ if compact => &[("space l", "open the chat")],
+        _ if asking => &[("space n", "ask about this")],
+        _ if stops && c.busy() => &[("[r", "replay what it did")],
+        _ => &[],
     };
     // Minimized, the panel's part above the turn: the question, the plan's step (the title is the frame's line)
     let mut top: Vec<Vec<Span>> = Vec::new();
@@ -12418,8 +12520,8 @@ fn draw_follow_card(
             top.push(row);
         }
     }
-    // Its rows but the turn's (a blank row between them and the keys)
-    let fixed = top.len() + 2 * usize::from(hint.is_some()) + 2 * pad;
+    // Its rows but the turn's
+    let fixed = top.len() + 2 * pad;
     let width = inner + 4;
     let x0 = (px + pw).saturating_sub(width + 1);
     // The lines being read stay readable: their rows, where their text reaches into the card's columns
@@ -12499,10 +12601,6 @@ fn draw_follow_card(
     let hand_at = hand_at.map(|k| top.len() + k);
     let mut rows: Vec<(Vec<Span>, Option<crate::chat::Link>)> = top.into_iter().map(|r| (r, None)).collect();
     rows.extend(body);
-    if let Some(h) = hint {
-        rows.push((Vec::new(), None));
-        rows.push((h, None));
-    }
     let h = rows.len() + 2 * pad;
     let y0 = if at_bottom { gap_end - h } else { gap_top };
     let rect = (x0, y0, width, h);
@@ -12538,11 +12636,15 @@ fn draw_follow_card(
         }
     }
     // Its frame (P3 step 7d): takes no keys — its lines the faint wash always; its name, details and time its top line;
-    // the strip's mark under the mouse in words on its bottom line (motion §4)
+    // its keys its bottom line — the strip's mark under the mouse in words in their place while it's there (motion §4;
+    // the user, 2026-10-25), the keys back as it leaves
     let shown_marks = &marks[shown];
     let hovered = c.follow.hover.as_deref().and_then(|h| shown_marks.iter().find(|m| m.call == h));
-    let words: Vec<(String, Style)> = hovered.map(|m| (m.said.clone(), dim)).into_iter().collect();
-    draw_frame(out, ui, card, rect, &[], &words, &[], false)?;
+    let bottom = match hovered {
+        Some(m) => vec![(m.said.clone(), dim)],
+        None => bottom_keys(keys, width.saturating_sub(6), key, faint, frame_line(ui, card)),
+    };
+    draw_frame(out, ui, card, rect, &[], &bottom, &[], false)?;
     let head = TopLine {
         names: &names,
         details: &details,
@@ -12560,6 +12662,32 @@ fn draw_follow_card(
         taken.push((y0, b - 1, m.call.clone()));
     }
     Ok(Some(rect))
+}
+
+/// A floating card's keys as its bottom line has them (`draw_frame`), in `room` cells: in order of use, whole pairs,
+/// ` · ` between — one that doesn't fit skipped for the next.
+fn bottom_keys(
+    pairs: &[(&str, &str)],
+    room: usize,
+    key: Style,
+    faint: Style,
+    line: Style,
+) -> Vec<(String, Style)> {
+    let mut spans = Vec::new();
+    let mut used = 0;
+    for (k, what) in pairs {
+        let w = k.width() + 1 + what.width() + if used > 0 { 3 } else { 0 };
+        if used + w > room {
+            continue;
+        }
+        if used > 0 {
+            spans.push((" · ".to_string(), line));
+        }
+        spans.push((k.to_string(), key));
+        spans.push((format!(" {what}"), faint));
+        used += w;
+    }
+    spans
 }
 
 /// The cells a follow card's strip of marks has on its top line (motion §4), `width` cells across: what the details have
@@ -14741,13 +14869,15 @@ fn chat_foot(editor: &Editor, lay: &Layout) -> Option<(usize, usize, usize)> {
 }
 
 /// The asks' area over the right column's foot (P3 step 7d): columns from `x`, `w` wide; rows from `top`, `rows` of them,
-/// the last one air — the chat's while it's open (`chat_foot`: under its top line, down to its input's line), else a
-/// session list docked right and in sight (the user 2026-10-24: "as the chat's" — under its top line, down to its leaf's
-/// last row), where it's wide enough for a card. None: the screen's right.
+/// the last one air — the chat's while it's open (`chat_foot`: under its top line, down to its input's rule — that
+/// rule the last row: a card's bottom line on the row right above it, the rule its edge, no row of air between — the
+/// user, 2026-10-25), else a session list docked right and in sight (the user 2026-10-24: "as the chat's" — under its
+/// top line, down to its leaf's last row, the row of air kept: it has no input rule, what's under it the status line
+/// or a slot), where it's wide enough for a card. None: the screen's right.
 fn asks_foot(editor: &Editor, lay: &Layout) -> Option<(usize, usize, usize, usize)> {
     use crate::pane::{GroupKind, Place, Side};
     if let Some((x, w, rule)) = chat_foot(editor, lay) {
-        return Some((x, w, 1, rule.saturating_sub(1)));
+        return Some((x, w, 1, rule));
     }
     let g = editor.session.group(GroupKind::Sessions).filter(|g| g.place == Place::Docked(Side::Right))?;
     if !editor.docked_in_sight(g.kind) || lay.chat_w > 0 {
@@ -14895,7 +15025,8 @@ fn draw_chat(
     // (the asks over its foot — P3 step 7d: the transcript's newest line stays in sight above the stack, a row of air
     // between, as the input's growth takes its room)
     let start = top + 1 + plan_h;
-    let asks = editor.screen.offer_card.filter(|r| r.0 >= x0 && r.1 + r.3 > start && r.1 < start + area);
+    // (a card grown left past the chat's edge for its bottom line still stands over its foot)
+    let asks = editor.screen.offer_card.filter(|r| r.0 + r.2 > x0 && r.1 + r.3 > start && r.1 < start + area);
     let area_shown = match (asks, view) {
         (Some(r), None) => r.1.saturating_sub(start + 1).min(area),
         _ => area,
@@ -18084,21 +18215,72 @@ mod snapshot_tests;
 
 #[cfg(test)]
 mod tests {
-    /// #201: a weighty card fits itself to a narrow screen — its answers in rows of whole pairs — down to
-    /// `CARD_MIN_INNER`; narrower, it isn't drawn and the status line says one waits and the window's size it
-    /// needs. (In a 50-column pane `:restart`'s four answers were one row too wide: no card, nothing said.)
+    /// #201: a weighty card fits itself to a narrow screen — its answers on its bottom line, whole, else their short
+    /// words, else their keys alone (the user, 2026-10-25) — down to `CARD_MIN_INNER`; narrower, it isn't drawn and
+    /// the status line says one waits and the window's size it needs. (In a 50-column pane `:restart`'s four answers
+    /// were one row too wide: no card, nothing said.)
     #[test]
     fn a_weighty_card_fits_a_narrow_screen_or_the_status_line_says_what_it_needs() {
         use crate::offer::{Offer, What};
-        // `:restart`'s answers, the most a card has: every one once, no row wider than the room
+        // `:restart`'s answers, the most a card has, its `y Restart anyway` one that lasts (it ends the work under
+        // way): the one order of what the line gives up (the user, 2026-10-25), a step at each room — (1) the way in
+        // always first, (2) what lasts in its short words, (3) what lists the cards behind it, (4) the others' short
+        // words, then their keys alone, the last first; past (4) the card grows left over the code to its narrowest
+        // line, else isn't drawn — no key in its body
         let restart =
             [('y', "Restart anyway"), ('f', "The front's instead"), ('w', "Wait for them"), ('n', "Not now")];
-        for room in [CARD_MIN_INNER, 30, 42, 56] {
-            let rows = button_rows(&restart, room);
-            assert_eq!(rows.iter().map(|r| r.len()).sum::<usize>(), restart.len(), "{room}: {rows:?}");
-            assert!(rows.iter().all(|r| buttons_width(&restart[r.clone()]) <= room), "{room}: {rows:?}");
+        let short: Vec<(char, String)> =
+            [('y', "restart"), ('f', "front's"), ('w', "wait"), ('n', "not now")]
+                .map(|(k, l)| (k, l.into()))
+                .into();
+        let forms = answer_forms(&restart, &short, None, &[0]);
+        let inbox = Some(inbox_w("space I"));
+        let line = |room: usize, last: Option<usize>| {
+            let f = answers_fit("C-q", &forms, room, last)?;
+            let pairs =
+                forms[f].iter().map(|(k, l)| if l.is_empty() { k.to_string() } else { format!("{k} {l}") });
+            let line = std::iter::once("C-q answer".to_string()).chain(pairs).collect::<Vec<_>>().join(" · ");
+            Some(if last.is_some() { format!("{line} · space I list") } else { line })
+        };
+        let said = [
+            // (whole, with what lists the cards behind it)
+            (
+                98,
+                "C-q answer · y Restart anyway · f The front's instead · w Wait for them · n Not now · space I list",
+            ),
+            // (4) short words, (3) that list kept over the others' words
+            (70, "C-q answer · y restart · f front's · w wait · n not now · space I list"),
+            // (4) the others' keys alone, the last first — (2) `y restart` in words, (3) the list still there
+            (62, "C-q answer · y restart · f front's · w wait · n · space I list"),
+            (57, "C-q answer · y restart · f front's · w · n · space I list"),
+            (49, "C-q answer · y restart · f · w · n · space I list"),
+        ];
+        for (room, want) in said {
+            assert_eq!(line(room, inbox).as_deref(), Some(want), "{room}");
         }
-        assert_eq!(button_rows(&restart, 200).len(), 1, "room for all: one row");
+        // (1), (2) and (3) never give way: past (4), none here — the card grows left to its narrowest line where the
+        // screen has the room, else isn't drawn and the status line says the size it needs (`card_short`); no key in its
+        // body ever
+        assert_eq!(line(48, inbox), None, "neither the way in, `y restart` nor `space I list` gives way");
+        assert_eq!(
+            line(34, None).as_deref(),
+            Some("C-q answer · y restart · f · w · n"),
+            "alone: its own keys"
+        );
+        assert_eq!(line(33, None), None);
+        // What lasts keeps its words in every form: `a`, `A` and `N` never a bare letter
+        let grant = [('y', "Once"), ('a', "This chat"), ('A', "Always here"), ('n', "No"), ('N', "Never")];
+        let short: Vec<(char, String)> =
+            [('y', "once"), ('a', "chat"), ('A', "always"), ('n', "no"), ('N', "never")]
+                .map(|(k, l)| (k, l.into()))
+                .into();
+        let forms = answer_forms(&grant, &short, None, &[1, 2, 4]);
+        let narrowest = forms.last().unwrap();
+        assert_eq!(
+            narrowest.iter().map(|(k, l)| format!("{k}{l}")).collect::<Vec<_>>(),
+            ["y", "achat", "Aalways", "n", "Nnever"],
+            "{forms:?}"
+        );
         let shown_after = |cols: u16, rows: u16, chat: bool, keys: &[&str]| {
             let mut ed = Editor::new(crate::config::Config::default());
             let q = "Claude renames `a` to `b` in 3 files.\n\nOne review for the set.";
@@ -18128,7 +18310,7 @@ mod tests {
             }
             // (in sight, waiting to be focused: the status line says `C-q`, nothing about where it is)
             assert!(
-                s.contains("Decline all") && !s.contains("shows its card"),
+                s.contains("Claude changes 3 files") && s.contains(" · n") && !s.contains("shows its card"),
                 "{cols} columns, in sight:\n{s}"
             );
         }
@@ -18254,8 +18436,8 @@ mod tests {
     }
 
     /// Where the asks float (P3 step 7d): the chat open, over its foot at its width — a cell in from its line and the
-    /// screen's edge, a row of air over its input's line; the chat closed, the screen's right above the status line. One
-    /// session: its title alone.
+    /// screen's edge, its bottom line right on its input's line — no row of air (the user, 2026-10-25); the chat closed,
+    /// the screen's right, a row of air over the status line. One session: its title alone.
     #[test]
     fn the_asks_float_over_the_chats_foot_or_at_the_screens_right() {
         use crate::offer::{Offer, What};
@@ -18278,10 +18460,17 @@ mod tests {
                     true => {
                         let cx = ed.screen.chat_x.expect("the chat") + crate::chrome::GAP;
                         assert_eq!((x, x + cw), (cx + 1, w - 1), "{w}: the chat's width, a cell in\n{s}");
-                        // (a row of air, then the input's line)
-                        let line: String = rows[y + ch + 1].chars().skip(cx).collect();
-                        assert!(line.trim_start().starts_with('─'), "{w}: over the input's line\n{s}");
-                        assert!(rows[y + ch].chars().skip(cx).all(|c| c == ' '), "{w}: air\n{s}");
+                        // (no row of air: the input's line right under its bottom line)
+                        let line: String = rows[y + ch].chars().skip(cx).collect();
+                        assert!(line.trim_start().starts_with('─'), "{w}: on the input's line\n{s}");
+                        assert!(
+                            rows[y + ch - 1]
+                                .chars()
+                                .skip(cx)
+                                .collect::<String>()
+                                .trim_start()
+                                .starts_with('╰')
+                        );
                     }
                     false => {
                         assert_eq!(x + cw, w - 1, "{w}: the screen's right\n{s}");
@@ -21083,7 +21272,7 @@ mod tests {
     /// Every card at the code's foot stands on one line (the user, 2026-10-24: "why are the two cards' bottoms at
     /// different heights?"): the follow card, an ask at the screen's right, a toast at its bottom spot, which-key —
     /// each its last row a row of air above the status line (`card_floor`). With the chat open the ask is over the
-    /// chat's foot instead: a row of air above its input's line.
+    /// chat's foot instead: its bottom line right above its input's line, no row of air.
     #[test]
     fn every_card_at_the_foot_stands_on_one_line() {
         use crate::offer::{Offer, What};
@@ -21133,11 +21322,8 @@ mod tests {
                     false => assert_eq!(bottom(card), floor, "{at}: the ask\n{s}"),
                     true => {
                         let cx = ed.screen.chat_x.expect("the chat") + crate::chrome::GAP;
-                        let line: String = rows[bottom(card) + 2].chars().skip(cx).collect();
-                        assert!(
-                            line.trim_start().starts_with('─'),
-                            "{at}: the ask over the input's line\n{s}"
-                        );
+                        let line: String = rows[bottom(card) + 1].chars().skip(cx).collect();
+                        assert!(line.trim_start().starts_with('─'), "{at}: the ask on the input's line\n{s}");
                     }
                 }
                 // A toast at its bottom spot (the cursor's row holds the top one)
@@ -21173,9 +21359,8 @@ mod tests {
     }
 
     /// The follow card's rows: its frame's top line (its ends and the line's run of `─` off — its title), then the
-    /// rows inside down to its foot (its frame's bottom line, its keys and the blank row over them — not kept).
+    /// rows inside down to its foot (the row of air over its bottom line, its keys — not kept).
     fn follow_card(ed: &mut Editor, w: u16) -> Vec<String> {
-        const KEYS: [&str; 3] = ["C-c stop", "stop by stop", "space l open the chat"];
         let vt = screen_at(ed, w);
         let (x, y, width, h) = ed.screen.thought_card.get().expect("the card is up");
         let top = vt.screen().rows(x as u16, width as u16).nth(y).unwrap_or_default();
@@ -21184,12 +21369,10 @@ mod tests {
             vt.screen()
                 .rows(x as u16 + 2, width as u16 - 4)
                 .skip(y + 1)
-                .take(h - 1)
+                .take(h - 2)
                 .map(|r| r.trim_end().into()),
         );
-        let foot =
-            |r: &String| r.is_empty() || r.chars().all(|ch| ch == '─') || KEYS.iter().any(|k| r.contains(k));
-        while card.last().is_some_and(foot) {
+        while card.last().is_some_and(String::is_empty) {
             card.pop();
         }
         card
@@ -21672,6 +21855,51 @@ mod tests {
         }
         screen_at(&mut ed, 160);
         assert_eq!(in_hand(&ed), ["stop:s13"], "`]r` lights the mark it lands on");
+    }
+
+    /// The user, 2026-10-25: the follow card's keys are its bottom line, never a row inside — in order of use, one that
+    /// doesn't fit skipped (narrow: `space l` alone, `[r replay` gone); the mouse over a strip's mark puts its words in
+    /// their place, and the keys come back as it leaves.
+    #[test]
+    fn the_follow_cards_keys_are_its_bottom_line() {
+        use crate::event::Event;
+        let mut ed = strip_turn(4);
+        // (its frame's bottom line, and the rows inside it)
+        let card = |ed: &mut Editor, w: u16| -> (String, Vec<String>) {
+            let vt = screen_at(ed, w);
+            let (x, y, cw, h) = ed.screen.thought_card.get().expect("the card");
+            let rows: Vec<String> = vt.screen().rows(x as u16, cw as u16).skip(y).take(h).collect();
+            (rows[h - 1].clone(), rows[1..h - 1].to_vec())
+        };
+        // The chat's input has the keys: how to stop it, how to stop following
+        let (bottom, inside) = card(&mut ed, 160);
+        assert!(bottom.starts_with("╰─ C-c stop · C-f unfollow ─") && bottom.ends_with('╯'), "{bottom:?}");
+        assert!(!inside.iter().any(|r| r.contains("C-c") || r.contains("C-f")), "no key inside: {inside:#?}");
+        assert!(
+            inside.last().is_some_and(|r| !r.trim_matches(['│', ' ']).is_empty()),
+            "the turn down to the frame, no blank row for keys: {inside:#?}"
+        );
+        // Paused: `C-f` follows again, and says so (as the chat's hints do)
+        ed.session.chat.as_mut().unwrap().follow.paused = true;
+        let (bottom, _) = card(&mut ed, 160);
+        assert!(bottom.starts_with("╰─ C-c stop · C-f follow ─"), "{bottom:?}");
+        ed.session.chat.as_mut().unwrap().follow.paused = false;
+        // The code has them: the chat's way back and the replay, in order of use
+        ed.session.at = At::Code;
+        let (bottom, _) = card(&mut ed, 160);
+        assert!(bottom.starts_with("╰─ space l open the chat · [r replay ─"), "{bottom:?}");
+        // Narrow: a pair that doesn't fit is skipped, the line whole
+        let (bottom, _) = card(&mut ed, 80);
+        assert!(bottom.starts_with("╰─ space l open the chat ─") && !bottom.contains("[r"), "{bottom:?}");
+        // The mouse over a mark: its words in the keys' place; away, the keys again
+        card(&mut ed, 160);
+        let &(y, x, _) = ed.screen.stop_marks.borrow().last().expect("a mark");
+        ed.handle_event(Event::Hover(x as u16, y as u16));
+        let (bottom, _) = card(&mut ed, 160);
+        assert!(bottom.starts_with("╰─ references Thread ") && !bottom.contains("space l"), "{bottom:?}");
+        ed.handle_event(Event::Hover(0, 0));
+        let (bottom, _) = card(&mut ed, 160);
+        assert!(bottom.starts_with("╰─ space l open the chat · [r replay ─"), "the keys back: {bottom:?}");
     }
 
     /// The code's cursor under the follow card in replay (`[r`) is hidden — never drawn inside the card — and
@@ -23515,11 +23743,12 @@ mod tests {
     #[test]
     fn esc_says_one_word_per_act_in_every_hint() {
         const KEPT: &[(&str, usize)] = &[
-            // Claude's change in review: esc leaves it waiting — its word must say so (narrow: `back`)
+            // Claude's change in review: esc leaves it waiting — its word must say so (narrow: `back`); a focused card's
+            // bottom line, where its way in was (`ESC_BACK`)
             ("back, unanswered", 1),
-            ("back", 1),
+            ("back", 2),
             // a card's line, and the change's, for the same act: esc leaves it there, unanswered
-            ("goes back", 4),
+            ("goes back", 3),
             // a card given the keys (`C-q`, a press on it): esc gives them back where they came from — the code or the chat
             ("gives them back", 3),
             // the stale notes' list goes back to the card it came from, not the code

@@ -137,8 +137,8 @@ fn the_inbox_is_every_sessions_waiting_things_oldest_first() {
 }
 
 /// frictions15 #5: the card in front holds `C-q` (it takes this session's oldest first, #198), so what waits
-/// behind it would be a silent queue — the card says how many more wait, where (here, or which session) and
-/// the key that lists them (the keymap's, never a hardcoded one). Alone, it says nothing of the kind.
+/// behind it would be a silent queue — the card says how many more wait and where (here, or which session), and
+/// its bottom line the key that lists them (the keymap's, never a hardcoded one). Alone, it says nothing of the kind.
 #[test]
 fn the_front_card_says_how_many_wait_behind_it_and_where() {
     let (mut ed, dir, back, _) = three("behind");
@@ -148,7 +148,20 @@ fn the_front_card_says_how_many_wait_behind_it_and_where() {
     up(&mut ed, claudes(2, 30));
     park(&mut ed, back, claudes(3, 10));
     let rows = screen(&mut ed, 120, 30).join("\n");
-    assert!(rows.contains("2 more wait — 1 here, 1 in back · space I lists them"), "{rows}");
+    assert!(rows.contains("2 more wait — 1 here, 1 in back") && !rows.contains("lists them"), "{rows}");
+    let line = "╰─ C-q answer · y once · a chat · n no · space I list ─╯";
+    assert_eq!(crate::term::card_line(&ed).as_deref(), Some(line), "its bottom line's last pair: {rows}");
+    // Narrow: the answers' words give way first, the key that lists them never — past that the card grows left for
+    // its line; no key in its body, and the way in stays first (a key typed now isn't an answer)
+    let narrow = "╰─ C-q answer · y · a chat · n · space I list ─╯";
+    for w in [80, 60] {
+        let rows = screen(&mut ed, w, 30).join("\n");
+        assert!(
+            rows.contains("│ 2 more wait — 1 here, 1 in back ") && !rows.contains("lists them"),
+            "{w}: {rows}"
+        );
+        assert_eq!(crate::term::card_line(&ed).as_deref(), Some(narrow), "{w}: {rows}");
+    }
     std::fs::remove_dir_all(&dir).ok();
 }
 

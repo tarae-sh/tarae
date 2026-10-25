@@ -631,14 +631,14 @@ impl crate::editor::Editor {
     /// width (too narrow for it beside the code), only while it has the keys. Out of the chat (a card
     /// answered, Esc, an edit's review) they went to a code pane with no room on screen: `keys → pane#29`,
     /// typing landing unseen. What has the keys fills a narrow screen, the code too; `space l` brings the chat.
-    /// A card that took them (`C-q` — #201: in 50 columns its keys went to a card nobody could see) has them,
-    /// not the chat: the code is there, with the card on it; Esc or its answer brings the chat back.
+    /// A card that took them from the chat (`C-q`) leaves it there: the asks float over its foot (P3 step 7d), so
+    /// the card stays where it waited — swapping in the code under it left a 57-column card, drawn while it waited,
+    /// with no room once focused, every key refused (the review of cardkeys).
     pub fn chat_panel(&self, total: usize) -> bool {
         if !self.session.chat.as_ref().is_some_and(|c| !c.compact()) {
             return false;
         }
-        (self.session.is_at(At::Chat) && !self.card_has_keys())
-            || widths(total, true, false, self.sizes).chat < total
+        self.session.is_at(At::Chat) || widths(total, true, false, self.sizes).chat < total
     }
 
     /// `C-w =` — every size automatic again, and how each group lays its members (`C-w t`'s).

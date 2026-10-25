@@ -2762,17 +2762,24 @@ fn the_boards_card_folds_its_angles_rather_than_be_cut() {
         }
         let mut parser = vt100::Parser::new(s.h, s.w, 0);
         parser.process(&s.frame());
-        parser.screen().rows(0, s.w).collect::<Vec<String>>().join("\n")
+        let line = crate::term::card_line(&s.ed).unwrap_or_default();
+        (parser.screen().rows(0, s.w).collect::<Vec<String>>().join("\n"), line)
     };
-    let screen = |w: u16, h: u16| screen_as(w, h, 0);
-    // (the rows the card draws counted, whatever it adds: `esc goes back` after `C-q`, a refused key's reason —
-    // still whole)
-    for (how, said) in [(1, "esc goes back, unanswered"), (2, "not taken")] {
-        let at = screen_as(60, 20, how);
+    let screen = |w: u16, h: u16| screen_as(w, h, 0).0;
+    // (the rows the card draws counted, whatever it says: `esc back` after `C-q` on its bottom line, a refused key's
+    // reason — still whole)
+    // (16 rows: its answers on its bottom line, not two rows of their own, gave 20 the room for it whole)
+    for (how, said, bottom) in [
+        (1, "", "╰─── esc back · y start · n ───────╯"),
+        (2, "not taken", "╰─ C-q answer · y start · n ───────╯"),
+    ] {
+        let (at, line) = screen_as(60, 16, how);
         assert!(at.contains(said) && !at.contains("more lines"), "{at}");
+        assert_eq!(line, bottom, "{at}");
     }
-    let narrow = screen(60, 20);
-    assert!(narrow.contains("Start a board on tarae-demo?") && narrow.contains("y Start it"), "{narrow}");
+    let (narrow, line) = screen_as(60, 16, 0);
+    assert!(narrow.contains("Start a board on tarae-demo?"), "{narrow}");
+    assert_eq!(line, "╰─ C-q answer · y start · n ───────╯", "{narrow}");
     assert!(!narrow.contains("more lines") && !narrow.contains("Each from its angle"), "{narrow}");
     assert!(narrow.contains("A yes holds for this session"), "what a yes means stays: {narrow}");
     let wide = screen(160, 30);
@@ -3041,11 +3048,12 @@ fn floating_cards_never_overlap() {
         if s.ed.screen.toast_card.get().is_none() {
             let mut vt = vt100::Parser::new(h, w, 0);
             vt.process(&bytes);
-            let status =
-                vt.screen().contents().lines().nth(usize::from(h) - 2).unwrap_or_default().to_string();
+            // (the status line: the screen's last row)
+            let status = vt.screen().rows(0, w).nth(usize::from(h) - 1).unwrap_or_default();
             assert!(
                 status.contains("Saved src/demo.rs"),
-                "{w}x{h}: no card → the status line has it: {status}"
+                "{w}x{h}: no card → the status line has it: {status}\n{}",
+                vt.screen().contents()
             );
         }
         assert!(s.ed.screen.note_card.get().is_some(), "{w}x{h}: the note card shows");
@@ -6578,20 +6586,24 @@ fn what_takes_the_keys_is_framed_with_its_name() {
     let ui = Ui::new(&s.ed);
     let focus = vt_color(s.ed.theme.try_get("ui.text.focus").and_then(|s| s.fg)).unwrap();
     let (window, accent) = (vt_color(ui.window).unwrap(), vt_color(ui.accent.fg).unwrap());
-    // The card waiting (it came on its own): `╭─ title ─╮` over its body, `╰─ y … · n … ─╯` under it, no title row
-    // inside — its lines faint, its body saying how to answer it
+    // The card waiting (it came on its own): `╭─ title ─╮` over its body, `╰─ C-q answer · y … · n … ─╯` under it,
+    // no title row inside — its lines faint, its way in its bottom line's first pair (the user, 2026-10-25: a floating
+    // card's keys are always in its bottom line, its body only what it says)
     assert!(!s.ed.card_has_keys());
     let r = rows(&mut s);
     let (x, y, cw, ch) = s.ed.screen.offer_card.expect("the card");
     let top: String = r[y].chars().skip(x).take(cw).collect();
     let bottom: String = r[y + ch - 1].chars().skip(x).take(cw).collect();
     assert!(top.starts_with("╭─ Claude asks to see the screen ─") && top.ends_with('╮'), "{top:?}");
-    assert!(bottom.starts_with("╰─ y ") && bottom.contains(" · n ") && bottom.ends_with('╯'), "{bottom:?}");
+    assert!(
+        bottom.starts_with("╰─ C-q answer · y ") && bottom.contains(" · n ") && bottom.ends_with('╯'),
+        "{bottom:?}"
+    );
     assert!(
         !r[y + 1..y + ch - 1].iter().any(|row| row.contains("Claude asks")),
         "the title once, on the frame"
     );
-    assert_eq!(r[y..y + ch].iter().filter(|row| row.contains("C-q to answer it")).count(), 1, "{r:#?}");
+    assert!(!r[y + 1..y + ch - 1].iter().any(|row| row.contains("C-q")), "no key in its body: {r:#?}");
     let p = cells(&s.frame(), w, h);
     let at =
         |p: &vt100::Parser, yy: usize, xx: usize| p.screen().cell(yy as u16, xx as u16).unwrap().fgcolor();
@@ -6600,27 +6612,34 @@ fn what_takes_the_keys_is_framed_with_its_name() {
         (window, focus, window),
         "line, name, side"
     );
-    // (its answers faint too: `╰─ y …` — the key at x + 3 in the frame's ink, never the accent — user, 2026-10-23)
-    let (by, key_at) = (y + ch - 1, x + 3);
+    // (its way in and answers faint too: `╰─ C-q answer · y …` — the keys in the frame's ink, never the accent — user,
+    // 2026-10-23; its `y` the button a press finds there)
+    let (by, key_at) = (y + ch - 1, x + 3 + "C-q answer · ".chars().count());
     assert_eq!(p.screen().cell(by as u16, key_at as u16).unwrap().contents(), "y");
+    assert_eq!(at(&p, by, x + 3), window, "a waiting card's way in faint");
     assert_eq!(at(&p, by, key_at), window, "a waiting card's answer keys faint");
+    assert!(s.ed.screen.offer_buttons.iter().any(|b| (b.0, b.1, b.3) == (by, key_at, 'y')), "its y's button");
     s.frames_both("framed_card");
-    // Focused (`C-q`): the same frame, its lines lit, its corner where it was — its body saying esc's way back
+    // Focused (`C-q`): the same frame, its lines lit, its corner where it was — `esc back` where its way in was, the
+    // line running on before it: the answers where they were
     s.keys("<C-q>");
     assert!(s.ed.card_has_keys());
     let r = rows(&mut s);
     let (x2, y2, cw2, ch2) = s.ed.screen.offer_card.expect("the card");
     assert_eq!((x2 + cw2, y2 + ch2, ch2), (x + cw, y + ch, ch), "in place, the same size");
-    assert!(r[y2..y2 + ch2].iter().any(|row| row.contains("esc goes back, unanswered")), "{r:#?}");
+    let bottom: String = r[y2 + ch2 - 1].chars().skip(x2).take(cw2).collect();
+    assert!(bottom.starts_with("╰─── esc back · y "), "{bottom:?}");
+    assert!(!r[y2 + 1..y2 + ch2 - 1].iter().any(|row| row.contains("esc")), "no key in its body: {r:#?}");
     let p = cells(&s.frame(), w, h);
     assert_eq!((at(&p, y2, x2), at(&p, y2, x2 + 3), at(&p, y2 + 1, x2)), (accent, focus, accent), "lit");
-    assert_eq!(at(&p, y2 + ch2 - 1, x2 + 3), accent, "focused: its answer keys in the accent");
+    assert_eq!(p.screen().cell(by as u16, key_at as u16).unwrap().contents(), "y", "its y where it was");
+    assert_eq!(at(&p, by, key_at), accent, "focused: its answer keys in the accent");
     s.frames_both("framed_card_focused");
     // `esc`: the keys back, the frame faint again
     s.keys("<esc>");
     let p = cells(&s.frame(), w, h);
     assert_eq!(at(&p, y, x), window, "the keys back: faint");
-    // The chat takes the keys: the card stays framed, faint (it says `C-q to answer it`)
+    // The chat takes the keys: the card stays framed, faint (it says `C-q answer` again)
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
     s.keys(" l");
@@ -6643,6 +6662,392 @@ fn what_takes_the_keys_is_framed_with_its_name() {
     // A prompt: what it's for
     s.keys("<esc>:");
     assert!(rows(&mut s).iter().any(|row| row.contains("╭─ command ─")), "the prompt");
+}
+
+/// The user, 2026-10-25: a floating card's keys are always in its bottom line — an ask too wide for its answers whole
+/// says each answer's short words there (`main moved`: `y move · c all · v files · n not now`), never rows of keys
+/// inside; where they fit, whole; each answer's button where its key is drawn; focused, `esc back` where its way in
+/// was and the answers where they were.
+#[test]
+fn an_ask_too_wide_for_its_answers_whole_says_their_short_words() {
+    let moves = base_moved;
+    let shown = |w: u16| {
+        let mut s = Shot::new(w, 30);
+        s.ed.offer_popups = true;
+        s.file("src/demo.rs", DEMO_RS);
+        s.ed.push_offer(moves(true).card());
+        let rows: Vec<String> = cells(&s.frame(), w, 30).screen().rows(0, w).collect();
+        let (x, y, cw, ch) = s.ed.screen.offer_card.expect("the card");
+        let at = |r: &str| r.chars().skip(x).take(cw).collect::<String>();
+        let inside: Vec<String> = rows[y + 1..y + ch - 1].iter().map(|r| at(r)).collect();
+        (s, rows.clone(), at(&rows[y + ch - 1]), inside, y + ch - 1)
+    };
+    // (at 80 the card's reading width is 40: its last answer its key alone)
+    let short = "╰─ C-q answer · y move · c all · v files · n ─";
+    let (mut s, rows, bottom, inside, by) = shown(80);
+    assert!(bottom.starts_with(short) && bottom.ends_with('╯'), "{bottom:?}");
+    assert!(
+        !inside.iter().any(|r| r.contains("not now") || r.contains("Not now") || r.contains("C-q")),
+        "no row of keys inside: {inside:#?}"
+    );
+    // (a press finds each answer where its key is drawn)
+    let buttons = s.ed.screen.offer_buttons.clone();
+    for k in ['y', 'c', 'v', 'n'] {
+        let b = buttons.iter().find(|b| b.3 == k).unwrap_or_else(|| panic!("{k}'s button: {buttons:?}"));
+        let drawn: String = rows[b.0].chars().skip(b.1).take(b.2 - b.1).collect();
+        assert!(b.0 == by && drawn.starts_with(k), "{k}: {drawn:?} at {b:?}");
+    }
+    // Focused: `esc back` in its way in's place, the line run on before it — every answer where it was
+    s.keys("<C-q>");
+    assert!(s.ed.card_has_keys());
+    let rows: Vec<String> = cells(&s.frame(), 80, 30).screen().rows(0, 80).collect();
+    let (x, ..) = s.ed.screen.offer_card.unwrap();
+    let bottom: String = rows[by].chars().skip(x).collect();
+    assert!(bottom.starts_with("╰─── esc back · y move · c all · v files · n ─"), "{bottom:?}");
+    assert_eq!(s.ed.screen.offer_buttons, buttons, "the answers in place");
+    // At 160 its reading width is 56: every one its short words — the card never wider for them (the user,
+    // 2026-10-25: "answers too wide for it" — for the card, not the screen)
+    let (s, _, bottom, ..) = shown(160);
+    assert!(bottom.starts_with("╰─ C-q answer · y move · c all · v files · n not now ─"), "{bottom:?}");
+    let whole =
+        "╰─ C-q answer · y Move the clean ones · c Conflicting ones too · v Instruction files · n Not now ─╯";
+    let card = s.ed.screen.offer_card.unwrap();
+    assert!(card.2 < whole.chars().count(), "never widened for its answers: {card:?}");
+    // (what keeps its words is its kind's flag on the answer (`Offer::answers_all`): a move onto the base is a rebase
+    // that can be taken back — none of `main moved`'s last; an install's `N` never asks again — it does)
+    let o = moves(true).card();
+    let kept: Vec<bool> = ['y', 'c', 'v', 'n'].map(|k| o.lasting(k)).into();
+    assert_eq!(kept, [false, false, false, false]);
+    let what = crate::offer::What::Install {
+        tool: "rust-analyzer".into(),
+        run: vec!["true".into()],
+        cwd: std::env::temp_dir(),
+        then: crate::install::Then::Lsp,
+    };
+    let install = crate::offer::Offer::new("Install?".into(), "q", "", String::new(), what);
+    assert_eq!(['y', 'n', 'N'].map(|k| install.lasting(k)), [false, false, true]);
+    // (a stuck run's `y Stop it` can't be taken back: kept, lowercase as it is)
+    assert_eq!(['y', 'w', 'n'].map(|k| quiet_card().lasting(k)), [true, false, false]);
+    // (BaseMoved's short words, and those any card's answers fall back to)
+    let card = moves(false).card();
+    assert_eq!(
+        card.answers_short(false),
+        [('y', "move".into()), ('c', "all".into()), ('n', "not now".into())]
+    );
+}
+
+/// The user, 2026-10-25: asks are always bottom-right — over a chat too narrow for a card's narrowest bottom line, the
+/// card grows left over the code by just the cells that line needs, its corner where the chat's foot is. The four
+/// cards whose lines keep the most (a session's end with work in no commit, a bring, a grant that may last, a host)
+/// over the chat at 112 columns: drawn, each its line's narrowest form whole, wider than the chat only by it.
+#[test]
+fn an_ask_too_wide_for_the_chats_foot_grows_left_over_the_code() {
+    for (name, card, line) in chat112_cards() {
+        let mut s = Shot::new(112, 30);
+        s.ed.offer_popups = true;
+        s.file("src/demo.rs", DEMO_RS);
+        s.ed.session.chat = Some(crate::chat::Chat::new());
+        s.ed.session.at = crate::session::At::Chat;
+        s.ed.push_offer(card);
+        s.frame();
+        let (x, _, w, _) = s.ed.screen.offer_card.unwrap_or_else(|| panic!("{name}: drawn"));
+        let chat_x = s.ed.screen.chat_x.expect("the chat");
+        assert_eq!(crate::term::card_line(&s.ed).as_deref(), Some(line), "{name}");
+        assert!(x < chat_x, "{name}: grown left past the chat's edge ({x} < {chat_x})");
+        // (its corner where the chat's foot is, a cell of air at the screen's right)
+        assert_eq!(x + w, 111, "{name}");
+        s.frames_both(&format!("cardkeys-chat112-{name}"));
+    }
+}
+
+/// A card grown left for its bottom line wraps its text at its own width (the user, 2026-10-25: a third of the session's
+/// end card and the grant's was blank, their bodies taller than they needed): every body row within the card's text
+/// width, none with room left for the next row's first word of the same paragraph; never more rows than wrapped at
+/// the chat's width — the grant's fewer — its corner where it was.
+#[test]
+fn a_card_grown_left_wraps_its_text_at_its_own_width() {
+    use unicode_width::UnicodeWidthStr;
+    let cards: Vec<_> = chat112_cards().into_iter().filter(|c| matches!(c.0, "end" | "grant")).collect();
+    assert_eq!(cards.len(), 2);
+    for (name, card, _) in cards {
+        let question = card.question.clone();
+        let mut s = Shot::new(112, 30);
+        s.ed.offer_popups = true;
+        s.file("src/demo.rs", DEMO_RS);
+        s.ed.session.chat = Some(crate::chat::Chat::new());
+        s.ed.session.at = crate::session::At::Chat;
+        s.ed.push_offer(card);
+        let p = cells(&s.frame(), 112, 30);
+        let (x, y, w, h) = s.ed.screen.offer_card.unwrap_or_else(|| panic!("{name}: drawn"));
+        let inner = w - 4;
+        // (its text's cells: inside the frame's side and a cell of padding)
+        let body: Vec<String> =
+            p.screen().rows((x + 2) as u16, inner as u16).skip(y + 1).take(h - 2).collect();
+        let body: Vec<&str> = body.iter().map(|r| r.trim_end()).collect();
+        assert!(body.iter().all(|r| r.width() <= inner), "{name}: {body:#?}");
+        // (each paragraph of its text: its drawn rows, whose words are its words; within one, the next row's first
+        // word never fits after a row's end)
+        let mut at = 0;
+        for para in question.split('\n') {
+            let words = para.split_whitespace().count();
+            if words == 0 {
+                assert_eq!(body.get(at).copied(), Some(""), "{name}: a blank row: {body:#?}");
+                at += 1;
+                continue;
+            }
+            let from = at;
+            let mut seen = 0;
+            while seen < words {
+                let row = body.get(at).unwrap_or_else(|| panic!("{name}: {para:?} drawn whole: {body:#?}"));
+                seen += row.split_whitespace().count();
+                at += 1;
+            }
+            for pair in body[from..at].windows(2) {
+                let next = pair[1].split_whitespace().next().unwrap_or_default();
+                let after = pair[0].width() + 1 + next.width();
+                assert!(after > inner, "{name}: {next:?} fit after {:?} ({inner}): {body:#?}", pair[0]);
+            }
+        }
+        // (laid at the chat's width: as tall or taller — the grant a row or more; its corner where that one's was)
+        let lay = super::Layout::new(&s.ed, 112, 30);
+        let (narrow, grown) = super::OfferCard::laid(&s.ed, &lay, None).expect("laid");
+        assert!(grown, "{name}: it grew for its bottom line");
+        let (was, now) = (narrow.lines.len() - 1, body.len());
+        match name {
+            "grant" => assert!(was > now, "{name}: shorter wrapped at its width: {was} rows, {now}"),
+            _ => assert!(was >= now, "{name}: never taller: {was} rows, {now}"),
+        }
+        assert_eq!(narrow.x + narrow.width(), x + w, "{name}: its corner where it was");
+    }
+}
+
+/// The user, 2026-10-25: over the chat's foot an ask stands on the input's rule — its bottom line on the row right above
+/// it, no row of air between — the input, its rule and its hint row as they were without it, and the stack above the
+/// card one row lower with it (the peek of the card behind, its row of air, then the card).
+#[test]
+fn an_ask_over_the_chat_stands_on_its_inputs_rule() {
+    let shot = || {
+        let mut s = Shot::new(112, 30);
+        s.ed.offer_popups = true;
+        s.file("src/demo.rs", DEMO_RS);
+        s.ed.session.chat = Some(crate::chat::Chat::new());
+        s.ed.session.at = crate::session::At::Chat;
+        s
+    };
+    let rows = |s: &mut Shot| -> Vec<String> { cells(&s.frame(), 112, 30).screen().rows(0, 112).collect() };
+    let mut bare = shot();
+    let without = rows(&mut bare);
+    let mut cards = chat112_cards().into_iter();
+    let (_, grant, _) = cards.find(|c| c.0 == "grant").expect("the grant card");
+    let (_, host, _) = cards.find(|c| c.0 == "host").expect("the host card");
+    let mut s = shot();
+    s.ed.push_offer(grant);
+    s.ed.push_offer(host);
+    let with = rows(&mut s);
+    let lay = super::Layout::new(&s.ed, 112, 30);
+    let rule = super::chat_foot(&s.ed, &lay).expect("the chat's foot").2;
+    let (x, y, w, h) = s.ed.screen.offer_card.expect("the card");
+    let bottom = y + h - 1;
+    assert_eq!(bottom + 1, rule, "its bottom line right above the input's rule");
+    assert!(with[bottom].chars().skip(x).take(w).collect::<String>().starts_with("╰─ "), "{}", with[bottom]);
+    // (the input's rule, its rows, the hint row and what's under them: as without the card)
+    let chat_x = s.ed.screen.chat_x.expect("the chat");
+    let chat = |r: &String| r.chars().skip(chat_x).collect::<String>();
+    for i in rule..30 {
+        assert_eq!(chat(&with[i]), chat(&without[i]), "row {i} of the chat's foot as without it");
+    }
+    // (the stack: the card's frame, a row of air above it, the peek above that — all one row lower than before)
+    let top =
+        (y..=bottom).find(|&r| with[r].chars().skip(x).take(w).any(|c| c == '╭')).expect("its frame's top");
+    let peek = s.ed.screen.offer_buttons.iter().find(|b| b.3.is_ascii_digit()).expect("the peek").0;
+    assert_eq!(peek + 2, top, "the peek, its row of air, then the card");
+}
+
+/// `an_ask_too_wide_for_the_chats_foot_grows_left_over_the_code`'s cards, made as tarae makes them, and the bottom
+/// line each takes over the chat at 112 columns.
+fn chat112_cards() -> Vec<(&'static str, crate::offer::Offer, &'static str)> {
+    use std::path::PathBuf;
+    let p = |s: &str| PathBuf::from(format!("/tmp/tarae-not-there/{s}"));
+    let sha = "0".repeat(40);
+    let ending = crate::worktree::Ending {
+        root: p("fix-login"),
+        common: p(".git"),
+        name: "fix-login".into(),
+        branch: Some("fix-login".into()),
+        tip: sha.clone(),
+        base: "main".into(),
+        changed: vec![" M src/login.rs".into(), " M src/session.rs".into()],
+        ahead: Vec::new(),
+        lost: Vec::new(),
+        entries: Vec::new(),
+        keep: crate::sessionkeep::Plan {
+            folders: Vec::new(),
+            differ: Vec::new(),
+            instructions_to: None,
+            not: None,
+            main: None,
+        },
+    };
+    let moved = crate::rebase::Moved {
+        root: p("fix-login"),
+        name: "fix-login".into(),
+        branch: "fix-login".into(),
+        base: "main".into(),
+        moved: 0,
+        ahead: 2,
+    };
+    let run = crate::blocked::BlockedRun {
+        job: crate::tools::Job::Command("npm test".into(), p("")),
+        denials: Vec::new(),
+        from: None,
+        claude: Some(crate::tools::Call::test(1)),
+        env: Vec::new(),
+        report: None,
+        key: None,
+        keys: None,
+    };
+    let grant = crate::allow::Grant::Write(p("npm-cache"));
+    let reason = "npm keeps its cache there";
+    let host = crate::hosts::Ask {
+        session: 1,
+        run: 1,
+        host: "registry.npmjs.org".into(),
+        port: 443,
+        process: "npm".into(),
+        label: "Claude's command".into(),
+        users: false,
+        left: false,
+        open: false,
+        hosts: Default::default(),
+        also: Vec::new(),
+        ended: false,
+    };
+    vec![
+        ("end", ending.card(), "╰─ C-q answer · c commit · R remove · D both · n ─╯"),
+        ("bring", moved.bring_card(None, true), "╰─ C-q answer · y bring · p preflight · n ─╯"),
+        (
+            "grant",
+            crate::blocked::also_card(grant, reason, "npm test", Box::new(run), None, Vec::new(), false),
+            "╰─ C-q answer · y · a chat · s session · A always · n ─╯",
+        ),
+        ("host", crate::hosts::card(host), "╰─ C-q answer · y · a chat · s session · v · n ─╯"),
+    ]
+}
+
+/// The user's three cards of 2026-10-25, for their screenshots (only with `TARAE_FRAMES_DIR` set: both themes there,
+/// 160×30 and 80×30; `cargo xtask shot` draws them by `TARAE_SHOT_REPLAY`): `main moved` with long answers, waiting
+/// and focused, and over the chat's foot; the follow card following and paused, a `Quiet` card waiting beside it.
+#[test]
+fn frames_of_cardkeys() {
+    if std::env::var_os("TARAE_FRAMES_DIR").is_none() {
+        return;
+    }
+    crate::clock::hold();
+    for w in [160u16, 80] {
+        let mut s = Shot::new(w, 30);
+        s.ed.offer_popups = true;
+        s.file("src/demo.rs", DEMO_RS);
+        s.ed.push_offer(base_moved(true).card());
+        s.frames_both(&format!("cardkeys-moved-{w}"));
+        s.keys("<C-q>");
+        s.frames_both(&format!("cardkeys-moved-focused-{w}"));
+        // Over the chat's foot, its bottom line right on the input's line
+        let mut s = Shot::new(w, 30);
+        s.ed.offer_popups = true;
+        s.file("src/demo.rs", DEMO_RS);
+        s.ed.session.chat = Some(crate::chat::Chat::new());
+        s.ed.session.at = crate::session::At::Chat;
+        s.ed.push_offer(base_moved(true).card());
+        s.frames_both(&format!("cardkeys-moved-chat-{w}"));
+        // The chat taking a narrow screen whole: the card waits over its foot, and focused it stays there
+        if w == 80 {
+            let mut s = Shot::new(57, 30);
+            s.ed.offer_popups = true;
+            s.file("src/demo.rs", DEMO_RS);
+            s.ed.session.chat = Some(crate::chat::Chat::new());
+            s.ed.session.at = crate::session::At::Chat;
+            s.ed.push_offer(chat112_cards().swap_remove(2).1);
+            s.frames_both("cardkeys-narrow-57-waiting");
+            s.keys("<C-q>");
+            s.frames_both("cardkeys-narrow-57-focused");
+        }
+        // The follow card at work, a quiet command's card waiting beside it
+        let mut s = Shot::new(w, 30);
+        s.ed.offer_popups = true;
+        s.file("src/demo.rs", DEMO_RS);
+        s.ed.config.llm.command = "sh".into();
+        s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+        s.keys(" lwhy does the count stall?<ret>");
+        let c = s.ed.session.chat.as_mut().unwrap();
+        let look = |verb, what: &str, range: &str| crate::chat::Look {
+            verb,
+            what: what.into(),
+            pattern: false,
+            range: range.into(),
+            link: None,
+        };
+        use crate::chat::{Msg, Role};
+        c.msgs.push(Msg::new(Role::Assistant, "Reading where the counts are made.", ""));
+        c.msgs.push(Msg::tool(look("read", "src/demo.rs", "L1–20"), "t1"));
+        c.msgs.push(Msg::new(Role::Assistant, "Running the tests in Linux to see it stall.", ""));
+        c.msgs.push(Msg::tool(look("run", "cargo xtask linux test", ""), "t2"));
+        s.ed.push_offer(quiet_card());
+        s.frames_both(&format!("cardkeys-follow-{w}"));
+        s.ed.session.chat.as_mut().unwrap().follow.paused = true;
+        s.frames_both(&format!("cardkeys-follow-paused-{w}"));
+    }
+}
+
+/// A quiet run's card (`snapshot_offer_quiet`'s): its command connected to a daemon outside its tree.
+fn quiet_card() -> crate::offer::Offer {
+    let stuck = crate::stuck::Stuck {
+        slot: crate::sizes::Slot::Task,
+        run: 1,
+        pid: 4242,
+        asked: std::time::Instant::now(),
+        quiet: std::time::Duration::from_secs(14 * 60),
+        cpu: 0.0,
+        at: 0,
+        reach: Some(crate::sandbox::ReachOut::Sockets("~/.colima/default/docker.sock".into())),
+    };
+    let lines = [
+        "pid 4242 · cargo xtask linux test · 1 thread".to_string(),
+        "  cargo — waiting · 0.31 s CPU".to_string(),
+        "pid 4250 · docker run --rm tarae-linux cargo test · 9 threads".to_string(),
+        "  9 × docker — waiting · 0.12 s CPU".to_string(),
+    ];
+    let label = "Claude's command cargo xtask linux test in the task panel";
+    crate::stuck::card(stuck, label, &lines, &["~/.colima/default/docker.sock".to_string()])
+}
+
+/// `main` moved: two workspaces behind it, `db` would conflict — with an instruction file newer in the main checkout
+/// (`instructions`: its `v`), its answers as long as a card's get.
+fn base_moved(instructions: bool) -> crate::keepclose::Moves {
+    crate::keepclose::Moves {
+        base: (std::path::PathBuf::from("/tmp/tarae-not-there"), "main".into()),
+        from: "a".into(),
+        to: "b".into(),
+        commits: 2,
+        ws: [Vec::new(), vec![("src/term.rs".to_string(), Some(210..260))]]
+            .into_iter()
+            .enumerate()
+            .map(|(i, conflicts)| crate::keepclose::Ws {
+                id: i as u64 + 1,
+                name: ["fix", "db"][i].into(),
+                root: std::path::PathBuf::from("/tmp/tarae-not-there"),
+                branch: ["fix", "db"][i].into(),
+                behind: 2,
+                ahead: 1,
+                changed: 0,
+                conflicts,
+                instructions: match instructions {
+                    true => vec![("CLAUDE.md".into(), vec!["+ a line".into()])],
+                    false => Vec::new(),
+                },
+            })
+            .collect(),
+        unasked: Vec::new(),
+    }
 }
 
 /// Panes plan §2.1c: a stacked group names all its members where a pane's name goes — the side panel's
@@ -7495,7 +7900,8 @@ fn a_cards_title_is_whole_at_80_columns() {
 fn a_one_row_follow_log_still_says_its_cut() {
     use crate::chat::{Msg, Role};
     use unicode_width::UnicodeWidthStr;
-    let mut s = Shot::new(112, 14);
+    // (its keys its bottom line, not two rows of its own: the pane two rows shorter than before for one row of log)
+    let mut s = Shot::new(112, 11);
     s.file("src/demo.rs", DEMO_RS);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
@@ -8016,4 +8422,61 @@ fn the_chats_line_names_the_sessions() {
     );
     let under: String = (chat + 1..w as usize).map(|x| at(1, x)).collect();
     assert!(!under.contains(&name), "no row of tabs under it: {:?}", rows[1]);
+}
+
+/// The cut card and the card with others waiting behind it, for their screenshots (only with `TARAE_FRAMES_DIR` set:
+/// both themes there, 160×24 and 80×24): a script's card cut short — waiting, then a `y` come early — and two
+/// asks here with one in another session.
+#[test]
+fn frames_of_cardkeys_more() {
+    if std::env::var_os("TARAE_FRAMES_DIR").is_none() {
+        return;
+    }
+    for w in [160u16, 80] {
+        let mut s = Shot::new(w, 24);
+        s.ed.offer_popups = true;
+        s.file("src/demo.rs", DEMO_RS);
+        let script: String = (1..=60).map(|i| format!("echo step {i}\n")).collect();
+        let what = crate::offer::What::Install {
+            tool: "script".into(),
+            run: vec!["true".into()],
+            cwd: std::env::temp_dir(),
+            then: crate::install::Then::Lsp,
+        };
+        let q = format!("{script}\nRuns the script Claude wrote this turn.");
+        let card =
+            crate::offer::Offer::new("Claude wants to run a script".into(), &q, "", String::new(), what);
+        s.ed.push_offer(card);
+        s.frames_both(&format!("cardkeys-cut-{w}"));
+        let o = (s.ed.offers[0].id, s.ed.offers[0].rev);
+        s.ed.card_focus = Some(o);
+        s.keys("y");
+        s.frames_both(&format!("cardkeys-cut-early-{w}"));
+        // Two asks here, one in another session
+        let mut s = Shot::new(w, 24);
+        s.ed.offer_popups = true;
+        s.ed.session.name = "main".into();
+        s.file("src/demo.rs", DEMO_RS);
+        let card = |n: u64| {
+            let what = crate::offer::What::Screen { call: crate::tools::Call::test(n) };
+            crate::offer::Offer::new(
+                "Claude asks to see the screen".into(),
+                "As text, once.",
+                "",
+                String::new(),
+                what,
+            )
+        };
+        s.ed.push_offer(card(1));
+        s.ed.push_offer(card(2));
+        let back = s.ed.session_add(std::env::temp_dir());
+        if let Some(l) = s.ed.sessions.iter_mut().find(|l| l.id == back) {
+            l.name = "fix-login".into();
+            s.ed.offer_seq += 1;
+            let mut o = card(3);
+            o.id = s.ed.offer_seq;
+            l.parked.push(o);
+        }
+        s.frames_both(&format!("cardkeys-behind-{w}"));
+    }
 }

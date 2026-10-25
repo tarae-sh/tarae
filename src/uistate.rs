@@ -582,6 +582,8 @@ impl Editor {
             _ => Takes::Commands,
         };
         let answers = match region {
+            // (none for a card the last frame had no room for: `card_key` refuses every key, said)
+            Region::Card(id) if self.offer_unshown.get().is_some_and(|u| u.0 == id) => Vec::new(),
             Region::Card(id) => self.offers.iter().find(|o| o.id == id).map_or_else(Vec::new, |o| {
                 let mut v: Vec<char> =
                     o.answers(self.preflight_quick().is_some()).into_iter().map(|a| a.0).collect();

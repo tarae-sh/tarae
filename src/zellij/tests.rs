@@ -545,8 +545,8 @@ fn an_aside_cards_line_says_the_twin() {
     }
 }
 
-/// In insert mode a card waits, its line says `C-q to answer it` — inside zellij `esc space I to answer it`, and
-/// that (with the inbox's `enter`) gives it the keys.
+/// In insert mode a card waits, its bottom line's first pair says `C-q answer` — inside zellij `esc space I answer`,
+/// and that (with the inbox's `enter`) gives it the keys.
 #[test]
 fn insert_modes_twin_of_c_q_is_esc_then_the_inbox() {
     for zellij in [false, true] {
@@ -555,7 +555,7 @@ fn insert_modes_twin_of_c_q_is_esc_then_the_inbox() {
         card(&mut ed);
         assert_eq!(ed.key_said("C-q"), if zellij { "esc space I" } else { "C-q" });
         let s = drawn(&mut ed, 160, 40);
-        let says = format!("{} to answer it", ed.key_said("C-q"));
+        let says = format!("╰─ {} answer · ", ed.key_said("C-q"));
         assert!(s.contains(&says), "{says}:\n{s}");
         feed(&mut ed, if zellij { "<esc><space>I<ret>" } else { "<C-q>" });
         assert!(ed.card_has_keys());

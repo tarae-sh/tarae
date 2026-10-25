@@ -812,8 +812,8 @@ impl Editor {
     }
 
     /// What waits behind the card in front, as the card says it (frictions15 #5: `C-q` takes the oldest here
-    /// first, so the others are a queue nobody named): `2 more wait — 1 here, 1 in feat · space I lists them`
-    /// — each other session by its name, the key the keymap's. None: nothing else waits.
+    /// first, so the others are a queue nobody named): `2 more wait — 1 here, 1 in feat` — each other session by
+    /// its name; the key that lists them is its bottom line's (`inbox_key`). None: nothing else waits.
     pub fn cards_behind_said(&self) -> Option<String> {
         let front = crate::uistate::session_id(self.session.id);
         let up = self.offers.first().map(|o| format!("card#{}", o.id));
@@ -839,13 +839,14 @@ impl Editor {
         // (here first, then the sessions in the order their oldest came)
         crate::sorting::by_key(&mut wheres, |w| w.0 != "here");
         let wheres: Vec<String> = wheres.iter().map(|(at, n)| format!("{n} {at}")).collect();
-        let lists = match self.keymaps.bindings().remove("inbox") {
-            Some(key) => format!("{key} lists them"),
-            None => ":inbox lists them".into(),
-        };
         let n = behind.len();
         let wait = if n == 1 { "waits" } else { "wait" };
-        Some(format!("{n} more {wait} — {} · {lists}", wheres.join(", ")))
+        Some(format!("{n} more {wait} — {}", wheres.join(", ")))
+    }
+
+    /// The key that lists every card waiting (the inbox) as the keymap has it — `space I`; unbound, `:inbox`.
+    pub fn inbox_key(&self) -> String {
+        self.keymaps.bindings().remove("inbox").unwrap_or_else(|| ":inbox".into())
     }
 
     /// Sessions whose Claude is about to ask (its next call needs a card, held back by claude until the one

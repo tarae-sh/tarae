@@ -104,16 +104,45 @@ To send the screen yourself, use `C-s` (below).
 
 A card that asks something (this one, a command to run, a read outside the project) takes the keys only once it's
 focused. One that came on its own — Claude's, a server's, a sync's — waits in a faint frame wherever your keys are
-(the code, the chat, a review) and says `C-q to answer it`; the status line says `▲1 waiting · C-q` (the chat's
-hints `C-q answer card`): a key typed for the code or a message is never an answer. `C-q`, a click on it or `C-w w`
-(its last stop) focuses it — its frame lit, the status line says `card`, your draft stays as it was; Esc goes back
-unanswered, and so does `C-w` (the window prefix going on from where you were). A card your own key asked for
+(the code, the chat, a review), its way in the first pair of its bottom line — `╰─ C-q answer · y Once · n No ─╯`;
+the status line says `▲1 waiting · C-q` (the chat's hints `C-q answer card`): a key typed for the code or a message
+is never an answer. `C-q`, a click on it or `C-w w` (its last stop) focuses it — its frame lit, its answers in the
+accent, `esc back` where `C-q answer` was (the answers stay where they were), the status line says `card`, your
+draft stays as it was.
+
+A card's keys are always on its bottom line, never in its body. Where they don't all fit there whole, the line gives
+up what matters least first, in one order. Kept longest:
+
+1. its way in, `C-q answer` (zellij's twin inside zellij) — without it nothing on the card says your keys don't
+   answer it;
+2. answers that last or can't be taken back, in their short words — each card kind marks them on its answers
+   (`y Remove checkout`, `y Commit`, `y Stop it`, `y Bring`, a trust, a capital such as `N` never or `D` remove both,
+   the `a`/`s` grants), and a cut card's `y once read` and `v read all`;
+3. `space I list`, while other cards wait behind it;
+4. the other answers' short words (`y move · c all · v files · n not now`), then their keys alone, the last first.
+
+Past that, the card grows left over the code by just the cells its line needs, its corner where it was —
+bottom-right, over the chat's foot or a docked list's, or above the status line: asks never go anywhere else. Only a
+screen too narrow even for that draws no card; the status line says the width it needs (`▲1 waiting · card needs N
+cols`). `C-q` still gives such a card the keys, but nothing answers a card nobody can see: every key is refused,
+said on the status line (`y not taken — no room on screen for the card, the window needs to be wider`); `esc` gives
+the keys back.
+
+Over the chat's foot an ask's bottom line sits on the row right above the input's rule, no row of air between: the
+rule is its edge, the input and its hint row untouched. Over a right-docked session list's foot (no input rule there)
+and above the status line it keeps its row of air. On a screen the chat fills, a card focused from it stays where it
+waited, over the chat's foot, the chat under it.
+
+Esc goes back unanswered, and so does `C-w` (the window prefix going on from where you were). A card your own key asked for
 (`:restart`, a new session, a bring) is focused as it comes. A focused card whose text changes (asked again, joined)
 lets go of the keys: focus it again to answer what it says now. Esc never answers a card. `n` does. Answered, the
 keys go on to the next card when you were going through them with `C-q` — once a frame has drawn it: a `y` typed on
 before that (a repeat) is refused and said on it, never an answer to a card not yet in sight — else back where they were. A card counts what waits behind it — `1/3`: cards
 under it, Claude's calls queued, cards in other sessions — and says it in words: `2 more wait — 1 here, 1 in
-fix-login · space I lists them`.
+fix-login`, the key that lists them its bottom line's last pair (`space I list`) — the queue it counts is never
+one with no way to it. A card cut
+short says how much and whether it's read (`↓ 45 more lines, not read yet`); its bottom line has `v read all`, and
+a yes that waits for it says `y once read` until it is.
 
 Claude's calls made at once can stack cards asking for the very same run — the same command, character for
 character, in the same folder, showing the same. The card in front lists those behind it — `+1 more like it: card#53 — same command, unchanged`

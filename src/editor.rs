@@ -983,6 +983,9 @@ pub struct Editor {
     /// The front card as the last frame drew it (id, `rev`) — a weighty card's answers count only for it
     /// (`Stands.drawn`).
     pub offer_drawn: std::cell::Cell<Option<(u64, u64)>>,
+    /// The front card the last frame had no room to draw (id, `rev` — the status line said the size it needs): `C-q`
+    /// gives it the keys as ever, but no key of yours is its answer while nothing on screen shows it (`card_key`).
+    pub offer_unshown: std::cell::Cell<Option<(u64, u64)>>,
     /// The floating pane a window prefix just took the keys from (a card's `card_key`): `C-w w` from it goes on round
     /// the panes, not back to it.
     pub float_left: Option<crate::pane::Floating>,
@@ -1032,6 +1035,9 @@ pub struct Editor {
     undo_group: Option<(DocId, Snapshot)>,
     next_id: DocId,
 }
+
+/// Said for a key meant for a card the last frame had no room to draw (`Editor::offer_unshown`).
+const CARD_UNSHOWN: &str = "no room on screen for the card, the window needs to be wider";
 
 impl Editor {
     /// An editor whose root is the folder the tests run in (`main` gives its own: `with_root`).
@@ -1268,6 +1274,7 @@ impl Editor {
             card_focus: None,
             card_next: None,
             offer_drawn: Default::default(),
+            offer_unshown: Default::default(),
             float_left: None,
             screen_sends: Vec::new(),
             frames: 0,
@@ -4452,6 +4459,12 @@ impl Editor {
             return true;
         }
         self.pending.clear();
+        // Nothing on screen shows it (the last frame had no room — `offer_unshown`): no key answers it, every card as a
+        // weighty one answers only once drawn (`Stands.drawn`) — said on the status line, as the card isn't there
+        if self.offer_unshown.get() == up {
+            self.set_status(format!("{key} not taken — {CARD_UNSHOWN}"));
+            return true;
+        }
         let front = self.offers.first().map(|o| (o.id, o.yours));
         if !self.offer_key(key) {
             // (its answers are beside what it says — on the card, or its bar)
@@ -7676,7 +7689,8 @@ mod tests {
         let s = screen(&mut ed);
         assert!(s.contains("Claude changes 3 files") && s.contains("replace `old_(\\w+)` → `new_$1`"), "{s}");
         assert!(s.contains("4 matches in 3 files:") && s.contains("src/deep/c.rs  1"), "{s}");
-        assert!(s.contains("y Accept all") && s.contains("r One by one") && s.contains("v See them"), "{s}");
+        let line = "╰─ C-q answer · y accept · r each · v see · n decline ─╯";
+        assert_eq!(crate::term::card_line(&ed).as_deref(), Some(line), "its answers on its bottom line\n{s}");
         settled(&mut ed);
         // `v`: every change, file by file
         answer(&mut ed, "v");
@@ -8064,12 +8078,9 @@ mod tests {
         crate::term::render(&mut ed, &mut bytes, 140, 40).unwrap();
         let mut parser = vt100::Parser::new(40, 140, 0);
         parser.process(&bytes);
-        assert!(
-            parser
-                .screen()
-                .contents()
-                .contains("y Once · a This chat · s This session · A Always here · n No")
-        );
+        // (its answers on its bottom line, the form its width gives)
+        let line = "╰─ C-q answer · y once · a chat · s session · A always · n no ─────╯";
+        assert_eq!(crate::term::card_line(&ed).as_deref(), Some(line), "{}", parser.screen().contents());
         let o = ed.offers.first().map(|o| (o.id, o.rev)).unwrap();
         ed.card_focus = Some((o.0, o.1));
         answer(&mut ed, "a");
@@ -8449,7 +8460,7 @@ mod tests {
         let input = |ed: &Editor| ed.session.chat.as_ref().unwrap().input.text();
         assert_eq!(input(&ed), "my draft y");
         assert!(!made.exists() && ed.offers.len() == 1);
-        assert!(draw(&mut ed).contains("C-q to answer it"));
+        assert!(draw(&mut ed).contains("╰─ C-q answer · y "), "its way in, its bottom line's first pair");
         // Esc leaves the input; another Esc (the card has the keys now) isn't a no
         feed(&mut ed, "<esc><esc>");
         assert_eq!(ed.offers.len(), 1, "Esc never answers a card");
@@ -8462,7 +8473,7 @@ mod tests {
         feed(&mut ed, "<C-q>");
         assert!(ed.card_has_keys());
         let s = draw(&mut ed);
-        assert!(s.contains("esc goes back, unanswered"));
+        assert!(s.contains("╰─── esc back · y "), "where its way in was");
         assert!(label(&s).contains("● card ") && !label(&s).contains("chat"), "{}", label(&s));
         feed(&mut ed, "x");
         // (said on the card, where the eyes are — it was a flash on the status line)
@@ -9798,7 +9809,9 @@ mod tests {
         // `a`: this conversation — and it runs again now
         feed(&mut ed, "<ret>");
         let s = settled(&mut ed, crate::blocked::GRANT_TITLE);
-        assert!(s.contains("y Once") && s.contains("a This chat") && s.contains("A Always"), "{s}");
+        // (its answers on its bottom line, the form its width gives — `a`, `s`, `A` never a bare letter)
+        let line = "╰─── esc back · y once · a chat · s session · A always · n ─╯";
+        assert_eq!(crate::term::card_line(&ed).as_deref(), Some(line), "{s}");
         feed(&mut ed, "a");
         assert!(ed.session.chat.as_ref().unwrap().allowed.write.contains(&deep));
         assert!(told(&ed, "The user let your commands write in"));
@@ -10198,8 +10211,9 @@ mod tests {
             "{q}"
         );
         assert!(s.contains("marker.txt"), "{s}");
-        assert!(s.contains("y Once") && s.contains("a This chat") && s.contains("A Always"), "{s}");
-        assert!(s.contains("s This session"), "{s}");
+        // (its answers on its bottom line, the form its width gives — `a`, `s`, `A` never a bare letter)
+        let line = "╰─ C-q answer · y · a chat · s session · A always · n ─────╯";
+        assert_eq!(crate::term::card_line(&ed).as_deref(), Some(line), "{s}");
         answer(&mut ed, "n");
         let a = answered(&mut ed, "p2");
         assert_eq!(a["behavior"], "deny");
@@ -16107,14 +16121,17 @@ mod tests {
         assert!(r.is_none(), "it waits for the user: {r:?}");
         settle_until(&mut ed, |ed| ed.offers.iter().any(|o| matches!(o.what, crate::offer::What::Run(_))));
         let s = screen(&mut ed);
-        assert!(s.contains("more lines · y once you've seen it all — v"), "{s}");
-        // (the hint row too, where `y`'s meaning was — frictions29 13: the row under the cut one said `y Once`)
+        // (how much is cut and that it isn't read, in words; the keys on its bottom line — `v` reads it all, `y` waits
+        // until then, in `y`'s meaning's place: frictions29 13, the row under the cut one said `y Once`)
+        assert!(s.contains("more lines, not read yet"), "{s}");
+        // (the exact line each width gives: over the chat at 140, its short words — `y once read` held)
+        let line = |ed: &Editor| crate::term::card_line(ed).unwrap_or_default();
+        assert_eq!(line(&ed), "╰─ C-q answer · y once read · v read all · n no ────╯", "{s}");
         let hint_color = |ed: &mut Editor| {
             let p = frame(ed);
             let s = p.screen().contents();
-            let (row, line) =
-                s.lines().enumerate().find(|(_, l)| l.contains("y read it first")).expect("{s}");
-            let col = line[..line.find("read it first").unwrap()].chars().count();
+            let (row, line) = s.lines().enumerate().find(|(_, l)| l.contains("y once")).expect("{s}");
+            let col = line[..line.find("once").unwrap()].chars().count();
             p.screen().cell(row as u16, col as u16).unwrap().fgcolor()
         };
         let hint_plain = hint_color(&mut ed);
@@ -16128,8 +16145,9 @@ mod tests {
             parser.screen().contents()
         };
         let s = narrow(&mut ed, 80);
-        let said = s.contains("y read it first — v") || s.contains("y after v");
-        assert!(said && !s.contains("y Once"), "80 columns:\n{s}");
+        // (over a chat 36 wide its narrowest line doesn't fit: the card grows left over the code by just the cells it
+        // needs — the way in, `y once read` and `v read all` whole; never `y run`)
+        assert_eq!(line(&ed), "╰─ C-q answer · y once read · v read all · n ─╯", "80 columns:\n{s}");
         let plain = cut_color(&mut ed);
         let y_at = |ed: &Editor| ed.screen.offer_buttons.iter().find(|b| b.3 == 'y').map(|b| (b.0, b.1));
         let before = y_at(&ed);
@@ -16140,7 +16158,7 @@ mod tests {
         let s = screen(&mut ed);
         assert!(ed.messages.last().is_some_and(|m| m.2.contains("v shows all of it")), "kept in :messages");
         // …and said on the card, where the eyes are: its cut row, in the warning color
-        assert!(s.contains("more lines · y waits — v shows all of it"), "{s}");
+        assert!(s.contains("more lines, not read yet"), "{s}");
         let warning = ed.theme.try_get("warning").and_then(|s| s.fg);
         assert_ne!(cut_color(&mut ed), plain, "the warning color, not the faint row's ({warning:?})");
         assert_ne!(hint_color(&mut ed), hint_plain, "its hint row in the warning color too");
@@ -16150,7 +16168,9 @@ mod tests {
         let waiting_at = y_at(&ed);
         ed.offer_whole.set(ed.offers.first().map(|o| (o.id, o.rev)));
         let s = screen(&mut ed);
-        assert!(s.contains("y Run") && !s.contains("read it first"), "{s}");
+        assert!(s.contains("more lines, read whole"), "{s}");
+        // (focused since its early `y`: `esc back` where its way in was)
+        assert_eq!(line(&ed), "╰─── esc back · y run · v read all · n no ──────────╯", "its meaning back");
         assert_eq!(y_at(&ed), waiting_at, "no narrower once read:\n{s}");
     }
 
@@ -16189,9 +16209,11 @@ mod tests {
         let s = screen(&mut ed);
         assert!(s.contains("Trust this project's settings?") && s.contains("line 1 of what it runs"), "{s}");
         assert!(!s.contains("line 80 of what it runs"), "cut to fit");
-        // (its hint row says what `y` waits for, in place of `y Trust` — frictions29 13)
-        assert!(
-            s.contains("more lines · y once you've seen it all — v") && s.contains("y read it first — v"),
+        // (its bottom line says what `y` waits for, in place of `y Trust`, and how to read it — frictions29 13)
+        assert!(s.contains("more lines, not read yet"), "{s}");
+        assert_eq!(
+            crate::term::card_line(&ed).as_deref(),
+            Some("╰─ C-q answer · y once read · v read all · n hold back ─╯"),
             "{s}"
         );
         assert!(!s.contains("y Trust"), "{s}");
@@ -16200,7 +16222,7 @@ mod tests {
         // `y` before all of it was seen: not an answer
         feed(&mut ed, "y");
         assert_eq!(ed.offers.len(), 1, "y waits");
-        assert!(screen(&mut ed).contains("more lines · y waits — v shows all of it"), "said on the card");
+        assert!(screen(&mut ed).contains("more lines, not read yet"), "said on the card");
         // `v`: all of it in a buffer — opened isn't read: `y` still waits until its end has been on screen.
         // The keys go to it (#55: the side panel or the review's rail kept them, and keys did nothing)
         let side = crate::sidebar::Sidebar::new(crate::sidebar::Mode::Files, test_root());
@@ -16233,7 +16255,7 @@ mod tests {
         let viewed = ed.doc().id;
         ed.new_scratch();
         let s = screen(&mut ed);
-        assert!(s.contains("more lines · y once read to the end — ge there"), "whole again: {s}");
+        assert!(s.contains("more lines, open but not read to its end"), "whole again: {s}");
         ed.current = ed.docs.iter().position(|d| d.id == viewed).unwrap();
         assert!(!screen(&mut ed).contains("more lines"), "the bar again");
         feed(&mut ed, "y");

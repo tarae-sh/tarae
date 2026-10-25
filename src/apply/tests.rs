@@ -314,7 +314,9 @@ fn what_was_read_is_one_row_that_keeps_its_end() {
         let row = read[0].trim_matches([' ', '│']).trim();
         // (its start kept, cut at a folder — never mid-name)
         let cut = row.starts_with("read ~/…/") || row.starts_with("read /…/");
-        assert!(cut && row.ends_with(&end), "{cols}: {row:?}\n{screen}");
+        // (narrow, the card at its reading width: the file's name and what it holds, its folder gone first)
+        let kept = if cols >= 100 { end.as_str() } else { end.trim_start_matches("/its-patches") };
+        assert!(cut && row.ends_with(kept), "{cols}: {row:?}\n{screen}");
         assert!(!screen.contains(&whole), "{cols}: cut, not whole\n{screen}");
     }
     // Whole in `v`'s view

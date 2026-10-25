@@ -140,10 +140,12 @@ configs carry over as they are.
   drags its height
 - **Frames** — what takes your keys floats in a rounded frame with its name in the top line: which-key (`╭─ space
   ─╮`), a picker (its title; the list and the preview meet on one line), a prompt (`command`, `search`), and a card
-  of Claude's while it has the keys — its question as the name, its answers set into the bottom line, `╰─ y Run · n
-  No ─╯`. When the keys go elsewhere (you type in the chat) its lines go, its name and answers stay on its top and
-  bottom rows, and it says how to answer it (`C-q`).
-  Notes — completion, docs, hover, toasts, the follow card — float as cards of their own colour, without a frame; two
+  that asks — its question as the name, its answers always its bottom line (in their short words where they don't fit
+  whole, in one order of what gives way first — [Claude integration](claude-integration.md)), `╰─ esc back · y Run ·
+  n No ─╯` while it has the keys. While it waits its lines are faint and its bottom
+  line starts with how to reach it, `╰─ C-q answer · y Run · n No ─╯`. The follow card's keys are its bottom line
+  too (`╰─ C-c stop · C-f unfollow ─╯`).
+  Notes — completion, docs, hover, toasts — float as cards of their own colour, without a frame; two
   cards never touch. The selected row has an accent bar `▎`
 - **Path bar** — `─ project › folder › file ● › ƒ enclosing_fn ──`, on the code pane's top line: the function, type,
   or module around the cursor comes from the tree-sitter tree. With several buffers open, the list shows on the

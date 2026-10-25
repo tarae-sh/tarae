@@ -13,17 +13,17 @@
 10  10     }
 11  11     counts
 12  12 }
-13  13                              ╭─ Open the sandbox a little? ───────────────────────────────────╮
-14  14 fn main() {                  │ Let Claude's commands write in                                 │
-15  15     let text = "the quick bro│ /private/tmp/tarae-shot-blocked/npm-cache and everything in it │
-16  16     let counts = word_counts(│                                                                │
-17  17     println!("{} distinct wor│ npm was writing …/_cacache/index-v5 in it, in `npm test` —     │
-18  18 }                            │ which runs again now with it open, whichever you choose.       │
-19                                  │ Claude hears how it ended with your next message. s lasts      │
-20                                  │ until this session ends, A until :granted takes it back.       │
-21                                  │                                                                │
-22                                  │ esc goes back, unanswered                                      │
-23                                  ╰─ y Once · a This chat · s This session · A Always here · n No ─╯
+13  13
+14  14 fn main() {                      ╭─ Open the sandbox a little? ───────────────────────────────╮
+15  15     let text = "the quick brown f│ Let Claude's commands write in                             │
+16  16     let counts = word_counts(text│ /private/tmp/tarae-shot-blocked/npm-cache and everything   │
+17  17     println!("{} distinct words",│ in it                                                      │
+18  18 }                                │                                                            │
+19                                      │ npm was writing …/_cacache/index-v5 in it, in `npm test` — │
+20                                      │ which runs again now with it open, whichever you choose.   │
+21                                      │ Claude hears how it ended with your next message. s lasts  │
+22                                      │ until this session ends, A until :granted takes it back.   │
+23                                      ╰─── esc back · y once · a chat · s session · A always · n ──╯
 24
 25 ─ npm test ▲ ── failed 2.4s ────────────────────────────────────────────────────── space m c close ─
 26   npm ERR! code EPERM
@@ -75,17 +75,17 @@
 10  ff
 11  ff
 12  ff
-13  ff                              aa TTTT TTT TTTTTTT T TTTTTTT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-14  ff                              a                                                                a
-15  ff                gggg ggggg ggga                                                                a
-16  ff                              a                                                                a
-17  ff              ggg gggggggg ggga ddd ddd ddddddd ddddddddddddddddddd dd ddd dd dddd ddddd d     a
-18  ff                              a ddddd dddd ddddd ddd dddd dd ddddd ddddddddd ddd ddddddd       a
-19                                  a dddddd ddddd ddd dd ddddd dddd dddd dddd dddddddd d ddddd      a
-20                                  a ddddd dddd ddddddd ddddd d ddddd dddddddd ddddd dd ddddd       a
-21                                  a                                                                a
-22                                  a ddd dddd ddddd dddddddddd                                      a
-23                                  aa A      f A dddd dddd f A dddd ddddddd f A dddddd dddd f A dd aa
+13  ff
+14  ff                                  aa TTTT TTT TTTTTTT T TTTTTTT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+15  ff                gggg ggggg ggggg ga                                                            a
+16  ff                                  a                                                            a
+17  ff              ggg gggggggg gggggg a                                                            a
+18  ff                                  a                                                            a
+19                                      a ddd ddd ddddddd ddddddddddddddddddd dd ddd dd dddd ddddd d a
+20                                      a ddddd dddd ddddd ddd dddd dd ddddd ddddddddd ddd ddddddd   a
+21                                      a dddddd ddddd ddd dd ddddd dddd dddd dddd dddddddd d ddddd  a
+22                                      a ddddd dddd ddddddd ddddd d ddddd dddddddd ddddd dd ddddd   a
+23                                      aaaa AAA dddd f A      f A dddd f A ddddddd f A dddddd f A aaa
 24
 25 f TTT TTTT e ff eeeeee dddd ffffffffffffffffffffffffffffffffffffffffffffffffffffff DDDDD D D fffff f
 26   fff ffff ffff fffff

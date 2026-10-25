@@ -651,12 +651,89 @@ fn a_cut_card_with_five_answers_keeps_its_width_once_read() {
     };
     let y_at = |ed: &Editor| ed.screen.offer_buttons.iter().find(|b| b.3 == 'y').map(|b| (b.0, b.1));
     let s = draw(&mut ed);
-    assert!(s.contains("more lines") && (s.contains("y read it first") || s.contains("y after v")), "{s}");
+    // (the exact line: `a` and `s` keep their words, `y` says it waits; read whole, `y` its meaning in that form)
+    let line = |ed: &Editor| crate::term::card_line(ed).unwrap_or_default();
+    assert!(s.contains("more lines, not read yet"), "{s}");
+    assert_eq!(line(&ed), "╰─ C-q answer · y once read · a chat · s session · v · n ─╯", "{s}");
     let waiting = y_at(&ed);
     ed.offer_whole.set(ed.offers.first().map(|o| (o.id, o.rev)));
     let s = draw(&mut ed);
-    assert!(s.contains("y Once"), "{s}");
+    assert_eq!(
+        line(&ed),
+        "╰─ C-q answer · y once · a chat · s session · v · n ──────╯",
+        "its meaning back: {s}"
+    );
     assert_eq!(y_at(&ed), waiting, "no narrower once read:\n{s}");
+}
+
+/// The one order's last step (the user, 2026-10-25): what lasts (`a` this chat, `s` this session) is never a bare
+/// letter and the way in never goes — a card grows left over the code for its narrowest line, and a screen too
+/// narrow even for that draws no card, the status line saying the window's width it needs; at that width it's
+/// drawn, its answers in those words, a column less it isn't — and while it isn't, no key of yours answers it.
+#[test]
+fn a_card_too_narrow_for_its_lasting_answers_says_the_width_it_needs() {
+    let (mut ed, dir, _, run, _) = two("narrow");
+    ed.session.chat = Some(crate::chat::Chat::new());
+    ed.session.at = crate::session::At::Chat;
+    asked(&mut ed, ask(&dir.join("front"), run, HOST));
+    let status = |ed: &mut Editor, w: u16| {
+        let mut bytes = Vec::new();
+        crate::term::render(ed, &mut bytes, w, 40).unwrap();
+        let mut p = vt100::Parser::new(40, w, 0);
+        p.process(&bytes);
+        p.screen().rows(0, w).nth(39).unwrap_or_default()
+    };
+    // (narrowing the window until the chat's column can't take its narrowest line)
+    let w = (40..=100u16)
+        .rev()
+        .find(|&w| {
+            status(&mut ed, w);
+            ed.screen.offer_card.is_none()
+        })
+        .expect("a width too narrow for it");
+    let said = status(&mut ed, w);
+    let cols: u16 = (said.split("card needs ").nth(1).and_then(|s| s.split(" cols").next()))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("the width it needs: {said}"));
+    status(&mut ed, cols - 1);
+    assert!(ed.screen.offer_card.is_none(), "{cols}: not a column less");
+    // Nothing shows it, so nothing of yours answers it (the review of cardkeys): `C-q` gives it the keys as ever, its
+    // `y` (and `a`, `n`) refused and said on the status line — the proxy told nothing
+    let _ = sent();
+    ed.handle_key("C-q".parse().unwrap());
+    assert!(ed.card_has_keys(), "C-q focuses it");
+    assert!(ed.keys_to().answers.is_empty(), "the state names no answer for it");
+    for k in ['y', 'a', 'n'] {
+        ed.handle_key(Key::plain(Code::Char(k)));
+        let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        assert_eq!(
+            said,
+            format!("{k} not taken — no room on screen for the card, the window needs to be wider")
+        );
+    }
+    assert_eq!(hosts_cards(&ed.offers).len(), 1, "not answered");
+    assert!(sent().is_empty(), "nothing answered");
+    // (`esc` gives the keys back to the chat)
+    ed.handle_key(Key::plain(Code::Esc));
+    assert!(!ed.card_has_keys());
+    let said = status(&mut ed, cols);
+    let line = crate::term::card_line(&ed).unwrap_or_else(|| panic!("drawn at {cols}: {said}"));
+    assert!(line.contains(" · a chat · s session · "), "its lasting answers in words: {line}");
+    // (the width they need, not the card's least: the line full, no run of `─` left before its corner)
+    assert!(line.ends_with(" ─╯") && !line.ends_with("──╯"), "{line}");
+    // Drawn again, it answers again: its `y` reaches the proxy (nothing left over from the frame with no room)
+    ed.handle_key("C-q".parse().unwrap());
+    let mut bytes = Vec::new();
+    crate::term::render(&mut ed, &mut bytes, cols, 40).unwrap();
+    let mut p = vt100::Parser::new(40, cols, 0);
+    p.process(&bytes);
+    assert!(ed.screen.offer_card.is_some(), "focused, still drawn at {cols}\n{}", p.screen().contents());
+    assert_eq!(ed.keys_to().answers, ['y', 'a', 's', 'A', 'n'], "its answers back in the state");
+    ed.handle_key(Key::plain(Code::Char('y')));
+    assert!(hosts_cards(&ed.offers).is_empty(), "answered");
+    let told: Vec<_> = sent().iter().filter_map(answered).map(|t| (t.2, t.4)).collect();
+    assert_eq!(told, [(HOST.to_string(), Scope::Run)], "`y` told the proxy");
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Its run reaped, the proxy is told (`RunEnded`): whoever else still waits on that host — another run's
@@ -695,6 +772,15 @@ fn the_card_stays_when_its_run_ends_and_y_is_for_the_next_run() {
     let _ = sent();
     // `y`: the next run's, nothing sent for the run that's over, Claude told
     settled(&mut ed);
+    // (over a chat 48 wide, another card behind it: its narrowest line — its way in, what lasts in words, the key that
+    // lists what waits — is wider than the chat, so the card grows left to it; no key in its body)
+    let line = "╰─ C-q answer · y · a chat · s session · A always · n · space I list ─╯";
+    assert_eq!(crate::term::card_line(&ed).as_deref(), Some(line));
+    let (bytes, w, h) = ed.last_frame.clone().unwrap();
+    let mut p = vt100::Parser::new(h, w, 0);
+    p.process(&bytes);
+    let s = p.screen().contents();
+    assert!(s.contains("│ 1 more waits — 1 here ") && !s.contains("lists them"), "{s}");
     key(&mut ed, 'y');
     assert_eq!(hosts_cards(&ed.offers).iter().map(|a| a.run).collect::<Vec<_>>(), [other]);
     let c = ed.session.chat.as_ref().unwrap();

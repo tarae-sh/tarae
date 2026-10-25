@@ -15,9 +15,9 @@
       "asks": "End the review?",
       "at": [
         62,
-        26,
+        28,
         57,
-        9
+        7
       ],
       "cut": 0,
       "focused": false,
@@ -265,9 +265,9 @@
           "id": "card#2",
           "rect": [
             62,
-            26,
+            28,
             57,
-            9
+            7
           ],
           "shows": "card"
         }

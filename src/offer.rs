@@ -509,6 +509,44 @@ pub enum Asker {
 pub const LOST: &str = "the card asking the user about this was lost before they could answer (an editor fault) \
 — nothing ran; send it again";
 
+/// One of a card's answers as its kind lists it (`Offer::answers_all`): its key, what it does, and whether it lasts.
+type Answer = (char, &'static str, bool);
+
+/// An answer that holds past this once or can't be taken back (`Offer::lasting`): never a bare letter on the card.
+fn lasts(k: char, says: &'static str) -> Answer {
+    (k, says, true)
+}
+
+/// An answer that doesn't last: on a narrow card it may fold to its key alone.
+fn plain(k: char, says: &'static str) -> Answer {
+    (k, says, false)
+}
+
+/// The short words of answers whose first word wouldn't say them (`Offer::answers_short`).
+const SHORT: &[(&str, &str)] = &[
+    ("Not now", "not now"),
+    ("This chat", "chat"),
+    ("This session", "session"),
+    ("Always here", "always"),
+    ("This command, this chat", "command"),
+    ("This socket, this chat", "socket"),
+    ("Ask each time", "ask"),
+    ("Don't run them", "none"),
+    ("Hold back", "hold back"),
+    ("Remove both", "both"),
+    ("Go to them", "go there"),
+    ("All listed", "all"),
+    ("New sessions too", "new ones"),
+    ("What it waits on", "waits on"),
+    ("The front's instead", "front's"),
+    ("Its output", "output"),
+    ("Git tab", "git tab"),
+    ("Other base", "other base"),
+    ("Turn on", "turn on"),
+    ("See the diff", "diff"),
+    ("One by one", "each"),
+];
+
 impl Offer {
     /// The call waiting on it, if it's Claude's and asks for one call's answer.
     fn asker(&self) -> Option<Asker> {
@@ -1132,20 +1170,60 @@ impl Offer {
     /// (`held` says why): made in one place, so what a card offers and what it says it holds back agree
     /// (frictions28: the state's line named `y` alone).
     pub fn answers_held(&self, quick: bool) -> (Vec<(char, &'static str)>, Vec<char>) {
+        let (v, withheld) = self.answers_lasting(quick);
+        (v.into_iter().map(|a| (a.0, a.1)).collect(), withheld)
+    }
+
+    /// Its answers (`answers_held`), each with whether it lasts (`answers_all`).
+    fn answers_lasting(&self, quick: bool) -> (Vec<Answer>, Vec<char>) {
         let mut v = self.answers_all(quick);
         // (the cards like it, listed on it: `Y` runs each — cardburden 6)
         if !self.like.is_empty() && matches!(self.state, OfferState::Asking) {
-            v.insert(1.min(v.len()), ('Y', "All listed"));
+            v.insert(1.min(v.len()), lasts('Y', "All listed"));
         }
         let mut withheld = Vec::new();
         if self.held.is_some() && matches!(self.state, OfferState::Asking) {
             withheld = v.iter().map(|a| a.0).filter(|k| matches!(k, 'y' | 'p')).collect();
             v.retain(|a| !withheld.contains(&a.0));
             if self.highs().is_some() {
-                v.insert(0, ('h', "Go to them"));
+                v.insert(0, plain('h', "Go to them"));
             }
         }
         (v, withheld)
+    }
+
+    /// Whether its answer `k` lasts — holds past this once or can't be taken back, as its kind lists it
+    /// (`answers_all`: `y Remove checkout`, `y Commit`, `y Stop it`, `N Never`, `a`/`s` grants …): on the card's
+    /// bottom line it keeps its short words however narrow, never a bare letter (`term::answer_forms` — the review of
+    /// cardkeys: `N` alone was a permanent no nothing on the card named).
+    pub fn lasting(&self, k: char) -> bool {
+        self.answers_lasting(false).0.iter().any(|a| a.0 == k && a.2)
+    }
+
+    /// Its answers as its bottom line says them where they don't fit there whole (the user, 2026-10-25: a floating
+    /// card's keys are always in its bottom line, never rows inside): each its short words, in the same order —
+    /// `y move · c all · v files · n not now`; the card's text explains them. Its kind's own first (`Moves::short`),
+    /// else `SHORT`'s, else its first word; two alike keep their words whole (lowercase), or they'd say nothing apart.
+    pub fn answers_short(&self, quick: bool) -> Vec<(char, String)> {
+        let whole = self.answers(quick);
+        let own = |k: char| match &self.what {
+            What::BaseMoved(m) => m.short(k),
+            _ => None,
+        };
+        let short = |&(k, l): &(char, &'static str)| -> String {
+            match own(k).or_else(|| SHORT.iter().find(|s| s.0 == l).map(|s| s.1)) {
+                Some(s) => s.to_string(),
+                None => l.split(' ').next().unwrap_or(l).trim_end_matches(',').to_lowercase(),
+            }
+        };
+        let mut v: Vec<(char, String)> = whole.iter().map(|a| (a.0, short(a))).collect();
+        let alike: Vec<bool> = v.iter().map(|a| v.iter().filter(|b| b.1 == a.1).count() > 1).collect();
+        for (i, same) in alike.into_iter().enumerate() {
+            if same {
+                v[i].1 = whole[i].1.to_lowercase();
+            }
+        }
+        v
     }
 
     /// Held for high-risk changes (#196): `h` goes to them — `Some(None)` in the review in front (its end
@@ -1169,122 +1247,154 @@ impl Offer {
         }
     }
 
-    fn answers_all(&self, quick: bool) -> Vec<(char, &'static str)> {
+    /// Its answers as its kind lists them, each with whether it lasts (`lasts`/`plain`): what holds past this once —
+    /// a grant kept for the chat, the session or always, a trust, a never — or can't be taken back — removing,
+    /// deleting, committing, pushing, stopping, running outside the sandbox, billing. Such an answer is never a bare
+    /// letter on the card's bottom line (`Offer::lasting`, `term::answer_forms`); the others may fold to their key.
+    fn answers_all(&self, quick: bool) -> Vec<Answer> {
         use What as W;
         match self.state {
             OfferState::Installing(_) => return Vec::new(),
-            OfferState::Failed(_) => return vec![('y', "Retry"), ('n', "Dismiss")],
+            OfferState::Failed(_) => return vec![plain('y', "Retry"), plain('n', "Dismiss")],
             OfferState::Asking => {}
         }
         match &self.what {
-            W::Grammars { .. } => vec![('y', "Install"), ('n', "Not now")],
-            W::Install { .. } | W::Fetch { .. } => vec![('y', "Install"), ('n', "Not now"), ('N', "Never")],
-            W::PluginPermissions { .. } => vec![('y', "Allow"), ('n', "Not now")],
-            W::PluginAsk { .. } => vec![('y', "Allow"), ('n', "No")],
+            W::Grammars { .. } => vec![plain('y', "Install"), plain('n', "Not now")],
+            W::Install { .. } | W::Fetch { .. } => {
+                vec![plain('y', "Install"), plain('n', "Not now"), lasts('N', "Never")]
+            }
+            W::PluginPermissions { .. } => vec![lasts('y', "Allow"), plain('n', "Not now")],
+            W::PluginAsk { .. } => vec![plain('y', "Allow"), plain('n', "No")],
             // (one socket past the sandbox — #119; `a` is the socket's, for any command — #182; Docker's,
             // this command's with it, never the socket's — #193)
             W::Run(r) if r.socket.is_some() && self.lasts() => match r.again.is_some() {
-                true => vec![('y', "Once"), ('a', "This command, this chat"), ('n', "No")],
-                false => vec![('y', "Once"), ('a', "This socket, this chat"), ('n', "No")],
+                true => vec![plain('y', "Once"), lasts('a', "This command, this chat"), plain('n', "No")],
+                false => vec![plain('y', "Once"), lasts('a', "This socket, this chat"), plain('n', "No")],
             },
-            W::Run(r) if r.socket.is_some() => vec![('y', "Once"), ('n', "No")],
-            W::Run(r) if r.keep => {
-                vec![
-                    ('y', "Once"),
-                    ('a', "This chat"),
-                    ('s', "This session"),
-                    ('A', "Always here"),
-                    ('n', "No"),
-                ]
-            }
+            W::Run(r) if r.socket.is_some() => vec![plain('y', "Once"), plain('n', "No")],
+            W::Run(r) if r.keep => vec![
+                plain('y', "Once"),
+                lasts('a', "This chat"),
+                lasts('s', "This session"),
+                lasts('A', "Always here"),
+                plain('n', "No"),
+            ],
             // (this command again for the rest of the chat — the card says which)
-            W::Run(r) if r.again.is_some() => vec![('y', "Once"), ('a', "This chat"), ('n', "No")],
-            W::Run(_) => vec![('y', "Run"), ('n', "No")],
-            W::ReviewAtEnd => vec![('y', "Turn on"), ('n', "No")],
-            W::ProjectTrust { .. } => vec![('y', "Trust"), ('n', "Hold back")],
-            W::ClaudeSettings { .. } => vec![('y', "Trust"), ('v', "Details"), ('n', "Hold back")],
-            W::GitTrust(_) => vec![('y', "Trust"), ('n', "Hold back")],
-            W::RepoTrust { .. } => vec![('y', "Trust"), ('v', "Details"), ('n', "Hold back")],
-            W::NoSandbox { first: true, .. } => {
-                vec![('y', "Ask each time"), ('s', "This session"), ('n', "Don't run them")]
+            W::Run(r) if r.again.is_some() => {
+                vec![plain('y', "Once"), lasts('a', "This chat"), plain('n', "No")]
             }
-            W::NoSandbox { .. } => vec![('y', "Once"), ('s', "This session"), ('n', "No")],
+            W::Run(_) => vec![plain('y', "Run"), plain('n', "No")],
+            W::ReviewAtEnd => vec![lasts('y', "Turn on"), plain('n', "No")],
+            W::ProjectTrust { .. } => vec![lasts('y', "Trust"), plain('n', "Hold back")],
+            W::ClaudeSettings { .. } => {
+                vec![lasts('y', "Trust"), plain('v', "Details"), plain('n', "Hold back")]
+            }
+            W::GitTrust(_) => vec![lasts('y', "Trust"), plain('n', "Hold back")],
+            W::RepoTrust { .. } => vec![lasts('y', "Trust"), plain('v', "Details"), plain('n', "Hold back")],
+            W::NoSandbox { first: true, .. } => {
+                vec![plain('y', "Ask each time"), lasts('s', "This session"), lasts('n', "Don't run them")]
+            }
+            W::NoSandbox { .. } => vec![plain('y', "Once"), lasts('s', "This session"), plain('n', "No")],
             // (the paused servers': nothing runs on the answer — they come back)
             W::ProtectedMade { then, .. } if then.servers() => {
-                vec![('y', "Keep"), ('r', "Remove"), ('v', "See them"), ('n', "Not now")]
+                vec![lasts('y', "Keep"), lasts('r', "Remove"), plain('v', "See them"), plain('n', "Not now")]
             }
             W::ProtectedMade { .. } => {
-                vec![('y', "Keep, run"), ('r', "Remove, run"), ('v', "See them"), ('n', "No")]
+                vec![
+                    lasts('y', "Keep, run"),
+                    lasts('r', "Remove, run"),
+                    plain('v', "See them"),
+                    plain('n', "No"),
+                ]
             }
             W::Read { keep, .. } => {
                 let mut v = match keep {
-                    true => {
-                        vec![('y', "Once"), ('a', "This chat"), ('s', "This session"), ('A', "Always here")]
-                    }
-                    false => vec![('y', "Once")],
+                    true => vec![
+                        plain('y', "Once"),
+                        lasts('a', "This chat"),
+                        lasts('s', "This session"),
+                        lasts('A', "Always here"),
+                    ],
+                    false => vec![plain('y', "Once")],
                 };
                 // (a search's pattern the card cut: whole on `v`)
                 if self.read_details().is_some() {
-                    v.push(('v', "Pattern"));
+                    v.push(plain('v', "Pattern"));
                 }
-                v.push(('n', "No"));
+                v.push(plain('n', "No"));
                 v
             }
             // (as the host's own card, the network closed: never kept past a session)
             W::Grant { grant: crate::allow::Grant::Host(..), .. } => {
-                vec![('y', "Once"), ('a', "This chat"), ('s', "This session"), ('n', "No")]
+                vec![
+                    plain('y', "Once"),
+                    lasts('a', "This chat"),
+                    lasts('s', "This session"),
+                    plain('n', "No"),
+                ]
             }
             // (as far as it may be kept: Docker's socket and a key this run's only, another socket this chat's)
             W::Grant { .. } => match self.top() {
                 Some(crate::allow::Scope::Always) => vec![
-                    ('y', "Once"),
-                    ('a', "This chat"),
-                    ('s', "This session"),
-                    ('A', "Always here"),
-                    ('n', "No"),
+                    plain('y', "Once"),
+                    lasts('a', "This chat"),
+                    lasts('s', "This session"),
+                    lasts('A', "Always here"),
+                    plain('n', "No"),
                 ],
                 Some(crate::allow::Scope::ThisChat) => {
-                    vec![('y', "Once"), ('a', "This chat"), ('n', "No")]
+                    vec![plain('y', "Once"), lasts('a', "This chat"), plain('n', "No")]
                 }
-                _ => vec![('y', "Once"), ('n', "No")],
+                _ => vec![plain('y', "Once"), plain('n', "No")],
             },
-            W::Outside { .. } => vec![('y', "Run"), ('n', "No")],
-            W::Preflight { .. } => vec![('y', "Run them"), ('n', "Not now")],
-            W::BranchDelete { .. } => vec![('y', "Delete"), ('n', "Keep it")],
-            W::ForcePush(_) => vec![('y', "Push"), ('n', "No")],
+            // (outside the sandbox: with all your permissions)
+            W::Outside { .. } => vec![lasts('y', "Run"), plain('n', "No")],
+            W::Preflight { .. } => vec![plain('y', "Run them"), plain('n', "Not now")],
+            W::BranchDelete { .. } => vec![lasts('y', "Delete"), plain('n', "Keep it")],
+            W::ForcePush(_) => vec![lasts('y', "Push"), plain('n', "No")],
             W::SessionNew(m) => {
-                let mut v = vec![('y', "Make it")];
+                let mut v = vec![plain('y', "Make it")];
                 if self.bills() {
-                    v.push((
+                    v.push(lasts(
                         '$',
                         if m.billing == crate::billing::Billing::Api { "Bill plan" } else { "Bill API" },
                     ));
                 }
                 if self.base_steps() {
-                    v.push(('b', "Other base"));
+                    v.push(plain('b', "Other base"));
                 }
-                v.push(('n', "Not now"));
+                v.push(plain('n', "Not now"));
                 v
             }
             // (work in no commit: no `y` — committing leads, removing takes a capital)
-            W::SessionEnd(_) if self.commits_first() => {
-                vec![('c', "Commit, then end"), ('R', "Remove"), ('D', "Remove both"), ('n', "Cancel")]
-            }
-            W::SessionEnd(_) if self.end_dirty() => vec![('R', "Remove"), ('n', "Cancel")],
+            W::SessionEnd(_) if self.commits_first() => vec![
+                lasts('c', "Commit, then end"),
+                lasts('R', "Remove"),
+                lasts('D', "Remove both"),
+                plain('n', "Cancel"),
+            ],
+            W::SessionEnd(_) if self.end_dirty() => vec![lasts('R', "Remove"), plain('n', "Cancel")],
             W::SessionEnd(_) if self.both() => {
-                vec![('y', "Remove checkout"), ('D', "Remove both"), ('n', "Cancel")]
+                vec![lasts('y', "Remove checkout"), lasts('D', "Remove both"), plain('n', "Cancel")]
             }
-            W::SessionEnd(_) => vec![('y', "Remove it"), ('n', "Cancel")],
+            W::SessionEnd(_) => vec![lasts('y', "Remove it"), plain('n', "Cancel")],
             // (it fell to the download's row once: `y Install` on a card whose `y` declines Claude's change)
-            W::CloseReviewed { .. } => vec![('y', "Decline and close"), ('n', "Keep both")],
-            W::Screen { .. } => vec![('y', "Once"), ('a', "This chat"), ('n', "No")],
-            W::WebRead(_) => vec![('y', "Once"), ('a', "This chat"), ('s', "This session"), ('n', "No")],
-            W::ReviewEnd { .. } => vec![('y', "End it"), ('n', "Keep reviewing")],
-            W::Rebase(_) => vec![('y', "Rebase first"), ('n', "Leave it")],
-            W::RebaseHeld(_) if self.stashes() => {
-                vec![('s', "Stash, rebase, put back"), ('g', "Git tab"), ('n', "Leave it")]
+            W::CloseReviewed { .. } => vec![lasts('y', "Decline and close"), plain('n', "Keep both")],
+            W::Screen { .. } => vec![plain('y', "Once"), lasts('a', "This chat"), plain('n', "No")],
+            W::WebRead(_) => {
+                vec![
+                    plain('y', "Once"),
+                    lasts('a', "This chat"),
+                    lasts('s', "This session"),
+                    plain('n', "No"),
+                ]
             }
-            W::RebaseHeld(_) => vec![('g', "Git tab"), ('n', "Leave it")],
+            W::ReviewEnd { .. } => vec![plain('y', "End it"), plain('n', "Keep reviewing")],
+            W::Rebase(_) => vec![plain('y', "Rebase first"), plain('n', "Leave it")],
+            W::RebaseHeld(_) if self.stashes() => {
+                vec![lasts('s', "Stash, rebase, put back"), plain('g', "Git tab"), plain('n', "Leave it")]
+            }
+            W::RebaseHeld(_) => vec![plain('g', "Git tab"), plain('n', "Leave it")],
             // (`p` runs the quick set when the project has two — the card names its steps; only the card back
             // after that preflight failed has `warnings`, `Moved::failed_card`)
             W::Rebased(_) => {
@@ -1292,81 +1402,123 @@ impl Offer {
                 // (after its preflight failed: a bring anyway — frictions29 91)
                 let y = if self.warnings.is_empty() { "Bring" } else { "Bring anyway" };
                 match self.output.is_some() {
-                    true => vec![('y', y), ('p', p), ('v', "Its output"), ('n', "Not now")],
-                    false => vec![('y', y), ('p', p), ('n', "Not now")],
+                    true => {
+                        vec![lasts('y', y), lasts('p', p), plain('v', "Its output"), plain('n', "Not now")]
+                    }
+                    false => vec![lasts('y', y), lasts('p', p), plain('n', "Not now")],
                 }
             }
             // (abort throws the resolution away: a capital, as removing does)
             W::RebaseResolved { message: true, .. } => {
-                vec![('y', "Continue"), ('m', "Message"), ('X', "Abort"), ('n', "Not now")]
+                vec![
+                    plain('y', "Continue"),
+                    plain('m', "Message"),
+                    lasts('X', "Abort"),
+                    plain('n', "Not now"),
+                ]
             }
-            W::RebaseResolved { .. } => vec![('y', "Continue"), ('X', "Abort"), ('n', "Not now")],
+            W::RebaseResolved { .. } => {
+                vec![plain('y', "Continue"), lasts('X', "Abort"), plain('n', "Not now")]
+            }
             W::Instructions(b) if b.out.is_some() => {
-                vec![('y', "Carry them into main's"), ('v', "See them"), ('n', "Leave main's")]
+                vec![plain('y', "Carry them into main's"), plain('v', "See them"), plain('n', "Leave main's")]
             }
             W::Instructions(_) => {
-                vec![('y', "Take the main checkout's"), ('v', "See them"), ('n', "Keep this one")]
+                vec![
+                    plain('y', "Take the main checkout's"),
+                    plain('v', "See them"),
+                    plain('n', "Keep this one"),
+                ]
             }
-            W::UpTo(_) => vec![('y', "Move it up"), ('n', "Leave it")],
-            W::BringQueue(_) => vec![('y', "Bring them in turn"), ('n', "Not now")],
-            W::BaseMoved(m) => m.answers(self.output.is_some()),
+            W::UpTo(_) => vec![plain('y', "Move it up"), plain('n', "Leave it")],
+            W::BringQueue(_) => vec![lasts('y', "Bring them in turn"), plain('n', "Not now")],
+            W::BaseMoved(m) => {
+                m.answers(self.output.is_some()).into_iter().map(|(k, s)| plain(k, s)).collect()
+            }
+            // (a hook runs as you, outside the sandbox)
             W::Hooks(a) if a.runnable() => {
-                vec![('y', if a.hooks.len() == 1 { "Run it" } else { "Run them" }), ('n', "Skip hooks")]
+                vec![
+                    lasts('y', if a.hooks.len() == 1 { "Run it" } else { "Run them" }),
+                    plain('n', "Skip hooks"),
+                ]
             }
-            W::Hooks(_) => vec![('n', "Skip hooks")],
+            W::Hooks(_) => vec![plain('n', "Skip hooks")],
             // (work under way: `y` restarts anyway, ending it — `w` waits for it)
             W::Restart(c) => {
                 let busy = !c.under_way.is_empty();
-                let mut v = vec![('y', if busy { "Restart anyway" } else { "Restart" })];
+                let mut v = vec![match busy {
+                    true => lasts('y', "Restart anyway"),
+                    false => plain('y', "Restart"),
+                }];
                 if self.restart_other() {
-                    v.push(('f', "The front's instead"));
+                    v.push(plain('f', "The front's instead"));
                 }
                 if busy {
-                    v.push(('w', "Wait for them"));
+                    v.push(plain('w', "Wait for them"));
                 }
-                v.push(('n', "Not now"));
+                v.push(plain('n', "Not now"));
                 v
             }
-            W::RestartSame { .. } => vec![('y', "Restart anyway"), ('n', "Not now")],
-            W::RestartCancel { .. } => vec![('y', "Call it off"), ('n', "Keep it")],
+            W::RestartSame { .. } => vec![lasts('y', "Restart anyway"), plain('n', "Not now")],
+            W::RestartCancel { .. } => vec![plain('y', "Call it off"), plain('n', "Keep it")],
             // (`r`: the notes list of just these — cardburden 6)
-            W::NotesStale { .. } => vec![('y', "Close them"), ('r', "One by one"), ('n', "Keep them")],
-            W::NotesClose { .. } => vec![('y', "Close them"), ('n', "Keep them")],
+            W::NotesStale { .. } => {
+                vec![lasts('y', "Close them"), plain('r', "One by one"), plain('n', "Keep them")]
+            }
+            W::NotesClose { .. } => vec![lasts('y', "Close them"), plain('n', "Keep them")],
             // (throwing them away takes a capital, as removing does)
-            W::Recover(_) => vec![('y', "Restore"), ('c', "Compare"), ('D', "Discard"), ('n', "Not now")],
+            W::Recover(_) => {
+                vec![
+                    plain('y', "Restore"),
+                    plain('c', "Compare"),
+                    lasts('D', "Discard"),
+                    plain('n', "Not now"),
+                ]
+            }
             W::ChangeSet { ops: true, .. } => {
-                vec![('y', "Accept all"), ('v', "See them"), ('n', "Decline all")]
+                vec![plain('y', "Accept all"), plain('v', "See them"), plain('n', "Decline all")]
             }
-            W::ChangeSet { .. } => {
-                vec![('y', "Accept all"), ('r', "One by one"), ('v', "See them"), ('n', "Decline all")]
+            W::ChangeSet { .. } => vec![
+                plain('y', "Accept all"),
+                plain('r', "One by one"),
+                plain('v', "See them"),
+                plain('n', "Decline all"),
+            ],
+            W::Commit(_) => vec![lasts('y', "Commit"), plain('v', "See the diff"), plain('n', "Don't")],
+            W::Stuck(_) => {
+                vec![lasts('y', "Stop it"), plain('w', "What it waits on"), plain('n', "Keep waiting")]
             }
-            W::Commit(_) => vec![('y', "Commit"), ('v', "See the diff"), ('n', "Don't")],
-            W::Stuck(_) => vec![('y', "Stop it"), ('w', "What it waits on"), ('n', "Keep waiting")],
-            W::LeftRunning { runs } if runs.len() == 1 => vec![('y', "Stop it"), ('n', "Let it run")],
-            W::LeftRunning { .. } => vec![('y', "Stop them"), ('n', "Let them run")],
+            W::LeftRunning { runs } if runs.len() == 1 => {
+                vec![lasts('y', "Stop it"), plain('n', "Let it run")]
+            }
+            W::LeftRunning { .. } => vec![lasts('y', "Stop them"), plain('n', "Let them run")],
             // (`A` only with the network open: cards.md decision 4 — piece C)
             W::Host(a) if a.open => vec![
-                ('y', "Once"),
-                ('a', "This chat"),
-                ('s', "This session"),
-                ('A', "Always here"),
-                ('n', "No"),
+                plain('y', "Once"),
+                lasts('a', "This chat"),
+                lasts('s', "This session"),
+                lasts('A', "Always here"),
+                plain('n', "No"),
             ],
             // (the network closed: the wait and how long a yes lasts are behind `v` — `hosts::details`)
-            W::Host(_) => {
-                vec![('y', "Once"), ('a', "This chat"), ('s', "This session"), ('v', "Details"), ('n', "No")]
-            }
-            W::Containers(_) => vec![('y', "Stop them"), ('n', "Leave them")],
-            W::BillingSwitch { money: true, .. } => vec![('y', "This session"), ('n', "Stay")],
-            W::BillingSwitch { .. } => vec![('y', "Switch"), ('n', "Keep it")],
-            W::EnvKey { .. } => vec![('y', "This session"), ('A', "Always"), ('n', "No")],
+            W::Host(_) => vec![
+                plain('y', "Once"),
+                lasts('a', "This chat"),
+                lasts('s', "This session"),
+                plain('v', "Details"),
+                plain('n', "No"),
+            ],
+            W::Containers(_) => vec![lasts('y', "Stop them"), plain('n', "Leave them")],
+            W::BillingSwitch { money: true, .. } => vec![lasts('y', "This session"), plain('n', "Stay")],
+            W::BillingSwitch { .. } => vec![lasts('y', "Switch"), plain('n', "Keep it")],
+            W::EnvKey { .. } => vec![lasts('y', "This session"), lasts('A', "Always"), plain('n', "No")],
             W::Limit(_) if self.limit_all() => {
-                vec![('y', "This session"), ('a', "New sessions too"), ('n', "Wait")]
+                vec![lasts('y', "This session"), lasts('a', "New sessions too"), plain('n', "Wait")]
             }
-            W::Limit(_) => vec![('y', "This session"), ('n', "Wait")],
-            W::FeaturesReset => vec![('y', "Empty them"), ('n', "Keep them")],
-            W::Board(_) => vec![('y', "Start it"), ('n', "Not now")],
-            W::Shuttle => vec![('y', "Until it ends"), ('n', "No")],
+            W::Limit(_) => vec![lasts('y', "This session"), plain('n', "Wait")],
+            W::FeaturesReset => vec![lasts('y', "Empty them"), plain('n', "Keep them")],
+            W::Board(_) => vec![lasts('y', "Start it"), plain('n', "Not now")],
+            W::Shuttle => vec![lasts('y', "Until it ends"), plain('n', "No")],
         }
     }
 

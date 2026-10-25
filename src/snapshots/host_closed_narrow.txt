@@ -19,15 +19,15 @@
 16  16     let counts = word_counts(text);
 17  17     println!("{} distinct words", counts.len()); // 타래
 18  18 }
-19
-20          ╭─ Let Claude's command reach index.crates.io? ──────────────╮
-21          │ cargo, in `cargo build` · port 443 · through tarae's proxy │
-22          │ Rust's registry: a yes also lets in crates.io, *.crates.io │
-23          │ What it read can be sent there. From the next run, runs    │
-24          │ can also write cargo's caches, which your own builds run.  │
-25          │                                                            │
-26          │ C-q to answer it                                           │
-27          ╰─ y Once · a This chat · s This session · v Details · n No ─╯
+19                       ╭─ Let Claude's command reach index.crates.io? ─╮
+20                       │ cargo, in `cargo build` · port 443 · through  │
+21                       │ tarae's proxy                                 │
+22                       │ Rust's registry: a yes also lets in           │
+23                       │ crates.io, *.crates.io                        │
+24                       │ What it read can be sent there. From the next │
+25                       │ run, runs can also write cargo's caches,      │
+26                       │ which your own builds run.                    │
+27                       ╰─ C-q answer · y · a chat · s session · v · n ─╯
 28
 29  ● normal   ▲1 waiting · C-q                     rust   utf-8 LF   1:1
 ## bg · surface per cell, blank = ui.background
@@ -81,15 +81,15 @@
 16  ff
 17  ff              ggg gggggggg gggggg
 18  ff
-19
-20          ff TTT TTTTTTTT TTTTTTT TTTTT TTTTTTTTTTTTTTTT fffffffffffffff
-21          f                                                            f
-22          f                                                            f
-23          f wwww ww wwww www ww wwww wwwwww wwww www wwww wwww wwww    f
-24          f www wwww wwwww wwwwwww wwwwwww wwwww wwww www wwwwww wwww  f
-25          f                                                            f
-26          f ddd dd dddddd dd                                           f
-27          ff F ffff f F ffff ffff f F ffff fffffff f F fffffff f F ff ff
+19                       ff TTT TTTTTTTT TTTTTTT TTTTT TTTTTTTTTTTTTTTT ff
+20                       f                                               f
+21                       f                                               f
+22                       f                                               f
+23                       f                                               f
+24                       f wwww ww wwww www ww wwww wwwwww wwww www wwww f
+25                       f wwww wwww www wwww wwwww wwwwwww wwwwwww      f
+26                       f wwwww wwww www wwwwww wwww                    f
+27                       ff FFF ffffff f F f F ffff f F fffffff f F f F ff
 28
 29  a TTTTTT   ww wwwwwww w www                     dddd   ddddd dd   TTT
 ## legend
