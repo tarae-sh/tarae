@@ -633,6 +633,36 @@ fn enter_on_a_change_goes_to_its_workspace_at_its_own_line() {
     assert_eq!(went(&ed), (ids[2], docs.join("a.rs"), 1));
 }
 
+/// The path bar with a conflict at 120 columns: its count, then the key hint two cells after it, as every hint; narrower,
+/// the hint folds whole, never its gap alone (`1 conflictenter go there`).
+#[test]
+fn the_path_bar_keeps_two_cells_before_its_key_hint() {
+    let Scene { mut ed, docs, dir: _dir, .. } = scene("weave-bar-gap");
+    std::fs::write(docs.join("a.rs"), twelve().replace("line 5\n", "five, docs\n")).unwrap();
+    ed.wrote(&docs.join("a.rs"));
+    type_line(&mut ed, 5, "five, fix");
+    crate::typed::execute(&mut ed, "weave").unwrap();
+    woven_to(&mut ed, 1);
+    assert_eq!(shown(&ed).merge.conflicts.len(), 1);
+    let r = rows(&frame(&mut ed, 120));
+    let bar = r.iter().find(|l| l.contains("go there")).unwrap_or_else(|| panic!("{r:#?}"));
+    assert!(bar.contains("≈ 1 conflict  enter go there"), "{bar}");
+    let (mut seen, mut folded) = (0, 0);
+    for w in (40..120).rev() {
+        let r = rows(&frame(&mut ed, w));
+        let Some(bar) = r.iter().find(|l| l.contains("woven ·")) else { continue };
+        seen += 1;
+        assert!(!bar.contains("conflictenter") && !bar.contains("conflict enter"), "{w}: {bar}");
+        match bar.contains("go there") {
+            true => assert!(bar.contains("≈ 1 conflict  enter go there"), "{w}: {bar}"),
+            false if bar.contains("≈ 1 conflict") => folded += 1,
+            false => {}
+        }
+    }
+    assert!(seen > 0, "the bar at some width");
+    assert!(folded > 0, "some width where the hint folded and the count stayed");
+}
+
 /// A conflict: `enter` on a stacked part's line goes to that part's workspace at its own line, on the tip's part to the
 /// checkout that has the base's branch at the tip's line — none has it: said; side by side, the column clicked is where
 /// it goes (its wash a step stronger); a side whose workspace ended meanwhile: said, nothing moves.

@@ -9078,9 +9078,9 @@ fn code_line(
                 left.push(Seg { text: format!("  reading {}…", f.what), style: faint, keep: 244 });
                 let time = timer(crate::clock::since(f.since), !editor.moving());
                 left.push(Seg { text: format!(" {time}"), style: faint, keep: 243 });
-                hint.push(Seg { text: "  ".into(), style: faint, keep: 238 });
+                hint.push(Seg { text: "  ".into(), style: faint, keep: PATH_HINTS });
                 for s in hint_spans(ui, &[("C-c", "stop")], dim, faint) {
-                    hint.push(Seg { text: s.text, style: s.style, keep: 238 });
+                    hint.push(Seg { text: s.text, style: s.style, keep: PATH_HINTS });
                 }
             }
             (None, Some(why), _) => {
@@ -9138,9 +9138,9 @@ fn code_line(
                     left.push(Seg { text, style: warn, keep: 244 });
                 }
                 // (what `enter` does on a change — `weave::go`: at the end, after the scope; folded first)
-                hint.push(Seg { text: "  ".into(), style: faint, keep: 238 });
+                hint.push(Seg { text: "  ".into(), style: faint, keep: PATH_HINTS });
                 for s in hint_spans(ui, &[("enter", "go there")], dim, faint) {
-                    hint.push(Seg { text: s.text, style: s.style, keep: 238 });
+                    hint.push(Seg { text: s.text, style: s.style, keep: PATH_HINTS });
                 }
             }
         }
@@ -9253,9 +9253,19 @@ fn fit_segments(left: &mut Vec<Seg>, right: &mut Vec<Seg>, width: usize) {
     let total = |l: &Vec<Seg>, r: &Vec<Seg>| l.iter().chain(r).map(|s| s.text.width()).sum::<usize>();
     // A blank spacer right after a segment with the same `keep` belongs to it — they go together, or a
     // stray gap is left behind (and the fill that should separate left from right goes missing)
-    // — and a key hint's words go with its key (`  i`, ` type`): never one without the other
+    // — and a key hint's words go with its key (`  i`, ` type`): never one without the other. A blank spacer before a
+    // run of its own `keep` (`  `, `enter`, ` go there`) leads it: it goes with the run, never alone — else the run
+    // stays, touching what's before it (`1 conflictenter go there`)
     let drop = |v: &mut Vec<Seg>, i: usize| {
         let s = v.remove(i);
+        let leads = i == 0 || v[i - 1].keep != s.keep;
+        let run = |n: &Seg| n.keep == s.keep && !n.text.trim().is_empty();
+        if s.text.trim().is_empty() && leads && v.get(i).is_some_and(run) {
+            while v.get(i).is_some_and(|n| n.keep == s.keep && !n.text.trim().is_empty()) {
+                v.remove(i);
+            }
+            return;
+        }
         let key = matches!(s.keep, HINTS | VIEW_HINTS) && s.text.starts_with("  ");
         if v.get(i).is_some_and(|n| {
             n.keep == s.keep && (n.text.trim().is_empty() || key && !n.text.starts_with("  "))
@@ -9839,6 +9849,10 @@ const SHUTTLE: u8 = 238;
 /// The status line's view-mode hints (`i type  esc code`): the first to fold when narrow — below the branch and
 /// the hunks; the mode word (`● normal · chat`) and a shuttle's name never (quote-plan §6).
 const VIEW_HINTS: u8 = 70;
+
+/// A code pane's top line's key hint (`enter go there`, `C-c stop`): a blank, then `hint_spans`' key and words, all
+/// this `keep` — folded before the line's details, the gap with them (`fit_segments`: a blank that leads its run).
+const PATH_HINTS: u8 = 238;
 
 /// …and its step lit a moment after each: as long-lived on the line, apart from the chip (not its click).
 const SHUTTLE_LIT: u8 = 237;
@@ -22138,6 +22152,28 @@ mod tests {
         assert_eq!(fit(31), [" NOR ", "  tarae · main", "  a.rs", "1:1 "], "drops encoding, then language");
         // One cell less and `a.rs` would touch `1:1` — the branch goes instead
         assert_eq!(fit(30), [" NOR ", "  a.rs", "1:1 "]);
+    }
+
+    /// A blank spacer before its run (`  `, `enter`, ` go there`, one `keep`) goes with it: two cells short drops the
+    /// whole hint, never the gap alone (the woven view's `1 conflictenter go there`).
+    #[test]
+    fn a_spacer_before_its_run_goes_with_it() {
+        let seg = |t: &str, keep| Seg { text: t.into(), style: Style::default(), keep };
+        let texts = |l: &[Seg]| l.iter().map(|s| s.text.clone()).collect::<Vec<_>>();
+        // (the woven bar's own keep: not `HINTS`/`VIEW_HINTS`, whose glued `  key` the older rule takes whole)
+        assert!(![HINTS, VIEW_HINTS].contains(&PATH_HINTS));
+        let mut l = vec![seg("woven · a.rs", 250), seg("  ≈ 1 conflict", 244), seg("  ", PATH_HINTS)];
+        l.extend([seg("enter", PATH_HINTS), seg(" go there", PATH_HINTS)]);
+        fit_segments(&mut l, &mut Vec::new(), 40);
+        assert_eq!(texts(&l), ["woven · a.rs", "  ≈ 1 conflict"]);
+        // A blank that doesn't lead keeps the older rules: two blanks of one keep go together (no stray gap left) …
+        let mut l = vec![seg("woven", 250), seg("  ", 10), seg("  ", 10), seg("x", 250)];
+        fit_segments(&mut l, &mut Vec::new(), 8);
+        assert_eq!(texts(&l), ["woven", "x"]);
+        // … and one after a segment of its keep goes with that one, the run after it staying while it fits
+        let mut l = vec![seg("woven", 250), seg("a", 10), seg("  ", 10), seg("b", 10), seg("x", 250)];
+        fit_segments(&mut l, &mut Vec::new(), 9);
+        assert_eq!(texts(&l), ["woven", "b", "x"]);
     }
 
     /// A key hint goes whole: room for half of `  i type` drops the pair, never leaves ` type` alone.
