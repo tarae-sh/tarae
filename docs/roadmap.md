@@ -595,13 +595,19 @@ bugs its reviewer found, two of tarae's own gates misbehaved in daily use, four 
 tarae.sh (the user's domain, 2026-10-24; its DNS on Cloudflare). Decided (user, 2026-10-24): a repository of its
 own (`tarae-sh/tarae.sh`), served by Cloudflare Workers (static assets, the `cf` CLI; each deploy asked — a preview,
 then the domain); its hero is tarae itself, a scripted scene of several sessions at work replayed as text in the
-browser (meok or hanji by the visitor's scheme), never a video there. The plan: `target/sb/home-plan.md`. The brand it wears is in (2026-10-18, `ec987191`, [brand/](brand)): the seal — a skein's
+browser (meok or hanji by the visitor's scheme), never a video there. The plan: `target/sb/home-plan.md`. Built
+2026-10-25 by three tarae sessions on API credits (site, home, weavehead): the page's top is **the page itself as
+tarae's woven view** (the user, 2026-10-25) — main, fix and docs, each a caret in its participant colour, write its own
+text at once, a conflict shown and folded, docs asking the visitor on a card that never answers itself (untouched, it
+folds to its peek and waits), then all brought in and the page plain; under it "The real thing", `cargo xtask
+homepage`'s six-beat recording (`3c8c7143`, `d67e4610`; the woven top line's gap fixed on the way, `4eda18dd`).
+tarae.sh `dd683e6`, not deployed yet. The brand it wears is in (2026-10-18, `ec987191`, [brand/](brand)): the seal — a skein's
 thread carved out of an accent block, unwinding to a cursor, in hanji and meok; vector only (the start screen is
 set in type, 2026-10-19) — and the mascot, a ball of thread painted in ink, finished with the seal as its 낙관
 (small, at its lower left, 2026-10-19): the one picture at the README's top, over its title. An animation that feels like several agents working at once, and the README's demo, both from
 one scripted recording: `cargo xtask shot` extended to record frames, Claude's parts played by the tests' fake
-claude, so it can be recorded again when the UI changes. To do: the recording script, the scenes, the site, the
-domain. The scenes are picked with the user: a chat edit and its card, the end-of-turn review, a commit from the
+claude, so it can be recorded again when the UI changes. To do: the deploy (a preview, then the domain) and the
+README's demo from the same recording. The scenes are picked with the user: a chat edit and its card, the end-of-turn review, a commit from the
 git tab, search, a short Kubernetes one.
 
 The line over the tarae-makes-tarae video (the user's draft, 2026-10-23: "…an editor designed to be fully controlled
