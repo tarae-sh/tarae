@@ -12447,9 +12447,7 @@ fn draw_follow_card(
     let compacting = crate::compaction::under_way(&editor.workspace) && !replaying;
     let waiting = c.busy()
         && !replaying
-        && (asks
-            || gaze.is_some_and(|g| matches!(g.look.verb, "edit" | "write"))
-                && editor.workspace.claude.review.is_some());
+        && (asks || gaze.is_some_and(|g| g.look.verb == "edit") && editor.workspace.claude.review.is_some());
     // Working: how long · a walk-through after the answer, or the replay: which stop (`‹1` turns back)
     let back = c.follow.replay.at.map_or(0, |at| c.follow.replay.position(at).2);
     let secs = match gaze.and_then(|g| g.step) {

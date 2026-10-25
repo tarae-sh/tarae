@@ -17,7 +17,7 @@
 //! - A move or a delete is never written unseen (`refactor`: always on the card), and never done to a name
 //!   Claude's runs can't write (`edits::protected`, where its path really leads), a file named like a key, a
 //!   link, a folder, a file with the user's unsaved edits, or anything outside the project.
-//! - Which edit tools the chat has is `llm.edit-tools` (`Arm`): `tarae` — only `edit` — since the A/B
+//! - It's the chat's one edit tool: Claude Code's Edit and Write went (audit 2.A, 2026-10-26) after the A/B
 //!   (tests/live.rs `chat_edit_ab`, 2026-10-13: as correct, 31 % fewer tokens, one review per change).
 
 use std::collections::HashMap;
@@ -30,45 +30,6 @@ use crate::editor::Editor;
 use crate::nav;
 use crate::refactor::{FileChange, Op};
 use crate::tools::{Call, answer};
-
-/// Which edit tools the chat has (`llm.edit-tools`): only `edit` (`tarae`, the default), it and Claude Code's
-/// Edit and Write (`both`), or those alone (`native`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Arm {
-    Native,
-    Both,
-    Tarae,
-}
-
-impl Arm {
-    /// As the setting names it.
-    pub fn parse(v: &str) -> Option<Arm> {
-        match v.trim() {
-            "tarae" => Some(Arm::Tarae),
-            "both" => Some(Arm::Both),
-            "native" => Some(Arm::Native),
-            _ => None,
-        }
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Arm::Tarae => "tarae",
-            Arm::Both => "both",
-            Arm::Native => "native",
-        }
-    }
-
-    /// The chat has tarae's `edit`.
-    pub fn tarae(self) -> bool {
-        self != Arm::Native
-    }
-
-    /// The chat has Claude Code's Edit and Write.
-    pub fn native(self) -> bool {
-        self != Arm::Tarae
-    }
-}
 
 pub fn schema() -> Value {
     json!({
@@ -226,12 +187,7 @@ pub fn call(ed: &mut Editor, call: Call, args: &Value) -> Result<(), String> {
             .filter(|d| !d.loading)
             .filter_map(|d| Some((d.path.clone()?, d.text.clone())))
             .collect(),
-        dirty: ed
-            .docs
-            .iter()
-            .filter(|d| d.is_modified() && !d.unsaved_is_claudes())
-            .filter_map(|d| d.path.clone())
-            .collect(),
+        dirty: ed.docs.iter().filter(|d| d.is_modified()).filter_map(|d| d.path.clone()).collect(),
         seen: ed.workspace.claude.chat.as_ref().map(|c| c.edits.seen.clone()).unwrap_or_default(),
         keys: crate::reads::Keys::of(ed),
     };

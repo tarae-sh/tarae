@@ -10431,7 +10431,7 @@ mod tests {
     }
 
     /// What Claude reads when the profile kept something on purpose: which names, and to edit them with its edit
-    /// tool (the user reviews it — never "Edit", a tool the chat may not have: `llm.edit-tools`); git's folder, and that git's writes are the user's; cargo's unpacked crates, and why —
+    /// tool (the user reviews it — never "Edit", a tool the chat hasn't); git's folder, and that git's writes are the user's; cargo's unpacked crates, and why —
     /// with nothing else blocked, no "tell the user to open it" (they can't).
     #[test]
     fn the_report_says_what_was_kept_and_what_to_do_instead() {

@@ -17,7 +17,7 @@ use super::{Choices, Sim};
 use crate::editor::Editor;
 use crate::key::{Code, Key};
 use crate::llm::StreamEv;
-use crate::writing::{Delta, Place, Scan, Tool};
+use crate::writing::{Delta, Place, Scan};
 
 // (4: the line rewritten moves as a kept line is written · 66: a review answered with something applied saves —
 // the saver's job, never a thread of its own · 150: a review left open while follow is paused wakes nothing)
@@ -104,7 +104,7 @@ fn begin(ed: &mut Editor, w: &mut World, line: usize) {
     let s = |t: &str| serde_json::to_string(t).unwrap();
     w.input =
         format!(r#"{{"edits":[{{"file_path":"a.rs","old_string":{},"new_string":{}}}]}}"#, s(&old), s(&new));
-    (w.sent, w.made, w.scan) = (0, false, Some(Scan::new(Tool::Edit)));
+    (w.sent, w.made, w.scan) = (0, false, Some(Scan::new()));
     // (the rows an earlier turn drew are its own: this turn's review is compared with this turn's)
     w.whole = None;
     w.turn += 1;
@@ -172,7 +172,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
             let call = call_id(w);
             let Some(scan) = w.scan.as_mut() else { return "(no reader)".into() };
             scan.feed(&piece);
-            let d = Delta { call, tool: Tool::Edit, pieces: scan.take(), done: end == chars.len() };
+            let d = Delta { call, pieces: scan.take(), done: end == chars.len() };
             let region = ed.keys_to().region.name().to_string();
             let could = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.follow.active())
                 && crate::follow::free(ed);

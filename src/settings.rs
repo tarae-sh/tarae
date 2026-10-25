@@ -451,15 +451,6 @@ pub static SETTINGS: &[Setting] = &[
         set: |c, v| c.llm.review_at_end = b(v),
     },
     Setting {
-        path: "llm.edit-tools",
-        kind: Kind::Enum(&["tarae", "both", "native"]),
-        doc: "Chat: what Claude edits with — \"tarae\": tarae's edit (replacements across files in one call, new files, moves and deletes, one review); \"both\": edit and Claude Code's Edit and Write; \"native\": Edit and Write only. A new chat (C-l) starts with it. Only your own config sets it",
-        get: |c| Value::from(c.llm.edit_tools.name()),
-        set: |c, v| {
-            c.llm.edit_tools = crate::edittool::Arm::parse(s(v)).unwrap_or(crate::edittool::Arm::Tarae)
-        },
-    },
-    Setting {
         path: "llm.keep-warm",
         kind: Kind::Enum(&["expected", "marked", "off"]),
         doc: "Chat: a big conversation waiting on you gets a one-word ping 5 minutes before its prompt cache goes cold, so its next turn reads the cache instead of writing it all again (a ping costs about a tenth of that) — \"expected\" (the default, on its own — at most llm.keep-warm-max pings a wait): while a review, a card, a rebase or a run of its waits, or you marked it (:keep-warm); \"marked\": only marked; \"off\": never. Each ping is said on the chat's last row and in :usage. Only your own config sets it",

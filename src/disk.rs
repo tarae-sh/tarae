@@ -26,9 +26,6 @@ pub type Stamp = (SystemTime, u64);
 const IDLE_SAVE: Duration = Duration::from_secs(2);
 /// Files larger than this aren't reloaded automatically (notification only).
 const RELOAD_MAX: u64 = 16 << 20;
-/// How long auto-save waits for Claude to write an edit it was allowed (it writes within milliseconds; a
-/// claude that died meanwhile shouldn't keep the file unsaved for long).
-const AGENT_WRITE_WAIT: Duration = Duration::from_secs(10);
 
 pub fn stamp(path: &Path) -> Option<Stamp> {
     let m = std::fs::metadata(path).ok()?;
@@ -83,12 +80,6 @@ fn settled(
             return read.into_iter().map(|(s, _)| s).filter(|s| s.2 != s.1).collect();
         }
     }
-}
-
-/// `text` is `body` and a newline — what Claude Code writes of an accepted edit lacks the last one.
-pub fn is_plus_newline(text: &Rope, body: ropey::RopeSlice) -> bool {
-    let n = body.len_bytes();
-    text.len_bytes() == n + 1 && text.byte(n) == b'\n' && text.byte_slice(..n) == body
 }
 
 /// Byte `i` is in the middle of a UTF-8 char.
@@ -393,8 +384,6 @@ impl Editor {
                 stale |= doc.saving == 0 && now != doc.disk;
                 continue;
             }
-            // Whatever it is, the write we were waiting for (if any) has happened
-            doc.agent_writes = None;
             let name = doc.display_name_short();
             // The log follows along like `tail -f`: reloaded without a toast, the cursor kept at the end
             let log = crate::log::is_log(doc.path.as_deref());
@@ -435,23 +424,12 @@ impl Editor {
                         said.push((id, format!("{name} reloaded from disk{lines}"), false));
                     }
                 }
-                // Written outside = my buffer (Claude writing an edit I accepted, etc.) — counts as saved
+                // Written outside = my buffer — counts as saved
                 (Some(stamp), Some(body)) if doc.text == body => {
                     doc.disk = Some(stamp);
                     doc.disk_conflict = false;
                     doc.mark_saved();
                     saved.push(id);
-                }
-                // Only the trailing newline is missing — Claude Code does that when writing accepted content
-                // (measured). Write back the buffer (= accepted content)
-                (Some(stamp), Some(body))
-                    if doc.is_modified() && is_plus_newline(&doc.text, body.slice(..)) =>
-                {
-                    doc.disk = Some(stamp);
-                    match doc.save_as(true) {
-                        Ok(_) => saved.push(id),
-                        Err(e) => self.set_error(format!("{name}: {e:#}")),
-                    }
                 }
                 (Some(stamp), _) => {
                     doc.disk = Some(stamp);
@@ -620,7 +598,6 @@ impl Editor {
         let changed = reload_text(doc, body);
         doc.disk = stamp;
         doc.disk_conflict = false;
-        doc.agent_writes = None;
         let id = doc.id;
         if changed {
             self.lsp_saved_outside(id);
@@ -642,44 +619,6 @@ impl Editor {
         }
         self.set_status(format!("{name} reloaded from disk"));
         Ok(())
-    }
-
-    /// Claude was allowed to write an accepted edit to `id` (`Document::agent_will_write`): if its write
-    /// hasn't landed when the wait is over, tarae saves the buffer itself, whatever `auto-save` is — at
-    /// "focus" (the default) nothing else would: an edit accepted as Claude's turn was cut short stayed
-    /// unsaved (•1) with the card saying accepted.
-    pub fn agent_write_watch(&mut self, id: DocId) {
-        let Some(version) = self.docs.iter().find(|d| d.id == id).and_then(|d| d.agent_writes).map(|w| w.1)
-        else {
-            return;
-        };
-        self.events.jobs().spawn(move || {
-            std::thread::sleep(AGENT_WRITE_WAIT);
-            move |ed: &mut Editor| ed.agent_write_missed(id, version)
-        });
-    }
-
-    /// `agent_write_watch`'s wait is over: still waiting for Claude's write of `version` (nothing typed since,
-    /// the watch hasn't seen it land) → saved as accepted.
-    pub(crate) fn agent_write_missed(&mut self, id: DocId, version: u64) {
-        let Some(d) = self.docs.iter_mut().find(|d| d.id == id) else { return self.unchanged = true };
-        let waiting = d.agent_writes.is_some_and(|w| w.1 == version) && d.version() == version;
-        if !waiting || !d.is_modified() {
-            self.unchanged = true;
-            return;
-        }
-        d.agent_writes = None;
-        // (Claude's change, so saved as one: beneath the project through no link — one outside it, accepted on
-        // its review, by path)
-        let inside = d.path.as_deref().is_some_and(|p| crate::paths::written_inside(&self.workspace.root, p));
-        let then = crate::saver::Then::Auto(" — Claude's write didn't come");
-        let saved = match inside {
-            true => self.save_beneath(id, self.workspace.root.clone(), then),
-            false => self.save_in_background(id, false, then),
-        };
-        if let Err(e) = saved {
-            self.set_error(format!("not saved — {e}"));
-        }
     }
 
     /// Terminal focus: auto-save on loss, check disk right away on regain.
@@ -719,9 +658,6 @@ impl Editor {
             let d = &self.docs[i];
             if !d.is_modified() || d.path.is_none() || d.loading || d.disk_conflict {
                 continue;
-            }
-            if d.agent_writes.is_some_and(|(until, _)| std::time::Instant::now() < until) {
-                continue; // Claude writes it
             }
             let (id, name) = (d.id, d.display_name_short());
             // A config file that doesn't parse stays in the buffer (#19: a half-edited ~/.cargo/config.toml
@@ -808,19 +744,6 @@ pub fn unparsed_config(path: &Path, text: &ropey::Rope) -> Option<String> {
 
 fn changed_while_editing(name: &str) -> String {
     format!("{name} changed on disk while you were editing — :reload takes theirs, :w! keeps yours")
-}
-
-impl crate::document::Document {
-    /// Claude is about to write this buffer's text to the file — see `agent_writes`.
-    pub fn agent_will_write(&mut self) {
-        self.agent_writes = Some((std::time::Instant::now() + AGENT_WRITE_WAIT, self.version()));
-    }
-
-    /// The buffer differs from disk only by an accepted edit Claude is writing (nothing typed since) — its
-    /// next edit goes on top of that, as on disk once the write lands.
-    pub fn unsaved_is_claudes(&self) -> bool {
-        self.agent_writes.is_some_and(|(until, v)| v == self.version() && std::time::Instant::now() < until)
-    }
 }
 
 /// Replace the document with new content — changed range only, marked as saved. true if it changed.
@@ -1512,18 +1435,18 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Claude writes the edit I just accepted, and focus leaves (off to Claude's pane) before the watch has
-    /// seen the write: the disk holds my buffer, so it's a save — not "auto-save failed" (measured, often).
+    /// Another program writes what my buffer holds, and focus leaves before the watch has seen the write: the
+    /// disk holds my buffer, so it's a save — not "auto-save failed".
     #[test]
-    fn autosave_right_after_an_agent_write_is_a_save() {
-        let dir = std::env::temp_dir().join(format!("tarae-disk-race-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+    fn autosave_right_after_a_write_of_the_same_text_is_a_save() {
+        let scratch = crate::scratch::Scratch::new("disk-race");
+        let dir = scratch.to_path_buf();
         let path = dir.join("a.txt");
         std::fs::write(&path, "one\n").unwrap();
         let mut ed = Editor::new(Config::default());
         ed.open(&path).unwrap();
-        feed(&mut ed, "wcTWOO<esc>"); // the accepted edit, in the buffer
-        std::fs::write(&path, "TWOO").unwrap(); // Claude writes it (without the trailing newline)
+        feed(&mut ed, "wcTWOO<esc>");
+        std::fs::write(&path, "TWOO\n").unwrap(); // (another program writes the same text)
         ed.on_focus(false);
         ed.flush_saves(); // (saves are written in the background)
         assert!(
@@ -1531,7 +1454,7 @@ mod tests {
             "no failure toast: {:?}",
             ed.toasts.iter().map(|t| &t.text).collect::<Vec<_>>()
         );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "TWOO\n", "saved, the newline back");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "TWOO\n");
         assert!(!ed.doc().is_modified() && !ed.doc().disk_conflict);
         // :w in the same moment — the same
         feed(&mut ed, "ggwcTHREE<esc>");
@@ -1547,34 +1470,6 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "theirs, longer\n", "theirs not overwritten");
         assert!(!ed.toasts.iter().any(|t| t.kind == ToastKind::Error));
         assert!(ed.toasts.iter().any(|t| t.text.contains("changed on disk while you were editing")));
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// While Claude's write of an accepted edit is pending, auto-save leaves the file alone; the write
-    /// landing (seen by the watch) ends the wait, and so does running out of time.
-    #[test]
-    fn autosave_waits_for_claudes_write() {
-        let dir = std::env::temp_dir().join(format!("tarae-disk-agentwait-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("a.txt");
-        std::fs::write(&path, "one\n").unwrap();
-        let mut ed = Editor::new(Config::default());
-        ed.open(&path).unwrap();
-        feed(&mut ed, "wcTWOO<esc>");
-        ed.doc_mut().agent_will_write();
-        ed.on_focus(false);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one\n", "left to Claude");
-        std::fs::write(&path, "TWOO\n").unwrap();
-        poll_once(&mut ed);
-        assert!(!ed.doc().is_modified() && ed.doc().agent_writes.is_none(), "its write is the save");
-        // A claude that never writes: after the wait, auto-save does it
-        feed(&mut ed, "ggwcTHREE<esc>");
-        let v = ed.doc().version();
-        ed.doc_mut().agent_writes = Some((std::time::Instant::now() - Duration::from_millis(1), v));
-        ed.on_focus(false);
-        ed.flush_saves();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "THREE\n");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// frictions29 90 a: another program's plain write — truncated, a line, then the rest — read half-done by a
@@ -1670,12 +1565,11 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Agent writing the same content as my buffer is "saved", not a conflict — if only the trailing
-    /// newline is missing, write it back.
+    /// Another program writing the same content as my buffer is "saved", not a conflict.
     #[test]
-    fn agent_writes_matching_buffer_are_saves() {
-        let dir = std::env::temp_dir().join(format!("tarae-disk-agent-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+    fn a_write_matching_the_buffer_is_a_save() {
+        let scratch = crate::scratch::Scratch::new("disk-matching");
+        let dir = scratch.to_path_buf();
         let path = dir.join("a.txt");
         std::fs::write(&path, "one\n").unwrap();
         let mut ed = Editor::new(Config::default());
@@ -1686,15 +1580,6 @@ mod tests {
         std::fs::write(&path, "TWOO\n").unwrap();
         poll_once(&mut ed);
         assert!(!ed.doc().is_modified() && !ed.doc().disk_conflict, "same content = saved");
-        feed(&mut ed, "ggwcTHREEE<esc>");
-        // Without trailing newline — put in place whole: the watch is waiting now, and could catch a write in
-        // place half done (truncated, not yet written) on a loaded machine
-        std::fs::write(dir.join("tmp"), "THREEE").unwrap();
-        std::fs::rename(dir.join("tmp"), &path).unwrap();
-        poll_once(&mut ed);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "THREEE\n", "newline written back");
-        assert!(!ed.doc().is_modified() && !ed.doc().disk_conflict);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A file being saved isn't watched until the save is done — then it is again, with the fingerprint the

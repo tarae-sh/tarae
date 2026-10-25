@@ -30,9 +30,6 @@ pub const RECORD_V: u64 = 1;
 /// The lines Claude's Read reads when it's given no limit.
 const READ_LINES: u64 = 2000;
 
-/// claude's tools that change files.
-const EDITS: [&str; 4] = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
-
 /// The numbers, summed over turns (`Totals` carries them).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Sums {
@@ -208,11 +205,6 @@ impl Tally {
                 let lines = input["limit"].as_u64().unwrap_or(READ_LINES).max(1);
                 self.read(path(file), (from, from + lines - 1));
             }
-            t if EDITS.contains(&t) => {
-                if let Some(file) = input["file_path"].as_str().or(input["notebook_path"].as_str()) {
-                    self.reads.remove(&path(file));
-                }
-            }
             // tarae's `edit`: every file an item changes or moves (what's read of them since is new)
             "edit" => {
                 for e in input["edits"].as_array().into_iter().flatten() {
@@ -276,7 +268,8 @@ impl Tally {
                 *n -= 1;
                 s.declined += 1;
             }
-            None if EDITS.contains(&tool.as_str()) => s.edit_failed += 1,
+            // (tarae's `edit`, the chat's one edit tool: a change declined in its review is its answer, not a failure)
+            None if tool == "edit" => s.edit_failed += 1,
             None if matches!(tool.as_str(), "run" | "run_tests") => s.run_refused += 1,
             None => {}
         }
@@ -558,7 +551,7 @@ mod tests {
         );
         assert_eq!(t.turn.programs.get("grep"), Some(&1), "a run's first program, past its cd");
         // Claude's edit of the file forgets that file; a run that may write forgets every file
-        call(&mut t, "6", "Edit", json!({ "file_path": "/p/src/a.rs" }), 0);
+        call(&mut t, "6", "mcp__tarae__edit", json!({ "edits": [{ "file_path": "/p/src/a.rs" }] }), 0);
         read(&mut t, "7", 1, 40);
         run(&mut t, "8", "cat src/b.rs");
         assert_eq!(t.turn.sums.reread, 3, "b.rs still read; a.rs read anew");
@@ -598,19 +591,16 @@ mod tests {
         assert_eq!(t.turn.sums.reread, 4);
     }
 
-    /// An edit's failure is claude's (counted wasted) unless tarae said no first — declined, apart; a run
-    /// that didn't run, or that the sandbox blocked, is refused.
+    /// An edit's failure is claude's (counted wasted) — one declined in its review is an answer, not an error;
+    /// a read tarae said no to is declined; a run that didn't run, or that the sandbox blocked, is refused.
     #[test]
     fn failed_edits_are_told_from_declined_ones_and_refused_runs_counted() {
         let mut t = Tally::default();
-        call(&mut t, "e1", "Edit", json!({ "file_path": "/p/a.rs" }), 0);
-        t.asked("r1", "Edit");
-        t.answer("r1", true);
+        let edit = json!({ "edits": [{ "file_path": "/p/a.rs" }] });
+        call(&mut t, "e1", "mcp__tarae__edit", edit.clone(), 0);
         t.answered("e1", true, 0);
-        call(&mut t, "e2", "Edit", json!({ "file_path": "/p/a.rs" }), 0);
-        t.asked("r2", "Edit");
-        t.answer("r2", false);
-        t.answered("e2", true, 0);
+        call(&mut t, "e2", "mcp__tarae__edit", edit, 0);
+        t.answered("e2", false, 0);
         call(&mut t, "e3", "Read", json!({ "file_path": "/etc/hosts" }), 0);
         t.asked("r3", "Read");
         t.answer("r3", true);
@@ -623,7 +613,7 @@ mod tests {
         t.blocked();
         t.answered("u2", false, 0);
         let s = t.end(&[1], None, 0).sums;
-        assert_eq!((s.edit_failed, s.declined, s.run_refused), (1, 2, 2));
+        assert_eq!((s.edit_failed, s.declined, s.run_refused), (1, 1, 2));
     }
 
     /// Calls of tarae's tools side by side: one coming while another is unanswered counts; one after

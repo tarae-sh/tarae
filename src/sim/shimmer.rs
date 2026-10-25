@@ -246,12 +246,10 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
                 add: add.into(),
                 closed: false,
             };
-            let tool = crate::writing::Tool::Edit;
             send(
                 ed,
                 StreamEv::Writing(crate::writing::Delta {
                     call: format!("e{n}"),
-                    tool,
                     pieces: vec![piece],
                     done: false,
                 }),

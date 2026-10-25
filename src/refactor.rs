@@ -141,8 +141,8 @@ pub struct Landing {
     read: String,
     /// For the card and the answer (``rename `a` → `b` ``).
     what: String,
-    /// Its reviews' title: what the user asked, for Claude's `edit` (`edits::asked` — as the native Edit's
-    /// review says it); else `what` (a rename's, a replace's).
+    /// Its reviews' title: what the user asked, for Claude's `edit` (`edits::asked`); else `what` (a rename's, a
+    /// replace's).
     title: String,
     /// What a place is called in the answer (`place`, `match`).
     noun: &'static str,
@@ -213,9 +213,7 @@ pub fn land_told(
     let at_end = crate::edits::at_end(ed);
     let ask = ed.config.llm.review_ask.clone();
     // Your unsaved edits: disk isn't what you see — the usual review, and it stays in the buffer
-    let dirty = |p: &Path| {
-        ed.docs.iter().any(|d| d.path.as_deref() == Some(p) && d.is_modified() && !d.unsaved_is_claudes())
-    };
+    let dirty = |p: &Path| ed.docs.iter().any(|d| d.path.as_deref() == Some(p) && d.is_modified());
     // (a move or a delete, or a name that runs later outside the sandbox: always put to the user)
     let (unseen, review): (Vec<_>, Vec<_>) = files.into_iter().partition(|f| {
         at_end
@@ -362,6 +360,10 @@ pub(crate) fn landed(
             // changed line)
             if let Whose::Claude(_) = whose {
                 ed.wet_landed(&f.path, &f.before, &f.after);
+                // (its call's stop: what it changed, for follow and replay)
+                if let Some(call) = row {
+                    crate::follow::edit_landed(ed, call, &f.path, &f.before, &f.after);
+                }
                 crate::follow::wrote(ed, row, &f.path, &f.before, &f.after);
             }
         }
@@ -517,10 +519,15 @@ fn next_of(ed: &mut Editor, whose: Whose) {
     }
 }
 
-/// A landing's files all done: Claude's call answered, the user's own said.
+/// A landing's files all done: Claude's call answered, the user's own said. Claude hears once what its review
+/// saved is on disk (`after_saves`): answered while a save was on its way, its next edit of that file was worked
+/// out against a buffer still modified and landed in it as the user's unsaved edits (frictions29 #130).
 fn finish(ed: &mut Editor, l: Landing) {
     match l.call.clone() {
-        Some(call) => answer(ed, call, Ok(report(&l))),
+        Some(call) => {
+            let report = report(&l);
+            ed.after_saves(move |ed| answer(ed, call, Ok(report)));
+        }
         None => said(ed, &l),
     }
 }
@@ -665,12 +672,8 @@ fn asking(ed: &mut Editor, whose: Whose) -> Option<&mut Landing> {
 /// the in-buffer review.
 pub fn accept_all(ed: &mut Editor, id: u64, whose: Whose) {
     ed.offer_finished(id, Ok(()));
-    let dirty: Vec<PathBuf> = ed
-        .docs
-        .iter()
-        .filter(|d| d.is_modified() && !d.unsaved_is_claudes())
-        .filter_map(|d| d.path.clone())
-        .collect();
+    let dirty: Vec<PathBuf> =
+        ed.docs.iter().filter(|d| d.is_modified()).filter_map(|d| d.path.clone()).collect();
     let Some(l) = asking(ed, whose) else { return };
     let row = l.row.clone();
     let (later, now): (Vec<FileChange>, Vec<FileChange>) =
@@ -856,7 +859,7 @@ fn show(ed: &mut Editor, f: FileChange, whose: Whose, title: String, reason: Str
         return done_one(ed, whose, &f, Outcome::Changed);
     }
     let claudes = matches!(whose, Whose::Claude(_));
-    let dirty = doc.is_modified() && !doc.unsaved_is_claudes();
+    let dirty = doc.is_modified();
     let doc_id = doc.id;
     let answers = front(ed, whose).and_then(|l| l.row.clone());
     let changes = crate::editdiff::line_changes(&f.before.to_string(), &f.after.to_string());
@@ -903,6 +906,9 @@ fn reviewed(ed: &mut Editor, f: FileChange, whose: Whose, doc_id: DocId, dirty: 
             // (Claude's, its `y` given: follow at its first changed line — the review showed it, its rows aren't the
             // writing's: `writing::reviewed`)
             if let Whose::Claude(_) = whose {
+                if let Some(call) = front(ed, whose).and_then(|l| l.row.clone()) {
+                    crate::follow::edit_landed(ed, &call, &f.path, &f.before, &now);
+                }
                 crate::follow::wrote(ed, None, &f.path, &f.before, &now);
             }
             match front(ed, whose).filter(|_| whose == Whose::Yours).map(|l| (l.step, l.what.clone())) {

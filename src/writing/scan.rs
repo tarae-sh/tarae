@@ -1,25 +1,8 @@
 //! A tool call's input read as it streams (`input_json_delta`): each piece of partial JSON is read once, from where
 //! the last one stopped — the strings an edit is made of come out as they grow (O(delta)), never parsed whole again.
 
-/// The tool whose input is read: tarae's `edit` (a list of items), Claude Code's Edit (one item) or Write (one, the
-/// whole file — its `content` read as the new text).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Tool {
-    Edit,
-    NativeEdit,
-    Write,
-}
-
-impl Tool {
-    pub fn of(name: &str) -> Option<Tool> {
-        match name {
-            "mcp__tarae__edit" => Some(Tool::Edit),
-            "Edit" => Some(Tool::NativeEdit),
-            "Write" => Some(Tool::Write),
-            _ => None,
-        }
-    }
-}
+/// The tool whose input is read: tarae's `edit` (a list of items) — the chat's one edit tool.
+pub const TOOL: &str = "mcp__tarae__edit";
 
 /// A field of an item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,7 +47,6 @@ enum Esc {
 }
 
 pub struct Scan {
-    tool: Tool,
     stack: Vec<Frame>,
     /// Inside a string: `Some(true)` a key's, `Some(false)` a value's.
     string: Option<bool>,
@@ -79,10 +61,15 @@ pub struct Scan {
     out: Vec<Piece>,
 }
 
+impl Default for Scan {
+    fn default() -> Scan {
+        Scan::new()
+    }
+}
+
 impl Scan {
-    pub fn new(tool: Tool) -> Scan {
+    pub fn new() -> Scan {
         Scan {
-            tool,
             stack: Vec::new(),
             string: None,
             esc: Esc::No,
@@ -232,8 +219,7 @@ impl Scan {
         }
     }
 
-    /// The item and field the value starting here is: tarae's `{"edits": [{…}, …]}` at depth 3, the native
-    /// tools' `{…}` at depth 1.
+    /// The item and field the value starting here is: tarae's `{"edits": [{…}, …]}` at depth 3.
     fn field_here(&self) -> Option<(usize, Field)> {
         fn key(f: &Frame) -> Option<&str> {
             match f {
@@ -241,20 +227,16 @@ impl Scan {
                 _ => None,
             }
         }
-        let (item, k) = match (self.tool, self.stack.as_slice()) {
-            (Tool::Edit, [root, Frame::Arr { index }, obj]) if key(root) == Some("edits") => {
-                (*index, key(obj)?)
-            }
-            (Tool::NativeEdit | Tool::Write, [obj]) => (0, key(obj)?),
+        let (item, k) = match self.stack.as_slice() {
+            [root, Frame::Arr { index }, obj] if key(root) == Some("edits") => (*index, key(obj)?),
             _ => return None,
         };
-        let field = match (self.tool, k) {
-            (_, "file_path") => Field::File,
-            (Tool::Write, "content") => Field::New,
-            (Tool::Edit | Tool::NativeEdit, "old_string") => Field::Old,
-            (Tool::Edit | Tool::NativeEdit, "new_string") => Field::New,
-            (Tool::Edit | Tool::NativeEdit, "replace_all") => Field::All,
-            (Tool::Edit, "move_to" | "delete") => Field::Other,
+        let field = match k {
+            "file_path" => Field::File,
+            "old_string" => Field::Old,
+            "new_string" => Field::New,
+            "replace_all" => Field::All,
+            "move_to" | "delete" => Field::Other,
             _ => return None,
         };
         Some((item, field))
@@ -266,8 +248,8 @@ mod tests {
     use super::*;
 
     /// Every field's text, by item, as the pieces built it up — and which closed.
-    fn read(tool: Tool, chunks: &[&str]) -> Vec<(usize, Field, String, bool)> {
-        let mut s = Scan::new(tool);
+    fn read(chunks: &[&str]) -> Vec<(usize, Field, String, bool)> {
+        let mut s = Scan::new();
         let mut got: Vec<(usize, Field, String, bool)> = Vec::new();
         for c in chunks {
             s.feed(c);
@@ -303,7 +285,7 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(input).unwrap()["edits"][0]["new_string"],
             "let x = \"é😀\\t\";\n\tdone"
         );
-        let whole = read(Tool::Edit, &[input]);
+        let whole = read(&[input]);
         assert_eq!(
             whole,
             [
@@ -321,29 +303,26 @@ mod tests {
         let chars: Vec<char> = input.chars().collect();
         for cut in 1..chars.len() {
             let (a, b): (String, String) = (chars[..cut].iter().collect(), chars[cut..].iter().collect());
-            assert_eq!(read(Tool::Edit, &[&a, &b]), whole, "cut at {cut}: {a:?} | {b:?}");
+            assert_eq!(read(&[&a, &b]), whole, "cut at {cut}: {a:?} | {b:?}");
         }
         let singles: Vec<String> = chars.iter().map(char::to_string).collect();
         let singles: Vec<&str> = singles.iter().map(String::as_str).collect();
-        assert_eq!(read(Tool::Edit, &singles), whole, "a character at a time");
+        assert_eq!(read(&singles), whole, "a character at a time");
     }
 
-    /// A string not closed yet is said as far as it goes; the native tools' fields are read at the top.
+    /// A string not closed yet is said as far as it goes; an item's fields are read in `edits`' items only.
     #[test]
     fn a_string_comes_as_it_grows() {
         assert_eq!(
-            read(Tool::NativeEdit, &[r#"{"file_path":"a.rs","old_string":"x","new_string":"fn ma"#]),
+            read(&[r#"{"edits":[{"file_path":"a.rs","old_string":"x","new_string":"fn ma"#]),
             [
                 (0, Field::File, "a.rs".into(), true),
                 (0, Field::Old, "x".into(), true),
                 (0, Field::New, "fn ma".into(), false)
             ]
         );
-        assert_eq!(
-            read(Tool::Write, &[r#"{"file_path":"a.rs","content":"one\ntw"#]),
-            [(0, Field::File, "a.rs".into(), true), (0, Field::New, "one\ntw".into(), false)]
-        );
-        // (a key named so deeper down isn't the item's)
-        assert_eq!(read(Tool::NativeEdit, &[r#"{"x":{"new_string":"no"}}"#]), []);
+        // (a key named so deeper down, or at the top, isn't an item's)
+        assert_eq!(read(&[r#"{"edits":[{"x":{"new_string":"no"}}]}"#]), []);
+        assert_eq!(read(&[r#"{"file_path":"a.rs","new_string":"no"}"#]), []);
     }
 }

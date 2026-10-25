@@ -79,10 +79,36 @@ fn screen(ed: &mut Editor, w: u16, h: u16) -> Vec<String> {
     vt.screen().rows(0, w).collect()
 }
 
-/// Every session's cards — up in front, stacked, parked behind, Claude's and tarae's — and the edits waiting
-/// for their review, in one list, oldest first, whatever session each is in. A card downloading waits for
-/// nobody: not in it. The UI state lists the same, in the same order, and every card it lists that waits is
-/// in it.
+/// A read of Claude's waiting for its card since `since` (on the real clock, as the inbox reads it).
+fn read_waiting(since: Instant) -> crate::reads::Pending {
+    let look = crate::reads::Look {
+        tool: "Read".into(),
+        at: Some("/elsewhere/a.rs".into()),
+        pattern: String::new(),
+        filter: String::new(),
+        given: "/elsewhere/a.rs".into(),
+        file: true,
+        keys: Vec::new(),
+        cut: false,
+    };
+    crate::reads::Pending {
+        request_id: "r1".into(),
+        generation: 1,
+        input: serde_json::Value::Null,
+        look,
+        class: crate::cards::Class::Elsewhere,
+        since,
+        found: Default::default(),
+        repository: None,
+        not_whole: None,
+        own: None,
+        then: None,
+    }
+}
+
+/// Every session's cards — up in front, stacked, parked behind, Claude's and tarae's — and Claude's reads waiting
+/// for their card, in one list, oldest first, whatever session each is in. A card downloading waits for nobody:
+/// not in it. The UI state lists the same, in the same order, and every card it lists that waits is in it.
 #[test]
 fn the_inbox_is_every_sessions_waiting_things_oldest_first() {
     let (mut ed, dir, back, third) = three("order");
@@ -91,17 +117,9 @@ fn the_inbox_is_every_sessions_waiting_things_oldest_first() {
     up(&mut ed, claudes(2, 300));
     park(&mut ed, back, claudes(3, 120));
     park(&mut ed, third, tarae(600));
-    // An edit of Claude's waiting for its review, behind
+    // A read of Claude's waiting for its card, behind
     let mut chat = crate::chat::Chat::new();
-    chat.edits.queue.push_back(crate::edits::Pending {
-        request_id: "e1".into(),
-        tool: "Edit".into(),
-        input: serde_json::json!({ "file_path": "src/a.rs" }),
-        reason: String::new(),
-        since: Instant::now() - Duration::from_secs(60),
-        row: None,
-        protected: Some(false),
-    });
+    chat.reads.push_back(read_waiting(Instant::now() - Duration::from_secs(60)));
     session(&mut ed, back).claude.chat = Some(chat);
     // One downloading: waits for nobody
     let mut busy = tarae(900);
@@ -112,10 +130,10 @@ fn the_inbox_is_every_sessions_waiting_things_oldest_first() {
     let (front_new, front_old) = (card(&ed.offers[0]), card(&ed.offers[1]));
     let parked = |ed: &mut Editor, id| card(&session(ed, id).parked[0]);
     let (b, t) = (parked(&mut ed, back), parked(&mut ed, third));
-    let edit = format!("edit#s{back}:e1");
-    assert_eq!(ids, [t, front_old, b, edit.clone(), front_new], "oldest first, every session's");
-    let e = ed.inbox().into_iter().find(|e| e.id == edit).unwrap();
-    assert_eq!((e.kind, e.asks.as_str(), e.up), ("edit", "Claude's edit to src/a.rs", "queued"));
+    let read = format!("read#s{back}:r1");
+    assert_eq!(ids, [t, front_old, b, read.clone(), front_new], "oldest first, every session's");
+    let e = ed.inbox().into_iter().find(|e| e.id == read).unwrap();
+    assert_eq!((e.kind, e.asks.as_str(), e.up), ("read", "Claude's Read of /elsewhere/a.rs", "queued"));
     // The state: the same list in the same order — and it's built on the state's cards
     let state = ed.ui_state();
     assert_eq!(state.inbox.iter().map(|e| &e.id).collect::<Vec<_>>(), ids.iter().collect::<Vec<_>>());
@@ -125,7 +143,7 @@ fn the_inbox_is_every_sessions_waiting_things_oldest_first() {
     assert!(!state.cards.iter().filter(|c| c.state == "installing").any(|c| ids.contains(&c.id)));
     let json = state.json();
     assert_eq!(json["inbox"][0]["id"], ids[0].as_str(), "{json}");
-    assert_eq!(json["inbox"][3]["kind"], "edit");
+    assert_eq!(json["inbox"][3]["kind"], "read");
     assert!(
         state.text().contains(&format!("inbox, oldest first: {} (s{third})", ids[0])),
         "{}",
@@ -272,19 +290,11 @@ fn the_order_is_by_each_ones_wait_on_its_own_clock() {
     card.since = crate::clock::now();
     up(&mut ed, card);
     let mut chat = crate::chat::Chat::new();
-    chat.edits.queue.push_back(crate::edits::Pending {
-        request_id: "e1".into(),
-        tool: "Edit".into(),
-        input: serde_json::json!({ "file_path": "src/a.rs" }),
-        reason: String::new(),
-        since: Instant::now() - Duration::from_secs(60),
-        row: None,
-        protected: Some(false),
-    });
+    chat.reads.push_back(read_waiting(Instant::now() - Duration::from_secs(60)));
     session(&mut ed, back).claude.chat = Some(chat);
     sim.wait(Duration::from_secs(600));
     let ids: Vec<String> = ed.inbox().into_iter().map(|e| e.id).collect();
-    assert_eq!(ids, [format!("card#{}", ed.offers[0].id), format!("edit#s{back}:e1")]);
+    assert_eq!(ids, [format!("card#{}", ed.offers[0].id), format!("read#s{back}:r1")]);
     drop(sim);
     std::fs::remove_dir_all(&dir).ok();
 }

@@ -37,8 +37,6 @@ const CHECK_WAIT: Duration = Duration::from_secs(5);
 pub enum Stage {
     /// Every session's chat turn ends first (#109 — another session's was cut, silently).
     Turn,
-    /// Claude's accepted edits land on disk first (`claudes_writes`).
-    Writes,
     /// The files are saved, and written (`saved_then`).
     Saving,
     /// The checkouts it could build in and their binaries are looked up (a worker).
@@ -260,26 +258,15 @@ fn under_way_of(ed: &Editor, ending: bool) -> Vec<(Work, String)> {
     out
 }
 
-/// Claude's edits in session `l` waiting for an answer — the one in its review, those queued behind it — and
-/// their files, each once. A restart drops them unanswered: the claude that asked is gone after it, and its
-/// conversation resumed can't take an answer to a request of the old process's.
+/// Claude's edit in session `l` waiting for an answer — the one in its review — and its file. A restart drops
+/// it unanswered: the claude that asked is gone after it, and its conversation resumed can't take an answer to
+/// a call of the old process's.
 fn edits_waiting(ed: &Editor, l: &crate::workspace::Workspace) -> (usize, Vec<String>) {
     let Some(c) = l.claude.chat.as_ref() else { return (0, Vec::new()) };
     let reviewed = c.edits.review.and(l.claude.review.as_ref()).map(|r| r.doc_id);
     let shown = reviewed.and_then(|id| ed.docs.iter().find(|d| d.id == id)).and_then(|d| d.path.clone());
-    let queued = c
-        .edits
-        .queue
-        .iter()
-        .map(|p| crate::chat::resolve(&l.root, p.input["file_path"].as_str().unwrap_or_default()));
-    let mut files = Vec::new();
-    for path in shown.into_iter().chain(queued) {
-        let said = crate::chat::shown(&l.root, &path);
-        if !files.contains(&said) {
-            files.push(said);
-        }
-    }
-    (c.edits.queue.len() + usize::from(c.edits.review.is_some()), files)
+    let files: Vec<String> = shown.iter().map(|path| crate::chat::shown(&l.root, path)).collect();
+    (usize::from(c.edits.review.is_some()), files)
 }
 
 /// What runs now that the restart's answer didn't name (`Restart::anyway`; all of it before its card or after
@@ -298,7 +285,6 @@ pub fn pending(ed: &Editor) -> Option<String> {
             [] => "restart waits".into(),
             names => format!("restart waits for {}", names.join(", ")),
         },
-        Stage::Writes => "restart waits for Claude's edits".into(),
         Stage::Building(_) => "restart waits for its build".into(),
         // (a worker cloning the binary's dSYM — a moment on APFS, a copy elsewhere)
         Stage::Keeping => "restarting — keeping its symbols".into(),
@@ -414,42 +400,6 @@ fn session_blocker(l: &crate::workspace::Workspace, waiting: bool) -> Option<Str
     None
 }
 
-/// The latest end of a wait for Claude's write of an accepted edit (`Document::agent_will_write`) — those
-/// files are left to Claude by auto-save, so until the watch sees the write they'd count as unsaved.
-fn pending_writes(ed: &Editor) -> Option<Instant> {
-    let now = Instant::now();
-    ed.docs
-        .iter()
-        .filter(|d| d.is_modified())
-        .filter_map(|d| Some(d.agent_writes?.0))
-        .filter(|&u| u > now)
-        .max()
-}
-
-/// Claude's edits are still landing: looked at again shortly (the wait ends on the write, or after
-/// `AGENT_WRITE_WAIT` when auto-save writes them itself). True if the restart waits.
-fn claudes_writes(ed: &mut Editor) -> bool {
-    let Some(until) = pending_writes(ed) else { return false };
-    let Some(r) = ed.restart.as_mut() else { return false };
-    let first = r.stage != Stage::Writes;
-    r.stage = Stage::Writes;
-    let id = r.id;
-    if first {
-        ed.set_status("tarae restarts once Claude's edits are on disk");
-    }
-    let nap = until.saturating_duration_since(Instant::now()).min(Duration::from_millis(100));
-    ed.events.jobs().spawn(move || {
-        std::thread::sleep(nap);
-        move |ed: &mut Editor| {
-            // (on: what began meanwhile is the card's to name, or `check`'s to wait for once it's answered)
-            if at(ed, id, &Stage::Writes) {
-                go(ed);
-            }
-        }
-    });
-    true
-}
-
 /// Files saved, then — once they're written (`after_saves`: the saver's event, not a wait; a slow disk says
 /// so meanwhile) and nothing's in the way — `next`. Else the restart is called off, with why.
 fn saved_then(ed: &mut Editor, id: u64, next: impl FnOnce(&mut Editor) + 'static) {
@@ -495,9 +445,6 @@ fn clear_to_go(ed: &mut Editor) -> bool {
 /// session in front's when that's another (#108: it built in the front's, an old session's, silently) —
 /// then its card says which and at what commit.
 fn go(ed: &mut Editor) {
-    if claudes_writes(ed) {
-        return;
-    }
     let Some(id) = ed.restart.as_ref().map(|r| r.id) else { return };
     saved_then(ed, id, move |ed| find(ed, id));
 }
@@ -769,16 +716,13 @@ fn check(ed: &mut Editor, bin: PathBuf, anyway: bool) {
                 return same(ed, id, &t);
             }
             // Something began since the card that it didn't name (Claude asked something, a run, an edit of
-            // a named turn's), or Claude's edits are still landing: on from that wait (built already, the
-            // card answered)
+            // a named turn's): on from that wait (built already, the card answered)
             let unnamed = unnamed(ed);
-            if !unnamed.is_empty() || pending_writes(ed).is_some() {
+            if !unnamed.is_empty() {
                 let r = ed.restart.as_mut().expect("checked above");
                 let built = if r.build { "built — " } else { "" };
                 (r.stage, r.build) = (Stage::Turn, false);
-                if !unnamed.is_empty() {
-                    ed.set_status(format!("{built}tarae restarts once these end: {}", unnamed.join(", ")));
-                }
+                ed.set_status(format!("{built}tarae restarts once these end: {}", unnamed.join(", ")));
                 return turn_over(ed);
             }
             keep_then(ed, id, bin);
@@ -2762,50 +2706,6 @@ mod tests {
         assert_eq!(flags & libc::FD_CLOEXEC, 0, "a descriptor's close-on-exec is as it was");
     }
 
-    /// Claude's edit waiting in its review is part of the turn — `:restart` names the turn on its card instead
-    /// of refusing, and `w` waits. Once accepted, the restart goes on only after Claude's write has landed
-    /// (until then auto-save leaves the file to Claude, and it would count as unsaved).
-    #[test]
-    fn claudes_edit_and_its_write_are_waited_for() {
-        let dir = temp("claude-edit");
-        let bin = fake_tarae(&dir, "tarae 9.9.9");
-        let file = dir.join("a.txt");
-        std::fs::write(&file, "one\n").unwrap();
-        // What Claude will write, and when: after the turn has ended — the watch sees it late
-        let prepared = dir.join("claude.txt");
-        std::fs::write(&prepared, "TWO\n").unwrap();
-        let ask = json!({"type": "control_request", "request_id": "p1", "request": {"subtype": "can_use_tool",
-            "tool_name": "Write", "input": {"file_path": file, "content": "TWO\n"}}});
-        let result = json!({"type": "result", "result": ""});
-        let mut ed = Editor::new(Config::default());
-        ed.workspace.root = dir.clone();
-        ed.open(&file).unwrap();
-        ed.disk_watch();
-        ed.config.restart_binary = bin.display().to_string();
-        ed.config.llm.command = "sh".into();
-        ed.config.llm.args = vec![
-            "-c".into(),
-            format!(
-                "while read -r line; do case \"$line\" in '{{\"message\"'*) printf '%s\\n' '{ask}';; \
-                 '{{\"response\"'*) printf '%s\\n' '{result}'; sleep 0.3; cp '{}' '{}';; esac; done",
-                prepared.display(),
-                file.display()
-            ),
-        ];
-        feed(&mut ed, "<space>lwrite it<ret>");
-        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
-        crate::typed::execute(&mut ed, "restart!").unwrap();
-        wait_on_card(&mut ed, "Claude's turn");
-        feed(&mut ed, "y");
-        settle_answering(&mut ed, |ed| ed.should_quit || ed.restart.is_none());
-        assert_eq!(ed.restart.as_ref().and_then(Restart::ready), Some(bin.as_path()), "{}", toasts(&ed));
-        assert!(toasts(&ed).contains("once Claude's edits are on disk"), "it waited: {}", toasts(&ed));
-        assert!(!ed.doc().is_modified(), "Claude's write was the save");
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "TWO\n");
-        drop(ed);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
     /// A turn's files still being read (review at the end) are the turn's — named, and `w` waits for them; then
     /// its review doesn't open over the restart — the chat says `space v t`, which works after it.
     #[test]
@@ -2902,30 +2802,21 @@ mod tests {
     }
 
     /// Restart anyway with Claude in a turn: the turn is named on the card and `y` doesn't wait for it —
-    /// and its edits waiting for an answer, which the restart drops with it (the claude that asked is gone
-    /// after it), are named too, by file (the reviewer: `y` dropped one, the card saying only "Claude's
-    /// turn"). Ones that came while the card was up aren't on it: `y` asks again, naming them.
+    /// and its edit waiting in its review, which the restart drops with it (the claude that asked is gone
+    /// after it), is named too, by file (the reviewer: `y` dropped one, the card saying only "Claude's
+    /// turn"). One that came while the card was up isn't on it: `y` asks again, naming it.
     #[test]
     fn restart_anyway_ends_claudes_turn_and_names_its_edit() {
         let dir = temp("anyway-turn");
         let file = dir.join("a.txt");
         std::fs::write(&file, "one\n").unwrap();
-        std::fs::write(dir.join("b.txt"), "one\n").unwrap();
         let (mut ed, bin) = restart_card_with_chat(&dir, true);
         let q = restart_card(&ed).unwrap();
         assert!(q.lines().any(|l| l == "  Claude's turn"), "{q}");
-        // Claude asks to write two files while the card is up
-        for (id, name) in [("e1", "a.txt"), ("e2", "b.txt")] {
-            ed.workspace.claude.chat.as_mut().unwrap().edits.queue.push_back(crate::edits::Pending {
-                request_id: id.into(),
-                tool: "Write".into(),
-                input: json!({ "file_path": dir.join(name), "content": "TWO\n" }),
-                reason: String::new(),
-                since: Instant::now(),
-                row: None,
-                protected: Some(false),
-            });
-        }
+        // Claude's edit of a.txt comes while the card is up, and opens in its review
+        let args = json!({ "edits": [{ "file_path": file, "old_string": "one", "new_string": "TWO" }] });
+        crate::edittool::call(&mut ed, crate::tools::Call::test(1), &args).unwrap();
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
         ed.offer_accept();
         assert!(
             toasts(&ed).contains("something began since the card asked — it asks again"),
@@ -2933,49 +2824,13 @@ mod tests {
             toasts(&ed)
         );
         let q = restart_card(&ed).expect("asked again");
-        let dropped = "Claude's turn — its 2 unanswered edits to a.txt, b.txt are dropped";
+        let dropped = "Claude's turn — its unanswered edit to a.txt is dropped";
         assert!(q.lines().any(|l| l == format!("  {dropped}")), "{q}");
-        // The first opens in its review meanwhile: named all the same
-        ed.handle_event(crate::event::Event::Resize);
-        assert!(ed.workspace.claude.review.is_some(), "a.txt's edit in its review");
         settle_answering(&mut ed, |ed| ed.should_quit || ed.restart.is_none());
         assert_eq!(ed.restart.as_ref().and_then(Restart::ready), Some(bin.as_path()), "{}", toasts(&ed));
         assert!(ed.workspace.claude.chat.as_ref().unwrap().busy(), "the turn wasn't waited for");
         assert!(toasts(&ed).contains(&format!("restarting anyway — it ends {dropped}")), "{}", toasts(&ed));
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "one\n", "the edit wasn't made");
-        drop(ed);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// Restart anyway with Claude in a turn whose accepted edit is still being written: the write is waited
-    /// for (until then the file would count as unsaved), and on the way the turn the card named isn't (the
-    /// wait's `sync` lets what it was told to end go on). The wait is the real one (`agent_will_write`), ended
-    /// as its job ends it (`agent_write_missed`) once the restart waits on it — never by the clock: a 300 ms
-    /// window ran out while the card's check ran the stand-in binary, and the restart went on unwaiting (1 in 5).
-    #[test]
-    fn restart_anyway_waits_for_claudes_write_not_its_turn() {
-        let dir = temp("anyway-write");
-        let file = dir.join("a.txt");
-        std::fs::write(&file, "one\n").unwrap();
-        let (mut ed, bin) = restart_card_with_chat(&dir, true);
-        // Claude's accepted edit, its write on the way
-        ed.open(&file).unwrap();
-        let edit = crate::transaction::Transaction::new(vec![crate::transaction::Change::insert(0, "TWO\n")]);
-        ed.doc_mut().apply(&edit);
-        ed.doc_mut().agent_will_write();
-        let (id, v) = (ed.doc().id, ed.doc().version());
-        let i = ed.offers.iter().position(|o| matches!(o.what, crate::offer::What::Restart(_))).unwrap();
-        ed.offer_to_front(i);
-        ed.offer_accept();
-        settle_until(&mut ed, |ed| ed.restart.as_ref().is_some_and(|r| r.stage == Stage::Writes));
-        assert!(toasts(&ed).contains("once Claude's edits are on disk"), "it waited: {}", toasts(&ed));
-        // (the write never came: the wait's end saves it as accepted)
-        ed.agent_write_missed(id, v);
-        settle_until(&mut ed, |ed| ed.should_quit || ed.restart.is_none());
-        assert_eq!(ed.restart.as_ref().and_then(Restart::ready), Some(bin.as_path()), "{}", toasts(&ed));
-        assert!(toasts(&ed).contains("once Claude's edits are on disk"), "it waited: {}", toasts(&ed));
-        assert!(ed.workspace.claude.chat.as_ref().unwrap().busy(), "the turn wasn't waited for");
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "TWO\none\n", "written before it restarts");
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
     }

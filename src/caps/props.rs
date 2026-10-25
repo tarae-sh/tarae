@@ -66,7 +66,7 @@ const ELSEWHERE: [(&str, &str); 11] = [
 /// added here too:
 /// - `settings`: `config.llm` with the answers in, through `tools::with_allowed` — what a run's policy is made
 ///   from (`tools::guard_then_go`) — each `SETTINGS` row as the settings table reads it, `llm.review-at-end`
-///   on too where the chat's edit gate has it (`edits::request` reads `Chat.edits.at_end`, not the config);
+///   on too where the chat's edit gate has it (`refactor::land_told` reads `Chat.edits.at_end`, not the config);
 /// - `read`, `outside`, `keys`: the session's `Caps` as a gate makes it (`Basis::build` — `reads::covered`,
 ///   `cards::decide`, `tools::in_sandbox`), with `with_allowed`'s reads and keys;
 /// - `open_keys`: of the files named like keys looked at, those whose text goes with a message — what `Caps`

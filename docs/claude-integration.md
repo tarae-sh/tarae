@@ -702,8 +702,7 @@ that long: the view moves at most that often). In sight or not, the cursor goes 
 the first it takes out; for one that only adds lines, the line its new rows stand on — which is where the change
 starts once it lands, so the cursor doesn't move then. Claude's caret rides the end of what it writes, piece by
 piece. Once the call is made, the review opens on the same rows.
-This is for tarae's `edit` and, with `llm.edit-tools` set to `both` or `native`, Claude Code's Edit and Write (a
-Write over the whole file); a new file, a move or a delete waits for its card.
+A new file, a move or a delete waits for its card.
 
 Claude edits with tarae's own `edit` tool: exact replacements (Claude Code's Edit fields), several files and
 replacements in one call, new files, moves and deletes — one change you review, or nothing changes and Claude is
@@ -713,16 +712,12 @@ the card, even alone and even under review at the end — `y`, `v` or `n`, nothi
 of a build script, a manifest, a file named like a key, a link, a file with your unsaved edits, or anything
 outside the project. `space u` brings a deleted file back and a moved one home.
 
-`llm.edit-tools` chooses what Claude edits with: `"tarae"` (the default — `edit` alone), `"both"` (`edit` and
-Claude Code's Edit and Write), `"native"` (Edit and Write alone). Only your own config sets it — a project's
-`.tarae.toml` or `.tarae.local.toml` can't — and a change, `:set` too, takes effect with the next chat (`C-l`).
-What `edit` writes, tarae writes through no link: each folder from the project's root opened without following
-one, and the write made there — a folder a command swapped for a link to outside meanwhile is never written
-through. Claude Code's own Edit and Write (`"both"`, `"native"`) write the file themselves, by its path, once
-tarae has said yes, so that gap stays open with them.
-The default was measured: on three changes to tarae's own code, three runs each, every arm got all of them right,
-and `edit` alone used 31 % fewer tokens and 27 % less money than Edit and Write — a six-place move was one call
-instead of four to six (tests/live.rs `chat_edit_ab`).
+`edit` is the chat's one edit tool: Claude has none of Claude Code's (no Edit or Write). What it writes, tarae
+writes through no link: each folder from the project's root opened without following one, and the write made
+there — a folder a command swapped for a link to outside meanwhile is never written through. It was measured
+against Claude Code's Edit and Write: on three changes to tarae's own code, three runs each, both got all of them
+right, and `edit` alone used 31 % fewer tokens and 27 % less money — a six-place move was one call instead of four
+to six (tests/live.rs `chat_edit_ab`, 2026-10-13).
 
 A file with unsaved edits is a special case, because disk isn't what you're looking at. The accepted change stays
 in your buffer, and Claude is told the file changes when you save.
@@ -1638,9 +1633,8 @@ Claude reads and searches through tarae itself — no process, no sandbox to sta
 
 They run in tarae, outside every sandbox, so they keep Read's rules themselves: a file named like a key, or a
 place outside the project and the places above, asks on the same card as Read — a link in the project to a
-place outside is asked about as that place — and the call goes on once you answer. With these, the chat has no tool of Claude Code's (`--tools ""`; Edit and Write with
-`llm.edit-tools` "both" or "native"), which takes about 1.1k tokens off every request. Neither the prompt nor
-`read` sends Claude to a read before an Edit: Claude Code 2.1.296 with the current model edits a file it
+place outside is asked about as that place — and the call goes on once you answer. With these, the chat has no tool of Claude Code's (`--tools ""`), which takes about
+1.1k tokens off every request. Neither the prompt nor `read` sends Claude to a read before an edit: Claude Code 2.1.296 with the current model edits a file it
 hasn't read. That depends on the model and the CLI — older models needed the Read first. `run`'s description
 sends reading and searching here, and `:usage`
 counts the runs that only read text, by program.

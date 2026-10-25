@@ -56,9 +56,7 @@ impl Editor {
             open: (self.docs.iter().filter(|d| !d.loading))
                 .filter_map(|d| Some((d.path.clone()?, d.text.clone())))
                 .collect(),
-            dirty: (self.docs.iter().filter(|d| d.is_modified() && !d.unsaved_is_claudes()))
-                .filter_map(|d| d.path.clone())
-                .collect(),
+            dirty: (self.docs.iter().filter(|d| d.is_modified())).filter_map(|d| d.path.clone()).collect(),
             keys: crate::reads::Keys::of(self),
         };
         let jobs = self.events.jobs();

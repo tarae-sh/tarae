@@ -213,8 +213,8 @@ pub fn record(ed: &mut Editor, id: crate::document::DocId, before: Option<Rope>)
 }
 
 /// An edit of Claude's let in unasked (review at the end) to `path`, which was `before` (None = no such
-/// file) — kept the first time this turn; what it is after is read when the turn ends. `then` (claude
-/// told it may write) runs once that's on disk: a crash before claude writes still has what it was.
+/// file) — kept the first time this turn; what it is after is read when the turn ends. `then` (what goes on
+/// to write it) runs once that's on disk: a crash before the write still has what it was.
 pub fn record_unseen(
     ed: &mut Editor,
     path: PathBuf,

@@ -13,7 +13,7 @@ use super::{Choices, Sim};
 use crate::codeview::Row;
 use crate::editor::Editor;
 use crate::llm::StreamEv;
-use crate::writing::{Delta, Place, REVEAL_EVERY, Scan, Tool};
+use crate::writing::{Delta, Place, REVEAL_EVERY, Scan};
 
 const SEEDS: &[u64] = &[0, 1, 2, 3, 4];
 
@@ -65,7 +65,7 @@ fn run(choices: Choices) -> Vec<String> {
     let s = |t: &str| serde_json::to_string(t).unwrap();
     let input =
         format!(r#"{{"edits":[{{"file_path":"a.rs","old_string":{},"new_string":{}}}]}}"#, s(OLD), s(NEW));
-    let world = RefCell::new(World { input, scan: Some(Scan::new(Tool::Edit)), ..World::default() });
+    let world = RefCell::new(World { input, scan: Some(Scan::new()), ..World::default() });
     let root = dir.to_path_buf();
     let check = |ed: &Editor| held(ed, &mut world.borrow_mut());
     sim.walk(&mut ed, INPUTS, |sim, ed| step(sim, ed, &mut world.borrow_mut(), &root), check, print);
@@ -100,7 +100,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World, root: &std::path::Path) -
             let Some(scan) = w.scan.as_mut() else { return "(no reader)".into() };
             scan.feed(&piece);
             let done = end == chars.len();
-            let d = Delta { call: "t1".into(), tool: Tool::Edit, pieces: scan.take(), done };
+            let d = Delta { call: "t1".into(), pieces: scan.take(), done };
             // (as the loop brings it: an event, the reveal moved after it)
             ed.handle_event(crate::event::Event::Job(Box::new(move |ed: &mut Editor| {
                 crate::chat::stream_event(ed, g, StreamEv::Writing(d));

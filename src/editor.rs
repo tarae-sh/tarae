@@ -2527,7 +2527,7 @@ impl Editor {
         crate::motion::wet_sync(self);
         crate::web::open::sync(self);
         crate::notes::attach(self);
-        crate::edits::next(self);
+        crate::edits::lost_review(self);
         crate::refactor::next(self);
         crate::codereview::land(self);
         self.offer_view_sync();
@@ -6304,7 +6304,7 @@ mod tests {
         fake_claude_stream(
             &mut ed,
             &[
-                tool("t1", "Read"),
+                tool("t1", "mcp__tarae__read"),
                 tool("t2", &format!("mcp__tarae__{marker}")),
                 json!({"type": "result", "result": "done"}),
             ],
@@ -6315,7 +6315,7 @@ mod tests {
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
         let pending = ed.features.pending();
         let n = |k: &str| pending.iter().find(|(p, _)| p == k).map_or(0, |(_, c)| c.n);
-        assert_eq!((n("claude:Read"), n("claude:other"), n("typed:vsplit")), (1, 1, 1), "{pending:?}");
+        assert_eq!((n("claude:read"), n("claude:other"), n("typed:vsplit")), (1, 1, 1), "{pending:?}");
         assert!(pending.iter().all(|(k, _)| !k.contains(marker)), "{pending:?}");
         let universe = crate::features::Universe::of(&ed);
         let r = crate::features::Report::new(true, &universe, &Default::default(), &pending, ed.features.day);
@@ -7081,19 +7081,13 @@ mod tests {
         let file = dir.join("edit.rs");
         let base: String = (1..=30).map(|i| format!("line {i}\n")).collect();
         std::fs::write(&file, &base).unwrap();
-        // The four edits: (old, new) and the file after each
+        // The four edits: (old, new)
         let edits = [
             ("line 3\n", "three\n"),
             ("line 10\n", "line 10\nadded a\nadded b\n"),
             ("line 20\n", ""),
             ("line 1\n", "zero\nline 1\n"),
         ];
-        let mut texts = Vec::new();
-        let mut text = base.clone();
-        for (old, new) in edits {
-            text = text.replacen(old, new, 1);
-            texts.push(text.clone());
-        }
         let tool = |id: &str, name: &str, input: serde_json::Value| json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": id, "name": name, "input": input}]}});
         let result = |id: &str, text: &str| json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": text}]}});
         let mut steps: Vec<serde_json::Value> = vec![
@@ -7103,17 +7097,17 @@ mod tests {
         ];
         for (k, (old, new)) in edits.iter().enumerate() {
             let id = format!("e{k}");
-            let input = json!({"file_path": file, "old_string": old, "new_string": new});
-            steps.push(tool(&id, "Edit", input.clone()));
-            steps.push(json!({"type": "control_request", "request_id": format!("q{k}"),
-                "request": {"subtype": "can_use_tool", "tool_name": "Edit", "input": input}}));
-            // (claude waits for the answer, writes the file, then says it's done)
+            let input = json!({"edits": [{"file_path": file, "old_string": old, "new_string": new}]});
+            steps.push(tool(&id, "mcp__tarae__edit", input.clone()));
+            steps.push(json!({"type": "control_request", "request_id": format!("q{k}"), "request": {"subtype": "mcp_message",
+                "server_name": "tarae", "message": {"jsonrpc": "2.0", "id": k, "method": "tools/call",
+                "params": {"name": "edit", "arguments": input}}}}));
+            // (claude waits for the answer — tarae wrote the file, unseen under review at the end — then says it's
+            // done)
             steps.push(json!(format!(
-                "while read -r l; do case \"$l\" in *'\"request_id\":\"q{k}\"'*) break;; esac; done; printf '%s' '{}' > '{}'",
-                texts[k],
-                file.display()
+                "while read -r l; do case \"$l\" in *'\"request_id\":\"q{k}\"'*) break;; esac; done"
             )));
-            steps.push(result(&id, "The file has been updated."));
+            steps.push(result(&id, "written"));
             steps.push(json!("sleep 0.15"));
         }
         steps.push(tool("s1", "mcp__tarae__search", json!({"pattern": "line 5"})));
@@ -8922,7 +8916,7 @@ mod tests {
 
     /// #29: the git tab reads the status again when Claude edits, writes or runs something — not only when
     /// it's reopened ("nothing to commit — the tree is clean" over files Claude had changed). Mid-turn: the
-    /// fake claude changes the file (standing in for its Edit), then sends the edit's result, then waits.
+    /// fake claude changes the file (standing in for its `edit`), then sends the edit's result, then waits.
     #[test]
     fn the_git_tab_follows_claudes_edits() {
         let repo = git_repo("git-follow", &[("a.txt", "one\n")]);
@@ -8934,7 +8928,7 @@ mod tests {
         ed.git_refresh();
         settle_until(&mut ed, |ed| ed.workspace.git_status.as_ref().is_some_and(|s| s.unstaged.is_empty()));
         let edit = serde_json::json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "e1",
-            "name": "Edit", "input": {"file_path": file, "old_string": "one", "new_string": "two"}}]}});
+            "name": "mcp__tarae__edit", "input": {"edits": [{"file_path": file, "old_string": "one", "new_string": "two"}]}}]}});
         let result = serde_json::json!({"type": "user", "message": {"content": [{"type": "tool_result",
             "tool_use_id": "e1", "content": "edited"}]}});
         let write = format!("printf 'two\\n' > '{}'", file.display());
@@ -10119,36 +10113,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A fake claude that asks to use `tool` with `input` on each question, then ends the turn once tarae
-    /// answers the request (or, with `early`, right away). Its stdin goes to the returned log.
-    fn fake_edit(ed: &mut Editor, dir: &Path, tool: &str, input: serde_json::Value, early: bool) -> PathBuf {
-        let log = dir.join("stdin.log");
-        let ask = serde_json::json!({"type": "control_request", "request_id": "p1",
-            "request": {"subtype": "can_use_tool", "tool_name": tool, "input": input}});
-        let result = serde_json::json!({"type": "result", "result": ""});
-        let on_question = if early {
-            format!("printf '%s\\n' '{ask}' '{result}'")
-        } else {
-            format!("printf '%s\\n' '{ask}'")
-        };
-        ed.config.llm.command = "sh".into();
-        ed.config.llm.args = vec![
-            "-c".into(),
-            format!(
-                "while read -r line; do printf '%s\\n' \"$line\" >> '{}'; case \"$line\" in \
-                 '{{\"message\"'*) {on_question};; '{{\"response\"'*) printf '%s\\n' '{result}';; esac; done",
-                log.display()
-            ),
-        ];
-        log
-    }
-
-    /// The answer tarae gave claude's permission request (from the fake's log).
-    fn permission_answer(log: &Path) -> serde_json::Value {
-        permission_answer_to(log, "p1")
-    }
-
-    /// The answer tarae gave claude's permission request `id`.
+    /// The answer tarae gave claude's permission request `id` (a read's, from the fake's log).
     fn permission_answer_to(log: &Path, id: &str) -> serde_json::Value {
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
         loop {
@@ -10504,30 +10469,67 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Claude's Edit from the chat is a review first; accepting lets claude write it (its own input).
+    /// A fake claude that calls tarae's `edit` with each of `calls` in turn (`c1`, `c2`, … — its row first, each
+    /// call once the one before is answered), then ends the turn; every line it's sent goes to the returned log.
+    fn fake_edits(ed: &mut Editor, dir: &Path, calls: &[serde_json::Value]) -> PathBuf {
+        use serde_json::json;
+        let log = dir.join("stdin.log");
+        let call = |i: usize| {
+            let n = i + 1;
+            let row = json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": format!("t{n}"),
+                "name": "mcp__tarae__edit", "input": calls[i]}]}});
+            let call = json!({"type": "control_request", "request_id": format!("c{n}"), "request": {"subtype": "mcp_message",
+                "server_name": "tarae", "message": {"jsonrpc": "2.0", "id": n, "method": "tools/call",
+                "params": {"name": "edit", "arguments": calls[i]}}}});
+            format!("printf '%s\\n' '{row}' '{call}'")
+        };
+        let result = json!({"type": "result", "result": "done"});
+        let mut cases = format!("'{{\"message\"'*) {};; ", call(0));
+        for i in 1..=calls.len() {
+            let next = if i < calls.len() { call(i) } else { format!("printf '%s\\n' '{result}'") };
+            cases.push_str(&format!("*'\"c{i}\"'*) {next};; "));
+        }
+        ed.config.llm.command = "sh".into();
+        ed.config.llm.args = vec![
+            "-c".into(),
+            format!(
+                "while read -r line; do printf '%s\\n' \"$line\" >> '{}'; case \"$line\" in {cases}esac; done",
+                log.display()
+            ),
+        ];
+        log
+    }
+
+    /// tarae's answer to the fake's tool call `id` (`fake_edits`' `c1`, …), as sent to claude — events handled
+    /// until it's there.
+    fn tool_answer_to(ed: &mut Editor, log: &Path, id: &str) -> String {
+        let find = |log: &Path| {
+            let sent = std::fs::read_to_string(log).unwrap_or_default();
+            sent.lines().find(|l| l.contains(&format!("\"request_id\":\"{id}\""))).map(str::to_string)
+        };
+        settle_until(ed, |_| find(log).is_some());
+        find(log).unwrap()
+    }
+
+    /// Claude's `edit` from the chat is a review first; `y` lands it — in the buffer, saved — and says so.
     #[test]
     fn chat_edits_are_reviewed_then_allowed() {
         let (dir, main, ..) = follow_project("edit-accept");
         let mut ed = editor("");
+        ed.workspace.root = dir.clone();
         ed.open(&main).unwrap();
-        let input = serde_json::json!({"file_path": main, "old_string": "line 2", "new_string": "LINE 2"});
-        let log = fake_edit(&mut ed, &dir, "Edit", input, false);
+        let edit = serde_json::json!({"edits": [{"file_path": main, "old_string": "line 2", "new_string": "LINE 2"}]});
+        let log = fake_edits(&mut ed, &dir, &[edit]);
         feed(&mut ed, "<space>lshout line 2<ret>");
-        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
         assert!(!ed.workspace.is_at(crate::workspace::At::Chat), "the keys go to the review");
         feed(&mut ed, "y");
-        let a = permission_answer(&log);
-        assert_eq!(a["behavior"], "allow", "{a}");
-        assert_eq!(
-            (a["updatedInput"]["old_string"].as_str(), a["updatedInput"]["new_string"].as_str()),
-            (Some("line 2"), Some("LINE 2"))
-        );
-        assert_eq!(text(&ed), "line 1\nLINE 2\nline 3\n", "the buffer has it already");
-        // Off to another pane at once: auto-save leaves the file to claude (saving first fails its Edit —
-        // measured live, tests/live.rs)
-        ed.on_focus(false);
-        assert!(std::fs::read_to_string(&main).unwrap().contains("line 2"), "claude writes it, not us");
+        let a = tool_answer_to(&mut ed, &log, "c1");
+        assert!(a.contains("main.rs") && !a.contains("\"isError\":true"), "{a}");
+        assert_eq!(text(&ed), "line 1\nLINE 2\nline 3\n", "the buffer has it");
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
+        ed.flush_saves();
+        assert_eq!(std::fs::read_to_string(&main).unwrap(), "line 1\nLINE 2\nline 3\n", "saved by tarae");
         assert!(
             ed.workspace.claude.chat.as_ref().unwrap().follow.active(),
             "a review isn't the user taking over"
@@ -10535,9 +10537,9 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A stand-in claude whose turn is two Edits of `lib`, each a tool call (`e1`, `e2`) and its permission asked
-    /// (`p1`, `p2`) — the second once the first is answered; the first changes two lines apart (two changes in
-    /// its review), the second one.
+    /// A stand-in claude whose turn is two `edit`s of `lib`, each its row (`e1`, `e2`) and its call to tarae (`p1`,
+    /// `p2`) — the second once the first is answered; the first changes two lines apart (two changes in its
+    /// review), the second one.
     fn two_edit_calls(ed: &mut Editor, dir: &Path, lib: &Path) {
         edit_calls(ed, dir, lib, false)
     }
@@ -10546,12 +10548,13 @@ mod tests {
     /// claude sends parallel calls.
     fn edit_calls(ed: &mut Editor, dir: &Path, lib: &Path, batch: bool) {
         use serde_json::json;
-        let first = json!({"file_path": lib, "old_string": "line 2\nline 3\nline 4", "new_string": "LINE 2\nline 3\nLINE 4"});
-        let second = json!({"file_path": lib, "old_string": "line 8", "new_string": "LINE 8"});
-        let call = |id: &str, input: &serde_json::Value| json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": id, "name": "Edit", "input": input}]}});
+        let first = json!({"edits": [{"file_path": lib, "old_string": "line 2\nline 3\nline 4", "new_string": "LINE 2\nline 3\nLINE 4"}]});
+        let second = json!({"edits": [{"file_path": lib, "old_string": "line 8", "new_string": "LINE 8"}]});
+        let call = |id: &str, input: &serde_json::Value| json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": id, "name": "mcp__tarae__edit", "input": input}]}});
         let ask = |id: &str, input: &serde_json::Value| {
-            json!({"type": "control_request", "request_id": id,
-            "request": {"subtype": "can_use_tool", "tool_name": "Edit", "input": input}})
+            json!({"type": "control_request", "request_id": id, "request": {"subtype": "mcp_message",
+                "server_name": "tarae", "message": {"jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": {"name": "edit", "arguments": input}}}})
         };
         let done = |id: &str| json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": "The file has been updated."}]}});
         let result = json!({"type": "result", "result": "done"});
@@ -10578,7 +10581,7 @@ mod tests {
         ];
     }
 
-    /// Two Edits of one file in one message, both answered before either's result comes: each row takes its own
+    /// Two edits of one file in one message, both answered before either's result comes: each row takes its own
     /// review's keys — the second's never joins the first's.
     #[test]
     fn two_edits_of_one_file_in_one_message_are_stamped_each_its_own() {
@@ -10682,30 +10685,11 @@ mod tests {
     fn a_turn_of_claudes_edits_undoes_as_one() {
         let (dir, _, _, lib) = follow_project("turn-undo");
         let new = dir.join("new.rs");
-        let log = dir.join("stdin.log");
-        let ask = |id: &str, tool: &str, input: serde_json::Value| {
-            serde_json::json!({"type": "control_request", "request_id": id,
-                "request": {"subtype": "can_use_tool", "tool_name": tool, "input": input}})
-        };
-        let edit = ask(
-            "p1",
-            "Edit",
-            serde_json::json!({"file_path": lib, "old_string": "line 2", "new_string": "LINE 2"}),
-        );
-        let write = ask("p2", "Write", serde_json::json!({"file_path": new, "content": "fn new() {}\n"}));
-        let result = serde_json::json!({"type": "result", "result": "done"});
+        let edit = |f: &Path, old: &str, new: &str| serde_json::json!({"edits": [{"file_path": f, "old_string": old, "new_string": new}]});
         let mut ed = editor("");
         ed.open(&lib).unwrap();
-        ed.config.llm.command = "sh".into();
-        ed.config.llm.args = vec![
-            "-c".into(),
-            format!(
-                "while read -r line; do printf '%s\\n' \"$line\" >> '{}'; case \"$line\" in \
-                 '{{\"message\"'*) printf '%s\\n' '{edit}';; *'\"p1\"'*) printf '%s\\n' '{write}';; \
-                 *'\"p2\"'*) printf '%s\\n' '{result}';; esac; done",
-                log.display()
-            ),
-        ];
+        let log =
+            fake_edits(&mut ed, &dir, &[edit(&lib, "line 2", "LINE 2"), edit(&new, "", "fn new() {}\n")]);
         feed(&mut ed, "<space>ltwo files please<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
         feed(&mut ed, "y");
@@ -10715,10 +10699,8 @@ mod tests {
         let c = ed.workspace.claude.chat.as_ref().unwrap();
         assert!(c.msgs.iter().any(|m| m.text == "changed lib.rs, new.rs · space u undo"));
         assert_eq!(ed.workspace.claude.checkpoints.list.len(), 1);
-        // Claude writes what was accepted (here: saved as it would be)
-        for d in ed.docs.iter_mut().filter(|d| d.path.is_some()) {
-            d.save().unwrap();
-        }
+        // (tarae wrote what was accepted)
+        ed.flush_saves();
         assert!(new.exists());
         // The user edits away from Claude's change
         ed.open(&lib).unwrap();
@@ -10753,7 +10735,7 @@ mod tests {
                 .contains("undid your changes from the turn \"two files please\"")
         );
         feed(&mut ed, "<space>lwhat now?<ret>");
-        // (the fake asks the same again: its edit no longer applies, its write changes nothing)
+        // (the fake asks the same again: its edit no longer applies, its new file is there already)
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
         let sent = std::fs::read_to_string(&log).unwrap();
         let asked = sent.lines().rfind(|l| l.contains("what now?")).unwrap();
@@ -10771,8 +10753,7 @@ mod tests {
         let log = dir.join("stdin.log");
         let said = serde_json::json!({"type": "stream_event", "event": {"type": "content_block_delta",
             "delta": {"type": "text_delta", "text": "Line 2 is lowercase while the rest shout, so I will make it match."}}});
-        let ask = serde_json::json!({"type": "control_request", "request_id": "p1", "request": {"subtype": "can_use_tool",
-            "tool_name": "Edit", "input": {"file_path": main, "old_string": "line 2", "new_string": "LINE 2"}}});
+        let ask = edit_call(&main, "line 2", "LINE 2");
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec![
             "-c".into(),
@@ -10808,11 +10789,11 @@ mod tests {
         std::fs::write(&file, lines.join("\n") + "\n").unwrap();
         let mut ed = editor("");
         ed.open(&file).unwrap();
-        let mut after = lines.clone();
-        after[1] = "LINE 2 of the long file under review, now shouting".into();
-        after[27] = "LINE 28 of the long file under review, now shouting".into();
-        let ask = serde_json::json!({"type": "control_request", "request_id": "p1", "request": {"subtype": "can_use_tool",
-            "tool_name": "Write", "input": {"file_path": file, "content": after.join("\n") + "\n"}}});
+        let shout = |n: usize| {
+            serde_json::json!({"file_path": file, "old_string": format!("line {n} of the long file under review\n"),
+                "new_string": format!("LINE {n} of the long file under review, now shouting\n")})
+        };
+        let ask = mcp_edit(serde_json::json!({"edits": [shout(2), shout(28)]}));
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec![
             "-c".into(),
@@ -10973,12 +10954,12 @@ mod tests {
             "server_name": "tarae", "message": {"jsonrpc": "2.0", "id": 7, "method": "tools/call",
             "params": {"name": "plan", "arguments": args}}}});
         // Then an edit with no words before it: its review says the plan's step in hand
-        let edit_row = json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t2", "name": "Edit", "input": {"file_path": main, "old_string": "line 2", "new_string": "LINE 2"}}]}});
-        let edit = json!({"type": "control_request", "request_id": "p1", "request": {"subtype": "can_use_tool",
-            "tool_name": "Edit", "input": {"file_path": main, "old_string": "line 2", "new_string": "LINE 2"}}});
+        let edit_args = edit_of(&main, "line 2", "LINE 2");
+        let edit_row = json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t2", "name": "mcp__tarae__edit", "input": edit_args}]}});
+        let edit = mcp_edit(edit_args);
         let result = json!({"type": "result", "result": "done"});
         // (its turn's end a moment after its edit: claude itself waits for the edit's answer — the review comes
-        // once where the edit leads is worked out, `edits::judge_later`)
+        // once the edit is worked out, on a worker)
         let mut body: Vec<String> =
             [tool, call, edit_row, edit].iter().map(|e| format!("printf '%s\\n' '{e}'")).collect();
         body.push(format!("sleep 0.5; printf '%s\\n' '{result}'"));
@@ -11137,20 +11118,23 @@ mod tests {
         assert!(t.contains("Opus 5.5") && !t.contains("asked"), "{t}");
     }
 
+    /// Claude's `edit` of `file`: `old` → `new`, its arguments.
+    fn edit_of(file: &Path, old: &str, new: &str) -> serde_json::Value {
+        serde_json::json!({"edits": [{"file_path": file, "old_string": old, "new_string": new}]})
+    }
+
     /// Declined → claude is told so and nothing changes.
     #[test]
     fn chat_edits_can_be_declined() {
         let (dir, main, ..) = follow_project("edit-deny");
         let mut ed = editor("");
         ed.open(&main).unwrap();
-        let input = serde_json::json!({"file_path": main, "old_string": "line 2", "new_string": "LINE 2"});
-        let log = fake_edit(&mut ed, &dir, "Edit", input, false);
+        let log = fake_edits(&mut ed, &dir, &[edit_of(&main, "line 2", "LINE 2")]);
         feed(&mut ed, "<space>lshout<ret>");
-        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
         feed(&mut ed, "n");
-        let a = permission_answer(&log);
-        assert_eq!(a["behavior"], "deny");
-        assert!(a["message"].as_str().unwrap().contains("declined"));
+        let a = tool_answer_to(&mut ed, &log, "c1");
+        assert!(a.contains("declined by the user"), "{a}");
         assert_eq!(text(&ed), "line 1\nline 2\nline 3\n");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -11162,10 +11146,9 @@ mod tests {
         let (dir, main, ..) = follow_project("edit-close");
         let mut ed = editor("");
         ed.open(&main).unwrap();
-        let input = serde_json::json!({"file_path": main, "old_string": "line 2", "new_string": "LINE 2"});
-        let log = fake_edit(&mut ed, &dir, "Edit", input, false);
+        let log = fake_edits(&mut ed, &dir, &[edit_of(&main, "line 2", "LINE 2")]);
         feed(&mut ed, "<space>lshout<ret>");
-        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
         let open = |ed: &Editor| ed.docs.iter().any(|d| d.path.as_deref() == Some(main.as_path()));
         crate::typed::execute(&mut ed, "buffer-close!").unwrap();
         assert!(open(&ed) && ed.workspace.claude.review.is_some(), "asked, not closed");
@@ -11176,8 +11159,8 @@ mod tests {
         crate::typed::execute(&mut ed, "buffer-close!").unwrap();
         feed(&mut ed, "y");
         assert!(!open(&ed) && ed.workspace.claude.review.is_none(), "y: declined and closed");
-        let a = permission_answer(&log);
-        assert_eq!(a["behavior"], "deny");
+        let a = tool_answer_to(&mut ed, &log, "c1");
+        assert!(a.contains("nothing changed"), "{a}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -11190,17 +11173,17 @@ mod tests {
         ed.open(&main).unwrap();
         feed(&mut ed, "imine <esc>");
         assert!(ed.doc().is_modified());
-        let input = serde_json::json!({"file_path": main, "old_string": "line 2", "new_string": "LINE 2"});
-        let log = fake_edit(&mut ed, &dir, "Edit", input, false);
+        let log = fake_edits(&mut ed, &dir, &[edit_of(&main, "line 2", "LINE 2")]);
         feed(&mut ed, "<space>lshout<ret>");
-        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
         let open = |ed: &Editor| ed.docs.iter().any(|d| d.path.as_deref() == Some(main.as_path()));
         crate::typed::execute(&mut ed, "buffer-close").unwrap();
         let q = ed.offers.first().map(|o| o.question.clone()).expect("a card");
         assert!(q.contains("unsaved edits keep the buffer open"), "said on the card: {q}");
         feed(&mut ed, "y");
         assert!(ed.workspace.claude.review.is_none(), "y: declined");
-        assert_eq!(permission_answer(&log)["behavior"], "deny");
+        let a = tool_answer_to(&mut ed, &log, "c1");
+        assert!(a.contains("nothing changed"), "{a}");
         assert!(open(&ed), "your unsaved edits keep it open");
         assert_eq!(text(&ed), "mine line 1\nline 2\nline 3\n");
         assert!(
@@ -11213,54 +11196,26 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// #54: an edit of Claude's arriving while you type in a buffer waits — said once — and opens when you
-    /// stop (it took the screen, and the next keys answered it).
+    /// Accepting part of an edit: what was accepted is written, and Claude hears it was in part.
     #[test]
-    fn an_edit_waits_while_you_type() {
-        let (dir, main, util, _) = follow_project("edit-typing");
-        let mut ed = editor("");
-        ed.open(&main).unwrap();
-        let input = serde_json::json!({"file_path": main, "old_string": "line 2", "new_string": "LINE 2"});
-        let log = fake_edit(&mut ed, &dir, "Edit", input, false);
-        feed(&mut ed, "<space>lshout<ret>");
-        // Typing in another file before Claude's ask comes in
-        ed.workspace.leave(crate::workspace::At::Chat);
-        ed.open(&util).unwrap();
-        feed(&mut ed, "ityping");
-        settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().unwrap().edits.queue.len() == 1);
-        assert!(ed.workspace.claude.review.is_none(), "it waits");
-        assert_eq!(ed.mode, Mode::Insert);
-        let waits = |ed: &Editor| ed.messages.iter().filter(|m| m.2.contains("waits — it opens")).count();
-        assert_eq!(waits(&ed), 1);
-        feed(&mut ed, " more");
-        assert_eq!(waits(&ed), 1, "said once");
-        assert!(ed.doc().text.to_string().starts_with("typing more"), "the keys stayed yours");
-        ed.handle_event(Event::Key("esc".parse().unwrap()));
-        // (as soon as where it leads is worked out — `edits::judge_later`)
-        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
-        assert_eq!(ed.doc().path.as_deref(), Some(main.as_path()));
-        feed(&mut ed, "y");
-        assert_eq!(permission_answer(&log)["behavior"], "allow");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// Accepting part of a Write: claude writes exactly what was accepted.
-    #[test]
-    fn a_partly_accepted_write_writes_the_accepted_part() {
+    fn a_partly_accepted_edit_writes_the_accepted_part() {
         let (dir, _, util, _) = follow_project("edit-partial");
         let mut ed = editor("");
         ed.open(&util).unwrap();
-        let content = "LINE 1\nline 2\nline 3\nline 4\nLINE 5\n";
-        let input = serde_json::json!({"file_path": util, "content": content});
-        let log = fake_edit(&mut ed, &dir, "Write", input, false);
+        let both = serde_json::json!({"edits": [
+            {"file_path": util, "old_string": "line 1", "new_string": "LINE 1"},
+            {"file_path": util, "old_string": "line 5", "new_string": "LINE 5"},
+        ]});
+        let log = fake_edits(&mut ed, &dir, &[both]);
         feed(&mut ed, "<space>lshout<ret>");
-        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
         feed(&mut ed, "yn");
-        let a = permission_answer(&log);
-        assert_eq!(a["behavior"], "allow", "{a}");
+        let a = tool_answer_to(&mut ed, &log, "c1");
+        assert!(a.contains("accepted in part: ") && a.contains("util.rs (2)"), "{a}");
         let accepted = "LINE 1\nline 2\nline 3\nline 4\nline 5\n";
-        assert_eq!(a["updatedInput"]["content"], accepted);
         assert_eq!(text(&ed), accepted);
+        ed.flush_saves();
+        assert_eq!(std::fs::read_to_string(&util).unwrap(), accepted);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -11301,100 +11256,23 @@ mod tests {
         assert!(said.contains("does nothing") || said.contains("y takes it"), "{said}");
     }
 
-    /// A new file of Claude's in a folder that isn't there yet, accepted, and Claude never writes it (its turn
-    /// stopped — the fake here writes nothing): tarae's own save makes the folders, inside the project. Every
-    /// save of such a file failed "No such file or directory" while the card had said accepted.
+    /// A new file of Claude's in a folder that isn't there yet, accepted in its review: tarae writes it, its
+    /// folders made inside the project.
     #[test]
     fn an_accepted_new_file_in_a_new_folder_is_saved_inside_the_project() {
         let (dir, ..) = follow_project("edit-new-folder");
         let new = dir.join("src/fresh/deeper/new.rs");
         let mut ed = editor("");
         ed.workspace.root = dir.clone();
-        let input = serde_json::json!({"file_path": new, "content": "pub fn new() {}\n"});
-        let log = fake_edit(&mut ed, &dir, "Write", input, false);
+        let log = fake_edits(&mut ed, &dir, &[edit_of(&new, "", "pub fn new() {}\n")]);
         feed(&mut ed, "<space>lmake it<ret>");
-        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
-        assert!(
-            !ed.workspace.claude.review.as_ref().unwrap().reason.contains("isn't there"),
-            "inside: nothing to say"
-        );
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
         feed(&mut ed, "y");
-        assert_eq!(permission_answer(&log)["behavior"], "allow");
-        crate::typed::execute(&mut ed, "write").unwrap();
+        let a = tool_answer_to(&mut ed, &log, "c1");
+        assert!(a.contains("accepted by the user: src/fresh/deeper/new.rs"), "{a}");
         assert!(ed.flush_saves());
         assert_eq!(std::fs::read_to_string(&new).unwrap(), "pub fn new() {}\n", "its folders were made");
         assert!(!ed.doc().is_modified());
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// An accepted edit whose write from Claude never comes (its turn cut short; the fake writes nothing):
-    /// when the wait for it is over tarae saves the buffer itself — with auto-save at "focus", the default,
-    /// nothing else did, and the file stayed unsaved (•1) while the card had said accepted. Not once you've
-    /// typed in it since: then it's your unsaved text, auto-save's to judge.
-    #[test]
-    fn an_accepted_edit_claude_never_writes_is_saved_by_tarae() {
-        let (dir, main, ..) = follow_project("edit-never-written");
-        let mut ed = editor("");
-        ed.workspace.root = dir.clone();
-        assert_eq!(ed.config.auto_save, "focus");
-        ed.open(&main).unwrap();
-        let input = serde_json::json!({"file_path": main, "old_string": "line 2", "new_string": "LINE 2"});
-        let log = fake_edit(&mut ed, &dir, "Edit", input, false);
-        feed(&mut ed, "<space>lshout<ret>");
-        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
-        feed(&mut ed, "y");
-        assert_eq!(permission_answer(&log)["behavior"], "allow");
-        let id = ed.doc().id;
-        let (_, version) = ed.doc().agent_writes.expect("waiting for Claude's write");
-        assert!(ed.doc().is_modified());
-        // (the wait's end, as its job brings it)
-        ed.agent_write_missed(id, version);
-        assert!(ed.flush_saves());
-        assert_eq!(std::fs::read_to_string(&main).unwrap(), "line 1\nLINE 2\nline 3\n");
-        assert!(!ed.doc().is_modified());
-        // Typed since: left to auto-save
-        let input = serde_json::json!({"file_path": main, "old_string": "line 3", "new_string": "LINE 3"});
-        crate::chat::close(&mut ed);
-        let log = fake_edit(&mut ed, &dir, "Edit", input, false);
-        feed(&mut ed, "<space>lagain<ret>");
-        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
-        feed(&mut ed, "y");
-        assert_eq!(permission_answer(&log)["behavior"], "allow");
-        let (_, version) = ed.doc().agent_writes.expect("waiting for Claude's write");
-        ed.workspace.leave(crate::workspace::At::Chat);
-        feed(&mut ed, "ggiX<esc>");
-        ed.agent_write_missed(id, version);
-        assert!(ed.flush_saves());
-        assert_eq!(std::fs::read_to_string(&main).unwrap(), "line 1\nLINE 2\nline 3\n", "not saved");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// The same outside the project: tarae doesn't make folders there — the review says so before you answer,
-    /// and a save of tarae's says why it can't write (only Claude's own write makes that folder).
-    #[test]
-    fn an_accepted_new_file_outside_the_project_says_its_folder_isnt_made() {
-        let (dir, ..) = follow_project("edit-new-folder-out");
-        let project = dir.join("project");
-        std::fs::create_dir_all(&project).unwrap();
-        let new = dir.join("elsewhere/new.rs");
-        let mut ed = editor("");
-        ed.workspace.root = project.clone();
-        let input = serde_json::json!({"file_path": new, "content": "pub fn new() {}\n"});
-        let log = fake_edit(&mut ed, &dir, "Write", input, false);
-        feed(&mut ed, "<space>lmake it<ret>");
-        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
-        let reason = ed.workspace.claude.review.as_ref().unwrap().reason.clone();
-        assert!(
-            reason.contains("elsewhere/ isn't there yet") && reason.contains("won't make it"),
-            "{reason}"
-        );
-        feed(&mut ed, "y");
-        assert_eq!(permission_answer(&log)["behavior"], "allow");
-        crate::typed::execute(&mut ed, "write").unwrap();
-        assert!(ed.flush_saves());
-        assert!(!dir.join("elsewhere").exists(), "no folder made outside the project");
-        let said = ed.messages.iter().any(|m| m.2.contains("tarae makes folders only inside the project"));
-        assert!(said, "{:?}", ed.messages.iter().map(|m| &m.2).collect::<Vec<_>>());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -11406,61 +11284,33 @@ mod tests {
         let mut ed = editor("");
         ed.open(&main).unwrap();
         feed(&mut ed, "ggiX<esc>");
-        let input = serde_json::json!({"file_path": main, "old_string": "line 2", "new_string": "LINE 2"});
-        let log = fake_edit(&mut ed, &dir, "Edit", input.clone(), false);
+        let log = fake_edits(&mut ed, &dir, &[edit_of(&main, "line 2", "LINE 2")]);
         feed(&mut ed, "<space>lshout<ret>");
-        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
         feed(&mut ed, "y");
-        let a = permission_answer(&log);
-        assert_eq!(a["behavior"], "deny");
-        assert!(a["message"].as_str().unwrap().contains("unsaved"), "{a}");
+        let a = tool_answer_to(&mut ed, &log, "c1");
+        assert!(a.contains("unsaved edits"), "{a}");
         assert_eq!(text(&ed), "Xline 1\nLINE 2\nline 3\n");
+        assert_eq!(std::fs::read_to_string(&main).unwrap(), "line 1\nline 2\nline 3\n", "not saved");
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
         // The turn ends while the review is up → it closes (claude isn't waiting any more)
-        let dir2 = dir.join("second");
-        std::fs::create_dir_all(&dir2).unwrap();
         crate::chat::close(&mut ed);
-        fake_edit(
-            &mut ed,
-            &dir2,
-            "Edit",
-            serde_json::json!({"file_path": main, "old_string": "line 3", "new_string": "x"}),
-            true,
-        );
+        let result = serde_json::json!({"type": "result", "result": ""});
+        fake_claude_stream(&mut ed, &[edit_call(&main, "line 3", "x"), result]);
         feed(&mut ed, "<space>lagain<ret>");
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
         assert!(ed.workspace.claude.review.is_none(), "no orphaned review");
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A fake claude that asks for two Edits to `file` back to back: p2 right after tarae answers p1 —
-    /// before the watch has seen claude write p1 (no watch runs in tests). Its stdin goes to the log.
+    /// A fake claude that makes two `edit`s of `file` back to back: `c2` right after tarae answers `c1`.
     fn fake_two_edits(ed: &mut Editor, dir: &Path, file: &Path) -> PathBuf {
-        let log = dir.join("stdin.log");
-        let ask = |id: &str, old: &str, new: &str| {
-            serde_json::json!({"type": "control_request", "request_id": id,
-                "request": {"subtype": "can_use_tool", "tool_name": "Edit",
-                    "input": {"file_path": file, "old_string": old, "new_string": new}}})
-        };
-        // (lengths change, so the file's fingerprint surely does)
-        let (p1, p2) = (ask("p1", "line 2", "LINE TWO"), ask("p2", "line 3", "LINE THREE"));
-        let result = serde_json::json!({"type": "result", "result": "done"});
-        ed.config.llm.command = "sh".into();
-        ed.config.llm.args = vec![
-            "-c".into(),
-            format!(
-                "while read -r line; do printf '%s\\n' \"$line\" >> '{}'; case \"$line\" in \
-                 '{{\"message\"'*) printf '%s\\n' '{p1}';; *'\"p1\"'*) printf '%s\\n' '{p2}';; \
-                 *'\"p2\"'*) printf '%s\\n' '{result}';; esac; done",
-                log.display()
-            ),
-        ];
-        log
+        fake_edits(ed, dir, &[edit_of(file, "line 2", "LINE TWO"), edit_of(file, "line 3", "LINE THREE")])
     }
 
-    /// Claude's second Edit to a file comes while its write of the first is still on the way: the buffer
-    /// differs from disk only by that write, so the second is Claude's to write too — not left unsaved in
-    /// the buffer (seen twice making :restart — the tab kept its dot until a test run saved it).
+    /// Claude's second edit of a file right after its first: both written, the buffer saved. Claude hears of the
+    /// first only once its save is on disk — answered while it was still on its way, the second came, was worked out
+    /// against a buffer still modified, and landed in it as the user's unsaved edits (frictions29 #130).
     #[test]
     fn back_to_back_chat_edits_to_one_file_are_both_written() {
         let (dir, main, ..) = follow_project("edit-twice");
@@ -11468,23 +11318,30 @@ mod tests {
         ed.open(&main).unwrap();
         let log = fake_two_edits(&mut ed, &dir, &main);
         feed(&mut ed, "<space>ltwo edits<ret>");
-        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        // A slow disk: the first's save on its way — Claude not answered meanwhile
+        ed.saver.held.hold();
         feed(&mut ed, "y");
-        assert_eq!(permission_answer_to(&log, "p1")["behavior"], "allow");
-        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
+        let end = crate::test_results::quiet_for(std::time::Duration::from_millis(300));
+        while std::time::Instant::now() < end {
+            if let Ok(Some(ev)) = ed.events.recv_within(std::time::Duration::from_millis(10)) {
+                ed.handle_event(ev);
+            }
+        }
+        let sent = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(!sent.contains("\"request_id\":\"c1\""), "answered before its save is on disk: {sent}");
+        ed.saver.held.release();
+        let a = tool_answer_to(&mut ed, &log, "c1");
+        assert!(a.contains("accepted by the user: ") && a.contains("main.rs (1)"), "{a}");
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
         feed(&mut ed, "y");
-        let a = permission_answer_to(&log, "p2");
-        assert_eq!(a["behavior"], "allow", "{a}");
-        assert_eq!(
-            (a["updatedInput"]["old_string"].as_str(), a["updatedInput"]["new_string"].as_str()),
-            (Some("line 3"), Some("LINE THREE"))
-        );
-        // Claude writes it; the watch takes that as the save
+        let a = tool_answer_to(&mut ed, &log, "c2");
+        assert!(a.contains("accepted by the user: ") && a.contains("main.rs (1)"), "{a}");
         let done = "line 1\nLINE TWO\nLINE THREE\n";
         assert_eq!(text(&ed), done);
-        std::fs::write(&main, done).unwrap();
-        ed.on_focus(true);
-        settle_until(&mut ed, |ed| !ed.doc().is_modified());
+        ed.flush_saves();
+        assert_eq!(std::fs::read_to_string(&main).unwrap(), done);
+        assert!(!ed.doc().is_modified());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -11497,17 +11354,16 @@ mod tests {
         ed.open(&main).unwrap();
         let log = fake_two_edits(&mut ed, &dir, &main);
         feed(&mut ed, "<space>ltwo edits<ret>");
-        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
         feed(&mut ed, "y");
-        // (the answer gave the keys back to the chat: Esc to the code, then typed — before p2 is read, events
+        // (the answer gave the keys back to the chat: Esc to the code, then typed — before c2 is read, events
         // wait for settle_until)
         assert!(ed.workspace.is_at(crate::workspace::At::Chat), "back in the chat");
         feed(&mut ed, "<esc>ggiX<esc>");
-        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
         feed(&mut ed, "y");
-        let a = permission_answer_to(&log, "p2");
-        assert_eq!(a["behavior"], "deny", "{a}");
-        assert!(a["message"].as_str().unwrap().contains("unsaved"), "{a}");
+        let a = tool_answer_to(&mut ed, &log, "c2");
+        assert!(a.contains("unsaved edits"), "{a}");
         assert_eq!(text(&ed), "Xline 1\nLINE TWO\nLINE THREE\n");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -11604,62 +11460,11 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A fake claude that asks to use each of `asks` (tool, input) in turn — p1 on the question, the next once
-    /// tarae answers the one before — and ends the turn after the last answer. With `write`, each answer is
-    /// taken as an allow and the file written as claude would (an Edit on the file as it is by then). Its stdin
-    /// goes to the log.
-    fn fake_asks(ed: &mut Editor, dir: &Path, asks: &[(&str, serde_json::Value)], write: bool) -> PathBuf {
-        let log = dir.join("stdin.log");
-        let ask = |i: usize| {
-            let (tool, input) = &asks[i];
-            serde_json::json!({"type": "control_request", "request_id": format!("p{}", i + 1),
-                "request": {"subtype": "can_use_tool", "tool_name": tool, "input": input}})
-        };
-        // What each one writes, worked out now and put beside the log: `cp` once it's answered
-        let mut files: HashMap<PathBuf, String> = HashMap::new();
-        let mut writes = Vec::new();
-        for (i, (tool, input)) in asks.iter().enumerate() {
-            let path = PathBuf::from(input["file_path"].as_str().unwrap());
-            let now = files
-                .entry(path.clone())
-                .or_insert_with(|| std::fs::read_to_string(&path).unwrap_or_default());
-            *now = match *tool {
-                "Write" => input["content"].as_str().unwrap().to_string(),
-                _ => now.replacen(
-                    input["old_string"].as_str().unwrap(),
-                    input["new_string"].as_str().unwrap(),
-                    1,
-                ),
-            };
-            let prepared = dir.join(format!(".claude-writes-{i}"));
-            std::fs::write(&prepared, &*now).unwrap();
-            let folder = path.parent().unwrap().display().to_string();
-            writes.push(format!("mkdir -p '{folder}'; cp '{}' '{}'; ", prepared.display(), path.display()));
-        }
-        let result = serde_json::json!({"type": "result", "result": "done"});
-        let mut cases = format!("'{{\"message\"'*) printf '%s\\n' '{}';; ", ask(0));
-        for i in 1..=asks.len() {
-            let next = if i < asks.len() { ask(i).to_string() } else { result.to_string() };
-            let then = if write { writes[i - 1].as_str() } else { "" };
-            cases.push_str(&format!("*'\"p{i}\"'*) {then}printf '%s\\n' '{next}';; "));
-        }
-        ed.config.llm.command = "sh".into();
-        ed.config.llm.args = vec![
-            "-c".into(),
-            format!(
-                "while read -r line; do printf '%s\\n' \"$line\" >> '{}'; case \"$line\" in {cases}esac; done",
-                log.display()
-            ),
-        ];
-        log
-    }
-
-    /// Review at the end: an edit inside the project goes in unasked — claude is allowed its own input and
-    /// writes it; tarae keeps what the file was. One outside the project, to a listed file (a build
-    /// script), or to a file with unsaved edits is still a review first.
+    /// Review at the end: an edit inside the project goes in unasked — written by tarae; it keeps what the file
+    /// was. One to a listed file (a build script) or to a file with unsaved edits is still a review first; one
+    /// outside the project isn't made.
     #[test]
     fn review_at_the_end_lets_edits_in_unasked() {
-        use serde_json::json;
         let (dir, main, util, _) = follow_project("at-end");
         let (build, new) = (dir.join("build.rs"), dir.join("src/new.rs"));
         std::fs::write(&build, "fn main() {}\n").unwrap();
@@ -11667,60 +11472,53 @@ mod tests {
         std::fs::create_dir_all(&away).unwrap();
         let outside = away.join("notes.txt");
         std::fs::write(&outside, "note\n").unwrap();
-        let edit =
-            |f: &Path, old: &str, new: &str| json!({"file_path": f, "old_string": old, "new_string": new});
         let mut ed = editor("");
+        ed.workspace.root = dir.clone();
         ed.open(&util).unwrap();
         feed(&mut ed, "ggiX<esc>"); // unsaved edits in util.rs
-        let log = fake_asks(
+        let log = fake_edits(
             &mut ed,
             &dir,
             &[
-                ("Edit", edit(&main, "line 2", "LINE 2")),
-                ("Write", json!({"file_path": new, "content": "pub fn new() {}\n"})),
-                ("Edit", edit(&build, "fn main() {}", "fn main() { run() }")),
-                ("Edit", edit(&outside, "note", "NOTE")),
-                ("Edit", edit(&util, "line 3", "LINE 3")),
+                edit_of(&main, "line 2", "LINE 2"),
+                edit_of(&new, "", "pub fn new() {}\n"),
+                edit_of(&build, "fn main() {}", "fn main() { run() }"),
+                edit_of(&outside, "note", "NOTE"),
+                edit_of(&util, "line 3", "LINE 3"),
             ],
-            false,
         );
         feed(&mut ed, "<space>l");
         ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
         feed(&mut ed, "write them<ret>");
-        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
-        // p1, p2: allowed as asked, nothing shown, nothing written by tarae
-        for (id, input) in [
-            ("p1", edit(&main, "line 2", "LINE 2")),
-            ("p2", json!({"file_path": new, "content": "pub fn new() {}\n"})),
-        ] {
-            let a = permission_answer_to(&log, id);
-            assert_eq!((&a["behavior"], &a["updatedInput"]), (&json!("allow"), &input), "{id}: {a}");
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        // c1, c2: written unasked, nothing shown
+        for id in ["c1", "c2"] {
+            assert!(tool_answer_to(&mut ed, &log, id).contains("written: "), "{id}");
         }
-        assert_eq!(std::fs::read_to_string(&main).unwrap(), "line 1\nline 2\nline 3\n", "claude writes it");
-        assert!(!new.exists());
+        assert_eq!(std::fs::read_to_string(&main).unwrap(), "line 1\nLINE 2\nline 3\n");
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "pub fn new() {}\n");
         let turn = &ed.workspace.claude.checkpoints.turn;
         let kept = |p: &Path| {
             turn.iter().find(|t| t.path == p).map(|t| (t.before.as_ref().map(|r| r.to_string()), t.unseen))
         };
         assert_eq!(kept(&main), Some((Some("line 1\nline 2\nline 3\n".into()), true)), "{turn:?}");
         assert_eq!(kept(&new), Some((None, true)), "a file it makes: none before");
-        // p3: a build script is a review
+        // c3: a build script is a review
         assert_eq!(ed.doc().path.as_deref(), Some(build.as_path()));
         feed(&mut ed, "y");
-        assert_eq!(permission_answer_to(&log, "p3")["behavior"], "allow");
-        // p4: outside the project too
-        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
-        assert_eq!(ed.doc().path.as_deref(), Some(outside.as_path()));
-        feed(&mut ed, "y");
-        // p5: unsaved edits in util.rs — a review, and it stays in the buffer
-        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
+        assert!(tool_answer_to(&mut ed, &log, "c3").contains("accepted by the user: build.rs"));
+        // c4: outside the project, not made
+        let a = tool_answer_to(&mut ed, &log, "c4");
+        assert!(a.contains("outside"), "{a}");
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "note\n");
+        // c5: unsaved edits in util.rs — a review, and it stays in the buffer
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
         assert_eq!(ed.doc().path.as_deref(), Some(util.as_path()));
         let kept =
             |p: &Path| ed.workspace.claude.checkpoints.turn.iter().find(|t| t.path == p).map(|t| t.unseen);
         assert_eq!(kept(&build), Some(false), "seen in its review");
         feed(&mut ed, "y");
-        let a = permission_answer_to(&log, "p5");
-        assert!(a["behavior"] == "deny" && a["message"].as_str().unwrap().contains("unsaved"), "{a}");
+        assert!(tool_answer_to(&mut ed, &log, "c5").contains("unsaved edits"));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&away).ok();
     }
@@ -11755,51 +11553,33 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// #37: a file outside the project that a chat edit's review opened closes when the turn ends — its root
-    /// keeps no language server — and a `:restart` meanwhile wouldn't bring it back. One the user pressed
-    /// keys in stays theirs; keys typed in the chat's input don't take it up.
+    /// #37: a file outside the project that Claude's turn opened (follow shows what it reads there) closes when
+    /// the turn ends — its root keeps no language server — and a `:restart` meanwhile wouldn't bring it back.
+    /// One the user pressed keys in stays theirs; keys that go elsewhere (`:` and esc) don't take it up (#46).
     #[test]
     fn files_a_turn_opened_outside_the_project_close_with_it() {
-        use serde_json::json;
         let (dir, main, ..) = follow_project("aside");
         let away = dir.with_file_name(format!("tarae-aside-away-{}", std::process::id()));
         std::fs::create_dir_all(&away).unwrap();
         let outside = std::fs::canonicalize(&away).unwrap().join("config.toml");
         std::fs::write(&outside, "a = 1\n").unwrap();
-        // #46: and one in the project's build output (a test's fixture)
-        std::fs::create_dir_all(dir.join("target/tmp")).unwrap();
-        let fixture = dir.join("target/tmp/fixture.toml");
-        std::fs::write(&fixture, "b = 1\n").unwrap();
         let open = |ed: &Editor, p: &Path| ed.docs.iter().any(|d| d.path.as_deref() == Some(p));
         let mut ed = editor("");
         ed.workspace.root = dir.clone();
+        ed.workspace.claude.chat = Some(crate::chat::Chat::new());
         ed.open(&main).unwrap();
-        let edit = json!({"file_path": outside, "old_string": "a = 1", "new_string": "a = 2"});
-        let in_target = json!({"file_path": fixture, "old_string": "b = 1", "new_string": "b = 2"});
-        fake_asks(&mut ed, &dir, &[("Edit", edit), ("Edit", in_target)], true);
-        feed(&mut ed, "<space>l");
-        ed.handle_event(Event::Key("c".parse().unwrap())); // (typed in the chat's input)
-        feed(&mut ed, "hange it<ret>");
-        settle_until(&mut ed, |ed| ed.workspace.claude.review.is_some());
-        assert_eq!(ed.doc().path.as_deref(), Some(outside.as_path()), "its review");
+        // Opened aside by the turn, in front
+        ed.open(&outside).unwrap();
+        ed.doc_mut().aside = true;
         let restarted = crate::restart::snapshot(&mut ed);
         let saved: Vec<&str> =
             restarted["docs"].as_array().unwrap().iter().filter_map(|d| d["path"].as_str()).collect();
         assert_eq!(saved, [main.to_str().unwrap()], "a restart doesn't bring it");
-        ed.handle_event(Event::Key("y".parse().unwrap())); // (the review's answer isn't taking it up)
-        // The fixture's review: between the two, keys that go elsewhere (`:` and esc) don't take up the
-        // file in front (#46: any key did)
-        settle_until(&mut ed, |ed| {
-            ed.workspace.claude.review.is_some() && ed.doc().path.as_deref() == Some(&fixture)
-        });
-        for k in ["y", ":", "esc"] {
+        for k in [":", "esc"] {
             ed.handle_event(Event::Key(k.parse().unwrap()));
         }
-        settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
-        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "a = 2\n");
-        assert_eq!(std::fs::read_to_string(&fixture).unwrap(), "b = 2\n");
+        crate::edits::turn_over(&mut ed);
         assert!(!open(&ed, &outside), "closed with the turn");
-        assert!(!open(&ed, &fixture), "in target/: closed with the turn too");
         assert!(open(&ed, &main));
         // Taken up: a move in the code pane while it's in front — it stays when the turn ends
         ed.open(&outside).unwrap();
@@ -11848,18 +11628,18 @@ mod tests {
         let away = dir.with_file_name(format!("tarae-aside-149-away-{}", std::process::id()));
         std::fs::create_dir_all(&away).unwrap();
         let away = std::fs::canonicalize(&away).unwrap();
-        let (setup, theirs) = (away.join("setup.sh"), away.join("theirs.toml"));
+        let (setup, theirs) = (dir.join("setup.sh"), away.join("theirs.toml"));
         std::fs::write(&theirs, "c = 1\n").unwrap();
         let open = |ed: &Editor, p: &Path| ed.docs.iter().any(|d| d.path.as_deref() == Some(p));
+        let answered = |n: u64| {
+            crate::tools::ANSWERED
+                .with(|a| a.borrow().iter().find(|(i, _)| *i == json!(n)).map(|(_, r)| r.clone()))
+        };
         let mut ed = editor("");
         ed.workspace.root = dir.clone();
         ed.open(&main).unwrap();
-        let log = fake_asks(
-            &mut ed,
-            &dir,
-            &[("Write", json!({"file_path": setup, "content": "echo hi\n"}))],
-            false,
-        );
+        let made = json!({"edits": [{"file_path": setup, "old_string": "", "new_string": "echo hi\n"}]});
+        let log = claude_calls(&mut ed, &dir, "edit", &made);
         feed(&mut ed, "<space>l");
         feed(&mut ed, "make it<ret>");
         settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
@@ -11884,33 +11664,28 @@ mod tests {
         assert_eq!(ed.cards_waiting(), (0, 1), "{:?}", ed.inbox());
         ed.workspace_switch(front);
         ed.handle_event(Event::Key("y".parse().unwrap()));
-        assert_eq!(permission_answer_to(&log, "p1")["behavior"], "allow", "answered");
-        // Closed under a review all the same: the review ends with it, Claude told why
-        let reviewed = |ed: &mut Editor, id: &str, doc: &Path| {
-            ed.workspace.claude.chat.as_mut().unwrap().edits.queue.push_back(crate::edits::Pending {
-                request_id: id.into(),
-                tool: "Write".into(),
-                input: json!({"file_path": doc, "content": "echo bye\n"}),
-                reason: String::new(),
-                since: std::time::Instant::now(),
-                row: None,
-                protected: Some(false),
-            });
-            ed.handle_event(Event::Job(Box::new(|_| {})));
-            ed.workspace.claude.review.as_ref().filter(|r| r.ready).map(|r| r.doc_id).expect("its review")
+        settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
+        assert!(tool_answer(&log).contains("setup.sh"), "answered: {}", tool_answer(&log));
+        // Closed under a review all the same: the review ends with it, Claude told
+        let reviewed = |ed: &mut Editor, n: u64| {
+            let args =
+                json!({"edits": [{"file_path": setup, "old_string": "echo hi", "new_string": "echo bye"}]});
+            crate::edittool::call(ed, crate::tools::Call::test(n), &args).unwrap();
+            settle_until(ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+            ed.workspace.claude.review.as_ref().map(|r| r.doc_id).expect("its review")
         };
-        let doc = reviewed(&mut ed, "p9", &setup);
+        let doc = reviewed(&mut ed, 9);
         ed.close_doc(doc);
         assert!(ed.workspace.claude.review.is_none(), "the review went with its buffer");
-        let a = permission_answer_to(&log, "p9");
-        assert!(a["behavior"] == "deny" && a["message"].as_str().unwrap().contains("was closed"), "{a}");
+        settle_until(&mut ed, |_| answered(9).is_some());
+        assert!(!std::fs::read_to_string(&setup).unwrap().contains("bye"), "nothing written");
         // Found without its buffer (gone some other way): it ends and says so — the keys stay the editor's
-        let doc = reviewed(&mut ed, "p10", &setup);
+        let doc = reviewed(&mut ed, 10);
         ed.workspace.claude.review.as_mut().unwrap().doc_id = doc + 1000;
         ed.handle_event(Event::Job(Box::new(|_| {})));
         assert!(ed.workspace.claude.review.is_none(), "not kept with nothing to draw");
         assert!(ed.messages.last().unwrap().2.contains("can't be shown"), "{:?}", ed.messages.last());
-        assert_eq!(permission_answer_to(&log, "p10")["behavior"], "deny");
+        settle_until(&mut ed, |_| answered(10).is_some());
         assert!(!matches!(ed.keys_to().region, crate::uistate::Region::EditReview));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&away).ok();
@@ -11922,21 +11697,19 @@ mod tests {
         use serde_json::json;
         let (dir, main, _, lib) = follow_project(name);
         let new = dir.join("src/new.rs");
-        let edit =
-            |f: &Path, old: &str, new: &str| json!({"file_path": f, "old_string": old, "new_string": new});
+        let edit = |f: &Path, old: &str, new: &str| json!({"edits": [{"file_path": f, "old_string": old, "new_string": new}]});
         let mut ed = editor("");
         ed.workspace.claude.checkpoints.dir = store.map(Path::to_path_buf);
         ed.viewport = (30, 100);
         ed.open(&lib).unwrap();
-        fake_asks(
+        fake_edits(
             &mut ed,
             &dir,
             &[
-                ("Edit", edit(&main, "line 2", "LINE 2")),
-                ("Write", json!({"file_path": new, "content": "pub fn new() {}\n"})),
-                ("Edit", edit(&lib, "line 9", "LINE 9")),
+                edit(&main, "line 2", "LINE 2"),
+                edit(&new, "", "pub fn new() {}\n"),
+                edit(&lib, "line 9", "LINE 9"),
             ],
-            true,
         );
         feed(&mut ed, "<space>l");
         ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
@@ -12225,17 +11998,15 @@ mod tests {
         std::fs::remove_dir_all(&store).ok();
     }
 
-    /// Review at the end: what a file was is on disk before claude is allowed to write it — a crash right
-    /// after still has it. (Saves are held here: the answer waits for them.)
+    /// Review at the end: what a file was is on disk before Claude's change is written — a crash right after
+    /// still has it. (Saves are held here: the write and its answer wait for them.)
     #[test]
-    fn what_a_file_was_is_kept_before_claude_writes_it() {
-        use serde_json::json;
+    fn what_a_file_was_is_kept_before_claudes_change_is_written() {
         let store = std::env::temp_dir().join(format!("tarae-turns-first-{}", std::process::id()));
         let (dir, main, ..) = follow_project("kept-first");
         let mut ed = editor("");
         ed.workspace.claude.checkpoints.dir = Some(store.clone());
-        let edit = json!({"file_path": main, "old_string": "line 2", "new_string": "LINE 2"});
-        let log = fake_asks(&mut ed, &dir, &[("Edit", edit)], true);
+        let log = fake_edits(&mut ed, &dir, &[edit_of(&main, "line 2", "LINE 2")]);
         feed(&mut ed, "<space>l");
         ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
         let held = crate::checkpoint::hold_saves();
@@ -12249,10 +12020,12 @@ mod tests {
             }
         }
         let sent = std::fs::read_to_string(&log).unwrap_or_default();
-        assert!(!sent.contains("\"request_id\":\"p1\""), "answered before what it was is kept: {sent}");
+        assert!(!sent.contains("\"request_id\":\"c1\""), "answered before what it was is kept: {sent}");
+        assert_eq!(std::fs::read_to_string(&main).unwrap(), "line 1\nline 2\nline 3\n", "not written yet");
         drop(held);
-        settle_until(&mut ed, |_| std::fs::read_to_string(&log).unwrap_or_default().contains("\"p1\""));
-        assert_eq!(permission_answer_to(&log, "p1")["behavior"], "allow");
+        let a = tool_answer_to(&mut ed, &log, "c1");
+        assert!(a.contains("written: ") && a.contains("main.rs (1)"), "{a}");
+        assert_eq!(std::fs::read_to_string(&main).unwrap(), "line 1\nLINE 2\nline 3\n");
         let was = |t: &crate::checkpoint::Touched| {
             t.path == main && t.before.as_ref().is_some_and(|b| *b == "line 1\nline 2\nline 3\n")
         };
@@ -12756,6 +12529,18 @@ mod tests {
         std::fs::remove_dir_all(&repo).ok();
     }
 
+    /// Claude's `edit` of `file` (`old` → `new`) as its claude asks it: a call to tarae's tool over the stream.
+    fn edit_call(file: &Path, old: &str, new: &str) -> serde_json::Value {
+        mcp_edit(serde_json::json!({"edits": [{"file_path": file, "old_string": old, "new_string": new}]}))
+    }
+
+    /// Claude's `edit` with `args`, as its claude asks it (request `e1`).
+    fn mcp_edit(args: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"type": "control_request", "request_id": "e1", "request": {"subtype": "mcp_message",
+            "server_name": "tarae", "message": {"jsonrpc": "2.0", "id": 71, "method": "tools/call",
+            "params": {"name": "edit", "arguments": args}}}})
+    }
+
     /// Claude's cards in a session behind wait for it: nothing comes up over the front session — no card, no
     /// review, the cursor stays — and it's said once, named; in front they're up; leaving again, they go
     /// with it. Harmless: the read it asks for is never answered (a file in the test's own temp folder).
@@ -12769,30 +12554,21 @@ mod tests {
         std::fs::create_dir_all(&out).unwrap();
         let outside = std::fs::canonicalize(&out).unwrap().join("notes.md");
         std::fs::write(&outside, "# marker\n").unwrap();
-        let ask = |id: &str, tool: &str, input: serde_json::Value| {
-            json!({"type": "control_request", "request_id": id,
-            "request": {"subtype": "can_use_tool", "tool_name": tool, "input": input}})
-        };
+        let read = json!({"type": "control_request", "request_id": "r1",
+            "request": {"subtype": "can_use_tool", "tool_name": "Read", "input": {"file_path": outside}}});
         let mut ed = editor("");
         ed.workspace.root = repo.clone();
         feed(&mut ed, ":o a.txt<ret>");
         let front_doc = ed.doc().id;
-        fake_claude_stream(
-            &mut ed,
-            &[
-                json!("sleep 0.3"),
-                ask("r1", "Read", json!({"file_path": outside})),
-                ask("e1", "Edit", json!({"file_path": file, "old_string": "one", "new_string": "ONE"})),
-            ],
-        );
+        fake_claude_stream(&mut ed, &[json!("sleep 0.3"), read, edit_call(&file, "one", "ONE")]);
         let behind = ed.workspace_open(&wt).unwrap();
         feed(&mut ed, "<space>lfix it<ret><esc>:workspace-switch 0<ret>");
-        // (the edit judged too — where it leads, on a worker: `edits::next` shows none before; Linux's workers
-        // came after the queue, and the review wasn't up yet at the switch)
+        // (the edit worked out too — on a worker: Linux's workers came after the queue, and the review wasn't up
+        // yet at the switch)
         let waiting = |ed: &Editor| {
             let l = workspace_by(ed, behind);
             l.parked.iter().any(crate::offer::Offer::claudes)
-                && l.claude.chat.as_ref().is_some_and(|c| c.edits.queue.iter().any(|p| p.protected.is_some()))
+                && l.claude.chat.as_ref().is_some_and(|c| c.edits.sets.iter().any(|s| !s.review.is_empty()))
         };
         settle_until(&mut ed, waiting);
         assert!(ed.offers.is_empty(), "no card over the front session");
@@ -12832,12 +12608,10 @@ mod tests {
         let repo = git_repo("session-edit-news", &[("a.txt", "one\n")]);
         let wt = worktree(&repo, "edit-news");
         let file = wt.join("a.txt");
-        let edit = json!({"type": "control_request", "request_id": "e1", "request": {"subtype": "can_use_tool",
-            "tool_name": "Edit", "input": {"file_path": file, "old_string": "one", "new_string": "ONE"}}});
         let mut ed = editor("");
         ed.workspace.root = repo.clone();
         feed(&mut ed, ":o a.txt<ret>");
-        fake_claude_stream(&mut ed, &[json!("sleep 0.3"), edit]);
+        fake_claude_stream(&mut ed, &[json!("sleep 0.3"), edit_call(&file, "one", "ONE")]);
         let behind = ed.workspace_open(&wt).unwrap();
         feed(&mut ed, "<space>lfix it<ret><esc>:workspace-switch 0<ret>");
         let told =
@@ -12848,13 +12622,13 @@ mod tests {
         ed.with_workspace(behind, |ed| ed.drop_cards(|w| matches!(w, crate::offer::What::Screen { .. })));
         assert_ne!(ed.doing(workspace_by(&ed, behind)), crate::workspace::Doing::Waiting);
         // Then its edit: said again, its row marked
-        // (in line, where it leads worked out — `edits::judge_later`)
+        // (in line, worked out on a worker)
         settle_until(&mut ed, |ed| {
             workspace_by(ed, behind)
                 .claude
                 .chat
                 .as_ref()
-                .is_some_and(|c| c.edits.queue.front().is_some_and(|p| p.protected.is_some()))
+                .is_some_and(|c| c.edits.sets.iter().any(|s| !s.review.is_empty()))
         });
         assert_eq!(told(&ed), 2, "said again: {:?}", ed.messages.iter().map(|m| &m.2).collect::<Vec<_>>());
         assert_eq!(ed.doing(workspace_by(&ed, behind)), crate::workspace::Doing::Waiting);

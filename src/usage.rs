@@ -1389,9 +1389,11 @@ mod tests {
             let input = json!({ "pattern": "needle-in-the-input", "file_path": "/p/secret.rs" });
             u.tally.called(id, name, &input, std::path::Path::new("/p"), None, 0);
         };
-        for (id, tools) in
-            [("m1", &["mcp__tarae__search", "mcp__other__fetch"][..]), ("m2", &["Read"]), ("m3", &[])]
-        {
+        for (id, tools) in [
+            ("m1", &["mcp__tarae__search", "mcp__other__fetch"][..]),
+            ("m2", &["mcp__tarae__read"]),
+            ("m3", &[]),
+        ] {
             let start = json!({ "type": "stream_event", "event": { "type": "message_start",
                 "message": { "id": id, "model": "claude-opus-5-5", "usage": usage(1) } } });
             line(&mut u, start);
@@ -1414,7 +1416,7 @@ mod tests {
             (Some(1), Some("chat"), Some(3))
         );
         let steps: Vec<Value> = e["steps"].as_array().unwrap().iter().map(|s| s["tools"].clone()).collect();
-        assert_eq!(steps, [json!(["search", "other"]), json!(["Read"]), json!([])]);
+        assert_eq!(steps, [json!(["search", "other"]), json!(["read"]), json!([])]);
         assert_eq!(
             (e["steps"][0]["context"].as_u64(), e["steps"][0]["output"].as_u64()),
             (Some(20_510), Some(120))

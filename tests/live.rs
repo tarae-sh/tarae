@@ -2009,14 +2009,13 @@ fn edit_check(task: &EditTask, work: &Path, check: &Path, target: &Path) -> Resu
     if wrong.is_empty() { Ok(()) } else { Err(wrong.join("; ")) }
 }
 
-/// Does tarae's own `edit` beat Claude Code's Edit and Write, beside them or instead? One build, three arms
-/// (`llm.edit-tools`, in each run's own config): `native` (Edit and Write), `both`, `tarae` (only `edit` — the
-/// default since this A/B, 2026-10-13).
-/// Each makes the same small changes to `TOOLS_CORPUS` (`EDIT_TASKS`), one turn each, review at the end on (no
-/// card stops a run), the language server off; what each run cost is read from claude's stream, and the result
-/// is checked after the turn (`edit_check`: cargo, and the files' texts). Arms rotate per run. `TARAE_AB_BIN`
-/// (the build; else `TARAE_BIN`, else this one), `TARAE_AB_ARMS` ("native,both,tarae"), `TARAE_AB_RUNS` (1 — a
-/// pilot), `TARAE_AB_TASKS` (names; all), `TARAE_AB_BUDGET` ($, 10), `TARAE_AB_MODEL` ("opus"), `TARAE_AB_EFFORT`.
+/// What tarae's `edit` costs and gets right on a build: the same small changes to `TOOLS_CORPUS` (`EDIT_TASKS`),
+/// one turn each, review at the end on (no card stops a run), the language server off; what each run cost is
+/// read from claude's stream, and the result is checked after the turn (`edit_check`: cargo, and the files'
+/// texts) — an A/B by running it on two builds. (Its first run, 2026-10-13, set `edit` against Claude Code's Edit
+/// and Write, beside it or instead — those arms went with them, audit 2.A, 2026-10-26; git has them.)
+/// `TARAE_AB_BIN` (the build; else `TARAE_BIN`, else this one), `TARAE_AB_RUNS` (1 — a pilot), `TARAE_AB_TASKS`
+/// (names; all), `TARAE_AB_BUDGET` ($, 10), `TARAE_AB_MODEL` ("opus"), `TARAE_AB_EFFORT`.
 /// Rows go to `target/live/edit-ab.tsv`, streams and summaries to `target/live/edit-ab/`; cargo's cache for the
 /// checks is `target/live/edit-ab-target` (the first check builds the corpus cold).
 #[test]
@@ -2027,8 +2026,7 @@ fn chat_edit_ab() {
         return;
     }
     let bin = var("TARAE_AB_BIN");
-    let arms_said = var("TARAE_AB_ARMS").unwrap_or_else(|| "native,both,tarae".into());
-    let arms: Vec<&str> = arms_said.split(',').map(str::trim).filter(|a| !a.is_empty()).collect();
+    let arms = ["edit"];
     let runs: usize = var("TARAE_AB_RUNS").and_then(|r| r.parse().ok()).unwrap_or(1);
     let budget: f64 = var("TARAE_AB_BUDGET").and_then(|b| b.parse().ok()).unwrap_or(10.0);
     let model = var("TARAE_AB_MODEL").unwrap_or_else(|| "opus".into());
@@ -2065,9 +2063,7 @@ fn chat_edit_ab() {
                     sb.copy_commit(TOOLS_CORPUS, &EDIT_CORPUS_PATHS),
                     "commit {TOOLS_CORPUS} in this clone"
                 );
-                let llm = format!(
-                    "model = \"{model}\"\neffort = \"{effort}\"\nreview-at-end = true\nedit-tools = \"{arm}\"\n"
-                );
+                let llm = format!("model = \"{model}\"\neffort = \"{effort}\"\nreview-at-end = true\n");
                 let stream = teed(&sb, &llm);
                 let mut t = sb.spawn(&["README.md"]);
                 let started = Instant::now();
@@ -2225,57 +2221,6 @@ fn chat_edit_recovers_from_a_miss() {
     );
     assert!(results.iter().skip(1).any(|(e, _)| !e), "then an edit that landed: {results:?}");
     assert_eq!(now, "pub fn greet(name: &str) -> String {\n    format!(\"Hi, {name}!\")\n}\n");
-}
-
-/// Before the A/B: what Claude Code's Edit does with a file tarae's `edit` just changed — does it still ask for
-/// its own Read? One turn in the `both` arm on a small file: `edit` first, then Edit with no Read between; the
-/// Edit's result and claude's version (its `system` init) are said, and kept in `target/live/edit-then-edit.jsonl`.
-#[test]
-#[ignore = "live: run with `cargo live` (uses Claude)"]
-fn chat_edit_then_native_edit() {
-    if !have("claude") {
-        return;
-    }
-    let sb = Sandbox::live("edit-then-edit");
-    let stream = teed(&sb, "review-at-end = true\nedit-tools = \"both\"\n");
-    sb.write("notes.txt", "alpha\nbeta\n");
-    let mut t = sb.spawn(&["notes.txt"]);
-    let (_, capped) = ab_turn(
-        &mut t,
-        "This is a test of two edit tools. First, with tarae's edit tool, change alpha to ALPHA in notes.txt. \
-         Then, with the Edit tool (not edit), change beta to BETA in notes.txt — call Edit directly, with no Read \
-         before it, even if it fails. Then say in one line what Edit answered.",
-        &stream,
-    );
-    let text = std::fs::read_to_string(&stream).unwrap_or_default();
-    let kept = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/live/edit-then-edit.jsonl");
-    let _ = std::fs::copy(&stream, &kept);
-    let version = text
-        .lines()
-        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-        .find(|v| v["type"] == "system" && v["subtype"] == "init")
-        .and_then(|v| v["claude_code_version"].as_str().map(str::to_string));
-    // Each Edit call's result, as claude sent it back
-    let mut edit_ids = Vec::new();
-    let mut results = Vec::new();
-    for v in text.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()) {
-        for c in v["message"]["content"].as_array().into_iter().flatten() {
-            if c["type"] == "tool_use" && c["name"] == "Edit" {
-                edit_ids.push(c["id"].clone());
-            }
-            if c["type"] == "tool_result" && edit_ids.contains(&c["tool_use_id"]) {
-                results.push(format!("error {}: {}", c["is_error"], c["content"]));
-            }
-        }
-    }
-    let m = measure(&text, sb.work().to_str().unwrap());
-    eprintln!(
-        "EDIT_THEN_EDIT claude {version:?}, calls {:?}, capped {capped}\n  Edit answered: {results:#?}\n  notes.txt now: {:?}\n  answer: {}",
-        m.tools,
-        std::fs::read_to_string(sb.file("notes.txt")).unwrap_or_default(),
-        m.answer
-    );
-    assert!(version.is_some(), "claude's init in its stream");
 }
 
 /// A turn's edit, undone with `space u` (on disk too); after a restart the conversation goes on, and Claude

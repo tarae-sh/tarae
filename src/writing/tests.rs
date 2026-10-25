@@ -51,13 +51,12 @@ fn led(ed: &Editor) -> Option<usize> {
 /// A call's input as the stream brings it, its reader kept between pieces as the reader thread keeps it.
 struct Writer {
     call: String,
-    tool: Tool,
     scan: Scan,
 }
 
 impl Writer {
-    fn new(call: &str, tool: Tool) -> Writer {
-        Writer { call: call.into(), tool, scan: Scan::new(tool) }
+    fn new(call: &str) -> Writer {
+        Writer { call: call.into(), scan: Scan::new() }
     }
 
     /// `json` cut into pieces at `cuts` (character counts), each sent as it would come — `done`: the last with its
@@ -70,15 +69,15 @@ impl Writer {
             at = cut.min(chars.len());
             self.scan.feed(&piece);
             let done = done && at == chars.len();
-            let d = Delta { call: self.call.clone(), tool: self.tool, pieces: self.scan.take(), done };
+            let d = Delta { call: self.call.clone(), pieces: self.scan.take(), done };
             crate::chat::stream_event(ed, g, StreamEv::Writing(d));
         }
     }
 }
 
 /// A whole call's input, sent in pieces at `cuts`.
-fn write(ed: &mut Editor, g: u64, call: &str, tool: Tool, json: &str, cuts: &[usize]) {
-    Writer::new(call, tool).send(ed, g, json, cuts, true);
+fn write(ed: &mut Editor, g: u64, call: &str, json: &str, cuts: &[usize]) {
+    Writer::new(call).send(ed, g, json, cuts, true);
 }
 
 /// The code area's rows of a frame `w` wide (the chat's columns left out).
@@ -164,7 +163,7 @@ fn an_edit_is_drawn_as_it_is_written() {
     // where it was, the keys in the chat or not)
     ed.workspace.viewer.at = crate::workspace::At::Chat;
     frame(&mut ed, 100, 30);
-    let mut w = Writer::new("t1", Tool::Edit);
+    let mut w = Writer::new("t1");
     w.send(&mut ed, g, &input[..mid], &[20, 60], false);
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
     frame(&mut ed, 100, 30);
@@ -226,7 +225,7 @@ fn the_review_opens_on_the_same_rows() {
     crate::typed::execute(&mut ed, "reload").unwrap();
     frame(&mut ed, 100, 30);
     let input = edit_input("    let b = 20;\n    let c = a + b;\n");
-    write(&mut ed, g, "t1", Tool::Edit, &input, &[30, 70]);
+    write(&mut ed, g, "t1", &input, &[30, 70]);
     let input: Value = serde_json::from_str(&input).unwrap();
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
     let live = frame(&mut ed, 100, 30);
@@ -255,9 +254,10 @@ fn the_review_opens_on_the_same_rows() {
 fn an_edit_with_no_one_place_is_not_drawn() {
     let (mut ed, dir, g) = scene("writing-nowhere");
     let twice = json!({"edits": [{"file_path": "a.rs", "old_string": "let", "new_string": "const"}]});
-    write(&mut ed, g, "t1", Tool::Edit, &twice.to_string(), &[]);
-    let outside = json!({"file_path": "/etc/hosts", "old_string": "localhost", "new_string": "x"});
-    write(&mut ed, g, "t2", Tool::NativeEdit, &outside.to_string(), &[]);
+    write(&mut ed, g, "t1", &twice.to_string(), &[]);
+    let outside =
+        json!({"edits": [{"file_path": "/etc/hosts", "old_string": "localhost", "new_string": "x"}]});
+    write(&mut ed, g, "t2", &outside.to_string(), &[]);
     let looked = |ed: &Editor| {
         let c = ed.workspace.claude.chat.as_ref().unwrap();
         c.writing.calls.iter().flat_map(|c| &c.items).all(|it| matches!(it.place, Place::Nowhere))
@@ -267,7 +267,7 @@ fn an_edit_with_no_one_place_is_not_drawn() {
     assert_eq!(ed.ui_state().workspaces[0].sessions[0].writing[0].lines, None);
     // One place; your line above it: still drawn, a line lower
     let once = edit_input("    let b = 3;\n");
-    let mut w = Writer::new("t3", Tool::Edit);
+    let mut w = Writer::new("t3");
     w.send(&mut ed, g, &once[..once.len() - 8], &[], false);
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
     ed.doc_mut().set_selection(crate::selection::Selection::point(0));
@@ -292,13 +292,13 @@ fn an_edit_with_no_one_place_is_not_drawn() {
 fn a_change_that_lands_takes_its_rows() {
     let (mut ed, dir, g) = scene("writing-landed");
     let input = edit_input("    let b = 2;\n    let c = 3;\n");
-    write(&mut ed, g, "t1", Tool::Edit, &input, &[]);
+    write(&mut ed, g, "t1", &input, &[]);
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
     std::fs::write(dir.join("a.rs"), TEXT.replace("    let b = 2;\n", "    let b = 2;\n    let c = 3;\n"))
         .unwrap();
     crate::typed::execute(&mut ed, "reload").unwrap();
     // (another call's piece comes before this one's result: the rows are laid out again)
-    Writer::new("t2", Tool::Edit).send(&mut ed, g, r#"{"edits":[{"file_path":"a.rs""#, &[], false);
+    Writer::new("t2").send(&mut ed, g, r#"{"edits":[{"file_path":"a.rs""#, &[], false);
     assert!(shown(ed.doc()).is_none(), "the landed change's rows");
     let rows = frame(&mut ed, 100, 30);
     assert_eq!(rows.iter().filter(|r| r.ends_with("let c = 3;")).count(), 1, "once: {rows:#?}");
@@ -321,7 +321,7 @@ fn the_head_stays_in_sight_as_it_is_written() {
         s("line 10\n"),
         s(&new)
     );
-    let mut w = Writer::new("t1", Tool::Edit);
+    let mut w = Writer::new("t1");
     let upto = |n: usize| input.find(&format!("written {n}\\n")).unwrap() + format!("written {n}").len();
     w.send(&mut ed, g, &input[..upto(1)], &[], false);
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
@@ -420,7 +420,7 @@ fn follow_keeps_the_line_being_rewritten_in_sight() {
     assert!(status(&frame(&mut ed, 100, 30)).contains("● normal"), "not led yet");
     let input = kept_lines_input();
     let upto = |t: &str| input.rfind(t).unwrap() + t.len();
-    let mut w = Writer::new("t1", Tool::Edit);
+    let mut w = Writer::new("t1");
     w.send(&mut ed, g, &input[..upto(r"let a = 1;\n")], &[], false);
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
     w.send(&mut ed, g, "", &[], false);
@@ -463,7 +463,7 @@ fn the_caret_never_misses_a_frame_on_a_line_kept() {
     let accent = claude_colour(&ed);
     let input = kept_lines_input();
     let upto = |t: &str| input.rfind(t).unwrap() + t.len();
-    let mut w = Writer::new("t1", Tool::Edit);
+    let mut w = Writer::new("t1");
     w.send(&mut ed, g, &input[..upto(r"let a = 1;\n")], &[], false);
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
     w.send(&mut ed, g, "", &[], false);
@@ -497,7 +497,7 @@ fn the_caret_is_a_bar_that_reads_on_the_writing_rows_wash() {
             ed.workspace.viewer.at = at;
             frame(&mut ed, 100, 30);
             let input = edit_input("    let b = 20;\n    let c = a");
-            let mut w = Writer::new("t1", Tool::Edit);
+            let mut w = Writer::new("t1");
             w.send(&mut ed, g, &input[..input.len() - 4], &[], false);
             settle(&mut ed, |ed| shown(ed.doc()).is_some());
             w.send(&mut ed, g, "", &[], false);
@@ -542,7 +542,7 @@ fn a_key_sequence_under_way_holds_the_cursor_and_its_end_decides() {
         press(&mut ed, prefix);
         let input = kept_lines_input();
         let upto = |t: &str| input.rfind(t).unwrap() + t.len();
-        let mut w = Writer::new("t1", Tool::Edit);
+        let mut w = Writer::new("t1");
         w.send(&mut ed, g, &input[..upto(r"let a = 1;\n")], &[], false);
         settle(&mut ed, |ed| shown(ed.doc()).is_some());
         w.send(&mut ed, g, "", &[], false);
@@ -661,7 +661,7 @@ fn a_key_left_under_way_pauses_follow() {
         press(&mut ed, keys);
         assert!(ed.workspace.claude.chat.as_ref().unwrap().follow.paused, "{keys}: paused");
         let input = kept_lines_input();
-        Writer::new("t1", Tool::Edit).send(&mut ed, g, &input[..input.len() - 20], &[], false);
+        Writer::new("t1").send(&mut ed, g, &input[..input.len() - 20], &[], false);
         settle(&mut ed, |ed| shown(ed.doc()).is_some());
         assert_eq!(ed.cursor_line(), 0, "{keys}: the cursor where you left it");
     }
@@ -735,7 +735,7 @@ fn with_the_keys_in_the_chat_claudes_place_is_a_mark() {
     ed.workspace.viewer.at = crate::workspace::At::Chat;
     frame(&mut ed, 100, 30);
     let input = edit_input("    let b = 20;\n    let c = a");
-    let mut w = Writer::new("t1", Tool::Edit);
+    let mut w = Writer::new("t1");
     w.send(&mut ed, g, &input[..input.len() - 4], &[], false);
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
     w.send(&mut ed, g, "", &[], false);
@@ -793,7 +793,7 @@ fn a_jump_waiting(name: &str) -> (Editor, crate::scratch::Scratch, u64, Writer, 
         s("    let x5 = 5;\n"),
         s("    let x5 = 50;\n")
     );
-    let mut w = Writer::new("t1", Tool::Edit);
+    let mut w = Writer::new("t1");
     let first = input.find("600").unwrap();
     w.send(&mut ed, g, &input[..first], &[], false);
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
@@ -886,7 +886,7 @@ fn a_jump_left_waiting_is_never_taken_late() {
         s("    let x62 = 62;\n"),
         s("    let x62 = 620;\n")
     );
-    let mut w = Writer::new("t2", Tool::Edit);
+    let mut w = Writer::new("t2");
     w.send(&mut ed, g, &near[..near.find("620").unwrap()], &[], false);
     settle(&mut ed, |ed| shown(ed.doc()).is_some_and(|s| s.blocks.iter().any(|b| b.first == 61)));
     w.send(&mut ed, g, "", &[], false);
@@ -927,7 +927,7 @@ fn an_added_lines_cursor_stays_put_when_it_lands() {
     let (old, new) = ("    let b = 2;\n", "    let b = 2;\n    let c = 3;\n");
     let input =
         format!(r#"{{"edits":[{{"file_path":"a.rs","old_string":{},"new_string":{}}}]}}"#, s(old), s(new));
-    let mut w = Writer::new("t1", Tool::Edit);
+    let mut w = Writer::new("t1");
     w.send(&mut ed, g, &input[..input.find("= 3").unwrap()], &[], false);
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
     w.send(&mut ed, g, "", &[], false);
@@ -984,7 +984,7 @@ fn an_edit_accepted_in_its_review_leads_the_cursor_there() {
     crate::typed::execute(&mut ed, "reload").unwrap();
     frame(&mut ed, 100, 30);
     let input = edit_input("    let b = 20;\n");
-    write(&mut ed, g, "t1", Tool::Edit, &input, &[30, 70]);
+    write(&mut ed, g, "t1", &input, &[30, 70]);
     let input: Value = serde_json::from_str(&input).unwrap();
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
     crate::chat::stream_event(
@@ -1043,7 +1043,7 @@ fn tall_scene(name: &str) -> (Editor, crate::scratch::Scratch, u64) {
 fn write_tall(ed: &mut Editor, g: u64, keys: &str, more: &str) -> String {
     let new: String = (1..=40).map(|i| format!("    let y{i} = {i};\n")).collect();
     let input = edit_of("a.rs", "    let x10 = 10;\n", &new).replace("}]}", &format!("}}{more}]}}"));
-    let mut w = Writer::new("t1", Tool::Edit);
+    let mut w = Writer::new("t1");
     let upto = |n: usize| input.find(&format!("y{n} = ")).unwrap();
     w.send(ed, g, &input[..upto(1)], &[], false);
     settle(ed, |ed| shown(ed.doc()).is_some());
@@ -1104,7 +1104,7 @@ fn an_edit_whose_end_you_did_not_watch_goes_to_its_first_line() {
     crate::follow::toggle(&mut ed);
     assert!(!ed.workspace.claude.chat.as_ref().unwrap().follow.paused, "C-f: following again");
     // (a call made beside it streams on: what's drawn is laid out again, follow leading now)
-    Writer::new("t2", Tool::Edit).send(&mut ed, g, r#"{"edits":[{"file_path":"a.rs""#, &[], false);
+    Writer::new("t2").send(&mut ed, g, r#"{"edits":[{"file_path":"a.rs""#, &[], false);
     call_edit(&mut ed, g, "t1", 2, &input);
     settle(&mut ed, |ed| ed.doc().text.to_string().contains("let y40 = 40;"));
     assert_eq!(led(&ed), Some(9), "the view on its first changed line");
@@ -1180,7 +1180,7 @@ fn a_whole_block_follow_does_not_lead_leaves_your_cursor_in_sight() {
     ed.doc_mut().set_selection(crate::selection::Selection::point(at));
     frame(&mut ed, 100, 30);
     let new: String = (1..=40).map(|i| format!("    let y{i} = {i};\n")).collect();
-    write(&mut ed, g, "t1", Tool::Edit, &edit_of("a.rs", "    let x10 = 10;\n", &new), &[]);
+    write(&mut ed, g, "t1", &edit_of("a.rs", "    let x10 = 10;\n", &new), &[]);
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
     let rows = frame(&mut ed, 100, 30);
     assert!(rows.iter().any(|r| r.contains("let x10 ")), "your cursor's line in sight: {rows:#?}");
@@ -1205,7 +1205,7 @@ fn a_many_item_edit_stays_at_its_last_written_items_end() {
         item("    let x40 = 40;\n", "    let z1 = 1;\n    let z2 = 2;\n    let z3 = 3;\n")
     );
     let cuts: Vec<usize> = input.match_indices(r#"{"file_path""#).map(|(i, _)| i).collect();
-    let mut w = Writer::new("t1", Tool::Edit);
+    let mut w = Writer::new("t1");
     let mut at = 0;
     for (n, &cut) in cuts[1..].iter().chain([&input.len()]).enumerate() {
         w.send(&mut ed, g, &input[at..cut], &[], cut == input.len());
@@ -1288,7 +1288,7 @@ fn perf_budget_stream_frame_with_live_rows() {
         crate::typed::execute(&mut ed, "reload").unwrap();
         let mut buf = Vec::with_capacity(1 << 16);
         crate::term::render(&mut ed, &mut buf, 120, 40).unwrap();
-        let mut w = Writer::new("t1", Tool::Edit);
+        let mut w = Writer::new("t1");
         let first: String = chars[..head].iter().collect();
         w.send(&mut ed, g, &first, &[], false);
         settle(&mut ed, |ed| shown(ed.doc()).is_some());
@@ -1341,7 +1341,7 @@ fn perf_budget_reveal_frame_with_live_rows() {
         crate::typed::execute(&mut ed, "reload").unwrap();
         let mut buf = Vec::with_capacity(1 << 16);
         crate::term::render(&mut ed, &mut buf, 120, 40).unwrap();
-        let mut w = Writer::new("t1", Tool::Edit);
+        let mut w = Writer::new("t1");
         let first: String = chars[..head].iter().collect();
         w.send(&mut ed, g, &first, &[], false);
         settle(&mut ed, |ed| shown(ed.doc()).is_some());
@@ -1376,8 +1376,8 @@ fn perf_budget_reveal_frame_with_live_rows() {
 /// pieces drawn where they go. A message's start begins its blocks anew: a piece for a block of the message before
 /// is no one's.
 #[test]
-fn the_native_edit_streams_from_its_lines_to_its_rows() {
-    let (mut ed, _dir, g) = scene("writing-native");
+fn an_edit_streams_from_its_lines_to_its_rows() {
+    let (mut ed, _dir, g) = scene("writing-lines");
     let line = |e: Value| json!({"type": "stream_event", "event": e});
     let piece = |p: &str| {
         line(json!({"type": "content_block_delta", "index": 1,
@@ -1385,15 +1385,14 @@ fn the_native_edit_streams_from_its_lines_to_its_rows() {
     };
     let mut r = Reading::default();
     let start = json!({"type": "content_block_start", "index": 1,
-        "content_block": {"type": "tool_use", "id": "e1", "name": "Edit", "input": {}}});
+        "content_block": {"type": "tool_use", "id": "e1", "name": "mcp__tarae__edit", "input": {}}});
     assert!(r.line(&line(start)));
-    let input =
-        r#"{"file_path":"a.rs","old_string":"    let b = 2;\n","new_string":"    let b = 22;\n    let d = 4"#;
+    let input = r#"{"edits":[{"file_path":"a.rs","old_string":"    let b = 2;\n","new_string":"    let b = 22;\n    let d = 4"#;
     for p in input.as_bytes().chunks(9) {
         assert!(r.line(&piece(std::str::from_utf8(p).unwrap())));
     }
     for d in r.take() {
-        assert_eq!((d.call.as_str(), d.tool), ("e1", Tool::NativeEdit));
+        assert_eq!(d.call, "e1");
         crate::chat::stream_event(&mut ed, g, StreamEv::Writing(d));
     }
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
@@ -1410,7 +1409,7 @@ fn the_native_edit_streams_from_its_lines_to_its_rows() {
 fn a_closed_chat_takes_its_rows_with_it() {
     let (mut ed, _dir, g) = scene("writing-close");
     let input = edit_input("    let b = 20;\n");
-    Writer::new("t1", Tool::Edit).send(&mut ed, g, &input[..input.len() - 8], &[], false);
+    Writer::new("t1").send(&mut ed, g, &input[..input.len() - 8], &[], false);
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
     crate::chat::close(&mut ed);
     assert!(ed.doc().writing.is_none());
@@ -1424,7 +1423,7 @@ fn a_place_found_after_its_review_is_not_drawn() {
     let (mut ed, _dir, g) = scene("writing-late");
     let input = edit_input("    let b = 20;\n");
     // (whole: the place is being looked for, its result not landed yet)
-    write(&mut ed, g, "t1", Tool::Edit, &input, &[]);
+    write(&mut ed, g, "t1", &input, &[]);
     let id = ed.doc().id;
     let from = TEXT.find("    let b").unwrap();
     let change = (from, from + 15, "    let b = 2;\n".to_string(), "    let b = 20;\n".to_string());
@@ -1446,7 +1445,7 @@ fn reduce_motion_and_calm_on_the_frame() {
     ed.bleed_ink = true;
     ed.reduce_motion = true;
     let input = edit_input("    let b = 20;\n");
-    Writer::new("t1", Tool::Edit).send(&mut ed, g, &input[..input.find("20").unwrap() + 2], &[], false);
+    Writer::new("t1").send(&mut ed, g, &input[..input.find("20").unwrap() + 2], &[], false);
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
     crate::term::BLEED_SEEN.with_borrow_mut(Vec::clear);
     frame(&mut ed, 100, 30);
@@ -1465,9 +1464,9 @@ fn reduce_motion_and_calm_on_the_frame() {
     assert_eq!(ed.tick_wanted(), Some(crate::editor::TICK), "full: it fades in");
 }
 
-/// Performance budget: a batch of a Write over a 5,000-line file (200 KB — laid out plain while it's written, the
-/// diff waiting for the whole text), the rows laid out again and the frame drawn, near its end: within one frame
-/// (16 ms; `TARAE_PERF_SLACK` loosens it); the worst batch, each its best of 3 rounds.
+/// Performance budget: a batch of an edit rewriting a 5,000-line file whole (200 KB — laid out plain while it's
+/// written, the diff waiting for the whole text), the rows laid out again and the frame drawn, near its end: within
+/// one frame (16 ms; `TARAE_PERF_SLACK` loosens it); the worst batch, each its best of 3 rounds.
 #[test]
 fn perf_budget_stream_frame_of_a_big_write() {
     if crate::test_results::unoptimized("writing::tests::perf_budget_stream_frame_of_a_big_write") {
@@ -1477,7 +1476,8 @@ fn perf_budget_stream_frame_of_a_big_write() {
     let budget = std::time::Duration::from_millis(16) * slack.max(1);
     let text: String = (0..5_000).map(|i| format!("    let value_{i} = compute({i}, \"타래\");\n")).collect();
     let new = text.replace("compute(", "measure(");
-    let input = format!(r#"{{"file_path":"a.rs","content":{}}}"#, serde_json::to_string(&new).unwrap());
+    let input =
+        json!({"edits": [{"file_path": "a.rs", "old_string": &text, "new_string": &new}]}).to_string();
     let chars: Vec<char> = input.chars().collect();
     let near_end = chars.len() - 40 * 16 - 10;
     let cuts: Vec<usize> = (near_end..chars.len() - 10).step_by(16).collect();
@@ -1488,7 +1488,7 @@ fn perf_budget_stream_frame_of_a_big_write() {
         crate::typed::execute(&mut ed, "reload").unwrap();
         let mut buf = Vec::with_capacity(1 << 16);
         crate::term::render(&mut ed, &mut buf, 120, 40).unwrap();
-        let mut w = Writer::new("w1", Tool::Write);
+        let mut w = Writer::new("w1");
         let first: String = chars[..near_end].iter().collect();
         w.send(&mut ed, g, &first, &[], false);
         settle(&mut ed, |ed| shown(ed.doc()).is_some());
@@ -1510,19 +1510,6 @@ fn perf_budget_stream_frame_of_a_big_write() {
     assert!(worst < budget, "a batch took {worst:?} (budget {budget:?})");
 }
 
-/// The native Write: the whole file its place, the text written so far over it.
-#[test]
-fn a_write_is_drawn_over_the_whole_file() {
-    let (mut ed, _dir, g) = scene("writing-write");
-    let input = json!({"file_path": "a.rs", "content": "fn main() {\n    let a = 1;\n    todo!()"});
-    write(&mut ed, g, "w1", Tool::Write, &input.to_string(), &[]);
-    settle(&mut ed, |ed| shown(ed.doc()).is_some());
-    let b = &shown(ed.doc()).unwrap().blocks[0];
-    assert_eq!((b.first, b.last), (0, 4), "every line of it");
-    let rows = frame(&mut ed, 100, 30);
-    assert!(rows.iter().any(|r| r.ends_with("todo!()")), "{rows:#?}");
-}
-
 /// `editor.motion`: `none` draws nothing bleeding (the rows stay), `calm` keeps bleeding ink but moves nothing on a clock —
 /// the wave still, a frame a second while waiting, a toast whole at once; macOS's Reduce Motion makes `full` calm,
 /// never `none` less.
@@ -1532,7 +1519,7 @@ fn the_motion_setting_holds_still_what_moves() {
     ed.bleed_ink = true;
     let input = edit_input("    let b = 20;\n");
     let cut = input.find("20").unwrap() + 2;
-    Writer::new("t1", Tool::Edit).send(&mut ed, g, &input[..cut], &[], false);
+    Writer::new("t1").send(&mut ed, g, &input[..cut], &[], false);
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
     let bleeding = |ed: &mut Editor| {
         crate::term::BLEED_SEEN.with_borrow_mut(Vec::clear);
@@ -1595,7 +1582,7 @@ fn an_edit_ending_in_a_wide_character_is_placed() {
         s("let a = 1; // one —"),
         s("let a = 1; // one — two")
     );
-    let mut w = Writer::new("t1", Tool::Edit);
+    let mut w = Writer::new("t1");
     w.send(&mut ed, g, &input, &[30], false);
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
     assert_eq!(
@@ -1701,7 +1688,7 @@ fn a_piece_is_drawn_as_typed_at_the_streams_pace() {
     let input = edit_input("    let b = 2000000000;\n");
     let head = input.find("2000").unwrap();
     let tail = head + input[head..].find(';').unwrap();
-    let mut w = Writer::new("t1", Tool::Edit);
+    let mut w = Writer::new("t1");
     w.send(&mut ed, g, &input[..head], &[], false);
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
     let mut sim =
@@ -1742,7 +1729,7 @@ fn an_unfocused_tarae_asks_no_reveal_frames_and_catches_up() {
     let input = edit_input("    let b = 2000000000;\n");
     let head = input.find("2000").unwrap();
     let tail = head + input[head..].find(';').unwrap();
-    let mut w = Writer::new("t1", Tool::Edit);
+    let mut w = Writer::new("t1");
     w.send(&mut ed, g, &input[..head], &[], false);
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
     let mut sim = crate::sim::Sim::new(
@@ -1773,7 +1760,7 @@ fn without_motion_the_writing_is_shown_as_it_comes() {
     frame(&mut ed, 100, 30);
     let input = edit_input("    let b = 3000;\n");
     let head = input.find("3000").unwrap();
-    let mut w = Writer::new("t1", Tool::Edit);
+    let mut w = Writer::new("t1");
     w.send(&mut ed, g, &input[..head], &[], false);
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
     let sim =
@@ -1795,7 +1782,7 @@ fn an_edit_landing_mid_reveal_shows_what_landed() {
     frame(&mut ed, 100, 30);
     let input = edit_input("    let b = 2000000000;\n");
     let head = input.find("2000").unwrap();
-    let mut w = Writer::new("t1", Tool::Edit);
+    let mut w = Writer::new("t1");
     w.send(&mut ed, g, &input[..head], &[], false);
     settle(&mut ed, |ed| shown(ed.doc()).is_some());
     let mut sim =

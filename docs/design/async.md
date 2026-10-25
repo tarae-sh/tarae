@@ -41,7 +41,7 @@ trace tells us where the other 36 went.
   5. Draw again, but only if something changed.
 
   Every event also runs about 25 sync hooks (`editor.rs:1398-1420`): `schedule_parses`,
-  `lsp_flush`, `git_schedule`, `disk_sync`, `saves_due`, `sessions_sync`, `edits::next` and so on.
+  `lsp_flush`, `git_schedule`, `disk_sync`, `saves_due`, `sessions_sync`, `refactor::next` and so on.
   An idle tarae draws nothing and isn't woken (CLAUDE.md; e2e
   `an_idle_editor_draws_nothing_and_sleeps`).
 - **`Jobs::spawn` makes one OS thread per job.** There's no pool and no limit
@@ -102,7 +102,7 @@ Column meanings:
 | Claude's `run` | `tools.rs:651`. Light checks happen inline. A read-only check runs as a job (`tools.rs:774`). A card goes up if needed. Then the guard job (`tools.rs:1270-1306`: probe, `sandbox::policy` with `cargo metadata`/`go env` cached per root by mtimes (`sandbox.rs:772-815`), log-stream `Watch` + 150 ms `WATCH_READY`), then `task_start_for` (`task.rs:418`). | as task runs | turn end makes it moot (each closure checks `c.busy()`). Dropped runs are answered. | — | run card, then the panel. **Refused while busy**: "already running … wait for it to finish, then run again" (`tools.rs:1063-1071`), "hasn't answered your last command yet" (`tools.rs:810-815`, `1328-1331`). |
 | Claude's `run_tests` | find the target in a job (`tools.rs:261`), then guard, then `test_start_guarded` | as tests | the same | — | **refused while tests run** (`tools.rs:281-289`) |
 | Claude's reads (Read/Grep/Glob outside the project) | job (`reads.rs`), then a card if needed, **one card at a time** (`Chat.reads` queue) | disk | — | FIFO | Read card |
-| Claude's edits | `can_use_tool` → review queue (`Chat.edits.queue`, `edits::next` every event). The write happens on a worker (refactor `land`). | the user's attention | deny | FIFO | in-buffer review, change-set card |
+| Claude's edits | tarae's `edit` → its change set (`Chat.edits.sets`, `refactor::next` every event). The write happens on a worker (refactor `land`). | the user's attention | deny | FIFO | in-buffer review, change-set card |
 | `:preflight` | **one `sh` script for all steps** (`preflight.rs:114-125`) in the task slot. Refused while a task runs (`preflight.rs:344-349`). | everything: fmt, clippy ×2, test ×2, perf | stop the task | steps in order inside the script | panel with step chips. **Today: 15m52s, 12m21s and 15m04s (log 13:55, 14:54, 15:19). "perf: not measured (machine busy: load 6.6)" once.** |
 | perf's own guard | `xtask/src/perf.rs:259-270`: waits up to 90 s for load < 5, then "not measured" | — | — | — | its note in the preflight summary |
 | Chat stream | claude process. `pump` thread + stderr thread (`llm.rs:290-330`); text batched every 25 ms | the network, Anthropic's side | `interrupt` control request, SIGKILL for once-asks | strict | chat |

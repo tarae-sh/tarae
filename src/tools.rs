@@ -19,7 +19,7 @@
 //! - `rename` and `replace` are the editor's own refactoring — one call, one change set that lands as
 //!   Claude's edits do, in the review (`refactor.rs`).
 //! - `edit` is Claude's own replacements, new files, moves and deletes in one call, landing the same way
-//!   (`edittool.rs`) — listed unless the chat's process was started with `llm.edit-tools = "native"`.
+//!   (`edittool.rs`) — the chat's one edit tool.
 //! - `ui` says what's on the screen by id — the cards and what they ask, toasts, panes, panels, runs — at
 //!   Claude's level, answered at once, no card (`uistate/claude.rs`).
 
@@ -120,9 +120,7 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
     let result = match method {
         "tools/list" => {
             sandbox_look(ed);
-            // (the edit tools its process was started with — `Chat.edit_tools`)
-            let arm = ed.workspace.claude.chat.as_ref().map_or(ed.config.llm.edit_tools, |c| c.edit_tools);
-            Ok(list(arm))
+            Ok(list())
         }
         "tools/call" => {
             // (side by side with another call still unanswered? — `calls.rs`; `sized` sees it answered)
@@ -215,10 +213,10 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
     })
 }
 
-/// `tools/list`'s answer for a chat process started with edit tools `arm` — the same to the byte for a ping that
-/// keeps its cache warm (`keepwarm.rs`: the tools come first in the cache's prefix).
-pub fn list(arm: crate::edittool::Arm) -> Value {
-    let mut tools = vec![
+/// `tools/list`'s answer — the same to the byte for a ping that keeps its cache warm (`keepwarm.rs`: the tools
+/// come first in the cache's prefix).
+pub fn list() -> Value {
+    let tools = vec![
         crate::notes::tool_schema(),
         run_tests_schema(),
         run_schema(),
@@ -237,10 +235,8 @@ pub fn list(arm: crate::edittool::Arm) -> Value {
         crate::uistate::claude::tool_schema(),
         crate::gittool::schema(),
         crate::committool::schema(),
+        crate::edittool::schema(),
     ];
-    if arm.tarae() {
-        tools.push(crate::edittool::schema());
-    }
     json!({ "tools": tools.into_iter().map(annotated).collect::<Vec<_>>() })
 }
 

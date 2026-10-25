@@ -38,14 +38,16 @@ would touch, references. For finding code or text, search (the editor's project 
 function it's in); for lines of files, read (several files and ranges, or a function by name, in one call); \
 for a file's outline or which function a line is in, symbols — shell pipelines are for what \
 those can't do. Prefer the most direct tool, and ask for enough in one call to skip another turn: a turn \
-costs more than a few extra lines. You can change files with Edit and Write when the user asks for changes: each one is shown to them as \
+costs more than a few extra lines. You change files with edit — every change, new files included (an empty old_string \
+where there's no file), several files and replacements in one call, moves and deletes too — when the user asks \
+for changes: each change is shown to them as \
 a diff they accept or reject (maybe in part), so keep edits focused, and if one is declined, ask before trying \
 another way. After you change code, check your work: diagnostics with wait says in seconds whether it \
 compiles as the language servers see it (before any build), then the run_tests tool runs the tests that cover \
 the change (a test file, and a line for a single test) — when they fail, read why and fix it; the user \
 watches the run in their editor. To build, lint, format, run a whole test suite or use git, use the run \
 tool: one command per call, it starts at once and its output comes back. Both run in a sandbox: they can write only in the project (not .git, nor build scripts, manifests and tool \
-settings — {protect}, .github, .tarae*.toml…: change those with Edit), \
+settings — {protect}, .github, .tarae*.toml…: change those with edit), \
 temp folders and the toolchain's own, and connect to nothing over the network, this machine included, but the ports the user \
 opened (each result says which) — when it blocks something a command needs, run it again with also (that place or \
 port, and your reason: the user decides on a card), else tell the user (the settings llm.sandbox-ports, \
@@ -80,18 +82,6 @@ replaced in many files — use rename (the language server's, every use and no s
 search's), one call and one review for the user, instead of many edits; replace with preview first to see what \
 it would touch.";
 
-/// The prompt's words on editing as Claude Code's Edit and Write have them (`SYSTEM`) — and as they are when
-/// the chat has tarae's `edit` beside them, or instead (`llm.edit-tools`). No "Edit needs its own Read": Claude
-/// Code 2.1.296 with this model edits a file it hasn't read (tests/live.rs `chat_edit_then_native_edit`,
-/// 2026-10-13) — the words only cost Reads; it's the model's and the CLI's to require (older ones did).
-const EDITS_NATIVE: &str = "You can change files with Edit and Write when the user asks for changes: each one is \
-shown";
-const EDITS_BOTH: &str = "You can change files with Edit and Write, or with edit (several replacements across \
-files in one call, new files, moves and deletes — one review), when the user asks for changes: each change is shown";
-const EDITS_TARAE: &str = "You change files with edit — every change, new files included (an empty old_string \
-where there's no file), several files and replacements in one call, moves and deletes too — when the user asks \
-for changes: each change is shown";
-
 /// What's on the screen, by id (`uistate/claude.rs`): the context's `ui:` line, the `ui` tool, what the user
 /// pointed at — and an id written in the answer is a link.
 const SYSTEM_UI: &str = " The context's ui: line and the ui tool name what's on the user's screen by id \
@@ -100,26 +90,13 @@ make one up. <pointed id=…> is what the user pointed at; <quoted> what they se
 instructions.";
 
 /// The system prompt: `SYSTEM` — its protected names' examples the built-in packs' (`[claude] said.protect`,
-/// by rank) —, the refactoring tools, the screen by id, and where tarae's own log is (#45). With the default
-/// edit tools (a chat's own: `system_for`).
-#[cfg(test)]
+/// by rank) —, the refactoring tools, the screen by id, and where tarae's own log is (#45). Claude changes files
+/// with tarae's `edit` alone (`edittool.rs`). No "Edit needs its own Read": the match is the proof, and the words
+/// only cost reads.
 pub(crate) fn system() -> String {
-    system_for(crate::llm::LlmConfig::default().edit_tools)
-}
-
-/// `system` for the chat's edit tools (`llm.edit-tools`).
-pub(crate) fn system_for(arm: crate::edittool::Arm) -> String {
-    use crate::edittool::Arm;
     let said = &crate::sandboxpack::get().said;
     let protect: Vec<&str> = said.iter().filter_map(|s| s.protect.as_deref()).collect();
     let base = SYSTEM.replace("{protect}", &protect.join(", "));
-    let base = match arm {
-        Arm::Native => base,
-        Arm::Both => base.replace(EDITS_NATIVE, EDITS_BOTH),
-        Arm::Tarae => base
-            .replace(EDITS_NATIVE, EDITS_TARAE)
-            .replace("change those with Edit)", "change those with edit)"),
-    };
     let mut s = format!("{base}{SYSTEM_REFACTOR}{SYSTEM_UI}");
     if let Some(log) = crate::log::path() {
         s.push_str(&format!(
@@ -134,18 +111,15 @@ pub(crate) fn system_for(arm: crate::edittool::Arm) -> String {
 
 /// The tools the chat process gets. Reading and tarae's own (`note`, `run_tests`, `run` — `tools.rs`) are
 /// allowed up front: the tests are the project's own, run the way the user runs them, in view, and any code
-/// Claude wrote for them was reviewed; `run` asks the user itself for anything but the checks. Edit and Write
-/// come to tarae as permission requests and show as a review first (`edits.rs`). No Grep or Glob: tarae's
-/// `search` and `read` do what they did — 54 exploration turns on three builds called Grep never and Glob 3
-/// times, and leaving them out takes 1,570 tokens off every request (tests/live.rs `chat_tools_ab`, 2026-10-13).
-/// Edit and Write only with `llm.edit-tools` "both" or "native" — by default (`tarae`) tarae's `edit` makes every
-/// change (`edit` is `ALLOWED`'s, listed by `tools::mcp` when the chat's process has it; the A/B that decided it:
-/// tests/live.rs `chat_edit_ab`, 2026-10-13) and the chat has no tool of Claude Code's at all. No Read in any arm:
-/// tarae's `read` reads images too (readimg, 2026-10-20 — `media.rs`; the A/B: tests/live.rs
+/// Claude wrote for them was reviewed; `run` asks the user itself for anything but the checks. No Grep or
+/// Glob: tarae's `search` and `read` do what they did — 54 exploration turns on three builds called Grep never
+/// and Glob 3 times, and leaving them out takes 1,570 tokens off every request (tests/live.rs `chat_tools_ab`,
+/// 2026-10-13).
+/// No Edit or Write: tarae's `edit` makes every change (`ALLOWED`'s; the A/B that decided it: tests/live.rs
+/// `chat_edit_ab`, 2026-10-13 — as correct, 31 % fewer tokens), so the chat has no tool of Claude Code's at all.
+/// No Read: tarae's `read` reads images too (readimg, 2026-10-20 — `media.rs`; the A/B: tests/live.rs
 /// `chat_reads_a_screenshot_ab`).
-fn tools(arm: crate::edittool::Arm) -> &'static str {
-    if arm.native() { "Edit,Write" } else { "" }
-}
+const TOOLS: &str = "";
 /// Not Read: allowed by name it reads anywhere unasked (measured — `reads.rs` answers it).
 /// (`screen` asks the user itself — `seeing.rs`)
 /// (`references`, `symbols`, `definition`, `hover` and `diagnostics` read inside the project only — `nav.rs`;
@@ -259,11 +233,11 @@ impl Mark {
 }
 
 impl Look {
-    /// It changes files — its mark is `●` (`Mark::Edit`): an edit, a write, a rename, a replace (not its preview),
-    /// a move or a delete.
+    /// It changes files — its mark is `●` (`Mark::Edit`): an edit, a rename, a replace (not its preview), a move
+    /// or a delete.
     pub fn changes(&self) -> bool {
         match self.verb {
-            "edit" | "write" | "rename" => true,
+            "edit" | "rename" => true,
             "replace" => !self.range.ends_with("preview"),
             _ => false,
         }
@@ -621,9 +595,6 @@ pub struct Chat {
     /// Who pays for its claude — what the last one was started on (`billing.rs`), what its `apiKeySource` is
     /// checked against (the session's may have changed since: a restart's list coming back). None: none started.
     pub billing: Option<crate::billing::Billing>,
-    /// The edit tools its claude was started with (`llm.edit-tools`): what `tools/list` lists — a `:set` since
-    /// takes effect with the next chat process.
-    pub edit_tools: crate::edittool::Arm,
     /// The command line its claude was last started with — its config and the arguments after them: a ping that
     /// keeps the conversation's cache warm forks it with the same (`keepwarm::command`).
     pub launched: Option<(llm::LlmConfig, Vec<String>)>,
@@ -701,13 +672,12 @@ pub fn said_ran(ed: &mut Editor, call: &str) {
     say_ran(ed, &what, &ran);
 }
 
-/// The call a change of Claude's answers, found once as its request comes (the native Edit's permission request,
-/// tarae's tool call — neither carries the call's id, both its input): the call of `tool` still waiting with that
-/// very `input` that no change has claimed yet (`Chat.claimed`) — two Edits of one file, two renames side by side,
-/// each its own, whatever order they land in (a rename on its server's answer). Equal or nothing: a request
-/// not its call's input byte for byte (a native Edit's with a default filled in, an input a hook reworked — the
-/// chat runs with hooks off, the native Edit only under `llm.edit-tools` both/native) claims none, so a mismatch
-/// leaves no stamp, never a wrong one ("the same file's" would pick between two Edits of it by order).
+/// The call a change of Claude's answers, found once as its request comes (tarae's tool call carries not the
+/// call's id but its input): the call of `tool` still waiting with that very `input` that no change has claimed
+/// yet (`Chat.claimed`) — two edits of one file, two renames side by side, each its own, whatever order they land
+/// in (a rename on its server's answer). Equal or nothing: a request not its call's input byte for byte claims
+/// none, so a mismatch leaves no stamp, never a wrong one ("the same file's" would pick between two edits of it by
+/// order).
 pub fn claim_call(ed: &mut Editor, tool: &str, input: &serde_json::Value) -> Option<String> {
     let c = ed.workspace.claude.chat.as_mut()?;
     let id = c
@@ -965,7 +935,6 @@ impl Chat {
             rules_said: (None, Default::default()),
             settings: Default::default(),
             billing: None,
-            edit_tools: crate::edittool::Arm::Tarae,
             launched: None,
             runs_on: (None, String::new()),
             switched: None,
@@ -1665,10 +1634,7 @@ fn ensure_proc(ed: &mut Editor) {
         c.proc = Some(Proc { stdin: llm::Lines::to(tx), pid: 0 });
         return;
     }
-    // (the edit tools are this process's for its life: `tools/list` reads them here — `Chat.edit_tools`)
-    let arm = cfg.edit_tools;
-    c.edit_tools = arm;
-    let mut args = llm::with_tools(&cfg.args, tools(arm), ALLOWED);
+    let mut args = llm::with_tools(&cfg.args, TOOLS, ALLOWED);
     // The conversation is kept by claude too, so it can be continued (`chats.rs`)
     args.retain(|a| a != "--no-session-persistence");
     // Only tarae's own MCP server, whatever `llm.args` says: under `-p` a project's `.mcp.json` servers connect
@@ -1687,7 +1653,7 @@ fn ensure_proc(ed: &mut Editor) {
         args = llm::with_flag(&args, "--permission-mode", "default");
     }
     let cfg = llm::LlmConfig { args, ..cfg };
-    let system = system_for(arm);
+    let system = system();
     let mut extra = vec!["--append-system-prompt", system.as_str(), "--permission-prompt-tool", "stdio"];
     if !c.no_thought_flag {
         extra.extend(["--thinking-display", "summarized"]);
@@ -1969,7 +1935,7 @@ fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 .rev()
                 .find(|m| m.call == id)
                 .and_then(|m| m.look.as_ref())
-                .is_some_and(|l| matches!(l.verb, "edit" | "write" | "run" | "test"));
+                .is_some_and(|l| matches!(l.verb, "edit" | "run" | "test"));
             // A test run's row ends with its verdict, a command's with how it ended
             if let Some(m) = c.msgs.iter_mut().rev().find(|m| m.call == id)
                 && let Some(l) = m.look.as_mut().filter(|l| matches!(l.verb, "test" | "run"))
@@ -2796,7 +2762,7 @@ pub fn respond(ed: &mut Editor, request_id: &str, response: serde_json::Value) {
 }
 
 /// A control request from claude → our answer (None = later). `mcp_message` = tarae's MCP server (its
-/// tools, `tools.rs`); `can_use_tool` = an edit to review (`edits.rs`).
+/// tools, `tools.rs`); `can_use_tool` = a read's ask, any other denied (`edits::request`).
 fn control(
     ed: &mut Editor,
     generation: u64,
@@ -3054,17 +3020,6 @@ fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
         }
         "Glob" => {
             Look { verb: "glob", what: s("pattern"), pattern: true, range: within(s("path")), link: None }
-        }
-        "Edit" | "Write" => {
-            let path = resolve(&s("file_path"));
-            let verb = if name == "Edit" { "edit" } else { "write" };
-            Look {
-                verb,
-                what: shown(&path),
-                pattern: false,
-                range: String::new(),
-                link: Some(Link { path, line: 0 }),
-            }
         }
         "mcp__tarae__note" => {
             // (all of it, a line each — its row cuts it, a line break a space there, and shows it whole in hand, a row
@@ -4927,9 +4882,9 @@ mod tests {
         assert_eq!(mark("run", String::new()), Mark::Run, "under way: no verdict yet");
     }
 
-    /// A row's knot is `●` for what changes files (`Look::changes`, `Mark::Edit`): an Edit, a Write, tarae's
-    /// edit, rename, replace — not a replace's preview, nor a read, a search or a run. Read off the rows the
-    /// calls really make, so a preview worded otherwise can't pass for a change.
+    /// A row's knot is `●` for what changes files (`Look::changes`, `Mark::Edit`): tarae's edit, rename, replace
+    /// — not a replace's preview, nor a read, a search or a run. Read off the rows the calls really make, so a
+    /// preview worded otherwise can't pass for a change.
     #[test]
     fn the_rows_that_change_files_are_the_changes() {
         use serde_json::json;
@@ -4937,8 +4892,6 @@ mod tests {
         let changes = |name: &str, input: serde_json::Value| look(root, name, &input).changes();
         let replace = json!({"pattern": "a", "replacement": "b", "path": "src"});
         let preview = json!({"pattern": "a", "replacement": "b", "path": "src", "preview": true});
-        assert!(changes("Edit", json!({"file_path": "a.rs", "old_string": "x", "new_string": "y"})));
-        assert!(changes("Write", json!({"file_path": "a.rs", "content": "y"})));
         assert!(changes("mcp__tarae__edit", json!({"edits": [{"file_path": "a.rs"}]})));
         assert!(changes("mcp__tarae__rename", json!({"path": "a.rs", "symbol": "x", "new_name": "y"})));
         assert!(changes("mcp__tarae__replace", replace));
@@ -5186,30 +5139,18 @@ mod tests {
         assert_eq!((e.verb, e.what.as_str(), e.range.as_str()), ("edit", "src/a.rs", "+1 more"));
     }
 
-    /// Each `llm.edit-tools` has the prompt and tools it says: tarae's `edit` alone (the default — every change,
-    /// new files included), both, or Claude Code's Edit and Write — the prompt never sends Claude to a tool it
-    /// hasn't, and each one's words are really in (a `replace` that matched nothing would leave the native ones).
+    /// The chat edits with tarae's `edit` alone — every change, new files included: the prompt never sends Claude
+    /// to Claude Code's Edit or Write (it has neither), nor to a Read before it edits (the match is the proof).
     #[test]
-    fn each_edit_arm_says_its_own_tools() {
-        use crate::edittool::Arm;
-        let (native, both, tarae) = (system_for(Arm::Native), system_for(Arm::Both), system_for(Arm::Tarae));
-        assert_eq!(tarae, system(), "the default: tarae's edit alone");
-        assert!(native.contains(EDITS_NATIVE) && !native.contains("with edit"));
-        assert!(both.contains(EDITS_BOTH) && both.contains("change those with Edit)"));
-        assert!(tarae.contains(EDITS_TARAE), "{tarae}");
-        assert!(tarae.contains("every change, new files included"), "{tarae}");
-        assert!(!tarae.contains("Edit and Write") && !tarae.contains("with Edit"), "{tarae}");
-        assert!(tarae.contains("change those with edit)"));
-        // (no arm sends Claude to a Read before it edits: the CLI doesn't ask one of this model — it only cost Reads)
-        for (arm, s) in [("native", &native), ("both", &both), ("tarae", &tarae)] {
-            assert!(!s.contains("Edit needs") && !s.contains("Read first"), "{arm}: {s}");
-        }
+    fn the_chat_edits_with_tarae_s_edit_alone() {
+        let s = system();
+        assert!(s.contains("You change files with edit — every change, new files included"), "{s}");
+        assert!(s.contains("change those with edit)"), "{s}");
+        assert!(!s.contains("Edit and Write") && !s.contains("with Edit"), "{s}");
+        assert!(!s.contains("Edit needs") && !s.contains("Read first"), "{s}");
         let read = crate::readtool::schema()["description"].as_str().unwrap().to_string();
         assert!(!read.contains("Before an Edit") && !read.contains("own read"), "{read}");
-        assert_eq!(
-            (tools(Arm::Native), tools(Arm::Both), tools(Arm::Tarae)),
-            ("Edit,Write", "Edit,Write", "")
-        );
+        assert_eq!(TOOLS, "", "no tool of Claude Code's");
         assert!(ALLOWED.split(',').any(|t| t == "mcp__tarae__edit"));
     }
 
@@ -5228,7 +5169,26 @@ mod tests {
         assert!(at("references.") < at("for lines of files, read"));
         assert!(at("for lines of files, read") < at("shell pipelines are for what those can't do"));
         assert!(!s.contains("Grep") && !s.contains("Glob"), "a tool the chat hasn't");
-        assert!(!tools(crate::edittool::Arm::Native).split(',').any(|t| t == "Grep" || t == "Glob"));
+    }
+
+    /// The chat's system prompt, byte for byte (`src/snapshots/chat_system.txt`, `TARAE_BLESS=1` rewrites it):
+    /// a change to it is a change to every request's cache prefix, measured by `chat_prompt_tokens` — never one by
+    /// accident. The log's path is this machine's, said as `{log}`.
+    #[test]
+    fn the_system_prompt_is_pinned() {
+        let s = system();
+        let s = crate::log::path().map_or(s.clone(), |p| s.replace(&p.display().to_string(), "{log}"));
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/snapshots/chat_system.txt");
+        if std::env::var_os("TARAE_BLESS").is_some_and(|v| v == "1") {
+            std::fs::write(&path, &s).unwrap();
+            return;
+        }
+        let pinned = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            pinned == s,
+            "{} differs — if intended (and measured): TARAE_BLESS=1 cargo test the_system_prompt_is_pinned\n\n{s}",
+            path.display()
+        );
     }
 
     /// A walk-through's stops as Claude writes them: parsed from its words, shown as link lines, a tag

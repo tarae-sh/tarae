@@ -211,7 +211,7 @@ safety line. It stood in for confined reads.
 | **Outside the sandbox** | `outside_sandbox` with a reason | `y` only | All the user's permissions. |
 | **No sandbox here** | Linux until Landlock, tarae nested in a sandbox | `y` · `a` (as today) | Nothing enforces the capabilities. |
 | **Screen** (S2) | Claude's `screen` tool | `y` · `a` (as today) | It's already a capability with a scope. |
-| Edit review | Claude's Edit/Write to `PROTECTED` names in review-at-end mode, or to anything without it | (as today) | That's review, not permission. |
+| Edit review | Claude's `edit` to `PROTECTED` names in review-at-end mode, or to anything without it | (as today) | That's review, not permission. |
 
 Unchanged and not Claude's: trust, hooks, preflight defaults, grammar/install offers.
 

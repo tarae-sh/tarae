@@ -38,8 +38,6 @@ struct Job {
     text: Rope,
     version: u64,
     then: Then,
-    /// A new file of Claude's: its missing folders are made first, inside this project (`Document::make_folders`).
-    folders: Option<PathBuf>,
     /// A save Claude caused (its change accepted, its own write that never came): written beneath this folder
     /// through no link (`write_beneath`), its missing folders made the same way.
     beneath: Option<PathBuf>,
@@ -72,19 +70,6 @@ pub(crate) fn write_beneath(
     text.write_to(&mut bytes).map_err(|e| said(&e))?;
     let written = if there { dir.replace(name, &bytes) } else { dir.create(name, &bytes) };
     written.map(Some).map_err(|e| said(&e))
-}
-
-/// The folders `path` needs, for a new file of Claude's (`Document::make_folders`): made when they're inside
-/// `root`, else why not — never outside the project, where tarae doesn't write unasked.
-fn make_folders(root: &Path, path: &Path) -> Result<(), String> {
-    let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty() && !d.exists()) else { return Ok(()) };
-    if crate::paths::inside(root, dir).is_none() {
-        return Err(format!(
-            "writing {}: its folder isn't there, and tarae makes folders only inside the project",
-            path.display()
-        ));
-    }
-    std::fs::create_dir_all(dir).map_err(|e| format!("making {}: {e}", dir.display()))
 }
 
 /// A written (or failed) save, for the main loop.
@@ -138,11 +123,9 @@ fn write_one(job: Job, shared: &(Mutex<Shared>, Condvar), pause: &dyn Fn()) -> b
     };
     let result = match job.beneath.as_deref() {
         Some(root) => write_beneath(root, &job.path, &job.text, &|| pause()),
-        None => job.folders.as_deref().map_or(Ok(()), |root| make_folders(root, &job.path)).and_then(|()| {
-            crate::disk::write_atomic(&job.path, write)
-                .map(|()| crate::disk::stamp(&job.path))
-                .map_err(|e| format!("writing {}: {e}", job.path.display()))
-        }),
+        None => crate::disk::write_atomic(&job.path, write)
+            .map(|()| crate::disk::stamp(&job.path))
+            .map_err(|e| format!("writing {}: {e}", job.path.display())),
     };
     let (lock, cv) = shared;
     let idle = {
@@ -346,8 +329,7 @@ impl Editor {
         let doc = self.docs.iter_mut().find(|d| d.id == id).ok_or("the buffer was closed")?;
         let path = doc.check_save(force).map_err(|e| format!("{e:#}"))?;
         doc.saving += 1;
-        let folders = doc.make_folders.clone();
-        let job = Job { id, path, text: doc.text.clone(), version: doc.version(), then, folders, beneath };
+        let job = Job { id, path, text: doc.text.clone(), version: doc.version(), then, beneath };
         let jobs = self.events.jobs();
         self.saver.push(job, &jobs);
         Ok(())
@@ -627,54 +609,6 @@ mod tests {
         assert!(ed.flush_saves());
         assert_eq!(std::fs::read_to_string(outside.join("a.txt")).unwrap(), "theirs\n");
         assert!(toasts(&ed, ToastKind::Error).iter().any(|t| t.contains("a link")), "said");
-        std::fs::remove_dir_all(&base).ok();
-    }
-
-    /// The save tarae makes when Claude's write of an accepted edit never came (`agent_write_missed`): in the
-    /// project it goes through the folders by descriptor — `sub/` swapped for a link to outside meanwhile and
-    /// the outside file is untouched, said; a file outside the project (accepted on its review) is saved by
-    /// its path as before.
-    #[test]
-    fn the_save_for_a_missed_write_never_goes_through_a_link() {
-        let scratch = crate::scratch::Scratch::new("saver-missed");
-        let base = scratch.to_path_buf();
-        let (dir, outside, apart) = (base.join("p"), base.join("outside"), base.join("apart"));
-        for d in [dir.join("sub"), outside.clone(), apart.clone()] {
-            std::fs::create_dir_all(d).unwrap();
-        }
-        let real = |p: &Path| std::fs::canonicalize(p).unwrap();
-        let (dir, outside, apart) = (real(&dir), real(&outside), real(&apart));
-        std::fs::write(dir.join("sub/a.txt"), "one\n").unwrap();
-        std::fs::write(outside.join("a.txt"), "theirs\n").unwrap();
-        std::fs::write(apart.join("b.txt"), "one\n").unwrap();
-        let mut ed = Editor::new(Config::default());
-        ed.workspace.root = dir.clone();
-        // Claude's accepted edit, its write never come — and the folder swapped for a link meanwhile
-        let missed = |ed: &mut Editor, path: &Path| {
-            ed.open(path).unwrap();
-            feed(ed, "cTWO<esc>");
-            ed.doc_mut().agent_will_write();
-            (ed.doc().id, ed.doc().version())
-        };
-        let (id, version) = missed(&mut ed, &dir.join("sub/a.txt"));
-        std::fs::rename(dir.join("sub"), dir.join("sub.aside")).unwrap();
-        std::os::unix::fs::symlink(&outside, dir.join("sub")).unwrap();
-        // (its fingerprint the outside file's: a conflict would stop it before the write — what's tried is the write)
-        ed.doc_mut().disk = crate::disk::stamp(&outside.join("a.txt"));
-        ed.agent_write_missed(id, version);
-        assert!(ed.flush_saves());
-        assert_eq!(
-            std::fs::read_to_string(outside.join("a.txt")).unwrap(),
-            "theirs\n",
-            "never through the link"
-        );
-        assert_eq!(std::fs::read_to_string(dir.join("sub.aside/a.txt")).unwrap(), "one\n");
-        assert!(toasts(&ed, ToastKind::Error).iter().any(|t| t.contains("a link")), "said");
-        // Outside the project: by its path, as before
-        let (id, version) = missed(&mut ed, &apart.join("b.txt"));
-        ed.agent_write_missed(id, version);
-        assert!(ed.flush_saves());
-        assert_eq!(std::fs::read_to_string(apart.join("b.txt")).unwrap(), "TWOne\n");
         std::fs::remove_dir_all(&base).ok();
     }
 

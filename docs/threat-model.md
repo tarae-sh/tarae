@@ -41,7 +41,7 @@ connections may go (§1.5, the proxy's address rule).
 ```
  you ──▶ tarae (trusted: your process, not confined)
           ├─ the claude process  (as you, like any program of yours; network open)
-          │     tools: tarae's own (in tarae) — none of Claude Code's (but Edit/Write when enabled)
+          │     tools: tarae's own (in tarae) — none of Claude Code's
           │     starts by itself: git, security (its login), sh (system facts)
           ├─ Claude's runs        (sandboxed: Seatbelt on macOS; keeper + Landlock + seccomp + supervisor on Linux)
           ├─ tarae's own git, language servers, debug adapters (as you; git's repository commands held)
@@ -52,7 +52,7 @@ connections may go (§1.5, the proxy's address rule).
 |---|---|---|
 | read a file in the project | tarae's `read`/`search` → `reads::Gate` (an image or a PDF's pages as pictures: `media.rs`) | key-named files ask |
 | read outside the project | the same → a card (`y`/`a`/`A`/`n`) | home, above it, key folders: once only |
-| change a file | tarae's `edit`/`rename`/`replace` (or Edit/Write when enabled) → the review | you |
+| change a file | tarae's `edit`/`rename`/`replace` → the review | you |
 | run a command | tarae's `run`/`run_tests` → the sandbox | the kernel, and tarae's supervisor and proxy |
 | run a command outside the sandbox | `outside_sandbox` + a reason → a card, `y`/`n` only | you, every time |
 | see the screen | `screen` → a card | you |
@@ -754,10 +754,10 @@ Kept:
   (team memory). The memory folder is the repository's, shared by every checkout; what's there is another tool's
   notes, and memory a tarae claude wrote would be obeyed later by your own Claude Code.
   test: `llm::tests::every_claude_tarae_starts_has_its_memory_off`
-- **Its tools**: tarae's own, in-process — none of Claude Code's (`--tools ""`), but `Edit` and `Write` with
-  `llm.edit-tools` "both"/"native". No Read (tarae's `read` reads images too), no Bash, no
-  WebFetch or WebSearch, no Grep or Glob, no Task.
-  test: `chat::tests::each_edit_arm_says_its_own_tools`
+- **Its tools**: tarae's own, in-process — none of Claude Code's (`--tools ""`): no Edit or Write (tarae's `edit`
+  makes every change), no Read (tarae's `read` reads images too), no Bash, no WebFetch or WebSearch, no Grep or
+  Glob, no Task.
+  test: `chat::tests::the_chat_edits_with_tarae_s_edit_alone`
 - **Only tarae's MCP server** (`--strict-mcp-config`: a project's `.mcp.json` doesn't connect); `Skill` denied;
   hooks off (`disableAllHooks`).
   test: `claudetrust::tests::the_chat_asks_for_only_tarae_s_own_mcp_servers` ·

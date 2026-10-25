@@ -126,9 +126,6 @@ pub struct LlmConfig {
     /// Chat: Claude's edits go in as it makes them, the turn reviewed when it ends — every new chat starts
     /// so (`space v a` turns it on and off, and keeps it here).
     pub review_at_end: bool,
-    /// Chat: the tools Claude edits with (`llm.edit-tools` — `edittool::Arm`), fixed for a chat process when it
-    /// starts. Only your own config sets it (`trust::YOURS_ONLY`).
-    pub edit_tools: crate::edittool::Arm,
     /// Chat: load CLAUDE.md files and Claude Code settings like `claude` does (hooks off, edits always ask).
     pub chat_settings: bool,
     /// Keep every card asked about Claude's work, and every run of its refused with no card, in the record
@@ -204,7 +201,6 @@ impl Default for LlmConfig {
             follow: true,
             follow_resume: 20,
             review_at_end: false,
-            edit_tools: crate::edittool::Arm::Tarae,
             chat_settings: true,
             card_record: true,
             keep_env_key: false,
@@ -2193,7 +2189,7 @@ pub(crate) mod tests {
         let text = |t: &str| delta(0, serde_json::json!({"type": "text_delta", "text": t}));
         let input = |j: &str| delta(1, serde_json::json!({"type": "input_json_delta", "partial_json": j}));
         let start = serde_json::json!({"type": "stream_event", "event": {"type": "content_block_start",
-            "index": 1, "content_block": {"type": "tool_use", "id": "w1", "name": "Write", "input": {}}}});
+            "index": 1, "content_block": {"type": "tool_use", "id": "w1", "name": "mcp__tarae__edit", "input": {}}}});
         // (four lines at once, a pause of 2 s, the next)
         let mut child = Command::new("/bin/sh")
             .args(["-c", r#"printf '%s\n' "$1" "$2" "$3" "$4" "$5"; sleep 2; printf '%s\n' "$6""#, "sh"])
@@ -2201,7 +2197,7 @@ pub(crate) mod tests {
                 text("one"),
                 text("two"),
                 start.to_string(),
-                input(r#"{"file_path": "a.rs", "content": "x"#),
+                input(r#"{"edits": [{"file_path": "a.rs", "new_string": "x"#),
                 input("y"),
                 text("three"),
             ])

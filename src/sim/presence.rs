@@ -119,7 +119,6 @@ fn step(sim: &mut Sim, ed: &mut Editor, w: &mut World) -> String {
             });
             ch.writing.calls = vec![crate::writing::Call {
                 id: format!("t{}", w.turns),
-                tool: crate::writing::Tool::Edit,
                 items: vec![it],
                 done: false,
                 reviewed: Vec::new(),

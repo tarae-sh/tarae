@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ropey::Rope;
-pub use scan::{Field, Piece, Scan, Tool};
+pub use scan::{Field, Piece, Scan};
 
 use crate::codeview::{Edit, Mark, OtherKind, Row};
 use crate::document::DocId;
@@ -26,7 +26,6 @@ use crate::editor::Editor;
 /// What of a tool call's input came since the last batch (the reader thread's) — `done` once its block ended.
 pub struct Delta {
     pub call: String,
-    pub tool: Tool,
     pub pieces: Vec<Piece>,
     pub done: bool,
 }
@@ -55,7 +54,7 @@ impl Delta {
 /// came of them that the next batch sends.
 #[derive(Default)]
 pub struct Reading {
-    blocks: Vec<(u64, String, Tool, Scan)>,
+    blocks: Vec<(u64, String, Scan)>,
     ready: Vec<Delta>,
 }
 
@@ -75,39 +74,37 @@ impl Reading {
             }
             Some("content_block_start") => {
                 let b = &e["content_block"];
-                let (Some(i), Some(tool)) = (index, b["name"].as_str().and_then(Tool::of)) else {
-                    return false;
-                };
+                let Some(i) = index.filter(|_| b["name"] == scan::TOOL) else { return false };
                 if b["type"] != "tool_use" {
                     return false;
                 }
                 let id = b["id"].as_str().unwrap_or_default().to_string();
-                self.blocks.push((i, id, tool, Scan::new(tool)));
+                self.blocks.push((i, id, Scan::new()));
                 true
             }
             Some("content_block_delta") if e["delta"]["type"] == "input_json_delta" => {
                 let Some(b) = self.blocks.iter_mut().find(|b| Some(b.0) == index) else { return false };
-                b.3.feed(e["delta"]["partial_json"].as_str().unwrap_or_default());
-                let (call, tool, pieces) = (b.1.clone(), b.2, b.3.take());
-                self.add(call, tool, pieces, false);
+                b.2.feed(e["delta"]["partial_json"].as_str().unwrap_or_default());
+                let (call, pieces) = (b.1.clone(), b.2.take());
+                self.add(call, pieces, false);
                 true
             }
             Some("content_block_stop") => {
                 let Some(k) = self.blocks.iter().position(|b| Some(b.0) == index) else { return false };
-                let (_, call, tool, mut scan) = self.blocks.remove(k);
-                self.add(call, tool, scan.take(), true);
+                let (_, call, mut scan) = self.blocks.remove(k);
+                self.add(call, scan.take(), true);
                 true
             }
             _ => false,
         }
     }
 
-    fn add(&mut self, call: String, tool: Tool, pieces: Vec<Piece>, done: bool) {
+    fn add(&mut self, call: String, pieces: Vec<Piece>, done: bool) {
         if pieces.is_empty() && !done {
             return;
         }
         let Some(d) = self.ready.iter_mut().find(|d| d.call == call) else {
-            return self.ready.push(Delta { call, tool, pieces, done });
+            return self.ready.push(Delta { call, pieces, done });
         };
         d.done |= done;
         for p in pieces {
@@ -266,7 +263,6 @@ fn cluster_end(text: &str, mut at: usize) -> usize {
 
 pub struct Call {
     pub id: String,
-    pub tool: Tool,
     pub items: Vec<Item>,
     /// Its input is whole (the block ended).
     pub done: bool,
@@ -332,9 +328,9 @@ pub struct Found {
 }
 
 impl Item {
-    /// Its place can be looked for: a file and what it replaces (all of it for Write).
-    fn askable(&self, tool: Tool) -> bool {
-        self.file.closed && !self.other && (tool == Tool::Write || self.old.closed)
+    /// Its place can be looked for: a file and what it replaces.
+    fn askable(&self) -> bool {
+        self.file.closed && !self.other && self.old.closed
     }
 }
 
@@ -490,13 +486,7 @@ pub fn on_delta(ed: &mut Editor, d: Delta) {
     let k = match live.calls.iter().position(|c| c.id == d.call) {
         Some(k) => k,
         None => {
-            let call = Call {
-                id: d.call.clone(),
-                tool: d.tool,
-                items: Vec::new(),
-                done: false,
-                reviewed: Vec::new(),
-            };
+            let call = Call { id: d.call.clone(), items: Vec::new(), done: false, reviewed: Vec::new() };
             live.calls.push(call);
             live.calls.len() - 1
         }
@@ -546,19 +536,18 @@ pub fn on_delta(ed: &mut Editor, d: Delta) {
             Piece::Flag { .. } => {}
         }
     }
-    let tool = call.tool;
     let ask: Vec<(usize, String, String)> = call
         .items
         .iter_mut()
         .enumerate()
-        .filter(|(_, it)| matches!(it.place, Place::Unknown) && it.askable(tool))
+        .filter(|(_, it)| matches!(it.place, Place::Unknown) && it.askable())
         .map(|(i, it)| {
             it.place = Place::Looking;
             (i, it.file.s.clone(), it.old.s.clone())
         })
         .collect();
     for (i, file, old) in ask {
-        look(ed, d.call.clone(), i, tool, file, old);
+        look(ed, d.call.clone(), i, file, old);
     }
     sync(ed);
 }
@@ -573,7 +562,7 @@ fn lines_of(whole: &str, from: usize, to: usize) -> (usize, usize) {
 
 /// Where item `i` of `call` goes, worked out on a worker: its file in the project (not one named like a key
 /// Claude can't read), its text as the user has it, `old` in it once.
-fn look(ed: &mut Editor, call: String, i: usize, tool: Tool, file: String, old: String) {
+fn look(ed: &mut Editor, call: String, i: usize, file: String, old: String) {
     let root = crate::nav::project_root(ed);
     let keys = crate::reads::Keys::of(ed);
     let open: Vec<(PathBuf, DocId, u64, Rope)> = ed
@@ -592,10 +581,7 @@ fn look(ed: &mut Editor, call: String, i: usize, tool: Tool, file: String, old: 
                 None => (Cow::Disk(String::from_utf8(std::fs::read(&path).ok()?).ok()?), None),
             };
             let whole = text.string();
-            let (from, to) = match tool {
-                Tool::Write => (0, whole.len()),
-                _ => crate::edittool::one_place(&whole, &old)?,
-            };
+            let (from, to) = crate::edittool::one_place(&whole, &old)?;
             let lines = lines_of(&whole, from, to);
             Some(Found { path, from, to, seen, bound: None, held: String::new(), lines, protected })
         })();
@@ -661,13 +647,7 @@ pub fn sync(ed: &mut Editor) {
                         // (read from the disk: the buffer opened since, unchanged, holds it there)
                         None => {
                             !d.is_modified()
-                                && match call.tool {
-                                    Tool::Write => d.text.len_bytes() == f.to,
-                                    _ => d
-                                        .text
-                                        .get_byte_slice(f.from..f.to)
-                                        .is_some_and(|s| s == it.old.s.as_str()),
-                                }
+                                && d.text.get_byte_slice(f.from..f.to).is_some_and(|s| s == it.old.s.as_str())
                         }
                     });
                     if let Some(d) = holds {
@@ -683,14 +663,14 @@ pub fn sync(ed: &mut Editor) {
                     continue;
                 };
                 // The buffer changed: an edit elsewhere keeps the rows where what they replace is now, one inside
-                // it (a Write's is the whole file) ends them
+                // it ends them
                 if doc.version() != version {
                     // (what it writes is there now: the change landed — Claude's write unasked, its file reloaded;
                     // what it replaced may still be read inside it, an edit that adds lines)
                     let end = f.from + it.new.s.len();
                     let landed = it.new.closed
                         && doc.text.get_byte_slice(f.from..end).is_some_and(|s| s == it.new.s.as_str());
-                    let found = relocate(&doc.text, f).filter(|_| call.tool != Tool::Write && !landed);
+                    let found = relocate(&doc.text, f).filter(|_| !landed);
                     let Some((from, to)) = found else {
                         it.place = Place::Nowhere;
                         continue;

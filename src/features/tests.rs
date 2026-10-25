@@ -379,7 +379,6 @@ fn every_picker_kind_is_listed() {
 #[test]
 fn every_tool_claude_has_is_counted_by_name() {
     let mut ed = counting();
-    ed.config.llm.edit_tools = crate::edittool::Arm::Both;
     let msg = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
     let list = crate::tools::mcp(&mut ed, 0, "r1", &msg).expect("answered");
     let tools = list["result"]["tools"].as_array().expect("a list");
@@ -388,7 +387,7 @@ fn every_tool_claude_has_is_counted_by_name() {
         let name = t["name"].as_str().unwrap();
         assert_eq!(claude_tool(&format!("mcp__tarae__{name}")), name, "{name} isn't in CLAUDE_TOOLS");
     }
-    assert_eq!(claude_tool("Read"), "Read");
+    assert_eq!(claude_tool("Read"), "other", "none of Claude Code's: the chat has none");
     assert_eq!(claude_tool("mcp__tarae__/home/me/secret"), "other", "a made-up name isn't kept");
 }
 

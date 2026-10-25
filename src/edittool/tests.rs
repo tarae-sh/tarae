@@ -330,12 +330,10 @@ fn pump(ed: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) {
     }
 }
 
-/// `llm.edit-tools`: by default the chat's claude has `Read` alone of Claude Code's tools and tarae's `edit`
-/// listed (it makes every change); `:set llm.edit-tools native` leaves the running process as it started — its
-/// `tools/list` the same — and the next chat's has Edit and Write and no `edit`. (A stand-in claude writes its
-/// arguments in the test's own folder.)
+/// The chat's claude has no tool of Claude Code's — no Edit or Write, no Read — and tarae's `edit` listed (it
+/// makes every change), the next chat's too. (A stand-in claude writes its arguments in the test's own folder.)
 #[test]
-fn the_edit_tools_take_effect_with_the_next_chat() {
+fn the_chat_edits_with_edit_alone() {
     let dir = project("setting", &[]);
     let mut ed = Editor::new(crate::config::Config::default());
     ed.workspace.root = dir.clone();
@@ -359,14 +357,11 @@ fn the_edit_tools_take_effect_with_the_next_chat() {
     pump(&mut ed, "the chat's claude", |_| tools_arg(&dir).is_some());
     assert_eq!(tools_arg(&dir).as_deref(), Some(""), "no tool of Claude Code's: no Edit or Write, no Read");
     assert!(listed(&mut ed).iter().any(|t| t == "edit"));
-    crate::typed::execute(&mut ed, "set llm.edit-tools native").unwrap();
-    assert_eq!(ed.config.llm.edit_tools, Arm::Native);
-    assert!(listed(&mut ed).iter().any(|t| t == "edit"), "the running process keeps what it started with");
     std::fs::remove_file(dir.join("argv")).unwrap();
     crate::chat::reset(&mut ed);
     pump(&mut ed, "the next chat's claude", |_| tools_arg(&dir).is_some());
-    assert_eq!(tools_arg(&dir).as_deref(), Some("Edit,Write"));
-    assert!(!listed(&mut ed).iter().any(|t| t == "edit"), "native: no edit");
+    assert_eq!(tools_arg(&dir).as_deref(), Some(""));
+    assert!(listed(&mut ed).iter().any(|t| t == "edit"));
     std::fs::remove_dir_all(&dir).ok();
 }
 

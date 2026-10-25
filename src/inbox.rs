@@ -32,8 +32,7 @@ pub const NOTHING: &str = "nothing waits for you — no card, no edit, in any se
 /// One thing waiting for the user.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
-    /// `card#12` · `edit#s1:review` (an edit in its review) · `edit#s1:<request>` (one waiting for it) ·
-    /// `read#s1:<request>` (a read waiting for its card) · `set#s1:<n>` (a change set's files, one by one) ·
+    /// `card#12` · `edit#s1:review` (an edit in its review) · `read#s1:<request>` (a read waiting for its card) · `set#s1:<n>` (a change set's files, one by one) ·
     /// `apply#s1` (the user's own change set's files, one by one) ·
     /// `run#…` (Claude's run gone quiet) · `reviewer#s1` (its reviewer ended while it was behind) ·
     /// `rebase#s1` (its rebase resolved, the card put away).
@@ -250,11 +249,6 @@ impl Editor {
                 v.push((e, now.saturating_duration_since(since), u64::MAX));
             }
             let Some(c) = l.claude.chat.as_ref() else { continue };
-            for p in &c.edits.queue {
-                let path = crate::chat::resolve(&l.root, p.input["file_path"].as_str().unwrap_or_default());
-                let asks = format!("Claude's edit to {}", crate::chat::shown(&l.root, &path));
-                v.push(entry(format!("edit#{s}:{}", p.request_id), "edit", asks, p.since, "queued"));
-            }
             for p in &c.reads {
                 let at = p.look.at.as_deref().map_or_else(|| p.look.given.clone(), crate::allow::tilde);
                 let asks = format!("Claude's {} of {at}", p.look.tool);
@@ -389,13 +383,11 @@ impl Editor {
             let stop = if slot == Slot::Task { "space m c" } else { "space x c" };
             return self.set_status(format!("Claude's run: {said} — {stop} stops it, Claude hears why"));
         }
-        // An edit or a read: what holds it back here goes (insert mode, a prompt — its review waits for
-        // you to stop typing), then the queues go on
+        // An edit or a read: what holds it back here goes (insert mode, a prompt), then the queues go on
         if self.prompt.is_some() || self.mode != crate::editor::Mode::Normal {
             self.handle_key(crate::key::Key::plain(crate::key::Code::Esc));
             self.mode = crate::editor::Mode::Normal;
         }
-        crate::edits::next(self);
         crate::refactor::next(self);
         if let Some(r) = self.workspace.claude.review.as_mut() {
             r.away = false;

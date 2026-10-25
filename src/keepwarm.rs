@@ -260,7 +260,7 @@ fn readers(s: &Workspace) -> [bool; 1] {
 /// What of session `s` waits on you (but a mark), the first in this order.
 pub fn back(s: &Workspace) -> Option<Back> {
     let chat = s.claude.chat.as_ref();
-    let review = chat.is_some_and(|c| !c.edits.queue.is_empty() || !c.edits.sets.is_empty())
+    let review = chat.is_some_and(|c| !c.edits.sets.is_empty())
         || s.claude.review.is_some()
         || s.code_review.is_some();
     let claudes_test =
@@ -438,8 +438,7 @@ fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             p.requested.get_or_insert(at);
         }
         StreamEv::Control { request_id, request } => {
-            let arm = ed.workspace.claude.chat.as_ref().map_or(ed.config.llm.edit_tools, |c| c.edit_tools);
-            let _ = p.stdin.send(llm::control_response(&request_id, control(arm, &request)));
+            let _ = p.stdin.send(llm::control_response(&request_id, control(&request)));
         }
         StreamEv::Spent(s) => {
             let (back, requested) = (p.back, p.requested);
@@ -516,7 +515,7 @@ fn kept_said(k: &crate::usage::Kept) -> String {
 
 /// The ping's answer to its claude's control request: tarae's tools listed as the chat lists them (the cache's
 /// prefix), none of them run, no permission given.
-fn control(arm: crate::edittool::Arm, req: &Value) -> Value {
+fn control(req: &Value) -> Value {
     const NONE: &str = "this is a ping that keeps the cache warm: no tool runs here";
     if req["subtype"] == "can_use_tool" {
         return json!({ "behavior": "deny", "message": NONE });
@@ -534,7 +533,7 @@ fn control(arm: crate::edittool::Arm, req: &Value) -> Value {
     };
     let method = msg["method"].as_str().unwrap_or_default();
     let result = match method {
-        "tools/list" => Ok(crate::tools::list(arm)),
+        "tools/list" => Ok(crate::tools::list()),
         "tools/call" => Ok(crate::tools::content(Err(NONE.to_string()))),
         m => crate::mcp::common(m, msg, rev, json!({ "tools": {} })).ok_or_else(|| crate::mcp::not_found(m)),
     };

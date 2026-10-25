@@ -99,9 +99,6 @@ pub struct Follow {
     /// The stop showing (`replaying`) was taken in a pane follow doesn't lead (`aside`): Claude moving on there leaves
     /// it showing in yours — you moving away, `]r` past the newest or the next turn end it.
     replay_aside: bool,
-    /// The texts files had before an edit allowed this turn (real path; None = no such file) — its stop's
-    /// changes are worked out against them once it's written.
-    befores: Vec<(PathBuf, Option<String>)>,
     /// The editor's input count `watch` saw last (a cursor moved with no input since isn't the user).
     seen_input: u64,
     /// Paused: when the user last pressed something · a wake-up to follow again is on its way.
@@ -184,7 +181,6 @@ impl Follow {
         self.replay.begin();
         self.replay.at = None;
         self.replaying = None;
-        self.befores.clear();
         self.last_input = None;
         self.block_jump = None;
         self.jump_wait = None;
@@ -311,11 +307,10 @@ pub fn on_tool(ed: &mut Editor, id: &str, name: &str, input: &serde_json::Value,
             | "mcp__tarae__git"
             | "mcp__tarae__commit"
     ) {
-        let in_file = matches!(name, "Edit" | "Write").then(|| look.link.as_ref().map(|l| l.path.clone()));
         f.replay.add(crate::replay::Stop {
             call: id.to_string(),
             look: look.clone(),
-            path: path.clone().or(in_file.flatten()),
+            path: path.clone(),
             lines: lines.clone().or_else(|| path.as_ref().map(|_| line..line + 1)),
             hunks: Vec::new(),
             why: said,
@@ -500,8 +495,8 @@ pub fn place(ed: &Editor, id: crate::split::PaneId, doc: &crate::document::Docum
 /// leading the view on them to its last piece: `writing::written_end`), the view stays where the writing ended — on
 /// the last line its last item wrote, the rows it took out gone — and Claude's next read or edit moves it; a key
 /// sequence of yours under way holds the view, and that's where it is. Nothing showed it (another file, not streamed,
-/// follow not leading there, a review's rows): the view on its first changed line, as an Edit is once written
-/// (`landed`), so it's seen at all. The selection the review left stays yours.
+/// follow not leading there, a review's rows): the view on its first changed line (`edit_landed` showing its
+/// changes there), so it's seen at all. The selection the review left stays yours.
 pub fn wrote(ed: &mut Editor, call: Option<&str>, path: &Path, before: &ropey::Rope, after: &ropey::Rope) {
     in_followed(ed, |ed| wrote_here(ed, call, path, before, after))
 }
@@ -524,6 +519,81 @@ fn wrote_here(ed: &mut Editor, call: Option<&str>, path: &Path, before: &ropey::
     }
     let line = first_difference(before, after);
     go_range(ed, path, line..line + 1);
+}
+
+/// Claude's `edit` call `call` landed in `real` (`refactor.rs`: unseen, from its card or through its review):
+/// `before` → `after` as its stop's changes — its file, lines and hunks, the stops before it in that file moved
+/// along, its row saying where (`L3 +1`) — and shown now if the editor is with Claude and nothing newer took its
+/// place: its changed lines on the review's wash, what they replaced above them. A call that changes several
+/// files keeps its first one's.
+pub fn edit_landed(ed: &mut Editor, call: &str, real: &Path, before: &ropey::Rope, after: &ropey::Rope) {
+    let after = after.to_string();
+    let changes = crate::replay::hunks(&before.to_string(), &after);
+    let moves: Vec<(Range<usize>, Range<usize>)> =
+        changes.iter().map(|(o, h)| (o.clone(), h.lines.clone())).collect();
+    let hunks: Vec<crate::replay::Hunk> = changes.into_iter().map(|c| c.1).collect();
+    let lines = hunks.first().map_or(0..1, |h| h.lines.start..h.lines.end.max(h.lines.start + 1));
+    let more = |n: usize| if n > 1 { format!(" +{}", n - 1) } else { String::new() };
+    let range = match (lines.len(), hunks.len()) {
+        (_, 0) => String::new(),
+        (1, n) => format!("L{}{}", lines.start + 1, more(n)),
+        (_, n) => format!("L{}–{}{}", lines.start + 1, lines.end, more(n)),
+    };
+    let background = ed.background();
+    let Some(f) = follow(ed) else { return };
+    f.replay.edited(real, &moves);
+    let Some(stop) = f.replay.by_call(call).filter(|s| s.path.as_deref().is_none_or(|p| p == real)) else {
+        return;
+    };
+    stop.path = Some(real.to_path_buf());
+    stop.lines = Some(lines.clone());
+    stop.hunks = hunks.clone();
+    stop.look.range = range.clone();
+    if let Some(link) = stop.look.link.as_mut() {
+        link.line = lines.start;
+    }
+    let look = stop.look.clone();
+    // The row says where (it was the file's top until now)
+    if let Some(m) =
+        ed.workspace.claude.chat.as_mut().and_then(|c| c.msgs.iter_mut().rev().find(|m| m.call == call))
+        && let Some(l) = m.look.as_mut()
+    {
+        l.range = range;
+        if let Some(link) = l.link.as_mut() {
+            link.line = lines.start;
+        }
+        m.changed();
+    }
+    // Shown while the editor is with Claude and nothing newer took its place
+    let Some(f) = follow(ed) else { return };
+    let ours = f.gaze.as_ref().is_some_and(|g| g.call == call || g.call.is_empty());
+    if !ours || !f.active() || background || !real.is_file() || !in_project(ed, real) {
+        return;
+    }
+    if let Some(f) = follow(ed) {
+        f.gaze = Some(Gaze {
+            call: call.to_string(),
+            ..Gaze::new(look, Some(real.to_path_buf()), Some(lines.clone()))
+        });
+    }
+    go_range(ed, real, lines.clone());
+    // Its changes drawn while the buffer is the file as written (one with unsaved edits of yours isn't)
+    let shown_in = ed
+        .docs
+        .iter()
+        .find(|d| d.path.as_deref() == Some(real) && !d.loading && d.text == after.as_str())
+        .map(|d| (d.id, d.version()));
+    if let Some(g) = follow(ed).and_then(|f| f.gaze.as_mut()).filter(|g| g.call == call) {
+        g.shown_in = shown_in;
+        g.edit = if shown_in.is_some() { hunks } else { Vec::new() };
+    }
+    sync_shown(ed);
+    // (placed again: its removed rows above it count now)
+    in_followed(ed, |ed| {
+        if shown_in.is_some() && ed.doc().path.as_deref() == Some(real) {
+            ed.show_range(lines);
+        }
+    });
 }
 
 /// The line where `a` and `b` first differ (the shorter's end when one starts the other) — compared a chunk at a
@@ -581,14 +651,6 @@ fn in_sight(ed: &Editor, path: &Path, lines: &Range<usize>) -> bool {
         }
     };
     doc.path.as_deref() == Some(path) && lines.clone().all(|l| shown.contains(&l)) && !shown.is_empty()
-}
-
-/// An edit to `real` (its real path) was allowed: what the file is now (None: no such file) — its stop's
-/// changes are worked out against it once the edit is written (`on_result`).
-pub fn before_edit(ed: &mut Editor, real: PathBuf, before: Option<String>) {
-    if let Some(f) = follow(ed) {
-        f.befores.push((real, before));
-    }
 }
 
 /// The walk-through's stop the cursor is on, or the view while follow holds it (its file, lines and why) — `space n`
@@ -962,8 +1024,8 @@ fn find_wanted(ed: &mut Editor) {
     }
 }
 
-/// A tool finished (`error`: it failed, or was denied): its stop takes the row's verdict; an edit is
-/// followed once written; a search or a lookup goes to its first hit, the count on the card.
+/// A tool finished (`error`: it failed, or was denied): its stop takes the row's verdict; a search or a
+/// lookup goes to its first hit, the count on the card.
 pub fn on_result(ed: &mut Editor, id: &str, text: &str, error: bool) {
     // The row's verdict (a run's `ok`, `12 references in 3 files`) is the stop's too
     let row = ed
@@ -975,16 +1037,11 @@ pub fn on_result(ed: &mut Editor, id: &str, text: &str, error: bool) {
         .and_then(|m| m.look.as_ref())
         .map(|l| l.range.clone());
     let Some(f) = follow(ed) else { return };
-    let Some((_, name, input)) = f.calls.iter().find(|c| c.0 == id).cloned() else { return };
+    let Some((_, name, _)) = f.calls.iter().find(|c| c.0 == id).cloned() else { return };
     if let (Some(range), Some(stop)) = (row, f.replay.by_call(id)) {
         stop.look.range = range;
     }
     match name.as_str() {
-        "Edit" | "Write" => {
-            let path =
-                crate::chat::resolve(&ed.workspace.root, input["file_path"].as_str().unwrap_or_default());
-            edit_written(ed, id, &name, &input, path, error);
-        }
         "Grep" | "Glob" | "mcp__tarae__search" | "mcp__tarae__references" | "mcp__tarae__definition"
             if !error =>
         {
@@ -1033,139 +1090,6 @@ fn found(ed: &mut Editor, id: &str, text: &str) {
         g.lines = Some(line..line + 1);
         go_range(ed, &path, line..line + 1);
     }
-}
-
-/// An edit or a write is done (claude's tool answered): what the file is now is read on a worker, its
-/// changes worked out against what it was when the edit was allowed (else from the edit itself), and kept
-/// on its stop; the editor shows them while it's still where Claude is — an open buffer taking the file now,
-/// as the disk watch would a moment later. Failed or denied: its kept text goes.
-fn edit_written(
-    ed: &mut Editor,
-    id: &str,
-    name: &str,
-    input: &serde_json::Value,
-    path: PathBuf,
-    error: bool,
-) {
-    let generation = ed.workspace.claude.chat.as_ref().map(crate::chat::Chat::generation);
-    let (id, write) = (id.to_string(), name == "Write");
-    let s = |k: &str| input[k].as_str().unwrap_or_default().to_string();
-    let (old, new, all) = (s("old_string"), s("new_string"), input["replace_all"].as_bool() == Some(true));
-    ed.events.jobs().spawn(move || {
-        let real = std::fs::canonicalize(&path).unwrap_or(path);
-        let now = (!error).then(|| std::fs::read_to_string(&real).ok()).flatten();
-        let stamp = crate::disk::stamp(&real);
-        move |ed: &mut Editor| {
-            if ed.workspace.claude.chat.as_ref().map(crate::chat::Chat::generation) != generation {
-                return;
-            }
-            let Some(f) = follow(ed) else { return };
-            let kept = f.befores.iter().position(|b| b.0 == real).map(|i| f.befores.remove(i).1);
-            let Some(after) = now else { return };
-            // (allowed without tarae asking — then what it was comes from the edit itself)
-            let before = match kept {
-                Some(b) => Some(b.unwrap_or_default()),
-                None if write => None,
-                None => unedit(&after, &old, &new, all),
-            };
-            landed(ed, &id, real, before, after, stamp);
-        }
-    });
-}
-
-/// The text before an Edit, from the text after it: `new` back to `old` — only where that's certain (once
-/// in the file, or all of them for `replace_all`).
-fn unedit(after: &str, old: &str, new: &str, all: bool) -> Option<String> {
-    if new.is_empty() {
-        return None;
-    }
-    match after.matches(new).count() {
-        0 => None,
-        _ if all => Some(after.replace(new, old)),
-        1 => Some(after.replacen(new, old, 1)),
-        _ => None,
-    }
-}
-
-/// An edit of `real` landed: `before` → `after` as its stop's changes (the stops before it in that file
-/// moved along); followed now if the editor is with Claude.
-fn landed(
-    ed: &mut Editor,
-    id: &str,
-    real: PathBuf,
-    before: Option<String>,
-    after: String,
-    stamp: Option<crate::disk::Stamp>,
-) {
-    let changes = before.as_deref().map(|b| crate::replay::hunks(b, &after)).unwrap_or_default();
-    let moves: Vec<(Range<usize>, Range<usize>)> =
-        changes.iter().map(|(o, h)| (o.clone(), h.lines.clone())).collect();
-    let hunks: Vec<crate::replay::Hunk> = changes.into_iter().map(|c| c.1).collect();
-    let lines = hunks.first().map_or(0..1, |h| h.lines.start..h.lines.end.max(h.lines.start + 1));
-    let range = match (lines.len(), hunks.len()) {
-        (_, 0) => String::new(),
-        (1, n) => format!("L{}{}", lines.start + 1, more(n)),
-        (_, n) => format!("L{}–{}{}", lines.start + 1, lines.end, more(n)),
-    };
-    // The row says where (it was the file's top until now)
-    if let Some(m) =
-        ed.workspace.claude.chat.as_mut().and_then(|c| c.msgs.iter_mut().rev().find(|m| m.call == id))
-        && let Some(l) = m.look.as_mut()
-    {
-        l.range = range.clone();
-        if let Some(link) = l.link.as_mut() {
-            link.line = lines.start;
-        }
-        m.changed();
-    }
-    let background = ed.background();
-    let Some(f) = follow(ed) else { return };
-    f.replay.edited(&real, &moves);
-    let mut look = None;
-    if let Some(stop) = f.replay.by_call(id) {
-        stop.path = Some(real.clone());
-        stop.lines = Some(lines.clone());
-        stop.hunks = hunks.clone();
-        stop.look.range = range.clone();
-        if let Some(link) = stop.look.link.as_mut() {
-            link.line = lines.start;
-        }
-        look = Some(stop.look.clone());
-    }
-    // Followed while the editor is with Claude and nothing newer took its place
-    let ours = f.gaze.as_ref().is_some_and(|g| g.call == id || g.call.is_empty());
-    let Some(look) = look.filter(|_| ours && f.active() && !background) else { return };
-    if !real.is_file() || !in_project(ed, &real) {
-        return;
-    }
-    ed.disk_take(&real, &ropey::Rope::from_str(&after), stamp);
-    if let Some(f) = follow(ed) {
-        f.gaze =
-            Some(Gaze { call: id.to_string(), ..Gaze::new(look, Some(real.clone()), Some(lines.clone())) });
-    }
-    go_range(ed, &real, lines.clone());
-    // Its changes drawn while the buffer is the file as written (one with unsaved edits of yours isn't)
-    let shown_in = ed
-        .docs
-        .iter()
-        .find(|d| d.path.as_deref() == Some(real.as_path()) && !d.loading && d.text == after.as_str())
-        .map(|d| (d.id, d.version()));
-    if let Some(g) = follow(ed).and_then(|f| f.gaze.as_mut()).filter(|g| g.call == id) {
-        g.shown_in = shown_in;
-        g.edit = if shown_in.is_some() { hunks } else { Vec::new() };
-    }
-    sync_shown(ed);
-    // (placed again: its removed rows above it count now)
-    in_followed(ed, |ed| {
-        if shown_in.is_some() && ed.doc().path.as_deref() == Some(real.as_path()) {
-            ed.show_range(lines);
-        }
-    });
-}
-
-/// `+2` — more changes in the edit than the first, which the range names.
-fn more(n: usize) -> String {
-    if n > 1 { format!(" +{}", n - 1) } else { String::new() }
 }
 
 /// The answer is complete. A walk-through goes on showing its stops (they came with the answer, faster

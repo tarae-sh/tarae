@@ -2009,7 +2009,7 @@ fn undo_history_comes_along_on_restart() {
 }
 
 /// Follow mode the way it failed when watched live: review at the end on, a stand-in claude reads, edits a
-/// file four times (each asked for, allowed unseen, written by claude), searches and reads again — a stop
+/// file four times with tarae's `edit` (each written unseen by tarae), searches and reads again — a stop
 /// every 0.4 s. Each reaches the screen in order within a bound, nothing skipped: an edit with its new lines
 /// and the replaced ones above them (`−`), the card naming it; the search with its count. Then the turn
 /// replays stop by stop with `[r` / `]r`.
@@ -2027,7 +2027,6 @@ fn follow_shows_each_edit_and_replays_the_turn() {
         ("line 20\n", ""),
         ("line 1\n", "zero\nline 1\n"),
     ];
-    let mut text = lines(30);
     let tool = |id: &str, name: &str, input: serde_json::Value| json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": id, "name": name, "input": input}]}});
     let result = |id: &str, text: &str| json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": text}]}});
     let say = |v: serde_json::Value| format!("  printf '%s\\n' '{v}'\n");
@@ -2035,17 +2034,18 @@ fn follow_shows_each_edit_and_replays_the_turn() {
     turn += &say(result("r1", "1\tline 1"));
     turn += "  sleep 0.4\n";
     for (k, (old, new)) in edits.iter().enumerate() {
-        text = text.replacen(old, new, 1);
-        let input = json!({"file_path": file, "old_string": old, "new_string": new});
-        turn += &say(tool(&format!("e{k}"), "Edit", input.clone()));
-        turn += &say(json!({"type": "control_request", "request_id": format!("q{k}"),
-            "request": {"subtype": "can_use_tool", "tool_name": "Edit", "input": input}}));
-        // (claude waits for tarae's answer, writes the file, then says it's done)
-        turn += &format!(
-            "  while read -r l; do case \"$l\" in *'\"request_id\":\"q{k}\"'*) break;; esac; done\n  printf '%s' '{text}' > '{}'\n",
-            file.display()
+        let input = json!({"edits": [{"file_path": file, "old_string": old, "new_string": new}]});
+        turn += &say(tool(&format!("e{k}"), "mcp__tarae__edit", input.clone()));
+        turn += &say(
+            json!({"type": "control_request", "request_id": format!("q{k}"), "request": {"subtype": "mcp_message",
+            "server_name": "tarae", "message": {"jsonrpc": "2.0", "id": k, "method": "tools/call",
+            "params": {"name": "edit", "arguments": input}}}}),
         );
-        turn += &say(result(&format!("e{k}"), "The file has been updated."));
+        // (claude waits for tarae's answer — the file written — then says it's done)
+        turn += &format!(
+            "  while read -r l; do case \"$l\" in *'\"request_id\":\"q{k}\"'*) break;; esac; done\n"
+        );
+        turn += &say(result(&format!("e{k}"), "written"));
         turn += "  sleep 0.4\n";
     }
     turn += &say(tool("s1", "mcp__tarae__search", json!({"pattern": "line 5"})));
@@ -2059,9 +2059,8 @@ fn follow_shows_each_edit_and_replays_the_turn() {
         "while read -r line; do\n  case \"$line\" in '{{\"message\"'*) ;; *) continue;; esac\n{turn}done\n"
     );
     let script = sb.write("fake-claude.sh", &fake);
-    // (its fake writes the file as Claude Code's Edit does — the arm with Edit)
     sb.write_config(&format!(
-        "{BASE_CONFIG}[llm]\ncommand = \"sh\"\nargs = [\"{}\"]\nreview-at-end = true\nedit-tools = \"native\"\n",
+        "{BASE_CONFIG}[llm]\ncommand = \"sh\"\nargs = [\"{}\"]\nreview-at-end = true\n",
         script.display()
     ));
     let mut t = Term::spawn(&sb, &["main.txt"], 120, 40);

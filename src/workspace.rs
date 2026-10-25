@@ -8,7 +8,7 @@
 //!   results tagged with it and its session (`event::Tx`, `Event::For`), and `with_workspace` swaps it in to
 //!   apply them, then back.
 //! - What would take the screen waits in the workspace: a card (`push_offer` parks it), an edit review (its
-//!   queue isn't taken up — `edits::next`), follow mode's moves (its trail is kept). Claude waiting on one
+//!   files aren't taken up — `refactor::next`), follow mode's moves (its trail is kept). Claude waiting on one
 //!   is said once, named. A tag for a workspace that's gone runs in front — the generation checks drop it.
 
 use std::path::{Path, PathBuf};
@@ -551,9 +551,7 @@ impl Workspace {
         self.parked.iter().any(|o| !o.installing())
             || self.claude.review.as_ref().is_some_and(|r| r.ready)
             || self.applying.as_ref().is_some_and(|l| !l.review.is_empty())
-            || self.claude.chat.as_ref().is_some_and(|c| {
-                !c.edits.queue.is_empty() || c.edits.sets.iter().any(|l| !l.review.is_empty())
-            })
+            || self.claude.chat.as_ref().is_some_and(|c| c.edits.sets.iter().any(|l| !l.review.is_empty()))
     }
 
     /// Something came while it was behind that it hasn't been in front for since: files again from disk
@@ -1397,7 +1395,8 @@ impl Editor {
         self.workspace.claude.compacted.unseen = false;
         // (its reviewer ended while it was behind: said now — #195)
         crate::reviewer::workspace_in(self);
-        crate::edits::next(self);
+        // (its Claude's edit waiting for its review: up now, in front)
+        crate::refactor::next(self);
         crate::follow::workspace_in(self);
         // (which one is in front is kept too — `:restart` and the next start come back to it)
         self.workspaces_keep();

@@ -283,14 +283,6 @@ pub struct Document {
     pub disk: Option<crate::disk::Stamp>,
     /// Disk changed too while I was editing (resolve with `:reload` / `:w!`).
     pub disk_conflict: bool,
-    /// Claude was told to write this buffer's text (an accepted edit): until the write lands or this time
-    /// passes, auto-save leaves the file to Claude — saving first fails its edit ("changed since read").
-    /// (until, the buffer's version Claude writes)
-    pub agent_writes: Option<(std::time::Instant, u64)>,
-    /// A new file of Claude's you accepted, and the project it was accepted in: tarae's own save of it makes
-    /// its missing folders — inside that project only (`saver::make_folders`). Claude's write makes them
-    /// too, but one that never comes (its turn stopped) left every save failing "No such file or directory".
-    pub make_folders: Option<std::path::PathBuf>,
     /// Saves of this buffer the saver thread hasn't finished (`saver.rs`) — the disk changing meanwhile is
     /// that write, not someone else's.
     pub saving: u32,
@@ -451,8 +443,6 @@ impl Document {
             redo: Vec::new(),
             disk: None,
             disk_conflict: false,
-            agent_writes: None,
-            make_folders: None,
             saving: 0,
             git_base: None,
             git_hunks: Vec::new(),
@@ -807,13 +797,9 @@ impl Document {
         let now = crate::disk::stamp(path);
         // (a save of ours still being written changes the file too — that's not someone else)
         let changed = self.saving == 0 && self.disk.is_some() && now.is_some() && now != self.disk;
-        // Written outside with my buffer's text (Claude saving an edit I accepted, maybe without the last
-        // newline) — before the watch has seen it. Not a conflict: this save just finishes it.
-        let mine = || {
-            let Ok(body) = std::fs::read_to_string(path) else { return false };
-            self.text == body.as_str()
-                || crate::disk::is_plus_newline(&self.text, ropey::RopeSlice::from(body.as_str()))
-        };
+        // Written outside with my buffer's text — before the watch has seen it. Not a conflict: this save just
+        // finishes it.
+        let mine = || std::fs::read_to_string(path).is_ok_and(|body| self.text == body.as_str());
         if !force && (self.disk_conflict || (changed && !mine())) {
             self.disk_conflict = true;
             bail!(

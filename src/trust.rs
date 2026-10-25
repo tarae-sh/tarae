@@ -57,15 +57,14 @@ pub const RISKY: [&str; 23] = [
 ];
 
 /// Settings only your own config sets — refused from a project's `.tarae.toml` and `.tarae.local.toml` alike,
-/// trusted or not (said): they decide whose credentials Claude uses and who pays, what Claude's chat edits
-/// with (`llm.edit-tools`), whether what you use is counted (`features.count`), whether a program may type into
-/// tarae (`ui.shuttle-keys`), whether your cards and your
-/// time on reviewed changes are kept (`llm.card-record`, `review.record`), whether pings spend your usage to keep
+/// trusted or not (said): they decide whose credentials Claude uses and who pays, whether what you use is
+/// counted (`features.count`), whether a program may type into tarae (`ui.shuttle-keys`), whether your cards and
+/// your time on reviewed changes are kept (`llm.card-record`, `review.record`), whether pings spend your usage to keep
 /// a conversation warm (`llm.keep-warm*`), what the board's Claudes are asked (`review.angles`) and how many of
 /// them run on your credential and memory (`review.skeptics-max`, `review.board-at-once`), whether your workspaces'
 /// trees are rewritten unasked (`workspace.sync`), how much moves on your screen (`editor.motion`) — a project
 /// never does.
-pub const YOURS_ONLY: [&str; 17] = [
+pub const YOURS_ONLY: [&str; 16] = [
     "llm.card-record",
     "review.record",
     "llm.keep-warm",
@@ -74,7 +73,6 @@ pub const YOURS_ONLY: [&str; 17] = [
     "llm.environment-key",
     "llm.billing",
     "llm.reviewer-billing",
-    "llm.edit-tools",
     "features.count",
     "ui.shuttle-keys",
     // (which keys the hints say by their twins: a project's could make every hint name the wrong keys)

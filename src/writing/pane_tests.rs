@@ -110,9 +110,9 @@ fn writing_into(ed: &mut Editor, g: u64, old: &str, new: &str, held: usize) {
     let s = |t: &str| serde_json::to_string(t).unwrap();
     let input =
         format!(r#"{{"edits":[{{"file_path":"a.rs","old_string":{},"new_string":{}}}]}}"#, s(old), s(new));
-    let mut scan = Scan::new(Tool::Edit);
+    let mut scan = Scan::new();
     scan.feed(&input[..input.len() - held]);
-    let d = Delta { call: "t9".into(), tool: Tool::Edit, pieces: scan.take(), done: false };
+    let d = Delta { call: "t9".into(), pieces: scan.take(), done: false };
     crate::chat::stream_event(ed, g, StreamEv::Writing(d));
     settle(ed, |ed| {
         ed.docs.iter().any(|d| d.path.as_ref().is_some_and(|p| p.ends_with("a.rs")) && shown(d).is_some())
@@ -190,9 +190,9 @@ fn follow_opens_what_claude_reads_in_its_own_pane() {
         s("let x45 = 45;\n"),
         s("let x45 = 45;\nlet y = 0;\nlet z = 0;\n")
     );
-    let mut scan = Scan::new(Tool::Edit);
+    let mut scan = Scan::new();
     scan.feed(&input[..input.len() - 12]);
-    let d = Delta { call: "t1".into(), tool: Tool::Edit, pieces: scan.take(), done: false };
+    let d = Delta { call: "t1".into(), pieces: scan.take(), done: false };
     crate::chat::stream_event(&mut ed, g, StreamEv::Writing(d));
     let written = |ed: &Editor| {
         ed.docs.iter().any(|d| d.path.as_ref().is_some_and(|p| p.ends_with("a.rs")) && shown(d).is_some())
@@ -241,9 +241,9 @@ fn c_f_takes_this_pane_to_the_writing() {
         s("let x45 = 45;\n"),
         s("let x45 = 45;\nlet y = 0;\nlet z = 0;\n")
     );
-    let mut scan = Scan::new(Tool::Edit);
+    let mut scan = Scan::new();
     scan.feed(&input[..input.len() - 12]);
-    let d = Delta { call: "t1".into(), tool: Tool::Edit, pieces: scan.take(), done: false };
+    let d = Delta { call: "t1".into(), pieces: scan.take(), done: false };
     crate::chat::stream_event(&mut ed, g, StreamEv::Writing(d));
     let written = |ed: &Editor| {
         ed.docs.iter().any(|d| d.path.as_ref().is_some_and(|p| p.ends_with("a.rs")) && shown(d).is_some())

@@ -14,7 +14,7 @@ use crate::editor::Editor;
 use crate::key::{Code, Key};
 use crate::llm::StreamEv;
 use crate::split::PaneId;
-use crate::writing::{Delta, Scan, Tool};
+use crate::writing::{Delta, Scan};
 
 const SEEDS: &[u64] = &[0, 1, 2, 3, 4];
 
@@ -98,7 +98,7 @@ fn begin(ed: &mut Editor, w: &mut World, line: usize) {
     let s = |t: &str| serde_json::to_string(t).unwrap();
     w.input =
         format!(r#"{{"edits":[{{"file_path":"a.rs","old_string":{},"new_string":{}}}]}}"#, s(&old), s(&new));
-    (w.sent, w.scan) = (0, Some(Scan::new(Tool::Edit)));
+    (w.sent, w.scan) = (0, Some(Scan::new()));
     w.turn += 1;
 }
 
@@ -135,7 +135,7 @@ fn step(sim: &mut Sim, ed: &mut Editor, a: PaneId, w: &mut World) -> String {
             let call = format!("t{}", w.turn);
             let Some(scan) = w.scan.as_mut() else { return "(no reader)".into() };
             scan.feed(&piece);
-            let d = Delta { call, tool: Tool::Edit, pieces: scan.take(), done: end == chars.len() };
+            let d = Delta { call, pieces: scan.take(), done: end == chars.len() };
             let before = crate::follow::led_in(ed, a);
             crate::chat::stream_event(ed, g, StreamEv::Writing(d));
             let now = crate::follow::led_in(ed, a);
