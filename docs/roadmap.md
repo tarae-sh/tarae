@@ -104,13 +104,17 @@ recipe, and the tests runnable without a cloud VM.
 
 In this order.
 
-**The main line from here** (user, 2026-10-25): panes P3's last step (step 8, follow per pane — the toast
-became news on the way: never focused, no frame, a press opens `:messages`, `6a7c457e`) → C0 (the workspace split out of
-the session) → the cleanup audit (§1 item 7, its plan decided) → the crate split (§1 item 6) → Orchestra Part I → P3b and
-the terminal line (§4). Beside it, in sessions of their own: motion's next pieces (the honest shimmer, then the strip),
-what PR #6's merge left (`8059c6d8`: a test helper's settle, a restarted tarae's frames, trace's sorts — and two found on
-the way: the other tests' own settles with the same gap, a file's git base read that may land out of order), frictions. Code mode (§3)
-and the review lens's A + E wait on their records' data.
+**The main line from here** (user, 2026-10-25): panes P3 is done — its last step, follow per pane (`f3afdbd9`), and on
+the way the toast became news (`6a7c457e`: never focused, no frame, a press opens `:messages`) and a floating card's keys
+went to its bottom line (`1d5161f5`: one order for what that line gives up, the card growing left only as far as its
+line needs, always bottom-right, over the chat standing on the input's rule) → C0 (the workspace split out of the
+session) → the cleanup audit (§1 item 7, its plan decided) → the crate split (§1 item 6) → Orchestra Part I → P3b and
+the terminal line (§4). Done beside it, in sessions of their own: motion's last pieces (the honest shimmer `cfbf2a7b`,
+the strip of marks `4c56cb6f`), what PR #6's merge left (`8059c6d8`, the git base read's race `0b105abe`, the tests' one
+settle `b935aac6`), what's cut shown whole where you look (`f48b2be8`), and a move onto the base that never leaves
+conflict markers (`305ef94d`: `--autostash` had left two checkouts half moved — the changes now set aside on a ref of
+the checkout's own, a conflict after all putting it back exactly as it was). Frictions go on. Code mode (§3) and the
+review lens's A + E wait on their records' data.
 
 ### 1. Publishing
 
@@ -661,9 +665,10 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
   word (moved by the stream), the turn's stops as a strip of marks (one vocabulary with the knots), a card's answer
   pressed as a stamp — `editor.motion` yours, contact sheets for the user's look. Built: the flash (`01b1f1b8`: undo,
   redo, `.`, a yank — its "yanked" then a note), the stamp's press (`4bee0287`); the drying ink (`48872cdf`); the honest
-  shimmer under way (the stream measured first: summarized thinking lands whole after a silence, so the wave stays where
+  shimmer (`cfbf2a7b` — the stream measured first: summarized thinking lands whole after a silence, so the wave stays where
   nothing streams by nature — a think, a run, a request on its way — and the band, its centre the accent, moves only as
-  deltas come); then the strip.
+  deltas come); the strip of marks on the follow card's top line (`4c56cb6f`: one vocabulary with the knots and the
+  trail, the stop in hand the selected row, a press its replay). The plan is built.
 - **Short videos, made ahead** (user, 2026-10-23): scripted scenes as docshots are — 16:9, English captions, no
   voice — for YouTube, the homepage and the README; a live stream once orchestra drives (Part I) and there's a
   homepage and a release to point at. Planned and measured (collab's spike: 1080p, MP4 ~600 KB a clip); made — `cargo xtask
