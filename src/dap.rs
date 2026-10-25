@@ -986,6 +986,7 @@ pub fn inline_values(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_results::settle_until;
 
     #[test]
     fn breakpoints_toggle_per_line() {
@@ -1165,16 +1166,6 @@ mod tests {
     fn alive(pid: u32) -> bool {
         // SAFETY: signal 0 only checks that the process exists.
         unsafe { libc::kill(pid as i32, 0) == 0 }
-    }
-
-    /// Processes events until the condition holds.
-    fn settle_until(ed: &mut Editor, done: impl Fn(&Editor) -> bool) {
-        let end = Instant::now() + crate::test_results::PATIENCE;
-        while !done(ed) {
-            let left = end.saturating_duration_since(Instant::now());
-            let ev = ed.events.recv_timeout(left).expect("event before timeout");
-            ed.handle_event(ev);
-        }
     }
 
     #[test]

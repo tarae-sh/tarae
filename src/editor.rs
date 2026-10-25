@@ -5237,6 +5237,7 @@ fn place_cursor(doc: &mut Document, line: usize, col: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_results::settle_until;
 
     /// Feeds a string like "xd" as keys. Angle brackets are named keys, like `<esc>`, `<A-x>`, `<ret>`.
     fn feed(ed: &mut Editor, keys: &str) {
@@ -5630,7 +5631,7 @@ mod tests {
         ed.session.root = dir.clone();
         // No steps, and no kind of project a pack knows (looked for on a worker)
         ed.preflight_start(Set::Quick).unwrap();
-        settle_for(&mut ed, |ed| ed.status.is_some());
+        settle_until(&mut ed, |ed| ed.status.is_some());
         let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
         assert!(
             said.starts_with("no preflight steps — no language pack knows this kind of project"),
@@ -5643,7 +5644,7 @@ mod tests {
         }
         ed.status = None;
         ed.preflight_start(Set::Quick).unwrap();
-        settle_for(&mut ed, |ed| ed.status.is_some());
+        settle_until(&mut ed, |ed| ed.status.is_some());
         let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
         assert!(said.starts_with("no preflight steps — this project builds with its own ./mvnw"), "{said}");
         assert!(ed.offers.is_empty() && ed.session.task_run.is_none(), "nothing asked, nothing ran");
@@ -5662,7 +5663,7 @@ mod tests {
             ed.preflight_start(Set::Full).unwrap_err().contains("preflight is running"),
             "not twice at once"
         );
-        settle_for(&mut ed, |ed| {
+        settle_until(&mut ed, |ed| {
             ed.session.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
         });
         let p = ed.session.preflight.as_ref().unwrap();
@@ -5724,7 +5725,7 @@ mod tests {
         ed.config.preflight_local = vec![step("mine", "echo mine", ".tarae.local.toml")];
         // A Cargo project: the rust pack's steps, on a card
         ed.preflight_start(Set::Quick).unwrap();
-        settle_for(&mut ed, |ed| !ed.offers.is_empty());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
         let q = ed.offers[0].question.clone();
         assert!(q.starts_with("The rust pack's defaults:"), "{q}");
         // (what's run is the project's code — said plainly, not "no trust needed")
@@ -5747,7 +5748,7 @@ mod tests {
         let done = |ed: &Editor| {
             ed.session.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
         };
-        settle_for(&mut ed, done);
+        settle_until(&mut ed, done);
         let ran = |ed: &Editor| -> Vec<(String, State)> {
             ed.session
                 .preflight
@@ -5762,12 +5763,12 @@ mod tests {
         // Told once: not asked again in this project
         ed.preflight_found(dir.clone(), pack, ed.config.preflight_local.clone(), Set::Quick);
         assert!(ed.offers.is_empty(), "no card the second time");
-        settle_for(&mut ed, done);
+        settle_until(&mut ed, done);
         // The project's own replace the packs'; yours still after
         ed.config.preflight = vec![step("own", "echo own", ".tarae.toml")];
         ed.preflight_start(Set::Quick).unwrap();
         assert!(ed.offers.is_empty());
-        settle_for(&mut ed, done);
+        settle_until(&mut ed, done);
         assert_eq!(ran(&ed).iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), ["own", "mine"]);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -5803,7 +5804,7 @@ mod tests {
         crate::typed::execute(&mut ed, "preflight").unwrap();
         let tab = ed.slot_tabs().into_iter().find(|t| t.slot == crate::sizes::Slot::Task).unwrap();
         assert_eq!(tab.label, "quick preflight");
-        settle_for(&mut ed, done);
+        settle_until(&mut ed, done);
         assert_eq!(ran(&ed), ["fmt", "test"]);
         let out: Vec<String> =
             ed.session.task_run.as_ref().unwrap().output.iter().map(|(_, l)| l.into_owned()).collect();
@@ -5815,7 +5816,7 @@ mod tests {
             said(&ed)
         );
         crate::typed::execute(&mut ed, "preflight-full").unwrap();
-        settle_for(&mut ed, done);
+        settle_until(&mut ed, done);
         assert_eq!(ran(&ed), ["fmt", "perf", "test", "linux"]);
         assert_eq!(ed.session.task_run.as_ref().unwrap().task.name, "full preflight");
         assert!(said(&ed).starts_with("full preflight: all 4 passed · "), "{}", said(&ed));
@@ -5866,24 +5867,6 @@ mod tests {
         let json = serde_json::json!({"type": "result", "is_error": is_error, "result": reply}).to_string();
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), format!("read line; printf '%s\\n' '{json}'")];
-    }
-
-    /// Processes events until the condition holds (a streamed answer is several events). What the test did by
-    /// hand (`feed`'s keys go to `handle_key`, `ed.open`) is followed first by the work every event ends with
-    /// (`handle_event`'s: the front buffer's diff, the side panel's rows), as the loop follows the input that did
-    /// it — else a condition only that work meets waits for an event that may never come (a preview's index read
-    /// landed while another file was in front, `ed.open` brought it to the front: no diff was ever asked).
-    #[track_caller]
-    fn settle_until(ed: &mut Editor, done: impl Fn(&Editor) -> bool) {
-        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-        if !done(ed) {
-            ed.handle_event(Event::Job(Box::new(|_| {})));
-        }
-        while !done(ed) {
-            let left = end.saturating_duration_since(std::time::Instant::now());
-            let ev = ed.events.recv_timeout(left).expect("event before timeout");
-            ed.handle_event(ev);
-        }
     }
 
     /// `|` replaces each selection with the command's output (one undo step), `!`/`A-!` insert output
@@ -7418,16 +7401,6 @@ mod tests {
         log
     }
 
-    /// Handles events until `done` (or panics after a minute).
-    fn settle_for(ed: &mut Editor, done: impl Fn(&Editor) -> bool) {
-        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-        while !done(ed) {
-            let left = end.saturating_duration_since(std::time::Instant::now());
-            let ev = ed.events.recv_timeout(left).expect("done before the timeout");
-            ed.handle_event(ev);
-        }
-    }
-
     /// tarae's answer to the tool call (`c7`), as sent to claude.
     fn tool_answer(log: &std::path::Path) -> String {
         let sent = std::fs::read_to_string(log).unwrap();
@@ -7530,7 +7503,7 @@ mod tests {
         assert_eq!(read("target/gen.rs"), "old_name\n", "gitignored");
         assert_eq!(read(".git/config"), "old_name\n", "never .git");
         assert_eq!(read("README.md"), "OLD_NAME stays\n", "case as written");
-        settle_for(&mut ed, reviewing);
+        settle_until(&mut ed, reviewing);
         let r = ed.session.code_review.as_ref().unwrap();
         let rels: Vec<&str> = r.files.iter().map(|f| f.rel.as_str()).collect();
         assert_eq!(rels, ["src/a.rs", "src/b.rs", "src/deep/c.rs"]);
@@ -7668,7 +7641,7 @@ mod tests {
             ed.docs.iter().filter(|d| d.title.as_deref().is_some_and(|t| t.starts_with("card ·"))).count()
         };
         feed(&mut ed, "<space>ldo it<ret>");
-        settle_for(&mut ed, |ed| !ed.offers.is_empty());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
         assert!(ed.session.is_at(crate::session::At::Chat), "the chat keeps the keys (frictions26)");
         assert!(ed.session.review.is_none(), "no change of it in review yet");
         let s = screen(&mut ed);
@@ -7678,7 +7651,7 @@ mod tests {
         settled(&mut ed);
         // `v`: every change, file by file
         answer(&mut ed, "v");
-        settle_for(&mut ed, |ed| card_buffers(ed) == 1);
+        settle_until(&mut ed, |ed| card_buffers(ed) == 1);
         let all = text(&ed);
         assert!(all.contains("── src/a.rs (2)") && all.contains("  - fn old_name() {}"), "{all}");
         assert!(all.contains("  + fn new_name() {}") && all.contains("── src/deep/c.rs (1)"), "{all}");
@@ -7687,7 +7660,7 @@ mod tests {
         screen(&mut ed);
         settled(&mut ed);
         answer(&mut ed, "y");
-        settle_for(&mut ed, answered);
+        settle_until(&mut ed, answered);
         assert_eq!(read("src/a.rs"), "fn new_name() {}\nfn x() { new_name() }\n");
         assert_eq!(read("src/deep/c.rs"), "// new_value here\n");
         let t = tool_answer(&log);
@@ -7702,11 +7675,11 @@ mod tests {
         std::fs::remove_file(&log).unwrap();
         ed.session.at = crate::session::At::Chat;
         feed(&mut ed, "again<ret>");
-        settle_for(&mut ed, |ed| !ed.offers.is_empty());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
         screen(&mut ed);
         settled(&mut ed);
         answer(&mut ed, "n");
-        settle_for(&mut ed, answered);
+        settle_until(&mut ed, answered);
         let t = tool_answer(&log);
         assert!(t.contains("nothing changed") && t.contains("declined by the user"), "{t}");
         assert_eq!(read("src/b.rs"), files[1].1);
@@ -7739,7 +7712,7 @@ mod tests {
         let command = format!("make -s -f {}", makefile.display());
         let log = claude_calls(&mut ed, &dir, "run", &json!({ "command": command }));
         feed(&mut ed, "<space>lbuild it<ret>");
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(ed.offers.is_empty(), "a check doesn't ask");
         let r = ed.session.task_run.as_ref().expect("it ran in the task panel");
         // (make exits 2 when a recipe fails)
@@ -7777,7 +7750,7 @@ mod tests {
             crate::tools::mcp(ed, 0, "c1", &msg)
         };
         let ran = |ed: &mut Editor, cmd: &str| {
-            settle_for(ed, |ed| {
+            settle_until(ed, |ed| {
                 !ed.offers.is_empty()
                     || ed
                         .session
@@ -7809,7 +7782,7 @@ mod tests {
         ed.config.llm.sandbox = false;
         let cmd = "cd no-such-folder; cat ../../tarae-not-there";
         assert!(call(&mut ed, json!({ "command": cmd })).is_none());
-        settle_for(&mut ed, |ed| {
+        settle_until(&mut ed, |ed| {
             !ed.offers.is_empty() || ed.session.task_run.as_ref().is_some_and(|r| r.task.cmd == cmd)
         });
         assert!(ed.session.task_run.as_ref().is_none_or(|r| r.task.cmd != cmd), "it didn't run");
@@ -7848,7 +7821,7 @@ mod tests {
             cwd: std::env::temp_dir(),
         };
         let printed = |ed: &mut Editor, name: &str| {
-            settle_for(ed, |ed| {
+            settle_until(ed, |ed| {
                 ed.session
                     .task_run
                     .as_ref()
@@ -7886,13 +7859,13 @@ mod tests {
         ed.config.llm.sandbox = false;
         let log = claude_calls(&mut ed, &dir, "run", &json!({ "command": "basename one two" }));
         feed(&mut ed, "<space>lsay it<ret>");
-        settle_for(&mut ed, |ed| !ed.offers.is_empty());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
         let q = ed.offers[0].question.clone();
         assert!(q.contains("a — this exact command again unasked, this chat"), "{q}");
         assert!(ed.offers[0].lasts() && !ed.offers[0].keeps(), "a — this chat; never for good");
         // (`a`, as its key does once the card has been in sight)
         ed.offer_for_chat();
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(tool_answer(&log).contains("exit 0"));
         let again = &ed.session.chat.as_ref().unwrap().run_again;
         assert_eq!(
@@ -7902,7 +7875,7 @@ mod tests {
         ed.session.at = crate::session::At::Chat;
         let answers = |log: &Path| std::fs::read_to_string(log).unwrap_or_default().matches("\"c7\"").count();
         feed(&mut ed, "again<ret>");
-        settle_for(&mut ed, |ed| !ed.offers.is_empty() || answers(&log) == 2);
+        settle_until(&mut ed, |ed| !ed.offers.is_empty() || answers(&log) == 2);
         assert!(ed.offers.is_empty(), "this chat: no card");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -7924,7 +7897,7 @@ mod tests {
         ed.config.llm.run_allow = vec!["basename one".into()];
         let log = claude_calls(&mut ed, &dir, "run", &json!({ "command": piped }));
         feed(&mut ed, "<space>lsay it<ret>");
-        settle_for(&mut ed, |ed| !ed.offers.is_empty() || !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty() || !ed.session.chat.as_ref().unwrap().busy());
         assert!(ed.offers.is_empty(), "a check through filters runs as the check would");
         let answer = tool_answer(&log);
         assert!(answer.contains("exit 0") && answer.contains("one two"), "{answer}");
@@ -7935,7 +7908,7 @@ mod tests {
         ed.config.llm.sandbox = false;
         claude_calls(&mut ed, &dir, "run", &json!({ "command": piped }));
         feed(&mut ed, "<space>lsay it<ret>");
-        settle_for(&mut ed, |ed| !ed.offers.is_empty());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
         let q = ed.offers[0].question.clone();
         assert!(q.contains("a — this exact command again unasked, this chat"), "{q}");
         // A pipe into a writer isn't a filter
@@ -7946,7 +7919,7 @@ mod tests {
         let tee = format!("basename one two | tee {}", dir.join("out").display());
         claude_calls(&mut ed, &dir, "run", &json!({ "command": tee }));
         feed(&mut ed, "<space>lsay it<ret>");
-        settle_for(&mut ed, |ed| !ed.offers.is_empty());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
         assert!(!dir.join("out").exists());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -7968,7 +7941,7 @@ mod tests {
         let log =
             claude_calls(&mut ed, &dir, "run", &json!({ "command": format!("cat {}", file.display()) }));
         feed(&mut ed, "<space>lsay it<ret>");
-        settle_for(&mut ed, |ed| !ed.offers.is_empty() || !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty() || !ed.session.chat.as_ref().unwrap().busy());
         assert!(ed.offers.is_empty(), "a read inside the project runs unasked");
         let answer = tool_answer(&log);
         assert!(answer.contains("exit 0") && answer.contains("TWOne"), "{answer}");
@@ -8004,7 +7977,7 @@ mod tests {
             let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                 "params": {"name": "run", "arguments": {"command": cmd}}});
             assert!(crate::tools::mcp(ed, 0, "c1", &msg).is_none());
-            settle_for(ed, |ed| {
+            settle_until(ed, |ed| {
                 ed.session
                     .task_run
                     .as_ref()
@@ -8042,9 +8015,9 @@ mod tests {
         ed.session.root = this_repo();
         let log = claude_calls(&mut ed, &dir, "run", &json!({ "command": "wc -l Cargo.toml" }));
         feed(&mut ed, "<space>lcount<ret>");
-        settle_for(&mut ed, card_or_done);
+        settle_until(&mut ed, card_or_done);
         assert!(ed.offers.is_empty(), "inside: no card");
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(tool_answer(&log).contains("Cargo.toml"), "{}", tool_answer(&log));
         // Outside: the card says what it reads
         std::fs::remove_file(&log).ok();
@@ -8055,7 +8028,7 @@ mod tests {
         ed.session.root = this_repo();
         let log = claude_calls(&mut ed, &dir, "run", &json!({ "command": command }));
         feed(&mut ed, "<space>lread it<ret>");
-        settle_for(&mut ed, card_or_done);
+        settle_until(&mut ed, card_or_done);
         let q = ed.offers.first().map(|o| o.question.clone()).expect("a card for a read outside");
         assert!(q.contains(&format!("It reads outside the project:\n  {}", marker.display())), "{q}");
         let mut bytes = Vec::new();
@@ -8071,14 +8044,14 @@ mod tests {
         let o = ed.offers.first().map(|o| (o.id, o.rev)).unwrap();
         ed.card_focus = Some((o.0, o.1));
         answer(&mut ed, "a");
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(tool_answer(&log).contains("tarae-marker-content"), "{}", tool_answer(&log));
         assert!(ed.session.chat.as_ref().unwrap().allowed.reads(&marker));
         // The next turn, the same command: allowed now, no card
         ed.session.at = crate::session::At::Chat;
         feed(&mut ed, "again<ret>");
         let answers = |log: &Path| std::fs::read_to_string(log).unwrap().matches("\"c7\"").count();
-        settle_for(&mut ed, |ed| !ed.offers.is_empty() || answers(&log) == 2);
+        settle_until(&mut ed, |ed| !ed.offers.is_empty() || answers(&log) == 2);
         assert!(ed.offers.is_empty(), "allowed this chat: no card");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -8108,7 +8081,7 @@ mod tests {
             crate::readonly::Shellcheck { homes: vec![home.join(".shellcheckrc")], opts: Vec::new() };
         claude_calls(&mut ed, &dir, "run", &cmd);
         feed(&mut ed, "<space>lcheck<ret>");
-        settle_for(&mut ed, card_or_done);
+        settle_until(&mut ed, card_or_done);
         assert!(ed.offers.is_empty(), "--norc: no card");
         // (home's rc turns external sources on: the card says so)
         let mut ed = editor("");
@@ -8118,7 +8091,7 @@ mod tests {
             crate::readonly::Shellcheck { homes: vec![home.join(".shellcheckrc")], opts: Vec::new() };
         claude_calls(&mut ed, &dir, "run", &json!({ "command": "shellcheck x.sh" }));
         feed(&mut ed, "<space>lcheck<ret>");
-        settle_for(&mut ed, card_or_done);
+        settle_until(&mut ed, card_or_done);
         let q = ed.offers.first().map(|o| o.question.clone()).expect("a card");
         assert!(q.contains(".shellcheckrc turns external sources on"), "{q}");
         ed.offer_dismiss();
@@ -8146,7 +8119,7 @@ mod tests {
             ed.session.root = this_repo();
             let _log = claude_calls(&mut ed, &dir, "run", &json!({ "command": command }));
             feed(&mut ed, "<space>lgo<ret>");
-            settle_for(&mut ed, |ed| !ed.offers.is_empty() || !ed.session.chat.as_ref().unwrap().busy());
+            settle_until(&mut ed, |ed| !ed.offers.is_empty() || !ed.session.chat.as_ref().unwrap().busy());
             let q = ed.offers.first().map(|o| o.question.clone()).expect("a card");
             // (after the command and where it runs, before anything else)
             let after = q.strip_prefix(command).and_then(|r| r.split_once("\n\n")).map(|(_, r)| r);
@@ -8176,7 +8149,7 @@ mod tests {
         let args = json!({ "command": "pwd", "outside_sandbox": true, "reason": reason });
         let log = claude_calls(&mut ed, &dir, "run", &args);
         feed(&mut ed, "<space>lwhere am I<ret>");
-        settle_for(&mut ed, |ed| !ed.offers.is_empty() || !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty() || !ed.session.chat.as_ref().unwrap().busy());
         let o = ed.offers.first().expect("asked, not run");
         assert_eq!(o.title, crate::tools::OUTSIDE_RUN_TITLE);
         assert!(o.question.contains(&format!("Its reason: {reason}")), "{}", o.question);
@@ -8191,7 +8164,7 @@ mod tests {
         answer(&mut ed, "a");
         assert_eq!(ed.offers.len(), 1, "never kept: `a` isn't an answer");
         answer(&mut ed, "y");
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         let answer = tool_answer(&log);
         assert!(answer.contains("Ran outside the sandbox"), "{answer}");
         assert!(matches!(
@@ -8244,7 +8217,7 @@ mod tests {
                     .as_ref()
                     .is_some_and(|t| t.parser.screen().contents().contains("term-marker"))
             };
-            settle_for(&mut ed, shows);
+            settle_until(&mut ed, shows);
             ed.session.leave(crate::session::At::Program);
             draw(&mut ed);
             ed
@@ -8254,7 +8227,7 @@ mod tests {
         let mut ed = with_terminal(true);
         let log = claude_calls(&mut ed, &dir, "screen", &json!({}));
         feed(&mut ed, "<space>lwhat do you see<ret>");
-        settle_for(&mut ed, |ed| !ed.offers.is_empty());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
         let o = ed.offers.first().unwrap();
         assert_eq!(o.title, crate::seeing::TITLE);
         assert!(o.question.contains("Includes the terminal panel ("), "{}", o.question);
@@ -8278,7 +8251,7 @@ mod tests {
         std::fs::remove_file(&log).ok();
         let log = claude_calls(&mut ed, &dir, "screen", &json!({}));
         feed(&mut ed, "<space>lwhat do you see<ret>");
-        settle_for(&mut ed, |ed| !ed.offers.is_empty());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
         let q = ed.offers[0].question.clone();
         assert!(q.contains("Not the terminal panel (llm.screen-terminal is off)"), "{q}");
         feed(&mut ed, "<C-q>a");
@@ -8296,7 +8269,7 @@ mod tests {
         let log = claude_calls(&mut ed, &dir, "screen", &json!({}));
         draw(&mut ed);
         feed(&mut ed, "<space>lwhat do you see<ret>");
-        settle_for(&mut ed, |ed| !ed.offers.is_empty());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
         feed(&mut ed, "<C-q>n");
         settle_drawing(&mut ed, &|ed| !ed.session.chat.as_ref().unwrap().busy());
         let answer = tool_answer(&log);
@@ -8316,7 +8289,7 @@ mod tests {
         let command = format!("touch {} && echo made", made.display());
         let log = claude_calls(&mut ed, &dir, "run", &json!({ "command": command }));
         feed(&mut ed, "<space>ltouch it<ret>");
-        settle_for(&mut ed, |ed| !ed.offers.is_empty() || !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty() || !ed.session.chat.as_ref().unwrap().busy());
         assert!(ed.offers.is_empty(), "no card: {:?}", ed.offers.first().map(|o| &o.question));
         let answer = tool_answer(&log);
         assert!(made.exists() && answer.contains("exit 0") && !answer.contains("isError"), "{answer}");
@@ -8337,7 +8310,7 @@ mod tests {
         ed.config.llm.sandbox = false;
         let log = claude_calls(&mut ed, &dir, "run", &json!({ "command": command }));
         feed(&mut ed, "<space>ltouch it<ret>");
-        settle_for(&mut ed, |ed| !ed.offers.is_empty());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
         let o = &ed.offers[0];
         assert!(matches!(&o.what, crate::offer::What::Run(r) if r.cmd == command));
         // (why it asks, a line under it — #164)
@@ -8358,7 +8331,7 @@ mod tests {
         assert_eq!(ed.offers.len(), 2);
         assert!(matches!(&ed.offers[1].what, crate::offer::What::Run(r) if r.cmd == "rm -rf x"));
         ed.offer_dismiss();
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         let answer = tool_answer(&log);
         assert!(answer.contains("the user chose not to run") && answer.contains("isError"), "{answer}");
         assert!(ed.session.task_run.is_none() && !made.exists());
@@ -8369,10 +8342,10 @@ mod tests {
         ed.config.llm.sandbox = false;
         let log = claude_calls(&mut ed, &dir, "run", &json!({ "command": command }));
         feed(&mut ed, "<space>ltouch it<ret>");
-        settle_for(&mut ed, |ed| !ed.offers.is_empty());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
         assert!(!made.exists(), "nothing runs before the answer");
         ed.offer_accept();
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(made.exists() && ed.offers.is_empty());
         let answer = tool_answer(&log);
         assert!(answer.contains("exit 0") && answer.contains("(no output)"), "{answer}");
@@ -8400,16 +8373,16 @@ mod tests {
         let command = format!("sleep 1; touch {}", dir.join("made").display());
         claude_calls(&mut ed, &dir, "run", &json!({ "command": command }));
         feed(&mut ed, "<space>lmake it<ret>");
-        settle_for(&mut ed, |ed| !ed.offers.is_empty());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
         let screen = draw(&mut ed);
         // (the card's title says it waits; its run is the knot in hand)
         assert!(screen.contains(" waiting ") && !screen.contains("exploring"), "{screen}");
         ed.offer_accept();
-        settle_for(&mut ed, |ed| ed.session.task_run.is_some());
+        settle_until(&mut ed, |ed| ed.session.task_run.is_some());
         let screen = draw(&mut ed);
         // (the card names the tool, as its chat row does)
         assert!(screen.contains("● run    sleep 1") && !screen.contains("waiting"), "{screen}");
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -8437,7 +8410,7 @@ mod tests {
         ed.offer_popups = true;
         let log = claude_calls(&mut ed, &dir, "run", &json!({ "command": command }));
         feed(&mut ed, "<space>ltouch it<ret>");
-        settle_for(&mut ed, |ed| !ed.offers.is_empty());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
         // A draft in the chat's input: what's typed is the draft's, the card says how to reach it
         ed.session.at = crate::session::At::Chat;
         // (minimized while Claude works: its first letter brings it back, typed — #151 — then the rest)
@@ -8474,7 +8447,7 @@ mod tests {
         draw(&mut ed);
         feed(&mut ed, "y");
         assert!(ed.offers.is_empty() && !ed.card_has_keys());
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(made.exists() && tool_answer(&log).contains("exit 0"));
         assert_eq!(input(&ed), "my draft y");
         assert!(ed.session.is_at(crate::session::At::Chat));
@@ -8547,7 +8520,7 @@ mod tests {
         assert_eq!(ed.session.chat.as_ref().unwrap().queued.as_deref(), Some("second too"));
         assert_eq!(sent(&log), 1, "nothing goes while Claude works");
         // The turn ends: it goes
-        settle_for(&mut ed, |_| sent(&log) == 2);
+        settle_until(&mut ed, |_| sent(&log) == 2);
         let last = std::fs::read_to_string(&log).unwrap();
         assert!(last.lines().nth(1).unwrap().contains("second too"), "{last}");
         assert!(ed.session.chat.as_ref().unwrap().queued.is_none());
@@ -8631,15 +8604,15 @@ mod tests {
         assert_eq!(sent(&log).lines().count(), 1, "nothing goes while Claude works");
         // The turn ends: the reply goes first; at the next end the review, its draft sent; at the one after, the
         // second review has nothing to send and the messages go
-        settle_for(&mut ed, |_| sent(&log).lines().count() == 2);
+        settle_until(&mut ed, |_| sent(&log).lines().count() == 2);
         assert!(sent(&log).lines().nth(1).unwrap().contains("this one too"), "{}", sent(&log));
-        settle_for(&mut ed, |_| sent(&log).lines().count() == 3);
+        settle_until(&mut ed, |_| sent(&log).lines().count() == 3);
         assert!(sent(&log).lines().nth(2).unwrap().contains("<review of="), "{}", sent(&log));
         assert!(!ed.session.notes.list.iter().find(|n| n.id == id).unwrap().thread[0].draft);
-        settle_for(&mut ed, |_| sent(&log).lines().count() == 4);
+        settle_until(&mut ed, |_| sent(&log).lines().count() == 4);
         let last = sent(&log).lines().nth(3).unwrap().to_string();
         assert!(last.contains("second") && last.contains("third"), "{last}");
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         let c = ed.session.chat.as_ref().unwrap();
         assert!(c.queued.is_none() && c.sends.is_empty() && c.queued_said().is_none());
         // Idle, nothing waiting: a failed run of the last turn goes on by itself — not while something waits, which
@@ -8862,7 +8835,7 @@ mod tests {
         );
         feed(&mut ed, "<space>lchange it<ret>");
         let dirty = |ed: &Editor| ed.session.git_status.as_ref().is_some_and(|s| !s.unstaged.is_empty());
-        settle_for(&mut ed, |ed| dirty(ed) || !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| dirty(ed) || !ed.session.chat.as_ref().unwrap().busy());
         assert!(dirty(&ed) && ed.session.chat.as_ref().unwrap().busy(), "the tab caught up mid-turn");
         std::fs::remove_dir_all(&repo).ok();
     }
@@ -8949,9 +8922,9 @@ mod tests {
         ed.config.llm.run_allow = vec!["sleep".into()];
         let log = claude_calls(&mut ed, &dir, "run", &json!({ "command": "sleep 30" }));
         feed(&mut ed, "<space>lwait<ret>");
-        settle_for(&mut ed, |ed| ed.session.task_run.is_some());
+        settle_until(&mut ed, |ed| ed.session.task_run.is_some());
         ed.task_close();
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         let answer = tool_answer(&log);
         assert!(answer.contains("the command was stopped — the user stopped it"), "{answer}");
         std::fs::remove_dir_all(&dir).ok();
@@ -8971,7 +8944,7 @@ mod tests {
         let log =
             claude_calls(&mut ed, &dir, "run", &json!({ "command": "printenv TARAE_CONTAINER_PREFIX" }));
         feed(&mut ed, "<space>lname it<ret>");
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         let answer = tool_answer(&log);
         let r = ed.session.task_run.as_ref().unwrap();
         let prefix = crate::containers::prefix(ed.session.id, r.trace.id());
@@ -8983,7 +8956,7 @@ mod tests {
             cwd: dir.clone(),
         };
         ed.task_start(task);
-        settle_for(&mut ed, |ed| {
+        settle_until(&mut ed, |ed| {
             ed.session.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
         });
         let out: Vec<String> =
@@ -9010,9 +8983,9 @@ mod tests {
         let log = claude_calls(&mut ed, &dir, "run", &json!({ "command": line }));
         feed(&mut ed, "<space>lwait<ret>");
         // (its card — it sets a name in front — answered y)
-        settle_for(&mut ed, |ed| !ed.offers.is_empty());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
         ed.offer_accept();
-        settle_for(&mut ed, |ed| ed.session.task_run.is_some());
+        settle_until(&mut ed, |ed| ed.session.task_run.is_some());
         let prefix =
             ed.session.task_run.as_ref().unwrap().containers.as_ref().expect("Claude's").prefix.clone();
         let script = format!(
@@ -9032,7 +9005,7 @@ mod tests {
             assert!(std::time::Instant::now() < end, "stopped by name, on its engine: {asked}");
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(tool_answer(&log).contains("the command was stopped"));
         // Ended by itself (passed): its panel closed, nothing asked of the engine
         std::fs::remove_file(&asked).ok();
@@ -9132,7 +9105,7 @@ mod tests {
         };
         // Shown on the card, drawn whole; `y` runs it
         let (mut ed, log) = start(&body);
-        settle_for(&mut ed, |ed| !ed.offers.is_empty());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
         let q = ed.offers[0].question.clone();
         assert!(q.starts_with(&command) && q.contains("x.sh") && q.contains(body.trim_end()), "{q}");
         let mut bytes = Vec::new();
@@ -9147,7 +9120,7 @@ mod tests {
         );
         assert!(ed.screen.offer_buttons.iter().any(|b| b.3 == 'y'), "y can answer it");
         ed.offer_accept();
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(made.exists(), "{}", tool_answer(&log));
         std::fs::remove_file(&made).ok();
         // (the record has its card, with the command and its run — cardauto 1)
@@ -9161,17 +9134,17 @@ mod tests {
         assert!(last["run"].is_u64(), "{last}");
         // Changed after it was shown: not run, Claude hears why
         let (mut ed, log) = start(&body);
-        settle_for(&mut ed, |ed| !ed.offers.is_empty());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
         let sneaked = dir.join("sneaked");
         std::fs::write(&script, format!("{body}touch {}\n", sneaked.display())).unwrap();
         ed.offer_accept();
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         let answer = tool_answer(&log);
         assert!(answer.contains("changed after the user saw it") && answer.contains("isError"), "{answer}");
         assert!(!made.exists() && !sneaked.exists() && ed.session.task_run.is_none());
         // Too long to show: not asked about
         let (mut ed, log) = start(&"echo x\n".repeat(200));
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         let answer = tool_answer(&log);
         assert!(
             answer.contains("it has 200 lines — a card shows at most 16") && answer.contains("isError"),
@@ -9198,7 +9171,7 @@ mod tests {
             ed.session.chat.as_ref().is_some_and(|c| !c.busy())
                 && std::fs::read_to_string(&log).is_ok_and(|s| s.contains("\"c7\""))
         };
-        settle_for(ed, |ed| !ed.offers.is_empty() || answered(ed));
+        settle_until(ed, |ed| !ed.offers.is_empty() || answered(ed));
         log
     }
 
@@ -9235,7 +9208,7 @@ mod tests {
             vec![('y', "Ask each time"), ('s', "This session"), ('n', "Don't run them")]
         );
         ed.offer_dismiss();
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         let answer = tool_answer(&log);
         assert!(answer.contains("run none of your commands") && answer.contains("isError"), "{answer}");
         let log = run_turn(&mut ed, &dir, &command);
@@ -9247,7 +9220,7 @@ mod tests {
         let mut ed = start();
         let log = run_turn(&mut ed, &dir, &command);
         ed.offer_accept();
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(made.exists() && tool_answer(&log).contains("Ran without a sandbox (not on this system)"));
         assert!(!crate::tools::unsandboxed(&ed), "asked each time");
         std::fs::remove_file(&made).ok();
@@ -9255,12 +9228,12 @@ mod tests {
         assert!(matches!(ed.offers[0].what, What::NoSandbox { first: false, .. }), "its run's card");
         assert_eq!(ed.offers[0].answers(false), vec![('y', "Once"), ('s', "This session"), ('n', "No")]);
         ed.offer_dismiss();
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(tool_answer(&log).contains("chose not to run `touch") && !made.exists());
         run_turn(&mut ed, &dir, &command);
         assert!(matches!(ed.offers[0].what, What::NoSandbox { first: false, .. }), "still asked");
         ed.offer_for_session();
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(made.exists() && crate::tools::unsandboxed(&ed));
         std::fs::remove_file(&made).ok();
         // s: unasked in the next chat too — and the title says so
@@ -9268,7 +9241,7 @@ mod tests {
         run_turn(&mut ed, &dir, &command);
         assert!(first(&ed));
         ed.offer_for_session();
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(made.exists() && crate::tools::unsandboxed(&ed));
         std::fs::remove_file(&made).ok();
         let log = run_turn(&mut ed, &dir, &command);
@@ -9286,7 +9259,7 @@ mod tests {
         assert!(matches!(&o.what, What::Run(r) if r.unprotected));
         assert!(o.question.contains("No sandbox here (not on this system)"), "{}", o.question);
         ed.offer_accept();
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(ed.offers.is_empty() && made.exists(), "one card, not two");
         std::fs::remove_file(&made).ok();
         // Not past a restart: the tarae it restarts into asks again
@@ -9322,7 +9295,7 @@ mod tests {
         assert_eq!(o.title, crate::tools::PARTIAL_SANDBOX_TITLE);
         assert!(o.question.contains(why) && o.question.contains("goes only so far"), "{}", o.question);
         ed.offer_dismiss();
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(tool_answer(&log).contains("goes only so far") && tool_answer(&log).contains("run none"));
         let log = run_turn(&mut ed, &dir, &command);
         assert!(
@@ -9333,7 +9306,7 @@ mod tests {
         let mut ed = start();
         run_turn(&mut ed, &dir, &command);
         ed.offer_for_session();
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert_eq!(ed.session.no_sandbox, Some(crate::tools::NoSandbox::Unasked));
         run_turn(&mut ed, &dir, &command);
         assert!(ed.offers.is_empty(), "one card a session");
@@ -9356,7 +9329,7 @@ mod tests {
         let log =
             claude_calls(&mut ed, &dir, "run", &json!({ "command": format!("touch {}", made.display()) }));
         feed(&mut ed, "<space>ltouch it<ret>");
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(ed.offers.is_empty() && made.exists());
         assert!(tool_answer(&log).contains("the user turned it off (llm.sandbox)"));
         assert!(crate::tools::unsandboxed(&ed));
@@ -9386,7 +9359,7 @@ mod tests {
         let command = format!("touch {} {}", made.display(), marker.display());
         let log = claude_calls(&mut ed, &dir, "run", &json!({ "command": command }));
         feed(&mut ed, "<space>ltouch them<ret>");
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(made.exists(), "temp is writable");
         assert!(!marker.exists(), "a kept path isn't");
         let answer = tool_answer(&log);
@@ -9447,7 +9420,7 @@ mod tests {
         let command = format!("touch {} {}", made.display(), marker.display());
         let log = claude_calls(&mut ed, &dir, "run", &json!({ "command": command }));
         feed(&mut ed, "<space>ltouch them<ret>");
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(made.exists(), "the project is writable");
         assert!(!marker.exists(), "outside it isn't");
         let answer = tool_answer(&log).replace("\\n", " ");
@@ -9528,7 +9501,7 @@ mod tests {
         let command = format!("rmdir {0}/heads {0}/tags {0}", refs.display());
         let log = claude_calls(&mut ed, &dir, "run", &json!({ "command": command }));
         feed(&mut ed, "<space>lempty them<ret>");
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         let answer = tool_answer(&log).replace("\\n", " ");
         let answer = answer.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(answer.contains("exit 0"), "it ran: {answer}");
@@ -9562,7 +9535,7 @@ mod tests {
             let command = format!("touch {}", made.display());
             let log = claude_calls(&mut ed, &dir, "run", &json!({ "command": command }));
             feed(&mut ed, "<space>ltouch it<ret>");
-            settle_for(&mut ed, |ed| !ed.offers.is_empty());
+            settle_until(&mut ed, |ed| !ed.offers.is_empty());
             (ed, log)
         };
         let (mut ed, log) = start();
@@ -9570,16 +9543,16 @@ mod tests {
         assert_eq!(o.title, crate::tools::PARTIAL_SANDBOX_TITLE);
         assert!(o.question.contains(why) && o.weighty(), "{}", o.question);
         ed.offer_dismiss();
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(tool_answer(&log).contains("goes only so far") && !made.exists());
         let (mut ed, log) = start();
         ed.offer_accept();
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(made.exists());
         assert!(tool_answer(&log).contains("In tarae's sandbox"), "{}", tool_answer(&log));
         let (mut ed, _) = start();
         ed.offer_for_session();
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(made.exists() && !crate::tools::unsandboxed(&ed), "agreed, and still sandboxed");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -9600,13 +9573,13 @@ mod tests {
         let log =
             claude_calls(&mut ed, &dir, "run", &json!({ "command": format!("touch {}", made.display()) }));
         feed(&mut ed, "<space>ltouch it<ret>");
-        settle_for(&mut ed, |ed| !ed.offers.is_empty());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
         let o = &ed.offers[0];
         let why = "this kernel's Landlock (ABI 1) refuses every move across folders, so tarae doesn't use it";
         assert!(matches!(o.what, crate::offer::What::NoSandbox { .. }), "{}", o.title);
         assert!(o.question.contains(why), "{}", o.question);
         ed.offer_accept();
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy());
         assert!(made.exists());
         let answer = tool_answer(&log);
         assert!(answer.contains(&format!("Ran without a sandbox ({why})")), "{answer}");
@@ -9639,7 +9612,7 @@ mod tests {
         let command = format!("{} test", gradlew.display());
         let log = claude_calls(&mut ed, &dir, "run", &json!({ "command": command }));
         feed(&mut ed, "<space>ltest it<ret>");
-        settle_for(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy() || !ed.offers.is_empty());
+        settle_until(&mut ed, |ed| !ed.session.chat.as_ref().unwrap().busy() || !ed.offers.is_empty());
         assert!(ed.offers.is_empty(), "no card: {:?}", ed.offers.first().map(|o| &o.title));
         assert!(dir.join("build/built.txt").exists(), "it ran: {}", tool_answer(&log));
         assert!(!dir.join("build.rs").exists(), "in the sandbox");
@@ -9722,7 +9695,7 @@ mod tests {
             "said meanwhile"
         );
         go.send(()).unwrap();
-        settle_for(&mut ed, |ed| ed.toasts.iter().any(|t| t.text.contains("got 7")));
+        settle_until(&mut ed, |ed| ed.toasts.iter().any(|t| t.text.contains("got 7")));
         assert!(!ed.toasts.iter().any(|t| t.step.is_some()));
     }
 
@@ -9772,7 +9745,7 @@ mod tests {
         // The list: the folders, widest last, then running it outside
         ed.session.leave(crate::session::At::Chat);
         feed(&mut ed, " ms");
-        settle_for(&mut ed, |ed| ed.picker.is_some());
+        settle_until(&mut ed, |ed| ed.picker.is_some());
         let rows: Vec<String> = ed.picker.as_ref().unwrap().items().iter().map(|i| i.label.clone()).collect();
         assert_eq!(rows[0], format!("allow writing in {}", crate::allow::tilde(&deep)), "{rows:?}");
         assert_eq!(rows[1], format!("allow writing in {}", crate::allow::tilde(&cache)), "{rows:?}");
@@ -9869,7 +9842,7 @@ mod tests {
         run.by_claude = true;
         ed.session.task_run = Some(run);
         feed(&mut ed, " ms");
-        settle_for(&mut ed, |ed| ed.picker.is_some());
+        settle_until(&mut ed, |ed| ed.picker.is_some());
         feed(&mut ed, "<ret>");
         assert_eq!(ed.offers.first().map(|o| o.title.as_str()), Some(crate::blocked::GRANT_TITLE));
         // (drawn, and in sight long enough for an answer)
@@ -17453,7 +17426,7 @@ q = \"delete_selection\"\n",
         );
         // (the live search looks in the project too)
         feed(&mut ed, " /fn put_cursor");
-        settle_for(&mut ed, |ed| ed.picker.as_ref().is_some_and(|p| !p.searching && p.current().is_some()));
+        settle_until(&mut ed, |ed| ed.picker.as_ref().is_some_and(|p| !p.searching && p.current().is_some()));
         feed(&mut ed, "<ret>");
         let doc = ed.doc();
         let pos = doc.selection().primary().head;
@@ -17482,7 +17455,7 @@ q = \"delete_selection\"\n",
         let parsed = |ed: &Editor| {
             ed.doc().syntax.as_ref().is_some_and(|s| !s.dirty && !s.in_flight && s.tree.is_some())
         };
-        settle_for(&mut ed, parsed);
+        settle_until(&mut ed, parsed);
         let Some(syn) = ed.doc().syntax.as_ref() else { return }; // (no rust grammar in this build)
         assert!(!syn.layers.is_empty(), "tagged comments are injected layers");
         let one = ed.doc().tree_nodes();
@@ -17509,9 +17482,9 @@ q = \"delete_selection\"\n",
                 3 => feed(&mut ed, "uU"),
                 _ => {}
             }
-            settle_for(&mut ed, |ed| !in_flight(ed));
+            settle_until(&mut ed, |ed| !in_flight(ed));
             ed.schedule_parses();
-            settle_for(&mut ed, parsed);
+            settle_until(&mut ed, parsed);
             assert_eq!(now(&ed), fresh(&ed), "edit {k}: the tree is the text's");
         }
         // Undo keeps no trees: what the document holds is one version's, after all that
@@ -17527,7 +17500,7 @@ q = \"delete_selection\"\n",
                 crate::syntax::highlights(syn, &ed.doc().text, 0..60, &mut tree_sitter::QueryCursor::new());
             assert!(!first.is_empty(), "{keys}: the top of the file still colored before any reparse");
             ed.schedule_parses();
-            settle_for(&mut ed, parsed);
+            settle_until(&mut ed, parsed);
             assert_eq!(now(&ed), fresh(&ed), "{keys}: the tree is the text's");
         }
         std::fs::remove_dir_all(&dir).ok();
@@ -17578,13 +17551,13 @@ q = \"delete_selection\"\n",
         let kept: Vec<&str> = names.iter().copied().filter(|n| has_tree(&ed, n)).collect();
         assert_eq!(kept, ["d", "e", "f", "g", "h"]);
         ed.schedule_parses();
-        settle_for(&mut ed, |ed| ed.docs.iter().all(|d| d.syntax.as_ref().is_none_or(|s| !s.in_flight)));
+        settle_until(&mut ed, |ed| ed.docs.iter().all(|d| d.syntax.as_ref().is_none_or(|s| !s.in_flight)));
         let kept: Vec<&str> = names.iter().copied().filter(|n| has_tree(&ed, n)).collect();
         assert_eq!(kept, ["d", "e", "f", "g", "h"], "not parsed again in the background");
         // Shown again: parsed again
         ed.open(&dir.join("a.rs")).unwrap();
         ed.schedule_parses();
-        settle_for(&mut ed, |ed| has_tree(ed, "a"));
+        settle_until(&mut ed, |ed| has_tree(ed, "a"));
         assert!(has_tree(&ed, "a"));
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -17610,14 +17583,14 @@ q = \"delete_selection\"\n",
         };
         // Lowercase: any case
         feed(&mut ed, "alp");
-        settle_for(&mut ed, landed);
+        settle_until(&mut ed, landed);
         let rows = found(&mut ed);
         let labels: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
         assert_eq!(labels, ["1: fn alpha() {}", "2: let Beta = alpha();", "1: ALPHA beta"]);
         assert_eq!(rows[1].1, [(14, 17)], "the match stands out");
         // A capital: as written — typed all at once, only the last pattern's results land
         feed(&mut ed, "<backspace><backspace><backspace>Beta");
-        settle_for(&mut ed, landed);
+        settle_until(&mut ed, landed);
         let rows = found(&mut ed);
         assert_eq!(rows.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), ["2: let Beta = alpha();"]);
         // Unfinished: the last results stay, said in the title's place — no error
@@ -17633,12 +17606,12 @@ q = \"delete_selection\"\n",
         assert!(ed.status.is_none(), "{:?}", ed.status);
         // Finished: searched again, the note gone
         feed(&mut ed, ")");
-        settle_for(&mut ed, landed);
+        settle_until(&mut ed, landed);
         assert!(ed.picker.as_ref().unwrap().note.is_none());
         assert_eq!(found(&mut ed).len(), 1);
         // A regex is searched, not fuzzy-matched against the rows (no `[` or `\` in them)
         feed(&mut ed, "<backspace><backspace><backspace><backspace><backspace><backspace>alph[a]\\(\\)");
-        settle_for(&mut ed, landed);
+        settle_until(&mut ed, landed);
         let rows = found(&mut ed);
         assert_eq!(
             rows.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),

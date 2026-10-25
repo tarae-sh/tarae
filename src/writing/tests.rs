@@ -9,6 +9,7 @@ use crate::chat::State;
 use crate::config::Config;
 use crate::key::{Code, Key};
 use crate::llm::StreamEv;
+use crate::test_results::settle_until as settle;
 
 const TEXT: &str = "fn main() {\n    let a = 1;\n    let b = 2;\n    println!(\"{a} {b}\");\n}\n";
 
@@ -45,16 +46,6 @@ fn keys(ed: &mut Editor, keys: &str) {
 /// The line follow keeps in sight (collab C1: follow moves the view, never your cursor).
 fn led(ed: &Editor) -> Option<usize> {
     crate::follow::view_line(ed)
-}
-
-/// Events until `done` holds (a place is looked for on a worker).
-fn settle(ed: &mut Editor, done: impl Fn(&Editor) -> bool) {
-    let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-    while !done(ed) {
-        let left = end.saturating_duration_since(std::time::Instant::now());
-        let ev = ed.events.recv_timeout(left).expect("an event before the time's up");
-        ed.handle_event(ev);
-    }
 }
 
 /// A call's input as the stream brings it, its reader kept between pieces as the reader thread keeps it.

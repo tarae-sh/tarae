@@ -110,6 +110,53 @@ pub fn quiet_for(d: std::time::Duration) -> std::time::Instant {
     std::time::Instant::now() + d
 }
 
+/// Events handled until `done` holds — `PATIENCE` its guard, a wait that runs out naming the test's line. What the
+/// test did by hand before it (keys straight to `handle_key`, `ed.open`, a call into a module) isn't an event, so
+/// the work every event ends with (`handle_event`'s: the front buffer's diff, the side panel's rows, notes' marks, a
+/// shared server's folders, …) runs once first, as the loop runs it after the input that did it — else a condition
+/// only that work meets waits for an event that may never come (a preview's index read landed while another file
+/// was in front, `ed.open` brought it back: no diff was ever asked, and the test waited out its patience). The
+/// condition is looked at again every `LOOK_EVERY` with no event too: one outside the editor (a file a worker's
+/// `background` removed, a process's own write) comes with none.
+#[cfg(test)]
+#[track_caller]
+pub fn settle_until(ed: &mut crate::editor::Editor, done: impl Fn(&crate::editor::Editor) -> bool) {
+    settle_saying(ed, done, |_| String::new());
+}
+
+/// `settle_until`, with what `said` makes of the editor when the patience runs out.
+#[cfg(test)]
+#[track_caller]
+pub fn settle_saying(
+    ed: &mut crate::editor::Editor,
+    done: impl Fn(&crate::editor::Editor) -> bool,
+    said: impl Fn(&crate::editor::Editor) -> String,
+) {
+    let end = std::time::Instant::now() + PATIENCE;
+    if !done(ed) {
+        ed.handle_event(crate::event::Event::Job(Box::new(|_| {})));
+    }
+    while !done(ed) {
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        let wait = left.min(LOOK_EVERY);
+        match ed.events.recv_timeout(wait) {
+            Some(ev) => ed.handle_event(ev),
+            // (a wait that ran to the patience's end is the hang it guards against — whatever the condition says
+            // after it)
+            None if wait == left => {
+                let said = said(ed);
+                let said = if said.is_empty() { said } else { format!(": {said}") };
+                panic!("not settled within {}s{said}", PATIENCE.as_secs());
+            }
+            None => {}
+        }
+    }
+}
+
+/// How often `settle_until` looks at its condition with no event come.
+#[cfg(test)]
+const LOOK_EVERY: std::time::Duration = std::time::Duration::from_millis(20);
+
 /// Every test waits with one patience: a deadline written in a test (`Instant::now() + Duration…`, a
 /// `recv_timeout` of whole seconds) outside these helpers fails here — a hang guard is `PATIENCE`, a look that
 /// nothing happens `quiet_for`, what a test checks against time a condition or the simulation's clock. The list
@@ -680,6 +727,56 @@ pub fn junit(report_dirs: &[PathBuf], since: SystemTime, src_roots: &[PathBuf]) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A wait after what the test did by hand runs the work every event ends with first: a note gets its mark in an
+    /// open file only from that work (`notes::attach`), and `ed.open` isn't an event — with nothing else on its way,
+    /// `settle_until` meets it at once, where a wait for the next event alone waited out its whole patience.
+    #[test]
+    fn a_wait_runs_the_work_every_event_ends_with_first() {
+        let dir = crate::scratch::Scratch::new("settle-tail");
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, "one\ntwo\n").unwrap();
+        let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        let id = crate::notes::add(&mut ed, &file, 1..2, crate::notes::By::You, "on two");
+        let note =
+            |ed: &crate::editor::Editor| ed.session.notes.list.iter().find(|n| n.id == id).cloned().unwrap();
+        // (its lines read on a worker, the file not open — in: nothing left on its way)
+        settle_until(&mut ed, |ed| note(ed).pinned.is_some());
+        assert!(note(&ed).at.is_none(), "no mark while its file isn't open");
+        ed.open(&file).unwrap();
+        assert!(note(&ed).at.is_none(), "`open` itself marks nothing");
+        settle_until(&mut ed, |ed| note(ed).at.is_some());
+    }
+
+    /// A wait looks at its condition again with no event: a file a `background` job removed comes with none (its
+    /// work brings nothing back). The file goes on the condition's second look — after the pass of the tail, before
+    /// the wait — so it's gone by the time the wait starts, and only a look of its own sees it.
+    #[test]
+    fn a_wait_looks_again_with_no_event() {
+        let dir = crate::scratch::Scratch::new("settle-look");
+        let file = dir.path().join("gone.txt");
+        std::fs::write(&file, "x").unwrap();
+        let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        let ((go, gate), (removed, out)) = (std::sync::mpsc::channel(), std::sync::mpsc::channel());
+        let gone = file.clone();
+        ed.events.jobs().background(move || {
+            if gate.recv_timeout(PATIENCE).is_ok() {
+                std::fs::remove_file(&gone).unwrap();
+                removed.send(()).unwrap();
+            }
+        });
+        let looks = std::cell::Cell::new(0);
+        settle_until(&mut ed, |_| {
+            let there = file.exists();
+            looks.set(looks.get() + 1);
+            if looks.get() == 2 {
+                go.send(()).unwrap();
+                out.recv_timeout(PATIENCE).expect("removed");
+            }
+            !there
+        });
+        assert!(looks.get() >= 3, "seen gone by a look of its own");
+    }
 
     /// Every `perf_` test in the editor starts by skipping itself at opt-level 0 (`unoptimized`), by its own
     /// full name — one that didn't held a release budget in the test profile and failed under load.

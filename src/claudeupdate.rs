@@ -168,6 +168,7 @@ pub fn ran(ed: &mut Editor, passed: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_results::settle_until;
 
     /// A claude the native installer put there over `STALE` ago is said, with how to look for a newer one; a
     /// fresh one, or one installed another way (no file), isn't; a version that isn't a plain name is never a
@@ -273,14 +274,5 @@ mod tests {
         std::fs::write(dir.join("2.1.300"), "").unwrap();
         let (kind, text) = said(&mut ed, "Installation complete", true, 0).unwrap();
         assert!(kind == crate::editor::ToastKind::Success && text.contains("2.1.300 installed"), "{text}");
-    }
-
-    fn settle_until(ed: &mut Editor, done: impl Fn(&Editor) -> bool) {
-        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-        while !done(ed) && std::time::Instant::now() < end {
-            if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(20)) {
-                ed.handle_event(ev);
-            }
-        }
     }
 }

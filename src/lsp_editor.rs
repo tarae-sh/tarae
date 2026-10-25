@@ -3637,6 +3637,7 @@ mod tests {
     use super::*;
     use crate::key::Key;
     use crate::selection::Range;
+    use crate::test_results::settle_until;
 
     fn feed(ed: &mut Editor, keys: &str) {
         let mut chars = keys.chars();
@@ -3920,17 +3921,9 @@ mod tests {
         cid
     }
 
-    /// Events until `done` — the language server's own messages and our timers.
-    fn settle_for(ed: &mut Editor, done: impl Fn(&Editor) -> bool) {
-        quiet_until(ed, std::time::Instant::now() + crate::test_results::PATIENCE, done);
-    }
-
     /// Events for `ms`, or until `done` — a look that it doesn't happen meanwhile (`quiet_for`).
     fn quiet(ed: &mut Editor, ms: u64, done: impl Fn(&Editor) -> bool) {
-        quiet_until(ed, crate::test_results::quiet_for(Duration::from_millis(ms)), done);
-    }
-
-    fn quiet_until(ed: &mut Editor, end: std::time::Instant, done: impl Fn(&Editor) -> bool) {
+        let end = crate::test_results::quiet_for(Duration::from_millis(ms));
         while !done(ed) && std::time::Instant::now() < end {
             if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(20)) {
                 ed.handle_event(ev);
@@ -3963,7 +3956,7 @@ mod tests {
         // Closed for good: it stops, without a word on screen, and its process is gone — not a zombie
         let id = ed.doc().id;
         ed.close_doc(id);
-        settle_for(&mut ed, |ed| ed.client(cid).is_none());
+        settle_until(&mut ed, |ed| ed.client(cid).is_none());
         assert!(ed.client(cid).is_none(), "stopped");
         let said: Vec<&str> = ed.toasts.iter().map(|t| t.text.as_str()).collect();
         assert_eq!(said, ["fake ready"], "nothing on screen about the stop (only its start was said)");
@@ -3988,7 +3981,7 @@ mod tests {
         let pid = ed.client(cid).and_then(Client::pid).expect("its process");
         // SAFETY: a signal to the stand-in server this test started.
         unsafe { libc::kill(pid as i32, libc::SIGKILL) };
-        settle_for(&mut ed, |ed| ed.client(cid).is_none());
+        settle_until(&mut ed, |ed| ed.client(cid).is_none());
         assert!(ed.client(cid).is_none(), "noticed");
         assert!(ed.toasts.iter().any(|t| t.text.starts_with("fake exited")), "said");
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
@@ -4049,7 +4042,7 @@ mod tests {
         // main.rs closed too: nothing under the root — both stop soon
         let id = ed.doc().id;
         ed.close_doc(id);
-        settle_for(&mut ed, |ed| ed.client(toml).is_none() && ed.client(rust).is_none());
+        settle_until(&mut ed, |ed| ed.client(toml).is_none() && ed.client(rust).is_none());
         assert!(ed.client(toml).is_none(), "toml's server stopped once its root had no file open");
         assert!(ed.client(rust).is_none(), "and rust's");
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
@@ -4094,7 +4087,7 @@ mod tests {
         ed.session.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
         ed.session_switch(0);
         ed.handle_event(crate::event::Event::Resize);
-        settle_for(&mut ed, |ed| ed.client(idle_srv).is_none());
+        settle_until(&mut ed, |ed| ed.client(idle_srv).is_none());
         assert!(ed.client(idle_srv).is_none(), "the idle session's server stopped");
         quiet(&mut ed, 1000, |_| false);
         assert!(ed.client(busy_srv).is_some(), "the working one's is kept");
@@ -4104,7 +4097,7 @@ mod tests {
         let l = ed.sessions.iter_mut().find(|l| l.id == busy).unwrap();
         l.chat.as_mut().unwrap().state = crate::chat::State::Idle;
         ed.handle_event(crate::event::Event::Resize);
-        settle_for(&mut ed, |ed| ed.client(busy_srv).is_none());
+        settle_until(&mut ed, |ed| ed.client(busy_srv).is_none());
         assert!(ed.client(busy_srv).is_none(), "stopped once its Claude was idle");
         // In front again: its file gets a server back
         ed.session_switch(idle);
@@ -4140,7 +4133,7 @@ mod tests {
         assert_ne!(out_srv, in_srv);
         // The project's file in sight: the outside one's server stops, its file stays open
         ed.handle_event(crate::event::Event::Resize);
-        settle_for(&mut ed, |ed| ed.client(out_srv).is_none());
+        settle_until(&mut ed, |ed| ed.client(out_srv).is_none());
         assert!(ed.client(out_srv).is_none(), "out of sight, outside the project: stopped");
         assert!(ed.docs.iter().any(|d| d.path.as_ref() == Some(&outside)), "its file stays open");
         // Shown again: a server back for it — while the project's, out of sight now, stays
@@ -4252,7 +4245,7 @@ mod tests {
         assert_eq!(saves(&synced(&mut ed)), 2, "not while the change is fresh");
         advance(RESAVE_QUIET);
         // (the worker's wake does it: its sleep, then the check)
-        settle_for(&mut ed, |ed| ed.lsp.resaves.is_empty());
+        settle_until(&mut ed, |ed| ed.lsp.resaves.is_empty());
         let out = synced(&mut ed);
         assert_eq!(saves(&out), 3, "sent again: {out}");
         assert!(after_the_change(&out), "the save went again after the change");
@@ -4634,16 +4627,6 @@ mod tests {
         std::fs::remove_dir_all(file.parent().unwrap()).ok();
     }
 
-    /// Apply worker-thread results until the condition holds.
-    fn settle_until(ed: &mut Editor, done: impl Fn(&Editor) -> bool) {
-        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-        while !done(ed) {
-            let left = end.saturating_duration_since(std::time::Instant::now());
-            let ev = ed.events.recv_timeout(left).expect("event before timeout");
-            ed.handle_event(ev);
-        }
-    }
-
     #[test]
     fn code_action_preview_resolves_lazily_and_shows_the_diff() {
         let (mut ed, file, log) = setup("preview", "fn main() {\n    let x = 1;\n}\n");
@@ -5013,7 +4996,7 @@ mod tests {
         let at = |line: u64| json!({ "uri": lsp::uri(&file), "range": { "start": { "line": line, "character": 0 }, "end": { "line": line, "character": 1 } } });
         let id = pending_of(&ed, Kind::Goto(Goto::Implementation));
         ed.on_lsp_message(cid, json!({ "id": id, "result": [at(1), at(2)] }));
-        settle_for(&mut ed, |ed| ed.picker.is_some());
+        settle_until(&mut ed, |ed| ed.picker.is_some());
         assert_eq!(ed.picker.as_ref().map(|p| p.title.as_str()), Some("implementations"));
         feed(&mut ed, "<esc>");
         // gy: one → straight there, and C-o comes back
@@ -5056,7 +5039,7 @@ mod tests {
         let refs =
             json!([at(&file, 1, 9), at(&other, 3, 7), at(&file, 0, 9), at(&other, 1, 11), at(&file, 1, 14)]);
         ed.on_lsp_message(cid, json!({ "id": id, "result": refs }));
-        settle_for(&mut ed, |ed| ed.picker.is_some());
+        settle_until(&mut ed, |ed| ed.picker.is_some());
         // (a row: its label, hint and what stands out in it)
         type Shown = (String, String, Vec<(u32, u32)>);
         let rows = |ed: &mut Editor| -> Vec<Shown> {
@@ -5108,7 +5091,7 @@ mod tests {
         ed.on_lsp_message(cid, json!({ "id": id, "result": [at(&other, 3, 7)] }));
         let id = pending_of(&ed, Kind::Goto(Goto::References));
         ed.on_lsp_message(cid, json!({ "id": id, "result": refs }));
-        settle_for(&mut ed, |ed| ed.picker.is_some());
+        settle_until(&mut ed, |ed| ed.picker.is_some());
         assert_eq!(labels(&rows(&mut ed))[..2], ["other.rs [2]", "4: pub fn a() {} [decl]"]);
         std::fs::remove_dir_all(file.parent().unwrap()).ok();
     }
@@ -5129,7 +5112,7 @@ mod tests {
         ed.on_lsp_message(cid, progress("begin"));
         ed.doc_mut().set_selection(Selection::point(3));
         feed(&mut ed, "gr");
-        settle_for(&mut ed, |ed| ed.picker.is_some());
+        settle_until(&mut ed, |ed| ed.picker.is_some());
         let shown = |ed: &mut Editor| -> (String, Vec<String>) {
             let p = ed.picker.as_mut().expect("a list");
             let rows = p.visible(20).into_iter().filter(|r| r.label.contains(':')).map(|r| r.label).collect();
@@ -5159,7 +5142,7 @@ mod tests {
         };
         let id = pending_of(&ed, Kind::Goto(Goto::References));
         ed.on_lsp_message(cid, json!({ "id": id, "result": [at(0, 3), at(1, 9)] }));
-        settle_for(&mut ed, |ed| ed.picker.as_ref().is_some_and(|p| p.title == "references"));
+        settle_until(&mut ed, |ed| ed.picker.as_ref().is_some_and(|p| p.title == "references"));
         let (title, rows) = shown(&mut ed);
         assert_eq!(
             (title.as_str(), rows),
@@ -5172,7 +5155,7 @@ mod tests {
         );
         // Closed before the answer came: no list pops up after
         feed(&mut ed, "<esc>gr");
-        settle_for(&mut ed, |ed| ed.picker.is_some());
+        settle_until(&mut ed, |ed| ed.picker.is_some());
         feed(&mut ed, "<esc>");
         let id = pending_of(&ed, Kind::Goto(Goto::References));
         ed.on_lsp_message(cid, json!({ "id": id, "result": [at(0, 3), at(1, 9)] }));
@@ -5183,7 +5166,7 @@ mod tests {
         feed(&mut ed, "gr");
         let id = pending_of(&ed, Kind::Goto(Goto::References));
         ed.on_lsp_message(cid, json!({ "id": id, "result": [at(0, 3), at(1, 9)] }));
-        settle_for(&mut ed, |ed| ed.picker.is_some());
+        settle_until(&mut ed, |ed| ed.picker.is_some());
         assert_eq!(ed.picker.as_ref().map(|p| p.title.as_str()), Some("references"));
         quiet(&mut ed, 1000, |ed| ed.picker.as_ref().is_some_and(|p| p.title != "references"));
         assert_eq!(ed.picker.as_ref().map(|p| p.title.as_str()), Some("references"), "and none come after");
@@ -5200,19 +5183,19 @@ mod tests {
         ed.doc_mut().set_selection(Selection::point(3));
         feed(&mut ed, "gr");
         assert!(ed.status.as_ref().is_some_and(|s| s.0 == "fake is starting — references when it's ready"));
-        settle_for(&mut ed, |ed| ed.picker.is_some());
+        settle_until(&mut ed, |ed| ed.picker.is_some());
         assert_eq!(ed.picker.as_ref().map(|p| p.title.as_str()), Some("text matches"));
         assert!(!sent(&log).contains("textDocument/references"), "not asked before it's up");
         let init = json!({ "id": 0, "result": { "capabilities": { "positionEncoding": "utf-8" } } });
         ed.on_lsp_message(cid, init);
-        settle_for(&mut ed, |ed| ed.lsp.pending.values().any(|p| p.kind == Kind::Goto(Goto::References)));
+        settle_until(&mut ed, |ed| ed.lsp.pending.values().any(|p| p.kind == Kind::Goto(Goto::References)));
         let at = |line: u64, col: u64| {
             json!({ "uri": lsp::uri(&file), "range": {
             "start": { "line": line, "character": col }, "end": { "line": line, "character": col + 1 } } })
         };
         let id = pending_of(&ed, Kind::Goto(Goto::References));
         ed.on_lsp_message(cid, json!({ "id": id, "result": [at(0, 3), at(1, 9)] }));
-        settle_for(&mut ed, |ed| ed.picker.as_ref().is_some_and(|p| p.title == "references"));
+        settle_until(&mut ed, |ed| ed.picker.as_ref().is_some_and(|p| p.title == "references"));
         assert_eq!(
             ed.picker.as_ref().map(|p| p.title.as_str()),
             Some("references"),
@@ -5238,7 +5221,7 @@ mod tests {
             assert_eq!(early, None, "nothing shows before the grace is over");
             let id = pending_of(&ed, Kind::Goto(Goto::References));
             ed.on_lsp_message(cid, json!({ "id": id, "result": [at(0, 3), at(1, 9)] }));
-            settle_for(&mut ed, |ed| ed.picker.is_some());
+            settle_until(&mut ed, |ed| ed.picker.is_some());
             if asked.elapsed() >= GRACE {
                 assert!(attempt < TRIES, "the list came after the grace in each of {TRIES} tries");
                 continue;
@@ -5280,7 +5263,7 @@ mod tests {
         ed.handle_event(held);
         assert!(ed.picker.is_none(), "no text matches: the answer is in");
         assert!(ed.lsp.refs.texts.is_none());
-        settle_for(&mut ed, |ed| ed.picker.is_some());
+        settle_until(&mut ed, |ed| ed.picker.is_some());
         assert_eq!(ed.picker.as_ref().map(|p| p.title.as_str()), Some("references"));
         std::fs::remove_dir_all(file.parent().unwrap()).ok();
     }
@@ -5293,7 +5276,7 @@ mod tests {
 
     fn ask_tool(ed: &mut Editor, id: u64, args: Value) -> Result<String, String> {
         crate::nav::references(ed, crate::tools::Call::test(id), &args)?;
-        settle_for(ed, |_| tool_answer(id).is_some());
+        settle_until(ed, |_| tool_answer(id).is_some());
         tool_answer(id).expect("answered")
     }
 
@@ -5318,7 +5301,7 @@ mod tests {
             &json!({"path": "other.rs", "line": 4, "symbol": "crate::a"}),
         )
         .unwrap();
-        settle_for(&mut ed, |ed| ed.lsp.pending.values().any(|p| matches!(p.kind, Kind::ToolRefs { .. })));
+        settle_until(&mut ed, |ed| ed.lsp.pending.values().any(|p| matches!(p.kind, Kind::ToolRefs { .. })));
         assert_eq!(ed.doc().path.as_deref(), Some(file.as_path()), "the user's file stays in view");
         assert!(ed.docs.iter().any(|d| d.path.as_deref() == Some(other.as_path())), "opened aside");
         let out = sent_until(&log, &["textDocument/references"]);
@@ -5341,7 +5324,7 @@ mod tests {
         assert!(tool_answer(1).is_none(), "waits for the declaration");
         let id = pending_of(&ed, Kind::ToolDeclared { ask: 0 });
         ed.on_lsp_message(cid, json!({ "id": id, "result": at(&other, 3, 7) }));
-        settle_for(&mut ed, |_| tool_answer(1).is_some());
+        settle_until(&mut ed, |_| tool_answer(1).is_some());
         assert_eq!(
             tool_answer(1).unwrap().unwrap(),
             "5 references in 2 files (fake), the declaration first:\nother.rs\n  4: pub fn a() {}  (declaration)\n  \
@@ -5377,10 +5360,10 @@ mod tests {
             "value": { "kind": "begin", "title": "Indexing" } } });
         ed.on_lsp_message(cid, progress);
         crate::nav::references(&mut ed, crate::tools::Call::test(2), &args).unwrap();
-        settle_for(&mut ed, |ed| ed.lsp.pending.values().any(|p| matches!(p.kind, Kind::ToolRefs { .. })));
+        settle_until(&mut ed, |ed| ed.lsp.pending.values().any(|p| matches!(p.kind, Kind::ToolRefs { .. })));
         let id = pending_of(&ed, Kind::ToolRefs { ask: 0 });
         ed.on_lsp_message(cid, json!({ "id": id, "result": [] }));
-        settle_for(&mut ed, |_| tool_answer(2).is_some());
+        settle_until(&mut ed, |_| tool_answer(2).is_some());
         let t = tool_answer(2).unwrap().unwrap();
         assert!(t.contains("fake is still loading (Indexing) and found none yet, so these are"), "{t}");
         // Silent: the text matches after the wait (a short one — the rest of the test answers, so waits long)
@@ -5401,7 +5384,7 @@ mod tests {
         ed.session.root = dir.clone();
         let syms = |ed: &mut Editor, id: u64, args: Value| {
             crate::nav::symbols(ed, crate::tools::Call::test(id), &args).unwrap();
-            settle_for(ed, |_| tool_answer(id).is_some());
+            settle_until(ed, |_| tool_answer(id).is_some());
             tool_answer(id).expect("answered")
         };
         let t = syms(&mut ed, 1, json!({"path": "main.rs", "line": 4})).unwrap();
@@ -5417,7 +5400,9 @@ mod tests {
         let caps = json!({ "positionEncoding": "utf-8", "documentSymbolProvider": true });
         ed.on_lsp_message(cid, json!({ "id": 0, "result": { "capabilities": caps } }));
         crate::nav::symbols(&mut ed, crate::tools::Call::test(2), &json!({"path": "main.rs"})).unwrap();
-        settle_for(&mut ed, |ed| ed.lsp.pending.values().any(|p| matches!(p.kind, Kind::ToolSymbols { .. })));
+        settle_until(&mut ed, |ed| {
+            ed.lsp.pending.values().any(|p| matches!(p.kind, Kind::ToolSymbols { .. }))
+        });
         assert!(sent_has(&log, "textDocument/documentSymbol"));
         let range = |a: u64, b: u64| json!({ "start": { "line": a, "character": 0 }, "end": { "line": b, "character": 1 } });
         let answer = json!([{ "name": "S", "kind": 23, "range": range(0, 0), "selectionRange": range(0, 0) },
@@ -5425,7 +5410,7 @@ mod tests {
               "children": [{ "name": "f", "kind": 6, "range": range(2, 4), "selectionRange": range(2, 2) }] }]);
         let id = pending_of(&ed, Kind::ToolSymbols { ask: 0 });
         ed.on_lsp_message(cid, json!({ "id": id, "result": answer }));
-        settle_for(&mut ed, |_| tool_answer(2).is_some());
+        settle_until(&mut ed, |_| tool_answer(2).is_some());
         assert_eq!(
             tool_answer(2).unwrap().unwrap(),
             "3 symbols in main.rs (fake):\nstruct S  1\nimpl S  2–6\n  method f  3–5"
@@ -5458,7 +5443,7 @@ mod tests {
         args: Value,
     ) -> Result<String, String> {
         f(ed, crate::tools::Call::test(id), &args)?;
-        settle_for(ed, |_| tool_answer(id).is_some());
+        settle_until(ed, |_| tool_answer(id).is_some());
         tool_answer(id).expect("answered")
     }
 
@@ -5595,14 +5580,14 @@ mod tests {
             &json!({"path": "main.rs", "line": 2, "symbol": "a"}),
         )
         .unwrap();
-        settle_for(&mut ed, |ed| ed.lsp.pending.values().any(|p| matches!(p.kind, Kind::ToolGoto { .. })));
+        settle_until(&mut ed, |ed| ed.lsp.pending.values().any(|p| matches!(p.kind, Kind::ToolGoto { .. })));
         let out = sent_until(&log, &["textDocument/definition"]);
         let asked = out.lines().find(|l| l.contains("textDocument/definition")).expect("asked");
         assert!(asked.contains(r#""position":{"character":9,"line":1}"#), "{asked}");
         feed(&mut ed, "j"); // (the user moves meanwhile: still answered)
         let id = pending_of(&ed, Kind::ToolGoto { ask: 0, goto: Goto::Definition });
         ed.on_lsp_message(cid, json!({ "id": id, "result": [loc(&other, 3, 7)] }));
-        settle_for(&mut ed, |_| tool_answer(1).is_some());
+        settle_until(&mut ed, |_| tool_answer(1).is_some());
         assert_eq!(
             tool_answer(1).unwrap().unwrap(),
             "1 definition (fake):\nother.rs\n  4: pub fn a(x: usize) -> usize {"
@@ -5615,11 +5600,11 @@ mod tests {
             &json!({"path": "main.rs", "line": 3, "symbol": "S", "kind": "implementation"}),
         )
         .unwrap();
-        settle_for(&mut ed, |ed| ed.lsp.pending.values().any(|p| matches!(p.kind, Kind::ToolGoto { .. })));
+        settle_until(&mut ed, |ed| ed.lsp.pending.values().any(|p| matches!(p.kind, Kind::ToolGoto { .. })));
         assert!(sent_has(&log, "textDocument/implementation"));
         let id = pending_of(&ed, Kind::ToolGoto { ask: 0, goto: Goto::Definition });
         ed.on_lsp_message(cid, json!({ "id": id, "result": [loc(&file, 3, 0)] }));
-        settle_for(&mut ed, |_| tool_answer(2).is_some());
+        settle_until(&mut ed, |_| tool_answer(2).is_some());
         assert_eq!(
             tool_answer(2).unwrap().unwrap(),
             "1 implementation (fake):\nmain.rs\n  4: impl S { fn a(&self) {} }"
@@ -5641,7 +5626,7 @@ mod tests {
         ]);
         let id = pending_of(&ed, Kind::ToolNamed { ask: 0 });
         ed.on_lsp_message(cid, json!({ "id": id, "result": found }));
-        settle_for(&mut ed, |_| tool_answer(3).is_some());
+        settle_until(&mut ed, |_| tool_answer(3).is_some());
         assert_eq!(
             tool_answer(3).unwrap().unwrap(),
             "2 definitions of `a` by name (fake), those in S first:\nmain.rs\n  4: impl S { fn a(&self) {} }  \
@@ -5651,7 +5636,7 @@ mod tests {
         crate::nav::definition(&mut ed, crate::tools::Call::test(4), &json!({"symbol": "A"})).unwrap();
         let id = pending_of(&ed, Kind::ToolNamed { ask: 0 });
         ed.on_lsp_message(cid, json!({ "id": id, "result": [sym("ab", 12, "", loc(&file, 0, 3))] }));
-        settle_for(&mut ed, |_| tool_answer(4).is_some());
+        settle_until(&mut ed, |_| tool_answer(4).is_some());
         assert_eq!(
             tool_answer(4).unwrap().unwrap(),
             "nothing named exactly `A` (fake, by name); close names:\nmain.rs\n  1: fn b() { a() }  (ab: fn)"
@@ -5703,10 +5688,10 @@ mod tests {
             &json!({"path": "main.rs", "symbol": "a"}),
         )
         .unwrap();
-        settle_for(&mut ed, |ed| ed.lsp.pending.values().any(|p| matches!(p.kind, Kind::ToolGoto { .. })));
+        settle_until(&mut ed, |ed| ed.lsp.pending.values().any(|p| matches!(p.kind, Kind::ToolGoto { .. })));
         let id = pending_of(&ed, Kind::ToolGoto { ask: 0, goto: Goto::Definition });
         ed.on_lsp_message(cid, json!({ "id": id, "result": [] }));
-        settle_for(&mut ed, |_| tool_answer(4).is_some());
+        settle_until(&mut ed, |_| tool_answer(4).is_some());
         let t = tool_answer(4).unwrap().unwrap();
         assert!(t.contains("fake is still loading (Indexing) and found none yet"), "{t}");
         assert!(t.contains("ask again in a moment"), "{t}");
@@ -5731,10 +5716,10 @@ mod tests {
             &json!({"path": "main.rs", "symbol": "b"}),
         )
         .unwrap();
-        settle_for(&mut ed, |ed| asked(ed) > before);
+        settle_until(&mut ed, |ed| asked(ed) > before);
         let id = pending_of(&ed, Kind::ToolGoto { ask: 0, goto: Goto::Definition });
         ed.on_lsp_message(cid, json!({ "id": id, "result": null }));
-        settle_for(&mut ed, |_| tool_answer(6).is_some());
+        settle_until(&mut ed, |_| tool_answer(6).is_some());
         let t = tool_answer(6).unwrap().unwrap();
         assert!(t.contains("fake found no definitions there"), "{t}");
         assert!(!t.contains("ask again"), "{t}");
@@ -5758,10 +5743,10 @@ mod tests {
         let cid = up(&mut ed, json!({ "hoverProvider": true }));
         let ask = |ed: &mut Editor, id: u64, args: Value, result: Value| {
             crate::nav::hover(ed, crate::tools::Call::test(id), &args).unwrap();
-            settle_for(ed, |ed| ed.lsp.pending.values().any(|p| matches!(p.kind, Kind::ToolHover { .. })));
+            settle_until(ed, |ed| ed.lsp.pending.values().any(|p| matches!(p.kind, Kind::ToolHover { .. })));
             let n = pending_of(ed, Kind::ToolHover { ask: 0 });
             ed.on_lsp_message(cid, json!({ "id": n, "result": result }));
-            settle_for(ed, |_| tool_answer(id).is_some());
+            settle_until(ed, |_| tool_answer(id).is_some());
             tool_answer(id).unwrap()
         };
         let md = |v: &str| json!({ "contents": { "kind": "markdown", "value": v } });
@@ -5784,13 +5769,13 @@ mod tests {
         // Content modified: still loading — the tree stands in
         crate::nav::hover(&mut ed, crate::tools::Call::test(5), &json!({"path": "main.rs", "symbol": "a"}))
             .unwrap();
-        settle_for(&mut ed, |ed| ed.lsp.pending.values().any(|p| matches!(p.kind, Kind::ToolHover { .. })));
+        settle_until(&mut ed, |ed| ed.lsp.pending.values().any(|p| matches!(p.kind, Kind::ToolHover { .. })));
         let n = pending_of(&ed, Kind::ToolHover { ask: 0 });
         ed.on_lsp_message(
             cid,
             json!({ "id": n, "error": { "code": -32801, "message": "content modified" } }),
         );
-        settle_for(&mut ed, |_| tool_answer(5).is_some());
+        settle_until(&mut ed, |_| tool_answer(5).is_some());
         let t = tool_answer(5).unwrap().unwrap();
         assert!(t.contains("fake is still loading the project"), "{t}");
         // Neither a name nor a column: said
@@ -5845,14 +5830,14 @@ mod tests {
         };
         // Asks, and the server answers `kind`'s request with `reply`
         let answered = |ed: &mut Editor, id: u64, kind: Kind, reply: Value| {
-            settle_for(ed, |ed| has(ed, &kind) || tool_answer(id).is_some());
+            settle_until(ed, |ed| has(ed, &kind) || tool_answer(id).is_some());
             assert!(has(ed, &kind), "{id} {kind:?}: {:?}", tool_answer(id));
             let n = pending_of(ed, kind);
             let mut msg = json!({ "id": n });
             let k = if reply.get("code").is_some() { "error" } else { "result" };
             msg[k] = reply;
             ed.on_lsp_message(cid, msg);
-            settle_for(ed, |_| tool_answer(id).is_some());
+            settle_until(ed, |_| tool_answer(id).is_some());
         };
         let prepare = Kind::ToolPrepareRename { ask: 0 };
         let renaming = Kind::ToolRename { ask: 0 };
@@ -5889,7 +5874,7 @@ mod tests {
         let ok_prepare =
             json!({ "start": { "line": 0, "character": 9 }, "end": { "line": 0, "character": 10 } });
         crate::refactor::rename(&mut ed, crate::tools::Call::test(4), &args("alpha")).unwrap();
-        settle_for(&mut ed, |ed| has(ed, &prepare));
+        settle_until(&mut ed, |ed| has(ed, &prepare));
         let n = pending_of(&ed, prepare.clone());
         ed.on_lsp_message(cid, json!({ "id": n, "result": ok_prepare }));
         answered(&mut ed, 4, renaming.clone(), edit("alpha", Some(&away.join("x.rs"))));
@@ -5903,7 +5888,7 @@ mod tests {
         let moving = json!({ "documentChanges": [
             { "kind": "rename", "oldUri": lsp::uri(&other), "newUri": lsp::uri(&dir.join("alpha.rs")) } ] });
         crate::refactor::rename(&mut ed, crate::tools::Call::test(5), &args("alpha")).unwrap();
-        settle_for(&mut ed, |ed| has(ed, &prepare));
+        settle_until(&mut ed, |ed| has(ed, &prepare));
         let n = pending_of(&ed, prepare.clone());
         ed.on_lsp_message(cid, json!({ "id": n, "result": ok_prepare }));
         answered(&mut ed, 5, renaming.clone(), moving);
@@ -5913,7 +5898,7 @@ mod tests {
         // Review at the end: written at once, kept for `space u` as unseen; the open buffer takes it
         ed.session.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
         crate::refactor::rename(&mut ed, crate::tools::Call::test(6), &args("alpha")).unwrap();
-        settle_for(&mut ed, |ed| has(ed, &prepare));
+        settle_until(&mut ed, |ed| has(ed, &prepare));
         let n = pending_of(&ed, prepare.clone());
         ed.on_lsp_message(cid, json!({ "id": n, "result": ok_prepare }));
         answered(&mut ed, 6, renaming.clone(), edit("alpha", None));
@@ -5949,10 +5934,10 @@ mod tests {
         ed.open(&file).unwrap();
         let again = json!({"path": "main.rs", "line": 1, "symbol": "alpha", "new_name": "beta"});
         crate::refactor::rename(&mut ed, crate::tools::Call::test(7), &again).unwrap();
-        settle_for(&mut ed, |ed| has(ed, &prepare));
+        settle_until(&mut ed, |ed| has(ed, &prepare));
         let n = pending_of(&ed, prepare.clone());
         ed.on_lsp_message(cid, json!({ "id": n, "result": ok_prepare }));
-        settle_for(&mut ed, |ed| has(ed, &renaming));
+        settle_until(&mut ed, |ed| has(ed, &renaming));
         let n = pending_of(&ed, renaming.clone());
         // (`alpha` is five characters now)
         let te5 = |line: u64, col: u64| {
@@ -5966,22 +5951,22 @@ mod tests {
         ed.on_lsp_message(cid, json!({ "id": n, "result": changes }));
         let title = |ed: &Editor| ed.session.review.as_ref().map(|r| r.instruction.clone());
         // Several files: one card for them all first (#75) — `r`, one by one
-        settle_for(&mut ed, |ed| !ed.offers.is_empty());
+        settle_until(&mut ed, |ed| !ed.offers.is_empty());
         assert!(ed.session.review.is_none());
         let q = &ed.offers[0].question;
         assert!(q.starts_with("rename `alpha` → `beta`\n\n6 places in 3 files:"), "{q}");
         ed.offer_one_by_one();
-        settle_for(&mut ed, |ed| ed.session.review.is_some());
+        settle_until(&mut ed, |ed| ed.session.review.is_some());
         assert_eq!(title(&ed).as_deref(), Some("rename `alpha` → `beta` · 1 of 3"));
         assert_eq!(ed.doc().path.as_ref(), Some(&file));
         feed(&mut ed, "a");
-        settle_for(&mut ed, |ed| ed.session.review.is_some());
+        settle_until(&mut ed, |ed| ed.session.review.is_some());
         assert_eq!(title(&ed).as_deref(), Some("rename `alpha` → `beta` · 2 of 3"));
         feed(&mut ed, "q");
-        settle_for(&mut ed, |ed| ed.session.review.is_some());
+        settle_until(&mut ed, |ed| ed.session.review.is_some());
         assert_eq!(ed.doc().path.as_deref(), Some(std::fs::canonicalize(&third).unwrap().as_path()));
         feed(&mut ed, "a");
-        settle_for(&mut ed, |_| tool_answer(7).is_some());
+        settle_until(&mut ed, |_| tool_answer(7).is_some());
         let t = tool_answer(7).unwrap().unwrap();
         assert!(
             t.starts_with(
@@ -5997,7 +5982,7 @@ mod tests {
             t.contains("\ndeclined by the user, left as they were: other.rs (2)\nSome files weren't changed"),
             "{t}"
         );
-        settle_for(&mut ed, |_| read(&file).contains("beta"));
+        settle_until(&mut ed, |_| read(&file).contains("beta"));
         assert_eq!(
             read(&file),
             "fn b() { beta() }\nfn c() { beta(); beta() }\nstruct S;\nimpl S { fn a(&self) {} }\n"
@@ -6088,7 +6073,7 @@ mod tests {
         publish(&mut ed, &file, json!([d(1, 9, 1, "cannot find `a`", json!("E0425"))]));
         assert!(tool_answer(5).is_none(), "nor while it publishes");
         ed.on_lsp_message(cid, progress("end"));
-        settle_for(&mut ed, |_| tool_answer(5).is_some());
+        settle_until(&mut ed, |_| tool_answer(5).is_some());
         let t = tool_answer(5).expect("answered once settled").unwrap();
         assert!(
             t.starts_with("1 error in 1 of 1 file:\nmain.rs\n  2:10 error: cannot find `a` [rustc E0425]"),
@@ -6130,14 +6115,14 @@ mod tests {
         ed.on_lsp_message(cid, progress("begin"));
         feed(&mut ed, "jwwgr");
         // (the server is busy: the text matches come first — N3)
-        settle_for(&mut ed, |ed| ed.picker.is_some());
+        settle_until(&mut ed, |ed| ed.picker.is_some());
         let id = pending_of(&ed, Kind::Goto(Goto::References));
         ed.on_lsp_message(cid, json!({ "id": id, "result": [] }));
         ed.on_lsp_message(cid, progress("end"));
         let id = pending_of(&ed, Kind::Goto(Goto::References));
         let at = |line: u64| json!({ "uri": lsp::uri(&file), "range": { "start": { "line": line, "character": 3 }, "end": { "line": line, "character": 4 } } });
         ed.on_lsp_message(cid, json!({ "id": id, "result": [at(0), at(1)] }));
-        settle_for(&mut ed, |ed| ed.picker.as_ref().is_some_and(|p| p.title == "references"));
+        settle_until(&mut ed, |ed| ed.picker.as_ref().is_some_and(|p| p.title == "references"));
         assert!(ed.picker.is_some(), "listed");
         assert!(ed.lsp.traced.is_empty(), "not before it's on screen");
         crate::term::render(&mut ed, &mut Vec::new(), 100, 30).unwrap();

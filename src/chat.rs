@@ -3633,17 +3633,12 @@ mod tests {
         ed
     }
 
+    #[track_caller]
     fn settle_until(ed: &mut Editor, done: impl Fn(&Editor) -> bool) {
-        let end = Instant::now() + crate::test_results::PATIENCE;
-        while !done(ed) {
-            let left = end.saturating_duration_since(Instant::now());
-            let Some(ev) = ed.events.recv_timeout(left) else {
-                let rows: Vec<_> =
-                    ed.session.chat.iter().flat_map(|c| c.msgs.iter().map(|m| &m.text)).collect();
-                panic!("no event before the timeout — the chat: {rows:?}");
-            };
-            ed.handle_event(ev);
-        }
+        crate::test_results::settle_saying(ed, done, |ed| {
+            let rows: Vec<_> = ed.session.chat.iter().flat_map(|c| c.msgs.iter().map(|m| &m.text)).collect();
+            format!("the chat: {rows:?}")
+        });
     }
 
     /// A message whose write fails because its claude already ended — the writer met the ended process on an

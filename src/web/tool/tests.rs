@@ -165,13 +165,9 @@ fn answered(id: u64) -> Option<Result<String, String>> {
     crate::tools::ANSWERED.with(|a| a.borrow().iter().find(|(k, _)| *k == json!(id)).map(|(_, r)| r.clone()))
 }
 
+#[track_caller]
 fn settle(ed: &mut Editor, done: &dyn Fn(&Editor) -> bool) {
-    let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-    while !done(ed) {
-        let left = end.saturating_duration_since(std::time::Instant::now());
-        let ev = ed.events.recv_timeout(left).expect("settled before the timeout");
-        ed.handle_event(ev);
-    }
+    crate::test_results::settle_until(ed, done);
 }
 
 fn card(ed: &Editor) -> Option<(String, String)> {

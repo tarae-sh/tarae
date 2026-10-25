@@ -84,7 +84,6 @@ pub fn answer(ed: &mut Editor, id: u64, (sid, message): (SessionId, Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
 
     /// A chat whose stand-in claude has no login unless it's given a key: each message it gets is a line in
     /// `log` — `key=set` or `key=`, and `hello` when it's that message — answered "Not logged in" without the key,
@@ -113,18 +112,14 @@ mod tests {
         ed
     }
 
+    #[track_caller]
     fn settle_for(ed: &mut Editor, done: impl Fn(&Editor) -> bool) {
-        let end = Instant::now() + crate::test_results::PATIENCE;
-        while !done(ed) {
-            assert!(
-                Instant::now() < end,
+        crate::test_results::settle_saying(ed, done, |ed| {
+            format!(
                 "{:?}",
                 ed.session.chat.as_ref().map(|c| c.msgs.iter().map(|m| &m.text).collect::<Vec<_>>())
-            );
-            if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(20)) {
-                ed.handle_event(ev);
-            }
-        }
+            )
+        });
     }
 
     fn card_up(ed: &Editor) -> bool {

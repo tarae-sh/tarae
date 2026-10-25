@@ -2605,13 +2605,9 @@ mod tests {
         assert!(kept.keys.is_empty() && kept.ports == [3000], "{kept:?}");
     }
 
+    #[track_caller]
     fn settle_until(ed: &mut Editor, done: impl Fn(&Editor) -> bool) {
-        let end = Instant::now() + crate::test_results::PATIENCE;
-        while !done(ed) {
-            let left = end.saturating_duration_since(Instant::now());
-            let ev = ed.events.recv_timeout(left).unwrap_or_else(|| panic!("timed out: {}", said(ed)));
-            ed.handle_event(ev);
-        }
+        crate::test_results::settle_saying(ed, done, said);
     }
 
     /// Everything said since the editor started, newest last.

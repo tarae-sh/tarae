@@ -49,13 +49,9 @@ fn feed(ed: &mut Editor, keys: &str) {
     }
 }
 
+#[track_caller]
 fn settle_until(ed: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) {
-    let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-    while !done(ed) {
-        let left = end.saturating_duration_since(std::time::Instant::now());
-        let ev = ed.events.recv_timeout(left).unwrap_or_else(|| panic!("{what} before the timeout"));
-        ed.handle_event(ev);
-    }
+    crate::test_results::settle_saying(ed, done, |_| what.to_string());
 }
 
 fn put(ed: &mut Editor, text: &str, mark: &str) {

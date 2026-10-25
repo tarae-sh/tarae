@@ -1418,15 +1418,10 @@ mod tests {
         }
     }
 
-    /// Events handled until `until` (5 s at most).
+    /// Events handled until `until`.
+    #[track_caller]
     fn settle(ed: &mut Editor, what: &str, until: impl Fn(&Editor) -> bool) {
-        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-        while !until(ed) {
-            assert!(std::time::Instant::now() < end, "{what}");
-            if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(10)) {
-                ed.handle_event(ev);
-            }
-        }
+        crate::test_results::settle_saying(ed, until, |_| what.to_string());
     }
 
     /// A temp folder of the test's own (real path), empty — the caller's to remove.

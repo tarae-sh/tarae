@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use super::reader::{self, DEPTH_MAX, PAGE_MAX, Page, Prefer, Read, TEXT_MAX};
 use super::tree::{self, Tree};
 use super::{charset, check, convert, lang, url};
+use crate::test_results::settle_until;
 
 struct Fixture {
     name: String,
@@ -772,15 +773,6 @@ fn feed(ed: &mut crate::editor::Editor, keys: &str) {
             Key::plain(Code::Char(c))
         };
         ed.handle_key(key);
-    }
-}
-
-fn settle_until(ed: &mut crate::editor::Editor, done: impl Fn(&crate::editor::Editor) -> bool) {
-    let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-    while !done(ed) {
-        let left = end.saturating_duration_since(std::time::Instant::now());
-        let ev = ed.events.recv_timeout(left).expect("the page read before the timeout");
-        ed.handle_event(ev);
     }
 }
 

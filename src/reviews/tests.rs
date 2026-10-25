@@ -49,14 +49,9 @@ fn frame(ed: &mut Editor) {
     settle_until(ed, "the review's changes found", found);
 }
 
+#[track_caller]
 fn settle_until(ed: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) {
-    let end = Instant::now() + crate::test_results::PATIENCE;
-    while !done(ed) {
-        assert!(Instant::now() < end, "{what}");
-        if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(20)) {
-            ed.handle_event(ev);
-        }
-    }
+    crate::test_results::settle_saying(ed, done, |_| what.to_string());
 }
 
 /// The record as written: every entry, and the files' text whole.

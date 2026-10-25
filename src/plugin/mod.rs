@@ -626,17 +626,12 @@ mod tests {
     use super::*;
     use crate::config::Config;
 
+    #[track_caller]
     fn settle_until(ed: &mut Editor, done: impl Fn(&Editor) -> bool) {
-        let end = Instant::now() + crate::test_results::PATIENCE;
-        while !done(ed) {
-            let left = end.saturating_duration_since(Instant::now());
+        crate::test_results::settle_saying(ed, done, |ed| {
             let texts: Vec<String> = ed.docs.iter().map(|d| d.text.to_string()).collect();
-            let ev = ed
-                .events
-                .recv_timeout(left)
-                .unwrap_or_else(|| panic!("timed out on {texts:?}: {}", toasts(ed)));
-            ed.handle_event(ev);
-        }
+            format!("{texts:?}: {}", toasts(ed))
+        });
     }
 
     fn toasts(ed: &Editor) -> String {

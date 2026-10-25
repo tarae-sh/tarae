@@ -5086,6 +5086,7 @@ pub fn send_as(ed: &mut Editor, lines: Option<bool>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_results::settle_until;
 
     /// After a bring card's `h`, the status line says how back to the card: `C-q` — inside zellij its twin, the
     /// inbox (`zellij.rs`).
@@ -5112,15 +5113,6 @@ mod tests {
                 Key::plain(Code::Char(c))
             };
             ed.handle_key(key);
-        }
-    }
-
-    fn settle_until(ed: &mut Editor, done: impl Fn(&Editor) -> bool) {
-        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-        while !done(ed) {
-            let left = end.saturating_duration_since(std::time::Instant::now());
-            let ev = ed.events.recv_timeout(left).expect("event before timeout");
-            ed.handle_event(ev);
         }
     }
 

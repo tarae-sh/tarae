@@ -2455,6 +2455,7 @@ fn last_line_of(text: &str, source: &str) -> usize {
 pub(crate) mod tests {
     use super::*;
     use crate::key::{Code, Key};
+    use crate::test_results::settle_until as settle;
 
     const MB: u64 = 1 << 20;
 
@@ -3973,16 +3974,6 @@ pub(crate) mod tests {
         let mut ed = Editor::new(config);
         ed.open(&dir.join("main.rs")).unwrap();
         (ed, std::fs::canonicalize(&dir).unwrap())
-    }
-
-    /// Events until `done` (or 5 s pass).
-    fn settle(ed: &mut Editor, done: impl Fn(&Editor) -> bool) {
-        let end = Instant::now() + crate::test_results::PATIENCE;
-        while !done(ed) && Instant::now() < end {
-            if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(20)) {
-                ed.handle_event(ev);
-            }
-        }
     }
 
     fn screen(ed: &mut Editor, w: u16, h: u16) -> Vec<String> {

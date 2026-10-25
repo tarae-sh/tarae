@@ -1611,6 +1611,7 @@ pub fn read(file: &Path) -> Option<Value> {
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::test_results::settle_until;
 
     fn temp(name: &str) -> std::path::PathBuf {
         crate::scratch::Scratch::new(&format!("restart-{name}")).into_path()
@@ -1710,15 +1711,6 @@ mod tests {
         assert_eq!(split_json(&crate::split::Split::Leaf(7)), json!(7));
         assert_eq!(split_of(&json!({"v": [1]})), None, "a node of one isn't a split");
         assert_eq!(split_of(&json!("x")), None);
-    }
-
-    fn settle_until(ed: &mut Editor, done: impl Fn(&Editor) -> bool) {
-        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-        while !done(ed) {
-            let left = end.saturating_duration_since(std::time::Instant::now());
-            let ev = ed.events.recv_timeout(left).expect("event before timeout");
-            ed.handle_event(ev);
-        }
     }
 
     /// With `TARAE_FRAMES_DIR` set, the screen as it is (100 × 30) in both built-in themes there,

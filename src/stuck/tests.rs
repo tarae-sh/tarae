@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use super::*;
 use crate::key::{Code, Key};
 use crate::procs::{Os, Sample};
+use crate::test_results::settle_until;
 use crate::waits::Waiting;
 
 const MIN: Duration = Duration::from_secs(60);
@@ -277,15 +278,6 @@ fn sample(pid: u32, pct: f32) -> Sample {
     let me = std::process::id();
     let os = |pid, ppid, name: &str| Os { pid, ppid, name: name.into(), started: 1, ..Default::default() };
     Sample::of(vec![(os(me, 1, "tarae"), Some(1.0)), (os(pid, me, "sh"), Some(pct))])
-}
-
-fn settle_until(ed: &mut Editor, done: impl Fn(&Editor) -> bool) {
-    let end = Instant::now() + crate::test_results::PATIENCE;
-    while !done(ed) {
-        let left = end.saturating_duration_since(Instant::now());
-        let ev = ed.events.recv_timeout(left).expect("event before timeout");
-        ed.handle_event(ev);
-    }
 }
 
 /// #181 as met: a run of Claude's printing nothing at 0% CPU for the setting's minutes has what its threads
