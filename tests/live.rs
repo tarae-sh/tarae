@@ -372,9 +372,9 @@ fn asking(
     all
 }
 
-/// The status line hasn't shown rust-analyzer at work for `secs` in a row (at most `LIVE_TIMEOUT`).
-#[cfg(target_os = "macos")]
-fn quiet(t: &mut Term, secs: u64) {
+/// Waits until the status line hasn't shown rust-analyzer at work for `secs` in a row, at most `LIVE_TIMEOUT`:
+/// whether it got there (false: still at work when the wait gave up).
+fn quiet(t: &mut Term, secs: u64) -> bool {
     let end = Instant::now() + LIVE_TIMEOUT;
     let mut since = Instant::now();
     while Instant::now() < end && since.elapsed() < Duration::from_secs(secs) {
@@ -383,6 +383,7 @@ fn quiet(t: &mut Term, secs: u64) {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+    since.elapsed() >= Duration::from_secs(secs)
 }
 
 /// The project's `.tarae.toml` card (this repository's risky settings), answered `n` if it comes within
@@ -930,11 +931,17 @@ fn teed_chat(name: &str) -> (Sandbox, std::path::PathBuf) {
 /// folder, which Claude reads unasked, so only a call that goes looking outside the project reaches them — the
 /// A/B counts those (`Measured.outside`).
 fn teed(sb: &Sandbox, llm: &str) -> std::path::PathBuf {
+    teed_lsp(sb, llm, false)
+}
+
+/// `teed`, with the language servers on or off.
+fn teed_lsp(sb: &Sandbox, llm: &str, lsp: bool) -> std::path::PathBuf {
     let out = sb.outside("stream.jsonl");
     let script = sb.outside("claude-tee.sh");
     std::fs::write(&script, format!("#!/bin/sh\nclaude \"$@\" | tee -a '{}'\n", out.display())).unwrap();
     std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    sb.write_config(&format!("{LIVE_CONFIG}lsp = false\n[llm]\ncommand = \"{}\"\n{llm}", script.display()));
+    let off = if lsp { "" } else { "lsp = false\n" };
+    sb.write_config(&format!("{LIVE_CONFIG}{off}[llm]\ncommand = \"{}\"\n{llm}", script.display()));
     out
 }
 
@@ -974,8 +981,10 @@ fn chat_prompt_tokens() {
     sb.write("notes.txt", "alpha\n");
     let mut t = sb.spawn(&["notes.txt"]);
     chat_turn(&mut t, "Reply with the single word ok. Use no tools.");
-    let p = prompts(&std::fs::read_to_string(&out).unwrap_or_default());
-    eprintln!("TOKENS first request's prompt: {:?} (all requests: {p:?})", p.first());
+    let stream = std::fs::read_to_string(&out).unwrap_or_default();
+    let p = prompts(&stream);
+    let cost = measure(&stream, "").cost;
+    eprintln!("TOKENS first request's prompt: {:?} (all requests: {p:?}), ${cost:.4}", p.first());
     assert!(!p.is_empty(), "claude's usage in its stream");
 }
 
@@ -1104,6 +1113,39 @@ const TOOLS_CORPUS_PATHS: [&str; 8] =
 const AB_MAX_REQUESTS: usize = 30;
 const AB_MAX_TIME: Duration = Duration::from_secs(8 * 60);
 
+/// Questions about types in `TOOLS_CORPUS` (`chat_hover_ab`): a value's type through a generic, what a function
+/// returns, which method a call resolves to — what the `hover` tool was for. Every file is in macOS's build.
+const HOVER_QUESTIONS: [Question; 3] = [
+    Question {
+        name: "fd-type",
+        ask: "In src/sandbox/proxy/tests/planted.rs, `planted_in` has `let fd = ours.into();`. What is the type \
+              of `fd`, and which conversion (whose `From` impl) makes it? Answer from the code; change nothing.",
+        // (`Planted.fd: OwnedFd`; `ours` is the accepted `TcpStream` — std's `From<TcpStream> for OwnedFd`)
+        key: &[&["OwnedFd"], &["TcpStream"]],
+    },
+    Question {
+        name: "for-file-in",
+        ask: "In src/diffview.rs, `let (repo, rel) = crate::gitrepo::for_file_in(places, path).map_err(|n| \
+              n.said())?;` — what does for_file_in return, what type is `repo`, and what is the error's type \
+              after the map_err? Answer from the code; change nothing.",
+        // (`Result<(Arc<Repo>, String), NoGit>`; `NoGit::said(self) -> &'static str`, then `?` into String)
+        key: &[
+            &["Arc<Repo>", "Arc<gitrepo::Repo>", "Arc<crate::gitrepo::Repo>"],
+            &["NoGit"],
+            &["static str"],
+        ],
+    },
+    Question {
+        name: "hello-said",
+        ask: "In src/sandbox/proxy.rs, the TLS branch has `Ok(Err(e)) => return reset(&c, OP, &format!(\"{at}: \
+              {}\", e.said())),`. What type is `e` there, and which `said` method does that call resolve to (its \
+              file)? Answer from the code; change nothing.",
+        // (`read_until<T>` returns `Result<T, bool>`, T = `parse::server_name`'s `Result<Option<String>,
+        // HelloRefusal>` — `HelloRefusal::said` in src/sandbox/proxy/parse.rs, not `Refusal::said` beside it)
+        key: &[&["HelloRefusal"], &["parse.rs"]],
+    },
+];
+
 /// A question of the A/B and what a right answer names: each entry is met when the answer has any of its
 /// words (case aside). Found in `TOOLS_CORPUS` with the language server's references, not by guessing.
 struct Question {
@@ -1164,6 +1206,8 @@ struct Measured {
     errors: usize,
     cards: usize,
     capped: bool,
+    /// Asked while rust-analyzer was still at work (`quiet` gave up) — its tools may have answered "loading".
+    loading: bool,
     /// Share of the question's key the answer names (an edit task: 1 when its check passed, else 0).
     right: f64,
     tools: std::collections::BTreeMap<String, usize>,
@@ -1560,6 +1604,24 @@ fn median(mut v: Vec<f64>) -> f64 {
 #[test]
 #[ignore = "live: run with `cargo live` (uses Claude)"]
 fn chat_tools_ab() {
+    tools_ab(&QUESTIONS, "tools-ab", false);
+}
+
+/// `chat_tools_ab` on `HOVER_QUESTIONS` with rust-analyzer on — what the `hover` tool's going costs (audit 2.G:
+/// `TARAE_AB_BASE` with it, `TARAE_AB_NEW` without). A run opens `src/main.rs` and asks once the server is
+/// quiet — one whose wait gave up first is flagged in its line, its row (the last column) and the medians; its cargo builds into `target/live/hover-ab-ra` (every run's the same corpus), the whole of
+/// `EDIT_CORPUS_PATHS` copied so the workspace loads. Rows to `target/live/hover-ab.tsv`.
+#[test]
+#[ignore = "live: run with `cargo live` (uses Claude and rust-analyzer)"]
+fn chat_hover_ab() {
+    if !have("rust-analyzer") {
+        return;
+    }
+    tools_ab(&HOVER_QUESTIONS, "hover-ab", true);
+}
+
+/// The reading A/B on `questions`, its rows and streams under `target/live/<name>`; `lsp`: rust-analyzer on.
+fn tools_ab(questions: &[Question], name: &str, lsp: bool) {
     let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
     let (Some(base), Some(new)) = (var("TARAE_AB_BASE"), var("TARAE_AB_NEW")) else {
         skip("TARAE_AB_BASE and TARAE_AB_NEW name the two builds");
@@ -1573,14 +1635,15 @@ fn chat_tools_ab() {
     let model = var("TARAE_AB_MODEL").unwrap_or_else(|| "opus".into());
     let effort = var("TARAE_AB_EFFORT").unwrap_or_default();
     let only = var("TARAE_AB_QUESTIONS");
-    let questions: Vec<&Question> = QUESTIONS
+    let questions: Vec<&Question> = questions
         .iter()
         .filter(|q| only.as_deref().is_none_or(|o| o.split(',').any(|n| n == q.name)))
         .collect();
     let labels = var("TARAE_AB_LABELS").unwrap_or_else(|| "base,new".into());
     let (first, second) = labels.split_once(',').unwrap_or(("base", "new"));
     let builds = [(first, Path::new(&base)), (second, Path::new(&new))];
-    let tsv = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/live/tools-ab.tsv");
+    let live = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/live");
+    let tsv = live.join(format!("{name}.tsv"));
     std::fs::create_dir_all(tsv.parent().unwrap()).unwrap();
     let mut rows: Vec<(&str, &str, Measured)> = Vec::new();
     let mut spent = 0.0;
@@ -1593,31 +1656,42 @@ fn chat_tools_ab() {
                     break 'runs;
                 }
                 let (build, bin) = builds[b];
-                let sb = Sandbox::live(&format!("tools-ab-{}-{build}", q.name)).with_bin(bin);
-                assert!(
-                    sb.copy_commit(TOOLS_CORPUS, &TOOLS_CORPUS_PATHS),
-                    "commit {TOOLS_CORPUS} in this clone"
-                );
-                let stream = teed(&sb, &format!("model = \"{model}\"\neffort = \"{effort}\"\n"));
-                let mut t = sb.spawn(&["README.md"]);
+                let mut sb = Sandbox::live(&format!("{name}-{}-{build}", q.name)).with_bin(bin);
+                let paths: &[&str] = if lsp { &EDIT_CORPUS_PATHS } else { &TOOLS_CORPUS_PATHS };
+                if lsp {
+                    let ra = live.join("hover-ab-ra");
+                    sb = sb.with_env("CARGO_TARGET_DIR", ra.to_str().unwrap());
+                }
+                assert!(sb.copy_commit(TOOLS_CORPUS, paths), "commit {TOOLS_CORPUS} in this clone");
+                let llm = format!("model = \"{model}\"\neffort = \"{effort}\"\n");
+                let stream = teed_lsp(&sb, &llm, lsp);
+                let mut t = sb.spawn(&[if lsp { "src/main.rs" } else { "README.md" }]);
+                let loading = lsp && {
+                    t.wait_text("rust-analyzer ready");
+                    !quiet(&mut t, 10)
+                };
                 let started = Instant::now();
                 let (cards, capped) = ab_turn(&mut t, q.ask, &stream);
                 let work = sb.work();
                 let mut m =
                     measure(&std::fs::read_to_string(&stream).unwrap_or_default(), work.to_str().unwrap());
                 m.wall_ms = started.elapsed().as_millis() as u64;
-                (m.cards, m.capped) = (cards, capped);
+                (m.cards, m.capped, m.loading) = (cards, capped, loading);
                 let lower = m.answer.to_lowercase();
                 let met = q.key.iter().filter(|alts| alts.iter().any(|a| lower.contains(&a.to_lowercase())));
                 m.right = met.count() as f64 / q.key.len() as f64;
                 spent += m.cost;
+                let flag = match m.loading {
+                    true => ", ASKED WHILE RUST-ANALYZER WAS STILL AT WORK",
+                    false => "",
+                };
                 // (the new build counts its own calls — `calls.rs`; said beside the stream's, a check of it)
                 let st = t.state_json(0);
                 let own = &st["workspaces"][0]["sessions"][0]["usage"]["last_turn"]["calls"];
                 let said = format!(
                     "TOOLS_AB {} {build} run {}: {} requests, {} calls {:?}, prompt mean {:.0} max {}, {} tokens, \
                      ${:.3}, tools {} ms of {} ms, read-only runs {}, wasted {}, errors {}, cards {}, capped {}, \
-                     outside the project {}, right {:.2}{}\n  answer: {}",
+                     outside the project {}, right {:.2}{flag}{}\n  answer: {}",
                     q.name,
                     run + 1,
                     m.requests,
@@ -1642,13 +1716,13 @@ fn chat_tools_ab() {
                 eprintln!("{said}");
                 // (what libtest keeps from a passing test's stderr is nothing: the answers, the calls.rs check
                 // and each run's whole stream are kept beside the table)
-                let kept = tsv.with_file_name("tools-ab");
+                let kept = live.join(name);
                 std::fs::create_dir_all(&kept).unwrap();
-                let name = format!("{}-{build}-{}-{}", q.name, run + 1, std::process::id());
-                let _ = std::fs::copy(&stream, kept.join(format!("{name}.jsonl")));
-                std::fs::write(kept.join(format!("{name}.txt")), &said).unwrap();
+                let one = format!("{}-{build}-{}-{}", q.name, run + 1, std::process::id());
+                let _ = std::fs::copy(&stream, kept.join(format!("{one}.jsonl")));
+                std::fs::write(kept.join(format!("{one}.txt")), &said).unwrap();
                 let row = format!(
-                    "{}\t{}\t{build}\t{}\t{}\t{}\t{:.0}\t{}\t{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{:?}\t{}\n",
+                    "{}\t{}\t{build}\t{}\t{}\t{}\t{:.0}\t{}\t{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}\t{:?}\t{}\t{}\n",
                     TOOLS_CORPUS,
                     q.name,
                     run + 1,
@@ -1668,6 +1742,7 @@ fn chat_tools_ab() {
                     m.right,
                     m.tools,
                     m.outside,
+                    m.loading,
                 );
                 use std::io::Write;
                 let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&tsv).unwrap();
@@ -1690,7 +1765,7 @@ fn chat_tools_ab() {
                 format!("{:.p$} ({lo:.p$}–{hi:.p$})", median(v))
             };
             eprintln!(
-                "TOOLS_AB {} {build} {}: {} · {} · {} · {} · {} · {} · {} · {} · {}",
+                "TOOLS_AB {} {build} {}: {} · {} · {} · {} · {} · {} · {} · {} · {}{}",
                 q.name,
                 of.len(),
                 at(&|m| m.requests as f64, 0),
@@ -1702,6 +1777,10 @@ fn chat_tools_ab() {
                 at(&|m| m.read_only as f64, 0),
                 at(&|m| m.wasted as f64, 0),
                 at(&|m| m.right, 2),
+                match of.iter().filter(|m| m.loading).count() {
+                    0 => String::new(),
+                    n => format!(" · {n} asked while rust-analyzer was still at work"),
+                },
             );
         }
     }
