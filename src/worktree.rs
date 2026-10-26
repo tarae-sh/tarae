@@ -2829,7 +2829,8 @@ mod tests {
         feed(&mut ed, ":o a.txt<ret>");
         assert_eq!(ed.doc().path.as_deref(), Some(wt.join("a.txt").as_path()));
         let end = Instant::now() + crate::test_results::PATIENCE;
-        while !pid_file.exists() {
+        // (its pid whole: `echo $$ >` makes the file, then writes the line — frictions #155's kind)
+        while std::fs::read_to_string(&pid_file).map_or(true, |s| !s.ends_with('\n')) {
             assert!(Instant::now() < end, "its Claude started");
             std::thread::sleep(Duration::from_millis(10));
         }

@@ -755,7 +755,10 @@ fn a_runs_changes_join_the_turn_and_undo_takes_them_back() {
     assert!(!ed.workspace.claude.checkpoints.list[0].seen, "reviewed at the turn's end, like Claude's edits");
     // space u: back as they were
     crate::checkpoint::step(&mut ed, true).unwrap();
-    pump(&mut ed, &|_| dir.join("b.bin").exists(), "the blob written back");
+    // (its blob is written on a worker, made then filled — waited for by its bytes, never by the file being there:
+    // frictions #155, read between the two in a full run)
+    let blob = |bytes: &[u8]| std::fs::read(dir.join("b.bin")).is_ok_and(|b| b == bytes);
+    pump(&mut ed, &|_| blob(b"\x00\x01bin-before"), "the blob written back");
     assert_eq!(std::fs::read_to_string(dir.join("src/gone.txt")).unwrap(), "kept-marker\n");
     assert_eq!(std::fs::read_to_string(dir.join("src/a.txt")).unwrap(), "one\ntwo\n");
     assert!(!dir.join("src/new.txt").exists(), "the file it made goes");
