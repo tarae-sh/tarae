@@ -38,13 +38,13 @@ The state is mostly gathering. Most of it exists, spread around:
 | Cards | `offer::Offer` (`id` from `offer_seq`, unique in the process; `rev`, `since`), `Editor.offers` (up, front first), `Workspace.parked`, `Editor.offer_seen` (in sight since), `Session.asking` + `asking_sync` (a lost card is found and said) | The answer keys aren't data: the card's hint row works them out from `lasts`/`keeps`/`preflights`/`aborts`/`end_dirty`… |
 | Sessions | `Session`, `Editor::doing` → `Doing`, `cards_waiting`, `session_spots` | — |
 | Geometry of the last frame | `editor::Screen` (panes and their line origins, `chat_x`, `picker_list`, `sidebar`, `review_rail`, `slot_tabs`, `toast_card`, `note_card`, `thought_card`, `terminal_rows`, …) | Filled by `term.rs` every frame. Most panels have their visible rows here already |
-| After a frame | `term::render` → `toasts_drawn`, `trace_drawn`, `frame_drawn`, `last_frame`, `seeing::after_frame` | The hook point for "state as drawn" |
+| After a frame | `term::render` → `toasts_drawn`, `trace_drawn`, `frame_drawn`, `last_frame` | The hook point for "state as drawn" |
 | Did my input land | `Editor.input_seq` (keys, clicks, the wheel, pastes) | Not visible from outside |
 | Runs | `trace::RunTrace` steps, `waits::Waiting::shown`, `Workspace.runs_next` (queued) | No run id |
 | What Claude was given | `chat::context` (`on screen:` / `also on screen:`), `follow::Gaze`, replay stops | UI elements aren't in it |
 | Ids in answers | `chat::refs_in` (`path:line` → links), `<show at=…>` | Only places in code |
 | Pointing | `labels.rs` (`gw` labels) | Only code positions |
-| Claude sees the screen | `seeing.rs` (`screen` tool: the frame as text, asked on a card) | All or nothing; no structure |
+| The screen sent | `chat::attach_screen` (`C-s`: the frame as text, with your message) | All or nothing; no structure |
 
 ## Principles
 
@@ -318,7 +318,7 @@ side git · 4 rows · in hand git:src/term.rs
 - **`procs`** (#143, 2026-10-05) — what `:procs` lists, as of its last look (`looked_ms` ago: every 30 s, each
   second while it's open): each row's pid, parent, depth, kind, title, what for, session, `up_s`, CPU, memory
   (footprint, else resident), resident, `zombie` (ended, not reaped), `flagged`; and `checks`, the self-checks
-  holding now. Full level only — Claude has its `procs` tool. The text form lists them a step in under what
+  holding now. Full level only. The text form lists them a step in under what
   started them.
 
 ## Element ids
@@ -363,7 +363,7 @@ Short, so they can be read in prose and typed. Unique within one tarae process.
 
 **A snapshot is the state as of a drawn frame.** A request goes to the main loop as an `Event::Job`. It
 doesn't set `unchanged`, so the loop draws. When nothing changed, `screen::Screen::present` writes nothing to
-the terminal. The answer is built in `render`'s after-frame hook, beside `seeing::after_frame`. So a reply
+the terminal. The answer is built in `render`'s after-frame hook. So a reply
 never describes a state the user hasn't seen, and `frame` lets a driver tell two snapshots apart.
 
 `after_input: N` holds the reply until `input_seq ≥ N` and a frame after that. That replaces sleeping after
@@ -440,8 +440,8 @@ mode (`space v h`, `space v H`) marks one.
 rows, frames, input, bytes}}`, `after_input` as for the state, always JSON. `cargo xtask shot --live out.png`
 asks the same and draws it with the shot's renderer, so a driver sees colours, alignment and cards, not only
 text. It's the shot's fonts and background (a transparent theme's ground is the shot's), with no hardware
-cursor. The user's level only: a frame shows every session's tabs and cards, and Claude's own `screen` stays a
-card.
+cursor. The user's level only: a frame shows every session's tabs and cards; Claude sees a frame only when you
+send it (`C-s`).
 
 ### tarae's Claude: the `ui` tool and the context line
 
@@ -550,7 +550,7 @@ meok and hanji, a narrow screen, the stacked-card case, and a mark next to the `
   - no terminal panel beyond "open, focused, program running / exited N";
   - a plugin's cards by title only.
 
-  It's less than the `screen` tool sends, which is why it needs no card of its own.
+  It's less than the screen as text (`C-s`), which is why it needs no card of its own.
 
 ## What it is not
 
@@ -558,7 +558,7 @@ meok and hanji, a narrow screen, the stacked-card case, and a mark next to the `
   things only when the user clicks it.
 - **Remote control only as keys.** Drivers act with keys through the terminal, so what they do goes through the
   UX a person uses, and any friction shows up as friction. No actions (`answer card N`), no clicks.
-- **Not a screen dump.** Contents stay on the screen; `screen` and zellij dumps remain for that.
+- **Not a screen dump.** Contents stay on the screen; `C-s` and zellij dumps remain for that.
 - **Not a plugin API.** Plugins have their own (0.2). A read-only state permission could come later.
 
 **Should drivers get a narrow "answer card N"?** No: keys, as a person's.
@@ -771,7 +771,8 @@ Whatever changes state the user didn't see change, or refuses a key, says so whe
 
 ## Decided (user, 2026-10-04)
 
-1. **`ui` tool:** asks no card — it's less than `screen` sends, and its own session only.
+1. **`ui` tool:** asks no card — it's less than the screen as text, and its own session only (Claude's `screen`,
+   which asked one, went with the audit, 2026-10-26).
 2. **The socket:** on by default — same uid, 0600, Claude's sandbox can't reach it, nothing idle.
 3. **Guarded keys for drivers:** replaced by shuttle keys (2026-10-19), which went with the audit (2026-10-26):
    drivers type through the terminal, no direct actions ("Shuttle keys").

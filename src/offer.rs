@@ -180,8 +180,11 @@ pub enum What {
     /// (`repotrust.rs`) — `parts` are their own cards, in order (tarae's, Claude's, git's); `y` trusts each, `n`
     /// holds each back, `v` shows each whole.
     RepoTrust { root: PathBuf, parts: Vec<Offer> },
-    /// Claude asks to see the screen (`seeing.rs`): `y` once, `a` this chat, `n` no.
-    Screen { call: crate::tools::Call },
+    /// Test builds only: a card Claude's call waits on that asks nothing in particular — `y` once, `a` this chat,
+    /// `n` no, answered as such — the stand-in where tests look at how cards stand, wait and go (the screen card
+    /// was, until Claude's `screen` went: audit 2.G). Every other card of Claude's is weighty.
+    #[cfg(test)]
+    Asks { call: crate::tools::Call },
     /// Claude's `read` of a page at a host not let through (`web::tool`, P4): `y` this read, `a` this chat, `s`
     /// this session (reads only — never a run), `n` no, for the chat.
     WebRead(Box<crate::web::tool::Ask>),
@@ -205,9 +208,6 @@ pub enum What {
     /// no buffer shows), `v` shows every change, `n` declines them all. `whose`: Claude's (its chat's generation)
     /// or the user's own (`:workspace-apply`).
     ChangeSet { whose: crate::refactor::Whose, ops: bool },
-    /// Claude's `commit` (`committool.rs`): `y` commits exactly the tree the card shows on the HEAD it names, no
-    /// hooks, `v` shows the whole diff, `n` tells Claude no.
-    Commit(Box<crate::committool::Commit>),
     /// Ending a code review with files not viewed (`codereview.rs`, #10): `y` ends it, `n` keeps reviewing.
     /// Its session's, and that review's (`started`) only — #159.
     ReviewEnd { session: crate::event::WorkspaceId, started: Instant },
@@ -289,6 +289,11 @@ pub enum What {
     Board(Box<crate::board::Ask>),
 }
 
+/// The tests' stand-in's kind (`What::Asks`) — a name, so `every_card_kind_is_listed` doesn't read it as one of
+/// `KINDS`.
+#[cfg(test)]
+pub const ASKS: &str = "asks";
+
 /// Every card's kind (`Offer::kind`) — what `:features` lists, so a card never asked shows as 0
 /// (`every_card_kind_is_listed` reads them from `kind`).
 pub const KINDS: &[&str] = &[
@@ -308,7 +313,6 @@ pub const KINDS: &[&str] = &[
     "claude-settings",
     "git-trust",
     "repo-trust",
-    "screen",
     "web-read",
     "preflight",
     "branch-delete",
@@ -317,7 +321,6 @@ pub const KINDS: &[&str] = &[
     "workspace-end",
     "close-reviewed",
     "change-set",
-    "commit",
     "review-end",
     "rebase",
     "rebase-held",
@@ -454,11 +457,9 @@ impl What {
             | What::ProtectedMade { .. }
             | What::ReviewAtEnd
             | What::Read { .. }
-            | What::Screen { .. }
             // (Claude's call ends with the turn)
             | What::WebRead(_)
             | What::ChangeSet { .. }
-            | What::Commit(_)
             | What::NotesStale { .. }
             | What::NotesClose { .. }
             | What::Stuck(_)
@@ -475,6 +476,8 @@ impl What {
             // (the review it's for ends with the restart)
             | What::Board(_)
             | What::Limit(_) => Lost,
+            #[cfg(test)]
+            What::Asks { .. } => Lost,
         }
     }
 }
@@ -545,7 +548,9 @@ impl Offer {
     fn asker(&self) -> Option<Asker> {
         match &self.what {
             What::Run(r) => Some(Asker::Tool(r.call.clone())),
-            What::NoSandbox { call, .. } | What::Screen { call } => Some(Asker::Tool(call.clone())),
+            What::NoSandbox { call, .. } => Some(Asker::Tool(call.clone())),
+            #[cfg(test)]
+            What::Asks { call } => Some(Asker::Tool(call.clone())),
             What::WebRead(a) => Some(Asker::Tool(a.call.clone())),
             // (one `also` raised: Claude's call waits on it — `tools::also_ask`)
             What::Grant { run, .. } if run.claude.is_some() => run.claude.clone().map(Asker::Tool),
@@ -741,7 +746,6 @@ impl Offer {
                 | What::SessionNew(_)
                 | What::WorkspaceEnd(_)
                 | What::ChangeSet { .. }
-                | What::Commit(_)
                 | What::Rebase(_)
                 | What::RebaseHeld(_)
                 | What::Rebased(_)
@@ -1069,7 +1073,9 @@ impl Offer {
             What::Grant { .. } => self.top() >= Some(crate::allow::Scope::ThisChat),
             // (piece C: a host's `a` is this conversation's — `hosts::chat_ended`)
             What::Host(_) | What::WebRead(_) => true,
-            What::Read { keep: true, .. } | What::Screen { .. } => true,
+            What::Read { keep: true, .. } => true,
+            #[cfg(test)]
+            What::Asks { .. } => true,
             // (what it reads outside, this command again, or its socket for the rest of the chat)
             What::Run(r) => {
                 r.keep || r.again.is_some() || r.socket.as_deref().is_some_and(|s| !as_outside(s))
@@ -1101,12 +1107,10 @@ impl Offer {
                 What::Run(_)
                     | What::NoSandbox { .. }
                     | What::Read { .. }
-                    | What::Screen { .. }
                     | What::ChangeSet {
                         whose: crate::refactor::Whose::Claude(_) | crate::refactor::Whose::Ask(_),
                         ..
                     }
-                    | What::Commit(_)
             )
             || matches!(&self.what, What::ProtectedMade { then, .. } if then.call().is_some())
     }
@@ -1372,7 +1376,8 @@ impl Offer {
             W::WorkspaceEnd(_) => vec![lasts('y', "Remove it"), plain('n', "Cancel")],
             // (it fell to the download's row once: `y Install` on a card whose `y` declines Claude's change)
             W::CloseReviewed { .. } => vec![lasts('y', "Decline and close"), plain('n', "Keep both")],
-            W::Screen { .. } => vec![plain('y', "Once"), lasts('a', "This chat"), plain('n', "No")],
+            #[cfg(test)]
+            W::Asks { .. } => vec![plain('y', "Once"), lasts('a', "This chat"), plain('n', "No")],
             W::WebRead(_) => {
                 vec![
                     plain('y', "Once"),
@@ -1476,7 +1481,6 @@ impl Offer {
                 plain('v', "See them"),
                 plain('n', "Decline all"),
             ],
-            W::Commit(_) => vec![lasts('y', "Commit"), plain('v', "See the diff"), plain('n', "Don't")],
             W::Stuck(_) => {
                 vec![lasts('y', "Stop it"), plain('w', "What it waits on"), plain('n', "Keep waiting")]
             }
@@ -1533,7 +1537,9 @@ impl Offer {
             W::ClaudeSettings { .. } => "claude-settings",
             W::GitTrust(_) => "git-trust",
             W::RepoTrust { .. } => "repo-trust",
-            W::Screen { .. } => "screen",
+            // (none outside tests: no kind in `KINDS`)
+            #[cfg(test)]
+            W::Asks { .. } => ASKS,
             W::WebRead(_) => "web-read",
             W::Preflight { .. } => "preflight",
             W::BranchDelete { .. } => "branch-delete",
@@ -1542,7 +1548,6 @@ impl Offer {
             W::WorkspaceEnd(_) => "workspace-end",
             W::CloseReviewed { .. } => "close-reviewed",
             W::ChangeSet { .. } => "change-set",
-            W::Commit(_) => "commit",
             W::ReviewEnd { .. } => "review-end",
             W::Rebase(_) => "rebase",
             W::RebaseHeld(_) => "rebase-held",
@@ -1965,7 +1970,11 @@ impl crate::editor::Editor {
                 crate::blocked::grant_answer(self, id, grant, *run, Some(crate::allow::Scope::Once))
             }
             What::Outside { run } => crate::blocked::outside_answer(self, id, *run, true),
-            What::Screen { call } => crate::seeing::answer(self, id, call, Some(crate::allow::Scope::Once)),
+            #[cfg(test)]
+            What::Asks { call } => {
+                self.offer_finished(id, Ok(()));
+                crate::tools::answer(self, call, Ok("yes".into()));
+            }
             What::WebRead(a) => crate::web::tool::answer(self, id, *a, Some(crate::allow::Scope::Once)),
             What::Preflight { root, steps, set } => self.preflight_answer(id, root, (steps, set), true),
             What::BranchDelete { top, branch, tip } => self.git_branch_delete_answer(id, top, branch, tip),
@@ -1977,7 +1986,6 @@ impl crate::editor::Editor {
                 self.close_reviewed(doc, force);
             }
             What::ChangeSet { whose, .. } => crate::refactor::accept_all(self, id, whose),
-            What::Commit(c) => crate::committool::answer(self, id, *c, true),
             What::Instructions(b) => {
                 self.offer_finished(id, Ok(()));
                 crate::instructions::answer(self, *b, true);
@@ -2392,10 +2400,6 @@ impl crate::editor::Editor {
         if let Some(more) = self.offers.first().and_then(|o| o.host_details().or_else(|| o.read_details())) {
             return self.offer_view_with(more);
         }
-        if let Some(What::Commit(c)) = self.offers.first().map(|o| &o.what) {
-            let more = crate::committool::view_text(&c.ask);
-            return self.offer_view_with(more);
-        }
         if let Some(What::Instructions(b)) = self.offers.first().map(|o| &o.what) {
             let more = b.view_text();
             return self.offer_view_with(more);
@@ -2528,7 +2532,11 @@ impl crate::editor::Editor {
             }
             What::Run(card) => crate::tools::run_answer(self, o.id, *card, Some(scope)),
             What::Grant { grant, run } => crate::blocked::grant_answer(self, o.id, grant, *run, Some(scope)),
-            What::Screen { call } => crate::seeing::answer(self, o.id, call, Some(scope)),
+            #[cfg(test)]
+            What::Asks { call } => {
+                self.offer_finished(o.id, Ok(()));
+                crate::tools::answer(self, call, Ok("yes".into()));
+            }
             What::WebRead(a) => crate::web::tool::answer(self, o.id, *a, Some(scope)),
             What::Host(a) if scope == crate::allow::Scope::Always => {
                 crate::hosts::answer(self, o.id, *a, crate::sandbox::proxy::Scope::Project)
@@ -2610,7 +2618,11 @@ impl crate::editor::Editor {
             }
             What::Grant { grant, run } => crate::blocked::grant_answer(self, o.id, grant, *run, None),
             What::Outside { run } => crate::blocked::outside_answer(self, o.id, *run, false),
-            What::Screen { call } => crate::seeing::answer(self, o.id, call, None),
+            #[cfg(test)]
+            What::Asks { call } => {
+                self.offer_finished(o.id, Ok(()));
+                crate::tools::answer(self, call, Err("the user said no".into()));
+            }
             What::WebRead(a) => crate::web::tool::answer(self, o.id, *a, None),
             What::Preflight { root, steps, set } => self.preflight_answer(o.id, root, (steps, set), false),
             What::BranchDelete { branch, .. } => self.set_status(format!("Kept {branch}")),
@@ -2621,7 +2633,6 @@ impl crate::editor::Editor {
                 self.set_status("kept open — Claude's change still waits for y or n")
             }
             What::ChangeSet { whose, .. } => crate::refactor::decline_all(self, whose),
-            What::Commit(c) => crate::committool::answer(self, o.id, *c, false),
             What::Instructions(b) => crate::instructions::answer(self, *b, false),
             What::ReviewEnd { .. } => self.set_status("still reviewing — space v m marks a file viewed"),
             What::Rebase(m) => {

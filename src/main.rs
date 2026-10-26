@@ -35,7 +35,6 @@ mod codereview;
 mod codeview;
 mod commands;
 mod comment;
-mod committool;
 mod compaction;
 #[cfg(test)]
 mod compat;
@@ -164,7 +163,6 @@ mod search;
 #[cfg(target_os = "linux")]
 mod seccomp;
 mod secretnames;
-mod seeing;
 mod selection;
 mod session;
 mod sessionpane;

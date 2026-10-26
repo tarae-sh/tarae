@@ -12,7 +12,6 @@
 //! - `definition` (N6) asks a name's definition, implementations or type definition at a place (`g d`,
 //!   `g i`, `g y`), or finds it by name (`workspace/symbol`) — each place with its signature. While the
 //!   server can't say, the syntax tree's definitions among the name's text matches, said so.
-//! - `hover` gives the server's hover text at a place (type, signature, docs), trimmed.
 //! - `diagnostics` says what the servers have published for some files now — and whether they've checked
 //!   them yet or are still at it — optionally after waiting (bounded) for them to settle.
 //!
@@ -193,8 +192,8 @@ fn locate(
                 clip(reads.trim(), 120)
             )
         }),
-        // (its first line in code: a module's doc comment naming it came first, and hover found nothing
-        // there — a comment's only when that's all there is)
+        // (its first line in code: a module's doc comment naming it came first, and the server found
+        // nothing there — a comment's only when that's all there is)
         None => {
             let mut first = None;
             for l in 0..lines {
@@ -808,7 +807,7 @@ const TREE_FILE_MAX: usize = 4 << 20;
 const DEF_ENDS: [&str; 7] =
     ["_item", "_definition", "_declaration", "_specifier", "_spec", "_declarator", "_signature"];
 
-/// Where a `definition` or `hover` call points: the file, the line, and the name on it — or a column
+/// Where a `definition` call points: the file, the line, and the name on it — or a column
 /// (from 0, in characters).
 pub(crate) struct Spot {
     pub path: PathBuf,
@@ -1449,146 +1448,6 @@ fn defines(node: tree_sitter::Node, goto: Goto) -> Option<(String, usize)> {
     let what =
         if k == "enum_variant" { "variant" } else { DEF_ENDS.iter().find_map(|e| k.strip_suffix(e))? };
     Some((what.replace('_', " "), node.start_byte()))
-}
-
-// ── hover ───────────────────────────────────────────────────────────────────
-
-pub fn hover_schema() -> Value {
-    json!({
-        "name": "hover",
-        "description": "What the language server says about a name at a place — its type, signature and \
-    docs (an editor's hover). Give the file, the line and the name on it (or a column). Reach for it to \
-    learn a variable's or an expression's type, what a function takes and returns, or which method a call \
-    resolves to, instead of reading definitions. While the server is still loading, the syntax tree's \
-    definitions of the name stand in, and it says so.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "path": { "type": "string", "description": "The file, relative to the project root" },
-                "line": { "type": "integer", "description": "The line, 1-based — left out: the name's first appearance in the file" },
-                "symbol": { "type": "string", "description": "The name as written on that line" },
-                "column": { "type": "integer", "description": "Its column, 1-based (characters) — instead of the name" }
-            },
-            "required": ["path"]
-        }
-    })
-}
-
-/// Hover text at most: lines, chars.
-const HOVER_LINES: usize = 80;
-const HOVER_MAX: usize = 4000;
-
-/// A `hover` question asked of a server.
-pub struct HoverAsk {
-    call: Call,
-    word: String,
-    /// `path:line` as answered.
-    at: String,
-    server: String,
-    cid: ClientId,
-}
-
-/// The tool: the file checked on a worker, then asked about (`hover_at`). Err = answered now.
-pub fn hover(ed: &mut Editor, call: Call, args: &Value) -> Result<(), String> {
-    let root = project_root(ed);
-    let spot = spot_of(&root, args)?;
-    let keys = crate::reads::Keys::of(ed);
-    ed.events.jobs().spawn(move || {
-        let file = file_in(&root, &spot.path, &keys);
-        move |ed: &mut Editor| match file {
-            Ok(path) => hover_at(ed, call, Spot { path, ..spot }),
-            Err(e) => answer(ed, call, Err(e)),
-        }
-    });
-    Ok(())
-}
-
-fn hover_at(ed: &mut Editor, call: Call, spot: Spot) {
-    let shown = rel(&project_root(ed), &spot.path);
-    let id = match buffer_for(ed, &spot.path) {
-        Ok(id) => id,
-        Err(e) => return answer(ed, call, Err(format!("{shown}: {e}"))),
-    };
-    let Some(doc) = ed.docs.iter().find(|d| d.id == id) else { return };
-    if doc.loading {
-        let word = spot.word.unwrap_or_default();
-        return tree_defs(ed, call, word, Goto::Definition, format!("{shown} is still loading"), true);
-    }
-    let (line, col, word) = match place_in(&doc.text, &spot, &shown) {
-        Ok(at) => at,
-        Err(e) => return answer(ed, call, Err(e)),
-    };
-    let byte = doc.text.line_to_byte(line) + col;
-    let n = next_ask(ed);
-    match ed.ask_at(id, byte, Kind::ToolHover { ask: n }, "no server here gives hover information") {
-        Err((why, later)) => tree_defs(ed, call, word, Goto::Definition, why, later),
-        Ok((cid, server)) => {
-            let at = format!("{shown}:{}", line + 1);
-            ed.lsp.tool_hovers.insert(n, HoverAsk { call, word, at, server, cid });
-            let wait = refs_wait(ed);
-            ed.events.jobs().spawn(move || {
-                std::thread::sleep(wait);
-                move |ed: &mut Editor| {
-                    if let Some(a) = ed.lsp.tool_hovers.remove(&n) {
-                        let why = format!("{} didn't answer within {}", a.server, secs(wait));
-                        tree_defs(ed, a.call, a.word, Goto::Definition, why, true);
-                    }
-                }
-            });
-        }
-    }
-}
-
-/// The server's hover for question `n` (Err: its error): its text, trimmed — nothing from a server still at
-/// work, and the syntax tree's definitions stand in.
-pub fn hover_answered(ed: &mut Editor, n: u64, result: Result<&Value, &Value>) {
-    let Some(a) = ed.lsp.tool_hovers.remove(&n) else { return };
-    let busy = ed
-        .client(a.cid)
-        .filter(|c| !c.progress.is_empty())
-        .map(|c| c.progress.values().map(|p| p.title.clone()).collect::<Vec<_>>().join(", "));
-    match result {
-        Ok(v) => match (hover_trim(&crate::lsp::hover_text(v)), busy) {
-            (t, _) if !t.is_empty() => {
-                answer(ed, a.call, Ok(format!("`{}` at {} ({}):\n{t}", a.word, a.at, a.server)))
-            }
-            (_, Some(busy)) => {
-                let why = format!("{} is still loading ({busy}) and has nothing for it yet", a.server);
-                tree_defs(ed, a.call, a.word, Goto::Definition, why, true)
-            }
-            (_, None) => {
-                let t = format!("{} has no hover information for `{}` at {}", a.server, a.word, a.at);
-                answer(ed, a.call, Ok(t))
-            }
-        },
-        Err(e) if matches!(e["code"].as_i64(), Some(-32801 | -32802)) => {
-            let why = format!("{} is still loading the project", a.server);
-            tree_defs(ed, a.call, a.word, Goto::Definition, why, true)
-        }
-        Err(e) => {
-            let why = e["message"].as_str().unwrap_or("the request failed");
-            answer(ed, a.call, Err(format!("{}: {why}", a.server)))
-        }
-    }
-}
-
-/// Hover text as an answer: trailing spaces off, runs of blank lines one, at most `HOVER_LINES` lines and
-/// `HOVER_MAX` chars — said when cut.
-fn hover_trim(text: &str) -> String {
-    let mut lines: Vec<&str> = Vec::new();
-    for l in text.lines().map(str::trim_end) {
-        if !(l.is_empty() && lines.last().is_none_or(|p| p.is_empty())) {
-            lines.push(l);
-        }
-    }
-    let n = lines.len();
-    lines.truncate(HOVER_LINES);
-    let mut out = lines.join("\n").trim_end().to_string();
-    if out.chars().count() > HOVER_MAX || n > HOVER_LINES {
-        out = clip(&out, HOVER_MAX);
-        out.push_str(&format!("\n… cut ({n} lines) — the definition has the rest"));
-    }
-    out
 }
 
 // ── diagnostics ─────────────────────────────────────────────────────────────

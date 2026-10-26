@@ -458,7 +458,7 @@ mod tests {
         // From the session in hand
         let call = crate::tools::Call::test(1);
         let mut card =
-            crate::offer::Offer::new("t".into(), "q", "", String::new(), crate::offer::What::Screen { call });
+            crate::offer::Offer::new("t".into(), "q", "", String::new(), crate::offer::What::Asks { call });
         card.id = 7;
         crate::cards::said(&front.log(), &card, "y", None);
         crate::usage::message_sent(&behind.log(), 40, 10);

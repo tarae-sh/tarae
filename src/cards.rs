@@ -154,10 +154,6 @@ pub enum Why {
     ProtectedMade,
     /// Claude's Read, Grep or Glob outside the project.
     Read,
-    /// Claude's `screen`.
-    Screen,
-    /// Claude's `commit`.
-    Commit,
     /// The user opening what the sandbox blocked (`blocked.rs`).
     Blocked,
     /// A host a run's rules don't name, held by tarae's proxy (`hosts.rs`).
@@ -194,8 +190,6 @@ impl Why {
             Why::NoSandbox => "no-sandbox".into(),
             Why::ProtectedMade => "protected-made".into(),
             Why::Read => "read".into(),
-            Why::Screen => "screen".into(),
-            Why::Commit => "commit".into(),
             Why::Blocked => "blocked".into(),
             Why::Host => "host".into(),
             Why::Web => "web".into(),
@@ -233,8 +227,6 @@ impl Why {
             | Why::NoSandbox
             | Why::ProtectedMade
             | Why::Read
-            | Why::Screen
-            | Why::Commit
             | Why::Blocked
             | Why::Also
             | Why::Host
@@ -290,10 +282,6 @@ pub enum Request {
     Run { past: Past, sandboxed: bool, reads: Vec<Class>, outward: bool },
     /// Claude's Read, Grep or Glob of a place outside the project.
     Read(Class),
-    /// Claude's `screen`.
-    Screen,
-    /// Claude's `commit`: its message and the diff of the paths it names.
-    Commit,
     /// The sandbox opened for what it blocked: a place to read, a folder to write in, a port — or one socket.
     Grant(crate::allow::Grant),
     /// A host reached through tarae's proxy (`host:port`).
@@ -314,9 +302,6 @@ pub enum Decision {
     NoSandbox,
     /// A command that publishes or reaches beyond this machine, where it could (D4) — asked each time.
     Outward,
-    Screen,
-    /// A commit: asked each time, the diff on the card.
-    Commit,
     /// A host past the session's (the proxy holds it).
     Host,
     /// tarae's own question: asked as today, the model has nothing to say of it.
@@ -337,8 +322,6 @@ impl Decision {
             Decision::Outside => "outside",
             Decision::NoSandbox => "no-sandbox",
             Decision::Outward => "outward",
-            Decision::Screen => "screen",
-            Decision::Commit => "commit",
             Decision::Host => "host",
             Decision::Own => "own",
         }
@@ -363,8 +346,6 @@ pub fn decide(r: &Request, caps: &crate::caps::Caps) -> Decision {
         Request::Run { outward: true, .. } => Decision::Outward,
         Request::Run { reads: c, .. } => reads(c),
         Request::Read(c) => reads(std::slice::from_ref(c)),
-        Request::Screen => Decision::Screen,
-        Request::Commit => Decision::Commit,
         Request::Grant(crate::allow::Grant::Read(_) | crate::allow::Grant::Key(_)) => {
             Decision::Grant(Verb::Read)
         }
@@ -848,7 +829,6 @@ mod tests {
         assert_eq!(decide(&Request::Read(Class::Toolchain)), Decision::None);
         assert_eq!(decide(&Request::Read(Class::Secret)), Decision::Grant(Verb::Read));
         assert_eq!(decide(&Request::Read(Class::Unknown)), Decision::Grant(Verb::Read));
-        assert_eq!(decide(&Request::Screen), Decision::Screen);
         let g = |g| decide(&Request::Grant(g));
         assert_eq!(g(crate::allow::Grant::Write("/w".into())), Decision::Grant(Verb::Write));
         assert_eq!(g(crate::allow::Grant::Port(5432)), Decision::Grant(Verb::Port));
@@ -949,7 +929,7 @@ mod tests {
     #[test]
     fn a_cards_line_says_what_it_asked_and_how_it_went() {
         let call = crate::tools::Call::test(1);
-        let mut o = Offer::new("t".into(), "q", "", String::new(), What::Screen { call });
+        let mut o = Offer::new("t".into(), "q", "", String::new(), What::Asks { call });
         o.id = 12;
         let asked = Asked::new(
             Why::ReadsOutside(vec![Class::Temp, Class::Home]),
@@ -966,7 +946,7 @@ mod tests {
         let line = |o: &Offer, a: &Asked, answer: &str, now: Instant| line(o, a, answer, now, None);
         assert_eq!(
             line(&o, &asked, "n", at(4200)),
-            "card#12 · screen · why=reads-outside · class=temp,home · shadow=grant:read · n · not drawn · \
+            "card#12 · asks · why=reads-outside · class=temp,home · shadow=grant:read · n · not drawn · \
              up 4.2s"
         );
         o.drawn.set(Some(at(3300)));
@@ -976,7 +956,7 @@ mod tests {
         );
         assert_eq!(
             line(&o, &a, "a", at(4200)),
-            "card#12 · screen · why=not-a-check:awk · shadow=none · a · 900ms · up 4.2s"
+            "card#12 · asks · why=not-a-check:awk · shadow=none · a · 900ms · up 4.2s"
         );
         let same = |unchanged| line(&o, &a.clone().same_as(9, unchanged), "y", at(4200));
         assert!(same(true).contains(" · shadow=none · same=#9 · y · "), "{}", same(true));
@@ -989,7 +969,7 @@ mod tests {
         let root = Path::new("/p");
         let ran = a.clone().ran(Some(7), "awk 1 x", root, root);
         let l = line(&o, &ran, "y", at(4200));
-        assert!(l.starts_with("card#12 · run#7 · screen · why=not-a-check:awk · "), "{l}");
+        assert!(l.starts_with("card#12 · run#7 · asks · why=not-a-check:awk · "), "{l}");
     }
 
     /// cardauto piece 1 (D2): every card goes in the record with what it was about — the command, where it

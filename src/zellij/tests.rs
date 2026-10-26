@@ -37,7 +37,7 @@ fn seq(s: &str) -> Vec<Key> {
 
 /// A card of Claude's (it asks to see the screen).
 fn card(ed: &mut Editor) {
-    let what = What::Screen { call: crate::tools::Call::test(1) };
+    let what = What::Asks { call: crate::tools::Call::test(1) };
     ed.push_offer(Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what));
 }
 

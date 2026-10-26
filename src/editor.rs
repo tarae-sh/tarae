@@ -995,8 +995,6 @@ pub struct Editor {
     /// on`), and no input came since: the waiting animation rests (`tick_wanted`). A terminal that never
     /// says keeps it going.
     pub unfocused: bool,
-    /// Claude's `screen` calls the user said yes to — answered with the next frame drawn (`seeing.rs`).
-    pub screen_sends: Vec<crate::tools::Call>,
     /// Frames drawn since tarae started · snapshots of the UI state asked over its socket, answered after a
     /// frame (`uistate.rs`) · messages said so far (a toast's id).
     pub frames: u64,
@@ -1278,7 +1276,6 @@ impl Editor {
             offer_drawn: Default::default(),
             offer_unshown: Default::default(),
             float_left: None,
-            screen_sends: Vec::new(),
             frames: 0,
             ui_asks: Vec::new(),
             said: 0,
@@ -8279,109 +8276,6 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Claude asks to see the screen: a card first (`C-q` from the chat answers it — frictions26), nothing
-    /// goes before `y`, and what goes is the frame drawn after it — the code and the terminal panel's
-    /// output, not the card. The card says the terminal panel is in it; with `llm.screen-terminal` off its
-    /// rows are blank and the card says that instead. `a` lets the next call go unasked; `n` tells Claude no.
-    #[test]
-    fn claude_sees_the_screen_once_the_user_says_yes() {
-        use serde_json::json;
-        if crate::sandbox::no_pty_here("editor::tests::claude_sees_the_screen_once_the_user_says_yes") {
-            return;
-        }
-        let scratch = crate::scratch::Scratch::new("screen-tool");
-        let dir = scratch.to_path_buf();
-        std::fs::write(dir.join("a.txt"), "screen-marker on this line\n").unwrap();
-        let draw = |ed: &mut Editor| {
-            let mut bytes = Vec::new();
-            crate::term::render(ed, &mut bytes, 140, 40).unwrap();
-            let mut parser = vt100::Parser::new(40, 140, 0);
-            parser.process(&bytes);
-            parser.screen().contents()
-        };
-        // Events handled with a frame drawn after each — the screen goes with a frame
-        let settle_drawing = |ed: &mut Editor, done: &dyn Fn(&Editor) -> bool| {
-            let end = std::time::Instant::now() + crate::test_results::PATIENCE;
-            while !done(ed) {
-                assert!(std::time::Instant::now() < end, "done before the timeout");
-                if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(50)) {
-                    ed.handle_event(ev);
-                }
-                draw(ed);
-            }
-        };
-        let with_terminal = |screen_terminal: bool| {
-            let mut ed = editor("");
-            ed.config.llm.screen_terminal = screen_terminal;
-            ed.open(&dir.join("a.txt")).unwrap();
-            let argv = ["/bin/sh".to_string(), "-c".into(), "printf term-marker; sleep 5".into()];
-            ed.terminal_run(argv.to_vec(), Vec::new());
-            let shows = |ed: &Editor| {
-                ed.workspace
-                    .terminal
-                    .as_ref()
-                    .is_some_and(|t| t.parser.screen().contents().contains("term-marker"))
-            };
-            settle_until(&mut ed, shows);
-            ed.workspace.leave(crate::workspace::At::Program);
-            draw(&mut ed);
-            ed
-        };
-        let answers = |log: &Path| std::fs::read_to_string(log).unwrap_or_default().matches("\"c7\"").count();
-        // y: the card first, then the screen as drawn after the yes
-        let mut ed = with_terminal(true);
-        let log = claude_calls(&mut ed, &dir, "screen", &json!({}));
-        feed(&mut ed, "<space>lwhat do you see<ret>");
-        settle_until(&mut ed, |ed| !ed.offers.is_empty());
-        let o = ed.offers.first().unwrap();
-        assert_eq!(o.title, crate::seeing::TITLE);
-        assert!(o.question.contains("Includes the terminal panel ("), "{}", o.question);
-        assert!(ed.workspace.is_at(crate::workspace::At::Chat), "the chat keeps the keys");
-        let s = draw(&mut ed);
-        assert!(s.contains("y Once · a This chat · n No"), "{s}");
-        assert_eq!(answers(&log), 0, "nothing goes before the answer");
-        feed(&mut ed, "<C-q>y");
-        assert!(ed.offers.is_empty());
-        settle_drawing(&mut ed, &|ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
-        let answer = tool_answer(&log);
-        assert!(answer.contains("screen-marker on this line") && answer.contains("term-marker"), "{answer}");
-        assert!(answer.contains("the terminal panel included"), "{answer}");
-        assert!(
-            !answer.contains(crate::seeing::TITLE) && !answer.contains("isError"),
-            "not the card: {answer}"
-        );
-        assert!(!ed.workspace.claude.chat.as_ref().unwrap().sees, "only once");
-        // The terminal panel left out: said on the card, blank in what goes; `a` — the next call is unasked
-        let mut ed = with_terminal(false);
-        std::fs::remove_file(&log).ok();
-        let log = claude_calls(&mut ed, &dir, "screen", &json!({}));
-        feed(&mut ed, "<space>lwhat do you see<ret>");
-        settle_until(&mut ed, |ed| !ed.offers.is_empty());
-        let q = ed.offers[0].question.clone();
-        assert!(q.contains("Not the terminal panel (llm.screen-terminal is off)"), "{q}");
-        feed(&mut ed, "<C-q>a");
-        settle_drawing(&mut ed, &|ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
-        let answer = tool_answer(&log);
-        assert!(answer.contains("screen-marker") && !answer.contains("term-marker"), "{answer}");
-        assert!(answer.contains(crate::seeing::LEFT_OUT), "{answer}");
-        ed.workspace.viewer.at = crate::workspace::At::Chat;
-        feed(&mut ed, "again<ret>");
-        settle_drawing(&mut ed, &|ed| !ed.offers.is_empty() || answers(&log) == 2);
-        assert!(ed.offers.is_empty(), "this chat: no card");
-        // n: Claude is told
-        let mut ed = editor("");
-        std::fs::remove_file(&log).ok();
-        let log = claude_calls(&mut ed, &dir, "screen", &json!({}));
-        draw(&mut ed);
-        feed(&mut ed, "<space>lwhat do you see<ret>");
-        settle_until(&mut ed, |ed| !ed.offers.is_empty());
-        feed(&mut ed, "<C-q>n");
-        settle_drawing(&mut ed, &|ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
-        let answer = tool_answer(&log);
-        assert!(answer.contains("said no") && answer.contains("isError"), "{answer}");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
     /// cardauto P3: in the sandbox, a command that isn't a check runs at once — no card — and Claude hears how it
     /// ended. (The run: `touch` in the test's own temp folder.)
     #[test]
@@ -12632,7 +12526,7 @@ mod tests {
         // A wait there that ended while it stayed behind: said once
         waits_for_you(&mut ed, behind);
         assert_eq!(told(&ed), 1);
-        ed.with_workspace(behind, |ed| ed.drop_cards(|w| matches!(w, crate::offer::What::Screen { .. })));
+        ed.with_workspace(behind, |ed| ed.drop_cards(|w| matches!(w, crate::offer::What::Asks { .. })));
         assert_ne!(ed.doing(workspace_by(&ed, behind)), crate::workspace::Doing::Waiting);
         // Then its edit: said again, its row marked
         // (in line, worked out on a worker)
@@ -12751,13 +12645,11 @@ mod tests {
         std::fs::remove_dir_all(&repo).ok();
     }
 
-    /// A Claude behind asking to see the screen — its card parks in its session: that session waits for you.
+    /// A Claude behind asking — its card parks in its session: that session waits for you.
     fn waits_for_you(ed: &mut Editor, id: crate::event::WorkspaceId) {
-        let msg = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": "screen", "arguments": {}}});
-        ed.with_workspace(id, |ed| {
-            crate::tools::mcp(ed, 0, "c1", &msg);
-        });
+        let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
+        let o = crate::offer::Offer::new("Claude asks".into(), "?", "", String::new(), what);
+        ed.with_workspace(id, |ed| ed.push_offer(o));
         assert!(workspace_by(ed, id).parked.iter().any(crate::offer::Offer::claudes), "parked");
     }
 

@@ -525,13 +525,11 @@ fn render_drawn(editor: &mut Editor, out: &mut impl Write, w: u16, h: u16) -> io
     editor.trace_drawn();
     // (a run's wave and wait counter want frames only while their slot is drawn — this frame's say)
     editor.frame_drawn();
-    // (kept: the screen as the user sees it — `C-s` in the chat sends it as text, and so does Claude's
-    // `screen` once the user said yes)
+    // (kept: the screen as the user sees it — `C-s` in the chat sends it as text)
     editor.last_frame = Some((frame, w, h));
     editor.frames += 1;
     // (the reviews under way: what of them this frame shows — the review record's time)
     crate::reviews::after_frame(editor);
-    crate::seeing::after_frame(editor);
     Ok(())
 }
 
@@ -12401,12 +12399,14 @@ fn draw_follow_card(
     // Header: what it's doing — or, stepping through the replay, the stop showing
     let gaze = c.follow.shown();
     let replaying = c.follow.replaying.is_some();
-    // Its call waits on the user — a card of Claude's asking (a command, a read, the screen) or an edit's
-    // review: said so, not "running" while nothing runs (what it waits on is that card's — not repeated)
+    // Its call waits on the user — a card of Claude's asking (a command, a read) or an edit's review: said so,
+    // not "running" while nothing runs (what it waits on is that card's — not repeated)
     let asks = editor.offers.iter().any(|o| {
         use crate::offer::What;
         match &o.what {
-            What::Run(_) | What::NoSandbox { .. } | What::Screen { .. } | What::Commit(_) => true,
+            What::Run(_) | What::NoSandbox { .. } => true,
+            #[cfg(test)]
+            What::Asks { .. } => true,
             What::ProtectedMade { then, .. } => then.call().is_some(),
             // (not one the user's pointing raised — `reads::point`)
             What::Read { pending, .. } => pending.own.is_none(),
@@ -18406,7 +18406,7 @@ mod tests {
         }
         assert!(ed.workspace_switch(ids[0]));
         let card = |n: u64| {
-            let what = What::Screen { call: crate::tools::Call::test(n) };
+            let what = What::Asks { call: crate::tools::Call::test(n) };
             Offer::new(format!("Claude asks {n}"), "to see the screen", "", String::new(), what)
         };
         fn behind<'a>(ed: &'a mut Editor, name: &str) -> &'a mut crate::workspace::Workspace {
@@ -18481,7 +18481,7 @@ mod tests {
         };
         for (n, chat) in [(4, false), (14, false), (40, false), (50, false), (90, false), (40, true)] {
             let mut ed = Editor::new(crate::config::Config::default());
-            let what = What::Screen { call: crate::tools::Call::test(1) };
+            let what = What::Asks { call: crate::tools::Call::test(1) };
             ed.push_offer(Offer::new("Asks".into(), &"x".repeat(n), "", String::new(), what));
             if chat {
                 ed.workspace.claude.chat = Some(crate::chat::Chat::new());
@@ -18516,7 +18516,7 @@ mod tests {
         }
         // (`esc back`'s run before it is its own, the way in's cells less its own: never on `C-q answer`)
         let mut ed = Editor::new(crate::config::Config::default());
-        let what = What::Screen { call: crate::tools::Call::test(1) };
+        let what = What::Asks { call: crate::tools::Call::test(1) };
         ed.push_offer(Offer::new("Asks".into(), "xxxx", "", String::new(), what));
         ed.card_focus_front();
         render(&mut ed, &mut Vec::new(), 140, 40).unwrap();
@@ -18592,7 +18592,7 @@ mod tests {
         for (w, h) in [(80u16, 24u16), (160, 45)] {
             for chat in [true, false] {
                 let mut ed = Editor::new(crate::config::Config::default());
-                let what = What::Screen { call: crate::tools::Call::test(1) };
+                let what = What::Asks { call: crate::tools::Call::test(1) };
                 ed.push_offer(Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what));
                 ed.workspace.claude.chat = chat.then(crate::chat::Chat::new);
                 let mut bytes = Vec::new();
@@ -21074,7 +21074,7 @@ mod tests {
             let mut ed = long_chat(200);
             ed.zellij = true;
             ed.workspace.viewer.at = crate::workspace::At::Chat;
-            let what = crate::offer::What::Screen { call: crate::tools::Call::test(1) };
+            let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
             ed.push_offer(crate::offer::Offer::new(
                 "Claude asks".into(),
                 "to see the screen",
@@ -21454,7 +21454,7 @@ mod tests {
                 );
                 // An ask
                 let mut ed = Editor::new(Config::default());
-                let what = What::Screen { call: crate::tools::Call::test(1) };
+                let what = What::Asks { call: crate::tools::Call::test(1) };
                 ed.push_offer(Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what));
                 ed.workspace.claude.chat = chat.then(crate::chat::Chat::new);
                 let rows = draw(&mut ed, w, h);
@@ -23436,7 +23436,6 @@ mod tests {
         ("limits.rs", 1),                 // the plan's next try, a time to come
         ("nav.rs", 4),                    // plurals
         ("plugin/perm.rs", 1),            // a plural
-        ("procs.rs", 1),                  // the CPU share's window, a setting
         ("replay.rs", 1),                 // a plural
         ("sandbox.rs", 1),                // a run not started within its limit
         ("sandbox/keeper.rs", 1),         // a run not started within its limit

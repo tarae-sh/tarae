@@ -31,7 +31,7 @@ const CHAIN: usize = 3;
 /// A request's calls brought back more than this many tokens: a large result.
 const LARGE: u64 = 8_000;
 /// The tools that change something.
-const CHANGES: [&str; 6] = ["edit", "Edit", "Write", "rename", "replace", "commit"];
+const CHANGES: [&str; 5] = ["edit", "Edit", "Write", "rename", "replace"];
 
 pub fn run(args: &[String]) -> Result<()> {
     let paths: Vec<PathBuf> = match args.is_empty() {

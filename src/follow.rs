@@ -283,8 +283,7 @@ pub fn on_tool(ed: &mut Editor, id: &str, name: &str, input: &serde_json::Value,
         | "mcp__tarae__references"
         | "mcp__tarae__symbols"
         | "mcp__tarae__definition"
-        | "mcp__tarae__rename"
-        | "mcp__tarae__hover" => match &look.link {
+        | "mcp__tarae__rename" => match &look.link {
             Some(l) => (Some(l.path.clone()), input["line"].is_u64().then(|| l.line..l.line + 1), l.line),
             None => (None, None, 0),
         },
@@ -298,15 +297,7 @@ pub fn on_tool(ed: &mut Editor, id: &str, name: &str, input: &serde_json::Value,
         },
         _ => (None, None, 0),
     };
-    if !matches!(
-        name,
-        "mcp__tarae__plan"
-            | "mcp__tarae__screen"
-            | "mcp__tarae__procs"
-            | "mcp__tarae__ui"
-            | "mcp__tarae__git"
-            | "mcp__tarae__commit"
-    ) {
+    if !matches!(name, "mcp__tarae__plan" | "mcp__tarae__ui" | "mcp__tarae__git") {
         f.replay.add(crate::replay::Stop {
             call: id.to_string(),
             look: look.clone(),

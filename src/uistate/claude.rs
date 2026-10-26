@@ -4,7 +4,7 @@
 //!   what they do and how many cards; no unsent text (the chat's draft, a prompt's or picker's query); a
 //!   plugin's card, a repository's git settings (`git-trust`), its Claude settings and the card holding them
 //!   (`repo-trust`) by their titles only, in the inbox too.
-//!   Less than the `screen` tool sends, so its `ui` tool asks no card.
+//!   Less than the screen as text (`C-s`), so its `ui` tool asks no card.
 //! - **The context line**: every message's `<editor-context>` gains `ui: …` when something's up beyond the
 //!   code and the chat — the cards, the toasts, the runs under way, by id.
 //! - **Ids in Claude's answers** (`card#12`, `run#7`, `git:src/a.rs`) are links: a click or `C-]` brings the
@@ -173,7 +173,7 @@ impl Editor {
         s.runs.retain(|r| r.session == own);
         // (only what went to it: a draft — yours, or a finding — is the user's until `space v s` sends it)
         s.notes.retain(|n| n.sent);
-        // (its `procs` tool says these, each process's command line and folder with them)
+        // (the user's: what runs, with its command lines)
         s.procs = Default::default();
         s.gone = self.ui_gone.iter().rev().filter(|g| g.session == own).take(3).cloned().collect();
         s.front = own_workspace;

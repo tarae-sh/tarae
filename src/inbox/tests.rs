@@ -27,7 +27,7 @@ fn three(name: &str) -> (Editor, PathBuf, WorkspaceId, WorkspaceId) {
 
 /// A card of Claude's (it asks to see the screen) that came `ago` seconds ago.
 fn claudes(n: u64, ago: u64) -> Offer {
-    let what = What::Screen { call: crate::tools::Call::test(n) };
+    let what = What::Asks { call: crate::tools::Call::test(n) };
     let mut o = Offer::new(format!("Claude asks {n}"), "to see the screen", "", String::new(), what);
     o.since = Instant::now() - Duration::from_secs(ago);
     o
@@ -488,7 +488,7 @@ fn a_card_waiting_comes_before_a_run_only_quiet() {
     park(&mut ed, back, claudes(1, 20));
     let inbox = ed.inbox();
     let kinds: Vec<&str> = inbox.iter().map(|e| e.kind).collect();
-    assert_eq!(kinds, ["screen", "silent-run"], "{inbox:?}");
+    assert_eq!(kinds, [crate::offer::ASKS, "silent-run"], "{inbox:?}");
     assert!(inbox[1].waited_ms > inbox[0].waited_ms, "quiet for longer than the card has waited");
     assert_eq!(ed.ui_state().inbox.iter().map(|e| e.kind).collect::<Vec<_>>(), kinds);
     // C-q: to back's card, not the quiet run's panel here

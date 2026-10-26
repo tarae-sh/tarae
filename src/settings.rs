@@ -502,7 +502,7 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         path: "llm.screen-terminal",
         kind: Kind::Bool,
-        doc: "Chat: when Claude looks at your screen (you say yes on a card), the terminal panel's contents go too — off: its rows go blank",
+        doc: "Chat: the terminal panel's contents go with the screen you send (C-s) and can be quoted — off: its rows go blank",
         get: |c| Value::from(c.llm.screen_terminal),
         set: |c, v| c.llm.screen_terminal = b(v),
     },

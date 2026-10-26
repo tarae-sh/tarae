@@ -170,8 +170,8 @@ pub struct LlmConfig {
     /// Days a kept run home (a toolchain's home of the runs', kept across them) stays with no run using it before
     /// tarae's start removes it (`runhomes.rs`).
     pub sandbox_kept_days: u64,
-    /// Chat: Claude's `screen` tool shows the terminal panel's contents too (`seeing.rs`) — off, its rows go
-    /// blank.
+    /// Chat: the screen sent (`C-s`) and the terminal's quoted rows show the terminal panel's contents — off, its
+    /// rows go blank and aren't quoted.
     pub screen_terminal: bool,
     /// Chat: minutes a run of Claude's prints nothing at next to no CPU before a card asks whether it's
     /// stuck (`stuck.rs`; 0 = never).

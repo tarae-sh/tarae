@@ -33,8 +33,8 @@ pub(crate) const SYSTEM: &str = "You are Claude, built into tarae — a terminal
 across files instead of guessing. The language server's answers beat any text search and reading around — \
 reach for them first: \"where is X defined\" is definition by name (symbol X, no file or line needed) — never a \
 grep for `fn X`, `struct X` or `class X`; for a trait's implementations, definition with kind implementation; \
-for a value's type or a function's signature and docs, hover; for where something is used or what a change \
-would touch, references. For finding code or text, search (the editor's project search — each hit says the \
+for a type's declaration, definition with kind type (a value's type or a signature: read the code); for where \
+something is used or what a change would touch, references. For finding code or text, search (the editor's project search — each hit says the \
 function it's in); for lines of files, read (several files and ranges, or a function by name, in one call); \
 for a file's outline or which function a line is in, symbols — shell pipelines are for what \
 those can't do. Prefer the most direct tool, and ask for enough in one call to skip another turn: a turn \
@@ -56,12 +56,8 @@ processes, the network) use a harmless stand-in — a marker file made in the te
 never the real command or a real path outside that dir, not even in code meant never to run. When the work takes several steps, lay them out first with the plan tool \
 and keep it current as you go (the step you're on doing, finished ones done). Each user message starts with <editor-context>: the file the user is looking at, \
 cursor line, the lines on screen (and any other file shown beside it), selection, diagnostics and the other \
-open files — \"this\" and \"here\" usually mean the selection, the cursor or what's on screen. When what they \
-mean is on their screen but not in the context (a panel, a card, a message, the terminal panel's output), the \
-screen tool shows you their screen as text — they're asked first, and it only looks. For the processes the \
-editor runs (language servers, your chat, commands, tests, the terminal — pid, parent, age, CPU, memory, \
-command line, folder), use the procs tool, not ps, pgrep or lsof through run. Files marked unsaved differ from disk — trust the \
-text given in the context over what read returns. When you point at code, cite it as path:line (relative to the \
+open files — \"this\" and \"here\" usually mean the selection, the cursor or what's on screen. Files marked \
+unsaved differ from disk — trust the text given in the context over what read returns. When you point at code, cite it as path:line (relative to the \
 project root) — the user can jump there; their editor follows you, showing the code you read and the code you \
 cite. When you explain how code works, walk the user through it in the order of the flow: right before you \
 explain each piece, put a line <show at=\"path:start-end\">what this code does in the flow, one short \
@@ -121,18 +117,14 @@ pub(crate) fn system() -> String {
 /// `chat_reads_a_screenshot_ab`).
 const TOOLS: &str = "";
 /// Not Read: allowed by name it reads anywhere unasked (measured — `reads.rs` answers it).
-/// (`screen` asks the user itself — `seeing.rs`)
-/// (`references`, `symbols`, `definition`, `hover` and `diagnostics` read inside the project only — `nav.rs`;
-/// `search` and `read` outside it only as Read would, on its card — `reads::Gate`; `rename` and `replace` land
-/// as Claude's edits do, in the review — `refactor.rs`, and `edit` too — `edittool.rs`; none of them reads or
-/// changes a file named like a key before Claude was let read it — `reads::Keys`; `procs` reads what `:procs`
-/// shows — `procs.rs`; `ui` the screen's structure at Claude's level, less than `screen` sends —
-/// `uistate/claude.rs`; `git` only git's reads, on the guarded path — `gittool.rs`; `commit` on its card —
-/// `committool.rs`)
+/// (`references`, `symbols`, `definition` and `diagnostics` read inside the project only — `nav.rs`; `search`
+/// and `read` outside it only as Read would, on its card — `reads::Gate`; `rename` and `replace` land as Claude's
+/// edits do, in the review — `refactor.rs`, and `edit` too — `edittool.rs`; none of them reads or changes a file
+/// named like a key before Claude was let read it — `reads::Keys`; `ui` the screen's structure at Claude's level
+/// — `uistate/claude.rs`; `git` only git's reads, on the guarded path — `gittool.rs`)
 const ALLOWED: &str = "mcp__tarae__note,mcp__tarae__run_tests,mcp__tarae__run,mcp__tarae__plan,\
-mcp__tarae__screen,mcp__tarae__references,mcp__tarae__search,mcp__tarae__read,mcp__tarae__symbols,mcp__tarae__definition,\
-mcp__tarae__hover,mcp__tarae__diagnostics,mcp__tarae__rename,mcp__tarae__replace,mcp__tarae__procs,\
-mcp__tarae__ui,mcp__tarae__edit,mcp__tarae__git,mcp__tarae__commit";
+mcp__tarae__references,mcp__tarae__search,mcp__tarae__read,mcp__tarae__symbols,mcp__tarae__definition,\
+mcp__tarae__diagnostics,mcp__tarae__rename,mcp__tarae__replace,mcp__tarae__ui,mcp__tarae__edit,mcp__tarae__git";
 
 /// Settings laid over the user's and the project's when they're loaded (`llm.chat-settings`) — with what the
 /// project's own aren't trusted for held back (`claudetrust.rs`). `Skill` denied: a project skill's
@@ -496,9 +488,6 @@ pub struct Chat {
     pub keys_said: Vec<PathBuf>,
     /// This turn's sandboxed runs of Claude's — what they made is read unasked (#81, `reads::Ran`).
     pub ran: Vec<crate::reads::Ran>,
-    /// Claude may look at the screen without asking for the rest of this conversation (`a` on its card —
-    /// `seeing.rs`).
-    pub sees: bool,
     /// Commands that run again without asking for the rest of this conversation — each exactly, its filters
     /// aside, where it ran, with Docker's socket when its card had it (`a` on a run card — `tools::again`,
     /// #193).
@@ -853,13 +842,11 @@ impl Chat {
     }
 
     /// Its conversation ends (a new one, another one continued): what its answers let through goes with it —
-    /// `a` on a card (`allowed`), on a run's card (`run_again`, a socket's too, and the scripts they run), on the
-    /// screen card (`sees`). The caller tells the proxy (`hosts::chat_ended`, first) and makes the `Caps` again.
+    /// `a` on a card (`allowed`), on a run's card (`run_again`, a socket's too, and the scripts they run). The caller tells the proxy (`hosts::chat_ended`, first) and makes the `Caps` again.
     pub(crate) fn conversation_left(&mut self) {
         self.allowed = Default::default();
         self.run_again.clear();
         self.run_scripts.clear();
-        self.sees = false;
         self.hosts_next.clear();
         self.web_hosts.clear();
         self.web_refused.clear();
@@ -894,7 +881,6 @@ impl Chat {
             key_pass: Vec::new(),
             keys_said: Vec::new(),
             ran: Vec::new(),
-            sees: false,
             run_again: Vec::new(),
             also_refused: Vec::new(),
             also_asked: 0,
@@ -1237,7 +1223,7 @@ fn continue_from(ed: &mut Editor, saved: crate::chats::Saved, spawn: bool) {
     // — `:restart`'s, one just opened — leaves only answers it holds)
     let other = match c.conversation.as_deref() {
         Some(id) => id != saved.id,
-        None => !c.allowed.is_empty() || !c.run_again.is_empty() || !c.run_scripts.is_empty() || c.sees,
+        None => !c.allowed.is_empty() || !c.run_again.is_empty() || !c.run_scripts.is_empty(),
     };
     if other {
         crate::hosts::chat_ended(ed);
@@ -2237,12 +2223,12 @@ fn turn_end_said(ed: &mut Editor, how: Result<(), String>) {
 
 /// `C-s` in the chat · `:chat-screen` — the screen as the user sees it now (the last frame, as text) goes
 /// with their next message, a pane showing a file named like a key Claude may not read blanked
-/// (`reads::key_panes`), the terminal panel too when `llm.screen-terminal` is off (as the `screen` tool's —
-/// `seeing::hidden`); the chat opens if it isn't, and the line over the input says so.
+/// (`reads::key_panes`), the terminal panel too when `llm.screen-terminal` is off (`screen_hidden`); the chat
+/// opens if it isn't, and the line over the input says so.
 pub fn attach_screen(ed: &mut Editor) -> Result<(), String> {
     let (frame, cols, rows) = ed.last_frame.as_ref().ok_or("nothing is on screen yet")?;
     let (cols, rows) = (*cols, *rows);
-    let (hidden, _) = crate::seeing::hidden(ed);
+    let hidden = screen_hidden(ed);
     let text =
         crate::screen::text_hiding(frame, cols, rows, &hidden).ok_or("this screen can't be read as text")?;
     if ed.workspace.claude.chat.is_none() {
@@ -2254,6 +2240,20 @@ pub fn attach_screen(ed: &mut Editor) -> Result<(), String> {
     c.with.push(With::Screen);
     ed.workspace.viewer.at = At::Chat;
     Ok(())
+}
+
+/// The note in place of the terminal panel when it's left out.
+pub const LEFT_OUT: &str = "[the terminal panel — left out: llm.screen-terminal]";
+
+/// What of the last frame `C-s` doesn't send — every pane showing a file named like a key Claude may not read
+/// (`reads::key_panes`), the terminal panel when `llm.screen-terminal` is off.
+fn screen_hidden(ed: &Editor) -> Vec<crate::screen::Hidden> {
+    let cols = ed.last_frame.as_ref().map_or(0, |f| f.1 as usize);
+    let mut hidden = crate::reads::key_panes(ed);
+    hidden.extend(ed.screen.terminal_rows.filter(|_| !ed.config.llm.screen_terminal).map(|rows| {
+        crate::screen::Hidden { rows, cols: (0, ed.screen.chat_x.unwrap_or(cols)), note: LEFT_OUT.into() }
+    }));
+    hidden
 }
 
 /// The folder of this tarae's own in the temp folder that copies of what went with messages go to (`Editor.sent_dir`):
@@ -2852,8 +2852,7 @@ fn context(
     };
     let mut withheld: Vec<PathBuf> = shut(doc).into_iter().collect();
     // A woven view (`weave.rs`) is the person's: nothing of it goes by itself — not its name, text, selection or
-    // lines on screen (other workspaces' lines); what of it Claude sees the person shows on purpose (`space >`, `C-s`,
-    // a screen card's `y`)
+    // lines on screen (other workspaces' lines); what of it Claude sees the person shows on purpose (`space >`, `C-s`)
     let woven = doc.woven.is_some();
     // A web page: its address, never its text — someone else's words go to Claude only framed as data, by its own
     // `read` of the address (`web/tool.rs`, the session's copy: no card, no fetch)
@@ -3088,9 +3087,6 @@ fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
             let what = s("command").split_whitespace().collect::<Vec<_>>().join(" ");
             Look { verb: "run", what, pattern: true, range: String::new(), link: None }
         }
-        "mcp__tarae__screen" => {
-            Look { verb: "look", what: "your screen".into(), pattern: true, range: String::new(), link: None }
-        }
         "mcp__tarae__ui" => Look {
             verb: "ui",
             what: "what's on screen".into(),
@@ -3104,15 +3100,6 @@ fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
                 .map(|a| a.iter().filter_map(serde_json::Value::as_str).collect())
                 .unwrap_or_default();
             Look { verb: "git", what: words.join(" "), pattern: true, range: String::new(), link: None }
-        }
-        "mcp__tarae__commit" => {
-            let subject = input["message"].as_str().and_then(|m| m.lines().next()).unwrap_or_default();
-            Look { verb: "commit", what: subject.into(), pattern: true, range: String::new(), link: None }
-        }
-        "mcp__tarae__procs" => {
-            let what =
-                if input["all"].as_bool() == Some(true) { "every session's" } else { "this session's" };
-            Look { verb: "procs", what: what.into(), pattern: true, range: String::new(), link: None }
         }
         "mcp__tarae__references" => {
             let path = resolve(&s("path"));
@@ -3182,8 +3169,8 @@ fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
             }
         }
         // At a place: the editor goes there; by name (definition), or the files (diagnostics): nowhere
-        "mcp__tarae__definition" | "mcp__tarae__hover" => {
-            let verb = if name == "mcp__tarae__hover" { "hover" } else { "definition" };
+        "mcp__tarae__definition" => {
+            let verb = "definition";
             let what = match (s("symbol"), n("column")) {
                 (w, _) if !w.is_empty() => w,
                 (_, Some(c)) => format!("column {c}"),
@@ -4353,7 +4340,7 @@ mod tests {
         }
     }
 
-    /// 7c′: the screen as text — `C-s`'s and Claude's `screen` tool's — blanks a pane showing a file named like
+    /// 7c′: the screen as text — `C-s`'s — blanks a pane showing a file named like
     /// a key (its marker in its place) and keeps the rest; once opened (`Grant::Key`) it shows. The token is
     /// a fake.
     #[test]
@@ -4372,7 +4359,7 @@ mod tests {
             crate::term::render(ed, &mut Vec::<u8>::new(), 140, 40).unwrap();
             attach_screen(ed).unwrap();
             let attached = ed.workspace.claude.chat.as_mut().unwrap().screen.take().unwrap().text;
-            [attached, crate::seeing::text(ed).unwrap()]
+            [attached]
         };
         for s in shots(&mut ed) {
             assert!(!s.contains("tarae-fake-token") && s.contains("plain words"), "{s}");
@@ -5063,7 +5050,7 @@ mod tests {
         close(&mut ed);
         assert!(ed.workspace.claude.chat.is_none());
         let g = thinking(&mut ed);
-        called(&mut ed, g, "m3", "mcp__tarae__hover");
+        called(&mut ed, g, "m3", "mcp__tarae__definition");
         on_event(&mut ed, g, StreamEv::Spent(crate::usage::Spent { at_ms: 1, ..Default::default() }));
         let lines = crate::calls::recorded(dir.path(), 3);
         let mut steps: Vec<String> = lines
@@ -5071,7 +5058,11 @@ mod tests {
             .map(|l| l["steps"].as_array().unwrap().iter().map(|s| s["tools"].to_string()).collect())
             .collect();
         steps.sort();
-        assert_eq!(steps, [r#"["hover"]"#, r#"["read"]"#, r#"["search"]"#], "each turn its own: {lines:?}");
+        assert_eq!(
+            steps,
+            [r#"["definition"]"#, r#"["read"]"#, r#"["search"]"#],
+            "each turn its own: {lines:?}"
+        );
     }
 
     /// A turn's calls counted from the stream as the chat reads it: each `tool_use` and its result, a range
@@ -5180,8 +5171,9 @@ mod tests {
     }
 
     /// The system prompt sends "where is X defined" to the language server by name (never a grep for `fn X`
-    /// / `struct X`), a type to hover, uses to references — then tarae's search and read; shell pipelines for
-    /// what those can't do. Grep and Glob aren't the chat's tools, and the prompt doesn't name them.
+    /// / `struct X`), a type's declaration to definition's kind type (a value's type to the code), uses to references — then tarae's search and read; shell
+    /// pipelines for what those can't do. Grep, Glob and hover aren't the chat's tools, and the prompt doesn't name
+    /// them.
     #[test]
     fn the_prompt_prefers_the_language_server() {
         let s = system();
@@ -5190,10 +5182,11 @@ mod tests {
             s.contains("\"where is X defined\" is definition by name (symbol X, no file or line needed)")
         );
         assert!(s.contains("never a grep for `fn X`, `struct X` or `class X`"));
-        assert!(at("definition by name") < at(", hover;") && at(", hover;") < at("references."));
+        let kind = "for a type's declaration, definition with kind type (a value's type or a signature: read the code);";
+        assert!(at("definition by name") < at(kind) && at(kind) < at("references."));
         assert!(at("references.") < at("for lines of files, read"));
         assert!(at("for lines of files, read") < at("shell pipelines are for what those can't do"));
-        assert!(!s.contains("Grep") && !s.contains("Glob"), "a tool the chat hasn't");
+        assert!(!s.contains("Grep") && !s.contains("Glob") && !s.contains("hover"), "a tool the chat hasn't");
     }
 
     /// The chat's system prompt, byte for byte (`src/snapshots/chat_system.txt`, `TARAE_BLESS=1` rewrites it):

@@ -1459,7 +1459,7 @@ mod tests {
         use crate::offer::{Offer, What};
         let (mut ed, front, _) = two_projects("yours-in-front");
         let claudes = || {
-            let what = What::Screen { call: crate::tools::Call::test(1) };
+            let what = What::Asks { call: crate::tools::Call::test(1) };
             Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what)
         };
         let grammar = || {
@@ -1554,7 +1554,7 @@ mod tests {
         use crate::offer::{Offer, What};
         let (mut ed, front, back) = two_projects("waiting-cards");
         let screen_card = |n: u64| {
-            let what = What::Screen { call: crate::tools::Call::test(n) };
+            let what = What::Asks { call: crate::tools::Call::test(n) };
             Offer::new(format!("Claude asks {n}"), "to see the screen", "", String::new(), what)
         };
         let back_id = ed.workspace_open(&back).unwrap();
@@ -1599,7 +1599,7 @@ mod tests {
         let third = front.with_file_name("third");
         std::fs::create_dir_all(&third).unwrap();
         let card = |n: u64, ago: u64| {
-            let what = What::Screen { call: crate::tools::Call::test(n) };
+            let what = What::Asks { call: crate::tools::Call::test(n) };
             let mut o = Offer::new(format!("Claude asks {n}"), "to see the screen", "", String::new(), what);
             o.since = Instant::now() - Duration::from_secs(ago);
             o
@@ -1638,7 +1638,7 @@ mod tests {
         use crate::offer::{Offer, What};
         let (mut ed, front, back) = two_projects("peeks");
         let card = |n: u64| {
-            let what = What::Screen { call: crate::tools::Call::test(n) };
+            let what = What::Asks { call: crate::tools::Call::test(n) };
             Offer::new(format!("Claude asks {n}"), "to see the screen", "", String::new(), what)
         };
         let back_id = ed.workspace_open(&back).unwrap();
@@ -1671,7 +1671,7 @@ mod tests {
         let (mut ed, front, back) = two_projects("peekalone");
         let back_id = ed.workspace_open(&back).unwrap();
         assert!(ed.workspace_switch(WorkspaceId::HOME));
-        let what = What::Screen { call: crate::tools::Call::test(2) };
+        let what = What::Asks { call: crate::tools::Call::test(2) };
         workspace_by_mut(&mut ed, back_id).parked.push(Offer::new(
             "Claude asks 2".into(),
             "to see the screen",
@@ -1721,7 +1721,7 @@ mod tests {
         let third_id = ed.workspace_open(&third).unwrap();
         assert!(ed.workspace_switch(WorkspaceId::HOME));
         let card = |n: u64, ago: u64| {
-            let what = What::Screen { call: crate::tools::Call::test(n) };
+            let what = What::Asks { call: crate::tools::Call::test(n) };
             let mut o = Offer::new(format!("Claude asks {n}"), "to see the screen", "", String::new(), what);
             o.id = 100 + n;
             o.since = crate::clock::now().checked_sub(std::time::Duration::from_secs(ago)).unwrap();
@@ -1847,7 +1847,7 @@ mod tests {
         let log = back.join("claude-heard.log");
         claude_calls(&mut ed, &log, &[]);
         let screen_card = |n: u64| {
-            let what = What::Screen { call: crate::tools::Call::test(n) };
+            let what = What::Asks { call: crate::tools::Call::test(n) };
             Offer::new(format!("Claude asks {n}"), "to see the screen", "", String::new(), what)
         };
         let (id, _) = back_at_work(&mut ed, &back);
@@ -1909,7 +1909,7 @@ mod tests {
         let id = ed.workspace_open(&back).unwrap();
         assert!(ed.workspace_switch(WorkspaceId::HOME));
         let park = |ed: &mut Editor, n: u64, ago: Duration| {
-            let what = What::Screen { call: crate::tools::Call::test(n) };
+            let what = What::Asks { call: crate::tools::Call::test(n) };
             let mut o = Offer::new(format!("Claude asks {n}"), "to see the screen", "", String::new(), what);
             (ed.offer_seq, o.since) = (ed.offer_seq + 1, Instant::now() - ago);
             o.id = ed.offer_seq;
@@ -2413,7 +2413,6 @@ mod tests {
                     "selectionRange": range }]),
                 Kind::ToolRefs { .. } | Kind::ToolGoto { .. } => json!([at]),
                 Kind::ToolDeclared { .. } => at.clone(),
-                Kind::ToolHover { .. } => json!({ "contents": { "kind": "markdown", "value": "fn main()" } }),
                 _ => continue,
             };
             ed.on_lsp_message(cid, json!({ "jsonrpc": "2.0", "id": id, "result": result }));
@@ -2449,7 +2448,6 @@ mod tests {
             ("symbols", json!({ "path": "main.rs" })),
             ("references", json!({ "path": "main.rs", "symbol": "main" })),
             ("definition", json!({ "path": "main.rs", "symbol": "main" })),
-            ("hover", json!({ "path": "main.rs", "symbol": "main" })),
             ("diagnostics", json!({ "paths": ["main.rs"], "wait": 5 })),
         ];
         claude_calls(&mut ed, &log, &calls);
@@ -2486,7 +2484,6 @@ mod tests {
         assert!(symbols.contains("fn main") && symbols.contains("(fake)"), "the server's outline: {symbols}");
         assert!(said("references").contains("1 reference in 1 file (fake)"), "{}", said("references"));
         assert!(said("definition").contains("1 definition (fake)"), "{}", said("definition"));
-        assert!(said("hover").contains("fn main()"), "{}", said("hover"));
         let diags = said("diagnostics");
         assert!(diags.contains("an unused stand-in"), "the published one: {diags}");
         // Its places named from its own checkout (answered in its session, not just delivered there)
@@ -2717,7 +2714,7 @@ mod tests {
         assert!(ed.workspace_switch(id));
         feed(&mut ed, "<space>lonce more<ret><esc>");
         assert!(ed.workspace_switch(WorkspaceId::HOME));
-        let what = What::Screen { call: crate::tools::Call::test(1) };
+        let what = What::Asks { call: crate::tools::Call::test(1) };
         ed.push_offer(Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what));
         turn_ends(&mut ed, id);
         assert_eq!(said(&ed, "back · turn stopped — C-q goes there after 1 older"), 1, "{:?}", ed.toasts);

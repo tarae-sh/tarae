@@ -15,7 +15,7 @@
 //!   read on a worker); `"format":"text"` → `:features`' text. The user's level only.
 //! - `{"get":"frame"}` → the frame drawn, as the terminal got it: `{"frame":{cols, rows, frames, input,
 //!   bytes}}` (`after_input` as for the state) — what `cargo xtask shot --live` draws. The user's level: a frame
-//!   shows every session's tabs and cards, and Claude's `screen` is a card.
+//!   shows every session's tabs and cards; Claude sees a frame only as the user sends it (`C-s`).
 //!
 //! `tarae state [--json] [--pid N] [--after-input N] [--chat [S] | --review [S] | --frame FILE | --features]` is
 //! the client (`cli`).

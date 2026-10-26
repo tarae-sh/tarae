@@ -1310,7 +1310,7 @@ fn snapshot_card_says_who_waits_behind_it() {
     s.ed.workspace.name = "main".into();
     s.file("src/demo.rs", DEMO_RS);
     let card = |n: u64| {
-        let what = crate::offer::What::Screen { call: crate::tools::Call::test(n) };
+        let what = crate::offer::What::Asks { call: crate::tools::Call::test(n) };
         crate::offer::Offer::new(
             "Claude asks to see the screen".into(),
             "As text, once.",
@@ -1356,45 +1356,6 @@ fn snapshot_host_card_closed() {
             ended: false,
         };
         s.ed.push_offer(crate::hosts::card(a));
-        s.check(name);
-        s.frames_both(name);
-    }
-}
-
-/// Piece H: Claude's `commit` card — the message at full strength, the branch and the files with their counts (a
-/// protected name and a key file in the warning colour), the diff's start in its colours, what stays staged, a
-/// partly staged file said; `y Commit` · `v See the diff` · `n Don't` — made by `committool::card` itself, at 100
-/// columns and narrow.
-#[test]
-fn snapshot_commit_card() {
-    use crate::committool::{Ask, Commit, File};
-    let file = |shown: &str, lines, status, warn| File { shown: shown.into(), lines, status, warn };
-    let ask = Ask {
-        root: PathBuf::from("/p"),
-        top: PathBuf::from("/p"),
-        parent: Some("1a2b3c4d5e6f".into()),
-        branch: Some("main".into()),
-        tree: "0".repeat(40),
-        message: "Parse the lockfile once per build\n\nThe second read was the slow half of every check.\n".into(),
-        paths: vec!["src/lock.rs".into(), "src/check.rs".into(), "Cargo.toml".into()],
-        files: vec![
-            file("Cargo.toml", Some((1, 1)), 'M', Some(crate::committool::PROTECTED.0)),
-            file("src/check.rs", Some((3, 9)), 'M', None),
-            file("src/lock.rs", Some((24, 0)), 'A', None),
-        ],
-        patch: "diff --git a/src/check.rs b/src/check.rs\n--- a/src/check.rs\n+++ b/src/check.rs\n@@ -12,9 +12,3 @@ pub fn check(root: &Path) -> Result<()> {\n-    let text = std::fs::read_to_string(root.join(\"Cargo.lock\"))?;\n-    let lock = parse(&text)?;\n+    let lock = crate::lock::once(root)?;\n     for p in lock.packages() {\n-        let again = parse(&std::fs::read_to_string(root.join(\"Cargo.lock\"))?)?;\n-        verify(p, &again)?;\n+        verify(p, lock)?;\n     }\n".into(),
-        staged: vec!["README.md".into()],
-        partial: vec!["src/check.rs".into()],
-        unsaved: Vec::new(),
-    };
-    for (w, name) in [(100, "commit_card"), (64, "commit_card_narrow")] {
-        let mut s = Shot::new(w, 32);
-        s.ed.offer_popups = true;
-        s.file("src/demo.rs", DEMO_RS);
-        s.ed.push_offer(crate::committool::card(Commit {
-            call: crate::tools::Call::test(1),
-            ask: ask.clone(),
-        }));
         s.check(name);
         s.frames_both(name);
     }
@@ -2270,7 +2231,7 @@ fn inbox_time_frames() {
     for (n, ago) in [(1, 12_300), (2, 400_000), (3, 4_000_000)] {
         let what = match n {
             2 => What::ProjectTrust { hash: [7; 32] },
-            _ => What::Screen { call: crate::tools::Call::test(n) },
+            _ => What::Asks { call: crate::tools::Call::test(n) },
         };
         let title = if n == 2 { "Trust this project's settings?".into() } else { format!("Claude asks {n}") };
         s.ed.push_offer(Offer::new(title, "to see the screen", "", String::new(), what));
@@ -2474,7 +2435,7 @@ fn snapshot_sessions_cards_waiting_behind() {
     card(
         &mut s.ed,
         "Claude asks to see the screen",
-        crate::offer::What::Screen { call: crate::tools::Call::test(7) },
+        crate::offer::What::Asks { call: crate::tools::Call::test(7) },
     );
     s.ed.card_nudge(id, first);
     // (frozen at full opacity: fully faded in, seconds before the fade-out)
@@ -6589,7 +6550,7 @@ fn what_takes_the_keys_is_framed_with_its_name() {
     let mut s = Shot::new(w, h);
     s.ed.offer_popups = true;
     s.file("src/demo.rs", DEMO_RS);
-    let what = crate::offer::What::Screen { call: crate::tools::Call::test(1) };
+    let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
     let card = crate::offer::Offer::new(
         "Claude asks to see the screen".into(),
         "As text, once.",
@@ -7187,7 +7148,7 @@ fn floating_cards_leave_nothing_against_their_edges() {
     let mut s = Shot::new(100, 30);
     s.ed.offer_popups = true;
     s.file("src/demo.rs", DEMO_RS);
-    let what = crate::offer::What::Screen { call: crate::tools::Call::test(1) };
+    let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
     s.ed.push_offer(crate::offer::Offer::new(
         "Claude asks".into(),
         "As text, once.",
@@ -7219,7 +7180,7 @@ fn two_cards_never_touch() {
     s.ed.offer_popups = true;
     s.file("src/demo.rs", DEMO_RS);
     // (a card reaching up to the row under where the toast would sit at the top)
-    let what = crate::offer::What::Screen { call: crate::tools::Call::test(1) };
+    let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
     let body = "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight";
     s.ed.push_offer(crate::offer::Offer::new("Claude asks".into(), body, "", String::new(), what));
     // (the cursor's row off the toast's place at the top)
@@ -7246,7 +7207,7 @@ fn two_cards_never_touch() {
     s.ed.offer_popups = true;
     s.file("src/demo.rs", DEMO_RS);
     for (n, title) in [(1, "Claude asks first"), (2, "Claude asks next")] {
-        let what = crate::offer::What::Screen { call: crate::tools::Call::test(n) };
+        let what = crate::offer::What::Asks { call: crate::tools::Call::test(n) };
         s.ed.push_offer(crate::offer::Offer::new(title.into(), "As text, once.", "", String::new(), what));
     }
     let p = cells(&s.frame(), w, 30);
@@ -8467,7 +8428,7 @@ fn frames_of_cardkeys_more() {
         s.ed.workspace.name = "main".into();
         s.file("src/demo.rs", DEMO_RS);
         let card = |n: u64| {
-            let what = crate::offer::What::Screen { call: crate::tools::Call::test(n) };
+            let what = crate::offer::What::Asks { call: crate::tools::Call::test(n) };
             crate::offer::Offer::new(
                 "Claude asks to see the screen".into(),
                 "As text, once.",

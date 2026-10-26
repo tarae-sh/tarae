@@ -86,7 +86,7 @@ fn run(choices: Choices) -> Vec<String> {
 
 /// A card of Claude's (one holding its call, as a grant card does) — the `n`th.
 fn card(n: u64) -> Offer {
-    let what = What::Screen { call: crate::tools::Call::test(n) };
+    let what = What::Asks { call: crate::tools::Call::test(n) };
     Offer::new(format!("Claude asks {n}"), "to see the screen", "", String::new(), what)
 }
 

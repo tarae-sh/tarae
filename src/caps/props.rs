@@ -55,7 +55,7 @@ const ELSEWHERE: [(&str, &str); 11] = [
     ("llm.command", "the claude process itself"),
     ("llm.args", "the claude process itself"),
     ("llm.chat-settings", "what claude loads, not what its tools may do"),
-    ("llm.screen-terminal", "what Claude's screen shows"),
+    ("llm.screen-terminal", "what the screen you send shows"),
     ("workspace.worktrees", "where checkouts are made"),
     ("workspace.ended", "a command at a session's end, as you"),
     ("workspace.keep", "files moved at a session's end"),
@@ -74,8 +74,8 @@ const ELSEWHERE: [(&str, &str); 11] = [
 ///   through (the chat's answers and its copy of the kept ones, `Chat.kept_keys`);
 /// - `sockets`, `hosts`, `terminals`: `with_allowed`'s, the hosts with `Session.hosts` added as `guard_then_go`
 ///   adds them;
-/// - `again`, `sees`: the chat's `a` on a run's card (`Chat.run_again`, read by `tools.rs`'s gate — Docker's
-///   socket rides with one) and on the screen card (`Chat.sees`, `seeing.rs`);
+/// - `again`: the chat's `a` on a run's card (`Chat.run_again`, read by `tools.rs`'s gate — Docker's socket rides
+///   with one);
 /// - `unsandboxed`: `Session.no_sandbox`'s `s` — checks and reads run unasked without a sandbox.
 ///
 /// And to hold the rest of `check` to: `caps` (made now), `shown` (the session's own, `Session.caps` — `:granted`,
@@ -93,7 +93,6 @@ struct Reach {
     keys: Vec<PathBuf>,
     open_keys: Vec<PathBuf>,
     again: Vec<String>,
-    sees: bool,
     unsandboxed: bool,
     caps: Caps,
     shown: Option<Caps>,
@@ -147,7 +146,6 @@ impl Reach {
                 .cloned()
                 .collect(),
             again: chat.map(|c| c.run_again.iter().map(|r| format!("{r:?}")).collect()).unwrap_or_default(),
-            sees: chat.is_some_and(|c| c.sees),
             unsandboxed: ed.workspace.claude.no_sandbox == Some(crate::tools::NoSandbox::Unasked),
             shown: ed.workspace.claude.caps().cloned(),
             caps,
@@ -175,8 +173,6 @@ enum Gone {
     Key(PathBuf),
     /// A run's `a` (as `Reach.again` says it).
     Again(String),
-    /// The screen card's `a`.
-    Sees,
 }
 
 /// What a step may widen — for the session at the root it's given with (None: every session), its reach before
@@ -187,7 +183,6 @@ enum Effect {
     Grant(Grant),
     Unsandboxed,
     Again(String),
-    Sees,
     /// A checkout you made, read by default.
     Read(PathBuf),
     /// These `SETTINGS` rows as the session has them after (a project's settings a card trusted: the config is
@@ -225,7 +220,6 @@ fn plus(b: &Reach, after: &Reach, e: &Effect) -> Reach {
         }
         Effect::Unsandboxed => r.unsandboxed = true,
         Effect::Again(a) => r.again.push(a.clone()),
-        Effect::Sees => r.sees = true,
         Effect::Rows(rows) => rows.iter().for_each(|i| r.settings[*i] = after.settings[*i].clone()),
     }
     r
@@ -262,7 +256,6 @@ fn check(
             Gone::Unsandboxed => after.unsandboxed,
             Gone::Key(k) => after.open_keys.contains(k),
             Gone::Again(a) => after.again.contains(a),
-            Gone::Sees => after.sees,
         };
         if still {
             return Err(format!("taken back, still there: {g:?}"));
@@ -308,7 +301,6 @@ fn wider(b: &Reach, allowed: &[Reach], a: &Reach, yours: &[Value]) -> Vec<String
     out.extend(a.open_keys.iter().filter(|k| !open(k)).map(|k| format!("the text of {}", d(k))));
     let again = |x: &String| any(&|r| r.again.contains(x));
     out.extend(a.again.iter().filter(|x| !again(x)).map(|x| format!("runs again: {x}")));
-    out.extend((a.sees && !any(&|r| r.sees)).then(|| "sees the screen".to_string()));
     out.extend((a.unsandboxed && !any(&|r| r.unsandboxed)).then(|| "no sandbox, unasked".to_string()));
     // (every port is open where localhost is)
     let on = Some(&Value::Boolean(true));
@@ -630,8 +622,6 @@ enum Step {
     KeyKept,
     /// `a` on a run's card: `docker ps` with Docker's socket, as `tools::run_answer` keeps it.
     RunAgain,
-    /// `a` on the screen card.
-    Sees,
     /// The project trust card's `y` / `n`.
     Trust(bool),
     /// The no-sandbox card's `s`.
@@ -733,8 +723,7 @@ impl Step {
             0..=5 | 28 => Step::Card(rng.below(w.grants.len()), scope(rng)),
             6 => Step::Denied(rng.below(w.denied.len()), scope(rng)),
             7 => Step::KeyKept,
-            8 if coin(rng) => Step::RunAgain,
-            8 => Step::Sees,
+            8 => Step::RunAgain,
             9 | 26 => Step::Trust(rng.below(3) != 0),
             10 if coin(rng) => Step::Unsandboxed,
             10 => Step::Sandboxed,
@@ -883,11 +872,6 @@ fn apply(w: &mut World, ed: &mut Editor, step: &Step, ledger: &mut Ledger, front
                 c.run_again.push(r);
             }
             widens(Some(root), Effect::Again(said))
-        }
-        Step::Sees => {
-            let Some(c) = ed.workspace.claude.chat.as_mut() else { return narrows(Vec::new()) };
-            c.sees = true;
-            widens(Some(root), Effect::Sees)
         }
         Step::Trust(yes) => {
             let Some(p) = ed.project_trust.clone().filter(|p| p.state != State::Trusted) else {
@@ -1077,8 +1061,8 @@ fn apply(w: &mut World, ed: &mut Editor, step: &Step, ledger: &mut Ledger, front
     }
 }
 
-/// What the session's conversation alone lets, as `:granted` lists it, and its `a` on a run's card and on the
-/// screen card — gone with the conversation.
+/// What the session's conversation alone lets, as `:granted` lists it, and its `a` on a run's card — gone with the
+/// conversation.
 fn chat_only(ed: &Editor) -> Vec<Gone> {
     let b = ed.caps_basis();
     let none = Allowed::default();
@@ -1090,7 +1074,6 @@ fn chat_only(ed: &Editor) -> Vec<Gone> {
     let mut gone: Vec<Gone> = chat.filter(|g| !hosts.contains(g)).map(Gone::Listed).collect();
     if let Some(c) = &ed.workspace.claude.chat {
         gone.extend(c.run_again.iter().map(|r| Gone::Again(format!("{r:?}"))));
-        gone.extend(c.sees.then_some(Gone::Sees));
     }
     gone
 }
@@ -2615,7 +2598,7 @@ fn a_key_taken_back_stays_out_of_the_message_after_its_write_failed() {
 }
 
 /// A conversation left — a new one, another continued — takes its `a` answers with it: a card's (the gates' `Caps`
-/// too), a run's (Docker's socket with it), the screen card's.
+/// too), a run's (Docker's socket with it).
 #[test]
 fn a_conversation_left_takes_its_answers_with_it() {
     let mut w = World::new("caps-chat-left");
@@ -2626,9 +2609,7 @@ fn a_conversation_left_takes_its_answers_with_it() {
         settle(&mut ed, "open", 0, &landed);
         answer(&mut ed, &g, Scope::ThisChat, false, "for the conversation");
         let front = Reach::of(&ed, &w.named);
-        for step in [Step::RunAgain, Step::Sees] {
-            apply(&mut w, &mut ed, &step, &mut Ledger::default(), &front);
-        }
+        apply(&mut w, &mut ed, &Step::RunAgain, &mut Ledger::default(), &front);
         match again {
             false => crate::chat::reset(&mut ed),
             true => {
@@ -2647,7 +2628,7 @@ fn a_conversation_left_takes_its_answers_with_it() {
         }
         settle(&mut ed, "left", 0, &landed);
         let c = ed.workspace.claude.chat.as_ref().unwrap();
-        assert!(c.run_again.is_empty() && !c.sees, "a run's or the screen's `a` carried over ({again})");
+        assert!(c.run_again.is_empty(), "a run's `a` carried over ({again})");
         assert!(!granted_now(&ed).contains(&g), "a card's `a` carried over ({again})");
         assert!(!ed.workspace.claude.caps().unwrap().grants().contains(&g), "and said ({again})");
     }

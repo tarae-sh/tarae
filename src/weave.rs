@@ -12,8 +12,8 @@
 //! one shown meanwhile; a buffer's version, a save, a snapshot or a HEAD moving asks again.
 //!
 //! It's the person's: Claude hears nothing of it, as of C2's overlaps — a message's context sends none of it, in front
-//! or on screen (`NOT_SENT`); what of it Claude sees the person shows on purpose: a quote (`space >`), the screen
-//! attached (`C-s`), a `y` on Claude's screen card (`seeing.rs`) — the frame as drawn, never blanked.
+//! or on screen (`NOT_SENT`); what of it Claude sees the person shows on purpose: a quote (`space >`) or the screen
+//! attached (`C-s`) — the frame as drawn, never blanked.
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -170,8 +170,7 @@ struct Hunk {
 }
 
 /// What a message's context says of a woven view in front in place of it (`chat::context`): nothing of it goes to
-/// Claude by itself — not its name, text, selection or lines on screen; a quote, `C-s` or a screen card's `y` is the
-/// person's act.
+/// Claude by itself — not its name, text, selection or lines on screen; a quote or `C-s` is the person's act.
 pub const NOT_SENT: &str = "a view of yours — not sent";
 
 /// The document's woven view, if it is one.

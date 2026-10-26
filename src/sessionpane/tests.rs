@@ -343,7 +343,7 @@ fn the_asks_float_over_a_docked_lists_foot_its_selected_row_above_them() {
     }
     assert!(ed.workspace_switch(WorkspaceId::HOME));
     feed(&mut ed, " W<C-w>LG");
-    let what = What::Screen { call: crate::tools::Call::test(1) };
+    let what = What::Asks { call: crate::tools::Call::test(1) };
     ed.push_offer(Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what));
     let s = frame(&mut ed, 160, 30);
     let (_, r) = ed.dock_rect(GroupKind::Sessions).expect("docked, drawn");

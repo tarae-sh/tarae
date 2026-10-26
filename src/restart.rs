@@ -2363,7 +2363,7 @@ mod tests {
         let dir = temp("in-front");
         let bin = fake_tarae(&dir, "tarae 9.9.9");
         let mut ed = editing(&dir, "true", &bin);
-        let what = What::Screen { call: crate::tools::Call::test(1) };
+        let what = What::Asks { call: crate::tools::Call::test(1) };
         ed.push_offer(Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what));
         let claudes = ed.offers[0].id;
         for k in [":", "r", "e", "s", "t", "a", "r", "t", "ret"] {

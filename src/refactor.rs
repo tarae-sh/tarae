@@ -1053,13 +1053,8 @@ fn tail(note: &str) -> String {
 pub fn rename_schema() -> Value {
     json!({
         "name": "rename",
-        "description": "Rename a function, type, method, field, variable or module everywhere it's used — the \
-    language server's rename (the editor's space r): every use, through imports and aliases, no same-named \
-    strangers. One call instead of an edit per place; the change lands as your edits do (the user reviews it). \
-    Give the file and line where the name is written (its declaration or any use) and the name, or a column \
-    on that line, and the new name. The answer lists the files and places changed, or why the server refused. \
-    While the language server is starting or loading it can't rename — try again later; for plain text \
-    across files, replace.",
+        "description": "Rename a symbol everywhere it's used — the language server's rename: every use, through \
+    imports and aliases, no same-named strangers, landing as your edits do. For plain text across files, replace.",
         "inputSchema": {
             "type": "object",
             "properties": {

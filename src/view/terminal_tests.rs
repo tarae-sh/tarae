@@ -186,8 +186,8 @@ fn program(ed: &Editor) -> bool {
     ed.workspace.is_at(crate::workspace::At::Program)
 }
 
-/// `C-s` sends the screen as the `screen` tool sees it: with `llm.screen-terminal` off the terminal's rows are left
-/// out (said in their place) — before P2 they went whatever it said.
+/// `C-s` sends the screen: with `llm.screen-terminal` off the terminal's rows are left out (said in their place) —
+/// before P2 they went whatever it said.
 #[test]
 fn ctrl_s_leaves_the_terminal_out_when_its_rows_dont_go() {
     for on in [true, false] {
@@ -199,6 +199,7 @@ fn ctrl_s_leaves_the_terminal_out_when_its_rows_dont_go() {
         crate::chat::attach_screen(&mut ed).unwrap();
         let text = ed.workspace.claude.chat.as_ref().unwrap().screen.as_ref().unwrap().text.clone();
         assert_eq!(text.contains("a-row-only-the-terminal-has"), on, "{on}: {text}");
+        assert_eq!(text.contains(crate::chat::LEFT_OUT), !on, "{on}: {text}");
     }
 }
 

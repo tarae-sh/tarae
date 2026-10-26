@@ -10,12 +10,8 @@
 //! - `run` runs a command in the task panel, the way `space m m` runs a task (`task.rs`) — answered when it
 //!   ends, with how it ended, the places it pointed at and its output. Checks (build, test, lint, format,
 //!   git's read-only commands) start at once; anything else asks the user first on a card (`y` run · `n` no).
-//! - `screen` shows Claude the user's screen as text, once they say yes (`seeing.rs`).
-//! - `references`, `search`, `symbols`, `definition`, `hover` and `diagnostics` find code the way the user
-//!   does — the language server's answers, the project search, a file's outline — read-only, no card
-//!   (`nav.rs`).
-//! - `procs` says what `:procs` shows: the session's processes (or every session's) — pid, parent, age, CPU,
-//!   footprint, command line, folder — read on a worker, no card (`procs.rs`).
+//! - `references`, `search`, `symbols`, `definition` and `diagnostics` find code the way the user does — the
+//!   language server's answers, the project search, a file's outline — read-only, no card (`nav.rs`).
 //! - `rename` and `replace` are the editor's own refactoring — one call, one change set that lands as
 //!   Claude's edits do, in the review (`refactor.rs`).
 //! - `edit` is Claude's own replacements, new files, moves and deletes in one call, landing the same way
@@ -93,20 +89,10 @@ impl Call {
     }
 }
 
-/// The tools whose calls wait on the editor's own work (servers, searches, a change set) — a run, tests and
-/// the screen wait on what may take long or on the user, and aren't watched.
-const WATCHED: [&str; 10] = [
-    "references",
-    "search",
-    "read",
-    "symbols",
-    "definition",
-    "hover",
-    "diagnostics",
-    "rename",
-    "replace",
-    "edit",
-];
+/// The tools whose calls wait on the editor's own work (servers, searches, a change set) — a run and tests wait
+/// on what may take long or on the user, and aren't watched.
+const WATCHED: [&str; 9] =
+    ["references", "search", "read", "symbols", "definition", "diagnostics", "rename", "replace", "edit"];
 
 /// An MCP message from claude → the `mcp_response` (None = answered later with `answer`). Either revision
 /// (`mcp.rs`): after `initialize`, or each request naming its own.
@@ -158,25 +144,13 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
                     Ok(()) => return None,
                     Err(e) => Err(e),
                 },
-                Some("screen") => {
-                    crate::seeing::call(ed, call());
-                    return None;
-                }
-                Some("procs") => {
-                    crate::procs::tool_call(ed, call(), args);
-                    return None;
-                }
                 Some("git") => match crate::gittool::call(ed, call(), args) {
                     Ok(()) => return None,
                     Err(e) => Err(e),
                 },
-                Some("commit") => match crate::committool::call(ed, call(), args) {
-                    Ok(()) => return None,
-                    Err(e) => Err(e),
-                },
                 Some(
-                    name @ ("references" | "search" | "read" | "symbols" | "definition" | "hover"
-                    | "diagnostics" | "rename" | "replace" | "edit"),
+                    name @ ("references" | "search" | "read" | "symbols" | "definition" | "diagnostics"
+                    | "rename" | "replace" | "edit"),
                 ) => {
                     let call = call();
                     // (a change: its call's row, found now by its input — it may land later than one called after
@@ -199,7 +173,6 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
                         "references" => crate::nav::references(ed, call, args),
                         "symbols" => crate::nav::symbols(ed, call, args),
                         "definition" => crate::nav::definition(ed, call, args),
-                        "hover" => crate::nav::hover(ed, call, args),
                         "diagnostics" => crate::nav::diagnostics(ed, call, args),
                         "read" => crate::readtool::call(ed, call, args),
                         _ => crate::nav::search(ed, call, args),
@@ -233,20 +206,16 @@ pub fn list() -> Value {
         run_tests_schema(),
         run_schema(),
         crate::plan::tool_schema(),
-        crate::seeing::tool_schema(),
         crate::nav::references_schema(),
         crate::nav::search_schema(),
         crate::readtool::schema(),
         crate::nav::symbols_schema(),
         crate::nav::definition_schema(),
-        crate::nav::hover_schema(),
         crate::nav::diagnostics_schema(),
         crate::refactor::rename_schema(),
         crate::refactor::replace_schema(),
-        crate::procs::tool_schema(),
         crate::uistate::claude::tool_schema(),
         crate::gittool::schema(),
-        crate::committool::schema(),
         crate::edittool::schema(),
     ];
     json!({ "tools": tools.into_iter().map(annotated).collect::<Vec<_>>() })
@@ -260,21 +229,17 @@ pub(crate) fn annotated(mut schema: Value) -> Value {
         "run_tests" => ("Run tests", None),
         "run" => ("Run a command", Some("destructiveHint")),
         "plan" => ("Show the plan", None),
-        "screen" => ("See the screen", Some("readOnlyHint")),
         "references" => ("Find references", Some("readOnlyHint")),
         "search" => ("Search the project", Some("readOnlyHint")),
         "read" => ("Read files", Some("readOnlyHint")),
         "symbols" => ("File outline", Some("readOnlyHint")),
         "definition" => ("Go to definition", Some("readOnlyHint")),
-        "hover" => ("Type and docs", Some("readOnlyHint")),
         "diagnostics" => ("Diagnostics", Some("readOnlyHint")),
         "rename" => ("Rename a symbol", Some("destructiveHint")),
         "replace" => ("Replace in files", Some("destructiveHint")),
         "edit" => ("Edit files", Some("destructiveHint")),
-        "procs" => ("The editor's processes", Some("readOnlyHint")),
         "ui" => ("What's on screen, by id", Some("readOnlyHint")),
         "git" => ("Read the repository", Some("readOnlyHint")),
-        "commit" => ("Commit files", Some("destructiveHint")),
         _ => return schema,
     };
     let mut a = json!({ "title": title });
@@ -747,9 +712,10 @@ pub fn turn_over(ed: &mut Editor) -> Vec<Left> {
             // (a read of a page waited on it)
             || matches!(w, What::WebRead(_))
     });
-    crate::seeing::turn_over(ed);
+    // (the tests' stand-in goes with its turn, as the screen card did)
+    #[cfg(test)]
+    ed.drop_cards(|w| matches!(w, crate::offer::What::Asks { .. }));
     crate::web::tool::turn_over(ed);
-    crate::committool::turn_over(ed);
     crate::refactor::turn_over(ed);
     // (its edits and runs may have changed what the session's reviewer read)
     crate::reviewer::since_sync_shown(ed);
@@ -5266,9 +5232,7 @@ mod tests {
         for t in list["result"]["tools"].as_array().unwrap() {
             assert!(t["annotations"]["title"].is_string(), "{t}");
         }
-        for name in
-            ["references", "search", "symbols", "definition", "hover", "diagnostics", "screen", "ui", "git"]
-        {
+        for name in ["references", "search", "symbols", "definition", "diagnostics", "ui", "git"] {
             assert_eq!(annotations(&list, name)["readOnlyHint"], true, "{name}");
         }
         for name in ["run", "rename", "replace"] {

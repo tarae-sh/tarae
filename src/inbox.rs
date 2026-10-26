@@ -425,9 +425,10 @@ impl Editor {
                 // (one row: cut as the one-line forms cut it — the whole is its card, one `enter` away)
                 let asks = crate::uistate::asks_line(&e.asks);
                 let label = if many { format!("{name} · {asks}") } else { asks };
+                // (`asks`: the tests' stand-in — `offer::ASKS`)
                 let claudes = matches!(
                     e.kind,
-                    "run" | "read" | "no-sandbox" | "screen" | "edit" | "change-set" | "silent-run"
+                    "run" | "read" | "no-sandbox" | "asks" | "edit" | "change-set" | "silent-run"
                 );
                 // (a reviewer's end: its own glyph, as its findings have it — news, not a question)
                 let glyph = match e.kind {

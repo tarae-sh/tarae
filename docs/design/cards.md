@@ -114,16 +114,15 @@ One line per card, when it's answered or dropped (built in P0 — `src/cards.rs`
 - `card#<id>`: the card (cardburden 3), so a later card's `same=#12` — a run card the same as one answered
   before, `same=#12:changed` when what it runs changed since — names a line here.
 - The kind: `run`, `read`, `no-sandbox`, `protected-made` (Claude's next run, after one made a protected
-  name Landlock couldn't refuse), `screen`, and the sandbox's own `grant` and `outside` (the user opening
-  what it blocked).
+  name Landlock couldn't refuse), and the sandbox's own `grant` and `outside` (the user opening what it
+  blocked).
 - `why` is the rule that sent it to a card: `not-a-check:<prog>` (the first part no rule lets through),
   `unreadable`, `script`, `script-changed`, `env-name`, `glob`, `reads-outside`, `cd-unknown`,
   `runs-outside`, `socket`, `outside`, `no-sandbox`, `protected-made`, `read` (Claude's Read/Grep/Glob),
-  `screen`, `blocked`.
+  `blocked`.
   Reads add `class`: `other-checkout`, `temp`, `toolchain`, `home`, `elsewhere`, `secret`, `unknown`.
 - `shadow` is what the capability model (§3) would do, from `cards::decide` — the one function P3 will
-  decide by: `none` (runs or reads unasked), `grant:<read|write|port>`, `socket`, `outside`, `no-sandbox`,
-  `screen`.
+  decide by: `none` (runs or reads unasked), `grant:<read|write|port>`, `socket`, `outside`, `no-sandbox`.
 - The answer (`y a A n`, or `dropped` when the turn takes the card away), the time from the card first
   being *drawn* in front to the answer (`not drawn`: answered or dropped unseen), and `up`: from the ask.
   A lost card keeps its own `cards lost` line (#94).
@@ -210,7 +209,6 @@ safety line. It stood in for confined reads.
 | **Socket** | one unix socket (#119) | `y` · `a` | A server's socket is the server. Docker's is the whole machine. |
 | **Outside the sandbox** | `outside_sandbox` with a reason | `y` only | All the user's permissions. |
 | **No sandbox here** | Linux until Landlock, tarae nested in a sandbox | `y` · `a` (as today) | Nothing enforces the capabilities. |
-| **Screen** (S2) | Claude's `screen` tool | `y` · `a` (as today) | It's already a capability with a scope. |
 | Edit review | Claude's `edit` to `PROTECTED` names in review-at-end mode, or to anything without it | (as today) | That's review, not permission. |
 
 Unchanged and not Claude's: trust, hooks, preflight defaults, grammar/install offers.
@@ -492,7 +490,7 @@ back (§8.2). P3 must not start before P2's measurements and the `file-link` res
   the `card` line (`line`, `said`) and the `denied` line (`denied_line`, called where a watched task or
   test run ends — `task.rs`, `testing.rs`).
 - `Offer.asked` (what a card asks, set where Claude's cards and the sandbox's are made: `tools::ask_with`,
-  `ask_unprotected`, `reads::next`, `seeing`, `blocked`) and `Offer.drawn` (first drawn in front,
+  `ask_unprotected`, `reads::next`, `blocked`) and `Offer.drawn` (first drawn in front,
   `term::render_frame`). Lines come from the answer paths (`offer_accept`, `offer_dismiss`,
   `offer_lasting`) and `drop_cards`. Since cardburden 5 every card has its line: one with no `asked` (tarae's
   own — a preflight's, a stuck run's, a review's end, notes gone stale) as `why=own · shadow=own`

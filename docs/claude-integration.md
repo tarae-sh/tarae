@@ -135,14 +135,10 @@ first time a version is sent, and just the area around the cursor for files over
 above your message (`main.rs · L13–18 · 3 diagnostics`). Answers render as Markdown, with code blocks in their
 language's colors.
 
-When what you mean is somewhere else on the screen (a card, a panel, a message, the terminal's output), Claude
-can **ask to see your screen**. A card says what would go: the screen as text, whether the terminal panel is in
-it, and that Claude can only look, with no keys or clicks. `y` sends it once, `a` lets Claude look again in this
-conversation without asking, `n` says no. What goes is the screen as it is just after your answer, without the
-card. `llm.screen-terminal = false` leaves the terminal panel out: its rows go blank, and the card says so.
-To send the screen yourself, use `C-s` (below).
+When what you mean is somewhere else on the screen (a card, a panel, a message, the terminal's output), send the
+screen with your message: `C-s` (below). Claude also knows [what's on screen by id](#whats-on-screen-by-id).
 
-A card that asks something (this one, a command to run, a read outside the project) takes the keys only once it's
+A card that asks something (a command to run, a read outside the project) takes the keys only once it's
 focused. One that came on its own — Claude's, a server's, a sync's — waits in a faint frame wherever your keys are
 (the code, the chat, a review), its way in the first pair of its bottom line — `╰─ C-q answer · y Once · n No ─╯`;
 the status line says `▲1 waiting · C-q` (the chat's hints `C-q answer card`): a key typed for the code or a message
@@ -287,10 +283,8 @@ is said the same way: `Claude's turn ended — space l shows it`. A session behi
 before)`, as a warning when it came by itself. Its row in the session list says `≈ compacted` until it's been in
 front. Claude's own view of the screen leaves out other sessions' news (they're counts there).
 
-![The inbox over the code: three rows, oldest first — main · Claude wants to run outside the sandbox · cargo test -q parser:: (run · 13 s), api · Claude wants to see your screen (screen · 9 s), docs · Change 1 of 1 · README.md (edit · 6 s) — and the status line's main ▲3 waiting](screenshots/inbox.png)
+![The inbox over the code: three sessions' waiting asks, oldest first, each with its session, what it asks, its kind and how long it has waited — and the status line's main ▲3 waiting](screenshots/inbox.png)
 ([hanji theme](screenshots/inbox-hanji.png))
-
-![Claude wants to see your screen: a card says it goes as text, 140×40, that Claude can only look, and that it includes the terminal panel (14 rows), with y Once, a This chat and n No](screenshots/chat-screen.png)
 
 ### What's on screen, by id
 
@@ -424,7 +418,7 @@ each one while the chat keeps the keys.
 | `C-q` | Give a card that asks mid-turn the keys — the chat keeps them till then |
 | `C-r` | Replace the selection with the answer's code — through the same review |
 | `C-y` | Copy the code |
-| `C-s` | Send the screen with your next message: what you see, as text (`:chat-screen` from anywhere) — the terminal panel's rows only while `llm.screen-terminal` is on, as for Claude's own look. The line over the input says `screen 140×40 goes with it`; Backspace in the empty input takes it off. The message's row opens a copy of what went |
+| `C-s` | Send the screen with your next message: what you see, as text (`:chat-screen` from anywhere) — the terminal panel's rows only while `llm.screen-terminal` is on. The line over the input says `screen 140×40 goes with it`; Backspace in the empty input takes it off. The message's row opens a copy of what went |
 | `C-o` | Point at something on screen: labels on the cards, rows, tabs and the path bar — a label's two letters (or a click) put its id in the message ([more](#whats-on-screen-by-id)) |
 | `C-]` (`C-g`) | Go to where Claude looked or pointed, or to an element it cites by id (again = one further back) |
 | `C-f` | Follow mode on/off (resumes if you took over) |
@@ -638,7 +632,7 @@ names whose changes it weaves, how far behind each is, which are unsaved, and `e
 overlaps are: Claude hears nothing of it — a message you send with it in front or beside carries none of it (not its
 name, its text, the lines on screen nor a selection in it; the context says only that you're looking at a view of
 yours). What of it Claude sees, you show it on purpose, each your own act: a quote (`space >` on a selection there),
-the screen attached (`C-s`), or a `y` on Claude's screen card — the frame drawn as it is, the woven lines in it too
+or the screen attached (`C-s`) — the frame drawn as it is, the woven lines in it too
 (you chose to show it; nothing is blanked).
 
 **Kept close to the base.** The longer a session's workspace stays behind its base, the bigger its conflicts. tarae
@@ -1917,34 +1911,6 @@ buffer and Claude writes the draft from what's staged, in the style of the repos
 subject lines, how they explain, the trailers they use). The draft streams in and lands as the usual in-buffer
 review. Take it (`a`), edit it, and `:w` commits. In a message you already opened, `:commit-draft` asks for one.
 When amending, Claude reads the whole commit and proposes a new version of the message.
-
-### Claude commits, on a card
-
-Claude can ask to commit with its `commit` tool. It names the files and writes the message. A card shows the
-message, the branch, each file with its line counts, and the first lines of the diff. `v` opens the whole diff;
-`y` commits; `n` tells Claude no and changes nothing.
-
-- **Only the files named go in**, as they were on disk when the card came up. A change written after that isn't
-  in the commit, it stays a change. New and deleted files can be named. Anything else you staged stays staged,
-  exactly as it was. A named file you staged part of goes in whole, and the card says so; so does one with
-  unsaved changes in a buffer (what's on disk goes in).
-- **A protected name** (`Cargo.toml`, a `Makefile`, `.github`, …: what a build or a tool runs later, outside the
-  sandbox), **a key file or a git hook** (a file of the checkout's own hooks folder: once committed, your git-tab
-  actions run it with no hooks card) is in the warning colour on its row.
-- **Refused, with the reason:** a folder; a path outside the project or the checkout; anything in `.git`; a file
-  inside another repository; an ignored untracked file; a file with no change from HEAD; an empty message.
-  Also refused while a rebase, a merge, a cherry-pick or a revert is under way, or the index has conflicts.
-  If HEAD or its branch moved between the card and `y`, nothing is committed.
-- **It's tarae's own git, plumbing only.** No hook runs (`core.hooksPath=/dev/null`), so neither yours nor any
-  Claude could have planted. Nothing is pushed or amended. The author is your git identity, and no trailer is
-  added. The commit is signed when your `commit.gpgSign` says so. If signing fails, git's error is on the toast
-  and in Claude's answer, and nothing is committed. The reflog says `commit (claude): <subject>`.
-
-The other agents work differently. Claude Code adds a trailer to its commits by default (`attribution.commit`);
-that it commits with its shell (`git commit`), staging files by name and never pushing or amending unasked, is
-from memory, not checked against its docs. Codex's default sandbox keeps `.git` read-only, so a commit asks to leave the
-sandbox. Zed's agent has no git tool, only its terminal. Aider commits each of its own edits, with `--no-verify`
-by default.
 
 ## Code review
 

@@ -567,8 +567,7 @@ pub fn input_pass(ed: &Editor) -> Vec<PathBuf> {
 }
 
 /// The panes on the last frame showing a file named like a key Claude may not read, as parts of the screen's
-/// text to blank (`screen::text_hiding`) — what `C-s` attaches and Claude's `screen` tool gets, with the
-/// context's marker in their place.
+/// text to blank (`screen::text_hiding`) — what `C-s` attaches, with the context's marker in their place.
 pub fn key_panes(ed: &Editor) -> Vec<crate::screen::Hidden> {
     let s = &ed.screen;
     let hidden = |path: PathBuf, (x, y, w, h): (usize, usize, usize, usize)| {

@@ -331,7 +331,7 @@ fn inside_zellij_an_aside_card_from_the_rail_is_the_inboxs() {
     }
     frame(&mut ed);
     assert_eq!(ed.keys_to().region, crate::uistate::Region::Rail, "space e: the rail");
-    let what = crate::offer::What::Screen { call: crate::tools::Call::test(1) };
+    let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
     ed.push_offer(crate::offer::Offer::new(
         "Claude asks".into(),
         "to see the screen",

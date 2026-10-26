@@ -112,11 +112,10 @@ pub struct LspState {
     /// Claude's `references` calls waiting for their server (N5, `nav.rs`), by number · the next number.
     pub(crate) tool_asks: HashMap<u64, crate::nav::Ask>,
     pub(crate) tool_ask_next: u64,
-    /// …and its `symbols` calls (N5b), its `definition` and `hover` calls (N6), by the same numbers · its
-    /// `diagnostics` calls waiting for the servers to settle.
+    /// …and its `symbols` calls (N5b), its `definition` calls (N6), by the same numbers · its `diagnostics`
+    /// calls waiting for the servers to settle.
     pub(crate) tool_symbols: HashMap<u64, crate::nav::SymAsk>,
     pub(crate) tool_defs: HashMap<u64, crate::nav::DefAsk>,
-    pub(crate) tool_hovers: HashMap<u64, crate::nav::HoverAsk>,
     pub(crate) tool_diags: Vec<crate::nav::DiagWait>,
     /// …and its `rename` calls (`refactor.rs`), by the same numbers.
     pub(crate) tool_renames: HashMap<u64, crate::refactor::RenameAsk>,
@@ -378,10 +377,6 @@ pub enum Kind {
     ToolNamed {
         ask: u64,
     },
-    /// Claude's `hover` question `ask` (N6).
-    ToolHover {
-        ask: u64,
-    },
     /// Claude's `rename` call `ask` (`refactor.rs`) — whether the name can be renamed there, then the
     /// rename's edit.
     ToolPrepareRename {
@@ -448,7 +443,6 @@ impl Kind {
                 ("goto", g.provider().unwrap_or("definitionProvider"))
             }
             Kind::ToolNamed { .. } => ("symbols", "workspaceSymbolProvider"),
-            Kind::ToolHover { .. } => ("hover", "hoverProvider"),
             Kind::Declared { .. } | Kind::ToolDeclared { .. } => ("goto", "definitionProvider"),
             Kind::ToolRefs { .. } => ("goto", "referencesProvider"),
             Kind::Highlights => ("highlights", "documentHighlightProvider"),
@@ -993,9 +987,6 @@ impl Editor {
                     &Kind::ToolGoto { ask, .. } | &Kind::ToolNamed { ask } => {
                         self.for_workspace(session, |ed| crate::nav::def_answered(ed, ask, cid, answered))
                     }
-                    &Kind::ToolHover { ask } => {
-                        self.for_workspace(session, |ed| crate::nav::hover_answered(ed, ask, answered))
-                    }
                     &Kind::ToolPrepareRename { ask } => {
                         self.for_workspace(session, |ed| crate::refactor::prepared(ed, ask, answered))
                     }
@@ -1359,7 +1350,6 @@ impl Editor {
             | Kind::ToolSymbols { .. }
             | Kind::ToolGoto { .. }
             | Kind::ToolNamed { .. }
-            | Kind::ToolHover { .. }
             | Kind::ToolPrepareRename { .. }
             | Kind::ToolRename { .. } => {}
             Kind::Rename => match self.apply_workspace_edit(cid, result) {
@@ -3060,9 +3050,8 @@ impl Editor {
         Ok((cid, name))
     }
 
-    /// Claude's `definition` or `hover` question at `byte` of document `id` (N6): `kind`'s request asked of
-    /// its server — that server and its name. Err as `tool_server`'s; the answer goes to
-    /// `nav::def_answered`/`hover_answered`.
+    /// Claude's `definition` question at `byte` of document `id` (N6): `kind`'s request asked of its server —
+    /// that server and its name. Err as `tool_server`'s; the answer goes to `nav::def_answered`.
     pub(crate) fn ask_at(
         &mut self,
         id: DocId,
@@ -5736,60 +5725,6 @@ mod tests {
                 "{t}"
             );
         }
-        std::fs::remove_dir_all(file.parent().unwrap()).ok();
-    }
-
-    /// N6: `hover` asks at the name (or a column) and answers with the server's text — blank runs one, a
-    /// long one cut and said; none said; a loading server's nothing is the tree's stand-in.
-    #[test]
-    fn the_hover_tool_gives_the_servers_text_trimmed() {
-        let (mut ed, file, _other, log) = def_fixture("tool-hover");
-        let hover = crate::nav::hover;
-        let t = tool(&mut ed, 1, hover, json!({"path": "main.rs", "line": 2, "symbol": "a"})).unwrap();
-        assert!(t.contains("fake is starting"), "{t}");
-        let cid = up(&mut ed, json!({ "hoverProvider": true }));
-        let ask = |ed: &mut Editor, id: u64, args: Value, result: Value| {
-            crate::nav::hover(ed, crate::tools::Call::test(id), &args).unwrap();
-            settle_until(ed, |ed| ed.lsp.pending.values().any(|p| matches!(p.kind, Kind::ToolHover { .. })));
-            let n = pending_of(ed, Kind::ToolHover { ask: 0 });
-            ed.on_lsp_message(cid, json!({ "id": n, "result": result }));
-            settle_until(ed, |_| tool_answer(id).is_some());
-            tool_answer(id).unwrap()
-        };
-        let md = |v: &str| json!({ "contents": { "kind": "markdown", "value": v } });
-        // (line 2, column 10 = its first `a`)
-        let t = ask(
-            &mut ed,
-            2,
-            json!({"path": "main.rs", "line": 2, "column": 10}),
-            md("```rust\nfn a()\n```  \n\n\n\ndocs"),
-        );
-        let asked = sent_until(&log, &["textDocument/hover"]);
-        let asked = asked.lines().find(|l| l.contains("textDocument/hover")).expect("asked");
-        assert!(asked.contains(r#""position":{"character":9,"line":1}"#), "{asked}");
-        assert_eq!(t.unwrap(), "`a` at main.rs:2 (fake):\n```rust\nfn a()\n```\n\ndocs");
-        let t = ask(&mut ed, 3, json!({"path": "main.rs", "symbol": "b"}), Value::Null).unwrap();
-        assert_eq!(t, "fake has no hover information for `b` at main.rs:1");
-        let long: String = (0..200).map(|i| format!("line {i}\n")).collect();
-        let t = ask(&mut ed, 4, json!({"path": "main.rs", "symbol": "b"}), md(&long)).unwrap();
-        assert!(t.ends_with("line 79\n… cut (200 lines) — the definition has the rest"), "{t}");
-        // Content modified: still loading — the tree stands in
-        crate::nav::hover(&mut ed, crate::tools::Call::test(5), &json!({"path": "main.rs", "symbol": "a"}))
-            .unwrap();
-        settle_until(&mut ed, |ed| ed.lsp.pending.values().any(|p| matches!(p.kind, Kind::ToolHover { .. })));
-        let n = pending_of(&ed, Kind::ToolHover { ask: 0 });
-        ed.on_lsp_message(
-            cid,
-            json!({ "id": n, "error": { "code": -32801, "message": "content modified" } }),
-        );
-        settle_until(&mut ed, |_| tool_answer(5).is_some());
-        let t = tool_answer(5).unwrap().unwrap();
-        assert!(t.contains("fake is still loading the project"), "{t}");
-        // Neither a name nor a column: said
-        let e = tool(&mut ed, 6, hover, json!({"path": "main.rs", "line": 1})).unwrap_err();
-        assert!(e.contains("or a line and a column"), "{e}");
-        let e = tool(&mut ed, 7, hover, json!({"path": "main.rs", "line": 1, "column": 40})).unwrap_err();
-        assert!(e.contains("line 1 of main.rs has 14 characters — no column 40"), "{e}");
         std::fs::remove_dir_all(file.parent().unwrap()).ok();
     }
 

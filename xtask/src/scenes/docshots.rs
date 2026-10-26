@@ -505,7 +505,6 @@ const DOCS: &[DocShot] = &[
     row("chat-conversations.png", Some("conversations"), S),
     row("inbox.png", None, (120, 34)),
     row("inbox-hanji.png", None, (120, 34)).light(),
-    row("chat-screen.png", None, (140, 40)),
     row("chat-point-hanji.png", Some("point"), (140, 34)).light(),
     row("chat-ids.png", None, (140, 34)),
     row("chat-explore.png", None, S),

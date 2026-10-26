@@ -281,7 +281,8 @@ Done so far, under way, and the order after it (2026-10-17, brought up to 2026-1
     answer rows, manifest tools (`cargo add`) said before they run, the docs.
   - **H** — done: Claude's `commit {message, paths}` tool (`committool.rs`). The card shows the message and the diff of
     exactly those paths; `y` commits them through tarae's own git, plumbing and no hooks, what else is staged left
-    as it was; `n` does nothing; it never pushes or amends.
+    as it was; `n` does nothing; it never pushes or amends. Gone with audit 2.G (2026-10-26): 3 calls in 12 days,
+    all answered `n` — commits are yours (the git tab, the commit buffer).
   - **E** — done: one list — the trust answers (tarae's, Claude's, git's, a hook's), the plugins' approvals, the
     packs' preflight told and the no-sandbox `s` join `:granted`, each taken back with `d`, what it let run held
     back at once; what's kept for the repository's other checkouts is counted, not used.

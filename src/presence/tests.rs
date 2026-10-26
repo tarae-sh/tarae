@@ -371,7 +371,7 @@ fn every_session_is_named_one_way_in_the_chrome() {
     let colours: Vec<vt100::Color> = all.iter().map(|(id, _)| colour_of(&ed, *id)).collect();
     assert!(colours[0] != colours[1] && colours[1] != colours[2] && colours[0] != colours[2], "each its own");
     // (docs waits on a card of its Claude's, behind)
-    let what = crate::offer::What::Screen { call: crate::tools::Call::test(1) };
+    let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
     let card = crate::offer::Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what);
     ed.workspace_by_id(third).unwrap().parked.push(card);
     let warning = match ed.theme.try_get("warning").and_then(|s| s.fg) {

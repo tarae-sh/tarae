@@ -214,7 +214,7 @@ fn the_state_says_a_refused_y_whose_card_it_is_and_where_an_answer_leaves_a_sess
         "?",
         "",
         String::new(),
-        What::Screen { call },
+        What::Asks { call },
     ));
     assert_eq!(answer(&ed), "blocked: Claude asks to see the screen");
     std::fs::remove_dir_all(&back).ok();
