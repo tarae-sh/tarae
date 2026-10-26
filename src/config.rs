@@ -58,6 +58,10 @@ pub struct EditorConfig {
     pub zellij_hints: String,
     /// How much moves on screen (`motion.rs`): "full" | "calm" (nothing on a clock) | "none" (no bleeding ink either).
     pub motion: String,
+    /// Claude's writing heard as it appears (`sound.rs`) — yours only, as the one below.
+    pub sound: bool,
+    /// 0 ‥ 100, under the system's own volume.
+    pub sound_volume: u8,
     /// The letters zellij takes with `C-` (`zellij::DEFAULT_KEYS` — yours only, `trust::YOURS_ONLY`).
     pub zellij_keys: Vec<char>,
     /// `:w` asks the language server to format first (lsp_editor.rs `format_then_save`).
@@ -144,6 +148,8 @@ impl Default for EditorConfig {
             soft_wrap: "always".into(),
             zellij_hints: "auto".into(),
             motion: "full".into(),
+            sound: false,
+            sound_volume: 30,
             zellij_keys: crate::zellij::DEFAULT_KEYS.to_vec(),
             format_on_save: true,
             git_blame: true,

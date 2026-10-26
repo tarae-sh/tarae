@@ -454,6 +454,24 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
             crate::keepwarm::mark(editor, want);
             Ok(())
         }
+        "sound" => {
+            // (on · off · nothing: flip — until you quit, as `:set`)
+            let arg = rest.trim();
+            let want = ["off", "on"].iter().position(|w| *w == arg).map(|i| i == 1);
+            if want.is_none() && !arg.is_empty() {
+                return Err(format!("sound: on or off, not {arg}"));
+            }
+            let want = want.unwrap_or(!editor.config.sound);
+            let v = toml::Value::Boolean(want);
+            settings::apply(&mut editor.config, "editor.sound", &v)?;
+            editor.overrides.retain(|(p, _)| p != "editor.sound");
+            editor.overrides.push(("editor.sound".into(), v));
+            match crate::sound::toggled(want) {
+                (said, true) => editor.set_status(said),
+                (said, false) => editor.set_warning(said),
+            }
+            Ok(())
+        }
         "note-close" => crate::notes::close_here(editor),
         "chat-resume" => {
             match rest.split_whitespace().next() {

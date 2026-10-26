@@ -280,6 +280,20 @@ pub static SETTINGS: &[Setting] = &[
         set: |c, v| c.motion = v.as_str().unwrap_or("full").to_string(),
     },
     Setting {
+        path: "editor.sound",
+        kind: Kind::Bool,
+        doc: "Hear Claude's writing as it appears, on a Happy Hacking's Topre typed as a person types: a key as characters come, the space bar between words, return as a line ends, a soft thunk as an edit lands unseen (backspace when it only took text out) — never your keys. macOS for now. :sound toggles it. Your own config only",
+        get: |c| Value::from(c.sound),
+        set: |c, v| c.sound = b(v),
+    },
+    Setting {
+        path: "editor.sound-volume",
+        kind: Kind::Int { min: 0, max: 100 },
+        doc: "How loud editor.sound is, under the system's own volume and mute. Your own config only",
+        get: |c| Value::from(c.sound_volume as i64),
+        set: |c, v| c.sound_volume = n(v).min(100) as u8,
+    },
+    Setting {
         path: "editor.zellij-hints",
         kind: Kind::Enum(&["auto", "on", "off"]),
         doc: "Hints say a key zellij takes by the keys that do the same: inside zellij (auto), always, or never — off for its unlock-first preset or keys of your own",

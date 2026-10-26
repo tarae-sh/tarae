@@ -722,6 +722,18 @@ starts once it lands, so the cursor doesn't move then. Claude's caret rides the 
 piece. Once the call is made, the review opens on the same rows.
 A new file, a move or a delete waits for its card.
 
+You can hear it too ([`editor.sound`](reference/settings.md), off by default; `:sound` flips it until you quit,
+macOS for now). As the lines appear, a Happy Hacking's Topre types them as a person would, never at the stream's 300
+characters a second: bursts of keys inside a word, a longer, uneven pause after a word or a line, now and then a
+hesitation — each sound for something just drawn: a key, the space bar where a gap between words shows, return
+where a line ends. The keys are synthesized from how a Topre sounds: no click, a rubber dome folding, a low thump
+under a rounded thock, and the louder thock of the key coming back up. An edit that lands unseen (review at the
+end) settles with a soft thunk, or a backspace when it only took text out. Only what's drawn in a pane in front
+makes a sound: not your keys, not your `y` in a review (its stamp says that), not reading, runs or thinking, not
+the chat's text. `editor.sound-volume` says how loud, under the system's own volume. `editor.motion` and
+Reduce Motion leave it alone; while it's on, the writing keeps its pace with the terminal unfocused (a stream, OBS
+in front). The output runs only while there's sound — stopped 1.5 s after the last, nothing is woken.
+
 Claude edits with tarae's own `edit` tool: exact replacements (Claude Code's Edit fields), several files and
 replacements in one call, new files, moves and deletes — one change you review, or nothing changes and Claude is
 told which part failed and the lines closest to what it meant. An edit that matched only with trailing whitespace

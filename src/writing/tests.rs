@@ -1751,6 +1751,52 @@ fn an_unfocused_tarae_asks_no_reveal_frames_and_catches_up() {
     drop(sim);
 }
 
+/// Unfocused, the reveal keeps its pace while its keys are heard (a stream, OBS in front) — only where a sound can
+/// play: with sound on but no output (off macOS, failed to open) it rests as any unfocused tarae.
+#[test]
+fn an_unfocused_reveal_keeps_its_pace_only_while_a_sound_plays() {
+    for device in [true, false] {
+        let (mut ed, _dir, g) = scene("writing-paced-heard");
+        ed.workspace.claude.chat.as_mut().unwrap().writing.paced = true;
+        ed.config.sound = true;
+        let (tx, _rx) = std::sync::mpsc::channel();
+        if device {
+            ed.sound.sink = crate::sound::Sink::Device(tx);
+        }
+        frame(&mut ed, 100, 30);
+        let input = edit_input("    let b = 2000000000;\n");
+        let head = input.find("2000").unwrap();
+        let tail = head + input[head..].find(';').unwrap();
+        let mut w = Writer::new("t1");
+        w.send(&mut ed, g, &input[..head], &[], false);
+        settle(&mut ed, |ed| shown(ed.doc()).is_some());
+        let mut sim = crate::sim::Sim::new(
+            "writing_paced_heard",
+            crate::sim::Choices::seeded(1),
+            Duration::from_secs(30),
+        );
+        sim.wait(Duration::from_secs(2));
+        tick(&mut ed);
+        ed.handle_event(crate::event::Event::Focus(false));
+        w.send(&mut ed, g, &input[head..tail], &[], false);
+        tick(&mut ed);
+        assert!(reveal_wake(&ed).is_some(), "text left to show");
+        match device {
+            true => assert!(
+                ed.tick_wanted().is_some_and(|d| d <= REVEAL_EVERY),
+                "heard: paced unfocused, {:?}",
+                ed.tick_wanted()
+            ),
+            false => assert!(
+                ed.tick_wanted().is_none_or(|d| d > REVEAL_EVERY),
+                "sound on, no output: resting, {:?}",
+                ed.tick_wanted()
+            ),
+        }
+        drop(sim);
+    }
+}
+
 /// `editor.motion = "none"`: what's written is shown as it comes, no frames of its own.
 #[test]
 fn without_motion_the_writing_is_shown_as_it_comes() {

@@ -62,8 +62,8 @@ pub const RISKY: [&str; 23] = [
 /// `review.record`), whether pings spend your usage to keep a conversation warm (`llm.keep-warm*`), what the board's
 /// Claudes are asked (`review.angles`) and how many of them run on your credential and memory (`review.skeptics-max`,
 /// `review.board-at-once`), whether your workspaces' trees are rewritten unasked (`workspace.sync`), how much moves
-/// on your screen (`editor.motion`) — a project never does.
-pub const YOURS_ONLY: [&str; 15] = [
+/// on your screen (`editor.motion`), whether and how your machine sounds (`editor.sound*`) — a project never does.
+pub const YOURS_ONLY: [&str; 17] = [
     "llm.card-record",
     "review.record",
     "llm.keep-warm",
@@ -84,15 +84,19 @@ pub const YOURS_ONLY: [&str; 15] = [
     "workspace.sync",
     // (how much moves on your screen is an accessibility choice: a project's `full` over your `calm`)
     "editor.motion",
+    // (whether your machine makes a sound, and how loud: a project's would click on someone's call)
+    "editor.sound",
+    "editor.sound-volume",
 ];
 
 pub fn yours_only(setting: &str) -> bool {
     YOURS_ONLY.contains(&setting)
 }
 
-/// `:` commands only your own keys run (or you, typed): they switch who pays for Claude, or read a file you name
-/// (`workspace-apply`'s patch). A project's key binding to one is left out (`config.rs`).
-pub const YOURS_ONLY_COMMANDS: [&str; 2] = ["session-billing", "workspace-apply"];
+/// `:` commands only your own keys run (or you, typed): they switch who pays for Claude, read a file you name
+/// (`workspace-apply`'s patch), or make your machine sound (`sound`). A project's key binding to one is left out
+/// (`config.rs`).
+pub const YOURS_ONLY_COMMANDS: [&str; 3] = ["session-billing", "workspace-apply", "sound"];
 
 /// Whether the `:` line `line` (no `:`) runs one of `YOURS_ONLY_COMMANDS`.
 pub fn yours_only_command(line: &str) -> bool {

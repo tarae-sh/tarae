@@ -52,6 +52,7 @@ mod reviews;
 mod rundoc;
 mod sessions;
 mod shimmer;
+mod sound;
 mod stuckstop;
 mod termview;
 mod toasts;

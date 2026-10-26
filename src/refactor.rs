@@ -329,6 +329,8 @@ fn write(ed: &mut Editor, mut l: Landing, unseen: Vec<FileChange>) {
                 let outcome = match r {
                     Ok(stamp) => {
                         landed(ed, &f, stamp, l.whose, l.row.as_deref());
+                        // (landed with no key of yours: heard — `sound.rs`)
+                        crate::sound::landed(ed, &f);
                         Outcome::Written
                     }
                     Err(o) => o,

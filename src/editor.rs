@@ -747,6 +747,8 @@ pub struct Editor {
     pub wet_waiting: Vec<crate::motion::Waiting>,
     /// Whether motions are drawn — off in tests, as the animation is (a test that looks at one turns it on).
     pub motion_drawn: bool,
+    /// What Claude's writing sounds like and where it goes (`sound.rs`, `editor.sound`).
+    pub sound: crate::sound::State,
     /// `TARAE_MOTION_AT`: every motion drawn at this age, none ending (shots — read once at start).
     pub motion_at: Option<std::time::Duration>,
     /// macOS's Reduce Motion is on (read once at start — `motion::reduce_motion`): `editor.motion = "full"`
@@ -1130,6 +1132,7 @@ impl Editor {
             press_on_diff: None,
             wet_waiting: Vec::new(),
             motion_drawn: !cfg!(test),
+            sound: crate::sound::State::default(),
             motion_at: if cfg!(test) { None } else { crate::motion::pinned_age() },
             reduce_motion: false,
             diag_card_hidden: None,
@@ -2513,6 +2516,7 @@ impl Editor {
         self.disk_sync();
         self.recovery_sync();
         self.saves_due(false);
+        crate::sound::sync(self);
         crate::writing::reveal(self);
         crate::follow::watch(self);
         crate::presence::sync(self);
@@ -3459,8 +3463,10 @@ impl Editor {
         let settle = crate::view::terminal_settling(self).then_some(crate::view::SETTLE);
         // A session's name tag on its clock: as its stay ends, then while it fades (`presence::tag_wake`)
         let tag = crate::presence::tag_wake(self);
-        // Claude's writing shown at its pace: a frame each `REVEAL_EVERY` while there's text left to show
-        let reveal = crate::writing::reveal_wake(self).filter(|_| !self.unfocused);
+        // Claude's writing shown at its pace: a frame each `REVEAL_EVERY` while there's text left to show — unfocused
+        // too while it's heard (a stream, OBS in front: the keys keep their pace), only where a sound can play
+        let reveal =
+            crate::writing::reveal_wake(self).filter(|_| !self.unfocused || crate::sound::playing(self));
         // A motion on its own clock (`motion.rs`): a frame each step while it dries, one as it goes
         let motion = self.motion_wake();
         [next, flash, self.silent_wake(), settle, tag, reveal, motion].into_iter().flatten().min()
@@ -17333,6 +17339,19 @@ mod tests {
         assert_eq!(ed.status, Some(("hi".to_string(), Severity::Info)));
         let mut ed = run("", ":sh false<ret>");
         settle(&mut ed);
+        assert_eq!(ed.status.as_ref().map(|s| s.1), Some(Severity::Error));
+    }
+
+    #[test]
+    fn sound_is_flipped_by_its_command_and_says_which() {
+        let ed = run("", ":sound<ret>");
+        assert!(ed.config.sound);
+        assert!(ed.status.as_ref().is_some_and(|s| s.0.starts_with("sound on")), "{:?}", ed.status);
+        let ed = run("", ":sound<ret>:sound off<ret>");
+        assert!(!ed.config.sound);
+        assert_eq!(ed.status.as_ref().map(|s| s.0.as_str()), Some("sound off"));
+        let ed = run("", ":sound loud<ret>");
+        assert!(!ed.config.sound);
         assert_eq!(ed.status.as_ref().map(|s| s.1), Some(Severity::Error));
     }
 

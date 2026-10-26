@@ -492,6 +492,8 @@ pub fn on_delta(ed: &mut Editor, d: Delta) {
         }
     };
     let (paced, now) = (live.paced, crate::clock::now());
+    // (an item's new text began: the sound's device starts before its first key — `sound::wake`)
+    let mut begun = false;
     let call = &mut live.calls[k];
     call.done |= d.done;
     for p in d.pieces {
@@ -523,6 +525,7 @@ pub fn on_delta(ed: &mut Editor, d: Delta) {
                 if matches!(field, Field::New) {
                     if !add.is_empty() {
                         it.pace.came(now, before);
+                        begun |= before == 0;
                     }
                     if closed {
                         it.pace.closed(now);
@@ -548,6 +551,9 @@ pub fn on_delta(ed: &mut Editor, d: Delta) {
         .collect();
     for (i, file, old) in ask {
         look(ed, d.call.clone(), i, file, old);
+    }
+    if begun {
+        crate::sound::wake(ed);
     }
     sync(ed);
 }
@@ -768,8 +774,9 @@ pub fn reveal(ed: &mut Editor) {
     let still = ed.motion() == crate::motion::Motion::None;
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     let now = crate::clock::now();
-    let mut moved = changed;
+    let (mut moved, mut was) = (changed, Vec::new());
     for it in c.writing.calls.iter_mut().flat_map(|c| &mut c.items) {
+        was.push(it.pace.shown);
         moved |= match still {
             true => std::mem::replace(&mut it.pace.shown, it.new.s.len()) != it.new.s.len(),
             false => it.pace.step(&it.new.s, now),
@@ -779,9 +786,23 @@ pub fn reveal(ed: &mut Editor) {
         sync(ed);
         ed.unchanged = false;
     }
+    // What's newly shown and still drawn (its buffer not changed under it) in a buffer in front is heard —
+    // `sound.rs`; nothing while it's off
+    let sight = crate::sound::sight(ed);
+    let Some(c) = ed.workspace.claude.chat.as_ref().filter(|_| !sight.is_empty()) else { return };
+    let mut heard = String::new();
+    for (it, was) in c.writing.calls.iter().flat_map(|c| &c.items).zip(was) {
+        if let Place::Found(Found { bound: Some((id, _)), .. }) = &it.place
+            && sight.contains(id)
+        {
+            heard.push_str(it.new.s.get(was..it.pace.shown).unwrap_or_default());
+        }
+    }
+    crate::sound::wrote(ed, &heard);
 }
 
-/// When the reveal moves next while an item drawn has text left to show — None: nothing left, no frame.
+/// When the reveal moves next while an item drawn has text left to show — None: nothing left, no frame. (Unfocused
+/// the loop doesn't ask it, but while the writing is heard — `Editor::tick_wanted`.)
 pub fn reveal_wake(ed: &Editor) -> Option<Duration> {
     let c = ed
         .workspace

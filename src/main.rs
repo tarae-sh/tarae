@@ -182,6 +182,7 @@ mod sizes;
 mod snapread;
 mod snapshot;
 mod sorting;
+mod sound;
 mod spawn;
 mod split;
 mod stamp;
