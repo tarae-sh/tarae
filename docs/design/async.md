@@ -107,7 +107,7 @@ Column meanings:
 | perf's own guard | `xtask/src/perf.rs:259-270`: waits up to 90 s for load < 5, then "not measured" | — | — | — | its note in the preflight summary |
 | Chat stream | claude process. `pump` thread + stderr thread (`llm.rs:290-330`); text batched every 25 ms | the network, Anthropic's side | `interrupt` control request, SIGKILL for once-asks | strict | chat |
 | Chat stdin | **main**, `writeln!` + `flush` into the pipe (`chat.rs:670,984,1074,1082,1112`) | the pipe (64 KB, measured below) | — | strict | — |
-| Claude spawn / prewarm | main, posix_spawn (`llm.rs:211-221`, `Warm::ensure`). The old spare is reaped on a thread. | CPU (cold start 8–10 s, all in the child) | kill | — | chat state |
+| Claude spawn | main, posix_spawn (`llm::spawn`). A one-turn claude (`space i`, a commit draft) is started as it's asked, no spare kept (audit 2.B, 2026-10-26). | CPU (cold start 8–10 s, all in the child) | kill | — | chat state |
 | Plugins | **one host thread**, FIFO across plugins (`plugin/host.rs:282-307`). Fuel-budgeted. Outbox coalesces what comes while busy (`plugin/io.rs:20-22,69-83`). **4 MB backlog** back-pressure (`io.rs:51,101-109`). ≤ 16 programs/sockets each (`io.rs:53-55`). | CPU, the plugin's network/programs | fuel, `stop`, reload | per plugin FIFO | plugin panels |
 | Search (`grep.rs`) | ripgrep crates in-process, ≤ 4 threads (`grep.rs:19,136`), on a job | disk, CPU | `AtomicU64` generation asked per file and per match (`editor.rs:2085-2131`), 50 ms debounce (`LIVE_PAUSE`) | latest wins | live picker, partial results at 100/400 ms |
 | Terminal panel | openpty + setsid. Spawned in a job (`Workspace.terminal_starting`). Reader thread with **one batch in flight** (`terminal.rs:255-292`), writer thread (`terminal.rs:294-302`). | the user's own programs (their cargo too, invisibly) | close → SIGTERM | strict | the panel |
@@ -143,7 +143,7 @@ threads):
    these waits for it.
 3. **Chat stdin writes are synchronous** (`chat.rs:984` and others). One user message can carry
    the whole file (≤ 60 KB, `chat.rs:116`), other unsaved buffers (≤ 120 KB, `chat.rs:120`) and a
-   screen. That's well past the measured 64 KB pipe. A prewarmed claude that's still
+   screen. That's well past the measured 64 KB pipe. A claude that's still
    cold-starting (8–10 s) isn't reading yet, so the main loop would sit in `write` until it does.
    I haven't measured this with the real CLI. It's the first thing to check in phase H.
 

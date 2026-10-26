@@ -805,8 +805,6 @@ pub enum Kind {
     Ask,
     /// A session's reviewer, reading (`reviewer.rs`).
     Reviewer,
-    /// The claude kept started for the next `space i`.
-    Spare,
     /// A plugin's program: (plugin, its id for it).
     Plugin(String, u64),
     /// Not one tarae knows (or under one it does).
@@ -823,7 +821,7 @@ impl Kind {
         match self {
             Kind::Tarae => 0,
             Kind::Lsp(_) | Kind::Held(..) => 1,
-            Kind::Chat | Kind::Ask | Kind::Reviewer | Kind::Spare => 2,
+            Kind::Chat | Kind::Ask | Kind::Reviewer => 2,
             Kind::Debug | Kind::Helper => 3,
             Kind::Task | Kind::Queued(_) => 4,
             Kind::Test => 5,
@@ -1963,7 +1961,6 @@ impl Editor {
                 }
             };
         add(self.llm_pid, Kind::Ask, "claude", "space i".into(), None);
-        add(self.llm_warm.pid(), Kind::Spare, "claude", "ready for space i".into(), None);
         for (plugin, id, pid, program) in self.plugin_pids() {
             add(Some(pid), Kind::Plugin(plugin.clone(), id), &program, format!("plugin {plugin}"), None);
         }
@@ -2272,10 +2269,6 @@ impl Editor {
                 let pid = r.pid;
                 self.procs_in(&r, |ed| crate::reviewer::stopped_by_procs(ed, pid));
                 gone(self, "the reviewer", None);
-            }
-            Kind::Spare => {
-                self.llm_warm = Default::default();
-                gone(self, "the spare claude", None);
             }
             Kind::Other => {
                 // (still the process the list showed: the same start, under tarae)
@@ -3504,7 +3497,7 @@ pub(crate) mod tests {
         drop(child);
     }
 
-    /// Two sessions: what's shared stays on top (tarae, the spare claude, one tarae doesn't know); then each
+    /// Two sessions: what's shared stays on top (tarae, `space i`'s claude, one tarae doesn't know); then each
     /// session under its heading, the heading summing CPU and memory of everything under it (what a server
     /// started too) — its server first, a held server by its root, then its chat and terminal.
     #[test]
@@ -3538,7 +3531,7 @@ pub(crate) mod tests {
             at: None,
         };
         let known = [
-            k(2, Kind::Spare, "claude", None),
+            k(2, Kind::Ask, "claude", None),
             k(3, Kind::Lsp(7), "rust-analyzer", Some(WorkspaceId::HOME)),
             k(5, Kind::Chat, "claude", Some(WorkspaceId::here(1))),
             k(6, Kind::Terminal, "terminal", Some(WorkspaceId::here(1))),
@@ -3899,7 +3892,7 @@ pub(crate) mod tests {
     /// Which zombie children the reaper takes for adopted (`reaper::Reaper::adopted`): one in a session
     /// neither tarae's nor its own, or seen under another parent at a look before (and still, at the looks
     /// after); never one of tarae's session or leading its own that wasn't — a child tarae started and holds
-    /// (an LSP server that crashed, the spare Claude) — nor anything while tarae's own session is unknown.
+    /// (an LSP server that crashed, the chat's Claude) — nor anything while tarae's own session is unknown.
     #[test]
     fn the_reaper_takes_only_what_tarae_adopted() {
         let p = |pid: u32, ppid: u32, sid: u32, zombie: bool| {

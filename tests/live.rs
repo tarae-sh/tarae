@@ -2172,6 +2172,669 @@ fn chat_edit_ab() {
     assert!(!rows.is_empty(), "no run");
 }
 
+// ── `space i` against the chat (audit 2.B, Q1) ────────────────────────────────────────────────────────────
+
+/// One selection edit of `ask_vs_chat_ab`: a file of its own, `src/<name>.rs` (a function and its tests, built and
+/// run alone by `rustc --test`), what's selected (line `line`, then `x` × `lines`; `regex`: then `s` it — a
+/// selection each match), the instruction, what the file has and lacks once it's right, and a right answer for
+/// the selected lines (`solved` — the check is checked on it before anything is spent).
+struct SelectionEdit {
+    name: &'static str,
+    text: &'static str,
+    line: usize,
+    lines: usize,
+    regex: Option<&'static str>,
+    ask: &'static str,
+    has: &'static [&'static str],
+    lacks: &'static [&'static str],
+    solved: &'static str,
+}
+
+impl SelectionEdit {
+    /// The file's text before and after the selected lines — what a right change leaves as it was.
+    fn around(&self) -> (String, String) {
+        let lines: Vec<&str> = self.text.split_inclusive('\n').collect();
+        let (from, to) = (self.line - 1, self.line - 1 + self.lines);
+        (lines[..from].concat(), lines[to..].concat())
+    }
+}
+
+const SELECTION_EDITS: [SelectionEdit; 5] = [
+    SelectionEdit {
+        name: "total",
+        text: "pub fn total(prices: &[u32]) -> u32 {\n    let mut sum = 0;\n    for p in prices {\n        sum += p;\n    }\n    \
+               sum\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn sums() {\n        assert_eq!(super::total(&[1, 2, 3]), 6);\n        \
+               assert_eq!(super::total(&[]), 0);\n    }\n}\n",
+        line: 2,
+        lines: 5,
+        regex: None,
+        ask: "Rewrite this as one iterator chain.",
+        has: &[".sum"],
+        lacks: &["for p", "let mut"],
+        solved: "    prices.iter().sum()\n",
+    },
+    SelectionEdit {
+        name: "label",
+        text: "pub fn label(code: u16) -> &'static str {\n    if code == 200 {\n        \"ok\"\n    } else if code == 404 {\n        \
+               \"not found\"\n    } else if code == 500 {\n        \"server error\"\n    } else {\n        \"other\"\n    }\n}\n\n\
+               #[cfg(test)]\nmod tests {\n    #[test]\n    fn labels() {\n        assert_eq!(super::label(200), \"ok\");\n        \
+               assert_eq!(super::label(404), \"not found\");\n        assert_eq!(super::label(500), \"server error\");\n        \
+               assert_eq!(super::label(302), \"other\");\n    }\n}\n",
+        line: 2,
+        lines: 9,
+        regex: None,
+        ask: "Turn this if-else chain into a match.",
+        has: &["match code"],
+        lacks: &["else if"],
+        solved: "    match code {\n        200 => \"ok\",\n        404 => \"not found\",\n        500 => \"server error\",\n        \
+                 _ => \"other\",\n    }\n",
+    },
+    SelectionEdit {
+        name: "mean",
+        text: "pub fn mean(xs: &[f64]) -> f64 {\n    let n = xs.len() as f64;\n    let s: f64 = xs.iter().sum();\n    s / n\n}\n\n\
+               #[cfg(test)]\nmod tests {\n    #[test]\n    fn means() {\n        assert_eq!(super::mean(&[1.0, 2.0, 3.0]), 2.0);\n    \
+               }\n}\n",
+        line: 2,
+        lines: 3,
+        regex: None,
+        ask: "Rename n to count and s to total.",
+        has: &["let count", "let total", "total / count"],
+        lacks: &["let n ", "let s:"],
+        solved: "    let count = xs.len() as f64;\n    let total: f64 = xs.iter().sum();\n    total / count\n",
+    },
+    SelectionEdit {
+        name: "clamp",
+        text: "pub fn clamp_pct(x: i32) -> i32 {\n    x.clamp(0, 100)\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    \
+               fn clamps() {\n        assert_eq!(super::clamp_pct(-5), 0);\n        assert_eq!(super::clamp_pct(140), 100);\n    \
+               }\n}\n",
+        line: 1,
+        lines: 1,
+        regex: None,
+        ask: "Add a one-line doc comment above this function saying what it returns.",
+        has: &["///"],
+        lacks: &["//!"],
+        solved: "/// The percentage, held within 0 to 100.\npub fn clamp_pct(x: i32) -> i32 {\n",
+    },
+    // (three selections, one answer: the ask's `<r i="N">` each, the chat's three quotes)
+    SelectionEdit {
+        name: "names",
+        text: "pub const NAMES: [&str; 3] = [\n    \"alpha\",\n    \"beta\",\n    \"gamma\",\n];\n\n#[cfg(test)]\nmod tests {\n    \
+               #[test]\n    fn shouts() {\n        assert!(super::NAMES.iter().all(|n| n.chars().all(|c| c.is_ascii_uppercase())));\n    \
+               }\n}\n",
+        line: 2,
+        lines: 3,
+        regex: Some("[a-z]+"),
+        ask: "Uppercase each of these words.",
+        has: &["\"ALPHA\"", "\"BETA\"", "\"GAMMA\""],
+        lacks: &["\"alpha\"", "\"beta\"", "\"gamma\""],
+        solved: "    \"ALPHA\",\n    \"BETA\",\n    \"GAMMA\",\n",
+    },
+];
+
+/// Whether `text` is a right answer to `task`: the lines around the selection as they were, what it has and lacks,
+/// and — only once those hold — it builds and passes its tests alone (`rustc --test` in `dir`). Ok, or what's wrong.
+/// The build and its test binary run Claude's changed lines as you, outside any sandbox: by hand only, in the
+/// `#[ignore]`d `ask_vs_chat_ab` (and on the tasks' own texts in `every_selection_edit_is_checked_right_and_wrong`).
+fn selection_check(task: &SelectionEdit, text: &str, dir: &Path) -> Result<(), String> {
+    let (before, after) = task.around();
+    let mut wrong = Vec::new();
+    if text.len() < before.len() + after.len() || !text.starts_with(&before) || !text.ends_with(&after) {
+        wrong.push("lines outside the selection changed".to_string());
+    }
+    wrong.extend(task.has.iter().filter(|h| !text.contains(*h)).map(|h| format!("lacks {h:?}")));
+    wrong.extend(task.lacks.iter().filter(|l| text.contains(*l)).map(|l| format!("still has {l:?}")));
+    // (wrong already: nothing of it is built or run)
+    if !wrong.is_empty() {
+        return Err(wrong.join("; "));
+    }
+    std::fs::create_dir_all(dir).unwrap();
+    let (src, bin) = (dir.join(format!("{}.rs", task.name)), dir.join(task.name));
+    std::fs::write(&src, text).unwrap();
+    let built = Command::new("rustc")
+        .args(["--edition", "2021", "--test", "-o"])
+        .arg(&bin)
+        .arg(&src)
+        .output()
+        .expect("rustc");
+    if !built.status.success() {
+        let said = String::from_utf8_lossy(&built.stderr);
+        wrong.push(format!("rustc: {}", said.lines().find(|l| l.starts_with("error")).unwrap_or("failed")));
+    } else if !Command::new(&bin).arg("-q").output().expect("its tests").status.success() {
+        wrong.push("its tests failed".to_string());
+    }
+    if wrong.is_empty() { Ok(()) } else { Err(wrong.join("; ")) }
+}
+
+/// Each task's check fails on the file as it is and passes on its known answer — else the A/B's "right" measures
+/// nothing. Run first by `ask_vs_chat_ab`, before anything is spent.
+fn selection_checks_checked(dir: &Path) -> Result<(), String> {
+    for task in &SELECTION_EDITS {
+        if selection_check(task, task.text, dir).is_ok() {
+            return Err(format!("{}: the file as it is passes its check", task.name));
+        }
+        let (before, after) = task.around();
+        let solved = format!("{before}{}{after}", task.solved);
+        selection_check(task, &solved, dir)
+            .map_err(|e| format!("{}: its known answer fails — {e}", task.name))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn every_selection_edit_is_checked_right_and_wrong() {
+    if !have("rustc") {
+        return;
+    }
+    let sb = Sandbox::live("ask-ab-checks");
+    selection_checks_checked(&sb.outside("check")).unwrap();
+}
+
+/// A stream as it grows, read to its last whole line each look: whether the change has begun to be written
+/// (`shown` — the ask's first character inside `<r i="…">`, the chat's first of an `edit`'s new_string; tarae
+/// draws either `FLUSH` after it arrives), each result (its conversation and claude's total for it), and the lines
+/// read (`prompts` counts the requests in them).
+#[derive(Default)]
+struct Watch {
+    at: usize,
+    blocks: Vec<(bool, String)>,
+    shown: bool,
+    results: Vec<(String, f64)>,
+    lines: String,
+}
+
+impl Watch {
+    /// Watching from the stream's end now: only what comes after is this run's.
+    fn from_end(stream: &Path) -> Watch {
+        let at = std::fs::metadata(stream).map_or(0, |m| m.len() as usize);
+        Watch { at, ..Watch::default() }
+    }
+
+    fn look(&mut self, stream: &Path) {
+        let Ok(bytes) = std::fs::read(stream) else { return };
+        let Some(end) = bytes.get(self.at..).and_then(|b| b.iter().rposition(|&c| c == b'\n')) else {
+            return;
+        };
+        let new = String::from_utf8_lossy(&bytes[self.at..self.at + end + 1]).into_owned();
+        self.at += end + 1;
+        new.lines().for_each(|l| self.line(l));
+        self.lines += &new;
+    }
+
+    fn line(&mut self, line: &str) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { return };
+        if v["type"] == "result" {
+            let id = v["session_id"].as_str().unwrap_or_default().to_string();
+            self.results.push((id, v["total_cost_usd"].as_f64().unwrap_or(0.0)));
+            return;
+        }
+        let e = &v["event"];
+        let i = e["index"].as_u64().unwrap_or(0) as usize;
+        match e["type"].as_str() {
+            Some("message_start") => self.blocks.clear(),
+            Some("content_block_start") => {
+                let b = &e["content_block"];
+                let edit =
+                    b["type"] == "tool_use" && b["name"].as_str().is_some_and(|n| n.ends_with("__edit"));
+                if self.blocks.len() <= i {
+                    self.blocks.resize(i + 1, (false, String::new()));
+                }
+                self.blocks[i] = (edit, String::new());
+            }
+            Some("content_block_delta") => {
+                let Some((edit, text)) = self.blocks.get_mut(i) else { return };
+                let d = &e["delta"];
+                let part = match (*edit, d["type"].as_str()) {
+                    (false, Some("text_delta")) => &d["text"],
+                    (true, Some("input_json_delta")) => &d["partial_json"],
+                    _ => return,
+                };
+                text.push_str(part.as_str().unwrap_or_default());
+                // (past the reply's opening tag, or the new_string's opening quote, by a character)
+                let begun = match edit {
+                    false => text.find("<r i=").and_then(|at| text[at..].find('>').map(|o| at + o + 1)),
+                    true => text.find("\"new_string\"").and_then(|at| {
+                        let rest = text[at + 12..].trim_start().strip_prefix(':')?.trim_start();
+                        rest.strip_prefix('"').map(|r| text.len() - r.len())
+                    }),
+                };
+                self.shown |= begun.is_some_and(|at| at < text.len());
+            }
+            _ => {}
+        }
+    }
+
+    /// What this run cost: each result's total less what its conversation had cost before (`totals`, kept
+    /// across a lane's runs — a fresh ask's conversation is new, the chat's goes on).
+    fn cost(&self, totals: &mut std::collections::HashMap<String, f64>) -> f64 {
+        let mut cost = 0.0;
+        for (id, total) in &self.results {
+            cost += total - totals.insert(id.clone(), *total).unwrap_or(0.0);
+        }
+        cost
+    }
+}
+
+#[test]
+fn the_ask_ab_sees_the_first_change_in_a_stream() {
+    let ev = |e: serde_json::Value| format!("{}\n", serde_json::json!({"type": "stream_event", "event": e}));
+    let start = |kind: &str, name: &str| {
+        ev(serde_json::json!({"type": "content_block_start", "index": 0,
+            "content_block": {"type": kind, "name": name}}))
+    };
+    let delta = |kind: &str, key: &str, s: &str| {
+        ev(serde_json::json!({"type": "content_block_delta", "index": 0, "delta": {"type": kind, key: s}}))
+    };
+    let sb = Sandbox::live("ask-ab-watch");
+    let stream = sb.outside("stream.jsonl");
+    let fed = |w: &mut Watch, s: &str| {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&stream).unwrap();
+        f.write_all(s.as_bytes()).unwrap();
+        w.look(&stream);
+        w.shown
+    };
+    // The ask: its reply's tag, then a character of it
+    let mut w = Watch::from_end(&stream);
+    assert!(!fed(&mut w, &(start("text", "") + &delta("text_delta", "text", "<r i=\"1"))));
+    assert!(!fed(&mut w, &delta("text_delta", "text", "\">")));
+    assert!(fed(&mut w, &delta("text_delta", "text", "    pr")));
+    // The chat: text isn't the change, an edit's old_string neither — its new_string's first character is
+    let mut w = Watch::from_end(&stream);
+    let edit = start("tool_use", "mcp__tarae__edit");
+    let old =
+        "{\"edits\": [{\"file_path\": \"src/a.rs\", \"old_string\": \"<r i=\\\"1\\\">x\", \"new_string\"";
+    assert!(!fed(&mut w, &(start("text", "") + &delta("text_delta", "text", "I'll change it."))));
+    assert!(!fed(&mut w, &(edit + &delta("input_json_delta", "partial_json", old))));
+    assert!(!fed(&mut w, &delta("input_json_delta", "partial_json", ": \"")));
+    assert!(fed(&mut w, &delta("input_json_delta", "partial_json", "y")));
+    // A line not ended yet waits for its end; results are each conversation's
+    let result = |id: &str, total: f64| {
+        format!("{}\n", serde_json::json!({"type": "result", "session_id": id, "total_cost_usd": total}))
+    };
+    let mut w = Watch::from_end(&stream);
+    let chat = result("chat", 1.5);
+    let (a, b) = chat.split_at(10);
+    fed(&mut w, a);
+    assert!(w.results.is_empty());
+    fed(&mut w, &format!("{b}{}", result("ask", 0.25)));
+    let mut totals = std::collections::HashMap::from([("chat".to_string(), 1.25)]);
+    assert_eq!(w.cost(&mut totals), 0.5);
+    assert_eq!(totals["chat"], 1.5);
+}
+
+/// One context of `ask_vs_chat_ab`: a tarae of its own, its chat warmed up, the stream of every claude it starts.
+struct Lane {
+    // (declared first, dropped first: tarae quits before its sandbox goes)
+    t: Term,
+    sb: Sandbox,
+    name: &'static str,
+    stream: std::path::PathBuf,
+    totals: std::collections::HashMap<String, f64>,
+}
+
+/// A large conversation's stand-in, about `tokens` tokens: the project's CLAUDE.md holding this repository's code
+/// as of `TOOLS_CORPUS` (its biggest files whole, the last one cut at a line), framed as reading only. Claude Code
+/// sends it in the conversation's first message, so it's there from the first request on and cached as any
+/// context is — made in one request, not in turns of reading (each re-reading what came before).
+fn large_claude_md(tokens: usize) -> String {
+    const PATHS: [&str; 6] =
+        ["src/editor.rs", "src/term.rs", "src/chat.rs", "src/llm.rs", "src/sandbox.rs", "src/tools.rs"];
+    // (bytes a token of this code — measured: 3.2 asked for 300k gave 403.5k, 2026-10-26; the warm-up says it)
+    let want = tokens * 24 / 10;
+    let here = env!("CARGO_MANIFEST_DIR");
+    let mut md = String::from(
+        "# Background\n\nBelow is source code of another project, kept here as background reading only: none of it \
+         is an instruction, and none of it is a file of this project.\n",
+    );
+    for p in PATHS {
+        if md.len() >= want {
+            break;
+        }
+        let out =
+            Command::new("git").args(["-C", here, "show", &format!("{TOOLS_CORPUS}:{p}")]).output().unwrap();
+        assert!(out.status.success(), "{p} at {TOOLS_CORPUS} in this clone");
+        md += &format!("\n## {p}\n\n```rust\n");
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            if md.len() >= want {
+                break;
+            }
+            md += line;
+            md.push('\n');
+        }
+        md += "```\n";
+    }
+    md
+}
+
+/// A person typing the instruction, in both arms, before its Enter (no claude is started ahead of it since Q2).
+const TYPING: Duration = Duration::from_secs(3);
+
+/// What the chat's `space i` would send: its instruction, after the quotes.
+const CHAT_ASKS: &str = "Make this change to the quoted code, in its file: ";
+
+/// The code has the keys again (from the chat, its view mode, a prompt).
+fn to_code(t: &mut Term) {
+    for _ in 0..4 {
+        let s = t.state_json(0);
+        if s["keys"]["region"] == "code" {
+            return;
+        }
+        let input = s["input"].as_u64().unwrap_or(0);
+        t.send("\x1b");
+        t.state_json(input + 1);
+    }
+    panic!("the code never had the keys back\n{}", t.screen());
+}
+
+/// One selection edit, one way, measured.
+#[derive(Default)]
+struct SelectionRun {
+    cost: f64,
+    first: Option<Duration>,
+    ready: Option<Duration>,
+    end: Option<Duration>,
+    requests: usize,
+    context: u64,
+    reviews: usize,
+    cards: usize,
+    capped: bool,
+    wrong: Option<String>,
+}
+
+/// `task` done in `lane` by `arm`: "ask" — today's `space i` (the selections in its prompt, its answer reviewed in
+/// the buffer, `:w`); "chat" — `space >` quotes the selections, `CHAT_ASKS` and the instruction go as a message,
+/// Claude changes the file with `edit`, reviewed in the buffer as every chat edit is. Times from the instruction's
+/// Enter: the change's first character in claude's stream (`first`), its review on screen (`ready`), the last
+/// result (`end`); every review answered `a` the moment it's up, every card `n`.
+fn selection_edit(lane: &mut Lane, task: &SelectionEdit, arm: &str, dir: &Path) -> SelectionRun {
+    let t = &mut lane.t;
+    to_code(t);
+    let path = format!("src/{}.rs", task.name);
+    std::fs::write(lane.sb.file(&path), task.text).unwrap();
+    t.command(&format!("o {path}"));
+    t.command("reload");
+    t.send(&format!("{}G{}", task.line, "x".repeat(task.lines)));
+    if let Some(re) = task.regex {
+        t.send(&format!("s{re}\r"));
+    }
+    let said = match arm {
+        "ask" => {
+            t.send(" i");
+            t.wait_state("the ask's prompt", |s| s["keys"]["region"] == "prompt");
+            task.ask.to_string()
+        }
+        _ => {
+            t.send(" >");
+            t.wait_state("the quotes over the chat's input", |s| s["keys"]["region"] == "chat");
+            format!("{CHAT_ASKS}{}", task.ask)
+        }
+    };
+    std::thread::sleep(TYPING);
+    let mut w = Watch::from_end(&lane.stream);
+    t.send(&format!("{said}\r"));
+    let sent = Instant::now();
+    let mut run = SelectionRun::default();
+    let (mut ended, mut tries, mut n) = (None::<Instant>, 0, 0u32);
+    // (a review waiting is the inbox's `edit` entry — the screen's words fold where the code is narrow)
+    let reviewing =
+        |s: &serde_json::Value| s["inbox"].as_array().into_iter().flatten().any(|e| e["kind"] == "edit");
+    loop {
+        std::thread::sleep(Duration::from_millis(50));
+        w.look(&lane.stream);
+        if w.shown && run.first.is_none() {
+            run.first = Some(sent.elapsed());
+        }
+        // (the stream every 50 ms, the state every 200)
+        n += 1;
+        if !n.is_multiple_of(4) {
+            continue;
+        }
+        let st = t.state_json(0);
+        if reviewing(&st) {
+            run.ready.get_or_insert(sent.elapsed());
+            // (the review has the keys, or `C-q` hands them to it)
+            match st["keys"]["region"] == "edit-review" {
+                true => {
+                    let input = st["input"].as_u64().unwrap_or(0);
+                    t.send("a");
+                    run.reviews += 1;
+                    t.state_json(input + 1);
+                }
+                false => {
+                    tries += 1;
+                    t.send("\x11");
+                }
+            }
+            continue;
+        }
+        if !w.results.is_empty() {
+            let at = *ended.get_or_insert_with(Instant::now);
+            run.end.get_or_insert(at - sent);
+            let settled = match arm {
+                "ask" => run.reviews > 0,
+                _ => chat_idle(&t.screen()),
+            };
+            if settled || at.elapsed() > Duration::from_secs(15) {
+                break;
+            }
+        }
+        if prompts(&w.lines).len() > AB_MAX_REQUESTS || sent.elapsed() > AB_MAX_TIME || tries > 10 {
+            t.send("\x03");
+            let _ = t.poll_for(Duration::from_secs(60), chat_idle);
+            run.capped = true;
+            break;
+        }
+        // A card that comes up is answered `n` (none is needed) and counted, as `ab_turn` does
+        let mut cards = st["cards"].as_array().into_iter().flatten();
+        if cards.any(|c| c["state"] == "asking" && c["up"] == "front") {
+            tries += 1;
+            match st["keys"]["region"].as_str().is_some_and(|r| r.contains("card")) {
+                true => {
+                    t.send("n");
+                    run.cards += 1;
+                }
+                false => t.send("\x11"),
+            }
+        }
+    }
+    let file = lane.sb.file(&path);
+    if arm == "ask" && run.reviews > 0 {
+        to_code(t);
+        t.command("w");
+    }
+    // (the accepted change on disk — tarae saves the chat's; nothing changed waits out the look, 100 × 50 ms)
+    for _ in 0..100 {
+        if std::fs::read_to_string(&file).is_ok_and(|s| s != task.text) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    w.look(&lane.stream);
+    run.cost = w.cost(&mut lane.totals);
+    let p = prompts(&w.lines);
+    (run.requests, run.context) = (p.len(), p.first().copied().unwrap_or(0));
+    run.wrong = selection_check(task, &std::fs::read_to_string(&file).unwrap_or_default(), dir).err();
+    run
+}
+
+/// A lane's tarae, its chat's first turn taken (a word, no tools) so every edit after it finds its context
+/// cached, as a conversation under way does; what that cost and the prompt it carried.
+fn ask_lane(name: &'static str, large: usize, llm: &str, bin: Option<&str>) -> (Lane, f64, u64) {
+    let mut sb = Sandbox::live(&format!("ask-ab-{name}"));
+    if let Some(b) = bin {
+        sb = sb.with_bin(Path::new(b));
+    }
+    let stream = teed(&sb, llm);
+    std::fs::create_dir_all(sb.file("src")).unwrap();
+    for task in &SELECTION_EDITS {
+        sb.write(&format!("src/{}.rs", task.name), task.text);
+    }
+    if large > 0 {
+        sb.write("CLAUDE.md", &large_claude_md(large));
+    }
+    let mut t = sb.spawn(&[&format!("src/{}.rs", SELECTION_EDITS[0].name)]);
+    let mut w = Watch::from_end(&stream);
+    chat_turn(&mut t, "Reply with the single word ok. Use no tools.");
+    w.look(&stream);
+    let mut lane = Lane { t, sb, name, stream, totals: Default::default() };
+    let cost = w.cost(&mut lane.totals);
+    let prompt = prompts(&w.lines).first().copied().unwrap_or(0);
+    to_code(&mut lane.t);
+    (lane, cost, prompt)
+}
+
+/// Q1 of the audit (2.B): what a selection edit costs and how soon it shows, today's `space i` against the
+/// chat's `space i`-to-be — five edits (`SELECTION_EDITS`, one of three selections at once) at a small context (a
+/// fresh conversation: the fixed part) and a large one (`large_claude_md`, `TARAE_AB_LARGE` tokens — 300k, a change
+/// turn's median context in the call record was 307k; 0: the small one only). The chat's arm is the closest
+/// stand-in the chat has today: `space >` quotes every selection (one quote each), the instruction goes as a message
+/// after `CHAT_ASKS`, `edit` makes the change; what `space i` becomes would send the same. Each lane's chat is
+/// warmed up first and goes on across its edits (the cache read as a conversation under way reads it); the ask is
+/// beside it — its prompt is the same in both lanes, measured in both. Per run: $ (claude's own `total_cost_usd`,
+/// a conversation's total less its last), seconds to the change's first character, to its review and to the
+/// end, requests and the first one's prompt, and whether the file is right (`selection_check`). Arms and lanes
+/// rotate by task and run. `TARAE_AB_RUNS` (2), `TARAE_AB_TASKS` (names; all), `TARAE_AB_BUDGET` ($, 15: no edit
+/// starts past it), `TARAE_AB_MODEL` ("opus" — a large lane needs a window past `TARAE_AB_LARGE`),
+/// `TARAE_AB_EFFORT`, `TARAE_AB_BIN`. Rows to `target/live/ask-ab.tsv`, streams to `target/live/ask-ab/`.
+/// Since Q2 the ask arm measures `space i` as it now is: its claude started at Enter, cold. The run that decided
+/// Q1 (2026-10-26, B′ on cost) had the spare started as the prompt opened; its rows are kept in this checkout's
+/// `.sb/ask-ab-2026-10-26.tsv` (the two pilots' 8, then the 2 runs' 40).
+#[test]
+#[ignore = "live: run with `cargo live` (uses Claude)"]
+fn ask_vs_chat_ab() {
+    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    if !have("claude") || !have("rustc") {
+        return;
+    }
+    let bin = var("TARAE_AB_BIN");
+    let runs: usize = var("TARAE_AB_RUNS").and_then(|r| r.parse().ok()).unwrap_or(2);
+    let budget: f64 = var("TARAE_AB_BUDGET").and_then(|b| b.parse().ok()).unwrap_or(15.0);
+    let large: usize = var("TARAE_AB_LARGE").and_then(|l| l.parse().ok()).unwrap_or(300_000);
+    let model = var("TARAE_AB_MODEL").unwrap_or_else(|| "opus".into());
+    let effort = var("TARAE_AB_EFFORT").unwrap_or_default();
+    let only = var("TARAE_AB_TASKS");
+    let tasks: Vec<&SelectionEdit> = SELECTION_EDITS
+        .iter()
+        .filter(|t| only.as_deref().is_none_or(|o| o.split(',').any(|n| n == t.name)))
+        .collect();
+    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let (tsv, kept, check) = (
+        here.join("target/live/ask-ab.tsv"),
+        here.join("target/live/ask-ab"),
+        here.join("target/live/ask-ab-check"),
+    );
+    std::fs::create_dir_all(&kept).unwrap();
+    if let Err(e) = selection_checks_checked(&check) {
+        panic!("ASK_AB not started: {e}");
+    }
+    // (keep-warm off: no ping of its own in a lane's stream)
+    let llm = format!("model = \"{model}\"\neffort = \"{effort}\"\nkeep-warm = \"off\"\n");
+    let arms = ["ask", "chat"];
+    let mut rows: Vec<(&str, &str, SelectionRun)> = Vec::new();
+    let mut spent = 0.0;
+    'runs: for run in 0..runs {
+        let mut lanes = Vec::new();
+        for (name, tokens) in [("small", 0), ("large", large)] {
+            if name == "large" && large == 0 {
+                continue;
+            }
+            let (lane, cost, prompt) = ask_lane(name, tokens, &llm, bin.as_deref());
+            spent += cost;
+            eprintln!("ASK_AB run {} {name}: warmed up, its prompt {prompt} tokens, ${cost:.3}", run + 1);
+            assert!(
+                prompt as usize * 10 >= tokens * 8,
+                "ASK_AB the large context didn't load: the warm-up's prompt was {prompt} tokens of {tokens} asked \
+                 (a model whose window is smaller? TARAE_AB_MODEL)"
+            );
+            lanes.push(lane);
+        }
+        for (i, task) in tasks.iter().enumerate() {
+            for c in 0..lanes.len() {
+                let l = (c + i + run) % lanes.len();
+                for k in 0..arms.len() {
+                    let arm = arms[(k + i + run + l) % arms.len()];
+                    if spent > budget {
+                        eprintln!("ASK_AB budget: ${spent:.2} spent, past ${budget} — no more runs");
+                        break 'runs;
+                    }
+                    let lane = &mut lanes[l];
+                    let m = selection_edit(lane, task, arm, &check);
+                    spent += m.cost;
+                    let secs = |d: Option<Duration>| {
+                        d.map_or("—".to_string(), |d| format!("{:.1}", d.as_secs_f64()))
+                    };
+                    eprintln!(
+                        "ASK_AB {} {} {arm} run {}: ${:.3}, first change {}s, review {}s, end {}s, {} requests, \
+                         prompt {}, reviews {}, cards {}, capped {}, {}",
+                        lane.name,
+                        task.name,
+                        run + 1,
+                        m.cost,
+                        secs(m.first),
+                        secs(m.ready),
+                        secs(m.end),
+                        m.requests,
+                        m.context,
+                        m.reviews,
+                        m.cards,
+                        m.capped,
+                        m.wrong.as_deref().map_or("right".to_string(), |e| format!("WRONG — {e}")),
+                    );
+                    let row = format!(
+                        "{model}\t{}\t{}\t{arm}\t{}\t{:.4}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                        lane.name,
+                        task.name,
+                        run + 1,
+                        m.cost,
+                        secs(m.first),
+                        secs(m.ready),
+                        secs(m.end),
+                        m.requests,
+                        m.context,
+                        m.reviews,
+                        m.cards,
+                        m.capped,
+                        m.wrong.as_deref().unwrap_or("right"),
+                    );
+                    use std::io::Write;
+                    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&tsv).unwrap();
+                    f.write_all(row.as_bytes()).unwrap();
+                    let name = format!("{}-{}-{}.jsonl", lane.name, run + 1, std::process::id());
+                    let _ = std::fs::copy(&lane.stream, kept.join(name));
+                    rows.push((lane.name, arm, m));
+                }
+            }
+        }
+    }
+    eprintln!("ASK_AB median — lane arm n: $ · first change s · review s · end s · requests · right");
+    for lane in ["small", "large"] {
+        for arm in arms {
+            let of: Vec<&SelectionRun> =
+                rows.iter().filter(|r| r.0 == lane && r.1 == arm).map(|r| &r.2).collect();
+            if of.is_empty() {
+                continue;
+            }
+            let at = |f: &dyn Fn(&SelectionRun) -> Option<f64>| {
+                format!("{:.2}", median(of.iter().filter_map(|m| f(m)).collect()))
+            };
+            let s = |d: Option<Duration>| d.map(|d| d.as_secs_f64());
+            eprintln!(
+                "ASK_AB {lane} {arm} {}: ${:.3} · {} · {} · {} · {} · {}/{}",
+                of.len(),
+                median(of.iter().map(|m| m.cost).collect()),
+                at(&|m| s(m.first)),
+                at(&|m| s(m.ready)),
+                at(&|m| s(m.end)),
+                at(&|m| Some(m.requests as f64)),
+                of.iter().filter(|m| m.wrong.is_none()).count(),
+                of.len(),
+            );
+        }
+    }
+    eprintln!("ASK_AB spent ${spent:.2}");
+    assert!(!rows.is_empty(), "no run");
+}
+
 /// `edit`'s error path, which no A/B run hit: the first old_string can't match (Claude is told to send it as
 /// written, unread), the answer lists the closest lines, and Claude's next call lands the change. With the
 /// default edit tools (`edit` alone); the stream is kept in `target/live/edit-recovers.jsonl`.

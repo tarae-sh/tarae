@@ -4,15 +4,16 @@
 //! Cold start is slow (measured 2026-09-27, Claude Code 2.1.280, a single "ok"):
 //! default 8–10 s → minimal options (`--tools "" --strict-mcp-config --setting-sources ""`) 4.3 s
 //! → **a process spawned early and waiting on stdin (stream-json): 2.5 s** (haiku 1.9 s).
-//! So the spare process is spawned the moment the ask prompt opens (overlapping typing); a request only
-//! writes the message. One process per request — so contexts don't mix.
+//! A spare started as the ask's prompt opened hid that behind typing; it went with audit Q2 (2026-10-26): a
+//! request starts its own process at Enter and writes its message. One process per request — so contexts don't
+//! mix.
 //!
 //! Flow: selections → one request (answer per selection in `<r i="N">` tags) → review (diff, y/n per change)
 //! → applied as one transaction. The answer is received as it streams (`--include-partial-messages`) and
 //! shown in a preview card. Cancel = kill the process.
 
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
@@ -226,81 +227,6 @@ impl Default for LlmConfig {
             keep_warm_max: 3,
         }
     }
-}
-
-// ── Spare process ───────────────────────────────────────────────────────
-
-/// A pre-spawned process for the next request (at most one), the folder it runs in and the credential it was
-/// started with.
-#[derive(Default)]
-pub struct Warm {
-    child: Option<(Child, PathBuf, Credential)>,
-}
-
-impl Warm {
-    /// Spawns one in `dir` on `cred` if there's no live spare there on it (one elsewhere, or on another billing,
-    /// goes). spawn itself returns at once (slow init happens in the child).
-    pub fn ensure(
-        &mut self,
-        cfg: &LlmConfig,
-        dir: &Path,
-        given: Option<&Env>,
-        cred: &Credential,
-    ) -> Result<(), String> {
-        if let Some((c, at, on)) = &mut self.child
-            && matches!(c.try_wait(), Ok(None))
-            && at == dir
-            && on == cred
-        {
-            return Ok(());
-        }
-        // Spared for another folder or billing, or gone: it goes
-        self.drop_spare();
-        let child = spawn(cfg, &[], dir, given, cred).map_err(|e| e.said(&cfg.command, false))?;
-        self.child = Some((child, dir.to_path_buf(), cred.clone()));
-        Ok(())
-    }
-
-    /// The spare's process (`:procs`).
-    pub fn pid(&self) -> Option<u32> {
-        self.child.as_ref().map(|(c, ..)| c.id())
-    }
-
-    /// The spare goes (reaped off the main thread — else a zombie until tarae exits).
-    pub fn drop_spare(&mut self) {
-        if let Some((mut c, ..)) = self.child.take() {
-            crate::event::thread("tarae-reap", move || {
-                let _ = c.kill();
-                let _ = c.wait();
-            });
-        }
-    }
-
-    fn take(
-        &mut self,
-        cfg: &LlmConfig,
-        dir: &Path,
-        given: Option<&Env>,
-        cred: &Credential,
-    ) -> Result<Child, String> {
-        self.ensure(cfg, dir, given, cred)?;
-        Ok(self.child.take().expect("ensured").0)
-    }
-}
-
-impl Drop for Warm {
-    fn drop(&mut self) {
-        self.drop_spare();
-    }
-}
-
-/// The session in front's billing changed (`:session-billing`): a spare there goes, and comes back on it.
-pub fn spare_billing_changed(ed: &mut Editor) {
-    if ed.llm_warm.child.is_none() {
-        return;
-    }
-    ed.llm_warm.drop_spare();
-    prewarm(ed);
 }
 
 /// What a failed start of `command` (`llm.command`) says. No `claude` at all: that Claude Code isn't installed,
@@ -1515,17 +1441,6 @@ impl Review {
 
 // ── Commands ────────────────────────────────────────────────────────────
 
-/// When the ask prompt opens or "ask" starts being typed — spawns the spare process (overlapping typing).
-pub fn prewarm(ed: &mut Editor) {
-    let cfg = ed.config.llm.clone();
-    let warmed = ed
-        .credential(ed.workspace.claude.billing, crate::billing::Role::Ask)
-        .and_then(|cred| ed.llm_warm.ensure(&cfg, &ed.workspace.root, ed.claude_env.as_ref(), &cred));
-    if let Err(e) = warmed {
-        ed.set_error(e);
-    }
-}
-
 pub fn ask(ed: &mut Editor, instruction: &str) -> Result<(), String> {
     let instruction = instruction.trim();
     if instruction.is_empty() {
@@ -1646,10 +1561,12 @@ fn start(
 ) -> Result<(), String> {
     let cfg = ed.config.llm.clone();
     let cred = ed.credential(ed.workspace.claude.billing, crate::billing::Role::Ask)?;
-    let mut child = ed.llm_warm.take(&cfg, &ed.workspace.root, ed.claude_env.as_ref(), &cred)?;
+    // (its own process, started now: posix_spawn returns at once, claude's start is the child's)
+    let mut child = spawn(&cfg, &[], &ed.workspace.root, ed.claude_env.as_ref(), &cred)
+        .map_err(|e| e.said(&cfg.command, false))?;
     let (billing, keep) = (cred.billing(), cfg.keep_env_key);
     // Write the message and close stdin — the process exits on its own after this one turn (written off the
-    // main loop: a commit draft's prompt can be 80 KB, and a spare still starting reads nothing yet).
+    // main loop: a commit draft's prompt can be 80 KB, and claude still starting reads nothing yet).
     // Before anything is installed: a process without stdin leaves no review waiting forever.
     let sent =
         child.stdin.take().ok_or_else(|| "claude: no stdin".to_string()).and_then(|stdin| {
@@ -2724,7 +2641,7 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// The chat's claude and the ask's spare (which the ask takes, or starts the same way) get tarae's environment
+    /// The chat's claude and the one-turn claude of the ask and the commit draft (`start`) get tarae's environment
     /// less what `claude_env` says — the same names left out, the rest as it was (the reviewer's: its own test).
     /// The chat says so once since tarae started, by name: a new conversation's claude doesn't say it again.
     #[test]
@@ -2764,8 +2681,9 @@ pub(crate) mod tests {
         crate::chat::reset(&mut ed);
         names_in(&mut ed, &root);
         assert!(notes(&ed).is_empty(), "a new conversation: not again");
-        prewarm(&mut ed);
-        check(names_in(&mut ed, &root), "the ask's spare");
+        let doc = ed.doc().id;
+        draft(&mut ed, doc, "a commit message", "Draft it.", 0, 0).unwrap();
+        check(names_in(&mut ed, &root), "a draft's (the ask's starts the same way, `start`)");
         drop(ed);
         std::fs::remove_dir_all(&root).ok();
     }

@@ -125,7 +125,6 @@ fn for_words(r: &Row) -> String {
         Kind::Chat => "Claude's chat".into(),
         Kind::Ask => "space i's Claude, answering".into(),
         Kind::Reviewer => "the session's reviewer".into(),
-        Kind::Spare => "a Claude kept started for space i".into(),
         Kind::Plugin(p, _) => format!("plugin {p}'s program"),
         Kind::Other if r.left => "left by a program tarae ran".into(),
         Kind::Other if r.depth > 0 => "started by what it's under".into(),

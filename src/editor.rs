@@ -12,7 +12,7 @@ use crate::document::{DocId, Document, Snapshot};
 use crate::event::{Event, Queue};
 use crate::key::{Code, Key};
 use crate::keymap::{Keymaps, Lookup, MappableCommand};
-use crate::llm::{self, Warm};
+use crate::llm;
 use crate::lsp_editor::LspState;
 use crate::movement as mv;
 use crate::picker::{Action, Picker};
@@ -687,7 +687,6 @@ pub struct Editor {
     /// The live search's latest key (N4) — a search under way for an earlier one stops (`grep::search`
     /// asks before each file and at each match).
     live_search: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    pub llm_warm: Warm,
     pub llm_generation: u64,
     /// The ask process awaiting an answer (killed on cancel).
     pub llm_pid: Option<u32>,
@@ -1101,7 +1100,6 @@ impl Editor {
             popup_scroll: 0,
             completion: None,
             signature: None,
-            llm_warm: Warm::default(),
             llm_generation: 0,
             llm_pid: None,
             usage_view: None,
@@ -5207,10 +5205,6 @@ impl Editor {
         }
         if self.prompt.as_ref().is_some_and(|p| p.kind == PromptKind::Command) {
             self.cmdline_prefetch();
-        }
-        // Once ":ask …" starts being typed, pre-spawn claude — typing time hides the cold start.
-        if self.prompt.as_ref().is_some_and(|p| p.kind == PromptKind::Command && p.text.starts_with("ask ")) {
-            llm::prewarm(self);
         }
     }
 

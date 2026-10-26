@@ -328,7 +328,7 @@ own MCP server (`--strict-mcp-config`), whatever `llm.args` says, so a project's
 connect.
 
 **Claude gets your environment, less another Claude Code session's.** Every claude tarae starts — the chat, the
-reviewer, `space i` and its spare — inherits tarae's environment with a few names left out:
+reviewer, `space i`'s and a commit draft's — inherits tarae's environment with a few names left out:
 
 - `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`, by default: without a terminal Claude Code uses a key in its
   environment over your login, and bills it — so Claude in tarae runs on your Claude Code login (`/login`, or

@@ -9,7 +9,7 @@
 //!
 //! What comes with it: tarae is the parent of every orphan of every process below it (the terminal's `nohup`s
 //! too), and reaps them — on `procs`' look (`Reaper::round`). **Only those it adopted, never one it started**:
-//! a child tarae started belongs to whoever holds its `Child` (an LSP client, the spare Claude, …), who may
+//! a child tarae started belongs to whoever holds its `Child` (an LSP client, the chat's Claude, …), who may
 //! wait or kill it much later — reaped under it, its pid could be reused and that kill reach another process.
 //! Adopted = in a session neither tarae's nor its own (a child tarae starts is in one of those two), or seen
 //! under another parent before (`Reaper::adopted`); the rest is left a zombie, never a wrong kill. One adopted

@@ -2555,7 +2555,6 @@ fn view_latest(cx: &mut Context) {
 
 fn llm_ask(cx: &mut Context) {
     cx.editor.open_prompt(PromptKind::Command, "ask ");
-    crate::llm::prewarm(cx.editor);
 }
 
 // ── Buffers ──────────────────────────────────────────────────────────────

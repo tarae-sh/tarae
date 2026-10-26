@@ -588,10 +588,10 @@ impl Editor {
     }
 
     /// Session `sid` bills `to` from now: kept with it (the session list), its claude — if it runs — stopped and
-    /// started again on the same conversation (`--resume`), the ask's spare in front going with it; the toast and
-    /// the line over its chat's input say what the next message costs (`switchcost.rs`). The first time API goes
-    /// on, `WEAKNESS` is said — `shown`: by the card answered. Err (nothing changed): API can't start here, or its
-    /// Claude is answering.
+    /// started again on the same conversation (`--resume`), the ask's and a draft's started on it as they're asked;
+    /// the toast and the line over its chat's input say what the next message costs (`switchcost.rs`). The first
+    /// time API goes on, `WEAKNESS` is said — `shown`: by the card answered. Err (nothing changed): API can't start
+    /// here, or its Claude is answering.
     pub fn billing_set(
         &mut self,
         sid: crate::event::WorkspaceId,
@@ -622,7 +622,6 @@ impl Editor {
         self.workspace.claude.billing = to;
         self.workspaces_keep();
         crate::chat::billing_changed(self);
-        crate::llm::spare_billing_changed(self);
         let said = match to {
             Billing::Api => "on your API key",
             Billing::Subscription => "on your plan",

@@ -670,7 +670,6 @@ impl Editor {
             );
         }
         v.extend(self.llm_pid);
-        v.extend(self.llm_warm.pid());
         v.retain(|&p| p > 0);
         v
     }
@@ -809,7 +808,7 @@ pub struct ProcRow {
     pub pid: u32,
     pub parent: u32,
     pub depth: usize,
-    /// `tarae` `server` `held` `debugger` `helper` `task` `tests` `terminal` `chat` `ask` `spare` `plugin`
+    /// `tarae` `server` `held` `debugger` `helper` `task` `tests` `terminal` `chat` `ask` `plugin`
     /// `other` `session` `queued`.
     pub kind: &'static str,
     pub title: String,
@@ -849,7 +848,6 @@ impl ProcsState {
                     Kind::Chat => "chat",
                     Kind::Ask => "ask",
                     Kind::Reviewer => "reviewer",
-                    Kind::Spare => "spare",
                     Kind::Plugin(..) => "plugin",
                     Kind::Other => "other",
                     Kind::Session(_) => "session",

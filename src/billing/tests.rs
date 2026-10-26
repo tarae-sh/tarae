@@ -229,30 +229,26 @@ fn an_api_sessions_key_goes_through_its_helper_and_never_through_tarae() {
 }
 
 /// `:session-billing` on a running chat: its claude stops and the next resumes the same conversation on the new
-/// billing — the helper going in or out of its `--settings` — and the ask's spare goes and comes back on it (no
-/// hour-long cache there: one turn). Refused while Claude answers; an unknown word refused, nothing changed.
+/// billing — the helper going in or out of its `--settings`. Refused while Claude answers; an unknown word refused,
+/// nothing changed.
 #[test]
-fn switching_billing_resumes_the_same_conversation_and_the_spare_follows() {
+fn switching_billing_resumes_the_same_conversation() {
     let place = Place::new("switch");
     let mut ed = place.editor();
-    crate::llm::prewarm(&mut ed);
     crate::chat::open(&mut ed);
     send(&mut ed, "hello");
     until(&mut ed, "the first turn", |ed| idle(ed) && ed.workspace.claude.usage.key_source.is_some());
     assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().conversation.as_deref(), Some("conv-1"));
     let before = place.starts();
-    assert_eq!(before.len(), 2, "the spare and the chat: {before:?}");
+    assert_eq!(before.len(), 1, "the chat: {before:?}");
     assert!(before.iter().all(|(r, s)| r.is_none() && s.get("apiKeyHelper").is_none()), "{before:?}");
     assert!(ed.session_billing("dollars").is_err());
     on_key(&mut ed);
-    until(&mut ed, "the chat's and the spare's new claude", |_| place.starts().len() == 4);
-    let after = &place.starts()[2..];
+    until(&mut ed, "the chat's new claude", |_| place.starts().len() == 2);
+    let after = &place.starts()[1..];
     let chat = after.iter().find(|(r, _)| r.as_deref() == Some("conv-1")).expect("the chat resumed conv-1");
     assert_eq!(chat.1["apiKeyHelper"], json!(place.helper));
     assert_eq!(chat.1["promptCacheTtl"], "1h");
-    let spare = after.iter().find(|(r, _)| r.is_none()).expect("the spare again");
-    assert_eq!(spare.1["apiKeyHelper"], json!(place.helper), "the spare on the key too");
-    assert!(spare.1.get("promptCacheTtl").is_none(), "the ask's: one turn, no hour-long cache");
     assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().billing, Some(Billing::Api));
     // The next turn goes on in the same conversation
     send(&mut ed, "again");
@@ -304,7 +300,7 @@ fn a_credential_other_than_its_billings_stops_claude_and_says_so() {
     assert!(note.contains("bills subscription") && note.contains("your own Claude settings"), "{note}");
 }
 
-/// The ask's claude is checked too: on the session's billing (its spare's `--settings` carry the helper), and one
+/// The ask's claude is checked too: on the session's billing (its `--settings` carry the helper), and one
 /// saying another credential is stopped — nothing applied, said why.
 #[test]
 fn the_asks_claude_is_billed_and_checked_as_the_chats() {
