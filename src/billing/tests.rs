@@ -308,7 +308,7 @@ fn the_asks_claude_is_billed_and_checked_as_the_chats() {
     let mut ed = place.editor();
     on_key(&mut ed);
     std::fs::write(place.root.join("turn.source"), "none").unwrap();
-    crate::llm::ask(&mut ed, "rename it").unwrap();
+    crate::ask::start(&mut ed, "rename it").unwrap();
     until(&mut ed, "the ask stopped", |ed| ed.workspace.claude.review.is_none());
     assert_eq!(place.starts()[0].1["apiKeyHelper"], json!(place.helper));
     let warned = ed.toasts.iter().any(|t| t.text.contains("reported its credential as none"));

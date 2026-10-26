@@ -188,7 +188,7 @@ pub fn call(ed: &mut Editor, call: Call, args: &Value) -> Result<(), String> {
             .filter_map(|d| Some((d.path.clone()?, d.text.clone())))
             .collect(),
         dirty: ed.docs.iter().filter(|d| d.is_modified()).filter_map(|d| d.path.clone()).collect(),
-        seen: ed.workspace.claude.chat.as_ref().map(|c| c.edits.seen.clone()).unwrap_or_default(),
+        seen: seen_of(ed, call.generation()).map(|s| s.clone()).unwrap_or_default(),
         keys: crate::reads::Keys::of(ed),
     };
     ed.events.jobs().spawn(move || {
@@ -222,18 +222,57 @@ pub fn call(ed: &mut Editor, call: Call, args: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// What `call` saw of `path` once Claude's change there is written: its stamp (None: no claim).
-pub fn saw(ed: &mut Editor, path: &Path, stamp: Option<crate::disk::Stamp>) {
-    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+/// What claude process `generation` has seen of each file: `space i`'s claude's own, else the chat's
+/// (`Edits.seen`) — one never tells the other it saw a file.
+fn seen_of(ed: &mut Editor, generation: u64) -> Option<&mut HashMap<PathBuf, crate::disk::Stamp>> {
+    let s = &mut ed.workspace.claude;
+    match s.ask.as_mut().filter(|a| a.generation == generation) {
+        Some(a) => Some(&mut a.edits.seen),
+        None => s.chat.as_mut().map(|c| &mut c.edits.seen),
+    }
+}
+
+/// What claude process `generation` saw of `path` once its change there is written, or as it read it: its stamp
+/// (None: no claim).
+pub fn saw(ed: &mut Editor, generation: u64, path: &Path, stamp: Option<crate::disk::Stamp>) {
+    let Some(seen) = seen_of(ed, generation) else { return };
     match stamp {
-        Some(s) => c.edits.seen.insert(path.to_path_buf(), s),
-        None => c.edits.seen.remove(path),
+        Some(s) => seen.insert(path.to_path_buf(), s),
+        None => seen.remove(path),
     };
 }
 
-/// No claim of what Claude has seen of `path` (it was saved where its stamp isn't known).
-pub fn forget(ed: &mut Editor, path: &Path) {
-    saw(ed, path, None)
+/// No claim of what claude process `generation` has seen of `path` (it was saved where its stamp isn't known).
+pub fn forget(ed: &mut Editor, generation: u64, path: &Path) {
+    saw(ed, generation, path, None)
+}
+
+/// `space i`'s edit of the buffer it was asked in that isn't a file of the project (`ask.rs`): the call's items,
+/// each naming `target` (the buffer's id, never a path), applied in order to `text` — its text after, or the edit
+/// tool's errors. Only replacements and a whole text: a buffer is no file to move or delete.
+pub(crate) fn in_buffer(text: &str, args: &Value, target: &str) -> Result<String, String> {
+    let mut now = text.to_string();
+    let mut failed = Vec::new();
+    for (i, it) in items_of(args)?.into_iter().enumerate() {
+        let head = format!("edits[{i}] ({})", it.file());
+        if it.file() != target {
+            failed.push(format!("{head}: this change is to {target} only — name it as file_path"));
+            continue;
+        }
+        match it {
+            Item::Replace { old, new, all, .. } => match replace_in(&now, &old, &new, all) {
+                Ok((after, ..)) => now = after,
+                Err(e) => failed.push(format!("{head}: {e}")),
+            },
+            Item::Whole { new, .. } => now = new,
+            Item::Move { .. } | Item::Delete { .. } => failed
+                .push(format!("{head}: {target} is a buffer, not a file — it can't be moved or deleted")),
+        }
+    }
+    match failed.is_empty() {
+        true => Ok(now),
+        false => Err(format!("nothing changed:\n{}", failed.join("\n"))),
+    }
 }
 
 /// A call worked out: the change set, what the user is told of how it matched (`Landing.told`), and

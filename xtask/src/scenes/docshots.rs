@@ -429,22 +429,27 @@ pub(super) fn answered(
             say(out, json!({"type": "control_response", "response": response}))?;
             Ok(true)
         }
+        // (`space i`'s claude: its `edit` written as it streams, then called — its turn over once tarae answers it)
         "askdone" if line.starts_with("{\"message\"") => {
-            let pieces = [
-                "<r i=\"1\">",
-                "    threads",
-                ".entry(first.name",
-                ".clone())",
-                ".or_insert(first);\n",
-                "</r>",
-            ];
-            for t in pieces {
-                let delta = json!({"type": "text_delta", "text": t});
+            let edit = super::ask_edit();
+            let block = json!({"type": "tool_use", "id": "t1", "name": "mcp__tarae__edit", "input": {}});
+            let start = json!({"type": "content_block_start", "index": 0, "content_block": block});
+            say(out, json!({"type": "stream_event", "event": start}))?;
+            for piece in edit.to_string().chars().collect::<Vec<_>>().chunks(12) {
+                let delta =
+                    json!({"type": "input_json_delta", "partial_json": piece.iter().collect::<String>()});
                 let event = json!({"type": "content_block_delta", "index": 0, "delta": delta});
                 say(out, json!({"type": "stream_event", "event": event}))?;
             }
-            // (the result's text is the answer tarae applies)
-            say(out, json!({"type": "result", "result": pieces.concat()}))?;
+            say(out, json!({"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}}))?;
+            let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "edit", "arguments": edit}});
+            let request = json!({"subtype": "mcp_message", "server_name": "tarae", "message": msg});
+            say(out, json!({"type": "control_request", "request_id": "ask-edit", "request": request}))?;
+            Ok(true)
+        }
+        "askdone" if line.contains("\"ask-edit\"") => {
+            say(out, json!({"type": "result", "result": "done"}))?;
             Ok(true)
         }
         "answer" if line.starts_with("{\"message\"") => {
@@ -1167,19 +1172,23 @@ mod tests {
                 && offered.iter().all(|m| m["value"].is_string() && m["displayName"].is_string())
         );
         let ask = said("askdone");
-        let text: String = ask
-            .lines()
-            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-            .filter_map(|v| v["event"]["delta"]["text"].as_str().map(String::from))
-            .collect();
-        assert_eq!(text, "<r i=\"1\">    threads.entry(first.name.clone()).or_insert(first);\n</r>");
-        let last: serde_json::Value = serde_json::from_str(ask.lines().last().unwrap()).unwrap();
-        assert_eq!(
-            (&last["type"], last["result"].as_str()),
-            (&json!("result"), Some(text.as_str())),
-            "{ask}"
-        );
-        assert!(!ask.contains("tarae-init"));
+        let lines: Vec<serde_json::Value> = ask.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        let input: String =
+            lines.iter().filter_map(|v| v["event"]["delta"]["partial_json"].as_str()).collect();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&input).unwrap(), super::super::ask_edit());
+        let call = lines.last().unwrap();
+        assert_eq!(call["request"]["message"]["params"]["arguments"], super::super::ask_edit(), "{ask}");
+        assert!(!ask.contains("tarae-init") && !ask.contains("\"result\""), "its turn waits for the answer");
+        let answer = r#"{"response":{"request_id":"ask-edit","response":{}},"type":"control_response"}"#;
+        let mut out = Vec::new();
+        super::super::claude(
+            "askdone",
+            format!("{answer}\n").as_bytes(),
+            &mut out,
+            std::time::Duration::ZERO,
+        )
+        .unwrap();
+        assert!(String::from_utf8(out).unwrap().contains("\"result\""), "then its turn ends");
         let answer = said("answer");
         let lines: Vec<serde_json::Value> =
             answer.lines().map(|l| serde_json::from_str(l).unwrap()).collect();

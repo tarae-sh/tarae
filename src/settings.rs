@@ -640,13 +640,6 @@ pub static SETTINGS: &[Setting] = &[
         },
     },
     Setting {
-        path: "llm.context-lines",
-        kind: Kind::Int { min: 0, max: 1000 },
-        doc: "Lines of context sent around each selection",
-        get: |c| Value::from(c.llm.context_lines as i64),
-        set: |c, v| c.llm.context_lines = n(v),
-    },
-    Setting {
         path: "features.count",
         kind: Kind::Bool,
         doc: "Count which of tarae's features you use — each command, card, panel, picker and Claude tool's count and last day, never what it was used on — in features.json in tarae's state folder, on this machine only (:features shows them). Only your own config turns it on",

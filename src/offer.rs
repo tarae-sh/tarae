@@ -1102,7 +1102,10 @@ impl Offer {
                     | What::NoSandbox { .. }
                     | What::Read { .. }
                     | What::Screen { .. }
-                    | What::ChangeSet { whose: crate::refactor::Whose::Claude(_), .. }
+                    | What::ChangeSet {
+                        whose: crate::refactor::Whose::Claude(_) | crate::refactor::Whose::Ask(_),
+                        ..
+                    }
                     | What::Commit(_)
             )
             || matches!(&self.what, What::ProtectedMade { then, .. } if then.call().is_some())

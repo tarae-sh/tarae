@@ -216,42 +216,60 @@ pub fn text_of(
 /// selected. A file named like a key Claude may not read is refused, said.
 pub fn from_code(ed: &Editor) -> Option<Result<Vec<Taken>, String>> {
     let d = ed.doc();
-    let wide: Vec<_> = d
+    let wide: Vec<(usize, usize)> = d
         .selection()
         .ranges()
         .iter()
         .filter(|r| crate::graphemes::next_boundary(&d.text, r.from()) < r.to())
-        .copied()
+        .map(|r| (r.from(), r.to()))
         .collect();
     if wide.is_empty() {
         return None;
     }
+    Some(taken(ed, &wide, None))
+}
+
+/// The current buffer's `ranges`, one quote each, named by its path — or, with `buffer` (`space i`'s id for a
+/// buffer that isn't a file of the project, `ask.rs`), by that id and its name. A file named like a key Claude may not
+/// read is refused, said.
+pub fn taken(ed: &Editor, ranges: &[(usize, usize)], buffer: Option<&str>) -> Result<Vec<Taken>, String> {
+    let d = ed.doc();
     let name = d.display_name(&ed.workspace.root);
     if d.path.as_ref().is_some_and(|p| crate::reads::key_shut(ed, p, &[])) {
-        return Some(Err(format!("{name} is named like a key — point at its pane (space @) to choose")));
+        return Err(format!("{name} is named like a key — point at its pane (space @) to choose"));
     }
-    let taken = wide
+    let taken = ranges
         .iter()
-        .map(|r| {
-            let (text, l0, l1) = text_of(&d.text, (r.from(), r.to()), &|_| (0, None), &|_| None);
+        .map(|&(from, to)| {
+            let (text, l0, l1) = text_of(&d.text, (from, to), &|_| (0, None), &|_| None);
             let at = match l0 == l1 {
                 true => format!("L{}", l0 + 1),
                 false => format!("L{}–{}", l0 + 1, l1 + 1),
             };
+            let named = match buffer {
+                Some(id) => vec![("buffer", id.to_string()), ("name", name.clone())],
+                None => vec![("path", name.clone())],
+            };
             Taken {
-                attrs: vec![
-                    ("from", "code".into()),
-                    ("path", name.clone()),
-                    ("lines", format!("{}-{}", l0 + 1, l1 + 1)),
-                ],
+                attrs: [
+                    vec![("from", "code".into())],
+                    named,
+                    vec![("lines", format!("{}-{}", l0 + 1, l1 + 1))],
+                ]
+                .concat(),
                 label: format!("{name} {at}"),
                 text,
                 redact: false,
-                code: Some((d.id, d.version(), r.from(), r.to())),
+                code: Some((d.id, d.version(), from, to)),
             }
         })
         .collect();
-    Some(Ok(taken))
+    Ok(taken)
+}
+
+/// `t` as a quote whole, never cut (`space i`'s: what it quotes is what its change replaces — `ask.rs`).
+pub fn whole(t: Taken) -> Quote {
+    made(t, usize::MAX)
 }
 
 /// `space >` · `:quote`: the code's selection to the chat as quotes, the input with the keys; nothing selected,

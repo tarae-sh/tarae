@@ -122,6 +122,9 @@ enum Stage {
 pub enum Whose {
     /// Claude's call, from the chat process of this generation — answered when its files are done.
     Claude(u64),
+    /// `space i`'s claude's call (`ask.rs`), of this generation: reviewed in the buffer always, its own `space u`
+    /// step named by what you asked — nothing of it the chat's.
+    Ask(u64),
     /// The user's own (`land_yours`).
     Yours,
 }
@@ -188,14 +191,18 @@ pub fn land_told(
     note: String,
     told: String,
 ) {
-    let Some(c) = ed.workspace.claude.chat.as_ref() else {
-        return answer(ed, call, Err("the chat is gone".into()));
+    // (`space i`'s claude: what you asked is its title, nothing of the chat's — `ask.rs`)
+    let ask = ed.workspace.claude.ask.as_ref().filter(|a| a.generation == call.generation());
+    let (whose, reason, title) = match (ask, ed.workspace.claude.chat.as_ref()) {
+        (Some(a), _) => (Whose::Ask(a.generation), String::new(), a.instruction.clone()),
+        (None, Some(c)) => {
+            // (the edit tool's own title, `edit a.rs`, says nothing: what you asked heads its review, as the native
+            // Edit's — a rename's or a replace's says what the change is, and keeps it)
+            let asked = crate::edits::asked(c).filter(|a| noun == "change" && !a.trim().is_empty());
+            (Whose::Claude(c.generation()), crate::edits::reason(c), asked.unwrap_or_else(|| what.clone()))
+        }
+        (None, None) => return answer(ed, call, Err("the chat is gone".into())),
     };
-    let (generation, reason) = (c.generation(), crate::edits::reason(c));
-    // (the edit tool's own title, `edit a.rs`, says nothing: what you asked heads its review, as the native
-    // Edit's — a rename's or a replace's says what the change is, and keeps it)
-    let asked = crate::edits::asked(c).filter(|a| noun == "change" && !a.trim().is_empty());
-    let title = asked.unwrap_or_else(|| what.clone());
     let files: Vec<FileChange> =
         files.into_iter().filter(|f| f.before != f.after || f.op != Op::Text).collect();
     // (its checkout being moved onto its base — `keepclose.rs`: never mid-turn, so a stand-in's guard)
@@ -209,8 +216,10 @@ pub fn land_told(
             Ok(format!("nothing to change — {what} leaves every file as it is{}", tail(&note))),
         );
     }
-    let row = crate::chat::row_for(ed, call.mcp_id());
-    let at_end = crate::edits::at_end(ed);
+    let claudes = matches!(whose, Whose::Claude(_));
+    let row = if claudes { crate::chat::row_for(ed, call.mcp_id()) } else { None };
+    // (review at the end is the chat's: `space i`'s change is always reviewed in the buffer)
+    let at_end = claudes && crate::edits::at_end(ed);
     let ask = ed.config.llm.review_ask.clone();
     // Your unsaved edits: disk isn't what you see — the usual review, and it stays in the buffer
     let dirty = |p: &Path| ed.docs.iter().any(|d| d.path.as_deref() == Some(p) && d.is_modified());
@@ -224,7 +233,7 @@ pub fn land_told(
     });
     let l = Landing {
         stage: Stage::Fresh,
-        whose: Whose::Claude(generation),
+        whose,
         call: Some(call),
         by: "Claude".into(),
         step: None,
@@ -342,8 +351,8 @@ pub(crate) fn landed(
     row: Option<&str>,
 ) {
     let saw = |ed: &mut Editor, p: &Path| {
-        if let Whose::Claude(_) = whose {
-            crate::edittool::saw(ed, p, stamp)
+        if let Whose::Claude(g) | Whose::Ask(g) = whose {
+            crate::edittool::saw(ed, g, p, stamp)
         }
     };
     let close = |ed: &mut Editor, p: &Path| {
@@ -442,30 +451,45 @@ fn write_file_between(
     written.map_err(|e| failed(&e))
 }
 
-/// Into the chat's queue of landings (answered at once when the chat it came from is gone).
+/// The queue of landings `whose` goes in: the chat's, or `space i`'s claude's (`ask.rs`) — None: the process it
+/// came from is gone.
+fn sets_of(ed: &mut Editor, whose: Whose) -> Option<&mut VecDeque<Landing>> {
+    let s = &mut ed.workspace.claude;
+    match whose {
+        Whose::Claude(g) => s.chat.as_mut().filter(|c| c.generation() == g).map(|c| &mut c.edits.sets),
+        Whose::Ask(g) => s.ask.as_mut().filter(|a| a.generation == g).map(|a| &mut a.edits.sets),
+        Whose::Yours => None,
+    }
+}
+
+/// Into its claude's queue of landings (answered at once when the process it came from is gone).
 fn queue(ed: &mut Editor, l: Landing) {
-    match ed.workspace.claude.chat.as_mut().filter(|c| l.whose == Whose::Claude(c.generation())) {
-        Some(c) => c.edits.sets.push_back(l),
+    // (`space i`'s: its waiting card gives way to the review — `ask.rs`)
+    if let Whose::Ask(g) = l.whose {
+        crate::ask::landing(ed, g);
+    }
+    match sets_of(ed, l.whose) {
+        Some(sets) => sets.push_back(l),
         None => return finish(ed, l),
     }
     next(ed);
 }
 
-/// The landing of `whose` in front: the user's own, or the chat's front one when it's that call's.
+/// The landing of `whose` in front: the user's own, or its claude's front one when it's that call's.
 fn front(ed: &mut Editor, whose: Whose) -> Option<&mut Landing> {
     match whose {
         Whose::Yours => ed.workspace.applying.as_mut(),
-        Whose::Claude(_) => {
-            ed.workspace.claude.chat.as_mut()?.edits.sets.front_mut().filter(|l| l.whose == whose)
-        }
+        Whose::Claude(_) | Whose::Ask(_) => sets_of(ed, whose)?.front_mut().filter(|l| l.whose == whose),
     }
 }
 
 /// Every event: once no review is up, the front landings' next file in review — or, a landing's files all
-/// done, its answer. The user's own first, then the chat's front one.
+/// done, its answer. The user's own first, then `space i`'s (yours too: you asked it), then the chat's front one.
 pub fn next(ed: &mut Editor) {
-    let claudes = ed.workspace.claude.chat.as_ref().and_then(|c| c.edits.sets.front()).map(|l| l.whose);
-    for whose in [Some(Whose::Yours), claudes].into_iter().flatten() {
+    let s = &ed.workspace.claude;
+    let asks = s.ask.as_ref().and_then(|a| a.edits.sets.front()).map(|l| l.whose);
+    let claudes = s.chat.as_ref().and_then(|c| c.edits.sets.front()).map(|l| l.whose);
+    for whose in [Some(Whose::Yours), asks, claudes].into_iter().flatten() {
         next_of(ed, whose);
     }
 }
@@ -512,7 +536,7 @@ fn next_of(ed: &mut Editor, whose: Whose) {
         None => {
             let l = match whose {
                 Whose::Yours => ed.workspace.applying.take(),
-                Whose::Claude(_) => ed.workspace.claude.chat.as_mut().and_then(|c| c.edits.sets.pop_front()),
+                Whose::Claude(_) | Whose::Ask(_) => sets_of(ed, whose).and_then(VecDeque::pop_front),
             };
             finish(ed, l.expect("the front one"));
         }
@@ -634,7 +658,7 @@ fn card(l: &Landing) -> crate::offer::Offer {
         q.push_str(&lines);
     }
     let failed = match l.whose {
-        Whose::Claude(_) => "Claude's change".into(),
+        Whose::Claude(_) | Whose::Ask(_) => "Claude's change".into(),
         Whose::Yours => format!("{}'s change", l.by),
     };
     let mut o = crate::offer::Offer::new(
@@ -681,7 +705,8 @@ pub fn accept_all(ed: &mut Editor, id: u64, whose: Whose) {
     l.reviews = later.len();
     l.review = later.into();
     l.stage = Stage::Writing;
-    let (step, what) = (l.step, l.what.clone());
+    // (its step's name: what the change is — `space i`'s, what you asked)
+    let (step, what) = (l.step, l.title.clone());
     // (Claude's call, answered on its card: its row takes the card's key — for the files written now; one with
     // your unsaved edits comes up in its own review, whose keys it takes)
     if let Some(row) = row.as_ref().filter(|_| !now.is_empty()) {
@@ -737,7 +762,7 @@ pub fn accept_all(ed: &mut Editor, id: u64, whose: Whose) {
     };
     match whose {
         Whose::Claude(_) => crate::checkpoint::record_all(ed, files, then),
-        Whose::Yours => {
+        Whose::Yours | Whose::Ask(_) => {
             let step = crate::checkpoint::own(ed, step, &what, files, then);
             if let Some(l) = front(ed, whose) {
                 l.step = Some(step);
@@ -847,6 +872,7 @@ fn show(ed: &mut Editor, f: FileChange, whose: Whose, title: String, reason: Str
     if f.card_only() {
         return done_one(ed, whose, &f, Outcome::Declined);
     }
+    let asks = matches!(whose, Whose::Ask(_));
     let warnings = if f.protected { crate::edits::warned(ed) } else { Vec::new() };
     if let Err(e) = ed.open(&f.path) {
         return done_one(ed, whose, &f, Outcome::Failed(format!("{e:#}")));
@@ -876,6 +902,10 @@ fn show(ed: &mut Editor, f: FileChange, whose: Whose, title: String, reason: Str
         changes,
         Some(Box::new(move |ed: &mut Editor, applied: bool| reviewed(ed, f, whose, doc_id, dirty, applied))),
     );
+    // (`space i`'s, as its review always said: how long Claude took — `ask.rs`)
+    if asks {
+        crate::ask::reviewing(ed);
+    }
     if let Some(r) = &mut ed.workspace.claude.review {
         r.answers = answers;
         r.from_chat = from_chat;
@@ -911,7 +941,9 @@ fn reviewed(ed: &mut Editor, f: FileChange, whose: Whose, doc_id: DocId, dirty: 
                 }
                 crate::follow::wrote(ed, None, &f.path, &f.before, &now);
             }
-            match front(ed, whose).filter(|_| whose == Whose::Yours).map(|l| (l.step, l.what.clone())) {
+            // (the user's own and `space i`'s: a step of their own, named by its title)
+            let own = matches!(whose, Whose::Yours | Whose::Ask(_));
+            match front(ed, whose).filter(|_| own).map(|l| (l.step, l.title.clone())) {
                 Some((step, what)) => {
                     let file = vec![(f.path.clone(), was(&f), Some(now.clone()))];
                     let step = crate::checkpoint::own(ed, step, &what, file, |_: &mut Editor| {});
@@ -922,7 +954,13 @@ fn reviewed(ed: &mut Editor, f: FileChange, whose: Whose, doc_id: DocId, dirty: 
                 None => crate::checkpoint::record(ed, doc_id, was(&f)),
             }
             // (saved in the background: its stamp isn't known here — no claim of what Claude has seen)
-            crate::edittool::forget(ed, &f.path);
+            // (the chat's claim, but for `space i`'s change: that's its claude's — the chat's stamp, now old,
+            // says the file changed since it read it)
+            let g = match whose {
+                Whose::Ask(g) => g,
+                _ => ed.workspace.claude.chat.as_ref().map_or(0, crate::chat::Chat::generation),
+            };
+            crate::edittool::forget(ed, g, &f.path);
             if dirty {
                 Outcome::InBuffer
             } else {

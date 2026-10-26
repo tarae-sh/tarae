@@ -1684,8 +1684,7 @@ fn ensure_proc(ed: &mut Editor) {
     // (nor its account: on a key or a cloud provider it says none, and the last one's would stand — #3)
     ed.workspace.claude.usage.account = None;
     // (unique across chats too: a closed chat's process ending after a new chat's started isn't the new one's)
-    static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    c.generation = GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    c.generation = crate::tools::generation();
     let generation = c.generation;
     c.proc = Some(Proc { stdin, pid: child.id() });
     llm::pump(child, false, tx, move |ev| {

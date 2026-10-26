@@ -184,6 +184,10 @@ impl Gate {
 /// A call of tarae's own tools waits on the read card for `ask` (`Then`).
 pub fn tool_ask(ed: &mut Editor, then: Then, ask: Ask) {
     let generation = then.call.generation();
+    // (`space i`'s claude asks no card: it reads the project and its buffer — `ask.rs`)
+    if ed.workspace.claude.ask.as_ref().is_some_and(|a| a.generation == generation) {
+        return crate::tools::answer(ed, then.call, Err(crate::ask::READS_ONLY.into()));
+    }
     let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.generation() == generation) else {
         return crate::tools::answer(ed, then.call, Err("the chat it came from is gone".into()));
     };

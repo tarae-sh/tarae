@@ -101,7 +101,6 @@ select = "underline"
 
 [llm]
 model = "haiku"              # "" = the CLI's default model
-context-lines = 20           # lines around the selection sent along
 
 [keys.normal]
 "A-," = "goto_previous_buffer"

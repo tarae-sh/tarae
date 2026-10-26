@@ -20,7 +20,7 @@ use crate::tools::{Call, Part, answer};
 const WHOLE_MAX: usize = 16 * 1024;
 
 /// Lines in one answer at most, and a line's characters.
-const LINES_MAX: usize = 1500;
+pub(crate) const LINES_MAX: usize = 1500;
 const LINE_MAX: usize = 500;
 
 /// Files and ranges one call asks for at most · symbols one name reads at most · outline rows shown.
@@ -192,7 +192,7 @@ fn go(ed: &mut Editor, call: Call, items: Vec<Item>, args: Value, granted: Vec<P
             match r {
                 Ok(Ok(parts)) => {
                     for (p, s) in stamps {
-                        crate::edittool::saw(ed, &p, s);
+                        crate::edittool::saw(ed, call.generation(), &p, s);
                     }
                     crate::web::tool::answered(ed, &call);
                     crate::web::tool::landed(ed, got);
@@ -427,19 +427,12 @@ fn section_of(
     let text = String::from_utf8_lossy(bytes);
     let lines: Vec<&str> = text.lines().collect();
     let n = lines.len();
-    let of = format!("of {n} line{}", if n == 1 { "" } else { "s" });
+    let of = of_lines(n);
     let ranges: Vec<(usize, usize, String)> = match &it.want {
         Want::Whole if bytes.len() > WHOLE_MAX => {
             return outline(outline_of(&text), shown, &lines, bytes.len(), left);
         }
-        Want::Whole => vec![(1, n, format!("== {shown} ({of})"))],
-        Want::Tail(k) => {
-            let a = n.saturating_sub(*k) + 1;
-            vec![(a, n, format!("== {shown}:{a}-{n} ({of})"))]
-        }
-        Want::Lines(rs) => {
-            rs.iter().map(|&(a, b)| (a, b.min(n), format!("== {shown}:{a}-{} ({of})", b.min(n)))).collect()
-        }
+        Want::Whole | Want::Tail(_) | Want::Lines(_) => ranges(&it.want, n, shown).unwrap_or_default(),
         Want::Symbol(name) => match outline_of(&text) {
             Err(e) => return format!("== {shown}:{name}: no symbols — {e}; ask for line ranges\n"),
             Ok(syms) => {
@@ -462,6 +455,41 @@ fn section_of(
             }
         },
     };
+    lines_of(ranges, n, &|l| lines[l - 1].to_string(), shown, left, seen)
+}
+
+/// `of 12 lines`.
+fn of_lines(n: usize) -> String {
+    format!("of {n} line{}", if n == 1 { "" } else { "s" })
+}
+
+/// The ranges `want` asks of a text of `n` lines, from 1 — its whole, its last lines, its line ranges (an end past
+/// the text's clamped to it) — each with its heading. None: a symbol's (its outline's to say).
+pub(crate) fn ranges(want: &Want, n: usize, shown: &str) -> Option<Vec<(usize, usize, String)>> {
+    let of = of_lines(n);
+    Some(match want {
+        Want::Whole => vec![(1, n, format!("== {shown} ({of})"))],
+        Want::Tail(k) => {
+            let a = n.saturating_sub(*k) + 1;
+            vec![(a, n, format!("== {shown}:{a}-{n} ({of})"))]
+        }
+        Want::Lines(rs) => {
+            rs.iter().map(|&(a, b)| (a, b.min(n), format!("== {shown}:{a}-{} ({of})", b.min(n)))).collect()
+        }
+        Want::Symbol(_) => return None,
+    })
+}
+
+/// `ranges`' lines of a text of `n` (`line(l)`: line `l`, from 1), numbered under their headings — at most `left`
+/// lines in all (taken from it), the lines given in `seen`.
+pub(crate) fn lines_of(
+    ranges: Vec<(usize, usize, String)>,
+    n: usize,
+    line: &dyn Fn(usize) -> String,
+    shown: &str,
+    left: &mut usize,
+    seen: &mut Vec<(usize, usize)>,
+) -> String {
     let mut out = String::new();
     for (a, b, head) in ranges {
         out.push_str(&head);
@@ -471,8 +499,8 @@ fn section_of(
             continue;
         }
         let take = (b - a + 1).min(*left);
-        for (i, l) in lines[a - 1..a - 1 + take].iter().enumerate() {
-            out.push_str(&format!("{}: {}\n", a + i, crate::nav::clip(l, LINE_MAX)));
+        for l in a..a + take {
+            out.push_str(&format!("{l}: {}\n", crate::nav::clip(&line(l), LINE_MAX)));
         }
         if take > 0 {
             seen.push((a, a + take - 1));

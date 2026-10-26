@@ -355,7 +355,7 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
             editor.load_language(id, spec);
             Ok(())
         }
-        "ask" => crate::llm::ask(editor, rest),
+        "ask" => crate::ask::start(editor, rest),
         "ask-cancel" => {
             crate::llm::cancel(editor);
             Ok(())

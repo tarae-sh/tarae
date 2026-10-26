@@ -31,6 +31,22 @@ In a selection-first editor, Claude takes the *action* slot: select, then tell i
 4. It opens as an **in-buffer review**: the whole file stays in view with only the changed spots expanded — deleted
    lines on faint red, added lines on faint green, both in the file's syntax colors, a header line per change
 
+It's a Claude of its own, beside the chat: one turn of `claude -p` that starts at Enter, with no conversation
+behind it and no settings, and only tarae's `read` and `edit` as tools. It gets your selections, quoted as
+`space >` quotes them (each whole, with its file and lines), and your instruction. It may read around them, then
+makes the change with `edit`, which you review as you review every edit of Claude's. It never waits behind a chat
+turn, and the chat hears nothing of it: not in its conversation, its turn, or what it has read. It stops after 10
+requests.
+
+An accepted change is saved, as every change of Claude's is, unless the buffer has unsaved edits of yours (then it
+stays in the buffer with them). A buffer that isn't a file of the project, such as a scratch buffer or a file
+outside it, is named to this Claude by an id of its own (`buffer-…`, new each time). Its `edit` and `read` take
+that id, and only this one buffer's. The change is reviewed in that buffer and not saved: `:w` saves it, as
+always. Any path it names goes the way every edit's does, inside the project or refused. It reads nothing that would
+ask you on a card, and no pages. What tarae shows read-only (a page, the woven view, a run's output) isn't
+`space i`'s to change, and the status line says so. A file named like a key isn't sent, as `space >` doesn't send
+one.
+
 | Key | In the review |
 |---|---|
 | `y` / `n` | Accept / reject this change |
@@ -43,8 +59,10 @@ Accepted changes apply as one transaction — one `u` undoes them all. If the or
 found again and the change still lands in the right place. `:ask-cancel` kills the process, so token generation stops
 too ([screenshot](screenshots/m4-review.png)).
 
-**Speed**: a fresh `claude` process takes 8–10 s to start, so tarae starts one the moment the prompt opens, while you
-type. Enter → diff takes about 3.4 s with the default model.
+**What it costs**: measured on 2026-10-26 with five changes. `space i` cost $0.018 a change, with 2–3 requests and
+the first change about 3.7 s after Enter. The chat cost $0.026 a change at a small context and $0.174 at a large
+one (403k tokens), because each of its requests reads the whole conversation. `space i`'s cost doesn't grow with
+the conversation, because it has none.
 
 ## Chat panel
 
@@ -2333,7 +2351,6 @@ there with other text.
 [llm]
 command = "claude"   # a CLI speaking Claude Code's stream-json protocol
 model = "haiku"      # "" = the CLI's default model
-context-lines = 20   # lines around each selection sent along
 ```
 
 All of them, with defaults: [settings reference](reference/settings.md#llm).

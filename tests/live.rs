@@ -2541,8 +2541,8 @@ struct SelectionRun {
     wrong: Option<String>,
 }
 
-/// `task` done in `lane` by `arm`: "ask" — today's `space i` (the selections in its prompt, its answer reviewed in
-/// the buffer, `:w`); "chat" — `space >` quotes the selections, `CHAT_ASKS` and the instruction go as a message,
+/// `task` done in `lane` by `arm`: "ask" — `space i` (since 4b, B′: a one-turn claude of its own, the selections quoted,
+/// its `edit` reviewed in the buffer and saved — the `:w` after finds nothing to write); "chat" — `space >` quotes the selections, `CHAT_ASKS` and the instruction go as a message,
 /// Claude changes the file with `edit`, reviewed in the buffer as every chat edit is. Times from the instruction's
 /// Enter: the change's first character in claude's stream (`first`), its review on screen (`ready`), the last
 /// result (`end`); every review answered `a` the moment it's up, every card `n`.
@@ -2696,8 +2696,9 @@ fn ask_lane(name: &'static str, large: usize, llm: &str, bin: Option<&str>) -> (
 /// rotate by task and run. `TARAE_AB_RUNS` (2), `TARAE_AB_TASKS` (names; all), `TARAE_AB_BUDGET` ($, 15: no edit
 /// starts past it), `TARAE_AB_MODEL` ("opus" — a large lane needs a window past `TARAE_AB_LARGE`),
 /// `TARAE_AB_EFFORT`, `TARAE_AB_BIN`. Rows to `target/live/ask-ab.tsv`, streams to `target/live/ask-ab/`.
-/// Since Q2 the ask arm measures `space i` as it now is: its claude started at Enter, cold. The run that decided
-/// Q1 (2026-10-26, B′ on cost) had the spare started as the prompt opened; its rows are kept in this checkout's
+/// Since Q2 the ask arm measures `space i` as it now is: its claude started at Enter, cold — and since 4b, B′ itself
+/// (`ask.rs`: `read` and `edit`, the quotes as its message). The run that decided Q1 (2026-10-26, B′ on cost) had
+/// today's one-shot ask with its spare started as the prompt opened; its rows are kept in this checkout's
 /// `.sb/ask-ab-2026-10-26.tsv` (the two pilots' 8, then the 2 runs' 40).
 #[test]
 #[ignore = "live: run with `cargo live` (uses Claude)"]

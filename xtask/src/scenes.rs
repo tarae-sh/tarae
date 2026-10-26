@@ -3056,6 +3056,12 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
     Ok(())
 }
 
+/// `space i`'s edit in the scenes (`ask`, the docs' `askdone`): line 10 of the demo's `main.rs` keeping the first strand.
+pub(crate) fn ask_edit() -> Value {
+    json!({"edits": [{"file_path": "src/main.rs", "old_string": "    threads.insert(first.name.clone(), first);",
+        "new_string": "    threads.entry(first.name.clone()).or_insert(first);"}]})
+}
+
 struct Turn<'a, W, L> {
     out: &'a mut W,
     lines: &'a mut L,
@@ -3332,16 +3338,10 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.lines.by_ref().try_for_each(|l| l.map(drop))
     }
 
-    /// `space i`'s answer (`<r i="1">` …): the line rewritten, stopping mid-line — and holding there a minute (a
-    /// shot's time): tarae closes this process's input once it has sent the message, so there's nothing to wait
-    /// on, and an exit would end the answer.
+    /// `space i`'s claude (`ask.rs`): its `edit` of the line being written, its `new_string` held mid-line until
+    /// tarae goes (the card's preview of it).
     fn rewrite(&mut self) -> io::Result<()> {
-        self.text("<r i=\"1\">")?;
-        for t in ["    threads", ".entry(first.name", ".clone())", ".or_insert("] {
-            self.text(t)?;
-        }
-        std::thread::sleep(Duration::from_secs(60));
-        Ok(())
+        self.input(1, "edit", &ask_edit().to_string(), Some("or_insert("))
     }
 
     /// A turn of a big conversation (`warm`): its init, a request that wrote 181k tokens to the 1h cache, a short

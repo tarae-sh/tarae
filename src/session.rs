@@ -37,6 +37,8 @@ pub struct Session {
     pub checkpoints: crate::checkpoint::Checkpoints,
     /// The in-buffer review (`llm.rs`) — `space i`'s, a chat edit's.
     pub review: Option<crate::llm::Review>,
+    /// `space i`'s claude while it runs (`ask.rs`): one turn beside the chat, nothing of it the chat's.
+    pub ask: Option<crate::ask::Ask>,
     /// A yes on the board's card (`board::Ask`), and the chat's conversation it was given in: another board in this
     /// session starts unasked while that conversation goes on. Not kept past a restart.
     pub board_yes: Option<Option<String>>,
@@ -115,6 +117,7 @@ impl Session {
             notes: Default::default(),
             checkpoints: Default::default(),
             review: None,
+            ask: None,
             board_yes: None,
             turn_end: None,
             tool_waits: Vec::new(),

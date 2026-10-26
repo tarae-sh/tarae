@@ -87,7 +87,6 @@ The name is also the `:set` path: `:set editor.scrolloff 8` changes it until you
 | `llm.sandbox-write` | list of strings | `[]` | Chat: more folders the sandbox lets Claude's commands write to ("~/scratch") — never the project's own folders above it |
 | `llm.sandbox-env` | list of strings | `[]` | Chat: more of your environment Claude's commands get ("DATABASE_URL", "MYAPP_*") — they start with PATH, HOME, the locale and the toolchains' own; a token-like one only by its whole name (:sandbox-env lists them) |
 | `llm.sandbox-protect` | list of strings | `[]` | Chat: paths in the project the sandbox keeps Claude's commands from changing ("migrations/"); the protected names (.git, .tarae.toml, build.rs, pom.xml… — every language pack's) always, anywhere in it |
-| `llm.context-lines` | integer 0–1000 | `20` | Lines of context sent around each selection |
 
 ## `[features]`
 

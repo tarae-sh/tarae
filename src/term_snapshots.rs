@@ -1735,20 +1735,30 @@ fn snapshot_offer_run_pattern() {
     s.check("offer_run_pattern");
 }
 
-/// `:ask` review — the answer shown as an inline diff inside the buffer (fake claude).
+/// `:ask` review — its claude's `edit` shown as an inline diff inside the buffer (a stand-in claude).
 #[test]
 fn snapshot_ask_review() {
     let mut s = Shot::new(100, 30);
-    s.file("src/demo.rs", DEMO_RS);
-    let reply = "<r i=\"1\">    println!(\"{} distinct words in {:?}\", counts.len(), text);\n</r>";
-    let json = json!({"type": "result", "is_error": false, "result": reply}).to_string();
-    s.ed.config.llm.command = "sh".into();
-    s.ed.config.llm.args = vec!["-c".into(), format!("read -r line; printf '%s\\n' '{json}'")];
-    s.keys("17ggx i");
-    s.keys("show the text too<ret>");
-    s.until("review", |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+    ask_answered(&mut s);
     s.ed.toasts.clear(); // "claude answered in 0.0s" — wall-clock time
     s.check("ask_review");
+}
+
+/// `space i` on line 17 of the demo, its stand-in claude's `edit` of it in review.
+fn ask_answered(s: &mut Shot) {
+    s.file("src/demo.rs", DEMO_RS);
+    let (tx, _sent) = std::sync::mpsc::channel();
+    s.ed.ask_lines = Some(tx);
+    s.keys("17ggx i");
+    s.keys("show the text too<ret>");
+    let (g, target) = crate::ask::target(&s.ed);
+    let edit = json!({"edits": [{"file_path": target,
+        "old_string": "    println!(\"{} distinct words\", counts.len()); // 타래\n",
+        "new_string": "    println!(\"{} distinct words in {:?}\", counts.len(), text);\n"}]});
+    let request = json!({"subtype": "mcp_message", "server_name": "tarae", "message": {"jsonrpc": "2.0", "id": 1,
+        "method": "tools/call", "params": {"name": "edit", "arguments": edit}}});
+    crate::ask::on_event(&mut s.ed, g, crate::llm::StreamEv::Control { request_id: "r1".into(), request });
+    s.until("review", |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
 }
 
 /// Chat panel, empty state (a fake claude that just waits).
@@ -7950,14 +7960,7 @@ fn the_path_bar_has_no_separator_alone() {
 fn an_edit_reviews_reason_is_whole_sentences() {
     use unicode_width::UnicodeWidthStr;
     let mut s = Shot::new(100, 30);
-    s.file("src/demo.rs", DEMO_RS);
-    let reply = "<r i=\"1\">    println!(\"{} distinct words in {:?}\", counts.len(), text);\n</r>";
-    let json = json!({"type": "result", "is_error": false, "result": reply}).to_string();
-    s.ed.config.llm.command = "sh".into();
-    s.ed.config.llm.args = vec!["-c".into(), format!("read -r line; printf '%s\\n' '{json}'")];
-    s.keys("17ggx i");
-    s.keys("show the text too<ret>");
-    s.until("review", |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+    ask_answered(&mut s);
     s.ed.toasts.clear();
     let reason = "Keying by the name alone means a second strand with the same name replaces the first one in \
                   the map. The entry API keeps the one that came first. I will switch it so a repeat keeps the \

@@ -8,9 +8,9 @@
 //! request starts its own process at Enter and writes its message. One process per request — so contexts don't
 //! mix.
 //!
-//! Flow: selections → one request (answer per selection in `<r i="N">` tags) → review (diff, y/n per change)
-//! → applied as one transaction. The answer is received as it streams (`--include-partial-messages`) and
-//! shown in a preview card. Cancel = kill the process.
+//! A commit draft (`draft`): one request → its answer streamed into a preview card (`--include-partial-messages`)
+//! → the in-buffer review (y/n per change) → applied as one transaction. Cancel = kill the process. `space i` is a
+//! one-turn claude of its own with tarae's `read` and `edit` (`ask.rs`), whose waiting card and review are these.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -118,8 +118,6 @@ pub struct LlmConfig {
     pub model: Option<String>,
     /// `--effort` ("" = the model's default).
     pub effort: String,
-    /// Lines of context sent before and after the selection.
-    pub context_lines: usize,
     /// Chat: the editor follows where Claude is reading (`C-f` in the chat toggles it for that chat).
     pub follow: bool,
     /// Chat: seconds after your last key that follow takes over again while Claude works (0 = only `C-f`).
@@ -198,7 +196,6 @@ impl Default for LlmConfig {
             args: DEFAULT_ARGS.iter().map(|s| s.to_string()).collect(),
             model: None,
             effort: String::new(),
-            context_lines: 20,
             follow: true,
             follow_resume: 20,
             review_at_end: false,
@@ -1163,59 +1160,9 @@ pub(crate) fn parse_line(ev: &serde_json::Value) -> Option<StreamEv> {
 
 // ── Prompt·response ─────────────────────────────────────────────────────
 
-pub fn build_prompt(
-    instruction: &str,
-    file: &str,
-    text: &Rope,
-    ranges: &[(usize, usize)],
-    ctx: usize,
-) -> String {
-    let mut p = String::from(
-        "You are the editing engine inside a text editor. Rewrite each <selection> according to the \
-         instruction.\nReply with ONLY the replacement text of every selection, each wrapped in \
-         <r i=\"N\">...</r> in the same order — no explanations, no markdown fences, nothing else. \
-         Keep the surrounding code style and indentation. If a selection needs no change, return it \
-         unchanged.\n\n",
-    );
-    p.push_str(&format!("Instruction: {instruction}\nFile: {file}\n"));
-    let last_line = text.len_lines().saturating_sub(1);
-    for (i, &(from, to)) in ranges.iter().enumerate() {
-        // Last line = that of the last selected byte (a line-wise selection ends at the next line's start)
-        let (l0, l1) = (text.byte_to_line(from), text.byte_to_line(to.saturating_sub(1).max(from)));
-        let c0 = text.line_to_byte(l0.saturating_sub(ctx));
-        let c1 = text.line_to_byte((l1 + ctx + 1).min(last_line + 1));
-        p.push_str(&format!(
-            "\n<selection i=\"{}\" lines=\"{}-{}\">\n<before>{}</before>\n<text>{}</text>\n<after>{}</after>\n</selection>\n",
-            i + 1,
-            l0 + 1,
-            l1 + 1,
-            text.byte_slice(c0..from),
-            text.byte_slice(from..to),
-            text.byte_slice(to..c1.max(to)),
-        ));
-    }
-    p
-}
-
-/// Extracts N `<r i="N">…</r>`. With a single selection, an untagged answer is accepted too.
-pub fn parse_replies(out: &str, n: usize) -> Result<Vec<String>, String> {
-    let mut replies = Vec::with_capacity(n);
-    for i in 1..=n {
-        let open = format!("<r i=\"{i}\">");
-        let found = out.find(&open).and_then(|s| {
-            let body = &out[s + open.len()..];
-            body.find("</r>").map(|e| &body[..e])
-        });
-        match found {
-            Some(body) => {
-                let body = body.strip_prefix('\n').unwrap_or(body);
-                replies.push(body.strip_suffix('\n').unwrap_or(body).to_string());
-            }
-            None if n == 1 => replies.push(strip_fences(out.trim_matches('\n')).to_string()),
-            None => return Err(format!("reply {i}/{n} missing")),
-        }
-    }
-    Ok(replies)
+/// A draft's answer as the text it is: the one answer, a code fence around it taken off.
+fn answer_of(out: &str) -> String {
+    strip_fences(out.trim_matches('\n')).to_string()
 }
 
 fn strip_fences(s: &str) -> &str {
@@ -1323,13 +1270,14 @@ pub struct Review {
 pub type OnDone = Box<dyn FnOnce(&mut Editor, bool)>;
 
 /// Closes the open review as rejected (before another review takes its place — so the waiter gets an answer).
-/// An ask still waiting for its answer is killed (its result would no longer find its review).
+/// An answer still being waited for is killed (its result would no longer find its review) — `space i`'s ends.
 pub fn close_review(ed: &mut Editor) {
     let Some(mut rev) = ed.workspace.claude.review.take() else { return };
-    if !rev.ready
-        && let Some(pid) = ed.llm_pid.take()
-    {
-        kill(pid);
+    if !rev.ready {
+        if let Some(pid) = ed.llm_pid.take() {
+            kill(pid);
+        }
+        crate::ask::closed(ed, rev.generation);
     }
     crate::reviews::edit_ended(ed, &rev, true, false);
     if let Some(cb) = rev.on_done.take() {
@@ -1441,49 +1389,8 @@ impl Review {
 
 // ── Commands ────────────────────────────────────────────────────────────
 
-pub fn ask(ed: &mut Editor, instruction: &str) -> Result<(), String> {
-    let instruction = instruction.trim();
-    if instruction.is_empty() {
-        return Err("usage: :ask <instruction>".into());
-    }
-    if ed.workspace.claude.review.is_some() {
-        return Err("an ask is already in progress (:ask-cancel)".into());
-    }
-    let cfg = ed.config.llm.clone();
-    let doc = ed.doc();
-    let ranges: Vec<(usize, usize)> = doc
-        .selection()
-        .ranges()
-        .iter()
-        .map(|r| {
-            let r = r.min_width_1(&doc.text);
-            (r.from(), r.to())
-        })
-        .collect();
-    let prompt = build_prompt(
-        instruction,
-        &doc.display_name(&ed.workspace.root),
-        &doc.text,
-        &ranges,
-        cfg.context_lines,
-    );
-    let hunks = ranges
-        .iter()
-        .map(|&(from, to)| Hunk {
-            from,
-            to,
-            old: doc.text.byte_slice(from..to).to_string(),
-            new: String::new(),
-            decision: Decision::Undecided,
-            conflict: false,
-        })
-        .collect::<Vec<_>>();
-    let doc_id = doc.id;
-    start(ed, doc_id, instruction, &prompt, hunks, "ask")
-}
-
 /// Claude writes what `from..to` of document `doc_id` should be, from `prompt` alone (one answer, no tools) —
-/// streamed, then the in-buffer review like `space i`'s (a commit message's draft).
+/// streamed, then the in-buffer review (a commit message's draft).
 pub fn draft(
     ed: &mut Editor,
     doc_id: DocId,
@@ -1501,7 +1408,7 @@ pub fn draft(
     }
     let old = doc.text.byte_slice(from..to).to_string();
     let hunk = Hunk { from, to, old, new: String::new(), decision: Decision::Undecided, conflict: false };
-    start(ed, doc_id, label, prompt, vec![hunk], "draft")?;
+    start(ed, doc_id, label, prompt, hunk)?;
     // (its time limit: a draft still being written then is stopped, and said)
     let generation = ed.llm_generation;
     ed.events.jobs().spawn(move || {
@@ -1548,17 +1455,10 @@ pub fn stop_waiting(ed: &mut Editor, generation: Option<u64>, said: &str) {
     ed.set_warning(format!("Claude's {what}: {said}"));
 }
 
-/// One answer for `hunks` of `doc_id` (the prompt asks for a `<r i="N">` each): the process, the review
-/// waiting for it, the stream into it. `what` asked it (`ask`: `space i` · `draft`: a commit message) — its
-/// turn's name in `:usage` and the call-order record.
-fn start(
-    ed: &mut Editor,
-    doc_id: DocId,
-    instruction: &str,
-    prompt: &str,
-    hunks: Vec<Hunk>,
-    what: &'static str,
-) -> Result<(), String> {
+/// A draft's answer for `hunk` of `doc_id`: the process, the review waiting for it, the stream into it — a turn
+/// named `draft` in `:usage` and the call-order record.
+fn start(ed: &mut Editor, doc_id: DocId, instruction: &str, prompt: &str, hunk: Hunk) -> Result<(), String> {
+    let what = "draft";
     let cfg = ed.config.llm.clone();
     let cred = ed.credential(ed.workspace.claude.billing, crate::billing::Role::Ask)?;
     // (its own process, started now: posix_spawn returns at once, claude's start is the child's)
@@ -1582,8 +1482,7 @@ fn start(
     }
     ed.llm_generation += 1;
     let generation = ed.llm_generation;
-    let n = hunks.len();
-    ed.workspace.claude.review = Some(Review::new(generation, doc_id, instruction, hunks));
+    ed.workspace.claude.review = Some(Review::new(generation, doc_id, instruction, vec![hunk]));
     ed.llm_pid = Some(child.id());
     pump(child, true, ed.events.sender(), move |ev| {
         Some(match ev {
@@ -1599,7 +1498,7 @@ fn start(
                 }
             }),
             StreamEv::Done(r) => {
-                let result = r.and_then(|out| parse_replies(&out, n));
+                let result = r.map(|out| vec![answer_of(&out)]);
                 Box::new(move |ed: &mut Editor| on_result(ed, generation, result))
             }
             // (what it cost is the session's too — a turn of its own, beside the chat's conversation; a
@@ -1621,7 +1520,7 @@ fn start(
                     stop_waiting(ed, Some(generation), &said);
                 })
             }
-            // ask runs without tools, and its conversation isn't kept
+            // a draft runs without tools, and its conversation isn't kept
             StreamEv::Requesting(_)
             | StreamEv::Retry(_)
             | StreamEv::Money(_)
@@ -1647,6 +1546,7 @@ pub fn cancel(ed: &mut Editor) {
     if let Some(pid) = ed.llm_pid.take() {
         kill(pid);
     }
+    crate::ask::cancel(ed);
     if ed.workspace.claude.review.is_some() {
         close_review(ed);
         ed.llm_generation += 1;
@@ -1724,17 +1624,9 @@ pub fn wrap_message(text: &str, width: usize) -> String {
     out
 }
 
-/// Preview of the streaming answer: the last few lines inside the `<r i="N">` being written.
+/// Preview of the streaming answer (a draft's, `space i`'s `new_string`): its last few lines.
 pub fn preview(streamed: &str, rows: usize) -> Vec<&str> {
-    let body = match streamed.rfind("<r i=\"") {
-        Some(i) => {
-            let rest = &streamed[i..];
-            rest.find('>').map_or("", |g| &rest[g + 1..])
-        }
-        None => streamed,
-    };
-    let body = body.split("</r>").next().unwrap_or_default().trim_start_matches('\n');
-    let lines: Vec<&str> = body.lines().collect();
+    let lines: Vec<&str> = streamed.trim_start_matches('\n').lines().collect();
     lines[lines.len().saturating_sub(rows)..].to_vec()
 }
 
@@ -2725,18 +2617,16 @@ pub(crate) mod tests {
         let stopped =
             serde_json::json!({"type": "result", "subtype": "error_during_execution", "result": ""});
         assert!(matches!(parse_line(&stopped), Some(StreamEv::Done(Err(e))) if e == "stopped"));
-        // Preview: the last lines inside the tag being written
-        assert_eq!(preview("<r i=\"1\">a</r>\n<r i=\"2\">\nx\ny\nz", 2), vec!["y", "z"]);
+        // Preview: the last lines being written
+        assert_eq!(preview("\nx\ny\nz", 2), vec!["y", "z"]);
         assert_eq!(preview("plain\ntext", 5), vec!["plain", "text"]);
     }
 
+    /// A draft's answer is the text it is — a code fence around it taken off.
     #[test]
-    fn parses_tagged_replies() {
-        let out = "<r i=\"1\">\nfoo\n</r>\n<r i=\"2\">bar</r>";
-        assert_eq!(parse_replies(out, 2).unwrap(), vec!["foo", "bar"]);
-        assert!(parse_replies("<r i=\"1\">x</r>", 2).is_err());
-        // With one selection, also an answer without tags·fences
-        assert_eq!(parse_replies("```rust\nlet x = 1;\n```", 1).unwrap(), vec!["let x = 1;"]);
+    fn a_drafts_answer_loses_its_fence() {
+        assert_eq!(answer_of("```rust\nlet x = 1;\n```"), "let x = 1;");
+        assert_eq!(answer_of("\nfix: a thing\n"), "fix: a thing");
     }
 
     #[test]
@@ -2802,20 +2692,6 @@ pub(crate) mod tests {
     fn line_diff_marks_changes() {
         let d = line_diff("a\nb\nc", "a\nB\nc");
         assert_eq!(d, vec![(' ', "a"), ('-', "b"), ('+', "B"), (' ', "c")]);
-    }
-
-    #[test]
-    fn prompt_carries_selection_and_context() {
-        let text = Rope::from_str("one\ntwo\nthree\n");
-        let p = build_prompt("upper", "x.txt", &text, &[(4, 7)], 1);
-        assert!(p.contains("Instruction: upper"));
-        assert!(p.contains("<text>two</text>"));
-        assert!(p.contains("<before>one\n</before>"));
-        assert!(p.contains("lines=\"2-2\""));
-        // A line-wise selection (up to the next line's start) is still that one line
-        let p = build_prompt("upper", "x.txt", &text, &[(4, 8)], 1);
-        assert!(p.contains("lines=\"2-2\""), "{p}");
-        assert!(p.contains("<after>three\n</after>"), "{p}");
     }
 
     /// A thinking block's start and its own end are told (the turn's word waves meanwhile — `shimmer.rs`); another

@@ -1093,6 +1093,11 @@ const BRANCHES: &[(&str, &str, &str)] = &[
     ),
     (
         "src/editor.rs",
+        "in fn with_root: ask_lines",
+        "stays off: only a test's `space i` has a stand-in claude (`sim/ask.rs`) — no run is an ask's",
+    ),
+    (
+        "src/editor.rs",
         "in fn with_root: reviews_dir",
         "stays off: no review record written — a person's time on reviewed changes, never read by a run",
     ),

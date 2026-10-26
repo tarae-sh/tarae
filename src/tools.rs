@@ -52,6 +52,19 @@ pub struct Call {
 }
 
 impl Call {
+    /// Call `id` of claude process `generation` (`request_id` its control request's), in revision `rev`, of `tool` —
+    /// `space i`'s claude's (`ask.rs`), whose server isn't `mcp`.
+    pub(crate) fn new(
+        generation: u64,
+        request_id: &str,
+        id: Value,
+        rev: crate::mcp::Rev,
+        tool: &str,
+    ) -> Call {
+        let request_id = request_id.to_string();
+        Call { generation, request_id, id, rev, tool: tool.to_string(), output: None, trace: None }
+    }
+
     /// Whether `other` is this call (the same chat process, the same MCP id).
     pub(crate) fn same(&self, other: &Call) -> bool {
         self.generation == other.generation && self.id == other.id
@@ -404,18 +417,27 @@ pub fn answer_parts(ed: &mut Editor, call: Call, r: Result<Vec<Part>, String>) {
     deliver(ed, call, r);
 }
 
-/// `answer`'s way to its chat: the session in `ed.workspace` if it's that chat's, else that session swapped in — or,
-/// while another session behind is swapped in, from the main loop next (never a swap inside a swap). That
-/// next turn is the owner's own event (`Event::For`, swapped in for it, so delivered at once), so it's one
-/// hop, never a loop.
+/// `answer`'s way to its chat — or `space i`'s claude (`ask.rs`): the session in `ed.workspace` if it's that
+/// process's, else that session swapped in — or, while another session behind is swapped in, from the main loop next
+/// (never a swap inside a swap). That next turn is the owner's own event (`Event::For`, swapped in for it, so
+/// delivered at once), so it's one hop, never a loop.
 fn deliver(ed: &mut Editor, call: Call, r: Result<Vec<Part>, String>) {
-    let owner = std::iter::once(&ed.workspace)
-        .chain(&ed.workspaces)
-        .find(|l| l.claude.chat.as_ref().is_some_and(|c| c.generation() == call.generation))
-        .map(|l| l.id);
+    let owns = |l: &crate::workspace::Workspace| {
+        l.claude.chat.as_ref().is_some_and(|c| c.generation() == call.generation)
+            || l.claude.ask.as_ref().is_some_and(|a| a.generation == call.generation)
+    };
+    let owner = std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|l| owns(l)).map(|l| l.id);
     match owner {
         // (its chat is gone, or another process took its place)
         None => {}
+        // (`space i`'s: to its own process — the chat's tally, sizes and waits are the chat's)
+        Some(session)
+            if session == ed.workspace.id
+                && ed.workspace.claude.ask.as_ref().is_some_and(|a| a.generation == call.generation) =>
+        {
+            let response = response(&call, r);
+            crate::ask::respond(ed, &call.request_id, json!({ "mcp_response": response }));
+        }
         Some(session) if session == ed.workspace.id => {
             ed.workspace.claude.tool_waits.retain(|w| !w.is(call.generation, &call.id));
             let (len, pictures) = r.as_ref().map_or_else(|e| (e.len(), 0), |p| (parts_len(p), pictures(p)));
@@ -433,6 +455,12 @@ fn deliver(ed: &mut Editor, call: Call, r: Result<Vec<Part>, String>) {
             let _ = ed.events.shared_sender().send(crate::event::Event::For(session, tag, Box::new(later)));
         }
     }
+}
+
+/// A new claude process's generation — the chats' and `space i`'s from one count, so a `Call`'s names one process.
+pub fn generation() -> u64 {
+    static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// A waited call's answer, in its request's revision.
