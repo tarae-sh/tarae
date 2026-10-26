@@ -98,12 +98,7 @@ fn frame(ed: &mut Editor, w: u16, h: u16) -> Vec<String> {
 /// tarae's edit replacing line 3 with `new`, its keys in the order the model writes them (serde's own `to_string`
 /// sorts them: `new_string` would come first).
 fn edit_input(new: &str) -> String {
-    let s = |t: &str| serde_json::to_string(t).unwrap();
-    format!(
-        r#"{{"edits":[{{"file_path":"a.rs","old_string":{},"new_string":{}}}]}}"#,
-        s("    let b = 2;\n"),
-        s(new)
-    )
+    edit_of("a.rs", "    let b = 2;\n", new)
 }
 
 /// The reader thread's part: a tool call's input read from its block's lines — each piece once, a block of another
@@ -1021,7 +1016,7 @@ fn call_edit(ed: &mut Editor, g: u64, id: &str, rpc: u64, input: &str) {
     crate::chat::stream_event(ed, g, StreamEv::Control { request_id: format!("c{rpc}"), request });
 }
 
-/// tarae's edit of `file` replacing `old` with `new`.
+/// tarae's edit of `file` replacing `old` with `new`, its keys in the order the model writes them.
 fn edit_of(file: &str, old: &str, new: &str) -> String {
     let s = |t: &str| serde_json::to_string(t).unwrap();
     format!(r#"{{"edits":[{{"file_path":{},"old_string":{},"new_string":{}}}]}}"#, s(file), s(old), s(new))
@@ -1464,6 +1459,59 @@ fn reduce_motion_and_calm_on_the_frame() {
     assert_eq!(ed.tick_wanted(), Some(crate::editor::TICK), "full: it fades in");
 }
 
+/// The big write's budget: an edit rewriting `a.rs`'s `lines` lines whole, its input as the model writes it (its
+/// `old_string` before its `new_string` — `json!`'s keys sorted put the 200 KB `old_string` last, never closed by the
+/// batches near the end: the look never asked, nothing shown, the budget never settling — frictions #161), and the
+/// batches near its end (16 characters each, the last 10 left).
+struct BigWrite {
+    text: String,
+    chars: Vec<char>,
+    near_end: usize,
+    cuts: Vec<usize>,
+}
+
+impl BigWrite {
+    fn new(lines: usize) -> BigWrite {
+        let text: String =
+            (0..lines).map(|i| format!("    let value_{i} = compute({i}, \"타래\");\n")).collect();
+        let new = text.replace("compute(", "measure(");
+        let chars: Vec<char> = edit_of("a.rs", &text, &new).chars().collect();
+        let near_end = chars.len() - 40 * 16 - 10;
+        let cuts = (near_end..chars.len() - 10).step_by(16).collect();
+        BigWrite { text, chars, near_end, cuts }
+    }
+
+    /// `a.rs` holding the text, drawn, and the write sent up to its batches near the end — shown by then.
+    fn scene(&self, buf: &mut Vec<u8>) -> (Editor, crate::scratch::Scratch, u64, Writer) {
+        let (mut ed, dir, g) = scene("writing-perf-write");
+        std::fs::write(dir.join("a.rs"), &self.text).unwrap();
+        crate::typed::execute(&mut ed, "reload").unwrap();
+        crate::term::render(&mut ed, buf, 120, 40).unwrap();
+        let mut w = Writer::new("w1");
+        let first: String = self.chars[..self.near_end].iter().collect();
+        w.send(&mut ed, g, &first, &[], false);
+        settle(&mut ed, |ed| shown(ed.doc()).is_some());
+        crate::term::render(&mut ed, buf, 120, 40).unwrap();
+        (ed, dir, g, w)
+    }
+}
+
+/// The big write's budget runs at opt-level 0 too, on a small file: shown before its batches near the end, its rows
+/// all drawn after them. Its budget skips itself in `cargo test`, so its scene broken (#161: never settling) showed
+/// only in `cargo perf`; this runs the same scene in every `cargo test`.
+#[test]
+fn the_big_writes_budget_scene_is_shown_as_it_is_written() {
+    let big = BigWrite::new(120);
+    let mut buf = Vec::new();
+    let (mut ed, _dir, g, mut w) = big.scene(&mut buf);
+    for pair in big.cuts.windows(2) {
+        let piece: String = big.chars[pair[0]..pair[1]].iter().collect();
+        w.send(&mut ed, g, &piece, &[], false);
+    }
+    crate::term::render(&mut ed, &mut buf, 120, 40).unwrap();
+    assert!(shown(ed.doc()).is_some_and(|s| s.blocks[0].rows.len() > 120), "its rows drawn");
+}
+
 /// Performance budget: a batch of an edit rewriting a 5,000-line file whole (200 KB — laid out plain while it's
 /// written, the diff waiting for the whole text), the rows laid out again and the frame drawn, near its end: within
 /// one frame (16 ms; `TARAE_PERF_SLACK` loosens it); the worst batch, each its best of 3 rounds.
@@ -1474,27 +1522,13 @@ fn perf_budget_stream_frame_of_a_big_write() {
     }
     let slack = std::env::var("TARAE_PERF_SLACK").ok().and_then(|s| s.parse::<u32>().ok()).unwrap_or(1);
     let budget = std::time::Duration::from_millis(16) * slack.max(1);
-    let text: String = (0..5_000).map(|i| format!("    let value_{i} = compute({i}, \"타래\");\n")).collect();
-    let new = text.replace("compute(", "measure(");
-    let input =
-        json!({"edits": [{"file_path": "a.rs", "old_string": &text, "new_string": &new}]}).to_string();
-    let chars: Vec<char> = input.chars().collect();
-    let near_end = chars.len() - 40 * 16 - 10;
-    let cuts: Vec<usize> = (near_end..chars.len() - 10).step_by(16).collect();
-    let mut best = vec![std::time::Duration::MAX; cuts.len() - 1];
+    let big = BigWrite::new(5_000);
+    let mut best = vec![std::time::Duration::MAX; big.cuts.len() - 1];
     for _ in 0..3 {
-        let (mut ed, dir, g) = scene("writing-perf-write");
-        std::fs::write(dir.join("a.rs"), &text).unwrap();
-        crate::typed::execute(&mut ed, "reload").unwrap();
         let mut buf = Vec::with_capacity(1 << 16);
-        crate::term::render(&mut ed, &mut buf, 120, 40).unwrap();
-        let mut w = Writer::new("w1");
-        let first: String = chars[..near_end].iter().collect();
-        w.send(&mut ed, g, &first, &[], false);
-        settle(&mut ed, |ed| shown(ed.doc()).is_some());
-        crate::term::render(&mut ed, &mut buf, 120, 40).unwrap();
-        for (k, pair) in cuts.windows(2).enumerate() {
-            let piece: String = chars[pair[0]..pair[1]].iter().collect();
+        let (mut ed, _dir, g, mut w) = big.scene(&mut buf);
+        for (k, pair) in big.cuts.windows(2).enumerate() {
+            let piece: String = big.chars[pair[0]..pair[1]].iter().collect();
             let t = std::time::Instant::now();
             w.send(&mut ed, g, &piece, &[], false);
             buf.clear();
