@@ -286,14 +286,24 @@ mod tests {
         assert!(ask().is_err(), "its slave still open");
         drop(slave);
         closed(node);
-        assert!(ask().is_ok(), "both ends closed: its place free");
-        held.push(ask().unwrap());
+        // (the pair this ask makes goes before the next ask holds one — its place free only once its last copy is,
+        // and a copy can be elsewhere a moment: another test's fork holds every descriptor until its exec. Unwaited
+        // for, the next ask was refused in a full run — frictions #154; made so here, a copy closed 50 ms later)
+        let (master, slave, node) = ask().expect("both ends closed: its place free");
+        let copy = master.try_clone().unwrap();
+        let later = crate::event::thread("tarae-pty-copy", move || {
+            crate::event::sleep(Duration::from_millis(50));
+            drop(copy);
+        });
+        in_turn((master, slave, node));
+        let _ = later.join();
+        held.push(ask().expect("the copy closed too: its place free"));
         let (master, slave, node) = held.pop().unwrap();
         drop(slave);
         assert!(ask().is_err(), "its master still open");
         drop(master);
         closed(node);
-        assert!(ask().is_ok(), "both ends closed: its place free again");
+        assert!(ask().map(in_turn).is_ok(), "both ends closed: its place free again");
         assert_eq!(end(9_000_003), (10, 3), "ten made, three refused");
     }
 
