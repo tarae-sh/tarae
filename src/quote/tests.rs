@@ -211,15 +211,17 @@ fn the_message_carries_the_quote_once() {
     assert!(m.chip.ends_with(" · [scratch] L2"), "{}", m.chip);
     assert_eq!(&m.chip[m.linked..], "[scratch] L2");
     let copy = m.attached.clone().expect("its copy").path;
-    // (the copy is a job's: its result read)
+    // (the copy is a job's, made then filled: waited for by what it holds, never by the file being there —
+    // frictions #155's kind)
+    let holds = |kept: &str| kept.contains(&format!("<quoted id=\"{id}\"")) && kept.contains("let code = 1;");
     let end = Instant::now() + crate::test_results::PATIENCE;
-    while !copy.exists() && Instant::now() < end {
+    while !std::fs::read_to_string(&copy).is_ok_and(|k| holds(&k)) && Instant::now() < end {
         if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(20)) {
             ed.handle_event(ev);
         }
     }
     let kept = std::fs::read_to_string(&copy).unwrap_or_default();
-    assert!(kept.contains(&format!("<quoted id=\"{id}\"")) && kept.contains("let code = 1;"), "{kept}");
+    assert!(holds(&kept), "{kept}");
     // (this user's alone: its folder 0700, the file 0600)
     use std::os::unix::fs::PermissionsExt;
     let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
