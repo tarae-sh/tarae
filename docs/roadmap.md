@@ -110,9 +110,14 @@ went to its bottom line (`1d5161f5`: one order for what that line gives up, the 
 line needs, always bottom-right, over the chat standing on the input's rule) → C0, the workspace split out of the
 session, is done (`621acbd8`, 2026-10-26: `Workspace` the place, its Claude's `Session` the participant, where you are in
 it the `Viewer`; ids (machine, n), events tagged with both, `:workspace-*`, `[workspace]`, the state's
-`workspaces[].sessions[]`; no visible change but the words) → the cleanup audit (§1 item 7, its plan decided) → the
-crate split (§1 item 6) → Orchestra Part I → P3b and the terminal line (§4). Two Linux tests red on main before the next
-push: the Read card's width pinned at macOS's path (`1d5161f5`) and an xattr error's order on kernel 6.8. Done beside it, in sessions of their own: motion's last pieces (the honest shimmer `cfbf2a7b`,
+`workspaces[].sessions[]`; no visible change but the words) → the cleanup audit (§1 item 7, under way: the diagram
+model `fd2cc7bd`, the native edit modes `6a530588`, shuttle keys `97b2e30b` and the spare claude `a1c66678` gone; next
+`space i` as a one-turn claude, then keep-warm into idle compaction) → the crate split (§1 item 6) → Orchestra Part I →
+P3b and the terminal line (§4). One Linux test red on main before the next push: an xattr error's order on kernel 6.8
+(the Read card's width pinned at macOS's path is fixed, `94ded1e6`). Plans and notes moved out of `target/` into each
+checkout's `.sb/` (`c09fa01a`, after a `cargo clean` took eight checkouts' notes; most rebuilt from tarae's turn
+checkpoints). An overlap or a weave named a base branch by any repository's checkout of that name — now by the same
+repository's (`fa1c2bb5`). Done beside it, in sessions of their own: motion's last pieces (the honest shimmer `cfbf2a7b`,
 the strip of marks `4c56cb6f`), what PR #6's merge left (`8059c6d8`, the git base read's race `0b105abe`, the tests' one
 settle `b935aac6`), what's cut shown whole where you look (`f48b2be8`), and a move onto the base that never leaves
 conflict markers (`305ef94d`: `--autostash` had left two checkouts half moved — the changes now set aside on a ref of
@@ -166,9 +171,11 @@ Items 1–3 are done (2026-10-16); 4 is the user's: the repository made public. 
    ask flow folded into the chat, keep-warm replaced by Claude Code's idle compaction (`/compact` past 200k after ~54 min idle), shuttle keys gone, the debugger and the diagram view
    out of the core, Claude's rarely used tools measured. **The plan is written and decided** (2026-10-25, main's
    `.sb/audit-plan.md`, from 12 days of the records: every answer as recommended, `:session-apply` kept — CLAUDE.md's
-   Cleanup bullet has them): about 11,300 lines go, in the plan's order — the diagram model, the native edit modes,
-   shuttle keys (done 2026-10-26, §4's shuttle part with them), the ask into the chat, keep-warm into idle
-   compaction, four of Claude's tools, then the debugger to a plugin.
+   Cleanup bullet has them): about 11,300 lines go, in the plan's order — the diagram model (done, `fd2cc7bd`), the
+   native edit modes (done, `6a530588`), shuttle keys (done, `97b2e30b`, §4's shuttle part with them), the ask into
+   the chat (Q1's A/B ran 2026-10-26: at a large context the chat cost 6.4× what it did at a small one, so `space i`
+   becomes a fresh one-turn claude with `edit` and `read` only — B′; commit drafts a one-shot claude with no spare,
+   done, `a1c66678`), keep-warm into idle compaction, four of Claude's tools, then the debugger to a plugin.
 
 After it, the rest goes on in this order.
 
