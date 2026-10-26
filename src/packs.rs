@@ -2331,7 +2331,10 @@ mod tests {
             )
         };
         let mut vars = HashMap::new();
-        let manifest = format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"));
+        // (the process's own variable, read as `first` reads it: `cargo test` sets it, the test binary run by itself
+        // — a load script's — doesn't, and its choice is then left out; `env!`'s, the build's, failed it there)
+        let manifest =
+            std::env::var("CARGO_MANIFEST_DIR").map_or("python3".into(), |d| format!("{d}/Cargo.toml"));
         let picked = first(
             "\"${TARAE_NO_SUCH_VARIABLE_SET}/x\", \"${CARGO_MANIFEST_DIR}/Cargo.toml\", \"python3\"",
             &mut vars,
