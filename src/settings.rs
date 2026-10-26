@@ -282,7 +282,7 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         path: "editor.sound",
         kind: Kind::Bool,
-        doc: "Hear Claude's writing as it appears, on a Happy Hacking's Topre typed as a person types: a key as characters come, the space bar between words, return as a line ends, a soft thunk as an edit lands unseen (backspace when it only took text out) — never your keys. macOS for now. :sound toggles it. Your own config only",
+        doc: "Hear Claude's writing as it appears, on a recorded keyboard typed as a person types: a key as characters come, the space bar between words, return as a line ends, a soft thunk as an edit lands unseen (backspace when it only took text out) — never your keys. macOS for now. :sound toggles it. Your own config only",
         get: |c| Value::from(c.sound),
         set: |c, v| c.sound = b(v),
     },

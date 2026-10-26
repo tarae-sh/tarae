@@ -1,9 +1,11 @@
 //! The ASMR mode (`editor.sound`, off by default, yours only): Claude's writing heard as it appears. A sound says
 //! something or it's silent, as motion: keys as characters appear at the writing head, the space bar for a gap between
 //! words, return as a line ends (`writing::reveal` — what each step newly shows, `typist.rs`'s pace), a soft thunk as
-//! an edit lands unseen, backspace when it only took text out (`refactor.rs`'s review at the end). Only the front
-//! workspace's Claude, only in a buffer of a pane in front; never your keys, nor your `y` (the stamp says that), nor
-//! reading, runs or thinking; the chat's prose silent for now.
+//! an edit lands unseen, backspace when it only took text out (`refactor.rs`'s review at the end, and a run of
+//! Claude's that rewrote an open buffer as the buffer takes it — `motion::run_landed`: where the wet ink lands, the
+//! settle sounds). Only the front workspace's Claude, only in a buffer of a pane in front; never your keys, nor your
+//! `y` (the stamp says that), nor reading, a run's output or thinking; the chat's prose silent for now. The keys are
+//! a recorded keyboard's (`sampled.rs`, `recorded.rs`), the settle synthesized (`synth.rs`).
 //!
 //! The decision is here, on the main loop's clock (`clock::now`: the simulation runs it); the sound is the audio
 //! thread's (`engine.rs`, `mac.rs`), only told — the main loop never waits on it. It's made the first time a turn runs
@@ -13,7 +15,11 @@
 mod engine;
 #[cfg(target_os = "macos")]
 mod mac;
+#[cfg(target_os = "macos")]
+mod recorded;
 pub mod said;
+#[cfg(target_os = "macos")]
+pub mod sampled;
 // (what plays a sound: only macOS's output does yet — Linux's ALSA is sound-plan §5 step 3)
 #[cfg(target_os = "macos")]
 pub mod synth;
@@ -131,15 +137,24 @@ pub fn wake(ed: &mut Editor) {
 /// settling, or backspace when it only took text out. Your `y` lands through another path, and says nothing.
 pub fn landed(ed: &mut Editor, f: &crate::refactor::FileChange) {
     use crate::refactor::Op;
-    if !on(ed) || !matches!(f.op, Op::Text | Op::Create) {
+    if matches!(f.op, Op::Text | Op::Create) {
+        settle(ed, &f.path, &f.before, &f.after);
+    }
+}
+
+/// Claude's write took `path` from `before` to `after` unseen — an unseen landing (`landed`) or a run of its that
+/// rewrote an open buffer (`motion::run_landed`), its buffer in sight: the page settling, or backspace when it only
+/// took text out.
+pub fn settle(ed: &mut Editor, path: &std::path::Path, before: &ropey::Rope, after: &ropey::Rope) {
+    if !on(ed) {
         return;
     }
     let sight = sight(ed);
-    let shown = ed.docs.iter().any(|d| d.path.as_deref() == Some(f.path.as_path()) && sight.contains(&d.id));
+    let shown = ed.docs.iter().any(|d| d.path.as_deref() == Some(path) && sight.contains(&d.id));
     if !shown {
         return;
     }
-    let kind = match crate::disk::minimal_change(&f.before, &f.after) {
+    let kind = match crate::disk::minimal_change(before, after) {
         None => return,
         Some(c) if c.insert.is_empty() => Kind::Erase,
         Some(_) => Kind::Settle,
@@ -271,6 +286,60 @@ mod tests {
         assert_eq!(land(&mut ed, "a\nb\n", "a\nx\nb\n"), [Kind::Settle]);
         let (mut ed, _dir) = heard("a\nb\n");
         assert_eq!(land(&mut ed, "a\nb\n", "a\n"), [Kind::Erase]);
+    }
+
+    /// A run of Claude's that rewrote `a.rs` (`motion::run_wrote`): heard as the buffer takes the run's text — the
+    /// disk watch's reload a version later, or at once where it has — whatever `editor.motion` says (no wet ink at
+    /// `none`, the sound all the same); a pure deletion a backspace; your unsaved edits, another text or out of sight
+    /// nothing.
+    #[test]
+    fn a_run_that_rewrote_an_open_buffer_settles_as_the_buffer_takes_it() {
+        let blob = |t: &str| Some(crate::snapshot::Blob { id: String::new(), text: Some(t.into()) });
+        let change = |ed: &Editor, was: &str, now: &str| crate::snapshot::Change {
+            path: ed.doc().path.clone().unwrap(),
+            before: blob(was),
+            after: blob(now),
+        };
+        let kinds = |ed: &Editor| match &ed.sound.sink {
+            Sink::Record(k) => k.iter().map(|(_, s)| s.kind).collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        let calm = |ed: &mut Editor| crate::typed::execute(ed, "set editor.motion none").unwrap();
+        let (mut ed, _dir) = heard("a\n");
+        calm(&mut ed);
+        let c = change(&ed, "a\n", "a\nb\n");
+        ed.run_wrote(std::slice::from_ref(&c));
+        crate::motion::wet_sync(&mut ed);
+        assert_eq!(kinds(&ed), [], "the buffer hasn't taken it yet");
+        crate::disk::reload_text(ed.doc_mut(), &ropey::Rope::from_str("a\nb\n"));
+        crate::motion::wet_sync(&mut ed);
+        assert_eq!(kinds(&ed), [Kind::Settle], "taken by the reload: heard");
+        assert!(ed.doc().wet.is_none(), "motion none: no wet ink, the sound all the same");
+        let (mut ed, _dir) = heard("a\n");
+        let c = change(&ed, "a\nb\n", "a\n");
+        ed.run_wrote(std::slice::from_ref(&c));
+        assert_eq!(kinds(&ed), [Kind::Erase], "taken already, only text out: a backspace at once");
+        let (mut ed, _dir) = heard("a\n");
+        keys(&mut ed, &["i", "x", "esc"]);
+        ed.run_wrote(&[change(&ed, "a\n", "a\nb\n")]);
+        crate::motion::wet_sync(&mut ed);
+        assert!(
+            kinds(&ed).is_empty() && ed.wet_waiting.is_empty(),
+            "your unsaved edits: nothing taken, nothing heard"
+        );
+        let (mut ed, _dir) = heard("a\n");
+        ed.run_wrote(&[change(&ed, "a\n", "a\nb\n")]);
+        crate::disk::reload_text(ed.doc_mut(), &ropey::Rope::from_str("other\n"));
+        crate::motion::wet_sync(&mut ed);
+        assert_eq!(kinds(&ed), [], "another text: let go, silent");
+        let (mut ed, dir) = heard("a\n");
+        let c = change(&ed, "a\n", "a\nb\n");
+        crate::disk::reload_text(ed.doc_mut(), &ropey::Rope::from_str("a\nb\n"));
+        ed.open(&dir.join("b.rs")).unwrap();
+        ed.handle_event(crate::event::Event::Job(Box::new(|_: &mut Editor| {})));
+        drawn(&mut ed);
+        ed.run_wrote(&[c]);
+        assert_eq!(kinds(&ed), [], "out of sight: silent");
     }
 
     #[test]

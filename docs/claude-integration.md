@@ -762,14 +762,18 @@ piece. Once the call is made, the review opens on the same rows.
 A new file, a move or a delete waits for its card.
 
 You can hear it too ([`editor.sound`](reference/settings.md), off by default; `:sound` flips it until you quit,
-macOS for now). As the lines appear, a Happy Hacking's Topre types them as a person would, never at the stream's 300
+macOS for now). As the lines appear, a keyboard types them as a person would, never at the stream's 300
 characters a second: bursts of keys inside a word, a longer, uneven pause after a word or a line, now and then a
 hesitation — each sound for something just drawn: a key, the space bar where a gap between words shows, return
-where a line ends. The keys are synthesized from how a Topre sounds: no click, a rubber dome folding, a low thump
-under a rounded thock, and the louder thock of the key coming back up. An edit that lands unseen (review at the
-end) settles with a soft thunk, or a backspace when it only took text out. Only what's drawn in a pane in front
-makes a sound: not your keys, not your `y` in a review (its stamp says that), not reading, runs or thinking, not
-the chat's text. `editor.sound-volume` says how loud, under the system's own volume. `editor.motion` and
+where a line ends. The keys are a real keyboard's, recorded: ten strokes, each its press and its release as they
+were struck, cut from "Keyboard Typing" by trollarch2
+([Freesound 331656](https://freesound.org/people/trollarch2/sounds/331656/), CC0 — no credit owed, given gladly);
+the space bar and return are a stroke played lower. Each key varies as a hand does: which stroke, its pitch and
+level a little, the release a little early or late, never the same stroke twice in a row. An edit that lands unseen
+(review at the end) settles with a soft thunk, synthesized, or a backspace when it only took text out — and so does
+a run of Claude's that rewrote a file open in front (`cargo fmt`, a code generator) as its buffer takes the new
+text. Only what's drawn in a pane in front makes a sound: not your keys, not your `y` in a review (its stamp says
+that), not reading, a run's output or thinking, not the chat's text. `editor.sound-volume` says how loud, under the system's own volume. `editor.motion` and
 Reduce Motion leave it alone; while it's on, the writing keeps its pace with the terminal unfocused (a stream, OBS
 in front). The output runs only while there's sound — stopped 1.5 s after the last, nothing is woken.
 

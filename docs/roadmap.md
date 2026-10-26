@@ -120,9 +120,9 @@ P3b and the terminal line (§4). One Linux test red on main before the next push
 checkout's `.sb/` (`c09fa01a`, after a `cargo clean` took eight checkouts' notes; most rebuilt from tarae's turn
 checkpoints). An overlap or a weave named a base branch by any repository's checkout of that name — now by the same
 repository's (`fa1c2bb5`). Done beside it, in sessions of their own: an ASMR mode (`4ca79e7f`: `editor.sound`, off by
-default, yours only — key clicks as Claude's writing appears and a settle as an edit lands unseen, a Happy Hacking's
-Topre synthesized and typed in a person's rhythm, macOS's output by tarae's own few lines of AudioToolbox; Linux's
-output next), motion's last pieces (the honest shimmer `cfbf2a7b`,
+default, yours only — key clicks as Claude's writing appears and a settle as an edit lands unseen or a run of
+Claude's rewrites an open file, a recorded keyboard's strokes (trollarch2's, CC0, chosen by ear over a synthesized
+Topre) typed in a person's rhythm, macOS's output by tarae's own few lines of AudioToolbox; Linux's output next), motion's last pieces (the honest shimmer `cfbf2a7b`,
 the strip of marks `4c56cb6f`), what PR #6's merge left (`8059c6d8`, the git base read's race `0b105abe`, the tests' one
 settle `b935aac6`), what's cut shown whole where you look (`f48b2be8`), and a move onto the base that never leaves
 conflict markers (`305ef94d`: `--autostash` had left two checkouts half moved — the changes now set aside on a ref of

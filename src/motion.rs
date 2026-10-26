@@ -150,6 +150,14 @@ impl Editor {
         self.wet(id, before);
     }
 
+    /// An open buffer took a run's write (`run_wrote`, `wet_sync`): its lines wet (at `full`), and the page heard
+    /// settling as an unseen landing is (`sound::settle`, whatever `editor.motion` says) — where the wet ink lands,
+    /// the settle sounds.
+    fn run_landed(&mut self, path: &std::path::Path, before: &ropey::Rope, after: &ropey::Rope) {
+        self.wet_landed(path, before, after);
+        crate::sound::settle(self, path, before, after);
+    }
+
     /// Document `id` took Claude's write over `before` (its text now the write's): the lines it left are wet, a
     /// newer write's in their place; a pure deletion leaves what was wet as it is. Only at `full`.
     pub fn wet(&mut self, id: DocId, before: &ropey::Rope) {
@@ -165,11 +173,11 @@ impl Editor {
         self.motion_start(What::Wet(id));
     }
 
-    /// A run of Claude's changed `files` (`snapshot::Change`, `tools.rs`): each open buffer it rewrote is wet as it
-    /// takes the text — now if it has (`wet_landed`), else once it does (the disk watch's reload, the turn's
-    /// gather: `wet_sync`). A buffer with your unsaved edits takes nothing; none waits past its next version.
+    /// A run of Claude's changed `files` (`snapshot::Change`, `tools.rs`): each open buffer it rewrote is wet and
+    /// heard as it takes the text — now if it has (`run_landed`), else once it does (the disk watch's reload, the
+    /// turn's gather: `wet_sync`). A buffer with your unsaved edits takes nothing; none waits past its next version.
     pub fn run_wrote(&mut self, files: &[crate::snapshot::Change]) {
-        if !self.moving() {
+        if !self.moving() && !crate::sound::on(self) {
             return;
         }
         for c in files {
@@ -190,7 +198,7 @@ impl Editor {
             let (doc, version) = (doc.id, doc.version());
             let (before, after) = (ropey::Rope::from_str(was), ropey::Rope::from_str(now));
             if taken {
-                self.wet_landed(&c.path, &before, &after);
+                self.run_landed(&c.path, &before, &after);
             } else {
                 self.wet_waiting.retain(|w| w.doc != doc);
                 self.wet_waiting.push(Waiting { doc, version, path: c.path.clone(), before, after });
@@ -350,8 +358,8 @@ impl Editor {
     }
 }
 
-/// Every event (`handle_event`): a buffer a run of Claude's rewrote (`run_wrote`) whose version moved — wet if it's
-/// now the file as the run left it, else let go (your edit, another write).
+/// Every event (`handle_event`): a buffer a run of Claude's rewrote (`run_wrote`) whose version moved — wet and heard
+/// if it's now the file as the run left it, else let go (your edit, another write).
 pub fn wet_sync(ed: &mut Editor) {
     if ed.wet_waiting.is_empty() {
         return;
@@ -368,7 +376,7 @@ pub fn wet_sync(ed: &mut Editor) {
         None => false,
     });
     for (path, before, after) in landed {
-        ed.wet_landed(&path, &before, &after);
+        ed.run_landed(&path, &before, &after);
     }
 }
 

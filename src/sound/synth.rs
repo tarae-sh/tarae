@@ -1,16 +1,20 @@
-//! The sound, synthesized — no samples, no decoder: the Happy Hacking's Topre, built from how it sounds (modal
-//! synthesis). Each contact of a stroke is a soft push (a raised cosine a millisecond or two wide — its width is its
+//! What plays every sound: the keys from a recorded keyboard's strokes (`sampled.rs`, `recorded.rs`), the page
+//! settling synthesized (`SETTLE`). The synthesized keys stay as `cargo xtask sound compare`'s "synth B" and the
+//! fallback for a bank with no strokes: a Happy Hacking's Topre, built from how it sounds (modal synthesis — the
+//! recording won by ear, 2026-10-27). Each contact of a stroke is a soft push (a raised cosine a millisecond or two wide — its width is its
 //! softness, so nothing much rings above ~4 kHz) striking a few damped resonators: the dome folding, the slider on
 //! the rubber (the body's low thump), the cap and housing's thock, and on the way up the spring driving the slider
 //! into the top housing, louder than the way down (`TOPRE`). A key's place on the board (from its seed) moves its
 //! modes and level a few per cent, the same place the same; the space bar and return are bigger keys, their wire
-//! rattling (`bigger`); the desk and case answer (`Room`). The page settling is one slow, low push (`SETTLE`).
+//! rattling (`bigger`); the desk and case answer (`Room`, the synthesized sounds only — a recording has its room in
+//! it). The page settling is one slow, low push (`SETTLE`).
 //! Pure — std only, no allocation once made (it runs in the audio callback): `cargo xtask sound` includes it.
 //! macOS's for now (`sound.rs`: only its output plays it).
 
 use std::f32::consts::TAU;
 
 use super::said::{Kind, Said};
+use super::sampled::{Bank, Sampler};
 
 /// A mode: (Hz, decay ms, level).
 pub type M = (f32, f32, f32);
@@ -213,7 +217,7 @@ fn xorshift(r: &mut u32) -> u32 {
 }
 
 /// A number in -0.5 ‥ 0.5.
-fn centred(r: &mut u32) -> f32 {
+pub(super) fn centred(r: &mut u32) -> f32 {
     (xorshift(r) >> 8) as f32 / (1 << 24) as f32 - 0.5
 }
 
@@ -320,6 +324,25 @@ impl Echo {
     }
 }
 
+/// Where the limiter starts rounding (−6 dBFS): above anything the default volume reaches — a stroke at
+/// `editor.sound-volume` 30 peaks at −17.9 dBFS at most (trollarch2's, measured 2026-10-27) — so there the output
+/// is the mix sample for sample.
+pub const KNEE: f32 = 0.5;
+/// What the limiter rounds toward and never reaches: under full scale, so nothing is ever clipped.
+pub const CEILING: f32 = 0.98;
+
+/// A soft limiter: a sample under `KNEE` as it is; above it rounded off toward `CEILING` on a tanh whose slope is 1
+/// at the knee (no corner) — the loudest strokes at a high volume (the recording's level peaks ~1.56 before it)
+/// lose their tips softly instead of clipping.
+pub fn limit(x: f32) -> f32 {
+    let a = x.abs();
+    if a <= KNEE {
+        return x;
+    }
+    let room = CEILING - KNEE;
+    (KNEE + room * ((a - KNEE) / room).tanh()).copysign(x)
+}
+
 /// At most this many sounds at once — a new one takes the oldest's place.
 pub const VOICES: usize = 16;
 
@@ -329,11 +352,27 @@ pub struct Synth {
     voices: [Option<Voice>; VOICES],
     next: usize,
     echo: Echo,
+    /// The recorded strokes, which play every sound but the settle (their room is in them: no echo).
+    sampler: Option<Sampler>,
 }
 
 impl Synth {
+    /// tarae's sound: the recorded strokes, the page settling synthesized.
     pub fn new(rate: f32) -> Synth {
-        Synth { rate, topre: TOPRE, voices: [None; VOICES], next: 0, echo: Echo::new(&TOPRE.room, rate) }
+        Synth::with(rate, Some(&super::recorded::BANK))
+    }
+
+    /// Strokes from `bank`, or synthesized all through (`None`: the tests', `cargo xtask sound`'s comparisons).
+    pub fn with(rate: f32, bank: Option<&'static Bank>) -> Synth {
+        Synth {
+            rate,
+            topre: TOPRE,
+            voices: [None; VOICES],
+            next: 0,
+            echo: Echo::new(&TOPRE.room, rate),
+            // (a bank with no strokes: synthesized)
+            sampler: bank.filter(|b| !b.letters.is_empty()).map(|b| Sampler::new(b, rate)),
+        }
     }
 
     /// Played by other numbers (the tests', and `cargo xtask sound`'s comparisons).
@@ -344,14 +383,27 @@ impl Synth {
     }
 
     pub fn play(&mut self, s: &Said) {
+        if let Some(sm) = self.sampler.as_mut().filter(|_| s.kind != Kind::Settle) {
+            sm.play(s);
+            return;
+        }
         let free = self.voices.iter().position(Option::is_none);
         let at = free.unwrap_or(self.next);
         self.next = (at + 1) % VOICES;
         self.voices[at] = Some(Voice::new(&self.topre, s, self.rate));
     }
 
-    /// The next `out.len()` samples (mono), at `master` (0 ‥ 1), within ±1.
+    /// The next `out.len()` samples (mono), at `master` (0 ‥ 1), within ±`CEILING` (`limit`).
     pub fn render(&mut self, out: &mut [f32], master: f32) {
+        self.mix(out);
+        for s in out {
+            *s = limit(*s * master);
+        }
+    }
+
+    /// The next `out.len()` samples as they mix, before the volume and the limiter (`render`'s first half — the
+    /// tests' and `cargo xtask sound`'s too).
+    pub fn mix(&mut self, out: &mut [f32]) {
         out.fill(0.0);
         for slot in &mut self.voices {
             let Some(v) = slot else { continue };
@@ -362,15 +414,20 @@ impl Synth {
                 *slot = None;
             }
         }
-        for s in out {
-            *s = (self.echo.next(*s) * master).clamp(-1.0, 1.0);
+        for s in out.iter_mut() {
+            *s = self.echo.next(*s);
+        }
+        if let Some(sm) = &mut self.sampler {
+            sm.add_to(out);
         }
     }
 
     /// Whether a sound is still ringing.
     #[cfg_attr(not(test), allow(dead_code))] // (the tests' and `cargo xtask sound`'s)
     pub fn busy(&self) -> bool {
-        self.voices.iter().any(Option::is_some) || self.echo.left > 0
+        self.voices.iter().any(Option::is_some)
+            || self.echo.left > 0
+            || self.sampler.as_ref().is_some_and(Sampler::busy)
     }
 }
 
@@ -381,7 +438,7 @@ mod tests {
     const KINDS: [Kind; 5] = [Kind::Key, Kind::Space, Kind::Return, Kind::Erase, Kind::Settle];
 
     fn rendered(t: Topre, kind: Kind, seed: u32) -> Vec<f32> {
-        let mut s = Synth::new(48_000.0);
+        let mut s = Synth::with(48_000.0, None);
         s.tune(t);
         s.play(&Said { kind, gain: 1.0, seed, delay: 0.01 });
         let mut all = Vec::new();
@@ -425,6 +482,74 @@ mod tests {
             let (d, u) = (peak(&rendered(down, kind, 5)), peak(&rendered(up, kind, 5)));
             assert!(u > d * 1.2, "{kind:?}: the way up {u} ≤ the way down {d} × 1.2");
         }
+    }
+
+    /// tarae's own: a key is a recorded stroke — it sounds, the sampler plays it and no synthesized voice is taken —
+    /// and the settle is synthesized as ever: a voice, the sampler idle, the synth's own samples.
+    #[test]
+    fn a_key_is_recorded_and_the_settle_synthesized() {
+        let said = |kind| Said { kind, gain: 1.0, seed: 7, delay: 0.0 };
+        let rendered = |s: &mut Synth| {
+            let mut buf = vec![0.0f32; 24_000];
+            s.render(&mut buf, 1.0);
+            buf
+        };
+        let mut s = Synth::new(48_000.0);
+        s.play(&said(Kind::Key));
+        assert!(s.voices.iter().all(Option::is_none), "a recorded key took a synthesized voice");
+        assert!(s.sampler.as_ref().is_some_and(Sampler::busy), "the sampler isn't playing the key");
+        let key = rendered(&mut s);
+        assert!(peak(&key) > 0.01, "the recorded key is silent: {}", peak(&key));
+        let mut s = Synth::new(48_000.0);
+        s.play(&said(Kind::Settle));
+        assert!(s.voices.iter().any(Option::is_some), "the settle took no synthesized voice");
+        assert!(!s.sampler.as_ref().is_some_and(Sampler::busy), "the settle went to the sampler");
+        let mut synth = Synth::with(48_000.0, None);
+        synth.play(&said(Kind::Settle));
+        assert_eq!(rendered(&mut s), rendered(&mut synth), "the settle isn't the synth's own");
+    }
+
+    /// At full volume the loudest strokes pass full scale before the limiter: rounded off under `CEILING`, every
+    /// sample `limit` of the mix (never a clamp's flat top), the tips above `KNEE` kept (rounded, not turned down).
+    #[test]
+    fn a_stroke_at_full_volume_is_rounded_off_below_full_scale_never_clamped() {
+        let mut over = 0;
+        for seed in 0..64u32 {
+            let said = Said { kind: Kind::Return, gain: 1.0, seed: seed * 8 + 1, delay: 0.0 };
+            let (mut a, mut b) = (Synth::new(48_000.0), Synth::new(48_000.0));
+            a.play(&said);
+            b.play(&said);
+            let (mut mixed, mut heard) = (vec![0.0f32; 24_000], vec![0.0f32; 24_000]);
+            a.mix(&mut mixed);
+            b.render(&mut heard, super::super::said::master(100));
+            if peak(&mixed) <= 1.0 {
+                continue;
+            }
+            over += 1;
+            assert!(peak(&heard) < CEILING, "seed {seed}: {} at or past the ceiling", peak(&heard));
+            assert!(peak(&heard) > KNEE, "seed {seed}: turned down, not rounded: {}", peak(&heard));
+            assert!(mixed.iter().zip(&heard).all(|(m, h)| *h == limit(*m)), "seed {seed}: not the limiter's");
+            let flat = heard.windows(2).any(|w| w[0].abs() > KNEE && w[0] == w[1]);
+            assert!(!flat, "seed {seed}: a flat top — clamped");
+        }
+        assert!(over > 0, "no stroke passed full scale at volume 100: the test checks nothing");
+    }
+
+    #[test]
+    fn the_limiter_is_the_sample_under_its_knee_and_smooth_and_under_its_ceiling_over_it() {
+        for x in [0.0, 0.1, -0.3, KNEE, -KNEE] {
+            assert_eq!(limit(x), x);
+        }
+        let (a, b) = (limit(KNEE + 1e-4), KNEE + 1e-4);
+        assert!((a - b).abs() < 1e-6, "a corner at the knee: {a} for {b}");
+        for x in [0.6, 1.0, 1.6, 10.0, 1e6] {
+            assert!(
+                limit(x) < CEILING + 1e-6 && limit(x) > KNEE && limit(-x) == -limit(x),
+                "{x}: {}",
+                limit(x)
+            );
+        }
+        assert!(limit(0.8) < limit(1.2) && limit(1.2) < limit(1.6), "not rising");
     }
 
     #[test]
