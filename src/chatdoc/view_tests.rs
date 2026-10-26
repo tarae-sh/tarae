@@ -904,6 +904,62 @@ fn a_click_on_the_conversation_puts_the_cursor_on_that_character() {
     assert_eq!(at(&ed).0, "Its end, with another needle.");
 }
 
+/// A drag over the conversation selects from the press's character to the one under the pointer, both included, as
+/// in the code — forward and back, over rows; `y` copies it; off the conversation's rows (its input's) it stays as it
+/// was; the release keeps it. A drag from a press elsewhere (the code) selects nothing here.
+#[test]
+fn a_drag_on_the_conversation_selects_and_y_copies_it() {
+    use crate::event::MouseKind as K;
+    let mut ed = editor();
+    let screen = frame(&mut ed);
+    let chat_x = ed.screen.chat_x.unwrap();
+    let cell = |word: &str| {
+        screen.lines().enumerate().find_map(|(y, l)| {
+            let l: String = l.chars().skip(chat_x).collect();
+            let b = l.find(word)?;
+            Some((chat_x + l[..b].chars().count(), y))
+        })
+    };
+    let mouse = |ed: &mut Editor, kind: K, (x, y): (usize, usize)| {
+        ed.handle_mouse(crate::event::Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
+        frame(ed);
+    };
+    let (x, y) = cell("needle in").unwrap();
+    mouse(&mut ed, K::Down, (x, y));
+    mouse(&mut ed, K::Drag, (x + 3, y));
+    mouse(&mut ed, K::Drag, (x + 8, y));
+    assert_eq!(region(&ed), "view:chat");
+    assert_eq!(at(&ed).1, "needle in", "to the character under the pointer, both in");
+    assert!(view(&ed).pane.selects());
+    // (off its rows: the input's — what's selected stays)
+    let (ix, iy) = cell("a draft").unwrap();
+    mouse(&mut ed, K::Drag, (ix, iy));
+    assert_eq!(at(&ed).1, "needle in");
+    mouse(&mut ed, K::Up, (ix, iy));
+    assert_eq!(at(&ed).1, "needle in", "the release keeps it");
+    feed(&mut ed, "y");
+    let ev = ed.events.recv_timeout(crate::test_results::PATIENCE).expect("the copy's result");
+    ed.handle_event(ev);
+    assert!(crate::clipboard::written("needle in"), "copied");
+    assert_eq!(ed.registers.get(&'"').map(Vec::as_slice), Some(&["needle in".to_string()][..]));
+    // (back, over rows: from the press's character up to the one under the pointer)
+    let (lx, ly) = cell("latest").unwrap();
+    let (ox, oy) = cell("opening").unwrap();
+    mouse(&mut ed, K::Down, (lx + 5, ly));
+    mouse(&mut ed, K::Drag, (ox, oy));
+    let (_, sel) = at(&ed);
+    assert!(sel.starts_with("opening line.") && sel.ends_with("The latest"), "{sel:?}");
+    // (a press in the code, dragged over the conversation: neither selects there)
+    let code = ed.doc().selection().clone();
+    feed(&mut ed, "<esc><esc>");
+    let before = transcript(&ed).unwrap().pane.doc().selection().clone();
+    let (cx, cy) = (ed.screen.panes[0].1.x + 8, ed.screen.panes[0].1.y + 1);
+    mouse(&mut ed, K::Down, (cx, cy));
+    mouse(&mut ed, K::Drag, (x + 3, y));
+    assert_eq!(transcript(&ed).unwrap().pane.doc().selection(), &before, "the conversation's untouched");
+    assert_ne!(ed.doc().selection(), &code, "the press was the code's");
+}
+
 /// The state lists the view's shape — never its text — and Claude's level none of it.
 #[test]
 fn the_state_says_the_views_shape_and_claude_never_sees_it() {

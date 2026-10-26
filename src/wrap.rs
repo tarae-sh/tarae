@@ -32,6 +32,12 @@ impl Row {
     }
 }
 
+/// A column the mouse is at on a row that stops before `end_col` (`Row.end_col`, `usize::MAX` on a line's last): never
+/// past its end — that's the next row's. The code's and the chat's input's.
+pub fn clamp_col(col: usize, end_col: usize) -> usize {
+    col.min(end_col.saturating_sub(1))
+}
+
 /// A document's rows as its surface laid them out (the chat's transcript, `chatdoc.rs`): `j`/`k`, the pages and the
 /// `z` moves count these, never `rows`' own breaks — its layout wraps the text, the text stays one line a
 /// paragraph. Every line has a row at least; starts are bytes of the document. Held in parts — the surface's

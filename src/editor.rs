@@ -300,6 +300,42 @@ impl Screen {
             w => self.slot_x + w,
         }
     }
+
+    /// The conversation's row drawn on screen row `y` (counted as `chat_view`'s), if one was.
+    pub fn chat_row(&self, y: usize) -> Option<usize> {
+        let (y0, _, rows, first) = self.chat_view.get()?;
+        (y0..y0 + rows).contains(&y).then(|| first + (y - y0))
+    }
+
+    /// The chat's input's row drawn on screen row `y`, if one was: that row, its text's first column, the chat's text
+    /// width it was wrapped to (`chatinput::rows`).
+    pub fn chat_input_row(&self, y: usize) -> Option<(usize, usize, usize)> {
+        let i = self.chat_input.get()?;
+        (i.y..i.y + i.rows).contains(&y).then(|| (i.first + (y - i.y), i.x, i.w))
+    }
+}
+
+/// The chat's input as drawn (`Screen.chat_input`).
+#[derive(Clone, Copy, Debug)]
+pub struct InputDrawn {
+    /// Its first screen row, and how many it drew.
+    pub y: usize,
+    pub rows: usize,
+    /// Which of its rows is on the first.
+    pub first: usize,
+    /// Its text's first column, and the width it was wrapped to (`chatinput::rows`).
+    pub x: usize,
+    pub w: usize,
+}
+
+/// Whose text a mouse drag selects — where its press was (`Editor.mouse_anchor`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Drag {
+    Code,
+    /// The chat's conversation (`chatdoc.rs`).
+    Transcript,
+    /// The chat's input (`chatinput.rs`).
+    Input,
 }
 
 /// A list as drawn (`Screen.lists`): its first row's screen row, the rows it has, the first of its rows in sight.
@@ -360,6 +396,8 @@ pub struct Screen {
     /// terminal's own cursor, one place on screen (`Editor::cursor_in`; the test that counts them).
     pub cursors: std::cell::RefCell<Vec<(usize, usize)>>,
     pub chat_view: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
+    /// Where the chat's input was drawn.
+    pub chat_input: std::cell::Cell<Option<InputDrawn>>,
     /// Where the run panel in front drew its output (the tests' detail): (its panel, first screen row, the text's
     /// first column, rows) — the mouse finds a row of its view there.
     pub run_rows: RunRows,
@@ -756,8 +794,8 @@ pub struct Editor {
     pub screen: Screen,
     /// Screen rows of the last frame (folded doc comments make screen row ≠ doc line — used by the mouse).
     pub view: Vec<crate::codeview::Row>,
-    /// Where a drag started (selecting with the mouse).
-    mouse_anchor: Option<usize>,
+    /// Where a drag started (selecting with the mouse): whose text, and the press's character there.
+    mouse_anchor: Option<(Drag, usize)>,
     /// A ctrl+press in the code not dragged yet: its release is `gd` (a ctrl+drag selects, as a plain one).
     mouse_goto: bool,
     /// The mouse was pressed on the terminal's screen — its drag and release go there, wherever they are.
@@ -2625,6 +2663,7 @@ impl Editor {
         // (a press anywhere starts afresh: only a ctrl+press in the code arms its release)
         if m.kind == K::Down {
             self.mouse_goto = false;
+            self.mouse_anchor = None;
         }
         // Input for follow = what can move the code's cursor: a press or a drag (anywhere — a chat link, a
         // side panel row, a pane), and the wheel over the code (below). A release, or the wheel over a
@@ -2724,6 +2763,31 @@ impl Editor {
                     self.float_drag_done(kind, grip);
                 }
                 _ => self.float_dragging = None,
+            }
+            return;
+        }
+        // A press in the chat's text (its conversation, its input) dragged: the chat's wherever the pointer goes, as
+        // the terminal's — over that text's rows what's under the pointer selected, as a drag in the code selects
+        if let Some((at @ (Drag::Transcript | Drag::Input), anchor)) = self.mouse_anchor
+            && matches!(m.kind, K::Drag | K::Up)
+        {
+            if m.kind == K::Up {
+                self.mouse_anchor = None;
+                return;
+            }
+            let col = |x0: usize| x.saturating_sub(x0);
+            match at {
+                Drag::Transcript => {
+                    let text_x = s.chat_x.unwrap_or(0) + crate::chrome::GAP + crate::chrome::PAD;
+                    if let Some(row) = s.chat_row(y) {
+                        crate::chatdoc::drag(self, anchor, row, col(text_x));
+                    }
+                }
+                _ => {
+                    if let Some((row, x0, w)) = s.chat_input_row(y) {
+                        crate::chatinput::drag(self, anchor, row, col(x0), w);
+                    }
+                }
             }
             return;
         }
@@ -3140,23 +3204,24 @@ impl Editor {
                         }
                         return;
                     }
-                    // The conversation's text: its view mode, the cursor on the character pressed (as the code's)
+                    // The conversation's text: its view mode, the cursor on the character pressed (as the code's) —
+                    // a drag from there selects
                     let text_x = cx + crate::chrome::GAP + crate::chrome::PAD;
-                    if let Some(row) = s
-                        .chat_view
-                        .get()
-                        .and_then(|(y0, _, rows, first)| (y >= y0 && y < y0 + rows).then(|| first + (y - y0)))
+                    if let Some(row) = s.chat_row(y)
+                        && let Some(pos) = crate::chatdoc::click(self, row, x.saturating_sub(text_x))
                     {
-                        crate::chatdoc::click(self, row, x.saturating_sub(text_x));
+                        self.mouse_anchor = Some((Drag::Transcript, pos));
+                    }
+                    // The input: the cursor on the character pressed, as in the code's insert mode
+                    if let Some((row, x0, w)) = s.chat_input_row(y) {
+                        let pos = crate::chatinput::click(self, row, x.saturating_sub(x0), w);
+                        self.mouse_anchor = Some((Drag::Input, pos));
                     }
                 }
                 // The wheel over the conversation: its view mode at that point (tmux's copy mode by the wheel —
                 // §3.8), the cursor on the row under the pointer
                 K::ScrollUp | K::ScrollDown => {
-                    let line = s.chat_view.get().and_then(|(y0, _, rows, first)| {
-                        (y >= y0 && y < y0 + rows).then(|| first + (y - y0))
-                    });
-                    return crate::chatdoc::wheel(self, line, m.kind == K::ScrollUp);
+                    return crate::chatdoc::wheel(self, s.chat_row(y), m.kind == K::ScrollUp);
                 }
                 _ => {}
             }
@@ -3265,7 +3330,7 @@ impl Editor {
                 let line = line.min(last);
                 // A wrapped row: cells after its indent, never past its end (that's the next row's)
                 let col =
-                    (c0 + x.saturating_sub(rect.x + gutter).saturating_sub(x0)).min(end.saturating_sub(1));
+                    crate::wrap::clamp_col(c0 + x.saturating_sub(rect.x + gutter).saturating_sub(x0), end);
                 let pos = match picked {
                     Some(l) => doc.text.line_to_byte(l),
                     None => mv::pos_at_col(&doc.text, line, col, tab),
@@ -3278,33 +3343,27 @@ impl Editor {
                 let text = doc.text.clone();
                 let anchor = self.mouse_anchor;
                 // (a ctrl+press dragged off its character is a selection, not a `gd`)
-                if m.kind == K::Drag && anchor.is_some_and(|a| a != pos) {
+                if m.kind == K::Drag && anchor.is_some_and(|a| a != (Drag::Code, pos)) {
                     self.mouse_goto = false;
                 }
                 let doc = self.doc_mut();
                 let mut new_anchor = anchor;
                 match (m.kind, anchor) {
-                    (K::Drag, Some(a)) => {
-                        // Dragging forward includes the last char (selection = half-open byte range)
-                        let r = if pos >= a {
-                            Range::new(a, crate::graphemes::next_boundary(&text, pos))
-                        } else {
-                            Range::new(crate::graphemes::next_boundary(&text, a), pos)
-                        };
-                        doc.set_selection(Selection::new(vec![r], 0));
+                    (K::Drag, Some((Drag::Code, a))) => {
+                        doc.set_selection(Selection::new(vec![Range::dragged(&text, a, pos)], 0));
                     }
                     // A drag whose press wasn't in the text (the terminal's, a panel's) isn't the code's
-                    (K::Drag, None) => {}
+                    (K::Drag, _) => {}
                     (K::Down, _) if m.alt => {
                         let mut ranges = doc.selection().ranges().to_vec();
                         ranges.push(Range::point(pos));
                         let n = ranges.len() - 1;
                         doc.set_selection(Selection::new(ranges, n));
-                        new_anchor = Some(pos);
+                        new_anchor = Some((Drag::Code, pos));
                     }
                     _ => {
                         doc.set_selection(Selection::point(pos));
-                        new_anchor = Some(pos);
+                        new_anchor = Some((Drag::Code, pos));
                     }
                 }
                 self.mouse_anchor = new_anchor;
@@ -16750,6 +16809,45 @@ mod tests {
         ed.handle_mouse(at(K::ScrollDown, 7, 3));
         assert_eq!(ed.doc().top, 3);
         assert_eq!(mv::line_of(&ed.doc().text, ed.doc().selection().primary().head), 3);
+    }
+
+    /// Every press starts its own drag: a press in the code let go over the side panel (its release isn't the code's),
+    /// then a press on a side-panel row dragged over the code — the code's selection stays where the first press put
+    /// it (the old anchor was kept, and the drag selected from it).
+    #[test]
+    fn a_drag_from_a_press_on_the_side_panel_leaves_the_codes_selection() {
+        use crate::event::{Mouse, MouseKind as K};
+        let mut ed = Editor::new(Config::default());
+        ed.docs[0].text = ropey::Rope::from_str(&(0..20).map(|i| format!("line {i}\n")).collect::<String>());
+        let root = ed.workspace.root.clone();
+        let files = vec!["sub/a.rs".to_string(), "b.rs".to_string()];
+        ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(root, files));
+        let frame = |ed: &mut Editor| crate::term::render(ed, &mut Vec::new(), 120, 30).unwrap();
+        frame(&mut ed);
+        let at = |kind, x: usize, y: usize| Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false };
+        let rect = ed.screen.panes[0].1;
+        let folder = {
+            let sb = ed.workspace.viewer.sidebar.as_ref().unwrap();
+            let lines = sb.lines();
+            let rows = ed.screen.sidebar.borrow();
+            rows.iter()
+                .find(|(_, r)| {
+                    matches!(lines.get(*r).map(|l| &l.target), Some(crate::sidebar::Target::Dir(_)))
+                })
+                .map(|(y, _)| *y)
+                .expect("the folder's row drawn")
+        };
+        let x_side = rect.x / 2;
+        // (a press in the code, let go over the side panel)
+        ed.handle_mouse(at(K::Down, rect.x + 12, rect.y + 3));
+        frame(&mut ed);
+        ed.handle_mouse(at(K::Up, x_side, folder));
+        let before = ed.doc().selection().clone();
+        // (a press on the folder's row — it folds — dragged over the code)
+        ed.handle_mouse(at(K::Down, x_side, folder));
+        frame(&mut ed);
+        ed.handle_mouse(at(K::Drag, rect.x + 20, rect.y + 6));
+        assert_eq!(ed.doc().selection(), &before, "nothing selected from the code's old press");
     }
 
     /// An accepted `space i` answer is a step of its own for `space u` / `space U`.

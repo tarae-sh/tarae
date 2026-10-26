@@ -716,18 +716,40 @@ fn come(ed: &mut Editor, row: Option<usize>, by_wheel: Option<Was>) {
 /// A press on the conversation's row `row` (counted as `Screen.chat_view`'s) at column `col` of its text: its view
 /// mode, the keys its, the cursor on that character, as a click in the code or a run's output puts it — on a bar
 /// or a hanging indent, the row's first; past its text, the cell after it (its line break, the space a wrap took),
-/// else its last. In sight already: the rows under the pointer don't move. A row of the frame's own (what a run
-/// waits on) or an empty conversation: false, nothing placed.
-pub fn click(ed: &mut Editor, row: usize, col: usize) -> bool {
+/// else its last. In sight already: the rows under the pointer don't move. Where it landed — a drag from there
+/// selects (`drag`). A row of the frame's own (what a run waits on) or an empty conversation: None, nothing placed.
+pub fn click(ed: &mut Editor, row: usize, col: usize) -> Option<usize> {
     if ed.workspace.claude.chat.as_ref().is_none_or(|c| c.msgs.is_empty()) {
-        return false;
+        return None;
     }
-    let Some(row) = doc_row(&ed.screen.chat_laid.borrow(), row) else { return false };
-    let Some(s) = transcript(ed).filter(|t| row < t.rows()).and_then(|t| t.row(row)) else { return false };
+    let row = doc_row(&ed.screen.chat_laid.borrow(), row)?;
+    let s = transcript(ed).filter(|t| row < t.rows()).and_then(|t| t.row(row))?;
     if !has_keys(ed) {
         come(ed, Some(row), None);
     }
-    let Some(d) = transcript_mut(ed).and_then(|t| t.pane.doc_in_mut()) else { return false };
+    let d = transcript_mut(ed).and_then(|t| t.pane.doc_in_mut())?;
+    let pos = under(d, s, col);
+    d.set_selection(Selection::point(pos));
+    Some(pos)
+}
+
+/// A drag from the press's character `anchor` (`click`'s) to the conversation's row `row`, column `col` under the
+/// pointer: what's between selected, both included, as a drag in the code selects — `y` copies it. Its view no
+/// longer with the keys, or a row of the frame's own: nothing.
+pub fn drag(ed: &mut Editor, anchor: usize, row: usize, col: usize) {
+    if !has_keys(ed) {
+        return;
+    }
+    let Some(row) = doc_row(&ed.screen.chat_laid.borrow(), row) else { return };
+    let Some(s) = transcript(ed).filter(|t| row < t.rows()).and_then(|t| t.row(row)) else { return };
+    let Some(d) = transcript_mut(ed).and_then(|t| t.pane.doc_in_mut()) else { return };
+    let pos = under(d, s, col);
+    let anchor = crate::graphemes::snap(&d.text, anchor);
+    d.set_selection(Selection::new(vec![crate::selection::Range::dragged(&d.text, anchor, pos)], 0));
+}
+
+/// The character row `s` draws at column `col` of the chat's text (`click`'s rule).
+fn under(d: &Document, s: Shown, col: usize) -> usize {
     let text = d.text.byte_slice(s.start..s.start + s.len).to_string();
     // (the character whose cells hold the column — display width, a wide one's second cell its own)
     let col = col.saturating_sub(s.x0);
@@ -741,8 +763,7 @@ pub fn click(ed: &mut Editor, row: usize, col: usize) -> bool {
     }
     let end = s.start + s.len;
     let pos = at.or(s.end).unwrap_or_else(|| crate::graphemes::prev_boundary(&d.text, end).max(s.start));
-    d.set_selection(Selection::point(crate::graphemes::snap(&d.text, pos)));
-    true
+    crate::graphemes::snap(&d.text, pos)
 }
 
 /// After a frame (`term::render`, as `rundoc::resized`): the chat drawn at another size while its view has the

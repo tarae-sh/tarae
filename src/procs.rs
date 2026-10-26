@@ -3897,6 +3897,18 @@ pub(crate) mod tests {
             "each chat its own"
         );
         let at = |ed: &Editor, k: Kind| ed.procs.rows.iter().position(|r| r.kind == k).expect("listed");
+        // (onto the first row `is` takes, from the top, by `j` as a person moves — never by counting rows: a gone row
+        // the selection leaves goes (`grouplist::List::set`), the rows under it a row up as it steps)
+        let select = |ed: &mut Editor, is: &dyn Fn(&Row) -> bool| {
+            keys(ed, "g");
+            for _ in 0..ed.procs.rows.len() {
+                if ed.procs_selected().is_some_and(|r| is(&r)) {
+                    return;
+                }
+                keys(ed, "j");
+            }
+            panic!("no such row: {:?}", ed.procs.rows);
+        };
         let (head0, head1) = (at(&ed, Kind::Session(WorkspaceId::HOME)), at(&ed, Kind::Session(id)));
         let (s0, s1) = (at(&ed, Kind::Lsp(front)), at(&ed, Kind::Lsp(behind)));
         assert!(head0 < s0 && s0 < head1 && head1 < s1, "each server under its heading: {:?}", ed.procs.rows);
@@ -3911,7 +3923,7 @@ pub(crate) mod tests {
         );
         let summed = mem(h.memory());
         // (on its heading, so it's in sight — other tests' children are listed on top too)
-        keys(&mut ed, &"j ".repeat(head1));
+        select(&mut ed, &|r| r.kind == Kind::Session(id));
         let shown = screen(&mut ed, 140, 40).join("\n");
         // (its checkout's path names it — not the chat's session tabs, not the server's row)
         let head = shown.lines().find(|l| l.contains("-second") && !l.contains("fake")).expect("its heading");
@@ -3923,7 +3935,7 @@ pub(crate) mod tests {
             ed.status.as_ref().map(|s| s.0.as_str()),
             Some("second is a session — :workspace-end ends it")
         );
-        keys(&mut ed, &"j ".repeat(s1 - head1));
+        select(&mut ed, &|r| r.kind == Kind::Lsp(behind));
         keys(&mut ed, "s");
         assert!(
             ed.client(behind).is_none() && ed.client(front).is_some(),
@@ -3932,9 +3944,7 @@ pub(crate) mod tests {
         let said = ed.toasts.last().map(|t| t.text.as_str());
         assert_eq!(said, Some("second · fake stopped · the next file of its project starts it again"));
         // Its chat: that session's claude stops, the front's goes on
-        let c1 = ed.procs.rows.iter().position(|r| r.pid == chat1).expect("its row");
-        keys(&mut ed, "g");
-        keys(&mut ed, &"j ".repeat(c1));
+        select(&mut ed, &|r| r.pid == chat1);
         keys(&mut ed, "s");
         settle(&mut ed, |ed| chat_of(ed, id).is_none());
         assert_eq!(
@@ -3944,11 +3954,18 @@ pub(crate) mod tests {
         );
         let said = ed.toasts.last().map(|t| t.text.as_str());
         assert_eq!(said, Some("second · claude stopped · the chat's next message starts it again"));
-        // `l` on a heading: that session to the front (its row now — what the processes started since, a
-        // chat's `cat`, can have come in above it)
-        let head1 = at(&ed, Kind::Session(id));
-        keys(&mut ed, "g");
-        keys(&mut ed, &"j ".repeat(head1));
+        // `l` on a heading: that session to the front. The stopped chat's row, the selection on it, is kept gone
+        // where it was by index (`procs_sampled`) — above the heading when other tests' children came in above
+        // meanwhile (the bring's preflight, 2026-10-26: counted `j`s then ended a row past it): made so here.
+        let mut gone = ed.procs.rows.iter().find(|r| r.pid == chat1).expect("its row").clone();
+        gone.gone = Some(SystemTime::now());
+        let above = at(&ed, Kind::Session(id));
+        ed.procs.rows.insert(above, gone);
+        ed.procs.panel.as_mut().unwrap().selected = above;
+        let n = ed.procs.rows.len();
+        select(&mut ed, &|r| r.kind == Kind::Session(id));
+        assert_eq!(ed.procs.rows.len(), n - 1, "left, the gone row went — the rows under it a row up");
+        assert_eq!(ed.procs_selected().map(|r| r.kind), Some(Kind::Session(id)), "on its heading");
         keys(&mut ed, "l");
         assert_eq!(ed.workspace.id, id, "brought to the front");
         drop(ed);

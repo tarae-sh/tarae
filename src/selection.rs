@@ -23,6 +23,17 @@ impl Range {
         Self::new(pos, pos)
     }
 
+    /// A mouse drag's selection: from the press's character `anchor` to the one under the pointer `pos`, both
+    /// included (a range is half-open) — dragging back, the press's character still in it. The code's, the chat's
+    /// transcript's and its input's alike.
+    pub fn dragged(text: &Rope, anchor: usize, pos: usize) -> Range {
+        if pos >= anchor {
+            Range::new(anchor, graphemes::next_boundary(text, pos))
+        } else {
+            Range::new(graphemes::next_boundary(text, anchor), pos)
+        }
+    }
+
     pub fn from(&self) -> usize {
         self.anchor.min(self.head)
     }

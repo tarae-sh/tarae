@@ -2096,6 +2096,45 @@ const SCENES: &[Scene] = &[
     Scene { name: "chatfoot41", claude: "foot41", files: MAIN, keys: FOOT },
     Scene { name: "chatfoot93", claude: "foot93", files: MAIN, keys: FOOT },
     Scene { name: "chatfootshort", claude: "footshort", files: MAIN, keys: FOOT },
+    // (a drag over the conversation: its view mode, what's between the press and the pointer selected, over rows)
+    Scene {
+        name: "chatdrag",
+        claude: "footshort",
+        files: MAIN,
+        keys: &[
+            "@1",
+            " ",
+            "l",
+            "@1",
+            "how is the map filled?",
+            "\r",
+            "@20?That is all",
+            "@1",
+            "@press?one pass",
+            "@drag+4?over the strands",
+            "@drag+11?writes to it",
+            "@release+11?writes to it",
+            "@1",
+        ],
+    },
+    // (a drag across two rows of a wrapped input: what's between the press and the pointer selected, insert mode kept)
+    Scene {
+        name: "inputdrag",
+        claude: "footshort",
+        files: MAIN,
+        keys: &[
+            "@1",
+            " ",
+            "l",
+            "@1",
+            "Please keep the first strand whenever two strands share a name, and say which tests cover the entry change.",
+            "@1",
+            "@press?first strand",
+            "@drag+4?which tests",
+            "@release+4?which tests",
+            "@1",
+        ],
+    },
     // (a run outside the sandbox: its card)
     Scene {
         name: "card",

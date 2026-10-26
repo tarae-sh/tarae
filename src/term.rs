@@ -606,6 +606,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         chat_x: (lay.chat_w > 0).then_some(lay.edit_w),
         chat_laid: Default::default(),
         chat_view: Default::default(),
+        chat_input: Default::default(),
         cursors: Default::default(),
         picker_list: editor.picker.as_ref().map(|p| {
             let b = PickerBox::new(&lay, p);
@@ -14550,40 +14551,13 @@ fn chat_widths(chat_w: usize) -> (usize, usize) {
 /// The chat's input shows this many of its rows at most.
 const CHAT_INPUT_MAX: usize = 5;
 
-/// The chat's input `text` wrapped to its text's width `w` (a cell for the caret): its rows, and the row and column of
-/// `cursor` (a byte offset).
-fn chat_input_rows(text: &str, cursor: usize, w: usize) -> (Vec<String>, usize, usize) {
-    let mut rows: Vec<String> = vec![String::new()];
-    let (mut cur_row, mut cur_col) = (0, 0);
-    let mut col = 0;
-    for (b, ch) in text.char_indices() {
-        if b == cursor {
-            (cur_row, cur_col) = (rows.len() - 1, col);
-        }
-        let cw = ch.width().unwrap_or(0);
-        if ch == '\n' || col + cw > w - 2 {
-            rows.push(String::new());
-            col = 0;
-            if ch == '\n' {
-                continue;
-            }
-        }
-        rows.last_mut().unwrap().push(ch);
-        col += cw;
-    }
-    if cursor >= text.len() {
-        (cur_row, cur_col) = (rows.len() - 1, col);
-    }
-    (rows, cur_row, cur_col)
-}
-
 /// Where the asks float while the chat is open (P3 step 7d, the user 2026-10-22: bottom-right, over the chat's foot at
 /// its width): its columns from `x`, `w` wide (the card a cell in from each side), and the row its input's line is on —
 /// as `draw_chat` lays them out. None: the chat isn't open beside the code (closed, minimized).
 fn chat_foot(editor: &Editor, lay: &Layout) -> Option<(usize, usize, usize)> {
     let c = editor.workspace.claude.chat.as_ref().filter(|_| lay.chat_w > 0)?;
     let (w, _) = chat_widths(lay.chat_w);
-    let input_h = chat_input_rows(&c.input.text(), c.input.cursor(), w).0.len().min(CHAT_INPUT_MAX);
+    let input_h = c.input.laid(w).height().min(CHAT_INPUT_MAX);
     let now_ms = crate::usage::now_ms();
     let compacts = crate::idlecompact::next_at(editor, &editor.workspace, now_ms);
     let s = Style::default();
@@ -14644,9 +14618,11 @@ fn draw_chat(
     let rows = lay.body_h;
     // ── Input (wrapped, up to 5 rows) + cursor position
     let placeholder = format!("Ask about {}…", editor.doc().display_name_short());
-    let (input_rows, cur_row, cur_col) = chat_input_rows(&c.input.text(), c.input.cursor(), w);
-    let first_input = input_rows.len().saturating_sub(CHAT_INPUT_MAX).min(cur_row);
-    let input_h = input_rows.len().min(CHAT_INPUT_MAX);
+    // (its text and rows from one read — `chatinput::Laid`: the rows only ever slice the text they were made from)
+    let input = c.input.laid(w);
+    let (cur_row, cur_col) = input.cursor();
+    let first_input = input.height().saturating_sub(CHAT_INPUT_MAX).min(cur_row);
+    let input_h = input.height().min(CHAT_INPUT_MAX);
     // ── Claude's plan, pinned under the title (one row when the panel is short) + a divider under it
     let room = rows.saturating_sub(input_h + 4);
     let plan_rows = match &c.plan {
@@ -15095,7 +15071,23 @@ fn draw_chat(
     chat_row_end(out, card, lay.chat_w, w)?;
     y += 1;
     let input_top = y;
-    for (i, r) in input_rows.iter().skip(first_input).take(input_h).enumerate() {
+    let drawn = crate::editor::InputDrawn { y, rows: input_h, first: first_input, x: x0 + GAP + PAD + 2, w };
+    editor.screen.chat_input.set(Some(drawn));
+    // (what a drag selected in it, washed as the code's selection is)
+    let input_doc = c.input.pane.doc();
+    let sel = input_doc.selection();
+    let washes: Vec<(usize, usize, Style)> = sel
+        .ranges()
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| !r.is_empty())
+        .map(|(i, r)| {
+            let wash = if i == sel.primary_index() { ui.selection_primary } else { ui.selection };
+            (r.from(), r.to(), Style { bg: wash.bg, ..Style::default() })
+        })
+        .collect();
+    for i in 0..input_h {
+        let (row, start) = input.row(first_input + i);
         chat_row_start(out, x0, y, edge(y), card)?;
         let prompt = if i == 0 { "› " } else { "  " };
         apply(out, if typing { Style { bold: true, ..accent } } else { faint })?;
@@ -15106,9 +15098,20 @@ fn draw_chat(
             queue!(out, Print(&p))?;
             p.width()
         } else {
-            apply(out, if view.is_some() { faint } else { card })?;
-            queue!(out, Print(r))?;
-            r.width()
+            let base = if view.is_some() { faint } else { card };
+            // (in runs of one style: the bytes a wash covers patched with it)
+            let style_at = |b: usize| {
+                washes.iter().find(|(a, z, _)| (*a..*z).contains(&b)).map_or(base, |(.., s)| base.patch(*s))
+            };
+            let mut from = 0;
+            for b in row.char_indices().map(|(b, _)| b).skip(1).chain([row.len()]) {
+                if b > from && (b == row.len() || style_at(start + b) != style_at(start + from)) {
+                    apply(out, style_at(start + from))?;
+                    queue!(out, Print(&row[from..b]))?;
+                    from = b;
+                }
+            }
+            row.width()
         };
         chat_row_end(out, card, lay.chat_w, 2 + used)?;
         y += 1;

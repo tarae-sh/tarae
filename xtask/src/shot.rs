@@ -7,7 +7,8 @@
 //! Keys are sent in order, 0.35 s apart (`\r` = Enter, `\t` = Tab, `\x1b` = Esc, `\xHH` = any byte; everything
 //! else, Korean too, goes out as UTF-8); `@3` waits 3 s taking screen updates; `@?ready` waits until `ready` is
 //! on screen (a language server indexing …) — at most 120 s, or `@30?ready` 30; `@!ready` (`@30!ready`) until it's
-//! gone from it. `@~300` sends the key after it and keeps every frame drawn in the 300 ms after it: `out-01.png` (the
+//! gone from it. `@press?text`, `@drag?text`, `@release?text` press, drag and let go of the mouse's left button on
+//! the first cell of `text` on screen (`@drag+3?text` three cells after it). `@~300` sends the key after it and keeps every frame drawn in the 300 ms after it: `out-01.png` (the
 //! screen before the key), `out-02.png` … and `out-sheet.png`, all side by side — a motion's contact sheet
 //! (`TARAE_MOTION_AT=<ms>` instead pins every motion at that age, for one picture of a step; `TARAE_SHOT_SHEET_ROWS=0,5-6`
 //! makes the sheet those rows of each frame, one frame's strip under the one before). A wait that times out
@@ -596,6 +597,16 @@ fn drive(
             }
             continue;
         }
+        if let Some((report, cells, text)) = button_key(k) {
+            match cell_of(vt.parser.screen(), text) {
+                Some((row, col)) => {
+                    let _ = master.write_all(report(col + cells + 1, row + 1).as_bytes());
+                    pump(vt, 0.35);
+                }
+                None => missed.push(format!("{k}: {text:?} not on screen")),
+            }
+            continue;
+        }
         if let Some((max, text)) = gone_key(k) {
             let t = Instant::now();
             if pump_until(vt, text, max, true) {
@@ -651,6 +662,24 @@ fn cell_of(screen: &vt100::Screen, text: &str) -> Option<(u16, u16)> {
         let k = line[..at].chars().count();
         cells.get(k).map(|(c, _)| (r, *c))
     })
+}
+
+/// A mouse report for a column and row (1-based).
+type Report = fn(u16, u16) -> String;
+
+/// `@press?text`, `@drag?text`, `@release?text` (`@drag+3?text`: that many cells after its first): the left button
+/// pressed on, dragged to, let go at `text`'s first cell on screen — its SGR report for a column and row (1-based),
+/// the cells on, the text.
+fn button_key(key: &str) -> Option<(Report, u16, &str)> {
+    let (head, text) = key.strip_prefix('@')?.split_once('?')?;
+    let (act, cells) = head.split_once('+').map_or(Some((head, 0)), |(a, n)| Some((a, n.parse().ok()?)))?;
+    let report: Report = match act {
+        "press" => |x, y| format!("\x1b[<0;{x};{y}M"),
+        "drag" => |x, y| format!("\x1b[<32;{x};{y}M"),
+        "release" => |x, y| format!("\x1b[<0;{x};{y}m"),
+        _ => return None,
+    };
+    (!text.is_empty()).then_some((report, cells, text))
 }
 
 /// `@!text` / `@30!text`: wait until `text` is gone from the screen — as `wait_key`'s limits.

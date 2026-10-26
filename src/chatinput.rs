@@ -10,8 +10,9 @@ use crate::document::Document;
 use crate::editor::{Editor, Mode};
 use crate::key::{Code, Key};
 use crate::keymap::{KeyTrie, Lookup, MappableCommand};
-use crate::selection::Selection;
+use crate::selection::{Range, Selection};
 use crate::transaction::{Change, Transaction};
+use unicode_width::UnicodeWidthChar as _;
 
 /// The input's rows at most (more scroll), as the chat draws it.
 pub const ROWS: usize = 5;
@@ -117,6 +118,123 @@ impl Input {
     fn held(&mut self) -> String {
         std::mem::take(&mut self.pane.keys.pending).iter().filter_map(Key::plain_char).collect()
     }
+
+    /// Laid out as the chat draws it, `w` its text's width.
+    pub fn laid(&self, w: usize) -> Laid {
+        let text = self.text();
+        let rows = rows(&text, w);
+        Laid { text, rows, cursor: self.cursor() }
+    }
+
+    /// The character drawn at column `col` of row `row` (`laid`, `w` wide): the one whose cells hold it — never past a
+    /// wrapped row's end, its last (the cell after it is the next row's first, as in the code); past a line's last
+    /// row, its end (the line break — the cursor there is after its last character).
+    fn at(&self, row: usize, col: usize, w: usize) -> usize {
+        let laid = self.laid(w);
+        let i = row.min(laid.height() - 1);
+        let (text, start) = laid.row(i);
+        let col = crate::wrap::clamp_col(col, laid.end_col(i));
+        let mut cells = 0;
+        let pos = text
+            .char_indices()
+            .find_map(|(b, ch)| {
+                cells += ch.width().unwrap_or(0);
+                (cells > col).then_some(start + b)
+            })
+            .unwrap_or(start + text.len());
+        crate::graphemes::snap(&self.pane.doc().text, pos)
+    }
+}
+
+/// The input laid out for one frame or one press: its text, read once, and its rows — byte ranges made from that text
+/// (`rows`) and kept beside it, private, so they never slice another string: every one starts and ends on that
+/// text's character boundaries (`char_indices`' or its end), and slicing by them can't panic.
+pub struct Laid {
+    text: String,
+    rows: Vec<std::ops::Range<usize>>,
+    /// The input's cursor in that text (a byte on its character boundary, a document's position).
+    cursor: usize,
+}
+
+impl Laid {
+    /// How many rows (one at least).
+    pub fn height(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Row `i`'s text and its first byte in the input.
+    pub fn row(&self, i: usize) -> (&str, usize) {
+        let r = &self.rows[i];
+        (&self.text[r.clone()], r.start)
+    }
+
+    /// The row and column the cursor is drawn at — on a row's end, that row's (a wrapped row's end is the next one's
+    /// start).
+    pub fn cursor(&self) -> (usize, usize) {
+        let at = self.rows.iter().position(|r| r.end >= self.cursor).unwrap_or(self.rows.len() - 1);
+        let r = &self.rows[at];
+        let upto = self.cursor.clamp(r.start, r.end);
+        (at, self.text[r.start..upto].chars().map(|c| c.width().unwrap_or(0)).sum())
+    }
+
+    /// The column row `i` stops before (`wrap::Row.end_col`): a wrapped row's width, else none (`usize::MAX` — the
+    /// cell after a line's text is its line break's).
+    fn end_col(&self, i: usize) -> usize {
+        let r = &self.rows[i];
+        match self.text[r.end..].starts_with('\n') || r.end == self.text.len() {
+            true => usize::MAX,
+            false => self.text[r.clone()].chars().map(|c| c.width().unwrap_or(0)).sum(),
+        }
+    }
+}
+
+/// The input's `text` wrapped as the chat draws it, `w` its text's width (the prompt's two cells off, the caret's
+/// among them): each row's bytes, without the line break that ends one.
+fn rows(text: &str, w: usize) -> Vec<std::ops::Range<usize>> {
+    let room = w.saturating_sub(2);
+    let mut rows = Vec::new();
+    let (mut start, mut col) = (0, 0);
+    for (b, ch) in text.char_indices() {
+        let cw = ch.width().unwrap_or(0);
+        if ch == '\n' || col + cw > room {
+            rows.push(start..b);
+            col = 0;
+            start = b;
+            if ch == '\n' {
+                start += 1;
+                continue;
+            }
+        }
+        col += cw;
+    }
+    rows.push(start..text.len());
+    rows
+}
+
+/// A press on the input's row `row` (`Screen::chat_input_row`) at column `col` of its text, `w` the width it was
+/// wrapped to: the keys to it (the conversation's view mode left, as `i` leaves it), the cursor on the character
+/// pressed, as a press in the code's insert mode puts it. Where it landed — a drag from there selects (`drag`).
+pub fn click(ed: &mut Editor, row: usize, col: usize, w: usize) -> usize {
+    crate::chatdoc::leave(ed);
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return 0 };
+    let pos = c.input.at(row, col, w);
+    c.input.pane.doc_mut().set_selection(Selection::point(pos));
+    pos
+}
+
+/// A drag from the press's character `anchor` (`click`'s) to row `row`, column `col` under the pointer: what's
+/// between selected, both included, as a drag in the code selects — insert mode kept, as there. The keys gone from
+/// it since: nothing.
+pub fn drag(ed: &mut Editor, anchor: usize, row: usize, col: usize, w: usize) {
+    if !ed.workspace.is_at(crate::workspace::At::Chat) || crate::chatdoc::keyed(ed) {
+        return;
+    }
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+    let pos = c.input.at(row, col, w);
+    let d = c.input.pane.doc_mut();
+    let anchor = crate::graphemes::snap(&d.text, anchor);
+    d.set_selection(Selection::new(vec![Range::dragged(&d.text, anchor, pos)], 0));
 }
 
 /// A key for the input's document (`chat::key`, once the chat's own keys didn't take it): `[chat]` then
