@@ -1032,6 +1032,29 @@ mod tests {
         assert_eq!(n, BTreeMap::from([("main.rs".to_string(), 3)]), "f, g's SystemTime, h");
     }
 
+    /// The code's roots are tarae's `src/` and every crate's of the workspace but xtask's — a crate left out of
+    /// `default-members` would be a crate these checks never read.
+    #[test]
+    fn the_codes_roots_are_every_crates() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: toml::Table =
+            toml::from_str(&std::fs::read_to_string(root.join("Cargo.toml")).unwrap()).unwrap();
+        let members = manifest["workspace"]["members"].as_array().unwrap();
+        let roots = lint::code_roots();
+        assert_eq!(roots[0].0, "src", "tarae's own first");
+        for m in members.iter().map(|m| m.as_str().unwrap()).filter(|m| *m != "xtask") {
+            assert!(
+                roots.iter().any(|(r, _)| *r == format!("{m}/src")),
+                "{m}: a member, not a default member"
+            );
+        }
+        for (rel, dir) in &roots {
+            let top = if rel == "src" { "main.rs" } else { "lib.rs" };
+            assert!(dir.join(top).is_file(), "{rel}/{top}");
+        }
+        assert!(lint::code_files().iter().any(|(k, _)| k == "crates/tarae-wasm/src/jit/mod.rs"));
+    }
+
     /// Second review 2: a module declared after a test-only one is the build's own (`nav.rs` after
     /// `#[cfg(test)] mod mutate;`); one declared under a test-only attribute, by its `#[path]`, or by a test-only
     /// file at all, is the tests'.
@@ -1065,25 +1088,77 @@ pub mod lint {
     /// How often each of `patterns` appears per file of tarae's code (under `src/`, keyed by the path from
     /// there) — in what a non-test build compiles; `except` left out.
     pub fn counts(patterns: &[&str], except: &[&str]) -> BTreeMap<String, usize> {
-        count_tree(&files(), patterns, except)
+        let mut out = BTreeMap::new();
+        for (rel, files) in trees() {
+            out.extend(count_tree(&files, patterns, &[]).into_iter().map(|(p, n)| (keyed(&rel, &p), n)));
+        }
+        out.retain(|p, _| !except.contains(&p.as_str()));
+        out
     }
 
     /// tarae's code as a non-test build compiles it, literals kept (comments and test-only items and files
-    /// out): each file's path from `src/` and its text — for checks of the words it says.
+    /// out): each file's key (`keyed`) and its text — for checks of the words it says.
     pub fn sources() -> Vec<(String, String)> {
-        let files = files();
-        let split: BTreeMap<&str, Split> = files.iter().map(|(p, t)| (p.as_str(), split(t))).collect();
-        let tests = test_only(&split);
-        split
-            .into_iter()
-            .filter(|(p, _)| !tests.contains(*p))
-            .map(|(p, s)| (p.to_string(), s.decls))
+        let mut out = Vec::new();
+        for (rel, files) in trees() {
+            let split: BTreeMap<&str, Split> = files.iter().map(|(p, t)| (p.as_str(), split(t))).collect();
+            let tests = test_only(&split);
+            out.extend(
+                split
+                    .into_iter()
+                    .filter(|(p, _)| !tests.contains(*p))
+                    .map(|(p, s)| (keyed(&rel, p), s.decls)),
+            );
+        }
+        out
+    }
+
+    /// The code's roots: tarae's `src/` and each of its crates' — the workspace's `default-members`, read from its
+    /// manifest (xtask, a tool apart, is a member only) — each its folder from the repository's root and its path.
+    /// A check that reads the code walks them all, so none stops at a crate's line.
+    pub fn code_roots() -> Vec<(String, std::path::PathBuf)> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let manifest: toml::Table =
+            toml::from_str(&std::fs::read_to_string(root.join("Cargo.toml")).unwrap()).unwrap();
+        let members = manifest["workspace"]["default-members"].as_array().expect("default-members");
+        members
+            .iter()
+            .map(|m| match m.as_str().expect("a folder") {
+                "." => "src".to_string(),
+                m => format!("{m}/src"),
+            })
+            .map(|rel| (rel.clone(), root.join(rel)))
             .collect()
     }
 
-    /// Every file under `src/`: its path from there, its text.
-    fn files() -> Vec<(String, String)> {
-        files_in(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
+    /// A file's key in the lists these checks keep: its path from `src/` for tarae's own, from the repository's
+    /// root for a crate's (`rel` its root, as `code_roots` names it; `path` from there).
+    pub fn keyed(rel: &str, path: &str) -> String {
+        match rel {
+            "src" => path.to_string(),
+            _ => format!("{rel}/{path}"),
+        }
+    }
+
+    /// Every `.rs` file of the code's roots: its key (`keyed`) and its path.
+    pub fn code_files() -> Vec<(String, std::path::PathBuf)> {
+        let mut out = Vec::new();
+        for (rel, dir) in code_roots() {
+            let mut paths = Vec::new();
+            walk(&dir, &mut paths);
+            out.extend(
+                paths
+                    .into_iter()
+                    .map(|p| (keyed(&rel, &p.strip_prefix(&dir).unwrap().display().to_string()), p.clone())),
+            );
+        }
+        out
+    }
+
+    /// Each of the code's roots (its folder from the repository's root) with its files: their paths from there,
+    /// their text.
+    fn trees() -> Vec<(String, Vec<(String, String)>)> {
+        code_roots().into_iter().map(|(rel, dir)| (rel, files_in(&dir))).collect()
     }
 
     /// Every `.rs` file under `dir`: its path from there, its text.
@@ -1098,14 +1173,17 @@ pub mod lint {
             .collect()
     }
 
-    /// How often each of `patterns` appears per file in test code — tarae's test-only items and files (`src/`),
-    /// every file of its own test crates (`tests/`), xtask's test-only items and files (`xtask/src/`) — keyed by
-    /// the path from the repository's root; `except` (such paths) left out. Never in a comment.
+    /// How often each of `patterns` appears per file in test code — the test-only items and files of the code's
+    /// roots (`src/`, each crate's), every file of tarae's own test crates (`tests/`), xtask's test-only items
+    /// and files (`xtask/src/`) — keyed by the path from the repository's root; `except` (such paths) left out.
+    /// Never in a comment.
     pub fn test_counts(patterns: &[&str], except: &[&str]) -> BTreeMap<String, usize> {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut out = BTreeMap::new();
-        for (prefix, all_tests) in [("src/", false), ("tests/", true), ("xtask/src/", false)] {
-            let files = files_in(&root.join(prefix));
+        let code = code_roots().into_iter().map(|(rel, _)| (format!("{rel}/"), false));
+        let others = [("tests/".to_string(), true), ("xtask/src/".to_string(), false)];
+        for (prefix, all_tests) in code.chain(others) {
+            let files = files_in(&root.join(&prefix));
             out.extend(test_count_tree(&files, patterns, all_tests).into_iter().filter_map(|(p, n)| {
                 let p = format!("{prefix}{p}");
                 (!except.contains(&p.as_str())).then_some((p, n))
@@ -1325,7 +1403,7 @@ pub mod lint {
         let (dir, file) = path.rsplit_once('/').unwrap_or(("", path));
         let stem = file.trim_end_matches(".rs");
         let join = |a: &str, b: &str| if a.is_empty() { b.to_string() } else { format!("{a}/{b}") };
-        let module = match stem == "mod" || (stem == "main" && dir.is_empty()) {
+        let module = match stem == "mod" || (matches!(stem, "main" | "lib") && dir.is_empty()) {
             true => dir.to_string(),
             false => join(dir, stem),
         };

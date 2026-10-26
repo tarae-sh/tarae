@@ -6,7 +6,7 @@
 //! reading an answer builds is budgeted too: lists and strings may point at the same memory over and over,
 //! so an answer could otherwise ask for far more than the plugin's memory holds.
 
-use crate::wasm::{Instance, Val};
+use crate::{Instance, Val};
 
 /// A WIT type (only the ones the API uses).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -299,7 +299,7 @@ mod tests {
                                      (i32.sub (i32.const 0) (local.get 2))))
               (global.set $next (i32.add (local.get $p) (local.get 3)))
               (local.get $p)))"#;
-        let m = crate::wasm::Module::new(&wat::parse_str(wat).unwrap()).unwrap();
+        let m = crate::Module::new(&wat::parse_str(wat).unwrap()).unwrap();
         let realloc = m.func("cabi_realloc").unwrap();
         (Instance::new(m, Default::default(), 1 << 30).unwrap(), realloc)
     }

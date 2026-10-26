@@ -93,7 +93,8 @@ What landed since, what's under way and what comes next: [roadmap.md](roadmap.md
 ## Plugins
 
 Language features stay in the core. Plugins are for the rest: commands written in Rust, compiled to WebAssembly, run
-sandboxed on tarae's own runtime ([`src/wasm/`](../src/wasm)) by the plugin host ([`src/plugin/`](../src/plugin)).
+sandboxed on tarae's own runtime ([`crates/tarae-wasm/`](../crates/tarae-wasm)) by the plugin host (its
+[`plugin/`](../crates/tarae-wasm/src/plugin), the editor's side in [`src/plugin/`](../src/plugin)).
 How to write and install one: [plugins.md](plugins.md).
 
 ### The runtime
@@ -285,13 +286,19 @@ src/
   edits.rs           the chat's edits, reviewed before they're written
   codereview.rs      pull-request-style review sent to Claude in one go
 
-  wasm/              the plugin runtime (see Plugins): mod.rs the API · read.rs bytes · module.rs sections ·
+  plugin/            the plugin host's editor side (the rest is crates/tarae-wasm): mod.rs commands and answers
+                     in the editor · perm.rs permissions · io.rs programs, connections, files, timers ·
+                     panel.rs its panel, line and buffers · events.rs buffer events · cli.rs `tarae plugin
+                     new|dev|list`
+crates/              tarae's own crates, workspace members beside the root package
+  tarae-wasm/        the plugin runtime (see Plugins): lib.rs the API · read.rs bytes · module.rs sections ·
                      compile.rs validation → register ops · exec.rs the interpreter · jit/ machine code —
-                     mod.rs executable memory and entry (the only `unsafe`), a64/ and x64/ the backends
-  plugin/            the plugin host: mod.rs commands and answers in the editor · host.rs the plugin thread ·
-                     abi.rs the API's types, loading and calling a plugin · cabi.rs the canonical ABI subset ·
-                     perm.rs permissions · io.rs programs, connections, files, timers · panel.rs its panel,
-                     line and buffers · events.rs buffer events · cli.rs `tarae plugin new|dev|list`
+                     mod.rs executable memory and entry (the only `unsafe`), a64/ and x64/ the backends ·
+                     plugin/ host.rs the plugin thread, abi.rs the API's types, loading and calling a plugin,
+                     cabi.rs the canonical ABI subset
+  tarae-sorting/     the one sort (clippy.toml) — std's sort copied once for every crate; src/sorting.rs
+                     re-exports it
+  tarae-testkit/     what the crates' tests share (dev-only): a test's scratch folder, the one patience
 runtime/
   queries/           tree-sitter queries (from Helix 25.07.1, MPL-2.0)
   packs/             language packs (built in; one in ~/.local/share/tarae/packs/ wins, table by table)
@@ -305,6 +312,6 @@ xtask/               dev tasks (cargo xtask — not part of the tarae binary): v
 plugin-sdk/          wit/tarae.wit the plugin API · template/ what `tarae plugin new` writes · demo/ the plugin
                      the tests load (demo.wasm, its build) · sdk/ tarae-plugin, the Rust helpers ·
                      kubernetes/ the cluster in the code: state beside manifests, pure Rust
-fuzz/                dev tools for src/wasm, outside the workspace (own lockfile): the differential fuzzer
-                     and the spec test runner
+fuzz/                dev tools for crates/tarae-wasm, outside the workspace (own lockfile, the runtime a
+                     dependency): the differential fuzzer and the spec test runner
 ```

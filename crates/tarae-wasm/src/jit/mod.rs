@@ -136,7 +136,7 @@ pub(super) fn busiest_loop_locals(m: &Module, start: usize, end: usize, locals: 
         }
     }
     let mut order: Vec<usize> = (0..weight.len()).filter(|&s| weight[s] > 0).collect();
-    crate::sorting::by_key(&mut order, |&s| (std::cmp::Reverse(weight[s]), s));
+    tarae_sorting::by_key(&mut order, |&s| (std::cmp::Reverse(weight[s]), s));
     order.into_iter().map(|s| s as S).collect()
 }
 

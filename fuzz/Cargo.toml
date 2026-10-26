@@ -1,5 +1,5 @@
-# Dev tools for the plugin runtime (src/wasm) — not part of tarae, and outside its workspace (own lockfile),
-# so its heavy dependencies (wasmtime, wasmi, wasm-smith) never touch tarae's build or CI.
+# Dev tools for the plugin runtime (crates/tarae-wasm) — not part of tarae, and outside its workspace (own
+# lockfile), so its heavy dependencies (wasmtime, wasmi, wasm-smith) never touch tarae's build or CI.
 #
 #   cargo run --release --bin fuzz -- 300            differential fuzzing for 5 minutes (see src/main.rs)
 #   cargo run --release --bin spec -- testsuite/*.wast   the official spec tests (see src/bin/spec.rs)
@@ -17,6 +17,7 @@ name = "fuzz"
 path = "src/main.rs"
 
 [dependencies]
+tarae-wasm = { path = "../crates/tarae-wasm" }
 arbitrary = "1"
 libc = "0.2"
 wasm-smith = "0.259"

@@ -91,16 +91,10 @@ pub fn unoptimized(name: &str) -> bool {
     true
 }
 
-/// How long a test waits for what it waits on before it calls it a hang. A guard, never the test's logic: it
-/// only stops a test that would otherwise never end, so it's generous — a shared runner, or this Mac while several
-/// sessions build at once, runs the suite 3–5× slower, and guards of a few seconds tripped there one a round
-/// (CI's rounds 1–6). A passing test
-/// never waits this long. One value for every test: the e2e harness's `TIMEOUT` and xtask's `PATIENCE` are the
-/// same (`every_test_waits_with_one_patience`, which also keeps new deadlines off). What a test checks against
-/// time — a timer under test, a program's own `read -t`, "viewed past 3 s" — is a condition or the
-/// simulation's clock, never a deadline; a look that nothing happens meanwhile is `quiet_for`'s.
+/// How long a test waits for what it waits on before it calls it a hang — one value for every crate's tests, the
+/// testkit's (`crates/tarae-testkit`, where it's told why).
 #[cfg(test)]
-pub const PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
+pub use tarae_testkit::PATIENCE;
 
 /// The end of a while in which a test looks that nothing happens (no event, no frame, nothing sent) — never a
 /// wait for what must happen (that's a condition, `PATIENCE` its guard): a slower machine only sees less happen
@@ -266,28 +260,16 @@ const SKIP_WRITERS_LEFT: &[(&str, usize)] = &[
 #[cfg(test)]
 #[test]
 fn every_self_skip_goes_through_said_skip() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut found: Vec<(String, usize)> = Vec::new();
-    let mut stack = vec![root.clone()];
-    while let Some(dir) = stack.pop() {
-        for e in std::fs::read_dir(&dir).unwrap().flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                stack.push(p);
-            } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("test_results.rs") {
-                let text = std::fs::read_to_string(&p).unwrap();
-                // (a reader strips the prefix; a writer puts it in a line)
-                let writes = |l: &&str| {
-                    l.contains("SELF_SKIP")
-                        && !l.contains("strip_prefix")
-                        && !l.trim_start().starts_with("//")
-                };
-                let n = text.lines().filter(writes).count();
-                if n > 0 {
-                    let rel = p.strip_prefix(&root).unwrap().to_string_lossy().into_owned();
-                    found.push((rel, n));
-                }
-            }
+    for (key, p) in crate::sim::lint::code_files().into_iter().filter(|(k, _)| k != "test_results.rs") {
+        let text = std::fs::read_to_string(&p).unwrap();
+        // (a reader strips the prefix; a writer puts it in a line)
+        let writes = |l: &&str| {
+            l.contains("SELF_SKIP") && !l.contains("strip_prefix") && !l.trim_start().starts_with("//")
+        };
+        let n = text.lines().filter(writes).count();
+        if n > 0 {
+            found.push((key, n));
         }
     }
     found.sort();
@@ -783,25 +765,16 @@ mod tests {
     /// full name — one that didn't held a release budget in the test profile and failed under load.
     #[test]
     fn every_perf_test_skips_itself_by_its_own_name() {
-        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-            for e in std::fs::read_dir(dir).unwrap().flatten() {
-                let p = e.path();
-                if p.is_dir() {
-                    walk(&p, out);
-                } else if p.extension().is_some_and(|x| x == "rs") {
-                    out.push(p);
-                }
-            }
-        }
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut files = Vec::new();
-        walk(&src, &mut files);
+        let roots = crate::sim::lint::code_roots();
         let mut n = 0;
-        for file in files {
+        // (a crate's perf test would need an `unoptimized` and a build script's `tarae_optimized` of its own: it
+        // fails here until it has them)
+        for (_, file) in crate::sim::lint::code_files() {
+            let src = &roots.iter().find(|(_, d)| file.starts_with(d)).expect("under a root").1;
             let text = std::fs::read_to_string(&file).unwrap();
             // The module the tests are in: `a/b.rs` → `a::b::tests`, `a/tests.rs` → `a::tests`, a file of tests of
             // its own `a/b_tests.rs` → `a::b_tests`
-            let rel = file.strip_prefix(&src).unwrap().with_extension("");
+            let rel = file.strip_prefix(src).unwrap().with_extension("");
             let module: Vec<String> = rel.iter().map(|s| s.to_string_lossy().to_string()).collect();
             let module = match module.last().map(String::as_str) {
                 Some(m) if m == "tests" || m.ends_with("_tests") => module.join("::"),

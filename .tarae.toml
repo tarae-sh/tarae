@@ -9,6 +9,8 @@ restart-binary = "target/release/tarae"
 risky = [
   "sandbox*", "landlock.rs", "seccomp.rs", "allow.rs", "trust.rs", "builds.rs", "build.rs", ".github/",
   ".tarae.toml",
+  # the JIT's emitters: a missed bounds check in the code it writes is a hole in plugins' sandbox
+  "crates/tarae-wasm/src/jit/",
 ]
 quiet = ["src/snapshots/", "docs/"]
 # What draws the screen: a change there brings the board's design angle (space v C)

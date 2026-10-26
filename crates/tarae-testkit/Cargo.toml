@@ -1,0 +1,10 @@
+# What the tests of tarae's crates share — a dev-dependency only, never in the binary: a test's own scratch folder
+# and the one patience every test waits with. std only.
+[package]
+name = "tarae-testkit"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false

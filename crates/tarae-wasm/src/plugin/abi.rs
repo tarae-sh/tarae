@@ -6,10 +6,10 @@
 //! `on-events(events, now)` — each answering a list of actions through a pointer, with a `cabi_post_*` to free
 //! it — and `cabi_realloc`, which tarae allocates the arguments with.
 //!
-//! [`plugin-sdk/wit/tarae.wit`]: ../../plugin-sdk/wit/tarae.wit
+//! [`plugin-sdk/wit/tarae.wit`]: ../../../../plugin-sdk/wit/tarae.wit
 
 use super::cabi::{Mem, T, V};
-use crate::wasm::{Instance, Limits, Module, Trap, Ty, Val};
+use crate::{Instance, Limits, Module, Trap, Ty, Val};
 
 /// The API version plugins are built for. Until 1.0 each 0.x breaks plugins: only this one loads.
 pub const API: &str = "0.2";
@@ -876,7 +876,7 @@ fn exports(m: &Module) -> Result<Exports, String> {
 }
 
 /// The runtime's reasons, in terms of how the plugin was built.
-fn rejected(e: crate::wasm::Error) -> String {
+fn rejected(e: crate::Error) -> String {
     let e = e.to_string();
     if e.contains("SIMD") {
         "it uses SIMD — build it without `+simd128`".into()
@@ -991,11 +991,13 @@ impl Plugin {
     }
 }
 
+/// The SDK's demo plugin as built (`plugin-sdk/demo.wasm`) — for tests, this crate's and the editor's.
+pub const DEMO: &[u8] = include_bytes!("../../../../plugin-sdk/demo.wasm");
+
 #[cfg(test)]
-pub(super) mod tests {
+mod tests {
     use super::*;
 
-    pub const DEMO: &[u8] = include_bytes!("../../plugin-sdk/demo.wasm");
     const FUEL: u64 = 1 << 32;
 
     /// Each call's randomness is the system's (a plugin's TLS keys come from it): new each time, and not

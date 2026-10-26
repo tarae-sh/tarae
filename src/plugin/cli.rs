@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context as _, anyhow, bail};
 
 use super::abi::{Plugin, WIT_BINDGEN};
-use crate::wasm::Limits;
+use tarae_wasm::Limits;
 
 const WIT: &str = include_str!("../../plugin-sdk/wit/tarae.wit");
 const CARGO_TOML: &str = include_str!("../../plugin-sdk/template/Cargo.toml");

@@ -907,6 +907,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// A test in a workspace's member crate (tarae's `crates/tarae-wasm`) runs in that member's folder, as its
+    /// library's — cargo takes the package from the folder it runs in, never the root's.
+    #[test]
+    fn a_members_test_runs_in_its_own_crate() {
+        let d = tmp("rust-member");
+        let root = "[package]\nname = \"x\"\n[workspace]\nmembers = [\"crates/m\"]\n";
+        std::fs::write(d.join("Cargo.toml"), root).unwrap();
+        std::fs::create_dir_all(d.join("src")).unwrap();
+        std::fs::write(d.join("src/main.rs"), "fn main() {}\n").unwrap();
+        let m = d.join("crates/m");
+        std::fs::create_dir_all(m.join("src/jit")).unwrap();
+        std::fs::write(m.join("Cargo.toml"), "[package]\nname = \"m\"\n").unwrap();
+        std::fs::write(m.join("src/lib.rs"), "mod jit;\n").unwrap();
+        let src = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn adds() { let here = 1; }\n}\n";
+        let tree = parse("rust", src).expect("rust grammar is always built in");
+        let file = m.join("src/jit/mod.rs");
+        let t = find("rust", &file, src, &tree, at(src, "here"), Scope::Nearest).unwrap();
+        assert_eq!(t.cwd, m, "the member's folder");
+        assert_eq!(t.argv(), ["cargo", "test", "--lib", "--", "jit::tests::adds", "--exact"]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     /// The Rust pack's query: a test attribute makes the function right after it (other attributes and
     /// comments between) a test, and no other function; debugging builds the test binary first.
     #[test]

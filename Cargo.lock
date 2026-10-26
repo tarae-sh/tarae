@@ -1292,6 +1292,9 @@ dependencies = [
  "serde_json",
  "streaming-iterator",
  "tar",
+ "tarae-sorting",
+ "tarae-testkit",
+ "tarae-wasm",
  "toml",
  "toml_edit",
  "tree-sitter",
@@ -1299,6 +1302,27 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "vt100",
+]
+
+[[package]]
+name = "tarae-sorting"
+version = "0.1.0"
+dependencies = [
+ "tarae-testkit",
+]
+
+[[package]]
+name = "tarae-testkit"
+version = "0.1.0"
+
+[[package]]
+name = "tarae-wasm"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "ropey",
+ "tarae-sorting",
+ "tarae-testkit",
  "wat",
 ]
 

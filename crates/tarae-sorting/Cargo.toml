@@ -1,0 +1,13 @@
+# tarae's one sort (clippy.toml): std's sort copied once for every crate of tarae's — a crate of its own since the
+# plugin runtime left tarae (its JIT's own copy of std's sort: +16.5 KB of release binary, measured 2026-10-26). std only.
+[package]
+name = "tarae-sorting"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dev-dependencies]
+tarae-testkit = { path = "../tarae-testkit" }

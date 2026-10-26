@@ -569,21 +569,9 @@ mod tests {
     /// `scoped(s, "…")` fits `THREAD_NAME_MAX` — the assert only sees threads that start.
     #[test]
     fn every_thread_in_the_code_is_named() {
-        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-            for e in std::fs::read_dir(dir).unwrap().flatten() {
-                let p = e.path();
-                if p.is_dir() {
-                    walk(&p, out);
-                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("tests.rs") {
-                    out.push(p);
-                }
-            }
-        }
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut files = Vec::new();
-        walk(&src, &mut files);
+        let files = crate::sim::lint::code_files().into_iter().filter(|(_, p)| !p.ends_with("tests.rs"));
         let (mut unnamed, mut long) = (Vec::new(), Vec::new());
-        for f in files {
+        for (key, f) in files {
             let text = std::fs::read_to_string(&f).unwrap();
             // (a file's own tests start at its top-level `#[cfg(test)] mod`)
             let code = text.split("\n#[cfg(test)]\nmod ").next().unwrap_or_default();
@@ -595,7 +583,7 @@ mod tests {
                 })
                 .collect();
             for (i, line) in code.lines().enumerate() {
-                let at = || format!("{}:{}", f.strip_prefix(&src).unwrap().display(), i + 1);
+                let at = || format!("{key}:{}", i + 1);
                 let from = code.lines().skip(i).take(4).collect::<String>();
                 let builder = line.contains("thread::Builder::new()") && !from.contains(".name(");
                 let scope_spawn = scopes.iter().any(|s| line.contains(s.as_str()));
@@ -670,7 +658,7 @@ mod tests {
         crate::sim::lint::only_shrinks("thread::sleep", &now, RAW_SLEEPS);
     }
 
-    /// `thread::sleep` calls left, per file (paths under `src/`).
+    /// `thread::sleep` calls left, per file (paths under `src/`, a crate's from the repository's root).
     const RAW_SLEEPS: &[(&str, usize)] = &[
         ("builds.rs", 1),
         ("cards.rs", 1),

@@ -290,15 +290,17 @@ process, or the disk.
 - Language-aware features (test discovery) work **on the tree-sitter tree**, never by guessing from text. If
   the grammar is missing, offer the download and carry on with what the user was doing once they accept.
 
-### The plugin runtime (`src/wasm`)
+### The plugin runtime (`crates/tarae-wasm`)
 
-- **`unsafe` lives only in `src/wasm/jit/mod.rs`** (executable memory and calling into it). The rest of the runtime is
-  `#![deny(unsafe_code)]`. The machine code the JIT writes is as trusted as `unsafe`, though: a missed bounds check in
+- **A crate of its own**, beside tarae in the workspace: the runtime at its root, the plugin API and its thread in
+  `plugin/`. It names nothing of the editor, so the boundary holds by the compiler.
+- **`unsafe` lives only in `crates/tarae-wasm/src/jit/mod.rs`** (executable memory and calling into it). The rest of the
+  crate is `#![deny(unsafe_code)]`. The machine code the JIT writes is as trusted as `unsafe`, though: a missed bounds check in
   `emit.rs` is a hole in the sandbox.
 - **The interpreter is the reference.** JIT and interpreter must agree exactly, traps, fuel and stack limits included.
   The interpreter is also the fallback wherever the JIT can't run.
 - A change to `compile.rs`, `exec.rs` or `jit/` goes through the spec tests and a fuzz run on each architecture it
-  touches. The tools are in [`fuzz/`](fuzz), outside the workspace:
+  touches. The tools are in [`fuzz/`](fuzz), outside the workspace, with the runtime as a dependency:
 
   ```sh
   cd fuzz
@@ -311,10 +313,10 @@ process, or the disk.
   x86-64 runs under Rosetta: `cargo test --target x86_64-apple-darwin`, and the same for `fuzz/`.
 - New instruction encodings get a line in the backend's `asm.rs` test, checked against `clang -c`.
 
-### The plugin host (`src/plugin`, `plugin-sdk`)
+### The plugin host (`crates/tarae-wasm/src/plugin`, `src/plugin`, `plugin-sdk`)
 
-- **The API is [`plugin-sdk/wit/tarae.wit`](plugin-sdk/wit/tarae.wit)**, and `src/plugin/abi.rs` mirrors it, type for
-  type. A change that breaks built plugins bumps the package's major version (and `abi::API`); tarae then refuses
+- **The API is [`plugin-sdk/wit/tarae.wit`](plugin-sdk/wit/tarae.wit)**, and `crates/tarae-wasm/src/plugin/abi.rs`
+  mirrors it, type for type. The editor's side (commands, permissions, panels, `tarae plugin`) is `src/plugin/`. A change that breaks built plugins bumps the package's major version (and `abi::API`); tarae then refuses
   plugins built for the old one, with a message saying to rebuild.
 - **wit-bindgen is pinned** to one version in the template, the demo and `abi::WIT_BINDGEN`. A test checks they agree.
 - **The tests load [`plugin-sdk/demo.wasm`](plugin-sdk/demo.wasm)**, the demo plugin's build, so they need no wasm

@@ -50,7 +50,7 @@ trace tells us where the other 36 went.
 - **Long-lived threads** belong to their owners: input (`term.rs:225`), the config watch
   (`config.rs:506`), one git HEAD watch per session (`git.rs:63`, made in `session.rs` `session_add`),
   `tarae-procs` (`procs.rs:311`), the log (`log.rs:38`), the saver (`saver.rs:75`), the plugin host
-  (`plugin/host.rs:290`), 3 per language server (`lsp.rs:589/601/622`), 2 per Claude process
+  (`crates/tarae-wasm/src/plugin/host.rs:294`), 3 per language server (`lsp.rs:589/601/622`), 2 per Claude process
   (`llm.rs:296/300`), 2 per task or test run (`task.rs:587/591`, `testing.rs:649/652`), 2 per terminal
   (`terminal.rs:255/296`), and the agent's websocket (`agent.rs:235/313/319`).
 
@@ -108,7 +108,7 @@ Column meanings:
 | Chat stream | claude process. `pump` thread + stderr thread (`llm.rs:290-330`); text batched every 25 ms | the network, Anthropic's side | `interrupt` control request, SIGKILL for once-asks | strict | chat |
 | Chat stdin | **main**, `writeln!` + `flush` into the pipe (`chat.rs:670,984,1074,1082,1112`) | the pipe (64 KB, measured below) | — | strict | — |
 | Claude spawn | main, posix_spawn (`llm::spawn`). A one-turn claude (`space i`, a commit draft) is started as it's asked, no spare kept (audit 2.B, 2026-10-26). | CPU (cold start 8–10 s, all in the child) | kill | — | chat state |
-| Plugins | **one host thread**, FIFO across plugins (`plugin/host.rs:282-307`). Fuel-budgeted. Outbox coalesces what comes while busy (`plugin/io.rs:20-22,69-83`). **4 MB backlog** back-pressure (`io.rs:51,101-109`). ≤ 16 programs/sockets each (`io.rs:53-55`). | CPU, the plugin's network/programs | fuel, `stop`, reload | per plugin FIFO | plugin panels |
+| Plugins | **one host thread**, FIFO across plugins (`crates/tarae-wasm/src/plugin/host.rs:286-312`). Fuel-budgeted. Outbox coalesces what comes while busy (`plugin/io.rs:20-22,69-83`). **4 MB backlog** back-pressure (`io.rs:51,101-109`). ≤ 16 programs/sockets each (`io.rs:53-55`). | CPU, the plugin's network/programs | fuel, `stop`, reload | per plugin FIFO | plugin panels |
 | Search (`grep.rs`) | ripgrep crates in-process, ≤ 4 threads (`grep.rs:19,136`), on a job | disk, CPU | `AtomicU64` generation asked per file and per match (`editor.rs:2085-2131`), 50 ms debounce (`LIVE_PAUSE`) | latest wins | live picker, partial results at 100/400 ms |
 | Terminal panel | openpty + setsid. Spawned in a job (`Workspace.terminal_starting`). Reader thread with **one batch in flight** (`terminal.rs:255-292`), writer thread (`terminal.rs:294-302`). | the user's own programs (their cargo too, invisibly) | close → SIGTERM | strict | the panel |
 | Debugger | adapter spawned and connected in a job, setsid, threads (`dap.rs:159,226,324,716`) | — | disconnect/kill | — | debug pane |

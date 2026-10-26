@@ -153,7 +153,7 @@ mod sandbox;
 mod sandboxpack;
 mod saver;
 #[cfg(test)]
-mod scratch;
+use tarae_testkit::scratch;
 mod screen;
 mod search;
 #[cfg(target_os = "linux")]
@@ -209,7 +209,6 @@ mod view;
 mod viewalign;
 mod virtualdoc;
 mod waits;
-mod wasm;
 mod weave;
 mod web;
 mod whole;

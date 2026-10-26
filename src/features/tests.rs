@@ -352,19 +352,11 @@ fn every_card_kind_is_listed() {
 #[test]
 fn every_picker_kind_is_listed() {
     let mut found = Vec::new();
-    let mut dirs = vec![PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))];
-    while let Some(dir) = dirs.pop() {
-        for e in std::fs::read_dir(&dir).unwrap().flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                dirs.push(p);
-            } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("features/tests.rs") {
-                let text = std::fs::read_to_string(&p).unwrap();
-                // (rustfmt may put the arguments on the next line)
-                for s in text.split("Picker::of(").skip(1).filter_map(|s| s.trim_start().strip_prefix('"')) {
-                    found.push(s[..s.find('"').unwrap()].to_string());
-                }
-            }
+    for (_, p) in crate::sim::lint::code_files().into_iter().filter(|(k, _)| k != "features/tests.rs") {
+        let text = std::fs::read_to_string(&p).unwrap();
+        // (rustfmt may put the arguments on the next line)
+        for s in text.split("Picker::of(").skip(1).filter_map(|s| s.trim_start().strip_prefix('"')) {
+            found.push(s[..s.find('"').unwrap()].to_string());
         }
     }
     for k in &found {

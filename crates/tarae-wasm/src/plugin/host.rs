@@ -19,7 +19,7 @@ use ropey::Rope;
 use super::abi::{
     Action, Buffer, Command, Context, Event, HostEvent, Now, Permission, Plugin, Selection, Subscription,
 };
-use crate::wasm::Limits;
+use crate::Limits;
 
 const JIT_FUEL: u64 = 2_000_000_000;
 const INTERPRETER_FUEL: u64 = 500_000_000;
@@ -196,18 +196,22 @@ fn budget(p: &Plugin) -> u64 {
     if p.compiled() { JIT_FUEL } else { INTERPRETER_FUEL }
 }
 
-fn load(bytes: &[u8]) -> Result<(Plugin, Manifest), String> {
+/// Why a permission can't be granted as written, if it can't — the editor's rule (its `perm::invalid`): a plugin
+/// that asks for one doesn't load.
+pub type Invalid = fn(&Permission) -> Option<String>;
+
+fn load(bytes: &[u8], invalid: Invalid) -> Result<(Plugin, Manifest), String> {
     let mut p = Plugin::new(bytes, Limits::default(), LOAD_FUEL)?;
     let commands = p.commands(LOAD_FUEL)?;
     let subscriptions = p.subscriptions(LOAD_FUEL)?;
     let permissions = p.permissions(LOAD_FUEL)?;
-    if let Some(why) = permissions.iter().find_map(super::perm::invalid) {
+    if let Some(why) = permissions.iter().find_map(invalid) {
         return Err(why);
     }
     Ok((p, Manifest { commands, subscriptions, permissions }))
 }
 
-fn worker(rx: std::sync::mpsc::Receiver<Req>, notify: impl Fn(Note)) {
+fn worker(rx: std::sync::mpsc::Receiver<Req>, notify: impl Fn(Note), invalid: Invalid) {
     let mut known: HashMap<String, Stamp> = HashMap::new();
     let mut loaded: HashMap<String, Loaded> = HashMap::new();
     let mut generation = 0;
@@ -223,7 +227,7 @@ fn worker(rx: std::sync::mpsc::Receiver<Req>, notify: impl Fn(Note)) {
                     generation += 1;
                     let bytes = std::fs::read(path).map_err(|e| format!("can't read it: {e}"));
                     let manifest = bytes.and_then(|bytes| {
-                        let (p, manifest) = load(&bytes)?;
+                        let (p, manifest) = load(&bytes, invalid)?;
                         loaded.insert(
                             name.clone(),
                             Loaded { bytes, live: Some(p), manifest: manifest.clone(), generation },
@@ -254,7 +258,7 @@ fn worker(rx: std::sync::mpsc::Receiver<Req>, notify: impl Fn(Note)) {
                 }
                 let p = match l.live.take() {
                     Some(p) => Ok(p),
-                    None => load(&l.bytes).map(|(p, _)| p),
+                    None => load(&l.bytes, invalid).map(|(p, _)| p),
                 };
                 let result = p.and_then(|mut p| {
                     let fuel = budget(&p);
@@ -284,13 +288,13 @@ pub struct Host {
 }
 
 impl Host {
-    /// Starts the thread; `notify` gets its notes (on that thread).
-    pub fn start(notify: impl Fn(Note) + Send + 'static) -> Option<Host> {
+    /// Starts the thread; `notify` gets its notes (on that thread), `invalid` judges what a plugin asks for.
+    pub fn start(notify: impl Fn(Note) + Send + 'static, invalid: Invalid) -> Option<Host> {
         let (tx, rx) = channel();
         std::thread::Builder::new()
             .name("tarae-plugins".into())
             .stack_size(STACK)
-            .spawn(move || worker(rx, notify))
+            .spawn(move || worker(rx, notify, invalid))
             .ok()?;
         Some(Host { tx })
     }
@@ -312,17 +316,50 @@ mod tests {
     use std::sync::mpsc::Receiver;
     use std::time::Duration;
 
-    use super::super::abi::tests::DEMO;
+    use super::super::abi::DEMO;
     use super::*;
 
-    fn dir(name: &str) -> PathBuf {
-        crate::scratch::Scratch::new(&format!("host-{name}")).into_path()
+    /// The test's own folder, gone when it's dropped (kept alive to the test's end).
+    fn dir(name: &str) -> tarae_testkit::scratch::Scratch {
+        tarae_testkit::scratch::Scratch::new(&format!("host-{name}"))
     }
 
     fn start() -> (Host, Receiver<Note>) {
+        start_judging(|_| None)
+    }
+
+    fn start_judging(invalid: Invalid) -> (Host, Receiver<Note>) {
         let (tx, rx) = channel();
-        let host = Host::start(move |n| tx.send(n).unwrap()).unwrap();
+        let host = Host::start(move |n| tx.send(n).unwrap(), invalid).unwrap();
         (host, rx)
+    }
+
+    /// A stand-in for the editor's rule: no programs.
+    fn no_programs(p: &Permission) -> Option<String> {
+        matches!(p, Permission::Run(_)).then(|| "no programs here".to_string())
+    }
+
+    /// The rule the editor passes judges what a plugin asks for as it loads: one it refuses doesn't load — its
+    /// note says why, the first time and on a reload alike — and has no commands to run.
+    #[test]
+    fn a_permission_the_editors_rule_refuses_keeps_the_plugin_out() {
+        let d = dir("refused");
+        std::fs::write(d.join("demo.wasm"), DEMO).unwrap();
+        let (host, notes) = start_judging(no_programs);
+        host.sync(scan(&d));
+        let Note::Loaded { plugin, manifest, reload: false, .. } = notes.recv_timeout(WAIT).unwrap() else {
+            panic!("loaded")
+        };
+        assert_eq!((plugin.as_str(), manifest), ("demo", Err("no programs here".to_string())));
+        assert_eq!(run(&host, "shout", input("", "x", &[(0, 1)])), Err("plugin demo isn't loaded".into()));
+        // A new build: judged again
+        std::fs::write(d.join("demo.wasm"), [DEMO, &[0, 1, 0]].concat()).unwrap();
+        host.sync(scan(&d));
+        let Note::Loaded { manifest, reload: true, .. } = notes.recv_timeout(WAIT).unwrap() else {
+            panic!("reloaded")
+        };
+        assert_eq!(manifest, Err("no programs here".to_string()));
+        assert_eq!(run(&host, "shout", input("", "x", &[(0, 1)])), Err("plugin demo isn't loaded".into()));
     }
 
     fn input(args: &str, text: &str, ranges: &[(usize, usize)]) -> Input {
@@ -343,10 +380,10 @@ mod tests {
         let (tx, rx) = channel();
         host.call("demo", Call::Command(command.into()), input, Box::new(move |r| tx.send(r).unwrap()))
             .unwrap();
-        rx.recv_timeout(crate::test_results::PATIENCE).expect("an answer")
+        rx.recv_timeout(tarae_testkit::PATIENCE).expect("an answer")
     }
 
-    const WAIT: Duration = crate::test_results::PATIENCE;
+    const WAIT: Duration = tarae_testkit::PATIENCE;
 
     #[test]
     fn loads_runs_reloads_and_drops() {
@@ -391,7 +428,6 @@ mod tests {
         host.sync(scan(&d));
         assert_eq!(notes.recv_timeout(WAIT).unwrap(), Note::Removed { plugin: "demo".into() });
         assert_eq!(run(&host, "shout", input("", "x", &[(0, 1)])), Err("plugin demo isn't loaded".into()));
-        std::fs::remove_dir_all(d).ok();
     }
 
     #[test]
@@ -412,13 +448,12 @@ mod tests {
         assert_eq!(run(&host, "boom", input("", "", &[])), Err("crashed (a panic?)".into()));
         assert!(run(&host, "stray", input("", "", &[])).is_ok(), "an odd edit is the editor's to refuse");
         assert_eq!(run(&host, "send", input(":w", "", &[])), Ok(vec![Action::Run(":w".into())]));
-        std::fs::remove_dir_all(d).ok();
     }
 
     #[test]
     fn the_watch_reports_changes_only() {
         let d = dir("watch");
-        let mut w = Watch::new(Some(d.clone()));
+        let mut w = Watch::new(Some(d.to_path_buf()));
         assert_eq!(w.changed(), None, "empty at start: nothing to do");
         std::fs::write(d.join("a.wasm"), DEMO).unwrap();
         std::fs::write(d.join("notes.txt"), "x").unwrap();
@@ -427,6 +462,5 @@ mod tests {
         std::fs::remove_file(d.join("a.wasm")).unwrap();
         assert_eq!(w.changed(), Some(Found::new()), "emptied: the editor drops what it had");
         assert_eq!(Watch::new(None).changed(), None);
-        std::fs::remove_dir_all(d).ok();
     }
 }

@@ -14,13 +14,20 @@
 //!   their length, calls by the locals they zero), and per byte (or element) by the ops that copy, fill or
 //!   grow — so every way to run long pays. Memory, tables, the value stack, and call depth have caps, and so
 //!   does loading (types' arity, locals per module, tables, compiling steps).
+//! - **Plugins** (`plugin`): tarae's plugin API on it — its types, loading and calling one plugin, and the
+//!   thread the editor talks to by messages. The editor's side (commands, the plugins folder, permission cards,
+//!   panels, `tarae plugin`) is tarae's `src/plugin/`; this crate knows nothing of the editor.
 
-#![deny(unsafe_code)] // allowed only in `jit`
+#![deny(unsafe_code)]
+// allowed only in `jit`
+// (std's `sort_by` family goes through tarae's `sorting` in the binary — clippy.toml; tests sort as they like)
+#![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests: not in the release binary"))]
 
 mod compile;
 mod exec;
 mod jit;
 mod module;
+pub mod plugin;
 mod read;
 
 use std::fmt;

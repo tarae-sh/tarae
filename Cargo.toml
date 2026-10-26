@@ -1,11 +1,10 @@
 [package]
 name = "tarae"
 version = "0.1.0"
-edition = "2024"
-# The pinned toolchain's (rust-toolchain.toml) — tarae is built with exactly that one, no older
-rust-version = "1.99"
-license = "GPL-3.0-or-later"
-repository = "https://github.com/tarae-sh/tarae"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 homepage = "https://tarae.sh"
 
 [dependencies]
@@ -49,6 +48,10 @@ encoding_rs = "0.8"
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-platform-verifier = "=0.7.1"
 crc32fast = "1.5"
+# The WebAssembly runtime and the plugin host (crates/tarae-wasm): the editor's side of plugins is src/plugin/
+tarae-wasm = { path = "crates/tarae-wasm" }
+# The one sort (clippy.toml), shared with the runtime's crate: `crate::sorting` re-exports it
+tarae-sorting = { path = "crates/tarae-sorting" }
 
 [profile.release]
 lto = true
@@ -134,9 +137,20 @@ flate2 = "1"
 tar = "0.4"
 toml = "1.1.6"
 
-# Dev task crate (cargo xtask — .cargo/config.toml). Doesn't affect `cargo install --path .`
+# One repository, workspace crates: tarae at the root, its own crates in crates/ — each a member and a default
+# member (a plain `cargo build`/`cargo test` is all of tarae; the code's roots, `sim::lint::code_roots`, read
+# them here); the dev task crate (cargo xtask — .cargo/config.toml) a member only. None affects
+# `cargo install --path .`
 [workspace]
-members = ["xtask"]
+members = ["xtask", "crates/tarae-wasm", "crates/tarae-sorting", "crates/tarae-testkit"]
+default-members = [".", "crates/tarae-wasm", "crates/tarae-sorting", "crates/tarae-testkit"]
+
+[workspace.package]
+edition = "2024"
+# The pinned toolchain's (rust-toolchain.toml) — tarae is built with exactly that one, no older
+rust-version = "1.99"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/tarae-sh/tarae"
 
 # `fuzzing`: what cargo-fuzz sets (`--cfg fuzzing`) when fuzz/parsers includes a reader's module — its properties
 # (`check`) are built for tests and for it, never in tarae's own build
@@ -145,5 +159,5 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
 
 [dev-dependencies]
 vt100 = "0.16.2"
-wat = "1"  # wasm runtime tests are written as text
+tarae-testkit = { path = "crates/tarae-testkit" }  # a test's scratch folder, the one patience
 ring = "=0.17.14"  # the fetch's tests make their own certificate (rustls's crypto, already built)

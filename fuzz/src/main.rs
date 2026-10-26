@@ -1,4 +1,4 @@
-//! Differential fuzzer for the plugin runtime (`src/wasm`).
+//! Differential fuzzer for the plugin runtime (`crates/tarae-wasm`).
 //!
 //! Random valid modules (wasm-smith, limited to what the runtime supports) run on tarae's JIT, tarae's
 //! interpreter, and wasmi. JIT and interpreter must agree exactly on every call — results, traps, memory —
@@ -15,14 +15,11 @@
 //! Findings are saved to `found/`; the module in flight is always in `last.wasm`, so a crash leaves it too.
 //! wasmi's own mistakes — wrong answers wasmtime refutes, and its panics — are counted apart, not found.
 //! Several processes with different seeds in different directories use every core.
-#[allow(dead_code)]
-#[path = "../../src/wasm/mod.rs"]
-mod wasm;
-
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::{Duration, Instant};
 
 use arbitrary::Unstructured;
+use tarae_wasm as wasm;
 use wasm::{Instance, Limits, Module, Trap, Val};
 
 const FUEL: u64 = 2_000_000;

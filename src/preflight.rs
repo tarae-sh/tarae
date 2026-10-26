@@ -1460,31 +1460,21 @@ mod tests {
             .collect();
         // (the marked ones: a test fn below the mark, by name)
         let mut marked = std::collections::BTreeSet::new();
-        let mut dirs = vec![root.join("src")];
-        while let Some(d) = dirs.pop() {
-            for e in std::fs::read_dir(&d).unwrap() {
-                let p = e.unwrap().path();
-                if p.is_dir() {
-                    dirs.push(p);
+        for (_, p) in crate::sim::lint::code_files() {
+            let text = std::fs::read_to_string(&p).unwrap();
+            let lines: Vec<&str> = text.lines().collect();
+            for (i, l) in lines.iter().enumerate() {
+                if !l.trim().starts_with("#[ignore = \"network: ") {
                     continue;
                 }
-                if p.extension().is_none_or(|x| x != "rs") {
-                    continue;
-                }
-                let text = std::fs::read_to_string(&p).unwrap();
-                let lines: Vec<&str> = text.lines().collect();
-                for (i, l) in lines.iter().enumerate() {
-                    if !l.trim().starts_with("#[ignore = \"network: ") {
-                        continue;
-                    }
-                    let f = lines[i..].iter().find_map(|l| l.trim().strip_prefix("fn ")).expect("a fn below");
-                    marked.insert(f.split('(').next().unwrap().to_string());
-                }
+                let f = lines[i..].iter().find_map(|l| l.trim().strip_prefix("fn ")).expect("a fn below");
+                marked.insert(f.split('(').next().unwrap().to_string());
             }
         }
-        let src = root.join("src");
+        let roots = crate::sim::lint::code_roots();
         for n in &named {
-            assert!(crate::sandbox::golden::test_exists(&src, n), "CI names {n}: no such test");
+            let there = roots.iter().any(|(_, src)| crate::sandbox::golden::test_exists(src, n));
+            assert!(there, "CI names {n}: no such test");
         }
         let names: std::collections::BTreeSet<String> =
             named.iter().map(|n| n.rsplit("::").next().unwrap().to_string()).collect();

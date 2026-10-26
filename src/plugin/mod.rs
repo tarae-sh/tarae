@@ -1,9 +1,9 @@
-//! Plugins: WebAssembly modules on tarae's own runtime (`crate::wasm`), speaking the API in
+//! Plugins: WebAssembly modules on tarae's own runtime (`tarae_wasm`, crates/tarae-wasm), speaking the API in
 //! `plugin-sdk/wit/tarae.wit`. They live in `~/.config/tarae/plugins/*.wasm`.
 //!
-//! - `cabi.rs`: the canonical ABI's values in a plugin's memory. `abi.rs`: the API's types, and loading and
-//!   calling one plugin. `host.rs`: the plugin thread. `cli.rs`: `tarae plugin new|dev|list`. Here: the
-//!   editor's side — commands and answers.
+//! - `tarae_wasm::plugin`: `cabi` the canonical ABI's values in a plugin's memory, `abi` the API's types and
+//!   loading and calling one plugin, `host` the plugin thread (judging permissions by `perm::invalid`, passed to
+//!   it). `cli.rs`: `tarae plugin new|dev|list`. Here: the editor's side — commands and answers.
 //! - **Nothing when unused**: the config watcher looks at the plugins folder (`host::Watch`), and the plugin
 //!   thread starts the first time there's something in it.
 //! - **Commands**: each plugin's commands become `:name args`, `":name"` in a keymap, and palette entries.
@@ -16,15 +16,14 @@
 //!   `:sh`, `:w` or anything else with effects outside the buffer), text is shown without control
 //!   characters (no terminal escapes) and capped, and names are checked.
 
-mod abi;
-mod cabi;
 mod cli;
 mod events;
-mod host;
 mod io;
 mod panel;
 mod perm;
+// (the plugin API and its thread are the runtime's crate's, crates/tarae-wasm — here, the editor's side)
 pub(crate) use perm::approved;
+use tarae_wasm::plugin::{abi, host};
 
 use std::path::{Path, PathBuf};
 
@@ -198,9 +197,12 @@ impl Editor {
                 return;
             }
             let events = self.events.shared_sender();
-            let started = Host::start(move |note| {
-                let _ = events.send(Event::Job(Box::new(move |ed: &mut Editor| ed.plugin_note(note))));
-            });
+            let started = Host::start(
+                move |note| {
+                    let _ = events.send(Event::Job(Box::new(move |ed: &mut Editor| ed.plugin_note(note))));
+                },
+                perm::invalid,
+            );
             let Some(host) = started else {
                 self.set_error("plugins: couldn't start their thread");
                 return;
@@ -622,7 +624,7 @@ struct Seen {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::abi::tests::DEMO;
+    use super::abi::DEMO;
     use super::*;
     use crate::config::Config;
 
@@ -651,6 +653,34 @@ mod tests {
 
     fn key(ed: &mut Editor, k: &str) {
         ed.handle_key(k.parse().unwrap());
+    }
+
+    /// The plugin thread judges permissions by the editor's own rule (`perm::invalid`, passed through
+    /// `plugins_sync`): the demo loads under it, and the demo asking for an environment variable by a name that
+    /// isn't one (`TARAE-DEMO`, its bytes changed in place) doesn't — said, with no command of it registered.
+    #[test]
+    fn the_plugin_thread_judges_permissions_by_the_editors_rule() {
+        let (ed, dir) = setup("rule", "x\n");
+        let declared = &ed.plugins.as_ref().unwrap().permissions["demo"];
+        assert!(declared.contains(&abi::Permission::Env("TARAE_DEMO".into())), "{declared:?}");
+        std::fs::remove_dir_all(dir).ok();
+
+        let at = DEMO.windows(10).position(|w| w == b"TARAE_DEMO").expect("the demo's permission");
+        assert_eq!(DEMO.windows(10).filter(|w| w == b"TARAE_DEMO").count(), 1, "only the permission");
+        let mut bytes = DEMO.to_vec();
+        bytes[at + 5] = b'-';
+        let dir = crate::scratch::Scratch::new("plugins-rule-refused");
+        std::fs::write(dir.join("demo.wasm"), bytes).unwrap();
+        let mut ed = Editor::new(Config::default());
+        ed.plugins_sync(host::scan(&dir));
+        // (refused or loaded, whichever comes: a rule not passed fails here at once, not at the patience's end)
+        settle_until(&mut ed, |ed| {
+            toasts(ed).contains("plugin demo:") || ed.plugin_command("shout").is_some()
+        });
+        assert!(ed.plugin_command("shout").is_none(), "loaded: {}", toasts(&ed));
+        let said = toasts(&ed);
+        assert!(said.contains("plugin demo: its permission"), "{said}");
+        assert!(said.contains("isn't valid: an environment variable's name"), "{said}");
     }
 
     /// A plugin's command typed on the command line is counted by the name it registered — never its words

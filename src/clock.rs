@@ -100,7 +100,7 @@ mod tests {
         assert_eq!(n.get("a.rs"), Some(&3), "{n:?}");
     }
 
-    /// Raw clock reads left, per file (paths under `src/`).
+    /// Raw clock reads left, per file (paths under `src/`, a crate's from the repository's root).
     const RAW_CLOCK_READS: &[(&str, usize)] = &[
         ("builds.rs", 3),
         ("calls.rs", 1),
@@ -110,6 +110,7 @@ mod tests {
         ("claudeupdate.rs", 1),
         ("codereview.rs", 1),
         ("containers.rs", 1),
+        ("crates/tarae-wasm/src/plugin/abi.rs", 1),
         ("dsyms.rs", 1),
         ("editor.rs", 10),
         ("features.rs", 3),
@@ -126,7 +127,6 @@ mod tests {
         ("main.rs", 2),
         ("nav.rs", 6),
         ("picker.rs", 3),
-        ("plugin/abi.rs", 1),
         ("plugin/cli.rs", 2),
         ("plugin/io.rs", 7),
         ("plugin/perm.rs", 1),

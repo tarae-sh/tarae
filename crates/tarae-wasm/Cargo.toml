@@ -1,0 +1,19 @@
+# tarae's WebAssembly runtime and its plugin host (the crate split's first member, 2026-10-26): what runs a
+# plugin, apart from the editor — it names nothing of tarae, and tarae talks to it by messages and callbacks.
+[package]
+name = "tarae-wasm"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+libc = "0.2"  # the JIT's executable memory
+ropey = "1"  # a buffer's text as the editor hands it over (`plugin::host::Input`)
+tarae-sorting = { path = "../tarae-sorting" }  # the JIT's one sort, std's one copy shared with tarae
+
+[dev-dependencies]
+tarae-testkit = { path = "../tarae-testkit" }
+wat = "1"  # the runtime's tests are written as text

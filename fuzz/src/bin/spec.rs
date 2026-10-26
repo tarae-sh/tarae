@@ -1,4 +1,5 @@
-//! Runs the official WebAssembly spec tests against the plugin runtime (`src/wasm`), JIT and interpreter.
+//! Runs the official WebAssembly spec tests against the plugin runtime (`crates/tarae-wasm`), JIT and
+//! interpreter.
 //!
 //! ```text
 //! git clone --depth 1 https://github.com/WebAssembly/testsuite
@@ -8,13 +9,9 @@
 //! Modules using what the runtime leaves out on purpose — SIMD, memory64 and multiple memories, GC, tail
 //! calls, exceptions, and anything importing from the host — are counted as skipped, along with the
 //! assertions on them. Everything else must pass.
-#[allow(dead_code)]
-#[path = "../../../src/wasm/mod.rs"]
-mod wasm;
-
 use std::collections::HashMap;
 
-use wasm::{Instance, Limits, Module, Trap, Val};
+use tarae_wasm::{Instance, Limits, Module, Trap, Val};
 use wast::core::{AbstractHeapType, HeapType, NanPattern, WastArgCore, WastRetCore};
 use wast::parser::{self, ParseBuffer};
 use wast::{QuoteWat, Wast, WastArg, WastDirective, WastExecute, WastInvoke, WastRet};
