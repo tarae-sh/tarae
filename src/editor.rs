@@ -207,9 +207,10 @@ pub fn anim_clock() -> std::time::Instant {
     }
 }
 
-/// The waiting animation's step now (`anim_clock`, a `TICK` a step).
+/// The waiting animation's step now (`anim_clock`, a `TICK` a step) — read through `clock`, so a test that holds it
+/// draws the same wave frame after frame (the mouse walk compares two frames around a press).
 pub fn anim_step() -> u128 {
-    anim_clock().elapsed().as_nanos() / TICK.as_nanos()
+    crate::clock::since(anim_clock()).as_nanos() / TICK.as_nanos()
 }
 
 /// From `elapsed` on the animation's clock to just past its next step (2 ms past — the frame drawn then is
@@ -839,7 +840,7 @@ pub struct Editor {
     /// A ctrl+press in the code not dragged yet: its release is `gd` (a ctrl+drag selects, as a plain one).
     mouse_goto: bool,
     /// The mouse was pressed on the terminal's screen — its drag and release go there, wherever they are.
-    mouse_in_terminal: bool,
+    pub(crate) mouse_in_terminal: bool,
     /// Recently opened files (start screen — open with number keys).
     pub recent: Vec<PathBuf>,
     /// What you ran from the palette, newest first — its order with nothing typed (`palette.rs`).
@@ -1033,6 +1034,10 @@ pub struct Editor {
     pub picker_click: Option<(u64, usize, std::time::Instant)>,
     /// The last click on the git tab's or the review rail's row (which list, row, when) — `clicked_again`.
     pub list_click: Option<(&'static str, usize, std::time::Instant)>,
+    /// The press that focused a waiting card (its id, when): a press on its answers within `DOUBLE_CLICK` after is that
+    /// press's double, never an answer — a card that came on its own isn't answered by a click meant for something else
+    /// as it appeared. A key between ends it.
+    pub card_pressed: Option<(u64, std::time::Instant)>,
     /// The card that has the keys — focused (P3 §3.8): by `C-q` from wherever they were (#24), a click on it,
     /// `C-w w`, or as it came when your own key asked for it (`Offer.yours`) — by its id and `rev`: what it said
     /// when it got them (one rewritten, or another in front, has them only once focused itself). The chat's draft,
@@ -1324,6 +1329,7 @@ impl Editor {
             messages_pane: None,
             picker_click: None,
             list_click: None,
+            card_pressed: None,
             card_focus: None,
             card_next: None,
             offer_drawn: Default::default(),
@@ -2066,7 +2072,7 @@ impl Editor {
     }
 
     /// The row of kind `kind`'s list at screen cell (x, y), as the list was last drawn (its pane in `Screen.leaves`).
-    fn list_row(&self, kind: crate::pane::GroupKind, x: usize, y: usize) -> Option<usize> {
+    pub(crate) fn list_row(&self, kind: crate::pane::GroupKind, x: usize, y: usize) -> Option<usize> {
         let (y0, rows, first) = self.screen.list(kind)?;
         let id = self.workspace.group(kind)?.list;
         let list = self.screen.leaves.iter().find(|l| l.0 == id)?.1;
@@ -2711,9 +2717,12 @@ impl Editor {
         self.with_group(|cx| crate::commands::paste_text(cx, text));
     }
 
+    /// A mouse event: what's under the pointer (`mouse_under` — the one truth, `mouse.rs`), then that surface's act.
     pub fn handle_mouse(&mut self, m: crate::event::Mouse) {
         use crate::event::MouseKind as K;
-        // (a press anywhere starts afresh: only a ctrl+press in the code arms its release)
+        use crate::mouse::{Link, Part, Surface as S, Word, took_mouse};
+        // (a press anywhere starts afresh: only a ctrl+press in the code arms its release, and a drag selects only from
+        // a press in that text — never from the code's last press, #140)
         if m.kind == K::Down {
             self.mouse_goto = false;
             self.mouse_anchor = None;
@@ -2725,8 +2734,16 @@ impl Editor {
             self.input_came();
         }
         let (x, y) = (m.x as usize, m.y as usize);
+        // (a click acts on this query's rows, not the last one's)
+        if m.kind == K::Down
+            && let Some(p) = self.picker.as_mut()
+        {
+            p.filter_now();
+        }
+        let u = self.mouse_under(m.kind, x, y);
         // Labels up for pointing: a click picks the element under it, or stops pointing; nothing else moves
-        if self.pointing.is_some() {
+        if u.surface == S::Pointing {
+            took_mouse(S::Pointing);
             if m.kind == K::Down {
                 crate::uistate::point::click(self, x, y);
             }
@@ -2734,632 +2751,552 @@ impl Editor {
         }
         let s = self.screen.clone();
         self.status = None;
-        // What holds the keys over every surface lets go first: a prompt or picker pressed outside closes, a focused card
-        // pressed outside gives its keys back (`mouse.rs`)
-        if m.kind == K::Down && crate::mouse::press_first(self, x, y) {
-            return;
+        // A focused card pressed outside gives its keys back first (`mouse::let_go`)
+        if m.kind == K::Down {
+            crate::mouse::let_go(self, u);
         }
-        // A press on the prompt's line dragged: what's under the pointer selected, wherever it goes (past an end the
-        // line scrolls, its cursor kept in sight)
-        if let Some((Drag::Prompt, anchor)) = self.mouse_anchor
-            && matches!(m.kind, K::Drag | K::Up)
-        {
-            match m.kind {
-                K::Up => self.mouse_anchor = None,
-                _ => crate::prompt::drag(self, anchor, x),
-            }
-            return;
-        }
-        // The prompt's card: what's under it isn't clicked through it
-        if let Some((px, py, pw, ph)) = s.prompt_card.get()
-            && (px..px + pw).contains(&x)
-            && (py..py + ph).contains(&y)
-        {
-            return;
-        }
-        // A card: a press on one that waits focuses it (P3 §3.8 — its answers answer it from then on, a press on
-        // one as it came up never one), a stacked one brought to the front with the keys; focused, its answers
-        let button = s.offer_buttons.iter().find(|b| b.0 == y && (b.1..b.2).contains(&x)).map(|b| b.3);
-        let on_card = s
-            .offer_card
-            .is_some_and(|(cx, cy, cw, ch)| (cx..cx + cw).contains(&x) && (cy..cy + ch).contains(&y));
-        // The notification card: a press on it (fading too) opens `:messages` at the message pressed (`toast.rs`)
-        let on_toast = s
-            .toast_card
-            .get()
-            .is_some_and(|(tx, ty, tw, th)| (tx..tx + tw).contains(&x) && (ty..ty + th).contains(&y));
-        if m.kind == K::Down && on_toast && !on_card && button.is_none() && self.picker.is_none() {
-            return self.toast_press(y);
-        }
-        if m.kind == K::Down && (button.is_some() || on_card) {
-            let has = self.card_has_keys();
-            match button {
-                Some(d) if d.is_ascii_digit() => self.offer_peek(d.to_digit(10).unwrap_or(0) as usize),
-                Some(k) if has => {
-                    let weighty = self.offers.first().is_some_and(|o| o.weighty_answer(k));
-                    match k {
-                        _ if weighty && !self.offer_seen_whole() => self.offer_see_all_first(),
-                        'y' => self.offer_accept(),
-                        'v' => self.offer_view(),
-                        'r' => self.offer_one_by_one(),
-                        'a' => self.offer_for_chat(),
-                        's' if self.offers.first().is_some_and(crate::offer::Offer::for_workspace) => {
-                            self.offer_for_session()
-                        }
-                        'A' => self.offer_always(),
-                        'D' => self.offer_remove(true),
-                        'R' => self.offer_remove(false),
-                        'c' => self.offer_commit_first(),
-                        'p' => self.offer_preflight_first(),
-                        'X' => self.offer_abort(),
-                        'n' => self.offer_dismiss(),
-                        'N' => self.offer_never(),
-                        _ => {}
-                    }
-                }
-                _ if !has && self.offers.first().is_some_and(|o| !o.installing()) => {
-                    self.card_focus_front();
-                    self.set_status("the card has the keys — its answers answer it, esc gives them back");
-                }
-                _ => {}
-            }
-            return;
-        }
-        // A border being dragged (the chat's edge, the side panel's, the bottom panel's top row): it follows the
-        // mouse; let go, the size is kept
-        if let Some(b) = self.dragging {
-            match m.kind {
-                K::Drag => self.border_drag(b, x, y),
-                K::Up => {
-                    self.dragging = None;
-                    self.border_done(b);
-                }
-                _ => self.dragging = None,
-            }
-            return;
-        }
-        // A floating frame held (P3 step 7): its top line moves it, its edges size it; let go, kept
-        if let Some((kind, grip)) = self.float_dragging {
-            match m.kind {
-                K::Drag => self.float_drag(kind, grip, x, y),
-                K::Up => {
-                    self.float_dragging = None;
-                    self.float_drag_done(kind, grip);
-                }
-                _ => self.float_dragging = None,
-            }
-            return;
-        }
-        // A press in the chat's text (its conversation, its input) dragged: the chat's wherever the pointer goes, as
-        // the terminal's — over that text's rows what's under the pointer selected, as a drag in the code selects
-        if let Some((at @ (Drag::Transcript | Drag::Input), anchor)) = self.mouse_anchor
-            && matches!(m.kind, K::Drag | K::Up)
-        {
-            if m.kind == K::Up {
-                self.mouse_anchor = None;
-                return;
-            }
-            let col = |x0: usize| x.saturating_sub(x0);
-            match at {
-                Drag::Transcript => {
-                    let text_x = s.chat_x.unwrap_or(0) + crate::chrome::GAP + crate::chrome::PAD;
-                    if let Some(row) = s.chat_row(y) {
-                        crate::chatdoc::drag(self, anchor, row, col(text_x));
-                    }
-                }
-                _ => {
-                    if let Some((row, x0, w)) = s.chat_input_row(y) {
-                        crate::chatinput::drag(self, anchor, row, col(x0), w);
-                    }
-                }
-            }
-            return;
-        }
-        // (what's under a floating pane isn't pressed through it: the topmost there takes it)
-        let floated = self.float_at(x, y).map(|f| f.0).filter(|_| self.picker.is_none());
-        if m.kind == K::Down
-            && floated.is_some()
-            && let Some((kind, grip)) = self.float_grip(x, y)
-        {
-            self.float_dragging = Some((kind, grip));
-            self.float_focus(kind);
-            return;
-        }
-        // A floating list (the session list, `:messages`) — or the session list docked: a press on a row selects it
-        // (again: opens it), the wheel moves through it
-        let docked_list = crate::floatlist::KINDS.into_iter().find(|&k| {
-            self.dock_rect(k)
-                .is_some_and(|(_, r)| (r.x..r.x + r.w).contains(&x) && (r.y..r.y + r.h).contains(&y))
-        });
-        let list = floated.filter(|&k| crate::floatlist::is_list(k));
-        if let Some(kind) = list.or(docked_list.filter(|_| floated.is_none() && self.picker.is_none())) {
-            match m.kind {
-                K::Down => match s.list(kind) {
-                    Some((y0, rows, top)) if (y0..y0 + rows).contains(&y) => {
-                        self.float_list_click(kind, top + y - y0)
-                    }
-                    _ => self.float_focus(kind),
-                },
-                K::ScrollDown | K::ScrollUp => crate::floatlist::wheel(self, kind, m.kind == K::ScrollUp),
-                _ => {}
-            }
-            return;
-        }
-        if m.kind == K::Down
-            && self.picker.is_none()
-            && floated.is_none()
-            && let Some(b) = self.border_at(x, y)
-        {
-            self.dragging = Some(b);
-            return;
-        }
-        // The status line's word of what Claude is doing now: a press follows Claude's place (`now::press`)
-        if m.kind == K::Down
-            && self.picker.is_none()
-            && floated.is_none()
-            && s.cut_spots
-                .borrow()
-                .iter()
-                .any(|l| l.3 == crate::whole::Cut::Now && l.0 == y && (l.1..l.2).contains(&x))
-        {
-            return crate::now::press(self);
-        }
-        // The sessions' tabs, dropdown, chip
-        if m.kind == K::Down
-            && self.picker.is_none()
-            && floated.is_none()
-            && let Some(&(.., spot)) =
-                s.session_spots.borrow().iter().find(|l| l.0 == y && (l.1..l.2).contains(&x))
-        {
-            return self.session_spot(spot);
-        }
-        // The bottom slot's tabs: that panel in front
-        // (the last drawn first: a floating frame's names over what's under it)
-        if m.kind == K::Down
-            && self.picker.is_none()
-            && let Some(&(.., slot)) =
-                s.slot_tabs.borrow().iter().rev().find(|t| t.0 == y && (t.1..t.2).contains(&x))
-        {
-            return self.slot_show(slot);
-        }
-        // A group member's name in the slot's line: the keys to it (stacked, it comes into sight)
-        if m.kind == K::Down
-            && self.picker.is_none()
-            && let Some(&(.., id)) =
-                s.member_names.borrow().iter().rev().find(|t| t.0 == y && (t.1..t.2).contains(&x))
-        {
-            return self.focus_pane(id);
-        }
-        if let Some(p) = self.picker.as_mut() {
-            // (a click acts on this query's rows, not the last one's)
-            if m.kind == K::Down {
-                p.filter_now();
-            }
-            let over_preview = s.picker_preview_x.is_some_and(|px| x >= px);
-            match m.kind {
-                K::ScrollUp if over_preview => p.preview_scroll = p.preview_scroll.saturating_sub(3),
-                K::ScrollDown if over_preview => p.preview_scroll += 3,
-                K::ScrollUp => p.move_by(-3),
-                K::ScrollDown => p.move_by(3),
-                // A click selects the row (the preview follows); the same row again soon after — a double
-                // click — opens it, as Enter does (N3). A folder (nothing to preview) folds or unfolds at once.
-                K::Down => {
-                    if let Some((top, rows)) = s.picker_list
-                        && (top..top + rows).contains(&y)
-                        && let Some(row) = p.row_at(y - top)
-                        && p.select_row(row)
-                    {
-                        let (id, folder) =
-                            (p.id, p.current().is_some_and(|i| matches!(i.action, Action::Dir(_))));
-                        let again = self
-                            .picker_click
-                            .is_some_and(|(i, r, at)| (i, r) == (id, row) && at.elapsed() < DOUBLE_CLICK);
-                        self.picker_click = (!again).then(|| (id, row, std::time::Instant::now()));
-                        if folder || again {
-                            self.handle_key(Key::plain(Code::Enter));
-                        }
-                    }
-                }
-                _ => {}
-            }
-            return;
-        }
-        // Wheel over the floating docs (hover, `space g p`) scrolls them
-        if let (Some(lines), Some((px, py, pw, ph))) = (self.popup.as_ref(), s.popup.get())
-            && (px..px + pw).contains(&x)
-            && (py..py + ph).contains(&y)
-        {
-            match m.kind {
-                K::ScrollDown => return self.popup_scroll = (self.popup_scroll + 3).min(lines.len()),
-                K::ScrollUp => return self.popup_scroll = self.popup_scroll.saturating_sub(3),
-                _ => {}
-            }
-        }
-        // The review's file rail: a click opens that file — on its mark, marks it viewed too (#67) — a click
-        // on `↑/↓ N more` or the wheel scrolls it (`CodeReview::fit` clamps; #73: the rail is its columns, left
-        // of where the code and the slot under it start — not "left of the first pane")
-        let on_rail = self.review_rail_up() && x < s.slot_x && !s.review_rail.borrow().is_empty();
-        let rail_keys = self.workspace.is_at(At::Rail);
-        if on_rail && let Some(r) = self.workspace.code_review.as_mut() {
-            let by = match m.kind {
-                K::ScrollDown => 3,
-                K::ScrollUp => -3,
-                K::Down => s.review_rail_more.borrow().iter().find(|r| r.0 == y).map_or(0, |r| r.1),
-                _ => 0,
-            };
-            // (with the keys, the file in hand follows into sight — as `C-e`/`C-y`; without them it's the code's
-            // file and the wheel only looks)
-            if by != 0 {
-                return if rail_keys { r.scroll_keeping(by) } else { r.scroll_by(by) };
-            }
-        }
-        if m.kind == K::Down && on_rail {
-            let mark = s
-                .review_rail_marks
-                .borrow()
-                .iter()
-                .find(|r| r.0 == y && (r.2..r.2 + 2).contains(&x))
-                .map(|r| r.1);
-            if let Some(i) = mark {
-                return crate::codereview::mark_clicked(self, i);
-            }
-            // (a click shows it in the preview slot; a double-click keeps it, as `enter`)
-            if let Some(&(_, i)) = s.review_rail.borrow().iter().find(|r| r.0 == y) {
-                // (the buffer that show opened — none for a binary row: never whatever was in front)
-                let shown = crate::codereview::show(self, i, false);
-                if self.clicked_again("rail", i)
-                    && let Some(id) = shown
-                {
-                    self.preview_keep(id);
-                }
-                return;
-            }
-            // (off its rows, within its width: the keys to it, on the file in hand — as `space e` gives them)
-            if x < s.rail_w {
-                if !rail_keys {
-                    crate::codereview::rail_focus(self);
-                }
-                return;
-            }
-        }
-        // A group docked beside the code (P3 step 6) or floating (step 7): what's under the pointer in its rect is its
-        // panel's
-        let docked = floated.or_else(|| {
-            (s.docked.borrow().iter())
-                .find(|d| (d.1.x..d.1.x + d.1.w).contains(&x) && (d.1.y..d.1.y + d.1.h).contains(&y))
-                .map(|d| d.0)
-        });
-        // The bottom slot's columns: under the code, between the side panel (or a group docked left) and the chat
-        // (or one docked right) — or a docked group's
-        let in_slot = docked.is_some() || (x >= s.slot_x && x < s.slot_end());
-        // (the run panel there: the docked one's, else the slot's)
-        let slot = match docked {
-            Some(k) => k.slot(),
-            None => self.slot_shown(),
-        };
-        // The terminal: the wheel scrolls back, a click gives it the keys (a click anywhere else takes them)
-        let in_terminal =
-            s.terminal_rows.is_some_and(|(y0, y1)| (y0..=y1).contains(&y)) && in_slot && docked.is_none();
-        // A press anywhere ends a selection whose release was lost (a pane switch mid-drag)
+        // A press anywhere ends a terminal's selection whose release was lost (a pane switch mid-drag); a press past the
+        // overlays but not on the terminal ends its selection and takes the keys from its program
         let owned = std::mem::replace(&mut self.mouse_in_terminal, false) && m.kind != K::Down;
+        let on_terminal = matches!(u.surface, S::Terminal | S::TerminalView);
         if m.kind == K::Down
+            && u.reaches_terminal()
             && let Some(t) = self.workspace.terminal.as_mut()
         {
             t.selecting = false;
-            if !in_terminal {
+            if !on_terminal {
                 t.selection = None;
                 if self.workspace.is_at(At::Program) {
                     self.workspace.viewer.at = At::Code;
                 }
             }
         }
-        // A press there, the wheel there, or the drag and release of a press there (clamped to its edge — a
-        // program that has the mouse always gets its release)
+        let (down, up) = (m.kind == K::Down, m.kind == K::ScrollUp);
         let wheel = matches!(m.kind, K::ScrollUp | K::ScrollDown);
-        if owned || (in_terminal && (m.kind == K::Down || wheel)) {
-            // Its screen starts under the header (`chrome::SLOT_HEAD`), the padding in from the slot's edge
-            let (head, x0) = (crate::chrome::SLOT_HEAD, s.slot_x + crate::chrome::PAD);
-            let cell = s.terminal_rows.and_then(|(y0, y1)| {
-                let inside = in_terminal && y >= y0 + head && x >= x0;
-                (inside || owned).then(|| {
-                    ((y.clamp(y0 + head, y1.max(y0 + head)) - y0 - head) as u16, x.saturating_sub(x0) as u16)
-                })
-            });
-            self.mouse_in_terminal = (owned && m.kind == K::Drag) || (m.kind == K::Down && cell.is_some());
-            self.terminal_mouse(m.kind, cell, m.alt);
-            return;
-        }
-        // Another press's drag over it isn't the terminal's (nor moves the code's cursor); its release ends it
-        if in_terminal {
-            if m.kind == K::Up {
-                self.mouse_anchor = None;
-            }
-            return;
-        }
-        // `:procs`' panel: the same — its detail beside the table (or stacked in its place) a run panel's document
-        if let Some(a) = s.procs_panel.get()
-            && (a.top..=a.bottom).contains(&y)
-            && in_slot
-            && slot == Some(crate::sizes::Slot::Procs)
-        {
-            let detail = s
-                .run_rows
-                .of(crate::sizes::Slot::Procs)
-                .filter(|r| (r.1..r.1 + r.3).contains(&y) && x + 1 >= r.2)
-                .filter(|_| !(a.x..a.x + a.w).contains(&x));
-            let slot = crate::sizes::Slot::Procs;
-            match m.kind {
-                K::Down if let Some(r) = detail => {
-                    crate::rundoc::click(self, slot, y - r.1, x.saturating_sub(r.2))
-                }
-                K::ScrollDown | K::ScrollUp if detail.is_some() => {
-                    crate::rundoc::wheel(self, slot, m.kind == K::ScrollUp)
-                }
-                K::Down => {
-                    let row = (a.first..a.first + a.shown).contains(&y) && (a.x..a.x + a.w).contains(&x);
-                    self.procs_click(row.then(|| a.scroll + y - a.first))
-                }
-                // (the wheel scrolls it as `C-e`/`C-y` do, three rows: the selection stays unless it would leave
-                // the rows in sight, then the nearest — `s` and `r` act on it, so it's never out of sight)
-                K::ScrollDown | K::ScrollUp => {
-                    let by = if m.kind == K::ScrollDown { 3 } else { -3 };
-                    crate::grouplist::wheel(self, crate::pane::GroupKind::Procs, by)
-                }
-                _ => {}
-            }
-            return;
-        }
-        // A plugin's panel: a click takes the keys there (on a row, selects it); the wheel moves through it
-        if let Some((y0, y1, first, scroll)) = s.plugin_panel.get()
-            && (y0..=y1).contains(&y)
-            && in_slot
-            && self.plugin_panel_in_sight()
-        {
-            match m.kind {
-                // (the rows: not the header, not the status line under them)
-                K::Down => self.plugin_panel_click((first..y1).contains(&y).then(|| scroll + y - first)),
-                K::ScrollDown => self.plugin_panel_wheel(3),
-                K::ScrollUp => self.plugin_panel_wheel(-3),
-                _ => {}
-            }
-            return;
-        }
-        // The test panel: the wheel scrolls its detail (the failure's message, or the output) — its document's rows
-        // while it has the keys; a press gives it the keys — on its detail, the cursor there
-        // (the row of the output under the pointer, and its column — as the panel drew them, `Screen.run_rows`)
-        let run_row = |slot: crate::sizes::Slot| {
-            s.run_rows
-                .of(slot)
-                .filter(|r| (r.1..r.1 + r.3).contains(&y) && x >= r.2)
-                .map(|r| (y - r.1, x - r.2))
+        let row_of = |p: Part| match p {
+            Part::Row(i) => Some(i),
+            _ => None,
         };
-        if let Some((y0, y1, _)) = s.test_panel.get()
-            && slot == Some(crate::sizes::Slot::Test)
-            && (y0..=y1).contains(&y)
-            && in_slot
-        {
-            let at = run_row(crate::sizes::Slot::Test);
-            match m.kind {
-                K::ScrollDown | K::ScrollUp => {
-                    crate::rundoc::wheel(self, crate::sizes::Slot::Test, m.kind == K::ScrollUp)
-                }
-                K::Down => match at {
-                    Some((r, c)) => crate::rundoc::click(self, crate::sizes::Slot::Test, r, c),
-                    None if let Some(i) = self.list_row(crate::pane::GroupKind::Tests, x, y) => {
-                        crate::grouplist::click(self, crate::pane::GroupKind::Tests, i)
-                    }
-                    None => self.panel_take_keys(crate::sizes::Slot::Test),
-                },
-                _ => {}
-            }
-            return;
-        }
-        // The task panel: the same, over its output
-        if let Some((y0, y1, _)) = s.task_panel.get()
-            && slot == Some(crate::sizes::Slot::Task)
-            && (y0..=y1).contains(&y)
-            && in_slot
-        {
-            // (a preflight's step chip: its output from its heading — #72)
-            let chip =
-                s.task_steps.borrow().iter().find(|c| c.0 == y && (c.1..c.2).contains(&x)).map(|c| c.3);
-            let step = chip.and_then(|k| Some(self.workspace.preflight.as_ref()?.steps.get(k)?.name.clone()));
-            let at = run_row(crate::sizes::Slot::Task);
-            // (a row of its list — its places, a preflight's steps — laid out beside the output)
-            let listed = self
-                .kind_of(crate::sizes::Slot::Task)
-                .and_then(|kind| Some((kind, self.list_row(kind, x, y)?)));
-            match m.kind {
-                K::Down if let Some((kind, i)) = listed => crate::grouplist::click(self, kind, i),
-                K::ScrollDown | K::ScrollUp => {
-                    crate::rundoc::wheel(self, crate::sizes::Slot::Task, m.kind == K::ScrollUp)
-                }
-                // (its output from that step's heading, at the top)
-                K::Down if let Some(name) = step.filter(|_| self.workspace.task_run.is_some()) => {
-                    crate::rundoc::step(self, &name)
-                }
-                K::Down => match at {
-                    Some((r, c)) => crate::rundoc::click(self, crate::sizes::Slot::Task, r, c),
-                    None => self.panel_take_keys(crate::sizes::Slot::Task),
-                },
-                _ => {}
-            }
-            return;
-        }
-        // (the rest of a floating frame: the keys to it, nothing under it pressed)
-        if let Some(kind) = floated {
-            if m.kind == K::Down {
-                self.float_focus(kind);
-            }
-            return;
-        }
-        // The side panel: a click opens that row (a folder folds or unfolds), the wheel scrolls it
-        if self.workspace.viewer.sidebar.is_some()
-            && !self.review_rail_up()
-            && x < s.panes.iter().map(|p| p.1.x).min().unwrap_or(0)
-        {
-            let row = s.sidebar.borrow().iter().find(|l| l.0 == y).map(|l| l.1);
-            let rows = s.sidebar.borrow().len();
-            let side_keys = self.workspace.is_at(At::Side);
-            let sb = self.workspace.viewer.sidebar.as_mut().unwrap();
-            // (with the keys, as `C-e`/`C-y`: the selection, what they act on, follows into sight; without them it
-            // marks where the code is and comes back there by itself — the wheel only looks)
-            match m.kind {
-                // (the git tab's file row: a click selects it and shows the file in the preview slot, the tab taking
-                // the keys — as moving onto it; a double-click opens it, as `enter`)
-                K::Down
-                    if let Some(r) = row
-                        && let Some(rel) = crate::sidebar::git_file_at(sb, r) =>
+        match (u.surface, u.part) {
+            // The prompt's card: a completion row picks it (as `tab` cycling to it does); pressed outside it closes, as
+            // `esc` — nothing else pressed (no click-through)
+            (S::Prompt, part) => {
+                took_mouse(S::Prompt);
+                // (a press on its line dragged: what's under the pointer selected, wherever it goes — past an end the
+                // line scrolls, its cursor kept in sight)
+                if let Some((Drag::Prompt, anchor)) = self.mouse_anchor
+                    && matches!(m.kind, K::Drag | K::Up)
                 {
-                    if self.clicked_again("git", r) {
-                        self.sidebar_activate(r);
-                    } else {
-                        if let Some(sb) = self.workspace.viewer.sidebar.as_mut() {
-                            sb.selected = r;
+                    match m.kind {
+                        K::Up => self.mouse_anchor = None,
+                        _ => crate::prompt::drag(self, anchor, x),
+                    }
+                    return;
+                }
+                match part {
+                    Part::Outside => self.cancel_prompt(),
+                    Part::Row(i) if down => self.cmdline_pick(i),
+                    // (its line: the cursor on the character pressed — a drag from there selects, #153)
+                    Part::Text { .. } if down => {
+                        if let Some(at) = crate::prompt::click(self, x, y) {
+                            self.mouse_anchor = Some((Drag::Prompt, at));
                         }
-                        self.workspace.leave(At::Chat);
-                        self.workspace.viewer.at = At::Side;
-                        self.git_show_file(&rel.0, rel.1);
+                    }
+                    _ => {}
+                }
+            }
+            (S::Picker, Part::Outside) => {
+                took_mouse(S::Picker);
+                self.picker_close();
+            }
+            // The notification card: a press on it (fading too) opens `:messages` at the message pressed (`toast.rs`)
+            (S::Toast, _) => {
+                took_mouse(S::Toast);
+                self.toast_press(y);
+            }
+            // A card: a press on one that waits focuses it (P3 §3.8 — its answers answer it from then on, a press on
+            // one as it came up never one), a stacked one brought to the front with the keys; focused, its answers
+            (S::Card, part) => {
+                took_mouse(S::Card);
+                let button = match part {
+                    Part::Answer(k) => Some(k),
+                    _ => None,
+                };
+                self.card_press(button);
+            }
+            // A border: held, it follows the mouse; let go, the size is kept
+            (S::Edge, Part::Border(b)) => {
+                took_mouse(S::Edge);
+                if self.dragging.is_none() {
+                    self.dragging = Some(b);
+                    return;
+                }
+                match m.kind {
+                    K::Drag => self.border_drag(b, x, y),
+                    K::Up => {
+                        self.dragging = None;
+                        self.border_done(b);
+                    }
+                    _ => self.dragging = None,
+                }
+            }
+            // A floating frame (P3 step 7): its top line moves it, its edges size it; let go, kept
+            (S::Float(kind), Part::Frame(grip)) => {
+                took_mouse(S::Float(kind));
+                if self.float_dragging.is_none() {
+                    self.float_dragging = Some((kind, grip));
+                    return self.float_focus(kind);
+                }
+                match m.kind {
+                    K::Drag => self.float_drag(kind, grip, x, y),
+                    K::Up => {
+                        self.float_dragging = None;
+                        self.float_drag_done(kind, grip);
+                    }
+                    _ => self.float_dragging = None,
+                }
+            }
+            // A press in the chat's text (its conversation, its input) dragged: the chat's wherever the pointer goes, as
+            // the terminal's — over that text's rows what's under the pointer selected, as a drag in the code selects
+            (S::Transcript | S::Input, part)
+                if matches!(m.kind, K::Drag | K::Up)
+                    && let Some((at @ (Drag::Transcript | Drag::Input), anchor)) = self.mouse_anchor =>
+            {
+                took_mouse(u.surface);
+                if m.kind == K::Up {
+                    self.mouse_anchor = None;
+                    return;
+                }
+                if let Part::Text { line, col } = part {
+                    match at {
+                        Drag::Transcript => crate::chatdoc::drag(self, anchor, line, col),
+                        _ => {
+                            let w = s.chat_input.get().map_or(0, |i| i.w);
+                            crate::chatinput::drag(self, anchor, line, col, w);
+                        }
                     }
                 }
-                K::Down => match row {
-                    Some(r) => self.sidebar_activate(r),
-                    // (off its rows — its top line, under its last row: the keys to it, as `space e` gives them)
-                    None if !side_keys => {
-                        self.plugin_panel_unfocus();
-                        self.procs_unfocus();
-                        self.side_focus();
-                    }
-                    None => {}
-                },
-                K::ScrollDown | K::ScrollUp if side_keys => {
-                    sb.scroll_keeping(if m.kind == K::ScrollDown { 3 } else { -3 }, rows)
+            }
+            // The terminal: the wheel scrolls back, a press gives it the keys; the drag and release of a press there go
+            // there wherever they are (clamped to its edge — a program that has the mouse always gets its release)
+            (S::Terminal | S::TerminalView, part) => {
+                took_mouse(u.surface);
+                let cell = match part {
+                    Part::Text { line, col } => Some((line as u16, col as u16)),
+                    _ => None,
+                };
+                if owned || down || wheel {
+                    self.mouse_in_terminal = (owned && m.kind == K::Drag) || (down && cell.is_some());
+                    self.terminal_mouse(m.kind, cell, m.alt);
+                } else if m.kind == K::Up {
+                    // (another press's drag over it isn't the terminal's; its release ends it)
+                    self.mouse_anchor = None;
                 }
-                K::ScrollDown => sb.scroll += 3,
-                K::ScrollUp => sb.scroll = sb.scroll.saturating_sub(3),
-                _ => {}
             }
-            return;
-        }
-        // A mark of the follow card's strip: its stop's replay, as `]r`/`[r` step to it (motion §4)
-        if let Some(call) = crate::follow::strip_under(self, x, y) {
-            if m.kind == K::Down && !crate::follow::replay_stop(self, &call) {
-                self.set_status("that stop is no longer kept");
+            // A floating list (the session list, `:messages`) — or the session list docked: a press on a row selects it
+            // (again: opens it), the wheel moves through it
+            (S::Floatlist(kind), part) => {
+                took_mouse(S::Floatlist(kind));
+                match (m.kind, row_of(part)) {
+                    (K::Down, Some(i)) => self.float_list_click(kind, i),
+                    (K::Down, None) => self.float_focus(kind),
+                    (K::ScrollDown | K::ScrollUp, _) => crate::floatlist::wheel(self, kind, up),
+                    _ => {}
+                }
             }
-            return;
-        }
-        // The minimized chat: a trail row jumps there, anywhere else brings the panel back
-        if let (Some((mx, my, mw, mh)), Some(c)) = (s.chat_mini.get(), self.workspace.claude.chat.as_mut())
-            && (mx..mx + mw).contains(&x)
-            && (my..my + mh).contains(&y)
-        {
-            if m.kind == K::Down {
-                let links = s.chat_links.borrow();
-                match links.iter().find(|l| l.0 == y && (l.1..l.2).contains(&x)) {
-                    Some((.., link)) => crate::chat::jump(self, link.clone()),
-                    None => {
-                        c.unfolded = true;
+            // The lines' words: the status line's word of what Claude is doing now follows Claude's place
+            // (`now::press`); the sessions' tabs, dropdown, chip; a slot's tab brings that panel in front; a group
+            // member's name gives it the keys (stacked, it comes into sight)
+            (_, Part::Word(Word::Now)) => {
+                took_mouse(u.surface);
+                crate::now::press(self);
+            }
+            (_, Part::Word(Word::Session(spot))) => {
+                took_mouse(u.surface);
+                self.session_spot(spot);
+            }
+            (_, Part::Word(Word::Tab(slot))) => {
+                took_mouse(u.surface);
+                self.slot_show(slot);
+            }
+            (_, Part::Word(Word::Member(id))) => {
+                took_mouse(u.surface);
+                self.focus_pane(id);
+            }
+            (S::Picker, part) => {
+                took_mouse(S::Picker);
+                let Some(p) = self.picker.as_mut() else { return };
+                match (m.kind, part) {
+                    (K::ScrollUp, _) => p.move_by(-3),
+                    (K::ScrollDown, _) => p.move_by(3),
+                    // A click selects the row (the preview follows); the same row again soon after — a double
+                    // click — opens it, as Enter does (N3). A folder (nothing to preview) folds or unfolds at once.
+                    (K::Down, Part::Row(row)) if p.select_row(row) => {
+                        let (id, folder) =
+                            (p.id, p.current().is_some_and(|i| matches!(i.action, Action::Dir(_))));
+                        let again = self.picker_click.is_some_and(|(i, r, at)| {
+                            (i, r) == (id, row) && crate::clock::since(at) < DOUBLE_CLICK
+                        });
+                        self.picker_click = (!again).then(|| (id, row, crate::clock::now()));
+                        if folder || again {
+                            self.handle_key(Key::plain(Code::Enter));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // The preview: the wheel scrolls it; a press picks nothing there (the list's row is the list's)
+            (S::PickerPreview, _) => {
+                took_mouse(S::PickerPreview);
+                let Some(p) = self.picker.as_mut() else { return };
+                match m.kind {
+                    K::ScrollUp => p.preview_scroll = p.preview_scroll.saturating_sub(3),
+                    K::ScrollDown => p.preview_scroll += 3,
+                    K::Down => self
+                        .set_status("the preview of the row in hand — a press on a row of the list picks it"),
+                    _ => {}
+                }
+            }
+            // The wheel over the floating docs (hover, `space g p`) scrolls them
+            (S::Popup, _) => {
+                took_mouse(S::Popup);
+                let lines = self.popup.as_ref().map_or(0, Vec::len);
+                match m.kind {
+                    K::ScrollDown => self.popup_scroll = (self.popup_scroll + 3).min(lines),
+                    K::ScrollUp => self.popup_scroll = self.popup_scroll.saturating_sub(3),
+                    _ => {}
+                }
+            }
+            // The review's file rail: a click opens that file — on its mark, marks it viewed too (#67) — a click on
+            // `↑/↓ N more` or the wheel scrolls it (`CodeReview::fit` clamps; #73)
+            (S::Rail, part) => {
+                took_mouse(S::Rail);
+                let rail_keys = self.workspace.is_at(At::Rail);
+                let by = match (m.kind, part) {
+                    (K::ScrollDown, _) => 3,
+                    (K::ScrollUp, _) => -3,
+                    (K::Down, Part::More(by)) => by,
+                    _ => 0,
+                };
+                // (with the keys, the file in hand follows into sight — as `C-e`/`C-y`; without them it's the code's
+                // file and the wheel only looks)
+                if by != 0 {
+                    if let Some(r) = self.workspace.code_review.as_mut() {
+                        if rail_keys { r.scroll_keeping(by) } else { r.scroll_by(by) }
+                    }
+                    return;
+                }
+                match part {
+                    Part::Mark(i) => crate::codereview::mark_clicked(self, i),
+                    // (a click shows it in the preview slot; a double-click keeps it, as `enter` — the buffer that show
+                    // opened, none for a binary row: never whatever was in front)
+                    Part::Row(i) => {
+                        let shown = crate::codereview::show(self, i, false);
+                        if self.clicked_again("rail", i)
+                            && let Some(id) = shown
+                        {
+                            self.preview_keep(id);
+                        }
+                    }
+                    // (off its rows, within its width: the keys to it, on the file in hand — as `space e` gives them)
+                    _ if !rail_keys => crate::codereview::rail_focus(self),
+                    _ => {}
+                }
+            }
+            // A run panel's output (the tests' detail, the task's, a preflight's, `:procs`' beside its table): the
+            // wheel scrolls it — its document's rows while it has the keys; a press gives it the keys, on its text the
+            // cursor there; a preflight's step chip, its output from its heading (#72)
+            (S::Output(slot), part) => {
+                took_mouse(S::Output(slot));
+                match (m.kind, part) {
+                    (K::ScrollDown | K::ScrollUp, _) => crate::rundoc::wheel(self, slot, up),
+                    (K::Down, Part::Text { line, col }) => crate::rundoc::click(self, slot, line, col),
+                    (K::Down, Part::Word(Word::Step(k))) => {
+                        let step = self.workspace.preflight.as_ref().and_then(|p| p.steps.get(k));
+                        if let Some(name) = step.map(|s| s.name.clone()) {
+                            crate::rundoc::step(self, &name);
+                        }
+                    }
+                    (K::Down, _) => self.panel_take_keys(slot),
+                    _ => {}
+                }
+            }
+            // A linked group's list: a press picks its row; `:procs`' table takes the keys off its rows too, and the
+            // wheel scrolls it as `C-e`/`C-y` do (the selection stays unless it would leave the rows in sight)
+            (S::List(kind), part) => {
+                took_mouse(S::List(kind));
+                match (m.kind, row_of(part)) {
+                    (K::Down, row) if kind == crate::pane::GroupKind::Procs => self.procs_click(row),
+                    (K::Down, Some(i)) => crate::grouplist::click(self, kind, i),
+                    (K::ScrollDown | K::ScrollUp, _) => {
+                        crate::grouplist::wheel(self, kind, if up { -3 } else { 3 })
+                    }
+                    _ => {}
+                }
+            }
+            // A plugin's panel: a click takes the keys there (on a row, selects it); the wheel moves through it
+            (S::Plugin, part) => {
+                took_mouse(S::Plugin);
+                match m.kind {
+                    K::Down => self.plugin_panel_click(row_of(part)),
+                    K::ScrollDown => self.plugin_panel_wheel(3),
+                    K::ScrollUp => self.plugin_panel_wheel(-3),
+                    _ => {}
+                }
+            }
+            // (the rest of a floating frame: the keys to it, nothing under it pressed)
+            (S::Float(kind), _) => {
+                took_mouse(S::Float(kind));
+                if down {
+                    self.float_focus(kind);
+                }
+            }
+            (S::Side, part) => {
+                took_mouse(S::Side);
+                self.side_mouse(m.kind, row_of(part), s.sidebar.borrow().len());
+            }
+            // The follow card: a mark of its strip replays its stop, as `]r`/`[r` step to it (motion §4); minimized, a
+            // trail row jumps there, anywhere else brings the panel back
+            (S::FollowCard, part) => {
+                took_mouse(S::FollowCard);
+                if !down {
+                    return;
+                }
+                match part {
+                    Part::Word(Word::Stop(i)) => {
+                        let call = s.stop_marks.borrow().get(i).map(|m| m.2.clone());
+                        if !call.is_some_and(|call| crate::follow::replay_stop(self, &call)) {
+                            self.set_status("that stop is no longer kept");
+                        }
+                    }
+                    Part::Link(Link::Chat(i)) => {
+                        if let Some(link) = s.chat_links.borrow().get(i).map(|l| l.3.clone()) {
+                            crate::chat::jump(self, link);
+                        }
+                    }
+                    _ => {
+                        if let Some(c) = self.workspace.claude.chat.as_mut() {
+                            c.unfolded = true;
+                        }
                         self.workspace.viewer.at = At::Chat;
                     }
                 }
             }
-            return;
-        }
-        if let (Some(cx), Some(_)) = (s.chat_x, self.workspace.claude.chat.as_ref())
-            && x >= cx
-        {
-            match m.kind {
-                K::Down => {
-                    self.workspace.viewer.at = At::Chat;
-                    // Where a command ran, at its row's end: why, said (cardburden 4b)
-                    let ran =
-                        s.chat_ran.borrow().iter().find(|l| l.0 == y && (l.1..l.2).contains(&x)).cloned();
-                    if let Some((.., call)) = ran {
-                        return crate::chat::said_ran(self, &call);
-                    }
-                    // An element's id in an answer: into sight, the keys where they are
-                    let ids = s.chat_ids.borrow();
-                    if let Some((.., id)) = ids.iter().find(|l| l.0 == y && (l.1..l.2).contains(&x)) {
-                        return self.ui_jump(id);
-                    }
-                    let links = s.chat_links.borrow();
-                    if let Some((.., link)) = links.iter().find(|l| l.0 == y && (l.1..l.2).contains(&x)) {
-                        // A tool call's row: its replay stop (an edit's changes shown), else the place
-                        let call = s.chat_calls.borrow().iter().find(|c| c.0 == y).map(|c| c.1.clone());
-                        if !call.is_some_and(|call| crate::follow::replay_call(self, &call)) {
-                            crate::chat::jump(self, link.clone());
+            (S::Chat | S::Transcript | S::Input, part) => {
+                took_mouse(u.surface);
+                match m.kind {
+                    K::Down => {
+                        self.workspace.viewer.at = At::Chat;
+                        match part {
+                            // Where a command ran, at its row's end: why, said (cardburden 4b)
+                            Part::Link(Link::Ran(i)) => {
+                                if let Some(call) = s.chat_ran.borrow().get(i).map(|l| l.3.clone()) {
+                                    crate::chat::said_ran(self, &call);
+                                }
+                            }
+                            // An element's id in an answer: into sight, the keys where they are
+                            Part::Link(Link::Id(i)) => {
+                                if let Some(id) = s.chat_ids.borrow().get(i).map(|l| l.3.clone()) {
+                                    self.ui_jump(&id);
+                                }
+                            }
+                            // A tool call's row: its replay stop (an edit's changes shown), else the place
+                            Part::Link(Link::Chat(i)) => {
+                                let Some(link) = s.chat_links.borrow().get(i).map(|l| l.3.clone()) else {
+                                    return;
+                                };
+                                let call =
+                                    s.chat_calls.borrow().iter().find(|c| c.0 == y).map(|c| c.1.clone());
+                                if !call.is_some_and(|call| crate::follow::replay_call(self, &call)) {
+                                    crate::chat::jump(self, link);
+                                }
+                            }
+                            // The conversation's text: its view mode, the cursor on the character pressed (as the
+                            // code's) — a drag from there selects
+                            Part::Text { line, col } if u.surface == S::Transcript => {
+                                if let Some(pos) = crate::chatdoc::click(self, line, col) {
+                                    self.mouse_anchor = Some((Drag::Transcript, pos));
+                                }
+                            }
+                            // The input: the cursor on the character pressed, as in the code's insert mode
+                            Part::Text { line, col } => {
+                                let w = s.chat_input.get().map_or(0, |i| i.w);
+                                let pos = crate::chatinput::click(self, line, col, w);
+                                self.mouse_anchor = Some((Drag::Input, pos));
+                            }
+                            _ => {}
                         }
-                        return;
                     }
-                    // The conversation's text: its view mode, the cursor on the character pressed (as the code's) —
-                    // a drag from there selects
-                    let text_x = cx + crate::chrome::GAP + crate::chrome::PAD;
-                    if let Some(row) = s.chat_row(y)
-                        && let Some(pos) = crate::chatdoc::click(self, row, x.saturating_sub(text_x))
-                    {
-                        self.mouse_anchor = Some((Drag::Transcript, pos));
-                    }
-                    // The input: the cursor on the character pressed, as in the code's insert mode
-                    if let Some((row, x0, w)) = s.chat_input_row(y) {
-                        let pos = crate::chatinput::click(self, row, x.saturating_sub(x0), w);
-                        self.mouse_anchor = Some((Drag::Input, pos));
-                    }
+                    // The wheel over the conversation: its view mode at that point (tmux's copy mode by the wheel —
+                    // §3.8), the cursor on the row under the pointer
+                    K::ScrollUp | K::ScrollDown => crate::chatdoc::wheel(self, s.chat_row(y), up),
+                    _ => {}
                 }
-                // The wheel over the conversation: its view mode at that point (tmux's copy mode by the wheel —
-                // §3.8), the cursor on the row under the pointer
-                K::ScrollUp | K::ScrollDown => {
-                    return crate::chatdoc::wheel(self, s.chat_row(y), m.kind == K::ScrollUp);
-                }
-                _ => {}
             }
-            return;
-        }
-        // The wheel over a change in review scrolls it (#61: a long insertion ran off the screen); a click on a
-        // change takes it in hand (the view stays: it's in sight; one answered already, to change the answer, as
-        // `tab` can't) — the review has no cursor, a click elsewhere moves nothing
-        // (only on it: a press elsewhere — the status line, a top line — goes where it lands)
-        let on_review = s
-            .review_area
-            .get()
-            .is_some_and(|(rx, ry, rw, rh)| (rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y));
-        if let Some(r) = self.workspace.claude.review.as_mut().filter(|r| r.ready)
-            && on_review
-        {
-            match m.kind {
-                K::ScrollDown => (r.scroll, r.follow) = (r.scroll + 3, false),
-                K::ScrollUp => (r.scroll, r.follow) = (r.scroll.saturating_sub(3), false),
-                // (a press anywhere on it: the keys to it, as `C-q` brings them — from the chat, the code, a panel)
-                K::Down => {
-                    let hunk = s.review_rows.borrow().iter().find(|c| c.0 == y).map(|c| c.1);
-                    if let Some(i) = hunk.filter(|&i| r.hunks.get(i).is_some_and(|h| !h.conflict)) {
-                        (r.current, r.follow) = (i, false);
+            // The wheel over a change in review scrolls it (#61: a long insertion ran off the screen); a click on a
+            // change takes it in hand (the view stays: it's in sight; one answered already, to change the answer, as
+            // `tab` can't) — the review has no cursor, a click elsewhere moves nothing
+            (S::EditReview, part) => {
+                took_mouse(S::EditReview);
+                let Some(r) = self.workspace.claude.review.as_mut().filter(|_| part != Part::Outside) else {
+                    return;
+                };
+                match m.kind {
+                    K::ScrollDown => (r.scroll, r.follow) = (r.scroll + 3, false),
+                    K::ScrollUp => (r.scroll, r.follow) = (r.scroll.saturating_sub(3), false),
+                    // (a press anywhere on it: the keys to it, as `C-q` brings them — from the chat, the code, a panel)
+                    K::Down => {
+                        if let Some(i) = row_of(part).filter(|&i| r.hunks.get(i).is_some_and(|h| !h.conflict))
+                        {
+                            (r.current, r.follow) = (i, false);
+                        }
+                        r.away = false;
+                        self.plugin_panel_unfocus();
+                        self.procs_unfocus();
+                        self.workspace.viewer.at = At::Code;
                     }
-                    r.away = false;
+                    _ => {}
+                }
+            }
+            // A code pane's top line: the press gives its pane the keys, as a press on its text (its words are
+            // motion's W)
+            (S::PaneTop(pid), _) => {
+                took_mouse(S::PaneTop(pid));
+                if down {
+                    self.focus_view(pid);
+                    if pid == self.workspace.viewer.focus {
+                        self.code_takes_keys();
+                    }
+                }
+            }
+            (S::Code(pid), Part::Text { line, col }) => {
+                took_mouse(S::Code(pid));
+                self.code_mouse(m, pid, line, col);
+            }
+            // The wheel scrolls the pane under the pointer and nothing else — never the keys, the focus, the cursor or
+            // the selection (CLAUDE.md, "The mouse, one way on every surface")
+            (S::Code(pid), _) => {
+                took_mouse(S::Code(pid));
+                if wheel {
+                    self.input_came();
+                    self.wheel_pane(pid, if up { -3 } else { 3 });
+                }
+            }
+            // (the status line off its words, the start screen, off an edit's review, nothing: motion's W, landing O)
+            _ => took_mouse(u.surface),
+        }
+    }
+
+    /// A press on a card (`button`: on one of its answers): one that waits is focused, a stacked one brought to the
+    /// front with the keys; focused, its answers answer it.
+    fn card_press(&mut self, button: Option<char>) {
+        let has = self.card_has_keys();
+        // (the second press of a double-click on a card the first press focused: still that one press — focus)
+        let front = self.offers.first().map(|o| o.id);
+        let double = self
+            .card_pressed
+            .is_some_and(|(id, at)| Some(id) == front && crate::clock::since(at) < DOUBLE_CLICK);
+        match button {
+            Some(d) if d.is_ascii_digit() => self.offer_peek(d.to_digit(10).unwrap_or(0) as usize),
+            Some(_) if has && double => {}
+            Some(k) if has => {
+                let weighty = self.offers.first().is_some_and(|o| o.weighty_answer(k));
+                match k {
+                    _ if weighty && !self.offer_seen_whole() => self.offer_see_all_first(),
+                    'y' => self.offer_accept(),
+                    'v' => self.offer_view(),
+                    'r' => self.offer_one_by_one(),
+                    'a' => self.offer_for_chat(),
+                    's' if self.offers.first().is_some_and(crate::offer::Offer::for_workspace) => {
+                        self.offer_for_session()
+                    }
+                    'A' => self.offer_always(),
+                    'D' => self.offer_remove(true),
+                    'R' => self.offer_remove(false),
+                    'c' => self.offer_commit_first(),
+                    'p' => self.offer_preflight_first(),
+                    'X' => self.offer_abort(),
+                    'n' => self.offer_dismiss(),
+                    'N' => self.offer_never(),
+                    _ => {}
+                }
+            }
+            _ if !has && self.offers.first().is_some_and(|o| !o.installing()) => {
+                self.card_focus_front();
+                self.card_pressed = self.offers.first().map(|o| (o.id, crate::clock::now()));
+                self.set_status("the card has the keys — its answers answer it, esc gives them back");
+            }
+            _ => {}
+        }
+    }
+
+    /// The side panel under the mouse (`row`: on that row of its `rows`): a click opens that row (a folder folds or
+    /// unfolds), the wheel scrolls it.
+    fn side_mouse(&mut self, kind: crate::event::MouseKind, row: Option<usize>, rows: usize) {
+        use crate::event::MouseKind as K;
+        let side_keys = self.workspace.is_at(At::Side);
+        let Some(sb) = self.workspace.viewer.sidebar.as_mut() else { return };
+        // (with the keys, as `C-e`/`C-y`: the selection, what they act on, follows into sight; without them it
+        // marks where the code is and comes back there by itself — the wheel only looks)
+        match kind {
+            // (the git tab's file row: a click selects it and shows the file in the preview slot, the tab taking
+            // the keys — as moving onto it; a double-click opens it, as `enter`)
+            K::Down
+                if let Some(r) = row
+                    && let Some(rel) = crate::sidebar::git_file_at(sb, r) =>
+            {
+                if self.clicked_again("git", r) {
+                    self.sidebar_activate(r);
+                } else {
+                    if let Some(sb) = self.workspace.viewer.sidebar.as_mut() {
+                        sb.selected = r;
+                    }
+                    self.workspace.leave(At::Chat);
+                    self.workspace.viewer.at = At::Side;
+                    self.git_show_file(&rel.0, rel.1);
+                }
+            }
+            K::Down => match row {
+                Some(r) => self.sidebar_activate(r),
+                // (off its rows — its top line, under its last row: the keys to it, as `space e` gives them)
+                None if !side_keys => {
                     self.plugin_panel_unfocus();
                     self.procs_unfocus();
-                    self.workspace.viewer.at = At::Code;
+                    self.side_focus();
                 }
-                _ => {}
+                None => {}
+            },
+            K::ScrollDown | K::ScrollUp if side_keys => {
+                sb.scroll_keeping(if kind == K::ScrollDown { 3 } else { -3 }, rows)
             }
+            K::ScrollDown => sb.scroll += 3,
+            K::ScrollUp => sb.scroll = sb.scroll.saturating_sub(3),
+            _ => {}
         }
-        if self.workspace.claude.review.is_some() || self.welcome() {
-            return;
+    }
+
+    /// A press in the code: the keys to it, from wherever they were — the chat, a panel, the side panel, the review's
+    /// rail, a group's list in the slot or docked; what floats over it (completion, hover text) goes.
+    fn code_takes_keys(&mut self) {
+        self.workspace.leave(At::Chat);
+        self.plugin_panel_unfocus();
+        self.procs_unfocus();
+        self.workspace.leave(At::Slot);
+        self.workspace.leave(At::Side);
+        self.workspace.leave(At::Rail);
+        if let At::List(id) = self.workspace.docked() {
+            self.workspace.leave(At::List(id));
         }
-        // Which pane (with splits, focus moves to the pane clicked/scrolled).
-        let Some((pid, rect, gutter, lines)) = s
-            .panes
-            .iter()
-            .find(|(_, r, ..)| (r.x..r.x + r.w).contains(&x) && (r.y..r.y + r.h).contains(&y))
-            .cloned()
-        else {
+        self.completion = None;
+        self.popup = None;
+    }
+
+    /// A press, drag or release on pane `pid`'s text, at its `line` and `col` (`mouse_under`'s `Part::Text`).
+    fn code_mouse(&mut self, m: crate::event::Mouse, pid: crate::split::PaneId, line: usize, col: usize) {
+        use crate::event::MouseKind as K;
+        let Some((rect, gutter)) = self.screen.panes.iter().find(|p| p.0 == pid).map(|p| (p.1, p.2)) else {
             return;
         };
-        // The wheel scrolls the pane under the pointer and nothing else — never the keys, the focus, the cursor or the
-        // selection (CLAUDE.md, "The mouse, one way on every surface")
-        if matches!(m.kind, K::ScrollUp | K::ScrollDown) {
-            self.input_came();
-            return self.wheel_pane(pid, if m.kind == K::ScrollDown { 3 } else { -3 });
-        }
         if m.kind == K::Down {
             self.focus_view(pid);
         }
@@ -3369,23 +3306,16 @@ impl Editor {
         // (its rows of text as the drawer lays them out — a pane under another has its top line in its first row; one at
         // the column's top, on the line over it: `chrome::pane_text`)
         let text = crate::chrome::pane_text(rect, self.screen.text_top);
+        let (x, y) = (m.x as usize, m.y as usize);
         if y < text.y {
             return;
         }
         let row = y - text.y;
-        // (the keys to the code, from wherever they were: the chat, a panel, the side panel, the review's rail)
-        self.workspace.leave(At::Chat);
-        self.plugin_panel_unfocus();
-        self.procs_unfocus();
-        self.workspace.leave(At::Slot);
-        self.workspace.leave(At::Side);
-        self.workspace.leave(At::Rail);
-        // (a group's list, in the slot or docked: the code's too)
-        if let At::List(id) = self.workspace.docked() {
-            self.workspace.leave(At::List(id));
+        // (a press: the keys to the code — never a release or a drag from elsewhere, which took them from a card's
+        // panel, `:messages` or the chat as the pointer let go over the code: the walk found it)
+        if m.kind == K::Down {
+            self.code_takes_keys();
         }
-        self.completion = None;
-        self.popup = None;
         // (a woven view's conflict side by side: the column clicked is the part `enter` goes to, the cursor on its
         // line there — the row's own place in the conflict as drawn, the rows the view starts past counted too)
         let woven = |r: &crate::codeview::Row| match *r {
@@ -3409,14 +3339,7 @@ impl Editor {
             // (taken above: `wheel_pane`)
             K::ScrollUp | K::ScrollDown => {}
             K::Down | K::Drag => {
-                let (line, c0, x0, end) =
-                    lines.get(row).copied().unwrap_or((doc.top + row, doc.left, 0, usize::MAX));
                 let line = line.min(last);
-                // A wrapped row: cells after its indent, never past its end (that's the next row's) — the hints
-                // drawn before the pointer on that row, in this pane, not counted (frictions #150)
-                let x = self.screen.text_x(x, y, rect.x);
-                let col =
-                    crate::wrap::clamp_col(c0 + x.saturating_sub(rect.x + gutter).saturating_sub(x0), end);
                 let pos = match picked {
                     Some(l) => doc.text.line_to_byte(l),
                     None => mv::pos_at_col(&doc.text, line, col, tab),
@@ -3531,7 +3454,7 @@ impl Editor {
         // (the wave held still where nothing moves on a clock: a frame a second, for the time waited — its timers
         // say whole seconds there, `term::running`)
         let next = if waiting && !self.unfocused {
-            let elapsed = anim_clock().elapsed();
+            let elapsed = crate::clock::since(anim_clock());
             Some(match self.moving() {
                 true => step_in(elapsed),
                 false => {
@@ -4649,6 +4572,8 @@ fn card_reads(key: Key, pending: &[Key]) -> bool {
 
 impl Editor {
     pub fn handle_key(&mut self, key: Key) {
+        // (a key between: a press on a card after it is a press of its own)
+        self.card_pressed = None;
         let begun = crate::document::input_begin();
         // (what it asks for — now, or through jobs it starts — was asked by this key, the count `input_came` is about
         // to take: a card it asks for is yours, focused as it comes — #205, P3 §3.8)
@@ -16057,7 +15982,8 @@ mod tests {
         assert!(ed.offers.is_empty());
         ed.offer_grammar(rust);
         assert!(ed.offers.is_empty(), "once until quit");
-        // A different language is asked — "Not now" via the mouse: a press focuses it, the next answers
+        // A different language is asked — "Not now" via the mouse: a press focuses it, the next answers (a press of its
+        // own: one right after is the first's double, focus only)
         ed.offer_grammar(syntax::spec("python").unwrap());
         assert_eq!(ed.offers.first().map(|o| o.title.as_str()), Some("Python syntax colors"));
         ed.screen.offer_buttons = vec![(20, 50, 59, 'y'), (20, 62, 71, 'n')];
@@ -16068,9 +15994,12 @@ mod tests {
             alt: false,
             ctrl: false,
         };
+        crate::clock::hold();
         ed.handle_mouse(press);
         assert!(ed.offers.len() == 1 && ed.card_has_keys(), "focused, not answered");
+        crate::clock::advance(DOUBLE_CLICK);
         ed.handle_mouse(press);
+        crate::clock::release();
         assert!(ed.offers.is_empty());
     }
 

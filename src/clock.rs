@@ -112,7 +112,7 @@ mod tests {
         ("containers.rs", 1),
         ("crates/tarae-wasm/src/plugin/abi.rs", 1),
         ("dsyms.rs", 1),
-        ("editor.rs", 10),
+        ("editor.rs", 6),
         ("features.rs", 3),
         ("fswatch.rs", 8),
         ("gitmenu.rs", 1),

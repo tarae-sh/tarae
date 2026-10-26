@@ -5,7 +5,7 @@ use super::*;
 use crate::config::Config;
 use crate::offer::{Offer, What};
 
-fn editor() -> Editor {
+pub(crate) fn editor() -> Editor {
     let mut ed = Editor::new(Config::default());
     ed.docs[0].text = ropey::Rope::from_str("one\ntwo\nthree\n");
     ed.workspace.root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
@@ -40,13 +40,13 @@ fn open_a_picker(ed: &mut Editor, label: &str) {
 }
 
 /// A frame, as the main loop draws one after an event (`focus_sync` ran in it).
-fn frame(ed: &mut Editor) {
+pub(crate) fn frame(ed: &mut Editor) {
     ed.focus_sync();
     crate::term::render(ed, &mut Vec::new(), 120, 40).unwrap();
 }
 
 /// A light card: `y` ends the code review (none here — nothing happens).
-fn light_card(ed: &mut Editor) {
+pub(crate) fn light_card(ed: &mut Editor) {
     let o = Offer::new(
         "End the review?".into(),
         "2 files not viewed.",
@@ -272,7 +272,7 @@ fn focus(ed: &mut Editor) {
     ed.card_focus_front();
 }
 
-fn chat(ed: &mut Editor, draft: &str) {
+pub(crate) fn chat(ed: &mut Editor, draft: &str) {
     let mut c = crate::chat::Chat::new();
     c.input = draft.into();
     ed.workspace.claude.chat = Some(c);
@@ -288,7 +288,7 @@ fn chat_minimized(ed: &mut Editor) {
     c.unfolded = false;
 }
 
-fn edit_review(ed: &mut Editor) {
+pub(crate) fn edit_review(ed: &mut Editor) {
     let id = ed.doc().id;
     crate::llm::review_with(ed, id, "x", vec![(0, 3, "one".into(), "uno".into())], None);
 }
@@ -328,11 +328,11 @@ fn rail(ed: &mut Editor) {
     ed.workspace.viewer.at = crate::workspace::At::Rail;
 }
 
-type Scene = (&'static str, fn(&mut Editor));
+pub(crate) type Scene = (&'static str, fn(&mut Editor));
 
 /// The states the routing test walks — the handlers of `handle_key`'s chain one by one, and the ways they
 /// meet (a card over the chat, a prompt over the terminal, a review under a side panel …).
-const SCENES: &[Scene] = &[
+pub(crate) const SCENES: &[Scene] = &[
     ("the code", |_| {}),
     // (collab C2b: its `enter` is its own — `a_woven_views_enter_goes_where_keys_to_says`)
     ("a woven view in front", |ed| crate::weave::stand_in(ed, "a.rs", "one\ntwo\n")),

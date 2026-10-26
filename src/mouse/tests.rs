@@ -9,6 +9,8 @@ use crate::offer::{Offer, What};
 use crate::uistate::Region;
 use crate::workspace::At;
 
+mod walk;
+
 const W: u16 = 160;
 const H: u16 = 40;
 
@@ -471,4 +473,184 @@ fn a_press_outside_a_picker_closes_it_and_one_on_its_frame_never() {
         assert_eq!(ed.doc().selection().primary(), before, "compact {compact}: no click-through");
         assert_eq!(ed.keys_to().region, Region::Code);
     }
+}
+
+fn mouse(ed: &mut Editor, kind: MouseKind, x: usize, y: usize) {
+    ed.handle_mouse(Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
+}
+
+/// #140's fix, pinned: a press anywhere drops the code's last press — a press on a panel, a card or the terminal, then a
+/// drag over the code, selects nothing from where the code was pressed before (its release lost on the status line,
+/// where nothing ends it).
+#[test]
+fn a_drag_over_the_code_never_selects_from_its_press_before_another() {
+    let side = |ed: &mut Editor| {
+        let side = crate::sidebar::Sidebar::with_files(std::env::temp_dir(), vec!["a.rs".into()]);
+        ed.workspace.viewer.sidebar = Some(side);
+        frame(ed);
+        let rows = ed.screen.sidebar.borrow().len();
+        (1, ed.screen.text_top + rows + 4)
+    };
+    let card = |ed: &mut Editor| {
+        let what =
+            What::ReviewEnd { session: crate::event::WorkspaceId::HOME, started: std::time::Instant::now() };
+        ed.push_offer(Offer::new("End the review?".into(), "2 files not viewed.", "", String::new(), what));
+        frame(ed);
+        let (x, y, ..) = ed.screen.offer_card.expect("the card drawn");
+        (x + 2, y + 1)
+    };
+    let terminal = |ed: &mut Editor| {
+        ed.terminal_run(vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()], Vec::new());
+        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+        while ed.workspace.terminal.is_none() {
+            assert!(std::time::Instant::now() < end, "the terminal started");
+            if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(20)) {
+                ed.handle_event(ev);
+            }
+        }
+        ed.workspace.terminal.as_mut().unwrap().visible = true;
+        frame(ed);
+        let (_, y1) = ed.screen.terminal_rows.expect("the terminal drawn");
+        (ed.screen.slot_x + 4, y1 - 1)
+    };
+    let pty = !crate::sandbox::no_pty_here(
+        "mouse::tests::a_drag_over_the_code_never_selects_from_its_press_before_another",
+    );
+    type Place = fn(&mut Editor) -> (usize, usize);
+    let surfaces: [(&str, Place); 3] =
+        [("the side panel", side), ("a card", card), ("the terminal", terminal)];
+    for (name, at) in surfaces.into_iter().filter(|s| pty || s.0 != "the terminal") {
+        let mut ed = editor();
+        let (px, py) = at(&mut ed);
+        let (x, y) = code_cell(&ed, 2);
+        mouse(&mut ed, MouseKind::Down, x, y);
+        mouse(&mut ed, MouseKind::Up, x, H as usize - 1);
+        frame(&mut ed);
+        let pressed = ed.doc().selection().clone();
+        mouse(&mut ed, MouseKind::Down, px, py);
+        frame(&mut ed);
+        let (dx, dy) = code_cell(&ed, 6);
+        mouse(&mut ed, MouseKind::Drag, dx, dy);
+        frame(&mut ed);
+        assert_eq!(ed.doc().selection(), &pressed, "{name}: nothing selected from the code's old press");
+    }
+}
+
+/// A double-click on a waiting card's answer is one press — it focuses, never answers (found by the walk: the first
+/// press focused, the second answered — a click meant for something else as the card came up answered it). An answer
+/// takes a press of its own after that.
+#[test]
+fn a_double_click_on_a_waiting_cards_answer_only_focuses_it() {
+    let mut ed = editor();
+    let what =
+        What::ReviewEnd { session: crate::event::WorkspaceId::HOME, started: std::time::Instant::now() };
+    ed.push_offer(Offer::new("End the review?".into(), "2 files not viewed.", "", String::new(), what));
+    frame(&mut ed);
+    let n = |ed: &Editor| {
+        let b = ed.screen.offer_buttons.iter().find(|b| b.3 == 'n').expect("its n drawn");
+        (b.1, b.0)
+    };
+    crate::clock::hold();
+    let (x, y) = n(&ed);
+    press(&mut ed, x, y);
+    assert!(ed.card_has_keys() && ed.offers.len() == 1, "one press: focused, not answered");
+    let (x, y) = n(&ed);
+    press(&mut ed, x, y);
+    assert!(ed.card_has_keys() && ed.offers.len() == 1, "its double: still focused, nothing answered");
+    crate::clock::advance(std::time::Duration::from_millis(500));
+    let (x, y) = n(&ed);
+    press(&mut ed, x, y);
+    crate::clock::release();
+    assert!(ed.offers.is_empty(), "a press of its own after: answered");
+}
+
+/// The prompt's line pressed where it was drawn (`Screen.prompt_input`, #153) puts its cursor on the character pressed —
+/// what's under the pointer says its line (`mouse_under`), and the press acts there.
+#[test]
+fn a_press_on_the_prompts_drawn_line_puts_its_cursor_there() {
+    let mut ed = editor();
+    ed.open_prompt(crate::editor::PromptKind::Command, "write a.rs");
+    frame(&mut ed);
+    let d = ed.screen.prompt_input.get().expect("its line drawn");
+    assert_eq!(d.first, 0, "the line whole in sight");
+    let cursor = |ed: &Editor| ed.prompt.as_ref().map(|p| p.split().0.len());
+    assert_eq!(cursor(&ed), Some("write a.rs".len()), "the cursor at its end as it opens");
+    let (x, y) = (d.x + 2, d.y);
+    assert!(
+        matches!(
+            ed.mouse_at(x, y),
+            super::Under { surface: super::Surface::Prompt, part: super::Part::Text { .. } }
+        ),
+        "its line: {:?}",
+        ed.mouse_at(x, y)
+    );
+    press(&mut ed, x, y);
+    assert!(ed.prompt.is_some(), "still open");
+    assert_eq!(cursor(&ed), Some(2), "the cursor on the third character, `i`");
+}
+
+/// Found by the walk (M0): a release, or a drag from a press elsewhere, over the code took the keys to the code — from
+/// the side panel here, from `:messages` a toast's press opened, from a card's panel. Only a press there takes them.
+#[test]
+fn a_release_over_the_code_leaves_the_keys_where_the_press_gave_them() {
+    let mut ed = editor();
+    let side = crate::sidebar::Sidebar::with_files(std::env::temp_dir(), vec!["a.rs".into()]);
+    ed.workspace.viewer.sidebar = Some(side);
+    frame(&mut ed);
+    let below = ed.screen.text_top + ed.screen.sidebar.borrow().len() + 4;
+    mouse(&mut ed, MouseKind::Down, 1, below);
+    frame(&mut ed);
+    assert!(matches!(ed.keys_to().region, Region::Side(_)), "the press gave the side panel the keys");
+    let (x, y) = code_cell(&ed, 3);
+    mouse(&mut ed, MouseKind::Drag, x, y);
+    mouse(&mut ed, MouseKind::Up, x, y);
+    frame(&mut ed);
+    assert!(matches!(ed.keys_to().region, Region::Side(_)), "still the side panel's");
+}
+
+/// Found by the walk (M0): a press on a code pane's top line (its path, its buffers) left the keys where they were —
+/// the chat's here. It gives them to its pane's code, as a press on its text does.
+#[test]
+fn a_press_on_a_panes_top_line_gives_its_code_the_keys() {
+    let mut ed = editor();
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    ed.workspace.viewer.at = At::Chat;
+    frame(&mut ed);
+    assert_eq!(ed.keys_to().region, Region::Chat);
+    let (_, rect, ..) = ed.screen.panes.first().expect("a code pane");
+    let (x, y) = (rect.x + 4, rect.y - 1);
+    assert!(matches!(ed.mouse_at(x, y).surface, super::Surface::PaneTop(_)), "its top line");
+    let line = ed.cursor_line();
+    press(&mut ed, x, y);
+    assert_eq!(ed.keys_to().region, Region::Code, "the code has the keys");
+    assert_eq!(ed.cursor_line(), line, "the cursor where it was");
+}
+
+/// A picker's preview at a list row's height is the preview's, never that row's (F found the press read the row and
+/// not the column): the row in hand stays, the press says where a row is picked.
+#[test]
+fn a_press_on_a_pickers_preview_picks_no_row_and_says_so() {
+    let mut ed = editor();
+    let id = ed.doc().id;
+    let item = |label: &str| crate::picker::Item {
+        label: label.into(),
+        action: crate::picker::Action::Buffer(id),
+        hint: String::new(),
+        glyph: None,
+    };
+    let items = vec![item("one"), item("two"), item("three")];
+    ed.open_picker(crate::picker::Picker::of("buffers", "buffers", items, false), None);
+    frame(&mut ed);
+    let (top, rows) = ed.screen.picker_list.expect("its list");
+    assert!(rows >= 3, "its rows: {rows}");
+    let (px, ..) = ed.screen.picker_preview.expect("its preview");
+    let label = |ed: &Editor| ed.picker.as_ref().and_then(|p| p.current()).map(|i| i.label.clone());
+    let before = label(&ed);
+    press(&mut ed, px + 4, top + 2);
+    assert_eq!(label(&ed), before, "the row in hand stays");
+    assert!(said(&ed).contains("a press on a row of the list picks it"), "said: {}", said(&ed));
+    // (the list's own row: picked)
+    let (lx, _) = ed.screen.picker_list_cols.expect("its columns");
+    press(&mut ed, lx + 3, top + 2);
+    assert_ne!(label(&ed), before, "a row of the list picked");
 }

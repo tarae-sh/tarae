@@ -2576,4 +2576,4 @@ pub mod point;
 pub mod watch;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
