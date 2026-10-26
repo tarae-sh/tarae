@@ -112,8 +112,9 @@ session, is done (`621acbd8`, 2026-10-26: `Workspace` the place, its Claude's `S
 it the `Viewer`; ids (machine, n), events tagged with both, `:workspace-*`, `[workspace]`, the state's
 `workspaces[].sessions[]`; no visible change but the words) → the cleanup audit (§1 item 7, under way: the diagram
 model `fd2cc7bd`, the native edit modes `6a530588`, shuttle keys `97b2e30b` and the spare claude `a1c66678` gone,
-`space i` a one-turn claude of its own with tarae's `read` and `edit` (`05092df7`, B′); next keep-warm into idle
-compaction, on by default) → the crate split (§1 item 6) → Orchestra Part I →
+`space i` a one-turn claude of its own with tarae's `read` and `edit` (`05092df7`, B′), keep-warm's pings replaced
+by Claude Code's idle compaction, on by default (`94cf92d8`); next Claude's four rarely used tools, then the debugger
+out of the core) → the crate split (§1 item 6) → Orchestra Part I →
 P3b and the terminal line (§4). One Linux test red on main before the next push: an xattr error's order on kernel 6.8
 (the Read card's width pinned at macOS's path is fixed, `94ded1e6`). Plans and notes moved out of `target/` into each
 checkout's `.sb/` (`c09fa01a`, after a `cargo clean` took eight checkouts' notes; most rebuilt from tarae's turn
@@ -178,8 +179,9 @@ Items 1–3 are done (2026-10-16); 4 is the user's: the repository made public. 
    Cleanup bullet has them): about 11,300 lines go, in the plan's order — the diagram model (done, `fd2cc7bd`), the
    native edit modes (done, `6a530588`), shuttle keys (done, `97b2e30b`, §4's shuttle part with them), the ask into
    the chat (Q1's A/B ran 2026-10-26: at a large context the chat cost 6.4× what it did at a small one, so `space i`
-   becomes a fresh one-turn claude with `edit` and `read` only — B′; commit drafts a one-shot claude with no spare,
-   done, `a1c66678`), keep-warm into idle compaction, four of Claude's tools, then the debugger to a plugin.
+   becomes a fresh one-turn claude with `edit` and `read` only — B′, done, `05092df7`; commit drafts a one-shot claude
+   with no spare, done, `a1c66678`), keep-warm into idle compaction (done, `94cf92d8`: on by default, though Claude
+   Code's own waits on a server flag), four of Claude's tools, then the debugger to a plugin.
 
 After it, the rest goes on in this order.
 
