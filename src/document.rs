@@ -353,6 +353,10 @@ pub struct Document {
     /// restored. A buffer of its own once edited, opened (`open`: `enter` on its row, a double-click) —
     /// `Editor::preview_keep`.
     pub preview: bool,
+    /// Where the wheel left its view (the mouse rule: the wheel scrolls the view, never the cursor): held off the cursor
+    /// while the cursor and the text are as they were then (its primary range, its version) — any move or edit brings
+    /// the view back to the cursor (`term::render_frame`).
+    pub wheel_held: Option<(crate::selection::Range, u64)>,
     /// Its grammar's offer held back while `claudes_only` or `review_only` (`load_language`): the language —
     /// offered when the user takes it up (`edits::taken_up`).
     pub grammar_held: Option<&'static crate::syntax::LangSpec>,
@@ -475,6 +479,7 @@ impl Document {
             claudes_only: false,
             review_only: false,
             preview: false,
+            wheel_held: None,
             grammar_held: None,
             shown: None,
             writing: None,

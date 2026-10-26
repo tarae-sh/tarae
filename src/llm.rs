@@ -120,7 +120,8 @@ pub struct LlmConfig {
     pub effort: String,
     /// Chat: the editor follows where Claude is reading (`C-f` in the chat toggles it for that chat).
     pub follow: bool,
-    /// Chat: seconds after your last key that follow takes over again while Claude works (0 = only `C-f`).
+    /// Chat: seconds after your last key that follow takes over again while Claude works (0 = only by your key:
+    /// `C-f` in the chat, `space F` in the code — `follow::again_key`).
     pub follow_resume: u64,
     /// Chat: Claude's edits go in as it makes them, the turn reviewed when it ends — every new chat starts
     /// so (`space v a` turns it on and off, and keeps it here).

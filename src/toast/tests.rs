@@ -115,7 +115,7 @@ fn the_round_never_stops_on_a_toast() {
 }
 
 /// A press on a toast — fading too — opens `:messages` at the message pressed, with the keys; opening it lets the toasts
-/// go. With a prompt open the press is the prompt's, said.
+/// go. With a prompt open the press closes it, as `esc` — nothing more.
 #[test]
 fn a_press_on_a_toast_opens_messages() {
     let mut ed = editor();
@@ -142,13 +142,12 @@ fn a_press_on_a_toast_opens_messages() {
     press(&mut ed, x + 3, y);
     assert!(ed.float_list_keys(GroupKind::Messages), "a fading one too");
     feed(&mut ed, "q");
-    // A prompt open: the press is its, said
+    // A prompt open: a press outside it closes it, as `esc` — nothing under it pressed (the mouse audit's Q2)
     ed.set_status("four");
     feed(&mut ed, ":");
     let (x, y, ..) = ed.screen.toast_card.get().expect("drawn");
     press(&mut ed, x + 3, y);
-    assert!(ed.prompt.is_some() && ed.messages_pane.is_none(), "the prompt stays, no list");
-    assert!(ed.messages.last().unwrap().2.starts_with("the prompt has the keys"), "said");
+    assert!(ed.prompt.is_none() && ed.messages_pane.is_none(), "the prompt closed, no list");
 }
 
 /// A press on a toast while a card has the keys: `:messages` takes them, the card lets go (it waits, `C-q` focuses it

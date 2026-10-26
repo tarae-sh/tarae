@@ -690,6 +690,9 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         toast_narrow: std::cell::Cell::new(editor.screen.toast_narrow.get()),
         toast_said: Default::default(),
         prompt_card: Default::default(),
+        prompt_rows: Default::default(),
+        picker_box: Default::default(),
+        review_area: Default::default(),
         spots: Default::default(),
         stop_marks: Default::default(),
         // (kept from the frame before until the list draws again)
@@ -746,9 +749,20 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
     }
     // During `/` preview the screen follows the match, not the cursor; while follow leads, Claude's place (the row it
     // writes, the lines it reads) — never moving your cursor (collab C1)
-    if editor.search_origin.is_none() {
-        let at = crate::follow::view_line(editor).map(|l| mv::line_start(&editor.doc().text, l));
-        scroll_to(editor, &focus_lay, at);
+    // (where the wheel left it, while the cursor and the text are as they were then — the mouse rule: it scrolls the
+    // view, never the cursor; any move or edit brings the view back. The hold is yours only while follow doesn't
+    // lead: leading again — by itself after the wait, `C-f`, `space F`, the next question — its line wins and the hold
+    // goes)
+    let led = crate::follow::view_line(editor).map(|l| mv::line_start(&editor.doc().text, l));
+    let held = led.is_none() && {
+        let d = editor.doc();
+        d.wheel_held.is_some_and(|h| h == (d.selection().primary(), d.version()))
+    };
+    if !held && editor.doc().wheel_held.is_some() {
+        editor.doc_mut().wheel_held = None;
+    }
+    if editor.search_origin.is_none() && !held {
+        scroll_to(editor, &focus_lay, led);
     }
     // The terminal is told its panel's size (it redraws for it)
     // (not while another tab has the slot — the program would draw for a size nobody sees)
@@ -7361,6 +7375,7 @@ fn draw_review(
         ui.base.patch(t.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() }));
     let accent = Style { fg: ui.accent.fg, ..ui.base };
     let width = lay.edit_w;
+    editor.screen.review_area.set(Some((0, lay.text_top as usize, width, lay.text_rows)));
     let code_w = review_code_w(doc, lay);
     let (warned, reason) = review_heads(editor, ui, &rev.reason, &rev.warnings, width);
     let warn = Style { fg: t.try_get("warning").and_then(|s| s.fg).or(ui.accent.fg), ..ui.base };
@@ -8349,6 +8364,7 @@ fn draw_picker(
     let (fx, fr) = if b.x > 0 && end < lay.edit_w { (b.x - 1, end) } else { (b.x, end - 1) };
     let splits: Vec<usize> = (right_w > 0).then_some(b.x + left_w).into_iter().collect();
     let name = pane_names(ui, editor, card, &[&p.title], 0);
+    editor.screen.picker_box.set(Some((fx, b.y, fr + 1 - fx, rows)));
     draw_frame(out, ui, card, (fx, b.y, fr + 1 - fx, rows), &name, &[], &splits, true)?;
     let (q, _) = picker_input(p, lw, &count);
     Ok(((b.x + 3 + q.width()) as u16, (b.y + 1) as u16))
@@ -17996,6 +18012,7 @@ fn draw_prompt(
         let cand = &cands[i];
         let is_sel = selected_i == Some(i);
         let base_st = if is_sel { selected } else { card };
+        editor.screen.prompt_rows.borrow_mut().push((y, i));
         queue!(out, MoveTo(x0 as u16, y as u16))?;
         apply(out, card)?;
         queue!(out, Spaces(indent))?;

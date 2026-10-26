@@ -439,7 +439,7 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         path: "llm.follow-resume",
         kind: Kind::Int { min: 0, max: 3600 },
-        doc: "Chat: seconds after your last key that follow takes over again while Claude still works (0 = only C-f)",
+        doc: "Chat: seconds after your last key that follow takes over again while Claude still works (0 = only by your key: C-f in the chat, space F in the code)",
         get: |c| Value::from(c.llm.follow_resume as i64),
         set: |c, v| c.llm.follow_resume = n(v) as u64,
     },

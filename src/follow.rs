@@ -449,7 +449,39 @@ pub fn your_view(ed: &mut Editor) {
     let line = ed.cursor_line();
     ed.show_range(line..line + 1);
     if ed.workspace.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
-        ed.set_status("you took over — C-f follows Claude again");
+        took_over(ed);
+    }
+}
+
+/// The wheel over the pane follow leads: the focused one's view back at your cursor first (`your_view`), one aside
+/// scrolled from where Claude was — either way follow pauses while it leads, said with the key that follows again where
+/// the keys are (the wheel never moves them).
+pub fn wheel(ed: &mut Editor, focused: bool) {
+    if focused {
+        your_view(ed);
+    }
+    let Some(f) = follow(ed).filter(|f| f.active()) else { return };
+    f.paused = true;
+    if ed.workspace.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
+        took_over(ed);
+    }
+}
+
+/// Follow paused by you, said with the key that follows Claude again where your keys are — the chat's `C-f` (the code's
+/// pages down), from the code `space F` (`follow_next`) while it comes back to this session, else the chat's named so.
+fn took_over(ed: &mut Editor) {
+    let key = again_key(ed);
+    ed.set_status(format!("you took over — {key} follows Claude again"));
+}
+
+/// The key that follows this session's Claude where the keys are now (`took_over`).
+pub(crate) fn again_key(ed: &Editor) -> String {
+    let chat = ed.key_said("C-f");
+    let code = ed.keymaps.bindings().get("follow_next").cloned();
+    match code {
+        _ if ed.workspace.chat_has_keys() => chat,
+        Some(k) if next_session(ed) == Some(ed.workspace.id) => k,
+        _ => format!("{chat} in the chat"),
     }
 }
 
@@ -1328,7 +1360,7 @@ pub fn watch(ed: &mut Editor) {
     }
     // Said: the status line's `● follow` goes, and why
     if paused && ed.workspace.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
-        ed.set_status("you took over — C-f follows Claude again");
+        took_over(ed);
     }
 }
 
@@ -1347,8 +1379,8 @@ fn sync_shown(ed: &mut Editor) {
     }
 }
 
-/// How long after your last key follow takes over again while Claude works (`llm.follow-resume`; 0 =
-/// only `C-f`).
+/// How long after your last key follow takes over again while Claude works (`llm.follow-resume`; 0 = only
+/// by your key, `again_key`).
 fn quiet(ed: &Editor) -> Option<std::time::Duration> {
     let secs = ed.config.llm.follow_resume;
     // (tests: a second is 20 ms)
@@ -1416,7 +1448,11 @@ fn resume_due(ed: &mut Editor) {
     f.replaying = None;
     f.replay.at = None;
     let target = f.gaze.as_ref().and_then(|g| Some((g.path.clone()?, g.lines.clone().unwrap_or(0..1))));
-    ed.set_status("following Claude again — C-f stops it");
+    // (the chat's `C-f` stops it; in the code that key pages down — a key of yours there takes over, `watch`)
+    ed.set_status(match ed.workspace.chat_has_keys() {
+        true => format!("following Claude again — {} stops it", ed.key_said("C-f")),
+        false => "following Claude again — move in the editor to take over".into(),
+    });
     if let Some((path, lines)) = target {
         go_range(ed, &path, lines);
     }
@@ -1700,7 +1736,10 @@ pub fn panes_gone(ed: &mut Editor, gone: &[crate::split::PaneId]) {
     let was = f.on;
     (f.on, f.pane, f.led) = (false, None, None);
     if was {
-        ed.set_status("the pane follow led closed — follow off · C-f follows in the one you're in");
+        let key = again_key(ed);
+        ed.set_status(format!(
+            "the pane follow led closed — follow off · {key} follows in the one you're in"
+        ));
     }
 }
 
@@ -1740,6 +1779,20 @@ pub fn follow_session(ed: &mut Editor, id: crate::event::WorkspaceId) {
 /// `space F`: follow the next session at work after the one in front (Zed's "follow next collaborator") — the one in
 /// front too, last, when it's the only one at work and you aren't following it.
 pub fn follow_next(ed: &mut Editor) {
+    let at_work =
+        ed.sessions_in_order().iter().any(|l| matches!(ed.doing(l), crate::workspace::Doing::Working));
+    match next_session(ed) {
+        Some(id) => follow_session(ed, id),
+        None if at_work => {
+            ed.set_status(format!("already following {} — no other session is at work", ed.workspace.label()))
+        }
+        None => ed.set_status("no session is at work"),
+    }
+}
+
+/// The session `space F` follows: the next at work after the one in front — the one in front too, last, when you aren't
+/// following it.
+fn next_session(ed: &Editor) -> Option<crate::event::WorkspaceId> {
     let order: Vec<(crate::event::WorkspaceId, bool)> = ed
         .sessions_in_order()
         .iter()
@@ -1749,13 +1802,7 @@ pub fn follow_next(ed: &mut Editor) {
     let next = (1..=order.len()).map(|k| order[(at + k) % order.len()]).find(|&(id, working)| {
         working && (id != ed.workspace.id || !crate::presence::followed(ed).is_some_and(|f| f == id))
     });
-    match next {
-        Some((id, _)) => follow_session(ed, id),
-        None if order.iter().any(|(_, w)| *w) => {
-            ed.set_status(format!("already following {} — no other session is at work", ed.workspace.label()))
-        }
-        None => ed.set_status("no session is at work"),
-    }
+    next.map(|n| n.0)
 }
 
 #[cfg(test)]

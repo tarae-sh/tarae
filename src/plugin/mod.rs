@@ -1435,6 +1435,16 @@ mod tests {
         settle_until(&mut ed, |ed| ed.picker.is_some());
         key(&mut ed, "esc");
         until_said(&mut ed, "answer 41 None");
+        // …and a press outside it, as `esc` (the mouse's rule): told nothing was chosen
+        ed.plugin_run("choose", "").unwrap();
+        settle_until(&mut ed, |ed| ed.picker.is_some());
+        crate::term::render(&mut ed, &mut Vec::new(), 120, 20).unwrap();
+        ed.toasts.clear();
+        let at =
+            crate::event::Mouse { kind: crate::event::MouseKind::Down, x: 2, y: 19, alt: false, ctrl: false };
+        ed.handle_mouse(at);
+        assert!(ed.picker.is_none(), "closed by the press");
+        until_said(&mut ed, "answer 41 None");
         ed.reopen_last_picker();
         assert!(ed.picker.is_none(), "not kept for space '");
         std::fs::remove_dir_all(dir).ok();

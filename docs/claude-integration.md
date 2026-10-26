@@ -573,11 +573,12 @@ A key of yours that moves the cursor (a click or a paste too) pauses following, 
 the cursor is (`d`, `r`, `~`) or enters INSERT or SELECT, and one that moves the view (`zz`, the pages, the wheel):
 it acts at your cursor, the view coming back to it first. While a key sequence is under way — a pending `g`, a
 count, `space`, `C-w` — follow holds the view still, and the sequence's end decides: a move or an edit pauses it, a
-hop to the chat or a picker doesn't. The status line says `you took over — C-f follows Claude again`; `C-f` brings
-the view back to Claude.
+hop to the chat or a picker doesn't. The status line says how to follow again where your keys are — `you took over —
+space F follows Claude again` in the code (its `C-f` pages down), the chat's `C-f` from the chat — and that key
+brings the view back to Claude.
 Claude's edit reloading the file you're in doesn't pause it, and neither does switching sessions. Follow takes over again
-by itself `llm.follow-resume` seconds (20 by default; 0 = only `C-f`) after your last key if Claude is still
-working. The next question also turns it back on.
+by itself `llm.follow-resume` seconds (20 by default; 0 = only by your key — `C-f` in the chat, `space F` in the
+code) after your last key if Claude is still working. The next question also turns it back on.
 
 **Split panes: follow leads one.** With the code split (`C-w v`, `C-w s`), follow leads the pane that had the code's
 keys when it started — the turn, `C-f`, a session followed — and that pane's top line says `● follow`. Your keys in

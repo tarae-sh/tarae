@@ -289,6 +289,94 @@ fn in_the_followed_pane_a_move_of_yours_takes_over() {
     assert!(follow(&ed).paused && said(&ed, "you took over"));
 }
 
+/// The key that follows Claude again, said where the keys are: the chat's `C-f` from the chat, `space F` from the code
+/// — and the wheel over the pane follow leads, from the chat during a followed turn: that pane's view scrolls from
+/// Claude's place, follow pauses, and the keys, the focus and the cursor stay where they were (the wheel scrolls and
+/// nothing else) — so the words name the chat's `C-f`.
+#[test]
+fn the_key_to_follow_again_is_said_where_the_keys_are() {
+    let Scene { mut ed, dir, g, a, b } = scene("pane-follow-key", true);
+    // (said once paused: leading, `space F` has nothing to bring back)
+    ed.workspace.claude.chat.as_mut().unwrap().follow.paused = true;
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    assert_eq!(crate::follow::again_key(&ed), "C-f");
+    ed.workspace.viewer.at = crate::workspace::At::Code;
+    assert_eq!(crate::follow::again_key(&ed), "space F");
+    ed.workspace.claude.chat.as_mut().unwrap().follow.paused = false;
+    read(&mut ed, g, &dir, "a.rs", 40);
+    frame(&mut ed);
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    let rect = ed.screen.leaves.iter().find(|l| l.0 == a).map(|l| l.1).expect("pane a");
+    let wheel = crate::event::Mouse {
+        kind: crate::event::MouseKind::ScrollDown,
+        x: (rect.x + 10) as u16,
+        y: (rect.y + 5) as u16,
+        alt: false,
+        ctrl: false,
+    };
+    let top = |ed: &Editor| ed.workspace.views.iter().find(|v| v.id == a).map(|v| v.top).unwrap();
+    let (before, cursor) = (top(&ed), ed.doc().selection().clone());
+    assert!(before > 20, "led to Claude's place: {before}");
+    ed.handle_event(crate::event::Event::Mouse(wheel));
+    frame(&mut ed);
+    let toasts: Vec<&str> = ed.toasts.iter().map(|t| t.text.as_str()).collect();
+    assert!(follow(&ed).paused && said(&ed, "you took over — C-f follows Claude again"), "{toasts:?}");
+    assert_eq!(top(&ed), before + 3, "the pane under it scrolled");
+    // (minimized into the follow card while followed: its keys `Unfold`'s)
+    assert!(ed.workspace.chat_has_keys(), "the keys still the chat's: {:?}", ed.keys_to().region);
+    assert_eq!(ed.workspace.viewer.focus, b, "the focus where it was");
+    assert_eq!(ed.doc().selection(), &cursor, "the cursor where it was");
+}
+
+/// The wheel's hold is yours only while follow doesn't lead: the wheel over the followed pane holds the view off the
+/// cursor and pauses follow; follow resumed (`C-f`), Claude reading further down the same file takes the view there —
+/// the hold gone with follow leading again, though your cursor never moved.
+#[test]
+fn follow_resumed_takes_the_view_from_the_wheels_hold() {
+    let Scene { mut ed, dir, g, a, .. } = scene("pane-follow-wheel", true);
+    read(&mut ed, g, &dir, "a.rs", 20);
+    press(&mut ed, "<C-w>h");
+    assert_eq!(ed.workspace.viewer.focus, a);
+    frame(&mut ed);
+    let rect = ed.screen.leaves.iter().find(|l| l.0 == a).map(|l| l.1).expect("pane a");
+    let wheel = crate::event::Mouse {
+        kind: crate::event::MouseKind::ScrollDown,
+        x: (rect.x + 10) as u16,
+        y: (rect.y + 5) as u16,
+        alt: false,
+        ctrl: false,
+    };
+    ed.handle_event(crate::event::Event::Mouse(wheel));
+    frame(&mut ed);
+    assert!(follow(&ed).paused && ed.doc().wheel_held.is_some(), "paused, the view held");
+    let held = ed.doc().top;
+    crate::follow::toggle(&mut ed);
+    assert!(follow(&ed).active(), "following again");
+    read(&mut ed, g, &dir, "a.rs", 55);
+    frame(&mut ed);
+    let top = ed.doc().top;
+    assert!(top != held && top <= 54 && 54 < top + H as usize - 4, "Claude's line 55 in sight: top {top}");
+    assert!(ed.doc().wheel_held.is_none(), "the hold gone");
+}
+
+/// Paused by a key of yours in the code, the words name the key that follows Claude again there — `space F`, not the
+/// chat's `C-f` (in the code it pages down) — and that key does; a pane closed under it says the same key.
+#[test]
+fn taking_over_in_the_code_says_the_codes_key_to_follow_again() {
+    let Scene { mut ed, dir, g, a, .. } = scene("pane-follow-again", true);
+    read(&mut ed, g, &dir, "a.rs", 40);
+    press(&mut ed, "<C-w>h");
+    assert_eq!(ed.workspace.viewer.focus, a);
+    press(&mut ed, "j");
+    let toasts: Vec<&str> = ed.toasts.iter().map(|t| t.text.as_str()).collect();
+    assert!(follow(&ed).paused && said(&ed, "you took over — space F follows Claude again"), "{toasts:?}");
+    assert!(!said(&ed, "C-f"), "never the chat's key from the code: {toasts:?}");
+    press(&mut ed, " F");
+    assert!(follow(&ed).active(), "space F follows again");
+    press(&mut ed, "<C-w>q");
+    assert!(said(&ed, "follow off · space F follows in the one you're in"), "{:?}", ed.toasts);
+}
+
 /// Another pane zoomed on the same file while Claude writes out of the followed pane's sight: the placing its writing
 /// asks for is that pane's — never taken by yours, your view where it was (your cursor near the writing: a placing
 /// taken by mistake would keep it in sight, and stay).

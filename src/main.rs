@@ -103,6 +103,7 @@ mod media;
 mod messages;
 mod models;
 mod motion;
+mod mouse;
 mod movement;
 #[cfg(test)]
 mod mutate;

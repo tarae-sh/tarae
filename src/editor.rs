@@ -523,8 +523,14 @@ pub struct Screen {
     /// The follow card's strip as drawn (motion §4): each mark's (row, column, its stop's call) — a hover names it, a
     /// press replays it, the state lists it (`stop:<call>`) and pointing labels it.
     pub stop_marks: std::cell::RefCell<Vec<(usize, usize, String)>>,
-    /// The prompt's card (x, y, width, height) — a click on it is its own, not the code's under it.
+    /// The prompt's card (x, y, width, height) — a click on it is its own, not the code's under it — and its
+    /// completions' rows as drawn: (screen row, candidate) — a press on one picks it.
     pub prompt_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
+    pub prompt_rows: std::cell::RefCell<Vec<(usize, usize)>>,
+    /// The picker's frame as drawn — its list's card and its preview's (x, y, width, height): a press outside closes it.
+    pub picker_box: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
+    /// An edit's review in the buffer as drawn (x, y, width, height): a press on it gives it the keys.
+    pub review_area: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
     /// The front card wasn't drawn this frame only because a key sequence is under way (`C-w` of `C-w w`: a card
     /// steps aside for which-key) — still in sight for the round (`cycle_view`).
     pub offer_held: bool,
@@ -2682,6 +2688,11 @@ impl Editor {
         }
         let s = self.screen.clone();
         self.status = None;
+        // What holds the keys over every surface lets go first: a prompt or picker pressed outside closes, a focused card
+        // pressed outside gives its keys back (`mouse.rs`)
+        if m.kind == K::Down && crate::mouse::press_first(self, x, y) {
+            return;
+        }
         // The prompt's card: what's under it isn't clicked through it
         if let Some((px, py, pw, ph)) = s.prompt_card.get()
             && (px..px + pw).contains(&x)
@@ -2701,11 +2712,6 @@ impl Editor {
             .get()
             .is_some_and(|(tx, ty, tw, th)| (tx..tx + tw).contains(&x) && (ty..ty + th).contains(&y));
         if m.kind == K::Down && on_toast && !on_card && button.is_none() && self.picker.is_none() {
-            // (a prompt open has the keys: the press is its — the code's under it isn't clicked either — said)
-            if self.prompt.is_some() {
-                return self
-                    .set_status("the prompt has the keys — esc close, then a press opens the messages");
-            }
             return self.toast_press(y);
         }
         if m.kind == K::Down && (button.is_some() || on_card) {
@@ -2951,6 +2957,13 @@ impl Editor {
                 }
                 return;
             }
+            // (off its rows, within its width: the keys to it, on the file in hand — as `space e` gives them)
+            if x < s.rail_w {
+                if !rail_keys {
+                    crate::codereview::rail_focus(self);
+                }
+                return;
+            }
         }
         // A group docked beside the code (P3 step 6) or floating (step 7): what's under the pointer in its rect is its
         // panel's
@@ -3152,11 +3165,16 @@ impl Editor {
                         self.git_show_file(&rel.0, rel.1);
                     }
                 }
-                K::Down => {
-                    if let Some(r) = row {
-                        self.sidebar_activate(r);
+                K::Down => match row {
+                    Some(r) => self.sidebar_activate(r),
+                    // (off its rows — its top line, under its last row: the keys to it, as `space e` gives them)
+                    None if !side_keys => {
+                        self.plugin_panel_unfocus();
+                        self.procs_unfocus();
+                        self.side_focus();
                     }
-                }
+                    None => {}
+                },
                 K::ScrollDown | K::ScrollUp if side_keys => {
                     sb.scroll_keeping(if m.kind == K::ScrollDown { 3 } else { -3 }, rows)
                 }
@@ -3242,17 +3260,27 @@ impl Editor {
         // The wheel over a change in review scrolls it (#61: a long insertion ran off the screen); a click on a
         // change takes it in hand (the view stays: it's in sight; one answered already, to change the answer, as
         // `tab` can't) — the review has no cursor, a click elsewhere moves nothing
+        // (only on it: a press elsewhere — the status line, a top line — goes where it lands)
+        let on_review = s
+            .review_area
+            .get()
+            .is_some_and(|(rx, ry, rw, rh)| (rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y));
         if let Some(r) = self.workspace.claude.review.as_mut().filter(|r| r.ready)
-            && x < s.chat_x.unwrap_or(usize::MAX)
+            && on_review
         {
             match m.kind {
                 K::ScrollDown => (r.scroll, r.follow) = (r.scroll + 3, false),
                 K::ScrollUp => (r.scroll, r.follow) = (r.scroll.saturating_sub(3), false),
+                // (a press anywhere on it: the keys to it, as `C-q` brings them — from the chat, the code, a panel)
                 K::Down => {
                     let hunk = s.review_rows.borrow().iter().find(|c| c.0 == y).map(|c| c.1);
                     if let Some(i) = hunk.filter(|&i| r.hunks.get(i).is_some_and(|h| !h.conflict)) {
                         (r.current, r.follow) = (i, false);
                     }
+                    r.away = false;
+                    self.plugin_panel_unfocus();
+                    self.procs_unfocus();
+                    self.workspace.viewer.at = At::Code;
                 }
                 _ => {}
             }
@@ -3270,19 +3298,14 @@ impl Editor {
         else {
             return;
         };
+        // The wheel scrolls the pane under the pointer and nothing else — never the keys, the focus, the cursor or the
+        // selection (CLAUDE.md, "The mouse, one way on every surface")
         if matches!(m.kind, K::ScrollUp | K::ScrollDown) {
             self.input_came();
+            return self.wheel_pane(pid, if m.kind == K::ScrollDown { 3 } else { -3 });
         }
-        if matches!(m.kind, K::Down | K::ScrollUp | K::ScrollDown) {
+        if m.kind == K::Down {
             self.focus_view(pid);
-        }
-        // Scrolling the code yourself takes over from follow mode — the view back at your cursor first, the wheel
-        // acting from there (clicks take over too, via the cursor)
-        if matches!(m.kind, K::ScrollUp | K::ScrollDown) {
-            crate::follow::your_view(self);
-            if let Some(c) = self.workspace.claude.chat.as_mut().filter(|c| c.follow.active() && c.busy()) {
-                c.follow.paused = true;
-            }
         }
         if pid != self.workspace.viewer.focus {
             return;
@@ -3292,10 +3315,13 @@ impl Editor {
             return;
         }
         let row = y - rect.y - title;
+        // (the keys to the code, from wherever they were: the chat, a panel, the side panel, the review's rail)
         self.workspace.leave(At::Chat);
         self.plugin_panel_unfocus();
         self.procs_unfocus();
         self.workspace.leave(At::Slot);
+        self.workspace.leave(At::Side);
+        self.workspace.leave(At::Rail);
         // (a group's list, in the slot or docked: the code's too)
         if let At::List(id) = self.workspace.docked() {
             self.workspace.leave(At::List(id));
@@ -3322,20 +3348,8 @@ impl Editor {
         let doc = self.doc();
         let last = mv::last_line(&doc.text);
         match m.kind {
-            K::ScrollUp | K::ScrollDown => {
-                let head = doc.selection().primary().cursor(&doc.text);
-                let col = mv::visual_col(&doc.text, head, tab);
-                let line = mv::line_of(&doc.text, head);
-                let (line, top) = if m.kind == K::ScrollDown {
-                    ((line + 3).min(last), (doc.top + 3).min(last))
-                } else {
-                    (line.saturating_sub(3), doc.top.saturating_sub(3))
-                };
-                let pos = mv::pos_at_col(&doc.text, line, col, tab);
-                let doc = self.doc_mut();
-                doc.set_top(top);
-                doc.set_selection(Selection::point(pos));
-            }
+            // (taken above: `wheel_pane`)
+            K::ScrollUp | K::ScrollDown => {}
             K::Down | K::Drag => {
                 let (line, c0, x0, end) =
                     lines.get(row).copied().unwrap_or((doc.top + row, doc.left, 0, usize::MAX));
@@ -3850,6 +3864,46 @@ impl Editor {
         }
     }
 
+    /// The wheel over code pane `id`: its view `by` lines (down when positive) and nothing else — the keys, the focus,
+    /// the cursor and the selection where they were. The focused pane's view is held there off the cursor until the
+    /// cursor or the text moves (`Document.wheel_held`); another pane's is its own (`View.top`). Over the pane follow
+    /// leads it pauses follow, said with the key that follows again where the keys are — the focused one's view back
+    /// at your cursor first, the wheel acting from there (`follow::your_view`).
+    fn wheel_pane(&mut self, id: crate::split::PaneId, by: isize) {
+        let focused = id == self.workspace.viewer.focus;
+        if crate::follow::pane(self) == id {
+            crate::follow::wheel(self, focused);
+        }
+        let step = |top: usize, last: usize| top.saturating_add_signed(by).min(last);
+        if focused {
+            let doc = self.doc_mut();
+            let top = step(doc.top, mv::last_line(&doc.text));
+            doc.set_top(top);
+            doc.wheel_held = Some((doc.selection().primary(), doc.version()));
+            return;
+        }
+        let Some(v) = self.workspace.views.iter().find(|v| v.id == id) else { return };
+        let Some(last) = self.docs.iter().find(|d| d.id == v.doc).map(|d| mv::last_line(&d.text)) else {
+            return;
+        };
+        if let Some(v) = self.workspace.views.iter_mut().find(|v| v.id == id) {
+            (v.top, v.top_rows) = (step(v.top, last), None);
+        }
+    }
+
+    /// The picker closes, nothing chosen (`esc`, `C-c`, a press outside it): a plugin's pick hears so, a theme being
+    /// previewed is put back.
+    pub(crate) fn picker_close(&mut self) {
+        if let Some(token) = self.plugin_pick_token() {
+            self.picker = None;
+            return self.plugin_prompt_done(token, None);
+        }
+        self.keep_last_picker();
+        if let Some(t) = self.theme_before.take() {
+            self.theme = t;
+        }
+    }
+
     fn picker_key(&mut self, key: Key) {
         let Some(p) = self.picker.as_mut() else { return };
         // Anything but typing acts on the list — never on the last query's rows
@@ -3868,16 +3922,7 @@ impl Editor {
             (Code::Esc, _) | (Code::Char('c'), true) | (Code::Char('q'), false)
                 if key.code != Code::Char('q') || q_closes =>
             {
-                // A plugin's pick: it hears nothing was chosen
-                if let Some(token) = self.plugin_pick_token() {
-                    self.picker = None;
-                    return self.plugin_prompt_done(token, None);
-                }
-                self.keep_last_picker();
-                if let Some(t) = self.theme_before.take() {
-                    self.theme = t;
-                }
-                return;
+                return self.picker_close();
             }
             // File tree: Enter on a folder opens/folds it, → opens, ← folds or goes up
             (Code::Enter, _) if p.current().is_some_and(|i| matches!(i.action, Action::Dir(_))) => {
@@ -5201,6 +5246,16 @@ impl Editor {
         p.cycle = Some((base, i));
     }
 
+    /// A press on the `:` menu's candidate `i`: it's filled in, as `tab` cycling to it fills it (the menu stays, the
+    /// next `tab` going on from it).
+    pub(crate) fn cmdline_pick(&mut self, i: usize) {
+        let Some(comp) = self.cmdline_completion().filter(|c| i < c.cands.len()) else { return };
+        let Some(p) = self.prompt.as_mut() else { return };
+        let base = p.cycle.as_ref().map_or_else(|| p.text.clone(), |(b, _)| b.clone());
+        p.text = crate::cmdline::apply(&base, &comp, i);
+        p.cycle = Some((base, i));
+    }
+
     pub(crate) fn handle_prompt_key(&mut self, key: Key) {
         let Some(prompt) = self.prompt.as_mut() else { return };
         match (key.code, key.ctrl || key.alt) {
@@ -5258,7 +5313,7 @@ impl Editor {
 
     /// Closes the prompt without running it (Esc·C-c·Backspace on empty) — reverts the view moved by the
     /// search preview, so the screen follows the cursor again.
-    fn cancel_prompt(&mut self) {
+    pub(crate) fn cancel_prompt(&mut self) {
         if let Some(PromptKind::Plugin(token)) = self.prompt.take().map(|p| p.kind) {
             self.plugin_prompt_done(token, None);
         }
@@ -6887,7 +6942,14 @@ mod tests {
             (Some(util.as_path()), 0),
             "back where Claude is — its next read is still held"
         );
-        assert!(ed.status.as_ref().is_some_and(|(m, _)| m.contains("following Claude again")));
+        // (said where the keys are — the code's: its `C-f` pages down, a key of yours there takes over)
+        assert!(
+            ed.status
+                .as_ref()
+                .is_some_and(|(m, _)| m == "following Claude again — move in the editor to take over"),
+            "{:?}",
+            ed.status
+        );
         std::fs::write(&go, "").unwrap();
         settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().busy());
         assert_eq!(ed.doc().path.as_deref(), Some(lib.as_path()), "and on with it");
@@ -16817,10 +16879,11 @@ mod tests {
         // alt+press = add a cursor
         ed.handle_mouse(Mouse { alt: true, ..at(K::Down, 5, 1) });
         assert_eq!(ed.doc().selection().len(), 2);
-        // Wheel = 3 lines (the cursor moves too)
+        // Wheel = the view 3 lines, nothing else (the mouse rule: the cursors and the selection stay)
+        let sel = ed.doc().selection().clone();
         ed.handle_mouse(at(K::ScrollDown, 7, 3));
         assert_eq!(ed.doc().top, 3);
-        assert_eq!(mv::line_of(&ed.doc().text, ed.doc().selection().primary().head), 3);
+        assert_eq!(ed.doc().selection(), &sel);
     }
 
     /// Every press starts its own drag: a press in the code let go over the side panel (its release isn't the code's),
