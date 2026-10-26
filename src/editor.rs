@@ -3321,13 +3321,13 @@ impl Editor {
         if pid != self.workspace.viewer.focus {
             return;
         }
-        // (a pane under another has its top line in its first row; one at the column's top, on the line over it —
-        // `term::panes`)
-        let title = usize::from(rect.y > self.screen.text_top);
-        if y < rect.y + title {
+        // (its rows of text as the drawer lays them out — a pane under another has its top line in its first row; one at
+        // the column's top, on the line over it: `chrome::pane_text`)
+        let text = crate::chrome::pane_text(rect, self.screen.text_top);
+        if y < text.y {
             return;
         }
-        let row = y - rect.y - title;
+        let row = y - text.y;
         // (the keys to the code, from wherever they were: the chat, a panel, the side panel, the review's rail)
         self.workspace.leave(At::Chat);
         self.plugin_panel_unfocus();

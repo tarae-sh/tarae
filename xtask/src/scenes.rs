@@ -3067,17 +3067,21 @@ fn run_files(scene: &str) -> Vec<(&'static str, String)> {
         ],
         // (#157: as many lines as the followed pane's rows less one, each wide enough to reach under the card)
         "follow-split-s" => vec![("src/wide.rs", wide_rs(18, 112))],
-        "follow-split-v" => vec![("src/wide.rs", wide_rs(36, 64))],
+        "follow-split-v" => vec![("src/wide.rs", wide_rs(36, 70))],
         _ => Vec::new(),
     }
 }
 
-/// `lines` lines of strands, each `width` characters (#157's scenes: unwrapped in their pane).
+/// `lines` lines of strands, each `width` characters, dots filling the string out (#157's scenes: wide enough to reach
+/// under the follow card, narrow enough not to wrap in their pane). A line with a two-digit number is 70 characters
+/// before any dots — a narrower `width` is refused.
 fn wide_rs(lines: usize, width: usize) -> String {
     (1..=lines)
         .map(|i| {
             let line = format!("    strands.push(Strand::new({i:2}, \"strand {i}, tied where it crosses");
-            format!("{line:.<w$}\"));\n", w = width - 4)
+            let w = width.saturating_sub(4);
+            assert!(line.len() <= w, "wide_rs: {width} is narrower than line {i}'s own {}", line.len() + 4);
+            format!("{line:.<w$}\"));\n")
         })
         .collect()
 }
