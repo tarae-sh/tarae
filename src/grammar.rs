@@ -339,9 +339,6 @@ impl crate::editor::Editor {
         let (ask, doing) = match &then {
             Resume::Test(crate::testing::Scope::Nearest) => ("run the test", "running the test"),
             Resume::Test(crate::testing::Scope::File) => ("run this file's tests", "running the tests"),
-            Resume::TestDebug | Resume::TestTarget(_) => ("debug the test", "debugging the test"),
-            Resume::Debug => ("start debugging", "starting the debugger"),
-            Resume::Attach(_) => ("attach the debugger", "attaching"),
         };
         let card = Offer::new(
             format!("{lang} grammar needed"),

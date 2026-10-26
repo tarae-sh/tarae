@@ -24,5 +24,5 @@ as it is (put it in tarae's config). Where tarae needed a key for something Heli
 | `space m` · `space x` · `space T` | Build tasks · tests · terminal | — |
 | `]q` `[q` · `]x` `[x` · `]m` `[m` · `]n` `[n` | The list · failed tests · conflicts · notes | — |
 
-Everything else — `space f`, `space /`, `gd`, `m` mode, `z` view mode, `C-w` windows, `space G` debugging — is where
+Everything else — `space f`, `space /`, `gd`, `m` mode, `z` view mode, `C-w` windows — is where
 Helix has it. The [keymap reference](reference/keymap.md) lists every key.

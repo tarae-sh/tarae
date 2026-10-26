@@ -23,7 +23,7 @@ screen = [
 keep = [".sb"]
 
 [llm]
-# tarae's own tests (attach.rs, dap.rs, plugin …) connect to their own port-0 listeners — opens every local port,
+# tarae's own tests (plugin …) connect to their own port-0 listeners — opens every local port,
 # the risky ones too
 sandbox-localhost = true
 

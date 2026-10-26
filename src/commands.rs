@@ -204,16 +204,7 @@ commands! {
         theme_picker => "Choose a theme (live preview)",
         symbol_picker => "Symbols in this file",
         vsplit => "Split the window side by side",
-        toggle_breakpoint => "Toggle breakpoint",
-        dap_launch => "Start debugging / continue",
-        dap_next => "Step over",
-        dap_step_in => "Step into",
-        dap_step_out => "Step out",
-        dap_pause => "Pause the program",
-        dap_terminate => "Stop debugging",
-        dap_attach => "Attach to a running program…",
         test_nearest => "Run the test at the cursor",
-        test_debug => "Debug the test at the cursor",
         test_file => "Run this file's tests",
         test_last => "Run the last test again",
         test_output => "Test output in a buffer",
@@ -258,10 +249,6 @@ commands! {
         task_picker => "Pick a task to run",
         task_close => "Stop the task, close its panel",
         task_sandbox => "What the sandbox blocked",
-        dap_edit_condition => "Break only when… (condition)",
-        dap_edit_log => "Log here instead of stopping",
-        dap_watch => "Watch an expression",
-        dap_unwatch => "Remove a watch",
         hsplit => "Split the window top / bottom",
         rotate_view => "Next window",
         swap_view_left => "Swap left · dock a group",
@@ -2014,20 +2001,8 @@ fn open_theme_picker(ed: &mut Editor, names: &[String], current: &str) {
     ed.open_picker(p, None);
 }
 
-fn toggle_breakpoint(cx: &mut Context) {
-    cx.editor.toggle_breakpoint();
-}
-
-fn dap_attach(cx: &mut Context) {
-    cx.editor.attach_picker();
-}
-
 fn test_nearest(cx: &mut Context) {
     cx.editor.test_run(crate::testing::Scope::Nearest);
-}
-
-fn test_debug(cx: &mut Context) {
-    cx.editor.test_debug();
 }
 
 fn test_file(cx: &mut Context) {
@@ -2176,81 +2151,6 @@ fn test_output(cx: &mut Context) {
 
 fn test_close(cx: &mut Context) {
     cx.editor.test_close();
-}
-
-fn dap_launch(cx: &mut Context) {
-    cx.editor.dap_launch();
-}
-
-fn dap_next(cx: &mut Context) {
-    cx.editor.dap_step("next");
-}
-
-fn dap_step_in(cx: &mut Context) {
-    cx.editor.dap_step("stepIn");
-}
-
-fn dap_step_out(cx: &mut Context) {
-    cx.editor.dap_step("stepOut");
-}
-
-fn dap_pause(cx: &mut Context) {
-    cx.editor.dap_pause();
-}
-
-fn dap_edit_condition(cx: &mut Context) {
-    let now = cx.editor.breakpoint_field(false).unwrap_or_default();
-    cx.editor.open_prompt(PromptKind::BreakCondition, &now);
-}
-fn dap_edit_log(cx: &mut Context) {
-    let now = cx.editor.breakpoint_field(true).unwrap_or_default();
-    cx.editor.open_prompt(PromptKind::LogMessage, &now);
-}
-/// Watch expression — prefilled with the selection (one line) if any, else the word under the cursor.
-fn dap_watch(cx: &mut Context) {
-    let doc = cx.editor.doc();
-    let r = doc.selection().primary();
-    let picked = doc.text.byte_slice(r.from()..r.to()).to_string();
-    let text = if crate::graphemes::next_boundary(&doc.text, r.from()) < r.to() && !picked.contains('\n') {
-        picked
-    } else {
-        let w = to::word_object(&doc.text, r, to::Kind::Inside, false);
-        doc.text.byte_slice(w.from()..w.to()).to_string()
-    };
-    cx.editor.open_prompt(PromptKind::Watch, text.trim());
-}
-/// Remove a watch expression — directly if there's one, pick from a list if several.
-fn dap_unwatch(cx: &mut Context) {
-    match cx.editor.watches.as_slice() {
-        [] => cx.editor.set_status("no watches"),
-        [one] => {
-            let one = one.clone();
-            cx.editor.remove_watch(&one);
-            cx.editor.note(format!("Stopped watching {one}"));
-        }
-        many => {
-            let mut items: Vec<crate::picker::Item> = many
-                .iter()
-                .map(|w| crate::picker::Item {
-                    label: w.clone(),
-                    action: crate::picker::Action::Typed(format!("unwatch {w}")),
-                    hint: String::new(),
-                    glyph: Some(("◦", "ui.text")),
-                })
-                .collect();
-            items.push(crate::picker::Item {
-                label: "all watches".into(),
-                action: crate::picker::Action::Typed("unwatch".into()),
-                hint: String::new(),
-                glyph: None,
-            });
-            let picker = crate::picker::Picker::of("watches", "remove watch", items, false).without_preview();
-            cx.editor.open_picker(picker, None);
-        }
-    }
-}
-fn dap_terminate(cx: &mut Context) {
-    cx.editor.dap_terminate();
 }
 
 fn vsplit(cx: &mut Context) {

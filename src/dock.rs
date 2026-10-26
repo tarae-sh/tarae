@@ -44,7 +44,7 @@ impl Editor {
             Slot::Task if crate::grouplist::preflight(self).is_some() => Some(GroupKind::Preflight),
             Slot::Task => Some(GroupKind::Task),
             Slot::Procs => Some(GroupKind::Procs),
-            Slot::Debug | Slot::Terminal | Slot::Plugin => None,
+            Slot::Terminal | Slot::Plugin => None,
         }
     }
 

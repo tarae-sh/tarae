@@ -4,12 +4,6 @@
 
 [normal]
 "C-\\" = "terminal_focus"
-# Debugger (IDE convention): F5 start/continue · F9 breakpoint · F10 step over · F11 step in · F12 step out
-F5 = "dap_launch"
-F9 = "toggle_breakpoint"
-F10 = "dap_next"
-F11 = "dap_step_in"
-F12 = "dap_step_out"
 h = "move_char_left"
 j = "move_visual_line_down"
 k = "move_visual_line_up"
@@ -152,22 +146,7 @@ q = "goto_prev_quickfix"
 m = "goto_prev_conflict"
 r = "replay_prev"
 
-[normal.space.G]
-a = "dap_attach"
-b = "toggle_breakpoint"
-l = "dap_launch"
-c = "dap_launch"
-n = "dap_next"
-i = "dap_step_in"
-o = "dap_step_out"
-p = "dap_pause"
-t = "dap_terminate"
-C-c = "dap_edit_condition"
-C-l = "dap_edit_log"
-w = "dap_watch"
-W = "dap_unwatch"
-
-# Tests (x = run): test at cursor · debug · whole file · rerun last · close window
+# Tests (x = run): test at cursor · whole file · rerun last · close window
 # Build tasks (m = run again · p = pick · c = stop/close · s = what the sandbox blocked in Claude's command)
 [normal.space.m]
 m = "task_again"
@@ -195,7 +174,6 @@ w = "woven_view"
 
 [normal.space.x]
 x = "test_nearest"
-d = "test_debug"
 f = "test_file"
 l = "test_last"
 o = "test_output"

@@ -124,7 +124,7 @@ pub enum What {
     /// Grammars (the language + ones used with it). `lang` = human-readable language name ·
     /// `then` = work to resume once downloaded.
     Grammars { lang: String, names: Vec<String>, then: Option<Resume> },
-    /// A language server or debugger a pack has tarae download (`fetch.rs`): `y` fetches `way` into `dir`, then
+    /// A language server a pack has tarae download (`fetch.rs`): `y` fetches `way` into `dir`, then
     /// `then`.
     Fetch { tool: String, way: Box<crate::fetch::Download>, dir: PathBuf, then: crate::install::Then },
     /// A plugin asks for permissions (when it loads): `y` approves the list, kept.
@@ -132,7 +132,7 @@ pub enum What {
     /// A plugin asks to connect somewhere new, or read a file outside its patterns: `y` allows it, kept — and
     /// every request waiting on it (all asking the same) goes on.
     PluginAsk { plugin: String, asks: Vec<crate::plugin::PluginAsk> },
-    /// A language server or debugger — `run` in the task panel (in `cwd`), then `then`.
+    /// A language server — `run` in the task panel (in `cwd`), then `then`.
     Install { tool: String, run: Vec<String>, cwd: PathBuf, then: crate::install::Then },
     /// A command Claude wants to run (`tools.rs`): `y` runs it in the task panel, `n` tells Claude no.
     /// `shown` = files it names that Claude wrote unseen (review at the end), on the card as they were ·
@@ -581,11 +581,6 @@ fn text_hash(o: &Offer) -> u64 {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Resume {
     Test(crate::testing::Scope),
-    TestDebug,
-    /// Debugging this test (the one it was — not the one at the cursor now).
-    TestTarget(Box<crate::testing::Target>),
-    Debug,
-    Attach(crate::attach::AttachTarget),
 }
 
 #[derive(Clone, Debug)]
@@ -641,13 +636,11 @@ impl Offer {
 
     /// Whether it's a kind only a command of the user's asks for (a key, a `:` line, a click — also through
     /// the work it starts) — not Claude's turn, nor nobody just now (a file shown, a plugin loaded, a turn's
-    /// end, a task that ended). A grammar, a server or a debugger is only when it resumes what the user
-    /// started (a launch, an attach). Its card is `yours` only when the input that asked is the last one.
+    /// end, a task that ended). A grammar is only when it resumes what the user started (a test run). Its card
+    /// is `yours` only when the input that asked is the last one.
     pub fn yours_kind(&self) -> bool {
-        use crate::install::Then;
         match &self.what {
             What::Grammars { then, .. } => then.is_some(),
-            What::Fetch { then, .. } | What::Install { then, .. } => matches!(then, Then::Resume(_)),
             // (one `also` raised is Claude's)
             What::Grant { run, .. } => run.claude.is_none(),
             w => matches!(
@@ -1582,10 +1575,6 @@ impl crate::editor::Editor {
     pub fn resume(&mut self, r: Resume) {
         match r {
             Resume::Test(scope) => self.test_run(scope),
-            Resume::TestDebug => self.test_debug(),
-            Resume::TestTarget(t) => self.test_debug_target(*t),
-            Resume::Debug => self.dap_launch(),
-            Resume::Attach(t) => self.attach(t),
         }
     }
 

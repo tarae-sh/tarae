@@ -27,8 +27,8 @@ pub enum Version {
     Newest(Pick),
 }
 
-/// What the file is checked against: a SHA-256 the pack pins (with a pinned version — java-debug's: Maven
-/// Central publishes only SHA-1 for it), or the one published beside it (a template: where).
+/// What the file is checked against: a SHA-256 the pack pins (with a pinned version — for a release whose
+/// site publishes none), or the one published beside it (a template: where).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Sum {
     Pinned(String),
@@ -665,7 +665,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// A release the pack pins — its version, SHA-256 and size (java-debug's): nothing looked up, only the
+    /// A release the pack pins — its version, SHA-256 and size: nothing looked up, only the
     /// file asked for, and what doesn't match all three isn't put in place.
     #[test]
     fn a_pinned_release_is_checked_against_the_pack() {

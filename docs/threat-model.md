@@ -44,7 +44,7 @@ connections may go (§1.5, the proxy's address rule).
           │     tools: tarae's own (in tarae) — none of Claude Code's
           │     starts by itself: git, security (its login), sh (system facts)
           ├─ Claude's runs        (sandboxed: Seatbelt on macOS; keeper + Landlock + seccomp + supervisor on Linux)
-          ├─ tarae's own git, language servers, debug adapters (as you; git's repository commands held)
+          ├─ tarae's own git, language servers (as you; git's repository commands held)
           └─ your terminal, tasks, preflight (as you: yours)
 ```
 
@@ -852,7 +852,7 @@ Not Claude's, but a hostile repository reaches them:
   test: `config::tests::what_starts_a_language_server_waits_for_trust` ·
   `trust::tests::every_setting_that_starts_a_program_waits_for_trust`
 - **`.tarae.toml`'s risky part** (tasks, server commands, `:` bindings, settings that run something or loosen a
-  guard, `[[attach]]` before-commands) waits for a trust card, keyed by real path and hash.
+  guard) waits for a trust card, keyed by real path and hash.
   test: `trust::tests::too_long_to_show_is_never_trusted` · `config::tests::the_users_own_file_is_never_held_back`
 - **Preflight's pack defaults** run the project's tests as you after a card that says so.
 - **Git** — §1.7.

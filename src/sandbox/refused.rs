@@ -1715,7 +1715,7 @@ fn running(out: &impl std::os::fd::AsRawFd) -> bool {
 
 impl Drop for SandboxedStandInGuard {
     fn drop(&mut self) {
-        // On Linux a run is its keeper's to signal, as `dap::term_group` does: the keeper reaps it, so its pid
+        // On Linux a run is its keeper's to signal, as `spawn::term_group` does: the keeper reaps it, so its pid
         // could be another process's by now — and a false (not a keeper's run any more) means it's gone:
         // nothing is signalled. On macOS it's this test's own child, unreaped until `wait` below.
         #[cfg(target_os = "linux")]

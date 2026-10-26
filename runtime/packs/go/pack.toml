@@ -1,4 +1,4 @@
-# Go: gopls; `go test` in the package's folder, dlv to debug. go.mod has a language of its own here.
+# Go: gopls; `go test` in the package's folder. go.mod has a language of its own here.
 
 # What checks and builds: the places Claude's run of one prints go to your list (]q)
 checks = ["go build", "go test", "go vet", "gofmt -l"]
@@ -38,8 +38,6 @@ none-ran = [0]
 # One test ({name}); the file's tests ({names}, joined with |)
 run = ["go", "test", "-v", "-run", "^{name}$", "."]
 run-file = ["go", "test", "-v", "-run", "^({names})$", "."]
-debug = { mode = "test", program = "{cwd}", cwd = "{cwd}", args = ["-test.run", "^{name}$", "-test.v"], outputMode = "remote" }
-debug-file = { mode = "test", program = "{cwd}", cwd = "{cwd}", args = ["-test.run", "^({names})$", "-test.v"], outputMode = "remote" }
 
 # `go test -v`: `=== RUN` starts a test (what t.Error and t.Log say comes indented, `x_test.go:8: why`
 # under it), `--- PASS: TestX (0.01s)` ends it
@@ -57,7 +55,6 @@ match = '^    \s*(?<file>[^\s:]+\.go):(?<line>\d+): (?<message>.*)$'
 [test.kind.bench]
 file = false
 run = ["go", "test", "-v", "-run", "^$", "-bench", "^{name}$", "."]
-debug = { mode = "test", program = "{cwd}", cwd = "{cwd}", args = ["-test.run", "^$", "-test.bench", "^{name}$", "-test.v"], outputMode = "remote" }
 
 [test.kind.single]
 file = false
@@ -97,32 +94,6 @@ what = "Go's language server"
 ways = [
     { run = ["go", "install", "golang.org/x/tools/gopls@latest"], bin = ["${GOBIN}", "${GOPATH}/bin", "~/go/bin"] },
     { run = ["brew", "install", "gopls"] },
-]
-
-# F5: the file's package. outputMode remote: the program's output comes as the debugger's output events
-# (the debug pane), not on dlv's stdout
-[debug]
-debugger = "dlv"
-launch = { mode = "debug", program = "{dir}", cwd = "{cwd}", outputMode = "remote" }
-attach-pid = { mode = "local", processId = "{pid}", cwd = "{cwd}" }
-# `dlv … --headless --listen :2345 --accept-multiclient` speaks DAP: straight to it
-attach-tcp = { mode = "remote", substitutePath = [{ from = "{cwd}", to = "{remote-root}" }] }
-
-# Where `go install` put it too (`[install.dlv]`'s bin)
-[debugger.dlv]
-adapter-id = "go"
-find = ["dlv"]
-run = ["{found}", "dap"]
-listen = ["-l", "127.0.0.1:{port}"]
-# A hint for its terminal, and its first line, building the program — its own, shown dim
-quiet = ["^Type 'dlv help'"]
-own-first = "^Building "
-
-[install.dlv]
-what = "Go's debugger"
-ways = [
-    { run = ["go", "install", "github.com/go-delve/delve/cmd/dlv@latest"], bin = ["${GOBIN}", "${GOPATH}/bin", "~/go/bin"] },
-    { run = ["brew", "install", "delve"] },
 ]
 
 # A code review's grades (`risk.rs`): a change adding or removing a line like these is high-risk — unsafe,

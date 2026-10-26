@@ -173,7 +173,6 @@ fn slot_name(s: Slot) -> &'static str {
         Slot::Test => "tests",
         Slot::Task => "task",
         Slot::Procs => "procs",
-        Slot::Debug => "debug",
         Slot::Plugin => "plugin",
     }
 }
@@ -624,7 +623,6 @@ impl Editor {
             Region::Slot(Slot::Task) => s.task_panel.get().is_some(),
             Region::Slot(Slot::Procs) => s.procs_panel.get().is_some(),
             Region::Slot(Slot::Plugin) => s.plugin_panel.get().is_some(),
-            Region::Slot(Slot::Debug) => s.bottom_h > 0,
             Region::Card(id) => s.offer_card.is_some() && self.offers.first().is_some_and(|o| o.id == id),
             Region::NextCard => true,
             Region::Popup => s.popup.get().is_some(),
@@ -810,7 +808,7 @@ pub struct ProcRow {
     pub pid: u32,
     pub parent: u32,
     pub depth: usize,
-    /// `tarae` `server` `held` `debugger` `helper` `task` `tests` `terminal` `chat` `ask` `plugin`
+    /// `tarae` `server` `held` `helper` `task` `tests` `terminal` `chat` `ask` `plugin`
     /// `other` `session` `queued`.
     pub kind: &'static str,
     pub title: String,
@@ -842,7 +840,6 @@ impl ProcsState {
                     Kind::Tarae => "tarae",
                     Kind::Lsp(_) => "server",
                     Kind::Held(..) => "held",
-                    Kind::Debug => "debugger",
                     Kind::Helper => "helper",
                     Kind::Task => "task",
                     Kind::Test => "tests",

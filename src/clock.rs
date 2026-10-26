@@ -102,7 +102,6 @@ mod tests {
 
     /// Raw clock reads left, per file (paths under `src/`).
     const RAW_CLOCK_READS: &[(&str, usize)] = &[
-        ("attach.rs", 4),
         ("builds.rs", 3),
         ("calls.rs", 1),
         ("cards.rs", 3),
@@ -111,7 +110,6 @@ mod tests {
         ("claudeupdate.rs", 1),
         ("codereview.rs", 1),
         ("containers.rs", 1),
-        ("dap.rs", 4),
         ("dsyms.rs", 1),
         ("editor.rs", 10),
         ("features.rs", 3),

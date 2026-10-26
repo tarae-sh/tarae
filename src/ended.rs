@@ -76,7 +76,7 @@ pub fn run(cmd: &[String], cwd: &Path, ended: &Path, limit: Duration) -> Ran {
     let status = done.recv_timeout(limit).ok();
     if status.is_none() {
         // (its whole group: what it started goes with it; one that ignores the stop is killed)
-        crate::dap::term_group(pid);
+        crate::spawn::term_group(pid);
         if done.recv_timeout(Duration::from_secs(5)).is_err() {
             // SAFETY: only signals the process group it was started in (`spawn::setsid`).
             unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };

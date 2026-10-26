@@ -1,12 +1,12 @@
 //! Starting a run's process (a task, tests — and every git tarae runs, `gitrepo`) in a session of its own
 //! without forking the editor.
 //!
-//! `dap::setsid` is a `pre_exec`, and any `pre_exec` makes std fork the whole editor and exec in the child:
+//! `setsid_fork` is a `pre_exec`, and any `pre_exec` makes std fork the whole editor and exec in the child:
 //! the fork copies the page tables, so it costs with the editor's memory — measured 2.9 ms at 230 MB and
 //! 7.2 ms at 800 MB, on the main loop, every run. std's posix_spawn has no stable setsid (`process_setsid`
 //! is unstable in 1.99) and asks it only on glibc. Here: posix_spawn with `POSIX_SPAWN_SETSID` (macOS
-//! 10.15+, glibc 2.26+, musl 1.1.24+), the same whatever the memory. The process is what `dap::setsid`
-//! made — its own session and process group (pgid = pid, no controlling terminal), so `dap::term_group`
+//! 10.15+, glibc 2.26+, musl 1.1.24+), the same whatever the memory. The process is what `setsid_fork`
+//! makes — its own session and process group (pgid = pid, no controlling terminal), so `term_group`
 //! stops it and everything it started.
 
 use std::ffi::{CString, OsStr, OsString};
@@ -27,7 +27,7 @@ pub struct Spawned {
 /// where that's so (`tier::runs_refuse_userns`), what acts for Claude or a plugin — sandboxed or not — gets the
 /// filter that refuses one (`seccomp::NoUserns`). The user's own tools keep them, as what VS Code starts does under
 /// Ubuntu's own `vscode` profile (the same shape: `flags=(unconfined) { userns, }`) — the terminal's shell,
-/// language servers, git, formatters, the debugger, the user's tasks and tests.
+/// language servers, git, formatters, the user's tasks and tests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Acts {
     User,
@@ -233,7 +233,7 @@ fn start(cmd: &Command, fed: bool, _limit: Limit) -> io::Result<(Spawned, Option
         c.current_dir(dir);
     }
     c.stdin(if fed { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = crate::dap::setsid(&mut c).spawn()?;
+    let mut child = crate::spawn::setsid_fork(&mut c).spawn()?;
     let pipe = |fd: Option<OwnedFd>| fd.map(PipeReader::from);
     let input = child.stdin.take().map(|s| PipeWriter::from(OwnedFd::from(s)));
     let spawned = Spawned {
@@ -347,6 +347,45 @@ pub fn close_on_exec() -> Vec<i32> {
         }
     }
     marked
+}
+
+/// `c` started in a session and process group of its own, with no controlling terminal (`setsid(2)`) — the
+/// process and whatever it starts can't touch tarae's controlling terminal and steal key input (measured: a
+/// program another child launched grabbed it and later keys stopped arriving), and `term_group` stops them all
+/// together. A `pre_exec`: std forks the whole editor for it — what `setsid` above avoids where it can.
+pub(crate) fn setsid_fork(c: &mut Command) -> &mut Command {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: setsid and `restore`'s setrlimit are safe to call between fork and exec.
+    unsafe {
+        c.pre_exec(|| {
+            libc::setsid();
+            // (the descriptor limit tarae started with — `nofile`)
+            crate::nofile::restore();
+            Ok(())
+        });
+    }
+    c
+}
+
+/// SIGTERM to the process group of a process started in a session of its own. A sandboxed run on Linux is
+/// signalled by its session's keeper, its reaper — tarae's kill could reach a group whose pid was reused once it
+/// reaped it.
+pub(crate) fn term_group(pid: u32) {
+    #[cfg(target_os = "linux")]
+    if crate::sandbox::keeper::signal(pid, libc::SIGTERM) {
+        return;
+    }
+    // SAFETY: only sends a signal to the process group we started in a session of its own.
+    unsafe {
+        libc::kill(-(pid as i32), libc::SIGTERM);
+    }
+}
+
+/// Stops a `setsid_fork` process with its whole group and reaps it.
+pub(crate) fn kill_group(c: &mut std::process::Child) {
+    term_group(c.id());
+    let _ = c.kill();
+    let _ = c.wait();
 }
 
 /// Waits for `pid` to end (on a run's own thread — never the main loop). A sandboxed run on Linux is its
@@ -472,7 +511,7 @@ mod tests {
         unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
     }
 
-    /// A run is the leader of a session and a process group of its own (as `dap::setsid` made it), and
+    /// A run is the leader of a session and a process group of its own (as `spawn::setsid_fork` made it), and
     /// `term_group` stops it with what it started.
     #[test]
     fn a_run_is_its_own_session_and_group() {
@@ -490,7 +529,7 @@ mod tests {
         assert_ne!(sid, ours);
         assert_eq!(pgid, pid as libc::pid_t, "its own process group");
         assert_eq!(its_pgid, pid as libc::pid_t, "what it starts is in that group");
-        crate::dap::term_group(pid);
+        crate::spawn::term_group(pid);
         use std::os::unix::process::ExitStatusExt;
         assert_eq!(wait(pid).unwrap().signal(), Some(libc::SIGTERM));
         let end = Instant::now() + crate::test_results::PATIENCE;
@@ -690,11 +729,11 @@ mod tests {
                 .wait_with_output()
                 .unwrap())
             }),
-            // the debugger, plugins — std's fork with `pre_exec`
-            ("dap::setsid", &|| {
+            // plugins — std's fork with `pre_exec`
+            ("spawn::setsid_fork", &|| {
                 let mut c = ls();
                 c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
-                out(crate::dap::setsid(&mut c).output().unwrap())
+                out(crate::spawn::setsid_fork(&mut c).output().unwrap())
             }),
             // runs and tests, tarae's git (fed its stdin: `setsid_fed`)
             ("spawn::setsid", &|| output(setsid(&ls()).unwrap()).0),
@@ -755,7 +794,7 @@ mod tests {
     }
 
     /// A run's start costs the same whatever the editor's memory: posix_spawn, not a fork of the editor —
-    /// measured beside the fork it replaces (`dap::setsid`'s `pre_exec`) with 230 MB touched and 64 parked
+    /// measured beside the fork it replaces (`spawn::setsid_fork`'s `pre_exec`) with 230 MB touched and 64 parked
     /// threads (tarae's size in the design doc's measure). The median of 20 for `cargo perf`; the fork's said.
     /// At opt-level 0 (the test profile, and a full parallel run) it skips itself, saying so past libtest's
     /// capture — its 1 ms budget is for the `perf` profile, run alone.
@@ -791,7 +830,7 @@ mod tests {
             wait(s.pid).unwrap();
             let mut c = Command::new("true");
             let t = Instant::now();
-            let mut child = crate::dap::setsid(&mut c).spawn().unwrap();
+            let mut child = crate::spawn::setsid_fork(&mut c).spawn().unwrap();
             fork.push(t.elapsed());
             child.wait().unwrap();
         }

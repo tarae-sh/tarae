@@ -84,7 +84,7 @@ pub struct EditorConfig {
     pub restart_binary: String,
     /// Ask whether to download when opening a file whose language has no grammar (`grammar.rs` notice).
     pub offer_grammars: bool,
-    /// Offer to install a missing language server or debugger the way its pack says (`install.rs`).
+    /// Offer to install a missing language server the way its pack says (`install.rs`).
     pub offer_installs: bool,
     pub scrollbar: bool,
     /// Where sessions' checkouts go ("" = `$XDG_DATA_HOME/tarae/worktrees`; `worktree.rs`).
@@ -101,8 +101,6 @@ pub struct EditorConfig {
     pub theme: String,
     pub llm: LlmConfig,
     pub lsp: crate::lsp::LspConfig,
-    /// Attach targets (`[[attach]]` — attach.rs). Same name: the later layer (project `.tarae.toml`) wins.
-    pub attach: Vec<crate::attach::AttachTarget>,
     /// Build tasks (`[task.<name>] cmd = "…"`, optional `cwd`) — before the ones the project suggests.
     pub tasks: Vec<crate::task::Task>,
     /// `:preflight`'s steps (`[preflight] steps = [{ name, cmd, note }, …]` — `preflight.rs`). A layer that
@@ -171,7 +169,6 @@ impl Default for EditorConfig {
             theme: "default".into(),
             llm: LlmConfig::default(),
             lsp: crate::lsp::LspConfig { enabled: true, ..Default::default() },
-            attach: Vec::new(),
             tasks: Vec::new(),
             preflight: Vec::new(),
             preflight_local: Vec::new(),
@@ -545,18 +542,6 @@ fn apply_source(
             config.editor.preflight = passed;
         }
     }
-    if let Some(v) = table.get("attach") {
-        for t in crate::attach::parse_config(v, file, warnings) {
-            // `before` is a command run first (a port-forward)
-            if let Some(b) = &t.before
-                && !pass(format!("attach.{}.before", t.name), &Value::from(b.as_str()))
-            {
-                continue;
-            }
-            config.editor.attach.retain(|x| x.name != t.name);
-            config.editor.attach.push(t);
-        }
-    }
     if let Some(cards) = table.get("cards") {
         read_cards(config, cards, file, warnings, yours);
     }
@@ -784,7 +769,7 @@ pub(crate) mod tests {
         let docs = [
             ("README.md", include_str!("../README.md")),
             ("docs/configuration.md", include_str!("../docs/configuration.md")),
-            ("docs/testing-and-debugging.md", include_str!("../docs/testing-and-debugging.md")),
+            ("docs/testing.md", include_str!("../docs/testing.md")),
             ("docs/claude-integration.md", include_str!("../docs/claude-integration.md")),
         ];
         for (file, md) in docs {
@@ -825,14 +810,6 @@ pub(crate) mod tests {
         assert_eq!(c.editor.line_number, LineNumber::Relative);
         assert_eq!(c.editor.cursor_shape, (CursorShape::Block, CursorShape::Bar, CursorShape::Underline));
         assert_eq!(c.editor.llm.model.as_deref(), Some("haiku"));
-    }
-
-    #[test]
-    fn attach_tables_are_not_unknown_settings() {
-        let (c, w) = parse("[editor]\nscrolloff = 3\n\n[[attach]]\nname = \"api\"\nport = 5005\n");
-        assert!(w.is_empty(), "{w:?}");
-        assert_eq!(c.editor.attach.len(), 1);
-        assert_eq!(c.editor.scrolloff, 3);
     }
 
     #[test]

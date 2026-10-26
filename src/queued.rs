@@ -76,7 +76,7 @@ pub struct Ride {
 pub enum What {
     /// Claude's command or tests — or the user's run of Claude's again (`For::User`, `blocked.rs`): through
     /// the sandbox (`tools::guard_then_go`).
-    Guarded { who: For, job: Job, ride: Ride },
+    Guarded { who: For, job: Job, ride: Box<Ride> },
     /// The user's task.
     Task(crate::task::Task),
     /// The user's tests.
@@ -214,12 +214,12 @@ pub fn admit(ed: &mut Editor, who: For, job: Job, mut ride: Ride) {
         }
         user => user,
     };
-    let slot = What::Guarded { who: who.clone(), job: job.clone(), ride: Ride::default() }.slot();
+    let slot = What::Guarded { who: who.clone(), job: job.clone(), ride: Box::default() }.slot();
     // (Claude's waits its turn behind what's in line; the user's goes first)
     let behind =
         matches!(who, For::Claude(_)) && ed.workspace.runs_next.iter().any(|n| n.what.slot() == slot);
     if busy(&ed.workspace, slot) || behind {
-        return push(ed, What::Guarded { who, job, ride });
+        return push(ed, What::Guarded { who, job, ride: Box::new(ride) });
     }
     crate::tools::guard_then_go(ed, who, job, ride);
 }
@@ -360,7 +360,7 @@ fn start(ed: &mut Editor, next: Next) {
         What::Guarded { who, job, mut ride } => {
             ride.queued = Some(next.queued);
             ride.trace = Some(next.trace);
-            crate::tools::guard_then_go(ed, who, job, ride)
+            crate::tools::guard_then_go(ed, who, job, *ride)
         }
         What::Task(t) => ed.task_start_now(t, false, Some(next.trace)),
         What::Tests(t) => ed.test_start_now(t, false, Some(next.trace)),
@@ -774,10 +774,7 @@ mod tests {
             how: crate::testing::How::Pack {
                 lang: "python".into(),
                 argv: vec!["sh".into(), "-c".into(), script.into()],
-                debug: None,
                 lines: crate::test_results::Rules::builtin("python"),
-                build: None,
-                debug_run: None,
                 junit: None,
             },
         }

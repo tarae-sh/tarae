@@ -4,7 +4,7 @@
 //! - **What's there** comes from the OS, not from bookkeeping: tarae's descendants (`tree` — libproc's child
 //!   lists on macOS, `/proc` on Linux), each read for its CPU time, resident memory and (macOS) physical
 //!   footprint. What each one is *for* comes from the editor (`Editor::procs_known` — its language servers,
-//!   the debugger, runs, the terminal, Claude, plugins' programs); one it doesn't know is listed by name,
+//!   runs, the terminal, Claude, plugins' programs); one it doesn't know is listed by name,
 //!   under its parent. What a session started stays its own after its run is closed or replaced
 //!   (`Spawned`, "left running"), and a child of tarae's nothing names goes under the session whose
 //!   checkout it works in (#100). tarae itself is the first row.
@@ -298,7 +298,7 @@ pub fn stop_tree(pid: u32, kill_after: Duration) -> Stopped {
     };
     let root = read.iter().find(|(p, _)| *p == pid).map(|&(_, s)| s);
     if root.is_some() {
-        crate::dap::term_group(pid);
+        crate::spawn::term_group(pid);
     }
     signal(libc::SIGTERM);
     // (the waits whole, whatever goes meanwhile: a stop takes as many steps however fast its processes end —
@@ -794,8 +794,7 @@ pub enum Kind {
     Lsp(ClientId),
     /// A server held after exiting again and again — no process; `r` starts it.
     Held(String, PathBuf),
-    Debug,
-    /// What a debug attach started before it (a port-forward).
+    /// A helper tarae runs beside what it serves: a sandbox's watch or keeper, `workspace.ended`'s command.
     Helper,
     Task,
     Test,
@@ -822,7 +821,7 @@ impl Kind {
             Kind::Tarae => 0,
             Kind::Lsp(_) | Kind::Held(..) => 1,
             Kind::Chat | Kind::Ask | Kind::Reviewer => 2,
-            Kind::Debug | Kind::Helper => 3,
+            Kind::Helper => 3,
             Kind::Task | Kind::Queued(_) => 4,
             Kind::Test => 5,
             Kind::Terminal => 6,
@@ -834,7 +833,7 @@ impl Kind {
 
     /// What the user's own programs run under: busy or big there is their business, not a fault.
     fn users(&self) -> bool {
-        matches!(self, Kind::Task | Kind::Test | Kind::Terminal | Kind::Debug)
+        matches!(self, Kind::Task | Kind::Test | Kind::Terminal)
     }
 
     /// Whether `r` means something for it.
@@ -1711,11 +1710,6 @@ impl Editor {
                 }
             }
         }
-        if let Some(d) = &self.dap {
-            let (adapter, helper) = d.pids();
-            add(adapter, Kind::Debug, "debugger", d.program.clone(), None);
-            add(helper, Kind::Helper, "debug helper", d.program.clone(), None);
-        }
         for l in std::iter::once(&self.workspace).chain(&self.workspaces) {
             let session = sessions.then_some(l.id);
             if let Some(r) = &l.task_run {
@@ -2085,12 +2079,11 @@ impl Editor {
                 w.finish();
                 gone(self, "the sandbox watch", None);
             }
-            Kind::Debug | Kind::Helper => {
-                self.dap_terminate();
-                self.procs_wake(Wake::Now);
+            Kind::Helper => {
+                self.set_status(format!("{} is tarae's own — it stops with what it serves", r.title))
             }
             Kind::Task | Kind::Test | Kind::Plugin(..) => {
-                crate::dap::term_group(r.pid);
+                crate::spawn::term_group(r.pid);
                 gone(self, &r.title, None);
             }
             Kind::Terminal => {
@@ -3615,13 +3608,13 @@ pub(crate) mod tests {
         let me = p(1, 0, 1, false);
         // tarae's own: a crashed server (its session), a crashed setsid one; a run's orphan; a terminal's
         // child still under its shell
-        let (server, adapter, orphan) = (p(2, 1, 1, true), p(3, 1, 3, true), p(4, 1, 9, true));
+        let (server, apart, orphan) = (p(2, 1, 1, true), p(3, 1, 3, true), p(4, 1, 9, true));
         let (shell, under) = (p(5, 1, 5, false), p(6, 5, 1, false));
-        let tree = [&me, &server, &adapter, &orphan, &shell, &under];
+        let tree = [&me, &server, &apart, &orphan, &shell, &under];
         assert_eq!(r.adopted(&tree, 1), [(4, 1_000)]);
         // (its parent gone, the one under it is tarae's — in tarae's session, but seen under another before)
         let adopted = p(6, 1, 1, true);
-        let tree = [&me, &server, &adapter, &orphan, &adopted];
+        let tree = [&me, &server, &apart, &orphan, &adopted];
         assert_eq!(r.adopted(&tree, 1), [(4, 1_000), (6, 1_000)]);
         assert_eq!(r.adopted(&tree, 1), [(4, 1_000), (6, 1_000)], "still known at the look after");
         // A new reaper never saw it under another parent: like tarae's own, left

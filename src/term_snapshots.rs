@@ -4221,8 +4221,8 @@ fn snapshot_edit_review_doc_comments() {
     s.frames_both("edit_review_doc_comments");
 }
 
-/// Claude's edit under review shows the file as the editor does (#9): a breakpoint in the sign column, a
-/// diagnostic at its line's end, indent guides on its document's rows — and a proposed line's tab at the
+/// Claude's edit under review shows the file as the editor does (#9): a diagnostic in the sign column and at
+/// its line's end, indent guides on its document's rows — and a proposed line's tab at the
 /// document's tab stops (#5: it was four spaces wherever it stood). With `TARAE_FRAMES_DIR` set, the frame in
 /// both themes (`.sb/shots-step6.sh` draws them).
 #[test]
@@ -4231,8 +4231,6 @@ fn the_edit_review_shows_the_file_as_the_editor_does() {
     let text = "/// Runs it, **once**: `go` then `done`.\nfn main() {\n    if ready {\n        go();\n    }\n    let a = 1;\n    \
                 done();\n}\n";
     let id = s.file("src/demo.rs", text);
-    let path = s.root.join("src/demo.rs");
-    s.ed.breakpoints.entry(path).or_default().insert(2, Default::default());
     let rope = Rope::from_str(text);
     let at = |line: usize| rope.line_to_byte(line);
     s.ed.doc_mut().lsp.diagnostics.push(crate::lsp::Diagnostic {
@@ -4257,8 +4255,8 @@ fn the_edit_review_shows_the_file_as_the_editor_does() {
     let shown = screen_text(&mut s);
     let row = |has: &str| shown.lines().find(|l| l.contains(has)).unwrap_or_default().to_string();
     let mut missing = Vec::new();
-    if !row("if ready").starts_with("● 3") {
-        missing.push("the breakpoint's ● before line 3's number");
+    if !row("done();").starts_with("▎ 7") {
+        missing.push("the diagnostic's ▎ before line 7's number");
     }
     if !row("done();").contains("▲ never read") {
         missing.push("the diagnostic at its line's end");
@@ -7484,12 +7482,11 @@ fn the_chats_thumb_shows_only_while_its_transcript_overflows() {
 }
 
 /// A slot's header is the line its leaves' lines start from: where one goes down, a `┬` — the
-/// details (the debugger's program, state and reason; the tests' summary) end short of it and the keys start past
+/// details (the tests' summary) end short of it and the keys start past
 /// it, never a `│` starting under a letter. They fold whole pieces, the time, then the counts (together: never `● 1`
 /// without its `▲ 1`); only words are cut, never a number half shown (no digit before a `…`).
 #[test]
 fn a_slot_headers_lines_down_start_at_a_join() {
-    use crate::dap::{Dap, State};
     use crate::test_results::{Case, Status};
     let h = 24u16;
     let header = |s: &mut Shot, w: u16, what: &str| -> String {
@@ -7521,15 +7518,6 @@ fn a_slot_headers_lines_down_start_at_a_join() {
     for w in [140u16].into_iter().chain((64..=104).rev()) {
         let mut s = Shot::new(w, h);
         s.file("src/demo.rs", DEMO_RS);
-        let reason = "breakpoint hit in a function with a long name".to_string();
-        s.ed.dap =
-            Some(Dap::placeholder(State::Stopped { reason }, "a-program-with-a-rather-long-name".into()));
-        let line = header(&mut s, w, "the debugger");
-        assert!(
-            line.contains("debug") && line.contains("F5 continue"),
-            "its name and first key stay: {line}"
-        );
-        s.ed.dap = None;
         let case = |name: &str, status| Case {
             name: name.into(),
             status,

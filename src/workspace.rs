@@ -117,9 +117,9 @@ pub struct Workspace {
     /// it was in place.
     pub terminal_starting: bool,
     pub terminal_early: (Vec<u8>, Option<i32>),
-    /// Test pane (running or last result) · what ran last (was it debug) — testing.rs.
+    /// Test pane (running or last result) · what ran last — testing.rs.
     pub test_run: Option<crate::testing::TestRun>,
-    pub test_last: Option<(crate::testing::Target, bool)>,
+    pub test_last: Option<crate::testing::Target>,
     /// The build task running or last run (task.rs) · the last one started (`space m m`).
     pub task_run: Option<crate::task::Run>,
     pub task_last: Option<crate::task::Task>,

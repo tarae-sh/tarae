@@ -15,8 +15,8 @@ the [keymap reference](reference/keymap.md).
 ## Where it lives
 
 - **User config**: `~/.config/tarae/config.toml` (or `$XDG_CONFIG_HOME/tarae/config.toml`). `:config-open` opens it
-- **Project config**: `.tarae.toml`, found by searching upward from the current directory — handy for per-project
-  debugger [attach targets](testing-and-debugging.md#attaching-to-a-running-program)
+- **Project config**: `.tarae.toml`, found by searching upward from the current directory — handy for a project's
+  own [tasks](#build-tasks) and preflight steps
 - **Your settings for one project**: `.tarae.local.toml` beside its `.tarae.toml` (or in the folder you start
   tarae in). It's yours, so nothing in it waits for trust — which is why it's read only while git says it's
   **untracked and ignored** (add it to `.gitignore`, or `.git/info/exclude` to keep that to yourself). A committed
@@ -31,7 +31,7 @@ the [keymap reference](reference/keymap.md).
   `llm.chat-settings`, `llm.sandbox*`, `editor.restart-build` and `restart-binary`, `workspace.worktrees` (where checkouts are
   written), `workspace.ended` (run at each session's end), `workspace.keep` (files moved into the main checkout at
   each session's end), `[task.*]`, `[preflight]` steps, a `[lsp.*]`
-  `command` or `args`, an `[[attach]]` `before`, and keys bound to `:` commands. A card shows each one as written: `y` trusts the
+  `command` or `args`, and keys bound to `:` commands. A card shows each one as written: `y` trusts the
   project, `n` ignores that part. The rest of the file applies either way. Each answer is kept for that version
   of those values, for the whole repository: every checkout of it (each session) shares every version you
   answered, so going back to one you trusted doesn't ask, and a version never seen does. `:project-trust`
@@ -174,7 +174,7 @@ one: `python + ruff`.
 ## Build tasks
 
 Tasks the project suggests (`cargo check`, `npm run lint`, `make`, …) are there without setup — they come from the
-language packs ([Tasks from packs](testing-and-debugging.md#tasks-from-packs)). Add your own — they come first in
+language packs ([Tasks from packs](testing.md#tasks-from-packs)). Add your own — they come first in
 `space m p`:
 
 ```toml

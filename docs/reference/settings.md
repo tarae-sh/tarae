@@ -28,7 +28,7 @@ The name is also the `:set` path: `:set editor.scrolloff 8` changes it until you
 | `editor.restart-build` | string | `""` | For working on tarae itself: a command :restart runs first, e.g. "cargo build --release" ("" = none; :restart! skips it) |
 | `editor.restart-binary` | string | `""` | The tarae :restart runs, from the project root if relative ("" = the same path as the one running now) |
 | `editor.offer-grammars` | bool | `true` | When a file's language has no syntax grammar yet, offer to download and build it (y/n) |
-| `editor.offer-installs` | bool | `true` | When a language server or debugger is missing, offer to install it the way its pack says (y/n/N) |
+| `editor.offer-installs` | bool | `true` | When a language server is missing, offer to install it the way its pack says (y/n/N) |
 | `editor.render-doc-comments` | bool | `true` | Show doc comments (///, //!, /** */) rendered as Markdown; raw when the cursor enters the block |
 | `editor.restore-files` | bool | `false` | Reopen the files you had open in this folder (with cursor positions) when started without files |
 | `editor.inline-diagnostics` | bool | `true` | Show diagnostic messages at the end of their line and tint error/warning lines |
@@ -126,5 +126,4 @@ These are read alongside the settings above; see the [configuration guide](../co
 | `[keys.terminal]` | Keys taken from the terminal's program, on top of the defaults (`C-\` → its view mode); a key bound to `to_program` goes back to the program |
 | `[lsp.<name>]` | A language server: `command`, `args`, `except` (features it's not asked for) |
 | `[lang.<language>]` | Per language: `lsp = ["name", …]` — which server to try, in order; `also = […]` — servers that run beside it |
-| `[[attach]]` | A named debugger attach target: `name`, `lang`, `host`, `port` or `pid`, `before`, `remote-root`, `program` |
 | `[[cards.warn]]` | What a card for one of Claude's commands warns of, besides the language packs' — only adds (an id a pack or your config has is left out): `id`, `run`, `options`, `option-values`, `missing`, `unless-part`, `unless-all`, `same`, `unless-in`, `fact`, `say`, `asks`, `start` — see [Claude integration](../claude-integration.md) |

@@ -145,7 +145,6 @@ impl Keys {
             Keys::Slot(Slot::Test) => "TESTS",
             Keys::Slot(Slot::Task) => "TASK",
             Keys::Slot(Slot::Procs) => "PROCS",
-            Keys::Slot(Slot::Debug) => "DEBUG",
             Keys::Slot(Slot::Plugin) => "PANEL",
             Keys::Card => "CARD",
             Keys::Point => "POINT",
@@ -295,14 +294,13 @@ pub struct Tab {
 }
 
 /// The tabs' order — fixed, so a tab never moves when another comes or goes.
-const ORDER: [Slot; 6] = [Slot::Terminal, Slot::Task, Slot::Test, Slot::Debug, Slot::Plugin, Slot::Procs];
+const ORDER: [Slot; 5] = [Slot::Terminal, Slot::Task, Slot::Test, Slot::Plugin, Slot::Procs];
 
 impl Editor {
     /// Whether `s` has something to show in the slot (a hidden terminal is a tab, not shown).
     pub(crate) fn slot_there(&self, s: Slot, shown: bool) -> bool {
         match s {
             Slot::Procs => self.procs_up(),
-            Slot::Debug => self.dap.is_some(),
             Slot::Terminal => self.workspace.terminal.as_ref().is_some_and(|t| t.visible || !shown),
             Slot::Plugin => self.plugins.as_ref().is_some_and(|p| p.panel.is_some()),
             Slot::Test => self.workspace.test_run.is_some(),
@@ -325,7 +323,6 @@ impl Editor {
 
     /// Every panel there is, docked or in the slot, in `ORDER`, with how it's doing.
     pub fn panel_tabs(&self) -> Vec<Tab> {
-        use crate::dap::State as D;
         ORDER
             .iter()
             .filter(|&&s| self.slot_there(s, false))
@@ -360,14 +357,6 @@ impl Editor {
                             R::NoTests => Badge::Warning,
                         };
                         ("tests".to_string(), badge)
-                    }
-                    Slot::Debug => {
-                        let badge = match self.dap.as_ref().map(|d| &d.state) {
-                            Some(D::Building | D::Starting | D::Running) => Badge::Running,
-                            Some(D::Stopped { .. }) => Badge::Warning,
-                            _ => Badge::None,
-                        };
-                        ("debug".to_string(), badge)
                     }
                     Slot::Plugin => {
                         let name =

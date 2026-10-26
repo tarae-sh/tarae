@@ -611,7 +611,7 @@ impl Drop for Run {
         if let Some(pid) = self.pid.take()
             && self.state == State::Running
         {
-            crate::dap::term_group(pid);
+            crate::spawn::term_group(pid);
             self.trace.end("stopped before its end");
             // (what it started in a container engine goes with it — `containers.rs`)
             if let Some(c) = self.containers.take() {

@@ -266,7 +266,6 @@ impl Default for Keymaps {
 pub fn group_name(path: &str) -> Option<&'static str> {
     Some(match path {
         "space g" => "Git",
-        "space G" => "Debug",
         "space w" | "C-w" => "Window",
         "space x" => "Tests",
         "space m" => "Tasks",

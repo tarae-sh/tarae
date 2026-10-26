@@ -12,7 +12,7 @@
 //! 1.19: a program using `select()` meets a descriptor numbered 1024 or more where under the old limit it got
 //! `EMFILE` — glibc's `FD_SET` writes past the set without `_FORTIFY_SOURCE`; macOS's skips it and `select`
 //! refuses it, but a program built with an SDK older than macOS 11 writes past it too (`tests`). A child made by
-//! a fork (`pre_exec`: the terminal's shell, debug adapters, plugins' programs) or born of the keeper (whose runs
+//! a fork (`pre_exec`: the terminal's shell, plugins' programs) or born of the keeper (whose runs
 //! inherit its limit) sets it itself (`restore`). `posix_spawn` has no attribute for it, so a child it makes that
 //! runs the project's code or the user's commands — tasks, tests, Claude's runs, `:sh`, shell pipes, language
 //! servers, a debug build — is started through tarae's own binary, which sets it and execs the program (`shim`,

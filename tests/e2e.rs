@@ -2,7 +2,7 @@
 //!
 //! Each test gets its own sandbox (HOME, XDG_*, CLAUDE_CONFIG_DIR all point into a fresh temp dir, the
 //! environment is cleared otherwise), starts tarae on a pty, types keys, and reads the screen back through a
-//! `vt100` parser. Nothing here needs the network, claude, a language server or a debugger.
+//! `vt100` parser. Nothing here needs the network, claude or a language server.
 //!
 //! Rules that keep these deterministic:
 //! - Never sleep and hope — every key that matters is followed by `wait_for` on its visible effect.

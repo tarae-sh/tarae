@@ -1,6 +1,6 @@
 //! Project trust. A project's `.tarae.toml` is the project's file — often a cloned repository's, written by
 //! someone else. What in it runs commands or loosens how Claude's commands are guarded (`RISKY` settings,
-//! `[task.<name>]`, a `[lsp.<name>]` command or args, an `[[attach]]` `before`, a key bound to a `:` command)
+//! `[task.<name>]`, a `[lsp.<name>]` command or args, a key bound to a `:` command)
 //! is held back until the user trusts the project on a card showing each of them as written; the rest of the
 //! file applies as is. Each answer is kept (`$state/trust.json`) for the version of the file it was about (a
 //! SHA-256 of the held-back part — `hash`), so a version never answered asks — and for the repository: its checkouts

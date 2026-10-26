@@ -10,7 +10,7 @@
 //! keeper or makes one (`born`: `clone3(CLONE_PIDFD | namespaces)`, tarae writing its id maps, raw calls until
 //! the exec), `Keeper::run` asks it for a run and waits for `Started` (the main loop's wait: at most
 //! `STARTED_WITHIN`, as it waited for `posix_spawn` before), and the two places every run is waited on and
-//! stopped — `spawn::wait` and `dap::term_group` — ask here first (`wait`, `signal`): a keeper's run isn't
+//! stopped — `spawn::wait` and `spawn::term_group` — ask here first (`wait`, `signal`): a keeper's run isn't
 //! tarae's child, and only its reaper can signal it without a reused pid's race. Its channel is `channel.rs`'s
 //! protocol; a thread reads it, another waits on its pidfd. A run's pid is tarae's number: in a PID namespace
 //! the keeper says its own, so tarae reads its own from the run's pidfd while the run waits for it (`held`).
@@ -315,7 +315,7 @@ pub fn pidfd(pid: u32) -> Option<Arc<OwnedFd>> {
     }
 }
 
-/// `dap::term_group` for a keeper's run: `sig` to its process group, by its keeper — only while it hasn't
+/// `spawn::term_group` for a keeper's run: `sig` to its process group, by its keeper — only while it hasn't
 /// reaped it (after, nothing: the group may be another's). False: `pid` isn't a keeper's run.
 pub fn signal(pid: u32, sig: i32) -> bool {
     let Some((k, id)) = run_of(pid) else { return false };
@@ -2710,7 +2710,7 @@ mod tests {
     }
 
     /// How a run ended comes from its keeper (`spawn::wait`: it isn't tarae's child), and stopping it
-    /// (`dap::term_group`) is the keeper's signal to its group: the run and a child of its own both go, the run
+    /// (`spawn::term_group`) is the keeper's signal to its group: the run and a child of its own both go, the run
     /// ended by that TERM.
     #[test]
     fn exit_status_and_cancel_go_through_the_keeper() {
@@ -2728,7 +2728,7 @@ mod tests {
         let pid = s.spawned.pid;
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || tx.send(crate::spawn::wait(pid)));
-        crate::dap::term_group(pid);
+        crate::spawn::term_group(pid);
         let status = rx.recv_timeout(crate::test_results::PATIENCE).expect("it ended once stopped").unwrap();
         assert_eq!(status.signal(), Some(libc::SIGTERM), "ended by the stop");
         let end = Instant::now() + crate::test_results::PATIENCE;
@@ -2968,7 +2968,7 @@ mod tests {
         assert!(!old.is_gone(), "kept for its run going");
         let refused = old.start(&cmd, &crate::landlock::thread_name(), rules.fd(), RunNet::Plain).err();
         assert!(refused.is_some_and(|e| e.to_string().contains("replaced")), "no run more");
-        crate::dap::term_group(going.spawned.pid);
+        crate::spawn::term_group(going.spawned.pid);
         crate::spawn::wait(going.spawned.pid).unwrap();
         assert!(gone_within(&old, END_WITHIN), "ended after its last run");
         let third = ready(&root, Some("key 3"), ns()).unwrap();
@@ -8478,7 +8478,7 @@ mod tests {
             true => assert_ne!(inner, pid, "inside, another number"),
             false => assert_eq!(inner, pid),
         }
-        crate::dap::term_group(pid);
+        crate::spawn::term_group(pid);
         crate::spawn::wait(pid).unwrap();
         k.end();
     }

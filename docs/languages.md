@@ -4,35 +4,27 @@ Syntax highlighting covers 54 languages ([how grammars work](features.md#syntax-
 colors comes from external tools that tarae finds on your `PATH` — install the ones for the languages you use, or
 let tarae [offer to](#when-one-is-missing).
 
-| Language | Language server (first one found) | Tests | Debugger |
-|---|---|---|---|
-| Rust | `rust-analyzer` | `cargo test` | `lldb-dap` (builds with `cargo build` first) |
-| C / C++ | `clangd` | — | `lldb-dap` (attach to the program your build made) |
-| Go | `gopls` | `go test` | `dlv` |
-| Python | `basedpyright`, `pyright`, `pylsp` — and `ruff` beside it | `pytest` | `debugpy` |
-| Java | `jdtls` (Java 21+) | Gradle (`./gradlew` or `gradle`) · Maven (`./mvnw` or `mvn`) | java-debug inside jdtls (offered for download) |
-| TypeScript / JavaScript (incl. TSX, JSX) | `typescript-language-server` | — | — |
-| Bash | `bash-language-server` | — | — |
-| Lua | `lua-language-server` | — | — |
-| Zig | `zls` | — | — |
-| Nix | `nil` | — | — |
-| TOML | `taplo` | — | — |
-| YAML | `yaml-language-server` | — | — |
-| Helm templates | `helm_ls` | — | — |
-| Markdown | `marksman` | — | — |
+| Language | Language server (first one found) | Tests |
+|---|---|---|
+| Rust | `rust-analyzer` | `cargo test` |
+| C / C++ | `clangd` | — |
+| Go | `gopls` | `go test` |
+| Python | `basedpyright`, `pyright`, `pylsp` — and `ruff` beside it | `pytest` |
+| Java | `jdtls` (Java 21+) | Gradle (`./gradlew` or `gradle`) · Maven (`./mvnw` or `mvn`) |
+| TypeScript / JavaScript (incl. TSX, JSX) | `typescript-language-server` | — |
+| Bash | `bash-language-server` | — |
+| Lua | `lua-language-server` | — |
+| Zig | `zls` | — |
+| Nix | `nil` | — |
+| TOML | `taplo` | — |
+| YAML | `yaml-language-server` | — |
+| Helm templates | `helm_ls` | — |
+| Markdown | `marksman` | — |
 
 Any other server can be added, or the choice changed, in your config — see
 [Language servers](configuration.md#language-servers).
 
-Notes:
-
-- **lldb-dap** is found as `lldb-dap`, `lldb-vscode`, or a versioned name like `lldb-dap-18` (as Linux packages install
-  it); on macOS, through `xcrun` as well. macOS needs a one-time `sudo DevToolsSecurity -enable`
-- **dlv** must be newer than your Go (`go install github.com/go-delve/delve/cmd/dlv@latest`)
-- **debugpy** and **pytest** run with the project's `.venv` Python, or `$VIRTUAL_ENV`, when there is one
-- **java-debug** is a jdtls extension that jdtls doesn't ship. `F5` offers to download it from Maven Central (with
-  `curl` or `wget`) — the release the Java pack pins, checked against the SHA-256 the pack pins (Maven Central
-  publishes only SHA-1 for it); copies installed by VS Code, Cursor or Neovim's mason are found too
+**pytest** runs with the project's `.venv` Python, or `$VIRTUAL_ENV`, when there is one.
 
 ## Adding a language
 
@@ -99,7 +91,7 @@ virtual = { scheme = "gleam://", fetch = "gleam/source", language = "gleam", tit
 client-commands = { "gleam.applyEdit" = "apply-edit" }
 
 [server.gleam.init]                  # its initializationOptions, as TOML
-plugins = ["{installed:gleam-plugin}"]   # where a tool the packs install is; left out of a list when it isn't
+checkOnSave = true                   # what the server reads as it starts
 ```
 
 - **Pinned.** The built-in packs' languages are pinned in
@@ -110,13 +102,12 @@ plugins = ["{installed:gleam-plugin}"]   # where a tool the packs install is; le
   `bundle` (which grammars tarae's build embeds) are tarae's own: in a pack of yours they're said and left out.
 - **Config files** a toolchain reads as soon as they're saved (`Cargo.toml`, `package.json`) are listed in its pack's
   `config-files = { toml = [...], json = [...] }`: a save of one that doesn't parse stays in the buffer.
-- What else a pack of yours can change, and what it can't: [Tests and debugging](testing-and-debugging.md#what-a-pack-of-yours-can-change).
+- What else a pack of yours can change, and what it can't: [Tests](testing.md#what-a-pack-of-yours-can-change).
 
 ## When one is missing
 
-When a file opens and its language server isn't found (once per language until you quit), or debugging finds no debugger,
-tarae offers to install it — a card with the command it would run, from the language's
-[pack](testing-and-debugging.md#language-packs):
+When a file opens and its language server isn't found (once per language until you quit), tarae offers to install it — a card with the command it would run, from the language's
+[pack](testing.md#language-packs):
 
 ```text
  ▎ Go's language server
@@ -127,13 +118,11 @@ tarae offers to install it — a card with the command it would run, from the la
 ```
 
 - **`y`** runs it in the task panel, output in sight; once it's in, the servers start for the open files that had
-  none, or debugging starts again as it was (the file, the test, the attach). While it runs, no other task starts;
-  `space m c` stops it. **`n`**: not now (a server is asked about again the next time tarae starts, a debugger the next time you
-  debug). **`N`** never offers that tool again (the list is `~/.local/state/tarae/never-install`).
+  none. While it runs, no other task starts; `space m c` stops it. **`n`**: not now (asked about again the next time
+  tarae starts). **`N`** never offers that tool again (the list is `~/.local/state/tarae/never-install`).
 - **Only with the language's own tools, or Homebrew:** `go install`, `rustup`, `npm`, `uv`/`pipx`, `cargo`, `brew` —
   the first way the language's pack lists whose program is on your `PATH`. Where none fits (Linux without Homebrew,
-  say), or it would need more — clangd and lldb-dap (from Xcode or LLVM), debugpy (into your project's virtualenv) —
-  a toast says where to get it (and the log), or the debugger's error does. Nix's `nil` too: a Nix setup adds it in
+  say), or it would need more — clangd (from Xcode or LLVM) — a toast says where to get it (and the log). Nix's `nil` too: a Nix setup adds it in
   its own config.
 - **Downloaded by tarae:** a pack can say to fetch a release itself ([Downloads](#downloads)) — the Java pack does
   for jdtls where there's no Homebrew: Eclipse's newest milestone release, checked against the SHA-256 published
@@ -147,7 +136,7 @@ tarae offers to install it — a card with the command it would run, from the la
 
 ### Downloads
 
-A way in a pack's `[install.<tool>]` ([Installing from packs](testing-and-debugging.md#installing-from-packs)) can be
+A way in a pack's `[install.<tool>]` ([Installing from packs](testing.md#installing-from-packs)) can be
 a download instead of a command: tarae finds the newest release, fetches it with `curl` (or `wget`), checks it
 against the SHA-256 its site publishes, unpacks it into `~/.local/share/tarae/<tool>`, and finds the program there
 from then on. A release without a published checksum isn't downloaded. The Java pack's jdtls:
@@ -176,21 +165,16 @@ runtime = { program = "java", home = "JAVA_HOME", ask = ["-version"], version = 
   line naming the file.
 - **Pinned.** Where a site publishes no SHA-256, the pack pins the release instead, as grammars are pinned to a
   commit: `version = "0.53.1"` (nothing looked up), `sha256 = "<64 hex digits>"` (the hash itself — only with a
-  pinned version), `size = <bytes>` if you like. A newer release is a change to the pack. The Java pack's
-  java-debug, from Maven Central (which publishes only SHA-1 for it):
+  pinned version), `size = <bytes>` if you like. A newer release is a change to the pack:
 
   ```toml
-  [install.java-debug]
-  what = "java-debug, the debugger jdtls runs"
-  look-for = "com.microsoft.java.debug.plugin-*.jar"   # not a program: this file, the newest by its version
-  look-in = ["~/.vscode/extensions/vscjava.vscode-java-debug-*/server"]   # also where other editors put it
-  [[install.java-debug.ways]]
-  download = "https://repo1.maven.org/maven2/com/microsoft/java/com.microsoft.java.debug.plugin/{version}/{file}"
-  version = "0.53.1"
-  file = "com.microsoft.java.debug.plugin-{version}.jar"
-  sha256 = "4f4778d452a6a0665536f43ce4e32403a24be6593336b80dc85a322912859e24"
+  [[install.some-server.ways]]
+  download = "https://example.org/some-server/{version}/{file}"
+  version = "1.4.2"
+  file = "some-server-{version}"
+  sha256 = "<64 hex digits>"
   size = 2960556
-  unpack = "file"
+  unpack = "file"                 # the file is the program itself
   program = "{file}"
   ```
 - **`needs`**: programs it needs on `PATH`. With `tar.gz`, `tar` too; always `curl` or `wget`. The way is taken

@@ -1,15 +1,13 @@
-//! Installing what a language needs — a language server, a debugger — when it isn't there. The packs say
-//! how (`[install.<tool>]`, `packs.rs`); tarae only offers: a card with the command it would run, `y` runs it
-//! in the task panel (its output in sight), `n` not now, `N` never for that tool (kept in the state folder).
-//! Once installed, the work goes on: language servers attach to the open files that have none, debugging
-//! starts again as it was (the file, the test, the attach).
+//! Installing what a language needs — a language server — when it isn't there. The packs say how
+//! (`[install.<tool>]`, `packs.rs`); tarae only offers: a card with the command it would run, `y` runs it in the
+//! task panel (its output in sight), `n` not now, `N` never for that tool (kept in the state folder). Once
+//! installed, the work goes on: language servers attach to the open files that have none.
 //!
 //! Asked once per language until quit when a file opens and no server is found (quiet otherwise: the log
-//! says, the status line's dot is faint) — or when a rustup proxy says its component isn't installed — and
-//! each time debugging finds no debugger. A server none of whose ways fits here (or that the packs only have
-//! a `hint` for) isn't offered: how one gets it is said on screen, where an offer would be, and logged (a
-//! debugger's error says what to install). A pack's `download` way is fetched by tarae itself (`fetch.rs`):
-//! what it runs on is looked at first, then the card.
+//! says, the status line's dot is faint) — or when a rustup proxy says its component isn't installed. A server
+//! none of whose ways fits here (or that the packs only have a `hint` for) isn't offered: how one gets it is
+//! said on screen, where an offer would be, and logged. A pack's `download` way is fetched by tarae itself
+//! (`fetch.rs`): what it runs on is looked at first, then the card.
 //!
 //! An install only runs from a card in sight, and while it runs no other task starts (that would stop it
 //! half-way); stopping it (`space m c`) says so on its card.
@@ -18,7 +16,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::editor::Editor;
-use crate::offer::{Offer, Resume, What};
+use crate::offer::{Offer, What};
 use crate::packs::Install;
 
 /// What goes on once a tool is installed.
@@ -27,8 +25,6 @@ pub enum Then {
     /// A language server: attach servers to the open files that have none (one server can be several
     /// languages': TypeScript's and JavaScript's).
     Lsp,
-    /// A debugger: start what stopped for it.
-    Resume(Resume),
     /// A plugin asked for it (`offer-install`): it hears (`installed`, with its id).
     Plugin { plugin: String, id: u64 },
 }
@@ -109,19 +105,6 @@ impl Editor {
         for id in ids {
             self.attach_lsp(id);
         }
-    }
-
-    /// No debugger (`tool`): offer it, to go on with what stopped. false if there's nothing to offer — then
-    /// the caller says what's missing.
-    pub(crate) fn offer_install_debugger(&mut self, tool: &str) -> bool {
-        let Some(found) = crate::packs::install(tool) else { return false };
-        if !self.offerable(&found) {
-            return false;
-        }
-        // What stopped: launching the file, a test's debugging, an attach
-        let then = self.dap_resume.clone().unwrap_or(Resume::Debug);
-        self.offer_install(found, Then::Resume(then));
-        true
     }
 
     fn offer_install(&mut self, found: Install, then: Then) {
@@ -220,7 +203,6 @@ impl Editor {
     fn installed(&mut self, then: Then) {
         match then {
             Then::Lsp => self.attach_servers_missing(),
-            Then::Resume(r) => self.resume(r),
             Then::Plugin { plugin, id } => {
                 self.plugin_events_from(&plugin, vec![crate::plugin::PluginHostEvent::Installed(id)])
             }
@@ -606,28 +588,6 @@ mod tests {
             panic!("{:?}", ed.offers[0].state)
         };
         assert!(!why.is_empty());
-    }
-
-    /// Java debugging without java-debug: the card is the java pack's download — the release it pins, from
-    /// Maven Central, checked against the SHA-256 the pack pins — and debugging starts again once it's in.
-    #[test]
-    fn java_debug_is_offered_as_its_pack_pins_it() {
-        let mut ed = Editor::new(crate::config::Config::default());
-        ed.offer_popups = true;
-        ed.dap_resume = Some(Resume::Debug);
-        assert!(ed.offer_install_debugger("java-debug"), "the java pack says how");
-        settle_until(&mut ed, |ed| !ed.offers.is_empty(), std::time::Duration::from_secs(10));
-        let o = &ed.offers[0];
-        let What::Fetch { tool, dir, then, .. } = &o.what else { panic!("{:?}", o.what) };
-        assert_eq!((tool.as_str(), then), ("java-debug", &Then::Resume(Resume::Debug)));
-        assert!(dir.ends_with("tarae/java-debug"), "{}", dir.display());
-        assert!(
-            o.question.contains(
-                "Download version 0.53.1 from repo1.maven.org — checked against the SHA-256 its pack pins"
-            ),
-            "{}",
-            o.question
-        );
     }
 
     #[test]

@@ -3704,7 +3704,11 @@ fn go(ed: &mut Editor, who: For, job: Job, guard: Option<Guard>, ride: Ride) {
 fn go_now(ed: &mut Editor, who: For, job: Job, guard: Option<Guard>, ride: Ride) {
     if slot_taken(ed, &job) {
         drop(guard);
-        return crate::queued::again(ed, crate::queued::What::Guarded { who, job, ride }, None);
+        return crate::queued::again(
+            ed,
+            crate::queued::What::Guarded { who, job, ride: Box::new(ride) },
+            None,
+        );
     }
     if matches!(who, For::Claude(_)) {
         let dir = match &guard {
@@ -5149,10 +5153,7 @@ mod tests {
             how: crate::testing::How::Pack {
                 lang: "sh".into(),
                 argv: vec!["sh".into(), "-c".into(), script.into()],
-                debug: None,
                 lines: None,
-                build: None,
-                debug_run: None,
                 junit: None,
             },
         };

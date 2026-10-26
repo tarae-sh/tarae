@@ -554,7 +554,7 @@ fn over_fold(editor: &mut Editor, w: u16, h: u16) {
     }
     let probe = Layout::new(editor, w, h);
     for kind in over {
-        editor.screen.over_folded[kind.dock_index()] = editor.dock_rows(kind, probe.rows, probe.debug_h) == 0;
+        editor.screen.over_folded[kind.dock_index()] = editor.dock_rows(kind, probe.rows, probe.slot_h) == 0;
     }
 }
 
@@ -649,20 +649,20 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         chat_w: lay.chat_w,
         side_w: if editor.review_rail_up() { 0 } else { lay.rail_w },
         rail_w: if editor.review_rail_up() && lay.zoom.is_none() { lay.rail_w } else { 0 },
-        bottom_h: lay.debug_h,
-        body_h: lay.text_rows + lay.debug_h,
+        bottom_h: lay.slot_h,
+        body_h: lay.text_rows + lay.slot_h,
         text_top: lay.text_top as usize,
-        terminal_rows: (lay.debug_h > 0 && terminal_shown)
-            .then(|| (lay.slot_y(), lay.slot_y() + lay.debug_h - 1)),
+        terminal_rows: (lay.slot_h > 0 && terminal_shown)
+            .then(|| (lay.slot_y(), lay.slot_y() + lay.slot_h - 1)),
         slot_x: lay.slot_x,
         slot_tabs: Default::default(),
         member_names: Default::default(),
         // (the terminal's rows: its panel's — the size you set, or its own — under the header)
         terminal_size: std::cell::Cell::new(Some((
             crate::sizes::bottom(
-                lay.text_rows + lay.debug_h,
+                lay.text_rows + lay.slot_h,
                 editor.sizes.bottom,
-                terminal_panel_h(lay.text_rows + lay.debug_h, lay.slot_head),
+                terminal_panel_h(lay.text_rows + lay.slot_h, lay.slot_head),
             )
             .saturating_sub(lay.slot_head)
             .max(2) as u16,
@@ -751,11 +751,11 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
     }
     // The terminal is told its panel's size (it redraws for it)
     // (not while another tab has the slot — the program would draw for a size nobody sees)
-    if lay.debug_h > lay.slot_head
+    if lay.slot_h > lay.slot_head
         && terminal_shown
         && let Some(t) = editor.workspace.terminal.as_mut()
     {
-        t.resize((lay.debug_h - lay.slot_head) as u16, terminal_cols(&lay) as u16);
+        t.resize((lay.slot_h - lay.slot_head) as u16, terminal_cols(&lay) as u16);
         // (its view mode read again at the new size)
         crate::view::terminal_resized(editor);
     }
@@ -921,7 +921,7 @@ struct Layout {
     text_cols: usize,
     /// Bottom slot height (0 when it's empty) — just below the code (text_rows), from column `slot_x`,
     /// `slot_w` wide: under the code only, the side panel and the chat running on beside it.
-    debug_h: usize,
+    slot_h: usize,
     slot_x: usize,
     slot_w: usize,
     /// The slot's header rows (`chrome::SLOT_HEAD`): its body starts this far under `slot_y`.
@@ -984,7 +984,7 @@ impl Layout {
             // (over the code: its bottom is the code's top line — no edge row of its own)
             Side::Top => (r.x, r.w, r.h),
         };
-        Layout { slot_x: x, slot_w: w, debug_h: h, docked: Some((kind, r.y)), ..self.clone() }
+        Layout { slot_x: x, slot_w: w, slot_h: h, docked: Some((kind, r.y)), ..self.clone() }
     }
 
     /// Kind `kind`'s panel floating in the frame `r`: its top line the frame's, its body inside the frame's sides,
@@ -993,7 +993,7 @@ impl Layout {
         Layout {
             slot_x: r.x + 1,
             slot_w: r.w.saturating_sub(2),
-            debug_h: r.h.saturating_sub(1),
+            slot_h: r.h.saturating_sub(1),
             docked: Some((kind, r.y)),
             framed: true,
             ..self.clone()
@@ -1092,10 +1092,10 @@ fn group_members(
     g: &crate::pane::Group,
 ) -> Option<(crate::split::Rect, crate::split::Rect)> {
     let lay = &group_lay(editor, lay, g)?;
-    if !editor.group_laid(g) || lay.debug_h <= lay.slot_head || lay.slot_w == 0 {
+    if !editor.group_laid(g) || lay.slot_h <= lay.slot_head || lay.slot_w == 0 {
         return None;
     }
-    let (y, h) = (lay.slot_y() + lay.slot_head, lay.debug_h - lay.slot_head);
+    let (y, h) = (lay.slot_y() + lay.slot_head, lay.slot_h - lay.slot_head);
     let all = crate::split::Rect { x: lay.slot_x, y, w: lay.slot_w, h };
     Some(match group_shape(editor, g, lay.slot_w, h)? {
         (Shape::Beside, list_w) => (
@@ -1172,10 +1172,10 @@ fn group_shapes(editor: &Editor, lay: &Layout) -> Vec<(crate::pane::GroupKind, S
     let mut shapes = Vec::new();
     for g in &editor.workspace.groups {
         let Some(l) = group_lay(editor, lay, g) else { continue };
-        if !editor.group_laid(g) || l.debug_h <= l.slot_head || l.slot_w == 0 {
+        if !editor.group_laid(g) || l.slot_h <= l.slot_head || l.slot_w == 0 {
             continue;
         }
-        if let Some((s, _)) = group_shape(editor, g, l.slot_w, l.debug_h - l.slot_head) {
+        if let Some((s, _)) = group_shape(editor, g, l.slot_w, l.slot_h - l.slot_head) {
             shapes.push((g.kind, s));
         }
     }
@@ -1322,7 +1322,7 @@ impl Layout {
         // A card stepped aside to a bar while its text is read (U8): the row over the status line is its
         let bar = usize::from(editor.offer_bar() && all > 6);
         let total = all - bar;
-        // The sign column (breakpoints, diagnostics) right after the gutter, the numbers after it
+        // The sign column (diagnostics) right after the gutter, the numbers after it
         let doc = editor.doc();
         // (a woven view's sign column holds its sides' prefixes — `weave::signs`)
         let gutter = crate::weave::signs(doc).max(crate::chrome::SIGNS) + num_w(doc);
@@ -1416,12 +1416,12 @@ impl Layout {
             }
             None => 0,
         };
-        let debug_h = match zoom_shows {
+        let slot_h = match zoom_shows {
             Some(Shows::Slot) => total,
             _ if natural == 0 => 0,
             _ => crate::sizes::bottom(total, editor.sizes.bottom, natural),
         };
-        let mut leaves = editor.workspace.split.layout(body, &room(debug_h));
+        let mut leaves = editor.workspace.split.layout(body, &room(slot_h));
         // (filling the screen: that pane alone — a code pane in the code's whole column, under the path bar; a
         // docked group the whole body)
         if let Some(z) = zoom {
@@ -1466,12 +1466,12 @@ impl Layout {
         let chat_w = rect(Shows::Chat).map_or(0, |r| r.w);
         let edit_w = w as usize - chat_w;
         let slot = rect(Shows::Slot);
-        let debug_h = slot.map_or(0, |r| r.h);
+        let slot_h = slot.map_or(0, |r| r.h);
         // (a group docked over the code: the code's rows start under it)
         let over = path_bar.1;
         let text_rows = match zoom_shows {
             Some(Shows::Slot | Shows::Group(_)) => 0,
-            _ => (total - debug_h).saturating_sub(over).max(1),
+            _ => (total - slot_h).saturating_sub(over).max(1),
         };
         let code_top = text_top + over as u16;
         Self {
@@ -1487,7 +1487,7 @@ impl Layout {
             text_rows,
             gutter,
             text_cols: edit_w.saturating_sub(rail_w + gutter + scrollbar as usize).max(1),
-            debug_h,
+            slot_h,
             slot_x: slot.map_or(rail_w, |r| r.x),
             slot_w: slot.map_or(edit_w - rail_w, |r| r.w),
             slot_head,
@@ -1644,212 +1644,6 @@ fn panes(
 /// The focused pane's layout (`lay` itself if there's none).
 fn focused_pane(editor: &Editor, lay: &Layout) -> Layout {
     panes(editor, lay).into_iter().find(|p| p.6).map_or_else(|| lay.clone(), |p| p.2)
-}
-
-/// Bottom debug panel: header row (status pill · what · key hints) + three columns — variables (colored
-/// by shape) · call stack (current frame ▶) · output (stderr red). Card background sets it off from editing.
-fn draw_debug_panel(
-    d: &crate::dap::Dap,
-    editor: &Editor,
-    ui: &Ui,
-    lay: &Layout,
-    out: &mut impl Write,
-) -> io::Result<()> {
-    use crate::chrome::PAD;
-    use crate::dap::State;
-    let t = &editor.theme;
-    let card = panel_style(ui, editor);
-    let dim = Style { fg: ui.virt.fg, ..card };
-    let faint = Style { fg: ui.linenr.fg, ..card };
-    let strong = card.patch(t.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() }));
-    let color = |k: &str| t.try_get(k).and_then(|s| s.fg);
-    let (x0, w) = (lay.slot_x, lay.slot_w);
-    // ── Header: the tabs, what it's at, the keys
-    let state = match &d.state {
-        State::Building => "building",
-        State::Starting => "starting",
-        State::Running => "running",
-        State::Stopped { .. } => "paused",
-        State::Exited(_) => "exited",
-    };
-    let what = match &d.state {
-        State::Stopped { reason } => {
-            let at = d
-                .frames
-                .first()
-                .map(|f| {
-                    let file =
-                        f.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
-                    format!(" · {}:{}", file.unwrap_or_default(), f.line + 1)
-                })
-                .unwrap_or_default();
-            format!("  {reason}{at}")
-        }
-        State::Exited(Some(c)) => format!("  exit code {c}"),
-        _ => String::new(),
-    };
-    let state_st = match &d.state {
-        State::Stopped { .. } => Style { fg: color("warning"), ..card },
-        State::Exited(_) => faint,
-        _ => dim,
-    };
-    let details = [(d.program.clone(), strong), (format!("  {state}"), state_st), (what, dim)];
-    let hints: &[(&str, &str)] = match d.state {
-        State::Stopped { .. } if d.request == "attach" => {
-            &[("F5", "continue"), ("F10", "over"), ("F11", "into"), ("F12", "out"), ("space G t", "detach")]
-        }
-        State::Stopped { .. } => {
-            &[("F5", "continue"), ("F10", "over"), ("F11", "into"), ("F12", "out"), ("space G t", "stop")]
-        }
-        State::Exited(_) => &[("F5", "restart"), ("space G t", "close")],
-        // Attached debug run: only detach (the remote program keeps running)
-        _ if d.request == "attach" => &[("space G p", "pause"), ("space G t", "detach")],
-        _ => &[("space G p", "pause"), ("space G t", "stop")],
-    };
-    // ── Three columns: variables 45% · stack 25% · output the rest (each a column of its own padding)
-    let cw = [w * 45 / 100, w * 25 / 100];
-    let cols = [(0, cw[0]), (cw[0] + 1, cw[1]), (cw[0] + cw[1] + 2, w.saturating_sub(cw[0] + cw[1] + 2))];
-    let splits: Vec<usize> = cols[1..].iter().map(|&(x, _)| x0 + x - 1).collect();
-    let body = slot_header(out, editor, ui, lay, card, &details, hints, &splits, None)?;
-    let rows = lay.debug_h.saturating_sub(lay.slot_head);
-    let var_scope = color("variable").or(ui.base.fg);
-    let root = editor.root();
-    let fn_color = color("function");
-    for r in 0..rows {
-        let y = (body + r) as u16;
-        queue!(out, MoveTo(x0 as u16, y))?;
-        apply(out, card)?;
-        queue!(out, Spaces(w))?;
-        for (c, &(x, cw)) in cols.iter().enumerate() {
-            if c > 0 {
-                queue!(out, MoveTo((x0 + x - 1) as u16, y))?;
-                leaf_line(out, ui, card, false)?;
-            }
-            // (the first column's text at the panel's padding, the others a cell in from their line)
-            let pad = if c == 0 { PAD } else { 1 };
-            queue!(out, MoveTo((x0 + x + pad) as u16, y))?;
-            let inner = cw.saturating_sub(pad + 1);
-            let nw = editor.watches.len();
-            if r == 0 {
-                apply(out, Style { bold: true, ..faint })?;
-                let first = if nw > 0 { "WATCH" } else { "VARIABLES" };
-                queue!(out, Print([first, "CALL STACK", "OUTPUT"][c]))?;
-                continue;
-            }
-            let i = r - 1;
-            match c {
-                // Watches on top, if any — `◦ expr  value`; if unresolvable in this frame, the reason dimmed
-                0 if i < nw => {
-                    let expr = &editor.watches[i];
-                    apply(out, Style { fg: ui.accent.fg, ..card })?;
-                    queue!(out, Print("◦ "))?;
-                    let name = fit_ellipsis(expr, inner.saturating_sub(2).min(24));
-                    apply(out, Style { fg: var_scope, ..card })?;
-                    queue!(out, Print(&name))?;
-                    let rest = inner.saturating_sub(name.width() + 4);
-                    apply(out, card)?;
-                    queue!(out, Print("  "))?;
-                    match d.watches.get(expr) {
-                        Some(crate::dap::Watch::Value { value, ty }) => {
-                            value_and_type(out, editor, ui, card, value, ty, rest)?
-                        }
-                        Some(crate::dap::Watch::Error(m)) => {
-                            apply(out, Style { italic: true, ..faint })?;
-                            queue!(out, Print(fit_ellipsis(m, rest)))?;
-                        }
-                        _ => {
-                            apply(out, faint)?;
-                            queue!(out, Print(if d.stopped() { "…" } else { "—" }))?;
-                        }
-                    }
-                }
-                0 if nw > 0 && i == nw => {
-                    apply(out, Style { bold: true, ..faint })?;
-                    queue!(out, Print("VARIABLES"))?;
-                }
-                0 => {
-                    let i = if nw > 0 { i - nw - 1 } else { i };
-                    let Some(v) = d.vars.get(i) else {
-                        if i == 0 {
-                            apply(out, faint)?;
-                            let msg =
-                                if d.stopped() { "no locals" } else { "run to a breakpoint (F9 on a line)" };
-                            queue!(out, Print(fit(msg, inner)))?;
-                        }
-                        continue;
-                    };
-                    // Expandable values (structs, lists) get ▸
-                    apply(out, faint)?;
-                    queue!(out, Print(if v.reference > 0 { "▸ " } else { "  " }))?;
-                    let name = fit_ellipsis(&v.name, inner.saturating_sub(2).min(18));
-                    apply(out, Style { fg: var_scope, ..card })?;
-                    queue!(out, Print(&name))?;
-                    let rest = inner.saturating_sub(name.width() + 4);
-                    apply(out, card)?;
-                    queue!(out, Print("  "))?;
-                    value_and_type(out, editor, ui, card, &v.value, &v.ty, rest)?;
-                }
-                1 => {
-                    let Some(f) = d.frames.get(i) else {
-                        if i == 0 {
-                            apply(out, faint)?;
-                            // (paused, the frames may still be on their way)
-                            let msg = if d.stopped() { "…" } else { "the call stack, when paused" };
-                            queue!(out, Print(fit_ellipsis(msg, inner)))?;
-                        }
-                        continue;
-                    };
-                    let current = i == 0;
-                    // Only my code's frames (inside the project) are crisp — stdlib/runtime frames dimmed
-                    let mine = f.path.as_ref().is_some_and(|p| p.starts_with(root));
-                    apply(out, if current { Style { fg: color("warning"), ..card } } else { faint })?;
-                    queue!(out, Print(if current { "▶ " } else { "  " }))?;
-                    let file = f
-                        .path
-                        .as_ref()
-                        .and_then(|p| p.file_name())
-                        .map(|n| format!("{}:{}", n.to_string_lossy(), f.line + 1))
-                        .unwrap_or_default();
-                    let name =
-                        fit_ellipsis(&f.name, inner.saturating_sub(2 + file.width().min(inner / 2) + 1));
-                    apply(
-                        out,
-                        match (current, mine) {
-                            (true, _) => Style { fg: fn_color, ..card },
-                            (false, true) => card,
-                            (false, false) => faint,
-                        },
-                    )?;
-                    queue!(out, Print(&name))?;
-                    let room = inner.saturating_sub(2 + name.width() + 1);
-                    if room >= 4 {
-                        apply(out, faint)?;
-                        queue!(out, Print(" "), Print(fit_ellipsis(&file, room)))?;
-                    }
-                }
-                _ => {
-                    // Output fills from the bottom (so the latest is visible)
-                    let lines = rows - 1;
-                    let start = d.output.len().saturating_sub(lines);
-                    let Some((cat, line)) = d.output.get(start + i) else {
-                        if i == 0 && d.output.is_empty() {
-                            apply(out, faint)?;
-                            queue!(out, Print(fit_ellipsis("the program's output", inner)))?;
-                        }
-                        continue;
-                    };
-                    let st = match cat.as_str() {
-                        "stderr" => Style { fg: ui.error.fg, ..card },
-                        "stdout" => card,
-                        _ => faint,
-                    };
-                    apply(out, st)?;
-                    queue!(out, Print(fit(&line.replace('\t', "  "), inner)))?;
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 /// A test's or task's panel: what its keys do there when it has them, else how they come (`C-w j` — how you get
@@ -2521,29 +2315,6 @@ fn apply_put(out: &mut impl Write, style: Style, text: &str) -> io::Result<()> {
     queue!(out, Print(text))
 }
 
-/// Debug panel value colored by shape, its type faint at the right end of `rest` cells (dropped if no room).
-fn value_and_type(
-    out: &mut impl Write,
-    editor: &Editor,
-    ui: &Ui,
-    card: Style,
-    value: &str,
-    ty: &str,
-    rest: usize,
-) -> io::Result<()> {
-    let ty = if ty.is_empty() { String::new() } else { fit_ellipsis(ty, 14) };
-    let val_room = rest.saturating_sub(if ty.is_empty() { 0 } else { ty.width() + 2 });
-    let shown = fit_ellipsis(value, val_room);
-    let vc = editor.theme.try_get(crate::dap::value_scope(value)).and_then(|s| s.fg).or(ui.base.fg);
-    apply(out, Style { fg: vc, ..card })?;
-    queue!(out, Print(&shown))?;
-    if !ty.is_empty() && rest >= shown.width() + ty.width() + 2 {
-        apply(out, Style { fg: ui.linenr.fg, ..card })?;
-        queue!(out, Spaces(rest - shown.width() - ty.width()), Print(&ty))?;
-    }
-    Ok(())
-}
-
 /// The preflight `r` is the run of, if it is one (`preflight.rs`) — its steps' row goes under the header.
 fn preflight_of<'a>(editor: &'a Editor, r: &crate::task::Run) -> Option<&'a crate::preflight::Preflight> {
     editor.workspace.preflight.as_ref().filter(|p| p.generation == r.generation())
@@ -2747,7 +2518,7 @@ fn draw_terminal_panel(
         hints.insert(0, ("alt+drag", "select"));
     }
     let body = slot_header(out, editor, ui, lay, card, &head, &hints, &[], None)?;
-    let rows = lay.debug_h.saturating_sub(lay.slot_head);
+    let rows = lay.slot_h.saturating_sub(lay.slot_head);
     let cols = terminal_cols(lay);
     let sel = t.selected();
     // (the primary selection's color — the plain one barely shows on a card)
@@ -2955,8 +2726,8 @@ fn draw_task_panel(
     // waits for the panel, a row each (`queued.rs`)
     let sandbox = crate::sandbox::panel_line(r.guard.as_ref(), running, r.last_output);
     // (the output keeps a row)
-    let below = lay.debug_h.saturating_sub(top + 1).min(queued_h(editor, crate::queued::Slot::Task));
-    let rows = lay.debug_h.saturating_sub(top + below + usize::from(sandbox.is_some()));
+    let below = lay.slot_h.saturating_sub(top + 1).min(queued_h(editor, crate::queued::Slot::Task));
+    let rows = lay.slot_h.saturating_sub(top + below + usize::from(sandbox.is_some()));
     draw_queued(out, editor, ui, crate::queued::Slot::Task, (x0, y0 + top + rows), w, below, card)?;
     if let Some((line, quiet)) = &sandbox {
         sandbox_row(
@@ -3305,7 +3076,7 @@ fn draw_plugin_panel<W: Write>(
     let top = slot_header(out, editor, ui, lay, card, &[(title, strong)], &hints, &[], None)?;
     // The table, and the status line under it
     let header = !panel.columns.is_empty();
-    let body = lay.debug_h.saturating_sub(lay.slot_head + 1 + header as usize);
+    let body = lay.slot_h.saturating_sub(lay.slot_head + 1 + header as usize);
     let n = panel.rows.len();
     // The selected row in sight
     let mut scroll = st.scroll.get().min(n.saturating_sub(body));
@@ -3445,7 +3216,7 @@ fn draw_procs_panel<W: Write>(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut 
     let body = slot_header(out, editor, ui, lay, card, &summary, &hints, &splits, head.as_ref())?;
     // (over and under: the table to the detail's top line, the detail under it)
     let over = head.as_ref().and_then(|m| m.over);
-    let table_end = over.unwrap_or(y0 + lay.debug_h);
+    let table_end = over.unwrap_or(y0 + lay.slot_h);
     let detail_rows = match members {
         Some((_, (list, detail))) => {
             draw_procs_detail(editor, ui, lay, out, (list, detail), over.map_or(body, |row| row + 1))?
@@ -3457,7 +3228,7 @@ fn draw_procs_panel<W: Write>(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut 
     }
     // (stacked with the detail open: no table)
     if w == 0 {
-        let bottom = y0 + lay.debug_h - 1;
+        let bottom = y0 + lay.slot_h - 1;
         let area =
             crate::procs::Area { top: y0, bottom, first: body, detail: detail_rows, ..Default::default() };
         editor.screen.procs_panel.set(Some(area));
@@ -3775,7 +3546,7 @@ fn draw_procs_detail(
         return Ok(0);
     }
     let card = panel_style(ui, editor);
-    let rows = (lay.slot_y() + lay.debug_h).saturating_sub(y);
+    let rows = (lay.slot_y() + lay.slot_h).saturating_sub(y);
     let side = side_by_side(&(list, detail)).is_some();
     let (tx, tw) = match side {
         true => (detail.x + 1, detail.w.saturating_sub(2)),
@@ -3801,7 +3572,7 @@ fn draw_procs_detail(
 /// Test panel (a tab of the bottom slot — `slot_header`):
 ///
 /// ```text
-///   tests ▲   check ●  │  math::tests::*   ● 2   ▲ 1   ◦ 1   0.4s       space x l again  space x d debug
+///   tests ▲   check ●  │  math::tests::*   ● 2   ▲ 1   ◦ 1   0.4s       space x l again  space x o output
 ///   ──────────────────────────────────────────────────────────────────────────────────────────────────
 ///   TESTS                          │ FAILURE  src/math.rs:21                         ]x next  [x prev
 ///   ● adds                         │ assertion `left == right` failed: 7 / 2 rounds down
@@ -3870,9 +3641,7 @@ fn draw_test_panel(
     hints.extend_from_slice(match r.state {
         RunState::Running => &[("space x c", "stop")],
         // (most useful first — the ones that don't fit fold away from the end)
-        _ => {
-            &[("space x l", "again"), ("space x o", "output"), ("space x c", "close"), ("space x d", "debug")]
-        }
+        _ => &[("space x l", "again"), ("space x o", "output"), ("space x c", "close")],
     });
     // (where the list and the detail meet, the line down from the header's; its members named in it — step 3b: the
     // detail's name and own details, the failure's place and which of how many, after the `┬`)
@@ -3924,7 +3693,7 @@ fn draw_test_panel(
     // The sandbox's line, when it blocked something: the bottom row, under the rest — and over it, what waits
     // for the pane, a row each (`queued.rs`)
     let sandbox = crate::sandbox::panel_line(r.guard.as_ref(), running, r.last_output);
-    let inner = lay.debug_h.saturating_sub(body - lay.slot_y() + usize::from(sandbox.is_some()));
+    let inner = lay.slot_h.saturating_sub(body - lay.slot_y() + usize::from(sandbox.is_some()));
     let below = inner.saturating_sub(2).min(queued_h(editor, crate::queued::Slot::Tests));
     let rows = inner - below;
     // (for the mouse: the panel from its tabs to its last row)
@@ -4831,7 +4600,7 @@ fn draw(
         draw_sidebar(sb, editor, ui, lay, out)?;
     }
     let mut terminal_cursor = None;
-    if lay.debug_h > 0 && lay.slot_w > 0 {
+    if lay.slot_h > 0 && lay.slot_w > 0 {
         use crate::sizes::Slot;
         let session = &editor.workspace;
         // (its panels' view modes and documents have the keys too — the terminal's, the runs')
@@ -4843,8 +4612,6 @@ fn draw(
         let plugin = editor.plugins.as_ref().and_then(|p| p.panel.as_ref());
         if slot == Some(Slot::Procs) {
             draw_procs_panel(editor, ui, lay, out)?;
-        } else if let (Some(Slot::Debug), Some(d)) = (slot, &editor.dap) {
-            draw_debug_panel(d, editor, ui, lay, out)?;
         } else if let (Some(Slot::Terminal), Some(t)) = (slot, &session.terminal) {
             terminal_cursor = draw_terminal_panel(t, editor, ui, lay, out)?;
         } else if let (Some(Slot::Plugin), Some(st)) = (slot, plugin) {
@@ -5014,7 +4781,7 @@ fn draw_docked(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> 
                         x: docked.slot_x,
                         y: docked.slot_y(),
                         w: docked.slot_w,
-                        h: docked.debug_h,
+                        h: docked.slot_h,
                     };
                     apply(out, card)?;
                     for y in rr.y..rr.y + rr.h {
@@ -5422,7 +5189,7 @@ fn dock_edge(
     let slot = lay.slot_y();
     // (the slot beside it: its line meets this one)
     let slot_beside =
-        lay.debug_h > 0 && lay.slot_w > 0 && (lay.slot_x + lay.slot_w == x || x + 1 == lay.slot_x);
+        lay.slot_h > 0 && lay.slot_w > 0 && (lay.slot_x + lay.slot_w == x || x + 1 == lay.slot_x);
     let (start, own, meet) = if side == Side::Right { ("┌", "├", "┤") } else { ("┐", "┤", "├") };
     // (its detail's top line, laid over and under; a code pane's top line meeting it — at its own top, the two lines
     // one: `┬`)
@@ -5434,7 +5201,7 @@ fn dock_edge(
     let code = code_lines(editor, lay);
     let code_at = |y: usize| code.iter().any(|l| l.0 == y && (l.1 + l.2 == x || l.1 == x + 1));
     for y in r.y..r.y + r.h {
-        let in_slot = slot_beside && (slot..slot + lay.debug_h).contains(&y);
+        let in_slot = slot_beside && (slot..slot + lay.slot_h).contains(&y);
         let glyph = match y {
             _ if y == r.y && code_at(y) => "┬",
             _ if y == r.y => start,
@@ -5647,19 +5414,6 @@ fn draw_text(
         &h[h.partition_point(|x| x.pos < vis_from)..h.partition_point(|x| x.pos <= vis_to)]
     } else {
         &[]
-    };
-    // Debugger: this doc's breakpoints · stopped line · variable values to append at line end
-    let doc_bps = doc.path.as_ref().and_then(|p| editor.breakpoints.get(p));
-    let stop_color = editor.theme.try_get("warning").and_then(|s| s.fg).or(ui.accent.fg);
-    let stop_line = editor
-        .dap
-        .as_ref()
-        .and_then(|d| d.stop_at())
-        .filter(|(p, _)| doc.path.as_deref() == Some(*p))
-        .map(|(_, l)| l);
-    let inline_vals = match (stop_line, editor.dap.as_ref()) {
-        (Some(l), Some(d)) => crate::dap::inline_values(text, l, &d.vars),
-        _ => Default::default(),
     };
     // Search matches (visible span only) — faint accent background, the currently selected match stronger
     let accent_bg = |t: f32| blend(ui.accent.fg, ui.tint, t);
@@ -5877,23 +5631,9 @@ fn draw_text(
     // Whose caret and place this document shows: its checkout's session's colour, full while you follow it
     let (writer, followed) = crate::presence::colour_of(editor, doc);
     let caret_fg = ui.participant(writer, followed);
-    // The sign column's cell for lines `a..=b` (a folded block's: its lines together) — stopped line ▶ >
-    // breakpoint ● > the most severe diagnostic's bar
+    // The sign column's cell for lines `a..=b` (a folded block's: its lines together) — the most severe
+    // diagnostic's bar
     let sign_of = |a: usize, b: usize| -> (&str, Style) {
-        if stop_line.is_some_and(|l| (a..=b).contains(&l)) {
-            return ("▶", Style { fg: stop_color, bold: true, ..ui.base });
-        }
-        if let Some(bp) = doc_bps.and_then(|m| m.range(a..=b).next()).map(|(_, bp)| bp) {
-            // Breakpoint = red · condition = orange · logpoint = accent (the line-end text says which)
-            let fg = if bp.log.is_some() {
-                ui.accent.fg
-            } else if bp.condition.is_some() {
-                stop_color
-            } else {
-                ui.error.fg
-            };
-            return ("●", Style { fg, ..ui.base });
-        }
         let sev = match a == b {
             true => line_severity.get(a.wrapping_sub(top)).copied().unwrap_or(0),
             // (a block can start above the screen, past the visible diagnostics)
@@ -6098,10 +5838,7 @@ fn draw_text(
         // Current-line highlight: this line's background = ui.cursorline.primary over the default
         let line_message_here = line_message.get(li).copied().flatten();
         let here = shows.cursorline == Some(line);
-        let line_base = if stop_line == Some(line) {
-            // Stopped line: accent band (takes precedence over the cursor line)
-            Style { bg: blend(stop_color, ui.tint, 0.18).or(ui.base.bg), ..ui.base }
-        } else if let Some(st) = conflict_bg(line) {
+        let line_base = if let Some(st) = conflict_bg(line) {
             st
         } else if let Some(st) = woven_bg(line, here) {
             st
@@ -6160,7 +5897,7 @@ fn draw_text(
             apply(out, gut(ui.base))?;
             queue!(out, Spaces(lay.gutter - 1))?;
         } else if signs > 0 {
-            // Sign column — the cell before the numbers: stopped line ▶ > breakpoint ● > diagnostic bar
+            // Sign column — the cell before the numbers: a diagnostic's bar
             // (under them all: a woven view's whose — then a session's place, `presence.rs`, the one you follow in
             // the accent; its cell kept, a click follows it, the mouse over it shows its tag)
             let (glyph, st) = match sign_of(line, line) {
@@ -6457,86 +6194,13 @@ fn draw_text(
                 cursor = Some(((lay.x0 + lay.gutter + x) as u16, y));
             }
         }
-        // Stopped: line-end values of vars used there (`count = 12  total = 15`) — names dim, values by shape
-        let mut extra_used = 0;
-        if let Some(vals) = inline_vals.get(&line)
-            && !clipped
-        {
-            let used = x0 + col.saturating_sub(row_left) + shift + 1;
-            let mut room = lay.text_cols.saturating_sub(used + 3);
-            if room > 6 {
-                apply(out, line_base)?;
-                queue!(out, Print("   "))?;
-                extra_used += 3;
-                for (k, (name, value)) in vals.iter().enumerate() {
-                    let sep = if k > 0 { "  " } else { "" };
-                    let value = fit_ellipsis(value, 32);
-                    let w = sep.width() + name.width() + 3 + value.width();
-                    if w > room {
-                        break;
-                    }
-                    apply(out, Style { fg: ui.linenr.fg, italic: true, ..line_base })?;
-                    queue!(out, Print(sep), Print(name), Print(" = "))?;
-                    let vc = editor
-                        .theme
-                        .try_get(crate::dap::value_scope(&value))
-                        .and_then(|s| s.fg)
-                        .or(ui.base.fg);
-                    apply(out, Style { fg: vc, italic: true, ..line_base })?;
-                    queue!(out, Print(&value))?;
-                    room -= w;
-                    extra_used += w;
-                }
-            }
-        }
-        // Condition/logpoint at line end: `● when n > 3` / `● log step {i}` — reason in red if rejected
-        if let Some(bp) = doc_bps
-            .and_then(|b| b.get(&line))
-            .filter(|b| b.condition.is_some() || b.log.is_some() || b.rejected.is_some())
-            && !clipped
-        {
-            let used = x0 + col.saturating_sub(row_left) + shift + 1 + extra_used;
-            let mut room = lay.text_cols.saturating_sub(used + 3);
-            if room >= 10 {
-                let mut parts: Vec<(&str, String)> = Vec::new();
-                if let Some(c) = &bp.condition {
-                    parts.push(("when ", c.clone()));
-                }
-                if let Some(m) = &bp.log {
-                    parts.push(("log ", m.clone()));
-                }
-                apply(out, line_base)?;
-                queue!(out, Print("   "))?;
-                extra_used += 3;
-                let glyph_fg = if bp.log.is_some() { ui.accent.fg } else { stop_color };
-                apply(out, Style { fg: glyph_fg, ..line_base })?;
-                queue!(out, Print("● "))?;
-                (extra_used, room) = (extra_used + 2, room - 2);
-                for (k, (label, body)) in parts.iter().enumerate() {
-                    let sep = if k > 0 { "  " } else { "" };
-                    let body = fit_ellipsis(body, room.saturating_sub(sep.len() + label.len()).min(48));
-                    apply(out, Style { fg: ui.linenr.fg, italic: true, ..line_base })?;
-                    queue!(out, Print(sep), Print(label))?;
-                    apply(out, Style { fg: ui.virt.fg, italic: true, ..line_base })?;
-                    queue!(out, Print(&body))?;
-                    let w = sep.len() + label.len() + body.width();
-                    (extra_used, room) = (extra_used + w, room.saturating_sub(w));
-                }
-                if let Some(why) = &bp.rejected {
-                    let why = fit_ellipsis(why, room.saturating_sub(2));
-                    apply(out, Style { fg: ui.error.fg, italic: true, ..line_base })?;
-                    queue!(out, Print("  "), Print(&why))?;
-                    extra_used += 2 + why.width();
-                }
-            }
-        }
         // Line-end note: `  ¶ first words +2` — accent glyph, the text a tone lower, replies faint
         let note_here = note_at.get(li).copied().flatten();
         if let Some((n, count)) = note_here
             && last
             && !clipped
         {
-            let used = x0 + col.saturating_sub(row_left) + shift + 1 + extra_used;
+            let used = x0 + col.saturating_sub(row_left) + shift + 1;
             let room = lay.text_cols.saturating_sub(used + 3);
             if room >= 8 {
                 let tail = match (n.waiting, n.thread.len()) {
@@ -6585,7 +6249,7 @@ fn draw_text(
             && last
             && !clipped
         {
-            let used = x0 + col.saturating_sub(row_left) + shift + 1 + extra_used;
+            let used = x0 + col.saturating_sub(row_left) + shift + 1;
             let room = lay.text_cols.saturating_sub(used + 3);
             if room >= 8 {
                 let (color, text) = match looked {
@@ -6607,7 +6271,7 @@ fn draw_text(
             && note_here.is_none()
             && risk_here.is_none()
         {
-            let used = x0 + col.saturating_sub(row_left) + shift + 1 + extra_used;
+            let used = x0 + col.saturating_sub(row_left) + shift + 1;
             let room = lay.text_cols.saturating_sub(used + 3);
             if room >= 8 {
                 let color = ui.sign[sev as usize].fg;
@@ -6650,7 +6314,7 @@ fn draw_text(
             && last
             && !clipped
         {
-            let used = x0 + col.saturating_sub(row_left) + shift + 1 + extra_used;
+            let used = x0 + col.saturating_sub(row_left) + shift + 1;
             let room = lay.text_cols.saturating_sub(used + 3);
             if room >= 8 {
                 use crate::plugin::PluginTone as T;
@@ -6687,7 +6351,7 @@ fn draw_text(
         // (two sessions where they are on one line: each its tag, the one you follow first, the later ones the first to
         // go when narrow)
         if tag_here.is_some() && last && !clipped {
-            let mut used = x0 + col.saturating_sub(row_left) + shift + 1 + extra_used;
+            let mut used = x0 + col.saturating_sub(row_left) + shift + 1;
             let mut gap = "   ";
             let mut said: Vec<crate::event::WorkspaceId> = Vec::new();
             for m in shows.presence.iter().filter(|m| m.here && m.tag > 0 && m.lines.start == line) {
@@ -6731,7 +6395,7 @@ fn draw_text(
             && let Some((at, name, colour)) = crate::weave::tag_at(m, cur_line)
             && at == line
         {
-            let used = x0 + col.saturating_sub(row_left) + shift + 1 + extra_used;
+            let used = x0 + col.saturating_sub(row_left) + shift + 1;
             let tag = format!("‹{}›", fit_ellipsis(&name, 32));
             if used + 3 + tag.width() <= lay.text_cols {
                 let fg = colour.and_then(|c| ui.participant(c, true)).or(ui.linenr.fg);
@@ -6742,7 +6406,7 @@ fn draw_text(
             }
         }
         // Blame (`b` in the git tab): who changed the cursor line, when, and why — faint, only where the line end is
-        // free (a diagnostic or debugger values take it first), and not while typing
+        // free (a diagnostic takes it first), and not while typing
         if shows.blame
             && tag_here.is_none()
             && line == cur_line
@@ -6752,7 +6416,6 @@ fn draw_text(
             && note_here.is_none()
             && hint_here.is_none()
             && risk_here.is_none()
-            && extra_used == 0
             && let Some(b) = editor.blame_here(line)
         {
             let used = x0 + col.saturating_sub(row_left) + shift + 1;
@@ -10623,7 +10286,7 @@ fn toast_paint(
 ///    y Install   n Not now
 /// ```
 ///
-/// An install (a language server, a debugger) also has `N Never`.
+/// An install (a language server) also has `N Never`.
 ///
 /// While downloading, a wave + "Fetching and building…"; on failure the reason + `y Retry` `n Dismiss`.
 struct OfferCard {
@@ -13232,8 +12895,8 @@ fn beside_rows(
     }
     let y = lay.slot_y();
     let covered = parts.iter().any(|p| p.1.len() == 1);
-    if lay.debug_h > 0 && lay.slot_w > 0 && !covered {
-        parts.push((y..y + lay.debug_h, vec![y], Region::Slot));
+    if lay.slot_h > 0 && lay.slot_w > 0 && !covered {
+        parts.push((y..y + lay.slot_h, vec![y], Region::Slot));
     }
     parts
 }
@@ -18058,8 +17721,6 @@ fn picker_enter(kind: &str) -> Option<&'static str> {
         | "text-matches" => "go to it",
         "themes" | "model" | "effort" | "session-base" | "rebase-session" | "blocked" | "plugin" => "choose",
         "code-actions" => "apply",
-        "attach" => "attach",
-        "watches" => "remove",
         _ => return None,
     })
 }
@@ -18075,7 +17736,6 @@ fn prompt_enter(kind: crate::editor::PromptKind) -> &'static str {
         K::Keep { remove: false } => "keep",
         K::Keep { remove: true } => "remove",
         K::Rename => "rename",
-        K::BreakCondition | K::LogMessage | K::Watch => "set",
         K::Replace => "replace",
         K::Note(_) => "send",
         K::Plugin(_) => "done",
@@ -22698,7 +22358,7 @@ mod tests {
         let mut ed = Editor::new(Config::default());
         let lay = |ed: &Editor| {
             let l = Layout::new(ed, 120, 40);
-            (l.debug_h, l.text_rows + l.debug_h)
+            (l.slot_h, l.text_rows + l.slot_h)
         };
         let mut r = Run::for_test(task("cargo fmt"));
         r.output = [(false, "formatted")].into_iter().collect();

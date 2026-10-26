@@ -50,23 +50,6 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
             editor.open_tutor();
             Ok(())
         }
-        // Attach the debugger to a running program — a name from the config, or host:port (attach.rs)
-        "attach" => editor.attach_command(rest),
-        // Debugger watch expressions: `:watch expr` adds, `:unwatch [expr]` removes (all if no expr)
-        "watch" if !rest.is_empty() => {
-            editor.add_watch(rest);
-            Ok(())
-        }
-        "watch" => Err("usage: :watch <expression>".into()),
-        "unwatch" => {
-            editor.remove_watch(rest);
-            editor.note(if rest.is_empty() {
-                "Cleared watches".into()
-            } else {
-                format!("Stopped watching {rest}")
-            });
-            Ok(())
-        }
         "theme" if rest.is_empty() => {
             editor.run_command_by_name("theme_picker");
             Ok(())

@@ -232,12 +232,11 @@ enum Which {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Zoom(pub crate::split::PaneId);
 
-/// What the bottom slot shows — one at a time: `:procs` while it's open (asked for just now), the debugger,
-/// then the terminal (when shown), a plugin's panel, and the test run or task started last.
+/// What the bottom slot shows — one at a time: `:procs` while it's open (asked for just now), then the
+/// terminal (when shown), a plugin's panel, and the test run or task started last.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Slot {
     Procs,
-    Debug,
     Terminal,
     Plugin,
     Test,
@@ -302,7 +301,7 @@ impl crate::editor::Editor {
                 self.workspace.leave(At::Slot);
             }
             Slot::Procs => self.procs_close(),
-            Slot::Debug | Slot::Plugin => {}
+            Slot::Plugin => {}
         }
     }
 
@@ -681,7 +680,7 @@ impl crate::editor::Editor {
     }
 
     /// What the bottom slot shows, if anything: the panel put in front (`chrome.rs` — a tab, one just
-    /// opened), else the first there of `:procs`, the debugger, the terminal, a plugin's panel, the test run
+    /// opened), else the first there of `:procs`, the terminal, a plugin's panel, the test run
     /// or task started last — never one whose group is docked in sight (P3 §3.1: it's a pane of its own).
     pub fn slot_shown(&self) -> Option<Slot> {
         let free = |s: &Slot| !self.slot_docked(*s);
@@ -690,9 +689,6 @@ impl crate::editor::Editor {
         }
         if self.procs_up() && free(&Slot::Procs) {
             return Some(Slot::Procs);
-        }
-        if self.dap.is_some() {
-            return Some(Slot::Debug);
         }
         if self.workspace.terminal.as_ref().is_some_and(|t| t.visible) {
             return Some(Slot::Terminal);
@@ -723,19 +719,16 @@ impl crate::editor::Editor {
             Some(Slot::Terminal) => self.workspace.is_at(At::Slot) || self.workspace.is_at(At::Program),
             Some(Slot::Plugin) => self.plugin_panel_focused(),
             Some(Slot::Procs | Slot::Test | Slot::Task) => self.workspace.is_at(At::Slot) || listing(),
-            Some(Slot::Debug) | None => false,
+            None => false,
         }
     }
 
     /// `C-w j` below the lowest pane, or a click on the panel: the keys to the bottom slot (on the terminal,
-    /// tarae's — `i` then types in it). The debugger's panel takes none (its keys work from the code).
+    /// tarae's — `i` then types in it).
     pub fn bottom_take_keys(&mut self) {
         self.workspace.viewer.hand = self.hand_of(self.slot_shown());
         match self.slot_shown() {
             None => self.set_status("nothing at the bottom — tests, tasks and the terminal show there"),
-            Some(Slot::Debug) => {
-                self.set_status("the debug panel follows the code — its keys work from there")
-            }
             Some(Slot::Plugin) => self.plugin_panel_click(None),
             Some(Slot::Procs) => self.procs_click(None),
             Some(_) => {

@@ -563,8 +563,7 @@ const DOCS: &[DocShot] = &[
     row("ux-symbols.png", None, S),
     row("ux-workspace-symbols.png", None, S),
     row("java-jdt-source.png", None, S).needs(&["jdtls"]),
-    row("java-debug-offer.png", None, S).needs(&["jdtls"]),
-    // docs/testing-and-debugging.md
+    // docs/testing.md
     row("grammar-needed.png", None, S),
     row("test-results-rust.png", None, S),
     row("test-results-go.png", None, S).needs(&["go"]),
@@ -572,12 +571,6 @@ const DOCS: &[DocShot] = &[
     row("test-results-java.png", None, S).needs(&["java", "gradle"]),
     row("test-run.png", None, S),
     row("test-run-java.png", None, S).needs(&["java", "gradle"]),
-    row("ux-debugger.png", None, S),
-    row("ux-debugger-python.png", None, S),
-    row("ux-debugger-go.png", None, S),
-    row("ux-debugger-java.png", None, S).needs(&["jdtls"]),
-    row("ux-debugger-conditions.png", None, S),
-    row("attach-python.png", None, S),
 ];
 
 pub(super) fn run(args: &[String]) -> Result<()> {

@@ -51,8 +51,7 @@ pub struct ServerTraits {
     /// `args-add`: arguments added at its start (`start_spec`), unless its arguments hold `args-unless`.
     pub args_add: Vec<String>,
     pub args_unless: Option<String>,
-    /// `init`: its `initializationOptions` (Null: none) — `{installed:<tool>}` filled where it starts
-    /// (`installed_filled`).
+    /// `init`: its `initializationOptions` (Null: none).
     pub init: Value,
     /// `progress`: a notification of its own saying what it's doing while it starts.
     pub progress: Option<Status>,
@@ -168,31 +167,6 @@ fn start_spec_with(spec: &ServerSpec, t: &ServerTraits, root: &Path, cache: Opti
         None => crate::log::line(&spec.name, "warning", "no home folder: its pack's `args-add` left out"),
     }
     spec
-}
-
-/// `init` with each `{installed:<tool>}` string the path where that tool is (`packs::installed_at`) — an item
-/// of a list left out, any other place null, when it isn't there. Disk: the server's writer thread.
-pub fn installed_filled(v: Value) -> Value {
-    fn tool(s: &str) -> Option<&str> {
-        s.strip_prefix("{installed:")?.strip_suffix('}')
-    }
-    let found = |t: &str| crate::packs::installed_at(t).map(|p| Value::String(p.display().to_string()));
-    match v {
-        Value::String(s) => match tool(&s) {
-            Some(t) => found(t).unwrap_or(Value::Null),
-            None => Value::String(s),
-        },
-        Value::Array(a) => Value::Array(
-            a.into_iter()
-                .filter_map(|x| match x.as_str().and_then(tool) {
-                    Some(t) => found(t),
-                    None => Some(installed_filled(x)),
-                })
-                .collect(),
-        ),
-        Value::Object(m) => Value::Object(m.into_iter().map(|(k, x)| (k, installed_filled(x))).collect()),
-        v => v,
-    }
 }
 
 /// A pack's `share = { … }`: what sharing one server between checkouts needs to know of it.
@@ -481,11 +455,6 @@ fn repo_or_dir(file: &Path) -> PathBuf {
     start.ancestors().find(|d| d.join(".git").exists()).unwrap_or(start).to_path_buf()
 }
 
-/// Project root by any language's markers (`root_by_markers`), else the repo root, else the file's dir.
-pub fn find_root(file: &Path) -> PathBuf {
-    root_by_markers(file, &crate::languages::get().roots_any).unwrap_or_else(|| repo_or_dir(file))
-}
-
 /// Per-language project root — the topmost of this language's markers below the repo root.
 pub fn find_root_for(lang: &str, file: &Path) -> PathBuf {
     root_by_markers(file, markers_for(lang)).unwrap_or_else(|| repo_or_dir(file))
@@ -565,7 +534,7 @@ pub struct Options {
 /// Made on the server's writer thread: its pack is read and the project walked (disk work).
 pub type MakeOptions = Box<dyn FnOnce() -> Options + Send>;
 
-/// Its pack's `init` (the tools it names found — `installed_filled`), and the server's pack's `leave-out`
+/// Its pack's `init`, and the server's pack's `leave-out`
 /// (`packs::LeaveOut`) filled with `nested_checkouts` — so a server that scans the workspace leaves worktrees
 /// and checkouts inside it alone, through its own setting. The server is looked for by its name, else by the
 /// built-in one its command is (`[lsp.py] command = "pyright-langserver"` is pyright). Several folders (a
@@ -575,7 +544,7 @@ pub fn options_for(spec: &ServerSpec, roots: &[PathBuf]) -> MakeOptions {
     let init = traits(spec).init.clone();
     let (roots, name) = (roots.to_vec(), spec.name.clone());
     Box::new(move || {
-        let mut o = Options { init: installed_filled(init), config: Value::Null };
+        let mut o = Options { init, config: Value::Null };
         let Some(leave) = names.iter().find_map(|n| crate::packs::leave_out(n)) else { return o };
         let found: Vec<String> = roots
             .iter()
@@ -1359,13 +1328,10 @@ mod tests {
         assert_eq!(cmds, &[("java.apply.workspaceEdit".to_string(), ClientAction::ApplyEdit)]);
     }
 
-    /// `{installed:<tool>}` in a pack's `init`: where that tool is, or gone from its list (none here).
+    /// A pack's `init` is the server's `initializationOptions`.
     #[test]
-    fn installed_tools_fill_a_servers_options() {
-        let init = json!({ "bundles": ["{installed:tarae-no-such-tool}", "kept.jar"], "one": "{installed:tarae-no-such-tool}", "n": 1 });
-        assert_eq!(installed_filled(init), json!({ "bundles": ["kept.jar"], "one": null, "n": 1 }));
+    fn a_servers_options_are_its_packs() {
         let jdtls = &traits(&spec_of("jdtls", "jdtls", &[])).init;
-        assert_eq!(jdtls["bundles"], json!(["{installed:java-debug}"]));
         assert_eq!(jdtls["extendedClientCapabilities"]["classFileContentsSupport"], json!(true));
     }
 
@@ -1416,7 +1382,7 @@ mod tests {
             .map(|s| s.command)
             .collect();
         assert!(first.len() >= 15, "the packs' servers: {first:?}");
-        for tool in first.iter().map(String::as_str).chain(["dlv", "lldb-dap"]) {
+        for tool in first.iter().map(String::as_str) {
             let found = crate::packs::install(tool);
             assert!(found.is_some(), "no [install.{tool}] in the packs (or it doesn't read)");
             let found = found.unwrap();
@@ -1490,7 +1456,7 @@ mod tests {
     #[test]
     fn finds_root_by_markers() {
         let here = Path::new(env!("CARGO_MANIFEST_DIR"));
-        assert_eq!(find_root(&here.join("src/lsp.rs")), here);
+        assert_eq!(find_root_for("rust", &here.join("src/lsp.rs")), here);
     }
 
     #[test]
@@ -1561,7 +1527,6 @@ mod tests {
 
         // (found by its command: the java pack's jdtls)
         let jdtls = options_for(&spec("java", "/opt/jdtls/bin/jdtls"), std::slice::from_ref(&root))().init;
-        assert!(jdtls["bundles"].is_array(), "{jdtls}");
         assert_eq!(
             jdtls["settings"]["java"]["maven"],
             json!({ "downloadSources": true }),

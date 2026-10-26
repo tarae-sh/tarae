@@ -6,7 +6,7 @@
 //!   back to the code; `space`, `:` and `C-w` stay the editor's. Every other key goes to the plugin (`key`), with
 //!   the row selected then — the plugin decides what `d` or `enter` does.
 //!   With row ids, the selection stays on its row as rows come, go and move, and a key says which row it
-//!   was on. A panel that's out of sight (a terminal or the debugger in its place) doesn't take keys.
+//!   was on. A panel that's out of sight (a terminal in its place) doesn't take keys.
 //! - **Its line** (`prompt`): the command line, labelled with the plugin's name; `enter` answers, `esc`
 //!   answers nothing. Only in answer to you (a command, a key in its panel, a line you typed) — a plugin
 //!   can't pull you into typing while you're doing something else — and not over a line being typed.

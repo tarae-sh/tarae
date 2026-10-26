@@ -346,17 +346,10 @@ fn blocker(ed: &Editor, waiting: bool) -> Option<String> {
         return rebasing;
     }
     let several = !ed.workspaces.is_empty();
-    let in_session = ed.sessions_in_order().into_iter().find_map(|l| {
+    ed.sessions_in_order().into_iter().find_map(|l| {
         let why = session_blocker(l, waiting)?;
         Some(if several { format!("{}: {why}", l.label()) } else { why })
-    });
-    if in_session.is_some() {
-        return in_session;
-    }
-    if ed.dap.as_ref().is_some_and(|d| !matches!(d.state, crate::dap::State::Exited(_))) {
-        return Some("a debug run is on — end it first (space G t)".into());
-    }
-    None
+    })
 }
 
 /// `blocker`'s part in session `l`, front or behind.
@@ -2496,7 +2489,7 @@ mod tests {
         assert!(toasts(&ed).contains("can't restart: unsaved changes in"), "{}", toasts(&ed));
     }
 
-    /// What's half written stops it with why, as `:q` would: a commit message, a debug run. A task running
+    /// What's half written stops it with why, as `:q` would: a commit message. A task running
     /// doesn't (frictions15: its card names it — `a_sessions_review_and_running_command_dont_hold_a_restart`),
     /// nor a shell in the terminal — the next tarae says it starts afresh.
     #[test]
@@ -2523,12 +2516,9 @@ mod tests {
         settle_until(&mut ed, |ed| ed.workspace.task_run.is_some());
         assert_eq!(blocker(&ed, true), None, "a run is named on its card, not a refusal");
         ed.task_close();
-        ed.dap = Some(crate::dap::Dap::placeholder(crate::dap::State::Starting, "app".into()));
-        try_it(&mut ed, "a debug run is on");
-        ed.dap = Some(crate::dap::Dap::placeholder(crate::dap::State::Exited(Some(0)), "app".into()));
         crate::typed::execute(&mut ed, "restart!").unwrap();
         settle_answering(&mut ed, |ed| ed.should_quit || ed.restart.is_none());
-        assert!(ed.should_quit, "an ended debug run doesn't count: {}", toasts(&ed));
+        assert!(ed.should_quit, "nothing holds it now: {}", toasts(&ed));
 
         let mut ed = Editor::new(Config::default());
         restore(&mut ed, &json!({ "terminal": true }));

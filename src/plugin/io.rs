@@ -220,7 +220,7 @@ impl Drop for Proc {
         if self.pid == 0 {
             return;
         }
-        crate::dap::term_group(self.pid);
+        crate::spawn::term_group(self.pid);
         let (pid, ended) = (self.pid, self.ended.clone());
         let _ = self.clock.at(Instant::now() + KILL_AFTER, move |_| {
             if !ended.load(Ordering::SeqCst) {
@@ -279,7 +279,7 @@ pub(crate) fn plugin_process(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     crate::spawn::keep_from_userns(&mut cmd, crate::spawn::Acts::Plugin).map_err(|e| e.to_string())?;
-    crate::dap::setsid(&mut cmd).spawn().map_err(|e| format!("{}: {e}", shown(program)))
+    crate::spawn::setsid_fork(&mut cmd).spawn().map_err(|e| format!("{}: {e}", shown(program)))
 }
 
 /// Whether a program a plugin runs gets this environment variable: the basics, and what it may read.
@@ -726,7 +726,7 @@ impl Editor {
                 });
             });
             if let Err(why) = started {
-                crate::dap::kill_group(&mut child);
+                crate::spawn::kill_group(&mut child);
                 return Err(why);
             }
         }

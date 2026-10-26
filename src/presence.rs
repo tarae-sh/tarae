@@ -9,8 +9,7 @@
 //! for a file and a buffer, the last one used meanwhile — and whether the two checkouts are of one repository is
 //! asked there too (`worktree::common_dir`, git's own answer, kept).
 //!
-//! Drawn (`term::draw_text`): a `▎` in a code pane's sign column on its lines (under a stopped line, a breakpoint and
-//! a diagnostic) and a name tag at its first line's end (`‹main writing›`) only while it says something new
+//! Drawn (`term::draw_text`): a `▎` in a code pane's sign column on its lines (under a diagnostic) and a name tag at its first line's end (`‹main writing›`) only while it says something new
 //! (`tag_shows`) — in the session's own participant colour (`ui.participant.N`, the user 2026-10-22), at full strength
 //! for the one you follow, dim for the others, the name beside it (never the colour alone); a click on the tag or the
 //! bar follows it (`follow::follow_session`). The session list says where each is (`at`), the strip its file, the side

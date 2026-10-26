@@ -1,5 +1,4 @@
-# Rust: rust-analyzer; `cargo test` in the package, filtered by module path; lldb-dap on the test binary to
-# debug.
+# Rust: rust-analyzer; `cargo test` in the package, filtered by module path.
 
 # What runs later outside Claude's sandbox, in every project (`packs::protect`): a crate's build script, its
 # manifest (dependencies, build settings), cargo's config (build and target dirs, `[env]`, runners — #20)
@@ -48,7 +47,7 @@ dev = true
 [test]
 query = "tests.scm"
 cwd = { nearest = ["Cargo.toml"] }
-helpers = ["cargo"]          # {cargo-target}, {module}, {module-label}, {crate-root}
+helpers = ["cargo"]          # {cargo-target}, {module}, {module-label}
 # libtest's `running 0 tests` (a filter that matched nothing) ends with 0
 none-ran = [0]
 
@@ -58,10 +57,6 @@ run-file = ["cargo", "test", "{cargo-target}", "--", "{module}"]
 label = "{module}{path}"
 label-group = "{module}{groups}::*"
 label-file = "{module-label}"
-
-debug = { program = "{built}", args = ["{module}{path}", "--exact", "--nocapture", "--test-threads=1"], cwd = "{cwd}", stopOnEntry = false }
-debug-group = { program = "{built}", args = ["{module}{groups}::", "--nocapture", "--test-threads=1"], cwd = "{cwd}", stopOnEntry = false }
-debug-file = { program = "{built}", args = ["{module}", "--nocapture", "--test-threads=1"], cwd = "{cwd}", stopOnEntry = false }
 
 # libtest's output: a line per test, then each failure's section (`---- a::b stdout ----`) — where it
 # panicked, and the rest of the section is why
@@ -89,33 +84,6 @@ match = '''panicked at (?<file>[^\s:']+\.rs):(?<line>\d+)'''
 
 [[test.line]]
 match = '^(?<message>.*)$'
-
-# {built}: the test binary of the file's target (its root file is {crate-root})
-[test.debug-build]
-run = ["cargo", "test", "--no-run", "{cargo-target}", "--message-format=json"]
-env = { CARGO_TERM_COLOR = "never" }
-pick = { reason = "compiler-artifact", "profile.test" = true, "target.src_path" = "{crate-root}" }
-take = "executable"
-error = { pick = { reason = "compiler-message", "message.level" = "error" }, text = ["message.rendered", "message.message"] }
-none = "no test binary for this file"
-
-# F5: the package's binary, built first; attach as C does (lldb-dap, the c pack)
-[debug]
-debugger = "lldb-dap"
-launch = { program = "{built}", args = [], cwd = "{cwd}", stopOnEntry = false }
-attach-pid = { pid = "{pid}", program = "{program}", cwd = "{cwd}" }
-attach-remote = { attachCommands = ["gdb-remote {host}:{port}"], program = "{program}", sourceMap = [["{remote-root}", "{cwd}"]], cwd = "{cwd}" }
-
-# A build's failure is rustc's first error, as rustc renders it
-[debug.build]
-when = ["Cargo.toml"]
-otherwise = "open a Cargo project"
-run = ["cargo", "build", "--message-format=json"]
-env = { CARGO_TERM_COLOR = "never" }
-pick = { reason = "compiler-artifact", "target.kind" = "bin" }
-take = "executable"
-error = { pick = { reason = "compiler-message", "message.level" = "error" }, text = ["message.rendered", "message.message"] }
-none = "no binary target to debug"
 
 # Where a checkout builds — cargo asked, as every cargo config of the checkout's has it (`builds.rs`). A
 # build-dir with {workspace-path-hash} is one folder per checkout in the cargo home's build/xx/yyyy: a new

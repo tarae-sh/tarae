@@ -147,7 +147,6 @@ pub fn panel(mode: crate::sidebar::Mode) -> &'static str {
 
 /// Every picker's kind (`Picker::of`) — `every_picker_kind_is_listed` reads them from the code.
 pub const PICKERS: &[&str] = &[
-    "attach",
     "blocked",
     "branches",
     "buffers",
@@ -175,7 +174,6 @@ pub const PICKERS: &[&str] = &[
     "tasks",
     "text-matches",
     "themes",
-    "watches",
     "workspace-diagnostics",
     "workspace-symbols",
 ];

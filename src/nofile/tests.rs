@@ -229,9 +229,9 @@ const SCENE: &str = "TARAE_NOFILE_SCENE";
 
 /// Started with a soft limit of 256 in a process of its own (the test binary on `raised_scene`, the limit set in
 /// its child before the exec — this process's own stays as it is), tarae's raise lifts it, and each way tarae
-/// starts a process gives the 256 back but git's: a fork's (`dap::setsid`'s `pre_exec`), posix_spawn's
-/// (`spawn::setsid`, and `nofile::command` for std's — a relative path from the folder it runs in, a debug build's
-/// too) through the shim — here a stand-in of it (a script doing what `shim_main` does, saying the `argv[0]` it
+/// starts a process gives the 256 back but git's: a fork's (`spawn::setsid_fork`'s `pre_exec`), posix_spawn's
+/// (`spawn::setsid`, and `nofile::command` for std's — a relative path from the folder it runs in) through the
+/// shim — here a stand-in of it (a script doing what `shim_main` does, saying the `argv[0]` it
 /// passes on: the test binary isn't tarae; tarae's own is tests/e2e.rs's), each program given the `argv[0]` it
 /// was given — and git's (`spawn::setsid_git`) left raised. `:restart`'s exec gets the 256 too, and a failed one
 /// puts the raised one back. Last, the shim's binary replaced behind tarae's back: no shim from then on (the
@@ -277,7 +277,6 @@ fn a_raised_limit_goes_back_to_what_tarae_starts_but_git() {
         relative,
         "a relative path found from the folder it runs in, through the shim"
     );
-    assert_eq!(get("build"), "256", "a debug build (debugpack::run_build), through the shim");
     assert_eq!(get("git"), format!("{want} none"), "git's left raised");
     assert_eq!(get("exec"), "256", "for an exec of tarae itself");
     assert_eq!(get("undone"), want, "the exec failed: raised again");
@@ -318,7 +317,7 @@ fn raised_scene() {
         c
     };
     let first_line = |b: &[u8]| String::from_utf8_lossy(b).lines().next().unwrap_or("").to_string();
-    let fork = crate::dap::setsid(&mut sh()).output().unwrap();
+    let fork = crate::spawn::setsid_fork(&mut sh()).output().unwrap();
     println!("scene: fork={}", first_line(&fork.stdout));
     let read = |s: crate::spawn::Spawned| {
         let mut out = Vec::new();
@@ -338,21 +337,6 @@ fn raised_scene() {
         .unwrap();
     let relative = command("bin/server", Some(&dir)).output().unwrap();
     println!("scene: relative={}", first_line(&relative.stdout));
-    // (a debug build — the project's code runs in it: what it prints as built is its limit)
-    let build = crate::debugpack::Build {
-        run: vec![
-            "sh".into(),
-            "-c".into(),
-            "printf '{\"k\":\"v\",\"p\":\"%s\"}\\n' \"$(ulimit -Sn)\"".into(),
-        ],
-        env: Vec::new(),
-        pick: vec![("k".into(), serde_json::json!("v"))],
-        take: "p".into(),
-        error: None,
-        none: "nothing built".into(),
-    };
-    let built = crate::debugpack::run_build(&build, &dir).map(|p| p.display().to_string());
-    println!("scene: build={}", built.unwrap_or_else(|e| e));
     let exec = for_exec();
     println!("scene: exec={}", soft());
     exec.undo();

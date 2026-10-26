@@ -418,7 +418,7 @@ impl Document {
     }
 
     /// A file's text read for a picker's preview (`picker::load_preview`) — nobody's buffer: no path, so nothing
-    /// said of a file by its path (diagnostics, breakpoints, notes, a test's failures) is drawn on it; the drawer
+    /// said of a file by its path (diagnostics, notes, a test's failures) is drawn on it; the drawer
     /// reads it as it reads a buffer.
     pub fn previewed(text: Rope, syntax: Option<crate::syntax::Syntax>) -> Self {
         Self { text, syntax, ..Self::from_str(PREVIEWED, "") }

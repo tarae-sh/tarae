@@ -418,8 +418,6 @@ pub enum Kind {
     },
     DocumentSymbols,
     WorkspaceSymbols,
-    /// Java debug prep (jdtls `vscode.java.*` commands) — java.rs.
-    JavaDebug,
     /// A document of the server's own (its pack's `virtual`: jdtls's `jdt://` classes) — `virtualdoc.rs`.
     Virtual {
         uri: String,
@@ -972,7 +970,6 @@ impl Editor {
                         self.swap_answer(cid, &root, error.is_none().then_some(result));
                     }
                     Kind::Shutdown => self.share_drop(cid),
-                    Kind::JavaDebug => self.java_debug_reply(cid, id, error, result),
                     Kind::Virtual { uri, pos } => self.server_doc_reply(cid, uri.clone(), pos, error, result),
                     Kind::InlayHint { range } => self.on_inlay(cid, &p, *range, result),
                     &Kind::ToolRefs { ask } => {
@@ -1343,7 +1340,6 @@ impl Editor {
             | Kind::Completion
             | Kind::SignatureHelp
             | Kind::InlayHint { .. }
-            | Kind::JavaDebug
             | Kind::Virtual { .. }
             | Kind::ToolRefs { .. }
             | Kind::ToolDeclared { .. }
@@ -3526,9 +3522,6 @@ impl Editor {
         if self.lsp.actions.iter().any(|(c, _)| *c == cid) {
             self.lsp.actions.clear();
             self.lsp.action_previews.clear();
-        }
-        if self.java_debug.as_ref().is_some_and(|p| p.cid == cid) {
-            self.java_debug_fail(format!("{name} exited"));
         }
         self.share_forget(cid);
         Some(name)

@@ -287,7 +287,7 @@ process, or the disk.
   break its queries; `every_installed_grammar_loads_with_its_queries` catches that.
 - Queries live in [`runtime/queries/`](runtime/queries) and are embedded at build time. To try query changes without
   rebuilding, point `TARAE_RUNTIME` at a folder with a `queries/` directory. Later patterns win.
-- Language-aware features (test discovery, debugging) work **on the tree-sitter tree**, never by guessing from text. If
+- Language-aware features (test discovery) work **on the tree-sitter tree**, never by guessing from text. If
   the grammar is missing, offer the download and carry on with what the user was doing once they accept.
 
 ### The plugin runtime (`src/wasm`)

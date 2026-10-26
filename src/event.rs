@@ -175,7 +175,7 @@ impl Queue {
     }
 
     /// A sender whose results are applied as they come, in whatever session is in front then — for what every
-    /// session shares (language servers, the saver, input, the config watch, plugins, the debugger).
+    /// session shares (language servers, the saver, input, the config watch, plugins).
     pub fn shared_sender(&self) -> Tx {
         self.tx_for(None)
     }
@@ -672,10 +672,8 @@ mod tests {
 
     /// `thread::sleep` calls left, per file (paths under `src/`).
     const RAW_SLEEPS: &[(&str, usize)] = &[
-        ("attach.rs", 3),
         ("builds.rs", 1),
         ("cards.rs", 1),
-        ("dap.rs", 4),
         ("disk.rs", 1),
         ("editor.rs", 1),
         ("follow.rs", 1),

@@ -1,8 +1,7 @@
-//! Tests — run the test at the cursor · this file's tests (test pane below), debug them (debug pane),
-//! rerun the last one. A language's tests are found and run the way its pack says (`packs.rs`,
+//! Tests — run the test at the cursor · this file's tests (test pane below), rerun the last one. A language's tests are found and run the way its pack says (`packs.rs`,
 //! `runtime/packs/`: Go, Rust, Python, Java). Finding goes **through the tree-sitter tree** — if the grammar
 //! is missing, show a download offer and resume the intended work once downloaded (`offer::Resume`). Here:
-//! the helper packs use (the Cargo target), running, and debugging.
+//! the helper packs use (the Cargo target), and running.
 //!
 //! Runs on three worker threads (read stdout·stderr, wait) — editing isn't blocked. Launched in a process group
 //! of its own (`setsid`) so closing kills the whole process group (including the test binaries cargo spawned).
@@ -10,7 +9,6 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
 use tree_sitter::Tree;
 
 use crate::editor::Editor;
@@ -34,16 +32,12 @@ pub struct Target {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum How {
-    /// From a language pack: the command, the debugger's launch configuration, how its output is read a line
-    /// at a time. And what to build before debugging; or the command to debug with instead, and how to attach
-    /// (`java`); and for `junit`, where the reports land and the source roots.
+    /// From a language pack: the command, how its output is read a line at a time, and for `junit`, where the
+    /// reports land and the source roots.
     Pack {
         lang: String,
         argv: Vec<String>,
-        debug: Option<Value>,
         lines: Option<crate::test_results::Rules>,
-        build: Option<crate::debugpack::Build>,
-        debug_run: Option<(Vec<String>, crate::packs::AttachWait)>,
         junit: Option<(Vec<PathBuf>, Vec<PathBuf>)>,
     },
 }
@@ -54,11 +48,6 @@ impl Target {
         let How::Pack { argv, .. } = &self.how;
         argv.clone()
     }
-}
-
-fn lang_of(how: &How) -> &str {
-    let How::Pack { lang, .. } = how;
-    lang
 }
 
 /// What reads a run's output a line at a time.
@@ -92,15 +81,7 @@ pub fn find(
     let pack =
         crate::packs::tests(lang, &tree.language()).ok_or(format!("no test runner for {lang} yet"))??;
     let f = pack.find(path, src, tree, cursor.min(src.len()), scope == Scope::File)?;
-    let how = How::Pack {
-        lang: lang.to_string(),
-        argv: f.argv,
-        debug: f.debug,
-        lines: f.lines,
-        build: f.build,
-        debug_run: f.debug_run,
-        junit: f.junit,
-    };
+    let how = How::Pack { lang: lang.to_string(), argv: f.argv, lines: f.lines, junit: f.junit };
     Ok(Target { label: f.label, cwd: f.cwd, how })
 }
 
@@ -120,8 +101,6 @@ fn up_to(start: &Path, found: impl Fn(&Path) -> bool) -> Option<PathBuf> {
 
 /// The Cargo target a file belongs to (the `cargo` helper of the Rust pack).
 pub(crate) struct Crate {
-    /// The target's root file (for picking the test binary to debug: the artifact's `target.src_path`).
-    pub crate_root: PathBuf,
     /// `--lib`, `--bin x`, `--test x` (or nothing: the binary of src/main.rs).
     pub flag: Vec<String>,
     /// The file's module path within it.
@@ -215,31 +194,23 @@ fn path_mods(tree: &Tree, src: &str) -> Vec<(String, String)> {
 
 /// The Cargo target and module path from where the file sits.
 fn rust_crate_by_place(path: &Path) -> Result<Crate, String> {
-    let c = |crate_root: PathBuf, flag: Vec<String>, mods: Vec<String>| Crate { crate_root, flag, mods };
+    let c = |flag: Vec<String>, mods: Vec<String>| Crate { flag, mods };
     let root = up_to(path, |d| d.join("Cargo.toml").is_file()).ok_or("not in a Cargo project")?;
     let rel = path.strip_prefix(&root).map_err(|_| "file outside its package")?;
     let parts: Vec<String> = rel.iter().map(|c| c.to_string_lossy().into_owned()).collect();
     let stem = |s: &str| s.trim_end_matches(".rs").to_string();
     match parts.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         // tests/foo.rs · tests/foo/main.rs = integration test target foo
-        ["tests", f] => Ok(c(path.to_path_buf(), vec!["--test".into(), stem(f)], Vec::new())),
-        ["tests", dir, rest @ ..] => {
-            let crate_root = root.join("tests").join(dir).join("main.rs");
-            let mods = module_path(rest);
-            Ok(c(crate_root, vec!["--test".into(), dir.to_string()], mods))
-        }
-        ["src", "bin", f] => Ok(c(path.to_path_buf(), vec!["--bin".into(), stem(f)], Vec::new())),
+        ["tests", f] => Ok(c(vec!["--test".into(), stem(f)], Vec::new())),
+        ["tests", dir, rest @ ..] => Ok(c(vec!["--test".into(), dir.to_string()], module_path(rest))),
+        ["src", "bin", f] => Ok(c(vec!["--bin".into(), stem(f)], Vec::new())),
         // src/bin/tool/main.rs (+ its modules) = binary target tool
-        ["src", "bin", dir, rest @ ..] => {
-            let crate_root = root.join("src/bin").join(dir).join("main.rs");
-            Ok(c(crate_root, vec!["--bin".into(), dir.to_string()], module_path(rest)))
-        }
+        ["src", "bin", dir, rest @ ..] => Ok(c(vec!["--bin".into(), dir.to_string()], module_path(rest))),
         ["src", rest @ ..] => {
-            let lib = root.join("src/lib.rs");
-            let crate_root =
-                if lib.is_file() && rest != ["main.rs"] { lib } else { root.join("src/main.rs") };
-            let flag = if crate_root.ends_with("lib.rs") { vec!["--lib".to_string()] } else { Vec::new() };
-            Ok(c(crate_root, flag, module_path(rest)))
+            // (the library's unless it's src/main.rs or there's no src/lib.rs: the binary's, no flag)
+            let lib = root.join("src/lib.rs").is_file() && rest != ["main.rs"];
+            let flag = if lib { vec!["--lib".to_string()] } else { Vec::new() };
+            Ok(c(flag, module_path(rest)))
         }
         _ => Err("tests live under src/ or tests/".into()),
     }
@@ -283,9 +254,6 @@ pub struct TestRun {
     pub took: Option<Duration>,
     pid: Option<u32>,
     generation: u64,
-    /// A test debugged by running it (`debug-attach`): attached once a line says where it waits — the file
-    /// and project it's for.
-    attach: Option<(crate::packs::AttachWait, PathBuf, PathBuf)>,
     /// Per-test results (parsed per line — Java: JUnit XML after finishing) · the one picked in the
     /// results pane.
     pub cases: Vec<crate::test_results::Case>,
@@ -377,10 +345,7 @@ impl TestRun {
         let how = How::Pack {
             lang: "python".into(),
             argv: vec!["python".into()],
-            debug: None,
             lines: crate::test_results::Rules::builtin("python"),
-            build: None,
-            debug_run: None,
             junit: None,
         };
         TestRun {
@@ -393,7 +358,6 @@ impl TestRun {
             took: None,
             pid: None,
             generation: 0,
-            attach: None,
             cases,
             selected: 0,
             list_top: Default::default(),
@@ -447,7 +411,7 @@ impl TestRun {
         if let Some(pid) = self.pid.take()
             && self.state == RunState::Running
         {
-            crate::dap::term_group(pid);
+            crate::spawn::term_group(pid);
             self.trace.end("stopped before its end");
             // (what it started in a container engine goes with it — `containers.rs`)
             if let Some(c) = self.containers.take() {
@@ -525,11 +489,10 @@ impl Editor {
         self.test_target(scope, crate::offer::Resume::Test(scope), |ed, t| ed.test_start(t));
     }
 
-    /// `space x l` — rerun the last one (as debug if it was debug).
+    /// `space x l` — rerun the last one.
     pub fn test_rerun(&mut self) {
         match self.workspace.test_last.clone() {
-            Some((t, false)) => self.test_start(t),
-            Some((t, true)) => self.test_debug_target(t),
+            Some(t) => self.test_start(t),
             None => self.set_status("no test run yet — space x x runs the test at the cursor"),
         }
     }
@@ -632,7 +595,7 @@ impl Editor {
     /// (`queued.rs`; `enter` in the pane runs them now).
     pub fn test_start(&mut self, target: Target) {
         if crate::queued::claudes_running(&self.workspace, crate::queued::Slot::Tests) {
-            self.workspace.test_last = Some((target.clone(), false));
+            self.workspace.test_last = Some(target.clone());
             return crate::queued::push(self, crate::queued::What::Tests(target));
         }
         self.test_start_now(target, false, None);
@@ -677,7 +640,7 @@ impl Editor {
     ) {
         let trace = trace.unwrap_or_else(|| crate::trace::RunTrace::new(format!("tests: {}", target.label)));
         trace.step("saved");
-        self.workspace.test_last = Some((target.clone(), false));
+        self.workspace.test_last = Some(target.clone());
         let argv = target.argv();
         let policy = match &guard {
             Some(crate::sandbox::Guard::In(p)) => Some(&**p),
@@ -739,36 +702,16 @@ impl Editor {
                     else {
                         return;
                     };
-                    let mut attach = None;
                     for (line, hit) in lines {
                         // (a wait's line is the run's state — the panel says it — not output)
                         if r.wait.line(hit, at, &r.trace) {
                             continue;
-                        }
-                        // A test debugged by running it waits for a debugger — attach to the port it says
-                        if let Some(port) = r.attach.as_ref().and_then(|a| a.0.port(&line))
-                            && let Some(a) = r.attach.take()
-                        {
-                            attach = Some((a, port, r.target.label.clone()));
                         }
                         r.parser.line(&r.target.cwd, &line, &mut r.cases);
                         r.output.push(err, &line);
                     }
                     r.last_output = Instant::now();
                     r.keep();
-                    if let Some(((wait, file, root), port, label)) = attach {
-                        ed.dap_generation += 1;
-                        let g = ed.dap_generation;
-                        // (the ways tarae has in code — `debugpack::WAYS`, checked when the pack was read)
-                        match wait.way.as_str() {
-                            "java" => ed.java_attach(file, root, "127.0.0.1".into(), port, g),
-                            way => return ed.set_error(format!("no way `{way}` to attach")),
-                        }
-                        // Debug pane header = the test name, not the address
-                        if let Some(d) = ed.dap.as_mut() {
-                            d.program = label;
-                        }
-                    }
                 };
                 tx.send(crate::event::Event::Job(Box::new(apply))).is_ok()
             };
@@ -860,7 +803,6 @@ impl Editor {
             took: None,
             pid: Some(pid),
             generation,
-            attach: None,
             cases: Vec::new(),
             parser,
             selected: 0,
@@ -881,67 +823,6 @@ impl Editor {
             ended: Default::default(),
         });
     }
-
-    /// Debugging by running `argv` (a pack's `debug-args`): Java — the build tool starts the test JVM waiting
-    /// for a debugger (build output in the test pane), and once it prints where it's waiting (`wait`), the
-    /// pack's way attaches (debug pane).
-    fn test_debug_by_running(&mut self, target: Target, argv: Vec<String>, wait: crate::packs::AttachWait) {
-        let Some(file) = self.doc().path.clone() else { return };
-        let mut t = target.clone();
-        let How::Pack { argv: run, .. } = &mut t.how;
-        *run = argv;
-        let root = target.cwd.clone();
-        let before = self.test_generation;
-        // (saved already — `test_debug_target`)
-        self.test_start_guarded(t, None, None, crate::spawn::Acts::User);
-        if self.test_generation == before {
-            return; // couldn't launch (reason shown)
-        }
-        self.workspace.test_last = Some((target.clone(), true));
-        self.dap_test = Some(target);
-        if let Some(r) = self.workspace.test_run.as_mut() {
-            r.attach = Some((wait, file, root));
-        }
-        self.set_status("Building and starting the test JVM — attaching when it's ready");
-    }
-
-    /// `space x d` — debugs the test at the cursor (stops at breakpoints).
-    pub fn test_debug(&mut self) {
-        self.test_target(Scope::Nearest, crate::offer::Resume::TestDebug, |ed, t| ed.test_debug_target(t));
-    }
-
-    pub fn test_debug_target(&mut self, target: Target) {
-        // Save modified files first — tests run the code on disk (started once they're written)
-        self.auto_save(" · before test");
-        self.after_saves(move |ed| ed.test_debug_saved(target));
-    }
-
-    fn test_debug_saved(&mut self, target: Target) {
-        self.workspace.test_last = Some((target.clone(), true));
-        self.dap_test = Some(target.clone());
-        self.dap_resume = Some(crate::offer::Resume::TestTarget(Box::new(target.clone())));
-        let lang = lang_of(&target.how).to_string();
-        let How::Pack { debug_run, .. } = &target.how;
-        if let Some((argv, wait)) = debug_run.clone() {
-            return self.test_debug_by_running(target, argv, wait);
-        }
-        let lang = lang.as_str();
-        self.dap_generation += 1;
-        let generation = self.dap_generation;
-        let cwd = target.cwd.clone();
-        let label = target.label.clone();
-        match target.how {
-            // What the pack builds first (on a worker), its path put into the launch configuration
-            How::Pack { debug: Some(launch), build: Some(build), .. } => {
-                self.dap_build_and_start(lang, label.clone(), cwd.clone(), generation, move || {
-                    let built = crate::debugpack::run_build(&build, &cwd)?;
-                    Ok((crate::debugpack::with_built(launch, &built), label))
-                });
-            }
-            How::Pack { debug: Some(launch), .. } => self.dap_start(lang, cwd, launch, label, generation),
-            How::Pack { debug: None, .. } => self.set_error(format!("the {lang} pack has no debug for this")),
-        }
-    }
 }
 
 /// Tests that run a real cargo in a temp project: its build goes inside the project (`target/build`) —
@@ -958,8 +839,6 @@ pub(crate) fn cargo_builds_inside(root: &Path) {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
-
     use super::*;
 
     fn tmp(name: &str) -> PathBuf {
@@ -1049,26 +928,6 @@ mod tests {
         assert_eq!(find_at("in_e").label, "tests::e", "once, not tests::tests::e");
         let t = find_at("in_c");
         assert_eq!(t.argv(), ["cargo", "test", "--lib", "--", "c", "--exact"]);
-        let How::Pack { debug: Some(launch), build: Some(build), .. } = t.how else {
-            panic!("a build to debug")
-        };
-        // The pack's `debug-build`: `cargo test --no-run` for this file's target, the binary whose root file
-        // is the target's
-        assert_eq!(build.run, ["cargo", "test", "--no-run", "--lib", "--message-format=json"]);
-        let crate_root = d.join("src/lib.rs").display().to_string();
-        assert_eq!(
-            build.pick,
-            [
-                ("profile.test".to_string(), json!(true)),
-                ("reason".to_string(), json!("compiler-artifact")),
-                ("target.src_path".to_string(), json!(crate_root)),
-            ]
-        );
-        assert_eq!(build.take, "executable");
-        assert_eq!(launch["program"], "{built}", "filled in once built");
-        assert_eq!(launch["args"], json!(["c", "--exact", "--nocapture", "--test-threads=1"]));
-        let launch = crate::debugpack::with_built(launch, Path::new("/t/x-123"));
-        assert_eq!(launch["program"], "/t/x-123");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -1094,16 +953,9 @@ mod tests {
             "parse_test.go",
             "Test + a lowercase letter isn't a test (go's rule)"
         );
-        // Debugging: the pack's launch configuration, filled in
-        let How::Pack { debug: Some(launch), lines, .. } = find_at("x := 1").how else {
-            panic!("from the pack")
-        };
+        let How::Pack { lines, .. } = find_at("x := 1").how;
         assert_eq!(lines, crate::test_results::Rules::builtin("go"));
         assert!(lines.is_some());
-        assert_eq!(
-            launch,
-            json!({ "mode": "test", "program": "/p", "cwd": "/p", "args": ["-test.run", "^TestParse$", "-test.v"], "outputMode": "remote" })
-        );
     }
 
     /// A pack of one's own (as it would be in `~/.local/share/tarae/packs/go/`): run from the module's root, with
@@ -1130,7 +982,6 @@ mod tests {
         let f = pack.find(&file, src, &tree, at(src, "x := 1"), false).unwrap();
         assert_eq!(f.cwd, d, "the folder with go.mod");
         assert_eq!(f.argv, ["go", "test", "-race", "-run", "^TestA$", "./..."]);
-        assert_eq!(f.debug, None, "no `debug` in this pack");
         let whole = pack.find(&file, src, &tree, 0, true).unwrap();
         assert_eq!(whole.argv, ["go", "test", &file.display().to_string()]);
         // Mistakes in a pack are said, not crashed on
@@ -1139,10 +990,10 @@ mod tests {
         };
         assert!(bad("[test]\nrun = 1").contains("query"), "no query");
         assert!(bad("[test]\nquery = \"q\"\nrun = 1").contains("`run` isn't a list"));
-        // …and so are the quiet ones: a typo, a parser tarae hasn't, debugging with no way to attach
+        // …and so are the quiet ones: a typo, a parser tarae hasn't, a key that went (the debugger's)
         assert!(bad("[test]\nquery = \"q\"\nrunn = []").contains("no `runn`"));
         assert!(bad("[test]\nquery = \"q\"\nparse = \"Junit\"").contains("parse"));
-        assert!(bad("[test]\nquery = \"q\"\ndebug-args = [\"-d\"]").contains("debug-attach"));
+        assert!(bad("[test]\nquery = \"q\"\ndebug-args = [\"-d\"]").contains("no `debug-args`"));
         assert!(bad("[test]\nquery = \"q\"\n[test.kind.x]\nfile = \"no\"").contains("true or false"));
         assert!(
             bad("[test]\nquery = \"q\"\nparse = \"junit\"\n[test.variant.a]\nreports = [\"r\"]")
@@ -1170,7 +1021,7 @@ mod tests {
     #[test]
     fn the_vitest_pack_in_the_docs_works() {
         // The example as the docs have it
-        let md = include_str!("../docs/testing-and-debugging.md");
+        let md = include_str!("../docs/testing.md");
         let block = |fence: &str, first: &str| {
             md.split(fence)
                 .skip(1)
@@ -1271,20 +1122,10 @@ mod tests {
         );
         assert_eq!(find_at("int x", Scope::File).argv()[5], "demo.AppTest");
         assert_eq!(find_at("void helper", Scope::Nearest).label, "AppTest");
-        // Debugging: the same run, waiting for a debugger; results from the module's JUnit XML
-        let How::Pack { debug_run: Some((argv, attach)), junit: Some((reports, sources)), .. } =
-            find_at("int x", Scope::Nearest).how
-        else {
-            panic!("no debug run or junit")
+        // Results from the module's JUnit XML
+        let How::Pack { junit: Some((reports, sources)), .. } = find_at("int x", Scope::Nearest).how else {
+            panic!("no junit")
         };
-        assert_eq!((argv.last().map(String::as_str), attach.way.as_str()), (Some("--debug-jvm"), "java"));
-        // (where the JVM says it waits: the port, with a host or without)
-        let says = |a: &str| attach.port(&format!("Listening for transport dt_socket at address: {a}"));
-        assert_eq!(
-            (says("5005"), says("*:5006"), says("localhost:5007")),
-            (Some(5005), Some(5006), Some(5007))
-        );
-        assert_eq!(attach.port("Listening for transport dt_shmem at address: 5005"), None);
         assert_eq!(reports, [d.join("app/build/test-results/test")]);
         assert_eq!(sources, [d.join("app/src/test/java"), d.join("app/src/main/java")]);
         // Maven: -pl module -Dtest=Class#method
@@ -1306,10 +1147,7 @@ mod tests {
             ]
         );
         assert_eq!(find_at("void empty", Scope::Nearest).argv()[5], "-Dtest=demo.AppTest$Edge#empty");
-        let How::Pack { debug_run: Some((argv, _)), junit: Some((reports, _)), .. } = t.how else {
-            panic!("no debug run or junit")
-        };
-        assert_eq!(argv.last().map(String::as_str), Some("-Dmaven.surefire.debug"));
+        let How::Pack { junit: Some((reports, _)), .. } = t.how else { panic!("no junit") };
         assert_eq!(reports, [d.join("app/target/surefire-reports")]);
         // The package from the tree: not one in a comment, not the rest of its line
         let src = "/* package old; */\npackage demo; import org.junit.jupiter.api.*; // x\nclass T { @Test void t() {} }\n";
@@ -1334,10 +1172,7 @@ mod tests {
         std::fs::write(d.join("Cargo.toml"), "").unwrap();
         std::fs::create_dir_all(d.join("src/bin/tool")).unwrap();
         let c = rust_crate_by_place(&d.join("src/bin/tool/main.rs")).unwrap();
-        assert_eq!(
-            (c.crate_root, c.flag, c.mods),
-            (d.join("src/bin/tool/main.rs"), vec!["--bin".into(), "tool".into()], vec![])
-        );
+        assert_eq!((c.flag, c.mods), (vec!["--bin".to_string(), "tool".into()], vec![]));
         let c = rust_crate_by_place(&d.join("src/bin/tool/util.rs")).unwrap();
         assert_eq!((c.flag, c.mods), (vec!["--bin".to_string(), "tool".into()], vec!["util".to_string()]));
         let _ = std::fs::remove_dir_all(&d);
@@ -1419,10 +1254,7 @@ mod tests {
                 how: How::Pack {
                     lang: parse.into(),
                     argv: vec!["sh".into(), "-c".into(), script.into()],
-                    debug: None,
                     lines: crate::test_results::Rules::builtin(parse),
-                    build: None,
-                    debug_run: None,
                     junit: None,
                 },
             });
@@ -1464,10 +1296,7 @@ mod tests {
             how: How::Pack {
                 lang: "rust".into(),
                 argv: vec!["sh".into(), "-c".into(), script.into()],
-                debug: None,
                 lines: crate::test_results::Rules::builtin("rust"),
-                build: None,
-                debug_run: None,
                 junit: None,
             },
         });
@@ -1522,10 +1351,7 @@ mod tests {
             how: How::Pack {
                 lang: "python".into(),
                 argv: vec![python.into(), "-m".into(), "pytest".into(), "x".into()],
-                debug: None,
                 lines: crate::test_results::Rules::builtin("python"),
-                build: None,
-                debug_run: None,
                 junit: None,
             },
         };

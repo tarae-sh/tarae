@@ -1,5 +1,5 @@
 # Python: basedpyright, pyright or pylsp, and ruff beside it; pytest from the project's root, with its
-# virtualenv's Python; debugpy to debug.
+# virtualenv's Python.
 
 # What runs later outside Claude's sandbox, in every project (`packs::protect`): bytecode beside its source —
 # your own `pytest` imports it. A run's Python writes its own elsewhere (`PYTHONPYCACHEPREFIX`, below); a
@@ -54,10 +54,6 @@ label = "{rel}::{path}"
 label-group = "{rel}::{groups}"
 label-file = "{rel}"
 
-debug = { module = "pytest", args = ["{rel}::{path}", "-q", "--color=no"], python = "{python}", cwd = "{cwd}", console = "internalConsole", justMyCode = false }
-debug-group = { module = "pytest", args = ["{rel}::{groups}", "-q", "--color=no"], python = "{python}", cwd = "{cwd}", console = "internalConsole", justMyCode = false }
-debug-file = { module = "pytest", args = ["{rel}", "-q", "--color=no"], python = "{python}", cwd = "{cwd}", console = "internalConsole", justMyCode = false }
-
 # pytest -v: a line per test (`tests/test_x.py::TestA::test_b PASSED  [ 50%]` — the name past the file),
 # then the FAILURES block: a heading per failure (`___ TestA.test_b ___`), its traceback's frames
 # (`tests/test_x.py:7: in test_b` — the last before the E lines is where it failed) and its E lines
@@ -91,24 +87,6 @@ phase = "failures"
 match = '^(?<file>[^\s:]+\.py):(?<line>\d+)'
 phase = "failures"
 place = "last"
-
-# F5: the file, with the project's virtualenv's Python (its packages)
-[debug]
-debugger = "debugpy"
-vars = [{ name = "python", first = ["{cwd}/.venv/bin/python", "{cwd}/venv/bin/python", "${VIRTUAL_ENV}/bin/python", "python3"] }]
-launch = { program = "{file}", python = "{python}", console = "internalConsole", cwd = "{cwd}", justMyCode = true }
-attach-pid = { processId = "{pid}", justMyCode = false, cwd = "{cwd}" }
-# `python -m debugpy --listen 5678 app.py` speaks DAP: straight to it
-attach-tcp = { justMyCode = false, pathMappings = [{ localRoot = "{cwd}", remoteRoot = "{remote-root}" }] }
-
-# The virtualenv's Python runs it when there is one (debugpy often lives only there); else debugpy's own
-# launcher, else python3's module
-[debugger.debugpy]
-find = [
-    { file = ["{cwd}/.venv/bin/python", "{cwd}/venv/bin/python", "${VIRTUAL_ENV}/bin/python"], run = ["{found}", "-m", "debugpy.adapter"] },
-    "debugpy-adapter",
-    { program = "python3", run = ["{found}", "-m", "debugpy.adapter"] },
-]
 
 [tasks]
 when = ["pyproject.toml", "setup.py", "setup.cfg"]

@@ -886,7 +886,7 @@ mod tests {
     /// The pack of one's own in the docs reads `go test -v` as the Go pack does — its rules are the pack's.
     #[test]
     fn the_go_rules_in_the_docs_are_the_packs() {
-        let md = include_str!("../docs/testing-and-debugging.md");
+        let md = include_str!("../docs/testing.md");
         let block = md.split("```toml\n").find(|b| b.contains("packs/go/pack.toml — run from")).unwrap();
         let t: toml::Table = block.split("```").next().unwrap().parse().unwrap();
         let docs = Rules::read(t["test"].as_table().unwrap()).unwrap();

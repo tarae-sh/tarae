@@ -61,10 +61,6 @@ pub enum PromptKind {
         remove: bool,
     },
     Rename,
-    /// Debugger: breakpoint condition / log message / watch expression.
-    BreakCondition,
-    LogMessage,
-    Watch,
     /// `|` `A-|` `!` `A-!` `$` — a shell command for the selections (shell.rs).
     Shell(crate::shell::Pipe),
     /// `C-r` in the global search results — the replacement text.
@@ -88,9 +84,6 @@ impl PromptKind {
             PromptKind::Keep { remove: false } => "keep:",
             PromptKind::Keep { remove: true } => "remove:",
             PromptKind::Rename => "rename:",
-            PromptKind::BreakCondition => "break when:",
-            PromptKind::LogMessage => "log:",
-            PromptKind::Watch => "watch:",
             PromptKind::Shell(p) => p.label(),
             PromptKind::Replace => "replace with:",
             PromptKind::Note(Some(_)) => "reply:",
@@ -698,9 +691,6 @@ pub struct Editor {
     /// cursor from a reload moving it; what only a person's look may do goes by it (follow's pause, a card's place
     /// among yours).
     pub input_seq: u64,
-    /// Debug run · breakpoints (kept without a debug run) · debug run generation (drops late messages).
-    pub dap: Option<crate::dap::Dap>,
-    pub breakpoints: crate::dap::Breakpoints,
     /// WebAssembly plugins: their thread and the commands they registered (`None` until there are some).
     pub plugins: Option<crate::plugin::Plugins>,
     /// The processes tarae started, their costs and its checks on them (`:procs`, `procs.rs`).
@@ -757,20 +747,11 @@ pub struct Editor {
     /// Diagnostic card closed with Esc on this line (doc, line) — back once the cursor leaves the line.
     pub diag_card_hidden: Option<(DocId, usize)>,
     cmd_loading: std::collections::HashSet<std::path::PathBuf>,
-    /// Debugger watch expressions (evaluated at every stop — outlive debug runs).
-    pub watches: Vec<String>,
-    pub dap_generation: u64,
     /// Run generations of the test pane, the build task and the terminal (a replaced one's late output is
     /// dropped) — counted here so they're unique across sessions.
     pub task_generation: u64,
     pub terminal_generation: u64,
     pub test_generation: u64,
-    /// If the current debug run is a test, that test (after it ends, F5 = rerun it).
-    pub dap_test: Option<crate::testing::Target>,
-    /// What the current debugging started as — to start it again once a missing debugger is installed.
-    pub dap_resume: Option<crate::offer::Resume>,
-    /// Preparing a Java debug run (asking jdtls for the main class and classpath) — java.rs.
-    pub java_debug: Option<crate::java::DebugPrep>,
     /// Screen layout of the last frame — for mapping mouse coordinates to text positions.
     pub screen: Screen,
     /// Screen rows of the last frame (folded doc comments make screen row ≠ doc line — used by the mouse).
@@ -1109,8 +1090,6 @@ impl Editor {
             usage_view: None,
             goto_after_load: None,
             input_seq: 0,
-            dap: None,
-            breakpoints: Default::default(),
             plugins: None,
             procs: Default::default(),
             cmd_lists: Default::default(),
@@ -1135,14 +1114,9 @@ impl Editor {
             reduce_motion: false,
             diag_card_hidden: None,
             cmd_loading: Default::default(),
-            watches: Vec::new(),
-            dap_generation: 0,
-            java_debug: None,
             task_generation: 0,
             terminal_generation: 0,
             test_generation: 0,
-            dap_test: None,
-            dap_resume: None,
             ticking: None,
             toasts: Vec::new(),
             messages: Vec::new(),
@@ -1401,11 +1375,6 @@ impl Editor {
         self.docs.push(Document::from_str(id, ""));
         self.current = self.docs.len() - 1;
         self.workspace_keeps(id);
-    }
-
-    /// The project's folder (`root`).
-    pub fn root(&self) -> &Path {
-        &self.workspace.root
     }
 
     /// The checkout tarae started in (session 0's): the editor's config is read from there, whichever
@@ -3411,7 +3380,6 @@ impl Editor {
                 || self.workspace.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running);
         let waiting = self.workspace.claude.review.as_ref().is_some_and(|r| !r.ready)
             || self.workspace.claude.chat.as_ref().is_some_and(|c| c.busy())
-            || self.dap.as_ref().is_some_and(|d| d.state == crate::dap::State::Building)
             || (run && slot_drawn)
             || crate::web::page::reading_in_sight(self)
             || self.offer_busy();
@@ -5242,10 +5210,7 @@ impl Editor {
             PromptKind::SelectRegex => self.with_group(|cx| search::select_regex(cx, &text)),
             PromptKind::Split => self.with_group(|cx| search::split_selection(cx, &text)),
             PromptKind::Keep { remove } => self.with_group(|cx| search::keep_selections(cx, &text, remove)),
-            PromptKind::BreakCondition => self.set_breakpoint_field(false, &text),
-            PromptKind::LogMessage => self.set_breakpoint_field(true, &text),
             PromptKind::Plugin(token) => self.plugin_prompt_done(token, Some(text)),
-            PromptKind::Watch => self.add_watch(&text),
             PromptKind::Shell(p) => self.shell_pipe(p, &text),
             PromptKind::Replace => self.replace_plan_start(text),
             PromptKind::Note(target) => crate::notes::submit(self, target, &text),
@@ -7446,10 +7411,7 @@ mod tests {
             how: crate::testing::How::Pack {
                 lang: "python".into(),
                 argv: vec!["sleep".into(), "5".into()],
-                debug: None,
                 lines: crate::test_results::Rules::builtin("python"),
-                build: None,
-                debug_run: None,
                 junit: None,
             },
         };
@@ -13409,7 +13371,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("project")).unwrap();
         std::os::unix::fs::symlink(dir.join("project"), dir.join("link")).unwrap();
         let ed = Editor::with_root(Config::default(), dir.join("link"));
-        assert_eq!(ed.root(), std::fs::canonicalize(dir.join("project")).unwrap());
+        assert_eq!(ed.workspace.root, std::fs::canonicalize(dir.join("project")).unwrap());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -13823,7 +13785,7 @@ mod tests {
         ed.workspace.root = dir.join("started");
         let other = ed.workspace_open(&dir.join("other")).unwrap();
         assert!(ed.workspace_switch(other));
-        assert_eq!(ed.root(), dir.join("other"), "the other session in front");
+        assert_eq!(ed.workspace.root, dir.join("other"), "the other session in front");
         assert_eq!(ed.started_root(), dir.join("started"));
         ed.config.tab_width = 4;
         crate::typed::execute(&mut ed, "config-reload").unwrap();
@@ -18681,14 +18643,6 @@ q = \"delete_selection\"\n",
         );
         feed(&mut ed, "<esc>");
         assert_eq!(ed.theme.name, original);
-    }
-
-    /// `space G w` with a one-character cursor takes the word — even when that character is multi-byte.
-    #[test]
-    fn watch_takes_the_word_under_a_wide_cursor() {
-        let prompt = |ed: &Editor| ed.prompt.as_ref().map(|p| p.text.clone());
-        assert_eq!(prompt(&run("값x + 1", " Gw")), Some("값x".into()));
-        assert_eq!(prompt(&run("a.b", "% Gw")), Some("a.b".into()), "a wider selection is taken as is");
     }
 
     /// `:w other` — a failed write keeps the old name; writing over an existing file isn't a conflict

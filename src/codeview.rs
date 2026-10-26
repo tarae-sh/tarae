@@ -589,8 +589,8 @@ impl Shows {
         }
     }
 
-    /// Claude's edit review: the whole file as in the editor — diagnostics, indent guides, inlay hints,
-    /// breakpoints on its document's rows — its change marks the edit's own (`Changes::Edit`), scrolled sideways
+    /// Claude's edit review: the whole file as in the editor — diagnostics, indent guides, inlay hints on its
+    /// document's rows — its change marks the edit's own (`Changes::Edit`), scrolled sideways
     /// by `left` when it doesn't wrap. Kept apart from a pane: absolute numbers and no cursor line, no selection,
     /// no search's hits, no blame — the review has no cursor (its keys answer changes, `j`/`k` scroll), and a
     /// number relative to a cursor that isn't there would read as distances from nothing.

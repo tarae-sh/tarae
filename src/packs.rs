@@ -13,31 +13,25 @@
 //!   the file's), or a template (`"{java-root}"`).
 //! - `helpers`: tarae's own helpers the templates need — `cargo`: `{cargo-target}` (`--lib`, `--bin x` or
 //!   `--test x`), `{module}` (the file's module path, `a::b::`, or empty), `{module-label}` (`a::b::*` or `all
-//!   tests`), `{crate-root}`. `vars`: variables worked out from what's around the file (`Derive`) — the
+//!   tests`). `vars`: variables worked out from what's around the file (`Derive`) — the
 //!   virtualenv's Python, a build's layout.
 //! - How the output is read: `[[test.line]]` rules and `none-ran`, a line at a time as it comes
 //!   (`test_results::Rules`); or `parse = "junit"`: the JUnit XML written to `reports` during the run, read
 //!   once it ends, failures placed through `sources`.
 //! - Templates, for the test at the cursor, the group around the cursor when it's in no test, and the
-//!   file: `run`, `run-group`, `run-file` (the command); `debug`, `debug-group`, `debug-file` (the
-//!   debugger's launch configuration); `label`, `label-group`, `label-file` (what the result is called).
+//!   file: `run`, `run-group`, `run-file` (the command); `label`, `label-group`, `label-file` (what the result
+//!   is called).
 //!   Their variables: `{name}` (the test), `{groups}` (the groups around it, joined with `group-sep`,
 //!   `::` unless set), `{path}` (groups and name), `{groups/.}` and `{path/.}` (joined with what follows
 //!   the `/` instead; `|re` after any of them escapes it for a regular expression), `{first-group}` (the file's first group), `{names}` (the file's tests, joined with
 //!   `|`), `{cwd}`, `{file}`, `{filename}`, `{rel}` (the file from `{cwd}`), and the helpers'. An argument
 //!   that is just a list variable (`"{cargo-target}"`) becomes its items; one that ends up empty is left
 //!   out.
-//! - Debugging: `{built}` in a `debug` template is what `debug-build` builds when debugging starts (the
-//!   shape of `[debug] build`, `debugpack.rs`). Or, instead of a `debug` template: `debug-args`, added to
-//!   the command so the test waits for a debugger, and `debug-attach = { wait-for, way }`: the line saying
-//!   where it waits (a regular expression with a `port` group), and the way tarae attaches then
-//!   (`debugpack::WAYS` — `java`).
 //! - `variant-by`: a template naming the `[test.variant.<name>]` whose settings (templates, `reports`,
-//!   `sources`, `debug-args`) override these — Java's `gradle` and `maven`. A kind's settings override the
+//!   `sources`) override these — Java's `gradle` and `maven`. A kind's settings override the
 //!   test ones; `file = false` keeps its tests out of a file's run.
 //!
 //! `[tasks]`: see `tasks`. `[install.<tool>]`: see `Install`. `[server.<name>]`: see `LeaveOut`.
-//! `[debug]`, `[debugger.<name>]`: `debugpack.rs`.
 //! `[[waits]]`: see `waits`. `[[places]]`: see `places`. `[language.<name>]`, `[grammar.<name>]`,
 //! `[server.<name>]`'s `command` and `args`, `config-files`, `outputs`, `checks`, `color-off`: the language
 //! table, `languages.rs`. `first-made`: what a Linux run gets made
@@ -64,14 +58,8 @@ pub struct Found {
     pub label: String,
     pub cwd: PathBuf,
     pub argv: Vec<String>,
-    /// The debugger's launch configuration, if the pack has one for this.
-    pub debug: Option<Value>,
     /// How its output is read a line at a time (`[[test.line]]`).
     pub lines: Option<crate::test_results::Rules>,
-    /// What to build before debugging (`{built}`).
-    pub build: Option<crate::debugpack::Build>,
-    /// Debugging by running this command instead (the test waits for a debugger), then attaching this way.
-    pub debug_run: Option<(Vec<String>, AttachWait)>,
     /// `parse = "junit"`: the folders the reports land in, and the source roots.
     pub junit: Option<(Vec<PathBuf>, Vec<PathBuf>)>,
 }
@@ -86,8 +74,6 @@ pub struct Tests {
     parse: String,
     lines: Option<crate::test_results::Rules>,
     group_sep: String,
-    /// What `{built}` in a `debug` template is, built when debugging starts.
-    debug_build: Option<crate::debugpack::BuildTemplate>,
     base: Settings,
     variant_by: Option<String>,
     variants: HashMap<String, Settings>,
@@ -138,15 +124,8 @@ enum Choice {
     Many(Vec<String>),
 }
 
-impl Derive {
-    #[cfg(test)]
-    pub(crate) fn name(&self) -> &str {
-        &self.name
-    }
-}
-
-/// `lang`'s pack's `[test]` as the language table's snapshot says it: how its output is read, how a test
-/// debugged by running it is attached — None: no pack with tests.
+/// `lang`'s pack's `[test]` as the language table's snapshot says it: how its output is read — None: no pack
+/// with tests.
 #[cfg(test)]
 pub(crate) fn test_summary(lang: &str) -> Option<String> {
     let t = manifest(lang)?.ok()?;
@@ -164,12 +143,6 @@ pub(crate) fn test_summary(lang: &str) -> Option<String> {
         && !vars.is_empty()
     {
         said += &format!(" · vars {}", vars.join(" "));
-    }
-    if let Some(a) = t.get("debug-attach") {
-        said += &match AttachWait::read(a) {
-            Ok(a) => format!(" · debug-attach {} on {}", a.way, a.wait_for.as_str()),
-            Err(e) => format!(" · debug-attach broken: {e}"),
-        };
     }
     Some(said)
 }
@@ -306,7 +279,6 @@ enum Cwd {
 #[derive(Default, Clone)]
 struct Set {
     run: Option<Vec<String>>,
-    debug: Option<toml::Value>,
     label: Option<String>,
 }
 
@@ -315,7 +287,6 @@ impl Set {
     fn over(&self, o: &Set) -> Set {
         Set {
             run: o.run.clone().or_else(|| self.run.clone()),
-            debug: o.debug.clone().or_else(|| self.debug.clone()),
             label: o.label.clone().or_else(|| self.label.clone()),
         }
     }
@@ -329,65 +300,11 @@ struct Settings {
     file: Set,
     reports: Option<Vec<String>>,
     sources: Option<Vec<String>>,
-    debug_args: Option<Vec<String>>,
-    debug_attach: Option<AttachWait>,
-}
-
-/// A test run waiting for a debugger (`debug-attach`): the line that says where — `wait-for`, its `port`
-/// group the port — and the way tarae attaches then (`debugpack::WAYS`).
-#[derive(Clone, Debug)]
-pub struct AttachWait {
-    wait_for: regex::Regex,
-    pub way: String,
-}
-
-impl PartialEq for AttachWait {
-    fn eq(&self, o: &AttachWait) -> bool {
-        (self.wait_for.as_str(), &self.way) == (o.wait_for.as_str(), &o.way)
-    }
-}
-
-impl Eq for AttachWait {}
-
-impl AttachWait {
-    fn read(v: &toml::Value) -> Result<AttachWait, String> {
-        let t = v.as_table().ok_or("`debug-attach` is `{ wait-for = '…', way = \"…\" }`")?;
-        known(t, &["wait-for", "way"], "`debug-attach`")?;
-        let way = need(t, "way", "`debug-attach`")?;
-        if !crate::debugpack::WAYS.contains(&way.as_str()) {
-            let ways = crate::debugpack::WAYS.join(", ");
-            return Err(format!("no `debug-attach` way `{way}` (there is: {ways})"));
-        }
-        let wait_for = need(t, "wait-for", "`debug-attach`")?;
-        let wait_for = regex::Regex::new(&wait_for).map_err(|e| format!("`debug-attach.wait-for`: {e}"))?;
-        if wait_for.capture_names().flatten().all(|g| g != "port") {
-            return Err("`debug-attach.wait-for` has no `port` group".into());
-        }
-        Ok(AttachWait { wait_for, way })
-    }
-
-    /// The port `line` says the run waits on, if it's the line.
-    pub fn port(&self, line: &str) -> Option<u16> {
-        self.wait_for.captures(line)?.name("port")?.as_str().parse().ok()
-    }
 }
 
 /// The keys `Settings` reads (in `[test]` and its variants).
-const SETTINGS: &[&str] = &[
-    "run",
-    "run-group",
-    "run-file",
-    "debug",
-    "debug-group",
-    "debug-file",
-    "label",
-    "label-group",
-    "label-file",
-    "reports",
-    "sources",
-    "debug-args",
-    "debug-attach",
-];
+const SETTINGS: &[&str] =
+    &["run", "run-group", "run-file", "label", "label-group", "label-file", "reports", "sources"];
 
 impl Settings {
     fn read(t: &Table) -> Result<Settings, String> {
@@ -397,8 +314,6 @@ impl Settings {
             file: set(t, "-file")?,
             reports: strings(t.get("reports"), "reports")?,
             sources: strings(t.get("sources"), "sources")?,
-            debug_args: strings(t.get("debug-args"), "debug-args")?,
-            debug_attach: t.get("debug-attach").map(AttachWait::read).transpose()?,
         })
     }
 
@@ -410,8 +325,6 @@ impl Settings {
             file: self.file.over(&o.file),
             reports: or(&o.reports, &self.reports),
             sources: or(&o.sources, &self.sources),
-            debug_args: or(&o.debug_args, &self.debug_args),
-            debug_attach: o.debug_attach.clone().or_else(|| self.debug_attach.clone()),
         }
     }
 }
@@ -470,10 +383,6 @@ pub(crate) const KEYS: &[(&str, Reach)] = &[
     ("server", Reach::Yours),
     ("language", Reach::Yours),
     ("grammar", Reach::Yours),
-    // How a language is debugged and its debugger found: the user's own debugging (F5, a test's, attach) —
-    // never Claude's runs
-    ("debug", Reach::Yours),
-    ("debugger", Reach::Yours),
     ("config-files", Reach::Added),
     // Whose places feed the user's list: one of one's own only adds to it
     ("checks", Reach::Added),
@@ -657,7 +566,7 @@ pub(crate) fn over(b: &mut Table, mut u: Table) {
 
 /// Whether a `Yours` table holds entries by name (`[install.<tool>]`), not settings of its own (`[test]`).
 fn is_by_name(key: &str) -> bool {
-    ["install", "server", "language", "grammar", "debugger"].contains(&key)
+    ["install", "server", "language", "grammar"].contains(&key)
 }
 
 /// `mine` added to `theirs`: lists joined (what's in both once), tables key by key.
@@ -1008,7 +917,7 @@ pub fn on_path(cmd: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(cmd).is_file()))
 }
 
-/// How to install a tool a language needs (a language server, a debugger) — a pack's `[install.<tool>]`:
+/// How to install a tool a language needs (a language server) — a pack's `[install.<tool>]`:
 ///
 /// - `what`: what it is ("Go's language server")
 /// - `ways`: how to install it, in order — each `{ run = [...], needs = "go", bin = ["~/go/bin"] }`, taken if
@@ -1019,8 +928,6 @@ pub fn on_path(cmd: &str) -> bool {
 /// - `hint`: what to tell when no way fits ("comes with Xcode's command line tools").
 /// - `missing-says`: what the program prints when it's there but not installed (a rustup proxy whose
 ///   component isn't): a line holding one of these offers it as if it weren't there (`missing_says`).
-/// - `look-for`: a tool that's a file, not a program (java-debug's jar: `name-*.jar`, the newest by its
-///   version) — in its download's folder, then the `look-in` folders (other editors' copies; a `*` per part).
 ///
 /// The tool is named as it's run (`gopls`, `basedpyright-langserver`). tarae only offers: `y` runs `run`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1063,16 +970,10 @@ pub fn missing_says(tool: &str) -> Vec<String> {
 }
 
 /// Where `tool` is when it isn't on `PATH`: in a `bin` of one of its ways (`go install` → `~/go/bin`), or
-/// where a `download` way put it (`fetched_dir`) — or for a file that isn't a program (`look-for`), the newest
-/// there or in `look-in`. Disk: a worker's, or once (java-debug's jar at F5 — `java::debug_bundle`).
+/// where a `download` way put it (`fetched_dir`). Disk: a worker's.
 pub fn installed_at(tool: &str) -> Option<PathBuf> {
     let found = install_in(tool, install_tables())?;
-    let fetched = fetched_dir(tool);
-    found_in(tool, &found.bins, fetched.as_deref()).or_else(|| {
-        let dirs: Vec<PathBuf> =
-            fetched.into_iter().chain(found.look_in.iter().filter_map(|d| expand_dir(d))).collect();
-        newest_in(found.look_for.as_deref()?, &dirs)
-    })
+    found_in(tool, &found.bins, fetched_dir(tool).as_deref())
 }
 
 /// The first of `bins`' `tool`, then the program a download put in `fetched`, that's there.
@@ -1184,11 +1085,6 @@ struct Recipe {
     bins: Vec<PathBuf>,
     hint: Option<String>,
     missing_says: Vec<String>,
-    /// `look-for`: a file that isn't a program (java-debug's jar, `name-*.jar`), the newest by the version in
-    /// its name — in its download's folder, then the `look-in` folders (other editors' copies; one `*` per
-    /// part of a path).
-    look_for: Option<String>,
-    look_in: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -1237,7 +1133,7 @@ fn install_in(tool: &str, tables: Vec<(String, Table)>) -> Option<Recipe> {
 
 fn recipe(tool: &str, v: &toml::Value) -> Result<Recipe, String> {
     let t = v.as_table().ok_or("isn't a table")?;
-    known(t, &["what", "ways", "hint", "missing-says", "look-for", "look-in"], "it")?;
+    known(t, &["what", "ways", "hint", "missing-says"], "it")?;
     let what = string(t, "what")?.ok_or("has no `what`")?;
     let mut ways = Vec::new();
     let mut bins = Vec::new();
@@ -1260,67 +1156,7 @@ fn recipe(tool: &str, v: &toml::Value) -> Result<Recipe, String> {
         ways.push(Way::Run { run, needs, project });
     }
     let missing_says = list_in(t, "missing-says")?;
-    let look_for = string(t, "look-for")?;
-    if look_for.as_ref().is_some_and(|f| f.contains('/') || f.matches('*').count() != 1) {
-        return Err("`look-for` is a file name with one `*` (where its version is)".into());
-    }
-    let look_in = list_in(t, "look-in")?;
-    if !look_in.is_empty() && look_for.is_none() {
-        return Err("`look-in` needs `look-for` (the file to look for there)".into());
-    }
-    Ok(Recipe {
-        tool: tool.to_string(),
-        what,
-        ways,
-        bins,
-        hint: string(t, "hint")?,
-        missing_says,
-        look_for,
-        look_in,
-    })
-}
-
-/// The newest file named as `pattern` (one `*`: its version) in `dirs` — each a path whose parts may hold one
-/// `*` (`~/.vscode/extensions/vscjava.vscode-java-debug-*/server`), `~` and `${VAR}` expanded.
-fn newest_in(pattern: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
-    let (pre, post) = pattern.split_once('*')?;
-    let version = |p: &Path| {
-        let n = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-        let v = n.get(pre.len()..n.len().saturating_sub(post.len())).unwrap_or_default();
-        v.split(|c: char| !c.is_ascii_digit())
-            .filter(|x| !x.is_empty())
-            .map(|x| x.parse().unwrap_or(0))
-            .collect::<Vec<u64>>()
-    };
-    dirs.iter()
-        .flat_map(|d| globbed(d))
-        .filter_map(|d| std::fs::read_dir(d).ok())
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| glob(pattern, n)) && p.is_file())
-        .max_by_key(|p| version(p))
-}
-
-/// The folders a path with `*`s in its parts names (`a/b-*/c` → every `a/b-…/c` there is).
-fn globbed(path: &Path) -> Vec<PathBuf> {
-    let mut found = vec![PathBuf::new()];
-    for part in path.components() {
-        let part = part.as_os_str().to_string_lossy();
-        if !part.contains('*') {
-            found.iter_mut().for_each(|f| f.push(&*part));
-            continue;
-        }
-        found = found
-            .iter()
-            .filter_map(|f| std::fs::read_dir(f).ok())
-            .flatten()
-            .flatten()
-            .filter(|e| glob(&part, &e.file_name().to_string_lossy()))
-            .map(|e| e.path())
-            .collect();
-    }
-    found
+    Ok(Recipe { tool: tool.to_string(), what, ways, bins, hint: string(t, "hint")?, missing_says })
 }
 
 /// A `download` way (docs/languages.md, "Downloads"): where the file is, how its version and name are found,
@@ -1494,11 +1330,10 @@ pub(crate) fn list_in(t: &Table, key: &str) -> Result<Vec<String>, String> {
     Ok(strings(t.get(key), key)?.unwrap_or_default())
 }
 
-/// The templates of one scope: `run{sfx}`, `debug{sfx}`, `label{sfx}`.
+/// The templates of one scope: `run{sfx}`, `label{sfx}`.
 fn set(t: &Table, sfx: &str) -> Result<Set, String> {
     Ok(Set {
         run: strings(t.get(&format!("run{sfx}")), &format!("run{sfx}"))?,
-        debug: t.get(&format!("debug{sfx}")).cloned(),
         label: string(t, &format!("label{sfx}"))?,
     })
 }
@@ -1533,7 +1368,6 @@ impl Tests {
             "variant-by",
             "variant",
             "kind",
-            "debug-build",
             "vars",
             "line",
             "none-ran",
@@ -1570,7 +1404,7 @@ impl Tests {
         if let Some(ks) = t.get("kind") {
             for (k, v) in ks.as_table().ok_or("[test.kind] isn't a table")? {
                 let kt = v.as_table().ok_or(format!("[test.kind.{k}] isn't a table"))?;
-                known(kt, &["file", "run", "debug", "label"], &format!("[test.kind.{k}]"))?;
+                known(kt, &["file", "run", "label"], &format!("[test.kind.{k}]"))?;
                 let file = match kt.get("file") {
                     None => true,
                     Some(f) => f.as_bool().ok_or(format!("[test.kind.{k}]: `file` is true or false"))?,
@@ -1609,21 +1443,6 @@ impl Tests {
         if parse == "junit" && each.iter().any(|s| s.reports.is_none()) {
             return Err("`parse = \"junit\"` needs `reports`".into());
         }
-        if each.iter().any(|s| s.debug_args.is_some() && s.debug_attach.is_none()) {
-            return Err("`debug-args` needs `debug-attach` (how to attach once the test waits)".into());
-        }
-        let debug_build = match t.get("debug-build") {
-            None => None,
-            Some(b) => Some(crate::debugpack::build_of(b, false).map_err(|e| format!("`debug-build`: {e}"))?),
-        };
-        let built = {
-            let mut sets =
-                each.iter().flat_map(|s| [&s.test, &s.group, &s.file]).chain(kinds.values().map(|k| &k.t));
-            sets.any(|s| s.debug.as_ref().is_some_and(builds))
-        };
-        if debug_build.is_none() && built {
-            return Err("`{built}` in a `debug` template needs `debug-build`".into());
-        }
         Ok(Tests {
             query,
             files: list_in(t, "files")?,
@@ -1631,7 +1450,6 @@ impl Tests {
             helpers,
             parse,
             lines,
-            debug_build,
             group_sep: string(t, "group-sep")?.unwrap_or_else(|| "::".into()),
             base,
             variant_by,
@@ -1783,18 +1601,7 @@ impl Tests {
         };
         let run =
             set.run.as_ref().ok_or("the pack has no command for this (`run`, `run-group`, `run-file`)")?;
-        let build = match (&set.debug, &self.debug_build) {
-            (Some(d), Some(b)) if builds(d) => Some(b.fill(&vars)),
-            _ => None,
-        };
         let argv = args(run, &vars);
-        // A `debug` template of this scope's own comes first
-        let debug_run = match (&set.debug, &settings.debug_args, &settings.debug_attach) {
-            (None, Some(extra), Some(attach)) => {
-                Some((argv.iter().cloned().chain(args(extra, &vars)).collect(), attach.clone()))
-            }
-            _ => None,
-        };
         // Relative to where the test runs
         let paths = |v: &Option<Vec<String>>| -> Vec<PathBuf> {
             v.iter().flatten().map(|p| cwd.join(fill(p, &vars))).collect()
@@ -1807,10 +1614,7 @@ impl Tests {
             label: fill(set.label.as_deref().unwrap_or(label_default), &vars),
             cwd,
             argv,
-            debug: set.debug.as_ref().map(|d| json(d, &vars)),
             lines: self.lines.clone(),
-            build,
-            debug_run,
             junit,
         })
     }
@@ -1874,18 +1678,12 @@ impl Tests {
                     vars.insert("cargo-target".into(), Var::Many(c.flag));
                     vars.insert("module".into(), Var::One(module));
                     vars.insert("module-label".into(), Var::One(label));
-                    vars.insert("crate-root".into(), Var::One(c.crate_root.display().to_string()));
                 }
                 _ => unreachable!("checked when the pack was read"),
             }
         }
         Ok(vars)
     }
-}
-
-/// Whether a `debug` template runs what's built first (`{built}`).
-fn builds(debug: &toml::Value) -> bool {
-    debug.to_string().contains("{built}")
 }
 
 /// Whether a scope's command uses a variable (so it needs something there).
@@ -1910,9 +1708,6 @@ pub(crate) enum Var {
     Parts(Vec<String>, String),
     /// Alternatives, joined with `|` (`{names}`).
     Any(Vec<String>),
-    /// A JSON value: a template string that is just this variable (`"{pid}"`) becomes the value itself (a
-    /// number stays one); inside a longer string, its text.
-    Json(Value),
 }
 
 /// `*_test.go`-style: at most one `*`.
@@ -1974,8 +1769,6 @@ fn expand(token: &str, vars: &HashMap<String, Var>) -> Option<String> {
         (Var::Parts(p, _), Some(with)) => esc(p.join(with)),
         // Each escaped on its own: `A|B` stays a choice
         (Var::Any(a), None) => a.iter().map(|x| esc(x.clone())).collect::<Vec<_>>().join("|"),
-        (Var::Json(Value::String(s)), None) => esc(s.clone()),
-        (Var::Json(v), None) => esc(v.to_string()),
         _ => return None,
     })
 }
@@ -2008,37 +1801,6 @@ pub(crate) fn args(template: &[String], vars: &HashMap<String, Var>) -> Vec<Stri
         }
     }
     out
-}
-
-/// A TOML template as JSON, its strings filled in (list arguments as in `args`; a string that is just a
-/// `Var::Json` is its value).
-pub(crate) fn json(v: &toml::Value, vars: &HashMap<String, Var>) -> Value {
-    match v {
-        toml::Value::String(s) => {
-            let lone = s.strip_prefix('{').and_then(|x| x.strip_suffix('}')).and_then(|k| vars.get(k));
-            match lone {
-                Some(Var::Json(v)) => v.clone(),
-                _ => Value::String(fill(s, vars)),
-            }
-        }
-        toml::Value::Integer(i) => Value::from(*i),
-        toml::Value::Float(f) => Value::from(*f),
-        toml::Value::Boolean(b) => Value::Bool(*b),
-        toml::Value::Datetime(d) => Value::String(d.to_string()),
-        toml::Value::Array(a) if a.iter().all(|x| x.is_str()) => {
-            let strs: Vec<String> = a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect();
-            Value::Array(args(&strs, vars).into_iter().map(Value::String).collect())
-        }
-        toml::Value::Array(a) => Value::Array(a.iter().map(|x| json(x, vars)).collect()),
-        toml::Value::Table(t) => {
-            // Inserted, not collected: a Map's `collect` sorts — a copy of the sort for each (~6 KB)
-            let mut m = serde_json::Map::new();
-            for (k, x) in t {
-                m.insert(k.clone(), json(x, vars));
-            }
-            Value::Object(m)
-        }
-    }
 }
 
 #[cfg(test)]
@@ -2077,9 +1839,6 @@ mod tests {
             args(&t(&["cargo", "{flags}", "--", "{empty}", "{name}"]), &vars),
             ["cargo", "--test", "api", "--", "TestA"]
         );
-        let v: toml::Value =
-            toml::from_str::<Table>("x = { a = [\"{name}\", \"{empty}\"], n = 1 }").unwrap()["x"].clone();
-        assert_eq!(json(&v, &vars), serde_json::json!({ "a": ["TestA"], "n": 1 }));
     }
 
     #[test]
@@ -2341,28 +2100,9 @@ mod tests {
         );
     }
 
-    /// The Java pack's java-debug: the release it pins (Maven Central publishes only SHA-1 for it, so the
-    /// SHA-256 is the pack's), downloaded as the jar it is — and found as other editors left it.
+    /// A pinned hash with the newest release isn't a pin.
     #[test]
-    fn the_java_packs_java_debug_is_pinned() {
-        let r = install_in("java-debug", install_tables()).expect("the Java pack has [install.java-debug]");
-        assert_eq!(r.look_for.as_deref(), Some("com.microsoft.java.debug.plugin-*.jar"));
-        assert!(r.look_in.iter().any(|d| d.contains("vscjava.vscode-java-debug-*/server")));
-        let d = r.pick(|_| true).download.expect("a download");
-        use crate::fetch::{Name, Sum, Unpack, Version};
-        assert_eq!(d.version, Version::Pinned("0.53.1".into()));
-        assert_eq!(
-            d.sha256,
-            Sum::Pinned("4f4778d452a6a0665536f43ce4e32403a24be6593336b80dc85a322912859e24".into())
-        );
-        assert_eq!(d.size, Some(2960556));
-        assert_eq!(d.file, Name::Is("com.microsoft.java.debug.plugin-{version}.jar".into()));
-        assert_eq!((d.unpack, d.program.as_str()), (Unpack::File, "{file}"));
-        assert_eq!(
-            d.url,
-            "https://repo1.maven.org/maven2/com/microsoft/java/com.microsoft.java.debug.plugin/{version}/{file}"
-        );
-        // A pinned hash with the newest release isn't a pin
+    fn a_pinned_hash_needs_a_pinned_version() {
         let t: Table = format!(
             "[t]\nwhat = \"t\"\n[[t.ways]]\ndownload = \"https://x/{{file}}\"\nfile = \"f\"\nprogram = \"f\"\n\
              sha256 = \"{}\"\nversion = {{ from = \"https://x/\", pick = \"(\\\\d+)\" }}\n",
@@ -2389,29 +2129,6 @@ mod tests {
         assert!(read("{ name = \"a\", parts = \"{x}\" }").unwrap_err().contains("has no `from`"));
     }
 
-    /// `look-for` in the download's folder and `look-in` folders (a `*` in a part of the path): the newest by
-    /// the version in its name.
-    #[test]
-    fn a_file_is_found_newest_where_editors_left_it() {
-        let scratch = crate::scratch::Scratch::new("look-in");
-        let t = scratch.to_path_buf();
-        for (dir, file) in [
-            ("ours", "p-0.9.0.jar"),
-            ("ext/vscjava.debug-0.50/server", "p-0.50.0.jar"),
-            ("ext/vscjava.debug-0.53/server", "p-0.53.1.jar"),
-            ("ext/other-1/server", "p-9.9.9.jar"),
-            ("ext/vscjava.debug-0.53/server", "notes.txt"),
-        ] {
-            std::fs::create_dir_all(t.join(dir)).unwrap();
-            std::fs::write(t.join(dir).join(file), "PK").unwrap();
-        }
-        let dirs = [t.join("ours"), t.join("ext/vscjava.debug-*/server"), t.join("nowhere/*/x")];
-        assert_eq!(newest_in("p-*.jar", &dirs), Some(t.join("ext/vscjava.debug-0.53/server/p-0.53.1.jar")));
-        assert_eq!(newest_in("p-*.jar", &dirs[..1]), Some(t.join("ours/p-0.9.0.jar")));
-        assert_eq!(newest_in("q-*.jar", &dirs), None);
-        let _ = std::fs::remove_dir_all(&t);
-    }
-
     #[test]
     fn install_recipes() {
         let t: Table = r#"
@@ -2424,8 +2141,8 @@ mod tests {
             [rust-analyzer]
             what = "Rust's"
             ways = [{ run = ["rustup", "component", "add", "rust-analyzer"], project = true }]
-            [lldb-dap]
-            what = "the debugger"
+            [clangd]
+            what = "C's language server"
             hint = "comes with Xcode"
             [bad]
             what = "x"
@@ -2449,8 +2166,8 @@ mod tests {
             none.no_way(),
             "Go's language server isn't installed: no-such-installer gopls, go install x/gopls@latest"
         );
-        let hint = install_in("lldb-dap", tables()).unwrap().pick(|_| true);
-        assert_eq!(hint.no_way(), "the debugger isn't installed: comes with Xcode");
+        let hint = install_in("clangd", tables()).unwrap().pick(|_| true);
+        assert_eq!(hint.no_way(), "C's language server isn't installed: comes with Xcode");
         assert_eq!((hint.run, hint.hint.as_deref()), (None, Some("comes with Xcode")));
         assert!(install_in("bad", tables()).is_none(), "a way without `run` is said (logged) and skipped");
         assert!(install_in("nothing", tables()).is_none());
@@ -2599,26 +2316,6 @@ mod tests {
         assert!(!m.contains_key("outputs") && m.contains_key("config-files"));
     }
 
-    /// A Java test debugged by running it: attached where the JVM says it waits, by the Java pack's pattern —
-    /// a port alone or after a host; a pattern with no port, a way tarae hasn't, are said.
-    #[test]
-    fn a_test_run_waiting_for_a_debugger_says_where() {
-        let java = merged("java", crate::runtime::pack_builtin("java/pack.toml"), None).unwrap().unwrap();
-        let a = AttachWait::read(&java["test"]["debug-attach"]).unwrap();
-        assert_eq!(a.way, "java");
-        let says = |at: &str| a.port(&format!("Listening for transport dt_socket at address: {at}"));
-        assert_eq!(
-            (says("5005"), says("*:5006"), says("localhost:5007")),
-            (Some(5005), Some(5006), Some(5007))
-        );
-        assert_eq!(a.port("Listening for transport dt_shmem at address: 5005"), None);
-        assert_eq!(a.port("[INFO] Running demo.AppTest"), None);
-        let bad = |s: &str| AttachWait::read(&s.parse::<Table>().unwrap().into()).unwrap_err();
-        assert!(bad("wait-for = 'at (\\d+)'\nway = 'java'").contains("no `port` group"));
-        assert!(bad("wait-for = 'at (?<port>\\d+)'\nway = 'gdb'").contains("way `gdb`"));
-        assert!(bad("way = 'java'").contains("no `wait-for`"));
-    }
-
     /// `first` takes `~/` and `${VAR}`: a variable that isn't set leaves its choice out. The Python pack's
     /// `{python}`: the project's virtualenv's when it has one, else python3 (`$VIRTUAL_ENV` is the process's —
     /// its expansion is `CARGO_MANIFEST_DIR`'s here, which cargo sets).
@@ -2647,22 +2344,19 @@ mod tests {
         std::fs::create_dir_all(d.join(".venv/bin")).unwrap();
         let python =
             merged("python", crate::runtime::pack_builtin("python/pack.toml"), None).unwrap().unwrap();
-        for at in ["test", "debug"] {
-            let rules = derive_rules(python[at].get("vars"), "").unwrap();
-            let python_in = |cwd: &Path| {
-                let mut vars = HashMap::from([("cwd".to_string(), Var::One(cwd.display().to_string()))]);
-                derive(&rules, cwd, &mut vars).unwrap();
-                fill("{python}", &vars)
-            };
-            // (an activated virtualenv's, where the tests run in one)
-            let active = std::env::var_os("VIRTUAL_ENV").map(|v| Path::new(&v).join("bin/python"));
-            let otherwise =
-                active.filter(|p| p.is_file()).map_or("python3".into(), |p| p.display().to_string());
-            assert_eq!(python_in(&d), otherwise, "[{at}] no python in .venv yet");
-            std::fs::write(d.join(".venv/bin/python"), "").unwrap();
-            assert_eq!(python_in(&d), d.join(".venv/bin/python").display().to_string(), "[{at}]");
-            std::fs::remove_file(d.join(".venv/bin/python")).unwrap();
-        }
+        let rules = derive_rules(python["test"].get("vars"), "").unwrap();
+        let python_in = |cwd: &Path| {
+            let mut vars = HashMap::from([("cwd".to_string(), Var::One(cwd.display().to_string()))]);
+            derive(&rules, cwd, &mut vars).unwrap();
+            fill("{python}", &vars)
+        };
+        // (an activated virtualenv's, where the tests run in one)
+        let active = std::env::var_os("VIRTUAL_ENV").map(|v| Path::new(&v).join("bin/python"));
+        let otherwise = active.filter(|p| p.is_file()).map_or("python3".into(), |p| p.display().to_string());
+        assert_eq!(python_in(&d), otherwise, "no python in .venv yet");
+        std::fs::write(d.join(".venv/bin/python"), "").unwrap();
+        assert_eq!(python_in(&d), d.join(".venv/bin/python").display().to_string());
+        std::fs::remove_file(d.join(".venv/bin/python")).unwrap();
         let _ = std::fs::remove_dir_all(&d);
     }
 

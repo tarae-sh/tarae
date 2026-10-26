@@ -104,11 +104,6 @@ In the editor you don't need this page: `space ?` finds any command by what it d
 | `down` | `move_visual_line_down` | Move down (visual line) |
 | `end` | `goto_line_end` | Go to line end |
 | `esc` | `normal_mode` | Enter normal mode |
-| `F10` | `dap_next` | Step over |
-| `F11` | `dap_step_in` | Step into |
-| `F12` | `dap_step_out` | Step out |
-| `F5` | `dap_launch` | Start debugging / continue |
-| `F9` | `toggle_breakpoint` | Toggle breakpoint |
 | `home` | `goto_line_start` | Go to line start |
 | `left` | `move_char_left` | Move left |
 | `pagedown` | `page_down` | Move page down |
@@ -277,7 +272,6 @@ In the editor you don't need this page: `space ?` finds any command by what it d
 | `space f` | `file_picker` | Open a file |
 | `space F` | `follow_next` | Follow next session at work |
 | `space g` | `git_panel` | Git: stage, commit, push |
-| `space G` | … | More keys — see `space G` below |
 | `space h` | `select_references_to_symbol_under_cursor` | Select this symbol's uses |
 | `space i` | `llm_ask` | Ask Claude to edit selection |
 | `space I` | `inbox` | What waits for your answer |
@@ -304,24 +298,6 @@ In the editor you don't need this page: `space ?` finds any command by what it d
 | `space W` | `session_list` | Sessions: switch, end, new |
 | `space x` | … | More keys — see `space x` below |
 | `space y` | `yank_to_clipboard` | Copy to clipboard |
-
-### `space G`
-
-| Key | Command | Description |
-|---|---|---|
-| `space G a` | `dap_attach` | Attach to a running program… |
-| `space G b` | `toggle_breakpoint` | Toggle breakpoint |
-| `space G c` | `dap_launch` | Start debugging / continue |
-| `space G i` | `dap_step_in` | Step into |
-| `space G l` | `dap_launch` | Start debugging / continue |
-| `space G n` | `dap_next` | Step over |
-| `space G o` | `dap_step_out` | Step out |
-| `space G p` | `dap_pause` | Pause the program |
-| `space G t` | `dap_terminate` | Stop debugging |
-| `space G w` | `dap_watch` | Watch an expression |
-| `space G W` | `dap_unwatch` | Remove a watch |
-| `space G C-c` | `dap_edit_condition` | Break only when… (condition) |
-| `space G C-l` | `dap_edit_log` | Log here instead of stopping |
 
 ### `space m`
 
@@ -386,7 +362,6 @@ In the editor you don't need this page: `space ?` finds any command by what it d
 | Key | Command | Description |
 |---|---|---|
 | `space x c` | `test_close` | Close the test panel |
-| `space x d` | `test_debug` | Debug the test at the cursor |
 | `space x f` | `test_file` | Run this file's tests |
 | `space x l` | `test_last` | Run the last test again |
 | `space x o` | `test_output` | Test output in a buffer |
@@ -668,9 +643,6 @@ Type `:` in normal mode. `Tab` completes command names and their arguments (path
 | `:commit-draft` |  | Let Claude draft the commit message |
 | `:undo-turn` |  | Undo what Claude changed in its last turn |
 | `:redo-turn` |  | Bring back the turn you undid |
-| `:attach` |  | Attach the debugger to a running program (name or host:port) |
-| `:watch` |  | Watch an expression while debugging |
-| `:unwatch` |  | Stop watching (no expression = all) |
 | `:tutor` |  | Learn the keys — a 10-minute tutorial |
 | `:task` | `:make` | Run a build task (by name; none: pick one) |
 | `:git-switch` |  | Switch to a branch (none: pick one) |

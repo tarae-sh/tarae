@@ -82,7 +82,7 @@ Early mockups that set the direction: [ink](design/a-ink.png) · [paper](design/
 | **M3** ✅ | LSP — diagnostics, navigation, hover, completion, signature help, inlay hints, code actions with preview, rename, format |
 | **M4** ✅ | Claude — select → instruct → diff, streaming answers, chat panel; the chat explores the project, the editor follows it with its thinking beside the code, notes pinned to lines you answer in place, its edits reviewed before they're written, and a pull-request-style review of all changes sent back in one go |
 | **M5** (retired 2026-10-04) | Claude Code IDE protocol — selection sharing, diagnostics, in-buffer review of edits; removed once the chat (`space l`) did all of it in tarae |
-| **Experience** ✅ | which-key, palette, tutor, start screen, mouse, toasts, git gutter, reopening the last files, persistent undo, disk sync, doc comments, splits, tests, debugger, attach |
+| **Experience** ✅ | which-key, palette, tutor, start screen, mouse, toasts, git gutter, reopening the last files, persistent undo, disk sync, doc comments, splits, tests |
 | **Workbench** ✅ | Side panel (files, outline, list, git), one folder tree for every list of files, indentation from `indents.scm`, several language servers per file, the list (quickfix) and build tasks, git tab (stage, commit, push, log, branches), merge conflicts, `:diff`, built-in terminal |
 | **M6** ✅ | Plugins — commands in Rust, compiled to WebAssembly, sandboxed on tarae's own runtime (interpreter + JIT); `tarae plugin new/dev/list` |
 
@@ -254,7 +254,7 @@ src/
   grammar.rs         grammar download and build
   runtime.rs         embedded queries and grammars
   offer.rs           download offer cards
-  install.rs         offering a missing language server or debugger, the way its pack says
+  install.rs         offering a missing language server, the way its pack says
   doccomment.rs      rendered doc comments
   markdown.rs        Markdown → colored lines (hover, docs, chat)
   picker.rs          fuzzy pickers, file listing, global search
@@ -273,13 +273,10 @@ src/
   signature.rs       signature help
   editdiff.rs        workspace edit previews (code actions, rename)
   virtualdoc.rs      a server's own documents (a pack's `virtual`: jdtls's jdt:// classes)
-  java.rs            Java debugging: java-debug's command chain through jdtls (for a plugin, later)
 
   testing.rs         test discovery and runs
   packs.rs           language packs: tests found and run, and tasks suggested, the way a pack's data says
   test_results.rs    test output parsing
-  dap.rs             debugger (DAP) client
-  attach.rs          attaching to running programs
 
   llm.rs             claude -p process, streaming, response parsing, review
   chat.rs            chat panel

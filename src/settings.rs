@@ -233,7 +233,7 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         path: "editor.offer-installs",
         kind: Kind::Bool,
-        doc: "When a language server or debugger is missing, offer to install it the way its pack says (y/n/N)",
+        doc: "When a language server is missing, offer to install it the way its pack says (y/n/N)",
         get: |c| Value::from(c.offer_installs),
         set: |c, v| c.offer_installs = b(v),
     },
@@ -801,10 +801,10 @@ fn walk(
 ) {
     for (k, v) in t {
         let path = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
-        // Free-form-named tables (keymap, language servers, per-language settings, `[[attach]]`, `:preflight`'s
+        // Free-form-named tables (keymap, language servers, per-language settings, `:preflight`'s
         // steps) are read by config.rs.
         if prefix.is_empty()
-            && matches!(path.as_str(), "keys" | "lsp" | "lang" | "attach" | "task" | "preflight" | "cards")
+            && matches!(path.as_str(), "keys" | "lsp" | "lang" | "task" | "preflight" | "cards")
         {
             continue;
         }
@@ -970,8 +970,6 @@ mod tests {
              | `[lsp.<name>]` | A language server: `command`, `args`, `except` (features it's not asked for) |\n\
              | `[lang.<language>]` | Per language: `lsp = [\"name\", …]` — which server to try, in order; `also = […]` — \
              servers that run beside it |\n\
-             | `[[attach]]` | A named debugger attach target: `name`, `lang`, `host`, `port` or `pid`, \
-             `before`, `remote-root`, `program` |\n\
              | `[[cards.warn]]` | What a card for one of Claude's commands warns of, besides the language packs' — \
              only adds (an id a pack or your config has is left out): `id`, `run`, `options`, `option-values`, \
              `missing`, `unless-part`, `unless-all`, `same`, `unless-in`, `fact`, `say`, `asks`, `start` — see \

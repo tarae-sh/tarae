@@ -860,7 +860,7 @@ a row that ends with its outcome (`◦ test  src/lib.rs:17  1 failed`).
 - It never cuts a run short. If tests are already running, it's told to wait. If you close the pane or start
   another run, it's told the run stopped
 - Unsaved files are saved first, as with `space x x`: tests run what's on disk
-- Rust, Go, Python, and Java, like the [test runner](testing-and-debugging.md#tests). A missing grammar shows the
+- Rust, Go, Python, and Java, like the [test runner](testing.md#tests). A missing grammar shows the
   download offer, and Claude asks you to accept it
 
 The tool runs without asking. It only runs the project's own tests, the same way you do and in plain view, and
@@ -1515,7 +1515,7 @@ macOS (Seatbelt). A test keeps this table equal to the code:
   writes the profile itself, and offers it only for a tarae at a path only root can replace — its `.deb` puts
   tarae at `/usr/bin/tarae` with the profile beside it. With the profile, what tarae starts may make user
   namespaces, as what VS Code starts may under Ubuntu's own `vscode` profile: your terminal's shell (podman,
-  buildah, a browser's sandbox), language servers, git, formatters, the debugger, your own tasks and tests.
+  buildah, a browser's sandbox), language servers, git, formatters, your own tasks and tests.
   **Claude's commands and what a plugin starts can't** — sandboxed or not (outside the sandbox once, for the
   conversation, or with `llm.sandbox` off): `unshare` and `clone` asking for one are refused, `clone3` answers
   that it doesn't exist, and Claude's result says so. The filter that refuses them also means a setuid program

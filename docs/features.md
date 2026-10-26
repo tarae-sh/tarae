@@ -1,7 +1,7 @@
 # Features
 
 A tour of what tarae does. Every key is listed in the [default keymap](reference/keymap.md); every setting in the
-[settings reference](reference/settings.md). Tests and the debugger have [their own page](testing-and-debugging.md),
+[settings reference](reference/settings.md). Tests have [their own page](testing.md),
 and so do [Claude](claude-integration.md) and [web pages](web.md).
 
 - [First steps](#first-steps)
@@ -162,8 +162,7 @@ configs carry over as they are.
   important items fold away first
 - **Log** `:log-open` — what language servers print, when they start, get ready, or exit, what's missing from PATH, and
   every message tarae showed, with local times (`$XDG_STATE_HOME/tarae/tarae.log`, the previous run's kept as `.old`)
-- **Processes** `:procs` — every process tarae started (language servers by project, the debugger, tasks and test
-  runs, the terminal's shell, Claude, plugins' programs, and what each of them started), with what it's for, how long
+- **Processes** `:procs` — every process tarae started (language servers by project, tasks and test runs, the terminal's shell, Claude, plugins' programs, and what each of them started), with what it's for, how long
   it's run, its CPU and its memory (the footprint Activity Monitor shows, on macOS, beside what's resident) — tarae
   itself first. On Linux each session's sandbox keeper has a row with its tier: what that session's commands are
   kept from and what they share with other sessions' ([on Linux](claude-integration.md#on-linux)). `s` stops one, `r` restarts it where that means something, `l` shows what it said (its panel, or
@@ -467,7 +466,7 @@ SQL, Lua, Zig, YAML, Terraform (HCL), Dockerfile, and Helm templates ([screensho
   needed later)
 - `tarae grammar list` · `tarae grammar install [lang…]` · `:grammar-install [lang|all]`. Turn the offers off with
   `editor.offer-grammars = false`. Downloaded grammars live in `~/.local/share/tarae/grammars/`. A missing language
-  server or debugger is offered too ([When one is missing](languages.md#when-one-is-missing))
+  server is offered too ([When one is missing](languages.md#when-one-is-missing))
 - **Injections** — Markdown code blocks in their language, bold/code/links inside paragraphs, `TODO`/`NOTE` in comments,
   code inside macros, and Go templates inside Helm YAML ([screenshot](screenshots/syntax-injections.png))
 - **Locals** — a name that refers to a local definition looks like that definition wherever it's used: a
@@ -531,10 +530,7 @@ your `PATH`.
   `build.gradle` inside the repository. A folder with no build file works too. Import progress shows in the status line
 - `gd` into libraries and the JDK opens their source (from source jars) or the decompiled class in a read-only buffer
   ([screenshot](screenshots/java-jdt-source.png))
-- Debugging needs the java-debug extension, which jdtls doesn't ship. `F5` offers to download it from Maven Central and
-  loads it into the running jdtls — no restart ([screenshot](screenshots/java-debug-offer.png)). Copies already
-  downloaded by VS Code or Neovim's mason are found too
-- Tests and debugging for Java: see [Tests and debugging](testing-and-debugging.md)
+- Tests for Java: see [Tests](testing.md)
 
 ## Sessions, review and the sandbox
 
@@ -632,8 +628,7 @@ Some things stop it, with a message saying what to do, because they can't be car
 - a file that changed on disk under your edits;
 - a change of Claude's waiting for your answer, outside a turn;
 - a commit message being written;
-- an install running;
-- a debug run.
+- an install running.
 
 The message names the session when there's more than one. When a file can't be saved, it stops too, and nothing is
 lost.

@@ -294,7 +294,7 @@ impl Sandbox {
             ("XDG_CACHE_HOME", home.join(".cache").into()),
             // tarae writes a Claude Code lock file on startup — never into the real ~/.claude
             ("CLAUDE_CONFIG_DIR", self.root.join("claude").into()),
-            // Minimal PATH: no language servers, debuggers or claude from ~/.cargo/bin etc.
+            // Minimal PATH: no language servers or claude from ~/.cargo/bin etc.
             ("PATH", path),
             ("SHELL", "/bin/sh".into()),
             ("TERM", "xterm-256color".into()),
