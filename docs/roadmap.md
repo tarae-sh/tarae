@@ -111,13 +111,17 @@ line needs, always bottom-right, over the chat standing on the input's rule) →
 session, is done (`621acbd8`, 2026-10-26: `Workspace` the place, its Claude's `Session` the participant, where you are in
 it the `Viewer`; ids (machine, n), events tagged with both, `:workspace-*`, `[workspace]`, the state's
 `workspaces[].sessions[]`; no visible change but the words) → the cleanup audit (§1 item 7, under way: the diagram
-model `fd2cc7bd`, the native edit modes `6a530588`, shuttle keys `97b2e30b` and the spare claude `a1c66678` gone; next
-`space i` as a one-turn claude, then keep-warm into idle compaction) → the crate split (§1 item 6) → Orchestra Part I →
+model `fd2cc7bd`, the native edit modes `6a530588`, shuttle keys `97b2e30b` and the spare claude `a1c66678` gone,
+`space i` a one-turn claude of its own with tarae's `read` and `edit` (`05092df7`, B′); next keep-warm into idle
+compaction, on by default) → the crate split (§1 item 6) → Orchestra Part I →
 P3b and the terminal line (§4). One Linux test red on main before the next push: an xattr error's order on kernel 6.8
 (the Read card's width pinned at macOS's path is fixed, `94ded1e6`). Plans and notes moved out of `target/` into each
 checkout's `.sb/` (`c09fa01a`, after a `cargo clean` took eight checkouts' notes; most rebuilt from tarae's turn
 checkpoints). An overlap or a weave named a base branch by any repository's checkout of that name — now by the same
-repository's (`fa1c2bb5`). Done beside it, in sessions of their own: motion's last pieces (the honest shimmer `cfbf2a7b`,
+repository's (`fa1c2bb5`). Done beside it, in sessions of their own: an ASMR mode (`4ca79e7f`: `editor.sound`, off by
+default, yours only — key clicks as Claude's writing appears and a settle as an edit lands unseen, a Happy Hacking's
+Topre synthesized and typed in a person's rhythm, macOS's output by tarae's own few lines of AudioToolbox; Linux's
+output next), motion's last pieces (the honest shimmer `cfbf2a7b`,
 the strip of marks `4c56cb6f`), what PR #6's merge left (`8059c6d8`, the git base read's race `0b105abe`, the tests' one
 settle `b935aac6`), what's cut shown whole where you look (`f48b2be8`), and a move onto the base that never leaves
 conflict markers (`305ef94d`: `--autostash` had left two checkouts half moved — the changes now set aside on a ref of
