@@ -1,7 +1,7 @@
 # follow_offer_run · 100x30 · theme meok · cursor hidden
 ## text
 00 ─ tarae › src › demo.rs ────────────────────────────────────────────────────────────────────────────
-01   1 use std::collections::HashMap;                           ╭─ follow ▲ waits ───────────   0ms ─╮
+01   1 use std::collections::HashMap;                           ╭─ follow ▲ waits ─────────     0ms ─╮
 02   2                                                          │ ▎ commit it                        │
 03   3 ▎ Counts how often each word appears.                    ╰─ C-c stop · C-f unfollow ──────────╯
 04     ▎
@@ -63,7 +63,7 @@
 29
 ## fg · visible glyphs only, blank = unlisted color, UPPERCASE = bold
 00 f ddddd f ddd f TTTTTTT ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-01   A                                                          ff TTTTTT w wwwww fffffffffff   fff ff
+01   A                                                          ff TTTTTT w wwwww fffffffff     fff ff
 02   f                                                          f a TTTTTT TT                        f
 03   f f                                                        ff DDD ffff f DDD ffffffff fffffffffff
 04     f

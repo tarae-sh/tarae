@@ -1333,6 +1333,49 @@ fn snapshot_card_says_who_waits_behind_it() {
     s.frames_both("card_says_who_waits_behind");
 }
 
+/// #159: a card at work behind the one that asks (an install under way, moved to the back) — its one-row peek ends
+/// with the working sign's one cell, as every place that works shows it. Frames for the shots at both sizes.
+#[test]
+fn snapshot_a_peek_at_work_ends_with_the_working_sign() {
+    for (w, h) in [(100, 30), (160, 40)] {
+        let mut s = Shot::new(w, h);
+        s.ed.offer_popups = true;
+        s.ed.workspace.name = "main".into();
+        s.file("src/demo.rs", DEMO_RS);
+        let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
+        let ask = crate::offer::Offer::new(
+            "Claude asks to see the screen".into(),
+            "As text, once.",
+            "",
+            String::new(),
+            what,
+        );
+        s.ed.push_offer(ask);
+        let run: Vec<String> =
+            ["go", "install", "golang.org/x/tools/gopls@latest"].map(String::from).to_vec();
+        let mut install = crate::offer::Offer::new(
+            "Go's language server".into(),
+            "gopls isn't installed.",
+            "Installing gopls…",
+            "Couldn't install gopls".into(),
+            crate::offer::What::Install {
+                tool: "gopls".into(),
+                run,
+                cwd: std::env::temp_dir(),
+                then: crate::install::Then::Lsp,
+            },
+        );
+        install.state = crate::offer::OfferState::Installing(crate::clock::now());
+        s.ed.push_offer(install);
+        let shown = String::from_utf8_lossy(&s.frame()).to_string();
+        assert!(shown.contains("Go's language server"), "its peek is up");
+        if w == 100 {
+            s.check("a_peek_at_work");
+        }
+        s.frames_both(&format!("a_peek_at_work-{w}"));
+    }
+}
+
 /// Piece C: the host card with the network closed — a pack's registry asked, its others suggested (the yes grants
 /// them), the caches warning, `y` · `a` · `s` · `n` — made by `hosts::card` itself; at 100 columns and narrow.
 #[test]
@@ -5558,8 +5601,8 @@ fn the_draft_card_stays_in_the_codes_room() {
             row.find("claude thinking").map(|b| unicode_width::UnicodeWidthStr::width(&row[..b])).unwrap();
         let sc = &s.ed.screen;
         let all = rows.join("\n");
-        // (the card's left edge: two cells of margin and the wave before the words)
-        let (left, edge) = (sc.rail_w.max(sc.side_w), x - 6);
+        // (the card's left edge: two cells of margin and the working sign's cell and a space before the words)
+        let (left, edge) = (sc.rail_w.max(sc.side_w), x - 4);
         assert!(left > 0 && sc.bottom_h > 0, "{w}×{h}: the panel and the slot are up\n{all}");
         assert!(edge > left, "{w}×{h}: right of the panel ({left}) — at {edge}\n{all}");
         assert!(y + 2 <= (h as usize) - 1 - sc.bottom_h, "{w}×{h}: above the slot — at row {y}\n{all}");
@@ -7840,7 +7883,8 @@ fn the_bottom_slot_shows_its_panels_as_tabs() {
     };
     let (row, ..) = tabs(&mut s);
     assert!(
-        row.trim_start().starts_with("─ terminal · check ") && row.chars().any(|c| "▂▃▄▅▆▇".contains(c)),
+        row.trim_start().starts_with("─ terminal · check ")
+            && row.chars().any(|c| crate::shimmer::CELLS.contains(&c)),
         "{row}"
     );
     assert_eq!((s.ed.slot(), typing(&s.ed)), (Some(Slot::Terminal), true), "the terminal keeps it all");

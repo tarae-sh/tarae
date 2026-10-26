@@ -54,6 +54,32 @@ const SHIMMER_KEYS: [&[&str]; 5] = [
     &["@1", " ", "l", "@1", "\x06", "how is the map filled?", "@~4200", "\r", "@3"],
 ];
 
+/// The working sign's scenes (#159): every frame from the question's `enter` through one turn that goes through every
+/// state (`shimmer-all`, ~6.4 s) — the chat open, follow off (`C-f`); following, the chat minimized (the code's cursor
+/// beside the follow card and the now line).
+const WORKING_KEYS: [&[&str]; 5] = [
+    &["@1", " ", "l", "@1", "\x06", "how is the map filled?", "@~7500", "\r", "@1"],
+    &["@1", " ", "l", "@1", "how is the map filled?", "@~7500", "\r", "@1"],
+    // (following, the code given the keys — `esc esc`, the chat minimized: its block cursor in sight beside the cell)
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "how is the map filled?",
+        "\r",
+        "@0.3",
+        "\x1b",
+        "\x1b",
+        "@0.2",
+        "@~6000",
+        "\x1b",
+        "@1",
+    ],
+    &["@1", " ", "l", "@1", "\x06", "run the tests", "\r", "@?Its reason", "@1"],
+    &["@1", " ", "l", "@1", "run the tests", "\r", "@?Its reason", "@1"],
+];
+
 /// What Claude is doing now on the status line (`now.rs`), a turn running the tests: `C-f` in the empty chat keeps it
 /// open; following, `esc esc` gives the code the keys and the chat minimizes; `j` there pauses follow; the card's turn,
 /// `C-w h` to the code; the mouse over the line, following.
@@ -1473,6 +1499,8 @@ const SCENES: &[Scene] = &[
         keys: &[
             "@?Trust this",
             "@1",
+            // (`C-q`: a card that came on its own takes the keys once focused)
+            "\x11",
             "y",
             "@1",
             ":",
@@ -1498,6 +1526,7 @@ const SCENES: &[Scene] = &[
         keys: &[
             "@?Trust this",
             "@1",
+            "\x11",
             "y",
             "@1",
             ":",
@@ -1517,12 +1546,12 @@ const SCENES: &[Scene] = &[
             "@3",
         ],
     },
-    // (…a task under way: the wave once, by its name; the time it has run in the details)
+    // (…a task under way: the working sign once, by its name; the time it has run in the details)
     Scene {
         name: "polish-task-running",
         claude: "idle",
         files: MAIN,
-        keys: &["@?Trust this", "@1", "y", "@1", ":", "task watch", "\r", "@20?knot 12 tied", "@1"],
+        keys: &["@?Trust this", "@1", "\x11", "y", "@1", ":", "task watch", "\r", "@20?knot 12 tied", "@1"],
     },
     // (a floating frame over the tests group — which-key's top line beside the slot's)
     Scene {
@@ -1729,6 +1758,15 @@ const SCENES: &[Scene] = &[
     Scene { name: "shimmer-follow", claude: "shimmer-think", files: MAIN, keys: SHIMMER_KEYS[3] },
     Scene { name: "shimmer-read", claude: "shimmer-read", files: MAIN, keys: SHIMMER_KEYS[4] },
     Scene { name: "wetfollow", claude: "sixfollow", files: MAIN, keys: WET_KEYS },
+    // (the working sign's sheets, #159: one turn through every state — its start, a think, prose, a stall, a read and
+    // the wait for the next answer, prose — the chat open; following)
+    Scene { name: "working-chat", claude: "shimmer-all", files: MAIN, keys: WORKING_KEYS[0] },
+    Scene { name: "working-follow", claude: "shimmer-all", files: MAIN, keys: WORKING_KEYS[1] },
+    Scene { name: "working-cursor", claude: "shimmer-all", files: MAIN, keys: WORKING_KEYS[2] },
+    // (…the turn waiting on you, Claude's run card up: the chat open, one session — its top line's cell `▲`; following —
+    // the follow card's head says `▲ waits`, its cell blank)
+    Scene { name: "working-waits-chat", claude: "card", files: MAIN, keys: WORKING_KEYS[3] },
+    Scene { name: "working-waits-follow", claude: "card", files: MAIN, keys: WORKING_KEYS[4] },
     // (what Claude is doing now on the status line, a turn running the tests: the chat open, follow off; following, the
     // chat minimized; following paused by a key in the code; Claude's card up while following)
     Scene { name: "now-open", claude: "now", files: MAIN, keys: NOW_KEYS[0] },
@@ -3138,7 +3176,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "now" => turn.now(false)?,
             "nowcard" => turn.now(true)?,
             // (motion §3: a turn timed as the stream measured — prose from the start, a think, a stall)
-            "shimmer-prose" | "shimmer-think" | "shimmer-stall" | "shimmer-read" => {
+            "shimmer-prose" | "shimmer-think" | "shimmer-stall" | "shimmer-read" | "shimmer-all" => {
                 turn.shimmer(&script[8..])?
             }
             // (its three-item edit being written: the third item's new text held mid-line)
@@ -3322,7 +3360,8 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
     /// summarized thinking silent while its block is open, then landing whole): `prose` from the first moment; `think` a
     /// thinking block open and silent 1.2 s, its summary at once, then the prose; `stall` the prose 0.6 s, 2 s of
     /// nothing, the prose again; `read` a few words, a read of tarae's, its result back to Claude and a request out as
-    /// claude says them, 2.5 s before the next answer's first words (2.75 s measured), the rest.
+    /// claude says them, 2.5 s before the next answer's first words (2.75 s measured), the rest; `all` (the working sign's,
+    /// #159) every state in one turn: 0.8 s before anything comes, the think, prose, a stall, the read and its wait, prose.
     fn shimmer(&mut self, shape: &str) -> io::Result<()> {
         let ev = |e: Value| json!({"type": "stream_event", "event": e});
         let prose = "The name is cloned because insert takes the key by value, and the first strand moves into the \
@@ -3337,7 +3376,11 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             }
             Ok(())
         };
-        if shape == "think" {
+        // (`all`: the turn's start, 0.8 s before anything comes)
+        if shape == "all" {
+            std::thread::sleep(Duration::from_millis(800));
+        }
+        if shape == "think" || shape == "all" {
             let block = json!({"type": "thinking", "thinking": "", "signature": ""});
             self.line(ev(json!({"type": "content_block_start", "index": 0, "content_block": block})))?;
             std::thread::sleep(Duration::from_millis(1200));
@@ -3351,6 +3394,17 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             "stall" => {
                 stream(self, &pieces[..12])?;
                 std::thread::sleep(Duration::from_secs(2));
+                stream(self, &pieces[12..])?;
+            }
+            // (`all`: after the think, prose 0.6 s, a stall of 1.6 s, a read and 1.5 s before the next answer, the rest)
+            "all" => {
+                stream(self, &pieces[..12])?;
+                std::thread::sleep(Duration::from_millis(1600));
+                self.call(1, "read", json!({"files": ["src/main.rs:7-14"]}))?;
+                let result = json!({"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "fn main() {"}]});
+                self.line(json!({"type": "user", "message": {"role": "user", "content": [result]}}))?;
+                self.line(json!({"type": "system", "subtype": "status", "status": "requesting"}))?;
+                std::thread::sleep(Duration::from_millis(1500));
                 stream(self, &pieces[12..])?;
             }
             "read" => {

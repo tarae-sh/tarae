@@ -66,7 +66,7 @@ fn each_step_says_what_claude_is_doing() {
     assert_eq!(step(&ed, &ed.workspace), None, "no chat");
     ed = at_work();
     let s = step(&ed, &ed.workspace).unwrap();
-    assert_eq!((s.verb, s.sign), ("thinking", Sign::Wave), "asked, nothing back yet");
+    assert_eq!((s.verb, s.sign), ("thinking", Sign::Working), "asked, nothing back yet");
     // A call in flight, each kind
     let calls: &[(&str, serde_json::Value, &str, Mark)] = &[
         ("run", json!({"command": "cargo test -q"}), "running cargo test -q", Mark::Run),
@@ -90,7 +90,7 @@ fn each_step_says_what_claude_is_doing() {
         // (its result back: the call's step is over — Claude's next answer on its way, the wave)
         send(&mut ed, StreamEv::ToolResult { id: "t1".into(), text: "ok".into(), error: false });
         let s = step(&ed, &ed.workspace).unwrap();
-        assert_eq!((s.verb, s.sign), ("thinking", Sign::Wave), "{name} answered");
+        assert_eq!((s.verb, s.sign), ("thinking", Sign::Working), "{name} answered");
     }
     // Tests run
     let mut ed = at_work();
@@ -110,11 +110,11 @@ fn each_step_says_what_claude_is_doing() {
     // Thinking, prose arriving
     let mut ed = at_work();
     send(&mut ed, StreamEv::ThinkingBlock(true));
-    assert_eq!(step(&ed, &ed.workspace).unwrap().sign, Sign::Wave, "a think");
+    assert_eq!(step(&ed, &ed.workspace).unwrap().sign, Sign::Working, "a think");
     send(&mut ed, StreamEv::ThinkingBlock(false));
     send(&mut ed, StreamEv::Text("Let me look".into()));
     let s = step(&ed, &ed.workspace).unwrap();
-    assert_eq!((s.verb, s.sign), ("writing", Sign::Band), "words arriving");
+    assert_eq!((s.verb, s.sign), ("writing", Sign::Working), "words arriving");
     // Waiting on you: a card of its up, an edit in its review
     let waits: &[(&str, serde_json::Value, &str)] = &[
         (

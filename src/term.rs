@@ -180,7 +180,7 @@ impl Resting {
     /// due before another `RESTING_REDRAW` (`tick`: `Editor::tick_due`) — that frame first, the whole screen
     /// `RESTING_REDRAW` after (else a late fade tick lost the race: the card drawn whole by the redraw, ci round
     /// 5). Only once: the next deadline draws it whatever ticks — an animation stepping each second (nothing on a
-    /// clock: the wave, the reviewer's time) always has its next frame that close, and would hold it the whole turn.
+    /// clock: the working sign, the reviewer's time) always has its next frame that close, and would hold it the whole turn.
     fn now_or_after(&mut self, tick: Option<std::time::Instant>, now: std::time::Instant) -> bool {
         if !self.held && tick.is_some_and(|t| t <= now + RESTING_REDRAW) {
             self.wrote(true, now);
@@ -1798,14 +1798,14 @@ fn draw_output(
     Ok(())
 }
 
-/// A tab's badge (`chrome::Badge`): its glyph and colour — the wave in the accent while under way, `●` in
+/// A tab's badge (`chrome::Badge`): its glyph and colour — the working sign in the accent while under way, `●` in
 /// the plus colour, `▲` in the error or the warning colour.
 fn badge_glyph(b: crate::chrome::Badge, editor: &Editor, ui: &Ui) -> Option<(String, Option<Color>)> {
     use crate::chrome::Badge;
     let color = |k: &str| editor.theme.try_get(k).and_then(|s| s.fg);
     Some(match b {
         Badge::None => return None,
-        Badge::Running => (wave(editor), ui.accent.fg),
+        Badge::Running => (working(editor, false), ui.accent.fg),
         Badge::Passed => ("●".into(), color("diff.plus")),
         Badge::Failed => ("▲".into(), ui.error.fg),
         Badge::Warning => ("▲".into(), color("warning")),
@@ -2339,7 +2339,7 @@ fn preflight_of<'a>(editor: &'a Editor, r: &crate::task::Run) -> Option<&'a crat
 }
 
 /// A preflight's steps in a row: `● fmt 0.4s   ▲ clippy 12s   ▅ test 3.2s   ◦ perf` — passed in the plus
-/// color (a note's pass in warning), failed in the error color, the one running with the wave's cell, the ones to
+/// color (a note's pass in warning), failed in the error color, the one running with the working sign, the ones to
 /// come faint. Too wide: the times go, then names are cut from the end. Each piece with its step (a click
 /// there scrolls to its output — #72; the gaps between: none).
 fn preflight_row(
@@ -2402,7 +2402,7 @@ fn preflight_row(
 }
 
 /// A preflight step's mark, its colour and its name's style: passed `●` in the plus colour (a note's pass in
-/// warning), failed `▲` in the error colour and bold, the one running the wave's one cell (`pulse`) in the accent,
+/// warning), failed `▲` in the error colour and bold, the one running the working sign (`working`) in the accent,
 /// the ones to come `◦` faint — every mark one cell, so a row's name and time stay where the others' are.
 fn step_mark(
     editor: &Editor,
@@ -2415,7 +2415,9 @@ fn step_mark(
     let faint = Style { fg: ui.linenr.fg, ..card };
     match s.state {
         State::Waiting => ("◦".to_string(), faint, faint),
-        State::Running => (pulse(editor), Style { fg: ui.accent.fg, ..card }, Style { bold: true, ..card }),
+        State::Running => {
+            (working(editor, false), Style { fg: ui.accent.fg, ..card }, Style { bold: true, ..card })
+        }
         State::Passed if s.note.is_some() => ("●".into(), Style { fg: warn, ..card }, card),
         State::Passed => ("●".into(), Style { fg: good, ..card }, card),
         State::Failed(_) => ("▲".into(), Style { fg: bad, ..card }, Style { bold: true, ..card }),
@@ -2646,7 +2648,7 @@ fn draw_task_panel(
             summary.push((n.to_string(), Style { bold: true, ..card }));
         }
     }
-    // A preflight's: which step (its row has the wave), its whole time in minutes
+    // A preflight's: which step (its row has the working sign), its whole time in minutes
     let steps = preflight_of(editor, r);
     let running = matches!(r.state, State::Running);
     // (waiting on what isn't its own — another session's cargo, likely — not stuck: #10, `waits.rs`)
@@ -2660,7 +2662,8 @@ fn draw_task_panel(
             let at = p.steps.iter().filter(|s| s.state != crate::preflight::State::Waiting).count();
             format!("   step {} of {}", at.max(1), p.steps.len())
         }
-        // (under way is said by the wave by its name — the badge; here, the time it has run, which becomes its whole)
+        // (under way is said by the working sign by its name — the badge; here, the time it has run, which becomes its
+        // whole)
         (State::Running, _, None) => {
             format!("   {}", run_time(crate::clock::since(r.started), follows, calm))
         }
@@ -2792,7 +2795,7 @@ fn draw_task_panel(
 
 /// The task panel's group laid out (panes P3 §2.2), `rows` rows from screen row `y` (its last row, the panel's,
 /// `last`): its list `list_w` wide — the task's places (`▲ src/main.rs:31  mismatched types`, the errors first; one
-/// whose line was cut says so) or a preflight's steps (`● fmt 6ms`, the one running with the wave) — a line, then
+/// whose line was cut says so) or a preflight's steps (`● fmt 6ms`, the one running with the working sign) — a line, then
 /// the output, each under its title (lit with the keys), as the tests' group draws its two. While the list has the
 /// keys its selection is on the cursor line's band in the output (the link).
 #[allow(clippy::too_many_arguments)]
@@ -3639,7 +3642,7 @@ fn draw_test_panel(
         }
     }
     let running = matches!(r.state, RunState::Running);
-    // (under way is said by the wave by its name — the badge; here, the time it has run, which becomes its whole —
+    // (under way is said by the working sign by its name — the badge; here, the time it has run, which becomes its whole —
     // then what it waits on that isn't its own: another session's cargo, likely, #10)
     let calm = !editor.moving();
     let wait = r.wait.shown(std::time::Instant::now(), |d| timer(d, calm)).filter(|_| running);
@@ -9135,7 +9138,7 @@ const NOW_PLAN_MAX: usize = 32;
 
 /// What Claude is doing now, after the mode word (`now.rs`; the user, 2026-10-26): `▸ running cargo test -q 41s — I will
 /// run the unit tests to check …   › 3/4 Run the unit tests` — the step's sign (motion's marks, in the accent as the one
-/// in hand; in warning where it waits on you; the wave, or none where the word's band says it), its verb and what it
+/// in hand; in warning where it waits on you; else the working sign's one cell, `working`), its verb and what it
 /// acts on, its own time (filled out so the sentence after it never slides as it counts), Claude's last sentence
 /// (italic: its thinking's) and the plan's step. Pushed onto `left`; the sentence returned whole, for the caller to cut
 /// to the room left once the rest is in.
@@ -9152,15 +9155,9 @@ fn now_segments(editor: &Editor, ui: &Ui, left: &mut Vec<Seg>) -> Option<String>
     left.push(seg("   ".into(), ui.status, NOW_STEP));
     match step.sign {
         Sign::Mark(m) => left.push(seg(format!("{} ", m.glyph()), sign, NOW_STEP)),
-        Sign::Wave => left.push(seg(format!("{} ", wave(editor)), accent, NOW_STEP)),
-        Sign::Band => {}
+        Sign::Working => left.push(seg(format!("{} ", working(editor, true)), accent, NOW_STEP)),
     }
-    match step.sign {
-        Sign::Band => {
-            left.extend(turn_word(editor, ui, step.verb, dim).into_iter().map(|(t, s)| seg(t, s, NOW_STEP)))
-        }
-        _ => left.push(seg(step.verb.into(), if step.warn { warn } else { dim }, NOW_STEP)),
-    }
+    left.push(seg(step.verb.into(), if step.warn { warn } else { dim }, NOW_STEP));
     if !step.what.is_empty() {
         left.push(seg(format!(" {}", fit_ellipsis(&step.what, 40)), ui.status, NOW_STEP));
     }
@@ -9496,7 +9493,7 @@ fn draw_statusline(
             right.push(gap(220));
         }
         Some(_) => {
-            right.push(Seg { text: format!("{} claude", wave(editor)), style: accent, keep: 220 });
+            right.push(Seg { text: format!("{} claude", working(editor, false)), style: accent, keep: 220 });
             right.push(gap(220));
         }
         None => {}
@@ -10405,7 +10402,7 @@ fn toast_paint(
 ///
 /// An install (a language server) also has `N Never`.
 ///
-/// While downloading, a wave + "Fetching and building…"; on failure the reason + `y Retry` `n Dismiss`.
+/// While downloading, the working sign + "Fetching and building…"; on failure the reason + `y Retry` `n Dismiss`.
 struct OfferCard {
     /// The front card's id (`Offer.id`).
     id: u64,
@@ -10437,7 +10434,7 @@ struct OfferCard {
     failed: bool,
     /// When stacked, the "1/3" at the right of the title row (else empty).
     badge: String,
-    /// Downloading — the wave at the start of the second line in accent.
+    /// Downloading — the working sign at the start of the second line in accent.
     busy: bool,
     /// Cards stacked behind (nearest first): (depth 1.., title, start time if downloading, failed?, id, whom it's
     /// about) — this session's, then other sessions' (P3 step 7d: every session's asks in one stack).
@@ -11033,7 +11030,7 @@ impl OfferCard {
                 (v, Some(b))
             }
             OfferState::Installing(_) => {
-                (vec![(title, false), (format!("{} {}", wave(editor), o.working), true)], None)
+                (vec![(title, false), (format!("{} {}", working(editor, false), o.working), true)], None)
             }
             OfferState::Failed(why) => {
                 let mut v = vec![(o.failed.clone(), false)];
@@ -11454,8 +11451,8 @@ impl OfferCard {
                 bg,
                 ..Style::default()
             };
-            let tail = started.map(|_| format!(" {}", wave(editor))).unwrap_or_default();
-            // (its mark at the right end, before the wave)
+            let tail = started.map(|_| format!(" {}", working(editor, false))).unwrap_or_default();
+            // (its mark at the right end, before the working sign)
             let mark_w = if mark.is_some() { 2 } else { 0 };
             let room = pw.saturating_sub(5 + tail.width() + mark_w);
             let t = fit_ellipsis(title, room);
@@ -11812,69 +11809,41 @@ fn draw_which_key(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) 
     Ok(())
 }
 
-/// Waiting animation: a three-cell equalizer wave (`▂▅▇` …) — only block chars in common monospace fonts.
-/// A step a `TICK` on the animation's clock (`editor::anim_step`): every wave on screen moves together, a
-/// step a frame — held still at its first where nothing moves on a clock (`editor.motion`, `Editor::moving`).
-fn wave(editor: &Editor) -> String {
-    let f = wave_step(editor);
-    (0..3).map(|k| WAVE[(f + k * 3) % WAVE.len()]).collect()
-}
-
-/// The wave's blocks, rising and falling.
-const WAVE: [char; 10] = ['▂', '▃', '▄', '▅', '▆', '▇', '▆', '▅', '▄', '▃'];
-
-/// Where the wave is in `WAVE` this frame.
-fn wave_step(editor: &Editor) -> usize {
-    let step = if editor.moving() { crate::editor::anim_step() } else { 0 };
-    (step % WAVE.len() as u128) as usize
-}
-
-/// Whether the wave stands beside the turn's word now: only where nothing streams by nature (`shimmer::Pace::Wave` —
-/// a thinking block open, a run, the turn's start, a compaction); where deltas come or stopped coming, the word's band
-/// says it instead (`turn_word`) — one sign, never both.
-fn wave_beside(editor: &Editor) -> bool {
-    crate::shimmer::pace(&editor.workspace) == Some(crate::shimmer::Pace::Wave)
-}
-
-/// The turn's word as its pace draws it (motion §3, `shimmer.rs`): while deltas come or the stream stands still
-/// (`Pace::Shimmer`, `Pace::Still`), the band over `style`'s dim ink, a cell at a time — the accent at its centre,
-/// blended toward the word's dim to its edges; named colours step dim · the accent · the accent bold. Plain beside the
-/// wave (`Pace::Wave`), at `calm` and `none`, and where motion isn't drawn.
-fn turn_word(editor: &Editor, ui: &Ui, word: &str, style: Style) -> Vec<(String, Style)> {
-    use crate::shimmer::Pace;
-    use unicode_width::UnicodeWidthChar;
-    let pace = crate::shimmer::pace(&editor.workspace);
-    let banded = editor.motion_drawn && editor.moving() && matches!(pace, Some(Pace::Shimmer | Pace::Still));
-    let at = editor.workspace.claude.chat.as_ref().map_or(0.0, |c| c.pace.at);
-    if !banded || word.is_empty() {
-        return vec![(word.to_string(), style)];
+/// The working sign (CLAUDE.md, "One working sign, one cell that rises"; `shimmer.rs`): one cell, `▃`‥`▆`, wherever
+/// Claude or a run works — a turn's word, a tab's badge, an ask's peek, a card, the step list — one cell as every mark
+/// is (`◦ • ● ▸ ▲`), so nothing moves a cell from a turn's start to its end. For a turn of the chat's (`turn`): the
+/// stream's level while deltas come (`Pace::Shimmer`), the floor the moment they stop (`Pace::Still`), else the breath on the animation's clock (`Pace::Wave`: a think, a run, a request out, the start). For
+/// a run, an install, an ask's own claude: the breath. Every breath on screen takes the same step
+/// (`editor::anim_step`). `▄` held where nothing moves on a clock (`Editor::moving`); the level only where motion is
+/// drawn (`Editor.motion_drawn`, off in tests: there it breathes on the tests' still clock).
+fn working(editor: &Editor, turn: bool) -> String {
+    use crate::shimmer::{CELLS, Pace, STILL};
+    if !editor.moving() {
+        return CELLS[STILL].to_string();
     }
-    let peak = ui.accent.fg;
-    let w = word.width();
-    let mut out: Vec<(String, Style)> = Vec::new();
-    let mut col = 0;
-    for ch in word.chars() {
-        let k = crate::shimmer::ink(at, col, w);
-        col += ch.width().unwrap_or(0);
-        let st = match blend(peak, style.fg, k) {
-            Some(fg) => Style { fg: Some(fg), ..style },
-            None if k >= 0.66 => Style { fg: peak.or(style.fg), bold: true, ..style },
-            None if k >= 0.33 => Style { fg: peak.or(style.fg), ..style },
-            None => style,
-        };
-        match out.last_mut() {
-            Some((s, last)) if *last == st => s.push(ch),
-            _ => out.push((ch.to_string(), st)),
+    let at = match turn.then(|| crate::shimmer::pace(&editor.workspace)).flatten() {
+        Some(Pace::Shimmer) if editor.motion_drawn => {
+            crate::shimmer::height(editor.workspace.claude.chat.as_ref().map_or(0.0, |c| c.pace.level()))
         }
-    }
-    out
+        // (the stream stopped: low and still at once, however much its last lump carried)
+        Some(Pace::Still) if editor.motion_drawn => 0,
+        _ => crate::shimmer::breath(crate::editor::anim_step()),
+    };
+    CELLS[at].to_string()
 }
 
-/// The wave in one cell, for a list row's mark (`●`, `▲`, `◦` are one): its middle block, rising and falling on
-/// the same clock — held still at `▅` where nothing moves. The three-cell wave stays where there's room (a header's
-/// badge, a card).
-fn pulse(editor: &Editor) -> String {
-    WAVE[(wave_step(editor) + 3) % WAVE.len()].to_string()
+/// The turn's cell on a top line (the chat's, the follow card's) and its style: `▲` in warning while the turn waits on
+/// you, `◦` while a call of it may be stuck, else the working sign in `accent` — the same one cell whatever it does.
+/// Where the line already names the turn's state (`said`: the follow card's head, the chat's line of two sessions or
+/// more — `▲ waits`, `◦ stuck?`) the cell is blank then, its width kept: said once, and nothing moves.
+fn turn_cell(editor: &Editor, accent: Style, warn: Style, said: bool) -> (String, Style) {
+    use crate::workspace::Doing;
+    match editor.doing(&editor.workspace) {
+        Doing::Waiting | Doing::Stuck { .. } if said => (" ".into(), accent),
+        Doing::Waiting => ("▲".into(), warn),
+        Doing::Stuck { .. } => ("◦".into(), warn),
+        _ => (working(editor, true), accent),
+    }
 }
 
 /// A run's time so far in a panel's header, where its whole goes once it ends — `run_duration`'s; with something
@@ -12062,7 +12031,7 @@ fn draw_ask_stream(
     let (x0, y0) = (lay.edit_w.saturating_sub(inner + 5), card_floor(lay) - h);
     let width = inner + 4;
     card_edge(out, card, x0, y0, width)?;
-    // Title: wave · status · instruction ……… elapsed
+    // Title: working sign · status · instruction ……… elapsed
     let y = y0 + pad;
     let secs = timer(rev.started.elapsed(), !editor.moving());
     let phase = if rev.thinking || rev.streamed.is_empty() { "thinking" } else { "writing" };
@@ -12070,17 +12039,17 @@ fn draw_ask_stream(
     apply(out, card)?;
     queue!(out, Print("  "))?;
     apply(out, Style { fg: ui.accent.fg, ..card })?;
-    queue!(out, Print(wave(editor)))?;
+    queue!(out, Print(working(editor, false)))?;
     apply(out, Style { bold: true, ..card })?;
     queue!(out, Print(format!(" claude {phase}")))?;
     let instr = fit_ellipsis(
         &format!("  “{}”", rev.instruction),
-        // One row = margin 2 + wave 3 + " claude status" + instruction + gap + elapsed + margin 2 = inner + 4
-        (inner + 4).saturating_sub(2 + 3 + 8 + phase.len() + 1 + secs.len() + 2),
+        // One row = margin 2 + sign 1 + " claude status" + instruction + gap + elapsed + margin 2 = inner + 4
+        (inner + 4).saturating_sub(2 + 1 + 8 + phase.len() + 1 + secs.len() + 2),
     );
     apply(out, Style { fg: ui.virt.fg, ..card })?;
     queue!(out, Print(&instr))?;
-    let used = 2 + 3 + 8 + phase.len() + instr.width();
+    let used = 2 + 1 + 8 + phase.len() + instr.width();
     queue!(out, Spaces((inner + 4).saturating_sub(used + secs.len() + 2)))?;
     apply(out, faint)?;
     queue!(out, Print(&secs), Print("  "))?;
@@ -12217,12 +12186,6 @@ fn draw_follow_card(
         _ if replaying || !c.busy() => vec![""],
         _ => vec![word.as_deref().unwrap_or(""), ""],
     };
-    // (waiting on you: the word in the accent — a `●` there read as a second knot beside the one in hand)
-    let mark = match () {
-        _ if waiting => String::new(),
-        _ if (compacting || c.busy() && !replaying) && wave_beside(editor) => wave(editor),
-        _ => String::new(),
-    };
     let bares: &[&str] = match compact && crate::tools::unsandboxed(editor) {
         true => &[" › no sandbox", " › bare", ""],
         false => &[""],
@@ -12232,6 +12195,12 @@ fn draw_follow_card(
         .try_get("warning")
         .and_then(|s| s.fg)
         .map_or(accent, |fg| Style { fg: Some(fg), ..card });
+    // (the turn's one cell while it works, waits on you or may be stuck — `turn_cell`; none in a replay or after it)
+    let (mark, mark_st) = match compacting || c.busy() && !replaying {
+        // (its head names the turn's state: `▲ waits`, `◦ stuck?`)
+        true => turn_cell(editor, accent, warn, true),
+        false => (String::new(), accent),
+    };
     // Its frame's top line (P3 step 7d: a floating pane, named): who it follows as the chrome names it — with two
     // sessions or more its name in its colour, else `follow` — its state after it (`▲ waits` in warning, `done` the
     // accent; at work, what it's at says it at the right: `thinking`, not `working` twice); `paused` and, minimized,
@@ -12284,10 +12253,8 @@ fn draw_follow_card(
     }
     // (what it's at and how long, a blank between — waiting on you, its state says so: not twice)
     let doing = if waiting { "" } else { doing.trim_start() };
-    // (the word as the turn's pace draws it: its band while the stream comes or stands still)
     let mut right: Vec<(String, Style)> = Vec::new();
-    let word = turn_word(editor, ui, doing, dim);
-    for part in [vec![(mark.clone(), accent)], word, vec![(secs.clone(), faint)]] {
+    for part in [vec![(mark.clone(), mark_st)], vec![(doing.to_string(), dim)], vec![(secs.clone(), faint)]] {
         if part.iter().all(|(s, _)| s.is_empty()) {
             continue;
         }
@@ -14773,14 +14740,11 @@ fn draw_chat(
     // (compacting can take a minute — said for what it is, whatever was going on before it)
     if crate::compaction::under_way(&editor.workspace) {
         lines.push(Vec::new());
-        lines.push(vec![sp(wave(editor), accent), sp(" compacting…".into(), dim)]);
+        lines.push(vec![sp(working(editor, true), accent), sp(" compacting…".into(), dim)]);
     } else if c.state == State::Thinking && !called && !thought_live {
         lines.push(Vec::new());
-        // (the wave where nothing streams, else its cells kept and the word's band: the word never slides)
-        let mark = if wave_beside(editor) { wave(editor) } else { "   ".into() };
-        let mut row = vec![sp(mark, accent), sp(" ".into(), dim)];
-        row.extend(turn_word(editor, ui, "thinking…", dim).into_iter().map(|(text, style)| sp(text, style)));
-        lines.push(row);
+        // (the working sign's one cell, however the turn goes: the word never slides)
+        lines.push(vec![sp(working(editor, true), accent), sp(" thinking…".into(), dim)]);
     }
     // Empty chat: guidance + example questions in the middle
     if c.msgs.is_empty() && !c.busy() {
@@ -14961,7 +14925,7 @@ fn draw_chat(
         // (its claude not up yet: the project's settings read first — frictions29 #67, a send then waits for it)
         State::Idle if let Some(t) = c.settings.waiting_since() => {
             let t = timer(crate::clock::since(t), !editor.moving());
-            vec![sp(wave(editor), accent), sp(format!(" starting {t}"), dim)]
+            vec![sp(working(editor, true), accent), sp(format!(" starting {t}"), dim)]
         }
         State::Idle => match crate::models::label(editor) {
             Some(m) if left >= 4 => vec![sp(fit_ellipsis(&m, left), faint)],
@@ -14971,14 +14935,14 @@ fn draw_chat(
         _ => {
             // (the step's word, as the status line says the step — `now::Step::word`)
             let word = crate::now::step(editor, &editor.workspace).map_or("thinking", |s| s.word());
-            // (the wave where nothing streams by nature, else the word's band — `turn_word`)
-            let mut v = match wave_beside(editor) {
-                true => vec![sp(wave(editor), accent), sp(" ".into(), dim)],
-                false => Vec::new(),
-            };
-            v.extend(turn_word(editor, ui, word, dim).into_iter().map(|(text, style)| sp(text, style)));
-            v.push(sp(format!(" {}", timer(crate::clock::since(c.started), !editor.moving())), dim));
-            v
+            // (the turn's one cell before it, whatever the turn does — `turn_cell`)
+            // (with two sessions or more the line names this one's state: `main ▲ waits` — `session_tabs`)
+            let (cell, style) = turn_cell(editor, accent, warn_fg, !editor.workspaces.is_empty());
+            vec![
+                sp(cell, style),
+                sp(format!(" {word}"), dim),
+                sp(format!(" {}", timer(crate::clock::since(c.started), !editor.moving())), dim),
+            ]
         }
     };
     let right: Vec<(String, Style)> = status.into_iter().map(|s| (s.text, s.style)).collect();
@@ -16187,8 +16151,7 @@ fn now_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io:
         Sign::Mark(m) => {
             sp(format!("{} ", m.glyph()), if step.warn { warn } else { Style { bold: true, ..accent } })
         }
-        Sign::Wave => sp(format!("{} ", wave(editor)), accent),
-        Sign::Band => sp(String::new(), ground),
+        Sign::Working => sp(format!("{} ", working(editor, true)), accent),
     };
     let lead = sign.text.width();
     let time = running(crate::now::took(&editor.workspace, &step), !editor.moving());
@@ -17579,7 +17542,7 @@ fn note_lines(
     if n.waiting {
         out.push(Line::Blank);
         out.push(Line::Text {
-            spans: vec![sp(&wave(editor), accent), sp(" claude is replying…", dim)],
+            spans: vec![sp(&working(editor, false), accent), sp(" claude is replying…", dim)],
             indent: 0,
         });
     }
@@ -21334,58 +21297,141 @@ mod tests {
         assert_eq!(steps, [vec![], vec![(44, 'y')], vec![(11, 'y')], vec![]], "lit, drying, dry");
     }
 
-    /// §3: the turn's word as its pace draws it — beside the wave plain; once deltas came, the band where the stream
-    /// left it: the accent on the cell its centre reached, a blend beside it, the word's dim past its half width; with
-    /// a named colour the steps dim · accent · accent bold; at `calm` a plain word and no wave (the stream came: the
-    /// wave isn't its sign).
+    /// #159: the turn's one cell — at its start the breath on the animation's clock (the floor, the top half a breath
+    /// on, the floor again); deltas raise it by the stream's level; a quiet lets it fall to the floor and hold there,
+    /// breathing no more; a run's cell breathes whatever the stream does; at `calm` `▄` held. One cell throughout.
     #[test]
-    fn the_turns_word_takes_the_band_where_the_stream_left_it() {
-        use crossterm::style::Color::Rgb;
+    fn the_turns_cell_breathes_rises_with_the_stream_and_holds_low_when_it_stops() {
+        use crate::shimmer::{BREATH, CELLS, STILL, breath};
+        crate::clock::hold();
         let mut ed = Editor::new(crate::config::Config::default());
         let mut c = crate::chat::Chat::new();
         c.state = crate::chat::State::Writing;
         ed.workspace.claude.chat = Some(c);
         ed.motion_drawn = true;
-        let ui = Ui::new(&ed);
-        let dim = Style { fg: Some(Rgb { r: 100, g: 100, b: 100 }), ..Style::default() };
-        let accent = ui.accent.fg;
-        assert!(matches!(accent, Some(Rgb { .. })), "the default theme's accent is a colour of its own");
-        let plain = vec![("writing".to_string(), dim)];
-        assert!(wave_beside(&ed), "the turn's start: the wave");
-        assert_eq!(turn_word(&ed, &ui, "writing", dim), plain);
-        // (five batches of 16 bytes: five cells on — the centre on the word's third cell)
-        let p = &mut ed.workspace.claude.chat.as_mut().unwrap().pace;
-        (0..5).for_each(|_| p.delta(16));
-        assert!(!wave_beside(&ed), "deltas came: the band, not the wave");
-        let cells = |dim: Style| -> Vec<(char, Style)> {
-            turn_word(&ed, &ui, "writing", dim)
-                .into_iter()
-                .flat_map(|(s, st)| s.chars().map(move |c| (c, st)).collect::<Vec<_>>())
-                .collect()
+        let cell = |ed: &Editor, turn: bool| -> char {
+            let s = working(ed, turn);
+            assert_eq!(s.chars().count(), 1, "one cell: {s:?}");
+            s.chars().next().unwrap()
         };
-        let band = cells(dim);
-        assert_eq!(band.iter().map(|c| c.0).collect::<String>(), "writing");
-        assert_eq!((band[2].0, band[2].1.fg), ('i', accent), "its centre the accent");
-        assert!(band[1].1.fg != dim.fg && band[1].1.fg != accent, "beside it, a blend");
-        assert_eq!((band[5].1, band[6].1), (dim, dim), "past its half width, the word's dim");
-        // (a named colour: no blend — the steps)
-        let named = Style { fg: Some(crossterm::style::Color::DarkGrey), ..Style::default() };
-        let steps = |ed: &Editor| -> Vec<(Option<crossterm::style::Color>, bool)> {
-            let word = turn_word(ed, &ui, "writing", named);
-            word.iter().flat_map(|(s, st)| s.chars().map(|_| (st.fg, st.bold)).collect::<Vec<_>>()).collect()
-        };
-        let (dark, lit, bold) = ((named.fg, false), (accent, false), (accent, true));
-        assert_eq!(
-            steps(&ed),
-            [dark, bold, bold, bold, dark, dark, dark],
-            "its centre on a cell: k .75 beside it"
+        let tick = crate::editor::TICK;
+        let period = (BREATH.as_millis() / tick.as_millis()) as u32;
+        // (to the breath's start: its floor; half a breath on, its top; a whole one, the floor again)
+        let into = (crate::editor::anim_step() % u128::from(period)) as u32;
+        crate::clock::advance(tick * (period - into));
+        assert_eq!(cell(&ed, true), CELLS[0], "the turn's start: the breath, at its floor");
+        crate::clock::advance(tick * (period / 2));
+        assert_eq!(cell(&ed, true), CELLS[CELLS.len() - 1], "half a breath on: the top");
+        crate::clock::advance(tick * (period / 2));
+        assert_eq!(cell(&ed, true), CELLS[0]);
+        // (deltas: the stream's level — 30 bytes a step up, 100 the top)
+        ed.workspace.claude.chat.as_mut().unwrap().pace.delta(30);
+        assert_eq!(cell(&ed, true), CELLS[1], "30 bytes: a step up");
+        (0..3).for_each(|_| ed.workspace.claude.chat.as_mut().unwrap().pace.delta(25));
+        assert_eq!(cell(&ed, true), CELLS[CELLS.len() - 1], "105 bytes: the top");
+        // (a run's cell meanwhile: the breath, not the stream — at the breath's floor now)
+        assert_eq!(cell(&ed, false), CELLS[breath(crate::editor::anim_step())]);
+        // (a quiet: the stream stands still, its cell fallen to the floor and held there whatever the clock does)
+        crate::clock::advance(crate::shimmer::STILL_AFTER + Duration::from_millis(500));
+        assert_eq!(crate::shimmer::pace(&ed.workspace), Some(crate::shimmer::Pace::Still));
+        let held: Vec<char> = (0..period)
+            .map(|_| {
+                crate::clock::advance(tick);
+                cell(&ed, true)
+            })
+            .collect();
+        assert!(held.iter().all(|&c| c == CELLS[0]), "still: low and held, {held:?}");
+        // (a lump of 2 KB, then the stream stops: the floor the moment it's still — never the level sinking from the top)
+        ed.workspace.claude.chat.as_mut().unwrap().pace.delta(2048);
+        assert_eq!(cell(&ed, true), CELLS[CELLS.len() - 1], "the lump: the top");
+        crate::clock::advance(crate::shimmer::STILL_AFTER);
+        assert_eq!(crate::shimmer::pace(&ed.workspace), Some(crate::shimmer::Pace::Still));
+        assert!(
+            crate::shimmer::height(ed.workspace.claude.chat.as_ref().unwrap().pace.level()) > 1,
+            "its level still high"
         );
-        // (half a cell on: the centre between the third and fourth — all three steps)
-        ed.workspace.claude.chat.as_mut().unwrap().pace.delta(8);
-        assert_eq!(steps(&ed), [dark, lit, bold, bold, lit, dark, dark], "dim · accent · accent bold");
+        assert_eq!(cell(&ed, true), CELLS[0], "stopped: the floor at once");
         ed.config.motion = "calm".into();
-        assert_eq!(turn_word(&ed, &ui, "writing", dim), plain, "calm: a plain word");
-        assert!(!wave_beside(&ed));
+        assert_eq!((cell(&ed, true), cell(&ed, false)), (CELLS[STILL], CELLS[STILL]), "calm: ▄ held");
+        ed.workspace.claude.chat.as_mut().unwrap().pace.delta(100);
+        assert_eq!(cell(&ed, true), CELLS[STILL], "calm: the stream doesn't move it");
+        crate::clock::release();
+    }
+
+    /// #159, the reviewer: the chat's top line while the turn waits on you (`▲`) or a call of it may be stuck (`◦`) —
+    /// with one session the turn's cell says it; with two or more the line's names say it (`main ▲ waits`, `main ◦
+    /// symbols 0s`) and the cell
+    /// is blank: the sign once on the line either way, never twice, never none.
+    #[test]
+    fn the_chats_top_line_says_waits_and_stuck_once() {
+        let line = |sessions: usize, stuck: bool| -> String {
+            let mut ed = Editor::new(Config::default());
+            ed.config.llm.command = "sh".into();
+            ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+            ed.workspace.name = "main".into();
+            for i in 1..sessions {
+                let id = ed.workspace_add(std::env::temp_dir().join(format!("tarae-cell-session-{i}")));
+                ed.workspace_by_id(id).unwrap().name = format!("fix{i}");
+            }
+            crate::chat::open(&mut ed);
+            let c = ed.workspace.claude.chat.as_mut().unwrap();
+            (c.state, c.unfolded) = (crate::chat::State::Thinking, true);
+            let generation = c.generation();
+            match stuck {
+                true => ed.tool_waits(generation, serde_json::json!(1), "symbols", Duration::ZERO),
+                false => {
+                    let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
+                    ed.push_offer(crate::offer::Offer::new(
+                        "Claude asks".into(),
+                        "once",
+                        "",
+                        String::new(),
+                        what,
+                    ));
+                }
+            }
+            let want = if stuck { "Stuck" } else { "Waiting" };
+            assert!(
+                format!("{:?}", ed.doing(&ed.workspace)).starts_with(want),
+                "{:?}",
+                ed.doing(&ed.workspace)
+            );
+            let mut out = Vec::new();
+            render(&mut ed, &mut out, 140, 36).unwrap();
+            let mut vt = vt100::Parser::new(36, 140, 0);
+            vt.process(&out);
+            vt.screen().rows(0, 140).next().unwrap()
+        };
+        for (stuck, glyph, said) in [(false, '▲', "main ▲ waits"), (true, '◦', "main ◦ symbols")] {
+            let one = line(1, stuck);
+            assert_eq!(one.matches(glyph).count(), 1, "one session: the cell says it — {one}");
+            assert!(!one.contains(said), "one session: no names on the line — {one}");
+            let two = line(2, stuck);
+            assert!(two.contains(said), "two sessions: the names say it — {two}");
+            assert_eq!(two.matches(glyph).count(), 1, "two sessions: the cell blank — {two}");
+        }
+    }
+
+    /// #159: while the turn waits on you its cell says `▲` in warning — blank where its line already says `▲ waits`
+    /// (the follow card's head, the chat's line of two sessions or more), one cell wide either way.
+    #[test]
+    fn the_turns_cell_says_it_waits_once() {
+        let mut ed = Editor::new(crate::config::Config::default());
+        let mut c = crate::chat::Chat::new();
+        c.state = crate::chat::State::Writing;
+        ed.workspace.claude.chat = Some(c);
+        let (accent, warn) =
+            (Style { bold: true, ..Style::default() }, Style { italic: true, ..Style::default() });
+        assert_eq!(turn_cell(&ed, accent, warn, true).1, accent, "working: the sign, said or not");
+        let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
+        ed.push_offer(crate::offer::Offer::new("Claude asks".into(), "once", "", String::new(), what));
+        assert_eq!(ed.doing(&ed.workspace), crate::workspace::Doing::Waiting);
+        assert_eq!(turn_cell(&ed, accent, warn, false), ("▲".to_string(), warn));
+        assert_eq!(
+            turn_cell(&ed, accent, warn, true),
+            (" ".to_string(), accent),
+            "said once: blank, its width kept"
+        );
     }
 
     /// Every card at the code's foot stands on one line (the user, 2026-10-24: "why are the two cards' bottoms at

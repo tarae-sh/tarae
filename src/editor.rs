@@ -3451,7 +3451,7 @@ impl Editor {
             || (run && slot_drawn)
             || crate::web::page::reading_in_sight(self)
             || self.offer_busy();
-        // (the wave held still where nothing moves on a clock: a frame a second, for the time waited — its timers
+        // (the working sign held still where nothing moves on a clock: a frame a second, for the time waited — its timers
         // say whole seconds there, `term::running`)
         let next = if waiting && !self.unfocused {
             let elapsed = crate::clock::since(anim_clock());
@@ -5965,8 +5965,9 @@ mod tests {
         assert_eq!(step_in(ms(300)), ms(102), "on a step: the next one");
     }
 
-    /// N6: a frame that only moves the waiting animation writes only its cells — the wave's and the seconds
-    /// beside it — not the screen (`screen.rs`'s cell diff; a frame it couldn't read would go out whole).
+    /// N6: a frame that only moves the waiting animation writes only its cells — the working sign's and the seconds
+    /// beside it — not the screen (`screen.rs`'s cell diff; a frame it couldn't read would go out whole). The sign
+    /// lingers at the ends of its breath (#159), so frames are drawn a tick apart until it has stepped.
     #[test]
     fn a_waiting_frame_writes_only_the_animation() {
         let mut ed = waiting_chat("fn main() {\n    println!(\"hi\");\n}\n");
@@ -5978,14 +5979,24 @@ mod tests {
         };
         let first = frame(&mut ed);
         let whole = screen.present(&first, 160, 50).len();
-        std::thread::sleep(ed.tick_wanted().unwrap());
-        let next = frame(&mut ed);
-        let out = String::from_utf8(screen.present(&next, 160, 50).to_vec()).unwrap();
         let escapes = regex::Regex::new(r"\x1b\[[0-9;:?]*[ -/]*[@-~]").unwrap();
-        let text = escapes.replace_all(&out, "");
-        assert!(text.chars().any(|c| "▂▃▄▅▆▇".contains(c)), "the wave moved: {text:?}");
-        assert!(text.chars().all(|c| "▂▃▄▅▆▇0123456789.s ".contains(c)), "only the animation: {text:?}");
-        assert!(out.len() < 300, "{} bytes (the whole screen: {whole})", out.len());
+        let cells: String = crate::shimmer::CELLS.iter().collect();
+        let only = format!("{cells}0123456789.s ");
+        let mut stepped = false;
+        // (half a breath at most: past its floor by then)
+        for _ in 0..crate::shimmer::BREATH.as_millis() / (2 * TICK.as_millis()) {
+            std::thread::sleep(ed.tick_wanted().unwrap());
+            let next = frame(&mut ed);
+            let out = String::from_utf8(screen.present(&next, 160, 50).to_vec()).unwrap();
+            let text = escapes.replace_all(&out, "");
+            assert!(text.chars().all(|c| only.contains(c)), "only the animation: {text:?}");
+            assert!(out.len() < 300, "{} bytes (the whole screen: {whole})", out.len());
+            stepped = text.chars().any(|c| cells.contains(c));
+            if stepped {
+                break;
+            }
+        }
+        assert!(stepped, "the working sign stepped within half a breath");
     }
 
     /// An sh standing in for `claude` that reads one stdin line and emits a fixed result event.

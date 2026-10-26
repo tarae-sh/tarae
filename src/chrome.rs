@@ -288,7 +288,7 @@ impl Editor {
 
 // ── The bottom slot's tabs ───────────────────────────────────────────────
 
-/// How a tab's panel is doing: under way (the wave), done well (`●`), failed (`▲` in the error colour),
+/// How a tab's panel is doing: under way (the working sign), done well (`●`), failed (`▲` in the error colour),
 /// wants a look (`▲` in the warning colour), stopped part-way for you (`◦` in the warning colour).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Badge {

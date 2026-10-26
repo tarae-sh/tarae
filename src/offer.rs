@@ -1,6 +1,6 @@
 //! Offers to download something (like IntelliJ's "install plugin" notice) — a card at the bottom right of
 //! the editing area, `y` download · `n` not now (normal mode, mouse too — insert mode is not intercepted).
-//! While downloading it shows a wave; on failure, the reason + `y` retry · `n` close.
+//! While downloading it shows the working sign; on failure, the reason + `y` retry · `n` close.
 //! What gets downloaded is `What` — grammars (grammar.rs) · a tool a language needs, installed the way its
 //! pack says (install.rs; `N` never offers that one again).
 //! Drawn by `term::OfferCard`.
@@ -8,7 +8,7 @@
 //! **Multiple offers stack** (`Editor::offers`, arrival order): only the front one takes keys; the ones
 //! behind overlap one line each above the front card, showing only their title — so none is missed.
 //! New offers go to the back (so a `y` never lands on the wrong card if the front one changes
-//! mid-answer). A card whose download started with `y` moves to the back and shows the wave while
+//! mid-answer). A card whose download started with `y` moves to the back and shows the working sign while
 //! downloading; the next one comes forward.
 //! On failure it stays in place and asks again when its turn comes. Clicking a back card brings it forward.
 
@@ -2722,7 +2722,7 @@ impl crate::editor::Editor {
         }
     }
 
-    /// Is anything downloading (keeps the tick running — the wave).
+    /// Is anything downloading (keeps the tick running — the working sign).
     pub fn offer_busy(&self) -> bool {
         self.offers.iter().any(Offer::installing)
     }

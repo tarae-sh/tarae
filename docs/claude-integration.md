@@ -83,7 +83,7 @@ names the session):
 First the step under way, with that step's own time (not the turn's): `▸ running cargo test -q`, `▸ queued 2nd · cargo
 test -q`, `◦ reading src/chat.rs:120-180` (as the chat's row says it), `• searching fn draw_chat`, `• looking up Session`, `● writing
 src/trust.rs` (an edit as it comes), `▸ asks to run …` or `● waits for your review of …` in the warning colour when it
-waits on you, `◦ stuck? symbols 42s`, `thinking` or `writing` beside the wave or under the band. Then the last sentence
+waits on you, `◦ stuck? symbols 42s`, `▅ thinking` or `▅ writing` with the working sign. Then the last sentence
 Claude finished, which is usually why: its thinking's summary until its words begin, in italic. It changes only as a
 sentence ends, never with each word. Last comes the plan's step when Claude keeps a plan. When the line runs short the
 plan's step goes first, then the sentence is cut. The mouse over the line shows all of it on a card above it; a press
@@ -91,11 +91,15 @@ on it follows Claude again (on, or back from a pause; `C-f` in the chat, `space 
 token: it's what Claude already sent. Drivers read it in the state as the session's `turn.now`.
 
 **While it works** the chat's title (and the follow card's) says what the turn is at, in the same words as the status
-line (`thinking 3.2s`, `writing`, `running`, `reading`), and whether anything is arriving. As Claude's words, its thinking's summary or an edit come in,
-a band in the accent moves across that word at the pace they come, and it stands still the moment they stop: it moves with
-the stream, never on a clock. Where nothing streams by nature, the wave `▂▅▇` beside the word says Claude is working
-instead, never both. That's the turn's first seconds, Claude thinking (its summary comes whole once it's done), the
-wait for its next answer after a tool's result went back, and a run of Claude's. A call that hangs still says `◦ stuck?`. At `editor.motion = "calm"` or `"none"` the word is plain.
+line (`thinking 3.2s`, `writing`, `running`, `reading`), and whether anything is arriving. Before the word stands the
+working sign: one cell in the accent, `▃` to `▆`, the same cell for the whole turn, so nothing beside it ever moves.
+How it moves says what's happening. As Claude's words, its thinking's summary or an edit come in, its height is how
+fast they come: high while they pour, lower as they thin, down at `▃` and still the moment they stop. Where nothing
+streams by nature it breathes instead, an even rise and fall every two seconds: the turn's first seconds, Claude
+thinking (its summary comes whole once it's done), the wait for its next answer after a tool's result went back, and a
+run of Claude's. While the turn waits on you the cell is `▲`; a call that hangs makes it `◦`, with `stuck?` — where the
+line already says so (the follow card's head, the chat's line with two sessions or more) the cell stays blank instead. Runs,
+installs and a tab's badge use the same cell, breathing. At `editor.motion = "calm"` or `"none"` it holds `▄`.
 
 **The model** is named in the chat's title while it's idle (`Opus 5.5 · high`). `C-t` in the chat (or `:model`,
 or "Choose Claude's model" in the palette) lists the models your `claude` offers, with the one in use marked

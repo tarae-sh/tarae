@@ -1545,7 +1545,7 @@ fn perf_budget_stream_frame_of_a_big_write() {
 }
 
 /// `editor.motion`: `none` draws nothing bleeding (the rows stay), `calm` keeps bleeding ink but moves nothing on a clock —
-/// the wave still, a frame a second while waiting, a toast whole at once; macOS's Reduce Motion makes `full` calm,
+/// the working sign held, a frame a second while waiting, a toast whole at once; macOS's Reduce Motion makes `full` calm,
 /// never `none` less.
 #[test]
 fn the_motion_setting_holds_still_what_moves() {

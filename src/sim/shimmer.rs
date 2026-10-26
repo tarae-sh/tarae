@@ -1,12 +1,14 @@
-//! The turn's word, simulated (motion §3, `shimmer.rs`): turns asked through `chat::submit` and their streams — text,
+//! The working sign, simulated (#159, `shimmer.rs`): turns asked through `chat::submit` and their streams — text,
 //! thinking's summary and an edit's input in small batches and in lumps, thinking blocks opening and closing, tool calls
 //! (a read, a run), their results and claude's requests — frames and time passing in any order.
 //!
-//! Fixed cases, each in a step of its own: a whole think (open and silent → the wave, its summary landing → the shimmer
-//! and two cells, closed and silent → still); a read answered right after words (the wave at once and while Claude's
-//! next answer is on its way, past `STILL_AFTER` too; its first words → the shimmer; silent → still); a turn ended and the next asked (the band back
-//! at 0, the wave); a lump moves the band two cells; a wait never moves it. After every step: the band where the batches
-//! sent it, and a frame draws the wave exactly when the pace is the wave (one sign).
+//! Fixed cases, each in a step of its own: a whole think (open and silent → the wave pace, its cell breathing frame
+//! after frame; its summary landing → the shimmer, the cell at the top; closed and silent → still, the cell fallen to
+//! the floor and held); a read answered right after words (the wave at once and while Claude's next answer is on its
+//! way, past `STILL_AFTER` too; its first words → the shimmer; silent → still); a turn ended and the next asked (the
+//! level back at 0, the wave); a delta raises the level by its bytes, a lump to the top; a wait never raises it. After
+//! every step: the level where the batches and the time since left it, and a frame draws the turn's cell as its pace
+//! says — the level's height, else the breath's — and no other height (one sign).
 //!
 //! Besides, `World` keeps the stream as the scenario sent it and states the rule over it (`World::pace`) — the rule
 //! again, so it can't tell a wrong rule from a right one: what it checks is that every event reaches the turn's state
@@ -19,7 +21,8 @@ use super::{Choices, Sim};
 use crate::chat::{Msg, Role};
 use crate::editor::Editor;
 use crate::llm::StreamEv;
-use crate::shimmer::{CELLS_MAX, Pace, STILL_AFTER};
+use crate::shimmer::{CELLS, Pace, RATE_TAU, STILL, STILL_AFTER};
+use crate::workspace::Doing;
 
 const SEEDS: &[u64] = &[0, 1, 2, 7, 10];
 
@@ -37,7 +40,9 @@ fn the_turns_word_moves_only_as_its_stream_arrives() {
 /// The stream as the scenario sent it, this turn.
 #[derive(Default)]
 struct World {
-    at: Cell<f32>,
+    /// The stream's bytes as of `rate_at`, decaying (`level`).
+    rate: Cell<f32>,
+    rate_at: Cell<Option<Instant>>,
     last: Cell<Option<Instant>>,
     thinking: Cell<bool>,
     begun: Cell<bool>,
@@ -64,15 +69,23 @@ impl World {
     }
 
     fn delta(&self, bytes: usize) {
-        self.at.set(self.at.get() + (bytes as f32 / 16.0).min(CELLS_MAX));
+        self.rate.set(self.level() + bytes as f32);
+        self.rate_at.set(Some(crate::clock::now()));
         self.last.set(Some(crate::clock::now()));
         self.begun.set(true);
         self.asked.set(false);
     }
 
+    /// The stream's bytes of about the last `RATE_TAU`, as sent.
+    fn level(&self) -> f32 {
+        let since = self.rate_at.get().map_or(f32::INFINITY, |t| crate::clock::since(t).as_secs_f32());
+        self.rate.get() * (-since / RATE_TAU).exp()
+    }
+
     /// A new turn: nothing of it yet.
     fn turn(&self) {
-        self.at.set(0.0);
+        self.rate.set(0.0);
+        self.rate_at.set(None);
         self.last.set(None);
         self.thinking.set(false);
         self.begun.set(false);
@@ -113,8 +126,34 @@ fn send(ed: &mut Editor, ev: StreamEv) {
     crate::chat::stream_event(ed, g, ev);
 }
 
-fn at(ed: &Editor) -> f32 {
-    ed.workspace.claude.chat.as_ref().map_or(0.0, |c| c.pace.at)
+fn level(ed: &Editor) -> f32 {
+    ed.workspace.claude.chat.as_ref().map_or(0.0, |c| c.pace.level())
+}
+
+/// The cell's height as the level stands now.
+fn height(ed: &Editor) -> usize {
+    crate::shimmer::height(level(ed))
+}
+
+/// The working sign's heights on the last frame, each once.
+fn drawn(ed: &Editor) -> Vec<char> {
+    let Some((frame, w, h)) = ed.last_frame.as_ref() else { return Vec::new() };
+    let screen = crate::screen::text(frame, *w, *h).unwrap_or_default();
+    let mut seen: Vec<char> = screen.chars().filter(|c| CELLS.contains(c)).collect();
+    seen.sort_unstable();
+    seen.dedup();
+    seen
+}
+
+/// The turn's cell as its pace says (`term::working`): the level's height while deltas come, the floor once they
+/// stopped, else the breath on the animation's clock; `▄` where nothing moves on a clock.
+fn want(ed: &Editor) -> char {
+    match pace(ed) {
+        _ if !ed.moving() => CELLS[STILL],
+        Some(Pace::Shimmer) => CELLS[height(ed)],
+        Some(Pace::Still) => CELLS[0],
+        _ => CELLS[crate::shimmer::breath(crate::editor::anim_step())],
+    }
 }
 
 fn pace(ed: &Editor) -> Option<Pace> {
@@ -161,12 +200,13 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
         k @ (0 | 1) => {
             let lump = "a lump of words, all at once. ".repeat(14);
             let text = *c.pick(&["word ", "another needle in the map ", lump.as_str()]);
-            let before = at(ed);
+            let before = height(ed);
             world.delta(text.len());
             send(ed, if k == 0 { StreamEv::Text(text.into()) } else { StreamEv::Thought(text.into()) });
-            let moved = at(ed) - before;
-            if text.len() >= 32 && moved != CELLS_MAX {
-                world.wrong(format!("a lump of {} bytes moved the band {moved} cells", text.len()));
+            // (a delta raises the cell, never lowers it; a lump takes it to the top)
+            let (now, top) = (height(ed), CELLS.len() - 1);
+            if now < before || text.len() >= 100 && now != top {
+                world.wrong(format!("a delta of {} bytes took the cell from {before} to {now}", text.len()));
             }
             if pace(ed) != Some(Pace::Shimmer) {
                 world.wrong(format!("a delta came: {:?}, not the shimmer", pace(ed)));
@@ -206,27 +246,40 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
             if pace(ed) != Some(Pace::Wave) {
                 world.wrong(format!("a thinking block open and silent: {:?}, not the wave", pace(ed)));
             }
-            let before = at(ed);
+            // (silent, it breathes: a breath's frames, each the breath's height, rising and falling)
+            let tick = crate::editor::TICK;
+            let mut breath = Vec::new();
+            for _ in 0..crate::shimmer::BREATH.as_millis() / tick.as_millis() {
+                sim.wait(tick);
+                frame(ed, world);
+                breath.extend(drawn(ed));
+                if drawn(ed) != [want(ed)] {
+                    world.wrong(format!("a silent think drew {:?}, its breath {:?}", drawn(ed), want(ed)));
+                }
+            }
+            breath.sort_unstable();
+            breath.dedup();
+            if ed.moving() && breath.len() < CELLS.len() {
+                world.wrong(format!("a silent think's breath reached only {breath:?}"));
+            }
             let summary = "Checking how the map keeps its keys, then the clone. ".repeat(3);
             world.delta(summary.len());
             send(ed, StreamEv::Thought(summary));
-            if pace(ed) != Some(Pace::Shimmer) || at(ed) - before != CELLS_MAX {
-                world.wrong(format!(
-                    "its summary landed: {:?}, the band {} cells on",
-                    pace(ed),
-                    at(ed) - before
-                ));
+            if pace(ed) != Some(Pace::Shimmer) || height(ed) != CELLS.len() - 1 {
+                world.wrong(format!("its summary landed: {:?}, the cell at {}", pace(ed), height(ed)));
             }
             world.thinking.set(false);
             send(ed, StreamEv::ThinkingBlock(false));
             sim.wait(STILL_AFTER);
-            if pace(ed) != Some(Pace::Still) || at(ed) - before != CELLS_MAX {
-                world.wrong(format!(
-                    "closed and silent: {:?}, the band {} cells on",
-                    pace(ed),
-                    at(ed) - before
-                ));
+            // (a quiet: the cell fallen to the floor, and held there a breath long)
+            for _ in 0..3 {
+                if pace(ed) != Some(Pace::Still) || height(ed) != 0 {
+                    world.wrong(format!("closed and silent: {:?}, the cell at {}", pace(ed), height(ed)));
+                }
+                sim.wait(crate::shimmer::BREATH / 3);
             }
+            // (and on screen: the step's own frame, checked after it — the floor)
+            frame(ed, world);
             "a whole think".into()
         }
         6 => {
@@ -234,10 +287,10 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
             "a frame".into()
         }
         8 => {
-            // (an edit's input as the reader sends it: its new text's bytes move the band, as text's do)
+            // (an edit's input as the reader sends it: its new text's bytes raise the level, as text's do)
             let lump = "let x = 1;\n".repeat(40);
             let add = *c.pick(&["x", "    let first = Thread::new(name);\n", lump.as_str()]);
-            let before = at(ed);
+            let before = level(ed);
             world.delta(add.len());
             let n = world.calls_made.get();
             let piece = crate::writing::Piece::Text {
@@ -254,10 +307,10 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
                     done: false,
                 }),
             );
-            let (moved, want) = (at(ed) - before, (add.len() as f32 / 16.0).min(CELLS_MAX));
-            if (moved - want).abs() > 1e-4 || pace(ed) != Some(Pace::Shimmer) {
+            let rose = level(ed) - before;
+            if (rose - add.len() as f32).abs() > 1e-2 || pace(ed) != Some(Pace::Shimmer) {
                 world.wrong(format!(
-                    "{} bytes of an edit's input: the band {moved} cells on, {:?}",
+                    "{} bytes of an edit's input: the level {rose} up, {:?}",
                     add.len(),
                     pace(ed)
                 ));
@@ -313,10 +366,10 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
                 world.wrong("the next turn wasn't asked".into());
             }
             world.turn();
-            if at(ed) != 0.0 || pace(ed) != Some(Pace::Wave) {
+            if level(ed) != 0.0 || pace(ed) != Some(Pace::Wave) {
                 world.wrong(format!(
-                    "a new turn: the band at {}, {:?}, not the wave from 0",
-                    at(ed),
+                    "a new turn: the level at {}, {:?}, not the wave from 0",
+                    level(ed),
                     pace(ed)
                 ));
             }
@@ -324,10 +377,10 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
         }
         _ => {
             let ms = *c.pick(&[30, 250, 999, 1000, 2000]);
-            let before = at(ed);
+            let before = level(ed);
             sim.wait(Duration::from_millis(ms));
-            if at(ed) != before {
-                world.wrong(format!("{ms} ms of nothing moved the band"));
+            if level(ed) > before {
+                world.wrong(format!("{ms} ms of nothing raised the level from {before} to {}", level(ed)));
             }
             format!("{ms} ms pass")
         }
@@ -338,25 +391,30 @@ fn held(ed: &Editor, world: &World) -> Result<(), String> {
     if let Some(w) = world.wrong.borrow_mut().take() {
         return Err(w);
     }
-    let (now, want) = (at(ed), world.at.get());
-    if (now - want).abs() > 1e-4 {
-        return Err(format!("the band at {now}, the stream sent it to {want}"));
+    let (now, sent) = (level(ed), world.level());
+    if (now - sent).abs() > 1e-3 * sent.max(1.0) {
+        return Err(format!("the level at {now}, the stream as sent leaves it at {sent}"));
     }
     let pace = pace(ed);
     if pace != Some(world.pace()) {
         return Err(format!("the turn's pace {pace:?}, the stream as sent says {:?}", world.pace()));
     }
-    // (a frame this step: the wave on it exactly when the pace is the wave — one sign)
-    let Some((frame, w, h)) = ed.last_frame.as_ref().filter(|_| world.framed.get()) else { return Ok(()) };
-    let screen = crate::screen::text(frame, *w, *h).unwrap_or_default();
-    let waves = screen.contains(['▂', '▃', '▄', '▅', '▆', '▇']);
-    if waves != (pace == Some(Pace::Wave)) {
-        return Err(format!("the frame {} the wave at {pace:?}", if waves { "draws" } else { "lacks" }));
+    // (a frame this step: the turn's cell on it as its pace says, and no other height — one sign; none at all only
+    // while the turn waits on you or a call may be stuck, its cell then `▲` or `◦`)
+    if !world.framed.get() {
+        return Ok(());
     }
-    Ok(())
+    let (seen, want) = (drawn(ed), want(ed));
+    // (no cell only where the turn waits on you or a call may be stuck — `▲`, `◦` take it — or no turn is under way)
+    let signed = matches!(ed.doing(&ed.workspace), Doing::Waiting | Doing::Stuck { .. });
+    match seen.as_slice() {
+        [c] if *c == want => Ok(()),
+        [] if signed || pace.is_none() => Ok(()),
+        _ => Err(format!("the frame draws {seen:?}, the turn's cell at {pace:?} is {want:?}")),
+    }
 }
 
 fn print(ed: &Editor) -> String {
     let c = ed.workspace.claude.chat.as_ref();
-    format!("band at {:.2} · {:?} · {:?}", at(ed), pace(ed), c.map(|c| c.state))
+    format!("level {:.1} · {:?} · {:?}", level(ed), pace(ed), c.map(|c| c.state))
 }

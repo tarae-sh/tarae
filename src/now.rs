@@ -18,10 +18,9 @@ use crate::workspace::{Doing, Workspace};
 pub enum Sign {
     /// A stop's mark, motion's one vocabulary (`◦ • ● ▸`).
     Mark(Mark),
-    /// Working where nothing streams by nature (`shimmer::Pace::Wave`): the wave.
-    Wave,
-    /// Words arriving: no mark — the word's band says it (`term::turn_word`).
-    Band,
+    /// Working, no call under way: the working sign's one cell, moving by the turn's pace (`shimmer.rs`,
+    /// `term::working`).
+    Working,
 }
 
 /// The step a turn is at.
@@ -61,10 +60,10 @@ pub fn step(ed: &Editor, l: &Workspace) -> Option<Step> {
     let c = l.claude.chat.as_ref().filter(|c| c.busy())?;
     let turn = turn_start(c);
     if crate::compaction::under_way(l) {
-        return Some(Step::new(Sign::Wave, "compacting", "", "compact"));
+        return Some(Step::new(Sign::Working, "compacting", "", "compact"));
     }
     if c.settings.waiting() {
-        return Some(Step::new(Sign::Wave, "starting", "", format!("start{turn}")));
+        return Some(Step::new(Sign::Working, "starting", "", format!("start{turn}")));
     }
     // (its newest call with no result yet, as its row says it)
     let live = c.msgs[turn..]
@@ -138,14 +137,11 @@ pub fn step(ed: &Editor, l: &Workspace) -> Option<Step> {
         return Some(Step::new(Sign::Mark(Mark::Edit), "writing", file, format!("edit:{}", w.id)));
     }
     let at = c.msgs.len();
-    // (its words or its thinking's summary arriving, or stood still: the band; working where nothing streams: the wave)
-    let sign = match crate::shimmer::pace(l) {
-        Some(crate::shimmer::Pace::Shimmer | crate::shimmer::Pace::Still) => Sign::Band,
-        _ => Sign::Wave,
-    };
+    // (its words or its thinking's summary arriving, stood still, or working where nothing streams: the one cell, its
+    // pace saying which)
     Some(match c.state == crate::chat::State::Writing {
-        true => Step::new(sign, "writing", "", format!("write{at}")),
-        false => Step::new(sign, "thinking", "", format!("think{at}")),
+        true => Step::new(Sign::Working, "writing", "", format!("write{at}")),
+        false => Step::new(Sign::Working, "thinking", "", format!("think{at}")),
     })
 }
 

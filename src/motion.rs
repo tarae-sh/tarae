@@ -1,5 +1,5 @@
 //! `editor.motion` — how much moves on screen: `full` (default) · `calm` · `none`. What moves on a clock (the
-//! waiting wave, a toast's fade) moves only at `full`; at `calm` the wave holds still, its time counted by the
+//! working sign, a toast's fade) moves only at `full`; at `calm` the sign holds `▄`, its time counted by the
 //! second, and a toast comes and goes whole. Bleeding ink (번짐 — the head of what's being written, a function of
 //! where the stream is, never of time) stays at `calm` and goes at `none`; the rows of an edit being written and
 //! a decision's stamp stay at all three — shown at the stream's pace (`writing::Pace`: it takes the lumps' jumps out)
@@ -56,7 +56,7 @@ impl Editor {
         }
     }
 
-    /// Whether what moves on a clock moves (the wave, a toast's fade).
+    /// Whether what moves on a clock moves (the working sign, a toast's fade).
     pub fn moving(&self) -> bool {
         self.motion() == Motion::Full
     }

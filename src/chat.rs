@@ -1910,7 +1910,7 @@ fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             crate::writing::answered(ed, &id);
             let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
             c.calls.retain(|k| k.id != id);
-            // (its result goes back to Claude: the wave until something of the answer comes — `shimmer.rs`)
+            // (its result goes back to Claude: the cell breathing until something of the answer comes — `shimmer.rs`)
             if c.busy() {
                 c.pace.asked();
             }
