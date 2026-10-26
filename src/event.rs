@@ -702,6 +702,5 @@ mod tests {
         ("task.rs", 1),
         ("testing.rs", 1),
         ("tools.rs", 1),
-        ("usage.rs", 1),
     ];
 }

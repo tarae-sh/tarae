@@ -46,7 +46,7 @@ For how tarae is built and why, see [architecture.md](architecture.md). For what
 | **Restart with sessions** | `:restart` brings back every session as it was, with its chat, code review and waiting cards; unsaved edits are kept and offered back after a crash ([features.md](features.md#updating-without-losing-your-place)) |
 | **Language packs** | A language is a folder of data: grammar, queries, servers, tests, debugger, and what its tools need from the sandbox. The core names no language |
 | **Shared rust-analyzer** | One server for a repository's checkouts, swapped in the background as sessions come and go |
-| **Usage** | What each session's Claude spends, from claude's own stream: the chat's last row, `:usage`, `tarae state`. Each turn's requests in order with their calls' tool names (`$state/calls/`, `cargo xtask turns`). A big conversation waiting on you is kept warm by a one-word ping of a fork before its hour's cache goes cold (`llm.keep-warm`, on by default for sessions expected back, your config only) |
+| **Usage** | What each session's Claude spends, from claude's own stream: the chat's last row, `:usage`, `tarae state`. Each turn's requests in order with their calls' tool names (`$state/calls/`, `cargo xtask turns`). A big conversation left idle is compacted (`/compact`) before its hour's cache expires, by Claude Code's own rule and your Claude settings (`idleCompaction`), said on the row (`compacts 14:26`) |
 
 The Claude Code IDE protocol (M5) was retired on 2026-10-04, once the chat did all of it inside tarae.
 

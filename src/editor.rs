@@ -6434,11 +6434,8 @@ mod tests {
         assert!(s.text().contains("usage s0: cache warm 60m (1h) · context 4% of 200k"), "{}", s.text());
         assert!(s.text().contains("total $0.018 in 1 turn · ≈ API price"), "{}", s.text());
         // The session list: its total, said as what it is
-        let shown = crate::worktree::Shown::claude_of(
-            &ed.workspace.claude.usage,
-            &Default::default(),
-            crate::usage::now_ms(),
-        );
+        let shown =
+            crate::worktree::Shown::claude_of(&ed.workspace.claude.usage, None, crate::usage::now_ms());
         assert_eq!(shown.map(|s| s.1).as_deref(), Some("≈ API $0.018"));
     }
 
@@ -8730,13 +8727,13 @@ mod tests {
         // Idle, nothing waiting: a failed run of the last turn goes on by itself — not while something waits, which
         // is the conversation expected back too (review 1)
         let key = crate::blocked::RunKey { tests: false, generation: 7 };
-        assert_eq!(crate::keepwarm::back(&ed.workspace), None);
+        assert_eq!(crate::idlecompact::busy(&ed.workspace, false), None);
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.failed = (c.conversation.clone(), vec![key]);
         assert!(crate::tools::goes_on(&ed, key));
         ed.workspace.claude.chat.as_mut().unwrap().sends.push(crate::chat::Later::Review(None));
         assert!(!crate::tools::goes_on(&ed, key), "review notes wait to go first");
-        assert_eq!(crate::keepwarm::back(&ed.workspace), Some(crate::keepwarm::Back::Queued));
+        assert_eq!(crate::idlecompact::busy(&ed.workspace, false), Some(crate::idlecompact::Busy::Queued));
     }
 
     /// The edit review's keys say what each takes (it read "y accept · a all" — one `y` left the rest

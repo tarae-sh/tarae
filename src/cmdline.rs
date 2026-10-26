@@ -108,7 +108,6 @@ pub const COMMANDS: &[TypedCmd] = &[
     c(&["messages"], Arg::None, "The messages since tarae started"),
     c(&["inbox"], Arg::None, "What waits for your answer, every session's, oldest first"),
     c(&["usage"], Arg::None, "What Claude's turns cost here and today, and its cache"),
-    c(&["keep-warm"], Arg::None, "Keep this session's Claude cache warm while it waits (on/off/now)"),
     c(&["features"], Arg::None, "Which features you use, and which never (features.count)"),
     c(&["sound"], Arg::None, "Hear Claude's writing as it appears (on/off)"),
     c(&["features-reset"], Arg::None, "Empty the feature counts (a card asks first)"),

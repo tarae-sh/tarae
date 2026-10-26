@@ -59,16 +59,13 @@ pub const RISKY: [&str; 23] = [
 /// Settings only your own config sets — refused from a project's `.tarae.toml` and `.tarae.local.toml` alike,
 /// trusted or not (said): they decide whose credentials Claude uses and who pays, whether what you use is
 /// counted (`features.count`), whether your cards and your time on reviewed changes are kept (`llm.card-record`,
-/// `review.record`), whether pings spend your usage to keep a conversation warm (`llm.keep-warm*`), what the board's
-/// Claudes are asked (`review.angles`) and how many of them run on your credential and memory (`review.skeptics-max`,
-/// `review.board-at-once`), whether your workspaces' trees are rewritten unasked (`workspace.sync`), how much moves
-/// on your screen (`editor.motion`), whether and how your machine sounds (`editor.sound*`) — a project never does.
-pub const YOURS_ONLY: [&str; 17] = [
+/// `review.record`), what the board's Claudes are asked (`review.angles`) and how many of them run on your
+/// credential and memory (`review.skeptics-max`, `review.board-at-once`), whether your workspaces' trees are
+/// rewritten unasked (`workspace.sync`), how much moves on your screen (`editor.motion`), whether and how your
+/// machine sounds (`editor.sound*`) — a project never does.
+pub const YOURS_ONLY: [&str; 14] = [
     "llm.card-record",
     "review.record",
-    "llm.keep-warm",
-    "llm.keep-warm-min-tokens",
-    "llm.keep-warm-max",
     "llm.environment-key",
     "llm.billing",
     "llm.reviewer-billing",

@@ -1185,10 +1185,10 @@ impl Shown {
         }
     }
 
-    /// `claude` for a session's usage at `now_ms`, and the pings that keep it warm (`keepwarm.rs`).
+    /// `claude` for a session's usage at `now_ms`, and when it compacts if it stays idle (`idlecompact::next_at`).
     pub fn claude_of(
         u: &crate::usage::Usage,
-        warm: &crate::keepwarm::Said,
+        compacts: Option<u64>,
         now_ms: u64,
     ) -> Option<(String, String)> {
         use crate::usage::Cache;
@@ -1197,9 +1197,11 @@ impl Shown {
         }
         let cache = match u.cache(now_ms) {
             Cache::Warm { left_ms, .. } => {
-                let (kept, next) = warm.words();
-                let parts = [format!("● warm until {}", crate::usage::until(now_ms + left_ms)), kept, next];
-                parts.into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" · ")
+                let warm = format!("● warm until {}", crate::usage::until(now_ms + left_ms));
+                match compacts {
+                    Some(at) => format!("{warm} · compacts {}", crate::usage::until(at)),
+                    None => warm,
+                }
             }
             Cache::Cold { .. } => "◦ cold".into(),
             // (a session whose chat began a new conversation, or a CLI that doesn't say)
@@ -2131,7 +2133,7 @@ impl Editor {
                 reviewer: Shown::reviewer_of(self, l),
                 claude: Shown::claude_of(
                     &l.claude.usage,
-                    &crate::keepwarm::said(l, &self.config.llm, &self.limits, now_ms),
+                    crate::idlecompact::next_at(self, l, now_ms),
                     now_ms,
                 ),
                 billing: l.claude.billing,
@@ -2149,10 +2151,9 @@ impl Editor {
 
     /// A letter in the session list (`sessionpane.rs`): a digit brings that row's session to the front, `o` makes a
     /// new one, `d` ends the one in hand, `b` brings it into its base, `m` marks it for the bring queue (`B` brings
-    /// the marked ones in turn — `bringqueue.rs`), `x` drops its build folder, `w` marks its conversation to be
-    /// kept warm (or not), `$` switches who pays for its Claude, `f` follows it (`follow::follow_session`), `v` its
-    /// changes woven. The list stays; what takes you elsewhere (a switch, a new session, follow, the woven view) is the
-    /// list used — it closes (`float_list_used`).
+    /// the marked ones in turn — `bringqueue.rs`), `x` drops its build folder, `$` switches who pays for its Claude,
+    /// `f` follows it (`follow::follow_session`), `v` its changes woven. The list stays; what takes you elsewhere (a
+    /// switch, a new session, follow, the woven view) is the list used — it closes (`float_list_used`).
     pub(crate) fn session_list_key(&mut self, c: char) {
         if self.sessions_pane.is_none() {
             return;
@@ -2202,11 +2203,6 @@ impl Editor {
             'x' => {
                 let Some(id) = here else { return };
                 self.session_build_drop(id);
-            }
-            // Its conversation kept warm while it waits, or not (`keepwarm.rs`)
-            'w' => {
-                let Some(id) = here else { return };
-                crate::keepwarm::mark_in(self, id);
             }
             // Its changes merged with the rest (`weave.rs`): a file where it would conflict, at the conflict — else
             // the one it's in, the first it changed; your own row: the file in front
@@ -5684,7 +5680,7 @@ mod tests {
     fn the_list_says_each_sessions_cache_and_cost() {
         use crate::usage::{Counts, Seen, Spent, Ttl, Usage};
         let mut u = Usage::default();
-        assert_eq!(Shown::claude_of(&u, &Default::default(), 0), None);
+        assert_eq!(Shown::claude_of(&u, None, 0), None);
         u.fresh("c");
         let usage = serde_json::json!({ "cache_creation_input_tokens": 9,
                                         "cache_creation": { "ephemeral_5m_input_tokens": 9 } });
@@ -5700,12 +5696,13 @@ mod tests {
         let at = format!("● warm until {}", crate::usage::until(1_000 + Ttl::Min5.ms()));
         // (the cost said as what it is: the API price — #161)
         let cost = "≈ API $0.020".to_string();
-        assert_eq!(Shown::claude_of(&u, &Default::default(), 61_000), Some((at.clone(), cost.clone())));
-        assert_eq!(Shown::claude_of(&u, &Default::default(), 290_000), Some((at, cost.clone())));
+        assert_eq!(Shown::claude_of(&u, None, 61_000), Some((at.clone(), cost.clone())));
         assert_eq!(
-            Shown::claude_of(&u, &Default::default(), 1_000 + Ttl::Min5.ms()),
-            Some(("◦ cold".into(), cost))
+            Shown::claude_of(&u, Some(150_000), 290_000),
+            Some((format!("{at} · compacts {}", crate::usage::until(150_000)), cost.clone()))
         );
+        assert_eq!(Shown::claude_of(&u, None, 290_000), Some((at, cost.clone())));
+        assert_eq!(Shown::claude_of(&u, None, 1_000 + Ttl::Min5.ms()), Some(("◦ cold".into(), cost)));
     }
 
     /// #111: a build-dir set per checkout (`{workspace-path-hash}`) — found where cargo looks: its variable,

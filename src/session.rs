@@ -64,8 +64,9 @@ pub struct Session {
     pub asking: Vec<crate::offer::Asking>,
     /// What its Claude's turns cost and how warm its cache is (`usage.rs`).
     pub usage: crate::usage::Usage,
-    /// Its conversation kept warm while it waits: marked by you, the ping under way (`keepwarm.rs`).
-    pub warm: crate::keepwarm::Warm,
+    /// Its conversation compacted before its cache expires while it's idle: the rule as read, the `/compact` sent
+    /// (`idlecompact.rs`).
+    pub idle: crate::idlecompact::Idle,
     /// Who pays for its Claude — the chat's, the ask's, the reviewer's unless `llm.reviewer-billing` says
     /// (`billing.rs`): `llm.billing` when it's made, kept with it (`worktree::Kept`), `:session-billing` switches it.
     pub billing: crate::billing::Billing,
@@ -126,7 +127,7 @@ impl Session {
             answered: Vec::new(),
             asking: Vec::new(),
             usage: Default::default(),
-            warm: Default::default(),
+            idle: Default::default(),
             billing: Default::default(),
             billing_next: None,
             limit_asked: None,

@@ -180,13 +180,6 @@ pub struct LlmConfig {
     /// outside its processes — with no time limit of its own: minutes before that card (cardburden 5; 0 = as
     /// `stuck_after`).
     pub stuck_after_outside: u64,
-    /// Chat: a big conversation that waits on you is kept warm by a ping before its cache's TTL (`keepwarm.rs`) —
-    /// when it's expected back, only when you marked it, or never. Only your own config sets these
-    /// (`trust::YOURS_ONLY`: a ping spends your usage).
-    pub keep_warm: crate::keepwarm::Mode,
-    /// …a conversation of at least these many tokens · at most these many pings while it waits.
-    pub keep_warm_min_tokens: u64,
-    pub keep_warm_max: u32,
 }
 
 impl Default for LlmConfig {
@@ -219,9 +212,6 @@ impl Default for LlmConfig {
             screen_terminal: true,
             stuck_after: 10,
             stuck_after_outside: 30,
-            keep_warm: crate::keepwarm::Mode::Expected,
-            keep_warm_min_tokens: 100_000,
-            keep_warm_max: 3,
         }
     }
 }
@@ -457,6 +447,16 @@ pub fn claude_env<'a>(names: impl IntoIterator<Item = &'a str>, keep_keys: bool)
 
 /// A stand-in for tarae's environment, by name (`Editor::claude_env`).
 pub type Env = std::collections::HashMap<String, String>;
+
+/// Variable `name` as claude gets it: `given`'s (`Editor::claude_env`), else tarae's own — never in a test build,
+/// where no stand-in is an empty environment (tests never read the real one).
+pub fn env_var(given: Option<&Env>, name: &str) -> Option<String> {
+    match given {
+        Some(g) => g.get(name).cloned(),
+        None if cfg!(test) => None,
+        None => std::env::var(name).ok(),
+    }
+}
 
 /// The process's environment's names (a name that isn't UTF-8 is none of the rules').
 fn process_names() -> Vec<String> {
@@ -1027,23 +1027,11 @@ pub fn usage_line(ev: &serde_json::Value, at_ms: u64) -> Option<StreamEv> {
                 .flatten()
                 .map(|(name, m)| (name.clone(), m["contextWindow"].as_u64()))
                 .collect();
-            // (the tokens `modelUsage` counts, the process's so far, against this result's)
-            const OWN: [&str; 4] =
-                ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"];
-            const MODEL: [&str; 4] =
-                ["inputTokens", "cacheReadInputTokens", "cacheCreationInputTokens", "outputTokens"];
-            let sum = |v: &serde_json::Value, keys: [&str; 4]| {
-                keys.iter().map(|k| v[*k].as_u64().unwrap_or(0)).sum::<u64>()
-            };
-            let alone = ev["modelUsage"]
-                .as_object()
-                .map(|m| m.values().map(|v| sum(v, MODEL)).sum::<u64>() == sum(&ev["usage"], OWN));
             Some(StreamEv::Spent(Spent {
                 conversation: ev["session_id"].as_str().unwrap_or_default().to_string(),
                 counts: Counts::of(&ev["usage"]),
                 total_cost: ev["total_cost_usd"].as_f64(),
                 models,
-                alone,
                 ms: ev["duration_ms"].as_u64(),
                 at_ms,
             }))

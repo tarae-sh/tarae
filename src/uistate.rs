@@ -47,7 +47,9 @@ use crate::workspace::At;
 /// reviewer, `cards`, `rebasing`, `view`, `overlaps`, `panes`), each with its `sessions[]` (`s0` … — `doing`,
 /// `answer`, `usage`, `billing`, `sandbox`, `writing`, `at`, …); `front` a workspace's id; `sessions[]` gone.
 /// 17: shuttle keys gone (audit 2.D): `keys.shuttle` and the `shuttle` card kind.
-pub const V: u64 = 17;
+/// 18: keep-warm gone, idle compaction in its place (audit 2.C): a session's `usage.keep_warm` is
+/// `usage.idle_compact` (`at_ms`, `off`, `min_tokens`); the `kept-warm` usage event gone.
+pub const V: u64 = 18;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;
@@ -1357,20 +1359,19 @@ pub struct UsageState {
     pub window: Option<u64>,
     pub last_turn: Option<crate::usage::Turn>,
     pub totals: crate::usage::Totals,
-    /// The pings that keep it warm (`keepwarm::Said::json`): the setting, the mark, the next, this stretch's.
-    pub keep_warm: Value,
+    /// Idle compaction (`idlecompact::json`): when it compacts if it stays idle, what turned it off, from what size.
+    pub idle_compact: Value,
 }
 
 impl UsageState {
     /// Session `s`'s, at `now_ms`.
     pub fn of_session(
+        ed: &crate::editor::Editor,
         s: &crate::workspace::Workspace,
-        cfg: &crate::llm::LlmConfig,
-        limits: &crate::limits::Limits,
         now_ms: u64,
     ) -> Option<UsageState> {
-        let warm = crate::keepwarm::said(s, cfg, limits, now_ms).json(cfg.keep_warm, s.claude.warm.marked);
-        Some(UsageState { keep_warm: warm, ..UsageState::of(&s.claude.usage, now_ms)? })
+        let idle = crate::idlecompact::json(ed, s, now_ms);
+        Some(UsageState { idle_compact: idle, ..UsageState::of(&s.claude.usage, now_ms)? })
     }
 
     pub fn of(u: &crate::usage::Usage, now_ms: u64) -> Option<UsageState> {
@@ -1392,7 +1393,7 @@ impl UsageState {
             window,
             last_turn: u.last_turn().cloned(),
             totals: u.totals(),
-            keep_warm: Value::Null,
+            idle_compact: Value::Null,
         })
     }
 
@@ -1432,7 +1433,7 @@ impl UsageState {
             "cache": self.cache, "seconds_left": self.seconds_left, "ttl": self.ttl,
             "context": { "tokens": self.context, "window": self.window,
                          "percent": self.percent().map(|p| (p * 10.0).round() / 10.0) },
-            "last_turn": last, "totals": totals, "keep_warm": self.keep_warm,
+            "last_turn": last, "totals": totals, "idle_compact": self.idle_compact,
         })
     }
 
@@ -1609,7 +1610,7 @@ impl Editor {
             id: session_id(l.claude.id),
             doing: self.doing_said(l),
             answer: self.answer_said(l, now_ms),
-            usage: UsageState::of_session(l, &self.config.llm, &self.limits, now_ms),
+            usage: UsageState::of_session(self, l, now_ms),
             compacted: Some(l.claude.compacted.clone()).filter(|c| c.count > 0),
             key_source: l.claude.usage.key_source.clone(),
             account: l.claude.usage.account.as_ref().map(|a| (a.organization.clone(), a.plan.clone())),

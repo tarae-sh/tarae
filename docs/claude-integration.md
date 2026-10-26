@@ -106,6 +106,28 @@ with the answer and the note in it, so no toast. The context figure under the ch
 `compacted` where its token counts would be zeros (in `:usage` too). `tarae state` counts each session's
 compactions, with the last one's time and trigger, and `--watch usage` is told when one happens.
 
+**Idle compaction.** Claude's prompt cache lasts an hour after its last request. A message after that writes the
+whole context to the cache again, at twice the input price, where a read costs a tenth. So, as Claude Code does in
+the terminal, tarae compacts a big conversation you've left idle shortly before its cache expires: 54 minutes after
+the last request (0.9 of the hour), when the context is 200k tokens or more, tarae sends `/compact` as a turn of its
+own. The chat says why where it happens (`Idle 54m 0s — compacting before Claude's cache expires at 14:32 …`), and
+the compaction's note says `idle`. Your next message then writes a summary to the cache, not the whole context.
+
+It uses Claude Code's rule and your own settings, read where the chat's claude reads them: the Claude settings it
+loads (yours, the project's, the local file, the managed one) and its environment. Before it fires, the chat's row
+says when (`compacts 14:26`).
+
+- `"idleCompaction": false` turns it off, and so does `"autoCompactEnabled": false`, `DISABLE_COMPACT` or
+  `DISABLE_AUTO_COMPACT`.
+- `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` changes the 200k minimum, never below 100k.
+- It never compacts on the 5-minute cache, or while a turn, a queued message, a review, a card, a run, a rebase or a
+  move onto the base waits.
+- It never compacts while your plan's limit is close, or when tarae wakes more than a minute late (the machine was
+  asleep).
+- A message before the 54 minutes moves it to 54 minutes after that message's request.
+
+In Claude Code itself this is behind a server-side switch. tarae's is on unless your settings turn it off.
+
 Every message carries **the current file, cursor, selection, and diagnostics** as context, plus **what's on
 screen**: the lines you're looking at, and the file in the pane beside it when the window is split. So "this" and
 "here" mean what you see, even when the cursor is somewhere else — the whole file only the
@@ -1706,6 +1728,13 @@ what its last turn cost:
 ● warm until 14:32  ctx 4% of 200k  turn ≈ API $0.018  read 7.9k write 8.1k in 18 out 185
 ```
 
+A big conversation on the hour's cache also says when tarae will compact it if you leave it idle (idle compaction,
+under [Chat panel](#chat-panel)):
+
+```
+● warm until 14:32  compacts 14:26  ctx 61% of 400k  turn ≈ API $1.81  read 243k write 2.1k in 6 out 912
+```
+
 Your plan's weekly window joins it only while it presses, in the warning colour, with when it resets:
 
 ```
@@ -1728,13 +1757,16 @@ that's not what you pay, so it's said as `≈ API` — in the chat's row, the se
   or read it, as that request's cache write says; then `◦ cold`. Said as a time, it stays true while nothing
   redraws; the only frame while you're idle is the one when it turns cold. (`tarae state` says the seconds
   left.)
+- **Compacts**: when tarae sends `/compact` if nothing happens before then: 54 minutes after the last request, on
+  the hour's cache only, for a context of 200k tokens or more. It's there only while it would happen. A turn, a
+  message waiting, a review, a card, a run, or `idleCompaction: false` takes it off the row.
 - **Context**: the last request's input + cache read + cache write, against the model's window (the window comes
   with the first turn's result, so the first turn shows the token count). After a compaction, what it kept,
   until the next request says.
 - **The last turn**: its cost, then its tokens read from the cache, written to it, sent as input and written out.
   Claude reports the cost as a whole; the four numbers are tokens, not dollars.
 
-When the chat is narrow the words fold first, then the split, then the context; the cache stays. With the weekly
+When the chat is narrow the words fold first, then the split, then the context, then `compacts`; the cache stays. With the weekly
 window on the row, its reset outlasts the turn's cost and the context. The session list (`space W`)
 has a column with each session's cache and its total so far. `:usage` opens a buffer with the plan's limits (each
 window claude has said: used, when it resets, as of when, and whether a `rate_limit_event` or `get_usage` said it),

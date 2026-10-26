@@ -595,8 +595,8 @@ pub struct Chat {
     /// Who pays for its claude — what the last one was started on (`billing.rs`), what its `apiKeySource` is
     /// checked against (the session's may have changed since: a restart's list coming back). None: none started.
     pub billing: Option<crate::billing::Billing>,
-    /// The command line its claude was last started with — its config and the arguments after them: a ping that
-    /// keeps the conversation's cache warm forks it with the same (`keepwarm::command`).
+    /// The command line its claude was last started with — its config and the arguments after them: the settings
+    /// it loads, which idle compaction's rule is read from (`idlecompact::Places`).
     pub launched: Option<(llm::LlmConfig, Vec<String>)>,
     /// The model and effort its claude runs on now (`llm.model`, `llm.effort`'s form): as started, then as `:model`
     /// and `:effort` switched this chat — they save the setting for all, but switch only the chat in front.
@@ -2535,6 +2535,32 @@ pub fn send(ed: &mut Editor) {
 /// one isn't this one's.
 pub fn submit(ed: &mut Editor, question: &str, about: Option<String>, chip: Option<String>) -> bool {
     submit_as(ed, question, about, chip, false)
+}
+
+/// `text` sent as it is, a turn of its own — no editor context: a slash command is read only at a message's start
+/// (`/compact`, `idlecompact.rs`); `note` is the chat's row for it (tarae sent it, not you). False if it couldn't
+/// go (busy, no process).
+pub fn submit_bare(ed: &mut Editor, text: &str, note: String) -> bool {
+    let session = ed.workspace.log();
+    let focus = ed.workspace.viewer.focus;
+    let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| !c.busy()) else { return false };
+    let Some(p) = &mut c.proc else { return false };
+    if p.stdin.send(llm::user_message(text)).is_err() {
+        llm::kill(p.pid);
+        return false;
+    }
+    crate::usage::message_sent(&session, text.len(), 0);
+    c.hop = 0;
+    c.failed.1.clear();
+    c.follow.new_turn();
+    c.follow.pane = Some(focus);
+    c.msgs.push(Msg::new(Role::Note, note, ""));
+    c.scroll = 0;
+    c.state = State::Thinking;
+    c.started = crate::clock::now();
+    c.pace = Default::default();
+    crate::uistate::watch::turn(ed, "started", 0, None);
+    true
 }
 
 /// The chat input's own message: with what the user pointed at (its chips), and the files named like keys a

@@ -230,7 +230,7 @@
       "where": "waiting"
     }
   ],
-  "v": 17,
+  "v": 18,
   "workspaces": [
     {
       "cards": 1,
@@ -454,11 +454,11 @@
               "tokens": 12012,
               "window": 200000
             },
-            "keep_warm": {
-              "kept": [],
-              "marked": false,
-              "mode": "expected",
-              "next_at": null
+            "idle_compact": {
+              "at_ms": null,
+              "held": null,
+              "min_tokens": 200000,
+              "off": null
             },
             "last_turn": {
               "at_ms": 1791100000000,

@@ -36,6 +36,7 @@ mod diskwatch;
 mod follow_pane;
 mod gitbase;
 mod hosts;
+mod idlecompact;
 mod instructions;
 mod keepclose;
 mod motion;

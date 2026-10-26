@@ -321,7 +321,7 @@ pub(crate) fn matches(row: &Row, re: &regex::Regex) -> bool {
 /// The list's keys for its top line, as they apply to the row in hand: `enter` switches, `/` searches, then what the row's session
 /// takes — `v` its changes woven where it overlaps, `f` follow while its Claude works, `B` the marked ones in turn —,
 /// `o` new, `d` end and `b` bring (not the checkout tarae started in), `m` mark, `x` its build folder once measured,
-/// `w` keep warm, `$` who pays; `esc code`, `q close`. The line folds them from the last.
+/// `$` who pays; `esc code`, `q close`. The line folds them from the last.
 pub fn hints(ed: &Editor) -> Vec<(&'static str, String)> {
     use crate::workspace::Doing;
     let here = ed.sessions_here();
@@ -343,12 +343,7 @@ pub fn hints(ed: &Editor) -> Vec<(&'static str, String)> {
         v.extend([("d", "end".into()), ("b", "bring into its base".into()), ("m", "mark to bring".into())]);
     }
     v.extend(build.then(|| ("x", "drop its build".into())));
-    v.extend([
-        ("w", "keep warm".into()),
-        ("$", "billing".into()),
-        ("esc", "code".into()),
-        ("q", "close".into()),
-    ]);
+    v.extend([("$", "billing".into()), ("esc", "code".into()), ("q", "close".into())]);
     v
 }
 

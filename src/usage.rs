@@ -168,30 +168,8 @@ pub struct Spent {
     pub total_cost: Option<f64>,
     /// The models it ran (`modelUsage`'s keys) and their context windows.
     pub models: Vec<(String, Option<u64>)>,
-    /// Its total is this process's requests alone: `modelUsage` counts the tokens `usage` does (None: not said).
-    /// A process that resumed a conversation adds what claude restored of its cost — or nothing (`keepwarm.rs`).
-    pub alone: Option<bool>,
     pub ms: Option<u64>,
     pub at_ms: u64,
-}
-
-/// A ping that kept a conversation's cache warm (`keepwarm.rs`): the conversation, when its request went out (the
-/// TTL runs from there), what it read and wrote, its own cost (None: not reported), why it went.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Kept {
-    pub conversation: String,
-    pub at_ms: u64,
-    pub counts: Counts,
-    pub cost: Option<f64>,
-    pub why: &'static str,
-}
-
-impl Kept {
-    pub fn json(&self) -> Value {
-        let n = &self.counts;
-        json!({ "at_ms": self.at_ms, "why": self.why, "cache_read": n.read, "cache_write": n.write,
-                "input": n.input, "output": n.output, "cost": self.cost })
-    }
 }
 
 /// One API request.
@@ -490,8 +468,6 @@ pub struct Usage {
     pub tally: crate::calls::Tally,
     /// Turns ended, their call-order record entries not yet handed to the record (`Editor::calls_record`).
     pub to_record: Vec<Value>,
-    /// The pings that kept its conversations warm since tarae started (`keepwarm.rs`), oldest first.
-    pub kept: Vec<Kept>,
 }
 
 impl Usage {
@@ -642,37 +618,6 @@ impl Usage {
         });
         let turn = self.turns.last().expect("just pushed");
         self.to_record.push(turn.entry(what, &[], &[]));
-    }
-
-    /// A ping's result (`keepwarm.rs`), its request out at `requested_ms`: the conversation's cache warm from
-    /// then, and a turn of its own (`aside`). Its cost is its total when that's its own request alone (`alone`:
-    /// measured live, the chat's process running — claude restored nothing of the conversation's cost); when
-    /// claude restored some (`.sb/kw.sh`: each earlier process had exited) its own can't be told from it —
-    /// not reported, never the difference from what tarae saw: what claude restores isn't that. None: no
-    /// conversation, or the ping reported no request.
-    pub fn kept_warm(&mut self, mut s: Spent, requested_ms: Option<u64>, why: &'static str) -> Option<Kept> {
-        let c = self.conv.as_mut()?;
-        if !s.counts.any() {
-            return None;
-        }
-        let cost = s.total_cost.filter(|_| s.alone == Some(true));
-        let at = requested_ms.unwrap_or(s.at_ms.saturating_sub(s.ms.unwrap_or(0)));
-        let touched = s.counts.read.unwrap_or(0) + s.counts.write.unwrap_or(0) > 0;
-        if touched && c.touched_ms.is_none_or(|t| t < at) {
-            c.touched_ms = Some(at);
-        }
-        let k = Kept { conversation: c.id.clone(), at_ms: at, counts: s.counts, cost, why };
-        s.total_cost = cost;
-        self.aside(s, "keep-warm");
-        self.kept.push(k.clone());
-        Some(k)
-    }
-
-    /// The pings since the conversation's last turn of its own — the stretch it has waited.
-    pub fn stretch(&self) -> Vec<&Kept> {
-        let Some(c) = &self.conv else { return Vec::new() };
-        let since = self.turns.iter().rev().find(|t| t.conversation == c.id).map_or(0, |t| t.at_ms);
-        self.kept.iter().filter(|k| k.conversation == c.id && k.at_ms >= since).collect()
     }
 
     /// The turn ended with no result (claude exited, cut off): what its requests said, no cost.
@@ -1003,10 +948,9 @@ pub fn report(
             let models: Vec<String> =
                 t.model.split(", ").filter(|m| !m.is_empty()).map(model_short).collect();
             let mut model = if models.is_empty() { "not reported".to_string() } else { models.join(", ") };
-            // (a one-turn process's: `space i`'s, a commit draft's, the reviewer's, a board's — `reviewer.rs` —, a
-            // keep-warm ping's)
+            // (a one-turn process's: `space i`'s, a commit draft's, the reviewer's, a board's — `reviewer.rs`)
             let c = t.conversation.as_str();
-            if matches!(c, "ask" | "draft" | "reviewer" | "keep-warm") || c.starts_with("board:") {
+            if matches!(c, "ask" | "draft" | "reviewer") || c.starts_with("board:") {
                 model = format!("{} · {model}", t.conversation);
             }
             // (a `/compact` turn's 0 tokens and its summary's cost, said for what they are)
@@ -1029,7 +973,6 @@ pub fn report(
             2,
         );
     }
-    out += &kept_section(u);
     out += &calls_section(u);
     if let Some(c) = &u.conv {
         out += "\n## Every request starts with\n\n";
@@ -1240,67 +1183,49 @@ pub fn view_sync(ed: &mut Editor) {
 
 // ── Cold, said once ─────────────────────────────────────────────────────────
 
-/// `:usage`'s pings that kept a conversation warm (`keepwarm.rs`) — none: nothing.
-fn kept_section(u: &Usage) -> String {
-    if u.kept.is_empty() {
-        return String::new();
-    }
-    let clock = |ms: u64| crate::log::clock(std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms));
-    let mut rows: Vec<Vec<String>> = u
-        .kept
-        .iter()
-        .map(|k| {
-            let cost = k.cost.map_or_else(|| "not reported".into(), dollars);
-            vec![clock(k.at_ms), k.why.to_string(), count(k.counts.read), count(k.counts.write), cost]
-        })
-        .collect();
-    let costs: Option<f64> = u.kept.iter().map(|k| k.cost).sum();
-    let n = u.kept.len();
-    rows.push(vec![
-        "total".into(),
-        format!("{n} ping{}", if n == 1 { "" } else { "s" }),
-        String::new(),
-        String::new(),
-        costs.map_or_else(|| "not reported".into(), dollars),
-    ]);
-    let mut out = "\n## Kept warm\n\n".to_string();
-    out += "A one-word ping of a fork of the conversation before its cache went cold, while it waited on you \
-             (llm.keep-warm) — its read refreshes the cache.\n\n";
-    out += &table(&["time", "why", "cache read", "cache write", "API price"], &rows, 2);
-    out
+/// After a turn: the main loop is woken when this session's cache goes cold — one frame then (the footer and
+/// the list say so) and a `usage` event for watchers; nothing before — but, on the 1h TTL, when idle compaction is
+/// due (`idlecompact.rs`), to decide. One watch asleep per session: one that wakes no later looks again when it
+/// wakes.
+pub fn watch(ed: &mut Editor) {
+    rearm(ed);
+    crate::idlecompact::arm(ed);
 }
 
-/// After a turn: the main loop is woken when this session's cache goes cold — one frame then (the footer and
-/// the list say so) and a `usage` event for watchers; nothing before — but, when a ping may keep it warm, at the
-/// window before (`keepwarm.rs`), to decide. One watch asleep per session: one that wakes no later looks again
-/// when it wakes.
-pub fn watch(ed: &mut Editor) {
-    if let Some(at) = wakes_at(&ed.workspace.claude.usage, ed.config.llm.keep_warm, now_ms()) {
+/// The watch asleep again until its next wake (`wakes_at`).
+pub fn rearm(ed: &mut Editor) {
+    if let Some(at) = wakes_at(&ed.workspace.claude.usage, now_ms()) {
         sleep_until(ed, at);
     }
 }
 
-/// When the watch of `u` wakes after `now_ms`: the window a ping may go in (on the 1h TTL, pings not off), else
-/// when its cache goes cold — None: cold already, or not reported.
-pub fn wakes_at(u: &Usage, keep_warm: crate::keepwarm::Mode, now_ms: u64) -> Option<u64> {
+/// When the watch of `u` wakes after `now_ms`: when idle compaction is due (the 1h TTL), else when its cache goes
+/// cold — None: cold already, or not reported.
+pub fn wakes_at(u: &Usage, now_ms: u64) -> Option<u64> {
     let cold = u.cold_at().filter(|&at| at > now_ms)?;
-    let hour = u.conv.as_ref().is_some_and(|c| c.ttl == Some(Ttl::Hour1));
-    let window = cold.saturating_sub(crate::keepwarm::LEAD_MS);
-    let pings = keep_warm != crate::keepwarm::Mode::Off && hour;
-    Some(if pings && window > now_ms { window } else { cold })
+    let due = u.conv.as_ref().and_then(|c| crate::idlecompact::due(c.touched_ms?, c.ttl?));
+    Some(due.filter(|&d| d > now_ms).unwrap_or(cold))
 }
 
-/// The session's watch wakes at `at` (unix ms) — unless one sleeping wakes no later.
+/// The session's watch wakes at `at` (unix ms) — unless one sleeping wakes no later. Not in tests, but in a
+/// simulation: its sleep is the simulated clock's.
 pub fn sleep_until(ed: &mut Editor, at: u64) {
     let now = now_ms();
-    if at <= now || ed.workspace.claude.usage.watch.is_some_and(|w| w <= at) || cfg!(test) {
+    if at <= now || ed.workspace.claude.usage.watch.is_some_and(|w| w <= at) || !watches() {
         return;
     }
     ed.workspace.claude.usage.watch = Some(at);
     ed.events.jobs().spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(at - now));
+        crate::event::sleep(std::time::Duration::from_millis(at - now));
         woke
     });
+}
+
+fn watches() -> bool {
+    #[cfg(test)]
+    return crate::sim::current().is_some();
+    #[cfg(not(test))]
+    true
 }
 
 /// What the watch finds when it wakes at `now_ms`.
@@ -1333,10 +1258,12 @@ fn woke(ed: &mut Editor) {
             }
         }
         Woke::Later => {
-            // (inside the window: a ping, a look again later, or nothing)
-            crate::keepwarm::woke(ed);
-            watch(ed);
+            // (idle compaction due: `/compact`, a look again later, or nothing — then the watch for the cold, once
+            // that's decided: `idlecompact::go` after the rule's read)
             ed.unchanged = true;
+            if !crate::idlecompact::woke(ed) {
+                rearm(ed);
+            }
         }
         Woke::Nothing => ed.unchanged = true,
     }

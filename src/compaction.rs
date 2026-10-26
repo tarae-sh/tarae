@@ -25,7 +25,8 @@ use crate::editor::Editor;
 /// One compaction, as its `compact_boundary` line says it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Compaction {
-    /// `auto` · `manual` — another word kept as claude says it.
+    /// `auto` · `manual` — another word kept as claude says it; `idle` where tarae's `/compact` asked for it
+    /// (`idlecompact.rs`).
     pub trigger: String,
     /// The context before · after (None: not said).
     pub pre_tokens: Option<u64>,
@@ -160,7 +161,11 @@ impl Compacted {
 
 /// Session `ed.workspace`'s Claude compacted its conversation: a note in its chat where it happened, counted,
 /// the context figure follows; behind, said (named) and its row in the list says so until it's in front.
-pub fn on_compacted(ed: &mut Editor, k: Compaction) {
+pub fn on_compacted(ed: &mut Editor, mut k: Compaction) {
+    // (in the turn tarae's `/compact` started, before the cache expired: `idle` — `idlecompact.rs`)
+    if crate::idlecompact::of_turn(ed) {
+        k.trigger = "idle".into();
+    }
     if let Some(c) = ed.workspace.claude.chat.as_mut() {
         c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Note, k.note(), ""));
         // (the sandbox's rules and guarantees a run told may be gone from what it kept: the next run says them)

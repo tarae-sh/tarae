@@ -163,7 +163,7 @@ pub fn set(ed: &mut Editor, value: &str) -> Result<(), String> {
     save(ed, "llm.model", if value == "default" { "" } else { &value })?;
     crate::chat::request(ed, json!({ "subtype": "set_model", "model": value }));
     // (what answers is known again from the next answer — until then the title says what was asked for; what it
-    // runs on now is this chat's — a ping that keeps it warm forks on it, `keepwarm.rs`)
+    // runs on now is this chat's)
     if let Some(c) = ed.workspace.claude.chat.as_mut() {
         c.model.clear();
         c.runs_on.0 = Some(value.clone()).filter(|v| v != "default");

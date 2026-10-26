@@ -226,8 +226,7 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
     })
 }
 
-/// `tools/list`'s answer — the same to the byte for a ping that keeps its cache warm (`keepwarm.rs`: the tools
-/// come first in the cache's prefix).
+/// `tools/list`'s answer — the same to the byte every time (the tools come first in the cache's prefix).
 pub fn list() -> Value {
     let tools = vec![
         crate::notes::tool_schema(),
