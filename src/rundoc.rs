@@ -782,7 +782,7 @@ pub fn procs_rewrapped(ed: &mut Editor) -> bool {
 /// while shown.
 pub fn refresh_search(ed: &mut Editor) {
     let typed = ed.prompt.as_ref().filter(|p| matches!(p.kind, crate::editor::PromptKind::Search { .. }));
-    let typed = typed.map(|p| p.text.clone());
+    let typed = typed.map(|p| p.text());
     let Some(slot) = has_keys(ed) else { return };
     if let Some(o) = ed.workspace.outputs.get_mut(slot) {
         o.pane.refresh_search(typed);

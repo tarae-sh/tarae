@@ -583,6 +583,11 @@ impl Editor {
         if let Some(o) = output {
             pending = o.keys.pending_keys();
         }
+        // (a prompt's line's own — `C-r` waiting for a register's name)
+        let line = self.prompt.as_ref().map(|p| &p.input.pane.keys).filter(|_| region == Region::Prompt);
+        if let Some(k) = line.filter(|k| !k.idle()) {
+            pending = k.pending_keys();
+        }
         KeysTo {
             region,
             takes,
@@ -591,7 +596,8 @@ impl Editor {
             pending: pending.join(" "),
             char_next: self.on_next_char.is_some()
                 || view.is_some_and(|(_, k)| k.char_next())
-                || output.is_some_and(|o| o.keys.char_next()),
+                || output.is_some_and(|o| o.keys.char_next())
+                || line.is_some_and(|k| k.char_next()),
             drawn: self.drawn(region),
             under,
             to: self.element_id(region),
@@ -1692,7 +1698,7 @@ impl Editor {
             prompt: self
                 .prompt
                 .as_ref()
-                .map(|p| (p.label.clone().unwrap_or_else(|| p.kind.label().to_string()), p.text.clone())),
+                .map(|p| (p.label.clone().unwrap_or_else(|| p.kind.label().to_string()), p.text())),
             front: workspace_id(front.id),
             workspaces,
             cards,

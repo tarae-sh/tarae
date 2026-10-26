@@ -69,6 +69,8 @@ commands! {
         extend_visual_line_down => "Extend down (visual line)",
         move_next_word_start => "Move to start of next word",
         move_prev_word_start => "Move to start of previous word",
+        input_word_left => "Back a word, in a typed line",
+        input_word_right => "On a word, in a typed line",
         move_next_word_end => "Move to end of next word",
         extend_next_word_start => "Extend to start of next word",
         extend_prev_word_start => "Extend to start of previous word",
@@ -190,6 +192,8 @@ commands! {
         chat_open => "Chat with Claude",
         chat_point => "Point Claude at something",
         chat_view => "View the chat",
+        prompt_history_older => "Earlier line typed here",
+        prompt_history_newer => "Later line typed here",
         view_leave => "Leave view mode",
         view_code => "To the code, at once",
         view_input => "Back to typing",
@@ -555,6 +559,39 @@ fn move_next_word_start(cx: &mut Context) {
 }
 fn move_prev_word_start(cx: &mut Context) {
     word(cx, mv::prev_word_start, false)
+}
+/// A line you type (a prompt's): back over blanks, then to the start of the word there — words divided by blanks,
+/// the cursor moved, nothing selected (Helix's prompt's `A-b`).
+fn input_word_left(cx: &mut Context) {
+    use crate::graphemes::prev_boundary;
+    let blank =
+        |t: &ropey::Rope, p| matches!(mv::class_at(t, p), mv::CharClass::Whitespace | mv::CharClass::Eol);
+    motion(cx, |t, r| {
+        let mut p = r.head;
+        while p > 0 && blank(t, prev_boundary(t, p)) {
+            p = prev_boundary(t, p);
+        }
+        while p > 0 && !blank(t, prev_boundary(t, p)) {
+            p = prev_boundary(t, p);
+        }
+        Range::point(p)
+    });
+}
+/// A line you type: past the rest of the word, then its blanks — the next word's start (Helix's prompt's `A-f`).
+fn input_word_right(cx: &mut Context) {
+    use crate::graphemes::next_boundary;
+    let blank =
+        |t: &ropey::Rope, p| matches!(mv::class_at(t, p), mv::CharClass::Whitespace | mv::CharClass::Eol);
+    motion(cx, |t, r| {
+        let (mut p, len) = (r.head, t.len_bytes());
+        while p < len && !blank(t, p) {
+            p = next_boundary(t, p);
+        }
+        while p < len && blank(t, p) {
+            p = next_boundary(t, p);
+        }
+        Range::point(p)
+    });
 }
 fn move_next_word_end(cx: &mut Context) {
     word(cx, mv::next_word_end, false)
@@ -2352,6 +2389,14 @@ fn chat_point(cx: &mut Context) {
 /// The chat's `esc`: from its input to its view mode.
 fn chat_view(cx: &mut Context) {
     crate::chatdoc::view(cx.editor);
+}
+/// A prompt's `↑`: the line run before at this kind of prompt (`prompt::walk`).
+fn prompt_history_older(cx: &mut Context) {
+    crate::prompt::walk(cx.editor, true);
+}
+/// A prompt's `↓`: the line run after it, past the newest what was typed.
+fn prompt_history_newer(cx: &mut Context) {
+    crate::prompt::walk(cx.editor, false);
 }
 /// The terminal's `C-\` from its program: its view mode, at the row in sight.
 fn terminal_view(cx: &mut Context) {

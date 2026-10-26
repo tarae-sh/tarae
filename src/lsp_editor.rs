@@ -4584,7 +4584,7 @@ mod tests {
         assert_eq!(ed.doc().text.to_string(), "fn main() {\n    let x = 1;\n}\n", "applying is one undo");
         // Rename: prompt (prefilled with the word under cursor) → request → edits
         feed(&mut ed, "<space>r");
-        assert_eq!(ed.prompt.as_ref().map(|p| p.text.as_str()), Some("x"));
+        assert_eq!(ed.prompt.as_ref().map(|p| p.text()).as_deref(), Some("x"));
         feed(&mut ed, "<backspace>count<ret>");
         let id = pending_of(&ed, Kind::Rename);
         // Versioned edits for an older version of the doc (we've sent 2: the action, then the undo) → refused

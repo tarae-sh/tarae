@@ -2075,7 +2075,7 @@ fn a_paste_in_normal_mode_is_never_silent() {
     let mut ed = editor();
     ed.handle_paste(":w\n".into());
     let p = ed.prompt.as_ref().expect("the command line");
-    assert_eq!((p.kind, p.text.as_str()), (crate::editor::PromptKind::Command, "w"));
+    assert_eq!((p.kind, p.text().as_str()), (crate::editor::PromptKind::Command, "w"));
     assert_eq!(ed.doc().text.to_string(), "one\ntwo\nthree\n", "nothing went in, nothing ran");
     feed(&mut ed, &["<esc>"]);
     let said = ed.said;

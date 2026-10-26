@@ -485,6 +485,25 @@ A cursor on what a surface shows. The chat's conversation (`esc` from its input)
 | `C-e` | `goto_line_end_newline` | Go to end of line (after the last char) |
 | `esc` | `chat_view` | View the chat |
 
+### A prompt's line (`[keys.prompt]` — over insert mode's moves and deletes; `enter`, `esc`, `C-c`, `:`'s `tab` and `→` at its end are the prompt's own)
+
+| Key | Command | Description |
+|---|---|---|
+| `A-b` | `input_word_left` | Back a word, in a typed line |
+| `A-f` | `input_word_right` | On a word, in a typed line |
+| `C-a` | `goto_line_start` | Go to line start |
+| `C-b` | `move_char_left` | Move left |
+| `C-backspace` | `delete_word_backward` | Delete previous word |
+| `C-del` | `delete_word_forward` | Delete next word |
+| `C-e` | `goto_line_end_newline` | Go to end of line (after the last char) |
+| `C-f` | `move_char_right` | Move right |
+| `C-left` | `input_word_left` | Back a word, in a typed line |
+| `C-n` | `prompt_history_newer` | Later line typed here |
+| `C-p` | `prompt_history_older` | Earlier line typed here |
+| `C-right` | `input_word_right` | On a word, in a typed line |
+| `down` | `prompt_history_newer` | Later line typed here |
+| `up` | `prompt_history_older` | Earlier line typed here |
+
 ### Taken from the terminal's program (`[keys.terminal]` — every other key is the program's; `to_program` gives one of these back)
 
 | Key | Command | Description |

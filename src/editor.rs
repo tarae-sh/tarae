@@ -94,14 +94,20 @@ impl PromptKind {
     }
 }
 
+/// A prompt (`prompt.rs`): its kind, and its line — an `Input`, a small document in insert mode (#153).
 #[derive(Clone, Debug)]
 pub struct Prompt {
     pub kind: PromptKind,
     /// Instead of the kind's own label (a plugin's).
     pub label: Option<String>,
-    pub text: String,
-    /// Cycling `:` completions with Tab: (input when cycling began, current candidate index). Typing ends it.
+    pub input: crate::input::Input,
+    /// Cycling `:` completions with Tab: (what was before the cursor when cycling began, current candidate index).
+    /// Typing ends it.
     pub cycle: Option<(String, usize)>,
+    /// Walking its history (`prompt::walk`): how far back from the newest, and what was typed before the walk.
+    pub recalled: Option<(usize, String)>,
+    /// The line's first byte drawn last frame (`term::prompt_window`): a long line moves only as its cursor needs.
+    pub left: std::cell::Cell<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -324,6 +330,16 @@ impl Screen {
     }
 }
 
+/// The prompt's line as drawn (`Screen.prompt_input`): its row, its text's first column, its width in cells, and the
+/// first byte of the line in sight there (a long line keeps its cursor in sight, its start cut).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PromptDrawn {
+    pub y: usize,
+    pub x: usize,
+    pub w: usize,
+    pub first: usize,
+}
+
 /// The chat's input as drawn (`Screen.chat_input`).
 #[derive(Clone, Copy, Debug)]
 pub struct InputDrawn {
@@ -345,6 +361,8 @@ pub enum Drag {
     Transcript,
     /// The chat's input (`chatinput.rs`).
     Input,
+    /// The prompt's line (`prompt.rs`).
+    Prompt,
 }
 
 /// A list as drawn (`Screen.lists`): its first row's screen row, the rows it has, the first of its rows in sight.
@@ -536,6 +554,8 @@ pub struct Screen {
     /// completions' rows as drawn: (screen row, candidate) — a press on one picks it.
     pub prompt_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
     pub prompt_rows: std::cell::RefCell<Vec<(usize, usize)>>,
+    /// The prompt's line as drawn: where a press puts its cursor (`PromptDrawn`).
+    pub prompt_input: std::cell::Cell<Option<PromptDrawn>>,
     /// The picker's frame as drawn — its list's card and its preview's (x, y, width, height): a press outside closes it.
     pub picker_box: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
     /// An edit's review in the buffer as drawn (x, y, width, height): a press on it gives it the keys.
@@ -706,6 +726,8 @@ pub struct Editor {
     pub search_hits: Option<search::SearchHits>,
     /// Position before the `/` preview moved the view (Esc returns there).
     pub search_origin: Option<usize>,
+    /// What was run at `:` and at `/` `?` since tarae started (`prompt::History`) — never written anywhere.
+    pub prompt_history: crate::prompt::History,
     pub status: Option<(String, Severity)>,
     pub should_quit: bool,
     /// Text area (rows, cols) — the terminal updates it every frame. Used by page motions.
@@ -813,7 +835,7 @@ pub struct Editor {
     /// Screen rows of the last frame (folded doc comments make screen row ≠ doc line — used by the mouse).
     pub view: Vec<crate::codeview::Row>,
     /// Where a drag started (selecting with the mouse): whose text, and the press's character there.
-    mouse_anchor: Option<(Drag, usize)>,
+    pub(crate) mouse_anchor: Option<(Drag, usize)>,
     /// A ctrl+press in the code not dragged yet: its release is `gd` (a ctrl+drag selects, as a plain one).
     mouse_goto: bool,
     /// The mouse was pressed on the terminal's screen — its drag and release go there, wherever they are.
@@ -1124,6 +1146,7 @@ impl Editor {
             search_hl: false,
             search_hits: None,
             search_origin: None,
+            prompt_history: Default::default(),
             status: None,
             should_quit: false,
             viewport: (24, 80),
@@ -2347,6 +2370,10 @@ impl Editor {
 
     /// For the status line — pending count and keys.
     pub fn pending_display(&self) -> String {
+        // (the prompt's line's — `C-r` waiting for a register's name)
+        if let Some(k) = self.prompt.as_ref().map(|p| &p.input.pane.keys).filter(|k| !k.idle()) {
+            return k.pending_display();
+        }
         // (a view mode's own, while it has the keys)
         if let Some((_, k)) = crate::view::viewing(self).filter(|_| self.pending.is_empty()) {
             return k.pending_display();
@@ -2432,8 +2459,13 @@ impl Editor {
 
     /// Insert-mode auto-pairs for this document — empty when turned off.
     pub fn pairs(&self) -> &'static [(char, char)] {
-        // (the chat's input is prose: what's typed is what's there)
-        if !self.config.auto_pairs || self.workspace.viewer.swapped == Some(crate::docpane::Which::Input) {
+        // (the chat's input is prose, the prompt's a line: what's typed is what's there)
+        if !self.config.auto_pairs
+            || matches!(
+                self.workspace.viewer.swapped,
+                Some(crate::docpane::Which::Input | crate::docpane::Which::Prompt)
+            )
+        {
             return &[];
         }
         self.lang_spec().and_then(|s| s.auto_pairs.as_deref()).unwrap_or(syntax::DEFAULT_PAIRS)
@@ -2604,9 +2636,11 @@ impl Editor {
             return;
         }
         if self.prompt.is_some() {
-            for c in line().chars() {
-                self.handle_key(Key::plain(Code::Char(c)));
+            crate::prompt::paste(self, &line());
+            if self.prompt.as_ref().is_some_and(|p| p.kind == PromptKind::Command) {
+                self.cmdline_prefetch();
             }
+            crate::floatlist::prompt_typed(self);
             return;
         }
         // Straight into the chat's input — as keys, its letters could answer a review or an offer first
@@ -2703,6 +2737,17 @@ impl Editor {
         // What holds the keys over every surface lets go first: a prompt or picker pressed outside closes, a focused card
         // pressed outside gives its keys back (`mouse.rs`)
         if m.kind == K::Down && crate::mouse::press_first(self, x, y) {
+            return;
+        }
+        // A press on the prompt's line dragged: what's under the pointer selected, wherever it goes (past an end the
+        // line scrolls, its cursor kept in sight)
+        if let Some((Drag::Prompt, anchor)) = self.mouse_anchor
+            && matches!(m.kind, K::Drag | K::Up)
+        {
+            match m.kind {
+                K::Up => self.mouse_anchor = None,
+                _ => crate::prompt::drag(self, anchor, x),
+            }
             return;
         }
         // The prompt's card: what's under it isn't clicked through it
@@ -5136,23 +5181,24 @@ impl Editor {
             self.prompt = None;
             self.plugin_prompt_done(token, None);
         }
-        self.prompt = Some(Prompt { kind, label: None, text: text.to_string(), cycle: None });
+        self.prompt = Some(Prompt::new(kind, text));
         if kind == PromptKind::Command {
             self.cmdline_prefetch();
         }
     }
 
-    /// Completion candidates for the `:` input (relative to the input when cycling began, if Tab-cycling).
+    /// Completion candidates for the `:` input — for what's before the cursor (what's after it is kept as it is), or
+    /// what was when Tab-cycling began.
     pub fn cmdline_completion(&self) -> Option<crate::cmdline::Completion> {
         let p = self.prompt.as_ref().filter(|p| p.kind == PromptKind::Command)?;
-        let base = p.cycle.as_ref().map_or(p.text.as_str(), |(b, _)| b.as_str());
-        Some(crate::cmdline::complete(base, &self.workspace.root, &self.cmd_lists))
+        let base = p.cycle.as_ref().map_or_else(|| p.split().0, |(b, _)| b.clone());
+        Some(crate::cmdline::complete(&base, &self.workspace.root, &self.cmd_lists))
     }
 
     /// If the lists a candidate needs (folders, themes) aren't read yet, read them on a worker thread.
     fn cmdline_prefetch(&mut self) {
         let Some(p) = self.prompt.as_ref().filter(|p| p.kind == PromptKind::Command) else { return };
-        let text = p.text.clone();
+        let text = p.split().0;
         let Some((name, _)) = text.split_once(char::is_whitespace) else { return };
         match crate::cmdline::find(name).map(|c| c.arg) {
             Some(crate::cmdline::Arg::File) => {
@@ -5233,7 +5279,9 @@ impl Editor {
         if n == 0 {
             return;
         }
-        let base = p.cycle.as_ref().map_or_else(|| p.text.clone(), |(b, _)| b.clone());
+        // (what's after the cursor stays after what's filled in)
+        let (before, after) = p.split();
+        let base = p.cycle.as_ref().map_or(before, |(b, _)| b.clone());
         if p.cycle.is_none() && n == 1 {
             let mut text = crate::cmdline::apply(&base, &comp, 0);
             // Trailing space = the next Tab shows what comes next (argument, value). Folders continue inside;
@@ -5244,10 +5292,17 @@ impl Editor {
             } else {
                 !comp.cands[0].dir
             };
-            if more {
-                text.push(' ');
-            }
-            p.text = text;
+            // (with text after the cursor: one space between, never two — the cursor after it either way, where
+            // the argument goes)
+            let at = match (more, after.starts_with(' ')) {
+                (true, true) => text.len() + 1,
+                (true, false) => {
+                    text.push(' ');
+                    text.len()
+                }
+                (false, _) => text.len(),
+            };
+            p.set_at(&format!("{text}{after}"), at);
             p.cycle = None;
             return self.cmdline_prefetch();
         }
@@ -5257,7 +5312,8 @@ impl Editor {
             (Some((_, i)), true) => (i + 1) % n,
             (Some((_, i)), false) => (i + n - 1) % n,
         };
-        p.text = crate::cmdline::apply(&base, &comp, i);
+        let text = crate::cmdline::apply(&base, &comp, i);
+        p.set_at(&format!("{text}{after}"), text.len());
         p.cycle = Some((base, i));
     }
 
@@ -5266,64 +5322,69 @@ impl Editor {
     pub(crate) fn cmdline_pick(&mut self, i: usize) {
         let Some(comp) = self.cmdline_completion().filter(|c| i < c.cands.len()) else { return };
         let Some(p) = self.prompt.as_mut() else { return };
-        let base = p.cycle.as_ref().map_or_else(|| p.text.clone(), |(b, _)| b.clone());
-        p.text = crate::cmdline::apply(&base, &comp, i);
+        let (before, after) = p.split();
+        let base = p.cycle.as_ref().map_or(before, |(b, _)| b.clone());
+        let text = crate::cmdline::apply(&base, &comp, i);
+        p.set_at(&format!("{text}{after}"), text.len());
         p.cycle = Some((base, i));
     }
 
+    /// A key for the prompt: its own first (`enter` runs, `esc`/`C-c` close, `backspace` on an empty line closes,
+    /// `:`'s `tab` and `→` at the end, a new session's `C-b`), then its line's (`prompt::key`: `[prompt]` over
+    /// `[insert]`, typed).
     pub(crate) fn handle_prompt_key(&mut self, key: Key) {
-        let Some(prompt) = self.prompt.as_mut() else { return };
-        match (key.code, key.ctrl || key.alt) {
-            (Code::Esc, _) => self.cancel_prompt(),
+        // (a sequence or an awaited character of the line's under way — `C-r`'s register, the `j` of a `j k`: a key
+        // that goes on with it is the line's; else what it typed goes in first and the key is the prompt's as ever)
+        if crate::prompt::under_way(self, key) {
+            return crate::prompt::key(self, key);
+        }
+        let Some(prompt) = self.prompt.as_ref() else { return };
+        let (kind, empty, at_end) = (prompt.kind, prompt.input.is_empty(), prompt.at_end());
+        let plain = !(key.ctrl || key.alt);
+        match key.code {
+            Code::Esc => self.cancel_prompt(),
             _ if prompt_submits(key) => {
-                let Some(Prompt { kind, text, .. }) = self.prompt.take() else { return };
+                let Some(p) = self.prompt.take() else { return };
+                let text = p.text();
+                self.prompt_history.remember(p.kind, &text);
                 self.search_origin = None;
-                self.submit_prompt(kind, text);
+                self.submit_prompt(p.kind, text);
             }
-            // `:` completion — Tab·Shift-Tab = cycle and fill, → = accept the dim suggestion
-            (Code::Tab | Code::BackTab, false) if prompt.kind == PromptKind::Command => {
+            // `:` completion — Tab·Shift-Tab = cycle and fill, → at the end = accept the dim suggestion
+            Code::Tab | Code::BackTab if plain && kind == PromptKind::Command => {
                 self.cmdline_tab(key.code == Code::Tab);
             }
-            (Code::Right, false) if prompt.kind == PromptKind::Command => {
-                let comp = self.cmdline_completion();
-                if let (Some(p), Some(c)) = (self.prompt.as_mut(), comp)
-                    && let Some(g) = crate::cmdline::ghost(&p.text, &c)
+            Code::Right
+                if plain && kind == PromptKind::Command && at_end && self.cmdline_ghost().is_some() =>
+            {
+                if let Some(g) = self.cmdline_ghost()
+                    && let Some(p) = self.prompt.as_mut()
                 {
-                    p.text.push_str(g);
+                    let text = p.text() + &g;
+                    p.set(&text);
                     p.cycle = None;
                 }
             }
-            (Code::Backspace, _) => {
-                prompt.cycle = None;
-                if prompt.text.pop().is_none() {
-                    self.cancel_prompt();
-                }
-            }
-            (Code::Char('c'), true) if key.ctrl => self.cancel_prompt(),
+            Code::Backspace if plain && empty => self.cancel_prompt(),
+            Code::Char('c') if key.ctrl && !key.alt => self.cancel_prompt(),
             // A new session's name: another base to make it from
-            (Code::Char('b'), true) if key.ctrl && prompt.kind == PromptKind::Session => {
-                let name = std::mem::take(&mut prompt.text);
-                self.prompt = None;
+            Code::Char('b') if key.ctrl && !key.alt && kind == PromptKind::Session => {
+                let name = self.prompt.take().map(|p| p.text()).unwrap_or_default();
                 self.session_base_picker(name);
             }
-            (Code::Char(c), false) => {
-                prompt.cycle = None;
-                prompt.text.push(c);
-            }
-            // (said, not dropped: a `C-q` here waited for a card the prompt keeps from it)
-            (Code::Char(_), true) => {
-                let out = match self.offers.is_empty() {
-                    true => "enter runs the line, esc close".to_string(),
-                    // (the way back is this line's own `esc`: what reaches the card is said from the code)
-                    false => format!("esc close — then {} reaches the card", self.c_q_from_code()),
-                };
-                self.key_unused(key, "the command line", &out);
-            }
-            _ => {}
+            _ => crate::prompt::key(self, key),
         }
         if self.prompt.as_ref().is_some_and(|p| p.kind == PromptKind::Command) {
             self.cmdline_prefetch();
         }
+    }
+
+    /// The rest of the `:` menu's first candidate after what's typed — drawn dim after it, `→` takes it — only with
+    /// the cursor at the line's end and no `tab` cycle under way.
+    pub(crate) fn cmdline_ghost(&self) -> Option<String> {
+        let p = self.prompt.as_ref().filter(|p| p.cycle.is_none() && p.at_end())?;
+        let c = self.cmdline_completion()?;
+        crate::cmdline::ghost(&p.text(), &c).map(str::to_string)
     }
 
     /// Closes the prompt without running it (Esc·C-c·Backspace on empty) — reverts the view moved by the
@@ -5564,7 +5625,7 @@ mod tests {
         let mut ed = Editor::new(Config::default());
         // (`:git-switch `'s branch names are read by git in the root: one that isn't tarae's own repository)
         ed.workspace.root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
-        let text = |ed: &Editor| ed.prompt.as_ref().map(|p| p.text.clone()).unwrap_or_default();
+        let text = |ed: &Editor| ed.prompt.as_ref().map(|p| p.text()).unwrap_or_default();
         feed(&mut ed, ":wr<tab>");
         assert_eq!(text(&ed), "write", "several → the first");
         feed(&mut ed, "<tab>");
@@ -13264,7 +13325,7 @@ mod tests {
         feed(&mut ed, "<C-r>");
         assert!(ed.picker.is_none());
         assert_eq!(
-            ed.prompt.as_ref().map(|p| p.text.as_str()),
+            ed.prompt.as_ref().map(|p| p.text()).as_deref(),
             Some("git-branch-rename fix-login fix-login")
         );
         feed(&mut ed, "<backspace><backspace><backspace><backspace><backspace>auth<ret>");
@@ -16999,7 +17060,7 @@ mod tests {
         let edit = serde_json::json!([{"file_path": path, "old_string": "foo", "new_string": "FOO"}]);
         fake_ask(&mut ed, edit, done(), Some(&log));
         feed(&mut ed, "e i");
-        assert_eq!(ed.prompt.as_ref().map(|p| p.text.as_str()), Some("ask "));
+        assert_eq!(ed.prompt.as_ref().map(|p| p.text()).as_deref(), Some("ask "));
         feed(&mut ed, "upper<ret>");
         assert!(
             ed.workspace.claude.review.as_ref().is_some_and(|r| !r.ready),

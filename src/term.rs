@@ -692,6 +692,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         toast_said: Default::default(),
         prompt_card: Default::default(),
         prompt_rows: Default::default(),
+        prompt_input: Default::default(),
         picker_box: Default::default(),
         review_area: Default::default(),
         spots: Default::default(),
@@ -17998,12 +17999,21 @@ fn draw_prompt(
     let label_w = visible.clone().map(|i| cands[i].label.width()).max().unwrap_or(0).min(LABEL_MAX);
     let hint_w = visible.clone().map(|i| cands[i].hint.width()).max().unwrap_or(0).min(HINT_MAX);
     let menu_w = if rows > 0 { label_w + if hint_w > 0 { 3 + hint_w } else { 0 } } else { 0 };
-    // Column of the word being completed: the prompt's head (`:`) + the text before the word
-    let base = p.cycle.as_ref().map_or(p.text.as_str(), |(b, _)| b.as_str());
-    let col = completion.map_or(0, |c| head.width() + base[..c.start.min(base.len())].width());
+    let text = p.text();
     // (a cell each side of it, its padding inside)
     let room = aw.saturating_sub(2 + 4).max(1);
-    let inner = (col + menu_w).max(head.width() + p.text.width() + 1).max(MIN).min(room);
+    let inner = (head.width() + text.width() + 1).max(MIN).min(room);
+    // What of the line is in sight: the cursor always, from where it was last drawn (`Prompt.left`)
+    let line = prompt_window(&text, p.cursor(), p.left.get(), inner.saturating_sub(head.width()).max(1));
+    p.left.set(line.first);
+    // Column of the word being completed: the prompt's head (`:`) + the line in sight before the word
+    let base = p.cycle.as_ref().map_or_else(|| p.split().0, |(b, _)| b.clone());
+    let col = completion.map_or(0, |c| {
+        let start = c.start.min(base.len());
+        let shown = base.get(line.first.min(start)..start).unwrap_or_default();
+        head.width() + usize::from(line.lead) + shown.width()
+    });
+    let inner = (col + menu_w).max(inner).min(room);
     let indent = col.min(inner.saturating_sub(menu_w));
     // (narrower than the menu wants — a 50-column screen: the hints end at the card's padding, cut, not past
     // its edge into the next row's first cell)
@@ -18061,22 +18071,58 @@ fn draw_prompt(
         queue!(out, Spaces(width))?;
         y += 1;
     }
-    // The input — a long one keeps its end in sight (that's where the cursor is), the rest of the first
-    // candidate dimmed after it (→ takes it)
+    // The input — a long one keeps its cursor in sight, `…` where it's cut; what a drag selected washed as the
+    // code's selection is; at its end the rest of the first candidate dimmed after it (→ takes it)
     queue!(out, MoveTo(x0 as u16, y as u16))?;
     apply(out, card)?;
     queue!(out, Print("  "))?;
-    let text = fit_left(&p.text, inner.saturating_sub(head.width() + 1));
     apply(out, if head.width() > 1 { Style { fg: ui.virt.fg, ..card } } else { card })?;
     queue!(out, Print(&head))?;
-    apply(out, card)?;
-    queue!(out, Print(&text))?;
-    let mut used = head.width() + text.width();
-    let cursor = ((x0 + 2 + used) as u16, y as u16);
-    if let Some(c) = completion.filter(|_| p.cycle.is_none())
-        && let Some(g) = crate::cmdline::ghost(&p.text, c)
+    let text_x = x0 + 2 + head.width() + usize::from(line.lead);
+    editor.screen.prompt_input.set(Some(crate::editor::PromptDrawn {
+        y,
+        x: text_x,
+        w: inner.saturating_sub(head.width()).max(1),
+        first: line.first,
+    }));
+    let cut = Style { fg: ui.linenr.fg, ..card };
+    if line.lead {
+        apply(out, cut)?;
+        queue!(out, Print("…"))?;
+    }
+    let sel = p.input.pane.doc().selection();
+    let washes: Vec<(usize, usize, Style)> = sel
+        .ranges()
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| !r.is_empty())
+        .map(|(i, r)| {
+            let wash = if i == sel.primary_index() { ui.selection_primary } else { ui.selection };
+            (r.from(), r.to(), card.patch(Style { bg: wash.bg, ..Style::default() }))
+        })
+        .collect();
+    let style_at = |b: usize| washes.iter().find(|(a, z, _)| (*a..*z).contains(&b)).map_or(card, |w| w.2);
+    let shown = &text[line.first..line.end];
+    let mut from = 0;
+    for b in shown.char_indices().map(|(b, _)| b).skip(1).chain([shown.len()]) {
+        let at = line.first + from;
+        if b > from && (b == shown.len() || style_at(line.first + b) != style_at(at)) {
+            apply(out, style_at(at))?;
+            queue!(out, Print(&shown[from..b]))?;
+            from = b;
+        }
+    }
+    if line.tail {
+        apply(out, cut)?;
+        queue!(out, Print("…"))?;
+    }
+    let mut used = head.width() + usize::from(line.lead) + shown.width() + usize::from(line.tail);
+    let cursor = text.get(line.first..p.cursor().max(line.first)).unwrap_or_default().width();
+    let cursor = ((text_x + cursor) as u16, y as u16);
+    if completion.is_some()
+        && let Some(g) = editor.cmdline_ghost()
     {
-        let g = fit(g, inner.saturating_sub(used));
+        let g = fit(&g, inner.saturating_sub(used));
         apply(out, Style { fg: ui.linenr.fg, ..card })?;
         queue!(out, Print(&g))?;
         used += g.width();
@@ -18093,6 +18139,67 @@ fn draw_prompt(
     }
     draw_frame(out, ui, card, (x0, y0, width, h), &name, &[], &[], true)?;
     Ok(cursor)
+}
+
+/// What of a prompt's line is drawn (`prompt_window`): from byte `first` to `end`, a `…` before it when it's cut
+/// there (`lead`), and after it (`tail`).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PromptLine {
+    pub first: usize,
+    pub end: usize,
+    pub lead: bool,
+    pub tail: bool,
+}
+
+/// The stretch of `text` drawn in `room` cells with the cursor (a byte) in sight — a cell after the text for it at
+/// the end: from `left` (where it began last frame) when the cursor is in sight from there, else moved a character at
+/// a time until it is; drawn back as far as it all fits, so a line made shorter shows its start again.
+pub(crate) fn prompt_window(text: &str, cursor: usize, left: usize, room: usize) -> PromptLine {
+    use unicode_width::UnicodeWidthChar as _;
+    let width = |s: &str| s.chars().map(|c| c.width().unwrap_or(0)).sum::<usize>();
+    let prev = |b: usize| text[..b].char_indices().next_back().map_or(0, |(i, _)| i);
+    let next = |b: usize| text[b..].chars().next().map_or(b, |c| b + c.len_utf8());
+    let cursor = cursor.min(text.len());
+    let at_end = usize::from(cursor == text.len());
+    // (the rest fits from further back: drawn from there)
+    let mut first = left.min(cursor);
+    while !text.is_char_boundary(first) {
+        first -= 1;
+    }
+    while first > 0 {
+        let back = prev(first);
+        if usize::from(back > 0) + width(&text[back..]) + at_end > room {
+            break;
+        }
+        first = back;
+    }
+    loop {
+        let lead = first > 0;
+        let fits = |avail: usize| {
+            let (mut cells, mut end) = (0, first);
+            for (b, c) in text[first..].char_indices() {
+                let w = c.width().unwrap_or(0);
+                if cells + w > avail {
+                    break;
+                }
+                cells += w;
+                end = first + b + c.len_utf8();
+            }
+            (cells, end)
+        };
+        let avail = room.saturating_sub(usize::from(lead));
+        let (mut cells, mut end) = fits(avail);
+        let tail = end < text.len();
+        if tail {
+            (cells, end) = fits(avail.saturating_sub(1));
+        }
+        let room_after = avail.saturating_sub(usize::from(tail));
+        let seen = cursor < end || (cursor == end && (end == text.len()) && cells < room_after.max(1));
+        if seen || first >= cursor {
+            return PromptLine { first, end, lead, tail };
+        }
+        first = next(first);
+    }
 }
 
 /// A prompt's name on its frame (D3): what it's for, in words — `:` a command, `/` a search; a worded one

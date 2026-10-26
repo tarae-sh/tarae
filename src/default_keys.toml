@@ -408,6 +408,25 @@ C-a = "goto_line_start"
 C-e = "goto_line_end_newline"
 A-ret = "insert_newline"
 
+# A prompt's line (`:`, `/`, `select:` …) — a small document in insert mode as the chat's input: these over [insert]
+# (yours too), only what moves or edits within the line (a new line, a tab, a completion said instead); what neither
+# binds typed; `enter`, `esc`, `C-c`, `:`'s `tab` and `→` at the end (its dim completion) are the prompt's own
+[prompt]
+C-a = "goto_line_start"
+C-e = "goto_line_end_newline"
+C-b = "move_char_left"
+C-f = "move_char_right"
+A-b = "input_word_left"
+A-f = "input_word_right"
+C-left = "input_word_left"
+C-right = "input_word_right"
+C-backspace = "delete_word_backward"
+C-del = "delete_word_forward"
+up = "prompt_history_older"
+down = "prompt_history_newer"
+C-p = "prompt_history_older"
+C-n = "prompt_history_newer"
+
 # The keys taken from the terminal's program — everything else is its (vim needs `esc`). Yours merge over these;
 # bind one to `to_program` to give it back to the program. `C-w` is the window prefix there too: `C-w C-w` sends
 # the program one `C-w`; `"C-w" = "to_program"` hands it back whole.

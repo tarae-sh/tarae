@@ -241,6 +241,9 @@ pub struct Keymaps {
     /// The chat's input (`[chat]`), over `insert` on its document (`chatinput.rs`) — `esc` → its view mode, `C-a`/`C-e`
     /// a line's ends, `A-ret` a new line.
     pub chat: Node,
+    /// A prompt's line (`[prompt]`), over `insert` on its document (`prompt.rs`) — its moves by a word and a line's
+    /// ends, its history.
+    pub prompt: Node,
     /// The keys taken from the terminal's program (`[terminal]`) — `C-\` → its view mode; every other key is the
     /// program's. A user's `[keys.terminal]` merges over it as every table does; `to_program` gives one back.
     pub terminal: Node,
@@ -298,6 +301,7 @@ impl Keymaps {
             view_on,
             views: Vec::new(),
             chat: part("chat", warnings),
+            prompt: part("prompt", warnings),
             terminal: part("terminal", warnings),
             run: part("run", warnings),
             runs: Default::default(),
@@ -383,6 +387,7 @@ impl Keymaps {
             ("select", &mut self.select),
             ("insert", &mut self.insert),
             ("chat", &mut self.chat),
+            ("prompt", &mut self.prompt),
             ("terminal", &mut self.terminal),
             ("run", &mut self.run),
         ] {
@@ -876,6 +881,13 @@ mod tests {
             node_tables(&mut out, node, &mut Vec::new(), &format!("### The {name}'s (`[keys.view.{name}]`)"));
         }
         node_tables(&mut out, &km.chat, &mut Vec::new(), "### The chat's input (`[keys.chat]`)");
+        node_tables(
+            &mut out,
+            &km.prompt,
+            &mut Vec::new(),
+            "### A prompt's line (`[keys.prompt]` — over insert mode's moves and deletes; `enter`, `esc`, `C-c`, `:`'s \
+             `tab` and `→` at its end are the prompt's own)",
+        );
         node_tables(
             &mut out,
             &km.terminal,

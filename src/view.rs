@@ -240,7 +240,7 @@ pub fn viewing(ed: &Editor) -> Option<(Surface, &Keys)> {
 /// else its last search while shown. Its rows hold still while it lasts, so they're counted once a pattern.
 pub fn refresh_search(ed: &mut Editor) {
     let typed = ed.prompt.as_ref().filter(|p| matches!(p.kind, crate::editor::PromptKind::Search { .. }));
-    let typed = typed.map(|p| p.text.clone());
+    let typed = typed.map(|p| p.text());
     let Some(v) = ed.workspace.viewer.view.as_mut().filter(|v| v.doc.is_some()) else { return };
     let pattern = match (v.prompt, typed) {
         (true, Some(t)) => Some(t).filter(|t| !t.is_empty()),

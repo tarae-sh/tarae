@@ -1730,6 +1730,47 @@ fn a_turns_usage_shows_under_the_chat_and_in_usage() {
     t.wait_for("today's total", |s| s.contains("Every session: $0.041 in 1 turn"));
 }
 
+/// The prompt's history is memory only (#153 — a `:sh` line can hold a secret): lines run at `/` and `?` recalled with
+/// `↑` while tarae runs, then nothing of them in any file of `$state` once it has quit (the last search a plain
+/// one, so the markers are only ever the history's).
+#[test]
+fn the_prompts_history_never_reaches_the_state_folder() {
+    let sb = Sandbox::new("prompt-history");
+    sb.write("a.txt", "history-mark-one\nhistory-mark-two\nplain\n");
+    let mut t = sb.spawn(&["a.txt"]);
+    t.wait_text("plain");
+    t.send("/history-mark-one\r");
+    t.send("?history-mark-two\r");
+    t.send("/plain\r");
+    // (every key of the three lines handled: 18 + 18 + 7)
+    t.wait_state("the last search", |s| {
+        s["prompt"].is_null() && s["input"].as_u64().is_some_and(|n| n >= 43)
+    });
+    t.send("/");
+    t.wait_state("its prompt", |s| s["prompt"]["kind"] == "/");
+    t.send("\x1b[A\x1b[A");
+    t.wait_state("recalled from memory", |s| s["prompt"]["text"] == "history-mark-two");
+    t.send("\x1b");
+    t.wait_state("closed", |s| s["prompt"].is_null());
+    t.command("q");
+    assert_eq!(t.wait_exit().code(), Some(0));
+    let mut dirs = vec![sb.state()];
+    let mut read = 0;
+    while let Some(d) = dirs.pop() {
+        for e in fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else if let Ok(bytes) = fs::read(&p) {
+                read += 1;
+                let text = String::from_utf8_lossy(&bytes);
+                assert!(!text.contains("history-mark"), "{} holds the history:\n{text}", p.display());
+            }
+        }
+    }
+    assert!(read > 0, "tarae wrote its state there (else this proves nothing)");
+}
+
 /// A state folder past `sun_path`'s 104 bytes: the socket is bound from its folder, and `tarae state`
 /// reaches it the same way.
 #[test]

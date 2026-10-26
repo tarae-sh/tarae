@@ -299,7 +299,7 @@ fn matched(ed: &Editor, kind: GroupKind, re: &regex::Regex) -> Vec<bool> {
 /// The pattern kind `kind`'s list lights: the one its `/` is typing, else its last search while lit.
 pub fn lit(ed: &Editor, kind: GroupKind) -> Option<regex::Regex> {
     let p = ed.float_list(kind)?;
-    let typed = ed.prompt.as_ref().filter(|_| p.prompt.is_some()).map(|t| t.text.clone());
+    let typed = ed.prompt.as_ref().filter(|_| p.prompt.is_some()).map(|t| t.text());
     let pat = match typed {
         Some(t) => Some(t).filter(|t| !t.is_empty()),
         None => p.search.clone().filter(|_| p.hl),
@@ -328,7 +328,15 @@ pub fn prompt_key(ed: &mut Editor, key: Key) -> bool {
         }
         return false;
     };
-    let empty = ed.prompt.as_ref().is_some_and(|p| p.text.is_empty());
+    // (a sequence of the line's under way — the `j` of `[keys.insert] j = { k = … }`, `C-r` waiting: a key that goes
+    // on with it is the line's; else what it typed goes in first, so `enter` searches with it and `backspace` sees
+    // the line as it is)
+    if crate::prompt::under_way(ed, key) {
+        ed.handle_prompt_key(key);
+        prompt_typed(ed);
+        return true;
+    }
+    let empty = ed.prompt.as_ref().is_some_and(|p| p.input.is_empty());
     let cancel = key.code == Code::Esc
         || (key.ctrl && key.code == Code::Char('c'))
         || (key.code == Code::Backspace && empty);
@@ -340,7 +348,8 @@ pub fn prompt_key(ed: &mut Editor, key: Key) -> bool {
         return true;
     }
     if crate::editor::prompt_submits(key) {
-        let text = ed.prompt.take().map(|p| p.text).unwrap_or_default();
+        let text = ed.prompt.take().map(|p| p.text()).unwrap_or_default();
+        ed.prompt_history.remember(PromptKind::Search { reverse }, &text);
         let last = ed.float_list_mut(kind).and_then(|p| {
             p.prompt = None;
             p.search.clone()
@@ -353,7 +362,23 @@ pub fn prompt_key(ed: &mut Editor, key: Key) -> bool {
         return true;
     }
     ed.handle_prompt_key(key);
-    let typed = ed.prompt.as_ref().map(|p| p.text.clone()).unwrap_or_default();
+    prompt_typed(ed);
+    true
+}
+
+/// A list's own `/`·`?` after its line changed (a key, a paste): the selection on the next match as it goes, back on
+/// the row it opened on while the line is empty. Nothing when the prompt isn't a list's.
+pub fn prompt_typed(ed: &mut Editor) {
+    let Some((kind, from)) =
+        KINDS.into_iter().find_map(|k| ed.float_list(k).and_then(|p| p.prompt).map(|from| (k, from)))
+    else {
+        return;
+    };
+    let Some((crate::editor::PromptKind::Search { reverse }, typed)) =
+        ed.prompt.as_ref().map(|p| (p.kind, p.text()))
+    else {
+        return;
+    };
     match typed.is_empty() {
         true => {
             if let Some(p) = ed.float_list_mut(kind) {
@@ -362,7 +387,6 @@ pub fn prompt_key(ed: &mut Editor, key: Key) -> bool {
         }
         false => ed.float_list_search(kind, &typed, reverse, from, true),
     }
-    true
 }
 
 /// The wheel over a list: its view three rows, the selection staying unless it would leave it (as `C-e`/`C-y`).

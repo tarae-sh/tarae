@@ -25,8 +25,18 @@ pub enum Which {
     Output(Slot),
     /// The chat's transcript (`Chat.transcript`).
     Chat,
-    /// The chat's input (`Chat.input`, `chatinput.rs`) — the one that takes typing.
+    /// The chat's input (`Chat.input`, `chatinput.rs`) — one that takes typing.
     Input,
+    /// The prompt's line (`Prompt.input`, `prompt.rs`) — the other; swapped in inside a pane's own swap when that
+    /// pane's `/` is up.
+    Prompt,
+}
+
+impl Which {
+    /// An input: its edits stay, its insert mode too (`swap`).
+    pub fn takes_typing(self) -> bool {
+        matches!(self, Which::Input | Which::Prompt)
+    }
 }
 
 /// The keys' state of a document that isn't the code's, traded with the editor's for each key (`swap`).
@@ -238,6 +248,7 @@ pub fn pane_mut(ed: &mut Editor, which: Which) -> Option<&mut Pane> {
         Which::Output(slot) => ed.workspace.outputs.get_mut(slot).map(|o| &mut o.pane),
         Which::Chat => ed.workspace.claude.chat.as_mut()?.transcript.as_mut().map(|t| &mut t.pane),
         Which::Input => ed.workspace.claude.chat.as_mut().map(|c| &mut c.input.pane),
+        Which::Prompt => ed.prompt.as_mut().map(|p| &mut p.input.pane),
     }
 }
 
@@ -288,7 +299,8 @@ impl Swapped {
 /// Runs `f` with `which`'s document as `current`, its mode, keys under way and `size` (rows, columns) as the
 /// editor's — all put back before it returns. What it did to the text is put back too, and insert mode ends there
 /// (the caller says so); a command that took the code to another buffer gives the code the keys (the code's jumps
-/// are its own then). The chat's input takes typing: its edits stay, its insert mode too.
+/// are its own then). An input takes typing: its edits stay, its insert mode too. Inside another's swap (the prompt's
+/// line while a pane's `/` is up) the outer one is swapped back as it was.
 pub fn swap<R>(
     ed: &mut Editor,
     which: Which,
@@ -303,15 +315,15 @@ pub fn swap<R>(
     ed.docs.push(doc);
     ed.current = ed.docs.len() - 1;
     trade(ed, &mut keys);
-    ed.workspace.viewer.swapped = Some(which);
+    let outer = ed.workspace.viewer.swapped.replace(which);
     let viewport = std::mem::replace(&mut ed.viewport, size);
     let focus = ed.workspace.viewer.focus;
     let jumps = ed.workspace.views.iter().find(|w| w.id == focus).map(|w| w.jumps.clone());
     let prompt = ed.prompt.is_some();
-    let input = which == Which::Input;
+    let input = which.takes_typing();
     let r = f(ed);
     ed.viewport = viewport;
-    ed.workspace.viewer.swapped = None;
+    ed.workspace.viewer.swapped = outer;
     let at = ed.docs.iter().rposition(|d| d.id == id).expect("the pane's document is still in");
     // (a command that showed the code another buffer — `C-o`, `ga`, `gf` — left it current)
     let moved = ed.current != at;

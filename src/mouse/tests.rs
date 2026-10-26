@@ -279,7 +279,7 @@ fn a_prompt_takes_its_press_and_a_press_outside_closes_it() {
     let want = crate::cmdline::apply("w", &comp, i);
     let before = ed.doc().selection().primary();
     press(&mut ed, 6, y);
-    assert_eq!(ed.prompt.as_ref().map(|p| p.text.as_str()), Some(want.as_str()), "filled in");
+    assert_eq!(ed.prompt.as_ref().map(|p| p.text()).as_deref(), Some(want.as_str()), "filled in");
     assert_eq!(ed.doc().selection().primary(), before, "the code untouched");
     let (x, y) = code_cell(&ed, 3);
     press(&mut ed, x, y);

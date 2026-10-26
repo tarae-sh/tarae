@@ -105,7 +105,7 @@ fn the_prompts_line_says_the_card_from_the_code() {
     for zellij in [false, true] {
         let mut ed = editor(zellij);
         card(&mut ed);
-        feed(&mut ed, ":<C-a>");
+        feed(&mut ed, ":<C-y>");
         let says = match zellij {
             true => "esc close — then space I reaches the card",
             false => "esc close — then C-q reaches the card",

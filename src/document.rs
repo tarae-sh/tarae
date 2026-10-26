@@ -231,6 +231,9 @@ pub const PREVIEWED: DocId = DocId::MAX;
 /// The id of the chat's input (`chatinput.rs`) — no buffer's; swapped in for its keys one at a time.
 pub const CHAT_INPUT: DocId = DocId::MAX - 1;
 
+/// The id of the prompt's line (`prompt.rs`) — no buffer's either; swapped in as the chat's input is.
+pub const PROMPT_INPUT: DocId = DocId::MAX - 2;
+
 /// File → rope. A missing file gives an empty rope (created on save).
 pub fn read_file(path: &Path) -> Result<Rope> {
     match File::open(path) {

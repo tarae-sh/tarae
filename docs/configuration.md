@@ -130,6 +130,8 @@ e = "file_picker"                                # tables are sub-menus (space e
 - View mode (the chat's and the terminal's) is normal mode on what they show: `[keys.normal]` spills in (kept to
   what reads), `[keys.view]` goes over it, `[keys.view.chat]` and `[keys.view.terminal]` over that; `[keys.chat]`
   is the chat's input (`esc` → its view mode)
+- A prompt's line (`:`, `/` …) is insert mode on one line: `[keys.prompt]` goes over `[keys.insert]`, and only what
+  moves or deletes within the line runs there (a new line, a tab or a completion is said instead)
 - A run panel's output (a task's, a preflight's, the tests') is normal mode on a read-only document: the whole of
   `[keys.normal]` (and `[keys.select]` after `v`) holds there, `[keys.run]` goes over it
 - `[keys.terminal]`: the keys taken from the terminal's program, merged over the default (`"C-\\" =

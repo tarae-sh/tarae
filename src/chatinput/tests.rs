@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::config::Config;
+use crate::editor::Mode;
 
 /// An editor with the chat up and its input with the keys, the code holding `code`.
 fn editor(code: &str) -> Editor {

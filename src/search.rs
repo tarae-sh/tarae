@@ -190,7 +190,7 @@ impl Editor {
     /// Pattern to show: typed text while entering `/`·`?` (preview), else the last search if highlighting.
     fn shown_pattern(&self) -> Option<String> {
         match self.code_search_prompt() {
-            Some(p) if !p.text.is_empty() => Some(p.text.clone()),
+            Some(p) if !p.input.is_empty() => Some(p.text()),
             Some(_) => None,
             _ if self.search_hl => self.search.clone(),
             _ => None,

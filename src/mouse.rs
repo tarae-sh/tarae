@@ -21,6 +21,10 @@ pub fn press_first(ed: &mut Editor, x: usize, y: usize) -> bool {
                 if let Some(i) = row {
                     ed.cmdline_pick(i);
                 }
+                // (its line: the cursor on the character pressed — a drag from there selects)
+                if let Some(at) = crate::prompt::click(ed, x, y) {
+                    ed.mouse_anchor = Some((crate::editor::Drag::Prompt, at));
+                }
             }
             _ => ed.cancel_prompt(),
         }

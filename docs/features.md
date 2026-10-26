@@ -364,8 +364,12 @@ configs carry over as they are.
   back to the pane under it once it goes. Your panes are kept per folder (`$state/layouts.json`, written as they
   change) and come back with the files on the start screen's `r`
 - **`:` completion** — command names (fuzzy, with aliases and descriptions), then arguments: file paths, themes,
-  setting paths and their values, languages. `Tab`/`Shift-Tab` cycle; `→` takes the dimmed suggestion
-  ([screenshot](screenshots/ux-cmdline-complete.png))
+  setting paths and their values, languages — for the word before the cursor, what's after it kept. `Tab`/`Shift-Tab`
+  cycle; `→` at the line's end takes the dimmed suggestion ([screenshot](screenshots/ux-cmdline-complete.png))
+- **A prompt's line edits as Helix's prompt** (`:`, `/`, `select:` …): `←` `→` `C-b` `C-f`, `A-b` `A-f` a word,
+  `C-a` `C-e` its ends, `C-w` `A-d` a word out, `C-u` `C-k` to an end, `C-r` a register; a press puts the cursor on
+  the character, a drag selects. `↑` `↓` (`C-p` `C-n`) walk what was run at `:`, and at `/` `?` — 100 lines each,
+  since tarae started, never saved
 - **Buffers** — `gn` `gp`, with a bufferline once two or more are open; `:bc`, `:bn`, `:bp`
 - `:sh command` runs a shell command in the background
 
