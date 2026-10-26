@@ -37,6 +37,7 @@ struct Scene {
 }
 
 const MAIN: &[&str] = &["src/main.rs"];
+const WIDE: &[&str] = &["src/wide.rs"];
 
 /// Motion §2's scenes: the chat, a question — every frame kept from its `enter` through the edit's landing (~1.1 s)
 /// until it's dry — and the picture then, before `six`'s turn ends (`TARAE_MOTION_AT` pins the drying's step).
@@ -544,6 +545,43 @@ const FOLLOW_PANE_FILES: &[&str] = &[
     "j",
     "j",
     "@2",
+];
+/// #157: a split's pane that had the code's keys asks a turn that reads the file's last lines, then the keys back in the
+/// code and the chat minimized — the follow card out of the lines' way, at the top of its pane (`follow-split-s`: `C-w s`,
+/// the top pane; `follow-split-v`: `C-w v`, the left).
+const FOLLOW_SPLIT: [&[&str]; 2] = [
+    &[
+        "@1",
+        "\x17",
+        "s",
+        "\x17",
+        "k",
+        " ",
+        "l",
+        "@1",
+        "where do the strands end?",
+        "\r",
+        "@10?last strands",
+        "\x1b",
+        "\x1b",
+        "@2",
+    ],
+    &[
+        "@1",
+        "\x17",
+        "v",
+        "\x17",
+        "h",
+        " ",
+        "l",
+        "@1",
+        "where do the strands end?",
+        "\r",
+        "@10?last strands",
+        "\x1b",
+        "\x1b",
+        "@2",
+    ],
 ];
 /// …then `C-f` from the chat with the right pane the code's last: follow moves into it, said, at the writing
 /// (`follow-pane-cf`).
@@ -2463,6 +2501,9 @@ const SCENES: &[Scene] = &[
     Scene { name: "follow-pane", claude: "writemid", files: MAIN, keys: FOLLOW_PANE },
     Scene { name: "follow-pane-files", claude: "writemid", files: MAIN, keys: FOLLOW_PANE_FILES },
     Scene { name: "follow-pane-cf", claude: "writemid", files: MAIN, keys: FOLLOW_PANE_CF },
+    // (#157: the follow card in a split's top pane, the lines read under its foot — `--size 160x40`)
+    Scene { name: "follow-split-s", claude: "readlast", files: WIDE, keys: FOLLOW_SPLIT[0] },
+    Scene { name: "follow-split-v", claude: "readlast", files: WIDE, keys: FOLLOW_SPLIT[1] },
     // (…the chat's top line with nine sessions: three waiting, two overlapping, one done — whole names, `+N`)
     Scene { name: "strip-nine", claude: "nine", files: MAIN, keys: STRIP_NINE },
     // (…the session list docked right, `enter` on the next row: switched, the list still there)
@@ -3024,8 +3065,21 @@ fn run_files(scene: &str) -> Vec<(&'static str, String)> {
             (".tarae.toml", "[task.check]\ncmd = \"sh check.sh\"\n".into()),
             ("check.sh", CHECK_SH.into()),
         ],
+        // (#157: as many lines as the followed pane's rows less one, each wide enough to reach under the card)
+        "follow-split-s" => vec![("src/wide.rs", wide_rs(18, 112))],
+        "follow-split-v" => vec![("src/wide.rs", wide_rs(36, 64))],
         _ => Vec::new(),
     }
+}
+
+/// `lines` lines of strands, each `width` characters (#157's scenes: unwrapped in their pane).
+fn wide_rs(lines: usize, width: usize) -> String {
+    (1..=lines)
+        .map(|i| {
+            let line = format!("    strands.push(Strand::new({i:2}, \"strand {i}, tied where it crosses");
+            format!("{line:.<w$}\"));\n", w = width - 4)
+        })
+        .collect()
 }
 
 // ── The stand-in claude ──────────────────────────────────────────────────────
@@ -3111,6 +3165,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "home-main" => turn.home_main()?,
             "home-fix" => turn.home_fix()?,
             "home-docs" => turn.home_docs()?,
+            "readlast" => turn.read_last()?,
             _ => {}
         }
     }
@@ -3162,6 +3217,16 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             }
         }
         Ok(())
+    }
+
+    /// #157's scenes: a read of `src/wide.rs`'s last five lines (as many as the file in the folder it runs in has), then
+    /// held — the turn at work, its follow card up — until tarae goes.
+    fn read_last(&mut self) -> io::Result<()> {
+        let n = std::fs::read_to_string("src/wide.rs").map_or(18, |t| t.lines().count());
+        self.words("Reading the last strands.")?;
+        self.text("\n\n")?;
+        self.call(1, "read", json!({"files": [format!("src/wide.rs:{}-{n}", n - 4)]}))?;
+        self.lines.by_ref().try_for_each(|l| l.map(drop))
     }
 
     /// A call's input as the model writes it, before the call (`input_json_delta`, tarae draws it as it comes —

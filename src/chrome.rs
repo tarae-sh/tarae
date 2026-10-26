@@ -42,6 +42,20 @@ pub const GAP: usize = 1;
 /// The bottom slot's header rows: one — the line where the slot meets what's above it carries its names, details
 /// and keys (panes P3 §1).
 pub const SLOT_HEAD: usize = 1;
+
+/// Whether a code pane's top line is its own first row (panes P3 step 6b): a pane under another has its line there —
+/// the one it shares with the pane above; a pane at the code's first row `text_top` has its line over its rect (the
+/// column's, or the screen's first row). The one rule: the drawer (`term::panes`) and whatever reads a pane's rows of
+/// text from its rect (`pane_text`).
+pub fn line_in_pane(pane: crate::split::Rect, text_top: usize) -> bool {
+    pane.y > text_top
+}
+
+/// A code pane's rows of text: its rect, less its top line where that's its own first row (`line_in_pane`).
+pub fn pane_text(pane: crate::split::Rect, text_top: usize) -> crate::split::Rect {
+    let line = usize::from(line_in_pane(pane, text_top));
+    crate::split::Rect { y: pane.y + line, h: pane.h.saturating_sub(line), ..pane }
+}
 /// The picker's margins over the editor area: columns, rows (a cell is about twice as tall as wide — the
 /// two look the same).
 pub const PICKER_MX: usize = 2;

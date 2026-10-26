@@ -1614,7 +1614,8 @@ impl Layout {
 }
 
 /// Panes: (view, rect, pane layout, doc index, (top line, its rows above the pane), h-scroll, focused?), left
-/// first. One window = one pane as before (no title row).
+/// first. One window = one pane. Each pane's top line is its own first row only under another pane
+/// (`chrome::line_in_pane`).
 #[allow(clippy::type_complexity)]
 fn panes(
     editor: &Editor,
@@ -1649,7 +1650,7 @@ fn panes(
             let rows = if focused { doc.top_rows } else { v.top_rows };
             let top = (top, rows.filter(|&(l, _)| l == top).map_or(0, |r| r.1));
             // (a pane under another has its top line in its first row; one at the column's top, on the line over it)
-            let line = r.y > lay.text_top as usize;
+            let line = crate::chrome::line_in_pane(r, lay.text_top as usize);
             Some((id, r, lay.pane(doc, r, line, editor), idx, top, left, focused))
         })
         .collect();
@@ -3882,7 +3883,7 @@ fn short_names<'a>(names: impl Iterator<Item = &'a str> + Clone) -> Vec<String> 
     list.iter().map(|n| n[cut.min(n.len())..].to_string()).collect()
 }
 
-/// Draws the panes (one if single window). Several get a title row each and dividers between adjacent ones.
+/// Draws the panes (one if single window), and the dividers between side-by-side ones.
 /// Returns the focused pane's cursor position.
 fn draw_panes(
     editor: &Editor,
@@ -12153,10 +12154,11 @@ fn draw_follow_card(
     let doc = shows.and_then(|v| editor.docs.iter().find(|d| d.id == v.doc)).unwrap_or_else(|| editor.doc());
     // (it leads a pane out of sight — another fills the screen, `C-w z`: where, said on its line)
     let unseen = (pane.is_none() && shows.is_some()).then(|| format!("in {}", doc.display_name_short()));
+    // (its rows of text as the drawer lays them out — its top line in its first row only under another pane, #157)
     let (px, py, pw, ph) = match pane {
         Some((_, rect, ..)) => {
-            let title = usize::from(editor.workspace.views.len() > 1 && lay.zoom.is_none());
-            (rect.x, rect.y + title, rect.w, rect.h.saturating_sub(title))
+            let t = crate::chrome::pane_text(*rect, lay.text_top as usize);
+            (t.x, t.y, t.w, t.h)
         }
         None => (lay.rail_w, lay.text_top as usize, lay.edit_w - lay.rail_w, lay.text_rows),
     };

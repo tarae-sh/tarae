@@ -2979,6 +2979,85 @@ fn follow_is_one_card_in_one_place() {
     assert_eq!((moved.0, moved.1), (first.0, pane.y), "{moved:?}");
 }
 
+/// #157: in a split the follow card takes the pane's rows of text as the drawer lays them out — a pane at the code's top
+/// has its line over it, one under another its line in its first row (`chrome::pane_text`): at the foot it stands on
+/// the pane's row of air; with the lines read under it, at the top it stands on the pane's first row of text, never on
+/// a line read. `C-w v`'s left pane, `C-w s`'s top and bottom.
+#[test]
+fn the_follow_card_stands_in_its_split_panes_rows() {
+    use crate::chat::{Look, Msg, Role};
+    // (every line long enough to reach under the card, wrapped or not)
+    let text: String = (1..=80).map(|i| format!("let line_{i:02} = \"{}\";\n", "x".repeat(150))).collect();
+    for (keys, which) in [("<C-w>v<C-w>h", "left"), ("<C-w>s<C-w>k", "top"), ("<C-w>s<C-w>j", "bottom")] {
+        let mut s = Shot::new(160, 40);
+        s.file("src/demo.rs", &text);
+        let path = s.ed.doc().path.clone().unwrap();
+        s.ed.config.llm.command = "sh".into();
+        s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+        s.keys(keys);
+        s.keys(" lwhere?<ret>");
+        let gaze = |s: &mut Shot, lines: std::ops::Range<usize>| {
+            let look = Look {
+                verb: "read",
+                what: "src/demo.rs".into(),
+                pattern: false,
+                range: String::new(),
+                link: None,
+            };
+            let c = s.ed.workspace.claude.chat.as_mut().unwrap();
+            c.follow.on = true;
+            c.msgs.push(Msg::new(Role::Thought, "Reading where it starts.", ""));
+            c.follow.gaze = Some(crate::follow::Gaze::new(look, Some(path.clone()), Some(lines)));
+            let bytes = s.frame();
+            let card = s.ed.screen.thought_card.get().expect("the card shows");
+            let mut vt = vt100::Parser::new(s.h, s.w, 0);
+            vt.process(&bytes);
+            (card, vt)
+        };
+        let followed = crate::follow::pane(&s.ed);
+        let (_, rect, _, rows) =
+            s.ed.screen.panes.iter().find(|p| p.0 == followed).cloned().expect("its pane");
+        let at_top = rect.y == s.ed.screen.text_top;
+        assert_eq!(
+            at_top,
+            which != "bottom",
+            "{which}: {rect:?}, the code from row {}",
+            s.ed.screen.text_top
+        );
+        // Read off screen: at the pane's foot, on its row of air
+        let (card, vt) = gaze(&mut s, 70..72);
+        assert_eq!(card.1 + card.3, rect.y + rect.h - 1, "{which}: the foot, {card:?} in {rect:?}");
+        // (the pane's rows of text, as drawn: where its lines are on screen — its first row and each line's rows)
+        let rows_of = |vt: &vt100::Parser, line: usize| -> Vec<usize> {
+            let label = format!("let line_{:02} ", line + 1);
+            (rect.y..rect.y + rect.h)
+                .filter(|&y| {
+                    vt.screen()
+                        .contents_between(y as u16, rect.x as u16, y as u16, (rect.x + rect.w) as u16)
+                        .contains(&label)
+                })
+                .collect()
+        };
+        let first = rows_of(&vt, rows[0].0)[0];
+        assert_eq!(first, rect.y + usize::from(!at_top), "{which}: its first row of text");
+        // Its last lines read: they run under the foot — the top, on its first row of text, off every line read
+        let shown: Vec<usize> = rows.iter().map(|r| r.0).collect();
+        let (last, read) = (*shown.last().unwrap(), shown[shown.len() - 4]..shown.last().unwrap() + 1);
+        let (card, _) = gaze(&mut s, read.clone());
+        assert_eq!(
+            card.1, first,
+            "{which}: at the top, {card:?} in {rect:?} (lines {read:?}, the last {last})"
+        );
+        // (every row of a line read — a wrapped one's too: the pane's rows from its first row of text)
+        for (y, line) in (first..).zip(&shown).filter(|(_, l)| read.contains(l)) {
+            assert!(
+                !(card.1..card.1 + card.3).contains(&y),
+                "{which}: line {line} on row {y} under {card:?}"
+            );
+        }
+    }
+}
+
 /// Crowded screens: with Claude at work in follow mode and a note under the cursor, the note card, the
 /// follow card and a notification never overlap — at any size (a card with no room is skipped; a
 /// notification with no room goes into the status line).
