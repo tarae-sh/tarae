@@ -309,6 +309,130 @@ fn previewing_a_theme(ed: &mut Editor, compact: bool) -> String {
     original
 }
 
+/// Line 0 `f(aa, bb)` with an inlay hint before each argument (`f(x: aa, y: bb)` as drawn), and where its text
+/// starts on screen.
+fn with_two_hints() -> (Editor, usize, usize) {
+    let mut ed = editor();
+    ed.docs[0].text = ropey::Rope::from_str("f(aa, bb)\nline 1\n");
+    let hint = |pos, text: &str| crate::lsp::InlayHint { pos, text: text.into() };
+    ed.docs[0].lsp.inlay = vec![hint(2, "x: "), hint(6, "y: ")];
+    frame(&mut ed);
+    let (_, rect, gutter, _) = ed.screen.panes.first().expect("a code pane");
+    let (x, y) = (rect.x + gutter, rect.y);
+    (ed, x, y)
+}
+
+/// What the code's primary selection holds.
+fn selected(ed: &Editor) -> String {
+    let r = ed.doc().selection().primary();
+    ed.doc().text.byte_slice(r.from()..r.to()).to_string()
+}
+
+/// A press and a drag across a line with two inlay hints select the characters under the pointer (frictions #150:
+/// every hint before the pointer moved them that many cells right); a press on a hint lands on the character it stands
+/// before.
+#[test]
+fn a_press_and_a_drag_past_inlay_hints_take_the_characters_under_the_pointer() {
+    let (mut ed, x, y) = with_two_hints();
+    let shown = frame(&mut ed);
+    assert!(shown.lines().nth(y).is_some_and(|l| l.contains("f(x: aa, y: bb)")), "the hints drawn:\n{shown}");
+    // (cells: `f(` 0-1, `x: ` 2-4, `aa` 5-6, `, ` 7-8, `y: ` 9-11, `bb` 12-13)
+    ed.handle_mouse(Mouse { kind: MouseKind::Down, x: (x + 6) as u16, y: y as u16, alt: false, ctrl: false });
+    assert_eq!(ed.doc().selection().primary().cursor(&ed.doc().text), 3, "the second a");
+    ed.handle_mouse(Mouse {
+        kind: MouseKind::Drag,
+        x: (x + 12) as u16,
+        y: y as u16,
+        alt: false,
+        ctrl: false,
+    });
+    assert_eq!(selected(&ed), "a, b", "from the second a through the first b");
+    ed.handle_mouse(Mouse { kind: MouseKind::Up, x: (x + 12) as u16, y: y as u16, alt: false, ctrl: false });
+    frame(&mut ed);
+    // (on `y: `'s middle: the b after it)
+    press(&mut ed, x + 10, y);
+    assert_eq!(ed.doc().selection().primary().cursor(&ed.doc().text), 6, "the b the hint stands before");
+}
+
+/// The same with the hints off: the cells are the text's own again — nothing the last frame with hints recorded is
+/// read past.
+#[test]
+fn with_inlay_hints_off_a_press_and_a_drag_take_the_texts_own_columns() {
+    let (mut ed, x, y) = with_two_hints();
+    ed.config.inlay_hints = false;
+    let shown = frame(&mut ed);
+    assert!(shown.lines().nth(y).is_some_and(|l| l.contains("f(aa, bb)")), "no hints:\n{shown}");
+    // (cells: `f(` 0-1, `aa` 2-3, `, ` 4-5, `bb` 6-7)
+    ed.handle_mouse(Mouse { kind: MouseKind::Down, x: (x + 3) as u16, y: y as u16, alt: false, ctrl: false });
+    assert_eq!(ed.doc().selection().primary().cursor(&ed.doc().text), 3, "the second a");
+    ed.handle_mouse(Mouse { kind: MouseKind::Drag, x: (x + 6) as u16, y: y as u16, alt: false, ctrl: false });
+    assert_eq!(selected(&ed), "a, b", "from the second a through the first b");
+}
+
+/// A press and a drag at (`x`, `y`) — no release.
+fn down_drag(ed: &mut Editor, (x, y): (usize, usize), to: usize) {
+    for (kind, x) in [(MouseKind::Down, x), (MouseKind::Drag, to)] {
+        ed.handle_mouse(Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
+    }
+}
+
+/// Split side by side (`C-w v`), the same line with its hints in both panes: a press and a drag in the right pane take
+/// the characters under the pointer there — the left pane's hints, drawn on the same screen row, aren't the right's.
+#[test]
+fn a_press_in_the_right_pane_skips_only_its_own_hints() {
+    let (mut ed, ..) = with_two_hints();
+    feed(&mut ed, "<C-w>v");
+    let shown = frame(&mut ed);
+    assert_eq!(ed.screen.panes.len(), 2, "split:\n{shown}");
+    let (_, rect, gutter, _) = *ed.screen.panes.iter().max_by_key(|p| p.1.x).unwrap();
+    let x = rect.x + gutter;
+    let rows: Vec<Vec<char>> = shown.lines().map(|l| l.chars().collect()).collect();
+    let at = |r: &Vec<char>| r.iter().skip(x).take(15).collect::<String>() == "f(x: aa, y: bb)";
+    let y = rows.iter().position(at).unwrap_or_else(|| panic!("the right pane's hints drawn:\n{shown}"));
+    assert!(rows[y][..x].iter().collect::<String>().contains("f(x: aa, y: bb)"), "the left's too:\n{shown}");
+    down_drag(&mut ed, (x + 6, y), x + 12);
+    assert_eq!(ed.workspace.viewer.focus, ed.screen.panes.iter().max_by_key(|p| p.1.x).unwrap().0);
+    assert_eq!(selected(&ed), "a, b", "from the second a through the first b, in the right pane");
+}
+
+/// Split side by side (`C-w v`) and over and under (`C-w s`): a press in the second pane takes the line drawn under the
+/// pointer — a pane at the column's top has its top line over its rect, one under another in its first row (a row was
+/// taken off every split pane, so a press there went one line up, and none on its first).
+#[test]
+fn a_press_in_a_split_pane_takes_the_line_under_it() {
+    for split in ["<C-w>v", "<C-w>s"] {
+        let mut ed = editor();
+        feed(&mut ed, split);
+        let shown = frame(&mut ed);
+        let (_, rect, gutter, _) = *ed.screen.panes.iter().max_by_key(|p| (p.1.y, p.1.x)).unwrap();
+        let x = rect.x + gutter;
+        let rows: Vec<String> = shown.lines().map(|l| l.chars().skip(x).take(6).collect()).collect();
+        for line in [0, 2] {
+            let y = (rect.y..).find(|&y| rows[y] == format!("line {line}")).expect("drawn");
+            press(&mut ed, x + 2, y);
+            assert_eq!(ed.cursor_line(), line, "{split}: the line under the pointer");
+        }
+    }
+}
+
+/// A hint after a line's last character (the last line, no newline after it: drawn at the line's end, not before a
+/// character) is recorded where it's drawn as the others are; a press before it takes its character, one on it the
+/// line's end.
+#[test]
+fn a_hint_at_the_lines_end_is_recorded_where_its_drawn() {
+    let (mut ed, x, y) = with_two_hints();
+    let text = "f(aa, bb)\nn = f(aa)";
+    ed.docs[0].text = ropey::Rope::from_str(text);
+    ed.docs[0].lsp.inlay = vec![crate::lsp::InlayHint { pos: text.len(), text: ": i32".into() }];
+    let shown = frame(&mut ed);
+    assert!(shown.lines().nth(y + 1).is_some_and(|l| l.contains("n = f(aa): i32")), "drawn:\n{shown}");
+    assert_eq!(*ed.screen.virtual_cells.borrow(), [(x + 9, y + 1, 5)], "recorded where it's drawn");
+    press(&mut ed, x + 7, y + 1);
+    assert_eq!(ed.doc().selection().primary().cursor(&ed.doc().text), 10 + 7, "the second a");
+    press(&mut ed, x + 11, y + 1);
+    assert_eq!(ed.doc().selection().primary().cursor(&ed.doc().text), text.len(), "the line's end");
+}
+
 /// A press on an open picker's own frame — each edge, its preview, its rows — is its own; one outside it closes it as
 /// `esc` does (a previewed theme put back), nothing under it pressed. The full picker with its preview and the compact
 /// one alike.

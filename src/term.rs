@@ -608,6 +608,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         chat_view: Default::default(),
         chat_input: Default::default(),
         cursors: Default::default(),
+        virtual_cells: Default::default(),
         picker_list: editor.picker.as_ref().map(|p| {
             let b = PickerBox::new(&lay, p);
             (b.list_y(), b.list_rows)
@@ -6065,6 +6066,9 @@ fn draw_text(
                 apply(out, line_base.patch(Style { bg: None, ..inlay_style }))?;
                 current = None;
                 queue!(out, Print(&t))?;
+                // (where it sits, for the mouse: a press past it reads the text's own column — frictions #150)
+                let at = lay.x0 + lay.gutter + x0 + c.col - row_left + shift;
+                editor.screen.virtual_cells.borrow_mut().push((at, y as usize, t.width()));
                 shift += t.width();
             }
             let x = x0 + c.col - row_left + shift;
@@ -6203,6 +6207,8 @@ fn draw_text(
                 let t = fit(&h.text, room);
                 apply(out, line_base.patch(Style { bg: None, ..inlay_style }))?;
                 queue!(out, Print(&t))?;
+                let at = lay.x0 + lay.gutter + x0 + col.saturating_sub(row_left) + shift;
+                editor.screen.virtual_cells.borrow_mut().push((at, y as usize, t.width()));
                 shift += t.width();
             }
         }

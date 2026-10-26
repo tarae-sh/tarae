@@ -288,6 +288,15 @@ impl Screen {
         self.panes.iter().zip(&self.pane_docs).filter(move |(_, d)| **d == doc).flat_map(|(p, _)| p.3.iter())
     }
 
+    /// Screen column `x` of row `y` with the virtual cells drawn before it on that row taken out — the text's own
+    /// cells; a press on a hint lands where the hint stands, on the character after it. Only the pressed pane's cells,
+    /// those from its left edge `from` on (a pane beside it, left, draws its own on the same row).
+    pub fn text_x(&self, x: usize, y: usize, from: usize) -> usize {
+        let cells = self.virtual_cells.borrow();
+        let before = cells.iter().filter(|c| c.1 == y && (from..x).contains(&c.0));
+        x - before.map(|c| c.2.min(x - c.0)).sum::<usize>()
+    }
+
     /// Kind `kind`'s list as the last frame drew it (`lists`).
     pub fn list(&self, kind: crate::pane::GroupKind) -> Option<(usize, usize, usize)> {
         self.lists.borrow().iter().find(|l| l.0 == kind).map(|l| l.1)
@@ -544,6 +553,9 @@ pub struct Screen {
     /// What an element drew of this frame, to tell whether the finished frame still shows it whole
     /// (`term::shown_whole`): its id, its cells (row, columns) and the bytes of the frame that drew them.
     pub owned: std::cell::RefCell<Vec<Owned>>,
+    /// The virtual text `term::draw_text` put in a row of text this frame — inlay hints, the only kind between
+    /// characters — as (x, y, width) on screen: a press's cell is read past them (`text_x`).
+    pub virtual_cells: std::cell::RefCell<Vec<(usize, usize, usize)>>,
 }
 
 /// An element's cells on a frame and the bytes that drew them (`Screen.owned`).
@@ -3288,8 +3300,7 @@ impl Editor {
         if self.workspace.claude.review.is_some() || self.welcome() {
             return;
         }
-        // Which pane (with splits, focus moves to the pane clicked/scrolled). With several panes the top
-        // row is the title row.
+        // Which pane (with splits, focus moves to the pane clicked/scrolled).
         let Some((pid, rect, gutter, lines)) = s
             .panes
             .iter()
@@ -3310,7 +3321,9 @@ impl Editor {
         if pid != self.workspace.viewer.focus {
             return;
         }
-        let title = usize::from(self.workspace.views.len() > 1);
+        // (a pane under another has its top line in its first row; one at the column's top, on the line over it —
+        // `term::panes`)
+        let title = usize::from(rect.y > self.screen.text_top);
         if y < rect.y + title {
             return;
         }
@@ -3354,7 +3367,9 @@ impl Editor {
                 let (line, c0, x0, end) =
                     lines.get(row).copied().unwrap_or((doc.top + row, doc.left, 0, usize::MAX));
                 let line = line.min(last);
-                // A wrapped row: cells after its indent, never past its end (that's the next row's)
+                // A wrapped row: cells after its indent, never past its end (that's the next row's) — the hints
+                // drawn before the pointer on that row, in this pane, not counted (frictions #150)
+                let x = self.screen.text_x(x, y, rect.x);
                 let col =
                     crate::wrap::clamp_col(c0 + x.saturating_sub(rect.x + gutter).saturating_sub(x0), end);
                 let pos = match picked {
@@ -16866,6 +16881,7 @@ mod tests {
         let rect = crate::split::Rect { x: 0, y: 1, w: 80, h: 10 };
         ed.screen = Screen {
             panes: vec![(1, rect, 5, (0..10).map(|l| (l, 0, 0, usize::MAX)).collect())],
+            text_top: 1,
             ..Screen::default()
         };
         let at = |kind, x, y| Mouse { kind, x, y, alt: false, ctrl: false };
