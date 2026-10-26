@@ -157,6 +157,10 @@ side git · 4 rows · in hand git:src/term.rs
 - **`workspaces[].sessions[].with`** (the front workspace's only; absent when empty) — what goes with the chat input's next
   message, in the order added: `{kind: "pointed", id}` · `{kind: "screen", cols, rows}` · `{kind: "quote", from,
   lines, cut, hidden}` (`chat::Chat::with_state`). Shapes, never text; Claude's level never has it (unsent).
+- **`workspaces[].sessions[].turn.now`** (V 19; the front session's, absent between turns) — what its Claude is doing
+  now, as the status line says it (`now::state`): `step` (`running cargo test -q`, `asks to run …`, `queued 2nd · …`),
+  `waits` (it waits on you), `since_ms` (when that step began, the step's own time — not the turn's), `said` (the last
+  sentence Claude finished) and `plan` (the plan's step, `3/4 …`). Claude's level never has it: it's Claude's own doing.
 - **`workspaces`** (V 16, collab C0: the place and the participants apart) — each a checkout: `w0` …, its name,
   branch, `base`, root, `cards`, `rebasing`, the reviewer's fields below, `overlaps`, `panes`, and its `sessions`
   (one each for now: its Claude) — `s0` …, `doing`, `answer`, `usage`, `billing`, `sandbox`, `writing`, `at`, …;

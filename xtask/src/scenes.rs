@@ -53,6 +53,54 @@ const SHIMMER_KEYS: [&[&str]; 5] = [
     &["@1", " ", "l", "@1", "\x06", "how is the map filled?", "@~4200", "\r", "@3"],
 ];
 
+/// What Claude is doing now on the status line (`now.rs`), a turn running the tests: `C-f` in the empty chat keeps it
+/// open; following, `esc esc` gives the code the keys and the chat minimizes; `j` there pauses follow; the card's turn,
+/// `C-w h` to the code; the mouse over the line, following.
+const NOW_KEYS: [&[&str]; 5] = [
+    &["@1", " ", "l", "@1", "\x06", "keep the first strand on a repeat", "\r", "@10?unit tests", "@2"],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "keep the first strand on a repeat",
+        "\r",
+        "@10?cargo test",
+        "\x1b",
+        "\x1b",
+        "@2",
+    ],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "keep the first strand on a repeat",
+        "\r",
+        "@10?cargo test",
+        "\x1b",
+        "\x1b",
+        "@1",
+        "j",
+        "@2",
+    ],
+    &["@1", " ", "l", "@1", "keep the first strand on a repeat", "\r", "\x17", "h", "@10?Its reason", "@2"],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "keep the first strand on a repeat",
+        "\r",
+        "@10?cargo test",
+        "\x1b",
+        "\x1b",
+        "@1",
+        "@hover?running cargo test",
+        "@1",
+    ],
+];
+
 /// Motion §4's scenes: the stand-in's 20-stop turn (one run failing), held at its last stop — the chat open, follow off
 /// (its trail rows); follow on (the follow card's top line, its strip); and the strip's second mark hovered (its words on
 /// the card's bottom line); the keys in the code (`C-w h`) and `[r` back to the failed run (its replay: the strip around
@@ -1643,6 +1691,14 @@ const SCENES: &[Scene] = &[
     Scene { name: "shimmer-follow", claude: "shimmer-think", files: MAIN, keys: SHIMMER_KEYS[3] },
     Scene { name: "shimmer-read", claude: "shimmer-read", files: MAIN, keys: SHIMMER_KEYS[4] },
     Scene { name: "wetfollow", claude: "sixfollow", files: MAIN, keys: WET_KEYS },
+    // (what Claude is doing now on the status line, a turn running the tests: the chat open, follow off; following, the
+    // chat minimized; following paused by a key in the code; Claude's card up while following)
+    Scene { name: "now-open", claude: "now", files: MAIN, keys: NOW_KEYS[0] },
+    Scene { name: "now-follow", claude: "now", files: MAIN, keys: NOW_KEYS[1] },
+    Scene { name: "now-paused", claude: "now", files: MAIN, keys: NOW_KEYS[2] },
+    Scene { name: "now-card", claude: "nowcard", files: MAIN, keys: NOW_KEYS[3] },
+    // (…the mouse over the line: its words whole on a card over it)
+    Scene { name: "now-hover", claude: "now", files: MAIN, keys: NOW_KEYS[4] },
     // (motion §4: a turn of 20 stops — reads, lookups, edits, runs, one failing — its trail rows; the follow card's strip)
     Scene { name: "strip-trail", claude: "strip", files: MAIN, keys: STRIP_KEYS[0] },
     Scene { name: "strip", claude: "strip", files: MAIN, keys: STRIP_KEYS[1] },
@@ -3004,6 +3060,8 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "sixend" => turn.six(false)?,
             // (motion §4: twenty stops, one run failing, held at the last)
             "strip" => turn.strip()?,
+            "now" => turn.now(false)?,
+            "nowcard" => turn.now(true)?,
             // (motion §3: a turn timed as the stream measured — prose from the start, a think, a stall)
             "shimmer-prose" | "shimmer-think" | "shimmer-stall" | "shimmer-read" => {
                 turn.shimmer(&script[8..])?
@@ -3543,6 +3601,33 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             "reason": "cargo needs to fetch the registry index"});
         self.call(1, "run", run)?;
         self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// (`now-*`: a read, a plan, a sentence of intent, then the tests run — in flight, held there; `card`: asked to run
+    /// outside the sandbox, the card up)
+    fn now(&mut self, card: bool) -> io::Result<()> {
+        self.words("Let me look at how the map is filled first.")?;
+        self.text("\n\n")?;
+        self.call(1, "read", json!({"files": ["src/main.rs:7-14"]}))?;
+        let steps = json!([
+            {"text": "Read how the map is filled", "status": "done"},
+            {"text": "Keep the first strand on a repeat", "status": "done"},
+            {"text": "Run the unit tests", "status": "doing"},
+            {"text": "Say what changed", "status": "todo"}
+        ]);
+        self.call(2, "plan", json!({"title": "Keep the first strand", "steps": steps}))?;
+        self.words("A repeated name now keeps the first strand.")?;
+        self.words("I will run the unit tests to check that nothing else relied on the old replace.")?;
+        self.text("\n")?;
+        if card {
+            let run = json!({"command": "cargo test --quiet", "outside_sandbox": true,
+                "reason": "cargo needs to fetch the registry index"});
+            self.call(3, "run", run)?;
+            return self.lines.by_ref().try_for_each(|l| l.map(drop));
+        }
+        let tool = json!({"type": "tool_use", "id": "t3", "name": "mcp__tarae__run", "input": {"command": "cargo test -q"}});
+        self.line(json!({"type": "assistant", "message": {"id": "m3", "content": [tool]}}))?;
+        self.lines.by_ref().try_for_each(|l| l.map(drop))
     }
 
     /// A run in the sandbox that outlasts the stuck mark (`STUCK_AFTER`): its call unanswered past it.

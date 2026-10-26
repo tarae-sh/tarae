@@ -4713,6 +4713,7 @@ fn draw(
         })
         .flatten();
     draw_statusline(editor, ui, lay, folded, out)?;
+    now_card(editor, ui, lay, out)?;
     // A prompt (`:`, `/`, `select:` …) is a card standing on the status line, its menu in it
     let prompt_cursor = match &editor.prompt {
         Some(p) => Some(draw_prompt(editor, p, editor.cmdline_completion().as_ref(), ui, lay, out)?),
@@ -9088,7 +9089,71 @@ fn fit_segments(left: &mut Vec<Seg>, right: &mut Vec<Seg>, width: usize) {
     }
 }
 
-/// tarae statusline: `● normal  branch  progress ……… claude · diag · lang · encoding EOL · sel · pos`
+/// The status line's rank for what Claude is doing now (`now.rs`): its step, under the inbox's and a list's keys, over
+/// the session chip's; its last sentence under a message folded there (news first) and the servers' progress, over the
+/// branch, its counts, the language and the encoding; the plan's step, the first of the three to fold.
+const NOW_STEP: u8 = 237;
+const NOW_SAID: u8 = 88;
+const NOW_PLAN: u8 = 75;
+
+/// Between the step and Claude's sentence.
+const NOW_DASH: &str = " — ";
+
+/// Claude's sentence on the status line: at most this wide (its whole in the hover card), at least this — else none.
+const NOW_SAID_MAX: usize = 72;
+const NOW_SAID_MIN: usize = 12;
+
+/// The plan's step on the status line, at most this wide.
+const NOW_PLAN_MAX: usize = 32;
+
+/// What Claude is doing now, after the mode word (`now.rs`; the user, 2026-10-26): `▸ running cargo test -q 41s — I will
+/// run the unit tests to check …   › 3/4 Run the unit tests` — the step's sign (motion's marks, in the accent as the one
+/// in hand; in warning where it waits on you; the wave, or none where the word's band says it), its verb and what it
+/// acts on, its own time (filled out so the sentence after it never slides as it counts), Claude's last sentence
+/// (italic: its thinking's) and the plan's step. Pushed onto `left`; the sentence returned whole, for the caller to cut
+/// to the room left once the rest is in.
+fn now_segments(editor: &Editor, ui: &Ui, left: &mut Vec<Seg>) -> Option<String> {
+    use crate::now::Sign;
+    let step = crate::now::step(editor, &editor.workspace)?;
+    let c = editor.workspace.claude.chat.as_ref()?;
+    let dim = Style { fg: ui.virt.fg.or(ui.linenr.fg), ..ui.status };
+    let faint = Style { fg: ui.linenr.fg, ..ui.status };
+    let accent = ui.status.patch(ui.accent);
+    let warn = editor.theme.try_get("warning").map_or(accent, |s| ui.status.patch(Style { bg: None, ..s }));
+    let sign = if step.warn { warn } else { Style { bold: true, ..accent } };
+    let seg = |text: String, style: Style, keep: u8| Seg { text, style, keep };
+    left.push(seg("   ".into(), ui.status, NOW_STEP));
+    match step.sign {
+        Sign::Mark(m) => left.push(seg(format!("{} ", m.glyph()), sign, NOW_STEP)),
+        Sign::Wave => left.push(seg(format!("{} ", wave(editor)), accent, NOW_STEP)),
+        Sign::Band => {}
+    }
+    match step.sign {
+        Sign::Band => {
+            left.extend(turn_word(editor, ui, step.verb, dim).into_iter().map(|(t, s)| seg(t, s, NOW_STEP)))
+        }
+        _ => left.push(seg(step.verb.into(), if step.warn { warn } else { dim }, NOW_STEP)),
+    }
+    if !step.what.is_empty() {
+        left.push(seg(format!(" {}", fit_ellipsis(&step.what, 40)), ui.status, NOW_STEP));
+    }
+    let d = crate::now::took(&editor.workspace, &step);
+    let time = running(d, !editor.moving());
+    let time = pad_right(&time, if d.as_secs_f32() < 59.95 { 5 } else { RUN_TIME_W });
+    left.push(seg(format!(" {time}"), faint, NOW_STEP));
+    let said = crate::now::said(c);
+    if let Some((s, thought)) = &said {
+        left.push(seg(NOW_DASH.into(), faint, NOW_SAID));
+        left.push(seg(s.clone(), Style { italic: *thought, ..dim }, NOW_SAID));
+    }
+    if let Some(p) = crate::now::plan(c) {
+        left.push(seg("   › ".into(), accent, NOW_PLAN));
+        left.push(seg(fit_ellipsis(&p, NOW_PLAN_MAX), faint, NOW_PLAN));
+    }
+    said.map(|(s, _)| s)
+}
+
+/// tarae statusline: `● normal  ▸ now  branch  progress ……… claude · diag · lang · encoding EOL · sel · pos`
 /// Mode = a dot and a word — where the keys go: the code's mode, or chat, git, review, picker, terminal …
 /// (`chrome::Keys::label`, lowercased); the rest dimmed — only mode, diagnostics, position catch the eye.
 /// With the header off, the file name goes here too. Symbols only from common monospace fonts (● ▲ · …).
@@ -9220,6 +9285,9 @@ fn draw_statusline(
             left.push(Seg { text: format!(" {}", r.said()), style, keep: CHIP });
         }
     }
+    // What Claude is doing now (`now.rs`), after the mode word — and after whose turn it is where the chip names it: the
+    // step and its time, its last sentence, the plan's step — the sentence cut to the room left below, once the rest is in
+    let now_said = now_segments(editor, ui, &mut left);
     // The session's reviewer in the background (bgreview): reading, waiting its turn, or what it found not read
     // yet — in its colour, the counts dim, then the key — while no review rail says it. A click reads its report
     if let Some((head, counts, key)) =
@@ -9566,12 +9634,26 @@ fn draw_statusline(
     if let Some((i, text, SAID)) = &waiting_at {
         cut_to_room(&mut left, &right, *i, text, SAID);
     }
+    // (Claude's sentence: the room what outranks it leaves, up to `NOW_SAID_MAX` — whole in the hover card; with too
+    // little, gone, its dash with it)
+    if let Some(said) = now_said
+        && let Some(i) = left.iter().position(|s| s.keep == NOW_SAID && s.text != NOW_DASH)
+    {
+        let others: usize =
+            (left.iter().chain(&right)).filter(|s| s.keep > NOW_SAID).map(|s| s.text.width()).sum();
+        let room = lay.width.saturating_sub(others + NOW_DASH.width() + 2);
+        match room >= NOW_SAID_MIN {
+            true => left[i].text = fit_ellipsis(&said, room.min(NOW_SAID_MAX)),
+            false => left.retain(|s| s.keep != NOW_SAID),
+        }
+    }
 
     fit_segments(&mut left, &mut right, lay.width);
     queue!(out, MoveTo(0, lay.status_y))?;
     let mut used = 0;
     let mut chip_at: Option<(usize, usize)> = None;
     let mut reviewer_at: Option<(usize, usize)> = None;
+    let mut now_at: Option<(usize, usize)> = None;
     for s in &left {
         apply(out, s.style)?;
         queue!(out, Print(&s.text))?;
@@ -9583,6 +9665,9 @@ fn draw_statusline(
         }
         if (REVIEWER - 2..=REVIEWER).contains(&s.keep) {
             reviewer_at = Some(reviewer_at.map_or((a, b), |(a0, _)| (a0, b)));
+        }
+        if matches!(s.keep, NOW_STEP | NOW_SAID | NOW_PLAN) {
+            now_at = Some(now_at.map_or((a, b), |(a0, _)| (a0, b)));
         }
         if s.keep == INBOX {
             let spot = (lay.status_y as usize, a, b, crate::workspace::Spot::Inbox);
@@ -9601,6 +9686,10 @@ fn draw_statusline(
     if let Some((a, b)) = reviewer_at {
         let spot = (lay.status_y as usize, a, b, crate::workspace::Spot::Reviewer);
         editor.screen.session_spots.borrow_mut().push(spot);
+    }
+    // (the line of what Claude is doing: a press follows Claude's place, the mouse over it its words whole — `now_card`)
+    if let Some((a, b)) = now_at {
+        editor.screen.cut_spots.borrow_mut().push((lay.status_y as usize, a, b, crate::whole::Cut::Now));
     }
     let right_w: usize = right.iter().map(|s| s.text.width()).sum();
     apply(out, ui.status)?;
@@ -12007,7 +12096,7 @@ fn draw_ask_stream(
 /// goes there). `None`: no room.
 ///
 /// ```text
-///      ╭─ main working ── paused ────── ▂▅▇ exploring 3.2s ─╮  ← P3 step 7d: framed, named
+///      ╭─ main working ── paused ──────── ▂▅▇ running 3.2s ─╮  ← P3 step 7d: framed, named
 ///      │ ▎ does ask get tools too?                     │  ← minimized only
 ///      │ ◦ read    src/chat.rs  L88–120                │
 ///      │ The chat swaps the empty tool list here;     │
@@ -12093,14 +12182,12 @@ fn draw_follow_card(
     // goes — minimized, Claude's commands without a sandbox too (in warning) — then, as the chat's title says it,
     // what it's at and how long. Narrow, what it's at gives way first, then `› no sandbox` goes shorter
     let paused = c.follow.paused && c.busy();
-    let exploring = c.msgs.last().is_some_and(|m| m.role == Role::Tool);
-    let doing: &[&str] = match () {
-        _ if compacting => &[" compacting", ""],
-        _ if waiting => &[" waiting for your answer", " waiting", ""],
-        _ if replaying || !c.busy() => &[""],
-        _ if exploring => &[" exploring", ""],
-        _ if c.state == crate::chat::State::Thinking => &[" thinking", ""],
-        _ => &[" writing", ""],
+    // (what it's at: the step's word, as the status line says the step — `now::Step::word`)
+    let word = crate::now::step(editor, &editor.workspace).map(|s| format!(" {}", s.word()));
+    let doing: Vec<&str> = match () {
+        _ if waiting => vec![" waiting for your answer", " waiting", ""],
+        _ if replaying || !c.busy() => vec![""],
+        _ => vec![word.as_deref().unwrap_or(""), ""],
     };
     // (waiting on you: the word in the accent — a `●` there read as a second knot beside the one in hand)
     let mark = match () {
@@ -14158,7 +14245,7 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
     let n = c.msgs.len();
     let string = card.patch(t.try_get("string").unwrap_or(dim));
     // The newest tool call is marked while Claude is still at it
-    let exploring = c.busy() && c.msgs.last().is_some_and(|m| m.role == Role::Tool);
+    let called = c.busy() && c.msgs.last().is_some_and(|m| m.role == Role::Tool);
     let plus = Style { fg: ui.diff_plus.fg, ..card };
     let styles = TrailStyles { faint, dim, string, accent, warn: warn_fg, plus };
     // A stop's row is its knot (글타래 P6, `knot`: its mark, the follow card's stop in hand in the accent). No line between them
@@ -14406,7 +14493,7 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
         pieces.push((Of::Msg(i), rows));
         // (the live command or tests waiting on what isn't their own — another cargo's lock — said under it, not
         // left looking stuck: #10, `waits.rs`; or printing nothing for minutes — #157. The clock's: never kept)
-        let Some(look) = m.look.as_ref().filter(|_| m.role == Role::Tool && exploring && i + 1 == n) else {
+        let Some(look) = m.look.as_ref().filter(|_| m.role == Role::Tool && called && i + 1 == n) else {
             continue;
         };
         let (now, calm) = (crate::clock::now(), !editor.moving());
@@ -14649,7 +14736,7 @@ fn draw_chat(
     let sp = |text: String, style: Style| Span { text, style };
     let plain = |spans: Vec<Span>| ChatRow { spans, ..ChatRow::default() };
     let own = |row: ChatRow| -> std::sync::Arc<[ChatRow]> { std::sync::Arc::from(vec![row]) };
-    let exploring = c.busy() && c.msgs.last().is_some_and(|m| m.role == Role::Tool);
+    let called = c.busy() && c.msgs.last().is_some_and(|m| m.role == Role::Tool);
     // (the conversation as this frame laid it out — `render_frame`, the transcript synced to it)
     let mut pieces = editor.screen.chat_laid.borrow().clone();
     let mut total: usize = pieces.iter().map(|(_, r)| r.len()).sum();
@@ -14659,7 +14746,7 @@ fn draw_chat(
     if crate::compaction::under_way(&editor.workspace) {
         lines.push(Vec::new());
         lines.push(vec![sp(wave(editor), accent), sp(" compacting…".into(), dim)]);
-    } else if c.state == State::Thinking && !exploring && !thought_live {
+    } else if c.state == State::Thinking && !called && !thought_live {
         lines.push(Vec::new());
         // (the wave where nothing streams, else its cells kept and the word's band: the word never slides)
         let mark = if wave_beside(editor) { wave(editor) } else { "   ".into() };
@@ -14853,16 +14940,9 @@ fn draw_chat(
             None if left >= 5 => vec![sp("ready".into(), faint)],
             _ => Vec::new(),
         },
-        s => {
-            let word = if crate::compaction::under_way(&editor.workspace) {
-                "compacting"
-            } else if exploring {
-                "exploring"
-            } else if s == State::Thinking {
-                "thinking"
-            } else {
-                "writing"
-            };
+        _ => {
+            // (the step's word, as the status line says the step — `now::Step::word`)
+            let word = crate::now::step(editor, &editor.workspace).map_or("thinking", |s| s.word());
             // (the wave where nothing streams by nature, else the word's band — `turn_word`)
             let mut v = match wave_beside(editor) {
                 true => vec![sp(wave(editor), accent), sp(" ".into(), dim)],
@@ -16036,6 +16116,106 @@ fn run_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io:
         }
         apply(out, ground)?;
         queue!(out, Spaces(width - 1 - text.width()))?;
+    }
+    Ok(())
+}
+
+/// The status line's word of what Claude is doing now, whole while the mouse is over it (`whole.rs`, `Cut::Now`): as the
+/// run card, a borderless card on the peek's slight ground right above the line, its words where the line's start —
+/// the step whole with its time, Claude's last sentence whole (italic: its thinking's), the plan's step whole, then
+/// the key that follows Claude as a press on the line does. Nothing under it moves; the mouse leaving lets it go.
+fn now_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io::Result<()> {
+    use crate::markdown::Span;
+    use crate::now::Sign;
+    if editor.cut_hover.as_ref() != Some(&crate::whole::Cut::Now) {
+        return Ok(());
+    }
+    let spot =
+        editor.screen.cut_spots.borrow().iter().find(|s| s.3 == crate::whole::Cut::Now).map(|s| (s.0, s.1));
+    let (Some((y, a)), Some(step), Some(c)) =
+        (spot, crate::now::step(editor, &editor.workspace), editor.workspace.claude.chat.as_ref())
+    else {
+        return Ok(());
+    };
+    let card = card_style(ui, editor, "ui.popup");
+    let ground = Style { bg: blend(card.bg, ui.tint, 1.0 - PEEK_STEP).or(card.bg), ..card };
+    let dim = Style { fg: ui.virt.fg.or(card.fg), ..ground };
+    let faint = Style { fg: ui.linenr.fg.or(card.fg), ..ground };
+    let accent = Style { fg: ui.accent.fg, ..ground };
+    let warn = editor
+        .theme
+        .try_get("warning")
+        .and_then(|s| s.fg)
+        .map_or(accent, |fg| Style { fg: Some(fg), ..ground });
+    let room = lay.width.saturating_sub(4).min(96);
+    if room < 16 || y < 2 {
+        return Ok(());
+    }
+    let sp = |text: String, style: Style| Span { text, style };
+    let wrapped = |s: &str, w: usize| crate::cut::fit_in_hand(s, w, false, true).into_iter().map(|p| p.text);
+    let mut rows: Vec<Vec<Span>> = Vec::new();
+    // The step: its sign, its verb and what it acts on whole, its time
+    let sign = match step.sign {
+        Sign::Mark(m) => {
+            sp(format!("{} ", m.glyph()), if step.warn { warn } else { Style { bold: true, ..accent } })
+        }
+        Sign::Wave => sp(format!("{} ", wave(editor)), accent),
+        Sign::Band => sp(String::new(), ground),
+    };
+    let lead = sign.text.width();
+    let time = running(crate::now::took(&editor.workspace, &step), !editor.moving());
+    let words = format!("{} {}", step.verb, step.what).trim().to_string();
+    for (k, line) in wrapped(&words, room - lead).enumerate() {
+        let first = match k {
+            0 => sign.clone(),
+            _ => sp(" ".repeat(lead), ground),
+        };
+        let (verb, rest) = match k {
+            0 => line.split_at(step.verb.len().min(line.len())),
+            _ => ("", line.as_str()),
+        };
+        rows.push(vec![first, sp(verb.into(), if step.warn { warn } else { dim }), sp(rest.into(), ground)]);
+    }
+    if let Some(last) = rows.last_mut() {
+        let used: usize = last.iter().map(|s| s.text.width()).sum();
+        match used + 1 + time.width() <= room {
+            true => last.push(sp(format!(" {time}"), faint)),
+            false => rows.push(vec![sp(format!("{}{time}", " ".repeat(lead)), faint)]),
+        }
+    }
+    // Claude's last sentence, whole
+    if let Some((said, thought)) = crate::now::said(c) {
+        let style = Style { italic: thought, ..dim };
+        rows.extend(wrapped(&said, room).map(|l| vec![sp(l, style)]));
+    }
+    // The plan's step, whole
+    if let Some(p) = crate::now::plan(c) {
+        for (k, line) in wrapped(&p, room - 2).enumerate() {
+            rows.push(vec![sp(if k == 0 { "› " } else { "  " }.into(), accent), sp(line, faint)]);
+        }
+    }
+    // The key that does what a press does: following Claude, from where the keys are
+    let key = if editor.workspace.is_at(At::Chat) { "C-f" } else { "space F" };
+    let key_style = Style { fg: ui.virt.fg.or(card.fg), ..ground };
+    rows.push(hint_spans(ui, &[(key, "follow Claude — a click here too")], key_style, faint));
+    // (as tall as it takes, up to the rows above the line — the newest kept: the key and the step first)
+    let cap = y.saturating_sub(lay.text_top as usize).max(1);
+    if rows.len() > cap {
+        let keys = rows.pop();
+        rows.truncate(cap.saturating_sub(1));
+        rows.extend(keys);
+    }
+    let inner = rows.iter().map(|r| r.iter().map(|s| s.text.width()).sum::<usize>()).max().unwrap_or(0);
+    let width = inner + 2;
+    let x = a.saturating_sub(1).min(lay.width.saturating_sub(width));
+    let top = y - rows.len();
+    for (k, row) in rows.iter().enumerate() {
+        queue!(out, MoveTo(x as u16, (top + k) as u16))?;
+        apply(out, ground)?;
+        queue!(out, Print(" "))?;
+        let used = chat_spans(out, row, ground, inner)?;
+        apply(out, ground)?;
+        queue!(out, Spaces(width - 1 - used))?;
     }
     Ok(())
 }
@@ -23139,6 +23319,39 @@ mod tests {
         assert_eq!(fit(31), [" NOR ", "  tarae · main", "  a.rs", "1:1 "], "drops encoding, then language");
         // One cell less and `a.rs` would touch `1:1` — the branch goes instead
         assert_eq!(fit(30), [" NOR ", "  a.rs", "1:1 "]);
+    }
+
+    /// What Claude is doing now has status-line ranks of its own (`now_segments`): no other segment there takes one of
+    /// them — a number written in `draw_statusline` or a named rank — so the sentence's `retain` and the line's spot take
+    /// only its own.
+    #[test]
+    fn the_now_lines_ranks_are_its_own() {
+        let own = [NOW_STEP, NOW_SAID, NOW_PLAN];
+        let named = [
+            CHIP,
+            INBOX,
+            INBOX - 1,
+            VIEW_HINTS,
+            PATH_HINTS,
+            REVIEWER,
+            REVIEWER - 1,
+            REVIEWER - 2,
+            HINTS,
+            FOLDED,
+            SAID,
+        ];
+        assert!(own.iter().all(|k| !named.contains(k)), "{own:?} against {named:?}");
+        let src = include_str!("term.rs");
+        let at = src.find("\nfn draw_statusline(").expect("draw_statusline");
+        let body = &src[at..at + src[at..].find("\n}\n").expect("its end")];
+        let written: Vec<u8> = body
+            .split("keep: ")
+            .skip(1)
+            .filter_map(|s| s.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok())
+            .chain(body.split("unwrap_or(").skip(1).filter_map(|s| s.split(')').next()?.parse().ok()))
+            .collect();
+        assert!(written.len() > 20, "read the ranks: {written:?}");
+        assert!(own.iter().all(|k| !written.contains(k)), "{own:?} against {written:?}");
     }
 
     /// A blank spacer before its run (`  `, `enter`, ` go there`, one `keep`) goes with it: two cells short drops the

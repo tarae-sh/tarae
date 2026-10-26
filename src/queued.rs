@@ -690,6 +690,41 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// What Claude is doing now (`now.rs`) while its run waits its turn: `queued 1st · sh fast.sh` — then, once it
+    /// starts, `running sh fast.sh`, its time started again (the run's own, not its wait's).
+    #[test]
+    fn a_run_in_line_is_said_queued_then_running() {
+        let (mut ed, dir, generation) = at_work("now");
+        script(&dir, "slow", 0.8);
+        script(&dir, "fast", 0.0);
+        // (the tool_use block first, then its request — as claude sends a call)
+        let tool = |ed: &mut Editor, id: &str, cmd: &str| {
+            let input = json!({ "command": cmd });
+            let ev = crate::llm::StreamEv::Tool { id: id.into(), name: "mcp__tarae__run".into(), input };
+            crate::chat::stream_event(ed, generation, ev);
+        };
+        tool(&mut ed, "t1", "sh slow.sh");
+        run(&mut ed, generation, 1, "sh slow.sh");
+        pump(&mut ed, "the first started", running);
+        tool(&mut ed, "t2", "sh fast.sh");
+        run(&mut ed, generation, 2, "sh fast.sh");
+        crate::now::sync(&mut ed);
+        let s = crate::now::step(&ed, &ed.workspace).unwrap();
+        assert_eq!((s.verb, s.what.as_str(), s.word()), ("queued", "1st · sh fast.sh", "queued"));
+        let started = |ed: &Editor| {
+            ed.workspace.task_run.as_ref().is_some_and(|r| r.task.cmd == "sh fast.sh")
+                && crate::now::step(ed, &ed.workspace).is_some_and(|s| s.verb == "running")
+        };
+        pump(&mut ed, "the second started", started);
+        let s = crate::now::step(&ed, &ed.workspace).unwrap();
+        assert_eq!(s.what, "sh fast.sh");
+        assert!(
+            crate::now::took(&ed.workspace, &s) < Duration::from_millis(400),
+            "its own time, not its wait's"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// A grant riding with a run that waits its turn goes with a take-back of it made meanwhile (verify3 F15): the
     /// run starts with what's allowed then.
     #[test]

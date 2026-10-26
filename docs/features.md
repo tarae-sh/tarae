@@ -153,7 +153,10 @@ configs carry over as they are.
   views, a slot's tabs — lit in the accent where the keys are; split panes each have their own, the scope and the
   buffers on the focused one's
 - **Status line** — the mode (`● normal`: the dot in the accent, or a color per mode, the word in ink bold; `● follow`
-  while Claude's follow mode leads the cursor, `● chat · follow` with the keys in the chat) · git branch and `+3 −2` · Claude status (`…` waiting,
+  while Claude's follow mode leads the cursor, `● chat · follow` with the keys in the chat) · while Claude works, what it's
+  doing now: the step and its own time, the last sentence it finished, the plan's step (`▸ running cargo test -q 41s — I
+  will run the unit tests to check …   › 3/4 Run the unit tests` — whole on a card under the mouse, a press follows
+  Claude; [Chat panel](claude-integration.md#chat-panel)) · git branch and `+3 −2` · Claude status (`…` waiting,
   `● change` a change of Claude's waits for its review) · `● errors ▲ warnings` · language, colored by its server's state — dim italic starting, green
   connected (a "ready" toast says so too), red failed or exited, faintest when none is installed · encoding and line
   endings · selection count · position (keys you've started — a count, `g`, `space w` — show in its place until

@@ -2537,6 +2537,7 @@ impl Editor {
         self.offer_group_sync();
         crate::notes::stale_sync(self);
         crate::stuck::sync(self);
+        crate::now::sync(self);
         self.bring_queue_sync();
         self.plugin_front();
         self.schedule_tick();
@@ -2828,6 +2829,17 @@ impl Editor {
         {
             self.dragging = Some(b);
             return;
+        }
+        // The status line's word of what Claude is doing now: a press follows Claude's place (`now::press`)
+        if m.kind == K::Down
+            && self.picker.is_none()
+            && floated.is_none()
+            && s.cut_spots
+                .borrow()
+                .iter()
+                .any(|l| l.3 == crate::whole::Cut::Now && l.0 == y && (l.1..l.2).contains(&x))
+        {
+            return crate::now::press(self);
         }
         // The sessions' tabs, dropdown, chip
         if m.kind == K::Down

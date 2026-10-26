@@ -49,7 +49,8 @@ use crate::workspace::At;
 /// 17: shuttle keys gone (audit 2.D): `keys.shuttle` and the `shuttle` card kind.
 /// 18: keep-warm gone, idle compaction in its place (audit 2.C): a session's `usage.keep_warm` is
 /// `usage.idle_compact` (`at_ms`, `off`, `min_tokens`); the `kept-warm` usage event gone.
-pub const V: u64 = 18;
+/// 19: what Claude is doing now (`now.rs`): the front session's `turn.now` (`step`, `waits`, `since_ms`, `said`, `plan`).
+pub const V: u64 = 19;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;
@@ -994,6 +995,9 @@ pub struct SessionState {
     /// Where its Claude is in its turn, as the session list says it (`presence::at`: `src/a.rs:12 · writing`) —
     /// None: between turns, or one session open. Claude's level never (collab C1: nothing of it reaches Claude).
     pub at: Option<String>,
+    /// What its Claude is doing now, as the status line says it (`now::state`: `step`, `waits`, `since_ms`, `said`,
+    /// `plan`) — the front session's turn only, its JSON's `turn.now`. Claude's level never (it's Claude's own).
+    pub now: Option<Value>,
 }
 
 impl UiState {
@@ -1619,6 +1623,7 @@ impl Editor {
             },
             writing: crate::writing::listed(l.claude.chat.as_ref(), &self.docs),
             at: crate::presence::at(self, l.id),
+            now: is_front.then(|| crate::now::state(self, l)).flatten(),
         };
         let workspace = |l: &crate::workspace::Workspace, is_front: bool| WorkspaceState {
             id: workspace_id(l.id),
@@ -1866,6 +1871,9 @@ impl UiState {
             }
             if let Some(at) = &s.at {
                 v["at"] = json!(at);
+            }
+            if let Some(now) = &s.now {
+                v["turn"] = json!({ "now": now });
             }
             if let Some(k) = &s.key_source {
                 v["key_source_seen"] = json!(k);

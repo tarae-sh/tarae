@@ -92,6 +92,7 @@ impl Editor {
             w.overlaps.clear();
             for l in w.sessions.iter_mut() {
                 l.at = None;
+                l.now = None;
             }
         }
         for w in s.workspaces.iter_mut().filter(|w| w.id != own_workspace) {

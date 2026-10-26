@@ -40,6 +40,7 @@ mod idlecompact;
 mod instructions;
 mod keepclose;
 mod motion;
+mod now;
 mod overlap;
 mod panes;
 mod presence;

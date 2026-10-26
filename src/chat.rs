@@ -596,6 +596,8 @@ pub struct Chat {
     /// The turn under way was refused for money (`billing::refusal`) — acted on at its end (`money_out`), gone
     /// with a turn cut off instead (claude's exit, a new chat).
     pub money: Option<crate::billing::Money>,
+    /// The step its turn is at and since when (`now.rs`) — the status line's time for it.
+    pub now: crate::now::Since,
 }
 
 /// Where a command of Claude's ran (cardburden 4), from its run's own record — its guard (`Guard::where_ran`),
@@ -925,6 +927,7 @@ impl Chat {
             runs_on: (None, String::new()),
             switched: None,
             money: None,
+            now: Default::default(),
         }
     }
 

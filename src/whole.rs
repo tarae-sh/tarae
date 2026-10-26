@@ -19,6 +19,9 @@ pub enum Cut {
     Queued,
     /// A run panel's command: its tab's label in the slot's line (whole on a card over it).
     Run(Slot),
+    /// The status line's word of what Claude is doing now (`now.rs`): its step, sentence and plan's step whole on a
+    /// card over it (`term::now_card`).
+    Now,
 }
 
 /// What's in hand now — drawn whole: the row the mouse is over, the chat row its view mode's cursor is on. Worked out

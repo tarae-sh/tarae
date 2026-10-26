@@ -72,8 +72,26 @@ the conversation, because it has none.
 closes it and `:chat-new` starts over. One
 process lives for the whole conversation, so Claude remembers what came before.
 
-**While it works** the chat's title (and the follow card's) says what the turn is at and for how long (`thinking 3.2s`,
-`writing`, `exploring`) and whether anything is arriving. As Claude's words, its thinking's summary or an edit come in,
+**What it's doing now** is on the status line, in every layout (the chat open, minimized into the follow card or
+closed, following or not, a card up), right after the mode word (and after whose turn it is, where the status line
+names the session):
+
+```
+● follow   ▸ running cargo test -q 41s — I will run the unit tests to check that nothing else relied…   › 3/4 Run the unit tests
+```
+
+First the step under way, with that step's own time (not the turn's): `▸ running cargo test -q`, `▸ queued 2nd · cargo
+test -q`, `◦ reading src/chat.rs:120-180` (as the chat's row says it), `• searching fn draw_chat`, `• looking up Session`, `● writing
+src/trust.rs` (an edit as it comes), `▸ asks to run …` or `● waits for your review of …` in the warning colour when it
+waits on you, `◦ stuck? symbols 42s`, `thinking` or `writing` beside the wave or under the band. Then the last sentence
+Claude finished, which is usually why: its thinking's summary until its words begin, in italic. It changes only as a
+sentence ends, never with each word. Last comes the plan's step when Claude keeps a plan. When the line runs short the
+plan's step goes first, then the sentence is cut. The mouse over the line shows all of it on a card above it; a press
+on it follows Claude again (on, or back from a pause; `C-f` in the chat, `space F` in the code). None of it costs a
+token: it's what Claude already sent. Drivers read it in the state as the session's `turn.now`.
+
+**While it works** the chat's title (and the follow card's) says what the turn is at, in the same words as the status
+line (`thinking 3.2s`, `writing`, `running`, `reading`), and whether anything is arriving. As Claude's words, its thinking's summary or an edit come in,
 a band in the accent moves across that word at the pace they come, and it stands still the moment they stop: it moves with
 the stream, never on a clock. Where nothing streams by nature, the wave `▂▅▇` beside the word says Claude is working
 instead, never both. That's the turn's first seconds, Claude thinking (its summary comes whole once it's done), the
@@ -532,7 +550,7 @@ what Claude thinks and says between them, a running log of the turn: a new thoug
 instead of replacing it, so you can follow the reasoning at your own pace
 ([screenshot](screenshots/follow-thinking.png)). When the words after a stop outgrow the card, its knot stays
 on top, `…` under it, the newest words below. Its top line carries the whole turn's shape as a strip of marks, one a
-stop, between its name and what Claude is at — `╭─ follow ── +4 •◦●▸◦•●•▲◦●▸◦•●◦ ─ exploring 4.1s ─╮` — growing
+stop, between its name and what Claude is at — `╭─ follow ── +4 •◦●▸◦•●•▲◦●▸◦•●◦ ─ reading 4.1s ─╮` — growing
 as it works, the newest by the word; past its room the oldest fold into `+N`, and it's the first thing the line
 gives up (the narrowest card has none while Claude works). The mouse over a mark names its stop on the card's
 bottom line (`run cargo test -q · exit 101`); a press on it is that stop's replay, as `[r`/`]r` step to it, and
