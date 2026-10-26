@@ -3883,12 +3883,22 @@ pub(crate) mod tests {
         };
         let (chat0, chat1) =
             (chat_of(&ed, WorkspaceId::HOME).expect("its claude"), chat_of(&ed, id).expect("its claude"));
+        // Every look is a table this test gives (frictions #152: the OS's held other tests' children, and a gone
+        // row's place moved with them — the bring's preflight failed twice). A look `:procs` or `s` asks for goes to
+        // this channel, never to a worker reading the OS; only the stand-ins' pids are real, so `s` stops them.
+        let (tx, _looks) = std::sync::mpsc::channel();
+        ed.procs.wake = Some(tx);
+        let me = std::process::id();
+        let pid_of = |ed: &Editor, c| ed.client(c).and_then(crate::lsp::Client::pid).expect("its process");
+        let (server0, server1) = (pid_of(&ed, front), pid_of(&ed, behind));
+        let look = |pids: &[u32], others: &[u32]| {
+            let mut procs = vec![os(me, 1, "tarae")];
+            procs.extend(pids.iter().map(|&p| os(p, me, "sh")));
+            procs.extend(others.iter().map(|&p| os(p, me, "sleep")));
+            sample(procs)
+        };
         crate::typed::execute(&mut ed, "procs").unwrap();
-        let listed = |ed: &Editor, c| ed.procs.rows.iter().position(|r| r.kind == Kind::Lsp(c));
-        let has = |ed: &Editor, pid| ed.procs.rows.iter().any(|r| r.pid == pid);
-        settle(&mut ed, |ed| {
-            listed(ed, front).is_some() && listed(ed, behind).is_some() && has(ed, chat0) && has(ed, chat1)
-        });
+        ed.procs_sampled(look(&[server0, server1, chat0, chat1], &[]));
         let workspace_of =
             |ed: &Editor, pid| ed.procs.rows.iter().find(|r| r.pid == pid).and_then(|r| r.session);
         assert_eq!(
@@ -3922,28 +3932,20 @@ pub(crate) mod tests {
             "the heading sums what's under it"
         );
         let summed = mem(h.memory());
-        // (on its heading, so it's in sight — other tests' children are listed on top too)
+        // (on its heading, so it's in sight)
         select(&mut ed, &|r| r.kind == Kind::Session(id));
         let shown = screen(&mut ed, 140, 40).join("\n");
         // (its checkout's path names it — not the chat's session tabs, not the server's row)
         let head = shown.lines().find(|l| l.contains("-second") && !l.contains("fake")).expect("its heading");
         assert!(head.contains("second  "), "its name from the pid column: {head}");
         assert!(head.contains(&summed), "summed on screen: {head}");
-        // Across the groups: on the heading, then the server behind
+        // On the heading `s` only says what it is
         keys(&mut ed, "s");
         assert_eq!(
             ed.status.as_ref().map(|s| s.0.as_str()),
             Some("second is a session — :workspace-end ends it")
         );
-        select(&mut ed, &|r| r.kind == Kind::Lsp(behind));
-        keys(&mut ed, "s");
-        assert!(
-            ed.client(behind).is_none() && ed.client(front).is_some(),
-            "the one behind stopped, not the front's"
-        );
-        let said = ed.toasts.last().map(|t| t.text.as_str());
-        assert_eq!(said, Some("second · fake stopped · the next file of its project starts it again"));
-        // Its chat: that session's claude stops, the front's goes on
+        // Its chat: that session's claude stops, the front's goes on (its exit an event — no look among them)
         select(&mut ed, &|r| r.pid == chat1);
         keys(&mut ed, "s");
         settle(&mut ed, |ed| chat_of(ed, id).is_none());
@@ -3954,18 +3956,36 @@ pub(crate) mod tests {
         );
         let said = ed.toasts.last().map(|t| t.text.as_str());
         assert_eq!(said, Some("second · claude stopped · the chat's next message starts it again"));
-        // `l` on a heading: that session to the front. The stopped chat's row, the selection on it, is kept gone
-        // where it was by index (`procs_sampled`) — above the heading when other tests' children came in above
-        // meanwhile (the bring's preflight, 2026-10-26: counted `j`s then ended a row past it): made so here.
-        let mut gone = ed.procs.rows.iter().find(|r| r.pid == chat1).expect("its row").clone();
-        gone.gone = Some(SystemTime::now());
-        let above = at(&ed, Kind::Session(id));
-        ed.procs.rows.insert(above, gone);
-        ed.procs.panel.as_mut().unwrap().selected = above;
+        // The next look: the stopped chat gone, and three of another's processes come in (as other tests' children did
+        // in the full suite) — the chat's row, the selection on it, kept gone where it was by index (`procs_sampled`),
+        // so above the heading now, the server behind still under it (the case the bring's preflight hit: counted
+        // `j`s ended a row past the heading). Leaving it, it goes; moving by `j` until there, on the heading.
+        ed.procs_sampled(look(&[server0, server1, chat0], &[90_001, 90_002, 90_003]));
+        let gone = ed.procs.rows.iter().position(|r| r.pid == chat1 && r.gone.is_some()).expect("kept, gone");
+        assert_eq!(
+            ed.procs.panel.as_ref().map(|p| p.selected),
+            Some(gone),
+            "the selection kept on the gone row"
+        );
+        let heading = at(&ed, Kind::Session(id));
+        assert!(gone < heading, "the gone row above the heading: {:?}", ed.procs.rows);
+        let under = ed.procs.rows.get(heading + 1).map(|r| r.kind.clone());
+        assert_eq!(under, Some(Kind::Lsp(behind)), "its server under it: {:?}", ed.procs.rows);
         let n = ed.procs.rows.len();
         select(&mut ed, &|r| r.kind == Kind::Session(id));
         assert_eq!(ed.procs.rows.len(), n - 1, "left, the gone row went — the rows under it a row up");
         assert_eq!(ed.procs_selected().map(|r| r.kind), Some(Kind::Session(id)), "on its heading");
+        // Across the groups: the server behind stops, not the front's
+        select(&mut ed, &|r| r.kind == Kind::Lsp(behind));
+        keys(&mut ed, "s");
+        assert!(
+            ed.client(behind).is_none() && ed.client(front).is_some(),
+            "the one behind stopped, not the front's"
+        );
+        let said = ed.toasts.last().map(|t| t.text.as_str());
+        assert_eq!(said, Some("second · fake stopped · the next file of its project starts it again"));
+        // `l` on a heading: that session to the front
+        select(&mut ed, &|r| r.kind == Kind::Session(id));
         keys(&mut ed, "l");
         assert_eq!(ed.workspace.id, id, "brought to the front");
         drop(ed);
