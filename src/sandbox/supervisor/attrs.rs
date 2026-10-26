@@ -34,7 +34,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use super::super::wire::{
-    Times, c_path, no_name, self_fd, through_proc, times, xattr_args, xattr_name, xattr_value,
+    Mem, Times, c_path, no_name, self_fd, through_proc, times, xattr_args, xattr_name, xattr_value,
 };
 use super::{Answer, Caller, Listener, Served, errno, refuse, refuse_with, result};
 use crate::seccomp::{SYS_REMOVEXATTRAT, SYS_SETXATTRAT};
@@ -79,6 +79,160 @@ enum Again {
     /// `fsetxattr(fd, …)`, `fremovexattr(fd, …)`, `setxattrat(fd, "", AT_EMPTY_PATH, …)` and `removexattrat`'s:
     /// the same on tarae's copy (one `O_PATH`: the kernel's own `EBADF`).
     Xattr,
+}
+
+/// A call's change as `call` has it: read, or an extended attribute's arguments still in the caller's memory — where
+/// this kernel reads them after it finds the file (`Order`).
+enum Asked {
+    Read(Change),
+    Unread(XattrArgs, Reads),
+}
+
+impl Asked {
+    fn op(&self) -> &'static str {
+        match self {
+            Asked::Read(change) => change.op(),
+            Asked::Unread(..) => "file-write-xattr",
+        }
+    }
+
+    /// The change, read once the call's file is found and before anything tarae refuses for its own reasons (a bad
+    /// argument is the kernel's own answer, unsaid): where the kernel's write check comes before the arguments
+    /// (`Reads::AfterWriteCheck`), a read-only mount (`read_only`, asked only there) is its `EROFS` whatever they are
+    /// — with good ones the call goes on to `refused`, which says a seal's.
+    fn read(self, m: &impl Mem, read_only: impl FnOnce() -> bool) -> Result<Change, i32> {
+        match self {
+            Asked::Read(change) => Ok(change),
+            Asked::Unread(args, reads) => {
+                let change = args.read(m);
+                if change.is_err() && reads == Reads::AfterWriteCheck && read_only() {
+                    return Err(libc::EROFS);
+                }
+                change
+            }
+        }
+    }
+}
+
+/// An extended attribute call's arguments as the run gave them (addresses in its memory, `setxattr`'s flags).
+#[derive(Clone, Copy)]
+enum XattrArgs {
+    Set { name: u64, value: u64, size: u64, flags: i32 },
+    Remove { name: u64 },
+}
+
+impl XattrArgs {
+    fn read(self, m: &impl Mem) -> Result<Change, i32> {
+        match self {
+            XattrArgs::Set { name, value, size, flags } => set(m, name, value, size, flags),
+            XattrArgs::Remove { name } => Ok(Change::Xattr(xattr_name(m, name)?, None)),
+        }
+    }
+
+    /// `asked_in` this kernel's order (`orders`).
+    fn asked(self, m: &impl Mem, by_fd: bool) -> Result<Asked, i32> {
+        let order = if matches!(self, XattrArgs::Set { .. }) { orders().set } else { orders().remove };
+        self.asked_in(m, by_fd, order)
+    }
+
+    /// The arguments read now where a kernel of `order` reads them first for this form (by a descriptor or a path),
+    /// else left for after the file is found.
+    fn asked_in(self, m: &impl Mem, by_fd: bool, order: Order) -> Result<Asked, i32> {
+        match order.reads(by_fd) {
+            Reads::First => Ok(Asked::Read(self.read(m)?)),
+            reads => Ok(Asked::Unread(self, reads)),
+        }
+    }
+}
+
+/// What comes first in an extended attribute call, its arguments (flags, name, value) or finding its file — as each
+/// kernel's `fs/xattr.c` has it (read in v5.14, v6.8–v6.13 and master; `setxattr` and `removexattr` alike).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Order {
+    /// To 6.10: the file first — a path's lookup, or the descriptor (`EBADF`) — and its mount's write check
+    /// (`EROFS`), then the arguments (`path_setxattr`, `fsetxattr` calling `setxattr` after `mnt_want_write`).
+    File,
+    /// 6.11 and 6.12: a path's arguments first, then its lookup and write check (`setxattr_copy` moved up); a
+    /// descriptor's call looks at the descriptor first (`EBADF`), then the arguments, then the write check.
+    Fd,
+    /// From 6.13 (every form through `path_setxattrat`, `path_removexattrat`): the arguments first.
+    Args,
+}
+
+/// Where a call's arguments are read (`Order::reads`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Reads {
+    First,
+    /// Once its file is found (a lookup's or a descriptor's error first).
+    AfterFile,
+    /// Once its file is found and its mount isn't read-only (`EROFS` first).
+    AfterWriteCheck,
+}
+
+impl Order {
+    fn reads(self, by_fd: bool) -> Reads {
+        match (self, by_fd) {
+            (Order::File, _) => Reads::AfterWriteCheck,
+            (Order::Fd, true) => Reads::AfterFile,
+            (Order::Fd, false) | (Order::Args, _) => Reads::First,
+        }
+    }
+
+    /// The order two calls that find no file say, by their answers: one by a path (`""`, `ENOENT` where the lookup
+    /// comes first) and one by a descriptor (`-1`, `EBADF` where it comes first), each with arguments the kernel
+    /// refuses (`bad`: an unknown flag's `EINVAL`, an empty name's `ERANGE`). None: an answer no kernel gives — a
+    /// filter's around tarae.
+    fn of(path: i32, fd: i32, bad: i32) -> Option<Order> {
+        match (path, fd) {
+            (libc::ENOENT, libc::EBADF) => Some(Order::File),
+            (p, libc::EBADF) if p == bad => Some(Order::Fd),
+            (p, f) if p == bad && f == bad => Some(Order::Args),
+            _ => None,
+        }
+    }
+}
+
+/// This kernel's orders for setting and removing an extended attribute.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Orders {
+    set: Order,
+    remove: Order,
+}
+
+/// This kernel's `Orders`, read from it once as Landlock's ABI is (a distribution's kernel carries backports its
+/// version doesn't say — Ubuntu's 6.8.0-117 has 6.11's `Order::Fd`, measured): calls that change nothing, by a path that names nothing and a descriptor that's none, with
+/// arguments refused — whichever it looks at first answers. An answer no kernel gives: the newest order, logged.
+fn orders() -> Orders {
+    static ORDERS: std::sync::OnceLock<Orders> = std::sync::OnceLock::new();
+    *ORDERS.get_or_init(|| {
+        read_orders().unwrap_or_else(|why| {
+            crate::log::line(
+                "sandbox",
+                "warn",
+                &format!("extended attribute calls' order unread ({why}): the newest"),
+            );
+            Orders { set: Order::Args, remove: Order::Args }
+        })
+    })
+}
+
+/// `orders`' calls, made: their orders, or their answers when one says none.
+fn read_orders() -> Result<Orders, String> {
+    let (name, empty) = (c"user.tarae.order".as_ptr(), c"".as_ptr());
+    let said = |r: libc::c_int| if r < 0 { errno_now() } else { 0 };
+    // SAFETY: calls on no file — an empty path, descriptor -1 — with a name and a value that live through them.
+    let [set, fset, rm, frm] = unsafe {
+        [
+            said(libc::setxattr(empty, name, c"x".as_ptr().cast(), 1, 4)),
+            said(libc::fsetxattr(-1, name, c"x".as_ptr().cast(), 1, 4)),
+            said(libc::removexattr(empty, empty)),
+            said(libc::fremovexattr(-1, empty)),
+        ]
+    };
+    match (Order::of(set, fset, libc::EINVAL), Order::of(rm, frm, libc::ERANGE)) {
+        (Some(set), Some(remove)) => Ok(Orders { set, remove }),
+        _ => Err(format!("set {set} {fset}, remove {rm} {frm}")),
+    }
 }
 
 /// Where a call's file is: a path from a folder of the caller's (`AT_FDCWD`: where it works), or a descriptor.
@@ -177,38 +331,44 @@ pub(super) fn call(l: &Listener, n: &libc::seccomp_notif, p: &Served) -> Answer 
                 at => (At::Path { dirfd: a[0], path: path(at)?, follow: true }, t),
             }
         }
-        // (an extended attribute's, in the kernel's order: its flags, name and value, then the file — measured)
+        nr => return xattr_call(p, &c, nr, a),
+    };
+    answered(p, &c, at, Asked::Read(change))
+}
+
+/// An extended attribute call: its arguments read where this kernel reads them (`Order`) — the `*xattrat` calls
+/// (Linux 6.13) always first.
+fn xattr_call(p: &Served, c: &Caller, nr: libc::c_long, a: [u64; 6]) -> Answer {
+    let path = |at: u64| c_path(c, at);
+    let sets = XattrArgs::Set { name: a[1], value: a[2], size: a[3], flags: a[4] as i32 };
+    let removes = XattrArgs::Remove { name: a[1] };
+    let (at, change) = match nr {
         libc::SYS_setxattr | libc::SYS_lsetxattr => {
-            let x = set(&c, a[1], a[2], a[3], a[4] as i32)?;
-            let follow = n.data.nr as libc::c_long == libc::SYS_setxattr;
+            let x = sets.asked(c, false)?;
+            let follow = nr == libc::SYS_setxattr;
             (At::Path { dirfd: libc::AT_FDCWD as u64, path: path(a[0])?, follow }, x)
         }
-        libc::SYS_fsetxattr => {
-            let x = set(&c, a[1], a[2], a[3], a[4] as i32)?;
-            (At::Fd(low(a[0]), Again::Xattr), x)
-        }
+        libc::SYS_fsetxattr => (At::Fd(low(a[0]), Again::Xattr), sets.asked(c, true)?),
         libc::SYS_removexattr | libc::SYS_lremovexattr => {
-            let x = Change::Xattr(xattr_name(&c, a[1])?, None);
-            let follow = n.data.nr as libc::c_long == libc::SYS_removexattr;
+            let x = removes.asked(c, false)?;
+            let follow = nr == libc::SYS_removexattr;
             (At::Path { dirfd: libc::AT_FDCWD as u64, path: path(a[0])?, follow }, x)
         }
-        libc::SYS_fremovexattr => {
-            (At::Fd(low(a[0]), Again::Xattr), Change::Xattr(xattr_name(&c, a[1])?, None))
-        }
-        nr @ (SYS_SETXATTRAT | SYS_REMOVEXATTRAT) => {
+        libc::SYS_fremovexattr => (At::Fd(low(a[0]), Again::Xattr), removes.asked(c, true)?),
+        SYS_SETXATTRAT | SYS_REMOVEXATTRAT => {
             if !xattrat_here() {
                 return Err(libc::ENOSYS);
             }
             let setting = nr == SYS_SETXATTRAT;
             // (`setxattrat`'s `struct xattr_args` first, then its flags)
-            let args = if setting { Some(xattr_args(&c, a[4], a[5])?) } else { None };
+            let args = if setting { Some(xattr_args(c, a[4], a[5])?) } else { None };
             let flags = a[2] as i32;
             if flags & !(NOFOLLOW | EMPTY) != 0 {
                 return Err(libc::EINVAL);
             }
             let x = match args {
-                Some((value, size, xflags)) => set(&c, a[3], value, size, xflags)?,
-                None => Change::Xattr(xattr_name(&c, a[3])?, None),
+                Some((value, size, xflags)) => set(c, a[3], value, size, xflags)?,
+                None => Change::Xattr(xattr_name(c, a[3])?, None),
             };
             // (no path with `AT_EMPTY_PATH`: an empty one; `removexattrat`'s on where the caller works: `EBADF`, as
             // the kernel answers it — `setxattrat`'s there is that folder, as `fchownat`'s)
@@ -219,31 +379,46 @@ pub(super) fn call(l: &Listener, n: &libc::seccomp_notif, p: &Served) -> Answer 
             if !setting && named.is_empty() && flags & EMPTY != 0 && cwd(a[0]) {
                 return Err(libc::EBADF);
             }
-            (with_flags(a[0], named, flags, Again::Xattr)?, x)
+            (with_flags(a[0], named, flags, Again::Xattr)?, Asked::Read(x))
         }
         _ => return Err(libc::ENOSYS),
     };
+    answered(p, c, at, change)
+}
+
+/// A call whose file is `at`, answered.
+fn answered(p: &Served, c: &Caller, at: At, change: Asked) -> Answer {
     let (dirfd, path, follow) = match at {
-        At::Fd(fd, again) => return on_fd(p, &c, fd, change, again),
+        At::Fd(fd, again) => return on_fd(p, c, fd, change, again),
         // (an empty path names nothing — `ENOENT`, as the kernel says it; `AT_EMPTY_PATH`'s became `.` or a descriptor)
         At::Path { path, .. } if path.is_empty() => return Err(libc::ENOENT),
         At::Path { dirfd, path, follow } => (dirfd, path, follow),
     };
     if let Some(fd) = self_fd(&path) {
-        return on_fd(p, &c, fd, change, Again::Proc { follow });
+        return on_fd(p, c, fd, change, Again::Proc { follow });
     }
-    let said = || String::from_utf8_lossy(&path).into_owned();
+    let (said, op) = (|| String::from_utf8_lossy(&path).into_owned(), change.op());
     if through_proc(&path) {
-        return refuse(p, &c, change.op(), said());
+        unopened(change, c)?;
+        return refuse(p, c, op, said());
     }
-    match open_in_run(&c, dirfd, &path, follow, true) {
+    match open_in_run(c, dirfd, &path, follow, true) {
         // (a magic link on the way — the same open without the guard gets past it: refused, never followed for the
         // run; a loop of links is the kernel's own ELOOP)
-        Err(libc::ELOOP) if open_in_run(&c, dirfd, &path, follow, false).err() != Some(libc::ELOOP) => {
-            refuse(p, &c, change.op(), said())
+        Err(libc::ELOOP) if open_in_run(c, dirfd, &path, follow, false).err() != Some(libc::ELOOP) => {
+            unopened(change, c)?;
+            refuse(p, c, op, said())
         }
-        file => on_path(p, &c, &file?, change),
+        file => on_path(p, c, &file?, change),
     }
+}
+
+/// A call tarae refuses for its own reasons before it opens a file for the run (a path through `/proc`, a magic link on
+/// the way): the kernel would find the file, then read the arguments — a bad one is its own answer, unsaid. Only they
+/// decide it: the file isn't the run's to ask about (an unguarded open resolves `/proc/self` as tarae), so neither is
+/// its mount.
+fn unopened(change: Asked, m: &impl Mem) -> Result<(), i32> {
+    change.read(m, || false).map(drop)
 }
 
 /// Where a call with `AT_SYMLINK_NOFOLLOW`/`AT_EMPTY_PATH` (`flags`) on `path` from `dirfd` is: an empty path with
@@ -305,9 +480,10 @@ fn open_in_run(c: &Caller, dirfd: u64, path: &[u8], follow: bool, guarded: bool)
 
 /// A call on `file` (opened in the run's view, its last part's link followed or not): refused where the run may not
 /// write, or where its name doesn't lead the run to it; else made by tarae on its own descriptor of it.
-fn on_path(p: &Served, c: &Caller, file: &OwnedFd, change: Change) -> Answer {
+fn on_path(p: &Served, c: &Caller, file: &OwnedFd, change: Asked) -> Answer {
     let st = stat(file)?;
     let real = name_of(file)?;
+    let change = change.read(c, || read_only(file))?;
     if changes_owner(&change, &st) {
         return owner_refused(p, c, file, &real, &st, &change);
     }
@@ -335,11 +511,13 @@ fn on_path(p: &Served, c: &Caller, file: &OwnedFd, change: Change) -> Answer {
 /// A call on the caller's descriptor `fd`: decided on what it names — a file by its name (`/proc/self/fd/M`'s link:
 /// where it is now), never one the name no longer leads to; no file of the user's (`wire::no_name`: no name left, a
 /// pipe, a socket), the run's — and made `again` on tarae's copy.
-fn on_fd(p: &Served, c: &Caller, fd: u64, change: Change, again: Again) -> Answer {
+fn on_fd(p: &Served, c: &Caller, fd: u64, change: Asked, again: Again) -> Answer {
     let file = c.fd(fd)?;
     let st = stat(&file)?;
     let proc = proc_path(&file);
     let name = name_of(&file)?;
+    fd_first(&change, again, &file)?;
+    let change = change.read(c, || read_only(&file))?;
     if changes_owner(&change, &st) {
         return owner_refused(p, c, &file, &name, &st, &change);
     }
@@ -482,6 +660,22 @@ fn chown_unchanged(fd: &OwnedFd, change: &Change, st: &libc::stat) -> Answer {
     result(unsafe { libc::fchownat(fd.as_raw_fd(), c"".as_ptr(), u32::MAX, u32::MAX, EMPTY) } as isize)
 }
 
+/// A descriptor's extended attribute call whose arguments wait for its file (`change`): an `O_PATH` descriptor is none
+/// to it (`fdget`) — its `EBADF` before the arguments. (Read first, the call on tarae's copy says it after them.)
+fn fd_first(change: &Asked, again: Again, file: &OwnedFd) -> Result<(), i32> {
+    if again == Again::Xattr && matches!(change, Asked::Unread(..)) && opened_path(file) {
+        return Err(libc::EBADF);
+    }
+    Ok(())
+}
+
+/// Whether tarae's copy of a run's descriptor is an `O_PATH` one.
+fn opened_path(fd: &OwnedFd) -> bool {
+    // SAFETY: a descriptor of ours.
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+    flags >= 0 && flags & libc::O_PATH != 0
+}
+
 /// Whether tarae's copy of a run's descriptor is open for writing (`O_WRONLY`, `O_RDWR`; never `O_PATH`).
 fn writable(fd: &OwnedFd) -> bool {
     // SAFETY: a descriptor of ours.
@@ -493,12 +687,12 @@ fn writable(fd: &OwnedFd) -> bool {
 
 /// `setxattr`'s change: its flags (`XATTR_CREATE`, `XATTR_REPLACE`, else `EINVAL`), then its name at `name` and its
 /// value of `size` bytes at `value`, each read once — the kernel's order (`setxattr_copy`).
-fn set(c: &Caller, name: u64, value: u64, size: u64, flags: i32) -> Result<Change, i32> {
+fn set(m: &impl Mem, name: u64, value: u64, size: u64, flags: i32) -> Result<Change, i32> {
     if flags & !(libc::XATTR_CREATE | libc::XATTR_REPLACE) != 0 {
         return Err(libc::EINVAL);
     }
-    let name = xattr_name(c, name)?;
-    Ok(Change::Xattr(name, Some((xattr_value(c, value, size)?, flags))))
+    let name = xattr_name(m, name)?;
+    Ok(Change::Xattr(name, Some((xattr_value(m, value, size)?, flags))))
 }
 
 /// Whether this kernel has `setxattrat` and `removexattrat` (Linux 6.13) — asked once, with a size no call takes:
@@ -742,6 +936,150 @@ fn utimensat(dirfd: i32, path: *const libc::c_char, t: Option<[i64; 4]>, flags: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::sandbox::wire::check::Fake;
+
+    /// A run's memory holding an extended attribute's name (`NAME`), an empty one (`BLANK`) and a value (`VALUE`).
+    const NAME: u64 = 0x1000;
+    const BLANK: u64 = 0x2000;
+    const VALUE: u64 = 0x3000;
+
+    fn memory() -> Fake {
+        // (a name's read asks for up to 256 bytes at once: each laid in that much)
+        let name = |s: &[u8]| [s, &[0; 256][s.len()..]].concat();
+        Fake::default().at(NAME, name(b"user.x")).at(BLANK, name(b"")).at(VALUE, *b"x")
+    }
+
+    fn good() -> Change {
+        Change::Xattr(c"user.x".into(), Some((b"x".to_vec(), 0)))
+    }
+
+    /// #127: each kernel's order, given explicitly (`fs/xattr.c` as v5.14–v6.10, v6.11–v6.12 and v6.13 on have it) —
+    /// a call's arguments read at once, or nothing read of the run's memory until its file is found; then, where the
+    /// write check comes first, a read-only mount is `EROFS` whatever bad arguments it has, and good ones are the
+    /// change on it as anywhere.
+    #[test]
+    fn an_xattr_calls_arguments_are_read_in_each_kernels_order() {
+        let bad_flag = XattrArgs::Set { name: NAME, value: VALUE, size: 1, flags: 4 };
+        let empty_name = XattrArgs::Remove { name: BLANK };
+        let set = XattrArgs::Set { name: NAME, value: VALUE, size: 1, flags: 0 };
+        // (order, by a descriptor, the arguments read at once)
+        for (order, by_fd, first) in [
+            (Order::File, false, false),
+            (Order::File, true, false),
+            (Order::Fd, false, true),
+            (Order::Fd, true, false),
+            (Order::Args, false, true),
+            (Order::Args, true, true),
+        ] {
+            let at = format!("{order:?}, by a descriptor {by_fd}");
+            for (args, bad) in [(bad_flag, libc::EINVAL), (empty_name, libc::ERANGE)] {
+                let m = memory();
+                let asked = args.asked_in(&m, by_fd, order);
+                if first {
+                    assert_eq!(asked.err(), Some(bad), "{at}: the arguments' error at once");
+                    continue;
+                }
+                let asked = asked.unwrap_or_else(|e| panic!("{at}: read before the file ({e})"));
+                assert!(
+                    m.reads.borrow().is_empty(),
+                    "{at}: nothing of the run's memory read before the file"
+                );
+                // (the write check first only where the kernel makes it before the arguments: 6.10's both forms)
+                let erofs = if order == Order::File { libc::EROFS } else { bad };
+                assert_eq!(asked.read(&m, || true).err(), Some(erofs), "{at}: on a read-only mount");
+                assert_eq!(
+                    args.asked_in(&m, by_fd, order).unwrap().read(&m, || false).err(),
+                    Some(bad),
+                    "{at}"
+                );
+            }
+            let m = memory();
+            let change = set.asked_in(&m, by_fd, order).and_then(|a| a.read(&m, || true));
+            assert_eq!(
+                change,
+                Ok(good()),
+                "{at}: good arguments are the change, a read-only mount's left to `refused`"
+            );
+            let removed = XattrArgs::Remove { name: NAME }
+                .asked_in(&m, by_fd, order)
+                .and_then(|a| a.read(&m, || false));
+            assert_eq!(removed, Ok(Change::Xattr(c"user.x".into(), None)), "{at}");
+        }
+    }
+
+    /// #127: a path tarae refuses before opening it (through `/proc`, through a magic link) answers a bad argument first
+    /// in every order — on 6.10's (`Order::File`), whose arguments wait for the file, too: the kernel would find it,
+    /// and only the arguments decide its answer; good ones go on to the refusal.
+    #[test]
+    fn a_path_refused_before_its_file_is_opened_answers_its_bad_arguments_first() {
+        let bad_flag = XattrArgs::Set { name: NAME, value: VALUE, size: 1, flags: 4 };
+        let empty_name = XattrArgs::Remove { name: BLANK };
+        let set = XattrArgs::Set { name: NAME, value: VALUE, size: 1, flags: 0 };
+        let m = memory();
+        for (args, want) in [(bad_flag, Err(libc::EINVAL)), (empty_name, Err(libc::ERANGE)), (set, Ok(()))] {
+            let asked = args.asked_in(&m, false, Order::File).unwrap();
+            assert!(
+                matches!(asked, Asked::Unread(_, Reads::AfterWriteCheck)),
+                "6.10: read once the file's found"
+            );
+            assert_eq!(unopened(asked, &m), want);
+        }
+    }
+
+    /// #127: an `O_PATH` descriptor is none to a descriptor's call (`fdget`): where the kernel looks at the descriptor
+    /// before the arguments (to 6.12), its `EBADF` first, whatever they are; where the arguments come first (6.13), their
+    /// error; a descriptor open for reading, or a path through `/proc/self/fd/N`, goes on to the arguments.
+    #[test]
+    fn an_o_path_descriptor_is_ebadf_before_the_arguments_where_the_descriptor_comes_first() {
+        let open = |flags| {
+            std::fs::OpenOptions::new().read(true).custom_flags(flags).open("/").map(OwnedFd::from).unwrap()
+        };
+        let (opath, read) = (open(libc::O_PATH), open(0));
+        let bad_flag = XattrArgs::Set { name: NAME, value: VALUE, size: 1, flags: 4 };
+        let m = memory();
+        for order in [Order::File, Order::Fd] {
+            let asked = bad_flag.asked_in(&m, true, order).unwrap();
+            assert_eq!(fd_first(&asked, Again::Xattr, &opath), Err(libc::EBADF), "{order:?}");
+            assert_eq!(fd_first(&asked, Again::Xattr, &read), Ok(()), "{order:?}: read-only");
+            assert_eq!(fd_first(&asked, Again::Proc { follow: true }, &opath), Ok(()), "{order:?}: a path");
+            assert_eq!(asked.read(&m, || false).err(), Some(libc::EINVAL), "{order:?}: then the arguments");
+        }
+        assert_eq!(
+            bad_flag.asked_in(&m, true, Order::Args).err(),
+            Some(libc::EINVAL),
+            "6.13: the arguments first"
+        );
+        let set = XattrArgs::Set { name: NAME, value: VALUE, size: 1, flags: 0 };
+        let asked = set.asked_in(&m, true, Order::Args).unwrap();
+        assert_eq!(fd_first(&asked, Again::Xattr, &opath), Ok(()), "read: the call on tarae's copy says it");
+    }
+
+    /// #127: the answers that tell the three orders apart, and this kernel's — where a filter answers these calls
+    /// before the kernel (tier offline's, Docker's default profile, a run's own), it can't tell: said, that part skipped.
+    #[test]
+    fn the_kernels_order_is_told_by_its_answers() {
+        use libc::{EBADF, EINVAL, ENOENT, EPERM, ERANGE};
+        for (path, fd, bad, want) in [
+            (ENOENT, EBADF, EINVAL, Some(Order::File)),
+            (EINVAL, EBADF, EINVAL, Some(Order::Fd)),
+            (EINVAL, EINVAL, EINVAL, Some(Order::Args)),
+            (ENOENT, EBADF, ERANGE, Some(Order::File)),
+            (ERANGE, EBADF, ERANGE, Some(Order::Fd)),
+            (ERANGE, ERANGE, ERANGE, Some(Order::Args)),
+            // (no kernel looks up a path first and a descriptor last; a filter's answers)
+            (ENOENT, EINVAL, EINVAL, None),
+            (EPERM, EPERM, EINVAL, None),
+        ] {
+            assert_eq!(Order::of(path, fd, bad), want, "{path} {fd} {bad}");
+        }
+        if let Err(why) = read_orders() {
+            crate::test_results::said_skip(&format!(
+                "sandbox::supervisor::attrs::tests::the_kernels_order_is_told_by_its_answers — this kernel's part: \
+                 its answers name no order ({why}), a filter's around this process"
+            ));
+        }
+    }
 
     #[test]
     fn an_owner_call_is_let_as_the_kernel_lets_it() {

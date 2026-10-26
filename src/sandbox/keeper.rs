@@ -4099,6 +4099,7 @@ mod tests {
             "attr_calls" => helper_attr_calls(),
             "attr_race" => helper_attr_race(),
             "xattr_shapes" => helper_xattr_shapes(),
+            "xattr_read_only" => helper_xattr_read_only(),
             "xattr_calls" => helper_xattr_calls(),
             "attr_shm" => helper_attr_shm(),
             "attr_shm_manifest" => helper_attr_shm_manifest(),
@@ -5782,7 +5783,8 @@ mod tests {
     }
 
     /// `xattr_shapes`: D2 B's extended attribute calls whose answer is the kernel's own, on files of its own where
-    /// it works — each argument's error in the kernel's order (flags, name, value, then the file), a name or a value
+    /// it works — each argument's error in the kernel's order (its arguments and its file, which first as this kernel
+    /// has it: `attrs::Order`), a name or a value
     /// too long, a file not there, `user.` on a link, an `O_PATH` descriptor, `AT_EMPTY_PATH` on where it works, an
     /// ACL the kernel judges — `name=ok` or `name=<errno>`, `;` between. Run unsandboxed (the kernel's answers) and
     /// served (tarae's), compared row for row.
@@ -5799,6 +5801,9 @@ mod tests {
         std::fs::write("shape_f", "shape\n").unwrap();
         let _ = std::fs::remove_file("shape_l");
         std::os::unix::fs::symlink("shape_f", "shape_l").unwrap();
+        // (a link through a magic link: tarae refuses it for its own reasons, the kernel follows it)
+        let _ = std::fs::remove_file("shape_m");
+        std::os::unix::fs::symlink("/proc/self/cwd/shape_f", "shape_m").unwrap();
         // (a file of its own it may not write: as a user, the kernel's write check answers before the name's namespace)
         let _ = std::fs::remove_file("shape_ro");
         std::fs::write("shape_ro", "shape\n").unwrap();
@@ -5853,8 +5858,14 @@ mod tests {
         let (rm, frm) = (libc::SYS_removexattr, libc::SYS_fremovexattr);
         let (setat, rmat) = (crate::seccomp::SYS_SETXATTRAT, crate::seccomp::SYS_REMOVEXATTRAT);
         let here = c(c".");
+        let (proc_f, magic) = (c(c"/proc/self/cwd/shape_f"), c(c"shape_m"));
         let rows: Vec<(&'static str, libc::c_long, [libc::c_long; 6])> = vec![
             ("set", set, [f, name, x, 1, 0, 0]),
+            // (#127: where tarae refuses for its own reasons, a bad argument is the kernel's answer before it)
+            ("set through /proc, an unknown flag", set, [proc_f, name, x, 1, 4, 0]),
+            ("set through a magic link, an unknown flag", set, [magic, name, x, 1, 4, 0]),
+            ("remove through /proc, an empty name", rm, [proc_f, c(c""), 0, 0, 0, 0]),
+            ("remove through a magic link, an empty name", rm, [magic, c(c""), 0, 0, 0, 0]),
             ("set, an empty name", set, [f, c(c""), x, 1, 0, 0]),
             ("set, no name", set, [f, 0, x, 1, 0, 0]),
             ("set, a name of 255", set, [f, c(&n255), x, 1, 0, 0]),
@@ -5881,11 +5892,18 @@ mod tests {
             ("set, by a descriptor read-only", fset, [ro, name, x, 1, 0, 0]),
             ("set, by a bad descriptor", fset, [-1, name, x, 1, 0, 0]),
             ("set, by a bad descriptor, an unknown flag", fset, [-1, name, x, 1, 4, 0]),
+            ("set, by a bad descriptor, an empty name", fset, [-1, c(c""), x, 1, 0, 0]),
+            ("set, by a bad descriptor, past 64 KiB", fset, [-1, name, big_p, 65537, 0, 0]),
+            ("set, by an O_PATH descriptor, an unknown flag", fset, [opath, name, x, 1, 4, 0]),
+            ("set through a link, an unknown flag", set, [l, name, x, 1, 4, 0]),
             ("remove", rm, [f, name, 0, 0, 0, 0]),
             ("remove what isn't", rm, [f, name, 0, 0, 0, 0]),
             ("remove, an empty name", rm, [f, c(c""), 0, 0, 0, 0]),
             ("remove, an empty name, no file", rm, [gone, c(c""), 0, 0, 0, 0]),
             ("remove, by an O_PATH descriptor", frm, [opath, name, 0, 0, 0, 0]),
+            ("remove, by an O_PATH descriptor, an empty name", frm, [opath, c(c""), 0, 0, 0, 0]),
+            ("remove, by a bad descriptor, an empty name", frm, [-1, c(c""), 0, 0, 0, 0]),
+            ("remove, no path, an empty name", rm, [0, c(c""), 0, 0, 0, 0]),
             ("setat", setat, [at, f, 0, name, a(&ok_args), 16]),
             ("setat, args of 8", setat, [at, f, 0, name, a(&ok_args), 8]),
             ("setat, args past a page", setat, [at, f, 0, name, a(&ok_args), 1 << 20]),
@@ -5925,9 +5943,111 @@ mod tests {
         let _ = (
             std::fs::remove_file("shape_f"),
             std::fs::remove_file("shape_l"),
+            std::fs::remove_file("shape_m"),
             std::fs::remove_file("shape_ro"),
         );
         said
+    }
+
+    /// `xattr_read_only` (#127): the kernel's own answer to an unknown flag on a file of its own on a read-only bind
+    /// mount — a B9 seal's shape — made in a child in user and mount namespaces of its own (its mounts go with it):
+    /// `ok` or the errno, else the step that couldn't be made and its errno (`unshare 1`: none here).
+    fn helper_xattr_read_only() -> String {
+        std::fs::write("ro_f", "x\n").unwrap();
+        // (a bind's remount in a user namespace keeps the mount's locked flags, or is refused)
+        let st = mount_flags(c"ro_f");
+        let mut locked = 0;
+        for (st_flag, ms) in [
+            (libc::ST_NOSUID, libc::MS_NOSUID),
+            (libc::ST_NODEV, libc::MS_NODEV),
+            (libc::ST_NOEXEC, libc::MS_NOEXEC),
+            (libc::ST_NOATIME, libc::MS_NOATIME),
+            (libc::ST_NODIRATIME, libc::MS_NODIRATIME),
+        ] {
+            if st & st_flag != 0 {
+                locked |= ms;
+            }
+        }
+        // SAFETY: plain calls.
+        let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+        let (uid_map, gid_map) = (format!("{uid} {uid} 1"), format!("{gid} {gid} 1"));
+        let (read_end, write_end) = io::pipe().unwrap();
+        let (r, w) =
+            (std::os::fd::AsRawFd::as_raw_fd(&read_end), std::os::fd::AsRawFd::as_raw_fd(&write_end));
+        /// In the child: raw calls only — this is a copy of a process with threads. `[step, errno]` on `w`.
+        unsafe fn inside(w: i32, maps: [(&std::ffi::CStr, &[u8]); 3], locked: libc::c_ulong) -> ! {
+            // SAFETY: raw calls on paths and bytes that live through them.
+            unsafe {
+                let say = |step: i32| {
+                    let e = [step, *libc::__errno_location()];
+                    libc::write(w, e.as_ptr().cast(), 8);
+                    libc::_exit(0)
+                };
+                if libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) != 0 {
+                    say(1);
+                }
+                for (path, bytes) in maps {
+                    let fd = libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
+                    if fd < 0 || libc::write(fd, bytes.as_ptr().cast(), bytes.len()) != bytes.len() as isize {
+                        say(2);
+                    }
+                    libc::close(fd);
+                }
+                let (f, none) = (c"ro_f".as_ptr(), std::ptr::null());
+                if libc::mount(f, f, none, libc::MS_BIND, std::ptr::null()) != 0
+                    || libc::mount(
+                        none,
+                        f,
+                        none,
+                        libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | locked,
+                        none.cast(),
+                    ) != 0
+                {
+                    say(3);
+                }
+                *libc::__errno_location() = 0;
+                libc::setxattr(f, c"user.tarae".as_ptr(), c"x".as_ptr().cast(), 1, 4);
+                say(0);
+                libc::_exit(0)
+            }
+        }
+        let maps = [
+            (c"/proc/self/setgroups", b"deny".as_slice()),
+            (c"/proc/self/uid_map", uid_map.as_bytes()),
+            (c"/proc/self/gid_map", gid_map.as_bytes()),
+        ];
+        // SAFETY: a fork whose child runs `inside` alone.
+        let pid = unsafe { libc::fork() };
+        if pid == 0 {
+            // SAFETY: the new child's own end.
+            unsafe { inside(w, maps, locked) }
+        }
+        if pid < 0 {
+            return format!("fork {}", io::Error::last_os_error());
+        }
+        // (its end gone here: a child that dies unheard reads as nothing)
+        drop(write_end);
+        let mut said = [-1i32, 0];
+        // SAFETY: a read into an array we own; the child reaped.
+        unsafe {
+            libc::read(r, said.as_mut_ptr().cast(), 8);
+            libc::waitpid(pid, std::ptr::null_mut(), 0);
+        }
+        let _ = std::fs::remove_file("ro_f");
+        match said {
+            [0, 0] => "ok".into(),
+            [0, e] => e.to_string(),
+            [step, e] => {
+                format!("{} {e}", ["", "unshare", "maps", "mount"].get(step as usize).unwrap_or(&"?"))
+            }
+        }
+    }
+
+    /// A path's mount flags (`statvfs`'s `f_flag`), 0 where it can't say.
+    fn mount_flags(path: &std::ffi::CStr) -> libc::c_ulong {
+        let mut s = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+        // SAFETY: a path that lives through the call and a buffer it fills; read only once filled.
+        unsafe { if libc::statvfs(path.as_ptr(), s.as_mut_ptr()) == 0 { s.assume_init().f_flag } else { 0 } }
     }
 
     /// `xattr_calls` (D2 B): extended attributes (ACLs too) in a served run, each row `want`ed — set, read back and
@@ -6054,14 +6174,28 @@ mod tests {
         // (`setxattrat` and `removexattrat` where this kernel has them — not under Docker's default seccomp profile,
         // which hides them from every process: there the kernel's `ENOSYS`, tarae's too)
         let at_here = raw(setat, [-1, 0, 0, 0, 0, 0]) != Err(libc::ENOSYS);
+        let mut seal_here = false;
         for (what, nr, args, want) in rows {
             let want = if at_here || ![setat, rmat].contains(&nr) { want } else { Err(libc::ENOSYS) };
             let got = raw(nr, args);
             // (a protected name sealed read-only in tier own, B9: `EROFS`, as the kernel answers it there)
             let sealed = what.contains("protected") && got == Err(libc::EROFS);
+            seal_here |= sealed;
             if got != want && !sealed {
                 wrong.push(format!("{what}: got {got:?}, want {want:?}"));
             }
+        }
+        // (#127: an unknown flag on a protected name — the kernel's own answer, unsaid: on a plain file (`xattr_shapes`'
+        // row) or, where the run's copy is sealed (tier own, B9), on a read-only bind (`xattr_read_only`): a kernel that
+        // checks the mount first, its `EROFS`)
+        let shapes = std::env::var("TARAE_SHAPES").unwrap_or_default();
+        let plain = shapes.split(';').find_map(|r| r.strip_prefix("set, an unknown flag=")).unwrap_or("none");
+        let read_only = std::env::var("TARAE_RO_KERNEL").unwrap_or_default();
+        let want = if seal_here { read_only.as_str() } else { plain };
+        let got = raw(set, [prot, name, x, 1, 4, 0]).map_or_else(|e| e.to_string(), |()| "ok".into());
+        // (sealed, with no kernel's answer to hold it to — said by the test)
+        if got != want && want != "none" {
+            wrong.push(format!("set a protected name, an unknown flag: got {got}, the kernel's {want}"));
         }
         if read_back(c"inside_x") != Ok(b"x".to_vec()) {
             wrong.push(format!("inside_x's user.tarae read back: {:?}", read_back(c"inside_x")));
@@ -9770,7 +9904,29 @@ mod tests {
             .output()
             .unwrap();
         let kernel = said_next(&mut String::from_utf8_lossy(&kernel.stdout).lines().map(String::from));
+        // (and on a read-only bind, a seal's shape — #127)
+        let read_only = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "sandbox::keeper::tests::helper",
+                "--ignored",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(HELPER, "xattr_read_only")
+            .current_dir(&shapes)
+            .output()
+            .unwrap();
+        let mut read_only =
+            said_next(&mut String::from_utf8_lossy(&read_only.stdout).lines().map(String::from));
         std::fs::remove_dir_all(&shapes).ok();
+        if read_only != "ok" && read_only.parse::<i32>().is_err() {
+            crate::test_results::said_skip(&format!(
+                "sandbox::keeper::tests::{test} — its row on a sealed protected name, where a run's is sealed: no \
+                 read-only bind for the kernel's own answer here ({read_only})"
+            ));
+            read_only = "none".into();
+        }
         if !kernel.starts_with("set=ok;") {
             crate::test_results::said_skip(&format!(
                 "sandbox::keeper::tests::{test} — no user. attributes on this file system: {kernel}"
@@ -9846,6 +10002,7 @@ mod tests {
                     ("TARAE_OUTSIDE_RO", &ro_s),
                     ("TARAE_RO_WANT", &ro_want_s),
                     ("TARAE_ACL_OTHER_WANT", &acl_other_s),
+                    ("TARAE_RO_KERNEL", &read_only),
                 ],
             );
             assert_eq!(said, "ok", "tier {tier}:\n{said}");
