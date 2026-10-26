@@ -15,6 +15,11 @@
 "ui.participant.4" = "thread_pink"
 "ui.participant.5" = "thread_lemon"
 "ui.participant.6" = "thread_cyan"
+# Selections (frictions #149): a ground only, the code's colours kept on it. Cool, never the paper's beige: the other
+# selections a near-neutral cool grey (`sel`), the primary a periwinkle a step deeper (`sel_hi`, toward ayu light's
+# selection blue) — told from the beige cursor line, the diff's rose and green washes and the vermilion accent by hue,
+# not only by a step of lightness the paper has little room for. As far from the paper as the old beiges (the
+# selections can be seen), the code's body ≥ 4.0 on both (`theme::tests`).
 "ui.selection" = { bg = "sel" }
 "ui.selection.primary" = { bg = "sel_hi" }
 "ui.cursor" = { fg = "paper", bg = "vermilion_dim" }
@@ -108,8 +113,8 @@ paper = "#f5f1e8"
 line = "#efeadf"
 surface = "#ebe5d8"
 surface_hi = "#ded6c4"
-sel = "#e9e2d3"
-sel_hi = "#e2d9c5"
+sel = "#e4e4e8"
+sel_hi = "#dcdaec"
 faint = "#9c9586"
 guide = "#e4ddcd"
 dim = "#74767e"

@@ -21,6 +21,8 @@
 "ui.participant.4" = "thread_pink"
 "ui.participant.5" = "thread_lemon"
 "ui.participant.6" = "thread_cyan"
+# Selections (frictions #149): a ground only, the code's colours kept on it — ink-blue, apart from the cursor line by
+# hue as by lightness; the primary a step lighter.
 "ui.selection" = { bg = "sel" }
 "ui.selection.primary" = { bg = "sel_hi" }
 "ui.cursor" = { fg = "ink", bg = "coral_dim" }

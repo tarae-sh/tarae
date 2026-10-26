@@ -18487,6 +18487,92 @@ q = \"delete_selection\"\n",
         Some(ed)
     }
 
+    /// A selection paints its ground only: a keyword, a string and plain text keep their colours under it — under the
+    /// primary and under another selection alike, each on its own ground — and a review's added line taken by `]g`
+    /// keeps its colours over the diff's wash, in both themes (frictions #149: every selected cell took the text's
+    /// colour — code turned white).
+    #[test]
+    fn a_selection_keeps_the_codes_colours() {
+        let src = "fn main() {\n    let s = \"str\";\n}\n";
+        let Some(mut ed) = parsed_rust(src) else { return };
+        // (colours drawn though tarae's test runner sets NO_COLOR)
+        crossterm::style::force_color_output(true);
+        // (every cell whose colour was lost, said together — each check its own line when one breaks)
+        let mut lost = Vec::new();
+        for theme in ["meok", "hanji"] {
+            ed.theme = crate::theme::load(theme).unwrap();
+            // (the cursor on the last line, off the cells looked at)
+            let end = ed.doc().text.len_bytes() - 2;
+            ed.doc_mut().set_selection(Selection::point(end));
+            let draw = |ed: &mut Editor| {
+                let mut bytes = Vec::new();
+                crate::term::render(ed, &mut bytes, 80, 12).unwrap();
+                let mut p = vt100::Parser::new(12, 80, 0);
+                p.process(&bytes);
+                p.screen().clone()
+            };
+            let cell = |s: &vt100::Screen, word: &str, dx: u16| {
+                let (y, l) = s.rows(0, 80).enumerate().find(|(_, l)| l.contains(word)).expect(word);
+                let x = l[..l.find(word).unwrap()].chars().count() as u16 + dx;
+                let c = s.cell(y as u16, x).unwrap();
+                (c.fgcolor(), c.bgcolor())
+            };
+            let before = draw(&mut ed);
+            // (two selections: `fn main()` another, the second line's `let s = "str";` the primary)
+            let (fn_main, let_s) = (0..9, 16..30);
+            assert_eq!((&src[fn_main.clone()], &src[let_s.clone()]), ("fn main()", "let s = \"str\";"));
+            let ranges = vec![Range::new(fn_main.start, fn_main.end), Range::new(let_s.start, let_s.end)];
+            ed.doc_mut().set_selection(Selection::new(ranges, 1));
+            let after = draw(&mut ed);
+            for (word, dx, what) in [
+                ("fn main", 0, "a keyword under another selection"),
+                ("\"str\"", 1, "a string under the primary"),
+                ("let s", 4, "text under the primary"),
+            ] {
+                let (was, now) = (cell(&before, word, dx), cell(&after, word, dx));
+                if now.0 != was.0 {
+                    lost.push(format!("{theme}: {what} drawn {:?}, was {:?}", now.0, was.0));
+                }
+                assert_ne!(now.1, was.1, "{theme}: {what} on a selection's ground");
+            }
+            if cell(&after, "fn main", 0).0 == cell(&after, "let s", 4).0 {
+                lost.push(format!("{theme}: the selected keyword and text drawn in one colour"));
+            }
+            let primary_ground = cell(&after, "let s", 0).1;
+            assert_ne!(
+                cell(&after, "fn main", 0).1,
+                primary_ground,
+                "{theme}: the other's ground, the primary's"
+            );
+            // A review's hunk: the second line changed since its base; `]g` takes the line it added
+            let base = "fn main() {\n    let s = 1;\n}\n";
+            let d = ed.doc_mut();
+            d.review_base = Some(ropey::Rope::from_str(base));
+            d.git_base = Some(std::sync::Arc::new(base.to_string()));
+            d.git_hunks = crate::git::hunks(base, src);
+            d.git_version = d.version();
+            d.set_selection(Selection::point(0));
+            let (id, version) = (d.id, d.version());
+            ed.diff_landed(id, version);
+            let washed = draw(&mut ed);
+            // (the added line's own row — the removed one, `let s = 1;`, is drawn above it)
+            let (plain, added) = (cell(&washed, "}", 0), cell(&washed, "let s = \"", 0));
+            assert_ne!(added.1, plain.1, "{theme}: the added line on the diff's wash");
+            feed(&mut ed, "]g");
+            assert_eq!(selected(&ed).trim_end(), "    let s = \"str\";", "{theme}: `]g` took the added line");
+            let taken = draw(&mut ed);
+            let now = cell(&taken, "let s = \"", 0);
+            if now.0 != added.0 {
+                lost.push(format!("{theme}: a review's added keyword drawn {:?}, was {:?}", now.0, added.0));
+            }
+            assert_eq!(now.1, primary_ground, "{theme}: on the selection's ground");
+            let d = ed.doc_mut();
+            (d.review_base, d.git_base, d.git_hunks) = (None, None, Vec::new());
+            ed.diff_landed(id, ed.doc().version());
+        }
+        assert!(lost.is_empty(), "colours lost under a selection:\n{}", lost.join("\n"));
+    }
+
     fn selected(ed: &Editor) -> String {
         let (doc, r) = (ed.doc(), ed.doc().selection().primary());
         doc.text.byte_slice(r.from()..r.to()).to_string()

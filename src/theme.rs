@@ -624,6 +624,72 @@ mod tests {
         assert!(low.is_empty(), "under their floors:\n{}", low.join("\n"));
     }
 
+    /// A selection paints its ground only, the code's colours kept on it (frictions #149): every syntax colour clears its
+    /// floor on both selection grounds — the body 4.0:1 (a step under the code's ground's 4.5: a selection that can be
+    /// seen is worth more than the half step — the user, 2026-10-26), punctuation 3, a quote 2.9 (meok's primary has it
+    /// at 2.95) — and the grounds read apart: from the code's ground, from each other and from the cursor line.
+    #[test]
+    fn the_codes_colours_read_on_a_selection() {
+        use crate::chrome::contrast;
+        let rgb = |c: Option<Color>| match c {
+            Some(Color::Rgb { r, g, b }) => [r, g, b],
+            other => panic!("a built-in theme's colour is a true colour: {other:?}"),
+        };
+        let not_code = ["ui.", "diagnostic", "diff.", "error", "warning", "info", "hint"];
+        let mut low = Vec::new();
+        for name in ["meok", "hanji"] {
+            let t = load(name).unwrap();
+            let mut keys: Vec<&String> = t
+                .styles
+                .iter()
+                .filter(|(k, s)| s.fg.is_some() && !not_code.iter().any(|p| k.starts_with(p)))
+                .map(|(k, _)| k)
+                .collect();
+            keys.sort();
+            assert!(keys.len() > 30, "{name}: the code's colours found ({})", keys.len());
+            let paper = rgb(t.get("ui.background").bg);
+            let (sel, hi) = (rgb(t.get("ui.selection").bg), rgb(t.get("ui.selection.primary").bg));
+            let apart = |a: [u8; 3], b: [u8; 3]| {
+                let c = |x: [u8; 3]| Some(Color::Rgb { r: x[0], g: x[1], b: x[2] });
+                (contrast(a, b), delta_e(c(a), c(b)))
+            };
+            // (and the grounds read apart — the primary from the others and both from the code's ground — by colour, ΔE:
+            // on hanji's paper luminance has little room, so its selections are told apart by hue)
+            let line = rgb(t.get("ui.cursorline.primary").bg);
+            for (what, a, b, floor) in [
+                ("ground/selection", paper, sel, 4.5),
+                ("selection/primary", sel, hi, 6.0),
+                ("ground/primary", paper, hi, 10.0),
+                // (a selection that isn't the primary never reads as the cursor line — with several cursors that's where
+                // the eye goes; the primary shares its cursor's row with it, its cells beside the line's own)
+                ("selection/cursor line", sel, line, 6.0),
+                ("primary/cursor line", hi, line, 9.0),
+            ] {
+                let (r, de) = apart(a, b);
+                if de < floor {
+                    low.push(format!("{name}: {what} ΔE {de:.1} ({r:.2}:1; floor ΔE {floor})"));
+                }
+            }
+            for g in ["ui.selection", "ui.selection.primary"] {
+                let ground = rgb(t.get(g).bg);
+                for k in &keys {
+                    let floor = match k.as_str() {
+                        "markup.quote" => 2.9,
+                        // (punctuation is set back on purpose — hanji's 3.90 on its own paper)
+                        "operator" | "punctuation" => 3.0,
+                        _ => 4.0,
+                    };
+                    let r = contrast(rgb(t.get(k).fg), ground);
+                    if r < floor {
+                        let on = contrast(rgb(t.get(k).fg), paper);
+                        low.push(format!("{name}: {k} on {g} {r:.2} (floor {floor}; on the ground {on:.2})"));
+                    }
+                }
+            }
+        }
+        assert!(low.is_empty(), "under their floors:\n{}", low.join("\n"));
+    }
+
     /// meok and hanji have one set of keys, their palettes apart — change one, change the other.
     #[test]
     fn builtin_themes_have_the_same_keys() {

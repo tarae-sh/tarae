@@ -4195,11 +4195,14 @@ impl Ui {
         let base = t.get("ui.background").patch(get("ui.text"));
         let tint = t.try_get("ui.tint").and_then(|s| s.bg).or(base.bg);
         let status = base.patch(get("ui.statusline"));
-        let selection = base.patch(get("ui.selection"));
+        // (a selection is only what the theme gives it — meok's and hanji's a ground — patched over what's drawn there:
+        // the code's colours, a diff's, kept under it; never the text's colour over them all, frictions #149. Where
+        // one is a whole style — a selected row — it's patched over that surface's own)
+        let selection = get("ui.selection");
         let cursor = base.patch(get("ui.cursor"));
         Ui {
             tint,
-            selection_primary: t.try_get("ui.selection.primary").map_or(selection, |s| base.patch(s)),
+            selection_primary: t.try_get("ui.selection.primary").unwrap_or(selection),
             cursor_primary: t
                 .try_get(&format!("ui.cursor.primary.{mode}"))
                 .or_else(|| t.try_get("ui.cursor.primary"))

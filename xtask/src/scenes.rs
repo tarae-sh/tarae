@@ -1827,6 +1827,23 @@ const SCENES: &[Scene] = &[
         files: MAIN,
         keys: &["@1", " ", "v", "v", "@?2 files", "@2", " ", "e", "@1", "j", "@2"],
     },
+    // (a drag over the code, over lines: what's selected keeps its syntax colours under the selection's ground)
+    Scene {
+        name: "selectcode",
+        claude: "idle",
+        files: MAIN,
+        keys: &["@1", "@press?fn main", "@drag+20?println", "@release+20?println", "@1"],
+    },
+    // (several selections: `%` then `s threads` — the primary on the cursor's line, the others on lines of their own,
+    // none of them reading as the cursor line)
+    Scene { name: "selectmany", claude: "idle", files: MAIN, keys: &["@1", "%", "s", "threads", "\r", "@1"] },
+    // (a review's hunk taken by `]g`: what's selected keeps the diff's and the syntax's colours)
+    Scene {
+        name: "reviewhunk",
+        claude: "idle",
+        files: MAIN,
+        keys: &["@1", " ", "v", "v", "@?2 files", "@1", "\x1b", "@1", "]", "g", "@1"],
+    },
     // (…and `enter` on its row: a buffer of its own — upright in the tabs, its hunks under it)
     Scene {
         name: "group-git-kept",
