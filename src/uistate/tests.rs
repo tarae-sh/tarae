@@ -2583,7 +2583,7 @@ fn perf_ui_state_quiet_batch_watched() {
 /// sessions' cards in either.
 #[test]
 fn claudes_answer_stays_small_on_a_busy_scene() {
-    let ed = busy_scene();
+    let mut ed = busy_scene();
     let c = ed.ui_state_claude();
     let text = c.text_claude(false);
     let (line, _) = c.context_line().expect("cards and toasts are up");
@@ -2591,11 +2591,15 @@ fn claudes_answer_stays_small_on_a_busy_scene() {
     assert!(line.len() <= 512, "{} bytes: {line}", line.len());
     assert!(!text.contains("cargo test -p tarae") && !line.contains("cargo test"), "{text}\n{line}");
     // (its sandbox: one line of the answer, nothing in the context's line every request reads — 9d)
+    // The scene without it carries the same task run: a run's id is the process's count, and a new run's
+    // could be a digit longer (frictions #132: `run#9`, then `run#10` — another test's runs between the
+    // two scenes). Compared whole, so a run of its own would show as another id every time.
     let mut bare = busy_scene();
     bare.workspace.claude.sandbox = None;
+    bare.workspace.task_run = ed.workspace.task_run.take();
     let b = bare.ui_state_claude();
     let sandbox = text.lines().find(|l| l.starts_with("sandbox: ")).expect("its sandbox said");
-    assert_eq!(b.text_claude(false).len() + sandbox.len() + 1, text.len(), "{text}");
+    assert_eq!(b.text_claude(false), text.replacen(&format!("{sandbox}\n"), "", 1), "{text}");
     assert_eq!(b.context_line().map(|l| l.0), Some(line));
 }
 
