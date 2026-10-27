@@ -30,12 +30,14 @@ pub enum Which {
     /// The prompt's line (`Prompt.input`, `prompt.rs`) — the other; swapped in inside a pane's own swap when that
     /// pane's `/` is up.
     Prompt,
+    /// A picker's query (`Picker.input`) — a line as the prompt's is.
+    Picker,
 }
 
 impl Which {
     /// An input: its edits stay, its insert mode too (`swap`).
     pub fn takes_typing(self) -> bool {
-        matches!(self, Which::Input | Which::Prompt)
+        matches!(self, Which::Input | Which::Prompt | Which::Picker)
     }
 }
 
@@ -249,6 +251,7 @@ pub fn pane_mut(ed: &mut Editor, which: Which) -> Option<&mut Pane> {
         Which::Chat => ed.workspace.claude.chat.as_mut()?.transcript.as_mut().map(|t| &mut t.pane),
         Which::Input => ed.workspace.claude.chat.as_mut().map(|c| &mut c.input.pane),
         Which::Prompt => ed.prompt.as_mut().map(|p| &mut p.input.pane),
+        Which::Picker => ed.picker.as_mut().map(|p| &mut p.input.pane),
     }
 }
 

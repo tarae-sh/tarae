@@ -4,9 +4,14 @@
 //! `[insert]` (`keymap.rs`, yours too), run with the line swapped in (`docpane::swap`, `Which::Prompt`) — only what
 //! acts on one line (`LINE`); what neither binds is typed. Its history (`History`): what was run at `:`, and at
 //! `/` `?`, kept since tarae started — never on disk (a `:sh` line can hold a secret).
+//!
+//! A picker's query is the same line (`Picker.input`, `Which::Picker`, #153's next step): its keys after the picker's
+//! own (`Editor::picker_key`), a press and a drag in it as here — no history; a character never waits for a sequence
+//! (what's typed narrows the list at once).
 
 use crate::docpane::Which;
-use crate::editor::{Editor, Prompt, PromptKind};
+use crate::editor::{Editor, Prompt, PromptDrawn, PromptKind};
+use crate::input::Input;
 use crate::key::{Code, Key};
 use crate::keymap::{KeyTrie, Lookup, MappableCommand};
 use crate::selection::Selection;
@@ -144,15 +149,8 @@ impl Prompt {
 pub fn key(ed: &mut Editor, key: Key) {
     let Some(p) = ed.prompt.as_ref() else { return };
     let (before, recalled) = (p.text(), p.recalled.clone());
-    let cols = ed.screen.prompt_input.get().map_or(60, |i| i.w).max(1);
-    crate::docpane::swap(ed, Which::Prompt, (1, cols), |ed| typed(ed, key));
+    edit(ed, Which::Prompt, key);
     let Some(p) = ed.prompt.as_mut() else { return };
-    let text = p.text();
-    // (one line: a register's line breaks are spaces, as a paste's are)
-    if text.contains(['\n', '\r']) {
-        let at = p.cursor();
-        p.set_at(&text.replace(['\n', '\r'], " "), at);
-    }
     if p.text() != before {
         p.cycle = None;
         // (a line recalled stays where the walk is — only an edit of yours ends it)
@@ -162,12 +160,49 @@ pub fn key(ed: &mut Editor, key: Key) {
     }
 }
 
+/// `key` for the line `which` (the prompt's, a picker's query), once its own keys didn't take it: `[prompt]` then
+/// `[insert]`, run with it swapped in; what neither binds, typed.
+pub fn edit(ed: &mut Editor, which: Which, key: Key) {
+    let cols = drawn(ed, which).map_or(60, |i| i.w).max(1);
+    crate::docpane::swap(ed, which, (1, cols), |ed| typed(ed, which, key));
+    let Some(input) = input_mut(ed, which) else { return };
+    let text = input.text();
+    // (one line: a register's line breaks are spaces, as a paste's are)
+    if text.contains(['\n', '\r']) {
+        let at = input.cursor();
+        input.set_at(&text.replace(['\n', '\r'], " "), at);
+    }
+}
+
+/// The line `which` names.
+fn input(ed: &Editor, which: Which) -> Option<&Input> {
+    match which {
+        Which::Picker => ed.picker.as_ref().map(|p| &p.input),
+        _ => ed.prompt.as_ref().map(|p| &p.input),
+    }
+}
+
+fn input_mut(ed: &mut Editor, which: Which) -> Option<&mut Input> {
+    match which {
+        Which::Picker => ed.picker.as_mut().map(|p| &mut p.input),
+        _ => ed.prompt.as_mut().map(|p| &mut p.input),
+    }
+}
+
+/// Where the line `which` was drawn last frame.
+fn drawn(ed: &Editor, which: Which) -> Option<PromptDrawn> {
+    match which {
+        Which::Picker => ed.screen.picker_input.get(),
+        _ => ed.screen.prompt_input.get(),
+    }
+}
+
 /// A sequence of the line's under way (the `j` of `[keys.insert] j = { k = … }`) or `C-r` waiting for a register's
 /// name: whether `key` is the line's — the wait's whatever it is, the sequence's when it goes on with it. A sequence
 /// broken off is text, put in first, and the key is the prompt's own as ever (`enter` runs the whole line, `esc`
-/// closes) — as a sequence broken off is in the code.
-pub fn under_way(ed: &mut Editor, key: Key) -> bool {
-    let Some(keys) = ed.prompt.as_ref().map(|p| &p.input.pane.keys) else { return false };
+/// closes) — as a sequence broken off is in the code. `which`: the prompt's line or a picker's query.
+pub fn under_way(ed: &mut Editor, which: Which, key: Key) -> bool {
+    let Some(keys) = input(ed, which).map(|i| &i.pane.keys) else { return false };
     if keys.char_next() {
         return true;
     }
@@ -179,8 +214,12 @@ pub fn under_way(ed: &mut Editor, key: Key) -> bool {
     if !matches!(lookup(ed, &seq), Lookup::NotFound) {
         return true;
     }
-    if let Some(p) = ed.prompt.as_mut() {
-        p.input.insert_str("");
+    if let Some(i) = input_mut(ed, which) {
+        i.insert_str("");
+    }
+    if which == Which::Prompt
+        && let Some(p) = ed.prompt.as_mut()
+    {
         (p.cycle, p.recalled) = (None, None);
     }
     false
@@ -194,8 +233,8 @@ pub fn paste(ed: &mut Editor, text: &str) {
     (p.cycle, p.recalled) = (None, None);
 }
 
-/// `key` with the line swapped in.
-fn typed(ed: &mut Editor, key: Key) {
+/// `key` with the line `which` swapped in.
+fn typed(ed: &mut Editor, which: Which, key: Key) {
     // `C-r`'s register: a character names it; any other key lets the wait go
     if let Some((f, count)) = ed.on_next_char.take() {
         if let Some(ch) = key.plain_char() {
@@ -205,6 +244,11 @@ fn typed(ed: &mut Editor, key: Key) {
     }
     ed.pending.push(key);
     let cmds = match lookup(ed, &ed.pending) {
+        // (a picker's query narrows the list as it's typed: a character never waits for a sequence of `[insert]`'s
+        // — the line runs only its moves and deletes, so one could end in nothing it does anyway)
+        Lookup::Pending if which == Which::Picker && ed.pending.len() == 1 && key.plain_char().is_some() => {
+            None
+        }
         Lookup::Pending => return,
         Lookup::Matched(cmds) => Some(cmds.to_vec()),
         Lookup::NotFound => None,
@@ -230,7 +274,7 @@ fn typed(ed: &mut Editor, key: Key) {
             }
         }
         // (bound in `[insert]`, but not for one line: a new line, a tab, a completion, the editor's)
-        Some(_) => said_unused(ed, last),
+        Some(_) => said_unused(ed, which, last),
         // (a sequence broken off is text, as in the code; a last key that isn't a character, said)
         None => {
             let chars: Vec<char> = keys.iter().filter_map(Key::plain_char).collect();
@@ -238,20 +282,24 @@ fn typed(ed: &mut Editor, key: Key) {
                 ed.with_group(|cx| chars.into_iter().for_each(|c| crate::commands::insert_char(cx, c)));
             }
             if last.plain_char().is_none() && matches!(last.code, Code::Char(_)) {
-                said_unused(ed, last);
+                said_unused(ed, which, last);
             }
         }
     }
 }
 
 /// `key` does nothing on the line: said where it would act.
-fn said_unused(ed: &mut Editor, key: Key) {
+fn said_unused(ed: &mut Editor, which: Which, key: Key) {
+    let (place, enter) = match which {
+        Which::Picker => ("the list's query", "enter picks the row"),
+        _ => ("the command line", "enter runs the line"),
+    };
     let out = match ed.offers.is_empty() {
-        true => "enter runs the line, esc close".to_string(),
+        true => format!("{enter}, esc close"),
         // (the way back is this line's own `esc`: what reaches the card is said from the code)
         false => format!("esc close — then {} reaches the card", ed.c_q_from_code()),
     };
-    ed.key_unused(key, "the command line", &out);
+    ed.key_unused(key, place, &out);
 }
 
 /// The keys under way in `[prompt]`, else in `[insert]`.
@@ -273,8 +321,10 @@ fn named(c: &MappableCommand, names: &[&str]) -> bool {
 /// `prompt_history_older` / `_newer`: the line run before the one in sight at this kind of prompt, or after it (past
 /// the newest, what you'd typed) — the cursor at its end. Runs with the line swapped in.
 pub fn walk(ed: &mut Editor, older: bool) {
-    if crate::docpane::swapped(ed) != Some(Which::Prompt) {
-        return ed.set_status("the history walks a prompt's line — : or / first");
+    match crate::docpane::swapped(ed) {
+        Some(Which::Prompt) => {}
+        Some(Which::Picker) => return ed.set_status("a list's query keeps no history — : and / do"),
+        _ => return ed.set_status("the history walks a prompt's line — : or / first"),
     }
     let Some(p) = ed.prompt.as_ref() else { return };
     let kind = p.kind;
@@ -303,38 +353,43 @@ pub fn walk(ed: &mut Editor, older: bool) {
     }
 }
 
-/// The line's character drawn at screen column `x` (`Screen.prompt_input`) — past either end of what's in sight, the
-/// next one out (a drag there scrolls the line a character at a time, its cursor kept in sight).
-fn at_x(ed: &Editor, x: usize) -> Option<usize> {
-    let drawn = ed.screen.prompt_input.get()?;
-    let p = ed.prompt.as_ref()?;
-    let (text, rope) = (p.text(), &p.input.pane.doc().text);
+/// The line's character drawn at screen column `x` (`Screen.prompt_input`, a picker's `picker_input`) — past either
+/// end of what's in sight, the next one out (a drag there scrolls the line a character at a time, its cursor kept in
+/// sight).
+fn at_x(ed: &Editor, which: Which, x: usize) -> Option<usize> {
+    let drawn = drawn(ed, which)?;
+    let p = input(ed, which)?;
+    let (text, rope) = (p.text(), &p.pane.doc().text);
     // (a byte of the last frame's line: an edit since — a paste, a key in the same batch — can leave it inside a
     // character now)
     let first = crate::graphemes::snap(rope, drawn.first);
     if x < drawn.x && first > 0 {
         return Some(crate::graphemes::prev_boundary(rope, first));
     }
-    Some(p.input.at_col(&text[first..], first, x.saturating_sub(drawn.x).min(drawn.w)))
+    Some(p.at_col(&text[first..], first, x.saturating_sub(drawn.x).min(drawn.w)))
 }
 
-/// A press on the screen at (`x`, `y`): on the prompt's line, its cursor on the character pressed, as a press in the
-/// code's insert mode puts it — where it landed (a drag from there selects, `drag`); elsewhere None.
-pub fn click(ed: &mut Editor, x: usize, y: usize) -> Option<usize> {
-    ed.screen.prompt_input.get().filter(|d| d.y == y)?;
-    let at = at_x(ed, x)?;
-    let p = ed.prompt.as_mut()?;
-    p.input.pane.doc_mut().set_selection(Selection::point(at));
-    p.cycle = None;
+/// A press on the screen at (`x`, `y`): on the line `which` (the prompt's, a picker's query), its cursor on the
+/// character pressed, as a press in the code's insert mode puts it — where it landed (a drag from there selects,
+/// `drag`); elsewhere None.
+pub fn click(ed: &mut Editor, which: Which, x: usize, y: usize) -> Option<usize> {
+    drawn(ed, which).filter(|d| d.y == y)?;
+    let at = at_x(ed, which, x)?;
+    input_mut(ed, which)?.pane.doc_mut().set_selection(Selection::point(at));
+    if which == Which::Prompt
+        && let Some(p) = ed.prompt.as_mut()
+    {
+        p.cycle = None;
+    }
     Some(at)
 }
 
 /// A drag from the press's character `anchor` (`click`'s) to screen column `x`: what's between selected, both
 /// included, as a drag in the code selects — insert mode kept, as there.
-pub fn drag(ed: &mut Editor, anchor: usize, x: usize) {
-    let Some(at) = at_x(ed, x) else { return };
-    let Some(p) = ed.prompt.as_mut() else { return };
-    let d = p.input.pane.doc_mut();
+pub fn drag(ed: &mut Editor, which: Which, anchor: usize, x: usize) {
+    let Some(at) = at_x(ed, which, x) else { return };
+    let Some(i) = input_mut(ed, which) else { return };
+    let d = i.pane.doc_mut();
     let anchor = crate::graphemes::snap(&d.text, anchor);
     d.set_selection(Selection::new(vec![crate::selection::Range::dragged(&d.text, anchor, at)], 0));
 }

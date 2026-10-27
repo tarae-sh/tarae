@@ -795,6 +795,12 @@ mod tests {
             "Open it in a split, beside · under (Helix's keys) · open it, the list kept up",
         ),
         ("A picker", "`C-t` · `C-f` `C-b`, wheel over it", "The preview away and back · scroll it"),
+        (
+            "A picker's query",
+            "`[keys.prompt]` over insert mode's moves and deletes, a press, a drag",
+            "Edit it as a prompt's line, its cursor anywhere — the picker's own keys above come first (`←` `→` open \
+             and fold in the file tree while nothing is typed)",
+        ),
     ];
 
     /// The twins of `ON_SCREEN`'s keys zellij takes (`zellij::twin`, `key::list_move`'s other keys).

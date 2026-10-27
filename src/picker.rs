@@ -312,7 +312,12 @@ pub struct Picker {
     /// Number assigned by the editor — so a late list doesn't land in a different (newer) picker.
     pub id: u64,
     pub title: String,
-    pub query: String,
+    /// What's typed — its line (#153: the prompt's `Input`, its cursor anywhere in it); `query` is its text as the
+    /// list was last filtered by (`typed`).
+    pub input: crate::input::Input,
+    query: String,
+    /// The query's first byte drawn last frame — a long one keeps its cursor in sight from there (`term::prompt_window`).
+    pub left: std::cell::Cell<usize>,
     items: Arc<Vec<Item>>,
     /// Filtered items (items indices, by score).
     matches: Vec<u32>,
@@ -412,7 +417,9 @@ impl Picker {
         let mut p = Picker {
             id: 0,
             title: title.into(),
+            input: crate::input::Input::new(crate::document::PICKER_INPUT),
             query: String::new(),
+            left: Default::default(),
             items: Arc::new(items),
             matches: Vec::new(),
             matched: None,
@@ -874,23 +881,42 @@ impl Picker {
         }
     }
 
+    /// What's typed, as the list was filtered by it.
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    /// `text` typed in place of the query, the cursor at its end.
+    pub fn set_query(&mut self, text: &str) {
+        self.input.set(text);
+        self.typed();
+    }
+
+    /// The line was edited (a key, a paste): the list filtered by what it holds now — true when that changed.
+    pub fn typed(&mut self) -> bool {
+        let text = self.input.text();
+        if text == self.query {
+            return false;
+        }
+        self.query = text;
+        self.selected = 0;
+        self.sync();
+        true
+    }
+
+    /// A character typed at the cursor (tests; keys go through `prompt::edit`).
+    #[cfg(test)]
     pub fn push(&mut self, c: char) {
-        self.query.push(c);
-        self.selected = 0;
-        self.sync();
+        self.input.insert_str(&c.to_string());
+        self.typed();
     }
 
-    /// Pasted text joins the query — filtered once, not per character.
-    pub fn push_str(&mut self, s: &str) {
-        self.query.push_str(s);
-        self.selected = 0;
-        self.sync();
-    }
-
+    /// The last character taken off (tests).
+    #[cfg(test)]
     pub fn pop(&mut self) {
-        self.query.pop();
-        self.selected = 0;
-        self.sync();
+        let mut q = self.query.clone();
+        q.pop();
+        self.set_query(&q);
     }
 
     /// Moves `delta` rows that pick something (headings are stepped over), wrapping around.

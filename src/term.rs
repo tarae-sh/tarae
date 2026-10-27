@@ -693,6 +693,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         prompt_card: Default::default(),
         prompt_rows: Default::default(),
         prompt_input: Default::default(),
+        picker_input: Default::default(),
         picker_box: Default::default(),
         review_area: Default::default(),
         spots: Default::default(),
@@ -8247,14 +8248,23 @@ fn draw_picker(
             apply(out, faint)?;
             queue!(out, Print(&right))?;
         } else if row == 1 {
-            // Input row: › query ……… title · count
+            // Input row: › query ……… title · count — the query's cursor in sight, `…` where it's cut, what a drag
+            // selected washed as the prompt's line is (#153)
             apply(out, Style { fg: ui.accent.fg, bold: true, ..card })?;
             queue!(out, Print(" › "))?;
-            let (q, right) = picker_input(p, lw, &count);
-            apply(out, strong)?;
-            queue!(out, Print(&q))?;
+            let q = picker_input(p, lw, &count);
+            p.left.set(q.line.first);
+            editor.screen.picker_input.set(Some(crate::editor::PromptDrawn {
+                y: y as usize,
+                x: b.x + 3 + usize::from(q.line.lead),
+                w: q.room,
+                first: q.line.first,
+            }));
+            let sel = p.input.pane.doc().selection();
+            let used = print_input_line(out, ui, &q.text, &q.line, sel, strong, faint)?;
+            let right = q.right;
             apply(out, card)?;
-            queue!(out, Spaces((lw + 2).saturating_sub(3 + q.width() + right.width())))?;
+            queue!(out, Spaces((lw + 2).saturating_sub(3 + used + right.width())))?;
             apply(out, faint)?;
             queue!(out, Print(&right))?;
         } else if row == 2 {
@@ -8300,9 +8310,9 @@ fn draw_picker(
                     if row == 3 + b.head && p.view.is_empty() {
                         let why = match () {
                             _ if p.loading => "loading…",
-                            _ if p.live && p.query.is_empty() => "type to search the project — a regex",
+                            _ if p.live && p.query().is_empty() => "type to search the project — a regex",
                             _ if p.live && p.searching => "searching…",
-                            _ if p.query.is_empty() => p.empty.as_deref().unwrap_or("nothing here"),
+                            _ if p.query().is_empty() => p.empty.as_deref().unwrap_or("nothing here"),
                             _ => "no matches",
                         };
                         let why = fit(why, lw.saturating_sub(1));
@@ -8380,29 +8390,86 @@ fn draw_picker(
     let name = pane_names(ui, editor, card, &[&p.title], 0);
     editor.screen.picker_box.set(Some((fx, b.y, fr + 1 - fx, rows)));
     draw_frame(out, ui, card, (fx, b.y, fr + 1 - fx, rows), &name, &[], &splits, true)?;
-    let (q, _) = picker_input(p, lw, &count);
-    Ok(((b.x + 3 + q.width()) as u16, (b.y + 1) as u16))
+    let q = picker_input(p, lw, &count);
+    let cursor = q.text.get(q.line.first..p.input.cursor().max(q.line.first)).unwrap_or_default().width();
+    Ok(((b.x + 3 + usize::from(q.line.lead) + cursor) as u16, (b.y + 1) as u16))
+}
+
+/// The picker's input row after ` › ` (`picker_input`): the query's text, what of it is in sight in its `room`, and
+/// what's right of it.
+struct PickerInput {
+    text: String,
+    line: PromptLine,
+    room: usize,
+    right: String,
 }
 
 /// The picker's input row after ` › `, in `lw - 1` cells: the query, and right of it the count (the title is the
-/// frame's name). What's typed must show: the query comes first, then the count, and a note about the query gets
-/// what's left, cut with `…`.
-fn picker_input(p: &Picker, lw: usize, count: &str) -> (String, String) {
+/// frame's name). What's typed must show: the query comes first — its cursor in sight, from where it was drawn last
+/// frame (`Picker.left`) —, then the count, and a note about the query gets what's left, cut with `…`.
+fn picker_input(p: &Picker, lw: usize, count: &str) -> PickerInput {
     let tail = format!("  {count} ");
-    let q = fit_left(&p.query, lw.saturating_sub(tail.width() + 3));
+    let text = p.input.text();
+    let room = lw.saturating_sub(tail.width() + 3).max(1);
+    let line = prompt_window(&text, p.input.cursor(), p.left.get(), room);
+    let q = usize::from(line.lead) + text[line.first..line.end].width() + usize::from(line.tail);
     // A word about the query — an unfinished pattern — said quietly in the title's place: the reason, and
     // that the rows are the last search's as far as the room goes
-    let room = lw.saturating_sub(q.width() + tail.width() + 3);
+    let room_note = lw.saturating_sub(q + tail.width() + 3);
     let title = match &p.note {
         Some(why) => [format!("{why} · last results"), format!("{why} · last"), why.clone()]
             .into_iter()
-            .find(|t| t.width() <= room)
-            .unwrap_or_else(|| fit_ellipsis(why, room)),
+            .find(|t| t.width() <= room_note)
+            .unwrap_or_else(|| fit_ellipsis(why, room_note)),
         // (its frame says it)
         None => String::new(),
     };
-    let right = fit_ellipsis(&format!("{title}{tail}"), lw.saturating_sub(q.width() + 1));
-    (q, right)
+    let right = fit_ellipsis(&format!("{title}{tail}"), lw.saturating_sub(q + 1));
+    PickerInput { text, line, room, right }
+}
+
+/// An input's line in sight (`prompt_window`'s `line` of `text`): a `…` in `cut` where it's cut, its text in `base`,
+/// what `sel` selects washed as the code's selection is — the prompt's line and a picker's query alike. The cells
+/// it took.
+fn print_input_line(
+    out: &mut impl Write,
+    ui: &Ui,
+    text: &str,
+    line: &PromptLine,
+    sel: &crate::selection::Selection,
+    base: Style,
+    cut: Style,
+) -> io::Result<usize> {
+    if line.lead {
+        apply(out, cut)?;
+        queue!(out, Print("…"))?;
+    }
+    let washes: Vec<(usize, usize, Style)> = sel
+        .ranges()
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| !r.is_empty())
+        .map(|(i, r)| {
+            let wash = if i == sel.primary_index() { ui.selection_primary } else { ui.selection };
+            (r.from(), r.to(), base.patch(Style { bg: wash.bg, ..Style::default() }))
+        })
+        .collect();
+    let style_at = |b: usize| washes.iter().find(|(a, z, _)| (*a..*z).contains(&b)).map_or(base, |w| w.2);
+    let shown = &text[line.first..line.end];
+    let mut from = 0;
+    for b in shown.char_indices().map(|(b, _)| b).skip(1).chain([shown.len()]) {
+        let at = line.first + from;
+        if b > from && (b == shown.len() || style_at(line.first + b) != style_at(at)) {
+            apply(out, style_at(at))?;
+            queue!(out, Print(&shown[from..b]))?;
+            from = b;
+        }
+    }
+    if line.tail {
+        apply(out, cut)?;
+        queue!(out, Print("…"))?;
+    }
+    Ok(usize::from(line.lead) + shown.width() + usize::from(line.tail))
 }
 
 /// One preview page: text, syntax, first line, line to highlight — or a hint message.
@@ -18059,37 +18126,8 @@ fn draw_prompt(
         first: line.first,
     }));
     let cut = Style { fg: ui.linenr.fg, ..card };
-    if line.lead {
-        apply(out, cut)?;
-        queue!(out, Print("…"))?;
-    }
     let sel = p.input.pane.doc().selection();
-    let washes: Vec<(usize, usize, Style)> = sel
-        .ranges()
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| !r.is_empty())
-        .map(|(i, r)| {
-            let wash = if i == sel.primary_index() { ui.selection_primary } else { ui.selection };
-            (r.from(), r.to(), card.patch(Style { bg: wash.bg, ..Style::default() }))
-        })
-        .collect();
-    let style_at = |b: usize| washes.iter().find(|(a, z, _)| (*a..*z).contains(&b)).map_or(card, |w| w.2);
-    let shown = &text[line.first..line.end];
-    let mut from = 0;
-    for b in shown.char_indices().map(|(b, _)| b).skip(1).chain([shown.len()]) {
-        let at = line.first + from;
-        if b > from && (b == shown.len() || style_at(line.first + b) != style_at(at)) {
-            apply(out, style_at(at))?;
-            queue!(out, Print(&shown[from..b]))?;
-            from = b;
-        }
-    }
-    if line.tail {
-        apply(out, cut)?;
-        queue!(out, Print("…"))?;
-    }
-    let mut used = head.width() + usize::from(line.lead) + shown.width() + usize::from(line.tail);
+    let mut used = head.width() + print_input_line(out, ui, &text, &line, sel, card, cut)?;
     let cursor = text.get(line.first..p.cursor().max(line.first)).unwrap_or_default().width();
     let cursor = ((text_x + cursor) as u16, y as u16);
     if completion.is_some()

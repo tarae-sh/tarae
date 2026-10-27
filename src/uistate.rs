@@ -583,8 +583,12 @@ impl Editor {
         if let Some(o) = output {
             pending = o.keys.pending_keys();
         }
-        // (a prompt's line's own — `C-r` waiting for a register's name)
-        let line = self.prompt.as_ref().map(|p| &p.input.pane.keys).filter(|_| region == Region::Prompt);
+        // (a prompt's line's own — `C-r` waiting for a register's name —, a picker's query's)
+        let line = match region {
+            Region::Prompt => self.prompt.as_ref().map(|p| &p.input.pane.keys),
+            Region::Picker => self.picker.as_ref().map(|p| &p.input.pane.keys),
+            _ => None,
+        };
         if let Some(k) = line.filter(|k| !k.idle()) {
             pending = k.pending_keys();
         }

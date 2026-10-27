@@ -386,6 +386,9 @@ fn before(ed: &Editor, u: Under) -> Before {
         Surface::Input => chat.is_some_and(|c| c.input.is_empty()),
         Surface::Transcript => chat.is_some_and(|c| c.msgs.is_empty()),
         Surface::Prompt => ed.prompt.as_ref().is_some_and(|p| p.input.is_empty()),
+        Surface::Picker if matches!(u.part, Part::Text { .. }) => {
+            ed.picker.as_ref().is_some_and(|p| p.input.is_empty())
+        }
         _ => false,
     };
     Before { holds: holds(ed, u), lets_go: ed.card_has_keys() && !modal, empty, room: false }

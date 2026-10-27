@@ -233,6 +233,14 @@ impl Editor {
         if matches!(kind, K::Drag | K::Up) && matches!(self.mouse_anchor, Some((Drag::Prompt, _))) {
             return at(S::Prompt, prompt_text(x));
         }
+        // (and a press on a picker's query: its line's too)
+        let query_text = |x: usize| {
+            let line = s.picker_input.get();
+            line.map_or(Part::Blank, |d| Part::Text { line: 0, col: x.saturating_sub(d.x) })
+        };
+        if matches!(kind, K::Drag | K::Up) && matches!(self.mouse_anchor, Some((Drag::Picker, _))) {
+            return at(S::Picker, query_text(x));
+        }
         // The prompt's card: a completion row, its line where it was drawn (#153); what's under it isn't pressed through
         // it
         if let Some(card) = s.prompt_card.get()
@@ -345,6 +353,9 @@ impl Editor {
         if let Some(p) = self.picker.as_ref() {
             if s.picker_preview_x.is_some_and(|px| x >= px) {
                 return at(S::PickerPreview, Part::Blank);
+            }
+            if s.picker_input.get().is_some_and(|d| d.y == y) {
+                return at(S::Picker, query_text(x));
             }
             let row = s.picker_list.filter(|l| (l.0..l.0 + l.1).contains(&y)).and_then(|l| p.row_at(y - l.0));
             return at(S::Picker, row.map_or(Part::Blank, Part::Row));
@@ -685,7 +696,8 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
         Su::Picker => match (part, act) {
             (Part::Outside, A::Press) => Acts,
             (Part::Row(_), A::Press | A::Double) => Acts,
-            (_, A::Press) => Gap(O, "its query: a cursor there"),
+            (Part::Text { .. }, A::Press | A::Drag) => Acts,
+            (_, A::Press) => Not("no row there"),
             (Part::Outside, A::Double) => Not("the first press closed it"),
             (_, A::Double) => AS_ONE,
             (_, A::Drag) => Gap(S, "a drag follows the pointer's row"),
@@ -964,7 +976,8 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ("Cards", "an answer, the card", Su::Card, Part::Answer('y')),
         ("The notification card", "", Su::Toast, Part::Row(0)),
         ("A picker", "a row", Su::Picker, Part::Row(0)),
-        ("A picker", "its query", Su::Picker, Part::Blank),
+        ("A picker", "its query", Su::Picker, Part::Text { line: 0, col: 0 }),
+        ("A picker", "its frame's other rows", Su::Picker, Part::Blank),
         ("A picker", "outside it", Su::Picker, Part::Outside),
         ("A picker's preview", "", Su::PickerPreview, Part::Blank),
         ("The prompt", "a completion", Su::Prompt, Part::Row(0)),

@@ -171,6 +171,49 @@ pub(crate) fn prompt_submits(key: Key) -> bool {
     key.code == Code::Enter
 }
 
+/// Whether `key` may be one of the picker's own keys (`Editor::picker_key`'s arms) — those act on its rows, so a
+/// filtering under way is finished first. The rest edit its query (#153) and filter again after it: `picker_key`
+/// sends them there before any arm of the list's can see them, so this is the one rule — a key it says no to never
+/// acts on the list. `ctrl` is read as the arms read it, with or without `alt` (`C-A-d` is `C-d`), but for `C-s`
+/// `C-v`, which want none. A guard that reads the row in hand (a branch's `C-r`, a buffer's `C-x`) is read as the
+/// rows are: those lists are never big enough to filter on a worker.
+fn picker_owns(p: &Picker, key: Key) -> bool {
+    let ctrl = key.ctrl;
+    p.keys
+        || matches!(
+            key.code,
+            Code::Esc
+                | Code::Enter
+                | Code::Home
+                | Code::End
+                | Code::Up
+                | Code::Down
+                | Code::Tab
+                | Code::BackTab
+                | Code::PageUp
+                | Code::PageDown
+        )
+        || (p.in_tree() && matches!(key.code, Code::Left | Code::Right))
+        || match key.code {
+            Code::Char('s' | 'v') => ctrl && !key.alt,
+            Code::Char('c' | 't' | 'q' | 'n' | 'p' | 'd' | 'u' | 'f' | 'b') => ctrl,
+            Code::Char('r') => {
+                ctrl && (p.grep.is_some()
+                    || matches!(p.current().map(|i| &i.action), Some(Action::Branch { .. })))
+            }
+            Code::Char('x') => {
+                (ctrl
+                    && (crate::notes::is_list(&p.title)
+                        || matches!(
+                            p.current().map(|i| &i.action),
+                            Some(Action::Buffer(_) | Action::Branch { .. })
+                        )))
+                    || (key.alt && p.title == crate::notes::NOTES)
+            }
+            _ => false,
+        }
+}
+
 #[cfg(test)]
 thread_local! {
     /// The `frames owed` lines this thread's editors logged (`Editor::frame_due` — the log writes nothing in
@@ -331,7 +374,7 @@ impl Screen {
     }
 }
 
-/// The prompt's line as drawn (`Screen.prompt_input`): its row, its text's first column, its width in cells, and the
+/// The prompt's line as drawn (`Screen.prompt_input`, a picker's query's `Screen.picker_input`): its row, its text's first column, its width in cells, and the
 /// first byte of the line in sight there (a long line keeps its cursor in sight, its start cut).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PromptDrawn {
@@ -364,6 +407,8 @@ pub enum Drag {
     Input,
     /// The prompt's line (`prompt.rs`).
     Prompt,
+    /// A picker's query (`prompt.rs` too).
+    Picker,
 }
 
 /// A list as drawn (`Screen.lists`): its first row's screen row, the rows it has, the first of its rows in sight.
@@ -557,6 +602,8 @@ pub struct Screen {
     pub prompt_rows: std::cell::RefCell<Vec<(usize, usize)>>,
     /// The prompt's line as drawn: where a press puts its cursor (`PromptDrawn`).
     pub prompt_input: std::cell::Cell<Option<PromptDrawn>>,
+    /// A picker's query as drawn: where a press puts its cursor (`PromptDrawn`, as the prompt's line).
+    pub picker_input: std::cell::Cell<Option<PromptDrawn>>,
     /// The picker's frame as drawn — its list's card and its preview's (x, y, width, height): a press outside closes it.
     pub picker_box: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
     /// An edit's review in the buffer as drawn (x, y, width, height): a press on it gives it the keys.
@@ -2469,7 +2516,11 @@ impl Editor {
         if !self.config.auto_pairs
             || matches!(
                 self.workspace.viewer.swapped,
-                Some(crate::docpane::Which::Input | crate::docpane::Which::Prompt)
+                Some(
+                    crate::docpane::Which::Input
+                        | crate::docpane::Which::Prompt
+                        | crate::docpane::Which::Picker
+                )
             )
         {
             return &[];
@@ -2633,13 +2684,10 @@ impl Editor {
                 )
                 .collect()
         };
+        // (a picker's query: at its cursor — filtered once, not per character)
         if let Some(p) = self.picker.as_mut() {
-            p.push_str(&line());
-            self.workspace_symbols_requery();
-            self.live_search();
-            self.preview_theme();
-            self.code_action_preview();
-            return;
+            p.input.insert_str(&line());
+            return self.picker_typed();
         }
         if self.prompt.is_some() {
             crate::prompt::paste(self, &line());
@@ -2789,7 +2837,7 @@ impl Editor {
                 {
                     match m.kind {
                         K::Up => self.mouse_anchor = None,
-                        _ => crate::prompt::drag(self, anchor, x),
+                        _ => crate::prompt::drag(self, crate::docpane::Which::Prompt, anchor, x),
                     }
                     return;
                 }
@@ -2798,7 +2846,7 @@ impl Editor {
                     Part::Row(i) if down => self.cmdline_pick(i),
                     // (its line: the cursor on the character pressed — a drag from there selects, #153)
                     Part::Text { .. } if down => {
-                        if let Some(at) = crate::prompt::click(self, x, y) {
+                        if let Some(at) = crate::prompt::click(self, crate::docpane::Which::Prompt, x, y) {
                             self.mouse_anchor = Some((Drag::Prompt, at));
                         }
                     }
@@ -2925,6 +2973,24 @@ impl Editor {
             }
             (S::Picker, part) => {
                 took_mouse(S::Picker);
+                use crate::docpane::Which;
+                // Its query: a press puts the cursor on the character pressed, a drag from there selects (#153)
+                if let Some((Drag::Picker, anchor)) = self.mouse_anchor
+                    && matches!(m.kind, K::Drag | K::Up)
+                {
+                    match m.kind {
+                        K::Up => self.mouse_anchor = None,
+                        _ => crate::prompt::drag(self, Which::Picker, anchor, x),
+                    }
+                    return;
+                }
+                if down
+                    && matches!(part, Part::Text { .. })
+                    && let Some(at) = crate::prompt::click(self, Which::Picker, x, y)
+                {
+                    self.mouse_anchor = Some((Drag::Picker, at));
+                    return;
+                }
                 let Some(p) = self.picker.as_mut() else { return };
                 match (m.kind, part) {
                     (K::ScrollUp, _) => p.move_by(-3),
@@ -3700,7 +3766,7 @@ impl Editor {
         let root = self.search_root();
         let mut picker = Picker::of("search", "search", Vec::new(), false).grouped(root);
         picker.live = true;
-        picker.query = pattern;
+        picker.set_query(&pattern);
         self.open_picker(picker, None);
         self.live_search();
     }
@@ -3717,7 +3783,7 @@ impl Editor {
         use std::sync::atomic::Ordering;
         let Some(p) = self.picker.as_mut().filter(|p| p.live) else { return };
         let generation = self.live_search.fetch_add(1, Ordering::Relaxed) + 1;
-        let pattern = p.query.clone();
+        let pattern = p.query().to_string();
         p.note = None;
         if pattern.is_empty() {
             p.set_items(Vec::new());
@@ -3888,9 +3954,17 @@ impl Editor {
     }
 
     fn picker_key(&mut self, key: Key) {
+        use crate::docpane::Which;
+        // (the query's `C-r` waiting for a register's name: the key is its)
+        if crate::prompt::under_way(self, Which::Picker, key) {
+            crate::prompt::edit(self, Which::Picker, key);
+            return self.picker_typed();
+        }
         let Some(p) = self.picker.as_mut() else { return };
-        // Anything but typing acts on the list — never on the last query's rows
-        if !matches!((key.code, key.ctrl, key.alt), (Code::Char(_), false, false) | (Code::Backspace, ..)) {
+        // The picker's own keys act on the list — never on the last query's rows; what edits the query (a character,
+        // `backspace`, `C-w`, `C-r` …) filters again after it, never waiting for the filtering it replaces
+        let owns = picker_owns(p, key);
+        if owns {
             p.filter_now();
         }
         // (the list's rows in sight, last frame)
@@ -3902,6 +3976,8 @@ impl Editor {
         // elsewhere it's typed)
         let q_closes = key.code == Code::Char('q') && !key.alt && p.keys;
         match (key.code, key.ctrl) {
+            // The query's first: no arm of the list's sees a key `picker_owns` leaves to it (one rule)
+            _ if !owns => return self.picker_typed_key(key),
             (Code::Esc, _) | (Code::Char('c'), true) | (Code::Char('q'), false)
                 if key.code != Code::Char('q') || q_closes =>
             {
@@ -4020,11 +4096,25 @@ impl Editor {
             // The preview pane
             (Code::Char('f'), true) => p.preview_scroll += 10,
             (Code::Char('b'), true) => p.preview_scroll = p.preview_scroll.saturating_sub(10),
-            (Code::Backspace, _) => p.pop(),
-            (Code::Char(c), false) if !key.alt => p.push(c),
-            _ => {}
+            // (a list whose letters are keys has no query to edit)
+            _ if p.keys => {}
+            // The query: `[prompt]` over `[insert]`, its cursor anywhere in it — what neither binds is typed (#153)
+            _ => return self.picker_typed_key(key),
         }
-        if matches!(key.code, Code::Backspace | Code::Char(_)) && !key.ctrl {
+        self.preview_theme();
+        self.code_action_preview();
+    }
+
+    /// A key for the picker's query — the picker's own keys didn't take it (`picker_owns`).
+    fn picker_typed_key(&mut self, key: Key) {
+        crate::prompt::edit(self, crate::docpane::Which::Picker, key);
+        self.picker_typed();
+    }
+
+    /// The picker's query may have changed (a key, a paste): the list filtered by it — a live search or the server's
+    /// symbols asked again.
+    fn picker_typed(&mut self) {
+        if self.picker.as_mut().is_some_and(|p| p.typed()) {
             self.workspace_symbols_requery();
             self.live_search();
         }
@@ -5260,7 +5350,7 @@ impl Editor {
     pub(crate) fn handle_prompt_key(&mut self, key: Key) {
         // (a sequence or an awaited character of the line's under way — `C-r`'s register, the `j` of a `j k`: a key
         // that goes on with it is the line's; else what it typed goes in first and the key is the prompt's as ever)
-        if crate::prompt::under_way(self, key) {
+        if crate::prompt::under_way(self, crate::docpane::Which::Prompt, key) {
             return crate::prompt::key(self, key);
         }
         let Some(prompt) = self.prompt.as_ref() else { return };
@@ -18283,7 +18373,7 @@ q = \"delete_selection\"\n",
         assert_eq!(ed.doc().text.to_string(), "fn main() {\n}\n");
         feed(&mut ed, " b");
         ed.handle_event(crate::event::Event::Paste("two\nwords".into()));
-        assert_eq!(ed.picker.as_ref().map(|p| p.query.as_str()), Some("two words"));
+        assert_eq!(ed.picker.as_ref().map(|p| p.query()), Some("two words"));
         assert_eq!(ed.doc().text.to_string(), "fn main() {\n}\n", "the buffer untouched");
         // Select mode: held too, and back to normal mode; `p` puts it after the selection
         feed(&mut ed, "<esc>ggvl");
@@ -18319,8 +18409,34 @@ q = \"delete_selection\"\n",
         }
         let p = ed.picker.as_ref().unwrap();
         assert!(!p.filtering, "settled by the move");
-        assert_eq!(p.query, "f5999");
+        assert_eq!(p.query(), "f5999");
         assert_eq!(p.shown().next().map(|i| i.label.as_str()), Some("d49/f5999.rs"), "the best match first");
+        // What edits the query never waits for the filtering it replaces (#153): `C-w` while a worker filters
+        // `d1 xf5999` (nothing has an `x`) asks a worker for `d1 f5999` — the old query never filtered here, the
+        // rows still the last settled one's
+        for k in ["C-a", "d", "1", "space", "x"] {
+            ed.handle_event(crate::event::Event::Key(k.parse().unwrap()));
+        }
+        assert!(ed.picker.as_ref().unwrap().filtering);
+        ed.handle_event(crate::event::Event::Key("C-w".parse().unwrap()));
+        let p = ed.picker.as_ref().unwrap();
+        assert_eq!(p.query(), "d1 f5999");
+        assert!(p.filtering, "the new query on a worker");
+        assert!(
+            p.counts().0 > 0,
+            "the rows still f5999's: `d1 xf5999` was never filtered on the main thread"
+        );
+        // The picker's own key with `alt` too (`C-A-d` is `C-d`, as its arm reads it): the filtering finished first,
+        // half a page down this query's rows, the query as it was
+        ed.handle_event(crate::event::Event::Key("C-A-d".parse().unwrap()));
+        let p = ed.picker.as_ref().unwrap();
+        assert!(!p.filtering, "finished before acting on the rows");
+        assert_eq!(p.query(), "d1 f5999", "C-A-d isn't the query's");
+        settle_until(&mut ed, |ed| !ed.picker.as_ref().unwrap().filtering);
+        for k in ["C-a", "C-k"] {
+            ed.handle_event(crate::event::Event::Key(k.parse().unwrap()));
+        }
+        settle_until(&mut ed, |ed| !ed.picker.as_ref().unwrap().filtering);
         // Closed while a worker filters (a query that takes all of them again): kept for `space '` with this
         // query's rows, nothing pending
         for k in ["backspace", "backspace", "backspace", "backspace", "backspace", "d"] {
@@ -18329,7 +18445,7 @@ q = \"delete_selection\"\n",
         assert!(ed.picker.as_ref().unwrap().filtering);
         ed.handle_event(crate::event::Event::Key("esc".parse().unwrap()));
         let kept = ed.last_picker.as_ref().unwrap();
-        assert!(!kept.filtering && kept.query == "d");
+        assert!(!kept.filtering && kept.query() == "d");
         assert_eq!(kept.counts().0, 60_000, "every one has a d");
     }
 
@@ -18707,7 +18823,7 @@ q = \"delete_selection\"\n",
         assert_eq!(line(&ed), 3, "the spot left is kept");
         feed(&mut ed, " jd<esc> '");
         let p = ed.picker.as_ref().expect("reopened");
-        assert_eq!((p.title.as_str(), p.query.as_str()), ("jumps", "d"));
+        assert_eq!((p.title.as_str(), p.query()), ("jumps", "d"));
         feed(&mut ed, "<esc>");
         let mut fresh = editor("x\n");
         feed(&mut fresh, " '");

@@ -1609,11 +1609,13 @@ impl Editor {
 
     /// The workspace symbol picker's query changed — re-ask after a 120 ms pause.
     pub fn workspace_symbols_requery(&mut self) {
-        let Some(query) = self.picker.as_ref().filter(|p| p.requery).map(|p| p.query.clone()) else { return };
+        let Some(query) = self.picker.as_ref().filter(|p| p.requery).map(|p| p.query().to_string()) else {
+            return;
+        };
         self.events.jobs().spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(120));
             move |ed: &mut Editor| {
-                if ed.picker.as_ref().is_some_and(|p| p.requery && p.query == query) {
+                if ed.picker.as_ref().is_some_and(|p| p.requery && p.query() == query) {
                     ed.lsp_request_raw(Kind::WorkspaceSymbols, "workspace/symbol", json!({ "query": query }));
                 }
             }

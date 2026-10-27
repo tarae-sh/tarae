@@ -331,7 +331,7 @@ pub fn prompt_key(ed: &mut Editor, key: Key) -> bool {
     // (a sequence of the line's under way — the `j` of `[keys.insert] j = { k = … }`, `C-r` waiting: a key that goes
     // on with it is the line's; else what it typed goes in first, so `enter` searches with it and `backspace` sees
     // the line as it is)
-    if crate::prompt::under_way(ed, key) {
+    if crate::prompt::under_way(ed, crate::docpane::Which::Prompt, key) {
         ed.handle_prompt_key(key);
         prompt_typed(ed);
         return true;

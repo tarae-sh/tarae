@@ -231,7 +231,9 @@ configs carry over as they are.
   quietly, no error. Lists fill in on a worker thread. `C-n`/`C-p` or arrows, `Tab`, `C-d`/`C-u` half the rows in
   sight, `PageDown`/`PageUp` all of them, `Home`/`End` the first and last, `Enter`, `Esc` — and Helix's: `C-v` opens a
   file or a place beside, `C-s` under (a split), `A-Enter` opens it with the list kept up, `C-t` puts the preview away
-  and back
+  and back. The query edits as a prompt's line does: its cursor goes anywhere in it (`←` `→`, `C-a` `C-e`, a word
+  with `A-b` `A-f`, a press on it), Helix's prompt keys delete there (`C-w`, `C-k`, `A-d` …) and a drag selects —
+  the picker's own keys first; what's typed narrows the list at once
 - **Side panel** — `space e` shows the project's files as a tree left of the code, `space o` the outline of the
   file you're editing (its functions, types, and modules from the tree-sitter tree, nested — no language server
   needed), `space q` the list below, `space g` git. Left alone it follows you: the current file with its folders

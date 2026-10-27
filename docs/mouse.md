@@ -44,7 +44,8 @@ that fills it (S selection, R resize, W words, O overlays and buttons).
 | Cards | an answer, the card | ✓ | — the press did it | ✗ O: says v shows it whole to copy (Q11) | as one press | ✗ O: a cut card's body scrolls | — nothing on hover |
 | The notification card |  | ✓ | — the press did it | — the press opened :messages | — the first press opened :messages | — news isn't scrolled | — nothing on hover |
 | A picker | a row | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | ✓ | ✓ | — nothing on hover |
-| A picker | its query | ✗ O: its query: a cursor there | — the press did it | ✗ S: a drag follows the pointer's row | as one press | ✓ | — nothing on hover |
+| A picker | its query | ✓ | — the press did it | ✓ | as one press | ✓ | — nothing on hover |
+| A picker | its frame's other rows | — no row there | — the press did it | ✗ S: a drag follows the pointer's row | as one press | ✓ | — nothing on hover |
 | A picker | outside it | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | — the first press closed it | ✓ | — nothing on hover |
 | A picker's preview |  | says: a press on a row of the list picks it | — the press did it | ✗ S: the preview's text selects | as one press | ✓ | — nothing on hover |
 | The prompt | a completion | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | as one press | ✗ O: its completions scroll | — nothing on hover |

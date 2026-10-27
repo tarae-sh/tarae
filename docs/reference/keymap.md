@@ -543,6 +543,7 @@ Keys of what's up on the screen — not rebindable, so not in `default_keys.toml
 | A picker | `C-n` `C-p` `↓` `↑` `Tab` · `C-d` `C-u` · `PageDown` `PageUp` · `Home` `End` | A row · half the rows in sight · all of them · the first and last |
 | A picker of files or places | `C-v` `C-s` · `A-ret` | Open it in a split, beside · under (Helix's keys) · open it, the list kept up |
 | A picker | `C-t` · `C-f` `C-b`, wheel over it | The preview away and back · scroll it |
+| A picker's query | `[keys.prompt]` over insert mode's moves and deletes, a press, a drag | Edit it as a prompt's line, its cursor anywhere — the picker's own keys above come first (`←` `→` open and fold in the file tree while nothing is typed) |
 
 ## Inside zellij
 

@@ -432,6 +432,163 @@ fn a_press_and_a_drag_in_the_line() {
     );
 }
 
+/// An editor with a picker of `labels` up, `keys` fed to it (the picker's tests, #153's next step).
+fn picker(config: Config, labels: &[&str], keys: &str) -> Editor {
+    let mut ed = Editor::new(config);
+    let item = |l: &&str| crate::picker::Item {
+        label: l.to_string(),
+        action: crate::picker::Action::Typed(l.to_string()),
+        hint: String::new(),
+        glyph: None,
+    };
+    ed.open_picker(crate::picker::Picker::new("things", labels.iter().map(item).collect(), false), None);
+    feed(&mut ed, keys);
+    ed
+}
+
+/// The picker's query, a `|` where its cursor is — and the list filtered by what it holds.
+fn query(ed: &Editor) -> String {
+    let p = ed.picker.as_ref().expect("a picker up");
+    let (text, at) = (p.input.text(), p.input.cursor());
+    assert_eq!(p.query(), text, "the list filtered by the line as it is");
+    format!("{}|{}", &text[..at], &text[at..])
+}
+
+/// A picker's query edits as the prompt's line does: Helix's prompt keys where the picker has none of its own, each
+/// from the middle of `abc def ghi`; the code's document stays current and untouched.
+#[test]
+fn a_pickers_query_edits_as_the_prompts_line() {
+    let mid = "<left><left><left><left>";
+    let rows = [
+        ("<left>X", "abc deX|f ghi"),
+        ("<right>X", "abc def X|ghi"),
+        ("<C-a>X", "X|abc def ghi"),
+        ("<C-e>X", "abc def ghiX|"),
+        ("<A-b>X", "abc X|def ghi"),
+        ("<C-left>X", "abc X|def ghi"),
+        ("<A-f>X", "abc def X|ghi"),
+        ("<C-right>X", "abc def X|ghi"),
+        ("<C-w>", "abc | ghi"),
+        ("<A-backspace>", "abc | ghi"),
+        ("<A-d>", "abc def|"),
+        ("<A-del>", "abc def|"),
+        ("<C-k>", "abc def|"),
+        ("<backspace>", "abc de| ghi"),
+        ("<C-h>", "abc de| ghi"),
+        ("<del>", "abc def|ghi"),
+        ("<C-r>a", "abc defREG| ghi"),
+        ("7(", "abc def7(| ghi"),
+    ];
+    for (keys, want) in rows {
+        let mut ed = picker(Config::default(), &["one"], "");
+        ed.write_register('a', vec!["REG".into()]);
+        feed(&mut ed, &format!("abc def ghi{mid}{keys}"));
+        assert_eq!(query(&ed), want, "{keys}");
+        assert_eq!(ed.doc().id, ed.docs[0].id, "{keys}: the code's document is current");
+        assert!(ed.doc().text == "", "{keys}: the code untouched");
+    }
+    // An edit mid-query filters the list by the whole line
+    let mut ed = picker(Config::default(), &["src/term.rs", "src/editor.rs"], "trm<left><left>e");
+    assert_eq!(query(&ed), "te|rm");
+    assert_eq!(ed.picker.as_ref().unwrap().counts().0, 1, "only term.rs has `term`");
+    // `C-r` waits for the register's name: in the state, and `esc` lets the wait go with the picker still up
+    feed(&mut ed, "<C-r>");
+    assert!(ed.keys_to().char_next, "the next key is a register's name");
+    assert_eq!(ed.keys_to().region, crate::uistate::Region::Picker);
+    feed(&mut ed, "<esc>");
+    assert!(ed.picker.is_some() && !ed.keys_to().char_next, "esc let the wait go");
+}
+
+/// A paste goes into the picker's query at its cursor, one line, and the list is filtered by the whole of it.
+#[test]
+fn a_paste_goes_into_a_pickers_query_at_its_cursor() {
+    let mut ed = picker(Config::default(), &["src/term.rs", "src/editor.rs", "docs/term.md"], "src.rs");
+    assert_eq!(ed.picker.as_ref().unwrap().counts().0, 2);
+    feed(&mut ed, "<left><left><left>");
+    ed.handle_event(crate::event::Event::Paste("te\nrm".into()));
+    assert_eq!(query(&ed), "srcte rm|.rs", "at the cursor, its line break a space");
+    assert_eq!(ed.picker.as_ref().unwrap().counts().0, 1, "only src/term.rs");
+}
+
+/// The picker's own keys come first (Helix: prompt keys work in pickers except where they conflict): `C-d` `C-u`
+/// half a page, `C-f` `C-b` the preview, `home` `end` the rows, `C-n` `C-p` `tab` a row — the query as it was.
+#[test]
+fn a_pickers_own_keys_come_before_the_querys() {
+    let labels = ["a1", "a2", "a3", "a4"];
+    for key in ["<C-d>", "<C-u>", "<C-f>", "<C-b>", "<home>", "<end>", "<C-n>", "<C-p>", "<tab>", "<S-tab>"] {
+        let ed = picker(Config::default(), &labels, &format!("a<left>{key}"));
+        assert_eq!(query(&ed), "|a", "{key}: the query as it was");
+    }
+    let ed = picker(Config::default(), &labels, "a<end>");
+    assert_eq!(ed.picker.as_ref().unwrap().selected, 3, "end: the last row");
+    let ed = picker(Config::default(), &labels, "a<C-n><C-n>");
+    assert_eq!(ed.picker.as_ref().unwrap().selected, 2, "C-n: a row down");
+}
+
+/// What's typed narrows the list at once: a sequence bound in insert mode (`j k`) never holds a character back in
+/// a picker — `j` filters as it's typed, `jk` is text.
+#[test]
+fn a_pickers_query_narrows_as_each_character_is_typed() {
+    let (config, w) = crate::config::parse("[keys.insert]\nj = { k = \"normal_mode\" }\n");
+    assert!(w.is_empty(), "{w:?}");
+    let mut ed = picker(config, &["jk", "jx", "ab"], "j");
+    assert_eq!(query(&ed), "j|", "the `j` typed at once");
+    assert_eq!(ed.picker.as_ref().unwrap().counts().0, 2);
+    assert!(ed.pending_display().is_empty(), "nothing under way");
+    feed(&mut ed, "k");
+    assert_eq!(query(&ed), "jk|");
+    assert_eq!(ed.picker.as_ref().unwrap().counts().0, 1);
+}
+
+/// What `[insert]` binds that isn't for one line, and an unbound `A-` key, are said in the picker's words; an empty
+/// query's deletes say there's nothing to delete. The query as it was.
+#[test]
+fn keys_not_for_a_pickers_query_are_said() {
+    for key in ["<C-j>", "<C-x>", "<A-z>"] {
+        let ed = picker(Config::default(), &["ab"], &format!("ab<left>{key}"));
+        assert_eq!(query(&ed), "a|b", "{key}");
+        assert!(said(&ed).contains("does nothing in the list's query"), "{key}: {}", said(&ed));
+    }
+    let ed = picker(Config::default(), &["ab"], "<C-w>");
+    assert_eq!(said(&ed), "nothing to delete — esc close");
+    assert!(ed.picker.is_some());
+}
+
+/// A press on the picker's query puts its cursor on the character pressed, the terminal's cursor drawn there; a drag
+/// selects, washed as the prompt's line is; typing goes on at the cursor. A long query keeps its cursor in sight.
+#[test]
+fn a_press_and_a_drag_in_a_pickers_query() {
+    crossterm::style::force_color_output(true);
+    let mut ed = picker(Config::default(), &["write a.rs"], "write a.rs b.rs");
+    frame(&mut ed);
+    let d = ed.screen.picker_input.get().expect("its query drawn");
+    let mouse = |ed: &mut Editor, kind, x: usize| {
+        ed.handle_mouse(crate::event::Mouse { kind, x: x as u16, y: d.y as u16, alt: false, ctrl: false });
+    };
+    mouse(&mut ed, K::Down, d.x + 6);
+    assert_eq!(query(&ed), "write |a.rs b.rs", "on the character pressed");
+    let s = frame(&mut ed);
+    assert_eq!(s.cursor_position(), (d.y as u16, (d.x + 6) as u16), "the terminal's cursor there");
+    mouse(&mut ed, K::Drag, d.x + 9);
+    mouse(&mut ed, K::Up, d.x + 9);
+    assert!(ed.picker.is_some(), "the drag kept it up");
+    let r = ed.picker.as_ref().unwrap().input.pane.doc().selection().primary();
+    assert_eq!((r.from(), r.to()), (6, 10), "`a.rs` selected, both ends included");
+    let s = frame(&mut ed);
+    let (plain, washed) =
+        (s.cell(d.y as u16, d.x as u16).unwrap(), s.cell(d.y as u16, (d.x + 7) as u16).unwrap());
+    assert_ne!(plain.bgcolor(), washed.bgcolor(), "the selection washed");
+    feed(&mut ed, "<C-a>X");
+    assert_eq!(query(&ed), "X|write a.rs b.rs");
+    // A long query: its end in sight, then its start once the cursor goes there
+    let mut ed = picker(Config::default(), &["x"], &"x".repeat(200));
+    frame(&mut ed);
+    assert!(ed.screen.picker_input.get().unwrap().first > 0, "the end in sight, the start cut");
+    feed(&mut ed, "<C-a>");
+    frame(&mut ed);
+    assert_eq!(ed.screen.picker_input.get().unwrap().first, 0, "the start in sight with the cursor");
+}
+
 /// The line's first byte drawn is the last frame's: an edit before the next frame (a paste, a key in the same batch)
 /// can leave it inside a character — a press then lands on a character boundary, never panics.
 #[test]

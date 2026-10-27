@@ -284,7 +284,7 @@ impl Editor {
                 .collect();
             p.picker = Some(Picker {
                 title: pk.title.clone(),
-                query: pk.query.clone(),
+                query: pk.query().to_string(),
                 rows,
                 total: pk.counts().0,
                 loading: pk.loading || pk.searching || pk.filtering,

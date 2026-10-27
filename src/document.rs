@@ -234,6 +234,9 @@ pub const CHAT_INPUT: DocId = DocId::MAX - 1;
 /// The id of the prompt's line (`prompt.rs`) — no buffer's either; swapped in as the chat's input is.
 pub const PROMPT_INPUT: DocId = DocId::MAX - 2;
 
+/// The id of a picker's query (`Picker.input`) — the prompt's line's kind, in a picker.
+pub const PICKER_INPUT: DocId = DocId::MAX - 3;
+
 /// File → rope. A missing file gives an empty rope (created on save).
 pub fn read_file(path: &Path) -> Result<Rope> {
     match File::open(path) {
