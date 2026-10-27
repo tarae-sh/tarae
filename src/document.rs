@@ -711,6 +711,18 @@ impl Document {
         (self.undo, self.redo) = (Vec::new(), Vec::new());
     }
 
+    /// A view tarae opened to show something — a quote whole, a card's `v`, a run's output, the tutor, a deleted file
+    /// in a review (`Editor::open_virtual`'s): no file of yours, so never the file in front where the chat names it
+    /// (`Editor::front_file`; the user, 2026-10-27). A web page and the woven view say what they are themselves
+    /// (`chat::context`); a language server's own document (`jdt://`, `virtual_uri`) is code you're reading.
+    pub fn is_view(&self) -> bool {
+        self.throwaway
+            && self.path.is_none()
+            && self.page.is_none()
+            && self.woven.is_none()
+            && self.virtual_uri.is_none()
+    }
+
     /// A read-only document (`read_only`) as it's kept: an edit since put back, the selection where it was before
     /// it. Whether one was.
     pub fn hold_read_only(&mut self) -> bool {

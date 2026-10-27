@@ -26,6 +26,7 @@ that fills it (S selection).
 | The chat's input | text | ✓ | — the press did it | ✓ | ✓ | ✓ | — a cut row comes whole under it |
 | The chat | its top line, its gaps | ✓ | — the press did it | — tiled panes don't move — its line toward the code sizes it | as one press | ✓ | — nothing on hover |
 | The chat | a session's name, `+N` | ✓ | — the press did it | — tiled panes don't move — its line toward the code sizes it | as one press | ✓ | ✓ |
+| The chat | what goes with the message over its input (a quote, `screen`, an element pointed at, `N things`) | ✓ | — the press did it | — tiled panes don't move — its line toward the code sizes it | as one press | ✓ | ✓ |
 | The chat | `follow`, `paused`, the turn's word, the model, a key hint at its foot | ✓ | — the press did it | — tiled panes don't move — its line toward the code sizes it | as one press | ✓ | ✓ |
 | The follow card | a trail row, the card | ✓ | — the press did it | — placed by rule | as one press | — nothing to scroll | — nothing on hover |
 | The follow card | a strip mark | ✓ | — the press did it | — placed by rule | as one press | — nothing to scroll | ✓ |

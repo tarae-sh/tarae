@@ -213,6 +213,21 @@ impl Editor {
         self.record(i, old);
     }
 
+    /// The file in front where the chat names it — its placeholder, its start line, Claude's context: the current
+    /// document, but never a view (`Document::is_view`): in its place the document seen before it in the focused pane
+    /// (`ga`'s, else the newest of its jumps that's no view). None: no file seen before it.
+    pub fn front_file(&self) -> Option<&crate::document::Document> {
+        let d = self.doc();
+        if !d.is_view() {
+            return Some(d);
+        }
+        let real = |id: DocId| self.docs.iter().find(|d| d.id == id && !d.is_view());
+        let view = self.workspace.views.iter().find(|v| v.id == self.workspace.viewer.focus)?;
+        // (the pane's document until the switch is tracked at the next event, then the one before it)
+        let before = [Some(view.doc), view.last_doc].into_iter().flatten().find_map(real);
+        before.or_else(|| (0..view.jumps.len()).rev().find_map(|i| real(view.jumps.get(i)?.doc)))
+    }
+
     /// `C-o` — `n` spots back. Leaving the newest spot records it first, so `C-i` returns there.
     pub fn jump_backward(&mut self, n: usize) {
         self.track_doc_switch();

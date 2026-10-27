@@ -506,6 +506,283 @@ fn a_chip_too_wide_is_cut_and_several_are_counted() {
     assert!(narrow(&mut ed).contains("2 things go with it"));
 }
 
+/// The mouse over a chip over the input shows what goes with the message (#185), on a card over it that moves nothing:
+/// a quote's lines as they go (past the card's rows, how many more), an element pointed at as the message says it, the
+/// screen as its rows; over `N things`, each chip. The mouse away lets it go.
+#[test]
+fn the_mouse_over_a_chip_shows_what_goes_with_the_message() {
+    use crate::event::Event;
+    use crate::whole::Cut;
+    let chip = |ed: &Editor, which: Option<usize>| {
+        let spots = ed.screen.cut_spots.borrow();
+        let s = spots.iter().find(|s| s.3 == Cut::With(which)).cloned();
+        s.map(|s| ((s.1 + s.2) as u16 / 2, s.0 as u16)).unwrap_or_else(|| panic!("no chip {which:?}"))
+    };
+    let (mut ed, _claude) = code();
+    let text = (1..=40).map(|i| format!("let line_{i:02} = {i};")).collect::<Vec<_>>().join("\n");
+    let mut long = taken(&text, false);
+    long.label = "src/a.rs L1–40".into();
+    add(&mut ed, vec![long]);
+    let before = frame(&mut ed);
+    assert!(!before.contains("let line_01"), "nothing until the mouse is over it:\n{before}");
+    let (x, y) = chip(&ed, Some(0));
+    ed.handle_event(Event::Hover(x, y));
+    let shown = frame(&mut ed);
+    assert_eq!(ed.cut_hover, Some(Cut::With(Some(0))));
+    // (its label, its first lines as they go, then how many more past the card's rows — the input where it was)
+    assert!(shown.contains("let line_01 = 1;") && shown.contains("let line_14 = 14;"), "{shown}");
+    assert!(!shown.contains("let line_15") && shown.contains("↓ 26 more lines"), "{shown}");
+    let rows: Vec<&str> = shown.lines().collect();
+    assert!(rows[y as usize].contains("goes with it"), "the line under it stays:\n{shown}");
+    ed.handle_event(Event::Hover(0, 0));
+    assert_eq!(frame(&mut ed), before, "the mouse away lets it go");
+    // Three things, folded: each chip whole
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.screen = Some(crate::chat::Shot { text: "the screen as seen".into(), cols: 80, rows: 24 });
+    c.with.push(crate::chat::With::Screen);
+    c.pointed.push("card#9".into());
+    c.with.push(crate::chat::With::Pointed);
+    c.quotes[0].label = "src/a/rather/long/path/to/a/module.rs L1–40".into();
+    let folded = frame(&mut ed);
+    assert!(folded.contains("3 things go with it"), "{folded}");
+    let (x, y) = chip(&ed, None);
+    ed.handle_event(Event::Hover(x, y));
+    let shown = frame(&mut ed);
+    for chip in ["src/a/rather/long/path/to/a/module.rs L1–40", "screen 80×24", "card#9"] {
+        assert!(shown.contains(chip), "{chip}:\n{shown}");
+    }
+    // Each on its own: the screen as its rows, the element as the message says it
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.quotes.clear();
+    c.with.retain(|w| *w != crate::chat::With::Quote);
+    frame(&mut ed);
+    let (x, y) = chip(&ed, Some(0));
+    ed.handle_event(Event::Hover(x, y));
+    assert!(frame(&mut ed).contains("its 24 rows go as text"));
+    let said = crate::chat::pointed_said(&ed, "card#9", &[]);
+    let (x, y) = chip(&ed, Some(1));
+    ed.handle_event(Event::Hover(x, y));
+    let shown = frame(&mut ed);
+    assert!(shown.contains(&said[..said.len().min(30)]), "{said:?}:\n{shown}");
+}
+
+/// The chip `which` stands for, where it's drawn: its middle cell.
+fn chip_cell(ed: &Editor, which: Option<usize>) -> (u16, u16) {
+    let spots = ed.screen.cut_spots.borrow();
+    let s = spots.iter().find(|s| s.3 == crate::whole::Cut::With(which)).cloned();
+    s.map(|s| ((s.1 + s.2) as u16 / 2, s.0 as u16)).unwrap_or_else(|| panic!("no chip {which:?}"))
+}
+
+/// A press and its release on the chip `which` stands for.
+fn press(ed: &mut Editor, which: Option<usize>) {
+    use crate::event::{Mouse, MouseKind};
+    let (x, y) = chip_cell(ed, which);
+    for kind in [MouseKind::Down, MouseKind::Up] {
+        ed.handle_mouse(Mouse { kind, x, y, alt: false, ctrl: false });
+    }
+    frame(ed);
+}
+
+/// A quote of the code keeps its colours as it's taken, from the tree its document has (#185): the hover card draws
+/// its lines in them, and a press on its chip opens it whole in a read-only buffer, in them too, the code with the keys
+/// — pressed again, the same buffer; the chip stays (Backspace takes it off, never a press).
+#[test]
+fn a_code_quote_shows_in_its_colours_and_a_press_reads_it_whole() {
+    let Ok(rust) = crate::syntax::Loader::global().load(crate::syntax::spec("rust").unwrap()) else {
+        return;
+    };
+    let (mut ed, _claude) = code();
+    // (a file's: the startup scratch would give its place to the buffer a press opens)
+    ed.docs[0].path = Some(ed.workspace.root.join("src/main.rs"));
+    ed.docs[0].syntax = Some(crate::syntax::Syntax::parsed(rust, &ed.docs[0].text));
+    feed(&mut ed, "% >");
+    let q = ed.workspace.claude.chat.as_ref().unwrap().quotes[0].clone();
+    assert!(!q.paint.is_empty(), "its colours taken with it");
+    // The hover card: `fn` and `main` in the code's colours, not the card's one ink
+    let (x, y) = chip_cell(&ed, Some(0));
+    ed.handle_event(crate::event::Event::Hover(x, y));
+    crossterm::style::force_color_output(true);
+    let mut bytes = Vec::new();
+    crate::term::render(&mut ed, &mut bytes, 140, 34).unwrap();
+    let mut vt = vt100::Parser::new(34, 140, 0);
+    vt.process(&bytes);
+    let screen = vt.screen();
+    let rows: Vec<String> = screen.rows(0, 140).collect();
+    let row =
+        (0..y as usize).rev().find(|&r| rows[r].contains("fn main() {}")).expect("its line on the card");
+    assert!(row + 4 >= y as usize, "the card's, right over the chip: row {row}\n{}", rows.join("\n"));
+    let col = rows[row].chars().collect::<Vec<_>>().windows(2).rposition(|w| w == ['f', 'n']).unwrap() as u16;
+    let fg = |c: u16| screen.cell(row as u16, c).map(|c| c.fgcolor());
+    assert_ne!(fg(col), fg(col + 3), "`fn` and `main` coloured apart");
+    // A press: the quote whole in a read-only buffer of its own, in its colours, the code with the keys
+    let docs = ed.docs.len();
+    press(&mut ed, Some(0));
+    let d = ed.doc();
+    assert_eq!(d.title.as_deref(), Some(format!("quoted · {}", q.label).as_str()));
+    assert!(d.text == q.text.as_str() && d.read_only.is_some() && d.paint == q.paint);
+    assert!(ed.workspace.is_at(crate::workspace::At::Code));
+    assert_eq!(
+        ed.workspace.claude.chat.as_ref().unwrap().quotes,
+        std::slice::from_ref(&q),
+        "a press never takes it off"
+    );
+    let id = ed.doc().id;
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    frame(&mut ed);
+    press(&mut ed, Some(0));
+    assert_eq!((ed.doc().id, ed.docs.len()), (id, docs + 1), "pressed again, the same buffer");
+}
+
+/// A press on the other chips (#185): the screen opens its frame as text in a read-only buffer, an element pointed at
+/// comes into sight as a link to it does (`ui_jump` — one gone says so); `3 things` gives the chat the keys and nothing
+/// else. None is taken off.
+#[test]
+fn a_press_on_a_chip_shows_what_goes_and_takes_nothing_off() {
+    let (mut ed, _claude) = code();
+    let mut long = taken("x", false);
+    long.label = "src/a/rather/long/path/to/a/module.rs L1–40".into();
+    add(&mut ed, vec![long]);
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.screen = Some(crate::chat::Shot { text: "the screen as seen".into(), cols: 80, rows: 24 });
+    c.with.push(crate::chat::With::Screen);
+    c.pointed.push("card#9".into());
+    c.with.push(crate::chat::With::Pointed);
+    assert!(frame(&mut ed).contains("3 things go with it"));
+    let (docs, current) = (ed.docs.len(), ed.doc().id);
+    press(&mut ed, None);
+    assert_eq!((ed.docs.len(), ed.doc().id), (docs, current), "3 things: nothing opened");
+    assert!(ed.workspace.is_at(crate::workspace::At::Chat), "the chat has the keys");
+    let with = |ed: &Editor| ed.workspace.claude.chat.as_ref().unwrap().with_chips().len();
+    assert_eq!(with(&ed), 3);
+    // (the quote off: the screen and the element fit, each a chip)
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.quotes.clear();
+    c.with.retain(|w| *w != crate::chat::With::Quote);
+    frame(&mut ed);
+    press(&mut ed, Some(0));
+    let d = ed.doc();
+    assert_eq!(d.title.as_deref(), Some("screen 80×24"));
+    assert!(d.text == "the screen as seen" && d.read_only.is_some());
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    ed.status = None;
+    frame(&mut ed);
+    press(&mut ed, Some(1));
+    let said = ed.messages.last().map(|m| m.2.clone()).unwrap_or_default();
+    assert_eq!(said, "card#9 — no such element", "a link to it, said gone");
+    assert_eq!(with(&ed), 2, "none taken off");
+}
+
+fn in_rust(ed: &mut Editor, text: &str) -> bool {
+    let Ok(rust) = crate::syntax::Loader::global().load(crate::syntax::spec("rust").unwrap()) else {
+        return false;
+    };
+    ed.docs[0].text = Rope::from_str(text);
+    ed.docs[0].path = Some(ed.workspace.root.join("src/main.rs"));
+    ed.docs[0].syntax = Some(crate::syntax::Syntax::parsed(rust, &ed.docs[0].text));
+    true
+}
+
+/// The reviewer's crash: a file with `\r\n` endings and Korean in it, quoted — the quote's lines joined with `\n`
+/// are shorter than the file's bytes, and its end in the file fell inside a character. Taken, never sliced there: no
+/// panic (release aborts on one), the quote as it was taken, its colours none (its bytes aren't the file's).
+#[test]
+fn a_crlf_file_with_korean_quoted_never_panics() {
+    let (mut ed, _claude) = code();
+    if !in_rust(&mut ed, "fn a() {}\r\n// 한국어 주석\r\n") {
+        return;
+    }
+    feed(&mut ed, "% >");
+    let q = ed.workspace.claude.chat.as_ref().unwrap().quotes[0].clone();
+    assert_eq!(q.text, "fn a() {}\n// 한국어 주석");
+    assert!(q.paint.is_empty(), "not the file's bytes: no colours");
+}
+
+/// A quote cut to its room keeps the colours of what it kept on both sides of `… cut …` — a keyword after the marker
+/// coloured as it is in the file, at its place in the quote.
+#[test]
+fn a_cut_quote_keeps_its_colours_after_the_cut() {
+    let (mut ed, _claude) = code();
+    let text: String = (0..2000).map(|i| format!("let v{i} = {i};\n")).collect();
+    if !in_rust(&mut ed, &text) {
+        return;
+    }
+    feed(&mut ed, "% >");
+    let q = ed.workspace.claude.chat.as_ref().unwrap().quotes[0].clone();
+    let marker = q.text.find(" cut …").expect("cut");
+    let after = marker + q.text[marker..].find("let ").unwrap();
+    let last = q.text.rfind("let ").unwrap();
+    let d = &ed.docs[0];
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut in_file = |at: usize| {
+        let spans = crate::syntax::highlights(d.syntax.as_ref().unwrap(), &d.text, at..at + 3, &mut cursor);
+        spans.iter().find(|s| (s.0, s.1) == (at, at + 3)).map(|s| s.2)
+    };
+    let keyword = in_file(text.rfind("let ").unwrap()).expect("`let` coloured in the file");
+    let at = |i: usize| q.paint.iter().find(|s| (s.0, s.1) == (i, i + 3)).map(|s| s.2);
+    assert_eq!(at(after), Some(keyword), "the first `let` after the cut");
+    assert_eq!(at(last), Some(keyword), "the last");
+    assert_eq!(at(0), Some(keyword), "the first, before the cut");
+    // (one long line, cut by its characters: the same on both sides)
+    let (mut ed, _claude) = code();
+    let line: String = (0..2000).map(|i| format!("let v{i} = {i}; ")).collect();
+    in_rust(&mut ed, &format!("fn f() {{ {line}}}\n"));
+    feed(&mut ed, "% >");
+    let q = ed.workspace.claude.chat.as_ref().unwrap().quotes[0].clone();
+    let marker = q.text.find(" bytes cut …").expect("cut by its characters");
+    let after = marker + q.text[marker..].find("let ").unwrap();
+    let at = |i: usize| q.paint.iter().find(|s| (s.0, s.1) == (i, i + 3)).map(|s| s.2);
+    assert_eq!(at(after), Some(keyword), "after a cut by characters");
+}
+
+/// A language server's own document (`jdt://`, its `virtual_uri`) is code you're reading, not a view tarae opened to
+/// show you something: it stands for the file in front, as a file does.
+#[test]
+fn a_language_servers_document_is_the_file_in_front() {
+    let (mut ed, _claude) = code();
+    ed.docs[0].path = Some(ed.workspace.root.join("src/main.rs"));
+    let id = ed.open_virtual("String.class", "public final class String {}\n");
+    let d = ed.docs.iter_mut().find(|d| d.id == id).unwrap();
+    d.virtual_uri = Some("jdt://contents/rt.jar/java.lang/String.class".into());
+    assert!(!ed.doc().is_view());
+    assert_eq!(ed.front_file().map(|d| d.id), Some(id));
+    crate::chat::open(&mut ed);
+    assert!(frame(&mut ed).contains("Ask about String.class…"));
+}
+
+/// A view of tarae's in front never stands for the file in front (the user, 2026-10-27): a quote's buffer, then a
+/// card's `v` buffer over it — the chat's placeholder, its start line and Claude's context name the file seen before
+/// them, and the views not at all.
+#[test]
+fn a_view_in_front_never_stands_for_the_file_in_front() {
+    use crate::offer::{CARD_VIEW, Offer, What};
+    let (mut ed, claude) = code();
+    ed.docs[0].path = Some(ed.workspace.root.join("src/main.rs"));
+    feed(&mut ed, "x >");
+    let named = |ed: &mut Editor, view: &str| {
+        let shown = frame(ed);
+        assert!(ed.doc().title.as_deref().is_some_and(|t| t.starts_with(view)), "{view} in front");
+        assert!(shown.contains("Ask about main.rs…") && shown.contains("starting from main.rs."), "{shown}");
+    };
+    press(&mut ed, Some(0));
+    named(&mut ed, "quoted · ");
+    let long: String = (1..=80).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+    ed.push_offer(Offer::new(
+        "Claude wants to run".into(),
+        &long,
+        "",
+        String::new(),
+        What::ProjectTrust { hash: [0; 32] },
+    ));
+    ed.offer_view_all();
+    named(&mut ed, CARD_VIEW);
+    // Claude's context: the file, its text — neither view named
+    assert!(crate::chat::submit(&mut ed, "what is this?", None, None));
+    let sent = sent(&claude);
+    let ctx = sent.first().map(String::as_str).unwrap_or_default();
+    assert!(ctx.contains("file: src/main.rs (") || ctx.contains("file: src/main.rs\n"), "{ctx}");
+    assert!(ctx.contains("let code = 1;") && !ctx.contains("quoted ·") && !ctx.contains(CARD_VIEW), "{ctx}");
+}
+
 /// Enter with nothing typed sends nothing — said, and with what's over the input, what it waits for.
 #[test]
 fn enter_with_nothing_typed_says_so() {

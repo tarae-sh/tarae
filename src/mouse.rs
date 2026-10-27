@@ -147,6 +147,9 @@ pub enum Word {
     Stop(usize),
     /// A word that names a state, a key hint's pair: its key (its index in `Screen.word_spots` — `wordspot.rs`).
     Does(usize),
+    /// A chip over the chat's input, of what goes with the message (`whole::Cut::With`: the `n`th, or None for `N
+    /// things`): what goes, on a card over it; pressed, it whole (`quote::pressed`).
+    With(Option<usize>),
 }
 
 /// A place in the chat that goes somewhere, by its index in its record.
@@ -202,7 +205,14 @@ impl Under {
         let word = matches!(
             self.part,
             Part::Frame(_)
-                | Part::Word(Word::Now | Word::Session(_) | Word::Tab(_) | Word::Member(_) | Word::Does(_))
+                | Part::Word(
+                    Word::Now
+                        | Word::Session(_)
+                        | Word::Tab(_)
+                        | Word::Member(_)
+                        | Word::Does(_)
+                        | Word::With(_)
+                )
         );
         !early && !word
     }
@@ -616,6 +626,13 @@ impl Editor {
             }
             if let Some(i) = links(y) {
                 return at(S::Transcript, Part::Link(Link::Chat(i)));
+            }
+            let chip = |l: &(usize, usize, usize, crate::whole::Cut)| match l.3 {
+                crate::whole::Cut::With(which) if on(l.0, l.1, l.2, x, y) => Some(which),
+                _ => None,
+            };
+            if let Some(which) = s.cut_spots.borrow().iter().find_map(chip) {
+                return at(S::Chat, Part::Word(Word::With(which)));
             }
             if s.chat_input_row(y).is_some() {
                 return at(S::Input, self.input_text(x, y));
@@ -1387,6 +1404,12 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ("The chat's input", "text", Su::Input, text),
         ("The chat", "its top line, its gaps", Su::Chat, Part::Blank),
         ("The chat", "a session's name, `+N`", Su::Chat, Part::Word(Word::Session(Spot::List))),
+        (
+            "The chat",
+            "what goes with the message over its input (a quote, `screen`, an element pointed at, `N things`)",
+            Su::Chat,
+            Part::Word(Word::With(Some(0))),
+        ),
         (
             "The chat",
             "`follow`, `paused`, the turn's word, the model, a key hint at its foot",

@@ -30,6 +30,9 @@ pub enum Cut {
     Now,
     /// A text cut to `…` where it stands (`cut_at`): whole on a card over it (`term::cut_card`).
     Text(Box<Whole>),
+    /// A chip over the chat's input of what goes with the message (#185) — the `n`th of them, or None: `N things`, all
+    /// of them folded — what goes on a card over it (`term::with_card`).
+    With(Option<usize>),
 }
 
 /// A text cut where it's drawn: the whole of it, as it was drawn, and the columns its card may take (`[from, to)` — the
@@ -93,17 +96,16 @@ pub fn held(ed: &Editor) -> [Option<Cut>; 2] {
 
 /// The cut row at (`x`, `y`) on the frame last drawn.
 fn under(ed: &Editor, x: usize, y: usize) -> Option<Cut> {
-    // (the last drawn first; a cut text only where what it's drawn on is what the pointer is over)
+    // (the last drawn first; a cut text only where what it's drawn on is what the pointer is over, a chip only where the
+    // chat is)
     let mut surface = None;
-    let mut takes = |w: &Whole| {
-        w.on.under(
-            *surface.get_or_insert_with(|| ed.mouse_under(crate::event::MouseKind::Down, x, y).surface),
-        )
-    };
+    let mut at =
+        || *surface.get_or_insert_with(|| ed.mouse_under(crate::event::MouseKind::Down, x, y).surface);
     let spots = ed.screen.cut_spots.borrow();
     let mut here = spots.iter().rev().filter(|s| s.0 == y && (s.1..s.2).contains(&x));
     here.find(|s| match &s.3 {
-        Cut::Text(w) => takes(w),
+        Cut::Text(w) => w.on.under(at()),
+        Cut::With(_) => at() == crate::mouse::Surface::Chat,
         _ => true,
     })
     .map(|s| s.3.clone())

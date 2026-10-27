@@ -45,6 +45,9 @@ pub struct Quote {
     /// Token-like lines taken out.
     pub hidden: usize,
     pub code: Option<(crate::document::DocId, u64, usize, usize)>,
+    /// The code's colours over its text, as it was taken (`painted`): byte spans and global capture ids in draw order —
+    /// its hover card's and its buffer's (`term::with_card`, `pressed`). None from the chat or the terminal.
+    pub paint: Vec<(usize, usize, u32)>,
 }
 
 impl Quote {
@@ -98,7 +101,60 @@ fn made(t: Taken, room: usize) -> Quote {
         false => (t.text, 0),
     };
     let (text, cut) = cut(&text, room);
-    Quote { id: id_for(&text), attrs: t.attrs, label: t.label, text, cut, hidden, code: t.code }
+    Quote {
+        id: id_for(&text),
+        attrs: t.attrs,
+        label: t.label,
+        text,
+        cut,
+        hidden,
+        code: t.code,
+        paint: Vec::new(),
+    }
+}
+
+/// A quote of the code's, its colours from the tree its document has now — a query of what's parsed, nothing parsed
+/// anew: its text's first and last `QUOTE_MAX` bytes (what a cut keeps), the cut's ends kept where they went. None
+/// where the document moved on since it was taken, has no tree, or its text isn't the document's bytes from where it
+/// starts (`\r\n`: its lines joined with `\n` — compared byte by byte, never sliced where it would end: that can be
+/// inside a character).
+fn painted(ed: &Editor, t: Taken, room: usize) -> Quote {
+    let Some((id, version, from, _)) = t.code else { return made(t, room) };
+    let doc = ed.docs.iter().find(|d| d.id == id && d.version() == version);
+    let Some((d, syn)) = doc.and_then(|d| Some((d, d.syntax.as_ref()?))) else { return made(t, room) };
+    let to = from + t.text.len();
+    if to > d.text.len_bytes() || !d.text.bytes_at(from).take(t.text.len()).eq(t.text.bytes()) {
+        return made(t, room);
+    }
+    let len = to - from;
+    let mut cursor = tree_sitter::QueryCursor::new();
+    let mut paint = Vec::new();
+    let windows = match len <= 2 * QUOTE_MAX {
+        true => [from..to, to..to],
+        false => [from..from + QUOTE_MAX, to - QUOTE_MAX..to],
+    };
+    for w in windows.into_iter().filter(|w| !w.is_empty()) {
+        let spans = crate::syntax::highlights(syn, &d.text, w, &mut cursor);
+        paint.extend(spans.into_iter().map(|(a, b, c)| (a - from, b - from, c)));
+    }
+    // (cut: its first lines are the text's start, its last the text's end — the colours of those two kept, moved)
+    let original = (t.text.len() > room).then(|| t.text.clone());
+    let mut q = made(t, room);
+    q.paint = match original {
+        None => paint,
+        Some(o) => {
+            let head = o.bytes().zip(q.text.bytes()).take_while(|(a, b)| a == b).count();
+            let tail = o.bytes().rev().zip(q.text.bytes().rev()).take_while(|(a, b)| a == b).count();
+            let (moved, kept) = (o.len() - q.text.len(), o.len() - tail);
+            let ends = |&(a, b, c): &(usize, usize, u32)| match (b <= head, a >= kept) {
+                (true, _) => Some((a, b, c)),
+                (_, true) => Some((a - moved, b - moved, c)),
+                _ => None,
+            };
+            paint.iter().filter_map(ends).collect()
+        }
+    };
+    q
 }
 
 /// `text` with token-like lines taken out (`tokens::redacted`), and how many lines it changed.
@@ -296,13 +352,16 @@ pub fn add(ed: &mut Editor, taken: Vec<Taken>) {
     c.unfolded = true;
     let mut left = 0;
     for t in taken {
+        let Some(c) = ed.workspace.claude.chat.as_ref() else { return };
         let used: usize = c.quotes.iter().map(|q| q.text.len()).sum();
         let room = QUOTES_BYTES.saturating_sub(used).min(QUOTE_MAX);
         if c.quotes.len() >= QUOTES_MAX || room < ROOM_MIN {
             left += 1;
             continue;
         }
-        c.quotes.push(made(t, room));
+        let q = painted(ed, t, room);
+        let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+        c.quotes.push(q);
         c.with.push(crate::chat::With::Quote);
     }
     if left > 0 {
@@ -312,6 +371,43 @@ pub fn add(ed: &mut Editor, taken: Vec<Taken>) {
             QUOTES_BYTES / 1024
         ));
     }
+}
+
+/// A press on a chip over the chat's input (#185; the press gave the chat the keys first): a quote opens whole in a
+/// read-only buffer of its own (as a card's `v` — the code's in its colours), an element pointed at comes into sight
+/// (`ui_jump`), the screen opens its frame as text; `N things` (None) is the chat's keys alone. Never takes one off —
+/// Backspace does: a stray press can't cost what was gathered.
+pub fn pressed(ed: &mut Editor, which: Option<usize>) {
+    use crate::chat::WithItem;
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return };
+    let Some(i) = which else { return };
+    let (title, text, paint) = match c.with_items().into_iter().nth(i) {
+        Some(WithItem::Quote(q)) => (format!("quoted · {}", q.label), q.text.clone(), q.paint.clone()),
+        Some(WithItem::Screen(s)) => (format!("screen {}×{}", s.cols, s.rows), s.text.clone(), Vec::new()),
+        Some(WithItem::Pointed(id)) => return ed.ui_jump(&id.clone()),
+        None => return,
+    };
+    // (one buffer a title: the same text is the one open — pressed again, it's shown; another takes its place)
+    let open = ed
+        .docs
+        .iter()
+        .position(|d| d.throwaway && d.read_only.is_some() && d.title.as_deref() == Some(&title));
+    match open {
+        Some(at) if ed.docs[at].text == text.as_str() => ed.current = at,
+        _ => {
+            if let Some(at) = open {
+                ed.close_doc(ed.docs[at].id);
+            }
+            let id = ed.open_virtual(&title, &text);
+            if let Some(d) = ed.docs.iter_mut().find(|d| d.id == id) {
+                d.paint = paint;
+                d.read_only = Some(d.snapshot());
+            }
+        }
+    }
+    // (the code has the keys, to read it)
+    ed.workspace.viewer.at = crate::workspace::At::Code;
+    ed.sync_focus_view();
 }
 
 /// Whether `quotes` are within one message's limits.

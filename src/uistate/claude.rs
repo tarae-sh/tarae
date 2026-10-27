@@ -347,9 +347,9 @@ pub fn cite(c: &mut crate::chat::Chat) {
     c.cited = cited;
 }
 
-/// What the user pointed at, as the message carries it: `<pointed id="card#12">its line</pointed>` — the
-/// line Claude's state has for it, a row's panel and label, a slot panel's tab.
-pub fn pointed(ed: &Editor, id: &str) -> String {
+/// What the user pointed at, as the message carries it in `<pointed id="card#12">…</pointed>` (`chat::pointed_said`):
+/// the line Claude's state has for it, a row's panel and label, a slot panel's tab.
+pub fn pointed_said(ed: &Editor, id: &str) -> String {
     let s = ed.ui_state_claude();
     let text = s.text_claude(ed.behind);
     let own =
@@ -373,8 +373,7 @@ pub fn pointed(ed: &Editor, id: &str) -> String {
         let m = crate::follow::strip(c).into_iter().find(|m| m.call == call)?;
         Some(format!("{id} · {:?} — a mark of your stops on the follow card", m.said))
     });
-    let body = own.or(row).or(slot).or(stop).unwrap_or_else(|| ed.ui_gone_said(id));
-    format!("<pointed id=\"{id}\">{body}</pointed>")
+    own.or(row).or(slot).or(stop).unwrap_or_else(|| ed.ui_gone_said(id))
 }
 
 // ── Ids in text ──────────────────────────────────────────────────────────

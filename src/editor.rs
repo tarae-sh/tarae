@@ -3582,6 +3582,8 @@ impl Editor {
                                     crate::chat::jump(self, link);
                                 }
                             }
+                            // A chip over the input: what goes, whole (`quote::pressed`) — never taken off
+                            Part::Word(Word::With(which)) => crate::quote::pressed(self, which),
                             // The conversation's text: its view mode, the cursor on the character pressed (as the
                             // code's) — a drag from there selects
                             Part::Text { line, col } if u.surface == S::Transcript => {

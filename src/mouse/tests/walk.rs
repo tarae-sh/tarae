@@ -192,7 +192,32 @@ const MOUSE_SCENES: &[Scene] = &[
             what,
         ));
     }),
+    // (#185: what goes with the message, over the chat's input — one chip, and three folded to `3 things`)
+    ("the chat, a long quote over its input", |ed| {
+        chat(ed, "");
+        crate::quote::add(ed, vec![quote_of("src/a.rs L1–40", 40)]);
+    }),
+    ("the chat, three things over its input", |ed| {
+        chat(ed, "");
+        crate::quote::add(ed, vec![quote_of("src/a/rather/long/path/to/a/module.rs L1–3", 3)]);
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.screen = Some(crate::chat::Shot { text: "the screen".into(), cols: 120, rows: 40 });
+        c.with.push(crate::chat::With::Screen);
+        c.pointed.push("chat".into());
+        c.with.push(crate::chat::With::Pointed);
+    }),
 ];
+
+/// A quote of `n` lines of code, its chip `label`.
+fn quote_of(label: &str, n: usize) -> crate::quote::Taken {
+    crate::quote::Taken {
+        attrs: vec![("from", "code".into())],
+        label: label.into(),
+        text: (1..=n).map(|i| format!("let line_{i} = {i};")).collect::<Vec<_>>().join("\n"),
+        redact: false,
+        code: None,
+    }
+}
 
 /// A `…` drawn that isn't a cut, by the words around it: something under way (a page's read too), a character waited
 /// for (`f…`), the chat's placeholder, which-key's mark of a menu (`Tasks …`).
@@ -439,6 +464,8 @@ fn holds(ed: &Editor, u: Under) -> bool {
         Surface::Code(p) | Surface::PaneTop(p) => {
             matches!(r, R::Code | R::Weave | R::Page) && ed.workspace.viewer.focus == p
         }
+        // (a chip's press shows what it stands for — the keys given aren't all it does; `N things`' is)
+        Surface::Chat if matches!(u.part, Part::Word(crate::mouse::Word::With(Some(_)))) => false,
         Surface::Chat | Surface::Transcript | Surface::Input => matches!(r, R::Chat | R::View(_)),
         Surface::Side => matches!(r, R::Side(_)) || ed.workspace.is_at(crate::workspace::At::Side),
         Surface::Rail => r == R::Rail,
@@ -564,6 +591,8 @@ struct Walk {
     dots: Vec<(String, String)>,
     /// `scene · at x,y: …` where a cut text under the mouse wasn't taken in hand as its surface says, or drew nothing.
     cuts: Vec<String>,
+    /// The scenes where a chip over the chat's input was met (`cuts_in`).
+    chips: Vec<String>,
     events: usize,
 }
 
@@ -715,7 +744,11 @@ fn sample(targets: Vec<Target>, n: usize) -> Vec<Target> {
         }
     }
     let of = |s: Surface| targets.iter().filter(move |t| t.1.surface == s).copied().collect::<Vec<_>>();
-    surfaces.into_iter().map(|s| of(s)[n % of(s).len()]).collect()
+    let mut out: Vec<Target> = surfaces.into_iter().map(|s| of(s)[n % of(s).len()]).collect();
+    // (and a chip over the chat's input wherever one is drawn: only its own scenes have one — #185)
+    let chip = |t: &&Target| matches!(t.1.part, Part::Word(crate::mouse::Word::With(_)));
+    out.extend(targets.iter().filter(chip).filter(|t| !out.contains(t)).copied().collect::<Vec<_>>());
+    out
 }
 
 fn walk_held(walk: &mut Walk, n: usize, scene: &str, setup: fn(&mut Editor)) {
@@ -809,6 +842,24 @@ fn cuts_in(walk: &mut Walk, ed: &Editor, text: &str, scene: &str, setup: fn(&mut
         }
     }
     for (y, a, b, cut) in spots {
+        // (a chip over the chat's input: what goes, on its card — #185)
+        if let Cut::With(which) = cut {
+            let x = (a + b) / 2;
+            let mut ed = fresh(setup);
+            walk.chips.push(scene.to_string());
+            let pressed = ed.mouse_at(x, y).part == Part::Word(crate::mouse::Word::With(which));
+            let before = snap(&mut ed);
+            ed.handle_event(Event::Hover(x as u16, y as u16));
+            let after = snap(&mut ed);
+            let what = match (pressed, ed.cut_hover == Some(Cut::With(which)), before.frame != after.frame) {
+                (true, true, true) => continue,
+                (false, ..) => "not a chip under the mouse",
+                (_, false, _) => "not taken in hand",
+                (_, true, false) => "in hand, nothing drawn",
+            };
+            walk.cuts.push(format!("{scene} · at {x},{y} (a chip, {which:?}): {what}"));
+            continue;
+        }
         let Cut::Text(w) = cut else { continue };
         let x = (a + b) / 2;
         let mut ed = fresh(setup);
@@ -948,6 +999,10 @@ fn every_cut_text_is_whole_under_the_mouse() {
     }
     let w = walk();
     assert!(w.cuts.is_empty(), "{}", w.cuts.join("\n"));
+    // (what goes with the message, over the chat's input: met in its scenes, one chip and three folded — #185)
+    for scene in ["the chat, a long quote over its input", "the chat, three things over its input"] {
+        assert!(w.chips.iter().any(|s| s == scene), "no chip met in {scene:?}");
+    }
     let surface = |at: &str| at.split(" · ").nth(1).unwrap_or_default().to_string();
     let open: Vec<String> = (w.dots.iter())
         .filter(|(at, row)| {

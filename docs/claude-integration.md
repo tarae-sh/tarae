@@ -511,6 +511,17 @@ Several selections make several chips; Backspace in the empty input takes the la
 screen, an element pointed at — one stack). With nothing selected `space >` opens the conversation's view mode, and
 `enter` does what it did: the input, the terminal's program.
 
+The mouse over a chip shows what goes, on a card over it that moves nothing: a quote's lines as they'll be sent —
+where they're from, what a cut kept, past the card's rows how many more; the code's in its colours —, an element
+pointed at as the message says it, the screen as its rows; over `3 things` (too many for the line), each chip. A press
+on a chip shows it whole: a quote in a read-only buffer of its own, the screen's frame as text, an element pointed at
+into sight (as a link to it does); on `3 things` it gives the chat the keys. A press never takes a chip off —
+Backspace does.
+
+A view tarae opens to show you something — a quote whole, a card's `v`, a run's output, the tutor — is never the
+file in front: while one is up, the chat's `Ask about main.rs…`, its `starting from main.rs.` and what Claude is told
+you're looking at name the file you were in before it (a web page and the woven view say what they are).
+
 A quote is what you selected as you saw it then, not as it is when you send. Claude gets it with your message,
 where it came from said:
 

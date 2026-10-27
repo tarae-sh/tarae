@@ -264,6 +264,34 @@ const WORDS_KEYS: [&[&str]; 4] = [
     &["@1", " ", "l", "@1", "how is the map filled?", "\r", "@30?That is all.", "@1", "@hover?follow", "@1"],
 ];
 
+/// #185: what goes with the message, the mouse over its chip over the chat's input — the whole file quoted
+/// (`%`, `space >`), in its colours; a line quoted, the screen (`C-s`), then lines 3–9 from the code (`C-w h`), folded
+/// to `3 things`; the whole file's chip pressed — the quote whole in a read-only buffer.
+const WITH_KEYS: [&[&str]; 3] = [
+    &["@1", "%", " ", ">", "@?goes with it", "@1", "@hover?src/main.rs", "@1"],
+    &[
+        "@1",
+        "x",
+        " ",
+        ">",
+        "@?goes with it",
+        "\x13",
+        "@?go with it",
+        "\x17",
+        "h",
+        "j",
+        "j",
+        "7x",
+        " ",
+        ">",
+        "@?things go with it",
+        "@1",
+        "@hover?things",
+        "@1",
+    ],
+    &["@1", "%", " ", ">", "@?goes with it", "@1", "@press?src/main.rs L1", "@release?src/main.rs L1", "@1"],
+];
+
 /// Claude asked to run outside the sandbox, the keys back in the code (`C-w h`) as its card comes; then `j j` there.
 const FOCUS_CARD: &[&str] =
     &["@1", " ", "l", "@1", "run the tests", "\r", "\x17", "h", "@?Its reason", "@1", "j", "j", "@1"];
@@ -1899,6 +1927,10 @@ const SCENES: &[Scene] = &[
     Scene { name: "measure-set", claude: "shimmer-prose", files: MAIN, keys: MEASURE_KEYS[1] },
     // (…the turn waiting on you, Claude's run card up: the chat open, one session — its top line's cell `▲`; following —
     // the follow card's head says `▲ waits`, its cell blank)
+    // (#185: the mouse over what goes with the message — a long quote's lines; `3 things`, each)
+    Scene { name: "with-quote", claude: "idle", files: MAIN, keys: WITH_KEYS[0] },
+    Scene { name: "with-three", claude: "idle", files: MAIN, keys: WITH_KEYS[1] },
+    Scene { name: "with-press", claude: "idle", files: MAIN, keys: WITH_KEYS[2] },
     Scene { name: "working-waits-chat", claude: "card", files: MAIN, keys: WORKING_KEYS[3] },
     Scene { name: "working-waits-follow", claude: "card", files: MAIN, keys: WORKING_KEYS[4] },
     // (what Claude is doing now on the status line, a turn running the tests: the chat open, follow off; following, the

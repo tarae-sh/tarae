@@ -365,7 +365,7 @@ pub enum With {
 }
 
 /// One thing that goes with the input's next message (`Chat::with_items`).
-enum WithItem<'a> {
+pub enum WithItem<'a> {
     Pointed(&'a String),
     Screen(&'a Shot),
     Quote(&'a crate::quote::Quote),
@@ -1006,7 +1006,7 @@ impl Chat {
     }
 
     /// What goes with the input's next message, in the order added.
-    fn with_items(&self) -> Vec<WithItem<'_>> {
+    pub fn with_items(&self) -> Vec<WithItem<'_>> {
         let (mut p, mut q) = (self.pointed.iter(), self.quotes.iter());
         let mut out: Vec<WithItem> = Vec::new();
         for w in &self.with {
@@ -2691,6 +2691,19 @@ fn bare(ed: &mut Editor, text: &str, row: Msg) -> bool {
     true
 }
 
+/// What the message says of the element `id` pointed at, inside its `<pointed>`: one carrying a file named like a key
+/// the user said no to by its name only (`pass`: those let through) — its chip's hover card says the same
+/// (`term::with_card`).
+pub fn pointed_said(ed: &Editor, id: &str, pass: &[std::path::PathBuf]) -> String {
+    match crate::reads::pointed_key(ed, id, pass) {
+        Some(k) => {
+            let name = k.strip_prefix(&ed.workspace.root).unwrap_or(&k).display().to_string();
+            format!("{id} — {name}, {}", crate::reads::NOT_SENT)
+        }
+        None => crate::uistate::claude::pointed_said(ed, id),
+    }
+}
+
 /// The chat input's own message: with what the user pointed at (its chips), and the files named like keys a
 /// `y` let go with it (`reads::input_pass`).
 fn submit_input(ed: &mut Editor, question: &str) -> bool {
@@ -2721,14 +2734,8 @@ fn submit_as(
     let context = match pointed.is_empty() {
         true => context,
         false => {
-            // (one carrying a file named like a key the user said no to: its name only)
-            let block = |id: &String| match crate::reads::pointed_key(ed, id, &pass) {
-                Some(k) => {
-                    let name = k.strip_prefix(&ed.workspace.root).unwrap_or(&k).display().to_string();
-                    format!("<pointed id=\"{id}\">{id} — {name}, {}</pointed>", crate::reads::NOT_SENT)
-                }
-                None => crate::uistate::claude::pointed(ed, id),
-            };
+            let block =
+                |id: &String| format!("<pointed id=\"{id}\">{}</pointed>", pointed_said(ed, id, &pass));
             let blocks: Vec<String> = pointed.iter().map(block).collect();
             format!("{context}\n{}", blocks.join("\n"))
         }
@@ -2977,7 +2984,17 @@ fn context(
     pass: &[PathBuf],
     quotes: &[crate::quote::Quote],
 ) -> (String, String, Vec<(DocId, u64)>, Vec<PathBuf>) {
-    let doc = ed.doc();
+    // The file in front — never a view of tarae's (a quote whole, a card's `v`): the file seen before it; none seen,
+    // no file said
+    let Some(doc) = ed.front_file() else {
+        let mut ctx = String::from("<editor-context>\nfile: none — a view of tarae's in front, not a file\n");
+        if let Some(ui) = ui {
+            ctx.push_str(ui);
+            ctx.push('\n');
+        }
+        ctx.push_str("</editor-context>");
+        return (ctx, "no file".into(), Vec::new(), Vec::new());
+    };
     let text = &doc.text;
     let name = doc.display_name(&ed.workspace.root);
     let lang =
@@ -3017,7 +3034,8 @@ fn context(
         ctx.push_str(&format!("on screen: lines {}-{}\n", r.start + 1, r.end));
     }
     for (id, r) in screen.iter().filter(|s| s.0 != doc.id) {
-        if let Some(d) = ed.docs.iter().find(|d| d.id == *id) {
+        // (a view of tarae's isn't a file: not named)
+        if let Some(d) = ed.docs.iter().find(|d| d.id == *id && !d.is_view()) {
             ctx.push_str(&format!(
                 "also on screen: {} lines {}-{}\n",
                 d.display_name(&ed.workspace.root),

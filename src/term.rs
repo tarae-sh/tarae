@@ -4907,6 +4907,7 @@ fn draw(
     let toast_folded = !draw_toasts(editor, ui, lay, &taken, out)?;
     run_card(editor, ui, lay, out)?;
     cut_card(editor, ui, lay, out)?;
+    with_card(editor, ui, lay, out)?;
     if let Some(card) = offer {
         card.draw(editor, ui, out)?;
     }
@@ -15553,7 +15554,11 @@ fn draw_chat(
     let top = 0;
     let rows = lay.body_h;
     // ── Input (wrapped, up to 5 rows) + cursor position
-    let placeholder = format!("Ask about {}…", editor.doc().display_name_short());
+    // (the file in front — never a view of tarae's: the file seen before it, `front_file`)
+    let placeholder = match editor.front_file() {
+        Some(d) => format!("Ask about {}…", d.display_name_short()),
+        None => "Ask Claude…".to_string(),
+    };
     // (its text and rows from one read — `chatinput::Laid`: the rows only ever slice the text they were made from)
     let input = c.input.laid(w);
     let (cur_row, cur_col) = input.cursor();
@@ -15602,15 +15607,15 @@ fn draw_chat(
     }
     // Empty chat: guidance + example questions in the middle
     if c.msgs.is_empty() && !c.busy() {
-        let name = editor.doc().display_name_short();
-        let mut intro = vec![
-            vec![sp("▎ ".into(), accent), sp("Ask Claude".into(), strong)],
-            vec![],
-            vec![sp(fit_ellipsis("It reads the whole project,", w), dim)],
-            vec![sp(fit_ellipsis(&format!("starting from {name}."), w), dim)],
-            vec![],
-            vec![sp("tab ".into(), Style { bold: true, ..dim }), sp("for a suggestion".into(), faint)],
-        ];
+        let reads = match editor.front_file().map(|d| d.display_name_short()) {
+            Some(name) => vec!["It reads the whole project,".to_string(), format!("starting from {name}.")],
+            None => vec!["It reads the whole project.".to_string()],
+        };
+        let mut intro = vec![vec![sp("▎ ".into(), accent), sp("Ask Claude".into(), strong)], vec![]];
+        intro.extend(reads.iter().map(|l| vec![sp(fit_ellipsis(l, w), dim)]));
+        intro.push(vec![]);
+        intro
+            .push(vec![sp("tab ".into(), Style { bold: true, ..dim }), sp("for a suggestion".into(), faint)]);
         // (the key for the model sits with the other first keys; the title names the one in use)
         // (a key and what it does; inside zellij its `:` command alone — `Editor::key_hint`)
         let first_key = |k: &'static str, what: &'static str| {
@@ -16000,13 +16005,19 @@ fn draw_chat(
         };
         let wide = what.iter().map(|s| s.width()).sum::<usize>() + 3 * (what.len() - 1) + said.width();
         if wide + 2 <= w {
+            // (each chip, or `N things`, shows what goes under the mouse — `with_card`)
+            let folded = c.with_items().len() > what.len();
+            let mut at = text_x;
             for (i, s) in what.iter().enumerate() {
                 if i > 0 {
                     apply(out, faint)?;
                     queue!(out, Print(" · "))?;
+                    at += 3;
                 }
                 apply(out, accent)?;
                 queue!(out, Print(s))?;
+                cut_spots.push((y, at, at + s.width(), crate::whole::Cut::With((!folded).then_some(i))));
+                at += s.width();
             }
             apply(out, faint)?;
             queue!(out, Print(said))?;
@@ -17065,6 +17076,122 @@ fn run_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io:
         }
         apply(out, ground)?;
         queue!(out, Spaces(width - 1 - text.width()))?;
+    }
+    Ok(())
+}
+
+/// The most rows the card of what goes with the message (`with_card`) takes — past them a quote's last says how many more
+/// lines go.
+const WITH_CARD_MAX: usize = 16;
+
+/// What goes with the chat's next message, while the mouse is over its chip over the input (#185, `whole::Cut::With`):
+/// as the run card, a borderless card on the peek's slight ground right above the line, its words where the chip's
+/// start (moved left, over the code, as far as its width needs) — a quote as the message carries it: where it's from,
+/// what its cut kept and the lines taken out, then its lines (each cut to the card, as a run's output is; past the rows
+/// `↓ N more lines`); an element pointed at, what the message says of it; the screen, that its rows go as text; `N
+/// things`, each chip whole. Nothing under it moves; the mouse leaving lets it go (`whole::drawn`).
+fn with_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io::Result<()> {
+    use crate::chat::WithItem;
+    use crate::markdown::Span;
+    let Some(cut @ crate::whole::Cut::With(which)) = editor.cut_hover.as_ref() else { return Ok(()) };
+    let spot = editor.screen.cut_spots.borrow().iter().find(|s| s.3 == *cut).map(|s| (s.0, s.1));
+    let (Some((y, a)), Some(c)) = (spot, editor.workspace.claude.chat.as_ref()) else { return Ok(()) };
+    let card = card_style(ui, editor, "ui.popup");
+    let ground = Style { bg: blend(card.bg, ui.tint, 1.0 - PEEK_STEP).or(card.bg), ..card };
+    let faint = Style { fg: ui.linenr.fg.or(card.fg), ..ground };
+    let accent = Style { fg: ui.accent.fg, ..ground };
+    let room = lay.width.saturating_sub(4).min(96);
+    let cap = y.saturating_sub(lay.text_top as usize).min(WITH_CARD_MAX);
+    if room < 16 || cap == 0 {
+        return Ok(());
+    }
+    let sp = |text: String, style: Style| Span { text, style };
+    let wrapped = |s: &str| crate::cut::fit_in_hand(s, room, false, true).into_iter().map(|p| p.text);
+    let items = c.with_items();
+    let mut rows: Vec<Vec<Span>> = Vec::new();
+    match which.map(|i| items.get(i)) {
+        Some(Some(WithItem::Quote(q))) => {
+            rows.extend(wrapped(&q.label).map(|l| vec![sp(l, accent)]));
+            if let Some(kept) = &q.cut {
+                rows.extend(wrapped(&format!("cut — {kept}")).map(|l| vec![sp(l, faint)]));
+            }
+            if q.hidden > 0 {
+                let gone = format!("{} taken out: token-like", crate::quote::lines(q.hidden));
+                rows.extend(wrapped(&gone).map(|l| vec![sp(l, faint)]));
+            }
+            // (its lines as they go, each cut to the card — a tab as spaces, nothing that moves the terminal's cursor;
+            // the code's in its colours, as it was taken — `quote::painted`)
+            let lines: Vec<&str> = q.text.split('\n').collect();
+            let left = cap.saturating_sub(rows.len());
+            let fits = lines.len() <= left;
+            let take = if fits { lines.len() } else { left.saturating_sub(1) };
+            let end = lines[..take].iter().map(|l| l.len() + 1).sum::<usize>().min(q.text.len());
+            let paint = paint_spans(&q.paint, 0..end);
+            let styles = editor.theme.capture_styles();
+            let mut at = 0;
+            for l in &lines[..take] {
+                let mut spans: Vec<Span> = Vec::new();
+                let mut used = 0;
+                for (i, ch) in l.char_indices() {
+                    let cap = paint.get(at + i).copied().unwrap_or(u32::MAX);
+                    let syn = styles.get(cap as usize).copied().flatten().unwrap_or_default();
+                    let style = ground.patch(Style { bg: None, ..syn });
+                    let shown = match ch {
+                        '\t' => "    ".to_string(),
+                        c if c.is_control() => " ".to_string(),
+                        c => c.to_string(),
+                    };
+                    used += shown.width();
+                    if used > room {
+                        break;
+                    }
+                    match spans.last_mut() {
+                        Some(s) if s.style == style => s.text.push_str(&shown),
+                        _ => spans.push(sp(shown, style)),
+                    }
+                }
+                at += l.len() + 1;
+                rows.push(spans);
+            }
+            if !fits && left > 0 {
+                let more = lines.len() - take;
+                rows.push(vec![sp(format!("↓ {more} more line{}", if more == 1 { "" } else { "s" }), faint)]);
+            }
+        }
+        Some(Some(WithItem::Pointed(id))) => {
+            let said = crate::chat::pointed_said(editor, id, &crate::reads::input_pass(editor));
+            for (k, l) in wrapped(&said).enumerate() {
+                match l.strip_prefix(id.as_str()).filter(|_| k == 0) {
+                    Some(rest) => rows.push(vec![sp(id.to_string(), accent), sp(rest.to_string(), ground)]),
+                    None => rows.push(vec![sp(l, ground)]),
+                }
+            }
+        }
+        Some(Some(WithItem::Screen(s))) => {
+            rows.push(vec![sp(format!("screen {}×{}", s.cols, s.rows), accent)]);
+            let said = format!("the screen as it was when you attached it — its {} rows go as text", s.rows);
+            rows.extend(wrapped(&said).map(|l| vec![sp(l, faint)]));
+        }
+        // (`N things`: each chip whole, in the order added)
+        None => {
+            for chip in c.with_chips() {
+                rows.extend(wrapped(&chip).map(|l| vec![sp(l, accent)]));
+            }
+        }
+        Some(None) => return Ok(()),
+    }
+    rows.truncate(cap);
+    let inner = rows.iter().map(|r| r.iter().map(|s| s.text.width()).sum::<usize>()).max().unwrap_or(0);
+    let width = inner + 2;
+    let x = a.saturating_sub(1).min(lay.width.saturating_sub(width));
+    let top = y - rows.len();
+    for (k, row) in rows.iter().enumerate() {
+        queue!(out, MoveTo(x as u16, (top + k) as u16))?;
+        apply(out, ground)?;
+        queue!(out, Print(" "))?;
+        let used = chat_spans(out, row, ground, inner)?;
+        apply(out, ground)?;
+        queue!(out, Spaces(width - 1 - used))?;
     }
     Ok(())
 }
@@ -22930,9 +23057,9 @@ mod tests {
             Some(12),
             "nothing moved"
         );
-        let pointed = crate::uistate::claude::pointed(&ed, "stop:s12");
+        let pointed = crate::uistate::claude::pointed_said(&ed, "stop:s12");
         assert!(
-            pointed.starts_with("<pointed id=\"stop:s12\">")
+            pointed.starts_with("stop:s12 ")
                 && pointed
                     .contains("\"run cargo test -q · exit 101\" — a mark of your stops on the follow card"),
             "{pointed}"

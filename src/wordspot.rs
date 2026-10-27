@@ -260,15 +260,16 @@ pub type Lit = (usize, usize, usize, Vec<(String, Style)>);
 /// What lights with the mouse at (`x`, `y`) on the frame last drawn: the word a press there lands on — `mouse_under`'s
 /// answer, so one under a card, a picker or a floating pane is none — as it was drawn: one of these spots, or a word
 /// with a record of its own (a session's tab, the status line's chip, a slot's tab, a preflight's step chip —
-/// `Screen.word_lit`). Not the two
-/// whose hover says more: what Claude is doing now (its card) and a mark of the strip (its words).
+/// `Screen.word_lit`). Not the three
+/// whose hover says more: what Claude is doing now (its card), a mark of the strip (its words) and a chip over the
+/// chat's input (what goes).
 pub fn lit(ed: &Editor, x: usize, y: usize) -> Option<Lit> {
     use crate::mouse::{Part, Word};
     match ed.mouse_under(crate::event::MouseKind::Down, x, y).part {
         Part::Word(Word::Does(i)) => {
             ed.screen.word_spots.borrow().get(i).map(|s| (s.y, s.from, s.to, s.spans.clone()))
         }
-        Part::Word(Word::Now | Word::Stop(_)) => None,
+        Part::Word(Word::Now | Word::Stop(_) | Word::With(_)) => None,
         Part::Word(_) => {
             let lit = ed.screen.word_lit.borrow();
             lit.iter().rev().find(|l| l.0 == y && (l.1..l.2).contains(&x)).cloned()
