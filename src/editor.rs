@@ -875,6 +875,8 @@ pub struct Editor {
     pub plugins: Option<crate::plugin::Plugins>,
     /// The processes tarae started, their costs and its checks on them (`:procs`, `procs.rs`).
     pub procs: crate::procs::Procs,
+    /// The disk's room: its looks, levels and what waits for room (`diskroom.rs`, #168).
+    pub disk: crate::diskroom::Room,
     /// Lists used by `:` completion (folders, themes — filled by a worker thread) · folders being read.
     pub cmd_lists: crate::cmdline::Lists,
     /// Grammars already offered for download (since tarae started).
@@ -1317,6 +1319,7 @@ impl Editor {
             input_seq: 0,
             plugins: None,
             procs: Default::default(),
+            disk: Default::default(),
             cmd_lists: Default::default(),
             grammar_hinted: Default::default(),
             offers: Vec::new(),

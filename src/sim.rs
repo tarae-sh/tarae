@@ -32,6 +32,7 @@ mod cardwait;
 mod chatstream;
 mod claudestart;
 mod commit;
+mod diskroom;
 mod diskwatch;
 mod follow_pane;
 mod gitbase;

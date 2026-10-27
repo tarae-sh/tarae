@@ -300,6 +300,9 @@ impl Sandbox {
             ("TERM", "xterm-256color".into()),
             // The harness doesn't answer the OSC 11 background query — skip it (and its 200 ms timeout)
             ("TARAE_BACKGROUND", "dark".into()),
+            // The machine's free space isn't the test's: a disk with room that stays (the suite's own builds drain
+            // the real one — a level said mid-scene drew in an idle test, #168); a test's `vars` stand in another
+            ("TARAE_DISK_FREE", (500u64 << 30).to_string().into()),
         ]
         .into_iter()
         .map(|(k, v): (&str, OsString)| (k.into(), v))

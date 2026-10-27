@@ -44,6 +44,7 @@ mod containers;
 mod cut;
 mod diffview;
 mod disk;
+mod diskroom;
 mod doccomment;
 mod dock;
 #[cfg(test)]

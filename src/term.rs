@@ -3123,7 +3123,7 @@ fn draw_queued(
     let dim = Style { fg: ui.virt.fg, ..card };
     let faint = Style { fg: ui.linenr.fg, ..card };
     let key = Style { bold: true, ..dim };
-    let rows = crate::queued::rows(&editor.workspace, slot, crate::clock::now());
+    let rows = crate::queued::rows(&editor.workspace, slot, crate::clock::now(), editor.disk.held());
     let shown = if rows.len() > n { n - 1 } else { rows.len() };
     let room = w.saturating_sub(PAD + 2);
     // (the labels as one column: where each is in line starts under the one above)

@@ -36,7 +36,8 @@
 //!
 //! Set by the shot for the tarae it runs, never yours to set: `TARAE_SHOT_NO_DISK=1` — the free space is the
 //! machine's the shot is taken on, not the picture's, so the status line's disk mark and the disk card stay off
-//! (`procs::disk_check`); also a color terminal, its own config and state (`as_a_terminal`).
+//! (`Editor::disk_looked`) — unless `TARAE_DISK_FREE` (and `TARAE_DISK_DRAIN`, bytes a second) stands in for
+//! it; also a color terminal, its own config and state (`as_a_terminal`).
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -704,7 +705,7 @@ pub fn build(root: &Path, profile: &str, features: &[&str]) -> Result<PathBuf> {
 /// tarae's environment in the shot: a color terminal, its own config and state. An inherited `NO_COLOR`
 /// goes — it's meant for the output of whatever runs it (a task panel sets it), and the shot renders tarae
 /// itself: with it, every shot taken from a panel came out gray. `TARAE_SHOT_NO_DISK=1`: the machine's free
-/// space isn't the picture's — tarae's disk mark and card stay off (`procs::disk_check`).
+/// space isn't the picture's — tarae's disk levels stay off (`Editor::disk_looked`).
 /// A folder given in `var`: absolute (tarae starts in `TARAE_SHOT_CWD`, so a relative one would mean another
 /// folder there), and there already when `must_exist` — a config folder that isn't found leaves tarae on its
 /// defaults, and the default `llm.command` is the real `claude` (a slip that started it once).

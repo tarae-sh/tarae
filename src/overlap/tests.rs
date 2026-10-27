@@ -10,6 +10,20 @@ use crate::config::Config;
 use crate::key::{Code, Key};
 use crate::scratch::Scratch;
 
+/// #168: the disk at its reserve, no round is armed (a round writes trees into tarae's cache); room again, the
+/// one that waited is.
+#[test]
+fn no_round_while_the_disk_is_at_its_reserve() {
+    const GB: u64 = 1 << 30;
+    let mut ed = Editor::new(Config::default());
+    let vol = |free| vec![crate::procs::Volume { at: PathBuf::from("/Volumes/x"), free, total: 926 * GB }];
+    ed.disk_looked(vol(18 * GB), false);
+    ask(&mut ed);
+    assert!(!ed.overlap.waiting, "held");
+    ed.disk_looked(vol(30 * GB), false);
+    assert!(ed.overlap.waiting, "armed once there's room");
+}
+
 /// git in the test's own repository: its own name, no signing, no hooks, none of the machine's config.
 fn git(dir: &Path, args: &[&str]) {
     crate::gitrepo::not_in_this_repository(dir, args);

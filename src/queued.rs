@@ -216,9 +216,11 @@ pub fn admit(ed: &mut Editor, who: For, job: Job, mut ride: Ride) {
     };
     let slot = What::Guarded { who: who.clone(), job: job.clone(), ride: Box::default() }.slot();
     // (Claude's waits its turn behind what's in line; the user's goes first)
-    let behind =
-        matches!(who, For::Claude(_)) && ed.workspace.runs_next.iter().any(|n| n.what.slot() == slot);
-    if busy(&ed.workspace, slot) || behind {
+    let claudes = matches!(who, For::Claude(_));
+    let behind = claudes && ed.workspace.runs_next.iter().any(|n| n.what.slot() == slot);
+    // (the disk at its reserve: Claude's runs wait for room — `diskroom.rs`; the user's go on)
+    let held = claudes && ed.disk.held().is_some();
+    if busy(&ed.workspace, slot) || behind || held {
         return push(ed, What::Guarded { who, job, ride: Box::new(ride) });
     }
     crate::tools::guard_then_go(ed, who, job, ride);
@@ -275,7 +277,8 @@ pub fn again(ed: &mut Editor, what: What, trace: Option<crate::trace::RunTrace>)
 
 fn push_at(ed: &mut Editor, mut what: What, front: bool, trace: Option<crate::trace::RunTrace>) {
     let slot = what.slot();
-    let holder = holder(&ed.workspace, slot);
+    let room = (!what.users()).then(|| ed.disk.held()).flatten();
+    let holder = holder(&ed.workspace, slot).or(room);
     // (back in line: its time and what it waited behind go on)
     let earlier = match &mut what {
         What::Guarded { ride, .. } => ride.queued.take(),
@@ -334,7 +337,11 @@ pub fn run_next(ed: &mut Editor) {
         if busy(&ed.workspace, slot) {
             continue;
         }
-        while let Some(i) = ed.workspace.runs_next.iter().position(|n| n.what.slot() == slot) {
+        // (the disk at its reserve: Claude's wait, the user's go — `diskroom.rs`)
+        let held = ed.disk.held().is_some();
+        while let Some(i) =
+            ed.workspace.runs_next.iter().position(|n| n.what.slot() == slot && !(held && !n.what.users()))
+        {
             let Some(next) = ed.workspace.runs_next.remove(i) else { break };
             // (as `tools.rs` checks a turn: another chat process, or one done, waits for nothing)
             let wanted = next.what.calls().first().is_none_or(|c| {
@@ -446,15 +453,16 @@ impl Row {
     }
 }
 
-/// The rows of what waits in session `l`'s `slot`, first in line first.
-pub fn rows(l: &Workspace, slot: Slot, now: Instant) -> Vec<Row> {
+/// The rows of what waits in session `l`'s `slot`, first in line first — Claude's behind the disk's reserve too
+/// while it holds them (`held`, `diskroom::Room::held`).
+pub fn rows(l: &Workspace, slot: Slot, now: Instant, held: Option<String>) -> Vec<Row> {
     let holder = holder(l, slot);
     line(&l.runs_next, slot)
         .enumerate()
         .map(|(i, n)| Row {
             label: n.what.label(),
             pos: i + 1,
-            behind: holder.clone(),
+            behind: holder.clone().or_else(|| held.clone().filter(|_| !n.what.users())),
             waited: now.saturating_duration_since(n.queued.since),
             stops: matches!(n.what, What::Task(_) | What::Tests(_)).then(|| holder.clone()).flatten(),
         })
@@ -563,7 +571,7 @@ impl Editor {
         for l in std::iter::once(&self.workspace).chain(&self.workspaces) {
             for slot in [Slot::Task, Slot::Tests] {
                 let ids = line(&l.runs_next, slot).map(|n| n.id);
-                for (id, r) in ids.zip(rows(l, slot, now)) {
+                for (id, r) in ids.zip(rows(l, slot, now, self.disk.held())) {
                     // (whole seconds: `:procs` looks again each second, a tenth would stand still between)
                     let said = r.said(true, true).trim_start_matches("queued · ").to_string();
                     out.push((l.id, id, r.label, said));
@@ -645,6 +653,36 @@ mod tests {
 
     fn running(ed: &Editor) -> bool {
         ed.workspace.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running)
+    }
+
+    /// #168: the disk at its reserve, Claude's run waits in line — its row says for what — and a freed slot
+    /// doesn't start it; room again, it runs and is answered.
+    #[test]
+    fn claudes_run_waits_for_room_on_the_disk_and_the_users_goes() {
+        const GB: u64 = 1 << 30;
+        let (mut ed, dir, generation) = at_work("disk");
+        script(&dir, "one", 0.0);
+        let vol =
+            |free| vec![crate::procs::Volume { at: PathBuf::from("/Volumes/x"), free, total: 926 * GB }];
+        ed.disk_looked(vol(18 * GB), false);
+        assert_eq!(ed.disk.held().as_deref(), Some("disk 18.0 GB free"));
+        run(&mut ed, generation, 1, "sh one.sh");
+        assert!(!running(&ed) && answered(1).is_none(), "it waits");
+        assert_eq!(ed.workspace.runs_next.len(), 1);
+        assert_eq!(ed.workspace.runs_next[0].queued.behind, ["disk 18.0 GB free"]);
+        let row = crate::queued::rows(
+            &ed.workspace,
+            crate::queued::Slot::Task,
+            crate::clock::now(),
+            ed.disk.held(),
+        );
+        assert_eq!(row[0].behind.as_deref(), Some("disk 18.0 GB free"), "its row says for what");
+        crate::queued::run_next(&mut ed);
+        assert!(!running(&ed) && ed.workspace.runs_next.len() == 1, "still held, in line");
+        ed.disk_looked(vol(30 * GB), false);
+        assert!(ed.disk.held().is_none());
+        pump(&mut ed, "the run ran", |_| answered(1).is_some());
+        assert_eq!(order(&dir), ["one"]);
     }
 
     /// Phase 1 (docs/design/async.md): a command that runs unasked while another runs waits in line — not

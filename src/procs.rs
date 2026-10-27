@@ -569,8 +569,8 @@ pub struct Sample {
     usual: Option<Usual>,
     /// The file systems tarae writes to, as this look found them (`volumes`).
     pub free: Vec<Volume>,
-    /// This tarae is a screenshot's (`TARAE_SHOT_NO_DISK`, which only `cargo xtask shot` sets): `disk_check` says
-    /// nothing of the host's free space.
+    /// This tarae is a screenshot's (`TARAE_SHOT_NO_DISK`, which only `cargo xtask shot` sets): `disk_looked`
+    /// says nothing of the host's free space.
     pub shot: bool,
     /// When it was taken.
     pub at: Instant,
@@ -601,12 +601,6 @@ pub struct Volume {
     pub total: u64,
 }
 
-/// Free below this (or a tenth of a small disk) marks the status line.
-const DISK_LOW: u64 = 10 << 30;
-/// Free below this (or a fiftieth of a small disk) is said on a card that waits for a key — builds and runs
-/// start failing soon (#219: 117 MB left, a session stopped mid-turn and nothing said why).
-const DISK_FLOOR: u64 = 2 << 30;
-
 /// Where tarae and what it runs write: the home folder (the tools' build folders — `~/.cargo/build`), tarae's
 /// data (sessions' checkouts) and cache (run folders), the temp folder.
 fn disk_places() -> Vec<PathBuf> {
@@ -636,31 +630,6 @@ pub fn volumes(places: &[PathBuf]) -> Vec<Volume> {
         #[allow(clippy::unnecessary_cast)]
         let (free, total) = (st.f_bavail as u64 * block, st.f_blocks as u64 * block);
         out.push(Volume { at: at.to_path_buf(), free, total });
-    }
-    out
-}
-
-/// What free space says: below `DISK_LOW` the status line's mark, below `DISK_FLOOR` a card too (`procs_found`).
-/// A screenshot's tarae (`shot`) says nothing: the free space is the machine's it's taken on, not the picture's.
-pub fn disk_check(vols: &[Volume], shot: bool) -> Vec<Finding> {
-    let mut out = Vec::new();
-    for v in vols.iter().filter(|v| v.total > 0 && !shot) {
-        let (low, floor) = (DISK_LOW.min(v.total / 10), DISK_FLOOR.min(v.total / 50));
-        let shown = crate::sandbox::home_shown(&v.at.display().to_string());
-        let what = format!("{} free of {} on {shown}", mem(v.free), mem(v.total));
-        let did = "nothing — space W shows each session's build folder; x drops an idle one's";
-        for (key, under) in [("disk-low", low), ("disk-full", floor)] {
-            if v.free < under {
-                out.push(Finding {
-                    key: format!("{key}:{}", v.at.display()),
-                    pid: 0,
-                    what: what.clone(),
-                    short: format!("disk {} free", mem(v.free)),
-                    did: did.into(),
-                    act: Act::Nothing,
-                });
-            }
-        }
     }
     out
 }
@@ -740,24 +709,39 @@ pub fn start(events: crate::event::Tx, usual_path: Option<PathBuf>) -> Sender<Wa
         let (quiet, mut open) = (quiet_every(), false);
         let mut usual = Some(usual_path.as_deref().map(load_usual).unwrap_or_default());
         let places = disk_places();
-        // (screenshots and drivers: every volume this free, in bytes — the mark and the card without a full disk)
-        let free_as = std::env::var("TARAE_DISK_FREE").ok().and_then(|v| v.parse::<u64>().ok());
-        let shot = std::env::var_os("TARAE_SHOT_NO_DISK").is_some_and(|v| v == "1");
+        // (screenshots and drivers: every volume this free, in bytes — the levels without a full disk — falling
+        // this many bytes a second, a drain rate on their clock)
+        let var = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u64>().ok());
+        let (free_as, drain) = (var("TARAE_DISK_FREE"), var("TARAE_DISK_DRAIN").unwrap_or(0));
+        // (a stand-in's free space is the picture's own: said in a shot too)
+        let shot = free_as.is_none() && std::env::var_os("TARAE_SHOT_NO_DISK").is_some_and(|v| v == "1");
+        let born = crate::clock::now();
+        let disk = || stand_in(volumes(&places), free_as, drain, crate::clock::since(born));
+        let mut looks = Looks::new(born, quiet);
         loop {
-            s.whole = open;
-            let mut sample = look(&mut s, &mut reaper, Instant::now());
-            sample.usual = usual.take();
-            sample.free = volumes(&places);
-            sample.shot = shot;
-            if let Some(free) = free_as {
-                sample.free.iter_mut().for_each(|v| v.free = free.min(v.total));
-            }
-            let job = move |ed: &mut Editor| ed.procs_sampled(sample);
-            if events.send(Event::Job(Box::new(job))).is_err() {
+            let now = crate::clock::now();
+            let free = disk();
+            let job: Box<dyn FnOnce(&mut Editor) + Send> = match looks.due(now) {
+                Look::Procs => {
+                    s.whole = open;
+                    let mut sample = look(&mut s, &mut reaper, Instant::now());
+                    sample.usual = usual.take();
+                    sample.shot = shot;
+                    looks.looked(Look::Procs, now, open, &free);
+                    sample.free = free;
+                    Box::new(move |ed: &mut Editor| ed.procs_sampled(sample))
+                }
+                Look::Disk => {
+                    looks.looked(Look::Disk, now, open, &free);
+                    Box::new(move |ed: &mut Editor| ed.procs_disk_looked(free, shot))
+                }
+            };
+            if events.send(Event::Job(job)).is_err() {
                 return;
             }
-            match wait(&rx, if open { OPEN_EVERY } else { quiet }, &mut open) {
-                Some(()) => {}
+            match wait(&rx, looks.until(crate::clock::now()), &mut open) {
+                Some(true) => looks.woken(crate::clock::now()),
+                Some(false) => {}
                 None => return,
             }
         }
@@ -766,8 +750,70 @@ pub fn start(events: crate::event::Tx, usual_path: Option<PathBuf>) -> Sender<Wa
     tx
 }
 
-/// Until the next look is due — or sooner, opened or asked. None: the editor is gone.
-fn wait(rx: &Receiver<Wake>, every: Duration, open: &mut bool) -> Option<()> {
+/// What the sampling thread looks at next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Look {
+    /// tarae's processes — and the disk with them.
+    Procs,
+    /// The disk alone, between two looks at the processes.
+    Disk,
+}
+
+/// The sampling thread's clock (`start`): the processes every `quiet` (`OPEN_EVERY` while `:procs` is open), the
+/// disk on its own clock between (`diskroom::every`: 30 s, 5 s once a file system is under 50 GB).
+#[derive(Debug)]
+struct Looks {
+    quiet: Duration,
+    procs_at: Instant,
+    disk_at: Instant,
+}
+
+impl Looks {
+    /// Both due at `now`.
+    fn new(now: Instant, quiet: Duration) -> Looks {
+        Looks { quiet, procs_at: now, disk_at: now }
+    }
+
+    /// What to look at `now`: the processes once they're due (the disk with them), else the disk.
+    fn due(&self, now: Instant) -> Look {
+        match now >= self.procs_at {
+            true => Look::Procs,
+            false => Look::Disk,
+        }
+    }
+
+    /// `look` taken at `now` (`:procs` `open`, the disk found `free`): when each is next.
+    fn looked(&mut self, look: Look, now: Instant, open: bool, free: &[Volume]) {
+        if look == Look::Procs {
+            self.procs_at = now + if open { OPEN_EVERY } else { self.quiet };
+        }
+        self.disk_at = now + crate::diskroom::every(free);
+    }
+
+    /// How long from `now` until the next look.
+    fn until(&self, now: Instant) -> Duration {
+        self.procs_at.min(self.disk_at).saturating_duration_since(now)
+    }
+
+    /// Woken (`:procs` opened, `Wake::Now`): the processes looked at now.
+    fn woken(&mut self, now: Instant) {
+        self.procs_at = now;
+    }
+}
+
+/// `vols` as a driver or a shot stands them in: every one `free` (`TARAE_DISK_FREE`) less `drain` bytes a second
+/// (`TARAE_DISK_DRAIN`) for `since`, never under nothing nor over its size — as they are with no stand-in.
+fn stand_in(mut vols: Vec<Volume>, free: Option<u64>, drain: u64, since: Duration) -> Vec<Volume> {
+    if let Some(free) = free {
+        let gone = drain.saturating_mul(since.as_secs());
+        vols.iter_mut().for_each(|v| v.free = free.saturating_sub(gone).min(v.total));
+    }
+    vols
+}
+
+/// Until the next look is due — or sooner, opened or asked (`Some(true)`: a look at the processes now). None: the
+/// editor is gone.
+fn wait(rx: &Receiver<Wake>, every: Duration, open: &mut bool) -> Option<bool> {
     let due = Instant::now() + every;
     loop {
         match rx.recv_timeout(due.saturating_duration_since(Instant::now())) {
@@ -775,11 +821,11 @@ fn wait(rx: &Receiver<Wake>, every: Duration, open: &mut bool) -> Option<()> {
                 let opened = o && !*open;
                 *open = o;
                 if opened {
-                    return Some(());
+                    return Some(true);
                 }
             }
-            Ok(Wake::Now) => return Some(()),
-            Err(RecvTimeoutError::Timeout) => return Some(()),
+            Ok(Wake::Now) => return Some(true),
+            Err(RecvTimeoutError::Timeout) => return Some(false),
             Err(RecvTimeoutError::Disconnected) => return None,
         }
     }
@@ -1517,7 +1563,19 @@ impl Procs {
     }
 
     /// The checks recorded as `found` says (a new one is logged; one no longer found has ended). The new ones.
+    #[cfg(test)]
     pub fn record(&mut self, found: &[Finding], at: SystemTime) -> Vec<Finding> {
+        self.record_where(found, at, |_| true)
+    }
+
+    /// `record` for the checks whose keys are `scope`'s — a look at the processes and one at the disk each end
+    /// only their own.
+    pub fn record_where(
+        &mut self,
+        found: &[Finding],
+        at: SystemTime,
+        scope: fn(&str) -> bool,
+    ) -> Vec<Finding> {
         let mut new = Vec::new();
         for f in found {
             if !self.checks.iter().any(|c| c.key == f.key && c.ended.is_none()) {
@@ -1538,7 +1596,7 @@ impl Procs {
                 c.short.clone_from(&f.short);
             }
         }
-        for c in self.checks.iter_mut().filter(|c| c.ended.is_none()) {
+        for c in self.checks.iter_mut().filter(|c| c.ended.is_none() && scope(&c.key)) {
             if !found.iter().any(|f| f.key == c.key) {
                 crate::log::line("procs", "check", &format!("ended: {}", c.what));
                 c.ended = Some(at);
@@ -1884,9 +1942,8 @@ impl Editor {
         let mut rows = rows(&s, &self.procs_known(), std::process::id(), &self.procs.held, &groups, secs);
         with_queued(&mut rows, &self.procs_queued(), &groups);
         self.procs.restoring = self.restoring();
-        let (mut found, learned) = self.procs.check(&rows, &self.procs_lsp_facts(), Instant::now());
-        found.extend(disk_check(&s.free, s.shot));
-        self.procs.free = s.free.clone();
+        let (found, learned) = self.procs.check(&rows, &self.procs_lsp_facts(), Instant::now());
+        self.disk_looked(s.free.clone(), s.shot);
         // (a run of Claude's printing nothing at next to no CPU — `stuck.rs`)
         crate::stuck::look(self, &rows, Instant::now());
         let flagged: HashSet<u32> = found.iter().map(|f| f.pid).filter(|&p| p > 0).collect();
@@ -1972,6 +2029,14 @@ impl Editor {
         self.ui_said_since(ev, self.procs.sampled);
     }
 
+    /// The disk looked at between two looks at the processes (`start`): nothing drawn unless the mark changed
+    /// or `:procs` is up.
+    fn procs_disk_looked(&mut self, free: Vec<Volume>, shot: bool) {
+        self.disk_looked(free, shot);
+        let up = self.procs_up();
+        self.unchanged = !up && !self.procs_mark_changed();
+    }
+
     /// The status line's mark isn't what was drawn last.
     fn procs_mark_changed(&mut self) -> bool {
         let now = self.procs.mark().map(|c| c.short.clone());
@@ -1981,15 +2046,7 @@ impl Editor {
 
     /// Checks recorded; what the new ones say to do, done.
     fn procs_found(&mut self, found: Vec<Finding>, at: SystemTime) {
-        for f in self.procs.record(&found, at) {
-            // (once each time it gets there: a card that waits for a key, not only the status line's mark)
-            if f.key.starts_with("disk-full:") {
-                // (what matters first: under a newer toast it's one row, cut; whole in a narrow card's 3 rows)
-                self.set_error(format!(
-                    "Disk almost full: {}. space W lists build folders; x drops an idle one",
-                    f.what
-                ));
-            }
+        for f in self.procs.record_where(&found, at, |k| !crate::diskroom::is_disk(k)) {
             if let Act::StopServer(cid) = f.act {
                 let log = self.server_log(cid);
                 if let Some(name) = self.lsp_stopped(cid) {
@@ -3768,20 +3825,12 @@ pub(crate) mod tests {
         }
     }
 
-    /// #219: free space as the checks take it — below 10 GB (a tenth of a small disk) the status line's mark,
-    /// below 2 GB a card that waits for a key, once each time it gets there; room again and both end.
+    /// #168: the disk's levels through both looks (`diskroom.rs`) — a look at the processes and one at the disk
+    /// alone each end only their own checks; critical said on a card once while it lasts, again once it's back.
     #[test]
-    fn a_disk_running_full_is_marked_then_said_on_a_card_once() {
+    fn a_disk_running_full_is_marked_by_level_and_each_look_ends_only_its_own_checks() {
         const GB: u64 = 1 << 30;
         let v = |free| Volume { at: PathBuf::from("/Volumes/x"), free, total: 500 * GB };
-        assert!(disk_check(&[v(50 * GB)], false).is_empty());
-        let low = disk_check(&[v(8 * GB)], false);
-        assert_eq!(low.iter().map(|f| f.key.as_str()).collect::<Vec<_>>(), ["disk-low:/Volumes/x"]);
-        assert_eq!(low[0].short, "disk 8.0 GB free");
-        assert_eq!(disk_check(&[v(GB)], false).len(), 2, "low and at the floor");
-        let small = Volume { at: PathBuf::from("/s"), free: 5 * GB, total: 32 * GB };
-        assert!(disk_check(&[small], false).is_empty(), "a small disk: a tenth of it");
-        // Through the looks: the mark, the card once per crossing
         let mut ed = Editor::new(crate::config::Config::default());
         let look = |ed: &mut Editor, free| {
             let mut s = Sample::of(Vec::new());
@@ -3794,15 +3843,31 @@ pub(crate) mod tests {
                 .filter(|m| m.1 == crate::editor::ToastKind::Error && m.2.contains("almost full"))
                 .count()
         };
-        look(&mut ed, 8 * GB);
-        assert_eq!(ed.procs.mark().map(|c| c.short.as_str()), Some("disk 8.0 GB free"));
+        look(&mut ed, 20 * GB);
+        assert_eq!(ed.procs.mark().map(|c| c.short.as_str()), Some("disk 20.0 GB free"));
         assert_eq!(cards(&ed), 0);
-        look(&mut ed, GB);
-        look(&mut ed, GB);
+        // (a process's check, as a look at the processes found it: a look at the disk alone leaves it)
+        let busy = Finding {
+            key: "busy:7".into(),
+            pid: 7,
+            what: "busy".into(),
+            short: "busy".into(),
+            did: "nothing".into(),
+            act: Act::Nothing,
+        };
+        ed.procs.record_where(&[busy], SystemTime::now(), |k| !crate::diskroom::is_disk(k));
+        ed.procs_disk_looked(vec![v(GB)], false);
+        ed.procs_disk_looked(vec![v(GB)], false);
         assert_eq!(cards(&ed), 1, "once while it stays there");
+        assert_eq!(
+            ed.procs.holding().len(),
+            2,
+            "the process's check and the disk's: {:?}",
+            ed.procs.holding()
+        );
         assert_eq!(ed.procs.mark().map(|c| c.short.as_str()), Some("disk 1.0 GB free"));
-        look(&mut ed, 50 * GB);
-        assert!(ed.procs.mark().is_none());
+        look(&mut ed, 100 * GB);
+        assert!(ed.procs.holding().is_empty(), "{:?}", ed.procs.holding());
         look(&mut ed, GB);
         assert_eq!(cards(&ed), 2, "again when it gets there again");
         // The real look: the temp folder's file system, a place not there yet by its folder
@@ -3818,7 +3883,6 @@ pub(crate) mod tests {
     fn a_shots_tarae_says_nothing_of_the_hosts_disk() {
         const GB: u64 = 1 << 30;
         let v = |free| Volume { at: PathBuf::from("/Volumes/x"), free, total: 500 * GB };
-        assert!(disk_check(&[v(8 * GB), v(GB)], true).is_empty());
         let mut ed = Editor::new(crate::config::Config::default());
         let mut s = Sample::of(Vec::new());
         (s.free, s.shot) = (vec![v(GB)], true);
@@ -4125,17 +4189,74 @@ pub(crate) mod tests {
         let (tx, rx) = channel();
         let mut open = false;
         let t = Instant::now();
-        assert_eq!(wait(&rx, Duration::from_millis(60), &mut open), Some(()));
+        assert_eq!(wait(&rx, Duration::from_millis(60), &mut open), Some(false), "its pace: no wake");
         assert!(t.elapsed() >= Duration::from_millis(60), "its pace");
         tx.send(Wake::Open(true)).unwrap();
         let t = Instant::now();
         let pace = crate::test_results::PATIENCE * 2;
-        assert_eq!(wait(&rx, pace, &mut open), Some(()));
+        assert_eq!(wait(&rx, pace, &mut open), Some(true));
         // (at once, not after a pace longer than any patience)
         assert!(open && t.elapsed() < crate::test_results::PATIENCE, "opened: at once");
         tx.send(Wake::Now).unwrap();
-        assert_eq!(wait(&rx, Duration::from_secs(30), &mut open), Some(()));
+        assert_eq!(wait(&rx, Duration::from_secs(30), &mut open), Some(true));
         drop(tx);
         assert_eq!(wait(&rx, Duration::from_secs(30), &mut open), None, "the editor is gone");
+    }
+
+    /// #168: the disk on its own clock — a look 30 s apart with room, 5 s once a file system is under 50 GB, the
+    /// processes still every `quiet` (the disk with them), every second while `:procs` is open; a wake brings the
+    /// look at the processes forward to now.
+    #[test]
+    fn the_disk_is_looked_at_on_its_own_clock_between_the_processes() {
+        const GB: u64 = 1 << 30;
+        let vol = |free| vec![Volume { at: PathBuf::from("/Volumes/x"), free, total: 926 * GB }];
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let mut looks = Looks::new(t0, QUIET_EVERY);
+        assert_eq!(looks.due(t0), Look::Procs, "a look at the processes first");
+        looks.looked(Look::Procs, t0, false, &vol(60 * GB));
+        assert_eq!(looks.until(t0), QUIET_EVERY, "room: the next with the processes");
+        assert_eq!(looks.due(at(29)), Look::Disk);
+        assert_eq!(looks.due(at(30)), Look::Procs);
+        looks.looked(Look::Procs, at(30), false, &vol(40 * GB));
+        assert_eq!(looks.until(at(30)), crate::diskroom::EVERY_CLOSE, "under 50 GB: 5 s");
+        // (the disk alone between, five times; the processes at their own time)
+        let mut seen = Vec::new();
+        let mut now = at(30);
+        while now < at(60) {
+            now += looks.until(now);
+            seen.push(looks.due(now));
+            looks.looked(looks.due(now), now, false, &vol(40 * GB));
+        }
+        assert_eq!(seen, [[Look::Disk; 5].as_slice(), &[Look::Procs]].concat());
+        assert_eq!(now, at(60));
+        // `:procs` open: a second
+        looks.looked(Look::Procs, now, true, &vol(60 * GB));
+        assert_eq!(looks.until(now), OPEN_EVERY);
+        // A wake: the processes now, not at their time
+        looks.looked(Look::Procs, now, false, &vol(60 * GB));
+        assert_eq!(looks.due(now + Duration::from_secs(3)), Look::Disk);
+        looks.woken(now + Duration::from_secs(3));
+        assert_eq!(looks.due(now + Duration::from_secs(3)), Look::Procs);
+        assert_eq!(looks.until(now + Duration::from_secs(3)), Duration::ZERO);
+    }
+
+    /// #168: a driver's or a shot's disk (`TARAE_DISK_FREE`, `TARAE_DISK_DRAIN`) falls by its rate on the clock,
+    /// never below nothing nor past the volume; no stand-in, the volumes as looked.
+    #[test]
+    fn a_stand_in_disk_drains_at_its_rate() {
+        const GB: u64 = 1 << 30;
+        let vols = || {
+            vec![
+                Volume { at: PathBuf::from("/"), free: 500 * GB, total: 926 * GB },
+                Volume { at: PathBuf::from("/small"), free: GB, total: 32 * GB },
+            ]
+        };
+        let free = |v: Vec<Volume>| v.iter().map(|v| v.free / GB).collect::<Vec<_>>();
+        let s = Duration::from_secs;
+        assert_eq!(free(stand_in(vols(), None, GB, s(30))), [500, 1], "no stand-in");
+        assert_eq!(free(stand_in(vols(), Some(100 * GB), 0, s(30))), [100, 32], "no more than the volume");
+        assert_eq!(free(stand_in(vols(), Some(100 * GB), GB, s(30))), [70, 32]);
+        assert_eq!(free(stand_in(vols(), Some(100 * GB), GB, s(300))), [0, 0], "never under nothing");
     }
 }

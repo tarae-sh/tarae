@@ -357,7 +357,8 @@ pub fn ask(ed: &mut Editor) {
 /// The quiet waited for, on a worker, while a workspace has moved (or a round was asked) and no round waits or runs.
 fn arm(ed: &mut Editor) {
     let o = &ed.overlap;
-    if o.waiting || o.running {
+    // (the disk at its reserve: no round writes its trees until there's room — `diskroom.rs`, then `resume`)
+    if o.waiting || o.running || ed.disk.held().is_some() {
         return;
     }
     let last = o.places.values().filter_map(|p| p.moved).max();
@@ -376,10 +377,30 @@ fn arm(ed: &mut Editor) {
     });
 }
 
+/// A round's quiet is being waited for (simulations).
+#[cfg(test)]
+pub fn waiting(ed: &Editor) -> bool {
+    ed.overlap.waiting
+}
+
+/// The rounds started so far, and whether one would start: a quiet over, nothing held (simulations).
+#[cfg(test)]
+pub fn rounds(ed: &Editor) -> u64 {
+    ed.overlap.started
+}
+
+/// Room on the disk again (`diskroom.rs`): the round that waited for it armed.
+pub fn resume(ed: &mut Editor) {
+    arm(ed);
+}
+
 /// The quiet over: a round over every workspace, the moved ones taken again — or the wait again, if one moved
 /// meanwhile.
 fn start(ed: &mut Editor) {
     let quiet = ed.overlap.quiet;
+    if ed.disk.held().is_some() {
+        return;
+    }
     // (one session left: nothing to compare — nothing armed until a second opens: `sync`)
     if ed.workspaces.is_empty() {
         return;

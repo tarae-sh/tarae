@@ -15,3 +15,6 @@ fontdue = "0.9"
 libc = "0.2"
 png = "0.18"
 vt100 = "0.16"
+
+[dev-dependencies]
+tarae-testkit = { path = "../crates/tarae-testkit" }  # a test's scratch folder (buildprune's tests)

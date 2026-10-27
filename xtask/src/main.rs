@@ -39,6 +39,10 @@
 //!   the fonts installed here (see [`glyphs`]) — the check behind CLAUDE.md's glyph list.
 //! - `sound [--volume N] [DIR]` — a burst of real writing as `editor.sound` plays it, a WAV for tuning by ear (see
 //!   [`sound`]).
+//! - `build-prune [--age 2d] [--whole] [--yes] [--in DIR]` — what's old in cargo's build folders (`~/.cargo/build`):
+//!   orphaned objects, with an age stale incremental caches and test binaries, with `--whole` the folders no
+//!   checkout of this repository builds in — listed, removed with `--yes`, each under cargo's lock (see
+//!   [`buildprune`]).
 //! - `homepage [<out-dir>]` — the homepage hero scene ("Three Claudes, one repository") recorded in both themes
 //!   (`hero-meok.json`, `hero-hanji.json`), first-frame PNGs, and 6-beat contact sheets (see [`homepage`]).
 
@@ -50,6 +54,7 @@ use std::io::Write as _;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
+mod buildprune;
 mod cards;
 mod claudestub;
 mod compat;
@@ -98,8 +103,9 @@ fn main() {
         Some("glyphs") => glyphs::run(&args[1..]),
         Some("homepage") => homepage::run(&args[1..]),
         Some("sound") => sound::run(&args[1..]),
+        Some("build-prune") => buildprune::run(&args[1..]),
         _ => Err(
-            "usage: cargo xtask vendor-grammars | shot out.png [keys …] | scenes [--out DIR] [scene …] | homepage [DIR] | sound [--volume N] [DIR] | perf | linux [--platform P] [clippy|test] | deb [--binary PATH] | stream [--model M] [--edit] [prompt] | stream --file F | trace [offcpu|syscalls|pty] [scenario …] | trace test|clippy | claude-stub serve|drive|summary | cards [PATH …] | reviews [PATH …] | turns [PATH …] | compat [stack …] [--lane gate|quick|net] [--linux a+|c|all] [--dry-run] | glyphs [chars]"
+            "usage: cargo xtask vendor-grammars | build-prune [--age 2d] [--whole] [--yes] [--in DIR] | shot out.png [keys …] | scenes [--out DIR] [scene …] | homepage [DIR] | sound [--volume N] [DIR] | perf | linux [--platform P] [clippy|test] | deb [--binary PATH] | stream [--model M] [--edit] [prompt] | stream --file F | trace [offcpu|syscalls|pty] [scenario …] | trace test|clippy | claude-stub serve|drive|summary | cards [PATH …] | reviews [PATH …] | turns [PATH …] | compat [stack …] [--lane gate|quick|net] [--linux a+|c|all] [--dry-run] | glyphs [chars]"
                 .into(),
         ),
     };
