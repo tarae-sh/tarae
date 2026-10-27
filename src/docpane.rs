@@ -7,7 +7,8 @@
 //! put back before the key's handler returns — frames, jobs, servers and `context()` see the code's. What a key did
 //! to the text is put back (`Document::put_back`) and insert mode ends there — the surface says so in its words; a
 //! command that took the code to another buffer (`C-o`, `ga`, `gf`) gives the code the keys. While it has the keys
-//! the pane holds still: the cursor is kept in sight only after a key or a size change (`in_sight`).
+//! the pane holds still: the cursor is kept in sight only after a key that moved the selection, or a size change
+//! (`in_sight`).
 
 use crate::document::Document;
 use crate::editor::{CharFn, Editor, Mode};
@@ -313,6 +314,9 @@ pub struct Swapped {
     pub edited: bool,
     /// It went into insert mode: back to normal.
     pub typing: bool,
+    /// It moved the primary selection (its cursor or its anchor): only then is the cursor brought in sight — a key
+    /// that leaves it as it was moves no row, as the code's (`Document::wheeled`'s rule).
+    pub moved: bool,
 }
 
 impl Swapped {
@@ -337,6 +341,7 @@ pub fn swap<R>(
     let doc = p.doc.take()?;
     let mut keys = std::mem::take(&mut p.keys);
     let (id, version, before) = (doc.id, doc.version(), doc.snapshot());
+    let range = doc.selection().primary();
     let code = ed.doc().id;
     ed.docs.push(doc);
     ed.current = ed.docs.len() - 1;
@@ -376,6 +381,7 @@ pub fn swap<R>(
         keys.mode = Mode::Insert;
         doc.drop_history();
     }
+    let selection_moved = doc.selection().primary() != range;
     let up = ed.prompt.is_some();
     let p = pane_mut(ed, which).expect("a pane lasts through its key");
     p.doc = Some(doc);
@@ -396,7 +402,7 @@ pub fn swap<R>(
         }
         ed.focus_sync();
     }
-    Some((r, Swapped { edited, typing }))
+    Some((r, Swapped { edited, typing, moved: selection_moved }))
 }
 
 /// A key's command has a pane's document lent now (`swap`): what would take a session to the front, close or replace a

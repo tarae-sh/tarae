@@ -696,6 +696,36 @@ fn the_wheel_leaves_the_cursor_behind_through_a_new_size() {
     assert!((d.top..d.top + viewport(&ed).0).contains(&line(&ed)), "a key: the view back to the cursor");
 }
 
+/// A key that leaves the selection as it was leaves the view where the wheel took it (#183's review, as the code's):
+/// `y` and `v` move no row; a key that moves the cursor brings it back; one that moves only the view (`zt`) moves
+/// what the terminal shows with it.
+#[test]
+fn a_key_that_moves_nothing_leaves_the_wheels_view() {
+    use crate::event::MouseKind as K;
+    let (mut ed, _sent) = term(Config::default(), 60);
+    feed(&mut ed, "<C-\\>");
+    let top = view(&ed).doc().top;
+    for _ in 0..4 {
+        ed.terminal_mouse(K::ScrollUp, Some((2, 0)), false);
+        frame(&mut ed);
+    }
+    assert_eq!(view(&ed).doc().top, top - 12, "the view as the wheel took it");
+    feed(&mut ed, "y");
+    assert_eq!(view(&ed).doc().top, top - 12, "y moved no row");
+    feed(&mut ed, "v");
+    assert_eq!(view(&ed).doc().top, top - 12, "v moved no row");
+    feed(&mut ed, "k");
+    assert!(view(&ed).doc().top > top - 12, "a key that moves the cursor: the view back to it");
+    // (a key that moves only the view, in the scrollback: what the terminal shows follows it — its offset the view's)
+    feed(&mut ed, "gg30G");
+    let before = view(&ed).doc().top;
+    feed(&mut ed, "zt");
+    let v = view(&ed);
+    assert!(v.doc().top > before && v.doc().top < v.made.back, "zt moved the view, still in the scrollback");
+    let back = ed.workspace.terminal.as_ref().unwrap().parser.screen().scrollback();
+    assert_eq!(back, v.made.back - v.doc().top, "the terminal shows the view's rows");
+}
+
 /// `C-w j` from the code puts tarae's keys on it: its view mode; `q` hides it (the shell runs on), as every
 /// output panel's `q` closes it; `C-w q` too.
 #[test]

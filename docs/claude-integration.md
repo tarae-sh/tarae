@@ -487,8 +487,10 @@ as from every panel.
 
 It holds still while you read: Claude's answer streaming in doesn't move it — not the rows in sight, not your
 selection: words arriving where your cursor is go under and after it, the cursor keeping its cell — and the title
-says `● normal · new text after` once something came; `G` catches up. Leaving lets it go on, the rows you were
-reading still in sight and what came below them. Next time it opens where you left it in this conversation; the
+says `● normal · new text after` once something came; `G` catches up. A key that moves neither the selection nor the
+view leaves the rows alone (`v`, `y`, `esc` with nothing selected); one that moves the selection keeps the cursor in
+sight; `z j` `z k` move the rows and keep the cursor. Leaving lets it go on, the rows you were reading still in sight
+and what came below them. Next time it opens where you left it in this conversation; the
 first time, on the last answer's first row. A click on the conversation puts the cursor on that character; the
 wheel over it opens it too, at the row under the pointer; rolled back down to the end with nothing selected, it
 closes and the keys go back where they were. The chat's chords (`C-s`, `C-o`, `C-y`, `C-l` …) work in it as in the

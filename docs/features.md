@@ -291,8 +291,8 @@ configs carry over as they are.
     latest. What would edit it is put back and said (`the task's output is read-only — esc code`). The status line
     says `● normal · task` (`· preflight`, `· tests`; `● select · task` after `v`), its position and its search's
     count. It holds still: what the run prints meanwhile comes in below the rows in sight (the head says `↓ output
-    after`), `G` catches up. `enter` on a selection quotes it to Claude (`<quoted from="task"` … `"preflight"`,
-    `"test"` with the test's name); with nothing selected, your run waiting behind Claude's runs now (the status line
+    after`), `G` catches up; a key that moves neither the selection nor the view moves no row (`v`, `y`). `enter`
+    on a selection quotes it to Claude (`<quoted from="task"` … `"preflight"`, `"test"` with the test's name); with nothing selected, your run waiting behind Claude's runs now (the status line
     says `enter run now`), else the chat's input. `tab` / `S-tab` the slot's other panels, `K` where Claude's
     command ran, `o` a preflight step's whole output (beside the steps' list, the step in view selected there), `esc`
     (a selection collapses first) to the code, `q` closes the

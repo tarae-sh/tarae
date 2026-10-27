@@ -699,7 +699,7 @@ fn keys_moved(ed: &mut Editor, slot: Slot) {
         // (a failure's message, `:procs`' detail: read from their first line in sight)
         _ if failure || slot == Slot::Procs => top,
         // (its last row in sight — inside the scrolloff margin, the view as it was, but at an ended run's end; one
-        // still printing puts lines below, and the first key would scroll to keep the margin)
+        // still printing puts lines below, and the first move would scroll to keep the margin)
         _ if top + rows > last && !running => last,
         _ => (top + rows - 1 - so).max(top),
     };
@@ -738,7 +738,7 @@ fn pin(ed: &mut Editor, slot: Slot) {
 /// After a frame (`term::render`): the output with the keys laid out for another size than its panel drew before
 /// (`C-w z`, the panel growing with its run) kept in sight at it — true when that moved it (drawn again). Only
 /// then: what its run printed meanwhile moves nothing (held still). Never while the wheel left the view off the
-/// cursor (`Document::wheeled` — the mouse rule): its next key brings it back.
+/// cursor (`Document::wheeled` — the mouse rule): the next key that moves the selection brings it back.
 pub fn resized(ed: &mut Editor) -> bool {
     let Some(slot) = has_keys(ed) else { return false };
     let size = viewport(ed, slot);
@@ -808,7 +808,7 @@ pub fn search_unshown(ed: &mut Editor) {
 }
 
 /// Runs `f` with `slot`'s document swapped in (`docpane::swap`): an edit or typing put back is said (it's
-/// read-only), the cursor kept in sight after.
+/// read-only), the cursor kept in sight after — once the key moved the selection.
 fn swap<R>(ed: &mut Editor, slot: Slot, f: impl FnOnce(&mut Editor) -> R) -> Option<R> {
     let size = viewport(ed, slot);
     let (r, done) = crate::docpane::swap(ed, Which::Output(slot), size, f)?;
@@ -817,7 +817,13 @@ fn swap<R>(ed: &mut Editor, slot: Slot, f: impl FnOnce(&mut Editor) -> R) -> Opt
         let out = bound(ed, "view_leave", "esc").map(|k| format!(" — {k} code")).unwrap_or_default();
         ed.set_status(format!("{what} is read-only{out}"));
     }
-    in_sight(ed, slot);
+    // (only a key that moved the selection brings the cursor in sight: what the run printed below while it held moves
+    // nothing — `esc`, `y`, `v` leave the rows you read where they are: #183)
+    match done.moved {
+        true => in_sight(ed, slot),
+        // (a key that moved only the view — `C-e`, `zz` — still sets the panel's scroll)
+        false => pin(ed, slot),
+    }
     Some(r)
 }
 
@@ -1022,7 +1028,7 @@ pub fn wheel(ed: &mut Editor, slot: Slot, up: bool) {
 }
 
 /// `slot`'s output's view `by` rows and nothing else — its cursor and selection where they are, in sight or not (the
-/// wheel's, a drag's held past its edge; its next key brings the view back to them).
+/// wheel's, a drag's held past its edge; the next key that moves the selection brings the view back to them).
 pub fn view_by(ed: &mut Editor, slot: Slot, by: isize) {
     let size = viewport(ed, slot);
     crate::docpane::swap(ed, Which::Output(slot), size, |ed| ed.view_by(by));

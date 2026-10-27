@@ -758,7 +758,7 @@ pub(crate) fn doc_mut(ed: &mut Editor) -> Option<&mut Document> {
 }
 
 /// The conversation's view `by` rows and nothing else — its cursor and selection where they are, in sight or not (the
-/// wheel's, a drag's held past its edge; its next key brings the view back to them).
+/// wheel's, a drag's held past its edge; the next key that moves the selection brings the view back to them).
 pub fn view_by(ed: &mut Editor, by: isize) {
     let size = viewport(ed);
     crate::docpane::swap(ed, Which::Chat, size, |ed| ed.view_by(by));
@@ -784,7 +784,8 @@ fn under(d: &Document, s: Shown, col: usize) -> usize {
 
 /// After a frame (`term::render`, as `rundoc::resized`): the chat drawn at another size while its view has the
 /// keys — the cursor kept in sight now, not at the next key. True when the rows in sight moved (drawn again). Never
-/// while the wheel left the view off the cursor (`Document::wheeled` — the mouse rule): its next key brings it back.
+/// while the wheel left the view off the cursor (`Document::wheeled` — the mouse rule): the next key that moves the
+/// selection brings it back.
 pub fn resized(ed: &mut Editor) -> bool {
     if !has_keys(ed) {
         return false;
@@ -880,7 +881,7 @@ fn catch_up(ed: &mut Editor) {
 }
 
 /// Runs `f` with the transcript swapped in (`docpane::swap`): an edit or typing put back is said (it's
-/// read-only), the cursor kept in sight after.
+/// read-only), the cursor kept in sight after — once the key moved the selection.
 fn swap<R>(ed: &mut Editor, f: impl FnOnce(&mut Editor) -> R) -> Option<R> {
     let size = viewport(ed);
     let (r, done) = crate::docpane::swap(ed, Which::Chat, size, f)?;
@@ -893,7 +894,11 @@ fn swap<R>(ed: &mut Editor, f: impl FnOnce(&mut Editor) -> R) -> Option<R> {
         let out = if ways.is_empty() { String::new() } else { format!(" — {}", ways.join(", ")) };
         ed.set_status(format!("the conversation is read-only{out}"));
     }
-    in_sight_now(ed);
+    // (only a key that moved the selection brings the cursor in sight: what came below while it held moves nothing —
+    // `esc`, `y`, `v` leave the rows you read where they are, the scrolloff margin never taken from them: #183)
+    if done.moved {
+        in_sight_now(ed);
+    }
     Some(r)
 }
 

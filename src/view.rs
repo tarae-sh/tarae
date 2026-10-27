@@ -528,7 +528,7 @@ pub fn terminal_pos(ed: &mut Editor, (r, c): (u16, u16)) -> Option<usize> {
 }
 
 /// The view's rows `by` and nothing else — its cursor and selection where they are, in sight or not (the wheel's, a
-/// drag's held past its edge; its next key brings the view back to them).
+/// drag's held past its edge; the next key that moves the selection brings the view back to them).
 pub fn terminal_view_by(ed: &mut Editor, by: isize) {
     // (a line a row: nothing wraps — no further down than the last line at the bottom, as `in_sight`)
     let (rows, _) = viewport(ed);
@@ -602,7 +602,7 @@ pub fn terminal_resized(ed: &mut Editor) {
     v.settling = None;
     match wheeled {
         // (the wheel left the view off the cursor — the mouse rule: the view stays, the terminal showing it; the next
-        // key brings it back)
+        // key that moves the selection brings it back)
         true => terminal_view_by(ed, 0),
         false => in_sight(ed),
     }
@@ -613,7 +613,6 @@ fn in_sight(ed: &mut Editor) {
     let (rows, _) = viewport(ed);
     let so = ed.config.scrolloff.min(rows.saturating_sub(1) / 2);
     let Some(v) = ed.workspace.viewer.view.as_mut() else { return };
-    let m = v.made;
     let d = v.doc_mut();
     let last = mv::last_line(&d.text);
     let line = mv::line_of(&d.text, d.selection().primary().cursor(&d.text));
@@ -626,19 +625,26 @@ fn in_sight(ed: &mut Editor) {
     // (no further down than the last line at the bottom)
     top = top.min((last + 1).saturating_sub(rows));
     d.set_top(top);
-    // (the terminal shows what's in sight by its scrollback offset)
+    shown(ed);
+}
+
+/// The terminal shows what's in sight by its scrollback offset: the view's top.
+fn shown(ed: &mut Editor) {
+    let Some(v) = ed.workspace.viewer.view.as_ref() else { return };
+    let (m, top) = (v.made, v.doc().top);
     if let Some(t) = ed.workspace.terminal.as_mut().filter(|t| t.generation() == m.generation) {
         t.parser.screen_mut().set_scrollback(m.back.saturating_sub(top));
     }
 }
 
 /// Runs `f` with the view's document as `current`, its mode, keys under way and size as the editor's — all
-/// put back before it returns (the code's are the editor's again; the jump list never holds the view's spots).
+/// put back before it returns (the code's are the editor's again; the jump list never holds the view's spots); the
+/// cursor kept in sight after — once the key moved the selection.
 fn swap<R>(ed: &mut Editor, f: impl FnOnce(&mut Editor) -> R) -> Option<R> {
     let (rows, cols) = viewport(ed);
     let v = ed.workspace.viewer.view.as_mut()?;
     let doc = v.doc.take()?;
-    let id = doc.id;
+    let (id, range) = (doc.id, doc.selection().primary());
     let current = ed.current;
     ed.docs.push(doc);
     ed.current = ed.docs.len() - 1;
@@ -659,6 +665,9 @@ fn swap<R>(ed: &mut Editor, f: impl FnOnce(&mut Editor) -> R) -> Option<R> {
     ed.current = current;
     let mut v = ed.workspace.viewer.view.take().expect("the view lasts through its key");
     crate::docpane::trade(ed, &mut v.keys);
+    // (only a key that moved the selection brings the cursor in sight — `esc`, `y`, `v` leave the rows where they
+    // are, the wheel's too: #183, as the code's and the chat's)
+    let moved = doc.selection().primary() != range;
     v.doc = Some(doc);
     // (a prompt it opened — `/`, `s` — is its until it closes)
     v.prompt = match ed.prompt.is_some() {
@@ -666,7 +675,11 @@ fn swap<R>(ed: &mut Editor, f: impl FnOnce(&mut Editor) -> R) -> Option<R> {
         false => false,
     };
     ed.workspace.viewer.view = Some(v);
-    in_sight(ed);
+    match moved {
+        true => in_sight(ed),
+        // (a key that moved only the view — `C-e`, `zz` — still sets what the terminal shows)
+        false => shown(ed),
+    }
     Some(r)
 }
 

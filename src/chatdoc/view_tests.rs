@@ -592,6 +592,37 @@ fn the_wheel_leaves_the_cursor_behind_until_a_key() {
     assert!((top..top + rows).contains(&row), "a key: the view back to the cursor ({row}, rows from {top})");
 }
 
+/// A key that moves only the selection's anchor brings the view back too (#183's review): the wheel left a selected
+/// line out of sight, `;` collapses it onto its cursor — the view back on it, as the code's (`Document::wheeled`).
+/// (Above the view: a cursor below it a frame brings back by itself once the wheel's hold is gone, `resized`.)
+#[test]
+fn a_key_that_moves_only_the_anchor_brings_the_view_back() {
+    let mut ed = chat_with(Config::default(), long());
+    feed(&mut ed, "<esc>ggjjx");
+    let (y0, _, rows, _) = ed.screen.chat_view.get().unwrap();
+    let x = ed.screen.chat_x.unwrap() + 4;
+    let row = cursor_row(&ed);
+    for _ in 0..4 {
+        let kind = crate::event::MouseKind::ScrollDown;
+        ed.handle_mouse(crate::event::Mouse {
+            kind,
+            x: x as u16,
+            y: (y0 + 5) as u16,
+            alt: false,
+            ctrl: false,
+        });
+        frame(&mut ed);
+    }
+    let top = view(&ed).top_row();
+    assert!(row < top, "the wheel left it out of sight, above ({row}, rows from {top})");
+    feed(&mut ed, "y");
+    assert_eq!(view(&ed).top_row(), top, "y: the view stays");
+    feed(&mut ed, ";");
+    assert_eq!(cursor_row(&ed), row, "the cursor where it was");
+    let top = view(&ed).top_row();
+    assert!((top..top + rows).contains(&row), "; moved the anchor: the view back to the cursor");
+}
+
 /// The wheel's hold goes along with the cursor through what arrives (#181): the cursor on the queued line, the answer
 /// above it streaming in — the cursor goes down with it, out of sight, and the view stays where the wheel left it.
 #[test]
@@ -1145,6 +1176,28 @@ fn leaving_keeps_the_rows_you_read_when_text_came_after() {
     assert_eq!(first, top, "the row on top before is on top now");
     let total: usize = ed.screen.chat_laid.borrow().iter().map(|(_, r)| r.len()).sum();
     assert!(total > held, "the new rows are there, below");
+}
+
+/// The same with the view at the conversation's bottom and only the cursor moved up (frictions #183: leaving showed
+/// the rows 2 below those read — the leaving key kept the scrolloff margin under the cursor, rows having come below
+/// it). A key that leaves the cursor where it is moves no row.
+#[test]
+fn leaving_from_the_bottom_keeps_the_rows_you_read_when_text_came_after() {
+    let mut ed = chat_with(Config::default(), long());
+    feed(&mut ed, "<esc>kkk");
+    let top = view(&ed).top_row();
+    assert!(top > 0);
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    for i in 0..6 {
+        c.msgs.push(Msg::new(Role::Assistant, format!("a new answer {i}"), ""));
+    }
+    assert!(frame(&mut ed).contains("new text after"));
+    assert_eq!(view(&ed).top_row(), top, "it held still");
+    feed(&mut ed, "v<esc>");
+    assert_eq!(view(&ed).top_row(), top, "v and esc moved no row");
+    feed(&mut ed, "<esc>");
+    assert!(!keyed(&ed), "left");
+    assert_eq!(ed.screen.chat_view.get().unwrap().3, top, "the row on top before is on top now");
 }
 
 /// A new conversation (`C-l`) or an earlier one (`C-p` → `chat::continue_with`) from view mode: the view of the

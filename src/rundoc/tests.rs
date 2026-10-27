@@ -560,6 +560,35 @@ fn into_a_run_still_printing_the_first_key_moves_no_rows() {
     assert_eq!(at(&ed, Slot::Task).0, 29, "an ended run's last line");
 }
 
+/// Held at its end, the cursor moved up, the run printing below (#183): a key that leaves the selection as it was
+/// (`y`, `v`) moves no row — the scrolloff margin under the cursor is kept only by a key that moves it — and
+/// leaving shows the rows you read.
+#[test]
+fn a_key_that_moves_nothing_keeps_the_rows_while_it_prints() {
+    let mut ed = task(30);
+    feed(&mut ed, "<C-w>jkk");
+    let top = output(&ed, Slot::Task).top;
+    assert_eq!(at(&ed, Slot::Task).0, 27, "the cursor two up from the end");
+    let r = ed.workspace.task_run.as_mut().unwrap();
+    r.state = crate::task::State::Running;
+    for i in 0..6 {
+        r.push_line(false, format!("came {i}"), false);
+    }
+    frame(&mut ed);
+    assert_eq!(output(&ed, Slot::Task).top, top, "held");
+    feed(&mut ed, "y");
+    assert_eq!(output(&ed, Slot::Task).top, top, "y moved no row");
+    feed(&mut ed, "v");
+    assert_eq!(output(&ed, Slot::Task).top, top, "v moved no row");
+    feed(&mut ed, "<esc><esc>");
+    assert_eq!(region(&ed), "code");
+    assert_eq!(
+        ed.workspace.task_run.as_ref().unwrap().top(rows(&ed, Slot::Task)),
+        top,
+        "left where you read"
+    );
+}
+
 /// `space` is the editor's menu, as from the code: `space ?` the palette over the output (the keys back on it when
 /// it goes), its which-key the code's.
 #[test]
