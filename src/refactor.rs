@@ -1378,10 +1378,11 @@ fn file_changes(
     keys: &crate::reads::Keys,
 ) -> Result<Vec<FileChange>, String> {
     let mut out: Vec<FileChange> = Vec::new();
-    let mut outside = Vec::new();
+    let (mut outside, mut why) = (Vec::new(), roots.said().to_string());
     for (path, edits) in per {
         let Some(at) = roots.inside(&path) else {
             outside.push(path.display().to_string());
+            why = roots.said_for(&path);
             continue;
         };
         let real = at.real.clone();
@@ -1409,7 +1410,7 @@ fn file_changes(
             "this change reaches {} outside the project ({}) — refused whole: tarae's tools change files {}",
             nav::count(outside.len(), "file"),
             outside.join(", "),
-            roots.said()
+            why
         ));
     }
     Ok(out)
@@ -1543,7 +1544,7 @@ fn plan(
     let given = roots.project().join(q.path.as_deref().unwrap_or(""));
     let at = roots.inside(&given).ok_or_else(|| {
         let p = q.path.as_deref().unwrap_or_default();
-        format!("{p} is outside the project — replace changes files {}", roots.said())
+        format!("{p} is outside the project — replace changes files {}", roots.said_for(&given))
     })?;
     let scope =
         std::fs::canonicalize(&given).map_err(|e| format!("{}: {e}", q.path.as_deref().unwrap_or(".")))?;

@@ -2720,6 +2720,8 @@ fn submit_as(
     if ed.workspace.claude.chat.as_ref().is_none_or(Chat::busy) {
         return false;
     }
+    // (the workspace's folders looked at again: one swapped for a link since is dropped and said — `folders.rs`)
+    ed.folders_look();
     // Process first — a newly spawned one clears `sent`, so the context carries the whole file again
     ensure_proc(ed);
     let pass = if input { crate::reads::input_pass(ed) } else { Vec::new() };

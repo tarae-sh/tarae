@@ -520,9 +520,9 @@ pub(crate) fn place_in(
     given: &str,
 ) -> Result<(PathBuf, String, bool), String> {
     let abs = crate::chat::resolve(roots.project(), given);
-    let at = roots
-        .inside(&abs)
-        .ok_or_else(|| format!("{given} is outside the project — edit changes files {}", roots.said()))?;
+    let at = roots.inside(&abs).ok_or_else(|| {
+        format!("{given} is outside the project — edit changes files {}", roots.said_for(&abs))
+    })?;
     if at.real == at.root {
         return Err(match at.project {
             true => "that's the project folder itself".into(),

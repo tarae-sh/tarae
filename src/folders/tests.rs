@@ -127,6 +127,101 @@ fn what_cant_be_a_folder_is_said() {
     refused(&mut ed, &other, "another checkout of this repository");
 }
 
+/// A folder's file gets the folder's repository as a session's file gets its checkout's: the folder first among
+/// `git_places`' roots, found even where a sandboxed run may write the folder (C opens it to runs — discovery from
+/// a file's folder refuses such a place), its config that runs commands held until trusted (the card asks) and
+/// not run meanwhile (a stand-in fsmonitor in the test's own scratch).
+#[test]
+fn a_folders_file_gets_the_folders_repository() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let (s, _project, infra, mut ed) = place("git");
+    git(&infra, &["init", "-q"]);
+    git(&infra, &["add", "-A"]);
+    git(&infra, &["commit", "-q", "-m", "one"]);
+    let (monitor, ran) = (s.join("monitor.sh"), s.join("ran-fsmonitor"));
+    std::fs::write(&monitor, format!("#!/bin/sh\ntouch '{}'\n", ran.display())).unwrap();
+    std::fs::set_permissions(&monitor, std::fs::Permissions::from_mode(0o755)).unwrap();
+    git(&infra, &["config", "core.fsmonitor", monitor.to_str().unwrap()]);
+    assert!(add(&mut ed, &infra).contains("added"), "{}", said(&ed));
+    let tf = infra.join("main.tf");
+    let places = ed.git_places(&tf);
+    let roots = places.roots.clone();
+    // (as C will have it: the folder one of the places a sandboxed run writes)
+    let w = infra.clone();
+    let places =
+        crate::gitrepo::Places { writes: std::sync::Arc::new(move || Some(vec![w.clone()])), ..places };
+    let (repo, rel) =
+        crate::gitrepo::for_file_in(&places, &tf).map_err(|e| e.said()).expect("its repository");
+    assert_eq!(rel, "main.tf");
+    assert_eq!(roots.first(), Some(&infra), "the folder holding it first: {roots:?}");
+    assert!(repo.held.is_some() && repo.asks, "its fsmonitor held, the card asks");
+    std::fs::write(&tf, "resource { changed }\n").unwrap();
+    let _ = repo.output(&["status", "--porcelain"], None);
+    assert!(!ran.exists(), "held: the repository's fsmonitor never ran");
+}
+
+/// A folder swapped for a link after it was added (`infra` → a stand-in `~/.aws` under the scratch) is no root:
+/// Claude's tools refuse what's through it and say why, never taking the link's target as the folder; the next
+/// turn's look drops it and says so.
+#[test]
+fn a_folder_swapped_for_a_link_is_no_root() {
+    let (s, _project, infra, mut ed) = place("swapped");
+    let aws = ed.caps_home.clone().unwrap().join(".aws");
+    std::fs::create_dir_all(&aws).unwrap();
+    std::fs::write(aws.join("config"), "[default]\n").unwrap();
+    assert!(add(&mut ed, &infra).contains("added"));
+    std::fs::rename(&infra, s.join("infra.was")).unwrap();
+    std::os::unix::fs::symlink(&aws, &infra).unwrap();
+    let (roots, keys) = (ed.workspace.roots(), crate::reads::Keys::of(&ed));
+    let config = infra.join("config");
+    assert_eq!(roots.inside(&config), None, "no root");
+    let e = crate::nav::file_in(&roots, &config, &keys).unwrap_err();
+    assert!(e.contains("folder") && e.contains("isn't the folder added any more"), "{e}");
+    let e = crate::edittool::place_in(&roots, &keys, config.to_str().unwrap()).unwrap_err();
+    assert!(e.contains("isn't the folder added any more"), "{e}");
+    let before = ed.said;
+    ed.folders_look();
+    settle_until(&mut ed, |ed| ed.said > before);
+    assert!(said(&ed).starts_with("folder dropped: infra ("), "{}", said(&ed));
+    assert!(ed.workspace.folders.is_empty(), "dropped");
+}
+
+/// A folder in a place sandboxed runs write, or holding one, is refused — a run could put a link in its place; with
+/// runs not sandboxed (no places), it isn't for that.
+#[test]
+fn a_folder_where_runs_write_is_refused() {
+    let s = crate::scratch::Scratch::new("folders-writes");
+    for d in ["project", "tmp/infra", "work/runs"] {
+        std::fs::create_dir_all(s.join(d)).unwrap();
+    }
+    let real = |p: &str| s.join(p).canonicalize().unwrap();
+    let roots = Roots::new(real("project"), Vec::new());
+    let caps = crate::caps::Caps::default();
+    let why = judge(&real("tmp/infra"), &roots, &caps, &[real("tmp")]).unwrap_or_default();
+    assert!(why.contains("where Claude's runs write — a run could put a link in its place"), "{why}");
+    let why = judge(&real("work"), &roots, &caps, &[real("work/runs")]).unwrap_or_default();
+    assert!(why.starts_with("it holds") && why.contains("where Claude's runs write"), "{why}");
+    assert_eq!(judge(&real("tmp/infra"), &roots, &caps, &[]), None, "runs not sandboxed");
+}
+
+/// A folder is in a workspace once, whichever way it came: `:folder-add` of one kept and still being judged as the
+/// workspace came back is said added already, and the judged one lands once; `:folder-remove` then leaves none.
+#[test]
+fn a_folder_is_in_its_workspace_once_while_kept_ones_are_judged() {
+    let (_s, _project, infra, mut ed) = place("once");
+    assert!(add(&mut ed, &infra).contains("added"));
+    // (as `workspaces_back` leaves it: kept, being judged again)
+    ed.workspace.folders_judging = std::mem::take(&mut ed.workspace.folders);
+    let s = add(&mut ed, &infra);
+    assert!(s.contains("added already"), "{s}");
+    assert!(ed.workspace.folders.is_empty(), "not added beside the one being judged");
+    ed.folders_back(ed.workspace.id);
+    settle_until(&mut ed, |ed| ed.workspace.folders_judging.is_empty());
+    assert_eq!(ed.workspace.folders.len(), 1, "once");
+    feed(&mut ed, ":folder-remove infra<ret>");
+    assert!(ed.workspace.folders.is_empty() && ed.workspace.roots().folders().is_empty(), "none left");
+}
+
 fn git(dir: &Path, args: &[&str]) {
     let out = std::process::Command::new("git")
         .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])

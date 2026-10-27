@@ -1733,6 +1733,14 @@ The folder is the workspace's (`:folders` lists the front one's; a new workspace
 the sessions' file until `:folder-remove` (or `d` in `:folders`). As tarae starts again (or `:restart`s) each is
 judged again before Claude reads there — one gone, a link now, or one that now holds or sits in what it mustn't
 is dropped and said. Removed, it's outside the project again: Claude's reads there ask on the card. Only you add one.
+A folder is the real path it was added as: one swapped for a link since (`/tmp/infra` → `~/.aws`) is no folder —
+Claude's tools refuse what's through it, saying why, and each message you send looks at the folders again and
+drops (and says) one that's a link now. A folder in or holding a place Claude's runs write is never added: a run
+could put a link in its place.
+
+A folder's git is read as a session's checkout's is: its repository resolved from the folder (the gutter, blame,
+staging, `:diff` on its files), its own config that runs commands held until you trust it on the git trust card,
+and no hook of it run by tarae's own git.
 
 ### Reading and searching in the editor
 

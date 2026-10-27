@@ -166,7 +166,7 @@ pub(crate) fn file_in(
     let shown = rel(roots.project(), path);
     let real = std::fs::canonicalize(path).map_err(|e| format!("{shown}: {e}"))?;
     if roots.inside(&real).is_none() {
-        return Err(format!("{shown} is outside the project — these tools look {}", roots.said()));
+        return Err(format!("{shown} is outside the project — these tools look {}", roots.said_for(path)));
     }
     if !real.is_file() {
         return Err(format!("{shown} isn't a file"));

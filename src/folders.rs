@@ -79,13 +79,16 @@ impl Roots {
     }
 
     /// Where `path` really leads (`paths::inside`: its deepest existing folder resolved) when that's in one of them.
-    /// A worker's (it resolves links).
+    /// A folder is the real path it was judged as: one that leads elsewhere now (swapped for a link) is no root —
+    /// never its link's target taken for it. A worker's (it resolves links).
     pub fn inside(&self, path: &Path) -> Option<Inside> {
-        self.all().enumerate().find_map(|(i, r)| {
-            let real = crate::paths::inside(r, path)?;
-            let root = std::fs::canonicalize(r).unwrap_or_else(|_| r.to_path_buf());
-            Some(Inside { root, real, project: i == 0 })
-        })
+        let project = std::fs::canonicalize(&self.project).unwrap_or_else(|_| self.project.clone());
+        if let Some(real) = crate::paths::inside(&project, path) {
+            return Some(Inside { root: project, real, project: true });
+        }
+        let real = crate::paths::real(path)?;
+        let f = self.folders.iter().find(|f| real.starts_with(f) && itself(f))?;
+        Some(Inside { root: f.clone(), real, project: false })
     }
 
     /// What a refusal says Claude's tools change: the project, or the project and its folders.
@@ -95,6 +98,23 @@ impl Roots {
             false => "inside it and its folders only",
         }
     }
+
+    /// `said` for `path` (as given): and why, when it's in a folder that isn't the folder added any more. A worker's.
+    pub fn said_for(&self, path: &Path) -> String {
+        match self.folders.iter().find(|f| path.starts_with(f) && !itself(f)) {
+            Some(f) => format!(
+                "{} — folder {} isn't the folder added any more (it leads elsewhere now): not read or changed",
+                self.said(),
+                f.display()
+            ),
+            None => self.said().to_string(),
+        }
+    }
+}
+
+/// Folder `at` (a real path as judged) is still itself: it resolves to that path, no link in its place. Reads the disk.
+fn itself(at: &Path) -> bool {
+    std::fs::canonicalize(at).is_ok_and(|r| r == at)
 }
 
 /// Where a path is, among the roots (`Roots::inside`).
@@ -128,8 +148,9 @@ fn given_path(project: &Path, given: &str, home: Option<&Path>) -> PathBuf {
     }
 }
 
-/// Why folder `at` (real) can't be added beside `roots` — None: it can. A worker's (it reads the disk).
-pub fn judge(at: &Path, roots: &Roots, caps: &Caps) -> Option<String> {
+/// Why folder `at` (real) can't be added beside `roots` — None: it can. `writes`: where sandboxed runs may write
+/// (`Editor::workspaces_writes`; none when runs aren't sandboxed). A worker's (it reads the disk).
+pub fn judge(at: &Path, roots: &Roots, caps: &Caps, writes: &[PathBuf]) -> Option<String> {
     let (project, holds, within) =
         (roots.project(), |p: &Path| p.starts_with(at), |p: &Path| at.starts_with(p));
     let name =
@@ -166,6 +187,16 @@ pub fn judge(at: &Path, roots: &Roots, caps: &Caps) -> Option<String> {
     if let Some(why) = caps.later.refuses(at) {
         return Some(why);
     }
+    // (a run could put a link in its place — `/tmp/infra` → `~/.aws` — or in one of its folders: what it reads would
+    // be read as the folder's)
+    if let Some(w) = writes.iter().find(|w| within(w) && at != w.as_path()) {
+        let w = crate::allow::tilde(w);
+        return Some(format!("it's in {w}, where Claude's runs write — a run could put a link in its place"));
+    }
+    if let Some(w) = writes.iter().find(|w| holds(w) && at != w.as_path()) {
+        let w = crate::allow::tilde(w);
+        return Some(format!("it holds {w}, where Claude's runs write — a run could put a link there"));
+    }
     if caps.defaults(Why::OtherCheckout).any(|c| within(c) || holds(c)) {
         return Some(
             "it's another checkout of this repository — that's a workspace (`:workspace-open`)".into(),
@@ -185,6 +216,45 @@ impl crate::workspace::Workspace {
     pub fn roots(&self) -> Roots {
         Roots::new(self.root.clone(), self.folders.iter().map(|f| f.at.clone()).collect())
     }
+
+    /// A folder of its — added, or kept and still being judged (`folders_judging`) — is `at`, holds it or is in it:
+    /// the one check that a folder is in a workspace once, whichever way it came.
+    pub fn has_folder(&self, at: &Path) -> bool {
+        self.folders
+            .iter()
+            .chain(&self.folders_judging)
+            .any(|f| at.starts_with(&f.at) || f.at.starts_with(at))
+    }
+}
+
+/// Each of `folders` judged again (`judge`: `caps`, `writes`) beside `project` and the ones before it kept — its
+/// real path still the one kept (a link now refused): those kept, their instruction files looked for again; those
+/// dropped, each with its words. A worker's.
+fn rejudge(
+    folders: Vec<Folder>,
+    project: &Path,
+    caps: &Caps,
+    writes: &[PathBuf],
+) -> (Vec<Folder>, Vec<(PathBuf, String)>) {
+    let (mut kept, mut dropped) = (Vec::new(), Vec::new());
+    for mut f in folders {
+        let roots = Roots::new(project.to_path_buf(), kept.iter().map(|f: &Folder| f.at.clone()).collect());
+        let why = match std::fs::canonicalize(&f.at) {
+            Err(e) => Some(e.to_string()),
+            Ok(real) => judge(&real, &roots, caps, writes)
+                .or_else(|| (real != f.at).then(|| format!("it leads elsewhere now ({})", real.display()))),
+        };
+        match why {
+            Some(why) => {
+                dropped.push((f.at.clone(), format!("{} ({}) — {why}", f.name, crate::allow::tilde(&f.at))))
+            }
+            None => {
+                f.instructions = instructions_in(&f.at);
+                kept.push(f);
+            }
+        }
+    }
+    (kept, dropped)
 }
 
 impl Editor {
@@ -195,7 +265,7 @@ impl Editor {
         if given.is_empty() {
             return Err("folder-add needs a folder: `:folder-add ~/work/infra`".into());
         }
-        let basis = self.caps_basis();
+        let (basis, writes) = (self.caps_basis(), self.workspaces_writes());
         let roots = self.workspace.roots();
         #[cfg(test)]
         let home = self.caps_home.clone();
@@ -205,7 +275,7 @@ impl Editor {
         let id = self.workspace.id;
         self.events.jobs().spawn(move || {
             let r = std::fs::canonicalize(&path).map_err(|e| e.to_string()).and_then(|at| {
-                match judge(&at, &roots, &basis.build()) {
+                match judge(&at, &roots, &basis.build(), &writes().unwrap_or_default()) {
                     Some(why) => Err(why),
                     None => Ok((instructions_in(&at), at)),
                 }
@@ -228,8 +298,8 @@ impl Editor {
     /// Folder `at` judged: the workspace in front's now (the one it was judged for), kept, said.
     fn folder_added(&mut self, at: PathBuf, instructions: Vec<String>) {
         let ws = &mut self.workspace;
-        // (another added it meanwhile, or the same twice)
-        if ws.folders.iter().any(|f| at.starts_with(&f.at) || f.at.starts_with(&at)) {
+        // (another added it meanwhile, the same twice, or kept and being judged again as the workspace came back)
+        if ws.has_folder(&at) {
             return self.set_status(format!("{} is added already", at.display()));
         }
         let last = at.file_name().map_or_else(|| at.display().to_string(), |n| n.to_string_lossy().into());
@@ -283,40 +353,58 @@ impl Editor {
             return;
         };
         let (basis, project, kept) = (self.caps_basis_in(ws), ws.root.clone(), ws.folders_judging.clone());
-        let front = self.workspace.id;
+        let (front, writes) = (self.workspace.id, self.workspaces_writes());
         self.events_for(id);
         self.events.jobs().spawn(move || {
-            let caps = basis.build();
-            let (mut back, mut dropped) = (Vec::new(), Vec::new());
-            for mut f in kept {
-                let roots = Roots::new(project.clone(), back.iter().map(|f: &Folder| f.at.clone()).collect());
-                let why = match std::fs::canonicalize(&f.at) {
-                    Err(e) => Some(e.to_string()),
-                    Ok(real) => judge(&real, &roots, &caps).or_else(|| {
-                        (real != f.at).then(|| format!("it leads elsewhere now ({})", real.display()))
-                    }),
-                };
-                match why {
-                    Some(why) => dropped.push(format!("{} ({}) — {why}", f.name, crate::allow::tilde(&f.at))),
-                    None => {
-                        f.instructions = instructions_in(&f.at);
-                        back.push(f);
-                    }
-                }
-            }
+            let (back, dropped) = rejudge(kept, &project, &basis.build(), &writes().unwrap_or_default());
             move |ed: &mut Editor| {
                 if ed.workspace.id != id {
                     return;
                 }
                 ed.workspace.folders_judging.clear();
-                ed.workspace.folders.extend(back);
+                // (one added meanwhile is there once: `has_folder`, as `:folder-add`'s landing asks)
+                for f in back {
+                    if !ed.workspace.has_folder(&f.at) {
+                        ed.workspace.folders.push(f);
+                    }
+                }
                 ed.folders_changed();
                 if !dropped.is_empty() {
-                    ed.set_warning(format!("folder dropped as it came back: {}", dropped.join(" · ")));
+                    let said: Vec<String> = dropped.into_iter().map(|(_, s)| s).collect();
+                    ed.set_warning(format!("folder dropped as it came back: {}", said.join(" · ")));
                 }
             }
         });
         self.events_for(front);
+    }
+
+    /// The front workspace's folders looked at again as a turn starts (`chat::submit_as`): each judged as
+    /// `folders_back` does — one that's a link now, gone, or in or holding what it mustn't is dropped and said (the
+    /// tools refuse it meanwhile: `Roots::inside`). Nothing when there are none.
+    pub(crate) fn folders_look(&mut self) {
+        if self.workspace.folders.is_empty() {
+            return;
+        }
+        let (basis, writes) = (self.caps_basis(), self.workspaces_writes());
+        let (project, now) = (self.workspace.root.clone(), self.workspace.folders.clone());
+        self.events.jobs().spawn(move || {
+            let (kept, dropped) = rejudge(now, &project, &basis.build(), &writes().unwrap_or_default());
+            move |ed: &mut Editor| {
+                // (their instruction files as they are now)
+                for f in ed.workspace.folders.iter_mut() {
+                    if let Some(k) = kept.iter().find(|k| k.at == f.at) {
+                        f.instructions = k.instructions.clone();
+                    }
+                }
+                if dropped.is_empty() {
+                    return;
+                }
+                ed.workspace.folders.retain(|f| !dropped.iter().any(|(at, _)| *at == f.at));
+                ed.folders_changed();
+                let said: Vec<String> = dropped.into_iter().map(|(_, s)| s).collect();
+                ed.set_warning(format!("folder dropped: {}", said.join(" · ")));
+            }
+        });
     }
 }
 

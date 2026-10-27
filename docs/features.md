@@ -579,7 +579,9 @@ your `PATH`.
   `:folder-remove`; you add it, Claude asks in words. Its settings aren't read (`.tarae.toml`, `.claude/`), its
   `CLAUDE.md` is named to Claude, not loaded. `:folders` lists them, a floating list as `:messages` (`d` removes one).
   Refused, and said why: the project, in it or holding it, your home or above, what runs never read, where a write
-  would run something later, another checkout of the project's repository (that's a workspace)
+  would run something later, in or holding a place Claude's runs write (`/tmp`: a run could put a link in its
+  place), another checkout of the project's repository (that's a workspace). One that's become a link since is no
+  folder: Claude's tools refuse what's through it, and it's dropped and said as your next message goes
   ([folders](claude-integration.md#another-folder))
 - **Review like a pull request** — Claude's edits hunk by hunk, or all at the turn's end
   ([review at the end](claude-integration.md#review-at-the-end)); any change reviewed over the real buffers, and a

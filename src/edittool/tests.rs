@@ -396,6 +396,52 @@ fn the_chat_edits_with_edit_alone() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A folder's file (`folders.rs`) lands on disk as the project's, every way: written unseen under review at the end,
+/// by a change set's `y` all beside a project file, and saved from its own in-buffer review — each read back.
+#[test]
+fn a_folders_change_lands_on_disk_every_way() {
+    let text = "one\ntwo\n";
+    let setup = |name: &str| {
+        let dir = std::fs::canonicalize(project(name, &[("a.rs", text)])).unwrap();
+        let infra = std::fs::canonicalize(project(&format!("{name}-infra"), &[("main.tf", text)])).unwrap();
+        let mut ed = chat_for(&dir, &dir.join("stdin.log"));
+        let f = crate::folders::Folder { at: infra.clone(), name: "infra".into(), instructions: Vec::new() };
+        ed.workspace.folders.push(f);
+        let tf = infra.join("main.tf");
+        (dir, tf, ed)
+    };
+    let read = |p: &Path| std::fs::read_to_string(p).unwrap();
+    let two = |tf: &Path| json!({"edits": [{"file_path": tf, "old_string": "two", "new_string": "TWO"}]});
+    // Review at the end: written unseen (`refactor::write`, beneath the folder)
+    let (dir, tf, mut ed) = setup("folder-at-end");
+    ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
+    call(&mut ed, Call::test(71), &two(&tf)).unwrap();
+    pump(&mut ed, "the answer", |_| answered(71).is_some());
+    assert_eq!(read(&tf), "one\nTWO\n", "{:?}", answered(71));
+    // A change set's `y` all (`accept_all`), with a project file
+    let (dir, tf, mut ed) = setup("folder-all");
+    let both = json!({"edits": [
+        {"file_path": "a.rs", "old_string": "one", "new_string": "ONE"},
+        {"file_path": tf, "old_string": "two", "new_string": "TWO"},
+    ]});
+    call(&mut ed, Call::test(72), &both).unwrap();
+    pump(&mut ed, "the card", |ed| change_card(ed).is_some());
+    let (id, whose, _) = change_card(&ed).unwrap();
+    crate::refactor::accept_all(&mut ed, id, whose);
+    pump(&mut ed, "the answer", |_| answered(72).is_some());
+    assert_eq!(
+        (read(&dir.join("a.rs")), read(&tf)),
+        ("ONE\ntwo\n".into(), "one\nTWO\n".into()),
+        "{:?}",
+        answered(72)
+    );
+    // Its own review's `y` (`reviewed`: saved beneath the folder)
+    let (_dir, tf, mut ed) = setup("folder-review");
+    call(&mut ed, Call::test(73), &two(&tf)).unwrap();
+    answer_reviews(&mut ed, 'y', |_| answered(73).is_some());
+    pump(&mut ed, "the save", |_| read(&tf) == "one\nTWO\n");
+}
+
 /// The change set's card, if up: its id, whose (its chat), and whether it has a move or delete.
 fn change_card(ed: &Editor) -> Option<(u64, crate::refactor::Whose, bool)> {
     ed.offers.iter().find_map(|o| match o.what {

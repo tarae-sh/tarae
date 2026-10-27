@@ -236,7 +236,8 @@ fn index_read(places: &crate::gitrepo::Places, path: &Path) -> Read {
 
 impl Editor {
     /// Where `path`'s git is looked for (`gitrepo::for_file_in`): the sessions' repositories — the one whose
-    /// checkout holds it first, then the front one's — and, for a file in none, where a sandboxed run of any
+    /// checkout holds it first, then the front one's — and their workspaces' folders' (`folders.rs`; the one holding
+    /// it first of all), and, for a file in none, where a sandboxed run of any
     /// session may write (`sandbox::write_places`, with what's been granted: kept for its project, its chat's;
     /// worked out on the worker, only then). Runs not sandboxed (`llm.sandbox` off, no sandbox here): none —
     /// such a file's own repository is found from its folder, nothing held back.
@@ -244,9 +245,13 @@ impl Editor {
         let id = self.workspace_of(path);
         let all = || std::iter::once(&self.workspace).chain(&self.workspaces);
         let mut roots: Vec<PathBuf> = all().filter(|s| Some(s.id) == id).map(|s| s.root.clone()).collect();
-        for s in all() {
-            if !roots.contains(&s.root) {
-                roots.push(s.root.clone());
+        // (a workspace's folders, `folders.rs`: each a root as its checkout is — its repository resolved as a session's,
+        // its config held until trusted, never found from a file's folder; the one holding the file first)
+        let folders = || all().flat_map(|s| s.folders.iter().map(|f| f.at.clone()));
+        roots.splice(0..0, folders().filter(|f| path.starts_with(f)));
+        for r in all().map(|s| s.root.clone()).chain(folders()) {
+            if !roots.contains(&r) {
+                roots.push(r);
             }
         }
         crate::gitrepo::Places { roots, writes: self.workspaces_writes() }
