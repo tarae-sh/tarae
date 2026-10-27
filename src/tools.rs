@@ -1571,15 +1571,121 @@ pub struct Again {
     /// The line's parts before its filters, word for word (a `cd` as `cd <dir>`).
     pub parts: Vec<Vec<String>>,
     pub scripts: Vec<String>,
+    /// Beside `parts`, on Docker's card (`any_arguments`): where a part's arguments may vary — its code pinned and
+    /// named by `llm.docker-inert`; None (or nothing here) where it's word for word.
+    pub free: Vec<Option<Free>>,
+}
+
+/// A part of an `Again` whose arguments may vary (`Again::any_arguments`): its first `kept` words as they are, then
+/// only what `inert` lets vary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Free {
+    pub kept: usize,
+    pub inert: Inert,
+}
+
+/// What Docker's card's `a` lets vary of a command whose code is pinned (`llm.docker-inert`, #139 — a project's only
+/// once trusted, `trust::RISKY`): after `run`'s words, `words` (its acts), `flags` (switches), `values` (options, each
+/// with one plain value after it) and, where `test_names`, test names after `--`. Written as one string:
+/// `"cargo xtask linux: clippy test --userns --bin= --"` — a plain word an act, `-x` a switch, `-x=` an option and its
+/// value, `--` test names.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Inert {
+    pub run: Vec<String>,
+    pub words: Vec<String>,
+    pub flags: Vec<String>,
+    pub values: Vec<String>,
+    pub test_names: bool,
+}
+
+impl Inert {
+    /// One entry of `llm.docker-inert` (see `Inert`) — None for one that isn't so written: it frees nothing.
+    pub fn parse(s: &str) -> Option<Inert> {
+        let plain = |w: &str| {
+            !w.is_empty()
+                && !w.starts_with(['-', '.'])
+                && w.chars().all(|c| c.is_ascii_alphanumeric() || "._-+".contains(c))
+        };
+        let option = |w: &str| w.strip_prefix("--").or_else(|| w.strip_prefix('-')).is_some_and(plain);
+        let (run, args) = s.split_once(':')?;
+        let mut i = Inert { run: run.split_whitespace().map(String::from).collect(), ..Inert::default() };
+        if i.run.is_empty() || !i.run.iter().all(|w| plain(w)) {
+            return None;
+        }
+        for w in args.split_whitespace() {
+            match w {
+                "--" => i.test_names = true,
+                w if w.strip_suffix('=').is_some_and(option) => i.values.push(w.trim_end_matches('=').into()),
+                w if option(w) => i.flags.push(w.into()),
+                w if plain(w) => i.words.push(w.into()),
+                _ => return None,
+            }
+        }
+        Some(i)
+    }
+
+    /// `llm.docker-inert`'s entries, those written so.
+    pub fn of(config: &[String]) -> Vec<Inert> {
+        config.iter().filter_map(|s| Inert::parse(s)).collect()
+    }
 }
 
 impl Again {
-    /// Whether `cmd` is this command, its filters aside — and its test names after `--` (`tests_vary`, #210).
+    /// Whether `cmd` is this command, its filters aside — and its test names after `--` (`tests_vary`, #210),
+    /// and a pinned part's inert arguments (`any_arguments`, #139).
     pub fn covers(&self, cmd: &str) -> bool {
         head_of(cmd).is_some_and(|h| {
             h.len() == self.parts.len()
-                && self.parts.iter().zip(&h).all(|(a, b)| a == b || same_but_tests(a, b))
+                && self.parts.iter().zip(&h).enumerate().all(|(i, (a, b))| {
+                    match self.free.get(i).and_then(Option::as_ref) {
+                        Some(Free { kept, inert }) => {
+                            b.len() >= *kept && a[..*kept] == b[..*kept] && inert_args(inert, &b[*kept..])
+                        }
+                        None => a == b || same_but_tests(a, b),
+                    }
+                })
         })
+    }
+
+    /// On Docker's card (#139, the user's decisions 2026-10-27): a part whose code tarae pins with `a` (a pack's
+    /// `entry`: `cargo xtask` runs `xtask/`) and whose words one of `inert` names (`llm.docker-inert`, the project's
+    /// once trusted: `cargo xtask linux`) takes, after those words, only the arguments it lists — each picks among what
+    /// that pinned code does — while that code is as it was (`readonly::run_pins`: one change and it's the card again).
+    /// Any other argument asks each time (`--image` runs any image, `--kept`/`--installed` reach the container's shell,
+    /// an option after `--` reaches `cargo test`'s runners). With none named nothing is freed (the packs carry only the
+    /// pins); a script by its path frees none (its `"$@"` is anything), nor a part whose own arguments aren't inert:
+    /// those stay word for word (#193).
+    pub fn any_arguments(self, inert: &[Inert]) -> Again {
+        let packs = crate::sandboxpack::get();
+        let limits: Vec<&str> = packs.time_limits.iter().map(|l| l.run.as_str()).collect();
+        let free = self.parts.iter().map(|p| pinned_head(p, &packs.entry, inert, &limits)).collect();
+        Again { free, ..self }
+    }
+
+    /// Whether a part takes any arguments (`any_arguments`).
+    pub fn args_free(&self) -> bool {
+        self.free.iter().any(Option::is_some)
+    }
+
+    /// ` with other arguments after `cargo xtask linux` (clippy, test, --userns, …)` where a part takes them
+    /// (`any_arguments`), as the card, the note and Claude's word say it.
+    pub fn args_said(&self) -> String {
+        let heads: Vec<String> = (self.parts.iter().zip(&self.free))
+            .filter_map(|(p, f)| {
+                let f = f.as_ref()?;
+                let spec = &f.inert;
+                let mut which: Vec<String> =
+                    spec.words.iter().chain(&spec.flags).chain(&spec.values).cloned().collect();
+                if spec.test_names {
+                    which.push("test names after --".into());
+                }
+                Some(format!("`{}` ({})", p[..f.kept].join(" "), which.join(", ")))
+            })
+            .collect();
+        match heads.is_empty() {
+            true => String::new(),
+            false => format!(" with other arguments after {} — no others", heads.join(" and ")),
+        }
     }
 
     /// Whether other test names after `--` are covered too (#210, user decision 2026-10-13: each `cargo xtask linux
@@ -1617,6 +1723,70 @@ fn tests_after_in<'a>(part: &'a [String], runners: &[Vec<String>]) -> Option<&'a
     let name =
         |w: &String| !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':');
     (runner && words.iter().any(|w| w == "test") && part[at + 1..].iter().all(name)).then_some(&part[..=at])
+}
+
+/// What `a`'s any arguments hold to, as the card says it (`` `xtask/` is as it is now ``): the scripts and the packs' entry files
+/// the line runs — `a`'s pins (`readonly::run_pins`).
+fn pinned_said(cmd: &str, a: &Again) -> String {
+    let files = a.scripts.iter().cloned().chain(crate::sinceyes::entry_files(cmd));
+    let files: Vec<String> = files.map(|f| format!("`{f}`")).collect();
+    match files.len() {
+        0 => "what it runs is as it is now".into(),
+        1 => format!("{} is as it is now", files[0]),
+        _ => format!("{} are as they are now", files.join(" and ")),
+    }
+}
+
+/// Where `part`'s arguments may vary (`Again::any_arguments`): the names set in front and an `inert` entry's words kept
+/// — those words first in the command, or after a time limit and its duration only (`timeout 1800 cargo xtask …`:
+/// what follows goes to cargo, never to another program that would take it), and they run what an `entry` pins — and
+/// the part's own arguments after them all inert. None: word for word.
+fn pinned_head(
+    part: &[String],
+    entries: &[crate::sandboxpack::Entry],
+    inert: &[Inert],
+    limits: &[&str],
+) -> Option<Free> {
+    let (_, rest) = crate::readonly::env_words(part)?;
+    let lead = part.len() - rest.len();
+    let after = match rest.as_slice() {
+        [t, d, ..] if limits.contains(&t.as_str()) && !d.starts_with('-') => 2,
+        _ => 0,
+    };
+    let words = &rest[after..];
+    let spec = inert.iter().find(|i| !i.run.is_empty() && words.starts_with(&i.run))?;
+    // (its code pinned: an entry's words start it)
+    entries.iter().find(|e| !e.run.is_empty() && spec.run.starts_with(&e.run))?;
+    let kept = lead + after + spec.run.len();
+    inert_args(spec, &part[kept..]).then(|| Free { kept, inert: spec.clone() })
+}
+
+/// Whether every one of `args` is what `spec` lets vary (`llm.docker-inert`): one of its words or flags, one of its
+/// options followed by one plain value (letters, digits, `_` `-` `.` `:` — never an option, a path, a quote's or a
+/// variable's), and after `--` test names only, where it takes them. Anything else — `--bin=x`, a redirect, a quoted
+/// `$` — isn't.
+fn inert_args(spec: &Inert, args: &[String]) -> bool {
+    let value = |w: &String| {
+        !w.is_empty()
+            && !w.starts_with('-')
+            && w.chars().all(|c| c.is_ascii_alphanumeric() || "_-.:".contains(c))
+    };
+    let test_name =
+        |w: &String| !w.is_empty() && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':');
+    let mut i = 0;
+    while let Some(w) = args.get(i) {
+        if w == "--" {
+            return spec.test_names && args[i + 1..].iter().all(test_name);
+        }
+        if spec.words.contains(w) || spec.flags.contains(w) {
+            i += 1;
+        } else if spec.values.contains(w) && args.get(i + 1).is_some_and(value) {
+            i += 2;
+        } else {
+            return false;
+        }
+    }
+    true
 }
 
 /// Whether two parts are one command whose test names after `--` differ (`tests_after`).
@@ -1759,7 +1929,7 @@ pub fn again(cmd: &str) -> Option<Again> {
             return None;
         }
     }
-    Some(Again { parts, scripts })
+    Some(Again { parts, scripts, free: Vec::new() })
 }
 
 /// `cmd` as its reads are judged when it runs again by an `Again` (`read_only`): its words, the names set in
@@ -2651,6 +2821,8 @@ fn ask_with(
     // nothing; the card waits for its key as any does
     let head = since.as_ref().map(|s| s.head() + "\n\n").unwrap_or_default();
     let mut question = head.clone() + &cmd;
+    // (what Docker's card's `a` may let vary — the config's, a project's only once trusted: #139)
+    let inert = Inert::of(&ed.config.llm.docker_inert);
     // What's decided: the command (and where it runs, when not at the root), what it reads outside (one
     // place a line)
     let mut decided = 0..head.matches('\n').count() + cmd.split('\n').count();
@@ -2711,7 +2883,16 @@ fn ask_with(
                 let g = crate::allow::Grant::Socket(s.clone());
                 // (what `a` allows, said exactly — #182: read as this command's, it was the socket's; #193:
                 // Docker's is this command's only)
-                let a = match (g.as_outside(), again(&cmd).filter(|_| reads.is_empty())) {
+                let a = match (
+                    g.as_outside(),
+                    again(&cmd).filter(|_| reads.is_empty()).map(|a| a.any_arguments(&inert)),
+                ) {
+                    (true, Some(a)) if a.args_free() => format!(
+                        "a lets this command connect again for the rest of this chat{} — while {} — \
+                         never another command.",
+                        a.args_said(),
+                        pinned_said(&cmd, &a)
+                    ),
                     (true, Some(a)) => format!(
                         "a lets this command connect again for the rest of this chat — with any filters after \
                          it that only read{} — never another command.",
@@ -2772,6 +2953,8 @@ fn ask_with(
     // the same run through unasked next time, the script's `git push` with it)
     let asks = warned.iter().any(|w| w.asks);
     let offered = again(&cmd).filter(|_| (outside.is_none() || docker) && judged_reads && !asks);
+    // (Docker's: a pinned part with any arguments — #139)
+    let offered = offered.map(|a| if docker { a.any_arguments(&inert) } else { a });
     if let Some(a) = offered.as_ref().filter(|_| outside.is_none()) {
         question.push_str(&format!(
             "\n\na — this exact command{}{} again unasked, this chat",
@@ -3308,19 +3491,31 @@ pub fn run_answer(ed: &mut Editor, id: u64, what: RunCard, scope: Option<crate::
             chat.run_again.push(r);
         }
         if let Some(s) = socket.as_ref().filter(|_| docker) {
-            ed.workspace.claude.checkpoints.tell.push(format!(
-                "The user let `{cmd}` connect to the socket {} again for the rest of this conversation — that \
-                 command only, word for word (filters after it that only read may differ{}); any other command \
-                 with it is asked.",
-                crate::allow::tilde(s),
-                match a.tests_vary() {
-                    true => ", and the test names after `--`",
-                    false => "",
-                }
-            ));
+            let tell = match a.args_free() {
+                true => format!(
+                    "The user let `{cmd}` connect to the socket {} again for the rest of this conversation{} — while \
+                     {} (filters after it that only read may differ); any other command with it is \
+                     asked.",
+                    crate::allow::tilde(s),
+                    a.args_said(),
+                    pinned_said(&cmd, a)
+                ),
+                false => format!(
+                    "The user let `{cmd}` connect to the socket {} again for the rest of this conversation — that \
+                     command only, word for word (filters after it that only read may differ{}); any other command \
+                     with it is asked.",
+                    crate::allow::tilde(s),
+                    match a.tests_vary() {
+                        true => ", and the test names after `--`",
+                        false => "",
+                    }
+                ),
+            };
+            ed.workspace.claude.checkpoints.tell.push(tell);
         }
         ed.note(format!(
-            "this command{}{} runs again without asking for the rest of this chat",
+            "this command{}{}{} runs again without asking for the rest of this chat",
+            a.args_said(),
             a.tests_said(),
             a.scripts_said()
         ));
@@ -7487,6 +7682,223 @@ mod tests {
         assert_eq!(card.answers(false), [('y', "Once"), ('n', "No")]);
         assert!(!card.lasts());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #139, narrowed (user, 2026-10-27, on the review: `--image` runs any image, `--kept`/`--installed` reach the
+    /// container's shell, an option after `--` reaches `cargo test`'s runners): on Docker's card `cargo xtask linux`
+    /// varies only in what the packs' `inert` lists — `clippy`, `test`, `--userns`, `--docker-default`, `--bin` and
+    /// `--repeat` with a plain value, test names after `--`; every other argument, and a freed one that isn't plain (a
+    /// redirect, a quote's `$`), is the card. A line whose own arguments aren't inert, and a script by its path, stay
+    /// word for word; the names in front, the time limit and the other parts too; off Docker's card nothing changes.
+    #[test]
+    fn dockers_a_frees_only_a_pinned_commands_inert_arguments() {
+        // (this repository's own `llm.docker-inert`, as its `.tarae.toml` writes it)
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/.tarae.toml");
+        let (config, warnings) = crate::config::parse(&std::fs::read_to_string(path).unwrap());
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let inert = super::Inert::of(&config.editor.llm.docker_inert);
+        assert_eq!(inert.len(), 1, "{:?}", config.editor.llm.docker_inert);
+        let a = |cmd: &str| super::again(cmd).unwrap().any_arguments(&inert);
+        let xtask = a("cargo xtask linux test -- sandbox::keeper");
+        let said = " with other arguments after `cargo xtask linux` (clippy, test, --userns, --docker-default, --bin, \
+                    --repeat, test names after --) — no others";
+        assert_eq!(xtask.args_said(), said);
+        for freed in [
+            "cargo xtask linux clippy",
+            "cargo xtask linux --userns test --bin tarae -- sandbox::keeper::tests",
+            "cargo xtask linux --docker-default test --repeat 5 -- a | grep b",
+            "cargo xtask linux",
+        ] {
+            assert!(xtask.covers(freed), "{freed}");
+        }
+        for asks in [
+            // (the user's list: each asks every time)
+            "cargo xtask linux --image evil test",
+            "cargo xtask linux --env A=1 test",
+            "cargo xtask linux test --kept x",
+            "cargo xtask linux test --installed x",
+            "cargo xtask linux --platform linux/amd64 test",
+            "cargo xtask linux test -- --ignored",
+            "cargo xtask linux test -- -x",
+            // (and what isn't listed as it's written)
+            "cargo xtask linux --userns=masked test",
+            "cargo xtask linux test --bin=tarae",
+            "cargo xtask linux test --bin ../x",
+            "cargo xtask linux test --repeat",
+            "cargo xtask linux prune --yes",
+            // (a freed one, judged: a redirect, a quote's `$`)
+            "cargo xtask linux test > ~/x",
+            "cargo xtask linux test -- 'a$b'",
+            "cargo xtask linux test --bin 'it$x'",
+            "cargo xtask shot out.png",
+            "cargo xtask",
+            "X=1 cargo xtask linux clippy",
+            "cargo xtask linux clippy && cargo xtask linux test",
+            "cd sub && cargo xtask linux clippy",
+            "cargo build",
+        ] {
+            assert!(!xtask.covers(asks), "{asks}");
+        }
+        // (a line whose own arguments aren't inert: word for word, as #193)
+        let imaged = a("cargo xtask linux --image x test");
+        assert!(!imaged.args_free(), "{imaged:?}");
+        assert!(
+            imaged.covers("cargo xtask linux --image x test") && !imaged.covers("cargo xtask linux clippy")
+        );
+        let limited = a("timeout 1800 cargo xtask linux clippy");
+        assert!(limited.covers("timeout 1800 cargo xtask linux --userns test"));
+        assert!(!limited.covers("timeout 60 cargo xtask linux clippy"));
+        assert!(!limited.covers("cargo xtask linux clippy"));
+        let named = a("X=1 cargo xtask linux clippy");
+        assert!(named.covers("X=1 cargo xtask linux test") && !named.covers("X=2 cargo xtask linux test"));
+        // (a script's `"$@"` is anything: none freed)
+        let script = a("./ci.sh linux --fast");
+        assert!(!script.args_free() && !script.covers("./ci.sh other"));
+        // (the other parts word for word: a `cd` and a command whose code isn't pinned)
+        let cd = a("cd sub && cargo xtask linux clippy");
+        assert!(
+            cd.covers("cd sub && cargo xtask linux test") && !cd.covers("cd other && cargo xtask linux test")
+        );
+        // (a program that isn't the entry keeps its arguments: what follows would be its own)
+        for exact in ["basename trace test", "echo cargo xtask linux test", "cargo build xtask linux"] {
+            let e = a(exact);
+            assert!(!e.args_free(), "{exact}");
+            assert!(!e.covers(&format!("{exact} more")), "{exact}");
+        }
+        // The packs alone (no `llm.docker-inert`): nothing freed — they carry only the pins
+        let bare = super::again("cargo xtask linux test -- a").unwrap().any_arguments(&[]);
+        assert!(!bare.args_free() && !bare.covers("cargo xtask linux clippy"), "{bare:?}");
+        // (an entry not written so frees nothing either)
+        for wrong in ["cargo xtask linux", ": clippy", "cargo xtask linux: --bin=x=", "cargo xtask linux: $x"]
+        {
+            assert_eq!(super::Inert::parse(wrong), None, "{wrong}");
+        }
+        // Off Docker's card: word for word, test names aside (#210)
+        let plain = super::again("cargo xtask linux test -- a").unwrap();
+        assert!(!plain.args_free() && plain.covers("cargo xtask linux test -- b"));
+        assert!(!plain.covers("cargo xtask linux clippy"));
+    }
+
+    /// #139 through the card: Docker's socket and `cargo xtask linux` (`xtask/` pinned; the scratch project's own
+    /// alias makes `cargo xtask` cargo's `version`, which refuses the words after it — nothing of xtask or Docker runs):
+    /// `a` is "This command, these arguments, this chat", said with what it frees; an inert change runs unasked with the
+    /// socket; each argument the user named, and a redirect or a quote's `$`, is the card and nothing runs; another
+    /// command with the socket is its own card; off Docker's card word for word; once `xtask/` changed, the card again.
+    #[test]
+    fn dockers_a_on_a_pinned_command_holds_while_its_code_is_as_it_was() {
+        use serde_json::json;
+        let scratch = crate::scratch::Scratch::new("qd-pinned");
+        let dir = scratch.to_path_buf();
+        std::fs::create_dir_all(dir.join("c")).unwrap();
+        std::fs::create_dir_all(dir.join("xtask/src")).unwrap();
+        std::fs::write(dir.join("xtask/src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::create_dir_all(dir.join(".cargo")).unwrap();
+        std::fs::write(dir.join(".cargo/config.toml"), "[alias]\nxtask = [\"version\"]\n").unwrap();
+        let sock = dir.join("c/docker.sock");
+        let _l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        ed.workspace.root = std::fs::canonicalize(&dir).unwrap();
+        // (unsandboxed here — the script only marks its folder; what's checked is what it was given)
+        ed.config.llm.sandbox = false;
+        ed.config.llm.command = "sh".into();
+        ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+        crate::chat::open(&mut ed);
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.state = crate::chat::State::Thinking;
+        ed.workspace.viewer.at = crate::workspace::At::Code;
+        let generation = c.generation();
+        let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool| {
+            let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+            while !done(ed) {
+                assert!(std::time::Instant::now() < end, "waited too long");
+                if let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(20)) {
+                    ed.handle_event(ev);
+                }
+            }
+        };
+        let ran = dir.join("ran");
+        let ended = |ed: &crate::editor::Editor| {
+            ed.workspace.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
+        };
+        let sent = |ed: &mut crate::editor::Editor, id: &str, args: serde_json::Value| {
+            ed.workspace.task_run = None;
+            ed.offers.clear();
+            let _ = std::fs::remove_file(&ran);
+            super::run(ed, super::Call::of(generation, id, json!(id)), &args).unwrap();
+            pump(ed, &|ed| ed.workspace.task_run.is_some() || !ed.offers.is_empty());
+        };
+        let send = |ed: &mut crate::editor::Editor, id: &str, command: &str| {
+            let args =
+                json!({ "command": command, "unix_socket": sock.to_str().unwrap(), "reason": "docker" });
+            sent(ed, id, args);
+        };
+        let admitted =
+            |cmd: &str| super::ADMITTED.with(|a| a.borrow().iter().rev().find(|x| x.0 == cmd).cloned());
+        // No `llm.docker-inert` (the packs alone): `a` is this command word for word
+        send(&mut ed, "r0", "cargo xtask linux test -- sandbox::keeper");
+        let o = ed.offers.first().expect("its card");
+        assert_eq!(o.answers(false), [('y', "Once"), ('a', "This command, this chat"), ('n', "No")]);
+        // This repository's setting: its inert arguments
+        ed.config.llm.docker_inert =
+            vec!["cargo xtask linux: clippy test --userns --docker-default --bin= --repeat= --".into()];
+        send(&mut ed, "r1", "cargo xtask linux test -- sandbox::keeper");
+        let o = ed.offers.first().expect("its card");
+        assert_eq!(o.title, super::SOCKET_RUN_TITLE);
+        assert_eq!(
+            o.answers(false),
+            [('y', "Once"), ('a', "This command, these arguments, this chat"), ('n', "No")]
+        );
+        let q = o.question.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(q.contains("with other arguments after `cargo xtask linux` (clippy, test, --userns"), "{q}");
+        assert!(q.contains("no others — while `xtask/` is as it is now"), "{q}");
+        ed.offer_for_chat();
+        pump(&mut ed, &ended);
+        let pins: Vec<_> =
+            ed.workspace.claude.chat.as_ref().unwrap().run_scripts.iter().map(|p| p.0.clone()).collect();
+        assert!(pins.iter().any(|p| p.ends_with("xtask")), "xtask/ pinned: {pins:?}");
+        // Its inert arguments changed: unasked, with the socket
+        let freed = "cargo xtask linux --userns clippy";
+        send(&mut ed, "r2", freed);
+        assert!(ed.offers.is_empty(), "asked again: {:?}", ed.offers.first().map(|o| &o.question));
+        pump(&mut ed, &ended);
+        let grant = admitted(freed).and_then(|a| a.1.grant);
+        assert_eq!(grant, Some(crate::allow::Grant::Socket(sock.clone())), "the socket rode with it");
+        // Each argument the user named, and a freed one that isn't plain: the card, nothing run
+        for (n, asks) in [
+            "cargo xtask linux --image evil test",
+            "cargo xtask linux --env A=1 test",
+            "cargo xtask linux test --kept x",
+            "cargo xtask linux test --installed x",
+            "cargo xtask linux --platform linux/amd64 test",
+            "cargo xtask linux test -- --ignored",
+            "cargo xtask linux test > ~/x",
+            "cargo xtask linux test -- 'a$b'",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            send(&mut ed, &format!("x{n}"), asks);
+            assert!(!ed.offers.is_empty() && ed.workspace.task_run.is_none(), "{asks}: its card");
+            assert!(admitted(asks).is_none(), "{asks}: nothing ran");
+        }
+        // Another command with the socket: its card, word for word
+        send(&mut ed, "r3", "basename other");
+        let o = ed.offers.first().expect("another command's card");
+        assert_eq!(o.answers(false), [('y', "Once"), ('a', "This command, this chat"), ('n', "No")]);
+        // Off Docker's card (no socket): `a` is the line word for word — an inert change asks
+        sent(&mut ed, "r5", json!({ "command": "cargo xtask linux clippy" }));
+        let o = ed.offers.first().expect("the plain card");
+        assert_eq!(o.answers(false), [('y', "Once"), ('a', "This chat"), ('n', "No")]);
+        ed.offer_for_chat();
+        pump(&mut ed, &ended);
+        sent(&mut ed, "r6", json!({ "command": "cargo xtask linux --userns clippy" }));
+        assert!(!ed.offers.is_empty() && ed.workspace.task_run.is_none(), "no socket: asked");
+        // xtask/ changed since: the card again, nothing ran
+        std::fs::write(dir.join("xtask/src/main.rs"), "fn main() { other() }\n").unwrap();
+        let after = "cargo xtask linux --docker-default clippy";
+        send(&mut ed, "r4", after);
+        assert!(!ed.offers.is_empty() && ed.workspace.task_run.is_none(), "a card for the changed xtask/");
+        assert!(admitted(after).is_none());
     }
 
     /// #182: `a` on a socket's card is that socket for the rest of the chat, for any command — and the card

@@ -1270,6 +1270,34 @@ Z = ["move_line_down", ":sh touch marker"]
         }
     }
 
+    /// #139: what a Docker card's `a` lets vary (`llm.docker-inert`) is a project's only once trusted — untrusted, the
+    /// setting is held back on the trust card and frees nothing (another project's `cargo xtask linux` may mean
+    /// anything, and its file could free `--image`); trusted, it applies.
+    #[test]
+    fn a_projects_docker_inert_waits_for_trust_and_frees_nothing_before() {
+        use crate::trust::{State, Store};
+        let src = "[llm]\ndocker-inert = [\"cargo xtask linux: clippy test --image= --\"]\n";
+        let path = project_file("inert", src);
+        let freed = |c: &Config| {
+            let inert = crate::tools::Inert::of(&c.editor.llm.docker_inert);
+            let a = crate::tools::again("cargo xtask linux test").unwrap().any_arguments(&inert);
+            a.covers("cargo xtask linux --image evil clippy")
+        };
+        let (c, w) = load_from(None, Some(path.clone()), &Store::default());
+        assert!(w.is_empty(), "{w:?}");
+        assert!(c.editor.llm.docker_inert.is_empty(), "held back: {:?}", c.editor.llm.docker_inert);
+        let p = c.project.as_ref().expect("held back");
+        assert_eq!(p.state, State::Ask);
+        assert!(p.items.iter().any(|(k, _)| k == "llm.docker-inert"), "on the trust card: {:?}", p.items);
+        assert!(!freed(&c), "untrusted: nothing freed");
+        let mut store = Store::default();
+        store.answer(crate::trust::Kind::Tarae, &path, p.hash, true, 0);
+        let (t, _) = load_from(None, Some(path.clone()), &store);
+        assert_eq!(t.project.as_ref().unwrap().state, State::Trusted);
+        assert!(freed(&t), "trusted: what it names is freed");
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
     #[test]
     fn a_projects_commands_wait_for_trust() {
         use crate::trust::{State, Store};

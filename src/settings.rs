@@ -507,6 +507,16 @@ pub static SETTINGS: &[Setting] = &[
         set: |c, v| c.llm.screen_terminal = b(v),
     },
     Setting {
+        path: "llm.docker-inert",
+        kind: Kind::StrList,
+        doc: "Chat: what a Docker card's a lets vary of a command whose code is pinned — \"cargo xtask linux: clippy test --userns --bin= --\" (an act, a switch, an option and its value, test names after --)",
+        get: |c| Value::Array(c.llm.docker_inert.iter().map(|a| Value::from(a.as_str())).collect()),
+        set: |c, v| {
+            c.llm.docker_inert =
+                v.as_array().into_iter().flatten().filter_map(|a| a.as_str().map(str::to_string)).collect()
+        },
+    },
+    Setting {
         path: "llm.run-allow",
         kind: Kind::StrList,
         doc: "Chat: commands Claude runs without asking, past the checks (cargo build/test/clippy/fmt, git status/diff/log…) — word prefixes, like \"npm test\"",

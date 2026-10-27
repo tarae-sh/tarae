@@ -3902,11 +3902,7 @@ mod tests {
         {
             panic!("{test}: tier {want} expected here, the probe found none — {why}");
         }
-        let line = format!(
-            "{}sandbox::keeper::tests::{test} — no namespaces here: {why}\n",
-            crate::test_results::SELF_SKIP
-        );
-        let _ = io::Write::write_all(&mut io::stderr(), line.as_bytes());
+        crate::test_results::said_skip(&skip_said(test, "no namespaces here", super::super::tier::get()));
         false
     }
 
@@ -3970,12 +3966,38 @@ mod tests {
         if std::env::var("TARAE_EXPECT_TIER").is_ok_and(|t| t.trim() == "own") {
             panic!("{test}: a network namespace expected here (TARAE_EXPECT_TIER=own), none — {why}");
         }
-        let line = format!(
-            "{}sandbox::keeper::tests::{test} — no network namespace of the session's own here: {why}\n",
-            crate::test_results::SELF_SKIP
-        );
-        let _ = io::Write::write_all(&mut io::stderr(), line.as_bytes());
+        let what = "no network namespace of the session's own here";
+        crate::test_results::said_skip(&skip_said(test, what, super::super::tier::get()));
         false
+    }
+
+    /// A test's skip for what the probe found (`p`), as `said_skip` takes it: `what` wasn't there, why, and what the
+    /// probe read where it found less than every namespace (`tier::Probed.read`) — a skip that comes and goes says
+    /// what differed (#145).
+    fn skip_said(test: &str, what: &str, p: &super::super::tier::Probed) -> String {
+        let why = p.short.as_deref().unwrap_or_default();
+        let read = p.read.as_deref().map(|r| format!(" — the probe read: {r}")).unwrap_or_default();
+        format!("sandbox::keeper::tests::{test} — {what}: {why}{read}")
+    }
+
+    /// #145's review: a skip says what the probe read, its values as read (a stand-in probe's), after why.
+    #[test]
+    fn a_skip_says_what_the_probe_read() {
+        let read = "failed at making its mounts its own with errno 13; apparmor_restrict_unprivileged_userns 1, \
+                    label unconfined; thread t: Seccomp 0, NoNewPrivs 0 (the process's: 0, 0)";
+        let p = super::super::tier::Probed {
+            ns: Ns::NONE,
+            short: Some("Ubuntu's restriction (refused at making its mounts its own)".into()),
+            brief: None,
+            served: Ok(()),
+            hint: None,
+            read: Some(read.into()),
+        };
+        let said = "sandbox::keeper::tests::t — no namespaces here: Ubuntu's restriction (refused at making its mounts \
+                    its own) — the probe read: ";
+        assert_eq!(skip_said("t", "no namespaces here", &p), format!("{said}{read}"));
+        let nothing = super::super::tier::Probed { read: None, ..p };
+        assert!(!skip_said("t", "x", &nothing).contains("the probe read"));
     }
 
     /// What tells the test binary it's a run's program (`helper`), and which.
@@ -4019,9 +4041,63 @@ mod tests {
         io::Read::read_to_string(&mut s.spawned.stdout.unwrap(), &mut out).unwrap();
         io::Read::read_to_string(&mut s.spawned.stderr.unwrap(), &mut err).unwrap();
         crate::spawn::wait(s.spawned.pid).unwrap();
-        out.lines()
-            .find_map(|l| l.split_once("helper: ").map(|(_, s)| s.to_string()))
-            .unwrap_or_else(|| panic!("the helper said nothing:\n{out}\n{err}"))
+        said_in(&out, &err)
+    }
+
+    /// A helper's answer in its whole output (`helper_said`).
+    fn said_in(out: &str, err: &str) -> String {
+        out.lines().find_map(heard).unwrap_or_else(|| panic!("the helper said nothing:\n{out}\n{err}"))
+    }
+
+    /// A helper's answer `said`, printed (`said_line`) — every helper's print goes through it.
+    fn say(said: &str) {
+        println!("{}", said_line(said));
+    }
+
+    /// What stands for a row break in a helper's answer as it's printed: the answer is one line whatever it holds, so
+    /// a reader takes all its rows (#138: one failing row hid the others) and one that streams never waits on a line
+    /// that isn't coming.
+    const ROW: char = '\u{1e}';
+
+    /// The line a helper prints for its answer `said` (`heard` takes it back).
+    fn said_line(said: &str) -> String {
+        format!("helper: {}", said.replace('\n', &ROW.to_string()))
+    }
+
+    /// A helper's answer from a line of its output, every row of it (`said_line`) — None for another line.
+    fn heard(line: &str) -> Option<String> {
+        line.split_once("helper: ").map(|(_, s)| s.replace(ROW, "\n"))
+    }
+
+    /// #138: a helper's answer of several rows (`rows`, the test binary run as a helper) comes back whole through both
+    /// readers — streamed (`said_next`, as `served_said`) and read at its end (`said_in`, as `helper_said`) — and no
+    /// helper prints an answer but through `said_line` (one bypassing it would cut its rows again).
+    #[test]
+    fn a_helpers_answer_comes_back_with_every_row() {
+        let want = "the kernel's a=1, served a=ok\nthe kernel's b=2, served b=ok\nrows: 3, served 2";
+        let run = || {
+            let mut cmd = helper_cmd("rows", &[], None);
+            cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+            cmd.spawn().unwrap()
+        };
+        let mut child = run();
+        let lines =
+            io::BufRead::lines(io::BufReader::new(child.stdout.take().unwrap())).map_while(Result::ok);
+        let mut lines = lines.collect::<Vec<_>>().into_iter();
+        assert_eq!(said_next(&mut lines), want, "streamed");
+        child.wait().unwrap();
+        let out = run().wait_with_output().unwrap();
+        let (text, err) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert_eq!(said_in(&text, &err), want, "read at its end");
+        // (every print of an answer goes through `said_line`: none written by hand — a call's whole text up to its
+        // `);`, its format string on a line of its own too)
+        let (print, raw) = (concat!("print", "ln!("), concat!("\"", "helper: "));
+        let src = include_str!("keeper.rs");
+        let by_hand: Vec<&str> = src
+            .match_indices(print)
+            .filter_map(|(at, _)| src[at..].split(");").next().filter(|call| call.contains(raw)))
+            .collect();
+        assert!(by_hand.is_empty(), "printed by hand: {by_hand:#?}");
     }
 
     /// A run's program in these tests: the test binary, doing what `HELPER` says — `pty`: a pty opened, its
@@ -4082,7 +4158,7 @@ mod tests {
             // (step 8: `proxied`, its connection then kept open, idle, until `done` is in its folder — 120 s at most)
             "proxyhold" => {
                 let (said, _kept) = proxied(&std::env::var("TARAE_TO").unwrap_or_default());
-                println!("helper: {said}");
+                say(&said);
                 let by = Instant::now() + crate::test_results::PATIENCE;
                 while !Path::new("done").exists() && Instant::now() < by {
                     std::thread::sleep(Duration::from_millis(50));
@@ -4123,7 +4199,7 @@ mod tests {
                 let out = io::BufReader::new(left.stdout.take().unwrap());
                 let said = io::BufRead::lines(out)
                     .map_while(Result::ok)
-                    .find_map(|l| l.split_once("helper: ").map(|(_, s)| s.to_string()))
+                    .find_map(|l| heard(&l))
                     .expect("the one left said nothing");
                 let said = format!("left={} {said}", left.id());
                 // (never waited here: it's left running, and the keeper — its subreaper once this is gone — reaps it)
@@ -4139,7 +4215,7 @@ mod tests {
                 assert!(fd >= 0, "{}", io::Error::last_os_error());
                 // SAFETY: just made, owned by nothing else.
                 let s = unsafe { std::net::UdpSocket::from_raw_fd(fd) };
-                println!("helper: made");
+                say("made");
                 let by = Instant::now() + crate::test_results::PATIENCE;
                 while !Path::new("swept").exists() && Instant::now() < by {
                     std::thread::sleep(Duration::from_millis(10));
@@ -4147,7 +4223,7 @@ mod tests {
                 // (to a port nothing listens on: what matters is the port the kernel gives it)
                 let sent = s.send_to(b"x", "127.0.0.1:9");
                 let port = s.local_addr().map(|a| a.port()).unwrap_or(0);
-                println!("helper: tag=theirs udp={port} sent={}", tried(sent));
+                say(&format!("tag=theirs udp={port} sent={}", tried(sent)));
                 let _ = s.set_read_timeout(Some(Duration::from_millis(100)));
                 let mut b = [0u8; 64];
                 while !Path::new("done").exists() && Instant::now() < by {
@@ -4168,12 +4244,12 @@ mod tests {
                     (bound(true, "127.0.0.1:0", true, None), bound(false, "127.0.0.1:0", true, None));
                 let (tcp, udp) = (tcp.unwrap(), udp.unwrap());
                 let late = bound_only(true, "127.0.0.1:0", true, None).unwrap();
-                println!("helper: tcp={} udp={} late={}", port_of(&tcp), port_of(&udp), port_of(&late));
+                say(&format!("tcp={} udp={} late={}", port_of(&tcp), port_of(&udp), port_of(&late)));
                 let by = Instant::now() + crate::test_results::PATIENCE;
                 let mut listened = false;
                 while !Path::new("done").exists() && Instant::now() < by {
                     if !listened && Path::new("listen").exists() {
-                        println!("helper: listened={}", tried(listening(&late)));
+                        say(&format!("listened={}", tried(listening(&late))));
                         listened = true;
                     }
                     std::thread::sleep(Duration::from_millis(10));
@@ -4192,10 +4268,10 @@ mod tests {
                     Some(_) => {
                         let port = to.split_whitespace().find_map(|w| w.strip_prefix("late=")).unwrap();
                         let s = bound_only(true, &format!("127.0.0.1:{port}"), true, None);
-                        println!(
-                            "helper: bound-late={}",
+                        say(&format!(
+                            "bound-late={}",
                             tried(s.as_ref().map(drop).map_err(|e| io::Error::new(e.kind(), e.to_string())))
-                        );
+                        ));
                         let by = Instant::now() + crate::test_results::PATIENCE;
                         while !Path::new("go").exists() && Instant::now() < by {
                             std::thread::sleep(Duration::from_millis(10));
@@ -4225,7 +4301,7 @@ mod tests {
             "aims" => {
                 let port: u16 = std::env::var("TARAE_PORT").unwrap().parse().unwrap();
                 let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-                println!("helper: aimed={port} connected={}", tried(s.connect(("127.0.0.1", port))));
+                say(&format!("aimed={port} connected={}", tried(s.connect(("127.0.0.1", port)))));
                 let by = Instant::now() + crate::test_results::PATIENCE;
                 while !Path::new("done").exists() && Instant::now() < by {
                     let _ = s.send(apart_marker("theirs-sent").as_bytes());
@@ -4341,7 +4417,7 @@ mod tests {
             }
             "hold" => {
                 let h = held("theirs");
-                println!("helper: {}", h.said);
+                println!("{}", said_line(&h.said));
                 let by = Instant::now() + crate::test_results::PATIENCE;
                 while !Path::new("done").exists() && Instant::now() < by {
                     std::thread::sleep(Duration::from_millis(10));
@@ -4363,9 +4439,12 @@ mod tests {
                 let name = std::env::var("TARAE_NAME").unwrap_or_default();
                 format!("v6={} lookup6={}", ipv6_addresses().join(","), lookup_in(&name, libc::AF_INET6))
             }
+            // (#138's test: an answer of several rows, as `xattr_calls` gives one when rows fail)
+            "rows" => ["the kernel's a=1, served a=ok", "the kernel's b=2, served b=ok", "rows: 3, served 2"]
+                .join("\n"),
             other => format!("no helper {other}"),
         };
-        println!("helper: {said}");
+        say(&said);
     }
 
     /// `userns`: a user namespace made three ways — `unshare` (in a fork: a process with threads can't), `clone` and
@@ -4527,7 +4606,7 @@ mod tests {
             let mut out = String::new();
             io::Read::read_to_string(&mut s.stdout.unwrap(), &mut out).unwrap();
             crate::spawn::wait(s.pid).unwrap();
-            out.lines().find_map(|l| l.split_once("helper: ").map(|(_, s)| s.trim().to_string()))
+            out.lines().find_map(|l| heard(l).map(|s| s.trim().to_string()))
         };
         let (users, claudes) = (joined(crate::spawn::Acts::User), joined(crate::spawn::Acts::Claude));
         // SAFETY: the group the holder leads (`setsid`), ours.
@@ -4555,7 +4634,7 @@ mod tests {
             return;
         }
         let said = |out: &str| {
-            let line = out.lines().find_map(|l| l.split_once("helper: ").map(|(_, s)| s.trim().to_string()));
+            let line = out.lines().find_map(|l| heard(l).map(|s| s.trim().to_string()));
             line.unwrap_or_else(|| panic!("the helper said nothing:\n{out}"))
         };
         // Claude's run, outside the sandbox
@@ -4609,16 +4688,16 @@ mod tests {
         let port: u16 = std::env::var("TARAE_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(0);
         let l = match std::net::TcpListener::bind(("127.0.0.1", port)) {
             Ok(l) => l,
-            Err(e) => return println!("helper: listen={}", tried::<()>(Err(e))),
+            Err(e) => return say(&format!("listen={}", tried::<()>(Err(e)))),
         };
-        println!("helper: port {}", l.local_addr().map(|a| a.port()).unwrap_or(0));
+        say(&format!("port {}", l.local_addr().map(|a| a.port()).unwrap_or(0)));
         if let Ok((s, _)) = l.accept() {
             let mut line = String::new();
             let mut r = std::io::BufReader::new(&s);
             let _ = io::BufRead::read_line(&mut r, &mut line);
             let _ = io::Write::write_all(&mut &s, format!("got {line}").as_bytes());
         }
-        println!("helper: served");
+        say("served");
     }
 
     /// `connect`: `$TARAE_TO` reached, `hello` written, its answer read: `reached <answer>`, or the errno.
@@ -7459,7 +7538,7 @@ mod tests {
         let held = loop {
             let mut line = String::new();
             assert!(io::BufRead::read_line(&mut out, &mut line).unwrap() > 0, "the holder said nothing");
-            if let Some((_, s)) = line.split_once("helper: ") {
+            if let Some(s) = heard(&line) {
                 break s.trim().to_string();
             }
         };
@@ -7697,7 +7776,7 @@ mod tests {
         let said = |out: &mut io::BufReader<_>| loop {
             let mut line = String::new();
             assert!(io::BufRead::read_line(out, &mut line).unwrap() > 0, "the holder said nothing");
-            if let Some((_, s)) = line.split_once("helper: ") {
+            if let Some(s) = heard(&line) {
                 break s.trim().to_string();
             }
         };
@@ -7844,7 +7923,7 @@ mod tests {
             loop {
                 let mut line = String::new();
                 assert!(out.read_line(&mut line).unwrap() > 0, "the run said nothing more");
-                if let Some((_, s)) = line.split_once("helper: ") {
+                if let Some(s) = heard(&line) {
                     break s.trim().to_string();
                 }
             }
@@ -7976,7 +8055,7 @@ mod tests {
         let aimed = loop {
             let mut line = String::new();
             assert!(io::BufRead::read_line(&mut out, &mut line).unwrap() > 0, "the sender said nothing");
-            if let Some((_, s)) = line.split_once("helper: ") {
+            if let Some(s) = heard(&line) {
                 break s.trim().to_string();
             }
         };
@@ -8890,11 +8969,9 @@ mod tests {
         (lines, pid, rx)
     }
 
-    /// What a helper said next (`helper: …`), its other lines skipped.
+    /// What a helper said next (`helper: …`, every row of it), its other lines skipped.
     fn said_next(lines: &mut impl Iterator<Item = String>) -> String {
-        lines
-            .find_map(|l| l.split_once("helper: ").map(|(_, s)| s.to_string()))
-            .unwrap_or_else(|| "nothing".into())
+        lines.find_map(|l| heard(&l)).unwrap_or_else(|| "nothing".into())
     }
 
     /// A helper's one answer, waited for to its end — and the refusals said meanwhile.

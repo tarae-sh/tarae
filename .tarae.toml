@@ -28,6 +28,11 @@ keep = [".sb"]
 # tarae's own tests (plugin …) connect to their own port-0 listeners — opens every local port,
 # the risky ones too
 sandbox-localhost = true
+# What a Docker card's `a` lets vary of `cargo xtask linux` (#139, the user's decision 2026-10-27): its acts, the
+# namespaces' switches, the test binary and the repeat count, test names after `--` — each picks among what this
+# repository's pinned `xtask/` does. `--image` (any image), `--env`, `--kept`/`--installed` (into the container's
+# shell), `--platform` and an option after `--` (into `cargo test`'s runners) ask each time
+docker-inert = ["cargo xtask linux: clippy test --userns --docker-default --bin= --repeat= --"]
 
 # What CI checks (perf's slower number: a pass with a note; a machine too busy to measure on fails — never a
 # pass, user 2026-10-24). `:preflight` — and before a
@@ -43,14 +48,12 @@ steps = [
 ]
 
 # What a card for one of Claude's commands warns of besides the packs' (`cardwarn.rs`): `cargo xtask linux` runs
-# Docker — without its own settings it reads your ~/.docker and whichever engine is current, and a hung container
-# holds the run
+# Docker, and a hung container holds the run. (Its settings it names itself in the sandbox — `DOCKER_CONFIG` an empty
+# folder of its own, `DOCKER_HOST` colima's; outside it, your own `docker`'s, as that card says it runs as you — #139)
 [[cards.warn]]
 id = "xtask-linux-docker"
 run = ["cargo xtask linux"]
 missing = [
-  { env = "DOCKER_CONFIG", say = "no DOCKER_CONFIG — it reads your ~/.docker, and its credential helpers run" },
-  { env = "DOCKER_HOST", say = "no DOCKER_HOST — it uses whichever engine is current" },
   { wrapper = ["timeout", "gtimeout"], say = "no timeout — a hung container holds the run" },
 ]
 say = "cargo xtask linux runs Docker: {missing}."

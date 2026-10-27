@@ -31,7 +31,7 @@ enum Way {
 
 /// The settings a session's reach reads (`tools::with_allowed` starts from them; `guard_then_go`, the edit review
 /// and the run cards read the rest).
-const SETTINGS: [(&str, Way); 12] = [
+const SETTINGS: [(&str, Way); 13] = [
     ("llm.sandbox", Way::Guards),
     ("llm.sandbox-network", Way::Opens),
     ("llm.sandbox-hosts", Way::Opens),
@@ -42,6 +42,8 @@ const SETTINGS: [(&str, Way); 12] = [
     ("llm.sandbox-env", Way::Opens),
     ("llm.sandbox-protect", Way::Guards),
     ("llm.run-allow", Way::Opens),
+    // (what Docker's card's `a` lets vary — #139)
+    ("llm.docker-inert", Way::Opens),
     ("llm.review-ask", Way::Guards),
     ("llm.review-at-end", Way::Opens),
 ];
@@ -864,7 +866,7 @@ fn apply(w: &mut World, ed: &mut Editor, step: &Step, ledger: &mut Ledger, front
         Step::RunAgain => {
             let Some(c) = ed.workspace.claude.chat.as_mut() else { return narrows(Vec::new()) };
             let parts = vec![vec!["docker".to_string(), "ps".to_string()]];
-            let again = crate::tools::Again { parts, scripts: Vec::new() };
+            let again = crate::tools::Again { parts, scripts: Vec::new(), free: Vec::new() };
             let r =
                 crate::tools::RunAgain { cwd: root.clone(), socket: Some(w.at.join("docker.sock")), again };
             let said = format!("{r:?}");

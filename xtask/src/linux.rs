@@ -545,6 +545,94 @@ pub(crate) fn reachable(docker: &mut Command) -> std::result::Result<(), String>
     Err(why.to_string())
 }
 
+/// The Docker settings a run in tarae's sandbox (`TARAE_SANDBOXED`) can't find for itself (#139) — the user's
+/// `~/.docker` isn't readable there (and its credential helpers shouldn't run), so neither is the current context —
+/// where they're unset: `DOCKER_CONFIG` an empty folder of xtask's own, made by `config` only then, `DOCKER_HOST`
+/// colima's socket for the profile `DOCKER_CONTEXT` names (`colima` → `default`, `colima-<p>` → `<p>`), else for
+/// `tarae-test` (the one `skipped` names), under `COLIMA_HOME` or `~/.colima`. Outside the sandbox, none. The settings,
+/// what's said of them, and the folder made.
+pub(crate) fn sandboxed_docker(
+    env: impl Fn(&str) -> Option<String>,
+    config: impl FnOnce() -> std::io::Result<PathBuf>,
+) -> (Vec<(&'static str, String)>, Vec<String>, Option<PathBuf>) {
+    let env = |n: &str| env(n).filter(|v| !v.is_empty());
+    let (mut set, mut said, mut made) = (Vec::new(), Vec::new(), None);
+    if env("TARAE_SANDBOXED").is_none() {
+        return (set, said, made);
+    }
+    if env("DOCKER_CONFIG").is_none() {
+        match config() {
+            Ok(config) => {
+                set.push(("DOCKER_CONFIG", config.display().to_string()));
+                said.push(format!("DOCKER_CONFIG={} (an empty folder of its own)", config.display()));
+                made = Some(config);
+            }
+            Err(e) => said.push(format!("no folder of its own for DOCKER_CONFIG ({e}) — set DOCKER_CONFIG")),
+        }
+    }
+    if env("DOCKER_HOST").is_none() {
+        let context = env("DOCKER_CONTEXT");
+        let profile = match context.as_deref() {
+            None => Some("tarae-test"),
+            Some("colima") => Some("default"),
+            Some(c) => c.strip_prefix("colima-"),
+        };
+        let colima = env("COLIMA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| env("HOME").map(|h| Path::new(&h).join(".colima")));
+        match (profile, colima, context.as_deref()) {
+            (Some(p), Some(colima), _) => {
+                let host = format!("unix://{}", colima.join(p).join("docker.sock").display());
+                said.push(format!("DOCKER_HOST={host} (colima's {p})"));
+                set.push(("DOCKER_HOST", host));
+            }
+            (None, _, Some(c)) => said.push(format!(
+                "DOCKER_CONTEXT={c} isn't colima's, and a context's endpoint can't be read here — set DOCKER_HOST"
+            )),
+            _ => said.push("no HOME nor COLIMA_HOME to find colima's socket in — set DOCKER_HOST".into()),
+        }
+    }
+    (set, said, made)
+}
+
+/// `DOCKER_CONFIG`'s folder, removed with it — xtask's whole run holds it.
+pub(crate) struct DockerConfig(PathBuf);
+
+impl Drop for DockerConfig {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A folder made new in `parent` by `mkdtemp`: 0700, a name no one could pick before — never one that's there
+/// (#139's review: a fixed folder in `target/`, which Claude's runs write, could hold a planted `config.json` —
+/// `cliPluginsExtraDirs`, `credsStore`, `proxies` — whose code would run with Docker's socket open).
+pub(crate) fn made_new(parent: &Path) -> std::io::Result<PathBuf> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let template = parent.join("tarae-xtask-docker-XXXXXX");
+    let mut bytes = std::ffi::CString::new(template.as_os_str().as_bytes())?.into_bytes_with_nul();
+    // SAFETY: a NUL-terminated template ending in six `X`s that lives through the call, which fills them in.
+    if unsafe { libc::mkdtemp(bytes.as_mut_ptr().cast()) }.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    bytes.pop();
+    Ok(PathBuf::from(std::ffi::OsStr::from_bytes(&bytes)))
+}
+
+/// `sandboxed_docker` made so for this process (its folder in the temp folder, `made_new`), and said — xtask's first
+/// act, before any thread of its own starts. The folder lives as long as what this gives back.
+pub(crate) fn docker_in_sandbox() -> Option<DockerConfig> {
+    let (set, said, made) = sandboxed_docker(|n| std::env::var(n).ok(), || made_new(&std::env::temp_dir()));
+    for (name, value) in set {
+        // SAFETY: xtask's first act, before any thread of its own starts: nothing reads the environment meanwhile.
+        unsafe { std::env::set_var(name, value) };
+    }
+    for line in said {
+        eprintln!("in tarae's sandbox: {line}");
+    }
+    made.map(DockerConfig)
+}
+
 /// The line said when there's no Docker to run in — what a preflight note matches.
 pub(crate) fn skipped(why: &str) -> String {
     format!(
@@ -3111,6 +3199,77 @@ mod tests {
         assert_eq!(none_ran(&forwarded(unfiltered.as_bytes(), &mut Vec::new())), None);
         assert_eq!(none_ran(&forwarded("Checking tarae\n".as_bytes(), &mut Vec::new())), None);
         assert_eq!((running("running 1 test"), running("running tests")), (Some(1), None));
+    }
+
+    /// In tarae's sandbox xtask names what reaches Docker where it's unset (#139): its own empty config, colima's
+    /// socket for the context's profile or `tarae-test`; what's set is left as it is, and outside the sandbox nothing.
+    #[test]
+    fn in_the_sandbox_docker_is_named_where_unset() {
+        let config = Path::new("/src/target/xtask/docker-config");
+        let with = |vars: &[(&str, &str)]| {
+            let vars: Vec<(String, String)> =
+                vars.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect();
+            let found = |n: &str| vars.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone());
+            let (set, said, made) = sandboxed_docker(found, || Ok(config.to_path_buf()));
+            assert_eq!(
+                made.is_some(),
+                set.iter().any(|(n, _)| *n == "DOCKER_CONFIG"),
+                "made only where it's set"
+            );
+            (set.into_iter().map(|(n, v)| format!("{n}={v}")).collect::<Vec<_>>(), said.join("; "))
+        };
+        let home = ("HOME", "/home/me");
+        assert_eq!(with(&[home]), (vec![], String::new()), "outside the sandbox: nothing");
+        let sandboxed = ("TARAE_SANDBOXED", "1");
+        let (set, said) = with(&[sandboxed, home]);
+        assert_eq!(
+            set,
+            [
+                "DOCKER_CONFIG=/src/target/xtask/docker-config",
+                "DOCKER_HOST=unix:///home/me/.colima/tarae-test/docker.sock"
+            ]
+        );
+        assert!(
+            said.contains("an empty folder of its own") && said.contains("colima's tarae-test"),
+            "{said}"
+        );
+        let host = |vars: &[(&str, &str)]| with(vars).0.into_iter().find(|s| s.starts_with("DOCKER_HOST="));
+        let sock = |p: &str| Some(format!("DOCKER_HOST=unix://{p}/docker.sock"));
+        assert_eq!(host(&[sandboxed, home, ("DOCKER_CONTEXT", "colima")]), sock("/home/me/.colima/default"));
+        assert_eq!(host(&[sandboxed, home, ("DOCKER_CONTEXT", "colima-x")]), sock("/home/me/.colima/x"));
+        assert_eq!(host(&[sandboxed, home, ("COLIMA_HOME", "/c")]), sock("/c/tarae-test"));
+        let (set, said) = with(&[sandboxed, home, ("DOCKER_CONTEXT", "desktop-linux")]);
+        assert_eq!(set.len(), 1, "the config only: {set:?}");
+        assert!(said.contains("isn't colima's") && said.contains("set DOCKER_HOST"), "{said}");
+        let (set, _) = with(&[sandboxed, home, ("DOCKER_CONFIG", "/mine"), ("DOCKER_HOST", "tcp://h:2375")]);
+        assert!(set.is_empty(), "what's set stays: {set:?}");
+        let (set, _) = with(&[sandboxed, home, ("DOCKER_HOST", "")]);
+        assert_eq!(set.len(), 2, "an empty value is unset: {set:?}");
+    }
+
+    /// #139's review: `DOCKER_CONFIG`'s folder is made new each run (`made_new`: `mkdtemp`, 0700), so one left with a
+    /// `config.json` — planted where Claude's runs write — is never the one used; and it goes with xtask's run.
+    #[test]
+    fn dockers_config_folder_is_made_new_and_goes() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let parent = made_new(&std::env::temp_dir()).unwrap();
+        // (what an earlier run left, or a run of Claude's planted: a folder with a config naming a plugin folder)
+        for planted in ["docker-config", "tarae-xtask-docker-XXXXXX"] {
+            std::fs::create_dir_all(parent.join(planted)).unwrap();
+            std::fs::write(parent.join(planted).join("config.json"), r#"{"cliPluginsExtraDirs":["/x"]}"#)
+                .unwrap();
+        }
+        let (one, two) = (made_new(&parent).unwrap(), made_new(&parent).unwrap());
+        assert_ne!(one, two, "each run its own");
+        for made in [&one, &two] {
+            assert_eq!(made.parent(), Some(parent.as_path()));
+            assert_eq!(std::fs::read_dir(made).unwrap().count(), 0, "empty: {}", made.display());
+            let mode = std::fs::metadata(made).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{}", made.display());
+        }
+        drop(DockerConfig(one.clone()));
+        assert!(!one.exists(), "removed with its run");
+        std::fs::remove_dir_all(&parent).unwrap();
     }
 
     /// No Docker to talk to: said in a line a preflight note can match, not an error.

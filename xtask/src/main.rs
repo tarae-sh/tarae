@@ -83,6 +83,12 @@ const PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // (what reaches Docker, in tarae's sandbox: the settings a run can't find for itself — #139; its config folder
+    // removed at the end)
+    let docker = match matches!(args.first().map(String::as_str), Some("linux" | "compat" | "trace")) {
+        true => linux::docker_in_sandbox(),
+        false => None,
+    };
     let result = match args.first().map(String::as_str) {
         Some("vendor-grammars") => vendor_grammars(),
         Some("shot") => shot::run(&args[1..]),
@@ -109,6 +115,7 @@ fn main() {
                 .into(),
         ),
     };
+    drop(docker);
     if let Err(e) = result {
         eprintln!("error: {e}");
         std::process::exit(1);

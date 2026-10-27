@@ -141,6 +141,9 @@ pub struct LlmConfig {
     /// Chat: commands Claude's `run` starts without asking, past the built-in checks (`tools::run_allow`) —
     /// each a prefix of whole words (`"npm test"`).
     pub run_allow: Vec<String>,
+    /// Chat, Docker's card (#139): what its `a` lets vary of a command whose code tarae pins (`tools::Inert`) —
+    /// `"cargo xtask linux: clippy test --userns --bin= --"`. A project's only once trusted (`trust::RISKY`).
+    pub docker_inert: Vec<String>,
     /// Chat, review at the end (`edits.rs`): more files whose edits still ask first, past the protected ones
     /// (`sandbox::protected_names`, which always ask) — a name matches anywhere, a path (with `/`) from the
     /// project's root.
@@ -199,6 +202,7 @@ impl Default for LlmConfig {
             billing: Default::default(),
             reviewer_billing: None,
             run_allow: Vec::new(),
+            docker_inert: Vec::new(),
             review_ask: Vec::new(),
             sandbox: true,
             sandbox_network: false,

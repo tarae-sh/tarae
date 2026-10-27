@@ -249,7 +249,7 @@ const SKIP_WRITERS_LEFT: &[(&str, usize)] = &[
     ("editor.rs", 1),
     ("landlock.rs", 5),
     ("sandbox.rs", 11),
-    ("sandbox/keeper.rs", 10),
+    ("sandbox/keeper.rs", 8),
     ("sandbox/linux.rs", 2),
     ("sandbox/owners/tests.rs", 1),
     ("sandbox/supervisor.rs", 4),

@@ -525,6 +525,7 @@ const SHORT: &[(&str, &str)] = &[
     ("This session", "session"),
     ("Always here", "always"),
     ("This command, this chat", "command"),
+    ("This command, these arguments, this chat", "command"),
     ("This socket, this chat", "socket"),
     ("Ask each time", "ask"),
     ("Don't run them", "none"),
@@ -1257,6 +1258,11 @@ impl Offer {
             // (one socket past the sandbox — #119; `a` is the socket's, for any command — #182; Docker's,
             // this command's with it, never the socket's — #193)
             W::Run(r) if r.socket.is_some() && self.lasts() => match r.again.is_some() {
+                true if r.again.as_ref().is_some_and(crate::tools::Again::args_free) => vec![
+                    plain('y', "Once"),
+                    lasts('a', "This command, these arguments, this chat"),
+                    plain('n', "No"),
+                ],
                 true => vec![plain('y', "Once"), lasts('a', "This command, this chat"), plain('n', "No")],
                 false => vec![plain('y', "Once"), lasts('a', "This socket, this chat"), plain('n', "No")],
             },

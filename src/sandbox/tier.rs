@@ -289,6 +289,31 @@ fn refuses_userns(restrict: Option<u32>, label: Option<&str>) -> bool {
 }
 
 impl Seen {
+    /// Everything it read, in a line — said with a test's skip and in the log beside `why` (#145: `why` takes the
+    /// first cause that fits, so a refusal from elsewhere reads as Ubuntu's restriction where that's on).
+    pub fn read(&self) -> String {
+        self.read_with(&thread_state())
+    }
+
+    /// `read` with what the thread carries (`thread_state`) given.
+    fn read_with(&self, thread: &str) -> String {
+        let or = |v: Option<String>| v.unwrap_or_else(|| "unread".into());
+        format!(
+            "failed at {} with errno {}; apparmor_restrict_unprivileged_userns {}, max_user_namespaces {}, \
+             unprivileged_userns_clone {}, label {}, seccomp {}, dumpable {}, wsl1 {}; {}",
+            self.failed.step.said(),
+            self.failed.errno,
+            or(self.restrict_userns.map(|v| v.to_string())),
+            or(self.max_userns.map(|v| v.to_string())),
+            or(self.userns_clone.map(|v| v.to_string())),
+            or(self.apparmor.clone()),
+            self.seccomp,
+            self.dumpable,
+            self.wsl1,
+            thread,
+        )
+    }
+
     /// `failed`, with this system's answers read now.
     pub fn now(failed: BirthError) -> Seen {
         let status = read("/proc/self/status").unwrap_or_default();
@@ -307,6 +332,30 @@ impl Seen {
             dumpable: unsafe { libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) } == 1,
         }
     }
+}
+
+/// What the thread reading it carries — the probe's keeper is born on a thread it starts, which inherits them: its
+/// `Seccomp` and `NoNewPrivs` beside the process's (`/proc/self/status` is the thread group leader's), and its name.
+fn thread_state() -> String {
+    let (me, all) =
+        (read("/proc/thread-self/status").unwrap_or_default(), read("/proc/self/status").unwrap_or_default());
+    thread_state_of(&me, &all)
+}
+
+/// `thread_state` from the thread's `status` file (`me`) and the process's (`all`).
+fn thread_state_of(me: &str, all: &str) -> String {
+    let field = |status: &str, key: &str| {
+        let v = status.lines().find_map(|l| l.strip_prefix(key)).map(str::trim);
+        v.unwrap_or("unread").to_string()
+    };
+    format!(
+        "thread {}: Seccomp {}, NoNewPrivs {} (the process's: {}, {})",
+        field(me, "Name:"),
+        field(me, "Seccomp:"),
+        field(me, "NoNewPrivs:"),
+        field(all, "Seccomp:"),
+        field(all, "NoNewPrivs:")
+    )
 }
 
 /// Ubuntu's restriction, and its remedy (said once, at the probe — tarae ships no profile).
@@ -434,6 +483,8 @@ pub struct Probed {
     pub served: Result<(), String>,
     /// Ubuntu's restriction kept the namespaces from a tarae under no profile: why, and the step (`hint`).
     pub hint: Option<super::guarantees::Hint>,
+    /// What the probe read where a birth failed (`Seen::read`, or how its keeper's run failed) — None: nothing did.
+    pub read: Option<String>,
 }
 
 impl Probed {
@@ -466,6 +517,7 @@ pub fn get() -> &'static Probed {
                 brief: Some("none asked".into()),
                 served,
                 hint: None,
+                read: None,
             };
         }
         #[allow(unused_mut)]
@@ -478,21 +530,30 @@ pub fn get() -> &'static Probed {
             p.short = Some("no PID namespace asked (TARAE_TEST_NO_PID)".into());
             p.brief = Some("no PID namespace asked".into());
         }
-        let said = match &p.short {
-            None => format!("namespaces: {} ({})", p.tier().said(), p.ns.said()),
-            Some(why) => format!("namespaces: {} ({}) — {why}", p.tier().said(), p.ns.said()),
-        };
-        let said = match &p.hint {
-            Some(hint) => format!("{said} — {}", hint.said),
-            None => said,
-        };
-        let said = match &p.served {
-            Ok(()) => said,
-            Err(why) => format!("{said} — not served: {why}"),
-        };
-        crate::log::line("sandbox", "info", &said);
+        crate::log::line("sandbox", "info", &logged(&p));
         p
     })
+}
+
+/// The log's line for what the probe found: the tier and namespaces, why not all, the hint, why not served, and what
+/// it read (#145).
+fn logged(p: &Probed) -> String {
+    let said = match &p.short {
+        None => format!("namespaces: {} ({})", p.tier().said(), p.ns.said()),
+        Some(why) => format!("namespaces: {} ({}) — {why}", p.tier().said(), p.ns.said()),
+    };
+    let said = match &p.hint {
+        Some(hint) => format!("{said} — {}", hint.said),
+        None => said,
+    };
+    let said = match &p.served {
+        Ok(()) => said,
+        Err(why) => format!("{said} — not served: {why}"),
+    };
+    match &p.read {
+        Some(read) => format!("{said} — the probe read: {read}"),
+        None => said,
+    }
 }
 
 /// The namespaces the keeper of a policy is born with: the probe's — without a `/dev/shm` of its own where the
@@ -543,22 +604,22 @@ fn probe_with(
             Failed::Birth(b) => hint(&Seen::now(*b), tier, &place()),
             _ => None,
         };
-        let short = e.brief();
-        (Ns::NONE, Some(e.said()), Some(short), hint)
+        let (short, read) = (e.brief(), e.read());
+        (Ns::NONE, Some(e.said()), Some(short), hint, Some(read))
     };
-    let (ns, short, brief_said, hint) = match tried(all) {
-        Ok(()) => (all, None, None, None),
+    let (ns, short, brief_said, hint, read) = match tried(all) {
+        Ok(()) => (all, None, None, None, None),
         Err(Failed::Birth(e)) if e.step == BirthStep::Proc => {
             let seen = Seen::now(e);
             let (no_pid, few) = (why(&seen), brief(&seen));
             match tried(Ns::session(true, false)) {
-                Ok(()) => (Ns::session(true, false), Some(no_pid), Some(few), None),
+                Ok(()) => (Ns::session(true, false), Some(no_pid), Some(few), None, Some(seen.read())),
                 Err(e) => without(e),
             }
         }
         Err(e) => without(e),
     };
-    Probed { ns, short, brief: brief_said, served: served(ns.user), hint }
+    Probed { ns, short, brief: brief_said, served: served(ns.user), hint, read }
 }
 
 /// How a probe's keeper failed.
@@ -578,6 +639,17 @@ impl Failed {
             Failed::Birth(e) => brief(&Seen::now(*e)),
             Failed::Run(_) => "a run in namespaces failed".into(),
             Failed::Late => "namespaces didn't answer in time".into(),
+        }
+    }
+
+    /// What the probe read of it (`Seen::read`; a run's failure or the wait, as `said` has them).
+    fn read(&self) -> String {
+        match self {
+            Failed::Birth(e) => Seen::now(*e).read(),
+            Failed::Run(why) => format!("its keeper was born; its run failed: {why}; {}", thread_state()),
+            Failed::Late => {
+                format!("no answer within {}; {}", crate::term::run_duration(PROBE_WITHIN), thread_state())
+            }
         }
     }
 
@@ -894,6 +966,77 @@ mod tests {
         let p = probe(&|ns| if ns.user { Err(Failed::Run("`true` ended 1".into())) } else { Ok(()) });
         assert!(p.short.as_deref().is_some_and(|w| w.ends_with("`true` ended 1")), "{:?}", p.short);
         assert_eq!(p.brief.as_deref(), Some("a run in namespaces failed"));
+    }
+
+    /// #145: where the probe found less than every namespace it keeps what it read — the step and errno, the system's
+    /// answers, the asking thread's own filter and no-new-privs beside the process's — for a skip's line and the log;
+    /// with every namespace, nothing. (Keepers stood in for.)
+    #[test]
+    fn the_probe_keeps_what_it_read_where_it_found_less() {
+        let probe = |fail: &dyn Fn(Ns) -> Result<(), Failed>| probe_with(|_| Ok(()), fail);
+        assert_eq!(probe(&|_| Ok(())).read, None, "every namespace: nothing read to say");
+        let map = BirthError { step: BirthStep::Map, errno: libc::EACCES };
+        let read =
+            probe(&|ns| if ns.user { Err(Failed::Birth(map)) } else { Ok(()) }).read.unwrap_or_default();
+        for word in [
+            "failed at writing its id maps with errno 13",
+            "apparmor_restrict_unprivileged_userns ",
+            "label ",
+        ] {
+            assert!(read.contains(word), "{word:?} in {read}");
+        }
+        assert!(read.contains("thread ") && read.contains("NoNewPrivs"), "the thread's own: {read}");
+        let proc = BirthError { step: BirthStep::Proc, errno: libc::EPERM };
+        let read =
+            probe(&|ns| if ns.pid { Err(Failed::Birth(proc)) } else { Ok(()) }).read.unwrap_or_default();
+        assert!(read.contains("failed at mounting a fresh /proc"), "without the PID namespace: {read}");
+        let read = probe(&|ns| if ns.user { Err(Failed::Late) } else { Ok(()) }).read.unwrap_or_default();
+        assert!(read.contains("no answer within") && read.contains("NoNewPrivs"), "{read}");
+    }
+
+    /// #145's review: what the probe read is said with its values — a stand-in system's, each one in the line — and
+    /// that line is the log's too.
+    #[test]
+    fn what_the_probe_read_is_said_with_its_values() {
+        let s = Seen {
+            failed: BirthError { step: BirthStep::Map, errno: libc::EACCES },
+            restrict_userns: Some(1),
+            max_userns: Some(47_564),
+            userns_clone: None,
+            seccomp: true,
+            apparmor: Some("docker-default (enforce)".into()),
+            wsl1: false,
+            dumpable: false,
+        };
+        let me = "Name:\ttarae-nsprobe\nSeccomp:\t2\nNoNewPrivs:\t1\n";
+        let all = "Name:\ttarae\nSeccomp:\t0\nNoNewPrivs:\t0\n";
+        let read = s.read_with(&thread_state_of(me, all));
+        for value in [
+            "failed at writing its id maps with errno 13",
+            "apparmor_restrict_unprivileged_userns 1,",
+            "max_user_namespaces 47564,",
+            "unprivileged_userns_clone unread,",
+            "label docker-default (enforce),",
+            "seccomp true,",
+            "dumpable false,",
+            "wsl1 false;",
+            "thread tarae-nsprobe: Seccomp 2, NoNewPrivs 1 (the process's: 0, 0)",
+        ] {
+            assert!(read.contains(value), "{value:?} in {read}");
+        }
+        let p = Probed {
+            ns: Ns::NONE,
+            short: Some(why(&s)),
+            brief: Some(brief(&s)),
+            served: Ok(()),
+            hint: None,
+            read: Some(read.clone()),
+        };
+        let line = logged(&p);
+        assert!(line.ends_with(&format!(" — the probe read: {read}")), "the log's line: {line}");
+        assert!(line.contains(&why(&s)), "{line}");
+        let all_of_them = Probed { ns: Ns::session(true, true), short: None, brief: None, read: None, ..p };
+        assert!(!logged(&all_of_them).contains("the probe read"), "nothing read to say");
     }
 
     /// Each of §Tiers' rows from what a stand-in system would show: the probe says why in the words of

@@ -20,7 +20,7 @@ use crate::keymap::Keymaps;
 
 /// Settings a project file sets only once trusted: they run commands, or change what Claude's commands do
 /// unasked (`llm.sandbox*` comes with the sandbox), or what Claude sees.
-pub const RISKY: [&str; 23] = [
+pub const RISKY: [&str; 24] = [
     // (a project turning on the language servers the user turned off — rust-analyzer runs its build scripts)
     "editor.lsp",
     "editor.restart-build",
@@ -28,6 +28,8 @@ pub const RISKY: [&str; 23] = [
     "llm.command",
     "llm.args",
     "llm.run-allow",
+    // (what Docker's card's `a` lets vary: a project's could free `--image`, any image run with the socket)
+    "llm.docker-inert",
     "llm.review-ask",
     // (Claude's edits go in unseen, and the checks run them)
     "llm.review-at-end",
