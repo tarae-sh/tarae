@@ -5,7 +5,8 @@
 //!   `block-comment-tokens = { start, end }`), paired (`auto-pairs`, each `"()"`), called (`title`, else the
 //!   name with its first letter up; `shown-as` — the name a person reads when its own is an inner one, and then
 //!   left out of `:lang`'s list; `aliases` — code fence and shebang names besides its extensions), drawn
-//!   (`doc-comments = true`: `///`, `//!`, `/** */` rendered), indented (`indent-tabs`, `indent-after-colon`,
+//!   (`doc-comments = { line, block, html, inline, tags }`: which comments are docs and how their text reads —
+//!   `doccomment::DocComments`), indented (`indent-tabs`, `indent-after-colon`,
 //!   `indent-heuristic = "simple"`: the line before's indentation as it is),
 //!   wrapped (`prose = true`, for `editor.soft-wrap = "prose"`); its servers (`lsp` — the first on `PATH`
 //!   starts — and `also`, beside it; `language-id`, the name unless set); what makes its project (`roots`,
@@ -62,7 +63,8 @@ pub struct LangSpec {
     pub shown: String,
     /// Code fence and shebang names besides its name and extensions (`golang`, `python3`).
     pub aliases: Vec<String>,
-    pub doc_comments: bool,
+    /// Its doc comments, rendered (`doc-comments`).
+    pub doc_comments: Option<crate::doccomment::DocComments>,
     pub indent_tabs: bool,
     pub indent_after_colon: bool,
     /// `indent-heuristic = "simple"`: a new line takes the line before's indentation as it is (`indent::simple`).
@@ -345,6 +347,83 @@ const LANGUAGE_KEYS: &[&str] = &[
     "grammars-with",
 ];
 
+/// `doc-comments = { line = ["///"], block = "/**", html = true, inline = { code = "code" }, tags = { param =
+/// { label = "Params", arg = "name" }, return = "Returns" } }` — a block closes with the language's block comment
+/// end (`block` needs `block-comment-tokens`).
+fn doc_comments(
+    v: &toml::Value,
+    block_comment: Option<&(String, String)>,
+) -> Result<crate::doccomment::DocComments, String> {
+    use crate::doccomment::{DocComments, InlineKind, TagArg, TagSpec};
+    let t = v.as_table().ok_or("`doc-comments` isn't a table (`{ line = [\"///\"], block = \"/**\" }`)")?;
+    known(t, &["line", "block", "html", "inline", "tags"], "`doc-comments`")?;
+    let block = match string(t, "block")? {
+        None => None,
+        Some(open) => {
+            let (_, close) =
+                block_comment.ok_or("`doc-comments.block` needs `block-comment-tokens` (its end)")?;
+            Some((open, close.clone()))
+        }
+    };
+    let html = match t.get("html") {
+        None => false,
+        Some(h) => h.as_bool().ok_or("`doc-comments.html` is true or false")?,
+    };
+    let table = |k: &str| match t.get(k) {
+        None => Ok(toml::map::Map::new()),
+        Some(x) => x.as_table().cloned().ok_or(format!("`doc-comments.{k}` isn't a table")),
+    };
+    let mut inline = Vec::new();
+    for (name, kind) in table("inline")? {
+        let kind = match kind.as_str() {
+            Some("code") => InlineKind::Code,
+            Some("link") => InlineKind::Link,
+            Some("plain-link") => InlineKind::PlainLink,
+            Some("text") => InlineKind::Text,
+            _ => {
+                return Err(format!(
+                    "`doc-comments.inline.{name}`: \"code\", \"link\", \"plain-link\" or \"text\""
+                ));
+            }
+        };
+        inline.push((name, kind));
+    }
+    let mut tags = Vec::new();
+    for (name, spec) in table("tags")? {
+        let (label, arg) = match &spec {
+            toml::Value::String(label) => (label.clone(), TagArg::None),
+            toml::Value::Table(s) => {
+                known(s, &["label", "arg"], &format!("`doc-comments.tags.{name}`"))?;
+                let label =
+                    string(s, "label")?.ok_or(format!("`doc-comments.tags.{name}` has no `label`"))?;
+                let arg = match string(s, "arg")?.as_deref() {
+                    None => TagArg::None,
+                    Some("name") => TagArg::Name,
+                    Some("ref") => TagArg::Ref,
+                    Some(a) => {
+                        return Err(format!("`doc-comments.tags.{name}.arg`: {a:?} — \"name\" or \"ref\""));
+                    }
+                };
+                (label, arg)
+            }
+            _ => return Err(format!("`doc-comments.tags.{name}` is a label or `{{ label, arg }}`")),
+        };
+        tags.push(TagSpec { name, label, arg });
+    }
+    let line = strings(t.get("line"), "doc-comments.line")?.unwrap_or_default();
+    if line.is_empty() && block.is_none() {
+        return Err("`doc-comments` names no `line` marker nor `block`".into());
+    }
+    if line
+        .iter()
+        .chain(block.as_ref().map(|b| &b.0))
+        .any(|m| m.trim().is_empty() || m.contains(char::is_whitespace))
+    {
+        return Err("`doc-comments`: a marker is a word of its own (`///`, `/**`)".into());
+    }
+    Ok(DocComments { line, block, html, inline, tags })
+}
+
 fn lang_of(e: &Entry) -> Result<LangSpec, String> {
     let t = &e.t;
     known(t, LANGUAGE_KEYS, "it")?;
@@ -377,6 +456,7 @@ fn lang_of(e: &Entry) -> Result<LangSpec, String> {
                 .collect::<Result<_, _>>()?,
         ),
     };
+    let doc_comments = t.get("doc-comments").map(|d| doc_comments(d, block_comment.as_ref())).transpose()?;
     let name = e.name.clone();
     Ok(LangSpec {
         grammar: string(t, "grammar")?.unwrap_or_else(|| name.clone()),
@@ -390,7 +470,7 @@ fn lang_of(e: &Entry) -> Result<LangSpec, String> {
         title: string(t, "title")?.unwrap_or_else(|| capitalized(&name)),
         shown: string(t, "shown-as")?.unwrap_or_else(|| name.clone()),
         aliases: list("aliases")?,
-        doc_comments: flag("doc-comments")?,
+        doc_comments,
         indent_tabs: flag("indent-tabs")?,
         indent_after_colon: flag("indent-after-colon")?,
         simple_indent: match string(t, "indent-heuristic")?.as_deref() {
@@ -618,7 +698,7 @@ mod tests {
                 l.auto_pairs.as_ref().map(|p| p.iter().map(|(a, b)| format!("{a}{b}")).collect());
             line(&mut s, "pairs", &pairs.unwrap_or_default());
             let flags = [
-                ("doc-comments", crate::doccomment::applies(Some(n))),
+                ("doc-comments", crate::doccomment::syntax(Some(n)).is_some()),
                 ("tabs", crate::syntax::tabs_by_default(Some(n))),
                 ("colon", crate::syntax::colon_indents(Some(n))),
                 ("simple-indent", l.simple_indent),
@@ -626,6 +706,14 @@ mod tests {
             ];
             let flags: Vec<String> = flags.iter().filter(|f| f.1).map(|f| f.0.to_string()).collect();
             line(&mut s, "flags", &flags);
+            if let Some(d) = &l.doc_comments {
+                let mut docs = d.line.clone();
+                docs.extend(d.block.iter().map(|(a, b)| format!("{a} {b}")));
+                docs.extend(d.html.then(|| "html".to_string()));
+                docs.extend(d.inline.iter().map(|(n, k)| format!("{{@{n}}}={k:?}")));
+                docs.extend(d.tags.iter().map(|t| format!("@{}={:?}/{:?}", t.name, t.label, t.arg)));
+                line(&mut s, "docs", &docs);
+            }
             if l.shown != n {
                 line(&mut s, "shown-as", std::slice::from_ref(&l.shown));
             }
@@ -982,6 +1070,49 @@ mod tests {
         assert!(said.contains("[language.y]: it has no `extension`"), "{said}");
         assert_eq!(lang(&t, "a.rs"), Some("rust"), "the built-in packs stay");
         assert_eq!(t.langs.len(), get().langs.len() + 1);
+    }
+
+    /// A language's doc comments are its pack's data: KDoc's tags follow Javadoc's with a pack alone; what can't
+    /// be read is said, that language left out.
+    #[test]
+    fn doc_comments_are_a_packs_data() {
+        use crate::doccomment::{InlineKind, TagArg, TagSpec};
+        let t = yours(&[
+            (
+                "kdoc",
+                "[language.kotlin.doc-comments]\nblock = \"/**\"\ninline = { code = \"code\" }\n\
+                 tags = { param = { label = \"Params\", arg = \"name\" }, return = \"Returns\" }\n",
+            ),
+            (
+                "kind",
+                "[language.a]\nextensions = [\"a\"]\ndoc-comments = { line = [\"///\"], inline = { x = \"bold\" } }\n",
+            ),
+            (
+                "arg",
+                "[language.b]\nextensions = [\"b\"]\ndoc-comments = { line = [\"///\"], tags = { p = { label = \"P\", arg = \"what\" } } }\n",
+            ),
+            ("close", "[language.c2]\nextensions = [\"c2\"]\ndoc-comments = { block = \"/**\" }\n"),
+            ("none", "[language.d]\nextensions = [\"d\"]\ndoc-comments = {}\n"),
+            ("flag", "[language.e]\nextensions = [\"e\"]\ndoc-comments = true\n"),
+        ]);
+        let kotlin = t.langs.iter().find(|l| l.name == "kotlin").unwrap().doc_comments.clone().unwrap();
+        assert_eq!(kotlin.block, Some(("/**".into(), "*/".into())), "closed as its block comments are");
+        assert_eq!(kotlin.inline, [("code".to_string(), InlineKind::Code)]);
+        assert_eq!(
+            kotlin.tags[0],
+            TagSpec { name: "param".into(), label: "Params".into(), arg: TagArg::Name }
+        );
+        let said = t.said.join("\n");
+        for (lang, why) in [
+            ("a", "`doc-comments.inline.x`: \"code\", \"link\", \"plain-link\" or \"text\""),
+            ("b", "`doc-comments.tags.p.arg`: \"what\" — \"name\" or \"ref\""),
+            ("c2", "`doc-comments.block` needs `block-comment-tokens` (its end)"),
+            ("d", "`doc-comments` names no `line` marker nor `block`"),
+            ("e", "`doc-comments` isn't a table"),
+        ] {
+            assert!(said.contains(&format!("[language.{lang}]")) && said.contains(why), "{lang}: {said}");
+            assert!(t.langs.iter().all(|l| l.name != lang), "{lang} left out");
+        }
     }
 
     /// A server's traits from a runtime folder's pack: one key in place of the built-in one (a table whole —

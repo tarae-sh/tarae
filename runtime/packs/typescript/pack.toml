@@ -16,7 +16,7 @@ not-settings = ["ts", "tsx"]
 extensions = ["ts", "mts", "cts"]
 comment-token = "//"
 block-comment-tokens = { start = "/*", end = "*/" }
-doc-comments = true
+doc-comments = { block = "/**" }
 title = "TypeScript"
 roots = ["package.json", "tsconfig.json", "jsconfig.json"]
 lsp = ["typescript-language-server"]
@@ -26,7 +26,7 @@ test-files = ["*.test.ts", "*.spec.ts"]
 extensions = ["tsx"]
 comment-token = "//"
 block-comment-tokens = { start = "/*", end = "*/" }
-doc-comments = true
+doc-comments = { block = "/**" }
 language-id = "typescriptreact"
 roots = ["package.json", "tsconfig.json", "jsconfig.json"]
 lsp = ["typescript-language-server"]

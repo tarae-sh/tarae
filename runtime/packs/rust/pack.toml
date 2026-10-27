@@ -31,7 +31,7 @@ extensions = ["rs"]
 comment-token = "//"
 block-comment-tokens = { start = "/*", end = "*/" }
 auto-pairs = ["()", "[]", "{}", "\"\"", "``"]
-doc-comments = true
+doc-comments = { line = ["///", "//!"], block = "/**" }
 roots = ["Cargo.toml"]
 # rust-analyzer in a lone .rs finds no workspace ("Failed to discover workspace" at every open)
 needs-project = ["Cargo.toml", "rust-project.json"]

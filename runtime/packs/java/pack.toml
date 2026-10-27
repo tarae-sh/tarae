@@ -19,10 +19,31 @@ first-made = [".gradle/", "build/", "target/"]
 extensions = ["java"]
 comment-token = "//"
 block-comment-tokens = { start = "/*", end = "*/" }
-doc-comments = true
 roots = ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"]
 lsp = ["jdtls"]
 test-files = ["*Test.java", "*Tests.java"]
+
+# Javadoc: `/** */` is HTML with its tags; `///` is Markdown (JDK 23, JEP 467) — `//!` is no doc in Java. Block
+# tags are sections as javadoc's own pages name them; an inline or block tag not listed is drawn as written.
+[language.java.doc-comments]
+line = ["///"]
+block = "/**"
+html = true
+inline = { code = "code", literal = "text", link = "link", linkplain = "plain-link", value = "link", systemProperty = "code", summary = "text", index = "text" }
+
+[language.java.doc-comments.tags]
+param = { label = "Params", arg = "name" }
+return = "Returns"
+throws = { label = "Throws", arg = "ref" }
+exception = { label = "Throws", arg = "ref" }
+see = { label = "See also", arg = "ref" }
+since = "Since"
+author = "Author"
+version = "Version"
+deprecated = "Deprecated"
+apiNote = "API note"
+implSpec = "Impl spec"
+implNote = "Impl note"
 
 [grammar.java]
 git = "https://github.com/tree-sitter/tree-sitter-java"

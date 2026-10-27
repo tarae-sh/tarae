@@ -19,7 +19,7 @@ checks = ["npm test", "npm run", "pnpm test", "pnpm run", "yarn test", "eslint"]
 extensions = ["js", "mjs", "cjs"]
 comment-token = "//"
 block-comment-tokens = { start = "/*", end = "*/" }
-doc-comments = true
+doc-comments = { block = "/**" }
 title = "JavaScript"
 aliases = ["node"]
 roots = ["package.json", "tsconfig.json", "jsconfig.json"]
@@ -32,7 +32,7 @@ grammar = "javascript"
 extensions = ["jsx"]
 comment-token = "//"
 block-comment-tokens = { start = "/*", end = "*/" }
-doc-comments = true
+doc-comments = { block = "/**" }
 language-id = "javascriptreact"
 roots = ["package.json", "tsconfig.json", "jsconfig.json"]
 lsp = ["typescript-language-server"]

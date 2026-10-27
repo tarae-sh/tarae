@@ -316,7 +316,7 @@ fn inline(text: &str, base: Style, theme: &Theme) -> Vec<Span> {
             '[' => {
                 // [text](url) → text only (styled as a link). rustdoc reference links [`Hash`]·[Eq][ref] too
                 // (only for a single word without spaces — text like `[1, 2]` stays as-is)
-                let close = chars[i..].iter().position(|&x| x == ']').map(|p| i + p);
+                let close = link_close(&chars, i + 1);
                 let end = close.and_then(|j| match chars.get(j + 1) {
                     Some('(') => chars[j..].iter().position(|&x| x == ')').map(|p| j + p),
                     Some('[') => chars[j + 1..].iter().position(|&x| x == ']').map(|p| j + 1 + p),
@@ -344,6 +344,27 @@ fn inline(text: &str, base: Style, theme: &Theme) -> Vec<Span> {
         }
     }
     spans
+}
+
+/// The `]` closing a link's text that starts at `from` — past code spans and escaped characters (``[`m(int[])`]``).
+fn link_close(chars: &[char], from: usize) -> Option<usize> {
+    let mut j = from;
+    while j < chars.len() {
+        match chars[j] {
+            '\\' => j += 2,
+            ']' => return Some(j),
+            '`' => {
+                let ticks = chars[j..].iter().take_while(|&&x| x == '`').count();
+                let body = j + ticks;
+                let run = |k: usize| chars[k..].iter().take_while(|&&x| x == '`').count();
+                j = (body..chars.len())
+                    .find(|&k| run(k) == ticks && chars[k - 1] != '`')
+                    .map_or(body, |k| k + ticks);
+            }
+            _ => j += 1,
+        }
+    }
+    None
 }
 
 /// A table row's cells, split at `|` — not at an escaped one (`\|`, left for `inline` to unescape) nor at one

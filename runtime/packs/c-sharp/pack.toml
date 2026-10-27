@@ -9,7 +9,7 @@ title = "C#"
 extensions = ["cs"]
 comment-token = "//"
 block-comment-tokens = { start = "/*", end = "*/" }
-doc-comments = true
+doc-comments = { line = ["///"], block = "/**" }
 aliases = ["csharp"]
 test-files = ["*Test.cs", "*Tests.cs"]
 

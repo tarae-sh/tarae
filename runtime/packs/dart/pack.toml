@@ -4,7 +4,7 @@
 extensions = ["dart"]
 comment-token = "//"
 block-comment-tokens = { start = "/*", end = "*/" }
-doc-comments = true
+doc-comments = { line = ["///"], block = "/**" }
 
 [grammar.dart]
 git = "https://github.com/UserNobody14/tree-sitter-dart"

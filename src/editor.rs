@@ -5387,16 +5387,14 @@ impl Editor {
             return crate::weave::columns(self, doc, c, m.cols.get(), self.editing_in(true))
                 .then(|| (r.start, r.end - 1));
         }
-        if !self.doc_comments_render(doc.lang_name()) {
-            return None;
-        }
-        crate::doccomment::block_at(&doc.text, line)
+        let syn = crate::doccomment::syntax(doc.lang_name()).filter(|_| self.config.render_doc_comments)?;
+        crate::doccomment::block_at(&doc.text, line, syn)
             .filter(|&block| self.doc_block_folded(doc, self.editing_in(true), block))
     }
 
     /// Whether doc comments render in this language at all: the setting on, and the language has them.
     pub fn doc_comments_render(&self, lang: Option<&str>) -> bool {
-        self.config.render_doc_comments && crate::doccomment::applies(lang)
+        self.config.render_doc_comments && crate::doccomment::syntax(lang).is_some()
     }
 
     /// Whether a pane is where its document is being edited: the focused one, in INSERT or SELECT (the mode is

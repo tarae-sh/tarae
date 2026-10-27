@@ -11,6 +11,7 @@
   extensions: c h
   comments: // /* */
   flags: doc-comments
+  docs: /// //! /** */
   roots: compile_commands.json CMakeLists.txt
   lsp: clangd (clangd)
   installs: c comment
@@ -19,6 +20,7 @@
   extensions: cs
   comments: // /* */
   flags: doc-comments
+  docs: /// /** */
   installs: c-sharp comment
 [cmake] CMake
   grammar: cmake
@@ -34,6 +36,7 @@
   extensions: cc cpp cxx hpp hh hxx c++
   comments: // /* */
   flags: doc-comments
+  docs: /// //! /** */
   roots: compile_commands.json CMakeLists.txt
   lsp: clangd (clangd)
   installs: cpp comment
@@ -47,6 +50,7 @@
   extensions: dart
   comments: // /* */
   flags: doc-comments
+  docs: /// /** */
   installs: dart comment
 [diff] Diff
   grammar: diff
@@ -140,6 +144,7 @@
   extensions: java
   comments: // /* */
   flags: doc-comments
+  docs: /// /** */ html {@code}=Code {@index}=Text {@link}=Link {@linkplain}=PlainLink {@literal}=Text {@summary}=Text {@systemProperty}=Code {@value}=Link @apiNote="API note"/None @author="Author"/None @deprecated="Deprecated"/None @exception="Throws"/Ref @implNote="Impl note"/None @implSpec="Impl spec"/None @param="Params"/Name @return="Returns"/None @see="See also"/Ref @since="Since"/None @throws="Throws"/Ref @version="Version"/None
   roots: pom.xml build.gradle build.gradle.kts settings.gradle settings.gradle.kts
   lsp: jdtls (jdtls)
   installs: java comment
@@ -149,6 +154,7 @@
   extensions: js mjs cjs
   comments: // /* */
   flags: doc-comments
+  docs: /** */
   roots: package.json tsconfig.json jsconfig.json
   lsp: typescript-language-server (typescript-language-server --stdio)
   installs: javascript comment
@@ -162,6 +168,7 @@
   extensions: jsx
   comments: // /* */
   flags: doc-comments
+  docs: /** */
   language-id: javascriptreact
   roots: package.json tsconfig.json jsconfig.json
   lsp: typescript-language-server (typescript-language-server --stdio)
@@ -182,6 +189,7 @@
   extensions: kt kts
   comments: // /* */
   flags: doc-comments
+  docs: /** */
   installs: kotlin comment
 [lua] Lua
   grammar: lua
@@ -228,6 +236,7 @@
   extensions: php
   comments: // /* */
   flags: doc-comments
+  docs: /** */
   installs: php comment
 [protobuf] Protobuf
   grammar: proto
@@ -257,6 +266,7 @@
   comments: // /* */
   pairs: () [] {} "" ``
   flags: doc-comments
+  docs: /// //! /** */
   roots: Cargo.toml
   needs-project: Cargo.toml rust-project.json
   lsp: rust-analyzer (rust-analyzer)
@@ -268,6 +278,7 @@
   extensions: scala sc
   comments: // /* */
   flags: doc-comments
+  docs: /** */
   installs: scala comment
 [scss] SCSS
   grammar: scss
@@ -294,6 +305,7 @@
   extensions: swift
   comments: // /* */
   flags: doc-comments
+  docs: /// /** */
   installs: swift comment
 [tarae-commit] Git commit
   grammar: gitcommit
@@ -312,6 +324,7 @@
   extensions: tsx
   comments: // /* */
   flags: doc-comments
+  docs: /** */
   language-id: typescriptreact
   roots: package.json tsconfig.json jsconfig.json
   lsp: typescript-language-server (typescript-language-server --stdio)
@@ -321,6 +334,7 @@
   extensions: ts mts cts
   comments: // /* */
   flags: doc-comments
+  docs: /** */
   roots: package.json tsconfig.json jsconfig.json
   lsp: typescript-language-server (typescript-language-server --stdio)
   installs: typescript comment
@@ -347,6 +361,7 @@
   extensions: zig zon
   comments: //
   flags: doc-comments
+  docs: /// //!
   lsp: zls (zls)
   installs: zig comment
 

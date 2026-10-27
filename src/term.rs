@@ -6978,7 +6978,6 @@ fn rows_pane(
     lay: &Layout,
 ) -> Vec<crate::codeview::Row> {
     use crate::codeview::{OtherKind, Part, Row, WovenRow};
-    use crate::doccomment::parts;
     let text = &doc.text;
     let rows = lay.text_rows;
     let last = mv::last_line(text);
@@ -7117,7 +7116,9 @@ fn rows_pane(
     // The blocks that show folded here (`Editor::doc_block_folded`: the one rule — a block being edited or
     // selected, or with a change shown in or beside it, stays raw). Horizontal scroll leaves them be: a folded
     // block is flowed to the width, so it has nothing to scroll — only the code lines move
-    let blocks: Vec<_> = crate::doccomment::blocks(text, w0..=w1, editor.config.tab_width)
+    let blocks: Vec<_> = crate::doccomment::syntax(lang)
+        .map(|syn| crate::doccomment::blocks(text, w0..=w1, editor.config.tab_width, syn))
+        .unwrap_or_default()
         .into_iter()
         .filter(|b| editor.doc_block_closed(doc, shows.editing, (b.start, b.end)))
         .collect();
@@ -7140,9 +7141,9 @@ fn rows_pane(
             continue;
         }
         match blocks.iter().find(|b| b.start <= line && line <= b.end) {
-            Some(&crate::doccomment::Block { start: a, end: b, indent, ref bodies }) => {
+            Some(block @ &crate::doccomment::Block { start: a, end: b, indent, .. }) => {
                 let width = lay.text_cols.saturating_sub(indent + 3).max(8);
-                let folded = fold_rows(editor, &parts(bodies), width, lang.as_deref());
+                let folded = fold_rows(editor, block, width, lang.as_deref());
                 // The top of the screen mid-block: its rows above it skipped — the rows scrolling put above
                 // (`top_rows`), or as many as lines when a top line inside it was set (`codeview::Measure::top`)
                 let skip = if line == a && line == top { top_skip } else { line - a };
@@ -7164,10 +7165,12 @@ fn rows_pane(
     view
 }
 
-/// Screen rows of a folded doc-comment block: (chunk, is example code line).
+/// Screen rows of a folded doc-comment block: (chunk, is example code line). A block tag its pack labels is a
+/// section (`Params`, `Returns` …): its label in a column as wide as this block's widest and two cells, once for a
+/// run of the same tag, what follows wrapped under the column; another tag is `@name` and its text.
 pub(crate) fn fold_rows(
     editor: &Editor,
-    parts: &[crate::doccomment::Part],
+    block: &crate::doccomment::Block,
     width: usize,
     lang: Option<&str>,
 ) -> Vec<(crate::codeview::Spans, bool)> {
@@ -7183,28 +7186,42 @@ pub(crate) fn fold_rows(
             out.push((row.into(), false));
         }
     };
-    for c in chunks(parts) {
+    let chunks = chunks(&crate::doccomment::parts_of(block));
+    let label = |c: &Chunk| match c {
+        Chunk::Tag(name, _) => block.syn.tag(name).map(|s| s.label.as_str()),
+        _ => None,
+    };
+    let column = chunks.iter().filter_map(label).map(|l| l.width()).max().map_or(0, |w| w + 2);
+    let kw = t.try_get("keyword").map(|s| Style { bg: None, bold: true, ..s }).unwrap_or_default();
+    for (i, c) in chunks.iter().enumerate() {
         match c {
             Chunk::Heading(h) => {
-                out.push((vec![plain(h, Style { fg: accent, bold: true, ..Style::default() })].into(), false))
+                let heading = Style { fg: accent, bold: true, ..Style::default() };
+                let spans = md::inline_spans(h, t).into_iter();
+                wrap(spans.map(|s| Span { style: heading.patch(s.style), ..s }).collect(), 0, &mut out)
             }
-            Chunk::Para(p) => wrap(md::inline_spans(&p, t), 0, &mut out),
+            Chunk::Para(p) => wrap(md::inline_spans(p, t), 0, &mut out),
             Chunk::Item(p) => {
                 let mut v = vec![plain("• ".into(), Style { fg: accent, ..Style::default() })];
-                v.extend(md::inline_spans(&p, t));
+                v.extend(md::inline_spans(p, t));
                 wrap(v, 2, &mut out);
             }
             Chunk::Tag(name, rest) => {
-                let kw =
-                    t.try_get("keyword").map(|s| Style { bg: None, bold: true, ..s }).unwrap_or_default();
-                let mut v = vec![plain(format!("@{name} "), kw)];
-                v.extend(md::inline_spans(&rest, t));
-                wrap(v, 2, &mut out);
+                let mut v = match label(c) {
+                    // (a run of the same tag labelled once)
+                    Some(_) if i > 0 && matches!(&chunks[i - 1], Chunk::Tag(n, _) if n == name) => {
+                        vec![plain(" ".repeat(column), Style::default())]
+                    }
+                    Some(l) => vec![plain(format!("{l}{}", " ".repeat(column - l.width())), kw)],
+                    None => vec![plain(format!("@{name} "), kw)],
+                };
+                v.extend(md::inline_spans(rest, t));
+                wrap(v, if label(c).is_some() { column } else { 2 }, &mut out);
             }
             // Blank line between paragraphs — the panel continues, only the text is empty
             Chunk::Gap => out.push((Vec::new().into(), false)),
             Chunk::Code(line) => {
-                let spans = match md::code_lines(&line, lang, t).into_iter().next() {
+                let spans = match md::code_lines(line, lang, t).into_iter().next() {
                     Some(Line::Code(s)) => s,
                     _ => Vec::new(),
                 };
@@ -7294,11 +7311,12 @@ fn review_folds(
     if let Some(c) = cache.filter(|c| c.key == key) {
         return Some(c);
     }
-    let blocks = crate::doccomment::blocks(&doc.text, 0..=mv::last_line(&doc.text), tab)
+    let syn = crate::doccomment::syntax(doc.lang_name())?;
+    let blocks = crate::doccomment::blocks(&doc.text, 0..=mv::last_line(&doc.text), tab, syn)
         .into_iter()
         .map(|b| {
             let width = code_w.saturating_sub(b.indent + 3).max(8);
-            let rows = fold_rows(editor, &crate::doccomment::parts(&b.bodies), width, lang.as_deref());
+            let rows = fold_rows(editor, &b, width, lang.as_deref());
             crate::doccomment::Folded { start: b.start, end: b.end, indent: b.indent, rows }
         })
         .collect();
@@ -8917,16 +8935,16 @@ fn rows_preview(
     let last = mv::last_line(text);
     let first = (focus.map_or(0, |f| f.saturating_sub(rows / 3)) + scroll)
         .min(last.saturating_sub(rows.saturating_sub(1)).max(focus.unwrap_or(0).min(last)));
-    let blocks: Vec<_> = match editor.doc_comments_render(lang) {
-        true => {
+    let blocks: Vec<_> = match crate::doccomment::syntax(lang).filter(|_| editor.doc_comments_render(lang)) {
+        Some(syn) => {
             let lines = first.saturating_sub(200)..=(first + rows * 3 + 200).min(last);
-            crate::doccomment::blocks(text, lines, editor.config.tab_width)
+            crate::doccomment::blocks(text, lines, editor.config.tab_width, syn)
                 .into_iter()
                 .filter(|b| !opens_at.is_some_and(|f| (b.start..=b.end).contains(&f)))
                 .filter(|b| editor.doc_block_closed(doc, false, (b.start, b.end)))
                 .collect()
         }
-        false => Vec::new(),
+        None => Vec::new(),
     };
     let tab = editor.config.tab_width;
     let from = |first: usize| {
@@ -8935,7 +8953,7 @@ fn rows_preview(
         while vis.len() < rows && line <= last {
             if let Some(b) = blocks.iter().find(|b| b.start <= line && line <= b.end) {
                 let w = width.saturating_sub(b.indent + 3).max(8);
-                let folded = fold_rows(editor, &crate::doccomment::parts(&b.bodies), w, lang);
+                let folded = fold_rows(editor, b, w, lang);
                 for (index, (spans, code)) in folded.into_iter().enumerate() {
                     if vis.len() == rows {
                         break;
@@ -20036,6 +20054,63 @@ mod tests {
         buf.clear();
         render(&mut ed, &mut buf, 80, 10).unwrap();
         assert!(String::from_utf8_lossy(&buf).contains("///"));
+    }
+
+    /// A Javadoc folds as Rust's docs do, its HTML and tags read: a paragraph, the example's lines, then its block
+    /// tags as sections — the label once for a run of the same tag, a long description wrapped under its column —
+    /// and the code after it right below its rows (the rows `codeview::Measure` counts are the rows drawn).
+    #[test]
+    fn a_javadoc_folds_into_sections() {
+        let mut ed = Editor::new(Config::default());
+        let src = "/**\n * Gets a <b>value</b>.\n * <pre>{@code\n *   get(k);\n * }</pre>\n *\n \
+                   * @param key the key to look up, never {@code null}, and then some more words\n \
+                   * @param load computes it\n * @return the value\n */\nint get();\n";
+        ed.docs[0].text = Rope::from_str(src);
+        ed.docs[0].path = Some("/tmp/x.java".into());
+        // (a cursor resting in it leaves it folded)
+        ed.docs[0].set_selection(crate::selection::Selection::point(0));
+        let mut buf = Vec::new();
+        render(&mut ed, &mut buf, 60, 14).unwrap();
+        let rows = screen(&buf, 60, 14);
+        let docs: Vec<&str> =
+            rows.iter().filter_map(|r| r.split_once("▎ ").map(|(_, t)| t.trim_end())).collect();
+        assert_eq!(
+            docs,
+            [
+                "Gets a value.",
+                "",
+                "  get(k);",
+                "",
+                "Params   key the key to look up, never null, and then",
+                "         some more words",
+                "         load computes it",
+                "Returns  the value",
+            ],
+            "{rows:#?}"
+        );
+        let after = rows.iter().position(|r| r.contains("Returns")).unwrap() + 1;
+        assert!(rows[after].contains("int get();"), "{rows:#?}");
+        assert_eq!(ed.folded_doc_block_at(3), Some((0, 9)), "`j`/`k` step over it");
+    }
+
+    /// A folded doc's heading, in any language, reads its inline Markdown as a paragraph does — its code in the
+    /// code's colour, its emphasis italic — over the heading's own look: the accent, bold.
+    #[test]
+    fn a_doc_headings_inline_markdown_keeps_the_accent() {
+        let ed = Editor::new(Config::default());
+        let text = Rope::from_str("/// # The `get` *way*\nfn f() {}\n");
+        let syn = crate::doccomment::syntax(Some("rust")).unwrap();
+        let block = &crate::doccomment::blocks(&text, 0..=1, 4, syn)[0];
+        let rows = fold_rows(&ed, block, 60, None);
+        let span =
+            |t: &str| rows[0].0.iter().find(|s| s.text == t).unwrap_or_else(|| panic!("{t}: {rows:?}")).style;
+        let accent = accent_color(&ed.theme);
+        let code = ed.theme.try_get("markup.raw.inline").and_then(|s| s.fg);
+        assert!(accent.is_some() && code.is_some() && code != accent);
+        let (the, get, way) = (span("The "), span("get"), span("way"));
+        assert_eq!((the.fg, the.bold, the.italic), (accent, true, false), "the heading's own look");
+        assert_eq!((get.fg, get.bold), (code, true), "its code in the code's colour");
+        assert_eq!((way.fg, way.bold, way.italic), (accent, true, true), "its emphasis italic");
     }
 
     /// Minimal terminal: applies `MoveTo`, `Clear(UntilNewLine)` and prints (other escapes ignored) —

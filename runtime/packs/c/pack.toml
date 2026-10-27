@@ -4,7 +4,7 @@
 extensions = ["c", "h"]
 comment-token = "//"
 block-comment-tokens = { start = "/*", end = "*/" }
-doc-comments = true
+doc-comments = { line = ["///", "//!"], block = "/**" }
 roots = ["compile_commands.json", "CMakeLists.txt"]
 lsp = ["clangd"]
 

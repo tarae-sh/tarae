@@ -42,7 +42,7 @@ comment-token = "//"                 # block-comment-tokens = { start = "/*", en
 # auto-pairs = ["()", "[]", "{}", "\"\""]   # typed in pairs (all six unless set)
 # title = "Gleam"                    # as it's called (the name with its first letter up unless set)
 # aliases = ["gleam-lang"]           # code fence and shebang names besides its name and extensions
-# doc-comments = true                # ///, //! and /** */ rendered as Markdown
+# doc-comments = { line = ["///"] } # which comments are docs, rendered as Markdown (below)
 # indent-tabs = true                 # tabs when the file doesn't say (Go, Makefiles)
 # indent-after-colon = true          # a line ending in `:` opens a block, without the grammar (Python, YAML)
 # indent-heuristic = "simple"        # a new line takes the line before's indentation as it is (commit messages)
@@ -53,6 +53,15 @@ lsp = ["gleam"]                      # the first on PATH starts; `also = [...]` 
 # language-id = "gleam"              # LSP's name for it (the language's unless set)
 # test-files = ["*_test.gleam"]      # test code by name (Claude's search and references tell it apart);
 # test-dirs = ["test"]               # `tests` and `test` folders are already
+
+# Doc comments, as Java's pack says them: line markers (Markdown), a block's opener (it closes with the
+# block-comment end, a line's `*` dropped), whether a block is HTML (Javadoc), inline tags and block tags
+# [language.java.doc-comments]
+# line = ["///"]
+# block = "/**"
+# html = true                        # <p>, lists, <pre>, <code>, <b>, entities … read as Markdown
+# inline = { code = "code", link = "link", linkplain = "plain-link", literal = "text" }   # unlisted: as written
+# tags = { param = { label = "Params", arg = "name" }, return = "Returns", throws = { label = "Throws", arg = "ref" } }
 
 [grammar.gleam]
 git = "https://github.com/gleam-lang/tree-sitter-gleam"

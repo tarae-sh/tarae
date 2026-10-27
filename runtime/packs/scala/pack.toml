@@ -8,7 +8,7 @@ not-settings = ["scala"]
 extensions = ["scala", "sc"]
 comment-token = "//"
 block-comment-tokens = { start = "/*", end = "*/" }
-doc-comments = true
+doc-comments = { block = "/**" }
 test-files = ["*Test.scala", "*Tests.scala"]
 
 [grammar.scala]

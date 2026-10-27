@@ -3,7 +3,7 @@
 [language.zig]
 extensions = ["zig", "zon"]
 comment-token = "//"
-doc-comments = true
+doc-comments = { line = ["///", "//!"] }
 lsp = ["zls"]
 
 [grammar.zig]

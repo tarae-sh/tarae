@@ -8,7 +8,7 @@ not-settings = ["swift"]
 extensions = ["swift"]
 comment-token = "//"
 block-comment-tokens = { start = "/*", end = "*/" }
-doc-comments = true
+doc-comments = { line = ["///"], block = "/**" }
 
 [grammar.swift]
 git = "https://github.com/alex-pinkus/tree-sitter-swift"

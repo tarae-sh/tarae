@@ -309,7 +309,8 @@ pub struct Measure<'a> {
     /// The last block found outside `near`, with whether it shows folded: a long one (a big `//!` header) is
     /// looked for once, not for each of its lines a move counts past `near` (each ~400 lines scanned).
     far: std::cell::RefCell<Option<(crate::doccomment::Block, bool)>>,
-    folding: bool,
+    /// Its language's doc comments where they render (`Editor::doc_comments_render`).
+    folding: Option<&'static crate::doccomment::DocComments>,
     /// What Claude is writing here (`writing.rs`): each block's lines drawn as its rows, counted as a folded doc
     /// comment's are — its rows on its first line, none on the rest (counted once a width: `Block::counts`).
     writing: Option<&'a crate::writing::Shown>,
@@ -337,15 +338,17 @@ impl<'a> Measure<'a> {
         let last = crate::movement::last_line(&doc.text);
         // (the lines the moves count: a screen up from the cursor's, one down from a top)
         let near = line.saturating_sub(rows + 2)..=(line + rows + 2).min(last);
-        let folding = editor.doc_comments_render(doc.lang_name());
+        let folding =
+            crate::doccomment::syntax(doc.lang_name()).filter(|_| editor.config.render_doc_comments);
         // (from far enough above to join a `/** */` that starts there, as `rows_pane` looks)
         let blocks = match folding {
-            true => crate::doccomment::blocks(
+            Some(syn) => crate::doccomment::blocks(
                 &doc.text,
                 near.start().saturating_sub(200)..=*near.end(),
                 editor.config.tab_width,
+                syn,
             ),
-            false => Vec::new(),
+            None => Vec::new(),
         };
         Measure {
             editor,
@@ -412,7 +415,7 @@ impl<'a> Measure<'a> {
         }
         *counts.rows.entry(b.start).or_insert_with(|| {
             let width = self.cols.saturating_sub(b.indent + 3).max(8);
-            crate::term::fold_rows(self.editor, &crate::doccomment::parts(&b.bodies), width, None).len()
+            crate::term::fold_rows(self.editor, b, width, None).len()
         })
     }
 
@@ -430,9 +433,7 @@ impl<'a> Measure<'a> {
             let r = c.lines();
             return Some((r.start, r.end - 1, crate::weave::column_rows(c)));
         }
-        if !self.folding {
-            return None;
-        }
+        let syn = self.folding?;
         if self.near.contains(&l) {
             let i = self.blocks.partition_point(|(b, _)| b.end < l);
             let (b, closed) = self.blocks.get(i).filter(|(b, _)| b.start <= l)?;
@@ -443,8 +444,8 @@ impl<'a> Measure<'a> {
         {
             return closed.then(|| (b.start, b.end, self.laid(b)));
         }
-        let (a, e) = crate::doccomment::block_at(&self.doc.text, l)?;
-        let b = crate::doccomment::blocks(&self.doc.text, a..=e, self.tab).into_iter().next()?;
+        let (a, e) = crate::doccomment::block_at(&self.doc.text, l, syn)?;
+        let b = crate::doccomment::blocks(&self.doc.text, a..=e, self.tab, syn).into_iter().next()?;
         let closed = self.closed(&b);
         let shown = closed.then(|| (a, e, self.laid(&b)));
         *self.far.borrow_mut() = Some((b, closed));

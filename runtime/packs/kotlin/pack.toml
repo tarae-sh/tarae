@@ -4,7 +4,7 @@
 extensions = ["kt", "kts"]
 comment-token = "//"
 block-comment-tokens = { start = "/*", end = "*/" }
-doc-comments = true
+doc-comments = { block = "/**" }
 test-files = ["*Test.kt", "*Tests.kt"]
 
 [grammar.kotlin]
