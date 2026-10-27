@@ -116,7 +116,9 @@ conversations. `C-p` in the chat (or `:chat-resume`) picks any of them, with the
 in that folder.
 
 **When Claude compacts.** Near its context limit Claude Code summarizes the conversation so far and carries on
-from the summary (or does it when you send `/compact`). Details it worked out before — a list it wrote, a plan's
+from the summary (or does it when you send `/compact`: typed, with or without its words, it goes as it is, without the
+editor context tarae puts before a message — claude reads a command only at a message's start — and alone, what's
+over the input staying there for your next message; any other `/…` you type is a message like the rest). Details it worked out before — a list it wrote, a plan's
 steps — may survive only as far as the summary kept them. While it compacts, which can take a minute, the chat
 (and the card beside the code, when following) says `compacting…` instead of `thinking…`. Then the chat says so
 where it happened, a beat of its own between what came before and after: `≈ Claude compacted this conversation (automatic, 812k
@@ -803,8 +805,8 @@ A long piece of work can mean dozens of edits, and a `y`/`n` for each one. Revie
 through it and shows you the whole change once, the way you'd read a pull request. `space v a` (or
 `:review-at-end on`) asks first, on a card that says what it means: Claude's edits go into your files as it makes
 them, before you see them, and the checks it runs (`cargo test`, `cargo build`) run that code. `y` turns it on for
-this chat. The chat's title says `› review at end` while it's on, and `space v a` turns it off. A new chat
-(`C-l`) starts with it off.
+this chat. The chat's title says `› review at end` while it's on, and `space v a` turns it off. Either way it's kept
+in your config (`llm.review-at-end`), so a new chat (`C-l`) starts as you last left it.
 
 An edit that goes in this way, in a file you have open, lands on a green wash over the lines it wrote that dries to
 nothing in under a second: which lines are new, just now, with no mark left to read later. A change set's `y` all

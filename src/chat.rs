@@ -785,7 +785,26 @@ impl Chat {
 impl Chat {
     /// `q` waits for this turn's end with what's queued — after it, or (`first`: one that failed, sent again)
     /// before it.
-    pub fn queue(&mut self, q: String, first: bool) {
+    /// `/compact` is never joined to a message (it would be words to Claude) nor kept anywhere unseen: met with one
+    /// here — a message sent again ahead of it, or it sent again ahead of one typed since — it's dropped, true for the
+    /// caller to say (`COMPACT_DROPPED`); two of them are one.
+    pub fn queue(&mut self, q: String, first: bool) -> bool {
+        if let Some(was) = &self.queued {
+            match (is_compact(was), is_compact(&q)) {
+                (true, true) => {
+                    self.queued = Some(q);
+                    return false;
+                }
+                (false, true) => return true,
+                (true, false) => {
+                    self.queued = None;
+                    self.queued_gone();
+                    self.queue(q, first);
+                    return true;
+                }
+                (false, false) => {}
+            }
+        }
         let n = self.queued.as_ref().map_or(0, |_| self.queued_n.max(1));
         if !first || n == 0 {
             self.queued_last = q.clone();
@@ -796,6 +815,7 @@ impl Chat {
             (None, _) => q,
         });
         self.queued_n = n + 1;
+        false
     }
 
     /// What was queued went (sent, or taken back to edit).
@@ -1564,10 +1584,11 @@ pub(crate) fn start_again(ed: &mut Editor, message: Option<String>, said: &str) 
         let at = c.msgs.iter().rposition(|m| m.role == Role::User && m.text == q)?;
         Some(c.msgs.remove(at).text)
     });
-    if let Some(q) = failed {
-        c.queue(q, true);
-    }
+    let dropped = failed.is_some_and(|q| c.queue(q, true));
     c.note(said);
+    if dropped {
+        ed.set_warning(COMPACT_DROPPED);
+    }
     ensure_proc(ed);
     send_queued(ed);
 }
@@ -2117,8 +2138,12 @@ fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                     State::Idle => None,
                     _ => c.msgs.iter().rposition(|m| m.role == Role::User),
                 };
+                // (a `/compact` cut off with it isn't sent again: the new conversation has nothing to compact — its row
+                // stays, the drop said)
+                let gone = unanswered.is_some_and(|at| is_compact(&c.msgs[at].text));
+                let unanswered = unanswered.filter(|_| !gone);
                 // (its quotes go again with it — they were taken off the input when it went)
-                let (mut over, mut lost) = (0, 0);
+                let (mut over, mut lost, mut dropped) = (0, 0, false);
                 if let Some(at) = unanswered {
                     let m = c.msgs.remove(at);
                     (over, lost) = crate::quote::put_back(c, m.quotes, m.screen);
@@ -2131,7 +2156,7 @@ fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                     }
                     c.queued_pointed = pointed;
                     c.key_pass.extend(m.key_pass);
-                    c.queue(m.text, true);
+                    dropped = c.queue(m.text, true);
                 }
                 let note = match (over, lost) {
                     (0, 0) => String::new(),
@@ -2151,6 +2176,12 @@ fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                     format!("Claude no longer has this conversation — a new one starts{note}"),
                     "",
                 ));
+                if dropped {
+                    ed.set_warning(COMPACT_DROPPED);
+                }
+                if gone {
+                    ed.set_warning(COMPACT_GONE);
+                }
                 ensure_proc(ed);
                 return send_queued(ed);
             }
@@ -2438,6 +2469,14 @@ pub(crate) fn send_queued(ed: &mut Editor) {
     }
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     let Some(q) = c.queued.take() else { return };
+    // (`/compact` queued goes bare — alone, never joined to a message: `queue`; what's over the input stays there)
+    if is_compact(&q) {
+        match submit_command(ed, &q) {
+            true => ed.workspace.claude.chat.as_mut().expect("sent").queued_gone(),
+            false => ed.workspace.claude.chat.as_mut().expect("there").queued = Some(q),
+        }
+        return;
+    }
     // (with what waited with it — its quotes, its screen, the elements pointed at; what came over the input since
     // stays there for the next message, as it was)
     let since = (
@@ -2487,6 +2526,18 @@ pub fn send(ed: &mut Editor) {
     // one joins it. So it does while the project's settings are read (`claudetrust.rs` — their card doesn't
     // hold it: claude runs held back meanwhile): sent once it starts
     if (c.busy() || c.settings.waiting() || moving) && !question.is_empty() {
+        // (`/compact` waits alone, as it goes — joined to a message it would be that message's text, never run;
+        // what's over the input stays there for a message)
+        let waits = c.queued.as_deref();
+        if is_compact(&question) || waits.is_some_and(is_compact) {
+            if let Some(w) = waits {
+                let which = if is_compact(w) { "the /compact that waits" } else { "the message that waits" };
+                return ed.set_status(format!("/compact goes alone — send this once {which} has gone"));
+            }
+            c.queue(question, false);
+            c.input.clear();
+            return;
+        }
         // (what's over the input is this message's: it waits with it, the input free for the next one's — joined
         // to one queued before: a newer screen in place of its, the elements pointed at added, the quotes within
         // one message's limits — the newest past them stay over the input, said)
@@ -2523,6 +2574,18 @@ pub fn send(ed: &mut Editor) {
             false => "nothing to send — type a question first",
         });
     }
+    // `/compact` goes bare, alone: what's over the input stays for the next message
+    if is_compact(&question) {
+        let with = c.has_with();
+        if submit_command(ed, &question) {
+            let c = ed.workspace.claude.chat.as_mut().expect("just sent");
+            c.input.clear();
+            if with {
+                ed.set_status("/compact goes alone — what's over the input stays for your next message");
+            }
+        }
+        return;
+    }
     if !question.is_empty() && crate::reads::pointing_asks(ed) {
         let key = ed.key_said("C-q");
         return ed
@@ -2543,9 +2606,48 @@ pub fn submit(ed: &mut Editor, question: &str, about: Option<String>, chip: Opti
 }
 
 /// `text` sent as it is, a turn of its own — no editor context: a slash command is read only at a message's start
-/// (`/compact`, `idlecompact.rs`); `note` is the chat's row for it (tarae sent it, not you). False if it couldn't
+/// (`/compact`: `idlecompact.rs`, yours — `submit_command`); `note` is the chat's row for it (tarae sent it, not you). False if it couldn't
 /// go (busy, no process).
 pub fn submit_bare(ed: &mut Editor, text: &str, note: String) -> bool {
+    bare(ed, text, Msg::new(Role::Note, note, ""))
+}
+
+/// Said when `/compact` met a message coming back to the queue and was dropped (`Chat::queue`).
+const COMPACT_DROPPED: &str =
+    "/compact dropped — a message came back to the queue; type it again after its turn";
+
+/// Said when `/compact` was cut off with its conversation: the new one has nothing to compact, so it isn't sent again.
+const COMPACT_GONE: &str = "/compact dropped — its conversation is gone; the new one has nothing to compact";
+
+/// Whether `text` is `/compact`, with or without its words — the one slash command that goes bare (`submit_command`):
+/// claude reads one only at a message's start. Every other `/…` is a message, the editor context before it: a path
+/// (`/tmp is full`) is one, and `/clear`, `/model` or a project's own commands would change claude's conversation
+/// behind tarae (what it was sent, the model, the turn's checkpoints).
+pub(crate) fn is_compact(text: &str) -> bool {
+    text.strip_prefix("/compact").is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+}
+
+/// `/compact` you typed (`is_compact`): sent as it is, a turn of its own with none of the editor context — your
+/// row in the chat, nothing over the input taken along. False if it couldn't go (busy, no process).
+fn submit_command(ed: &mut Editor, text: &str) -> bool {
+    if ed.workspace.claude.chat.as_ref().is_none_or(Chat::busy) {
+        return false;
+    }
+    ensure_proc(ed);
+    if !bare(ed, text, Msg::new(Role::User, text, "")) {
+        return false;
+    }
+    let c = ed.workspace.claude.chat.as_mut().expect("sent above");
+    // (a new turn of yours, as `submit_as`'s: nothing on screen given with it)
+    c.unfolded = false;
+    c.switched = None;
+    c.cited.clear();
+    c.given.clear();
+    true
+}
+
+/// `text` sent as it is, `row` the chat's row for it.
+fn bare(ed: &mut Editor, text: &str, row: Msg) -> bool {
     let session = ed.workspace.log();
     let focus = ed.workspace.viewer.focus;
     let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| !c.busy()) else { return false };
@@ -2559,7 +2661,7 @@ pub fn submit_bare(ed: &mut Editor, text: &str, note: String) -> bool {
     c.failed.1.clear();
     c.follow.new_turn();
     c.follow.pane = Some(focus);
-    c.msgs.push(Msg::new(Role::Note, note, ""));
+    c.msgs.push(row);
     c.scroll = 0;
     c.state = State::Thinking;
     c.started = crate::clock::now();
@@ -3952,6 +4054,202 @@ mod tests {
         assert!(!context(&ed, None, &[], &[]).0.contains("<selection"));
         ed.doc_mut().set_selection(Selection::single(Range::new(0, 6)));
         assert!(context(&ed, None, &[], &[]).0.contains("<selection lines=\"1-1\">\n한글\n</selection>"));
+    }
+
+    /// `/compact` you type goes bare — claude reads a slash command only at a message's start (frictions #136): no
+    /// editor context before it, what's over the input left there for the next message; typed while Claude works it
+    /// waits alone and goes bare too, nothing joined to it. A path and every other slash command are messages.
+    #[test]
+    fn compact_you_type_goes_bare_and_alone() {
+        let mut ed = editor("");
+        let mut c = Chat::new();
+        let rx = stand_in(&mut c);
+        ed.workspace.claude.chat = Some(c);
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        let sent = |rx: &std::sync::mpsc::Receiver<String>| -> Vec<String> {
+            rx.try_iter()
+                .filter_map(|l| {
+                    let v: serde_json::Value = serde_json::from_str(&l).ok()?;
+                    (v["type"] == "user").then(|| v["message"]["content"].as_str().unwrap_or_default().into())
+                })
+                .collect()
+        };
+        let said = |ed: &Editor, t: &str| ed.messages.iter().filter(|m| m.2.contains(t)).count();
+        let taken = crate::quote::Taken {
+            attrs: vec![("from", "terminal".into())],
+            label: "q".into(),
+            text: "quoted".into(),
+            redact: false,
+            code: None,
+        };
+        crate::quote::add(&mut ed, vec![taken]);
+        ed.workspace.claude.chat.as_mut().unwrap().input = "/compact keep the plan".into();
+        send(&mut ed);
+        assert_eq!(sent(&rx), ["/compact keep the plan"], "bare: nothing before it");
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        assert!(c.busy() && c.input.text().is_empty());
+        let row = c.msgs.last().unwrap();
+        assert_eq!(
+            (row.role, row.text.as_str(), row.chip.as_str()),
+            (Role::User, "/compact keep the plan", "")
+        );
+        assert_eq!(c.with_chips(), ["q"], "the quote stays over the input");
+        assert_eq!(said(&ed, "/compact goes alone — what's over the input stays for your next message"), 1);
+        // (while it works: it waits alone, a message after it isn't joined to it)
+        ed.workspace.claude.chat.as_mut().unwrap().input = "/compact".into();
+        send(&mut ed);
+        ed.workspace.claude.chat.as_mut().unwrap().input = "more".into();
+        send(&mut ed);
+        assert_eq!(said(&ed, "/compact goes alone — send this once the /compact that waits has gone"), 1);
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        assert_eq!((c.queued.as_deref(), c.input.text().as_str()), (Some("/compact"), "more"));
+        stand_in_done(&mut ed);
+        assert_eq!(sent(&rx), ["/compact"], "the queued one bare too");
+        assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().with_chips(), ["q"]);
+        // (a message waits, the quote with it; `/compact` typed then isn't joined to it)
+        send(&mut ed);
+        ed.workspace.claude.chat.as_mut().unwrap().input = "/compact".into();
+        send(&mut ed);
+        assert_eq!(said(&ed, "send this once the message that waits has gone"), 1);
+        stand_in_done(&mut ed);
+        let s = sent(&rx);
+        assert!(s.len() == 1 && s[0].ends_with("\n\nmore") && s[0].contains("\nquoted\n</quoted"), "{s:?}");
+        // (a path and any other slash command are messages: the context before them)
+        for typed in ["/tmp is full", "/clear"] {
+            stand_in_done(&mut ed);
+            ed.workspace.claude.chat.as_mut().unwrap().input = typed.into();
+            send(&mut ed);
+            let s = sent(&rx);
+            assert!(
+                s.len() == 1
+                    && s[0].starts_with("<editor-context>")
+                    && s[0].ends_with(&format!("\n\n{typed}")),
+                "{typed}: {s:?}"
+            );
+        }
+    }
+
+    /// The turn of `sent` lost its conversation while `typed` waited (if any): the exit sends `sent` again ahead of it
+    /// (`queue(_, true)`) — what claude was sent then, the stand-in's lines, by each turn's end; and the toasts.
+    fn requeued(sent: &str, typed: Option<&str>) -> (Vec<Vec<String>>, Editor) {
+        let users = |rx: &std::sync::mpsc::Receiver<String>| -> Vec<String> {
+            rx.try_iter()
+                .filter_map(|l| {
+                    let v: serde_json::Value = serde_json::from_str(&l).ok()?;
+                    (v["type"] == "user").then(|| v["message"]["content"].as_str().unwrap_or_default().into())
+                })
+                .collect()
+        };
+        let mut ed = editor("");
+        // (the claude started after the exit can't start: the stand-in takes its place, deterministically)
+        ed.config.llm.command = "tarae-no-such-claude".into();
+        let mut c = Chat::new();
+        let first = stand_in(&mut c);
+        c.resume = Some("s-1".into());
+        ed.workspace.claude.chat = Some(c);
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        for t in std::iter::once(sent).chain(typed) {
+            ed.workspace.claude.chat.as_mut().unwrap().input = t.into();
+            send(&mut ed);
+        }
+        assert_eq!(users(&first).len(), 1);
+        assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().queued.as_deref(), typed);
+        let generation = ed.workspace.claude.chat.as_ref().unwrap().generation;
+        on_event(&mut ed, generation, StreamEv::Exit("No conversation found with session ID: s-1".into()));
+        let next = stand_in(ed.workspace.claude.chat.as_mut().unwrap());
+        let mut turns = Vec::new();
+        for _ in 0..2 {
+            stand_in_done(&mut ed);
+            turns.push(users(&next));
+        }
+        (turns, ed)
+    }
+
+    /// A bare `/compact` cut off with its conversation isn't sent again — the new one has nothing to compact: alone,
+    /// nothing goes; ahead of a message typed meanwhile, the message goes with its context and no `/compact` in its
+    /// words. Each time its row stays and the drop is said.
+    #[test]
+    fn compact_cut_off_with_its_conversation_isnt_sent_again() {
+        for typed in [None, Some("later")] {
+            let (turns, ed) = requeued("/compact keep it", typed);
+            match typed {
+                None => assert!(turns[0].is_empty(), "to the new conversation: {:?}", turns[0]),
+                Some(m) => {
+                    let t = &turns[0];
+                    let ok = t.len() == 1
+                        && t[0].starts_with("<editor-context>")
+                        && t[0].ends_with(&format!("\n\n{m}"));
+                    assert!(ok, "{t:?}");
+                    let words = t[0].rsplit_once("</editor-context>").unwrap().1;
+                    assert!(!words.contains("/compact"), "never words to Claude: {words}");
+                }
+            }
+            assert!(turns[1].is_empty(), "{typed:?}: nothing after it: {:?}", turns[1]);
+            let said = |t: &str| ed.messages.iter().filter(|m| m.2 == t).count();
+            assert_eq!((said(COMPACT_GONE), said(COMPACT_DROPPED)), (1, 0), "{typed:?}");
+            let c = ed.workspace.claude.chat.as_ref().unwrap();
+            assert!(c.queued.is_none(), "{typed:?}");
+            assert!(
+                c.msgs.iter().any(|m| m.role == Role::User && m.text == "/compact keep it"),
+                "its row stays"
+            );
+        }
+    }
+
+    /// A message whose conversation was lost, sent again ahead of a `/compact` typed meanwhile: the `/compact` is
+    /// dropped and said — the message goes alone, with its context, nothing after it. And two `/compact`s are one;
+    /// messages still join each other.
+    #[test]
+    fn a_message_coming_back_ahead_of_a_queued_compact_drops_it_and_says_so() {
+        let (turns, mut ed) = requeued("do it", Some("/compact"));
+        let t = &turns[0];
+        assert!(t.len() == 1 && t[0].starts_with("<editor-context>") && t[0].ends_with("\n\ndo it"), "{t:?}");
+        let words = t[0].rsplit_once("</editor-context>").unwrap().1;
+        assert!(!words.contains("/compact"), "never words to Claude: {words}");
+        assert!(turns[1].is_empty(), "nothing waits after it: {:?}", turns[1]);
+        assert_eq!(ed.messages.iter().filter(|m| m.2 == COMPACT_DROPPED).count(), 1);
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        assert!(c.queued.is_none());
+        assert!(!c.queue("/compact".into(), false));
+        assert!(!c.queue("/compact x".into(), true));
+        assert_eq!((c.queued.as_deref(), c.queued_n), (Some("/compact x"), 1), "two are one");
+        c.queued = None;
+        c.queued_gone();
+        // (and `/compact` coming back ahead of a queued message — `start_again`'s: dropped, the message kept)
+        assert!(!c.queue("later".into(), false));
+        assert!(c.queue("/compact".into(), true));
+        assert_eq!((c.queued.as_deref(), c.queued_n), (Some("later"), 1));
+        c.queued = None;
+        c.queued_gone();
+        assert!(!c.queue("again".into(), false) && !c.queue("more".into(), false));
+        assert_eq!(c.queued.as_deref(), Some("again\n\nmore"), "messages still join each other");
+    }
+
+    /// `/compact` queued alone that can't go as the turn ends (no claude to take it): it stays queued, as it was.
+    #[test]
+    fn compact_that_cant_go_stays_queued() {
+        let mut ed = editor("");
+        ed.config.llm.command = "tarae-no-such-claude".into();
+        let mut c = Chat::new();
+        c.state = State::Thinking;
+        c.queue("/compact".into(), false);
+        ed.workspace.claude.chat = Some(c);
+        stand_in_done(&mut ed);
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        assert!(c.proc.is_none() && !c.busy());
+        assert_eq!((c.queued.as_deref(), c.queued_n), (Some("/compact"), 1));
+    }
+
+    #[test]
+    fn only_compact_goes_bare() {
+        for yes in ["/compact", "/compact keep the plan", "/compact\nmore"] {
+            assert!(is_compact(yes), "{yes}");
+        }
+        for no in
+            ["/clear", "/model haiku", "/tmp is full", "/compacted", "/compact-x", "compact", " /compact"]
+        {
+            assert!(!is_compact(no), "{no}");
+        }
     }
 
     /// A web page in front: its address and where you are in it, never its words (a page is anyone's — Claude reads it

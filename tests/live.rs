@@ -2809,6 +2809,28 @@ fn chat_switches_the_model() {
     chat_turn(&mut t, "Reply with just the word: ok");
 }
 
+/// `/compact` you type goes bare (frictions #136): `/compact` after a turn is read as the command — claude's
+/// stream says it compacted, by hand, and the chat says so. On Haiku, two short turns.
+#[test]
+#[ignore = "live: run with `cargo live` (uses Claude)"]
+fn chat_runs_a_slash_command_you_type() {
+    if !have("claude") {
+        return;
+    }
+    let sb = Sandbox::live("chat-slash");
+    let stream = teed(&sb, "model = \"haiku\"\n");
+    sb.write("notes.txt", "alpha\n");
+    let mut t = sb.spawn(&["notes.txt"]);
+    chat_turn(&mut t, "Reply with just the word: ok");
+    let s = chat_turn(&mut t, "/compact");
+    let out = wait_file_until(&stream, "said it compacted", LIVE_TIMEOUT, |s| s.contains("compact_boundary"));
+    assert!(out.contains("\"trigger\":\"manual\""), "{out}");
+    // (the chat's note, its words wrapped in the chat's width: `≈ Claude compacted this conversation (manual, …`)
+    let noted = |s: &Screen| s.contains("Claude compacted") && s.contains("(manual,");
+    let s = if noted(&s) { s } else { t.wait_for("the chat's note", noted) };
+    assert!(!s.contains("Unknown"), "{s}");
+}
+
 /// `space v c`: the reviewer — a second claude, its read-only flags as the real CLI takes them (`--tools`,
 /// `--disallowedTools`, no settings, `--max-turns`) — reviews the uncommitted change and ends its turn. Its
 /// stream (teed) says the tools it was given are exactly tarae's read, search and note — none of Claude Code's —
