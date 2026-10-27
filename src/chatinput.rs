@@ -42,6 +42,18 @@ pub fn drag(ed: &mut Editor, held: crate::selection::Held, row: usize, col: usiz
     d.set_selection(Selection::new(vec![held.dragged(&d.text, pos)], 0));
 }
 
+/// Its held keys (the `j` of a `j k` binding) broken off by a press: typed where its cursor is; its `C-r` waiting for a
+/// register's name, ended (`Editor::sequence_end`).
+pub fn held_typed(ed: &mut Editor) {
+    let Some(keys) = ed.workspace.claude.chat.as_mut().map(|c| &mut c.input.pane.keys) else { return };
+    keys.end_wait();
+    if keys.pending.is_empty() {
+        return;
+    }
+    let cols = ed.screen.chat_view.get().map_or(60, |a| a.1).saturating_sub(2).max(1);
+    crate::docpane::swap(ed, Which::Input, (ROWS, cols), Editor::held_typed);
+}
+
 /// A key for the input's document (`chat::key`, once the chat's own keys didn't take it): `[chat]` then
 /// `[insert]`, run with it swapped in; what neither binds, typed — a `C-`/`A-` key nothing binds is said. Always
 /// taken.

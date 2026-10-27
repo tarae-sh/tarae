@@ -2243,6 +2243,37 @@ impl crate::editor::Editor {
         })
     }
 
+    /// The wheel over the front card: its body, cut to fit, `by` rows on (the drawer stops it where the end shows) —
+    /// one the last frame drew whole has nothing to scroll: nothing kept, so cut later (a resize, rows taken) it opens
+    /// at its top.
+    pub fn offer_scroll(&mut self, by: isize) {
+        let Some((id, rev)) = self.offers.first().map(|o| (o.id, o.rev)) else { return };
+        if self.offer_cut != Some((id, rev)) {
+            return;
+        }
+        let now = self.offer_skip.get().filter(|s| (s.0, s.1) == (id, rev)).map_or(0, |s| s.2);
+        self.offer_skip.set(Some((id, rev, now.saturating_add_signed(by))));
+    }
+
+    /// A frame drew rows `drawn` of card `card`'s body of `rows` (past its title): recorded — whether every row has
+    /// now been drawn in some frame.
+    pub fn offer_lines_drawn(
+        &mut self,
+        (id, rev): (u64, u64),
+        rows: usize,
+        drawn: std::ops::Range<usize>,
+    ) -> bool {
+        let key = (id, rev, rows);
+        let seen = match &mut self.offer_rows_drawn {
+            Some((k, seen)) if *k == key => seen,
+            slot => &mut slot.insert((key, vec![false; rows])).1,
+        };
+        for i in drawn.filter(|&i| i < rows) {
+            seen[i] = true;
+        }
+        seen.iter().all(|&d| d)
+    }
+
     /// Card `(id, rev)` has been in sight whole — and so has its text, should a card bring it again.
     pub fn offer_read_whole(&self, card: (u64, u64)) {
         self.offer_whole.set(Some(card));

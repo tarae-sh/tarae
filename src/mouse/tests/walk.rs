@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 use crate::editor::{Drag, Editor};
 use crate::event::{Event, Mouse, MouseKind as K};
-use crate::mouse::{ACTS, Act, Expect, Part, SILENT_STATES, Surface, TOOK, Under, doc, expect, rows};
+use crate::mouse::{ACTS, Act, Expect, Part, STATES, Surface, TOOK, Under, doc, expect, rows};
 use crate::sizes::Border;
 use crate::uistate::tests::{SCENES, Scene, chat, editor, frame};
 
@@ -145,6 +145,53 @@ const MOUSE_SCENES: &[Scene] = &[
             source: 0,
         }];
     }),
+    // (a sequence under way in each place that keeps its own — `UNDER_WAY`)
+    ("the terminal in view mode, a sequence under way", |ed| {
+        crate::uistate::tests::terminal(ed);
+        feed(ed, &["<C-\\>", "g"]);
+    }),
+    ("the task panel's output, a count under way", |ed| {
+        crate::uistate::tests::task_panel(ed);
+        ed.bottom_take_keys();
+        feed(ed, &["3"]);
+    }),
+    ("the task panel's output, f waits for its character", |ed| {
+        crate::uistate::tests::task_panel(ed);
+        ed.bottom_take_keys();
+        feed(ed, &["f"]);
+    }),
+    ("the chat's view mode, r waits for its character", |ed| {
+        crate::uistate::tests::chat_view(ed);
+        feed(ed, &["r"]);
+    }),
+    ("the completion menu, long", |ed| {
+        long_text(ed);
+        feed(ed, &["j", "A"]);
+        let items: Vec<serde_json::Value> =
+            (0..30).map(|i| serde_json::json!({"label": format!("line_{i}"), "detail": "i32"})).collect();
+        let at = ed.doc().selection().primary().head;
+        let mut c = crate::completion::Completion::new(0, ed.doc().id, at, serde_json::Value::from(items));
+        c.filter("");
+        c.selected = Some(0);
+        ed.completion = Some(c);
+    }),
+    ("a note on the cursor's line", |ed| {
+        long_text(ed);
+        let path = std::env::temp_dir().join("tarae-mouse-walk-note.rs");
+        ed.docs[0].path = Some(path.clone());
+        crate::notes::add(ed, &path, 0..1, crate::notes::By::Author, "A word about this line.");
+    }),
+    ("a card cut to fit, long", |ed| {
+        let body: Vec<String> = (0..80).map(|i| format!("line {i} of what it asks")).collect();
+        let what = crate::offer::What::ReviewAtEnd;
+        ed.push_offer(crate::offer::Offer::new(
+            "A long card".into(),
+            &body.join("\n"),
+            "",
+            String::new(),
+            what,
+        ));
+    }),
 ];
 
 /// A `…` drawn that isn't a cut, by the words around it: something under way (a page's read too), a character waited
@@ -165,6 +212,32 @@ const NOT_WHOLE_YET: &[&str] = &[
     "Status",
 ];
 
+/// The scenes whose keys leave a sequence under way where the keys are — a prefix, a count, an awaited character, the
+/// window prefix — as their keys read (`SCENES`' and `MOUSE_SCENES`' last keys): a press there ends it (`STATES`). The
+/// walk's oracle for that state, never the code's own `sequence_under_way` — which `the_scenes_under_way_are_listed`
+/// holds to this list.
+const UNDER_WAY: &[&str] = &[
+    "a prefix under way",
+    "the space menu",
+    "a count",
+    "f waits for its character",
+    "a card focused, then C-w",
+    "list:tests, the window prefix taken from it",
+    "list:tests docked right, the window prefix taken from it",
+    "C-w m moving the floating tests, the window prefix taken",
+    "the terminal's program, the window prefix taken from it",
+    "the task panel's output, space under way",
+    "the task panel's output, ] under way",
+    "the chat's view mode, a count under way",
+    "the chat's view mode, a sequence under way",
+    "the terminal in view mode, a sequence under way",
+    "the task panel's output, a count under way",
+    "the task panel's output, f waits for its character",
+    "the chat's view mode, r waits for its character",
+];
+
+thread_local!(static SCENE_UNDER_WAY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+
 /// Scenes made with more than a screen of a surface (by its name in `Surface`'s `Debug`): its wheel has room to scroll,
 /// so there it must act — elsewhere a wheel that does nothing may be one with nothing to scroll. (The wheel's room isn't
 /// set up for the rail, the terminal, a plugin's panel, a floating pane, a group's list or the edit review yet: S's.)
@@ -180,6 +253,8 @@ const SCROLLS: &[(&str, &str)] = &[
     ("the side panel, many files", "Side"),
     ("a long test output", "Output"),
     ("hover text, long", "Popup"),
+    ("the completion menu, long", "Completion"),
+    ("a card cut to fit, long", "Card"),
 ];
 
 fn shown(ed: &mut Editor) -> String {
@@ -524,6 +599,10 @@ struct Before {
     empty: bool,
     /// More than a screen of the surface under the wheel (`SCROLLS`): it must scroll.
     room: bool,
+    /// A key sequence under way (`STATES`): a press ends it.
+    pending: bool,
+    /// On the floating pane `C-w m` moves (`STATES`): a press says how it moves.
+    moving_here: bool,
 }
 
 fn judge(
@@ -534,31 +613,30 @@ fn judge(
     before: Before,
     Did { acted, drawn, said, selected, what }: Did,
 ) {
-    let e = expect(u.surface, u.part, act);
     let quiet = !acted && !said;
     let pressed = matches!(act, Act::Press | Act::Double);
-    // (a state the table can't hold, by surface: a press there silent until its landing — `SILENT_STATES`)
-    let state = SILENT_STATES.iter().any(|s| scene.contains(s.0));
-    let ok = state && pressed && quiet
-        // (a scene whose frame moves by itself: an act that only draws isn't told from it)
-        || MOVING.get() && quiet && e == Expect::Acts
+    let e = state_expect(u, act, before).unwrap_or_else(|| expect(u.surface, u.part, act));
+    // (a scene whose frame moves by itself: an act that only draws isn't told from it)
+    let ok = MOVING.get() && quiet && e == Expect::Acts
         || match e {
-        // (the wheel where there may be nothing to scroll: silent too — where there's room, it must act)
-        // (a double on text: its word selected — drawn alone doesn't do, tests draw no colours)
-        Expect::Acts if act == Act::Double && matches!(u.part, Part::Text { .. }) => selected || before.empty,
-        // (a hover acts by what it lights: a line that drags)
-        Expect::Acts if act == Act::Hover => acted || drawn,
-        // (a release that gives the keys: given already, it's done)
-        Expect::Acts if act == Act::Release => acted || (quiet && before.holds),
-        Expect::Acts => {
-            acted
-                || (act == Act::Wheel && !before.room)
-                || (pressed && quiet && before.holds)
-                || (act == Act::Drag && quiet && before.empty)
-        }
-        Expect::Says(_) => said,
-        // (a double is one press: past what the first did, the second changes nothing — it may say its word again)
-        Expect::Again => !acted,
+            // (the wheel where there may be nothing to scroll: silent too — where there's room, it must act)
+            // (a double on text: its word selected — drawn alone doesn't do, tests draw no colours)
+            Expect::Acts if act == Act::Double && matches!(u.part, Part::Text { .. }) => {
+                selected || before.empty
+            }
+            // (a hover acts by what it lights: a line that drags)
+            Expect::Acts if act == Act::Hover => acted || drawn,
+            // (a release that gives the keys: given already, it's done)
+            Expect::Acts if act == Act::Release => acted || (quiet && before.holds),
+            Expect::Acts => {
+                acted
+                    || (act == Act::Wheel && !before.room)
+                    || (pressed && quiet && before.holds)
+                    || (act == Act::Drag && quiet && before.empty)
+            }
+            Expect::Says(_) => said,
+            // (a double is one press: past what the first did, the second changes nothing — it may say its word again)
+            Expect::Again => !acted,
             Expect::Not(_) | Expect::Gap(..) => quiet || (pressed && before.lets_go && acted && said),
         };
     if !ok {
@@ -572,7 +650,28 @@ fn judge(
     }
 }
 
-fn before(ed: &Editor, u: Under) -> Before {
+/// A state that decides an act whatever it lands on (`STATES`): a key sequence under way — a press ends it, then acts
+/// where it landed; `C-w m` moving a floating pane — a press on it (not its top line, which still drags it) says how it
+/// moves (a double says it again, its drag is that press's), elsewhere it takes the keys and the move ends with them.
+fn state_expect(u: Under, act: Act, before: Before) -> Option<Expect> {
+    if before.pending && act == Act::Press {
+        return Some(STATES[1].2);
+    }
+    if !before.moving_here {
+        return None;
+    }
+    // (its top line, pressed: held to drag it — the keys already the move's)
+    if matches!(u.part, Part::Frame(_)) {
+        return (act == Act::Press).then_some(Expect::Not("its top line still drags it"));
+    }
+    match act {
+        Act::Press | Act::Double => Some(STATES[0].2),
+        Act::Drag => Some(Expect::Not("the press said it")),
+        _ => None,
+    }
+}
+
+fn before(ed: &Editor, u: Under, (x, y): (usize, usize)) -> Before {
     let modal = matches!(u.surface, Surface::Card | Surface::Prompt) || u.part == Part::Outside;
     let chat = ed.workspace.claude.chat.as_ref();
     let empty = match u.surface {
@@ -588,7 +687,15 @@ fn before(ed: &Editor, u: Under) -> Before {
         }
         _ => false,
     };
-    Before { holds: holds(ed, u), lets_go: ed.card_has_keys() && !modal, empty, room: false }
+    Before {
+        holds: holds(ed, u),
+        lets_go: ed.card_has_keys() && !modal,
+        empty,
+        room: false,
+        // (as the scene's keys left it: `UNDER_WAY` — before its first press, which ends it)
+        pending: SCENE_UNDER_WAY.get(),
+        moving_here: ed.float_moving.is_some() && ed.float_at(x, y).map(|f| f.0) == ed.float_moving,
+    }
 }
 
 fn walk_scene(walk: &mut Walk, n: usize, (scene, setup): Scene) {
@@ -612,6 +719,7 @@ fn sample(targets: Vec<Target>, n: usize) -> Vec<Target> {
 }
 
 fn walk_held(walk: &mut Walk, n: usize, scene: &str, setup: fn(&mut Editor)) {
+    SCENE_UNDER_WAY.set(UNDER_WAY.contains(&scene));
     let mut ed = fresh(setup);
     // (a scene whose frame moves by itself: what arrives on the stand-in Claude's stream, a draft revealed as it comes)
     MOVING.set(scene.contains("being written") || snap(&mut ed) != snap(&mut ed));
@@ -630,7 +738,7 @@ fn walk_held(walk: &mut Walk, n: usize, scene: &str, setup: fn(&mut Editor)) {
         // A press, its release, and a second press at the same instant (a double)
         let mut ed = fresh(setup);
         let (s0, still0) = after(walk, &mut ed, scene, u, "before the press");
-        let b0 = before(&ed, u);
+        let b0 = before(&ed, u, (x, y));
         let front = |ed: &Editor| ed.offers.first().map(|o| o.id);
         let card = front(&ed);
         let word = word_at(&ed, u);
@@ -640,9 +748,12 @@ fn walk_held(walk: &mut Walk, n: usize, scene: &str, setup: fn(&mut Editor)) {
         send(&mut ed, K::Up, x, y, scene, walk);
         let (s2, still2) = after(walk, &mut ed, scene, u, "after the release");
         // (the double is on what the press there is now — the first may have moved the screen, or answered a card and
-        // brought the next one under the pointer: another card's press)
+        // brought the next one under the pointer: another card's press. Where the first press made what was under it go
+        // — a start-screen row's picker, a completion accepted, which-key's next level — the second press lands on
+        // another surface, and the table's row for that one has no double of this one to judge: its being one press,
+        // nothing under it pressed, is `Editor.pressed_through`'s, tested by `overlays::a_double_click_where_…`)
         let again = ed.mouse_at(x, y) == u && front(&ed) == card && word_at(&ed, u) == word;
-        let b2 = before(&ed, u);
+        let b2 = before(&ed, u, (x, y));
         send(&mut ed, K::Down, x, y, scene, walk);
         send(&mut ed, K::Up, x, y, scene, walk);
         let (s3, still3) = after(walk, &mut ed, scene, u, "after the double");
@@ -664,7 +775,7 @@ fn walk_held(walk: &mut Walk, n: usize, scene: &str, setup: fn(&mut Editor)) {
         let (s2, still2) = after(walk, &mut ed, scene, u, "after the drag");
         send(&mut ed, K::Up, dx, dy, scene, walk);
         if still1 && still2 {
-            judge(walk, scene, u, Act::Drag, before(&ed, u), did(&s1, &s2, Act::Drag, u));
+            judge(walk, scene, u, Act::Drag, before(&ed, u, (x, y)), did(&s1, &s2, Act::Drag, u));
         }
         wheel_at(walk, scene, setup, (x, y), Some(u));
     }
@@ -896,6 +1007,27 @@ fn the_walk_judges_frames_without_their_colours() {
     assert_eq!(colourless(a), b"\x1b[0;1mab\x1b[mc".to_vec());
     let bold_off = b"\x1b[0;38;2;1;2;3;48;2;40;50;60mab\x1b[38;2;9;9;9mc";
     assert_ne!(colourless(a), colourless(bold_off), "bold still counts");
+}
+
+/// The walk's oracle for a sequence under way (`UNDER_WAY`, read from each scene's keys) and the code's own
+/// (`Editor::sequence_under_way`, what `handle_mouse` ends on a press) agree on every scene — every name in the list a
+/// scene's.
+#[test]
+fn the_scenes_under_way_are_listed() {
+    if !pty("the_scenes_under_way_are_listed") {
+        return;
+    }
+    let all: Vec<Scene> = SCENES.iter().chain(MOUSE_SCENES).copied().collect();
+    let unknown: Vec<&&str> = UNDER_WAY.iter().filter(|n| !all.iter().any(|s| s.0 == **n)).collect();
+    assert!(unknown.is_empty(), "listed, no such scene: {unknown:?}");
+    let off: Vec<String> = all
+        .iter()
+        .filter_map(|&(scene, setup)| {
+            let (listed, says) = (UNDER_WAY.contains(&scene), fresh(setup).sequence_under_way());
+            (listed != says).then(|| format!("{scene}: listed {listed}, sequence_under_way {says}"))
+        })
+        .collect();
+    assert!(off.is_empty(), "{}", off.join("\n"));
 }
 
 /// `docs/mouse.md` is the table's (`TARAE_BLESS=1` writes it again), and every surface the walk found has a row there.

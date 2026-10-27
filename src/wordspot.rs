@@ -17,8 +17,8 @@ use crate::workspace::At;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Press {
     /// A key hint's pair: its keys as written (`keys`), typed where the keys are — a hint says the keys of where they
-    /// are — only in normal mode with nothing under way there (`refused`): in INSERT they'd be typed into the file,
-    /// after a `d` or a count they'd join it.
+    /// are — only in normal mode (`refused`: in INSERT they'd be typed into the file); a sequence under way there (a
+    /// `d`, a count) ends first, as any press ends it (`Editor::sequence_end` — the mouse's one rule), never joined.
     Keys(String),
     /// `▲ waits`, Claude's change waiting, the inbox's `· C-q`: `C-q`'s act — the card or the review waiting gets the
     /// keys, from wherever they are, in any mode (the card's key comes first in `handle_key`).
@@ -116,6 +116,7 @@ pub fn press(ed: &mut Editor, i: usize) {
     let Some((on, p, home)) = spot else { return };
     match p {
         Press::Keys(said) => {
+            // (a sequence under way: ended on the press's Down, before this — `handle_mouse`, `Editor::sequence_end`)
             if let Some(why) = refused(ed, home) {
                 return ed.set_status(format!("{why}: esc first — a word presses {said} in normal mode"));
             }
@@ -241,16 +242,10 @@ pub fn pressable(key: &str, what: &str) -> bool {
     keys(key).is_some() && PRESSABLE.contains(&what.trim())
 }
 
-/// Why a key hint's keys can't go as typed now, said: a sequence under way (a `d`, a count — they'd join it), or the
-/// code where they go (`home`, else where the keys are) in a mode other than normal (they'd be typed into the file).
-/// None: they go.
+/// Why a key hint's keys can't go as typed now, said: the code where they go (`home`, else where the keys are) in a
+/// mode other than normal (they'd be typed into the file). None: they go (a sequence under way ended first — `press`).
 fn refused(ed: &Editor, home: Option<At>) -> Option<String> {
     use crate::uistate::Region;
-    // (keys or a count, the code's or a view mode's)
-    let under = ed.pending_display();
-    if !under.trim().is_empty() {
-        return Some(format!("{} under way", under.trim()));
-    }
     let code = match home {
         Some(h) => h == At::Code,
         None => matches!(ed.keys_to().region, Region::Code | Region::Weave | Region::Page),

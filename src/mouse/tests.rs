@@ -9,8 +9,10 @@ use crate::offer::{Offer, What};
 use crate::uistate::Region;
 use crate::workspace::At;
 
+mod overlays;
 mod resize;
 mod select;
+mod sequences;
 mod walk;
 
 const W: u16 = 160;

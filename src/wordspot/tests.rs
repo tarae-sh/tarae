@@ -218,11 +218,11 @@ fn stop_pressed_stops_the_turn() {
     assert_eq!(status(&ed), "nothing to stop: its claude isn't running");
 }
 
-/// A key hint's keys go only in normal mode with nothing under way where the keys are: in INSERT `space l` would be typed
-/// into the file, after a count and `g` it would join them — refused, said, nothing typed or moved; in normal mode it
-/// goes.
+/// A key hint's keys go only in normal mode: in INSERT `space l` would be typed into the file — refused, said, nothing
+/// typed. A sequence under way (a count and `g`) ends as any press ends it (the mouse's one rule, landing O), then the
+/// hint's keys go — never joined to it: nothing moved by a `2g…`.
 #[test]
-fn a_hint_pressed_mid_insert_or_mid_sequence_is_refused_and_said() {
+fn a_hint_pressed_mid_insert_is_refused_and_mid_sequence_ends_it_then_goes() {
     let mut ed = editor();
     chat(&mut ed, "");
     ed.workspace.viewer.at = At::Code;
@@ -247,15 +247,10 @@ fn a_hint_pressed_mid_insert_or_mid_sequence_is_refused_and_said() {
     // (past a double's while: a press of its own)
     crate::clock::advance(crate::editor::DOUBLE_CLICK);
     press_word(&mut ed, &focus);
-    assert!(status(&ed).starts_with("2g under way: esc first"), "{}", status(&ed));
-    assert_eq!((ed.doc().text.to_string(), ed.doc().selection()), (text, &at), "nothing changed or moved");
-    assert!(ed.workspace.is_at(At::Code));
-    ed.handle_key("esc".parse().unwrap());
-    frame(&mut ed);
-    crate::clock::advance(crate::editor::DOUBLE_CLICK);
-    press_word(&mut ed, &focus);
     crate::clock::release();
-    assert!(ed.workspace.is_at(At::Chat), "normal mode: space l's");
+    assert!(ed.pending_display().is_empty(), "the sequence ended: {:?}", ed.pending_display());
+    assert_eq!((ed.doc().text.to_string(), ed.doc().selection()), (text, &at), "nothing changed or moved");
+    assert!(ed.workspace.is_at(At::Chat), "then space l's: the chat has the keys");
 }
 
 /// What the last frame shows at `s`'s columns of its row.

@@ -448,6 +448,10 @@ fn spawn_input(tx: crate::event::Tx) {
                         MouseEventKind::Up(MouseButton::Left) => Some(MouseKind::Up),
                         MouseEventKind::ScrollUp => Some(MouseKind::ScrollUp),
                         MouseEventKind::ScrollDown => Some(MouseKind::ScrollDown),
+                        MouseEventKind::ScrollLeft => Some(MouseKind::ScrollLeft),
+                        MouseEventKind::ScrollRight => Some(MouseKind::ScrollRight),
+                        MouseEventKind::Down(MouseButton::Middle) => Some(MouseKind::Middle),
+                        // (the right button stays the terminal's way: not taken — CLAUDE.md, the mouse's bullet)
                         _ => None,
                     };
                     kind.map(|kind| {
@@ -584,13 +588,20 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
     {
         o.drawn.set(Some(crate::clock::now()));
     }
-    // Drawn whole: all of it has been in sight (a cut one is only once `v` showed it — its bar is no card in
-    // sight)
-    if offer.as_ref().is_some_and(|c| c.cut == 0 && !c.bar)
+    // Drawn whole: all of it has been in sight — every row of its body in some frame, a cut one's as the wheel brought
+    // them (#84: never from the wheel's offset, which can step past rows between frames); its bar is no card in sight
+    if let Some(c) = offer.as_ref().filter(|c| !c.bar)
         && let Some(f) = front
+        && !editor.offer_seen_whole()
+        && editor.offer_lines_drawn(f, c.seen.0, c.seen.1.clone())
     {
         editor.offer_read_whole(f);
+        // (this frame's card already says so: its cut row's words)
+        offer = OfferCard::new(editor, &lay);
     }
+    // (cut to fit: the wheel has its body to scroll — drawn whole, nothing)
+    let cut = offer.as_ref().is_some_and(|c| !c.bar && c.seen.1 != (0..c.seen.0));
+    editor.offer_cut = front.filter(|_| cut);
     // With split windows, scroll/viewport follow the focused pane
     let focus_lay = focused_pane(editor, &lay);
     editor.viewport = (focus_lay.text_rows, focus_lay.text_cols);
@@ -686,6 +697,12 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         task_panel: Default::default(),
         plugin_panel: Default::default(),
         procs_panel: Default::default(),
+        which_key: Default::default(),
+        which_key_rows: Default::default(),
+        welcome_rows: Default::default(),
+        completion_card: Default::default(),
+        completion_docs: Default::default(),
+        completion_rows: Default::default(),
         note_card: Default::default(),
         thought_card: Default::default(),
         toast_card: Default::default(),
@@ -10449,6 +10466,8 @@ fn draw_completion(
     let below = cy as usize + 1 + h <= bottom;
     let y0 = if below { cy as usize + 1 } else { (cy as usize).saturating_sub(h).max(top) };
     card_edge(out, card, x0, y0, width)?;
+    editor.screen.completion_card.set(Some((x0, y0, width, h)));
+    editor.screen.completion_rows.borrow_mut().extend((0..rows).map(|row| (y0 + pad + row, first + row)));
     let thumb = scroll_thumb(rows, n, first);
     for row in 0..rows {
         let i = first + row;
@@ -10518,6 +10537,8 @@ fn draw_completion(
                 let wrapped = crate::markdown::wrap(lines, inner, dim);
                 let max_rows = limit.saturating_sub(y0 + 2).clamp(1, 16);
                 draw_doc_box(&wrapped, (x, y0), inner, max_rows, ui, editor, out)?;
+                let docs = (x, y0, inner + 4, wrapped.len().min(max_rows) + 2);
+                editor.screen.completion_docs.set(Some(docs));
                 // The cell between the two cards: blank where both are (not a letter of the code behind)
                 let gap = if x > x0 { x0 + width } else { x0 - 1 };
                 apply(out, ui.base)?;
@@ -10535,6 +10556,7 @@ fn draw_completion(
                     let dh = wrapped.len().min(max_rows) + 2;
                     let y = if below { y0 + h } else { y0 - dh };
                     draw_doc_box(&wrapped, (x0, y), inner, max_rows, ui, editor, out)?;
+                    editor.screen.completion_docs.set(Some((x0, y, inner + 4, dh)));
                 }
             }
         }
@@ -10692,6 +10714,8 @@ fn draw_welcome(
         vec![("타래 · Helix keys, Claude inside".into(), dim)],
         vec![],
     ];
+    // (each row's keys, where it has some: a press on the row presses them — `Screen.welcome_rows`)
+    let mut keys: Vec<Option<String>> = vec![None; rows.len()];
     // The files last open in this folder first — the most likely next step when there are some
     if let Some(files) = editor.workspace.restorable.as_ref().filter(|f| !f.is_empty()) {
         let name = files[0].file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -10702,6 +10726,7 @@ fn draw_welcome(
             (format!("{name}{more}"), faint),
         ]);
         rows.push(vec![]);
+        keys.extend([Some("r".to_string()), None]);
     }
     for (k, d) in [
         ("space f", "Open a file"),
@@ -10713,12 +10738,14 @@ fn draw_welcome(
         (":q", "Quit"),
     ] {
         rows.push(vec![(format!("{k:<9}"), key), (d.into(), ui.base)]);
+        keys.push(Some(k.to_string()));
     }
     // Rows from here on are recent files (their folders are cut from the left)
     let mut recent_from = usize::MAX;
     if !editor.recent.is_empty() {
         rows.push(vec![]);
         rows.push(vec![("Recent".into(), faint)]);
+        keys.extend([None, None]);
         recent_from = rows.len();
         for (i, p) in editor.recent.iter().take(5).enumerate() {
             let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -10728,6 +10755,7 @@ fn draw_welcome(
                 _ => dir,
             };
             rows.push(vec![(format!("{:<9}", i + 1), key), (format!("{name}  "), ui.base), (dir, faint)]);
+            keys.push(Some((i + 1).to_string()));
         }
     }
     let block_w = rows
@@ -10768,6 +10796,9 @@ fn draw_welcome(
         apply(out, ui.base)?;
         queue!(out, Spaces(ew))?;
         if let Some(r) = (y >= top).then(|| rows.get(y - top)).flatten().filter(|_| !under(x0, block_w, y)) {
+            if let Some(Some(k)) = keys.get(y - top) {
+                editor.screen.welcome_rows.borrow_mut().push((y, x0, x0 + block_w, k.clone()));
+            }
             queue!(out, MoveTo(x0 as u16, y as u16))?;
             let mut used = 0;
             for (k, (s, st)) in r.iter().enumerate() {
@@ -11089,6 +11120,9 @@ struct OfferCard {
     paint: Vec<(String, &'static str)>,
     /// Lines left out for want of room (0: shown whole).
     cut: usize,
+    /// Its body's rows past its title, all of them, and those this layout draws — what `render_frame` records as read
+    /// (`Editor::offer_lines_drawn`: read whole once every row was drawn, never from the wheel's offset).
+    seen: (usize, std::ops::Range<usize>),
     /// Stepped aside to a one-row bar while its text is read in its buffer (U8): `lines` = title, how far. Else in
     /// a frame (D3) — its title (`lines[0]`) the frame's name, one cell of padding inside.
     bar: bool,
@@ -11485,6 +11519,7 @@ impl OfferCard {
             about: None,
             paint: Vec::new(),
             cut: 0,
+            seen: (0, 0..0),
             bar: false,
         })
     }
@@ -11782,6 +11817,7 @@ impl OfferCard {
                     about,
                     paint: Vec::new(),
                     cut: 0,
+                    seen: (0, 0..0),
                     bar: true,
                 },
                 false,
@@ -11804,17 +11840,42 @@ impl OfferCard {
         let mut cut = 0;
         // (the cut row's forms all fit: the card keeps its width as it says another)
         let mut cut_floor = 0;
+        // (the wheel over it: the body's rows past its title scrolled by — `Editor::offer_scroll`)
+        let mut above = 0;
+        // (its body's rows past the title, and those drawn — all of them, uncut)
+        let body_rows = lines.len().saturating_sub(1);
+        let mut seen = (body_rows, 0..body_rows);
         if lines.len() > room {
             if room < 3 {
                 return None;
             }
+            let scrolled = editor.offer_skip.get().filter(|s| (s.0, s.1) == (o.id, o.rev)).map_or(0, |s| s.2);
+            above = scrolled.min(lines.len() - (room - 1));
+            if scrolled > 0 {
+                editor.offer_skip.set(Some((o.id, o.rev, above)));
+            }
+            if above > 0 {
+                lines.drain(1..1 + above);
+                let back = |i: usize| match i {
+                    0 => Some(0),
+                    i if i > above => Some(i - above),
+                    _ => None,
+                };
+                warn = warn.into_iter().filter_map(back).collect();
+                diff = diff.into_iter().filter_map(|(i, c)| Some((back(i)?, c))).collect();
+            }
             cut = lines.len() - (room - 1);
             lines.truncate(room - 1);
+            // (the rows drawn: the window the wheel left — read whole only once every row was in one, `render_frame`)
+            seen.1 = above..above + lines.len() - 1;
             // (how much is cut and whether it's been read, in words — the keys are its bottom line's: `v` reads it
             // all, a weighty yes says it waits `once it's read`; #84: a `y` before was taken in silence — one now
             // turns this row and that yes to the warning colour)
             let early = editor.offer_early.get() == Some((o.id, o.rev));
-            let row = |then: &str| format!("↓ {cut} more lines, {then}");
+            let row = |then: &str| match cut {
+                0 => format!("↑ {above} lines above, {then}"),
+                _ => format!("↓ {cut} more lines, {then}"),
+            };
             let then = match (editor.offer_seen_whole(), editor.offer_viewing()) {
                 (true, _) => CUT_READ,
                 (false, true) => CUT_OPEN,
@@ -11829,7 +11890,7 @@ impl OfferCard {
             }
         }
         // (the body's rows only: not the cut row, nor what's said under it)
-        let body = lines.len() - usize::from(cut > 0);
+        let body = lines.len() - usize::from(cut > 0 || above > 0);
         diff.retain(|&(i, _)| i < body);
         for row in said {
             if !row.0.is_empty() {
@@ -11868,7 +11929,7 @@ impl OfferCard {
         let read = labels.iter().position(|(k, _)| *k == 'y' && o.weighty_answer(*k)).filter(|_| cut > 0);
         let (mut whole, mut short) = (labels.clone(), o.answers_short(quick));
         let mut keep = None;
-        if cut > 0 && o.acts_on('v') && !labels.iter().any(|a| a.0 == 'v') {
+        if (cut > 0 || above > 0) && o.acts_on('v') && !labels.iter().any(|a| a.0 == 'v') {
             let at = read.map_or(1, |i| i + 1).min(whole.len());
             whole.insert(at, READ_ALL);
             short.insert(at.min(short.len()), (READ_ALL.0, READ_ALL_SHORT.into()));
@@ -11968,7 +12029,7 @@ impl OfferCard {
             let py = y - k - 1;
             buttons.push((py, px, px + width - 2 * PEEK_INSET * k, char::from(b'0' + *k as u8)));
         }
-        if cut > 0 {
+        if cut > 0 || above > 0 {
             // (its "more lines" row: a click views it all)
             buttons.push((y + pad + body_rows - 1, x + 3, x + width - 2, 'v'));
         }
@@ -11998,6 +12059,7 @@ impl OfferCard {
                 about,
                 paint: o.paint.clone(),
                 cut,
+                seen,
                 bar: false,
             },
             grown,
@@ -12452,8 +12514,16 @@ fn draw_which_key(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) 
     let card = on_ground(ui, card_style(ui, editor, "ui.popup"));
     let (key_style, dim) = (Style { bg: card.bg, ..key_style }, Style { bg: card.bg, ..dim });
     card_edge(out, card, x0, y0, width)?;
+    editor.screen.which_key.set(Some((x0, y0, width, h)));
     // Title: pressed keys · mode name — the frame's name
     let y = y0 + pad;
+    let mut pressed = editor.screen.which_key_rows.borrow_mut();
+    for (i, (k, ..)) in entries.iter().enumerate() {
+        let (c, r) = (i / rows, i % rows);
+        let from = x0 + 2 + c * (cell + 3);
+        pressed.push((y + r, from, from + cell, *k));
+    }
+    drop(pressed);
     let head = pending.join(" ");
     let rest = if head == title { String::new() } else { format!("  {title}") };
     for r in 0..rows {

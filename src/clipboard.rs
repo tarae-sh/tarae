@@ -386,6 +386,12 @@ pub fn written(text: &str) -> bool {
     system::written(text)
 }
 
+/// The tests' stand-in clipboard holds `text` (as a copy leaves it, unsaid).
+#[cfg(test)]
+pub fn stand_in(text: &str) {
+    let _ = system::write(text);
+}
+
 #[cfg(test)]
 mod system {
     use super::{Read, Wrote};

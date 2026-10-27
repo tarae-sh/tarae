@@ -53,6 +53,11 @@ pub enum MouseKind {
     Up,
     ScrollUp,
     ScrollDown,
+    /// The wheel sideways (a trackpad, a tilt wheel).
+    ScrollLeft,
+    ScrollRight,
+    /// The middle button's press: the clipboard pasted at the pointer, on text that takes it (`Editor::middle_paste`).
+    Middle,
 }
 
 /// Which workspace a result belongs to (`workspace.rs`).

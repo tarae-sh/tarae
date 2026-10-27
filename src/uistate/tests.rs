@@ -306,7 +306,7 @@ fn no_pty_here(test: &str) -> bool {
 }
 
 /// A terminal whose program sits there (`sleep`) — it hangs up when the editor goes.
-fn terminal(ed: &mut Editor) {
+pub(crate) fn terminal(ed: &mut Editor) {
     ed.terminal_run(vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()], Vec::new());
     let end = Instant::now() + crate::test_results::PATIENCE;
     while ed.workspace.terminal.is_none() {
@@ -800,7 +800,7 @@ pub(crate) const SCENES: &[Scene] = &[
 ];
 
 /// The chat's view mode (`esc` from its input, a draft in it) on a question and its answer.
-fn chat_view(ed: &mut Editor) {
+pub(crate) fn chat_view(ed: &mut Editor) {
     use crate::chat::{Msg, Role};
     chat(ed, "a draft");
     let c = ed.workspace.claude.chat.as_mut().unwrap();

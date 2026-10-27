@@ -172,7 +172,12 @@ fn mouse_bytes(
 ) -> Option<Vec<u8>> {
     use vt100::MouseProtocolMode as M;
     let wanted = match kind {
-        MouseKind::Down | MouseKind::ScrollUp | MouseKind::ScrollDown => mode != M::None,
+        MouseKind::Down
+        | MouseKind::Middle
+        | MouseKind::ScrollUp
+        | MouseKind::ScrollDown
+        | MouseKind::ScrollLeft
+        | MouseKind::ScrollRight => mode != M::None,
         MouseKind::Up => matches!(mode, M::PressRelease | M::ButtonMotion | M::AnyMotion),
         MouseKind::Drag => matches!(mode, M::ButtonMotion | M::AnyMotion),
     };
@@ -185,6 +190,9 @@ fn mouse_bytes(
         MouseKind::Up => (0, false),
         MouseKind::ScrollUp => (64, true),
         MouseKind::ScrollDown => (65, true),
+        MouseKind::ScrollLeft => (66, true),
+        MouseKind::ScrollRight => (67, true),
+        MouseKind::Middle => (1, true),
     };
     let (x, y) = (u32::from(col) + 1, u32::from(row) + 1);
     match encoding {
@@ -734,7 +742,8 @@ impl Editor {
                         crate::mouse::text_drag(self, on, pos);
                     }
                 }
-                MouseKind::Up => {}
+                // (`handle_mouse` takes the sideways wheel and the middle button before they come here)
+                MouseKind::Up | MouseKind::ScrollLeft | MouseKind::ScrollRight | MouseKind::Middle => {}
             };
         }
         let Some(t) = self.workspace.terminal.as_mut() else { return };
@@ -798,6 +807,7 @@ impl Editor {
                 };
                 crate::clipboard::copy(&self.events.jobs(), text, what);
             }
+            MouseKind::ScrollLeft | MouseKind::ScrollRight | MouseKind::Middle => {}
         }
     }
 }

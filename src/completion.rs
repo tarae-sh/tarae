@@ -128,6 +128,16 @@ impl Completion {
         });
     }
 
+    /// The wheel: `delta` rows on, stopping at the ends (never round, as `tab` goes).
+    pub fn wheel(&mut self, delta: isize) {
+        let last = self.shown.len().saturating_sub(1) as isize;
+        if self.shown.is_empty() {
+            return;
+        }
+        let from = self.selected.map_or(-1, |s| s as isize);
+        self.selected = Some((from + delta).clamp(0, last) as usize);
+    }
+
     pub fn current(&self) -> Option<&Item> {
         self.selected.and_then(|s| self.shown.get(s)).map(|&i| &self.items[i])
     }

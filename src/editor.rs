@@ -158,6 +158,15 @@ pub struct Toast {
 /// Two clicks on the same picker row this close together are a double click (it opens the row).
 pub(crate) const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
 
+/// The document panes whose own key sequences a press ends (`Editor::sequence_end`): the run panels', the chat's
+/// conversation's (the chat's input takes typing: its held keys are typed characters, never ended).
+const SEQUENCE_PANES: [crate::docpane::Which; 4] = [
+    crate::docpane::Which::Output(crate::sizes::Slot::Test),
+    crate::docpane::Which::Output(crate::sizes::Slot::Task),
+    crate::docpane::Which::Output(crate::sizes::Slot::Procs),
+    crate::docpane::Which::Chat,
+];
+
 /// What a drag from a name on a line that drags nothing says (`Editor::name_held`): a floating frame's line inside it,
 /// a docked group's line, the slot's while it fills the screen.
 pub(crate) const NAME_FLOAT: &str = "a floating pane moves by its top line — its edges size it";
@@ -607,6 +616,17 @@ pub struct Screen {
     pub plugin_panel: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
     /// `:procs`' panel as drawn (for the mouse).
     pub procs_panel: std::cell::Cell<Option<crate::procs::Area>>,
+    /// Which-key's card this frame (x, y, width, height), and its entries as drawn: (screen row, first column, past its
+    /// last, the key it presses) — a press on one presses it.
+    pub which_key: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
+    pub which_key_rows: std::cell::RefCell<Vec<(usize, usize, usize, crate::key::Key)>>,
+    /// The start screen's rows that have keys: (screen row, first column, past its last, its keys as written).
+    pub welcome_rows: std::cell::RefCell<Vec<(usize, usize, usize, String)>>,
+    /// The completion menu's card this frame (x, y, width, height), its docs' beside it, and its rows: (screen row, the
+    /// item's index among those shown) — a press on one accepts it.
+    pub completion_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
+    pub completion_docs: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
+    pub completion_rows: std::cell::RefCell<Vec<(usize, usize)>>,
     /// The note card and the thought card this frame (x, y, width, height).
     pub note_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
     pub thought_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
@@ -867,6 +887,14 @@ pub struct Editor {
     /// The card (id, rev) last in sight whole — drawn uncut, or read to its end in its `v` buffer (a weighty
     /// `y` waits for it).
     pub offer_whole: std::cell::Cell<Option<(u64, u64)>>,
+    /// The front card's body scrolled by the wheel, cut to fit: (id, rev, rows past its title) — the card's drawer
+    /// keeps it within the body.
+    pub offer_skip: std::cell::Cell<Option<(u64, u64, usize)>>,
+    /// The front card's body rows drawn so far: ((id, rev, rows), each row drawn in some frame) — read whole once all
+    /// were (`offer_lines_drawn`); laid again at another width, counted afresh.
+    pub offer_rows_drawn: Option<((u64, u64, usize), Vec<bool>)>,
+    /// The front card the last frame drew cut to fit, (id, rev) — the wheel scrolls only that one (`offer_scroll`).
+    pub offer_cut: Option<(u64, u64)>,
     /// The card (id, rev) a `y` came to before it was seen whole — its cut row says why in the warning
     /// color (#84: the toast alone was missed, the `y` seemed ignored).
     pub offer_early: std::cell::Cell<Option<(u64, u64)>>,
@@ -1121,6 +1149,12 @@ pub struct Editor {
     /// A name pressed on a line nothing drags (a docked group's, the slot's filling the screen): a drag from it says
     /// why, once — (said, why).
     pub name_held: Option<(bool, &'static str)>,
+    /// A press on what a drag can't do anything with (a card, the start screen, off an edit's review, pointing's
+    /// labels): its drag and release are that press's, the drag saying why once — (where it was pressed, said, why).
+    pub drag_says: Option<(crate::mouse::Under, bool, &'static str)>,
+    /// A press that made what was under it go or change (a start-screen row opening a picker, a completion accepted,
+    /// which-key's row, the note card's reply): (where, when) — a double's second press there is that one press.
+    pub pressed_through: Option<(usize, usize, std::time::Instant)>,
     /// The border under the pointer, as the last hover found it: lit half (`term::grab_style`).
     pub border_hover: Option<crate::sizes::Border>,
     /// The surface under the pointer, as the last hover found it: its lines lit half (`mouse::Lights`).
@@ -1287,6 +1321,9 @@ impl Editor {
             grammar_hinted: Default::default(),
             offers: Vec::new(),
             offer_whole: Default::default(),
+            offer_skip: Default::default(),
+            offer_rows_drawn: None,
+            offer_cut: None,
             offer_early: Default::default(),
             offer_view: Default::default(),
             offer_views: Vec::new(),
@@ -1434,6 +1471,8 @@ impl Editor {
             border_moved: false,
             border_name: false,
             name_held: None,
+            drag_says: None,
+            pressed_through: None,
             border_hover: None,
             pointer_over: None,
             float_dragging: None,
@@ -2498,6 +2537,73 @@ impl Editor {
             .clamp(0.0, 1.0)
     }
 
+    /// A key sequence under way, wherever it is (the code's, a view mode's, a run panel's) — its keys, count and awaited
+    /// character — ended, as `esc` ends it: a press ends it, then acts where it lands (the mouse's one rule,
+    /// `.sb/mouse-plan.md` O; a word pressed too). Insert mode's held keys (the `j` of a `j k` binding — the code's, the
+    /// chat's input's, the prompt's line's, a picker's query's) are text a press breaks off: typed where they were
+    /// typed, before the press moves the cursor — as a key that breaks the sequence off types them
+    /// (`dispatch_pending`, `Input::insert_str`), never dropped; `C-r` waiting for a register's name, ended — the
+    /// code's insert mode's and every line's alike.
+    pub fn sequence_end(&mut self) {
+        match self.mode {
+            // (insert's held keys typed; its `C-r` waiting for a register's name, ended — as every line's)
+            Mode::Insert => {
+                self.held_typed();
+                self.on_next_char = None;
+                self.char_for.clear();
+            }
+            _ => {
+                self.pending.clear();
+                self.count = None;
+                self.on_next_char = None;
+                self.char_for.clear();
+            }
+        }
+        crate::chatinput::held_typed(self);
+        crate::prompt::held_typed(self, crate::docpane::Which::Prompt);
+        crate::prompt::held_typed(self, crate::docpane::Which::Picker);
+        for which in SEQUENCE_PANES {
+            if let Some(p) = crate::docpane::pane_mut(self, which) {
+                p.keys.end_sequence();
+            }
+        }
+        if let Some(v) = self.workspace.viewer.view.as_mut() {
+            v.keys.end_sequence();
+        }
+    }
+
+    /// Insert mode's held keys, broken off: typed where the cursor is (`sequence_end`).
+    pub(crate) fn held_typed(&mut self) {
+        if self.mode != Mode::Insert || self.pending.is_empty() {
+            return;
+        }
+        let chars: Vec<char> = std::mem::take(&mut self.pending).iter().filter_map(Key::plain_char).collect();
+        if !chars.is_empty() {
+            self.with_group(|cx| {
+                for c in chars {
+                    commands::insert_char(cx, c);
+                }
+            });
+        }
+    }
+
+    /// A sequence under way that a press ends or breaks off (`sequence_end`'s), anywhere.
+    pub fn sequence_under_way(&self) -> bool {
+        let held = self.workspace.claude.chat.as_ref().is_some_and(|c| !c.input.pane.keys.idle())
+            || self.prompt.as_ref().is_some_and(|p| !p.input.pane.keys.idle())
+            || self.picker.as_ref().is_some_and(|p| !p.input.pane.keys.idle());
+        let code = held
+            || !self.pending.is_empty()
+            || self.on_next_char.is_some()
+            || self.mode != Mode::Insert && self.count.is_some();
+        let pane = |which| match which {
+            crate::docpane::Which::Output(slot) => self.workspace.outputs.get(slot).map(|o| &o.pane.keys),
+            _ => crate::chatdoc::transcript(self).map(|t| &t.pane.keys),
+        };
+        code || SEQUENCE_PANES.into_iter().any(|w| pane(w).is_some_and(crate::docpane::Keys::under_way))
+            || self.workspace.viewer.view.as_ref().is_some_and(|v| v.keys.under_way())
+    }
+
     /// For the status line — pending count and keys.
     pub fn pending_display(&self) -> String {
         // (the prompt's line's — `C-r` waiting for a register's name)
@@ -2860,12 +2966,27 @@ impl Editor {
     pub fn handle_mouse(&mut self, m: crate::event::Mouse) {
         use crate::event::MouseKind as K;
         use crate::mouse::{Link, Part, Surface as S, Word, took_mouse};
+        // The middle button: the clipboard pasted at the pointer, on text that takes it — never a left press
+        if m.kind == K::Middle {
+            return self.middle_paste(m.x as usize, m.y as usize);
+        }
+        // The wheel sideways: the code pane under the pointer, its view's columns (nothing else moves); elsewhere there's
+        // nothing to scroll sideways
+        if matches!(m.kind, K::ScrollLeft | K::ScrollRight) {
+            let u = self.mouse_under(K::ScrollDown, m.x as usize, m.y as usize);
+            if let S::Code(pid) = u.surface {
+                self.input_came();
+                self.wheel_pane_sideways(pid, if m.kind == K::ScrollLeft { -4 } else { 4 });
+            }
+            return;
+        }
         // (a press anywhere starts afresh: only a ctrl+press in the code arms its release, and a drag selects only from
         // a press in that text — never from the code's last press, #140)
         if m.kind == K::Down {
             self.mouse_goto = false;
             self.mouse_anchor = None;
             self.name_held = None;
+            self.drag_says = None;
             // (a line or a floating frame held whose release was lost: let go, unkept — this press is its own)
             (self.dragging, self.border_moved, self.border_name) = (None, false, false);
             (self.float_dragging, self.float_moved) = (None, false);
@@ -2892,12 +3013,55 @@ impl Editor {
             p.filter_now();
         }
         let u = self.mouse_under(m.kind, x, y);
+        // (a press whose drag does nothing: the drag says why, once — its release, nothing)
+        if matches!(m.kind, K::Drag | K::Up)
+            && let Some((at, said, why)) = self.drag_says
+        {
+            took_mouse(at.surface);
+            match m.kind {
+                K::Drag if !said => {
+                    self.drag_says = Some((at, true, why));
+                    self.set_status(why);
+                }
+                K::Up => self.drag_says = None,
+                _ => {}
+            }
+            return;
+        }
+        // (the second press of a double where the first made what was under it go — a start-screen row's picker, a
+        // completion accepted, which-key's next level: that one press, nothing under it pressed)
+        if m.kind == K::Down
+            && let Some((px, py, at)) = self.pressed_through.take()
+            && (px, py) == (x, y)
+            && crate::clock::since(at) < DOUBLE_CLICK
+        {
+            took_mouse(u.surface);
+            return;
+        }
         // Labels up for pointing: a click picks the element under it, or stops pointing; nothing else moves
         if u.surface == S::Pointing {
             took_mouse(S::Pointing);
             if m.kind == K::Down {
+                self.drag_says = Some((u, false, crate::mouse::POINTING_DRAG));
                 crate::uistate::point::click(self, x, y);
             }
+            return;
+        }
+        // A press while a key sequence is under way (`space`, `C-w`, `g`…) ends it, as `esc` would — then acts where it
+        // landed (which-key's own rows press as their keys)
+        if m.kind == K::Down && u.surface != S::WhichKey && self.sequence_under_way() {
+            self.sequence_end();
+        }
+        // (`C-w m` moving a floating pane: a press on it says how it moves — the keys stay the move's; its top line still
+        // drags it, a press elsewhere takes the keys, which ends the move)
+        if m.kind == K::Down
+            && self.float_moving.is_some()
+            && self.float_at(x, y).map(|f| f.0) == self.float_moving
+            && !matches!(u.part, Part::Frame(_))
+        {
+            took_mouse(u.surface);
+            self.drag_says = Some((u, true, ""));
+            self.set_status(crate::mouse::MOVING_PRESS);
             return;
         }
         let s = self.screen.clone();
@@ -2953,6 +3117,8 @@ impl Editor {
                             self.mouse_anchor = Some((Drag::Prompt, crate::selection::Held::char_at(at)));
                         }
                     }
+                    // (its other rows — its hints, its air: what a press there would do, said)
+                    Part::Blank if down => self.set_status(crate::mouse::PROMPT_ROWS),
                     _ => {}
                 }
             }
@@ -2969,11 +3135,81 @@ impl Editor {
             // one as it came up never one), a stacked one brought to the front with the keys; focused, its answers
             (S::Card, part) => {
                 took_mouse(S::Card);
+                // (the wheel: its body, cut to fit, scrolls — `offer_scroll`)
+                if wheel {
+                    return self.offer_scroll(if up { -3 } else { 3 });
+                }
                 let button = match part {
                     Part::Answer(k) => Some(k),
                     _ => None,
                 };
+                self.drag_says = Some((u, false, crate::mouse::CARD_DRAG));
                 self.card_press(button);
+            }
+            // Which-key: a row presses its key, as typed (the same row again at once is that one press); off its rows,
+            // said; the wheel has nothing to scroll there, nothing under it scrolled
+            (S::WhichKey, part) => {
+                took_mouse(S::WhichKey);
+                match (m.kind, row_of(part)) {
+                    (K::Down, Some(i)) => {
+                        self.pressed_through = Some((x, y, crate::clock::now()));
+                        if let Some(k) = s.which_key_rows.borrow().get(i).map(|r| r.3) {
+                            self.handle_key(k);
+                        }
+                    }
+                    (K::Down, None) => self.set_status("a key's row presses it · esc close"),
+                    _ => {}
+                }
+            }
+            // The completion menu: a row accepts its item, as `enter` on it; the wheel moves through it, as `tab`
+            (S::Completion, part) => {
+                took_mouse(S::Completion);
+                match (m.kind, row_of(part)) {
+                    (K::Down, Some(i)) => {
+                        if let Some(c) = self.completion.as_mut() {
+                            c.selected = Some(i);
+                        }
+                        self.pressed_through = Some((x, y, crate::clock::now()));
+                        self.completion_accept();
+                    }
+                    (K::Down, None) => self.set_status("a row of the list accepts it · esc close"),
+                    (K::ScrollDown | K::ScrollUp, _) => {
+                        if let Some(c) = self.completion.as_mut() {
+                            c.wheel(if up { -3 } else { 3 });
+                        }
+                        self.completion_docs();
+                    }
+                    _ => {}
+                }
+            }
+            // The note card: a press replies (`space n`); while its reply's line is open, said — its line is the reply's
+            (S::NoteCard, _) => {
+                took_mouse(S::NoteCard);
+                if !down {
+                    return;
+                }
+                match self.prompt.as_ref().map(|p| p.kind) {
+                    Some(PromptKind::Note(_)) => self.set_status("replying — enter sends it · esc close"),
+                    _ => {
+                        self.pressed_through = Some((x, y, crate::clock::now()));
+                        crate::notes::start(self)
+                    }
+                }
+            }
+            // The start screen: a row presses its keys, as typed; off its rows, said
+            (S::Welcome, part) => {
+                took_mouse(S::Welcome);
+                if !down {
+                    return;
+                }
+                self.drag_says = Some((u, false, crate::mouse::WELCOME_DRAG));
+                match row_of(part).and_then(|i| s.welcome_rows.borrow().get(i).map(|r| r.3.clone())) {
+                    Some(keys) => {
+                        self.pressed_through = Some((x, y, crate::clock::now()));
+                        self.welcome_press(&keys)
+                    }
+                    None => self.set_status("a row of the start screen presses its keys"),
+                }
             }
             // A border: held, it follows the mouse; let go, the size is kept — let go where it was pressed, the keys go to
             // what it heads (zellij's frame press: Q9)
@@ -3372,6 +3608,10 @@ impl Editor {
             (S::EditReview, part) => {
                 took_mouse(S::EditReview);
                 if part == Part::Outside && !matches!(self.mouse_anchor, Some((Drag::Review, _))) {
+                    if down {
+                        self.drag_says = Some((u, false, crate::mouse::REVIEW_OFF));
+                        self.set_status(crate::mouse::REVIEW_OFF);
+                    }
                     return;
                 }
                 let Some(r) = self.workspace.claude.review.as_mut() else { return };
@@ -3406,6 +3646,24 @@ impl Editor {
             }
             // (the status line off its words, the start screen, off an edit's review, nothing: motion's W, landing O)
             _ => took_mouse(u.surface),
+        }
+    }
+
+    /// A press on a row of the start screen: its keys (`space f`, `r`, `1`, `:tutor`), as typed — a command its line
+    /// run.
+    fn welcome_press(&mut self, keys: &str) {
+        if let Some(cmd) = keys.strip_prefix(':') {
+            self.handle_key(Key::plain(Code::Char(':')));
+            for c in cmd.chars() {
+                self.handle_key(Key::plain(Code::Char(c)));
+            }
+            return self.handle_key(Key::plain(Code::Enter));
+        }
+        for k in keys.split(' ') {
+            match k.parse::<Key>() {
+                Ok(k) => self.handle_key(k),
+                Err(_) => return,
+            }
         }
     }
 
@@ -3602,8 +3860,8 @@ impl Editor {
         let doc = self.doc();
         let last = mv::last_line(&doc.text);
         match m.kind {
-            // (taken above: `wheel_pane`)
-            K::ScrollUp | K::ScrollDown => {}
+            // (taken above: `wheel_pane`, the sideways wheel and the middle button first thing in `handle_mouse`)
+            K::ScrollUp | K::ScrollDown | K::ScrollLeft | K::ScrollRight | K::Middle => {}
             K::Down | K::Drag => {
                 let line = line.min(last);
                 let pos = match picked {
@@ -4156,6 +4414,77 @@ impl Editor {
         };
         if let Some(v) = self.workspace.views.iter_mut().find(|v| v.id == id) {
             (v.top, v.top_rows) = (step(v.top, last), None);
+        }
+    }
+
+    /// The middle button at (`x`, `y`): what the clipboard holds (tarae's copies put it there) pasted at the pointer, on
+    /// text that takes it — the code in normal or insert mode, the chat's input, a prompt's line — the cursor put there
+    /// first; anywhere else (a card, a row, the start screen, a picker's list) nothing, said. Never a left press: no
+    /// card answered, no key pressed, no row opened.
+    fn middle_paste(&mut self, x: usize, y: usize) {
+        use crate::mouse::{Part, Surface as S};
+        let u = self.mouse_under(crate::event::MouseKind::Down, x, y);
+        match (u.surface, u.part) {
+            (S::Code(pid), Part::Text { line, col }) if matches!(self.mode, Mode::Normal | Mode::Insert) => {
+                self.input_came();
+                self.pane_takes_keys(pid);
+                let tab = self.config.tab_width;
+                let text = &self.doc().text;
+                let pos = mv::pos_at_col(text, line.min(mv::last_line(text)), col, tab);
+                self.doc_mut().set_selection(Selection::point(pos));
+                self.run_command_by_name("paste_clipboard_before");
+            }
+            (S::Input, Part::Text { line, col }) => {
+                self.workspace.viewer.at = At::Chat;
+                let w = self.screen.chat_input.get().map_or(0, |i| i.w);
+                crate::chatinput::click(self, line, col, w);
+                crate::clipboard::paste(&self.events.jobs(), |ed, text| ed.handle_paste(text));
+            }
+            (S::Prompt, Part::Text { .. }) => {
+                crate::prompt::click(self, crate::docpane::Which::Prompt, x, y);
+                crate::clipboard::paste(&self.events.jobs(), |ed, text| ed.handle_paste(text));
+            }
+            _ => self.set_status(crate::mouse::MIDDLE_ELSEWHERE),
+        }
+    }
+
+    /// The wheel sideways over code pane `id`: its view `by` columns (right when positive), as far as the widest line
+    /// in sight goes (its cells: tabs expanded, a wide glyph two) — nothing else moves, held as `wheel_pane` holds it,
+    /// follow paused over the pane it leads as there; a pane that wraps has nothing to scroll.
+    fn wheel_pane_sideways(&mut self, id: crate::split::PaneId, by: isize) {
+        let cols = self.screen.panes.iter().find(|p| p.0 == id).map_or(0, |p| p.1.w.saturating_sub(p.2));
+        let (tab, rows) = (self.config.tab_width, self.viewport.0.max(1));
+        let widest = |d: &Document, top: usize| {
+            let lines = top..(top + rows).min(d.text.len_lines());
+            lines.map(|l| mv::visual_col(&d.text, mv::line_end(&d.text, l), tab)).max().unwrap_or(0)
+        };
+        let step =
+            |left: usize, widest: usize| left.saturating_add_signed(by).min(widest.saturating_sub(cols));
+        let focused = id == self.workspace.viewer.focus;
+        let wraps = match focused {
+            true => self.wraps(self.doc()),
+            false => (self.workspace.views.iter().find(|v| v.id == id))
+                .and_then(|v| self.docs.iter().find(|d| d.id == v.doc))
+                .is_none_or(|d| self.wraps(d)),
+        };
+        if wraps {
+            return;
+        }
+        if crate::follow::pane(self) == id {
+            crate::follow::wheel(self, focused);
+        }
+        if focused {
+            let w = widest(self.doc(), self.doc().top);
+            let doc = self.doc_mut();
+            doc.left = step(doc.left, w);
+            doc.wheel_held = Some((doc.selection().primary(), doc.version()));
+            return;
+        }
+        let Some(v) = self.workspace.views.iter().find(|v| v.id == id) else { return };
+        let Some(d) = self.docs.iter().find(|d| d.id == v.doc) else { return };
+        let w = widest(d, v.top);
+        if let Some(v) = self.workspace.views.iter_mut().find(|v| v.id == id) {
+            v.left = step(v.left, w);
         }
     }
 

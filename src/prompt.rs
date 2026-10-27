@@ -225,6 +225,26 @@ pub fn under_way(ed: &mut Editor, which: Which, key: Key) -> bool {
     false
 }
 
+/// A press while the line `which` holds keys (the `j` of a `j k` binding: text, as a sequence broken off is) or `C-r`
+/// waits for a register's name (`Editor::sequence_end`): the held keys typed where they were typed, before the press
+/// moves its cursor (`click`); the wait ended.
+pub fn held_typed(ed: &mut Editor, which: Which) {
+    let Some(i) = input_mut(ed, which) else { return };
+    if i.pane.keys.idle() {
+        return;
+    }
+    i.pane.keys.end_wait();
+    if i.pane.keys.pending.is_empty() {
+        return;
+    }
+    i.insert_str("");
+    if which == Which::Prompt
+        && let Some(p) = ed.prompt.as_mut()
+    {
+        (p.cycle, p.recalled) = (None, None);
+    }
+}
+
 /// A paste into the line: at the cursor, at once — one change, never key by key (no sequence of `[insert]`'s fires
 /// in it; what one under way had typed goes in first). `text` is one line already (`handle_paste`).
 pub fn paste(ed: &mut Editor, text: &str) {

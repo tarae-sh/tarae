@@ -90,15 +90,11 @@ pub enum Surface {
     PaneTop(PaneId),
     /// A code pane's text (files, pages, a woven view, the verdict).
     Code(PaneId),
-    /// Which-key — not recorded where it's drawn yet (landing O): a press goes to what's under it. (The table's
-    /// rows only, as the two below, until `mouse_under` finds them.)
-    #[cfg(test)]
+    /// Which-key: a row presses its key (`Part::Row`: its index in `Screen.which_key_rows`).
     WhichKey,
-    /// The completion menu — not recorded yet (O).
-    #[cfg(test)]
+    /// The completion menu and its docs: a row accepts its item (`Part::Row`: its index among those shown).
     Completion,
-    /// The note card, the thought card — recorded, not read yet (O).
-    #[cfg(test)]
+    /// The note card: a press replies (`space n`'s).
     NoteCard,
     /// Nothing drawn there that takes the mouse.
     Nothing,
@@ -199,6 +195,9 @@ impl Under {
                 | S::SlotLine
                 | S::Popup
                 | S::Rail
+                | S::WhichKey
+                | S::Completion
+                | S::NoteCard
         );
         let word = matches!(
             self.part,
@@ -208,6 +207,22 @@ impl Under {
         !early && !word
     }
 }
+
+/// What a press on the prompt's card off its line and its completions says.
+pub const PROMPT_ROWS: &str = "a completion's row fills it in — enter runs the line · esc close";
+/// What the middle button says where there's no text to paste into.
+pub const MIDDLE_ELSEWHERE: &str =
+    "the middle button pastes the clipboard into text — the code, the chat's input, a prompt's line";
+/// What a drag from pointing's press says (`Editor.drag_says`).
+pub const POINTING_DRAG: &str = "pointing takes a press — a drag picks nothing";
+/// What a press says while `C-w m` moves a floating pane (its top line still drags it).
+pub const MOVING_PRESS: &str = "moving this pane — h j k l move it, enter done, its top line drags it";
+/// What a drag from a card says (Q11: a card is a question, not a document).
+pub const CARD_DRAG: &str = "a card's text isn't selected — v shows it whole, to copy";
+/// What a press or a drag off an edit's review says while it waits.
+pub const REVIEW_OFF: &str = "the review waits for its answer — y accepts the change, n rejects it";
+/// What a drag on the start screen says.
+pub const WELCOME_DRAG: &str = "the start screen has nothing to select — a press on a row presses its keys";
 
 thread_local!(pub static TOOK: std::cell::Cell<Option<Surface>> = const { std::cell::Cell::new(None) });
 
@@ -238,6 +253,12 @@ impl Editor {
         let at = Under::new;
         let down = kind == K::Down;
         let wheel = matches!(kind, K::ScrollUp | K::ScrollDown);
+        // (a press whose drag does nothing: its drag and release that press's — `Editor.drag_says`)
+        if matches!(kind, K::Drag | K::Up)
+            && let Some((u, ..)) = self.drag_says
+        {
+            return u;
+        }
         if self.pointing.is_some() {
             return at(S::Pointing, Part::Blank);
         }
@@ -270,6 +291,16 @@ impl Editor {
             };
             return at(S::Prompt, part);
         }
+        // The note card: a press is its own, while its reply's line is open too — the wheel too, nothing under it (another
+        // prompt open: a press there is outside that prompt, which closes it)
+        let replying =
+            matches!(self.prompt.as_ref().map(|p| p.kind), Some(crate::editor::PromptKind::Note(_)));
+        if (down || wheel)
+            && (self.prompt.is_none() || replying)
+            && s.note_card.get().is_some_and(|r| inside(r, x, y))
+        {
+            return at(S::NoteCard, Part::Blank);
+        }
         if down && self.prompt.is_some() {
             return at(S::Prompt, Part::Outside);
         }
@@ -284,6 +315,30 @@ impl Editor {
         }
         if down && (button.is_some() || on_card) {
             return at(S::Card, button.map_or(Part::Blank, Part::Answer));
+        }
+        // (the wheel over a card: its body, cut to fit, scrolls)
+        if wheel && on_card {
+            return at(S::Card, Part::Blank);
+        }
+        // Which-key and the completion menu: a row presses its key, accepts its item — the wheel theirs, nothing under
+        // them pressed through them
+        if down || wheel {
+            let rows = s.which_key_rows.borrow();
+            if let Some(i) = rows.iter().position(|r| on(r.0, r.1, r.2, x, y)) {
+                return at(S::WhichKey, Part::Row(i));
+            }
+            if s.which_key.get().is_some_and(|r| inside(r, x, y)) {
+                return at(S::WhichKey, Part::Blank);
+            }
+            if let Some(card) = s.completion_card.get()
+                && inside(card, x, y)
+            {
+                let row = s.completion_rows.borrow().iter().find(|r| r.0 == y).map(|r| r.1);
+                return at(S::Completion, row.map_or(Part::Blank, Part::Row));
+            }
+            if s.completion_docs.get().is_some_and(|r| inside(r, x, y)) {
+                return at(S::Completion, Part::Blank);
+            }
         }
         // What a drag holds, wherever the pointer goes (a press starts afresh: one held whose release was lost lets go)
         if let Some(b) = self.dragging.filter(|_| !down) {
@@ -541,7 +596,9 @@ impl Editor {
             return at(S::FollowCard, Part::Word(Word::Stop(i)));
         }
         let links = |y: usize| s.chat_links.borrow().iter().position(|l| on(l.0, l.1, l.2, x, y));
-        if self.workspace.claude.chat.is_some() && s.chat_mini.get().is_some_and(|r| inside(r, x, y)) {
+        // (minimized, or floating over the code while it follows)
+        let follow_card = s.chat_mini.get().or(s.thought_card.get());
+        if self.workspace.claude.chat.is_some() && follow_card.is_some_and(|r| inside(r, x, y)) {
             return at(S::FollowCard, links(y).map_or(Part::Blank, |i| Part::Link(Link::Chat(i))));
         }
         if let Some(cx) = s.chat_x
@@ -576,7 +633,8 @@ impl Editor {
             return at(S::EditReview, Part::Outside);
         }
         if self.welcome() {
-            return at(S::Welcome, Part::Blank);
+            let row = s.welcome_rows.borrow().iter().position(|r| on(r.0, r.1, r.2, x, y));
+            return at(S::Welcome, row.map_or(Part::Blank, Part::Row));
         }
         let Some((pid, ..)) =
             s.panes.iter().find(|(_, r, ..)| (r.x..r.x + r.w).contains(&x) && (r.y..r.y + r.h).contains(&y))
@@ -993,8 +1051,6 @@ pub const ACTS: [Act; 6] = [Act::Press, Act::Release, Act::Drag, Act::Double, Ac
 pub enum Landing {
     /// Selection: drags in every text, double a word, triple a line, the edge's scroll.
     S,
-    /// Overlays and buttons: which-key, completion, cards' wheel, the note card, the start screen, the other buttons.
-    O,
 }
 
 /// What an act on a part of a surface does.
@@ -1020,7 +1076,7 @@ pub enum Expect {
 pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
     use Act as A;
     use Expect::{Acts, Gap, Not, Says};
-    use Landing::{O, S};
+    use Landing::S;
     use Surface as Su;
     const RELEASE: Expect = Not("the press did it");
     const HOVER: Expect = Not("nothing on hover");
@@ -1031,7 +1087,7 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
         Su::Pointing => match act {
             A::Press => Acts,
             A::Double => AS_ONE,
-            A::Drag => Gap(O, "pointing takes a press only"),
+            A::Drag => Says(POINTING_DRAG),
             A::Wheel => NO_SCROLL,
             A::Release | A::Hover => RELEASE,
         },
@@ -1039,10 +1095,11 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             (Part::Row(_) | Part::Outside | Part::Text { .. }, A::Press) | (Part::Text { .. }, A::Drag) => {
                 Acts
             }
-            (_, A::Press) => Gap(O, "the card's other rows"),
+            (_, A::Press) => Says(PROMPT_ROWS),
             (_, A::Drag) => Gap(S, "a drag follows the pointer's row"),
             (_, A::Double) => AS_ONE,
-            (_, A::Wheel) => Gap(O, "its completions scroll"),
+            // (its menu is `tab`'s: what it fills in is the line's text — a wheel never types)
+            (_, A::Wheel) => Not("tab moves through its completions"),
             (_, A::Release) => RELEASE,
             (_, A::Hover) => HOVER,
         },
@@ -1077,8 +1134,9 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
         Su::Card => match act {
             A::Press => Acts,
             A::Double => AS_ONE,
-            A::Drag => Gap(O, "says v shows it whole to copy (Q11)"),
-            A::Wheel => Gap(O, "a cut card's body scrolls"),
+            A::Drag => Says(CARD_DRAG),
+            // (a cut card's body)
+            A::Wheel => Acts,
             A::Release => RELEASE,
             A::Hover => HOVER,
         },
@@ -1190,7 +1248,7 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             (_, A::Press) => Acts,
             (_, A::Double) => AS_ONE,
             (_, A::Drag) => Not("placed by rule"),
-            (_, A::Wheel) => Gap(O, "the wheel passes under it"),
+            (_, A::Wheel) => NO_SCROLL,
             (_, A::Release) => RELEASE,
             (Part::Word(_), A::Hover) => Acts,
             (_, A::Hover) => HOVER,
@@ -1213,21 +1271,21 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             (_, A::Hover) => Not("a cut row comes whole under it"),
         },
         Su::EditReview => match (part, act) {
-            (Part::Outside, A::Press) => Gap(O, "off the review: nothing until it's answered"),
+            (Part::Outside, A::Press | A::Drag) => Says(REVIEW_OFF),
             (Part::Outside, A::Wheel) => NO_SCROLL,
-            (Part::Outside, A::Drag) => Gap(O, "off the review: nothing until it's answered"),
             (_, A::Press) | (_, A::Wheel) | (_, A::Drag) => Acts,
             (_, A::Double) => AS_ONE,
             (_, A::Release) => RELEASE,
             (_, A::Hover) => HOVER,
         },
-        Su::Welcome => match act {
-            A::Press => Gap(O, "its recent files and keys press"),
-            A::Drag => Gap(O, "nothing to select"),
-            A::Double => AS_ONE,
-            A::Wheel => NO_SCROLL,
-            A::Release => RELEASE,
-            A::Hover => HOVER,
+        Su::Welcome => match (part, act) {
+            (Part::Row(_), A::Press) => Acts,
+            (_, A::Press) => Says("a row of the start screen presses its keys"),
+            (_, A::Drag) => Says(WELCOME_DRAG),
+            (_, A::Double) => AS_ONE,
+            (_, A::Wheel) => NO_SCROLL,
+            (_, A::Release) => RELEASE,
+            (_, A::Hover) => HOVER,
         },
         Su::PaneTop(_) => match (part, act) {
             (_, A::Press) => Acts,
@@ -1247,42 +1305,56 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             (Part::Word(_), A::Hover) => Acts,
             (_, A::Hover) => Not("no hover from the language server — K"),
         },
-        Su::WhichKey => match act {
-            A::Press => Gap(O, "its rows press as their keys"),
-            A::Wheel => Gap(O, "its wheel"),
-            A::Drag | A::Double | A::Release | A::Hover => Not("goes to what's under it"),
-        },
-        Su::Completion => match act {
-            A::Press => Gap(O, "its rows accept"),
-            A::Wheel => Gap(O, "its wheel"),
-            A::Drag | A::Double | A::Release | A::Hover => Not("goes to what's under it"),
-        },
-        Su::NoteCard => match act {
-            A::Press => Gap(O, "a press is its own"),
-            A::Wheel => Gap(O, "its wheel"),
-            A::Drag | A::Double | A::Release | A::Hover => Not("goes to what's under it"),
+        // (a press on a row presses its key, accepts its item, replies; the rest of the card says so)
+        Su::WhichKey | Su::Completion | Su::NoteCard => match (part, act) {
+            (Part::Row(_), A::Press) => Acts,
+            (_, A::Press) if surface == Su::NoteCard => Acts,
+            (_, A::Press) => Says("a row presses it"),
+            (_, A::Double) => AS_ONE,
+            (_, A::Wheel) if surface == Su::Completion => Acts,
+            (_, A::Wheel) => NO_SCROLL,
+            (_, A::Drag) => Not("its press did it — a drag goes to what's under it"),
+            (_, A::Release) => RELEASE,
+            (_, A::Hover) => HOVER,
         },
         Su::Nothing => Not("nothing there"),
     }
 }
 
-/// States in which a press where the keys already are does nothing and says nothing, whatever surface it lands on —
-/// the table is by surface, these by state: (what the walk's scene is named with, the state, the landing, what it
-/// should do).
+/// States that decide a press whatever surface it lands on — the table is by surface, these by state: (what the walk's
+/// scene is named with, the state, what a press does there).
 #[cfg(test)]
-pub const SILENT_STATES: &[(&str, &str, Landing, &str)] = &[
+pub const STATES: &[(&str, &str, Expect)] = &[
     (
         "C-w m moving",
-        "`C-w m` moving a floating pane",
-        Landing::O,
-        "a press on it says enter or esc ends the move",
+        "`C-w m` moving a floating pane: a press on it, not its top line",
+        Expect::Says(MOVING_PRESS),
     ),
+    // (which-key's rows press as their keys; the press then acts where it lands, as the table says)
     (
         "the window prefix taken",
-        "`C-w` under way",
-        Landing::O,
-        "a press ends the sequence, as which-key's rows press as their keys",
+        "a key sequence under way (`space`, `C-w`, `g`, a count…): a press ends it, then acts where it lands — which-key's \
+         row presses its key, a word does its key (in normal mode; mid-insert a word's keys are refused, said); insert \
+         mode's held keys (a `j k` binding's `j` — the code's, the chat's input's, the prompt's line's) are text: typed \
+         where they were typed, never dropped; `C-r` waiting for a register's name, ended — in the code's insert mode and \
+         every line alike",
+        Expect::Acts,
     ),
+];
+
+/// The other buttons, apart from the table (its acts are the left button's and the wheel's): (the button, what it does).
+#[cfg(test)]
+pub const BUTTONS: &[(&str, &str)] = &[
+    (
+        "The middle button",
+        "the clipboard pasted at the pointer, the cursor put there first, on text that takes it — the code in normal \
+         or insert mode, the chat's input, a prompt's line; anywhere else nothing, said",
+    ),
+    (
+        "The wheel sideways",
+        "the code pane under the pointer, its view's columns; elsewhere nothing to scroll",
+    ),
+    ("The right button", "the terminal's — tarae doesn't take it"),
 ];
 
 /// The table's rows as `docs/mouse.md` prints them: a surface, the part, a stand-in of each.
@@ -1366,9 +1438,11 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ("The prompt", "its input", Su::Prompt, Part::Text { line: 0, col: 0 }),
         ("The prompt", "outside it", Su::Prompt, Part::Outside),
         ("Hover text, docs", "", Su::Popup, Part::Blank),
-        ("Which-key", "", Su::WhichKey, Part::Blank),
-        ("The completion menu", "", Su::Completion, Part::Blank),
-        ("The note card, the thought card", "", Su::NoteCard, Part::Blank),
+        ("Which-key", "a key's row", Su::WhichKey, Part::Row(0)),
+        ("Which-key", "the rest of it", Su::WhichKey, Part::Blank),
+        ("The completion menu", "a row", Su::Completion, Part::Row(0)),
+        ("The completion menu", "the rest of it, its docs", Su::Completion, Part::Blank),
+        ("The note card", "", Su::NoteCard, Part::Blank),
         (
             "The status line",
             "a word (`▲N waiting · C-q`, the chip, what Claude does now, the branch, `▲ N`, `full screen`)",
@@ -1376,7 +1450,8 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
             Part::Word(Word::Now),
         ),
         ("The status line", "the rest", Su::Status, Part::Blank),
-        ("The start screen", "", Su::Welcome, Part::Blank),
+        ("The start screen", "a row with keys", Su::Welcome, Part::Row(0)),
+        ("The start screen", "the rest", Su::Welcome, Part::Blank),
         ("Pointing's labels", "", Su::Pointing, Part::Blank),
     ]
 }
@@ -1400,7 +1475,7 @@ pub fn doc() -> String {
          every line between two things with sizes drags; a word that names a state does its key. A press, a drag or a\n\
          wheel that does nothing says why — nothing at all only for a hover, a release, a wheel with nothing to scroll.\n\n\
          ✓ acts · says: it says why not · — nothing, by design · ✗ a gap, and the landing of `.sb/mouse-plan.md` §4\n\
-         that fills it (S selection, O overlays and buttons).\n\n\
+         that fills it (S selection).\n\n\
          | Surface | Part | Press | Release | Drag | Double | Wheel | Hover |\n\
          |---|---|---|---|---|---|---|---|\n",
     );
@@ -1408,12 +1483,13 @@ pub fn doc() -> String {
         let cells: Vec<String> = ACTS.iter().map(|&a| cell(expect(s, p, a))).collect();
         out.push_str(&format!("| {surface} | {part} | {} |\n", cells.join(" | ")));
     }
-    out.push_str(
-        "\nStates in which a press where the keys already are does nothing and says nothing, on any surface:\n\n\
-         | State | Press |\n|---|---|\n",
-    );
-    for (_, state, landing, why) in SILENT_STATES {
-        out.push_str(&format!("| {state} | ✗ {landing:?}: {why} |\n"));
+    out.push_str("\nStates that decide a press, on any surface:\n\n| State | Press |\n|---|---|\n");
+    for &(_, state, e) in STATES {
+        out.push_str(&format!("| {state} | {} |\n", cell(e)));
+    }
+    out.push_str("\nThe other buttons:\n\n| Button | What it does |\n|---|---|\n");
+    for (button, what) in BUTTONS {
+        out.push_str(&format!("| {button} | {what} |\n"));
     }
     out
 }

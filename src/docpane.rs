@@ -76,6 +76,29 @@ impl Keys {
         self.pending.is_empty() && self.on_next_char.is_none() && self.count.is_none()
     }
 
+    /// A sequence under way that a press ends (`end_sequence`): keys, a count or an awaited character, out of insert
+    /// mode.
+    pub fn under_way(&self) -> bool {
+        self.mode != Mode::Insert && !self.idle()
+    }
+
+    /// Ends what's under way — its keys, count and awaited character — as `esc` would (`Editor::sequence_end`).
+    pub fn end_sequence(&mut self) {
+        if !self.under_way() {
+            return;
+        }
+        self.pending.clear();
+        self.count = None;
+        self.on_next_char = None;
+        self.char_for.clear();
+    }
+
+    /// An awaited character (`C-r`'s register name, `f`'s) no longer awaited — in any mode (`prompt::held_typed`).
+    pub fn end_wait(&mut self) {
+        self.on_next_char = None;
+        self.char_for.clear();
+    }
+
     /// Its count and keys under way, as the status line says them (`Editor::pending_display`).
     pub fn pending_display(&self) -> String {
         let mut s = self.count.map(|c| c.to_string()).unwrap_or_default();
