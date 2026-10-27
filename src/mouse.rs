@@ -163,9 +163,10 @@ pub enum Link {
     Chat(usize),
 }
 
-/// The docked surface under the pointer, whose lines light half while it's there (zellij's `mouse_hover_effects` —
+/// The surface under the pointer, whose lines light half while it's there (zellij's `mouse_hover_effects` —
 /// CLAUDE.md, the mouse's bullet): the lines the keys light where it has them (`Viewer.at`'s) — a code pane, the side
-/// panel or the rail, the chat, the bottom slot, a group docked or floating.
+/// panel or the rail, the chat, the bottom slot, a group docked or floating — and the floating frames that wait for
+/// them (#189): the front card's, the follow card's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lights {
     Code(PaneId),
@@ -173,6 +174,28 @@ pub enum Lights {
     Chat,
     Slot,
     Dock(GroupKind),
+    /// The front card's frame (its peeks above it have none).
+    Card,
+    Follow,
+}
+
+/// How a floating frame's lines are lit (#189): the faint wash, the accent half over it while the pointer is on it, the
+/// accent while it has the keys — one rule for every frame (`term::draw_frame`, a floating pane's).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lit {
+    Wash,
+    Half,
+    Keys,
+}
+
+/// A floating frame as drawn (`Screen.frames`): where, the surface whose pointer lights it (None: one that's up only
+/// while it has the keys — a picker, a prompt, which-key) and how it was lit — the walk reads it, the hover finds the
+/// front card's there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Framed {
+    pub rect: (usize, usize, usize, usize),
+    pub of: Option<Lights>,
+    pub lit: Lit,
 }
 
 impl Under {
@@ -677,8 +700,9 @@ impl Editor {
     }
 
     /// Whose lines light half with the pointer at (`x`, `y`), `u` under it (`Lights`): a run panel's, a list's, the
-    /// terminal's are their group's where it's docked or floating, else the slot's. None on a line (a line that drags
-    /// lights itself — `border_hover`), a card, a picker, the status line — what has no lines of its own to light.
+    /// terminal's are their group's where it's docked or floating, else the slot's; a card's or the follow card's, the
+    /// frame drawn there (`Screen.frames` — a card's peek has none). None on a line (a line that drags lights itself —
+    /// `border_hover`), a picker, the status line — what has no lines of its own to light.
     pub fn lights_at(&self, u: Under, x: usize, y: usize) -> Option<Lights> {
         use Surface as S;
         let group = || {
@@ -694,6 +718,10 @@ impl Editor {
             S::Float(k) | S::Floatlist(k) => Some(Lights::Dock(k)),
             S::Output(_) | S::List(_) | S::Terminal | S::TerminalView | S::Plugin | S::SlotLine => {
                 Some(group().map_or(Lights::Slot, Lights::Dock))
+            }
+            S::Card | S::FollowCard => {
+                let frames = self.screen.frames.borrow();
+                frames.iter().rev().find(|f| inside(f.rect, x, y)).and_then(|f| f.of)
             }
             _ => None,
         }

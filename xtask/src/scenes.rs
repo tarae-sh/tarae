@@ -300,6 +300,41 @@ const FOCUS_CARD: &[&str] =
 const FOCUS_CARD_Y: &[&str] =
     &["@1", " ", "l", "@1", "run the tests", "\r", "\x17", "h", "@?Its reason", "@1", "j", "j", "y", "@1"];
 
+/// #189: the mouse on a floating frame without the keys lights its lines half: Claude's card waiting (`FOCUS_CARD`), on
+/// its text; the follow card, the chat minimized (`words-card`'s), and `:messages` given its keys back (`esc`), on the
+/// bottom-left corner (no word of its own there).
+const FRAME_HOVER: [&[&str]; 3] = [
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "run the tests",
+        "\r",
+        "\x17",
+        "h",
+        "@?Its reason",
+        "@1",
+        "@hover?Its reason",
+        "@1",
+    ],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "keep the first strand on a repeat",
+        "\r",
+        "@10?cargo test",
+        "\x1b",
+        "\x1b",
+        "@1",
+        "@hover?╰",
+        "@1",
+    ],
+    &["@1", ":w\r", "@1", ":nope\r", "@1", ":messages\r", "@?messages", "@1", "\x1b", "@1", "@hover?╰", "@1"],
+];
+
 /// `FOCUS_CARD`, then `C-q`.
 const FOCUS_CARD_Q: &[&str] =
     &["@1", " ", "l", "@1", "run the tests", "\r", "\x17", "h", "@?Its reason", "@1", "j", "j", "\x11", "@1"];
@@ -2516,6 +2551,10 @@ const SCENES: &[Scene] = &[
     Scene { name: "focus-card-y", claude: "card", files: MAIN, keys: FOCUS_CARD_Y },
     // (…`C-q` focuses it: its frame lit, its answers its own)
     Scene { name: "focus-card-q", claude: "card", files: MAIN, keys: FOCUS_CARD_Q },
+    // (#189: the mouse on a frame without the keys — its lines half lit: Claude's card, the follow card, `:messages`)
+    Scene { name: "frame-hover-card", claude: "card", files: MAIN, keys: FRAME_HOVER[0] },
+    Scene { name: "frame-hover-follow", claude: "now", files: MAIN, keys: FRAME_HOVER[1] },
+    Scene { name: "frame-hover-messages", claude: "idle", files: MAIN, keys: FRAME_HOVER[2] },
     // (…a card your own key asked for over it — `:features-reset` — focused at once)
     Scene { name: "focus-card-yours", claude: "card", files: MAIN, keys: FOCUS_CARD_YOURS },
     // (one toast as it comes — news, never a pane with the keys: borderless on the peek's ground, a message a row)

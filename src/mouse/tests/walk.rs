@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 use crate::editor::{Drag, Editor};
 use crate::event::{Event, Mouse, MouseKind as K};
-use crate::mouse::{ACTS, Act, Expect, Part, STATES, Surface, TOOK, Under, doc, expect, rows};
+use crate::mouse::{ACTS, Act, Expect, Lit, Part, STATES, Surface, TOOK, Under, doc, expect, rows};
 use crate::sizes::Border;
 use crate::uistate::tests::{SCENES, Scene, chat, editor, frame};
 
@@ -191,6 +191,29 @@ const MOUSE_SCENES: &[Scene] = &[
             String::new(),
             what,
         ));
+    }),
+    // (#189: floating frames without the keys — the follow card over the code, the lists given back their keys)
+    ("the follow card over the code", |ed| {
+        long_text(ed);
+        chat(ed, "");
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "a question", ""));
+        (c.state, c.follow.on) = (crate::chat::State::Thinking, true);
+        ed.workspace.viewer.at = crate::workspace::At::Code;
+    }),
+    ("the messages list, its keys given back", |ed| {
+        ed.set_status("one");
+        ed.messages_open(None);
+        frame(ed);
+        feed(ed, &["<esc>"]);
+    }),
+    ("the folders list, its keys given back", |ed| {
+        let at = ed.workspace.root.join("elsewhere");
+        let folder = crate::folders::Folder { at, name: "elsewhere".into(), instructions: Vec::new() };
+        ed.workspace.folders.push(folder);
+        ed.folders_open();
+        frame(ed);
+        feed(ed, &["<esc>"]);
     }),
     // (#185: what goes with the message, over the chat's input — one chip, and three folded to `3 things`)
     ("the chat, a long quote over its input", |ed| {
@@ -1014,6 +1037,139 @@ fn every_cut_text_is_whole_under_the_mouse() {
     let done: Vec<&&str> =
         NOT_WHOLE_YET.iter().filter(|s| !w.dots.iter().any(|d| surface(&d.0) == **s)).collect();
     assert!(done.is_empty(), "no `…` left on {done:?}: take it off NOT_WHOLE_YET");
+}
+
+/// Every floating frame lights half while the pointer is on it, as a docked surface's lines do (#189, the mouse's
+/// bullet): in every scene each frame drawn without the keys is the wash with no pointer, half with the pointer on a cell
+/// of it where the surface under the pointer is its (`lights_at`), the wash again with the pointer off it. Every frame's
+/// corner drawn (`╭`) is one `Screen.frames` recorded — a frame drawn another way shows here — and one with no surface
+/// for the pointer (`of` None) is up only while it has the keys.
+#[test]
+fn every_floating_frame_lights_half_under_the_pointer() {
+    if !pty("every_floating_frame_lights_half_under_the_pointer") {
+        return;
+    }
+    let inside = |(x, y, w, h): (usize, usize, usize, usize), cx: usize, cy: usize| {
+        (x..x + w).contains(&cx) && (y..y + h).contains(&cy)
+    };
+    let (mut off, mut met) = (Vec::new(), Vec::new());
+    for &(scene, setup) in SCENES.iter().chain(MOUSE_SCENES) {
+        crate::clock::hold();
+        let mut ed = fresh(setup);
+        let text = shown(&mut ed);
+        let frames = ed.screen.frames.borrow().clone();
+        for (y, row) in text.lines().enumerate() {
+            for (x, _) in row.chars().enumerate().filter(|c| c.1 == '╭') {
+                if !frames.iter().any(|f| (f.rect.0, f.rect.1) == (x, y)) {
+                    off.push(format!("{scene}: a frame at {x},{y} drawn but not recorded"));
+                }
+            }
+        }
+        for f in &frames {
+            let (of, rect) = match (f.of, f.lit) {
+                (_, Lit::Keys) => continue,
+                (None, lit) => {
+                    off.push(format!(
+                        "{scene}: a frame at {:?} {lit:?}, nothing the pointer lights it for",
+                        f.rect
+                    ));
+                    continue;
+                }
+                (Some(of), Lit::Half) => {
+                    off.push(format!("{scene} · {of:?}: half lit with no pointer"));
+                    continue;
+                }
+                (Some(of), Lit::Wash) => (of, f.rect),
+            };
+            met.push(format!("{scene} · {of:?}"));
+            let (x, y, w, h) = rect;
+            let cells = (y..y + h).flat_map(|cy| (x..x + w).map(move |cx| (cx, cy)));
+            let mine: Vec<(usize, usize)> = cells
+                .filter(|&(cx, cy)| ed.lights_at(ed.mouse_under(K::Down, cx, cy), cx, cy) == Some(of))
+                .collect();
+            // (under a prompt, a picker or pointing every press is theirs — outside, it closes them: nothing under them
+            // lights, docked or floating)
+            let modal = |cx, cy| {
+                let s = ed.mouse_under(K::Down, cx, cy).surface;
+                matches!(s, Surface::Prompt | Surface::Picker | Surface::Pointing)
+            };
+            let Some(&(cx, cy)) = mine.get(mine.len() / 2) else {
+                if (y..y + h).all(|cy| (x..x + w).all(|cx| modal(cx, cy))) {
+                    continue;
+                }
+                off.push(format!("{scene} · {of:?} at {rect:?}: no cell of it is its surface"));
+                continue;
+            };
+            let lit =
+                |ed: &Editor| ed.screen.frames.borrow().iter().find(|g| g.of == Some(of)).map(|g| g.lit);
+            let mut over = fresh(setup);
+            over.handle_event(Event::Hover(cx as u16, cy as u16));
+            frame(&mut over);
+            if lit(&over) != Some(Lit::Half) {
+                off.push(format!("{scene} · {of:?} at {rect:?}: the pointer at {cx},{cy}, {:?}", lit(&over)));
+            }
+            let away = (0..H).flat_map(|ay| (0..W).map(move |ax| (ax, ay)));
+            if let Some((ax, ay)) =
+                away.clone().find(|&(ax, ay)| !frames.iter().any(|g| inside(g.rect, ax, ay)))
+            {
+                over.handle_event(Event::Hover(ax as u16, ay as u16));
+                frame(&mut over);
+                if lit(&over) != Some(Lit::Wash) {
+                    off.push(format!(
+                        "{scene} · {of:?}: the pointer gone off it to {ax},{ay}, {:?}",
+                        lit(&over)
+                    ));
+                }
+            }
+        }
+        crate::clock::release();
+    }
+    assert!(off.is_empty(), "{}", off.join("\n"));
+    // (each kind met unlit: a waiting ask, the follow card, the floating lists)
+    let kinds = [
+        "a light card · Card",
+        "the follow card over the code · Follow",
+        "the code, the session list floating without the keys · Dock(Sessions)",
+        "the messages list, its keys given back · Dock(Messages)",
+        "the folders list, its keys given back · Dock(Folders)",
+    ];
+    let unmet: Vec<&&str> = kinds.iter().filter(|k| !met.iter().any(|m| m == *k)).collect();
+    assert!(unmet.is_empty(), "never met unlit: {unmet:?}\nmet: {met:#?}");
+}
+
+/// A floating frame moved from under a still pointer goes back to its wash (`Ui::frame_lit`'s cell check): `:messages`
+/// without the keys, the pointer on its left side — half — then the pane moved off that cell (as `C-w m` or a drag moves
+/// it) with no hover after: the surface the last hover found is still its, the frame the wash.
+#[test]
+fn a_frame_moved_from_under_a_still_pointer_is_washed_again() {
+    if !pty("a_frame_moved_from_under_a_still_pointer_is_washed_again") {
+        return;
+    }
+    use crate::pane::GroupKind;
+    let scene = MOUSE_SCENES.iter().find(|s| s.0 == "the messages list, its keys given back").unwrap();
+    let mut ed = fresh(scene.1);
+    let of = crate::mouse::Lights::Dock(GroupKind::Messages);
+    let lit =
+        |ed: &Editor| ed.screen.frames.borrow().iter().find(|g| g.of == Some(of)).map(|g| (g.lit, g.rect));
+    let (_, (x, y, w, _)) = lit(&ed).expect("the messages list drawn");
+    let (px, py) = (x, y + 1);
+    assert_eq!(
+        ed.lights_at(ed.mouse_under(K::Down, px, py), px, py),
+        Some(of),
+        "its left side is its surface"
+    );
+    ed.handle_event(Event::Hover(px as u16, py as u16));
+    frame(&mut ed);
+    assert_eq!(lit(&ed).map(|l| l.0), Some(Lit::Half), "the pointer on it");
+    // (moved past the pointer's column: right of it where there's room, else left of it)
+    let r = ed.float_rect(GroupKind::Messages).unwrap();
+    let to = if px + 1 + w <= W { px + 1 } else { px.saturating_sub(w) };
+    ed.float_set(GroupKind::Messages, crate::split::Rect { x: to, ..r });
+    frame(&mut ed);
+    assert_eq!(ed.pointer_over, Some(of), "no hover since: the surface found is still its");
+    let (now, rect) = lit(&ed).unwrap();
+    assert_ne!(rect.0, x, "it moved");
+    assert_eq!(now, Lit::Wash, "moved from under the pointer at {px},{py}: {rect:?}");
 }
 
 /// What `after`'s second look does and doesn't do. The scene's state changed by itself (`DRIFT`, as a thread's write

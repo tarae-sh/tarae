@@ -512,6 +512,8 @@ pub struct Screen {
     /// The floating panes as drawn, bottom first: their kind (the session list's `Sessions`) and their frame's rect
     /// (P3 step 7) — the mouse finds the topmost, the code's cursor under one is hidden.
     pub floating: std::cell::RefCell<Vec<(crate::pane::GroupKind, crate::split::Rect)>>,
+    /// Every floating frame as drawn, bottom first, and how it was lit (#189) — the hover finds the card's.
+    pub frames: std::cell::RefCell<Vec<crate::mouse::Framed>>,
     /// The rows above the status line (None before the first frame): floating panes are placed on them and the width.
     pub height: Option<usize>,
     /// The groups docked over the code folded into the slot this frame, by `dock_index` — the code and the slot under
@@ -1161,6 +1163,9 @@ pub struct Editor {
     pub border_hover: Option<crate::sizes::Border>,
     /// The surface under the pointer, as the last hover found it: its lines lit half (`mouse::Lights`).
     pub pointer_over: Option<crate::mouse::Lights>,
+    /// The pointer's cell as the last hover found it: a floating frame lights half only while it's drawn round it (a
+    /// follow card that moved off a still pointer goes back to its wash).
+    pub pointer: Option<(usize, usize)>,
     /// A floating frame the mouse holds (its top line: moving it; an edge: sizing it) until it's let go (`float.rs`).
     pub float_dragging: Option<(crate::pane::GroupKind, crate::float::Grip)>,
     /// The held frame moved since its press: let go, it's kept (`float_drag_done`) — a click keeps nothing.
@@ -1480,6 +1485,7 @@ impl Editor {
             pressed_through: None,
             border_hover: None,
             pointer_over: None,
+            pointer: None,
             float_dragging: None,
             float_moved: false,
             float_moving: None,
@@ -2754,6 +2760,7 @@ impl Editor {
                 _ => None,
             };
             let over = self.lights_at(u, x, y);
+            self.pointer = Some((x, y));
             let lit = edge != std::mem::replace(&mut self.border_hover, edge)
                 || over != std::mem::replace(&mut self.pointer_over, over);
             self.unchanged = !(tag || mark || cut || word || lit);
@@ -2780,7 +2787,7 @@ impl Editor {
                 self.unfocused = !gained;
                 if !gained {
                     // (the pointer gone with the focus: nothing lit for it)
-                    (self.pointer_over, self.border_hover) = (None, None);
+                    (self.pointer_over, self.border_hover, self.pointer) = (None, None, None);
                     crate::presence::away(self);
                     // (the mouse gone with the focus: a row it held whole folds — `whole.rs`)
                     self.cut_hover = None;

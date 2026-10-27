@@ -31,6 +31,7 @@ use crate::filetree::Kind;
 use crate::graphemes;
 use crate::key::Key;
 use crate::llm::Review;
+use crate::mouse::Lit;
 use crate::movement as mv;
 use crate::picker::{Action, Picker};
 use crate::selection::Range;
@@ -689,6 +690,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         run_cols: Default::default(),
         docked: Default::default(),
         floating: Default::default(),
+        frames: Default::default(),
         height: Some((h as usize).saturating_sub(1)),
         slot_w: lay.slot_w,
         review_change: Default::default(),
@@ -4300,6 +4302,10 @@ struct Ui {
     /// (its own top line and edges).
     hover: Option<Region>,
     hover_pane: Option<crate::split::PaneId>,
+    /// The surface under the pointer as found (`Editor.pointer_over`) and the pointer's cell: a floating frame's lines
+    /// light half by them (`frame_lit`).
+    over: Option<crate::mouse::Lights>,
+    pointer: Option<(usize, usize)>,
     /// Key hints' keys: the dark wash (`ui.virtual.strong`), else the hint's own colour.
     hint_key: Option<crossterm::style::Color>,
     /// Diagnostics [_, error, warning, info, hint]: underline style, sign (●) color
@@ -4359,11 +4365,13 @@ impl Ui {
             participants: std::array::from_fn(|i| get(&format!("ui.participant.{}", i + 1)).fg),
             window: t.try_get("ui.window").and_then(|s| s.fg).or(base.patch(get("ui.linenr")).fg),
             lit: Region::with_keys(editor),
-            hover: editor.pointer_over.map(Region::of_lights),
+            hover: editor.pointer_over.and_then(Region::of_lights),
             hover_pane: match editor.pointer_over {
                 Some(crate::mouse::Lights::Code(p)) => Some(p),
                 _ => None,
             },
+            over: editor.pointer_over,
+            pointer: editor.pointer,
             hint_key: t.try_get("ui.virtual.strong").and_then(|s| s.fg),
             virt: base.patch(get("ui.virtual")),
             error: base.patch(get("error")),
@@ -4377,6 +4385,19 @@ impl Ui {
             selection,
             cursor,
             status,
+        }
+    }
+
+    /// How the floating frame drawn at `rect` is lit (#189, the mouse's bullet: as a docked surface's lines): the accent
+    /// where it has the keys (`keys`), half while the pointer is on it — its surface `of` as the last move found it, the
+    /// pointer's cell inside the frame as drawn now (a follow card gone from under a still pointer is washed again) —
+    /// else the wash. `of` None: a frame that's up only while it has the keys.
+    fn frame_lit(&self, of: Option<crate::mouse::Lights>, (x, y, w, h): Rect4, keys: bool) -> Lit {
+        let on = self.pointer.is_some_and(|(px, py)| (x..x + w).contains(&px) && (y..y + h).contains(&py));
+        match () {
+            _ if keys => Lit::Keys,
+            _ if of.is_some() && self.over == of && on => Lit::Half,
+            _ => Lit::Wash,
         }
     }
 
@@ -4417,16 +4438,18 @@ enum Region {
 }
 
 impl Region {
-    /// The surface under the pointer, as a docked surface (`mouse::Lights`).
-    fn of_lights(l: crate::mouse::Lights) -> Region {
+    /// The surface under the pointer, as a docked surface (`mouse::Lights`) — none for a card's frame or the follow
+    /// card's: theirs by `Ui::frame_lit`.
+    fn of_lights(l: crate::mouse::Lights) -> Option<Region> {
         use crate::mouse::Lights;
-        match l {
+        Some(match l {
             Lights::Code(_) => Region::Code,
             Lights::Side => Region::Side,
             Lights::Chat => Region::Chat,
             Lights::Slot => Region::Slot,
             Lights::Dock(k) => Region::Dock(k),
-        }
+            Lights::Card | Lights::Follow => return None,
+        })
     }
 
     /// Where the keys are, as a docked surface (`Editor::keys_at`) — none while a picker, a card or pointing has
@@ -5096,7 +5119,11 @@ fn draw_floating(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut Vec<u8>) -> i
             continue;
         }
         let has = ui.lit == Some(Region::Dock(kind));
-        let over = ui.hover == Some(Region::Dock(kind));
+        // (its lines as every floating frame's — `Ui::frame_lit`, #189)
+        let lit = ui.frame_lit(Some(crate::mouse::Lights::Dock(kind)), (r.x, r.y, r.w, r.h), has);
+        let over = lit == Lit::Half;
+        let of = Some(crate::mouse::Lights::Dock(kind));
+        editor.screen.frames.borrow_mut().push(crate::mouse::Framed { rect: (r.x, r.y, r.w, r.h), of, lit });
         let card = panel_style(ui, editor);
         apply(out, card)?;
         for y in r.y..r.y + r.h {
@@ -8917,7 +8944,7 @@ fn draw_picker(
     let splits: Vec<usize> = (right_w > 0).then_some(b.x + left_w).into_iter().collect();
     let name = pane_names(ui, editor, card, &[&p.title], 0);
     editor.screen.picker_box.set(Some((fx, b.y, fr + 1 - fx, rows)));
-    draw_frame(out, ui, card, (fx, b.y, fr + 1 - fx, rows), &name, &[], &splits, true)?;
+    draw_frame(out, ui, editor, card, (fx, b.y, fr + 1 - fx, rows), &name, &[], &splits, (None, true))?;
     let q = picker_input(p, lw, &count);
     let cursor = q.text.get(q.line.first..p.input.cursor().max(q.line.first)).unwrap_or_default().width();
     Ok(((b.x + 3 + usize::from(q.line.lead) + cursor) as u16, (b.y + 1) as u16))
@@ -12472,7 +12499,9 @@ impl OfferCard {
             }
             (true, _) => Vec::new(),
         };
-        draw_frame(out, ui, card, (self.x, self.y, width, self.rows()), &named, &answers, &[], held)?;
+        let rect = (self.x, self.y, width, self.rows());
+        let of = Some(crate::mouse::Lights::Card);
+        draw_frame(out, ui, editor, card, rect, &named, &answers, &[], (of, held))?;
         Ok(())
     }
 
@@ -12676,7 +12705,7 @@ fn draw_which_key(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) 
     card_edge(out, card, x0, y + rows, width)?;
     let mut name = pane_names(ui, editor, card, &[&head], 0);
     name.push((rest, dim));
-    draw_frame(out, ui, card, (x0, y0, width, h), &name, &[], &[], true)?;
+    draw_frame(out, ui, editor, card, (x0, y0, width, h), &name, &[], &[], (None, true))?;
     Ok(())
 }
 
@@ -13330,7 +13359,8 @@ fn draw_follow_card(
             links.push((y, x0 + 2, x0 + 2 + inner, l.clone()));
         }
     }
-    // Its frame (P3 step 7d): takes no keys — its lines the faint wash always; its name, details and time its top line;
+    // Its frame (P3 step 7d): takes no keys — its lines the faint wash, half lit under the pointer (#189); its name,
+    // details and time its top line;
     // its keys its bottom line — the strip's mark under the mouse in words in their place while it's there (motion §4;
     // the user, 2026-10-25), the keys back as it leaves
     let shown_marks = &marks[shown];
@@ -13339,7 +13369,17 @@ fn draw_follow_card(
         Some(m) => vec![(m.said.clone(), dim)],
         None => bottom_keys(keys, width.saturating_sub(6), key, faint, frame_line(ui, card)),
     };
-    draw_frame(out, ui, card, rect, &[], &bottom, &[], false)?;
+    let line = draw_frame(
+        out,
+        ui,
+        editor,
+        card,
+        rect,
+        &[],
+        &bottom,
+        &[],
+        (Some(crate::mouse::Lights::Follow), false),
+    )?;
     use crate::wordspot::{Press, Spot};
     let on = crate::mouse::Surface::FollowCard;
     let head = TopLine {
@@ -13361,7 +13401,7 @@ fn draw_follow_card(
         }),
         ..TopLine::default()
     };
-    let cols = top_line(out, frame_line(ui, card), card, (x0, y0, width), ("╭", "╮", "┬"), &[], true, &head)?;
+    let cols = top_line(out, line, card, (x0, y0, width), ("╭", "╮", "┬"), &[], true, &head)?;
     // (its words that do their keys: `▲ waits` — `C-q` — and `paused` — `C-f` — where the line had room for them;
     // its bottom line's keys, laid as `draw_frame` lays them after `╰─ `)
     let mut words = editor.screen.word_spots.borrow_mut();
@@ -18273,6 +18313,15 @@ fn frame_line(ui: &Ui, card: Style) -> Style {
     Style { fg: ui.window, bg: card.bg, ..Style::default() }
 }
 
+/// A floating frame's lines as `lit` (`Ui::frame_lit`): the wash, the accent half over it, the accent.
+fn frame_style(ui: &Ui, card: Style, lit: Lit) -> Style {
+    match lit {
+        Lit::Keys => Style { fg: ui.accent.fg, ..frame_line(ui, card) },
+        Lit::Half => half_lit(ui, frame_line(ui, card)),
+        Lit::Wash => frame_line(ui, card),
+    }
+}
+
 /// A pane's names as its top line has them (panes plan §2.1c, D3) — one model for a frame's top line and a docked
 /// group's header: a pane alone is one name, a stacked group names all its members, `·` between (the faint
 /// wash), the one in sight lit (`ui.text.focus`), the others in the dim wash. `tab`/`S-tab` move between them.
@@ -18301,26 +18350,28 @@ const MEMBERS_SEP: &str = " › ";
 /// first and last columns padding): `╭─ name ─╮` — the name in place of a title row — `│` down both sides,
 /// `╰─ y run · n no ─╯` — the answer keys (`keys`: spans, `OfferCard::answer_spans`) in the bottom line: top
 /// says what, bottom says how. `splits`: columns where two leaves of one group meet inside it, a line down with `┬`/`┴`
-/// where it meets the frame. The lines unfaded: `lit` — it has the keys — in the accent, else the faint wash
-/// (`ui.window`) of a pane that could take them (P3 §3.8, as a docked pane's line); the name as `frame_name` styles it.
+/// where it meets the frame. The lines unfaded: in the accent where it has the keys (`lit`'s second), half while the
+/// pointer is on it (its surface `lit`'s first — #189, as a docked pane's lines), else the faint wash (`ui.window`) of a
+/// pane that could take them (P3 §3.8) — `Ui::frame_lit`, recorded in `Screen.frames`; the name as `frame_name` styles
+/// it. Its lines' style, for what draws over its top line.
 #[allow(clippy::too_many_arguments)]
 fn draw_frame(
     out: &mut impl Write,
     ui: &Ui,
+    editor: &Editor,
     card: Style,
     (x, y, w, h): Rect4,
     name: &[(String, Style)],
     keys: &[(String, Style)],
     splits: &[usize],
-    lit: bool,
-) -> io::Result<()> {
+    (of, has): (Option<crate::mouse::Lights>, bool),
+) -> io::Result<Style> {
+    let lit = ui.frame_lit(of, (x, y, w, h), has);
+    let line = frame_style(ui, card, lit);
     if w < 8 || h < 2 {
-        return Ok(());
+        return Ok(line);
     }
-    let line = match lit {
-        true => Style { fg: ui.accent.fg, ..frame_line(ui, card) },
-        false => frame_line(ui, card),
-    };
+    editor.screen.frames.borrow_mut().push(crate::mouse::Framed { rect: (x, y, w, h), of, lit });
     // Its top and bottom lines are top lines (`top_line`, the slot's header's drawer): the spans set in after `─ `
     let across = |out: &mut Vec<u8>, yy: usize, ends: (&str, &str, &str), spans: &[(String, Style)]| {
         let head = TopLine {
@@ -18343,7 +18394,8 @@ fn draw_frame(
         }
     }
     across(&mut buf, y + h - 1, ("╰", "╯", "┴"), keys)?;
-    out.write_all(&buf)
+    out.write_all(&buf)?;
+    Ok(line)
 }
 
 /// A card's top or bottom row (`CARD_PAD`): `width` cells of the card's colour — a frame's line, drawn over it, or
@@ -19272,7 +19324,7 @@ fn draw_prompt(
         let only = format!("only {} read", crate::cmdline::DIR_MAX);
         name.push((only, Style { fg: ui.linenr.fg, ..card }));
     }
-    draw_frame(out, ui, card, (x0, y0, width, h), &name, &[], &[], true)?;
+    draw_frame(out, ui, editor, card, (x0, y0, width, h), &name, &[], &[], (None, true))?;
     Ok(cursor)
 }
 
