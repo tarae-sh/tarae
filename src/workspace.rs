@@ -610,7 +610,7 @@ pub enum Spot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Doing {
     Idle,
-    /// Answering — `●`.
+    /// Answering — `working` in the lists, the working sign (`term::working`) where a mark says it.
     Working,
     /// Waiting for your answer: a card of its, an edit to review — `▲ waits` (before working: it's both).
     Waiting,
@@ -622,7 +622,7 @@ pub enum Doing {
         tool: &'static str,
         secs: u64,
     },
-    /// Its run waits in line for its slot, `pos`th (`queued.rs`) — `● queued 2nd`, dim: at work, held back,
+    /// Its run waits in line for its slot, `pos`th (`queued.rs`) — `queued 2nd`, faint: at work, held back,
     /// not stuck.
     Queued {
         pos: usize,

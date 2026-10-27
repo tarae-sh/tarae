@@ -57,14 +57,10 @@ pub fn answer(ed: &mut Editor, id: u64, (sid, message): (WorkspaceId, Option<Str
         ed.config.llm.keep_env_key = true;
         ed.overrides.retain(|(p, _)| p != "llm.environment-key");
         // (here, as `:set!` writes — your own config file, the one tarae read at start)
-        let kept = ed
-            .config_file
-            .as_ref()
-            .map(|f| crate::config::persist_to(f, "llm.environment-key", &"keep".into()));
-        match kept {
+        match ed.save_setting("llm.environment-key", &"keep".into()) {
             Some(Err(e)) => ed.set_error(format!("llm.environment-key isn't kept for the next start: {e}")),
             None => ed.set_warning("No config file of yours to keep llm.environment-key in — until you quit"),
-            Some(Ok(())) => {}
+            Some(Ok(_)) => {}
         }
     }
     ed.with_workspace(sid, |ed| {

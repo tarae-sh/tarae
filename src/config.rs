@@ -694,14 +694,8 @@ pub fn watch(tx: crate::event::Tx, root: PathBuf, from: Sources) {
 
 // ── Writing (`:set!`) ────────────────────────────────────────────────────────
 
-/// Set `path` in the user config file to `v` — comments and formatting kept (toml_edit).
-pub fn persist(path: &str, v: &Value) -> Result<PathBuf, String> {
-    let file = config_path().ok_or("no config directory")?;
-    persist_to(&file, path, v)?;
-    Ok(file)
-}
-
-/// Set `path` in the config file `file` to `v` — comments and formatting kept.
+/// Set `path` in the config file `file` to `v` — comments and formatting kept (toml_edit). Through
+/// `Editor::save_setting`, the editor's own file's one writer.
 pub fn persist_to(file: &Path, path: &str, v: &Value) -> Result<(), String> {
     let src = match fs::read_to_string(file) {
         Ok(s) => s,
@@ -809,6 +803,16 @@ pub(crate) mod tests {
     /// The ```toml blocks of a Markdown file.
     fn toml_blocks(md: &str) -> Vec<&str> {
         md.split("```toml\n").skip(1).map(|b| &b[..b.find("```").unwrap()]).collect()
+    }
+
+    /// frictions #169: a saved setting has one writer, `Editor::save_setting` — the editor's own config file (none
+    /// in tests but the one they give): nothing else of the code writes a config file, so no test can write yours.
+    #[test]
+    fn every_saved_setting_is_written_by_save_setting() {
+        let writes: Vec<String> = (crate::sim::lint::sources().into_iter())
+            .flat_map(|(file, text)| vec![file; text.matches("persist_to(").count()])
+            .collect();
+        assert_eq!(writes, ["config.rs", "editor.rs"], "its definition, and `save_setting`'s one call");
     }
 
     /// frictions #134: a reload of what tarae itself wrote to a config file (`space v a`, `:set!`) says nothing over

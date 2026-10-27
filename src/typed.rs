@@ -533,10 +533,7 @@ fn set_value(editor: &mut Editor, path: &str, v: toml::Value, persist: bool) -> 
     // Written first: what follows it (every chat's review at the end) switches only to what holds — a write that
     // fails keeps it until you quit, said (the editor's own config file, as `space v a` writes it — none in tests
     // but the one they give)
-    let kept = persist.then(|| {
-        let file = editor.config_file.clone().ok_or("no config directory")?;
-        config::persist_to(&file, path, &v).map(|()| file)
-    });
+    let kept = persist.then(|| editor.save_setting(path, &v).unwrap_or(Err("no config directory".into())));
     editor.config = next;
     editor.ensure_theme();
     editor.overrides.retain(|(p, _)| p != path);

@@ -142,15 +142,26 @@ pub fn effort_picker(ed: &mut Editor) {
     ed.open_picker(p, None);
 }
 
-/// A setting changed and saved (not from tests — they'd write the user's config).
-fn save(ed: &mut Editor, path: &str, v: &str) -> Result<(), String> {
+/// A setting changed and saved, as `:set!` saves it (`Editor::save_setting`: the editor's own config file — none
+/// in tests but the one they give). A write that fails, or no file to write in, keeps it until you quit: why, for the
+/// answer to say.
+fn save(ed: &mut Editor, path: &str, v: &str) -> Result<Option<String>, String> {
     let v = toml::Value::from(v);
     crate::settings::apply(&mut ed.config, path, &v)?;
     ed.overrides.retain(|(p, _)| p != path);
-    if !cfg!(test) {
-        crate::config::persist(path, &v)?;
+    let Err(e) = ed.save_setting(path, &v).unwrap_or(Err("no config directory".into())) else {
+        return Ok(None);
+    };
+    ed.overrides.push((path.to_string(), v));
+    Ok(Some(e))
+}
+
+/// What a switch says: done, or done until you quit — not saved, why.
+fn said(ed: &mut Editor, what: String, unsaved: Option<String>) {
+    match unsaved {
+        Some(e) => ed.set_error(format!("{what} until you quit — not saved: {e}")),
+        None => ed.set_success(what),
     }
-    Ok(())
 }
 
 /// `:model <value>` — saved, and the conversation goes on with it.
@@ -160,7 +171,7 @@ pub fn set(ed: &mut Editor, value: &str) -> Result<(), String> {
     let value = m.map_or(value.to_string(), |m| m.value.clone());
     // (what the conversation ran on — the line over the input says what the next message costs)
     ed.switching();
-    save(ed, "llm.model", if value == "default" { "" } else { &value })?;
+    let mut unsaved = save(ed, "llm.model", if value == "default" { "" } else { &value })?;
     crate::chat::request(ed, json!({ "subtype": "set_model", "model": value }));
     // (what answers is known again from the next answer — until then the title says what was asked for; what it
     // runs on now is this chat's)
@@ -171,14 +182,14 @@ pub fn set(ed: &mut Editor, value: &str) -> Result<(), String> {
     // An effort the new model doesn't take goes (it'd be refused)
     let effort = ed.config.llm.effort.clone();
     if m.is_some_and(|m| !m.resolved.is_empty() && !effort.is_empty() && !m.efforts.contains(&effort)) {
-        save(ed, "llm.effort", "")?;
+        unsaved = unsaved.or(save(ed, "llm.effort", "")?);
         if let Some(c) = ed.workspace.claude.chat.as_mut() {
             c.runs_on.1.clear();
         }
     }
     let name = label(ed).or_else(|| m.map(|m| m.name.clone())).unwrap_or(value);
     let cost = ed.switched_said();
-    ed.set_success(format!("Claude: {name}{cost}"));
+    said(ed, format!("Claude: {name}{cost}"), unsaved);
     Ok(())
 }
 
@@ -186,7 +197,7 @@ pub fn set(ed: &mut Editor, value: &str) -> Result<(), String> {
 pub fn set_effort(ed: &mut Editor, level: &str) -> Result<(), String> {
     let level = if level == "default" { "" } else { level };
     ed.switching();
-    save(ed, "llm.effort", level)?;
+    let unsaved = save(ed, "llm.effort", level)?;
     // (null = the model's own — measured: thinking back at the untouched default's)
     let effort = if level.is_empty() { serde_json::Value::Null } else { json!(level) };
     crate::chat::request(
@@ -198,6 +209,6 @@ pub fn set_effort(ed: &mut Editor, level: &str) -> Result<(), String> {
     }
     let what = if level.is_empty() { "the model's default".to_string() } else { level.to_string() };
     let cost = ed.switched_said();
-    ed.set_success(format!("Effort: {what}{cost}"));
+    said(ed, format!("Effort: {what}{cost}"), unsaved);
     Ok(())
 }

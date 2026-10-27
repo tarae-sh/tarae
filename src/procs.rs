@@ -1637,6 +1637,14 @@ impl Editor {
         self.list_focus(crate::pane::GroupKind::Procs);
     }
 
+    /// Whether the panel in sight shows a session behind at work: its heading's working sign moves, as the front's
+    /// does (frames for it while the last one drew the bottom slot — the panel is its first).
+    pub(crate) fn procs_sign_drawn(&self) -> bool {
+        self.procs.panel.is_some()
+            && self.screen.bottom_h > 0
+            && (self.workspaces.iter()).any(|l| self.doing(l) == crate::workspace::Doing::Working)
+    }
+
     /// Whether the panel's table has the keys.
     pub fn procs_focused(&self) -> bool {
         self.list_focused().is_some_and(|g| g.kind == crate::pane::GroupKind::Procs)
@@ -4000,6 +4008,22 @@ pub(crate) mod tests {
         let head = shown.lines().find(|l| l.contains("-second") && !l.contains("fake")).expect("its heading");
         assert!(head.contains("second  "), "its name from the pid column: {head}");
         assert!(head.contains(&summed), "summed on screen: {head}");
+        // frictions #166: at work behind, its heading has the one working sign (`term::working`) — never a `●` — and
+        // frames come for it while the panel's in sight, as the front's (no toast left to want one of its own)
+        ed.toasts.clear();
+        assert!(!ed.procs_sign_drawn() && ed.tick_wanted().is_none(), "nothing at work, no frame wanted");
+        let at_work = |ed: &mut Editor, state| {
+            let l = ed.workspaces.iter_mut().find(|l| l.id == id).unwrap();
+            l.claude.chat.as_mut().unwrap().state = state;
+        };
+        at_work(&mut ed, crate::chat::State::Thinking);
+        let shown = screen(&mut ed, 140, 40).join("\n");
+        let head = shown.lines().find(|l| l.contains("-second") && !l.contains("fake")).expect("its heading");
+        let sign = head.split("second").nth(1).and_then(|r| r.chars().nth(1));
+        assert!(sign.is_some_and(|c| crate::shimmer::CELLS.contains(&c)), "the working sign: {head}");
+        assert!(!head.contains('●'), "{head}");
+        assert!(ed.procs_sign_drawn() && ed.tick_wanted().is_some(), "its sign moves");
+        at_work(&mut ed, crate::chat::State::Idle);
         // On the heading `s` only says what it is
         keys(&mut ed, "s");
         assert_eq!(

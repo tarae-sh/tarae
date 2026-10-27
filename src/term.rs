@@ -3363,19 +3363,16 @@ fn draw_procs_panel<W: Write>(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut 
         let mark = editor.procs_focused() && scroll + i == panel.selected;
         let base = if mark { selected } else { card };
         let plain = Style { fg: base.fg, ..card };
-        // A session's heading: its name from the pid column on, `●`/`▲` as its tab has them, its checkout,
-        // and what's under it summed
+        // A session's heading: its name from the pid column on, its state after it — the working sign while it works
+        // (#166: the one sign wherever a session works), `▲`/`◦` as its tab has them, `queued 2nd` —, its
+        // checkout, and what's under it summed
         if let Kind::Session(id) = r.kind {
-            use crate::workspace::Doing;
             let session = editor.sessions_in_order().into_iter().find(|l| l.id == id);
-            let glyph = match session.map(|l| editor.doing(l)) {
-                Some(Doing::Working) => Some(("●", Style { fg: ui.accent.fg, ..card })),
-                Some(Doing::Waiting) => Some(("▲", warn)),
-                Some(Doing::Stuck { .. }) => Some(("◦", warn)),
-                Some(Doing::Queued { .. }) => Some(("●", dim)),
-                _ => None,
-            };
-            let name = glyph.map_or_else(|| r.title.clone(), |(g, _)| format!("{} {g}", r.title));
+            let inks = (Style { fg: ui.accent.fg, ..card }, warn, faint);
+            let glyph = session.and_then(|l| {
+                procs_heading_state(editor, editor.doing(l), l.id == editor.workspace.id, inks)
+            });
+            let name = glyph.as_ref().map_or_else(|| r.title.clone(), |(g, _)| format!("{} {g}", r.title));
             // (its name in its colour, full, as every list names a session — #165)
             let own = session.and_then(|l| ui.participant(l.claude.colour, true));
             let own = Style { fg: own.or(strong.fg), ..strong };
@@ -3397,10 +3394,10 @@ fn draw_procs_panel<W: Write>(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut 
             }
             line(out, y, &cells, base, mark)?;
             // (the glyph in its own color, over the name's end)
-            if let Some((g, st)) = glyph
+            if let Some((g, st)) = &glyph
                 && name.width() <= lead
             {
-                apply(out, Style { bg: base.bg, ..st })?;
+                apply(out, Style { bg: base.bg, ..*st })?;
                 let gx = x0 + crate::chrome::PAD + name.width() - g.width();
                 queue!(out, MoveTo(gx as u16, y as u16), Print(g))?;
             }
@@ -12087,6 +12084,25 @@ fn working(editor: &Editor, turn: bool) -> String {
     CELLS[at].to_string()
 }
 
+/// What a session's heading in `:procs` says after its name, in its ink (`inks`: accent, warning, faint): the working
+/// sign while it works (#166 — the front's at its stream's level, as its chat's; one behind breathes), `▲`/`◦` as
+/// its tab has them, `queued 2nd` faint as the session list says it (`●` is an edit's mark); nothing idle or done.
+fn procs_heading_state(
+    editor: &Editor,
+    doing: crate::workspace::Doing,
+    front: bool,
+    (accent, warn, faint): (Style, Style, Style),
+) -> Option<(String, Style)> {
+    use crate::workspace::Doing;
+    match doing {
+        Doing::Working => Some((working(editor, front), accent)),
+        Doing::Waiting => Some(("▲".into(), warn)),
+        Doing::Stuck { .. } => Some(("◦".into(), warn)),
+        d @ Doing::Queued { .. } => Some((d.said(), faint)),
+        Doing::Idle | Doing::Done => None,
+    }
+}
+
 /// The turn's cell on a top line (the chat's, the follow card's) and its style: `▲` in warning while the turn waits on
 /// you, `◦` while a call of it may be stuck, else the working sign in `accent` — the same one cell whatever it does.
 /// Where the line already names the turn's state (`said`: the follow card's head, the chat's line of two sessions or
@@ -18444,6 +18460,29 @@ mod tests {
         let cells =
             (0..n).map(|x| vt.screen().cell(0, x).unwrap()).map(|c| (c.fgcolor(), c.bgcolor())).collect();
         (vt.screen().contents().trim_end().to_string(), cells)
+    }
+
+    /// frictions #166: a `:procs` heading says its session's state as every other place does — at work the one working
+    /// sign in the accent, a run in line the faint word (`●` is an edit's mark, never a state's), `▲`/`◦` in warning,
+    /// nothing idle or done.
+    #[test]
+    fn a_procs_heading_says_its_sessions_state_as_everywhere() {
+        use crate::workspace::Doing;
+        use crossterm::style::Color;
+        let ed = crate::editor::Editor::new(crate::config::Config::default());
+        let ink = |r| super::Style { fg: Some(Color::Rgb { r, g: 0, b: 0 }), ..super::Style::default() };
+        let (accent, warn, faint) = (ink(1), ink(2), ink(3));
+        let said = |d, front| super::procs_heading_state(&ed, d, front, (accent, warn, faint));
+        for front in [true, false] {
+            let (sign, st) = said(Doing::Working, front).unwrap();
+            let cell = sign.chars().collect::<Vec<_>>();
+            assert!(matches!(&cell[..], [c] if crate::shimmer::CELLS.contains(c)), "{sign:?}");
+            assert_eq!(st, accent);
+        }
+        assert_eq!(said(Doing::Queued { pos: 2 }, false), Some(("queued 2nd".into(), faint)));
+        assert_eq!(said(Doing::Waiting, false), Some(("▲".into(), warn)));
+        assert_eq!(said(Doing::Stuck { tool: "symbols", secs: 3 }, false), Some(("◦".into(), warn)));
+        assert_eq!((said(Doing::Idle, true), said(Doing::Done, false)), (None, None));
     }
 
     /// #165's review: a list's search over a painted row — a hit keeps its own ink and ground over a painted name, the

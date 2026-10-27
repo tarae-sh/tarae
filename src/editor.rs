@@ -1053,7 +1053,7 @@ pub struct Editor {
     /// What a run's policy reads of tarae's surroundings (`sandbox::Here`, on its worker) — `Here::now` unless a
     /// test says (`tools::guard_then_go`).
     pub(crate) sandbox_here: Option<std::sync::Arc<dyn Fn() -> crate::sandbox::Here + Send + Sync>>,
-    /// The user's config file, where a toggle that's kept is written (`space v a`) — None in tests (they
+    /// The user's config file, where every saved setting is written (`save_setting`) — None in tests (they
     /// set a temp file).
     pub config_file: Option<std::path::PathBuf>,
     /// The last frame drawn and its size — what the user sees (`chat::attach_screen`).
@@ -1577,6 +1577,14 @@ impl Editor {
     /// Where its config loads read your config file and the trust answers — none in tests.
     pub fn config_sources(&self) -> crate::config::Sources {
         crate::config::Sources { user: self.config_file.clone(), trust: self.trust_path.clone() }
+    }
+
+    /// The one writer of a saved setting — `:set!`, `space v a`, the model and effort, the key card's `A`: `path`
+    /// set to `v` in the editor's own config file (yours, the one read at start; a test's own or none in tests),
+    /// where it was written. None: no file to write it in.
+    pub fn save_setting(&self, path: &str, v: &toml::Value) -> Option<Result<PathBuf, String>> {
+        let file = self.config_file.as_ref()?;
+        Some(crate::config::persist_to(file, path, v).map(|()| file.clone()))
     }
 
     /// What every tarae watches from its start (`term::event_loop`): its config files — `started_root`'s —
@@ -3693,7 +3701,8 @@ impl Editor {
             || self.workspace.claude.chat.as_ref().is_some_and(|c| c.busy())
             || (run && slot_drawn)
             || crate::web::page::reading_in_sight(self)
-            || self.offer_busy();
+            || self.offer_busy()
+            || self.procs_sign_drawn();
         // (the working sign held still where nothing moves on a clock: a frame a second, for the time waited — its timers
         // say whole seconds there, `term::running`)
         let next = if waiting && !self.unfocused {
@@ -11374,8 +11383,8 @@ mod tests {
     #[test]
     fn claudes_model_is_chosen_live() {
         use serde_json::json;
-        let dir = std::env::temp_dir().join(format!("tarae-model-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let scratch = crate::scratch::Scratch::new("model");
+        let dir = scratch.to_path_buf();
         let log = dir.join("stdin.log");
         let models = json!([
             {"value": "default", "displayName": "Default (recommended)", "resolvedModel": "claude-opus-5-5",
@@ -11387,6 +11396,9 @@ mod tests {
         let init = json!({"type": "control_response", "response": {"subtype": "success", "request_id": "tarae-init",
             "response": {"models": models}}});
         let mut ed = editor("");
+        // (frictions #169: saved where `:set!` saves — the editor's own config file, the test's here)
+        let config = dir.join("config.toml");
+        ed.config_file = Some(config.clone());
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec![
             "-c".into(),
@@ -11413,8 +11425,10 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         };
+        let saved = || std::fs::read_to_string(&config).unwrap_or_default();
         feed(&mut ed, "<esc><esc>:model haiku<ret>");
         assert_eq!(ed.config.llm.model.as_deref(), Some("haiku"));
+        assert!(saved().contains("model = \"haiku\""), "saved: {}", saved());
         logged(r#""model":"haiku","subtype":"set_model""#);
         assert!(title(&mut ed).contains("Haiku 4.5"));
         feed(&mut ed, ":effort<ret>");
@@ -11426,12 +11440,32 @@ mod tests {
         feed(&mut ed, ":model opus<ret>:effort max<ret>");
         logged(r#""settings":{"effortLevel":"max"},"subtype":"apply_flag_settings""#);
         assert_eq!(ed.config.llm.effort, "max");
+        assert!(saved().contains("model = \"opus\"") && saved().contains("effort = \"max\""), "{}", saved());
         assert!(title(&mut ed).contains("Opus 5.5 · max"));
         // Back to the model's own — no restart: a null effort
         feed(&mut ed, ":effort default<ret>");
         assert_eq!(ed.config.llm.effort, "");
         logged(r#""settings":{"effortLevel":null},"subtype":"apply_flag_settings""#);
-        std::fs::remove_dir_all(&dir).ok();
+        // A write that fails: switched all the same, kept until you quit, past a reload — said, not saved, why
+        std::fs::write(dir.join("afile"), "").unwrap();
+        ed.config_file = Some(dir.join("afile/config.toml"));
+        let said = |ed: &Editor| ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        feed(&mut ed, ":model haiku<ret>");
+        logged(r#""model":"haiku","subtype":"set_model""#);
+        assert!(said(&ed).starts_with("Claude: Haiku 4.5"), "{}", said(&ed));
+        assert!(said(&ed).contains(" until you quit — not saved: "), "{}", said(&ed));
+        feed(&mut ed, ":model opus<ret>:effort low<ret>");
+        assert!(said(&ed).starts_with("Effort: low until you quit — not saved: "), "{}", said(&ed));
+        ed.reload_config(crate::config::parse("").0, Vec::new());
+        assert_eq!((ed.config.llm.model.as_deref(), ed.config.llm.effort.as_str()), (Some("opus"), "low"));
+        assert!(saved().contains("effort = \"\""), "the file kept what was saved last: {}", saved());
+        // No config file at all: the same, said as `:set!` says it
+        ed.config_file = None;
+        feed(&mut ed, ":effort high<ret>");
+        assert!(said(&ed).starts_with("Effort: high"), "{}", said(&ed));
+        assert!(said(&ed).ends_with(" until you quit — not saved: no config directory"), "{}", said(&ed));
+        ed.reload_config(crate::config::parse("").0, Vec::new());
+        assert_eq!(ed.config.llm.effort, "high", "kept past a reload");
     }
 
     /// The title says the model that answered, not the one configured: a chat whose process started on
@@ -12056,6 +12090,38 @@ mod tests {
         reload(&mut ed);
         assert!(!ed.config.llm.review_at_end && !crate::edits::at_end(&ed), "kept past a reload");
         assert_eq!(ed.overrides.len(), 1, "one, the last");
+    }
+
+    /// frictions #170: `:set!`'s write that fails, for any setting — set all the same, kept until you quit past a
+    /// reload, said: not saved, why; no config file at all says that. Saved again, it's the file's, kept no more.
+    #[test]
+    fn a_set_bang_not_saved_is_kept_until_you_quit_and_said() {
+        let scratch = crate::scratch::Scratch::new("set-not-saved");
+        let dir = scratch.to_path_buf();
+        let mut ed = editor("");
+        let said = |ed: &Editor| ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        let reload = |ed: &mut Editor| ed.reload_config(crate::config::parse("").0, Vec::new());
+        // (a file where its folder would be: the write fails)
+        std::fs::write(dir.join("afile"), "").unwrap();
+        ed.config_file = Some(dir.join("afile/config.toml"));
+        feed(&mut ed, ":set! editor.scrolloff 9<ret>");
+        assert!(said(&ed).starts_with("editor.scrolloff = 9 until you quit — not saved: "), "{}", said(&ed));
+        assert_eq!(ed.config.scrolloff, 9);
+        reload(&mut ed);
+        assert_eq!(ed.config.scrolloff, 9, "kept past a reload");
+        // None to write in
+        ed.config_file = None;
+        feed(&mut ed, ":set! editor.scrolloff 4<ret>");
+        assert_eq!(said(&ed), "editor.scrolloff = 4 until you quit — not saved: no config directory");
+        reload(&mut ed);
+        assert_eq!((ed.config.scrolloff, ed.overrides.len()), (4, 1), "kept, the last one only");
+        // Saved: the file's from then on, nothing kept over it
+        let config = dir.join("config.toml");
+        ed.config_file = Some(config.clone());
+        feed(&mut ed, ":set! editor.scrolloff 6<ret>");
+        assert!(said(&ed).contains("(saved to "), "{}", said(&ed));
+        assert!(std::fs::read_to_string(&config).unwrap().contains("scrolloff = 6"));
+        assert!(ed.overrides.is_empty(), "nothing kept over the file");
     }
 
     /// Review at the end: an edit inside the project goes in unasked — written by tarae; it keeps what the file

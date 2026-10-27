@@ -208,7 +208,7 @@ pub fn at_end_set(ed: &mut Editor, on: bool) {
     ed.overrides.retain(|(p, _)| p != "llm.review-at-end");
     // (here, as `:set!` writes: on a worker each, a quick on-off could land off-on — and the config watch
     // would take that back — or cross a `:set!` of the same file)
-    let kept = ed.config_file.as_ref().map(|f| crate::config::persist_to(f, "llm.review-at-end", &on.into()));
+    let kept = ed.save_setting("llm.review-at-end", &on.into());
     // (not written: kept until you quit, as `:set!`'s — a reload of the file would take it back)
     if let Some(Err(_)) = &kept {
         ed.overrides.push(("llm.review-at-end".into(), on.into()));

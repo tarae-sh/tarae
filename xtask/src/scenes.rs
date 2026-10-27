@@ -317,6 +317,8 @@ const PRESENCE: &[&str] = presence_keys!();
 const PRESENCE_LIST: &[&str] = presence_keys!(" ", "W", "@2");
 const PRESENCE_FILES: &[&str] = presence_keys!(" ", "e", "@2");
 const PRESENCE_FOLLOW: &[&str] = presence_keys!(" ", "F", "@2");
+// (frictions #166: `:procs` from fix, main at work behind — its heading's one working sign, as every place a session works)
+const PRESENCE_PROCS: &[&str] = presence_keys!(":procs", "\r", "@2");
 // (a third checkout, idle, then back in fix with its chat open: the strip over it, each session's name in its colour,
 // main's `working` and its file after it, fix in front in bold)
 const PRESENCE_STRIP: &[&str] = presence_keys!(
@@ -2566,6 +2568,8 @@ const SCENES: &[Scene] = &[
     Scene { name: "presencefiles", claude: "writemid", files: MAIN, keys: PRESENCE_FILES },
     // (…`space F`: following the next session at work takes you into its checkout, `● follow <name>`)
     Scene { name: "presencefollow", claude: "writemid", files: MAIN, keys: PRESENCE_FOLLOW },
+    // (…`:procs`: each session under its heading, main's the working sign while it writes)
+    Scene { name: "presenceprocs", claude: "writemid", files: MAIN, keys: PRESENCE_PROCS },
     // (…the sessions' strip over a chat: every session's name in its colour, what it does after it)
     Scene { name: "presencestrip", claude: "writemid", files: MAIN, keys: PRESENCE_STRIP },
     // (…a session waiting on you behind — its card parked: the strip and the list say it in warning)
