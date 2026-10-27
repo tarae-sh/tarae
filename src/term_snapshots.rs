@@ -7722,6 +7722,211 @@ fn a_slot_headers_lines_down_start_at_a_join() {
     }
 }
 
+/// Mouse R, Q7: a line that drags under the pointer lights half — the accent half over its wash, the line of what has
+/// the keys staying the one full-accent line (one lit by them stays full) — and the accent while it's held; off it,
+/// its wash again. The line over and under, and the slot's.
+#[test]
+fn a_line_that_drags_lights_under_the_pointer() {
+    use crate::event::Event;
+    let (w, h) = (120u16, 30u16);
+    let mut s = Shot::new(w, h);
+    s.file("src/demo.rs", DEMO_RS);
+    let lines = (0..20).map(|i| format!("output line {i}")).collect();
+    s.ed.workspace.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), lines));
+    s.keys("<C-w>s");
+    let (_, _, accent) = chrome_colors(&s.ed);
+    let cell = |s: &mut Shot, x: usize, y: usize| {
+        let c = cells(&s.frame(), w, h).screen().cell(y as u16, x as u16).unwrap().clone();
+        (c.contents().to_string(), c.fgcolor())
+    };
+    let hover = |s: &mut Shot, x: usize, y: usize| s.ed.handle_event(Event::Hover(x as u16, y as u16));
+    // The keys in the slot: the lower pane's top line — the line between the two — in the wash
+    let mut ids = s.ed.code_leaves();
+    let rect = |s: &Shot, id| s.ed.screen.leaves.iter().find(|l| l.0 == id).unwrap().1;
+    ids.sort_by_key(|&id| rect(&s, id).y);
+    s.ed.focus_view(ids[0]);
+    s.ed.bottom_take_keys();
+    let low = rect(&s, ids[1]);
+    // (a cell of its rule: past the names, before the buffers)
+    let rule = |s: &mut Shot, xs: std::ops::Range<usize>, y: usize| {
+        xs.rev().find(|&x| cell(s, x, y).0 == "─" && s.ed.border_at(x, y).is_some()).expect("its rule")
+    };
+    // (the accent half over a wash, as `term::blend` mixes them)
+    let half = |wash: vt100::Color| match (accent, wash) {
+        (vt100::Color::Rgb(a, b, c), vt100::Color::Rgb(x, y, z)) => {
+            let m = |w: u8, a: u8| (w as f32 + (a as f32 - w as f32) * 0.5).round() as u8;
+            vt100::Color::Rgb(m(x, a), m(y, b), m(z, c))
+        }
+        _ => panic!("the themes are truecolor"),
+    };
+    let x = rule(&mut s, low.x + low.w / 2..low.x + low.w, low.y);
+    let wash = cell(&mut s, x, low.y).1;
+    assert_ne!(wash, accent, "not lit: the keys are the slot's");
+    // Under the pointer: half lit — the line of what has the keys stays the one full-accent line; held, full
+    hover(&mut s, x, low.y);
+    assert_eq!(
+        cell(&mut s, x, low.y),
+        ("─".into(), half(wash)),
+        "the line over and under, under the pointer"
+    );
+    s.ed.dragging = s.ed.border_at(x, low.y);
+    assert_eq!(cell(&mut s, x, low.y).1, accent, "held: the accent");
+    s.ed.dragging = None;
+    // The keys back in the code: the slot's line, off its names — then off every line: none lit
+    s.ed.workspace.viewer.at = crate::workspace::At::Code;
+    hover(&mut s, 30, low.y + 2);
+    let slot = s.ed.screen.text_top + s.ed.screen.body_h - s.ed.screen.bottom_h;
+    let cols = s.ed.screen.slot_x..s.ed.screen.slot_end();
+    let x = rule(&mut s, cols, slot);
+    assert_eq!(s.ed.border_at(x, slot), Some(crate::sizes::Border::Bottom));
+    let wash = cell(&mut s, x, slot).1;
+    assert_ne!(wash, accent, "not lit: the keys are the code's");
+    hover(&mut s, x, slot);
+    assert_eq!(cell(&mut s, x, slot).1, half(wash), "the slot's line, under the pointer");
+    // (lit by the keys: under the pointer it stays full)
+    s.ed.bottom_take_keys();
+    assert_eq!(cell(&mut s, x, slot).1, accent, "the slot with the keys: its line full");
+    s.ed.workspace.viewer.at = crate::workspace::At::Code;
+    hover(&mut s, 30, low.y + 2);
+    assert_eq!(cell(&mut s, x, slot).1, wash, "let go");
+}
+
+/// The surface under the pointer lights its lines half, as zellij's `mouse_hover_effects` (user, 2026-10-27): the chat's
+/// top line under the pointer is the accent half over its wash while the code has the keys, the code's line staying the
+/// one full-accent line; the keys and the pointer on one surface, full; a move within it draws nothing; the bottom
+/// slot's line the same; the pointer gone (the terminal's focus lost), the wash again.
+#[test]
+fn the_surface_under_the_pointer_lights_its_lines_half() {
+    use crate::event::Event;
+    let (w, h) = (120u16, 30u16);
+    let mut s = Shot::new(w, h);
+    s.file("src/demo.rs", DEMO_RS);
+    let lines = (0..20).map(|i| format!("output line {i}")).collect();
+    s.ed.workspace.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), lines));
+    crate::uistate::tests::chat(&mut s.ed, "");
+    s.ed.workspace.viewer.at = crate::workspace::At::Code;
+    let (_, _, accent) = chrome_colors(&s.ed);
+    let fg = |s: &mut Shot, x: usize, y: usize| {
+        let c = cells(&s.frame(), w, h).screen().cell(y as u16, x as u16).unwrap().clone();
+        (c.contents() == "─").then(|| c.fgcolor())
+    };
+    let half = |wash: vt100::Color| match (accent, wash) {
+        (vt100::Color::Rgb(a, b, c), vt100::Color::Rgb(x, y, z)) => {
+            let m = |w: u8, a: u8| (w as f32 + (a as f32 - w as f32) * 0.5).round() as u8;
+            vt100::Color::Rgb(m(x, a), m(y, b), m(z, c))
+        }
+        _ => panic!("the themes are truecolor"),
+    };
+    let hover = |s: &mut Shot, x: usize, y: usize| s.ed.handle_event(Event::Hover(x as u16, y as u16));
+    s.frame();
+    let chat_x = s.ed.screen.chat_x.unwrap();
+    // (a cell of the chat's top line's rule, and of the code's)
+    let chat_rule = (chat_x + 2..w as usize).rev().find(|&x| fg(&mut s, x, 0).is_some()).expect("its rule");
+    let code_rule = (2..chat_x).rev().find(|&x| fg(&mut s, x, 0).is_some()).expect("the code's rule");
+    let wash = fg(&mut s, chat_rule, 0).unwrap();
+    assert_ne!(wash, accent, "the chat without the keys: its line in the wash");
+    assert_eq!(fg(&mut s, code_rule, 0), Some(accent), "the code's line, with the keys");
+    // The pointer over the chat's conversation: its line half, the code's full
+    hover(&mut s, chat_x + 6, 6);
+    assert!(!s.ed.unchanged, "drawn");
+    assert_eq!(fg(&mut s, chat_rule, 0), Some(half(wash)), "the chat under the pointer: half");
+    assert_eq!(fg(&mut s, code_rule, 0), Some(accent), "the keys' line stays full");
+    hover(&mut s, chat_x + 9, 7);
+    assert!(s.ed.unchanged, "a move within it: nothing to draw");
+    // The keys there too: full
+    s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+    assert_eq!(fg(&mut s, chat_rule, 0), Some(accent), "keys and pointer: full");
+    // (the keys in the chat: the code's line the wash — under the pointer, half)
+    let code_wash = fg(&mut s, code_rule, 0).unwrap();
+    assert_ne!(code_wash, accent);
+    hover(&mut s, 10, 6);
+    assert_eq!(fg(&mut s, code_rule, 0), Some(half(code_wash)), "the code pane under the pointer: half");
+    s.ed.workspace.viewer.at = crate::workspace::At::Code;
+    // The bottom slot's line, the pointer over its output
+    let slot = s.ed.screen.text_top + s.ed.screen.body_h - s.ed.screen.bottom_h;
+    let cols = s.ed.screen.slot_x..s.ed.screen.slot_end();
+    let rule = cols.clone().rev().find(|&x| fg(&mut s, x, slot).is_some()).expect("the slot's rule");
+    let slot_wash = fg(&mut s, rule, slot).unwrap();
+    assert_ne!(slot_wash, accent);
+    hover(&mut s, cols.start + 4, slot + 2);
+    assert_eq!(fg(&mut s, rule, slot), Some(half(slot_wash)), "the slot under the pointer: half");
+    assert_eq!(fg(&mut s, chat_rule, 0), Some(wash), "the chat let go");
+    // The pointer gone with the terminal's focus: the wash
+    s.ed.handle_event(Event::Focus(false));
+    assert_eq!(fg(&mut s, rule, slot), Some(slot_wash), "gone: the wash");
+}
+
+/// A group docked or floating lights its lines half under the pointer, as every surface: docked right, its edge toward
+/// the code (`dock_edge`, its side by `line_side`) and its top line; floating, its frame's sides and top line, and the
+/// line between its list and detail (`leaf_line`). The keys in the slot: none of them lit by keys.
+#[test]
+fn a_docked_or_floating_group_under_the_pointer_lights_its_lines_half() {
+    use crate::event::Event;
+    use crate::pane::GroupKind;
+    let (w, h) = (140u16, 36u16);
+    let mut s = Shot::new(w, h);
+    s.file("src/demo.rs", DEMO_RS);
+    crate::uistate::tests::task_panel(&mut s.ed);
+    crate::uistate::tests::tests_group_list(&mut s.ed);
+    s.frame();
+    s.ed.dock(GroupKind::Tests, crate::pane::Side::Right);
+    s.frame();
+    s.ed.bottom_take_keys();
+    let (_, _, accent) = chrome_colors(&s.ed);
+    let cell = |s: &mut Shot, x: usize, y: usize| {
+        let c = cells(&s.frame(), w, h).screen().cell(y as u16, x as u16).unwrap().clone();
+        (c.contents().to_string(), c.fgcolor())
+    };
+    let half = |wash: vt100::Color| match (accent, wash) {
+        (vt100::Color::Rgb(a, b, c), vt100::Color::Rgb(x, y, z)) => {
+            let m = |w: u8, a: u8| (w as f32 + (a as f32 - w as f32) * 0.5).round() as u8;
+            vt100::Color::Rgb(m(x, a), m(y, b), m(z, c))
+        }
+        _ => panic!("the themes are truecolor"),
+    };
+    let hover = |s: &mut Shot, x: usize, y: usize| s.ed.handle_event(Event::Hover(x as u16, y as u16));
+    // (each cell: its glyph, its wash without the pointer, then under it — half)
+    let lines = |s: &mut Shot, at: &[(usize, usize, &str)], over: (usize, usize), what: &str| {
+        hover(s, 0, h as usize - 1);
+        let mut washes = Vec::new();
+        for &(x, y, g) in at {
+            let (glyph, fg) = cell(s, x, y);
+            assert_eq!(glyph, g, "{what}: the cell at {x},{y}");
+            assert_ne!(fg, accent, "{what} at {x},{y}: not lit by keys");
+            washes.push(fg);
+        }
+        hover(s, over.0, over.1);
+        for (&(x, y, _), wash) in at.iter().zip(washes) {
+            assert_eq!(cell(s, x, y).1, half(wash), "{what} at {x},{y}: half under the pointer");
+        }
+    };
+    // Docked right: its edge beside the code, and its top line
+    let (_, r) = s.ed.dock_rect(GroupKind::Tests).expect("docked");
+    let top = (r.x + 2..r.x + r.w).rev().find(|&x| cell(&mut s, x, r.y).0 == "─").expect("its top line");
+    lines(&mut s, &[(r.x, r.y + 2, "│"), (top, r.y, "─")], (r.x + 4, r.y + 2), "docked");
+    // (its edge is the code's too: the pointer over the code lights it half as well)
+    lines(&mut s, &[(r.x, r.y + 2, "│")], (r.x - 10, r.y + 2), "docked, the code under the pointer");
+    // Floating: its sides, its top line, the line between its list and detail
+    s.ed.float(GroupKind::Tests);
+    s.ed.bottom_take_keys();
+    s.frame();
+    let r =
+        s.ed.screen
+            .floating
+            .borrow()
+            .iter()
+            .find(|f| f.0 == GroupKind::Tests)
+            .map(|f| f.1)
+            .expect("floating");
+    let y = r.y + 2;
+    let leaf = (r.x + 2..r.x + r.w - 2)
+        .find(|&x| cell(&mut s, x, y).0 == "│")
+        .expect("the line between its members");
+    let top = (r.x + 2..r.x + r.w - 2).rev().find(|&x| cell(&mut s, x, r.y).0 == "─").expect("its top line");
+    let at = [(r.x, y, "│"), (r.x + r.w - 1, y, "│"), (leaf, y, "│"), (top, r.y, "─")];
+    lines(&mut s, &at, (r.x + 3, y), "floating");
+}
+
 /// The gutters at their edges: the code's sign column is the first cell after the side panel's line; a border
 /// held shows its line in the accent; a panel filling the screen takes its gutter's cell whole — no line at the
 /// screen's edge. (Which line is lit with the keys: `the_edges_light_with_the_keys`.)

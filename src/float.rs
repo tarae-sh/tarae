@@ -179,7 +179,7 @@ impl Editor {
     }
 
     /// Kind `kind`'s floating frame set to the cells `r` — onto the screen, at least its least size (`Frame::rect`).
-    fn float_set(&mut self, kind: GroupKind, r: Rect) {
+    pub(crate) fn float_set(&mut self, kind: GroupKind, r: Rect) {
         let (w, h) = self.float_screen();
         let f = Frame::of_rect(r, w, h);
         // (a floating list's is the viewer's, kept with the sizes — as tall as its rows still unless its height

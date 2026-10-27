@@ -162,6 +162,18 @@ pub enum Link {
     Chat(usize),
 }
 
+/// The docked surface under the pointer, whose lines light half while it's there (zellij's `mouse_hover_effects` —
+/// CLAUDE.md, the mouse's bullet): the lines the keys light where it has them (`Viewer.at`'s) — a code pane, the side
+/// panel or the rail, the chat, the bottom slot, a group docked or floating.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lights {
+    Code(PaneId),
+    Side,
+    Chat,
+    Slot,
+    Dock(GroupKind),
+}
+
 impl Under {
     fn new(surface: Surface, part: Part) -> Under {
         Under { surface, part }
@@ -270,12 +282,16 @@ impl Editor {
         if down && (button.is_some() || on_card) {
             return at(S::Card, button.map_or(Part::Blank, Part::Answer));
         }
-        // What a drag holds, wherever the pointer goes
-        if let Some(b) = self.dragging {
+        // What a drag holds, wherever the pointer goes (a press starts afresh: one held whose release was lost lets go)
+        if let Some(b) = self.dragging.filter(|_| !down) {
             return at(S::Edge, Part::Border(b));
         }
-        if let Some((kind, grip)) = self.float_dragging {
+        if let Some((kind, grip)) = self.float_dragging.filter(|_| !down) {
             return at(S::Float(kind), Part::Frame(grip));
+        }
+        // (a name pressed on a line nothing drags: its drag and release that line's)
+        if matches!(kind, K::Drag | K::Up) && self.name_held.is_some() {
+            return at(S::SlotLine, Part::Blank);
         }
         if matches!(kind, K::Drag | K::Up) {
             // (a drag from text is that text's wherever the pointer goes — past its edge, its row there: it scrolls,
@@ -567,6 +583,29 @@ impl Editor {
         match self.code_text(*pid, x, y, false) {
             Some(part) => at(S::Code(*pid), part),
             None => at(S::PaneTop(*pid), Part::Blank),
+        }
+    }
+
+    /// Whose lines light half with the pointer at (`x`, `y`), `u` under it (`Lights`): a run panel's, a list's, the
+    /// terminal's are their group's where it's docked or floating, else the slot's. None on a line (a line that drags
+    /// lights itself — `border_hover`), a card, a picker, the status line — what has no lines of its own to light.
+    pub fn lights_at(&self, u: Under, x: usize, y: usize) -> Option<Lights> {
+        use Surface as S;
+        let group = || {
+            self.float_at(x, y).map(|f| f.0).or_else(|| {
+                let docked = self.screen.docked.borrow();
+                docked.iter().find(|d| inside((d.1.x, d.1.y, d.1.w, d.1.h), x, y)).map(|d| d.0)
+            })
+        };
+        match u.surface {
+            S::Code(p) | S::PaneTop(p) => Some(Lights::Code(p)),
+            S::Side | S::Rail => Some(Lights::Side),
+            S::Chat | S::Transcript | S::Input => Some(Lights::Chat),
+            S::Float(k) | S::Floatlist(k) => Some(Lights::Dock(k)),
+            S::Output(_) | S::List(_) | S::Terminal | S::TerminalView | S::Plugin | S::SlotLine => {
+                Some(group().map_or(Lights::Slot, Lights::Dock))
+            }
+            _ => None,
         }
     }
 
@@ -939,8 +978,6 @@ pub const ACTS: [Act; 6] = [Act::Press, Act::Release, Act::Drag, Act::Double, Ac
 pub enum Landing {
     /// Selection: drags in every text, double a word, triple a line, the edge's scroll.
     S,
-    /// Resize: every line between two sized things drags, lit under the pointer, pressed focuses what it heads.
-    R,
     /// Words: a state word does its key (motion's §B).
     W,
     /// Overlays and buttons: which-key, completion, cards' wheel, the note card, the start screen, the other buttons.
@@ -970,7 +1007,7 @@ pub enum Expect {
 pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
     use Act as A;
     use Expect::{Acts, Gap, Not, Says};
-    use Landing::{O, R, S, W};
+    use Landing::{O, S, W};
     use Surface as Su;
     const RELEASE: Expect = Not("the press did it");
     const HOVER: Expect = Not("nothing on hover");
@@ -1032,17 +1069,16 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             A::Release => RELEASE,
             A::Hover => HOVER,
         },
+        // (pressed it's held, lit; let go where it was pressed, the keys to what it heads; under the pointer, lit)
         Su::Edge => match act {
-            A::Drag => Acts,
-            A::Press => Gap(R, "a press focuses what it heads"),
+            A::Press | A::Release | A::Drag | A::Hover => Acts,
             A::Double => AS_ONE,
             A::Wheel => NO_SCROLL,
-            A::Release => RELEASE,
-            A::Hover => Gap(R, "it lights under the pointer"),
         },
         Su::Float(_) => match (part, act) {
             (_, A::Press) | (Part::Frame(_), A::Drag) => Acts,
-            (Part::Frame(Grip::Size { .. }), A::Release) => Says("its size, kept"),
+            // (a click: nothing moved, nothing kept or said — a drag's release keeps and says its size)
+            (Part::Frame(_), A::Release) => Not("a click keeps nothing; a drag's release keeps it"),
             (_, A::Drag) => Gap(S, "its text selects"),
             (_, A::Double) => AS_ONE,
             (_, A::Wheel) => Acts,
@@ -1066,10 +1102,10 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             (Part::Word(_), A::Hover) => Gap(W, "a word's key on hover"),
             (_, A::Hover) => HOVER,
         },
+        // (a name on the slot's line is the line too: a drag from it sizes the slot)
         Su::SlotLine => match act {
-            A::Press => Acts,
+            A::Press | A::Drag => Acts,
             A::Double => AS_ONE,
-            A::Drag => Gap(R, "the slot's line drags its height"),
             A::Wheel => NO_SCROLL,
             A::Release => RELEASE,
             A::Hover => HOVER,
@@ -1146,7 +1182,7 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
         Su::Chat => match act {
             A::Press => Acts,
             A::Double => AS_ONE,
-            A::Drag => Gap(R, "its top line, its edge: nothing to drag there"),
+            A::Drag => Not("tiled panes don't move — its line toward the code sizes it"),
             A::Wheel => Acts,
             A::Release => RELEASE,
             A::Hover => HOVER,
@@ -1238,7 +1274,12 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ("The code", "text", Su::Code(0), text),
         ("The code", "a presence tag", Su::Code(0), Part::Word(Word::Session(Spot::List))),
         ("A pane's top line", "", Su::PaneTop(0), Part::Blank),
-        ("A line between panels", "", Su::Edge, Part::Border(Border::Side)),
+        (
+            "A line between panels, between your panes",
+            "the chat's, the side panel's, the rail's, the slot's, a dock's, a divider",
+            Su::Edge,
+            Part::Border(Border::Side),
+        ),
         ("Claude's edit review", "a change", Su::EditReview, Part::Row(0)),
         ("Claude's edit review", "off it", Su::EditReview, Part::Outside),
         ("The review's rail", "a file", Su::Rail, Part::Row(0)),
@@ -1319,7 +1360,7 @@ pub fn doc() -> String {
          every line between two things with sizes drags; a word that names a state does its key. A press, a drag or a\n\
          wheel that does nothing says why — nothing at all only for a hover, a release, a wheel with nothing to scroll.\n\n\
          ✓ acts · says: it says why not · — nothing, by design · ✗ a gap, and the landing of `.sb/mouse-plan.md` §4\n\
-         that fills it (S selection, R resize, W words, O overlays and buttons).\n\n\
+         that fills it (S selection, W words, O overlays and buttons).\n\n\
          | Surface | Part | Press | Release | Drag | Double | Wheel | Hover |\n\
          |---|---|---|---|---|---|---|---|\n",
     );

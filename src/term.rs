@@ -1917,8 +1917,19 @@ fn slot_header(
     let mut who: Vec<Option<Member>> = vec![None; names.len()];
     let mut beyond_names = Vec::new();
     let mut said = details.to_vec();
+    // (the slot's line held or under the pointer, its whole width — as every line that drags: `grab_style`)
+    let g = match lay.docked {
+        None => grab(editor, |b| b == crate::sizes::Border::Bottom),
+        Some(_) => Grab::No,
+    };
     let line = edge_style(ui, card, Region::Slot);
-    let wash = Style { fg: ui.window, ..line };
+    // (the member without the keys: the wash — under the pointer, half as the rest of the line)
+    let wash = match ui.lit == Some(Region::Slot) {
+        true => Style { fg: ui.window, ..line },
+        false => line,
+    };
+    let wash = grab_style(ui, wash, g);
+    let line = grab_style(ui, line, g);
     let mut stretches = (line, None);
     if let Some(m) = members {
         let name = |of: Member| {
@@ -3923,25 +3934,35 @@ fn draw_panes(
     // pane's line meets it from the side (`├` `┤` `┼`) — last. The faint wash, the rows edging the pane with the keys
     // lit (D2), as every surface's lines are; one being dragged in the accent
     let wash = Style { fg: ui.window, ..ui.base };
-    let dragged = match editor.dragging {
-        Some(crate::sizes::Border::Divider(id)) => ps.iter().find(|p| p.0 == id).map(|p| p.1.x + p.1.w),
-        _ => None,
+    let grabbed = |x: usize| {
+        grab(editor, |b| match b {
+            crate::sizes::Border::Divider { sized, dir: crate::split::Dir::Vertical, .. } => {
+                ps.iter().any(|p| p.0 == sized && p.1.x + p.1.w == x)
+            }
+            _ => false,
+        })
     };
     let keys_here = ui.lit == Some(Region::Code);
     let (lines, dividers) = code_edges(editor, lay);
-    let focused = lines.iter().find(|l| l.4).filter(|_| keys_here).map(|l| {
+    let edged = |l: &CodeLine| {
         let r = ps.iter().find(|p| p.0 == l.3).map_or(crate::split::Rect::default(), |p| p.1);
         (r.x, r.w, l.0..r.y + r.h)
-    });
-    let edges = |x: usize, y: usize| {
-        focused.as_ref().is_some_and(|(fx, fw, rows)| (*fx == x + 1 || fx + fw == x) && rows.contains(&y))
+    };
+    let focused = lines.iter().find(|l| l.4).filter(|_| keys_here).map(edged);
+    // (the pane under the pointer: its edges half lit — `half_lit`)
+    let hovered = ui.hover_pane.and_then(|h| lines.iter().find(|l| l.3 == h)).map(edged);
+    let on = |pane: &Option<(usize, usize, std::ops::Range<usize>)>, x: usize, y: usize| {
+        pane.as_ref().is_some_and(|(fx, fw, rows)| (*fx == x + 1 || fx + fw == x) && rows.contains(&y))
     };
     for (x, rows) in dividers {
+        let g = grabbed(*x);
         for y in rows.clone() {
-            let style = match dragged == Some(*x) || edges(*x, y) {
-                true => Style { fg: ui.accent.fg, ..ui.base },
-                false => wash,
+            let style = match () {
+                _ if on(&focused, *x, y) => Style { fg: ui.accent.fg, ..ui.base },
+                _ if on(&hovered, *x, y) => half_lit(ui, wash),
+                _ => wash,
             };
+            let style = grab_style(ui, style, g);
             let glyph = divider_glyph(lines, dividers, *x, y);
             queue!(out, MoveTo(*x as u16, y as u16))?;
             put_line(out, style, glyph)?;
@@ -4178,6 +4199,10 @@ struct Ui {
     window: Option<crossterm::style::Color>,
     /// The docked surface with the keys — its lines lit (`edge_style`); none while something floating has them.
     lit: Option<Region>,
+    /// The docked surface under the pointer — its lines lit half (`edge_style`, `half_lit`), and the code pane under it
+    /// (its own top line and edges).
+    hover: Option<Region>,
+    hover_pane: Option<crate::split::PaneId>,
     /// Key hints' keys: the dark wash (`ui.virtual.strong`), else the hint's own colour.
     hint_key: Option<crossterm::style::Color>,
     /// Diagnostics [_, error, warning, info, hint]: underline style, sign (●) color
@@ -4237,6 +4262,11 @@ impl Ui {
             participants: std::array::from_fn(|i| get(&format!("ui.participant.{}", i + 1)).fg),
             window: t.try_get("ui.window").and_then(|s| s.fg).or(base.patch(get("ui.linenr")).fg),
             lit: Region::with_keys(editor),
+            hover: editor.pointer_over.map(Region::of_lights),
+            hover_pane: match editor.pointer_over {
+                Some(crate::mouse::Lights::Code(p)) => Some(p),
+                _ => None,
+            },
             hint_key: t.try_get("ui.virtual.strong").and_then(|s| s.fg),
             virt: base.patch(get("ui.virtual")),
             error: base.patch(get("error")),
@@ -4290,6 +4320,18 @@ enum Region {
 }
 
 impl Region {
+    /// The surface under the pointer, as a docked surface (`mouse::Lights`).
+    fn of_lights(l: crate::mouse::Lights) -> Region {
+        use crate::mouse::Lights;
+        match l {
+            Lights::Code(_) => Region::Code,
+            Lights::Side => Region::Side,
+            Lights::Chat => Region::Chat,
+            Lights::Slot => Region::Slot,
+            Lights::Dock(k) => Region::Dock(k),
+        }
+    }
+
     /// Where the keys are, as a docked surface (`Editor::keys_at`) — none while a picker, a card or pointing has
     /// them: what floats says it with its frame.
     fn with_keys(editor: &Editor) -> Option<Region> {
@@ -4310,12 +4352,65 @@ impl Region {
     }
 }
 
+/// How a line that drags is taken: not, under the pointer, held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Grab {
+    No,
+    Hover,
+    Held,
+}
+
+/// How the line that `is` names is taken (`Editor::border_held`, `border_hover`: while one is held no other lights).
+fn grab(editor: &Editor, is: impl Fn(crate::sizes::Border) -> bool) -> Grab {
+    match (editor.border_held(), editor.dragging, editor.border_hover) {
+        (Some(b), ..) if is(b) => Grab::Held,
+        (_, None, Some(b)) if is(b) => Grab::Hover,
+        _ => Grab::No,
+    }
+}
+
+/// A line that drags, drawn in `style` (its wash, or lit where the keys are): held, the accent; under the pointer, the
+/// accent half over its wash (user, 2026-10-27: the line of what has the keys stays the one full-accent line — one lit
+/// by them stays so: in truecolor half of the accent over itself is the accent, the guard is for a theme of named
+/// colours, where the half is the accent dim).
+fn grab_style(ui: &Ui, style: Style, g: Grab) -> Style {
+    match g {
+        Grab::Held => Style { fg: ui.accent.fg, ..style },
+        // (half over the wash, never over a half already there: the surface under the pointer lights it so too)
+        Grab::Hover if style.fg != ui.accent.fg => half_lit(ui, Style { fg: ui.window, dim: false, ..style }),
+        _ => style,
+    }
+}
+
+/// A line under the pointer — its surface's, or one that drags: the accent half over `wash`'s colour (user, 2026-10-27,
+/// zellij's `mouse_hover_effects`: the line of what has the keys stays the one full-accent line); a theme of named
+/// colours, the accent dim.
+fn half_lit(ui: &Ui, wash: Style) -> Style {
+    match blend(ui.accent.fg, wash.fg.or(ui.window), 0.5) {
+        Some(fg) => Style { fg: Some(fg), ..wash },
+        None => Style { fg: ui.accent.fg, dim: true, ..wash },
+    }
+}
+
 /// Every line between surfaces and under their titles — the gutters, the header rules, the slot's top edge, the
 /// chat's input rule: the accent where `region` has the keys, else the faint wash (`ui.window`). One rule, so a
 /// surface's lines light together and nothing else marks focus (design pass 2, D2).
 fn edge_style(ui: &Ui, base: Style, region: Region) -> Style {
-    let fg = if ui.lit == Some(region) { ui.accent.fg } else { ui.window };
-    Style { fg, bold: false, dim: false, italic: false, ..base }
+    let wash = Style { fg: ui.window, bold: false, dim: false, italic: false, ..base };
+    match () {
+        _ if ui.lit == Some(region) => Style { fg: ui.accent.fg, ..wash },
+        // (under the pointer: half)
+        _ if ui.hover == Some(region) => half_lit(ui, wash),
+        _ => wash,
+    }
+}
+
+/// Which of a line's two sides lights it (`edge_style`'s region): the one with the keys, else the one under the
+/// pointer, else its own.
+fn line_side(ui: &Ui, mine: Region, beside: Region) -> Region {
+    let sides = [mine, beside];
+    let keys = sides.into_iter().find(|&r| ui.lit == Some(r));
+    keys.or_else(|| sides.into_iter().find(|&r| ui.hover == Some(r))).unwrap_or(mine)
 }
 
 /// Draws a line's `text` in `style` (`edge_style`'s) unfaded: an edge is lit or the wash, whichever side of it
@@ -4799,7 +4894,8 @@ fn draw_docked(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> 
         };
         let docked = lay.docked(g.kind, side, r);
         let has = ui.lit == Some(Region::Dock(g.kind));
-        let own = Ui { lit: has.then_some(Region::Slot), ..ui.clone() };
+        let over = ui.hover == Some(Region::Dock(g.kind));
+        let own = Ui { lit: has.then_some(Region::Slot), hover: over.then_some(Region::Slot), ..ui.clone() };
         {
             let _fade = Fade::unless(has, &own);
             match g.kind.slot() {
@@ -4850,12 +4946,13 @@ fn draw_floating(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut Vec<u8>) -> i
             continue;
         }
         let has = ui.lit == Some(Region::Dock(kind));
+        let over = ui.hover == Some(Region::Dock(kind));
         let card = panel_style(ui, editor);
         apply(out, card)?;
         for y in r.y..r.y + r.h {
             queue!(out, MoveTo(r.x as u16, y as u16), Spaces(r.w))?;
         }
-        let own = Ui { lit: has.then_some(Region::Slot), ..ui.clone() };
+        let own = Ui { lit: has.then_some(Region::Slot), hover: over.then_some(Region::Slot), ..ui.clone() };
         let line = edge_style(&own, card, Region::Slot);
         if kind == GroupKind::Sessions {
             let _fade = Fade::unless(has, &own);
@@ -5231,13 +5328,9 @@ fn dock_edge(
     r: crate::split::Rect,
 ) -> io::Result<()> {
     use crate::pane::Side;
-    let dragged = editor.dragging == Some(crate::sizes::Border::Leaf(kind));
+    let g = grab(editor, |b| b == crate::sizes::Border::Leaf(kind));
     let mine = Region::Dock(kind);
-    let style = |beside: Region| match (dragged, [mine, beside].into_iter().find(|&r| ui.lit == Some(r))) {
-        (true, _) => Style { fg: ui.accent.fg, ..ui.base },
-        (false, Some(r)) => edge_style(ui, ui.base, r),
-        (false, None) => edge_style(ui, ui.base, mine),
-    };
+    let style = |beside: Region| grab_style(ui, edge_style(ui, ui.base, line_side(ui, mine, beside)), g);
     // (over the code: its bottom is the code's top line, no edge of its own)
     if side == Side::Top {
         return Ok(());
@@ -8921,9 +9014,24 @@ fn draw_header(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> 
     // (a review whose rail has no room — the chat beside it, a phone: the line says which of its files this is)
     let railless = lay.rail_w == 0 || !editor.review_rail_up();
     let ps = panes(editor, lay);
+    // (a line that drags, held or under the pointer, in the accent: the one over and under a pane of yours is its
+    // pane's; a group docked over the code's edge is the line of the panes at the column's top)
+    use crate::sizes::Border;
+    let lit = |id: crate::split::PaneId, r: crate::split::Rect| {
+        grab(editor, |b| match b {
+            Border::Divider { heads, dir: crate::split::Dir::Horizontal, .. } => heads == id,
+            Border::Leaf(kind) => {
+                let top = crate::pane::Place::Docked(crate::pane::Side::Top);
+                editor.workspace.group(kind).is_some_and(|g| g.place == top)
+                    && !crate::chrome::line_in_pane(r, lay.text_top as usize)
+            }
+            _ => false,
+        })
+    };
     for (id, r, pl, idx, .., focused) in &ps {
         let y = (pl.text_top as usize).saturating_sub(1);
-        code_line(editor, ui, &editor.docs[*idx], (*id, *focused, railless), (r.x, y, r.w), out)?;
+        let doc = &editor.docs[*idx];
+        code_line(editor, ui, doc, (*id, *focused, railless, lit(*id, *r)), (r.x, y, r.w), out)?;
     }
     Ok(())
 }
@@ -8936,7 +9044,7 @@ fn code_line(
     editor: &Editor,
     ui: &Ui,
     doc: &crate::document::Document,
-    (id, focused, railless): (crate::split::PaneId, bool, bool),
+    (id, focused, railless, held): (crate::split::PaneId, bool, bool, Grab),
     (x0, y0, width): (usize, usize, usize),
     out: &mut impl Write,
 ) -> io::Result<()> {
@@ -8945,10 +9053,15 @@ fn code_line(
     let faint = Style { fg: ui.linenr.fg, ..ui.base };
     let strong =
         ui.base.patch(t.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() }));
-    let line = match focused {
-        true => edge_style(ui, ui.base, Region::Code),
-        false => Style { fg: ui.window, bold: false, dim: false, italic: false, ..ui.base },
+    // (a line that drags, held or under the pointer, as every such line: `grab_style`)
+    let wash = Style { fg: ui.window, bold: false, dim: false, italic: false, ..ui.base };
+    let line = match () {
+        _ if focused && ui.lit == Some(Region::Code) => Style { fg: ui.accent.fg, ..wash },
+        // (the pane under the pointer: half)
+        _ if ui.hover_pane == Some(id) => half_lit(ui, wash),
+        _ => wash,
     };
+    let line = grab_style(ui, line, held);
     let key = Style { bold: true, ..dim };
     let bare = |out: &mut _| {
         let head = TopLine { key, faint, ..TopLine::default() };
@@ -12817,7 +12930,7 @@ fn draw_sidebar(
     let faint = Style { fg: ui.linenr.fg, ..card };
     let selected = selected_row(ui, editor, card);
     let key = Style { bold: true, fg: ui.virt.fg, ..card };
-    let dragged = editor.dragging == Some(crate::sizes::Border::Side);
+    let dragged = grab(editor, |b| b == crate::sizes::Border::Side);
     let sp = |text: &str, style: Style| Span { text: text.to_string(), style };
     let w = lay.rail_w.saturating_sub(GAP + PAD + PAD_R).max(1);
     let lines = sb.lines();
@@ -13060,7 +13173,7 @@ fn draw_sidebar(
 fn side_gutter<'a>(
     (ui, editor, lay): (&'a Ui, &Editor, &Layout),
     card: Style,
-    dragged: bool,
+    dragged: Grab,
 ) -> impl Fn(usize) -> (&'static str, Style) + 'a {
     let parts = beside_rows(editor, lay, crate::pane::Side::Left);
     let over = editor.picker.as_ref().is_some_and(|p| !p.compact);
@@ -13077,6 +13190,8 @@ fn side_gutter<'a>(
 fn leaf_line(out: &mut impl Write, ui: &Ui, card: Style, lit: bool) -> io::Result<()> {
     match lit {
         true => put_line(out, Style { fg: ui.accent.fg, ..frame_line(ui, card) }, "│"),
+        // (the group under the pointer: half)
+        false if ui.hover == Some(Region::Slot) => put_line(out, half_lit(ui, frame_line(ui, card)), "│"),
         false => put_line(out, frame_line(ui, card), "│"),
     }
 }
@@ -13129,24 +13244,19 @@ fn beside_rows(
 /// Where a column panel (`mine`: the side panel, the chat) meets what's beside it on row `y` — the code, or a part of
 /// `beside_rows` on its rows (the slot, a docked group): one `│` in the gutter's whole cell, `join` (`├`, `┤`) where
 /// that part's own line meets it. The line of both sides: lit when either has the keys (`edge_style`) — the join
-/// with its edge too; the accent while it's dragged.
+/// with its edge too; the accent while it's dragged, half under the pointer (`grab_style`).
 fn meeting_line(
     ui: &Ui,
     parts: &[(std::ops::Range<usize>, Vec<usize>, Region)],
     mine: Region,
     join: &'static str,
-    (dragged, picker_over): (bool, bool),
+    (dragged, picker_over): (Grab, bool),
     y: usize,
 ) -> (&'static str, Style) {
     let at = parts.iter().find(|p| p.0.contains(&y));
     let beside = at.map_or(Region::Code, |p| p.2);
     let rule = at.is_some_and(|p| p.1.contains(&y));
-    let lit = [mine, beside].into_iter().find(|&r| ui.lit == Some(r));
-    let style = match (dragged, lit) {
-        (true, _) => Style { fg: ui.accent.fg, ..ui.base },
-        (false, Some(r)) => edge_style(ui, ui.base, r),
-        (false, None) => edge_style(ui, ui.base, mine),
-    };
+    let style = grab_style(ui, edge_style(ui, ui.base, line_side(ui, mine, beside)), dragged);
     // (on the screen's first row both sides' top lines meet it: it starts there, never above a line — under a picker
     // over the editing area, only its own: it turns down)
     let covered = picker_over;
@@ -13169,7 +13279,7 @@ fn chat_gutter<'a>(
     card: Style,
 ) -> impl Fn(usize) -> (&'static str, Style) + 'a {
     let parts = beside_rows(editor, lay, crate::pane::Side::Right);
-    let dragged = editor.dragging == Some(crate::sizes::Border::Chat);
+    let dragged = grab(editor, |b| b == crate::sizes::Border::Chat);
     let over = editor.picker.as_ref().is_some_and(|p| !p.compact);
     let whole = lay.edit_w == 0;
     move |y| match whole {
@@ -13215,9 +13325,9 @@ fn put_gutter(out: &mut impl Write, (glyph, style): (&str, Style)) -> io::Result
 const RAIL_HINTS: usize = 6;
 
 /// The review rail's width bounds, and the columns the code keeps beside it.
-const REVIEW_RAIL_MIN: usize = 24;
-const REVIEW_RAIL_MAX: usize = 48;
-const REVIEW_CODE_MIN: usize = 60;
+const REVIEW_RAIL_MIN: usize = crate::sizes::RAIL_MIN;
+const REVIEW_RAIL_MAX: usize = crate::sizes::RAIL_AUTO_MAX;
+const REVIEW_CODE_MIN: usize = crate::sizes::RAIL_CODE;
 
 /// The review rail's width: what its rows need — every file's whole (bar, guides, glyph, name, `+a −r`,
 /// `new`), its folders, the head and the key hints — between 24 and 48 columns, the code keeping 60. Measured
@@ -13245,9 +13355,13 @@ fn review_rail_code_min(edit_w: usize, focus: bool) -> Option<usize> {
     }
 }
 
-/// The review rail's width with room for it: what its rows need, between `REVIEW_RAIL_MIN` and `_MAX`.
+/// The review rail's width with room for it: yours (a drag of its edge, `C-w < >` with its keys — up to
+/// `sizes::RAIL_MAX`), else what its rows need, between `REVIEW_RAIL_MIN` and `_MAX`.
 fn review_rail_natural(editor: &Editor, r: &crate::codereview::CodeReview) -> usize {
     use crate::chrome::{GAP, PAD, PAD_R};
+    if let Some(k) = editor.sizes.rail {
+        return (k as usize).clamp(REVIEW_RAIL_MIN, crate::sizes::RAIL_MAX);
+    }
     let need = *r.rail_need.get_or_init(|| review_rail_need(editor, r));
     (need + PAD + PAD_R + GAP).clamp(REVIEW_RAIL_MIN, REVIEW_RAIL_MAX)
 }
@@ -14067,7 +14181,7 @@ fn draw_review_rail(
         rows.push((row, card, None));
     }
     let mut links = editor.screen.review_rail.borrow_mut();
-    let gutter = side_gutter((ui, editor, lay), card, false);
+    let gutter = side_gutter((ui, editor, lay), card, grab(editor, |b| b == crate::sizes::Border::Rail));
     for (y, (row, bg, file)) in rows.iter().take(lay.body_h).enumerate() {
         if y == 0 {
             let line = edge_style(ui, card, Region::Side);

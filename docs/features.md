@@ -36,7 +36,11 @@ You don't need to know the keys to start:
   them right away instead
 - **Mouse** — click to place the cursor, drag to select, alt+click for another cursor, ctrl+click to go there
   (`gd`: a definition, a page's link followed; an http(s) address in code opened as a page — `C-o` comes back), wheel to scroll. In pickers the
-  wheel moves the selection and a click opens. (Your terminal's own text selection is usually shift+drag.)
+  wheel moves the selection and a click opens. Every line between two things with sizes drags — the chat's and the side
+  panel's edges, the review rail's (its width kept), the bottom panel's line (from its tabs too), the dividers between
+  your panes, side by side and over and under — the accent while dragged; pressed without a drag, it gives the keys
+  to what it heads. The surface under the pointer lights its lines half (its top line, its edges), the one with the
+  keys staying the one full-accent line. (Your terminal's own text selection is usually shift+drag.)
 - **Key hints** — while a completion, a picker or a docs window is open, the keys that operate it show dimmed on the
   status line, right after the mode
 - **Inside zellij** — zellij's normal mode takes some `C-` keys before tarae sees them: the letters

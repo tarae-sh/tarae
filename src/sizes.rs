@@ -1,11 +1,11 @@
-//! Sizes you set (U1): the chat's and the side panel's widths and the bottom slot's height. Global, not per
+//! Sizes you set (U1): the chat's, the side panel's and the review rail's widths and the bottom slot's height. Global, not per
 //! project: kept as columns and rows in `$state/sizes.json`, read at startup (so across `:restart` too). A
 //! screen too small for a kept size shows less of it — clamped here, never written back — and a bigger one
 //! gets it again. Unset, each is automatic: the chat 2/5 of the screen (36–96 columns — U3), the side panel
 //! 32 and more on a wide screen, the bottom slot what its panel wants (a task's output — U2).
 //!
-//! `C-w <`/`>` narrow/widen the focused one (the chat, the side panel; from the code: the chat if it's open,
-//! else the side panel), `C-w -`/`+` the bottom slot, `C-w =` makes them all automatic again. A split of the
+//! `C-w <`/`>` narrow/widen the focused one (the chat, the side panel, the review rail; from the code: the chat if
+//! it's open, else the side panel), `C-w -`/`+` the bottom slot, `C-w =` makes them all automatic again. A split of the
 //! code's you made sizes its panes instead (panes P2b, §5.4): from a code pane with another beside it that way,
 //! `C-w < > - +` and a drag of the divider between them set that pane's share in the tree (`Share::Cells` — the
 //! session's, not these global three); `C-w =` makes them even again.
@@ -43,6 +43,12 @@ pub const CODE_ROOM: usize = 60;
 pub const CODE_MIN: usize = 48;
 /// The code beside the review's rail: an automatic chat narrows to leave it this much (`chat_beside`).
 pub const REVIEW_CODE_ROOM: usize = 100;
+/// The code review's rail: what its rows need between `RAIL_MIN` and `RAIL_AUTO_MAX`, or yours up to `RAIL_MAX` (a drag
+/// of its edge, `C-w < >` with its keys — mouse R, Q4); the code beside it keeps `RAIL_CODE` (from 90 columns on).
+pub const RAIL_MIN: usize = 24;
+pub const RAIL_AUTO_MAX: usize = 48;
+pub const RAIL_MAX: usize = SIDE_MAX;
+pub const RAIL_CODE: usize = 60;
 /// The bottom slot: at least this many rows, and the code keeps `BOTTOM_CODE` above it.
 pub const BOTTOM_MIN: usize = 3;
 pub const BOTTOM_CODE: usize = 4;
@@ -57,6 +63,8 @@ pub const STEP_ROWS: usize = 2;
 pub struct Sizes {
     pub chat: Option<u16>,
     pub side: Option<u16>,
+    /// The code review's rail.
+    pub rail: Option<u16>,
     pub bottom: Option<u16>,
     /// A docked group's, per kind (`GroupKind::dock_index`): its width beside the code, its rows above it.
     pub docked: [Option<u16>; crate::pane::DOCKABLE],
@@ -99,6 +107,7 @@ impl Sizes {
         Sizes {
             chat: n(&v["chat"]),
             side: n(&v["side"]),
+            rail: n(&v["rail"]),
             bottom: n(&v["bottom"]),
             docked,
             sessions,
@@ -115,8 +124,8 @@ impl Sizes {
         let (sessions, messages) =
             (self.sessions.map(crate::pane::Frame::json), self.messages.map(crate::pane::Frame::json));
         let dock = self.sessions_dock.map(crate::pane::Side::name);
-        json!({ "chat": self.chat, "side": self.side, "bottom": self.bottom, "docked": docked, "sessions": sessions,
-                "messages": messages, "sessions_dock": dock })
+        json!({ "chat": self.chat, "side": self.side, "rail": self.rail, "bottom": self.bottom, "docked": docked,
+                "sessions": sessions, "messages": messages, "sessions_dock": dock })
         .to_string()
     }
 }
@@ -205,14 +214,24 @@ pub fn bottom(total: usize, kept: Option<u16>, natural: usize) -> usize {
     }
 }
 
-/// A border the mouse drags: the chat's left edge, the side panel's right edge, the bottom slot's top row, the
-/// divider right of a code pane with another beside it (the pane's id).
+/// A border the mouse drags: the chat's left edge, the side panel's right edge, the review rail's, the bottom slot's top
+/// row, a divider between two code panes of yours. A press on one without a drag gives the keys to what it heads
+/// (`border_heads`; mouse R, Q9); under the pointer it's lit as it is while dragged (`border_lit`, Q7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Border {
     Chat,
     Side,
+    /// The code review's rail's right edge.
+    Rail,
     Bottom,
-    Divider(crate::split::PaneId),
+    /// Between two code panes along `dir` — side by side the `│` left of `heads`, over and under `heads`' top line: the
+    /// pane before it (`sized`, left or above) is the one whose child in that split ends there; `heads` the pane after
+    /// it, whose line it is.
+    Divider {
+        sized: crate::split::PaneId,
+        heads: crate::split::PaneId,
+        dir: crate::split::Dir,
+    },
     /// A docked group's edge (P3 step 6), by its kind: its width, or its rows over the code.
     Leaf(crate::pane::GroupKind),
 }
@@ -226,6 +245,7 @@ pub const PANE_MIN_ROWS: usize = 3;
 enum Which {
     Chat,
     Side,
+    Rail,
 }
 
 /// What `C-w z` fills the screen with: a pane — a code pane alone, the bottom slot, the chat, the side panel.
@@ -337,6 +357,10 @@ impl crate::editor::Editor {
         let chat =
             self.screen.chat_w > 0 && self.workspace.claude.chat.as_ref().is_some_and(|c| !c.compact());
         let side = self.workspace.viewer.sidebar.is_some() && !self.review_rail_up();
+        // (the review's rail with its keys: its own width)
+        if self.screen.rail_w > 0 && self.review_rail_up() && self.workspace.is_at(At::Rail) {
+            return Some(Which::Rail);
+        }
         if chat && self.workspace.is_at(At::Chat) {
             return Some(Which::Chat);
         }
@@ -358,6 +382,11 @@ impl crate::editor::Editor {
     /// How wide the side panel can be: what leaves the code `CODE_MIN` beside the chat.
     fn side_max(&self, total: usize) -> usize {
         total.saturating_sub(self.screen.chat_w + CODE_MIN).min(SIDE_MAX)
+    }
+
+    /// How wide the review's rail can be: what leaves the code beside it `RAIL_CODE`, `RAIL_MAX` at most.
+    fn rail_max(&self, total: usize) -> usize {
+        total.saturating_sub(self.screen.chat_w + RAIL_CODE).min(RAIL_MAX)
     }
 
     /// How tall the bottom slot can be: the code keeps `BOTTOM_CODE`.
@@ -383,6 +412,9 @@ impl crate::editor::Editor {
         if s.side_w > 0 && x + 1 == s.side_w && y < end {
             return Some(Border::Side);
         }
+        if s.rail_w > 0 && x + 1 == s.rail_w && y < end {
+            return Some(Border::Rail);
+        }
         let tab = || {
             s.slot_tabs.borrow().iter().any(|t| t.0 == y && (t.1..t.2).contains(&x))
                 || s.member_names.borrow().iter().any(|t| t.0 == y && (t.1..t.2).contains(&x))
@@ -399,14 +431,66 @@ impl crate::editor::Editor {
         {
             return Some(Border::Bottom);
         }
-        // (between two code panes side by side: the cell after the left one's last, the right one starting past it)
+        use crate::split::Dir;
         let code = |id: &crate::split::PaneId| self.workspace.views.iter().any(|v| v.id == *id);
-        let left = s.leaves.iter().filter(|l| code(&l.0)).find(|(_, r)| {
-            r.x + r.w == x
-                && (r.y..r.y + r.h).contains(&y)
-                && s.leaves.iter().any(|(id, b)| code(id) && b.x == x + 1 && (b.y..b.y + b.h).contains(&y))
+        let leaf = |f: &dyn Fn(&crate::split::Rect) -> bool| {
+            s.leaves.iter().filter(|l| code(&l.0)).find(|l| f(&l.1)).map(|l| l.0)
+        };
+        // (between two code panes side by side: the cell after the left one's last, the right one starting past it)
+        let left = leaf(&|r| r.x + r.w == x && (r.y..r.y + r.h).contains(&y));
+        let right = leaf(&|b| b.x == x + 1 && (b.y..b.y + b.h).contains(&y));
+        if let (Some(sized), Some(heads)) = (left, right) {
+            return Some(Border::Divider { sized, heads, dir: Dir::Vertical });
+        }
+        // (over and under: the lower one's top line — its own first row — off the words on it, the upper one ending
+        // over it)
+        let word = s.session_spots.borrow().iter().any(|l| l.0 == y && (l.1..l.2).contains(&x));
+        let lower = leaf(&|b| {
+            crate::chrome::line_in_pane(*b, s.text_top) && b.y == y && (b.x..b.x + b.w).contains(&x)
         });
-        left.map(|l| Border::Divider(l.0))
+        let upper = leaf(&|a| a.y + a.h == y && (a.x..a.x + a.w).contains(&x));
+        match (upper, lower) {
+            (Some(sized), Some(heads)) if !word => {
+                Some(Border::Divider { sized, heads, dir: Dir::Horizontal })
+            }
+            _ => None,
+        }
+    }
+
+    /// A press on border `b` without a drag: the keys to what it heads (zellij's frame press — mouse R, Q9) — the chat,
+    /// the side panel, the rail, the bottom slot, a docked group, the code pane whose line it is.
+    pub fn border_heads(&mut self, b: Border) {
+        match b {
+            Border::Chat => self.workspace.viewer.at = At::Chat,
+            Border::Side if !self.workspace.is_at(At::Side) => {
+                self.plugin_panel_unfocus();
+                self.procs_unfocus();
+                self.side_focus();
+            }
+            Border::Side => {}
+            Border::Rail if !self.workspace.is_at(At::Rail) => crate::codereview::rail_focus(self),
+            Border::Rail => {}
+            Border::Bottom if !self.bottom_has_keys() => self.bottom_take_keys(),
+            Border::Bottom => {}
+            Border::Leaf(kind) => self.float_focus(kind),
+            Border::Divider { heads, .. } => self.pane_takes_keys(heads),
+        }
+    }
+
+    /// The line held, lit in the accent — the slot's line held by a name pressed on it only once it moves (a tab's
+    /// press is the tab's).
+    pub fn border_held(&self) -> Option<Border> {
+        self.dragging.filter(|_| !(self.border_name && !self.border_moved))
+    }
+
+    /// A line lit: the one held, else the one under the pointer (Q7 — half lit: `term::grab_style`) — what the tests
+    /// read where they draw no colours.
+    #[cfg(test)]
+    pub fn border_lit(&self) -> Option<Border> {
+        match self.dragging {
+            Some(_) => self.border_held(),
+            None => self.border_hover,
+        }
     }
 
     /// A split of yours around the code pane `id` along `dir`: its child holding the pane, that child's size along
@@ -488,6 +572,10 @@ impl crate::editor::Editor {
                 let cols = (x + 1).clamp(SIDE_MIN, self.side_max(total).max(SIDE_MIN));
                 self.sizes.side = Some(cols as u16);
             }
+            Border::Rail => {
+                let cols = (x + 1).clamp(RAIL_MIN, self.rail_max(total).max(RAIL_MIN));
+                self.sizes.rail = Some(cols as u16);
+            }
             Border::Bottom => {
                 let rows = (s.text_top + s.body_h).saturating_sub(y).clamp(BOTTOM_MIN, self.bottom_max());
                 self.sizes.bottom = Some(rows as u16);
@@ -504,14 +592,17 @@ impl crate::editor::Editor {
                     self.dock_size(kind, n);
                 }
             }
-            // (the divider at column `x`: the left pane's child ends there)
-            Border::Divider(id) => {
-                let dir = crate::split::Dir::Vertical;
-                let Some((_, now, room)) = self.own_split(id, dir) else { return };
-                let Some(r) = s.leaves.iter().find(|l| l.0 == id).map(|l| l.1) else { return };
-                // (the child's left edge: its width now back from the pane's right edge)
-                let start = (r.x + r.w).saturating_sub(now);
-                self.pane_size(id, dir, x.saturating_sub(start), room);
+            // (the divider at column `x` — over and under, row `y`: the pane before it's child ends there)
+            Border::Divider { sized, dir, .. } => {
+                let Some((_, now, room)) = self.own_split(sized, dir) else { return };
+                let Some(r) = s.leaves.iter().find(|l| l.0 == sized).map(|l| l.1) else { return };
+                let (end, at) = match dir {
+                    crate::split::Dir::Vertical => (r.x + r.w, x),
+                    crate::split::Dir::Horizontal => (r.y + r.h, y),
+                };
+                // (the child's first cell: its size now back from the pane's far edge)
+                let start = end.saturating_sub(now);
+                self.pane_size(sized, dir, at.saturating_sub(start), room);
             }
         }
     }
@@ -522,6 +613,7 @@ impl crate::editor::Editor {
         let (what, n, unit) = match b {
             Border::Chat => ("chat", self.sizes.chat, "columns"),
             Border::Side => ("side panel", self.sizes.side, "columns"),
+            Border::Rail => ("review rail", self.sizes.rail, "columns"),
             Border::Bottom => ("bottom panel", self.sizes.bottom, "rows"),
             Border::Leaf(kind) => {
                 let unit = match self.workspace.group(kind).map(|g| g.place) {
@@ -530,16 +622,17 @@ impl crate::editor::Editor {
                 };
                 (kind.name(), self.sizes.docked[kind.dock_index()], unit)
             }
-            Border::Divider(id) => {
+            Border::Divider { sized, dir, .. } => {
                 let mut tree = self.workspace.split.clone();
-                let n = match tree.parent_along(id, crate::split::Dir::Vertical) {
+                let n = match tree.parent_along(sized, dir) {
                     Some((kids, i)) => match kids[i].0 {
                         crate::split::Share::Cells(n) => Some(n),
                         _ => None,
                     },
                     None => None,
                 };
-                ("pane", n, "columns")
+                let unit = if dir == crate::split::Dir::Vertical { "columns" } else { "rows" };
+                ("pane", n, unit)
             }
         };
         if let Some(n) = n {
@@ -590,6 +683,12 @@ impl crate::editor::Editor {
                 let cols = step(from(self.sizes.side, shown, max), SIDE_MIN, max);
                 self.sizes.side = Some(cols as u16);
                 ("side panel", cols)
+            }
+            Which::Rail => {
+                let max = self.rail_max(total);
+                let cols = step(from(self.sizes.rail, self.screen.rail_w, max), RAIL_MIN, max);
+                self.sizes.rail = Some(cols as u16);
+                ("review rail", cols)
             }
         };
         self.sizes_keep();
@@ -861,6 +960,7 @@ mod tests {
     const AUTO: Sizes = Sizes {
         chat: None,
         side: None,
+        rail: None,
         bottom: None,
         docked: [None; crate::pane::DOCKABLE],
         sessions: None,
@@ -982,6 +1082,7 @@ mod tests {
         let kept = Sizes {
             chat: Some(70),
             side: None,
+            rail: None,
             bottom: None,
             docked: [None; crate::pane::DOCKABLE],
             sessions: None,
@@ -999,6 +1100,7 @@ mod tests {
         let kept = Sizes {
             chat: Some(90),
             side: Some(40),
+            rail: None,
             bottom: None,
             docked: [None; crate::pane::DOCKABLE],
             sessions: None,
@@ -1020,6 +1122,7 @@ mod tests {
         let odd = Sizes {
             chat: Some(5),
             side: Some(500),
+            rail: None,
             bottom: None,
             docked: [None; crate::pane::DOCKABLE],
             sessions: None,
@@ -1047,6 +1150,7 @@ mod tests {
         let s = Sizes {
             chat: Some(70),
             side: None,
+            rail: Some(30),
             bottom: Some(12),
             docked: [None; crate::pane::DOCKABLE],
             sessions: None,

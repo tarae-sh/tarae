@@ -9,6 +9,7 @@ use crate::offer::{Offer, What};
 use crate::uistate::Region;
 use crate::workspace::At;
 
+mod resize;
 mod select;
 mod walk;
 

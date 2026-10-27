@@ -158,6 +158,14 @@ pub struct Toast {
 /// Two clicks on the same picker row this close together are a double click (it opens the row).
 pub(crate) const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
 
+/// What a drag from a name on a line that drags nothing says (`Editor::name_held`): a floating frame's line inside it,
+/// a docked group's line, the slot's while it fills the screen.
+pub(crate) const NAME_FLOAT: &str = "a floating pane moves by its top line — its edges size it";
+pub(crate) const NAME_DOCKED: &str =
+    "a docked pane's line stays — its edge toward the code sizes it, C-w e floats it";
+pub(crate) const NAME_ZOOMED: &str =
+    "it fills the screen — C-w z gives it its place back, then its line sizes it";
+
 /// The longest a step's toast stays up without its end being said.
 const STEP_MAX: std::time::Duration = std::time::Duration::from_secs(120);
 
@@ -1093,8 +1101,22 @@ pub struct Editor {
     pub reviews_dir: Option<PathBuf>,
     /// The border the mouse is dragging (pressed on it, not let go yet).
     pub dragging: Option<crate::sizes::Border>,
+    /// The held border moved since its press: let go, its size is kept and said — else the press gives the keys to what
+    /// it heads (`border_heads`).
+    pub border_moved: bool,
+    /// The held border is the bottom slot's line pressed on a name (a tab, a member's): let go unmoved, nothing more.
+    pub border_name: bool,
+    /// A name pressed on a line nothing drags (a docked group's, the slot's filling the screen): a drag from it says
+    /// why, once — (said, why).
+    pub name_held: Option<(bool, &'static str)>,
+    /// The border under the pointer, as the last hover found it: lit half (`term::grab_style`).
+    pub border_hover: Option<crate::sizes::Border>,
+    /// The surface under the pointer, as the last hover found it: its lines lit half (`mouse::Lights`).
+    pub pointer_over: Option<crate::mouse::Lights>,
     /// A floating frame the mouse holds (its top line: moving it; an edge: sizing it) until it's let go (`float.rs`).
     pub float_dragging: Option<(crate::pane::GroupKind, crate::float::Grip)>,
+    /// The held frame moved since its press: let go, it's kept (`float_drag_done`) — a click keeps nothing.
+    pub float_moved: bool,
     /// `C-w m` under way: the floating pane its keys move (`Handler::Move`).
     pub float_moving: Option<crate::pane::GroupKind>,
     /// The session list, a floating pane while it's up (`space W`, `sessionpane.rs`) — the viewer's, across
@@ -1395,7 +1417,13 @@ impl Editor {
                 crate::config::state_dir().map(|d| d.join(crate::features::FILE))
             }),
             dragging: None,
+            border_moved: false,
+            border_name: false,
+            name_held: None,
+            border_hover: None,
+            pointer_over: None,
             float_dragging: None,
+            float_moved: false,
             float_moving: None,
             sessions_pane: None,
             messages_pane: None,
@@ -2217,7 +2245,7 @@ impl Editor {
     }
 
     /// The keys to the open side panel, its row the one for where the code is.
-    fn side_focus(&mut self) {
+    pub(crate) fn side_focus(&mut self) {
         self.workspace.leave(At::Chat);
         if self.workspace.viewer.sidebar.is_none() {
             return;
@@ -2583,7 +2611,17 @@ impl Editor {
             let tag = crate::presence::hovered(self, x, y);
             let mark = crate::follow::strip_hovered(self, x, y);
             let cut = crate::whole::hovered(self, x, y);
-            self.unchanged = !(tag || mark || cut);
+            // (the surface under the pointer lights its lines half, a line that drags itself — a frame only when
+            // either changed: a move within one draws nothing)
+            let u = self.mouse_under(crate::event::MouseKind::Down, x, y);
+            let edge = match u.part {
+                crate::mouse::Part::Border(b) => Some(b),
+                _ => None,
+            };
+            let over = self.lights_at(u, x, y);
+            let lit = edge != std::mem::replace(&mut self.border_hover, edge)
+                || over != std::mem::replace(&mut self.pointer_over, over);
+            self.unchanged = !(tag || mark || cut || lit);
             return;
         }
         // Input means the terminal has focus, whatever it said last (a focus-in lost on the way)
@@ -2606,6 +2644,8 @@ impl Editor {
             Event::Focus(gained) => {
                 self.unfocused = !gained;
                 if !gained {
+                    // (the pointer gone with the focus: nothing lit for it)
+                    (self.pointer_over, self.border_hover) = (None, None);
                     crate::presence::away(self);
                     // (the mouse gone with the focus: a row it held whole folds — `whole.rs`)
                     self.cut_hover = None;
@@ -2801,6 +2841,10 @@ impl Editor {
         if m.kind == K::Down {
             self.mouse_goto = false;
             self.mouse_anchor = None;
+            self.name_held = None;
+            // (a line or a floating frame held whose release was lost: let go, unkept — this press is its own)
+            (self.dragging, self.border_moved, self.border_name) = (None, false, false);
+            (self.float_dragging, self.float_moved) = (None, false);
         }
         // (a drag held past its text's edge scrolls it until the button is let go — or pressed again, a release lost; let
         // go there, the selection reaches the row drawn there now: a tick's drag reads the frame before its scroll)
@@ -2907,36 +2951,53 @@ impl Editor {
                 };
                 self.card_press(button);
             }
-            // A border: held, it follows the mouse; let go, the size is kept
+            // A border: held, it follows the mouse; let go, the size is kept — let go where it was pressed, the keys go to
+            // what it heads (zellij's frame press: Q9)
             (S::Edge, Part::Border(b)) => {
                 took_mouse(S::Edge);
                 if self.dragging.is_none() {
                     self.dragging = Some(b);
+                    self.border_moved = false;
                     return;
                 }
                 match m.kind {
-                    K::Drag => self.border_drag(b, x, y),
+                    K::Drag => {
+                        self.border_moved = true;
+                        self.border_drag(b, x, y);
+                    }
                     K::Up => {
                         self.dragging = None;
-                        self.border_done(b);
+                        let name = std::mem::take(&mut self.border_name);
+                        match std::mem::take(&mut self.border_moved) {
+                            true => self.border_done(b),
+                            false if name => {}
+                            false => self.border_heads(b),
+                        }
                     }
-                    _ => self.dragging = None,
+                    // (the wheel while one is held: let go, unkept — as a press does, a release lost)
+                    _ => (self.dragging, self.border_moved, self.border_name) = (None, false, false),
                 }
             }
-            // A floating frame (P3 step 7): its top line moves it, its edges size it; let go, kept
+            // A floating frame (P3 step 7): its top line moves it, its edges size it; let go, kept — a click that moved
+            // nothing keeps nothing
             (S::Float(kind), Part::Frame(grip)) => {
                 took_mouse(S::Float(kind));
                 if self.float_dragging.is_none() {
-                    self.float_dragging = Some((kind, grip));
+                    (self.float_dragging, self.float_moved) = (Some((kind, grip)), false);
                     return self.float_focus(kind);
                 }
                 match m.kind {
-                    K::Drag => self.float_drag(kind, grip, x, y),
+                    K::Drag => {
+                        self.float_moved = true;
+                        self.float_drag(kind, grip, x, y);
+                    }
                     K::Up => {
                         self.float_dragging = None;
-                        self.float_drag_done(kind, grip);
+                        if std::mem::take(&mut self.float_moved) {
+                            self.float_drag_done(kind, grip);
+                        }
                     }
-                    _ => self.float_dragging = None,
+                    _ => (self.float_dragging, self.float_moved) = (None, false),
                 }
             }
             // A press in the chat's text (its conversation, its input) dragged: the chat's wherever the pointer goes, as
@@ -3002,13 +3063,28 @@ impl Editor {
                 took_mouse(u.surface);
                 self.session_spot(spot);
             }
+            // (a name on a line is the line too: a drag from it does what one from the line beside it does)
             (_, Part::Word(Word::Tab(slot))) => {
                 took_mouse(u.surface);
                 self.slot_show(slot);
+                self.name_held(x, y);
             }
             (_, Part::Word(Word::Member(id))) => {
                 took_mouse(u.surface);
                 self.focus_pane(id);
+                self.name_held(x, y);
+            }
+            // (a drag from a name on a line nothing drags: said, once)
+            (S::SlotLine, _) => {
+                took_mouse(S::SlotLine);
+                match m.kind {
+                    K::Drag if let Some((false, why)) = self.name_held => {
+                        self.name_held = Some((true, why));
+                        self.set_status(why);
+                    }
+                    K::Up => self.name_held = None,
+                    _ => {}
+                }
             }
             (S::Picker, part) => {
                 took_mouse(S::Picker);
@@ -3275,10 +3351,7 @@ impl Editor {
             (S::PaneTop(pid), _) => {
                 took_mouse(S::PaneTop(pid));
                 if down {
-                    self.focus_view(pid);
-                    if pid == self.workspace.viewer.focus {
-                        self.code_takes_keys();
-                    }
+                    self.pane_takes_keys(pid);
                 }
             }
             (S::Code(pid), Part::Text { line, col }) => {
@@ -3385,6 +3458,49 @@ impl Editor {
             K::ScrollUp => sb.scroll = sb.scroll.saturating_sub(3),
             _ => {}
         }
+    }
+
+    /// A press on code pane `pid`'s top line: the keys to it, as a press on its text.
+    pub(crate) fn pane_takes_keys(&mut self, pid: crate::split::PaneId) {
+        self.focus_view(pid);
+        if pid == self.workspace.viewer.focus {
+            self.code_takes_keys();
+        }
+    }
+
+    /// A press on a name on a line (a tab, a member's): the line held as the line beside it is — the bottom slot's its
+    /// border (`Border::Bottom`: a drag sizes the slot), a floating frame's top line its move; let go where it was
+    /// pressed, nothing more (the name did its act). A line that drags nothing — a floating frame's inside its top line,
+    /// a docked group's, the slot's while it fills the screen — says why on the drag (`NAME_FLOAT`, `NAME_DOCKED`,
+    /// `NAME_ZOOMED`). The topmost first, as `mouse_under` finds the name: a float over the slot's line is the float's —
+    /// one filling the screen (`C-w z`: no other is drawn then) its zoom's reason, as the slot's.
+    fn name_held(&mut self, x: usize, y: usize) {
+        if let Some((kind, r)) = self.float_at(x, y) {
+            match r.y == y {
+                _ if self.zoomed().is_some() => self.name_held = Some((false, NAME_ZOOMED)),
+                true if self.float_dragging.is_none() => {
+                    let grip = crate::float::Grip::Move(x - r.x, 0);
+                    (self.float_dragging, self.float_moved) = (Some((kind, grip)), false);
+                }
+                true => {}
+                false => self.name_held = Some((false, NAME_FLOAT)),
+            }
+            return;
+        }
+        if self.zoomed().is_some() {
+            self.name_held = Some((false, NAME_ZOOMED));
+            return;
+        }
+        let s = &self.screen;
+        let bottom =
+            s.bottom_h > 0 && y + s.bottom_h == s.text_top + s.body_h && x >= s.slot_x && x < s.slot_end();
+        if bottom && self.dragging.is_none() {
+            self.dragging = Some(crate::sizes::Border::Bottom);
+            self.border_moved = false;
+            self.border_name = true;
+            return;
+        }
+        self.name_held = Some((false, NAME_DOCKED));
     }
 
     /// A press in the code: the keys to it, from wherever they were — the chat, a panel, the side panel, the review's

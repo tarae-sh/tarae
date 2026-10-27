@@ -498,7 +498,9 @@ fn your_split_is_sized_by_keys_and_by_its_divider() {
     // The divider: the cell after the left pane, dragged 10 to the left
     let l = ed.screen.leaves.iter().find(|p| p.0 == left).unwrap().1;
     let (x, y) = (l.x + l.w, l.y + 3);
-    assert_eq!(ed.border_at(x, y), Some(crate::sizes::Border::Divider(left)));
+    let vertical = crate::split::Dir::Vertical;
+    let divider = crate::sizes::Border::Divider { sized: left, heads: right, dir: vertical };
+    assert_eq!(ed.border_at(x, y), Some(divider));
     let mouse = |ed: &mut Editor, kind, x: usize| {
         ed.handle_mouse(Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
         frame(ed);

@@ -293,7 +293,7 @@ pub(crate) fn edit_review(ed: &mut Editor) {
     crate::llm::review_with(ed, id, "x", vec![(0, 3, "one".into(), "uno".into())], None);
 }
 
-fn task_panel(ed: &mut Editor) {
+pub(crate) fn task_panel(ed: &mut Editor) {
     let task = crate::task::Task { name: "check".into(), cmd: "true".into(), cwd: ed.workspace.root.clone() };
     ed.workspace.task_run = Some(crate::task::Run::for_test(task));
 }
@@ -857,7 +857,7 @@ fn mismatches(scenes: &[Scene], model: impl Fn(&Editor) -> KeysTo) -> Vec<String
 }
 
 /// A finished test run with two results in the slot, its group's list with the keys.
-fn tests_group_list(ed: &mut Editor) {
+pub(crate) fn tests_group_list(ed: &mut Editor) {
     let case = crate::test_results::Case {
         name: "adds".into(),
         status: crate::test_results::Status::Passed,

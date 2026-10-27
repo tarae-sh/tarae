@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 use crate::editor::{Drag, Editor};
 use crate::event::{Event, Mouse, MouseKind as K};
 use crate::mouse::{ACTS, Act, Expect, Part, SILENT_STATES, Surface, TOOK, Under, doc, expect, rows};
+use crate::sizes::Border;
 use crate::uistate::tests::{SCENES, Scene, chat, editor, frame};
 
 const W: usize = 120;
@@ -137,12 +138,15 @@ struct Snap {
     text: String,
     keys: String,
     sel: String,
+    /// The line lit as dragged (`Editor::border_lit`) — drawn in the accent, which tests draw no colours of.
+    lit: String,
     said: u64,
 }
 
 impl PartialEq for Snap {
     fn eq(&self, o: &Snap) -> bool {
-        (&self.frame, &self.keys, &self.sel, self.said) == (&o.frame, &o.keys, &o.sel, o.said)
+        (&self.frame, &self.keys, &self.sel, &self.lit, self.said)
+            == (&o.frame, &o.keys, &o.sel, &o.lit, o.said)
     }
 }
 
@@ -154,6 +158,9 @@ fn changed(a: &Snap, b: &Snap) -> String {
     }
     if a.sel != b.sel {
         out.push(format!("selection {} → {}", a.sel, b.sel));
+    }
+    if a.lit != b.lit {
+        out.push(format!("lit {} → {}", a.lit, b.lit));
     }
     let rows = a.text.lines().zip(b.text.lines()).enumerate().filter(|(_, (x, y))| x != y);
     for (i, (x, y)) in rows.take(2) {
@@ -191,7 +198,7 @@ fn snap(ed: &mut Editor) -> Snap {
     }
     let frame = ed.last_frame.as_ref().unwrap().0.clone();
     let text = crate::screen::text(&frame, W as u16, H as u16).unwrap_or_default();
-    Snap { frame, text, keys, sel, said: ed.said }
+    Snap { frame, text, keys, sel, lit: format!("{:?}", ed.border_lit()), said: ed.said }
 }
 
 /// What an act did between two snaps. A hover acts only where it moves the keys or a selection —
@@ -199,14 +206,22 @@ fn snap(ed: &mut Editor) -> Snap {
 /// (a draft being written), neither is the frame.
 fn did(a: &Snap, b: &Snap, act: Act) -> Did {
     let moved = a.keys != b.keys || a.sel != b.sel;
-    let drawn = act != Act::Hover && !MOVING.get() && a.frame != b.frame;
-    Did { acted: moved || drawn, said: a.said != b.said, selected: a.sel != b.sel, what: changed(a, b) }
+    let drawn = !MOVING.get() && (a.frame != b.frame || a.lit != b.lit);
+    Did {
+        acted: moved || (drawn && act != Act::Hover),
+        drawn,
+        said: a.said != b.said,
+        selected: a.sel != b.sel,
+        what: changed(a, b),
+    }
 }
 
 /// What an act did (`did`): acted, said, changed a selection (the code's, the edit review's or a text surface's), and
 /// what changed in words.
 struct Did {
     acted: bool,
+    /// The frame changed (a hover's too: what it lights where the table says a hover acts — a line that drags).
+    drawn: bool,
     said: bool,
     selected: bool,
     what: String,
@@ -241,6 +256,20 @@ fn holds(ed: &Editor, u: Under) -> bool {
             let tab = matches!(u.part, Part::Word(crate::mouse::Word::Tab(s)) if ed.slot() == Some(s));
             tab || matches!(r, R::Output(_) | R::Slot(_) | R::List(_))
         }
+        // (a line: what it heads — `Editor::border_heads`)
+        Surface::Edge => match u.part {
+            Part::Border(Border::Chat) => matches!(r, R::Chat | R::View(_)),
+            Part::Border(Border::Side) => {
+                matches!(r, R::Side(_)) || ed.workspace.is_at(crate::workspace::At::Side)
+            }
+            Part::Border(Border::Rail) => r == R::Rail,
+            Part::Border(Border::Bottom) => ed.bottom_has_keys(),
+            Part::Border(Border::Leaf(_)) => matches!(r, R::Output(_) | R::Slot(_) | R::List(_)),
+            Part::Border(Border::Divider { heads, .. }) => {
+                matches!(r, R::Code | R::Weave | R::Page) && ed.workspace.viewer.focus == heads
+            }
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -249,8 +278,8 @@ fn holds(ed: &Editor, u: Under) -> bool {
 /// is the other's act, not this one's (what a press holds — a border, a frame — goes three on and one down).
 fn drag_to(ed: &Editor, u: Under, x: usize, y: usize) -> (usize, usize) {
     let far = ((x + 3).min(W - 1), (y + 1).min(H - 1));
-    // (a line held: toward the code — a panel's edge, the slot's top line up)
-    if matches!(u.part, Part::Border(_) | Part::Frame(_)) {
+    // (a line held: toward the code — a panel's edge, the slot's top line up — and a name on the slot's line, the line too)
+    if matches!(u.part, Part::Border(_) | Part::Frame(_)) || u.surface == Surface::SlotLine {
         return (x.saturating_sub(3), y.saturating_sub(1));
     }
     let near = [(3, 0), (-3, 0), (3, 1), (0, 1), (0, -1), (1, 0), (-1, 0)];
@@ -370,7 +399,7 @@ fn judge(
     u: Under,
     act: Act,
     before: Before,
-    Did { acted, said, selected, what }: Did,
+    Did { acted, drawn, said, selected, what }: Did,
 ) {
     let e = expect(u.surface, u.part, act);
     let quiet = !acted && !said;
@@ -384,6 +413,10 @@ fn judge(
         // (the wheel where there may be nothing to scroll: silent too — where there's room, it must act)
         // (a double on text: its word selected — drawn alone doesn't do, tests draw no colours)
         Expect::Acts if act == Act::Double && matches!(u.part, Part::Text { .. }) => selected || before.empty,
+        // (a hover acts by what it lights: a line that drags)
+        Expect::Acts if act == Act::Hover => acted || drawn,
+        // (a release that gives the keys: given already, it's done)
+        Expect::Acts if act == Act::Release => acted || (quiet && before.holds),
         Expect::Acts => {
             acted
                 || (act == Act::Wheel && !before.room)
@@ -468,6 +501,7 @@ fn walk_held(walk: &mut Walk, n: usize, scene: &str, setup: fn(&mut Editor)) {
         let card = front(&ed);
         send(&mut ed, K::Down, x, y, scene, walk);
         let s1 = snap(&mut ed);
+        let b1 = Before { holds: holds(&ed, u), ..Before::default() };
         send(&mut ed, K::Up, x, y, scene, walk);
         let s2 = snap(&mut ed);
         // (the double is on what the press there is now — the first may have moved the screen, or answered a card and
@@ -478,7 +512,7 @@ fn walk_held(walk: &mut Walk, n: usize, scene: &str, setup: fn(&mut Editor)) {
         send(&mut ed, K::Up, x, y, scene, walk);
         let s3 = snap(&mut ed);
         judge(walk, scene, u, Act::Press, b0, did(&s0, &s1, Act::Press));
-        judge(walk, scene, u, Act::Release, Before::default(), did(&s1, &s2, Act::Release));
+        judge(walk, scene, u, Act::Release, b1, did(&s1, &s2, Act::Release));
         if again {
             judge(walk, scene, u, Act::Double, b2, did(&s2, &s3, Act::Double));
         }
@@ -541,6 +575,7 @@ fn wheel_at(
         let with = Before { room, ..Before::default() };
         let did = Did {
             acted: a.acted || b.acted,
+            drawn: a.drawn || b.drawn,
             said: a.said || b.said,
             selected: a.selected || b.selected,
             what,

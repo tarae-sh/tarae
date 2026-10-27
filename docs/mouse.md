@@ -8,14 +8,14 @@ every line between two things with sizes drags; a word that names a state does i
 wheel that does nothing says why — nothing at all only for a hover, a release, a wheel with nothing to scroll.
 
 ✓ acts · says: it says why not · — nothing, by design · ✗ a gap, and the landing of `.sb/mouse-plan.md` §4
-that fills it (S selection, R resize, W words, O overlays and buttons).
+that fills it (S selection, W words, O overlays and buttons).
 
 | Surface | Part | Press | Release | Drag | Double | Wheel | Hover |
 |---|---|---|---|---|---|---|---|
 | The code | text | ✓ | — ctrl+press goes there at the release | ✓ | ✓ | ✓ | — no hover from the language server — K |
 | The code | a presence tag | ✓ | — ctrl+press goes there at the release | ✓ | as one press | ✓ | — no hover from the language server — K |
 | A pane's top line |  | ✓ | — the press did it | — tiled panes don't move | as one press | ✓ | ✗ W: its words' keys on hover |
-| A line between panels |  | ✗ R: a press focuses what it heads | — the press did it | ✓ | as one press | — nothing to scroll | ✗ R: it lights under the pointer |
+| A line between panels, between your panes | the chat's, the side panel's, the rail's, the slot's, a dock's, a divider | ✓ | ✓ | ✓ | as one press | — nothing to scroll | ✓ |
 | Claude's edit review | a change | ✓ | — the press did it | ✓ | as one press | ✓ | — nothing on hover |
 | Claude's edit review | off it | ✗ O: off the review: nothing until it's answered | — the press did it | ✗ O: off the review: nothing until it's answered | as one press | — nothing to scroll | — nothing on hover |
 | The review's rail | a file | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | ✓ | ✓ | — nothing on hover |
@@ -23,8 +23,8 @@ that fills it (S selection, R resize, W words, O overlays and buttons).
 | The chat's conversation | text | ✓ | — the press did it | ✓ | ✓ | ✓ | — a cut row comes whole under it |
 | The chat's conversation | a link, a tool row, an id | ✓ | — the press did it | ✗ S: a drag from a link | as one press | ✓ | — a cut row comes whole under it |
 | The chat's input | text | ✓ | — the press did it | ✓ | ✓ | ✓ | — a cut row comes whole under it |
-| The chat | its top line, its gaps | ✓ | — the press did it | ✗ R: its top line, its edge: nothing to drag there | as one press | ✓ | — nothing on hover |
-| The chat | a session's name, `+N` | ✓ | — the press did it | ✗ R: its top line, its edge: nothing to drag there | as one press | ✓ | — nothing on hover |
+| The chat | its top line, its gaps | ✓ | — the press did it | — tiled panes don't move — its line toward the code sizes it | as one press | ✓ | — nothing on hover |
+| The chat | a session's name, `+N` | ✓ | — the press did it | — tiled panes don't move — its line toward the code sizes it | as one press | ✓ | — nothing on hover |
 | The follow card | a trail row, the card | ✓ | — the press did it | — placed by rule | as one press | ✗ O: the wheel passes under it | — nothing on hover |
 | The follow card | a strip mark | ✓ | — the press did it | — placed by rule | as one press | ✗ O: the wheel passes under it | ✓ |
 | The side panel | a row | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | — a row opens on one press — the git tab's opens on two | ✓ | — nothing on hover |
@@ -33,13 +33,13 @@ that fills it (S selection, R resize, W words, O overlays and buttons).
 | Run output | off its rows | ✓ | — the press did it | ✗ S: a drag follows the pointer | as one press | ✓ | — nothing on hover |
 | Run output | a preflight's step chip | ✓ | — the press did it | ✗ S: a drag follows the pointer | as one press | ✓ | — nothing on hover |
 | A group's list | a row | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | ✗ S: again opens, as the session list's | ✓ | — nothing on hover |
-| The slot's line | a tab, a member's name | ✓ | — the press did it | ✗ R: the slot's line drags its height | as one press | — nothing to scroll | — nothing on hover |
+| The slot's line | a tab, a member's name | ✓ | — the press did it | ✓ | as one press | — nothing to scroll | — nothing on hover |
 | The terminal |  | ✓ | ✓ | ✓ | ✗ S: a word | ✓ | — nothing on hover |
 | The terminal's view mode |  | ✓ | — the press did it | ✓ | ✓ | ✓ | — nothing on hover |
 | A plugin's panel |  | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | as one press | ✓ | — nothing on hover |
 | A floating list (sessions, `:messages`) | a row | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | ✓ | ✓ | — nothing on hover |
 | A floating list (sessions, `:messages`) | off its rows | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | as one press | ✓ | — nothing on hover |
-| A floating pane | its frame | ✓ | — the press did it | ✓ | as one press | ✓ | — nothing on hover |
+| A floating pane | its frame | ✓ | — a click keeps nothing; a drag's release keeps it | ✓ | as one press | ✓ | — nothing on hover |
 | A floating pane | inside | ✓ | — the press did it | ✗ S: its text selects | as one press | ✓ | — nothing on hover |
 | Cards | an answer, the card | ✓ | — the press did it | ✗ O: says v shows it whole to copy (Q11) | as one press | ✗ O: a cut card's body scrolls | — nothing on hover |
 | The notification card |  | ✓ | — the press did it | — the press opened :messages | — the first press opened :messages | — news isn't scrolled | — nothing on hover |
