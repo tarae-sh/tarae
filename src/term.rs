@@ -3365,13 +3365,16 @@ fn draw_procs_panel<W: Write>(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut 
                 _ => None,
             };
             let name = glyph.map_or_else(|| r.title.clone(), |(g, _)| format!("{} {g}", r.title));
+            // (its name in its colour, full, as every list names a session — #165)
+            let own = session.and_then(|l| ui.participant(l.claude.colour, true));
+            let own = Style { fg: own.or(strong.fg), ..strong };
             let mut lead = if pid { 9 } else { 0 } + name_w;
             let mut cells =
-                vec![col(&name, lead, false, strong), col(&fit_left(&r.what, for_w), for_w, false, faint)];
+                vec![col(&name, lead, false, own), col(&fit_left(&r.what, for_w), for_w, false, faint)];
             // (a name too long for its room takes its checkout's — the path matters least)
             if name.width() > lead && for_w > 0 {
                 lead += 2 + for_w;
-                cells = vec![col(&name, lead, false, strong)];
+                cells = vec![col(&name, lead, false, own)];
             }
             if up {
                 cells.push(col("", 7, true, faint));
@@ -5127,7 +5130,15 @@ fn draw_messages_pane(
         let hits: Vec<(usize, usize)> = re.as_ref().map_or(Vec::new(), |re| {
             re.find_iter(&m.text).filter(|h| !h.is_empty()).map(|h| (h.start(), h.end())).collect()
         });
-        print_lit(out, (&shown, &m.text), (text, hit(on, text)), &hits)?;
+        // (its painted words as its toast had them — an overlap's session names in their colours)
+        let mut painted = Vec::new();
+        let mut at = 0;
+        for (seg, scope) in toast_paint(std::slice::from_ref(&m.text), &m.paint).concat() {
+            let fg = scope.and_then(|s| editor.theme.try_get(s)).and_then(|s| s.fg);
+            painted.extend(fg.map(|fg| (at..at + seg.len(), fg)));
+            at += seg.len();
+        }
+        print_lit_painted(out, (&shown, &m.text), (text, hit(on, text)), &hits, &painted)?;
         apply(out, base)?;
         queue!(out, Spaces(room.saturating_sub(shown.width()) + 2))?;
         apply(out, Style { fg: faint.fg, ..base })?;
@@ -5174,18 +5185,37 @@ fn print_lit(
     (st, lit): (Style, Style),
     hits: &[(usize, usize)],
 ) -> io::Result<()> {
+    print_lit_painted(out, (t, text), (st, lit), hits, &[])
+}
+
+/// `print_lit` with byte ranges of `text` in a colour of their own (`:messages`' painted words — a session's name in
+/// its colour): a search's hit over one keeps the hit's ink (its ground is what's read there), the paint only where
+/// the hit's style has no colour of its own.
+fn print_lit_painted(
+    out: &mut impl Write,
+    (t, text): (&str, &str),
+    (st, lit): (Style, Style),
+    hits: &[(usize, usize)],
+    painted: &[(std::ops::Range<usize>, crossterm::style::Color)],
+) -> io::Result<()> {
     let kept = if t == text { t.len() } else { t.len().saturating_sub('…'.len_utf8()) };
-    let mut at = 0;
-    for &(a, b) in hits.iter().filter(|h| h.0 < kept) {
-        let (a, b) = (a.max(at), b.min(kept));
-        apply(out, st)?;
-        queue!(out, Print(&t[at..a]))?;
-        apply(out, lit)?;
+    let mut cuts: Vec<usize> = [0, kept].into_iter().chain(hits.iter().flat_map(|h| [h.0, h.1])).collect();
+    cuts.extend(painted.iter().flat_map(|p| [p.0.start, p.0.end]));
+    cuts.retain(|&c| c <= kept && t.is_char_boundary(c));
+    crate::sorting::sort(&mut cuts);
+    cuts.dedup();
+    for w in cuts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let paint = painted.iter().find(|p| p.0.start <= a && b <= p.0.end).map(|p| p.1);
+        let s = match hits.iter().any(|h| h.0 <= a && b <= h.1) {
+            true => Style { fg: lit.fg.or(paint), ..lit },
+            false => Style { fg: paint.or(st.fg), ..st },
+        };
+        apply(out, s)?;
         queue!(out, Print(&t[a..b]))?;
-        at = b;
     }
     apply(out, st)?;
-    queue!(out, Print(&t[at..]))
+    queue!(out, Print(&t[kept..]))
 }
 
 /// A docked group's edge, in its leaf's cell on the code's side: a `│` from its own top line down beside the code —
@@ -7937,7 +7967,18 @@ fn draw_list_row(
             let st = Style { fg, italic: true, ..base };
             used += print_matched(out, &r.label, &r.marks, st, matched, label_room.saturating_sub(used))?;
         }
-        _ => used += print_matched(out, &r.label, &r.marks, name, matched, label_room.saturating_sub(used))?,
+        _ => {
+            // (a painted lead — the inbox's session name — in its scope, the rest as the row's name)
+            let lead = r.paint.as_ref().and_then(|p| p.lead).and_then(|(n, scope)| {
+                let fg = scope_fg(scope)?;
+                Some((r.label.get(..n)?.chars().count(), Style { fg: Some(fg), ..name }))
+            });
+            let style = |ci: usize| match lead {
+                Some((n, st)) if ci < n => st,
+                _ => name,
+            };
+            used += print_styled(out, &r.label, &r.marks, style, matched, label_room.saturating_sub(used))?
+        }
     }
     apply(out, base)?;
     if hint_w > 0 && hint_w < lw {
@@ -18271,6 +18312,64 @@ mod snapshot_tests;
 
 #[cfg(test)]
 mod tests {
+    /// `print_lit_painted`'s line in a one-row terminal: its text and each cell's (fg, bg).
+    fn lit_cells(
+        (t, text): (&str, &str),
+        hits: &[(usize, usize)],
+        painted: &[(std::ops::Range<usize>, crossterm::style::Color)],
+    ) -> (String, Vec<(vt100::Color, vt100::Color)>) {
+        use crossterm::style::Color;
+        crossterm::style::force_color_output(true);
+        let st = super::Style { fg: Some(Color::Rgb { r: 1, g: 1, b: 1 }), ..super::Style::default() };
+        let lit = super::Style { bg: Some(Color::Rgb { r: 9, g: 9, b: 9 }), bold: true, ..st };
+        let mut out = Vec::new();
+        super::print_lit_painted(&mut out, (t, text), (st, lit), hits, painted).unwrap();
+        let mut vt = vt100::Parser::new(1, 40, 0);
+        vt.process(&out);
+        let n = unicode_width::UnicodeWidthStr::width(t) as u16;
+        let cells =
+            (0..n).map(|x| vt.screen().cell(0, x).unwrap()).map(|c| (c.fgcolor(), c.bgcolor())).collect();
+        (vt.screen().contents().trim_end().to_string(), cells)
+    }
+
+    /// #165's review: a list's search over a painted row — a hit keeps its own ink and ground over a painted name, the
+    /// paint stays where no hit is; the text printed once, whole, whatever the hits and paints overlap; a cut row (`…`)
+    /// never lights or paints past what it shows, its `…` in the row's ink.
+    #[test]
+    fn a_search_hit_over_a_painted_word_keeps_its_ink() {
+        use crossterm::style::Color;
+        use vt100::Color::{Default as D, Rgb};
+        let (ink, ground, name) = (Rgb(1, 1, 1), Rgb(9, 9, 9), Rgb(200, 10, 10));
+        let red = Color::Rgb { r: 200, g: 10, b: 10 };
+        // `fix ≈ main`: fix painted; a hit `ix ≈` over its end and past it
+        let text = "fix ≈ main";
+        let (shown, cells) = lit_cells((text, text), &[(1, 7)], &[(0..3, red)]);
+        assert_eq!(shown, text);
+        assert_eq!(cells[0], (name, D), "painted, no hit: the paint");
+        assert_eq!(&cells[1..3], &[(ink, ground); 2], "the hit over the paint: the hit's ink");
+        assert_eq!(&cells[3..5], &[(ink, ground); 2], "the hit past it");
+        assert_eq!(cells[6], (ink, D), "neither");
+        // Overlapping hits (a search's matches never overlap, but nothing printed twice if they did)
+        let (shown, cells) = lit_cells((text, text), &[(0, 4), (2, 7)], &[(0..3, red)]);
+        assert_eq!(shown, text, "printed once");
+        assert!(cells[..5].iter().all(|c| *c == (ink, ground)), "{cells:?}");
+        assert_eq!(cells[6], (ink, D));
+        // Cut: what the `…` took isn't lit nor painted, the `…` in the row's ink — a hit across the cut lit up to it
+        let long = "fix ≈ main · src/term.rs";
+        let cut = "fix ≈ ma…";
+        let (shown, cells) = lit_cells((cut, long), &[(7, 12)], &[(7..11, red)]);
+        assert_eq!(shown, cut);
+        assert_eq!(&cells[6..8], &[(ink, ground); 2], "lit up to the cut: {cells:?}");
+        assert_eq!(cells[8], (ink, D), "the … plain");
+        let (shown, cells) = lit_cells((cut, long), &[(14, 17)], &[(14..17, red)]);
+        assert_eq!(shown, cut);
+        assert!(cells.iter().all(|c| *c == (ink, D)), "past the cut: nothing lit or painted: {cells:?}");
+        // The old callers (no paint): as before
+        let (shown, cells) = lit_cells((cut, long), &[(0, 3)], &[]);
+        assert_eq!(shown, cut);
+        assert_eq!(&cells[..4], &[(ink, ground), (ink, ground), (ink, ground), (ink, D)]);
+    }
+
     /// #201: a weighty card fits itself to a narrow screen — its answers on its bottom line, whole, else their short
     /// words, else their keys alone (the user, 2026-10-25) — down to `CARD_MIN_INNER`; narrower, it isn't drawn and
     /// the status line says one waits and the window's size it needs. (In a 50-column pane `:restart`'s four answers

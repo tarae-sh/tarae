@@ -1043,6 +1043,10 @@ fn landed(ed: &mut Editor, r: Round, seq: u64) {
                 t.persons = true;
                 t.paint = paint.clone();
             }
+            // (and its row in `:messages`, its home, as the toast said it)
+            if let Some(m) = ed.messages.last_mut().filter(|m| m.2.ends_with(&msg)) {
+                m.3 = paint;
+            }
         }
     }
     ed.overlap.said = said;

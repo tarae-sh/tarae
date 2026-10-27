@@ -222,7 +222,7 @@ fn an_api_sessions_key_goes_through_its_helper_and_never_through_tarae() {
         !state.json().to_string().contains(nonce) && !state.text().contains(nonce),
         "the key in tarae state"
     );
-    assert!(!ed.messages.iter().any(|(_, _, m)| m.contains(nonce)), "the key in :messages");
+    assert!(!ed.messages.iter().any(|(_, _, m, _)| m.contains(nonce)), "the key in :messages");
     let rows =
         ed.workspace.claude.chat.as_ref().unwrap().msgs.iter().map(|m| m.text.clone()).collect::<Vec<_>>();
     assert!(!rows.iter().any(|t| t.contains(nonce)), "the key in the chat");

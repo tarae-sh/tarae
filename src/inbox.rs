@@ -411,20 +411,32 @@ impl Editor {
         }
     }
 
-    /// The inbox's rows: session (with more than one), what it asks · kind and how long it has waited.
-    fn inbox_items(&self) -> Vec<crate::picker::Item> {
-        let names: Vec<(String, String)> = std::iter::once(&self.workspace)
+    /// The inbox's rows: session (with more than one — its name in its colour, as every list names a session), what
+    /// it asks · kind and how long it has waited.
+    fn inbox_items(&self) -> (Vec<crate::picker::Item>, Vec<(crate::picker::Action, crate::picker::Paint)>) {
+        let names: Vec<(String, String, u8)> = std::iter::once(&self.workspace)
             .chain(&self.workspaces)
-            .map(|l| (session_id(l.claude.id), l.label().to_string()))
+            .map(|l| (session_id(l.claude.id), l.label().to_string(), l.claude.colour))
             .collect();
         let many = !self.workspaces.is_empty();
-        self.inbox()
+        let mut paints = Vec::new();
+        let items = self
+            .inbox()
             .into_iter()
             .map(|e| {
-                let name = names.iter().find(|n| n.0 == e.session).map_or("", |n| n.1.as_str());
+                let named = names.iter().find(|n| n.0 == e.session);
+                let name = named.map_or("", |n| n.1.as_str());
                 // (one row: cut as the one-line forms cut it — the whole is its card, one `enter` away)
                 let asks = crate::uistate::asks_line(&e.asks);
                 let label = if many { format!("{name} · {asks}") } else { asks };
+                if let Some((_, name, c)) = named.filter(|n| many && !n.1.is_empty()) {
+                    let scope = crate::session::PARTICIPANTS[*c as usize % crate::session::COLOURS];
+                    let lead = Some((name.len(), scope));
+                    paints.push((
+                        crate::picker::Action::Inbox(e.id.clone()),
+                        crate::picker::Paint { lead, ..Default::default() },
+                    ));
+                }
                 // (`asks`: the tests' stand-in — `offer::ASKS`)
                 let claudes = matches!(
                     e.kind,
@@ -447,18 +459,20 @@ impl Editor {
                     glyph: Some(glyph),
                 }
             })
-            .collect()
+            .collect();
+        (items, paints)
     }
 
     /// `space I` · `:inbox` · a click on the status line's count — the list, oldest first, as wide as the
     /// picker (what each asks is the row; the whole of it is its card, one `enter` away). Nothing waiting:
     /// said.
     pub fn inbox_open(&mut self) {
-        let items = self.inbox_items();
+        let (items, paints) = self.inbox_items();
         if items.is_empty() {
             return self.set_status(NOTHING);
         }
-        let p = crate::picker::Picker::of("inbox", INBOX, items, false).without_preview();
+        let mut p = crate::picker::Picker::of("inbox", INBOX, items, false).without_preview();
+        p.paints = paints;
         self.open_picker(p, None);
     }
 
@@ -467,9 +481,14 @@ impl Editor {
         if !self.picker.as_ref().is_some_and(|p| p.title == INBOX) {
             return;
         }
-        let items = self.inbox_items();
+        let (items, paints) = self.inbox_items();
         let Some(p) = self.picker.as_mut() else { return };
-        if p.items().iter().map(|i| &i.action).ne(items.iter().map(|i| &i.action)) {
+        // (a session's colour changed keeps up too — and its name, which is the rows' labels)
+        p.paints = paints;
+        let rows = |is: &[crate::picker::Item]| -> Vec<(crate::picker::Action, String)> {
+            is.iter().map(|i| (i.action.clone(), i.label.clone())).collect()
+        };
+        if rows(p.items()) != rows(&items) {
             if items.is_empty() {
                 self.picker = None;
                 return self.set_status("nothing waits for you any more");

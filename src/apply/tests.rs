@@ -80,7 +80,7 @@ fn pump(ed: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) {
 
 /// Everything said so far.
 fn said(ed: &Editor) -> String {
-    ed.messages.iter().map(|(_, _, t)| t.as_str()).collect::<Vec<_>>().join("\n")
+    ed.messages.iter().map(|(_, _, t, _)| t.as_str()).collect::<Vec<_>>().join("\n")
 }
 
 /// The user's own change set's card, if up: its id, its text, its warning lines, whether a move or delete is
@@ -101,7 +101,7 @@ fn apply(ed: &mut Editor, args: &str) -> Result<(u64, String, usize, bool), Stri
     let refused = |ed: &Editor| {
         ed.messages[before..]
             .iter()
-            .find(|(_, k, _)| *k == crate::editor::ToastKind::Error)
+            .find(|(_, k, ..)| *k == crate::editor::ToastKind::Error)
             .map(|m| m.2.clone())
     };
     pump(ed, "the card, or why not", |ed| card(ed).is_some() || refused(ed).is_some());

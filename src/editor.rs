@@ -125,6 +125,9 @@ pub enum ToastKind {
     Error,
 }
 
+/// A toast's or a message's painted words (`Toast.paint`): each with its theme scope (`""`: as the text).
+pub type Painted = Vec<(String, &'static str)>;
+
 #[derive(Clone, Debug)]
 pub struct Toast {
     pub text: String,
@@ -146,7 +149,7 @@ pub struct Toast {
     pub persons: bool,
     /// Words painted in a theme scope (`""`: as the text), in order — each the first found after the one before:
     /// an overlap's two names in their participant colours and its `≈` in warning.
-    pub paint: Vec<(String, &'static str)>,
+    pub paint: Painted,
     /// Said while `:messages` was up: only its row there if the frame shows that row, else a toast as usual —
     /// decided once, by the first frame that has it (`messages::rows_drawn`).
     pub row: bool,
@@ -920,8 +923,9 @@ pub struct Editor {
     /// The notification card: messages that came while it was up (a burst is one card, newest on top) —
     /// it goes when the last of them has had its time.
     pub toasts: Vec<Toast>,
-    /// Every message since tarae started (`:messages`): when, kind, text.
-    pub messages: Vec<(std::time::Instant, ToastKind, String)>,
+    /// Every message since tarae started (`:messages`): when, kind, text, and its painted words as its toast had them
+    /// (`Toast.paint` — an overlap's session names in their colours).
+    pub messages: Vec<(std::time::Instant, ToastKind, String, Painted)>,
     /// The disk watch round that's current — a newer one (an immediate check) takes over the watch.
     pub disk_poll_gen: u64,
     /// Git actions' reloads, said as one line a session once its actions are over (`disk::DiskBatch`).
@@ -2305,7 +2309,7 @@ impl Editor {
         };
         crate::log::line("tarae", level, &msg);
         self.said += 1;
-        self.messages.push((crate::clock::now(), kind, msg));
+        self.messages.push((crate::clock::now(), kind, msg, Vec::new()));
         if self.messages.len() > MESSAGES_KEPT {
             self.messages.remove(0);
         }

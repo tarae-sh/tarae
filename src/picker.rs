@@ -131,12 +131,14 @@ pub struct Item {
     pub glyph: Option<(&'static str, &'static str)>,
 }
 
-/// A row painted by what it stands for (the session list: its name in its session's colour, the state that needs
-/// you in warning — collab C1): the label's theme scope, and byte ranges of the hint, each in a scope (`ui.accent`
-/// through the accent's fallbacks).
+/// A row painted by what it stands for (a session's name in its colour, the state that needs you in warning —
+/// collab C1): the label's theme scope, and byte ranges of the hint, each in a scope (`ui.accent` through the
+/// accent's fallbacks).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Paint {
     pub label: Option<&'static str>,
+    /// The label's first bytes in a scope of their own (the inbox's session name before what it asks — #165).
+    pub lead: Option<(usize, &'static str)>,
     pub hint: Vec<(std::ops::Range<usize>, &'static str)>,
     /// Those of the hint's ranges drawn bold too (a session's initial in the side panel — `presence::file_hint`).
     pub bold: Vec<std::ops::Range<usize>>,
@@ -396,7 +398,7 @@ pub struct Picker {
     /// The most rows it listed (or items it held) while open: its list card keeps that height — typing never
     /// makes it shrink and jump (`term::PickerBox`).
     pub tallest: std::cell::Cell<usize>,
-    /// Rows painted by their item's action (the session list's names and states).
+    /// Rows painted by their item's action (the inbox's session names).
     pub paints: Vec<(Action, Paint)>,
 }
 

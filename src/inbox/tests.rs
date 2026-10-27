@@ -535,6 +535,90 @@ fn c_q_goes_to_a_finished_session_when_nothing_waits() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Each row names its session as every list names one (#165): the name in its participant colour, full — the row in
+/// hand too —, what it asks after it in the row's own ink.
+#[test]
+fn each_row_names_its_session_in_its_colour() {
+    let (mut ed, dir, back, third) = three("colours");
+    up(&mut ed, claudes(1, 900));
+    park(&mut ed, back, claudes(2, 60));
+    park(&mut ed, third, tarae(400));
+    feed(&mut ed, "<space>I");
+    let vt = colour_frame(&mut ed);
+    let mut seen = Vec::new();
+    for (name, id, asks) in [
+        ("front", WorkspaceId::HOME, "Claude asks 1"),
+        ("third", third, "Trust this"),
+        ("back", back, "Claude asks 2"),
+    ] {
+        let want = colour(&mut ed, id);
+        let (row, name_fg, after) = named_row(&vt, name, asks);
+        assert!(name_fg.iter().all(|c| *c == want), "{name} whole in its colour: {row}");
+        assert_ne!(after[0], want, "the `·` after it isn't: {row}");
+        assert_ne!(after[1], want, "nor what it asks: {row}");
+        seen.push(want);
+    }
+    assert!(seen[0] != seen[1] && seen[1] != seen[2] && seen[0] != seen[2], "each its own");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// #165's review: the list open, a session's colour or name changed shows on its row by the next event's sync — the
+/// paint follows a colour alone (the rows the same), and a new name in its colour.
+#[test]
+fn a_sessions_new_colour_or_name_shows_while_the_list_is_open() {
+    let (mut ed, dir, back, third) = three("repaint");
+    park(&mut ed, back, claudes(2, 60));
+    park(&mut ed, third, tarae(400));
+    feed(&mut ed, "<space>I");
+    let was = colour(&mut ed, back);
+    // (a colour none of the three has)
+    let used: Vec<u8> =
+        [WorkspaceId::HOME, back, third].into_iter().map(|id| session(&mut ed, id).claude.colour).collect();
+    let free = (0..crate::session::COLOURS as u8).find(|c| !used.contains(c)).expect("a free colour");
+    session(&mut ed, back).claude.colour = free;
+    session(&mut ed, third).name = "docs".into();
+    ed.inbox_sync();
+    let vt = colour_frame(&mut ed);
+    let now = colour(&mut ed, back);
+    assert_ne!(was, now);
+    let (row, name_fg, _) = named_row(&vt, "back", "Claude asks 2");
+    assert!(name_fg.iter().all(|c| *c == now), "back in its new colour: {row}");
+    let (row, name_fg, _) = named_row(&vt, "docs", "Trust this");
+    let want = colour(&mut ed, third);
+    assert!(name_fg.iter().all(|c| *c == want), "docs, its new name, in its colour: {row}");
+    assert!(!vt.screen().contents().contains("third ·"), "the old name gone");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The frame with its colours, 160 × 30.
+fn colour_frame(ed: &mut Editor) -> vt100::Parser {
+    crossterm::style::force_color_output(true);
+    let mut bytes = Vec::new();
+    crate::term::render(ed, &mut bytes, 160, 30).unwrap();
+    let mut vt = vt100::Parser::new(30, 160, 0);
+    vt.process(&bytes);
+    vt
+}
+
+/// Session `id`'s participant colour at full strength, as the frame paints it.
+fn colour(ed: &mut Editor, id: WorkspaceId) -> vt100::Color {
+    let k = crate::session::PARTICIPANTS[session(ed, id).claude.colour as usize % crate::session::COLOURS];
+    match ed.theme.try_get(k).and_then(|s| s.fg) {
+        Some(crossterm::style::Color::Rgb { r, g, b }) => vt100::Color::Rgb(r, g, b),
+        c => panic!("{k}: {c:?}"),
+    }
+}
+
+/// The inbox's row `name · asks…`: its text, its name's cells' colours, and those of the `·` and what it asks.
+fn named_row(vt: &vt100::Parser, name: &str, asks: &str) -> (String, Vec<vt100::Color>, [vt100::Color; 2]) {
+    let rows: Vec<String> = vt.screen().rows(0, 160).collect();
+    let lead = format!("{name} · {asks}");
+    let y = rows.iter().position(|r| r.contains(&lead)).unwrap_or_else(|| panic!("{lead}: {rows:#?}"));
+    let x = rows[y][..rows[y].find(&lead).unwrap()].chars().count();
+    let at = |dx: usize| vt.screen().cell(y as u16, (x + dx) as u16).unwrap().fgcolor();
+    (rows[y].clone(), (0..name.len()).map(at).collect(), [at(name.len() + 1), at(name.len() + 3)])
+}
+
 /// The list: `space I` (or a click on the status line's count) — a row each, its session named, what it
 /// asks, its kind and how long it has waited, the oldest in hand. `enter` goes to it — its session in front,
 /// its card up with the keys — and it's answered there. Nothing waiting: said, no list.

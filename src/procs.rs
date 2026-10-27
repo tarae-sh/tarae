@@ -3281,6 +3281,67 @@ pub(crate) mod tests {
         assert!(rows[6].same(&rows[6].clone()) && !rows[6].same(&rows[3]) && !rows[6].same(&rows[7]));
     }
 
+    /// A session's heading names it as every list names a session (#165): its name in its participant colour, full;
+    /// a process under it in the table's own ink.
+    #[test]
+    fn a_sessions_heading_is_its_name_in_its_colour() {
+        let dir = crate::scratch::Scratch::new("procs-colours");
+        std::fs::create_dir_all(dir.join("fix")).unwrap();
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.name = "main".into();
+        let fix = ed.workspace_open(&dir.join("fix")).unwrap();
+        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        let (tx, _looks) = std::sync::mpsc::channel();
+        ed.procs.wake = Some(tx);
+        ed.procs_toggle();
+        let s = || sample(vec![os(1, 0, "tarae"), os(5, 1, "claude"), os(6, 1, "claude")]);
+        ed.procs_sampled(s());
+        let chat = |pid, session| Known {
+            pid,
+            kind: Kind::Chat,
+            title: "claude".into(),
+            what: String::new(),
+            session: Some(session),
+            at: None,
+        };
+        let groups = [
+            Group { id: WorkspaceId::HOME, name: "main".into(), root: "/w".into() },
+            Group { id: fix, name: "fix".into(), root: "/wt/fix".into() },
+        ];
+        ed.procs.rows = rows(&s(), &[chat(5, WorkspaceId::HOME), chat(6, fix)], 1, &[], &groups, 1_060);
+        crossterm::style::force_color_output(true);
+        let mut bytes = Vec::new();
+        crate::term::render(&mut ed, &mut bytes, 160, 40).unwrap();
+        let mut vt = vt100::Parser::new(40, 160, 0);
+        vt.process(&bytes);
+        let shown: Vec<String> = vt.screen().rows(0, 160).collect();
+        let colour = |ed: &Editor, id: WorkspaceId| {
+            let l = std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|l| l.id == id).unwrap();
+            let k = crate::session::PARTICIPANTS[l.claude.colour as usize % crate::session::COLOURS];
+            match ed.theme.try_get(k).and_then(|s| s.fg) {
+                Some(crossterm::style::Color::Rgb { r, g, b }) => vt100::Color::Rgb(r, g, b),
+                c => panic!("{k}: {c:?}"),
+            }
+        };
+        // (the first cell of `word` on the row that starts with it, past the pid column)
+        let fg = |word: &str, from: usize| {
+            let y = (from..shown.len())
+                .find(|&y| shown[y].trim_start().starts_with(word))
+                .unwrap_or_else(|| panic!("{word}: {shown:#?}"));
+            let x = shown[y][..shown[y].find(word).unwrap()].chars().count() as u16;
+            (y, vt.screen().cell(y as u16, x).unwrap().fgcolor())
+        };
+        let (main_y, main_fg) = fg("main", 0);
+        let (fix_y, fix_fg) = fg("fix", 0);
+        assert_eq!(main_fg, colour(&ed, WorkspaceId::HOME), "main: {}", shown[main_y]);
+        assert_eq!(fix_fg, colour(&ed, fix), "fix: {}", shown[fix_y]);
+        assert_ne!(main_fg, fix_fg, "each its own");
+        let y = (main_y + 1..fix_y).find(|&y| shown[y].contains("claude")).expect("main's claude under it");
+        let x = shown[y][..shown[y].find("claude").unwrap()].chars().count() as u16;
+        let under = vt.screen().cell(y as u16, x).unwrap().fgcolor();
+        assert!(under != main_fg && under != fix_fg, "a process under it: {}", shown[y]);
+    }
+
     /// #100: what a session started stays under it after its run is gone — remembered with when it started
     /// (a later process given the same pid isn't it) — and a child of tarae's nothing names goes under the
     /// session whose checkout it works in; elsewhere, it's shared.

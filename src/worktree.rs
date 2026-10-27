@@ -3609,7 +3609,7 @@ mod tests {
         let reload = |ed: &mut Editor| {
             let n = ed.messages.len();
             feed(ed, ":config-reload<ret>");
-            let read = |m: &(_, _, String)| m.2 == "config reloaded" || m.2.starts_with("config: ");
+            let read = |m: &(_, _, String, _)| m.2 == "config reloaded" || m.2.starts_with("config: ");
             settle_until(ed, |ed| ed.messages[n..].iter().any(read));
         };
         let fmt = Ok(vec!["fmt".to_string()]);

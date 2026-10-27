@@ -494,7 +494,9 @@ impl Editor {
             Some(("toast", n)) if n >= 1 && n <= self.said => {
                 let back = (self.said - n) as usize;
                 match self.messages.len().checked_sub(back + 1).and_then(|i| self.messages.get(i)) {
-                    Some((_, _, text)) => format!("{id} went: {}", text.lines().next().unwrap_or_default()),
+                    Some((_, _, text, _)) => {
+                        format!("{id} went: {}", text.lines().next().unwrap_or_default())
+                    }
                     None => format!("{id} went — :messages has the latest"),
                 }
             }

@@ -19,6 +19,8 @@ pub struct Row {
     /// As it was said, lines and all.
     pub whole: String,
     pub at: std::time::Instant,
+    /// Its painted words, as its toast had them (`Toast.paint`).
+    pub paint: Vec<(String, &'static str)>,
 }
 
 /// The messages' rows, oldest first.
@@ -27,12 +29,13 @@ pub fn rows(ed: &Editor) -> Vec<Row> {
     ed.messages
         .iter()
         .zip(ids)
-        .map(|((at, kind, text), id)| Row {
+        .map(|((at, kind, text, paint), id)| Row {
             id,
             kind: *kind,
             text: one_line(text),
             whole: text.clone(),
             at: *at,
+            paint: paint.clone(),
         })
         .collect()
 }

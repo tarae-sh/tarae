@@ -586,6 +586,27 @@ fn the_strip_the_list_and_the_tree_say_it() {
     assert_eq!(fg_at(&p, toast, "", "≈"), warning, "the toast's ≈");
     assert_eq!(fg_at(&p, toast, "≈", "main"), main_c, "the toast's main");
     assert_ne!(fg_at(&p, toast, "a.rs", "L3"), main_c, "the rest as the text");
+    // Its row in `:messages`, its home, as the toast said it (#165) — the row in hand and one that isn't
+    for n in [0, 1] {
+        if n == 1 {
+            ed.set_status("something after it");
+        }
+        ed.messages_open(None);
+        assert!(!ed.toasts.iter().any(|t| t.text.contains(toast)), "its toast gone: what's read is the row");
+        let p = frame(&mut ed);
+        // (the one row with those words, inside the list's rows)
+        let rows: Vec<String> = p.screen().rows(0, 160).collect();
+        let at: Vec<usize> = (0..rows.len()).filter(|&y| rows[y].contains(toast)).collect();
+        let lists = ed.screen.lists.borrow().clone();
+        let (y0, inner, _) =
+            lists.iter().find(|l| l.0 == crate::pane::GroupKind::Messages).expect(":messages drawn").1;
+        assert!(at.len() == 1 && (y0..y0 + inner).contains(&at[0]), "its row in the list ({n}): {rows:#?}");
+        assert_eq!(fg_at(&p, toast, "", "fix"), fix_c, "the message's fix ({n})");
+        assert_eq!(fg_at(&p, toast, "", "≈"), warning, "the message's ≈ ({n})");
+        assert_eq!(fg_at(&p, toast, "≈", "main"), main_c, "the message's main ({n})");
+        assert_ne!(fg_at(&p, toast, "a.rs", "L3"), main_c, "the rest as the text ({n})");
+        press(&mut ed, "q");
+    }
     assert_eq!(others(&ed, fix_id), [("main".to_string(), Some(ed.workspaces[0].claude.colour))]);
     assert_eq!(
         others(&ed, WorkspaceId::HOME),
