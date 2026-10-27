@@ -326,7 +326,7 @@ fn a_docked_list_with_no_room_floats_so_the_keys_go_to_a_list_in_sight() {
 }
 
 /// The chat closed and the list docked right, the asks sit over the list's foot as over the chat's (the user,
-/// 2026-10-24): its width, a cell in from its line and the screen's edge, a row of air over its leaf's end; the list
+/// 2026-10-24): their own width (#177), a cell in from the screen's edge, a row of air over its leaf's end; the list
 /// keeps its selected row in sight above the stack.
 #[test]
 fn the_asks_float_over_a_docked_lists_foot_its_selected_row_above_them() {
@@ -348,11 +348,13 @@ fn the_asks_float_over_a_docked_lists_foot_its_selected_row_above_them() {
     let s = frame(&mut ed, 160, 30);
     let (_, r) = ed.dock_rect(GroupKind::Sessions).expect("docked, drawn");
     let (x, y, cw, ch) = ed.screen.offer_card.expect("drawn");
-    assert_eq!((x, x + cw), (r.x + 2, r.x + r.w - 1), "the list's width, a cell in\n{s}");
+    assert_eq!(x + cw, r.x + r.w - 1, "a cell in from its right\n{s}");
+    assert!(x > r.x + 2, "its own width, narrower than the list's\n{s}");
     assert_eq!(y + ch, r.y + r.h - 1, "a row of air over its leaf's end\n{s}");
     let rows: Vec<&str> = s.lines().collect();
     assert!(rows[y + ch].chars().skip(r.x + 1).all(|c| c == ' '), "air, no row of the list\n{s}");
-    let bar = (r.y + 1..r.y + r.h).find(|&k| rows[k].chars().skip(r.x).any(|c| c == '▎'));
+    // (the list's own bar, at its edge — a toast standing above the card over its rows has one too, further in)
+    let bar = (r.y + 1..r.y + r.h).find(|&k| rows[k].chars().nth(r.x + 1) == Some('▎'));
     assert!(
         bar.is_some_and(|k| k + 1 < y),
         "the selected row above the stack, a row of air: {bar:?} < {y}\n{s}"

@@ -528,6 +528,9 @@ pub struct Chat {
     pub queued_quotes: Vec<crate::quote::Quote>,
     pub queued_screen: Option<Shot>,
     pub queued_pointed: Vec<String>,
+    /// What `C-c` cleared from the input, and where its cursor was (#175): `↑` on the empty input puts it back —
+    /// that clear's undo. Kept until a message is sent or another clear takes its place.
+    pub cleared: Option<(String, usize)>,
     /// What waits for this turn's end besides the message, in order: the review's notes (`space v s`), a reply on
     /// a note — they were refused while Claude answered (frictions29 18), and go first, one a turn.
     pub sends: Vec<Later>,
@@ -919,6 +922,7 @@ impl Chat {
             queued_quotes: Vec::new(),
             queued_screen: None,
             queued_pointed: Vec::new(),
+            cleared: None,
             view_wanted: false,
             transcript: None,
             sends: Vec::new(),
@@ -2535,6 +2539,10 @@ pub fn send(ed: &mut Editor) {
     let moving = ed.workspace.moving.is_some();
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     let question = c.input.text().trim().to_string();
+    // (a message going: what a `C-c` cleared before it is no longer what `↑` gives back)
+    if !question.is_empty() {
+        c.cleared = None;
+    }
     // Claude is working: it waits its turn (#23) — said over the input, sent when this turn ends; a second
     // one joins it. So it does while the project's settings are read (`claudetrust.rs` — their card doesn't
     // hold it: claude runs held back meanwhile): sent once it starts
@@ -3586,8 +3594,13 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
     match (key.code, key.ctrl, key.alt) {
         (Code::Esc, ..) => ed.workspace.viewer.at = At::Code,
         (Code::Enter, ..) => send(ed),
+        // What's typed first, then the turn (#175, as Claude Code's): a draft typed mid-turn is cleared, a second
+        // `C-c` stops — the cleared text kept for `↑`
         (Code::Char('c'), true, _) => {
-            if c.busy() {
+            if !c.input.blank() {
+                c.cleared = Some((c.input.text(), c.input.cursor()));
+                c.input.clear();
+            } else if c.busy() {
                 stop(ed);
             } else {
                 c.input.clear();
@@ -3667,6 +3680,11 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
                 Some(_) => c.note("The queued message's screen gave way to the one attached since"),
                 None => {}
             }
+        }
+        // What `C-c` cleared, back (#175: that clear's undo) — the queued message first, as it would come
+        (Code::Up, ..) if c.input.is_empty() && c.cleared.is_some() => {
+            let (text, at) = c.cleared.take().unwrap_or_default();
+            c.input.set_at(&text, at);
         }
         (Code::PageUp, ..) | (Code::Up, ..) if c.input.is_empty() || key.code == Code::PageUp => {
             c.scroll += if key.code == Code::PageUp { page } else { 1 };
@@ -3807,6 +3825,76 @@ mod tests {
         let mut ed = Editor::new(crate::config::Config::default());
         ed.docs[0].text = ropey::Rope::from_str(text);
         ed
+    }
+
+    /// `C-c` clears what's typed (#175) — what's typed first, then the turn, as Claude Code's: idle it clears and `↑`
+    /// gives it back, its cursor where it was; a message sent forgets it; mid-turn a draft is cleared and the turn goes
+    /// on, a second `C-c` stops it. Each said at the chat's foot as it stands.
+    #[test]
+    fn ctrl_c_clears_the_input_first_and_up_gives_it_back() {
+        let mut ed = editor("");
+        let mut c = Chat::new();
+        let claude = stand_in(&mut c);
+        c.unfolded = true;
+        ed.workspace.claude.chat = Some(c);
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        let feed = |ed: &mut Editor, keys: &str| {
+            let mut chars = keys.chars();
+            while let Some(ch) = chars.next() {
+                let key: Key = match ch {
+                    '<' => chars.by_ref().take_while(|&c| c != '>').collect::<String>().parse().unwrap(),
+                    ch => Key::plain(crate::key::Code::Char(ch)),
+                };
+                ed.handle_key(key);
+            }
+        };
+        let screen = |ed: &mut Editor| {
+            let mut bytes = Vec::new();
+            crate::term::render(ed, &mut bytes, 140, 30).unwrap();
+            let mut p = vt100::Parser::new(30, 140, 0);
+            p.process(&bytes);
+            p.screen().contents()
+        };
+        let input = |ed: &Editor| {
+            let c = ed.workspace.claude.chat.as_ref().unwrap();
+            (c.input.text(), c.input.cursor())
+        };
+        // Idle: cleared, said, and back on `↑` where the cursor was
+        feed(&mut ed, "draft<left><left>");
+        let s = screen(&mut ed);
+        assert!(s.contains("C-c clear") && !s.contains("undo clear"), "{s}");
+        feed(&mut ed, "<C-c>");
+        assert_eq!(input(&ed), (String::new(), 0));
+        let s = screen(&mut ed);
+        assert!(s.contains("↑ undo clear") && !s.contains("C-c clear"), "{s}");
+        feed(&mut ed, "<up>");
+        assert_eq!(input(&ed), ("draft".into(), 3), "back as it was");
+        // A message sent forgets what a clear took: `↑` gives nothing back after it
+        feed(&mut ed, "<C-c>hello<ret>");
+        assert_eq!(claude.try_iter().filter(|l| l.contains("hello")).count(), 1, "it went");
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().busy());
+        feed(&mut ed, "<up>");
+        assert_eq!(input(&ed), (String::new(), 0));
+        assert!(!screen(&mut ed).contains("undo clear"));
+        // Mid-turn: a draft cleared, the turn going on; then `C-c` stops it
+        assert!(screen(&mut ed).contains("C-c stop"));
+        feed(&mut ed, "next");
+        let s = screen(&mut ed);
+        assert!(s.contains("C-c clear") && !s.contains("C-c stop"), "{s}");
+        feed(&mut ed, "<C-c>");
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        assert_eq!(
+            (c.input.text().as_str(), c.busy(), c.stopping),
+            ("", true, false),
+            "cleared, not stopped"
+        );
+        let s = screen(&mut ed);
+        assert!(s.contains("↑ undo clear") && s.contains("C-c stop"), "{s}");
+        feed(&mut ed, "<C-c>");
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().stopping, "the second stops the turn");
+        assert_eq!(claude.try_iter().filter(|l| l.contains("interrupt")).count(), 1);
+        feed(&mut ed, "<up>");
+        assert_eq!(input(&ed), ("next".into(), 4));
     }
 
     #[track_caller]

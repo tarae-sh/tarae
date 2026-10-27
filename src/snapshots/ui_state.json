@@ -221,13 +221,15 @@
     "pid": 0,
     "version": "-"
   },
+  "tick_in_ms": 100,
   "toasts": [
     {
       "id": "toast#1",
       "kind": "warning",
-      "shown": false,
+      "shown": true,
+      "strength": 0,
       "text": "a.rs changed on disk",
-      "where": "waiting"
+      "where": "card"
     }
   ],
   "v": 19,

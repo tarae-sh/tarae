@@ -171,6 +171,10 @@ is never an answer. `C-q`, a click on it or `C-w w` (its last stop) focuses it �
 accent, `esc back` where `C-q answer` was (the answers stay where they were), the status line says `card`, your
 draft stays as it was.
 
+A card is as wide as what it says needs — its text wrapped to half the screen (30 to 56 cells), its title, its bottom
+line — whether the chat is open or not: over the chat's foot a short ask is narrower than the chat, a long one
+reaches left over the code, its corner bottom-right either way.
+
 A card's keys are always on its bottom line, never in its body. Where they don't all fit there whole, the line gives
 up what matters least first, in one order. Kept longest:
 
@@ -439,7 +443,7 @@ each one while the chat keeps the keys.
 |---|---|
 | `enter` | Send. While Claude works, it queues the message: the conversation's last line says `queued …` (whole under the mouse or the view mode's cursor), and it goes when the turn ends. `↑` in the empty input takes it back to edit or drop |
 | `alt-enter` / `C-j` | New line |
-| `C-c` | Stop the answer (the conversation stays). A command or tests it ran go on; a card offers to stop them (`y`), since the next turn's runs would wait behind them — the chat's row then says `queued 1st, behind a stopped turn's run` and, under it, the run, how long it has run and `space m c stop it` |
+| `C-c` | Clear what's typed (the foot says `C-c clear`; `↑` in the emptied input gives it back, until you send). With nothing typed: stop the answer (the conversation stays). A command or tests it ran go on; a card offers to stop them (`y`), since the next turn's runs would wait behind them — the chat's row then says `queued 1st, behind a stopped turn's run` and, under it, the run, how long it has run and `space m c stop it` |
 | `C-q` | Give a card that asks mid-turn the keys — the chat keeps them till then |
 | `C-r` | Replace the selection with the answer's code — through the same review |
 | `C-y` | Copy the code |
@@ -455,7 +459,7 @@ each one while the chat keeps the keys.
 
 The input is a small buffer in insert mode: what insert mode does in the code it does here — `A-backspace` a word
 back, `A-d` / `A-del` a word on, `C-k` to the line's end, `C-h` a character, `↑` `↓` a line in a message of
-several, `tab` a tab once you've typed. Where the chat's own keys above meet insert mode's, the chat's win (`C-d`,
+several, `tab` a tab once you've typed, `C-u` back to the line's start (`C-c` clears it all). Where the chat's own keys above meet insert mode's, the chat's win (`C-d`,
 `C-r`, `C-s`, `C-u` in an empty input, the pages). Your `[keys.insert]` reach it, `[keys.chat]` over them.
 
 ### Reading the conversation: view mode

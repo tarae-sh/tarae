@@ -10322,7 +10322,7 @@ mod tests {
         let s = settled(&mut ed, crate::blocked::GRANT_TITLE);
         // (its answers on its bottom line, the form its width gives — `a`, `s`, `A` never a bare letter; the card as
         // wide as the folder it names makes it)
-        let says = "esc back · y once · a chat · s session · A always · n";
+        let says = "esc back · y once · a chat · s session · A always · n no";
         crate::term::card_line_holds(&ed, says).unwrap_or_else(|e| panic!("{e}\n{s}"));
         feed(&mut ed, "a");
         assert!(ed.workspace.claude.chat.as_ref().unwrap().allowed.write.contains(&deep));
@@ -16983,9 +16983,9 @@ mod tests {
         // (how much is cut and that it isn't read, in words; the keys on its bottom line — `v` reads it all, `y` waits
         // until then, in `y`'s meaning's place: frictions29 13, the row under the cut one said `y Once`)
         assert!(s.contains("more lines, not read yet"), "{s}");
-        // (the exact line each width gives: over the chat at 140, its short words — `y once read` held)
+        // (the exact line each width gives: at 140 — its own width over the chat, #177 — its whole words)
         let line = |ed: &Editor| crate::term::card_line(ed).unwrap_or_default();
-        assert_eq!(line(&ed), "╰─ C-q answer · y once read · v read all · n no ────╯", "{s}");
+        assert_eq!(line(&ed), "╰─ C-q answer · y once it's read · v read it all · n No ─────────╯", "{s}");
         let hint_color = |ed: &mut Editor| {
             let p = frame(ed);
             let s = p.screen().contents();
@@ -17004,9 +17004,9 @@ mod tests {
             parser.screen().contents()
         };
         let s = narrow(&mut ed, 80);
-        // (over a chat 36 wide its narrowest line doesn't fit: the card grows left over the code by just the cells it
-        // needs — the way in, `y once read` and `v read all` whole; never `y run`)
-        assert_eq!(line(&ed), "╰─ C-q answer · y once read · v read all · n ─╯", "80 columns:\n{s}");
+        // (at its reading width there, 40 — wider than the chat, #177 — the way in, `y once read` and `v read all`
+        // whole; never `y run`)
+        assert_eq!(line(&ed), "╰─ C-q answer · y once read · v read all · n ──╯", "80 columns:\n{s}");
         let plain = cut_color(&mut ed);
         let y_at = |ed: &Editor| ed.screen.offer_buttons.iter().find(|b| b.3 == 'y').map(|b| (b.0, b.1));
         let before = y_at(&ed);
@@ -17029,7 +17029,11 @@ mod tests {
         let s = screen(&mut ed);
         assert!(s.contains("more lines, read whole"), "{s}");
         // (focused since its early `y`: `esc back` where its way in was)
-        assert_eq!(line(&ed), "╰─── esc back · y run · v read all · n no ──────────╯", "its meaning back");
+        assert_eq!(
+            line(&ed),
+            "╰─── esc back · y Run · v read it all · n No ────────────────────╯",
+            "its meaning back"
+        );
         assert_eq!(y_at(&ed), waiting_at, "no narrower once read:\n{s}");
     }
 

@@ -10703,7 +10703,9 @@ fn toast_color(editor: &Editor, ui: &Ui, kind: crate::editor::ToastKind) -> Opti
 
 /// The notification card's first row, its rows `(x, w, h)`: at the top of the editing rows `[top, bottom)` a row of air
 /// above and below them, else at their bottom — its last row on the floor every card at the code's foot stands on
-/// (`card_floor`), a row of air above it —, wherever that overlaps none of `taken` — None if neither is free.
+/// (`card_floor`), a row of air above it —, else right above what holds that floor (an ask as wide as it needs reaching
+/// over the code, its stack — #177's review: a warning was left on the status line alone), the first free place from
+/// there up, a row of air each side; wherever that overlaps none of `taken` — None if nothing is free.
 fn toast_place(
     (x, w, h): (usize, usize, usize),
     (top, bottom): (usize, usize),
@@ -10715,8 +10717,11 @@ fn toast_place(
     if free(top, h + 2 * pad) {
         return Some(top + pad);
     }
-    let y = bottom.checked_sub(h + pad)?;
-    free(y, h + pad).then_some(y + pad)
+    let floor = bottom.checked_sub(h + pad)?;
+    if free(floor, h + pad) {
+        return Some(floor + pad);
+    }
+    (top..floor.saturating_sub(pad)).rev().find(|&y| free(y, h + 2 * pad)).map(|y| y + pad)
 }
 
 /// Older messages a card shows under the newest (one row each) — more are counted.
@@ -11007,7 +11012,7 @@ fn card_rows(text: &str, w: usize) -> Vec<String> {
 
 /// What the screen lacks for the card up when this frame couldn't draw it (#201: in a 50-column pane
 /// `:restart`'s card was nowhere, and nothing said one waited): the window's size it needs — `card needs 62 cols`,
-/// `card needs 20 rows` —, over the chat's foot too (P3 step 7d: whichever is short, the chat's width or its rows).
+/// `card needs 20 rows` —, over the chat's foot too (P3 step 7d: whichever is short, the screen's width or its rows).
 /// None when it's drawn, or held back on purpose (a picker, keys under way, its text read in its buffer).
 fn card_short(editor: &Editor, lay: &Layout) -> Option<String> {
     let o = editor.offers.first()?;
@@ -11028,20 +11033,15 @@ fn card_short(editor: &Editor, lay: &Layout) -> Option<String> {
     let answer = keys.map(|w| w + 3).sum::<usize>().checked_sub(3).map(|w| w + way + behind);
     let side = editor.workspace.viewer.sidebar.is_some();
     let chat = |w: usize| crate::sizes::widths(w, editor.chat_panel(w), side, editor.sizes).chat;
-    // (over the chat's foot or a docked list's: as wide as that column — its text 6 cells less, at least
-    // `CARD_MIN_INNER`; the rows from its top line down to the input's line)
+    // (over the chat's foot or a docked list's: its own width, whatever the column's (#177); the rows from its top line
+    // down to the input's line)
     if let Some((ax, aw, _, arows)) = asks_foot(editor, lay) {
-        // (its text at least `CARD_MIN_INNER` over the column; its narrowest bottom line from the column's right edge
-        // leftward — the card grows over the code for it, its frame's own cells and a cell of air at the screen's left)
-        let need = CARD_MIN_INNER + 6;
-        let line = answer.unwrap_or(0) + 2 + 4 + 1;
-        if aw < need || ax + aw < line {
-            // (the window width that gives both, the column as it's laid out — `sizes::widths` —, its edges as now)
-            let edge = chat(lay.width).min(lay.width).saturating_sub(aw);
-            let right = lay.width.saturating_sub(ax + aw);
-            let fits = |w: usize| chat(w).min(w) >= need + edge && w.saturating_sub(right) >= line;
-            let cols = (lay.width..lay.width + 400).find(|&w| fits(w));
-            return Some(cols.map_or("card needs a wider chat".into(), |c| format!("card needs {c} cols")));
+        // (its text at least `CARD_MIN_INNER` and its narrowest bottom line, from the column's right edge leftward — over
+        // the code, its frame's own cells and a cell of air at the screen's left; that edge the screen's right less what's
+        // beyond it, as now)
+        let need = (CARD_MIN_INNER + 8).max(answer.unwrap_or(0) + 2 + 4 + 1);
+        if ax + aw < need {
+            return Some(format!("card needs {} cols", lay.width + need - (ax + aw)));
         }
         return Some(match arows < 8 {
             true => format!("card needs {} rows", height + 8 - arows),
@@ -11141,11 +11141,11 @@ pub(crate) fn card_line(ed: &Editor) -> Option<String> {
 /// test whose card holds a path (`/private/tmp/…` on macOS, `/tmp/…` on Linux, a pid's digits: the card's width
 /// isn't one number): `says` (its way in, its answers, what lists the cards behind) after `╰─ ` — a run before it
 /// only where `esc back` took the way in's place, as long as their difference (`way_w`) — then a run to the corner,
-/// the line as wide as the card; and the card as wide as what lays it (`OfferCard::laid`): over the chat's foot, the
-/// chat's width; else the widest of its text (and 4 cells) and its title (and 6) — where a line of what it says
-/// wrapped, its reading width from the layout (up to `CARD_SLACK` more, for fewer rows) — or that line's own need,
-/// whichever is wider. So a run of more than one `─` before the corner is the text's, the title's, the reading
-/// width's or the chat's, never slack. Err: what differs, with the card.
+/// the line as wide as the card; and the card as wide as what lays it (`OfferCard::laid`), the chat open or not (#177):
+/// the widest of its text (and 4 cells) and its title (and 6) — where a line of what it says wrapped, its reading
+/// width from the layout (up to `CARD_SLACK` more, for fewer rows) — or that line's own need, whichever is wider. So
+/// a run of more than one `─` before the corner is the text's, the title's or the reading width's, never slack. Err:
+/// what differs, with the card.
 #[cfg(test)]
 pub(crate) fn card_line_holds(ed: &Editor, says: &str) -> Result<(), String> {
     let (x, y, w, h) = ed.screen.offer_card.ok_or("no card drawn")?;
@@ -11177,20 +11177,19 @@ pub(crate) fn card_line_holds(ed: &Editor, says: &str) -> Result<(), String> {
     let title = card[0].strip_prefix("╭─ ").unwrap_or_default();
     let title = title.trim_end_matches('╮').trim_end_matches('─').trim_end().width();
     let lay = Layout::new(ed, *cols, *rows);
-    // (what lays it but its line: the widths it may be — one, or the reading width's span where its text wrapped)
-    let (least, most) = match asks_foot(ed, &lay) {
-        Some((_, aw, ..)) => (aw.saturating_sub(2), aw.saturating_sub(2)),
-        None => {
-            let o = ed.offers.first().ok_or("no card up")?;
-            let need = (text + 4).max(title + 6);
-            match o.question.lines().any(|l| l.trim_end().width() > text) {
-                // (wrapped: its rows ragged under its reading width, `laid`'s; a title wider than that, the title's)
-                true => {
-                    let reading = (lay.edit_w / 2).clamp(30, 56).min(lay.edit_w.saturating_sub(8)) + 4;
-                    (need.max(reading), need.max(reading + CARD_SLACK))
-                }
-                false => (need, need),
+    // (what lays it but its line: the widths it may be — one, or the reading width's span where its text wrapped; the
+    // chat open or not, #177)
+    let (least, most) = {
+        let o = ed.offers.first().ok_or("no card up")?;
+        let need = (text + 4).max(title + 6);
+        match o.question.lines().any(|l| l.trim_end().width() > text) {
+            // (wrapped: its rows ragged under its reading width, `laid`'s; a title wider than that, the title's)
+            true => {
+                let (ax, aw, ..) = asks_area(ed, &lay).1;
+                let reading = card_reading(&lay, ax + aw) + 4;
+                (need.max(reading), need.max(reading + CARD_SLACK))
             }
+            false => (need, need),
         }
     };
     match run.chars().count() == 1 {
@@ -11279,10 +11278,18 @@ fn card_badge((here, elsewhere): (usize, usize), title_w: usize, room: usize) ->
 }
 
 /// Where the asks float (P3 step 7d, the user 2026-10-22: bottom-right is what needs you): over the right column's foot
-/// at its width — the chat's while it's open, the transcript's newest line above it, else a session list docked right
-/// (the user 2026-10-24) — else the screen's right, above a bottom slot or the status line. The column's foot, if it's
+/// — the chat's while it's open, the transcript's newest line above it, else a session list docked right (the user
+/// 2026-10-24) — else the screen's right, above a bottom slot or the status line; as wide as what it says needs (#177,
+/// the user 2026-10-27: never the column's width), reaching left over the code when it's wider. The column's foot, if it's
 /// one (`asks_foot`), and the area: columns from `ax`, `aw` wide; rows from `atop`, `arows` of them (the last one air).
 type AsksArea = (Option<(usize, usize, usize, usize)>, (usize, usize, usize, usize));
+
+/// A card's reading width (`OfferCard::laid`, `peeks_alone`): what its text wraps to — half the screen, 30 to 56 cells,
+/// whatever the chat (#177) — within its area's right edge `right` (its frame, padding and a cell of air each side, its
+/// name's 2 cells past its text on the top line: `laid`'s widest).
+fn card_reading(lay: &Layout, right: usize) -> usize {
+    (lay.width / 2).clamp(30, 56).min(lay.width.saturating_sub(8)).min(right.saturating_sub(8))
+}
 
 fn asks_area(editor: &Editor, lay: &Layout) -> AsksArea {
     let foot = asks_foot(editor, lay);
@@ -11300,19 +11307,21 @@ impl OfferCard {
     /// one-row peeks alone, where this session's card would stand — its width, bottom-right, the nearest lowest, a row
     /// of air under it; each named in its colour, a press on one goes there with its card focused (`offer_peek`).
     fn peeks_alone(editor: &Editor, lay: &Layout) -> Option<Self> {
-        let (foot, (ax, aw, atop, arows)) = asks_area(editor, lay);
+        let (_, (ax, aw, atop, arows)) = asks_area(editor, lay);
         if lay.offer_bar.is_some() || editor.picker.is_some() || !editor.pending.is_empty() || aw == 0 {
             return None;
         }
         let asks = editor.asks_elsewhere();
-        // (as wide as a card would be there: the column's, else its reading width)
-        let inner = match foot {
-            Some(_) => aw.saturating_sub(6),
-            None => (lay.edit_w / 2).clamp(30, 56).min(lay.edit_w.saturating_sub(8)),
-        };
-        let room_w = if foot.is_some() { aw.saturating_sub(2) } else { lay.edit_w.saturating_sub(1) };
-        let width = inner + 4;
-        if asks.is_empty() || inner < CARD_MIN_INNER || width > room_w {
+        // (as wide as the card the nearest stands for — the one `C-q` or a press brings to the front — laid by the
+        // card's own rule, the chat open or not: the stack's width kept as it comes to the front, #177's review)
+        let right = ax + aw;
+        let nearest = asks.first().map(|a| a.1)?;
+        if card_reading(lay, right) < CARD_MIN_INNER {
+            return None;
+        }
+        let width = Self::width_of(editor, lay, nearest).unwrap_or(card_reading(lay, right) + 4);
+        let inner = width.saturating_sub(4);
+        if width > right.saturating_sub(1) {
             return None;
         }
         // (the row of air at the area's foot under the nearest)
@@ -11381,27 +11390,62 @@ impl OfferCard {
     /// `new`'s layout, its text wrapped at `wrap` when given (else its column's reading width), and whether its
     /// bottom line made it wider than that.
     fn laid(editor: &Editor, lay: &Layout, wrap: Option<usize>) -> Option<(Self, bool)> {
-        use crate::offer::OfferState;
         // (none of this session's: another's waiting are the stack still — its peeks alone)
         let Some(o) = editor.offers.first() else {
             return Self::peeks_alone(editor, lay).map(|c| (c, false));
         };
-        let (foot, (ax, aw, atop, arows)) = asks_area(editor, lay);
+        Self::laid_of(editor, lay, wrap, o)
+    }
+
+    /// The width card `o` takes where the asks float, laid as `new` lays it (again at its grown width) — another
+    /// session's, measured for the peeks standing for it (`peeks_alone`). None: not drawn there.
+    fn width_of(editor: &Editor, lay: &Layout, o: &crate::offer::Offer) -> Option<usize> {
+        let (card, grown) = Self::laid_of(editor, lay, None, o)?;
+        let again = grown.then(|| Self::laid_of(editor, lay, Some(card.inner), o)).flatten();
+        Some(again.map_or(card.width(), |c| c.0.width()))
+    }
+
+    /// `laid` for card `o`: the front one, or another session's to measure (`width_of`).
+    fn laid_of(
+        editor: &Editor,
+        lay: &Layout,
+        wrap: Option<usize>,
+        o: &crate::offer::Offer,
+    ) -> Option<(Self, bool)> {
+        use crate::offer::OfferState;
+        // (what waits, as the card's own session counts it: this session for its front card, another's session for one
+        // measured — brought to the front there, its count and its line of what waits behind are that session's)
+        let theirs = (editor.workspaces.iter())
+            .find(|l| l.parked.iter().any(|p| p.id == o.id))
+            .filter(|_| editor.offers.first().is_none_or(|f| f.id != o.id));
+        let (waiting, behind_said) = match theirs.map(|l| crate::uistate::session_id(l.claude.id)) {
+            Some(s) => (editor.cards_waiting_from(s.clone()), editor.cards_behind_said_from(s, Some(o.id))),
+            None => (editor.cards_waiting(), editor.cards_behind_said()),
+        };
+        // (and whom it's about: that session, named as its peek names it — `card_about` takes a card with no `about` of
+        // its own for this session's)
+        let about = match theirs {
+            Some(l) => Some((l.label().to_string(), l.claude.colour)),
+            None => card_about(editor, o),
+        };
+        let (_, (ax, aw, atop, arows)) = asks_area(editor, lay);
         if lay.offer_bar.is_none()
             && (editor.picker.is_some() || !editor.pending.is_empty() || arows < 8 || aw == 0)
         {
             return None;
         }
         let pad = CARD_PAD;
-        // (over the chat: as wide as the chat, a cell in from each side — its text that minus the frame's)
+        // (its right edge: its area's — the chat's foot a cell in from the screen's right, a docked list's, else the
+        // code's; one width whatever the chat — #177, the user 2026-10-27: as wide as what it says needs, its reading
+        // width the screen's, never held to the chat's column)
+        let right = ax + aw;
         // (laid again at the width its bottom line grew it to: that its text's width)
-        let fixed = wrap.or(foot.map(|_| aw.saturating_sub(6)));
-        let reading = fixed.unwrap_or((lay.edit_w / 2).clamp(30, 56).min(lay.edit_w.saturating_sub(8)));
-        // The widest it can be — its answers and its cut row may take it past `reading`, never past the code
+        let fixed = wrap;
+        let reading = fixed.unwrap_or_else(|| card_reading(lay, right));
+        // The widest it can be — its answers and its cut row may take it past `reading`, never past the screen: its
+        // frame, padding and a cell of air each side, and the 2 cells its name takes on the top line past its text
         // (laid again at its grown width: that its widest too — its text wraps at it, never a slack wider)
-        let widest = wrap.unwrap_or(aw.saturating_sub(6));
-        // (and the most cells it takes, its frame's sides and padding with it — a cell of air beside it)
-        let room_w = if foot.is_some() { aw.saturating_sub(2) } else { lay.edit_w.saturating_sub(1) };
+        let widest = wrap.unwrap_or(right.saturating_sub(8));
         // (its text at its reading width: its answers fit the card, never the card its answers — the user, 2026-10-25)
         let quick = editor.preflight_quick().is_some();
         let way_key = editor.key_said("C-q");
@@ -11428,17 +11472,16 @@ impl OfferCard {
             return None;
         }
         // (with sessions, a card about one names it — #90: `C-q` landed somewhere unsaid; P3 step 7d: `main asks · …`,
-        // the title cut first, the name never)
-        let about = card_about(editor, o);
+        // the title cut first, the name never — `about` above)
         let title = asks_title(about.as_ref(), &o.title);
         // Its title whole, and the count that shares its row, where the code has the room — at 80 columns the
         // run-outside card's was cut at its key word (`outside the sandb…`), alone or with a card behind it
         // (its count's shortest form: the card widens only as far as the title needs — a longer form where it fits)
-        let shortest = card_badge(editor.cards_waiting(), title.width(), 0);
+        let shortest = card_badge(waiting, title.width(), 0);
         let badge_w = if shortest.is_empty() { 0 } else { shortest.width() + 2 };
         max_inner = max_inner.max((title.width() + badge_w).min(widest));
         // (what waits behind it too — queued calls here, and other sessions' cards apart, #7/#91)
-        let badge = card_badge(editor.cards_waiting(), title.width(), max_inner);
+        let badge = card_badge(waiting, title.width(), max_inner);
         // A paragraph wrapped to the card, up to `n` lines (a command to run is shown whole)
         let wrapped = |text: &str, n: usize| -> Vec<(String, bool)> {
             let mut all: Vec<(String, bool)> =
@@ -11528,7 +11571,7 @@ impl OfferCard {
                     // line's first pair, never a row: `draw`)
                     // What waits behind it, and where (frictions15 #5: `C-q` takes the oldest here — the rest
                     // were a queue the card didn't name)
-                    let behind = editor.cards_behind_said();
+                    let behind = behind_said.clone();
                     if behind.is_some() {
                         v.push((String::new(), true));
                     }
@@ -11718,12 +11761,13 @@ impl OfferCard {
             .map(|(i, _)| i)
             .collect();
         let forms = answer_forms(&whole, &short, read, &kept);
-        let inbox = editor.cards_behind_said().filter(|_| has_buttons).map(|_| editor.inbox_key());
+        let inbox = behind_said.as_ref().filter(|_| has_buttons).map(|_| editor.inbox_key());
         // (where even its narrowest line doesn't fit, the card grows left by just the cells that line needs — still
         // bottom-right, over the code beside the chat or a docked list (the user, 2026-10-25: asks are always
-        // bottom-right, never another place by width); the most it may take: from its corner's column to the
-        // screen's left, a cell of air there — else not drawn, the status line saying the size it needs)
-        let most_w = if foot.is_some() { (ax + aw).saturating_sub(1) } else { room_w };
+        // bottom-right, never another place by width); the most it may take, its frame's sides and padding with it:
+        // from its corner's column to the screen's left, a cell of air there — else not drawn, the status line saying
+        // the size it needs)
+        let most_w = right.saturating_sub(1);
         let last = inbox.as_deref().map(inbox_w);
         let form = match has_buttons {
             true => match answers_fit(&way_key, &forms, room, last) {
@@ -11751,7 +11795,7 @@ impl OfferCard {
         }
         let line_w = line_w + inbox.as_deref().map_or(0, |k| inbox_w(k) + 3);
         let line_inner = if has_buttons { line_w + 2 } else { 0 };
-        // (over the chat: its width whatever it says — wider only for its bottom line's narrowest form)
+        // (its text's width — wider only for its bottom line's narrowest form)
         let inner = fixed.unwrap_or(inner).max(line_inner);
         // (wider than its text's width for its bottom line: `new` lays it again at this width, its text wrapped to it)
         let grown = line_inner > max_inner;
@@ -11771,7 +11815,7 @@ impl OfferCard {
         // a row of air between them and its frame (two cards never touch): this session's, then every other session's
         // waiting, oldest first, named in its colour (P3 step 7d, the user: every session's asks in one stack)
         let room = y.saturating_sub(atop + pad + 1);
-        let here = editor.offers[1..].iter().map(|p| (p, card_about(editor, p)));
+        let here = editor.offers.get(1..).unwrap_or_default().iter().map(|p| (p, card_about(editor, p)));
         let elsewhere = editor
             .asks_elsewhere()
             .into_iter()
@@ -12840,6 +12884,10 @@ fn draw_follow_card(
     let follows = if c.follow.active() { "unfollow" } else { "follow" };
     let keys: &[(&str, &str)] = match () {
         _ if replaying => &[("[r ]r", "stop by stop")],
+        // (`C-c` clears a draft before it stops the turn — #175)
+        _ if compact && editor.workspace.is_at(At::Chat) && !c.input.blank() => {
+            &[("C-c", "clear"), ("C-f", follows)]
+        }
         _ if compact && editor.workspace.is_at(At::Chat) => &[("C-c", "stop"), ("C-f", follows)],
         _ if compact && stops => &[("space l", "open the chat"), ("[r", "replay")],
         _ if compact => &[("space l", "open the chat")],
@@ -15223,8 +15271,8 @@ fn chat_widths(chat_w: usize, set: bool) -> (usize, usize) {
 /// The chat's input shows this many of its rows at most.
 const CHAT_INPUT_MAX: usize = 5;
 
-/// Where the asks float while the chat is open (P3 step 7d, the user 2026-10-22: bottom-right, over the chat's foot at
-/// its width): its columns from `x`, `w` wide (the card a cell in from each side), and the row its input's line is on —
+/// Where the asks float while the chat is open (P3 step 7d, the user 2026-10-22: bottom-right, over the chat's foot —
+/// their own width, #177): its columns from `x`, `w` wide (the card's right a cell in), and the row its input's line is on —
 /// as `draw_chat` lays them out. None: the chat isn't open beside the code (closed, minimized).
 fn chat_foot(editor: &Editor, lay: &Layout) -> Option<(usize, usize, usize)> {
     let c = editor.workspace.claude.chat.as_ref().filter(|_| lay.chat_w > 0)?;
@@ -15849,8 +15897,11 @@ fn draw_chat(
             hints.push(("enter", "queue"));
         } else if c.queued.is_some() {
             hints.push(("↑", "edit queued"));
+        } else if c.cleared.is_some() && c.input.is_empty() {
+            hints.push(("↑", "undo clear"));
         }
-        hints.push(("C-c", "stop"));
+        // (what's typed first, then the turn — #175)
+        hints.push(("C-c", if c.input.blank() { "stop" } else { "clear" }));
         hints.push(esc);
         hints.push(("C-f", if c.follow.active() { "unfollow" } else { "follow" }));
     } else {
@@ -15865,8 +15916,14 @@ fn draw_chat(
         // (one queued and not sent — a restart waited for the turn)
         if c.queued.is_some() && c.input.is_empty() {
             hints.push(("↑", "edit queued"));
+        } else if c.cleared.is_some() && c.input.is_empty() {
+            hints.push(("↑", "undo clear"));
         }
         hints.push(esc);
+        // (#175: `C-c` clears what's typed — `↑` gives it back)
+        if !c.input.blank() {
+            hints.push(("C-c", "clear"));
+        }
         if crate::checkpoint::can_undo(editor) {
             hints.push(("C-z", "undo turn"));
         }
@@ -19211,13 +19268,45 @@ mod tests {
         out
     }
 
-    /// Where the asks float (P3 step 7d): the chat open, over its foot at its width — a cell in from its line and the
-    /// screen's edge, its bottom line right on its input's line — no row of air (the user, 2026-10-25); the chat closed,
-    /// the screen's right, a row of air over the status line. One session: its title alone.
+    /// #177's review: an ask as wide as it needs over the chat reaches the code's last column, where a toast's floor is —
+    /// with the top taken (the cursor's row), a warning stands right above the card, a row of air between, never on the
+    /// status line alone (an error or a warning is never only there).
+    #[test]
+    fn a_toast_stands_above_an_ask_that_holds_its_floor() {
+        use crate::offer::{Offer, What};
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.docs[0].text = ropey::Rope::from_str("one\n");
+        ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        let what = What::Asks { call: crate::tools::Call::test(1) };
+        let title = "Claude asks to see the screen and every pane on it";
+        ed.push_offer(Offer::new(title.into(), "to see the screen", "", String::new(), what));
+        let mut bytes = Vec::new();
+        render(&mut ed, &mut bytes, 120, 40).unwrap();
+        ed.set_warning("a warning while it waits");
+        bytes.clear();
+        render(&mut ed, &mut bytes, 120, 40).unwrap();
+        let mut p = vt100::Parser::new(40, 120, 0);
+        p.process(&bytes);
+        let s = p.screen().contents();
+        let (cx, cy, ..) = ed.screen.offer_card.expect("the card");
+        let code = ed.screen.chat_x.expect("the chat");
+        assert!(cx + 2 < code, "the card reaches over the code's last columns\n{s}");
+        let (tx, ty, tw, th) = ed.screen.toast_card.get().unwrap_or_else(|| panic!("the toast drawn\n{s}"));
+        assert!(ty + th < cy, "above the card, a row of air between\n{s}");
+        assert!(ty > 1, "not at the top: the cursor's row is there\n{s}");
+        assert!(tx + tw <= code, "in the code's columns\n{s}");
+    }
+
+    /// Where the asks float (P3 step 7d): the chat open, over its foot — a cell in from the screen's edge, its bottom line
+    /// right on its input's line, no row of air (the user, 2026-10-25); the chat closed, the screen's right, a row of air
+    /// over the status line. One session: its title alone. As wide as what it says needs, the chat open or not (#177,
+    /// the user 2026-10-27): at 80 columns wider than the chat, over the code; at 160 narrower than the chat.
     #[test]
     fn the_asks_float_over_the_chats_foot_or_at_the_screens_right() {
         use crate::offer::{Offer, What};
         for (w, h) in [(80u16, 24u16), (160, 45)] {
+            let mut widths = Vec::new();
             for chat in [true, false] {
                 let mut ed = Editor::new(crate::config::Config::default());
                 let what = What::Asks { call: crate::tools::Call::test(1) };
@@ -19232,20 +19321,21 @@ mod tests {
                 let s = rows.join("\n");
                 assert!(rows[y].contains("╭─ Claude asks ─"), "{w} {chat}: its title alone\n{s}");
                 let (w, h) = (w as usize, h as usize);
+                widths.push(cw);
                 match chat {
                     true => {
                         let cx = ed.screen.chat_x.expect("the chat") + crate::chrome::GAP;
-                        assert_eq!((x, x + cw), (cx + 1, w - 1), "{w}: the chat's width, a cell in\n{s}");
+                        assert_eq!(x + cw, w - 1, "{w}: a cell in from the screen's right\n{s}");
+                        match w {
+                            80 => assert!(x < cx, "{w}: wider than the chat, over the code\n{s}"),
+                            _ => assert!(x > cx + 1, "{w}: narrower than the chat\n{s}"),
+                        }
                         // (no row of air: the input's line right under its bottom line)
                         let line: String = rows[y + ch].chars().skip(cx).collect();
                         assert!(line.trim_start().starts_with('─'), "{w}: on the input's line\n{s}");
                         assert!(
-                            rows[y + ch - 1]
-                                .chars()
-                                .skip(cx)
-                                .collect::<String>()
-                                .trim_start()
-                                .starts_with('╰')
+                            rows[y + ch - 1].chars().skip(x).collect::<String>().starts_with('╰'),
+                            "{w}: its bottom line\n{s}"
                         );
                     }
                     false => {
@@ -19254,6 +19344,7 @@ mod tests {
                     }
                 }
             }
+            assert_eq!(widths[0], widths[1], "{w}: one width, the chat open or closed");
         }
     }
 
@@ -19545,14 +19636,16 @@ mod tests {
         let thought = (50, 2, 40, 8);
         assert_eq!(toast_place(card, rows, &[thought]), Some(27), "under the thought card: the bottom");
         assert_eq!(toast_place(card, rows, &[(50, 4, 40, 8)]), Some(27), "its air row below kept free too");
+        // (the floor held: right above what holds it, a row of air each side — #177's review)
         let mini = (58, 20, 36, 8);
-        assert_eq!(toast_place(card, rows, &[thought, mini]), None, "no room left");
+        assert_eq!(toast_place(card, rows, &[thought, mini]), Some(17), "right above the card on the floor");
         let low = (50, 26, 40, 1);
         assert_eq!(
             toast_place(card, rows, &[thought, low]),
-            None,
+            Some(23),
             "nor on the air row above the bottom spot"
         );
+        assert_eq!(toast_place(card, rows, &[thought, (50, 12, 40, 16)]), None, "no room left");
         assert_eq!(toast_place(card, rows, &[(0, 2, 20, 8)]), Some(2), "a card elsewhere doesn't matter");
     }
 

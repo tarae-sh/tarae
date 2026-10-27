@@ -741,7 +741,12 @@ impl Editor {
     /// keeps them apart). Only what asks for an answer (`Entry::asks_answer`): a quiet run, a reviewer's end
     /// is news, not something waiting.
     pub fn cards_waiting(&self) -> (usize, usize) {
-        let front = crate::uistate::session_id(self.workspace.claude.id);
+        self.cards_waiting_from(crate::uistate::session_id(self.workspace.claude.id))
+    }
+
+    /// `cards_waiting` as session `front` (its `uistate::session_id`) counts them — another's card measured as it
+    /// would stand there (`term`'s peeks alone).
+    pub fn cards_waiting_from(&self, front: String) -> (usize, usize) {
         let inbox: Vec<_> = self.inbox().into_iter().filter(crate::inbox::Entry::asks_answer).collect();
         let here = inbox.iter().filter(|e| e.session == front).count();
         (here, inbox.len() - here)
@@ -752,7 +757,13 @@ impl Editor {
     /// its name; the key that lists them is its bottom line's (`inbox_key`). None: nothing else waits.
     pub fn cards_behind_said(&self) -> Option<String> {
         let front = crate::uistate::session_id(self.workspace.claude.id);
-        let up = self.offers.first().map(|o| format!("card#{}", o.id));
+        self.cards_behind_said_from(front, self.offers.first().map(|o| o.id))
+    }
+
+    /// `cards_behind_said` as session `front` says it with card `up` in front — another's card measured as it would
+    /// stand there (`term`'s peeks alone).
+    pub fn cards_behind_said_from(&self, front: String, up: Option<u64>) -> Option<String> {
+        let up = up.map(|id| format!("card#{id}"));
         let behind: Vec<_> =
             self.inbox().into_iter().filter(|e| e.asks_answer() && Some(&e.id) != up.as_ref()).collect();
         if behind.is_empty() {

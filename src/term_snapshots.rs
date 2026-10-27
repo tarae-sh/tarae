@@ -2498,6 +2498,49 @@ fn snapshot_session_end_keeps_its_notes() {
     s.frames_both("session_end_not_kept");
 }
 
+/// #177's review: another session's asks alone are peeks as wide as the card the nearest stands for, by the card's own
+/// rule — a press on it brings that session to the front, its card focused at the stack's width, not a jump (they kept
+/// the chat's column while the card had its own); with the chat open, at 120 and 160 columns. Two cards wait there, the
+/// nearest's title long: its count and the line of what waits behind it are that session's — `1/2`, `1 more waits — 1
+/// here` — never this one's (`+2 elsewhere`, `2 in fix-login`), which would lay it wider (the review's round 2).
+#[test]
+fn the_peeks_alone_are_as_wide_as_the_card_they_bring() {
+    for w in [120u16, 160] {
+        let mut s = Shot::new(w, 30);
+        let root = s.in_project();
+        s.file("src/demo.rs", DEMO_RS);
+        s.ed.workspace.name = "main".into();
+        s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        let dir = root.with_file_name("fix-login");
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = s.ed.workspace_add(dir);
+        let since = Instant::now();
+        for (k, title) in
+            ["Claude asks to see the screen and every pane on it", "Claude asks"].into_iter().enumerate()
+        {
+            let what = crate::offer::What::Asks { call: crate::tools::Call::test(7 + k as u64) };
+            let mut o = crate::offer::Offer::new(title.into(), "to see the screen", "", String::new(), what);
+            (s.ed.offer_seq, o.id, o.since) = (s.ed.offer_seq + 1, s.ed.offer_seq + 1, since);
+            let l = s.ed.workspaces.iter_mut().find(|l| l.id == id).unwrap();
+            l.name = "fix-login".into();
+            l.parked.push(o);
+        }
+        let before = cells(&s.frame(), s.w, s.h).screen().contents();
+        let peek = s.ed.screen.offer_buttons.iter().find(|b| b.3 == '1').copied();
+        let (_, px, end, _) = peek.unwrap_or_else(|| panic!("{w}: the peek\n{before}"));
+        let stack = end - px + 2 * super::PEEK_INSET;
+        s.ed.offer_peek(1);
+        let after = cells(&s.frame(), s.w, s.h).screen().contents();
+        assert_eq!(s.ed.workspace.id, id, "{w}: that session in front");
+        assert!(
+            after.contains("every pane on it") && after.contains("1/2"),
+            "{w}: the nearest, counted there\n{after}"
+        );
+        let (_, _, cw, _) = s.ed.screen.offer_card.unwrap_or_else(|| panic!("{w}: its card\n{after}"));
+        assert_eq!(cw, stack, "{w}: the card at the stack's width\nbefore:\n{before}\nafter:\n{after}");
+    }
+}
+
 /// frictions26 S2: a session behind with two cards waiting — its tab counts them (`▲2 waits`) — and, minutes on,
 /// the one warning that names it.
 #[test]
@@ -6884,36 +6927,111 @@ fn an_ask_too_wide_for_its_answers_whole_says_their_short_words() {
     );
 }
 
-/// The user, 2026-10-25: asks are always bottom-right — over a chat too narrow for a card's narrowest bottom line, the
-/// card grows left over the code by just the cells that line needs, its corner where the chat's foot is. The four
-/// cards whose lines keep the most (a session's end with work in no commit, a bring, a grant that may last, a host)
-/// over the chat at 112 columns: drawn, each its line's narrowest form whole, wider than the chat only by it.
+/// An ask is as wide as what it says needs, the chat open or not (#177, the user 2026-10-27 — it was held to the chat's
+/// width): the four cards whose lines keep the most (a session's end with work in no commit, a bring, a grant that may
+/// last, a host) at 112 columns, over the chat's foot and with the chat closed: the same width and bottom line, always
+/// bottom-right — its corner a cell in from the screen's right —, wider than the chat over the code.
 #[test]
-fn an_ask_too_wide_for_the_chats_foot_grows_left_over_the_code() {
+fn an_ask_over_the_chat_is_as_wide_as_with_the_chat_closed() {
     for (name, card, line) in chat112_cards() {
-        let mut s = Shot::new(112, 30);
-        s.ed.offer_popups = true;
-        s.file("src/demo.rs", DEMO_RS);
-        s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
-        s.ed.workspace.viewer.at = crate::workspace::At::Chat;
-        s.ed.push_offer(card);
-        s.frame();
-        let (x, _, w, _) = s.ed.screen.offer_card.unwrap_or_else(|| panic!("{name}: drawn"));
-        let chat_x = s.ed.screen.chat_x.expect("the chat");
-        assert_eq!(crate::term::card_line(&s.ed).as_deref(), Some(line), "{name}");
-        assert!(x < chat_x, "{name}: grown left past the chat's edge ({x} < {chat_x})");
-        // (its corner where the chat's foot is, a cell of air at the screen's right)
-        assert_eq!(x + w, 111, "{name}");
-        s.frames_both(&format!("cardkeys-chat112-{name}"));
+        let mut drawn = Vec::new();
+        for chat in [true, false] {
+            let mut s = Shot::new(112, 30);
+            s.ed.offer_popups = true;
+            s.file("src/demo.rs", DEMO_RS);
+            if chat {
+                s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+                s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+            }
+            s.ed.push_offer(card.clone());
+            let shown = cells(&s.frame(), 112, 30).screen().contents();
+            let (x, _, w, _) = s.ed.screen.offer_card.unwrap_or_else(|| panic!("{name}: drawn"));
+            assert_eq!(crate::term::card_line(&s.ed).as_deref(), Some(line), "{name} {chat}\n{shown}");
+            // (its corner a cell of air in from the screen's right)
+            assert_eq!(x + w, 111, "{name} {chat}");
+            if chat {
+                let chat_x = s.ed.screen.chat_x.expect("the chat");
+                assert!(x < chat_x, "{name}: wider than the chat, over the code ({x} < {chat_x})");
+                s.frames_both(&format!("cardkeys-chat112-{name}"));
+            }
+            drawn.push(w);
+        }
+        assert_eq!(drawn[0], drawn[1], "{name}: one width, the chat open or closed");
     }
 }
 
-/// A card grown left for its bottom line wraps its text at its own width (the user, 2026-10-25: a third of the session's
-/// end card and the grant's was blank, their bodies taller than they needed): every body row within the card's text
-/// width, none with room left for the next row's first word of the same paragraph; never more rows than wrapped at
-/// the chat's width — the grant's fewer — its corner where it was.
+/// #177's screens, for their screenshots (only with `TARAE_FRAMES_DIR` set: both themes there, 140×34 — `cargo xtask
+/// shot` draws them with `TARAE_SHOT_REPLAY`): a short ask (Claude asks to see the screen) and a long one (a session's
+/// end), each with the chat open and closed.
 #[test]
-fn a_card_grown_left_wraps_its_text_at_its_own_width() {
+fn frames_of_fixesy_asks() {
+    if std::env::var_os("TARAE_FRAMES_DIR").is_none() {
+        return;
+    }
+    let end = chat112_cards().into_iter().find(|c| c.0 == "end").expect("the end card").1;
+    let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
+    let short = crate::offer::Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what);
+    for (name, card) in [("short", short), ("long", end)] {
+        for chat in [true, false] {
+            let mut s = Shot::new(140, 34);
+            s.ed.offer_popups = true;
+            s.file("src/demo.rs", DEMO_RS);
+            if chat {
+                s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+                s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+            }
+            s.ed.push_offer(card.clone());
+            s.frames_both(&format!("fixesy-{name}-{}", if chat { "chat" } else { "nochat" }));
+        }
+    }
+}
+
+/// #177's review's screens (only with `TARAE_FRAMES_DIR` set: both themes there, 120×30 and 160×30): the stack — a card
+/// of this session's with another session's peek behind it, and that peek alone — over the chat, a warning up while the
+/// cursor's row holds the top.
+#[test]
+fn frames_of_fixesy_stack() {
+    if std::env::var_os("TARAE_FRAMES_DIR").is_none() {
+        return;
+    }
+    for w in [120u16, 160] {
+        for alone in [false, true] {
+            let mut s = Shot::new(w, 30);
+            let root = s.in_project();
+            s.file("src/demo.rs", DEMO_RS);
+            s.ed.workspace.name = "main".into();
+            s.ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+            s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+            s.ed.offer_popups = true;
+            let dir = root.with_file_name("fix-login");
+            std::fs::create_dir_all(&dir).unwrap();
+            let id = s.ed.workspace_add(dir);
+            let what = crate::offer::What::Asks { call: crate::tools::Call::test(7) };
+            let mut o =
+                crate::offer::Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what);
+            (s.ed.offer_seq, o.id) = (s.ed.offer_seq + 1, s.ed.offer_seq + 1);
+            let l = s.ed.workspaces.iter_mut().find(|l| l.id == id).unwrap();
+            l.name = "fix-login".into();
+            l.parked.push(o);
+            if !alone {
+                let end = chat112_cards().into_iter().find(|c| c.0 == "end").expect("the end card").1;
+                s.ed.push_offer(end);
+            }
+            s.ed.set_warning("rust-analyzer exited — restarting it");
+            let fresh = Instant::now().checked_sub(Duration::from_millis(500)).unwrap();
+            for t in &mut s.ed.toasts {
+                (t.at, t.shown) = (fresh, true);
+            }
+            s.frames_both(&format!("fixesy-stack-{}-{w}", if alone { "alone" } else { "card" }));
+        }
+    }
+}
+
+/// A card wraps its text at its own width (the user, 2026-10-25: a third of the session's end card and the grant's was
+/// blank, their bodies taller than they needed): every body row within the card's text width, none with room left for
+/// the next row's first word of the same paragraph.
+#[test]
+fn an_ask_wraps_its_text_at_its_own_width() {
     use unicode_width::UnicodeWidthStr;
     let cards: Vec<_> = chat112_cards().into_iter().filter(|c| matches!(c.0, "end" | "grant")).collect();
     assert_eq!(cards.len(), 2);
@@ -6956,16 +7074,6 @@ fn a_card_grown_left_wraps_its_text_at_its_own_width() {
                 assert!(after > inner, "{name}: {next:?} fit after {:?} ({inner}): {body:#?}", pair[0]);
             }
         }
-        // (laid at the chat's width: as tall or taller — the grant a row or more; its corner where that one's was)
-        let lay = super::Layout::new(&s.ed, 112, 30);
-        let (narrow, grown) = super::OfferCard::laid(&s.ed, &lay, None).expect("laid");
-        assert!(grown, "{name}: it grew for its bottom line");
-        let (was, now) = (narrow.lines.len() - 1, body.len());
-        match name {
-            "grant" => assert!(was > now, "{name}: shorter wrapped at its width: {was} rows, {now}"),
-            _ => assert!(was >= now, "{name}: never taller: {was} rows, {now}"),
-        }
-        assert_eq!(narrow.x + narrow.width(), x + w, "{name}: its corner where it was");
     }
 }
 
@@ -7011,8 +7119,8 @@ fn an_ask_over_the_chat_stands_on_its_inputs_rule() {
     assert_eq!(peek + 2, top, "the peek, its row of air, then the card");
 }
 
-/// `an_ask_too_wide_for_the_chats_foot_grows_left_over_the_code`'s cards, made as tarae makes them, and the bottom
-/// line each takes over the chat at 112 columns.
+/// `an_ask_over_the_chat_is_as_wide_as_with_the_chat_closed`'s cards, made as tarae makes them, and the bottom line
+/// each takes at 112 columns.
 fn chat112_cards() -> Vec<(&'static str, crate::offer::Offer, &'static str)> {
     use std::path::PathBuf;
     let p = |s: &str| PathBuf::from(format!("/tmp/tarae-not-there/{s}"));
@@ -7071,14 +7179,22 @@ fn chat112_cards() -> Vec<(&'static str, crate::offer::Offer, &'static str)> {
         ended: false,
     };
     vec![
-        ("end", ending.card(), "╰─ C-q answer · c commit · R remove · D both · n ─╯"),
-        ("bring", moved.bring_card(None, true), "╰─ C-q answer · y bring · p preflight · n ─╯"),
+        ("end", ending.card(), "╰─ C-q answer · c commit · R remove · D both · n cancel ───────╯"),
+        (
+            "bring",
+            moved.bring_card(None, true),
+            "╰─ C-q answer · y bring · p preflight · n not now ──────────╯",
+        ),
         (
             "grant",
             crate::blocked::also_card(grant, reason, "npm test", Box::new(run), None, Vec::new(), false),
-            "╰─ C-q answer · y · a chat · s session · A always · n ─╯",
+            "╰─ C-q answer · y · a chat · s session · A always · n ─────╯",
         ),
-        ("host", crate::hosts::card(host), "╰─ C-q answer · y · a chat · s session · v · n ─╯"),
+        (
+            "host",
+            crate::hosts::card(host),
+            "╰─ C-q answer · y once · a chat · s session · v details · n no ─╯",
+        ),
     ]
 }
 

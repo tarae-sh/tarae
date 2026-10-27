@@ -3988,15 +3988,15 @@ mod tests {
             ed.workspace.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)
         });
         // Cut to fit a short screen: `v` is the card's text with the output after it (the review of 42: it was
-        // the card's text alone)
+        // the card's text alone) — 80 columns (at its own width, #177, 112 hold it whole in 12 rows)
         let mut out = Vec::new();
-        crate::term::render(&mut ed, &mut out, 112, 12).unwrap();
+        crate::term::render(&mut ed, &mut out, 80, 12).unwrap();
         ed.card_focus_front();
         out.clear();
-        crate::term::render(&mut ed, &mut out, 112, 12).unwrap();
+        crate::term::render(&mut ed, &mut out, 80, 12).unwrap();
         assert!(!ed.offer_seen_whole(), "cut at 12 rows");
         let drawn: Vec<char> = ed.screen.offer_buttons.iter().map(|b| b.3).collect();
-        let mut vt = vt100::Parser::new(12, 112, 0);
+        let mut vt = vt100::Parser::new(12, 80, 0);
         vt.process(&out);
         assert!(drawn.contains(&'v'), "{drawn:?}\n{}", vt.screen().contents());
         feed(&mut ed, "v");
