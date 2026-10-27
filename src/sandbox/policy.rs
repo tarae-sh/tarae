@@ -193,6 +193,10 @@ pub struct Policy {
     pub protect: Vec<PathBuf>,
     /// Folders writable besides the project (temp, the toolchain's, `llm.sandbox-write`).
     pub write: Vec<PathBuf>,
+    /// Of `write`, the folders the user opened (`llm.sandbox-write`, a write grant): below each the protected names
+    /// are kept however deep, but below its tools' output, as below the root (`protected_in` from it) — another
+    /// repository's `.git`, `Makefile` or `Cargo.toml` runs later outside the sandbox as the project's does.
+    pub opened: Vec<PathBuf>,
     /// Single files writable — the caches' own files (cargo's locks and last-use database), the network closed
     /// even those inside `caches`, and the packs' `write-files`.
     pub files: Vec<PathBuf>,
@@ -466,6 +470,10 @@ impl Policy {
         // After the allows, so these win. The names a run keeps off, below the project's root however deep
         // (`protected_writes`)
         p.push_str(&deny(&format!("file-write* {}", protected_writes(&self.root))));
+        // …and below each folder the user opened for writing, counted from it as the root's are (`opened`)
+        for (i, o) in self.opened.iter().enumerate() {
+            p.push_str(&deny(&format!("file-write* {}", protected_writes_in(o, &format!("O{i}")))));
+        }
         // …the files named like keys (`secretnames`, data — 7a): not read, below the root however deep, but a
         // template or a public key (its `!` lines), what's below tools' output (a package's test keys), and each
         // file the user opened (`keys`)
@@ -917,6 +925,9 @@ impl Policy {
         if real.starts_with(&self.root) {
             return !protected_in(&self.root, real) && !self.protect.iter().any(|p| real.starts_with(p));
         }
+        if self.opened.iter().any(|o| protected_in(o, real)) {
+            return false;
+        }
         let open = (self.own_shm && real.starts_with(Path::new("/dev/shm")))
             || self.run.as_ref().is_some_and(|d| real.starts_with(d.path()))
             || self.write.iter().any(|w| real.starts_with(w));
@@ -1054,11 +1065,11 @@ impl Policy {
     }
 
     /// Linux, tier own: whether the project's protected names are sealed by mounts for the run
-    /// (`linux::Covers::seals`).
+    /// (`linux::Confine::project_sealed` — `Covers::seals` holds the opened folders' too).
     pub(super) fn sealed(&self) -> bool {
         #[cfg(target_os = "linux")]
         if let Some(Ok(c)) = &self.confine {
-            return !c.covers.seals.is_empty();
+            return c.project_sealed;
         }
         false
     }
@@ -1122,6 +1133,7 @@ impl Policy {
         v.extend(self.run.iter().map(|r| ("RUN".to_string(), s(r.path()))));
         v.extend(self.protect.iter().enumerate().map(|(i, p)| (format!("P{i}"), s(p))));
         v.extend(self.write.iter().enumerate().map(|(i, p)| (format!("W{i}"), s(p))));
+        v.extend(self.opened.iter().enumerate().map(|(i, p)| (format!("O{i}"), s(p))));
         v.extend(self.files.iter().enumerate().map(|(i, p)| (format!("F{i}"), s(p))));
         v.extend(self.keep.iter().enumerate().map(|(i, p)| (format!("K{i}"), s(p))));
         v.extend(self.caches.iter().enumerate().map(|(i, p)| (format!("C{i}"), s(p))));
@@ -1229,9 +1241,11 @@ impl Policy {
         // Never the project or what holds it (that would open .git again); inside it, the project's rule
         write.retain(|w| !root.starts_with(w) && !w.starts_with(&root));
         write.dedup();
-        // (a folder the user opened for writing — `llm.sandbox-write`, a write grant — is read too: its keys closed;
-        // only as it's opened: not one holding the project, which isn't, nor `/`)
-        key_places.extend(user_writes.into_iter().filter(|w| write.contains(w)));
+        // (a folder the user opened for writing — `llm.sandbox-write`, a write grant — is read too: its keys closed,
+        // and its protected names kept, as the project's (`opened`); only as it's opened: not one holding the
+        // project, which isn't, nor `/`)
+        let opened: Vec<PathBuf> = user_writes.into_iter().filter(|w| write.contains(w)).collect();
+        key_places.extend(opened.iter().cloned());
         // (a read place holding the project stays — a granted ancestor, the main checkout of a nested worktree: its
         // rule leaves the project to the project's own; one in the project is the project's)
         // (what's spared — an install the packs name — is never one, and is left out of those holding it; only
@@ -1253,6 +1267,7 @@ impl Policy {
             root,
             protect,
             write,
+            opened,
             files: env.files.clone(),
             keep: mux_dirs(env),
             caches: if env.network { Vec::new() } else { caches },

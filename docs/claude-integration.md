@@ -1174,7 +1174,19 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
   tarae also reads the run's output: a path on a failing line next to `Operation not permitted` that the
   sandbox wouldn't let it read or write counts as denied too, and Claude is told it came from the output.
 - It reaches nothing over the network, so a build that needs to download something fails.
-  `llm.sandbox-network` lets it through, and `llm.sandbox-write` adds folders
+  `llm.sandbox-network` lets it through, and `llm.sandbox-write` adds folders. A folder added there, or opened
+  on a write card, keeps the same names as the project however deep (`.git`, `Makefile`, `Cargo.toml`,
+  `.envrc`, … — not below its tools' output): another repository opened for writing can't have its hooks or
+  build files changed by a command, since those run later outside the sandbox. On Linux that has a cost wherever
+  those names can't be sealed by mounts of the command's own: in tiers host and offline (Ubuntu's restriction on
+  user namespaces, Docker's default profile) always, and in tier own for a folder one of whose names is reached
+  through another mount, isn't a file or a folder, or is past the mounts a command takes. There those names are
+  closed by their folders' rules instead, so the folder, every folder between it and one of them, and a place
+  commands write that holds it (your temp folder, say) take no new entry — their files are still written, and an
+  emptied folder below the opened one can go (`cargo clean`). What tarae couldn't look through before the command
+  (past 20,000 entries, another filesystem, a network one) isn't written at all, and the folders holding it take
+  no new entry either, in every tier. The command's report names each such folder and why. And on Linux a name
+  made where none was isn't caught there.
 - **Which hosts.** With `llm.sandbox-network` on, a command goes out only through tarae's proxy, and
   `llm.sandbox-hosts` says which hosts it reaches without asking: `"registries"`, the default, is every built-in
   language pack's package registries (crates.io, npm, PyPI, Go's proxy, Maven Central, Gradle's — whatever the

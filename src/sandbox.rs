@@ -807,6 +807,18 @@ impl Guard {
                     true => String::new(),
                     false => format!(" The user also let it {}.", p.granted.join(", and ")),
                 };
+                // (Linux: one made where none was isn't refused there — Landlock only grants — nor found after the run,
+                // which the project's are: `snapshot::Made`)
+                let opened = match (p.opened.is_empty(), p.supervised) {
+                    (true, _) => "",
+                    (false, false) => {
+                        " Below the folders the user opened for writing it can't write those names either."
+                    }
+                    (false, true) => {
+                        " Below the folders the user opened for writing it can't write those names either — but one \
+                         it makes there where none was isn't refused, nor asked about after the run."
+                    }
+                };
                 // (what the checkout's cargo config named and stays closed — #20)
                 let refused = match p.refused.is_empty() {
                     true => String::new(),
@@ -887,8 +899,8 @@ impl Guard {
                 };
                 format!(
                     "In tarae's sandbox: it could {reads}write only in the project — not {names}, {names_where} \
-                     (your edits change those) — temp folders and the toolchain's own{crates}{net}.{granted}{refused}\
-                     {keys}{copies}{stores}{linux}"
+                     (your edits change those) — temp folders and the toolchain's own{crates}{net}.{granted}{opened}\
+                     {refused}{keys}{copies}{stores}{linux}"
                 )
             }
             Guard::Without(why) => {
@@ -3630,14 +3642,20 @@ fn outputs_regex() -> String {
 /// names (`name_regexes`) below it however deep, but below a folder of tools' output — runs' profile's rule.
 #[cfg_attr(target_os = "linux", allow(dead_code))] // (Seatbelt's — its tests run everywhere)
 pub(crate) fn protected_writes(root: &Path) -> String {
-    let (below, outputs) = (below(root), outputs_regex());
+    protected_writes_in(root, "ROOT")
+}
+
+/// `protected_writes` below `at`, the profile's parameter `param` (a folder the user opened for writing: `O<n>`).
+#[cfg_attr(target_os = "linux", allow(dead_code))] // (Seatbelt's — its tests run everywhere)
+pub(crate) fn protected_writes_in(at: &Path, param: &str) -> String {
+    let (below, outputs) = (below(at), outputs_regex());
     let (mut named, mut in_output) = (String::new(), String::new());
     for names in name_regexes() {
         named.push_str(&format!(" (regex #\"{below}({names})(/|$)\")"));
         in_output.push_str(&format!(" (regex #\"{below}({outputs})/(.*/)?({names})(/|$)\")"));
     }
     format!(
-        "(require-all (subpath (param \"ROOT\")) (require-any{named}) (require-not (require-any{in_output})))"
+        "(require-all (subpath (param \"{param}\")) (require-any{named}) (require-not (require-any{in_output})))"
     )
 }
 
@@ -11832,6 +11850,7 @@ mod tests {
             run_env: Default::default(),
             run_homes: Vec::new(),
             kept: Vec::new(),
+            opened: Vec::new(),
             own_shm: false,
         };
         let sh = |script: &str| {
@@ -13650,6 +13669,7 @@ mod tests {
                 run_env: Default::default(),
                 run_homes: Vec::new(),
                 kept: Vec::new(),
+                opened: Vec::new(),
                 own_shm: false,
             };
             let sh = |script: &str| {
@@ -13737,6 +13757,7 @@ mod tests {
             run_env: Default::default(),
             run_homes: Vec::new(),
             kept: Vec::new(),
+            opened: Vec::new(),
             own_shm: false,
         };
         let pid = std::process::id();
@@ -13811,6 +13832,7 @@ mod tests {
             run_env: Default::default(),
             run_homes: Vec::new(),
             kept: Vec::new(),
+            opened: Vec::new(),
             own_shm: false,
         };
         let sh = |script: &str| {
@@ -13927,6 +13949,105 @@ mod tests {
         assert!(knocked(&sock, "granted.sock"), "the granted socket");
         assert!(!knocked(&sock_other, "other.sock"), "the socket beside it");
         std::fs::remove_dir_all(&t).ok();
+    }
+
+    /// A folder the user opened for writing (`llm.sandbox-write`, a write grant) keeps the protected names below it
+    /// as the project does: another repository's `.git`, `Makefile`, `Cargo.toml` aren't written — they run later
+    /// outside the sandbox — its own files and its tools' output are. The rule in Rust; the profile's and
+    /// Landlock's for real beside (`a_repository_opened_for_writing_keeps_its_names_under_the_real_profile`,
+    /// `linux::tests::a_repository_opened_for_writing_keeps_its_protected_names`).
+    #[test]
+    fn a_folder_opened_for_writing_keeps_its_protected_names() {
+        let (root, infra) = (PathBuf::from("/w/project"), PathBuf::from("/w/infra"));
+        let env = Env {
+            root,
+            write: vec![infra.display().to_string()],
+            tmp: Some("/w/tmp".into()),
+            ..Env::default()
+        };
+        let p = Policy::for_project(&env);
+        assert_eq!(p.opened, std::slice::from_ref(&infra), "the place opened, not the temp folders");
+        for refused in
+            [".git/hooks/pre-commit", ".git/config", "Makefile", "Cargo.toml", "deploy/build.rs", ".envrc"]
+        {
+            assert!(!p.writes_allow(&infra.join(refused)), "{refused}: written");
+        }
+        for written in ["src/lib.rs", "notes.md", "target/debug/build/x/Cargo.toml"] {
+            assert!(p.writes_allow(&infra.join(written)), "{written}: refused");
+        }
+        assert!(p.params().contains(&("O0".to_string(), infra.display().to_string())));
+        assert!(p.profile().contains("(subpath (param \"O0\"))"), "the profile keeps them below O0");
+        // (the run's report says so once a folder is opened — Linux's, what isn't caught there; nothing without one)
+        let said = "Below the folders the user opened for writing it can't write those names either";
+        let mac = Guard::In(Box::new(Policy { supervised: false, ..p.clone() })).rules();
+        assert!(mac.contains(&format!("{said}.")), "{mac}");
+        let linux = Guard::In(Box::new(Policy { supervised: true, ..p.clone() })).rules();
+        assert!(
+            linux.contains(said) && linux.contains("isn't refused, nor asked about after the run"),
+            "{linux}"
+        );
+        let none = Policy::for_project(&Env { write: Vec::new(), ..env });
+        for supervised in [false, true] {
+            let rules = Guard::In(Box::new(Policy { supervised, ..none.clone() })).rules();
+            assert!(!rules.contains(said), "no folder opened: {rules}");
+        }
+    }
+
+    /// For real: a repository opened for writing keeps its protected names under the profile — written, made,
+    /// emptied, removed or renamed away — while its own files are written. Harmless: plain-text stand-ins in the
+    /// test's own scratch folder.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_repository_opened_for_writing_keeps_its_names_under_the_real_profile() {
+        if skipped_inside(
+            "sandbox::tests::a_repository_opened_for_writing_keeps_its_names_under_the_real_profile",
+        ) {
+            return;
+        }
+        let scratch = crate::scratch::Scratch::new("sb-opened");
+        let t = profile_path(&scratch);
+        let (root, infra) = (t.join("project"), t.join("infra"));
+        for (f, text) in [
+            ("project/src/main.rs", "x"),
+            ("infra/.git/hooks/pre-commit", "kept\n"),
+            ("infra/Makefile", "kept\n"),
+            ("infra/Cargo.toml", "kept\n"),
+            ("infra/src/lib.rs", "x"),
+        ] {
+            std::fs::create_dir_all(t.join(f).parent().unwrap()).unwrap();
+            std::fs::write(t.join(f), text).unwrap();
+        }
+        let env = Env { root: root.clone(), write: vec![infra.display().to_string()], ..Env::default() };
+        let p = Policy::for_project(&env);
+        let script = r#"
+            t() { if ( eval "$2" ) >/dev/null 2>&1; then echo "$1 ok"; else echo "$1 no"; fi; }
+            t own-file 'printf x > "$O/src/new.rs"'
+            t write-hook 'printf x >> "$O/.git/hooks/pre-commit"'
+            t make-hook 'printf x > "$O/.git/hooks/post-checkout"'
+            t write-makefile 'printf x >> "$O/Makefile"'
+            t empty-manifest ': > "$O/Cargo.toml"'
+            t remove-makefile 'rm -f "$O/Makefile"'
+            t rename-git-away 'mv "$O/.git" "$O/git-old"'
+            t make-envrc 'printf x > "$O/src/.envrc"'
+        "#;
+        let mut c = command(Some(&p), "/bin/sh", &["-c".into(), script.into()]);
+        let out = c.current_dir(&root).env("O", &infra).stdin(Stdio::null()).output().unwrap();
+        let got = String::from_utf8_lossy(&out.stdout);
+        let want = [
+            "own-file ok",
+            "write-hook no",
+            "make-hook no",
+            "write-makefile no",
+            "empty-manifest no",
+            "remove-makefile no",
+            "rename-git-away no",
+            "make-envrc no",
+        ];
+        assert_eq!(got.lines().collect::<Vec<_>>(), want, "{out:?}");
+        for f in [".git/hooks/pre-commit", "Makefile", "Cargo.toml"] {
+            assert_eq!(std::fs::read_to_string(infra.join(f)).unwrap_or_default(), "kept\n", "{f}");
+        }
+        assert!(!infra.join(".git/hooks/post-checkout").exists() && !infra.join("src/.envrc").exists());
     }
 
     /// tarae's UI state socket (`uisocket.rs`, `$state/ui/<pid>.sock`) can't be reached from Claude's runs:
@@ -15108,6 +15229,7 @@ mod tests {
             run_env: Default::default(),
             run_homes: Vec::new(),
             kept: Vec::new(),
+            opened: Vec::new(),
             own_shm: false,
         };
         let reached = |p: &Policy, l: &TcpListener| {

@@ -136,6 +136,18 @@ pub struct Confine {
     /// child mounts (tier own, D-i): those hidden by mounts as the project's are, those left open, and the folders
     /// the walk didn't reach (`outside_keys`).
     pub outside: Outside,
+    /// What the walk of the folders the user opened for writing couldn't look through (`OpenedNames.closed`), closed
+    /// whole for its runs — and why each.
+    pub unlooked: Vec<(PathBuf, String)>,
+    /// The write places and folders opened for writing that take no new entry because an opened folder's protected
+    /// names are closed by their folders' rules, not sealed (`shut_by`) — each with why its names weren't (None: the
+    /// runs have no mounts of their own, the tier says why), said so.
+    pub shut: Vec<(PathBuf, Option<String>)>,
+    /// Those that take none because what the walk couldn't look through below them is closed whole (`unlooked`).
+    pub shut_unlooked: Vec<PathBuf>,
+    /// Whether the project's own protected names are sealed (`Covers::seals` holds the opened folders' too): what the
+    /// report says of the project and the output's readings go by this, never by `seals` being there.
+    pub project_sealed: bool,
     /// The fileless folders under protected ones, made again after a run (`Kept`).
     pub kept: Arc<Kept>,
     /// The session's keeper, which forks the run (`sandbox::confined` finds or makes it) — None until then.
@@ -212,6 +224,10 @@ impl PartialEq for Confine {
             && self.elsewhere == other.elsewhere
             && self.unseen == other.unseen
             && self.outside == other.outside
+            && self.unlooked == other.unlooked
+            && self.shut == other.shut
+            && self.shut_unlooked == other.shut_unlooked
+            && self.project_sealed == other.project_sealed
             && Arc::ptr_eq(&self.made, &other.made)
             && Arc::ptr_eq(&self.kept, &other.kept)
             && Arc::ptr_eq(&self.rules, &other.rules)
@@ -628,7 +644,8 @@ pub fn covers_said(c: &Confine) -> String {
             if places.len() == 1 { "it" } else { "them" }
         ),
     };
-    let sealed = match (c.covers.seals.is_empty(), &c.seal_why) {
+    // (the project's own state: `seals` holds the opened folders' too)
+    let sealed = match (!c.project_sealed, &c.seal_why) {
         (false, _) => " Here the project's protected names are each bound read-only over themselves for the run: \
                        written, refused (Read-only file system); renamed or removed, refused (Device or resource \
                        busy) — and so is a folder holding one, each bound over itself: a file moved between it \
@@ -642,7 +659,91 @@ pub fn covers_said(c: &Confine) -> String {
         ),
         (true, None) => String::new(),
     };
-    format!("{how}{sealed}{elsewhere}{holes}{whole}{unseen}{}", outside_said(&c.outside))
+    format!(
+        "{how}{sealed}{elsewhere}{holes}{whole}{unseen}{}{}",
+        outside_said(&c.outside),
+        unlooked_said(&c.unlooked) + &shut_said(c)
+    )
+}
+
+/// The write places and opened folders among `places` (`Policy.write`) that `holes` keep from taking new entries:
+/// every folder from the outermost grant holding a hole down to the hole's own gets no rule of its own (`grant`) —
+/// of them those a person names (a place itself), outermost first.
+fn shut_by(holes: &[PathBuf], places: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for h in holes {
+        let holding = places.iter().filter(|w| h.starts_with(w) && *w != h);
+        let Some(w) = holding.min_by_key(|w| w.components().count()) else { continue };
+        for a in h.ancestors().skip(1).take_while(|a| a.starts_with(w)) {
+            if places.iter().any(|p| p == a) && !out.iter().any(|o| o == a) {
+                out.push(a.to_path_buf());
+            }
+        }
+    }
+    crate::sorting::by_key(&mut out, |a| (a.components().count(), a.clone()));
+    out
+}
+
+/// What the report says of the folders that take no new entry for an opened folder (`Confine.shut`,
+/// `shut_unlooked`) and why — nothing where there's none.
+fn shut_said(c: &Confine) -> String {
+    const SAID: usize = 3;
+    let named = |v: &[PathBuf]| {
+        let mut n: Vec<String> =
+            v.iter().take(SAID).map(|d| format!("{}/", crate::allow::tilde(d))).collect();
+        if v.len() > SAID {
+            n.push(format!("{} more", v.len() - SAID));
+        }
+        n.join(", ")
+    };
+    // (each folder's own reason, as it fell back — none: no mounts of the run's own, the tier said)
+    let why_of = |w: &Option<String>| match (w, c.tier()) {
+        (Some(why), _) => why.clone(),
+        (None, "") => "its runs have no mounts of their own here".into(),
+        (None, t) => format!("tier {t}: its runs have no mounts of their own here"),
+    };
+    let mut whys: Vec<String> = Vec::new();
+    for (_, w) in &c.shut {
+        let why = why_of(w);
+        if !whys.contains(&why) {
+            whys.push(why);
+        }
+    }
+    let mut said = String::new();
+    for why in whys {
+        let places: Vec<PathBuf> =
+            c.shut.iter().filter(|(_, w)| why_of(w) == why).map(|(p, _)| p.clone()).collect();
+        said += &format!(
+            " {} — and the folders between them and the protected names of a folder opened for writing — take no new \
+             entry here: those names are closed by their folders' rules, not sealed ({why}).",
+            named(&places)
+        );
+    }
+    if !c.shut_unlooked.is_empty() {
+        said += &format!(
+            " {} take no new entry either: what wasn't looked through below them is closed whole.",
+            named(&c.shut_unlooked)
+        );
+    }
+    said
+}
+
+/// What the report says of what the walk of the folders opened for writing couldn't look through (`Confine.unlooked`):
+/// closed whole for the run — nothing where there's none.
+fn unlooked_said(unlooked: &[(PathBuf, String)]) -> String {
+    const SAID: usize = 3;
+    let mut said: String = unlooked
+        .iter()
+        .take(SAID)
+        .map(|(d, why)| {
+            let d = crate::allow::tilde(d);
+            format!(" {d}/ isn't written ({why}): its protected names weren't looked for.")
+        })
+        .collect();
+    if unlooked.len() > SAID {
+        said += &format!(" Nor are {} more folders there.", unlooked.len() - SAID);
+    }
+    said
 }
 
 /// What the report says of the files named like keys in the places outside the project a run reads (D-i): how many
@@ -912,6 +1013,106 @@ pub fn there(root: &Path, extra: &[PathBuf], open: &[PathBuf]) -> There {
             if here < *names && !said.contains(id) {
                 said.push(*id);
                 out.unseen.push(key.clone());
+            }
+        }
+    }
+    out
+}
+
+/// What `opened_names` found below the folders the user opened for writing.
+#[derive(Debug, Default)]
+pub struct OpenedNames {
+    /// Each folder opened, with the protected names below it (`protected_in` from it), in the walk's order.
+    pub names: Vec<(PathBuf, Vec<PathBuf>)>,
+    /// What it couldn't look through, closed whole instead (a name there is never known), and why each.
+    pub closed: Vec<(PathBuf, String)>,
+}
+
+/// The protected names below each folder in `opened` (`Policy.opened`), found before each run as the key places'
+/// keys are (`outside_keys`): breadth-first over them all, at most `max` entries read — each folder's in name order,
+/// whole or not at all — opened from its place's descriptor through no link and on no other filesystem (`mounts`,
+/// and `EXDEV`), none on one that can hang (`remote`), never into tools' output (names there are written) nor below
+/// a protected name. What it can't look through — past the cap, another filesystem, one that can hang, a folder
+/// that's a link now or unreadable — is closed whole (`closed`). No hard links looked for: Landlock's `REFER` keeps
+/// a run from giving a protected file a second, writable name. Real paths. Blocks (a run's start).
+pub fn opened_names(opened: &[PathBuf], mounts: &[PathBuf], remote: &[PathBuf], max: usize) -> OpenedNames {
+    use std::collections::VecDeque;
+    let mut out = OpenedNames::default();
+    let on_remote = |d: &Path| {
+        let holding = mounts.iter().filter(|m| d.starts_with(m)).max_by_key(|m| m.components().count());
+        holding.is_some_and(|m| remote.contains(m))
+    };
+    let why = |e: &io::Error| match e.raw_os_error() {
+        Some(libc::ELOOP | libc::ENOTDIR) => "a link now, not followed".to_string(),
+        _ => e.to_string(),
+    };
+    let mut roots: Vec<Option<OwnedFd>> = Vec::new();
+    let mut queue: VecDeque<(usize, PathBuf)> = VecDeque::new();
+    for (i, o) in opened.iter().enumerate() {
+        out.names.push((o.clone(), Vec::new()));
+        let root = match on_remote(o) {
+            true => {
+                out.closed.push((o.clone(), "on a filesystem that can hang".into()));
+                None
+            }
+            false => match open_place(o) {
+                Ok(fd) => Some(fd),
+                Err(e) if e.raw_os_error() == Some(libc::ENOENT) => None,
+                Err(e) => {
+                    out.closed.push((o.clone(), why(&e)));
+                    None
+                }
+            },
+        };
+        if root.is_some() {
+            queue.push_back((i, o.clone()));
+        }
+        roots.push(root);
+    }
+    let past =
+        format!("past the {} entries looked through before a run", crate::features::thousands(max as u64));
+    let mut read = 0usize;
+    while let Some((i, dir)) = queue.pop_front() {
+        let (Some(root), o) = (roots[i].as_ref(), &opened[i]) else { continue };
+        let rel = dir.strip_prefix(o).unwrap_or(Path::new(""));
+        let folder = match open_beneath(root.as_fd(), rel) {
+            Ok(fd) => fd,
+            Err(e) if e.raw_os_error() == Some(libc::ENOENT) => continue,
+            Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
+                out.closed.push((dir, "another filesystem mounted there".into()));
+                continue;
+            }
+            Err(e) => {
+                out.closed.push((dir, why(&e)));
+                continue;
+            }
+        };
+        let entries = match std::fs::read_dir(format!("/proc/self/fd/{}", folder.as_raw_fd())) {
+            Ok(entries) => entries,
+            Err(e) => {
+                out.closed.push((dir, e.to_string()));
+                continue;
+            }
+        };
+        let Some(listed) = crate::sorting::listing(entries, max.saturating_sub(read)) else {
+            out.closed.push((dir, past.clone()));
+            out.closed.extend(queue.drain(..).map(|(_, d)| (d, past.clone())));
+            break;
+        };
+        read += listed.len();
+        for (name, e) in listed {
+            let path = dir.join(&name);
+            if super::protected_in(o, &path) {
+                out.names[i].1.push(path);
+                continue;
+            }
+            if mounts.contains(&path) {
+                out.closed.push((path, "another filesystem mounted there".into()));
+                continue;
+            }
+            let output = super::outputs().iter().any(|x| name == x.as_str());
+            if e.file_type().is_ok_and(|t| t.is_dir()) && !output {
+                queue.push_back((i, path));
             }
         }
     }
@@ -1521,6 +1722,14 @@ pub(super) fn confine_in(
     // its folders can't be whole then (the project's folder rule would open it through any way), so no mounts for
     // that run
     let table = own.table.as_deref().map(mounts);
+    // …and the protected names below each folder the user opened for writing (`Policy.opened`), counted from it —
+    // walked as the key places are (capped, no other mount, none that can hang); what it couldn't look through is
+    // closed whole
+    let opened = {
+        let points: Vec<PathBuf> = table.iter().flatten().map(|(_, _, at)| at.clone()).collect();
+        let remote = own.table.as_deref().map(remote_points).unwrap_or_default();
+        opened_names(&p.opened, &points, &remote, WALK_MAX)
+    };
     let ways: Vec<(PathBuf, PathBuf)> = match &table {
         Some(table) => keys.iter().flat_map(|k| ways_through(table, k)).collect(),
         None => Vec::new(),
@@ -1681,10 +1890,57 @@ pub(super) fn confine_in(
         (false, true) => sealing.map(|(seals, _)| (seals, Vec::new())),
         (false, false) => sealing,
     };
-    let ((seals, pins), seal_why) = match sealing {
+    let ((mut seals, mut pins), seal_why) = match sealing {
         Ok(s) => (s, None),
         Err(why) => (Default::default(), Some(why)),
     };
+    let project_sealed = !seals.is_empty();
+    // …and each folder the user opened for writing as the project: its protected names sealed where the project's
+    // can be — the folders on the way pinned up to the write place holding it (that one could move it away whole),
+    // else to it — so its grants stay whole: new entries, `cargo clean`, only the names refused. Where they can't be
+    // (no mounts of its own, another mount reaching one, one `Covers::sealed` refuses), split as below (`split`), each
+    // with its own reason — the report says it. `cant`: why no folder can be sealed here — None: one can;
+    // `Some(None)`: the runs have no mounts of their own (the tier says why)
+    let cant: Option<Option<String>> = match (&own.mounts, &table, &p.run) {
+        (None, ..) => Some(None),
+        (Some(Err(why)), ..) => Some(Some(why.clone())),
+        (Some(Ok(())), None, _) => Some(Some("the mount table its commands see couldn't be read".into())),
+        (Some(Ok(())), _, None) => Some(Some("it has no folder of its own".into())),
+        (Some(Ok(())), Some(_), Some(_)) => None,
+    };
+    #[cfg(test)]
+    let cant = match std::env::var_os("TARAE_TEST_NO_SEALS").is_some() || p.seals_off {
+        true => Some(Some("no seals (the test's)".into())),
+        false => cant,
+    };
+    let mut split: Vec<(PathBuf, Vec<PathBuf>, Option<String>)> = Vec::new();
+    for (o, names) in &opened.names {
+        let holding = p.write.iter().filter(|w| o.starts_with(w) && *w != o);
+        let anchor = holding.min_by_key(|w| w.components().count()).unwrap_or(o);
+        let through =
+            table.as_ref().and_then(|t| names.iter().find_map(|f| ways_through(t, f).into_iter().next()));
+        let room =
+            COVERS_MAX.saturating_sub(covers.as_ref().map_or(0, |c| c.keys.len()) + seals.len() + pins.len());
+        let tried = match (&cant, through) {
+            (Some(why), _) => Err(why.clone()),
+            (None, Some((other, _))) => Err(Some(format!(
+                "{} reaches one of them through another mount of its filesystem",
+                other.display()
+            ))),
+            (None, None) => Covers::sealed(anchor, names, room).map_err(Some),
+        };
+        match tried {
+            Ok((s, on_the_way)) => {
+                seals.extend(s);
+                for pin in on_the_way {
+                    if !pins.iter().any(|q| q.path == pin.path) {
+                        pins.push(pin);
+                    }
+                }
+            }
+            Err(why) => split.push((o.clone(), names.clone(), why)),
+        }
+    }
     let mut outside = Outside { unwalked, mounts: beside, failed, ..Default::default() };
     let mut covers = covers;
     match covers.as_mut() {
@@ -1712,7 +1968,7 @@ pub(super) fn confine_in(
             outside.open = outside_found.into_iter().map(|k| (k, why.clone())).collect();
         }
     }
-    let sealed = !seals.is_empty();
+    let sealed = project_sealed;
     let made = match make_first && !sealed {
         true => make(to_make(&p.root, &found, &crate::packs::made_beside())),
         false => Made::none(),
@@ -1722,7 +1978,15 @@ pub(super) fn confine_in(
     // the user's decision, 2026-10-05). Nothing else: no file there is removed (no `REMOVE_FILE`), no entry
     // made (a rename there is a remove and a make — `.git` renamed away), and what's written is granted
     // entry by entry. An empty protected folder can go too: a rule can't leave a name out.
-    let closed = if sealed { Vec::new() } else { closed_folders(&p.root, &found) };
+    let mut closed = if sealed { Vec::new() } else { closed_folders(&p.root, &found) };
+    // (a folder opened for writing whose names aren't sealed: the same, its folders up to it)
+    for (o, names, _) in &split {
+        for dir in closed_folders(o, names) {
+            if !closed.contains(&dir) {
+                closed.push(dir);
+            }
+        }
+    }
     for dir in &closed {
         match r.allow(dir, landlock::REMOVE_DIR) {
             Err(e) if !matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) => {
@@ -1733,9 +1997,25 @@ pub(super) fn confine_in(
     }
     // Every other place a run writes in leaves the project's protected names out where it holds them — a
     // project in `/dev/shm` (measured: its Cargo.toml written and `.git` renamed away through that grant);
-    // `p.write` drops what holds the project already (`Policy::for_project`). None there: one rule.
-    let protected_in =
-        |place: &Path| found.iter().filter(|f| f.starts_with(place)).cloned().collect::<Vec<_>>();
+    // `p.write` drops what holds the project already (`Policy::for_project`) — and a folder the user opened's own
+    // names where they aren't sealed (`split`), and what its walk couldn't look through. None there: one rule.
+    let split_names: Vec<PathBuf> = split.iter().flat_map(|(_, n, _)| n.iter().cloned()).collect();
+    let unlooked: Vec<PathBuf> = opened.closed.iter().map(|(d, _)| d.clone()).collect();
+    let opened_holes: Vec<PathBuf> = split_names.iter().chain(&unlooked).cloned().collect();
+    // (what those holes cost, said: the folders on the way to them take no new entry — a write place holding an
+    // opened folder too, `$TMPDIR`)
+    let mut shut: Vec<(PathBuf, Option<String>)> = Vec::new();
+    for (_, names, why) in &split {
+        for place in shut_by(names, &p.write) {
+            if !shut.iter().any(|(s, _)| *s == place) {
+                shut.push((place, why.clone()));
+            }
+        }
+    }
+    let shut_unlooked = shut_by(&unlooked, &p.write);
+    let protected_in = |place: &Path| {
+        found.iter().chain(&opened_holes).filter(|f| f.starts_with(place)).cloned().collect::<Vec<_>>()
+    };
     if let Some(run) = &p.run {
         grant(&mut r, run.path(), landlock::ALL, &protected_in(run.path()))?;
     }
@@ -1762,7 +2042,7 @@ pub(super) fn confine_in(
     // after the run — `Kept`)
     let kept = match closed.is_empty() {
         true => Kept::none(),
-        false => Kept::of(&found),
+        false => Kept::of(&[found.as_slice(), &split_names].concat()),
     };
     crate::sorting::sort(&mut unread);
     Ok(Confine {
@@ -1784,6 +2064,10 @@ pub(super) fn confine_in(
         closed_whole,
         unseen: unseen.iter().map(|k| k.strip_prefix(&p.root).unwrap_or(k).to_path_buf()).collect(),
         outside,
+        unlooked: opened.closed,
+        shut,
+        shut_unlooked,
+        project_sealed,
         kept: Arc::new(kept),
         keeper: None,
         rules: Arc::new(r),
@@ -3208,6 +3492,264 @@ mod tests {
             assert_eq!(got, want, "a project in {name}");
             assert_eq!(kept, "kept\n", "a project in {name}");
         }
+    }
+
+    /// For real: a repository the user opened for writing (`llm.sandbox-write`, a write grant) keeps its protected
+    /// names as the project does, in a temp folder that holds it (the run's `$TMPDIR` stand-in): written, made inside
+    /// `.git`, emptied, removed or renamed away — refused; its own files written, its `target/` removed. Where the run
+    /// has mounts of its own (tier own) the names are sealed, so its top and the temp folder take new entries as
+    /// on macOS; elsewhere they're holes, the folders holding them closed to new entries as the project's are.
+    #[test]
+    fn a_repository_opened_for_writing_keeps_its_protected_names() {
+        let Some(_) = kernel_abi("a_repository_opened_for_writing_keeps_its_protected_names") else {
+            return;
+        };
+        let scratch = crate::scratch::Scratch::new("ll-opened");
+        let t = std::fs::canonicalize(&scratch).unwrap();
+        let (root, temp, infra) = (t.join("project"), t.join("temp"), t.join("temp/infra"));
+        for (f, text) in [
+            ("project/src/main.rs", "x"),
+            ("temp/infra/.git/hooks/pre-commit", "kept\n"),
+            ("temp/infra/Makefile", "kept\n"),
+            ("temp/infra/Cargo.toml", "kept\n"),
+            ("temp/infra/src/lib.rs", "x"),
+            ("temp/infra/target/debug/out.o", "x"),
+        ] {
+            std::fs::create_dir_all(t.join(f).parent().unwrap()).unwrap();
+            std::fs::write(t.join(f), text).unwrap();
+        }
+        let env = Env {
+            root: root.clone(),
+            tmp: Some(temp.clone()),
+            write: vec![infra.display().to_string()],
+            run_env: run_env_here(),
+            ..Default::default()
+        };
+        let p = crate::sandbox::confined(Policy { run: RunDir::new().ok(), ..Policy::for_project(&env) });
+        let confine = p.confine.as_ref().and_then(|c| c.as_ref().ok());
+        let sealed = confine.is_some_and(|c| !c.covers.seals.is_empty());
+        let script = r#"
+            t() { if ( eval "$2" ) >/dev/null 2>&1; then echo "$1 ok"; else echo "$1 no"; fi; }
+            t own-file 'printf x > "$O/src/new.rs"'
+            t clean-target 'rm -rf "$O/target" && [ ! -e "$O/target" ]'
+            t new-top-file 'printf x > "$O/NOTES.md"'
+            t new-in-temp 'mkdir "$T/new-folder"'
+            t write-hook 'printf x >> "$O/.git/hooks/pre-commit"'
+            t make-hook 'printf x > "$O/.git/hooks/post-checkout"'
+            t write-makefile 'printf x >> "$O/Makefile"'
+            t empty-manifest ': > "$O/Cargo.toml"'
+            t remove-makefile 'rm -f "$O/Makefile"'
+            t rename-git-away 'mv "$O/.git" "$O/git-old"'
+            t rename-repo-away 'mv "$O" "$T/infra-old"'
+        "#;
+        let mut cmd = crate::sandbox::command(Some(&p), "sh", &["-c".into(), script.into()]);
+        cmd.env("O", &infra).env("T", &temp);
+        let spawned = crate::sandbox::spawn(Some(&p), &cmd).unwrap();
+        let mut out = String::new();
+        io::Read::read_to_string(&mut spawned.stdout.unwrap(), &mut out).unwrap();
+        crate::spawn::wait(spawned.pid).unwrap();
+        let new = if sealed { "ok" } else { "no" };
+        let want = [
+            "own-file ok".to_string(),
+            "clean-target ok".into(),
+            format!("new-top-file {new}"),
+            format!("new-in-temp {new}"),
+            "write-hook no".into(),
+            "make-hook no".into(),
+            "write-makefile no".into(),
+            "empty-manifest no".into(),
+            "remove-makefile no".into(),
+            "rename-git-away no".into(),
+            "rename-repo-away no".into(),
+        ];
+        assert_eq!(
+            out.lines().collect::<Vec<_>>(),
+            want,
+            "sealed: {sealed}, {:?}",
+            confine.map(|c| &c.seal_why)
+        );
+        for f in [".git/hooks/pre-commit", "Makefile", "Cargo.toml"] {
+            assert_eq!(std::fs::read_to_string(infra.join(f)).unwrap_or_default(), "kept\n", "{f}");
+        }
+        // (as the project's seals' test: a machine said to give tier own seals them — but run as root, where its runs
+        // have no mounts of their own; `cargo xtask linux --userns test --as-user` runs it as a user)
+        // SAFETY: a plain call.
+        let root_here = unsafe { libc::geteuid() } == 0;
+        let own = std::env::var("TARAE_EXPECT_TIER").is_ok_and(|w| w.trim() == "own");
+        let tier = confine.map_or("", |c| c.tier());
+        assert!(
+            sealed || !own || (tier == "own" && root_here),
+            "tier own expected, the runs are {tier}, not sealed"
+        );
+        // (not sealed, the cost is said where it bites: the temp folder holding it and the folder itself take no new
+        // entry, and why; sealed, nothing of it)
+        let notes = p.linux_said().map(|(_, n)| n).unwrap_or_default();
+        let shut = format!("{}/, {}/ — and the folders between them", temp.display(), infra.display());
+        assert_eq!(notes.contains(&shut), !sealed, "{notes}");
+        assert_eq!(notes.contains("take no new entry here"), !sealed, "{notes}");
+    }
+
+    /// Tier own, through `confine_in`, the mixed case: the project can't be sealed (its `.git` reached through another
+    /// mount, as `a_key_reached_through_root_…`'s bind) while a folder opened for writing is — `Covers::seals` holds only
+    /// the opened folder's, and what's said of the project goes by its own state: its folders closed, why it isn't
+    /// sealed said, never "each bound read-only", and the output's readings not taken as seals' (`Policy::sealed`).
+    #[test]
+    fn an_opened_folder_sealed_never_says_the_project_is() {
+        let held = crate::scratch::Scratch::new("ll-opened-mixed");
+        let dir = held.to_path_buf();
+        let (real, bound, good) = (dir.join("real"), dir.join("bound"), dir.join("good"));
+        for at in [&real, &bound] {
+            for f in [".git/HEAD", "src/main.rs"] {
+                std::fs::create_dir_all(at.join(f).parent().unwrap()).unwrap();
+                std::fs::write(at.join(f), "x").unwrap();
+            }
+        }
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::write(good.join("Makefile"), "x").unwrap();
+        let env = Env { root: bound.clone(), write: vec![good.display().to_string()], ..Default::default() };
+        let p = Policy { run: crate::sandbox::RunDir::new().ok(), ..Policy::for_project(&env) };
+        let table = format!(
+            "1 0 0:50 / / rw - overlay overlay rw\n2 1 0:50 {} {} rw - overlay overlay rw\n",
+            real.display(),
+            bound.display()
+        );
+        let own = Own { mounts: Some(Ok(())), table: Some(table), ..Default::default() };
+        let r = Ruleset::written(3).unwrap();
+        let c = confine_in(r, &p, Err("not watched".into()), false, Ok(()), RunNet::Served, own).unwrap();
+        let sealed: Vec<&PathBuf> = c.covers.seals.iter().map(|s| &s.path).collect();
+        assert_eq!(sealed, [&good.join("Makefile")], "only the opened folder's");
+        assert!(
+            !c.project_sealed && c.closed.contains(&bound),
+            "the project's folders closed: {:?}",
+            c.closed
+        );
+        let why = c.seal_why.clone().unwrap_or_default();
+        assert!(why.starts_with("/ reaches them"), "{why}");
+        let said = covers_said(&c);
+        assert!(said.contains("Protected names are closed by their folders' rules here"), "{said}");
+        assert!(said.contains(&why) && !said.contains("each bound read-only"), "{said}");
+        let p = Policy { confine: Some(Ok(c)), ..p };
+        assert!(!p.sealed(), "the output's readings aren't the project's seals'");
+    }
+
+    /// Tier own, through `confine_in` (its mounts said its own, as `a_key_reached_through_root_…`'s): a folder opened
+    /// for writing whose names `Covers::sealed` refuses — a stand-in, a FIFO named `Makefile` — falls back to its
+    /// folders' rules, and the report says that folder's own reason, never "no mounts of their own"; another
+    /// folder beside it is sealed and named nowhere.
+    #[test]
+    fn in_tier_own_a_folder_that_cant_be_sealed_falls_back_and_says_why() {
+        let held = crate::scratch::Scratch::new("ll-opened-unsealed");
+        let t = held.to_path_buf();
+        let (root, good, odd) = (t.join("project"), t.join("good"), t.join("odd"));
+        for f in ["project/src/main.rs", "good/Makefile", "odd/src/lib.rs"] {
+            std::fs::create_dir_all(t.join(f).parent().unwrap()).unwrap();
+            std::fs::write(t.join(f), "x").unwrap();
+        }
+        let fifo = std::ffi::CString::new(odd.join("Makefile").as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: a path of the test's own scratch folder, live for the call.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        let write = vec![good.display().to_string(), odd.display().to_string()];
+        let env = Env { root, write, ..Default::default() };
+        let p = Policy { run: crate::sandbox::RunDir::new().ok(), ..Policy::for_project(&env) };
+        let table = "1 0 0:50 / / rw - overlay overlay rw\n".to_string();
+        let own = Own { mounts: Some(Ok(())), table: Some(table), ..Default::default() };
+        let r = Ruleset::written(3).unwrap();
+        let c = confine_in(r, &p, Err("not watched".into()), false, Ok(()), RunNet::Served, own).unwrap();
+        let sealed: Vec<&PathBuf> = c.covers.seals.iter().map(|s| &s.path).collect();
+        assert_eq!(sealed, [&good.join("Makefile")], "the good one sealed, the odd one not");
+        let why = format!("{} is neither a file nor a folder", odd.join("Makefile").display());
+        assert_eq!(c.shut, [(odd.clone(), Some(why.clone()))]);
+        let said = covers_said(&c);
+        let shut = format!("{}/ — and the folders between them", odd.display());
+        assert!(said.contains(&shut) && said.contains(&format!("not sealed ({why})")), "{said}");
+        assert!(
+            !said.contains("no mounts of their own") && !said.contains(&format!("{}/ —", good.display())),
+            "{said}"
+        );
+    }
+
+    /// Through `confine_in`, for real: what the walk of a folder opened for writing didn't reach — past `WALK_MAX` —
+    /// is closed whole in every tier, sealed or not: not written, the folder holding it taking no new entry, and the
+    /// report says both.
+    #[test]
+    fn what_the_walk_of_an_opened_folder_didnt_reach_is_closed_and_said() {
+        let Some(_) = kernel_abi("what_the_walk_of_an_opened_folder_didnt_reach_is_closed_and_said") else {
+            return;
+        };
+        let scratch = crate::scratch::Scratch::new("ll-opened-cap");
+        let t = std::fs::canonicalize(&scratch).unwrap();
+        let (root, infra) = (t.join("project"), t.join("infra"));
+        for (f, text) in
+            [("project/src/main.rs", "x"), ("infra/Makefile", "kept\n"), ("infra/zz/a", "kept\n")]
+        {
+            std::fs::create_dir_all(t.join(f).parent().unwrap()).unwrap();
+            std::fs::write(t.join(f), text).unwrap();
+        }
+        // (its top's 3 entries, then `big`'s past the rest of the cap: `big` and `zz` not reached)
+        std::fs::create_dir(infra.join("big")).unwrap();
+        for i in 0..WALK_MAX {
+            std::fs::File::create(infra.join(format!("big/{i}"))).unwrap();
+        }
+        let env = Env {
+            root: root.clone(),
+            tmp: Some(crate::sandbox::profile_path(&std::env::temp_dir())),
+            write: vec![infra.display().to_string()],
+            run_env: run_env_here(),
+            ..Default::default()
+        };
+        let p = crate::sandbox::confined(Policy { run: RunDir::new().ok(), ..Policy::for_project(&env) });
+        let Some(Ok(c)) = &p.confine else { panic!("{:?}", p.confine) };
+        let unlooked: Vec<&PathBuf> = c.unlooked.iter().map(|(d, _)| d).collect();
+        assert_eq!(unlooked, [&infra.join("big"), &infra.join("zz")]);
+        assert_eq!(c.shut_unlooked, std::slice::from_ref(&infra));
+        let script = r#"
+            t() { if ( eval "$2" ) >/dev/null 2>&1; then echo "$1 ok"; else echo "$1 no"; fi; }
+            t write-past-the-cap 'printf x > "$O/big/0"'
+            t write-not-reached 'printf x >> "$O/zz/a"'
+            t new-at-its-top 'printf x > "$O/new.txt"'
+        "#;
+        let mut cmd = crate::sandbox::command(Some(&p), "sh", &["-c".into(), script.into()]);
+        cmd.env("O", &infra);
+        let spawned = crate::sandbox::spawn(Some(&p), &cmd).unwrap();
+        let mut out = String::new();
+        io::Read::read_to_string(&mut spawned.stdout.unwrap(), &mut out).unwrap();
+        crate::spawn::wait(spawned.pid).unwrap();
+        assert_eq!(
+            out.lines().collect::<Vec<_>>(),
+            ["write-past-the-cap no", "write-not-reached no", "new-at-its-top no"]
+        );
+        assert_eq!(std::fs::read_to_string(infra.join("zz/a")).unwrap(), "kept\n");
+        let notes = p.linux_said().map(|(_, n)| n).unwrap_or_default();
+        let past = format!("{}/ isn't written (past the 20,000 entries", infra.join("big").display());
+        let either = format!("{}/ take no new entry either", infra.display());
+        assert!(notes.contains(&past) && notes.contains(&either), "{notes}");
+    }
+
+    /// The walk of the folders opened for writing is capped as the key places' is: past `max` entries what it
+    /// didn't reach is closed whole and said why; a link isn't followed, tools' output isn't looked in (names there
+    /// are written).
+    #[test]
+    fn the_walk_of_an_opened_folder_is_capped_and_closes_what_it_didnt_reach() {
+        let scratch = crate::scratch::Scratch::new("ll-opened-walk");
+        let o = std::fs::canonicalize(&scratch).unwrap();
+        for f in ["Makefile", "a/Cargo.toml", "b/c/.envrc", "target/x/Makefile"] {
+            std::fs::create_dir_all(o.join(f).parent().unwrap()).unwrap();
+            std::fs::write(o.join(f), "x").unwrap();
+        }
+        std::os::unix::fs::symlink(o.join("b"), o.join("link")).unwrap();
+        let all = opened_names(std::slice::from_ref(&o), &[], &[], WALK_MAX);
+        let names = vec![o.join("Makefile"), o.join("a/Cargo.toml"), o.join("b/c/.envrc")];
+        assert_eq!(all.names, [(o.clone(), names)]);
+        assert!(all.closed.is_empty(), "{:?}", all.closed);
+        // (its top 5 entries and `a`'s one: `b` isn't reached — closed whole, said)
+        let cut = opened_names(std::slice::from_ref(&o), &[], &[], 6);
+        assert_eq!(cut.names, [(o.clone(), vec![o.join("Makefile"), o.join("a/Cargo.toml")])]);
+        assert_eq!(cut.closed, [(o.join("b"), "past the 6 entries looked through before a run".to_string())]);
+        let said = unlooked_said(&cut.closed);
+        assert!(
+            said.contains("b/ isn't written (past the 6 entries") && said.contains("weren't looked for"),
+            "{said}"
+        );
     }
 
     /// For real: `REMOVE_DIR` on the project's folders reaches beneath them, into the protected folders too
