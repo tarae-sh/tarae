@@ -198,7 +198,34 @@ fn snap(ed: &mut Editor) -> Snap {
     }
     let frame = ed.last_frame.as_ref().unwrap().0.clone();
     let text = crate::screen::text(&frame, W as u16, H as u16).unwrap_or_default();
+    // (the stand-in for a state that changes by itself, `DRIFT`: landing after this snap's frames, as a thread's write
+    // between two of them)
+    if let n @ 1.. = DRIFT.get() {
+        DRIFT.set(n - 1);
+        if n == 1 {
+            ed.docs[0].text = ropey::Rope::from_str("moved by itself\n");
+        }
+    }
     Snap { frame, text, keys, sel, lit: format!("{:?}", ed.border_lit()), said: ed.said }
+}
+
+/// A snap where an act is judged, and whether the frame then holds still: a second snap with no event between. A frame
+/// that changes between the two (a clock the walk doesn't hold, a thread's writes) is listed (`Walk.moved`, `when` it
+/// was), and the acts on either side of it aren't judged (frictions #164). A diagnostic, not a guarantee: it catches what
+/// lands between the two looks and only narrows the rest — a change that lands after the second look, during the next
+/// act, is still that act's. Its job is to name the race the next time it lands where it's seen. A scene whose frame
+/// moves by nature (`MOVING`) isn't looked at twice.
+fn after(walk: &mut Walk, ed: &mut Editor, scene: &str, u: Under, when: &str) -> (Snap, bool) {
+    let s = snap(ed);
+    if MOVING.get() || UNGUARDED.get() {
+        return (s, true);
+    }
+    let again = snap(ed);
+    if again != s {
+        walk.moved.push(format!("{scene} · {} · {when}: {}", name(u), changed(&s, &again)));
+        return (again, false);
+    }
+    (s, true)
 }
 
 /// What an act did between two snaps. A hover acts only where it moves the keys or a selection —
@@ -228,6 +255,13 @@ struct Did {
 }
 
 thread_local!(static MOVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+
+thread_local! {
+    /// The test of `after`'s: the scene's state changes by itself after this many more snaps (0: never).
+    static DRIFT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The test of `after`'s, broken: no second look — every act judged, whatever moved.
+    static UNGUARDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 /// Whether the keys are already where a press on `u` gives them — a press there with nothing else to do is no silence
 /// (a press gives the keys to the surface it lands on: given, it's done).
@@ -354,6 +388,9 @@ struct Walk {
     bare: Vec<String>,
     /// Every surface found, by its name.
     found: Vec<String>,
+    /// `scene · surface/part · when: …` where the frame changed between `after`'s two looks, with no event (frictions
+    /// #164: an act judged against a frame that moves by itself is blamed for what it didn't do).
+    moved: Vec<String>,
     /// `scene · surface` of `SCROLLS` whose wheel was judged with room.
     scrolled: Vec<String>,
     events: usize,
@@ -495,36 +532,42 @@ fn walk_held(walk: &mut Walk, n: usize, scene: &str, setup: fn(&mut Editor)) {
         }
         // A press, its release, and a second press at the same instant (a double)
         let mut ed = fresh(setup);
-        let s0 = snap(&mut ed);
+        let (s0, still0) = after(walk, &mut ed, scene, u, "before the press");
         let b0 = before(&ed, u);
         let front = |ed: &Editor| ed.offers.first().map(|o| o.id);
         let card = front(&ed);
         send(&mut ed, K::Down, x, y, scene, walk);
-        let s1 = snap(&mut ed);
+        let (s1, still1) = after(walk, &mut ed, scene, u, "after the press");
         let b1 = Before { holds: holds(&ed, u), ..Before::default() };
         send(&mut ed, K::Up, x, y, scene, walk);
-        let s2 = snap(&mut ed);
+        let (s2, still2) = after(walk, &mut ed, scene, u, "after the release");
         // (the double is on what the press there is now — the first may have moved the screen, or answered a card and
         // brought the next one under the pointer: another card's press)
         let again = ed.mouse_at(x, y) == u && front(&ed) == card;
         let b2 = before(&ed, u);
         send(&mut ed, K::Down, x, y, scene, walk);
         send(&mut ed, K::Up, x, y, scene, walk);
-        let s3 = snap(&mut ed);
-        judge(walk, scene, u, Act::Press, b0, did(&s0, &s1, Act::Press));
-        judge(walk, scene, u, Act::Release, b1, did(&s1, &s2, Act::Release));
-        if again {
+        let (s3, still3) = after(walk, &mut ed, scene, u, "after the double");
+        if still0 && still1 {
+            judge(walk, scene, u, Act::Press, b0, did(&s0, &s1, Act::Press));
+        }
+        if still1 && still2 {
+            judge(walk, scene, u, Act::Release, b1, did(&s1, &s2, Act::Release));
+        }
+        if again && still2 && still3 {
             judge(walk, scene, u, Act::Double, b2, did(&s2, &s3, Act::Double));
         }
         // A drag from it — on, along its own surface
         let mut ed = fresh(setup);
         let (dx, dy) = drag_to(&ed, u, x, y);
         send(&mut ed, K::Down, x, y, scene, walk);
-        let s1 = snap(&mut ed);
+        let (s1, still1) = after(walk, &mut ed, scene, u, "after the drag's press");
         send(&mut ed, K::Drag, dx, dy, scene, walk);
-        let s2 = snap(&mut ed);
+        let (s2, still2) = after(walk, &mut ed, scene, u, "after the drag");
         send(&mut ed, K::Up, dx, dy, scene, walk);
-        judge(walk, scene, u, Act::Drag, before(&ed, u), did(&s1, &s2, Act::Drag));
+        if still1 && still2 {
+            judge(walk, scene, u, Act::Drag, before(&ed, u), did(&s1, &s2, Act::Drag));
+        }
         wheel_at(walk, scene, setup, (x, y), Some(u));
     }
     // (what only a wheel lands on — hover text: the press goes under it)
@@ -553,18 +596,19 @@ fn wheel_at(
 ) {
     let mut ed = fresh(setup);
     let wheel = ed.mouse_under(K::ScrollDown, x, y);
-    let s0 = snap(&mut ed);
+    let at = pressed.unwrap_or(wheel);
+    let (s0, still0) = after(walk, &mut ed, scene, at, "before the hover");
     ed.handle_event(Event::Hover(x as u16, y as u16));
-    let s1 = snap(&mut ed);
-    if let Some(u) = pressed {
+    let (s1, still1) = after(walk, &mut ed, scene, at, "after the hover");
+    if let Some(u) = pressed.filter(|_| still0 && still1) {
         judge(walk, scene, u, Act::Hover, Before::default(), did(&s0, &s1, Act::Hover));
     }
     send(&mut ed, K::ScrollDown, x, y, scene, walk);
-    let s2 = snap(&mut ed);
+    let (s2, still2) = after(walk, &mut ed, scene, at, "after the wheel down");
     send(&mut ed, K::ScrollUp, x, y, scene, walk);
-    let s3 = snap(&mut ed);
+    let (s3, still3) = after(walk, &mut ed, scene, at, "after the wheel up");
     let (a, b) = (did(&s1, &s2, Act::Wheel), did(&s2, &s3, Act::Wheel));
-    if pressed.is_none_or(|u| u.surface == wheel.surface) {
+    if pressed.is_none_or(|u| u.surface == wheel.surface) && still1 && still2 && still3 {
         let what = [a.what, b.what].join("; ");
         let surface = format!("{:?}", wheel.surface);
         let surface = surface.split('(').next().unwrap_or_default();
@@ -633,11 +677,50 @@ fn no_press_is_lost_in_silence() {
         return;
     }
     let w = walk();
+    // (a frame that changed with no event between two looks: something the scene's state reads that isn't the walk's — a
+    // clock it doesn't hold, a thread's writes — named first, where it was seen)
+    assert!(w.moved.is_empty(), "the frame moved with no event:\n{}", w.moved.join("\n"));
     assert!(w.off.is_empty(), "{}:\n{}", w.off.len(), w.off.join("\n"));
     // (every surface set up with room had its wheel judged — a scene that lost it doesn't pass by not looking)
     let unmet: Vec<String> =
         SCROLLS.iter().map(|s| format!("{} · {}", s.0, s.1)).filter(|s| !w.scrolled.contains(s)).collect();
     assert!(unmet.is_empty(), "the wheel never judged where it has room: {unmet:?}");
+}
+
+/// What `after`'s second look does and doesn't do. The scene's state changed by itself (`DRIFT`, as a thread's write
+/// lands) between the two looks after the first release: named where it moved (`Walk.moved`), not blamed on an act
+/// (`Walk.off`) — and without the second look (`UNGUARDED`) the same drift is the release's failure, as #164's was. The
+/// known limit: the same change landing just after the second look isn't seen by it, and the next act (the double) is
+/// still blamed for it.
+#[test]
+fn a_frame_that_moves_between_two_looks_is_named_not_blamed_on_an_act() {
+    let scene = SCENES[0];
+    // (`snaps`: after how many it lands — the scene's own look for a moving frame takes 2, then each act's snap and,
+    // guarded, its second look: 7 is after the release's snap, 8 after its second look; unguarded, 4 is after the
+    // release's. The first target is the pane's top line, where a release does nothing (`Not("the press did it")`) nor a
+    // double, so blamed they fail)
+    let drift = |unguarded, snaps| {
+        DRIFT.set(snaps);
+        UNGUARDED.set(unguarded);
+        let mut walk = Walk::default();
+        walk_scene(&mut walk, 0, scene);
+        DRIFT.set(0);
+        UNGUARDED.set(false);
+        walk
+    };
+    let at = format!("{} · ", scene.0);
+    let named = |w: &Walk| w.moved.iter().any(|m| m.starts_with(&at) && m.contains("moved by itself"));
+    let blamed =
+        |w: &Walk, act: &str| w.off.iter().any(|m| m.starts_with(&at) && m.contains(&format!(" · {act}:")));
+    let broken = drift(true, 4);
+    assert!(blamed(&broken, "Release"), "unguarded, the release blamed: {:?}", broken.off);
+    let w = drift(false, 7);
+    assert!(named(&w), "between the looks: the drift named: {:?}", w.moved);
+    assert!(w.off.is_empty(), "between the looks: no act blamed for it: {:?}", w.off);
+    // (the limit, pinned: past the second look it isn't seen, and the next act takes the blame)
+    let late = drift(false, 8);
+    assert!(!named(&late), "after the second look: not seen by it: {:?}", late.moved);
+    assert!(blamed(&late, "Double"), "after the second look: the double still blamed: {:?}", late.off);
 }
 
 /// `docs/mouse.md` is the table's (`TARAE_BLESS=1` writes it again), and every surface the walk found has a row there.
