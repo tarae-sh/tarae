@@ -101,23 +101,36 @@ struct Varies {
 
 /// A turn's time as the chat says it, right-aligned in `cols` of `row`: `2.0s` — tarae's clock, a tenth either way.
 const fn turn_time(row: u16, cols: (u16, u16)) -> Varies {
-    Varies { row, cols, what: "a turn's time (`2.0s`)", holds: seconds }
+    Varies { row, cols, what: "a turn's time (`2.0s`)", holds: seconds_padded }
 }
 
-/// How long Claude has waited, as the follow card's head says it after `waiting`, right-aligned in `cols` of `row`:
-/// `4.7s` — the scene's own pace on tarae's clock, never the same twice.
+/// How long Claude has waited, as the follow card's frame says it at its top line's right end: the scene's own pace on
+/// tarae's clock, never the same twice. `timer` right-aligns it in five cells under a minute and seven past it, three
+/// blanks before (the line's, the working sign's empty cell, the one between), ` ─╮` after — as the docs run reads
+/// `chat-edit`'s row 18: `──────    5.2s ─╮`, past a minute `────    1m 07s ─╮` (the line's `─` a fixed run, two
+/// cells shorter past a minute). `cols` are the six cells ending right before ` ─╮`: `  5.2s`, `1m 07s` — the time
+/// right-aligned, blanks before it, never a `─`.
 const fn wait_time(row: u16, cols: (u16, u16)) -> Varies {
-    Varies { row, cols, what: "the follow card's wait (`4.7s`)", holds: seconds }
+    Varies { row, cols, what: "the follow card's wait (`4.7s`), right-aligned", holds: seconds_right }
+}
+
+/// The time the status line says beside the step under way (`● waits for your review of … 1.6s`): how long that step
+/// has gone when the shot is taken. `now_segments` writes it after a space, left-aligned and padded to five cells under
+/// a minute, to `RUN_TIME_W`'s seven past it, then ` — ` — as the docs run reads `chat-edit`'s row 29: `main.rs 1.6s  —`,
+/// past a minute `main.rs 1m 03s  —`. `cols` are those five and the cell after them: `1.6s  ` (the padding, then
+/// ` — `'s space), `1m 03s` (its padding beyond them) — the time left-aligned, blanks after it.
+const fn step_time(row: u16, cols: (u16, u16)) -> Varies {
+    Varies { row, cols, what: "the step's time (`1.6s`), left-aligned", holds: seconds_left }
 }
 
 /// The inbox's three ages, right-aligned at its rows' end, and the status line's wait for main's run after `cargo test
 /// --quiet`: how long each ask has waited when the shot is taken (`inbox`).
 const INBOX_WAITS: &[Varies] = &[
-    Varies { row: 4, cols: (110, 117), what: "main's ask's age (`24.5s`)", holds: seconds },
-    Varies { row: 5, cols: (110, 117), what: "api's ask's age (`16.3s`)", holds: seconds },
-    Varies { row: 6, cols: (110, 117), what: "docs's change's age (`5.2s`)", holds: seconds },
+    Varies { row: 4, cols: (110, 117), what: "main's ask's age (`24.5s`)", holds: seconds_padded },
+    Varies { row: 5, cols: (110, 117), what: "api's ask's age (`16.3s`)", holds: seconds_padded },
+    Varies { row: 6, cols: (110, 117), what: "docs's change's age (`5.2s`)", holds: seconds_padded },
     // (`1m 02s` a cell wider than `27.4s`: the cell after it, a space, then holds its `s`)
-    Varies { row: 33, cols: (86, 92), what: "the status line's wait (`27.4s`)", holds: seconds },
+    Varies { row: 33, cols: (86, 92), what: "the status line's wait (`27.4s`)", holds: seconds_padded },
 ];
 
 /// A time as `run_duration` writes it under an hour: `2.0s`, `12.3s` (seconds to a tenth), then `1m 02s` — what a
@@ -131,6 +144,21 @@ fn seconds(t: &str) -> bool {
         }
         None => t.split_once('.').is_some_and(|(a, b)| digits(a) && b.len() == 1 && digits(b)),
     }
+}
+
+/// A time with blanks either side of it in its cells (`varies_hold`'s cells as drawn, a blank a space).
+fn seconds_padded(t: &str) -> bool {
+    seconds(t.trim_matches(' '))
+}
+
+/// A time right-aligned in its cells as drawn: blanks before it, its last character the cells' last.
+fn seconds_right(t: &str) -> bool {
+    seconds(t.trim_start_matches(' '))
+}
+
+/// A time left-aligned in its cells as drawn: its first character the cells' first, blanks after it.
+fn seconds_left(t: &str) -> bool {
+    seconds(t.trim_end_matches(' '))
 }
 
 /// `cargo xtask shot`'s default size, most pictures'.
@@ -157,22 +185,18 @@ impl DocShot {
     }
 
     /// Each `varies` holds what it says on the screen just taken (`screen`: its cells' text, row by row) — else
-    /// the layout moved, and its mask would hide something else.
+    /// the layout moved, and its mask would hide something else. Its cells as drawn, a cell left blank a space.
     fn varies_hold(&self, screen: &[Vec<String>]) -> Result<()> {
         for v in self.varies {
             let cells = screen.get(usize::from(v.row)).map(|r| {
                 let (a, b) = (usize::from(v.cols.0).min(r.len()), usize::from(v.cols.1).min(r.len()));
-                r[a..b].concat()
+                r[a..b].iter().map(|c| if c.is_empty() { " " } else { c.as_str() }).collect::<String>()
             });
             let text = cells.unwrap_or_default();
-            if !(v.holds)(text.trim()) {
+            if !(v.holds)(&text) {
                 return Err(format!(
                     "row {} cols {}..{} holds {:?}, not {} — the layout moved: its `varies` would hide what's there",
-                    v.row,
-                    v.cols.0,
-                    v.cols.1,
-                    text.trim(),
-                    v.what
+                    v.row, v.cols.0, v.cols.1, text, v.what
                 ));
             }
         }
@@ -632,14 +656,15 @@ const DOCS: &[DocShot] = &[
     row("m4-chat-hanji.png", Some("chatanswer"), S).light().varies(&[turn_time(23, (103, 111))]),
     row("chat-plan.png", None, S),
     // (its head quotes what was asked, as every review of Claude's change does — frictions34 43)
-    // (the follow card's wait on its head row, right-aligned: how long the scene took to get there)
-    row("chat-edit.png", Some("review"), S).varies(&[wait_time(17, (103, 111))]),
+    // (the follow card's wait on its frame's top line, right-aligned: how long the scene took to get there — and the
+    // status line's time of the step under way, the review it waits for)
+    row("chat-edit.png", Some("review"), S).varies(&[wait_time(18, (102, 108)), step_time(29, (52, 58))]),
     row("chat-edit-why.png", None, S),
     row("chat-turn-review.png", None, (200, 36)),
     row("chat-review-at-end.png", Some("reviewatend"), S),
     row("chat-undo-turn.png", None, S),
     row("chat-tests.png", None, S),
-    row("chat-run.png", Some("runcard"), S).varies(&[wait_time(2, (103, 111))]),
+    row("chat-run.png", Some("runcard"), S).varies(&[wait_time(1, (102, 108)), step_time(29, (46, 52))]),
     row("notes.png", None, S),
     row("commit-draft.png", Some("commitdraft"), S),
     row("review.png", Some("codereview"), S),
@@ -1486,6 +1511,85 @@ mod tests {
         for moved in ["ctx 0", "", "2s", "2.05s", "a.0s"] {
             let e = d.varies_hold(&screen(moved)).unwrap_err();
             assert!(e.contains("row 1 cols 4..9") && e.contains("the layout moved"), "{moved:?}: {e}");
+        }
+        // (the cells as the docs run read them: the follow card's wait right-aligned, the step's time left-aligned —
+        // each refused the other way round, with the line or the dash beside it, or with a word before it; `1m 07s`
+        // takes every cell, both ways)
+        for right in ["  5.2s", "  2.8s", " 12.3s"] {
+            assert!(seconds_right(right) && !seconds_left(right), "{right:?}");
+        }
+        for left in ["1.6s  ", "1.9s  ", "12.3s "] {
+            assert!(seconds_left(left) && !seconds_right(left), "{left:?}");
+        }
+        assert!(seconds_right("1m 07s") && seconds_left("1m 03s"));
+        for not in ["─  5.2s", "5.2s ─", "1.6s —", "▲ 5.2s", "waits 5.2s", "      "] {
+            assert!(!seconds_right(not) && !seconds_left(not), "{not:?}");
+        }
+        // (an unwritten cell is a blank, as drawn)
+        let blanks: Vec<String> = ["", "", "5", ".", "2", "s"].map(String::from).to_vec();
+        const RIGHT: &[Varies] = &[Varies { row: 0, cols: (0, 6), what: "", holds: seconds_right }];
+        assert_eq!(row("x.png", None, (6, 1)).varies(RIGHT).varies_hold(&[blanks]), Ok(()));
+    }
+
+    /// Every row's `wait_time` holds the follow card's top line as `timer` and `top_line` lay it — the line's `─`, three
+    /// blanks, the time right-aligned in five cells under a minute and seven past it, then ` ─╮` — laid out here to the
+    /// cell the docs run read `chat-edit`'s row 18 (`──────    5.2s ─╮`, `────    1m 07s ─╮`): its cells end right before
+    /// ` ─╮` and hold the time and blanks, never a `─`.
+    #[test]
+    fn a_waits_time_is_named_where_the_card_puts_it() {
+        let what = wait_time(0, (0, 0)).what;
+        let waits: Vec<(&str, &'static Varies)> = DOCS
+            .iter()
+            .flat_map(|d| d.varies.iter().filter(|v| v.what == what).map(move |v| (d.picture, v)))
+            .collect();
+        assert_eq!(waits.len(), 2, "chat-edit's and chat-run's");
+        for (picture, v) in waits {
+            let d = DocShot { varies: std::slice::from_ref(v), ..row(picture, None, S) };
+            let end = usize::from(v.cols.1);
+            for (t, w, read) in [
+                ("5.2s", 5, "──────    5.2s ─╮ "),
+                ("12.3s", 5, "──────   12.3s ─╮ "),
+                ("1m 07s", 7, "────    1m 07s ─╮ "),
+                ("9m 59s", 7, "────    9m 59s ─╮ "),
+            ] {
+                let line: Vec<String> =
+                    format!("{}   {t:>w$} ─╮ ", "─".repeat(end - 3 - w)).chars().map(String::from).collect();
+                assert_eq!(line[end - 14..].concat(), read, "{picture} {t:?}: as the docs run read it");
+                let mut screen = vec![Vec::new(); usize::from(v.row)];
+                screen.push(line);
+                assert_eq!(d.varies_hold(&screen), Ok(()), "{picture} {t:?}");
+            }
+        }
+    }
+
+    /// Every row's `step_time` holds the status line's step time as `now_segments` lays it — after a space, padded to
+    /// five cells under a minute and to seven (`RUN_TIME_W`) past it, then ` — ` — its cells ending right before the
+    /// dash under a minute, and taking `1m 02s` whole past it (under ten minutes: a docs shot's).
+    #[test]
+    fn a_steps_time_is_named_where_its_padding_puts_it() {
+        let what = step_time(0, (0, 0)).what;
+        let steps: Vec<(&str, &'static Varies)> = DOCS
+            .iter()
+            .flat_map(|d| d.varies.iter().filter(|v| v.what == what).map(move |v| (d.picture, v)))
+            .collect();
+        assert_eq!(steps.len(), 2, "chat-edit's and chat-run's");
+        for (picture, v) in steps {
+            let d = DocShot { varies: std::slice::from_ref(v), ..row(picture, None, S) };
+            for (t, w) in [("1.6s", 5), ("12.3s", 5), ("59.9s", 5), ("1m 02s", 7), ("9m 59s", 7)] {
+                let before = "x".repeat(usize::from(v.cols.0) - 1);
+                let line: Vec<String> =
+                    format!("{before} {t:<w$} — I will switch it").chars().map(String::from).collect();
+                let mut screen = vec![Vec::new(); usize::from(v.row)];
+                screen.push(line.clone());
+                assert_eq!(d.varies_hold(&screen), Ok(()), "{picture} {t:?}");
+                if w == 5 {
+                    assert_eq!(
+                        line[usize::from(v.cols.1)],
+                        "—",
+                        "{picture} {t:?}: the dash right after its cells"
+                    );
+                }
+            }
         }
     }
 
