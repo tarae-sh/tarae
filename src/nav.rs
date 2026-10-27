@@ -124,10 +124,10 @@ pub fn references(ed: &mut Editor, call: Call, args: &Value) -> Result<(), Strin
     let word = name_of(args["symbol"].as_str().unwrap_or_default())?;
     let line = args["line"].as_u64().map(|l| l.max(1) as usize - 1);
     let tests = args["tests"].as_bool().unwrap_or(true);
-    let (root, keys) = (project_root(ed), crate::reads::Keys::of(ed));
-    let path = root.join(path);
+    let (roots, keys) = (ed.workspace.roots(), crate::reads::Keys::of(ed));
+    let path = roots.project().join(path);
     ed.events.jobs().spawn(move || {
-        let file = file_in(&root, &path, &keys);
+        let file = file_in(&roots, &path, &keys);
         move |ed: &mut Editor| match file {
             Ok(path) => ask(ed, call, path, line, Name { word, tests }),
             Err(e) => answer(ed, call, Err(e)),
@@ -156,11 +156,18 @@ fn name_of(symbol: &str) -> Result<String, String> {
     }
 }
 
-/// `path`, real, if it's a file in the project — and not one named like a key Claude hasn't been let read
-/// (`reads::Keys`) — on a worker.
-pub(crate) fn file_in(root: &Path, path: &Path, keys: &crate::reads::Keys) -> Result<PathBuf, String> {
-    let shown = rel(root, path);
-    let real = crate::paths::existing_inside(root, path, &shown, "these tools look inside it only")?;
+/// `path`, real, if it's a file in the project or one of its folders (`roots`) — and not one named like a key
+/// Claude hasn't been let read (`reads::Keys`) — on a worker.
+pub(crate) fn file_in(
+    roots: &crate::folders::Roots,
+    path: &Path,
+    keys: &crate::reads::Keys,
+) -> Result<PathBuf, String> {
+    let shown = rel(roots.project(), path);
+    let real = std::fs::canonicalize(path).map_err(|e| format!("{shown}: {e}"))?;
+    if roots.inside(&real).is_none() {
+        return Err(format!("{shown} is outside the project — these tools look {}", roots.said()));
+    }
     if !real.is_file() {
         return Err(format!("{shown} isn't a file"));
     }
@@ -570,10 +577,10 @@ pub struct SymAsk {
 pub fn symbols(ed: &mut Editor, call: Call, args: &Value) -> Result<(), String> {
     let path = args["path"].as_str().map(str::trim).filter(|p| !p.is_empty()).ok_or("path is required")?;
     let line = args["line"].as_u64().map(|l| l.max(1) as usize - 1);
-    let (root, keys) = (project_root(ed), crate::reads::Keys::of(ed));
-    let path = root.join(path);
+    let (roots, keys) = (ed.workspace.roots(), crate::reads::Keys::of(ed));
+    let path = roots.project().join(path);
     ed.events.jobs().spawn(move || {
-        let file = file_in(&root, &path, &keys);
+        let file = file_in(&roots, &path, &keys);
         move |ed: &mut Editor| match file {
             Ok(path) => ask_symbols(ed, call, path, line),
             Err(e) => answer(ed, call, Err(e)),
@@ -930,9 +937,9 @@ pub fn definition(ed: &mut Editor, call: Call, args: &Value) -> Result<(), Strin
         return Ok(());
     }
     let spot = spot_of(&root, args)?;
-    let keys = crate::reads::Keys::of(ed);
+    let (roots, keys) = (ed.workspace.roots(), crate::reads::Keys::of(ed));
     ed.events.jobs().spawn(move || {
-        let file = file_in(&root, &spot.path, &keys);
+        let file = file_in(&roots, &spot.path, &keys);
         move |ed: &mut Editor| match file {
             Ok(path) => def_at(ed, call, Spot { path, ..spot }, goto),
             Err(e) => answer(ed, call, Err(e)),
@@ -1522,11 +1529,11 @@ pub fn diagnostics(ed: &mut Editor, call: Call, args: &Value) -> Result<(), Stri
     if paths.is_empty() {
         return Err("no files to look at — you edited none this turn and none is open; give paths".into());
     }
-    let keys = crate::reads::Keys::of(ed);
+    let (roots, keys) = (ed.workspace.roots(), crate::reads::Keys::of(ed));
     ed.events.jobs().spawn(move || {
         let (mut ok, mut unread) = (Vec::new(), Vec::new());
         for p in &paths {
-            match file_in(&root, p, &keys) {
+            match file_in(&roots, p, &keys) {
                 Ok(p) if !ok.contains(&p) => ok.push(p),
                 Ok(_) => {}
                 Err(e) => unread.push(e),
@@ -2897,9 +2904,10 @@ mod tests {
             named.contains("id_ed25519 is named like a key") && !named.starts_with("asks the user:"),
             "{named}"
         );
-        assert!(file_in(&dir, &env, &shut).unwrap_err().contains("named like a key"));
-        assert_eq!(file_in(&dir, &env, &open), Ok(env.clone()));
-        assert_eq!(file_in(&dir, &dir.join("a.rs"), &shut), Ok(dir.join("a.rs")), "the rest as before");
+        let roots = crate::folders::Roots::new(dir.clone(), Vec::new());
+        assert!(file_in(&roots, &env, &shut).unwrap_err().contains("named like a key"));
+        assert_eq!(file_in(&roots, &env, &open), Ok(env.clone()));
+        assert_eq!(file_in(&roots, &dir.join("a.rs"), &shut), Ok(dir.join("a.rs")), "the rest as before");
         std::fs::remove_dir_all(&dir).ok();
     }
 

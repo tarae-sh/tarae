@@ -72,6 +72,8 @@ pub struct Sizes {
     pub sessions: Option<crate::pane::Frame>,
     /// `:messages`' frame, as the session list's.
     pub messages: Option<crate::pane::Frame>,
+    /// `:folders`' frame, as the session list's.
+    pub folders: Option<crate::pane::Frame>,
     /// The side the session list is docked on (P3 step 7d, `C-w H/K/L`; `C-w e` floats it again) — the viewer's place
     /// for it, kept while it closes and opens and across `:restart`: the session in front holds its leaf
     /// (`list_dock_sync`). None: it floats.
@@ -112,6 +114,7 @@ impl Sizes {
             docked,
             sessions,
             messages,
+            folders: crate::pane::Frame::of_json(&v["folders"]),
             sessions_dock: v["sessions_dock"].as_str().and_then(crate::pane::Side::of_name),
         }
     }
@@ -124,8 +127,9 @@ impl Sizes {
         let (sessions, messages) =
             (self.sessions.map(crate::pane::Frame::json), self.messages.map(crate::pane::Frame::json));
         let dock = self.sessions_dock.map(crate::pane::Side::name);
+        let folders = self.folders.map(crate::pane::Frame::json);
         json!({ "chat": self.chat, "side": self.side, "rail": self.rail, "bottom": self.bottom, "docked": docked,
-                "sessions": sessions, "messages": messages, "sessions_dock": dock })
+                "sessions": sessions, "messages": messages, "folders": folders, "sessions_dock": dock })
         .to_string()
     }
 }
@@ -751,6 +755,7 @@ impl crate::editor::Editor {
         self.sizes = Sizes {
             sessions: s.sessions,
             messages: s.messages,
+            folders: s.folders,
             sessions_dock: s.sessions_dock,
             ..Sizes::default()
         };
@@ -965,6 +970,7 @@ mod tests {
         docked: [None; crate::pane::DOCKABLE],
         sessions: None,
         messages: None,
+        folders: None,
         sessions_dock: None,
     };
 
@@ -1087,6 +1093,7 @@ mod tests {
             docked: [None; crate::pane::DOCKABLE],
             sessions: None,
             messages: None,
+            folders: None,
             sessions_dock: None,
         };
         assert_eq!(chat_beside(160, 36, kept), 70, "yours stays");
@@ -1105,6 +1112,7 @@ mod tests {
             docked: [None; crate::pane::DOCKABLE],
             sessions: None,
             messages: None,
+            folders: None,
             sessions_dock: None,
         };
         assert_eq!(widths(200, true, true, kept), Widths { chat: 90, side: 40 });
@@ -1127,6 +1135,7 @@ mod tests {
             docked: [None; crate::pane::DOCKABLE],
             sessions: None,
             messages: None,
+            folders: None,
             sessions_dock: None,
         };
         assert_eq!(widths(240, true, true, odd), Widths { chat: CHAT_MIN, side: SIDE_MAX });
@@ -1155,6 +1164,7 @@ mod tests {
             docked: [None; crate::pane::DOCKABLE],
             sessions: None,
             messages: None,
+            folders: None,
             sessions_dock: Some(crate::pane::Side::Right),
         };
         save(&path, s, 1);

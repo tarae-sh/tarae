@@ -573,6 +573,14 @@ your `PATH`.
   woven together, unsaved ones too (`:weave`, `space v w`: each change in its session's colour, conflicts side by
   side, `enter` into the workspace a change is from)
   ([several sessions](claude-integration.md#follow-mode))
+- **Another folder** `:folder-add ~/work/infra` — a folder outside the project the workspace works in too (a service
+  and its infra, a library and its user): Claude reads and edits there as in the project, its edits reviewed the same
+  way, its paths whole. The workspace's own (a new one starts with none), kept with it across restarts until
+  `:folder-remove`; you add it, Claude asks in words. Its settings aren't read (`.tarae.toml`, `.claude/`), its
+  `CLAUDE.md` is named to Claude, not loaded. `:folders` lists them, a floating list as `:messages` (`d` removes one).
+  Refused, and said why: the project, in it or holding it, your home or above, what runs never read, where a write
+  would run something later, another checkout of the project's repository (that's a workspace)
+  ([folders](claude-integration.md#another-folder))
 - **Review like a pull request** — Claude's edits hunk by hunk, or all at the turn's end
   ([review at the end](claude-integration.md#review-at-the-end)); any change reviewed over the real buffers, and a
   second Claude reviewing as notes on the lines, `space v c`, or a board of them, one per angle with a skeptic

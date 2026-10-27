@@ -406,6 +406,7 @@ impl Editor {
 fn list_name(kind: GroupKind) -> &'static str {
     match kind {
         GroupKind::Messages => "messages",
+        GroupKind::Folders => "folders",
         _ => "session",
     }
 }

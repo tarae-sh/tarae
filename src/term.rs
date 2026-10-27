@@ -1229,7 +1229,11 @@ fn group_list_rows(editor: &Editor, g: &crate::pane::Group) -> usize {
         GroupKind::Task => editor.workspace.task_run.as_ref().map_or(0, |r| r.place_rows().len()),
         GroupKind::Preflight => crate::grouplist::preflight(editor).map_or(0, |p| p.steps.len()),
         GroupKind::Procs => 1 + editor.procs.rows.len() + 1 + editor.procs.checks.len().clamp(1, 4),
-        GroupKind::Git | GroupKind::Review | GroupKind::Sessions | GroupKind::Messages => 0,
+        GroupKind::Git
+        | GroupKind::Review
+        | GroupKind::Sessions
+        | GroupKind::Messages
+        | GroupKind::Folders => 0,
     }
 }
 
@@ -5106,6 +5110,9 @@ fn draw_floating(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut Vec<u8>) -> i
         } else if kind == GroupKind::Messages {
             let _fade = Fade::unless(has, &own);
             draw_messages_pane(editor, &own, card, line, r, out)?;
+        } else if kind == GroupKind::Folders {
+            let _fade = Fade::unless(has, &own);
+            draw_folders_pane(editor, &own, card, line, r, out)?;
         } else {
             let floated = lay.floated(kind, r);
             let _fade = Fade::unless(has, &own);
@@ -5416,6 +5423,116 @@ fn draw_messages_pane(
             crate::uistate::panels::Row {
                 id: format!("messages:toast#{}", m.id),
                 label: shown,
+                selected: on,
+                viewed: None,
+            },
+        ));
+    }
+    Ok(())
+}
+
+/// `:folders` in its frame `r` (`folders.rs`): `╭─ folders ── 2 folders ── …keys ─╮`, then a row a folder in the order
+/// added — the bar `▎` and `ui.menu.selected` on the one selected, its name in a column as wide as the widest, where
+/// it is (faint), its instruction files (dim); narrow, the place folds first, from its start (`…/ZCTJ/infra`, whole in
+/// the mouse's card) — its files stay whole while a cell of it is left.
+fn draw_folders_pane(
+    editor: &Editor,
+    ui: &Ui,
+    card: Style,
+    line: Style,
+    r: crate::split::Rect,
+    out: &mut Vec<u8>,
+) -> io::Result<()> {
+    use crate::pane::GroupKind;
+    let rows = crate::folders::rows(editor);
+    let dim = Style { fg: ui.virt.fg, ..card };
+    let faint = Style { fg: ui.linenr.fg, ..card };
+    let strong =
+        card.patch(editor.theme.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() }));
+    let details = vec![(crate::nav::count(rows.len(), "folder"), dim)];
+    let has = ui.lit == Some(Region::Slot);
+    let keys = if has { crate::folders::hints() } else { Vec::new() };
+    let names = [("folders".to_string(), strong)];
+    let head = TopLine {
+        names: &names,
+        details: &details,
+        keys: &keys,
+        key: Style { bold: true, ..dim },
+        faint,
+        ..TopLine::default()
+    };
+    top_line(out, line, card, (r.x, r.y, r.w), ("╭", "╮", "┬"), &[], true, &head)?;
+    // The rows: `▎ ` (the bar's cell and a blank), the name, two cells, where, two cells, its files, a cell before the side
+    let (x0, y0, inner) = (r.x + 1, r.y + 1, r.h.saturating_sub(2));
+    let name_w = rows.iter().map(|f| f.name.width()).max().unwrap_or(0);
+    let room = r.w.saturating_sub(2 + 2 + 1);
+    let here = editor.float_list_here(GroupKind::Folders);
+    let selected = rows.iter().position(|f| Some(f.id) == here).unwrap_or(0);
+    let p = editor.float_list(GroupKind::Folders);
+    let top = p.map_or(0, |p| p.top.get());
+    let top = crate::key::in_sight(0, top, selected, rows.len(), inner, 0).0;
+    if let Some(p) = p {
+        p.top.set(top);
+    }
+    editor.screen.lists.borrow_mut().push((GroupKind::Folders, (y0, inner, top)));
+    let sel = selected_row(ui, editor, card);
+    let re = crate::floatlist::lit(editor, GroupKind::Folders);
+    let mut listed = editor.screen.list_rows.borrow_mut();
+    for (k, f) in rows.iter().enumerate().skip(top).take(inner) {
+        let y = y0 + k - top;
+        let on = k == selected;
+        let base = if on { sel } else { card };
+        queue!(out, MoveTo(x0 as u16, y as u16))?;
+        apply(out, Style { fg: ui.accent.fg, ..base })?;
+        queue!(out, Print(if on { "▎ " } else { "  " }))?;
+        // (its search's matches lit, as the other lists' — here on the name)
+        let lit = re.as_ref().is_some_and(|re| re.is_match(&f.text));
+        let name_st = Style { fg: if on { strong.fg } else { card.fg }, bold: on || lit, ..base };
+        let name = fit_ellipsis(&f.name, room);
+        apply(out, name_st)?;
+        queue!(out, Print(pad_right(&name, name_w.min(room))))?;
+        let left = room.saturating_sub(name_w.min(room) + 2);
+        // (its files keep their room while a cell of the place is left — the place folds first)
+        let files = match !f.has.is_empty() && f.has.width() + 2 < left {
+            true => f.has.clone(),
+            false => String::new(),
+        };
+        let place = left.saturating_sub(if files.is_empty() { 0 } else { files.width() + 2 });
+        // (folded at a folder's boundary where one is left: `…/ZCTJ/infra`, never `…hot.ZCTJ/infra`)
+        let at = fit_left(&f.at, place);
+        let at = match at
+            .strip_prefix('…')
+            .filter(|r| !r.starts_with('/'))
+            .and_then(|r| r.find('/').map(|i| &r[i..]))
+        {
+            Some(rest) => format!("…{rest}"),
+            None => at,
+        };
+        apply(out, base)?;
+        queue!(out, Spaces(2.min(room)))?;
+        let at_st = Style { fg: faint.fg, ..base };
+        apply(out, at_st)?;
+        queue!(out, Print(&at))?;
+        let at_x = x0 + 2 + name_w.min(room) + 2;
+        crate::whole::cut_at(editor, crate::whole::On::List, (at_x, y), (&at, &f.at), at_st, (0, usize::MAX));
+        apply(out, base)?;
+        if !files.is_empty() {
+            queue!(out, Spaces(2))?;
+            apply(out, Style { fg: dim.fg, ..base })?;
+            queue!(out, Print(&files))?;
+            apply(out, base)?;
+        }
+        let used = 2
+            + name_w.min(room)
+            + 2.min(room)
+            + at.width()
+            + if files.is_empty() { 0 } else { 2 + files.width() };
+        queue!(out, Spaces(r.w.saturating_sub(2 + used)))?;
+        listed.push((
+            GroupKind::Folders,
+            crate::uistate::panels::Row {
+                id: format!("folders:{}", f.name),
+                label: format!("{} {}", f.name, f.at),
                 selected: on,
                 viewed: None,
             },

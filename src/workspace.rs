@@ -64,6 +64,11 @@ pub struct Workspace {
     /// in `Editor::with_root`; nothing reads the process's folder after that. Tests with a project of their
     /// own in a temp folder set it.
     pub root: PathBuf,
+    /// The folders outside it added to it (`:folder-add`, `folders.rs`) — Claude works there as in the checkout.
+    pub folders: Vec<crate::folders::Folder>,
+    /// Its kept folders as it came back, judged again on a worker before they're `folders` (`folders_back`) — kept
+    /// meanwhile, never read as its.
+    pub folders_judging: Vec<crate::folders::Folder>,
     /// What it's called (toasts from it start with it): a session's name, else its checkout's folder name.
     pub name: String,
     /// Its checkout, known to the log while it lives: a line about a path in it names it (`log::Session::of`)
@@ -352,6 +357,8 @@ impl Workspace {
             viewer: Viewer::new(view),
             in_log: crate::log::Checkout::new(&root, &name),
             root,
+            folders: Vec::new(),
+            folders_judging: Vec::new(),
             name,
             branch: None,
             base: None,

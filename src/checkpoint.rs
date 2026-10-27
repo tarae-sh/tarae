@@ -632,9 +632,11 @@ pub(crate) fn file(
     let empty = Rope::new();
     let now = ed.doc().text.to_string();
     let (target, kept) = rebase(&from.unwrap_or(&empty).to_string(), &to.unwrap_or(&empty).to_string(), &now);
-    // In the project, written through no link from its root (`beneath.rs`): a run of Claude's may have swapped
-    // a folder for a link to outside since the turn. A file outside it (accepted on its review) by its path.
-    let root = Some(ed.workspace.root.clone()).filter(|r| crate::paths::written_inside(r, path));
+    // In the project or one of its folders, written through no link from that root (`beneath.rs`): a run of
+    // Claude's may have swapped a folder for a link to outside since the turn. A file outside them (accepted on its
+    // review) by its path.
+    let roots = ed.workspace.roots();
+    let root = roots.all().find(|r| crate::paths::written_inside(r, path)).map(Path::to_path_buf);
     // A file the turn made, with nothing else in it now: it goes
     if to.is_none() && kept == 0 && target.is_empty() {
         let id = ed.doc().id;

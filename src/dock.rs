@@ -33,6 +33,7 @@ impl Editor {
             GroupKind::Procs => self.procs_up(),
             GroupKind::Sessions => self.sessions_pane.is_some(),
             GroupKind::Messages => self.messages_pane.is_some(),
+            GroupKind::Folders => self.folders_pane.is_some(),
             GroupKind::Git | GroupKind::Review => false,
         }
     }
@@ -295,8 +296,11 @@ impl Editor {
     /// (`C-w J`). False: the keys aren't in a group (the code's panes trade places, `swap_view`).
     pub fn dock_key(&mut self, dx: i32, dy: i32) -> bool {
         if let Some(k) = self.float_list_in_hand() {
-            if k == GroupKind::Messages {
-                self.set_status("the messages list floats — C-w m moves it, C-w < > - + size it");
+            if matches!(k, GroupKind::Messages | GroupKind::Folders) {
+                self.set_status(format!(
+                    "the {} list floats — C-w m moves it, C-w < > - + size it",
+                    k.name()
+                ));
                 return true;
             }
             // The session list docks (P3 step 7d): beside the code or above it, the keys staying with it; below is the

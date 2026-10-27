@@ -130,6 +130,12 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
         "web!" => crate::web::open::web(editor, rest, true),
         "web-reader" => crate::web::page::reader(editor, rest),
         "web-open" => crate::web::page::web_open(editor),
+        "folder-add" => editor.folder_add(rest),
+        "folder-remove" => editor.folder_remove(rest),
+        "folders" => {
+            editor.folders_open();
+            Ok(())
+        }
         "workspace-open" if !rest.trim().is_empty() => {
             let id = editor.workspace_open(Path::new(rest.trim()))?;
             let all = editor.sessions_in_order();

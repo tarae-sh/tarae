@@ -1172,6 +1172,8 @@ pub struct Editor {
     pub sessions_pane: Option<crate::floatlist::FloatList>,
     /// `:messages`, a floating list while it's up (`messages.rs`) — the viewer's, as the session list.
     pub messages_pane: Option<crate::floatlist::FloatList>,
+    /// `:folders`, a floating list while it's up (`folders.rs`) — the viewer's, of the front workspace's folders.
+    pub folders_pane: Option<crate::floatlist::FloatList>,
     /// The last click on a picker's row (picker, row, when) — the same row again within `DOUBLE_CLICK` opens it.
     pub picker_click: Option<(u64, usize, std::time::Instant)>,
     /// The last click on the git tab's or the review rail's row (which list, row, when) — `clicked_again`.
@@ -1483,6 +1485,7 @@ impl Editor {
             float_moving: None,
             sessions_pane: None,
             messages_pane: None,
+            folders_pane: None,
             picker_click: None,
             list_click: None,
             card_pressed: None,

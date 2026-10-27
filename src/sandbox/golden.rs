@@ -332,6 +332,7 @@ fn the_caps_are_pinned() {
         let session = crate::allow::Allowed { ports: vec![5432], ..Default::default() };
         let basis = crate::caps::Basis {
             root: f.root.clone(),
+            folders: Vec::new(),
             store: Some(store),
             session,
             chat,

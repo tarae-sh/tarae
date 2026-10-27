@@ -31,6 +31,8 @@ pub enum Why {
     /// Outside home, where it's read by default (`Caps.outside`, D3) — never an entry of `read`: what
     /// `Caps::default_for` says of a place there.
     Outside,
+    /// A folder the user added to the workspace (`:folder-add`, `folders.rs`) — worked in as the project is.
+    Folder,
 }
 
 impl Why {
@@ -42,6 +44,7 @@ impl Why {
             Why::Temp => "the temp folders",
             Why::Toolchain => "a toolchain's own",
             Why::Outside => "outside home",
+            Why::Folder => "a folder of this workspace",
         }
     }
 
@@ -54,6 +57,7 @@ impl Why {
             Why::Temp => "temp",
             Why::Toolchain => "toolchain",
             Why::Outside => "outside",
+            Why::Folder => "folder",
         }
     }
 }
@@ -370,6 +374,8 @@ impl Caps {
 pub struct Basis {
     /// The checkout (a commit's tree for a run on one).
     pub root: PathBuf,
+    /// The folders added to its workspace (`Workspace.folders`, real paths): read as the checkout is.
+    pub folders: Vec<PathBuf>,
     /// `$state/sandbox.json` (None: nothing kept — tests).
     pub store: Option<PathBuf>,
     /// This session's answers.
@@ -421,7 +427,8 @@ impl Basis {
             // (never one every checkout uses: a default here — a build folder, another checkout — may be none
             // there, review J 4)
             .filter(|e| !caps.shared.contains(&Grant::Read(e.what.clone())))
-            .filter_map(|e| Some((e.what.clone(), caps.default_for(&e.what)?)))
+            // (never one a folder covers: removed, it'd take the answer kept for it along)
+            .filter_map(|e| Some((e.what.clone(), caps.default_for(&e.what).filter(|w| *w != Why::Folder)?)))
             .collect();
         if covered.is_empty() {
             return covered;
@@ -450,6 +457,7 @@ impl Basis {
     pub fn build_in(&self, home: Option<&Path>, here: &crate::sandbox::Here) -> Caps {
         let mut c = self.granted();
         c.found(crate::allow::defaults_in(&self.root, self.temp, home, here));
+        c.read.extend(entries(&self.folders, Source::Default(Why::Folder)));
         c.later = home
             .map(|h| {
                 let vars = crate::sandbox::vars_in(h, here);
@@ -470,15 +478,21 @@ impl Basis {
 impl crate::editor::Editor {
     /// What this session's `Caps` is made from now.
     pub fn caps_basis(&self) -> Basis {
+        self.caps_basis_in(&self.workspace)
+    }
+
+    /// What workspace `ws`'s `Caps` is made from now (in front or behind).
+    pub fn caps_basis_in(&self, ws: &crate::workspace::Workspace) -> Basis {
         Basis {
-            root: self.workspace.root.clone(),
+            root: ws.root.clone(),
+            folders: ws.roots().folders().to_vec(),
             store: self.allow_path.clone(),
-            session: self.workspace.claude.allowed.clone(),
-            chat: self.workspace.claude.chat.as_ref().map(|c| c.allowed.clone()).unwrap_or_default(),
+            session: ws.claude.allowed.clone(),
+            chat: ws.claude.chat.as_ref().map(|c| c.allowed.clone()).unwrap_or_default(),
             temp: self.read_temp,
             outside: self.read_outside,
-            taking: self.taking_for(&self.workspace.root),
-            hosts: self.workspace.granted_hosts(),
+            taking: self.taking_for(&ws.root),
+            hosts: ws.granted_hosts(),
             #[cfg(test)]
             home: self.caps_home.clone(),
         }
@@ -526,9 +540,10 @@ impl crate::editor::Editor {
         let generation = s.claude.caps_asked;
         let chat = s.claude.chat.as_ref().map(|c| c.allowed.clone()).unwrap_or_default();
         let (root, session) = (s.root.clone(), s.claude.allowed.clone());
-        let hosts = s.granted_hosts();
+        let (hosts, folders) = (s.granted_hosts(), s.roots().folders().to_vec());
         let basis = Basis {
             root,
+            folders,
             store,
             session,
             chat,

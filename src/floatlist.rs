@@ -1,5 +1,5 @@
-//! The floating lists (panes P3 steps 7a and 7c): the session list (`sessionpane.rs`) and `:messages`
-//! (`messages.rs`) — the viewer's, not a session's (no member of `Workspace.groups`), each in a named frame over the
+//! The floating lists (panes P3 steps 7a and 7c): the session list (`sessionpane.rs`), `:messages`
+//! (`messages.rs`) and `:folders` (`folders.rs`) — the viewer's, not a session's (no member of `Workspace.groups`), each in a named frame over the
 //! code and the chat (`Frame::LIST`: 3/5 wide, as tall as its rows up to half the screen, its top at 1/4). One list's
 //! state, keys, search and mouse for both, so the two never drift apart; each kind gives its rows' ids, what its
 //! search matches, its `enter` and its own letters.
@@ -36,7 +36,7 @@ pub struct FloatList {
 }
 
 /// The kinds that are floating lists.
-pub const KINDS: [GroupKind; 2] = [GroupKind::Sessions, GroupKind::Messages];
+pub const KINDS: [GroupKind; 3] = [GroupKind::Sessions, GroupKind::Messages, GroupKind::Folders];
 
 /// Kind `kind` is a floating list of the viewer's.
 pub fn is_list(kind: GroupKind) -> bool {
@@ -47,6 +47,7 @@ pub fn is_list(kind: GroupKind) -> bool {
 fn what(kind: GroupKind) -> &'static str {
     match kind {
         GroupKind::Messages => "the messages",
+        GroupKind::Folders => "the folders",
         _ => "the session list",
     }
 }
@@ -57,6 +58,7 @@ impl Editor {
         match kind {
             GroupKind::Sessions => self.sessions_pane.as_ref(),
             GroupKind::Messages => self.messages_pane.as_ref(),
+            GroupKind::Folders => self.folders_pane.as_ref(),
             _ => None,
         }
     }
@@ -69,6 +71,7 @@ impl Editor {
         match kind {
             GroupKind::Sessions => Some(&mut self.sessions_pane),
             GroupKind::Messages => Some(&mut self.messages_pane),
+            GroupKind::Folders => Some(&mut self.folders_pane),
             _ => None,
         }
     }
@@ -78,6 +81,7 @@ impl Editor {
         match kind {
             GroupKind::Sessions => self.sessions_in_order().iter().map(|l| l.id.n).collect(),
             GroupKind::Messages => self.message_ids(),
+            GroupKind::Folders => self.folder_ids(),
             _ => Vec::new(),
         }
     }
@@ -198,6 +202,7 @@ impl Editor {
     fn float_list_enter(&mut self, kind: GroupKind) {
         match kind {
             GroupKind::Messages => self.messages_enter(),
+            GroupKind::Folders => self.folders_enter(),
             _ => self.sessions_enter(),
         }
     }
@@ -208,6 +213,7 @@ impl Editor {
         self.float_list(kind)?;
         let kept = match kind {
             GroupKind::Messages => self.sizes.messages,
+            GroupKind::Folders => self.sizes.folders,
             _ => self.sizes.sessions,
         };
         Some(kept.unwrap_or(crate::pane::Frame::LIST))
@@ -226,6 +232,7 @@ impl Editor {
     pub(crate) fn float_list_frame_set(&mut self, kind: GroupKind, f: Option<crate::pane::Frame>) {
         match kind {
             GroupKind::Messages => self.sizes.messages = f,
+            GroupKind::Folders => self.sizes.folders = f,
             _ => self.sizes.sessions = f,
         }
     }
@@ -263,6 +270,7 @@ impl Editor {
             if !typing {
                 let none = match kind {
                     GroupKind::Messages => "no message",
+                    GroupKind::Folders => "no folder",
                     _ => "no session",
                 };
                 self.set_error(format!("{none} matches /{pat}/"));
@@ -292,6 +300,7 @@ impl Editor {
 fn matched(ed: &Editor, kind: GroupKind, re: &regex::Regex) -> Vec<bool> {
     match kind {
         GroupKind::Messages => crate::messages::rows(ed).iter().map(|r| re.is_match(&r.text)).collect(),
+        GroupKind::Folders => crate::folders::rows(ed).iter().map(|r| re.is_match(&r.text)).collect(),
         _ => ed.sessions_rows().iter().map(|r| crate::sessionpane::matches(r, re)).collect(),
     }
 }
@@ -450,6 +459,7 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
         (Code::Char(c @ ('n' | 'N')), false, false) => ed.float_list_search_next(kind, c == 'N'),
         (Code::Char(c), false, false) => match kind {
             GroupKind::Messages => ed.messages_key(c),
+            GroupKind::Folders => ed.folders_key(c),
             _ => ed.session_list_key(c),
         },
         _ => ed.key_unused(key, what(kind), "esc code"),

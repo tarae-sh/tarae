@@ -79,13 +79,15 @@ pub enum GroupKind {
     Sessions,
     /// `:messages` (step 7c, `messages.rs`): a floating list alone, the viewer's, as the session list.
     Messages,
+    /// `:folders` (`folders.rs`): the front workspace's added folders, a floating list alone as `:messages`.
+    Folders,
 }
 
 /// How many kinds dock (`GroupKind::dock_index`).
 pub const DOCKABLE: usize = 5;
 
 impl GroupKind {
-    pub const ALL: [GroupKind; 8] = [
+    pub const ALL: [GroupKind; 9] = [
         GroupKind::Tests,
         GroupKind::Task,
         GroupKind::Preflight,
@@ -94,6 +96,7 @@ impl GroupKind {
         GroupKind::Review,
         GroupKind::Sessions,
         GroupKind::Messages,
+        GroupKind::Folders,
     ];
 
     /// Its name in the state (`list:tests`, `keys.region`) and the restart's file (`groups: [{kind}]`).
@@ -107,6 +110,7 @@ impl GroupKind {
             GroupKind::Review => "review",
             GroupKind::Sessions => "sessions",
             GroupKind::Messages => "messages",
+            GroupKind::Folders => "folders",
         }
     }
 
@@ -122,9 +126,10 @@ impl GroupKind {
 
     /// It can leave the slot and dock beside the code (§3.1): the slot's groups. The git tab and the review's rail
     /// are the left column's (§3.7: how you move, not what you look at) — their detail is the code itself.
-    /// The session list docks too (P3 step 7d: the manager's overview kept in sight); `:messages` only floats.
+    /// The session list docks too (P3 step 7d: the manager's overview kept in sight); `:messages` and `:folders` only
+    /// float.
     pub fn dockable(self) -> bool {
-        !self.detail_is_code() && self != GroupKind::Messages
+        !self.detail_is_code() && !matches!(self, GroupKind::Messages | GroupKind::Folders)
     }
 
     /// Its index among the dockable kinds (`Sizes.docked`, `DOCKABLE` of them).
@@ -133,7 +138,11 @@ impl GroupKind {
             GroupKind::Tests => 0,
             GroupKind::Task => 1,
             GroupKind::Preflight => 2,
-            GroupKind::Procs | GroupKind::Git | GroupKind::Review | GroupKind::Messages => 3,
+            GroupKind::Procs
+            | GroupKind::Git
+            | GroupKind::Review
+            | GroupKind::Messages
+            | GroupKind::Folders => 3,
             GroupKind::Sessions => 4,
         }
     }
@@ -399,7 +408,7 @@ impl Group {
     /// code.
     pub fn new(kind: GroupKind, host: PaneId, first: PaneId) -> Self {
         let detail = match kind {
-            GroupKind::Sessions | GroupKind::Messages => Detail::None,
+            GroupKind::Sessions | GroupKind::Messages | GroupKind::Folders => Detail::None,
             k if k.detail_is_code() => Detail::Code,
             _ => Detail::Pane(first + 1),
         };

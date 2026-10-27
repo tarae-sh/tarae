@@ -915,6 +915,29 @@ fn chat_prompt_tokens_with_a_toast_up() {
     eprintln!("TOKENS first request's prompt: {:?}", p.first());
 }
 
+/// A turn whose context carries the folders' line (`:folder-add`, `folders.rs`: one folder beside the project, with a
+/// CLAUDE.md): its first request's prompt, beside `chat_prompt_tokens`' — the difference is the line.
+#[test]
+#[ignore = "live: run with `cargo live` (uses Claude)"]
+fn chat_prompt_tokens_with_a_folder() {
+    if !have("claude") {
+        return;
+    }
+    let (sb, out) = teed_chat("chat-tokens-folder");
+    sb.write("notes.txt", "alpha\n");
+    let infra = sb.outside("infra");
+    std::fs::create_dir_all(&infra).unwrap();
+    std::fs::write(infra.join("CLAUDE.md"), "# infra\n").unwrap();
+    let mut t = sb.spawn(&["notes.txt"]);
+    t.command(&format!("folder-add {}", infra.display()));
+    t.wait_for("the folder added", |s| s.contains("folder infra added"));
+    // (its toast gone first: else the message carries a `ui:` line too — `chat_prompt_tokens_with_a_toast_up`'s)
+    t.wait_for("its toast gone", |s| !s.contains("folder infra added"));
+    chat_turn(&mut t, "Reply with the single word ok. Use no tools.");
+    let p = prompts(&std::fs::read_to_string(&out).unwrap_or_default());
+    eprintln!("TOKENS first request's prompt: {:?}", p.first());
+}
+
 /// What a run's time costs in its answer (one way a time is written, 2026-10-23): a run past a minute, its answer
 /// saying `in 1m 04s` where it said `in 64.2s`. The request after the run less the one before it is the call and its
 /// answer (Claude writes nothing before the call) — run against two builds (`TARAE_BIN`) and compare that.

@@ -166,6 +166,8 @@ fn item(i: usize, e: &Value) -> Result<Item, String> {
 /// What the worker needs from the main loop.
 struct Known {
     root: PathBuf,
+    /// The project and its folders (`folders.rs`): where an item may change a file.
+    roots: crate::folders::Roots,
     /// Open buffers' text, by path (loaded ones).
     open: HashMap<PathBuf, Rope>,
     /// Buffers with the user's unsaved edits.
@@ -181,6 +183,7 @@ pub fn call(ed: &mut Editor, call: Call, args: &Value) -> Result<(), String> {
     let items = items_of(args)?;
     let k = Known {
         root: nav::project_root(ed),
+        roots: ed.workspace.roots(),
         open: ed
             .docs
             .iter()
@@ -323,13 +326,12 @@ impl Tier {
 /// Every item, in order, against the files as the user has them — the change set, or one error naming each
 /// item that failed. A worker's (it reads the disk).
 fn resolve(k: &Known, items: &[Item]) -> Result<Resolved, String> {
-    let real_root = std::fs::canonicalize(&k.root).map_err(|e| e.to_string())?;
     let mut states: Vec<(PathBuf, State)> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
     let mut told: Vec<String> = Vec::new();
     for (i, it) in items.iter().enumerate() {
         let head = format!("edits[{i}] ({})", it.file());
-        if let Err(e) = apply(k, &real_root, &mut states, it, &mut told, &head) {
+        if let Err(e) = apply(k, &mut states, it, &mut told, &head) {
             failed.push(format!("{head}: {e}"));
         }
     }
@@ -390,13 +392,12 @@ fn resolve(k: &Known, items: &[Item]) -> Result<Resolved, String> {
 /// One item against the files so far (`states`). Err: why it fails.
 fn apply(
     k: &Known,
-    real_root: &Path,
     states: &mut Vec<(PathBuf, State)>,
     it: &Item,
     told: &mut Vec<String>,
     head: &str,
 ) -> Result<(), String> {
-    let (path, rel, protected) = place(k, real_root, it.file())?;
+    let (path, rel, protected) = place(k, it.file())?;
     let at = state(k, states, &path, rel.clone(), protected)?;
     let gone = |s: &State| s.went.map(|w| format!("{} was {w} earlier in this call", s.rel));
     match it {
@@ -456,8 +457,14 @@ fn apply(
         }
         Item::Move { to, .. } => {
             path_op_allowed(k, it.file(), &path, &rel, protected)?;
-            let (to_path, to_rel, to_protected) = place(k, real_root, to)?;
+            let (to_path, to_rel, to_protected) = place(k, to)?;
             path_op_allowed(k, to, &to_path, &to_rel, to_protected)?;
+            // (a move is a link made and one removed, within the folder it walks from — `refactor::write_file`)
+            if k.roots.inside(&to_path).map(|i| i.root) != k.roots.inside(&path).map(|i| i.root) {
+                return Err(format!(
+                    "{rel} → {to_rel}: a move stays within the project or within one folder"
+                ));
+            }
             if to_path == path {
                 return Err(format!("{rel} is already there"));
             }
@@ -500,29 +507,34 @@ fn apply(
 /// Where `given` really is: its real path, from the project's root, and whether it's a name Claude's runs
 /// can't write — Err when it's outside the project, the project itself, or a file named like a key Claude
 /// hasn't been let read.
-fn place(k: &Known, real_root: &Path, given: &str) -> Result<(PathBuf, String, bool), String> {
-    place_in(&k.root, &k.keys, real_root, given)
+fn place(k: &Known, given: &str) -> Result<(PathBuf, String, bool), String> {
+    place_in(&k.roots, &k.keys, given)
 }
 
-/// `place` for `root` and the files named like keys Claude hasn't been let read — also where an edit being written
-/// goes (`writing.rs`). A worker's (it resolves links).
+/// `place` in `roots` (the project, its folders) and the files named like keys Claude hasn't been let read — also
+/// where an edit being written goes (`writing.rs`). A path in the project is shown from it, a folder's whole. A
+/// worker's (it resolves links).
 pub(crate) fn place_in(
-    root: &Path,
+    roots: &crate::folders::Roots,
     keys: &crate::reads::Keys,
-    real_root: &Path,
     given: &str,
 ) -> Result<(PathBuf, String, bool), String> {
-    let abs = crate::chat::resolve(root, given);
-    let real = crate::paths::inside(real_root, &abs)
-        .ok_or_else(|| format!("{given} is outside the project — edit changes files inside it only"))?;
-    if real == real_root {
-        return Err("that's the project folder itself".into());
+    let abs = crate::chat::resolve(roots.project(), given);
+    let at = roots
+        .inside(&abs)
+        .ok_or_else(|| format!("{given} is outside the project — edit changes files {}", roots.said()))?;
+    if at.real == at.root {
+        return Err(match at.project {
+            true => "that's the project folder itself".into(),
+            false => "that's an added folder itself".into(),
+        });
     }
-    let rel = nav::rel(real_root, &real);
-    if keys.shut(&real) {
+    let rel = at.shown(&at.real);
+    if keys.shut(&at.real) {
         return Err(crate::reads::key_left_out(&rel));
     }
-    Ok((real, rel, crate::edits::protected(root, &abs)))
+    let protected = crate::edits::protected(&at.root, &abs);
+    Ok((at.real, rel, protected))
 }
 
 /// A move or delete only of the project's own plain files: not a name Claude's runs can't write, not a link

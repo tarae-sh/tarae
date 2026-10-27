@@ -121,6 +121,9 @@ pub struct Kept {
     pub billing: Option<crate::billing::Billing>,
     /// What the user let its Claude do for the session (`Session.allowed`).
     pub allowed: crate::allow::Allowed,
+    /// The folders added to it (`Workspace.folders`, and those still being judged as they came back —
+    /// `folders_judging`).
+    pub folders: Vec<crate::folders::Folder>,
 }
 
 impl Kept {
@@ -132,6 +135,7 @@ impl Kept {
             base: l.base.clone(),
             billing: Some(l.claude.billing),
             allowed: l.claude.allowed.clone(),
+            folders: l.folders.iter().chain(&l.folders_judging).cloned().collect(),
         }
     }
 
@@ -141,6 +145,9 @@ impl Kept {
         let allowed = self.allowed.entries("session");
         if !allowed.is_empty() {
             v["allowed"] = json!(allowed);
+        }
+        if !self.folders.is_empty() {
+            v["folders"] = self.folders.iter().map(crate::folders::Folder::json).collect();
         }
         v
     }
@@ -154,6 +161,12 @@ impl Kept {
             billing: v["billing"].as_str().and_then(crate::billing::Billing::parse),
             // (every entry has its time: written by `json`)
             allowed: crate::allow::Allowed::from_entries(&v["allowed"], 0),
+            folders: v["folders"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(crate::folders::Folder::from_json)
+                .collect(),
         })
     }
 }
@@ -1610,6 +1623,7 @@ impl Editor {
         let start = self.start_root();
         let mut changed = !gone.is_empty();
         let mut took = false;
+        let mut judging = Vec::new();
         for mut k in here {
             let id = match std::iter::once(&self.workspace).chain(&self.workspaces).find(|l| l.root == k.root)
             {
@@ -1628,8 +1642,13 @@ impl Editor {
             // (written again without it, or it's back at the next start)
             took |= k.allowed != came;
             let granted = !k.allowed.is_empty();
+            if !k.folders.is_empty() {
+                judging.push(id);
+            }
             if let Some(l) = self.workspace_by_id(id) {
                 (l.name, l.branch, l.base) = (k.name, k.branch, k.base);
+                // (judged again before they're read as the workspace's — `folders_back`)
+                l.folders_judging = k.folders;
                 // (its claude, if one already runs — session 0's chat opened before the list came back — keeps the
                 // billing it started on until its next start)
                 if let Some(b) = k.billing {
@@ -1659,6 +1678,9 @@ impl Editor {
             self.workspaces_taken_back(takes);
         } else if changed {
             self.workspaces_keep();
+        }
+        for id in judging {
+            self.folders_back(id);
         }
         gone.into_iter().map(|k| k.name).collect()
     }
@@ -6350,6 +6372,7 @@ mod tests {
             base: Some("main".into()),
             billing: Some(crate::billing::Billing::Api),
             allowed: Default::default(),
+            folders: Vec::new(),
         };
         let s = Stored { sessions: vec![kept.clone()], front: Some("/wt/a".into()), rev: Default::default() };
         save(&dir, &common, s, &[], Default::default()).unwrap();

@@ -1715,6 +1715,25 @@ for (a pattern past 60 characters is cut; `v` shows it whole). What's read goes 
   …) have their line too, as `why=own · shadow=own`, and so does an answer by a card's own letter (`w`, `p`,
   `X`, `c` …)
 
+### Another folder
+
+`:folder-add <path>` adds a folder outside the project to the workspace (`~` your home, a relative path from the
+project); Claude reads and edits there as in the project, with no card: `read`, `search` and `edit` take its files
+by their whole path, one `edit` may change the project and a folder at once (one change set, reviewed as any), and
+`space u` takes a turn's change there back. A file named like a key there is closed as in the project, a protected
+name (`Makefile`, `.git/`, `build.rs` …) asked about in the review as in the project, and a move stays within the
+project or within one folder. `search` and `replace` with no path look in the project only — a folder by its path.
+
+What Claude is told: one line in each message's context, only while there are folders — `folders (read and edit
+there as in the project; paths absolute; search them by path): /Users/you/work/infra (has CLAUDE.md)`. A folder's
+instruction files are named, never loaded: Claude reads one if it needs it. Its `.tarae.toml` and `.claude/` settings
+are never read — file access, not configuration, as Claude Code's added directories.
+
+The folder is the workspace's (`:folders` lists the front one's; a new workspace starts with none), kept with it in
+the sessions' file until `:folder-remove` (or `d` in `:folders`). As tarae starts again (or `:restart`s) each is
+judged again before Claude reads there — one gone, a link now, or one that now holds or sits in what it mustn't
+is dropped and said. Removed, it's outside the project again: Claude's reads there ask on the card. Only you add one.
+
 ### Reading and searching in the editor
 
 Claude reads and searches through tarae itself — no process, no sandbox to start, and inside the project no card:

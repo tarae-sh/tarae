@@ -2992,6 +2992,10 @@ fn context(
             ctx.push_str(ui);
             ctx.push('\n');
         }
+        if let Some(f) = crate::folders::context_line(&ed.workspace.folders) {
+            ctx.push_str(&f);
+            ctx.push('\n');
+        }
         ctx.push_str("</editor-context>");
         return (ctx, "no file".into(), Vec::new(), Vec::new());
     };
@@ -3146,6 +3150,11 @@ fn context(
             ));
             sent.push((d.id, d.version()));
         }
+    }
+    // The workspace's folders (`folders.rs`): only while there are any — their instruction files named, never sent
+    if let Some(f) = crate::folders::context_line(&ed.workspace.folders) {
+        ctx.push_str(&f);
+        ctx.push('\n');
     }
     ctx.push_str("</editor-context>");
     (ctx, chip, sent, withheld)

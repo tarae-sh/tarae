@@ -674,6 +674,9 @@ Type `:` in normal mode. `Tab` completes command names and their arguments (path
 | `:web-reader` |  | Read the page as main\|article\|page |
 | `:web-open` |  | Open the page in your browser |
 | `:workspace-open` |  | Work in another checkout beside this one |
+| `:folder-add` |  | Work in a folder outside the project too |
+| `:folder-remove` |  | Stop working in an added folder |
+| `:folders` |  | The folders added to this workspace |
 | `:workspace-switch` |  | Bring another workspace to the front |
 | `:session-new` |  | New session: a branch in its own checkout |
 | `:workspace-end` |  | End a workspace (its checkout goes) |

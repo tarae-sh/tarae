@@ -946,6 +946,8 @@ pub struct WorkspaceState {
     pub base: Option<String>,
     /// Its checkout — `tarae state` finds the tarae whose workspace holds the folder it's run in.
     pub root: String,
+    /// The folders added to it (`folders.rs`): where each is.
+    pub folders: Vec<String>,
     /// Its reviewer (`reviewer.rs`): `reviewing` while it reads — None else. A field of its own beside
     /// `doing`: the two are at work apart, often at once, and a driver waiting for `doing` to be `idle` waits
     /// for the chat's turn, not a review it didn't ask for (#195).
@@ -1641,6 +1643,7 @@ impl Editor {
             branch: l.branch.clone().or_else(|| l.git_branch.clone()),
             base: l.base.clone(),
             root: l.root.display().to_string(),
+            folders: l.folders.iter().map(|f| f.at.display().to_string()).collect(),
             reviewer: crate::reviewer::session_said(self, l),
             reviewer_run: ReviewerState::of(self, l),
             review: crate::reviews::Run::of(self, l, is_front),
@@ -1902,6 +1905,9 @@ impl UiState {
                 }
                 if let Some(b) = &s.base {
                     v["base"] = json!(b);
+                }
+                if !s.folders.is_empty() {
+                    v["folders"] = json!(s.folders);
                 }
                 if let Some(r) = s.reviewer {
                     v["reviewer"] = json!(r);

@@ -490,6 +490,8 @@ impl Made {
 #[derive(Clone, Debug)]
 pub struct Keys {
     root: PathBuf,
+    /// The project's folders (`folders.rs`): a file named like a key in one is judged from it, as in the project.
+    folders: Vec<PathBuf>,
     chat: Vec<PathBuf>,
     store: Option<PathBuf>,
     kept: std::sync::OnceLock<Vec<PathBuf>>,
@@ -499,6 +501,7 @@ impl Keys {
     pub fn of(ed: &Editor) -> Keys {
         Keys {
             root: ed.workspace.root.clone(),
+            folders: ed.workspace.roots().folders().to_vec(),
             chat: ed.workspace.claude.chat.as_ref().map(|c| c.allowed.keys.clone()).unwrap_or_default(),
             store: ed.allow_path.clone(),
             kept: Default::default(),
@@ -508,7 +511,13 @@ impl Keys {
     /// None opened, in the project at `root`, nothing kept.
     #[cfg(test)]
     pub fn none_opened(root: &Path) -> Keys {
-        Keys { root: root.to_path_buf(), chat: Vec::new(), store: None, kept: Default::default() }
+        Keys {
+            root: root.to_path_buf(),
+            folders: Vec::new(),
+            chat: Vec::new(),
+            store: None,
+            kept: Default::default(),
+        }
     }
 
     /// These with `key` (real) opened for this conversation.
@@ -523,7 +532,8 @@ impl Keys {
     /// resolves the path, and may read the store.
     pub fn shut(&self, path: &Path) -> bool {
         let real = crate::paths::real(path).unwrap_or_else(|| path.to_path_buf());
-        if !crate::sandbox::key_named(&self.root, &real) {
+        let root = self.folders.iter().find(|f| real.starts_with(f)).unwrap_or(&self.root);
+        if !crate::sandbox::key_named(root, &real) {
             return false;
         }
         let kept =
@@ -2124,6 +2134,7 @@ mod tests {
         assert!(gate.judge(&key, true).is_err(), "the read");
         let keys = Keys {
             root: project.clone(),
+            folders: Vec::new(),
             chat: Vec::new(),
             store: Some(store.clone()),
             kept: Default::default(),

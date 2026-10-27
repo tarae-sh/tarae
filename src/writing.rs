@@ -569,7 +569,7 @@ fn lines_of(whole: &str, from: usize, to: usize) -> (usize, usize) {
 /// Where item `i` of `call` goes, worked out on a worker: its file in the project (not one named like a key
 /// Claude can't read), its text as the user has it, `old` in it once.
 fn look(ed: &mut Editor, call: String, i: usize, file: String, old: String) {
-    let root = crate::nav::project_root(ed);
+    let roots = ed.workspace.roots();
     let keys = crate::reads::Keys::of(ed);
     let open: Vec<(PathBuf, DocId, u64, Rope)> = ed
         .docs
@@ -580,8 +580,7 @@ fn look(ed: &mut Editor, call: String, i: usize, file: String, old: String) {
     let generation = ed.workspace.claude.chat.as_ref().map(crate::chat::Chat::generation);
     ed.events.jobs().spawn(move || {
         let found = (|| {
-            let real_root = std::fs::canonicalize(&root).ok()?;
-            let (path, _, protected) = crate::edittool::place_in(&root, &keys, &real_root, &file).ok()?;
+            let (path, _, protected) = crate::edittool::place_in(&roots, &keys, &file).ok()?;
             let (text, seen) = match open.into_iter().find(|o| o.0 == path) {
                 Some((_, id, version, text)) => (Cow::Rope(text), Some((id, version))),
                 None => (Cow::Disk(String::from_utf8(std::fs::read(&path).ok()?).ok()?), None),

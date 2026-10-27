@@ -65,6 +65,7 @@ mod filetree;
 mod filters;
 mod float;
 mod floatlist;
+mod folders;
 mod follow;
 mod fswatch;
 mod git;

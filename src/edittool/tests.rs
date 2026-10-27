@@ -14,11 +14,42 @@ fn project(name: &str, files: &[(&str, &str)]) -> PathBuf {
 fn known(dir: &Path) -> Known {
     Known {
         root: dir.to_path_buf(),
+        roots: crate::folders::Roots::new(dir.to_path_buf(), Vec::new()),
         open: HashMap::new(),
         dirty: Vec::new(),
         seen: HashMap::new(),
         keys: crate::reads::Keys::none_opened(dir),
     }
+}
+
+/// One `edit` call over the project and a folder added to it (`folders.rs`): one change set, the folder's file shown
+/// whole, its protected name its own; a file beside the folder refused, and a move from one root to the other.
+#[test]
+fn one_call_edits_the_project_and_its_folder_as_one_change_set() {
+    let dir = project("folder", &[("a.rs", "fn one() {}\n")]);
+    let infra = project("folder-infra", &[("main.tf", "resource {}\n"), ("Makefile", "all:\n")]);
+    let beside = project("folder-beside", &[("b.txt", "b\n")]);
+    let infra = infra.canonicalize().unwrap();
+    let k = Known { roots: crate::folders::Roots::new(dir.clone(), vec![infra.clone()]), ..known(&dir) };
+    let tf = infra.join("main.tf").display().to_string();
+    let mk = infra.join("Makefile").display().to_string();
+    let r = run(
+        &k,
+        json!([
+            { "file_path": "a.rs", "old_string": "one", "new_string": "uno" },
+            { "file_path": tf, "old_string": "{}", "new_string": "{ x }" },
+            { "file_path": mk, "old_string": "all:", "new_string": "all: x" },
+        ]),
+    )
+    .unwrap();
+    assert_eq!(r.files.len(), 3, "one change set");
+    assert_eq!(change(&r, &tf).after.to_string(), "resource { x }\n");
+    assert!(!change(&r, "a.rs").protected && !change(&r, &tf).protected && change(&r, &mk).protected);
+    let e = run(&k, json!([{ "file_path": beside.join("b.txt"), "old_string": "b", "new_string": "c" }]))
+        .unwrap_err();
+    assert!(e.contains("edit changes files inside it and its folders only"), "{e}");
+    let e = run(&k, json!([{ "file_path": "a.rs", "move_to": infra.join("a.rs") }])).unwrap_err();
+    assert!(e.contains("a move stays within the project or within one folder"), "{e}");
 }
 
 fn run(k: &Known, edits: Value) -> Result<Resolved, String> {

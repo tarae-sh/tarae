@@ -177,6 +177,7 @@ impl Keys {
                 crate::pane::GroupKind::Review => "REVIEW",
                 crate::pane::GroupKind::Sessions => "SESSIONS",
                 crate::pane::GroupKind::Messages => "MESSAGES",
+                crate::pane::GroupKind::Folders => "FOLDERS",
             },
         })
     }
@@ -271,9 +272,12 @@ impl Editor {
             R::Move => Keys::List(self.float_moving.unwrap_or(crate::pane::GroupKind::Sessions)),
             R::List(k) => match (k.slot(), k) {
                 (Some(_), _)
-                | (None, crate::pane::GroupKind::Sessions | crate::pane::GroupKind::Messages) => {
-                    Keys::List(k)
-                }
+                | (
+                    None,
+                    crate::pane::GroupKind::Sessions
+                    | crate::pane::GroupKind::Messages
+                    | crate::pane::GroupKind::Folders,
+                ) => Keys::List(k),
                 (None, crate::pane::GroupKind::Git) => Keys::Side(crate::sidebar::Mode::Git),
                 (None, _) => Keys::Review,
             },

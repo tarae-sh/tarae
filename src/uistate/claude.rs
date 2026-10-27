@@ -99,6 +99,7 @@ impl Editor {
             w.branch = None;
             w.base = None;
             w.root.clear();
+            w.folders.clear();
             w.rebasing = None;
             for l in w.sessions.iter_mut() {
                 l.compacted = None;
