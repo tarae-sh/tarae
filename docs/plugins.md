@@ -11,7 +11,7 @@ file, the network — it has to ask for, and only gets once you approve.
 - [What it can do](#what-it-can-do)
 - [Events](#events)
 - [Beyond the buffer](#beyond-the-buffer)
-- [Its panel, its line, its buffers](#its-panel-its-line-its-buffers)
+- [Beside the code, its tab, its panel, its line, its buffers](#beside-the-code-its-tab-its-panel-its-line-its-buffers)
 - [The SDK](#the-sdk)
 - [Limits](#limits)
 - [When tarae refuses a plugin](#when-tarae-refuses-a-plugin)

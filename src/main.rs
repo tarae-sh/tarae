@@ -46,6 +46,8 @@ mod diffview;
 mod disk;
 mod doccomment;
 mod dock;
+#[cfg(test)]
+mod doclinks;
 mod docpane;
 mod document;
 mod dsyms;
