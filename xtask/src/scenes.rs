@@ -3186,7 +3186,9 @@ pub(crate) fn script_for<'a>(spec: &'a str, cwd: Option<&Path>) -> &'a str {
 /// reads and edits (its calls wait for tarae's answers), `three` the same with three changes; `mid` stops in the
 /// middle of its code block and waits for tarae to go; `midlist` stops in a list after a quote, on a line in
 /// Japanese; `ask` answers `space i` and stops mid-line; `card` asks to run outside the sandbox; `samebinary` asks
-/// it twice, a program rebuilt between; `searchcard` searches a folder in home with tarae's `search`; `grants` asks
+/// it twice, a program rebuilt between; `searchcard` searches a folder in home with tarae's `search`; `volumecard` reads
+/// a file on a mounted disk with tarae's `read` (a card wherever home is: a docs shot's is a temp folder, read unasked);
+/// `grants` asks
 /// for what `:granted` then lists; `big` answers on a big conversation's 1h cache;
 /// `boardmid` / `boarddone` are a board's members (each by what its message
 /// asks — `board`); `idle` never answers.
@@ -3235,6 +3237,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "nine" if line.contains("wait for the build") => turn.run_long()?,
             "nine" => turn.explain(true, false)?,
             "searchcard" => turn.search_outside()?,
+            "volumecard" => turn.read_volume()?,
             "grants" => turn.grants()?,
             "big" => turn.big()?,
             "foot41" => turn.foot(41, true)?,
@@ -3853,6 +3856,14 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         let pattern = r#""kind":"(grant|run|read)".*"(terminals|pty|tty)".*"answer":"(y|a|s|A)".*"session":"frictions3[0-9]""#;
         let search = json!({"pattern": pattern, "path": format!("{home}/Library/Logs")});
         self.call(1, "search", search)?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// tarae's `read` of a file on another disk, `/Volumes/…`: its read card (`volumecard`).
+    fn read_volume(&mut self) -> io::Result<()> {
+        self.words("The strands' notes are on the backup disk; I will read them there.")?;
+        self.text("\n")?;
+        self.call(1, "read", json!({"files": ["/Volumes/backup/skein/strands.md"]}))?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

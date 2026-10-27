@@ -305,7 +305,7 @@ is said the same way: `Claude's turn ended — space l shows it`. A session behi
 before)`, as a warning when it came by itself. Its row in the session list says `≈ compacted` until it's been in
 front. Claude's own view of the screen leaves out other sessions' news (they're counts there).
 
-![The inbox over the code: three sessions' waiting asks, oldest first, each with its session, what it asks, its kind and how long it has waited — and the status line's main ▲3 waiting](screenshots/inbox.png)
+![The inbox: three sessions' waiting asks, oldest first — main's Claude asking to run outside the sandbox, api's to read a file on another disk, docs's change in its review — each with its session, what it asks, its kind and how long it has waited, and the status line's ▲3 waiting](screenshots/inbox.png)
 ([hanji theme](screenshots/inbox-hanji.png))
 
 ### What's on screen, by id

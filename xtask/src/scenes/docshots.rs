@@ -110,14 +110,27 @@ const fn wait_time(row: u16, cols: (u16, u16)) -> Varies {
     Varies { row, cols, what: "the follow card's wait (`4.7s`)", holds: seconds }
 }
 
-/// `2.0s`, `12.3s`: seconds to a tenth.
+/// The inbox's three ages, right-aligned at its rows' end, and the status line's wait for main's run after `cargo test
+/// --quiet`: how long each ask has waited when the shot is taken (`inbox`).
+const INBOX_WAITS: &[Varies] = &[
+    Varies { row: 4, cols: (110, 117), what: "main's ask's age (`24.5s`)", holds: seconds },
+    Varies { row: 5, cols: (110, 117), what: "api's ask's age (`16.3s`)", holds: seconds },
+    Varies { row: 6, cols: (110, 117), what: "docs's change's age (`5.2s`)", holds: seconds },
+    // (`1m 02s` a cell wider than `27.4s`: the cell after it, a space, then holds its `s`)
+    Varies { row: 33, cols: (86, 92), what: "the status line's wait (`27.4s`)", holds: seconds },
+];
+
+/// A time as `run_duration` writes it under an hour: `2.0s`, `12.3s` (seconds to a tenth), then `1m 02s` — what a
+/// wait or a turn reads once a loaded machine takes past a minute to get there.
 fn seconds(t: &str) -> bool {
-    t.strip_suffix('s').and_then(|n| n.split_once('.')).is_some_and(|(a, b)| {
-        !a.is_empty()
-            && a.bytes().all(|c| c.is_ascii_digit())
-            && b.len() == 1
-            && b.bytes().all(|c| c.is_ascii_digit())
-    })
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit());
+    let Some(t) = t.strip_suffix('s') else { return false };
+    match t.split_once("m ") {
+        Some((m, s)) => {
+            digits(m) && m.len() <= 2 && digits(s) && s.len() == 2 && s < "60" && !m.starts_with('0')
+        }
+        None => t.split_once('.').is_some_and(|(a, b)| digits(a) && b.len() == 1 && digits(b)),
+    }
 }
 
 /// `cargo xtask shot`'s default size, most pictures'.
@@ -369,6 +382,63 @@ const DOC_SCENES: &[DocScene] = &[
         &["@1", " ", "l", "@1", "run the tests", "\r", "@?Its reason", "\x1b", "@1"],
     )
     .claude("card"),
+    // (`space I` in main: three sessions' asks, oldest first — main's Claude asking to run outside the sandbox, api's
+    // to read a file on another disk, docs's change waiting in its review)
+    scene(
+        "inbox",
+        Fixture::Demo,
+        MAIN,
+        &[
+            "@1",
+            ":",
+            "sh git worktree add -q ../api && git worktree add -q ../docs",
+            "\r",
+            "@3",
+            " ",
+            "l",
+            "@1",
+            "run the tests",
+            "\r",
+            "@?Its reason",
+            "@1",
+            "\x1b",
+            ":",
+            "workspace-open ../api",
+            "\r",
+            "@3",
+            " ",
+            "l",
+            "@1",
+            "read the strands' notes",
+            "\r",
+            "@?goes to Claude",
+            "@1",
+            "\x1b",
+            ":",
+            "workspace-open ../docs",
+            "\r",
+            "@3",
+            " ",
+            "l",
+            "@1",
+            "why does insert clone the name?",
+            "\r",
+            "@20?Change 1 of",
+            "@1",
+            // (the review's `esc` gives the chat its input back; the input's own, its view mode)
+            "\x1b",
+            "\x1b",
+            ":",
+            "workspace-switch 0",
+            "\r",
+            "@2",
+            " ",
+            "I",
+            "@?waiting for you",
+            "@1",
+        ],
+    )
+    .claude("main=card,api=volumecard,docs=full"),
     // (a review whose changes are graded high: an `unsafe` line, a new build script)
     scene("risk", Fixture::Words, MAIN, &["@1", " ", "v", "v", "@?high", "@1"]),
     // (…and its end held while they're not looked at — asked once the review's toast has gone: caught fading, the
@@ -503,8 +573,8 @@ const DOCS: &[DocShot] = &[
     row("m4-chat.png", None, S),
     row("chat-model.png", Some("model"), S),
     row("chat-conversations.png", Some("conversations"), S),
-    row("inbox.png", None, (120, 34)),
-    row("inbox-hanji.png", None, (120, 34)).light(),
+    row("inbox.png", Some("inbox"), (120, 34)).varies(INBOX_WAITS),
+    row("inbox-hanji.png", Some("inbox"), (120, 34)).light().varies(INBOX_WAITS),
     row("chat-point-hanji.png", Some("point"), (140, 34)).light(),
     row("chat-ids.png", None, (140, 34)),
     row("chat-explore.png", None, S),
@@ -1358,6 +1428,12 @@ mod tests {
         };
         assert_eq!(d.varies_hold(&screen(" 2.0s")), Ok(()));
         assert_eq!(d.varies_hold(&screen("12.3s")), Ok(()));
+        for long in ["1m 02s", "12m 59s"] {
+            assert!(seconds(long), "past a minute, as run_duration writes it: {long}");
+        }
+        for not in ["1m 2s", "1m 60s", "01m 02s", "1m02s", "m 02s", "1m 02", "123m 00s"] {
+            assert!(!seconds(not), "not run_duration's: {not}");
+        }
         for moved in ["ctx 0", "", "2s", "2.05s", "a.0s"] {
             let e = d.varies_hold(&screen(moved)).unwrap_err();
             assert!(e.contains("row 1 cols 4..9") && e.contains("the layout moved"), "{moved:?}: {e}");
