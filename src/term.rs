@@ -648,6 +648,8 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         chat_links: Default::default(),
         chat_calls: Default::default(),
         cut_spots: Default::default(),
+        cut_hand: Default::default(),
+        cut_card: Default::default(),
         run_line: Default::default(),
         chat_ran: Default::default(),
         chat_ids: Default::default(),
@@ -4874,6 +4876,8 @@ fn draw(
         }
         _ => None,
     };
+    // A docked surface's row in hand whole on its card — under what floats, as that surface is
+    cut_card(editor, ui, lay, true, out)?;
     // The floating panes over all that's docked, under the cards (the chat's cursor under one is hidden with it)
     draw_floating(editor, ui, lay, out)?;
     let under_float = |at: Option<(u16, u16)>| {
@@ -4933,7 +4937,6 @@ fn draw(
     let taken: Vec<Rect4> = cards.chain([cursor_row, change].into_iter().flatten()).collect();
     let toast_folded = !draw_toasts(editor, ui, lay, &taken, out)?;
     run_card(editor, ui, lay, out)?;
-    cut_card(editor, ui, lay, out)?;
     with_card(editor, ui, lay, out)?;
     if let Some(card) = offer {
         card.draw(editor, ui, out)?;
@@ -4964,6 +4967,8 @@ fn draw(
         Some(p) => Some(draw_prompt(editor, p, editor.cmdline_completion().as_ref(), ui, lay, out)?),
         None => None,
     };
+    // A cut text whole on its card — a tooltip, over everything but the lit word and pointing's labels
+    cut_card(editor, ui, lay, false, out)?;
     // The word the mouse is over, lit — over everything but pointing's labels
     light_word(editor, ui, out)?;
     // Pointing: a label on every element with an id, over everything
@@ -5297,6 +5302,11 @@ fn draw_sessions_pane(
             (&shown, &row.name),
             name,
             (0, usize::MAX),
+            // (floating, the screen its free ground; docked, nothing beside it is)
+            (on && has).then_some(crate::whole::Hand::Outside(
+                (r.x, r.y, r.w, r.h),
+                if framed { (0, usize::MAX) } else { (r.x, r.x + r.w) },
+            )),
         );
         apply(out, name)?;
         queue!(out, Spaces(name_w.saturating_sub(shown.width())))?;
@@ -5419,6 +5429,7 @@ fn draw_messages_pane(
             (&shown, &m.text),
             text,
             (0, usize::MAX),
+            (on && has).then_some(crate::whole::Hand::Outside((r.x, r.y, r.w, r.h), (0, usize::MAX))),
         );
         let hits: Vec<(usize, usize)> = re.as_ref().map_or(Vec::new(), |re| {
             re.find_iter(&m.text).filter(|h| !h.is_empty()).map(|h| (h.start(), h.end())).collect()
@@ -5541,7 +5552,17 @@ fn draw_folders_pane(
         apply(out, at_st)?;
         queue!(out, Print(&at))?;
         let at_x = x0 + 2 + name_w.min(room) + 2;
-        crate::whole::cut_at(editor, crate::whole::On::List, (at_x, y), (&at, &f.at), at_st, (0, usize::MAX));
+        // (the row in hand's place whole on a card outside the frame, as `:messages`')
+        let hand = (on && has).then_some(crate::whole::Hand::Outside((r.x, r.y, r.w, r.h), (0, usize::MAX)));
+        crate::whole::cut_at(
+            editor,
+            crate::whole::On::List,
+            (at_x, y),
+            (&at, &f.at),
+            at_st,
+            (0, usize::MAX),
+            hand,
+        );
         apply(out, base)?;
         if !files.is_empty() {
             queue!(out, Spaces(2))?;
@@ -6670,7 +6691,7 @@ fn draw_text(
         let cut_end = |used: usize, lead: usize, shown: &str, whole: &str, style: Style| {
             let at = (lay.x0 + lay.gutter + used + 2 + lead, y as usize);
             let cols = (lay.x0, lay.x0 + lay.gutter + lay.text_cols);
-            crate::whole::cut_at(editor, crate::whole::On::Code, at, (shown, whole), style, cols);
+            crate::whole::cut_at(editor, crate::whole::On::Code, at, (shown, whole), style, cols, None);
         };
         // Line-end note: `  ¶ first words +2` — accent glyph, the text a tone lower, replies faint
         let note_here = note_at.get(li).copied().flatten();
@@ -6869,6 +6890,7 @@ fn draw_text(
                     (&tag, &whole),
                     style,
                     cols,
+                    None,
                 );
                 used += gap.len() + tag.width();
                 gap = " ";
@@ -8285,11 +8307,12 @@ fn draw_list_row(
     selected: Style,
     highlight: bool,
     others: &[&str],
-    at: Option<(crate::whole::On, usize, usize)>,
+    at: Option<(crate::whole::On, usize, usize, Option<crate::whole::Hand>)>,
 ) -> io::Result<usize> {
     let t = &editor.theme;
-    // (`at`: the cell it starts on — its label or hint cut to `…` there is whole under the mouse, `whole::cut_at`, on a
-    // card reaching right over what's beside the list)
+    // (`at`: the cell it starts on, and while its list has the keys where its row in hand's card goes — its label or
+    // hint cut to `…` there is whole under the mouse, and while it's the selected row, on a card beside the list or
+    // outside its frame: `whole::cut_at`)
     let whole = (r.label.clone(), r.hint.clone());
     let matched = Style { fg: ui.accent.fg, bold: true, ..Style::default() };
     let mut used = 0;
@@ -8449,13 +8472,26 @@ fn draw_list_row(
             used += print_styled(out, &r.label, &r.marks, style, matched, label_room.saturating_sub(used))?
         }
     }
-    if let Some((on, x, y)) = at {
+    if let Some((on, x, y, keys)) = at {
         use crate::whole::cut_at;
         let style = if dir && !r.selected { dim } else { name };
-        cut_at(editor, on, (x + 2 + label_at, y), (&r.label, &whole.0), style, (0, usize::MAX));
+        // (the row in hand: the selected one while its list has the keys — its name's card; one whose state comes
+        // first, a plugin tab's, says it after the name, the card covering it)
+        let hand = keys.filter(|_| r.selected);
+        let plain = Style { fg: ui.virt.fg, ..base };
+        let at = (x + 2 + label_at, y);
+        match r.hint_first && !hint.is_empty() && r.label != whole.0 {
+            true => {
+                let text = format!("{}  {}", whole.0, whole.1);
+                let pieces = vec![(0..whole.0.len(), style), (whole.0.len()..text.len(), plain)];
+                let state = Some(whole.0.len());
+                let w = crate::whole::Whole { on, text, style, pieces, cols: (0, usize::MAX), state };
+                crate::whole::record(editor, (at.1, at.0, at.0 + r.label.width()), w, hand);
+            }
+            false => cut_at(editor, on, at, (&r.label, &whole.0), style, (0, usize::MAX), hand),
+        }
         if hint_w > 0 && hint_w < lw {
-            let plain = Style { fg: ui.virt.fg, ..base };
-            cut_at(editor, on, (x + 3 + lw - hint_w, y), (hint, &whole.1), plain, (0, usize::MAX));
+            cut_at(editor, on, (x + 3 + lw - hint_w, y), (hint, &whole.1), plain, (0, usize::MAX), None);
         }
     }
     apply(out, base)?;
@@ -8756,6 +8792,12 @@ fn draw_picker(
         v => v,
     });
     let (left_w, right_w) = (lw + 2, if b.preview_w > 0 { b.preview_w + 2 } else { 0 });
+    // Framed (D3): one frame round the list and its preview — a group, its name the picker's title, the two meeting
+    // on one line in the gap between them (outside the cards, in its margins: the selected row's bar keeps its
+    // edge; with no margins, over the cards' outer cells)
+    let end = b.x + left_w + if right_w > 0 { 1 + right_w } else { 0 };
+    let (fx, fr) = if b.x > 0 && end < lay.edit_w { (b.x - 1, end) } else { (b.x, end - 1) };
+    let frame = (fx, b.y, fr + 1 - fx, rows);
     // The ground under it, left of the chat: its margins, and what's behind kept from leaking through
     if !b.compact {
         apply(out, ui.base)?;
@@ -8855,7 +8897,9 @@ fn draw_picker(
             let mut used = 0;
             match p.view.get(row - 3 - b.head) {
                 Some(r) => {
-                    let at = Some((crate::whole::On::Picker, b.x, y as usize));
+                    // (the row in hand's card outside the frame, on its ground left of the chat)
+                    let hand = Some(crate::whole::Hand::Outside(frame, (0, lay.edit_w)));
+                    let at = Some((crate::whole::On::Picker, b.x, y as usize, hand));
                     used = draw_list_row(out, r, lw, editor, ui, card, selected, true, &others, at)?
                 }
                 None => {
@@ -8936,15 +8980,10 @@ fn draw_picker(
         let shows = Shows::preview(editor, *focus);
         draw_text(editor, &Source::of(doc), top, &shows, rows, &ui.on(card), &pl, out)?;
     }
-    // Framed (D3): one frame round the list and its preview — a group, its name the picker's title, the two meeting
-    // on one line in the gap between them (outside the cards, in its margins: the selected row's bar keeps its
-    // edge; with no margins, over the cards' outer cells)
-    let end = b.x + left_w + if right_w > 0 { 1 + right_w } else { 0 };
-    let (fx, fr) = if b.x > 0 && end < lay.edit_w { (b.x - 1, end) } else { (b.x, end - 1) };
     let splits: Vec<usize> = (right_w > 0).then_some(b.x + left_w).into_iter().collect();
     let name = pane_names(ui, editor, card, &[&p.title], 0);
-    editor.screen.picker_box.set(Some((fx, b.y, fr + 1 - fx, rows)));
-    draw_frame(out, ui, editor, card, (fx, b.y, fr + 1 - fx, rows), &name, &[], &splits, (None, true))?;
+    editor.screen.picker_box.set(Some(frame));
+    draw_frame(out, ui, editor, card, frame, &name, &[], &splits, (None, true))?;
     let q = picker_input(p, lw, &count);
     let cursor = q.text.get(q.line.first..p.input.cursor().max(q.line.first)).unwrap_or_default().width();
     Ok(((b.x + 3 + usize::from(q.line.lead) + cursor) as u16, (b.y + 1) as u16))
@@ -10641,12 +10680,21 @@ fn draw_completion(
         let hits = c.hits.get(i).map_or(&[][..], Vec::as_slice);
         let name = if is_sel { base.patch(t.try_get("ui.text.focus").unwrap_or_default()) } else { base };
         let name = Style { bg: base.bg, ..name };
+        // (cut: whole on a card over it — the selected item's name in hand)
+        let y = y0 + pad + row;
+        let on = crate::whole::On::Completion;
+        let screen = (0, lay.width);
+        let hand = is_sel.then_some(crate::whole::Hand::Outside((x0, y0, width, h), (0, lay.edit_w)));
+        crate::whole::cut_at(editor, on, (x0 + 3, y), (&label, &item.label), name, screen, hand);
         print_matched(out, &label, hits, name, matched, label_w)?;
         apply(out, base)?;
         queue!(out, Spaces(label_w - label.width()))?;
         let mut used = 3 + label_w;
         if detail_w > 0 {
             let d = fit_ellipsis(&item.detail, detail_w);
+            let plain = Style { fg: ui.virt.fg, ..base };
+            let at = (x0 + used + 3 + detail_w - d.width(), y);
+            crate::whole::cut_at(editor, on, at, (&d, &item.detail), plain, screen, None);
             apply(out, Style { fg: ui.virt.fg, ..base })?;
             queue!(out, Print("   "), Spaces(detail_w - d.width()), Print(&d))?;
             used += 3 + detail_w;
@@ -13769,7 +13817,6 @@ fn draw_sidebar(
         None => String::new(),
     };
     let mut links = editor.screen.sidebar.borrow_mut();
-    let mut overflow = None;
     // (a row's id, looked up only while something's marked or flashing — `Editor::ui_lit`)
     let lit = editor.ui_lit();
     let tab = crate::uistate::side_tab(sb.mode);
@@ -13826,26 +13873,21 @@ fn draw_sidebar(
                         paint,
                     };
                     links.push((y, r));
-                    // The selected row's name cut short: whole, over the code (drawn after the rest) — with
-                    // its state after it, when that's what took the room
-                    let state = if row.hint_first && !row.hint.is_empty() { row.hint.width() + 2 } else { 0 };
-                    let whole = 4
-                        + tree_guides(l.depth).width()
-                        + l.label.width()
-                        + usize::from(matches!(l.kind, crate::filetree::Kind::Dir { .. }))
-                        + state;
-                    if row.selected && editor.workspace.is_at(At::Side) && whole > w {
-                        overflow = Some((y, row.clone(), whole));
-                    }
                     // Brought into sight from a link: the row flashes; given or cited: its mark at the right
                     let id = lit.then(|| crate::uistate::panels::side_id(editor, tab, l));
                     let base = id.as_deref().map_or(card, |id| flashed(ui, editor, id, card));
                     let selected =
                         id.as_deref().map_or(selected, |id| flashed_selected(ui, editor, id, selected));
                     given = id.as_deref().and_then(|id| ui_mark(ui, editor, id, card));
-                    // (the row in hand drawn whole over the code below: nothing cut to show)
-                    let at =
-                        overflow.as_ref().is_none_or(|o| o.0 != y).then_some((crate::whole::On::Side, 0, y));
+                    // (its name cut short: whole on a card over the code — the selected row's while the panel has
+                    // the keys)
+                    let hand = crate::whole::Hand::Beside(lay.rail_w);
+                    let at = Some((
+                        crate::whole::On::Side,
+                        0,
+                        y,
+                        editor.workspace.is_at(At::Side).then_some(hand),
+                    ));
                     // The row's own background runs on to the padding (its bar in the padding before it)
                     let used = draw_list_row(
                         out,
@@ -13888,15 +13930,6 @@ fn draw_sidebar(
             queue!(out, Print(m))?;
         }
         put_gutter(out, gutter(y))?;
-    }
-    // The whole name on its row, running on over the code — ending in a half cell of the row's color
-    if let Some((y, row, whole)) = overflow
-        && whole < lay.edit_w
-    {
-        queue!(out, MoveTo(0, y as u16))?;
-        draw_list_row(out, &row, whole + 1, editor, ui, card, selected, true, &[], None)?;
-        apply(out, Style { fg: selected.bg, bg: ui.base.bg, ..Style::default() })?;
-        queue!(out, Print("▌"))?;
     }
     Ok(())
 }
@@ -14899,6 +14932,7 @@ fn draw_review_rail(
                 (&shown, &piece),
                 name_st,
                 (0, usize::MAX),
+                (here && ui.lit == Some(Region::Side)).then_some(crate::whole::Hand::Beside(lay.rail_w)),
             );
         }
         rows.push((row, bg, Some(i)));
@@ -15266,10 +15300,6 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
     let last_user = c.msgs.iter().rposition(|m| m.role == Role::User);
     let turn_end = |i: usize| !c.busy() && last_user.is_none_or(|u| u < i);
     let stops = c.follow.replay.latest();
-    // What's in hand, worked out once a frame (`whole.rs`): the row the mouse is over, the view mode's cursor's
-    let held = crate::whole::held(editor);
-    let call_held =
-        |call: &str| held.iter().any(|h| matches!(h, Some(crate::whole::Cut::Call(id)) if id == call));
     // What a message's rows depend on beyond its text and the look: being written, live, a turn's end
     let state = |i: usize, m: &crate::chat::Msg| -> u64 {
         let last = i + 1 == n;
@@ -15277,12 +15307,8 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
             Role::User => 0,
             Role::Assistant => u64::from(last && c.state == State::Writing),
             Role::Thought => u64::from(last && c.busy()),
-            // (and a press drying on its stamps: a step a layout — §5; and whole, in hand — `whole.rs`)
-            Role::Tool => {
-                u64::from(m.is_call(hand))
-                    | (((knot_lit(editor, m, false) * 1000.0) as u64) << 1)
-                    | (u64::from(call_held(&m.call)) << 32)
-            }
+            // (and a press drying on its stamps: a step a layout — §5)
+            Role::Tool => u64::from(m.is_call(hand)) | (((knot_lit(editor, m, false) * 1000.0) as u64) << 1),
             // (the replay's stops, and its keys — which the chat's focus changes)
             Role::Note if turn_end(i) => {
                 1 | (u64::from(editor.workspace.is_at(At::Chat)) << 1) | ((stops as u64) << 2)
@@ -15395,9 +15421,8 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
                 let in_hand = m.is_call(hand);
                 let stamps = knot_stamps(ui, &m.stamps, knot_lit(editor, m, in_hand), card);
                 let glyph = knot(look, in_hand, &styles);
-                // (its words whole: the transcript keeps them, the row in hand shows them — `whole.rs`)
-                let (cut, whole) = (crate::whole::Cut::Call(m.call.clone()), call_held(&m.call));
-                let mut rows = tool_rows(look, m.ran.as_ref(), glyph, &stamps, w, &styles, whole, cut);
+                // (its words whole: the transcript keeps them, its card shows them — `whole.rs`)
+                let mut rows = tool_rows(look, m.ran.as_ref(), glyph, &stamps, w, &styles);
                 for r in &mut rows {
                     (r.link, r.call) = (look.link.clone(), Some(m.call.clone()));
                 }
@@ -15558,16 +15583,13 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
         }
     }
     // A message waiting for this turn's end (#23): the transcript's last line, a row of air over it — what's queued in
-    // the accent, the message's words faint, whole in hand (`whole.rs`); `draw_chat` puts its own rows before it
+    // the accent, the message's words faint, whole on its card (`whole.rs`); `draw_chat` puts its own rows before it
     if let Some((said, last)) = c.queued_said().filter(|_| w > 14) {
-        let cut = crate::whole::Cut::Queued;
-        let whole = held.contains(&Some(cut.clone()));
-        let key = hash_of((&said, &last, w, look, whole));
+        let key = hash_of((&said, &last, w, look));
         let kept = c.queued_laid.borrow().as_ref().filter(|(k, _)| *k == key).map(|(_, rows)| rows.clone());
         let rows = kept.unwrap_or_else(|| {
             let n = c.queued_n.max(1) + c.sends.len();
-            let rows: std::sync::Arc<[ChatRow]> =
-                queued_rows(&said, &last, (w, n), (accent, faint), whole, cut).into();
+            let rows: std::sync::Arc<[ChatRow]> = queued_rows(&said, &last, (w, n), (accent, faint)).into();
             *c.queued_laid.borrow_mut() = Some((key, rows.clone()));
             rows
         });
@@ -15586,8 +15608,6 @@ fn queued_rows(
     last: &str,
     (w, n): (usize, usize),
     (accent, faint): (Style, Style),
-    whole: bool,
-    cut: crate::whole::Cut,
 ) -> Vec<crate::chat::ChatRow> {
     use crate::chat::ChatRow;
     use crate::markdown::Span;
@@ -15621,13 +15641,19 @@ fn queued_rows(
     let shown = crate::cut::fit_in_hand(last, room, false, false).remove(0);
     let mut folded = row(0, shown.text, false);
     crate::chatdoc::keep_whole(&mut folded, &words);
-    let is_cut = folded.rest.is_some();
-    // (not cut: nothing to unfold — the row as it is, in hand or not, never laid out another way under the cursor)
-    if !whole || !is_cut {
-        folded.cut = is_cut.then_some(cut);
-        return vec![folded];
+    if folded.rest.is_some() {
+        let to = folded.spans.iter().map(|s| s.text.width()).sum();
+        let whole = crate::whole::Whole {
+            on: crate::whole::On::Transcript,
+            text: last.to_string(),
+            style: faint,
+            pieces: Vec::new(),
+            cols: (0, 0),
+            state: None,
+        };
+        folded.cut = Some((hang, to, whole));
     }
-    rows.into_iter().map(|r| ChatRow { cut: Some(cut.clone()), ..r }).collect()
+    vec![folded]
 }
 
 /// The chat's text width `chat_w` wide (the gutter, the padding on both sides off) and its prose's measure. At the
@@ -15837,25 +15863,9 @@ fn draw_chat(
             let from = crate::chatdoc::laid_row(&pieces, t.top_row()).min(total.saturating_sub(1));
             (from, (from + area).min(total))
         }
-        // (a row the mouse holds whole: the rows over it stay where they were, those under it go down — as a wrap;
-        // past the bottom — the queued line, a full chat's last row — up just enough to show it whole, never past its
-        // first row: the mouse stays on it, its rows went up under it)
         None => {
-            let held = editor.cut_hover.as_ref().and_then(|h| {
-                let mut at = 0;
-                pieces.iter().find_map(|(_, r)| {
-                    let held = r.first().is_some_and(|r| r.cut.as_ref() == Some(h));
-                    at += r.len();
-                    held.then(|| (at - r.len(), r.len()))
-                })
-            });
-            let folded = total - held.map_or(0, |(_, n)| n.saturating_sub(1));
-            let scroll = c.scroll.min(folded.saturating_sub(area_shown));
-            let mut from = folded.saturating_sub(area_shown + scroll);
-            if let Some((first, n)) = held {
-                let past = (first + n).saturating_sub(from + area_shown);
-                from = (from + past).min(first.max(from)).min(total.saturating_sub(area_shown));
-            }
+            let scroll = c.scroll.min(total.saturating_sub(area_shown));
+            let from = total.saturating_sub(area_shown + scroll);
             (from, (from + area_shown).min(total))
         }
     };
@@ -16074,11 +16084,16 @@ fn draw_chat(
     // (the transcript taller than its rows: its thumb in the outer cell, as the code's last column says its view)
     let (area_top, thumb_x) = (y, x0 + lay.chat_w.saturating_sub(1));
     let bar = (total > area && area > 0).then(|| scroll_thumb(area, total, from));
-    let mut cut_spots = editor.screen.cut_spots.borrow_mut();
+    // (a cut row's whole on its card — in hand where the view mode's cursor is on its line)
+    let hand_line = crate::chatdoc::cursor_line(editor);
+    let line_of = |row: usize| Some(view?.row(crate::chatdoc::doc_row(&pieces, row)?)?.line);
     for i in 0..area {
         chat_row_start(out, x0, y, edge(y), card)?;
-        if let Some(cut) = shown.get(i).and_then(|r| r.cut.clone()) {
-            cut_spots.push((y, text_x, text_x + w, cut));
+        if let Some((a, b, whole)) = shown.get(i).and_then(|r| r.cut.clone()) {
+            let hand =
+                (hand_line.is_some() && line_of(from + i) == hand_line).then_some(crate::whole::Hand::Over);
+            let whole = crate::whole::Whole { cols: (text_x, text_x + w), ..whole };
+            crate::whole::record(editor, (y, text_x + a, text_x + b), whole, hand);
         }
         if let Some((a, b)) = shown.get(i).and_then(|r| r.ran) {
             chat_ran.push((y, text_x + a, text_x + b, shown[i].call.clone().unwrap_or_default()));
@@ -16173,7 +16188,8 @@ fn draw_chat(
                 }
                 apply(out, accent)?;
                 queue!(out, Print(s))?;
-                cut_spots.push((y, at, at + s.width(), crate::whole::Cut::With((!folded).then_some(i))));
+                let with = crate::whole::Cut::With((!folded).then_some(i));
+                editor.screen.cut_spots.borrow_mut().push((y, at, at + s.width(), with));
                 at += s.width();
             }
             apply(out, faint)?;
@@ -17019,13 +17035,10 @@ fn trail_spans(
     (row, mark)
 }
 
-/// A tool call's rows in the chat, its words whole in the transcript (`whole.rs`): folded, `trail_row_at`'s one row,
-/// what it cut kept as the document's (`chatdoc::keep_whole`); `whole` (in hand), its words — the target, then the
-/// suffix (a range, a note's words) and where it ran — wrapped as one text, each row after the first hanging under the
-/// target, each piece in its own colour, the knot and the stamps on the first — the transcript's line the same words
-/// either way. Rows that are cut, or whole for being in hand, carry `cut` (the mouse takes them in hand —
-/// `Screen.cut_spots`).
-#[allow(clippy::too_many_arguments)]
+/// A tool call's row in the chat, its words whole in the transcript (`whole.rs`): `trail_row_at`'s one row, what it
+/// cut kept as the document's (`chatdoc::keep_whole`) — its words wrapped as one text (the target, then the suffix — a
+/// range, a note's words — and where it ran) only to say the transcript's line, the same at every width. A cut row
+/// carries its whole, each piece in its own colour, for its card (`ChatRow.cut`).
 fn tool_rows(
     look: &crate::chat::Look,
     ran: Option<&crate::chat::Ran>,
@@ -17033,8 +17046,6 @@ fn tool_rows(
     stamps: &[crate::markdown::Span],
     w: usize,
     st: &TrailStyles,
-    whole: bool,
-    cut: crate::whole::Cut,
 ) -> Vec<crate::chat::ChatRow> {
     use crate::chat::ChatRow;
     use crate::markdown::Span;
@@ -17105,18 +17116,23 @@ fn tool_rows(
     // (the transcript's line: these rows' words — the folded row stands for them)
     let words = crate::chatdoc::lines_of(&rows).0.trim_end_matches('\n').to_string();
     let (spans, ran, tail) = trail_row_at(look, ran, knot, stamps, w, false, st);
+    // (its cut text from the target to its stamps; whole on its card, hanging under the target)
+    let to = width(&spans).saturating_sub(if tail > 0 { width(stamps) } else { 0 });
     let mut folded = ChatRow { spans, ran, skip: 2, tail, ..ChatRow::default() };
     crate::chatdoc::keep_whole(&mut folded, &words);
-    let is_cut = folded.rest.is_some();
-    // (not cut: nothing to unfold — the row as it is, in hand or not, never laid out another way under the cursor)
-    if !whole || !is_cut {
-        folded.cut = is_cut.then_some(cut);
-        return vec![folded];
+    if folded.rest.is_some() {
+        let pieces = segs.iter().map(|&(a, b, s)| (a..b, s)).collect();
+        let whole = crate::whole::Whole {
+            on: crate::whole::On::Transcript,
+            text,
+            style,
+            pieces,
+            cols: (0, 0),
+            state: None,
+        };
+        folded.cut = Some((hang, to, whole));
     }
-    for r in &mut rows {
-        r.cut = Some(cut.clone());
-    }
-    rows
+    vec![folded]
 }
 
 /// The most rows the run card (`run_card`) takes — past them its last says where the rest is.
@@ -17132,48 +17148,234 @@ const RUN_CARD_MAX: usize = 12;
 /// The room right of a cut text under which its card wraps in all its columns instead (`cut_card`).
 const CUT_CARD_MIN: usize = 32;
 
-/// A text cut to `…` under the mouse (`whole::cut_at`: blame or a diagnostic at a line's end, a list's row), whole on a
-/// borderless card over it (#178, #179): its first row on the cut one, the text where it started, in the style it was
-/// drawn in, a cell of ground either side — one row reaching right as far as its columns let it; past their end wrapped in
-/// the room right of where it starts (its text stays where it was), or, that room only a few words wide, in all its
-/// columns, moved left; rows after the first go down, up where the status line is nearer. Nothing under it moves.
-fn cut_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io::Result<()> {
-    let Some(cut @ crate::whole::Cut::Text(w)) = editor.cut_hover.as_ref() else { return Ok(()) };
-    let spot = editor.screen.cut_spots.borrow().iter().find(|s| s.3 == *cut).map(|s| (s.0, s.1));
-    let Some((y, a)) = spot else { return Ok(()) };
-    let (left, right) = (w.cols.0, w.cols.1.min(lay.width));
+/// The most rows a cut text's card takes (`cut_card`) — past them its last says how many more, a press there opening it
+/// whole in a read-only buffer (`whole::pressed`).
+pub(crate) const CUT_CARD_MAX: usize = 12;
+
+/// A text cut to `…` (`whole::cut_at`: blame or a diagnostic at a line's end, a list's row, the chat's rows) whole on a
+/// borderless card over it (#178, #179, #187) — the mouse's, else the row in hand's (`whole::shown`): its first row on
+/// the cut one, the text where it started, in the colours it was drawn in, a cell of ground either side — one row
+/// reaching right as far as its columns let it; past their end wrapped in the room right of where it starts (its text
+/// stays where it was), or, that room only a few words wide, in all its columns, moved left; rows after the first go
+/// down, up where the status line is nearer; past `CUT_CARD_MAX` rows, `↓ N more lines`. On the peek's slight ground
+/// for the mouse; the row in hand's on the selected row's (`ui.menu.selected`: the row continued), a view mode's cursor
+/// on it kept, and never over another row of its own list nor its frame (`whole::Hand`): beside a list, along its row
+/// and wrapped under it from the list's edge only; a framed list's, just outside its frame. Nothing under it moves.
+/// Drawn over everything but pointing's labels (a tooltip), its cells recorded — but a docked surface's row in hand,
+/// drawn under what floats (`docked`: the first pass, before the floating panes).
+fn cut_card(editor: &Editor, ui: &Ui, lay: &Layout, docked: bool, out: &mut impl Write) -> io::Result<()> {
+    use crate::whole::Hand;
+    let Some((cut, hand)) = crate::whole::shown(editor) else { return Ok(()) };
+    let crate::whole::Cut::Text(w) = &cut else { return Ok(()) };
+    if docked != (hand.is_some() && w.on.docked()) {
+        return Ok(());
+    }
+    let spot = editor.screen.cut_spots.borrow().iter().find(|s| s.3 == cut).map(|s| (s.0, s.1, s.2));
+    let Some((y, a, b)) = spot else { return Ok(()) };
+    let (frame, ground) = match hand {
+        Some(Hand::Outside(f, g)) => (Some(f), g),
+        _ => (None, w.cols),
+    };
+    // (outside a frame, in the free ground's columns there)
+    let (left, right) = (ground.0, ground.1.min(lay.width));
     let room = right.saturating_sub(left + 2);
     if room < 4 {
         return Ok(());
     }
     // (wrapped in the room right of where it starts, so its text stays there — unless that's narrower than a few words:
-    // then in all its columns, moved left)
+    // then in all its columns, moved left; outside a frame, one row moved left wherever the ground holds it)
     let past = right.saturating_sub(a + 1);
-    let wrap = if w.text.width() <= past || past >= CUT_CARD_MIN { past } else { room };
-    let rows: Vec<String> =
-        crate::cut::fit_in_hand(&w.text, wrap, false, true).into_iter().map(|p| p.text).collect();
-    let inner = rows.iter().map(|r| r.width()).max().unwrap_or(0);
-    let width = inner + 2;
-    let x = a.saturating_sub(1).max(left).min(right.saturating_sub(width)).max(left);
-    // (down from the cut row, as far as the status line; up from it where there's more room that way)
+    let wrap = match () {
+        _ if w.text.width() <= past => past,
+        _ if frame.is_some() && w.text.width() <= room => room,
+        _ if past >= CUT_CARD_MIN => past,
+        _ => room,
+    };
+    // (beside a list: its first row along its own row, the rest under it from the list's edge — never back over it)
+    let beside = match hand {
+        Some(Hand::Beside(edge)) if w.text.width() > past => Some(edge.max(left)),
+        _ => None,
+    };
+    // (each row with where its bytes start in the text — its pieces' colours)
+    let mut rows: Vec<(usize, String)> = Vec::new();
+    fn lay_text(
+        text: &str,
+        (from, to): (usize, usize),
+        width: usize,
+        one: bool,
+        rows: &mut Vec<(usize, String)>,
+    ) -> usize {
+        let mut pos = from;
+        for p in crate::cut::fit_in_hand(&text[from..to], width, false, true) {
+            let at = text[pos..].find(&p.text).map_or(pos, |k| pos + k);
+            pos = at + p.text.len();
+            rows.push((at, p.text));
+            if one {
+                break;
+            }
+        }
+        pos
+    }
+    // (a row's trailing state whole on one row: after the name's last row where it fits there, else on its own)
+    let mut lay_rows = |from: usize, width: usize, one: bool| {
+        let Some(k) = w.state.filter(|&k| k > from) else {
+            return lay_text(&w.text, (from, w.text.len()), width, one, &mut rows);
+        };
+        let first = rows.len();
+        let pos = lay_text(&w.text, (from, k), width, one, &mut rows);
+        if pos < w.text[..k].trim_end().len() {
+            return pos;
+        }
+        let joined = rows[first..].last().map(|r| r.0).filter(|&at| w.text[at..].width() <= width);
+        match joined {
+            Some(at) => {
+                rows.last_mut().expect("its name's row").1 = w.text[at..].to_string();
+                w.text.len()
+            }
+            None if one => pos,
+            None => {
+                let s = w.text.len() - w.text[k..].trim_start().len();
+                lay_text(&w.text, (s, w.text.len()), width, false, &mut rows)
+            }
+        }
+    };
+    match beside {
+        Some(edge) => {
+            let pos = lay_rows(0, past, true);
+            let rest = w.text[pos..].len() - w.text[pos..].trim_start().len();
+            if right.saturating_sub(edge + 2) >= 4 && pos + rest < w.text.len() {
+                lay_rows(pos + rest, right - edge - 2, false);
+            }
+        }
+        None => {
+            lay_rows(0, wrap, false);
+        }
+    }
+    // (down from the cut row, as far as the status line; up from it where there's more room that way — past what
+    // either holds, or `CUT_CARD_MAX`, its last row says how many more. Outside a frame: below it, else above it.
+    // Beside a list: down only, its first row on its own)
     let bottom = lay.status_y as usize;
-    let n = rows.len();
-    let top = match y + n <= bottom || y + 1 < n {
-        true => y,
-        false => y + 1 - n,
+    let (below, above) = match frame {
+        Some((_, fy, _, fh)) => (bottom.saturating_sub(fy + fh), fy),
+        None if beside.is_some() => (bottom.saturating_sub(y), 0),
+        None => (bottom.saturating_sub(y), y + 1),
+    };
+    let cap = CUT_CARD_MAX.min(below.max(above));
+    if cap == 0 {
+        return Ok(());
+    }
+    let label = |n: usize| format!("↓ {n} more {}", if n == 1 { "line" } else { "lines" });
+    // (room for one row only — a picker as tall as the screen: its start, then on that row how many more, the row
+    // opening it whole)
+    let inline = cap == 1 && rows.len() > 1;
+    let more = match inline {
+        true => {
+            let row_w = if beside.is_some() { past } else { wrap };
+            let room = row_w.saturating_sub(label(rows.len()).width() + 2);
+            let parts = crate::cut::fit_in_hand(&w.text, room, false, true);
+            rows = parts.first().map(|p| (0, p.text.clone())).into_iter().collect();
+            Some(label(parts.len().saturating_sub(1).max(1)))
+        }
+        false => {
+            let more = (rows.len() > cap).then(|| rows.len() - (cap - 1));
+            if more.is_some() {
+                rows.truncate(cap - 1);
+            }
+            more.map(label)
+        }
+    };
+    let n = rows.len() + usize::from(more.is_some() && !inline);
+    // (the rows after the first, and its more row: from the list's edge beside it)
+    let from = beside;
+    let widest = |rs: &[(usize, String)]| rs.iter().map(|r| r.1.width()).max().unwrap_or(0);
+    let more_w = more.as_ref().map_or(0, |m| m.width());
+    let (head, tail) = match from {
+        _ if inline => (widest(&rows) + 2 + more_w, 0),
+        Some(_) => (widest(&rows[..1]), widest(&rows[1..]).max(more_w)),
+        None => {
+            let all = widest(&rows).max(more_w);
+            (all, all)
+        }
+    };
+    let x = a.saturating_sub(1).max(left).min(right.saturating_sub(head + 2)).max(left);
+    // (over the whole of the cut text, its `…` too, though its rows broke short of it — where it's over it)
+    let width = match frame {
+        Some(_) => (head + 2).min(right.saturating_sub(x)),
+        None => (head + 2).max(b + 1 - x.min(b)).min(right.saturating_sub(x)),
+    };
+    let from = from.unwrap_or(x);
+    let rest_w = match from == x {
+        true => width,
+        false => (tail + 2).min(right.saturating_sub(from)),
+    };
+    let top = match frame {
+        Some((_, fy, _, fh)) if n <= below || below >= above => fy + fh,
+        Some((_, fy, ..)) => fy.saturating_sub(n.min(above)),
+        None if beside.is_some() || y + n <= bottom || y + 1 < n => y,
+        None => y + 1 - n,
     };
     let card = card_style(ui, editor, "ui.popup");
-    let ground = Style { bg: blend(card.bg, ui.tint, 1.0 - PEEK_STEP).or(card.bg), ..card };
+    let ground = match hand {
+        Some(_) => selected_row(ui, editor, card),
+        None => Style { bg: blend(card.bg, ui.tint, 1.0 - PEEK_STEP).or(card.bg), ..card },
+    };
     let text = Style { bg: ground.bg, fg: w.style.fg.or(ground.fg), ..w.style };
-    for (k, row) in rows.iter().enumerate().take(bottom.saturating_sub(top)) {
-        queue!(out, MoveTo(x as u16, (top + k) as u16))?;
+    let faint = Style { fg: ui.linenr.fg.or(card.fg), ..ground };
+    use unicode_segmentation::UnicodeSegmentation as _;
+    let cursors = editor.screen.cursors.borrow();
+    let shown = n.min(bottom.saturating_sub(top));
+    // (each row's first cell and width: the first's over its cut text, the rest's from `from`)
+    let place = |k: usize| if k == 0 { (x, width) } else { (from, rest_w) };
+    for (k, (at, row)) in rows.iter().enumerate().take(shown) {
+        let ry = top + k;
+        let (x, width) = place(k);
+        queue!(out, MoveTo(x as u16, ry as u16))?;
         apply(out, ground)?;
         queue!(out, Print(" "))?;
-        apply(out, text)?;
-        queue!(out, Print(row))?;
+        let pieces: Vec<(&str, Style)> = match w.pieces.is_empty() {
+            true => vec![(row.as_str(), text)],
+            false => (w.pieces.iter())
+                .filter_map(|(r, s)| {
+                    let (p, q) = (r.start.max(*at), r.end.min(at + row.len()));
+                    (p < q).then(|| (&w.text[p..q], Style { bg: ground.bg, ..*s }))
+                })
+                .collect(),
+        };
+        for (t, s) in &pieces {
+            apply(out, *s)?;
+            queue!(out, Print(t))?;
+        }
+        let mut used = row.width();
+        if let Some(m) = more.as_ref().filter(|_| inline) {
+            apply(out, faint)?;
+            queue!(out, Print("  "), Print(m))?;
+            used += 2 + m.width();
+        }
         apply(out, ground)?;
-        queue!(out, Spaces(width - 1 - row.width()))?;
+        queue!(out, Spaces((width - 1).saturating_sub(used)))?;
+        // (a view mode's cursor on the row it covers: kept — the one cursor stays in sight)
+        for &(cx, _) in cursors.iter().filter(|c| c.1 == ry && c.0 > x && c.0 < x + width) {
+            let mut col = x + 1;
+            let ch = row.graphemes(true).find(|g| {
+                col += g.width();
+                col > cx
+            });
+            queue!(out, MoveTo(cx as u16, ry as u16))?;
+            apply(out, text.patch(ui.cursor_primary))?;
+            queue!(out, Print(ch.unwrap_or(" ")))?;
+        }
     }
+    if let Some(m) = more.as_ref().filter(|_| shown == n && !inline) {
+        let (x, width) = place(n - 1);
+        queue!(out, MoveTo(x as u16, (top + n - 1) as u16))?;
+        apply(out, faint)?;
+        queue!(out, Print(" "), Print(m), Spaces(width - 1 - m.width()))?;
+    }
+    let more = more.filter(|_| shown == n).map(|_| top + n - 1);
+    let span = (x + width).max(if shown > 1 { from + rest_w } else { 0 }) - x;
+    let (under, outside) = (docked, frame.is_some());
+    *editor.screen.cut_card.borrow_mut() =
+        Some(crate::whole::Card { rect: (x, top, span, shown), from, under, outside, more, cut });
     Ok(())
 }
 
@@ -19259,12 +19461,19 @@ fn draw_prompt(
             if is_sel { base_st.patch(t.try_get("ui.text.focus").unwrap_or_default()) } else { base_st };
         let name = Style { bg: base_st.bg, fg: if cand.dir { dir_fg } else { name.fg }, ..name };
         let label = fit_ellipsis(&cand.label, label_w);
+        // (cut: whole on a card over it — the selected candidate's name in hand)
+        let (on, screen) = (crate::whole::On::Prompt, (0, lay.width));
+        let at = (x0 + indent + 2, y);
+        let hand = is_sel.then_some(crate::whole::Hand::Outside((x0, y0, width, h), screen));
+        crate::whole::cut_at(editor, on, at, (&label, &cand.label), name, screen, hand);
         print_matched(out, &label, &cand.hits, name, matched, label_w)?;
         apply(out, base_st)?;
         queue!(out, Spaces(label_w - label.width()))?;
         let mut used = indent + 2 + label_w;
         if hint_w > 0 {
             let hnt = fit_ellipsis(&cand.hint, hint_w);
+            let plain = Style { fg: ui.virt.fg, ..base_st };
+            crate::whole::cut_at(editor, on, (x0 + used + 3, y), (&hnt, &cand.hint), plain, screen, None);
             apply(out, Style { fg: ui.virt.fg, ..base_st })?;
             queue!(out, Print("   "), Print(&hnt), Spaces(hint_w - hnt.width()))?;
             used += 3 + hint_w;

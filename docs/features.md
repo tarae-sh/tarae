@@ -247,7 +247,8 @@ configs carry over as they are.
   plugin's), `h`/`l` fold and unfold, Enter
   opens (the code gets the keys back), Tab steps files → outline → list → git, Esc leaves it showing, `q` or the same key again closes it; `space` and `:` still
   work. `C-w h`/`j`/`k`/`l` go to the pane that way, the side panel among them. Folders you scroll past stay pinned at its top. A name too long for it loses its middle, not its end
-  (`user_prof…model.ts`), and the selected one shows whole, over the code. A wide terminal makes it wider (up to
+  (`user_prof…model.ts`); the selected one shows whole on a card over the code while the panel has the keys, any
+  other under the mouse. A wide terminal makes it wider (up to
   12 columns, the code keeping 100). A click opens a row, the wheel scrolls. It folds away
   when the terminal leaves the code fewer than 80 columns ([files](screenshots/ux-side-panel.png) ·
   [outline](screenshots/ux-outline.png))

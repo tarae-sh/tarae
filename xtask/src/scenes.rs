@@ -292,6 +292,65 @@ const WITH_KEYS: [&[&str]; 3] = [
     &["@1", "%", " ", ">", "@?goes with it", "@1", "@press?src/main.rs L1", "@release?src/main.rs L1", "@1"],
 ];
 
+/// A file whose name the side panel never has room for (#187's list in hand).
+const LONG_NAME: &[&str] = &["src/a_component_whose_name_runs_far_past_the_panel.rs"];
+
+/// A message far longer than a card's rows, queued while Claude works (#187's `↓ N more lines`).
+const LONG_QUEUED: &str = "Before the next step, read every place the strands are kept and tell me which of them still \
+                           clone a name they could borrow; then look at how the loop ties the knots, whether a strand \
+                           that crosses itself is tied twice, and what happens to the first strand when two share a \
+                           name; then the tests: which of them cover the entry change, which only the insert, and \
+                           which would still pass if the loop tied nothing at all; then the docs, whether they say \
+                           the first strand is kept or the last; then the bench, whether it measures the clone or the \
+                           loop; then the comments, which of them still describe the old way; then the changelog, \
+                           whether the change is said there in the words the docs use; then the examples, whether \
+                           any of them relies on the last strand winning; and last, the error messages, whether a \
+                           strand refused says its name and where it crossed, so the person reading it can find it \
+                           without a debugger, and say goodbye";
+
+/// #187: what's cut is whole on a card over it, one way — the chat's view mode's cursor on a cut `run` row (its card on
+/// the selected row's ground, the cursor kept); the side panel with the keys, its selected long name; a queued message
+/// past a card's rows, `↓ N more lines` under the mouse; then pressed — the message whole in a read-only buffer.
+const CUT_KEYS: [&[&str]; 4] = [
+    &["@1", " ", "l", "@1", "tidy it", "\r", "@30?That is all.", "@1", "\x1b", "/", "cargo fmt", "\r", "@1"],
+    &["@1", " ", "e", "@?a_component", "@1"],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "tidy the threads",
+        "\r",
+        "@?One more look",
+        LONG_QUEUED,
+        "\r",
+        "@?queued",
+        "@1",
+        "@hover+12?queued",
+        "@1",
+    ],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "tidy the threads",
+        "\r",
+        "@?One more look",
+        LONG_QUEUED,
+        "\r",
+        "@?queued",
+        "@1",
+        "@hover+12?queued",
+        "@?more lines",
+        "@hover+2?more lines",
+        "@press+2?more lines",
+        "@?whole · chat",
+        "@release?whole · chat",
+        "@1",
+    ],
+];
+
 /// Claude asked to run outside the sandbox, the keys back in the code (`C-w h`) as its card comes; then `j j` there.
 const FOCUS_CARD: &[&str] =
     &["@1", " ", "l", "@1", "run the tests", "\r", "\x17", "h", "@?Its reason", "@1", "j", "j", "@1"];
@@ -1966,6 +2025,12 @@ const SCENES: &[Scene] = &[
     Scene { name: "with-quote", claude: "idle", files: MAIN, keys: WITH_KEYS[0] },
     Scene { name: "with-three", claude: "idle", files: MAIN, keys: WITH_KEYS[1] },
     Scene { name: "with-press", claude: "idle", files: MAIN, keys: WITH_KEYS[2] },
+    // (#187: a cut row whole on its card — the chat's row in hand, a list's selected row, a long one's `↓ N more lines`
+    // and its press)
+    Scene { name: "cut-hand-chat", claude: "cuthand", files: MAIN, keys: CUT_KEYS[0] },
+    Scene { name: "cut-hand-list", claude: "idle", files: LONG_NAME, keys: CUT_KEYS[1] },
+    Scene { name: "cut-more", claude: "strip", files: MAIN, keys: CUT_KEYS[2] },
+    Scene { name: "cut-more-press", claude: "strip", files: MAIN, keys: CUT_KEYS[3] },
     Scene { name: "working-waits-chat", claude: "card", files: MAIN, keys: WORKING_KEYS[3] },
     Scene { name: "working-waits-follow", claude: "card", files: MAIN, keys: WORKING_KEYS[4] },
     // (what Claude is doing now on the status line, a turn running the tests: the chat open, follow off; following, the
@@ -3316,6 +3381,7 @@ fn run_files(scene: &str) -> Vec<(&'static str, String)> {
             ("check.sh", CHECK_SH.into()),
         ],
         // (#157: as many lines as the followed pane's rows less one, each wide enough to reach under the card)
+        "cut-hand-list" => vec![(LONG_NAME[0], "pub fn component() {}\n".into())],
         "follow-split-s" => vec![("src/wide.rs", wide_rs(18, 112))],
         "follow-split-v" => vec![("src/wide.rs", wide_rs(36, 70))],
         _ => Vec::new(),
@@ -3424,6 +3490,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "home-fix" => turn.home_fix()?,
             "home-docs" => turn.home_docs()?,
             "readlast" => turn.read_last()?,
+            "cuthand" => turn.cut_hand()?,
             _ => {}
         }
     }
@@ -3993,6 +4060,31 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         let tool = json!({"type": "tool_use", "id": "t3", "name": "mcp__tarae__run", "input": {"command": "cargo test -q"}});
         self.line(json!({"type": "assistant", "message": {"id": "m3", "content": [tool]}}))?;
         self.lines.by_ref().try_for_each(|l| l.map(drop))
+    }
+
+    /// #187's turn: a run of a long command and a note of several lines — each a call and its result as claude's stream
+    /// says them (nothing runs, no request of tarae's) — then a few words and the turn's end.
+    fn cut_hand(&mut self) -> io::Result<()> {
+        let run = "cargo fmt --all && git diff --stat | tail -3 && cargo clippy --all-targets -q 2>&1 | grep -E \
+                   'warning|error' | head -20 && cargo test -q --bin tarae whole";
+        let note = "The first strand is kept now; the tests cover the entry change.\nThe clone in the loop can go \
+                    once names are borrowed — a later change.";
+        let stops = [
+            ("run", json!({"command": run}), "exit 0"),
+            ("note", json!({"path": "src/main.rs", "line": 3, "text": note}), "noted"),
+        ];
+        self.words("I tidied the loop and checked it.")?;
+        self.text("\n\n")?;
+        for (n, (name, args, said)) in stops.into_iter().enumerate() {
+            let id = format!("c{n}");
+            let tool =
+                json!({"type": "tool_use", "id": id, "name": format!("mcp__tarae__{name}"), "input": args});
+            self.line(json!({"type": "assistant", "message": {"id": format!("mc{n}"), "content": [tool]}}))?;
+            let result = json!({"type": "tool_result", "tool_use_id": id, "content": [{"type": "text", "text": said}]});
+            self.line(json!({"type": "user", "message": {"role": "user", "content": [result]}}))?;
+        }
+        self.words("That is all.")?;
+        self.line(json!({"type": "result", "result": "done"}))
     }
 
     /// A run in the sandbox that outlasts the stuck mark (`STUCK_AFTER`): its call unanswered past it.

@@ -387,27 +387,8 @@ pub fn pressed(ed: &mut Editor, which: Option<usize>) {
         Some(WithItem::Pointed(id)) => return ed.ui_jump(&id.clone()),
         None => return,
     };
-    // (one buffer a title: the same text is the one open — pressed again, it's shown; another takes its place)
-    let open = ed
-        .docs
-        .iter()
-        .position(|d| d.throwaway && d.read_only.is_some() && d.title.as_deref() == Some(&title));
-    match open {
-        Some(at) if ed.docs[at].text == text.as_str() => ed.current = at,
-        _ => {
-            if let Some(at) = open {
-                ed.close_doc(ed.docs[at].id);
-            }
-            let id = ed.open_virtual(&title, &text);
-            if let Some(d) = ed.docs.iter_mut().find(|d| d.id == id) {
-                d.paint = paint;
-                d.read_only = Some(d.snapshot());
-            }
-        }
-    }
-    // (the code has the keys, to read it)
-    ed.workspace.viewer.at = crate::workspace::At::Code;
-    ed.sync_focus_view();
+    // (one buffer a title, the code with the keys to read it)
+    crate::whole::open(ed, &title, &text, paint);
 }
 
 /// Whether `quotes` are within one message's limits.

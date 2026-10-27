@@ -1,5 +1,6 @@
-//! What's cut is whole where you look at it: a tool's row, the queued line, a run panel's command — cut to one row,
-//! whole in the transcript, whole on screen while in hand (the view mode's cursor, the mouse, a panel's keys).
+//! What's cut is whole where you look at it, one way: a tool's row, the queued line, a line's end, a list's row — cut
+//! to one row, whole in the transcript, whole on a card over it while in hand (the mouse, the view mode's cursor, a
+//! list's selected row) — nothing under it moves; a run panel's command on its own card over its line.
 
 use super::*;
 use crate::chat::{Chat, Look, Msg, Role};
@@ -80,40 +81,65 @@ fn spot(ed: &Editor, cut: &Cut) -> (usize, usize) {
     (s.1, s.0)
 }
 
-/// The view mode's cursor onto a cut tool row draws it whole — as many rows as it takes, nothing above it moved;
-/// off it, one row again. The transcript holds its words whole all along: `/` finds a word past the cut, `x` `y`
-/// copies the command whole.
+/// The card as drawn on the last frame (x, y, width, height).
+fn card(ed: &Editor) -> Option<(usize, usize, usize, usize)> {
+    ed.screen.cut_card.borrow().as_ref().map(|c| c.rect)
+}
+
+/// Nothing moved: every row of `now` above `upto` the card doesn't cover is `before`'s, and on the rows it covers, the
+/// cells left of it too.
+fn nothing_moved(before: &str, now: &str, (x, y, _, h): (usize, usize, usize, usize), upto: usize) {
+    // (the top line's turn timer aside)
+    for (i, (was, is)) in before.lines().zip(now.lines()).enumerate().take(upto).skip(1) {
+        match (y..y + h).contains(&i) {
+            false => assert_eq!(was, is, "row {i} moved:\n{now}"),
+            true => assert_eq!(
+                was.chars().take(x).collect::<String>(),
+                is.chars().take(x).collect::<String>(),
+                "row {i} left of the card moved:\n{now}"
+            ),
+        }
+    }
+}
+
+/// The view mode's cursor onto a cut tool row shows it whole on a card over it — its text where it started, its rows
+/// after the first hanging under it; the row itself still one row, nothing else moved — and off it, the card goes. The
+/// transcript holds its words whole all along: `/` finds a word past the cut, `x` `y` copies the command whole.
 #[test]
-fn a_cut_tool_row_is_whole_under_the_view_modes_cursor() {
+fn a_cut_tool_row_is_whole_on_a_card_under_the_view_modes_cursor() {
     let mut ed = chat(convo());
     let screen = frame(&mut ed);
     assert!(!screen.contains("farewell"), "cut:\n{screen}");
     assert!(screen.lines().any(|l| l.contains("▸ run") && l.trim_end().ends_with('…')), "its `…`:\n{screen}");
     assert_eq!(rows_of(&ed, Of::Msg(1)), 1, "one row");
     assert!(transcript_text(&ed).contains(&format!("run    {CMD}\n")), "the transcript's line is whole");
-    let (_, y) = spot(&ed, &Cut::Call("call-1".into()));
-    let above = screen.lines().nth(y - 1).unwrap().to_string();
-    feed(&mut ed, "<esc>/farewell<ret>");
+    let (y, a, ..) = cut_text(&ed, "farewell").expect("recorded as cut");
+    assert!(screen.lines().nth(y).unwrap().chars().skip(a).collect::<String>().starts_with("cargo fmt"));
+    feed(&mut ed, "<esc>gg");
+    let before = frame(&mut ed);
+    feed(&mut ed, "/farewell<ret>");
     let screen = frame(&mut ed);
     assert!(screen.contains("farewell"), "whole in hand:\n{screen}");
-    assert!(rows_of(&ed, Of::Msg(1)) > 2, "wrapped over its rows");
-    assert_eq!(screen.lines().nth(y - 1).unwrap(), above, "the row over it stays");
-    // (its rows after the first hang under the command, the knot on the first only)
-    let row = |k: usize| screen.lines().nth(y + k).unwrap().to_string();
-    let col = |l: &str| l.find("cargo").map(|b| l[..b].chars().count());
-    let hang = col(&row(0)).unwrap();
-    assert_eq!(row(1).chars().take(hang).filter(|c| !c.is_whitespace()).count(), 1, "only the gutter's line");
-    assert!(row(1).chars().nth(hang).is_some_and(|c| !c.is_whitespace()), "under the command:\n{screen}");
+    assert_eq!(rows_of(&ed, Of::Msg(1)), 1, "never unfolds");
+    let rect = card(&ed).expect("its card");
+    assert!(rect.3 > 1, "wrapped over rows of its own");
+    let (y, a, ..) = cut_text(&ed, "farewell").unwrap();
+    // (the hints under the input say the selection the search made)
+    nothing_moved(&before, &screen, rect, H as usize - 4);
+    // (its text where it started, its rows after the first hanging under it)
+    let row = |k: usize| screen.lines().nth(y + k).unwrap().chars().skip(a).collect::<String>();
+    assert!(row(0).starts_with("cargo fmt"), "where it started:\n{screen}");
+    assert!(row(1).starts_with(|c: char| !c.is_whitespace()), "under the command:\n{screen}");
     // (`x` `y` copies the line whole)
     feed(&mut ed, "xy");
     let ev = ed.events.recv_timeout(crate::test_results::PATIENCE).expect("the copy's result");
     ed.handle_event(ev);
     assert!(crate::clipboard::written(&format!("run    {CMD}\n")), "the command whole");
-    // (off it: one row again)
+    // (off it: no card)
     feed(&mut ed, "<esc>gg");
     let screen = frame(&mut ed);
-    assert_eq!(rows_of(&ed, Of::Msg(1)), 1, "folded:\n{screen}");
-    assert!(!screen.contains("farewell"));
+    assert!(!screen.contains("farewell"), "gone:\n{screen}");
+    assert_eq!(card(&ed), None);
 }
 
 /// A row that isn't cut is drawn as it is with the view mode's cursor on it — nothing to unfold, nothing shifts: a
@@ -145,38 +171,59 @@ fn a_row_that_isnt_cut_stays_as_it_is_under_the_cursor() {
     }
 }
 
-/// The mouse over a cut row draws it whole — the rows over it stay, those under it go down — a move that changes
-/// nothing draws nothing, and off it, it folds.
+/// A cut `run` row that ran (`…  ok` at its end) in hand: its card covers the row to its end — nothing of the cut row
+/// shows past it — and the view mode's cursor on it stays in sight, painted on the card.
 #[test]
-fn the_mouse_over_a_cut_row_draws_it_whole() {
+fn a_cut_rows_card_covers_it_to_its_end_and_keeps_the_cursor() {
+    crossterm::style::force_color_output(true);
+    // (its first row breaks short of the chat's edge: a long word after it goes to the next)
+    let mut ran = run_row("cargo fmt --all && ./check_every_strand_tied_once.sh --all-of-them");
+    ran.ran = Some(crate::chat::Ran::of(&crate::sandbox::Guard::Outside, None, None, Vec::new()));
+    let mut ed = chat(vec![Msg::new(Role::User, "tidy it", ""), ran, Msg::new(Role::Assistant, "Done.", "")]);
+    feed(&mut ed, "<esc>gg/cargo fmt<ret>");
+    let mut bytes = Vec::new();
+    crate::term::render(&mut ed, &mut bytes, W, H).unwrap();
+    let mut vt = vt100::Parser::new(H, W, 0);
+    vt.process(&bytes);
+    let screen = vt.screen().contents();
+    let (x, y, w, _) = card(&ed).expect("its card");
+    let row: String = screen.lines().nth(y).unwrap().chars().skip(x + w).collect();
+    assert!(row.trim().is_empty(), "the cut row shows past its card: {row:?}\n{screen}");
+    // (the cursor on the card: its cell in the cursor's ground, not the card's)
+    let &(cx, cy) = ed.screen.cursors.borrow().iter().find(|c| c.1 == y).expect("its cursor on the row");
+    assert!((x..x + w).contains(&cx), "under the card");
+    let bg = |x: usize| vt.screen().cell(cy as u16, x as u16).unwrap().bgcolor();
+    assert_ne!(bg(cx), bg(x + w - 1), "the cursor painted on the card");
+}
+
+/// The mouse over a cut row shows it whole on its card — nothing else moves; the mouse gone onto the card keeps it (a
+/// move that changes nothing draws nothing), and off both, the frame as it was.
+#[test]
+fn the_mouse_over_a_cut_row_shows_it_whole_on_a_card() {
     let mut ed = chat(convo());
     ed.workspace.viewer.at = crate::workspace::At::Code;
-    let screen = frame(&mut ed);
-    let cut = Cut::Call("call-1".into());
-    let (x, y) = spot(&ed, &cut);
-    let above = screen.lines().nth(y - 1).unwrap().to_string();
-    let first = screen.lines().nth(y).unwrap().to_string();
+    let before = frame(&mut ed);
+    let (y, x, ..) = cut_text(&ed, "farewell").expect("recorded as cut");
     ed.handle_event(Event::Hover(x as u16 + 3, y as u16));
     assert!(!ed.unchanged, "taken in hand: a frame");
     let screen = frame(&mut ed);
     assert!(screen.contains("farewell"), "whole:\n{screen}");
-    assert_eq!(screen.lines().nth(y - 1).unwrap(), above, "the row over it stays");
-    let head = |l: &str| l.split("cargo").next().unwrap_or_default().to_string();
-    assert_eq!(head(screen.lines().nth(y).unwrap()), head(&first), "its first row where it was");
-    // (along its rows: still in hand, nothing to draw)
+    assert_eq!(rows_of(&ed, Of::Msg(1)), 1, "never unfolds");
+    nothing_moved(&before, &screen, card(&ed).expect("its card"), H as usize);
+    // (onto its card's next row: still in hand, nothing to draw)
     ed.handle_event(Event::Hover(x as u16 + 3, y as u16 + 1));
     assert!(ed.unchanged, "a move that changes nothing draws nothing");
+    assert!(ed.cut_hover.is_some(), "the card keeps it");
     ed.handle_event(Event::Hover(0, 0));
     assert!(!ed.unchanged);
-    let screen = frame(&mut ed);
-    assert!(!screen.contains("farewell"), "folded again:\n{screen}");
+    assert_eq!(frame(&mut ed), before, "gone as the mouse leaves");
     assert_eq!(ed.cut_hover, None);
 }
 
-/// A note's words are its row's suffix: in hand they wrap with the rest, every row within the chat's width, all of
-/// them there.
+/// A note's words are its row's suffix: on its card they wrap with the rest, the card inside the chat, all of them
+/// there.
 #[test]
-fn a_notes_words_wrap_whole_in_hand() {
+fn a_notes_words_wrap_whole_on_its_card() {
     let gist = "the cut rows keep their whole words in the transcript and unfold where you look at them, wrapped \
                 under their target, every row inside the chat, and then goodbye";
     let look =
@@ -187,23 +234,18 @@ fn a_notes_words_wrap_whole_in_hand() {
     feed(&mut ed, "<esc>/goodbye<ret>");
     let screen = frame(&mut ed);
     assert!(screen.contains("goodbye"), "whole:\n{screen}");
-    let w = ed.screen.chat_view.get().unwrap().1;
-    let laid = ed.screen.chat_laid.borrow();
-    let rows = &laid.iter().find(|(o, _)| *o == Of::Msg(1)).unwrap().1;
-    assert!(rows.len() > 2, "wrapped");
-    for r in rows.iter() {
-        let used: usize =
-            r.spans.iter().map(|s| unicode_width::UnicodeWidthStr::width(s.text.as_str())).sum();
-        assert!(used <= w, "a row of {used} cells in {w}:\n{screen}");
-    }
-    let text = crate::chatdoc::lines_of(rows).0;
-    assert!(text.contains(gist), "its words whole: {text:?}");
+    let (x, _, w, h) = card(&ed).expect("its card");
+    let chat_w = ed.screen.chat_view.get().unwrap().1;
+    assert!(h > 2, "wrapped");
+    assert!(x + w <= W as usize && x + chat_w + 4 >= W as usize, "inside the chat: {x}+{w}:\n{screen}");
+    let (_, _, _, whole) = cut_text(&ed, "goodbye").unwrap();
+    assert!(whole.text.contains(gist), "its words whole: {:?}", whole.text);
 }
 
 /// A note of several lines keeps them all: the transcript has every word (its lines one paragraph there), the folded
-/// row cuts them, and in hand each line starts a row of its own.
+/// row cuts them, and on its card each line starts a row of its own.
 #[test]
-fn a_notes_lines_are_all_kept_and_each_starts_a_row_in_hand() {
+fn a_notes_lines_are_all_kept_and_each_starts_a_row_on_its_card() {
     let gist = "the first line of the note\nand its second line, then goodbye";
     let look =
         Look { verb: "note", what: "src/whole.rs:12".into(), pattern: false, range: gist.into(), link: None };
@@ -213,10 +255,12 @@ fn a_notes_lines_are_all_kept_and_each_starts_a_row_in_hand() {
     assert!(transcript_text(&ed).contains("the first line of the note and its second line, then goodbye"));
     feed(&mut ed, "<esc>/goodbye<ret>");
     let screen = frame(&mut ed);
+    let (x, ..) = card(&ed).expect("its card");
     assert!(
         screen.lines().any(|l| l
-            .trim_start()
-            .trim_start_matches('│')
+            .chars()
+            .skip(x)
+            .collect::<String>()
             .trim_start()
             .starts_with("and its second")),
         "its second line starts a row:\n{screen}"
@@ -224,8 +268,8 @@ fn a_notes_lines_are_all_kept_and_each_starts_a_row_in_hand() {
     assert!(screen.contains("goodbye"), "whole:\n{screen}");
 }
 
-/// In a full chat the row the mouse holds at its foot — the queued line is always last — goes up just enough to show
-/// it whole, the mouse still on it (its rows went up under the mouse): it stays in hand.
+/// In a full chat the row the mouse holds at its foot — the queued line is always last — shows whole on its card, the
+/// chat's rows where they were; it stays in hand, frame after frame.
 #[test]
 fn the_last_row_held_in_a_full_chat_shows_whole() {
     let msg = "Your walk-perf run sat 30 min with no output, stop it and look at what it waited on before you run it \
@@ -237,19 +281,16 @@ fn the_last_row_held_in_a_full_chat_shows_whole() {
     c.state = crate::chat::State::Thinking;
     c.queue(msg.to_string(), false);
     let before = frame(&mut ed);
-    let (x, y) = spot(&ed, &Cut::Queued);
+    let (y, x, ..) = cut_text(&ed, "goodbye").expect("recorded as cut");
     ed.handle_event(Event::Hover(x as u16, y as u16));
     let screen = frame(&mut ed);
-    assert!(rows_of(&ed, Of::Queued) > 1, "unfolded");
-    assert!(screen.contains("goodbye"), "its last row in sight:\n{screen}");
-    assert_eq!(ed.cut_hover, Some(Cut::Queued), "the mouse still on it");
-    // (the row under the mouse is one of its rows; the rows under it, the input's, where they were)
-    assert!(ed.screen.cut_spots.borrow().iter().any(|s| s.0 == y && s.3 == Cut::Queued));
-    for (i, (was, now)) in before.lines().zip(screen.lines()).enumerate().skip(y + 1) {
-        assert_eq!(was, now, "row {i} under it moved:\n{screen}");
-    }
+    assert_eq!(rows_of(&ed, Of::Queued), 1, "never unfolds");
+    assert!(screen.contains("goodbye"), "whole:\n{screen}");
+    nothing_moved(&before, &screen, card(&ed).expect("its card"), H as usize);
+    let held = ed.cut_hover.clone();
+    assert!(matches!(&held, Some(Cut::Text(w)) if w.text.contains("goodbye")), "the mouse still on it");
     frame(&mut ed);
-    assert_eq!(ed.cut_hover, Some(Cut::Queued), "and stays, frame after frame");
+    assert_eq!(ed.cut_hover, held, "and stays, frame after frame");
 }
 
 /// A row the mouse holds folds once it moves from under a mouse that stays put (what came above it pushed it up), and
@@ -268,17 +309,18 @@ fn a_held_row_folds_when_it_leaves_a_still_mouse() {
     let mut ed = chat(msgs());
     ed.workspace.viewer.at = crate::workspace::At::Code;
     frame(&mut ed);
-    let (x, y) = spot(&ed, &Cut::Call("call-1".into()));
+    let (y, x, ..) = cut_text(&ed, "farewell").expect("recorded as cut");
     ed.handle_event(Event::Hover(x as u16 + 3, y as u16));
-    frame(&mut ed);
-    assert!(rows_of(&ed, Of::Msg(2)) > 1, "whole under the mouse");
-    // (what comes pushes it up from under the mouse: folded)
+    let screen = frame(&mut ed);
+    assert!(screen.contains("farewell"), "whole under the mouse:\n{screen}");
+    // (what comes pushes it up from under the mouse: gone)
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.msgs.push(Msg::new(Role::User, "and more?", ""));
     c.msgs.push(Msg::new(Role::Assistant, "One.\n\nTwo.\n\nThree.\n\nFour.", ""));
+    frame(&mut ed);
     let screen = frame(&mut ed);
-    assert_ne!(ed.cut_hover, Some(Cut::Call("call-1".into())));
-    assert_eq!(rows_of(&ed, Of::Msg(2)), 1, "folded:\n{screen}");
+    assert!(!matches!(&ed.cut_hover, Some(Cut::Text(w)) if w.text.contains("farewell")));
+    assert!(!screen.contains("farewell"), "gone:\n{screen}");
     // (the focus gone, the mouse with it)
     let mut ed = chat(msgs());
     ed.workspace.viewer.at = crate::workspace::At::Code;
@@ -290,7 +332,7 @@ fn a_held_row_folds_when_it_leaves_a_still_mouse() {
 }
 
 /// A press on the queued line, `thinking…` drawn before it: the frame's row is the transcript's own — its view mode,
-/// the cursor in its words, and so in hand, whole.
+/// the cursor in its words, and so in hand, whole on its card.
 #[test]
 fn a_press_on_the_queued_line_lands_in_its_words() {
     let msg = "Your walk-perf run sat 30 min with no output, stop it and look at what it waited on before you run it \
@@ -300,7 +342,7 @@ fn a_press_on_the_queued_line_lands_in_its_words() {
     c.state = crate::chat::State::Thinking;
     c.queue(msg.to_string(), false);
     frame(&mut ed);
-    let (x, y) = spot(&ed, &Cut::Queued);
+    let (y, x, ..) = cut_text(&ed, "goodbye").expect("recorded as cut");
     let m = crate::event::Mouse {
         kind: crate::event::MouseKind::Down,
         x: (x + 10) as u16,
@@ -315,7 +357,8 @@ fn a_press_on_the_queued_line_lands_in_its_words() {
     let line = crate::movement::line_of(&d.text, d.selection().primary().cursor(&d.text));
     assert!(crate::chatdoc::has_keys(&ed), "its view mode");
     assert_eq!(d.text.line(line).to_string().trim_end(), msg, "the cursor in the queued words");
-    assert!(rows_of(&ed, Of::Queued) > 1 && screen.contains("goodbye"), "whole:\n{screen}");
+    assert!(rows_of(&ed, Of::Queued) == 1 && screen.contains("goodbye"), "whole:\n{screen}");
+    assert!(card(&ed).is_some(), "on its card");
 }
 
 /// The queued line is the transcript's last, after the frame's own rows: its words whole there (what's queued is the
@@ -339,7 +382,7 @@ fn the_queued_line_is_whole_in_the_transcript_and_in_hand() {
     let line =
         rows.iter().rposition(|l| l.contains("────") && !l.contains("claude")).expect("the input's line");
     assert!(!rows[line].contains("queued"), "the input's line a line again:\n{screen}");
-    let (x, y) = spot(&ed, &Cut::Queued);
+    let (y, x, ..) = cut_text(&ed, "goodbye").expect("recorded as cut");
     assert_eq!(y, queued);
     ed.handle_event(Event::Hover(x as u16, y as u16));
     let screen = frame(&mut ed);
@@ -563,4 +606,396 @@ fn a_cut_text_under_a_picker_is_not_in_hand() {
     );
     ed.handle_event(Event::Hover((a + 3) as u16, y as u16));
     assert_eq!(ed.cut_hover, None, "under the picker");
+}
+
+/// The side panel with two long names, the second selected.
+fn side_panel(at: crate::workspace::At) -> Editor {
+    let mut ed = Editor::new(Config::default());
+    let files = vec![
+        "a_first_long_file_name_that_says_hello_and_never_fits_in_the_panel.rs".to_string(),
+        "a_very_long_file_name_farewell_the_panel_never_has_room_for_at_all.rs".to_string(),
+    ];
+    // (the code on the second: the row the panel marks without the keys too)
+    ed.docs[0].path = Some(std::path::Path::new("/r").join(&files[1]));
+    let mut sb = crate::sidebar::Sidebar::with_files(std::path::PathBuf::from("/r"), files);
+    sb.selected = 1;
+    ed.workspace.viewer.sidebar = Some(sb);
+    ed.workspace.viewer.at = at;
+    frame(&mut ed);
+    ed
+}
+
+/// #187: a list's selected row is in hand while the list has the keys — its cut name whole on a card over it, on the
+/// selected row's ground, nothing else moved; the list without the keys, none. The mouse over another cut row shows
+/// that one instead — one card — and gone from it, the row in hand's again.
+#[test]
+fn a_lists_selected_row_is_whole_on_its_card_while_the_list_has_the_keys() {
+    // (the panel's rows only: the path bar names the file whole)
+    let (long, other) =
+        ("farewell_the_panel_never_has_room_for_at_all.rs", "hello_and_never_fits_in_the_panel.rs");
+    let row_of = |s: &str, y: usize| s.lines().nth(y).unwrap_or_default().to_string();
+    let mut ed = side_panel(crate::workspace::At::Code);
+    let before = frame(&mut ed);
+    let (y, ..) = cut_text(&ed, "farewell").expect("marked, and cut");
+    assert!(!row_of(&before, y).contains(long) && card(&ed).is_none(), "no keys, no row in hand:\n{before}");
+    let mut ed = side_panel(crate::workspace::At::Side);
+    let screen = frame(&mut ed);
+    let (y, a, _, w) = cut_text(&ed, "farewell").expect("recorded as cut");
+    assert!(row_of(&screen, y).contains(long), "whole:\n{screen}");
+    assert_eq!(card(&ed).map(|c| (c.1, c.3)), Some((y, 1)), "one row, on its own");
+    let row = screen.lines().nth(y).unwrap().chars().skip(a).collect::<String>();
+    assert!(row.starts_with("a_very"), "where it started:\n{screen}");
+    assert!(a > 0 && w.text.ends_with("at_all.rs"));
+    assert_eq!(
+        crate::whole::shown(&ed).map(|s| matches!(s.1, Some(Hand::Beside(_)))),
+        Some(true),
+        "the row in hand's (its ground the selected row's), beside its list"
+    );
+    // (the mouse over the other: that one, one card; gone from it, the row in hand's again)
+    let (y1, a1, ..) = cut_text(&ed, "hello").expect("the other recorded as cut");
+    ed.handle_event(Event::Hover((a1 + 2) as u16, y1 as u16));
+    let screen = frame(&mut ed);
+    assert!(row_of(&screen, y1).contains(other), "the mouse's:\n{screen}");
+    assert!(!row_of(&screen, y).contains(long), "one card:\n{screen}");
+    ed.handle_event(Event::Hover(0, H - 1));
+    let screen = frame(&mut ed);
+    assert!(row_of(&screen, y).contains(long), "back to the hand's:\n{screen}");
+}
+
+/// The side panel with the keys, `long` selected on its first row and two short names under it.
+fn side_long(long: &str) -> Editor {
+    let mut ed = Editor::new(Config::default());
+    let files = vec![long.to_string(), "b_second.rs".to_string(), "c_third.rs".to_string()];
+    let mut sb = crate::sidebar::Sidebar::with_files(std::path::PathBuf::from("/r"), files);
+    sb.selected = 0;
+    ed.workspace.viewer.sidebar = Some(sb);
+    ed.workspace.viewer.at = crate::workspace::At::Side;
+    frame(&mut ed);
+    ed
+}
+
+/// #187, the user on U1's review: a row in hand's card never covers another row of its own list — beside a list with
+/// the code free at its right, a name too long for its row runs on along it and wraps under it from the list's edge
+/// rightwards only; the names under it stay in sight, and its rows read in order are the name whole.
+#[test]
+fn a_row_in_hand_too_long_for_its_row_wraps_beside_its_list_never_over_it() {
+    let long = format!("a_{}farewell.rs", "long_segment_".repeat(24));
+    let mut ed = side_long(&long);
+    let screen = frame(&mut ed);
+    let (y, a, ..) = cut_text(&ed, "farewell").expect("recorded as cut");
+    let c = ed.screen.cut_card.borrow().clone().expect("the row in hand's card");
+    assert!(c.rect.1 == y && c.rect.3 > 1, "on its row, wrapped: {c:?}\n{screen}");
+    assert!(c.from > a, "its rows after the first start past the list: {c:?}\n{screen}");
+    let lines: Vec<String> = screen.lines().map(str::to_string).collect();
+    assert!(lines[y + 1].contains("b_second.rs"), "the next row in sight:\n{screen}");
+    assert!(lines[y + 2].contains("c_third.rs"), "and the one after:\n{screen}");
+    let read: String = (0..c.rect.3)
+        .map(|k| {
+            let from = if k == 0 { a } else { c.from + 1 };
+            lines[y + k].chars().skip(from).collect::<String>().trim_end().to_string()
+        })
+        .collect();
+    assert_eq!(read, long, "whole, in order:\n{screen}");
+}
+
+/// A picker as tall as the screen (one row free under its frame), `long` its first choice, selected.
+fn picked(long: &str) -> Editor {
+    let item = |label: &str| crate::picker::Item {
+        label: label.into(),
+        action: crate::picker::Action::Message,
+        hint: String::new(),
+        glyph: None,
+    };
+    let mut ed = Editor::new(Config::default());
+    let items = vec![item(long), item("a short one"), item("another")];
+    ed.open_picker(crate::picker::Picker::of("buffers", "things", items, false), None);
+    frame(&mut ed);
+    ed
+}
+
+/// #187, the user on U1's review: a framed list's row in hand — a picker's, a card's choices, `:granted` — is whole on a
+/// card just outside its frame, over none of its rows nor the frame itself; its rows as they were. One row free there
+/// and more to say: its start, then `↓ N more lines` on that row — a press there opens it whole.
+#[test]
+fn a_framed_lists_row_in_hand_is_whole_outside_its_frame() {
+    let long = format!("choose {}farewell", "a long choice of words ".repeat(4));
+    let mut ed = picked(&long);
+    let screen = frame(&mut ed);
+    let (y, ..) = cut_text(&ed, "farewell").expect("recorded as cut");
+    let (fx, fy, _, fh) = ed.screen.picker_box.get().expect("its frame");
+    let (x, top, w, h) = card(&ed).expect("the row in hand's card");
+    assert!(
+        top >= fy + fh || top + h <= fy,
+        "outside its frame's rows: {:?} {:?}\n{screen}",
+        (x, top, w, h),
+        (fx, fy)
+    );
+    assert!(x + w <= W as usize, "on the ground there:\n{screen}");
+    assert!(screen.contains("farewell"), "whole:\n{screen}");
+    let lines: Vec<&str> = screen.lines().collect();
+    assert!(lines[y].contains('…'), "its row as it was, cut:\n{screen}");
+    assert!(lines[y + 1].contains("a short one"), "the next row in sight:\n{screen}");
+    // (longer than its one row outside: never clipped unsaid)
+    let longer = format!("choose {}farewell", "a long choice of words ".repeat(12));
+    let mut ed = picked(&longer);
+    let screen = frame(&mut ed);
+    let c = ed.screen.cut_card.borrow().clone().expect("the row in hand's card");
+    let row = screen.lines().nth(c.rect.1).unwrap_or_default().to_string();
+    assert!(c.rect.3 == 1 && c.more == Some(c.rect.1), "one row, its more on it: {c:?}\n{screen}");
+    assert!(
+        row.contains("choose a long") && row.contains("more line"),
+        "its start, how many more:\n{screen}"
+    );
+    super::pressed(&mut ed, c.rect.0 + 2, c.rect.1);
+    assert!(ed.doc().read_only.is_some() && ed.doc().text == longer.as_str(), "whole, read-only");
+}
+
+/// A list whose rows say their state first (`:granted`'s), each `(name, state)`, the first selected.
+fn granted_like(rows: &[(&str, &str)]) -> Editor {
+    let items = (rows.iter())
+        .map(|(label, hint)| crate::picker::Item {
+            label: label.to_string(),
+            action: crate::picker::Action::Message,
+            hint: hint.to_string(),
+            glyph: None,
+        })
+        .collect();
+    let mut ed = Editor::new(Config::default());
+    let mut p = crate::picker::Picker::of("buffers", "things", items, false).without_preview();
+    (p.keys, p.hints_first) = (true, true);
+    ed.open_picker(p, None);
+    frame(&mut ed);
+    ed
+}
+
+/// The card's rows as drawn (its first from its `x`, the rest from its `from`), trimmed.
+fn card_rows(ed: &Editor, screen: &str) -> Option<Vec<String>> {
+    let c = ed.screen.cut_card.borrow().clone()?;
+    let (x, top, w, h) = c.rect;
+    let rows = (screen.lines().skip(top).take(h).enumerate()).map(|(k, l)| {
+        let from = if k == 0 { x } else { c.from };
+        l.chars().skip(from).take(x + w - from).collect::<String>().trim().to_string()
+    });
+    Some(rows.collect())
+}
+
+/// #187, the user on U1's review round (2026-10-27): a framed list's row in hand takes the free ground's width under
+/// its frame, not the frame's — `:granted`'s `this checkout` on one row with its name; and where it must still wrap,
+/// the row's trailing state moves whole to the next row, never split.
+#[test]
+fn a_framed_lists_card_takes_the_grounds_width_and_never_splits_a_rows_state() {
+    let state = "this checkout";
+    let (_, _, fw, _) = granted_like(&[("a", state)]).screen.picker_box.get().expect("its frame");
+    // (wider than the frame holds by a cell, as narrow as the ground under it is: its margins a cell or two)
+    let name = format!("read /{}", "x".repeat(fw - 22));
+    let mut ed = granted_like(&[(&name, state), ("read /tmp", "the temp folders")]);
+    let screen = frame(&mut ed);
+    let (fx, _, fw, _) = ed.screen.picker_box.get().expect("its frame");
+    let (x, _, w, _) = card(&ed).expect("the row in hand's card");
+    assert_eq!(card_rows(&ed, &screen), Some(vec![format!("{name}  {state}")]), "one row:\n{screen}");
+    assert!(x < fx || x + w > fx + fw, "wider than its frame:\n{screen}");
+    // (too long for the ground too: wrapped, its state whole on a row — after the name where it fits, else its own)
+    // (its end swept across the first row's: the state where that row breaks; a name not cut has no card)
+    let mut wrapped = 0;
+    for i in 0..40 {
+        let words = "a_segment ".repeat((fw - 30) / 10);
+        let name = format!("read {} {}", "x".repeat(i), words.trim_end());
+        let mut ed = granted_like(&[(&name, state)]);
+        let screen = frame(&mut ed);
+        let Some(rows) = card_rows(&ed, &screen) else { continue };
+        wrapped += usize::from(rows.len() > 1);
+        assert!(
+            rows.iter().any(|r| r.ends_with(state)),
+            "{state:?} whole on a row ({i}): {rows:?}\n{screen}"
+        );
+    }
+    assert!(wrapped > 12, "wrapped where the ground doesn't hold it: {wrapped}");
+}
+
+/// #187, on U1's review: a docked surface's row in hand stands under what floats — a toast over the side panel's card
+/// is read whole, and a press on it is the toast's, never the row's under the card.
+#[test]
+fn a_docked_row_in_hand_is_under_what_floats() {
+    let long = format!("a_{}farewell.rs", "long_segment_".repeat(30));
+    let mut ed = side_long(&long);
+    ed.set_warning("a toast over the card");
+    let screen = frame(&mut ed);
+    let c = ed.screen.cut_card.borrow().clone().expect("the row in hand's card");
+    let (ty, line) = screen.lines().enumerate().find(|l| l.1.contains("a toast over")).expect("read whole");
+    let tx = line[..line.find("a toast").unwrap()].chars().count();
+    let (cx, cy, cw, ch) = c.rect;
+    assert!(
+        (cy..cy + ch).contains(&ty) && (c.from..cx + cw).contains(&tx),
+        "the toast where the card is: {c:?} at ({tx}, {ty})\n{screen}"
+    );
+    assert_eq!(super::pressed(&mut ed, tx, ty), Some((tx, ty)), "the toast's press");
+}
+
+/// #187, on U1's review: a press on a card is the press on the row it's about, whole — its drag and its release too:
+/// pressed over the code's other rows and dragged there, the selection stays on the cut row.
+#[test]
+fn a_press_drag_and_release_on_a_card_are_the_rows() {
+    use crate::event::{Mouse, MouseKind as K};
+    let long: String = (1..=12).map(|i| format!("part {i} of a long message about the code ")).collect();
+    let mut ed = diagnosed(&long);
+    let (y, a, ..) = cut_text(&ed, "part 12").expect("recorded as cut");
+    ed.handle_event(Event::Hover((a + 3) as u16, y as u16));
+    frame(&mut ed);
+    let (x, top, _, h) = card(&ed).expect("its card");
+    assert!(top == y && h > 3, "down over the rows under it");
+    let m = |kind, x: usize, y: usize| Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false };
+    ed.handle_mouse(m(K::Down, x + 2, top + 2));
+    ed.handle_mouse(m(K::Drag, x + 6, top + 2));
+    ed.handle_mouse(m(K::Up, x + 6, top + 2));
+    let d = ed.doc();
+    let r = d.selection().primary();
+    let line = |p: usize| d.text.byte_to_line(p);
+    // (a block cursor's range ends after its character)
+    assert_eq!((line(r.from()), line(r.to() - 1)), (0, 0), "on the cut row only: {r:?}");
+    assert_eq!(ed.cut_press, None, "let go");
+}
+
+/// A plain press at (`x`, `y`) and its release, through `handle_mouse`, a frame after each.
+fn click(ed: &mut Editor, x: usize, y: usize) {
+    use crate::event::{Mouse, MouseKind as K};
+    let m = |kind| Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false };
+    ed.handle_mouse(m(K::Down));
+    frame(ed);
+    ed.handle_mouse(m(K::Up));
+    frame(ed);
+}
+
+/// The row in hand's card outside its list's frame, as drawn: a cell on its text, not its `↓ N more lines`.
+fn outside_card(ed: &Editor, screen: &str) -> (usize, usize) {
+    let c =
+        ed.screen.cut_card.borrow().clone().unwrap_or_else(|| panic!("the row in hand's card:\n{screen}"));
+    assert!(
+        c.outside && c.more != Some(c.rect.1),
+        "outside its frame, its first row its text: {c:?}\n{screen}"
+    );
+    (c.rect.0 + 2, c.rect.1)
+}
+
+/// #187, U1's review: a press on a framed list's row in hand's card — outside its frame — is a press outside, as on
+/// the ground it covers: the sandbox's blocked list closes, nothing chosen and no grant's card. (Its `↓ N more lines`
+/// still opens it whole — `a_framed_lists_row_in_hand_is_whole_outside_its_frame`.)
+#[test]
+fn a_press_on_the_blocked_lists_card_outside_its_frame_closes_it_and_grants_nothing() {
+    // (a write refused deep in a long folder: `allow writing in …` its first row, cut)
+    let scratch = crate::scratch::Scratch::new("whole-blocked");
+    let deep = (0..3).fold(scratch.to_path_buf(), |p, _| p.join("a_rather_long_folder_name"));
+    std::fs::create_dir_all(&deep).unwrap();
+    let watch = crate::sandbox::Watch::quiet("t.");
+    watch.record(crate::sandbox::Denial {
+        process: "npm".into(),
+        op: "file-write-create".into(),
+        target: deep.join("index-v5").display().to_string(),
+    });
+    let policy = crate::sandbox::Policy {
+        watch: Some(watch),
+        ..crate::sandbox::Policy::for_project(&crate::sandbox::Env::default())
+    };
+    let task =
+        crate::task::Task { name: "npm test".into(), cmd: "npm test".into(), cwd: scratch.to_path_buf() };
+    let mut run = crate::task::Run::for_test(task);
+    run.guard = Some(crate::sandbox::Guard::In(Box::new(policy)));
+    run.by_claude = true;
+    let mut ed = Editor::new(Config::default());
+    ed.workspace.task_run = Some(run);
+    ed.sandbox_blocked(crate::blocked::Which::Either);
+    let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+    while ed.picker.is_none() {
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        let ev = ed.events.recv_timeout(left).expect("the blocked list before the timeout");
+        ed.handle_event(ev);
+    }
+    let screen = frame(&mut ed);
+    let first = ed.picker.as_ref().and_then(|p| p.current()).map(|i| i.label.clone()).unwrap_or_default();
+    assert!(first.starts_with("allow writing in"), "a grant in hand: {first:?}\n{screen}");
+    let (x, y) = outside_card(&ed, &screen);
+    click(&mut ed, x, y);
+    assert!(ed.picker.is_none(), "closed, as a press outside it");
+    assert!(
+        ed.offers.is_empty(),
+        "nothing chosen, no grant's card: {:?}",
+        ed.offers.first().map(|o| &o.title)
+    );
+}
+
+/// #187, U1's review: the prompt's candidate in hand (`:theme`'s, cycled to) — a press on its card outside the
+/// prompt's frame closes the prompt, as a press outside it, never the candidate picked.
+#[test]
+fn a_press_on_the_prompts_card_outside_its_frame_closes_it() {
+    let long = format!("a_theme_{}farewell", "with_a_long_name_".repeat(10));
+    let mut ed = Editor::new(Config::default());
+    ed.cmd_lists.themes = Some(vec![long.clone(), "another".into()]);
+    feed(&mut ed, ":theme <tab>");
+    let screen = frame(&mut ed);
+    assert_eq!(ed.prompt.as_ref().map(|p| p.text()), Some(format!("theme {long}")), "cycled to it");
+    let (x, y) = outside_card(&ed, &screen);
+    click(&mut ed, x, y);
+    assert!(ed.prompt.is_none(), "closed, as a press outside it — not its candidate picked:\n{screen}");
+}
+
+/// #187, U1's review: completion's item in hand — a press on its card outside the menu's frame never accepts it.
+#[test]
+fn a_press_on_completions_card_outside_its_frame_accepts_nothing() {
+    let long = format!("a_word_{}farewell", "with_a_long_name_".repeat(10));
+    let mut ed = Editor::new(Config::default());
+    ed.docs[0].text = ropey::Rope::from_str("fn main() {}\n");
+    feed(&mut ed, "A");
+    let items = serde_json::json!([{"label": long, "detail": "i32"}, {"label": "short", "detail": "i32"}]);
+    let at = ed.doc().selection().primary().head;
+    let mut c = crate::completion::Completion::new(0, ed.doc().id, at, items);
+    c.filter("");
+    c.selected = Some(0);
+    ed.completion = Some(c);
+    let screen = frame(&mut ed);
+    let (x, y) = outside_card(&ed, &screen);
+    click(&mut ed, x, y);
+    let text = ed.doc().text.to_string();
+    assert!(!text.contains("farewell"), "not accepted: {text:?}\n{screen}");
+}
+
+/// #187: a text past `CUT_CARD_MAX` rows — its card's last row says how many more; a press there opens it whole in a
+/// read-only buffer (pressed again, the same one); a press elsewhere on the card is the press on the row it's about.
+#[test]
+fn a_long_cut_says_how_many_more_lines_and_a_press_opens_it_whole() {
+    // (one line, wrapped to far more rows than a card takes)
+    let long: String = (1..=40).map(|i| format!("part {i} of a long message about the code ")).collect();
+    let long = format!("{long}farewell");
+    let mut ed = diagnosed(&long);
+    let (y, a, b, _) = cut_text(&ed, "farewell").expect("recorded as cut");
+    ed.handle_event(Event::Hover((a + 3) as u16, y as u16));
+    let screen = frame(&mut ed);
+    let (x, top, w, h) = card(&ed).expect("its card");
+    assert_eq!(h, crate::term::CUT_CARD_MAX, "as tall as a card goes:\n{screen}");
+    let more = ed.screen.cut_card.borrow().as_ref().and_then(|c| c.more).expect("its more row");
+    assert_eq!(more, top + h - 1);
+    assert!(screen.lines().nth(more).unwrap().contains("more lines"), "says so:\n{screen}");
+    // (a press elsewhere on it: the press on its row, inside its cut text; off it, where it was)
+    assert_eq!(super::pressed(&mut ed, x + 2, top + 2), Some(((x + 2).clamp(a, b - 1), y)));
+    assert_eq!(super::pressed(&mut ed, x + w + 1, top + 2), Some((x + w + 1, top + 2)));
+    let press = |ed: &mut Editor, x: usize, y: usize| {
+        let kind = crate::event::MouseKind::Down;
+        let m = crate::event::Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false };
+        ed.handle_mouse(m);
+        ed.handle_mouse(crate::event::Mouse { kind: crate::event::MouseKind::Up, ..m });
+    };
+    // (on its more row, the mouse gone onto it: the whole, read-only)
+    ed.handle_event(Event::Hover((x + 2) as u16, more as u16));
+    assert!(ed.cut_hover.is_some(), "the card keeps it");
+    frame(&mut ed);
+    press(&mut ed, x + 2, more);
+    let d = ed.doc();
+    assert_eq!(d.title.as_deref(), Some("whole · code"));
+    assert!(d.read_only.is_some() && d.text == long.as_str(), "whole, read-only");
+    assert_eq!(ed.cut_hover, None, "the card gone with its act");
+    let n = ed.docs.len();
+    ed.current = 0;
+    frame(&mut ed);
+    ed.handle_event(Event::Hover((a + 3) as u16, y as u16));
+    frame(&mut ed);
+    press(&mut ed, x + 2, more);
+    assert_eq!(ed.docs.len(), n, "the same buffer");
 }

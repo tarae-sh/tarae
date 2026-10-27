@@ -438,6 +438,42 @@ fn the_place_folds_before_the_files() {
     assert!(row.contains("has CLAUDE.md") && row.contains("…"), "{row}");
 }
 
+/// #187 U1: the selected row's place, cut, is whole on the row in hand's card while the list has the keys — outside
+/// the list's frame, below it, as `:messages`' (never over its rows nor its frame); its row as it was; none once the
+/// keys went back to the code.
+#[test]
+fn the_selected_rows_place_is_whole_outside_the_frame_while_the_list_has_the_keys() {
+    let (s, _project, _infra, mut ed) = place("hand");
+    let tf = s.join("infra-terraform");
+    std::fs::create_dir_all(&tf).unwrap();
+    assert!(add(&mut ed, &tf).contains("added"));
+    feed(&mut ed, ":folders<ret>");
+    let narrow = |ed: &mut Editor| {
+        ed.focus_sync();
+        crate::term::render(ed, &mut Vec::new(), 60, 30).unwrap();
+        crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 60, 30).unwrap()
+    };
+    let screen = narrow(&mut ed);
+    let lines: Vec<&str> = screen.lines().collect();
+    let row = lines.iter().position(|l| l.contains("▎ infra-terraform"));
+    let row = row.unwrap_or_else(|| panic!("its row:\n{screen}"));
+    assert!(lines[row].contains('…'), "its place cut, its row as it was:\n{screen}");
+    let bottom = (row..lines.len()).find(|&i| lines[i].contains('╰')).expect("its frame's bottom line");
+    let c =
+        ed.screen.cut_card.borrow().clone().unwrap_or_else(|| panic!("the row in hand's card:\n{screen}"));
+    let (_, top, _, h) = c.rect;
+    assert!(c.outside && top > bottom, "outside the frame, below it: {c:?}\n{screen}");
+    let place = crate::allow::tilde(&tf);
+    let shown: String = lines[top..top + h].iter().map(|l| l.trim()).collect();
+    assert!(shown.contains(place.trim_end_matches("/infra-terraform")), "whole: {place}\n{screen}");
+    assert!(shown.ends_with("infra-terraform"), "to its end:\n{screen}");
+    // (the keys back to the code: the list stays, no row in hand)
+    feed(&mut ed, "<esc>");
+    let screen = narrow(&mut ed);
+    assert!(!ed.float_list_keys(GroupKind::Folders) && screen.contains("╭─ folders"), "{screen}");
+    assert_eq!(ed.screen.cut_card.borrow().clone(), None, "no card without the keys:\n{screen}");
+}
+
 /// `:folders` only floats: `C-w L` from it says so (and how it moves); its frame, once you've set one, is kept with
 /// the sizes (`sizes.json`, read again as tarae starts) and is the list's.
 #[test]

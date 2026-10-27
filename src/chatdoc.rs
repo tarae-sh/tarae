@@ -91,7 +91,8 @@ fn body(r: &ChatRow) -> (String, Option<&str>) {
 /// A row drawn cut whose text is `whole` (`whole.rs`: what's cut is whole where you look at it): the document keeps
 /// `whole` — the drawn text's start that is `whole`'s is the row's text, the rest of `whole` what it stands for
 /// (`ChatRow.rest`), and what's drawn past that start (the `…`, a kept end, what follows it) the drawer's
-/// (`ChatRow.tail`): never painted, never under the cursor — a cursor on the row draws it whole. Not cut: as it is.
+/// (`ChatRow.tail`): never painted, never under the cursor — a cursor on the row shows it whole on its card. Not cut: as
+/// it is.
 pub fn keep_whole(r: &mut ChatRow, whole: &str) {
     if body(r).0 == whole {
         return;
@@ -228,18 +229,6 @@ impl Transcript {
     pub fn top_row(&self) -> usize {
         let Some(d) = self.pane.doc_in() else { return 0 };
         d.rows.as_deref().map_or(0, |g| g.index(d.top, d.top_skip()))
-    }
-
-    /// The piece the document's `line` is in.
-    fn piece_at(&self, line: usize) -> Option<Of> {
-        let mut base = 0;
-        for p in &self.pieces {
-            if line < base + p.lines {
-                return Some(p.of);
-            }
-            base += p.lines;
-        }
-        None
     }
 
     /// The message whose words the document's `line` is (the air before one: the message before it).
@@ -512,22 +501,14 @@ pub fn laid_row(laid: &Laid, row: usize) -> usize {
     row + own_inside(laid)
 }
 
-/// The cut row its view mode's cursor is on while it has the keys — drawn whole (`whole::in_hand`): a tool call's
-/// row, the queued line.
-pub fn cursor_on(ed: &Editor) -> Option<crate::whole::Cut> {
-    use crate::whole::Cut;
+/// The transcript's line its view mode's cursor is on while it has the keys — a cut row there is in hand, whole on its
+/// card (`whole.rs`): a tool call's row, the queued line.
+pub fn cursor_line(ed: &Editor) -> Option<usize> {
     if !has_keys(ed) {
         return None;
     }
-    let c = ed.workspace.claude.chat.as_ref()?;
-    let t = c.transcript.as_ref()?;
-    let d = t.pane.doc_in()?;
-    let line = mv::line_of(&d.text, d.selection().primary().cursor(&d.text));
-    match t.piece_at(line)? {
-        Of::Msg(i) => c.msgs.get(i).filter(|m| m.look.is_some()).map(|m| Cut::Call(m.call.clone())),
-        Of::Queued => Some(Cut::Queued),
-        _ => None,
-    }
+    let d = transcript(ed)?.pane.doc_in()?;
+    Some(mv::line_of(&d.text, d.selection().primary().cursor(&d.text)))
 }
 
 // ── Its view mode ────────────────────────────────────────────────────────────────────────────────────────

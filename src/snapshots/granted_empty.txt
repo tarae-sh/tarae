@@ -17,7 +17,7 @@
 14  │                                                        │ │  › Explain what this file does
 15  │                                                        │ │  › Where is this used across the pr…
 16  ╰────────────────────────────────────────────────────────╯ │  › Why is this diagnostic happening?
-17                                                             │
+17   read /private/tmp/tarae-shot-granted/tarae  this checkout │
 18                                                             │  C-t for another model
 19                                                             │
 20                                                             │
@@ -48,7 +48,7 @@
 14
 15
 16
-17
+17  PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP
 18
 19
 20
@@ -79,7 +79,7 @@
 14  a                                                        a f  f ddddddd dddd dddd dddd dddd
 15  a                                                        a f  f ddddd dd dddd dddd dddddd ddd ddd
 16  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa f  f ddd dd dddd dddddddddd dddddddddd
-17                                                             f
+17   TTTT TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT  dddd dddddddd f
 18                                                             f  DDD fff fffffff fffff
 19                                                             f
 20                                                             f

@@ -352,8 +352,9 @@ pub struct ChatRow {
     /// Its last characters that aren't the text's either — a change's stamps, the writing caret, a folded
     /// thought's `…` (`chatdoc.rs` leaves them out of the transcript's document).
     pub tail: usize,
-    /// A row cut to one, or drawn whole while in hand: which (`whole.rs` — the mouse over it takes it in hand).
-    pub cut: Option<crate::whole::Cut>,
+    /// A row cut to one: the columns of its cut text (from, to — its card's text starts at `from`) and its whole
+    /// (`whole.rs`: on a card while the mouse is over it or it's in hand; its card's columns set where it's drawn).
+    pub cut: Option<(usize, usize, crate::whole::Whole)>,
 }
 
 /// What goes with the input's next message, each kind in the order added (`Chat.with`).
@@ -3213,7 +3214,7 @@ fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
             Look { verb: "glob", what: s("pattern"), pattern: true, range: within(s("path")), link: None }
         }
         "mcp__tarae__note" => {
-            // (all of it, a line each — its row cuts it, a line break a space there, and shows it whole in hand, a row
+            // (all of it, a line each — its row cuts it, a line break a space there, and its card shows it whole, a row
             // each line: `whole.rs`)
             let text = s("text");
             let lines = text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty());
@@ -3250,7 +3251,7 @@ fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
             Look { verb: "test", what, pattern: false, range: String::new(), link: Some(Link { path, line }) }
         }
         "mcp__tarae__run" => {
-            // (whole: its row cuts it, and shows it whole in hand — `whole.rs`)
+            // (whole: its row cuts it, and its card shows it whole — `whole.rs`)
             let what = s("command").split_whitespace().collect::<Vec<_>>().join(" ");
             Look { verb: "run", what, pattern: true, range: String::new(), link: None }
         }

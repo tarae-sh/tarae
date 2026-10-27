@@ -1433,9 +1433,11 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
   each warning — as a warning when it was past the sandbox. `tarae state` gives each run's `ran`: where, why and
   the warnings
 - **What's cut is whole where you look at it.** A row cut to one line — a tool call's row (`▸ run  cargo fmt …`),
-  a note's or reply's, the queued line — unfolds whole, wrapped under its words, while it's the row in hand: the
-  chat's view mode's cursor on it, or the mouse over it; moving on folds it back, and only the rows under it move.
-  The conversation keeps the whole words, so `/` finds a word past the cut and `y` copies all of it. A run panel's
+  a note's or reply's, the queued line — stays one row and shows whole on a borderless card over it, its words where
+  they started and wrapped under them, while it's the row in hand: the chat's view mode's cursor on it (the card on
+  the selected row's ground), or the mouse over it (the mouse's first); nothing under it moves, and moving on lets it
+  go. Past 12 rows the card's last says `↓ N more lines`, a press there opening it whole in a read-only buffer. The
+  conversation keeps the whole words, so `/` finds a word past the cut and `y` copies all of it. A run panel's
   command, cut to its tab's label in the panel's top line, shows whole on a borderless card over the line while the
   mouse is over the label (`$ …`, wrapped) — nothing under it moves, it takes no keys, and it goes as the mouse
   leaves; `K` in the panel says it whole

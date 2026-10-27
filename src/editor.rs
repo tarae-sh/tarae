@@ -544,9 +544,14 @@ pub struct Screen {
     pub chat_links: std::cell::RefCell<Vec<(usize, usize, usize, crate::chat::Link)>>,
     /// The chat's rows of tool calls: (row, call id) — a click goes to that call's replay stop.
     pub chat_calls: std::cell::RefCell<Vec<(usize, String)>>,
-    /// Where a row that's cut, or drawn whole while in hand, is: (row, start col, end col, which) — the mouse over
-    /// it takes it in hand (`whole.rs`).
+    /// Where a text that's cut is: (row, start col, end col, which) — the mouse over it shows it whole (`whole.rs`).
     pub cut_spots: std::cell::RefCell<Vec<(usize, usize, usize, crate::whole::Cut)>>,
+    /// Which of `cut_spots` is the row in hand — a list's selected row, the chat's view mode's cursor's: whole on its
+    /// card while nothing else is under the mouse (`whole::shown`).
+    pub cut_hand: std::cell::Cell<Option<(usize, crate::whole::Hand)>>,
+    /// The card a cut text shows on, as drawn (`term::cut_card`): the mouse over it keeps it, a press on its
+    /// `↓ N more lines` opens it whole (`whole::pressed`).
+    pub cut_card: std::cell::RefCell<Option<crate::whole::Card>>,
     /// The columns of the panel whose line holds a run's cut command (from, to) — the slot's, a docked or floating
     /// group's own: its run card stays inside them (`term::run_card`).
     pub run_line: std::cell::Cell<Option<(usize, usize)>>,
@@ -772,6 +777,9 @@ pub struct Editor {
     pub presence: crate::presence::State,
     /// The cut row the mouse is over — drawn whole while it stays there (`whole.rs`).
     pub cut_hover: Option<crate::whole::Cut>,
+    /// A press that landed on a cut text's card, until its release: its drags and release are that row's too
+    /// (`whole::held`).
+    pub cut_press: Option<crate::whole::Held>,
     /// The word the mouse is over — lit while it stays there (`wordspot.rs`): its row and columns.
     pub word_hover: std::cell::Cell<Option<(usize, usize, usize)>>,
     /// Where two workspaces' changes would conflict, and what each was last taken as (`overlap.rs`).
@@ -1279,6 +1287,7 @@ impl Editor {
             next_workspace: crate::event::WorkspaceId::HOME,
             presence: Default::default(),
             cut_hover: None,
+            cut_press: None,
             word_hover: Default::default(),
             overlap: Default::default(),
             keep_close: Default::default(),
@@ -3004,6 +3013,15 @@ impl Editor {
             (self.dragging, self.border_moved, self.border_name) = (None, false, false);
             (self.float_dragging, self.float_moved) = (None, false);
         }
+        // A press on a cut text's card (`whole.rs`): its `↓ N more lines` opens it whole; elsewhere on it, the press on
+        // the row it's about
+        let at = match m.kind {
+            K::Down => crate::whole::pressed(self, m.x as usize, m.y as usize),
+            K::Drag | K::Up => crate::whole::held(self, m.x as usize, m.y as usize, m.kind == K::Up),
+            _ => Some((m.x as usize, m.y as usize)),
+        };
+        let Some((x, y)) = at else { return };
+        let m = crate::event::Mouse { x: x as u16, y: y as u16, ..m };
         // (a drag held past its text's edge scrolls it until the button is let go — or pressed again, a release lost; let
         // go there, the selection reaches the row drawn there now: a tick's drag reads the frame before its scroll)
         if m.kind == K::Up && self.mouse_edge.is_some() {

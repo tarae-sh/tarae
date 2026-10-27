@@ -8559,9 +8559,14 @@ fn granted_rows_cut_the_same_when_scrolled() {
             crate::granted::items(&caps, [&none, &none, &none], &[], &more, 1_792_000_000),
             false,
         );
+        // (the rows as the list cut them — not those the selected row's card covers, its name whole)
         let shown = |s: &mut Shot| -> Vec<String> {
             let rows = rows_of(s, (0, 0, 80, h as usize));
-            rows.into_iter().filter(|r| r.contains("rustlib")).map(|r| r.trim().to_string()).collect()
+            let card = s.ed.screen.cut_card.borrow().as_ref().map_or(0..0, |c| c.rect.1..c.rect.1 + c.rect.3);
+            (rows.into_iter().enumerate())
+                .filter(|(y, r)| r.contains("rustlib") && !card.contains(y))
+                .map(|(_, r)| r.trim().to_string())
+                .collect()
         };
         let mut frames = vec![shown(&mut s)];
         for _ in 0..8 {

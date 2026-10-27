@@ -1513,7 +1513,7 @@ mod tests {
         let frame = String::from_utf8_lossy(&frame).into_owned();
         assert!(frame.contains("demo") && frame.contains("⎈ test"), "its tab, and the badge");
         assert!(frame.contains("deploy detail"), "a long name is cut, its state isn't");
-        // Asked to: with the keys, on the row for the code under the cursor — its name cut short, whole
+        // Asked to: with the keys, on the row for the code under the cursor — its name cut short, whole on its card
         // (and its state after it) over the code
         ed.plugin_run("side", "focus").unwrap();
         settle_until(&mut ed, |ed| ed.workspace.is_at(crate::workspace::At::Side));
