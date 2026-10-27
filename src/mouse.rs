@@ -1182,6 +1182,8 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             (_, A::Double) => AS_ONE,
             (_, A::Drag) => Gap(S, "a drag follows the pointer's row"),
             (_, A::Release) => RELEASE,
+            // (a tab's name on its top line lights under the mouse)
+            (Part::Word(_), A::Hover) => Acts,
             (_, A::Hover) => HOVER,
         },
         Su::FollowCard => match (part, act) {
@@ -1234,7 +1236,7 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             (_, A::Wheel) => Acts,
             (_, A::Release) => RELEASE,
             (Part::Word(_), A::Hover) => Acts,
-            (_, A::Hover) => Not("the path, the buffers: nothing to press there yet"),
+            (_, A::Hover) => Not("its line between the names: nothing to press"),
         },
         Su::Code(_) => match (part, act) {
             (_, A::Press) | (_, A::Wheel) | (_, A::Drag) => Acts,
@@ -1294,7 +1296,7 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ("A pane's top line", "", Su::PaneTop(0), Part::Blank),
         (
             "A pane's top line",
-            "a key hint (`C-c stop`, `enter go there`)",
+            "a name in its path (its row in the side panel's files), a buffer's name, a key hint (`enter go there`)",
             Su::PaneTop(0),
             Part::Word(Word::Does(0)),
         ),
@@ -1328,6 +1330,7 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
             Part::Word(Word::Does(0)),
         ),
         ("The side panel", "a row", Su::Side, Part::Row(0)),
+        ("The side panel", "a tab's name on its top line", Su::Side, Part::Word(Word::Does(0))),
         ("The side panel", "off its rows", Su::Side, Part::Blank),
         ("Run output", "text", Su::Output(Slot::Test), text),
         ("Run output", "off its rows", Su::Output(Slot::Test), Part::Blank),

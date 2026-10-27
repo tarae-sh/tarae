@@ -683,6 +683,33 @@ mod tests {
         assert!(said.contains("isn't valid: an environment variable's name"), "{said}");
     }
 
+    /// A plugin's tab opened while a name pressed in a path waits for its listing (mouse X): the side panel leaves the
+    /// files tab as every tab change does (`Sidebar::switch_to`) — the reveal goes with it, never taken on a later
+    /// `space e` (the reviewer's, round 3).
+    #[test]
+    fn a_plugins_tab_opened_mid_listing_drops_a_reveal() {
+        let (mut ed, dir) = setup("side-reveal", "x\n");
+        let root = std::fs::canonicalize(&dir).unwrap();
+        ed.workspace.root = root.clone();
+        let files = vec!["src/ui/card.rs".to_string()];
+        ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(root.clone(), files));
+        ed.sidebar_reveal(&root.join("src/ui"));
+        let reveal = |ed: &Editor| ed.workspace.viewer.sidebar.as_ref().and_then(|s| s.reveal.clone());
+        assert_eq!(reveal(&ed).as_deref(), Some("src/ui"), "kept for the listing it asked");
+        let side = abi::Side {
+            title: "demo".into(),
+            note: String::new(),
+            rows: Vec::new(),
+            keys: Vec::new(),
+            open: true,
+            focus: false,
+        };
+        ed.plugin_side("demo", Some(side));
+        let mode = ed.workspace.viewer.sidebar.as_ref().map(|s| s.mode);
+        assert_eq!(mode, Some(crate::sidebar::Mode::Plugin));
+        assert_eq!(reveal(&ed), None, "the files tab left: gone");
+    }
+
     /// A plugin's command typed on the command line is counted by the name it registered — never its words
     /// (`features.rs`).
     #[test]

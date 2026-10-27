@@ -32,6 +32,14 @@ pub enum Press {
     /// A word on the status line: its command by name wherever the keys are (from the chat's input `space g` would be
     /// typed) — a `:` one as typed (`:procs`).
     Command(&'static str),
+    /// A tab's name on the side panel's top line (`files · outline · git`): that tab, the keys there — `space e`'s,
+    /// `space o`'s … act, never its close (a press never closes what it names).
+    Side(crate::sidebar::Mode),
+    /// A buffer's name at a code pane's top line's right end: that buffer, in that pane.
+    Buffer(crate::document::DocId),
+    /// A folder's or the file's name in a code pane's path (`tarae › src › main.rs`): its row in the side panel's files,
+    /// opened and unfolded down to it, the keys there (`space e`'s).
+    Reveal(std::path::PathBuf),
 }
 
 /// A word where it's drawn: its row, its columns, the surface it's on as `mouse_under` names it, what a press does,
@@ -167,6 +175,19 @@ pub fn press(ed: &mut Editor, i: usize) {
             }
             None => ed.run_command_by_name(name),
         },
+        Press::Side(mode) => ed.sidebar_tab(mode),
+        Press::Buffer(id) => {
+            if let Surface::PaneTop(p) = on
+                && p != ed.workspace.viewer.focus
+            {
+                ed.focus_pane(p);
+            }
+            ed.workspace.viewer.at = At::Code;
+            if let Some(i) = ed.docs.iter().position(|d| d.id == id) {
+                ed.current = i;
+            }
+        }
+        Press::Reveal(path) => ed.sidebar_reveal(&path),
     }
 }
 

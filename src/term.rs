@@ -1978,6 +1978,7 @@ fn slot_header(
         spots: &editor.screen.word_spots,
         on: crate::mouse::Surface::SlotLine,
         right: None,
+        each: &[],
         // (by what each is: the slot's own keys typed in the slot — its list's while the list has them, as its hints are
         // then the list's —, the way in typed in the code)
         home: Some(match editor.workspace.viewer.at {
@@ -2121,6 +2122,8 @@ struct TopWords<'a> {
     spots: &'a std::cell::RefCell<Vec<crate::wordspot::Spot>>,
     on: crate::mouse::Surface,
     right: Option<crate::wordspot::Press>,
+    /// Or what a press on each of its right end's spans does, one by one (the code's buffers).
+    each: &'a [Option<crate::wordspot::Press>],
     /// Where its keys are typed (`Spot.home`) — but the way in (`way_in`: the key that gives the line's surface the keys,
     /// typed in the code).
     home: Option<At>,
@@ -2364,8 +2367,13 @@ fn top_line(
     };
     if right_cells > 0 {
         apply_put(&mut buf, card, " ")?;
-        for (s, st) in head.right {
+        let mut at = x + fill_end + 1;
+        for (k, (s, st)) in head.right.iter().enumerate() {
             apply_put(&mut buf, *st, s)?;
+            if let Some(p) = head.words.as_ref().and_then(|w| w.each.get(k).cloned().flatten()) {
+                word(at, p, vec![(s.clone(), *st)]);
+            }
+            at += s.width();
         }
         if let Some(p) = head.words.as_ref().and_then(|w| w.right.clone()) {
             word(x + fill_end + 1, p, head.right.to_vec());
@@ -4881,6 +4889,7 @@ fn draw(
     let taken: Vec<Rect4> = cards.chain([cursor_row, change].into_iter().flatten()).collect();
     let toast_folded = !draw_toasts(editor, ui, lay, &taken, out)?;
     run_card(editor, ui, lay, out)?;
+    cut_card(editor, ui, lay, out)?;
     if let Some(card) = offer {
         card.draw(editor, ui, out)?;
     }
@@ -5229,6 +5238,14 @@ fn draw_sessions_pane(
         let name = Style { fg: ui.participant(row.colour, true), bold: row.front || on, ..base };
         let shown = fit_ellipsis(&row.name, name_w);
         print_lit(out, (&shown, &row.name), (name, hit(on, name)), &hits_in(&row.name))?;
+        crate::whole::cut_at(
+            editor,
+            crate::whole::On::List,
+            (x0 + 2, y),
+            (&shown, &row.name),
+            name,
+            (0, usize::MAX),
+        );
         apply(out, name)?;
         queue!(out, Spaces(name_w.saturating_sub(shown.width())))?;
         used += name_w;
@@ -5343,6 +5360,14 @@ fn draw_messages_pane(
         queue!(out, Print(mark))?;
         let text = Style { fg: if on { strong.fg } else { card.fg }, bold: on, ..base };
         let shown = fit_ellipsis(&m.text, room);
+        crate::whole::cut_at(
+            editor,
+            crate::whole::On::List,
+            (x0 + 4, y),
+            (&shown, &m.text),
+            text,
+            (0, usize::MAX),
+        );
         let hits: Vec<(usize, usize)> = re.as_ref().map_or(Vec::new(), |re| {
             re.find_iter(&m.text).filter(|h| !h.is_empty()).map(|h| (h.start(), h.end())).collect()
         });
@@ -6478,6 +6503,13 @@ fn draw_text(
                 cursor = Some(((lay.x0 + lay.gutter + x) as u16, y));
             }
         }
+        // (a line end's words cut to `…`: whole under the mouse, on a card in this pane's columns — `whole::cut_at`; `used`
+        // as each counts it, `lead` the cells of its glyph after the three blanks)
+        let cut_end = |used: usize, lead: usize, shown: &str, whole: &str, style: Style| {
+            let at = (lay.x0 + lay.gutter + used + 2 + lead, y as usize);
+            let cols = (lay.x0, lay.x0 + lay.gutter + lay.text_cols);
+            crate::whole::cut_at(editor, crate::whole::On::Code, at, (shown, whole), style, cols);
+        };
         // Line-end note: `  ¶ first words +2` — accent glyph, the text a tone lower, replies faint
         let note_here = note_at.get(li).copied().flatten();
         if let Some((n, count)) = note_here
@@ -6523,6 +6555,7 @@ fn draw_text(
                 let fg = blend(glyph_fg, line_base.bg.or(ui.tint), 0.62).or(ui.virt.fg);
                 apply(out, Style { fg, italic: true, ..line_base })?;
                 queue!(out, Print(&body))?;
+                cut_end(used, 2, &body, &gist, Style { fg, italic: true, ..line_base });
                 apply(out, Style { fg: ui.linenr.fg, ..line_base })?;
                 queue!(out, Print(&tail))?;
             }
@@ -6546,7 +6579,9 @@ fn draw_text(
                 queue!(out, Print("▲ "))?;
                 let fg = if *looked { color } else { blend(color, line_base.bg.or(ui.tint), 0.72).or(color) };
                 apply(out, Style { fg, italic: true, ..line_base })?;
-                queue!(out, Print(fit_ellipsis(&text, room.saturating_sub(2))))?;
+                let shown = fit_ellipsis(&text, room.saturating_sub(2));
+                queue!(out, Print(&shown))?;
+                cut_end(used, 2, &shown, &text, Style { fg, italic: true, ..line_base });
             }
         }
         // Line-end diagnostic: `  ● message +2` — symbol in severity color, text a tone lower. …if no room
@@ -6575,15 +6610,14 @@ fn draw_text(
                 queue!(out, Print("   "))?;
                 apply(out, Style { fg: color, ..line_base })?;
                 queue!(out, Print(glyph), Print(" "))?;
-                apply(
-                    out,
-                    Style {
-                        fg: blend(color, line_base.bg.or(ui.tint), 0.72).or(color),
-                        italic: true,
-                        ..line_base
-                    },
-                )?;
+                let style = Style {
+                    fg: blend(color, line_base.bg.or(ui.tint), 0.72).or(color),
+                    italic: true,
+                    ..line_base
+                };
+                apply(out, style)?;
                 queue!(out, Print(&body))?;
+                cut_end(used, glyph.width() + 1, &body, msg, style);
                 apply(out, Style { fg: ui.linenr.fg, ..line_base })?;
                 queue!(out, Print(&more))?;
             }
@@ -6620,6 +6654,7 @@ fn draw_text(
                 };
                 apply(out, Style { fg, italic: true, ..line_base })?;
                 queue!(out, Print(&body))?;
+                cut_end(used, 2, &body, text, Style { fg, italic: true, ..line_base });
             }
         }
         // A session's name tag where it is now: `‹main writing›` — the accent for the one you follow, dim for the others;
@@ -6661,6 +6696,18 @@ fn draw_text(
                     at + tag.width(),
                     crate::workspace::Spot::Follow(m.session),
                 ));
+                // (folded to its name: `‹main writing›` whole under the mouse — `whole::cut_at`)
+                let whole = m.tag(usize::MAX).unwrap_or_default();
+                let style = Style { fg, bold: m.followed, ..line_base };
+                let cols = (lay.x0, lay.x0 + lay.gutter + lay.text_cols);
+                crate::whole::cut_at(
+                    editor,
+                    crate::whole::On::Code,
+                    (at, y as usize),
+                    (&tag, &whole),
+                    style,
+                    cols,
+                );
                 used += gap.len() + tag.width();
                 gap = " ";
             }
@@ -6687,6 +6734,7 @@ fn draw_text(
                 queue!(out, Print("   "))?;
                 apply(out, Style { fg, ..line_base })?;
                 queue!(out, Print(&tag))?;
+                cut_end(used, 0, &tag, &format!("‹{name}›"), Style { fg, ..line_base });
             }
         }
         // Blame (`b` in the git tab): who changed the cursor line, when, and why — faint, only where the line end is
@@ -6705,8 +6753,11 @@ fn draw_text(
             let used = x0 + col.saturating_sub(row_left) + shift + 1;
             let room = lay.text_cols.saturating_sub(used + 3);
             if room >= 12 {
-                apply(out, Style { fg: ui.linenr.fg, italic: true, ..line_base })?;
-                queue!(out, Print("   "), Print(fit_ellipsis(&b, room)))?;
+                let style = Style { fg: ui.linenr.fg, italic: true, ..line_base };
+                apply(out, style)?;
+                let shown = fit_ellipsis(&b, room);
+                queue!(out, Print("   "), Print(&shown))?;
+                cut_end(used, 0, &shown, &b, style);
             }
         }
     }
@@ -8072,8 +8123,12 @@ fn draw_list_row(
     selected: Style,
     highlight: bool,
     others: &[&str],
+    at: Option<(crate::whole::On, usize, usize)>,
 ) -> io::Result<usize> {
     let t = &editor.theme;
+    // (`at`: the cell it starts on — its label or hint cut to `…` there is whole under the mouse, `whole::cut_at`, on a
+    // card reaching right over what's beside the list)
+    let whole = (r.label.clone(), r.hint.clone());
     let matched = Style { fg: ui.accent.fg, bold: true, ..Style::default() };
     let mut used = 0;
     let base = if r.selected && highlight { selected } else { card };
@@ -8149,6 +8204,7 @@ fn draw_list_row(
     // extension, `_test`, `.spec` tell siblings apart), anything else ends in `…` (a folder keeps a cell for
     // its `/`)
     let fits = label_room.saturating_sub(used + usize::from(dir));
+    let label_at = used;
     let cut;
     let r = if r.label.width() > fits {
         // (a plain row whose hint keeps its room: a place, its start and its end kept — `:granted`)
@@ -8229,6 +8285,15 @@ fn draw_list_row(
                 _ => name,
             };
             used += print_styled(out, &r.label, &r.marks, style, matched, label_room.saturating_sub(used))?
+        }
+    }
+    if let Some((on, x, y)) = at {
+        use crate::whole::cut_at;
+        let style = if dir && !r.selected { dim } else { name };
+        cut_at(editor, on, (x + 2 + label_at, y), (&r.label, &whole.0), style, (0, usize::MAX));
+        if hint_w > 0 && hint_w < lw {
+            let plain = Style { fg: ui.virt.fg, ..base };
+            cut_at(editor, on, (x + 3 + lw - hint_w, y), (hint, &whole.1), plain, (0, usize::MAX));
         }
     }
     apply(out, base)?;
@@ -8627,7 +8692,10 @@ fn draw_picker(
         } else {
             let mut used = 0;
             match p.view.get(row - 3 - b.head) {
-                Some(r) => used = draw_list_row(out, r, lw, editor, ui, card, selected, true, &others)?,
+                Some(r) => {
+                    let at = Some((crate::whole::On::Picker, b.x, y as usize));
+                    used = draw_list_row(out, r, lw, editor, ui, card, selected, true, &others, at)?
+                }
                 None => {
                     apply(out, card)?;
                     queue!(out, Print("  "))?;
@@ -9421,13 +9489,16 @@ fn code_line(
     }
     left.extend(hint);
     let mut right = Vec::new();
-    // (the front session's buffers)
+    // (the front session's buffers — the others' `keep`s one apart, in order: the first folds first, as before, and each
+    // still names its buffer once fitted, `buffer_of`)
     let buffers = editor.buffers();
+    let mut buffer_of: Vec<(u8, crate::document::DocId)> = Vec::new();
     if buffers.len() > 1 && focused {
-        for i in buffers {
+        for (k, i) in buffers.into_iter().enumerate() {
             let (d, current) = (&editor.docs[i], i == editor.current);
             let mark = if d.is_modified() { " ●" } else { "" };
-            let keep = if current { 90 } else { 10 };
+            let keep = if current { 90 } else { (10 + k).min(89) as u8 };
+            buffer_of.push((keep, d.id));
             let style = named(if current { strong } else { dim }, d);
             right.push(Seg { text: format!("{}{mark}", d.display_name_short()), style, keep });
             // (the gap upright: an italic name's slant stops at its last letter)
@@ -9450,12 +9521,59 @@ fn code_line(
     if let Some(first) = left.first_mut() {
         first.text = first.text.trim_start().to_string();
     }
+    // (what a press on each fitted piece does: a name in the path its row in the side panel's files, a buffer's name that
+    // buffer — by `keep`, each piece's own: the project 20, a folder 30 + its depth, the file 250; a buffer `buffer_of`'s)
+    let place =
+        doc.path.as_deref().filter(|_| page.is_none() && crate::weave::of(doc).is_none()).and_then(|p| {
+            let rel = p.strip_prefix(&editor.workspace.root).ok()?;
+            Some((p, rel.parent().map(|d| d.iter().count()).unwrap_or(0)))
+        });
+    let reveal = |s: &Seg| -> Option<crate::wordspot::Press> {
+        use crate::wordspot::Press;
+        let (path, depth) = place?;
+        if s.text.trim().is_empty() || s.text == MEMBERS_SEP {
+            return None;
+        }
+        match s.keep {
+            20 => Some(Press::Reveal(editor.workspace.root.clone())),
+            250 => Some(Press::Reveal(path.to_path_buf())),
+            k @ 30.. if usize::from(k - 30) < depth => {
+                let up = depth - usize::from(k - 30);
+                path.ancestors().nth(up).map(|d| Press::Reveal(d.to_path_buf()))
+            }
+            _ => None,
+        }
+    };
+    let left_press: Vec<_> = left.iter().map(reveal).collect();
+    let right_press: Vec<_> = right
+        .iter()
+        .map(|s| {
+            let id = buffer_of.iter().find(|b| b.0 == s.keep && !s.text.trim().is_empty())?.1;
+            let one = buffer_of.iter().filter(|b| b.0 == s.keep).count() == 1;
+            one.then_some(crate::wordspot::Press::Buffer(id))
+        })
+        .collect();
     // (brought into sight from a link: its names flash)
     let lit = |s: Style| flashed(ui, editor, &pane, s);
     let names: Vec<(String, Style)> = left.into_iter().map(|s| (s.text, lit(s.style))).collect();
     let right: Vec<(String, Style)> = right.into_iter().map(|s| (s.text, lit(s.style))).collect();
-    let head = TopLine { names: &names, key, faint, right: &right, ..TopLine::default() };
+    let words = TopWords {
+        spots: &editor.screen.word_spots,
+        on: crate::mouse::Surface::PaneTop(id),
+        right: None,
+        each: &right_press,
+        home: Some(At::Code),
+        way_in: None,
+    };
+    let head = TopLine { names: &names, key, faint, right: &right, words: Some(words), ..TopLine::default() };
     let cols = top_line(out, line, ui.base, (x0, y0, width), ("", "", "┬"), &[], true, &head)?;
+    for ((name, press), &(a, b)) in names.iter().zip(left_press).zip(&cols) {
+        if let Some(press) = press.filter(|_| b > a) {
+            let spans = vec![(fit_ellipsis(&name.0, b - a), name.1)];
+            let spot = crate::wordspot::Spot::new(crate::mouse::Surface::PaneTop(id), press, (a, y0), spans);
+            editor.screen.word_spots.borrow_mut().push(spot);
+        }
+    }
     // (its key hints pressed do their keys, in this pane — `wordspot.rs`: `C-c stop` a page's read, `enter go there`)
     for i in 0..names.len().saturating_sub(1) {
         let (k, what) = (&names[i], &names[i + 1]);
@@ -13049,6 +13167,7 @@ fn draw_follow_card(
             spots: &editor.screen.word_spots,
             on,
             right: Some(Press::Now),
+            each: &[],
             home: None,
             way_in: None,
         }),
@@ -13433,8 +13552,19 @@ fn draw_sidebar(
         apply(out, card)?;
         if y == 0 {
             let line = edge_style(ui, card, Region::Side);
-            let head = TopLine { names: &head, details: &of, key, faint, ..TopLine::default() };
-            top_line(out, line, card, (0, 0, lay.rail_w - GAP), ("", "", "┬"), &[], true, &head)?;
+            let top = TopLine { names: &head, details: &of, key, faint, ..TopLine::default() };
+            let cols = top_line(out, line, card, (0, 0, lay.rail_w - GAP), ("", "", "┬"), &[], true, &top)?;
+            // (each tab's name pressed shows that tab — `pane_names` puts a ` · ` between two: every other one a name)
+            let mut spots = editor.screen.word_spots.borrow_mut();
+            for (k, &(a, b)) in cols.iter().take(head.len()).enumerate().step_by(2) {
+                let (Some(v), Some(name)) = (views.get(k / 2), head.get(k)) else { continue };
+                if b > a {
+                    let spans = vec![(fit_ellipsis(&name.0, b - a), name.1)];
+                    let press = crate::wordspot::Press::Side(v.1);
+                    spots.push(crate::wordspot::Spot::new(crate::mouse::Surface::Side, press, (a, 0), spans));
+                }
+            }
+            drop(spots);
             put_gutter(out, gutter(y))?;
             continue;
         }
@@ -13485,6 +13615,9 @@ fn draw_sidebar(
                     let selected =
                         id.as_deref().map_or(selected, |id| flashed_selected(ui, editor, id, selected));
                     given = id.as_deref().and_then(|id| ui_mark(ui, editor, id, card));
+                    // (the row in hand drawn whole over the code below: nothing cut to show)
+                    let at =
+                        overflow.as_ref().is_none_or(|o| o.0 != y).then_some((crate::whole::On::Side, 0, y));
                     // The row's own background runs on to the padding (its bar in the padding before it)
                     let used = draw_list_row(
                         out,
@@ -13496,6 +13629,7 @@ fn draw_sidebar(
                         selected,
                         editor.workspace.is_at(At::Side),
                         &[],
+                        at,
                     )?;
                     queue!(out, Spaces((w + PAD - 2).saturating_sub(used)))?;
                     w
@@ -13532,7 +13666,7 @@ fn draw_sidebar(
         && whole < lay.edit_w
     {
         queue!(out, MoveTo(0, y as u16))?;
-        draw_list_row(out, &row, whole + 1, editor, ui, card, selected, true, &[])?;
+        draw_list_row(out, &row, whole + 1, editor, ui, card, selected, true, &[], None)?;
         apply(out, Style { fg: selected.bg, bg: ui.base.bg, ..Style::default() })?;
         queue!(out, Print("▌"))?;
     }
@@ -14527,6 +14661,18 @@ fn draw_review_rail(
             }
         }
         marks.push((rows.len(), i, 2 + indent));
+        // (a name cut from the left: whole under the mouse, `whole::cut_at` — its row is its screen row)
+        if rows.len() < lay.body_h {
+            let on = crate::whole::On::Rail;
+            crate::whole::cut_at(
+                editor,
+                on,
+                (4 + indent, rows.len()),
+                (&shown, &piece),
+                name_st,
+                (0, usize::MAX),
+            );
+        }
         rows.push((row, bg, Some(i)));
     }
     let below = files_in(tree.get(r.scroll + room..).unwrap_or_default());
@@ -15630,6 +15776,7 @@ fn draw_chat(
             spots: &editor.screen.word_spots,
             on,
             right: right_press,
+            each: &[],
             home: None,
             way_in: None,
         }),
@@ -16744,6 +16891,54 @@ const RUN_CARD_MAX: usize = 12;
 /// peek's slight ground as a toast is (it takes no keys, so no frame), the command wrapped after a `$ ` hanging under
 /// it, its words where the label's start, as tall as it takes — up to `RUN_CARD_MAX` and the code's rows, past them
 /// its last row naming `K`. Nothing under it moves; the mouse leaving lets it go (`whole::drawn`).
+/// The room right of a cut text under which its card wraps in all its columns instead (`cut_card`).
+const CUT_CARD_MIN: usize = 32;
+
+/// A text cut to `…` under the mouse (`whole::cut_at`: blame or a diagnostic at a line's end, a list's row), whole on a
+/// borderless card over it (#178, #179): its first row on the cut one, the text where it started, in the style it was
+/// drawn in, a cell of ground either side — one row reaching right as far as its columns let it; past their end wrapped in
+/// the room right of where it starts (its text stays where it was), or, that room only a few words wide, in all its
+/// columns, moved left; rows after the first go down, up where the status line is nearer. Nothing under it moves.
+fn cut_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io::Result<()> {
+    let Some(cut @ crate::whole::Cut::Text(w)) = editor.cut_hover.as_ref() else { return Ok(()) };
+    let spot = editor.screen.cut_spots.borrow().iter().find(|s| s.3 == *cut).map(|s| (s.0, s.1));
+    let Some((y, a)) = spot else { return Ok(()) };
+    let (left, right) = (w.cols.0, w.cols.1.min(lay.width));
+    let room = right.saturating_sub(left + 2);
+    if room < 4 {
+        return Ok(());
+    }
+    // (wrapped in the room right of where it starts, so its text stays there — unless that's narrower than a few words:
+    // then in all its columns, moved left)
+    let past = right.saturating_sub(a + 1);
+    let wrap = if w.text.width() <= past || past >= CUT_CARD_MIN { past } else { room };
+    let rows: Vec<String> =
+        crate::cut::fit_in_hand(&w.text, wrap, false, true).into_iter().map(|p| p.text).collect();
+    let inner = rows.iter().map(|r| r.width()).max().unwrap_or(0);
+    let width = inner + 2;
+    let x = a.saturating_sub(1).max(left).min(right.saturating_sub(width)).max(left);
+    // (down from the cut row, as far as the status line; up from it where there's more room that way)
+    let bottom = lay.status_y as usize;
+    let n = rows.len();
+    let top = match y + n <= bottom || y + 1 < n {
+        true => y,
+        false => y + 1 - n,
+    };
+    let card = card_style(ui, editor, "ui.popup");
+    let ground = Style { bg: blend(card.bg, ui.tint, 1.0 - PEEK_STEP).or(card.bg), ..card };
+    let text = Style { bg: ground.bg, fg: w.style.fg.or(ground.fg), ..w.style };
+    for (k, row) in rows.iter().enumerate().take(bottom.saturating_sub(top)) {
+        queue!(out, MoveTo(x as u16, (top + k) as u16))?;
+        apply(out, ground)?;
+        queue!(out, Print(" "))?;
+        apply(out, text)?;
+        queue!(out, Print(row))?;
+        apply(out, ground)?;
+        queue!(out, Spaces(width - 1 - row.width()))?;
+    }
+    Ok(())
+}
+
 fn run_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io::Result<()> {
     let cut = crate::whole::Cut::Run(crate::sizes::Slot::Task);
     if editor.cut_hover.as_ref() != Some(&cut) {

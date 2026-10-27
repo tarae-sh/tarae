@@ -446,3 +446,121 @@ fn a_run_panels_command_is_whole_on_a_card_over_its_line() {
     assert!(!ed.unchanged);
     assert_eq!(frame(&mut ed), before, "gone as the mouse leaves");
 }
+
+/// The cut text recorded on the last frame (`cut_at`) whose whole holds `word`: its row, its columns, its whole.
+fn cut_text(ed: &Editor, word: &str) -> Option<(usize, usize, usize, Whole)> {
+    let spots = ed.screen.cut_spots.borrow();
+    spots.iter().find_map(|s| match &s.3 {
+        Cut::Text(w) if w.text.contains(word) => Some((s.0, s.1, s.2, (**w).clone())),
+        _ => None,
+    })
+}
+
+/// The code with one line and a diagnostic on it saying `message`.
+fn diagnosed(message: &str) -> Editor {
+    let mut ed = Editor::new(Config::default());
+    ed.docs[0].text = ropey::Rope::from_str("fn main() {}\n\nfn two() {}\n");
+    ed.docs[0].lsp.diagnostics = vec![crate::lsp::Diagnostic {
+        from: 3,
+        to: 7,
+        severity: 1,
+        message: message.into(),
+        raw: serde_json::json!({}),
+        source: 0,
+    }];
+    frame(&mut ed);
+    ed
+}
+
+/// frictions #178: a diagnostic cut to `…` at its line's end — the mouse over it shows it whole on a card over it, its
+/// first row on the cut one and its text where it started (nothing else moves: the code's rows as they were), wrapped
+/// in its pane's columns where they're too narrow; off it, the frame as it was. A whole one records nothing.
+#[test]
+fn the_mouse_over_a_cut_line_end_shows_it_whole_on_a_card() {
+    let long = format!("{} and farewell", "mismatched types: expected `usize`, found `String` ".repeat(4));
+    let mut ed = diagnosed(&long);
+    let before = frame(&mut ed);
+    assert!(!before.contains("farewell"), "cut:\n{before}");
+    let (y, a, b, w) = cut_text(&ed, "farewell").expect("recorded as cut");
+    assert_eq!(w.text, long);
+    let row = before.lines().nth(y).unwrap();
+    let start: String = row.chars().skip(a).take(12).collect();
+    assert!(long.starts_with(&start), "its spot is where its text is drawn: {start:?} in {row:?}");
+    assert!(row.chars().nth(b - 1) == Some('…'), "its spot ends at the `…`: {row:?}");
+    ed.handle_event(Event::Hover((a + 3) as u16, y as u16));
+    assert!(!ed.unchanged, "in hand: a frame");
+    let screen = frame(&mut ed);
+    assert!(screen.contains("farewell"), "whole:\n{screen}");
+    let now = screen.lines().nth(y).unwrap();
+    assert_eq!(
+        now.chars().take(a).collect::<String>(),
+        row.chars().take(a).collect::<String>(),
+        "the code stays"
+    );
+    assert!(
+        now.chars().skip(a).collect::<String>().starts_with(&start),
+        "its text where it started:\n{screen}"
+    );
+    for (i, (was, is)) in before.lines().zip(screen.lines()).enumerate().take(y) {
+        assert_eq!(was, is, "row {i} over it moved");
+    }
+    ed.handle_event(Event::Hover(0, 0));
+    assert_eq!(ed.cut_hover, None);
+    assert_eq!(frame(&mut ed), before, "gone as the mouse leaves");
+    // (a short one isn't cut: nothing recorded, nothing to show)
+    let mut ed = diagnosed("unused variable");
+    frame(&mut ed);
+    assert!(cut_text(&ed, "unused").is_none(), "whole already: no card");
+}
+
+/// frictions #179: a file's name cut in the side panel — whole on one row under the mouse, reaching right over the
+/// code (a tooltip), its row's other cells and the panel's other rows as they were.
+#[test]
+fn the_mouse_over_a_cut_name_in_the_side_panel_shows_it_whole() {
+    let mut ed = Editor::new(Config::default());
+    let root = std::path::PathBuf::from("/r");
+    let long = "a_very_long_file_name_farewell_the_panel_never_has_room_for_at_all.rs";
+    let files = vec!["short.rs".to_string(), long.to_string()];
+    ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(root, files));
+    let before = frame(&mut ed);
+    assert!(!before.contains("farewell"), "cut:\n{before}");
+    let (y, a, _, w) = cut_text(&ed, "farewell").expect("recorded as cut");
+    assert_eq!(w.text, long);
+    assert!(cut_text(&ed, "short").is_none(), "a name that fits: nothing");
+    ed.handle_event(Event::Hover((a + 2) as u16, y as u16));
+    let screen = frame(&mut ed);
+    let row = screen.lines().nth(y).unwrap();
+    assert!(row.contains(long), "whole on its own row, over the code:\n{screen}");
+    assert_eq!(row.find(long), before.lines().nth(y).unwrap().find("a_very"), "where it started");
+    for (i, (was, is)) in before.lines().zip(screen.lines()).enumerate() {
+        if i != y {
+            assert_eq!(was, is, "row {i} moved");
+        }
+    }
+    ed.handle_event(Event::Hover(0, 0));
+    assert_eq!(frame(&mut ed), before, "gone as the mouse leaves");
+}
+
+/// A cut text under what floats over it isn't in hand: the mouse over a picker where a line end's `…` is under it
+/// shows no card of it.
+#[test]
+fn a_cut_text_under_a_picker_is_not_in_hand() {
+    let long = format!("{} farewell", "a long message about the code ".repeat(8));
+    let mut ed = diagnosed(&long);
+    let (y, a, ..) = cut_text(&ed, "farewell").expect("recorded as cut");
+    let item = crate::picker::Item {
+        label: "one".into(),
+        action: crate::picker::Action::Message,
+        hint: String::new(),
+        glyph: None,
+    };
+    ed.open_picker(crate::picker::Picker::of("buffers", "things", vec![item], false), None);
+    frame(&mut ed);
+    let under = ed.mouse_under(crate::event::MouseKind::Down, a + 3, y).surface;
+    assert!(
+        matches!(under, crate::mouse::Surface::Picker | crate::mouse::Surface::PickerPreview),
+        "{under:?}"
+    );
+    ed.handle_event(Event::Hover((a + 3) as u16, y as u16));
+    assert_eq!(ed.cut_hover, None, "under the picker");
+}

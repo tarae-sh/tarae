@@ -280,7 +280,8 @@ impl Editor {
         if open || focus {
             match self.workspace.viewer.sidebar.as_mut() {
                 Some(s) => {
-                    s.mode = crate::sidebar::Mode::Plugin;
+                    // (as every tab change: what the files tab held goes with it — a reveal under way)
+                    s.switch_to(crate::sidebar::Mode::Plugin);
                     s.shown = None;
                 }
                 None => {

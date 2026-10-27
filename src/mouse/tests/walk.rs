@@ -118,6 +118,51 @@ const MOUSE_SCENES: &[Scene] = &[
         let md: String = (0..80).map(|i| format!("line {i} of the docs\n\n")).collect();
         ed.popup = Some(crate::markdown::render(&md, &ed.theme, None));
     }),
+    // (frictions #172–#174, #178, #179: what the mouse X piece added)
+    ("the side panel, long names", |ed| {
+        let root = ed.workspace.root.clone();
+        let names = ["src/a_file_whose_name_runs_on_far_past_the_panel.rs", "src/main.rs", "Cargo.toml"];
+        let files = names.map(String::from).to_vec();
+        ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(root, files));
+    }),
+    ("two buffers, a nested path", |ed| {
+        ed.docs[0].path = Some(ed.workspace.root.join("src/ui/card.rs"));
+        let mut other = crate::document::Document::from_str(77, "other\n");
+        other.path = Some(ed.workspace.root.join("other.rs"));
+        ed.docs.push(other);
+    }),
+    ("a long diagnostic at a line's end", |ed| {
+        long_text(ed);
+        // (a file's: a server's diagnostics are never a scratch buffer's — `space d` lists a file's)
+        ed.docs[0].path = Some(ed.workspace.root.join("src/main.rs"));
+        let message = "mismatched types: expected `usize`, found `String` ".repeat(4);
+        ed.docs[0].lsp.diagnostics = vec![crate::lsp::Diagnostic {
+            from: 4,
+            to: 8,
+            severity: 1,
+            message,
+            raw: serde_json::json!({}),
+            source: 0,
+        }];
+    }),
+];
+
+/// A `…` drawn that isn't a cut, by the words around it: something under way (a page's read too), a character waited
+/// for (`f…`), the chat's placeholder, which-key's mark of a menu (`Tasks …`).
+const NOT_CUTS: &[&str] =
+    &["looking…", "listing files…", "weaving…", "  reading ", " f…", "› Ask about ", " …  "];
+
+/// The surfaces whose `…`s aren't whole under the mouse yet (frictions #179's rest) — it only shrinks: one met with none
+/// left fails until it's taken off. (The walk meets these; the rest not done is named in mouse X's commit.)
+const NOT_WHOLE_YET: &[&str] = &[
+    // (a card's peek: its title cut)
+    "Card",
+    // (Claude's edit review's head: the instruction cut)
+    "EditReview",
+    // (a group's list: `:procs`' note when it's empty)
+    "List",
+    // (the status line's folds: another session's waiting card)
+    "Status",
 ];
 
 /// Scenes made with more than a screen of a surface (by its name in `Surface`'s `Debug`): its wheel has room to scroll,
@@ -440,6 +485,10 @@ struct Walk {
     moved: Vec<String>,
     /// `scene · surface` of `SCROLLS` whose wheel was judged with room.
     scrolled: Vec<String>,
+    /// `scene · surface: row` of a `…` drawn where no cut is recorded (`whole::cut_at`, the chat's rows).
+    dots: Vec<(String, String)>,
+    /// `scene · at x,y: …` where a cut text under the mouse wasn't taken in hand as its surface says, or drew nothing.
+    cuts: Vec<String>,
     events: usize,
 }
 
@@ -571,6 +620,7 @@ fn walk_held(walk: &mut Walk, n: usize, scene: &str, setup: fn(&mut Editor)) {
     if let Some(&(x, y)) = bare.first() {
         walk.bare.push(format!("{scene}: {} cells under nothing, first at {x},{y}", bare.len()));
     }
+    cuts_in(walk, &ed, &text, scene, setup);
     for &((x, y), u) in &sample(targets, n) {
         let found = format!("{:?}", u.surface);
         let found = found.split('(').next().unwrap_or_default().to_string();
@@ -630,6 +680,39 @@ fn walk_held(walk: &mut Walk, n: usize, scene: &str, setup: fn(&mut Editor)) {
     }
     for (_, cell) in only {
         wheel_at(walk, scene, setup, cell, None);
+    }
+}
+
+/// Every `…` on the scene's frame under a cut recorded (else listed, `Walk.dots`), and every cut text there taken in hand
+/// by the mouse over it — a card drawn — where what it's drawn on is what's under the pointer, and not where it isn't.
+fn cuts_in(walk: &mut Walk, ed: &Editor, text: &str, scene: &str, setup: fn(&mut Editor)) {
+    use crate::whole::Cut;
+    let spots = ed.screen.cut_spots.borrow().clone();
+    for (y, row) in text.lines().enumerate() {
+        for (x, _) in row.chars().enumerate().filter(|c| c.1 == '…') {
+            if !spots.iter().any(|s| s.0 == y && (s.1..s.2).contains(&x)) {
+                let surface = format!("{:?}", ed.mouse_at(x, y).surface);
+                let surface = surface.split('(').next().unwrap_or_default().to_string();
+                walk.dots.push((format!("{scene} · {surface}"), row.trim().to_string()));
+            }
+        }
+    }
+    for (y, a, b, cut) in spots {
+        let Cut::Text(w) = cut else { continue };
+        let x = (a + b) / 2;
+        let mut ed = fresh(setup);
+        let shows = w.on.under(ed.mouse_at(x, y).surface);
+        let before = snap(&mut ed);
+        ed.handle_event(Event::Hover(x as u16, y as u16));
+        let after = snap(&mut ed);
+        let held = matches!(&ed.cut_hover, Some(Cut::Text(h)) if h.text == w.text);
+        let what = match (shows, held, before.frame != after.frame) {
+            (true, true, true) | (false, false, _) => continue,
+            (true, false, _) => "not taken in hand",
+            (true, true, false) => "in hand, nothing drawn",
+            (false, true, _) => "in hand under what's over it",
+        };
+        walk.cuts.push(format!("{scene} · at {x},{y} ({:?}): {what} — {:?}", w.on, w.text));
     }
 }
 
@@ -741,6 +824,30 @@ fn no_press_is_lost_in_silence() {
     let unmet: Vec<String> =
         SCROLLS.iter().map(|s| format!("{} · {}", s.0, s.1)).filter(|s| !w.scrolled.contains(s)).collect();
     assert!(unmet.is_empty(), "the wheel never judged where it has room: {unmet:?}");
+}
+
+/// Every `…` tarae draws shows its whole text under the mouse (frictions #178, #179): on every scene's frame, each `…` is
+/// under a cut recorded where it's drawn, and the mouse over a cut text shows it whole (its card drawn) where what it's
+/// drawn on is under the pointer — but the surfaces not done yet (`NOT_WHOLE_YET`, only shrinking) and a `…` that
+/// isn't a cut (`NOT_CUTS`).
+#[test]
+fn every_cut_text_is_whole_under_the_mouse() {
+    if !pty("every_cut_text_is_whole_under_the_mouse") {
+        return;
+    }
+    let w = walk();
+    assert!(w.cuts.is_empty(), "{}", w.cuts.join("\n"));
+    let surface = |at: &str| at.split(" · ").nth(1).unwrap_or_default().to_string();
+    let open: Vec<String> = (w.dots.iter())
+        .filter(|(at, row)| {
+            !NOT_WHOLE_YET.contains(&surface(at).as_str()) && !NOT_CUTS.iter().any(|n| row.contains(n))
+        })
+        .map(|(at, row)| format!("{at}: {row}"))
+        .collect();
+    assert!(open.is_empty(), "a `…` not whole under the mouse:\n{}", open.join("\n"));
+    let done: Vec<&&str> =
+        NOT_WHOLE_YET.iter().filter(|s| !w.dots.iter().any(|d| surface(&d.0) == **s)).collect();
+    assert!(done.is_empty(), "no `…` left on {done:?}: take it off NOT_WHOLE_YET");
 }
 
 /// What `after`'s second look does and doesn't do. The scene's state changed by itself (`DRIFT`, as a thread's write

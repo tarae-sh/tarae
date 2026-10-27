@@ -175,6 +175,25 @@ fn presence_maps_lines_across_checkouts() {
     let (a, b, c) = (row_of(&r, "let a = 1;"), row_of(&r, "let b = 2;"), row_of(&r, "let c = 3;"));
     assert!(r[a].trim_end().ends_with("let a = 1;   ‹main reading›"), "{}", r[a]);
     assert!(!r[b].contains('‹'), "the tag on its first line only: {}", r[b]);
+    // (its two forms: whole, nothing cut to show; folded to its name where the line end is short, `‹main reading›`
+    // whole under the mouse — `whole::cut_at`)
+    let cut_tag = |ed: &Editor| {
+        let spots = ed.screen.cut_spots.borrow();
+        spots.iter().find_map(|s| match &s.3 {
+            crate::whole::Cut::Text(w) if w.text.starts_with('‹') => Some((s.0, s.1, s.2, w.text.clone())),
+            _ => None,
+        })
+    };
+    assert_eq!(cut_tag(&ed), None, "whole: nothing to show");
+    let folded = (20..100u16).rev().find_map(|w| {
+        let r = rows(&frame(&mut ed, w));
+        r.iter().any(|l| l.trim_end().ends_with("‹main›")).then_some(r)
+    });
+    let r = folded.expect("a width that folds it to its name");
+    let (y, from, to, whole) = cut_tag(&ed).expect("folded: recorded");
+    assert_eq!(whole, "‹main reading›", "the whole is the full tag");
+    let shown: String = r[y].chars().skip(from).take(to - from).collect();
+    assert_eq!(shown, "‹main›", "the cut one the folded tag, where it's drawn");
     // (each session its own colour, for its life — main's not fix's)
     assert_ne!(ed.workspace.claude.colour, ed.workspaces[0].claude.colour);
     let accent = colour_of(&ed, WorkspaceId::HOME);
@@ -509,9 +528,10 @@ fn a_tag_shows_only_while_it_says_something_new() {
     assert!(tag(&mut ed), "over its mark: its tag");
     ed.handle_event(crate::event::Event::Hover(0, 0));
     assert!(!tag(&mut ed), "away: gone");
-    // (a move that changes nothing draws nothing)
+    // (a move that changes nothing draws nothing — along the top line's lead, before the path's names: words since
+    // mouse X)
     ed.unchanged = false;
-    ed.handle_event(crate::event::Event::Hover(5, 0));
+    ed.handle_event(crate::event::Event::Hover(1, 0));
     assert!(ed.unchanged, "no frame for it");
     // The mouse still over where its bar was, the bar gone from under it (its gaze moved down): the tag goes with
     // the next frame

@@ -614,6 +614,136 @@ fn each_status_line_word_does_its_own() {
     assert!(ed.card_has_keys(), "the card's keys");
 }
 
+/// A file in the project, open, and the side panel's files listed (none of it on disk: the tree is given).
+fn in_project(ed: &mut Editor) -> std::path::PathBuf {
+    let root = ed.workspace.root.clone();
+    let rels = ["Cargo.toml", "src/main.rs", "src/ui/card.rs", "src/ui/list.rs"].map(String::from).to_vec();
+    ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(root.clone(), rels));
+    let path = root.join("src/ui/card.rs");
+    ed.docs[0].path = Some(path.clone());
+    path
+}
+
+/// frictions #172: a tab's name on the side panel's top line shows that tab, the keys there — and the tab already in
+/// sight pressed keeps it open (a press never closes what it names, where `space o` on it would).
+#[test]
+fn a_tabs_name_on_the_side_panels_line_shows_that_tab() {
+    let mut ed = editor();
+    in_project(&mut ed);
+    frame(&mut ed);
+    let names: Vec<String> = (ed.screen.word_spots.borrow().iter())
+        .filter(|s| matches!(s.press, Press::Side(_)))
+        .map(|s| s.spans[0].0.clone())
+        .collect();
+    assert_eq!(names, ["files", "outline", "git"], "each name its word");
+    press_word(&mut ed, &Press::Side(crate::sidebar::Mode::Outline));
+    let mode = |ed: &Editor| ed.workspace.viewer.sidebar.as_ref().map(|s| s.mode);
+    assert_eq!(mode(&ed), Some(crate::sidebar::Mode::Outline));
+    assert!(ed.workspace.is_at(At::Side), "the keys there");
+    press_word(&mut ed, &Press::Side(crate::sidebar::Mode::Outline));
+    assert_eq!(mode(&ed), Some(crate::sidebar::Mode::Outline), "pressed again: still there, never closed");
+    assert!(ed.workspace.is_at(At::Side));
+    press_word(&mut ed, &Press::Side(crate::sidebar::Mode::Git));
+    assert_eq!(mode(&ed), Some(crate::sidebar::Mode::Git));
+}
+
+/// frictions #173: a buffer's name at the code's top line's right end switches to it, in that pane, the keys there.
+#[test]
+fn a_buffers_name_on_the_codes_line_switches_to_it() {
+    let mut ed = editor();
+    let mut other = crate::document::Document::from_str(77, "other\n");
+    other.path = Some(ed.workspace.root.join("other.rs"));
+    ed.docs.push(other);
+    frame(&mut ed);
+    let s = spot(&ed, &Press::Buffer(77));
+    assert!(s.spans[0].0.contains("other.rs"), "{:?}", s.spans);
+    assert!(matches!(s.on, crate::mouse::Surface::PaneTop(_)));
+    ed.workspace.viewer.at = At::Chat;
+    press_word(&mut ed, &Press::Buffer(77));
+    assert_eq!(ed.doc().id, 77, "switched");
+    assert!(ed.workspace.is_at(At::Code), "the keys to the code");
+    // (the one in sight pressed: stays)
+    let first = ed.docs[0].id;
+    press_word(&mut ed, &Press::Buffer(77));
+    assert_eq!(ed.doc().id, 77);
+    press_word(&mut ed, &Press::Buffer(first));
+    assert_eq!(ed.doc().id, first, "and back");
+}
+
+/// frictions #174: a name in the code's path shows its row in the side panel's files — a folder selected and unfolded,
+/// the file its own row, the project its top — the keys there, as `space e`.
+#[test]
+fn a_name_in_the_codes_path_shows_its_row_in_the_files() {
+    use crate::sidebar::Target;
+    let mut ed = editor();
+    let path = in_project(&mut ed);
+    let root = ed.workspace.root.clone();
+    ed.workspace.viewer.sidebar = None;
+    frame(&mut ed);
+    let words: Vec<String> = (ed.screen.word_spots.borrow().iter())
+        .filter(|s| matches!(s.press, Press::Reveal(_)))
+        .map(|s| s.spans[0].0.clone())
+        .collect();
+    assert_eq!(words, ["tarae", "src", "ui", "card.rs"], "the project, each folder, the file");
+    in_project(&mut ed);
+    ed.workspace.viewer.at = At::Code;
+    frame(&mut ed);
+    let selected = |ed: &Editor| {
+        let s = ed.workspace.viewer.sidebar.as_ref().unwrap();
+        s.lines()[s.selected].target.clone()
+    };
+    press_word(&mut ed, &Press::Reveal(root.join("src/ui")));
+    assert!(ed.workspace.is_at(At::Side), "the keys there");
+    assert_eq!(selected(&ed), Target::Dir("src/ui".into()));
+    assert!(ed.workspace.viewer.sidebar.as_ref().unwrap().is_open("src/ui"), "unfolded");
+    ed.workspace.viewer.at = At::Code;
+    frame(&mut ed);
+    press_word(&mut ed, &Press::Reveal(path.clone()));
+    assert_eq!(selected(&ed), Target::File(path));
+    ed.workspace.viewer.at = At::Code;
+    frame(&mut ed);
+    press_word(&mut ed, &Press::Reveal(root));
+    assert_eq!(ed.workspace.viewer.sidebar.as_ref().unwrap().selected, 0, "the project: its top");
+}
+
+/// A name in the path pressed while the files are listed already (the usual case): taken at once, and still there once
+/// the listing the press asked for lands — never moved to the current file's row by it (the reviewer's, mouse X).
+#[test]
+fn a_revealed_folder_stays_selected_when_the_listing_it_asked_lands() {
+    use crate::sidebar::Target;
+    let dir = crate::scratch::Scratch::new("wordspot-reveal-lands");
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let rels = ["src/main.rs", "src/ui/card.rs", "src/ui/list.rs"];
+    for r in rels {
+        std::fs::create_dir_all(root.join(r).parent().unwrap()).unwrap();
+        std::fs::write(root.join(r), "\n").unwrap();
+    }
+    // (one file the given tree hasn't: there once the listing landed)
+    std::fs::write(root.join("README.md"), "\n").unwrap();
+    let mut ed = editor();
+    ed.workspace.root = root.clone();
+    let given = rels.map(String::from).to_vec();
+    ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(root.clone(), given));
+    ed.docs[0].path = Some(root.join("src/ui/card.rs"));
+    frame(&mut ed);
+    press_word(&mut ed, &Press::Reveal(root.join("src")));
+    let selected = |ed: &Editor| {
+        let s = ed.workspace.viewer.sidebar.as_ref().unwrap();
+        s.lines()[s.selected].target.clone()
+    };
+    assert_eq!(selected(&ed), Target::Dir("src".into()), "taken at once");
+    let landed = |ed: &Editor| {
+        let s = ed.workspace.viewer.sidebar.as_ref().unwrap();
+        s.lines().iter().any(|l| l.target == Target::File(root.join("README.md")))
+    };
+    while !landed(&ed) {
+        let ev = ed.events.recv_timeout(crate::test_results::PATIENCE).expect("the listing's result");
+        ed.handle_event(ev);
+    }
+    assert_eq!(selected(&ed), Target::Dir("src".into()), "the listing landed: still the folder pressed");
+    assert!(ed.workspace.viewer.sidebar.as_ref().unwrap().reveal.is_none(), "taken, then done");
+}
+
 fn said(k: &str) -> Option<Vec<String>> {
     keys(k).map(|v| v.iter().map(|k| k.to_string()).collect())
 }

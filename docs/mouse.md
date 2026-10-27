@@ -14,8 +14,8 @@ that fills it (S selection, O overlays and buttons).
 |---|---|---|---|---|---|---|---|
 | The code | text | ✓ | — ctrl+press goes there at the release | ✓ | ✓ | ✓ | — no hover from the language server — K |
 | The code | a presence tag | ✓ | — ctrl+press goes there at the release | ✓ | as one press | ✓ | ✓ |
-| A pane's top line |  | ✓ | — the press did it | — tiled panes don't move | as one press | ✓ | — the path, the buffers: nothing to press there yet |
-| A pane's top line | a key hint (`C-c stop`, `enter go there`) | ✓ | — the press did it | — tiled panes don't move | as one press | ✓ | ✓ |
+| A pane's top line |  | ✓ | — the press did it | — tiled panes don't move | as one press | ✓ | — its line between the names: nothing to press |
+| A pane's top line | a name in its path (its row in the side panel's files), a buffer's name, a key hint (`enter go there`) | ✓ | — the press did it | — tiled panes don't move | as one press | ✓ | ✓ |
 | A line between panels, between your panes | the chat's, the side panel's, the rail's, the slot's, a dock's, a divider | ✓ | ✓ | ✓ | as one press | — nothing to scroll | ✓ |
 | Claude's edit review | a change | ✓ | — the press did it | ✓ | as one press | ✓ | — nothing on hover |
 | Claude's edit review | off it | ✗ O: off the review: nothing until it's answered | — the press did it | ✗ O: off the review: nothing until it's answered | as one press | — nothing to scroll | — nothing on hover |
@@ -31,6 +31,7 @@ that fills it (S selection, O overlays and buttons).
 | The follow card | a strip mark | ✓ | — the press did it | — placed by rule | as one press | ✗ O: the wheel passes under it | ✓ |
 | The follow card | `▲ waits`, `paused`, the turn's word, its keys | ✓ | — the press did it | — placed by rule | as one press | ✗ O: the wheel passes under it | ✓ |
 | The side panel | a row | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | — a row opens on one press — the git tab's opens on two | ✓ | — nothing on hover |
+| The side panel | a tab's name on its top line | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | as one press | ✓ | ✓ |
 | The side panel | off its rows | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | as one press | ✓ | — nothing on hover |
 | Run output | text | ✓ | — the press did it | ✓ | ✓ | ✓ | — nothing on hover |
 | Run output | off its rows | ✓ | — the press did it | ✗ S: a drag follows the pointer | as one press | ✓ | — nothing on hover |

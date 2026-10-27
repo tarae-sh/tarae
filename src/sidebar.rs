@@ -119,6 +119,13 @@ pub struct Sidebar {
     /// The git tab's selection moved onto a changed file, shown in the code: its first change selected once its
     /// diff is there (`Editor::git_inline_sync`).
     pub land: Option<crate::document::DocId>,
+    /// A name pressed in a code pane's path (`wordspot::Press::Reveal`): the folder or file (relative, `""` the root)
+    /// to select once the files are listed (`reveal_now`).
+    pub reveal: Option<String>,
+    /// The listings asked (`sidebar_list_files`) and the latest of them landed: a reveal taken on the tree there was is
+    /// kept until the listing asked with it lands, then taken again there — never lost to the current file's row.
+    asked: u64,
+    landed: u64,
 }
 
 impl Sidebar {
@@ -127,6 +134,10 @@ impl Sidebar {
     pub fn switch_to(&mut self, mode: Mode) {
         if mode == self.mode {
             return;
+        }
+        // (a name pressed in a path, its listing not landed yet: done with the files tab — never taken on a later one)
+        if mode != Mode::Files {
+            self.reveal = None;
         }
         if mode == Mode::Git {
             self.selected = 0;
@@ -165,7 +176,40 @@ impl Sidebar {
             from_code: false,
             folded: HashSet::new(),
             land: None,
+            reveal: None,
+            asked: 0,
+            landed: 0,
         }
+    }
+
+    /// The folder or file `reveal` names: its folders unfolded down to it (a folder itself too), its row selected —
+    /// once the files are listed (until then it waits). Whether it was taken.
+    pub fn reveal_now(&mut self) -> bool {
+        let Some(rel) = self.reveal.clone().filter(|_| self.tree.is_some() && self.mode == Mode::Files)
+        else {
+            return false;
+        };
+        let dir = !rel.is_empty() && !self.rels.contains(&rel);
+        let mut open: Vec<&str> = ancestors(&rel).collect();
+        if dir {
+            open.push(&rel);
+        }
+        let open: Vec<String> = open.into_iter().map(str::to_string).collect();
+        self.set_open(open.iter().map(String::as_str), true);
+        let file = self.root.join(&rel);
+        // (a folder with one folder in it is drawn with it, `src/ui`: its row is the one that starts with it)
+        let row = self.files.iter().position(|l| match &l.target {
+            Target::Dir(d) => *d == rel || d.starts_with(&format!("{rel}/")),
+            Target::File(p) => !dir && *p == file,
+            _ => false,
+        });
+        self.selected = row.unwrap_or(0);
+        self.shown = None;
+        // (a listing under way lands after it: kept for that one, which takes it again)
+        if self.landed >= self.asked {
+            self.reveal = None;
+        }
+        true
     }
 
     /// Files mode with these files listed already (tests — the real list comes from a worker).
@@ -646,9 +690,41 @@ fn ancestors(rel: &str) -> impl Iterator<Item = &str> {
 impl Editor {
     /// `space e` / `space o` — show the panel in `mode` and focus it; on it already, close it.
     pub fn sidebar_show(&mut self, mode: Mode) {
+        self.sidebar_open(mode, false)
+    }
+
+    /// A tab's name pressed on the panel's top line (`wordspot::Press::Side`): that tab, the keys there — on it
+    /// already, nothing more (a press never closes what it names).
+    pub fn sidebar_tab(&mut self, mode: Mode) {
+        let on = self.workspace.is_at(At::Side)
+            && self.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == mode);
+        if !on {
+            self.sidebar_show(mode);
+        }
+    }
+
+    /// A name pressed in a code pane's path (`wordspot::Press::Reveal`): the files tab, the keys there, that folder or
+    /// file selected and unfolded down to — in front of a review's rail, as the other tabs go (its files aren't the
+    /// project's).
+    pub fn sidebar_reveal(&mut self, path: &std::path::Path) {
+        let on = self.workspace.is_at(At::Side)
+            && self.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == Mode::Files);
+        if !on {
+            self.sidebar_open(Mode::Files, true);
+        }
+        let Some(s) = self.workspace.viewer.sidebar.as_mut() else { return };
+        let Ok(rel) = path.strip_prefix(&s.root) else {
+            return self.set_status("not in the project's files");
+        };
+        s.reveal = Some(rel.to_string_lossy().replace('\\', "/"));
+        s.reveal_now();
+    }
+
+    /// `sidebar_show`'s act; `over_rail`: the files tab in front of a review's rail too (else the rail takes the keys).
+    fn sidebar_open(&mut self, mode: Mode, over_rail: bool) {
         self.workspace.viewer.side_last = mode;
         // A review's rail holds the panel's place — `space e` gives it the keys
-        if mode == Mode::Files && self.workspace.code_review.is_some() {
+        if mode == Mode::Files && self.workspace.code_review.is_some() && !over_rail {
             self.count(crate::features::Area::Panel, crate::features::panel(mode));
             return crate::codereview::rail_focus(self);
         }
@@ -707,8 +783,10 @@ impl Editor {
 
     /// (Re)list the files — on a worker, the tree built there too.
     pub(crate) fn sidebar_list_files(&mut self) {
-        let Some(s) = self.workspace.viewer.sidebar.as_ref() else { return };
+        let Some(s) = self.workspace.viewer.sidebar.as_mut() else { return };
         let root = s.root.clone();
+        s.asked += 1;
+        let ask = s.asked;
         self.events.jobs().spawn(move || {
             let rels: Vec<String> = crate::picker::list_files(&root)
                 .into_iter()
@@ -717,6 +795,7 @@ impl Editor {
             let tree = Tree::build(rels.iter().enumerate().map(|(i, r)| (i, r.as_str(), r.len())), true);
             move |ed: &mut Editor| {
                 let Some(s) = ed.workspace.viewer.sidebar.as_mut().filter(|s| s.root == root) else { return };
+                s.landed = s.landed.max(ask);
                 s.rels = rels;
                 s.tree = Some(tree);
                 s.build_files();
@@ -724,6 +803,10 @@ impl Editor {
                 s.revealed = None; // open the current file's folders in the new tree
                 s.shown = None;
                 ed.sidebar_sync();
+                // (a name pressed in a path while they were listed: its row, else the current file's)
+                if ed.workspace.viewer.sidebar.as_mut().is_some_and(|s| s.reveal_now()) {
+                    return;
+                }
                 if let Some(h) = ed.workspace.viewer.sidebar.as_ref().and_then(|s| s.here(ed)) {
                     ed.workspace.viewer.sidebar.as_mut().unwrap().selected = h;
                 }
@@ -1310,6 +1393,51 @@ mod tests {
         assert_eq!(inward(17, -1, 10..18, lands), Some(17), "a row that lands stays");
         assert_eq!(inward(17, 1, 10..18, |i| i == 12), Some(12), "none that way: the other");
         assert_eq!(inward(10, 1, 10..18, |_| false), None, "none in sight");
+    }
+
+    /// A name pressed in a code pane's path while the files are still listed: it waits, then its row is selected and
+    /// its folders unfolded (a folder itself too); a file its own row; the project its top.
+    #[test]
+    fn a_name_revealed_waits_for_the_files_then_is_selected() {
+        let root = PathBuf::from("/r");
+        let rels =
+            ["Cargo.toml", "src/main.rs", "src/ui/card.rs", "src/ui/list.rs"].map(String::from).to_vec();
+        let mut s = Sidebar::new(Mode::Files, root.clone());
+        s.reveal = Some("src/ui".into());
+        assert!(!s.reveal_now(), "listing: it waits");
+        assert!(s.reveal.is_some());
+        let listed = Sidebar::with_files(root.clone(), rels);
+        (s.rels, s.tree, s.loading) = (listed.rels, listed.tree, false);
+        assert!(s.reveal_now());
+        assert!(s.is_open("src") && s.is_open("src/ui"), "unfolded down to it, and it");
+        assert_eq!(s.files[s.selected].target, Target::Dir("src/ui".into()));
+        s.reveal = Some("src/ui/list.rs".into());
+        s.reveal_now();
+        assert_eq!(s.files[s.selected].target, Target::File(root.join("src/ui/list.rs")));
+        s.reveal = Some(String::new());
+        s.reveal_now();
+        assert_eq!(s.selected, 0, "the project: its top");
+    }
+
+    /// A reveal kept for a listing under way goes when the panel leaves the files tab before it lands: back on files
+    /// later, the listing's landing (or the next one) selects nothing of it (the reviewer's, mouse X round 2).
+    #[test]
+    fn a_reveal_goes_when_the_files_tab_is_left_mid_listing() {
+        let root = PathBuf::from("/r");
+        let rels = ["src/main.rs", "src/ui/card.rs"].map(String::from).to_vec();
+        let mut s = Sidebar::with_files(root, rels);
+        // (a listing asked with the press, not landed yet)
+        (s.asked, s.landed) = (1, 0);
+        s.reveal = Some("src/ui".into());
+        assert!(s.reveal_now(), "taken at once");
+        assert!(s.reveal.is_some(), "kept for the listing under way");
+        s.switch_to(Mode::Outline);
+        assert_eq!(s.reveal, None, "the files tab left: gone");
+        s.switch_to(Mode::Files);
+        s.landed = 1;
+        s.selected = 0;
+        assert!(!s.reveal_now(), "the listing lands: nothing to take");
+        assert_eq!(s.selected, 0);
     }
 
     /// A file in a review: the git tab lists no hunks for it — they're against the review's base, not the
