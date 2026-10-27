@@ -585,7 +585,7 @@ pub(crate) mod tests {
         if crate::test_results::unoptimized("snapread::tests::perf_snapshot_reads") {
             return;
         }
-        const CORPUS: &str = "53843b6";
+        let corpus = crate::test_results::corpus();
         const PATHS: [&str; 8] =
             ["src", "runtime", "docs", "tests", "xtask/src", "Cargo.toml", "README.md", "CONTRIBUTING.md"];
         let s = crate::scratch::Scratch::new("snapread-perf");
@@ -593,13 +593,13 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let here = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let archive = std::process::Command::new("git")
-            .args(["archive", "--format=tar", CORPUS, "--"])
+            .args(["archive", "--format=tar", corpus, "--"])
             .args(PATHS)
             .current_dir(&here)
             .output()
             .unwrap();
         if !archive.status.success() {
-            let why = format!("snapread::tests::perf_snapshot_reads — no commit {CORPUS} here");
+            let why = format!("snapread::tests::perf_snapshot_reads — no commit {corpus} here");
             return crate::test_results::said_skip(&why);
         }
         let mut tar = std::process::Command::new("tar")

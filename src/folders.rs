@@ -91,6 +91,13 @@ impl Roots {
         Some(Inside { root: f.clone(), real, project: false })
     }
 
+    /// Them with the folders still themselves only (`itself`): one swapped for a link left out — what lists or
+    /// searches them never goes through its link. A worker's (it reads the disk).
+    pub fn standing(&self) -> Roots {
+        let folders = self.folders.iter().filter(|f| itself(f)).cloned().collect();
+        Roots { project: self.project.clone(), folders }
+    }
+
     /// What a refusal says Claude's tools change: the project, or the project and its folders.
     pub fn said(&self) -> &'static str {
         match self.folders.is_empty() {
@@ -384,9 +391,10 @@ impl Editor {
         self.events_for(front);
     }
 
-    /// The front workspace's folders looked at again as a turn starts (`chat::submit_as`): each judged as
-    /// `folders_back` does — one that's a link now, gone, or in or holding what it mustn't is dropped and said (the
-    /// tools refuse it meanwhile: `Roots::inside`). Nothing when there are none.
+    /// The front workspace's folders looked at again as a turn starts (`chat::submit_as`) and as the file picker or
+    /// `space /` opens: each judged as `folders_back` does — one that's a link now, gone, or in or holding what it
+    /// mustn't is dropped and said, once (the tools refuse it meanwhile: `Roots::inside`; the lists leave it out:
+    /// `Roots::standing`). Nothing when there are none.
     pub(crate) fn folders_look(&mut self) {
         if self.workspace.folders.is_empty() {
             return;
@@ -402,6 +410,11 @@ impl Editor {
                         f.instructions = k.instructions.clone();
                     }
                 }
+                // (only those still there: two looks under way say a folder once)
+                let dropped: Vec<_> = dropped
+                    .into_iter()
+                    .filter(|(at, _)| ed.workspace.folders.iter().any(|f| f.at == *at))
+                    .collect();
                 if dropped.is_empty() {
                     return;
                 }

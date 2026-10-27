@@ -53,6 +53,32 @@ pub fn fit_left(s: &str, width: usize) -> String {
     std::iter::once('…').chain(tail.into_iter().rev()).collect()
 }
 
+/// A place (a folder's path) that doesn't fit, folded from its start at a folder's boundary where one is left —
+/// `…/ZCTJ/infra`, never `…hot.ZCTJ/infra`; its last part alone cut as `fit_left` cuts it. `:folders`' place and a
+/// workspace's folder in the file picker.
+pub fn fit_place(s: &str, width: usize) -> String {
+    let at = fit_left(s, width);
+    match at.strip_prefix('…').filter(|r| !r.starts_with('/')).and_then(|r| r.find('/').map(|i| &r[i..])) {
+        Some(rest) => format!("…{rest}"),
+        None => at,
+    }
+}
+
+/// `fit_place` with a row's match marks (characters of `s`) moved along: whole, they stay; folded, those cut off go and
+/// the rest follow the `…`; nothing left, none.
+pub fn fit_place_marked(s: &str, marks: &[u32], width: usize) -> (String, Vec<u32>) {
+    let cut = fit_place(s, width);
+    let marks = match cut.strip_prefix('…') {
+        _ if cut == s => marks.to_vec(),
+        Some(rest) => {
+            let gone = (s.chars().count() - rest.chars().count()) as u32;
+            marks.iter().filter(|&&m| m >= gone).map(|&m| m - gone + 1).collect()
+        }
+        None => Vec::new(),
+    };
+    (cut, marks)
+}
+
 /// One row of `fit_in_hand`'s: its text, and whether the break before it took a space (a line break of `s` counts as
 /// one — a paragraph keeps it as a space).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -121,6 +147,37 @@ mod tests {
 
     fn texts(rows: &[Wrapped]) -> Vec<(&str, bool)> {
         rows.iter().map(|r| (r.text.as_str(), r.space)).collect()
+    }
+
+    #[test]
+    fn a_place_folds_at_a_folders_boundary() {
+        let p = "/private/tmp/tarae-shot-folders/infra";
+        assert_eq!(fit_place(p, 40), p, "fits: whole");
+        assert_eq!(fit_place(p, 30), "…/tmp/tarae-shot-folders/infra");
+        assert_eq!(fit_place(p, 28), "…/tarae-shot-folders/infra", "`…mp/` folded to the boundary");
+        assert_eq!(fit_place(p, 20), "…/infra", "never mid-name while a boundary is left");
+        assert_eq!(fit_place("/a/infrastructure", 8), "…ructure", "its last part alone: cut");
+        assert_eq!(fit_place(p, 0), "");
+    }
+
+    /// A place's match marks: whole, each where it was (the leading `/` too); folded, those cut off gone and the rest
+    /// after the `…` on the same characters; nothing left, none.
+    #[test]
+    fn a_places_marks_follow_its_fold() {
+        let p = "/x/ZCTJ/infra";
+        let marked = |(s, m): (String, Vec<u32>)| -> String {
+            s.chars().enumerate().filter(|(i, _)| m.contains(&(*i as u32))).map(|(_, c)| c).collect()
+        };
+        assert_eq!(
+            fit_place_marked(p, &[0, 1, 8], 20),
+            (p.to_string(), vec![0, 1, 8]),
+            "whole: as they were"
+        );
+        assert_eq!(marked(fit_place_marked(p, &[0, 1, 8], 20)), "/xi");
+        let folded = fit_place_marked(p, &[0, 1, 7, 8], 10);
+        assert_eq!(folded.0, "…/infra");
+        assert_eq!(marked(folded), "/i", "the `/` and `i` kept, `x` and the first `/` cut off");
+        assert_eq!(fit_place_marked(p, &[0, 8], 0), (String::new(), Vec::new()));
     }
 
     #[test]

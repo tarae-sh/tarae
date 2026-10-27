@@ -126,7 +126,7 @@ fn stamp(p: &Path) -> Stamp {
 /// by the second), so a change in the tick its stamp was taken in leaves the stamp as it was — a resolve
 /// that read the file before the change, finishing after it, would be kept with what it read (seen on
 /// Linux: a worker's resolve between a hook's write and its `chmod`).
-const RACY: std::time::Duration = std::time::Duration::from_secs(1);
+pub(crate) const RACY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Whether `s` was changed within `RACY` before `at`.
 fn racy(s: &Stamp, at: std::time::SystemTime) -> bool {
@@ -1162,6 +1162,28 @@ pub(crate) fn not_in_this_repository(dir: &Path, args: &[&str]) {
         let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
         std::process::abort();
     }
+}
+
+/// Tests only: git in a fixture's own repository (`dir`) — never tarae's (`not_in_this_repository`) — with its own
+/// name, no signing, no hooks, none of the machine's config (user and system, its ignore and attributes — as `base`
+/// stands in for them — and the environment's template folder), so nothing of the user's (`core.fsmonitor`, a global
+/// hooks folder, `init.templateDir`) runs or is copied. What it printed; a failure fails the test.
+#[cfg(test)]
+pub(crate) fn fixture_git(dir: &Path, args: &[&str]) -> String {
+    not_in_this_repository(dir, args);
+    let out = Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
+        .args(["-c", "init.defaultBranch=main", "-c", "core.hooksPath=/dev/null"])
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("XDG_CONFIG_HOME", "/dev/null")
+        .env_remove("GIT_TEMPLATE_DIR")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 #[cfg(test)]

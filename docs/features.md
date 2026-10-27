@@ -583,7 +583,11 @@ your `PATH`.
   Refused, and said why: the project, in it or holding it, your home or above, what runs never read, where a write
   would run something later, in or holding a place Claude's runs write (`/tmp`: a run could put a link in its
   place), another checkout of the project's repository (that's a workspace). One that's become a link since is no
-  folder: Claude's tools refuse what's through it, and it's dropped and said as your next message goes
+  folder: Claude's tools refuse what's through it, the lists and searches leave it out, and it's dropped and said as
+  your next message goes or the file picker or `space /` opens. The file picker (`space f`, its title naming the
+  folders) and `space /` take its files too, under one row of its whole path after the project's (narrow, folded from
+  its start at a folder's boundary, its count kept — whole on the row in hand's card); `g r`'s places and text
+  matches put a folder's file the same way
   ([folders](claude-integration.md#another-folder))
 - **Review like a pull request** — Claude's edits hunk by hunk, or all at the turn's end
   ([review at the end](claude-integration.md#review-at-the-end)); any change reviewed over the real buffers, and a

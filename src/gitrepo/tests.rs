@@ -336,3 +336,65 @@ fn taraes_own_git_is_in_english_and_the_hooked_form_in_the_users_language() {
     assert_eq!(language(&r.hooked_command(&["status"]).unwrap()), None, "the user's, inherited");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A fixture's git (`fixture_git`) takes nothing of the machine's: a user config naming a hooks folder, an fsmonitor
+/// and a template folder, and the environment's template folder — none runs (markers in the test's own scratch) nor
+/// is copied into the repository it makes. In a process of its own (the variables are the process's): this binary on
+/// `fixture_git_in_its_own_process`.
+#[test]
+fn a_fixtures_git_takes_none_of_the_machines_config() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let s = crate::scratch::Scratch::new("fixture-git");
+    let (ran, repo) = (s.join("ran"), s.join("repo"));
+    let script = |at: PathBuf, name: &str| {
+        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::fs::write(&at, format!("#!/bin/sh\necho {name} >> '{}'\n", ran.display())).unwrap();
+        std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    for hook in ["pre-commit", "post-commit"] {
+        script(s.join("hooks").join(hook), hook);
+    }
+    script(s.join("fsmonitor"), "fsmonitor");
+    for (t, file) in [("template", "from-config"), ("env-template", "from-env")] {
+        std::fs::create_dir_all(s.join(t).join("info")).unwrap();
+        std::fs::write(s.join(t).join("info").join(file), "").unwrap();
+    }
+    let config = s.join("user.gitconfig");
+    let (hooks, fsmonitor, template) = (s.join("hooks"), s.join("fsmonitor"), s.join("template"));
+    std::fs::write(
+        &config,
+        format!(
+            "[core]\n\thooksPath = {}\n\tfsmonitor = {}\n[init]\n\ttemplateDir = {}\n",
+            hooks.display(),
+            fsmonitor.display(),
+            template.display()
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(&repo).unwrap();
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "gitrepo::tests::fixture_git_in_its_own_process", "--ignored", "--nocapture"])
+        .env("GIT_CONFIG_GLOBAL", &config)
+        .env("GIT_TEMPLATE_DIR", s.join("env-template"))
+        .env("TARAE_FIXTURE_AT", &repo)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && String::from_utf8_lossy(&out.stdout).contains("1 passed"), "{err}");
+    assert!(!ran.exists(), "ran: {}", std::fs::read_to_string(&ran).unwrap_or_default());
+    for file in ["from-config", "from-env"] {
+        assert!(!repo.join(".git/info").join(file).exists(), "{file}: a template copied");
+    }
+    assert!(repo.join(".git/HEAD").exists(), "its repository made");
+}
+
+#[test]
+#[ignore = "a_fixtures_git_takes_none_of_the_machines_config's own process"]
+fn fixture_git_in_its_own_process() {
+    let at = PathBuf::from(std::env::var_os("TARAE_FIXTURE_AT").unwrap());
+    fixture_git(&at, &["init", "-q"]);
+    std::fs::write(at.join("a.txt"), "a\n").unwrap();
+    fixture_git(&at, &["add", "-A"]);
+    fixture_git(&at, &["status", "--porcelain"]);
+    fixture_git(&at, &["commit", "-qm", "a"]);
+}

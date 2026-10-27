@@ -212,8 +212,10 @@ fn place_items(
     declared: &[(std::path::PathBuf, usize)],
 ) -> Vec<Item> {
     let is_decl = |p: &Place| declared.iter().any(|(path, line)| *path == p.path && *line == p.line);
+    // (the declaration first, then the project's before a workspace's folder's — as `space /`'s hits)
+    let key = |p: &Place| (!is_decl(p), !p.path.starts_with(root));
     crate::sorting::by(&mut places, |a, b| {
-        (!is_decl(a), &a.path, a.line, a.col).cmp(&(!is_decl(b), &b.path, b.line, b.col))
+        (key(a), &a.path, a.line, a.col).cmp(&(key(b), &b.path, b.line, b.col))
     });
     places.dedup_by(|a, b| a.path == b.path && a.line == b.line && a.col == b.col);
     places
@@ -2989,7 +2991,9 @@ impl Editor {
                     _ => return,
                 };
                 // (short — the title holds a few words; the server's state is said beside it)
-                let mut picker = Picker::of("text-matches", "text matches", items, true).grouped(here);
+                let mut picker = Picker::of("text-matches", "text matches", items, true)
+                    .grouped(here)
+                    .in_folders(ed.workspace.roots().folders());
                 picker.emphasis = regex::Regex::new(&format!(r"\b{}\b", regex::escape(&name))).ok();
                 ed.open_picker(picker, None);
                 ed.lsp.refs.texts = ed.picker.as_ref().map(|p| p.id);
@@ -3281,8 +3285,9 @@ impl Editor {
                     }
                     return;
                 }
-                let mut picker =
-                    Picker::of("places", goto.noun(), items, true).grouped(ed.workspace.root.clone());
+                let mut picker = Picker::of("places", goto.noun(), items, true)
+                    .grouped(ed.workspace.root.clone())
+                    .in_folders(ed.workspace.roots().folders());
                 let name = &ed.lsp.refs.name;
                 picker.emphasis = (!name.is_empty())
                     .then(|| regex::Regex::new(&format!(r"\b{}\b", regex::escape(name))).ok())
@@ -5085,6 +5090,103 @@ mod tests {
         settle_until(&mut ed, |ed| ed.picker.is_some());
         assert_eq!(labels(&rows(&mut ed))[..2], ["other.rs [2]", "4: pub fn a() {} [decl]"]);
         std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// `g r` in a file of a workspace's folder: its places are under the folder's one row — its whole path, as the
+    /// file picker has it — after the project's, never sharing it with the one folder in it (`src`).
+    #[test]
+    fn references_in_a_folders_file_are_under_its_row() {
+        let (mut ed, file, log) = setup("refs-folder", "fn a() {}\nfn b() { a() }\n");
+        let folder = file.parent().unwrap().to_path_buf();
+        let p = crate::scratch::Scratch::new("lsp-refs-folder-project");
+        let project = std::fs::canonicalize(&*p).unwrap();
+        std::fs::write(project.join("lib.rs"), "use crate::a;\n").unwrap();
+        let other = folder.join("src/other.rs");
+        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+        std::fs::write(&other, "use crate::a;\nfn c() { a() }\n").unwrap();
+        ed.workspace.root = project.clone();
+        let infra =
+            crate::folders::Folder { at: folder.clone(), name: "infra".into(), instructions: Vec::new() };
+        ed.workspace.folders.push(infra);
+        let cid = ed.doc().lsp.client.unwrap();
+        let caps = json!({ "positionEncoding": "utf-8", "referencesProvider": true });
+        ed.on_lsp_message(cid, json!({ "id": 0, "result": { "capabilities": caps } }));
+        ed.doc_mut().set_selection(Selection::point(3));
+        feed(&mut ed, "gr");
+        sent_until(&log, &["textDocument/references"]);
+        let at = |path: &PathBuf, line: u64, col: u64| {
+            json!({ "uri": lsp::uri(path), "range": {
+            "start": { "line": line, "character": col }, "end": { "line": line, "character": col + 1 } } })
+        };
+        let id = pending_of(&ed, Kind::Goto(Goto::References));
+        let refs = json!([at(&other, 1, 9), at(&project.join("lib.rs"), 0, 12), at(&other, 0, 12)]);
+        ed.on_lsp_message(cid, json!({ "id": id, "result": refs }));
+        settle_until(&mut ed, |ed| ed.picker.is_some());
+        let p = ed.picker.as_mut().expect("the list");
+        let rows: Vec<String> = (p.visible(20).into_iter())
+            .map(|r| if r.hint.is_empty() { r.label } else { format!("{} [{}]", r.label, r.hint) })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                "lib.rs [1]".to_string(),
+                "1: use crate::a;".into(),
+                folder.display().to_string(),
+                "src".into(),
+                "other.rs [2]".into(),
+                "1: use crate::a;".into(),
+                "2: fn c() { a() }".into(),
+            ],
+            "the project's, then the folder's under its one row"
+        );
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    /// N3 in a workspace's folder: `g r`'s text matches, searched in the server's root (the folder — the project's
+    /// `a` isn't among them), are under the folder's one row — its whole path, as the file picker has it — never
+    /// sharing it with the one folder in it (`src`).
+    #[test]
+    fn text_matches_in_a_folders_file_are_under_its_row() {
+        let (mut ed, file, _log) = setup("texts-folder", "fn a() {}\nfn b() { a() }\n");
+        let folder = file.parent().unwrap().to_path_buf();
+        // (neither the stand-in's log, which holds the file's text, nor the file asked from searched: every match
+        // in `src`, the one folder in it — the row the folder's mustn't share)
+        std::fs::write(folder.join(".rgignore"), "sent.log\n/main.rs\n").unwrap();
+        let p = crate::scratch::Scratch::new("lsp-texts-folder-project");
+        let project = std::fs::canonicalize(&*p).unwrap();
+        std::fs::write(project.join("lib.rs"), "use crate::a;\n").unwrap();
+        std::fs::create_dir_all(folder.join("src")).unwrap();
+        std::fs::write(folder.join("src/other.rs"), "use crate::a;\nfn c() { a() }\n").unwrap();
+        ed.workspace.root = project.clone();
+        let infra =
+            crate::folders::Folder { at: folder.clone(), name: "infra".into(), instructions: Vec::new() };
+        ed.workspace.folders.push(infra);
+        let cid = ready(&mut ed);
+        ed.on_lsp_message(
+            cid,
+            json!({ "method": "$/progress", "params": { "token": "rustAnalyzer/Indexing",
+                "value": { "kind": "begin", "title": "Indexing" } } }),
+        );
+        ed.doc_mut().set_selection(Selection::point(3));
+        feed(&mut ed, "gr");
+        settle_until(&mut ed, |ed| ed.picker.is_some());
+        let p = ed.picker.as_mut().expect("the list");
+        assert_eq!(p.title, "text matches");
+        let rows: Vec<String> = (p.visible(20).into_iter())
+            .map(|r| if r.hint.is_empty() { r.label } else { format!("{} [{}]", r.label, r.hint) })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                folder.display().to_string(),
+                "src".into(),
+                "other.rs [2]".into(),
+                "1: use crate::a;".into(),
+                "2: fn c() { a() }".into(),
+            ],
+            "the folder's under its one row"
+        );
+        std::fs::remove_dir_all(&folder).ok();
     }
 
     /// N3: `g r` while the server is loading lists the name's text matches at once (whole word, case as

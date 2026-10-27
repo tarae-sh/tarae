@@ -91,6 +91,16 @@ pub fn unoptimized(name: &str) -> bool {
     true
 }
 
+/// The commit the perf scenes copy this repository as of: `tests/perf.rs`'s `CORPUS`, read from there — one place
+/// (moving it is a new baseline for every scene).
+#[cfg(test)]
+pub fn corpus() -> &'static str {
+    const PERF: &str = include_str!("../tests/perf.rs");
+    const AT: &str = "const CORPUS: &str = \"";
+    let at = PERF.find(AT).expect("tests/perf.rs's CORPUS") + AT.len();
+    &PERF[at..at + PERF[at..].find('"').unwrap()]
+}
+
 /// How long a test waits for what it waits on before it calls it a hang — one value for every crate's tests, the
 /// testkit's (`crates/tarae-testkit`, where it's told why).
 #[cfg(test)]

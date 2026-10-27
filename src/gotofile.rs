@@ -148,7 +148,10 @@ fn opened(ed: &mut Editor, found: Vec<Found>) {
 fn folder(ed: &mut Editor, root: PathBuf) {
     let title = format!("files in {}", ed.shown(&root).display());
     let picker = crate::picker::Picker::of("files", title, Vec::new(), true).with_tree(root.clone(), None);
-    ed.open_picker(picker, Some(Box::new(move || Ok(crate::picker::file_items(&root)))));
+    ed.open_picker(
+        picker,
+        Some(Box::new(move || Ok(crate::picker::file_items(&crate::folders::Roots::new(root, Vec::new()))))),
+    );
 }
 
 #[cfg(test)]

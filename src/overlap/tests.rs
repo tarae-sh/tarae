@@ -26,17 +26,7 @@ fn no_round_while_the_disk_is_at_its_reserve() {
 
 /// git in the test's own repository: its own name, no signing, no hooks, none of the machine's config.
 fn git(dir: &Path, args: &[&str]) {
-    crate::gitrepo::not_in_this_repository(dir, args);
-    let out = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
-        .args(["-c", "init.defaultBranch=main", "-c", "core.hooksPath=/dev/null"])
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    crate::gitrepo::fixture_git(dir, args);
 }
 
 /// Twelve lines: `line 1` … `line 12`.
@@ -182,7 +172,7 @@ fn perf_overlap_round() {
         return;
     }
     use std::io::Write as _;
-    const CORPUS: &str = "53843b6";
+    let corpus = crate::test_results::corpus();
     const PATHS: [&str; 8] =
         ["src", "runtime", "docs", "tests", "xtask/src", "Cargo.toml", "README.md", "CONTRIBUTING.md"];
     let s = Scratch::new("overlap-perf");
@@ -191,12 +181,12 @@ fn perf_overlap_round() {
     let main = std::fs::canonicalize(main).unwrap();
     let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let archive = Command::new("git")
-        .args(["archive", "--format=tar", CORPUS, "--"])
+        .args(["archive", "--format=tar", corpus, "--"])
         .args(PATHS)
         .current_dir(&here)
         .output();
     let Some(archive) = archive.ok().filter(|a| a.status.success()) else {
-        let why = format!("overlap::tests::perf_overlap_round — no commit {CORPUS} here");
+        let why = format!("overlap::tests::perf_overlap_round — no commit {corpus} here");
         return crate::test_results::said_skip(&why);
     };
     let mut tar = Command::new("tar")

@@ -16,7 +16,7 @@ use ignore::{WalkBuilder, WalkState};
 /// Threads at most — more contend in the kernel opening files and are slower (rg's default, a thread a
 /// core: a 200k-file tree took 6.8 s with 14, 75 s of it system time; 2.3 s with 4 — measured 2026-10-03,
 /// macOS).
-const THREADS: usize = 4;
+pub(crate) const THREADS: usize = 4;
 
 /// A line's text kept at most this long, in bytes (a minified file's line) — what's shown is shorter.
 const TEXT_MAX: usize = 1024;

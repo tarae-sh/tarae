@@ -1917,18 +1917,30 @@ fn diagnostics_picker(cx: &mut Context) {
 
 fn file_picker(cx: &mut Context) {
     // (the root is a real path, as buffers' are)
-    let root = cx.editor.workspace.root.clone();
-    let title = format!("files in {}", root.file_name().map(|n| n.to_string_lossy()).unwrap_or_default());
-    // Nothing typed: a folder tree opened up to the file being edited
+    let roots = cx.editor.workspace.roots();
+    let root = roots.project().to_path_buf();
+    let mut title = format!("files in {}", root.file_name().map(|n| n.to_string_lossy()).unwrap_or_default());
+    // (and its folders by name)
+    for f in &cx.editor.workspace.folders {
+        title = format!("{title} · {}", f.name);
+    }
+    // Nothing typed: a folder tree opened up to the file being edited (a folder's file by its whole path)
     let reveal = cx
         .editor
         .doc()
         .path
         .as_deref()
-        .and_then(|p| p.strip_prefix(&root).ok())
+        .and_then(|p| match p.strip_prefix(&root) {
+            Ok(r) => Some(r),
+            Err(_) => roots.folders().iter().any(|f| p.starts_with(f)).then_some(p),
+        })
         .map(|r| r.to_string_lossy().replace('\\', "/"));
-    let picker = crate::picker::Picker::of("files", title, Vec::new(), true).with_tree(root.clone(), reveal);
-    cx.editor.open_picker(picker, Some(Box::new(move || Ok(crate::picker::file_items(&root)))));
+    let picker = crate::picker::Picker::of("files", title, Vec::new(), true)
+        .with_tree(root, reveal)
+        .in_folders(roots.folders());
+    // (a folder swapped for a link: left out of the list, dropped and said by the look)
+    cx.editor.folders_look();
+    cx.editor.open_picker(picker, Some(Box::new(move || Ok(crate::picker::file_items(&roots)))));
 }
 
 /// `:` commands to list in the palette (description, command line).

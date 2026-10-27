@@ -186,6 +186,37 @@ fn a_folder_swapped_for_a_link_is_no_root() {
     assert!(ed.workspace.folders.is_empty(), "dropped");
 }
 
+/// A folder swapped for a link isn't listed nor searched through it — the file list and `space /` leave it out, never
+/// labelling the link's target's files as the folder's — and the file picker and `space /` opening, one after the
+/// other, drop it and say so once.
+#[test]
+fn a_folder_swapped_for_a_link_isnt_listed_or_searched() {
+    let (s, _project, infra, mut ed) = place("swapped-lists");
+    let aws = ed.caps_home.clone().unwrap().join(".aws");
+    std::fs::create_dir_all(&aws).unwrap();
+    std::fs::write(aws.join("config"), "[default]\nresource\n").unwrap();
+    assert!(add(&mut ed, &infra).contains("added"));
+    std::fs::rename(&infra, s.join("infra.was")).unwrap();
+    std::os::unix::fs::symlink(&aws, &infra).unwrap();
+    let roots = ed.workspace.roots();
+    let files: Vec<String> = crate::picker::file_items(&roots).into_iter().map(|i| i.label).collect();
+    assert_eq!(files, ["a.rs"], "the project's only");
+    let hits = crate::picker::search(&roots, "resource|default", &|| false, &mut |_| {}).unwrap();
+    assert!(hits.is_empty(), "{:?}", hits.iter().map(|i| &i.label).collect::<Vec<_>>());
+    let before = ed.messages.len();
+    feed(&mut ed, " f<esc> /");
+    settle_until(&mut ed, |ed| {
+        ed.workspace.folders.is_empty() && ed.picker.as_ref().is_some_and(|p| !p.loading)
+    });
+    feed(&mut ed, "<esc> f");
+    settle_until(&mut ed, |ed| ed.picker.as_ref().is_some_and(|p| !p.loading));
+    let p = ed.picker.as_ref().unwrap();
+    assert_eq!(p.items().iter().map(|i| i.label.as_str()).collect::<Vec<_>>(), ["a.rs"]);
+    let said: Vec<&String> =
+        ed.messages[before..].iter().map(|m| &m.2).filter(|m| m.starts_with("folder dropped")).collect();
+    assert!(said.len() == 1 && said[0].starts_with("folder dropped: infra ("), "said once: {said:?}");
+}
+
 /// A folder in a place sandboxed runs write, or holding one, is refused — a run could put a link in its place; with
 /// runs not sandboxed (no places), it isn't for that.
 #[test]
@@ -490,4 +521,104 @@ fn the_folders_list_floats_and_keeps_its_frame() {
     std::fs::write(&path, sizes.to_json()).unwrap();
     ed.sizes = crate::sizes::Sizes::read(Some(&path));
     assert_eq!(ed.float_list_frame(GroupKind::Folders), Some(frame));
+}
+
+/// A folder's row in the file picker that doesn't fit is its path folded from its start at a folder's boundary
+/// (`…/tarae-shot-folders/infra/  2`), its count kept, as `:folders`' place; in hand, its whole path is on the card.
+#[test]
+fn a_folders_row_folds_its_path_at_its_start_and_keeps_its_count() {
+    let (s, _project, _infra, mut ed) = place("fold");
+    let infra = s.join("a-folder-whose-name-is-long-enough-to-fold/infra");
+    std::fs::create_dir_all(&infra).unwrap();
+    std::fs::write(infra.join("main.tf"), "resource {}\n").unwrap();
+    std::fs::write(infra.join("vars.tf"), "variable {}\n").unwrap();
+    let infra = infra.canonicalize().unwrap();
+    assert!(add(&mut ed, &infra).contains("added"));
+    feed(&mut ed, " f");
+    settle_until(&mut ed, |ed| ed.picker.as_ref().is_some_and(|p| !p.loading));
+    // (onto the folder's row: in hand)
+    feed(&mut ed, "<down>");
+    let (w, h) = (80, 30);
+    crate::term::render(&mut ed, &mut Vec::new(), w, h).unwrap();
+    let screen = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), w, h).unwrap();
+    let lines: Vec<&str> = screen.lines().collect();
+    let row = lines.iter().find(|l| l.contains("infra/")).unwrap_or_else(|| panic!("its row:\n{screen}"));
+    let path =
+        row[row.find('…').unwrap_or_else(|| panic!("folded:\n{screen}"))..].split("infra/").next().unwrap();
+    assert!(path.starts_with("…/"), "at a folder's boundary, never mid-name: {row}\n{screen}");
+    let after = row.split("infra/").nth(1).unwrap();
+    assert_eq!(after.split_whitespace().next(), Some("2"), "its count kept: {row}\n{screen}");
+    let c =
+        ed.screen.cut_card.borrow().clone().unwrap_or_else(|| panic!("the row in hand's card:\n{screen}"));
+    // (its start on the card below the frame — here a row's room, the rest a press away: `↓ N more lines`)
+    let crate::whole::Cut::Text(whole) = &c.cut else { panic!("a text's card: {c:?}") };
+    assert_eq!(whole.text, infra.display().to_string(), "the whole path:\n{screen}");
+    let (x, top, _, _) = c.rect;
+    let start: String = lines[top].chars().skip(x).collect();
+    assert!(start.trim_start().starts_with("/"), "from its start:\n{screen}");
+}
+
+/// With a folder's file the one in front and nothing typed, `space f` opens the tree up to it as it does a project's:
+/// the folder's row and its folders in it open, the file selected.
+#[test]
+fn the_file_picker_opens_up_to_a_folders_file() {
+    let (_s, _project, infra, mut ed) = place("reveal");
+    let vpc = infra.join("modules/net/vpc.tf");
+    std::fs::create_dir_all(vpc.parent().unwrap()).unwrap();
+    std::fs::write(&vpc, "resource {}\n").unwrap();
+    assert!(add(&mut ed, &infra).contains("added"));
+    ed.open(&vpc).unwrap();
+    feed(&mut ed, " f");
+    settle_until(&mut ed, |ed| ed.picker.as_ref().is_some_and(|p| !p.loading));
+    let p = ed.picker.as_mut().unwrap();
+    assert_eq!(p.current().map(|i| i.action.clone()), Some(crate::picker::Action::Open(vpc.clone())));
+    let rows: Vec<String> = p.visible(20).into_iter().map(|r| r.label).collect();
+    let place = infra.display().to_string();
+    assert_eq!(rows, ["a.rs", &place, "modules/net", "vpc.tf", "CLAUDE.md", "main.tf"], "opened up to it");
+}
+
+/// The file picker and `space /` take the workspace's folders with the project: a folder's file by its whole path,
+/// under its folder's one row (after the project's while nothing is typed), opened from there; `space /` finds a
+/// match in each; the folder removed, both are the project's only again.
+#[test]
+fn the_file_picker_and_the_search_take_the_folders() {
+    let (_s, project, infra, mut ed) = place("pickers");
+    std::fs::write(project.join("b.rs"), "// resource here too\n").unwrap();
+    assert!(add(&mut ed, &infra).contains("added"));
+    let main_tf = infra.join("main.tf");
+    let listed = |ed: &mut Editor| {
+        settle_until(ed, |ed| ed.picker.as_ref().is_some_and(|p| !p.loading && !p.searching));
+        let p = ed.picker.as_ref().unwrap();
+        p.items().iter().map(|i| i.label.clone()).collect::<Vec<_>>()
+    };
+    feed(&mut ed, " f");
+    let files = listed(&mut ed);
+    assert!(
+        files.contains(&"a.rs".to_string()) && files.contains(&main_tf.display().to_string()),
+        "{files:?}"
+    );
+    let screen = frame(&mut ed);
+    assert!(screen.contains("files in project · infra"), "its folder in the title:\n{screen}");
+    let (a, folder) = (screen.find("a.rs").unwrap(), screen.find("infra/").unwrap());
+    assert!(a < folder, "the folder's row after the project's files:\n{screen}");
+    feed(&mut ed, "main.tf");
+    let picked = ed.picker.as_ref().and_then(|p| p.current()).map(|i| i.action.clone());
+    assert_eq!(picked, Some(crate::picker::Action::Open(main_tf.clone())));
+    feed(&mut ed, "<ret>");
+    assert_eq!(ed.doc().path.as_deref(), Some(main_tf.as_path()), "opened from the list");
+    feed(&mut ed, " /");
+    feed(&mut ed, "resource");
+    let hits = listed(&mut ed);
+    assert_eq!(
+        hits,
+        ["b.rs:1: // resource here too".to_string(), format!("{}:1: resource {{}}", main_tf.display())]
+    );
+    feed(&mut ed, "<esc>");
+    feed(&mut ed, ":folder-remove infra<ret>");
+    assert!(ed.workspace.folders.is_empty(), "{}", said(&ed));
+    feed(&mut ed, " f");
+    let files = listed(&mut ed);
+    assert!(files.iter().all(|f| !f.starts_with('/')), "the project's only: {files:?}");
+    feed(&mut ed, "<esc> /resource");
+    assert_eq!(listed(&mut ed), ["b.rs:1: // resource here too"]);
 }

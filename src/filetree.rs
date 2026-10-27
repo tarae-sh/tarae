@@ -9,6 +9,10 @@
 //! entries came in (best match first, or the list's own order): a folder or file sits where its first entry
 //! is, and every folder is open, as a heading. A folder holding nothing but one folder shares its row
 //! (`snapshots/fixtures/demo/`).
+//!
+//! A workspace's folders (`Tree::build_in`'s roots) are labelled by their whole path, as Claude's tools say them
+//! (`folders::Inside::shown`): a folder's row is that path whole — one row, never split at its `/`s nor sharing
+//! the row of the one folder in it — and, browsing, it comes after the project's own entries.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -52,6 +56,8 @@ pub struct Row {
 
 #[derive(Default)]
 struct Dir {
+    /// A workspace's folder, its whole path one name (`Tree::build_in`).
+    root: bool,
     name: String,
     rel: String,
     dirs: Vec<Dir>,
@@ -82,9 +88,19 @@ impl Tree {
     /// `entries` = (index, label, bytes of the label that are the path), in rank order. `browse` sorts each
     /// level by name instead.
     pub fn build<'a>(entries: impl IntoIterator<Item = (usize, &'a str, usize)>, browse: bool) -> Tree {
+        Tree::build_in(entries, browse, &[])
+    }
+
+    /// `build`, with `roots` the starts of labels that are a workspace's folder (its whole path, `/`-separated,
+    /// no `/` at its end): each one row of its own, after the project's entries while browsing.
+    pub fn build_in<'a>(
+        entries: impl IntoIterator<Item = (usize, &'a str, usize)>,
+        browse: bool,
+        roots: &[String],
+    ) -> Tree {
         let mut top = Dir::default();
         for (order, (index, label, path_len)) in entries.into_iter().enumerate() {
-            top.insert(order, index, label, path_len);
+            top.insert(order, index, label, path_len, roots);
         }
         if browse {
             top.sort();
@@ -102,19 +118,32 @@ impl Tree {
 }
 
 impl Dir {
-    fn insert(&mut self, order: usize, index: usize, label: &str, path_len: usize) {
+    fn insert(&mut self, order: usize, index: usize, label: &str, path_len: usize, roots: &[String]) {
         let path = &label[..path_len];
-        let segs = segments(path);
+        // (a folder's file: its path whole the first name, the rest as any path's after it)
+        let root =
+            roots.iter().find(|r| path.strip_prefix(r.as_str()).is_some_and(|rest| rest.starts_with('/')));
+        let segs = match root {
+            Some(r) => {
+                let n = r.chars().count();
+                let rest = segments(&path[r.len() + 1..]).into_iter();
+                std::iter::once((r.as_str(), 0..n))
+                    .chain(rest.map(|(seg, s)| (seg, s.start + n + 1..s.end + n + 1)))
+                    .collect()
+            }
+            None => segments(path),
+        };
         let Some(((name, span), dirs)) = segs.split_last() else { return };
         let mut at = self;
         at.count += 1;
-        for (seg, span) in dirs {
+        for (i, (seg, span)) in dirs.iter().enumerate() {
             let k = match at.dir_at.get(*seg) {
                 Some(&k) => k,
                 None => {
                     let rel = if at.rel.is_empty() { seg.to_string() } else { format!("{}/{seg}", at.rel) };
                     at.dir_at.insert(seg.to_string(), at.dirs.len());
                     at.dirs.push(Dir {
+                        root: i == 0 && root.is_some(),
                         name: seg.to_string(),
                         rel,
                         first: order,
@@ -154,11 +183,14 @@ impl Dir {
         }
     }
 
-    /// Folders first, then files, each by name (case folded, so `Cargo.toml` sits with `build.rs`).
+    /// Folders first, then files, each by name (case folded, so `Cargo.toml` sits with `build.rs`) — a
+    /// workspace's folders in the order they came, after them all (`emit`).
     fn sort(&mut self) {
         let key = |s: &str| (s.to_lowercase(), s.to_string());
         #[expect(clippy::disallowed_methods, reason = "the file tree, up to 200k files: std's, in place")]
-        self.dirs.sort_by_cached_key(|d| key(&d.name));
+        self.dirs.sort_by_cached_key(|d| {
+            if d.root { (true, d.first, Default::default()) } else { (false, 0, key(&d.name)) }
+        });
         #[expect(clippy::disallowed_methods, reason = "the file tree, up to 200k files: std's, in place")]
         self.files.sort_by_cached_key(|f| key(&f.name));
         for d in &mut self.dirs {
@@ -173,7 +205,14 @@ enum Kid<'a> {
 }
 
 fn emit(dir: &Dir, depth: usize, open: Option<&HashSet<String>>, out: &mut Vec<Row>) {
-    let mut kids: Vec<Kid> = dir.dirs.iter().map(Kid::Dir).chain(dir.files.iter().map(Kid::File)).collect();
+    // (a workspace's folders after the project's files)
+    let (roots, dirs): (Vec<&Dir>, Vec<&Dir>) = dir.dirs.iter().partition(|d| d.root);
+    let mut kids: Vec<Kid> = dirs
+        .into_iter()
+        .map(Kid::Dir)
+        .chain(dir.files.iter().map(Kid::File))
+        .chain(roots.into_iter().map(Kid::Dir))
+        .collect();
     if open.is_none() {
         #[expect(
             clippy::disallowed_methods,
@@ -189,7 +228,7 @@ fn emit(dir: &Dir, depth: usize, open: Option<&HashSet<String>>, out: &mut Vec<R
             Kid::Dir(d) => {
                 // A folder holding just one folder shares its row
                 let (mut last, mut span) = (d, d.span.clone());
-                while last.files.is_empty() && last.dirs.len() == 1 {
+                while !d.root && last.files.is_empty() && last.dirs.len() == 1 {
                     last = &last.dirs[0];
                     span.end = last.span.end;
                 }
@@ -376,6 +415,41 @@ mod tests {
         assert_eq!(rows[1].item, None, "the file heads its hits");
         assert_eq!(rows[1].count, 2);
         assert_eq!(rows[2].item, Some(0));
+    }
+
+    #[test]
+    fn a_workspaces_folder_is_one_row_after_the_projects() {
+        let labels = ["src/a.rs", "/w/infra/x/main.tf", "b.txt", "/w/infra/y.tf", "/w/one/deep/z.tf"];
+        let roots = ["/w/infra".to_string(), "/w/one".to_string()];
+        let t = Tree::build_in(paths(&labels), true, &roots);
+        let open: HashSet<String> = ["/w/infra", "/w/one"].into_iter().map(String::from).collect();
+        let rows = t.rows(Some(&open));
+        assert_eq!(
+            show(&labels, &rows),
+            ["+src/", "b.txt", "−/w/infra/", "  +x/", "  y.tf", "−/w/one/", "  +deep/"],
+            "its whole path one row, after the project's files; one holding one folder keeps its own row"
+        );
+        assert_eq!(rows[2].dir.as_deref(), Some("/w/infra"));
+        assert_eq!(rows[3].dir.as_deref(), Some("/w/infra/x"));
+        let ranked = Tree::build_in(paths(&labels), false, &roots).rows(None);
+        assert_eq!(
+            show(&labels, &ranked),
+            [
+                "src/",
+                "  a.rs",
+                "/w/infra/",
+                "  x/",
+                "    main.tf",
+                "  y.tf",
+                "b.txt",
+                "/w/one/",
+                "  deep/",
+                "    z.tf"
+            ],
+            "ranked: where its best entry is"
+        );
+        let plain = Tree::build(paths(&labels), false).rows(None);
+        assert_eq!(show(&labels, &plain)[2], "/w/", "without the roots, a path split at its `/`s");
     }
 
     #[test]

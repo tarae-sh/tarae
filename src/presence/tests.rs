@@ -1,7 +1,5 @@
 //! Presence (`presence.rs`): where each session is, mapped across checkouts, drawn, followed.
 
-use std::process::Command;
-
 use super::*;
 use crate::chat::{Look, State};
 use crate::config::Config;
@@ -13,17 +11,7 @@ const TEXT: &str = "fn main() {\n    let a = 1;\n    let b = 2;\n    let c = 3;\
 
 /// git in the test's own repository: its own name, no signing, no hooks, none of the machine's config.
 fn git(dir: &Path, args: &[&str]) {
-    crate::gitrepo::not_in_this_repository(dir, args);
-    let out = Command::new("git")
-        .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"])
-        .args(["-c", "init.defaultBranch=main", "-c", "core.hooksPath=/dev/null"])
-        .args(args)
-        .current_dir(dir)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    crate::gitrepo::fixture_git(dir, args);
 }
 
 struct Scene {

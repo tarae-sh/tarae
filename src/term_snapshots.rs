@@ -710,7 +710,7 @@ fn snapshot_file_picker() {
     s.ed.workspace.root = base;
     s.ed.open_picker(
         crate::picker::Picker::new("files in demo", Vec::new(), true).with_tree(root.clone(), None),
-        Some(Box::new(move || Ok(crate::picker::file_items(&root)))),
+        Some(Box::new(move || Ok(crate::picker::file_items(&crate::folders::Roots::new(root, Vec::new()))))),
     );
     s.until("file list", |ed| ed.picker.as_ref().is_some_and(|p| !p.loading));
     s.keys("main");
@@ -6454,7 +6454,7 @@ fn picker_query_shows_past_a_long_title() {
     let title = "files in a-folder-whose-name-is-as-long-as-a-worktree-ebpf-performance-7e75ab";
     s.ed.open_picker(
         crate::picker::Picker::new(title, Vec::new(), true).with_tree(root.clone(), None),
-        Some(Box::new(move || Ok(crate::picker::file_items(&root)))),
+        Some(Box::new(move || Ok(crate::picker::file_items(&crate::folders::Roots::new(root, Vec::new()))))),
     );
     s.until("file list", |ed| ed.picker.as_ref().is_some_and(|p| !p.loading));
     s.keys("main");
@@ -8136,7 +8136,7 @@ fn the_picker_floats_with_equal_margins() {
     let (_, root) = demo_copy("floats");
     s.ed.open_picker(
         crate::picker::Picker::new("files", Vec::new(), true).with_tree(root.clone(), None),
-        Some(Box::new(move || Ok(crate::picker::file_items(&root)))),
+        Some(Box::new(move || Ok(crate::picker::file_items(&crate::folders::Roots::new(root, Vec::new()))))),
     );
     s.until("file list", |ed| ed.picker.as_ref().is_some_and(|p| !p.loading));
     let (ground, surface, _) = chrome_colors(&s.ed);

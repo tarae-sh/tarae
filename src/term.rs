@@ -20,7 +20,7 @@ use crossterm::terminal::{
 use crossterm::{execute, queue};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::cut::{fit, fit_ellipsis, fit_left};
+use crate::cut::{fit, fit_ellipsis, fit_left, fit_place, fit_place_marked};
 
 use crate::chrome::Keys;
 use crate::codeview::{Changes, Shows, Source};
@@ -5537,15 +5537,7 @@ fn draw_folders_pane(
         };
         let place = left.saturating_sub(if files.is_empty() { 0 } else { files.width() + 2 });
         // (folded at a folder's boundary where one is left: `…/ZCTJ/infra`, never `…hot.ZCTJ/infra`)
-        let at = fit_left(&f.at, place);
-        let at = match at
-            .strip_prefix('…')
-            .filter(|r| !r.starts_with('/'))
-            .and_then(|r| r.find('/').map(|i| &r[i..]))
-        {
-            Some(rest) => format!("…{rest}"),
-            None => at,
-        };
+        let at = fit_place(&f.at, place);
         apply(out, base)?;
         queue!(out, Spaces(2.min(room)))?;
         let at_st = Style { fg: faint.fg, ..base };
@@ -8373,10 +8365,13 @@ fn draw_list_row(
         used += 2;
     }
     let dir = matches!(r.tree, Some((_, Kind::Dir { .. })));
+    // (a workspace's folder: its whole path is its name — `filetree::Tree::build_in` —, folded from its start, its
+    // count kept)
+    let place = dir && r.label.starts_with('/');
     // Annotation (keys, a line of code …) dimmed at the right end — the label comes first, the
     // annotation gets what's left (cut with …). An annotation that's what the row is for (a plugin tab's
     // state) comes first instead, the label keeping a few cells at least — every row says it.
-    let room = if r.hint_first {
+    let room = if r.hint_first || place {
         lw.saturating_sub(1 + used + usize::from(dir) + 2 + 8)
     } else {
         lw.saturating_sub(1 + used + r.label.width() + usize::from(dir) + 2)
@@ -8398,7 +8393,9 @@ fn draw_list_row(
         // (one of rows that share a start and an end — `:granted`'s paths under one folder — keeps what sets
         // it apart from them: cut in the middle, five toolchains' read alike)
         let keep = (named && r.marks.is_empty()).then(|| apart(&r.label, others)).flatten();
-        let (label, marks) = if let Some(keep) = keep {
+        let (label, marks) = if place {
+            fit_place_marked(&r.label, &r.marks, fits)
+        } else if let Some(keep) = keep {
             (fit_keeping(&r.label, keep, fits), Vec::new())
         } else if named {
             fit_middle(&r.label, &r.marks, fits)
@@ -25444,6 +25441,32 @@ mod tests {
             typing.max(landing) < budget,
             "a key {typing:?}, a result landing {landing:?} (budget {budget:?})"
         );
+        // With a workspace's folder: half of them in it, labelled whole, each entry's root looked for as the tree is
+        // laid out
+        let infra = PathBuf::from("/nowhere/infra");
+        let items: Vec<crate::picker::Item> = (0..20)
+            .flat_map(|a| (0..100).flat_map(move |b| (0..100).map(move |c| format!("d{a}/e{b}/f{c}.rs"))))
+            .enumerate()
+            .map(|(i, rel)| {
+                let path =
+                    if i % 2 == 0 { PathBuf::from("/nowhere/big").join(&rel) } else { infra.join(&rel) };
+                let label = if i % 2 == 0 { rel } else { path.display().to_string() };
+                crate::picker::Item {
+                    action: crate::picker::Action::Open(path),
+                    label,
+                    hint: String::new(),
+                    glyph: None,
+                }
+            })
+            .collect();
+        let mut p = crate::picker::Picker::new("files", Vec::new(), true)
+            .with_tree(PathBuf::from("/nowhere/big"), None)
+            .in_folders(std::slice::from_ref(&infra));
+        p.set_items(items);
+        ed.picker = Some(p);
+        let (worst, key) = events_to_frames(&mut ed, &keys, 180, 50);
+        measured("file_picker_typing_in_200k_files_with_a_folder", worst, budget);
+        assert!(worst < budget, "with a folder: key {key:?} took {worst:?} (budget {budget:?})");
     }
 
     /// Same budget with the git tab showing 20k new files — and a fresh status arriving (its rows are

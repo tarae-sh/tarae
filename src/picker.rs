@@ -279,6 +279,9 @@ fn placement(label: &str, query: &str) -> u8 {
 /// Lists of paths shown as a folder tree (filetree.rs), relative to `root`.
 struct TreeMode {
     root: PathBuf,
+    /// The workspace's folders (whole paths, `/`-separated): their paths are labelled whole, each one row
+    /// (`Tree::build_in`).
+    folders: Vec<String>,
     /// The file picker: with nothing typed, every file, folded by folder.
     browse: bool,
     /// Browsing: the whole list's tree (once it's listed) and the open folders.
@@ -508,8 +511,8 @@ impl Picker {
 
     /// The file picker's folder to browse — its tree is built with the list, on the worker thread (a
     /// 200k-file tree takes 100 ms).
-    pub fn browse_root(&self) -> Option<PathBuf> {
-        self.tree.as_ref().filter(|t| t.browse).map(|t| t.root.clone())
+    pub fn browse_root(&self) -> Option<(PathBuf, Vec<String>)> {
+        self.tree.as_ref().filter(|t| t.browse).map(|t| (t.root.clone(), t.folders.clone()))
     }
 
     /// `tree` = `browse_tree` of these items, when built already.
@@ -520,7 +523,7 @@ impl Picker {
         self.earlier.clear();
         let reveal = match self.tree.as_mut() {
             Some(tm) if tm.browse => {
-                tm.all = Some(tree.unwrap_or_else(|| browse_tree(&tm.root, &self.items)));
+                tm.all = Some(tree.unwrap_or_else(|| browse_tree(&tm.root, &tm.folders, &self.items)));
                 let reveal = tm.reveal.take();
                 if let Some(r) = &reveal {
                     let mut up = crate::filetree::parent(r);
@@ -559,6 +562,7 @@ impl Picker {
     pub fn with_tree(mut self, root: PathBuf, reveal: Option<String>) -> Self {
         self.tree = Some(TreeMode {
             root,
+            folders: Vec::new(),
             browse: true,
             all: None,
             open: HashSet::new(),
@@ -576,6 +580,7 @@ impl Picker {
     pub fn grouped(mut self, root: PathBuf) -> Self {
         self.tree = Some(TreeMode {
             root,
+            folders: Vec::new(),
             browse: false,
             all: None,
             open: HashSet::new(),
@@ -584,6 +589,15 @@ impl Picker {
             dirs: Vec::new(),
             num_w: 0,
         });
+        self.sync();
+        self
+    }
+
+    /// A tree's paths in the workspace's `folders` (real paths) too: each folder's under its whole path, one row.
+    pub fn in_folders(mut self, folders: &[PathBuf]) -> Self {
+        if let Some(tm) = self.tree.as_mut() {
+            tm.folders = folders.iter().map(|f| f.to_string_lossy().into_owned()).collect();
+        }
         self.sync();
         self
     }
@@ -609,7 +623,7 @@ impl Picker {
                 let it = &items[i as usize];
                 (i as usize, it.label.as_str(), crate::filetree::path_len(root, it))
             });
-            Tree::build(entries, false).rows(None)
+            Tree::build_in(entries, false, &tm.folders).rows(None)
         };
         // Browsing: folders are picked too (Enter / → opens one)
         if tm.browse && self.query.is_empty() {
@@ -728,7 +742,10 @@ impl Picker {
         let root = &self.tree.as_ref()?.root;
         match &self.current()?.action {
             Action::Dir(rel) => Some((rel.clone(), true)),
-            Action::Open(p) => Some((p.strip_prefix(root).ok()?.to_string_lossy().replace('\\', "/"), false)),
+            // (a folder's file: its path whole, as labelled)
+            Action::Open(p) => {
+                Some((p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\', "/"), false))
+            }
             _ => None,
         }
     }
@@ -1136,11 +1153,11 @@ fn spots(re: &regex::Regex, label: &str) -> Vec<(u32, u32)> {
         .collect()
 }
 
-/// Every file under `root`, by folder, for browsing.
-pub fn browse_tree(root: &Path, items: &[Item]) -> Tree {
+/// Every file under `root` and the workspace's `folders` (whole paths), by folder, for browsing.
+pub fn browse_tree(root: &Path, folders: &[String], items: &[Item]) -> Tree {
     let entries =
         items.iter().enumerate().map(|(i, it)| (i, it.label.as_str(), crate::filetree::path_len(root, it)));
-    Tree::build(entries, true)
+    Tree::build_in(entries, true, folders)
 }
 
 // ── Preview ──────────────────────────────────────────────────────────────────
@@ -1336,16 +1353,24 @@ fn walk(root: &Path, rel: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-pub fn file_items(root: &Path) -> Vec<Item> {
-    list_files(root)
-        .into_iter()
-        .map(|rel| Item {
-            label: rel.to_string_lossy().into_owned(),
-            action: Action::Open(root.join(rel)),
-            hint: String::new(),
-            glyph: None,
-        })
-        .collect()
+/// The file picker's files: the project's from it, then each of the workspace's folders' whole (as Claude's tools
+/// say them, `folders::Inside::shown`) — listed one root after another; never a folder that isn't itself any more
+/// (`Roots::standing`: its link's target isn't the folder's).
+pub fn file_items(roots: &crate::folders::Roots) -> Vec<Item> {
+    let roots = &roots.standing();
+    let mut items = Vec::new();
+    for root in roots.all() {
+        let project = root == roots.project();
+        items.extend(list_files(root).into_iter().map(|rel| {
+            let path = root.join(rel);
+            let label = match project {
+                true => path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned(),
+                false => path.to_string_lossy().into_owned(),
+            };
+            Item { label, action: Action::Open(path), hint: String::new(), glyph: None }
+        }));
+    }
+    items
 }
 
 const MAX_RESULTS: usize = 10_000;
@@ -1378,15 +1403,16 @@ pub fn word_matches(root: &Path, word: &str) -> Result<Vec<Item>, String> {
         exclude: "",
         judged: false,
     };
-    Ok(by_place(hits(root, &q, &|| false, &mut |_| {})?))
+    let hits = hits(&crate::folders::Roots::new(root.to_path_buf(), Vec::new()), &q, &|| false, &mut |_| {})?;
+    Ok(by_place(root, hits))
 }
 
-/// The live search (`space /`, N4): `pattern` with smart case, by file then line — `stop` asked as it goes
-/// (a newer key's search: this one ends in its own threads, even in a file with nothing to say), what's
-/// found so far handed to `partial` a little after it starts and now and then after (a big tree takes a
-/// while).
+/// The live search (`space /`, N4): `pattern` with smart case in the project and the workspace's folders, by file
+/// then line — `stop` asked as it goes (a newer key's search: this one ends in its own threads, even in a file with
+/// nothing to say), what's found so far handed to `partial` a little after it starts and now and then after (a big
+/// tree takes a while).
 pub fn search(
-    root: &Path,
+    roots: &crate::folders::Roots,
     pattern: &str,
     stop: &(dyn Fn() -> bool + Sync),
     partial: &mut dyn FnMut(Vec<Item>),
@@ -1404,26 +1430,36 @@ pub fn search(
         exclude: "",
         judged: false,
     };
-    let items = hits(root, &q, stop, &mut |found| partial(by_place(found.to_vec())))?;
-    Ok(by_place(items))
+    let root = roots.project();
+    let items = hits(roots, &q, stop, &mut |found| partial(by_place(root, found.to_vec())))?;
+    Ok(by_place(root, items))
 }
 
 /// The first of a search's results shown this soon after it starts, then more this often.
 const PARTIAL_FIRST: std::time::Duration = std::time::Duration::from_millis(100);
 const PARTIAL_EVERY: std::time::Duration = std::time::Duration::from_millis(400);
 
-/// `q`'s matching lines under `root` as rows to open (`path:line: text`), at most MAX_RESULTS — what's
-/// found so far to `partial` now and then. What it couldn't read is left out quietly, as rg's list would.
+/// `q`'s matching lines under `roots` as rows to open (`path:line: text` — a folder's path whole), at most
+/// MAX_RESULTS — what's found so far to `partial` now and then. One walk over every root (its threads `grep`'s,
+/// shared; a folder that isn't itself any more left out — `Roots::standing`). What it couldn't read is left out
+/// quietly, as rg's list would.
 fn hits(
-    root: &Path,
+    roots: &crate::folders::Roots,
     q: &crate::grep::Query,
     stop: &(dyn Fn() -> bool + Sync),
     partial: &mut dyn FnMut(&[Item]),
 ) -> Result<Vec<Item>, String> {
+    let roots = &roots.standing();
     let mut items = Vec::new();
     let started = std::time::Instant::now();
     let mut next = PARTIAL_FIRST;
-    crate::grep::search(root, &[], q, stop, &mut |file| {
+    let root = roots.project();
+    // (with folders, every root a scope of the one walk: a folder's files' `rel` is their whole path)
+    let scopes: Vec<PathBuf> = match roots.folders().is_empty() {
+        true => Vec::new(),
+        false => roots.all().map(Path::to_path_buf).collect(),
+    };
+    crate::grep::search(root, &scopes, q, stop, &mut |file| {
         for r in file.rows.into_iter().filter(|r| r.hit) {
             let text = r.text.trim();
             let text = text.char_indices().nth(LABEL_MAX).map_or(text, |(i, _)| &text[..i]);
@@ -1447,12 +1483,12 @@ fn hits(
     Ok(items)
 }
 
-/// Hits by file then line — files come as the threads searching them finish. One a line (its matches all
-/// stand out in its row anyway), at its first match.
-fn by_place(mut items: Vec<Item>) -> Vec<Item> {
+/// Hits by file then line — files come as the threads searching them finish; the project's (`root`) before a
+/// folder's. One a line (its matches all stand out in its row anyway), at its first match.
+fn by_place(root: &Path, mut items: Vec<Item>) -> Vec<Item> {
     let at = |it: &Item| match &it.action {
-        Action::Goto { path, line, col } => (path.clone(), *line, *col),
-        _ => (PathBuf::new(), 0, 0),
+        Action::Goto { path, line, col } => (!path.starts_with(root), path.clone(), *line, *col),
+        _ => (false, PathBuf::new(), 0, 0),
     };
     #[expect(
         clippy::disallowed_methods,
@@ -1461,7 +1497,7 @@ fn by_place(mut items: Vec<Item>) -> Vec<Item> {
     items.sort_by_key(at);
     items.dedup_by(|b, a| {
         let (a, b) = (at(a), at(b));
-        (a.0, a.1) == (b.0, b.1)
+        (a.1, a.2) == (b.1, b.2)
     });
     items
 }
@@ -1630,7 +1666,8 @@ mod tests {
         std::fs::write(dir.join("bin.dat"), "world\0\n").unwrap();
         std::fs::write(dir.join("long.txt"), format!("world {}\n", "x".repeat(500))).unwrap();
         let labels = |items: &[Item]| items.iter().map(|i| i.label.clone()).collect::<Vec<_>>();
-        let hits = search(&dir, "world", &|| false, &mut |_| {}).unwrap();
+        let root = crate::folders::Roots::new(dir.clone(), Vec::new());
+        let hits = search(&root, "world", &|| false, &mut |_| {}).unwrap();
         let long = format!("long.txt:1: world {}", "x".repeat(LABEL_MAX - 6));
         assert_eq!(
             labels(&hits),
@@ -1644,7 +1681,7 @@ mod tests {
             "lowercase = any case; hidden in; .git, .gitignore'd and binary out"
         );
         assert_eq!(hits[1].action, Action::Goto { path: dir.join("a.txt"), line: 1, col: 7 }, "col in bytes");
-        assert_eq!(labels(&search(&dir, "World", &|| false, &mut |_| {}).unwrap()), ["sub/b.txt:2: World"]);
+        assert_eq!(labels(&search(&root, "World", &|| false, &mut |_| {}).unwrap()), ["sub/b.txt:2: World"]);
         let words = labels(&word_matches(&dir, "world").unwrap());
         assert_eq!(words[..2], [".hidden/c.txt:1: world", "a.txt:2: 타래 world"]);
         assert_eq!(words.len(), 3, "not `worlds`, not `World`: {words:?}");
@@ -1674,12 +1711,116 @@ mod tests {
             std::fs::write(dir.join(f), "x\nno\nx x\n").unwrap();
         }
         let labels = |items: Vec<Item>| items.into_iter().map(|i| i.label).collect::<Vec<_>>();
-        let all = search(&dir, "x", &|| false, &mut |_| {}).unwrap();
+        let root = crate::folders::Roots::new(dir.clone(), Vec::new());
+        let all = search(&root, "x", &|| false, &mut |_| {}).unwrap();
         // (one row a line, its two matches in it)
         assert_eq!(labels(all), ["a.txt:1: x", "a.txt:3: x x", "b.txt:1: x", "b.txt:3: x x"]);
-        let stopped = search(&dir, "x", &|| true, &mut |_| {}).unwrap();
+        let stopped = search(&root, "x", &|| true, &mut |_| {}).unwrap();
         assert!(stopped.is_empty(), "{:?}", labels(stopped));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// With a workspace's folder the file list and the search take both roots: the project's paths from it, the
+    /// folder's whole, each root's `.gitignore` its own (none is a git repository: `.gitignore` is read only inside
+    /// one, as rg) — and the search's walkers are `grep`'s, shared: never more threads than one root's.
+    #[test]
+    fn a_workspaces_folder_is_listed_and_searched_with_the_project() {
+        let (p, f) =
+            (crate::scratch::Scratch::new("roots-project"), crate::scratch::Scratch::new("roots-infra"));
+        let (project, folder) = (p.to_path_buf(), std::fs::canonicalize(&*f).unwrap());
+        for (root, n) in [(&project, 40), (&folder, 40)] {
+            for i in 0..n {
+                std::fs::create_dir_all(root.join(format!("d{}", i % 5))).unwrap();
+                std::fs::write(root.join(format!("d{}/f{i}.txt", i % 5)), "needle\n").unwrap();
+            }
+        }
+        std::fs::write(project.join("a.txt"), "x\n").unwrap();
+        let roots = crate::folders::Roots::new(project.clone(), vec![folder.clone()]);
+        let files = file_items(&roots);
+        assert_eq!(files.len(), 81);
+        assert!(files.iter().any(|i| i.label == "a.txt" && i.action == Action::Open(project.join("a.txt"))));
+        let whole = folder.join("d0/f0.txt");
+        assert!(
+            files
+                .iter()
+                .any(|i| i.label == whole.to_string_lossy() && i.action == Action::Open(whole.clone())),
+            "a folder's file by its whole path"
+        );
+        // (each searching thread asks `stop` before its files)
+        let threads = std::sync::Mutex::new(std::collections::HashSet::new());
+        let stop = || {
+            threads.lock().unwrap().insert(std::thread::current().id());
+            false
+        };
+        let hits = search(&roots, "needle", &stop, &mut |_| {}).unwrap();
+        assert_eq!(hits.len(), 80);
+        assert!(hits.iter().any(|i| i.label == format!("{}:1: needle", whole.display())));
+        assert!(hits.iter().any(|i| i.label == "d0/f0.txt:1: needle"));
+        let n = threads.lock().unwrap().len();
+        assert!((1..=crate::grep::THREADS).contains(&n), "{n} threads searched");
+    }
+
+    /// What a workspace's folder costs the file list and `space /`: this repository as of `tests/perf.rs`'s
+    /// `CORPUS` as the project (a git repository of its own), then with a folder as big as it (another copy) — the
+    /// files listed (the work: twice the project's) and the times.
+    #[test]
+    fn perf_listing_and_searching_with_a_folder() {
+        if crate::test_results::unoptimized("picker::tests::perf_listing_and_searching_with_a_folder") {
+            return;
+        }
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+        let corpus = crate::test_results::corpus();
+        let here = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let archive =
+            Command::new("git").args(["archive", "--format=tar", corpus]).current_dir(&here).output();
+        let Some(archive) = archive.ok().filter(|a| a.status.success()) else {
+            let why =
+                format!("picker::tests::perf_listing_and_searching_with_a_folder — no commit {corpus} here");
+            return crate::test_results::said_skip(&why);
+        };
+        let s = crate::scratch::Scratch::new("picker-perf");
+        let copy = |name: &str| {
+            let at = s.join(name);
+            std::fs::create_dir_all(&at).unwrap();
+            let mut tar = Command::new("tar")
+                .args(["-xf", "-"])
+                .current_dir(&at)
+                .stdin(Stdio::piped())
+                .spawn()
+                .unwrap();
+            tar.stdin.take().unwrap().write_all(&archive.stdout).unwrap();
+            assert!(tar.wait().unwrap().success());
+            crate::gitrepo::fixture_git(&at, &["init", "-q"]);
+            crate::gitrepo::fixture_git(&at, &["add", "-A"]);
+            std::fs::canonicalize(at).unwrap()
+        };
+        let (repo, folder) = (copy("project"), copy("infra"));
+        // (past `gitrepo::RACY` since the copies: a repository resolved now is kept, as one that's been there a while
+        // — else each listing resolves the younger again: 31.6 ms against 10.6 for the same files)
+        std::thread::sleep(crate::gitrepo::RACY + std::time::Duration::from_millis(100));
+        let median = |f: &dyn Fn() -> usize| {
+            let mut runs: Vec<(f64, usize)> = (0..5)
+                .map(|_| {
+                    let t0 = std::time::Instant::now();
+                    let n = std::hint::black_box(f());
+                    (t0.elapsed().as_secs_f64() * 1000.0, n)
+                })
+                .collect();
+            crate::sorting::by(&mut runs, |a, b| a.0.total_cmp(&b.0));
+            runs[runs.len() / 2]
+        };
+        let mut lines = String::new();
+        for (name, folders) in [("project", Vec::new()), ("with_a_folder", vec![folder.clone()])] {
+            let roots = crate::folders::Roots::new(repo.clone(), folders);
+            let (ms, files) = median(&|| file_items(&roots).len());
+            lines += &format!(
+                "PERF file_list_{name}_ms {ms:.3} noise=5\nPERF file_list_{name}_files {files} noise=0\n"
+            );
+            let (ms, _) = median(&|| search(&roots, "fn draw_", &|| false, &mut |_| {}).unwrap().len());
+            lines += &format!("PERF live_search_{name}_ms {ms:.3} noise=5\n");
+        }
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), lines.as_bytes());
     }
 
     /// A big list is filtered by a worker: the key only hands the job over, the result lands if no later

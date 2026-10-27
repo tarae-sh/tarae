@@ -4222,7 +4222,8 @@ impl Editor {
             let browse = picker.browse_root();
             self.events.jobs().spawn(move || {
                 let result = fill().map(|items| {
-                    let tree = browse.map(|root| crate::picker::browse_tree(&root, &items));
+                    let tree =
+                        browse.map(|(root, folders)| crate::picker::browse_tree(&root, &folders, &items));
                     (items, tree)
                 });
                 move |ed: &mut Editor| {
@@ -4273,17 +4274,21 @@ impl Editor {
     /// `space /` — the project searched as you type (N4): a regex with smart case, its results rows of code
     /// with the match standing out (`pattern`: what's typed already).
     pub(crate) fn global_search(&mut self, pattern: String) {
-        let root = self.search_root();
-        let mut picker = Picker::of("search", "search", Vec::new(), false).grouped(root);
+        let roots = self.search_roots();
+        let mut picker = Picker::of("search", "search", Vec::new(), false)
+            .grouped(roots.project().to_path_buf())
+            .in_folders(roots.folders());
+        // (a folder swapped for a link: left out of the search, dropped and said by the look)
+        self.folders_look();
         picker.live = true;
         picker.set_query(&pattern);
         self.open_picker(picker, None);
         self.live_search();
     }
 
-    /// Where `space /` searches: the project (tarae's folder; a test's own).
-    fn search_root(&self) -> PathBuf {
-        self.workspace.root.clone()
+    /// Where `space /` searches: the project (tarae's folder; a test's own) and the workspace's folders.
+    fn search_roots(&self) -> crate::folders::Roots {
+        self.workspace.roots()
     }
 
     /// The live search's query changed (a key): the search under way stops, and after a pause in the typing
@@ -4311,7 +4316,7 @@ impl Editor {
         };
         p.searching = true;
         let id = p.id;
-        let root = self.search_root();
+        let roots = self.search_roots();
         let now = self.live_search.clone();
         let tx = self.events.sender();
         self.events.jobs().spawn(move || {
@@ -4332,7 +4337,7 @@ impl Editor {
                     };
                     let _ = tx.send(crate::event::Event::Job(Box::new(show)));
                 };
-                Some(crate::picker::search(&root, &pattern, &stop, &mut partial))
+                Some(crate::picker::search(&roots, &pattern, &stop, &mut partial))
             };
             move |ed: &mut Editor| {
                 if ed.live_search.load(Ordering::Relaxed) != generation {
