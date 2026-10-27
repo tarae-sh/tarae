@@ -25,6 +25,22 @@ impl Editor {
         Measure::new(self, doc, self.editing_in(true), (wrap, self.viewport.1), line, self.viewport.0.max(1))
     }
 
+    /// Whether the focused pane shows its last line on or above its bottom row, `rows` tall: the rows from its top to
+    /// its end as it lays them out (wrapped rows, removed rows, a folded block's) fit — a drag held below it scrolls
+    /// no further (`mouse::edge_tick`).
+    pub(crate) fn shows_end(&self, rows: usize) -> bool {
+        let d = self.doc();
+        let m = self.measure(d.top);
+        let mut n = 0;
+        for l in d.top..=mv::last_line(&d.text) {
+            n += m.rows(l);
+            if n > rows + d.top_skip() {
+                return false;
+            }
+        }
+        true
+    }
+
     fn scrolloff(&self) -> usize {
         self.config.scrolloff.min(self.viewport.0.saturating_sub(1) / 2)
     }
@@ -148,6 +164,28 @@ impl Editor {
         let pos = mv::pos_at_col(&doc.text, line, col, tab);
         let r = r.put_cursor(&doc.text, pos, extend);
         doc.set_selection(Selection::single(r));
+    }
+
+    /// The wheel's (and a drag's held past an edge): the view `delta` lines — a document whose rows are given, its
+    /// rows — and nothing else: the cursor and the selection stay, in sight or not (the mouse rule; a pane's next key
+    /// brings the view back to them, `docpane::in_sight`).
+    pub fn view_by(&mut self, delta: isize) {
+        let area = self.viewport.0.max(1);
+        let d = self.doc_mut();
+        d.wheel_held = Some((d.selection().primary(), d.version()));
+        match d.rows.clone() {
+            Some(g) => {
+                let top = g.index(d.top, d.top_skip()).saturating_add_signed(delta);
+                let (line, k) = g.place(top.min(g.len().saturating_sub(area)));
+                d.set_top(line);
+                d.top_rows = (k > 0).then_some((line, k));
+            }
+            None => {
+                // (as `scroll_view` clamps it)
+                let last = mv::last_line(&d.text);
+                d.set_top(d.top.saturating_add_signed(delta).min(last));
+            }
+        }
     }
 
     /// `zj` / `zk` — the view moves `delta` lines; the cursor only moves if the view would leave it. A document

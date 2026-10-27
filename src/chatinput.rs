@@ -9,7 +9,7 @@ use crate::docpane::{After, Which};
 use crate::editor::Editor;
 use crate::key::{Code, Key};
 use crate::keymap::{KeyTrie, Lookup, MappableCommand};
-use crate::selection::{Range, Selection};
+use crate::selection::Selection;
 
 /// The chat's input is an `Input` (`input.rs`, the prompt's line one too).
 pub use crate::input::Input;
@@ -32,15 +32,14 @@ pub fn click(ed: &mut Editor, row: usize, col: usize, w: usize) -> usize {
 /// A drag from the press's character `anchor` (`click`'s) to row `row`, column `col` under the pointer: what's
 /// between selected, both included, as a drag in the code selects — insert mode kept, as there. The keys gone from
 /// it since: nothing.
-pub fn drag(ed: &mut Editor, anchor: usize, row: usize, col: usize, w: usize) {
+pub fn drag(ed: &mut Editor, held: crate::selection::Held, row: usize, col: usize, w: usize) {
     if !ed.workspace.is_at(crate::workspace::At::Chat) || crate::chatdoc::keyed(ed) {
         return;
     }
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     let pos = c.input.at(row, col, w);
     let d = c.input.pane.doc_mut();
-    let anchor = crate::graphemes::snap(&d.text, anchor);
-    d.set_selection(Selection::new(vec![Range::dragged(&d.text, anchor, pos)], 0));
+    d.set_selection(Selection::new(vec![held.dragged(&d.text, pos)], 0));
 }
 
 /// A key for the input's document (`chat::key`, once the chat's own keys didn't take it): `[chat]` then

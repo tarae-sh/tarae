@@ -5,7 +5,7 @@
 
 use std::sync::OnceLock;
 
-use crate::editor::Editor;
+use crate::editor::{Drag, Editor};
 use crate::event::{Event, Mouse, MouseKind as K};
 use crate::mouse::{ACTS, Act, Expect, Part, SILENT_STATES, Surface, TOOK, Under, doc, expect, rows};
 use crate::uistate::tests::{SCENES, Scene, chat, editor, frame};
@@ -129,7 +129,7 @@ fn shown(ed: &mut Editor) -> String {
 }
 
 /// What an act can change: the frame as drawn (its styles too: a selection, a lit line), where the keys go, the code's
-/// selection; and what was said.
+/// selection and the edit review's; and what was said.
 #[derive(Clone)]
 struct Snap {
     frame: Vec<u8>,
@@ -172,19 +172,44 @@ fn snap(ed: &mut Editor) -> Snap {
     frame(ed);
     frame(ed);
     let keys = format!("{:?} {:?}", ed.keys_to().region, ed.mode);
-    let sel = format!("{:?} {:?}", ed.doc().id, ed.doc().selection());
+    // (the edit review's too: it has no cursor, its selection a ground only — tests draw no colours)
+    let review = ed.workspace.claude.review.as_ref().and_then(|r| r.marked);
+    let mut sel = format!("{:?} {:?} {review:?}", ed.doc().id, ed.doc().selection());
+    // (and every text surface's own document: a double there selects in it)
+    use crate::sizes::Slot;
+    for on in [
+        Drag::Transcript,
+        Drag::Input,
+        Drag::Output(Slot::Test),
+        Drag::Output(Slot::Task),
+        Drag::Output(Slot::Procs),
+        Drag::TerminalView,
+    ] {
+        if let Some(d) = crate::mouse::text_doc(ed, on) {
+            sel += &format!(" {on:?} {:?}", d.selection());
+        }
+    }
     let frame = ed.last_frame.as_ref().unwrap().0.clone();
     let text = crate::screen::text(&frame, W as u16, H as u16).unwrap_or_default();
     Snap { frame, text, keys, sel, said: ed.said }
 }
 
-/// What an act did between two snaps: (acted, said). A hover acts only where it moves the keys or a selection —
+/// What an act did between two snaps. A hover acts only where it moves the keys or a selection —
 /// what it shows (a cut row whole, a mark's words) is what it is, not an act; in a scene whose frame moves by itself
 /// (a draft being written), neither is the frame.
-fn did(a: &Snap, b: &Snap, act: Act) -> (bool, bool, String) {
+fn did(a: &Snap, b: &Snap, act: Act) -> Did {
     let moved = a.keys != b.keys || a.sel != b.sel;
     let drawn = act != Act::Hover && !MOVING.get() && a.frame != b.frame;
-    (moved || drawn, a.said != b.said, changed(a, b))
+    Did { acted: moved || drawn, said: a.said != b.said, selected: a.sel != b.sel, what: changed(a, b) }
+}
+
+/// What an act did (`did`): acted, said, changed a selection (the code's, the edit review's or a text surface's), and
+/// what changed in words.
+struct Did {
+    acted: bool,
+    said: bool,
+    selected: bool,
+    what: String,
 }
 
 thread_local!(static MOVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
@@ -333,7 +358,7 @@ struct Before {
     holds: bool,
     lets_go: bool,
     /// No text where it was pressed to drag over: the chat's input empty, its conversation with no message, the
-    /// prompt's line empty.
+    /// prompt's line empty, the terminal's view blank.
     empty: bool,
     /// More than a screen of the surface under the wheel (`SCROLLS`): it must scroll.
     room: bool,
@@ -345,7 +370,7 @@ fn judge(
     u: Under,
     act: Act,
     before: Before,
-    (acted, said, what): (bool, bool, String),
+    Did { acted, said, selected, what }: Did,
 ) {
     let e = expect(u.surface, u.part, act);
     let quiet = !acted && !said;
@@ -357,6 +382,8 @@ fn judge(
         || MOVING.get() && quiet && e == Expect::Acts
         || match e {
         // (the wheel where there may be nothing to scroll: silent too — where there's room, it must act)
+        // (a double on text: its word selected — drawn alone doesn't do, tests draw no colours)
+        Expect::Acts if act == Act::Double && matches!(u.part, Part::Text { .. }) => selected || before.empty,
         Expect::Acts => {
             acted
                 || (act == Act::Wheel && !before.room)
@@ -388,6 +415,10 @@ fn before(ed: &Editor, u: Under) -> Before {
         Surface::Prompt => ed.prompt.as_ref().is_some_and(|p| p.input.is_empty()),
         Surface::Picker if matches!(u.part, Part::Text { .. }) => {
             ed.picker.as_ref().is_some_and(|p| p.input.is_empty())
+        }
+        // (a program that printed nothing: its view's rows blank — a drag over them selects their line ends only)
+        Surface::TerminalView => {
+            crate::view::terminal_view_of(ed).is_some_and(|v| v.doc().text.chars().all(char::is_whitespace))
         }
         _ => false,
     };
@@ -500,7 +531,7 @@ fn wheel_at(
     let s3 = snap(&mut ed);
     let (a, b) = (did(&s1, &s2, Act::Wheel), did(&s2, &s3, Act::Wheel));
     if pressed.is_none_or(|u| u.surface == wheel.surface) {
-        let what = [a.2, b.2].join("; ");
+        let what = [a.what, b.what].join("; ");
         let surface = format!("{:?}", wheel.surface);
         let surface = surface.split('(').next().unwrap_or_default();
         let room = SCROLLS.iter().any(|s| s.0 == scene && s.1 == surface);
@@ -508,7 +539,13 @@ fn wheel_at(
             walk.scrolled.push(format!("{scene} · {surface}"));
         }
         let with = Before { room, ..Before::default() };
-        judge(walk, scene, wheel, Act::Wheel, with, (a.0 || b.0, a.1 || b.1, what));
+        let did = Did {
+            acted: a.acted || b.acted,
+            said: a.said || b.said,
+            selected: a.selected || b.selected,
+            what,
+        };
+        judge(walk, scene, wheel, Act::Wheel, with, did);
     }
 }
 

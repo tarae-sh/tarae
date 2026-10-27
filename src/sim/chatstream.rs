@@ -486,7 +486,9 @@ fn held(ed: &Editor, world: &World) -> Result<(), String> {
     let line = crate::movement::line_of(&d.text, cursor);
     let at = g.index(line, crate::wrap::row_of(g.of(line), cursor));
     let top = t.top_row();
-    if at < top || at >= top + area {
+    // (the wheel moves the view only: the cursor stays where it was, out of sight, until a key)
+    let wheeled = d.wheel_held.is_some_and(|h| h.0 == d.selection().primary());
+    if (at < top || at >= top + area) && !wheeled {
         return Err(format!("the cursor's row {at} out of the rows from {top} ({area})"));
     }
     // (after a frame: the rows drawn are the document's, from its top)

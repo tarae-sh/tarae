@@ -680,6 +680,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         slot_w: lay.slot_w,
         review_change: Default::default(),
         review_rows: Default::default(),
+        review_text: Default::default(),
         task_panel: Default::default(),
         plugin_panel: Default::default(),
         procs_panel: Default::default(),
@@ -5690,6 +5691,11 @@ fn draw_text(
             _ => ("▎", git_color("diff.delta")),
         })
     };
+    // (what a drag selected where there's no cursor — the edit review's: a ground only, the syntax and the change's
+    // colours kept)
+    let marked = |row: usize, col: usize| {
+        shows.marked.get(row).copied().flatten().is_some_and(|(a, b)| (a..b).contains(&col))
+    };
     // (each row takes its ground across the pane first — `ground` — and draws over it)
     for row in 0..lay.text_rows {
         let y = lay.text_top + row as u16;
@@ -5817,7 +5823,10 @@ fn draw_text(
                     room -= c.width;
                     let cap = paint.get(c.bytes.start).copied().unwrap_or(u32::MAX);
                     let syn = capture_styles.get(cap as usize).copied().flatten().unwrap_or_default();
-                    let st = base.patch(Style { bg: None, ..syn });
+                    let mut st = base.patch(Style { bg: None, ..syn });
+                    if marked(row, c.col) {
+                        st = st.patch(ui.selection_primary);
+                    }
                     apply(out, if bleed_at.is_some_and(|w| c.bytes.start >= w) { bled(st) } else { st })?;
                     match &gone[c.bytes.clone()] {
                         "\t" => queue!(out, Spaces(c.width))?,
@@ -6114,6 +6123,8 @@ fn draw_text(
             }
             if let Some(i) = selected {
                 st = st.patch(if i == primary_idx { ui.selection_primary } else { ui.selection });
+            } else if marked(row, c.col) {
+                st = st.patch(ui.selection_primary);
             }
             let k = flashed.partition_point(|r| r.end <= c.pos);
             let in_flash = flashed.get(k).is_some_and(|r| r.start <= c.pos);
@@ -7451,7 +7462,9 @@ fn draw_review(
     let wrap_w = editor.wraps(doc).then_some(code_w);
     let tab = editor.config.tab_width;
     let mut view: Vec<Row> = Vec::with_capacity(body);
-    for row in &rows[rev.scroll.min(rows.len())..] {
+    // (each drawn row's text: which of the rows, its first display column, where on the row it starts — for the mouse)
+    let mut texts: Vec<Option<(usize, usize, usize)>> = Vec::with_capacity(body);
+    for (i, row) in rows.iter().enumerate().skip(rev.scroll.min(rows.len())) {
         if view.len() >= body {
             break;
         }
@@ -7460,20 +7473,40 @@ fn draw_review(
             Row::Other { text, .. } => crate::codeview::other_parts(text, wrap_w, tab),
             Row::Doc { .. } | Row::Header { .. } => vec![None],
         };
+        let has_text = matches!(row, Row::Text { .. } | Row::Other { .. });
         for p in parts.into_iter().take(body - view.len()) {
+            texts.push(has_text.then(|| p.map_or((i, rev.left, 0), |p| (i, p.row.col, p.row.x0))));
             view.push(row.with_part(p));
         }
     }
     // The change in hand: its rows on screen (a notification keeps off them — U9); every change's rows (the
     // follow card keeps off them)
     let top = lay.text_top as usize + title_h;
+    let gutter = crate::chrome::SIGNS + num_w(doc);
+    *editor.screen.review_text.borrow_mut() = (texts.iter().enumerate())
+        .filter_map(|(k, t)| t.map(|(i, col, x0)| (top + k, i, col, gutter + x0)))
+        .collect();
+    // What a drag selected: by row drawn, the display columns of its text (`Review.marked`, the rows' (row, column))
+    let marked: Vec<Option<(usize, usize)>> = match rev.marked {
+        Some((a, b)) if a != b => {
+            let (lo, hi) = (a.min(b), a.max(b));
+            (texts.iter())
+                .map(|t| {
+                    let (i, ..) = (*t)?;
+                    let from = if i == lo.0 { lo.1 } else { 0 };
+                    let to = if i == hi.0 { hi.1 + 1 } else { usize::MAX };
+                    (lo.0..=hi.0).contains(&i).then_some((from, to))
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
     let changes: Vec<(usize, usize)> =
         view.iter().enumerate().filter_map(|(k, r)| r.hunk().map(|h| (top + k, h))).collect();
     let mut mine = changes.iter().filter(|r| r.1 == rev.current).map(|r| r.0);
     let first = mine.next();
     editor.screen.review_change.set(first.zip(mine.next_back().or(first)));
     *editor.screen.review_rows.borrow_mut() = changes;
-    let gutter = crate::chrome::SIGNS + num_w(doc);
     let body_lay = Layout {
         x0: 0,
         text_top: top as u16,
@@ -7484,7 +7517,7 @@ fn draw_review(
     };
     let body_lay = Layout { scrollbar: false, ..body_lay };
     let first = view.iter().map(Row::line).min().unwrap_or(0);
-    let shows = Shows::edit_review(editor, rev.left);
+    let shows = Shows { marked, ..Shows::edit_review(editor, rev.left) };
     draw_text(editor, &Source::of(doc), first, &shows, &view, ui, &body_lay, out)?;
     // Each change's head, over the row the drawer leaves it
     for (k, row) in view.iter().enumerate() {

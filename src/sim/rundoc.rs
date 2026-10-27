@@ -239,7 +239,9 @@ fn held(ed: &Editor, world: &World) -> Result<(), String> {
     let last = crate::movement::last_line(&d.text);
     let line = crate::movement::line_of(&d.text, d.selection().primary().cursor(&d.text));
     let rows = crate::rundoc::rows(ed, Slot::Task);
-    if d.top > last || line < d.top || line >= d.top + rows {
+    // (the wheel moves the view only: the cursor stays where it was, out of sight, until a key)
+    let wheeled = d.wheel_held.is_some_and(|h| h.0 == d.selection().primary());
+    if d.top > last || (line < d.top || line >= d.top + rows) && !wheeled {
         return Err(format!("the cursor's line {line} out of its rows from {} ({rows})", d.top));
     }
     // (the run's scroll is the document's top — what `o` reads as the step in view, where it's left)

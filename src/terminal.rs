@@ -715,17 +715,25 @@ impl Editor {
     pub fn terminal_mouse(&mut self, kind: MouseKind, cell: Option<(u16, u16)>, alt: bool) {
         // In its view mode the mouse is the view's, whoever asked for it: the program's screen is held still, maybe
         // scrolled back — a click there isn't on what the program drew now. The wheel scrolls the view, a press puts
-        // its cursor on that cell, as a click in the code; a drag waits for P4 (as its selection)
+        // its cursor on that cell, as a click in the code (a double its word, a triple its line); a drag selects, as
+        // the code's
         if crate::view::terminal_viewed(self) {
             let row = cell.map(|c| c.0 as usize);
+            let on = crate::editor::Drag::TerminalView;
             return match kind {
                 MouseKind::ScrollUp | MouseKind::ScrollDown => {
                     crate::view::terminal_wheel(self, row, kind == MouseKind::ScrollUp)
                 }
-                MouseKind::Down => crate::view::terminal_click(self, cell),
-                // (no silent drag: what selects there now, said)
-                MouseKind::Drag => self
-                    .set_status("a drag doesn't select in view mode yet — x or v selects, y copies, i types"),
+                MouseKind::Down => {
+                    if let Some(pos) = crate::view::terminal_click(self, cell) {
+                        crate::mouse::text_press(self, on, pos);
+                    }
+                }
+                MouseKind::Drag => {
+                    if let Some(pos) = cell.and_then(|c| crate::view::terminal_pos(self, c)) {
+                        crate::mouse::text_drag(self, on, pos);
+                    }
+                }
                 MouseKind::Up => {}
             };
         }

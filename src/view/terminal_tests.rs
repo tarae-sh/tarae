@@ -445,11 +445,9 @@ fn a_click_in_view_mode_moves_its_cursor_and_sends_the_program_nothing() {
     for kind in [K::Down, K::Drag, K::Up] {
         ed.terminal_mouse(kind, Some((2, 3)), false);
     }
-    let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
-    assert_eq!(
-        said, "a drag doesn't select in view mode yet — x or v selects, y copies, i types",
-        "never a silent drag"
-    );
+    // (a drag on its own cell: that character, selected — `mouse::tests::select` drags further)
+    let d = view(&ed).doc();
+    assert!(!d.selection().primary().is_empty(), "a drag selects");
     frame(&mut ed);
     let col = |ed: &Editor| {
         let d = view(ed).doc();

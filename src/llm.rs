@@ -1250,6 +1250,11 @@ pub struct Review {
     pub from_chat: bool,
     /// Esc gave the keys back to the code, the change unanswered: they're the editor's until `C-q`.
     pub away: bool,
+    /// What a mouse drag selected over it — the file's lines and the ones a change proposes alike, by its rows (the
+    /// row, the display column): from the press to the pointer, copied as the button is let go.
+    pub marked: Option<((usize, usize), (usize, usize))>,
+    /// Where a press on it was (its row, the display column): a drag from there selects (`marked`).
+    pub pressed: Option<(usize, usize)>,
     /// Claude's call it answers (its id, `chat::claim_call`): that call's row takes the keys that answered it
     /// (`chat::stamp_call`) — None for your own changes, `space i`'s, or a call not found.
     pub answers: Option<String>,
@@ -1301,6 +1306,8 @@ impl Review {
             from_chat: false,
             away: false,
             answers: None,
+            marked: None,
+            pressed: None,
         }
     }
 
@@ -1709,6 +1716,8 @@ pub fn review_key(ed: &mut Editor, key: Key) -> bool {
         return true;
     }
     let Some(rev) = ed.workspace.claude.review.as_mut().filter(|r| r.ready) else { return false };
+    // (a key of yours ends what the mouse selected over it — copied already, as the button was let go)
+    rev.marked = None;
     let c_q = key.ctrl && !key.alt && key.code == Code::Char('q');
     // Back in the chat: its keys are the chat's until `C-q`
     if chat {

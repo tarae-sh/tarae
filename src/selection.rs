@@ -7,6 +7,7 @@
 use ropey::Rope;
 
 use crate::graphemes;
+use crate::movement as mv;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Range {
@@ -24,14 +25,10 @@ impl Range {
     }
 
     /// A mouse drag's selection: from the press's character `anchor` to the one under the pointer `pos`, both
-    /// included (a range is half-open) — dragging back, the press's character still in it. The code's, the chat's
-    /// transcript's and its input's alike.
+    /// included (a range is half-open) — dragging back, the press's character still in it (`Held::dragged`, by
+    /// characters).
     pub fn dragged(text: &Rope, anchor: usize, pos: usize) -> Range {
-        if pos >= anchor {
-            Range::new(anchor, graphemes::next_boundary(text, pos))
-        } else {
-            Range::new(graphemes::next_boundary(text, anchor), pos)
-        }
+        Held::at(text, anchor, Unit::Char).dragged(text, pos)
     }
 
     pub fn from(&self) -> usize {
@@ -88,6 +85,87 @@ impl Range {
             Range::new(anchor, graphemes::next_boundary(text, pos))
         } else {
             Range::new(anchor, pos)
+        }
+    }
+}
+
+/// What a mouse press takes by how many came at once on one character (`mouse::presses`): one its character, two
+/// the word, three the line — a drag from it goes by the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unit {
+    Char,
+    Word,
+    Line,
+}
+
+impl Unit {
+    /// The `n`th press at once: a fourth starts again at the character.
+    pub fn of(n: usize) -> Unit {
+        match n.saturating_sub(1) % 3 {
+            0 => Unit::Char,
+            1 => Unit::Word,
+            _ => Unit::Line,
+        }
+    }
+}
+
+/// What a press holds for a drag from it (`Editor.mouse_anchor`): the text it took, `from..to` — its character, a
+/// double's word, a triple's line — and the unit the drag goes by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Held {
+    pub from: usize,
+    pub to: usize,
+    pub unit: Unit,
+}
+
+impl Held {
+    /// The `unit` around `pos` (a word where there's none — a line's end, an empty text: its character).
+    pub fn at(text: &Rope, pos: usize, unit: Unit) -> Held {
+        let (from, to) = span(text, graphemes::snap(text, pos.min(text.len_bytes())), unit);
+        Held { from, to, unit }
+    }
+
+    /// A press's character at `at` where the text isn't at hand (the prompt's line, a picker's query: they drag from
+    /// `from` by their own rule, `prompt::drag`).
+    pub fn char_at(at: usize) -> Held {
+        Held { from: at, to: at, unit: Unit::Char }
+    }
+
+    /// What the press selects: a double's word, a triple's line — one press only puts the cursor there.
+    pub fn range(self) -> Range {
+        match self.unit {
+            Unit::Char => Range::point(self.from),
+            _ => Range::new(self.from, self.to),
+        }
+    }
+
+    /// A drag from it to `pos`: what's between selected, the press's text and the unit under the pointer whole —
+    /// dragging back, the press's own still in it, the head at the pointer's.
+    pub fn dragged(self, text: &Rope, pos: usize) -> Range {
+        let len = text.len_bytes();
+        let (a, b) = (graphemes::snap(text, self.from.min(len)), graphemes::snap(text, self.to.min(len)));
+        let (from, to) = span(text, graphemes::snap(text, pos.min(len)), self.unit);
+        if from >= a { Range::new(a, to.max(b)) } else { Range::new(b, from) }
+    }
+}
+
+/// The bytes of `unit` around `pos`.
+fn span(text: &Rope, pos: usize, unit: Unit) -> (usize, usize) {
+    let char = (pos, graphemes::next_boundary(text, pos));
+    match unit {
+        Unit::Char => char,
+        Unit::Word => {
+            let r = crate::textobject::word_object(
+                text,
+                Range::point(pos),
+                crate::textobject::Kind::Inside,
+                false,
+            );
+            if r.is_empty() { char } else { (r.from(), r.to()) }
+        }
+        Unit::Line => {
+            let line = mv::line_of(text, pos);
+            (text.line_to_byte(line), text.line_to_byte((line + 1).min(text.len_lines())))
         }
     }
 }

@@ -1739,6 +1739,27 @@ const SCENES: &[Scene] = &[
         files: MAIN,
         keys: &["@1", " ", "l", "@1", "why does insert clone the name?", "\r", "@?Change 1 of 1", "@1"],
     },
+    // (mouse S: a drag over the review selects what it shows — the line above the change, the one it takes out, the one
+    // it proposes, the line under it — on the selection's ground, the code's colours kept; let go, copied)
+    Scene {
+        name: "review-select",
+        claude: "full",
+        files: MAIN,
+        keys: &[
+            "@1",
+            " ",
+            "l",
+            "@1",
+            "why does insert clone the name?",
+            "\r",
+            "@?Change 1 of 1",
+            "@1",
+            "@press+4?first = Thread",
+            "@drag+6?for (name, t) in &threads",
+            "@release+6?for (name, t) in &threads",
+            "@1",
+        ],
+    },
     // (글타래 P7: Claude's edit of three changes as it's written — two whole, the third's new line mid-way, its head
     // bleeding; nothing applied, no review yet)
     Scene {

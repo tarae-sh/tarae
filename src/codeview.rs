@@ -154,6 +154,9 @@ pub struct Shows {
     /// Where the sessions are in it (`presence::marks`): `▎` in the sign column on their lines, a name tag at the
     /// first line's end of where each is now — a pane's only.
     pub presence: Vec<crate::presence::Mark>,
+    /// What a mouse drag selected where there's no cursor to hold it (the edit review: the file's lines and the ones
+    /// a change proposes alike): by row drawn, its text's display columns `from..to` on the selection's ground.
+    pub marked: Vec<Option<(usize, usize)>>,
 }
 
 /// Where a code view's change marks come from — the one source of its signs, washes, removed rows, the
@@ -586,6 +589,7 @@ impl Shows {
             claude: crate::follow::place(editor, id, doc),
             caret: crate::follow::caret_in(editor, id, doc),
             presence: crate::presence::marks(editor, doc),
+            marked: Vec::new(),
         }
     }
 
@@ -614,6 +618,7 @@ impl Shows {
             claude: None,
             caret: true,
             presence: Vec::new(),
+            marked: Vec::new(),
         }
     }
 
@@ -639,6 +644,7 @@ impl Shows {
             claude: None,
             caret: true,
             presence: Vec::new(),
+            marked: Vec::new(),
         }
     }
 
@@ -669,6 +675,7 @@ impl Shows {
             claude: None,
             caret: true,
             presence: Vec::new(),
+            marked: Vec::new(),
         }
     }
 }

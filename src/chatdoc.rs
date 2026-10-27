@@ -736,16 +736,27 @@ pub fn click(ed: &mut Editor, row: usize, col: usize) -> Option<usize> {
 /// A drag from the press's character `anchor` (`click`'s) to the conversation's row `row`, column `col` under the
 /// pointer: what's between selected, both included, as a drag in the code selects — `y` copies it. Its view no
 /// longer with the keys, or a row of the frame's own: nothing.
-pub fn drag(ed: &mut Editor, anchor: usize, row: usize, col: usize) {
+pub fn drag(ed: &mut Editor, held: crate::selection::Held, row: usize, col: usize) {
     if !has_keys(ed) {
         return;
     }
     let Some(row) = doc_row(&ed.screen.chat_laid.borrow(), row) else { return };
     let Some(s) = transcript(ed).filter(|t| row < t.rows()).and_then(|t| t.row(row)) else { return };
-    let Some(d) = transcript_mut(ed).and_then(|t| t.pane.doc_in_mut()) else { return };
+    let Some(d) = doc_mut(ed) else { return };
     let pos = under(d, s, col);
-    let anchor = crate::graphemes::snap(&d.text, anchor);
-    d.set_selection(Selection::new(vec![crate::selection::Range::dragged(&d.text, anchor, pos)], 0));
+    d.set_selection(Selection::new(vec![held.dragged(&d.text, pos)], 0));
+}
+
+/// The conversation's document.
+pub(crate) fn doc_mut(ed: &mut Editor) -> Option<&mut Document> {
+    transcript_mut(ed).and_then(|t| t.pane.doc_in_mut())
+}
+
+/// The conversation's view `by` rows and nothing else — its cursor and selection where they are, in sight or not (the
+/// wheel's, a drag's held past its edge; its next key brings the view back to them).
+pub fn view_by(ed: &mut Editor, by: isize) {
+    let size = viewport(ed);
+    crate::docpane::swap(ed, Which::Chat, size, |ed| ed.view_by(by));
 }
 
 /// The character row `s` draws at column `col` of the chat's text (`click`'s rule).
@@ -1030,8 +1041,8 @@ pub fn wheel(ed: &mut Editor, row: Option<usize>, up: bool) {
         enter(ed, row, Some(was));
     }
     ed.workspace.viewer.at = At::Chat;
-    // (three rows — `scroll_view` counts the transcript's rows, a paragraph's each its own)
-    swap(ed, |ed| ed.scroll_view(if up { -3 } else { 3 }, false));
+    // (three rows — the transcript's, a paragraph's each its own; the cursor and the selection stay)
+    view_by(ed, if up { -3 } else { 3 });
     let (area, _) = viewport(ed);
     let Some(t) = transcript(ed) else { return };
     let at_end = t.top_row() + area >= t.rows();

@@ -475,7 +475,7 @@ pub fn terminal_wheel(ed: &mut Editor, row: Option<usize>, up: bool) {
         let was = was(ed);
         terminal_enter(ed, row.map_or(Land::InSight, Land::Row), Some(was));
     }
-    swap(ed, |ed| ed.scroll_view(if up { -3 } else { 3 }, false));
+    terminal_view_by(ed, if up { -3 } else { 3 });
     let Some(v) = ed.workspace.viewer.view.as_ref() else { return };
     let at_end = v.doc().top >= v.made.back;
     if !up
@@ -492,10 +492,25 @@ pub fn terminal_wheel(ed: &mut Editor, row: Option<usize>, up: bool) {
 /// A press on its screen's cell (row, column) while viewed: the view's cursor on that cell's character, as a click
 /// in the code puts it (a wide character's second cell: the character; past a row's text: its end) — nothing goes to
 /// the program.
-pub fn terminal_click(ed: &mut Editor, cell: Option<(u16, u16)>) {
-    let Some((r, c)) = cell else { return };
+pub fn terminal_click(ed: &mut Editor, cell: Option<(u16, u16)>) -> Option<usize> {
+    let pos = terminal_pos(ed, cell?)?;
+    // (in sight already: a press inside the scrolloff margin doesn't move the rows under the pointer — a double there
+    // takes the word it was pressed on)
+    terminal_doc_mut(ed)?.set_selection(Selection::point(pos));
+    Some(pos)
+}
+
+/// The view's document while the terminal is viewed.
+pub(crate) fn terminal_doc_mut(ed: &mut Editor) -> Option<&mut Document> {
+    let viewed = terminal_viewed(ed);
+    ed.workspace.viewer.view.as_mut().filter(|v| viewed && v.doc.is_some()).map(View::doc_mut)
+}
+
+/// The view's character on its screen's cell (row, column) — a wide character's second cell: the character; past a
+/// row's text: its end.
+pub fn terminal_pos(ed: &mut Editor, (r, c): (u16, u16)) -> Option<usize> {
     // (the bytes of the row's line before the cell's character, counted as the document was read — `cell_len`)
-    let Some(t) = ed.workspace.terminal.as_ref() else { return };
+    let t = ed.workspace.terminal.as_ref()?;
     let s = t.parser.screen();
     let (mut at, mut here) = (0, 0);
     for x in 0..=c {
@@ -506,12 +521,28 @@ pub fn terminal_click(ed: &mut Editor, cell: Option<(u16, u16)>) {
         here = at;
         at += cell_len(cell.contents());
     }
-    let Some(v) = ed.workspace.viewer.view.as_mut().filter(|v| v.doc.is_some()) else { return };
-    let d = v.doc_mut();
+    let d = terminal_doc_mut(ed)?;
     let line = (d.top + usize::from(r)).min(mv::last_line(&d.text));
     let (ls, le) = (mv::line_start(&d.text, line), mv::line_end(&d.text, line));
-    d.set_selection(Selection::point((ls + here).min(le)));
-    in_sight(ed);
+    Some((ls + here).min(le))
+}
+
+/// The view's rows `by` and nothing else — its cursor and selection where they are, in sight or not (the wheel's, a
+/// drag's held past its edge; its next key brings the view back to them).
+pub fn terminal_view_by(ed: &mut Editor, by: isize) {
+    // (a line a row: nothing wraps — no further down than the last line at the bottom, as `in_sight`)
+    let (rows, _) = viewport(ed);
+    let Some(v) = ed.workspace.viewer.view.as_mut().filter(|v| v.doc.is_some()) else { return };
+    let m = v.made;
+    let d = v.doc_mut();
+    let last = (mv::last_line(&d.text) + 1).saturating_sub(rows);
+    let top = d.top.saturating_add_signed(by).min(last);
+    d.set_top(top);
+    d.wheel_held = Some((d.selection().primary(), d.version()));
+    // (the terminal shows what's in sight by its scrollback offset)
+    if let Some(t) = ed.workspace.terminal.as_mut().filter(|t| t.generation() == m.generation) {
+        t.parser.screen_mut().set_scrollback(m.back.saturating_sub(top));
+    }
 }
 
 /// A new panel size waits to settle (`terminal_resized`): a frame is wanted `SETTLE` on.

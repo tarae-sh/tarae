@@ -12,6 +12,7 @@ use crate::editor::{Drag, Editor};
 use crate::event::MouseKind;
 use crate::float::Grip;
 use crate::pane::GroupKind;
+use crate::selection::{Held, Selection, Unit};
 use crate::sizes::{Border, Slot};
 use crate::split::PaneId;
 use crate::workspace::Spot;
@@ -277,9 +278,28 @@ impl Editor {
             return at(S::Float(kind), Part::Frame(grip));
         }
         if matches!(kind, K::Drag | K::Up) {
+            // (a drag from text is that text's wherever the pointer goes — past its edge, its row there: it scrolls,
+            // `edge`)
+            let rows = |y0: usize, n: usize| y.clamp(y0, y0 + n.max(1) - 1);
             match self.mouse_anchor {
-                Some((Drag::Transcript, _)) => return at(S::Transcript, self.transcript_text(x, y)),
+                Some((Drag::Transcript, _)) => {
+                    let y = s.chat_view.get().map_or(y, |(y0, _, n, _)| rows(y0, n));
+                    return at(S::Transcript, self.transcript_text(x, y));
+                }
                 Some((Drag::Input, _)) => return at(S::Input, self.input_text(x, y)),
+                Some((Drag::Review, _)) => return at(S::EditReview, Part::Blank),
+                Some((Drag::Code, _)) => {
+                    let pid = self.workspace.viewer.focus;
+                    if let Some(part) = self.code_text(pid, x, y, true) {
+                        return at(S::Code(pid), part);
+                    }
+                }
+                Some((Drag::Output(slot), _)) => {
+                    if let Some(r) = s.run_rows.of(slot) {
+                        let line = rows(r.1, r.3) - r.1;
+                        return at(S::Output(slot), Part::Text { line, col: x.saturating_sub(r.2) });
+                    }
+                }
                 _ => {}
             }
             // (a program that has the mouse always gets its drag and release, clamped to its edge)
@@ -527,7 +547,7 @@ impl Editor {
         if self.welcome() {
             return at(S::Welcome, Part::Blank);
         }
-        let Some((pid, rect, gutter, lines)) =
+        let Some((pid, ..)) =
             s.panes.iter().find(|(_, r, ..)| (r.x..r.x + r.w).contains(&x) && (r.y..r.y + r.h).contains(&y))
         else {
             // (a pane at the column's top has its top line over its rect — `chrome::line_in_pane` —, its `┬` over a
@@ -544,15 +564,28 @@ impl Editor {
         if wheel {
             return at(S::Code(*pid), Part::Blank);
         }
+        match self.code_text(*pid, x, y, false) {
+            Some(part) => at(S::Code(*pid), part),
+            None => at(S::PaneTop(*pid), Part::Blank),
+        }
+    }
+
+    /// Pane `pid`'s character under (`x`, `y`) — None on its top line. `held` (a drag from a press there): the row
+    /// clamped to its text's rows, the column to its own.
+    fn code_text(&self, pid: PaneId, x: usize, y: usize, held: bool) -> Option<Part> {
+        let s = &self.screen;
+        let (_, rect, gutter, lines) = s.panes.iter().find(|p| p.0 == pid)?;
         // (its rows of text as the drawer lays them out: a pane under another has its top line in its first row —
         // `chrome::pane_text`)
         let text = crate::chrome::pane_text(*rect, s.text_top);
+        let y = if held { y.clamp(text.y, (text.y + text.h).max(text.y + 1) - 1) } else { y };
+        let x = if held { x.clamp(rect.x, (rect.x + rect.w).max(rect.x + 1) - 1) } else { x };
         if y < text.y {
-            return at(S::PaneTop(*pid), Part::Blank);
+            return None;
         }
         let row = y - text.y;
-        let scroll = || match self.workspace.views.iter().find(|v| v.id == *pid) {
-            Some(v) if *pid != self.workspace.viewer.focus => (v.top, v.left),
+        let scroll = || match self.workspace.views.iter().find(|v| v.id == pid) {
+            Some(v) if pid != self.workspace.viewer.focus => (v.top, v.left),
             _ => (self.doc().top, self.doc().left),
         };
         let (line, c0, x0, end) = lines.get(row).copied().unwrap_or_else(|| {
@@ -563,7 +596,7 @@ impl Editor {
         // pointer on that row, in this pane, not counted (frictions #150)
         let x = s.text_x(x, y, rect.x);
         let col = crate::wrap::clamp_col(c0 + x.saturating_sub(rect.x + gutter).saturating_sub(x0), end);
-        at(S::Code(*pid), Part::Text { line, col })
+        Some(Part::Text { line, col })
     }
 
     /// The conversation's row and column under (`x`, `y`), if a row of it was drawn there.
@@ -610,6 +643,276 @@ pub fn let_go(ed: &mut Editor, u: Under) {
         let key = ed.key_said("C-q");
         ed.set_status(format!("keys back — the card waits, {key} answers it"));
     }
+}
+
+/// The document a press or drag on `on`'s text selects in: the code's in front, the conversation's, the input's, a run
+/// panel's output, the terminal's view (the prompt's line and a picker's query are their own, `prompt::drag`).
+pub(crate) fn text_doc(ed: &mut Editor, on: Drag) -> Option<&mut crate::document::Document> {
+    match on {
+        Drag::Code => Some(ed.doc_mut()),
+        Drag::Transcript => crate::chatdoc::doc_mut(ed),
+        Drag::Input => ed.workspace.claude.chat.as_mut().map(|c| c.input.pane.doc_mut()),
+        Drag::Output(slot) => ed.workspace.outputs.get_mut(slot).and_then(|o| o.doc_in_mut()),
+        Drag::TerminalView => crate::view::terminal_doc_mut(ed),
+        Drag::Prompt | Drag::Picker | Drag::Review => None,
+    }
+}
+
+/// The edit review's text under (`x`, `y`): which of its rows, the display column in that row's text. A press on a
+/// row that isn't text (a change's head, the title): the text row under it, the one above at the end. `held` (a drag
+/// from a press there): over a head the row above it; above its first row of text that row's start.
+pub fn review_at(ed: &Editor, x: usize, y: usize, kind: MouseKind) -> Option<(usize, usize)> {
+    let rows = ed.screen.review_text.borrow();
+    let first = *rows.first()?;
+    if kind != MouseKind::Down && y < first.0 {
+        return Some((first.1, first.2));
+    }
+    let &(_, i, col, x0) = match kind {
+        MouseKind::Down => rows.iter().find(|r| r.0 >= y).or(rows.last())?,
+        _ => rows.iter().rev().find(|r| r.0 <= y)?,
+    };
+    Some((i, col + x.saturating_sub(x0)))
+}
+
+/// What a drag selected over the edit review (`Review.marked`): its rows' text from the press's column to the
+/// pointer's, both included — the file's lines and the ones a change proposes alike, a change's head not text.
+pub fn review_marked(ed: &Editor) -> Option<String> {
+    use crate::codeview::Row;
+    let rev = ed.workspace.claude.review.as_ref()?;
+    let (a, b) = rev.marked.filter(|(a, b)| a != b)?;
+    let (lo, hi) = (a.min(b), a.max(b));
+    let rows = &rev.kept.as_ref()?.rows;
+    let doc = ed.docs.iter().find(|d| d.id == rev.doc_id)?;
+    let tab = ed.config.tab_width;
+    let mut out = Vec::new();
+    for (i, row) in rows.iter().enumerate().take(hi.0 + 1).skip(lo.0) {
+        let text = match row {
+            Row::Text { line, .. } => {
+                doc.text.line(*line).to_string().trim_end_matches(['\n', '\r']).to_string()
+            }
+            Row::Other { text, .. } => text.clone(),
+            Row::Doc { .. } | Row::Header { .. } => continue,
+        };
+        let byte = |col: usize| {
+            crate::graphemes::cells(&text, 0, tab)
+                .find(|c| c.col >= col)
+                .map_or(text.len(), |c| c.bytes.start)
+        };
+        let from = if i == lo.0 { lo.1 } else { 0 };
+        let to = if i == hi.0 { hi.1 + 1 } else { usize::MAX };
+        out.push(text[byte(from)..byte(to)].to_string());
+    }
+    Some(out.join("\n"))
+}
+
+/// A drag over the edit review let go: what it selected copied, as the terminal's selection is — the review's own
+/// keys stay its answers (`y` accepts the change; it never copies there). A press not dragged: nothing selected.
+fn review_copy(ed: &mut Editor) {
+    let Some(text) = review_marked(ed) else {
+        if let Some(r) = ed.workspace.claude.review.as_mut() {
+            r.marked = None;
+        }
+        return;
+    };
+    let what = match text.lines().count() {
+        0 | 1 => format!("{} characters", text.chars().count()),
+        n => format!("{n} lines"),
+    };
+    crate::clipboard::copy(&ed.events.jobs(), text, what);
+}
+
+/// A press, drag or release on the edit review at (`x`, `y`), on a change's row (`hunk`) or off one: a press takes the
+/// change in hand (one answered already, to change the answer) and gives the review the keys; a drag from it selects
+/// its text, past its edge it scrolls; let go, what it selected is copied. Whether it took the event (a drag or release
+/// not from a press there: no).
+pub fn review_mouse(ed: &mut Editor, kind: MouseKind, x: usize, y: usize, hunk: Option<usize>) -> bool {
+    let held = matches!(ed.mouse_anchor, Some((Drag::Review, _)));
+    let at = review_at(ed, x, y, kind);
+    let Some(r) = ed.workspace.claude.review.as_mut() else { return false };
+    match kind {
+        MouseKind::Drag if held => {
+            if let (Some(at), Some(from)) = (at, r.pressed) {
+                r.marked = Some((from, at));
+            }
+            edge(ed, x, y);
+        }
+        MouseKind::Up if held => {
+            ed.mouse_anchor = None;
+            review_copy(ed);
+        }
+        // (a press anywhere on it: the keys to it, as `C-q` brings them — from the chat, the code, a panel)
+        MouseKind::Down => {
+            if let Some(i) = hunk.filter(|&i| r.hunks.get(i).is_some_and(|h| !h.conflict)) {
+                (r.current, r.follow) = (i, false);
+            }
+            r.away = false;
+            (r.marked, r.pressed) = (None, at);
+            if at.is_some() {
+                ed.mouse_anchor = Some((Drag::Review, Held { from: 0, to: 0, unit: Unit::Char }));
+            }
+            ed.plugin_panel_unfocus();
+            ed.procs_unfocus();
+            ed.workspace.viewer.at = crate::workspace::At::Code;
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// A press on `on`'s text, its surface's click having put the cursor on `pos`: the second at once on that character
+/// selects its word, the third its line, a fourth starts again (`Unit::of`) — what it took is what a drag from it
+/// holds, the drag going by the same unit.
+pub fn text_press(ed: &mut Editor, on: Drag, pos: usize) {
+    let pane = ed.workspace.viewer.focus;
+    let Some(d) = text_doc(ed, on) else { return };
+    // (the same character of the same document in the same pane: another split's, another buffer's isn't a double)
+    let here = (on, d.id, pane, pos);
+    let n = match ed.mouse_presses {
+        Some((was, at, n)) if was == here && crate::clock::since(at) < crate::editor::DOUBLE_CLICK => n + 1,
+        _ => 1,
+    };
+    ed.mouse_presses = Some((here, crate::clock::now(), n));
+    let unit = Unit::of(n);
+    let Some(d) = text_doc(ed, on) else { return };
+    let held = Held::at(&d.text, pos, unit);
+    if unit != Unit::Char {
+        d.set_selection(Selection::single(held.range()));
+    }
+    ed.mouse_anchor = Some((on, held));
+}
+
+/// A drag from a press on `on`'s text to its character `pos` under the pointer: what's between selected, by the
+/// press's unit (`Held::dragged`). A drag whose press wasn't on that text: nothing.
+pub fn text_drag(ed: &mut Editor, on: Drag, pos: usize) {
+    let Some((_, held)) = ed.mouse_anchor.filter(|a| a.0 == on) else { return };
+    let Some(d) = text_doc(ed, on) else { return };
+    let r = held.dragged(&d.text, pos);
+    d.set_selection(Selection::single(r));
+}
+
+/// How often a drag held past its text's edge scrolls it a row toward the pointer.
+pub const EDGE_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// The screen rows `on`'s text was drawn on in the last frame (first, past the last) — where a drag past them scrolls
+/// it. The input, the prompt's line and a picker's query: none (they're a few rows, their own).
+fn text_rows(ed: &Editor, on: Drag) -> Option<(usize, usize)> {
+    let s = &ed.screen;
+    match on {
+        Drag::Code => {
+            let rect = s.panes.iter().find(|p| p.0 == ed.workspace.viewer.focus)?.1;
+            let text = crate::chrome::pane_text(rect, s.text_top);
+            Some((text.y, text.y + text.h))
+        }
+        Drag::Transcript => s.chat_view.get().map(|(y0, _, rows, _)| (y0, y0 + rows)),
+        Drag::Output(slot) => s.run_rows.of(slot).map(|r| (r.1, r.1 + r.3)),
+        Drag::TerminalView => s.terminal_rows.map(|(y0, y1)| (y0 + crate::chrome::SLOT_HEAD, y1 + 1)),
+        Drag::Review => {
+            let rows = s.review_text.borrow();
+            Some((rows.first()?.0, rows.last()?.0 + 1))
+        }
+        Drag::Input | Drag::Prompt | Drag::Picker => None,
+    }
+}
+
+/// The row a drag at screen row `y` is past its text by: up (−1), down (1), or inside it (None).
+fn past(ed: &Editor, on: Drag, y: usize) -> Option<isize> {
+    let (first, end) = text_rows(ed, on)?;
+    match y {
+        _ if y < first => Some(-1),
+        _ if y >= end && end > first => Some(1),
+        _ => None,
+    }
+}
+
+/// After a drag at (`x`, `y`) on text: past its first or last row it's held there (`Editor.mouse_edge`), its text
+/// scrolling a row toward the pointer each `EDGE_EVERY` (`edge_tick`) and the selection reaching the row now at the
+/// edge; back inside, no longer.
+pub fn edge(ed: &mut Editor, x: usize, y: usize) {
+    let past = ed.mouse_anchor.and_then(|(on, _)| past(ed, on, y));
+    ed.mouse_edge = match (past, ed.mouse_edge) {
+        (None, _) => None,
+        (Some(_), Some((.., at))) => Some((x as u16, y as u16, at)),
+        (Some(_), None) => Some((x as u16, y as u16, crate::clock::now())),
+    };
+    // (the code's view held where the drag left it: the frame's scroll to the cursor would jump its scrolloff margin)
+    if ed.mouse_edge.is_some() && matches!(ed.mouse_anchor, Some((Drag::Code, _))) {
+        let d = ed.doc_mut();
+        d.wheel_held = Some((d.selection().primary(), d.version()));
+    }
+}
+
+/// Where `on`'s text is scrolled to: its top line and the rows of it above the view (a transcript's paragraph), the
+/// edit review's first row.
+fn edge_top(ed: &mut Editor, on: Drag) -> Option<(usize, usize)> {
+    match on {
+        Drag::Review => ed.workspace.claude.review.as_ref().map(|r| (r.scroll, 0)),
+        _ => text_doc(ed, on).map(|d| (d.top, d.top_rows.map_or(0, |r| r.1))),
+    }
+}
+
+/// When the next row of a drag held past its text's edge is due (`Editor::tick_wanted`).
+pub fn edge_wake(ed: &Editor) -> Option<std::time::Duration> {
+    let (.., at) = ed.mouse_edge?;
+    Some(EDGE_EVERY.saturating_sub(crate::clock::since(at)))
+}
+
+/// A tick while a drag is held past its text's edge: its text a row toward the pointer, the drag again where the
+/// pointer is (the selection to the row now at the edge). Whether it moved.
+pub fn edge_tick(ed: &mut Editor) -> bool {
+    let (Some((x, y, at)), Some((on, _))) = (ed.mouse_edge, ed.mouse_anchor) else { return false };
+    if crate::clock::since(at) < EDGE_EVERY {
+        return false;
+    }
+    let Some(by) = past(ed, on, y.into()) else {
+        ed.mouse_edge = None;
+        return false;
+    };
+    let was = edge_top(ed, on);
+    // (toward the end, no further than its last line on the bottom row: a drag selects what's there, it never moves
+    // the text out of sight — a file shorter than its rows doesn't move; one scrolled past it already, `zj` or the
+    // wheel, stays there, never pulled back up)
+    let rows = text_rows(ed, on).map_or(1, |(first, end)| end - first);
+    let at_end = by > 0
+        && match on {
+            // (by the rows the pane lays out — a soft-wrapped line takes several)
+            Drag::Code => ed.shows_end(rows),
+            // (a line a row)
+            Drag::Output(_) => text_doc(ed, on)
+                .is_some_and(|d| d.top >= (crate::movement::last_line(&d.text) + 1).saturating_sub(rows)),
+            // (its last row drawn, the last frame's)
+            Drag::Review => ed.workspace.claude.review.as_ref().is_some_and(|r| {
+                let last = r.kept.as_ref().map_or(0, |k| k.rows.len()).saturating_sub(1);
+                ed.screen.review_text.borrow().iter().any(|t| t.1 == last)
+            }),
+            _ => false,
+        };
+    if at_end {
+        ed.mouse_edge = None;
+        return false;
+    }
+    match on {
+        Drag::Code => {
+            let d = ed.doc_mut();
+            d.set_top(d.top.saturating_add_signed(by));
+        }
+        Drag::Transcript => crate::chatdoc::view_by(ed, by),
+        Drag::Output(slot) => crate::rundoc::view_by(ed, slot, by),
+        Drag::TerminalView => crate::view::terminal_view_by(ed, by),
+        Drag::Review => {
+            let Some(r) = ed.workspace.claude.review.as_mut() else { return false };
+            let rows = r.kept.as_ref().map_or(0, |k| k.rows.len());
+            (r.scroll, r.follow) = (r.scroll.saturating_add_signed(by).min(rows.saturating_sub(1)), false);
+        }
+        Drag::Input | Drag::Prompt | Drag::Picker => return false,
+    }
+    // (at its end already: nothing more to scroll, no more ticks — a drag back there arms it again)
+    if edge_top(ed, on) == was {
+        ed.mouse_edge = None;
+        return false;
+    }
+    ed.mouse_edge = Some((x, y, crate::clock::now()));
+    ed.handle_mouse(crate::event::Mouse { kind: MouseKind::Drag, x, y, alt: false, ctrl: false });
+    true
 }
 
 // The table and its doc are the tests' (the walk holds every scene to it, `docs/mouse.md` is printed from it).
@@ -795,17 +1098,16 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
         },
         Su::TerminalView => match (part, act) {
             (_, A::Press) | (_, A::Wheel) => Acts,
-            (Part::Text { .. }, A::Drag) => Says("x or v selects, y copies"),
+            (_, A::Drag | A::Double) if text => Acts,
             (_, A::Drag) => Gap(S, "a drag from its padding"),
-            (_, A::Double) => Gap(S, "a word"),
+            (_, A::Double) => AS_ONE,
             (_, A::Release) => RELEASE,
             (_, A::Hover) => HOVER,
         },
         Su::Output(_) => match (part, act) {
             (_, A::Press) | (_, A::Wheel) => Acts,
-            (_, A::Drag) if text => Gap(S, "a drag selects"),
+            (_, A::Drag | A::Double) if text => Acts,
             (_, A::Drag) => Gap(S, "a drag follows the pointer"),
-            (_, A::Double) if text => Gap(S, "a word"),
             (_, A::Double) => AS_ONE,
             (_, A::Release) => RELEASE,
             (_, A::Hover) => HOVER,
@@ -851,9 +1153,8 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
         },
         Su::Transcript | Su::Input => match (part, act) {
             (_, A::Press) | (_, A::Wheel) => Acts,
-            (_, A::Drag) if text => Acts,
+            (_, A::Drag | A::Double) if text => Acts,
             (_, A::Drag) => Gap(S, "a drag from a link"),
-            (_, A::Double) if text => Gap(S, "a word"),
             (_, A::Double) => AS_ONE,
             (_, A::Release) => RELEASE,
             (_, A::Hover) => Not("a cut row comes whole under it"),
@@ -861,8 +1162,8 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
         Su::EditReview => match (part, act) {
             (Part::Outside, A::Press) => Gap(O, "off the review: nothing until it's answered"),
             (Part::Outside, A::Wheel) => NO_SCROLL,
-            (_, A::Press) | (_, A::Wheel) => Acts,
-            (_, A::Drag) => Gap(S, "the review's text selects"),
+            (Part::Outside, A::Drag) => Gap(O, "off the review: nothing until it's answered"),
+            (_, A::Press) | (_, A::Wheel) | (_, A::Drag) => Acts,
             (_, A::Double) => AS_ONE,
             (_, A::Release) => RELEASE,
             (_, A::Hover) => HOVER,
@@ -885,7 +1186,7 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
         },
         Su::Code(_) => match (part, act) {
             (_, A::Press) | (_, A::Wheel) | (_, A::Drag) => Acts,
-            (_, A::Double) if text => Gap(S, "a word"),
+            (_, A::Double) if text => Acts,
             (_, A::Double) => AS_ONE,
             (_, A::Release) => Not("ctrl+press goes there at the release"),
             (_, A::Hover) => Not("no hover from the language server — K"),

@@ -991,13 +991,11 @@ pub fn prompt_from(ed: &Editor) -> Option<Run> {
     keyed(ed).filter(|(_, o)| o.prompt && ed.prompt.is_some()).map(|(r, _)| r)
 }
 
-/// The wheel over a run panel's output: three rows of its document while it has the keys, the cursor kept in
-/// sight (`C-e`/`C-y` thrice); without them the panel scrolls (back at the end, it follows its output again).
+/// The wheel over a run panel's output: three rows of its document while it has the keys, the cursor and the
+/// selection where they are (`view_by`); without them the panel scrolls (back at the end, it follows its output again).
 pub fn wheel(ed: &mut Editor, slot: Slot, up: bool) {
     if has_keys(ed) == Some(slot) {
-        let by = if up { -3 } else { 3 };
-        swap(ed, slot, |ed| ed.scroll_view(by, false));
-        return;
+        return view_by(ed, slot, if up { -3 } else { 3 });
     }
     let rows = rows(ed, slot);
     let by = if up { -3 } else { 3 };
@@ -1012,14 +1010,32 @@ pub fn wheel(ed: &mut Editor, slot: Slot, up: bool) {
     };
 }
 
+/// `slot`'s output's view `by` rows and nothing else — its cursor and selection where they are, in sight or not (the
+/// wheel's, a drag's held past its edge; its next key brings the view back to them).
+pub fn view_by(ed: &mut Editor, slot: Slot, by: isize) {
+    let size = viewport(ed, slot);
+    crate::docpane::swap(ed, Which::Output(slot), size, |ed| ed.view_by(by));
+    pin(ed, slot);
+}
+
 /// A press on a run panel's row `row` of its output at column `col` of its text: the keys its, the cursor on that
-/// character, as a click in the code puts it.
-pub fn click(ed: &mut Editor, slot: Slot, row: usize, col: usize) {
+/// character, as a click in the code puts it — where it landed (a drag from there selects, `mouse::text_drag`).
+pub fn click(ed: &mut Editor, slot: Slot, row: usize, col: usize) -> Option<usize> {
     match slot {
         Slot::Procs => ed.detail_focus(crate::pane::GroupKind::Procs),
         _ => ed.panel_take_keys(slot),
     }
-    let Some(d) = ed.workspace.outputs.get_mut(slot).and_then(|o| o.doc_in_mut()) else { return };
+    let pos = pos_at(ed, slot, row, col)?;
+    let d = ed.workspace.outputs.get_mut(slot).and_then(|o| o.doc_in_mut())?;
+    // (in sight already: a press inside the scrolloff margin doesn't move the rows under the pointer)
+    d.set_selection(Selection::point(pos));
+    Some(pos)
+}
+
+/// The character a run panel's output draws on its row `row` at column `col` of its text (past a row's text: its
+/// end).
+pub fn pos_at(ed: &mut Editor, slot: Slot, row: usize, col: usize) -> Option<usize> {
+    let d = ed.workspace.outputs.get_mut(slot).and_then(|o| o.doc_in_mut())?;
     let line = (d.top + row).min(mv::last_line(&d.text));
     let (ls, le) = (mv::line_start(&d.text, line), mv::line_end(&d.text, line));
     let text = d.text.byte_slice(ls..le).to_string();
@@ -1032,8 +1048,7 @@ pub fn click(ed: &mut Editor, slot: Slot, row: usize, col: usize) {
         }
         (w, at) = (w + gw, at + g.len());
     }
-    // (in sight already: a press inside the scrolloff margin doesn't move the rows under the pointer)
-    d.set_selection(Selection::point(crate::graphemes::snap(&d.text, (ls + at).min(le))));
+    Some(crate::graphemes::snap(&d.text, (ls + at).min(le)))
 }
 
 /// A preflight step's chip: the task panel's keys, its document from that step's heading at the top, the cursor on
