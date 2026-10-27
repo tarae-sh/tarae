@@ -1344,10 +1344,8 @@ pub struct Restored {
     pub focused: bool,
     pub scroll: usize,
     pub follow: bool,
-    /// Review at the end, on for this folder (`edits.rs`).
+    /// Review at the end, on for this folder (`edits.rs`) — the config's since then is followed as it comes back.
     pub at_end: Option<PathBuf>,
-    /// … by your `y` (`Edits.at_end_yours`).
-    pub at_end_yours: bool,
     /// A session behind's: no claude until its first message (which resumes the conversation).
     pub lazy: bool,
 }
@@ -1362,8 +1360,9 @@ pub fn restore(ed: &mut Editor, r: Restored) {
     c.follow.on = r.follow;
     c.input.set_at(&r.input, r.cursor);
     c.edits.at_end = r.at_end;
-    c.edits.at_end_yours = r.at_end_yours;
     ed.workspace.claude.chat = Some(c);
+    // (the setting changed meanwhile — `:set` gone with the quit, another tarae's key: what Claude was told, then this)
+    crate::edits::at_end_follow_here(ed);
     if r.focused {
         ed.workspace.viewer.at = At::Chat;
     }

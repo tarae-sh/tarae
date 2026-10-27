@@ -382,6 +382,8 @@ const DOC_SCENES: &[DocScene] = &[
         &["@1", " ", "l", "@1", "run the tests", "\r", "@?Its reason", "\x1b", "@1"],
     )
     .claude("card"),
+    // (`space v a`: the card that turns review at the end on, every chat's — focused, its answers lit)
+    scene("reviewatend", Fixture::Calc, LIB, &["@1", " ", "v", "a", "@?Review Claude", "\x11", "@1"]),
     // (`space I` in main: three sessions' asks, oldest first — main's Claude asking to run outside the sandbox, api's
     // to read a file on another disk, docs's change waiting in its review)
     scene(
@@ -634,7 +636,7 @@ const DOCS: &[DocShot] = &[
     row("chat-edit.png", Some("review"), S).varies(&[wait_time(17, (103, 111))]),
     row("chat-edit-why.png", None, S),
     row("chat-turn-review.png", None, (200, 36)),
-    row("chat-review-at-end.png", None, S),
+    row("chat-review-at-end.png", Some("reviewatend"), S),
     row("chat-undo-turn.png", None, S),
     row("chat-tests.png", None, S),
     row("chat-run.png", Some("runcard"), S).varies(&[wait_time(2, (103, 111))]),

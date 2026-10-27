@@ -804,9 +804,16 @@ in your buffer, and Claude is told the file changes when you save.
 A long piece of work can mean dozens of edits, and a `y`/`n` for each one. Review at the end lets Claude work
 through it and shows you the whole change once, the way you'd read a pull request. `space v a` (or
 `:review-at-end on`) asks first, on a card that says what it means: Claude's edits go into your files as it makes
-them, before you see them, and the checks it runs (`cargo test`, `cargo build`) run that code. `y` turns it on for
-this chat. The chat's title says `› review at end` while it's on, and `space v a` turns it off. Either way it's kept
-in your config (`llm.review-at-end`), so a new chat (`C-l`) starts as you last left it.
+them, before you see them, and the checks it runs (`cargo test`, `cargo build`) run that code. It's one setting for
+every chat: `y` turns it on in each session's chat, and `space v a` again turns it off in all of them. The chat in
+front switches at once, even in the middle of a turn — it's your key, in sight; every other chat in the middle of a
+turn keeps its way until that turn ends — it says so as the change comes — so the edits Claude is making there never
+change how they're shown under it. The chat's title says `› review at end` while it's on. Either way it's kept in your
+config (`llm.review-at-end`): a new chat (`C-l`) starts so, and changing the setting another way (`:set` — your front
+chat at once too —, the file edited, another tarae's `space v a`) reaches every chat the same way. Where a layer above
+your config sets it — a trusted project's `.tarae.toml`, your `.tarae.local.toml` — that one decides: `space v a`
+says which file to change and writes nothing to yours. If writing your config fails, the setting holds until you
+quit, and the error says so.
 
 An edit that goes in this way, in a file you have open, lands on a green wash over the lines it wrote that dries to
 nothing in under a second: which lines are new, just now, with no mark left to read later. A change set's `y` all
@@ -815,7 +822,7 @@ its review doesn't (you watched it), and what only took lines out leaves nothing
 on a change's wash (a shown edit, a code review), that wash lands deeper and dries to its own instead of a second
 one. Only at [`editor.motion = "full"`](reference/settings.md).
 
-![The card that turns it on: edits go into your files before you see them, and the checks run that code; you review all of it at the end, and space u takes the turn back](screenshots/chat-review-at-end.png)
+![The card that turns it on for every chat: edits go into your files before you see them, and the checks run that code; you review all of it at the end, and space u takes the turn back](screenshots/chat-review-at-end.png)
 
 When the turn ends, the files Claude changed open as a [code review](#code-review), each against what it was before
 the turn. What you asked is under the rail's head. `]g` walks the changes across files, `space v u` takes the change

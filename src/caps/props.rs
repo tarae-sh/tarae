@@ -2739,10 +2739,10 @@ fn review_at_the_end_from_a_trust_goes_with_it() {
     });
 }
 
-/// Review at the end your `y` turned on stays when the config read again hasn't it (its write failed, a reload
-/// read before it, a project's layer) — only what the config turned on follows it.
+/// Review at the end is the config's, every chat's (frictions #134 A): a reload that reads it off takes it off an
+/// idle chat, your `y` too.
 #[test]
-fn review_at_the_end_you_said_yes_to_stays_past_a_reload() {
+fn review_at_the_end_follows_a_reload() {
     let w = World::new("caps-at-end-yours");
     let mut ed = w.editor();
     crate::chat::open(&mut ed);
@@ -2752,7 +2752,7 @@ fn review_at_the_end_you_said_yes_to_stays_past_a_reload() {
     crate::edits::at_end_set(&mut ed, true);
     w.reload(&mut ed);
     assert!(!ed.config.llm.review_at_end, "the config read again has it");
-    assert!(crate::edits::at_end(&ed), "your yes taken back by a reload");
+    assert!(!crate::edits::at_end(&ed), "the chat follows the config");
 }
 
 /// `check` says a read where runs never read, and a write where it runs later — the loop's cards never offer

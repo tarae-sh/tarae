@@ -520,15 +520,41 @@ fn set(editor: &mut Editor, rest: &str, persist: bool) -> Result<(), String> {
 }
 
 fn set_value(editor: &mut Editor, path: &str, v: toml::Value, persist: bool) -> Result<(), String> {
-    settings::apply(&mut editor.config, path, &v)?;
+    // (one rule however you set it — the card, `space v a`, `:set`, `:set!`: a layer above yours that sets it decides)
+    if path == "llm.review-at-end"
+        && let Some(want) = v.as_bool()
+        && crate::edits::at_end_held(editor, want)
+    {
+        return Ok(());
+    }
+    // (checked before anything is written or switched)
+    let mut next = editor.config.clone();
+    settings::apply(&mut next, path, &v)?;
+    // Written first: what follows it (every chat's review at the end) switches only to what holds — a write that
+    // fails keeps it until you quit, said (the editor's own config file, as `space v a` writes it — none in tests
+    // but the one they give)
+    let kept = persist.then(|| {
+        let file = editor.config_file.clone().ok_or("no config directory")?;
+        config::persist_to(&file, path, &v).map(|()| file)
+    });
+    editor.config = next;
     editor.ensure_theme();
     editor.overrides.retain(|(p, _)| p != path);
-    if persist {
-        let file = config::persist(path, &v)?;
-        editor.set_status(format!("{path} = {v}  (saved to {})", file.display()));
-    } else {
-        editor.set_status(format!("{path} = {v}  (until you quit — :set! to save)"));
-        editor.overrides.push((path.to_string(), v));
+    if !matches!(kept, Some(Ok(_))) {
+        editor.overrides.push((path.to_string(), v.clone()));
+    }
+    // (every chat follows `llm.review-at-end` — the front one at once, mid-turn too: your key)
+    if path == "llm.review-at-end" {
+        crate::edits::at_end_follow_here(editor);
+    }
+    crate::edits::at_end_follow_config(editor);
+    match kept {
+        Some(Ok(file)) => editor.set_status(format!("{path} = {v}  (saved to {})", file.display())),
+        Some(Err(e)) => editor.set_error(match (path, v.as_bool()) {
+            ("llm.review-at-end", Some(on)) => crate::edits::at_end_not_saved(on, &e),
+            _ => format!("{path} = {v} until you quit — not saved: {e}"),
+        }),
+        None => editor.set_status(format!("{path} = {v}  (until you quit — :set! to save)")),
     }
     Ok(())
 }

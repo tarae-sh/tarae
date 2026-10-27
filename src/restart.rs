@@ -1050,8 +1050,7 @@ fn session_json(
         .and_then(|s| Some(json!({ "mode": mode_name(s.mode)?, "focus": l.is_at(At::Side) })));
     let chat = l.claude.chat.as_ref().map(|c| {
         json!({ "conversation": c.conversation, "input": c.input.text(), "cursor": c.input.cursor(), "focused": l.is_at(At::Chat),
-                "scroll": c.scroll, "follow": c.follow.on, "at_end": c.edits.at_end,
-                "at_end_yours": c.edits.at_end_yours })
+                "scroll": c.scroll, "follow": c.follow.on, "at_end": c.edits.at_end })
     });
     let on = docs.iter().find(|d| d.id == current).and_then(|d| d.path.as_deref());
     let turns = l.claude.checkpoints.list.len();
@@ -1315,7 +1314,6 @@ fn restore_session(ed: &mut Editor, v: &Value, behind: bool, back: &mut Back) {
                 scroll: num(&chat["scroll"]),
                 follow: chat["follow"].as_bool().unwrap_or(ed.config.llm.follow),
                 at_end: chat["at_end"].as_str().map(PathBuf::from),
-                at_end_yours: chat["at_end_yours"].as_bool().unwrap_or(false),
                 lazy: behind,
             },
         );
@@ -1716,6 +1714,8 @@ mod tests {
         ed.config.llm.command = "sh".into();
         ed.config.llm.args =
             vec!["-c".into(), format!("printf '%s\\n' \"$*\" >> '{}'; cat > /dev/null", argv.display())];
+        // (review at the end is every chat's: on in the config it came back to — `edits::at_end_follow_here`)
+        ed.config.llm.review_at_end = true;
         // (as an earlier build wrote it — "session", not "conversation": a `:restart` into a new build)
         let state = json!({ "chat": { "session": "s-1", "input": "half 한", "cursor": 5, "focused": true,
                                       "scroll": 2, "follow": false, "at_end": dir } });

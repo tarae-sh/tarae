@@ -108,6 +108,9 @@ pub struct EditorConfig {
     pub preflight: Vec<crate::preflight::Step>,
     /// …and `.tarae.local.toml`'s, added after them (or after the packs').
     pub preflight_local: Vec<crate::preflight::Step>,
+    /// A layer above your config file that sets `llm.review-at-end` — its file's name and value (the project's
+    /// trusted `.tarae.toml`, `.tarae.local.toml`): what `space v a` writes to yours wouldn't hold (`edits::at_end_held`).
+    pub at_end_above: Option<(String, bool)>,
     /// A code review's risk grades (`risk.rs`): paths whose every change is high (a trusted setting) · paths
     /// that are tests, docs or snapshots — names anywhere, paths from the root.
     pub review_risky: Vec<String>,
@@ -172,6 +175,7 @@ impl Default for EditorConfig {
             tasks: Vec::new(),
             preflight: Vec::new(),
             preflight_local: Vec::new(),
+            at_end_above: None,
             review_risky: Vec::new(),
             review_quiet: Vec::new(),
             review_angles: None,
@@ -408,6 +412,10 @@ pub(crate) fn load_layers(
     (config, warnings)
 }
 
+fn file_name(p: &Path) -> String {
+    p.file_name().map_or_else(|| short(p), |n| n.to_string_lossy().into_owned())
+}
+
 /// A single string on top of defaults (for tests).
 #[cfg(test)]
 pub fn parse(src: &str) -> (Config, Vec<String>) {
@@ -441,14 +449,23 @@ fn apply_source(
         }
     };
     let mut refused = Vec::new();
+    let mut above = None;
     let mut risky = |path: &str, v: &Value| {
         if !your_config && crate::trust::yours_only(path) {
             refused.push(path.to_string());
             return false;
         }
-        !crate::trust::is_risky(path) || pass(path.to_string(), v)
+        let goes = !crate::trust::is_risky(path) || pass(path.to_string(), v);
+        // (a layer above yours that sets review at the end — however it's written — and it goes in)
+        if goes && !your_config && path == "llm.review-at-end" {
+            above = v.as_bool();
+        }
+        goes
     };
     settings::apply_table_gated(&mut config.editor, &table, src, file, warnings, &mut risky);
+    if let Some(on) = above {
+        config.editor.at_end_above = Some((file_name(Path::new(file)), on));
+    }
     for path in refused {
         let at = settings::locate(src, &path).map(|l| format!(":{l}")).unwrap_or_default();
         warnings.push(format!("{file}{at}: {path} is set only in your own config — not a project's file"));
@@ -660,9 +677,12 @@ pub fn watch(tx: crate::event::Tx, root: PathBuf, from: Sources) {
             }
             let now = stamps();
             if now != last {
+                // (only what tarae itself wrote changed: said by whoever set it — `:set!`, `space v a`'s toast)
+                let changed = paths.iter().zip(now.iter().zip(&last)).filter(|(_, (a, b))| a != b);
+                let ours = reload_ours(changed.map(|(p, _)| p.as_path()));
                 last = now;
                 let (config, warnings) = load(&root, &from);
-                let apply = move |ed: &mut Editor| ed.reload_config(config, warnings);
+                let apply = move |ed: &mut Editor| ed.reload_config_ours(config, warnings, ours);
                 if tx.send(Event::Job(Box::new(apply))).is_err() {
                     break;
                 }
@@ -694,7 +714,56 @@ pub fn persist_to(file: &Path, path: &str, v: &Value) -> Result<(), String> {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let body = doc.to_string();
-    crate::disk::write_atomic(file, |w| w.write_all(body.as_bytes())).map_err(|e| e.to_string())
+    crate::disk::write_atomic(file, |w| w.write_all(body.as_bytes())).map_err(|e| e.to_string())?;
+    let file = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let mut wrote = WROTE.lock().unwrap_or_else(|e| e.into_inner());
+    // (the settings set before, kept while the file held only tarae's writes since)
+    let before = body_hash(src.as_bytes());
+    let mut set = match wrote.iter().position(|w| w.file == file) {
+        Some(i) => Some(wrote.remove(i)).filter(|w| w.hash == before).map(|w| w.set).unwrap_or_default(),
+        None => Vec::new(),
+    };
+    set.retain(|(p, _)| p != path);
+    set.push((path.to_string(), v.clone()));
+    wrote.push(Wrote { file, hash: body_hash(body.as_bytes()), set });
+    Ok(())
+}
+
+/// What tarae last wrote to a config file (`persist_to`): its text's hash, and the settings it set there since the
+/// file last held something else. The watch's reload of it is quiet — never "config reloaded" over what the
+/// write's own caller just said — while the config read again holds them (`Editor::reload_config_ours`).
+struct Wrote {
+    file: PathBuf,
+    hash: u64,
+    set: Vec<(String, Value)>,
+}
+
+static WROTE: std::sync::Mutex<Vec<Wrote>> = std::sync::Mutex::new(Vec::new());
+
+fn body_hash(body: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    body.hash(&mut h);
+    h.finish()
+}
+
+/// A reload of the files that `changed`: each holds what tarae itself last wrote there → the settings it set (said
+/// by whoever set them); None → "config reloaded" (one of yours, or changed since).
+fn reload_ours<'a>(changed: impl Iterator<Item = &'a Path>) -> Option<Vec<(String, Value)>> {
+    let mut set = Vec::new();
+    for file in changed {
+        set.extend(wrote_ours(file)?);
+    }
+    Some(set)
+}
+
+/// What tarae set in `file` (`persist_to`), if the file holds what it last wrote there — not a change of yours since.
+fn wrote_ours(file: &Path) -> Option<Vec<(String, Value)>> {
+    let now = fs::read(file).ok()?;
+    let file = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let h = body_hash(&now);
+    let wrote = WROTE.lock().unwrap_or_else(|e| e.into_inner());
+    wrote.iter().find(|w| w.file == file && w.hash == h).map(|w| w.set.clone())
 }
 
 fn set_path(doc: &mut DocumentMut, path: &str, v: &Value) -> Result<(), String> {
@@ -740,6 +809,83 @@ pub(crate) mod tests {
     /// The ```toml blocks of a Markdown file.
     fn toml_blocks(md: &str) -> Vec<&str> {
         md.split("```toml\n").skip(1).map(|b| &b[..b.find("```").unwrap()]).collect()
+    }
+
+    /// frictions #134: a reload of what tarae itself wrote to a config file (`space v a`, `:set!`) says nothing over
+    /// what its caller said — while the config read again holds what it set; where it doesn't (a layer above yours
+    /// sets it) it's said, with why. A change of yours since, or a file it never wrote, is "config reloaded".
+    #[test]
+    fn a_reload_of_taraes_own_write_is_quiet_while_it_holds() {
+        let scratch = crate::scratch::Scratch::new("own-write");
+        let (file, other) = (scratch.join("config.toml"), scratch.join(".tarae.toml"));
+        fs::write(&file, "# mine\n[llm]\nfollow = false\n").unwrap();
+        fs::write(&other, "[editor]\n").unwrap();
+        let ours = |files: &[&PathBuf]| reload_ours(files.iter().map(|p| p.as_path()));
+        let keys = |set: Option<Vec<(String, Value)>>| {
+            set.map(|s| s.into_iter().map(|(k, _)| k).collect::<Vec<_>>())
+        };
+        persist_to(&file, "llm.review-at-end", &true.into()).unwrap();
+        persist_to(&file, "editor.scrolloff", &7.into()).unwrap();
+        assert_eq!(keys(ours(&[&file])), Some(vec!["llm.review-at-end".into(), "editor.scrolloff".into()]));
+        assert!(ours(&[&file, &other]).is_none(), "one it never wrote changed too");
+        fs::write(&file, "# mine\n[llm]\nfollow = true\nreview-at-end = true\n").unwrap();
+        assert!(ours(&[&file]).is_none(), "yours since");
+        persist_to(&file, "editor.scrolloff", &7.into()).unwrap();
+        assert_eq!(
+            keys(ours(&[&file])),
+            Some(vec!["editor.scrolloff".into()]),
+            "only what it set since yours"
+        );
+        // The editor's side: quiet while it holds; a layer above yours setting it otherwise said, with where
+        let saved = || Some(vec![("llm.review-at-end".to_string(), Value::from(true))]);
+        let mut ed = crate::editor::Editor::new(Config::default());
+        ed.reload_config_ours(parse("[llm]\nreview-at-end = true\n").0, Vec::new(), saved());
+        assert!(ed.status.is_none(), "{:?}", ed.status);
+        let mut above = parse("").0;
+        above.editor.at_end_above = Some((".tarae.toml".into(), false));
+        ed.reload_config_ours(above, Vec::new(), saved());
+        let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        assert!(
+            said.contains(
+                "llm.review-at-end is false, not the true saved: this project's .tarae.toml sets it"
+            ),
+            "{said}"
+        );
+        // Your own `:set` since (until you quit): yours, not a layer's — quiet
+        ed.status = None;
+        ed.overrides.push(("llm.review-at-end".into(), Value::from(false)));
+        ed.reload_config_ours(parse("").0, Vec::new(), saved());
+        assert!(ed.status.is_none(), "{:?}", ed.status);
+        ed.reload_config_ours(parse("").0, vec!["bad".into()], Some(Vec::new()));
+        assert!(ed.status.as_ref().is_some_and(|s| s.0.contains("bad")), "a warning, always");
+    }
+
+    /// frictions #134: a trusted project's `.tarae.toml` that sets `llm.review-at-end` outranks your file — recorded
+    /// (`at_end_above`) so `space v a` can say where to change it; held back untrusted, yours stands and nothing is.
+    #[test]
+    fn a_trusted_project_setting_review_at_the_end_is_named() {
+        use crate::trust::Store;
+        let scratch = crate::scratch::Scratch::new("at-end-above");
+        let user = scratch.join("config.toml");
+        fs::write(&user, "[llm]\nreview-at-end = true\n").unwrap();
+        // (however it's written: a table, a dotted key at the top)
+        for src in ["[llm]\nreview-at-end = false\n", "\"llm.review-at-end\" = false\n"] {
+            let path = project_file("at-end-above", src);
+            let (c, _) = load_from(Some(user.clone()), Some(path.clone()), &Store::default());
+            assert!(
+                c.editor.llm.review_at_end && c.editor.at_end_above.is_none(),
+                "untrusted: yours ({src})"
+            );
+            let mut store = Store::default();
+            store.answer(crate::trust::Kind::Tarae, &path, c.project.as_ref().unwrap().hash, true, 0);
+            let (t, _) = load_from(Some(user.clone()), Some(path.clone()), &store);
+            assert!(!t.editor.llm.review_at_end, "{src}");
+            assert_eq!(t.editor.at_end_above, Some((".tarae.toml".into(), false)), "{src}");
+            fs::remove_dir_all(path.parent().unwrap()).ok();
+        }
+        // Your own file setting it is no layer above
+        let (y, _) = load_from(Some(user), None, &Store::default());
+        assert!(y.editor.llm.review_at_end && y.editor.at_end_above.is_none());
     }
 
     /// Line numbers are absolute unless you say otherwise — Helix's default (uxaudit H2: relative showed `1`

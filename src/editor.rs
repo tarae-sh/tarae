@@ -4573,7 +4573,19 @@ impl Editor {
     }
 
     /// Replaces the config (already read and parsed by the watcher thread — no disk wait on the main thread).
-    pub fn reload_config(&mut self, mut config: Config, warnings: Vec<String>) {
+    pub fn reload_config(&mut self, config: Config, warnings: Vec<String>) {
+        self.reload_config_ours(config, warnings, None);
+    }
+
+    /// … `ours`: None — "config reloaded" on the status line; Some — a reload of only what tarae itself wrote
+    /// (`config::watch`), the settings it set: quiet while the config read again holds them (whoever set them said
+    /// so), else said with why. A warning is said all the same.
+    pub fn reload_config_ours(
+        &mut self,
+        mut config: Config,
+        warnings: Vec<String>,
+        ours: Option<Vec<(String, toml::Value)>>,
+    ) {
         // (read before a trust answer at its place given since, or while its write waits, about the same version:
         // that answer holds — N13; before a take-back there, any version: not trusted — F11)
         if let (Some(new), Some(t)) = (config.project.as_mut(), self.trust_path.as_deref()) {
@@ -4600,15 +4612,28 @@ impl Editor {
             let _ = crate::settings::apply(&mut self.config, path, v);
         }
         self.project_trust_set(config.project);
-        // (review at the end a chat had from what's no longer set goes with it)
+        // (every chat follows review at the end as the file says now)
         crate::edits::at_end_follow_config(self);
         self.ensure_theme();
         self.pending.clear();
         self.count = None;
-        if warnings.is_empty() {
-            self.set_status("config reloaded");
-        } else {
-            self.set_error(format!("config: {}", warnings.join("; ")));
+        if !warnings.is_empty() {
+            return self.set_error(format!("config: {}", warnings.join("; ")));
+        }
+        let Some(set) = ours else { return self.set_status("config reloaded") };
+        for (path, saved) in set {
+            let Some(now) = crate::settings::find(&path).map(|s| (s.get)(&self.config)) else { continue };
+            // (your own `:set` since, until you quit: yours, said as you set it — not a layer's doing)
+            if now == saved || self.overrides.iter().any(|(p, _)| *p == path) {
+                continue;
+            }
+            let why = match (path.as_str(), &self.config.at_end_above) {
+                ("llm.review-at-end", Some((file, _))) => {
+                    format!("this project's {file} sets it — change it there")
+                }
+                _ => "a layer above your config file sets it".to_string(),
+            };
+            self.set_warning(format!("config reloaded — {path} is {now}, not the {saved} saved: {why}"));
         }
     }
 
@@ -11600,9 +11625,9 @@ mod tests {
         parser.screen().rows(0, 110).find(|r| r.contains("claude")).unwrap_or_default()
     }
 
-    /// `space v a` asks first: a card that says edits go into the files before they're seen and that the
-    /// checks run that code. `n` leaves it off; `y` turns it on for this chat — the title says so and Claude
-    /// hears of it with the next message — and `space v a` again turns it off without asking.
+    /// `space v a` asks first: a card that says edits go into the files before they're seen, for every chat, and
+    /// that the checks run that code. `n` leaves it off; `y` turns it on — the title says so and Claude hears of it
+    /// with the next message — and `space v a` again turns it off without asking.
     #[test]
     fn review_at_the_end_asks_first() {
         let scratch = crate::scratch::Scratch::new("at-end");
@@ -11625,7 +11650,9 @@ mod tests {
         assert!(matches!(o.what, crate::offer::What::ReviewAtEnd));
         assert!(o.weighty(), "y must have been in sight a moment to count");
         assert!(
-            o.question.contains("before you see them") && o.question.contains("cargo test"),
+            o.question.contains("before you see them")
+                && o.question.contains("cargo test")
+                && o.question.contains("every chat"),
             "{}",
             o.question
         );
@@ -11681,6 +11708,238 @@ mod tests {
         crate::edits::at_end_set(&mut ed, false);
         kept(&mut ed, "review-at-end = false");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// frictions #134 A: review at the end is every chat's. `y` in one session turns another session's idle chat on
+    /// at once, said in it; a chat mid-turn is told now and takes it at its turn's end — never mid-turn —, Claude
+    /// hearing it then. Off reaches them the same way, without a card; so does the setting changed another way
+    /// (`:set`, a reload of the file).
+    #[test]
+    fn review_at_the_end_is_every_chats() {
+        let scratch = crate::scratch::Scratch::new("at-end-all");
+        let dir = scratch.to_path_buf();
+        let mut ed = editor("");
+        ed.config_file = Some(dir.join("config.toml"));
+        ed.config.llm.command = "sh".into();
+        ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+        let (idle, busy) = (ed.workspace_add(dir.join("a")), ed.workspace_add(dir.join("b")));
+        for id in [idle, busy] {
+            ed.with_workspace(id, |ed| ed.workspace.claude.chat = Some(crate::chat::Chat::new()));
+        }
+        let state = |ed: &mut Editor, id, s| {
+            ed.with_workspace(id, |ed| ed.workspace.claude.chat.as_mut().unwrap().state = s);
+        };
+        state(&mut ed, busy, crate::chat::State::Thinking);
+        let on = |ed: &mut Editor, id| {
+            let mut on = false;
+            ed.with_workspace(id, |ed| on = crate::edits::at_end(ed));
+            on
+        };
+        let notes = |ed: &mut Editor, id| {
+            let mut rows = Vec::new();
+            ed.with_workspace(id, |ed| {
+                let c = ed.workspace.claude.chat.as_ref().unwrap();
+                rows = c.msgs.iter().map(|m| m.text.clone()).collect();
+            });
+            rows
+        };
+        let tell = |ed: &mut Editor, id| {
+            let mut tell = Vec::new();
+            ed.with_workspace(id, |ed| tell = ed.workspace.claude.checkpoints.tell.clone());
+            tell
+        };
+        feed(&mut ed, "<space>va");
+        ed.offer_accept();
+        assert!(crate::edits::at_end(&ed), "this chat");
+        assert!(on(&mut ed, idle), "another session's idle chat, at once");
+        assert!(
+            notes(&mut ed, idle).iter().any(|r| r.contains("every chat's")),
+            "{:?}",
+            notes(&mut ed, idle)
+        );
+        assert_eq!(tell(&mut ed, idle).len(), 1, "its Claude hears it");
+        assert!(!on(&mut ed, busy), "never mid-turn");
+        assert!(notes(&mut ed, busy).iter().any(|r| r.contains("from this turn's end")), "said as it comes");
+        assert!(tell(&mut ed, busy).is_empty(), "Claude hears it when it takes effect");
+        // Its turn ends: on now, Claude told
+        state(&mut ed, busy, crate::chat::State::Idle);
+        ed.with_workspace(busy, crate::edits::turn_over);
+        assert!(on(&mut ed, busy), "at its turn's end");
+        assert_eq!(tell(&mut ed, busy).len(), 1);
+        // Off: every chat, no card
+        feed(&mut ed, "<space>va");
+        assert!(ed.offers.is_empty());
+        assert!(![idle, busy].map(|id| on(&mut ed, id)).contains(&true), "off reaches every chat");
+        assert!(!crate::edits::at_end(&ed));
+        // The setting changed another way (`:set`; a reload runs the same follow): every chat again
+        feed(&mut ed, ":set llm.review-at-end true<ret>");
+        assert!(crate::edits::at_end(&ed) && on(&mut ed, idle) && on(&mut ed, busy));
+        // A chat back from `:restart` follows the config it came back to
+        ed.config.llm.review_at_end = false;
+        let back = crate::chat::Restored {
+            conversation: None,
+            input: String::new(),
+            cursor: 0,
+            focused: false,
+            scroll: 0,
+            follow: false,
+            at_end: Some(dir.clone()),
+            lazy: true,
+        };
+        crate::chat::restore(&mut ed, back);
+        assert!(!crate::edits::at_end(&ed), "a restored chat follows the config");
+    }
+
+    /// frictions #134: your own key switches the chat in front at once, mid-turn too (`space v a`, `:set`) — another
+    /// session's mid-turn chat still waits for its turn's end.
+    #[test]
+    fn review_at_the_end_switches_your_front_chat_mid_turn() {
+        let scratch = crate::scratch::Scratch::new("at-end-front");
+        let dir = scratch.to_path_buf();
+        let mut ed = editor("");
+        ed.config_file = Some(dir.join("config.toml"));
+        ed.config.llm.command = "sh".into();
+        ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+        let other = ed.workspace_add(dir.join("b"));
+        ed.with_workspace(other, |ed| {
+            let mut c = crate::chat::Chat::new();
+            c.state = crate::chat::State::Thinking;
+            ed.workspace.claude.chat = Some(c);
+        });
+        crate::chat::open(&mut ed);
+        ed.workspace.leave(At::Chat);
+        ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
+        let behind = |ed: &mut Editor| {
+            let mut on = false;
+            ed.with_workspace(other, |ed| on = crate::edits::at_end(ed));
+            on
+        };
+        feed(&mut ed, ":set llm.review-at-end true<ret>");
+        assert!(crate::edits::at_end(&ed), "`:set`: the front chat at once, mid-turn");
+        assert!(!behind(&mut ed), "another session's waits for its turn's end");
+        feed(&mut ed, "<space>va");
+        assert!(!crate::edits::at_end(&ed), "`space v a`: the front chat at once, mid-turn");
+    }
+
+    /// frictions #134: a chat mid-turn is told of a change once — not again at every reload that says the same (the
+    /// watcher's after your own write, another `:set`); a change taken back before its turn ends is said, and its
+    /// turn's end then changes nothing.
+    #[test]
+    fn review_at_the_end_is_said_once_in_a_busy_chat() {
+        let mut ed = editor("");
+        let busy = ed.workspace_add(std::path::PathBuf::from("/nowhere/b"));
+        ed.with_workspace(busy, |ed| {
+            let mut c = crate::chat::Chat::new();
+            c.state = crate::chat::State::Thinking;
+            ed.workspace.claude.chat = Some(c);
+        });
+        let rows = |ed: &mut Editor, what: &str| {
+            let mut n = 0;
+            ed.with_workspace(busy, |ed| {
+                n = ed
+                    .workspace
+                    .claude
+                    .chat
+                    .as_ref()
+                    .unwrap()
+                    .msgs
+                    .iter()
+                    .filter(|m| m.text.contains(what))
+                    .count();
+            });
+            n
+        };
+        let on = || crate::config::parse("[llm]\nreview-at-end = true\n").0;
+        let saved = || Some(vec![("llm.review-at-end".to_string(), toml::Value::from(true))]);
+        feed(&mut ed, ":set llm.review-at-end true<ret>");
+        ed.overrides.clear();
+        ed.reload_config_ours(on(), Vec::new(), saved());
+        ed.reload_config(on(), Vec::new());
+        feed(&mut ed, ":set llm.review-at-end true<ret>");
+        assert_eq!(rows(&mut ed, "from this turn's end"), 1, "once a change");
+        // Taken back mid-turn: said; its turn's end changes nothing
+        feed(&mut ed, ":set llm.review-at-end false<ret>");
+        assert_eq!(rows(&mut ed, "the change was taken back"), 1);
+        ed.with_workspace(busy, |ed| {
+            ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+            crate::edits::turn_over(ed);
+        });
+        let mut on_now = true;
+        ed.with_workspace(busy, |ed| on_now = crate::edits::at_end(ed));
+        assert!(!on_now);
+        assert_eq!(rows(&mut ed, "every chat's"), 1, "no switch said at its end: … only the first note");
+        // Taken at its turn's end, then the next turn: a reload saying the same is nothing to it
+        let state = |ed: &mut Editor, s| {
+            ed.with_workspace(busy, |ed| ed.workspace.claude.chat.as_mut().unwrap().state = s);
+        };
+        state(&mut ed, crate::chat::State::Thinking);
+        feed(&mut ed, ":set llm.review-at-end true<ret>");
+        state(&mut ed, crate::chat::State::Idle);
+        ed.with_workspace(busy, crate::edits::turn_over);
+        state(&mut ed, crate::chat::State::Thinking);
+        ed.overrides.clear();
+        ed.reload_config(on(), Vec::new());
+        assert_eq!(rows(&mut ed, "the change was taken back"), 1, "nothing waits once taken");
+    }
+
+    /// frictions #134: a layer above your config file that sets review at the end the other way (the project's
+    /// trusted `.tarae.toml`) — `space v a` says where to change it and writes nothing, its card's `y` too. A write
+    /// that fails — `space v a`'s or `:set!`'s — keeps it until you quit, past a reload, and says so: not saved, why.
+    #[test]
+    fn review_at_the_end_held_above_or_not_saved_says_so() {
+        let scratch = crate::scratch::Scratch::new("at-end-held");
+        let dir = scratch.to_path_buf();
+        let config = dir.join("config.toml");
+        let mut ed = editor("");
+        ed.config_file = Some(config.clone());
+        ed.config.llm.command = "sh".into();
+        ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+        let said = |ed: &Editor| ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        // Its card up, then the project's layer read: `y` holds back
+        feed(&mut ed, "<space>va");
+        assert!(!ed.offers.is_empty());
+        ed.config.at_end_above = Some((".tarae.toml".into(), false));
+        ed.offer_accept();
+        assert!(
+            said(&ed).contains("this project's .tarae.toml sets review at the end off — change it there")
+        );
+        assert!(!ed.config.llm.review_at_end && !config.exists(), "nothing written");
+        // `space v a` with it read: said, no card
+        ed.status = None;
+        feed(&mut ed, "<space>va");
+        assert!(ed.offers.is_empty(), "no card for what wouldn't hold");
+        assert!(said(&ed).contains("change it there"), "{}", said(&ed));
+        // `:set!` and `:set`: the same rule — said, nothing set, written or kept until you quit
+        for typed in [":set! llm.review-at-end true<ret>", ":set llm.review-at-end true<ret>"] {
+            ed.status = None;
+            feed(&mut ed, typed);
+            assert!(said(&ed).contains("this project's .tarae.toml sets review at the end off"), "{typed}");
+            assert!(!ed.config.llm.review_at_end && !config.exists() && ed.overrides.is_empty(), "{typed}");
+        }
+        // …and with no layer above, `:set!` writes the editor's own config file
+        ed.config.at_end_above = None;
+        feed(&mut ed, ":set! llm.review-at-end true<ret>");
+        assert!(ed.config.llm.review_at_end);
+        assert!(std::fs::read_to_string(&config).unwrap().contains("review-at-end = true"));
+        feed(&mut ed, ":set! llm.review-at-end false<ret>");
+        std::fs::remove_file(&config).unwrap();
+        // A write that fails — `space v a`'s, then `:set!`'s: kept until you quit, past a reload, and said so
+        ed.config.at_end_above = None;
+        std::fs::write(dir.join("afile"), "").unwrap();
+        ed.config_file = Some(dir.join("afile/config.toml"));
+        let reload = |ed: &mut Editor| ed.reload_config(crate::config::parse("").0, Vec::new());
+        feed(&mut ed, "<space>va");
+        ed.offer_accept();
+        assert!(said(&ed).contains("review at the end on until you quit — not saved: "), "{}", said(&ed));
+        reload(&mut ed);
+        assert!(ed.config.llm.review_at_end && crate::edits::at_end(&ed), "kept past a reload");
+        feed(&mut ed, ":set! llm.review-at-end false<ret>");
+        assert!(said(&ed).contains("review at the end off until you quit — not saved: "), "{}", said(&ed));
+        assert!(!crate::edits::at_end(&ed), "switched to what holds");
+        ed.config.llm.review_at_end = true;
+        reload(&mut ed);
+        assert!(!ed.config.llm.review_at_end && !crate::edits::at_end(&ed), "kept past a reload");
+        assert_eq!(ed.overrides.len(), 1, "one, the last");
     }
 
     /// Review at the end: an edit inside the project goes in unasked — written by tarae; it keeps what the file
@@ -11935,6 +12194,8 @@ mod tests {
             ],
         );
         feed(&mut ed, "<space>l");
+        // (the setting's too: every chat follows it at its turn's end — frictions #134)
+        ed.config.llm.review_at_end = true;
         ed.workspace.claude.chat.as_mut().unwrap().edits.at_end = Some(dir.clone());
         feed(&mut ed, "three files<ret>");
         (ed, dir, [main, lib, new])

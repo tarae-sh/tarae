@@ -20,12 +20,12 @@ use crate::offer::{Offer, What};
 pub struct Edits {
     /// The review showing one of ours (its `llm_generation`).
     pub review: Option<u64>,
-    /// Review at the end (`space v a`, agreed on its card): edits under this folder go in as Claude makes
-    /// them, and the turn is reviewed when it ends.
+    /// Review at the end (`llm.review-at-end`, every chat's — `space v a`, agreed on its card): edits under this
+    /// folder go in as Claude makes them, and the turn is reviewed when it ends.
     pub at_end: Option<PathBuf>,
-    /// `at_end` is your `y` on its card's, not the config's: a config without it leaves it on
-    /// (`at_end_follow_config`).
-    pub at_end_yours: bool,
+    /// …the setting's other way, waiting for this turn's end (`at_end_follow_config`): said in the chat once as it
+    /// came, not again at every reload that says the same.
+    pub at_end_pending: Option<bool>,
     /// Claude's renames, replaces and edits landing (`refactor.rs`): the front one's files reviewed one at a
     /// time.
     pub sets: VecDeque<crate::refactor::Landing>,
@@ -39,9 +39,10 @@ pub struct Edits {
 const AT_END_TITLE: &str = "Review Claude's edits at the end?";
 
 /// What the card asks — what turning it on means.
-const AT_END_ASK: &str = "Claude's edits go into your files as it makes them — before you see them — and the \
-checks it runs (cargo test, cargo build) run that code.\n\nWhen its turn ends you review all of it; space u \
-takes the turn back. Build scripts, settings and files outside the project still ask first.";
+const AT_END_ASK: &str = "For every chat — each session's, and new ones: Claude's edits go into your files as it \
+makes them — before you see them — and the checks it runs (cargo test, cargo build) run that code.\n\nWhen its \
+turn ends you review all of it; space u takes the turn back. Build scripts, settings and files outside the \
+project still ask first.";
 
 /// What Claude hears with its next message when it's turned on · off.
 const TELL_ON: &str = "From now on in this conversation your edits are applied as you make them, \
@@ -56,7 +57,8 @@ pub fn at_end(ed: &Editor) -> bool {
 
 /// `space v a` · `:review-at-end [on|off]` (`want`; None flips it): on asks first, on its card.
 pub fn at_end_toggle(ed: &mut Editor, want: Option<bool>) {
-    let on = at_end(ed);
+    // (the setting's: a chat mid-turn may still have the other until its turn ends)
+    let on = ed.config.llm.review_at_end;
     let want = want.unwrap_or(!on);
     ed.offers.retain(|o| !matches!(o.what, What::ReviewAtEnd));
     if want == on {
@@ -64,6 +66,9 @@ pub fn at_end_toggle(ed: &mut Editor, want: Option<bool>) {
             true => "review at the end is on — space v a turns it off",
             false => "Claude's edits come one at a time",
         });
+    }
+    if at_end_held(ed, want) {
+        return;
     }
     if !want {
         return at_end_set(ed, false);
@@ -79,7 +84,6 @@ pub fn at_end_new_chat(ed: &mut Editor) {
     let root = ed.workspace.root.clone();
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     c.edits.at_end = on.then_some(root);
-    c.edits.at_end_yours = false;
     let tell = &mut ed.workspace.claude.checkpoints.tell;
     tell.retain(|t| t != TELL_ON && t != TELL_OFF);
     if on {
@@ -99,33 +103,97 @@ fn at_end_told(ed: &mut Editor, on: bool) {
     }
 }
 
-/// The config's `llm.review-at-end` off now (a project's trust taken back, a reload): every chat the config turned
-/// review at the end on for — each session's — has its edits come one at a time again, said in it. One your `y`
-/// turned on stays (a project's layer, a write that failed, a reload read before it can't take it back). Never
-/// turned on this way; the config file isn't written.
+/// `llm.review-at-end` changed (`space v a` in any session, a reload of the file — another tarae's key too —, a
+/// project's trust given or taken back, `:set`): every chat of this tarae — each session's — follows it, on and off
+/// alike. A chat between turns at once, said in it; one mid-turn at its turn's end (`at_end_turn_over`), said in it
+/// now — never mid-turn, where the edits it's making would change how they're seen under it. But your own key
+/// (`space v a`, `:set`) switches the front chat at once, mid-turn too — in sight, yours: its callers
+/// `at_end_follow_here` first.
 pub fn at_end_follow_config(ed: &mut Editor) {
-    if ed.config.llm.review_at_end {
-        return;
-    }
-    let on = |s: &crate::workspace::Workspace| {
-        s.claude.chat.as_ref().is_some_and(|c| c.edits.at_end.is_some() && !c.edits.at_end_yours)
+    let on = ed.config.llm.review_at_end;
+    // (one that differs, or that waits for a change since taken back)
+    let moves = |s: &crate::workspace::Workspace| {
+        s.claude
+            .chat
+            .as_ref()
+            .is_some_and(|c| c.edits.at_end.is_some() != on || c.edits.at_end_pending.is_some())
     };
     let ids: Vec<_> =
-        std::iter::once(&ed.workspace).chain(&ed.workspaces).filter(|s| on(s)).map(|s| s.id).collect();
+        std::iter::once(&ed.workspace).chain(&ed.workspaces).filter(|s| moves(s)).map(|s| s.id).collect();
     for id in ids {
         ed.with_workspace(id, |ed| {
             let Some(c) = &mut ed.workspace.claude.chat else { return };
-            c.edits.at_end = None;
-            let row = "Claude's edits come one at a time again — the settings that turned review at the end on went";
+            if !c.busy() {
+                return at_end_follow_here(ed);
+            }
+            let differs = c.edits.at_end.is_some() != on;
+            let want = differs.then_some(on);
+            // (said once a change: a reload saying the same again — the watcher's after your own write too — is quiet)
+            if c.edits.at_end_pending == want {
+                return;
+            }
+            c.edits.at_end_pending = want;
+            let row = match (differs, on) {
+                (true, true) => "review at the end, every chat's · from this turn's end",
+                (true, false) => {
+                    "Claude's edits come one at a time again, every chat's · from this turn's end"
+                }
+                (false, true) => "review at the end stays on — the change was taken back",
+                (false, false) => "Claude's edits stay one at a time — the change was taken back",
+            };
             c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Note, row, ""));
-            at_end_told(ed, false);
         });
     }
 }
 
-/// `y` on the card (on) · turned off: for this chat, the project folder it was agreed for — and for the
-/// chats after it (`llm.review-at-end`, kept in the config file).
+/// The chat's turn ended: review at the end as the config says now — a change made while it ran takes effect here
+/// (`at_end_follow_config` said so in it as it came).
+pub fn at_end_turn_over(ed: &mut Editor) {
+    at_end_follow_here(ed);
+}
+
+/// What a failed write of `llm.review-at-end` says — `space v a`'s and `:set!`'s alike: kept until you quit.
+pub(crate) fn at_end_not_saved(on: bool, why: &str) -> String {
+    let way = if on { "on" } else { "off" };
+    format!("review at the end {way} until you quit — not saved: {why}")
+}
+
+/// A layer above your config file sets `llm.review-at-end` the other way (`EditorConfig.at_end_above`: the project's
+/// trusted `.tarae.toml`, `.tarae.local.toml`): what `space v a` would write to yours wouldn't hold — the next
+/// reload would take it back — so it's said where to change it, and nothing is written. One rule for every way you
+/// set it: the card, `space v a`, `:set`, `:set!` (`typed::set_value`).
+pub(crate) fn at_end_held(ed: &mut Editor, want: bool) -> bool {
+    let Some((file, on)) = ed.config.at_end_above.clone().filter(|(_, on)| *on != want) else { return false };
+    let way = if on { "on" } else { "off" };
+    ed.set_warning(format!("this project's {file} sets review at the end {way} — change it there"));
+    true
+}
+
+/// This workspace's chat as `llm.review-at-end` says, said in it and told to Claude with its next message.
+pub fn at_end_follow_here(ed: &mut Editor) {
+    let on = ed.config.llm.review_at_end;
+    let root = ed.workspace.root.clone();
+    let Some(c) = &mut ed.workspace.claude.chat else { return };
+    c.edits.at_end_pending = None;
+    if c.edits.at_end.is_some() == on {
+        return;
+    }
+    c.edits.at_end = on.then_some(root);
+    let row = match on {
+        true => "review at the end, every chat's · space v a turns it off",
+        false => "Claude's edits come one at a time again, every chat's",
+    };
+    c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Note, row, ""));
+    at_end_told(ed, on);
+}
+
+/// `y` on the card (on) · turned off: `llm.review-at-end`, kept in the config file — every chat's, each session's
+/// (`at_end_follow_config`), and the chats after them.
 pub fn at_end_set(ed: &mut Editor, on: bool) {
+    // (a layer above yours read since its card came)
+    if at_end_held(ed, on) {
+        return;
+    }
     // (opened as it was set — it's told below)
     if ed.workspace.claude.chat.is_none() {
         // (opened without the keys: they stay where they were)
@@ -141,24 +209,19 @@ pub fn at_end_set(ed: &mut Editor, on: bool) {
     // (here, as `:set!` writes: on a worker each, a quick on-off could land off-on — and the config watch
     // would take that back — or cross a `:set!` of the same file)
     let kept = ed.config_file.as_ref().map(|f| crate::config::persist_to(f, "llm.review-at-end", &on.into()));
-    if let Some(Err(e)) = kept {
-        ed.set_error(format!("review at the end isn't kept for the next chats: {e}"));
+    // (not written: kept until you quit, as `:set!`'s — a reload of the file would take it back)
+    if let Some(Err(_)) = &kept {
+        ed.overrides.push(("llm.review-at-end".into(), on.into()));
     }
-    let root = ed.workspace.root.clone();
-    let Some(c) = &mut ed.workspace.claude.chat else { return };
-    c.edits.at_end = on.then_some(root);
-    c.edits.at_end_yours = on;
-    let row = match on {
-        true => "review at the end · space v a turns it off",
-        false => "Claude's edits come one at a time again",
-    };
-    c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Note, row, ""));
-    at_end_told(ed, on);
-    match on {
-        true => ed.set_success(
-            "Claude's edits go in as it works — you review the turn when it ends (new chats too)",
-        ),
-        false => ed.set_status(row),
+    // (this chat at once, mid-turn too: your key, in sight — the others between turns)
+    at_end_follow_here(ed);
+    at_end_follow_config(ed);
+    match (kept, on) {
+        (Some(Err(e)), _) => ed.set_error(at_end_not_saved(on, &e)),
+        (_, true) => {
+            ed.set_success("Every chat's edits go in as Claude works — each turn reviewed when it ends")
+        }
+        (_, false) => ed.set_status("Every chat's edits come one at a time again"),
     }
 }
 
@@ -311,6 +374,7 @@ pub(crate) fn warned(ed: &Editor) -> Vec<crate::cardwarn::Warned> {
 /// worked in since). Only this session's: buffers are shared, and another session's Claude may be showing one
 /// in its review (#149).
 pub fn turn_over(ed: &mut Editor) {
+    at_end_turn_over(ed);
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     if let Some(g) = c.edits.review.take()
         && ed.workspace.claude.review.as_ref().is_some_and(|r| r.generation == g)
