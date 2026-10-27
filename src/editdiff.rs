@@ -438,6 +438,84 @@ fn emphasis(a: &str, b: &str) -> Option<((usize, usize), (usize, usize))> {
     Some(((af, at), (bf, bt)))
 }
 
+/// A change `cut_at` leaves whole past this many bytes, old and new together, or this many new lines: it runs on the
+/// main thread, each cut a pass over its change (`split`).
+const CUT_BYTES: usize = 4096;
+const CUT_LINES: usize = 32;
+/// The cuts `cut_at` makes at most, all its changes together: past it (`%` then `A-s` over a file, a selection a
+/// line) the changes stay as they came.
+const CUTS_MAX: usize = 8;
+
+/// `line_changes` cut at `cuts` (line starts in the old text, sorted): a change over one is split there, each part
+/// with the new lines that answer it — `space i`'s selections on touching lines each a change of its own (#135). The
+/// new lines split where the two sides' characters differ least (`split`) — on a tie the latest such place: lines
+/// added between two kept whole are the first's, as is what's left when one goes; a part that changes nothing goes.
+pub fn cut_at(
+    changes: Vec<(usize, usize, String, String)>,
+    cuts: &[usize],
+) -> Vec<(usize, usize, String, String)> {
+    let within = |from: usize, to: usize| {
+        &cuts[cuts.partition_point(|&c| c <= from)..cuts.partition_point(|&c| c < to)]
+    };
+    if changes.iter().map(|(from, to, ..)| within(*from, *to).len()).sum::<usize>() > CUTS_MAX {
+        return changes;
+    }
+    let mut out = Vec::with_capacity(changes.len());
+    for (from, to, old, new) in changes {
+        let mut inside: Vec<usize> = within(from, to).iter().map(|&c| c - from).collect();
+        inside.dedup();
+        let mut starts = vec![0];
+        starts.extend(new.match_indices('\n').map(|(i, _)| i + 1));
+        if *starts.last().unwrap() != new.len() {
+            starts.push(new.len());
+        }
+        if inside.is_empty() || old.len() + new.len() > CUT_BYTES || starts.len() > CUT_LINES + 1 {
+            out.push((from, to, old, new));
+            continue;
+        }
+        // (old from `s`, new from line `j`)
+        let (mut s, mut j) = (0, 0);
+        for c in inside {
+            let d = j + split(&old[s..c], &old[c..], &new, &starts[j..]);
+            out.push((from + s, from + c, old[s..c].to_string(), new[starts[j]..starts[d]].to_string()));
+            (s, j) = (c, d);
+        }
+        out.push((from + s, to, old[s..].to_string(), new[starts[j]..].to_string()));
+    }
+    out.retain(|(_, _, old, new)| old != new);
+    out
+}
+
+/// Where `new`'s lines from `starts[0]` on part between the old `left` and `right` — an index into `starts`: where
+/// each side's characters differ least from its old part's, by which and how many (not their order), the two sides
+/// added; on a tie the latest. One pass: a line moved from the right to the left changes each side's count by its
+/// own characters. (A character diff of each side at each place cost 200 ms at the caps' worst — measured.)
+fn split(left: &str, right: &str, new: &str, starts: &[usize]) -> usize {
+    use std::collections::HashMap;
+    // (each side: the old part's count of a character less its new lines'; `sl`, `sr` the sums of their sizes)
+    let (mut l, mut r): (HashMap<char, i64>, HashMap<char, i64>) = (HashMap::new(), HashMap::new());
+    left.chars().for_each(|ch| *l.entry(ch).or_default() += 1);
+    right.chars().for_each(|ch| *r.entry(ch).or_default() += 1);
+    new[starts[0]..].chars().for_each(|ch| *r.entry(ch).or_default() -= 1);
+    let size = |m: &HashMap<char, i64>| m.values().map(|v| v.abs()).sum::<i64>();
+    let (mut sl, mut sr) = (size(&l), size(&r));
+    let (mut best, mut at) = (sl + sr, 0);
+    for k in 1..starts.len() {
+        for ch in new[starts[k - 1]..starts[k]].chars() {
+            let v = l.entry(ch).or_default();
+            sl += (*v - 1).abs() - v.abs();
+            *v -= 1;
+            let v = r.entry(ch).or_default();
+            sr += (*v + 1).abs() - v.abs();
+            *v += 1;
+        }
+        if sl + sr <= best {
+            (best, at) = (sl + sr, k);
+        }
+    }
+    at
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,6 +531,105 @@ mod tests {
         let c = line_changes("x\ny", "x\nz");
         assert_eq!(c, [(2, 3, "y".to_string(), "z".to_string())]);
         assert!(line_changes("same\n", "same\n").is_empty());
+    }
+
+    /// #135: a change over a cut is split there, the new lines where the two sides differ least — a rewrite of each
+    /// line its own, a line taken out its own (not the first line answered by the second's rewrite); a cut outside a
+    /// change or at its edge leaves it whole; a part that changes nothing goes.
+    #[test]
+    fn a_change_is_cut_where_selections_meet() {
+        let c = |old: &str, new: &str, cuts: &[usize]| cut_at(line_changes(old, new), cuts);
+        let s = |a: &str, b: &str| (a.to_string(), b.to_string());
+        let parts = |v: Vec<(usize, usize, String, String)>| -> Vec<(usize, usize)> {
+            v.iter().map(|(f, t, ..)| (*f, *t)).collect()
+        };
+        let old = "    let a = 1;\n    let b = 2;\nend\n";
+        let v = c(old, "    let x = 1;\n    let y = 2;\nend\n", &[0, 15, 30]);
+        assert_eq!(parts(v.clone()), [(0, 15), (15, 30)]);
+        assert_eq!((v[0].3.as_str(), v[1].3.as_str()), ("    let x = 1;\n", "    let y = 2;\n"));
+        let v = c(old, "    let y = 2;\nend\n", &[15]);
+        assert_eq!(
+            v.iter().map(|(.., o, n)| s(o, n)).collect::<Vec<_>>(),
+            [s("    let a = 1;\n", ""), s("    let b = 2;\n", "    let y = 2;\n")]
+        );
+        // (a line added between the two, each kept whole in its rewrite: the first's — and what's left of two, the
+        // first's)
+        let v = c("let a = 1;\nlet b = 2;\n", "let a = 10;\nlet a2 = 10;\nlet b = 20;\n", &[11]);
+        assert_eq!(
+            v.iter().map(|(.., o, n)| s(o, n)).collect::<Vec<_>>(),
+            [s("let a = 1;\n", "let a = 10;\nlet a2 = 10;\n"), s("let b = 2;\n", "let b = 20;\n")]
+        );
+        let v = c("let a = 1;\nlet b = 2;\n", "let a = 10;\n", &[11]);
+        assert_eq!(
+            v.iter().map(|(.., o, n)| s(o, n)).collect::<Vec<_>>(),
+            [s("let a = 1;\n", "let a = 10;\n"), s("let b = 2;\n", "")]
+        );
+        assert_eq!(parts(c(old, "    let x = 1;\n    let y = 2;\nend\n", &[])), [(0, 30)]);
+        assert_eq!(parts(c(old, "    let x = 1;\n    let y = 2;\nend\n", &[30, 34])), [(0, 30)]);
+        let v = cut_at(vec![(0, 4, "a\nb\n".into(), "A\nb\n".into())], &[2]);
+        assert_eq!(v, [(0, 2, "a\n".to_string(), "A\n".to_string())]);
+        // (`CUTS_MAX` cuts at most, every change's together: one more and they stay as they came)
+        let lines = |up: bool| -> String {
+            (0..=CUTS_MAX + 1).map(|i| if up { format!("L{i}\n") } else { format!("l{i}\n") }).collect()
+        };
+        let (old, new) = (lines(false), lines(true));
+        let cuts: Vec<usize> = (1..=CUTS_MAX + 1).map(|i| 3 * i).collect();
+        assert_eq!(c(&old, &new, &cuts[..CUTS_MAX]).len(), CUTS_MAX + 1);
+        assert_eq!(parts(c(&old, &new, &cuts)), [(0, old.len())], "one past the cap");
+        // (two changes, a line kept between: each under the cap, together past it)
+        let half = |up: bool| -> String {
+            (0..CUTS_MAX / 2 + 2).map(|i| if up { format!("L{i}\n") } else { format!("l{i}\n") }).collect()
+        };
+        let (old, new) =
+            (format!("{}keep\n{}", half(false), half(false)), format!("{}keep\n{}", half(true), half(true)));
+        let cuts: Vec<usize> = old.match_indices('\n').map(|(i, _)| i + 1).collect();
+        assert_eq!(line_changes(&old, &new).len(), 2);
+        assert_eq!(c(&old, &new, &cuts).len(), 2, "counted over every change");
+        let a_few: Vec<usize> = cuts.iter().copied().filter(|&c| c != 3 && c != old.len() - 3).collect();
+        assert_eq!(c(&old, &new, &a_few).len(), 2 * (CUTS_MAX / 2 + 2) - 2, "at the cap");
+    }
+
+    /// The most `cut_at` does (#135): `CUTS_MAX` cuts in one change of `CUT_BYTES`, its new lines `CUT_LINES` — the
+    /// two sides of the same 16 letters in another order (a character diff's worst: 200 ms with one, what `split`
+    /// replaced). A number for `cargo perf`.
+    #[test]
+    fn perf_cut_at_worst_case() {
+        if crate::test_results::unoptimized("editdiff::tests::perf_cut_at_worst_case") {
+            return;
+        }
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut letters = |n: usize| -> String {
+            (0..n)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    char::from(b'a' + (seed % 16) as u8)
+                })
+                .collect()
+        };
+        let half = CUT_BYTES / 2;
+        let old: String = (0..=CUTS_MAX).map(|_| letters(half / (CUTS_MAX + 1) - 1) + "\n").collect();
+        let new: String = (0..CUT_LINES).map(|_| letters(half / CUT_LINES - 1) + "\n").collect();
+        assert!(old.len() + new.len() <= CUT_BYTES);
+        let mut cuts: Vec<usize> = old.match_indices('\n').map(|(i, _)| i + 1).collect();
+        cuts.pop();
+        assert_eq!(cuts.len(), CUTS_MAX);
+        let changes = vec![(0, old.len(), old.clone(), new.clone())];
+        let mut took: Vec<std::time::Duration> = (0..11)
+            .map(|_| {
+                let t = std::time::Instant::now();
+                let parts = std::hint::black_box(cut_at(changes.clone(), &cuts));
+                assert!(parts.len() > 1, "it cut");
+                t.elapsed()
+            })
+            .collect();
+        crate::sorting::sort(&mut took);
+        let median = took[took.len() / 2];
+        let ms = median.as_secs_f64() * 1e3;
+        let line = format!("PERF cut_at_worst_case {ms:.3} budget=2 noise=0.1\n");
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+        assert!(ms < 2.0, "the worst cut took {median:?}");
     }
 
     /// Format-on-save keeps the formatter's change only on lines changed since the save: line for line

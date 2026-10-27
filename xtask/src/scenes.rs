@@ -1782,6 +1782,28 @@ const SCENES: &[Scene] = &[
         files: MAIN,
         keys: &["@1", "9", "G", "x", " ", "i", "@1", "keep the first strand", "\r", "@?claude writing", "@1"],
     },
+    // (`space i` on two touching lines, one selection each, one edit of both: a change each in its review)
+    Scene {
+        name: "asktouching",
+        claude: "asktouching",
+        files: MAIN,
+        keys: &[
+            "@1",
+            "9",
+            "G",
+            "x",
+            "x",
+            "\x1bs",
+            "@1",
+            " ",
+            "i",
+            "@1",
+            "keep the first, two knots",
+            "\r",
+            "@?Change 1 of",
+            "@1",
+        ],
+    },
     // (Claude's edit: its review; accepted and the turn's end; then `space v t` on that turn)
     Scene {
         name: "review",
@@ -3305,6 +3327,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "mid" => turn.explain(false, false)?,
             "midlist" => turn.explain_listed()?,
             "ask" => turn.rewrite()?,
+            "asktouching" => turn.rewrite_touching()?,
             "card" => turn.ask_outside()?,
             // (the session list's scene: a run asked for where the tests are asked, else an edit held mid-line)
             "manager" if line.contains("run the tests") => turn.ask_outside()?,
@@ -3648,6 +3671,15 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
     /// tarae goes (the card's preview of it).
     fn rewrite(&mut self) -> io::Result<()> {
         self.input(1, "edit", &ask_edit().to_string(), Some("or_insert("))
+    }
+
+    /// `space i`'s claude on lines 9 and 10 of the demo's `main.rs`, a selection each: one `edit` item over both.
+    fn rewrite_touching(&mut self) -> io::Result<()> {
+        let old = "    let first = Thread { name: \"타래\".into(), knots: vec![1, 2, 3] };\n    threads.insert(first.name.clone(), first);";
+        let new = "    let first = Thread { name: \"타래\".into(), knots: vec![1, 2] };\n    threads.entry(first.name.clone()).or_insert(first);";
+        let edits = json!({"edits": [{"file_path": "src/main.rs", "old_string": old, "new_string": new}]});
+        self.call(1, "edit", edits)?;
+        self.lines.by_ref().try_for_each(|l| l.map(drop))
     }
 
     /// A turn of a big conversation (`big`): its init, a request that read 243k tokens from the 1h cache and wrote

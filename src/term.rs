@@ -7855,6 +7855,26 @@ fn draw_review_header(
         ),
         _ => (vec![("", "pending")], vec![("", "pending")], Style { fg: ui.linenr.fg, ..base }),
     };
+    // The other way, where a first-timer meets one change at a time (#133): a chat edit's change in hand, its keys
+    // here, review at the end off — said last, the first left out where the row is narrow
+    let chats = editor.workspace.claude.chat.as_ref().is_some_and(|c| c.edits.review == Some(rev.generation));
+    let other_way = chats
+        && current
+        && chat != Some(true)
+        && !rev.away
+        && !h.conflict
+        && !editor.config.llm.review_at_end
+        && !crate::edits::at_end(editor);
+    // (its key as bound — `space v a` — else its command)
+    let way_key = match other_way {
+        true => (editor.keymaps.untaken(Mode::Normal, "review_at_end", editor.zellij_letters()))
+            .unwrap_or_else(|| ":review-at-end".into()),
+        false => String::new(),
+    };
+    let with_way: Hints = match other_way {
+        true => [&full[..], &[(way_key.as_str(), "review at the end")]].concat(),
+        false => Vec::new(),
+    };
     // Decided: its stamp where the answer was asked — its letter in the column of the keys — then the word. Dry:
     // the change in hand (always an undecided one) has the region's accent, in its answer keys
     let stamp = if h.conflict { None } else { crate::stamp::Stamp::of(h.decision) };
@@ -7877,6 +7897,7 @@ fn draw_review_header(
     };
     let (status, gap) = match stamp {
         Some(_) => (full, 1),
+        None if other_way && used + room(&with_way, 3) <= width => (with_way, 3),
         None if used + room(&full, 3) <= width => (full, 3),
         None => (short, 2),
     };
@@ -7891,7 +7912,7 @@ fn draw_review_header(
             queue!(out, Print(&piece))?;
         } else {
             // (an answer's key in the accent; going back or on answers nothing: a hint's key, bold dim)
-            let answer = !matches!(key, "esc" | "tab");
+            let answer = !matches!(key, "esc" | "tab") && key != way_key;
             let fg = if answer { ui.accent.fg } else { ui.virt.fg };
             apply(out, Style { fg, bold: true, ..base })?;
             queue!(out, Print(format!("{lead}{key}")))?;

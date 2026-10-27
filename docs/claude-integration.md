@@ -29,7 +29,8 @@ In a selection-first editor, Claude takes the *action* slot: select, then tell i
 2. `space i` (or `:ask <instruction>`) and type the instruction
 3. The answer streams into a card at the bottom right (thinking/writing, elapsed time) while you keep editing
 4. It opens as an **in-buffer review**: the whole file stays in view with only the changed spots expanded — deleted
-   lines on faint red, added lines on faint green, both in the file's syntax colors, a header line per change
+   lines on faint red, added lines on faint green, both in the file's syntax colors, a header line per change —
+   selections on touching lines are a change each, as they were selected (two on one line stay one change)
 
 It's a Claude of its own, beside the chat: one turn of `claude -p` that starts at Enter, with no conversation
 behind it and no settings, and only tarae's `read` and `edit` as tools. It gets your selections, quoted as
@@ -734,8 +735,9 @@ plan belongs to its conversation: it's kept and continued with it, and `C-l` sta
 When you ask for a change, Claude edits files from the chat too, across as many files as it takes. Nothing is
 written until you've seen it: each edit opens as the same in-buffer review as select → instruct → diff, headed
 by what you asked for. The change in hand says what its keys do: `y accept this one`, `a accept all 2` (every
-change still undecided), `n reject`, `esc back, unanswered` (shorter where the row is narrow); `q` rejects the
-rest. Esc gives the keys back where they were before the review took them — the chat, or the code (NORMAL) —
+change still undecided), `n reject`, `esc back, unanswered` (shorter where the row is narrow), and while review at
+the end is off, the other way: `space v a review at the end` (left out first where the row is narrow); `q` rejects
+the rest. Esc gives the keys back where they were before the review took them — the chat, or the code (NORMAL) —
 and leaves the change waiting; `C-q` answers it. While it waits, `C-d` `C-u` (and
 the wheel) scroll it, a click on a change takes that one in hand (one answered already too, to change the answer),
 and `space`, `:` and `C-w` work over it. Under that title, Claude's own

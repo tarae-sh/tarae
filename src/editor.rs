@@ -9189,6 +9189,42 @@ mod tests {
         assert!(s.contains("● change ") && !s.contains("claude ● change"), "{s}");
     }
 
+    /// #133: a chat edit's review says the other way — `space v a`, review at the end — on the change in hand,
+    /// while it's off; not on a review that isn't the chat's edit, not once it's on, not where the row is narrow.
+    #[test]
+    fn a_chat_edits_review_names_review_at_the_end() {
+        let mut ed = editor("one\ntwo\n");
+        ed.config.llm.command = "sh".into();
+        ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+        crate::chat::open(&mut ed);
+        ed.workspace.leave(crate::workspace::At::Chat);
+        let id = ed.doc().id;
+        crate::llm::review_with(&mut ed, id, "grow", vec![(0, 4, "one\n".into(), "ONE\n".into())], None);
+        let draw = |ed: &mut Editor, w: u16| {
+            let mut bytes = Vec::new();
+            crate::term::render(ed, &mut bytes, w, 30).unwrap();
+            let mut parser = vt100::Parser::new(30, w, 0);
+            parser.process(&bytes);
+            parser.screen().contents()
+        };
+        const SAID: &str = "space v a review at the end";
+        let s = draw(&mut ed, 240);
+        assert!(s.contains("esc back, unanswered") && !s.contains(SAID), "not the chat's edit: {s}");
+        let g = ed.workspace.claude.review.as_ref().unwrap().generation;
+        ed.workspace.claude.chat.as_mut().unwrap().edits.review = Some(g);
+        let s = draw(&mut ed, 240);
+        assert!(s.contains(&format!("esc back, unanswered   {SAID}")), "the chat's edit: {s}");
+        // (narrow: the rest whole, it left out)
+        let s = draw(&mut ed, 150);
+        assert!(s.contains("esc back, unanswered") && !s.contains("space v a"), "{s}");
+        // (narrower: the short form, as without it)
+        let s = draw(&mut ed, 100);
+        assert!(s.contains("y yes  n no  esc back") && !s.contains("space v a"), "{s}");
+        ed.config.llm.review_at_end = true;
+        let s = draw(&mut ed, 240);
+        assert!(s.contains("esc back, unanswered") && !s.contains(SAID), "on: {s}");
+    }
+
     /// #61, #70: while an edit review waits, the editor's keys still work over it — C-d/C-u and the wheel
     /// scroll it (a long insertion was cut off), `space` opens what it opens, the picker has the keys — and
     /// Esc goes back to the chat with the change unanswered (it declined it): typed keys are the chat's
@@ -17905,6 +17941,70 @@ mod tests {
         assert_eq!(ed.workspace.claude.review.as_ref().map(|r| r.hunks.len()), Some(2));
         feed(&mut ed, "yn");
         assert_eq!(text(&ed), "X\nkeep\nbar\n");
+    }
+
+    /// #135: selections on touching lines, one `edit` over both — a change each in its review, as the selections
+    /// were: in a file of the project and in a buffer that isn't one; one selection over both lines stays one change,
+    /// and so do two sharing a line (the next one apart its own). Only in the text the selections were taken from: the
+    /// buffer edited since, or another file the ask changed, line hunks as they come.
+    #[test]
+    fn an_asks_selections_on_touching_lines_are_a_change_each() {
+        let hunks = |ed: &Editor| ed.workspace.claude.review.as_ref().map(|r| r.hunks.len());
+        let (_dir, path, mut ed) = ask_file("ask-touching", "foo\nbar\nkeep\n");
+        let edit = serde_json::json!([{"file_path": path, "old_string": "foo\nbar", "new_string": "X\nY"}]);
+        fake_ask(&mut ed, edit, done(), None);
+        feed(&mut ed, "%sfoo|bar<ret>:ask shout<ret>");
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        assert_eq!(hunks(&ed), Some(2));
+        feed(&mut ed, "ny");
+        assert_eq!(text(&ed), "foo\nY\nkeep\n");
+        // (another file of the project, its text the same: not where the selections were)
+        let (_dir, path, mut ed) = ask_file("ask-touching-other", "foo\nbar\nkeep\n");
+        let other = path.with_file_name("b.txt");
+        std::fs::write(&other, "foo\nbar\nkeep\n").unwrap();
+        let edit = serde_json::json!([{"file_path": other, "old_string": "foo\nbar", "new_string": "X\nY"}]);
+        fake_ask(&mut ed, edit, done(), None);
+        feed(&mut ed, "%sfoo|bar<ret>:ask shout<ret>");
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        assert_eq!(ed.doc().path.as_deref(), Some(other.as_path()));
+        assert_eq!(hunks(&ed), Some(1), "another file");
+        // A buffer that isn't a file, by its id: selected by `select`, `between` typed while it's asked
+        let in_buffer = |text: &str, select: &dyn Fn(&mut Editor), between: &str, old: &str, new: &str| {
+            let mut ed = editor(text);
+            ed.config.llm.command = "sh".into();
+            select(&mut ed);
+            let (g, rx) = stand_in_ask(&mut ed, "shout");
+            feed(&mut ed, between);
+            let id = (rx.try_iter())
+                .find_map(|l| {
+                    l.split("buffer=\\\"").nth(1).and_then(|r| r.split("\\\"").next()).map(str::to_string)
+                })
+                .expect("its quote names the buffer");
+            let edit =
+                serde_json::json!({"edits": [{"file_path": id, "old_string": old, "new_string": new}]});
+            ask_calls(&mut ed, g, 1, "edit", edit);
+            ed
+        };
+        let keys = |k: &'static str| move |ed: &mut Editor| feed(ed, k);
+        let mut ed = in_buffer("foo\nbar\nkeep\n", &keys("%sfoo|bar<ret>"), "", "foo\nbar", "X\nY");
+        assert_eq!(hunks(&ed), Some(2));
+        feed(&mut ed, "yn");
+        assert_eq!(text(&ed), "X\nbar\nkeep\n");
+        let ed = in_buffer("foo\nbar\nkeep\n", &keys("xx"), "", "foo\nbar", "X\nY");
+        assert_eq!(hunks(&ed), Some(1), "one selection");
+        let ed = in_buffer("foo\nbar\nkeep\n", &keys("%sfoo|bar<ret>"), "geomore<esc>", "foo\nbar", "X\nY");
+        assert!(text(&ed).ends_with("more\n"), "{}", text(&ed));
+        assert_eq!(hunks(&ed), Some(1), "edited since it was asked");
+        // (A from line 1's end to line 2's start, B from line 2's end to line 3, C line 4: A and B share line 2 —
+        // lines 1 to 3 one change, never A cut at B's start nor B at A's end; line 4 its own)
+        let shared = |ed: &mut Editor| {
+            let ranges = vec![Range::new(1, 5), Range::new(5, 7), Range::new(9, 12)];
+            ed.doc_mut().set_selection(Selection::new(ranges, 0));
+        };
+        let ed = in_buffer("l1\nl2\nl3\nl4\nl5\n", &shared, "", "l1\nl2\nl3\nl4", "L1\nL2\nL3\nL4");
+        let r = ed.workspace.claude.review.as_ref().unwrap();
+        let parts: Vec<(usize, usize)> = r.hunks.iter().map(|h| (h.from, h.to)).collect();
+        assert_eq!(parts, [(0, 9), (9, 12)]);
     }
 
     #[test]

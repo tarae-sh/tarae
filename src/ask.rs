@@ -71,6 +71,10 @@ pub struct Ask {
     writing: Option<usize>,
     billing: crate::billing::Billing,
     keep: bool,
+    /// Where its selections' lines start and end, in the text they were taken from (`taken`): its review cuts a
+    /// change there (`cut`).
+    bounds: Vec<usize>,
+    taken: ropey::Rope,
 }
 
 /// What `space i` makes of the current buffer: Ok(None) — a file of the project, `edit`'s by its path; Ok(Some) — a
@@ -122,6 +126,29 @@ pub fn start(ed: &mut Editor, instruction: &str) -> Result<(), String> {
             conflict: false,
         })
         .collect();
+    // (each selection's lines, from the first's start to the line after its last — sorted as the selections are, which
+    // never overlap; a bound is a cut only between selections: none where a neighbour's lines go on past it, as two
+    // sharing a line)
+    let text = &doc.text;
+    let line_start = |l: usize| text.line_to_byte(l.min(text.len_lines()));
+    let spans: Vec<(usize, usize)> = (ranges.iter())
+        .map(|&(from, to)| {
+            let last = text.byte_to_line(to.saturating_sub(1).max(from));
+            (line_start(text.byte_to_line(from)), line_start(last + 1))
+        })
+        .collect();
+    let mut bounds: Vec<usize> = (spans.iter().enumerate())
+        .flat_map(|(i, &(start, end))| {
+            let before = i.checked_sub(1).map(|i| spans[i].1);
+            let after = spans.get(i + 1).map(|s| s.0);
+            let start = before.is_none_or(|e| e <= start).then_some(start);
+            let end = after.is_none_or(|s| end <= s).then_some(end);
+            start.into_iter().chain(end)
+        })
+        .collect();
+    crate::sorting::sort(&mut bounds);
+    bounds.dedup();
+    let taken = text.clone();
     let doc_id = doc.id;
     let buffer = taken_as(ed)?;
     let quotes = crate::quote::taken(ed, &ranges, buffer.as_deref())?;
@@ -174,6 +201,8 @@ pub fn start(ed: &mut Editor, instruction: &str) -> Result<(), String> {
         writing: None,
         billing,
         keep,
+        bounds,
+        taken,
     });
     if let Some(child) = child {
         llm::pump(child, true, ed.events.sender(), move |ev| {
@@ -241,6 +270,22 @@ fn args(base: &[String]) -> Vec<String> {
 /// The ask of `generation`, if it's still the session's.
 fn of(ed: &mut Editor, generation: u64) -> Option<&mut Ask> {
     ed.workspace.claude.ask.as_mut().filter(|a| a.generation == generation)
+}
+
+/// Its change to `doc`, from `before`, as its review shows it: cut where its selections' lines meet, each its own
+/// change as the selections were (#135) — only in the text they were taken from (one changed since, or another
+/// file, is reviewed by line hunks alone).
+pub fn cut(
+    ed: &mut Editor,
+    generation: u64,
+    doc: DocId,
+    before: &ropey::Rope,
+    changes: Vec<(usize, usize, String, String)>,
+) -> Vec<(usize, usize, String, String)> {
+    match of(ed, generation) {
+        Some(a) if a.doc == doc && a.taken == *before => crate::editdiff::cut_at(changes, &a.bounds),
+        _ => changes,
+    }
 }
 
 /// Its waiting card's review, while it waits.
@@ -519,7 +564,8 @@ fn edit(ed: &mut Editor, generation: u64, call: Call, args: &Value) -> Result<()
     if !named {
         return crate::edittool::call(ed, call, args);
     }
-    let before = ed.docs.iter().find(|d| d.id == doc).ok_or("the buffer was closed")?.text.to_string();
+    let text = ed.docs.iter().find(|d| d.id == doc).ok_or("the buffer was closed")?.text.clone();
+    let before = text.to_string();
     let after = crate::edittool::in_buffer(&before, args, &id)?;
     if after == before {
         crate::tools::answer(ed, call, Ok(format!("nothing to change — {id} is as it was")));
@@ -531,6 +577,7 @@ fn edit(ed: &mut Editor, generation: u64, call: Call, args: &Value) -> Result<()
     }
     landing(ed, generation);
     let changes = crate::editdiff::line_changes(&before, &after);
+    let changes = cut(ed, generation, doc, &text, changes);
     let done = move |ed: &mut Editor, applied: bool| {
         let now = ed.docs.iter().find(|d| d.id == doc).map(|d| d.text.to_string());
         let said = match now {

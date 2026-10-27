@@ -901,6 +901,11 @@ fn show(ed: &mut Editor, f: FileChange, whose: Whose, title: String, reason: Str
     let doc_id = doc.id;
     let answers = front(ed, whose).and_then(|l| l.row.clone());
     let changes = crate::editdiff::line_changes(&f.before.to_string(), &f.after.to_string());
+    // (`space i`'s: cut where its selections meet)
+    let changes = match whose {
+        Whose::Ask(g) => crate::ask::cut(ed, g, doc_id, &f.before, changes),
+        _ => changes,
+    };
     // The keys go to the review; the file is the user's now (follow won't close it as a preview)
     let from_chat = claudes && ed.workspace.chat_has_keys();
     ed.workspace.leave(crate::workspace::At::Chat);
