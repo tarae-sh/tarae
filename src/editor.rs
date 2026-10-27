@@ -549,6 +549,13 @@ pub struct Screen {
     /// The sessions' tabs (the chat's top row) and the status line's chip: (row, start col, end col, what a
     /// click does).
     pub session_spots: std::cell::RefCell<Vec<(usize, usize, usize, crate::workspace::Spot)>>,
+    /// The words that do their keys — a top line's `follow`, the turn's word, a key hint's pair — where they were
+    /// drawn and what they say (`wordspot.rs`).
+    pub word_spots: std::cell::RefCell<Vec<crate::wordspot::Spot>>,
+    /// The words with a record of their own (a session's tab, the status line's chip, a slot's tab, a member's name, a
+    /// preflight's step chip):
+    /// what's drawn there, lit while the mouse is over it (`wordspot::lit`).
+    pub word_lit: std::cell::RefCell<Vec<crate::wordspot::Lit>>,
     /// The code review's file rail: (row, file index) — a click opens that file.
     pub review_rail: std::cell::RefCell<Vec<(usize, usize)>>,
     /// The rail's file rows' viewed marks: (row, file index, column) — a click there marks it viewed (#67) ·
@@ -743,6 +750,8 @@ pub struct Editor {
     pub presence: crate::presence::State,
     /// The cut row the mouse is over — drawn whole while it stays there (`whole.rs`).
     pub cut_hover: Option<crate::whole::Cut>,
+    /// The word the mouse is over — lit while it stays there (`wordspot.rs`): its row and columns.
+    pub word_hover: std::cell::Cell<Option<(usize, usize, usize)>>,
     /// Where two workspaces' changes would conflict, and what each was last taken as (`overlap.rs`).
     pub overlap: crate::overlap::State,
     /// The workspaces kept close to their base: its tips watched, its moves asked and made (`keepclose.rs`).
@@ -1224,6 +1233,7 @@ impl Editor {
             next_workspace: crate::event::WorkspaceId::HOME,
             presence: Default::default(),
             cut_hover: None,
+            word_hover: Default::default(),
             overlap: Default::default(),
             keep_close: Default::default(),
             behind: false,
@@ -2619,6 +2629,7 @@ impl Editor {
             let tag = crate::presence::hovered(self, x, y);
             let mark = crate::follow::strip_hovered(self, x, y);
             let cut = crate::whole::hovered(self, x, y);
+            let word = crate::wordspot::hovered(self, x, y);
             // (the surface under the pointer lights its lines half, a line that drags itself — a frame only when
             // either changed: a move within one draws nothing)
             let u = self.mouse_under(crate::event::MouseKind::Down, x, y);
@@ -2629,7 +2640,7 @@ impl Editor {
             let over = self.lights_at(u, x, y);
             let lit = edge != std::mem::replace(&mut self.border_hover, edge)
                 || over != std::mem::replace(&mut self.pointer_over, over);
-            self.unchanged = !(tag || mark || cut || lit);
+            self.unchanged = !(tag || mark || cut || word || lit);
             return;
         }
         // Input means the terminal has focus, whatever it said last (a focus-in lost on the way)
@@ -2657,6 +2668,7 @@ impl Editor {
                     crate::presence::away(self);
                     // (the mouse gone with the focus: a row it held whole folds — `whole.rs`)
                     self.cut_hover = None;
+                    self.word_hover.set(None);
                     if let Some(c) = self.workspace.claude.chat.as_mut() {
                         c.follow.hover = None;
                     }
@@ -3070,6 +3082,19 @@ impl Editor {
             (_, Part::Word(Word::Session(spot))) => {
                 took_mouse(u.surface);
                 self.session_spot(spot);
+            }
+            // A word that names a state, a key hint's pair: its key (`wordspot.rs`)
+            // (a double is one press: a button pressed twice out of habit doesn't do its key twice — a toggle undone;
+            // a key on the slot's line is the line too, as its tabs are: a drag from it sizes the slot)
+            (_, Part::Word(Word::Does(i))) => {
+                took_mouse(u.surface);
+                let at = self.screen.word_spots.borrow().get(i).map_or(0, |s| s.y << 16 | s.from);
+                if down && !self.clicked_again("word", at) {
+                    crate::wordspot::press(self, i);
+                }
+                if u.surface == S::SlotLine {
+                    self.name_held(x, y);
+                }
             }
             // (a name on a line is the line too: a drag from it does what one from the line beside it does)
             (_, Part::Word(Word::Tab(slot))) => {

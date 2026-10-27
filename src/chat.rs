@@ -447,7 +447,8 @@ pub struct Chat {
     generation: u64,
     /// Per document, the version whose full text was sent.
     sent: HashMap<DocId, u64>,
-    stopping: bool,
+    /// `C-c` asked the turn to stop: its claude told (the interrupt), the turn ending as it answers.
+    pub(crate) stopping: bool,
     /// `C-]`: how many links back from the newest the next press goes.
     hop: usize,
     /// The editor follows where Claude reads (`C-f`).
@@ -2927,10 +2928,19 @@ pub fn stop(ed: &mut Editor) {
     if !c.busy() {
         return;
     }
-    if let Some(p) = &mut c.proc {
-        c.stopping = true;
-        let _ = p.stdin.send(llm::interrupt_message());
-    }
+    let asked = match &mut c.proc {
+        Some(p) => {
+            c.stopping = true;
+            let _ = p.stdin.send(llm::interrupt_message());
+            true
+        }
+        None => false,
+    };
+    // (said at once: the turn ends as claude answers the interrupt, a moment later — never a key gone in silence)
+    ed.set_status(match asked {
+        true => "stopping the turn",
+        false => "nothing to stop: its claude isn't running",
+    });
 }
 
 /// The context's words for a web page in front (`context`).

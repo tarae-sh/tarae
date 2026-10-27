@@ -216,6 +216,54 @@ const STRIP_KEYS: [&[&str]; 5] = [
     ],
 ];
 
+/// W, a word that does its key lit under the mouse: following paused by `j` in the code, the chat open — its top line's
+/// `paused`; minimized, the follow card's `space l open the chat`; the turn over, the chat's foot's `esc normal` and its
+/// top line's `follow`.
+const WORDS_KEYS: [&[&str]; 4] = [
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "keep the first strand on a repeat",
+        "\r",
+        "\x17",
+        "h",
+        "@10?cargo test",
+        "j",
+        "@1",
+        "@hover?paused",
+        "@1",
+    ],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "keep the first strand on a repeat",
+        "\r",
+        "@10?cargo test",
+        "\x1b",
+        "\x1b",
+        "@1",
+        "@hover?space l",
+        "@1",
+    ],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "how is the map filled?",
+        "\r",
+        "@30?That is all.",
+        "@1",
+        "@hover?esc normal",
+        "@1",
+    ],
+    &["@1", " ", "l", "@1", "how is the map filled?", "\r", "@30?That is all.", "@1", "@hover?follow", "@1"],
+];
+
 /// Claude asked to run outside the sandbox, the keys back in the code (`C-w h`) as its card comes; then `j j` there.
 const FOCUS_CARD: &[&str] =
     &["@1", " ", "l", "@1", "run the tests", "\r", "\x17", "h", "@?Its reason", "@1", "j", "j", "@1"];
@@ -1839,6 +1887,11 @@ const SCENES: &[Scene] = &[
     Scene { name: "now-card", claude: "nowcard", files: MAIN, keys: NOW_KEYS[3] },
     // (…the mouse over the line: its words whole on a card over it)
     Scene { name: "now-hover", claude: "now", files: MAIN, keys: NOW_KEYS[4] },
+    // (W: a word that does its key, lit under the mouse — the chat's `paused`, the follow card's keys, the chat's foot)
+    Scene { name: "words-paused", claude: "now", files: MAIN, keys: WORDS_KEYS[0] },
+    Scene { name: "words-card", claude: "now", files: MAIN, keys: WORDS_KEYS[1] },
+    Scene { name: "words-foot", claude: "footshort", files: MAIN, keys: WORDS_KEYS[2] },
+    Scene { name: "words-follow", claude: "footshort", files: MAIN, keys: WORDS_KEYS[3] },
     // (motion §4: a turn of 20 stops — reads, lookups, edits, runs, one failing — its trail rows; the follow card's strip)
     Scene { name: "strip-trail", claude: "strip", files: MAIN, keys: STRIP_KEYS[0] },
     Scene { name: "strip", claude: "strip", files: MAIN, keys: STRIP_KEYS[1] },

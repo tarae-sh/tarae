@@ -141,6 +141,8 @@ struct Snap {
     /// The line lit as dragged (`Editor::border_lit`) — drawn in the accent, which tests draw no colours of.
     lit: String,
     said: u64,
+    /// What the mouse over a word shows: the word lit, a presence tag, the now line's card, a strip mark's words.
+    over: String,
 }
 
 impl PartialEq for Snap {
@@ -206,7 +208,10 @@ fn snap(ed: &mut Editor) -> Snap {
             ed.docs[0].text = ropey::Rope::from_str("moved by itself\n");
         }
     }
-    Snap { frame, text, keys, sel, lit: format!("{:?}", ed.border_lit()), said: ed.said }
+    let frame = colourless(&frame);
+    let strip = ed.workspace.claude.chat.as_ref().and_then(|c| c.follow.hover.clone());
+    let over = format!("{:?} {:?} {:?} {strip:?}", ed.word_hover.get(), ed.presence.hover, ed.cut_hover);
+    Snap { frame, text, keys, sel, lit: format!("{:?}", ed.border_lit()), said: ed.said, over }
 }
 
 /// A snap where an act is judged, and whether the frame then holds still: a second snap with no event between. A frame
@@ -228,11 +233,40 @@ fn after(walk: &mut Walk, ed: &mut Editor, scene: &str, u: Under, when: &str) ->
     (s, true)
 }
 
-/// What an act did between two snaps. A hover acts only where it moves the keys or a selection —
-/// what it shows (a cut row whole, a mark's words) is what it is, not an act; in a scene whose frame moves by itself
-/// (a draft being written), neither is the frame.
-fn did(a: &Snap, b: &Snap, act: Act) -> Did {
-    let moved = a.keys != b.keys || a.sel != b.sel;
+/// A frame's bytes without their colours (`38;2;r;g;b`, `48;2;…`, `58;2;…` in a style's sequence) — the walk judges a
+/// frame as drawn with none (an act that only colours is no act here), whatever crossterm's switch says: it's the
+/// process's, other tests turn it on as they run, and the walk was judged with or without colours by the order they ran
+/// in (an edge pressed lights its line while held — in colour only).
+fn colourless(frame: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(frame.len());
+    let mut i = 0;
+    while i < frame.len() {
+        // (after a `;` within a sequence or its `[` first: the `[` kept)
+        let rgb = [b"38;2;".as_slice(), b"48;2;", b"58;2;"].iter().any(|p| frame[i + 1..].starts_with(p));
+        if rgb && matches!(frame[i], b';' | b'[') {
+            if frame[i] == b'[' {
+                out.push(b'[');
+            }
+            // (to the `;` before its three numbers, then each `;` and its digits)
+            i += 5;
+            for _ in 0..3 {
+                i += 1 + frame[(i + 1).min(frame.len())..].iter().take_while(|b| b.is_ascii_digit()).count();
+            }
+            continue;
+        }
+        out.push(frame[i]);
+        i += 1;
+    }
+    out
+}
+
+/// What an act did between two snaps. A hover acts where it moves the keys or a selection, or on a word, where it shows
+/// what that word is (lit, its tag, its card, its words — `Snap.over`; tests draw no colours) — what else it shows is
+/// drawn, not an act (a cut row whole; a line that drags, lit: `Did.drawn`); in a scene whose frame moves by itself (a
+/// draft being written), neither is the frame.
+fn did(a: &Snap, b: &Snap, act: Act, u: Under) -> Did {
+    let word = act == Act::Hover && matches!(u.part, Part::Word(_)) && a.over != b.over;
+    let moved = a.keys != b.keys || a.sel != b.sel || word;
     let drawn = !MOVING.get() && (a.frame != b.frame || a.lit != b.lit);
     Did {
         acted: moved || (drawn && act != Act::Hover),
@@ -536,6 +570,7 @@ fn walk_held(walk: &mut Walk, n: usize, scene: &str, setup: fn(&mut Editor)) {
         let b0 = before(&ed, u);
         let front = |ed: &Editor| ed.offers.first().map(|o| o.id);
         let card = front(&ed);
+        let word = word_at(&ed, u);
         send(&mut ed, K::Down, x, y, scene, walk);
         let (s1, still1) = after(walk, &mut ed, scene, u, "after the press");
         let b1 = Before { holds: holds(&ed, u), ..Before::default() };
@@ -543,19 +578,19 @@ fn walk_held(walk: &mut Walk, n: usize, scene: &str, setup: fn(&mut Editor)) {
         let (s2, still2) = after(walk, &mut ed, scene, u, "after the release");
         // (the double is on what the press there is now — the first may have moved the screen, or answered a card and
         // brought the next one under the pointer: another card's press)
-        let again = ed.mouse_at(x, y) == u && front(&ed) == card;
+        let again = ed.mouse_at(x, y) == u && front(&ed) == card && word_at(&ed, u) == word;
         let b2 = before(&ed, u);
         send(&mut ed, K::Down, x, y, scene, walk);
         send(&mut ed, K::Up, x, y, scene, walk);
         let (s3, still3) = after(walk, &mut ed, scene, u, "after the double");
         if still0 && still1 {
-            judge(walk, scene, u, Act::Press, b0, did(&s0, &s1, Act::Press));
+            judge(walk, scene, u, Act::Press, b0, did(&s0, &s1, Act::Press, u));
         }
         if still1 && still2 {
-            judge(walk, scene, u, Act::Release, b1, did(&s1, &s2, Act::Release));
+            judge(walk, scene, u, Act::Release, b1, did(&s1, &s2, Act::Release, u));
         }
         if again && still2 && still3 {
-            judge(walk, scene, u, Act::Double, b2, did(&s2, &s3, Act::Double));
+            judge(walk, scene, u, Act::Double, b2, did(&s2, &s3, Act::Double, u));
         }
         // A drag from it — on, along its own surface
         let mut ed = fresh(setup);
@@ -566,7 +601,7 @@ fn walk_held(walk: &mut Walk, n: usize, scene: &str, setup: fn(&mut Editor)) {
         let (s2, still2) = after(walk, &mut ed, scene, u, "after the drag");
         send(&mut ed, K::Up, dx, dy, scene, walk);
         if still1 && still2 {
-            judge(walk, scene, u, Act::Drag, before(&ed, u), did(&s1, &s2, Act::Drag));
+            judge(walk, scene, u, Act::Drag, before(&ed, u), did(&s1, &s2, Act::Drag, u));
         }
         wheel_at(walk, scene, setup, (x, y), Some(u));
     }
@@ -585,6 +620,14 @@ fn walk_held(walk: &mut Walk, n: usize, scene: &str, setup: fn(&mut Editor)) {
     }
 }
 
+/// The word that does its key under `u`, as it says itself — a press may draw another in its place (`esc code` → `space
+/// l focus`): a second press there is that one's, not a double.
+fn word_at(ed: &Editor, u: Under) -> Option<(crate::wordspot::Press, Vec<String>)> {
+    let Part::Word(crate::mouse::Word::Does(i)) = u.part else { return None };
+    let spots = ed.screen.word_spots.borrow();
+    spots.get(i).map(|s| (s.press.clone(), s.spans.iter().map(|s| s.0.clone()).collect()))
+}
+
 /// A hover at `cell` (on `pressed`, what a press there lands on), then the wheel down and up — judged by what the wheel
 /// there goes to, where that's the pressed surface or one only a wheel lands on.
 fn wheel_at(
@@ -601,13 +644,13 @@ fn wheel_at(
     ed.handle_event(Event::Hover(x as u16, y as u16));
     let (s1, still1) = after(walk, &mut ed, scene, at, "after the hover");
     if let Some(u) = pressed.filter(|_| still0 && still1) {
-        judge(walk, scene, u, Act::Hover, Before::default(), did(&s0, &s1, Act::Hover));
+        judge(walk, scene, u, Act::Hover, Before::default(), did(&s0, &s1, Act::Hover, u));
     }
     send(&mut ed, K::ScrollDown, x, y, scene, walk);
     let (s2, still2) = after(walk, &mut ed, scene, at, "after the wheel down");
     send(&mut ed, K::ScrollUp, x, y, scene, walk);
     let (s3, still3) = after(walk, &mut ed, scene, at, "after the wheel up");
-    let (a, b) = (did(&s1, &s2, Act::Wheel), did(&s2, &s3, Act::Wheel));
+    let (a, b) = (did(&s1, &s2, Act::Wheel, wheel), did(&s2, &s3, Act::Wheel, wheel));
     if pressed.is_none_or(|u| u.surface == wheel.surface) && still1 && still2 && still3 {
         let what = [a.what, b.what].join("; ");
         let surface = format!("{:?}", wheel.surface);
@@ -721,6 +764,18 @@ fn a_frame_that_moves_between_two_looks_is_named_not_blamed_on_an_act() {
     let late = drift(false, 8);
     assert!(!named(&late), "after the second look: not seen by it: {:?}", late.moved);
     assert!(blamed(&late, "Double"), "after the second look: the double still blamed: {:?}", late.off);
+}
+
+/// A frame judged without its colours: two frames that differ only in them are the same, any other style or text
+/// still tells them apart.
+#[test]
+fn the_walk_judges_frames_without_their_colours() {
+    let a = b"\x1b[0;38;2;1;2;3;48;2;40;50;60;1mab\x1b[38;2;9;9;9mc";
+    let b = b"\x1b[0;38;2;200;2;3;48;2;4;5;6;1mab\x1b[38;2;1;1;1mc";
+    assert_eq!(colourless(a), colourless(b));
+    assert_eq!(colourless(a), b"\x1b[0;1mab\x1b[mc".to_vec());
+    let bold_off = b"\x1b[0;38;2;1;2;3;48;2;40;50;60mab\x1b[38;2;9;9;9mc";
+    assert_ne!(colourless(a), colourless(bold_off), "bold still counts");
 }
 
 /// `docs/mouse.md` is the table's (`TARAE_BLESS=1` writes it again), and every surface the walk found has a row there.

@@ -218,6 +218,7 @@ mod waits;
 mod weave;
 mod web;
 mod whole;
+mod wordspot;
 mod workspace;
 mod workspacekeep;
 mod worktree;

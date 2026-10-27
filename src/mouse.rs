@@ -149,6 +149,8 @@ pub enum Word {
     Step(usize),
     /// A mark of the follow card's strip (its index in `Screen.stop_marks`).
     Stop(usize),
+    /// A word that names a state, a key hint's pair: its key (its index in `Screen.word_spots` — `wordspot.rs`).
+    Does(usize),
 }
 
 /// A place in the chat that goes somewhere, by its index in its record.
@@ -200,7 +202,8 @@ impl Under {
         );
         let word = matches!(
             self.part,
-            Part::Frame(_) | Part::Word(Word::Now | Word::Session(_) | Word::Tab(_) | Word::Member(_))
+            Part::Frame(_)
+                | Part::Word(Word::Now | Word::Session(_) | Word::Tab(_) | Word::Member(_) | Word::Does(_))
         );
         !early && !word
     }
@@ -342,6 +345,18 @@ impl Editor {
         }
         // The lines' borders and words
         let free = self.picker.is_none() && floated.is_none();
+        // (a line's words before the line: the slot's line drags off its tabs and its keys, as off its tabs; the last
+        // drawn first, a card's line over a pane's — and under the follow card, the minimized chat, only the card's own:
+        // a word it covers is neither pressed nor lit through it)
+        let carded = s.thought_card.get().or(s.chat_mini.get()).is_some_and(|r| inside(r, x, y));
+        let shown = |w: &&crate::wordspot::Spot| !carded || w.on == S::FollowCard;
+        if down
+            && free
+            && let Some(i) =
+                s.word_spots.borrow().iter().rposition(|w| on(w.y, w.from, w.to, x, y) && shown(&w))
+        {
+            return at(s.word_spots.borrow()[i].on, Part::Word(Word::Does(i)));
+        }
         if down
             && free
             && let Some(b) = self.border_at(x, y)
@@ -978,8 +993,6 @@ pub const ACTS: [Act; 6] = [Act::Press, Act::Release, Act::Drag, Act::Double, Ac
 pub enum Landing {
     /// Selection: drags in every text, double a word, triple a line, the edge's scroll.
     S,
-    /// Words: a state word does its key (motion's §B).
-    W,
     /// Overlays and buttons: which-key, completion, cards' wheel, the note card, the start screen, the other buttons.
     O,
 }
@@ -1007,7 +1020,7 @@ pub enum Expect {
 pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
     use Act as A;
     use Expect::{Acts, Gap, Not, Says};
-    use Landing::{O, S, W};
+    use Landing::{O, S};
     use Surface as Su;
     const RELEASE: Expect = Not("the press did it");
     const HOVER: Expect = Not("nothing on hover");
@@ -1093,13 +1106,12 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             (_, A::Hover) => HOVER,
         },
         Su::Status => match (part, act) {
-            (Part::Word(_), A::Press) => Acts,
-            (_, A::Press) => Gap(W, "its state words do their keys"),
+            (Part::Word(_), A::Press | A::Hover) => Acts,
+            (_, A::Press) => Not("no word there: the mode and the position say where the keys are"),
             (_, A::Double) => AS_ONE,
-            (_, A::Drag) => Gap(W, "a drag there does nothing"),
+            (_, A::Drag) => Not("a line of state, no text to select"),
             (_, A::Wheel) => NO_SCROLL,
             (_, A::Release) => RELEASE,
-            (Part::Word(_), A::Hover) => Gap(W, "a word's key on hover"),
             (_, A::Hover) => HOVER,
         },
         // (a name on the slot's line is the line too: a drag from it sizes the slot)
@@ -1108,7 +1120,7 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             A::Double => AS_ONE,
             A::Wheel => NO_SCROLL,
             A::Release => RELEASE,
-            A::Hover => HOVER,
+            A::Hover => Acts,
         },
         Su::Popup => match act {
             A::Wheel => Acts,
@@ -1146,6 +1158,8 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             (_, A::Drag) => Gap(S, "a drag follows the pointer"),
             (_, A::Double) => AS_ONE,
             (_, A::Release) => RELEASE,
+            // (a preflight's step chip lights under the mouse)
+            (Part::Word(_), A::Hover) => Acts,
             (_, A::Hover) => HOVER,
         },
         Su::List(_) => match act {
@@ -1179,13 +1193,14 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             (Part::Word(_), A::Hover) => Acts,
             (_, A::Hover) => HOVER,
         },
-        Su::Chat => match act {
-            A::Press => Acts,
-            A::Double => AS_ONE,
-            A::Drag => Not("tiled panes don't move — its line toward the code sizes it"),
-            A::Wheel => Acts,
-            A::Release => RELEASE,
-            A::Hover => HOVER,
+        Su::Chat => match (part, act) {
+            (_, A::Press) => Acts,
+            (_, A::Double) => AS_ONE,
+            (_, A::Drag) => Not("tiled panes don't move — its line toward the code sizes it"),
+            (_, A::Wheel) => Acts,
+            (_, A::Release) => RELEASE,
+            (Part::Word(_), A::Hover) => Acts,
+            (_, A::Hover) => HOVER,
         },
         Su::Transcript | Su::Input => match (part, act) {
             (_, A::Press) | (_, A::Wheel) => Acts,
@@ -1212,19 +1227,22 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             A::Release => RELEASE,
             A::Hover => HOVER,
         },
-        Su::PaneTop(_) => match act {
-            A::Press => Acts,
-            A::Double => AS_ONE,
-            A::Drag => Not("tiled panes don't move"),
-            A::Wheel => Acts,
-            A::Release => RELEASE,
-            A::Hover => Gap(W, "its words' keys on hover"),
+        Su::PaneTop(_) => match (part, act) {
+            (_, A::Press) => Acts,
+            (_, A::Double) => AS_ONE,
+            (_, A::Drag) => Not("tiled panes don't move"),
+            (_, A::Wheel) => Acts,
+            (_, A::Release) => RELEASE,
+            (Part::Word(_), A::Hover) => Acts,
+            (_, A::Hover) => Not("the path, the buffers: nothing to press there yet"),
         },
         Su::Code(_) => match (part, act) {
             (_, A::Press) | (_, A::Wheel) | (_, A::Drag) => Acts,
             (_, A::Double) if text => Acts,
             (_, A::Double) => AS_ONE,
             (_, A::Release) => Not("ctrl+press goes there at the release"),
+            // (a presence tag shows its name under the mouse)
+            (Part::Word(_), A::Hover) => Acts,
             (_, A::Hover) => Not("no hover from the language server — K"),
         },
         Su::WhichKey => match act {
@@ -1275,6 +1293,12 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ("The code", "a presence tag", Su::Code(0), Part::Word(Word::Session(Spot::List))),
         ("A pane's top line", "", Su::PaneTop(0), Part::Blank),
         (
+            "A pane's top line",
+            "a key hint (`C-c stop`, `enter go there`)",
+            Su::PaneTop(0),
+            Part::Word(Word::Does(0)),
+        ),
+        (
             "A line between panels, between your panes",
             "the chat's, the side panel's, the rail's, the slot's, a dock's, a divider",
             Su::Edge,
@@ -1289,8 +1313,20 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ("The chat's input", "text", Su::Input, text),
         ("The chat", "its top line, its gaps", Su::Chat, Part::Blank),
         ("The chat", "a session's name, `+N`", Su::Chat, Part::Word(Word::Session(Spot::List))),
+        (
+            "The chat",
+            "`follow`, `paused`, the turn's word, the model, a key hint at its foot",
+            Su::Chat,
+            Part::Word(Word::Does(0)),
+        ),
         ("The follow card", "a trail row, the card", Su::FollowCard, Part::Blank),
         ("The follow card", "a strip mark", Su::FollowCard, Part::Word(Word::Stop(0))),
+        (
+            "The follow card",
+            "`▲ waits`, `paused`, the turn's word, its keys",
+            Su::FollowCard,
+            Part::Word(Word::Does(0)),
+        ),
         ("The side panel", "a row", Su::Side, Part::Row(0)),
         ("The side panel", "off its rows", Su::Side, Part::Blank),
         ("Run output", "text", Su::Output(Slot::Test), text),
@@ -1298,6 +1334,7 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ("Run output", "a preflight's step chip", Su::Output(Slot::Task), Part::Word(Word::Step(0))),
         ("A group's list", "a row", Su::List(GroupKind::Tests), Part::Row(0)),
         ("The slot's line", "a tab, a member's name", Su::SlotLine, Part::Word(Word::Tab(Slot::Test))),
+        ("The slot's line", "its keys", Su::SlotLine, Part::Word(Word::Does(0))),
         ("The terminal", "", Su::Terminal, text),
         ("The terminal's view mode", "", Su::TerminalView, text),
         ("A plugin's panel", "", Su::Plugin, Part::Row(0)),
@@ -1331,7 +1368,7 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ("The note card, the thought card", "", Su::NoteCard, Part::Blank),
         (
             "The status line",
-            "a word (`▲N waiting`, the chip, what Claude does now)",
+            "a word (`▲N waiting · C-q`, the chip, what Claude does now, the branch, `▲ N`, `full screen`)",
             Su::Status,
             Part::Word(Word::Now),
         ),
@@ -1360,7 +1397,7 @@ pub fn doc() -> String {
          every line between two things with sizes drags; a word that names a state does its key. A press, a drag or a\n\
          wheel that does nothing says why — nothing at all only for a hover, a release, a wheel with nothing to scroll.\n\n\
          ✓ acts · says: it says why not · — nothing, by design · ✗ a gap, and the landing of `.sb/mouse-plan.md` §4\n\
-         that fills it (S selection, W words, O overlays and buttons).\n\n\
+         that fills it (S selection, O overlays and buttons).\n\n\
          | Surface | Part | Press | Release | Drag | Double | Wheel | Hover |\n\
          |---|---|---|---|---|---|---|---|\n",
     );

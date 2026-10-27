@@ -471,6 +471,37 @@ fn a_preflights_steps_list_beside_its_output_drives_it() {
     assert!(!ed.screen.task_steps.borrow().is_empty(), "its chip");
 }
 
+/// A preflight's step chip lights under the mouse as every word that does its key (W): its mark, name and time one word,
+/// let go as the mouse leaves.
+#[test]
+fn a_step_chip_lights_under_the_mouse() {
+    let dir = crate::scratch::Scratch::new("group-chip");
+    let mut ed = editor(dir.path());
+    let step = crate::preflight::Step {
+        name: "fmt".into(),
+        cmd: String::new(),
+        note: None,
+        from: String::new(),
+        full: false,
+    };
+    let mut p = crate::preflight::Preflight::new(0, &[step], crate::preflight::Set::Full, "k".into());
+    p.steps[0].state = crate::preflight::State::Passed;
+    ed.workspace.preflight = Some(p);
+    ed.workspace.task_run.as_mut().unwrap().push_line(false, "── fmt ──".into(), true);
+    frame(&mut ed);
+    let chip = ed.screen.task_steps.borrow().first().copied().expect("its chip");
+    let (y, from) = (chip.0, chip.1);
+    let to = ed.screen.task_steps.borrow().iter().filter(|c| c.3 == chip.3).map(|c| c.2).max().unwrap();
+    // (on the chip's name, past its mark)
+    ed.handle_event(crate::event::Event::Hover((from + 2) as u16, y as u16));
+    assert!(!ed.unchanged, "drawn: it lights");
+    frame(&mut ed);
+    assert_eq!(ed.word_hover.get(), Some((y, from, to)), "the chip whole");
+    ed.handle_event(crate::event::Event::Hover(0, 0));
+    frame(&mut ed);
+    assert_eq!(ed.word_hover.get(), None);
+}
+
 /// A group of each kind in the slot, its list's two rows first: the task's places (`two` an error, listed first),
 /// a preflight's steps (`fmt`, `test`), the tests' results (a pass, a failure in `src/lib.rs` picked).
 fn each_kind(root: &std::path::Path) -> Vec<(Editor, GroupKind, &'static str, &'static str, &'static str)> {

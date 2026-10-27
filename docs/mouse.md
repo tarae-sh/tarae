@@ -8,13 +8,14 @@ every line between two things with sizes drags; a word that names a state does i
 wheel that does nothing says why — nothing at all only for a hover, a release, a wheel with nothing to scroll.
 
 ✓ acts · says: it says why not · — nothing, by design · ✗ a gap, and the landing of `.sb/mouse-plan.md` §4
-that fills it (S selection, W words, O overlays and buttons).
+that fills it (S selection, O overlays and buttons).
 
 | Surface | Part | Press | Release | Drag | Double | Wheel | Hover |
 |---|---|---|---|---|---|---|---|
 | The code | text | ✓ | — ctrl+press goes there at the release | ✓ | ✓ | ✓ | — no hover from the language server — K |
-| The code | a presence tag | ✓ | — ctrl+press goes there at the release | ✓ | as one press | ✓ | — no hover from the language server — K |
-| A pane's top line |  | ✓ | — the press did it | — tiled panes don't move | as one press | ✓ | ✗ W: its words' keys on hover |
+| The code | a presence tag | ✓ | — ctrl+press goes there at the release | ✓ | as one press | ✓ | ✓ |
+| A pane's top line |  | ✓ | — the press did it | — tiled panes don't move | as one press | ✓ | — the path, the buffers: nothing to press there yet |
+| A pane's top line | a key hint (`C-c stop`, `enter go there`) | ✓ | — the press did it | — tiled panes don't move | as one press | ✓ | ✓ |
 | A line between panels, between your panes | the chat's, the side panel's, the rail's, the slot's, a dock's, a divider | ✓ | ✓ | ✓ | as one press | — nothing to scroll | ✓ |
 | Claude's edit review | a change | ✓ | — the press did it | ✓ | as one press | ✓ | — nothing on hover |
 | Claude's edit review | off it | ✗ O: off the review: nothing until it's answered | — the press did it | ✗ O: off the review: nothing until it's answered | as one press | — nothing to scroll | — nothing on hover |
@@ -24,16 +25,19 @@ that fills it (S selection, W words, O overlays and buttons).
 | The chat's conversation | a link, a tool row, an id | ✓ | — the press did it | ✗ S: a drag from a link | as one press | ✓ | — a cut row comes whole under it |
 | The chat's input | text | ✓ | — the press did it | ✓ | ✓ | ✓ | — a cut row comes whole under it |
 | The chat | its top line, its gaps | ✓ | — the press did it | — tiled panes don't move — its line toward the code sizes it | as one press | ✓ | — nothing on hover |
-| The chat | a session's name, `+N` | ✓ | — the press did it | — tiled panes don't move — its line toward the code sizes it | as one press | ✓ | — nothing on hover |
+| The chat | a session's name, `+N` | ✓ | — the press did it | — tiled panes don't move — its line toward the code sizes it | as one press | ✓ | ✓ |
+| The chat | `follow`, `paused`, the turn's word, the model, a key hint at its foot | ✓ | — the press did it | — tiled panes don't move — its line toward the code sizes it | as one press | ✓ | ✓ |
 | The follow card | a trail row, the card | ✓ | — the press did it | — placed by rule | as one press | ✗ O: the wheel passes under it | — nothing on hover |
 | The follow card | a strip mark | ✓ | — the press did it | — placed by rule | as one press | ✗ O: the wheel passes under it | ✓ |
+| The follow card | `▲ waits`, `paused`, the turn's word, its keys | ✓ | — the press did it | — placed by rule | as one press | ✗ O: the wheel passes under it | ✓ |
 | The side panel | a row | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | — a row opens on one press — the git tab's opens on two | ✓ | — nothing on hover |
 | The side panel | off its rows | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | as one press | ✓ | — nothing on hover |
 | Run output | text | ✓ | — the press did it | ✓ | ✓ | ✓ | — nothing on hover |
 | Run output | off its rows | ✓ | — the press did it | ✗ S: a drag follows the pointer | as one press | ✓ | — nothing on hover |
-| Run output | a preflight's step chip | ✓ | — the press did it | ✗ S: a drag follows the pointer | as one press | ✓ | — nothing on hover |
+| Run output | a preflight's step chip | ✓ | — the press did it | ✗ S: a drag follows the pointer | as one press | ✓ | ✓ |
 | A group's list | a row | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | ✗ S: again opens, as the session list's | ✓ | — nothing on hover |
-| The slot's line | a tab, a member's name | ✓ | — the press did it | ✓ | as one press | — nothing to scroll | — nothing on hover |
+| The slot's line | a tab, a member's name | ✓ | — the press did it | ✓ | as one press | — nothing to scroll | ✓ |
+| The slot's line | its keys | ✓ | — the press did it | ✓ | as one press | — nothing to scroll | ✓ |
 | The terminal |  | ✓ | ✓ | ✓ | ✗ S: a word | ✓ | — nothing on hover |
 | The terminal's view mode |  | ✓ | — the press did it | ✓ | ✓ | ✓ | — nothing on hover |
 | A plugin's panel |  | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | as one press | ✓ | — nothing on hover |
@@ -55,8 +59,8 @@ that fills it (S selection, W words, O overlays and buttons).
 | Which-key |  | ✗ O: its rows press as their keys | — goes to what's under it | — goes to what's under it | — goes to what's under it | ✗ O: its wheel | — goes to what's under it |
 | The completion menu |  | ✗ O: its rows accept | — goes to what's under it | — goes to what's under it | — goes to what's under it | ✗ O: its wheel | — goes to what's under it |
 | The note card, the thought card |  | ✗ O: a press is its own | — goes to what's under it | — goes to what's under it | — goes to what's under it | ✗ O: its wheel | — goes to what's under it |
-| The status line | a word (`▲N waiting`, the chip, what Claude does now) | ✓ | — the press did it | ✗ W: a drag there does nothing | as one press | — nothing to scroll | ✗ W: a word's key on hover |
-| The status line | the rest | ✗ W: its state words do their keys | — the press did it | ✗ W: a drag there does nothing | as one press | — nothing to scroll | — nothing on hover |
+| The status line | a word (`▲N waiting · C-q`, the chip, what Claude does now, the branch, `▲ N`, `full screen`) | ✓ | — the press did it | — a line of state, no text to select | as one press | — nothing to scroll | ✓ |
+| The status line | the rest | — no word there: the mode and the position say where the keys are | — the press did it | — a line of state, no text to select | as one press | — nothing to scroll | — nothing on hover |
 | The start screen |  | ✗ O: its recent files and keys press | — the press did it | ✗ O: nothing to select | as one press | — nothing to scroll | — nothing on hover |
 | Pointing's labels |  | ✓ | — the press did it | ✗ O: pointing takes a press only | as one press | — nothing to scroll | — the press did it |
 

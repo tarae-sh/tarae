@@ -641,6 +641,8 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         chat_ids: Default::default(),
         chat_mini: Default::default(),
         session_spots: Default::default(),
+        word_spots: Default::default(),
+        word_lit: Default::default(),
         review_rail: Default::default(),
         review_rail_marks: Default::default(),
         review_rail_more: Default::default(),
@@ -1970,6 +1972,20 @@ fn slot_header(
         None => dividers_up(editor, lay, y0),
         Some(_) => Vec::new(),
     };
+    // (its keys pressed do their keys where they were drawn for: the slot's while it has them — its panel or its list —,
+    // else the code's way in, `C-w j`)
+    let words = TopWords {
+        spots: &editor.screen.word_spots,
+        on: crate::mouse::Surface::SlotLine,
+        right: None,
+        // (by what each is: the slot's own keys typed in the slot — its list's while the list has them, as its hints are
+        // then the list's —, the way in typed in the code)
+        home: Some(match editor.workspace.viewer.at {
+            at @ At::List(_) if editor.list_focused().is_some() => at,
+            _ => At::Slot,
+        }),
+        way_in: Some("C-w j"),
+    };
     let head = TopLine {
         names: &names,
         details: &said,
@@ -1978,6 +1994,7 @@ fn slot_header(
         faint,
         beyond,
         ups: &ups,
+        words: Some(words),
         ..TopLine::default()
     };
     // (floating: the frame's top line, its corners round the panel's width)
@@ -2013,6 +2030,13 @@ fn slot_header(
                 named.push((y0, a, b, id));
             }
         }
+    }
+    // (its tabs and its members' names: lit under the mouse, as every word that does its key)
+    let laid = || names.iter().chain(&beyond_names).zip(&cols).map(|((t, st), &(a, _))| (a, t.as_str(), *st));
+    let named = editor.screen.member_names.borrow();
+    let words = spots.iter().map(|s| (s.0, s.1, s.2)).chain(named.iter().map(|s| (s.0, s.1, s.2)));
+    for (_, a, b) in words.filter(|s| s.0 == y0) {
+        word_lit(editor, y0, (a, b), spans_in(laid(), a, b));
     }
     Ok(y0 + crate::chrome::SLOT_HEAD)
 }
@@ -2058,6 +2082,7 @@ fn member_line(
     let cols = top_line(out, line, card, (x, y, w), ("", "", "┬"), &[], true, &head)?;
     if let Some(&(a, b)) = cols.first().filter(|c| c.1 > c.0) {
         editor.screen.member_names.borrow_mut().push((y, a, b, m.ids.1));
+        word_lit(editor, y, (a, b), vec![(fit_ellipsis(&names[0].0, b - a), names[0].1)]);
     }
     Ok(())
 }
@@ -2086,6 +2111,20 @@ struct TopLine<'a> {
     /// Columns where a line from above ends on this one (a code pane's divider over the slot's line): `┴` in its run of
     /// `─` (`┼` where one goes down there too).
     ups: &'a [usize],
+    /// Its keys — and what stands at its right end, given a press — do their keys on a press (`wordspot.rs`).
+    words: Option<TopWords<'a>>,
+}
+
+/// Where a top line records its words (`TopLine.words`): the frame's spots, the surface the line is, what a press on
+/// its right end does.
+struct TopWords<'a> {
+    spots: &'a std::cell::RefCell<Vec<crate::wordspot::Spot>>,
+    on: crate::mouse::Surface,
+    right: Option<crate::wordspot::Press>,
+    /// Where its keys are typed (`Spot.home`) — but the way in (`way_in`: the key that gives the line's surface the keys,
+    /// typed in the code).
+    home: Option<At>,
+    way_in: Option<&'a str>,
 }
 
 /// The part of a top line over a group's detail (panes P3 step 3b): from the first line down (`splits`) on, its own
@@ -2317,18 +2356,38 @@ fn top_line(
     };
     let fill: String = (col..fill_end).map(cell).collect();
     put(&mut buf, line, &fill)?;
+    use crate::wordspot::{Press, Spot};
+    let word = |at: usize, press: Press, spans: Vec<(String, Style)>| {
+        if let Some(w) = &head.words {
+            w.spots.borrow_mut().push(Spot::new(w.on, press, (at, y), spans));
+        }
+    };
     if right_cells > 0 {
         apply_put(&mut buf, card, " ")?;
         for (s, st) in head.right {
             apply_put(&mut buf, *st, s)?;
         }
+        if let Some(p) = head.words.as_ref().and_then(|w| w.right.clone()) {
+            word(x + fill_end + 1, p, head.right.to_vec());
+        }
         apply_put(&mut buf, card, " ")?;
         put(&mut buf, line, "─")?;
     }
+    let mut at = x + fill_end + right_cells;
     for (i, (k, v)) in head.keys[..n].iter().enumerate() {
-        apply_put(&mut buf, card, if i == 0 { " " } else { "  " })?;
+        let gap = if i == 0 { " " } else { "  " };
+        apply_put(&mut buf, card, gap)?;
         apply_put(&mut buf, head.key, k)?;
         apply_put(&mut buf, head.faint, &format!(" {v}"))?;
+        if crate::wordspot::pressable(k, v)
+            && let Some(w) = &head.words
+        {
+            let spans = vec![(k.to_string(), head.key), (format!(" {v}"), head.faint)];
+            let spot = Spot::new(w.on, Press::Keys(k.to_string()), (at + gap.len(), y), spans);
+            let home = if w.way_in == Some(*k) { Some(At::Code) } else { w.home };
+            w.spots.borrow_mut().push(Spot { home, ..spot });
+        }
+        at += gap.len() + k.width() + 1 + v.width();
     }
     if n > 0 {
         apply_put(&mut buf, card, " ")?;
@@ -2747,13 +2806,25 @@ fn draw_task_panel(
         queue!(out, Spaces(w), MoveTo((x0 + PAD) as u16, body as u16))?;
         let mut chips = editor.screen.task_steps.borrow_mut();
         let mut x = x0 + PAD;
+        // (each step's chip whole — its mark, name and time: lit under the mouse, as every word that does its key)
+        let mut lit: Vec<(usize, crate::wordspot::Lit)> = Vec::new();
         for (s, st, k) in preflight_row(editor, p, w, card, ui, (good, bad, warn)) {
             apply(out, st)?;
             queue!(out, Print(&s))?;
             if let Some(k) = k {
                 chips.push((body, x, x + s.width(), k));
+                match lit.last_mut() {
+                    Some((step, l)) if *step == k => {
+                        l.2 = x + s.width();
+                        l.3.push((s.clone(), st));
+                    }
+                    _ => lit.push((k, (body, x, x + s.width(), vec![(s.clone(), st)]))),
+                }
             }
             x += s.width();
+        }
+        for (_, (y, from, to, spans)) in lit {
+            word_lit(editor, y, (from, to), spans);
         }
     }
     // The sandbox's line, when it blocked something: the bottom row, under the output — and over it, what
@@ -4839,6 +4910,8 @@ fn draw(
         Some(p) => Some(draw_prompt(editor, p, editor.cmdline_completion().as_ref(), ui, lay, out)?),
         None => None,
     };
+    // The word the mouse is over, lit — over everything but pointing's labels
+    light_word(editor, ui, out)?;
     // Pointing: a label on every element with an id, over everything
     if let Some(p) = &editor.pointing {
         draw_point_labels(p, ui, out)?;
@@ -4872,6 +4945,55 @@ fn draw(
     }
     queue!(out, SetAttribute(Attribute::Reset), ResetColor, EndSynchronizedUpdate)?;
     out.flush()
+}
+
+/// The word the mouse is over (`wordspot.rs`) — the one a press there lands on, none under a card or a picker — drawn
+/// again lit: each of its spans in the accent on the selected row's ground, its weight kept (a list's row in hand, the
+/// strip's mark under the mouse), at full strength wherever it is.
+fn light_word(editor: &Editor, ui: &Ui, out: &mut impl Write) -> io::Result<()> {
+    let over = editor.presence.hover_at.and_then(|(x, y)| crate::wordspot::lit(editor, x, y));
+    editor.word_hover.set(over.as_ref().map(|l| (l.0, l.1, l.2)));
+    let Some((y, from, _, spans)) = over else { return Ok(()) };
+    queue!(out, MoveTo(from as u16, y as u16))?;
+    for (text, st) in &spans {
+        let lit = Style { fg: ui.accent.fg, bold: st.bold, ..selected_row(ui, editor, *st) };
+        apply_full(out, lit)?;
+        queue!(out, Print(text))?;
+    }
+    Ok(())
+}
+
+/// What's drawn in columns `a..b` of a line laid as `laid` (each span's first column, its text, its style): those spans
+/// cut to the columns.
+fn spans_in<'a>(
+    laid: impl IntoIterator<Item = (usize, &'a str, Style)>,
+    a: usize,
+    b: usize,
+) -> Vec<(String, Style)> {
+    let mut out = Vec::new();
+    for (x, text, st) in laid {
+        let mut col = x;
+        let mut kept = String::new();
+        for ch in text.chars() {
+            let w = ch.width().unwrap_or(0);
+            if col >= a && col + w <= b {
+                kept.push(ch);
+            }
+            col += w;
+        }
+        if !kept.is_empty() {
+            out.push((kept, st));
+        }
+    }
+    out
+}
+
+/// A word with a record of its own (a session's tab, the chip, a slot's tab): what's drawn at columns `a..b` of row
+/// `y`, lit while the mouse is over it (`wordspot::lit`).
+fn word_lit(editor: &Editor, y: usize, (a, b): (usize, usize), spans: Vec<(String, Style)>) {
+    if b > a && !spans.is_empty() {
+        editor.screen.word_lit.borrow_mut().push((y, a, b, spans));
+    }
 }
 
 /// The groups docked beside the code and in sight (P3 step 6): each its panel drawn in its own leaf as the slot draws
@@ -9295,6 +9417,20 @@ fn code_line(
     let right: Vec<(String, Style)> = right.into_iter().map(|s| (s.text, lit(s.style))).collect();
     let head = TopLine { names: &names, key, faint, right: &right, ..TopLine::default() };
     let cols = top_line(out, line, ui.base, (x0, y0, width), ("", "", "┬"), &[], true, &head)?;
+    // (its key hints pressed do their keys, in this pane — `wordspot.rs`: `C-c stop` a page's read, `enter go there`)
+    for i in 0..names.len().saturating_sub(1) {
+        let (k, what) = (&names[i], &names[i + 1]);
+        let hint = [("C-c", " stop"), ("enter", " go there")].contains(&(k.0.as_str(), what.0.as_str()));
+        if let (true, Some(&(a, _))) = (hint, cols.get(i)) {
+            let spot = crate::wordspot::Spot::new(
+                crate::mouse::Surface::PaneTop(id),
+                crate::wordspot::Press::Keys(k.0.clone()),
+                (a, y0),
+                vec![k.clone(), what.clone()],
+            );
+            editor.screen.word_spots.borrow_mut().push(spot.home(At::Code));
+        }
+    }
     // (pointed at: the pane's label on its line past its path — none of the path hidden)
     let of = crate::uistate::point::Of::Pane(id);
     let at = (cols.last().map_or(x0 + 2, |c| c.1 + 1).min(x0 + width.saturating_sub(1)), y0);
@@ -9608,10 +9744,10 @@ fn draw_statusline(
         // (none of this session's up, another's waiting — its peek, or out of sight: `C-q` goes there)
         let elsewhere = editor.offers.is_empty() && matches!(editor.next_up(), crate::inbox::Next::Go(_));
         if let Some(short) = card_short(editor, lay) {
-            left.push(Seg { text: format!(" · {short}"), style: ui.status.patch(warn), keep: INBOX - 1 });
+            left.push(Seg { text: format!(" · {short}"), style: ui.status.patch(warn), keep: INBOX_NEXT });
         } else if held || elsewhere {
             let key = editor.key_said("C-q");
-            left.push(Seg { text: format!(" · {key}"), style: ui.status.patch(warn), keep: INBOX - 1 });
+            left.push(Seg { text: format!(" · {key}"), style: ui.status.patch(warn), keep: INBOX_NEXT });
         }
         gap = " ";
     }
@@ -9655,14 +9791,14 @@ fn draw_statusline(
         .filter(|_| lay.chat_w == 0)
         .and_then(|c| c.input.text().lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string))
     {
-        left.push(Seg { text: "  unsent ".into(), style: accent, keep: 225 });
-        left.push(Seg { text: fit_ellipsis(&text, 24), style: dim, keep: 225 });
+        left.push(Seg { text: "  unsent ".into(), style: accent, keep: UNSENT });
+        left.push(Seg { text: fit_ellipsis(&text, 24), style: dim, keep: UNSENT });
     }
     // (a session's branch is its name — the chip said it; a branch is a branch, faint ink, never a session's colour)
     if let Some(b) =
         editor.workspace.git_branch.as_ref().filter(|b| !chip || b.as_str() != editor.workspace.label())
     {
-        left.push(Seg { text: format!("   {b}"), style: dim, keep: 80 });
+        left.push(Seg { text: format!("   {b}"), style: dim, keep: BRANCH });
     }
     // How much this file changed from HEAD: +added/modified lines −removed lines (colors match the git bar)
     let (added, removed) = doc.git_hunks.iter().fold((0, 0), |(a, r), h| (a + h.lines.len(), r + h.removed));
@@ -9670,10 +9806,10 @@ fn draw_statusline(
         let color =
             |k: &str| ui.status.patch(Style { fg: t.try_get(k).and_then(|s| s.fg), ..Style::default() });
         if added > 0 {
-            left.push(Seg { text: format!("  +{added}"), style: color("diff.plus"), keep: 85 });
+            left.push(Seg { text: format!("  +{added}"), style: color("diff.plus"), keep: CHANGED });
         }
         if removed > 0 {
-            left.push(Seg { text: format!("  −{removed}"), style: color("diff.minus"), keep: 85 });
+            left.push(Seg { text: format!("  −{removed}"), style: color("diff.minus"), keep: CHANGED });
         }
     }
     // (an error or warning no card has shown yet under a picker outlasts the list's keys: they fit beside it,
@@ -9727,10 +9863,14 @@ fn draw_statusline(
     let mut right = Vec::new();
     // `C-w z`: one thing fills the screen — how to get the rest back
     if lay.zoom.is_some() {
-        right.push(Seg { text: "full screen  ".into(), style: dim, keep: 215 });
-        right.push(Seg { text: "C-w z".into(), style: Style { bold: true, ..dim }, keep: 215 });
-        right.push(Seg { text: " back".into(), style: Style { fg: ui.linenr.fg, ..ui.status }, keep: 215 });
-        right.push(gap(215));
+        right.push(Seg { text: "full screen  ".into(), style: dim, keep: ZOOMED });
+        right.push(Seg { text: "C-w z".into(), style: Style { bold: true, ..dim }, keep: ZOOMED });
+        right.push(Seg {
+            text: " back".into(),
+            style: Style { fg: ui.linenr.fg, ..ui.status },
+            keep: ZOOMED,
+        });
+        right.push(gap(ZOOMED));
     }
     match &editor.workspace.claude.review {
         // (the change in review in front: the mode says it — `● change` on the left — once is enough)
@@ -9739,13 +9879,17 @@ fn draw_statusline(
             right.push(Seg {
                 text: "claude ● change".into(),
                 style: Style { bold: true, ..accent },
-                keep: 220,
+                keep: CLAUDE_CHANGE,
             });
-            right.push(gap(220));
+            right.push(gap(CLAUDE_CHANGE));
         }
         Some(_) => {
-            right.push(Seg { text: format!("{} claude", working(editor, false)), style: accent, keep: 220 });
-            right.push(gap(220));
+            right.push(Seg {
+                text: format!("{} claude", working(editor, false)),
+                style: accent,
+                keep: CLAUDE_CHANGE,
+            });
+            right.push(gap(CLAUDE_CHANGE));
         }
         None => {}
     }
@@ -9768,24 +9912,28 @@ fn draw_statusline(
         right.push(Seg {
             text: format!("▲ {}", fit_ellipsis(&c.short, 32)),
             style: ui.status.patch(warn),
-            keep: 195,
+            keep: PROCS_MARK,
         });
-        right.push(Seg { text: " :procs".into(), style: Style { fg: ui.linenr.fg, ..ui.status }, keep: 120 });
-        right.push(gap(195));
+        right.push(Seg {
+            text: " :procs".into(),
+            style: Style { fg: ui.linenr.fg, ..ui.status },
+            keep: PROCS_SAYS,
+        });
+        right.push(gap(PROCS_MARK));
     }
     let [errors, warnings] = doc.diagnostic_counts();
     if errors > 0 {
         right.push(Seg {
             text: format!("● {errors}"),
             style: ui.status.patch(Style { bg: None, ..ui.error }),
-            keep: 210,
+            keep: DIAGNOSTICS,
         });
-        right.push(gap(210));
+        right.push(gap(DIAGNOSTICS));
     }
     if warnings > 0 {
         let warn = t.try_get("warning").map(|s| Style { bg: None, ..s }).unwrap_or_default();
-        right.push(Seg { text: format!("▲ {warnings}"), style: ui.status.patch(warn), keep: 210 });
-        right.push(gap(210));
+        right.push(Seg { text: format!("▲ {warnings}"), style: ui.status.patch(warn), keep: DIAGNOSTICS });
+        right.push(gap(DIAGNOSTICS));
     }
     // (the search of where the keys are: a view mode's its own — its `/` being typed too —, never the code's)
     let chat = crate::chatdoc::transcript(editor)
@@ -9930,9 +10078,12 @@ fn draw_statusline(
     let mut chip_at: Option<(usize, usize)> = None;
     let mut reviewer_at: Option<(usize, usize)> = None;
     let mut now_at: Option<(usize, usize)> = None;
+    // (each segment where it went: what a word there lights — `Screen.word_lit`)
+    let mut laid: Vec<(usize, &str, Style)> = Vec::new();
     for s in &left {
         apply(out, s.style)?;
         queue!(out, Print(&s.text))?;
+        laid.push((used, &s.text, s.style));
         // (a click on the name: the list; on the count: the inbox — not the gap before them)
         let lead = s.text.len() - s.text.trim_start().len();
         let (a, b) = (used + lead, used + s.text.width());
@@ -9963,6 +10114,11 @@ fn draw_statusline(
         let spot = (lay.status_y as usize, a, b, crate::workspace::Spot::Reviewer);
         editor.screen.session_spots.borrow_mut().push(spot);
     }
+    // (the chip, the count waiting, the reviewer: lit under the mouse, as every word that does its key)
+    let status_y = lay.status_y as usize;
+    for s in editor.screen.session_spots.borrow().iter().filter(|s| s.0 == status_y) {
+        word_lit(editor, status_y, (s.1, s.2), spans_in(laid.iter().copied(), s.1, s.2));
+    }
     // (the line of what Claude is doing: a press follows Claude's place, the mouse over it its words whole — `now_card`)
     if let Some((a, b)) = now_at {
         editor.screen.cut_spots.borrow_mut().push((lay.status_y as usize, a, b, crate::whole::Cut::Now));
@@ -9974,12 +10130,86 @@ fn draw_statusline(
         apply(out, s.style)?;
         queue!(out, Print(&s.text))?;
     }
+    status_words(editor, &left, &right, (lay.status_y as usize, lay.width.saturating_sub(right_w).max(used)));
     clear_rest(out, ui.status)
+}
+
+/// The status line's words that do their keys (`wordspot.rs`), by their segments' rank: what's typed in the chat
+/// while it's out of sight (the chat), the branch and how much the file changed (the git tab), `full screen C-w z back`,
+/// Claude's change waiting (`C-q`, the review), what's abnormal among tarae's processes (`:procs`), the file's errors and
+/// warnings (its diagnostics), the inbox's `· C-q` after its count (the card). Each run of segments of one press one
+/// word, from its first mark to its last; `right_x` where the right side starts.
+fn status_words(editor: &Editor, left: &[Seg], right: &[Seg], (y, right_x): (usize, usize)) {
+    use crate::wordspot::{Press, Spot};
+    let review = editor.workspace.claude.review.as_ref().is_some_and(|r| r.ready);
+    let press = |keep: u8| match keep {
+        UNSENT => Some(Press::Command("chat_open")),
+        BRANCH | CHANGED => Some(Press::Command("git_panel")),
+        ZOOMED => Some(Press::Command("zoom_toggle")),
+        CLAUDE_CHANGE if review => Some(Press::Card),
+        PROCS_MARK | PROCS_SAYS => Some(Press::Command(":procs")),
+        DIAGNOSTICS => Some(Press::Command("diagnostics_picker")),
+        INBOX_NEXT => Some(Press::Card),
+        _ => None,
+    };
+    let laid = |segs: &[Seg], x0: usize| -> Vec<(usize, Option<Press>, (String, Style))> {
+        let mut x = x0;
+        let mut out = Vec::new();
+        for s in segs {
+            out.push((x, press(s.keep), (s.text.clone(), s.style)));
+            x += s.text.width();
+        }
+        out
+    };
+    // (each run a spot from its first segment, its spans gathered — its columns set once they're trimmed)
+    let mut runs: Vec<Spot> = Vec::new();
+    for side in [laid(left, 0), laid(right, right_x)] {
+        let mut last: Option<Press> = None;
+        for (x, p, span) in side {
+            match (p, &last) {
+                (Some(p), Some(l)) if p == *l => runs.last_mut().expect("a run").spans.push(span),
+                (Some(p), _) => {
+                    runs.push(Spot::new(crate::mouse::Surface::Status, p.clone(), (x, y), vec![span]));
+                    last = Some(p);
+                }
+                (None, _) => last = None,
+            }
+        }
+    }
+    let mut words = editor.screen.word_spots.borrow_mut();
+    for Spot { from, on, press, mut spans, .. } in runs {
+        // (from its first mark to its last: the blanks round it are the line's)
+        let lead = spans.first().map_or(0, |s| s.0.len() - s.0.trim_start().len());
+        if let Some(first) = spans.first_mut() {
+            first.0 = first.0.trim_start().to_string();
+        }
+        if let Some(last) = spans.last_mut() {
+            last.0 = last.0.trim_end().to_string();
+        }
+        spans.retain(|s| !s.0.is_empty());
+        if !spans.is_empty() {
+            words.push(Spot::new(on, press, (from + lead, y), spans));
+        }
+    }
 }
 
 /// The status line's session chip — its segments are told apart by this `keep` (it outlasts all but the
 /// mode, the position and a floating list's keys).
 const CHIP: u8 = 235;
+
+// The status line's words that do their keys, by their segments' ranks (`status_words`): what's typed in the chat out of
+// sight; the branch and how much the file changed; `full screen C-w z back`; Claude's change waiting (or `space i`
+// asking); what's abnormal among tarae's processes and its ` :procs`; the file's errors and warnings; after the inbox's
+// count, what waits or `· C-q`.
+const UNSENT: u8 = 225;
+const BRANCH: u8 = 80;
+const CHANGED: u8 = 85;
+const ZOOMED: u8 = 215;
+const CLAUDE_CHANGE: u8 = 220;
+const PROCS_MARK: u8 = 195;
+const PROCS_SAYS: u8 = 120;
+const DIAGNOSTICS: u8 = 210;
+const INBOX_NEXT: u8 = INBOX - 1;
 
 /// The status line's `▲3 waiting` and `1 run quiet` (the inbox): they outlast the chip — what waits for you
 /// is what's left when the room runs out.
@@ -12483,6 +12713,8 @@ fn draw_follow_card(
             (l.label().to_string(), Style { fg: ui.participant(l.claude.colour, true), bold: true, ..card })
         }
     };
+    // (`▲ waits` pressed: `C-q`'s — the card it waits on)
+    let waits = editor.doing(l) == crate::workspace::Doing::Waiting;
     let state: Option<(String, Style)> = {
         use crate::workspace::Doing;
         match editor.doing(l) {
@@ -12715,6 +12947,8 @@ fn draw_follow_card(
         None => bottom_keys(keys, width.saturating_sub(6), key, faint, frame_line(ui, card)),
     };
     draw_frame(out, ui, card, rect, &[], &bottom, &[], false)?;
+    use crate::wordspot::{Press, Spot};
+    let on = crate::mouse::Surface::FollowCard;
     let head = TopLine {
         names: &names,
         details: &details,
@@ -12723,9 +12957,44 @@ fn draw_follow_card(
         plain: true,
         right: &right,
         keep_right: true,
+        // (its right end pressed: Claude's place followed, as the status line's word)
+        words: Some(TopWords {
+            spots: &editor.screen.word_spots,
+            on,
+            right: Some(Press::Now),
+            home: None,
+            way_in: None,
+        }),
         ..TopLine::default()
     };
     let cols = top_line(out, frame_line(ui, card), card, (x0, y0, width), ("╭", "╮", "┬"), &[], true, &head)?;
+    // (its words that do their keys: `▲ waits` — `C-q` — and `paused` — `C-f` — where the line had room for them;
+    // its bottom line's keys, laid as `draw_frame` lays them after `╰─ `)
+    let mut words = editor.screen.word_spots.borrow_mut();
+    let word = |i: usize, press: Press| {
+        let (&(a, b), (text, st)) = (cols.get(i)?, names.iter().chain(&details).nth(i)?);
+        // (the word alone: not the blank before it nor the one the strip after it keeps)
+        let lead = text.len() - text.trim_start().len();
+        let spans = vec![(fit_ellipsis(text.trim(), (b - a).saturating_sub(lead)), *st)];
+        Some(Spot::new(on, press, (a + lead, y0), spans))
+    };
+    words.extend(word(1, Press::Card).filter(|_| waits));
+    words.extend(word(names.len(), Press::Follow).filter(|_| paused));
+    if hovered.is_none() {
+        let mut at = x0 + 3;
+        for pair in bottom.split(|s| s.0 == " · ") {
+            let k = pair.first().map_or("", |s| s.0.as_str());
+            if crate::wordspot::pressable(k, pair.get(1).map_or("", |s| s.0.as_str())) {
+                // (by what each key is, never where the keys are: the turn's own — `C-c stop`, `C-f` — the chat's; the
+                // ways in — `space l open the chat`, `[r replay` — typed in the code)
+                let home = if matches!(k, "C-c" | "C-f") { At::Chat } else { At::Code };
+                let spot = Spot::new(on, Press::Keys(k.to_string()), (at, y0 + h - 1), pair.to_vec());
+                words.push(spot.home(home));
+            }
+            at += pair.iter().map(|s| s.0.width()).sum::<usize>() + " · ".width();
+        }
+    }
+    drop(words);
     // (each mark's cell, for the mouse, the state and pointing: a mark is its span's last cell)
     let mut taken = editor.screen.stop_marks.borrow_mut();
     for (m, &(_, b)) in shown_marks.iter().zip(cols.iter().skip(strip_at)) {
@@ -15159,25 +15428,29 @@ fn draw_chat(
     let select = crate::chatdoc::transcript(editor).is_some_and(|t| t.pane.keys.mode == Mode::Select);
     // (each a piece of its own after ` ── `, ` · ` between them — a slot's line says its state so)
     let mut details: Vec<(String, Style)> = Vec::new();
+    // (each detail's place among them: the words that do their keys — `wordspot.rs`)
     let mut say = |text: &str, style: Style| {
         if !details.is_empty() {
             details.push((NAMES_SEP.into(), faint));
         }
         details.push((text.into(), style));
+        details.len() - 1
     };
+    use crate::wordspot::Press;
+    let mut presses: Vec<(usize, Press)> = Vec::new();
     if view.is_some() {
         say(if select { "● select" } else { "● normal" }, accent);
         if came {
-            say("new text after", dim);
+            presses.push((say("new text after", dim), Press::Keys("G".into())));
         }
     }
-    // Follow badge: accent while following, faint once the user took over
+    // Follow badge: accent while following, faint once the user took over — a press is `C-f`'s (frictions #147)
     // (paused lasts until the next question — only worth saying while Claude works)
     let paused = c.follow.paused && c.busy();
     match (c.follow.on, paused) {
         (false, _) => {}
-        (true, false) => say("follow", accent),
-        (true, true) => say("paused", faint),
+        (true, false) => presses.push((say("follow", accent), Press::Follow)),
+        (true, true) => presses.push((say("paused", faint), Press::Follow)),
     }
     // Claude's commands without a sandbox (off, or none here and agreed): said while it's so, in warning
     let warn = editor
@@ -15252,6 +15525,13 @@ fn draw_chat(
     let key = Style { bold: true, ..dim };
     // (a turn's time stands; the model's name gives way to what's on)
     let keep_right = c.busy() || c.settings.waiting_since().is_some();
+    // (its right end pressed: the turn's word follows Claude's place, the model's name is `C-t`'s)
+    let right_press = match c.state {
+        State::Idle if c.settings.waiting_since().is_some() => None,
+        State::Idle => crate::models::label(editor).map(|_| Press::Model),
+        _ => Some(Press::Now),
+    };
+    let on = crate::mouse::Surface::Chat;
     let head = TopLine {
         names: &names,
         details: &details,
@@ -15259,9 +15539,24 @@ fn draw_chat(
         faint,
         right: &right,
         keep_right,
+        words: Some(TopWords {
+            spots: &editor.screen.word_spots,
+            on,
+            right: right_press,
+            home: None,
+            way_in: None,
+        }),
         ..TopLine::default()
     };
     let cols = top_line(out, line, card, (lx, y, lw), ("", "", "┬"), &[], true, &head)?;
+    // (its details that do their keys, where they were drawn — those the line had room for)
+    let laid = &cols[names.len().min(cols.len())..];
+    for (i, press) in presses {
+        if let (Some(&(a, b)), Some((text, st))) = (laid.get(i), details.get(i)) {
+            let spans = vec![(fit_ellipsis(text, b - a), *st)];
+            editor.screen.word_spots.borrow_mut().push(crate::wordspot::Spot::new(on, press, (a, y), spans));
+        }
+    }
     // (where its names and its granted chip were drawn: their clicks)
     let mut taken = editor.screen.session_spots.borrow_mut();
     if let Some(&(base, _)) = cols.first() {
@@ -15273,6 +15568,11 @@ fn draw_chat(
         taken.push((y, a, b, crate::workspace::Spot::Granted));
     }
     drop(taken);
+    // (the sessions' names, `+N`, `N granted`: lit under the mouse, as every word that does its key)
+    let laid = || names.iter().chain(&details).zip(&cols).map(|((t, st), &(a, _))| (a, t.as_str(), *st));
+    for s in editor.screen.session_spots.borrow().iter().filter(|s| s.0 == y && s.1 >= lx) {
+        word_lit(editor, y, (s.1, s.2), spans_in(laid(), s.1, s.2));
+    }
     y += 1;
     if !plan_rows.is_empty() {
         for row in &plan_rows {
@@ -15561,7 +15861,21 @@ fn draw_chat(
         apply(out, key)?;
         queue!(out, Print(k))?;
         apply(out, faint)?;
-        queue!(out, Print(what))?;
+        queue!(out, Print(&what))?;
+        // (a pair pressed does its key — `wordspot.rs`: one a stray press can't cost)
+        if crate::wordspot::pressable(k, d) {
+            let mut spans = vec![(k.to_string(), key)];
+            spans.extend((!d.is_empty()).then(|| (format!(" {d}"), faint)));
+            let spot = crate::wordspot::Spot::new(
+                crate::mouse::Surface::Chat,
+                crate::wordspot::Press::Keys(k.to_string()),
+                (text_x + used, y),
+                spans,
+            );
+            // (the chat's keys while it has them, else the way in from the code — `space l focus`: typed there)
+            let home = if editor.workspace.is_at(At::Chat) { At::Chat } else { At::Code };
+            editor.screen.word_spots.borrow_mut().push(spot.home(home));
+        }
         used += wd;
     }
     chat_row_end(out, card, lay.chat_w, used)?;
@@ -23845,7 +24159,15 @@ mod tests {
         let named = [
             CHIP,
             INBOX,
-            INBOX - 1,
+            INBOX_NEXT,
+            UNSENT,
+            BRANCH,
+            CHANGED,
+            ZOOMED,
+            CLAUDE_CHANGE,
+            PROCS_MARK,
+            PROCS_SAYS,
+            DIAGNOSTICS,
             VIEW_HINTS,
             PATH_HINTS,
             REVIEWER,
@@ -23865,7 +24187,8 @@ mod tests {
             .filter_map(|s| s.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok())
             .chain(body.split("unwrap_or(").skip(1).filter_map(|s| s.split(')').next()?.parse().ok()))
             .collect();
-        assert!(written.len() > 20, "read the ranks: {written:?}");
+        // (the words that do their keys have named ranks — in `named` above — so fewer are written as numbers)
+        assert!(written.len() > 12, "read the ranks: {written:?}");
         assert!(own.iter().all(|k| !written.contains(k)), "{own:?} against {written:?}");
     }
 
