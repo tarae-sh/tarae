@@ -114,9 +114,10 @@ it the `Viewer`; ids (machine, n), events tagged with both, `:workspace-*`, `[wo
 diagram model `fd2cc7bd`, the native edit modes `6a530588`, shuttle keys `97b2e30b`, the spare claude `a1c66678`,
 Claude's four rarely used tools `52085039` and the debugger `e0bc6b9b` gone — 13,500 lines net, the fixed prompt
 11,880 → 10,715 tokens a request (`4f6762d4`); `space i` a one-turn claude of its own with tarae's `read` and `edit`
-(`05092df7`, B′); keep-warm's pings replaced by Claude Code's idle compaction, on by default (`94cf92d8`)) → the crate split (§1 item 6) → Orchestra Part I →
-P3b and the terminal line (§4). One Linux test red on main before the next push: an xattr error's order on kernel 6.8
-(the Read card's width pinned at macOS's path is fixed, `94ded1e6`). Plans and notes moved out of `target/` into each
+(`05092df7`, B′); keep-warm's pings replaced by Claude Code's idle compaction, on by default (`94cf92d8`)) → the crate split (§1 item 6; its first step done, `cb4c570b`: `crates/tarae-wasm`) → Orchestra Part I →
+P3b and the terminal line (§4). The Linux test red on main, an xattr error's order on kernel 6.8, is fixed (`071e028e`:
+the running kernel's order, read once as Landlock's ABI is), as is the Read card's width pinned at macOS's path
+(`94ded1e6`). Plans and notes moved out of `target/` into each
 checkout's `.sb/` (`c09fa01a`, after a `cargo clean` took eight checkouts' notes; most rebuilt from tarae's turn
 checkpoints). An overlap or a weave named a base branch by any repository's checkout of that name — now by the same
 repository's (`fa1c2bb5`). Done beside it, in sessions of their own: an ASMR mode (`4ca79e7f`: `editor.sound`, off by
@@ -126,8 +127,11 @@ Topre) typed in a person's rhythm, macOS's output by tarae's own few lines of Au
 the strip of marks `4c56cb6f`), what PR #6's merge left (`8059c6d8`, the git base read's race `0b105abe`, the tests' one
 settle `b935aac6`), what's cut shown whole where you look (`f48b2be8`), and a move onto the base that never leaves
 conflict markers (`305ef94d`: `--autostash` had left two checkouts half moved — the changes now set aside on a ref of
-the checkout's own, a conflict after all putting it back exactly as it was). Frictions go on. Code mode (§3) and the
-review lens's A + E wait on their records' data.
+the checkout's own, a conflict after all putting it back exactly as it was). Since 2026-10-26: what Claude is doing now
+on the status line (`7497ae62`) and one working sign in place of the wave and the band (`85d73fcb`) — motion,
+Alongside —, the mouse's first landings (the chat's drag and the plan's F, M0 and S — Alongside), and from the frictions the prompt's and the
+pickers' line edited as the chat's input, a selection that keeps the code's colours and the chat's prose filling a
+width you set (§3). Frictions go on. Code mode (§3) and the review lens's A + E wait on their records' data.
 
 ### 1. Publishing
 
@@ -169,7 +173,13 @@ Items 1–3 are done (2026-10-16); 4 is the user's: the repository made public. 
    repository (tarae makes tarae runs on its worktrees; runtime and host change together before 1.0) but split it
    into workspace crates — `tarae-wasm` first, its build times measured before and after — and move the first-party
    plugins (kubernetes, db, template) to `tarae-sh/tarae-plugins` once the SDK is first on crates.io, so they build
-   against the published SDK as anyone's would (Zed's core/extensions split).
+   against the published SDK as anyone's would (Zed's core/extensions split). The split's first step is done
+   (2026-10-26, `cb4c570b`, carry's `.sb/crates-plan.md`, its ten questions as recommended): the WebAssembly runtime
+   and the plugin ABI and host in `crates/tarae-wasm`, beside `crates/tarae-sorting` (the one sort, shared so the
+   JIT's isn't a second copy of std's — 16.5 KB measured) and the dev-only `crates/tarae-testkit`; `fuzz/` builds
+   again on the crate; build times within noise, the test build −2.7 s, the release binary +16,576 bytes. tarae as a
+   library with a thin `main.rs` was measured and not landed (every edit's build +1.0 s; kept as carry's
+   `.sb/crates-2-lib.patch`). Next `tarae-web`; the sandbox a plan of its own.
 7. **What tarae carries, audited** (user, 2026-10-23 — after the main line in flight, before the crate split): a
    plan first — each feature's use (`:features`' counts, the card record), its code, its fit — keep · fold · a plugin
    · gone, the user deciding. Decided ahead (CLAUDE.md's "Cleanup" bullet): `llm.edit-tools`' other modes gone, the
@@ -389,6 +399,21 @@ Done so far, under way, and the order after it (2026-10-17, brought up to 2026-1
   frictions29's item 12, the web tool: not built — measured
   first; if needed, tarae's `read` takes an https URL (GET, text, `select`), not a new tool; Claude Code's
   WebSearch stays held back.
+  Since the audit (2026-10-26–27), a commit a friction, by frictions29's numbers: a selection paints only its
+  ground, the code's and the diff's colours kept under it, hanji's selections cool and told from the cursor line by hue
+  (#149, `4bc74f56`); the prompt's line a small document in insert mode as the chat's input — its cursor anywhere,
+  Helix's prompt keys, a press puts the cursor and a drag selects, `↑`/`↓` what was run at `:` and at `/` `?`
+  (`27a410fd`) — and a picker's query the same, what's typed still narrowing the list at once (`a1321e49`, #153); the
+  chat's prose at its 72-cell measure only at the automatic width, a width you set it fills, `C-w =` the measure
+  back (#163, `28ccdc30`); a `/compact` you type goes bare, as idle compaction's (#136, `d475a686`); a press past a
+  pane's inlay hints lands on the character it stands before (#150, `7b3d9c74`); the follow card and the mouse read a
+  split pane's rows as the drawer lays them out (#157, `6130d50f`, `d0e7a01d`); a served extended attribute call
+  answers in the running kernel's order (#127, `071e028e`); the big write's budget streams its edit in the model's
+  order, its scene in every `cargo test` (#161, `99e878e7`); every relative link in docs/ and the README goes
+  somewhere, read as GitHub reads it (`doclinks`, #131, `1f5a0034`); the inbox's pictures from a scene of their own
+  (#137, `f0fd2ce3`); and tests that waited for a file's being there rather than its content, counted another test's
+  processes or runs, held macOS to one way of answering or read an environment the test binary run alone hasn't
+  (#132, #152, #154, #155, #158, #162, `59c0134e`).
 
 - **`:session-apply`** — done (2026-10-19, `a525a775`): an outside tree's change — a patch, `--base <rev>` for
   where it was made — brought in as one reviewed change set, never written unseen.
@@ -667,7 +692,26 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
   shimmer (`cfbf2a7b` — the stream measured first: summarized thinking lands whole after a silence, so the wave stays where
   nothing streams by nature — a think, a run, a request on its way — and the band, its centre the accent, moves only as
   deltas come); the strip of marks on the follow card's top line (`4c56cb6f`: one vocabulary with the knots and the
-  trail, the stop in hand the selected row, a press its replay). The plan is built.
+  trail, the stop in hand the selected row, a press its replay). The plan is built. Since: what Claude is doing now
+  is on the status line (`7497ae62`, motion's `.sb/now-plan.md`, its five as recommended — the user at work: "what
+  it's doing now should be in sight"): right after the mode word in every layout, the step under way with its own
+  time, Claude's last finished sentence, the plan's step, folded last-first; `exploring` retired for the same verbs;
+  no token spent. And one working sign (`85d73fcb`, #159, the wave plan's C): the wave beside the word and the band
+  over it fold into one cell that rises, `▃▄▅▆` in the accent, the same in every place for the whole turn — its
+  height the stream's level, a 2 s breath where nothing streams by nature, low and still when the stream stops — so
+  nothing moves a cell from a turn's start to its end.
+- **The mouse, one way on every surface** (user, 2026-10-26, after a day at work through Windows Terminal into WSL;
+  panes4's `.sb/mouse-plan.md`, its twelve as recommended but the right button, which stays as it is): a press gives
+  the keys to where it lands, a drag selects wherever there's text, the wheel scrolls what's under the pointer and
+  nothing else, every line between two things with sizes drags, a word that names a state does its key. Landed: a drag in the
+  chat selects, its conversation and its input alike (#140, `d315f03d`); F (`c2282faf`): a press gives the keys to
+  where it lands — the code takes them from the side panel, the rail and a focused card, an edit's review takes them,
+  a prompt or picker closes on a press outside it; M0 (`6b23970a`): what's under the pointer one truth
+  (`Editor::mouse_under`), `handle_mouse`'s 760-line chain one `match` on it, the table [mouse.md](mouse.md) printed
+  from it and a walk that holds every scene to it; S (`53b05286`): a drag selects in run output, the terminal's view
+  mode and Claude's edit review, a double press takes the word and a triple the line in every text, a drag held past
+  the edge scrolls, the wheel never moves the cursor or the selection. Next: resize, then the words (with motion),
+  then the overlays.
 - **Short videos, made ahead** (user, 2026-10-23): scripted scenes as docshots are — 16:9, English captions, no
   voice — for YouTube, the homepage and the README; a live stream once orchestra drives (Part I) and there's a
   homepage and a release to point at. Planned and measured (collab's spike: 1080p, MP4 ~600 KB a clip); made — `cargo xtask
