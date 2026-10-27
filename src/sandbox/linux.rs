@@ -1619,7 +1619,12 @@ pub(super) fn confine_in(
     };
     match &p.reads.home {
         Some(home) => {
-            grant(&mut r, Path::new("/"), READ, &[std::slice::from_ref(home), &pts_hole].concat())?;
+            // (`/` read but home — and but each kept place outside it: a cloud CLI's sign-in a variable moved,
+            // `AWS_SHARED_CREDENTIALS_FILE=/opt/creds/…`, #182; Landlock only grants, so a place is kept by being
+            // left out. One inside a place a run writes stays read through that grant, as its writes would be)
+            let outside: Vec<PathBuf> =
+                p.reads.kept.iter().filter(|k| !k.starts_with(home)).cloned().collect();
+            grant(&mut r, Path::new("/"), READ, &[std::slice::from_ref(home), &outside, &pts_hole].concat())?;
             // In home: the project, where it writes, what's allowed — none inside a kept place (but the
             // project, when one holds it), and around what's kept or read from a copy below them
             let kept = &p.reads.kept;

@@ -49,7 +49,7 @@ profile:
 (deny mach-priv-task-port (with message "$TAG"))
 (allow mach-priv-task-port (target same-sandbox))
 (deny file-read-data file-read-xattr (literal (param "T0")) (literal (param "T1")) (literal (param "T2")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (with message "$TAG"))
+(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X28")) (with message "$TAG"))
 (allow file-read-data file-read-xattr (literal (param "LOG")))
 params:
   C:
@@ -117,12 +117,16 @@ params:
     $TMP
   X:
     $HOME/.aws
+    $HOME/.aws/config
+    $HOME/.aws/credentials
+    $HOME/.azure
     $HOME/.cache/uv
     $HOME/.cargo/credentials
     $HOME/.cargo/credentials.toml
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
@@ -131,6 +135,7 @@ params:
     $HOME/.gradle/daemon
     $HOME/.kotlin/daemon
     $HOME/.kube
+    $HOME/.kube/config
     $HOME/.netrc
     $HOME/.npmrc
     $HOME/.password-store
@@ -197,12 +202,16 @@ reads.allow:
     $HOME/work/.cargo/config.toml
 reads.kept:
     $HOME/.aws
+    $HOME/.aws/config
+    $HOME/.aws/credentials
+    $HOME/.azure
     $HOME/.cache/uv
     $HOME/.cargo/credentials
     $HOME/.cargo/credentials.toml
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
@@ -211,6 +220,7 @@ reads.kept:
     $HOME/.gradle/daemon
     $HOME/.kotlin/daemon
     $HOME/.kube
+    $HOME/.kube/config
     $HOME/.netrc
     $HOME/.npmrc
     $HOME/.password-store
@@ -311,7 +321,7 @@ profile:
 (deny mach-priv-task-port (with message "$TAG"))
 (allow mach-priv-task-port (target same-sandbox))
 (deny file-read-data file-read-xattr (literal (param "T0")) (literal (param "T1")) (literal (param "T2")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (with message "$TAG"))
+(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X28")) (subpath (param "X29")) (subpath (param "X30")) (subpath (param "X31")) (with message "$TAG"))
 (allow file-read-data file-read-xattr (literal (param "LOG")))
 params:
   C:
@@ -378,12 +388,16 @@ params:
     $BASE/cargo-moved/credentials.toml
     $BASE/gradle-moved/daemon
     $HOME/.aws
+    $HOME/.aws/config
+    $HOME/.aws/credentials
+    $HOME/.azure
     $HOME/.cache/uv
     $HOME/.cargo/credentials
     $HOME/.cargo/credentials.toml
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
@@ -392,6 +406,7 @@ params:
     $HOME/.gradle/daemon
     $HOME/.kotlin/daemon
     $HOME/.kube
+    $HOME/.kube/config
     $HOME/.netrc
     $HOME/.npmrc
     $HOME/.password-store
@@ -458,12 +473,16 @@ reads.kept:
     $BASE/cargo-moved/credentials.toml
     $BASE/gradle-moved/daemon
     $HOME/.aws
+    $HOME/.aws/config
+    $HOME/.aws/credentials
+    $HOME/.azure
     $HOME/.cache/uv
     $HOME/.cargo/credentials
     $HOME/.cargo/credentials.toml
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
@@ -472,6 +491,7 @@ reads.kept:
     $HOME/.gradle/daemon
     $HOME/.kotlin/daemon
     $HOME/.kube
+    $HOME/.kube/config
     $HOME/.netrc
     $HOME/.npmrc
     $HOME/.password-store
@@ -570,7 +590,7 @@ profile:
 (deny mach-priv-task-port (with message "$TAG"))
 (allow mach-priv-task-port (target same-sandbox))
 (deny file-read-data file-read-xattr (literal (param "T0")) (literal (param "T1")) (literal (param "T2")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (with message "$TAG"))
+(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X28")) (with message "$TAG"))
 (allow file-read-data file-read-xattr (literal (param "LOG")))
 params:
   F:
@@ -637,12 +657,16 @@ params:
     $TMP
   X:
     $HOME/.aws
+    $HOME/.aws/config
+    $HOME/.aws/credentials
+    $HOME/.azure
     $HOME/.cache/uv
     $HOME/.cargo/credentials
     $HOME/.cargo/credentials.toml
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
@@ -651,6 +675,7 @@ params:
     $HOME/.gradle/daemon
     $HOME/.kotlin/daemon
     $HOME/.kube
+    $HOME/.kube/config
     $HOME/.netrc
     $HOME/.npmrc
     $HOME/.password-store
@@ -717,12 +742,16 @@ reads.allow:
     $HOME/work/.cargo/config.toml
 reads.kept:
     $HOME/.aws
+    $HOME/.aws/config
+    $HOME/.aws/credentials
+    $HOME/.azure
     $HOME/.cache/uv
     $HOME/.cargo/credentials
     $HOME/.cargo/credentials.toml
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
@@ -731,6 +760,7 @@ reads.kept:
     $HOME/.gradle/daemon
     $HOME/.kotlin/daemon
     $HOME/.kube
+    $HOME/.kube/config
     $HOME/.netrc
     $HOME/.npmrc
     $HOME/.password-store
@@ -838,7 +868,7 @@ profile:
 (deny mach-priv-task-port (with message "$TAG"))
 (allow mach-priv-task-port (target same-sandbox))
 (deny file-read-data file-read-xattr (literal (param "T0")) (literal (param "T1")) (literal (param "T2")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (with message "$TAG"))
+(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X28")) (with message "$TAG"))
 (allow file-read-data file-read-xattr (literal (param "LOG")))
 params:
   C:
@@ -902,6 +932,9 @@ params:
     $TMP
   X:
     $HOME/.aws
+    $HOME/.aws/config
+    $HOME/.aws/credentials
+    $HOME/.azure
     $HOME/.cache/go-build
     $HOME/.cache/uv
     $HOME/.cargo/credentials
@@ -909,6 +942,7 @@ params:
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
@@ -917,6 +951,7 @@ params:
     $HOME/.gradle/daemon
     $HOME/.kotlin/daemon
     $HOME/.kube
+    $HOME/.kube/config
     $HOME/.netrc
     $HOME/.npmrc
     $HOME/.password-store
@@ -981,6 +1016,9 @@ reads.allow:
     $HOME/work/.cargo/config.toml
 reads.kept:
     $HOME/.aws
+    $HOME/.aws/config
+    $HOME/.aws/credentials
+    $HOME/.azure
     $HOME/.cache/go-build
     $HOME/.cache/uv
     $HOME/.cargo/credentials
@@ -988,6 +1026,7 @@ reads.kept:
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
@@ -996,6 +1035,7 @@ reads.kept:
     $HOME/.gradle/daemon
     $HOME/.kotlin/daemon
     $HOME/.kube
+    $HOME/.kube/config
     $HOME/.netrc
     $HOME/.npmrc
     $HOME/.password-store
@@ -1092,7 +1132,7 @@ profile:
 (deny mach-priv-task-port (with message "$TAG"))
 (allow mach-priv-task-port (target same-sandbox))
 (deny file-read-data file-read-xattr (literal (param "T0")) (literal (param "T1")) (literal (param "T2")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (with message "$TAG"))
+(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X28")) (subpath (param "X29")) (subpath (param "X30")) (subpath (param "X31")) (with message "$TAG"))
 (allow file-read-data file-read-xattr (literal (param "LOG")))
 params:
   C:
@@ -1155,6 +1195,9 @@ params:
     $BASE/cargo-moved/credentials.toml
     $BASE/gradle-moved/daemon
     $HOME/.aws
+    $HOME/.aws/config
+    $HOME/.aws/credentials
+    $HOME/.azure
     $HOME/.cache/go-build
     $HOME/.cache/uv
     $HOME/.cargo/credentials
@@ -1162,6 +1205,7 @@ params:
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
@@ -1170,6 +1214,7 @@ params:
     $HOME/.gradle/daemon
     $HOME/.kotlin/daemon
     $HOME/.kube
+    $HOME/.kube/config
     $HOME/.netrc
     $HOME/.npmrc
     $HOME/.password-store
@@ -1234,6 +1279,9 @@ reads.kept:
     $BASE/cargo-moved/credentials.toml
     $BASE/gradle-moved/daemon
     $HOME/.aws
+    $HOME/.aws/config
+    $HOME/.aws/credentials
+    $HOME/.azure
     $HOME/.cache/go-build
     $HOME/.cache/uv
     $HOME/.cargo/credentials
@@ -1241,6 +1289,7 @@ reads.kept:
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
@@ -1249,6 +1298,7 @@ reads.kept:
     $HOME/.gradle/daemon
     $HOME/.kotlin/daemon
     $HOME/.kube
+    $HOME/.kube/config
     $HOME/.netrc
     $HOME/.npmrc
     $HOME/.password-store
@@ -1343,7 +1393,7 @@ profile:
 (deny mach-priv-task-port (with message "$TAG"))
 (allow mach-priv-task-port (target same-sandbox))
 (deny file-read-data file-read-xattr (literal (param "T0")) (literal (param "T1")) (literal (param "T2")) (with message "$TAG"))
-(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (with message "$TAG"))
+(deny file-read-data file-read-xattr (subpath (param "X0")) (subpath (param "X1")) (subpath (param "X2")) (subpath (param "X3")) (subpath (param "X4")) (subpath (param "X5")) (subpath (param "X6")) (subpath (param "X7")) (subpath (param "X8")) (subpath (param "X9")) (subpath (param "X10")) (subpath (param "X11")) (subpath (param "X12")) (subpath (param "X13")) (subpath (param "X14")) (subpath (param "X15")) (subpath (param "X16")) (subpath (param "X17")) (subpath (param "X18")) (subpath (param "X19")) (subpath (param "X20")) (subpath (param "X21")) (subpath (param "X22")) (subpath (param "X23")) (subpath (param "X24")) (subpath (param "X25")) (subpath (param "X26")) (subpath (param "X27")) (subpath (param "X28")) (with message "$TAG"))
 (allow file-read-data file-read-xattr (literal (param "LOG")))
 params:
   F:
@@ -1406,6 +1456,9 @@ params:
     $TMP
   X:
     $HOME/.aws
+    $HOME/.aws/config
+    $HOME/.aws/credentials
+    $HOME/.azure
     $HOME/.cache/go-build
     $HOME/.cache/uv
     $HOME/.cargo/credentials
@@ -1413,6 +1466,7 @@ params:
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
@@ -1421,6 +1475,7 @@ params:
     $HOME/.gradle/daemon
     $HOME/.kotlin/daemon
     $HOME/.kube
+    $HOME/.kube/config
     $HOME/.netrc
     $HOME/.npmrc
     $HOME/.password-store
@@ -1485,6 +1540,9 @@ reads.allow:
     $HOME/work/.cargo/config.toml
 reads.kept:
     $HOME/.aws
+    $HOME/.aws/config
+    $HOME/.aws/credentials
+    $HOME/.azure
     $HOME/.cache/go-build
     $HOME/.cache/uv
     $HOME/.cargo/credentials
@@ -1492,6 +1550,7 @@ reads.kept:
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
@@ -1500,6 +1559,7 @@ reads.kept:
     $HOME/.gradle/daemon
     $HOME/.kotlin/daemon
     $HOME/.kube
+    $HOME/.kube/config
     $HOME/.netrc
     $HOME/.npmrc
     $HOME/.password-store

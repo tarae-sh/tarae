@@ -17623,6 +17623,99 @@ mod tests {
         assert_eq!(fg(&mut ed, "Download and build"), head);
     }
 
+    /// A kubectl run outside the sandbox (#182): its card names the context it reaches right under the command —
+    /// here a kubeconfig where Claude's runs write (the test's temp folder), so said so, in the warning color and
+    /// never as decided; any other command outside has no such line.
+    #[test]
+    fn a_kubectl_run_outside_names_its_cluster_on_the_card() {
+        use serde_json::json;
+        // (#182: a stand-in kubeconfig in the test's own folder — never the real home's; the card is never answered y)
+        let scratch = crate::scratch::Scratch::new("kubectl-outside");
+        let dir = scratch.to_path_buf();
+        let kc = dir.join("kc.yaml");
+        std::fs::write(&kc, "apiVersion: v1\ncurrent-context: standin-eks\n").unwrap();
+        let mut ed = editor("");
+        let cmd = format!("kubectl --kubeconfig {} get pods", kc.display());
+        let args = json!({ "command": cmd, "outside_sandbox": true, "reason": "its sign-in is in ~/.kube" });
+        let _log = claude_calls(&mut ed, &dir, "run", &args);
+        feed(&mut ed, "<space>lpods?<ret>");
+        settle_until(&mut ed, |ed| {
+            !ed.offers.is_empty() || !ed.workspace.claude.chat.as_ref().unwrap().busy()
+        });
+        let o = ed.offers.first().expect("asked, not run");
+        assert_eq!(o.title, crate::tools::OUTSIDE_RUN_TITLE);
+        let shown = crate::allow::tilde(&kc);
+        let line = format!("\n  kubectl's context: standin-eks ({shown} — Claude's runs can write it)");
+        assert!(o.question.contains(&format!("{cmd}{line}")), "right under the command: {}", o.question);
+        let at = o.question.split('\n').position(|l| l.contains("kubectl's context")).unwrap();
+        assert!(!o.decides(at) && o.told == [at] && o.warnings.iter().any(|w| w.contains(&at)));
+        // Any other command outside: no such line
+        let mut ed = editor("");
+        let args = json!({ "command": "pwd", "outside_sandbox": true, "reason": "a test" });
+        let _log = claude_calls(&mut ed, &dir, "run", &args);
+        feed(&mut ed, "<space>lwhere?<ret>");
+        settle_until(&mut ed, |ed| {
+            !ed.offers.is_empty() || !ed.workspace.claude.chat.as_ref().unwrap().busy()
+        });
+        assert!(!ed.offers.first().expect("asked").question.contains("kubectl's context"));
+    }
+
+    /// `y` on a kubectl run's outside card reads its context again (#182, round 3 #4): another since the card came,
+    /// the card says it — a new `rev` — and that `y`, and one before the new card is drawn, run nothing; the same,
+    /// the `y` runs it. (A stand-in kubeconfig; a stand-in run holds the slot, so a `y` taken only queues the run —
+    /// nothing starts.)
+    #[test]
+    fn a_kubectl_cards_context_is_read_again_at_y() {
+        use serde_json::json;
+        let scratch = crate::scratch::Scratch::new("kubectl-again");
+        let dir = scratch.to_path_buf();
+        let kc = dir.join("kc.yaml");
+        let set =
+            |name: &str| std::fs::write(&kc, format!("apiVersion: v1\ncurrent-context: {name}\n")).unwrap();
+        set("standin-a");
+        let mut ed = editor("");
+        let cmd = format!("kubectl --kubeconfig {} get pods", kc.display());
+        let args = json!({ "command": cmd, "outside_sandbox": true, "reason": "its sign-in is in ~/.kube" });
+        let _log = claude_calls(&mut ed, &dir, "run", &args);
+        feed(&mut ed, "<space>lpods?<ret>");
+        settle_until(&mut ed, |ed| {
+            !ed.offers.is_empty() || !ed.workspace.claude.chat.as_ref().unwrap().busy()
+        });
+        assert!(
+            ed.offers[0].question.contains("kubectl's context: standin-a ("),
+            "{}",
+            ed.offers[0].question
+        );
+        let task = crate::task::Task { name: "stand-in".into(), cmd: "true".into(), cwd: dir.clone() };
+        let mut r = crate::task::Run::for_test(task);
+        r.state = crate::task::State::Running;
+        ed.workspace.task_run = Some(r);
+        let frame = |ed: &mut Editor| crate::term::render(ed, &mut Vec::new(), 112, 30).unwrap();
+        let y = || Key::plain(Code::Char('y'));
+        let ran = |cmd: &str| crate::tools::ADMITTED.with(|a| a.borrow().iter().any(|(c, _)| c == cmd));
+        frame(&mut ed);
+        ed.card_focus_front();
+        frame(&mut ed);
+        let (id, rev) = (ed.offers[0].id, ed.offers[0].rev);
+        // Another context since: the card says it, that `y` runs nothing
+        set("standin-b");
+        ed.handle_key(y());
+        settle_until(&mut ed, |ed| ed.offers.first().is_some_and(|o| o.rev != rev));
+        let o = &ed.offers[0];
+        assert_eq!(o.id, id);
+        assert!(o.question.contains("kubectl's context: standin-b (") && !o.question.contains("standin-a"));
+        assert!(ed.offer_said_now().is_some_and(|s| s.contains("context changed")), "said on the card");
+        assert!(!ran(&cmd) && ed.workspace.runs_next.is_empty(), "nothing run on that y");
+        // Not drawn as it is now: its `y` refused
+        ed.handle_key(y());
+        assert!(ed.offers.first().is_some_and(|o| o.id == id && o.rev == rev + 1) && !ran(&cmd));
+        // Drawn, the same context: the `y` runs it (in line behind the stand-in)
+        frame(&mut ed);
+        ed.handle_key(y());
+        settle_until(&mut ed, |ed| ran(&cmd) || !ed.offers.first().is_some_and(|o| o.id == id));
+        assert!(ran(&cmd), "run on the y for what it said");
+    }
+
     /// On the card for running outside the sandbox, what yes means — "with all your permissions" — is in the
     /// warning color (that of the panel's `▲ sandbox blocked` row); Claude's reason stays faint (its own
     /// words); the command is at full strength.

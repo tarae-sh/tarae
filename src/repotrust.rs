@@ -88,7 +88,9 @@ fn card(root: &Path, mut parts: Vec<Offer>, joined: Option<&str>, project: Optio
         lines.push(heading(root, p, project));
         // (the lines its own card decides on, as they are there)
         let q: Vec<&str> = p.question.split('\n').collect();
-        lines.extend(p.decided_lines().filter_map(|i| q.get(i)).map(|l| l.to_string()));
+        lines.extend(
+            p.decided_lines().filter(|&i| p.decides(i)).filter_map(|i| q.get(i)).map(|l| l.to_string()),
+        );
         if let What::GitTrust(a) = &p.what {
             if let Some(names) = a.files_named() {
                 lines.push(format!("  as these files are now: {names} — a change to one asks again"));

@@ -2019,7 +2019,7 @@ pub(crate) fn run(ed: &mut Editor, call: Call, args: &Value) -> Result<(), Strin
                 Some(s) => Some(socket_at(s)?),
                 None => None,
             };
-            Some(Beyond { reason: reason.to_string(), socket })
+            Some(Beyond { reason: reason.to_string(), socket, cluster: None })
         }
     };
     // (one socket this chat allows already — `a` on its card: the sandbox has it for every run of the chat,
@@ -2200,6 +2200,8 @@ fn why_asked(cmd: &str, extra: &[String]) -> crate::cards::Why {
 pub struct Beyond {
     pub reason: String,
     pub socket: Option<PathBuf>,
+    /// Outside it whole, a `kubectl` run's cluster as its card says it (`kubeconfig::said`, read in `card`).
+    pub cluster: Option<crate::kubeconfig::Said>,
 }
 
 /// The socket `unix_socket` names — `~/` from home — by its real path: a unix socket that's there. Err says
@@ -2236,14 +2238,32 @@ fn card(
     let scripts = scripts_run(&cmd);
     // (the same run: what runs, not the filters after it — `sinceyes::key`)
     let yes = answered_before(ed, &cmd, &cwd, outside.as_ref());
-    if unseen.is_empty() && scripts.is_empty() && yes.is_none() {
+    // (outside whole, a kubectl run's card names the cluster — its kubeconfig read here, the user's side: #182)
+    let kube = outside.as_ref().is_some_and(|b| b.socket.is_none()) && crate::kubeconfig::runs(&cmd);
+    if unseen.is_empty() && scripts.is_empty() && yes.is_none() && !kube {
         return ask_with(ed, cmd, cwd, call, Default::default(), (Vec::new(), why), outside);
     }
     let root = ed.workspace.root.clone();
     // (past the sandbox — outside it whole, or with a socket: Docker's is root's, and what any service behind
     // one does with the project the sandbox can't bound — the project's whole diff since, as outside)
     let whole = outside.is_some();
+    let (env, home) = (std::env::var_os("KUBECONFIG"), crate::allow::home());
+    // (where Claude's runs write: a kubeconfig there is Claude's — worked out on the worker)
+    let writes = kube.then(|| ed.workspaces_writes());
+    // (the turn it's for, by its start: a call of a turn stopped meanwhile gets no card in the next one)
+    let turn = ed.workspace.claude.chat.as_ref().map(|c| c.started);
     ed.events.jobs().spawn(move || {
+        let cluster = writes.and_then(|writes| {
+            let writes = writes();
+            let place = crate::kubeconfig::Place {
+                cwd: &cwd,
+                env: env.as_deref(),
+                home: home.as_deref(),
+                writes: writes.as_deref(),
+            };
+            crate::kubeconfig::said(&cmd, &place)
+        });
+        let outside = outside.map(|b| Beyond { cluster, ..b });
         let since = yes.map(|y| y.since(&root, &cwd, &cmd, whole));
         let shown = match unseen.is_empty() {
             true => Ok(Vec::new()),
@@ -2253,13 +2273,13 @@ fn card(
         let carried = carried_of(&cmd, &cwd, &unseen);
         move |ed: &mut Editor| {
             call.step("files it names read");
-            // (the turn ended meanwhile: nobody waits for a card)
+            // (the turn ended meanwhile, another begun since or not: nobody waits for a card)
             if ed
                 .workspace
                 .claude
                 .chat
                 .as_ref()
-                .is_some_and(|c| c.generation() != call.generation || !c.busy())
+                .is_some_and(|c| c.generation() != call.generation || !c.busy() || Some(c.started) != turn)
             {
                 return;
             }
@@ -2831,6 +2851,19 @@ fn ask_with(
         question.push_str(&format!("\n  in {}", folders.join(", ")));
         decided.end += 1;
     }
+    // (the cluster a kubectl run outside reaches, #182: information, never what `y` decides — faint, in the
+    // warning color where it can't be told or its kubeconfig is Claude's to write; read again at `y`)
+    let (mut warnings, mut tells) = (Vec::new(), Vec::new());
+    let mut context = None;
+    if let Some(c) = outside.as_ref().and_then(|b| b.cluster.as_ref()) {
+        question.push_str(&format!("\n  {}", c.line));
+        let at = question.split('\n').count() - 1;
+        tells.push(at);
+        if c.warns() {
+            warnings.push(at..at + 1);
+        }
+        context = Some(KubeLine { said: c.clone(), at, checked: None });
+    }
     // What it warns of (cardburden 4, `cardwarn.rs`): right under what it asks, in the warning color, each
     // saying whose — from the line, the scripts it runs and the facts; it answers nothing, holds nothing back
     let texts: Vec<(String, String)> = scripts
@@ -2844,7 +2877,6 @@ fn ask_with(
     let whole = outside.as_ref().is_some_and(|b| b.socket.is_none());
     let on = WarnOn { cmd: &cmd, cwd: &cwd, scripts: &texts, reads: &reads, script_changed, outside: whole };
     let warned = warned(ed, on);
-    let mut warnings = Vec::new();
     if !warned.is_empty() {
         let at = question.split('\n').count() + 1;
         let lines: Vec<String> = warned.iter().map(|w| format!("▲ {}", w.line())).collect();
@@ -3035,11 +3067,12 @@ fn ask_with(
         outside: outside.is_some() && socket.is_none(),
         socket,
         again: offered,
+        context,
     };
     let what = crate::offer::What::Run(Box::new(card));
     let o = crate::offer::Offer::new(title, &question, "Running…", "Claude's command".into(), what);
     let mut o = o.deciding(decided).asked(asked);
-    (o.diff, o.warnings) = (diff, warnings);
+    (o.diff, o.warnings, o.told) = (diff, warnings, tells);
     ed.push_offer(match warning {
         Some(lines) => o.warning(lines),
         None => o,
@@ -3612,6 +3645,77 @@ pub struct RunCard {
     pub reason: Option<String>,
     /// What it warned of (`cardwarn.rs`) — its run's chat row says it too.
     pub warned: Vec<crate::cardwarn::Warned>,
+    /// A kubectl run outside: the context its card says (#182), read again at `y` (`kube_recheck`).
+    pub context: Option<KubeLine>,
+}
+
+/// A kubectl run's context as its card says it: the line, where it is in the question, and the card's `rev` it
+/// was last read again for at a `y` (that `y` goes on).
+#[derive(Clone, Debug)]
+pub struct KubeLine {
+    pub said: crate::kubeconfig::Said,
+    pub at: usize,
+    pub checked: Option<u64>,
+}
+
+/// `y` on a kubectl run's outside card (#182): its context is read again first, on a worker — the user's
+/// kubeconfig may have changed since the card came. The same: the `y` goes on (`kube_rechecked`). Another: the card
+/// says the new one (its `rev` — a `y` waits until it's drawn, as on any weighty card) and refuses this `y`.
+/// Whether it took the key (a read under way).
+pub(crate) fn kube_recheck(ed: &mut Editor, key: char) -> bool {
+    let Some(o) = ed.offers.first() else { return false };
+    let crate::offer::What::Run(r) = &o.what else { return false };
+    if r.context.as_ref().is_none_or(|k| k.checked == Some(o.rev)) {
+        return false;
+    }
+    let (at, cmd, cwd) = ((o.id, o.rev), r.cmd.clone(), r.cwd.clone());
+    let (env, home, writes) = (std::env::var_os("KUBECONFIG"), crate::allow::home(), ed.workspaces_writes());
+    let jobs = ed.events.jobs();
+    let work = move || {
+        let writes = writes();
+        let place = crate::kubeconfig::Place {
+            cwd: &cwd,
+            env: env.as_deref(),
+            home: home.as_deref(),
+            writes: writes.as_deref(),
+        };
+        crate::kubeconfig::said(&cmd, &place)
+    };
+    ed.step(jobs, "kubectl", "reading kubectl's context again", work, move |ed, now| {
+        kube_rechecked(ed, at, key, now)
+    });
+    true
+}
+
+/// The context of card `at` (id, rev) read again for `key`: the same, the key answers it; another, the card says
+/// it, anew. Nothing where the card was answered or changed meanwhile.
+fn kube_rechecked(ed: &mut Editor, (id, rev): (u64, u64), key: char, now: Option<crate::kubeconfig::Said>) {
+    let Some(o) = ed.offers.first_mut().filter(|o| (o.id, o.rev) == (id, rev) && !o.installing()) else {
+        return;
+    };
+    let crate::offer::What::Run(r) = &mut o.what else { return };
+    let (Some(k), Some(now)) = (r.context.as_mut(), now) else { return };
+    if now == k.said {
+        k.checked = Some(rev);
+        return ed.offer_accept_by(key);
+    }
+    let at = k.at;
+    let mut lines: Vec<String> = o.question.split('\n').map(str::to_string).collect();
+    if let Some(l) = lines.get_mut(at) {
+        *l = format!("  {}", now.line);
+    }
+    o.question = lines.join("\n");
+    o.warnings.retain(|w| *w != (at..at + 1));
+    if now.warns() {
+        o.warnings.push(at..at + 1);
+    }
+    k.said = now;
+    o.rev += 1;
+    // (the keys stay with it: the next `y` is for what it says now, once drawn)
+    if ed.card_focus == Some((id, rev)) {
+        ed.card_focus = Some((id, rev + 1));
+    }
+    ed.offer_refused("kubectl's context changed since the card came — read it again: y runs it there");
 }
 
 // ── The sandbox ─────────────────────────────────────────────────────────────
@@ -4427,6 +4531,8 @@ pub fn run_done(ed: &mut Editor) {
         .collect();
     let started = if started.is_empty() { String::new() } else { started.concat() + "\n" };
     let guard = started + &said.as_ref().map(|s| format!("\n{}\n", s.text)).unwrap_or_default();
+    let inside = matches!(r.guard, Some(Guard::In(_)));
+    let guard = guard + &sign_in_said(&r.task.cmd, failed && inside, said.as_ref().map(|s| s.text.as_str()));
     // (what blocked a failed run that `also` could open — not a walk up from the project or the run's folder)
     let run_dir = match r.guard.as_ref() {
         Some(Guard::In(p)) => p.run.as_ref().map(|d| d.path().to_path_buf()),
@@ -4648,6 +4754,23 @@ pub(crate) fn localhost_ports(denials: &[crate::sandbox::Denial]) -> Vec<u16> {
         .filter(|d| packs.refused_port.iter().any(|r| r.picks(d)))
         .filter_map(crate::sandbox::Denial::port_here)
         .collect()
+}
+
+/// What the packs' `sign-in` says of a cloud CLI in `cmd` that failed in the sandbox (#182): the way, one command
+/// outside, asked — where the kernel may name nothing it refused (WSL: aws's "Unable to locate credentials"). Said
+/// once: nothing where its report gave the way already (a kept place it named), nor for a run that passed or ran
+/// outside.
+fn sign_in_said(cmd: &str, failed_inside: bool, report: Option<&str>) -> String {
+    if !failed_inside || report.is_some_and(|t| t.contains(crate::sandbox::OUTSIDE_WAY)) {
+        return String::new();
+    }
+    let packs = crate::sandboxpack::get();
+    let runs = |s: &&crate::sandboxpack::SignIn| crate::cardwarn::runs_any(cmd, &s.run, &packs.wrappers);
+    let said: Vec<&str> = packs.sign_in.iter().filter(runs).map(|s| s.said.as_str()).collect();
+    match said.is_empty() {
+        true => String::new(),
+        false => format!("\n{}\n", said.join("\n")),
+    }
 }
 
 /// What `also_line` names at most.
@@ -5215,6 +5338,38 @@ pub fn verdict(result: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A cloud CLI failing in the sandbox (#182): the packs' words for it under the report — the way, one command
+    /// outside, asked — where the kernel named nothing (WSL: aws's "Unable to locate credentials"); once, and only
+    /// for a failed run in the sandbox.
+    #[test]
+    fn a_cloud_cli_failing_in_the_sandbox_is_told_the_way_outside() {
+        use super::sign_in_said;
+        use crate::sandbox::OUTSIDE_WAY;
+        let nothing = Some("The sandbox blocked nothing tarae saw. In tarae's sandbox: …");
+        let aws = sign_in_said("aws sts get-caller-identity", true, nothing);
+        assert!(aws.contains("aws reads its sign-in from ~/.aws") && aws.contains(OUTSIDE_WAY), "{aws}");
+        assert!(!aws.contains("kubectl"), "its own words only: {aws}");
+        for cmd in [
+            "timeout 60 kubectl get pods",
+            "KUBECONFIG=x kubectl get ns && echo done",
+            "gcloud auth list",
+            "az account show",
+        ] {
+            assert!(sign_in_said(cmd, true, nothing).contains(OUTSIDE_WAY), "{cmd}");
+        }
+        // Not for a run that passed or ran outside, nor another program, nor said twice
+        assert_eq!(sign_in_said("aws sts get-caller-identity", false, nothing), "");
+        assert_eq!(sign_in_said("cargo test", true, nothing), "");
+        assert_eq!(sign_in_said("echo aws", true, nothing), "");
+        let kept = format!("~/.kube/config: tarae keeps these … If the command needs one, {OUTSIDE_WAY}; …");
+        assert_eq!(sign_in_said("kubectl get pods", true, Some(&kept)), "");
+        // Every entry says it the one way, and no runtime folder's words: built-in only
+        let packs = crate::sandboxpack::get();
+        assert!(packs.sign_in.len() >= 3 && packs.sign_in.iter().all(|s| s.said.contains(OUTSIDE_WAY)));
+        let reach = crate::sandboxpack::CLAUDE_KEYS.iter().find(|(k, _)| *k == "sign-in").map(|(_, r)| r);
+        assert_eq!(reach, Some(&crate::packs::Reach::BuiltIn));
+    }
+
     /// A project root none of the reports' paths are under (they're shown whole).
     fn elsewhere() -> &'static std::path::Path {
         std::path::Path::new("/elsewhere")

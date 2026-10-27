@@ -24,12 +24,16 @@ keys
     $ROOT/.env · always
 never read
     $HOME/.aws
+    $HOME/.aws/config
+    $HOME/.aws/credentials
+    $HOME/.azure
     $HOME/.cache/uv
     $HOME/.cargo/credentials
     $HOME/.cargo/credentials.toml
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
@@ -38,6 +42,7 @@ never read
     $HOME/.gradle/daemon
     $HOME/.kotlin/daemon
     $HOME/.kube
+    $HOME/.kube/config
     $HOME/.local/state/tarae
     $HOME/.netrc
     $HOME/.npmrc
@@ -96,6 +101,9 @@ keys
     $ROOT/.env · always
 never read
     $HOME/.aws
+    $HOME/.aws/config
+    $HOME/.aws/credentials
+    $HOME/.azure
     $HOME/.cache/go-build
     $HOME/.cache/uv
     $HOME/.cargo/credentials
@@ -103,6 +111,7 @@ never read
     $HOME/.claude
     $HOME/.claude.json
     $HOME/.claude.json.backup
+    $HOME/.config/gcloud
     $HOME/.config/gh
     $HOME/.config/git/credentials
     $HOME/.docker
@@ -111,6 +120,7 @@ never read
     $HOME/.gradle/daemon
     $HOME/.kotlin/daemon
     $HOME/.kube
+    $HOME/.kube/config
     $HOME/.local/state/tarae
     $HOME/.netrc
     $HOME/.npmrc

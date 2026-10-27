@@ -396,6 +396,38 @@ fn matched(w: &Warn, c: &Command, wrappers: &[String]) -> Option<usize> {
     None
 }
 
+/// Whether a command of `text` runs one of `programs`: its first word after its `NAME=value` words and keywords,
+/// or a word after a wrapper (`timeout 60 kubectl …`) — the packs' `sign-in` (#182).
+pub fn runs_any(text: &str, programs: &[String], wrappers: &[String]) -> bool {
+    command_words(text, programs, wrappers)
+        .iter()
+        .any(|(_, w)| w.first().is_some_and(|f| programs.contains(f)))
+}
+
+/// Every command of `text` in its order, as `runs_any` reads it: its words before its program (`NAME=value`,
+/// keywords, a wrapper and its words: `env -u HOME KUBECONFIG=x kubectl`), and its words from the program on — one
+/// of `programs` after a wrapper, else its first word (none: a command of assignments only, `KUBECONFIG=x;`).
+pub fn command_words(
+    text: &str,
+    programs: &[String],
+    wrappers: &[String],
+) -> Vec<(Vec<String>, Vec<String>)> {
+    commands(text)
+        .into_iter()
+        .map(|c| {
+            let start = lead(&c.words);
+            let words = &c.words[start..];
+            let at = match words.first() {
+                Some(f) if wrappers.contains(f) => {
+                    (1..words.len()).find(|&k| programs.contains(&words[k])).unwrap_or(0)
+                }
+                _ => 0,
+            };
+            (c.words[..start + at].to_vec(), words[at..].to_vec())
+        })
+        .collect()
+}
+
 /// How many of `words` lead a command without being it: `NAME=value`, and a shell's keywords.
 pub(crate) fn lead(words: &[String]) -> usize {
     const KEYWORDS: [&str; 11] =
@@ -404,7 +436,7 @@ pub(crate) fn lead(words: &[String]) -> usize {
 }
 
 /// The name a `NAME=value` word sets.
-fn assign(w: &str) -> Option<&str> {
+pub(crate) fn assign(w: &str) -> Option<&str> {
     let (name, _) = w.split_once('=')?;
     let ok = !name.is_empty()
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')

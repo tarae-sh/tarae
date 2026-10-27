@@ -147,6 +147,11 @@ impl ReachOut {
     }
 }
 
+/// The way a report gives where nothing opens a place in the sandbox — keys, tokens, a cloud CLI's sign-in
+/// (#182): one command outside, asked. `tools::sign_in_said` reads it to say it once.
+pub const OUTSIDE_WAY: &str =
+    "ask to run it outside the sandbox (outside_sandbox, with your reason) — the user answers y or n";
+
 /// What a run's sandbox report said (`Guard::report_with`): its text, whether it said something was
 /// blocked, and the digests of the rules and the guarantees it would say — `known` for the next report (None: a
 /// run without guarantees).
@@ -594,8 +599,8 @@ impl Guard {
         if !copied.is_empty() {
             s.push_str(&format!(
                 "{}: it holds a token, so your commands read a copy without those lines, at the variable named — \
-                 the tool finds it on its own; the file itself stays closed. If a command needs the token, say so \
-                 to the user and let them run it.\n",
+                 the tool finds it on its own; the file itself stays closed. If a command needs the token, \
+                 {OUTSIDE_WAY}; don't work around it.\n",
                 copied.join(", ")
             ));
         }
@@ -603,9 +608,10 @@ impl Guard {
             let what: Vec<String> =
                 secret.into_iter().chain(services.into_iter().map(String::from)).collect();
             s.push_str(&format!(
-                "{}: tarae keeps these from every command of yours — keys, tokens, Claude's and tarae's own \
-                 state, the clipboard, the keychain. Nothing opens them for a command; if one needs it, say so \
-                 to the user and let them run it.\n",
+                "{}: tarae keeps these from every command of yours in the sandbox — keys, tokens, Claude's and \
+                 tarae's own state, the clipboard, the keychain — and nothing opens them there. If the command \
+                 needs one, {OUTSIDE_WAY}; don't work around it (a copy, another HOME, the values in \
+                 variables).\n",
                 what.join(", ")
             ));
         }
@@ -1199,7 +1205,8 @@ pub fn reads_above(root: &Path, home: &Path) -> Vec<PathBuf> {
 
 /// What a run never reads, whatever is granted: the places that hold keys (`allow::SECRETS`, and git's
 /// credential store where `$XDG_CONFIG_HOME` puts it), Claude's own (`CLAUDES`), `KEPT_FLOOR`, the packs'
-/// `kept` at both a home's places, and tarae's state (its conversations, what was allowed — its log aside).
+/// `kept` at both a home's places, their `kept-moved` where the user's variables move them (the cloud CLIs'
+/// sign-in, #182), and tarae's state (its conversations, what was allowed — its log aside).
 pub fn kept_reads(home: &Path, vars: &crate::sandboxpack::Vars) -> Vec<PathBuf> {
     kept_in(home, vars, &crate::sandboxpack::get().kept)
 }
@@ -1223,6 +1230,7 @@ fn kept_in(home: &Path, vars: &crate::sandboxpack::Vars, packs: &[String]) -> Ve
     let floor = crate::allow::SECRETS.iter().chain(&CLAUDES).chain(&KEPT_FLOOR);
     let mut v: Vec<PathBuf> = floor.map(|s| at(home.join(s))).collect();
     v.extend(packs.iter().flat_map(|k| vars.places_both(k)).map(at));
+    v.extend(vars.kept_moved.iter().cloned().map(at));
     v.push(at(vars.xdg_config.join("git/credentials")));
     v.extend(crate::config::state_dir().map(at));
     crate::sorting::sort(&mut v);
@@ -9366,6 +9374,73 @@ mod tests {
         std::fs::remove_dir_all(&home).ok();
     }
 
+    /// Every cloud CLI's sign-in is kept as keys are (#182): with the folders around them read, no run reads
+    /// kubectl's, aws's, gcloud's or az's — the policy's rules, not only the report's words — and no answer opens them.
+    #[test]
+    fn every_cloud_clis_sign_in_is_kept_whatever_is_granted() {
+        let home = Path::new("/Users/u");
+        let reads = Reads {
+            home: Some(home.into()),
+            allow: [".config", ".kube", ".aws", ".azure"].map(|p| home.join(p)).to_vec(),
+            kept: kept_reads(home, &vars_in(home, &Here::default())),
+            ..Reads::default()
+        };
+        let policy = Policy::for_project(&Env { root: home.join("proj"), reads, ..Env::default() });
+        for p in [
+            ".kube/config",
+            ".aws/credentials",
+            ".config/gcloud/credentials.db",
+            ".azure/msal_token_cache.json",
+        ] {
+            assert!(!policy.reads_allow(&home.join(p)), "{p}");
+            assert!(crate::allow::read_choices(&home.join(p), home, &policy.reads.kept).is_empty(), "{p}");
+        }
+        assert!(policy.reads_allow(&home.join(".config/other/x")), "the folder around them is read");
+    }
+
+    /// The cloud CLIs' sign-in where the user's variables move it (#182, reviewer round 4 #2) is kept there as at
+    /// home — the tools pack's `kept-moved`, KUBECONFIG's every absolute entry — with what's around them read and
+    /// no answer opening them. (A stand-in environment: nothing of this process's.)
+    #[test]
+    fn the_cloud_clis_sign_in_is_kept_where_its_variables_move_it() {
+        let home = Path::new("/Users/u");
+        let env = [
+            ("AWS_SHARED_CREDENTIALS_FILE", "/opt/creds/aws-credentials"),
+            ("AWS_CONFIG_FILE", "/opt/creds/aws-config"),
+            ("KUBECONFIG", "/opt/kube/a.yaml:/opt/kube/b.yaml:relative.yaml"),
+            ("CLOUDSDK_CONFIG", "/opt/gcloud"),
+            ("AZURE_CONFIG_DIR", "/opt/azure"),
+        ];
+        let here = Here {
+            env: env.iter().map(|(k, v)| (k.to_string(), std::ffi::OsString::from(v))).collect(),
+            ..Here::default()
+        };
+        let kept = kept_reads(home, &vars_in(home, &here));
+        let reads =
+            Reads { home: Some(home.into()), allow: vec![home.join(".config")], kept, ..Reads::default() };
+        let policy = Policy::for_project(&Env { root: home.join("proj"), reads, ..Env::default() });
+        for p in [
+            "/opt/creds/aws-credentials",
+            "/opt/creds/aws-config",
+            "/opt/kube/a.yaml",
+            "/opt/kube/b.yaml",
+            "/opt/gcloud/credentials.db",
+            "/opt/azure/msal_token_cache.json",
+            "/Users/u/.aws/credentials",
+            "/Users/u/.kube/config",
+        ] {
+            assert!(!policy.reads_allow(Path::new(p)), "{p}");
+            assert!(crate::allow::read_choices(Path::new(p), home, &policy.reads.kept).is_empty(), "{p}");
+        }
+        for p in ["/opt/creds/other", "/opt/kube/c.yaml"] {
+            assert!(policy.reads_allow(Path::new(p)), "{p}: only the places the variables name");
+        }
+        assert!(!policy.reads.kept.iter().any(|k| k.ends_with("relative.yaml")), "a relative entry: none");
+        // Their variables are only kept places: not passed to runs
+        let names: Vec<&str> = crate::sandboxpack::get().env_names().collect();
+        assert!(env.iter().all(|(k, _)| !names.contains(k)), "{names:?}");
+    }
+
     /// Where the sandbox refuses a v4-mapped loopback (macOS below 27), a run's JVMs are IPv4-only: the Java
     /// pack's `JAVA_TOOL_OPTIONS`, tarae's value alone — the user's own (an agent here) never reaches a run, set
     /// there or not; elsewhere (27, Linux) a run has none. The fact as this Mac says it.
@@ -10535,6 +10610,16 @@ mod tests {
         // A key: kept from every command, said so
         let r = unreported.report(&[(true, "cat: /Users/u/.ssh/id: Operation not permitted".into())]);
         assert!(r.contains("/Users/u/.ssh/id: tarae keeps these from every command of yours"), "{r}");
+        // …and the way is one command outside, asked — kubectl's own words for its kubeconfig (#182)
+        let kubectl = "error: error loading config file \"/Users/u/.kube/config\": open /Users/u/.kube/config: \
+                       operation not permitted";
+        let mut kept = p.clone();
+        kept.reads.kept =
+            kept_reads(Path::new("/Users/u"), &vars_in(Path::new("/Users/u"), &Here::default()));
+        let kept = Guard::In(Box::new(Policy { watch: Some(Watch::quiet("k.")), ..kept }));
+        let r = kept.report(&[(true, kubectl.into())]);
+        assert!(r.contains("/Users/u/.kube/config: tarae keeps these") && r.contains(OUTSIDE_WAY), "{r}");
+        assert!(!r.contains("let them run it") && !r.contains("What also could open"), "{r}");
         w.record(denial("file-write-create", "/Users/u/marker"));
         assert!(g.report(&[]).contains("If the command needs one of these"), "something else blocked");
         // The network open: the caches aren't kept, and nothing says they are
@@ -13192,6 +13277,60 @@ mod tests {
         }
     }
 
+    /// For real, on Linux in every tier (#182, reviewer round 5 #1): a kept place outside home — a cloud CLI's
+    /// sign-in its variable moved there (`AWS_SHARED_CREDENTIALS_FILE=/opt/creds/…`, `CLOUDSDK_CONFIG=/opt/gcloud`)
+    /// — isn't read, as home isn't: Landlock only grants, so it's left out of `/`'s rule. What's beside it reads, and
+    /// so does the project. Stand-ins in a folder of the test's own beside its binary's build folder: outside every
+    /// place a run writes (the temp folders are, and read through that grant).
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_kept_place_outside_home_is_closed() {
+        let test = "a_kept_place_outside_home_is_closed";
+        if !keys_tested_here(test) {
+            return;
+        }
+        let exe = std::env::current_exe().unwrap();
+        let beside = exe.parent().and_then(Path::parent).expect("the build folder");
+        let s = crate::scratch::Scratch::in_dir(beside, "sb-kept-outside");
+        let t = profile_path(&s);
+        let (home, root) = (t.join("home"), t.join("home/project"));
+        let (creds, gcloud) = (t.join("opt/creds/aws-credentials"), t.join("opt/gcloud"));
+        let open = [t.join("opt/creds/beside.txt"), root.join("own.txt")];
+        let closed = [creds.clone(), gcloud.join("credentials.db")];
+        for f in closed.iter().chain(&open) {
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, FAKE).unwrap();
+        }
+        let reads = Reads { home: Some(home.clone()), kept: vec![creds, gcloud], ..Reads::default() };
+        let p = Policy::for_project(&Env {
+            root: root.clone(),
+            reads,
+            run_env: run_env_here(),
+            ..Env::default()
+        });
+        assert!(!p.write_places().iter().any(|w| t.starts_with(w)), "the stand-ins are where no run writes");
+        let c = confined(Policy { run: RunDir::new().ok(), ..p });
+        let tier = match &c.confine {
+            Some(Ok(c)) => c.tier(),
+            other => panic!("{test}: not confined: {other:?}"),
+        };
+        if let Ok(want) = std::env::var("TARAE_EXPECT_TIER") {
+            assert_eq!(tier, want.trim(), "{test}: the tier its runs go at");
+        }
+        for f in &closed {
+            let (ok, out, err) = sh_confined(&c, &root, &format!("cat '{}'", f.display()));
+            assert!(
+                !ok && !out.contains(FAKE) && err.contains(KEY_DENIED),
+                "{tier}: {}: {out} {err}",
+                f.display()
+            );
+        }
+        for f in &open {
+            let (ok, out, err) = sh_confined(&c, &root, &format!("cat '{}'", f.display()));
+            assert!(ok && out == FAKE, "{tier}: {} beside it: {err}", f.display());
+        }
+    }
+
     /// For real, on Linux in every tier (7e): home reached through another mount of its filesystem — toolbox's host
     /// root at `/run/host` — isn't read there, as it isn't at its own place: Landlock's rules hold inodes, and what
     /// holds that mount is granted whole by `/`'s rule, so home's path through it is a hole too. What else that mount
@@ -14997,7 +15136,8 @@ mod tests {
     /// PATH) reaches the run — a run that saw another `CARGO_HOME` than the policy would look where nothing was
     /// opened. What the policy reads is recorded as it asks (`Here::asked`), each set in turn until no new one
     /// is asked; the multiplexers' socket folders aside (the policy keeps them from runs — a run has no use
-    /// for them).
+    /// for them), and the packs' `kept-moved` variables (only kept places: without one, a tool reads its home
+    /// place, kept too — #182's cloud CLIs' sign-in).
     #[test]
     fn every_variable_the_policy_reads_reaches_the_run() {
         let scratch = crate::scratch::Scratch::new("runenv-reads");
@@ -15012,6 +15152,8 @@ mod tests {
         let mut env: HashMap<String, std::ffi::OsString> =
             HashMap::from([("HOME".into(), home.clone().into())]);
         let mut asked: Vec<String> = Vec::new();
+        let kept_only: Vec<&str> =
+            crate::sandboxpack::get().kept_moved.iter().map(|k| k.env.as_str()).collect();
         for _ in 0..4 {
             let here = Here { env: env.clone(), ..Here::default() };
             toolchain_found_in(&root, ToolDirs::default(), &here);
@@ -15019,7 +15161,9 @@ mod tests {
             let now: Vec<String> = here.asked.lock().unwrap().clone();
             let names: Vec<&str> = p.run_env.vars.iter().map(|(k, ..)| k.as_str()).collect();
             for n in &now {
-                if !["TMUX_TMPDIR", "ZELLIJ_SOCKET_DIR"].contains(&n.as_str()) && env.contains_key(n) {
+                let apart = ["TMUX_TMPDIR", "ZELLIJ_SOCKET_DIR"].contains(&n.as_str())
+                    || kept_only.contains(&n.as_str());
+                if !apart && env.contains_key(n) {
                     assert!(
                         names.contains(&n.as_str()),
                         "{n}: the policy reads it, the run doesn't get it (left out as token-like: {:?})",

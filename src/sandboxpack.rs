@@ -17,6 +17,9 @@
 //!   project and home (`.cargo/config.toml`).
 //! - `kept`: places a run never reads, whatever is granted — at a home's default place and where its variable
 //!   moved it.
+//! - `kept-moved = [{ env, else, list }]`: a place kept as `kept`'s are, at `else` (from home) and where the
+//!   user's `env` moves it (absolute; `list`: each entry of it, the system's separator) — a variable that names
+//!   no home: neither passed to runs nor anything but kept (#182: the cloud CLIs' sign-in files).
 //! - `caches = { home, dirs, files, xattr, rule, said }`: the tool's shared caches, in its home — or `asked`
 //!   for `home` and `dirs`: the folder an `ask`'s `caches` key named, by default at `places` or where the
 //!   variable `var` points. Wherever they are by default or where a home moved them, no grant nor asked folder
@@ -95,6 +98,9 @@
 //!   `--` are its own (`cargo run`).
 //! - `said = { rank, run, code, tests, protect }`: the pack's words in Claude's prompt and tools, joined by
 //!   `rank` (lower first).
+//! - `sign-in = [{ run, said }]`: programs that read their sign-in from home (`kubectl`, `aws`) — a run of one that
+//!   failed in the sandbox has `said` under its report, never more (#182: where the kernel names nothing it
+//!   refused, as aws's "Unable to locate credentials" on WSL). Words only: nothing opens for it.
 //!
 //! A place is written from home (`~/…`) or a variable — `{<home>}`, `{user-config}` (macOS's `~/Library/
 //! Application Support`, else `$XDG_CONFIG_HOME` or `~/.config`), `{user-cache}` (`~/Library/Caches`, else
@@ -121,6 +127,7 @@ pub(crate) const SANDBOX_KEYS: &[(&str, Reach)] = &[
     ("reads-above", Reach::BuiltIn),
     // (narrows)
     ("kept", Reach::Added),
+    ("kept-moved", Reach::Added),
     ("caches", Reach::BuiltIn),
     // (a variable set for runs, a place read)
     ("disk-store", Reach::BuiltIn),
@@ -174,6 +181,8 @@ pub(crate) const CLAUDE_KEYS: &[(&str, Reach)] = &[
     ("time-limits", Reach::BuiltIn),
     // (Claude's prompt)
     ("said", Reach::BuiltIn),
+    // (what Claude reads under a failed run's report)
+    ("sign-in", Reach::BuiltIn),
     // (what a switch is said to cost you — a runtime folder's prices would be its words, not the price list's)
     ("price", Reach::BuiltIn),
 ];
@@ -186,6 +195,15 @@ pub struct Home {
     pub default: String,
     /// Its variable may be a list of folders (`GOPATH=/a:/b`, the system's separator): the home is the first,
     /// every one is refused like a home. Only where the pack says so — no other variable is split.
+    pub list: bool,
+}
+
+/// A place kept where a variable moves it (`kept-moved`): at `default` (from home) and where `env` points.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeptMoved {
+    pub env: String,
+    pub default: String,
+    /// `env` is a list of places (`KUBECONFIG=/a:/b`): every entry kept.
     pub list: bool,
 }
 
@@ -332,6 +350,15 @@ pub struct RefusedConnect {
     pub when: Option<regex::Regex>,
     /// Its program, where the line doesn't say it.
     pub process: Option<String>,
+}
+
+/// Programs that read their sign-in from home (`sign-in`): failing in the sandbox, what Claude reads under the run's
+/// report — the way there being one command outside, asked (#182).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignIn {
+    /// The programs, as a command's first word names them (`kubectl`).
+    pub run: Vec<String>,
+    pub said: String,
 }
 
 /// A program that picks this machine's ports as it starts (`refused-port`): refused one, it needs them all.
@@ -500,6 +527,7 @@ pub struct Packs {
     pub reads: Vec<String>,
     pub reads_above: Vec<String>,
     pub kept: Vec<String>,
+    pub kept_moved: Vec<KeptMoved>,
     pub caches: Vec<Caches>,
     pub disk_stores: Vec<DiskStore>,
     /// Variables their tools read in any case (`any-case`, npm's `npm_config_*`): read so, and a run gets each in
@@ -541,6 +569,7 @@ pub struct Packs {
     /// Claude's under one isn't asked whether it's stuck before then (`stuck::limit`).
     pub time_limits: Vec<TimeLimit>,
     pub said: Vec<Said>,
+    pub sign_in: Vec<SignIn>,
     /// What writing a model's prompt cache costs (`switchcost.rs`) — what a switch of billing, model or effort is
     /// said to cost.
     pub price: Vec<crate::switchcost::Price>,
@@ -740,6 +769,25 @@ fn read_key_of(
             }
         }
         ("sandbox", "kept") => places(&mut out.kept, v, Kind::Kept)?,
+        ("sandbox", "kept-moved") => {
+            let Some(entries) = v.as_array() else { return Err("`kept-moved` isn't a list".into()) };
+            for e in entries {
+                let e = tab(e)?;
+                known(&e, &["env", "else", "list"], "a `kept-moved` entry")?;
+                let env = need(&e, "env", "a `kept-moved` entry")?;
+                let default = need(&e, "else", "a `kept-moved` entry")?;
+                let list =
+                    e.get("list").map_or(Ok(false), |l| l.as_bool().ok_or("`list` isn't true or false"))?;
+                if !plain_word(&env) || env.contains(['.', '-', '+']) {
+                    wrong.push(format!("`{env}` isn't a variable's name"));
+                    continue;
+                }
+                match default.starts_with("~/") && check_place(&default, Kind::Kept, &[]).is_ok() {
+                    true => out.kept_moved.push(KeptMoved { env, default, list }),
+                    false => wrong.push(format!("`{default}` isn't a place from home (`~/…`)")),
+                }
+            }
+        }
         ("sandbox", "caches") => {
             let c = tab(v)?;
             let keys = ["home", "dirs", "asked", "places", "var", "files", "xattr", "rule", "said"];
@@ -1119,6 +1167,19 @@ fn read_key_of(
                     (false, _) => wrong.push(format!("`{run}` isn't a program's name")),
                     (_, Some(g)) => wrong.push(format!("`{g}` is a `grace` but not among `option-values`")),
                     _ => out.time_limits.push(TimeLimit { run, option_values, grace }),
+                }
+            }
+        }
+        ("claude", "sign-in") => {
+            let Some(entries) = v.as_array() else { return Err("`sign-in` isn't a list".into()) };
+            for e in entries {
+                let e = tab(e)?;
+                known(&e, &["run", "said"], "a `sign-in` entry")?;
+                let (run, said) = (list_in(&e, "run")?, need(&e, "said", "a `sign-in` entry")?);
+                match run.iter().find(|r| !plain_word(r)) {
+                    Some(r) => wrong.push(format!("`{r}` isn't a program's name")),
+                    None if run.is_empty() => wrong.push("a `sign-in` entry names no program".into()),
+                    None => out.sign_in.push(SignIn { run, said }),
                 }
             }
         }
@@ -1634,6 +1695,8 @@ pub struct Vars {
     /// Each home: (name, where it is — its variable's when that's an absolute path (a list home's: its first
     /// entry's), else its default — its default).
     pub homes: Vec<(String, PathBuf, PathBuf)>,
+    /// The `kept-moved` places: each at its default and where its variable moves it (every absolute entry).
+    pub kept_moved: Vec<PathBuf>,
     /// A list home's other entries (absolute) — homes too, with none of its places in them.
     pub listed: Vec<PathBuf>,
     pub user_config: PathBuf,
@@ -1695,9 +1758,23 @@ impl Vars {
             Os::Mac => (home.join("Library/Application Support"), home.join("Library/Caches")),
             Os::Linux => (xdg_config.clone(), xdg_cache.clone()),
         };
+        let kept_moved = t
+            .kept_moved
+            .iter()
+            .flat_map(|k| {
+                let moved: Vec<PathBuf> = match (k.list, var(&k.env)) {
+                    (_, None) => Vec::new(),
+                    (true, Some(v)) => std::env::split_paths(&v).collect(),
+                    (false, Some(v)) => vec![v],
+                };
+                std::iter::once(from(&k.default, &unmoved))
+                    .chain(moved.into_iter().filter(|p| p.is_absolute()))
+            })
+            .collect();
         let mut v = Vars {
             home: home.to_path_buf(),
             homes,
+            kept_moved,
             listed,
             user_config,
             user_cache,

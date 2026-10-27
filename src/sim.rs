@@ -40,6 +40,7 @@ mod hosts;
 mod idlecompact;
 mod instructions;
 mod keepclose;
+mod kubecard;
 mod motion;
 mod now;
 mod overlap;

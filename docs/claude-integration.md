@@ -1151,7 +1151,7 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
   read grants. The card names the files, never the values. It looks through settings-like files only, not
   code, and not tools' output (`node_modules`, `target`…). In a folder too big to look through, it says so.
 - **Some places it never reads, whatever you allow**: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh`,
-  `~/.kube`, `~/.docker`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.password-store`, `~/Library/Keychains`,
+  `~/.kube`, `~/.config/gcloud`, `~/.azure`, `~/.docker`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.password-store`, `~/Library/Keychains`,
   git's credential store (`~/.git-credentials`, `~/.config/git/credentials`),
   Claude's own `~/.claude` and `~/.claude.json`, cargo's `credentials.toml`, Gradle's daemons' registry
   (`~/.gradle/daemon`), and tarae's state (its

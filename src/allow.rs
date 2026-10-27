@@ -1014,8 +1014,11 @@ fn taking_after(root: &Path, given: u64) -> Vec<String> {
 
 /// Places under home that hold keys and tokens — allowed once at a time, never kept; Claude's commands never
 /// read them (`sandbox::kept_reads`). Git's credential store keeps passwords in plain text in
-/// `~/.git-credentials` and `~/.config/git/credentials` — the latter inside `~/.config/git`, which runs read.
-pub(crate) const SECRETS: [&str; 13] = [
+/// `~/.git-credentials` and `~/.config/git/credentials` — the latter inside `~/.config/git`, which runs read. Every
+/// cloud CLI's sign-in is kept the one way (#182: kubectl's, aws's, gcloud's, az's — the way is one command outside,
+/// asked), and where their variables move it too (the tools pack's `kept-moved`: `AWS_SHARED_CREDENTIALS_FILE`,
+/// `AWS_CONFIG_FILE`, `KUBECONFIG`'s every entry, `CLOUDSDK_CONFIG`, `AZURE_CONFIG_DIR`).
+pub(crate) const SECRETS: [&str; 15] = [
     ".git-credentials",
     ".config/git/credentials",
     ".ssh",
@@ -1023,6 +1026,8 @@ pub(crate) const SECRETS: [&str; 13] = [
     ".gnupg",
     ".config/gh",
     ".kube",
+    ".config/gcloud",
+    ".azure",
     ".docker",
     ".netrc",
     ".npmrc",

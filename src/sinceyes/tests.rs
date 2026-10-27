@@ -515,6 +515,52 @@ fn the_card_says_what_changed_since_your_y() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A kubectl run's context on its card asked again after a change (#182, round 3 #1): the "changed since" block
+/// draws the card's lines as decided, never the context's — information, told; in warning here, its stand-in
+/// kubeconfig being where Claude's runs write. (Every answer is `n`: nothing runs.)
+#[test]
+fn a_kubectl_runs_context_stays_told_after_a_change_since() {
+    let (_dir, root) = repo("kube");
+    std::fs::write(root.join("kc.yaml"), "apiVersion: v1\ncurrent-context: standin-a\n").unwrap();
+    let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+    ed.workspace.root = root.clone();
+    ed.config.llm.command = "sh".into();
+    ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+    crate::chat::open(&mut ed);
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.state = crate::chat::State::Thinking;
+    let generation = c.generation();
+    let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool, what: &str| {
+        let end = Instant::now() + crate::test_results::PATIENCE;
+        while !done(ed) {
+            assert!(Instant::now() < end, "{what}");
+            if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(20)) {
+                ed.handle_event(ev);
+            }
+        }
+    };
+    let cmd = "kubectl --kubeconfig kc.yaml get pods";
+    let ask = |ed: &mut crate::editor::Editor, n: u64| {
+        let msg = json!({"jsonrpc": "2.0", "id": n, "method": "tools/call", "params": {"name": "run",
+            "arguments": {"command": cmd, "outside_sandbox": true, "reason": "its sign-in"}}});
+        assert!(crate::tools::mcp(ed, generation, &format!("r{n}"), &msg).is_none(), "it waits for the user");
+        pump(ed, &|ed| !ed.offers.is_empty(), "its card");
+    };
+    ask(&mut ed, 1);
+    ed.offer_dismiss();
+    pump(&mut ed, &|ed| !ed.workspace.claude.answered.is_empty(), "the n kept");
+    std::fs::write(root.join("src/lib.rs"), "fn a() {}\nfn b() { 2 }\n").unwrap();
+    ask(&mut ed, 2);
+    let o = &ed.offers[0];
+    assert!(o.question.contains("Changed since card#"), "{}", o.question);
+    let lines: Vec<&str> = o.question.split('\n').collect();
+    let at = lines.iter().position(|l| l.starts_with("  kubectl's context: standin-a (")).unwrap();
+    assert!(o.decided_lines().contains(&at), "the block after the change covers it: {:?}", o.decided_lines());
+    assert!(!o.decides(at) && o.told == [at], "told, never decided");
+    assert!(o.warnings.iter().any(|w| w.contains(&at)), "Claude's runs write its kubeconfig: in warning");
+    assert!(o.decides(0), "what the card decides still is");
+}
+
 /// cardburden 3, in the sandbox (step 6c: `cargo xtask linux clippy` carded 7 times, each read again by hand
 /// for "has anything it runs changed?"): the same run asked again — through another filter too — says which
 /// card and its answer first, then part by part what it runs: the pack's entry files (`xtask/`), the build

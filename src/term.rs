@@ -11689,7 +11689,7 @@ impl OfferCard {
                             }
                             _ => wrapped(part, most),
                         };
-                        if decided.contains(&k) {
+                        if decided.contains(&k) && !o.told.contains(&k) {
                             rows.iter_mut().for_each(|r| r.1 = false);
                         }
                         if warning.contains(&k) || o.warnings.iter().any(|w| w.contains(&k)) {
@@ -20556,6 +20556,7 @@ mod tests {
                 warnings: Vec::new(),
                 diff: None,
                 ends: Vec::new(),
+                told: Vec::new(),
                 since: std::time::Instant::now(),
                 drawn: Default::default(),
                 asked: None,

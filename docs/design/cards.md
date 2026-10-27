@@ -190,7 +190,7 @@ A **capability** is a place or a port with a verb: `read <path>`, `write <path>`
 | connect | localhost ports in `llm.sandbox-ports`, all with `llm.sandbox-localhost` | as today |
 
 **Never readable, whatever is granted**: the `SECRETS` places (`allow.rs:207`: `.ssh`, `.aws`,
-`.gnupg`, `.config/gh`, `.kube`, `.docker`, `.netrc`, `.npmrc`, `.pypirc`, `.password-store`,
+`.gnupg`, `.config/gh`, `.kube`, `.config/gcloud`, `.azure`, `.docker`, `.netrc`, `.npmrc`, `.pypirc`, `.password-store`,
 `Library/Keychains`), plus `~/.claude`, `~/.cargo/credentials*` and tarae's own `$state`. These are
 denied in the profile *after* every allow, because the later rule wins (measured,
 `sandbox.rs:11`). A card can open one of them for **this run only**, and says plainly what it is.

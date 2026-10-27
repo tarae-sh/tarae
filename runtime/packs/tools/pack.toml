@@ -20,6 +20,15 @@ installs = ["~/.asdf/installs", "~/.local/share/mise/installs"]
 refused-connect = [
     '^(?P<process>[\w.+-]+): connectx to (?P<host>[0-9A-Fa-f.:]+) port (?P<port>\d+) \(tcp\) failed: Operation not permitted$',
 ]
+# The cloud CLIs' sign-in where their variables move it (#182): kept there as at home (`allow::SECRETS`), no grant
+# opening it — a list's every entry (KUBECONFIG). Their variables aren't passed to runs: only the places are kept
+kept-moved = [
+    { env = "AWS_SHARED_CREDENTIALS_FILE", else = "~/.aws/credentials" },
+    { env = "AWS_CONFIG_FILE", else = "~/.aws/config" },
+    { env = "KUBECONFIG", else = "~/.kube/config", list = true },
+    { env = "CLOUDSDK_CONFIG", else = "~/.config/gcloud" },
+    { env = "AZURE_CONFIG_DIR", else = "~/.azure" },
+]
 
 # What a run card of Claude's warns of (`cardwarn.rs`, cardburden 4) — the tools no one language has. Each is a
 # line in the warning colour under what the card asks, said as this pack's; `asks = true`: `a` on an earlier card
@@ -32,6 +41,14 @@ wrappers = ["timeout", "gtimeout", "env", "nice", "nohup", "time", "stdbuf", "ca
 time-limits = [
     { run = "timeout", option-values = ["-k", "-s", "--kill-after", "--signal"], grace = ["-k", "--kill-after"] },
     { run = "gtimeout", option-values = ["-k", "-s", "--kill-after", "--signal"], grace = ["-k", "--kill-after"] },
+]
+# Cloud CLIs read their sign-in from home: a run of one that failed in the sandbox has these words under its
+# report (#182) — where the kernel names nothing it refused (WSL: aws says only "Unable to locate credentials").
+# The way is one command outside, asked; nothing opens their places in the sandbox.
+sign-in = [
+    { run = ["kubectl"], said = "kubectl reads its kubeconfig from ~/.kube (or $KUBECONFIG, not passed to your commands), and EKS's sign-in runs aws, which reads ~/.aws: no command of yours reads those in the sandbox, whatever is granted. If it failed for that, ask to run it outside the sandbox (outside_sandbox, with your reason) — the user answers y or n; don't work around it (a copy, another HOME or KUBECONFIG, keys in variables)." },
+    { run = ["aws"], said = "aws reads its sign-in from ~/.aws (config, credentials, SSO's cache) and AWS_* variables: no command of yours reads ~/.aws in the sandbox, whatever is granted, and its error may name no file (\"Unable to locate credentials\"). If it failed for that, ask to run it outside the sandbox (outside_sandbox, with your reason) — the user answers y or n; don't work around it (a copy, another HOME, keys in variables)." },
+    { run = ["gcloud", "az"], said = "gcloud reads its sign-in from ~/.config/gcloud, az from ~/.azure: no command of yours reads those in the sandbox, whatever is granted. If it failed for that, ask to run it outside the sandbox (outside_sandbox, with your reason) — the user answers y or n; don't work around it (a copy, another HOME, keys in variables)." },
 ]
 
 # Docker without its own settings: `DOCKER_CONFIG` unset, it reads the user's ~/.docker (whose credential

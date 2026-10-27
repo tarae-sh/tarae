@@ -46,6 +46,9 @@ pub struct Offer {
     /// The question's lines that keep their end (`read ~/…/x.patch · 515 B · 2 files`): one row, never wrapped —
     /// their first word whole, the rest cut on the left (`term::fit_left`) so a path's name and what follows stay.
     pub ends: Vec<usize>,
+    /// The question's lines that tell, never decide — drawn faint (or in warning) whatever `decided` covers: a
+    /// kubectl run's context, information about what it reaches, not what `y` decides (#182).
+    pub told: Vec<usize>,
     /// The question's lines it can do without, least important first — each a run of lines (a paragraph with the
     /// blank before it): left out one by one while the card would otherwise be cut (`term::OfferCard` — bgreview:
     /// the board's card whole at 60 columns, `y` answering at once).
@@ -608,6 +611,7 @@ impl Offer {
             warnings: Vec::new(),
             diff: None,
             ends: Vec::new(),
+            told: Vec::new(),
             folds: Vec::new(),
             since: crate::clock::now(),
             drawn: Default::default(),
@@ -711,6 +715,11 @@ impl Offer {
             true => 0..self.question.split('\n').position(|l| l.trim().is_empty()).unwrap_or(usize::MAX),
             false => 0..0,
         })
+    }
+
+    /// Whether line `i` of the question is drawn at full strength: in `decided_lines`, and not one that only tells.
+    pub fn decides(&self, i: usize) -> bool {
+        self.decided_lines().contains(&i) && !self.told.contains(&i)
     }
 
     /// Whether answering it runs something (an install, a plugin's permissions).
@@ -1712,7 +1721,7 @@ impl crate::editor::Editor {
             if !old.installing() {
                 (old.question, old.working, old.failed) = (o.question, o.working, o.failed);
                 (old.decided, old.warning, old.asked, old.diff) = (o.decided, o.warning, o.asked, o.diff);
-                (old.warnings, old.output) = (o.warnings, o.output);
+                (old.warnings, old.output, old.told) = (o.warnings, o.output, o.told);
                 (old.held, old.gate, old.held_changes, old.aside) = (o.held, o.gate, o.held_changes, false);
                 (old.what, old.state) = (o.what, OfferState::Asking);
                 old.rev += 1;
@@ -1914,6 +1923,10 @@ impl crate::editor::Editor {
         // (a yes held — high-risk changes no one has looked at: said on the card, which stays)
         if let Some(why) = self.offers[0].held.clone() {
             return self.offer_refused(why);
+        }
+        // (a kubectl run outside: its context read again first — another since the card came is shown, #182)
+        if crate::tools::kube_recheck(self, key) {
+            return;
         }
         let mut o = self.offers.remove(0);
         self.offer_said(&o, key);

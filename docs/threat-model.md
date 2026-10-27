@@ -246,7 +246,7 @@ Not kept:
 Kept:
 - Files named like keys (`.env`, `*.pem`, `*.key`, `id_rsa*`, `.netrc`, `.npmrc`, …) aren't read, in the project
   too, unless you open one from the run's panel. Key folders in home (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`,
-  `~/.docker`, `~/.config/gh`, `~/.claude`, `~/.claude.json`, `~/Library/Keychains`, …) are denied even inside a
+  `~/.config/gcloud`, `~/.azure`, `~/.docker`, `~/.config/gh`, `~/.claude`, `~/.claude.json`, `~/Library/Keychains`, …) are denied even inside a
   grant.
   test: `sandbox::tests::a_run_cant_read_a_key_named_file` · `sandbox::tests::files_named_like_keys_are_closed_but_the_exceptions` ·
   `sandbox::tests::a_key_inside_a_protected_folder_is_closed` · `sandbox::linux::tests::keys_are_found_where_they_are`

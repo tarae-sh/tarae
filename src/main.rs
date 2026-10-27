@@ -91,6 +91,7 @@ mod jumplist;
 mod keepclose;
 mod key;
 mod keymap;
+mod kubeconfig;
 mod labels;
 #[cfg(target_os = "linux")]
 mod landlock;

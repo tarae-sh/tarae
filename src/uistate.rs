@@ -1818,10 +1818,9 @@ impl Editor {
 /// inbox read it all (frictions 13), the text line and the watch's `card-up` too (frictions15); Claude's level
 /// and the inbox picker's row cut it (`asks_line`).
 fn asks(o: &crate::offer::Offer) -> String {
-    let decided = o.decided_lines();
     let mut s = o.title.clone();
     for (i, line) in o.question.split('\n').enumerate() {
-        if decided.contains(&i) && !line.trim().is_empty() {
+        if o.decides(i) && !line.trim().is_empty() {
             s.push_str(" · ");
             s.push_str(line.trim());
         }
@@ -1834,7 +1833,6 @@ fn asks(o: &crate::offer::Offer) -> String {
 /// the data's `warnings`) · `diff` (what changed since, `sinceyes`) · `decided` (at full strength: what's being
 /// decided) · `said` (the rest, faint).
 fn text(o: &crate::offer::Offer) -> Vec<(String, &'static str)> {
-    let decided = o.decided_lines();
     let warns = |i: usize| {
         o.warning.as_ref().is_some_and(|r| r.contains(&i)) || o.warnings.iter().any(|r| r.contains(&i))
     };
@@ -1845,7 +1843,7 @@ fn text(o: &crate::offer::Offer) -> Vec<(String, &'static str)> {
             let role = match () {
                 _ if warns(i) => "warning",
                 _ if o.diff.as_ref().is_some_and(|r| r.contains(&i)) => "diff",
-                _ if decided.contains(&i) => "decided",
+                _ if o.decides(i) => "decided",
                 _ => "said",
             };
             (line.to_string(), role)
