@@ -14232,7 +14232,8 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
     let accent = Style { fg: ui.accent.fg, ..card };
     let strong = card.patch(t.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() }));
     let warn_fg = t.try_get("warning").and_then(|s| s.fg).map_or(accent, |fg| Style { fg: Some(fg), ..card });
-    let (w, mw) = chat_widths(chat_w);
+    // (the prose's measure: 72 at the automatic width, the width you set else — #163)
+    let (w, mw) = chat_widths(chat_w, editor.sizes.chat.is_some());
     let lang = editor.doc().syntax.as_ref().map(|s| s.lang.name.clone());
     use crate::chat::{ChatRow, Laid, LaidKey};
     let sp = |text: String, style: Style| Span { text, style };
@@ -14469,7 +14470,14 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
             pieces.push((Of::Air, blank.clone()));
             total += 1;
         }
-        let key = LaidKey { version: m.version(), len: m.text.len(), width: w, look, state: state(i, m) };
+        let key = LaidKey {
+            version: m.version(),
+            len: m.text.len(),
+            width: w,
+            measure: mw,
+            look,
+            state: state(i, m),
+        };
         let loaded = |name: &str| crate::syntax::Loader::global().loaded(name).is_some();
         let kept = m
             .cache
@@ -14620,14 +14628,16 @@ fn queued_rows(
     rows.into_iter().map(|r| ChatRow { cut: Some(cut.clone()), ..r }).collect()
 }
 
-/// The chat's text width `chat_w` wide (the gutter, the padding on both sides off) and its measure — prose keeps
-/// one in it, the rest is margin. The chat is the screen's right column (`Layout::new`: the code is what it leaves),
-/// so its text stays `PAD` from the screen's edge as from its line — the side panel's left is so too — the outer
-/// cell its transcript's scroll thumb.
-fn chat_widths(chat_w: usize) -> (usize, usize) {
+/// The chat's text width `chat_w` wide (the gutter, the padding on both sides off) and its prose's measure. At the
+/// chat's automatic width prose keeps `chrome::MEASURE` in it, the rest is margin; at a width you set (`set`: `C-w >`,
+/// a drag of its edge — `Sizes.chat`) it fills what you gave it, as a border dragged wider does what it looks like
+/// (the user, 2026-10-27, #163). Code blocks, rules and tool rows take the text width either way. The chat is the
+/// screen's right column (`Layout::new`: the code is what it leaves), so its text stays `PAD` from the screen's edge
+/// as from its line — the side panel's left is so too — the outer cell its transcript's scroll thumb.
+fn chat_widths(chat_w: usize, set: bool) -> (usize, usize) {
     use crate::chrome::{GAP, MEASURE, PAD};
     let w = chat_w.saturating_sub(GAP + PAD + PAD).max(8);
-    (w, w.min(MEASURE))
+    (w, if set { w } else { w.min(MEASURE) })
 }
 
 /// The chat's input shows this many of its rows at most.
@@ -14638,7 +14648,7 @@ const CHAT_INPUT_MAX: usize = 5;
 /// as `draw_chat` lays them out. None: the chat isn't open beside the code (closed, minimized).
 fn chat_foot(editor: &Editor, lay: &Layout) -> Option<(usize, usize, usize)> {
     let c = editor.workspace.claude.chat.as_ref().filter(|_| lay.chat_w > 0)?;
-    let (w, _) = chat_widths(lay.chat_w);
+    let (w, _) = chat_widths(lay.chat_w, editor.sizes.chat.is_some());
     let input_h = c.input.laid(w).height().min(CHAT_INPUT_MAX);
     let now_ms = crate::usage::now_ms();
     let compacts = crate::idlecompact::next_at(editor, &editor.workspace, now_ms);
@@ -14694,7 +14704,7 @@ fn draw_chat(
     let strong = card.patch(t.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() }));
     use crate::chrome::{GAP, PAD};
     let x0 = lay.edit_w;
-    let (w, _) = chat_widths(lay.chat_w);
+    let (w, _) = chat_widths(lay.chat_w, editor.sizes.chat.is_some());
     // (the whole height, its title on the screen's first row — `chrome.rs`)
     let top = 0;
     let rows = lay.body_h;
@@ -22285,7 +22295,7 @@ mod tests {
     #[test]
     fn a_kept_answer_waits_for_the_grammar_it_was_painted_plain_for() {
         use crate::chat::{Laid, LaidKey};
-        let key = LaidKey { version: 1, len: 10, width: 60, look: 7, state: 0 };
+        let key = LaidKey { version: 1, len: 10, width: 60, measure: 60, look: 7, state: 0 };
         let laid = |lang, unloaded: &[&str]| Laid {
             key,
             lang,

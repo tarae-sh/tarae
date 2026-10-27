@@ -320,13 +320,15 @@ pub struct Laid {
 }
 
 /// What every message's rows depend on: its version (and its text's length — an append the version didn't
-/// see), the width, the look (the theme, the styles — `term::draw_chat` hashes it once a frame) and its own
-/// state there (being written, live, a turn's end). What only some read is `Laid`'s own.
+/// see), the width and the prose's measure (`term::chat_widths` — a width you set drops the measure at the same
+/// width), the look (the theme, the styles — `term::draw_chat` hashes it once a frame) and its own state there (being
+/// written, live, a turn's end). What only some read is `Laid`'s own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LaidKey {
     pub version: u64,
     pub len: usize,
     pub width: usize,
+    pub measure: usize,
     pub look: u64,
     pub state: u64,
 }

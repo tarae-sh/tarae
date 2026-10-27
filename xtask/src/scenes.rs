@@ -80,6 +80,44 @@ const WORKING_KEYS: [&[&str]; 5] = [
     &["@1", " ", "l", "@1", "run the tests", "\r", "@?Its reason", "@1"],
 ];
 
+/// #163's scenes: a question answered in prose, the chat open (follow off); then wider by you, `C-w >` ten times from
+/// its empty input (as far as the code's room lets it).
+const MEASURE_KEYS: [&[&str]; 2] = [
+    &["@1", " ", "l", "@1", "\x06", "how is the map filled?", "\r", "@?ready", "@1"],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "\x06",
+        "how is the map filled?",
+        "\r",
+        "@?ready",
+        "@1",
+        "\x17",
+        ">",
+        "\x17",
+        ">",
+        "\x17",
+        ">",
+        "\x17",
+        ">",
+        "\x17",
+        ">",
+        "\x17",
+        ">",
+        "\x17",
+        ">",
+        "\x17",
+        ">",
+        "\x17",
+        ">",
+        "\x17",
+        ">",
+        "@1",
+    ],
+];
+
 /// What Claude is doing now on the status line (`now.rs`), a turn running the tests: `C-f` in the empty chat keeps it
 /// open; following, `esc esc` gives the code the keys and the chat minimizes; `j` there pauses follow; the card's turn,
 /// `C-w h` to the code; the mouse over the line, following.
@@ -1763,6 +1801,9 @@ const SCENES: &[Scene] = &[
     Scene { name: "working-chat", claude: "shimmer-all", files: MAIN, keys: WORKING_KEYS[0] },
     Scene { name: "working-follow", claude: "shimmer-all", files: MAIN, keys: WORKING_KEYS[1] },
     Scene { name: "working-cursor", claude: "shimmer-all", files: MAIN, keys: WORKING_KEYS[2] },
+    // (#163: the chat's prose at its automatic width; at a width you set, ten `C-w >` from the empty input — it fills it)
+    Scene { name: "measure-auto", claude: "shimmer-prose", files: MAIN, keys: MEASURE_KEYS[0] },
+    Scene { name: "measure-set", claude: "shimmer-prose", files: MAIN, keys: MEASURE_KEYS[1] },
     // (…the turn waiting on you, Claude's run card up: the chat open, one session — its top line's cell `▲`; following —
     // the follow card's head says `▲ waits`, its cell blank)
     Scene { name: "working-waits-chat", claude: "card", files: MAIN, keys: WORKING_KEYS[3] },

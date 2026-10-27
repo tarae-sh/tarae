@@ -1891,6 +1891,57 @@ fn snapshot_chat_measure() {
     s.check("chat_measure");
 }
 
+/// #163 (the user, 2026-10-27): the measure is the automatic width's only — a width you set (`C-w >`, `C-w <`) the
+/// prose fills, even one the same as the automatic (its rows laid out again though the panel didn't move); `C-w =`
+/// brings the measure back.
+#[test]
+fn the_chats_prose_fills_a_width_you_set() {
+    use crate::chat::{Msg, Role};
+    use crate::chrome::{GAP, MEASURE, PAD};
+    use unicode_width::UnicodeWidthStr;
+    let mut s = Shot::new(240, 30);
+    s.file("src/demo.rs", DEMO_RS);
+    s.ed.config.llm.command = "sh".into();
+    s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+    s.keys(" l");
+    let answer = "The name is cloned because insert takes the key by value, and the strand moves into the map in the \
+                  same call. Keying by the name alone means a second strand with the same name replaces the first, \
+                  and entry keeps the first one it was given while every later strand with that name is dropped.";
+    s.ed.workspace.claude.chat.as_mut().unwrap().msgs = vec![Msg::new(Role::Assistant, answer, "")];
+    // (the prose's widest row and the chat's text width, as drawn)
+    let prose = |s: &mut Shot| -> (usize, usize) {
+        let shown = screen_text(s);
+        let x = s.ed.screen.chat_x.unwrap() + GAP + PAD;
+        let rows: Vec<String> = shown.lines().map(|r| r.chars().skip(x).collect::<String>()).collect();
+        let first =
+            rows.iter().position(|r| r.contains("The name is cloned")).unwrap_or_else(|| panic!("{shown}"));
+        let widest =
+            rows[first..].iter().take_while(|r| !r.trim().is_empty()).map(|r| r.trim_end().width()).max();
+        let text_w = s.ed.screen.chat_w.saturating_sub(GAP + PAD + PAD);
+        (widest.unwrap_or(0), text_w)
+    };
+    let (auto, text_w) = prose(&mut s);
+    assert!(s.ed.sizes.chat.is_none() && text_w > MEASURE + 8, "the automatic width, wider than the measure");
+    assert!(auto <= MEASURE && auto > MEASURE - 12, "automatic: the measure — {auto}");
+    // (set at the automatic width itself, no frame between — a drag ending where it began: the panel as it was, its
+    // rows laid out again all the same, the prose its whole width)
+    for k in ["C-w", ">", "C-w", "lt"] {
+        s.ed.handle_event(Event::Key(k.parse().unwrap()));
+    }
+    let (same, same_w) = prose(&mut s);
+    assert_eq!((s.ed.sizes.chat.is_some(), same_w), (true, text_w), "set, at the same width");
+    assert!(same > MEASURE + 8 && same <= same_w, "set: the prose fills it — {same} of {same_w}");
+    s.keys("<C-w>><C-w>><C-w>>");
+    let (wide, wide_w) = prose(&mut s);
+    assert!(
+        wide_w > same_w && wide > same && wide <= wide_w,
+        "set wider: it fills that — {wide} of {wide_w}"
+    );
+    s.keys("<C-w>=");
+    let (back, _) = prose(&mut s);
+    assert!(s.ed.sizes.chat.is_none() && back <= MEASURE, "automatic again: the measure — {back}");
+}
+
 /// While Claude works in follow mode the panel is minimized to a floating card (the code gets the whole
 /// width); `space l` brings it back for the turn, and without follow it stays docked.
 #[test]
