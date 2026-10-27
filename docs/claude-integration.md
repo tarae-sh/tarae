@@ -1724,8 +1724,8 @@ by their whole path, one `edit` may change the project and a folder at once (one
 name (`Makefile`, `.git/`, `build.rs` …) asked about in the review as in the project, and a move stays within the
 project or within one folder. `search` and `replace` with no path look in the project only — a folder by its path.
 
-What Claude is told: one line in each message's context, only while there are folders — `folders (read and edit
-there as in the project; paths absolute; search them by path): /Users/you/work/infra (has CLAUDE.md)`. A folder's
+What Claude is told: one line in each message's context, only while there are folders — `folders (read, edit and
+run there as in the project; paths absolute; search them by path): /Users/you/work/infra (has CLAUDE.md)`. A folder's
 instruction files are named, never loaded: Claude reads one if it needs it. Its `.tarae.toml` and `.claude/` settings
 are never read — file access, not configuration, as Claude Code's added directories.
 
@@ -1735,12 +1735,25 @@ judged again before Claude reads there — one gone, a link now, or one that now
 is dropped and said. Removed, it's outside the project again: Claude's reads there ask on the card. Only you add one.
 A folder is the real path it was added as: one swapped for a link since (`/tmp/infra` → `~/.aws`) is no folder —
 Claude's tools refuse what's through it, saying why, and each message you send looks at the folders again and
-drops (and says) one that's a link now. A folder in or holding a place Claude's runs write is never added: a run
-could put a link in its place.
+drops (and says) one that's a link now; a run's sandbox leaves it out (never its link's target), its report saying
+so. A folder in, holding or itself a place Claude's runs write for another reason (a write grant, the temp folders,
+another workspace's folder) is never added: a run could put a link in its place.
 
 A folder's git is read as a session's checkout's is: its repository resolved from the folder (the gutter, blame,
 staging, `:diff` on its files), its own config that runs commands held until you trust it on the git trust card,
 and no hook of it run by tarae's own git.
+
+Claude's commands run there as in the project: `run`'s `cwd` takes a folder's whole path, and a check or a read there
+goes unasked as in the project (git there too — its config held as above). The sandbox writes a folder as the project
+(its report says `write only in the project and its folder ~/work/infra`): its protected names are kept however deep
+(`.git/`, `Makefile`, `.tarae.toml`, `build.rs` …, not below its tools' output), its files named like keys closed, as
+for a folder opened for writing ([the sandbox](#the-sandbox) — on Linux with the same costs). What its own build tool
+names is judged against the folder, as the project's against the project: its `target/` is written, its own build
+folder in cargo's home opened, one elsewhere kept closed and said as the folder's. What a run changes there joins the
+turn — the folder taken as a checkout of its own before and after, in the same job (with one folder like this
+repository, ~50 ms before a run became ~95 ms), `space u` taking it back, a protected name a run made there asked
+about by its whole path before the next run; a file you save there while a run goes on stays yours, never the run's.
+A folder that isn't a git checkout: its changes aren't in the turn, and the turn's first run there says so.
 
 ### Reading and searching in the editor
 

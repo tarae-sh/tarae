@@ -117,6 +117,7 @@ impl Fixture {
             // (the project's kept homes are named by its path: the fixture's, a new one each time)
             (project_key(&self.root), "$KEY"),
             (self.root.display().to_string(), "$ROOT"),
+            (self.folder().display().to_string(), "$FOLDER"),
             (self.home.display().to_string(), "$HOME"),
             (self.base.display().to_string(), "$BASE"),
             (TMP.to_string(), "$TMP"),
@@ -148,6 +149,23 @@ impl Fixture {
     /// A run's (`run_policy_in`: its own folder in the stand-in home's cache).
     fn policy(&self, llm: &crate::llm::LlmConfig) -> Policy {
         run_policy_in(&self.root, llm, &[], &self.here).expect("a run's policy")
+    }
+
+    /// The workspace's folder beside the project (`with_folder` makes it).
+    fn folder(&self) -> PathBuf {
+        self.home.join("work/infra")
+    }
+
+    /// A run's with the workspace's folder (Folders C) — made, a cargo project whose build tool names its own
+    /// `target/` and a folder in home (kept closed, said as the folder's).
+    fn with_folder(&self, llm: &crate::llm::LlmConfig) -> Policy {
+        let at = self.folder();
+        std::fs::create_dir_all(at.join("src")).unwrap();
+        std::fs::write(at.join("Cargo.toml"), "[package]\nname = \"infra\"\n").unwrap();
+        let named =
+            vec![(at.join("target"), "target-dir".into()), (self.home.join("infra-out"), "build-dir".into())];
+        toolchain_found_in(&at, ToolDirs { named, ..ToolDirs::default() }, &self.here);
+        run_policy_with(&self.root, llm, &[], &[at], &self.here).expect("a run's policy")
     }
 }
 
@@ -301,6 +319,15 @@ fn the_policy_is_pinned() {
             out.push_str(&format!("══ {os:?}: {scene}\n"));
             out.push_str(&policy_said(&f, &f.policy(&llm)));
         }
+        // (Folders C: the workspace's folder, written as the project — opened, its names and keys kept)
+        let f = Fixture::new(&format!("policy-{os:?}-folder"), os, &[]);
+        out.push_str(&format!("══ {os:?}: a folder added\n"));
+        let p = f.with_folder(&Default::default());
+        out.push_str(&policy_said(&f, &p));
+        out.push_str(&format!(
+            "folders:\n{}",
+            lines(&f, p.run.as_deref(), p.folders.iter().map(|w| shown(w)))
+        ));
     }
     pinned("sandbox_policy.txt", &out);
 }

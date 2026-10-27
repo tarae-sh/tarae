@@ -260,15 +260,27 @@ impl Editor {
     /// Where a sandboxed run of any session may write (`sandbox::write_places`, with what's been granted: kept for
     /// its project, its chat's) — worked out when it's called (a worker's). None: runs aren't sandboxed.
     pub(crate) fn workspaces_writes(&self) -> crate::gitrepo::Writes {
+        self.writes_but(None)
+    }
+
+    /// `workspaces_writes` without workspace `id`'s own folders (its project and every other place kept) — what a
+    /// folder of its is judged against (`folders::judge`): its own runs write there by its adding, nothing else may.
+    pub(crate) fn writes_beside(&self, id: crate::event::WorkspaceId) -> crate::gitrepo::Writes {
+        self.writes_but(Some(id))
+    }
+
+    fn writes_but(&self, but: Option<crate::event::WorkspaceId>) -> crate::gitrepo::Writes {
         use crate::sandbox::Availability;
         let all = || std::iter::once(&self.workspace).chain(&self.workspaces);
         let sandboxed = self.config.llm.sandbox
             && !matches!(self.sandbox, Availability::Missing(_) | Availability::Bypass);
         let (llm, store) = (self.config.llm.clone(), self.allow_path.clone());
-        let chats: Vec<(PathBuf, crate::allow::Allowed, crate::allow::Allowed)> = all()
+        type Of = (PathBuf, Vec<PathBuf>, crate::allow::Allowed, crate::allow::Allowed);
+        let chats: Vec<Of> = all()
             .map(|s| {
                 let chat = s.claude.chat.as_ref().map(|c| c.allowed.clone()).unwrap_or_default();
-                (s.root.clone(), s.claude.allowed.clone(), chat)
+                let folders = if Some(s.id) == but { Vec::new() } else { s.roots().folders().to_vec() };
+                (s.root.clone(), folders, s.claude.allowed.clone(), chat)
             })
             .collect();
         std::sync::Arc::new(move || {
@@ -277,11 +289,12 @@ impl Editor {
             }
             let kept = crate::allow::Store::read(store.as_deref());
             let mut all = Vec::new();
-            for (root, session, chat) in &chats {
+            for (root, folders, session, chat) in &chats {
                 let project = kept.get(root);
                 let caps = crate::caps::Caps::granted(root, &project, session, chat);
                 let w = crate::tools::with_allowed(&llm, &caps, None);
-                all.extend(crate::sandbox::write_places(root, &w.llm));
+                // (its folders are its runs' write places too — but the asking workspace's: `writes_beside`)
+                all.extend(crate::sandbox::write_places(root, &w.llm, folders));
             }
             Some(all)
         })

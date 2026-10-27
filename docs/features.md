@@ -574,8 +574,9 @@ your `PATH`.
   side, `enter` into the workspace a change is from)
   ([several sessions](claude-integration.md#follow-mode))
 - **Another folder** `:folder-add ~/work/infra` — a folder outside the project the workspace works in too (a service
-  and its infra, a library and its user): Claude reads and edits there as in the project, its edits reviewed the same
-  way, its paths whole. The workspace's own (a new one starts with none), kept with it across restarts until
+  and its infra, a library and its user): Claude reads, edits and runs there as in the project, its edits reviewed the
+  same way, its paths whole, its commands in the sandbox with the folder's protected names kept as the project's and
+  their changes in the turn (`space u`). The workspace's own (a new one starts with none), kept with it across restarts until
   `:folder-remove`; you add it, Claude asks in words. Its settings aren't read (`.tarae.toml`, `.claude/`), its
   `CLAUDE.md` is named to Claude, not loaded. `:folders` lists them, a floating list as `:messages` (`d` removes one).
   Refused, and said why: the project, in it or holding it, your home or above, what runs never read, where a write

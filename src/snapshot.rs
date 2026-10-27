@@ -590,6 +590,9 @@ pub struct Before {
     /// Whether the code changed below tools' output is looked for (`output_code`) — not after a build or a
     /// check, whose output it is.
     pub outputs: bool,
+    /// The workspace's folders (`folders.rs`), each taken as a checkout of its own (`take_with`) — what the run
+    /// changes there joins the turn too.
+    pub also: Vec<Before>,
 }
 
 /// What a run changed (`Before::since`): the files, those it can't take back (named — `changes`), how many
@@ -605,6 +608,20 @@ pub struct Found {
     pub protected: Vec<Made>,
     pub head: Option<HeadMove>,
     pub output_code: Vec<OutputCode>,
+    /// What the run's report says of the workspace's folders beside the rest: one whose changes can't be told
+    /// (not a git checkout — not in the turn), a folder's HEAD moved.
+    pub folders: Vec<FolderLine>,
+}
+
+/// A line of the run's report on one of the workspace's roots (`Found.folders`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FolderLine {
+    /// The root it's about: a folder, or the project (with folders, one whose changes can't be told).
+    pub at: PathBuf,
+    pub said: String,
+    /// How that root stands (its changes can't be told) — said once a turn (`Checkpoints.told`); else what this run
+    /// did there (its HEAD moved), said each time.
+    pub standing: bool,
 }
 
 /// How many of a folder's changed programs, bytecode and libraries the run's report names (`OutputCode`).
@@ -699,7 +716,8 @@ fn output_code(root: &Path, ignored: &[String], since: std::time::SystemTime) ->
     out
 }
 
-/// A name a run made that's asked about (`Found.protected`), from the project's root, and what it holds
+/// A name a run made that's asked about (`Found.protected`), from the project's root — a folder's whole
+/// (`Found::folder`) — and what it holds
 /// (`made_hash`) — one kept on its card (`y`) is asked about again only when a run makes it holding
 /// something else.
 #[derive(Clone, Debug, PartialEq)]
@@ -846,24 +864,38 @@ fn made_hash_within(root: &Path, rel: &str, (max_bytes, max_names): (u64, usize)
     crate::sha256::hex(&bytes)
 }
 
-/// `r` on the protected-made card: each name removed from the project at `root` — only that entry, through
-/// no link (`beneath.rs`: its folders opened from the root's real path, `unlinkat` — a link goes itself,
-/// never what it leads to); not a folder, nor one that holds something else than when it was asked about
-/// (`made_hash`). Each with how it went.
-pub fn remove_made(root: &Path, made: &[Made]) -> Vec<(Made, Result<(), String>)> {
-    let dir = crate::beneath::Dir::root(root).map_err(|e| format!("the project: {e}"));
+/// Where made name `path` is (`Made.path`): a folder's by its whole path (`Found::folder`), else from the project —
+/// the root holding it, and the name from there. None: a whole path in none of the folders.
+fn made_at<'a>(roots: &'a crate::folders::Roots, path: &str) -> Option<(&'a Path, PathBuf)> {
+    let p = Path::new(path);
+    if p.is_relative() {
+        return Some((roots.project(), p.to_path_buf()));
+    }
+    let f = roots.folders().iter().find(|f| p.starts_with(f))?;
+    Some((f.as_path(), p.strip_prefix(f).ok()?.to_path_buf()))
+}
+
+/// `r` on the protected-made card: each name removed from the project or the folder of `roots` holding it —
+/// only that entry, through no link (`beneath.rs`: its folders opened from the root's real path, `unlinkat` — a
+/// link goes itself, never what it leads to); not a folder, nor one that holds something else than when it was
+/// asked about (`made_hash`). Each with how it went.
+pub fn remove_made(roots: &crate::folders::Roots, made: &[Made]) -> Vec<(Made, Result<(), String>)> {
     made.iter()
         .map(|m| {
-            let rel = Path::new(&m.path);
             let gone = (|| {
-                let dir = dir.as_ref().map_err(String::clone)?;
-                let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) else {
-                    return Err(format!("{}: not a name in the project", m.path));
+                let Some((root, rel)) = made_at(roots, &m.path) else {
+                    return Err(format!("{}: in none of the workspace's folders now", m.path));
                 };
-                if std::fs::symlink_metadata(root.join(rel)).is_ok_and(|t| t.is_dir()) {
+                let shown =
+                    if root == roots.project() { "the project".into() } else { root.display().to_string() };
+                let dir = crate::beneath::Dir::root(root).map_err(|e| format!("{shown}: {e}"))?;
+                let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) else {
+                    return Err(format!("{}: not a name in {shown}", m.path));
+                };
+                if std::fs::symlink_metadata(root.join(&rel)).is_ok_and(|t| t.is_dir()) {
                     return Err(format!("{}/ is a folder — only files and links are removed", m.path));
                 }
-                if made_hash(root, &m.path) != m.hash {
+                if made_hash(root, &rel.to_string_lossy()) != m.hash {
                     return Err(format!("{} changed since it was asked about — left as it is", m.path));
                 }
                 dir.folder(parent, false).and_then(|d| d.remove(name)).map_err(|e| e.to_string())
@@ -877,12 +909,15 @@ pub fn remove_made(root: &Path, made: &[Made]) -> Vec<(Made, Result<(), String>)
 const SHOWN_MAX: u64 = 64 << 10;
 
 /// `v` on the protected-made card: each name and what it holds — a file's text (read through no link, up to
-/// `SHOWN_MAX`), a link's target (not followed), a folder's names.
-pub fn made_shown(root: &Path, made: &[Made]) -> String {
+/// `SHOWN_MAX`), a link's target (not followed), a folder's names — from the root of `roots` holding it.
+pub fn made_shown(roots: &crate::folders::Roots, made: &[Made]) -> String {
     use std::os::unix::fs::OpenOptionsExt as _;
     let mut out = String::new();
     for m in made {
-        let path = root.join(&m.path);
+        let Some(path) = made_at(roots, &m.path).map(|(root, rel)| root.join(rel)) else {
+            out.push_str(&format!("\n── {}: (in none of the workspace's folders now)\n", m.path));
+            continue;
+        };
         let held = match std::fs::symlink_metadata(&path) {
             Err(_) => "(gone)".to_string(),
             Ok(t) if t.file_type().is_symlink() => match std::fs::read_link(&path) {
@@ -965,11 +1000,54 @@ impl Before {
         let ignored = ignored(root).ok();
         let (head, refs) = (head(root), tips(root));
         let (tree, wrote) = (snap(root), Vec::new());
-        Before { root: root.to_path_buf(), tree, wrote, ignored, head, refs, started, outputs: false }
+        let also = Vec::new();
+        Before { root: root.to_path_buf(), tree, wrote, ignored, head, refs, started, outputs: false, also }
     }
 
-    /// What the run changed: the checkout taken again and compared (on a worker) — Err: it can't tell.
+    /// `take`, and each of the workspace's folders (`folders`, real) as a checkout of its own, in the same job.
+    pub fn take_with(root: &Path, folders: &[PathBuf]) -> Before {
+        let project = Before::take(root);
+        Before { also: folders.iter().map(|f| Before::take(f)).collect(), ..project }
+    }
+
+    /// What the run changed: the checkout taken again and compared (on a worker) — Err: it can't tell — and in
+    /// each folder (`also`) the same, its names whole (`Found::folder`); a folder where it can't tell is said. With
+    /// folders, a checkout it can't tell is said beside them, never the folders' changes lost with it.
     pub fn since(&self) -> Result<Found, String> {
+        let mut found = match self.own() {
+            Ok(f) => f,
+            Err(e) if self.also.is_empty() => return Err(e),
+            Err(why) => Found {
+                folders: vec![FolderLine {
+                    at: self.root.clone(),
+                    said: format!(
+                        "Its changes in the project aren't in this turn — {why}: the user can't take them back with it."
+                    ),
+                    standing: true,
+                }],
+                ..Found::default()
+            },
+        };
+        for b in &self.also {
+            let (wrote, outputs) = (self.wrote.clone(), self.outputs);
+            match (Before { wrote, outputs, also: Vec::new(), ..b.clone() }).own() {
+                Ok(f) => found.folder(&b.root, f),
+                Err(why) => found.folders.push(FolderLine {
+                    at: b.root.clone(),
+                    said: format!(
+                        "Its changes in folder {} aren't in this turn — {why}: the user can't take them back with \
+                         it, nor is a protected name made there asked about.",
+                        b.root.display()
+                    ),
+                    standing: true,
+                }),
+            }
+        }
+        Ok(found)
+    }
+
+    /// `since`, of its own checkout only.
+    fn own(&self) -> Result<Found, String> {
         let then = self.tree.as_ref().map_err(String::clone)?;
         let now = snap(&self.root)?;
         let left_out = then.left_out.max(now.left_out);
@@ -1014,7 +1092,41 @@ impl Before {
             }
             _ => None,
         };
-        Ok(Found { files, skipped, left_out, ignored_gone, protected, head, output_code })
+        Ok(Found {
+            files,
+            skipped,
+            left_out,
+            ignored_gone,
+            protected,
+            head,
+            output_code,
+            folders: Vec::new(),
+        })
+    }
+}
+
+impl Found {
+    /// What the run changed in folder `at` (`f`, its own) put with the rest: its names whole, as Claude's tools say
+    /// a folder's paths (`folders::Inside::shown`) — a made name by its whole path too (`Made`, `remove_made`); its
+    /// HEAD's move said, the files it brought already left out.
+    fn folder(&mut self, at: &Path, f: Found) {
+        let whole = |rel: &str| at.join(rel).display().to_string();
+        self.files.extend(f.files);
+        self.skipped.extend(f.skipped.iter().map(|s| whole(s)));
+        self.left_out += f.left_out;
+        self.ignored_gone.extend(f.ignored_gone.iter().map(|s| whole(s)));
+        self.protected.extend(f.protected.into_iter().map(|m| Made { path: whole(&m.path), ..m }));
+        if let Some(h) = f.head {
+            let said = format!("In folder {}: {}.", at.display(), h.said());
+            self.folders.push(FolderLine { at: at.to_path_buf(), said, standing: false });
+        }
+        let code = f.output_code.into_iter().map(|c| OutputCode {
+            folder: whole(&c.folder),
+            first: c.first.iter().map(|n| whole(n)).collect(),
+            ..c
+        });
+        self.output_code.extend(code);
+        self.folders.extend(f.folders);
     }
 }
 

@@ -2033,7 +2033,7 @@ pub(crate) fn run(ed: &mut Editor, call: Call, args: &Value) -> Result<(), Strin
     };
     let outside = outside.filter(|b| !allowed_socket(b));
     let also = also_of(args)?;
-    let cwd = run_cwd(&ed.workspace.root, args["cwd"].as_str())?;
+    let cwd = run_cwd(&ed.workspace.roots(), args["cwd"].as_str())?;
     let mut call = call;
     call.trace = Some(crate::trace::RunTrace::new(format!("claude's run: {}", crate::task::traced(cmd))));
     // One thing past the session's capabilities: its grant card (P3)
@@ -2664,14 +2664,20 @@ pub(crate) fn runs_in(root: &Path, cwd: &Path, cmd: &str) -> Vec<String> {
         .collect()
 }
 
-/// Where a command runs: the project root (`root`, a real path), or `cwd` in it (relative to the root, or
-/// absolute) — a folder that's there, inside the project (real path), so a `cd` isn't needed (#27).
-fn run_cwd(root: &Path, cwd: Option<&str>) -> Result<PathBuf, String> {
+/// Where a command runs: the project root (`roots`' project, a real path), or `cwd` in it (relative to the root,
+/// or absolute) or in one of the workspace's folders (absolute) — a folder that's there, inside one of them (real
+/// path; a folder that leads elsewhere now is none — `Roots::inside`), so a `cd` isn't needed (#27).
+fn run_cwd(roots: &crate::folders::Roots, cwd: Option<&str>) -> Result<PathBuf, String> {
+    let root = roots.project();
     let Some(cwd) = cwd.map(str::trim).filter(|c| !c.is_empty() && *c != ".") else {
         return Ok(root.to_path_buf());
     };
-    let dir =
-        crate::paths::existing_inside(root, &root.join(cwd), &format!("cwd {cwd}"), "commands run in it")?;
+    let shown = format!("cwd {cwd}");
+    let real = std::fs::canonicalize(root.join(cwd)).map_err(|e| format!("{shown}: {e}"))?;
+    let dir = roots.inside(&real).map(|i| i.real).ok_or_else(|| match roots.folders().is_empty() {
+        true => format!("{shown} is outside the project — commands run in it"),
+        false => format!("{shown} is outside the project and its folders — commands run in them"),
+    })?;
     if !dir.is_dir() {
         return Err(format!("cwd {cwd} isn't a folder"));
     }
@@ -2693,7 +2699,8 @@ fn read_only(
     pins: Option<Vec<(PathBuf, u64)>>,
     (judge, beyond): (String, Option<Beyond>),
 ) -> Result<(), String> {
-    let (basis, root, shellcheck) = (ed.caps_basis(), ed.workspace.root.clone(), ed.shellcheck.clone());
+    let (basis, roots, shellcheck) = (ed.caps_basis(), ed.workspace.roots(), ed.shellcheck.clone());
+    let root = roots.project().to_path_buf();
     ed.events.jobs().spawn(move || {
         let caps = basis.build();
         // (what's read unasked, as the line's reads are judged until the gate goes by `caps` itself — piece 4)
@@ -2707,7 +2714,7 @@ fn read_only(
         // (where they are, for the card's line)
         let classes = reads.as_ref().map(|r| crate::cards::classes(r, &caps)).unwrap_or_default();
         // (a check or git that would run outside the project: the plain card, whatever reads are allowed)
-        let runs_outside = crate::readonly::runs_outside(&judge, &cwd, &root, &expanded);
+        let runs_outside = crate::readonly::runs_outside(&judge, &cwd, &roots, &expanded);
         // (its scripts and the packs' entry files it runs — `cargo xtask`'s `xtask/` — #210)
         let pinned = pins.is_none_or(|pins| {
             crate::readonly::run_pins(&judge, &cwd, &root).is_some_and(|s| s.iter().all(|p| pins.contains(p)))
@@ -3378,6 +3385,8 @@ pub struct Widened {
     pub terminals: bool,
     /// The files named like keys in the project open to it (`allow::Grant::Key`).
     pub keys: Vec<PathBuf>,
+    /// The workspace's folders (`folders.rs`, real): written as the project is (`sandbox::Env.folders`).
+    pub folders: Vec<PathBuf>,
 }
 
 impl Widened {
@@ -3404,6 +3413,7 @@ pub fn with_allowed(
 ) -> Widened {
     use crate::allow::Grant;
     let mut w = Widened { llm: llm.clone(), ..Widened::default() };
+    w.folders = caps.defaults(crate::caps::Why::Folder).map(Path::to_path_buf).collect();
     // (a host once is what a yes on it lets in: the pack's other registries with a registry — C2)
     let once = once.into_iter().flat_map(|g| match g {
         Grant::Host(h, p) => {
@@ -3853,6 +3863,10 @@ pub(crate) fn guard_then_go(ed: &mut Editor, who: For, job: Job, ride: Ride) {
         let mut told = (Vec::new(), None);
         let policy = matches!(found, Availability::Ready | Availability::Partial(_)).then(|| {
             let mut w = with_allowed(&llm, &basis.granted(), grant.as_ref());
+            // (the workspace's folders — not on a commit's tree: that tree alone is the run's project)
+            if base.is_none() {
+                w.folders = basis.folders.clone();
+            }
             // (the session's `s` hosts: the proxy has them already — here for the caches they open, piece C)
             for h in basis.hosts.iter().chain(&next_hosts) {
                 if !w.hosts.contains(h) {
@@ -3861,7 +3875,7 @@ pub(crate) fn guard_then_go(ed: &mut Editor, who: For, job: Job, ride: Ride) {
             }
             let here = here();
             let mut p = crate::sandbox::policy_from(&root, w, &here)?;
-            p.cwd = run_folder(&job_run, base.as_deref(), &workspace_root, &p.root);
+            p.cwd = run_folder(&job_run, base.as_deref(), &workspace_root, &p);
             // (settings holding a token that take no copy — cargo's: the user hears once — `tokens::tell_holders`)
             told = crate::tokens::to_tell(&p.reads.copies.told, said.as_deref());
             // Its denials watched from before it starts (the stream up first — measured)
@@ -3969,11 +3983,12 @@ fn go(ed: &mut Editor, who: For, job: Job, guard: Option<Guard>, ride: Ride) {
         match &who {
             For::Claude(call) if (!reads || ride.answered.is_some()) && !base && !slot_taken(ed, &job) => {
                 call.step("snapshot");
-                let root = ed.workspace.root.clone();
+                // (and each of the workspace's folders: its runs write there as in the project — `folders.rs`)
+                let (root, folders) = (ed.workspace.root.clone(), ed.workspace.roots().folders().to_vec());
                 let mut ride = ride;
                 let answered = ride.answered.take();
                 ed.events.jobs().spawn(move || {
-                    let snap = crate::snapshot::Before::take(&root);
+                    let snap = crate::snapshot::Before::take_with(&root, &folders);
                     let answered = answered.map(|mut a| {
                         let tree = || snap.tree.as_ref().map(|t| t.id.clone()).map_err(String::clone);
                         a.kept = crate::sinceyes::take_with(&root, &a.cwd, &a.cmd, tree);
@@ -4198,9 +4213,14 @@ pub fn unprotected_answer(
 
 /// Where run `job` runs, real — what a name its output gives relative is from (`sandbox::Policy::cwd`): its
 /// folder (on a commit's tree, `base`, its folder there), then the line's `cd`s before its first command. None:
-/// outside `policy_root`, a `cd` that can't be followed (a line it can't read that has one), or one after a command
-/// (no one folder holds for the whole output). On a worker (`cd_into` reads the disk).
-fn run_folder(job: &Job, base: Option<&Path>, workspace_root: &Path, policy_root: &Path) -> Option<PathBuf> {
+/// outside the policy's project and folders (`p`), a `cd` that can't be followed (a line it can't read that has
+/// one), or one after a command (no one folder holds for the whole output). On a worker (`cd_into` reads the disk).
+fn run_folder(
+    job: &Job,
+    base: Option<&Path>,
+    workspace_root: &Path,
+    p: &crate::sandbox::Policy,
+) -> Option<PathBuf> {
     let cwd = match job {
         Job::Command(_, cwd) => cwd.clone(),
         Job::Tests(t) => t.cwd.clone(),
@@ -4227,7 +4247,8 @@ fn run_folder(job: &Job, base: Option<&Path>, workspace_root: &Path, policy_root
             }
         }
     }
-    std::fs::canonicalize(&here).ok().filter(|c| c.starts_with(policy_root))
+    let roots = std::iter::once(&p.root).chain(&p.folders);
+    std::fs::canonicalize(&here).ok().filter(|c| roots.clone().any(|r| c.starts_with(r)))
 }
 
 pub const MADE_TITLE: &str = "Claude wants to run — after it made a protected file";
@@ -4393,9 +4414,9 @@ pub fn made_answer(
             made_go(ed, then)
         }
         MadeAnswer::Remove => {
-            let root = ed.workspace.root.clone();
+            let roots = ed.workspace.roots();
             ed.events.jobs().spawn(move || {
-                let gone = crate::snapshot::remove_made(&root, &made);
+                let gone = crate::snapshot::remove_made(&roots, &made);
                 move |ed: &mut Editor| {
                     ed.offer_finished(id, Ok(()));
                     let (removed, left): (Vec<_>, Vec<_>) = gone.into_iter().partition(|(_, r)| r.is_ok());
@@ -4484,9 +4505,9 @@ fn made_go(ed: &mut Editor, then: MadeThen) {
 pub fn made_view(ed: &mut Editor) {
     let Some(o) = ed.offers.first() else { return };
     let crate::offer::What::ProtectedMade { made, .. } = &o.what else { return };
-    let (id, root, made) = (o.id, ed.workspace.root.clone(), made.clone());
+    let (id, roots, made) = (o.id, ed.workspace.roots(), made.clone());
     ed.events.jobs().spawn(move || {
-        let text = crate::snapshot::made_shown(&root, &made);
+        let text = crate::snapshot::made_shown(&roots, &made);
         move |ed: &mut Editor| {
             if ed.offers.first().is_some_and(|o| o.id == id) {
                 ed.offer_view_with(text);
@@ -4906,6 +4927,13 @@ fn run_changes_now(
     ed.events.jobs().spawn(move || {
         let found = snap.since();
         move |ed: &mut Editor| {
+            // (how a folder stands — no git checkout — is said once a turn, not in every run's report)
+            let found = found.map(|mut f| {
+                let said = &mut ed.workspace.claude.checkpoints.told;
+                f.folders.retain(|l| !l.standing || !said.contains(&l.at));
+                said.extend(f.folders.iter().filter(|l| l.standing).map(|l| l.at.clone()));
+                f
+            });
             let said = match found {
                 Ok(crate::snapshot::Found {
                     files,
@@ -4915,13 +4943,15 @@ fn run_changes_now(
                     protected,
                     head,
                     output_code,
+                    folders,
                 }) if !files.is_empty()
                     || !skipped.is_empty()
                     || left_out > 0
                     || !ignored_gone.is_empty()
                     || !protected.is_empty()
                     || head.is_some()
-                    || !output_code.is_empty() =>
+                    || !output_code.is_empty()
+                    || !folders.is_empty() =>
                 {
                     let root = ed.workspace.root.clone();
                     // (its tree moved: taken again for overlaps — `overlap.rs`)
@@ -5006,6 +5036,10 @@ fn run_changes_now(
                         ));
                     }
                     out.push_str(&crate::snapshot::OutputCode::said(&output_code));
+                    // (the workspace's folders: one whose changes can't be told, a folder's HEAD moved)
+                    for f in &folders {
+                        out.push_str(&format!("{}\n", f.said));
+                    }
                     // (kept for the card before its next run — Landlock couldn't refuse them)
                     // (one kept on its card, holding what it held then: not asked about again)
                     let kept = &ed.workspace.made_kept;
@@ -5377,21 +5411,34 @@ mod tests {
 
     /// Where a run of Claude's runs, as its report reads its output's names from (compat7 review 3 and 13): its
     /// folder, on a commit's tree that folder there, after the line's leading `cd`s — a real path (macOS's temp
-    /// folder is `/private/var/…`); none outside the project, nor after a `cd` that follows a command.
+    /// folder is `/private/var/…`); none outside the project and its folders, nor after a `cd` that follows a
+    /// command.
     #[test]
     fn a_runs_folder_follows_its_tree_and_its_leading_cds() {
         use super::{Job, run_folder};
         let t = crate::scratch::Scratch::new("run-folder").into_path();
         let (root, tree) = (t.join("p"), t.join("tree"));
-        for d in [root.join("sub/deep"), tree.join("sub")] {
+        for d in [root.join("sub/deep"), tree.join("sub"), t.join("infra/deploy")] {
             std::fs::create_dir_all(d).unwrap();
         }
         let real = std::fs::canonicalize(&t).unwrap();
         let (proot, ptree) = (real.join("p"), real.join("tree"));
         let cmd = |line: &str, at: &std::path::Path| Job::Command(line.into(), at.to_path_buf());
-        let at = |job: &Job, base: Option<&std::path::Path>, policy: &std::path::Path| {
-            run_folder(job, base, &root, policy)
+        let policy = |root: &std::path::Path, folders: Vec<std::path::PathBuf>| crate::sandbox::Policy {
+            root: root.to_path_buf(),
+            folders,
+            ..crate::sandbox::Policy::for_project(&Default::default())
         };
+        let at = |job: &Job, base: Option<&std::path::Path>, p: &std::path::Path| {
+            run_folder(job, base, &root, &policy(p, Vec::new()))
+        };
+        // (a folder of the workspace: its own place, as the project's — and only while it's the policy's)
+        let infra = real.join("infra");
+        let with = policy(&proot, vec![infra.clone()]);
+        let deploy = cmd("terraform plan", &infra.join("deploy"));
+        assert_eq!(run_folder(&deploy, None, &root, &with), Some(infra.join("deploy")));
+        assert_eq!(run_folder(&cmd("cd ../infra && make", &root), None, &root, &with), Some(infra.clone()));
+        assert_eq!(at(&deploy, None, &proot), None, "no folder: outside");
         assert_eq!(at(&cmd("go build", &root.join("sub")), None, &proot), Some(proot.join("sub")));
         assert_eq!(at(&cmd("go build", &root.join("sub")), Some(&tree), &ptree), Some(ptree.join("sub")));
         assert_eq!(at(&cmd("cd sub && go build", &root), None, &proot), Some(proot.join("sub")));
@@ -5408,6 +5455,32 @@ mod tests {
         assert_ne!(std::fs::canonicalize(&linked).unwrap(), linked);
         assert_eq!(at(&cmd("go build", &linked), None, &proot), Some(proot.join("sub")), "its real path");
         std::fs::remove_dir_all(&t).ok();
+    }
+
+    /// Folders C: a run's `cwd` is in the project (relative or absolute) or in one of the workspace's folders (its
+    /// whole path) — a folder beside them, or one that isn't the workspace's, refused, said so.
+    #[test]
+    fn a_runs_cwd_may_be_a_folder_of_the_workspace() {
+        use super::run_cwd;
+        let t = crate::scratch::Scratch::new("run-cwd");
+        for d in ["p/src", "infra/deploy", "beside"] {
+            std::fs::create_dir_all(t.join(d)).unwrap();
+        }
+        let real = std::fs::canonicalize(t.path()).unwrap();
+        let (p, infra) = (real.join("p"), real.join("infra"));
+        let roots = crate::folders::Roots::new(p.clone(), vec![infra.clone()]);
+        let deploy = infra.join("deploy").display().to_string();
+        assert_eq!(run_cwd(&roots, Some("src")), Ok(p.join("src")));
+        assert_eq!(run_cwd(&roots, Some(&deploy)), Ok(infra.join("deploy")));
+        assert_eq!(run_cwd(&roots, Some("../infra")), Ok(infra.clone()), "relative to the project, into it");
+        let beside = run_cwd(&roots, Some("../beside")).unwrap_err();
+        assert!(
+            beside.ends_with("is outside the project and its folders — commands run in them"),
+            "{beside}"
+        );
+        let alone = crate::folders::Roots::new(p.clone(), Vec::new());
+        let no = run_cwd(&alone, Some(&deploy)).unwrap_err();
+        assert!(no.ends_with("is outside the project — commands run in it"), "{no}");
     }
 
     /// 9d: the session's sandbox is a run's once it started — one that didn't spawn (its folder gone: the spawn's

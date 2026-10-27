@@ -34,6 +34,7 @@ mod claudestart;
 mod commit;
 mod diskroom;
 mod diskwatch;
+mod folders;
 mod follow_pane;
 mod gitbase;
 mod hosts;

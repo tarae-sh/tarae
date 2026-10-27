@@ -177,6 +177,9 @@ pub struct Checkpoints {
     /// that isn't text before (no `before` to keep for it in `turn`): named like the unseen ones all the same
     /// (`tools::moved`). Gone with the turn.
     pub carried: Vec<PathBuf>,
+    /// The roots whose standing a run's report said this turn (`snapshot::FolderLine`: a folder that's no git
+    /// checkout) — not said again by its next runs. Gone with the turn.
+    pub told: Vec<PathBuf>,
     /// What Claude hears with the next message (it undid or redid a turn).
     pub tell: Vec<String>,
     /// The turn that just ended wrote files unseen, being read (`gather`): its checkpoint comes after.
@@ -410,6 +413,7 @@ pub fn single(ed: &mut Editor, id: crate::document::DocId, before: Rope, what: &
 /// the row names them (`lib.rs, sub.rs` · `4 files`), if any.
 pub fn turn_over(ed: &mut Editor, question: &str) -> Option<String> {
     ed.workspace.claude.checkpoints.carried.clear();
+    ed.workspace.claude.checkpoints.told.clear();
     let files = std::mem::take(&mut ed.workspace.claude.checkpoints.turn);
     let head = std::mem::take(&mut ed.workspace.claude.checkpoints.head);
     finish(ed, question, files, head)
@@ -423,6 +427,7 @@ pub fn gather(ed: &mut Editor, question: &str) -> bool {
         return false;
     }
     ed.workspace.claude.checkpoints.carried.clear();
+    ed.workspace.claude.checkpoints.told.clear();
     let files = std::mem::take(&mut ed.workspace.claude.checkpoints.turn);
     let head = std::mem::take(&mut ed.workspace.claude.checkpoints.head);
     ed.workspace.claude.checkpoints.gathering = true;

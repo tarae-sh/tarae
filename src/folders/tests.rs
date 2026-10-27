@@ -70,7 +70,7 @@ fn a_folder_is_added_listed_and_removed() {
     assert_eq!(
         crate::folders::context_line(&ed.workspace.folders).unwrap(),
         format!(
-            "folders (read and edit there as in the project; paths absolute; search them by path): {} (has CLAUDE.md)",
+            "folders (read, edit and run there as in the project; paths absolute; search them by path): {} (has CLAUDE.md)",
             infra.display()
         )
     );
@@ -202,6 +202,70 @@ fn a_folder_where_runs_write_is_refused() {
     let why = judge(&real("work"), &roots, &caps, &[real("work/runs")]).unwrap_or_default();
     assert!(why.starts_with("it holds") && why.contains("where Claude's runs write"), "{why}");
     assert_eq!(judge(&real("tmp/infra"), &roots, &caps, &[]), None, "runs not sandboxed");
+    // (a folder is one of its own workspace's write places once added, so its callers leave those out —
+    // `Editor::writes_beside`; one passed here is a place runs write for some other reason: refused, as it's added
+    // and as it comes back or a turn starts)
+    let infra = real("tmp/infra");
+    let why = judge(&infra, &roots, &caps, std::slice::from_ref(&infra)).unwrap_or_default();
+    assert!(why.starts_with("Claude's runs write there ("), "{why}");
+    let folder = Folder { at: infra.clone(), name: "infra".into(), instructions: Vec::new() };
+    let (kept, dropped) =
+        rejudge(vec![folder.clone()], &real("project"), &caps, std::slice::from_ref(&infra));
+    assert!(kept.is_empty() && dropped[0].1.contains("Claude's runs write there"), "{dropped:?}");
+    let (kept, dropped) = rejudge(vec![folder], &real("project"), &caps, &[real("work/runs")]);
+    assert!(kept.len() == 1 && dropped.is_empty(), "{dropped:?}");
+}
+
+/// What a workspace's folder is judged against leaves out that workspace's own folders (`Editor::writes_beside`) but
+/// nothing else: the folder itself kept, the same folder opened by a grant (`llm.sandbox-write`) refused, and so is
+/// a folder in the temp folders runs write.
+#[test]
+fn a_folders_own_place_is_left_out_of_what_its_judged_against_a_grant_isnt() {
+    // (under this crate's `target/`: outside the temp folders, which a project in them would close)
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    std::fs::create_dir_all(&target).unwrap();
+    let s = crate::scratch::Scratch::in_dir(&target, "folders-beside");
+    for d in ["project", "infra"] {
+        std::fs::create_dir_all(s.join(d)).unwrap();
+    }
+    let (project, infra) =
+        (s.join("project").canonicalize().unwrap(), s.join("infra").canonicalize().unwrap());
+    crate::sandbox::toolchain_found(&project, Default::default());
+    crate::sandbox::toolchain_found(&infra, Default::default());
+    let mut ed = Editor::new(crate::config::Config::default());
+    ed.workspace.root = project.clone();
+    ed.sandbox = crate::sandbox::Availability::Ready;
+    ed.config.llm.sandbox = true;
+    ed.workspace.folders.push(Folder { at: infra.clone(), name: "infra".into(), instructions: Vec::new() });
+    let id = ed.workspace.id;
+    let all = (ed.workspaces_writes())().unwrap();
+    assert!(all.contains(&infra), "its runs write it: {all:?}");
+    let beside = (ed.writes_beside(id))().unwrap();
+    assert!(!beside.contains(&infra), "{beside:?}");
+    // (kept as a turn starts — its instruction file found, the look landed — and as it comes back)
+    std::fs::write(infra.join("CLAUDE.md"), "infra's\n").unwrap();
+    ed.folders_look();
+    settle_until(&mut ed, |ed| ed.workspace.folders.first().is_none_or(|f| !f.instructions.is_empty()));
+    assert_eq!(ed.workspace.folders.len(), 1, "{}", said(&ed));
+    ed.workspace.folders_judging = std::mem::take(&mut ed.workspace.folders);
+    ed.folders_back(id);
+    settle_until(&mut ed, |ed| ed.workspace.folders_judging.is_empty());
+    assert_eq!(ed.workspace.folders.len(), 1, "{}", said(&ed));
+    // (the same folder granted: refused)
+    ed.config.llm.sandbox_write = vec![infra.display().to_string()];
+    let before = ed.said;
+    ed.folders_look();
+    settle_until(&mut ed, |ed| ed.said > before);
+    assert!(
+        said(&ed).contains("Claude's runs write there") && ed.workspace.folders.is_empty(),
+        "{}",
+        said(&ed)
+    );
+    let caps = crate::caps::Caps::default();
+    let tmp = crate::scratch::Scratch::new("folders-beside-tmp");
+    let temp = Folder { at: tmp.canonicalize().unwrap(), name: "tmp".into(), instructions: Vec::new() };
+    let (kept, dropped) = rejudge(vec![temp], &project, &caps, &beside);
+    assert!(kept.is_empty() && dropped[0].1.contains("where Claude's runs write"), "{dropped:?}");
 }
 
 /// A folder is in a workspace once, whichever way it came: `:folder-add` of one kept and still being judged as the

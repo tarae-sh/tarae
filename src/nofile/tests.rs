@@ -216,7 +216,7 @@ fn no_sandboxed_run_can_write_where_pins_are() {
         return;
     };
     let pins = crate::sandbox::profile_path(&pins);
-    let places = crate::sandbox::write_places(&root, &crate::llm::LlmConfig::default());
+    let places = crate::sandbox::write_places(&root, &crate::llm::LlmConfig::default(), &[]);
     std::fs::remove_dir_all(&root).ok();
     assert!(!places.is_empty(), "a run writes somewhere");
     for w in &places {

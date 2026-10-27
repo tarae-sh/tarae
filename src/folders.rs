@@ -112,8 +112,9 @@ impl Roots {
     }
 }
 
-/// Folder `at` (a real path as judged) is still itself: it resolves to that path, no link in its place. Reads the disk.
-fn itself(at: &Path) -> bool {
+/// Folder `at` (a real path as judged) is still itself: it resolves to that path, no link in its place. Reads the disk
+/// (a run's policy asks it too: `sandbox::env_with`).
+pub(crate) fn itself(at: &Path) -> bool {
     std::fs::canonicalize(at).is_ok_and(|r| r == at)
 }
 
@@ -148,8 +149,9 @@ fn given_path(project: &Path, given: &str, home: Option<&Path>) -> PathBuf {
     }
 }
 
-/// Why folder `at` (real) can't be added beside `roots` — None: it can. `writes`: where sandboxed runs may write
-/// (`Editor::workspaces_writes`; none when runs aren't sandboxed). A worker's (it reads the disk).
+/// Why folder `at` (real) can't be added beside `roots` — None: it can. `writes`: where sandboxed runs may write but
+/// the asking workspace's own folders (`Editor::writes_beside`; none when runs aren't sandboxed) — a folder that's one
+/// of them for any other reason (a grant, `$TMPDIR`, another workspace's) is refused. A worker's (it reads the disk).
 pub fn judge(at: &Path, roots: &Roots, caps: &Caps, writes: &[PathBuf]) -> Option<String> {
     let (project, holds, within) =
         (roots.project(), |p: &Path| p.starts_with(at), |p: &Path| at.starts_with(p));
@@ -189,11 +191,15 @@ pub fn judge(at: &Path, roots: &Roots, caps: &Caps, writes: &[PathBuf]) -> Optio
     }
     // (a run could put a link in its place — `/tmp/infra` → `~/.aws` — or in one of its folders: what it reads would
     // be read as the folder's)
-    if let Some(w) = writes.iter().find(|w| within(w) && at != w.as_path()) {
+    if let Some(w) = writes.iter().find(|w| at == w.as_path()) {
+        let w = crate::allow::tilde(w);
+        return Some(format!("Claude's runs write there ({w}) — a run could put a link in its place"));
+    }
+    if let Some(w) = writes.iter().find(|w| within(w)) {
         let w = crate::allow::tilde(w);
         return Some(format!("it's in {w}, where Claude's runs write — a run could put a link in its place"));
     }
-    if let Some(w) = writes.iter().find(|w| holds(w) && at != w.as_path()) {
+    if let Some(w) = writes.iter().find(|w| holds(w)) {
         let w = crate::allow::tilde(w);
         return Some(format!("it holds {w}, where Claude's runs write — a run could put a link there"));
     }
@@ -265,7 +271,7 @@ impl Editor {
         if given.is_empty() {
             return Err("folder-add needs a folder: `:folder-add ~/work/infra`".into());
         }
-        let (basis, writes) = (self.caps_basis(), self.workspaces_writes());
+        let (basis, writes) = (self.caps_basis(), self.writes_beside(self.workspace.id));
         let roots = self.workspace.roots();
         #[cfg(test)]
         let home = self.caps_home.clone();
@@ -353,7 +359,7 @@ impl Editor {
             return;
         };
         let (basis, project, kept) = (self.caps_basis_in(ws), ws.root.clone(), ws.folders_judging.clone());
-        let (front, writes) = (self.workspace.id, self.workspaces_writes());
+        let (front, writes) = (self.workspace.id, self.writes_beside(id));
         self.events_for(id);
         self.events.jobs().spawn(move || {
             let (back, dropped) = rejudge(kept, &project, &basis.build(), &writes().unwrap_or_default());
@@ -385,7 +391,7 @@ impl Editor {
         if self.workspace.folders.is_empty() {
             return;
         }
-        let (basis, writes) = (self.caps_basis(), self.workspaces_writes());
+        let (basis, writes) = (self.caps_basis(), self.writes_beside(self.workspace.id));
         let (project, now) = (self.workspace.root.clone(), self.workspace.folders.clone());
         self.events.jobs().spawn(move || {
             let (kept, dropped) = rejudge(now, &project, &basis.build(), &writes().unwrap_or_default());
@@ -509,7 +515,7 @@ pub fn context_line(folders: &[Folder]) -> Option<String> {
         })
         .collect();
     Some(format!(
-        "folders (read and edit there as in the project; paths absolute; search them by path): {}",
+        "folders (read, edit and run there as in the project; paths absolute; search them by path): {}",
         each.join(", ")
     ))
 }

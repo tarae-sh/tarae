@@ -10272,6 +10272,56 @@ mod tests {
         std::fs::remove_dir_all(&kept).ok();
     }
 
+    /// For real, on macOS (Folders C): Claude's run with its `cwd` in a folder of the workspace writes there and not a
+    /// protected name there (a new `Makefile` — in the test's temp folder, which runs write, only the folder's own
+    /// rule refuses it: the folder reached the run's policy, `Widened.folders`); its report says the folder with the
+    /// project, and that its changes there aren't in the turn (no git checkout). Harmless: markers only.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn claudes_run_in_a_folder_runs_in_the_sandbox_there() {
+        use serde_json::json;
+        if crate::sandbox::skipped_inside("editor::tests::claudes_run_in_a_folder_runs_in_the_sandbox_there")
+        {
+            return;
+        }
+        let scratch = crate::scratch::Scratch::new("run-sb-folder");
+        let t = std::fs::canonicalize(scratch.path()).unwrap();
+        let (dir, infra) = (t.join("project"), t.join("infra"));
+        for d in [&dir, &infra] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let mut ed = editor("");
+        ed.workspace.root = dir.clone();
+        ed.sandbox = crate::sandbox::Availability::Ready;
+        ed.config.llm.run_allow = vec!["touch".into()];
+        ed.workspace.folders.push(crate::folders::Folder {
+            at: infra.clone(),
+            name: "infra".into(),
+            instructions: Vec::new(),
+        });
+        // (the call made in a turn going, no message sent: a message looks at the folders again — `folders_look` —
+        // and drops this stand-in, in a temp folder runs write, as it should)
+        crate::chat::open(&mut ed);
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.state = crate::chat::State::Thinking;
+        let generation = c.generation();
+        let args = json!({ "command": "touch made Makefile", "cwd": infra.display().to_string() });
+        let msg = json!({"jsonrpc": "2.0", "id": 71, "method": "tools/call",
+            "params": {"name": "run", "arguments": args}});
+        assert!(crate::tools::mcp(&mut ed, generation, "r71", &msg).is_none(), "it runs, answered later");
+        let answered = || {
+            crate::tools::ANSWERED
+                .with(|a| a.borrow().iter().find(|(id, _)| *id == json!(71)).map(|(_, r)| r.clone()))
+        };
+        settle_until(&mut ed, |_| answered().is_some());
+        let answer = answered().unwrap().unwrap();
+        assert!(infra.join("made").exists(), "the folder is written: {answer}");
+        assert!(!infra.join("Makefile").exists(), "a protected name there isn't: {answer}");
+        let said = format!("write only in the project and its folder {} — not ", crate::allow::tilde(&infra));
+        assert!(answer.contains(&said), "{answer}");
+        assert!(answer.contains("aren't in this turn") && answer.contains("not a git checkout"), "{answer}");
+    }
+
     /// Linux tests that need this kernel's Landlock at `abi` or more: None after saying the test skips itself.
     #[cfg(target_os = "linux")]
     fn landlock_at_least(abi: u32, test: &str) -> Option<u32> {

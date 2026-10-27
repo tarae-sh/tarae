@@ -3589,6 +3589,69 @@ mod tests {
         assert_eq!(notes.contains("take no new entry here"), !sealed, "{notes}");
     }
 
+    /// For real (Folders C): a run with its `cwd` in a folder of the workspace (`Env.folders` — an opened folder, as
+    /// the one above) writes the folder's own files and can't write its `.git/hooks`, `Makefile` or `.tarae.toml`, nor
+    /// rename its `.git` away; a folder beside it isn't written. (A name made there where none was isn't refused —
+    /// Landlock only grants — the snapshot after the run asks about it: `snapshot::Made`.) Markers in the test's own
+    /// scratch.
+    #[test]
+    fn a_runs_folder_keeps_its_protected_names() {
+        let Some(_) = kernel_abi("a_runs_folder_keeps_its_protected_names") else {
+            return;
+        };
+        let scratch = crate::scratch::Scratch::new("ll-folder");
+        let t = std::fs::canonicalize(&scratch).unwrap();
+        let (root, infra, beside) = (t.join("project"), t.join("infra"), t.join("beside"));
+        for (f, text) in [
+            ("project/src/main.rs", "x"),
+            ("infra/.git/hooks/pre-commit", "kept\n"),
+            ("infra/Makefile", "kept\n"),
+            ("infra/.tarae.toml", "kept\n"),
+            ("infra/src/lib.rs", "x"),
+            ("beside/a.txt", "kept\n"),
+        ] {
+            std::fs::create_dir_all(t.join(f).parent().unwrap()).unwrap();
+            std::fs::write(t.join(f), text).unwrap();
+        }
+        let env = Env {
+            root: root.clone(),
+            folders: vec![crate::sandbox::FolderEnv { at: infra.clone(), ..Default::default() }],
+            run_env: run_env_here(),
+            ..Default::default()
+        };
+        let p = crate::sandbox::confined(Policy { run: RunDir::new().ok(), ..Policy::for_project(&env) });
+        let script = r#"
+            t() { if ( eval "$2" ) >/dev/null 2>&1; then echo "$1 ok"; else echo "$1 no"; fi; }
+            t own-file 'printf x > src/x.rs'
+            t write-hook 'printf x >> .git/hooks/pre-commit'
+            t write-makefile 'printf x >> Makefile'
+            t write-tarae 'printf x >> .tarae.toml'
+            t remove-tarae 'rm -f .tarae.toml'
+            t rename-git-away 'mv .git git-old'
+            t beside 'printf x >> "$B/a.txt"'
+        "#;
+        let mut cmd = crate::sandbox::command(Some(&p), "sh", &["-c".into(), script.into()]);
+        cmd.current_dir(&infra).env("B", &beside);
+        let spawned = crate::sandbox::spawn(Some(&p), &cmd).unwrap();
+        let mut out = String::new();
+        io::Read::read_to_string(&mut spawned.stdout.unwrap(), &mut out).unwrap();
+        crate::spawn::wait(spawned.pid).unwrap();
+        let want = [
+            "own-file ok",
+            "write-hook no",
+            "write-makefile no",
+            "write-tarae no",
+            "remove-tarae no",
+            "rename-git-away no",
+            "beside no",
+        ];
+        assert_eq!(out.lines().collect::<Vec<_>>(), want);
+        assert_eq!(std::fs::read_to_string(infra.join("src/x.rs")).unwrap(), "x");
+        for f in [".git/hooks/pre-commit", "Makefile", ".tarae.toml"] {
+            assert_eq!(std::fs::read_to_string(infra.join(f)).unwrap_or_default(), "kept\n", "{f}");
+        }
+    }
+
     /// Tier own, through `confine_in`, the mixed case: the project can't be sealed (its `.git` reached through another
     /// mount, as `a_key_reached_through_root_…`'s bind) while a folder opened for writing is — `Covers::seals` holds only
     /// the opened folder's, and what's said of the project goes by its own state: its folders closed, why it isn't

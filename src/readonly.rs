@@ -1226,14 +1226,21 @@ fn candidates(words: &[Word]) -> Vec<String> {
     dirs.into_iter().chain(named).collect()
 }
 
-/// Whether a part of `cmd` that runs something would run outside `root` — after a `cd` there, or git with a
-/// `-C` there. Anything but a read runs something (a build runs the folder's build scripts), and so does
-/// git (a repository's config runs its hooks, fsmonitor, pager): a read allowed outside (`allow.rs`) never
-/// lets those run there — code nobody saw (review note). A `cd` that can't be followed counts as outside. On
-/// a worker.
-pub fn runs_outside(cmd: &str, cwd: &Path, root: &Path, expanded: &[(String, PathBuf)]) -> bool {
+/// Whether a part of `cmd` that runs something would run outside the project and the workspace's folders
+/// (`roots`) — after a `cd` there, or git with a `-C` there. Anything but a read runs something (a build runs the
+/// folder's build scripts), and so does git (a repository's config runs its hooks, fsmonitor, pager): a read
+/// allowed outside (`allow.rs`) never lets those run there — code nobody saw (review note). A folder of the
+/// workspace is worked in as the project is (`folders.rs` — its git resolved as a checkout's, its config held). A
+/// `cd` that can't be followed counts as outside. On a worker.
+pub fn runs_outside(
+    cmd: &str,
+    cwd: &Path,
+    roots: &crate::folders::Roots,
+    expanded: &[(String, PathBuf)],
+) -> bool {
     let Some(parts) = flat(cmd) else { return true };
-    let inside = |p: &Path| std::fs::canonicalize(p).is_ok_and(|r| r.starts_with(root));
+    let inside =
+        |p: &Path| std::fs::canonicalize(p).is_ok_and(|r| roots.all().any(|root| r.starts_with(root)));
     let mut here = cwd.to_path_buf();
     for part in parts {
         match part {
@@ -1559,6 +1566,11 @@ fn wild_match(pat: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The project `p` alone, no folder (`runs_outside`'s roots).
+    fn roots(p: &Path) -> crate::folders::Roots {
+        crate::folders::Roots::new(p.to_path_buf(), Vec::new())
+    }
 
     /// frictions34 39 a: a run's output is a pipe, so every filter tarae knows holds what it writes — the first
     /// one named, wherever it stands, a `tee` before or after it as well; a `tail` that follows or starts from a
@@ -2237,7 +2249,7 @@ mod tests {
         ] {
             assert!(read_only(&c), "{c}");
             assert_eq!(outside(&c, &p, &p, &none, &trees, &known), Ok(vec![]), "{c}");
-            assert!(!runs_outside(&c, &p, &p, &known), "{c}");
+            assert!(!runs_outside(&c, &p, &roots(&p), &known), "{c}");
         }
         let c = format!("cat {core}");
         assert!(outside(&c, &p, &p, &none, &trees, &[]).is_err(), "not known: asked");
@@ -2281,8 +2293,16 @@ mod tests {
         // #88: a -C behind git's harmless options is a read all the same, and where it runs (`runs_outside`)
         assert_eq!(at("git --no-pager -C ../out log"), std::slice::from_ref(&out));
         assert_eq!(at("git -C src --no-optional-locks ls-files ../../out"), std::slice::from_ref(&out));
-        assert!(runs_outside("git --no-optional-locks -C ../out status", &p, &p, &[]));
-        assert!(!runs_outside("git --no-optional-locks -C src status", &p, &p, &[]));
+        assert!(runs_outside("git --no-optional-locks -C ../out status", &p, &roots(&p), &[]));
+        assert!(!runs_outside("git --no-optional-locks -C src status", &p, &roots(&p), &[]));
+        // …but a folder of the workspace is worked in as the project is (`folders.rs`): a check or git there runs
+        // unasked as in the project; what holds both is still outside
+        let with_out = crate::folders::Roots::new(p.clone(), vec![out.clone()]);
+        assert!(!runs_outside("git --no-optional-locks -C ../out status", &p, &with_out, &[]));
+        assert!(!runs_outside("cd ../out && cargo check", &p, &with_out, &[]));
+        assert!(!runs_outside("cargo check", &out, &with_out, &[]), "its cwd the folder");
+        assert!(runs_outside("cd .. && cargo check", &p, &with_out, &[]), "what holds both");
+        assert!(runs_outside("cd ../out && cargo check", &p, &roots(&p), &[]), "no folder: outside");
         // A line of several: each part where it runs — a cd's folder read too; a glob by its fixed folder
         assert!(at("cd src && cat a.rs | wc -l").is_empty());
         assert_eq!(at("cd ../out && cat m.txt"), [out.clone(), out.join("m.txt")]);
@@ -2413,7 +2433,7 @@ mod tests {
         for line in [one, list] {
             let line = at(line);
             assert_eq!(outside(&line, &p, &p, &none, &crates, &[]), Ok(vec![]), "{line}");
-            assert!(!runs_outside(&line, &p, &p, &[]), "{line}");
+            assert!(!runs_outside(&line, &p, &roots(&p), &[]), "{line}");
         }
         let into = reg.join("index-a/libc-0.2.189/src");
         assert_eq!(outside(&at(one), &p, &p, &none, &none, &[]), Ok(vec![into.clone()]), "not allowed");
@@ -2430,7 +2450,7 @@ mod tests {
         std::fs::create_dir_all(base.join("reg/src/index-b/libc-0.2.189/src")).unwrap();
         let r = outside(&at(one), &p, &p, &none, &crates, &[]);
         assert!(r.as_ref().is_err_and(|e| e.ends_with("2 folders match")), "{r:?}");
-        assert!(runs_outside(&at(one), &p, &p, &[]));
+        assert!(runs_outside(&at(one), &p, &roots(&p), &[]));
         std::fs::remove_dir_all(&base).ok();
         for (pat, name, is) in [
             ("libc-*", "libc-0.2", true),

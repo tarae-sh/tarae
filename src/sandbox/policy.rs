@@ -197,6 +197,11 @@ pub struct Policy {
     /// are kept however deep, but below its tools' output, as below the root (`protected_in` from it) — another
     /// repository's `.git`, `Makefile` or `Cargo.toml` runs later outside the sandbox as the project's does.
     pub opened: Vec<PathBuf>,
+    /// Of `opened`, the workspace's folders (`folders.rs`): written as the project is, and said so — the rest are
+    /// what the user opened for writing.
+    pub folders: Vec<PathBuf>,
+    /// The workspace's folders left out, a link in their place now (`Env.folders_gone`) — said in the report.
+    pub folders_gone: Vec<PathBuf>,
     /// Single files writable — the caches' own files (cargo's locks and last-use database), the network closed
     /// even those inside `caches`, and the packs' `write-files`.
     pub files: Vec<PathBuf>,
@@ -1229,14 +1234,35 @@ impl Policy {
                 Err(_) => {}
             }
         }
-        let mut user_writes = Vec::new();
+        // The workspace's folders: written as opened folders are (their protected names kept below each, their keys
+        // closed: `opened`), and what each one's build tool names judged against that folder, as the checkout's are
+        let (mut user_writes, mut folders) = (Vec::new(), Vec::new());
+        for f in &env.folders {
+            write.push(f.at.clone());
+            user_writes.push(f.at.clone());
+            folders.push(f.at.clone());
+            let name =
+                f.at.file_name().map_or_else(|| f.at.display().to_string(), |n| n.to_string_lossy().into());
+            for (d, which) in &f.asked {
+                let (home, own, tmp) = (env.home.as_deref(), f.own_build.as_deref(), env.tmp.as_deref());
+                match asked_dir_verdict(d, &f.at, home, &f.builder, own, tmp) {
+                    Ok(true) => write.push(d.clone()),
+                    Ok(false) => {}
+                    Err(why) if !refused.iter().any(|(r, _)| r == d) => refused
+                        .push((d.clone(), format!("folder {name}: {}'s {which} — {why}", f.builder.who))),
+                    Err(_) => {}
+                }
+            }
+        }
         for w in &env.write {
             let p = match (w.strip_prefix("~/"), &env.home) {
                 (Some(rest), Some(home)) => home.join(rest),
                 _ => root.join(w),
             };
             write.push(profile_path(&p));
-            user_writes.push(profile_path(&p));
+            if !user_writes.contains(&profile_path(&p)) {
+                user_writes.push(profile_path(&p));
+            }
         }
         // Never the project or what holds it (that would open .git again); inside it, the project's rule
         write.retain(|w| !root.starts_with(w) && !w.starts_with(&root));
@@ -1245,6 +1271,7 @@ impl Policy {
         // and its protected names kept, as the project's (`opened`); only as it's opened: not one holding the
         // project, which isn't, nor `/`)
         let opened: Vec<PathBuf> = user_writes.into_iter().filter(|w| write.contains(w)).collect();
+        folders.retain(|f| opened.contains(f));
         key_places.extend(opened.iter().cloned());
         // (a read place holding the project stays — a granted ancestor, the main checkout of a nested worktree: its
         // rule leaves the project to the project's own; one in the project is the project's)
@@ -1268,6 +1295,8 @@ impl Policy {
             protect,
             write,
             opened,
+            folders,
+            folders_gone: env.folders_gone.clone(),
             files: env.files.clone(),
             keep: mux_dirs(env),
             caches: if env.network { Vec::new() } else { caches },

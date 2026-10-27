@@ -257,6 +257,122 @@ fn a_runs_changes_wait_for_a_save_still_being_written() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Folders C's review: how a folder stands — no git checkout, its changes not in the turn — is said by the first run
+/// of a turn that runs there, not by every run after it (`Checkpoints.told`); a new turn says it again. (A harmless
+/// command: it writes a file in the test's own folder.)
+#[test]
+fn a_folder_thats_no_checkout_is_said_once_a_turn() {
+    let dir = std::fs::canonicalize(repo("folder-told")).unwrap();
+    let plain = std::fs::canonicalize(crate::scratch::Scratch::new("folder-told-plain").into_path()).unwrap();
+    let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+    ed.workspace.root = dir.clone();
+    let folder = crate::folders::Folder { at: plain.clone(), name: "plain".into(), instructions: Vec::new() };
+    ed.workspace.folders.push(folder);
+    ed.config.llm.sandbox = false;
+    ed.config.llm.command = "sh".into();
+    ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+    crate::chat::open(&mut ed);
+    ed.workspace.viewer.at = crate::workspace::At::Code;
+    let answered = |n: u64| {
+        crate::tools::ANSWERED
+            .with(|a| a.borrow().iter().find(|(id, _)| *id == json!(n)).map(|(_, r)| r.clone()))
+    };
+    let run = |ed: &mut crate::editor::Editor, n: u64| {
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.state = crate::chat::State::Thinking;
+        let call = crate::tools::Call::of(c.generation(), &format!("r{n}"), json!(n));
+        let job = crate::tools::Job::Command(format!("printf '{n}\\n' > made-{n}.txt"), plain.clone());
+        crate::tools::guard_and_go(ed, crate::tools::For::Claude(call), job, false, Default::default());
+        let end = Instant::now() + crate::test_results::PATIENCE;
+        while answered(n).is_none() {
+            assert!(Instant::now() < end, "run {n}");
+            if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(20)) {
+                ed.handle_event(ev);
+            }
+        }
+        answered(n).unwrap().unwrap()
+    };
+    let says = |report: &str| report.contains(&format!("Its changes in folder {} aren't", plain.display()));
+    let first = run(&mut ed, 1);
+    assert!(says(&first) && first.contains("not a git checkout"), "{first}");
+    let second = run(&mut ed, 2);
+    assert!(!says(&second), "said once a turn: {second}");
+    assert!(plain.join("made-2.txt").exists());
+    ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+    crate::checkpoint::turn_over(&mut ed, "next");
+    let third = run(&mut ed, 3);
+    assert!(says(&third), "a new turn says it again: {third}");
+    for d in [dir, plain] {
+        std::fs::remove_dir_all(&d).ok();
+    }
+}
+
+/// Folders C's review: a save into a workspace's folder (`folders.rs`) while Claude's run there goes on is the user's,
+/// not the run's — `workspace_of` names the folder's workspace, so `Editor::wrote` marks the run's snapshot: the turn
+/// holds only what the run made, and `space u` takes that away and leaves the save. (A harmless command: it waits for
+/// the save in the test's own folder, then makes a file there.)
+#[test]
+fn a_save_into_a_folder_during_a_run_isnt_the_runs() {
+    let dir = std::fs::canonicalize(repo("folder-save")).unwrap();
+    let infra = std::fs::canonicalize(repo("folder-save-infra")).unwrap();
+    let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+    ed.workspace.root = dir.clone();
+    let folder = crate::folders::Folder { at: infra.clone(), name: "infra".into(), instructions: Vec::new() };
+    ed.workspace.folders.push(folder);
+    ed.config.llm.sandbox = false;
+    ed.config.llm.command = "sh".into();
+    ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+    ed.open(&infra.join("src/a.txt")).unwrap();
+    let doc = ed.doc().id;
+    crate::chat::open(&mut ed);
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.state = crate::chat::State::Thinking;
+    ed.workspace.viewer.at = crate::workspace::At::Code;
+    let generation = c.generation();
+    let answered = || {
+        crate::tools::ANSWERED
+            .with(|a| a.borrow().iter().find(|(id, _)| *id == json!(1)).map(|(_, r)| r.clone()))
+    };
+    let pump = |ed: &mut crate::editor::Editor, done: &dyn Fn(&crate::editor::Editor) -> bool, what: &str| {
+        let end = Instant::now() + crate::test_results::PATIENCE;
+        while !done(ed) {
+            assert!(Instant::now() < end, "{what}");
+            if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(20)) {
+                ed.handle_event(ev);
+            }
+        }
+    };
+    let cmd = "while ! grep -q saved src/a.txt; do sleep 0.05; done; printf 'x\\n' > made.txt";
+    let call = crate::tools::Call::of(generation, "r1", json!(1));
+    let job = crate::tools::Job::Command(cmd.into(), infra.clone());
+    crate::tools::guard_and_go(&mut ed, crate::tools::For::Claude(call), job, false, Default::default());
+    pump(
+        &mut ed,
+        &|ed| ed.workspace.task_run.as_ref().is_some_and(|r| r.state == crate::task::State::Running),
+        "it runs",
+    );
+    let d = ed.docs.iter_mut().find(|d| d.id == doc).unwrap();
+    d.apply(&crate::transaction::Transaction::new(vec![crate::transaction::Change::insert(0, "saved\n")]));
+    ed.save_in_background(doc, false, crate::saver::Then::Auto(" · idle")).unwrap();
+    pump(&mut ed, &|_| answered().is_some(), "it ran");
+    assert_eq!(std::fs::read_to_string(infra.join("src/a.txt")).unwrap(), "saved\none\ntwo\n");
+    let turn: Vec<_> = ed.workspace.claude.checkpoints.turn.iter().map(|t| t.path.clone()).collect();
+    assert_eq!(turn, [infra.join("made.txt")], "the save isn't the run's");
+    ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+    assert!(crate::checkpoint::gather(&mut ed, "tidy up"));
+    pump(&mut ed, &|ed| ed.workspace.claude.checkpoints.list.len() == 1, "its checkpoint");
+    crate::checkpoint::step(&mut ed, true).unwrap();
+    pump(&mut ed, &|_| !infra.join("made.txt").exists(), "what the run made goes");
+    assert_eq!(
+        std::fs::read_to_string(infra.join("src/a.txt")).unwrap(),
+        "saved\none\ntwo\n",
+        "the save stays"
+    );
+    for d in [dir, infra] {
+        std::fs::remove_dir_all(&d).ok();
+    }
+}
+
 /// Ignored files a run deleted are named, not kept: an ignored file, an ignored folder whole — not a file
 /// inside an ignored folder (that folder is one entry, never walked), and not one the run left.
 #[test]
@@ -483,7 +599,7 @@ fn r_leaves_a_folder_and_a_file_changed_since_it_was_asked() {
     let made = |p: &str| Made { path: p.into(), hash: made_hash(&dir, p) };
     let asked = [made(".cargo"), made("Makefile"), made("sub/Cargo.toml")];
     std::fs::write(dir.join("Makefile"), "all: changed\n").unwrap();
-    let gone = remove_made(&dir, &asked);
+    let gone = remove_made(&crate::folders::Roots::new(dir.clone(), Vec::new()), &asked);
     let said = |p: &str| gone.iter().find(|(m, _)| m.path == p).map(|(_, r)| r.clone()).unwrap();
     let folder = said(".cargo").unwrap_err();
     assert!(folder.contains("is a folder"), "{folder}");
@@ -493,6 +609,49 @@ fn r_leaves_a_folder_and_a_file_changed_since_it_was_asked() {
     assert_eq!(std::fs::read_to_string(dir.join("Makefile")).unwrap(), "all: changed\n");
     assert!(said("sub/Cargo.toml").is_ok() && !dir.join("sub/Cargo.toml").exists());
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Folders C: a run's changes in a workspace's folder (`folders.rs`) are taken as the project's — the folder a
+/// checkout of its own, its snapshot in the same job (`take_with`): a file it changed there is in what it found,
+/// by its real path; a protected name it made there is asked about by its whole path, `v` shows it and `r` removes
+/// it from that folder; a folder that's no git checkout is said, its changes not in the turn. (Stand-ins, the
+/// test's own folders.)
+#[test]
+fn a_runs_changes_in_a_folder_are_found_as_the_projects() {
+    let (dir, infra) = (repo("folder-project"), repo("folder-infra"));
+    let plain = crate::scratch::Scratch::new("folder-plain").into_path();
+    let plain = std::fs::canonicalize(&plain).unwrap();
+    std::fs::write(infra.join("main.tf"), "a\n").unwrap();
+    git_in(&infra, &["add", "-A"]);
+    git_in(&infra, &["commit", "-q", "-m", "tf"]);
+    let snap = Before::take_with(&dir, &[infra.clone(), plain.clone()]);
+    std::fs::write(infra.join("main.tf"), "b\n").unwrap();
+    std::fs::write(infra.join("Makefile"), "all:\n").unwrap();
+    std::fs::write(plain.join("notes.md"), "x\n").unwrap();
+    let found = snap.since().unwrap();
+    let paths: Vec<&Path> = found.files.iter().map(|c| c.path.as_path()).collect();
+    assert!(paths.contains(&infra.join("main.tf").as_path()), "{paths:?}");
+    let made = infra.join("Makefile").display().to_string();
+    assert_eq!(
+        found.protected.iter().map(|m| m.path.clone()).collect::<Vec<_>>(),
+        std::slice::from_ref(&made)
+    );
+    let said: Vec<&str> = found.folders.iter().map(|l| l.said.as_str()).collect();
+    let said = said.join(" ");
+    assert!(said.contains(&plain.display().to_string()) && said.contains("not a git checkout"), "{said}");
+    assert!(found.folders.iter().all(|l| l.at == plain && l.standing), "{:?}", found.folders);
+    assert!(!said.contains(&infra.display().to_string()), "{said}");
+    // (`v` and `r` from the folder holding it — none when that folder isn't the workspace's any more)
+    let roots = crate::folders::Roots::new(dir.clone(), vec![infra.clone()]);
+    assert!(made_shown(&roots, &found.protected).contains("all:"));
+    let alone = crate::folders::Roots::new(dir.clone(), Vec::new());
+    assert!(remove_made(&alone, &found.protected)[0].1.is_err());
+    assert!(infra.join("Makefile").exists());
+    assert!(remove_made(&roots, &found.protected)[0].1.is_ok());
+    assert!(!infra.join("Makefile").exists());
+    for d in [dir, infra, plain] {
+        std::fs::remove_dir_all(&d).ok();
+    }
 }
 
 /// A first build's new ignored `target/` (or `node_modules/`, or a folder inside one) is a tool's output: not
@@ -641,16 +800,8 @@ fn perf_snapshot_of_untracked_files() {
     let _ = std::io::Write::write_all(&mut std::io::stderr(), (lines.join("\n") + "\n").as_bytes());
 }
 
-/// What a check pays for being covered, in a checkout like this repository's: 600 tracked files, an ignored
-/// `target/` of 20k files the check writes 1,000 more into — the snapshot before it (ignored listing, tree)
-/// and the one after (tree, ignored listing, nothing to diff). Medians of 7.
-#[test]
-fn perf_snapshot_around_a_check() {
-    if crate::test_results::unoptimized("snapshot::tests::perf_snapshot_around_a_check") {
-        return;
-    }
-    let scratch = crate::scratch::Scratch::new("snapshot-check");
-    let dir = scratch.to_path_buf();
+/// A checkout like this repository's in `dir`: 600 tracked files, an ignored `target/` of 20k files.
+fn checkout_like_this(dir: &Path) -> PathBuf {
     for d in 0..30 {
         std::fs::create_dir_all(dir.join(format!("src/m{d}"))).unwrap();
         for f in 0..20 {
@@ -658,7 +809,7 @@ fn perf_snapshot_around_a_check() {
                 .unwrap();
         }
     }
-    let dir = std::fs::canonicalize(&dir).unwrap();
+    let dir = std::fs::canonicalize(dir).unwrap();
     std::fs::write(dir.join(".gitignore"), "target/\n").unwrap();
     git_in(&dir, &["init", "-q"]);
     git_in(&dir, &["add", "-A"]);
@@ -669,7 +820,24 @@ fn perf_snapshot_around_a_check() {
             std::fs::write(dir.join(format!("target/debug/d{d}/o{f}")), "obj\n").unwrap();
         }
     }
+    dir
+}
+
+/// What a check pays for being covered, in a checkout like this repository's: 600 tracked files, an ignored
+/// `target/` of 20k files the check writes 1,000 more into — the snapshot before it (ignored listing, tree)
+/// and the one after (tree, ignored listing, nothing to diff). Medians of 7. And the snapshot before it with one
+/// folder of the workspace like it (Folders C: `take_with` — one more checkout taken in the same job).
+#[test]
+fn perf_snapshot_around_a_check() {
+    if crate::test_results::unoptimized("snapshot::tests::perf_snapshot_around_a_check") {
+        return;
+    }
+    let scratch = crate::scratch::Scratch::new("snapshot-check");
+    let dir = checkout_like_this(&scratch);
+    let folder_scratch = crate::scratch::Scratch::new("snapshot-check-folder");
+    let folder = checkout_like_this(&folder_scratch);
     Before::take(&dir); // (tarae's index made: the first of a checkout's snapshots, once)
+    Before::take(&folder);
     let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
     let (mut before, mut after) = (Vec::new(), Vec::new());
     for k in 0..7 {
@@ -685,12 +853,21 @@ fn perf_snapshot_around_a_check() {
         after.push(ms(t));
         assert_eq!(found, Found::default(), "a check's build output isn't a change");
     }
+    let mut with_folder = Vec::new();
+    for _ in 0..7 {
+        let t = Instant::now();
+        let _ = Before::take_with(&dir, std::slice::from_ref(&folder));
+        with_folder.push(ms(t));
+    }
     std::fs::remove_dir_all(&dir).ok();
+    std::fs::remove_dir_all(&folder).ok();
     crate::sorting::by(&mut before, f64::total_cmp);
     crate::sorting::by(&mut after, f64::total_cmp);
+    crate::sorting::by(&mut with_folder, f64::total_cmp);
     let lines = [
         format!("PERF snapshot_before_a_check_ms {:.1} budget=500 noise=10", before[3]),
         format!("PERF snapshot_after_a_check_ms {:.1} budget=500 noise=10", after[3]),
+        format!("PERF snapshot_before_a_check_with_a_folder_ms {:.1} budget=1000 noise=20", with_folder[3]),
     ];
     let _ = std::io::Write::write_all(&mut std::io::stderr(), (lines.join("\n") + "\n").as_bytes());
 }

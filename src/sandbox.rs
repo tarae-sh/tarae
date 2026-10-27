@@ -809,7 +809,8 @@ impl Guard {
                 };
                 // (Linux: one made where none was isn't refused there — Landlock only grants — nor found after the run,
                 // which the project's are: `snapshot::Made`)
-                let opened = match (p.opened.is_empty(), p.supervised) {
+                // (the workspace's folders are said with the project, below: these are what the user opened)
+                let opened = match (p.opened.iter().all(|o| p.folders.contains(o)), p.supervised) {
                     (true, _) => "",
                     (false, false) => {
                         " Below the folders the user opened for writing it can't write those names either."
@@ -880,6 +881,12 @@ impl Guard {
                 // (macOS: in the places outside a grant or a default opened too — Landlock only grants, so Linux
                 // closes them in the project, and outside it only tier own's mounts do: `linux::outside_said`)
                 let keys = match (p.keys.is_some(), !p.supervised) {
+                    (true, true) if !p.folders.is_empty() => {
+                        " In the project, its folders, the repository's other checkouts, the temp folders and what the \
+                         user let it read or write it can't read a file named like a key or a token (but templates, \
+                         public keys, CA bundles and a toolchain's installs and packages) — the user can open one from \
+                         the run's panel."
+                    }
                     (true, true) => {
                         " In the project, the repository's other checkouts, the temp folders and what the user let it \
                          read or write it can't read a file named like a key or a token (but templates, public keys, \
@@ -895,12 +902,31 @@ impl Guard {
                 // (what's shared with other sessions' commands isn't here: the guarantees' paragraph, 9b)
                 let (names_where, net, linux) = match linux {
                     Some((said, notes)) => ("where they are now", said.unwrap_or(net), notes),
-                    None => ("anywhere in it", net, String::new()),
+                    None if p.folders.is_empty() => ("anywhere in it", net, String::new()),
+                    None => ("anywhere in them", net, String::new()),
                 };
+                // (the workspace's folders, written as the project — `folders.rs`)
+                let folders: Vec<String> = p.folders.iter().map(|f| crate::allow::tilde(f)).collect();
+                let project = match folders.as_slice() {
+                    [] => "the project".to_string(),
+                    [one] => format!("the project and its folder {one}"),
+                    all => format!("the project and its folders {}", all.join(", ")),
+                };
+                // (a folder swapped for a link since it was added: left out — `folders::itself`)
+                let gone: String = p
+                    .folders_gone
+                    .iter()
+                    .map(|f| {
+                        format!(
+                            " Folder {} isn't the folder added any more (it leads elsewhere now): not written.",
+                            crate::allow::tilde(f)
+                        )
+                    })
+                    .collect();
                 format!(
-                    "In tarae's sandbox: it could {reads}write only in the project — not {names}, {names_where} \
-                     (your edits change those) — temp folders and the toolchain's own{crates}{net}.{granted}{opened}\
-                     {refused}{keys}{copies}{stores}{linux}"
+                    "In tarae's sandbox: it could {reads}write only in {project} — not {names}, {names_where} \
+                     (your edits change those) — temp folders and the toolchain's own{crates}{net}.{gone}{granted}\
+                     {opened}{refused}{keys}{copies}{stores}{linux}"
                 )
             }
             Guard::Without(why) => {
@@ -4048,6 +4074,12 @@ pub struct Env {
     /// This checkout's own per-checkout build dir: what the build tool names with your own setting (cargo's
     /// `$CARGO_BUILD_BUILD_DIR`, else its home config) put over the checkout's — `cargo-home/build/xx/yyyy`.
     pub own_build: Option<PathBuf>,
+    /// The workspace's folders (`folders.rs`): each written as an opened folder is (`Policy.opened` — its protected
+    /// names and keys kept as the project's), with what its own build tool names.
+    pub folders: Vec<FolderEnv>,
+    /// The workspace's folders that no longer lead to themselves (`folders::itself`: a link in their place) — left
+    /// out, never their link's target opened; said in the run's report.
+    pub folders_gone: Vec<PathBuf>,
     /// `llm.sandbox-write` · `-protect` · `-network` · `-ports` · `-localhost`.
     pub write: Vec<String>,
     pub protect: Vec<String>,
@@ -4077,6 +4109,18 @@ pub struct Env {
     /// This machine's own addresses (`Here::addresses`).
     #[cfg(target_os = "linux")]
     pub own_addresses: Option<Vec<std::net::IpAddr>>,
+}
+
+/// A folder of the workspace as its runs' policy is made from it (`Env.folders`): where it is (real) and what its
+/// own build tool names — asked in the folder, judged against it as the checkout's are against the checkout (#20).
+#[derive(Clone, Debug, Default)]
+pub struct FolderEnv {
+    pub at: PathBuf,
+    /// Its build tool's target and build dirs (real, as said).
+    pub asked: Vec<(PathBuf, String)>,
+    pub builder: Builder,
+    /// Its own per-checkout build dir in the tool's home (`Env::own_build`'s, the folder's).
+    pub own_build: Option<PathBuf>,
 }
 
 /// A path as the profile writes it: the real path; for one that isn't there yet, its folder's real path
@@ -4177,9 +4221,9 @@ pub fn missing_why(stderr: &str) -> String {
 /// Where a sandboxed run in the project at `root` may write with these settings (grants put in as
 /// `tools::with_allowed` does): its policy's own (`Policy::write_places`), made as `policy` makes it — the same
 /// `env_for`, the toolchain's folders asked as for a run (blocks the first time: a worker's). For what tarae
-/// reads from places no run can write (`gitrepo::for_file_in`).
-pub fn write_places(root: &Path, llm: &crate::llm::LlmConfig) -> Vec<PathBuf> {
-    let env = env_in(root, llm, &[], &Here::now()).0;
+/// reads from places no run can write (`gitrepo::for_file_in`). `folders`: the workspace's (`Env.folders`).
+pub fn write_places(root: &Path, llm: &crate::llm::LlmConfig, folders: &[PathBuf]) -> Vec<PathBuf> {
+    let env = env_with(root, llm, &[], folders, &Here::now()).0;
     let mut p = Policy::for_project(&env);
     // (the homes a daemon lives from are per policy key too — every one of the tool's, as any run may have
     // one: what a run may write is never trusted)
@@ -4187,14 +4231,26 @@ pub fn write_places(root: &Path, llm: &crate::llm::LlmConfig) -> Vec<PathBuf> {
     p.write_places()
 }
 
-/// What the policy for the project at `root` is made from (`policy`, `write_places`): these settings, the
-/// places in home the user let Claude read (`reads`, real), the toolchain's folders found (asked inside the
-/// sandbox they're for — blocks), what `here` says. With cargo's configs above the project (`tokens.rs` reads
-/// them).
+/// `env_with`, the workspace with no folder (tests).
+#[cfg(test)]
 pub(crate) fn env_in(
     root: &Path,
     llm: &crate::llm::LlmConfig,
     reads: &[PathBuf],
+    here: &Here,
+) -> (Env, Vec<PathBuf>) {
+    env_with(root, llm, reads, &[], here)
+}
+
+/// What the policy for the project at `root` is made from (`policy`, `write_places`): these settings, the
+/// places in home the user let Claude read (`reads`, real), the workspace's folders (`folders`, real — each one's
+/// build tool asked in it), the toolchain's folders found (asked inside the sandbox they're for — blocks), what
+/// `here` says. With cargo's configs above the project (`tokens.rs` reads them).
+pub(crate) fn env_with(
+    root: &Path,
+    llm: &crate::llm::LlmConfig,
+    reads: &[PathBuf],
+    folders: &[PathBuf],
     here: &Here,
 ) -> (Env, Vec<PathBuf>) {
     let home = here.path("HOME");
@@ -4247,6 +4303,8 @@ pub(crate) fn env_in(
         asked: Vec::new(),
         builder: asks.builder.clone(),
         own_build: None,
+        folders: Vec::new(),
+        folders_gone: Vec::new(),
         write: llm.sandbox_write.clone(),
         protect: llm.sandbox_protect.clone(),
         network: llm.sandbox_network,
@@ -4267,6 +4325,20 @@ pub(crate) fn env_in(
     };
     // The toolchain is asked inside the sandbox it's for (it reads only)
     let found = toolchain_dirs(&Policy::for_project(&env), &asks);
+    // …and each folder's build tool, in the folder, as the folder's own project (the packs' `ask` stays the
+    // project's: what it names is the toolchain's, the same from any checkout)
+    for at in folders {
+        // (one swapped for a link since it was judged: as resolved, its link's target would be written)
+        if !crate::folders::itself(at) {
+            env.folders_gone.push(at.clone());
+            continue;
+        }
+        let at = at.clone();
+        let asks = Asks { others: Vec::new(), ..asks_for(&at, real_home.as_deref(), here) };
+        let named = toolchain_dirs(&Policy::for_project(&Env { root: at.clone(), ..env.clone() }), &asks);
+        let (asked, own_build, builder) = (named.named, named.own_build, asks.builder);
+        env.folders.push(FolderEnv { at, asked, builder, own_build });
+    }
     (env.dirs, env.asked, env.own_build) = (found.other, found.named, found.own_build);
     env.asks_hosts = !llm.sandbox_network;
     // Its caches, as the packs say them; what it names that no run reads — in home, not home itself nor what
@@ -4453,7 +4525,7 @@ pub fn policy_opening(root: &Path, llm: &crate::llm::LlmConfig, keys: &[PathBuf]
 /// The policy for the run about to start with the settings and grants `w` (`tools::with_allowed`) and what
 /// `here` says of tarae's surroundings (`Editor.sandbox_here`: a test's own).
 pub fn policy_from(root: &Path, w: crate::tools::Widened, here: &Here) -> Result<Policy, String> {
-    let mut p = run_policy_in(root, &w.llm, &w.reads, here)?;
+    let mut p = run_policy_with(root, &w.llm, &w.reads, &w.folders, here)?;
     // (what no setting carries goes on before Linux's rules are made from the policy: a file named like a key
     // the user opened is left out of what they close — 7b)
     w.onto(&mut p);
@@ -4466,7 +4538,7 @@ pub fn policy_from(root: &Path, w: crate::tools::Widened, here: &Here) -> Result
 /// — for what's asked before the session's first run (`also`): computed as a policy is, nothing made for a run, no
 /// proxy port. Blocks (a worker's).
 pub fn key_rules_for(root: &Path, w: crate::tools::Widened, here: &Here) -> KeyRules {
-    let (env, _) = env_in(root, &w.llm, &w.reads, here);
+    let (env, _) = env_with(root, &w.llm, &w.reads, &w.folders, here);
     let mut p = Policy::for_project(&env);
     p.supervised = here.os == Os::Linux;
     w.onto(&mut p);
@@ -4477,14 +4549,27 @@ pub fn key_rules_for(root: &Path, w: crate::tools::Widened, here: &Here) -> KeyR
 /// (`RunDir`) in tarae's cache and what's in it (`for_its_run`), and the checkout's own build folder in its
 /// tool's home, opened to its runs, where it isn't yet — a run can't make it beside other checkouts'
 /// (`own_build_made`). Computing a policy (`policy_computed`, `policy_in`; `write_places`) writes nothing in
-/// the user's homes. A run whose own folder can't be made doesn't start: why, and what to do.
+/// the user's homes. A run whose own folder can't be made doesn't start: why, and what to do. (Tests; tarae's runs
+/// go by `run_policy_with`, with the workspace's folders.)
+#[cfg(test)]
 pub(crate) fn run_policy_in(
     root: &Path,
     llm: &crate::llm::LlmConfig,
     reads: &[PathBuf],
     here: &Here,
 ) -> Result<Policy, String> {
-    let (mut p, found) = policy_computed(root, llm, reads, here);
+    run_policy_with(root, llm, reads, &[], here)
+}
+
+/// `run_policy_in`, with the workspace's folders (`folders`, real).
+pub(crate) fn run_policy_with(
+    root: &Path,
+    llm: &crate::llm::LlmConfig,
+    reads: &[PathBuf],
+    folders: &[PathBuf],
+    here: &Here,
+) -> Result<Policy, String> {
+    let (mut p, found) = policy_computed(root, llm, reads, folders, here);
     // (a run without its own folder would have the temp folders, which every run writes, as its `TMPDIR` and
     // tools' homes, and no tag its denials are watched by: it doesn't start)
     let log = crate::log::Session::of(root);
@@ -4493,8 +4578,8 @@ pub(crate) fn run_policy_in(
         format!("The sandbox gives each command a folder of its own, and {why}, then run it again.")
     })?;
     for_its_run(&mut p, Some(run), reads, here, &found);
-    if let Some((own, tool)) = found.own {
-        match own_build_made(&own, &tool) {
+    for (own, tool) in &found.own {
+        match own_build_made(own, tool) {
             Ok(true) => log.line("sandbox", "info", &format!("made {} for its first build", own.display())),
             Ok(false) => {}
             Err(e) => log.line("sandbox", "warning", &format!("the checkout's own build folder: {e}")),
@@ -4508,18 +4593,18 @@ pub(crate) fn run_policy_in(
 /// tag to watch by, no tools' homes of its own.
 #[cfg(test)]
 pub(crate) fn policy_in(root: &Path, llm: &crate::llm::LlmConfig, reads: &[PathBuf], here: &Here) -> Policy {
-    let (mut p, found) = policy_computed(root, llm, reads, here);
+    let (mut p, found) = policy_computed(root, llm, reads, &[], here);
     for_its_run(&mut p, None, reads, here, &found);
     p
 }
 
 /// What computing a policy found that its run is made from (`for_its_run`): the real home, cargo's configs
 /// above the project (`env_in`), and the checkout's own build folder in its tool's home when the policy opens
-/// it to its runs (the folder, and the tool that keeps it).
+/// it to its runs (the folder, and the tool that keeps it) — and each of the workspace's folders' own.
 struct Found {
     real_home: Option<PathBuf>,
     above: Vec<PathBuf>,
-    own: Option<(PathBuf, Builder)>,
+    own: Vec<(PathBuf, Builder)>,
 }
 
 /// The policy for the project at `root`, computed — nothing made in the user's homes: no run's folder, no kept
@@ -4528,12 +4613,16 @@ fn policy_computed(
     root: &Path,
     llm: &crate::llm::LlmConfig,
     reads: &[PathBuf],
+    folders: &[PathBuf],
     here: &Here,
 ) -> (Policy, Found) {
-    let (env, above) = env_in(root, llm, reads, here);
+    let (env, above) = env_with(root, llm, reads, folders, here);
     let real_home = env.home.as_deref().and_then(|h| std::fs::canonicalize(h).ok());
     let mut p = Policy::for_project(&env);
-    let own = env.own_build.clone().filter(|o| p.write.contains(o)).map(|o| (o, env.builder.clone()));
+    let owns = std::iter::once((&env.own_build, &env.builder))
+        .chain(env.folders.iter().map(|f| (&f.own_build, &f.builder)));
+    let own =
+        owns.filter_map(|(o, b)| o.clone().filter(|o| p.write.contains(o)).map(|o| (o, b.clone()))).collect();
     // (macOS: the network open goes out through tarae's proxy, at a port of the run's own)
     if p.network && here.os == Os::Mac {
         p.proxy = proxy::RunPort::new(p.run_id)
@@ -5978,7 +6067,7 @@ mod tests {
         );
         let llm =
             crate::llm::LlmConfig { sandbox_write: vec!["/opt/tarae-granted".into()], ..Default::default() };
-        let w = write_places(&root, &llm);
+        let w = write_places(&root, &llm, &[]);
         let devices =
             if cfg!(target_os = "linux") { ["/dev/shm", "/dev/pts"] } else { ["/dev/fd", "/dev/null"] };
         // (runs' folders: in a test, its own temp folder — `Here::now`)
@@ -11851,6 +11940,8 @@ mod tests {
             run_homes: Vec::new(),
             kept: Vec::new(),
             opened: Vec::new(),
+            folders: Vec::new(),
+            folders_gone: Vec::new(),
             own_shm: false,
         };
         let sh = |script: &str| {
@@ -13670,6 +13761,8 @@ mod tests {
                 run_homes: Vec::new(),
                 kept: Vec::new(),
                 opened: Vec::new(),
+                folders: Vec::new(),
+                folders_gone: Vec::new(),
                 own_shm: false,
             };
             let sh = |script: &str| {
@@ -13758,6 +13851,8 @@ mod tests {
             run_homes: Vec::new(),
             kept: Vec::new(),
             opened: Vec::new(),
+            folders: Vec::new(),
+            folders_gone: Vec::new(),
             own_shm: false,
         };
         let pid = std::process::id();
@@ -13833,6 +13928,8 @@ mod tests {
             run_homes: Vec::new(),
             kept: Vec::new(),
             opened: Vec::new(),
+            folders: Vec::new(),
+            folders_gone: Vec::new(),
             own_shm: false,
         };
         let sh = |script: &str| {
@@ -14048,6 +14145,152 @@ mod tests {
             assert_eq!(std::fs::read_to_string(infra.join(f)).unwrap_or_default(), "kept\n", "{f}");
         }
         assert!(!infra.join(".git/hooks/post-checkout").exists() && !infra.join("src/.envrc").exists());
+    }
+
+    /// Folders C: a folder of the workspace (`Env.folders`) is written as the project — opened, its protected names
+    /// and keys kept below it however deep (`opened`, `key_places`), named apart (`Policy.folders`) and said with the
+    /// project in the run's report; what its own build tool names is judged against it (its `target/` writable
+    /// already, a folder in home closed and said as the folder's); a folder holding the project never gets in, and
+    /// one also opened by `llm.sandbox-write` is there once. Every OS.
+    #[test]
+    fn the_workspaces_folders_are_written_as_the_project() {
+        let (root, infra, home) =
+            (PathBuf::from("/w/project"), PathBuf::from("/w/infra"), PathBuf::from("/w/home"));
+        let builder = Builder { who: "cargo".into(), ..Builder::default() };
+        let folder = FolderEnv {
+            at: infra.clone(),
+            asked: vec![
+                (infra.join("target"), "target-dir".into()),
+                (home.join("elsewhere"), "target-dir".into()),
+            ],
+            builder,
+            own_build: None,
+        };
+        let env = Env { root, home: Some(home.clone()), folders: vec![folder.clone()], ..Env::default() };
+        let p = Policy::for_project(&env);
+        assert_eq!(p.folders, std::slice::from_ref(&infra));
+        assert_eq!(p.opened, std::slice::from_ref(&infra));
+        assert!(p.key_places.contains(&infra), "its keys closed: {:?}", p.key_places);
+        for written in ["src/lib.rs", "deploy/main.tf", "target/debug/build/x/Cargo.toml"] {
+            assert!(p.writes_allow(&infra.join(written)), "{written}: refused");
+        }
+        for refused in [".git/hooks/pre-commit", "Makefile", ".tarae.toml", "deploy/.envrc"] {
+            assert!(!p.writes_allow(&infra.join(refused)), "{refused}: written");
+        }
+        assert!(!p.writes_allow(Path::new("/w/beside/x")), "a folder beside it isn't");
+        assert!(!p.write.contains(&home.join("elsewhere")));
+        let (d, why) = &p.refused[0];
+        assert!(
+            d == &home.join("elsewhere") && why.starts_with("folder infra: cargo's target-dir — "),
+            "{why}"
+        );
+        // (said with the project — not as what the user opened for writing)
+        for supervised in [false, true] {
+            let rules = Guard::In(Box::new(Policy { supervised, ..p.clone() })).rules();
+            assert!(rules.contains("write only in the project and its folder /w/infra — not "), "{rules}");
+            assert!(!rules.contains("the user opened for writing"), "{rules}");
+        }
+        // (opened for writing too: once; a folder holding the project: never — it would open the project's `.git`)
+        let both = Policy::for_project(&Env { write: vec!["/w/infra".into()], ..env.clone() });
+        assert_eq!((both.opened.len(), both.folders.len()), (1, 1));
+        let holding = FolderEnv { at: "/w".into(), ..folder };
+        let p = Policy::for_project(&Env { folders: vec![holding], ..env });
+        assert!(p.folders.is_empty() && !p.write.iter().any(|w| w == Path::new("/w")), "{:?}", p.write);
+    }
+
+    /// For real (Folders C): a run with its `cwd` in a folder of the workspace writes the folder's own files and
+    /// can't write its `.git/hooks`, `Makefile` or `.tarae.toml`, nor rename its `.git` away, nor read a file
+    /// there named like a key; a folder beside it that isn't the workspace's isn't written. Harmless: plain-text
+    /// stand-ins and markers in the test's own scratch folder.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_runs_folder_keeps_its_protected_names_under_the_real_profile() {
+        if skipped_inside("sandbox::tests::a_runs_folder_keeps_its_protected_names_under_the_real_profile") {
+            return;
+        }
+        let scratch = crate::scratch::Scratch::new("sb-folder");
+        let t = profile_path(&scratch);
+        let (root, infra, beside) = (t.join("project"), t.join("infra"), t.join("beside"));
+        for (f, text) in [
+            ("project/src/main.rs", "x"),
+            ("infra/.git/hooks/pre-commit", "kept\n"),
+            ("infra/Makefile", "kept\n"),
+            ("infra/.tarae.toml", "kept\n"),
+            ("infra/.env", "tarae-fake-token-marker\n"),
+            ("infra/src/lib.rs", "x"),
+            ("beside/a.txt", "kept\n"),
+        ] {
+            std::fs::create_dir_all(t.join(f).parent().unwrap()).unwrap();
+            std::fs::write(t.join(f), text).unwrap();
+        }
+        let folders = vec![FolderEnv { at: infra.clone(), ..FolderEnv::default() }];
+        let p = Policy::for_project(&Env { root: root.clone(), folders, ..Env::default() });
+        let script = r#"
+            t() { if ( eval "$2" ) >/dev/null 2>&1; then echo "$1 ok"; else echo "$1 no"; fi; }
+            t own-file 'printf x > src/x.rs'
+            t write-hook 'printf x >> .git/hooks/pre-commit'
+            t make-hook 'printf x > .git/hooks/post-checkout'
+            t write-makefile 'printf x >> Makefile'
+            t write-tarae 'printf x >> .tarae.toml'
+            t make-tarae 'printf x > src/.tarae.toml'
+            t rename-git-away 'mv .git git-old'
+            t read-key 'cat .env'
+            t beside 'printf x >> "$B/a.txt"'
+        "#;
+        let mut c = command(Some(&p), "/bin/sh", &["-c".into(), script.into()]);
+        let out = c.current_dir(&infra).env("B", &beside).stdin(Stdio::null()).output().unwrap();
+        let got = String::from_utf8_lossy(&out.stdout);
+        let want = [
+            "own-file ok",
+            "write-hook no",
+            "make-hook no",
+            "write-makefile no",
+            "write-tarae no",
+            "make-tarae no",
+            "rename-git-away no",
+            "read-key no",
+            "beside no",
+        ];
+        assert_eq!(got.lines().collect::<Vec<_>>(), want, "{out:?}");
+        assert_eq!(std::fs::read_to_string(infra.join("src/x.rs")).unwrap(), "x");
+        for f in ["infra/.git/hooks/pre-commit", "infra/Makefile", "infra/.tarae.toml", "beside/a.txt"] {
+            assert_eq!(std::fs::read_to_string(t.join(f)).unwrap_or_default(), "kept\n", "{f}");
+        }
+        assert!(!infra.join(".git/hooks/post-checkout").exists() && !infra.join("src/.tarae.toml").exists());
+    }
+
+    /// A folder of the workspace swapped for a link since it was added is left out of its runs' policy (`env_with`:
+    /// `folders::itself`) — its link's target never opened, `write_places` without it either — and the run's report
+    /// says so; for real on macOS, a run writing through the link is refused. Harmless: markers in the test's scratch.
+    #[test]
+    fn a_folder_swapped_for_a_link_isnt_written() {
+        let scratch = crate::scratch::Scratch::new("sb-folder-swap");
+        let t = profile_path(&scratch);
+        let (root, infra, elsewhere) = (t.join("project"), t.join("infra"), t.join("elsewhere"));
+        for d in [&root, &infra, &elsewhere] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        toolchain_found(&root, ToolDirs::default());
+        toolchain_found(&infra, ToolDirs::default());
+        let (llm, folders) = (crate::llm::LlmConfig::default(), std::slice::from_ref(&infra));
+        assert!(write_places(&root, &llm, folders).contains(&infra), "the folder as added: written");
+        std::fs::rename(&infra, t.join("infra-old")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &infra).unwrap();
+        let w = write_places(&root, &llm, folders);
+        assert!(!w.iter().any(|w| w == &infra || w == &elsewhere), "{w:?}");
+        let (env, _) = env_with(&root, &llm, &[], folders, &Here::now());
+        assert!(env.folders.is_empty() && env.folders_gone == [infra.clone()], "{:?}", env.folders);
+        let p = Policy::for_project(&env);
+        assert!(p.folders.is_empty() && !p.writes_allow(&elsewhere.join("x")), "{:?}", p.write);
+        let rules = Guard::In(Box::new(p.clone())).rules();
+        let said = format!("Folder {} isn't the folder added any more", crate::allow::tilde(&infra));
+        assert!(rules.contains(&said) && rules.contains("write only in the project — not "), "{rules}");
+        #[cfg(target_os = "macos")]
+        if !skipped_inside("sandbox::tests::a_folder_swapped_for_a_link_isnt_written") {
+            let mut c = command(Some(&p), "/bin/sh", &["-c".into(), r#"printf x > "$I/x""#.into()]);
+            let out = c.current_dir(&root).env("I", &infra).stdin(Stdio::null()).output().unwrap();
+            assert!(!out.status.success() && !elsewhere.join("x").exists(), "{out:?}");
+        }
     }
 
     /// tarae's UI state socket (`uisocket.rs`, `$state/ui/<pid>.sock`) can't be reached from Claude's runs:
@@ -15230,6 +15473,8 @@ mod tests {
             run_homes: Vec::new(),
             kept: Vec::new(),
             opened: Vec::new(),
+            folders: Vec::new(),
+            folders_gone: Vec::new(),
             own_shm: false,
         };
         let reached = |p: &Policy, l: &TcpListener| {

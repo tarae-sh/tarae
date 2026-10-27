@@ -915,13 +915,17 @@ impl Editor {
         }
     }
 
-    /// The session whose checkout `path` is in (the innermost, when one is inside another).
+    /// The session whose checkout or folder (`folders.rs`) `path` is in (the innermost, when one is inside another) —
+    /// a save into a folder is its workspace's (`wrote`: never taken as a run's change there).
     pub fn workspace_of(&self, path: &Path) -> Option<WorkspaceId> {
         std::iter::once(&self.workspace)
             .chain(&self.workspaces)
-            .filter(|l| path.starts_with(&l.root))
-            .max_by_key(|l| l.root.as_os_str().len())
-            .map(|l| l.id)
+            .flat_map(|l| {
+                std::iter::once(&l.root).chain(l.folders.iter().map(|f| &f.at)).map(move |r| (l.id, r))
+            })
+            .filter(|(_, r)| path.starts_with(r))
+            .max_by_key(|(_, r)| r.as_os_str().len())
+            .map(|(id, _)| id)
     }
 
     /// The workspaces whose checkout is on `branch` of workspace `of`'s repository (`of` among them when it is) —
