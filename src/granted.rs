@@ -1026,7 +1026,7 @@ mod tests {
         until(&mut ed, "kept", |_| crate::allow::Store::read(Some(&store)).get(&wt).reads(&outside));
         let main_id = ed.workspace.id;
         let other = ed.workspace_add(wt.clone());
-        assert!(ed.workspace_switch(other));
+        assert!(ed.workspace_switch(other).is_in());
         ed.sandbox_disallow(&outside.display().to_string()).unwrap();
         until(&mut ed, "taken back", |_| !crate::allow::Store::read(Some(&store)).get(&main).reads(&outside));
         let m = ed.workspace_by_id(main_id).unwrap();

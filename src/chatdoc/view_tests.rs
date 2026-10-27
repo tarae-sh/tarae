@@ -561,6 +561,372 @@ fn ctrl_w_q_in_the_chats_view_is_said_and_closes_no_pane() {
     assert_eq!(region(&ed), "view:chat");
 }
 
+/// Frictions #176: `space L` in the chat's view mode killed tarae — its key ran `chat_close` with the conversation's
+/// document lent as `current`, and the chat went with the pane it was to go back to. The chat closes once the key
+/// is over, the keys the code's, in each state the view mode is met in: as it lands (a draft in the input), a
+/// selection, a search's match, a quote over the input, a turn under way; and `:chat-close` from there too.
+#[test]
+fn space_l_closes_the_chat_from_its_view_mode() {
+    let cases = [
+        ("a draft", "<esc>", false),
+        ("a selection", "<esc>kkxx", false),
+        ("a search", "<esc>/needle<ret>", false),
+        ("a quote over the input", "<esc>x<ret><esc>", false),
+        ("a turn under way", "<esc>", true),
+    ];
+    for (what, keys, busy) in cases {
+        for close in ["<space>L", ":chat-close<ret>"] {
+            let mut ed = editor();
+            if busy {
+                ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Writing;
+            }
+            feed(&mut ed, keys);
+            assert_eq!(region(&ed), "view:chat", "{what}: in its view mode");
+            feed(&mut ed, close);
+            assert!(ed.workspace.claude.chat.is_none(), "{what}, {close}: closed");
+            assert_eq!(region(&ed), "code", "{what}, {close}: the keys the code's");
+            assert_eq!(
+                ed.doc().text.to_string(),
+                "fn main() {}\nlet code = 1;\n",
+                "{what}: the code in front"
+            );
+            assert!(ed.after_swap.is_empty());
+        }
+    }
+}
+
+/// #176's twin in the input: a key of yours bound to `chat_close` there runs with the input's document lent — the chat
+/// closes once it's back, the keys the code's.
+#[test]
+fn a_key_of_the_inputs_closes_the_chat_once_its_document_is_back() {
+    let (config, warnings) = crate::config::parse("[keys.chat]\n\"A-q\" = \"chat_close\"\n");
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let mut ed = chat_with(config, convo());
+    assert_eq!(region(&ed), "chat");
+    feed(&mut ed, "<A-q>");
+    assert!(ed.workspace.claude.chat.is_none(), "closed");
+    assert_eq!(region(&ed), "code");
+}
+
+/// The chat with a stand-in claude (it reads nothing), in its view mode on the first row (`Which::Chat`) or its input
+/// with the keys (`Which::Input`).
+fn lent(which: Which) -> Editor {
+    let mut ed = editor();
+    ed.config.llm.command = "sh".into();
+    ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+    into(&mut ed, which);
+    ed
+}
+
+/// The keys to the front workspace's chat: its view mode on the first row (`Which::Chat`), or its input.
+fn into(ed: &mut Editor, which: Which) {
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    frame(ed);
+    if which == Which::Chat {
+        feed(ed, "<esc>gg");
+        assert_eq!(region(ed), "view:chat");
+    }
+}
+
+/// `lent`, with another workspace behind (its folder `dir`) whose Claude is at work — its id.
+fn with_another(which: Which, dir: &crate::scratch::Scratch) -> (Editor, crate::event::WorkspaceId) {
+    let mut ed = lent(Which::Input);
+    let id = ed.workspace_open(dir.path()).unwrap();
+    ed.workspace.claude.chat = Some(Chat::new());
+    ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Writing;
+    assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in());
+    into(&mut ed, which);
+    (ed, id)
+}
+
+/// `f` run as a key's command of the front chat's `which` would run it: with that document lent.
+fn under<R>(ed: &mut Editor, which: Which, f: impl FnOnce(&mut Editor) -> R) -> R {
+    crate::docpane::swap(ed, which, (20, 60), f).expect("swapped").0
+}
+
+/// After the key: `id` in front, every document where it's kept — the home workspace's chat's two its own, behind.
+fn home_behind_whole(ed: &Editor, id: crate::event::WorkspaceId, docs: usize, which: Which) {
+    assert_eq!(ed.workspace.id, id, "{which:?}: in the other workspace");
+    assert_eq!(ed.docs.len(), docs, "{which:?}: every document back");
+    let home = ed.workspaces.iter().find(|w| w.id == crate::event::WorkspaceId::HOME).unwrap();
+    let c = home.claude.chat.as_ref().unwrap();
+    assert!(
+        c.transcript.as_ref().unwrap().pane.doc_in().is_some(),
+        "{which:?}: its transcript's document home"
+    );
+    assert!(c.input.pane.doc_in().is_some(), "{which:?}: its input's document home");
+    assert!(ed.workspace.viewer.swapped.is_none() && home.viewer.swapped.is_none());
+    assert!(ed.after_swap.is_empty());
+}
+
+/// Nothing run inside a pane's swap drops or replaces that pane (#176's rule): a new conversation asked with the
+/// transcript's or the input's document lent starts once it's back — the view of the one left ended as from outside,
+/// where it was forgotten.
+#[test]
+fn a_new_conversation_asked_in_a_panes_key_waits_until_its_over() {
+    for which in [Which::Chat, Which::Input] {
+        let mut ed = lent(which);
+        crate::docpane::swap(&mut ed, which, (20, 60), crate::chat::reset).expect("swapped");
+        assert!(!keyed(&ed), "{which:?}: the view of the one left went");
+        assert!(!transcript(&ed).unwrap().visited, "{which:?}: where it was is forgotten");
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().msgs.is_empty(), "{which:?}: a new one");
+        frame(&mut ed);
+    }
+}
+
+/// As a new one: an earlier conversation (`C-p`'s pick) asked in a pane's key is shown once its document is back.
+#[test]
+fn an_earlier_conversation_asked_in_a_panes_key_waits_until_its_over() {
+    for which in [Which::Chat, Which::Input] {
+        let mut ed = lent(which);
+        let saved = crate::chats::Saved {
+            id: "earlier".into(),
+            title: "an earlier one".into(),
+            updated: 0,
+            rows: Vec::new(),
+            plan: None,
+            usage: None,
+            seq: 0,
+        };
+        under(&mut ed, which, |ed| crate::chat::continue_with(ed, saved));
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        assert_eq!(c.conversation.as_deref(), Some("earlier"), "{which:?}: the earlier one continued");
+        assert!(c.msgs.last().is_some_and(|m| m.text.starts_with("continued from ")), "{which:?}: said");
+        assert!(!keyed(&ed), "{which:?}: the view of the one left went");
+        assert!(!transcript(&ed).unwrap().visited, "{which:?}: where it was is forgotten");
+        frame(&mut ed);
+    }
+}
+
+/// `space F` in the chat's view mode with another session at work: into its workspace once the key is over — every
+/// pane of this one goes behind with its document in it (it took the transcript's along, lent, and put another
+/// workspace's in its place); a session switch asked in the input's key alike.
+#[test]
+fn space_f_from_the_view_mode_follows_once_the_key_is_over() {
+    for which in [Which::Chat, Which::Input] {
+        let dir = crate::scratch::Scratch::new("swap-follow");
+        let (mut ed, id) = with_another(which, &dir);
+        let docs = ed.docs.len();
+        match which {
+            // (the keys, in the view mode)
+            Which::Chat => {
+                feed(&mut ed, "<space>");
+                ed.handle_key(Key::plain(Code::Char('F')));
+            }
+            _ => under(&mut ed, which, crate::follow::follow_next),
+        }
+        home_behind_whole(&ed, id, docs, which);
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().follow.active(), "{which:?}: following it");
+        frame(&mut ed);
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in(), "{which:?}: and back");
+        frame(&mut ed);
+    }
+}
+
+/// The net (#176's review): `workspace_switch` asked with a pane's document lent says `Later` — never `Gone`, never
+/// in front yet — and the workspace comes once the key is over.
+#[test]
+fn a_switch_asked_with_a_document_lent_comes_once_its_back() {
+    for which in [Which::Chat, Which::Input] {
+        let dir = crate::scratch::Scratch::new("swap-net");
+        let (mut ed, id) = with_another(which, &dir);
+        let docs = ed.docs.len();
+        let said = under(&mut ed, which, |ed| (ed.workspace_switch(id), ed.workspace.id));
+        assert_eq!(said, (crate::workspace::Switched::Later, crate::event::WorkspaceId::HOME), "{which:?}");
+        home_behind_whole(&ed, id, docs, which);
+        // (`:workspace-switch` from there: no "no such session", in front after)
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in());
+        into(&mut ed, which);
+        let line = format!("workspace-switch {id}");
+        let said = under(&mut ed, which, |ed| crate::typed::execute(ed, &line));
+        assert_eq!(said, Ok(()), "{which:?}: not read as gone");
+        home_behind_whole(&ed, id, docs, which);
+    }
+}
+
+/// A card of Claude's waiting in workspace `id`, behind — its id.
+fn park_card(ed: &mut Editor, id: crate::event::WorkspaceId) -> u64 {
+    let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
+    let mut o = crate::offer::Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what);
+    ed.offer_seq += 1;
+    o.id = ed.offer_seq;
+    ed.workspaces.iter_mut().find(|w| w.id == id).unwrap().parked.push(o);
+    ed.offer_seq
+}
+
+/// `C-q` from the view mode or the input to a card waiting in another workspace: there, the card up with the keys.
+/// The key itself is taken before any pane's (`handle_key_now`); the same act asked with a document lent —
+/// `inbox_next` — puts itself off whole, and is all done once the key is over.
+#[test]
+fn c_q_from_the_chat_goes_to_another_workspaces_card() {
+    for which in [Which::Chat, Which::Input] {
+        for lent in [false, true] {
+            let dir = crate::scratch::Scratch::new("swap-c-q");
+            let (mut ed, id) = with_another(which, &dir);
+            let card = park_card(&mut ed, id);
+            let docs = ed.docs.len();
+            match lent {
+                false => ed.handle_key("C-q".parse().unwrap()),
+                true => assert!(under(&mut ed, which, |ed| ed.inbox_next()), "{which:?}: one waits"),
+            }
+            home_behind_whole(&ed, id, docs, which);
+            assert_eq!(ed.offers.first().map(|o| o.id), Some(card), "{which:?}, lent {lent}: its card up");
+            assert!(ed.card_has_keys(), "{which:?}, lent {lent}: with the keys");
+        }
+    }
+}
+
+/// A link to another workspace's card (`s1/card#N` — a click, `C-]`) followed with a document lent (`ui_jump`,
+/// `jump_card`): that workspace in front once the key is over, the card up and flashed — never "no such session".
+#[test]
+fn a_link_to_another_workspaces_card_followed_with_a_document_lent() {
+    for which in [Which::Chat, Which::Input] {
+        let dir = crate::scratch::Scratch::new("swap-jump");
+        let (mut ed, id) = with_another(which, &dir);
+        let card = park_card(&mut ed, id);
+        let docs = ed.docs.len();
+        ed.status = None;
+        let link = format!("s{id}/card#{card}");
+        under(&mut ed, which, |ed| ed.ui_jump(&link));
+        home_behind_whole(&ed, id, docs, which);
+        assert_eq!(ed.offers.first().map(|o| o.id), Some(card), "{which:?}: its card up");
+        assert_eq!(ed.ui_flash.as_ref().map(|f| f.0.clone()), Some(format!("card#{card}")), "{which:?}");
+        assert!(ed.status.is_none(), "{which:?}: nothing said: {:?}", ed.status);
+    }
+}
+
+/// The workspace in front closed with its chat's document lent (`workspace_close`): the home one in front and it gone,
+/// once the key is over — never dropped in silence.
+#[test]
+fn the_front_workspace_closed_with_a_document_lent_goes_once_its_back() {
+    for which in [Which::Chat, Which::Input] {
+        let dir = crate::scratch::Scratch::new("swap-close");
+        let mut ed = lent(Which::Input);
+        let id = ed.workspace_open(dir.path()).unwrap();
+        let mut c = Chat::new();
+        c.msgs = convo();
+        ed.workspace.claude.chat = Some(c);
+        into(&mut ed, which);
+        let root = ed.workspace.root.clone();
+        under(&mut ed, which, |ed| ed.workspace_close(&root));
+        assert_eq!(ed.workspace.id, crate::event::WorkspaceId::HOME, "{which:?}: the home one in front");
+        assert!(ed.workspaces.iter().all(|w| w.id != id), "{which:?}: it closed");
+        assert!(ed.after_swap.is_empty() && ed.workspace.viewer.swapped.is_none());
+        frame(&mut ed);
+    }
+}
+
+/// Every act that would take another workspace to the front, asked with a document lent, puts itself off whole —
+/// its switch and what it does after, one `docpane::later` (nothing to do here once it's run: each finds nothing).
+/// The rebase's and the end's are seen put off by their guard's own line, before any git, and dropped unrun: run,
+/// they'd start git on a checkout (here a folder in the test's own, never made).
+#[test]
+fn every_act_that_takes_a_workspace_to_the_front_puts_itself_off_whole() {
+    use std::path::Path;
+    type Act = fn(&mut Editor, &Path);
+    fn moved(dir: &Path) -> crate::rebase::Moved {
+        crate::rebase::Moved {
+            root: dir.join("gone"),
+            name: "gone".into(),
+            branch: "gone".into(),
+            base: "main".into(),
+            moved: 1,
+            ahead: 0,
+        }
+    }
+    fn held(dir: &Path) -> crate::rebase::Held {
+        crate::rebase::Held { moved: moved(dir), changed: Vec::new(), unsaved: Vec::new() }
+    }
+    fn ending(dir: &Path) -> crate::worktree::Ending {
+        crate::worktree::Ending {
+            root: dir.join("gone"),
+            common: dir.join("gone/.git"),
+            name: "gone".into(),
+            branch: Some("gone".into()),
+            tip: String::new(),
+            base: "main".into(),
+            changed: Vec::new(),
+            ahead: Vec::new(),
+            lost: Vec::new(),
+            entries: Vec::new(),
+            keep: Default::default(),
+        }
+    }
+    // (name, the act, run once the key is over)
+    let acts: [(&str, Act, bool); 13] = [
+        ("inbox_next", |ed, _| _ = ed.inbox_next(), true),
+        ("inbox_go", |ed, _| ed.inbox_go("none"), true),
+        ("ui_jump", |ed, _| ed.ui_jump("card#99"), true),
+        ("weave::go", |ed, _| crate::weave::go(ed), true),
+        ("procs_log", |ed, _| ed.procs_act('l'), true),
+        ("sessions_enter", |ed, _| ed.sessions_enter(), true),
+        ("card_highs", |ed, _| crate::codereview::card_highs(ed), true),
+        ("follow_next", |ed, _| crate::follow::follow_next(ed), true),
+        ("rebase_start", |ed, dir| ed.rebase_start(0, moved(dir)), false),
+        ("rebase_held_stash", |ed, dir| ed.rebase_held_stash(held(dir)), false),
+        ("rebase_held_show", |ed, dir| ed.rebase_held_show(held(dir)), false),
+        ("session_commit_first", |ed, dir| ed.session_commit_first(ending(dir)), false),
+        ("session_remove", |ed, dir| ed.session_remove(ending(dir), false, None), false),
+    ];
+    let mut not = Vec::new();
+    for (name, act, runs) in acts {
+        let dir = crate::scratch::Scratch::new("swap-acts");
+        let (mut ed, _) = with_another(Which::Chat, &dir);
+        let put_off = under(&mut ed, Which::Chat, |ed| {
+            act(ed, dir.path());
+            let n = ed.after_swap.len();
+            if !runs {
+                ed.after_swap.clear();
+            }
+            n
+        });
+        if put_off != 1 {
+            not.push(name);
+        }
+        assert!(ed.after_swap.is_empty(), "{name}: done once the key is over");
+        frame(&mut ed);
+    }
+    assert!(not.is_empty(), "done under the key: {not:?}");
+}
+
+/// A press on the chat's `space L close` hint closes the chat (mouse W: a word that names a state does its key). It's
+/// drawn while the code has the keys and typed there; the keys moved into the chat's input or its view mode since the
+/// frame, the press gives them to the code first — the chat closes, no crash (#176), the keys the code's after.
+#[test]
+fn a_press_on_the_close_hint_closes_the_chat() {
+    for from in ["the code", "the input", "the view mode"] {
+        let mut ed = editor();
+        ed.workspace.leave(crate::workspace::At::Chat);
+        let shown = frame(&mut ed);
+        let (y, line) =
+            shown.lines().enumerate().find(|(_, l)| l.contains("space L close")).expect("the hint");
+        let x = line[..line.find("space L close").unwrap()].chars().count() + 2;
+        // (the keys moved since the frame drew the hint)
+        if from != "the code" {
+            ed.workspace.viewer.at = crate::workspace::At::Chat;
+        }
+        if from == "the view mode" {
+            ed.handle_key(Key::plain(Code::Esc));
+        }
+        let region = |ed: &Editor| ed.keys_to().region.name();
+        let at = region(&ed);
+        let want = match from {
+            "the code" => "code",
+            "the input" => "chat",
+            _ => "view:chat",
+        };
+        assert_eq!(at, want, "from {from}: the keys there before the press");
+        for kind in [crate::event::MouseKind::Down, crate::event::MouseKind::Up] {
+            ed.handle_mouse(crate::event::Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
+        }
+        frame(&mut ed);
+        assert!(ed.workspace.claude.chat.is_none(), "from {from} ({at}): closed");
+        assert_eq!(region(&ed), "code", "from {from}: the keys the code's");
+        assert_eq!(ed.doc().text.to_string(), "fn main() {}\nlet code = 1;\n", "from {from}: nothing typed");
+        assert!(ed.after_swap.is_empty());
+    }
+}
+
 /// The chat's chords stay its in view mode — `C-y` the last code block (none here: said) — and `C-w` is the
 /// windows' (`C-w z` fills the screen with the chat, its view mode kept).
 #[test]
@@ -714,11 +1080,11 @@ fn a_session_switch_ends_the_view_and_its_prompt() {
     let dir = crate::scratch::Scratch::new("view-switch");
     let mut ed = editor();
     let id = ed.workspace_open(dir.path()).unwrap();
-    assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME));
+    assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in());
     frame(&mut ed);
     feed(&mut ed, "<esc>gg/need");
     assert!(ed.prompt.is_some() && view(&ed).pane.prompt, "its search prompt up");
-    assert!(ed.workspace_switch(id));
+    assert!(ed.workspace_switch(id).is_in());
     assert!(ed.prompt.is_none(), "its prompt closed");
     let behind = ed.workspaces.iter().find(|s| s.id == crate::event::WorkspaceId::HOME).unwrap();
     let t = behind.claude.chat.as_ref().unwrap().transcript.as_ref().unwrap();

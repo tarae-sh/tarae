@@ -3717,10 +3717,10 @@ mod tests {
         assert!(ed.offers.first().is_some_and(crate::offer::Offer::made), "the card");
         let other = crate::scratch::Scratch::new("made-hold-other").into_path();
         let b = ed.workspace_add(other.clone());
-        assert!(ed.workspace_switch(b) && ed.workspace.id == b, "another session in front");
+        assert!(ed.workspace_switch(b).is_in() && ed.workspace.id == b, "another session in front");
         ed.workspaces_sync();
         assert!(!ed.offers.iter().any(crate::offer::Offer::made), "not in front of another session");
-        assert!(ed.workspace_switch(a));
+        assert!(ed.workspace_switch(a).is_in());
         ed.workspaces_sync();
         assert!(ed.offers.first().is_some_and(crate::offer::Offer::made), "up again with its session");
         ed.offer_accept();

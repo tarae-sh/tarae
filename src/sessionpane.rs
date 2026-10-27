@@ -302,6 +302,10 @@ impl Editor {
     /// `enter` on the list (a digit, a double click): to the selected session — the list done once used, so it
     /// closes (user, 2026-10-23: floating in the middle, it would cover the code); on the session in front too.
     pub(crate) fn sessions_enter(&mut self) {
+        // (a pane's key has its document lent: the session to the front, the list used, once it's back)
+        if crate::docpane::later(self, |ed| ed.sessions_enter()) {
+            return;
+        }
         let Some(id) = self.sessions_here() else { return };
         self.float_list_used(GroupKind::Sessions);
         if id != self.workspace.id {

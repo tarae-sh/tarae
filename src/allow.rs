@@ -2049,7 +2049,7 @@ pub(crate) mod tests {
         settle(&mut ed);
         let failed = crate::storewrite::pending(&store).len();
         let id = ed.workspace_add(wt.clone());
-        assert!(ed.workspace_switch(id));
+        assert!(ed.workspace_switch(id).is_in());
         ed.sandbox_disallow("port 8080").unwrap();
         settle(&mut ed);
         let left = crate::storewrite::pending(&store).len();

@@ -2572,6 +2572,10 @@ pub fn unseen(highs: &[Held], looked: &std::collections::HashSet<crate::risk::Ke
 /// review since its base (its session to the front, the review opened when it isn't), or, where the review
 /// can't show it as the commits have it, in a buffer that shows it so (`held_go`). Going there is no look.
 pub fn card_highs(ed: &mut Editor) {
+    // (a pane's key has its document lent: its session to the front and its review, once it's back)
+    if crate::docpane::later(ed, card_highs) {
+        return;
+    }
     let Some(o) = ed.offers.first() else { return };
     let Some(bring) = o.highs() else { return };
     let (id, held) = (o.id, o.held_changes.clone());

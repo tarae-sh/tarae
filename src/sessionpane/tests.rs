@@ -236,7 +236,7 @@ fn the_session_list_docks_and_stays_after_enter() {
     std::fs::create_dir_all(&other).unwrap();
     let fix = ed.workspace_open(&other).unwrap();
     ed.workspace.name = "fix".into();
-    assert!(ed.workspace_switch(WorkspaceId::HOME));
+    assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
     feed(&mut ed, " W<C-w>L");
     assert_eq!(ed.sizes.sessions_dock, Some(crate::pane::Side::Right));
     let s = frame(&mut ed, 160, 40);
@@ -280,7 +280,7 @@ fn a_docked_list_with_no_room_floats_so_the_keys_go_to_a_list_in_sight() {
     std::fs::create_dir_all(&other).unwrap();
     ed.workspace_open(&other).unwrap();
     ed.workspace.name = "fix".into();
-    assert!(ed.workspace_switch(WorkspaceId::HOME));
+    assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
     feed(&mut ed, " W<C-w>L");
     frame(&mut ed, 160, 40);
     assert!(ed.dock_rect(GroupKind::Sessions).is_some(), "docked at 160");
@@ -341,7 +341,7 @@ fn the_asks_float_over_a_docked_lists_foot_its_selected_row_above_them() {
         ed.workspace_open(&other).unwrap();
         ed.workspace.name = format!("s{k:02}");
     }
-    assert!(ed.workspace_switch(WorkspaceId::HOME));
+    assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
     feed(&mut ed, " W<C-w>LG");
     let what = What::Asks { call: crate::tools::Call::test(1) };
     ed.push_offer(Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what));

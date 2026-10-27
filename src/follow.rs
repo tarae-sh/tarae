@@ -1765,8 +1765,14 @@ fn resume(ed: &mut Editor) {
 /// it's another (your session moves there), its follow on and leading — a click on its name tag, `f` on its row in the
 /// list, `space F`. The first key of yours stops it there, as ever (`watch`); `C-f` in its chat follows again.
 pub fn follow_session(ed: &mut Editor, id: crate::event::WorkspaceId) {
-    if id != ed.workspace.id && !ed.workspace_switch(id) {
-        return ed.set_status("that session is gone");
+    // (`space F` from a pane's view mode, its document lent: into the other workspace once it's back)
+    if id != ed.workspace.id && crate::docpane::later(ed, move |ed| follow_session(ed, id)) {
+        return;
+    }
+    match ed.workspace_switch(id) {
+        crate::workspace::Switched::In => {}
+        crate::workspace::Switched::Later => return,
+        crate::workspace::Switched::Gone => return ed.set_status("that session is gone"),
     }
     let name = ed.workspace.label().to_string();
     if ed.workspace.claude.chat.is_none() {

@@ -86,7 +86,7 @@ fn editor_on(main: &Path, fix: &Path, base: &Path) -> (Editor, WorkspaceId) {
     crate::git::watched(l, "fix");
     l.name = "fix".into();
     l.base = Some("main".into());
-    assert!(ed.workspace_switch(fix_id));
+    assert!(ed.workspace_switch(fix_id).is_in());
     ed.open(&fix.join("a.rs")).unwrap();
     (ed, fix_id)
 }
@@ -403,7 +403,9 @@ fn the_bases_tip_is_named_by_its_own_repositorys_session() {
     crate::git::watched(l, "main");
     // (its workspace before the home one in the list's order: the front, then the list a switch swaps into)
     assert!(
-        ed.workspace_switch(site_id) && ed.workspace_switch(WorkspaceId::HOME) && ed.workspace_switch(fix_id)
+        ed.workspace_switch(site_id).is_in()
+            && ed.workspace_switch(WorkspaceId::HOME).is_in()
+            && ed.workspace_switch(fix_id).is_in()
     );
     assert_eq!(ed.workspaces.iter().map(|l| l.id).collect::<Vec<_>>(), [site_id, WorkspaceId::HOME]);
     change(&mut ed, &main.join("a.rs"), 5, "five, committed on main");

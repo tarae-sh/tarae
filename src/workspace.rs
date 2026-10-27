@@ -587,6 +587,25 @@ pub fn turn_end_words(how: &Result<(), String>) -> (crate::editor::ToastKind, St
     }
 }
 
+/// What `workspace_switch` did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Switched {
+    /// The workspace is in front: it was already, or it came.
+    In,
+    /// A key's command has a pane's document lent (`docpane::lent`): it comes once the key is over — the caller does
+    /// nothing more now, in the workspace in front (it should have put itself off whole, as `follow_session` does).
+    Later,
+    /// No such workspace: ended, or never there.
+    Gone,
+}
+
+impl Switched {
+    /// In front now.
+    pub fn is_in(self) -> bool {
+        self == Switched::In
+    }
+}
+
 /// What a click on the sessions' tabs or chip does (`Screen.session_spots`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Spot {
@@ -1319,12 +1338,19 @@ impl Editor {
     }
 
     /// `:workspace-switch <n>` — session `id` to the front. What was up over the one in front closes (a
-    /// picker, a prompt, insert mode); Claude's cards there go with it. False: no such session.
-    pub fn workspace_switch(&mut self, id: WorkspaceId) -> bool {
+    /// picker, a prompt, insert mode); Claude's cards there go with it.
+    pub fn workspace_switch(&mut self, id: WorkspaceId) -> Switched {
         if id == self.workspace.id {
-            return true;
+            return Switched::In;
         }
-        let Some(i) = self.workspaces.iter().position(|l| l.id == id) else { return false };
+        let Some(i) = self.workspaces.iter().position(|l| l.id == id) else { return Switched::Gone };
+        // (the net: a pane's key has its document lent — every pane of this workspace would go behind with it. Switched
+        // once it's back; a caller that goes on in the other workspace puts itself off whole first, as
+        // `follow_session` does)
+        if crate::docpane::lent(self) {
+            crate::docpane::later(self, move |ed| _ = ed.workspace_switch(id));
+            return Switched::Later;
+        }
         let esc = Key { code: Code::Esc, ctrl: false, alt: false, shift: false };
         if self.picker.is_some() {
             self.handle_key(esc);
@@ -1398,7 +1424,7 @@ impl Editor {
         crate::follow::workspace_in(self);
         // (which one is in front is kept too — `:restart` and the next start come back to it)
         self.workspaces_keep();
-        true
+        Switched::In
     }
 
     /// A click on the sessions' tabs, dropdown or chip.
@@ -1559,7 +1585,7 @@ mod tests {
         };
         let back_id = ed.workspace_open(&back).unwrap();
         ed.workspace.parked.push(screen_card(1));
-        assert!(ed.workspace_switch(WorkspaceId::HOME) && ed.workspace.root == front);
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in() && ed.workspace.root == front);
         assert_eq!(ed.sessions_waiting(), 1);
         // In front: one card up, one under it — and the one behind, counted apart (#91)
         ed.push_offer(screen_card(2));
@@ -1606,7 +1632,7 @@ mod tests {
         };
         let back_id = ed.workspace_open(&back).unwrap();
         let third_id = ed.workspace_open(&third).unwrap();
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         // `back` is first in the list, but `third`'s card came earlier
         workspace_by_mut(&mut ed, back_id).parked.push(card(1, 5));
         workspace_by_mut(&mut ed, third_id).parked.push(card(2, 60));
@@ -1642,7 +1668,7 @@ mod tests {
             Offer::new(format!("Claude asks {n}"), "to see the screen", "", String::new(), what)
         };
         let back_id = ed.workspace_open(&back).unwrap();
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         ed.push_offer(card(1));
         workspace_by_mut(&mut ed, back_id).parked.push(card(2));
         for (w, h) in [(80, 24), (160, 45)] {
@@ -1670,7 +1696,7 @@ mod tests {
         use crate::offer::{Offer, What};
         let (mut ed, front, back) = two_projects("peekalone");
         let back_id = ed.workspace_open(&back).unwrap();
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         let what = What::Asks { call: crate::tools::Call::test(2) };
         workspace_by_mut(&mut ed, back_id).parked.push(Offer::new(
             "Claude asks 2".into(),
@@ -1719,7 +1745,7 @@ mod tests {
         std::fs::create_dir_all(&third).unwrap();
         let back_id = ed.workspace_open(&back).unwrap();
         let third_id = ed.workspace_open(&third).unwrap();
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         let card = |n: u64, ago: u64| {
             let what = What::Asks { call: crate::tools::Call::test(n) };
             let mut o = Offer::new(format!("Claude asks {n}"), "to see the screen", "", String::new(), what);
@@ -1751,7 +1777,7 @@ mod tests {
     fn the_bring_rebase_and_end_cards_are_about_the_session_whose_checkout_they_name() {
         let (mut ed, front, back) = two_projects("about");
         let back_id = ed.workspace_open(&back).unwrap();
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         let link = front.with_file_name("back-link");
         std::os::unix::fs::symlink(&back, &link).unwrap();
         let moved = |root: &std::path::Path| crate::rebase::Moved {
@@ -1816,7 +1842,7 @@ mod tests {
         let id = ed.workspace_open(&back).unwrap();
         crate::chat::open(&mut ed);
         ed.workspace.claude.chat.as_mut().unwrap().input = "and also the tests".into();
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         crate::chat::open(&mut ed);
         let rows = screen(&mut ed, 160, 24);
         let tabs = rows.iter().find(|r| r.contains(" · +")).cloned().unwrap_or_else(|| panic!("{rows:#?}"));
@@ -1892,8 +1918,8 @@ mod tests {
         let status = rows.iter().find(|r| r.contains("● normal")).unwrap_or_else(|| panic!("{rows:#?}"));
         assert!(status.contains("front 1 done") && !status.contains('▲'), "{status}");
         // Looked at: no longer done
-        assert!(ed.workspace_switch(id));
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(id).is_in());
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         assert_eq!(ed.doing(workspace_by(&ed, id)), Doing::Idle);
         std::fs::remove_dir_all(front.parent().unwrap()).ok();
     }
@@ -1907,7 +1933,7 @@ mod tests {
         use crate::offer::{Offer, What};
         let (mut ed, front, back) = two_projects("nudge");
         let id = ed.workspace_open(&back).unwrap();
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         let park = |ed: &mut Editor, n: u64, ago: Duration| {
             let what = What::Asks { call: crate::tools::Call::test(n) };
             let mut o = Offer::new(format!("Claude asks {n}"), "to see the screen", "", String::new(), what);
@@ -1933,7 +1959,7 @@ mod tests {
         assert_eq!(warnings(&ed).len(), 1, "never again");
         // Answered meanwhile (gone), or its session in front: nothing
         ed.card_nudge(id, 99);
-        assert!(ed.workspace_switch(id));
+        assert!(ed.workspace_switch(id).is_in());
         ed.card_nudge(id, fresh);
         assert_eq!(warnings(&ed).len(), 1);
         std::fs::remove_dir_all(front.parent().unwrap()).ok();
@@ -2150,12 +2176,12 @@ mod tests {
         // …the same behind: its parked card lost, told in its session, named
         let front_log = front.join("claude-heard-again.log");
         claude_calls(&mut ed, &front_log, &[("run", run(&front))]);
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         ed.workspace.claude.chat = None;
         feed(&mut ed, "<space>lagain<ret><esc>");
         pump(&mut ed, &|ed| runs(&ed.offers), "front's card again");
         let front_id = ed.workspace.id;
-        assert!(ed.workspace_switch(id), "front goes behind, its card parked");
+        assert!(ed.workspace_switch(id).is_in(), "front goes behind, its card parked");
         workspace_by_mut(&mut ed, front_id).parked.clear();
         ed.asking_sync();
         pump(
@@ -2190,7 +2216,7 @@ mod tests {
         ed.workspace.code_review = Some(review(&front));
         let back_id = ed.workspace_open(&back).unwrap();
         ed.workspace.code_review = Some(review(&back));
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         let name = ed.workspace.label().to_string();
         feed(&mut ed, "<space>vq");
         let o = ed.offers.first().expect("the end card");
@@ -2200,7 +2226,7 @@ mod tests {
             format!("{name}'s review · uncommitted · 0 of 3 viewed\n\n3 files not viewed — end it anyway?");
         assert!(o.question.starts_with(&head), "{}", o.question);
         // To back: front's card goes behind with front; back's own end card is its own, not merged into it
-        assert!(ed.workspace_switch(back_id));
+        assert!(ed.workspace_switch(back_id).is_in());
         assert!(ed.offers.is_empty(), "front's card isn't up in back: {:?}", ed.offers);
         feed(&mut ed, "<space>vq");
         assert_eq!(ed.offers.len(), 1);
@@ -2212,7 +2238,7 @@ mod tests {
         assert!(ed.workspace.code_review.is_none(), "front's ended");
         assert!(workspace_by(&ed, back_id).code_review.is_some(), "back's untouched");
         // Back's card, its review ended and another begun meanwhile: `y` ends nothing
-        assert!(ed.workspace_switch(back_id));
+        assert!(ed.workspace_switch(back_id).is_in());
         let r = ed.workspace.code_review.as_mut().unwrap();
         r.started += Duration::from_millis(1);
         feed(&mut ed, "<C-q>y");
@@ -2317,9 +2343,9 @@ mod tests {
         ed.split_view(crate::split::Dir::Vertical);
         let v = ed.workspace.views.iter_mut().find(|v| v.id == left).unwrap();
         (v.doc, v.top, v.left, v.top_rows) = (gone, 3, 2, Some((3, 5)));
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         ed.close_doc(gone);
-        assert!(ed.workspace_switch(back));
+        assert!(ed.workspace_switch(back).is_in());
         let v = ed.workspace.views.iter().find(|v| v.id == left).unwrap();
         assert_ne!(v.doc, gone);
         assert_eq!((v.top, v.left, v.top_rows), (0, 0, None));
@@ -2428,7 +2454,7 @@ mod tests {
         ready(ed);
         feed(ed, "<space>lgo<ret><esc>");
         assert!(
-            ed.workspace_switch(WorkspaceId::HOME) && ed.workspace.id == WorkspaceId::HOME,
+            ed.workspace_switch(WorkspaceId::HOME).is_in() && ed.workspace.id == WorkspaceId::HOME,
             "front in front"
         );
         assert!(workspace_by(ed, id).claude.chat.as_ref().unwrap().busy(), "back's Claude at work behind it");
@@ -2587,7 +2613,7 @@ mod tests {
         claude_calls(&mut ed, &log, &[("symbols", json!({ "path": "main.rs" }))]);
         let back_id = ed.workspace_open(&back).unwrap();
         assert!(
-            ed.workspace_switch(WorkspaceId::HOME) && ed.workspace.id == WorkspaceId::HOME,
+            ed.workspace_switch(WorkspaceId::HOME).is_in() && ed.workspace.id == WorkspaceId::HOME,
             "front in front"
         );
         feed(&mut ed, "<space>lgo<ret><esc>");
@@ -2703,7 +2729,7 @@ mod tests {
         assert_eq!(ed.workspace.id, id);
         // A failed turn: its error's first line, a warning
         feed(&mut ed, "<space>lagain<ret><esc>");
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         turn_ends(&mut ed, id);
         let warn = ed.toasts.iter().find(|t| t.text.starts_with("back · turn ended: ")).expect("said");
         assert_eq!(
@@ -2711,9 +2737,9 @@ mod tests {
             ("back · turn ended: API Error: overloaded — C-q goes there", ToastKind::Warning)
         );
         // A stopped one, a card of the front's up first: `C-q` goes there after it
-        assert!(ed.workspace_switch(id));
+        assert!(ed.workspace_switch(id).is_in());
         feed(&mut ed, "<space>lonce more<ret><esc>");
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         let what = What::Asks { call: crate::tools::Call::test(1) };
         ed.push_offer(Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what));
         turn_ends(&mut ed, id);

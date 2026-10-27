@@ -64,7 +64,7 @@ fn scene(name: &str) -> Scene {
     ed.workspace.claude.chat = Some(c);
     let fix = ed.workspace_add(other.clone());
     ed.workspace_by_id(fix).unwrap().name = "fix".into();
-    assert!(ed.workspace_switch(fix));
+    assert!(ed.workspace_switch(fix).is_in());
     ed.open(&other.join("a.rs")).unwrap();
     Scene { ed, main, other, fix, _dir: dir }
 }
@@ -260,7 +260,7 @@ fn a_change_on_disk_from_elsewhere_maps_the_lines_again() {
 #[test]
 fn one_session_shows_no_presence() {
     let Scene { mut ed, main, fix, _dir, .. } = scene("presence-one");
-    assert!(ed.workspace_switch(WorkspaceId::HOME));
+    assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
     ed.workspaces.retain(|l| l.id != fix);
     gaze(&mut ed, main.join("a.rs"), 1..2);
     ed.open(&main.join("a.rs")).unwrap();
@@ -470,7 +470,7 @@ fn a_click_on_the_tag_or_f_in_the_list_follows() {
     let home = crate::event::WorkspaceId::HOME;
     assert_eq!((ed.workspace.id, followed(&ed)), (home, Some(home)), "followed from its tag");
     // Back in fix; the list's `f`
-    assert!(ed.workspace_switch(fix));
+    assert!(ed.workspace_switch(fix).is_in());
     press(&mut ed, "<space>W");
     let main_row = ed.session_items().iter().position(|i| i.label == "main").unwrap();
     let here = ed.session_items().iter().position(|i| i.label == "fix").unwrap();

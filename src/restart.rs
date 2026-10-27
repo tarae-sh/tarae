@@ -1833,7 +1833,7 @@ mod tests {
         assert_eq!(ed.preflight_quick(), Some(vec!["fmt".to_string()]), "before: the project's quick set");
         // The other checkout in front, then `:restart`
         let id = ed.workspace_add(back.clone());
-        assert!(ed.workspace_switch(id));
+        assert!(ed.workspace_switch(id).is_in());
         let state = snapshot(&mut ed);
         drop(ed);
         let mut ed = started_in(&dir, &front);
@@ -3450,7 +3450,7 @@ mod tests {
         let id = ed.workspace_open(&back).unwrap();
         crate::chat::open(&mut ed);
         ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         crate::typed::execute(&mut ed, "restart!").unwrap();
         wait_on_card(&mut ed, "back: Claude's turn");
         assert!(
@@ -3489,7 +3489,7 @@ mod tests {
         let id = ed.workspace_open(&back).unwrap();
         crate::chat::open(&mut ed);
         ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         let status = |ed: &mut Editor| {
             let mut bytes = Vec::new();
             crate::term::render(ed, &mut bytes, 160, 30).unwrap();

@@ -109,7 +109,7 @@ fn older_card_behind(ed: &mut Editor) {
     );
     o.since = Instant::now() - Duration::from_secs(60);
     ed.workspace.parked.push(o);
-    assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME) && ed.workspace.id != id);
+    assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in() && ed.workspace.id != id);
     light_card(ed);
 }
 
@@ -491,7 +491,7 @@ pub(crate) const SCENES: &[Scene] = &[
         let dir = std::env::temp_dir().join(format!("tarae-uistate-done-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let id = ed.workspace_open(&dir).unwrap();
-        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME) && ed.workspace.id != id);
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in() && ed.workspace.id != id);
         let l = ed.workspaces.iter_mut().find(|l| l.id == id).unwrap();
         l.claude.turn_end = Some((Instant::now(), Ok(())));
         assert_eq!(ed.next_up(), crate::inbox::Next::Done(id));

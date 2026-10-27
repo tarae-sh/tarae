@@ -1112,7 +1112,7 @@ mod tests {
         let back = ed.workspace_open(&dir.join("back")).unwrap();
         ed.open(&dir.join("back/back.txt")).unwrap();
         let back_doc = ed.doc().id;
-        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME));
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in());
         ed.open(&dir.join("front/front.txt")).unwrap();
         let front_doc = ed.doc().id;
         let stats: Vec<Stat> = [(front_doc, "front"), (back_doc, "back")]
@@ -1155,15 +1155,15 @@ mod tests {
         let row = s.lines().find(|l| l.contains(&back_label)).unwrap_or_default();
         assert!(row.contains("• 1 reloaded"), "{s}");
         ed.picker = None;
-        assert!(ed.workspace_switch(back));
-        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME));
+        assert!(ed.workspace_switch(back).is_in());
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in());
         assert!(!chip(&mut ed).contains('•'), "seen: {}", chip(&mut ed));
         // A round started while the other session was in front lands in the one in front now — said there,
         // named after it (not swapped into the one that started it)
-        assert!(ed.workspace_switch(back));
+        assert!(ed.workspace_switch(back).is_in());
         std::fs::write(dir.join("front/front.txt"), "one\ntwo\nthree\n").unwrap();
         ed.disk_poll(false);
-        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME));
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in());
         ed.toasts.clear();
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
         let reloaded = |ed: &Editor| ed.docs.iter().any(|d| d.id == front_doc && d.text.len_lines() == 4);

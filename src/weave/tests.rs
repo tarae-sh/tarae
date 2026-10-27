@@ -199,7 +199,7 @@ fn scene(name: &str) -> Scene {
         crate::git::watched(l, name);
         ids[k + 1] = id;
     }
-    assert!(ed.workspace_switch(ids[1]));
+    assert!(ed.workspace_switch(ids[1]).is_in());
     ed.open(&fix.join("a.rs")).unwrap();
     Scene { ed, main, fix, docs, ids, dir }
 }
@@ -531,7 +531,7 @@ fn a_conflict_shows_side_by_side_wide_and_stacked_narrow() {
 #[test]
 fn a_branch_not_read_yet_is_read_with_the_merge() {
     let Scene { mut ed, main, docs, ids, dir: _dir, .. } = scene("weave-branch");
-    assert!(ed.workspace_switch(ids[0]));
+    assert!(ed.workspace_switch(ids[0]).is_in());
     ed.workspace.git_branch = None;
     ed.open(&main.join("a.rs")).unwrap();
     save_line(&mut ed, &docs.join("a.rs"), 4, "four, docs");
@@ -594,7 +594,7 @@ fn space_v_w_and_the_lists_v_open_it() {
 /// The woven view of `view` in front again, in fix's workspace (after an `enter` took you elsewhere).
 fn back(ed: &mut Editor, fix: WorkspaceId, view: crate::document::DocId) {
     if ed.workspace.id != fix {
-        assert!(ed.workspace_switch(fix));
+        assert!(ed.workspace_switch(fix).is_in());
     }
     ed.current = ed.docs.iter().position(|d| d.id == view).expect("the view");
 }
@@ -652,7 +652,11 @@ fn enter_on_the_tips_part_stays_in_its_repository() {
     l.name = "site".into();
     crate::git::watched(l, "main");
     // (its workspace before main's in the list's order: the front, then the list a switch swaps into)
-    assert!(ed.workspace_switch(site_id) && ed.workspace_switch(ids[0]) && ed.workspace_switch(ids[1]));
+    assert!(
+        ed.workspace_switch(site_id).is_in()
+            && ed.workspace_switch(ids[0]).is_in()
+            && ed.workspace_switch(ids[1]).is_in()
+    );
     assert_eq!(ed.workspaces.first().map(|l| l.id), Some(site_id));
     std::fs::write(docs.join("a.rs"), twelve().replace("line 5\n", "five, docs\n")).unwrap();
     ed.wrote(&docs.join("a.rs"));

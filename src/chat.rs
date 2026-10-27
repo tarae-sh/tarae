@@ -1236,6 +1236,11 @@ fn loaded(ed: &mut Editor, saved: Vec<crate::chats::Saved>) {
 
 /// Shows `saved` in the panel and resumes its conversation in claude (the process of now, if any, goes).
 pub fn continue_with(ed: &mut Editor, saved: crate::chats::Saved) {
+    // (as `reset`: once a pane's key has its document back)
+    if crate::docpane::lent(ed) {
+        crate::docpane::later(ed, move |ed| continue_with(ed, saved));
+        return;
+    }
     continue_from(ed, saved, true);
 }
 
@@ -1442,6 +1447,10 @@ pub fn keep_now(ed: &Editor) {
 }
 
 pub fn close(ed: &mut Editor) {
+    // (its view mode's or its input's key — `space L` there — has their document lent: closed once it's back)
+    if crate::docpane::later(ed, close) {
+        return;
+    }
     // (the hosts its conversation's `a` let through go with it — one conversation a session at a time)
     crate::hosts::chat_ended(ed);
     // (a turn under way ends here, cut off: its process goes with the chat, and its exit is never heard)
@@ -1458,6 +1467,10 @@ pub fn close(ed: &mut Editor) {
 /// New chat — fresh process (drops memory of the previous conversation): `C-l` in the chat, `:chat-new`
 /// (the chat opened first if it's closed — and the recent conversation not continued when it's read).
 pub fn reset(ed: &mut Editor) {
+    // (a pane's key has its document lent: the view mode it ends can't let go of it yet — once it's back)
+    if crate::docpane::later(ed, reset) {
+        return;
+    }
     let said = "New conversation with Claude";
     // (the hosts this conversation's `a` let through go with it — the proxy keeps them as the session's, right
     // while a session has one conversation at a time)

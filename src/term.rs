@@ -18993,7 +18993,7 @@ mod tests {
             ids.push(ed.workspace_open(&p).unwrap());
             ed.workspace.name = (*n).into();
         }
-        assert!(ed.workspace_switch(ids[0]));
+        assert!(ed.workspace_switch(ids[0]).is_in());
         let card = |n: u64| {
             let what = What::Asks { call: crate::tools::Call::test(n) };
             Offer::new(format!("Claude asks {n}"), "to see the screen", "", String::new(), what)

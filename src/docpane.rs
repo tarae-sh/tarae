@@ -365,7 +365,36 @@ pub fn swap<R>(
     if moved {
         ed.workspace.viewer.at = At::Code;
     }
+    // (what its command asked that drops a pane — this one too — now, every document back: the keys follow it, to the
+    // code where it closed what had them)
+    if outer.is_none() && !ed.after_swap.is_empty() {
+        for act in std::mem::take(&mut ed.after_swap) {
+            act(ed);
+        }
+        ed.focus_sync();
+    }
     Some((r, Swapped { edited, typing }))
+}
+
+/// A key's command has a pane's document lent now (`swap`): what would take a session to the front, close or replace a
+/// pane puts itself off whole — its act and what it does after — with `later` (`workspace_switch`'s own is the net).
+pub fn lent(ed: &Editor) -> bool {
+    swapped(ed).is_some()
+}
+
+/// An act `later` put off, done once the key's documents are back.
+pub type Later = Box<dyn FnOnce(&mut Editor)>;
+
+/// An act that drops or replaces a document pane — the chat closed, started anew or another conversation in it,
+/// another session in front — asked while a key's command has a pane swapped in (its document lent as `current`, its
+/// keys traded): put off until the key is over and every document is back where it's kept (`swap`), never done
+/// under the command. True: put off — the caller does nothing more now.
+pub fn later(ed: &mut Editor, act: impl FnOnce(&mut Editor) + 'static) -> bool {
+    if !lent(ed) {
+        return false;
+    }
+    ed.after_swap.push(Box::new(act));
+    true
 }
 
 /// `d`'s cursor line in sight in `rows` × `cols`, the scrolloff margin `so` kept (one line a row: nothing wraps),

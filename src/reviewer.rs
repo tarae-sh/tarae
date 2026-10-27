@@ -2233,7 +2233,7 @@ mod tests {
         assert!(row.contains("author · other · +"), "{row}");
         assert!(status(&mut ed).contains("¶ reviewing"));
         // Behind
-        assert!(ed.workspace_switch(other));
+        assert!(ed.workspace_switch(other).is_in());
         let (s, text) = said(&ed);
         assert_eq!(
             (&s[0]["sessions"][0]["doing"], &s[0]["reviewer"]),
@@ -2264,7 +2264,7 @@ mod tests {
         fake(&mut ed, &dir, &[note, result("One finding.")]);
         reading(&mut ed, &repo);
         let other = other_session(&mut ed, &dir);
-        assert!(ed.workspace_switch(other));
+        assert!(ed.workspace_switch(other).is_in());
         assert!(ed.inbox().is_empty(), "it reads: nothing yet");
         settle_until(&mut ed, |ed| !author(ed).reviewer.as_ref().unwrap().reading());
         let inbox = ed.inbox();
@@ -2293,7 +2293,7 @@ mod tests {
             "said where you are: {toasts:?}"
         );
         assert!(ed.inbox().is_empty(), "{:?}", ed.inbox());
-        assert!(ed.workspace_switch(other));
+        assert!(ed.workspace_switch(other).is_in());
         let row = tabs(&mut ed);
         assert!(row.contains("author · other · +"), "{row}");
         std::fs::remove_dir_all(&dir).ok();
@@ -2308,7 +2308,7 @@ mod tests {
         fake(&mut ed, &dir, &[failed]);
         reading(&mut ed, &repo);
         let other = other_session(&mut ed, &dir);
-        assert!(ed.workspace_switch(other));
+        assert!(ed.workspace_switch(other).is_in());
         settle_until(&mut ed, |ed| !author(ed).reviewer.as_ref().unwrap().reading());
         let inbox = ed.inbox();
         assert_eq!(inbox.len(), 1, "{inbox:?}");
@@ -2365,7 +2365,7 @@ mod tests {
         );
         // Behind: the same
         let other = other_session(&mut ed, &dir);
-        assert!(ed.workspace_switch(other));
+        assert!(ed.workspace_switch(other).is_in());
         let st = ed.ui_state().json();
         let author = st["workspaces"].as_array().unwrap().iter().find(|s| s["id"] == "w0").unwrap().clone();
         assert_eq!(
@@ -2433,7 +2433,7 @@ mod tests {
         assert!(r.verdict.is_empty() && r.why.is_none() && r.of.is_empty(), "{r:?}");
         // Another session's Claude: the same counts, and no line of its own
         let other = other_session(&mut ed, &dir);
-        assert!(ed.workspace_switch(other));
+        assert!(ed.workspace_switch(other).is_in());
         let st = ed.ui_state_claude();
         let author = st.workspaces.iter().find(|s| s.id == "w0").unwrap();
         let r = author.reviewer_run.as_ref().expect("its counts stay");
@@ -2555,7 +2555,7 @@ mod tests {
         one_finding(&mut ed, &dir);
         reading(&mut ed, &repo);
         let other = other_session(&mut ed, &dir);
-        assert!(ed.workspace_switch(other));
+        assert!(ed.workspace_switch(other).is_in());
         settle_until(&mut ed, |ed| !author(ed).reviewer.as_ref().unwrap().reading());
         let author_run = |ed: &Editor| {
             let st = ed.ui_state().json();
@@ -2563,7 +2563,7 @@ mod tests {
                 .clone()
         };
         assert_eq!((&author_run(&ed)["state"], &author_run(&ed)["news"]), (&json!("done"), &json!(true)));
-        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME));
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in());
         assert_eq!(author_run(&ed)["news"], false, "in front: no longer news");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -3869,10 +3869,10 @@ mod tests {
                 .is_some_and(|r| r.members.iter().any(|m| m.state == State::Reading))
         };
         let other = ed.workspace_add(repo2.clone());
-        assert!(ed.workspace_switch(other));
+        assert!(ed.workspace_switch(other).is_in());
         ask_in(&mut ed, repo2.clone(), None, false);
         settle_until(&mut ed, reads);
-        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME));
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in());
         ed.workspace.root = repo.clone();
         ask_in(&mut ed, repo.clone(), None, false);
         settle_until(&mut ed, |ed| ed.workspace.reviewer.is_some() && !ed.reviewer_pumping);

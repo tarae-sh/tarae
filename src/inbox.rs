@@ -314,6 +314,12 @@ impl Editor {
     /// `C-q` with no card of its to take it: to the one that has waited longest — nothing waiting, to the
     /// session whose turn ended first, unseen. False: nothing waits, no turn ended.
     pub(crate) fn inbox_next(&mut self) -> bool {
+        // (a pane's key has its document lent: to the one waiting — its session, its card — once it's back)
+        if crate::docpane::lent(self) {
+            let waits = !matches!(self.next_up(), Next::None);
+            crate::docpane::later(self, |ed| _ = ed.inbox_next());
+            return waits;
+        }
         match self.next_up() {
             Next::None => false,
             Next::Go(e) => {
@@ -345,7 +351,8 @@ impl Editor {
     /// (`workspace_switch` leaves insert mode, a prompt, a picker as it always does).
     fn inbox_to(&mut self, e: &Entry) {
         let id = e.session_id();
-        if id != self.workspace.id && !self.workspace_switch(id) {
+        // (its callers put themselves off whole while a pane's document is lent: `Later` never here)
+        if !self.workspace_switch(id).is_in() {
             return;
         }
         if let Some(card) = e.card() {
@@ -402,6 +409,11 @@ impl Editor {
     /// `enter` in the inbox: to the entry, and its card takes the keys — answered there. Gone meanwhile
     /// (answered elsewhere, its turn ended): said, and the list follows.
     pub(crate) fn inbox_go(&mut self, id: &str) {
+        if crate::docpane::lent(self) {
+            let id = id.to_string();
+            crate::docpane::later(self, move |ed| ed.inbox_go(&id));
+            return;
+        }
         let Some(e) = self.inbox().into_iter().find(|e| e.id == id) else {
             return self.set_status("that one isn't waiting any more — answered, or its turn ended");
         };

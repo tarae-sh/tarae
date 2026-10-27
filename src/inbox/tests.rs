@@ -21,7 +21,7 @@ fn three(name: &str) -> (Editor, PathBuf, WorkspaceId, WorkspaceId) {
     (ed.workspace.root, ed.workspace.name) = (dir.join("front"), "front".into());
     let back = ed.workspace_open(&dir.join("back")).unwrap();
     let third = ed.workspace_open(&dir.join("third")).unwrap();
-    assert!(ed.workspace_switch(WorkspaceId::HOME));
+    assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
     (ed, dir, back, third)
 }
 
@@ -363,7 +363,7 @@ fn inside_zellij_or_not_the_toast_for_a_session_left_waiting_says_its_key() {
         session(&mut ed, back).claude.chat = Some(c);
         session(&mut ed, back).viewer.at = crate::workspace::At::Chat;
         up(&mut ed, claudes(1, 20));
-        assert!(ed.workspace_switch(back));
+        assert!(ed.workspace_switch(back).is_in());
         let says = if twins {
             "front · waits for you — space I lists it"
         } else {

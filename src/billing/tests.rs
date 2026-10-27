@@ -1149,7 +1149,7 @@ fn a_session_behind_refused_twice_for_money_has_one_card() {
     let sid = ed.workspace.id;
     std::fs::create_dir_all(place.dir.join("other")).unwrap();
     let other = ed.workspace_add(place.dir.join("other"));
-    assert!(ed.workspace_switch(other));
+    assert!(ed.workspace_switch(other).is_in());
     failing(&place, "billing_error", CREDITS);
     let parked = |ed: &Editor| {
         let s = ed.workspaces.iter().find(|s| s.id == sid).unwrap();

@@ -143,7 +143,8 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
         "workspace-switch" => {
             let sessions = editor.workspaces_listed();
             match rest.trim().parse() {
-                Ok(id) if editor.workspace_switch(id) => Ok(()),
+                // (`Later`: a pane's key has its document lent — in front once it's back, nothing more to do here)
+                Ok(id) if editor.workspace_switch(id) != crate::workspace::Switched::Gone => Ok(()),
                 _ => {
                     let list: Vec<String> = sessions
                         .iter()

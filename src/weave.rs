@@ -925,6 +925,10 @@ pub fn enter(ed: &mut Editor, key: crate::key::Key) -> bool {
 /// file at its own line — the tip's part the checkout that has the base's branch (C2's naming). Said where there's
 /// nowhere to go: a line nobody changed, a workspace that ended, a branch no checkout here has.
 pub fn go(ed: &mut Editor) {
+    // (the woven view's line is read where the keys' code is: never with a pane's document lent — once it's back)
+    if crate::docpane::later(ed, go) {
+        return;
+    }
     let Some(m) = of(ed.doc()) else { return };
     let last = crate::movement::last_line(&ed.doc().text);
     let Some(there) = there(m, ed.cursor_line(), last) else {
@@ -969,8 +973,11 @@ pub fn go(ed: &mut Editor) {
         Err(Read::Failed(e)) => return ed.set_error(format!("{rel} in {name}'s workspace: {e}")),
         Err(Read::Text(_) | Read::TooLarge) => {}
     }
-    if id != ed.workspace.id && !ed.workspace_switch(id) {
-        return ed.set_status(format!("{name}'s workspace has ended"));
+    match ed.workspace_switch(id) {
+        crate::workspace::Switched::In => {}
+        // (put off whole above: never here)
+        crate::workspace::Switched::Later => return,
+        crate::workspace::Switched::Gone => return ed.set_status(format!("{name}'s workspace has ended")),
     }
     // (its file may have changed since the weave: the line kept to it)
     match ed.open(&path) {

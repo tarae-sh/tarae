@@ -897,6 +897,9 @@ pub struct Editor {
     pub wet_waiting: Vec<crate::motion::Waiting>,
     /// Whether motions are drawn — off in tests, as the animation is (a test that looks at one turns it on).
     pub motion_drawn: bool,
+    /// Acts that drop or replace a document pane, asked while a key's command had one swapped in: done once every
+    /// document is back where it's kept (`docpane::later`).
+    pub(crate) after_swap: Vec<crate::docpane::Later>,
     /// What Claude's writing sounds like and where it goes (`sound.rs`, `editor.sound`).
     pub sound: crate::sound::State,
     /// `TARAE_MOTION_AT`: every motion drawn at this age, none ending (shots — read once at start).
@@ -1297,6 +1300,7 @@ impl Editor {
             press_on_diff: None,
             wet_waiting: Vec::new(),
             motion_drawn: !cfg!(test),
+            after_swap: Vec::new(),
             sound: crate::sound::State::default(),
             motion_at: if cfg!(test) { None } else { crate::motion::pinned_age() },
             reduce_motion: false,
@@ -7475,13 +7479,13 @@ mod tests {
         let (a, b) = (ed.workspace.id, ed.workspace_add(other.clone()));
         // A click on the other session's tab (the person's input), then back while the file changed under the first
         ed.input_seq += 1;
-        assert!(ed.workspace_switch(b));
+        assert!(ed.workspace_switch(b).is_in());
         ed.handle_event(crate::event::Event::Resize);
         let grown = format!("new top\n{}", std::fs::read_to_string(&util).unwrap());
         std::fs::write(&util, &grown).unwrap();
         ed.disk_take(&util, &ropey::Rope::from_str(&grown), crate::disk::stamp(&util));
         ed.input_seq += 1;
-        assert!(ed.workspace_switch(a));
+        assert!(ed.workspace_switch(a).is_in());
         ed.handle_event(crate::event::Event::Resize);
         assert!(
             !ed.workspace.claude.chat.as_ref().unwrap().follow.paused,
@@ -7516,7 +7520,7 @@ mod tests {
         feed(&mut ed, "<esc>j");
         settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().unwrap().follow.paused);
         let (a, b) = (ed.workspace.id, ed.workspace_add(other.clone()));
-        assert!(ed.workspace_switch(b));
+        assert!(ed.workspace_switch(b).is_in());
         // The wake-up lands while it's behind: follow doesn't take over in a session you aren't in
         let end = crate::test_results::quiet_for(std::time::Duration::from_millis(300));
         while let Some(left) = end.checked_duration_since(std::time::Instant::now()) {
@@ -7530,7 +7534,7 @@ mod tests {
         );
         assert!(!ed.messages.iter().any(|m| m.2.contains("following Claude again")), "nor said in front");
         // Back in front and quiet: a quiet while from coming back, then follow again
-        assert!(ed.workspace_switch(a));
+        assert!(ed.workspace_switch(a).is_in());
         let back = std::time::Instant::now();
         ed.handle_event(crate::event::Event::Resize);
         assert!(
@@ -13158,7 +13162,7 @@ mod tests {
         let behind = ed.workspace_open(&wt).unwrap();
         let sh = |s: &str| vec!["/bin/sh".to_string(), "-c".into(), s.into()];
         assert!(ed.terminal_run(sh("sleep 0.3; echo from-behind; sleep 5"), Vec::new()));
-        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME));
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in());
         assert!(ed.terminal_run(sh("echo in-front; sleep 5"), Vec::new()));
         let shows = |t: Option<&crate::terminal::Terminal>, s: &str| {
             t.is_some_and(|t| t.parser.screen().contents().contains(s))
@@ -13171,7 +13175,7 @@ mod tests {
             !shows(ed.workspace.terminal.as_ref(), "from-behind"),
             "each session's output in its own terminal"
         );
-        assert!(ed.workspace_switch(behind));
+        assert!(ed.workspace_switch(behind).is_in());
         assert!(shows(ed.workspace.terminal.as_ref(), "from-behind"));
         ed.workspace.terminal = None;
         ed.workspaces.clear();
@@ -14790,7 +14794,7 @@ mod tests {
         let mut ed = editor("");
         ed.workspace.root = dir.join("started");
         let other = ed.workspace_open(&dir.join("other")).unwrap();
-        assert!(ed.workspace_switch(other));
+        assert!(ed.workspace_switch(other).is_in());
         assert_eq!(ed.workspace.root, dir.join("other"), "the other session in front");
         assert_eq!(ed.started_root(), dir.join("started"));
         ed.config.tab_width = 4;
@@ -15897,12 +15901,12 @@ mod tests {
         let first = ed.workspace.id;
         // Another session: a file, a jump there (its list pruned)
         let id = ed.workspace_add(other.clone());
-        assert!(ed.workspace_switch(id));
+        assert!(ed.workspace_switch(id).is_in());
         ed.open(&other.join("x.txt")).unwrap();
         feed_events(&mut ed, "jgg");
         ed.push_jump();
         // Back: `C-o` to b, as the preview, then to a.txt where it was
-        assert!(ed.workspace_switch(first));
+        assert!(ed.workspace_switch(first).is_in());
         feed_events(&mut ed, "<C-o>");
         assert!(on(&ed, "b.txt") && ed.doc().preview, "b.txt again: its parked spot kept");
         feed_events(&mut ed, "<C-o>");
@@ -17596,14 +17600,14 @@ mod tests {
         let mut ed = editor("one\n");
         let main = ed.workspace.id;
         let other = ed.workspace_open(dir.path()).unwrap();
-        assert!(ed.workspace_switch(main));
+        assert!(ed.workspace_switch(main).is_in());
         let trust = What::ProjectTrust { hash: [0; 32] };
         ed.push_offer(Offer::new("Trust this project?".into(), "x = 1", "", String::new(), trust));
         feed(&mut ed, "<C-q>");
         assert!(ed.card_has_keys());
-        assert!(ed.workspace_switch(other));
+        assert!(ed.workspace_switch(other).is_in());
         assert!(ed.offers.len() == 1 && !ed.card_has_keys(), "up in the other session, waiting");
-        assert!(ed.workspace_switch(main));
+        assert!(ed.workspace_switch(main).is_in());
         assert!(!ed.card_has_keys(), "back: still waiting");
     }
 

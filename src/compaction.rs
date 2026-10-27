@@ -573,7 +573,7 @@ mod tests {
         claude_answers(&mut ed, &[vec![text("working"), automatic(), result(None, 0.1)]]);
         let back = ed.workspace_open(&dir.join("back")).unwrap();
         feed(&mut ed, "<space>lgo<ret><esc>");
-        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME));
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in());
         turn_ends(&mut ed, back);
         let msg = "back · Claude compacted its conversation (automatic, 812k tokens before)";
         let toasts: Vec<_> = ed.toasts.iter().filter(|t| t.text == msg).collect();
@@ -589,7 +589,9 @@ mod tests {
         assert!(row.contains("≈ compacted"), "{row:?}");
         assert_eq!(ed.ui_state().json()["workspaces"][1]["sessions"][0]["compacted"]["unseen"], true);
         // Seen once it's in front
-        assert!(ed.workspace_switch(back) && ed.workspace_switch(crate::event::WorkspaceId::HOME));
+        assert!(
+            ed.workspace_switch(back).is_in() && ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in()
+        );
         let row = listed(&mut ed);
         assert!(!row.contains("compacted"), "{row:?}");
         assert_eq!(

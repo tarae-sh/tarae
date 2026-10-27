@@ -881,6 +881,11 @@ impl Editor {
 
     /// `y` on the base-moved card: its session to the front, and its rebase looked at, then started.
     pub fn rebase_start(&mut self, card: u64, m: Moved) {
+        // (a pane's key has its document lent: its session to the front, and the rest, once it's back)
+        if crate::docpane::lent(self) {
+            crate::docpane::later(self, move |ed| ed.rebase_start(card, m));
+            return;
+        }
         let Some(id) = self.session_at(&m.root) else {
             return self.offer_finished(card, Err(format!("{} isn't open any more", m.name)));
         };
@@ -1008,6 +1013,10 @@ impl Editor {
 
     /// `s` on the held card: the rebase, its changes stashed for it and put back after.
     pub fn rebase_held_stash(&mut self, h: Held) {
+        if crate::docpane::lent(self) {
+            crate::docpane::later(self, move |ed| ed.rebase_held_stash(h));
+            return;
+        }
         let Some(id) = self.session_at(&h.moved.root) else { return };
         self.workspace_switch(id);
         self.rebase_check(h.moved, true);
@@ -1015,6 +1024,10 @@ impl Editor {
 
     /// `g` on the held card: its session's git tab, with the keys — the changes to commit, stash or drop.
     pub fn rebase_held_show(&mut self, h: Held) {
+        if crate::docpane::lent(self) {
+            crate::docpane::later(self, move |ed| ed.rebase_held_show(h));
+            return;
+        }
         let Some(id) = self.session_at(&h.moved.root) else { return };
         self.workspace_switch(id);
         let shown =
@@ -1959,7 +1972,7 @@ mod tests {
         (ed.workspace.root, ed.workspace.name) = (dir.join("front"), "front".into());
         let a = ed.workspace_open(&dir.join("a")).unwrap();
         let b = ed.workspace_open(&dir.join("b")).unwrap();
-        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME));
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in());
         // (git at work in each: the answer says so — nothing runs)
         let running = |base: &str| Rebase {
             branch: "x".into(),

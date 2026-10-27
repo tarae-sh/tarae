@@ -636,7 +636,7 @@ mod tests {
         // (made behind: its own asked as it's made)
         let second = ed.workspace_add(other.clone());
         ed.caps_sync();
-        assert!(ed.workspace_switch(second));
+        assert!(ed.workspace_switch(second).is_in());
         let end = std::time::Instant::now() + crate::test_results::PATIENCE;
         let made =
             |ed: &mut crate::editor::Editor, id| ed.workspace_by_id(id).and_then(|s| s.claude.caps.clone());

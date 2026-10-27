@@ -1816,6 +1816,11 @@ impl Editor {
     /// when `both`, and its cargo build dir when only it built there (`build_dir_fate`). `card`: the end
     /// card's id (it waves meanwhile, and says a failure). A failure opens the session again.
     pub fn session_remove(&mut self, e: Ending, both: bool, card: Option<u64>) {
+        // (a pane's key has its document lent: the one in front can't go behind under it — ended once it's back)
+        if crate::docpane::lent(self) {
+            crate::docpane::later(self, move |ed| ed.session_remove(e, both, card));
+            return;
+        }
         let kept = self.workspace_close(&e.root);
         if card.is_none() {
             self.set_step("session", format!("Ending {}…", e.name));
@@ -1901,6 +1906,11 @@ impl Editor {
     /// is in, the end is asked again (`Committing.then_end`); `:q` in the message keeps the session, its
     /// changes staged.
     pub fn session_commit_first(&mut self, e: Ending) {
+        // (a pane's key has its document lent: its session to the front and its staging, once it's back)
+        if crate::docpane::lent(self) {
+            crate::docpane::later(self, move |ed| ed.session_commit_first(e));
+            return;
+        }
         let Some(id) =
             std::iter::once(&self.workspace).chain(&self.workspaces).find(|l| l.root == e.root).map(|l| l.id)
         else {
@@ -1934,6 +1944,13 @@ impl Editor {
         // (by its checkout: one opened again after a failed end has another id)
         let id = std::iter::once(&self.workspace).chain(&self.workspaces).find(|l| l.root == root)?.id;
         if id == WorkspaceId::HOME {
+            return None;
+        }
+        // (the one in front can't go behind while a pane's document is lent: closed once it's back — nothing kept to
+        // open it again then; `session_remove`, which needs it, puts itself off whole first)
+        if self.workspace.id == id && crate::docpane::lent(self) {
+            let root = root.to_path_buf();
+            crate::docpane::later(self, move |ed| _ = ed.workspace_close(&root));
             return None;
         }
         if self.workspace.id == id {
@@ -3505,7 +3522,7 @@ mod tests {
         std::fs::write(wt.join("a.txt"), "feat\n").unwrap();
         git_in(&wt, &["commit", "-qam", "feat"]);
         assert!(
-            ed.workspace_switch(WorkspaceId::HOME) && ed.workspaces.iter().any(|l| l.root == wt),
+            ed.workspace_switch(WorkspaceId::HOME).is_in() && ed.workspaces.iter().any(|l| l.root == wt),
             "feat behind"
         );
         ed.workspace_bring("feat").unwrap();
@@ -4663,7 +4680,7 @@ mod tests {
         card_in_sight(&mut ed);
         feed(&mut ed, "n");
         assert!(says(&ed, "the rebase waits"), "{}", said(&ed));
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         // Bringing feat from here: its card, in front
         feed(&mut ed, ":workspace-bring feat<ret>");
         assert!(!says(&ed, "bring feat:"), "{}", said(&ed));
@@ -4716,7 +4733,7 @@ mod tests {
         assert!(card(&ed, "feat: rebasing 1/2").is_none());
         // A card that came since, in the session tarae started in — one nobody's key asked for (one of the
         // user's own, in front, would rank first: #205)
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         let later = crate::offer::What::Grammars { lang: "Lua".into(), names: Vec::new(), then: None };
         ed.push_offer(crate::offer::Offer::new("Later".into(), "…", "", String::new(), later));
         let inbox = ed.inbox();
@@ -4760,7 +4777,7 @@ mod tests {
         assert!(e.asks.starts_with("feat: conflicts resolved") && e.asks_answer(), "{e:?}");
         let id = e.id.clone();
         // From another session: enter on it — feat in front, its card up with the keys
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         assert!(ed.inbox().iter().any(|e| e.id == id), "listed from every session");
         ed.inbox_go(&id);
         assert_eq!(ed.workspace.id, feat);
@@ -4772,7 +4789,7 @@ mod tests {
         card_in_sight(&mut ed);
         feed(&mut ed, "n");
         assert_eq!(put_away(&ed).len(), 1, "put away again");
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         feed(&mut ed, "<C-q>");
         assert_eq!(ed.workspace.id, feat, "C-q: there");
         assert_eq!(ed.offers.first().map(|o| o.title.as_str()), Some("feat: conflicts resolved"));
@@ -4903,7 +4920,7 @@ mod tests {
         feed(&mut ed, ":rebase-abort<ret>");
         let feat = ed.workspace.id;
         let main = ed.workspaces.iter().map(|s| s.id).find(|&id| id != feat).expect("the other session");
-        assert!(ed.workspace_switch(main));
+        assert!(ed.workspace_switch(main).is_in());
         settle_until(&mut ed, |ed| {
             // (`rebase: 1 file reloaded` is its reloads, said earlier — frictions29 #68)
             let failed = ed.messages.iter().any(|m| m.2.contains("rebase:") && !m.2.contains(" reloaded"));
@@ -4911,7 +4928,7 @@ mod tests {
         });
         assert!(says(&ed, "Rebase aborted — feat is back where it was"), "{}", said(&ed));
         assert!(ed.workspace.task_run.is_none(), "nothing ran in the session in front");
-        assert!(ed.workspace_switch(feat));
+        assert!(ed.workspace_switch(feat).is_in());
         assert!(ed.workspace.task_run.as_ref().is_some_and(|r| r.task.name == "rebase --abort"));
         assert_eq!(git_in(&wt, &["rev-parse", "HEAD"]), tip);
         assert_eq!(std::fs::read_to_string(wt.join("a.txt")).unwrap(), "one\nfeat\n");
@@ -4939,7 +4956,7 @@ mod tests {
         feed(&mut ed, ":rebase-abort<ret>");
         let feat = ed.workspace.id;
         let main = ed.workspaces.iter().map(|s| s.id).find(|&id| id != feat).expect("the other session");
-        assert!(ed.workspace_switch(main));
+        assert!(ed.workspace_switch(main).is_in());
         // Gone — taken out as nothing in tarae can while it rebases (ending one is refused then)
         ed.workspaces.retain(|s| s.id != feat);
         let read = ed.rebase_lines_read;
@@ -5989,7 +6006,7 @@ mod tests {
         // Both waiting to be brought; the first asked is in front, the other behind it (`1`)
         ed.workspace_bring("two").unwrap();
         settle_until(&mut ed, |ed| card(ed, "Bring two into main").is_some());
-        assert!(ed.workspace_switch(made[0]));
+        assert!(ed.workspace_switch(made[0]).is_in());
         ed.workspace_bring("one").unwrap();
         settle_until(&mut ed, |ed| card(ed, "Bring one into main").is_some());
         assert_eq!(card_in_sight(&mut ed), ['y', 'p', 'n', '1'], "{}", said(&ed));

@@ -511,15 +511,21 @@ impl Editor {
     /// keys answering what they did. A card stacked behind flashes where it is (to the front, `y` would
     /// answer it). Gone, or never there: said, no flash.
     pub fn ui_jump(&mut self, id: &str) {
+        // (a pane's key has its document lent: its session to the front and the element into sight, once it's back)
+        if crate::docpane::lent(self) {
+            let id = id.to_string();
+            crate::docpane::later(self, move |ed| ed.ui_jump(&id));
+            return;
+        }
         let (session, rest) = match id.split_once('/') {
             Some((s, r)) if s.starts_with('s') && s[1..].parse::<u64>().is_ok() => {
                 (s[1..].parse::<crate::event::WorkspaceId>().ok(), r.to_string())
             }
             _ => (None, id.to_string()),
         };
+        // (put off whole above: `Later` never here, nor in `jump_card`, `jump_run`)
         if let Some(s) = session
-            && s != self.workspace.id
-            && !self.workspace_switch(s)
+            && !self.workspace_switch(s).is_in()
         {
             return self.set_status(format!("{id} — no such session"));
         }
@@ -567,7 +573,7 @@ impl Editor {
         }
         let parked = self.workspaces.iter().find(|l| l.parked.iter().any(|o| o.id == n)).map(|l| l.id);
         match parked {
-            Some(s) => self.workspace_switch(s) && self.offers.iter().any(|o| o.id == n),
+            Some(s) => self.workspace_switch(s).is_in() && self.offers.iter().any(|o| o.id == n),
             None => false,
         }
     }
@@ -591,7 +597,7 @@ impl Editor {
         let there = self.workspaces.iter().find_map(|l| of(l).map(|s| (l.id, s)));
         let slot = match (here, there) {
             (Some(s), _) => s,
-            (None, Some((l, s))) if self.workspace_switch(l) => s,
+            (None, Some((l, s))) if self.workspace_switch(l).is_in() => s,
             _ => return false,
         };
         if self.slot_there(slot, false) {

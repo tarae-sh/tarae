@@ -709,7 +709,7 @@ mod tests {
         ed.saver.slow = Duration::from_millis(300);
         feed(&mut ed, "cTWO<esc>");
         ed.task_start(crate::task::Task { name: "cat".into(), cmd: "cat a.txt".into(), cwd: dir.clone() });
-        assert!(ed.workspace_switch(second));
+        assert!(ed.workspace_switch(second).is_in());
         let ended = |ed: &Editor| {
             let s = std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|s| s.id == first).unwrap();
             s.task_run.as_ref().is_some_and(|r| r.state != crate::task::State::Running)

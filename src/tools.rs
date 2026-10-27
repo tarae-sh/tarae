@@ -7168,7 +7168,7 @@ mod tests {
         let mut ed = crate::editor::Editor::new(crate::config::Config::default());
         ed.workspace.root = dir.join("front");
         let other = ed.workspace_open(&dir.join("back")).unwrap();
-        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME));
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in());
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
         crate::chat::open(&mut ed);
@@ -7190,14 +7190,14 @@ mod tests {
                 .with(|a| a.borrow().iter().find(|(id, _)| *id == json!(21)).map(|(_, r)| r.clone()))
         };
         // Another session to the front: the card waits in its own, its call still waiting on it
-        assert!(ed.workspace_switch(other));
+        assert!(ed.workspace_switch(other).is_in());
         ed.asking_sync();
         assert_eq!(answered(), None, "its call was answered");
         assert!(ed.offers.iter().all(|o| o.id != card), "up in the other session");
         let i = ed.workspaces.iter().position(|s| s.id == crate::event::WorkspaceId::HOME).unwrap();
         assert!(ed.workspaces[i].parked.iter().any(|o| o.id == card), "not parked with its session");
         // Back: up again, and `y` runs it with the port open — the call waits for how the run ends
-        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME));
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in());
         assert_eq!(ed.offers.first().map(|o| o.id), Some(card));
         let before = super::ADMITTED.with(|a| a.borrow().len());
         also_key(&mut ed, 'y');
@@ -8919,7 +8919,7 @@ mod tests {
         ed.allow_path = Some(store.clone());
         crate::allow::keep(&store, &elsewhere, |a| a.write.push(kept_w.clone())).unwrap();
         ed.workspace_open(&back).unwrap();
-        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME));
+        assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in());
         let behind = ed.workspaces.iter_mut().find(|s| s.root == back).expect("the session behind");
         behind.claude.allowed.write.push(back_w.clone());
         ed.sandbox_here = Some(std::sync::Arc::new(crate::sandbox::Here::default));

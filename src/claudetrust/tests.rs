@@ -492,10 +492,10 @@ fn the_card_stays_with_its_session() {
             .any(|s| s.id == b && s.claude.chat.as_ref().is_some_and(|c| c.settings.seen.is_some()))
     });
     assert!(card(&ed).is_some(), "the other session's read leaves this card alone");
-    assert!(ed.workspace_switch(b));
+    assert!(ed.workspace_switch(b).is_in());
     assert!(card(&ed).is_none(), "not up in the other session");
     let a = ed.workspaces.iter().find(|s| s.root == root).map(|s| s.id).unwrap();
-    assert!(ed.workspace_switch(a));
+    assert!(ed.workspace_switch(a).is_in());
     assert!(card(&ed).is_some(), "up again with its session");
     ed.offer_dismiss();
     until(&mut ed, "this session's claude", |_| arg_after(&root, "--settings").is_some());

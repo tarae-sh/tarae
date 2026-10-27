@@ -28,7 +28,7 @@ fn two(name: &str) -> (Editor, PathBuf, WorkspaceId, u64, u64) {
     (ed.workspace.root, ed.workspace.name) = (dir.join("front"), "front".into());
     ed.allow_path = Some(dir.join("state/sandbox.json"));
     let back = ed.workspace_open(&dir.join("back")).unwrap();
-    assert!(ed.workspace_switch(WorkspaceId::HOME));
+    assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
     let front_run = running(&mut ed.workspace, "cargo build");
     let i = ed.workspaces.iter().position(|s| s.id == back).unwrap();
     let back_run = running(&mut ed.workspaces[i], "npm install");
@@ -465,13 +465,13 @@ fn a_peer_sessions_key_never_answers_it() {
         key(&mut ed, k);
     }
     assert!(sent().iter().all(|m| answered(m).is_none()), "the front's keys answered nothing");
-    assert!(ed.workspace_switch(back));
+    assert!(ed.workspace_switch(back).is_in());
     settled(&mut ed);
     key(&mut ed, 'y');
     let told: Vec<_> = sent().iter().filter_map(answered).collect();
     assert_eq!(told, [(workspace_of(&dir.join("back")), back_run, HOST.to_string(), 443, Scope::Run)]);
     // Its session ended: the proxy drops that session's answers
-    assert!(ed.workspace_switch(WorkspaceId::HOME));
+    assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
     let _ = sent();
     ed.workspace_close(&dir.join("back")).expect("closed");
     let ended = sent().into_iter().any(

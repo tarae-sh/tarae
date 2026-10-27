@@ -2211,6 +2211,10 @@ impl Editor {
     /// in that session, brought to the front), else tarae's log at its last line; on a session's heading,
     /// that session to the front.
     fn procs_log(&mut self) {
+        // (a pane's key has its document lent: the session it names to the front, and its panel, once it's back)
+        if crate::docpane::later(self, |ed| ed.procs_log()) {
+            return;
+        }
         let Some(r) = self.procs_selected() else { return };
         if let Kind::Session(id) = r.kind {
             self.workspace_switch(id);
@@ -3088,7 +3092,7 @@ pub(crate) mod tests {
         // Its panel closed: the run is gone, its program isn't
         ed.task_close();
         assert!(ed.workspace.task_run.is_none());
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         std::thread::sleep(Duration::from_millis(200));
         assert!(read(pid).is_some_and(|o| !o.zombie), "still running");
         let (known, groups, held) = (ed.procs_known(), ed.procs_groups(), ed.procs.held.clone());
@@ -3298,7 +3302,7 @@ pub(crate) mod tests {
         let mut ed = Editor::new(crate::config::Config::default());
         ed.workspace.name = "main".into();
         let fix = ed.workspace_open(&dir.join("fix")).unwrap();
-        assert!(ed.workspace_switch(WorkspaceId::HOME));
+        assert!(ed.workspace_switch(WorkspaceId::HOME).is_in());
         let (tx, _looks) = std::sync::mpsc::channel();
         ed.procs.wake = Some(tx);
         ed.procs_toggle();

@@ -194,6 +194,37 @@ fn the_task_panels_keys_are_normal_mode_on_its_output() {
     assert_eq!(region(&ed), "code");
 }
 
+/// #176's rule on a run panel: `space L` there closes the chat, `space F` follows another session at work into its
+/// workspace — each once the key is over and the output's document back (`docpane::later`): the panel's output still
+/// its own, behind.
+#[test]
+fn what_a_key_on_the_output_drops_waits_until_its_over() {
+    let mut ed = task(40);
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    feed(&mut ed, "<C-w>j<space>L");
+    assert!(ed.workspace.claude.chat.is_none(), "space L: the chat closed");
+    assert!(ed.workspace.outputs.doc(Slot::Task).is_some(), "the output's document back");
+    assert_eq!(region(&ed), "output:task", "the keys stay where they were");
+    // `space F`: another session at work
+    let dir = crate::scratch::Scratch::new("rundoc-follow");
+    let id = ed.workspace_open(dir.path()).unwrap();
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Writing;
+    assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in());
+    frame(&mut ed);
+    feed(&mut ed, "<C-w>j<space>");
+    assert_eq!(region(&ed), "output:task");
+    ed.handle_key(Key::plain(Code::Char('F')));
+    assert_eq!(ed.workspace.id, id, "followed into it");
+    frame(&mut ed);
+    let home = ed.workspaces.iter().find(|w| w.id == crate::event::WorkspaceId::HOME).unwrap();
+    assert!(home.outputs.doc(Slot::Task).is_some(), "the output's document home, behind");
+    assert!(home.viewer.swapped.is_none() && ed.workspace.viewer.swapped.is_none());
+    assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in());
+    frame(&mut ed);
+    assert_eq!(output(&ed, Slot::Task).text.len_lines(), 41, "its lines as they were");
+}
+
 /// Read-only: what would edit it — `d`, `c`, `p`, `i`, `o`'s neighbours, `u` — is put back and said, insert mode
 /// never entered; `y` copies to `"` and the clipboard, `p` in the code pastes it there.
 #[test]

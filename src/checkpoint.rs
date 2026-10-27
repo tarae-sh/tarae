@@ -1506,7 +1506,7 @@ mod tests {
             assert!(held(&ed, id), "{n}: read once, held while it's where it was");
         }
         // The front one goes behind: what it read goes; b1, in front now, keeps its own
-        assert!(ed.workspace_switch(ids[1]));
+        assert!(ed.workspace_switch(ids[1]).is_in());
         assert!(!held(&ed, ids[0]) && held(&ed, ids[1]));
         // …and is read again when asked
         ed.with_workspace(ids[0], |ed| step(ed, true).unwrap());
