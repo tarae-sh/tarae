@@ -6722,6 +6722,7 @@ fn a_top_line_says_the_same_in_the_slot_and_in_a_frame() {
     let card = ui.base;
     let names = [("tests".to_string(), card), (" ▲".to_string(), card)];
     let details = [("all tests".to_string(), card), ("   ● 1".to_string(), card)];
+    let (names, details) = (super::fits(&names), super::fits(&details));
     let head = TopLine {
         names: &names,
         details: &details,
@@ -6743,6 +6744,7 @@ fn a_top_line_says_the_same_in_the_slot_and_in_a_frame() {
     let names = [("check".to_string(), card), (MEMBERS_SEP.to_string(), card), ("places".to_string(), card)];
     let detail = [("output".to_string(), card)];
     let after = [("↓ output after".to_string(), card)];
+    let (names, detail, after) = (super::fits(&names), super::fits(&detail), super::fits(&after));
     let beyond = Some(Beyond { names: &detail, details: &after, line: card, join: card });
     let head = TopLine { names: &names, details: &details, beyond, ..head };
     let mut out = Vec::new();
@@ -8937,4 +8939,77 @@ fn frames_of_cardkeys_more() {
         }
         s.frames_both(&format!("cardkeys-behind-{w}"));
     }
+}
+
+/// U2's screens (#187: every `…` whole under the mouse), for their screenshots (only with `TARAE_FRAMES_DIR` set: both
+/// themes there, 100×30; `cargo xtask shot` draws them with `TARAE_SHOT_REPLAY`): a toast cut, a page's title cut —
+/// each with the mouse on it, its card up — and the tests' list with a long case in hand (its card beside the list).
+#[test]
+fn frames_of_u2() {
+    use crate::whole::{Cut, On};
+    if std::env::var_os("TARAE_FRAMES_DIR").is_none() {
+        return;
+    }
+    let hover = |s: &mut Shot, on: On| {
+        let spot = s.ed.screen.cut_spots.borrow().iter().find_map(|c| match &c.3 {
+            Cut::Text(w) if w.on == on => Some(((c.1 + c.2) / 2, c.0)),
+            _ => None,
+        });
+        let (x, y) = spot.unwrap_or_else(|| panic!("a cut on {on:?}"));
+        s.ed.handle_event(Event::Hover(x as u16, y as u16));
+        s.frame();
+    };
+    // A toast: its third row cut, the mouse on it
+    let mut s = Shot::new(100, 30);
+    s.file("src/demo.rs", DEMO_RS);
+    s.ed.set_error(
+        "cargo test stopped: 3 tests failed in term_snapshots after the status line's widths changed under them, \
+         snapshot_statusline_widths first — its frame is kept in target/snapshots, the diff beside it\n\
+         thread 'main' panicked at src/term_snapshots.rs:412\nrun with RUST_BACKTRACE=1 for a backtrace",
+    );
+    let fresh = Instant::now().checked_sub(Duration::from_millis(500)).unwrap();
+    for t in &mut s.ed.toasts {
+        (t.at, t.shown) = (fresh, true);
+    }
+    s.frame();
+    hover(&mut s, On::Toast);
+    s.frames_both("u2-toast");
+    // A page's title, the mouse on it
+    let mut s = Shot::new(100, 30);
+    let url = "https://doc.rust-lang.org/book/ch16-03-shared-state.html";
+    let text = "Shared-State Concurrency\n\nMessage passing is a fine way to handle concurrency, but it’s not the only way.\n";
+    let id = crate::web::page::stand_in(&mut s.ed, url, text);
+    let d = s.ed.docs.iter_mut().find(|d| d.id == id).unwrap();
+    d.title = Some(
+        "web · doc.rust-lang.org › Shared-State Concurrency - The Rust Programming Language, Fearless Concurrency"
+            .into(),
+    );
+    d.page.as_mut().unwrap().fetching = None;
+    s.frame();
+    hover(&mut s, On::Top);
+    s.frames_both("u2-page");
+    // A run panel's row: the tests' list with the keys, its selected case cut — in hand, beside the list
+    let mut s = Shot::new(100, 30);
+    s.file("src/demo.rs", DEMO_RS);
+    let case = |name: &str, status| crate::test_results::Case {
+        name: name.into(),
+        status,
+        secs: Some(0.012),
+        message: vec!["assertion `left == right` failed".into(), "  left: 3".into(), " right: 4".into()],
+        at: None,
+    };
+    use crate::test_results::Status;
+    let cases = vec![
+        case(
+            "whole::tests::a_framed_lists_card_takes_the_grounds_width_and_never_splits_a_rows_state",
+            Status::Failed,
+        ),
+        case("whole::tests::a_cut_toasts_message_is_whole_under_the_mouse", Status::Passed),
+        case("whole::tests::a_pages_title_cut_is_whole_under_the_mouse", Status::Passed),
+    ];
+    s.ed.workspace.test_run = Some(crate::testing::TestRun::finished("whole", cases, vec!["ok".into()]));
+    s.frame();
+    s.ed.list_focus(crate::pane::GroupKind::Tests);
+    s.frame();
+    s.frames_both("u2-run");
 }

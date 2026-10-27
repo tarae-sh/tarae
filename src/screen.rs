@@ -565,6 +565,37 @@ pub fn last_writes(frame: &[u8], w: u16, h: u16) -> Option<Vec<usize>> {
     g.writes
 }
 
+/// How far past a card's own text a word under it may take its row (#187, the user 2026-10-28): further (a long hash),
+/// the card ends at its text and the rest of the word shows.
+pub const WORD_REACH: usize = 12;
+
+/// Where the words under a card's rows end (#187: a card never leaves a word's last letters showing after it): for
+/// each (`y`, `end`) — a row of the card drawn up to `end` (its first column past it) over `frame`, what's been drawn so
+/// far — the end of the word its last cell is in, where the cell under it and the next both hold a word's character;
+/// else `end`. A word is Helix's `w`'s (`movement::char_class`: letters, digits, `_`) — punctuation, a blank, a rule's
+/// or a frame's lines end it (over a path it stops before the next `/`); one ending past `WORD_REACH` stays `end`. None:
+/// a frame this doesn't read.
+pub fn word_ends(frame: &[u8], w: u16, h: u16, rows: &[(usize, usize)]) -> Option<Vec<usize>> {
+    use crate::movement::{CharClass, char_class};
+    let mut g = Grid::new(w as usize, h as usize);
+    g.apply(frame)?;
+    let word = |c: &Cell| match std::str::from_utf8(c.text()).ok().and_then(|t| t.chars().next()) {
+        Some(ch) => char_class(ch) == CharClass::Word,
+        None => false,
+    };
+    let ends = rows.iter().map(|&(y, end)| {
+        let Some(row) = (y < g.h).then(|| g.row(y)) else { return end };
+        // (a wide character's right half is its left's)
+        let at = |x: usize| row.get(x).map(|c| if c.width == 0 && x > 0 { &row[x - 1] } else { c });
+        if end == 0 || !at(end - 1).is_some_and(word) {
+            return end;
+        }
+        let to = (end..g.w).find(|&x| !at(x).is_some_and(word)).unwrap_or(g.w);
+        if to - end > WORD_REACH { end } else { to }
+    });
+    Some(ends.collect())
+}
+
 /// A whole frame as the text it shows (`w`×`h` cells, a row a line, trailing blanks and rows dropped) — what
 /// goes to Claude for "the screen" is this less what's hidden (`text_hiding`). None: a frame this doesn't read.
 #[cfg(test)]
@@ -679,6 +710,37 @@ mod tests {
             .filter(|c| c.width > 0)
             .map(|c| String::from_utf8_lossy(c.text()).into_owned())
             .collect()
+    }
+
+    /// A card's row ending inside a word of what's under it reaches that word's end — Helix's `w`'s word (#187, the user
+    /// 2026-10-28): a path's, a URL's punctuation ends it, `_` doesn't; a word running on past `WORD_REACH` (a hash) leaves
+    /// the row at its own end; a row ending on punctuation, a blank or a rule stays.
+    #[test]
+    fn a_cards_row_reaches_a_words_end_by_helixs_word_and_twelve_cells_at_most() {
+        let rows = [
+            "src/ui/components/card_view.rs   ",
+            "see https://docs.example.com/guide/intro now",
+            "commit 0123456789abcdef0123456789abcdef01234567 ok",
+            "── a rule ────────────────",
+        ];
+        let frame: String = rows.iter().enumerate().map(|(y, r)| format!("\x1b[{};1H{r}", y + 1)).collect();
+        let reach = |y: usize, end: usize| word_ends(frame.as_bytes(), 60, 4, &[(y, end)]).unwrap()[0];
+        let (path, url, hash) = (0, 1, 2);
+        // (a path: `com|ponents` on to the `/`, `card|_view` on to the `.`; ending on the `/` itself, none)
+        assert_eq!(reach(path, 10), 17);
+        assert_eq!(reach(path, 20), 27);
+        assert_eq!(reach(path, 18), 18);
+        // (a URL: `ht|tps` to the `:`, `do|cs` to the `.`)
+        assert_eq!(reach(url, 6), 9);
+        assert_eq!(reach(url, 14), 16);
+        // (a hash of 40 to 47: twelve cells on at most — more, the row at its own end)
+        assert_eq!(reach(hash, 40), 47);
+        assert_eq!(reach(hash, 35), 47);
+        assert_eq!(reach(hash, 34), 34);
+        assert_eq!(reach(hash, 10), 10);
+        // (a rule's lines are no word; its name is)
+        assert_eq!(reach(3, 2), 2);
+        assert_eq!(reach(3, 7), 9);
     }
 
     /// Each cell says the write it shows: a later one over part of an earlier, an erase, a wide character over half of

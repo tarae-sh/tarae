@@ -5,7 +5,8 @@ use crate::markdown::Span;
 use crate::theme::Style;
 
 fn row(texts: &[&str]) -> ChatRow {
-    let spans = texts.iter().map(|t| Span { text: t.to_string(), style: Style::default() }).collect();
+    let spans =
+        texts.iter().map(|t| Span { cut: None, text: t.to_string(), style: Style::default() }).collect();
     ChatRow { spans, ..ChatRow::default() }
 }
 

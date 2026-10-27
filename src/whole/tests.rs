@@ -16,6 +16,138 @@ const H: u16 = 34;
 const CMD: &str = "cargo fmt --all && git diff --stat | tail -3 && cargo clippy --all-targets -q 2>&1 | grep -E \
                    'warning|error' | head -20 && echo farewell";
 
+/// Every cut tarae draws is recorded (frictions #187, U2): in `term.rs` a text is cut by `whole::fit` or `fit_left` — a
+/// `whole::Fit`, its whole carried to its print, which records it where it stands (`whole::at`, `cut_at`, a span's in
+/// `chat_spans_at`; its text leaves only by `shown`: U2's review) —, `fit_part` (a part of a whole) or `fit_own` (its own
+/// card or a word painted again: `OWN`, each named) — a bare `fit_ellipsis`, `fit_left`, `fit_middle`, `fit_keeping`,
+/// `fit_place` or `fit_place_marked` only inside the fitting helpers (`HELPERS`), or handed to `whole::of` on its line or
+/// the next (a `Fit` as `fit`'s).
+/// What this can't see — a cut that reaches no print — the type holds, and where it lands the tests below
+/// (`whole_fresh_and_cached`) and the walk (`every_cut_text_is_whole_under_the_mouse`).
+#[test]
+fn every_cut_tarae_draws_is_recorded() {
+    let bare = bare_cuts(&crate::sim::lint::sources());
+    assert!(bare.is_empty(), "cut, not recorded for the mouse — `whole::fit`:\n{}", bare.join("\n"));
+}
+
+/// Broken once: a bare cut in a drawer counts — a `crate::cut::` one too —; one in a helper, `whole::`'s and one handed
+/// to `whole::of` don't.
+#[test]
+fn a_bare_cut_counts() {
+    let src = "fn draw_x(out: &mut W) {\n    let a = fit_ellipsis(s, 4);\n    let b = crate::cut::fit_left(s, 4);\n    \
+               let c = crate::whole::fit(s, 4);\n    let (d, m) = fit_middle(s, &[], 4);\n    \
+               let d = crate::whole::of(d, s);\n}\nfn fit_keeping(s: &str) -> String {\n    fit_ellipsis(s, 2)\n}\n";
+    let files = [("term.rs".to_string(), src.to_string())];
+    let bare = bare_cuts(&files);
+    assert_eq!(bare.len(), 2, "{bare:?}");
+    assert!(bare[0].contains("draw_x") && bare[0].contains("fit_ellipsis(s, 4)"), "{bare:?}");
+    assert!(bare[1].contains("cut::fit_left"), "{bare:?}");
+    let elsewhere = [("chat.rs".to_string(), src.to_string())];
+    assert!(bare_cuts(&elsewhere).is_empty(), "only what term.rs draws");
+}
+
+/// The fitting helpers: what they cut, their callers record.
+const HELPERS: &[&str] = &["fit_middle", "fit_keeping", "fit_path_left", "fold_hints"];
+
+/// What `term.rs` draws, a file at a time: its name, its lines, and the drawer each line is in.
+fn drawers(files: &[(String, String)]) -> Vec<(&str, Vec<&str>, Vec<&str>)> {
+    let top = regex::Regex::new(r"^(?:pub(?:\([\w:]+\))? )?fn (\w+)").unwrap();
+    let drawn = files.iter().filter(|(f, _)| f == "term.rs" || f.starts_with("term/"));
+    drawn
+        .map(|(file, text)| {
+            let lines: Vec<&str> = text.lines().collect();
+            let mut within = "";
+            let mut drawer = Vec::with_capacity(lines.len());
+            for line in &lines {
+                if let Some(c) = top.captures(line) {
+                    within = c.get(1).map_or("", |m| m.as_str());
+                } else if line.starts_with("impl") {
+                    within = "";
+                }
+                drawer.push(within);
+            }
+            (file.as_str(), lines, drawer)
+        })
+        .collect()
+}
+
+/// Each bare cut in what `term.rs` draws: `file:line in fn: the line`.
+fn bare_cuts(files: &[(String, String)]) -> Vec<String> {
+    let call = regex::Regex::new(
+        r"(^|[^\w:]|cut::)(fit_ellipsis|fit_left|fit_middle|fit_keeping|fit_place|fit_place_marked)\(",
+    )
+    .unwrap();
+    let mut out = Vec::new();
+    for (file, lines, drawer) in drawers(files) {
+        let handed = |k: usize| lines.get(k).is_some_and(|l| l.contains("whole::of("));
+        for (i, line) in lines.iter().enumerate() {
+            if call.is_match(line) && !HELPERS.contains(&drawer[i]) && !handed(i) && !handed(i + 1) {
+                out.push(format!("{file}:{} in {}: {}", i + 1, drawer[i], line.trim()));
+            }
+        }
+    }
+    out
+}
+
+/// The cuts `fit_own` makes — a plain string, nothing carried to its print, so what's wrapped in it passes the rule above
+/// (U2's third review): each drawer that makes one, how many, and why its cut needs no record. The list only shrinks —
+/// lower a count as you turn one into `whole::fit` (as the clock's and sleep's lints); a new one is a `whole::fit`.
+const OWN: &[(&str, usize, &str)] = &[
+    ("slot_header", 1, "a task's tab: its command whole on its own card (`Cut::Run`, `run_card`)"),
+    ("member_line", 1, "a member's name lit again over the top line's print, which recorded its cut"),
+    ("code_line", 1, "a buffer's name lit again over the top line's print, which recorded its cut"),
+    ("now_segments", 2, "the now line's step and plan: its own card (`Cut::Now`, `now_card`)"),
+    ("draw_statusline", 1, "the now line's sentence: its own card (`Cut::Now`, `now_card`)"),
+    ("draw_welcome", 1, "the start screen's folder inside its foot, whose `whole::of` holds both whole"),
+    ("draw_follow_card", 1, "a word of the card's top line lit again over its print, which recorded its cut"),
+    ("draw_sidebar", 1, "a tab's name lit again over the top line's print, which recorded its cut"),
+    ("rail_board", 1, "a name inside a row whose `fit_part` holds the row whole"),
+    (
+        "draw_chat",
+        2,
+        "a top line's detail lit again; the `with` chip: its own card (`Cut::With`, `with_card`)",
+    ),
+    ("run_card", 1, "a row of the run card, which is the command whole (`K` says all of it)"),
+];
+
+/// Each drawer's `fit_own` cuts and how many, in the order they're met.
+fn own_cuts(files: &[(String, String)]) -> Vec<(String, usize)> {
+    let call = regex::Regex::new(r"(^|[^\w])fit_own\(").unwrap();
+    let mut out: Vec<(String, usize)> = Vec::new();
+    for (_, lines, drawer) in drawers(files) {
+        for (line, within) in lines.iter().zip(drawer) {
+            let n = call.find_iter(line).count();
+            match out.last_mut() {
+                _ if n == 0 => {}
+                Some(last) if last.0 == within => last.1 += n,
+                _ => out.push((within.to_string(), n)),
+            }
+        }
+    }
+    out
+}
+
+/// Every `fit_own` is named (`OWN`), its count as many as there are: a new one fails (make it a `whole::fit`), one gone
+/// fails until its count is lowered.
+#[test]
+fn every_own_cut_is_named_and_the_list_only_shrinks() {
+    let counted = own_cuts(&crate::sim::lint::sources());
+    let listed: Vec<(String, usize)> = OWN.iter().map(|o| (o.0.to_string(), o.1)).collect();
+    assert_eq!(
+        counted, listed,
+        "`whole::fit_own` by drawer — a new one: `whole::fit`; one gone: lower `OWN`"
+    );
+}
+
+/// Broken once: a `fit_own` counts in its drawer, `whole::fit_own` and a bare one alike; `fit_owner` doesn't.
+#[test]
+fn an_own_cut_counts_in_its_drawer() {
+    let src = "fn draw_x() {\n    let a = crate::whole::fit_own(s, 4);\n    let b = fit_own(s, 2);\n    \
+               let c = fit_owner(s);\n}\nfn draw_y() {\n    let d = fit_own(s, 1);\n}\n";
+    let counted = own_cuts(&[("term.rs".to_string(), src.to_string())]);
+    assert_eq!(counted, vec![("draw_x".to_string(), 2), ("draw_y".to_string(), 1)]);
+}
+
 fn run_row(cmd: &str) -> Msg {
     let look = Look { verb: "run", what: cmd.into(), pattern: true, range: String::new(), link: None };
     Msg::tool(look, "call-1")
@@ -998,4 +1130,470 @@ fn a_long_cut_says_how_many_more_lines_and_a_press_opens_it_whole() {
     frame(&mut ed);
     press(&mut ed, x + 2, more);
     assert_eq!(ed.docs.len(), n, "the same buffer");
+}
+
+/// U2's sweep (#187): a cut on a surface no walk meets — its text recorded where it's printed (`whole::at`), whole on a
+/// card under the mouse, gone as it leaves: `on` the surface it's recorded on, `word` the end only the whole has.
+fn whole_under_the_mouse(ed: &mut Editor, on: On, word: &str) -> String {
+    let before = frame(ed);
+    assert!(!before.contains(word), "cut:\n{before}");
+    let (y, a, b, w) = cut_text(ed, word).unwrap_or_else(|| panic!("recorded as cut:\n{before}"));
+    assert_eq!(w.on, on, "on what it's drawn on");
+    let row = before.lines().nth(y).unwrap();
+    assert_eq!(row.chars().nth(b - 1), Some('…'), "its spot ends at the `…`: {row:?}");
+    assert!(a < b);
+    ed.handle_event(Event::Hover(((a + b) / 2) as u16, y as u16));
+    let screen = frame(ed);
+    assert!(screen.contains(word), "whole:\n{screen}");
+    ed.handle_event(Event::Hover(0, H - 1));
+    assert_eq!(frame(ed), before, "gone as the mouse leaves");
+    w.text
+}
+
+#[test]
+fn a_cut_toasts_message_is_whole_under_the_mouse() {
+    let mut ed = Editor::new(Config::default());
+    let long = format!("the build stopped: {} and farewell", "a reason that runs on ".repeat(16));
+    ed.set_error(format!("{long}\nsecond line\nthird line\nfourth line"));
+    // (shown, at full strength)
+    let fresh = std::time::Instant::now().checked_sub(std::time::Duration::from_millis(500)).unwrap();
+    for t in &mut ed.toasts {
+        (t.at, t.shown) = (fresh, true);
+    }
+    let whole = whole_under_the_mouse(&mut ed, On::Toast, "farewell");
+    assert!(whole.contains("fourth line"), "the message whole, every line: {whole:?}");
+}
+
+/// The user on U2's shots (2026-10-28): a cut toast's card is the toast unfolded where it stands — over it whole, its bar
+/// too, the kind's `▎` beside the card's first row, its words where they were — whichever way it grows: down from its
+/// top row where the toast is high, up over it from the status line where it's low.
+#[test]
+fn a_cut_toasts_card_is_the_toast_unfolded_where_it_stands() {
+    for low in [true, false] {
+        let mut ed = Editor::new(Config::default());
+        ed.docs[0].text = ropey::Rope::from_str(&"fn main() {}\n".repeat(40));
+        // (the cursor off the top's rows: the toast there)
+        if !low {
+            feed(&mut ed, "20G");
+        }
+        let long = format!("the build stopped: {} and farewell", "a reason that runs on ".repeat(16));
+        ed.set_error(format!("{long}\nsecond line\nthird line"));
+        let fresh = std::time::Instant::now().checked_sub(std::time::Duration::from_millis(500)).unwrap();
+        for t in &mut ed.toasts {
+            (t.at, t.shown) = (fresh, true);
+        }
+        let before = frame(&mut ed);
+        let (tx, ty, tw, th) = ed.screen.toast_card.get().expect("its toast");
+        assert_eq!(ty > H as usize / 2, low, "the toast where it's meant to be:\n{before}");
+        let (y, a, b, _) = cut_text(&ed, "farewell").expect("recorded as cut");
+        ed.handle_event(Event::Hover(((a + b) / 2) as u16, y as u16));
+        let screen = frame(&mut ed);
+        let (x, top, w, h) = card(&ed).expect("its card");
+        assert!(
+            x <= tx && x + w >= tx + tw && top <= ty && top + h >= ty + th,
+            "over the toast whole: {:?} over {:?}\n{screen}",
+            (x, top, w, h),
+            (tx, ty, tw, th)
+        );
+        match low {
+            true => assert!(top < ty, "up over it:\n{screen}"),
+            false => assert_eq!(top, ty, "from its top row:\n{screen}"),
+        }
+        let lines: Vec<String> = screen.lines().map(str::to_string).collect();
+        let first: String = lines[top].chars().skip(tx).collect();
+        assert!(
+            first.starts_with(" ▎ the build stopped"),
+            "its bar beside its first row, its words where they were:\n{screen}"
+        );
+        let bars = (top..top + h).filter(|&r| lines[r].chars().skip(x).take(w).any(|c| c == '▎')).count();
+        assert_eq!(bars, 1, "one bar:\n{screen}");
+        assert!(screen.contains("farewell"), "whole:\n{screen}");
+    }
+}
+
+/// The user on U2's shots (2026-10-28): a card that ends inside a word of what's under it reaches on to that word's end,
+/// its ground over the rest — no letter of the word after the card: the side panel's row in hand over the code, its end
+/// swept across the code's words.
+#[test]
+fn a_card_never_ends_inside_a_word_under_it() {
+    let code =
+        "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau\n";
+    let letter = |s: &str, x: usize| s.chars().nth(x).is_some_and(char::is_alphanumeric);
+    let mut reached = 0;
+    for i in 0..12 {
+        let long = format!("a_{}_{}.rs", "x".repeat(i), "name_".repeat(8));
+        let side = |at| {
+            let mut ed = Editor::new(Config::default());
+            ed.docs[0].text = ropey::Rope::from_str(&code.repeat(20));
+            let files = vec![long.clone(), "b_second.rs".to_string()];
+            let mut sb = crate::sidebar::Sidebar::with_files(std::path::PathBuf::from("/r"), files);
+            sb.selected = 0;
+            ed.workspace.viewer.sidebar = Some(sb);
+            ed.workspace.viewer.at = at;
+            ed
+        };
+        let before = frame(&mut side(crate::workspace::At::Code));
+        let mut ed = side(crate::workspace::At::Side);
+        let screen = frame(&mut ed);
+        let c = ed.screen.cut_card.borrow().clone().expect("the row in hand's card");
+        for (k, &end) in c.ends.iter().enumerate() {
+            let (under, now) =
+                (before.lines().nth(c.rect.1 + k).unwrap(), screen.lines().nth(c.rect.1 + k).unwrap());
+            assert!(
+                !(letter(under, end - 1) && letter(under, end)),
+                "ends inside a word ({i}, its row {k} at {end}):\n{under}\n{now}"
+            );
+            assert_eq!(now.chars().nth(end - 1), Some(' '), "its ground to there:\n{now}");
+            reached += usize::from(letter(under, end - 1));
+        }
+    }
+    assert!(reached > 0, "the sweep ended inside a word somewhere");
+}
+
+/// The user, 2026-10-28 (U2's fifth review): a word is Helix's `w`'s — over a path, a URL, a hash under the side panel's
+/// row in hand the card stops at the word's punctuation, never on to the screen's edge, and a word running on more than
+/// `WORD_REACH` past it (the hash) leaves the card at its own end, the rest showing. What it holds (`Card::holds`) is what
+/// it draws: its last cell its, the next the code's as before.
+#[test]
+fn a_card_reaches_a_words_end_never_past_its_punctuation_nor_twelve_cells() {
+    use crate::movement::{CharClass, char_class};
+    let code = "src/ui/card_view.rs https://x.io/a 0123456789abcdef0123456789abcdef01234567\n";
+    let word = |s: &str, x: usize| s.chars().nth(x).is_some_and(|c| char_class(c) == CharClass::Word);
+    // (the word's cells from `x` on)
+    let run = |s: &str, x: usize| s.chars().skip(x).take_while(|&c| char_class(c) == CharClass::Word).count();
+    let (mut at_punct, mut capped) = (0, 0);
+    for i in 0..60 {
+        let long = format!("a_{}_{}.rs", "x".repeat(i), "name_".repeat(8));
+        let side = |at| {
+            let mut ed = Editor::new(Config::default());
+            ed.docs[0].text = ropey::Rope::from_str(&code.repeat(20));
+            let files = vec![long.clone(), "b_second.rs".to_string()];
+            let mut sb = crate::sidebar::Sidebar::with_files(std::path::PathBuf::from("/r"), files);
+            sb.selected = 0;
+            ed.workspace.viewer.sidebar = Some(sb);
+            ed.workspace.viewer.at = at;
+            ed
+        };
+        let before = frame(&mut side(crate::workspace::At::Code));
+        let mut ed = side(crate::workspace::At::Side);
+        let screen = frame(&mut ed);
+        let Some(c) = ed.screen.cut_card.borrow().clone() else { continue };
+        for (k, &end) in c.ends.iter().enumerate() {
+            let y = c.rect.1 + k;
+            let (under, now) = (before.lines().nth(y).unwrap(), screen.lines().nth(y).unwrap());
+            let on = run(under, end);
+            assert!(
+                !(word(under, end - 1) && on > 0) || on > crate::screen::WORD_REACH,
+                "ends inside a word it could reach ({i}, its row {k} at {end}):\n{under}\n{now}"
+            );
+            assert!(end < W as usize, "never on to the screen's edge ({i}, row {k}):\n{now}");
+            assert_eq!(now.chars().nth(end - 1), Some(' '), "its ground to there:\n{now}");
+            let rest = |s: &str| s.chars().skip(end).take(6).collect::<String>();
+            assert_eq!(rest(now), rest(under), "the code after it as it was ({i}, row {k}):\n{now}");
+            assert!(c.holds(&ed, end - 1, y) && !c.holds(&ed, end, y), "holds what it draws ({i}, row {k})");
+            at_punct +=
+                usize::from(word(under, end - 1) && !word(under, end) && under.chars().nth(end) != Some(' '));
+            capped += usize::from(word(under, end - 1) && on > crate::screen::WORD_REACH);
+        }
+    }
+    assert!(at_punct > 0 && capped > 0, "the sweep met punctuation ({at_punct}) and the hash ({capped})");
+}
+
+#[test]
+fn a_pages_title_cut_is_whole_under_the_mouse() {
+    let mut ed = Editor::new(Config::default());
+    let id = crate::web::page::stand_in(&mut ed, "https://docs.example.com/guide", "Its text.\n");
+    let title = format!("web · docs.example.com › {} and farewell", "A Guide to Everything ".repeat(6));
+    let d = ed.docs.iter_mut().find(|d| d.id == id).unwrap();
+    d.title = Some(title);
+    d.page.as_mut().unwrap().fetching = None;
+    let whole = whole_under_the_mouse(&mut ed, On::Top, "farewell");
+    assert!(whole.starts_with("A Guide"), "the title whole: {whole:?}");
+}
+
+/// A cut on the frame that laid it out and on the next, which draws what the first laid out (U2's review, 2026-10-28:
+/// the chat's rows were laid before the frame began, and cached after): recorded on `on`, its whole holding `word`, whole
+/// on its card under the mouse — `anew` makes its rows be laid out again.
+fn whole_fresh_and_cached(ed: &mut Editor, on: On, word: &str, anew: fn(&mut Editor)) {
+    for when in ["laid out anew", "cached"] {
+        if when == "laid out anew" {
+            anew(ed);
+        }
+        let before = frame(ed);
+        let (y, a, b, w) = cut_text(ed, word).unwrap_or_else(|| panic!("recorded as cut, {when}:\n{before}"));
+        assert_eq!(w.on, on, "on what it's drawn on, {when}");
+        assert!(!before.contains(word) && a < b, "cut, {when}:\n{before}");
+        ed.handle_event(Event::Hover(((a + b) / 2) as u16, y as u16));
+        let screen = frame(ed);
+        assert!(screen.contains(word), "whole under the mouse, {when}:\n{screen}");
+        ed.handle_event(Event::Hover(1, 1));
+        frame(ed);
+    }
+}
+
+fn chat_of(ed: &mut Editor) -> &mut Chat {
+    ed.workspace.claude.chat.as_mut().unwrap()
+}
+
+/// The chat's chip on a sent message: its rows cached with the message.
+#[test]
+fn a_cut_chip_is_whole_on_a_fresh_frame_and_a_cached_one() {
+    let chip = format!("a screen went with it — {} and farewell", "the title of a long screen ".repeat(4));
+    let mut ed = chat(vec![Msg::new(Role::User, "look", chip)]);
+    whole_fresh_and_cached(&mut ed, On::Chat, "farewell", |ed| chat_of(ed).msgs[0].changed());
+}
+
+/// A run's wait under its row in the chat: the frame's own row, laid out before the frame begins.
+#[test]
+fn a_cut_wait_is_whole_on_a_fresh_frame_and_a_cached_one() {
+    let mut ed = chat(vec![Msg::new(Role::User, "build it", ""), run_row("cargo build")]);
+    let t = crate::task::Task { name: "build".into(), cmd: "cargo build".into(), cwd: "/".into() };
+    let mut r = crate::task::Run::for_test(t);
+    r.state = crate::task::State::Running;
+    let rev = crate::mcp::Rev::default();
+    r.chat = Some(crate::tools::Call::new(1, "r1", serde_json::json!(1), rev, "run"));
+    let said = format!("{} and farewell", "the lock another cargo holds on its build folder ".repeat(2));
+    r.wait.now = Some((crate::waits::Hit { said, report: String::new() }, crate::clock::now()));
+    ed.workspace.task_run = Some(r);
+    chat_of(&mut ed).state = crate::chat::State::Thinking;
+    // (one instant: its time is in its words — a second gone by between two frames is another text, its card a frame
+    // later, `whole::drawn`)
+    crate::clock::hold();
+    whole_fresh_and_cached(&mut ed, On::Chat, "farewell", |_| {});
+    crate::clock::release();
+}
+
+/// The queued line: its rows cached while nothing changed (`Chat.queued_laid`).
+#[test]
+fn a_cut_queued_line_is_whole_on_a_fresh_frame_and_a_cached_one() {
+    let mut ed = chat(vec![Msg::new(Role::User, "walk it", "")]);
+    let c = chat_of(&mut ed);
+    c.state = crate::chat::State::Thinking;
+    c.queue(
+        format!("{} and farewell", "look at what it waited on before you run it again ".repeat(3)),
+        false,
+    );
+    whole_fresh_and_cached(&mut ed, On::Transcript, "farewell", |ed| {
+        *chat_of(ed).queued_laid.borrow_mut() = None
+    });
+}
+
+/// The status line's chip naming the session in front (no chat up, two workspaces): a piece cut before its column is
+/// known, carried to its print.
+#[test]
+fn a_cut_status_piece_is_whole_on_a_fresh_frame_and_a_cached_one() {
+    let dir = crate::scratch::Scratch::new("whole-status");
+    let mut ed = Editor::new(Config::default());
+    ed.workspace_add(dir.to_path_buf());
+    ed.workspace.git_branch = Some(format!("{}and-farewell", "a-branch-named-at-length-".repeat(2)));
+    whole_fresh_and_cached(&mut ed, On::Status, "farewell", |_| {});
+}
+
+/// A floating group's row: the tests' note over its output, the group floated (`C-w e`) — on the floating list's
+/// surface, not the slot's (`slot_on`), so its card is drawn over what floats.
+#[test]
+fn a_floating_groups_cut_row_is_whole_on_a_fresh_frame_and_a_cached_one() {
+    let mut ed = Editor::new(Config::default());
+    let case = |name: String| crate::test_results::Case {
+        name,
+        status: crate::test_results::Status::Failed,
+        secs: None,
+        message: vec!["assertion failed".into()],
+        at: None,
+    };
+    let long = format!("tests::case_{}_and_farewell", "with_a_name_that_runs_on_".repeat(4));
+    let run = crate::testing::TestRun::finished("t", vec![case(long)], vec!["ok".into()]);
+    ed.workspace.test_run = Some(run);
+    frame(&mut ed);
+    ed.list_focus(crate::pane::GroupKind::Tests);
+    feed(&mut ed, "<C-w>e");
+    let g = ed.workspace.group(crate::pane::GroupKind::Tests).unwrap();
+    assert!(matches!(g.place, crate::pane::Place::Floating(_)), "floated");
+    // (the keys back in the code: no row in hand, the mouse's alone)
+    ed.workspace.viewer.at = crate::workspace::At::Code;
+    whole_fresh_and_cached(&mut ed, On::List, "farewell", |_| {});
+    // (no test ran: its note over the output, in the same frame)
+    let r = ed.workspace.test_run.as_mut().unwrap();
+    (r.state, r.cases) = (crate::testing::RunState::NoTests, Vec::new());
+    // (narrow: the floating frame too narrow for it)
+    let narrow = |ed: &mut Editor| {
+        let mut bytes = Vec::new();
+        crate::term::render(ed, &mut bytes, 70, H).unwrap();
+        let mut p = vt100::Parser::new(H, 70, 0);
+        p.process(&bytes);
+        p.screen().contents()
+    };
+    let screen = narrow(&mut ed);
+    let (y, a, b, w) = cut_text(&ed, "runner did").unwrap_or_else(|| panic!("the note cut:\n{screen}"));
+    assert_eq!(w.on, On::List, "the note on what floats:\n{screen}");
+    ed.handle_event(Event::Hover(((a + b) / 2) as u16, y as u16));
+    let screen = narrow(&mut ed);
+    assert!(card(&ed).is_some() && screen.contains("did:"), "whole over what floats:\n{screen}");
+}
+
+/// A run panel's list: the tests' selected case, its name cut, whole on its card while the list has the keys — beside
+/// the list, never over its other rows; another under the mouse.
+#[test]
+fn a_run_panels_selected_row_is_whole_in_hand_and_under_the_mouse() {
+    let mut ed = Editor::new(Config::default());
+    let case = |name: String| crate::test_results::Case {
+        name,
+        status: crate::test_results::Status::Failed,
+        secs: None,
+        message: vec!["assertion failed".into()],
+        at: None,
+    };
+    let long =
+        |k: usize| format!("tests::case_{k}_{}_and_farewell_{k}", "with_a_name_that_runs_on_".repeat(4));
+    let run = crate::testing::TestRun::finished("t", vec![case(long(1)), case(long(2))], vec!["ok".into()]);
+    ed.workspace.test_run = Some(run);
+    frame(&mut ed);
+    let before = frame(&mut ed);
+    assert!(card(&ed).is_none(), "no keys, no row in hand:\n{before}");
+    ed.list_focus(crate::pane::GroupKind::Tests);
+    let screen = frame(&mut ed);
+    let (y, ..) = cut_text(&ed, "farewell_1").expect("recorded as cut");
+    assert_eq!(crate::whole::shown(&ed).map(|s| matches!(s.1, Some(Hand::Beside(_)))), Some(true));
+    assert_eq!(card(&ed).map(|c| c.1), Some(y), "along its own row");
+    assert!(screen.contains("farewell_1"), "whole:\n{screen}");
+    let (y2, a2, ..) = cut_text(&ed, "farewell_2").expect("the other recorded");
+    let row2: String = screen.lines().nth(y2).unwrap().chars().skip(a2).take(13).collect();
+    assert_eq!(row2, "case_2_with_a", "never over its other row:\n{screen}");
+}
+
+/// A cut cut again narrower than what leads it (U2's third review): `lead("abc ")` refit to `abc…`, the old cut's start
+/// inside the new `…` — placed at this cut's `…`, its whole what those cells stand for (the lead's cut part, the old
+/// whole); cut again in its tail, from where it was cut, the tail taken in.
+#[test]
+fn a_cut_cut_again_into_its_lead_is_placed_from_its_new_cut() {
+    let placed = |cut: &Fit| {
+        begin();
+        at(On::Status, cut, (10, 0), Style::default(), (0, 80));
+        PLACED.take().into_iter().map(|(spot, w, _)| (spot, w.text)).collect::<Vec<_>>()
+    };
+    let led = super::fit("a whole name", 6).lead("abc ");
+    assert_eq!(led.shown(), "abc a who…");
+    let again = led.fit(4);
+    assert_eq!(again.shown(), "abc…");
+    assert_eq!(
+        placed(&again),
+        vec![((0, 13, 14), " a whole name".to_string())],
+        "at its `…`, all it stands for"
+    );
+    let tailed = super::fit("a whole name", 6).lead("abc ").then(" tail");
+    let again = tailed.fit(12);
+    assert_eq!(again.shown(), "abc a who… …");
+    assert_eq!(
+        placed(&again),
+        vec![((0, 14, 22), "a whole name tail".to_string())],
+        "from its cut, the tail in"
+    );
+}
+
+/// A cut on a floating frame's line is seen only where that frame is the topmost drawn (U2's fourth review: `On::Frame`
+/// matched any floating surface): a card's title cut on its frame (its first row's cut carried there — it was dropped),
+/// the prompt's frame drawn over it: no card; another card's frame over it (the same surface — which frame is topmost
+/// tells them apart) and the note card over it (no frame — the surface does), each laid in the frame's record, as
+/// no layout today puts them there: no card; with nothing over it, its card. (A picker and which-key hide the cards.)
+#[test]
+fn a_cut_on_a_frame_under_another_frame_is_not_in_hand() {
+    let mut ed = Editor::new(Config::default());
+    let title = format!("Run {}and farewell", "a rather long command ".repeat(8));
+    let body: Vec<String> = (0..2).map(|i| format!("line {i} of what it asks")).collect();
+    let what = crate::offer::What::ReviewAtEnd;
+    ed.push_offer(crate::offer::Offer::new(title, &body.join("\n"), "", String::new(), what));
+    let alone = frame(&mut ed);
+    let (y, a, b, w) =
+        cut_text(&ed, "farewell").unwrap_or_else(|| panic!("the title cut on its frame:\n{alone}"));
+    let card = match w.on {
+        On::Frame(crate::mouse::Surface::Card, rect) => rect,
+        on => panic!("on the card's frame: {on:?}"),
+    };
+    // (the prompt, its completions over the card's title)
+    feed(&mut ed, ":s");
+    let screen = frame(&mut ed);
+    // (a cell of the cut under the prompt's frame, drawn after the card's)
+    let frames = ed.screen.frames.borrow().clone();
+    let over = |x: usize| {
+        let inside =
+            |r: (usize, usize, usize, usize)| (r.0..r.0 + r.2).contains(&x) && (r.1..r.1 + r.3).contains(&y);
+        frames.iter().rev().find(|f| inside(f.rect)).is_some_and(|f| f.rect != card)
+    };
+    let x = (a..b).find(|&x| over(x)).unwrap_or_else(|| panic!("the prompt over the cut:\n{screen}"));
+    assert!(cut_text(&ed, "farewell").is_some(), "recorded, drawn first:\n{screen}");
+    ed.handle_event(Event::Hover(x as u16, y as u16));
+    let hovered = frame(&mut ed);
+    assert!(
+        ed.cut_hover.is_none() && !hovered.contains("farewell"),
+        "the prompt over it, no card:\n{hovered}"
+    );
+    ed.handle_event(Event::Hover(0, H - 1));
+    feed(&mut ed, "<esc>");
+    frame(&mut ed);
+    // (another card's frame over it — the same surface, `mouse_under` saying `Card` there: only which frame is topmost
+    // tells them apart. Two cards never touch in a layout today, so it's laid in the frame's record, drawn after it)
+    let x = (a + b) / 2;
+    let other = crate::mouse::Framed {
+        rect: (x.saturating_sub(4), y.saturating_sub(1), 12, 3),
+        of: Some(crate::mouse::Lights::Card),
+        lit: crate::mouse::Lit::Wash,
+    };
+    ed.screen.frames.borrow_mut().push(other);
+    assert_eq!(ed.mouse_at(x, y).surface, crate::mouse::Surface::Card, "a card's surface there");
+    ed.handle_event(Event::Hover(x as u16, y as u16));
+    assert!(ed.cut_hover.is_none(), "another card over it, no card");
+    ed.handle_event(Event::Hover(0, H - 1));
+    frame(&mut ed);
+    // (what has no frame over it — the note card, `mouse_under`'s before the card: only the surface tells them apart)
+    ed.screen.note_card.set(Some((x.saturating_sub(4), y.saturating_sub(1), 12, 3)));
+    assert_eq!(ed.mouse_at(x, y).surface, crate::mouse::Surface::NoteCard, "the note card's surface there");
+    ed.handle_event(Event::Hover(x as u16, y as u16));
+    assert!(ed.cut_hover.is_none(), "the note card over it, no card");
+    ed.screen.note_card.set(None);
+    ed.handle_event(Event::Hover(0, H - 1));
+    frame(&mut ed);
+    // (nothing over it: its card)
+    ed.handle_event(Event::Hover(((a + b) / 2) as u16, y as u16));
+    let hovered = frame(&mut ed);
+    assert!(hovered.contains("farewell"), "in sight, its card:\n{hovered}");
+}
+
+/// A cut hidden under a floating pane isn't in hand (U2's third review): a page's title cut on its pane's top line, the
+/// floating `:messages` laid over it — the mouse there is over the list, whose surface a docked line's could be: no
+/// card; the list moved off it, its card.
+#[test]
+fn a_cut_hidden_under_a_floating_pane_is_not_in_hand() {
+    use crate::pane::GroupKind;
+    use crate::split::Rect;
+    let mut ed = Editor::new(Config::default());
+    let id = crate::web::page::stand_in(&mut ed, "https://docs.example.com/guide", "Its text.\n");
+    let title = format!("web · docs.example.com › {} and farewell", "A Guide to Everything ".repeat(6));
+    let d = ed.docs.iter_mut().find(|d| d.id == id).unwrap();
+    d.title = Some(title);
+    d.page.as_mut().unwrap().fetching = None;
+    frame(&mut ed);
+    let (y, a, b, w) = cut_text(&ed, "farewell").expect("the title cut");
+    assert_eq!((w.on, w.float), (On::Top, None), "docked");
+    let x = (a + b) / 2;
+    ed.set_status("a message to list");
+    ed.messages_open(None);
+    frame(&mut ed);
+    ed.workspace.viewer.at = crate::workspace::At::Code;
+    for (over, at) in [(true, y), (false, y + 12)] {
+        ed.float_set(GroupKind::Messages, Rect { x: x.saturating_sub(10), y: at, w: 40, h: 6 });
+        let before = frame(&mut ed);
+        let floats = ed.float_at(x, y).map(|f| f.0);
+        assert_eq!(floats, over.then_some(GroupKind::Messages), "the list over it: {over}\n{before}");
+        assert!(cut_text(&ed, "farewell").is_some(), "recorded, drawn first");
+        ed.handle_event(Event::Hover(x as u16, y as u16));
+        let screen = frame(&mut ed);
+        match over {
+            true => {
+                assert!(ed.cut_hover.is_none() && !screen.contains("farewell"), "hidden, no card:\n{screen}")
+            }
+            false => assert!(screen.contains("farewell"), "in sight, its card:\n{screen}"),
+        }
+        ed.handle_event(Event::Hover(0, H - 1));
+        frame(&mut ed);
+    }
 }

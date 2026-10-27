@@ -106,6 +106,14 @@ const MOUSE_SCENES: &[Scene] = &[
         }
         ed.messages_open(None);
     }),
+    // (a cut in a floating pane, its card only where that pane is the topmost — U2's fourth review: one drawn outside
+    // `whole::Within` was hidden to the walk too; its keys given back, so no row is in hand and the mouse's card is seen)
+    ("the messages list, a message cut", |ed| {
+        ed.set_status(format!("a message far wider than its list, {}and farewell", "on and on ".repeat(16)));
+        ed.messages_open(None);
+        frame(ed);
+        feed(ed, &["<esc>"]);
+    }),
     ("the side panel, many files", |ed| {
         let files = (0..80).map(|i| format!("f{i:02}.rs")).collect();
         ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(std::env::temp_dir(), files));
@@ -242,23 +250,67 @@ fn quote_of(label: &str, n: usize) -> crate::quote::Taken {
     }
 }
 
-/// A `…` drawn that isn't a cut, by the words around it: something under way (a page's read too), a character waited
-/// for (`f…`), the chat's placeholder, which-key's mark of a menu (`Tasks …`).
-const NOT_CUTS: &[&str] =
-    &["looking…", "listing files…", "weaving…", "  reading ", " f…", "› Ask about ", " …  "];
-
-/// The surfaces whose `…`s aren't whole under the mouse yet (frictions #179's rest) — it only shrinks: one met with none
-/// left fails until it's taken off. (The walk meets these; the rest not done is named in mouse X's commit.)
-const NOT_WHOLE_YET: &[&str] = &[
-    // (a card's peek: its title cut)
-    "Card",
-    // (Claude's edit review's head: the instruction cut)
-    "EditReview",
-    // (a group's list: `:procs`' note when it's empty)
-    "List",
-    // (the status line's folds: another session's waiting card)
-    "Status",
+/// A `…` drawn that isn't a cut, by the words around it — matched at that `…`'s own cell, never anywhere on its row
+/// (U2's fourth review: `r…` excused every `…` beside it, and a cut ending in a word starting with `r`): where (a
+/// regex on `scene · surface`, `""` anywhere), the row before it (a regex ending at it) and after it (one starting
+/// past it). Something under way (a page's read too), a character waited for on the status line (`f…`, `r…`), the
+/// chat's placeholder, which-key's mark of a menu (`Tasks …`, the built-in groups' names).
+const NOT_CUTS: &[(&str, &str, &str)] = &[
+    ("", r"(^|\s)looking$", r"^(\s|$)"),
+    ("", r"(^|\s)listing files$", r"^(\s|$)"),
+    ("", r"\s{2}weaving$", r"^(\s|$)"),
+    ("", r"\s{2}reading \S+$", r"^\s"),
+    // (its keys padded to the position's width they stand in for: two blanks before at least)
+    (r"waits for its character · Status$", r"\s{2}[fr]$", r"^(\s|$)"),
+    ("", r"› Ask about \S+$", r"^(\s|$)"),
+    (r" · WhichKey$", r"\s{2}(Git|Window|Tests|Tasks|Review|View|Goto|Match|Previous|Next) $", r"^(\s|$)"),
 ];
+
+/// Whether the `…` at cell `x` of `row` (`cells`), drawn in `at` (`scene · surface`), isn't a cut (`NOT_CUTS`).
+fn not_a_cut(at: &str, row: &[char], x: usize) -> bool {
+    let (before, after): (String, String) = (row[..x].iter().collect(), row[x + 1..].iter().collect());
+    let (before, after) = (before.replace('\0', ""), after.replace('\0', ""));
+    let is = |re: &str, s: &str| regex::Regex::new(re).unwrap().is_match(s);
+    NOT_CUTS.iter().any(|&(w, b, a)| is(w, at) && is(b, &before) && is(a, &after))
+}
+
+/// A frame's row as its cells (`screen::text` writes a wide character once): each cell's character, a wide one's second
+/// cell `\0`, a mark that takes no cell left out.
+fn cells(row: &str) -> Vec<char> {
+    use unicode_width::UnicodeWidthChar;
+    let mut out = Vec::new();
+    for c in row.chars() {
+        match c.width().unwrap_or(0) {
+            0 if !out.is_empty() => {}
+            2 => out.extend([c, '\0']),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Whether the frame shows a cut's own text at its cells (`[a, b)` of `row`): what's drawn there, each stretch between
+/// its `…`s (its blanks as the frame has them, the ends' trimmed) a stretch of its whole, in order — and its `…` drawn
+/// there (a cut's own drawing always has it: a label with none over its cells isn't it, whatever it says).
+/// The walk's oracle of what's on top, from the frame alone (U2's fourth review: never `Whole::seen`, the predicate under
+/// test — a cut tagged wrong was hidden to both): a cut under a floating pane, a card, a picker shows that one's cells,
+/// not its own. Contiguous (U2's fifth: letters read in order with gaps let almost any short label over a long whole
+/// pass).
+fn shows_its_own(row: &[char], (a, b): (usize, usize), whole: &str) -> bool {
+    let drawn: String =
+        (row.get(a..b.min(row.len())).unwrap_or_default().iter()).filter(|c| **c != '\0').collect();
+    let parts: Vec<&str> = drawn.split('…').map(str::trim).filter(|p| !p.is_empty()).collect();
+    let mut rest = whole;
+    drawn.contains('…')
+        && !parts.is_empty()
+        && parts.iter().all(|p| match rest.find(p) {
+            Some(i) => {
+                rest = &rest[i + p.len()..];
+                true
+            }
+            None => false,
+        })
+}
 
 /// The scenes whose keys leave a sequence under way where the keys are — a prefix, a count, an awaited character, the
 /// window prefix — as their keys read (`SCENES`' and `MOUSE_SCENES`' last keys): a press there ends it (`STATES`). The
@@ -610,8 +662,9 @@ struct Walk {
     moved: Vec<String>,
     /// `scene · surface` of `SCROLLS` whose wheel was judged with room.
     scrolled: Vec<String>,
-    /// `scene · surface: row` of a `…` drawn where no cut is recorded (`whole::cut_at`, the chat's rows).
-    dots: Vec<(String, String)>,
+    /// `scene · surface`, the row's cells and the `…`'s cell of a `…` drawn where no cut is recorded (`whole::cut_at`,
+    /// the chat's rows).
+    dots: Vec<(String, Vec<char>, usize)>,
     /// `scene · at x,y: …` where a cut text under the mouse wasn't taken in hand as its surface says, or drew nothing.
     cuts: Vec<String>,
     /// The scenes where a chip over the chat's input was met (`cuts_in`).
@@ -855,12 +908,13 @@ fn walk_held(walk: &mut Walk, n: usize, scene: &str, setup: fn(&mut Editor)) {
 fn cuts_in(walk: &mut Walk, ed: &Editor, text: &str, scene: &str, setup: fn(&mut Editor)) {
     use crate::whole::Cut;
     let spots = ed.screen.cut_spots.borrow().clone();
-    for (y, row) in text.lines().enumerate() {
-        for (x, _) in row.chars().enumerate().filter(|c| c.1 == '…') {
+    let rows: Vec<Vec<char>> = text.lines().map(cells).collect();
+    for (y, row) in rows.iter().enumerate() {
+        for (x, _) in row.iter().enumerate().filter(|c| *c.1 == '…') {
             if !spots.iter().any(|s| s.0 == y && (s.1..s.2).contains(&x)) {
                 let surface = format!("{:?}", ed.mouse_at(x, y).surface);
                 let surface = surface.split('(').next().unwrap_or_default().to_string();
-                walk.dots.push((format!("{scene} · {surface}"), row.trim().to_string()));
+                walk.dots.push((format!("{scene} · {surface}"), row.clone(), x));
             }
         }
     }
@@ -886,7 +940,8 @@ fn cuts_in(walk: &mut Walk, ed: &Editor, text: &str, scene: &str, setup: fn(&mut
         let Cut::Text(w) = cut else { continue };
         let x = (a + b) / 2;
         let mut ed = fresh(setup);
-        let shows = w.on.under(ed.mouse_at(x, y).surface);
+        // (what's on top at its cells, as the frame shows them — never the code's own `Whole::seen`)
+        let shows = rows.get(y).is_some_and(|row| shows_its_own(row, (a, b), &w.text));
         let before = snap(&mut ed);
         ed.handle_event(Event::Hover(x as u16, y as u16));
         let after = snap(&mut ed);
@@ -1013,8 +1068,8 @@ fn no_press_is_lost_in_silence() {
 
 /// Every `…` tarae draws shows its whole text under the mouse (frictions #178, #179): on every scene's frame, each `…` is
 /// under a cut recorded where it's drawn, and the mouse over a cut text shows it whole (its card drawn) where what it's
-/// drawn on is under the pointer — but the surfaces not done yet (`NOT_WHOLE_YET`, only shrinking) and a `…` that
-/// isn't a cut (`NOT_CUTS`).
+/// drawn on is under the pointer — but a `…` that isn't a cut (`NOT_CUTS`). What no walk meets is held by
+/// `whole::tests::every_cut_tarae_draws_is_recorded`.
 #[test]
 fn every_cut_text_is_whole_under_the_mouse() {
     if !pty("every_cut_text_is_whole_under_the_mouse") {
@@ -1026,17 +1081,76 @@ fn every_cut_text_is_whole_under_the_mouse() {
     for scene in ["the chat, a long quote over its input", "the chat, three things over its input"] {
         assert!(w.chips.iter().any(|s| s == scene), "no chip met in {scene:?}");
     }
-    let surface = |at: &str| at.split(" · ").nth(1).unwrap_or_default().to_string();
     let open: Vec<String> = (w.dots.iter())
-        .filter(|(at, row)| {
-            !NOT_WHOLE_YET.contains(&surface(at).as_str()) && !NOT_CUTS.iter().any(|n| row.contains(n))
+        .filter(|(at, row, x)| !not_a_cut(at, row, *x))
+        .map(|(at, row, x)| {
+            format!("{at} at {x}: {}", row.iter().filter(|c| **c != '\0').collect::<String>().trim())
         })
-        .map(|(at, row)| format!("{at}: {row}"))
         .collect();
     assert!(open.is_empty(), "a `…` not whole under the mouse:\n{}", open.join("\n"));
-    let done: Vec<&&str> =
-        NOT_WHOLE_YET.iter().filter(|s| !w.dots.iter().any(|d| surface(&d.0) == **s)).collect();
-    assert!(done.is_empty(), "no `…` left on {done:?}: take it off NOT_WHOLE_YET");
+}
+
+/// A `…` that isn't a cut is told at its own cell (U2's fourth review): a character waited for on the status line, a
+/// menu's mark on which-key, a page being read — each excused there, and a cut beside it on the same row, or one whose
+/// cut word starts with what an exemption's does, not.
+#[test]
+fn a_dot_that_isnt_a_cut_is_told_at_its_own_cell() {
+    let at = |row: &str| {
+        let row = cells(row);
+        let x = row.iter().rposition(|c| *c == '…').unwrap();
+        (row, x)
+    };
+    let waits = "f waits for its character · Status";
+    for (scene, row, excused) in [
+        (waits, "● normal  src/a.rs   f… ", true),
+        (waits, "● normal  a message about the r…  f… ", true),
+        ("the space menu · WhichKey", "│ m  Tasks …      │", true),
+        ("a page · PaneTop", "─ web · docs.example.com  reading docs.example.com/guide… 3s ─", true),
+        ("the chat · Input", "  › Ask about main.rs…", true),
+        // (a cut on the same row as one excused: its own `…` judged, the last on the row)
+        (waits, "● normal   f…  a message cut befo…", false),
+        ("the space menu · WhichKey", "│ m  Tasks …  w  Window …  s  Search in the whole proj… │", false),
+        ("a page · PaneTop", "─ web  reading docs.example.com/guide…  a title cut in the midd… ─", false),
+        // (a cut word starting with an exemption's letter, where it isn't waited for)
+        ("a long conversation · Transcript", "  ▸ cargo test -q -- the r…", false),
+        (waits, "● normal  a message about the r…", false),
+        ("the space menu · WhichKey", "│ s  Search in the whole …      │", false),
+    ] {
+        let (row, x) = at(row);
+        assert_eq!(not_a_cut(scene, &row, x), excused, "{scene}: {:?}", row.iter().collect::<String>());
+    }
+}
+
+/// The walk's oracle of a cut's being on top reads the frame (U2's fourth review): its own text at its cells, but its
+/// `…` — a floating pane's, a card's, a blank ground's cells there are not it.
+#[test]
+fn a_cut_on_top_is_read_from_the_frame() {
+    let whole = "a title far too long to fit and farewell";
+    for (row, on_top) in [
+        ("─ a title far too lo… ─", true),
+        ("─ …too long to fit an… ─", true),
+        ("─ │ messages ─────── ─", false),
+        ("─                    ─", false),
+        ("─ one  a message     ─", false),
+    ] {
+        assert_eq!(shows_its_own(&cells(row), (2, 21), whole), on_top, "{row:?}");
+    }
+    // (a long whole — the scene's cut message — and a short label over its cells: its letters are somewhere in it in
+    // order, never a stretch of it; the cut's own stretches, a middle cut's two, are)
+    let whole = format!("a message far wider than its list, {}and farewell", "on and on ".repeat(16));
+    for (row, on_top) in [
+        ("  one                 ", false),
+        ("  sand                ", false),
+        ("  a message far wid… ", true),
+        ("  …on and farewell   ", true),
+        ("  a message…farewell ", true),
+        ("  farewell…a message ", false),
+        // (a pane's label that is a stretch of it, with no `…` — U2's sixth review)
+        ("  on and             ", false),
+        ("  a                   ", false),
+    ] {
+        assert_eq!(shows_its_own(&cells(row), (2, 21), &whole), on_top, "{row:?}");
+    }
 }
 
 /// Every floating frame lights half while the pointer is on it, as a docked surface's lines do (#189, the mouse's
