@@ -450,12 +450,8 @@ A cursor on what a surface shows. The chat's conversation (`esc` from its input)
 | `i` | `view_input` | Back to typing |
 | `q` | `view_leave` | Leave view mode |
 | `y` | `view_copy` | Copy, to paste anywhere |
-| `down` | `scroll_down` | Scroll down a line |
 | `esc` | `view_leave` | Leave view mode |
-| `left` | `page_up` | Move page up |
 | `ret` | `view_take` | Quote it to the chat, or type |
-| `right` | `page_down` | Move page down |
-| `up` | `scroll_up` | Scroll up a line |
 
 ### The terminal's (`[keys.view.terminal]`)
 

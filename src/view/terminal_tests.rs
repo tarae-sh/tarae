@@ -628,6 +628,74 @@ fn the_wheel_enters_view_mode_and_leaves_it_at_the_bottom() {
     assert_eq!(region(&ed), "view:terminal", "entered by a key, it stays");
 }
 
+/// The arrows are the code's normal mode's (#181): `↑`/`↓` a line, `←`/`→` a character, the view following the
+/// cursor.
+#[test]
+fn the_arrows_move_the_cursor_as_in_the_code() {
+    let (mut ed, _sent) = term(Config::default(), 60);
+    feed(&mut ed, "<C-\\>");
+    let col = |ed: &Editor| {
+        let d = view(ed).doc();
+        let c = d.selection().primary().cursor(&d.text);
+        c - mv::line_start(&d.text, mv::line_of(&d.text, c))
+    };
+    assert_eq!((at(&ed).0.as_str(), col(&ed)), ("$", 0), "on the prompt");
+    feed(&mut ed, "<up>");
+    assert_eq!(at(&ed).0, "line 60", "a line up");
+    feed(&mut ed, "<right><right>");
+    assert_eq!(col(&ed), 2, "two characters on");
+    feed(&mut ed, "<left>");
+    assert_eq!(col(&ed), 1, "one back");
+    feed(&mut ed, "<down>");
+    assert_eq!(at(&ed).0, "$", "a line down");
+    let top = view(&ed).doc().top;
+    let rows = viewport(&ed).0;
+    for _ in 0..rows {
+        feed(&mut ed, "<up>");
+    }
+    let d = view(&ed).doc();
+    let line = mv::line_of(&d.text, d.selection().primary().cursor(&d.text));
+    assert!(d.top < top && (d.top..d.top + rows).contains(&line), "the view followed");
+}
+
+/// The wheel leaves the cursor behind (#181, the mouse rule): the view scrolled past it stays through frames and the
+/// panel taking another size (read again at it); a key that moves the cursor brings the view back.
+#[test]
+fn the_wheel_leaves_the_cursor_behind_through_a_new_size() {
+    use crate::event::MouseKind as K;
+    let (mut ed, _sent) = term(Config::default(), 60);
+    feed(&mut ed, "<C-\\>");
+    let line = |ed: &Editor| {
+        let d = view(ed).doc();
+        mv::line_of(&d.text, d.selection().primary().cursor(&d.text))
+    };
+    let (top, on) = (view(&ed).doc().top, line(&ed));
+    for _ in 0..4 {
+        ed.terminal_mouse(K::ScrollUp, Some((2, 0)), false);
+        frame(&mut ed);
+    }
+    assert_eq!(
+        (view(&ed).doc().top, line(&ed)),
+        (top - 12, on),
+        "the view as the wheel took it, the cursor where it was"
+    );
+    assert!(on >= top - 12 + viewport(&ed).0, "out of sight, below");
+    let mut bytes = Vec::new();
+    crate::term::render(&mut ed, &mut bytes, W, H + 6).unwrap();
+    crate::term::render(&mut ed, &mut bytes, W, H + 6).unwrap();
+    assert!(!terminal_settling(&ed), "read again at its new size");
+    let (d, rows) = (view(&ed).doc(), viewport(&ed).0);
+    let shown = d.top..d.top + rows;
+    assert!(
+        !shown.contains(&line(&ed)),
+        "the view stays off the cursor: rows {shown:?}, the cursor on {}",
+        line(&ed)
+    );
+    feed(&mut ed, "k");
+    let d = view(&ed).doc();
+    assert!((d.top..d.top + viewport(&ed).0).contains(&line(&ed)), "a key: the view back to the cursor");
+}
+
 /// `C-w j` from the code puts tarae's keys on it: its view mode; `q` hides it (the shell runs on), as every
 /// output panel's `q` closes it; `C-w q` too.
 #[test]

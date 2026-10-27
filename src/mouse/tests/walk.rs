@@ -75,6 +75,18 @@ const MOUSE_SCENES: &[Scene] = &[
             c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, format!("answer {i}"), ""));
         }
     }),
+    // (its view mode's cursor on the last row: the wheel up takes the view past it — #181, nothing holds it to the
+    // cursor)
+    ("a long conversation, its cursor at the end", |ed| {
+        chat(ed, "");
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        for i in 0..30 {
+            c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, format!("question {i}"), ""));
+            c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, format!("answer {i}"), ""));
+        }
+        frame(ed);
+        feed(ed, &["<esc>", "G"]);
+    }),
     ("a picker of many rows, its preview long", |ed| {
         long_text(ed);
         let id = ed.doc().id;
@@ -116,6 +128,7 @@ const SCROLLS: &[(&str, &str)] = &[
     ("a split over and under", "Code"),
     ("the chat beside a long file", "Code"),
     ("a long conversation", "Transcript"),
+    ("a long conversation, its cursor at the end", "Transcript"),
     ("a picker of many rows, its preview long", "Picker"),
     ("a picker of many rows, its preview long", "PickerPreview"),
     ("the messages list, long", "Floatlist"),

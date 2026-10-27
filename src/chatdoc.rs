@@ -366,6 +366,7 @@ fn follow(t: &mut Transcript, laid: &Laid) {
             })
             .collect();
         let primary = d.selection().primary_index();
+        let wheeled = d.wheeled();
         d.apply(&tx);
         let ranges = ends
             .into_iter()
@@ -375,6 +376,10 @@ fn follow(t: &mut Transcript, laid: &Laid) {
             })
             .collect();
         d.set_selection(Selection::new(ranges, primary));
+        // (the wheel's hold goes along with the cursor: what arrives is no key of yours)
+        if wheeled {
+            d.wheel_held = Some((d.selection().primary(), d.version()));
+        }
         let line = mv::line_of(&d.text, top);
         d.set_top(line);
         d.top_rows = (skip > 0).then_some((line, skip));
@@ -778,12 +783,19 @@ fn under(d: &Document, s: Shown, col: usize) -> usize {
 }
 
 /// After a frame (`term::render`, as `rundoc::resized`): the chat drawn at another size while its view has the
-/// keys — the cursor kept in sight now, not at the next key. True when the rows in sight moved (drawn again).
+/// keys — the cursor kept in sight now, not at the next key. True when the rows in sight moved (drawn again). Never
+/// while the wheel left the view off the cursor (`Document::wheeled` — the mouse rule): its next key brings it back.
 pub fn resized(ed: &mut Editor) -> bool {
     if !has_keys(ed) {
         return false;
     }
     let size = viewport(ed);
+    if transcript(ed).and_then(|t| t.pane.doc_in()).is_some_and(Document::wheeled) {
+        if let Some(t) = transcript_mut(ed) {
+            t.pane.size = Some(size);
+        }
+        return false;
+    }
     if let Some(before) = transcript(ed).filter(|t| t.pane.size != Some(size)).map(Transcript::top_row) {
         in_sight_now(ed);
         return transcript(ed).map(Transcript::top_row) != Some(before);

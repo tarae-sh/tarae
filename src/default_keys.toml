@@ -348,12 +348,10 @@ esc = "normal_mode"
 
 # View mode — a cursor on what a surface shows: the chat's conversation is normal mode on a read-only document
 # (the whole of it, your [keys.normal] too, `space` the editor's menu), the terminal's normal mode's moves,
-# selections, search and counts (kept to `view::COMMANDS`); these on top, then [view.<surface>]
+# selections, search and counts (kept to `view::COMMANDS`) — the arrows the code's too, the view following the
+# cursor (`z j`/`z k` scroll it, the cursor carried at the edge; only the wheel leaves the cursor behind); these on
+# top, then [view.<surface>]
 [view]
-up = "scroll_up"
-down = "scroll_down"
-left = "page_up"
-right = "page_down"
 G = "view_latest"
 y = "view_copy"
 # (a selection: quoted to the chat — nothing selected: back to typing)

@@ -591,12 +591,21 @@ pub fn terminal_resized(ed: &mut Editor) {
     };
     let sel = old.selection().transform(|r| Range { anchor: put(place(r.anchor)), head: put(place(r.head)) });
     let top = old.top.min(last);
+    let wheeled = old.wheeled();
     doc.set_selection(sel);
     doc.set_top(top);
+    if wheeled {
+        doc.wheel_held = Some((doc.selection().primary(), doc.version()));
+    }
     v.doc = Some(doc);
     v.made = Made { size: now, back, lines: last + 1, ..m };
     v.settling = None;
-    in_sight(ed);
+    match wheeled {
+        // (the wheel left the view off the cursor — the mouse rule: the view stays, the terminal showing it; the next
+        // key brings it back)
+        true => terminal_view_by(ed, 0),
+        false => in_sight(ed),
+    }
 }
 
 /// The cursor's line in sight, the scrolloff margin kept (one line a row: nothing wraps).

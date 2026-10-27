@@ -478,8 +478,7 @@ as from every panel.
 
 | Key | In view mode |
 |---|---|
-| `↑` `↓` | A row up or down, the cursor carried along at the edge |
-| `←` `→` | A page back (older) or on (newer) |
+| `←` `→` `↑` `↓` | A character or a row, as in the code — the view following the cursor (`z j` `z k` scroll it, the cursor carried at the edge; only the wheel leaves the cursor behind) |
 | `y` | Copy what's selected, as written (a paragraph one line) — to the clipboard, and to `p` in the code |
 | `enter` | Quote what's selected to Claude ([below](#quoting-what-you-read)) — nothing selected, back to the input |
 | `G` | The latest: the conversation caught up, the cursor on its last line (`5G`: line 5) |

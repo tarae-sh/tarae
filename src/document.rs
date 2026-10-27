@@ -421,6 +421,13 @@ impl Document {
         self.review_base.is_some() && self.inline.is_none()
     }
 
+    /// The wheel (or a drag past an edge) left the view off the cursor, and the cursor is where it was then: a pane
+    /// that holds still (the chat's, a run's output, the terminal's view mode) leaves the view where it is until a key
+    /// (`wheel_held`; the code's own also asks its text's version — `term::render_frame`).
+    pub fn wheeled(&self) -> bool {
+        self.wheel_held.is_some_and(|h| h.0 == self.selection().primary())
+    }
+
     /// The view starts at `line`, from its first row.
     pub fn set_top(&mut self, line: usize) {
         self.top = line;

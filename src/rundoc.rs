@@ -586,11 +586,16 @@ fn follow(ed: &mut Editor, slot: Slot) {
             let (text, paint) = text_of(&lines(ed, slot, kept), 0, m.preflight);
             let o = ed.workspace.outputs.get_mut(slot).expect("an output, above");
             let d = o.doc_mut();
+            let wheeled = d.wheeled();
             if !trims.is_empty() {
                 let top = mv::line_start(&d.text, d.top.min(mv::last_line(&d.text)));
                 let top = replay(d, w.lines, &trims, top);
                 let top = mv::line_of(&d.text, top);
                 d.set_top(top);
+                // (the wheel's hold goes along with the cursor: a trim is no key of yours)
+                if wheeled {
+                    d.wheel_held = Some((d.selection().primary(), d.version()));
+                }
             }
             let end = d.text.len_bytes();
             // (the colours of what came: from where it goes — after the trims)
@@ -600,9 +605,9 @@ fn follow(ed: &mut Editor, slot: Slot) {
             d.apply_with(&Transaction::new(vec![Change::insert(end, text)]), sel);
             d.paint.extend(paint);
             o.made = m;
-            // (what you were reading may have gone with it: the cursor where it went, kept in sight; held still
-            // otherwise, the run's scroll with it)
-            match (o.keyed, trims.is_empty()) {
+            // (what you were reading may have gone with it: the cursor where it went, kept in sight — but where the
+            // wheel left the view off it; held still otherwise, the run's scroll with it)
+            match (o.keyed, trims.is_empty() || wheeled) {
                 (true, false) => in_sight(ed, slot),
                 (true, true) => pin(ed, slot),
                 _ => {}
@@ -732,11 +737,17 @@ fn pin(ed: &mut Editor, slot: Slot) {
 
 /// After a frame (`term::render`): the output with the keys laid out for another size than its panel drew before
 /// (`C-w z`, the panel growing with its run) kept in sight at it — true when that moved it (drawn again). Only
-/// then: what its run printed meanwhile moves nothing (held still).
+/// then: what its run printed meanwhile moves nothing (held still). Never while the wheel left the view off the
+/// cursor (`Document::wheeled` — the mouse rule): its next key brings it back.
 pub fn resized(ed: &mut Editor) -> bool {
     let Some(slot) = has_keys(ed) else { return false };
     let size = viewport(ed, slot);
     if ed.workspace.outputs.get(slot).is_none_or(|o| o.size == Some(size)) {
+        return false;
+    }
+    if let Some(o) = ed.workspace.outputs.get_mut(slot).filter(|o| o.doc_in().is_some_and(Document::wheeled))
+    {
+        o.size = Some(size);
         return false;
     }
     let at = |ed: &Editor| ed.workspace.outputs.doc(slot).map(|d| (d.top, d.left));

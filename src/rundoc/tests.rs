@@ -607,6 +607,75 @@ fn the_wheel_scrolls_and_a_press_puts_the_cursor() {
     assert!((d.top..d.top + rows).contains(&line), "the cursor in sight");
 }
 
+/// With the keys, the wheel leaves the cursor behind (#181, the mouse rule): the panel taking another size doesn't
+/// bring the view back to it; a key that moves the cursor does.
+#[test]
+fn the_wheel_leaves_the_cursor_behind_through_a_new_size() {
+    use crate::event::{Mouse, MouseKind as K};
+    let mut ed = task(60);
+    feed(&mut ed, "<C-w>j");
+    let (_, y, x, _) = ed.screen.run_rows.get().expect("its rows recorded");
+    let (top, line) = (output(&ed, Slot::Task).top, at(&ed, Slot::Task).0);
+    for _ in 0..4 {
+        ed.handle_mouse(Mouse {
+            kind: K::ScrollUp,
+            x: x as u16 + 2,
+            y: (y + 2) as u16,
+            alt: false,
+            ctrl: false,
+        });
+        frame(&mut ed);
+    }
+    let n = rows(&ed, Slot::Task);
+    assert_eq!(output(&ed, Slot::Task).top, top - 12, "the view as the wheel took it");
+    assert!(line >= top - 12 + n, "the cursor out of sight, below");
+    let mut bytes = Vec::new();
+    crate::term::render(&mut ed, &mut bytes, W, H - 8).unwrap();
+    assert_ne!(rows(&ed, Slot::Task), n, "another size");
+    assert_eq!((output(&ed, Slot::Task).top, at(&ed, Slot::Task).0), (top - 12, line), "the view stays");
+    feed(&mut ed, "k");
+    let (d, n) = (output(&ed, Slot::Task), rows(&ed, Slot::Task));
+    assert!((d.top..d.top + n).contains(&(line - 1)), "a key: the view back to the cursor");
+}
+
+/// The wheel's hold goes along with the cursor through the run's trims (#181): a long run cut at its top while the
+/// wheel left the view off the cursor keeps the view on what you read, the cursor off it — through a new size too.
+#[test]
+fn the_wheels_hold_lasts_through_a_trim_and_a_new_size() {
+    use crate::event::{Mouse, MouseKind as K};
+    let mut ed = task(3100);
+    feed(&mut ed, "<C-w>j3000G");
+    let (_, y, x, _) = ed.screen.run_rows.get().expect("its rows recorded");
+    for _ in 0..4 {
+        ed.handle_mouse(Mouse {
+            kind: K::ScrollUp,
+            x: x as u16 + 2,
+            y: (y + 2) as u16,
+            alt: false,
+            ctrl: false,
+        });
+        frame(&mut ed);
+    }
+    let line = |ed: &Editor, l: usize| output(ed, Slot::Task).text.line(l).to_string();
+    let (top, n) = (output(&ed, Slot::Task).top, rows(&ed, Slot::Task));
+    let (read, cursor) = (line(&ed, top), line(&ed, at(&ed, Slot::Task).0));
+    assert!(at(&ed, Slot::Task).0 >= top + n, "the cursor out of sight, below");
+    ed.workspace.task_run.as_mut().unwrap().keep(0);
+    frame(&mut ed);
+    let trims = ed.workspace.task_run.as_ref().unwrap().trims().count();
+    assert!(trims > 0, "trimmed");
+    let top = output(&ed, Slot::Task).top;
+    assert_eq!((line(&ed, top), line(&ed, at(&ed, Slot::Task).0)), (read.clone(), cursor.clone()), "held");
+    assert!(at(&ed, Slot::Task).0 >= top + n, "the cursor still out of sight");
+    let mut bytes = Vec::new();
+    crate::term::render(&mut ed, &mut bytes, W, H - 8).unwrap();
+    assert_ne!(rows(&ed, Slot::Task), n, "another size");
+    assert_eq!(output(&ed, Slot::Task).top, top, "the view stays through it");
+    feed(&mut ed, "k");
+    let (d, n) = (output(&ed, Slot::Task), rows(&ed, Slot::Task));
+    assert!((d.top..d.top + n).contains(&at(&ed, Slot::Task).0), "a key: the view back to the cursor");
+}
+
 /// A key that shows the code another buffer from the output (`ga`, the one before) gives the code the keys — the
 /// output's document never the code's, the code's pane showing that buffer.
 #[test]

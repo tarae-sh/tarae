@@ -346,23 +346,35 @@ fn esc_collapses_then_leaves() {
     assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().input, "a draft");
 }
 
-/// The arrows: `↑`/`↓` a row of the view (the cursor carried at the edge), `←`/`→` a page back and on — by the
-/// rows drawn, a paragraph's each its own.
+/// The arrows are the code's normal mode's (#181): `←`/`→` a character, `↑`/`↓` a row as drawn, the view following
+/// the cursor; under `v` they extend.
 #[test]
-fn the_arrows_scroll_a_row_and_a_page() {
+fn the_arrows_move_the_cursor_as_in_the_code() {
     let mut ed = chat_with(Config::default(), long());
-    feed(&mut ed, "<esc>");
-    let top = view(&ed).top_row();
-    feed(&mut ed, "<up>");
-    assert_eq!(view(&ed).top_row(), top - 1, "a row up");
-    feed(&mut ed, "<down>");
-    assert_eq!(view(&ed).top_row(), top);
-    let before = cursor_row(&ed);
-    feed(&mut ed, "<left>");
-    let rows = ed.screen.chat_view.get().unwrap().2;
-    assert_eq!(before - cursor_row(&ed), rows, "a page back");
+    feed(&mut ed, "<esc>gg");
+    let pos = |ed: &Editor| doc(ed).selection().primary().cursor(&doc(ed).text);
+    let start = pos(&ed);
     feed(&mut ed, "<right>");
-    assert_eq!(cursor_row(&ed), before, "a page on");
+    assert_eq!(pos(&ed), crate::graphemes::next_boundary(&doc(&ed).text, start), "a character on");
+    feed(&mut ed, "<left>");
+    assert_eq!(pos(&ed), start, "and back");
+    feed(&mut ed, "<down>");
+    assert_eq!(cursor_row(&ed), 1, "a row down");
+    feed(&mut ed, "<up>");
+    assert_eq!((cursor_row(&ed), view(&ed).top_row()), (0, 0), "and up");
+    // (past the last row in sight: the view goes with the cursor)
+    let rows = ed.screen.chat_view.get().unwrap().2;
+    for _ in 0..rows {
+        feed(&mut ed, "<down>");
+    }
+    let (top, row) = (view(&ed).top_row(), cursor_row(&ed));
+    assert_eq!(row, rows, "a row each");
+    assert!(
+        top > 0 && (top..top + rows).contains(&row),
+        "the view followed: rows from {top}, the cursor on {row}"
+    );
+    feed(&mut ed, "ggv<right><right>");
+    assert_eq!(at(&ed).1, "que", "under `v`: extended");
 }
 
 /// It holds still: Claude's text arriving is appended below what's in sight — the rows in sight and the cursor
@@ -540,6 +552,100 @@ fn your_keys_remap_view_mode_and_its_hints() {
     assert!(d.top > 0, "the view went with it");
     feed(&mut ed, "i<C-v>i");
     assert_eq!(region(&ed), "chat");
+}
+
+/// The wheel leaves the cursor behind (#181, the mouse rule): with the cursor placed it scrolls the view past it, and
+/// nothing after brings the view back — not a frame, not another size, not Claude's text arriving; a key that moves
+/// the cursor does.
+#[test]
+fn the_wheel_leaves_the_cursor_behind_until_a_key() {
+    let mut ed = chat_with(Config::default(), long());
+    feed(&mut ed, "<esc>G");
+    let (y0, _, rows, _) = ed.screen.chat_view.get().unwrap();
+    let x = ed.screen.chat_x.unwrap() + 4;
+    let (top, row) = (view(&ed).top_row(), cursor_row(&ed));
+    assert!(top >= 12, "room to scroll: {top}");
+    for _ in 0..4 {
+        let kind = crate::event::MouseKind::ScrollUp;
+        ed.handle_mouse(crate::event::Mouse {
+            kind,
+            x: x as u16,
+            y: (y0 + 5) as u16,
+            alt: false,
+            ctrl: false,
+        });
+        frame(&mut ed);
+    }
+    assert_eq!(view(&ed).top_row(), top - 12, "the view as the wheel took it");
+    assert_eq!(cursor_row(&ed), row, "the cursor where it was");
+    assert!(row >= top - 12 + rows, "out of sight, below");
+    let mut bytes = Vec::new();
+    crate::term::render(&mut ed, &mut bytes, W, H - 6).unwrap();
+    frame(&mut ed);
+    assert_eq!(view(&ed).top_row(), top - 12, "another size: the view stays");
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs.push(Msg::new(Role::User, "one more question", ""));
+    frame(&mut ed);
+    assert_eq!((view(&ed).top_row(), cursor_row(&ed)), (top - 12, row), "what arrives: the view stays");
+    feed(&mut ed, "k");
+    let (top, row) = (view(&ed).top_row(), cursor_row(&ed));
+    assert!((top..top + rows).contains(&row), "a key: the view back to the cursor ({row}, rows from {top})");
+}
+
+/// The wheel's hold goes along with the cursor through what arrives (#181): the cursor on the queued line, the answer
+/// above it streaming in — the cursor goes down with it, out of sight, and the view stays where the wheel left it.
+#[test]
+fn the_wheels_hold_goes_down_with_a_cursor_past_what_arrives() {
+    let mut ed = chat_with(Config::default(), long());
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.state = crate::chat::State::Writing;
+    c.queued = Some("the next question".into());
+    frame(&mut ed);
+    feed(&mut ed, "<esc>G");
+    assert!(at(&ed).0.contains("the next question"), "on the queued line: {:?}", at(&ed).0);
+    let (y0, _, rows, _) = ed.screen.chat_view.get().unwrap();
+    let x = ed.screen.chat_x.unwrap() + 4;
+    for _ in 0..4 {
+        let kind = crate::event::MouseKind::ScrollUp;
+        ed.handle_mouse(crate::event::Mouse {
+            kind,
+            x: x as u16,
+            y: (y0 + 5) as u16,
+            alt: false,
+            ctrl: false,
+        });
+        frame(&mut ed);
+    }
+    let (top, row) = (view(&ed).top_row(), cursor_row(&ed));
+    assert!(row >= top + rows, "the wheel left the cursor below");
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    let m = c.msgs.last_mut().unwrap();
+    m.text.push_str(" More of the answer.\n\nAnd a paragraph after it.");
+    m.changed();
+    frame(&mut ed);
+    assert!(at(&ed).0.contains("the next question"), "the cursor on the queued line still");
+    assert!(cursor_row(&ed) > row, "gone down with what arrived");
+    assert_eq!(view(&ed).top_row(), top, "the view where the wheel left it");
+}
+
+/// `z j` / `z k` scroll the view a row, the cursor carried at its edge (`scroll_view`) — only the wheel leaves it
+/// behind (#181: what the keys' docs say).
+#[test]
+fn z_k_carries_the_cursor_at_the_edge() {
+    let mut ed = chat_with(Config::default(), long());
+    feed(&mut ed, "<esc>G");
+    let rows = ed.screen.chat_view.get().unwrap().2;
+    let (top, row) = (view(&ed).top_row(), cursor_row(&ed));
+    assert_eq!(row + 1, top + rows, "on the last row in sight");
+    feed(&mut ed, "zkzkzk");
+    let (now, at) = (view(&ed).top_row(), cursor_row(&ed));
+    assert_eq!(now, top - 3, "three rows up");
+    assert!(
+        at < row && (now..now + rows).contains(&at),
+        "the cursor carried, in sight: {at} in rows from {now}"
+    );
+    feed(&mut ed, "zjzjzj");
+    assert_eq!(view(&ed).top_row(), top, "and back down");
 }
 
 /// `C-w q` in the chat's view mode closes nothing — as from its input, it's said (`space L` closes the chat); the
@@ -1024,7 +1130,8 @@ fn q_leaves_view_mode_as_esc_does() {
 #[test]
 fn leaving_keeps_the_rows_you_read_when_text_came_after() {
     let mut ed = chat_with(Config::default(), long());
-    feed(&mut ed, "<esc><up><up><up>");
+    // (the view three rows up, the cursor where it is)
+    feed(&mut ed, "<esc>zkzkzk");
     let (top, held) = (view(&ed).top_row(), view(&ed).rows());
     assert!(top > 0);
     let c = ed.workspace.claude.chat.as_mut().unwrap();

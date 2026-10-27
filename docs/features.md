@@ -313,7 +313,7 @@ configs carry over as they are.
   behind another tab or shown without them.
   - **View mode** (`C-\` from the program, `C-w j` to its panel, or the wheel up over it): a cursor on its
     scrollback and screen as text, the code's normal mode on them — `j` `k` `w` `x` `v` `/` `n` `*` `gg`, counts,
-    the `z` views; `↑` `↓` a line, `←` `→` a page, `y` copies, `G` the latest. The panel's head says `● view`, the
+    the `z` views; the arrows as in the code (`←` `→` a character, `↑` `↓` a line), `y` copies, `G` the latest. The panel's head says `● view`, the
     status line `● view · terminal`. It holds still: the program's output waits, and so does the program —
     once its next write fills the pty, it's held there as a real terminal's flow control holds it (`● view ·
     output waits`); nothing piles up in tarae. Its questions to the terminal are still answered. `G` catches up,
