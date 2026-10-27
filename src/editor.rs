@@ -9493,12 +9493,37 @@ mod tests {
             answer.contains("Operation not permitted") && answer.contains("In tarae's sandbox"),
             "{answer}"
         );
-        // What was blocked, watched — the marker by name (JSON-escaped in the log), not a guess
-        assert!(answer.contains("The sandbox blocked one thing"), "{answer}");
-        assert!(
-            answer.contains("  writing ") && answer.contains("marker (file-write-create, touch)"),
-            "{answer}"
-        );
+        // What was blocked, by name (JSON-escaped in the log), not a guess: watched — or, where macOS's record of
+        // the denial came after the watch's last wait or never (`log stream` loses one now and then: frictions
+        // #162, a quick preflight), read from the run's output and said so. Named either way: a lost record is
+        // the OS's answer, a refusal not named is the report's fault.
+        let watched = answer.contains("The sandbox blocked one thing");
+        let (act, named) = match watched {
+            true => ("writing", "marker (file-write-create, touch)".to_string()),
+            false => {
+                let lost = "The sandbox blocked nothing tarae saw. Its output says one thing was refused";
+                assert!(answer.contains(lost), "{answer}");
+                // (still watched: its run had its tag and a `log stream` that started — an unwatched run's report
+                // says the same words, and this is the one check end to end that Claude's runs are watched)
+                let guard = ed.workspace.task_run.as_ref().and_then(|r| r.guard.as_ref());
+                let tagged = matches!(guard, Some(crate::sandbox::Guard::In(p)) if p.tag.is_some());
+                let watch = guard.and_then(crate::sandbox::Guard::watch);
+                let failed = watch.map(|w| w.blocked().failed);
+                assert!(tagged && failed == Some(None), "the run unwatched: tag {tagged}, watch {failed:?}");
+                let said = "editor::tests::claudes_check_runs_in_the_sandbox: the denial's record didn't come \
+                            — named from the output\n";
+                let _ = std::io::Write::write_all(&mut std::io::stderr(), said.as_bytes());
+                // (a checkout in home: reads are kept there too, so the output's line is either's)
+                let in_home =
+                    std::env::var_os("HOME").is_some_and(|h| !h.is_empty() && marker.starts_with(h));
+                let (act, op) = match in_home {
+                    true => ("reading or writing", crate::sandbox::EITHER),
+                    false => ("writing", "file-write*"),
+                };
+                (act, format!("marker ({op}, said in the output)"))
+            }
+        };
+        assert!(answer.contains(&format!("  {act} ")) && answer.contains(&named), "{answer}");
         assert!(!crate::tools::unsandboxed(&ed));
         // (9d: the session's sandbox is its run's, in the state)
         assert_eq!(ed.ui_state().json()["workspaces"][0]["sessions"][0]["sandbox"]["by"], "seatbelt");
