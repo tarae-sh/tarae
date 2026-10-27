@@ -2777,7 +2777,7 @@ fn comment_with(cx: &mut Context, toggle: Toggle) {
     let doc = cx.editor.doc_mut();
     let Some(tx) = toggle(&doc.text, doc.selection(), spec.comment_token.as_deref(), block) else {
         if spec.comment_token.is_none() && block.is_none() {
-            cx.editor.set_status(format!("{} has no comments", spec.name));
+            cx.editor.set_status(format!("{} has no comments", crate::syntax::shown(&spec.name)));
         }
         return;
     };

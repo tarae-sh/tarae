@@ -558,6 +558,25 @@ pub struct Committing {
     pub then_end: bool,
 }
 
+/// The line in a commit message's buffer that it and what's below it are left out at — git's scissors line, as
+/// `commit -v` writes it (the gitcommit grammar knows it). tarae cuts there itself: git cuts at none with `-F`
+/// (`--cleanup=scissors` is `whitespace` when no editor of git's ran — git 2.54, measured), and by its own
+/// `core.commentChar`, not this `#`.
+pub(crate) const SCISSORS: &str = "# ------------------------ >8 ------------------------";
+
+/// The language of the git tab's message: git-commit's grammar and colours, but above the scissors line every line
+/// is the message, a `#` one too, as `git_saved` commits it (frictions #146). A file of that name opened otherwise is
+/// git's, `git-commit`, whose `#` lines git strips.
+pub(crate) const COMMIT_LANG: &str = "tarae-commit";
+
+/// The folder in the git folder that holds the git tab's message (`tarae/COMMIT_EDITMSG`): tarae's own, so git's
+/// writes to its `COMMIT_EDITMSG` — the cleaned message, before `commit-msg` runs — never touch the buffer's file.
+const MESSAGE_DIR: &str = "tarae";
+
+/// What git's own template says under it, word for word.
+const SCISSORS_SAID: &str =
+    "# Do not modify or remove the line above.\n# Everything below it will be ignored.\n";
+
 impl Editor {
     /// Where git runs: the side panel's folder, else the editor's root.
     pub(crate) fn git_cwd(&self) -> PathBuf {
@@ -998,11 +1017,17 @@ impl Editor {
                     return Ok(String::new());
                 }
                 let dir = git(top, &["rev-parse", "--absolute-git-dir"], None)?;
-                let file = PathBuf::from(dir.trim()).join("COMMIT_EDITMSG");
+                // (tarae's own file, never git's `COMMIT_EDITMSG`: git writes its cleaned message there before
+                // `commit-msg` runs — a hook that refused left the buffer's file without its scissors line)
+                let own = PathBuf::from(dir.trim()).join(MESSAGE_DIR);
+                std::fs::create_dir_all(&own).map_err(|e| format!("{}: {e}", own.display()))?;
+                let file = own.join("COMMIT_EDITMSG");
                 let last = if amend { git(top, &["log", "-1", "--format=%B"], None)? } else { String::new() };
-                let mut text = format!("{}\n", last.trim_end());
+                // (the message, every line kept as written — a `#127: …` too, frictions #146 — then the scissors
+                // line, it and what's below it left out: `git_saved`)
+                let mut text = format!("{}\n\n{SCISSORS}\n{SCISSORS_SAID}", last.trim_end());
                 text += &format!(
-                    "\n# :w {} · :q cancels · :commit-draft asks Claude · # lines are left out\n",
+                    "# :w {} · :q cancels · :commit-draft asks Claude\n",
                     if amend { "amends the last commit" } else { "commits" }
                 );
                 text += &format!(
@@ -1039,6 +1064,10 @@ impl Editor {
                     doc.set_selection(crate::selection::Selection::point(0));
                     let id = doc.id;
                     ed.workspace.committing = Some(Committing { doc: id, top, amend, then_end });
+                    if let Some(spec) = crate::syntax::spec(COMMIT_LANG) {
+                        ed.doc_mut().language = Some(COMMIT_LANG);
+                        ed.load_language(id, spec);
+                    }
                     ed.workspace.leave(crate::workspace::At::Side);
                     // A new message: typed at once. Amending: the last message is there to change, not to
                     // type over the top of — normal mode
@@ -1057,7 +1086,8 @@ impl Editor {
     }
 
     /// A buffer was saved: the commit message's commits (and its buffer closes); the panel reads the status
-    /// again.
+    /// again. What's committed is every line above the scissors line — a `#` one too (frictions #146: `strip` took a
+    /// `#127: …` subject, and `#149's …` in a body).
     pub fn git_saved(&mut self, id: DocId) {
         if let Some(c) = self.workspace.committing.take_if(|c| c.doc == id) {
             let Some(file) = self.docs.iter().find(|d| d.id == id).and_then(|d| d.path.clone()) else {
@@ -1069,12 +1099,21 @@ impl Editor {
                 // In the git queue — after a stage still running, never beside another git that writes
                 ed.git_do(
                     Box::new(move |top| {
-                        let f = file.to_string_lossy().into_owned();
-                        let mut args = vec!["commit", "--cleanup=strip", "-F", f.as_str()];
+                        // (what's above the cut line, every line of it: `whitespace` keeps a `#` line — `strip`
+                        // took them, frictions #146)
+                        let text =
+                            std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+                        // (no line that is the scissors line — taken out, a dash edited: where the message ends
+                        // can't be told, and below it are tarae's `#` lines; never guessed, never committed)
+                        if !text.lines().any(|l| l == SCISSORS) {
+                            return Err("the scissors line is gone — put it back, or :q".into());
+                        }
+                        let message = crate::rebase::message_cut(&text, SCISSORS);
+                        let mut args = vec!["commit", "--cleanup=whitespace", "-F", "-"];
                         if amend {
                             args.push("--amend");
                         }
-                        crate::gitrepo::hooked(top, &hooks::with(pre, &args))
+                        crate::gitrepo::hooked_fed(top, &hooks::with(pre, &args), &message)
                             .and_then(|_| git(top, &["log", "-1", "--format=%h %s"], None))
                     }),
                     Box::new(move |ed, result| match result {
@@ -1105,7 +1144,8 @@ impl Editor {
 
     /// `:commit <file>` from a code review once every file is viewed (frictions29 #77: ten keys with timing) — the
     /// git tab's steps in one: the review ends, every change is staged (`S`), committed with the file as its
-    /// message (`c` … `:w`: `#` lines left out, the hooks asked about as there), then a session's bring card.
+    /// message (every line of the file, a `#` one too — frictions #146; the hooks asked about as `c` … `:w` asks),
+    /// then a session's bring card.
     /// Said as it goes; refused, saying why, while a file isn't viewed, a buffer isn't saved, Claude is working or
     /// the review is a turn's (it shows only part of what would be committed). What's staged is what was viewed
     /// (the review of frictions36: the check ran as it was typed, `add --all` after the saves, a hooks card and the
@@ -1220,7 +1260,7 @@ impl Editor {
                         // (the message first: none, nothing staged either)
                         let msg =
                             std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-                        if msg.lines().all(|l| l.trim().is_empty() || l.starts_with('#')) {
+                        if msg.trim().is_empty() {
                             return Err(format!("{} holds no message — nothing staged", path.display()));
                         }
                         // (what was viewed, still — a turn, a tool or a save since: nothing staged)
@@ -1238,7 +1278,7 @@ impl Editor {
                         git(top, &add, None)?;
                         crate::gitrepo::hooked(
                             top,
-                            &hooks::with(pre, &["commit", "--cleanup=strip", "-F", &f]),
+                            &hooks::with(pre, &["commit", "--cleanup=whitespace", "-F", &f]),
                         )
                         .map_err(|e| format!("{e} (every change stays staged)"))?;
                         git(top, &["log", "-1", "--format=%h %s"], None)
@@ -1270,7 +1310,7 @@ impl Editor {
 
     /// `C` · `:commit-draft` — Claude drafts the commit message from what's staged (amending: the whole
     /// commit), in the style of the repository's recent messages. Read on a worker; the draft streams in and
-    /// lands as the in-buffer review of the message part (above the `#` lines).
+    /// lands as the in-buffer review of the message part (above the scissors line).
     pub fn commit_draft(&mut self) {
         let Some(c) = self.workspace.committing.as_ref().filter(|c| c.doc == self.doc().id) else {
             return self
@@ -1289,12 +1329,11 @@ impl Editor {
                 Err(e) => return ed.set_error(format!("commit draft: {e}")),
             };
             let Some(doc) = ed.docs.iter().find(|d| d.id == id) else { return };
-            // The message part: all before the first `#` line
+            // The message part: all before the scissors line (`git_saved` cuts there)
             let text = doc.text.to_string();
-            let end = text.match_indices('\n').map(|(i, _)| i + 1).find(|&i| text[i..].starts_with('#'));
-            let end = end.unwrap_or(text.len());
+            let end = text.rfind(&format!("\n{SCISSORS}")).map_or(text.len(), |i| i + 1);
             // Nothing written yet: the draft goes in at the top (a plain insertion to read, the blank lines
-            // under it the gap before the `#` lines); amending: it's a new version of the message
+            // under it the gap before the cut line); amending: it's a new version of the message
             let end = if text[..end].trim().is_empty() { 0 } else { end };
             match crate::llm::draft(ed, id, "a commit message", &prompt, 0, end) {
                 // (its body at 72, like every message — Claude doesn't always: #21)

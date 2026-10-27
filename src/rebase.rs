@@ -375,9 +375,15 @@ const MESSAGE_CUT: &str = "──────── tarae: this line and what's 
 
 /// The message as written in `text`: what comes before the last `MESSAGE_CUT` line, its trailing blank lines off.
 pub fn message_written(text: &str) -> String {
-    let kept = match text.rfind(&format!("\n{MESSAGE_CUT}")) {
+    message_cut(text, MESSAGE_CUT)
+}
+
+/// The message as written in `text`: what comes before the last line that is `cut`, its trailing blank lines off —
+/// every line of it, a `#` one too (the git tab's commit cuts at git's scissors line, frictions #146).
+pub(crate) fn message_cut(text: &str, cut: &str) -> String {
+    let kept = match text.rfind(&format!("\n{cut}")) {
         Some(i) => &text[..i],
-        None if text.starts_with(MESSAGE_CUT) => "",
+        None if text.starts_with(cut) => "",
         None => text,
     };
     format!("{}\n", kept.trim_end())

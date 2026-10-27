@@ -3,7 +3,8 @@
 //! - `[language.<name>]`: how its files are recognised (`extensions`, `filenames`, `path-suffixes`, `globs` —
 //!   one `*` per segment), `grammar` (its name unless set), commented (`comment-token`,
 //!   `block-comment-tokens = { start, end }`), paired (`auto-pairs`, each `"()"`), called (`title`, else the
-//!   name with its first letter up; `aliases` — code fence and shebang names besides its extensions), drawn
+//!   name with its first letter up; `shown-as` — the name a person reads when its own is an inner one, and then
+//!   left out of `:lang`'s list; `aliases` — code fence and shebang names besides its extensions), drawn
 //!   (`doc-comments = true`: `///`, `//!`, `/** */` rendered), indented (`indent-tabs`, `indent-after-colon`,
 //!   `indent-heuristic = "simple"`: the line before's indentation as it is),
 //!   wrapped (`prose = true`, for `editor.soft-wrap = "prose"`); its servers (`lsp` — the first on `PATH`
@@ -56,6 +57,9 @@ pub struct LangSpec {
     pub auto_pairs: Option<Vec<(char, char)>>,
     /// As people call it (`C++`, `go.mod`).
     pub title: String,
+    /// Its name where a person (or Claude) reads one — the status line, the context — when its own is an inner one
+    /// (`shown-as`: `tarae-commit`, the git tab's message, is `git-commit` there); else its name.
+    pub shown: String,
     /// Code fence and shebang names besides its name and extensions (`golang`, `python3`).
     pub aliases: Vec<String>,
     pub doc_comments: bool,
@@ -324,6 +328,7 @@ const LANGUAGE_KEYS: &[&str] = &[
     "block-comment-tokens",
     "auto-pairs",
     "title",
+    "shown-as",
     "aliases",
     "doc-comments",
     "indent-tabs",
@@ -383,6 +388,7 @@ fn lang_of(e: &Entry) -> Result<LangSpec, String> {
         block_comment,
         auto_pairs,
         title: string(t, "title")?.unwrap_or_else(|| capitalized(&name)),
+        shown: string(t, "shown-as")?.unwrap_or_else(|| name.clone()),
         aliases: list("aliases")?,
         doc_comments: flag("doc-comments")?,
         indent_tabs: flag("indent-tabs")?,
@@ -620,6 +626,9 @@ mod tests {
             ];
             let flags: Vec<String> = flags.iter().filter(|f| f.1).map(|f| f.0.to_string()).collect();
             line(&mut s, "flags", &flags);
+            if l.shown != n {
+                line(&mut s, "shown-as", std::slice::from_ref(&l.shown));
+            }
             if crate::lsp::language_id(n) != n {
                 line(&mut s, "language-id", &[crate::lsp::language_id(n).to_string()]);
             }

@@ -295,6 +295,11 @@
   comments: // /* */
   flags: doc-comments
   installs: swift comment
+[tarae-commit] Git commit
+  grammar: gitcommit
+  flags: simple-indent prose
+  shown-as: git-commit
+  installs: gitcommit comment
 [toml] TOML
   grammar: toml
   extensions: toml

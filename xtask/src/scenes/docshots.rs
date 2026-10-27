@@ -439,6 +439,31 @@ const DOC_SCENES: &[DocScene] = &[
         ],
     )
     .claude("main=card,api=volumecard,docs=full"),
+    // (`C` in the git tab, every change staged: Claude's draft in the message's review, above the scissors line — the
+    // gitcommit grammar's download card answered `n`: a download, never in the docs' homes, and 1.57 MB too many to
+    // embed)
+    scene(
+        "commitdraft",
+        Fixture::Calc,
+        LIB,
+        &[
+            "@1",
+            " ",
+            "g",
+            "@?Changes",
+            "S",
+            "@?Staged",
+            "C",
+            "@20?Change 1 of 1",
+            "@?Git commit syntax",
+            "\x11",
+            "n",
+            "@10!Git commit syntax",
+            "@10!claude answered",
+            "@1",
+        ],
+    )
+    .claude("commitdraft"),
     // (a review whose changes are graded high: an `unsafe` line, a new build script)
     scene("risk", Fixture::Words, MAIN, &["@1", " ", "v", "v", "@?high", "@1"]),
     // (…and its end held while they're not looked at — asked once the review's toast has gone: caught fading, the
@@ -550,9 +575,26 @@ pub(super) fn answered(
             )?;
             Ok(true)
         }
+        // (`C` in the git tab: the commit draft's one-turn claude, its message streamed a line at a time)
+        "commitdraft" if line.starts_with("{\"message\"") => {
+            for t in COMMIT_DRAFT.split_inclusive('\n') {
+                let delta = json!({"type": "text_delta", "text": t});
+                let event = json!({"type": "content_block_delta", "index": 0, "delta": delta});
+                say(out, json!({"type": "stream_event", "event": event}))?;
+                std::thread::sleep(pause);
+            }
+            say(out, json!({"type": "result", "result": COMMIT_DRAFT}))?;
+            Ok(true)
+        }
         _ => Ok(false),
     }
 }
+
+/// `commitdraft`'s message, about the calc project's change (`fixtures::calc_since`): its body one line a paragraph,
+/// for tarae to wrap at 72.
+const COMMIT_DRAFT: &str = "Add min beside max, and median beside average\n\n\
+    min is max's twin, and max now says which one it returns when the two are equal. median sorts a copy and \
+    takes the lower middle for an even length, None for an empty list, as average does.\n";
 
 /// `answer`'s words, about the demo's `main.rs`.
 const ANSWER: &str = "`insert` takes its key by value, so the name is cloned before `first` moves into the map.\n\n\
@@ -597,7 +639,7 @@ const DOCS: &[DocShot] = &[
     row("chat-tests.png", None, S),
     row("chat-run.png", Some("runcard"), S).varies(&[wait_time(2, (103, 111))]),
     row("notes.png", None, S),
-    row("commit-draft.png", None, S),
+    row("commit-draft.png", Some("commitdraft"), S),
     row("review.png", Some("codereview"), S),
     row("claude-reviews.png", Some("bgreviewnote"), S),
     row("review-risk.png", Some("risk"), S),
@@ -1261,6 +1303,11 @@ mod tests {
         assert_eq!(text, ANSWER);
         assert!(text.contains("\n- ") && text.contains("```rust\n") && text.contains("`insert`"), "{text}");
         assert_eq!(lines.last().unwrap()["result"], json!(ANSWER));
+        let draft = said("commitdraft");
+        let lines: Vec<serde_json::Value> = draft.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        let text: String = lines.iter().filter_map(|v| v["event"]["delta"]["text"].as_str()).collect();
+        assert_eq!((text.as_str(), &lines.last().unwrap()["result"]), (COMMIT_DRAFT, &json!(COMMIT_DRAFT)));
+        assert!(!draft.contains("tarae-init"), "the message only: {draft}");
         assert_eq!(said("idle"), "");
     }
 

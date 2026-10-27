@@ -91,9 +91,20 @@ pub fn prose(lang: Option<&str>) -> bool {
     lang.is_none_or(|l| spec(l).is_some_and(|s| s.prose))
 }
 
-/// Known language names (`:lang` completion).
+/// Every known language name, an inner one too (the language table's snapshot; a person picks from `listed`).
+#[cfg(test)]
 pub fn names() -> impl Iterator<Item = &'static str> {
     specs().iter().map(|s| s.name.as_str())
+}
+
+/// The names a person picks a language by (`:lang` completion): not one shown as another's (`shown-as`).
+pub fn listed() -> impl Iterator<Item = &'static str> {
+    specs().iter().filter(|s| s.shown == s.name).map(|s| s.name.as_str())
+}
+
+/// Language `name` as a person reads it (`LangSpec::shown`): `tarae-commit` is `git-commit`.
+pub fn shown(name: &str) -> &str {
+    spec(name).map_or(name, |s| s.shown.as_str())
 }
 
 pub fn spec(name: &str) -> Option<&'static LangSpec> {
@@ -1437,6 +1448,65 @@ mod tests {
             checked += 1;
         }
         eprintln!("{checked} languages checked");
+    }
+
+    /// frictions #146: the git tab's message (`tarae-commit`) is every line above its scissors line, a `#` one too —
+    /// so there the first line looks like a subject (`#146 kept`, no conventional prefix: the grammar's `comment`) and
+    /// a `#` line of the body like the body, never dim; under the scissors every `#` line is a comment whole (the keys
+    /// line, `# :w commits · …`, stood out white past its first `:`), a `commit -v` diff there keeping the diff layer's
+    /// colours. A COMMIT_EDITMSG of git's own (`git-commit`) keeps its `#` lines dim: git strips them.
+    #[test]
+    fn a_commit_message_is_drawn_as_it_is_committed() {
+        // Skip where the gitcommit grammar isn't installed
+        let (Ok(ours), Ok(gits)) = (
+            Loader::global().load(spec(crate::gitpanel::COMMIT_LANG).unwrap()),
+            Loader::global().load(spec("git-commit").unwrap()),
+        ) else {
+            return;
+        };
+        let diffs = Loader::global().load(spec("diff").unwrap()).is_ok();
+        for (subject, lang) in [("#146 kept", &ours), ("#146: kept", &ours), ("#146 kept", &gits)] {
+            let src = format!(
+                "{subject}\n\n#149's body stays\n# a heading in it\n\n{}\n# Do not modify or remove the line above.\n\
+                 # Everything below it will be ignored.\n# :w commits · :q cancels · :commit-draft asks Claude\n\
+                 # Committing on main\n#   M src/a.rs\n\
+                 diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-old\n+new\n",
+                crate::gitpanel::SCISSORS
+            );
+            let text = Rope::from_str(&src);
+            let mut syn = Syntax::new(lang.clone());
+            let job = syn.start_parse(&text);
+            let g = job.generation;
+            syn.finish_parse(g, job.run());
+            let spans = highlights(&syn, &text, 0..text.len_bytes(), &mut QueryCursor::new());
+            let top = |at: usize| {
+                spans.iter().rev().find(|&&(s, e, _)| s <= at && at < e).map(|&(_, _, c)| capture_name(c))
+            };
+            let tree = syn.tree.as_ref().map(|t| t.root_node().to_sexp()).unwrap_or_default();
+            let name = &lang.name;
+            let body = src.find("#149").unwrap();
+            let under = src.find(crate::gitpanel::SCISSORS).unwrap();
+            let dim = |at: usize| top(at).unwrap_or_default().starts_with("comment");
+            if lang.name == crate::gitpanel::COMMIT_LANG {
+                let heading = spans.iter().any(|&(s, e, c)| {
+                    s == 0 && e >= subject.len() && capture_name(c).starts_with("markup.heading")
+                });
+                assert!(heading, "{subject:?}: a subject\n{tree}");
+                for (i, ch) in src[..under].char_indices().filter(|(_, c)| !c.is_whitespace()) {
+                    assert!(!dim(i), "{subject:?}: {ch:?} at {i} dim, committed: {:?}\n{tree}", top(i));
+                }
+            } else {
+                assert!(dim(0) && dim(body), "{name}: git strips them — dim\n{tree}");
+            }
+            let diff = src.find("diff --git").unwrap();
+            for (i, ch) in src[under..diff].char_indices().filter(|(_, c)| !c.is_whitespace()) {
+                assert!(dim(under + i), "{name}: {ch:?} at {}: {:?}\n{tree}", under + i, top(under + i));
+            }
+            if diffs {
+                let c = top(src.find("+new").unwrap() + 1).unwrap_or_default();
+                assert!(c.starts_with("diff"), "{name}: an added line: {c:?}\n{tree}");
+            }
+        }
     }
 
     /// Helm templates: `{{ }}` in Go template colors, text between is a YAML layer (not HTML) — templates

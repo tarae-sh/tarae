@@ -58,7 +58,7 @@ fn run(choices: Choices) -> Vec<String> {
         std::fs::write(repo.join(f), "one\ntwo\n").unwrap();
     }
     let msg = repo.with_file_name("message.txt");
-    std::fs::write(&msg, "The change\n\nWhy.\n# left out\n").unwrap();
+    std::fs::write(&msg, "The change\n\nWhy.\n#77 kept\n").unwrap();
     let mut sim = Sim::new("commit_from_a_review", choices, LIMIT);
     let mut ed = Editor::new(crate::config::Config::default());
     ed.workspace.root = repo.clone();

@@ -460,7 +460,7 @@ pub fn complete(text: &str, cwd: &Path, lists: &Lists) -> Completion {
             (rank(token, items, true), false)
         }
         Arg::Lang if arg_index == 0 => {
-            let items = crate::syntax::names()
+            let items = crate::syntax::listed()
                 .map(|n| Cand {
                     insert: n.to_string(),
                     label: n.to_string(),

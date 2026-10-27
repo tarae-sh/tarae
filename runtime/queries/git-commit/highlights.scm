@@ -1,4 +1,6 @@
-[(comment) (generated_comment) (scissor)] @comment
+; Under the scissors line all is left out of the message: a comment whole (frictions #146 — past a `#` line's `:`,
+; its text is the `diff` node's own, captured by nothing else), the diff layer's colours over it where it has some
+[(comment) (generated_comment) (scissor) (diff)] @comment
 (subject) @markup.heading
 (branch) @string.special.symbol
 (filepath) @string.special.path

@@ -326,6 +326,81 @@ fn what_was_read_is_one_row_that_keeps_its_end() {
     });
 }
 
+/// frictions #144: a change set's card cut to fit, its every change open with `v` — read to its end from the card
+/// (`ge`, or `G`), it's been seen and `y` answers. The buffer opened but was never the card's: `y` waited for good, and
+/// `G` was "not an answer" — a key that reads, before `v`, says at once how the card's text is read.
+#[test]
+fn a_change_sets_changes_read_to_their_end_from_the_card_are_seen() {
+    let names: Vec<String> = (0..40).map(|i| format!("f{i:02}.txt")).collect();
+    for end in ["ge", "G"] {
+        let s = project("seen", &names.iter().map(|n| (n.as_str(), "a\n")).collect::<Vec<_>>());
+        let dir = s.path();
+        let after: Vec<_> = names.iter().map(|n| (n.as_str(), Some("b\n"))).collect();
+        let (_p, patch) = patch_file(&diff_of(dir, &after));
+        let mut ed = editor(dir);
+        let keys = |ed: &mut Editor, keys: &str| {
+            for c in keys.chars() {
+                ed.handle_key(crate::key::Key::plain(crate::key::Code::Char(c)));
+            }
+        };
+        let frame = |ed: &mut Editor| {
+            ed.focus_sync();
+            // (short: the card cut by a few rows, as the report's was)
+            crate::term::render(ed, &mut Vec::new(), 100, 16).unwrap();
+        };
+        let (_, q, ..) = apply(&mut ed, &patch.display().to_string()).unwrap();
+        frame(&mut ed);
+        assert!(!ed.offer_seen_whole(), "{end}: cut to fit\n{q}");
+        ed.card_focus_front();
+        keys(&mut ed, "G");
+        assert_eq!(ed.offer_said_now(), Some("G reads its text: v opens it, then ge"), "{end}: said at once");
+        keys(&mut ed, "v");
+        let view = |ed: &Editor| {
+            ed.docs.iter().any(|d| d.title.as_deref().is_some_and(|t| t.starts_with(crate::offer::CARD_VIEW)))
+        };
+        pump(&mut ed, "its changes in a buffer", view);
+        frame(&mut ed);
+        assert!(ed.offer_reading(), "{end}: the card's text, in sight");
+        assert!(!ed.offer_seen_whole(), "{end}: its top only");
+        keys(&mut ed, end);
+        frame(&mut ed);
+        assert!(ed.card_has_keys(), "{end}: the card still holds the keys");
+        assert!(ed.offer_seen_whole(), "{end}: read to its end from the card — said: {}", said(&ed));
+        keys(&mut ed, "y");
+        pump(&mut ed, "the files written", |ed| ed.workspace.applying.is_none());
+        assert_eq!(read(dir, "f39.txt").as_deref(), Some("b\n"), "{end}: y answered it");
+    }
+}
+
+/// The review of frictions #144: a change set's view lands after its `v` (worked out on a worker) — an `esc` (or a
+/// move elsewhere) meanwhile keeps the keys where they went, the side panel here: the view is the card's still, read to its end it counts
+/// as seen, but neither the card nor the code takes them back.
+#[test]
+fn a_change_sets_view_landing_after_esc_leaves_the_keys_where_they_went() {
+    use crate::key::{Code, Key};
+    let names: Vec<String> = (0..40).map(|i| format!("f{i:02}.txt")).collect();
+    let s = project("late", &names.iter().map(|n| (n.as_str(), "a\n")).collect::<Vec<_>>());
+    let dir = s.path();
+    let after: Vec<_> = names.iter().map(|n| (n.as_str(), Some("b\n"))).collect();
+    let (_p, patch) = patch_file(&diff_of(dir, &after));
+    let mut ed = editor(dir);
+    apply(&mut ed, &patch.display().to_string()).unwrap();
+    crate::term::render(&mut ed, &mut Vec::new(), 100, 16).unwrap();
+    // (the keys in the side panel as `v` is pressed on the card: where `esc` gives them back)
+    ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Files, dir.into()));
+    ed.workspace.viewer.at = crate::workspace::At::Side;
+    ed.card_focus_front();
+    ed.handle_key(Key::plain(Code::Char('v')));
+    ed.handle_key(Key::plain(Code::Esc));
+    ed.focus_sync();
+    assert!(!ed.card_has_keys(), "esc gave them back");
+    assert_eq!(ed.workspace.viewer.at, crate::workspace::At::Side, "back where they were");
+    pump(&mut ed, "its changes in a buffer", |ed| ed.offer_viewing());
+    ed.focus_sync();
+    assert!(!ed.card_has_keys(), "the view landing took them back to the card");
+    assert_eq!(ed.workspace.viewer.at, crate::workspace::At::Side, "the keys where they went");
+}
+
 /// `--base` and its revision apart by any space, a wide one too (U+3000, a no-break space) — never a panic.
 #[test]
 fn the_base_is_read_past_any_space() {

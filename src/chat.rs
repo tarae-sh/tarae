@@ -2950,7 +2950,8 @@ fn context(
     let doc = ed.doc();
     let text = &doc.text;
     let name = doc.display_name(&ed.workspace.root);
-    let lang = doc.syntax.as_ref().map(|s| s.lang.name.clone()).unwrap_or_default();
+    let lang =
+        doc.syntax.as_ref().map(|s| crate::syntax::shown(&s.lang.name).to_string()).unwrap_or_default();
     let sel = doc.selection().primary();
     let head = sel.cursor(text);
     let line = text.byte_to_line(head.min(text.len_bytes()));

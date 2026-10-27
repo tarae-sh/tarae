@@ -928,6 +928,12 @@ pub(crate) fn hooked(root: &Path, args: &[&str]) -> Result<String, String> {
     finish(&cmd, None).map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
+/// `hooked`, `input` its stdin (a commit's message, `-F -`).
+pub(crate) fn hooked_fed(root: &Path, args: &[&str], input: &str) -> Result<String, String> {
+    let cmd = repo(root)?.hooked_command(args)?;
+    finish(&cmd, Some(input.as_bytes())).map(|b| String::from_utf8_lossy(&b).into_owned())
+}
+
 /// `git` with `NO_HOOKS`.
 pub(crate) fn git_no_hooks(root: &Path, args: &[&str]) -> Result<String, String> {
     repo(root)?.run_no_hooks(args)

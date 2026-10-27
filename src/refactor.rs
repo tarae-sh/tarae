@@ -809,6 +809,8 @@ pub fn view_all(ed: &mut Editor, whose: Whose) {
     crate::sorting::by(&mut files, |a, b| a.rel.cmp(&b.rel));
     // (what was read, whole — the card's row keeps only its end)
     let read = if l.read.is_empty() { String::new() } else { format!("{}\n\n", l.read) };
+    // (its card, as it is now: read to its end, it counts as seen — #144: it never did, and `y` waited for good)
+    let card = ed.offers.first().filter(|o| o.change_set() == Some(whose)).map(|o| (o.id, o.rev));
     ed.events.jobs().spawn(move || {
         let text = read + &changes_text(&files);
         move |ed: &mut Editor| {
@@ -820,8 +822,16 @@ pub fn view_all(ed: &mut Editor, whose: Whose) {
             for d in old {
                 ed.close_doc(d);
             }
-            ed.open_virtual(&title, &text);
-            ed.workspace.leave(crate::workspace::At::Chat);
+            let doc = ed.open_virtual(&title, &text);
+            match card.filter(|c| ed.offers.first().map(|o| (o.id, o.rev)) == Some(*c)) {
+                // (the keys to it only where the card still holds them — an `esc`, a move to the chat since `v`
+                // keep them where they went)
+                Some(c) => {
+                    let keys = ed.card_focus == Some(c);
+                    ed.offer_viewed(c, doc, keys)
+                }
+                None => ed.workspace.leave(crate::workspace::At::Chat),
+            }
         }
     });
 }

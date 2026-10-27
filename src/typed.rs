@@ -334,7 +334,13 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
         "grammar-install" => editor.grammar_install(rest),
         "lang" | "set-language" => {
             let spec = crate::syntax::spec(rest).ok_or_else(|| format!("unknown language '{rest}'"))?;
-            let id = editor.doc().id;
+            let doc = editor.doc_mut();
+            // (a document held to a language — the git tab's message — is held to the one you chose: your own key's
+            // load lands, and one its file's name asks later stays off it)
+            if doc.language.is_some() {
+                doc.language = Some(spec.name.as_str());
+            }
+            let id = doc.id;
             editor.load_language(id, spec);
             Ok(())
         }

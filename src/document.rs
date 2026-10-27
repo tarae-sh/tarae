@@ -366,6 +366,11 @@ pub struct Document {
     /// Its grammar's offer held back while `claudes_only` or `review_only` (`load_language`): the language —
     /// offered when the user takes it up (`edits::taken_up`).
     pub grammar_held: Option<&'static crate::syntax::LangSpec>,
+    /// The language it's held to, whatever its file's name says (`Editor::language_loaded`, `language_of`): the git
+    /// tab's message is `gitpanel::COMMIT_LANG`, and a load its name asked as it opened — `git-commit` — never
+    /// takes its place, in whichever workspace it lands; a grammar's download attaches this one; `:lang` holds it to
+    /// yours.
+    pub language: Option<&'static str>,
     /// An edit of Claude's that follow or replay shows here (`follow::sync_shown` — only while the buffer is
     /// the version it was seen in): its lines on the review's wash, the ones they replaced above them.
     pub shown: Option<Vec<crate::replay::Hunk>>,
@@ -487,6 +492,7 @@ impl Document {
             preview: false,
             wheel_held: None,
             grammar_held: None,
+            language: None,
             shown: None,
             writing: None,
             writing_align: None,

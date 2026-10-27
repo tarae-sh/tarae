@@ -2466,6 +2466,14 @@ impl crate::editor::Editor {
             self.close_doc(d);
         }
         let doc = self.open_virtual(&name, &text);
+        self.offer_viewed((id, rev), doc, true);
+    }
+
+    /// Card `(id, rev)`'s whole text is open in `doc` (`v`): read to its end, it counts as seen (`term::render_frame`
+    /// looks) — and, where `keys`, the code and the card take the keys, those that read it reaching it through the
+    /// card. A view that lands later than its `v` (a change set's, worked out on a worker) takes them only where the
+    /// card still holds them: an `esc` or a move to the chat meanwhile keeps them where they went.
+    pub(crate) fn offer_viewed(&mut self, (id, rev): (u64, u64), doc: crate::document::DocId, keys: bool) {
         // (wrapped as the card is, whatever editor.soft-wrap says: a script's long line read before its run
         // never runs off the edge — #156; `z w` unwraps it)
         if let Some(d) = self.docs.iter_mut().find(|d| d.id == doc) {
@@ -2477,13 +2485,15 @@ impl crate::editor::Editor {
         self.offer_views.push((doc, id));
         // The code has the keys, to read it (#55: the review's rail kept them, and keys did nothing)
         // (a panel in the slot `:procs`, a plugin's, keeps them as it did)
-        if !(self.procs_focused() || self.workspace.is_at(crate::workspace::At::Plugin)) {
+        if keys && !(self.procs_focused() || self.workspace.is_at(crate::workspace::At::Plugin)) {
             self.workspace.viewer.at = crate::workspace::At::Code;
         }
         // The card keeps the keys while it's read: the keys that read reach the buffer through it (`card_reads`),
         // its answers answer it. In its buffer those are the card's only while it holds them — Esc gives them
         // back, and then `y` is a yank, not a yes; `C-q` gives them again (frictions15 review)
-        self.card_focus_front();
+        if keys {
+            self.card_focus_front();
+        }
         // (in the focused pane now, not at the next event: its keys go through the card, past the code's
         // path that would put it there — `track_doc_switch`)
         self.sync_focus_view();

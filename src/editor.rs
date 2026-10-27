@@ -4331,30 +4331,52 @@ impl Editor {
 
     // ── Syntax, themes (slow work all on worker threads) ──────────────────
 
-    /// Picks a language by path, loads its grammar in the background and attaches it.
+    /// Picks a language (`language_of`), loads its grammar in the background and attaches it.
     pub fn attach_syntax(&mut self, id: DocId) {
-        let Some(doc) = self.docs.iter().find(|d| d.id == id) else { return };
-        let Some(spec) = doc.path.as_deref().and_then(syntax::detect) else { return };
+        let Some(spec) = self.language_of(id) else { return };
         self.load_language(id, spec);
+    }
+
+    /// The language document `id` is drawn in: the one it's held to (`Document.language` — the git tab's message,
+    /// as a grammar's download lands too), else its path's.
+    pub(crate) fn language_of(&self, id: DocId) -> Option<&'static syntax::LangSpec> {
+        let doc = self.docs.iter().find(|d| d.id == id)?;
+        match doc.language {
+            Some(held) => syntax::spec(held),
+            None => doc.path.as_deref().and_then(syntax::detect),
+        }
     }
 
     pub fn load_language(&mut self, id: DocId, spec: &'static syntax::LangSpec) {
         self.events.jobs().spawn(move || {
             let result = syntax::Loader::global().load(spec);
-            move |ed: &mut Editor| {
-                let Some(doc) = ed.docs.iter_mut().find(|d| d.id == id) else { return };
-                match result {
-                    Ok(lang) => doc.syntax = Some(syntax::Syntax::new(lang)),
-                    // (only Claude's turn or a review opened it: offered once the user takes it up — #208)
-                    Err(e) if e.starts_with("no grammar") && (doc.claudes_only || doc.review_only) => {
-                        doc.grammar_held = Some(spec)
-                    }
-                    // Grammar not downloaded yet — offer to download it (once per language until quit)
-                    Err(e) if e.starts_with("no grammar") => ed.offer_grammar(spec),
-                    Err(e) => ed.set_status(format!("no highlighting: {e}")),
-                }
-            }
+            move |ed: &mut Editor| ed.language_loaded(id, spec, result)
         });
+    }
+
+    /// Language `spec` loaded for document `id` (`load_language`'s result, on the main loop): attached — but on a
+    /// document held to another (`Document.language`: the git tab's message), nothing; the load its file's name
+    /// asked as it opened may land after its own.
+    pub(crate) fn language_loaded(
+        &mut self,
+        id: DocId,
+        spec: &'static syntax::LangSpec,
+        result: Result<std::sync::Arc<syntax::LangData>, String>,
+    ) {
+        let Some(doc) = self.docs.iter_mut().find(|d| d.id == id) else { return };
+        if doc.language.is_some_and(|held| held != spec.name) {
+            return;
+        }
+        match result {
+            Ok(lang) => doc.syntax = Some(syntax::Syntax::new(lang)),
+            // (only Claude's turn or a review opened it: offered once the user takes it up — #208)
+            Err(e) if e.starts_with("no grammar") && (doc.claudes_only || doc.review_only) => {
+                doc.grammar_held = Some(spec)
+            }
+            // Grammar not downloaded yet — offer to download it (once per language until quit)
+            Err(e) if e.starts_with("no grammar") => self.offer_grammar(spec),
+            Err(e) => self.set_status(format!("no highlighting: {e}")),
+        }
     }
 
     /// `:grammar-install [lang|all]` — downloads and builds grammars (worker thread; when done, open
@@ -4680,6 +4702,7 @@ impl Editor {
             self.dispatch_pending();
             return true;
         }
+        let reads = card_reads(key, &self.pending);
         self.pending.clear();
         // Nothing on screen shows it (the last frame had no room — `offer_unshown`): no key answers it, every card as a
         // weighty one answers only once drawn (`Stands.drawn`) — said on the status line, as the card isn't there
@@ -4692,7 +4715,13 @@ impl Editor {
             // (its answers are beside what it says — on the card, or its bar)
             // (short: a bar has room for little beside its title and answers; esc is on the card and
             // the status line says CARD)
-            self.offer_refused(format!("{key} isn't an answer here"));
+            // (a key that reads, its text not read: how it's read, at once — #144 said only this, and `G` again)
+            match reads && !self.offer_seen_whole() {
+                true => {
+                    self.offer_refused(format!("{key} reads its text: v opens it, then {}", self.end_key()))
+                }
+                false => self.offer_refused(format!("{key} isn't an answer here")),
+            }
         }
         // Answered (or gone): the keys go to the next card up here when you were going through them (`C-q`'s round —
         // #101: card 2 of 3 waited for another `C-q`), or when it's yours too; one of yours answered, Claude's next
@@ -13173,6 +13202,190 @@ mod tests {
         feed(&mut ed, "d");
         settle_until(&mut ed, |_| !repo.join("b.txt").exists());
         std::fs::remove_dir_all(&repo).ok();
+    }
+
+    /// frictions #146: the git tab's commit keeps every line written — a `#` first line (`#146: …`) and a `#` line in
+    /// the body (git's `strip` took both); from the scissors line down (the keys, what's staged) is left out.
+    /// The git tab's message open (`c`) on a change staged in a repository of the test's own (`name`).
+    fn commit_message_open(name: &str) -> (Editor, PathBuf) {
+        commit_message_open_with(name, |_| {})
+    }
+
+    /// `commit_message_open`, `before` given the repository first (a hook of its own).
+    fn commit_message_open_with(name: &str, before: impl FnOnce(&Path)) -> (Editor, PathBuf) {
+        let repo = git_repo(name, &[("a.txt", "one\n")]);
+        std::fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
+        before(&repo);
+        let mut ed = editor("");
+        ed.workspace.viewer.sidebar =
+            Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Git, repo.clone()));
+        ed.workspace.viewer.at = crate::workspace::At::Side;
+        ed.git_refresh();
+        settle_until(&mut ed, |ed| ed.workspace.git_status.is_some());
+        ed.sidebar_sync();
+        ed.workspace.viewer.sidebar.as_mut().unwrap().selected = 1;
+        feed(&mut ed, "s");
+        settle_until(&mut ed, |ed| ed.workspace.git_status.as_ref().is_some_and(|s| !s.staged.is_empty()));
+        feed(&mut ed, "c");
+        settle_until(&mut ed, |ed| ed.workspace.committing.is_some());
+        assert!(ed.doc().text.to_string().contains(crate::gitpanel::SCISSORS), "{}", ed.doc().text);
+        (ed, repo)
+    }
+
+    #[test]
+    fn the_git_tabs_commit_keeps_its_hash_lines() {
+        let (mut ed, repo) = commit_message_open("commithash");
+        // (its own language where the grammar is installed: above the scissors all is the message — the load its
+        // file's name asked never takes its place, landing first or after)
+        let commit = crate::syntax::spec(crate::gitpanel::COMMIT_LANG).unwrap();
+        let gits = crate::syntax::spec("git-commit").unwrap();
+        // (held to it by the document itself, whichever workspace is in front as a load lands; a `#` line is the
+        // message's, so it has no comment token: `space c` and a new line after one add none)
+        assert_eq!(ed.doc().language, Some(crate::gitpanel::COMMIT_LANG));
+        assert_eq!(commit.comment_token, None, "a `#` line is the message's");
+        // (`tarae-commit` is the inner name: a person reads `git-commit` — and `:lang` doesn't list it)
+        assert_eq!(crate::syntax::shown(crate::gitpanel::COMMIT_LANG), "git-commit");
+        assert!(crate::syntax::listed().all(|n| n != crate::gitpanel::COMMIT_LANG));
+        if crate::syntax::Loader::global().load(commit).is_ok() {
+            let lang = |ed: &Editor| ed.doc().syntax.as_ref().map(|s| s.lang.name.clone());
+            settle_until(&mut ed, |ed| lang(ed).as_deref() == Some(crate::gitpanel::COMMIT_LANG));
+            // A late load by its file's name, landing after its own — with the git tab's commit in front, and as from
+            // a workspace behind (no `committing` in front): it stays its own
+            let id = ed.doc().id;
+            ed.language_loaded(id, gits, crate::syntax::Loader::global().load(gits));
+            assert_eq!(lang(&ed).as_deref(), Some(crate::gitpanel::COMMIT_LANG), "git's own landed on it");
+            let committing = ed.workspace.committing.take();
+            ed.language_loaded(id, gits, crate::syntax::Loader::global().load(gits));
+            assert_eq!(
+                lang(&ed).as_deref(),
+                Some(crate::gitpanel::COMMIT_LANG),
+                "landed, its workspace behind"
+            );
+            ed.workspace.committing = committing;
+            let (w, h) = (100, 20);
+            crate::term::render(&mut ed, &mut Vec::new(), w, h).unwrap();
+            let screen = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), w, h).unwrap();
+            let status = screen.lines().last().unwrap_or_default();
+            assert!(status.contains(" git-commit ") && !screen.contains("tarae-commit"), "{status}");
+            // `space c`: no comment of its own, said as any language without one, by the name a person reads
+            let before = ed.doc().text.clone();
+            feed(&mut ed, "<esc><space>c");
+            assert_eq!(ed.doc().text, before, "space c commented a line of the message");
+            let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+            assert_eq!(said, "git-commit has no comments");
+            feed(&mut ed, "i");
+        }
+        feed(&mut ed, "#146: keep it<ret><ret>#149's body stays<ret>and a plain line<esc>:w<ret>");
+        settle_until(&mut ed, |ed| {
+            ed.workspace.committing.is_none()
+                && ed.docs.iter().all(|d| d.display_name_short() != "COMMIT_EDITMSG")
+        });
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["log", "-1", "--format=%B"])
+            .output();
+        let body = String::from_utf8_lossy(&out.unwrap().stdout).trim().to_string();
+        assert_eq!(body, "#146: keep it\n\n#149's body stays\nand a plain line");
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    /// The review of frictions #146: the git tab's message keeps its own language through a grammar's download —
+    /// its attach picks the language the document is held to, not its file's name's (`git-commit`, which the hold
+    /// would drop: the message stayed plain under "colors are on") — and `:lang` there is yours: it lands, and the
+    /// document is held to it.
+    #[test]
+    fn a_commit_messages_language_comes_back_after_a_download_and_takes_lang() {
+        let (mut ed, repo) = commit_message_open("commitlang");
+        let id = ed.doc().id;
+        let name = |s: Option<&'static crate::syntax::LangSpec>| s.map(|s| s.name.as_str());
+        assert_eq!(
+            name(ed.language_of(id)),
+            Some(crate::gitpanel::COMMIT_LANG),
+            "a download's attach picks it"
+        );
+        let lang = |ed: &Editor| ed.doc().syntax.as_ref().map(|s| s.lang.name.clone());
+        let commit = crate::syntax::spec(crate::gitpanel::COMMIT_LANG).unwrap();
+        if crate::syntax::Loader::global().load(commit).is_ok() {
+            settle_until(&mut ed, |ed| lang(ed).as_deref() == Some(crate::gitpanel::COMMIT_LANG));
+            // (as `install_grammars` ends: every buffer with no colours attached again)
+            ed.doc_mut().syntax = None;
+            ed.attach_syntax(id);
+            settle_until(&mut ed, |ed| lang(ed).as_deref() == Some(crate::gitpanel::COMMIT_LANG));
+        }
+        feed(&mut ed, "<esc>:lang toml<ret>");
+        assert_eq!(ed.doc().language, Some("toml"), "held to the one you chose");
+        settle_until(&mut ed, |ed| lang(ed).as_deref() == Some("toml"));
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    /// The review of frictions #146: a `commit-msg` hook that refuses the commit leaves the message as written — its
+    /// file is tarae's own (`.git/tarae/COMMIT_EDITMSG`), not git's `COMMIT_EDITMSG`, which git writes the cleaned
+    /// message to before the hook runs: the buffer's file kept its scissors line, and the retry commits. (The hook is
+    /// the test's own stand-in, refusing while a marker file in its repository is there.)
+    #[test]
+    fn a_commit_its_hook_refused_keeps_its_message_and_commits_again() {
+        let (mut ed, repo) = commit_message_open_with("commithook", |repo| {
+            let marker = repo.join(".git/refuse-commit");
+            std::fs::write(&marker, "").unwrap();
+            let hook = repo.join(".git/hooks/commit-msg");
+            let script = format!(
+                "#!/bin/sh\n[ -e '{}' ] && {{ echo refused >&2; exit 1; }}\nexit 0\n",
+                marker.display()
+            );
+            std::fs::write(&hook, script).unwrap();
+            let mut perms = std::fs::metadata(&hook).unwrap().permissions();
+            std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+            std::fs::set_permissions(&hook, perms).unwrap();
+            // (a hook in the git folder runs once the repository is trusted — `gittrust.rs`: as the card's `y`)
+            let r = crate::gitrepo::repo(repo).unwrap();
+            crate::gitrepo::answered(&r.config_file(), r.local.digest(), true);
+        });
+        let file = ed.doc().path.clone().unwrap();
+        let head = || git_out(&repo, &["rev-parse", "HEAD"]);
+        let before = head();
+        let refused = |ed: &Editor| ed.messages.iter().any(|m| m.2.starts_with("commit: "));
+        feed(&mut ed, "#146 kept subject<esc>:w<ret>");
+        settle_until(&mut ed, |ed| refused(ed) && ed.workspace.committing.is_some());
+        assert_eq!(head(), before, "the hook refused it");
+        let on_disk = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            on_disk.starts_with("#146 kept subject\n") && on_disk.contains(crate::gitpanel::SCISSORS),
+            "the buffer's file as written: {on_disk}"
+        );
+        std::fs::remove_file(repo.join(".git/refuse-commit")).unwrap();
+        feed(&mut ed, ":w<ret>");
+        settle_until(&mut ed, |ed| ed.docs.iter().all(|d| d.display_name_short() != "COMMIT_EDITMSG"));
+        assert_eq!(git_out(&repo, &["log", "-1", "--format=%B"]), "#146 kept subject", "the retry committed");
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    /// The review of frictions #146: a message whose scissors line is gone — taken out, or a dash of it edited —
+    /// isn't committed, said, its buffer kept to put it back (or `:q`): where the message ends can't be told, and
+    /// tarae's own `#` lines below it would go in.
+    #[test]
+    fn a_commit_message_without_its_scissors_line_is_refused() {
+        for (name, cut) in [("commitcut", "xd"), ("commitdash", "r=")] {
+            let (mut ed, repo) = commit_message_open(name);
+            let head = || git_out(&repo, &["rev-parse", "HEAD"]);
+            let before = head();
+            feed(&mut ed, &format!("subject<esc>/>8<ret>{cut}:w<ret>"));
+            let gone = "commit: the scissors line is gone — put it back, or :q";
+            // (refused, or committed after all: its buffer closed)
+            let said = |ed: &Editor| ed.messages.iter().any(|m| m.2 == gone);
+            let closed = |ed: &Editor| ed.docs.iter().all(|d| d.display_name_short() != "COMMIT_EDITMSG");
+            settle_until(&mut ed, |ed| said(ed) || closed(ed));
+            assert!(said(&ed), "{cut}: not refused, said: {:?}", ed.messages.last());
+            settle_until(&mut ed, |ed| ed.workspace.committing.is_some());
+            assert!(
+                !ed.doc().text.to_string().contains(crate::gitpanel::SCISSORS),
+                "{cut}: {}",
+                ed.doc().text
+            );
+            assert_eq!(ed.doc().display_name_short(), "COMMIT_EDITMSG", "{cut}: its buffer kept");
+            assert_eq!(head(), before, "{cut}: nothing committed");
+            std::fs::remove_dir_all(&repo).ok();
+        }
     }
 
     /// #187: a section's header row is reachable — `k` from the rows under it and `gg` both land on

@@ -9677,7 +9677,8 @@ fn draw_statusline(
         };
         // (paused: said in words — a protected name Claude's run made waits for its card)
         let paused = if state == Some(LspDot::Paused) { " paused" } else { "" };
-        right.push(Seg { text: format!("{}{paused}", s.lang.name), style, keep: 60 });
+        let lang = crate::syntax::shown(&s.lang.name);
+        right.push(Seg { text: format!("{lang}{paused}"), style, keep: 60 });
         // Servers beside the main one, faint: `python + ruff`
         let also: Vec<String> = doc
             .lsp

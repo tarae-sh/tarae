@@ -1933,13 +1933,14 @@ Claude: the chat says why.
 
 ## Commit messages
 
-![A commit message Claude drafted, as an in-buffer review in COMMIT_EDITMSG: the subject "Fix add() subtracting instead of adding" and a body on why, above the # lines](screenshots/commit-draft.png)
+![A commit message Claude drafted, as an in-buffer review in COMMIT_EDITMSG: the subject "Add min beside max, and median beside average" and a body on why, above the scissors line](screenshots/commit-draft.png)
 
 In the git tab, `C` commits with a message Claude drafts. `c` is the plain commit. `C` opens the commit message
 buffer and Claude writes the draft from what's staged, in the style of the repository's recent messages (their
 subject lines, how they explain, the trailers they use). The draft streams in and lands as the usual in-buffer
 review. Take it (`a`), edit it, and `:w` commits. In a message you already opened, `:commit-draft` asks for one.
-When amending, Claude reads the whole commit and proposes a new version of the message.
+When amending, Claude reads the whole commit and proposes a new version of the message. The message is every line above
+the `>8` scissors line, a line starting with `#` too (`#123: …`); that line and what's below it are left out.
 
 ## Code review
 

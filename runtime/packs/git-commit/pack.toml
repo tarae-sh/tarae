@@ -10,6 +10,18 @@ comment-token = "#"
 indent-heuristic = "simple"
 prose = true
 
+# The git tab's own message (`c`, `C`, `A` — `gitpanel::COMMIT_LANG`): the same grammar, but every line above the
+# scissors line is the message as tarae commits it, a `#` one too (frictions #146) — a `git commit` of your own
+# strips them, so a file named COMMIT_EDITMSG stays `git-commit`; never picked by a file's name
+[language.tarae-commit]
+title = "Git commit"
+# (its name, wherever a person reads one: it's a commit message as any other)
+shown-as = "git-commit"
+grammar = "gitcommit"
+# (no comment token: a `#` line is the message's — `space c` and a new line after one add none)
+indent-heuristic = "simple"
+prose = true
+
 [grammar.gitcommit]
 git = "https://github.com/gbprod/tree-sitter-gitcommit"
 rev = "a716678c0f00645fed1e6f1d0eb221481dbd6f6d"

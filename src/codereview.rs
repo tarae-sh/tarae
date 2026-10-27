@@ -5951,8 +5951,8 @@ mod tests {
     }
 
     /// frictions29 #77: `:commit <file>` from a review — refused, saying which, while a file isn't viewed; once
-    /// all are, the review ends, every change is staged and committed with the file as its message (`#` lines
-    /// left out), said.
+    /// all are, the review ends, every change is staged and committed with the file as its message (every line of
+    /// it, `#` ones too — frictions #146), said.
     #[test]
     fn commit_from_a_review_all_viewed_stages_and_commits_with_the_file_as_its_message() {
         let files = [("a.txt", "a\n", "a2\n"), ("b.txt", "b\n", "b2\n"), ("c.txt", "c\n", "c\n")];
@@ -5970,7 +5970,7 @@ mod tests {
         // (beside the checkout, named from it: `../` — the review of frictions36: excluded as if inside, git refused)
         let name = format!("{}-msg.txt", dir.file_name().unwrap().to_string_lossy());
         let msg = dir.parent().unwrap().join(&name);
-        std::fs::write(&msg, "Two files\n\nThe body.\n# left out\n").unwrap();
+        std::fs::write(&msg, "#77: two files\n\nThe body.\n# kept too\n").unwrap();
         let toasts = |ed: &Editor| ed.toasts.iter().map(|t| t.text.clone()).collect::<Vec<_>>();
         feed(&mut ed, &format!(":commit ../{name}<ret>"));
         assert!(
@@ -5997,12 +5997,12 @@ mod tests {
             toasts(ed).iter().any(|t| t.starts_with("Committed ") || t.starts_with("commit: "))
         });
         assert!(
-            toasts(&ed).iter().any(|t| t.ends_with(" Two files — the review ended")),
+            toasts(&ed).iter().any(|t| t.ends_with(" #77: two files — the review ended")),
             "{:?}",
             toasts(&ed)
         );
         assert!(ed.workspace.code_review.is_none(), "the review ended with the commit");
-        assert_eq!(git(&["log", "-1", "--format=%B"]), "Two files\n\nThe body.");
+        assert_eq!(git(&["log", "-1", "--format=%B"]), "#77: two files\n\nThe body.\n# kept too");
         assert_eq!(git(&["status", "--porcelain"]), "", "every change in");
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_file(&msg).ok();
