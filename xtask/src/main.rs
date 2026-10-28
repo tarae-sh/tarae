@@ -45,6 +45,8 @@
 //!   [`buildprune`]).
 //! - `homepage [<out-dir>]` — the homepage hero scene ("Three Claudes, one repository") recorded in both themes
 //!   (`hero-meok.json`, `hero-hanji.json`), first-frame PNGs, and 6-beat contact sheets (see [`homepage`]).
+//! - `sign [<out-dir>]` — the working sign's candidates as animated PNGs, one recorded turn each in meok and hanji,
+//!   and their frames a second (see [`sign`]).
 
 // (clippy.toml's sort rule is for the tarae binary's size: these tasks aren't in it)
 #![allow(clippy::disallowed_methods, reason = "dev tasks: not in the release binary")]
@@ -69,6 +71,7 @@ mod pty;
 mod reviews;
 mod scenes;
 mod shot;
+mod sign;
 mod sound;
 mod stream;
 mod trace;
@@ -108,6 +111,7 @@ fn main() {
         Some("compat") => compat::run(&args[1..]),
         Some("glyphs") => glyphs::run(&args[1..]),
         Some("homepage") => homepage::run(&args[1..]),
+        Some("sign") => sign::run(&args[1..]),
         Some("sound") => sound::run(&args[1..]),
         Some("build-prune") => buildprune::run(&args[1..]),
         _ => Err(

@@ -80,6 +80,79 @@ const WORKING_KEYS: [&[&str]; 5] = [
     &["@1", " ", "l", "@1", "run the tests", "\r", "@?Its reason", "@1"],
 ];
 
+/// `shimmer-sign`'s turn (`Turn::sign_turn`, `sign.rs`): each phase and how long it lasts, in milliseconds — the
+/// stall's first second still the stream's (tarae's `shimmer::STILL_AFTER`), the read's wait from its call to the next
+/// answer's first words.
+pub(crate) const SIGN_TURN: [(&str, u64); 6] = [
+    ("start", 1000),
+    ("think", 1600),
+    ("prose", 2000),
+    ("stall", 2400),
+    ("read's wait", 2000),
+    ("prose", 2000),
+];
+
+/// `shimmer-sign`'s prose as a real answer streamed (`cargo xtask stream`, kept 2026-10-04): each text delta's gap
+/// after the one before, in ms, and its size — about 50 ms apart, then a quiet of 0.15–0.5 s and a lump of several at once.
+pub(crate) const SIGN_STREAM: [(u64, usize); 56] = [
+    (0, 4),
+    (57, 13),
+    (35, 9),
+    (53, 24),
+    (53, 24),
+    (48, 17),
+    (48, 10),
+    (59, 6),
+    (479, 23),
+    (0, 29),
+    (0, 5),
+    (0, 12),
+    (0, 8),
+    (0, 8),
+    (0, 22),
+    (0, 24),
+    (0, 17),
+    (15, 27),
+    (47, 17),
+    (51, 21),
+    (387, 8),
+    (0, 17),
+    (0, 3),
+    (0, 24),
+    (0, 17),
+    (0, 13),
+    (0, 18),
+    (13, 25),
+    (50, 4),
+    (52, 24),
+    (53, 16),
+    (48, 12),
+    (285, 27),
+    (0, 25),
+    (0, 20),
+    (0, 12),
+    (0, 22),
+    (13, 10),
+    (50, 31),
+    (50, 25),
+    (49, 4),
+    (50, 5),
+    (49, 9),
+    (50, 7),
+    (241, 10),
+    (1, 14),
+    (1, 32),
+    (0, 5),
+    (9, 30),
+    (54, 20),
+    (46, 19),
+    (50, 5),
+    (48, 6),
+    (52, 5),
+    (47, 16),
+    (51, 22),
+];
+
 /// #163's scenes: a question answered in prose, the chat open (follow off); then wider by you, `C-w >` ten times from
 /// its empty input (as far as the code's room lets it).
 const MEASURE_KEYS: [&[&str]; 2] = [
@@ -3704,14 +3777,14 @@ echo '    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.42s'
 /// The run scenes' own files: a task (`output-task`), a preflight of three steps (`output-preflight`) — both in
 /// a `.tarae.toml` trusted on its card — or a failing test (`output-tests`, its build in the demo's own folder,
 /// never cargo's shared one).
-fn run_files(scene: &str) -> Vec<(&'static str, String)> {
+pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
     match scene {
         "output-task" | "panes-task-places" | "group-task-detail" | "group-task-stacked" => vec![
             (".tarae.toml", "[task.check]\ncmd = \"sh check.sh\"\n".into()),
             ("check.sh", CHECK_SH.into()),
         ],
         // (a run still printing: a line every 0.2 s for a minute)
-        "output-live" | "polish-task-running" => vec![
+        "output-live" | "polish-task-running" | "sign" => vec![
             (".tarae.toml", "[task.watch]\ncmd = \"sh watch.sh\"\n".into()),
             (
                 "watch.sh",
@@ -3834,9 +3907,8 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "now" => turn.now(false)?,
             "nowcard" => turn.now(true)?,
             // (motion §3: a turn timed as the stream measured — prose from the start, a think, a stall)
-            "shimmer-prose" | "shimmer-think" | "shimmer-stall" | "shimmer-read" | "shimmer-all" => {
-                turn.shimmer(&script[8..])?
-            }
+            "shimmer-prose" | "shimmer-think" | "shimmer-stall" | "shimmer-read" | "shimmer-all"
+            | "shimmer-sign" => turn.shimmer(&script[8..])?,
             // (its three-item edit being written: the third item's new text held mid-line)
             "writemid" => turn.explain_held(true, true, Some("nots.len());\\n\"}"))?,
             "mid" => turn.explain(false, false)?,
@@ -4155,6 +4227,10 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             }
             Ok(())
         };
+        // (`sign`: the working sign's candidates (`sign.rs`) — every state of `all`, each long enough to watch)
+        if shape == "sign" {
+            return self.sign_turn(&pieces);
+        }
         // (`all`: the turn's start, 0.8 s before anything comes)
         if shape == "all" {
             std::thread::sleep(Duration::from_millis(800));
@@ -4197,6 +4273,45 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             }
             _ => stream(self, &pieces)?,
         }
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// `shimmer-sign`'s turn, timed by `SIGN_TURN`: nothing, a think open and silent then its summary, prose, a stall, a
+    /// read and the wait for the next answer, prose — the prose's pieces over again for as long as a phase lasts.
+    fn sign_turn(&mut self, pieces: &[String]) -> io::Result<()> {
+        let ev = |e: Value| json!({"type": "stream_event", "event": e});
+        let ms = |n: usize| Duration::from_millis(SIGN_TURN[n].1);
+        let mut chars = pieces.concat().chars().collect::<Vec<_>>().into_iter().cycle();
+        // (the prose as a real stream comes: `SIGN_STREAM`'s gaps and sizes over again for as long as the phase lasts)
+        let mut stream = |turn: &mut Self, d: Duration| -> io::Result<()> {
+            let mut spent = 0;
+            for &(gap, bytes) in SIGN_STREAM.iter().cycle() {
+                if spent + gap > d.as_millis() as u64 {
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(gap));
+                spent += gap;
+                let text: String = chars.by_ref().take(bytes).collect();
+                let delta = json!({"type": "text_delta", "text": text});
+                turn.line(ev(json!({"type": "content_block_delta", "index": 1, "delta": delta})))?;
+            }
+            Ok(())
+        };
+        std::thread::sleep(ms(0));
+        let block = json!({"type": "thinking", "thinking": "", "signature": ""});
+        self.line(ev(json!({"type": "content_block_start", "index": 0, "content_block": block})))?;
+        std::thread::sleep(ms(1));
+        let delta = json!({"type": "thinking_delta", "thinking": "Checking how the map keeps its keys."});
+        self.line(ev(json!({"type": "content_block_delta", "index": 0, "delta": delta})))?;
+        self.line(ev(json!({"type": "content_block_stop", "index": 0})))?;
+        stream(self, ms(2))?;
+        std::thread::sleep(ms(3));
+        self.call(1, "read", json!({"files": ["src/main.rs:7-14"]}))?;
+        let result = json!({"type": "tool_result", "tool_use_id": "t1", "content": [{"type": "text", "text": "fn main() {"}]});
+        self.line(json!({"type": "user", "message": {"role": "user", "content": [result]}}))?;
+        self.line(json!({"type": "system", "subtype": "status", "status": "requesting"}))?;
+        std::thread::sleep(ms(4));
+        stream(self, ms(5))?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

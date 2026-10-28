@@ -2,17 +2,18 @@
 //! thinking's summary and an edit's input in small batches and in lumps, thinking blocks opening and closing, tool calls
 //! (a read, a run), their results and claude's requests — frames and time passing in any order.
 //!
-//! Fixed cases, each in a step of its own: a whole think (open and silent → the wave pace, its cell breathing frame
-//! after frame; its summary landing → the shimmer, the cell at the top; closed and silent → still, the cell fallen to
-//! the floor and held); a read answered right after words (the wave at once and while Claude's next answer is on its
-//! way, past `STILL_AFTER` too; its first words → the shimmer; silent → still); a turn ended and the next asked (the
-//! level back at 0, the wave); a delta raises the level by its bytes, a lump to the top; a wait never raises it. After
-//! every step: the level where the batches and the time since left it, and a frame draws the turn's cell as its pace
-//! says — the level's height, else the breath's — and no other height (one sign).
+//! Fixed cases, each in a step of its own: a delta, a few bytes or a lump, draws the turn's cell as it was (the breath
+//! goes on; out of a stall, the floor); a whole think (open and silent → breathing, frame after frame, every height
+//! reached; its summary landing moves nothing; closed and silent → still, the cell at the floor and held a breath long;
+//! the stream again → its breath from the floor, frame by frame half a breath up); a read answered right after words
+//! (breathing at once and while Claude's next answer is on its way, past `STILL_AFTER` too; silent after its first
+//! words → still); a turn ended and the next asked (breathing from the floor). After every step the turn's pace is the
+//! stream's as sent, and a frame draws the turn's cell as it says — the floor while still, else the breath from where
+//! the turn's own started (its start, the last stall it left) — and no other height (one sign).
 //!
-//! Besides, `World` keeps the stream as the scenario sent it and states the rule over it (`World::pace`) — the rule
-//! again, so it can't tell a wrong rule from a right one: what it checks is that every event reaches the turn's state
-//! (`chat::on_event` → `Chat.pace`), whatever the order they come in.
+//! Besides, `World` keeps the stream as the scenario sent it and states the rule over it (`World::pace`, `World::from`)
+//! — the rule again, so it can't tell a wrong rule from a right one: what it checks is that every event reaches the
+//! turn's state (`chat::on_event` → `Chat.pace`), whatever the order they come in.
 
 use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
@@ -21,7 +22,7 @@ use super::{Choices, Sim};
 use crate::chat::{Msg, Role};
 use crate::editor::Editor;
 use crate::llm::StreamEv;
-use crate::shimmer::{CELLS, Pace, RATE_TAU, STILL, STILL_AFTER};
+use crate::shimmer::{CELLS, Pace, STILL, STILL_AFTER, breath};
 use crate::workspace::Doing;
 
 const SEEDS: &[u64] = &[0, 1, 2, 7, 10];
@@ -40,9 +41,8 @@ fn the_turns_word_moves_only_as_its_stream_arrives() {
 /// The stream as the scenario sent it, this turn.
 #[derive(Default)]
 struct World {
-    /// The stream's bytes as of `rate_at`, decaying (`level`).
-    rate: Cell<f32>,
-    rate_at: Cell<Option<Instant>>,
+    /// The animation step the turn's breath counts from: its start, the last stall it left.
+    from: Cell<u128>,
     last: Cell<Option<Instant>>,
     thinking: Cell<bool>,
     begun: Cell<bool>,
@@ -61,31 +61,22 @@ impl World {
     /// The rule over the stream as sent (see the module's words: the wiring's check, not the rule's).
     fn pace(&self) -> Pace {
         let runs = self.calls.borrow().iter().any(|c| c.1);
-        match () {
-            _ if self.last.get().is_some_and(|t| crate::clock::since(t) < STILL_AFTER) => Pace::Shimmer,
-            _ if self.thinking.get() || runs || self.asked.get() || !self.begun.get() => Pace::Wave,
-            _ => Pace::Still,
+        let flowing = self.last.get().is_some_and(|t| crate::clock::since(t) < STILL_AFTER);
+        match flowing || self.thinking.get() || runs || self.asked.get() || !self.begun.get() {
+            true => Pace::Breath,
+            false => Pace::Still,
         }
     }
 
-    fn delta(&self, bytes: usize) {
-        self.rate.set(self.level() + bytes as f32);
-        self.rate_at.set(Some(crate::clock::now()));
+    fn delta(&self) {
         self.last.set(Some(crate::clock::now()));
         self.begun.set(true);
         self.asked.set(false);
     }
 
-    /// The stream's bytes of about the last `RATE_TAU`, as sent.
-    fn level(&self) -> f32 {
-        let since = self.rate_at.get().map_or(f32::INFINITY, |t| crate::clock::since(t).as_secs_f32());
-        self.rate.get() * (-since / RATE_TAU).exp()
-    }
-
-    /// A new turn: nothing of it yet.
+    /// A new turn: nothing of it yet, its breath from now.
     fn turn(&self) {
-        self.rate.set(0.0);
-        self.rate_at.set(None);
+        self.from.set(crate::editor::anim_step());
         self.last.set(None);
         self.thinking.set(false);
         self.begun.set(false);
@@ -110,6 +101,7 @@ fn run(choices: Choices) -> Vec<String> {
     ed.workspace.viewer.at = crate::workspace::At::Chat;
     let world = World::default();
     assert!(crate::chat::submit(&mut ed, "and the second?", None, None), "the first turn asked");
+    world.turn();
     let check = |ed: &Editor| {
         while claude.try_recv().is_ok() {}
         held(ed, &world)
@@ -121,18 +113,15 @@ fn run(choices: Choices) -> Vec<String> {
     trace
 }
 
-fn send(ed: &mut Editor, ev: StreamEv) {
+/// `ev` as the stream sends it, the world told before (`World`'s state for it already set): a turn that was still and
+/// breathes again breathes from now.
+fn send(ed: &mut Editor, world: &World, ev: StreamEv) {
+    let before = pace(ed);
     let g = ed.workspace.claude.chat.as_ref().map_or(0, crate::chat::Chat::generation);
     crate::chat::stream_event(ed, g, ev);
-}
-
-fn level(ed: &Editor) -> f32 {
-    ed.workspace.claude.chat.as_ref().map_or(0.0, |c| c.pace.level())
-}
-
-/// The cell's height as the level stands now.
-fn height(ed: &Editor) -> usize {
-    crate::shimmer::height(level(ed))
+    if before == Some(Pace::Still) && world.pace() == Pace::Breath {
+        world.from.set(crate::editor::anim_step());
+    }
 }
 
 /// The working sign's heights on the last frame, each once.
@@ -145,15 +134,19 @@ fn drawn(ed: &Editor) -> Vec<char> {
     seen
 }
 
-/// The turn's cell as its pace says (`term::working`): the level's height while deltas come, the floor once they
-/// stopped, else the breath on the animation's clock; `▄` where nothing moves on a clock.
-fn want(ed: &Editor) -> char {
+/// The turn's cell as the world says (`term::working`): the floor while the stream stands still, else the breath from
+/// where the turn's own started; `▄` where nothing moves on a clock.
+fn want(ed: &Editor, world: &World) -> char {
     match pace(ed) {
         _ if !ed.moving() => CELLS[STILL],
-        Some(Pace::Shimmer) => CELLS[height(ed)],
         Some(Pace::Still) => CELLS[0],
-        _ => CELLS[crate::shimmer::breath(crate::editor::anim_step())],
+        _ => CELLS[breath(crate::editor::anim_step().saturating_sub(world.from.get()))],
     }
+}
+
+/// The turn's cell says `▲` or `◦` instead: it waits on you, or a call may be stuck.
+fn signed(ed: &Editor) -> bool {
+    matches!(ed.doing(&ed.workspace), Doing::Waiting | Doing::Stuck { .. })
 }
 
 fn pace(ed: &Editor) -> Option<Pace> {
@@ -178,7 +171,7 @@ fn call(ed: &mut Editor, world: &World, run: bool) -> String {
     world.begun.set(true);
     world.asked.set(false);
     world.last.set(None);
-    send(ed, StreamEv::Tool { id: id.clone(), name: name.into(), input });
+    send(ed, world, StreamEv::Tool { id: id.clone(), name: name.into(), input });
     format!("{id}: {name}")
 }
 
@@ -187,7 +180,7 @@ fn answer(ed: &mut Editor, world: &World, id: &str) {
     world.calls.borrow_mut().retain(|c| c.0 != id);
     world.asked.set(true);
     world.last.set(None);
-    send(ed, StreamEv::ToolResult { id: id.into(), text: "ok".into(), error: false });
+    send(ed, world, StreamEv::ToolResult { id: id.into(), text: "ok".into(), error: false });
 }
 
 fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
@@ -200,16 +193,32 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
         k @ (0 | 1) => {
             let lump = "a lump of words, all at once. ".repeat(14);
             let text = *c.pick(&["word ", "another needle in the map ", lump.as_str()]);
-            let before = height(ed);
-            world.delta(text.len());
-            send(ed, if k == 0 { StreamEv::Text(text.into()) } else { StreamEv::Thought(text.into()) });
-            // (a delta raises the cell, never lowers it; a lump takes it to the top)
-            let (now, top) = (height(ed), CELLS.len() - 1);
-            if now < before || text.len() >= 100 && now != top {
-                world.wrong(format!("a delta of {} bytes took the cell from {before} to {now}", text.len()));
+            // (a delta draws the cell as it was — the breath goes on, whatever its size; out of a stall, the floor)
+            let was = pace(ed);
+            frame(ed, world);
+            let before = drawn(ed);
+            world.delta();
+            send(
+                ed,
+                world,
+                if k == 0 { StreamEv::Text(text.into()) } else { StreamEv::Thought(text.into()) },
+            );
+            frame(ed, world);
+            let now = drawn(ed);
+            let floor = ed.moving().then_some(CELLS[0]).into_iter().collect::<Vec<_>>();
+            match was {
+                _ if before.is_empty() || now.is_empty() => {}
+                Some(Pace::Breath) if now != before => world.wrong(format!(
+                    "a delta of {} bytes took the cell from {before:?} to {now:?}",
+                    text.len()
+                )),
+                Some(Pace::Still) if now != floor => {
+                    world.wrong(format!("out of a stall: {now:?}, not from the floor"))
+                }
+                _ => {}
             }
-            if pace(ed) != Some(Pace::Shimmer) {
-                world.wrong(format!("a delta came: {:?}, not the shimmer", pace(ed)));
+            if pace(ed) != Some(Pace::Breath) {
+                world.wrong(format!("a delta came: {:?}, not breathing", pace(ed)));
             }
             format!("{} of {} bytes", if k == 0 { "text" } else { "a summary" }, text.len())
         }
@@ -221,7 +230,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
                 world.asked.set(false);
                 world.last.set(None);
             }
-            send(ed, StreamEv::ThinkingBlock(open));
+            send(ed, world, StreamEv::ThinkingBlock(open));
             format!("a thinking block {}", if open { "opens" } else { "closes" })
         }
         3 => {
@@ -241,10 +250,10 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
             world.thinking.set(true);
             world.asked.set(false);
             world.last.set(None);
-            send(ed, StreamEv::ThinkingBlock(true));
+            send(ed, world, StreamEv::ThinkingBlock(true));
             sim.wait(STILL_AFTER + Duration::from_millis(200));
-            if pace(ed) != Some(Pace::Wave) {
-                world.wrong(format!("a thinking block open and silent: {:?}, not the wave", pace(ed)));
+            if pace(ed) != Some(Pace::Breath) {
+                world.wrong(format!("a thinking block open and silent: {:?}, not breathing", pace(ed)));
             }
             // (silent, it breathes: a breath's frames, each the breath's height, rising and falling)
             let tick = crate::editor::TICK;
@@ -253,8 +262,12 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
                 sim.wait(tick);
                 frame(ed, world);
                 breath.extend(drawn(ed));
-                if drawn(ed) != [want(ed)] {
-                    world.wrong(format!("a silent think drew {:?}, its breath {:?}", drawn(ed), want(ed)));
+                if drawn(ed) != [want(ed, world)] {
+                    world.wrong(format!(
+                        "a silent think drew {:?}, its breath {:?}",
+                        drawn(ed),
+                        want(ed, world)
+                    ));
                 }
             }
             breath.sort_unstable();
@@ -262,25 +275,43 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
             if ed.moving() && breath.len() < CELLS.len() {
                 world.wrong(format!("a silent think's breath reached only {breath:?}"));
             }
+            let before = drawn(ed);
             let summary = "Checking how the map keeps its keys, then the clone. ".repeat(3);
-            world.delta(summary.len());
-            send(ed, StreamEv::Thought(summary));
-            if pace(ed) != Some(Pace::Shimmer) || height(ed) != CELLS.len() - 1 {
-                world.wrong(format!("its summary landed: {:?}, the cell at {}", pace(ed), height(ed)));
+            world.delta();
+            send(ed, world, StreamEv::Thought(summary));
+            frame(ed, world);
+            if pace(ed) != Some(Pace::Breath) || drawn(ed) != before {
+                world.wrong(format!("its summary landed: {:?}, {before:?} became {:?}", pace(ed), drawn(ed)));
             }
             world.thinking.set(false);
-            send(ed, StreamEv::ThinkingBlock(false));
+            send(ed, world, StreamEv::ThinkingBlock(false));
             sim.wait(STILL_AFTER);
-            // (a quiet: the cell fallen to the floor, and held there a breath long)
+            // (a quiet: the cell at the floor, and held there a breath long)
+            let floor = ed.moving().then_some(CELLS[0]).into_iter().collect::<Vec<_>>();
             for _ in 0..3 {
-                if pace(ed) != Some(Pace::Still) || height(ed) != 0 {
-                    world.wrong(format!("closed and silent: {:?}, the cell at {}", pace(ed), height(ed)));
+                frame(ed, world);
+                if pace(ed) != Some(Pace::Still) || drawn(ed) != floor && !signed(ed) {
+                    world.wrong(format!("closed and silent: {:?}, the cell {:?}", pace(ed), drawn(ed)));
                 }
                 sim.wait(crate::shimmer::BREATH / 3);
             }
-            // (and on screen: the step's own frame, checked after it — the floor)
-            frame(ed, world);
-            "a whole think".into()
+            // (the stream again: its breath from the floor, frame by frame up to the top — never a jump to where the
+            // clock went meanwhile; short of `STILL_AFTER`, past which one delta's stream is still again)
+            world.delta();
+            send(ed, world, StreamEv::Text("Then the clone. ".into()));
+            let mut up = Vec::new();
+            for k in 0..crate::shimmer::BREATH.as_millis() / tick.as_millis() / 2 {
+                if k > 0 {
+                    sim.wait(tick);
+                }
+                frame(ed, world);
+                up.extend(drawn(ed));
+            }
+            let breath: Vec<char> = (0..up.len() as u128).map(|k| CELLS[crate::shimmer::breath(k)]).collect();
+            if ed.moving() && !signed(ed) && up != breath {
+                world.wrong(format!("out of the stall it drew {up:?}, a breath from the floor {breath:?}"));
+            }
+            "a whole think, a stall, the stream again".into()
         }
         6 => {
             frame(ed, world);
@@ -290,8 +321,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
             // (an edit's input as the reader sends it: its new text's bytes raise the level, as text's do)
             let lump = "let x = 1;\n".repeat(40);
             let add = *c.pick(&["x", "    let first = Thread::new(name);\n", lump.as_str()]);
-            let before = level(ed);
-            world.delta(add.len());
+            world.delta();
             let n = world.calls_made.get();
             let piece = crate::writing::Piece::Text {
                 item: 0,
@@ -301,87 +331,80 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
             };
             send(
                 ed,
+                world,
                 StreamEv::Writing(crate::writing::Delta {
                     call: format!("e{n}"),
                     pieces: vec![piece],
                     done: false,
                 }),
             );
-            let rose = level(ed) - before;
-            if (rose - add.len() as f32).abs() > 1e-2 || pace(ed) != Some(Pace::Shimmer) {
-                world.wrong(format!(
-                    "{} bytes of an edit's input: the level {rose} up, {:?}",
-                    add.len(),
-                    pace(ed)
-                ));
+            if pace(ed) != Some(Pace::Breath) {
+                world.wrong(format!("{} bytes of an edit's input: {:?}, not breathing", add.len(), pace(ed)));
             }
             format!("an edit's input of {} bytes", add.len())
         }
         9 => {
             world.asked.set(true);
             world.last.set(None);
-            send(ed, StreamEv::Requesting(0));
+            send(ed, world, StreamEv::Requesting(0));
             "a request goes out".into()
         }
         10 => {
-            // (a read answered: Claude's next answer on its way — the wave, however long; its first words the shimmer;
-            // then silent, still)
+            // (a read answered: Claude's next answer on its way — breathing, however long; its first words, then
+            // silent: still)
             if world.thinking.get() || world.calls.borrow().iter().any(|c| c.1) {
                 return "(a read waits)".into();
             }
-            // (a few words first: the answer's wait is the wave at once, never the words' shimmer held on)
-            let words = "Let me look. ";
-            world.delta(words.len());
-            send(ed, StreamEv::Text(words.into()));
+            // (a few words first: the answer's wait breathes at once, never the words' stall)
+            world.delta();
+            send(ed, world, StreamEv::Text("Let me look. ".into()));
             let said = call(ed, world, false);
             let id = world.calls.borrow().last().map(|c| c.0.clone()).unwrap_or_default();
             answer(ed, world, &id);
-            if pace(ed) != Some(Pace::Wave) {
+            if pace(ed) != Some(Pace::Breath) {
                 world.wrong(format!(
-                    "a read answered right after words: {:?}, not the wave at once",
+                    "a read answered right after words: {:?}, not breathing at once",
                     pace(ed)
                 ));
             }
             sim.wait(STILL_AFTER + Duration::from_millis(1500));
-            if pace(ed) != Some(Pace::Wave) {
+            if pace(ed) != Some(Pace::Breath) {
                 world.wrong(format!(
-                    "a read answered, the next answer on its way: {:?}, not the wave",
+                    "a read answered, the next answer on its way: {:?}, not breathing",
                     pace(ed)
                 ));
             }
-            let words = "So: ";
-            world.delta(words.len());
-            send(ed, StreamEv::Text(words.into()));
+            world.delta();
+            send(ed, world, StreamEv::Text("So: ".into()));
             let first = pace(ed);
             sim.wait(STILL_AFTER);
-            if (first, pace(ed)) != (Some(Pace::Shimmer), Some(Pace::Still)) {
+            if (first, pace(ed)) != (Some(Pace::Breath), Some(Pace::Still)) {
                 world.wrong(format!("the answer's first words, then silent: {first:?}, {:?}", pace(ed)));
             }
             format!("{said}, answered, the next answer")
         }
         11 => {
             // (the turn over, the next asked through `submit`: nothing of the last one carried over)
-            send(ed, StreamEv::Done(Ok("done".into())));
+            send(ed, world, StreamEv::Done(Ok("done".into())));
             if !crate::chat::submit(ed, "and the third?", None, None) {
                 world.wrong("the next turn wasn't asked".into());
             }
             world.turn();
-            if level(ed) != 0.0 || pace(ed) != Some(Pace::Wave) {
+            // (its breath from the floor, as it starts)
+            frame(ed, world);
+            let floor = ed.moving().then_some(CELLS[0]).into_iter().collect::<Vec<_>>();
+            if pace(ed) != Some(Pace::Breath) || drawn(ed) != floor && !signed(ed) {
                 world.wrong(format!(
-                    "a new turn: the level at {}, {:?}, not the wave from 0",
-                    level(ed),
-                    pace(ed)
+                    "a new turn: {:?}, its cell {:?}, not breathing from the floor",
+                    pace(ed),
+                    drawn(ed)
                 ));
             }
             "the turn ends, the next is asked".into()
         }
         _ => {
             let ms = *c.pick(&[30, 250, 999, 1000, 2000]);
-            let before = level(ed);
             sim.wait(Duration::from_millis(ms));
-            if level(ed) > before {
-                world.wrong(format!("{ms} ms of nothing raised the level from {before} to {}", level(ed)));
-            }
             format!("{ms} ms pass")
         }
     }
@@ -390,10 +413,6 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
 fn held(ed: &Editor, world: &World) -> Result<(), String> {
     if let Some(w) = world.wrong.borrow_mut().take() {
         return Err(w);
-    }
-    let (now, sent) = (level(ed), world.level());
-    if (now - sent).abs() > 1e-3 * sent.max(1.0) {
-        return Err(format!("the level at {now}, the stream as sent leaves it at {sent}"));
     }
     let pace = pace(ed);
     if pace != Some(world.pace()) {
@@ -404,17 +423,16 @@ fn held(ed: &Editor, world: &World) -> Result<(), String> {
     if !world.framed.get() {
         return Ok(());
     }
-    let (seen, want) = (drawn(ed), want(ed));
+    let (seen, want) = (drawn(ed), want(ed, world));
     // (no cell only where the turn waits on you or a call may be stuck — `▲`, `◦` take it — or no turn is under way)
-    let signed = matches!(ed.doing(&ed.workspace), Doing::Waiting | Doing::Stuck { .. });
     match seen.as_slice() {
         [c] if *c == want => Ok(()),
-        [] if signed || pace.is_none() => Ok(()),
+        [] if signed(ed) || pace.is_none() => Ok(()),
         _ => Err(format!("the frame draws {seen:?}, the turn's cell at {pace:?} is {want:?}")),
     }
 }
 
 fn print(ed: &Editor) -> String {
     let c = ed.workspace.claude.chat.as_ref();
-    format!("level {:.1} · {:?} · {:?}", level(ed), pace(ed), c.map(|c| c.state))
+    format!("{:?} · {:?}", pace(ed), c.map(|c| c.state))
 }

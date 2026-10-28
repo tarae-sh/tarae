@@ -706,7 +706,9 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
   no token spent. And one working sign (`85d73fcb`, #159, the wave plan's C): the wave beside the word and the band
   over it fold into one cell that rises, `▃▄▅▆` in the accent, the same in every place for the whole turn — its
   height the stream's level, a 2 s breath where nothing streams by nature, low and still when the stream stops — so
-  nothing moves a cell from a turn's start to its end.
+  nothing moves a cell from a turn's start to its end. Then the breath alone (the user, 2026-10-28, on `cargo xtask
+  sign`'s animations of six candidates: the level read as stutters): an even 2 s breath the whole turn, from the floor
+  as the turn starts and as it leaves a stall, low and still while the stream has stopped.
 - **The mouse, one way on every surface** (user, 2026-10-26, after a day at work through Windows Terminal into WSL;
   panes4's `.sb/mouse-plan.md`, its twelve as recommended but the right button, which stays as it is): a press gives
   the keys to where it lands, a drag selects wherever there's text, the wheel scrolls what's under the pointer and

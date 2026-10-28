@@ -1,25 +1,23 @@
-//! The working sign (CLAUDE.md, "One working sign, one cell that rises"; #159, motion's `.sb/wave-plan.md` C) — what a
-//! turn is doing as its stream shows it: one state, `pace`, and one cell drawn from it (`term::working`) wherever
-//! Claude or a run works: the top lines, the follow card, the now line, a tab's badge, an ask's peek, the step list.
-//! The cell keeps its place for the whole turn; only how it moves changes.
+//! The working sign (CLAUDE.md, "One working sign, one cell that rises"; #159, motion's `.sb/wave-plan.md` C, then the
+//! breath alone — the user, 2026-10-28, on `cargo xtask sign`'s animations: the stream's level read as stutters) — what
+//! a turn is doing: one state, `pace`, and one cell drawn from it (`term::working`) wherever Claude or a run works: the
+//! top lines, the follow card, the now line, a tab's badge, an ask's peek, the step list. The cell keeps its place for
+//! the whole turn; it moves one way, an even breath, and stops when the stream does.
 //!
-//! - `Pace::Wave` — working, not streaming: a thinking block open (summarized thinking sends nothing until it's done,
-//!   then lands whole — measured 2026-10-25, `cargo xtask stream --think`: 1.2–1.9 s silent in short turns), a run of
-//!   Claude's under way, the turn's start before its first event, a request out with nothing of its answer yet (a
-//!   tool's result gone back: 2.75 s measured before the next message's first event), a compaction. The cell breathes
-//!   on the animation's clock (`breath`): an even rise and fall, `BREATH` long.
-//! - `Pace::Shimmer` — deltas arriving (text, thinking's summary, an edit's input: what tarae's reader sends,
-//!   `llm::pump`): the cell's height is the stream's level (`Band::level`, its bytes of about the last `RATE_TAU`,
-//!   `BYTES_A_STEP` a step) — uneven, as the stream is: high while it pours, lower as it thins. No frames of its own:
-//!   each delta is an event and a frame already.
-//! - `Pace::Still` — neither, no delta for `STILL_AFTER`: the cell at the floor and still, at once — never the level
-//!   sinking after a big lump; `◦ stuck?` as before (`Doing::Stuck`).
+//! - `Pace::Breath` — working: deltas arriving (text, thinking's summary, an edit's input), a thinking block open
+//!   (summarized thinking sends nothing until it's done — measured 2026-10-25, `cargo xtask stream --think`: 1.2–1.9 s
+//!   silent in short turns), a run of Claude's under way, the turn's start before its first event, a request out with
+//!   nothing of its answer yet (a tool's result gone back: 2.75 s measured before the next message's first event), a
+//!   compaction. The cell breathes (`breath`): an even rise and fall, `BREATH` long, whatever the stream does — a delta
+//!   changes nothing. A turn's breath counts from its own start (`Band::from`): from the floor as the turn starts, and
+//!   again as it leaves `Still` (`woke`), so it never jumps a height on the way out.
+//! - `Pace::Still` — the stream stopped: no delta for `STILL_AFTER` and nothing else at work. The cell at the floor and
+//!   still, at once; `◦ stuck?` as before (`Doing::Stuck`).
 //!
-//! The latest sign wins: a delta within `STILL_AFTER` is `Shimmer` unless something since said the stream paused for work
-//! (a thinking block opening, a tool call, a request out — each lets the delta before it go); thinking's summary lands
-//! after its block opened, while it's still open: the shimmer. Past `STILL_AFTER`, what works without streaming breathes
-//! again. At `calm` and `none` the cell holds `CELLS[STILL]`; the level is drawn only where motion is
-//! (`Editor.motion_drawn` — off in tests, where the cell breathes on the tests' still clock).
+//! A delta within `STILL_AFTER` breathes unless something since said the stream paused for work (a thinking block
+//! opening, a tool call, a request out — each lets the delta before it go, and breathes for itself). At `calm` and `none`
+//! the cell holds `CELLS[STILL]`; still and the turn's own breath are drawn only where motion is (`Editor.motion_drawn`
+//! — off in tests, where the cell breathes on the tests' still clock).
 
 use std::time::{Duration, Instant};
 
@@ -33,13 +31,6 @@ pub const CELLS: [char; 4] = ['▃', '▄', '▅', '▆'];
 /// The height held where nothing moves on a clock (`calm`, `none`).
 pub const STILL: usize = 1;
 
-/// How fast the stream's level falls back: its bytes decay with this time constant, in seconds.
-pub const RATE_TAU: f32 = 0.3;
-
-/// Bytes of the level a step of the cell: prose at its measured 328 characters a second keeps about 98 bytes in the
-/// level — the top.
-pub const BYTES_A_STEP: f32 = 20.0;
-
 /// One breath of the cell where nothing streams (Claude Code's spinner breathes on the same period).
 pub const BREATH: Duration = Duration::from_secs(2);
 
@@ -50,17 +41,16 @@ pub const STILL_AFTER: Duration = Duration::from_secs(1);
 /// What the turn is doing, as its stream shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pace {
-    Wave,
-    Shimmer,
+    Breath,
     Still,
 }
 
-/// The turn's stream so far (`Chat.pace`): made anew as a turn starts.
+/// The turn's stream so far (`Chat.pace`): made anew as a turn starts (`Band::begin`).
 #[derive(Clone, Debug, Default)]
 pub struct Band {
-    /// The stream's bytes as of `rate_at`, decaying with `RATE_TAU` (`level`).
-    pub rate: f32,
-    pub rate_at: Option<Instant>,
+    /// The animation step (`editor::anim_step`) the turn's breath counts from: the turn's start, and the last time it
+    /// left `Pace::Still`.
+    pub from: u128,
     /// When the last delta came — None once something since said the stream paused for work.
     pub last: Option<Instant>,
     /// A thinking block is open (from its start to its end in the stream).
@@ -72,22 +62,19 @@ pub struct Band {
 }
 
 impl Band {
-    /// A batch of `bytes` arrived: the level rises by them.
+    /// A turn's, as it starts: its breath from the floor now.
+    pub fn begin() -> Band {
+        Band { from: crate::editor::anim_step(), ..Band::default() }
+    }
+
+    /// A batch of `bytes` arrived: the stream is flowing (how much never shows).
     pub fn delta(&mut self, bytes: usize) {
         if bytes == 0 {
             return;
         }
-        self.rate = self.level() + bytes as f32;
-        self.rate_at = Some(crate::clock::now());
         self.last = Some(crate::clock::now());
         self.begun = true;
         self.asked = false;
-    }
-
-    /// The stream's bytes of about the last `RATE_TAU`, decayed to now: 0 once it has stood still a while.
-    pub fn level(&self) -> f32 {
-        let since = self.rate_at.map_or(f32::INFINITY, |t| crate::clock::since(t).as_secs_f32());
-        self.rate * (-since / RATE_TAU).exp()
     }
 
     /// A thinking block began or ended.
@@ -115,20 +102,34 @@ impl Band {
 pub fn pace(l: &Workspace) -> Option<Pace> {
     let c = l.claude.chat.as_ref().filter(|c| c.busy())?;
     let p = &c.pace;
-    let compacting = crate::compaction::under_way(l);
-    if !compacting && p.last.is_some_and(|t| crate::clock::since(t) < STILL_AFTER) {
-        return Some(Pace::Shimmer);
-    }
+    let flowing = p.last.is_some_and(|t| crate::clock::since(t) < STILL_AFTER);
     let runs = c.calls.iter().any(|k| matches!(k.name.as_str(), "mcp__tarae__run" | "mcp__tarae__run_tests"));
-    Some(match compacting || p.thinking || runs || p.asked || !p.begun {
-        true => Pace::Wave,
+    Some(match flowing || crate::compaction::under_way(l) || p.thinking || runs || p.asked || !p.begun {
+        true => Pace::Breath,
         false => Pace::Still,
     })
 }
 
-/// The cell's height for a stream's `level` (`Band::level`): a step each `BYTES_A_STEP`, the floor at none.
-pub fn height(level: f32) -> usize {
-    ((level / BYTES_A_STEP) as usize).min(CELLS.len() - 1)
+/// After an event of `l`'s turn (`chat::on_event`), its pace `before` it: a turn that was still and breathes again
+/// breathes from the floor, now.
+pub fn woke(l: &mut Workspace, before: Option<Pace>) {
+    if before != Some(Pace::Still) || pace(l) != Some(Pace::Breath) {
+        return;
+    }
+    if let Some(c) = l.claude.chat.as_mut() {
+        c.pace.from = crate::editor::anim_step();
+    }
+}
+
+/// The turn's cell's height now: the floor while still, else its breath from `Band::from` — None: no turn under way.
+pub fn turn_height(l: &Workspace) -> Option<usize> {
+    Some(match pace(l)? {
+        Pace::Still => 0,
+        Pace::Breath => {
+            let from = l.claude.chat.as_ref().map_or(0, |c| c.pace.from);
+            breath(crate::editor::anim_step().saturating_sub(from))
+        }
+    })
 }
 
 /// The cell's height at `step` of the animation's clock (`editor::anim_step`, a `TICK` a step): an even rise from the
@@ -145,22 +146,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_batch_raises_the_level_by_its_bytes_and_a_quiet_lets_it_fall() {
+    fn a_delta_marks_the_stream_flowing_and_an_empty_one_nothing() {
         let mut b = Band::default();
-        assert_eq!(height(b.level()), 0, "nothing came: the floor");
-        b.delta(8);
-        assert!((b.level() - 8.0).abs() < 0.5, "{}", b.level());
-        b.delta(16);
-        assert!((b.level() - 24.0).abs() < 1.0, "{}", b.level());
-        assert_eq!(height(b.level()), 1);
-        // (a lump: 419 bytes of a thinking summary at once — the top, no higher)
-        b.delta(419);
-        assert_eq!(height(b.level()), CELLS.len() - 1);
         b.delta(0);
-        assert!(b.begun);
-        // (a quiet of a few time constants: back at the floor)
-        b.rate_at = b.rate_at.map(|t| t - Duration::from_secs(2));
-        assert_eq!(height(b.level()), 0, "{}", b.level());
+        assert!(!b.begun && b.last.is_none(), "nothing came");
+        b.asked();
+        b.delta(419);
+        assert!(b.begun && b.last.is_some() && !b.asked, "its answer came");
     }
 
     #[test]

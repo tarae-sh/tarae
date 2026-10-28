@@ -1816,6 +1816,13 @@ pub(crate) fn stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
 }
 
 fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
+    // (the turn's cell, still, breathing again from this event: from the floor — `shimmer::woke`)
+    let before = crate::shimmer::pace(&ed.workspace);
+    on_stream_event(ed, generation, ev);
+    crate::shimmer::woke(&mut ed.workspace, before);
+}
+
+fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
     // (a failure for want of a login, with a key tarae left out: said with it, and what passes it)
     let login_hint = match &ev {
         StreamEv::Done(Err(e)) | StreamEv::Exit(e) => llm::login_hint(ed, e),
@@ -2822,7 +2829,7 @@ fn bare(ed: &mut Editor, text: &str, row: Msg) -> bool {
     c.scroll = 0;
     c.state = State::Thinking;
     c.started = crate::clock::now();
-    c.pace = Default::default();
+    c.pace = crate::shimmer::Band::begin();
     crate::uistate::watch::turn(ed, "started", 0, None);
     true
 }
@@ -3023,7 +3030,7 @@ fn submit_as(
     c.scroll = 0;
     c.state = State::Thinking;
     c.started = crate::clock::now();
-    c.pace = Default::default();
+    c.pace = crate::shimmer::Band::begin();
     crate::reads::not_sent(ed, &withheld);
     crate::uistate::watch::turn(ed, "started", 0, None);
     true

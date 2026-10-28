@@ -13344,29 +13344,26 @@ fn draw_which_key(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) 
 
 /// The working sign (CLAUDE.md, "One working sign, one cell that rises"; `shimmer.rs`): one cell, `▃`‥`▆`, wherever
 /// Claude or a run works — a turn's word, a tab's badge, an ask's peek, a card, the step list — one cell as every mark
-/// is (`◦ • ● ▸ ▲`), so nothing moves a cell from a turn's start to its end. For a turn of the chat's (`turn`): the
-/// stream's level while deltas come (`Pace::Shimmer`), the floor the moment they stop (`Pace::Still`), else the breath on the animation's clock (`Pace::Wave`: a think, a run, a request out, the start). For
-/// a run, an install, an ask's own claude: the breath. Every breath on screen takes the same step
-/// (`editor::anim_step`). `▄` held where nothing moves on a clock (`Editor::moving`); the level only where motion is
-/// drawn (`Editor.motion_drawn`, off in tests: there it breathes on the tests' still clock).
+/// is (`◦ • ● ▸ ▲`), so nothing moves a cell from a turn's start to its end. It breathes, evenly, `BREATH` long. For a
+/// turn of the chat's (`turn`): its breath from the turn's start or the last time it left the stall, the floor and still
+/// while the stream has stopped (`shimmer::turn_height`). For a run, an install, an ask's own claude: the breath on the
+/// animation's clock (`editor::anim_step`), every one on screen at the same step. `▄` held where nothing moves on a clock
+/// (`Editor::moving`); the turn's own only where motion is drawn (`Editor.motion_drawn`, off in tests: there it breathes
+/// on the tests' still clock).
 fn working(editor: &Editor, turn: bool) -> String {
-    use crate::shimmer::{CELLS, Pace, STILL};
+    use crate::shimmer::{CELLS, STILL};
     if !editor.moving() {
         return CELLS[STILL].to_string();
     }
-    let at = match turn.then(|| crate::shimmer::pace(&editor.workspace)).flatten() {
-        Some(Pace::Shimmer) if editor.motion_drawn => {
-            crate::shimmer::height(editor.workspace.claude.chat.as_ref().map_or(0.0, |c| c.pace.level()))
-        }
-        // (the stream stopped: low and still at once, however much its last lump carried)
-        Some(Pace::Still) if editor.motion_drawn => 0,
-        _ => crate::shimmer::breath(crate::editor::anim_step()),
+    let at = match turn && editor.motion_drawn {
+        true => crate::shimmer::turn_height(&editor.workspace),
+        false => None,
     };
-    CELLS[at].to_string()
+    CELLS[at.unwrap_or_else(|| crate::shimmer::breath(crate::editor::anim_step()))].to_string()
 }
 
 /// What a session's heading in `:procs` says after its name, in its ink (`inks`: accent, warning, faint): the working
-/// sign while it works (#166 — the front's at its stream's level, as its chat's; one behind breathes), `▲`/`◦` as
+/// sign while it works (#166 — the front's as its chat's, its own breath; one behind on the clock's), `▲`/`◦` as
 /// its tab has them, `queued 2nd` faint as the session list says it (`●` is an edit's mark); nothing idle or done.
 fn procs_heading_state(
     editor: &Editor,
@@ -23898,16 +23895,22 @@ mod tests {
         assert_eq!(steps, [vec![], vec![(44, 'y')], vec![(11, 'y')], vec![]], "lit, drying, dry");
     }
 
-    /// #159: the turn's one cell — at its start the breath on the animation's clock (the floor, the top half a breath
-    /// on, the floor again); deltas raise it by the stream's level; a quiet lets it fall to the floor and hold there,
-    /// breathing no more; a run's cell breathes whatever the stream does; at `calm` `▄` held. One cell throughout.
+    /// #159: the turn's one cell — its own breath from the floor as the turn starts (the top half a breath on), apart
+    /// from a run's on the clock; deltas, a few bytes or a lump, move nothing; a quiet holds it at the floor; the stream
+    /// again breathes from the floor, never a jump to where the clock went; at `calm` `▄` held. One cell throughout.
     #[test]
-    fn the_turns_cell_breathes_rises_with_the_stream_and_holds_low_when_it_stops() {
-        use crate::shimmer::{BREATH, CELLS, STILL, breath};
+    fn the_turns_cell_breathes_whatever_its_stream_does_and_holds_low_when_it_stops() {
+        use crate::shimmer::{BREATH, Band, CELLS, Pace, STILL, breath};
         crate::clock::hold();
         let mut ed = Editor::new(crate::config::Config::default());
         let mut c = crate::chat::Chat::new();
         c.state = crate::chat::State::Writing;
+        // (the run's breath and the turn's apart: the turn starts a third of a breath into the clock's)
+        let tick = crate::editor::TICK;
+        let period = (BREATH.as_millis() / tick.as_millis()) as u32;
+        let into = (crate::editor::anim_step() % u128::from(period)) as u32;
+        crate::clock::advance(tick * (period - into + period / 3));
+        c.pace = Band::begin();
         ed.workspace.claude.chat = Some(c);
         ed.motion_drawn = true;
         let cell = |ed: &Editor, turn: bool| -> char {
@@ -23915,26 +23918,30 @@ mod tests {
             assert_eq!(s.chars().count(), 1, "one cell: {s:?}");
             s.chars().next().unwrap()
         };
-        let tick = crate::editor::TICK;
-        let period = (BREATH.as_millis() / tick.as_millis()) as u32;
-        // (to the breath's start: its floor; half a breath on, its top; a whole one, the floor again)
-        let into = (crate::editor::anim_step() % u128::from(period)) as u32;
-        crate::clock::advance(tick * (period - into));
-        assert_eq!(cell(&ed, true), CELLS[0], "the turn's start: the breath, at its floor");
+        let pace = |ed: &Editor| crate::shimmer::pace(&ed.workspace);
+        // (the turn's start: its breath at the floor; half a breath on, its top; a whole one, the floor again)
+        assert_eq!(cell(&ed, true), CELLS[0], "the turn's start: the floor");
+        assert_eq!(
+            cell(&ed, false),
+            CELLS[breath(crate::editor::anim_step())],
+            "a run's: the clock's breath"
+        );
+        assert_ne!(cell(&ed, false), CELLS[0], "(a third of a breath in)");
         crate::clock::advance(tick * (period / 2));
         assert_eq!(cell(&ed, true), CELLS[CELLS.len() - 1], "half a breath on: the top");
-        crate::clock::advance(tick * (period / 2));
-        assert_eq!(cell(&ed, true), CELLS[0]);
-        // (deltas: the stream's level — 30 bytes a step up, 100 the top)
-        ed.workspace.claude.chat.as_mut().unwrap().pace.delta(30);
-        assert_eq!(cell(&ed, true), CELLS[1], "30 bytes: a step up");
-        (0..3).for_each(|_| ed.workspace.claude.chat.as_mut().unwrap().pace.delta(25));
-        assert_eq!(cell(&ed, true), CELLS[CELLS.len() - 1], "105 bytes: the top");
-        // (a run's cell meanwhile: the breath, not the stream — at the breath's floor now)
-        assert_eq!(cell(&ed, false), CELLS[breath(crate::editor::anim_step())]);
-        // (a quiet: the stream stands still, its cell fallen to the floor and held there whatever the clock does)
-        crate::clock::advance(crate::shimmer::STILL_AFTER + Duration::from_millis(500));
-        assert_eq!(crate::shimmer::pace(&ed.workspace), Some(crate::shimmer::Pace::Still));
+        // (deltas, a few bytes or a lump: the breath goes on as it was)
+        let deltas: Vec<char> = [30, 25, 2048, 4]
+            .iter()
+            .map(|&n| {
+                ed.workspace.claude.chat.as_mut().unwrap().pace.delta(n);
+                cell(&ed, true)
+            })
+            .collect();
+        assert_eq!(deltas, [CELLS[CELLS.len() - 1]; 4], "deltas move nothing");
+        assert_eq!(pace(&ed), Some(Pace::Breath));
+        // (a quiet: the stream stands still, its cell at the floor and held there whatever the clock does)
+        crate::clock::advance(crate::shimmer::STILL_AFTER);
+        assert_eq!(pace(&ed), Some(Pace::Still));
         let held: Vec<char> = (0..period)
             .map(|_| {
                 crate::clock::advance(tick);
@@ -23942,16 +23949,22 @@ mod tests {
             })
             .collect();
         assert!(held.iter().all(|&c| c == CELLS[0]), "still: low and held, {held:?}");
-        // (a lump of 2 KB, then the stream stops: the floor the moment it's still — never the level sinking from the top)
-        ed.workspace.claude.chat.as_mut().unwrap().pace.delta(2048);
-        assert_eq!(cell(&ed, true), CELLS[CELLS.len() - 1], "the lump: the top");
-        crate::clock::advance(crate::shimmer::STILL_AFTER);
-        assert_eq!(crate::shimmer::pace(&ed.workspace), Some(crate::shimmer::Pace::Still));
-        assert!(
-            crate::shimmer::height(ed.workspace.claude.chat.as_ref().unwrap().pace.level()) > 1,
-            "its level still high"
-        );
-        assert_eq!(cell(&ed, true), CELLS[0], "stopped: the floor at once");
+        // (the stream again, however far the clock went: from the floor, a breath of its own)
+        crate::clock::advance(tick * (period / 3));
+        let before = pace(&ed);
+        ed.workspace.claude.chat.as_mut().unwrap().pace.delta(12);
+        crate::shimmer::woke(&mut ed.workspace, before);
+        // (up to the top, short of `STILL_AFTER` — half a breath: past it, one delta's stream is still again)
+        let woke: Vec<char> = (0..period / 2)
+            .map(|k| {
+                if k > 0 {
+                    crate::clock::advance(tick);
+                }
+                cell(&ed, true)
+            })
+            .collect();
+        let breath: Vec<char> = (0..period / 2).map(|k| CELLS[breath(u128::from(k))]).collect();
+        assert_eq!(woke, breath, "out of the stall: from the floor, never a jump");
         ed.config.motion = "calm".into();
         assert_eq!((cell(&ed, true), cell(&ed, false)), (CELLS[STILL], CELLS[STILL]), "calm: ▄ held");
         ed.workspace.claude.chat.as_mut().unwrap().pace.delta(100);
