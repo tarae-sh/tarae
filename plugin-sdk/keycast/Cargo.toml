@@ -1,0 +1,25 @@
+# The keys you press, in the corner where tarae's asks stand — for a recording of tarae at work. It asks for `keys`
+# alone: it reads, connects to and runs nothing, and shows what it hears in its overlay only.
+#   cargo build --release && cp target/wasm32-unknown-unknown/release/keycast.wasm ~/.config/tarae/plugins/
+#   cargo test --target aarch64-apple-darwin      (the tests run on your machine, not in wasm)
+[package]
+name = "keycast"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "=0.62.0"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Not part of tarae's workspace
+[workspace]

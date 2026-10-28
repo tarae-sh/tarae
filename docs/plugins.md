@@ -369,6 +369,14 @@ password-env = "PGPASSWORD"
 paths = ["migrations/**"]
 ```
 
+[`plugin-sdk/keycast`](../plugin-sdk/keycast) shows the keys you press in the corner where tarae's asks stand, for a
+recording of tarae at work: one short row of the last four bindings, newest at the right, as keycaps in the names
+tarae's hints use (`C-w` `v`, `space` `f`), a repeat folded (`j ×4`), a count as its keys (`3` `j`). Insert mode is the
+key that entered it and the one that left it, a faint `insert` after them while it lasts. It's gone while an ask
+stands there or which-key is up, and back with the latest keys after; after a 3 s pause the row starts again. It asks
+for `keys` alone, so it hears nothing until your own config turns `plugins.keys` on. `:keycast-off` stops it,
+`:keycast` starts it again, and a press on it puts it away until the next key.
+
 ## Limits
 
 - **No imports**: no WASI, no host functions. A plugin reads what tarae gives it and answers; what it asks beyond

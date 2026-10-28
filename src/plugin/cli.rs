@@ -304,12 +304,16 @@ mod tests {
         assert!(out.contains(":echo") && !out.contains("can't load"), "{out}");
     }
 
-    /// The template, the demo and the version tarae names in its messages agree, and match the WIT's major.
+    /// The template, the demo, tarae's own plugins and the version tarae names in its messages agree, and match the
+    /// WIT's major.
     #[test]
     fn the_sdk_pins_one_wit_bindgen() {
         let pin = format!("wit-bindgen = \"={WIT_BINDGEN}.");
         assert!(CARGO_TOML.contains(&pin), "template: {pin}");
         assert!(include_str!("../../plugin-sdk/demo/Cargo.toml").contains(&pin), "demo: {pin}");
+        assert!(include_str!("../../plugin-sdk/kubernetes/Cargo.toml").contains(&pin), "kubernetes: {pin}");
+        assert!(include_str!("../../plugin-sdk/db/Cargo.toml").contains(&pin), "db: {pin}");
+        assert!(include_str!("../../plugin-sdk/keycast/Cargo.toml").contains(&pin), "keycast: {pin}");
         assert!(WIT.contains(&format!("package tarae:plugin@{}.", super::super::abi::API)));
     }
 }
