@@ -1148,6 +1148,10 @@ pub struct Here {
     /// as the variables say.
     #[cfg(test)]
     pub runs: Option<PathBuf>,
+    /// Tests: tarae's runs folder as a write is judged by it (`runs_judged`) — None unless a test names one: `runs`
+    /// is the test's temp folder, which holds every scratch folder.
+    #[cfg(test)]
+    pub judged_runs: Option<PathBuf>,
 }
 
 impl Here {
@@ -1185,6 +1189,8 @@ impl Here {
             asked: Default::default(),
             #[cfg(test)]
             runs: Some(profile_path(&std::env::temp_dir())),
+            #[cfg(test)]
+            judged_runs: None,
         }
     }
 
@@ -2021,6 +2027,9 @@ pub struct RunsLater {
     /// A tool's store on the project's filesystem, told to its runs (`disk_store`, compat B12) — its files are
     /// hard-linked into the user's projects. Real paths.
     pub stores: Vec<PathBuf>,
+    /// tarae's runs folder (`runs_root`, real): each run's own folder is made there, where no run may write but in
+    /// its own (keeper 7e, F1) — a folder in it or holding it opened, every run would be refused (`runs_written`).
+    pub runs: Option<PathBuf>,
 }
 
 impl RunsLater {
@@ -2060,6 +2069,13 @@ impl RunsLater {
 
     /// Why folder `d` (real) is never written — None: not for this.
     pub fn refuses(&self, d: &Path) -> Option<String> {
+        if let Some(r) = self.runs.as_ref().filter(|r| r.starts_with(d) || d.starts_with(r)) {
+            let how = if d.starts_with(r) { "it's in" } else { "it holds" };
+            return Some(format!(
+                "{how} tarae's runs folder ({}) — each run's own folder is made there, where no run may write",
+                crate::allow::tilde(r)
+            ));
+        }
         if let Some(s) = self.stores.iter().find(|s| s.starts_with(d) || d.starts_with(s)) {
             let how = if d.starts_with(s) { "it's in" } else { "it holds" };
             return Some(format!(
@@ -4301,6 +4317,7 @@ pub(crate) fn env_with(
     let reads = real_home.as_deref().zip(vars.as_ref()).map(|(h, v)| reads_for(h, &also, v));
     let runs_later = real_home.as_deref().zip(vars.as_ref()).map(|(h, v)| RunsLater {
         stores: disk_stores.told.iter().map(|(s, _)| s.clone()).collect(),
+        runs: runs_judged(Some(h), here),
         ..RunsLater::new(h, v, &path_dirs_in(here))
     });
     let mut env = Env {
@@ -4430,6 +4447,19 @@ pub(crate) fn runs_root(home: Option<&Path>, here: &Here) -> Option<PathBuf> {
         return Some(runs.clone());
     }
     taraes_cache(home, here).map(|c| profile_path(&c.join("runs")))
+}
+
+/// tarae's runs folder as a write is judged by it (`RunsLater.runs`): `runs_root`. (Tests: only one a test names
+/// (`Here.judged_runs`) — a test run in tarae's sandbox has its temp folder in the real one, and every scratch
+/// folder would read as in it.)
+pub(crate) fn runs_judged(home: Option<&Path>, here: &Here) -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        let _ = home;
+        here.judged_runs.clone()
+    }
+    #[cfg(not(test))]
+    runs_root(home, here)
 }
 
 /// The place every run under `p` may write (the project, `write`) that holds runs' folders' `base` or is in it:
@@ -7457,7 +7487,8 @@ mod tests {
     /// (`tools::with_allowed`), by the rule the card offers folders by today: a folder of the user's programs, one
     /// holding keys, what's kept from every run (the user's own Go build cache, the go pack's `{user-cache}/go-build`)
     /// or what holds it stays closed — said in the result and on the panel; a folder that's none of those opens. The
-    /// user's own `llm.sandbox-write` is the way past that rule, and stays open.
+    /// user's own `llm.sandbox-write` is the way past that rule, and stays open — a grant it opens anyway isn't said
+    /// to be kept closed. With no home known a grant can't be judged, and stays closed.
     #[test]
     fn a_kept_write_grant_is_judged_again() {
         let s = crate::scratch::Scratch::new("write-grant-again");
@@ -7472,11 +7503,14 @@ mod tests {
             (home.join(".ssh/x"), "keys"),
         ];
         let open = home.join("data/out");
-        for d in refused.iter().map(|(d, _)| d).chain([&open, &root]) {
+        // (tarae's runs folder in this home, as `runs_root` finds it with no XDG_CACHE_HOME)
+        let runs = home.join(".cache/tarae/runs/7-0");
+        for d in refused.iter().map(|(d, _)| d).chain([&open, &root, &runs]) {
             std::fs::create_dir_all(d).unwrap();
         }
         let env = [("HOME".to_string(), home.clone().into_os_string())].into();
-        let here = Here { env, os: Os::Linux, ..Here::default() };
+        let judged_runs = Some(home.join(".cache/tarae/runs"));
+        let here = Here { env, os: Os::Linux, judged_runs, ..Here::default() };
         let write = refused.iter().map(|(d, _)| d.clone()).chain([open.clone()]).collect();
         let kept = crate::allow::Allowed { write, ..Default::default() };
         let none = crate::allow::Allowed::default();
@@ -7500,14 +7534,48 @@ mod tests {
             assert!(why.is_some_and(|w| w.contains(said)), "{}: {why:?}", d.display());
             assert!(!p.writes_allow(&d.join("x")), "{} opened", d.display());
         }
-        assert!(p.refused_write.iter().any(|(r, _)| *r == refused[0].0), "the grant's own refusal is said");
+        assert!(
+            !p.refused_write.iter().any(|(r, _)| *r == refused[0].0),
+            "opened by llm.sandbox-write: never said to be kept closed"
+        );
         let g = Guard::In(Box::new(p));
         let said = g.report(&[]);
         let words =
             "It kept closed folders the user's answers opened for writing that no run may write now: ";
         assert!(said.contains(words) && said.contains(":granted takes the answer back"), "{said}");
+        assert!(!said.contains(".local/bin"), "{said}");
         let (line, _) = panel_line(Some(&g), false, std::time::Instant::now()).expect("the panel says it");
-        assert!(line.contains(" closed — your answer opened it, but ") && line.ends_with("  +4"), "{line}");
+        assert!(line.contains(" closed — your answer opened it, but ") && line.ends_with("  +3"), "{line}");
+        // No home known: nothing to judge a grant by — every one stays closed, said
+        let homeless = crate::caps::Caps { home: None, ..caps };
+        let w = crate::tools::with_allowed(&crate::llm::LlmConfig::default(), &homeless, None);
+        assert!(w.llm.sandbox_write.is_empty(), "{:?}", w.llm.sandbox_write);
+        let why = w.refused_write.iter().find(|(r, _)| *r == open).map(|(_, w)| w.as_str());
+        assert_eq!(why, Some("no home folder is known to judge it by"));
+        // As a run's policy is made (`tools::guard_then_go`): the session's answers judged there too, by home
+        let basis = crate::caps::Basis {
+            root: root.clone(),
+            session: crate::allow::Allowed {
+                write: vec![home.join(".local/bin"), runs.clone(), open.clone()],
+                ..Default::default()
+            },
+            home: Some(home.clone()),
+            ..Default::default()
+        };
+        let w = crate::tools::with_allowed(
+            &crate::llm::LlmConfig::default(),
+            &crate::tools::run_caps(&basis, &here),
+            None,
+        );
+        assert_eq!(w.llm.sandbox_write, [open.display().to_string()], "the run's own: {:?}", w.refused_write);
+        assert!(
+            w.refused_write
+                .iter()
+                .any(|(r, why)| *r == home.join(".local/bin") && why.contains("programs you run"))
+        );
+        // (#218: a grant kept in tarae's runs folder — where each run's own folder is made, no run writing — closed)
+        let why = w.refused_write.iter().find(|(r, _)| *r == runs).map(|(_, w)| w.as_str());
+        assert!(why.is_some_and(|w| w.starts_with("it's in tarae's runs folder")), "{why:?}");
     }
 
     /// A toolchain's shared cache its `ask` names (Go's module cache) is kept as the packs' `caches` are: read,
@@ -14123,12 +14191,14 @@ mod tests {
         let mut this_chat = Allowed::default();
         this_chat.add(&Grant::Write(chat.clone()));
         this_chat.add(&Grant::Socket(socks.join("granted.sock")));
-        let w = crate::tools::with_allowed(
-            &crate::llm::LlmConfig::default(),
-            &crate::caps::Caps::answered(&[&from_store, &this_chat]),
-            None,
-        );
-        assert_eq!(w.granted.len(), 5, "{:?}", w.granted);
+        // (its home and project: what a write grant is judged by again)
+        let caps = crate::caps::Caps {
+            home: Some(home.clone()),
+            root: root.clone(),
+            ..crate::caps::Caps::answered(&[&from_store, &this_chat])
+        };
+        let w = crate::tools::with_allowed(&crate::llm::LlmConfig::default(), &caps, None);
+        assert_eq!(w.granted.len(), 5, "{:?} — refused: {:?}", w.granted, w.refused_write);
         let env = Env {
             root: root.clone(),
             write: w.llm.sandbox_write.clone(),

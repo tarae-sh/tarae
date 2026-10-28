@@ -569,6 +569,8 @@ mod tests {
         let mut ed = Editor::new(crate::config::Config::default());
         ed.workspace.root = root.clone();
         ed.allow_path = Some(s.path().join("sandbox.json"));
+        // (a home of its own: write grants are judged as a run's are, never by where the test's temp folder is)
+        ed.caps_home = Some(s.path().join("home"));
         ed.workspace.claude.chat = Some(crate::chat::Chat::new());
         ed.workspace.viewer.at = crate::workspace::At::Chat;
         (ed, root, s.path().join("sandbox.json"))
@@ -586,7 +588,8 @@ mod tests {
 
     /// The next run's policy, as `tools::guard_then_go` makes it: the session's answers as they are now.
     fn next_run(ed: &Editor) -> crate::tools::Widened {
-        crate::tools::with_allowed(&ed.config.llm, &ed.caps_basis().granted(), None)
+        let caps = ed.caps_basis().granted_judged(&crate::sandbox::Here::now());
+        crate::tools::with_allowed(&ed.config.llm, &caps, None)
     }
 
     /// cardauto 7: `d` in `:granted` takes an answer back — kept, this session's, this chat's — and the next run's

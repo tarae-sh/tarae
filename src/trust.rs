@@ -414,10 +414,14 @@ impl Store {
     /// The answer for `file` as it is now (`hash`) — Ask when this version was never answered, or its trust is
     /// being taken back (`taking`).
     pub fn state(&self, file: &Path, hash: Digest) -> State {
-        let place = place_of(file);
-        let found = self.answers.get(&place).and_then(|k| k.versions.iter().rfind(|a| a.0 == hash));
+        self.state_at(&place_of(file), hash)
+    }
+
+    /// `state`, at a place worked out before.
+    pub fn state_at(&self, place: &Place, hash: Digest) -> State {
+        let found = self.answers.get(place).and_then(|k| k.versions.iter().rfind(|a| a.0 == hash));
         match found {
-            Some((_, true, ..)) if self.is_taking(&place) => State::Ask,
+            Some((_, true, ..)) if self.is_taking(place) => State::Ask,
             Some((_, true, ..)) => State::Trusted,
             Some((_, false, ..)) => State::Ignored,
             None => State::Ask,

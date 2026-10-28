@@ -10950,6 +10950,8 @@ mod tests {
         let mut ed = editor("");
         ed.workspace.root = this_repo();
         ed.allow_path = Some(store.clone());
+        // (a home of its own: write grants are judged as a run's are, never by where the test's temp folder is)
+        ed.caps_home = Some(dir.join("home"));
         // Kept for the project, then taken back with the write failing: until you quit
         let project = crate::sandbox::profile_path(&ed.workspace.root);
         crate::allow::keep(&store, &project, |a| a.add_write(cache.clone())).unwrap();
@@ -10991,7 +10993,8 @@ mod tests {
         let (ran, extra) = ride.expect("run again");
         assert_eq!(ran, cmd);
         // (the run's policy as `tools::guard_then_go` makes it, the store's write not landed)
-        let w = crate::tools::with_allowed(&ed.config.llm, &ed.caps_basis().granted(), extra.grant.as_ref());
+        let caps = ed.caps_basis().granted_judged(&crate::sandbox::Here::now());
+        let w = crate::tools::with_allowed(&ed.config.llm, &caps, extra.grant.as_ref());
         assert!(
             w.llm.sandbox_write.iter().any(|p| Path::new(p).ends_with("cache")),
             "{:?}",

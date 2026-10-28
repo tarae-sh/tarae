@@ -215,6 +215,17 @@ impl Caps {
         }
     }
 
+    /// With what judges a write grant again for `home` (`tools::with_allowed`): where a write would run something
+    /// later, what's kept from every run. None: nothing to judge by — every write grant stays closed. A worker's.
+    pub fn judging(mut self, home: Option<PathBuf>, here: &crate::sandbox::Here) -> Caps {
+        if let Some(h) = home.as_deref() {
+            self.later = later_in(&self.root, h, here);
+            self.kept = crate::sandbox::kept_places(h, here);
+        }
+        self.home = home;
+        self
+    }
+
     /// The defaults found (`allow::defaults_in`), and what's never one.
     fn found(&mut self, d: crate::allow::Defaults) {
         self.read.extend(entries(&d.checkouts, Source::Default(Why::OtherCheckout)));
@@ -369,6 +380,19 @@ impl Caps {
     }
 }
 
+/// Where a write would run something later for checkout `root` and home `h` (`sandbox::RunsLater`).
+fn later_in(root: &Path, h: &Path, here: &crate::sandbox::Here) -> crate::sandbox::RunsLater {
+    let vars = crate::sandbox::vars_in(h, here);
+    // (a tool's store on the project's filesystem — compat B12)
+    let stores = crate::sandbox::disk_stores_in(root, h, &vars, here).told;
+    crate::sandbox::RunsLater {
+        stores: stores.into_iter().map(|(s, _)| s).collect(),
+        // (tarae's runs folder: never a write's choice, nor a grant kept there — #218)
+        runs: crate::sandbox::runs_judged(Some(h), here),
+        ..crate::sandbox::RunsLater::new(h, &vars, &crate::sandbox::path_dirs_in(here))
+    }
+}
+
 /// What a `Caps` is made from, taken on the main thread (`Editor::caps_basis`).
 #[derive(Clone, Debug, Default)]
 pub struct Basis {
@@ -446,11 +470,23 @@ impl Basis {
     /// The whole value, for home and the variables as the process has them. A worker's: it reads the store and
     /// looks for the defaults.
     pub fn build(&self) -> Caps {
+        self.build_in(self.home().as_deref(), &crate::sandbox::Here::now())
+    }
+
+    /// Home as the process has it (a test's own, when it set one). It may read the disk: a worker's.
+    pub(crate) fn home(&self) -> Option<PathBuf> {
         #[cfg(test)]
         if let Some(home) = &self.home {
-            return self.build_in(Some(home), &crate::sandbox::Here::now());
+            return Some(home.clone());
         }
-        self.build_in(crate::allow::home().as_deref(), &crate::sandbox::Here::now())
+        crate::allow::home()
+    }
+
+    /// The answers (`granted`) with what judges a write grant again (`tools::with_allowed`): home, where a write
+    /// would run something later, what's kept from every run — as `build_in` has them, the defaults not looked for.
+    /// What a run's policy is made from. A worker's: it reads the store.
+    pub fn granted_judged(&self, here: &crate::sandbox::Here) -> Caps {
+        self.granted().judging(self.home(), here)
     }
 
     /// `build` for `home` and what `here` says of the variables (a stand-in's: `sandbox::golden`).
@@ -458,17 +494,7 @@ impl Basis {
         let mut c = self.granted();
         c.found(crate::allow::defaults_in(&self.root, self.temp, home, here));
         c.read.extend(entries(&self.folders, Source::Default(Why::Folder)));
-        c.later = home
-            .map(|h| {
-                let vars = crate::sandbox::vars_in(h, here);
-                // (a tool's store on the project's filesystem — compat B12)
-                let stores = crate::sandbox::disk_stores_in(&self.root, h, &vars, here).told;
-                crate::sandbox::RunsLater {
-                    stores: stores.into_iter().map(|(s, _)| s).collect(),
-                    ..crate::sandbox::RunsLater::new(h, &vars, &crate::sandbox::path_dirs_in(here))
-                }
-            })
-            .unwrap_or_default();
+        c.later = home.map(|h| later_in(&self.root, h, here)).unwrap_or_default();
         c.home = home.map(Path::to_path_buf);
         c.outside = self.outside;
         c

@@ -1137,8 +1137,11 @@ pub fn write_refused_why(
     if let Some(k) = kept.iter().find(|k| k.starts_with(dir) || dir.starts_with(k)) {
         return Some(format!("what's there is kept from every run ({})", tilde(k)));
     }
-    // (no checkout: none to be in)
-    if !root.as_os_str().is_empty() && (dir.starts_with(root) || root.starts_with(dir)) {
+    // (no checkout: nothing is offered or kept open — there's no project to tell a folder apart from)
+    if root.as_os_str().is_empty() {
+        return Some("no project is open to judge it by".into());
+    }
+    if dir.starts_with(root) || root.starts_with(dir) {
         return Some("it's the project's or holds it".into());
     }
     (dir.components().count() <= WRITE_DEPTH).then(|| "it's too near the top of the disk".into())
@@ -2311,6 +2314,29 @@ pub(crate) mod tests {
             write_place(&home.join("data/new"), &home, &root, &later, &kept),
             Some(home.join("data/new"))
         );
+        // No checkout: nothing offered, nothing a grant kept from before opens — there's no project to tell a
+        // folder apart from
+        let none = Path::new("");
+        assert!(write_choices(&home.join("data/new/x.json"), &home, none, &later, &[]).is_empty());
+        assert_eq!(write_place(&home.join("data/new"), &home, none, &later, &[]), None);
+        assert_eq!(
+            write_refused_why(&home.join("data/new"), &home, none, &later, &[]).as_deref(),
+            Some("no project is open to judge it by")
+        );
+        // tarae's runs folder (#218), as the session's Caps have it: never offered, nor what holds it — each run's own
+        // folder is made there, where no run may write; a folder beside it still is
+        let runs = home.join(".cache/tarae/runs");
+        for d in [runs.join("9-0/3"), home.join(".cache/other")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let basis = crate::caps::Basis { root: root.clone(), home: Some(home.clone()), ..Default::default() };
+        let caps = basis
+            .build_in(Some(&home), &crate::sandbox::Here { judged_runs: Some(runs.clone()), ..here.clone() });
+        let offer = |t: &Path| write_choices(t, &home, &root, &caps.later, &caps.kept);
+        assert!(offer(&runs.join("9-0/3/x")).is_empty(), "{:?}", offer(&runs.join("9-0/3/x")));
+        let why = write_refused_why(&runs.join("9-0"), &home, &root, &caps.later, &caps.kept);
+        assert!(why.as_deref().is_some_and(|w| w.starts_with("it's in tarae's runs folder")), "{why:?}");
+        assert_eq!(offer(&home.join(".cache/other/x")).first(), Some(&home.join(".cache/other")));
     }
 
     /// A read refused at a folder (`space m s`) offers that folder first, then those above; named by `also`,

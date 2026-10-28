@@ -770,12 +770,19 @@ pub fn outside_said(o: &Outside, skipped: Option<&Skipped>) -> String {
         (n, Some(s)) => {
             let replaced: Vec<&PathBuf> = s.keys.iter().filter(|(_, r)| *r).map(|(k, _)| k).collect();
             let gone = s.keys.len() - replaced.len();
+            // (past what its record holds, the keys it left unlisted are among these: a most, never a count)
             let hidden = n.saturating_sub(s.keys.len());
-            let mut said = match hidden {
-                0 => String::new(),
-                h => format!(
+            let mut said = match (hidden, s.more) {
+                (0, _) => String::new(),
+                (h, false) => format!(
                     " {h} {} found before it started {places} {} hidden by mounts too.",
                     files(h),
+                    if h == 1 { "is" } else { "are" }
+                ),
+                (h, true) => format!(
+                    " Of the {} found before it started {places}, at most {h} {} hidden by mounts too: more weren't \
+                     hidden than its run could list, so one may stay readable — the next run's walk finds it.",
+                    files(2),
                     if h == 1 { "is" } else { "are" }
                 ),
             };
@@ -798,7 +805,7 @@ pub fn outside_said(o: &Outside, skipped: Option<&Skipped>) -> String {
                     if gone == 1 { "was" } else { "were" }
                 );
             }
-            if s.more {
+            if s.more && hidden == 0 {
                 said += " Past those, more weren't hidden than its run could list: one may stay readable — the next \
                          run's walk finds it.";
             }
@@ -3145,6 +3152,29 @@ mod tests {
         let said = outside_said(&Outside { unwalked, ..Default::default() }, None);
         assert!(said.contains("more than the 20,000 entries"), "{said}");
         std::fs::remove_dir_all(&t).ok();
+    }
+
+    /// D-i: a run's child that left more keys than its record lists (`Skipped.more`) has the keys it didn't list among
+    /// those the report would count as hidden — so the count is a most, said with why, never a flat number first;
+    /// with every key listed, a count.
+    #[test]
+    fn past_the_childs_record_the_hidden_keys_are_a_most() {
+        let covered: Vec<PathBuf> = (0..5).map(|i| PathBuf::from(format!("/tmp/k{i}/id_rsa"))).collect();
+        let o = Outside { covered: covered.clone(), ..Default::default() };
+        let left =
+            Skipped { keys: vec![(covered[0].clone(), false), (covered[1].clone(), true)], more: false };
+        let said = outside_said(&o, Some(&left));
+        assert!(
+            said.contains(" 3 files named like keys found before it started") && !said.contains("at most"),
+            "{said}"
+        );
+        let said = outside_said(&o, Some(&Skipped { more: true, ..left }));
+        assert!(
+            said.contains("at most 3 are hidden by mounts too: more weren't hidden than its run could list"),
+            "{said}"
+        );
+        assert!(!said.contains(" 3 files named like keys found"), "no flat count: {said}");
+        assert_eq!(said.matches("more weren't hidden").count(), 1, "said once: {said}");
     }
 
     /// D-i: the walk opens each folder beneath the folder it started at, through no link and on no other mount

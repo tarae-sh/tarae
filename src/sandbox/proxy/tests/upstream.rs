@@ -423,6 +423,163 @@ fn a_big_tunnel_goes_whole_through_the_bridge() {
     );
 }
 
+/// The burst `burst_inside` sends after the run's ClientHello: past what the bridge and the relay hold at once
+/// (64 KiB each) many times over, short of what the sockets between hold, so the upstream is done and closed
+/// before the run reads a byte — a pattern no shift can match.
+fn burst() -> Vec<u8> {
+    (0..384u32 << 10).map(|i| (i % 251) as u8).collect()
+}
+
+/// Inside: the CONNECT opened, the run's ClientHello read, then that hello back and `burst()`, its close_notify and
+/// the connection closed at once.
+fn burst_inside(t: &mut Tls) -> Vec<u8> {
+    let mut got = read_head(t);
+    let _ = t.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n");
+    let mut hello = vec![0u8; curl_hello().len()];
+    let _ = t.read_exact(&mut hello);
+    got.extend(&hello);
+    let _ = t.write_all(&[&hello[..], &burst()].concat());
+    t.conn.send_close_notify();
+    let _ = t.flush();
+    got
+}
+
+fn tls_burst(s: TcpStream) -> Vec<u8> {
+    over_tls(s, crate::web::fetch::tests::server_tls(), burst_inside)
+}
+
+/// An https:// upstream that sends far more than the bridge holds and closes at once has every byte reach the run,
+/// the last too: what rustls decrypted before the socket's end is still taken out after it. (The run reads only
+/// once the upstream is done, so the bridge meets the socket's end with its 64 KiB waiting and more in rustls.)
+#[test]
+fn an_https_upstreams_last_burst_reaches_the_run_whole() {
+    let upstream = outside(tls_burst);
+    let (resolve, _) = resolver(vec![("localhost", vec![vec![upstream.at]])]);
+    let f = start(resolve, limits());
+    let rules = rules_via(&["example.invalid"], via_https("localhost", upstream.at.port(), ("u", "p")));
+    let (mut c, _) = connection(&f.proxy, 1, 1, rules);
+    assert_eq!(ask(&mut c, &connect_head("example.invalid:443")), 200);
+    c.write_all(curl_hello()).unwrap();
+    // (the buffers between hold the burst: the upstream ends before the run reads — if one didn't, the run's
+    // reading lets it end, and the test still checks every byte)
+    let ended = upstream.got.recv_timeout(HOLD).is_ok();
+    let back = to_close(&mut c);
+    let want = [curl_hello(), &burst()].concat();
+    assert!(
+        back == want,
+        "{} of {} bytes back, the first wrong at {:?} (the upstream ended first: {ended})",
+        back.len(),
+        want.len(),
+        back.iter().zip(&want).position(|(a, b)| a != b)
+    );
+    assert!(ended, "the burst fit in the sockets between: the upstream ended before the run read");
+}
+
+/// Upstreams that answered and keep their connection open, silent — held here, so nothing of theirs closes it.
+static HELD: Mutex<Vec<Tls>> = Mutex::new(Vec::new());
+
+/// An https:// upstream that answers a plain request's first head with a 407 and keeps the connection open, as one
+/// waiting for the credentials it asked for does — never closing it, never sending more. What it gives back: its
+/// peer's address (the bridge's end).
+fn tls_asks_and_stays(s: TcpStream) -> Vec<u8> {
+    let peer = s.peer_addr().unwrap();
+    let _ = s.set_read_timeout(Some(WAIT));
+    let mut t = Tls::new(rustls::ServerConnection::new(crate::web::fetch::tests::server_tls()).unwrap(), s);
+    read_head(&mut t);
+    let _ = t.write_all(
+        b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"corp\"\r\n\
+          Content-Length: 0\r\n\r\n",
+    );
+    let _ = t.flush();
+    HELD.lock().unwrap_or_else(|e| e.into_inner()).push(t);
+    peer.to_string().into_bytes()
+}
+
+/// The bridge lives no longer than the relay it serves: once the relay is done (here: an upstream's 407 to a plain
+/// request, never passed on), the bridge's thread ends and its sockets close — an upstream that keeps its side open
+/// and silent doesn't hold them, as the relay's own life is its two sides' (srt ends a tunnel's one side with the
+/// other's close).
+#[test]
+fn the_bridge_ends_with_its_relay_whatever_the_upstream_keeps_open() {
+    let upstream = outside(tls_asks_and_stays);
+    let (resolve, _) = resolver(vec![("localhost", vec![vec![upstream.at]])]);
+    let f = start(resolve, limits());
+    let rules = rules_via(&["web.example.invalid"], via_https("localhost", upstream.at.port(), ("u", "p")));
+    let (mut c, d) = connection(&f.proxy, 1, 1, rules);
+    c.write_all(b"GET http://web.example.invalid/x HTTP/1.1\r\nHost: web.example.invalid\r\n\r\n").unwrap();
+    assert!(head_of(&mut c).starts_with("HTTP/1.1 502 "));
+    assert!(d.recv_timeout(WAIT).expect("said").target.contains("(407)"));
+    let peer: SocketAddr =
+        String::from_utf8(upstream.got.recv_timeout(WAIT).unwrap()).unwrap().parse().unwrap();
+    let ended = crate::sandbox::proxy::bridge::ended(peer);
+    HELD.lock().unwrap_or_else(|e| e.into_inner()).retain(|t| t.sock.peer_addr().ok() != Some(peer));
+    assert!(ended, "the bridge's thread outlived its relay");
+}
+
+/// An answer to CONNECT that ends exactly where one read of it does (4,096 bytes), then bytes of the upstream's own.
+fn edge_answer() -> Vec<u8> {
+    let (head, end) = (&b"HTTP/1.1 200 Connection established\r\nX-Pad: "[..], &b"\r\n\r\n"[..]);
+    [head, &vec![b'a'; 4096 - head.len() - end.len()], end, b"early"].concat()
+}
+
+/// The same with the bytes in the read the answer's end is in.
+const EARLY_ANSWER: &[u8] = b"HTTP/1.1 200 Connection established\r\n\r\nearly";
+
+fn early(s: TcpStream) -> Vec<u8> {
+    answering(s, EARLY_ANSWER)
+}
+
+fn edge(s: TcpStream) -> Vec<u8> {
+    answering(s, &edge_answer())
+}
+
+/// Inside: `answer` to the head, in one write (one record), then what comes to the end.
+fn answering_inside(t: &mut Tls, answer: &[u8]) -> Vec<u8> {
+    let mut got = read_head(t);
+    let _ = t.write_all(answer);
+    let _ = t.flush();
+    let mut rest = Vec::new();
+    let _ = t.read_to_end(&mut rest);
+    got.extend(rest);
+    got
+}
+
+fn tls_early(s: TcpStream) -> Vec<u8> {
+    over_tls(s, crate::web::fetch::tests::server_tls(), |t| answering_inside(t, EARLY_ANSWER))
+}
+
+fn tls_edge(s: TcpStream) -> Vec<u8> {
+    over_tls(s, crate::web::fetch::tests::server_tls(), |t| answering_inside(t, &edge_answer()))
+}
+
+/// What an upstream sends after its 2xx to a CONNECT never reaches the run ahead of the run's own first bytes: the
+/// tunnel is refused (502), said as the upstream's — whether the read that took the answer took them too, or the
+/// answer ended where that read did (4,096 bytes) and they were left behind it: on the socket (http://) or
+/// decrypted in rustls (https://).
+#[test]
+fn an_upstreams_bytes_after_its_2xx_are_refused() {
+    type Serve = fn(TcpStream) -> Vec<u8>;
+    let cases: [(Serve, bool, &str); 4] = [
+        (early, false, "in the answer's read"),
+        (edge, false, "past the answer's read"),
+        (tls_early, true, "in the answer's read, inside TLS"),
+        (tls_edge, true, "past the answer's read, inside TLS"),
+    ];
+    for (serve, tls, case) in cases {
+        let upstream = outside(serve);
+        let (resolve, _) = resolver(vec![("localhost", vec![vec![upstream.at]])]);
+        let f = start(resolve, limits());
+        let way =
+            if tls { via_https("localhost", upstream.at.port(), ("u", "p")) } else { via(upstream.at, None) };
+        let (mut c, d) = connection(&f.proxy, 1, 1, rules_via(&["example.invalid"], way));
+        c.write_all(connect_head("example.invalid:443").as_bytes()).unwrap();
+        let head = head_of(&mut c);
+        assert!(head.starts_with("HTTP/1.1 502 "), "{case}: {head}");
+        let denial = d.recv_timeout(WAIT).expect("said");
+        assert!(denial.target.contains("it sent bytes before the client's own"), "{case}: {}", denial.target);
+    }
+}
+
 /// What fails at an https:// upstream's TLS is said as the upstream's, in tarae's words — never the
 /// certificate's: one no CA of the system's issued, one for another name, a proxy that speaks no TLS, one that
 /// never answers the handshake; and a 407 inside the TLS is read as ever. The run gets 502.

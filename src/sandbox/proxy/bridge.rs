@@ -14,11 +14,12 @@ const CHUNK: usize = 16 * 1024;
 /// The most decrypted bytes waiting for the relay before the upstream isn't read any more.
 const PENDING_MAX: usize = 64 * 1024;
 
-/// The way out: a connection made, or the bridge's end.
+/// The way out: a connection made, or the bridge's end — with the writing end of a pipe the bridge watches, closed
+/// as the relay lets its end go (its life line: the pair alone can't tell a relay gone from one only half-closed).
 #[derive(Debug)]
 pub enum Out {
     Tcp(TcpStream),
-    Bridged(UnixStream),
+    Bridged(UnixStream, io::PipeWriter),
 }
 
 impl From<TcpStream> for Out {
@@ -31,14 +32,14 @@ impl Out {
     pub fn set_nonblocking(&self, on: bool) -> io::Result<()> {
         match self {
             Out::Tcp(s) => s.set_nonblocking(on),
-            Out::Bridged(s) => s.set_nonblocking(on),
+            Out::Bridged(s, _) => s.set_nonblocking(on),
         }
     }
 
     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
         match self {
             Out::Tcp(s) => s.shutdown(how),
-            Out::Bridged(s) => s.shutdown(how),
+            Out::Bridged(s, _) => s.shutdown(how),
         }
     }
 
@@ -47,7 +48,7 @@ impl Out {
         match self {
             Out::Tcp(s) => s.peek(b),
             // SAFETY: a socket of ours, a buffer of `b.len()` bytes.
-            Out::Bridged(s) => {
+            Out::Bridged(s, _) => {
                 match unsafe { libc::recv(s.as_raw_fd(), b.as_mut_ptr().cast(), b.len(), libc::MSG_PEEK) } {
                     n if n >= 0 => Ok(n as usize),
                     _ => Err(io::Error::last_os_error()),
@@ -61,7 +62,7 @@ impl AsRawFd for Out {
     fn as_raw_fd(&self) -> RawFd {
         match self {
             Out::Tcp(s) => s.as_raw_fd(),
-            Out::Bridged(s) => s.as_raw_fd(),
+            Out::Bridged(s, _) => s.as_raw_fd(),
         }
     }
 }
@@ -70,7 +71,7 @@ impl Read for &Out {
     fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
         match self {
             Out::Tcp(s) => (&*s).read(b),
-            Out::Bridged(s) => (&*s).read(b),
+            Out::Bridged(s, _) => (&*s).read(b),
         }
     }
 }
@@ -79,7 +80,7 @@ impl Write for &Out {
     fn write(&mut self, b: &[u8]) -> io::Result<usize> {
         match self {
             Out::Tcp(s) => (&*s).write(b),
-            Out::Bridged(s) => send(s.as_raw_fd(), b),
+            Out::Bridged(s, _) => send(s.as_raw_fd(), b),
         }
     }
 
@@ -127,23 +128,70 @@ fn pair() -> io::Result<(UnixStream, UnixStream)> {
 }
 
 /// The bridge for `conn` — TLS to the upstream on `tcp`, its handshake done — started: the relay's end returned,
-/// the thread holding the other until either side is done.
+/// the thread holding the other until both sides are done, or the relay has let its end go (as the relay itself
+/// lives only as long as its two sides, and srt's tunnel ends one side with the other's close).
 pub fn start(conn: rustls::ClientConnection, tcp: TcpStream) -> io::Result<Out> {
     let (relay, mine) = pair()?;
-    std::thread::Builder::new().name("tarae-proxy-tls".into()).spawn(move || run(conn, tcp, mine))?;
-    Ok(Out::Bridged(relay))
+    let (alive, line) = io::pipe()?;
+    std::thread::Builder::new().name("tarae-proxy-tls".into()).spawn(move || run(conn, tcp, mine, alive))?;
+    Ok(Out::Bridged(relay, line))
+}
+
+/// Tests: the upstream-side addresses (the bridge's own end) of the bridges whose thread still runs.
+#[cfg(test)]
+static LIVE: std::sync::Mutex<Vec<std::net::SocketAddr>> = std::sync::Mutex::new(Vec::new());
+
+/// Tests: one bridge's entry in `LIVE`, taken out as its thread ends.
+#[cfg(test)]
+struct Live(Option<std::net::SocketAddr>);
+
+#[cfg(test)]
+impl Live {
+    fn of(tcp: &TcpStream) -> Live {
+        let at = tcp.local_addr().ok();
+        if let Some(at) = at {
+            LIVE.lock().unwrap_or_else(|e| e.into_inner()).push(at);
+        }
+        Live(at)
+    }
+}
+
+#[cfg(test)]
+impl Drop for Live {
+    fn drop(&mut self) {
+        let mut live = LIVE.lock().unwrap_or_else(|e| e.into_inner());
+        live.retain(|a| Some(*a) != self.0);
+    }
+}
+
+/// Tests: whether the bridge whose upstream side is `at` (the upstream's peer) has ended, by `PATIENCE`.
+#[cfg(test)]
+pub fn ended(at: std::net::SocketAddr) -> bool {
+    let by = std::time::Instant::now() + crate::test_results::PATIENCE;
+    loop {
+        if !LIVE.lock().unwrap_or_else(|e| e.into_inner()).contains(&at) {
+            return true;
+        }
+        if std::time::Instant::now() > by {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 }
 
 /// The bridge's loop (`poll` on both): what the relay writes goes to the upstream encrypted, what the upstream
 /// sends to the relay decrypted. The relay's end closed → close_notify, then the upstream's writing shut down; the
-/// upstream's close_notify (or its end) → the relay's reading end shut down once what's decrypted is written.
+/// upstream's close_notify (or its end) → the relay's reading end shut down once what's decrypted — all of it, what
+/// rustls still holds too — is written. The relay gone (`alive` says its end, never written to) ends both: nobody
+/// reads what the upstream would still send, and an upstream that keeps its side open can't hold the thread.
 /// Anything else that fails ends both: the relay sees its side end. A record that doesn't decrypt is never passed on.
-fn run(mut conn: rustls::ClientConnection, tcp: TcpStream, pair: UnixStream) {
+fn run(mut conn: rustls::ClientConnection, tcp: TcpStream, pair: UnixStream, alive: io::PipeReader) {
     if tcp.set_nonblocking(true).is_err() || pair.set_nonblocking(true).is_err() {
         return;
     }
-    // (to the relay: decrypted, not yet written; the relay's end read to its end; the upstream's TLS ended)
-    let (mut out, mut relay_done, mut tls_done) = (Vec::new(), false, false);
+    // (to the relay: decrypted, not yet written; the relay's end read to its end; the upstream's socket read to
+    // its end; the upstream's TLS ended — once what rustls holds is taken out, after the socket's end)
+    let (mut out, mut relay_done, mut tcp_done, mut tls_done) = (Vec::new(), false, false, false);
     let (mut out_shut, mut tcp_shut) = (false, false);
     // hup[i]: that side hung up — left out of `poll` while it's neither read nor written to, so it can't spin the
     // loop (as the relay's)
@@ -153,9 +201,18 @@ fn run(mut conn: rustls::ClientConnection, tcp: TcpStream, pair: UnixStream) {
         let _ = tcp.shutdown(Shutdown::Both);
         let _ = pair.shutdown(Shutdown::Both);
     };
+    #[cfg(test)]
+    let _live = Live::of(&tcp);
     loop {
-        // (what's decrypted taken out of rustls, up to what the relay may wait for)
-        while !tls_done && out.len() < PENDING_MAX {
+        // (what's decrypted taken out of rustls, up to what the relay may wait for — `held`: rustls still holds
+        // some then, and the socket isn't read until it's out: a `read_tls` over it would pass rustls's own limit
+        // and fail, or meet the socket's end and lose it)
+        let mut held = false;
+        while !tls_done {
+            if out.len() >= PENDING_MAX {
+                held = true;
+                break;
+            }
             match conn.reader().read(&mut buf) {
                 Ok(0) => tls_done = true,
                 Ok(n) => out.extend_from_slice(&buf[..n]),
@@ -184,8 +241,12 @@ fn run(mut conn: rustls::ClientConnection, tcp: TcpStream, pair: UnixStream) {
         if out_shut && tcp_shut {
             return;
         }
+        // (the relay took some: what rustls holds goes next, before anything waits)
+        if held && out.len() < PENDING_MAX {
+            continue;
+        }
         let wants_tls_out = conn.wants_write();
-        let read_tcp = !tls_done && out.len() < PENDING_MAX;
+        let read_tcp = !tcp_done && !tls_done && !held && out.len() < PENDING_MAX;
         // (the relay's next bytes only once the last are on their way: rustls's buffer stays small)
         let read_relay = !relay_done && !wants_tls_out;
         let events = [
@@ -199,24 +260,27 @@ fn run(mut conn: rustls::ClientConnection, tcp: TcpStream, pair: UnixStream) {
         let mut fds = [
             libc::pollfd { fd: fd(0, tcp.as_raw_fd()), events: events[0], revents: 0 },
             libc::pollfd { fd: fd(1, pair.as_raw_fd()), events: events[1], revents: 0 },
+            libc::pollfd { fd: alive.as_raw_fd(), events: libc::POLLIN, revents: 0 },
         ];
-        // SAFETY: two pollfds of ours, their count.
-        if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } < 0 {
+        // SAFETY: three pollfds of ours, their count.
+        if unsafe { libc::poll(fds.as_mut_ptr(), 3, -1) } < 0 {
             if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
                 continue;
             }
             return end();
         }
-        if fds.iter().any(|f| f.revents & (libc::POLLERR | libc::POLLNVAL) != 0) {
+        // (nothing is ever written to the life line: anything there says the relay's end is gone)
+        if fds[2].revents != 0 || fds.iter().any(|f| f.revents & (libc::POLLERR | libc::POLLNVAL) != 0) {
             return end();
         }
-        for (h, f) in hup.iter_mut().zip(&fds) {
+        for (h, f) in hup.iter_mut().zip(&fds[..2]) {
             *h |= f.revents & libc::POLLHUP != 0;
         }
         let ready = libc::POLLIN | libc::POLLHUP;
         if read_tcp && fds[0].revents & ready != 0 {
             match conn.read_tls(&mut &tcp) {
-                Ok(0) => tls_done = true,
+                // (what rustls decrypted before it is still taken out, to its end: `tls_done` comes from there)
+                Ok(0) => tcp_done = true,
                 Ok(_) => {
                     if conn.process_new_packets().is_err() {
                         // (its alert sent if it can be, then nothing more either way)

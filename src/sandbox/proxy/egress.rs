@@ -269,12 +269,20 @@ pub fn reach(
                 let mut sock = &stream;
                 let mut inside = rustls::Stream::new(&mut conn, &mut sock);
                 tunnel_through(&mut inside, &stream, up, name, port, by, timeout).map_err(failed)?;
+                // (what the upstream sent after its 2xx that rustls decrypted and that one read didn't take)
+                if conn.process_new_packets().is_ok_and(|s| s.plaintext_bytes_to_read() > 0) {
+                    return Err(failed(Failed::Extra));
+                }
             }
             let _ = (stream.set_read_timeout(None), stream.set_write_timeout(None));
             bridge::start(conn, stream).map_err(|e| failed(Failed::Unreachable(e.kind().to_string())))?
         }
         Proto::Http if tunnel => {
             tunnel_through(&mut &stream, &stream, up, name, port, by, timeout).map_err(failed)?;
+            // (what came with its 2xx that one read didn't take — an answer that ended at the read's edge)
+            if waiting(&stream) {
+                return Err(failed(Failed::Extra));
+            }
             Out::Tcp(stream)
         }
         Proto::Http => Out::Tcp(stream),
@@ -284,6 +292,14 @@ pub fn reach(
         }
     };
     Ok(Reached { stream, through: Some(up.clone()) })
+}
+
+/// Bytes on `s` now, not taken — a look that doesn't wait.
+fn waiting(s: &TcpStream) -> bool {
+    let mut b = [0u8; 1];
+    let there = s.set_nonblocking(true).is_ok() && matches!(s.peek(&mut b), Ok(1..));
+    let _ = s.set_nonblocking(false);
+    there
 }
 
 /// TLS to an https:// upstream on `s`, its handshake done by `by` (srt's recipe): its name the server name — an

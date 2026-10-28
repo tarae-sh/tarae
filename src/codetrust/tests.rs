@@ -114,6 +114,44 @@ fn code_untrust_stops_them() {
     assert_eq!(ed.code_untrust().unwrap_err(), "this repository's code isn't trusted here");
 }
 
+/// In a repository the trust is the repository's, every server root in it alike: two cargo roots ask once, and
+/// `:code-untrust` from either takes it back from both — every root's servers that run its code stopped, its files
+/// waiting, not only the front file's root.
+#[test]
+fn code_untrust_takes_it_back_at_every_root_of_the_repository() {
+    let s = crate::scratch::Scratch::new("code-untrust-roots");
+    let (mut ed, dir) = setup(&s);
+    // (a repository of its own beside setup's crate, a crate in each of two folders — no `Cargo.toml` above them)
+    let repo = dir.join("repo");
+    std::fs::create_dir(&repo).unwrap();
+    let init = std::process::Command::new("git").args(["init", "-q"]).current_dir(&repo).status().unwrap();
+    assert!(init.success());
+    let (a, b) = (repo.join("a"), repo.join("b"));
+    for root in [&a, &b] {
+        std::fs::create_dir(root).unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"t\"\n").unwrap();
+    }
+    let (in_a, in_b) = (a.join("main.rs"), b.join("main.rs"));
+    ed.open(&in_a).unwrap();
+    assert!(until(&mut ed, |ed| card(ed).is_some()));
+    let crate::offer::What::CodeTrust { root } = card(&ed).unwrap().what.clone() else { unreachable!() };
+    assert_eq!(root, a, "each crate its own server root");
+    let id = card(&ed).unwrap().id;
+    ed.code_trust_answer(id, &a, true);
+    assert!(until(&mut ed, |ed| ed.trust_writing == 0), "kept");
+    ed.open(&in_b).unwrap();
+    assert!(until(&mut ed, |ed| has_server(ed, &in_b)), "the other root: the repository's answer, no card");
+    assert!(card(&ed).is_none());
+    ed.open(&in_a).unwrap();
+    assert!(has_server(&ed, &in_a));
+    ed.code_untrust().unwrap();
+    assert!(!has_server(&ed, &in_a), "the front file's root's server stopped");
+    assert!(!has_server(&ed, &in_b), "and the other root's: the trust it ran on is gone");
+    assert!(until(&mut ed, |ed| card(ed).is_some() && ed.trust_writing == 0), "asked again");
+    assert!(!has_server(&ed, &in_b), "still waiting, the store read anew");
+}
+
 /// In a git repository the answer is the repository's — the card says every checkout of it shares it.
 #[test]
 fn a_repositorys_card_says_its_checkouts_share_it() {

@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use crate::document::DocId;
 use crate::editor::Editor;
-use crate::trust::{Digest, Kind, State};
+use crate::trust::{Digest, Kind, Place, State};
 
 /// The place's name in `trust.json` and `:granted` — a repository's code, never a file of it.
 pub const FILE: &str = "(its code)";
@@ -26,9 +26,18 @@ fn hash() -> Digest {
     crate::trust::hash(&[("code".into(), "every server that runs it".into())])
 }
 
-/// Where a root's answer is kept: its repository's (every checkout's), else the root's own.
+/// The root's answer's name as a file, for what's said (`trust::Write`'s words).
 fn file(root: &Path) -> PathBuf {
     root.join(FILE)
+}
+
+/// Where a root's answer is kept (it reads the disk: a worker's): its repository's — one for every checkout and
+/// every server root in it, a second cargo or gradle root too —, else the root's own.
+fn place(root: &Path) -> Place {
+    match crate::trust::place_of(&file(root)) {
+        Place::Repo { common, .. } => Place::Repo { common, file: PathBuf::from(FILE) },
+        own => own,
+    }
 }
 
 /// A server root's trust, as read and answered.
@@ -37,8 +46,9 @@ pub struct Root {
     /// None while it's read.
     pub state: Option<State>,
     reading: bool,
-    /// Its answer is a repository's, every checkout's (read with it: where it's kept is found on the disk).
-    repo: bool,
+    /// Where its answer is kept, read with it (found on the disk) — a repository's, every checkout's and root's,
+    /// or its own.
+    place: Option<Place>,
     /// The files waiting for its servers.
     pub held: Vec<DocId>,
     /// The servers waiting (name, what of the project each runs — its pack's words).
@@ -70,10 +80,9 @@ impl Editor {
                 r.reading = true;
                 let (path, root) = (self.trust_path.clone(), root.to_path_buf());
                 self.events.jobs().spawn(move || {
-                    let state = crate::trust::Store::read(path.as_deref()).state(&file(&root), hash());
-                    let repo =
-                        matches!(crate::trust::place_of(&file(&root)), crate::trust::Place::Repo { .. });
-                    move |ed: &mut Editor| ed.code_trust_read(&root, state, repo)
+                    let place = place(&root);
+                    let state = crate::trust::Store::read(path.as_deref()).state_at(&place, hash());
+                    move |ed: &mut Editor| ed.code_trust_read(&root, state, place)
                 });
             }
             Some(State::Ask) if !r.asked => self.code_trust_card(root),
@@ -84,9 +93,9 @@ impl Editor {
 
     /// A root's answer read: trusted, its files get their servers; else asked — a no kept from before asks again
     /// too (`n` holds back until you quit only).
-    fn code_trust_read(&mut self, root: &Path, state: State, repo: bool) {
+    fn code_trust_read(&mut self, root: &Path, state: State, place: Place) {
         let Some(r) = self.code_trust.get_mut(root) else { return };
-        (r.reading, r.repo) = (false, repo);
+        (r.reading, r.place) = (false, Some(place));
         match state {
             State::Trusted => {
                 r.state = Some(State::Trusted);
@@ -103,7 +112,7 @@ impl Editor {
     fn code_trust_card(&mut self, root: &Path) {
         let Some(r) = self.code_trust.get_mut(root) else { return };
         r.asked = true;
-        let (servers, repo) = (r.servers.clone(), r.repo);
+        let (servers, repo) = (r.servers.clone(), matches!(r.place, Some(Place::Repo { .. })));
         let name =
             root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into());
         let mut q =
@@ -137,11 +146,12 @@ impl Editor {
             return self.set_status(format!("{} held back — :code-trust to look again", names.join(", ")));
         }
         r.state = Some(State::Trusted);
+        let place = r.place.clone();
         if let Some(path) = self.trust_path.clone() {
             let seen = crate::storewrite::seen_now(&path);
             let w = crate::trust::Write::Answer {
                 kind: Kind::Code,
-                place: None,
+                place,
                 file: file(root),
                 hash: hash(),
                 trusted: true,
@@ -190,26 +200,44 @@ impl Editor {
         Ok(())
     }
 
-    /// `:code-untrust` — the front file's root's trust taken back: its servers that run its code stop, and its
-    /// files wait for them again (asked at the next one).
+    /// `:code-untrust` — the front file's repository's trust taken back: the servers that run its code stop at every
+    /// root it holds (each checkout's, a second cargo or gradle root's), and their files wait for them again (asked
+    /// at the next one).
     pub fn code_untrust(&mut self) -> Result<(), String> {
         let path = self.doc().path.clone().ok_or("this buffer has no file")?;
-        let root = self
+        let (root, place) = self
             .code_trust
             .iter()
             .find(|(p, r)| path.starts_with(p) && r.state == Some(State::Trusted))
-            .map(|(p, _)| p.clone())
+            .map(|(p, r)| (p.clone(), r.place.clone()))
             .ok_or("this repository's code isn't trusted here")?;
-        let place = crate::trust::place_of(&file(&root));
+        // (read with its trust, so always there once trusted; worked out here only if it ever weren't)
+        let place = place.unwrap_or_else(|| self::place(&root));
         let given = self.trust_taking_given(place.clone());
         match self.trust_path.clone() {
             Some(store) => {
-                let w = crate::trust::Write::Forget { kind: Kind::Code, place, given };
+                let w = crate::trust::Write::Forget { kind: Kind::Code, place: place.clone(), given };
                 crate::trust::queue_said(self, store, vec![w], " — held back until you quit");
             }
             None => crate::trust::taken(&place, given),
         }
-        let stopped = self.code_servers_stop(&root);
+        let mut roots: Vec<PathBuf> = self
+            .code_trust
+            .iter()
+            .filter(|(_, r)| r.state == Some(State::Trusted) && r.place.as_ref() == Some(&place))
+            .map(|(p, _)| p.clone())
+            .collect();
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+        let mut stopped = Vec::new();
+        for root in roots {
+            for name in self.code_servers_stop(&root) {
+                if !stopped.contains(&name) {
+                    stopped.push(name);
+                }
+            }
+        }
         match stopped.is_empty() {
             true => self.set_status("Trust taken back — its servers wait for it at the next file"),
             false => self.set_status(format!("Trust taken back — {} stopped", stopped.join(", "))),

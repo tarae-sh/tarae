@@ -280,6 +280,8 @@ impl Editor {
         let sandboxed = self.config.llm.sandbox
             && !matches!(self.sandbox, Availability::Missing(_) | Availability::Bypass);
         let (llm, store) = (self.config.llm.clone(), self.allow_path.clone());
+        // (home as its runs' policies have it: their write grants judged as a run's are — `tools::guard_then_go`)
+        let basis = self.caps_basis();
         type Of = (PathBuf, Vec<PathBuf>, crate::allow::Allowed, crate::allow::Allowed);
         let chats: Vec<Of> = all()
             .map(|s| {
@@ -293,10 +295,12 @@ impl Editor {
                 return None;
             }
             let kept = crate::allow::Store::read(store.as_deref());
+            let (home, here) = (basis.home(), crate::sandbox::Here::now());
             let mut all = Vec::new();
             for (root, folders, session, chat) in &chats {
                 let project = kept.get(root);
-                let caps = crate::caps::Caps::granted(root, &project, session, chat);
+                let caps =
+                    crate::caps::Caps::granted(root, &project, session, chat).judging(home.clone(), &here);
                 let w = crate::tools::with_allowed(&llm, &caps, None);
                 // (its folders are its runs' write places too — but the asking workspace's: `writes_beside`)
                 all.extend(crate::sandbox::write_places(root, &w.llm, folders));

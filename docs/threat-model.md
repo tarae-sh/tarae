@@ -282,7 +282,7 @@ Kept:
   hidden, that the run's panel lets runs use that file only and that once the user removes it the next run's walk
   finds it gone (`sandbox::hidden_keys_said`); one gone or replaced by another file between the walk and the run's
   mount is skipped, which the run's child says before its exec — the report names a replaced one as readable and
-  counts the gone ones (`linux::outside_said`); tiers host and offline
+  counts the gone ones, the hidden ones a most past what the child's record holds (`linux::outside_said`); tiers host and offline
   close them in the project only (Landlock only grants). Claude's Read goes by the rule as designed there too.
   Inside those places a toolchain's own files read: an install the packs name (pyenv's, conda's, rbenv's, asdf's and mise's installs) and what's below an install's
   packages as its layout has them (`lib/python3*/site-packages`, `lib/ruby/gems`, `lib/ruby/3.*` — never a bare

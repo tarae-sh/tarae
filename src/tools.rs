@@ -3451,6 +3451,12 @@ impl Widened {
     }
 }
 
+/// What a run's policy is made from of the session's `Caps`: its answers, with home and what judges a write grant
+/// again (`Basis::granted_judged`) — a kept one the card's rule refuses today stays closed. A worker's.
+pub(crate) fn run_caps(basis: &crate::caps::Basis, here: &crate::sandbox::Here) -> crate::caps::Caps {
+    basis.granted_judged(here)
+}
+
 /// The settings a run's policy is made from with the session's answers added (`caps`: kept for the project,
 /// this conversation's) and `once` — and what no setting has: the sockets, the places to read.
 pub fn with_allowed(
@@ -3468,16 +3474,32 @@ pub fn with_allowed(
         }
         g => vec![g.clone()],
     });
+    // (the folders the user's own `llm.sandbox-write` opens, real: the way past the card's rule)
+    let by_hand: Vec<PathBuf> = llm
+        .sandbox_write
+        .iter()
+        .filter_map(|e| match (e.strip_prefix("~/"), &caps.home) {
+            (Some(rest), Some(h)) => Some(h.join(rest)),
+            _ => Some(PathBuf::from(e)).filter(|e| e.is_absolute()),
+        })
+        .map(|e| crate::paths::real(&e).unwrap_or(e))
+        .collect();
     for g in caps.run_grants(llm.sandbox_network).into_iter().chain(once) {
         // (a write grant judged again by the rule the card offers folders by today: one kept from before that rule
-        // refused it, or from before the user's PATH or a toolchain moved, stays closed — said)
-        if let (Grant::Write(p), Some(home)) = (&g, &caps.home)
-            && let Some(why) = crate::allow::write_refused_why(p, home, &caps.root, &caps.later, &caps.kept)
-        {
-            if !w.refused_write.iter().any(|(r, _)| r == p) {
-                w.refused_write.push((p.clone(), why));
+        // refused it, or from before the user's PATH or a toolchain moved, stays closed — said, unless the user's
+        // own setting opens it anyway; with no home known it can't be judged, and stays closed)
+        if let Grant::Write(p) = &g {
+            let why = match &caps.home {
+                Some(home) => crate::allow::write_refused_why(p, home, &caps.root, &caps.later, &caps.kept),
+                None => Some("no home folder is known to judge it by".into()),
+            };
+            if let Some(why) = why {
+                let open = by_hand.iter().any(|e| p.starts_with(e));
+                if !open && !w.refused_write.iter().any(|(r, _)| r == p) {
+                    w.refused_write.push((p.clone(), why));
+                }
+                continue;
             }
-            continue;
         }
         match &g {
             Grant::Read(p) if !w.reads.contains(p) => w.reads.push(p.clone()),
@@ -3919,7 +3941,8 @@ pub(crate) fn guard_then_go(ed: &mut Editor, who: For, job: Job, ride: Ride) {
         };
         let mut told = (Vec::new(), None);
         let policy = matches!(found, Availability::Ready | Availability::Partial(_)).then(|| {
-            let mut w = with_allowed(&llm, &basis.granted(), grant.as_ref());
+            let here = here();
+            let mut w = with_allowed(&llm, &run_caps(&basis, &here), grant.as_ref());
             // (the workspace's folders — not on a commit's tree: that tree alone is the run's project)
             if base.is_none() {
                 w.folders = basis.folders.clone();
@@ -3930,7 +3953,6 @@ pub(crate) fn guard_then_go(ed: &mut Editor, who: For, job: Job, ride: Ride) {
                     w.hosts.push(h.clone());
                 }
             }
-            let here = here();
             let mut p = crate::sandbox::policy_from(&root, w, &here)?;
             p.cwd = run_folder(&job_run, base.as_deref(), &workspace_root, &p);
             // (settings holding a token that take no copy — cargo's: the user hears once — `tokens::tell_holders`)
@@ -5953,26 +5975,32 @@ mod tests {
         use crate::allow::{Allowed, Grant};
         let kept = Allowed {
             read: vec!["/r/kept".into()],
-            write: vec!["/w/kept".into()],
+            write: vec!["/w/x/kept".into()],
             ports: vec![5432],
             ..Default::default()
         };
-        let chat = Allowed { write: vec!["/w/chat".into()], ports: vec![5432], ..Default::default() };
+        let chat = Allowed { write: vec!["/w/x/chat".into()], ports: vec![5432], ..Default::default() };
         let base = crate::llm::LlmConfig::default();
+        // (a home and a checkout: what a write grant is judged by again — these two open)
+        let caps = |c: crate::caps::Caps| crate::caps::Caps {
+            home: Some("/h/u".into()),
+            root: "/h/u/work/p".into(),
+            ..c
+        };
         let w = super::with_allowed(
             &base,
-            &crate::caps::Caps::answered(&[&kept, &chat]),
+            &caps(crate::caps::Caps::answered(&[&kept, &chat])),
             Some(&Grant::Port(3000)),
         );
-        assert_eq!(w.llm.sandbox_write, ["/w/kept", "/w/chat"]);
+        assert_eq!(w.llm.sandbox_write, ["/w/x/kept", "/w/x/chat"]);
         assert_eq!(w.llm.sandbox_ports, [5432, 5432, 3000], "(the policy keeps each port once)");
         assert_eq!(
             w.granted,
             [
                 "read /r/kept and everything in it",
-                "write in /w/kept and everything in it",
+                "write in /w/x/kept and everything in it",
                 "connect to port 5432 on this machine",
-                "write in /w/chat and everything in it",
+                "write in /w/x/chat and everything in it",
                 "connect to port 3000 on this machine"
             ]
         );
@@ -9641,6 +9669,8 @@ mod tests {
         let behind = ed.workspaces.iter_mut().find(|s| s.root == back).expect("the session behind");
         behind.claude.allowed.write.push(back_w.clone());
         ed.sandbox_here = Some(std::sync::Arc::new(crate::sandbox::Here::default));
+        // (a home of its own: the grants are judged as a run's are, never by where the test's temp folder is)
+        ed.caps_home = Some(dir.join("home"));
         let here = super::run_here(&ed)();
         for w in [&back, &back_w, &kept_w] {
             let named = here.others_write.iter().any(|o| o == w);
