@@ -135,6 +135,9 @@ pub fn rows_of(msgs: &[Msg]) -> Vec<Value> {
             if let Some(from) = &m.from {
                 v["from"] = json!(from);
             }
+            if let Some(conversation) = &m.from_conversation {
+                v["from_conversation"] = json!(conversation);
+            }
             if let Some(l) = &m.look {
                 v["look"] = json!({
                     "verb": l.verb, "what": l.what, "pattern": l.pattern, "range": l.range,
@@ -192,6 +195,7 @@ pub fn msgs_of(rows: &[Value]) -> Vec<Msg> {
             };
             let mut m = Msg::new(role, s("text"), s("chip"));
             m.from = r["from"].as_str().map(str::to_string);
+            m.from_conversation = r["from_conversation"].as_str().map(str::to_string);
             if role == Role::Tool {
                 let l = &r["look"];
                 let verb = VERBS.into_iter().find(|v| l["verb"] == *v).unwrap_or("use");

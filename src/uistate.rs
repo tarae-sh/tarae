@@ -1040,6 +1040,9 @@ pub struct SessionState {
     /// What its Claude is doing now, as the status line says it (`now::state`: `step`, `waits`, `since_ms`, `said`,
     /// `plan`) — the front session's turn only, its JSON's `turn.now`. Claude's level never (it's Claude's own).
     pub now: Option<Value>,
+    /// The session whose Claude started it (orchestra, `Session.parent`): its id — None: one of its own. Claude's level:
+    /// its own children's only.
+    pub parent: Option<String>,
 }
 
 impl UiState {
@@ -1666,6 +1669,7 @@ impl Editor {
             writing: crate::writing::listed(l.claude.chat.as_ref(), &self.docs),
             at: crate::presence::at(self, l.id),
             now: is_front.then(|| crate::now::state(self, l)).flatten(),
+            parent: l.claude.parent.map(session_id),
         };
         let workspace = |l: &crate::workspace::Workspace, is_front: bool| WorkspaceState {
             id: workspace_id(l.id),
@@ -1929,6 +1933,9 @@ impl UiState {
             }
             if let Some(now) = &s.now {
                 v["turn"] = json!({ "now": now });
+            }
+            if let Some(p) = &s.parent {
+                v["parent"] = json!(p);
             }
             if let Some(k) = &s.key_source {
                 v["key_source_seen"] = json!(k);
@@ -2337,6 +2344,26 @@ impl ChatTurn {
     }
 }
 
+/// One turn as its chat shows it (`ChatTurn`'s rows) — `msgs` from its message up to the next one's: tool rows as the
+/// chat draws them, the answer as written. A child's report is the last `assistant` row of a turn its parent started
+/// (`orchestra::report`).
+pub fn turn_rows(msgs: &[crate::chat::Msg]) -> Vec<(&'static str, String)> {
+    use crate::chat::Role;
+    msgs.iter()
+        .map(|m| match m.role {
+            Role::User => ("user", m.text.clone()),
+            Role::Assistant => ("assistant", m.text.clone()),
+            Role::Thought => ("thought", m.text.clone()),
+            Role::Note => ("note", m.text.clone()),
+            Role::Tool => {
+                let row = m.look.as_ref().map(|k| format!("◦ {}  {}  {}", k.verb, k.what, k.range));
+                let row = [row.unwrap_or_default().trim_end(), m.text.trim()].join(" ");
+                ("tool", row.trim().to_string())
+            }
+        })
+        .collect()
+}
+
 impl Editor {
     /// `which` session's last turn (`ChatTurn`): by id (`s1`) or name, empty for the one in front. Err names
     /// the sessions there are.
@@ -2345,25 +2372,11 @@ impl Editor {
         let l = self.asked_session(which)?;
         let msgs = l.claude.chat.as_ref().map_or(&[][..], |c| &c.msgs[..]);
         let from = msgs.iter().rposition(|m| m.role == Role::User).unwrap_or(msgs.len());
-        let rows = msgs[from..]
-            .iter()
-            .map(|m| match m.role {
-                Role::User => ("user", m.text.clone()),
-                Role::Assistant => ("assistant", m.text.clone()),
-                Role::Thought => ("thought", m.text.clone()),
-                Role::Note => ("note", m.text.clone()),
-                Role::Tool => {
-                    let row = m.look.as_ref().map(|k| format!("◦ {}  {}  {}", k.verb, k.what, k.range));
-                    let row = [row.unwrap_or_default().trim_end(), m.text.trim()].join(" ");
-                    ("tool", row.trim().to_string())
-                }
-            })
-            .collect();
         Ok(ChatTurn {
             session: session_id(l.claude.id),
             name: l.label().to_string(),
             doing: self.doing_said(l),
-            rows,
+            rows: turn_rows(&msgs[from..]),
         })
     }
 

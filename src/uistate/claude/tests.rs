@@ -174,6 +174,120 @@ fn claudes_level_holds_back_unsent_text_and_other_sessions() {
     assert!(s.panels.chat.as_ref().is_some_and(|c| c.draft.is_empty()));
 }
 
+/// Claude's level widened for a parent's own children only (orchestra §3): four sessions — main (the parent), its child
+/// c1, other (the user's) and other's child c2 — each with a marker in its draft, a message of the user's queued, a
+/// card's title and text, the reply to a turn the user started, a toast, a note, its reviewer's verdict and its branch;
+/// c1 and c2 a reply to a turn their parent started too. main's level — the `ui` tool's text and JSON, the context's
+/// line — and its `sessions` answers, all and each by name, hold none of them but c1's report (in `sessions` only) and
+/// c1's branch; whose a session is, only for c1; `session_send` to other or c2 is the answer to a name no session has.
+#[test]
+fn a_parents_level_holds_nothing_of_a_session_it_didnt_start() {
+    use crate::chat::{Msg, Role};
+    let mut ed = editor();
+    ed.workspace.name = "main".into();
+    chat(&mut ed, "");
+    ed.workspace.claude.chat.as_mut().unwrap().session_tools = true;
+    let dir = crate::scratch::Scratch::new("parents-level");
+    let main = ed.workspace.claude.id;
+    let c1 = behind(&mut ed, "c1", dir.join("c1"));
+    let other = behind(&mut ed, "other", dir.join("other"));
+    let c2 = behind(&mut ed, "c2", dir.join("c2"));
+    let other_session = ed.workspace_by_id(other).unwrap().claude.id;
+    let all = [
+        (c1, "c1", Some((main, "main"))),
+        (other, "other", None),
+        (c2, "c2", Some((other_session, "other"))),
+    ];
+    for (id, name, parent) in all {
+        ed.offer_seq += 1;
+        let what = What::ReviewEnd { session: id, started: std::time::Instant::now() };
+        let mut card =
+            Offer::new(format!("{name}-card-title"), &format!("{name}-card-text"), "", String::new(), what);
+        card.id = ed.offer_seq;
+        let l = ed.workspace_by_id(id).unwrap();
+        l.branch = Some(format!("{name}-branch"));
+        l.claude.parent = parent.map(|p| p.0);
+        l.parked.push(card);
+        let root = l.root.clone();
+        l.reviewer = Some(crate::reviewer::Reviewer::for_test(
+            root,
+            crate::reviewer::State::Done,
+            Vec::new(),
+            &format!("{name}-verdict"),
+        ));
+        let mut c = crate::chat::Chat::new();
+        c.input = format!("{name}-draft").as_str().into();
+        c.queued = Some(format!("{name}-queued"));
+        if let Some((_, from)) = parent {
+            let mut brief = Msg::new(Role::User, "a brief", "");
+            brief.from = Some(from.into());
+            c.msgs.push(brief);
+            c.msgs.push(Msg::new(Role::Assistant, format!("{name}-parent-report"), ""));
+        }
+        c.msgs.push(Msg::new(Role::User, "a question", ""));
+        c.msgs.push(Msg::new(Role::Assistant, format!("{name}-user-reply"), ""));
+        l.claude.chat = Some(c);
+        let file = dir.join(format!("{name}.txt"));
+        std::fs::write(&file, "one\n").unwrap();
+        ed.with_workspace(id, |ed| {
+            ed.set_warning(format!("{name}-toast"));
+            crate::notes::add(ed, &file, 0..1, crate::notes::By::Author, &format!("{name}-note"));
+        });
+    }
+    frame(&mut ed);
+    // (the full level has them — the filter is what keeps them out)
+    let full = format!("{}\n{}", ed.ui_state().text(), ed.ui_state().json());
+    assert!(full.contains("c2-card-title") && full.contains("other-branch"), "{full}");
+    assert!(ed.chat_turn("c2").unwrap().text().contains("c2-user-reply"));
+    let s = ed.ui_state_claude();
+    let level = format!("{}\n{}", s.text_claude(false), s.json());
+    let context = s.context_line().map(|l| l.0).unwrap_or_default();
+    let mut answers = Vec::new();
+    for args in
+        [json!({}), json!({ "session": "c1" }), json!({ "session": "other" }), json!({ "session": "c2" })]
+    {
+        answers.push(crate::orchestra::sessions(&ed, &args).unwrap_or_else(|e| e));
+    }
+    let said = answers.join("\n");
+    for name in ["c1", "other", "c2"] {
+        for what in ["draft", "queued", "card-title", "card-text", "user-reply", "toast", "note", "verdict"] {
+            let marker = format!("{name}-{what}");
+            for (at, text) in [("level", &level), ("context", &context), ("sessions", &said)] {
+                assert!(!text.contains(&marker), "{marker} in main's {at}:\n{text}");
+            }
+        }
+    }
+    for held in ["c2-parent-report", "other-branch", "c2-branch"] {
+        assert!(
+            !level.contains(held) && !context.contains(held) && !said.contains(held),
+            "{held}:\n{level}\n{said}"
+        );
+    }
+    assert!(
+        said.contains("c1-parent-report") && !level.contains("c1-parent-report"),
+        "c1's report, in sessions:\n{said}"
+    );
+    assert!(level.contains("c1-branch"), "its own child's branch:\n{level}");
+    assert_eq!(answers[2], crate::orchestra::NOT_YOURS);
+    assert_eq!(answers[3], crate::orchestra::NOT_YOURS);
+    // (whose a session is: its own child's only)
+    let parents: Vec<String> = (s.workspaces.iter())
+        .flat_map(|w| &w.sessions)
+        .filter_map(|l| l.parent.as_ref().map(|p| format!("{} {p}", l.id)))
+        .collect();
+    let c1_session = super::super::session_id(ed.workspace_by_id(c1).unwrap().claude.id);
+    assert_eq!(parents, [format!("{c1_session} {}", super::super::session_id(main))]);
+    assert!(s.text_claude(false).contains("c1 (you started it)"), "{}", s.text_claude(false));
+    // `session_send` to other or c2: the answer to a name no session has
+    let generation = ed.workspace.claude.chat.as_ref().unwrap().generation();
+    for (n, to) in [(1, "other"), (2, "c2"), (3, "nobody")] {
+        let msg = json!({ "jsonrpc": "2.0", "id": n, "method": "tools/call",
+            "params": { "name": "session_send", "arguments": { "session": to, "message": "m" } } });
+        let r = crate::tools::mcp(&mut ed, generation, "r", &msg).expect("answered at once");
+        assert_eq!(r["result"]["content"][0]["text"], crate::orchestra::NOT_YOURS, "{to}");
+    }
+}
+
 /// The context's `ui:` line: nothing up but the code and the chat, no line; a card, a toast, a run under
 /// way — each by id, and the ids are what went to Claude.
 #[test]

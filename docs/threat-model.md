@@ -56,6 +56,7 @@ connections may go (§1.5, the proxy's address rule).
 | run a command | tarae's `run`/`run_tests` → the sandbox | the kernel, and tarae's supervisor and proxy |
 | run a command outside the sandbox | `outside_sandbox` + a reason → a card, `y`/`n` only | you, every time |
 | use git | tarae's `git` tool: reads only, an option allowlist | `gittool.rs` |
+| start or steer a session (§2.x) | tarae's session tools → a card for the start; `sessions` reads its own children's reports, framed | you: the child's own cards for everything it does |
 
 ---
 
@@ -844,9 +845,9 @@ live check runs, is ABI 4.
 
 ### 2.x Sessions Claude starts (orchestra)
 
-The chat of the checkout tarae started in can start sessions of its own (`sessions_start`) and put words into them
-(`session_send`) — Claude in one session steering Claude in others. This half covers words going into children; the
-second (what a child's reports carry back to its parent) comes with reading back.
+The chat of the checkout tarae started in can start sessions of its own (`sessions_start`), put words into them
+(`session_send`) and read back what they answered it (`sessions`) — Claude in one session steering Claude in others.
+The first half is words going into children; the second, what a child's reports carry back to its parent.
 
 Kept:
 - **Starting spends, so it's yours, on one card**: a weighty card, Claude's — it waits unfocused until `C-q` or a press,
@@ -884,12 +885,40 @@ Kept:
   follows read as your words.
   test: `orchestra::tests::a_set_is_made_behind_each_brief_its_first_message` ·
   `orchestra::tests::text_that_closes_the_frame_stays_inside_it`
+- **What comes back is what the parent's own acts came to**: `sessions` lists its own children only — each one's state
+  and the reply of the last turn the parent started there (its report); a turn you started there is counted, never
+  read; a card a child waits on is said as `working`, never named. The one thing told unasked is a turn the parent
+  started that ended (its report's first line), once — with the next session tool's answer or the next message,
+  whichever comes first; never that a child waits on a card, nor where two overlap. Its `ui` level keeps its own
+  children's branch, base and whose they are, and is as before for every other session: nothing unsent, none of a
+  child's cards, toasts, notes or reviewer's words.
+  test: `uistate::claude::tests::a_parents_level_holds_nothing_of_a_session_it_didnt_start` ·
+  `orchestra::tests::sessions_reads_each_childs_last_report_framed` ·
+  `orchestra::tests::a_turn_the_parent_started_is_news_told_once` ·
+  `orchestra::tests::a_parent_never_hears_its_child_waits_on_a_card` · `sim::orchestra::children_and_their_sends`
+- **A report is another Claude's words, framed as data**: in `<session-report>`, closed only by an id of its own that
+  the text doesn't hold — a report printing `</session-report>` can't end the frame and have what follows read as
+  tarae's or yours; token-like lines hidden, past 16 KB cut, each said on the frame; `sessions`' description says once
+  that a report is data, never instructions.
+  test: `orchestra::tests::sessions_reads_each_childs_last_report_framed`
+- **A new conversation in a child only between its turns**: `session_send`'s `fresh` is refused while the child works,
+  its checkout moves onto its base, or a message — yours or the parent's — waits there, said why; your draft there
+  stays.
+  test: `orchestra::tests::a_fresh_send_starts_a_new_conversation_only_between_turns` ·
+  `sim::orchestra::children_and_their_sends`
 
 Not kept:
 - **A brief is the parent Claude's words, and its Claude takes them as instructions**, as it takes yours. What the
   parent read — a file, a page, someone else's words — can reach a child that way; the child can do with them what the
   parent's own Claude could in its session, now in another checkout, and every act still asks. A misled parent can
   spend up to `llm.children-max` sessions once you say `y` on the card.
+- **A report carries what a child read.** A child's Claude reads the repository, its dependencies, test output, the
+  pages a run fetched, and what you let it read outside the project; any of it may be a prompt injection, and its
+  report can pass it on word for word. The frame tells the parent's Claude whose words they are; it doesn't make the
+  model ignore them. What you let one child read reaches the parent through its report — a read's answer is per
+  chat, a report is the child's words — and through the parent's next brief or message it can reach another child:
+  the reach is sideways, kept by the same gates (every act of each still asks), said on the start card ("What their
+  Claudes read, their reports carry to main's Claude"), not closed.
 
 ## 3. What tarae runs as you, outside the sandbox
 

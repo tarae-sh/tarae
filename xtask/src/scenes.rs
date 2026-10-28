@@ -800,6 +800,195 @@ const SESSION_SET_CHILD: &[&str] = &[
     "@?main's Claude",
     "@1",
 ];
+/// orchestra P1b (`orchestra-list`): a session of yours (fix) opened, then main's Claude starts three — knot-count's turn
+/// ends (done), thread-docs asks for a run (▲ waits), spool-clones writes (working) — and main's chat open with the
+/// session list over it: the children right after main, each with a faint `›`, fix after them; the chat's top line
+/// the same order.
+const ORCHESTRA_LIST: &[&str] = &[
+    "@1",
+    ":",
+    "sh git worktree add -q ../fix",
+    "\r",
+    "@3",
+    ":",
+    "workspace-open ../fix",
+    "\r",
+    "@3",
+    ":",
+    "workspace-switch 0",
+    "\r",
+    "@2",
+    " ",
+    "l",
+    "@1",
+    "split the work",
+    "\r",
+    "@?Start ",
+    "\x11",
+    "@1",
+    "y",
+    "@20?Started all",
+    "@20?▲1 waiting",
+    "@3",
+    "\x1b",
+    " ",
+    "W",
+    "@2",
+];
+/// orchestra P1b's parent (`orchestra-parent`, `-long`): main starts knot-count, its brief's turn ends — news for main —
+/// then you ask main how it goes: the news told with your message (its `told Claude: …` row), main's `sessions` row, its
+/// answer.
+const ORCHESTRA_PARENT: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "split the work",
+    "\r",
+    "@?Start ",
+    "\x11",
+    "@1",
+    "y",
+    "@20?Started",
+    "@20?turn ended",
+    "@1",
+    "how is it going",
+    "\r",
+    "@20?its change next",
+    "@2",
+];
+/// …the mouse on the `told Claude` row's `…` (`orchestra-parent-hover`).
+const ORCHESTRA_PARENT_HOVER: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "split the work",
+    "\r",
+    "@?Start ",
+    "\x11",
+    "@1",
+    "y",
+    "@20?Started",
+    "@20?turn ended",
+    "@1",
+    "how is it going",
+    "\r",
+    "@20?its change next",
+    "@1",
+    "@hover?told Claude",
+    "@1",
+];
+/// …then `start it over`: main's `send anew` row (`orchestra-fresh-parent`).
+const ORCHESTRA_FRESH_PARENT: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "split the work",
+    "\r",
+    "@?Start ",
+    "\x11",
+    "@1",
+    "y",
+    "@20?Started",
+    "@20?turn ended",
+    "@1",
+    "how is it going",
+    "\r",
+    "@20?its change next",
+    "@1",
+    "start it over",
+    "\r",
+    "@20?brief.",
+    "@2",
+];
+/// …the mouse on its row's `…` (`orchestra-fresh-parent-hover`).
+const ORCHESTRA_FRESH_PARENT_HOVER: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "split the work",
+    "\r",
+    "@?Start ",
+    "\x11",
+    "@1",
+    "y",
+    "@20?Started",
+    "@20?turn ended",
+    "@1",
+    "how is it going",
+    "\r",
+    "@20?its change next",
+    "@1",
+    "start it over",
+    "\r",
+    "@20?brief.",
+    "@1",
+    "@hover?anew:",
+    "@1",
+];
+/// …and into knot-count (`orchestra-fresh`): its new conversation, said whose, main's message its first, its answer.
+const ORCHESTRA_FRESH: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "split the work",
+    "\r",
+    "@?Start ",
+    "\x11",
+    "@1",
+    "y",
+    "@20?Started",
+    "@20?turn ended",
+    "@1",
+    "how is it going",
+    "\r",
+    "@20?its change next",
+    "@1",
+    "start it over",
+    "\r",
+    "@20?brief.",
+    "@1",
+    "\x1b",
+    " ",
+    "W",
+    "@1",
+    "2",
+    "@10?a new conversation",
+    "@10?Each thread",
+    "@2",
+];
+/// …the chat's top line alone, the list closed (`orchestra-strip`).
+const ORCHESTRA_STRIP: &[&str] = &[
+    "@1",
+    ":",
+    "sh git worktree add -q ../fix",
+    "\r",
+    "@3",
+    ":",
+    "workspace-open ../fix",
+    "\r",
+    "@3",
+    ":",
+    "workspace-switch 0",
+    "\r",
+    "@2",
+    " ",
+    "l",
+    "@1",
+    "split the work",
+    "\r",
+    "@?Start ",
+    "\x11",
+    "@1",
+    "y",
+    "@20?Started all",
+    "@20?▲1 waiting",
+    "@3",
+];
 /// …and as it comes, waiting (`sessionset-waits`).
 const SESSION_SET_WAITS: &[&str] =
     &["@1", " ", "l", "@1", "split the work", "\r", "@?Start ", "\x17", "h", "@1", " ", "l", "@2"];
@@ -2932,6 +3121,59 @@ const SCENES: &[Scene] = &[
         files: MAIN,
         keys: SESSION_SET_CHILD,
     },
+    // (orchestra P1b: three children of main's after it in the list and on the chat's top line, a faint `›` each; fix,
+    // a session of yours, after them)
+    Scene {
+        name: "orchestra-list",
+        claude: "main=startgo3,knot-count=childcount,thread-docs=card,spool-clones=writemid",
+        files: MAIN,
+        keys: ORCHESTRA_LIST,
+    },
+    Scene {
+        name: "orchestra-strip",
+        claude: "main=startgo3,knot-count=childcount,thread-docs=card,spool-clones=writemid",
+        files: MAIN,
+        keys: ORCHESTRA_STRIP,
+    },
+    // (orchestra P1b, the plan's `orchestraparent`: the parent's chat after news and a `sessions` call — a short report's
+    // head, a long one's; its fresh send; the child's new conversation)
+    Scene {
+        name: "orchestra-parent",
+        claude: "main=parent,knot-count=childcount",
+        files: MAIN,
+        keys: ORCHESTRA_PARENT,
+    },
+    Scene {
+        name: "orchestra-parent-long",
+        claude: "main=parent,knot-count=childlong",
+        files: MAIN,
+        keys: ORCHESTRA_PARENT,
+    },
+    Scene {
+        name: "orchestra-fresh-parent",
+        claude: "main=parent,knot-count=childcount",
+        files: MAIN,
+        keys: ORCHESTRA_FRESH_PARENT,
+    },
+    Scene {
+        name: "orchestra-fresh",
+        claude: "main=parent,knot-count=childcount",
+        files: MAIN,
+        keys: ORCHESTRA_FRESH,
+    },
+    // (…the mouse on each new row's `…`)
+    Scene {
+        name: "orchestra-parent-hover",
+        claude: "main=parent,knot-count=childcount",
+        files: MAIN,
+        keys: ORCHESTRA_PARENT_HOVER,
+    },
+    Scene {
+        name: "orchestra-fresh-parent-hover",
+        claude: "main=parent,knot-count=childcount",
+        files: MAIN,
+        keys: ORCHESTRA_FRESH_PARENT_HOVER,
+    },
     // (…the follow card framed, one session: named `follow`, the turn's time at its line's right)
     // (overlays A1: the demo's keycast row in the asks' corner — alone, and gone while Claude's ask stands there)
     Scene { name: "overlay-keys", claude: "idle", files: MAIN, keys: OVERLAY_KEYS },
@@ -3628,8 +3870,11 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "readlast" => turn.read_last()?,
             "cuthand" => turn.cut_hand()?,
             "startone" | "startthree" | "startlong" => turn.sessions_start(&script[5..])?,
-            "startgo" => turn.sessions_started()?,
+            "startgo" => turn.sessions_started(false)?,
+            "startgo3" => turn.sessions_started(true)?,
             "childcount" => turn.child_count(&line)?,
+            "childlong" => turn.child_long(&line)?,
+            "parent" => turn.parent(&line)?,
             _ => {}
         }
     }
@@ -3719,12 +3964,23 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.lines.by_ref().try_for_each(|l| l.map(drop))
     }
 
-    /// `sessionset-child`'s main: one session asked for, then — the set made — its turn's end.
-    fn sessions_started(&mut self) -> io::Result<()> {
+    /// `sessionset-child`'s main: one session asked for (`three`: `orchestra-*`'s three), then — the set made — its
+    /// turn's end.
+    fn sessions_started(&mut self, three: bool) -> io::Result<()> {
         self.words("The count is a piece of its own, so it can go in a session beside us.")?;
         self.text("\n")?;
-        self.call(1, "sessions_start", json!({"sessions": {"knot-count": COUNT_BRIEF}, "base": "main"}))?;
-        self.words("Started **knot-count**; I'll keep to the map here.")?;
+        let sessions = match three {
+            true => json!({"knot-count": COUNT_BRIEF,
+                "thread-docs": "Write a one-line doc comment for every public item in src/thread.rs.",
+                "spool-clones": "Make filling the map in src/main.rs clone each thread's name once, not twice."}),
+            false => json!({"knot-count": COUNT_BRIEF}),
+        };
+        self.call(1, "sessions_start", json!({"sessions": sessions, "base": "main"}))?;
+        self.words(if three {
+            "Started all three; I'll keep to the map here."
+        } else {
+            "Started **knot-count**; I'll keep to the map here."
+        })?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 
@@ -3740,6 +3996,48 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.words("Each thread keeps its knots in a list, so the count is its length. I'll sort by it, most-knotted first, \
             and add the order's test in **src/thread.rs**.")?;
         self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// `orchestra-parent-long`'s child: main's brief answered with a reply whose first line runs past a news item's head
+    /// (100 characters) and a few lines after it.
+    fn child_long(&mut self, line: &str) -> io::Result<()> {
+        if !line.contains("from-session") {
+            return self.child_count(line);
+        }
+        self.words(
+            "Done: the threads now print most-knotted first, ties kept in their names' order, and a test in \
+            src/thread.rs pins the order of three threads with the same count.",
+        )?;
+        self.text("\n\n")?;
+        self.words(
+            "The count is each thread's knot list's length, so nothing new is kept. cargo test passes.",
+        )?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// orchestra P1b's parent (`orchestra-parent`, `-fresh`): main starts knot-count (`split the work`), reads its sessions
+    /// once you ask how it goes, and starts it over in a new conversation once you say so.
+    fn parent(&mut self, line: &str) -> io::Result<()> {
+        if line.contains("how is it going") {
+            self.words("Reading what knot-count reported.")?;
+            self.text("\n\n")?;
+            self.call(1, "sessions", json!({}))?;
+            self.words("knot-count is done: threads print most-knotted first, ties by name, with a test for the order. \
+                I'll look at its change next.")?;
+            return self.line(json!({"type": "result", "result": "done"}));
+        }
+        if line.contains("start it over") {
+            let message =
+                "Start over, narrower: only the sort in src/main.rs, most-knotted first. No test yet.";
+            self.call(
+                1,
+                "session_send",
+                json!({"session": "knot-count", "message": message, "fresh": true}),
+            )?;
+            self.words("Started knot-count over in a new conversation, with the narrower brief.")?;
+            return self.line(json!({"type": "result", "result": "done"}));
+        }
+        self.sessions_started(false)
     }
 
     /// #157's scenes: a read of `src/wide.rs`'s last five lines (as many as the file in the folder it runs in has), then

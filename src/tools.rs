@@ -148,15 +148,21 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
                     Ok(()) => return None,
                     Err(e) => Err(e),
                 },
-                // (only a chat that lists them — a child's has no such tools)
-                Some(name @ ("sessions_start" | "session_send")) if crate::orchestra::lists(ed) => {
+                // (only a chat that lists them — a child's has no such tools; an answer now carries the parent's news,
+                // one later gets it as it's delivered)
+                Some(name @ ("sessions_start" | "session_send" | "sessions"))
+                    if crate::orchestra::lists(ed) =>
+                {
                     let asked = match name {
-                        "sessions_start" => crate::orchestra::start(ed, call(), args),
-                        _ => crate::orchestra::send(ed, call(), args),
+                        "sessions_start" => crate::orchestra::start(ed, call(), args).map(|()| None),
+                        "session_send" => crate::orchestra::send(ed, call(), args).map(|()| None),
+                        _ => crate::orchestra::sessions(ed, args).map(Some),
                     };
+                    let mut news = || crate::orchestra::news_for_answer(ed, name);
                     match asked {
-                        Ok(()) => return None,
-                        Err(e) => Err(e),
+                        Ok(None) => return None,
+                        Ok(Some(text)) => Ok(text + &news()),
+                        Err(e) => Err(e + &news()),
                     }
                 }
                 Some(
@@ -231,7 +237,11 @@ pub fn list(parent: bool) -> Value {
         crate::edittool::schema(),
     ];
     if parent {
-        tools.extend([crate::orchestra::start_schema(), crate::orchestra::send_schema()]);
+        tools.extend([
+            crate::orchestra::start_schema(),
+            crate::orchestra::send_schema(),
+            crate::orchestra::sessions_schema(),
+        ]);
     }
     json!({ "tools": tools.into_iter().map(annotated).collect::<Vec<_>>() })
 }
@@ -257,6 +267,7 @@ pub(crate) fn annotated(mut schema: Value) -> Value {
         "git" => ("Read the repository", Some("readOnlyHint")),
         "sessions_start" => ("Start sessions", None),
         "session_send" => ("Message a session", None),
+        "sessions" => ("Your sessions", Some("readOnlyHint")),
         _ => return schema,
     };
     let mut a = json!({ "title": title });
@@ -423,6 +434,18 @@ fn deliver(ed: &mut Editor, call: Call, r: Result<Vec<Part>, String>) {
             crate::ask::respond(ed, &call.request_id, json!({ "mcp_response": response }));
         }
         Some(session) if session == ed.workspace.id => {
+            // (a session tool's answer: the parent's news after it, told once — `orchestra::News`)
+            let news = crate::orchestra::news_for_answer(ed, &call.tool);
+            let r = match news.is_empty() {
+                true => r,
+                false => match r {
+                    Ok(mut parts) => {
+                        parts.push(Part::Text(news));
+                        Ok(parts)
+                    }
+                    Err(e) => Err(e + &news),
+                },
+            };
             ed.workspace.claude.tool_waits.retain(|w| !w.is(call.generation, &call.id));
             let (len, pictures) = r.as_ref().map_or_else(|e| (e.len(), 0), |p| (parts_len(p), pictures(p)));
             sized(ed, &call.tool, len, call.output, pictures);

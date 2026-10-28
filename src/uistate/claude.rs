@@ -99,9 +99,18 @@ impl Editor {
                 l.now = None;
             }
         }
+        // (its own children — the sessions its Claude started, orchestra — keep what it may act on: their branch and
+        // base, and whose they are. Every other session is as before: a count, whose it is not said. Their reports
+        // are `sessions`', framed as another Claude's words; nothing unsent, nothing of their cards, beyond the rest)
+        let mine = |w: &super::WorkspaceState| w.sessions.iter().any(|l| l.parent.as_ref() == Some(&own));
         for w in s.workspaces.iter_mut().filter(|w| w.id != own_workspace) {
-            w.branch = None;
-            w.base = None;
+            if !mine(w) {
+                w.branch = None;
+                w.base = None;
+                for l in w.sessions.iter_mut() {
+                    l.parent = None;
+                }
+            }
             w.root.clear();
             w.folders.clear();
             w.rebasing = None;
@@ -201,6 +210,7 @@ impl UiState {
             out.push(self.mode_line());
         }
         if self.workspaces.len() > 1 {
+            let me = own.and_then(|w| w.sessions.first()).map(|s| s.id.clone());
             let s: Vec<String> = self
                 .workspaces
                 .iter()
@@ -208,6 +218,7 @@ impl UiState {
                 .map(|(w, s)| {
                     let whose = match (w.id == self.front, w.front && !behind) {
                         (true, _) => " (yours)",
+                        _ if s.parent.is_some() && s.parent == me => " (you started it)",
                         (false, true) => " (in front)",
                         _ => "",
                     };

@@ -120,6 +120,8 @@ pub struct Row {
     pub colour: u8,
     /// The session in front — its name bold, as the strip's.
     pub front: bool,
+    /// Started by another session's Claude: right after its parent, `CHILD` before its name, faint.
+    pub child: bool,
     pub cells: Vec<(Col, Vec<Part>)>,
 }
 
@@ -225,7 +227,19 @@ pub fn row(l: &crate::worktree::Shown) -> Row {
     );
     let usage = l.usage.map(|(cpu, bytes)| format!("{cpu:>3.0}%  {:>6}", crate::procs::mem(bytes)));
     put(Col::Usage, one(usage.unwrap_or_default(), Ink::Faint));
-    Row { id: l.id, name: l.name.clone(), colour: l.colour, front: l.front, cells }
+    Row { id: l.id, name: l.name.clone(), colour: l.colour, front: l.front, child: l.child, cells }
+}
+
+/// Before a child's name, faint, in the list (orchestra N6): it follows its parent. The chat's top line joins a child to
+/// its parent or a sibling by `›` instead (`term::MEMBERS_SEP`), and writes this only before one whose parent went into
+/// `+N`.
+pub const CHILD: &str = "› ";
+
+impl Row {
+    /// Its name's cells, a child's `CHILD` with it.
+    pub fn name_width(&self) -> usize {
+        self.name.width() + if self.child { CHILD.width() } else { 0 }
+    }
 }
 
 /// The columns shown in a pane whose rows are `room` cells wide (the name's column first, then each shown column
@@ -233,7 +247,7 @@ pub fn row(l: &crate::worktree::Shown) -> Row {
 /// in `FOLDS`' order — the report cut to `REPORT_MIN` first once only it and what folds after it are left.
 pub fn lay(rows: &[Row], room: usize) -> (usize, Vec<(Col, usize)>) {
     let width = |c: Col| rows.iter().map(|r| r.text(c).width()).max().unwrap_or(0);
-    let name_w = rows.iter().map(|r| r.name.width()).max().unwrap_or(0).min(room);
+    let name_w = rows.iter().map(Row::name_width).max().unwrap_or(0).min(room);
     let all: Vec<(Col, usize)> = (COLS.iter().map(|&c| (c, width(c))))
         .map(|(c, w)| (c, if c == Col::Report { w.min(REPORT_MAX) } else { w }))
         .filter(|c| c.1 > 0)

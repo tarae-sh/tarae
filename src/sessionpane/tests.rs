@@ -8,6 +8,7 @@ fn full(id: WorkspaceId, name: &str, doing: Doing) -> Shown {
     Shown {
         id,
         name: name.into(),
+        child: false,
         branch: Some(format!("{name}-branch")),
         facts: Some(Facts { ahead: 2, behind: 3, changed: 4 }),
         doing,
@@ -439,6 +440,52 @@ fn a_card_waits_while_the_session_list_has_the_keys() {
     frame(&mut ed, 160, 40);
     assert!(ed.sessions_list_keys() && ed.card_has_keys(), "yours: its keys");
     assert_eq!(ed.keys_to().waiting, None);
+}
+
+/// orchestra N6: a session another one's Claude started comes right after its parent — fix, yours and opened before them,
+/// after main's children, its own child after it — a faint `›` before its name; `j`/`k` and the digits go by that
+/// order, the one drawn.
+#[test]
+fn a_child_follows_its_parent_in_the_list() {
+    let dir = crate::scratch::Scratch::new("sessionchildren");
+    let mut ed = Editor::new(crate::config::Config::default());
+    (ed.workspace.root, ed.workspace.name) = (dir.to_path_buf(), "main".into());
+    let main = ed.workspace.claude.id;
+    let add = |ed: &mut Editor, name: &str, parent| {
+        let id = ed.workspace_add(dir.join(name));
+        let l = ed.workspace_by_id(id).unwrap();
+        (l.name, l.claude.parent) = (name.into(), parent);
+        l.claude.id
+    };
+    let fix = add(&mut ed, "fix", None);
+    add(&mut ed, "one", Some(main));
+    add(&mut ed, "two", Some(main));
+    add(&mut ed, "mend", Some(fix));
+    let order = ["main", "one", "two", "fix", "mend"];
+    let rows = ed.sessions_rows();
+    let named: Vec<(&str, bool)> = rows.iter().map(|r| (r.name.as_str(), r.child)).collect();
+    assert_eq!(named, [("main", false), ("one", true), ("two", true), ("fix", false), ("mend", true)]);
+    feed(&mut ed, " W");
+    let s = frame(&mut ed, 160, 40);
+    let drawn: Vec<&str> = (s.lines())
+        .filter_map(|l| order.iter().find(|n| l.contains(&format!(" {n} ")) && l.contains('│')).copied())
+        .collect();
+    assert_eq!(drawn, order, "drawn in that order:\n{s}");
+    assert!(s.lines().any(|l| l.contains("› one ")) && !s.contains("› fix"), "{s}");
+    let at = |ed: &Editor| {
+        let id = ed.sessions_here().unwrap();
+        ed.sessions_in_order().iter().find(|l| l.id == id).unwrap().name.clone()
+    };
+    let mut walked = vec![at(&ed)];
+    for _ in 1..order.len() {
+        feed(&mut ed, "j");
+        walked.push(at(&ed));
+    }
+    assert_eq!(walked, order, "j goes by it");
+    feed(&mut ed, "kk");
+    assert_eq!(at(&ed), "two", "k too");
+    feed(&mut ed, "4");
+    assert_eq!(ed.workspace.name, "fix", "4: the fourth row drawn");
 }
 
 /// The list is searched with `/` as every pane is (user, 2026-10-23), never type-to-narrow: its own prompt, the

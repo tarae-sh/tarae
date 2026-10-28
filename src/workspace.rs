@@ -2585,6 +2585,7 @@ mod tests {
         let shown = |doing| crate::worktree::Shown {
             id,
             name: "back".into(),
+            child: false,
             branch: None,
             facts: None,
             doing,

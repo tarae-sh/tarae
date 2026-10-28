@@ -522,6 +522,71 @@ fn the_queued_line_is_whole_in_the_transcript_and_in_hand() {
     assert_eq!(transcript_text(&ed), text, "the same words, folded or not");
 }
 
+/// A parent chat's `told Claude: …` row (orchestra P1b) is one row cut at its end, as a tool row is — never wrapped over
+/// rows of its own —, its words whole in the transcript and on its card under the mouse.
+#[test]
+fn a_told_row_is_one_row_whole_on_its_card() {
+    let told = format!(
+        "{}knot-count's turn ended — “Each thread keeps its knots in a list, so the count is its length. I'll sort \
+         by it, most-knotted first, and say goodbye”",
+        crate::orchestra::TOLD
+    );
+    let mut ed = chat(vec![
+        Msg::new(Role::User, "split the work", ""),
+        Msg::new(Role::Note, told.as_str(), ""),
+        Msg::new(Role::Assistant, "Started.", ""),
+    ]);
+    let screen = frame(&mut ed);
+    assert_eq!(rows_of(&ed, Of::Msg(1)), 1, "one row:\n{screen}");
+    assert!(!screen.contains("goodbye"), "cut:\n{screen}");
+    assert!(
+        screen.lines().any(|l| l.contains("· told Claude: knot-count") && l.trim_end().ends_with('…')),
+        "its `…` at its end:\n{screen}"
+    );
+    let text = transcript_text(&ed);
+    assert!(text.contains(&format!("{told}\n")), "the transcript's line is whole:\n{text}");
+    let (y, x, ..) = cut_text(&ed, "goodbye").expect("recorded as cut");
+    ed.handle_event(Event::Hover(x as u16, y as u16));
+    let screen = frame(&mut ed);
+    assert!(screen.contains("goodbye"), "whole in hand:\n{screen}");
+    assert_eq!(rows_of(&ed, Of::Msg(1)), 1, "never unfolds");
+    assert_eq!(transcript_text(&ed), text, "the same words, folded or not");
+}
+
+/// A `told Claude` row draws a reply's inline markdown as an answer does — `**src/thread.rs**` bold, `` `count()` `` code,
+/// no markers — on the row and on its card alike; the transcript keeps that text whole.
+#[test]
+fn a_told_rows_markdown_is_drawn_not_its_markers() {
+    let told = format!(
+        "{}k's turn ended — “**src/thread.rs** sorts by `count()`, most-knotted first, ties by name, and says goodbye”",
+        crate::orchestra::TOLD
+    );
+    let mut ed = chat(vec![
+        Msg::new(Role::User, "split the work", ""),
+        Msg::new(Role::Note, told.as_str(), ""),
+        Msg::new(Role::Assistant, "Started.", ""),
+    ]);
+    let screen = frame(&mut ed);
+    let row = screen.lines().find(|l| l.contains("· told Claude")).expect("its row");
+    assert!(row.contains("“src/thread.rs") && !screen.contains("**"), "no markers:\n{screen}");
+    let laid = ed.screen.chat_laid.borrow().iter().find(|(o, _)| *o == Of::Msg(1)).map(|(_, r)| r[0].clone());
+    let bold = laid.expect("laid").spans.iter().any(|s| s.text == "src/thread.rs" && s.style.bold);
+    assert!(bold, "its bold drawn");
+    let plain = "k's turn ended — “src/thread.rs sorts by count(), most-knotted first, ties by name, and says goodbye”";
+    let text = transcript_text(&ed);
+    assert!(text.contains(&format!("told Claude: {plain}\n")), "the transcript's line, whole:\n{text}");
+    let (y, x, _, whole) = cut_text(&ed, "goodbye").expect("recorded as cut");
+    let styled = |word: &str| whole.pieces.iter().find(|(r, _)| &whole.text[r.clone()] == word).map(|p| p.1);
+    assert!(styled("src/thread.rs").is_some_and(|s| s.bold), "bold on its card: {:?}", whole.pieces);
+    assert!(styled("count()").is_some(), "code its own piece: {:?}", whole.pieces);
+    ed.handle_event(Event::Hover(x as u16, y as u16));
+    let screen = frame(&mut ed);
+    assert!(
+        screen.contains("goodbye") && !screen.contains("**") && !screen.contains('`'),
+        "its card:\n{screen}"
+    );
+}
+
 /// The run card stays inside the slot's columns: on a narrow, short screen, past its cap, its last row (`K`) fitted —
 /// nothing printed past the edge wraps onto the line under it; a slot with no room for a card shows none.
 #[test]

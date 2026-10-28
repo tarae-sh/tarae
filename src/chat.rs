@@ -122,12 +122,12 @@ const TOOLS: &str = "";
 /// edits do, in the review — `refactor.rs`, and `edit` too — `edittool.rs`; none of them reads or changes a file
 /// named like a key before Claude was let read it — `reads::Keys`; `ui` the screen's structure at Claude's level
 /// — `uistate/claude.rs`; `git` only git's reads, on the guarded path — `gittool.rs`; `sessions_start` asks on its
-/// own card, `session_send` reaches only the chat's own children, and only a parent's chat lists them —
+/// own card, `session_send` and `sessions` reach only the chat's own children, and only a parent's chat lists them —
 /// `orchestra.rs`)
 const ALLOWED: &str = "mcp__tarae__note,mcp__tarae__run_tests,mcp__tarae__run,mcp__tarae__plan,\
 mcp__tarae__references,mcp__tarae__search,mcp__tarae__read,mcp__tarae__symbols,mcp__tarae__definition,\
 mcp__tarae__diagnostics,mcp__tarae__rename,mcp__tarae__replace,mcp__tarae__ui,mcp__tarae__edit,mcp__tarae__git,\
-mcp__tarae__sessions_start,mcp__tarae__session_send";
+mcp__tarae__sessions_start,mcp__tarae__session_send,mcp__tarae__sessions";
 
 /// Settings laid over the user's and the project's when they're loaded (`llm.chat-settings`) — with what the
 /// project's own aren't trusted for held back (`claudetrust.rs`). `Skill` denied: a project skill's
@@ -305,6 +305,10 @@ pub struct Msg {
     /// A message another session's Claude sent (`orchestra.rs` — its parent's): that session's name. Drawn as its,
     /// headed `main's Claude`, never in your message's style.
     pub from: Option<String>,
+    /// With `from`: the conversation of that session's chat it was sent from (claude's id for it, `Chat.conversation`)
+    /// — what this turn comes to is that conversation's news and report, never another's (`orchestra::turn_ended`,
+    /// `report`).
+    pub from_conversation: Option<String>,
     /// Goes up with every change to what it shows (`changed`) — a word replaced, a row's verdict — so its rows
     /// are laid out again, even when the text's length stays.
     version: u64,
@@ -406,6 +410,7 @@ impl Msg {
             ran: None,
             stamps: Vec::new(),
             from: None,
+            from_conversation: None,
             version: 0,
             cache: RefCell::new(None),
         }
@@ -1506,11 +1511,18 @@ pub fn close(ed: &mut Editor) {
 /// New chat — fresh process (drops memory of the previous conversation): `C-l` in the chat, `:chat-new`
 /// (the chat opened first if it's closed — and the recent conversation not continued when it's read).
 pub fn reset(ed: &mut Editor) {
+    reset_said(ed, "New conversation with Claude");
+}
+
+/// `reset`, its toast `said` — whose the new conversation was where it isn't yours (orchestra's fresh send).
+pub fn reset_said(ed: &mut Editor, said: &str) {
     // (a pane's key has its document lent: the view mode it ends can't let go of it yet — once it's back)
-    if crate::docpane::later(ed, reset) {
+    let again = said.to_string();
+    if crate::docpane::later(ed, move |ed| reset_said(ed, &again)) {
         return;
     }
-    let said = "New conversation with Claude";
+    // (what the last conversation's acts as a parent came to goes with it: never told to this one — `orchestra::News`)
+    ed.workspace.claude.news.clear();
     // (the hosts this conversation's `a` let through go with it — the proxy keeps them as the session's, right
     // while a session has one conversation at a time)
     crate::hosts::chat_ended(ed);
@@ -1674,6 +1686,12 @@ pub(crate) fn stand_in_own(c: &mut Chat) -> std::sync::mpsc::Receiver<String> {
     stand_in(c)
 }
 
+/// Tests: the conversation the next process resumes (`Chat.resume`) — one claude may no longer have.
+#[cfg(test)]
+pub(crate) fn resuming(c: &mut Chat, id: &str) {
+    c.resume = Some(id.to_string());
+}
+
 /// The turn over — a stand-in claude's (a simulation's step): what was queued goes, as at a real turn's end.
 #[cfg(test)]
 pub(crate) fn stand_in_done(ed: &mut Editor) {
@@ -1714,6 +1732,8 @@ fn ensure_proc(ed: &mut Editor) {
     // (a simulation's stand-in: no process — its lines kept, its turns the scenario's)
     #[cfg(test)]
     if let Some(tx) = ed.claude_lines.clone() {
+        // (a generation of its own, as a real process's: a call's answer reaches the chat that asked, wherever it is)
+        c.generation = crate::tools::generation();
         c.proc = Some(Proc { stdin: llm::Lines::to(tx), pid: 0 });
         c.session_tools = parent;
         return;
@@ -2113,6 +2133,8 @@ fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             let ok = r.is_ok();
             // (refused by the plan, in Claude Code's own words — `limits::of_words`)
             let refused = r.as_ref().err().and_then(|e| crate::limits::of_words(e));
+            // (a parent's news, once its reply is in — below)
+            let ended = how.clone();
             // A session behind: its tab says `done` until it's looked at (#86), and a toast says it once
             // (`with_workspace`). In front with the chat out of sight past the turn: said here
             if ed.background() {
@@ -2139,6 +2161,11 @@ fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                     }
                 }
             }
+            // A turn its parent started: news for the parent — here, where every turn's end passes, in front or behind,
+            // its reply in and before what's queued starts the next (`with_workspace`'s read of `turn_end` sees only a
+            // session behind, and by then a queued message may have made the last turn another's)
+            let stop = if stopped { crate::orchestra::Stop::ByUser } else { crate::orchestra::Stop::No };
+            crate::orchestra::turn_ended(ed, &ended, stop);
             // (a key held back: the card asks whether Claude takes it)
             if login_hint.is_some() {
                 crate::envkey::ask(ed);
@@ -2217,6 +2244,16 @@ fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 let unanswered = unanswered.filter(|_| !gone);
                 // (its quotes go again with it — they were taken off the input when it went)
                 let (mut over, mut lost, mut dropped) = (0, 0, false);
+                // (the new conversation never heard the parent's line saying whose a message is: it goes again)
+                c.framed = false;
+                // (a parent's message goes again as its: framed, its conversation's news and report — first of what
+                // waits besides a message, after one of the user's queued there, as every parent's message goes)
+                let parents = unanswered.filter(|&at| c.msgs[at].from.is_some()).map(|at| c.msgs.remove(at));
+                let unanswered = unanswered.filter(|_| parents.is_none());
+                if let Some(m) = parents {
+                    let (from, conversation) = (m.from.unwrap_or_default(), m.from_conversation);
+                    c.sends.insert(0, Later::Parent { from, conversation, text: m.text });
+                }
                 if let Some(at) = unanswered {
                     let m = c.msgs.remove(at);
                     (over, lost) = crate::quote::put_back(c, m.quotes, m.screen);
@@ -2267,6 +2304,7 @@ fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 }
                 return ensure_proc(ed);
             }
+            let mut cut_off = None;
             if c.state != State::Idle {
                 c.state = State::Idle;
                 for id in std::mem::take(&mut ed.workspace.claude.notes.turn) {
@@ -2279,13 +2317,23 @@ fn on_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 } else {
                     format!("claude exited: {err}")
                 };
-                // (stopped for the project's settings: said already, and it starts again below)
-                if !c.settings.again {
-                    c.msgs.push(Msg::new(Role::Note, e, ""));
-                }
+                // (stopped for the project's settings: said already, and it starts again below — its parent told so,
+                // never "claude exited")
+                let stop = match c.settings.again {
+                    true => crate::orchestra::Stop::ForSettings,
+                    false => {
+                        c.msgs.push(Msg::new(Role::Note, e.clone(), ""));
+                        crate::orchestra::Stop::No
+                    }
+                };
+                cut_off = Some((e, stop));
             }
             if let Some(hint) = &login_hint {
                 c.note(hint);
+            }
+            // (a turn its parent started, cut off: the parent's news as `Done`'s)
+            if let Some((e, stop)) = cut_off {
+                crate::orchestra::turn_ended(ed, &Err(e), stop);
             }
             // (a turn cut off: what its requests reported, no cost)
             ed.workspace.claude.usage.cut_off(crate::usage::now_ms());
@@ -2538,12 +2586,12 @@ pub(crate) fn send_queued(ed: &mut Editor) {
         match later {
             Later::Review(lines) => crate::codereview::send_as(ed, lines),
             Later::Reply { id, text, fresh, why } => crate::notes::send(ed, id, &text, fresh, why, None),
-            Later::Parent { from, text } => {
-                if !submit_from(ed, &from, &text)
+            Later::Parent { from, conversation, text } => {
+                if !submit_from(ed, &from, conversation.as_deref(), &text)
                     && let Some(c) = ed.workspace.claude.chat.as_mut()
                 {
                     // (it couldn't go — its claude ended: it waits again, first, for the next start)
-                    c.sends.insert(0, Later::Parent { from, text });
+                    c.sends.insert(0, Later::Parent { from, conversation, text });
                     return;
                 }
             }
@@ -2591,9 +2639,10 @@ pub enum Later {
     Review(Option<bool>),
     /// A reply on note `id` (`notes::send`'s).
     Reply { id: u64, text: String, fresh: bool, why: Option<String> },
-    /// A message from its parent session's Claude (`orchestra.rs`, `session_send`): `from` its name. It goes after a
-    /// message of the user's queued before it — the person first.
-    Parent { from: String, text: String },
+    /// A message from its parent session's Claude (`orchestra.rs`, `session_send`): `from` its name, `conversation` the
+    /// one of its chat it came from (`Msg.from_conversation`). It goes after a message of the user's queued before it —
+    /// the person first.
+    Parent { from: String, conversation: Option<String>, text: String },
 }
 
 /// The turn ended refused for money: the message queued during it stays queued, said — it goes once the
@@ -2700,8 +2749,17 @@ pub fn submit(ed: &mut Editor, question: &str, about: Option<String>, chip: Opti
 /// A message from the session `from`'s Claude — this one's parent (`orchestra.rs`) — as the next turn: in
 /// `<from-session>`, the line saying who it's from before it the first time in a conversation; its row headed
 /// `from's Claude`. False if it couldn't go (busy, no process).
-pub fn submit_from(ed: &mut Editor, from: &str, text: &str) -> bool {
-    submit_as(ed, text, None, None, false, Some(from))
+pub fn submit_from(ed: &mut Editor, from: &str, conversation: Option<&str>, text: &str) -> bool {
+    if !submit_as(ed, text, None, None, false, Some(from)) {
+        return false;
+    }
+    // (the message just pushed: which of the parent's conversations it came from)
+    if let Some(m) =
+        ed.workspace.claude.chat.as_mut().and_then(|c| c.msgs.iter_mut().rfind(|m| m.role == Role::User))
+    {
+        m.from_conversation = conversation.map(str::to_string);
+    }
+    true
 }
 
 /// `text` sent as it is, a turn of its own — no editor context: a slash command is read only at a message's start
@@ -2827,14 +2885,27 @@ fn submit_as(
             format!("{context}\n{}", blocks.join("\n"))
         }
     };
+    // (what its own acts as a parent came to — a turn it started in a child ended: told once, with this message or the
+    // next session tool's answer, whichever comes first — `orchestra::News`)
+    let news = crate::orchestra::news_for_message(ed);
     let session = ed.workspace.log();
     let Some(c) = &mut ed.workspace.claude.chat else { return false };
-    let Some(p) = &mut c.proc else { return false };
+    let Some(p) = &mut c.proc else {
+        if let Some((_, _, kept)) = news {
+            ed.workspace.claude.news = kept;
+        }
+        return false;
+    };
     // What happened to its edits since (a turn undone): Claude's memory still has them
     let told = std::mem::take(&mut ed.workspace.claude.checkpoints.tell);
-    let context = match told.is_empty() {
+    let noted: Vec<&str> = told
+        .iter()
+        .map(String::as_str)
+        .chain(news.iter().flat_map(|n| n.0.iter().map(String::as_str)))
+        .collect();
+    let context = match noted.is_empty() {
         true => context,
-        false => format!("{context}\n<editor-note>\n{}\n</editor-note>", told.join("\n")),
+        false => format!("{context}\n<editor-note>\n{}\n</editor-note>", noted.join("\n")),
     };
     // The screen the user attached (`C-s`): as they saw it, characters only
     // (the input's message only, as its quotes and points: a note's reply or the review's notes leave it there)
@@ -2865,12 +2936,18 @@ fn submit_as(
     // A write that fails: the process stopped reading — it ended, and its exit, on the way (`llm::pump`), says
     // why. Until then the message is the turn's, as one written a moment before that exit is: for a conversation
     // claude no longer has it goes again to the new one; any other end is said once, as an exit mid-turn is
+    // (the news's row in the chat once it went — the person sees what its Claude was told, in order)
+    let mut news_row = None;
     if p.stdin.send(llm::user_message(&content)).is_err() {
         // (said with the next message that goes; ended, if it only closed its stdin — so its exit comes)
         ed.workspace.claude.checkpoints.tell = told;
+        if let Some((_, _, kept)) = news {
+            ed.workspace.claude.news = kept;
+        }
         llm::kill(p.pid);
     } else {
         crate::usage::message_sent(&session, content.len(), context.len());
+        news_row = news.map(|n| n.1);
     }
     c.sent.extend(sent);
     c.hop = 0;
@@ -2939,6 +3016,9 @@ fn submit_as(
     msg.from = from.map(str::to_string);
     let c = ed.workspace.claude.chat.as_mut().expect("sent above");
     c.framed |= from.is_some();
+    if let Some(row) = news_row {
+        c.note(&row);
+    }
     c.msgs.push(msg);
     c.scroll = 0;
     c.state = State::Thinking;
@@ -3526,7 +3606,17 @@ fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
                 .filter(|l| !l.trim().is_empty())
                 .collect::<Vec<_>>()
                 .join("\n");
-            Look { verb: "send", what: s("session"), pattern: false, range: gist, link: None }
+            // (a new conversation asked for: said before the words — the verb stays in the rows' six cells)
+            let range = match input["fresh"].as_bool() == Some(true) {
+                true => format!("anew: {gist}"),
+                false => gist,
+            };
+            Look { verb: "send", what: s("session"), pattern: false, range, link: None }
+        }
+        // (checking on a session: its state and the reply of the last turn this Claude started there)
+        "mcp__tarae__sessions" => {
+            let what = input["session"].as_str().filter(|n| !n.trim().is_empty()).unwrap_or("all");
+            Look { verb: "check", what: what.to_string(), pattern: false, range: String::new(), link: None }
         }
         other => {
             Look { verb: "use", what: other.to_string(), pattern: false, range: String::new(), link: None }
@@ -5696,6 +5786,25 @@ mod tests {
                 {"file_path": "src/b.rs"}]}),
         );
         assert_eq!((e.verb, e.what.as_str(), e.range.as_str()), ("edit", "src/a.rs", "+1 more"));
+        // Orchestra's: each verb in the rows' six cells (`{:<6}`) — a fresh send's `anew` in its words
+        let at = |tool: &str, input: serde_json::Value| look(cwd, tool, &input);
+        let start = at("mcp__tarae__sessions_start", serde_json::json!({"sessions": {"knot-count": "b"}}));
+        let send = at("mcp__tarae__session_send", serde_json::json!({"session": "k", "message": "go"}));
+        let anew = at(
+            "mcp__tarae__session_send",
+            serde_json::json!({"session": "k", "message": "go", "fresh": true}),
+        );
+        let check = at("mcp__tarae__sessions", serde_json::json!({}));
+        assert_eq!(
+            [start.verb, send.verb, anew.verb, check.verb],
+            ["start", "send", "send", "check"],
+            "the verbs"
+        );
+        assert_eq!((anew.what.as_str(), anew.range.as_str()), ("k", "anew: go"));
+        assert_eq!((send.range.as_str(), check.what.as_str()), ("go", "all"));
+        for l in [start, send, anew, check] {
+            assert!(label(l.verb).chars().count() <= 6, "{}: past the rows' six cells", l.verb);
+        }
     }
 
     /// The chat edits with tarae's `edit` alone — every change, new files included: the prompt never sends Claude

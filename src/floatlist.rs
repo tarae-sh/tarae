@@ -79,7 +79,7 @@ impl Editor {
     /// Its rows' ids, in its order (the session list's: its workspaces' numbers — all this machine's).
     pub fn float_list_ids(&self, kind: GroupKind) -> Vec<u64> {
         match kind {
-            GroupKind::Sessions => self.sessions_in_order().iter().map(|l| l.id.n).collect(),
+            GroupKind::Sessions => self.sessions_by_parent().iter().map(|l| l.id.n).collect(),
             GroupKind::Messages => self.message_ids(),
             GroupKind::Folders => self.folder_ids(),
             _ => Vec::new(),

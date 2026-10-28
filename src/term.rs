@@ -5474,12 +5474,19 @@ fn draw_sessions_pane(
         queue!(out, Print(if on { "▎ " } else { "  " }))?;
         let mut used = 2;
         let name = Style { fg: ui.participant(row.colour, true), bold: row.front || on, ..base };
+        // (a child after its parent: `› ` faint before its name — orchestra N6)
+        let pre = if row.child { crate::sessionpane::CHILD } else { "" };
+        if row.child {
+            apply(out, Style { fg: ui.linenr.fg, ..base })?;
+            queue!(out, Print(pre))?;
+        }
+        let name_w = name_w.saturating_sub(pre.width());
         let shown = crate::whole::fit(&row.name, name_w);
         print_lit(out, (shown.shown(), &row.name), (name, hit(on, name)), &hits_in(&row.name))?;
         crate::whole::cut_at(
             editor,
             crate::whole::On::List,
-            (x0 + 2, y),
+            (x0 + 2 + pre.width(), y),
             &shown,
             name,
             (0, usize::MAX),
@@ -5491,7 +5498,7 @@ fn draw_sessions_pane(
         );
         apply(out, name)?;
         queue!(out, Spaces(name_w.saturating_sub(shown.width())))?;
-        used += name_w;
+        used += name_w + pre.width();
         for &(c, w) in &cols {
             apply(out, base)?;
             queue!(out, Print("  "))?;
@@ -15668,7 +15675,8 @@ fn session_tabs(
 ) -> (Vec<crate::markdown::Span>, Vec<(usize, usize, crate::workspace::Spot)>) {
     use crate::markdown::Span;
     use crate::workspace::{Doing, Spot};
-    let sessions = editor.sessions_in_order();
+    // (a child right after its parent — orchestra N6)
+    let sessions = editor.sessions_by_parent();
     // (how many of its cards wait: `▲2 waits` from two — frictions26)
     let cards = |l: &crate::workspace::Workspace| match l.id == editor.workspace.id {
         true => editor.offers.iter().filter(|o| o.goes_with_workspace()).count(),
@@ -15762,9 +15770,18 @@ fn session_tabs(
     // What needs you: always in (with the front)
     let needs =
         |l: &crate::workspace::Workspace| matches!(editor.doing(l), Doing::Waiting | Doing::Stuck { .. });
-    // The sessions `shown` laid out in their order, `·` between (as a top line's names — `pane_names`), then the rest as
-    // `+N` (a click: the list) — or, all shown, `+`. Folding a name never drops what it says: `+N` carries its sessions'
-    // signs, each kind once — `▲k` waiting on you, `◦k` maybe stuck, `¶` a reviewer, `•` news, `unsent`, `≈` an overlap
+    // (a child after its parent or a sibling: joined by `›`, a group's inside — orchestra N6, the user on its shots)
+    let inside = |i: usize, before: Option<usize>| {
+        let parent = sessions[i].claude.parent;
+        before.is_some_and(|b| {
+            parent.is_some() && (Some(sessions[b].claude.id) == parent || sessions[b].claude.parent == parent)
+        })
+    };
+    // The sessions `shown` laid out in their order, `·` between peers and `›` before a child after its parent or a
+    // sibling (as a top line's names — `pane_names`: a group's inside), then the rest as `+N` (a click: the list) — or, all
+    // shown, `+`. A child whose parent went into `+N` keeps a `› ` before its name. Folding a name never drops what it
+    // says: `+N` carries its sessions' signs, each kind once — `▲k` waiting on you, `◦k` maybe stuck, `¶` a reviewer, `•`
+    // news, `unsent`, `≈` an overlap
     let lay = |items: &[Vec<Span>], shown: &[bool]| -> (Vec<Span>, Vec<(usize, usize, Spot)>) {
         let (mut spans, mut spots, mut x) = (Vec::new(), Vec::new(), 0);
         let mut put = |spans: &mut Vec<Span>, text: String, style: Style| {
@@ -15772,8 +15789,15 @@ fn session_tabs(
             spans.push(Span { cut: None, text, style });
             x
         };
+        let mut before = None;
         for (i, item) in items.iter().enumerate().filter(|(i, _)| shown[*i]) {
-            let start = if spans.is_empty() { 0 } else { put(&mut spans, NAMES_SEP.into(), faint) };
+            let sep = if inside(i, before) { MEMBERS_SEP } else { NAMES_SEP };
+            let mut start = if spans.is_empty() { 0 } else { put(&mut spans, sep.into(), faint) };
+            if sessions[i].claude.parent.is_some() && !inside(i, before) {
+                start = put(&mut spans, crate::sessionpane::CHILD.into(), faint)
+                    - crate::sessionpane::CHILD.width();
+            }
+            before = Some(i);
             let mut end = start;
             for s in item {
                 end = put(&mut spans, s.text.clone(), s.style);
@@ -16145,6 +16169,8 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
                     }
                 } else if timing {
                     lines.push(right(&m.text));
+                } else if crate::orchestra::is_told(&m.text) {
+                    lines.push(told_row(&m.text, w, dim, t));
                 } else {
                     // As many rows as it takes (how to install claude is a few lines — #163), each line of it
                     // wrapped, hanging under its text. A compaction is a beat of its own mid-answer, not the
@@ -16291,6 +16317,57 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
         pieces.push((Of::Queued, rows));
     }
     pieces
+}
+
+/// A parent chat's `told Claude: …` row (`orchestra::TOLD`): a note's `· ` and its words on one row, cut at its end
+/// (`fit_ellipsis`) as a tool row is, the transcript keeping it whole (`chatdoc::keep_whole`) and its card saying it
+/// whole (`cut_card`) — a child's reply can be a long line, and wrapped it took four or five rows at 100 columns. A
+/// reply's inline markdown drawn as an answer's is (`markdown::inline_spans`: bold, code, no markers), on the row and its
+/// card alike; the transcript keeps that text, whole.
+fn told_row(text: &str, w: usize, dim: Style, theme: &Theme) -> crate::chat::ChatRow {
+    use crate::chat::ChatRow;
+    use crate::markdown::Span;
+    const MARK: &str = "· ";
+    let hang = MARK.chars().count();
+    // (its pieces as drawn: each one's bytes in the text without markers, the note's dim under its own style)
+    let mut pieces = Vec::new();
+    let mut plain = String::new();
+    for s in crate::markdown::inline_spans(text, theme) {
+        pieces.push((plain.len()..plain.len() + s.text.len(), dim.patch(s.style)));
+        plain.push_str(&s.text);
+    }
+    let shown = crate::cut::fit_in_hand(&plain, w.saturating_sub(hang).max(1), false, false).remove(0).text;
+    // (the start it kept in its pieces' styles, the `…` the note's)
+    let kept = match shown == plain {
+        true => shown.len(),
+        false => shown.strip_suffix('…').filter(|k| plain.starts_with(k)).unwrap_or(&shown).len(),
+    };
+    let mut spans = vec![Span { cut: None, text: MARK.into(), style: dim }];
+    for (r, style) in &pieces {
+        let (a, b) = (r.start, r.end.min(kept));
+        if a < b {
+            spans.push(Span { cut: None, text: plain[a..b].to_string(), style: *style });
+        }
+    }
+    if kept < shown.len() {
+        spans.push(Span { cut: None, text: shown[kept..].to_string(), style: dim });
+    }
+    let mut row = ChatRow { spans, skip: hang, ..ChatRow::default() };
+    crate::chatdoc::keep_whole(&mut row, &plain);
+    if row.rest.is_some() {
+        let to = row.spans.iter().map(|s| s.text.width()).sum();
+        let whole = crate::whole::Whole {
+            on: crate::whole::On::Transcript,
+            text: plain,
+            style: dim,
+            pieces,
+            cols: (0, 0),
+            state: None,
+            float: None,
+        };
+        row.cut = Some((hang, to, whole));
+    }
+    row
 }
 
 /// The queued line's rows (`chat_laid`): what waits (`2 messages queued · `, accent — the drawer's, not the text), then
@@ -19376,9 +19453,9 @@ fn pane_names(ui: &Ui, editor: &Editor, base: Style, names: &[&str], current: us
 
 /// Between two names on a top line or a docked group's header (`pane_names`).
 const NAMES_SEP: &str = " · ";
-
 /// Between the slot's tabs and the members of the group in front (step 3b): `check ▲ › places` — `›` inside, as the
-/// path bar's `src › main.rs`; `·` stays between peers.
+/// path bar's `src › main.rs`; `·` stays between peers. On the chat's line, before a child session after its parent or a
+/// sibling (orchestra N6).
 const MEMBERS_SEP: &str = " › ";
 
 /// D3's frame around `(x, y, w, h)`, over a card already drawn there (its first and last rows are its edges, its
@@ -20759,6 +20836,62 @@ mod tests {
             let name = r.split(' ').next().unwrap();
             assert!(before.iter().any(|b| b.split(' ').next() == Some(name)), "{name} moved in: {text}");
         }
+    }
+
+    /// orchestra N6: on the chat's line a child comes right after its parent, joined to it or a sibling by a faint `›`
+    /// (the user, on its shots: a group's inside, as `pane_names` writes it — `·` between peers) — the list's order
+    /// (`sessions_by_parent`), fix (yours, opened before them) after main's children; folded as every line is, whole names
+    /// in that order and the rest `+N`; a child whose parent went into `+N` keeps a `› ` before its name, and the front a
+    /// child with no room for its name keeps it too, the name cut.
+    #[test]
+    fn a_child_follows_its_parent_on_the_chats_line() {
+        let dir = crate::scratch::Scratch::new("children-line");
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.name = "main".into();
+        let main = ed.workspace.claude.id;
+        let mut ids = Vec::new();
+        for (n, child) in [("fix", false), ("knot-count", true), ("thread-docs", true)] {
+            let id = ed.workspace_add(dir.path().join(n));
+            let l = ed.workspace_by_id(id).unwrap();
+            (l.name, l.claude.parent) = (n.into(), child.then_some(main));
+            ids.push(id);
+        }
+        let fix = ed.workspace_by_id(ids[0]).unwrap().claude.id;
+        let mend = ed.workspace_add(dir.path().join("mend"));
+        let l = ed.workspace_by_id(mend).unwrap();
+        (l.name, l.claude.parent) = ("mend".into(), Some(fix));
+        let s = Style::default();
+        let tabs = |ed: &Editor, w: usize| {
+            let (spans, spots) = session_tabs(ed, w, 0, [s; 5], &|_| s);
+            let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+            let shown: Vec<String> = (spots.iter())
+                .filter_map(|&(a, b, spot)| match spot {
+                    crate::workspace::Spot::Session(_) => Some(text.chars().skip(a).take(b - a).collect()),
+                    _ => None,
+                })
+                .collect();
+            (text, shown)
+        };
+        let (text, shown) = tabs(&ed, 200);
+        assert_eq!(shown, ["main", "knot-count", "thread-docs", "fix", "mend"], "{text}");
+        assert_eq!(text, "main › knot-count › thread-docs · fix › mend · +");
+        // (narrower: whole names in that order, the rest `+N`)
+        let (text, shown) = tabs(&ed, 30);
+        let order = ["main", "knot-count", "thread-docs", "fix", "mend"];
+        let at: Vec<usize> =
+            shown.iter().map(|r| order.iter().position(|n| r == n).expect("whole")).collect();
+        assert!(at.windows(2).all(|p| p[0] < p[1]) && shown.len() < 5, "{text}");
+        assert!(text.contains(&format!("+{}", 5 - shown.len())), "{text}");
+        // (a child whose parent went into `+N`: its `› ` kept, after a peer's `·`)
+        assert!(ed.workspace_switch(mend).is_in());
+        let (text, shown) = tabs(&ed, 20);
+        assert_eq!((text.as_str(), shown), ("main · › mend · +3", vec!["main".into(), "› mend".to_string()]));
+        // (the front a child, the room too small for its name: its `› ` stays, the name is cut)
+        assert!(ed.workspace_switch(ids[2]).is_in());
+        let (text, shown) = tabs(&ed, 10);
+        assert_eq!(shown.len(), 1, "{text}");
+        assert!(shown[0].starts_with("› th") && shown[0].ends_with('…'), "{text}");
+        assert!(text.contains("+4"), "{text}");
     }
 
     /// `card_line_holds` reads the rule, not a width (#126: a path's length is the system's): a card's text narrower

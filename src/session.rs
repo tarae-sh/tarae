@@ -113,6 +113,9 @@ pub struct Session {
     /// Its Claude's `sessions_start` under way — from the call to its answer (`orchestra::answered`, in
     /// `tools::answer_parts`): one at a time, so two calls side by side can't both pass `llm.children-max`.
     pub starting: Vec<crate::tools::Call>,
+    /// What its own acts as a parent came to, not told its Claude yet (`orchestra::News`): a turn it started in a child
+    /// ended. Told once, by the next session tool's answer or the next message, whichever comes first.
+    pub news: Vec<crate::orchestra::News>,
 }
 
 impl Session {
@@ -147,6 +150,7 @@ impl Session {
             allowed: Default::default(),
             parent: None,
             starting: Vec::new(),
+            news: Vec::new(),
             caps: None,
             caps_asked: 0,
             sandbox: None,

@@ -1177,6 +1177,9 @@ fn facts(root: &Path, base: Option<String>, start: &Path) -> Option<Facts> {
 pub struct Shown {
     pub id: WorkspaceId,
     pub name: String,
+    /// A session another session's Claude started (orchestra): listed right after its parent, a faint `›` before
+    /// its name.
+    pub child: bool,
     /// The branch checked out there (said when it isn't the name).
     pub branch: Option<String>,
     pub facts: Option<Facts>,
@@ -1431,6 +1434,19 @@ impl Editor {
             std::iter::once(&self.workspace).chain(&self.workspaces).collect();
         crate::sorting::by_key(&mut all, |l| l.id);
         all
+    }
+
+    /// Every session as the list and the chat's top line show them: in their order, but a child right after its
+    /// parent (orchestra N6) — its parent's place, then its own among its siblings.
+    pub fn sessions_by_parent(&self) -> Vec<&crate::workspace::Workspace> {
+        let all = self.sessions_in_order();
+        let place = |l: &&crate::workspace::Workspace| {
+            let parent = l.claude.parent.and_then(|p| all.iter().find(|x| x.claude.id == p));
+            parent.map_or((l.id, None), |p| (p.id, Some(l.id)))
+        };
+        let mut v = all.clone();
+        crate::sorting::by_key(&mut v, place);
+        v
     }
 
     pub(crate) fn workspace_by_id(&mut self, id: WorkspaceId) -> Option<&mut crate::workspace::Workspace> {
@@ -2213,11 +2229,12 @@ impl Editor {
             Some((n, Some(w))) if w > 0 => Some(n * 100 / w),
             _ => None,
         };
-        self.sessions_in_order()
+        self.sessions_by_parent()
             .into_iter()
             .map(|l| Shown {
                 id: l.id,
                 name: l.label().to_string(),
+                child: l.claude.parent.is_some(),
                 branch: l.git_branch.clone().or_else(|| l.branch.clone()),
                 facts: self.workspace_store.facts.get(&l.id).cloned(),
                 doing: self.doing(l),
@@ -2258,7 +2275,7 @@ impl Editor {
         match c {
             '1'..='9' => {
                 let row = c as usize - '1' as usize;
-                let Some(id) = self.sessions_in_order().get(row).map(|l| l.id) else {
+                let Some(id) = self.sessions_by_parent().get(row).map(|l| l.id) else {
                     let n = self.sessions_in_order().len();
                     return self.set_status(format!("no session on row {c} — the list has {n}"));
                 };
