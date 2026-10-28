@@ -526,7 +526,8 @@ Keys of what's up on the screen — not rebindable, so not in `default_keys.toml
 | An edit's review | `y` `n` `a` `tab` | Accept this change · reject it · accept all left · next |
 | An edit's review | `esc` | Back to the chat, the change unanswered — `C-q` answers it |
 | An edit's review | `C-d` `C-u` `C-f` `C-b` `C-e` `C-y`, wheel | Scroll it — `space`, `:` and `C-w` work over it too |
-| Code review rail | click on `◦` | Mark the file viewed (a second click leaves it marked) |
+| Code review rail | click on a file · double-click | Show it as the preview, the rail taking the keys · open it, the code taking them (as `enter`) |
+| Code review rail | click on `◦` | Mark the file viewed (a second click leaves it marked), the rail taking the keys |
 | Code review rail | click on `↑ N more` / `↓ N more`, wheel | Scroll the files |
 | Code review | `space v q` | End it — asked on a card while files aren't viewed |
 | Task panel | click on a preflight step | Its output; wheel, `C-u` `C-d` scroll |

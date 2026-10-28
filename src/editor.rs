@@ -3498,8 +3498,9 @@ impl Editor {
                     _ => {}
                 }
             }
-            // The review's file rail: a click opens that file — on its mark, marks it viewed too (#67) — a click on
-            // `↑/↓ N more` or the wheel scrolls it (`CodeReview::fit` clamps; #73)
+            // The review's file rail: a click selects a file and shows it in the preview slot, the rail taking the keys —
+            // on its mark, marks it viewed too (#67); a double-click opens it, the code taking them, as `enter` (#207, as
+            // the git tab's file rows) — a click on `↑/↓ N more` or the wheel scrolls it (`CodeReview::fit` clamps; #73)
             (S::Rail, part) => {
                 took_mouse(S::Rail);
                 let rail_keys = self.workspace.is_at(At::Rail);
@@ -3518,15 +3519,22 @@ impl Editor {
                     return;
                 }
                 match part {
-                    Part::Mark(i) => crate::codereview::mark_clicked(self, i),
+                    // (after the mark: it shows the file unless it's the one in hand, which the rail's selection isn't)
+                    Part::Mark(i) => {
+                        crate::codereview::mark_clicked(self, i);
+                        crate::codereview::rail_select(self, i);
+                    }
                     // (a click shows it in the preview slot; a double-click keeps it, as `enter` — the buffer that show
                     // opened, none for a binary row: never whatever was in front)
                     Part::Row(i) => {
                         let shown = crate::codereview::show(self, i, false);
-                        if self.clicked_again("rail", i)
-                            && let Some(id) = shown
-                        {
-                            self.preview_keep(id);
+                        if self.clicked_again("rail", i) {
+                            self.workspace.viewer.at = At::Code;
+                            if let Some(id) = shown {
+                                self.preview_keep(id);
+                            }
+                        } else {
+                            crate::codereview::rail_select(self, i);
                         }
                     }
                     // (off its rows, within its width: the keys to it, on the file in hand — as `space e` gives them)

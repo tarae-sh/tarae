@@ -196,6 +196,136 @@ fn a_press_off_the_rails_rows_gives_it_the_keys() {
     assert_eq!(ed.keys_to().region, Region::Code, "the code's again");
 }
 
+/// A review of a turn's three files — two under `src/`, one at the root — the code reading the first, its keys the code's.
+/// No git and nothing on disk: each file is gone, shown as a buffer of its own.
+pub(super) fn turn_review(ed: &mut Editor) {
+    let root = ed.workspace.root.clone();
+    review_of_three(ed, root, true);
+}
+
+/// The same review with its three files on disk in `scratch`, the review's root: each shown in the preview slot.
+fn turn_review_on_disk(ed: &mut Editor, scratch: &crate::scratch::Scratch) {
+    for rel in ["src/a.rs", "src/b.rs", "z.md"] {
+        let path = scratch.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "fn one() {}\n").unwrap();
+    }
+    let root = scratch.path().to_path_buf();
+    ed.workspace.root = root.clone();
+    review_of_three(ed, root, false);
+}
+
+fn review_of_three(ed: &mut Editor, root: std::path::PathBuf, gone: bool) {
+    use crate::codereview::{Base, CodeReview, File};
+    // (a buffer of its own beside the review's: one empty unnamed buffer alone is the start screen)
+    ed.docs[0].path = Some(root.join("notes.txt"));
+    let file = |rel: &str| File {
+        rel: rel.into(),
+        path: root.join(rel),
+        added: 0,
+        removed: 1,
+        new: false,
+        gone,
+        binary: false,
+    };
+    let files = vec![file("src/a.rs"), file("src/b.rs"), file("z.md")];
+    let base = Base::Turn { at: 0, question: "a question".into() };
+    ed.workspace.code_review = Some(CodeReview::for_test(base, root, files));
+    crate::codereview::show(ed, 0, false);
+    // (lines to read: a drag or a double in the code has text to select — on disk the file's own)
+    if gone {
+        ed.doc_mut().text = ropey::Rope::from_str("fn one() {}\nfn two() {}\n");
+    }
+    ed.workspace.viewer.at = At::Code;
+}
+
+/// File `i`'s row in the rail as drawn: its screen row and its mark's first column.
+fn rail_file(ed: &Editor, i: usize) -> (usize, usize) {
+    let marks = ed.screen.review_rail_marks.borrow();
+    marks.iter().find(|m| m.1 == i).map(|m| (m.0, m.2)).expect("its row drawn")
+}
+
+/// The buffer in front, by its title (a gone file's) or its path.
+fn front(ed: &Editor) -> String {
+    let d = ed.doc();
+    d.title.clone().or_else(|| d.path.as_ref().map(|p| p.display().to_string())).unwrap_or_default()
+}
+
+/// #207: a press on a file's row in the review's rail, the code reading another, gives the rail the keys — that file
+/// selected and shown, `● review` — as moving onto it with `j`/`k` and as the git tab's rows; it showed the file and left
+/// the keys in the code (`● normal`, the rail's `▎` on the file as if it had them). A double-click opens it, the code
+/// taking the keys, as `enter`.
+#[test]
+fn a_press_on_a_rail_file_gives_the_rail_the_keys() {
+    let scratch = crate::scratch::Scratch::new("rail-press");
+    let mut ed = editor();
+    turn_review_on_disk(&mut ed, &scratch);
+    frame(&mut ed);
+    assert_eq!(ed.keys_to().region, Region::Code);
+    assert!(front(&ed).contains("a.rs"), "{}", front(&ed));
+    let (y, x) = rail_file(&ed, 1);
+    press(&mut ed, x + 3, y);
+    assert_eq!(ed.keys_to().region, Region::Rail, "the rail's keys");
+    assert_eq!(ed.workspace.code_review.as_ref().unwrap().selected, 1, "that file selected");
+    assert!(front(&ed).contains("b.rs"), "that file shown: {}", front(&ed));
+    assert!(ed.doc().preview, "shown as the preview");
+    let text = frame(&mut ed);
+    assert!(text.lines().last().unwrap().contains("● review"), "{}", text.lines().last().unwrap());
+    // (the rail's keys: `j` moves its selection, never the code's cursor)
+    feed(&mut ed, "j");
+    assert_eq!(ed.workspace.code_review.as_ref().unwrap().selected, 2);
+    assert!(front(&ed).contains("z.md"), "{}", front(&ed));
+    // A double-click opens it, as `enter`: the code's keys, the file kept — a buffer of its own, no longer the
+    // preview (one click shows `a.rs` in front too)
+    let (y, x) = rail_file(&ed, 0);
+    press(&mut ed, x + 3, y);
+    assert!(ed.doc().preview, "one click: the preview");
+    press(&mut ed, x + 3, y);
+    assert_eq!(ed.keys_to().region, Region::Code, "opened: the code's keys");
+    assert!(front(&ed).contains("a.rs"), "{}", front(&ed));
+    assert!(!ed.doc().preview, "kept: no longer the preview");
+}
+
+/// #207: with the rail's keys already, a press on another file's row selects it as it shows it — the selection stayed
+/// on the old file while the code showed the new, so `enter` (and `m`) acted on a file other than the one shown.
+#[test]
+fn a_press_on_a_rail_file_with_the_rails_keys_selects_it() {
+    let scratch = crate::scratch::Scratch::new("rail-press-keys");
+    let mut ed = editor();
+    turn_review_on_disk(&mut ed, &scratch);
+    crate::codereview::rail_focus(&mut ed);
+    frame(&mut ed);
+    assert_eq!(ed.keys_to().region, Region::Rail);
+    assert_eq!(ed.workspace.code_review.as_ref().unwrap().selected, 0, "on the file in hand");
+    let (y, x) = rail_file(&ed, 2);
+    press(&mut ed, x + 3, y);
+    assert_eq!(ed.keys_to().region, Region::Rail, "still the rail's keys");
+    assert_eq!(ed.workspace.code_review.as_ref().unwrap().selected, 2, "the file pressed selected");
+    assert!(front(&ed).contains("z.md"), "and shown: {}", front(&ed));
+    // `enter` opens the file pressed, never the one selected before
+    feed(&mut ed, "<ret>");
+    assert_eq!(ed.keys_to().region, Region::Code, "opened: the code's keys");
+    assert!(front(&ed).contains("z.md"), "{}", front(&ed));
+    assert!(!ed.doc().preview, "kept");
+}
+
+/// #207: a press on a file's mark in the rail, the code reading another, marks it viewed and gives the rail the keys on
+/// it — as a press on its row.
+#[test]
+fn a_press_on_a_rail_files_mark_gives_the_rail_the_keys() {
+    let mut ed = editor();
+    turn_review(&mut ed);
+    frame(&mut ed);
+    let (y, x) = rail_file(&ed, 2);
+    assert_eq!(ed.mouse_at(x, y).part, crate::mouse::Part::Mark(2));
+    press(&mut ed, x, y);
+    assert_eq!(ed.keys_to().region, Region::Rail, "the rail's keys");
+    let r = ed.workspace.code_review.as_ref().unwrap();
+    assert_eq!(r.selected, 2, "that file selected");
+    assert!(r.viewed(&ed, &r.files[2]), "and marked viewed");
+    assert!(front(&ed).contains("z.md"), "that file shown: {}", front(&ed));
+}
+
 /// A focused card pressed outside lets go of the keys, as `esc` does — it waits, unanswered — and the press acts
 /// where it landed: a letter typed after it is the code's, never the card's answer.
 #[test]

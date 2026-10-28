@@ -4775,6 +4775,15 @@ pub fn rail_focus(ed: &mut Editor) {
     }
 }
 
+/// A press on file `i`'s row or mark: the rail takes the keys with `i` selected — as moving onto it with `j`/`k`, the
+/// file shown as the preview — wherever the keys were (#207: from the code they stayed there, `● normal`, the rail's
+/// `▎` on the file as if it had them).
+pub fn rail_select(ed: &mut Editor, i: usize) {
+    let Some(r) = ed.workspace.code_review.as_mut() else { return };
+    r.selected = i;
+    ed.workspace.viewer.at = At::Rail;
+}
+
 /// Keys while the rail has them: `j`/`k` move over the files, Enter (`l`) opens one, `m` marks it viewed
 /// and goes on to the next, `q` ends the review (`space v q`: its card when files are unviewed), Esc back to
 /// the code; `space`, `:` and `C-w` stay the editor's. False = not the rail's.

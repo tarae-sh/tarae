@@ -419,8 +419,8 @@ configs carry over as they are.
   pass over takes, so the buffer list doesn't grow — its name in italic in the path bar and the buffer tabs, last in
   `space b` with a faint `preview`. It becomes a buffer of its own when you edit it, press `enter` on its row or
   double-click it; moving, searching or `esc` into it leave it a preview, and closing the tab leaves it as it is.
-  The review's rail the same: `j`/`k` onto a file show it as the preview, the rail keeping the keys; `enter` or a
-  double-click keeps one. `C-o` goes back through the files shown so, each opened again as the preview; a preview
+  The review's rail the same: `j`/`k` onto a file, or a click on it, show it as the preview, the rail keeping (or
+  taking) the keys; `enter` or a double-click keeps one, the code taking them. `C-o` goes back through the files shown so, each opened again as the preview; a preview
   another pane shows stays open when the next comes (a buffer of its own then, said). A preview isn't
   reopened at the next start (`:restart` keeps it, a preview still). While the tab has the keys, the file in the editor shows its
   changes against the index **inline** — the removed lines rows of their own on the red wash, the changed ones on the

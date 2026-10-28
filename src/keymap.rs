@@ -743,7 +743,16 @@ pub(crate) mod tests {
             "`C-d` `C-u` `C-f` `C-b` `C-e` `C-y`, wheel",
             "Scroll it — `space`, `:` and `C-w` work over it too",
         ),
-        ("Code review rail", "click on `◦`", "Mark the file viewed (a second click leaves it marked)"),
+        (
+            "Code review rail",
+            "click on a file · double-click",
+            "Show it as the preview, the rail taking the keys · open it, the code taking them (as `enter`)",
+        ),
+        (
+            "Code review rail",
+            "click on `◦`",
+            "Mark the file viewed (a second click leaves it marked), the rail taking the keys",
+        ),
         ("Code review rail", "click on `↑ N more` / `↓ N more`, wheel", "Scroll the files"),
         ("Code review", "`space v q`", "End it — asked on a card while files aren't viewed"),
         ("Task panel", "click on a preflight step", "Its output; wheel, `C-u` `C-d` scroll"),

@@ -209,6 +209,8 @@ const MOUSE_SCENES: &[Scene] = &[
         (c.state, c.follow.on) = (crate::chat::State::Thinking, true);
         ed.workspace.viewer.at = crate::workspace::At::Code;
     }),
+    // (#207: the review's rail with files, the code reading one — its rows and marks pressed from the code's keys)
+    ("the review's rail, the code reading a file", super::turn_review),
     ("the messages list, its keys given back", |ed| {
         ed.set_status("one");
         ed.messages_open(None);
@@ -685,6 +687,10 @@ struct Walk {
     cuts: Vec<String>,
     /// The scenes where a chip over the chat's input was met (`cuts_in`).
     chips: Vec<String>,
+    /// `scene · surface/part at x,y: the keys …` where a press `gives_keys` left them elsewhere (#207).
+    keys: Vec<String>,
+    /// `surface/part` of every press `gives_keys` judged.
+    given: Vec<String>,
     events: usize,
 }
 
@@ -854,6 +860,7 @@ fn walk_held(walk: &mut Walk, n: usize, scene: &str, setup: fn(&mut Editor)) {
         walk.bare.push(format!("{scene}: {} cells under nothing, first at {x},{y}", bare.len()));
     }
     cuts_in(walk, &ed, &text, scene, setup);
+    keys_given(walk, scene, setup, &targets);
     for &((x, y), u) in &sample(targets, n) {
         let found = format!("{:?}", u.surface);
         let found = found.split('(').next().unwrap_or_default().to_string();
@@ -916,6 +923,33 @@ fn walk_held(walk: &mut Walk, n: usize, scene: &str, setup: fn(&mut Editor)) {
     }
     for (_, cell) in only {
         wheel_at(walk, scene, setup, cell, None);
+    }
+}
+
+/// Where a press gives its surface the keys, whatever else it does (the mouse rule: a press gives the keys to the
+/// surface it lands on) — the parts held to it after every press of every scene, not one sampled (#207: a press on the
+/// review rail's file row showed the file and left the keys in the code).
+fn gives_keys(u: Under) -> bool {
+    match u.surface {
+        Surface::Rail => matches!(u.part, Part::Row(_) | Part::Mark(_) | Part::Blank),
+        Surface::Code(_) => matches!(u.part, Part::Text { .. }),
+        _ => false,
+    }
+}
+
+/// Each of the scene's targets where a press `gives_keys`: pressed and let go, the keys there after (`holds`).
+fn keys_given(walk: &mut Walk, scene: &str, setup: fn(&mut Editor), targets: &[Target]) {
+    for &((x, y), u) in targets.iter().filter(|t| gives_keys(t.1)) {
+        let mut ed = fresh(setup);
+        send(&mut ed, K::Down, x, y, scene, walk);
+        send(&mut ed, K::Up, x, y, scene, walk);
+        frame(&mut ed);
+        if !walk.given.contains(&name(u)) {
+            walk.given.push(name(u));
+        }
+        if !holds(&ed, u) {
+            walk.keys.push(format!("{scene} · {} at {x},{y}: the keys {:?}", name(u), ed.keys_to().region));
+        }
     }
 }
 
@@ -1050,6 +1084,21 @@ fn mouse_at_is_where_handle_mouse_sends_every_press() {
     let w = walk();
     assert!(w.events > 1000, "the walk sent {} events", w.events);
     assert!(w.routed.is_empty(), "{} of {}:\n{}", w.routed.len(), w.events, w.routed.join("\n"));
+}
+
+/// A press gives the keys to the surface it lands on (the mouse rule), wherever `gives_keys` says it does, in every scene
+/// — #207: a press on the review rail's file row or mark, the code reading a file, left the keys in the code.
+#[test]
+fn a_press_gives_its_surface_the_keys() {
+    if !pty("a_press_gives_its_surface_the_keys") {
+        return;
+    }
+    let w = walk();
+    // (each part met somewhere — a scene that lost it doesn't pass by not looking)
+    for part in ["Rail/Row", "Rail/Mark", "Rail/Blank"] {
+        assert!(w.given.iter().any(|g| g == part), "no press on {part} judged: {:?}", w.given);
+    }
+    assert!(w.keys.is_empty(), "{}:\n{}", w.keys.len(), w.keys.join("\n"));
 }
 
 /// The frame's coverage: every non-blank cell of every scene's frame is under some surface — a new surface that draws
