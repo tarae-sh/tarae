@@ -2400,6 +2400,15 @@ its base up to it, fast-forward only. When the base has moved since the session 
   those files, a review shows them against the commit being replayed, and a card says they aren't staged yet and
   offers to continue (`y`: tarae stages them and runs `git rebase --continue`, which may stop again — the same
   loop) or abort (`X`: back to where the branch was). Markers left: the files are named, and the rebase waits
+- `y` stages the files git named as conflicted and nothing else. What else the resolution changed is in the
+  review and named on the card. A tracked file changed besides them holds `y` (git wouldn't go on with it
+  unstaged): the card says `y` waits until it's staged or undone in the git tab, neither `y` nor `m` (its
+  message's `:w` goes on) is among its answers, and pressed either is refused on the card, which reads the
+  checkout again, as the git tab's status read does — staged or undone, the card says `y` goes on. A file the resolution made (its code split into a new file) is named as untracked: `a` stages it with
+  the conflicted files, `y` goes on without it and says it stays untracked; one made after the card is never
+  staged unseen. What was untracked or ignored as git stopped is never counted as the resolution's (a build
+  folder the series ignores only in a later commit stays out of every commit); a rebase tarae took up (started
+  by hand, or before a restart) didn't see the stop, so it counts no untracked file as the resolution's
 - A resolution can change what the commit says. Claude is sent the commit's message too, and asked whether its
   resolution changes what the message says; if it does, its answer ends with the message as it should now read
   (a ```` ```commit-message ```` block), and the card says `Claude says the commit's message no longer holds`.

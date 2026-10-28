@@ -4919,11 +4919,14 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// #129: resolving, Claude changed another file too (a snapshot blessed again) — it's in the review beside
-    /// the conflicted one, the card names it, and `y` stages it with them (left unstaged, git refused to go
-    /// on). One changed after the review isn't staged unseen: named, and the next `:rebase-continue` takes it.
+    /// #129, #206: resolving, Claude changed another file too (a snapshot blessed again) — it's in the review
+    /// beside the conflicted one and the card names it, not staged: tarae stages only the conflicted file, and
+    /// git wouldn't go on with the other unstaged, so the card says `y` waits until it's staged or undone — its
+    /// `y` gone from its answers and refused on it, naming the file (`:rebase-continue` alike, said). Staged by
+    /// you, `y` again: the card read again says it's free, and the next `y` goes on with it; a file made after
+    /// the review is named on the card then, and `y` goes on without it, said.
     #[test]
-    fn what_else_a_resolution_changed_is_reviewed_and_staged() {
+    fn what_else_a_resolution_changed_is_reviewed_and_left_to_you() {
         let (repo, dir) = place("rebase-also");
         let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
         std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
@@ -4942,31 +4945,433 @@ mod tests {
         let mut files: Vec<&str> = review.files.iter().map(|f| f.rel.as_str()).collect();
         files.sort_unstable();
         assert_eq!(files, [".gitignore", "a.txt"], "what else it changed is in the review");
-        let q = &card(&ed, "feat: conflicts resolved").unwrap().question;
-        assert!(q.contains(" It also changed .gitignore — staged with them. The review shows them"), "{q}");
-        // Changed after the review: named, not staged unseen
+        let up = card(&ed, "feat: conflicts resolved").unwrap();
+        assert!(
+            up.question.starts_with(
+                "a.txt resolved for commit 1 of 2 ("
+            ) && up.question.contains(
+                " feat a). It also changed .gitignore — not staged by tarae. The review shows them against that \
+                 commit — not staged yet: y stages it and goes on once it is staged or undone in the git tab \
+                 (space g).\n\n"
+            ),
+            "{}",
+            up.question
+        );
+        let held = "y waits until .gitignore is staged or undone — the git tab (space g)";
+        assert_eq!(up.held.as_deref(), Some(held));
+        let up_rev = up.rev;
+        // (y isn't among its answers, nor `m`, which goes on once its message is written — and pressed, `m` is
+        // refused on the card as `y` is: the card stays, no message to write)
+        assert_eq!(card_in_sight(&mut ed), ['X', 'n'], "{}", said(&ed));
+        feed(&mut ed, "m");
+        assert_eq!(ed.offer_said_now(), Some(held), "{}", said(&ed));
+        assert!(card(&ed, "feat: conflicts resolved").is_some() && !ed.in_rebase_message(), "{}", said(&ed));
+        // (`y` pressed, refused alike; the checkout read again: a file made since the review is named, `y` still
+        // held)
         std::fs::write(wt.join("late.txt"), "late\n").unwrap();
-        card_in_sight(&mut ed);
         feed(&mut ed, "y");
+        assert_eq!(ed.offer_said_now(), Some(held), "{}", said(&ed));
+        settle_until(&mut ed, |ed| card(ed, "feat: conflicts resolved").is_none_or(|c| c.rev > up_rev));
+        let up = card(&ed, "feat: conflicts resolved").expect("the card stays");
+        assert!(
+            up.question.contains(
+                " feat a). It also changed .gitignore — not staged by tarae. It made late.txt, untracked: y goes on \
+                 without it. The review shows them"
+            ),
+            "{}",
+            up.question
+        );
+        assert_eq!(up.held.as_deref(), Some(held));
+        assert!(crate::rebase::under_way(&wt).is_some(), "still stopped");
+        // (nothing staged: the conflicted file still unmerged, the other as Claude left it)
+        assert_eq!(git_in(&wt, &["status", "--porcelain", "a.txt", ".gitignore"]), "M .gitignore\nUU a.txt");
+        // Typed, it stops alike
+        feed(&mut ed, ":rebase-continue<ret>");
         settle_until(&mut ed, |ed| says(ed, "not going on") || says(ed, "Rebased feat"));
         assert!(
-            says(&ed, "not going on — late.txt changed too and is unstaged: look at it (space g), then"),
+            says(
+                &ed,
+                "not going on — .gitignore changed besides the conflict and is unstaged: tarae stages only the \
+                 conflicted files — stage or undo it in the git tab (space g), then :rebase-continue"
+            ),
             "{}",
             said(&ed)
         );
         assert!(crate::rebase::under_way(&wt).is_some(), "still stopped");
+        // Staged by you, and the git tab reads its status: the card says it as it now stands, no key pressed (no
+        // read again out first — else one asked before the stage could be what frees it)
+        let none_out =
+            |ed: &Editor| ed.workspace.rebase.as_ref().is_some_and(|r| r.rechecks.0 == r.rechecks.1);
+        settle_until(&mut ed, none_out);
+        git_in(&wt, &["add", ".gitignore"]);
+        ed.git_refresh();
+        settle_until(&mut ed, |ed| card(ed, "feat: conflicts resolved").is_none_or(|c| c.held.is_none()));
+        let q = &card(&ed, "feat: conflicts resolved").expect("the card, freed").question;
+        assert!(
+            q.contains(
+                " feat a). It made late.txt, untracked: a stages it too, y goes on without it. The review shows \
+                 them against that commit — not staged yet: y stages it and goes on.\n\n"
+            ),
+            "{q}"
+        );
+        assert_eq!(card_in_sight(&mut ed), ['y', 'a', 'm', 'X', 'n']);
+        feed(&mut ed, "y");
+        settle_until(&mut ed, |ed| card(ed, "Rebased feat onto main").is_some() || says(ed, "rebase feat:"));
+        assert!(
+            says(&ed, "going on without late.txt: it stays untracked, not in the commit"),
+            "{}",
+            said(&ed)
+        );
+        assert_eq!(git_in(&wt, &["log", "--format=%s", "main..HEAD"]), "add b\nfeat a", "{}", said(&ed));
+        assert_eq!(git_in(&wt, &["show", "HEAD~1:.gitignore"]), "target/\nsnap/", "as you staged it");
+        assert_eq!(git_in(&wt, &["ls-files", "late.txt"]), "", "never staged");
+        assert_eq!(git_in(&wt, &["status", "--porcelain"]), "?? late.txt", "left untracked");
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The files `commit` holds that its parent doesn't have the same, sorted.
+    fn commit_files(wt: &Path, commit: &str) -> String {
+        git_in(wt, &["diff-tree", "--no-commit-id", "--name-only", "-r", commit])
+    }
+
+    /// #206: an untracked build folder (not ignored) in the checkout as the rebase stops, and a file Claude made
+    /// while resolving: `y` stages the conflicted file only — the commit holds what it held, the folder and the
+    /// new file stay untracked; the card names the new file (left to you), never the folder that was there.
+    #[test]
+    fn a_resolution_stages_only_the_conflicted_files() {
+        let (repo, dir) = place("rebase-untracked");
+        let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
+        std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
+        let mut ed = editor(&repo, &dir);
+        claude_does(&mut ed, &log, &format!("cp '{}' a.txt; echo n > notes.txt;", answer.display()));
+        let (wt, _) = moved_apart(&mut ed, &repo, false);
+        std::fs::create_dir_all(wt.join("build/out")).unwrap();
+        for f in ["build/out/a.o", "build/out/b.o", "build/run"] {
+            std::fs::write(wt.join(f), "built\n").unwrap();
+        }
+        rebase_asked(&mut ed);
+        settle_until(&mut ed, |ed| {
+            card(ed, "feat: conflicts resolved").is_some() || says(ed, "rebase feat:")
+        });
+        let q = &card(&ed, "feat: conflicts resolved").unwrap().question;
+        assert!(
+            q.contains(" feat a). It made notes.txt, untracked: a stages it too, y goes on without it."),
+            "{q}"
+        );
+        assert!(!q.contains("build"), "what was there as git stopped isn't the resolution's: {q}");
+        card_in_sight(&mut ed);
+        feed(&mut ed, "y");
+        settle_until(&mut ed, |ed| card(ed, "Rebased feat onto main").is_some() || says(ed, "rebase feat:"));
+        assert!(
+            says(&ed, "going on without notes.txt: it stays untracked, not in the commit"),
+            "{}",
+            said(&ed)
+        );
+        assert_eq!(git_in(&wt, &["log", "--format=%s", "main..HEAD"]), "add b\nfeat a", "{}", said(&ed));
+        assert_eq!(commit_files(&wt, "HEAD~1"), "a.txt", "the resolved file only");
+        assert_eq!(commit_files(&wt, "HEAD"), "b.txt");
+        assert_eq!(git_in(&wt, &["show", "HEAD~1:a.txt"]), "one\nmain\nfeat");
+        assert_eq!(git_in(&wt, &["ls-files", "build", "notes.txt"]), "", "never staged");
+        assert_eq!(git_in(&wt, &["status", "--porcelain"]), "?? build/\n?? notes.txt", "left untracked");
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #206: a file the resolution made (its code split into a new file) is the resolution's own, and the commit
+    /// may not build without it: the card names it and `a` stages it with the conflicted file. Only what the card
+    /// named — never what was untracked as git stopped (`build/`), nor a file made after the card (named as left
+    /// untracked as it goes on).
+    #[test]
+    fn a_file_the_resolution_made_is_staged_by_a() {
+        let (repo, dir) = place("rebase-made");
+        let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
+        std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
+        let mut ed = editor(&repo, &dir);
+        claude_does(&mut ed, &log, &format!("cp '{}' a.txt; echo part > part.txt;", answer.display()));
+        let (wt, _) = moved_apart(&mut ed, &repo, false);
+        std::fs::create_dir_all(wt.join("build")).unwrap();
+        std::fs::write(wt.join("build/run"), "built\n").unwrap();
+        rebase_asked(&mut ed);
+        settle_until(&mut ed, |ed| {
+            card(ed, "feat: conflicts resolved").is_some() || says(ed, "rebase feat:")
+        });
+        let q = &card(&ed, "feat: conflicts resolved").unwrap().question;
+        assert!(
+            q.contains(" feat a). It made part.txt, untracked: a stages it too, y goes on without it."),
+            "{q}"
+        );
+        assert!(!q.contains("build"), "{q}");
+        let review = ed.workspace.code_review.as_ref().expect("the review");
+        let mut files: Vec<&str> = review.files.iter().map(|f| f.rel.as_str()).collect();
+        files.sort_unstable();
+        assert_eq!(files, ["a.txt", "part.txt"], "what it made is in the review");
+        std::fs::write(wt.join("late.txt"), "late\n").unwrap();
+        assert_eq!(card_in_sight(&mut ed), ['y', 'a', 'm', 'X', 'n']);
+        feed(&mut ed, "a");
+        settle_until(&mut ed, |ed| card(ed, "Rebased feat onto main").is_some() || says(ed, "rebase feat:"));
+        assert_eq!(git_in(&wt, &["log", "--format=%s", "main..HEAD"]), "add b\nfeat a", "{}", said(&ed));
+        assert_eq!(commit_files(&wt, "HEAD~1"), "a.txt\npart.txt", "the resolution with what it made");
+        assert_eq!(git_in(&wt, &["show", "HEAD~1:part.txt"]), "part");
+        assert!(
+            says(&ed, "going on without late.txt: it stays untracked, not in the commit"),
+            "{}",
+            said(&ed)
+        );
+        assert_eq!(git_in(&wt, &["status", "--porcelain"]), "?? build/\n?? late.txt", "left untracked");
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #206: a rebase tarae took up (started by hand, or from before a restart) has no record of what was
+    /// untracked as git stopped (`Stop.before` None): no untracked file is counted as the resolution's then — a
+    /// build folder there is neither staged nor named as it goes on.
+    #[test]
+    fn a_rebase_taken_up_counts_no_untracked_file_as_the_resolutions() {
+        let (repo, dir) = place("rebase-hand-untracked");
+        let mut ed = editor(&repo, &dir);
+        let (wt, _) = moved_apart(&mut ed, &repo, false);
+        std::fs::create_dir_all(wt.join("build")).unwrap();
+        std::fs::write(wt.join("build/run"), "built\n").unwrap();
+        let out =
+            std::process::Command::new("git").arg("-C").arg(&wt).args(["rebase", "main"]).output().unwrap();
+        assert!(!out.status.success(), "stopped at the conflict");
+        feed(&mut ed, ":workspace-bring<ret>");
+        settle_until(&mut ed, |ed| card(ed, "feat: rebasing 1/2").is_some() || says(ed, "bring feat:"));
+        let r = ed.workspace.rebase.as_ref().expect("taken up");
+        assert_eq!(r.stop.before, None, "not read: git stopped before tarae looked");
+        // Resolved by hand
+        std::fs::write(wt.join("a.txt"), "one\nmain\nfeat\n").unwrap();
+        assert_eq!(card_in_sight(&mut ed), ['y', 'X', 'n']);
+        feed(&mut ed, "y");
+        settle_until(&mut ed, |ed| card(ed, "Rebased feat onto main").is_some() || says(ed, "rebase feat:"));
+        assert_eq!(git_in(&wt, &["log", "--format=%s", "main..HEAD"]), "add b\nfeat a", "{}", said(&ed));
+        assert_eq!(commit_files(&wt, "HEAD~1"), "a.txt");
+        assert!(!said(&ed).contains("build"), "never counted as the resolution's: {}", said(&ed));
+        assert_eq!(git_in(&wt, &["status", "--porcelain"]), "?? build/", "left untracked");
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #206: a file ignored at the branch's tip that the commit being replayed un-ignores (the `.gitignore` that
+    /// covers it comes in a later commit of the series, as k8s's `target/`) shows as untracked at the stop: it's
+    /// never staged, the commit holds only its own files. The conflict resolved in a buffer: unsaved, it doesn't
+    /// go on; saved, that text is what's staged.
+    #[test]
+    fn a_file_the_replayed_commit_unignores_isnt_staged() {
+        let (repo, dir) = place("rebase-unignored");
+        let log = dir.join("claude.log");
+        let mut ed = editor(&repo, &dir);
+        claude_does(&mut ed, &log, "");
+        let wt = new_session(&mut ed, "feat");
+        // (feat a: a.txt and the ignore rule gone; add b: the rule back — `target/` ignored at the tip)
+        std::fs::write(wt.join("a.txt"), "one\nfeat\n").unwrap();
+        std::fs::write(wt.join(".gitignore"), "").unwrap();
+        git_in(&wt, &["commit", "-qam", "feat a"]);
+        std::fs::write(wt.join(".gitignore"), "target/\n").unwrap();
+        std::fs::write(wt.join("b.txt"), "b\n").unwrap();
+        git_in(&wt, &["add", "-A"]);
+        git_in(&wt, &["commit", "-qm", "add b"]);
+        std::fs::create_dir_all(wt.join("target/debug")).unwrap();
+        std::fs::write(wt.join("target/debug/tarae"), "built\n").unwrap();
+        assert_eq!(git_in(&wt, &["status", "--porcelain"]), "", "ignored at the tip");
+        std::fs::write(repo.join("a.txt"), "one\nmain\n").unwrap();
+        git_in(&repo, &["commit", "-qam", "main moves"]);
+        rebase_asked(&mut ed);
+        settle_until(&mut ed, |ed| says(ed, "conflict markers still in") || says(ed, "rebase feat:"));
+        assert!(says(&ed, "conflict markers still in a.txt"), "{}", said(&ed));
+        let status = git_in(&wt, &["status", "--porcelain"]);
+        assert!(status.contains("?? target/"), "un-ignored by the commit being replayed: {status}");
+        // Resolved in its buffer, not saved
+        feed(&mut ed, ":o a.txt<ret>");
+        assert!(ed.doc().text.to_string().contains("<<<<<<<"), "{}", ed.doc().text);
+        let all = ed.doc().text.len_bytes();
+        let resolved = crate::transaction::Change { from: 0, to: all, insert: "one\nmain\nfeat\n".into() };
+        ed.doc_mut().apply(&crate::transaction::Transaction::new(vec![resolved]));
+        assert!(ed.doc().is_modified());
+        feed(&mut ed, ":rebase-continue<ret>");
+        assert!(says(&ed, "unsaved changes in a.txt — save them first"), "{}", said(&ed));
+        feed(&mut ed, ":w<ret>");
+        settle_until(&mut ed, |ed| !ed.doc().is_modified());
         feed(&mut ed, ":rebase-continue<ret>");
         settle_until(&mut ed, |ed| card(ed, "Rebased feat onto main").is_some() || says(ed, "rebase feat:"));
         assert_eq!(git_in(&wt, &["log", "--format=%s", "main..HEAD"]), "add b\nfeat a", "{}", said(&ed));
-        assert_eq!(
-            git_in(&wt, &["show", "HEAD~1:.gitignore"]),
-            "target/\nsnap/",
-            "staged with the resolution"
-        );
-        assert_eq!(git_in(&wt, &["show", "HEAD~1:late.txt"]), "late", "the next continue took it");
-        assert_eq!(git_in(&wt, &["status", "--porcelain"]), "", "nothing left unstaged");
+        assert_eq!(commit_files(&wt, "HEAD~1"), ".gitignore\na.txt", "its own files only");
+        assert_eq!(git_in(&wt, &["show", "HEAD~1:a.txt"]), "one\nmain\nfeat", "the buffer's text");
+        assert_eq!(git_in(&wt, &["ls-files", "target"]), "", "never staged");
+        assert_eq!(git_in(&wt, &["status", "--porcelain"]), "", "ignored again at the new tip");
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #206: a tracked file changed after the resolved card's last read, `y` pressed — the card goes as it's
+    /// answered, and going on finds the file: the card is put back, held, the refusal on it, nothing staged —
+    /// yours (your key brought it back): the keys handed on to it once drawn, a key before that refused on it.
+    /// Undone and freed, `m` and its message's `:w` with the file changed again: alike.
+    #[test]
+    fn a_tracked_file_changed_after_the_card_puts_it_back() {
+        let off = card_back_on_going_on("rebase-back");
+        assert!(off.is_empty(), "{off:#?}");
+    }
+
+    /// …and it sees the card left gone, a warning only.
+    #[test]
+    fn the_card_back_test_sees_it_left_gone() {
+        let _back = crate::rebase::Broken::GoneOnRefusal.set();
+        let off = card_back_on_going_on("rebase-back-trap");
+        for how in ["y", "m's :w"] {
+            assert!(off.iter().any(|o| o.starts_with(&format!("{how}: no card back"))), "{off:#?}");
+        }
+    }
+
+    /// …and it sees the card put back waiting unfocused.
+    #[test]
+    fn the_card_back_test_sees_it_come_back_unfocused() {
+        let _back = crate::rebase::Broken::NotYours.set();
+        let off = card_back_on_going_on("rebase-back-unfocused");
+        for how in ["y", "m's :w"] {
+            assert!(
+                off.iter().any(|o| o.starts_with(&format!("{how}: a stray key not refused"))),
+                "{off:#?}"
+            );
+            assert!(off.iter().any(|o| o.starts_with(&format!("{how}: drawn without the keys"))), "{off:#?}");
+        }
+    }
+
+    /// What's off in `a_tracked_file_changed_after_the_card_puts_it_back`, each a line.
+    fn card_back_on_going_on(name: &str) -> Vec<String> {
+        let (repo, dir) = place(name);
+        let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
+        std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
+        let mut ed = editor(&repo, &dir);
+        claude_does(&mut ed, &log, &format!("cp '{}' a.txt;", answer.display()));
+        let (wt, _) = moved_apart(&mut ed, &repo, false);
+        rebase_asked(&mut ed);
+        settle_until(&mut ed, |ed| {
+            card(ed, "feat: conflicts resolved").is_some() || says(ed, "rebase feat:")
+        });
+        assert_eq!(card_in_sight(&mut ed), ['y', 'm', 'X', 'n'], "{}", said(&ed));
+        let held = "y waits until .gitignore is staged or undone — the git tab (space g)";
+        let refused = |ed: &mut Editor, how: &str, off: &mut Vec<String>| {
+            let n = ed.messages.len();
+            settle_until(ed, |ed| ed.messages.iter().skip(n).any(|m| m.2.contains("not going on")));
+            match card(ed, "feat: conflicts resolved") {
+                None => off.push(format!("{how}: no card back — {}", said(ed))),
+                Some(c) if c.held.as_deref() != Some(held) => {
+                    off.push(format!("{how}: the card back isn't held: {:?}", c.held))
+                }
+                Some(_) => {}
+            }
+            if ed.offer_said_now() != Some(held) {
+                off.push(format!("{how}: not refused on the card: {:?}", ed.offer_said_now()));
+            }
+            if crate::rebase::under_way(&wt).is_none() {
+                off.push(format!("{how}: went on — {}", said(ed)));
+            }
+            let status = git_in(&wt, &["status", "--porcelain", "a.txt", ".gitignore"]);
+            if status != "M .gitignore\nUU a.txt" {
+                off.push(format!("{how}: staged — {status}"));
+            }
+            // Yours, your key brought it back: the keys handed on to it — a key typed on before a frame drew it is
+            // refused on it (`n` would put it away), then it has them
+            let Some(id) = card(ed, "feat: conflicts resolved").map(|c| c.id) else { return };
+            if ed.card_has_keys() {
+                off.push(format!("{how}: the keys before it was drawn"));
+            }
+            feed(ed, "n");
+            let stray = "n came before this card was in sight — not taken";
+            if ed.offer_said_now() != Some(stray) || card(ed, "feat: conflicts resolved").is_none() {
+                off.push(format!("{how}: a stray key not refused on it: {:?}", ed.offer_said_now()));
+            }
+            crate::term::render(ed, &mut Vec::new(), 112, 30).unwrap();
+            if !ed.card_has_keys() || ed.offers.first().map(|o| o.id) != Some(id) {
+                off.push(format!("{how}: drawn without the keys"));
+            }
+        };
+        let mut off = Vec::new();
+        // `y`, a tracked file changed since the card's last read
+        std::fs::write(wt.join(".gitignore"), "target/\nsnap/\n").unwrap();
+        feed(&mut ed, "y");
+        refused(&mut ed, "y", &mut off);
+        // Undone, and the git tab's read frees it; `m`, the file changed again, then its message's `:w` (the card
+        // brought back by hand if `y` left it gone: the trap sees this half too)
+        if card(&ed, "feat: conflicts resolved").is_none() {
+            ed.rebase_offer(ed.workspace.id).unwrap();
+        }
+        git_in(&wt, &["checkout", "--", ".gitignore"]);
+        ed.git_refresh();
+        settle_until(&mut ed, |ed| card(ed, "feat: conflicts resolved").is_none_or(|c| c.held.is_none()));
+        assert_eq!(card_in_sight(&mut ed), ['y', 'm', 'X', 'n'], "{}", said(&ed));
+        feed(&mut ed, "m");
+        settle_until(&mut ed, |ed| ed.in_rebase_message() || says(ed, "the commit's message:"));
+        assert!(ed.in_rebase_message(), "{}", said(&ed));
+        std::fs::write(wt.join(".gitignore"), "target/\nsnap/\n").unwrap();
+        feed(&mut ed, ":w<ret>");
+        refused(&mut ed, "m's :w", &mut off);
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+        off
+    }
+
+    /// #206: the conflicted paths are staged as git named them, literally — a conflicted `a*.txt` beside an
+    /// untracked `ab.txt` there as git stopped, which the `*` would match: the commit holds `a*.txt` alone,
+    /// `ab.txt` stays untracked and as it was.
+    #[test]
+    fn a_conflicted_name_with_a_star_stages_only_itself() {
+        let off = star_named_conflict("rebase-star");
+        assert!(off.is_empty(), "{off:#?}");
+    }
+
+    /// …and it sees the paths staged as globs.
+    #[test]
+    fn the_star_test_sees_paths_staged_as_globs() {
+        let _back = crate::rebase::Broken::GlobPathspecs.set();
+        let off = star_named_conflict("rebase-star-trap");
+        assert!(off.iter().any(|o| o.starts_with("the commit holds") && o.contains("ab.txt")), "{off:#?}");
+    }
+
+    /// What's off in `a_conflicted_name_with_a_star_stages_only_itself`, each a line.
+    fn star_named_conflict(name: &str) -> Vec<String> {
+        let (repo, dir) = place(name);
+        let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
+        std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
+        std::fs::write(repo.join("a*.txt"), "one\n").unwrap();
+        git_in(&repo, &["add", "-A"]);
+        git_in(&repo, &["commit", "-qm", "a star"]);
+        let mut ed = editor(&repo, &dir);
+        claude_does(&mut ed, &log, &format!("cp '{}' 'a*.txt';", answer.display()));
+        let wt = new_session(&mut ed, "feat");
+        std::fs::write(wt.join("a*.txt"), "one\nfeat\n").unwrap();
+        git_in(&wt, &["commit", "-qam", "feat a"]);
+        std::fs::write(repo.join("a*.txt"), "one\nmain\n").unwrap();
+        git_in(&repo, &["commit", "-qam", "main moves"]);
+        std::fs::write(wt.join("ab.txt"), "mine\n").unwrap();
+        rebase_asked(&mut ed);
+        settle_until(&mut ed, |ed| {
+            card(ed, "feat: conflicts resolved").is_some() || says(ed, "rebase feat:")
+        });
+        assert_eq!(card_in_sight(&mut ed), ['y', 'm', 'X', 'n'], "{}", said(&ed));
+        feed(&mut ed, "y");
+        settle_until(&mut ed, |ed| card(ed, "Rebased feat onto main").is_some() || says(ed, "rebase feat:"));
+        let mut off = Vec::new();
+        let commits = git_in(&wt, &["log", "--format=%s", "main..HEAD"]);
+        if commits != "feat a" {
+            off.push(format!("not gone on: {commits:?} — {}", said(&ed)));
+        }
+        let files = commit_files(&wt, "HEAD");
+        if files != "a*.txt" {
+            off.push(format!("the commit holds {files:?}, not a*.txt alone"));
+        }
+        let status = git_in(&wt, &["status", "--porcelain"]);
+        if status != "?? ab.txt" {
+            off.push(format!("ab.txt not left untracked: {status:?}"));
+        }
+        if std::fs::read_to_string(wt.join("ab.txt")).ok().as_deref() != Some("mine\n") {
+            off.push("ab.txt changed".into());
+        }
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+        off
     }
 
     /// Claude's turn ends with markers left: the files are named, nothing goes on — `:rebase-continue`

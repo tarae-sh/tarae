@@ -55,6 +55,7 @@ mod ptybroker;
 mod quota;
 mod quotes;
 mod rebasemsg;
+mod rebaserecheck;
 mod reveal;
 mod reviews;
 mod rundoc;

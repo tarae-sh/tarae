@@ -41,6 +41,8 @@ struct Job {
     /// A save Claude caused (its change accepted, its own write that never came): written beneath this folder
     /// through no link (`write_beneath`), its missing folders made the same way.
     beneath: Option<PathBuf>,
+    /// The user's input it was asked under (`Queue.asked`): what follows a `:w` runs as asked by it.
+    input: Option<u64>,
 }
 
 /// `text` to `path` as Claude's changes are written (`refactor::write_file`, `beneath.rs`): through descriptors
@@ -80,6 +82,8 @@ pub struct Done {
     pub then: Then,
     /// The file's new fingerprint — or why it couldn't be written
     pub result: Result<Option<Stamp>, String>,
+    /// The user's input the save was asked under (`Job.input`).
+    pub input: Option<u64>,
 }
 
 #[derive(Default)]
@@ -130,8 +134,8 @@ fn write_one(job: Job, shared: &(Mutex<Shared>, Condvar), pause: &dyn Fn()) -> b
     let (lock, cv) = shared;
     let idle = {
         let mut s = locked(lock);
-        let Job { id, path, version, then, .. } = job;
-        s.done.push(Done { id, path, version, then, result });
+        let Job { id, path, version, then, input, .. } = job;
+        s.done.push(Done { id, path, version, then, result, input });
         s.pending -= 1;
         s.written += 1;
         s.pending == 0
@@ -329,7 +333,8 @@ impl Editor {
         let doc = self.docs.iter_mut().find(|d| d.id == id).ok_or("the buffer was closed")?;
         let path = doc.check_save(force).map_err(|e| format!("{e:#}"))?;
         doc.saving += 1;
-        let job = Job { id, path, text: doc.text.clone(), version: doc.version(), then, beneath };
+        let input = self.events.asked();
+        let job = Job { id, path, text: doc.text.clone(), version: doc.version(), then, beneath, input };
         let jobs = self.events.jobs();
         self.saver.push(job, &jobs);
         Ok(())
@@ -426,7 +431,7 @@ impl Editor {
                         self.files_moved(&d.path);
                     }
                     match d.then {
-                        Then::Command => saved.push(d.id),
+                        Then::Command => saved.push((d.id, d.input)),
                         Then::Auto(w) => {
                             why = w;
                             auto.push(d.id);
@@ -436,14 +441,20 @@ impl Editor {
                 Err(e) => failed.push(e),
             }
         }
-        for &id in saved.iter().chain(&auto) {
+        for &id in saved.iter().map(|s| &s.0).chain(&auto) {
             self.lsp_did_save(id);
             self.undo_persist(id);
             self.plugin_event(crate::plugin::PluginEvent::Saved, id);
         }
-        for &id in &saved {
+        // (as asked by the `:w` that saved it, as a job's result is: a rebase's card its message's `:w` brings back
+        // is yours — #206, #205)
+        for &(id, input) in &saved {
+            let was = input.map(|_| self.events.set_asked(input));
             self.git_saved(id);
             self.rebase_saved(id);
+            if let Some(was) = was {
+                self.events.set_asked(was);
+            }
         }
         if !failed.is_empty() {
             self.set_error(format!("not saved — {}", failed.join("; ")));
@@ -452,7 +463,7 @@ impl Editor {
             |ed: &Editor, id: DocId| ed.docs.iter().find(|d| d.id == id).map(|d| d.display_name_short());
         match (saved.as_slice(), auto.as_slice()) {
             ([], []) => {}
-            ([one], []) => {
+            ([(one, _)], []) => {
                 if let Some(doc) = self.docs.iter().find(|d| d.id == *one) {
                     let msg = format!(
                         "Saved {} · {} lines",

@@ -299,6 +299,10 @@ pub struct Stop {
     pub since: Option<std::time::SystemTime>,
     /// The replayed commit's whole message (frictions29 #25: what a resolution may make wrong).
     pub message: Option<String>,
+    /// What was untracked or ignored in the checkout as git stopped (`status`'s, a folder whole as `dir/`) —
+    /// never the resolution's (#206: a build folder the series ignores only in a later commit). None: not read
+    /// (a rebase tarae took up): no untracked file is counted as the resolution's then.
+    pub before: Option<Vec<String>>,
 }
 
 impl Stop {
@@ -325,8 +329,10 @@ pub struct Rebase {
     /// the turn under way to end.
     pub asked: bool,
     waiting: Option<Ask>,
-    /// What the resolution changed besides the conflicted files (#129): in its review, staged with them.
-    pub also: Vec<String>,
+    /// What the resolution changed besides the conflicted files (#129): in its review and named on its card,
+    /// never staged by tarae on `y` (#206) — a tracked one holds `y` until you stage or undo it, a made one is
+    /// staged by the card's `a` only.
+    pub also: Besides,
     /// The files whose changes in no commit were set aside for it (#188, `aside::REBASE`) — put back at its end,
     /// and said.
     pub stashed: Vec<String>,
@@ -334,6 +340,9 @@ pub struct Rebase {
     pub resolved_at: Option<std::time::Instant>,
     /// What becomes of the replayed commits' messages (frictions29 #25).
     pub messages: Messages,
+    /// `rebase_recheck`'s reads: the last asked · the last landed — only the last asked lands (an older one may have
+    /// read the checkout before a stage); the two apart, one is out.
+    pub rechecks: (u64, u64),
 }
 
 /// The messages of the commits a rebase replays, where a resolution may have made them wrong (frictions29 #25:
@@ -500,6 +509,7 @@ pub fn under_way(root: &Path) -> Option<Stop> {
             .ok()
             .map(|m| m.trim_end().to_string())
             .filter(|m| !m.is_empty()),
+        before: None,
     })
 }
 
@@ -528,7 +538,8 @@ pub enum Aside {
 }
 
 fn ended(root: &Path, branch: &str, base: &str, aborting: bool) -> (Ended, Aside) {
-    if let Some(stop) = under_way(root) {
+    if let Some(mut stop) = under_way(root) {
+        stop.before = Some(left_alone(root));
         let ask = (!stop.files.is_empty()).then(|| ask(root, branch, base, &stop));
         return (Ended::Stopped(Box::new(stop), ask), Aside::None);
     }
@@ -658,11 +669,12 @@ fn marked(root: &Path, files: Vec<(String, Option<ropey::Rope>)>) -> Vec<String>
         .collect()
 }
 
-/// Every file `git add -A` would stage in the checkout (relative): changed against the index, unmerged,
-/// untracked. `status` with optional locks off, as Claude's runs and the git tab read it — never a `git diff`
-/// over the working tree (it refreshes the index).
-fn unstaged(root: &Path) -> Vec<String> {
-    let out = git(root, &["status", "--porcelain", "-z", "--untracked-files=all"], None).unwrap_or_default();
+/// `status`'s entries in the checkout (relative): (its two letters, the path). With optional locks off, as
+/// Claude's runs and the git tab read it — never a `git diff` over the working tree (it refreshes the index).
+fn status(root: &Path, args: &[&str]) -> Vec<(String, String)> {
+    let mut all = vec!["status", "--porcelain", "-z"];
+    all.extend(args);
+    let out = git(root, &all, None).unwrap_or_default();
     let mut v = Vec::new();
     let mut entries = out.split('\0').filter(|e| !e.is_empty());
     while let Some(e) = entries.next() {
@@ -671,8 +683,55 @@ fn unstaged(root: &Path) -> Vec<String> {
         if xy.starts_with(['R', 'C']) {
             entries.next();
         }
-        if !xy.ends_with(' ') && !path.is_empty() {
-            v.push(path.to_string());
+        if !path.is_empty() {
+            v.push((xy.to_string(), path.to_string()));
+        }
+    }
+    v
+}
+
+/// What's untracked or ignored in the checkout as git stops (`Stop.before`): a folder that's all untracked, or
+/// ignored, whole (`dir/`) — never walked into, a build folder's thousands of files one row.
+fn left_alone(root: &Path) -> Vec<String> {
+    let v = status(root, &["--untracked-files=normal", "--ignored=matching"]);
+    v.into_iter().filter(|(xy, _)| xy == "??" || xy == "!!").map(|(_, p)| p).collect()
+}
+
+/// What the checkout has changed besides the conflicted files (relative), as a resolution leaves it (#206).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Besides {
+    /// Tracked files changed against the index — git won't go on while one is ("You must edit all merge
+    /// conflicts…"), and tarae never stages one: the resolved card's `y` waits until you stage or undo them.
+    pub tracked: Vec<String>,
+    /// Untracked files that weren't there as git stopped (`before`; none counted when it wasn't read) — the
+    /// resolution's own (code split into a new file): `y` leaves them untracked, said; the card's `a` stages
+    /// those it named.
+    pub made: Vec<String>,
+}
+
+impl Besides {
+    fn all(&self) -> Vec<String> {
+        self.tracked.iter().chain(&self.made).cloned().collect()
+    }
+}
+
+/// What's changed in the checkout at `root` besides `conflicted`: tracked files the working tree changed against
+/// the index (what git staged at the stop, the replayed commit's own, isn't), and untracked ones made since the
+/// stop (`before`). Never what was untracked or ignored as git stopped, nor a file inside such a folder.
+fn besides(root: &Path, conflicted: &[String], before: Option<&[String]>) -> Besides {
+    let there = |p: &str| {
+        before.is_none_or(|b| b.iter().any(|b| b == p || (b.ends_with('/') && p.starts_with(b.as_str()))))
+    };
+    let mut v = Besides::default();
+    for (xy, path) in status(root, &["--untracked-files=all"]) {
+        if conflicted.contains(&path) {
+            continue;
+        }
+        match xy.as_str() {
+            "??" if !there(&path) => v.made.push(path),
+            "??" | "!!" => {}
+            _ if !xy.ends_with(' ') => v.tracked.push(path),
+            _ => {}
         }
     }
     v
@@ -685,6 +744,60 @@ fn named(files: &[String]) -> String {
         s.push_str(&format!(" and {} more", files.len() - 4));
     }
     s
+}
+
+/// A break a trap makes, to see its test or simulation fail (`sim/rebaserecheck.rs`, `worktree`'s tests; test
+/// builds only — `broken` is false in others; one at a time, `Broken::set`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Broken {
+    #[cfg(test)]
+    No,
+    /// A read again that finds no card up puts one up: a card answered comes back.
+    BringsBack,
+    /// A read again lands at whatever stop its rebase is resolved at by then — the stage alone looked at.
+    AnyStop,
+    /// A card said again keeps its `rev`: the key focused on what it said answers what it says now.
+    SameRev,
+    /// A tracked file found as `y` (or `m`'s `:w`) goes on with the card gone puts no card back: a warning only.
+    GoneOnRefusal,
+    /// The card put back isn't yours: it waits unfocused behind `C-q`, the refusal on it out of sight.
+    NotYours,
+    /// The conflicted paths staged as pathspecs: a `*` in a name a glob, matching its neighbours.
+    GlobPathspecs,
+}
+
+#[cfg(test)]
+thread_local! {
+    static BROKEN: std::cell::Cell<Broken> = const { std::cell::Cell::new(Broken::No) };
+}
+
+/// Broken this way until it goes (dropped — a failed assertion too).
+#[cfg(test)]
+pub(crate) struct Back;
+
+#[cfg(test)]
+impl Drop for Back {
+    fn drop(&mut self) {
+        BROKEN.set(Broken::No);
+    }
+}
+
+#[cfg(test)]
+impl Broken {
+    pub(crate) fn set(self) -> Back {
+        BROKEN.set(self);
+        Back
+    }
+}
+
+#[cfg(test)]
+fn broken(b: Broken) -> bool {
+    BROKEN.get() == b
+}
+
+#[cfg(not(test))]
+fn broken(_: Broken) -> bool {
+    false
 }
 
 // ── The flow ─────────────────────────────────────────────────────────────────
@@ -774,12 +887,14 @@ pub fn turn_over(ed: &mut Editor) {
     let answer = ed.workspace.claude.chat.as_ref().map(|c| c.last_answer()).unwrap_or_default();
     r.messages.proposed = proposed_message(&answer);
     let conflicted = r.stop.files.clone();
+    let before = r.stop.before.clone();
     let files = ed.rebase_texts(&conflicted);
     let root = ed.workspace.root.clone();
     ed.events.jobs().spawn(move || {
         let left = marked(&root, files);
-        // (what else the resolution changed — a snapshot blessed again: #129, left unstaged it stopped git)
-        let also = unstaged(&root).into_iter().filter(|f| !conflicted.contains(f)).collect();
+        // (what else the resolution changed — a snapshot blessed again: #129; never what was untracked or
+        // ignored as git stopped: #206)
+        let also = besides(&root, &conflicted, before.as_deref());
         move |ed: &mut Editor| ed.rebase_checked(left, also)
     });
 }
@@ -983,10 +1098,11 @@ impl Editor {
             stop: Stop::default(),
             asked: false,
             waiting: None,
-            also: Vec::new(),
+            also: Besides::default(),
             stashed,
             resolved_at: None,
             messages: Default::default(),
+            rechecks: (0, 0),
         });
         let base = crate::packs::sh_quote(&m.base);
         let branch = m.branch.clone();
@@ -1072,7 +1188,7 @@ impl Editor {
                 if let Some(r) = self.workspace.rebase.as_mut() {
                     (r.stage, r.step, r.asked) = (Stage::Stopped, stop.step, false);
                     r.stop = *stop;
-                    r.also.clear();
+                    r.also = Besides::default();
                     (r.messages.proposed, r.messages.editing, r.messages.written) = (None, None, None);
                 }
                 match ask {
@@ -1205,9 +1321,9 @@ impl Editor {
     }
 
     /// The markers looked for after Claude's turn: some left — named; none — the review of the resolved
-    /// files, and of what else it changed (`also`, staged with them), against the commit being replayed, and
-    /// the card.
-    fn rebase_checked(&mut self, left: Vec<String>, also: Vec<String>) {
+    /// files, and of what else it changed (`also`, named on the card, never staged), against the commit being
+    /// replayed, and the card.
+    fn rebase_checked(&mut self, left: Vec<String>, also: Besides) {
         let Some(r) = self.workspace.rebase.as_mut().filter(|r| r.stage == Stage::Stopped) else { return };
         if !left.is_empty() {
             return self.set_warning(format!(
@@ -1219,7 +1335,7 @@ impl Editor {
         r.resolved_at = Some(std::time::Instant::now());
         r.also = also;
         let mut stop = r.stop.clone();
-        stop.files.extend(r.also.iter().cloned());
+        stop.files.extend(r.also.all());
         match stop.commit {
             // (the card once the review is open — it's about what the review shows)
             Some((sha, short, subject)) => {
@@ -1254,22 +1370,55 @@ impl Editor {
     fn rebase_card(&self) -> Offer {
         let r = self.workspace.rebase.as_ref().expect("a rebase");
         let (stop, branch, name) = (&r.stop, &r.branch, self.workspace.label());
-        let n = stop.files.len() + r.also.len();
-        let them = if n == 1 { "it" } else { "them" };
+        let n = stop.files.len() + r.also.tracked.len() + r.also.made.len();
+        let shown = if n == 1 { "it" } else { "them" };
+        let them = if stop.files.len() == 1 { "it" } else { "them" };
+        let resolved = r.stage == Stage::Resolved;
         // (short: the card shares the code's room with the review it's about and the task panel — what `y`
         // does, its button says)
-        let also = match r.also.is_empty() {
-            true => String::new(),
-            false => format!(" It also changed {} — staged with them.", named(&r.also)),
-        };
+        // (#206: what else changed is never staged on `y` — a tracked file holds it, git wouldn't go on with one
+        // unstaged; a made one is left untracked, or staged by `a`)
+        let (tracked, made) = (&r.also.tracked, &r.also.made);
+        let it = |v: &[String]| if v.len() == 1 { "it" } else { "them" };
+        let is = |v: &[String]| if v.len() == 1 { "is" } else { "are" };
+        // (`a` once nothing holds `y` — it stages what `y` does, and these)
+        let stages_made = resolved && tracked.is_empty() && !made.is_empty();
+        let mut also = String::new();
+        if !tracked.is_empty() {
+            also.push_str(&format!(" It also changed {} — not staged by tarae.", named(tracked)));
+        }
+        if !made.is_empty() {
+            also.push_str(&format!(
+                " It made {}, untracked: {}y goes on without {}.",
+                named(made),
+                if stages_made { format!("a stages {} too, ", it(made)) } else { String::new() },
+                it(made),
+            ));
+        }
+        // (what holds `y` — its answer gone from the card, the key refused on it: `Offer.held`)
+        let held = (resolved && !tracked.is_empty()).then(|| {
+            format!(
+                "y waits until {} {} staged or undone — the git tab (space g)",
+                named(tracked),
+                is(tracked)
+            )
+        });
         let (title, first) = match (r.stage, stop.files.is_empty()) {
             (Stage::Resolved, _) => (
                 format!("{name}: conflicts resolved"),
                 format!(
-                    "{} resolved for {}.{also} The review shows {them} against that commit — not staged yet: y \
-                     stages {them} and goes on.",
+                    "{} resolved for {}.{also} The review shows {shown} against that commit — not staged yet: \
+                     y stages {them} and goes on{}.",
                     named(&stop.files),
                     stop.at(),
+                    match tracked.is_empty() {
+                        true => String::new(),
+                        false => format!(
+                            " once {} {} staged or undone in the git tab (space g)",
+                            it(tracked),
+                            is(tracked)
+                        ),
+                    },
                 ),
             ),
             (_, false) => (
@@ -1293,7 +1442,7 @@ impl Editor {
             ),
         };
         // (frictions29 #25: resolved, the commit's message may no longer hold — `m` writes it first)
-        let message = r.stage == Stage::Resolved && stop.message.is_some();
+        let message = resolved && stop.message.is_some();
         let said = match (message, r.messages.proposed.is_some()) {
             (false, _) => String::new(),
             (true, true) => {
@@ -1308,14 +1457,99 @@ impl Editor {
         let q = format!("{first}\n\n{said}X aborts the rebase: {branch} goes back as it was.");
         let x = q.lines().count() - 1;
         let root = self.workspace.root.clone();
-        Offer::new(
+        let mut o = Offer::new(
             title,
             &q,
             "Going on with the rebase…",
             "Couldn't go on with the rebase".into(),
-            What::RebaseResolved { root, message },
+            What::RebaseResolved { root, message, made: stages_made },
         )
-        .warning(x..x + 1)
+        .warning(x..x + 1);
+        o.held = held;
+        o
+    }
+
+    /// What else the resolution of the rebase at `root` changed, read again (#206): `y` on its card while a
+    /// tracked file held it, or the git tab's status read (a stage or undo there) — changed since the card,
+    /// the card says it as it now stands (the same card, its `rev` up: a key meant for what it said isn't an
+    /// answer to what it says now).
+    pub(crate) fn rebase_recheck(&mut self, root: &Path) {
+        let Some(id) = self.session_at(root) else { return };
+        self.with_workspace(id, |ed| {
+            let Some(r) = ed.workspace.rebase.as_mut().filter(|r| r.stage == Stage::Resolved) else { return };
+            if r.also.tracked.is_empty() {
+                return;
+            }
+            r.rechecks.0 += 1;
+            let (n, stop) = (r.rechecks.0, r.stop.clone());
+            let root = ed.workspace.root.clone();
+            ed.events.jobs().spawn(move || {
+                let now = besides(&root, &stop.files, stop.before.as_deref());
+                move |ed: &mut Editor| {
+                    let Some(r) = ed.workspace.rebase.as_mut().filter(|r| r.rechecks.0 == n) else { return };
+                    r.rechecks.1 = n;
+                    // (still resolved at the stop it read for: gone on since — its card answered — or resolved
+                    // again at the next stop, what it read isn't that one's)
+                    let there = r.stage == Stage::Resolved && (r.stop == stop || broken(Broken::AnyStop));
+                    if !there || r.also == now {
+                        return;
+                    }
+                    r.also = now;
+                    ed.rebase_card_again();
+                }
+            });
+        });
+    }
+
+    /// The card of the rebase in front said again as it now stands (`rebase_card`), wherever it waits — the same
+    /// card, its `rev` up: a key meant for what it said isn't an answer to what it says now (the focus lets go).
+    /// None up — answered, or gone with the stop — none is put up (one answered `n` waits parked, said again there).
+    fn rebase_card_again(&mut self) {
+        let new = self.rebase_card();
+        let root = self.workspace.root.clone();
+        let mine = |o: &Offer| matches!(&o.what, What::RebaseResolved { root: r, .. } if *r == root);
+        let parked =
+            std::iter::once(&mut self.workspace).chain(&mut self.workspaces).flat_map(|l| &mut l.parked);
+        match self.offers.iter_mut().chain(parked).find(|o| mine(o)) {
+            Some(o) => {
+                let rev = o.rev + u64::from(!broken(Broken::SameRev));
+                (o.question, o.warning, o.held) = (new.question, new.warning, new.held);
+                (o.what, o.rev) = (new.what, rev);
+            }
+            None if broken(Broken::BringsBack) => self.push_offer(new),
+            None => {}
+        }
+    }
+
+    /// The resolved card of the rebase in front put back where none waits (`rebase_offer`), what holds it refused
+    /// on it (`why` where nothing does) — #206: `y`, `a` and `m`'s `:w` go on with the card gone, and a tracked
+    /// file changed since its last read left only a warning then. One answered `n` waits parked: left there.
+    /// Your input brought it back, so it's yours (`Offer.yours`) while that input is still the last one (#205):
+    /// handed the keys as an answer hands them on (`card_next`) — focused once a frame has drawn it, a key typed
+    /// on before then refused on it, never an answer.
+    fn rebase_card_back(&mut self, why: &str) {
+        let root = self.workspace.root.clone();
+        let mine = |o: &Offer| matches!(&o.what, What::RebaseResolved { root: r, .. } if *r == root);
+        let waiting = |ed: &Editor| {
+            let parked = std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked);
+            ed.offers.iter().chain(parked).find(|o| mine(o)).map(|o| (o.id, o.rev, o.held.clone()))
+        };
+        if waiting(self).is_some() || broken(Broken::GoneOnRefusal) {
+            return;
+        }
+        let yours = self.events.asked() == Some(self.input_seq) && !broken(Broken::NotYours);
+        if self.rebase_offer(self.workspace.id).is_err() {
+            return;
+        }
+        let Some((id, rev, held)) = waiting(self) else { return };
+        self.offer_said = Some((id, rev, held.unwrap_or_else(|| why.to_string())));
+        // (in front here, not parked in a session behind: the keys handed on to it)
+        if let Some(o) = self.offers.iter_mut().find(|o| o.id == id) {
+            o.yours = yours;
+            if yours && self.offers.first().is_some_and(|f| f.id == id) {
+                self.card_next = Some((id, rev));
+            }
+        }
     }
 
     /// Session `id`'s rebase met where it's in the way (`:workspace-bring`, #175): its card up in front — `y`
@@ -1550,25 +1784,37 @@ impl Editor {
         }
     }
 
-    /// The resolved card's, a session's rebase (wherever it is): `y` continue · `X` abort.
-    pub fn rebase_answer(&mut self, root: &Path, go_on: bool) {
+    /// The resolved card's, a session's rebase (wherever it is): `y` continue · `a` continue, the files the
+    /// resolution made that the card named staged too · `X` abort.
+    pub fn rebase_answer(&mut self, root: &Path, key: char) {
         let Some(id) = self.session_at(root) else { return };
         self.with_workspace(id, |ed| {
-            let done = if go_on { ed.rebase_continue() } else { ed.rebase_abort() };
+            let done = match key {
+                'X' => ed.rebase_abort(),
+                _ => ed.rebase_go_on(key == 'a'),
+            };
             if let Err(e) = done {
                 ed.set_error(e);
             }
         });
     }
 
-    /// `:rebase-continue` — the stopped rebase's files, with no markers left, staged with what else the
-    /// resolution changed (its review showed them — `Rebase.also`) and `git rebase --continue` (it may stop
-    /// again). Anything else changed in the checkout isn't staged unseen: named, and the next
-    /// `:rebase-continue` stages it (#129: left unstaged, git refused to go on). A rebase tarae didn't start
-    /// is taken up first.
+    /// `:rebase-continue` — the stopped rebase's conflicted files, with no markers left, staged (those git
+    /// listed, nothing else — #206: a whole tree staged took a build folder into a commit) and `git rebase
+    /// --continue` (it may stop again) — never with a buffer of the checkout unsaved (`rebase_free`), so what's
+    /// staged is the text the markers were looked for in. What else the resolution changed is never staged: a
+    /// tracked file changed besides them stops it, named (git wouldn't go on — #129), yours to stage or undo;
+    /// an untracked one it made stays untracked, said. A rebase tarae didn't start is taken up first.
     /// The replayed commit goes on with the message written with `m` (`Messages.written`), else as it is — a
     /// resolved stop's then named on the bring card (`Messages.kept`).
     pub fn rebase_continue(&mut self) -> Result<(), String> {
+        self.rebase_go_on(false)
+    }
+
+    /// `rebase_continue`, and with `made` (the resolved card's `a`) the files the resolution made that its card
+    /// named staged with the conflicted ones — still untracked and still not there as git stopped; one made
+    /// since the card isn't staged unseen.
+    fn rebase_go_on(&mut self, made: bool) -> Result<(), String> {
         let name = self.workspace.label().to_string();
         let Some(r) = self.workspace.rebase.as_ref() else {
             return self.rebase_find(true);
@@ -1578,8 +1824,9 @@ impl Editor {
         }
         self.rebase_free()?;
         let mut files = r.stop.files.clone();
-        files.extend(r.also.iter().cloned());
-        let texts = self.rebase_texts(&r.stop.files);
+        let before = r.stop.before.clone();
+        let named_made = if made { r.also.made.clone() } else { Vec::new() };
+        let texts = self.rebase_texts(&files);
         let root = self.workspace.root.clone();
         let written = r.messages.written.clone();
         self.events.jobs().spawn(move || {
@@ -1591,25 +1838,38 @@ impl Editor {
                 std::fs::write(&out, message_written(&text)).map_err(|e| e.to_string())?;
                 Ok(out)
             });
-            let unseen: Vec<String> = unstaged(&root).into_iter().filter(|f| !files.contains(f)).collect();
+            let besides = besides(&root, &files, before.as_deref());
             move |ed: &mut Editor| {
                 let Some(r) = ed.workspace.rebase.as_mut().filter(|r| r.stopped()) else { return };
                 if !left.is_empty() {
                     return ed
                         .set_warning(format!("conflict markers still in {} — not going on", named(&left)));
                 }
-                if !unseen.is_empty() {
+                // (a tracked file changed besides the conflict: git won't go on while it's unstaged, and tarae
+                // stages only what the conflict named — #206)
+                let (tracked, made) = (&besides.tracked, &besides.made);
+                if !tracked.is_empty() {
+                    let one = tracked.len() == 1;
                     let msg = format!(
-                        "not going on — {} changed too and {} unstaged: look at {} (space g), then \
-                         :rebase-continue stages {} with the rest",
-                        named(&unseen),
-                        if unseen.len() == 1 { "is" } else { "are" },
-                        if unseen.len() == 1 { "it" } else { "them" },
-                        if unseen.len() == 1 { "it" } else { "them" },
+                        "not going on — {} changed besides the conflict and {} unstaged: tarae stages only the \
+                         conflicted files — stage or undo {} in the git tab (space g), then :rebase-continue",
+                        named(tracked),
+                        if one { "is" } else { "are" },
+                        if one { "it" } else { "them" },
                     );
-                    r.also.extend(unseen);
+                    // (its card says what this found — put back where none waits: `y` and `a` took it away as
+                    // they were pressed, and `m`'s `:w` comes here with it gone)
+                    if r.also != besides {
+                        r.also = besides;
+                        ed.rebase_card_again();
+                    }
+                    ed.rebase_card_back(&msg);
                     return ed.set_warning(msg);
                 }
+                // (what the resolution made: `a` stages what its card named, `y` goes on without it — said)
+                let staged: Vec<String> = made.iter().filter(|f| named_made.contains(f)).cloned().collect();
+                let untracked: Vec<String> = made.iter().filter(|f| !staged.contains(f)).cloned().collect();
+                files.extend(staged);
                 // (a resolved stop's commit going on with its message as it was: named on the bring card)
                 r.messages.written = None;
                 let message = match message {
@@ -1624,6 +1884,13 @@ impl Editor {
                     r.messages.kept.push(subject.clone());
                 }
                 r.messages.editing = None;
+                if !untracked.is_empty() {
+                    ed.set_status(format!(
+                        "going on without {}: {} untracked, not in the commit",
+                        named(&untracked),
+                        if untracked.len() == 1 { "it stays" } else { "they stay" }
+                    ));
+                }
                 ed.rebase_review_gone();
                 ed.rebase_cards_gone();
                 let quoted: Vec<String> = files.iter().map(|f| crate::packs::sh_quote(f)).collect();
@@ -1632,10 +1899,13 @@ impl Editor {
                 let editor = message.map(|f| {
                     crate::packs::sh_quote(&format!("cp {}", crate::packs::sh_quote(&f.to_string_lossy())))
                 });
+                // (the conflicted paths as git named them, literally — a `*` in a name is no glob — and nothing
+                // else: #206)
+                let literal = if broken(Broken::GlobPathspecs) { "" } else { " --literal-pathspecs" };
                 let cmd = move |git: &str| {
                     let add = match quoted.is_empty() {
                         true => String::new(),
-                        false => format!("{git} add -A -- {} && ", quoted.join(" ")),
+                        false => format!("{git}{literal} add -- {} && ", quoted.join(" ")),
                     };
                     match &editor {
                         // (`whitespace`: git keeps the message's own `#` lines — tarae cut its own already)
@@ -1707,12 +1977,13 @@ impl Editor {
             stop,
             asked: false,
             waiting: None,
-            also: Vec::new(),
+            also: Besides::default(),
             // (one tarae didn't start, or started before a restart: changes set aside for it are found at its end
             // by their ref — `changes_back`)
             stashed: Vec::new(),
             resolved_at: None,
             messages: Default::default(),
+            rechecks: (0, 0),
         });
     }
 
@@ -1847,10 +2118,11 @@ pub(crate) fn ask_for_test(ed: &mut Editor, question: &str) {
         stop: Stop::default(),
         asked: false,
         waiting: None,
-        also: Vec::new(),
+        also: Besides::default(),
         stashed: Vec::new(),
         resolved_at: None,
         messages: Default::default(),
+        rechecks: (0, 0),
     });
     let a = Ask { question: question.into(), about: "<conflicts/>".into(), chip: "rebase".into() };
     ed.rebase_ask(a);
@@ -1875,11 +2147,44 @@ pub(crate) fn resolved_for_test(ed: &mut Editor, message: &str, proposed: Option
         stop,
         asked: true,
         waiting: None,
-        also: Vec::new(),
+        also: Besides::default(),
         stashed: Vec::new(),
         resolved_at: Some(std::time::Instant::now()),
         messages: Messages { proposed: proposed.map(String::from), ..Messages::default() },
+        rechecks: (0, 0),
     });
+}
+
+/// The front session's rebase resolved at its stop `n`, git having named `files` conflicted there — what else the
+/// checkout changed read as the end of Claude's turn reads it (`besides`), the cards of the stop before gone and no
+/// card put up (`rebase_offer` puts it) — for the simulation of the resolved card read again
+/// (`sim/rebaserecheck.rs`).
+#[cfg(test)]
+pub(crate) fn resolved_at_for_test(ed: &mut Editor, n: usize, files: &[&str]) {
+    let stop = Stop {
+        step: Some((n, n + 1)),
+        files: files.iter().map(|f| f.to_string()).collect(),
+        commit: Some((format!("{n:040}"), format!("{n:07}"), format!("stop {n}"))),
+        ..Stop::default()
+    };
+    ed.rebase_cards_gone();
+    let also = besides(&ed.workspace.root, &stop.files, None);
+    if ed.workspace.rebase.is_none() {
+        resolved_for_test(ed, "stop", None);
+    }
+    let r = ed.workspace.rebase.as_mut().expect("a rebase");
+    (r.stage, r.step, r.stop, r.also) = (Stage::Resolved, stop.step, stop, also);
+    r.messages = Messages::default();
+}
+
+/// The front session's rebase going on — git at work, as `y` leaves it once its line starts (its cards gone) — for
+/// `sim/rebaserecheck.rs`, which runs no process.
+#[cfg(test)]
+pub(crate) fn going_on_for_test(ed: &mut Editor) {
+    ed.rebase_cards_gone();
+    if let Some(r) = ed.workspace.rebase.as_mut() {
+        r.stage = Stage::Running { generation: 0, aborting: false };
+    }
 }
 
 #[cfg(test)]
@@ -1948,10 +2253,11 @@ mod tests {
             stop: Stop::default(),
             asked: false,
             waiting: None,
-            also: Vec::new(),
+            also: Besides::default(),
             stashed: Vec::new(),
             resolved_at: None,
             messages: Default::default(),
+            rechecks: (0, 0),
         };
         assert_eq!(r.said(), "rebasing 2/5");
         assert_eq!(r.why("feat"), "feat is rebasing 2/5 — :rebase-continue or :rebase-abort first");
@@ -1982,10 +2288,11 @@ mod tests {
             stop: Stop::default(),
             asked: false,
             waiting: None,
-            also: Vec::new(),
+            also: Besides::default(),
             stashed: Vec::new(),
             resolved_at: None,
             messages: Default::default(),
+            rechecks: (0, 0),
         };
         ed.with_workspace(a, |ed| ed.workspace.rebase = Some(running("main")));
         let label = |ed: &mut Editor, id| {

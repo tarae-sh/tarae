@@ -230,10 +230,11 @@ pub enum What {
     /// A session rebased cleanly (`rebase.rs`): `y` brings it into its base, `p` runs the preflight first and
     /// brings it once that passes, `n` not now.
     Rebased(Box<crate::rebase::Moved>),
-    /// A rebase stopped at a conflict its Claude resolved (`rebase.rs`): `y` stages the files and goes on,
-    /// `m` writes the replayed commit's message first (`message`: resolved, its message known — frictions29 #25),
-    /// `X` aborts the rebase, `n` leaves it stopped.
-    RebaseResolved { root: PathBuf, message: bool },
+    /// A rebase stopped at a conflict its Claude resolved (`rebase.rs`): `y` stages the conflicted files and goes
+    /// on (held while a tracked file changed besides them is unstaged — #206), `a` stages the files the
+    /// resolution made too (`made`: some, nothing holding `y`), `m` writes the replayed commit's message first
+    /// (`message`: resolved, its message known — frictions29 #25), `X` aborts the rebase, `n` leaves it stopped.
+    RebaseResolved { root: PathBuf, message: bool, made: bool },
     /// An instruction file changed in a session and in the main checkout since its copy (`instructions.rs`,
     /// frictions29 #27): `y` takes the main checkout's changes, `v` shows them, `n` keeps the session's.
     Instructions(Box<crate::instructions::Both>),
@@ -891,6 +892,19 @@ impl Offer {
         matches!(self.what, What::RebaseResolved { message: true, .. })
     }
 
+    /// Whether its answer `k` goes on with what it asks — its yes, or that yes another way (a bring's `p` after
+    /// a preflight, a resolved rebase's `m` after its message, `a` with the files it made): the answers a held
+    /// yes (`held`) holds, all of them (#206: `m` went on to a `:w` that was refused, the card gone).
+    pub fn goes_on(&self, k: char) -> bool {
+        match k {
+            'y' | 'Y' => true,
+            'p' => self.preflights(),
+            'm' => self.messages(),
+            'a' => matches!(self.what, What::RebaseResolved { made: true, .. }),
+            _ => false,
+        }
+    }
+
     /// The held rebase it asks about, if it's that card (`s` stashes, `g` shows the changes).
     pub fn held(&self) -> Option<&crate::rebase::Held> {
         match &self.what {
@@ -995,6 +1009,7 @@ impl Offer {
             'c' if self.moves_mixed() => A::KeepClose('c'),
             'D' if self.recovers() => A::Discard,
             'y' => A::Accept,
+            'a' if matches!(self.what, What::RebaseResolved { made: true, .. }) => A::AcceptBy('a'),
             'Y' if !self.like.is_empty() => A::AcceptLike,
             // (the card stays: the list of its drafts over it, closed one by one there)
             'r' if matches!(self.what, What::NotesStale { .. }) => A::StaleList,
@@ -1186,8 +1201,8 @@ impl Offer {
         self.answers_held(quick).0
     }
 
-    /// Its answers (`answers`) and the keys held back from them — `y`, and a bring's `p`, while its yes is held
-    /// (`held` says why): made in one place, so what a card offers and what it says it holds back agree
+    /// Its answers (`answers`) and the keys held back from them — those that go on (`goes_on`) while its yes is
+    /// held (`held` says why): made in one place, so what a card offers and what it says it holds back agree
     /// (frictions28: the state's line named `y` alone).
     pub fn answers_held(&self, quick: bool) -> (Vec<(char, &'static str)>, Vec<char>) {
         let (v, withheld) = self.answers_lasting(quick);
@@ -1203,7 +1218,7 @@ impl Offer {
         }
         let mut withheld = Vec::new();
         if self.held.is_some() && matches!(self.state, OfferState::Asking) {
-            withheld = v.iter().map(|a| a.0).filter(|k| matches!(k, 'y' | 'p')).collect();
+            withheld = v.iter().map(|a| a.0).filter(|&k| self.goes_on(k)).collect();
             v.retain(|a| !withheld.contains(&a.0));
             if self.highs().is_some() {
                 v.insert(0, plain('h', "Go to them"));
@@ -1449,16 +1464,17 @@ impl Offer {
                 }
             }
             // (abort throws the resolution away: a capital, as removing does)
-            W::RebaseResolved { message: true, .. } => {
-                vec![
-                    plain('y', "Continue"),
-                    plain('m', "Message"),
-                    lasts('X', "Abort"),
-                    plain('n', "Not now"),
-                ]
-            }
-            W::RebaseResolved { .. } => {
-                vec![plain('y', "Continue"), lasts('X', "Abort"), plain('n', "Not now")]
+            W::RebaseResolved { message, made, .. } => {
+                let mut v = vec![plain('y', "Continue")];
+                // (#206: what the resolution made, staged too — its card names them)
+                if *made {
+                    v.push(plain('a', "Stage made too"));
+                }
+                if *message {
+                    v.push(plain('m', "Message"));
+                }
+                v.extend([lasts('X', "Abort"), plain('n', "Not now")]);
+                v
             }
             W::Instructions(b) if b.out.is_some() => {
                 vec![plain('y', "Carry them into main's"), plain('v', "See them"), plain('n', "Leave main's")]
@@ -1956,9 +1972,8 @@ impl crate::editor::Editor {
         {
             return self.offer_refused(why);
         }
-        // (a yes held — high-risk changes no one has looked at: said on the card, which stays)
-        if let Some(why) = self.offers[0].held.clone() {
-            return self.offer_refused(why);
+        if self.offer_holds(key) {
+            return;
         }
         // (a kubectl run outside: its context read again first — another since the card came is shown, #182)
         if crate::tools::kube_recheck(self, key) {
@@ -2052,7 +2067,7 @@ impl crate::editor::Editor {
             }
             What::RebaseResolved { root, .. } => {
                 self.offer_finished(id, Ok(()));
-                self.rebase_answer(&root, true);
+                self.rebase_answer(&root, key);
             }
             What::UpTo(m) => self.rebase_move_up(id, *m),
             What::BaseMoved(m) => {
@@ -2191,13 +2206,24 @@ impl crate::editor::Editor {
         }
     }
 
+    /// Whether answer `key` on the front card is held (`Offer::goes_on` while its `held` stands) — refused, said
+    /// on the card, which stays: high-risk changes no one has looked at, a resolved rebase's tracked file
+    /// unstaged. The rebase's read again then (`rebase_recheck`) — staged or undone since, its card says so.
+    fn offer_holds(&mut self, key: char) -> bool {
+        let Some(o) = self.offers.first().filter(|o| o.goes_on(key)) else { return false };
+        let Some(why) = o.held.clone() else { return false };
+        if let What::RebaseResolved { root, .. } = &o.what {
+            let root = root.clone();
+            self.rebase_recheck(&root);
+        }
+        self.offer_refused(why);
+        true
+    }
+
     /// `p` on the bring card after a rebase: the preflight first, the bring once it passes.
     pub fn offer_preflight_first(&mut self) {
-        if !self.offers.first().is_some_and(Offer::preflights) {
+        if !self.offers.first().is_some_and(Offer::preflights) || self.offer_holds('p') {
             return;
-        }
-        if let Some(why) = self.offers[0].held.clone() {
-            return self.offer_refused(why);
         }
         let o = self.offers.remove(0);
         self.offer_answered(&o, 'p');
@@ -2242,17 +2268,21 @@ impl crate::editor::Editor {
         let o = self.offers.remove(0);
         self.offer_answered(&o, 'X');
         if let What::RebaseResolved { root, .. } = o.what {
-            self.rebase_answer(&root, false);
+            self.rebase_answer(&root, 'X');
         }
     }
 
     /// `m` on a resolved rebase's card: the replayed commit's message in a buffer to write (`rebase_message`) —
     /// the card goes meanwhile, and comes back if the buffer is left with `:q`.
     pub fn offer_message(&mut self) {
-        let Some(What::RebaseResolved { root, message: true }) = self.offers.first().map(|o| o.what.clone())
+        let Some(What::RebaseResolved { root, message: true, .. }) =
+            self.offers.first().map(|o| o.what.clone())
         else {
             return;
         };
+        if self.offer_holds('m') {
+            return;
+        }
         let o = self.offers.remove(0);
         self.offer_answered(&o, 'm');
         self.rebase_message(&root);
@@ -2398,7 +2428,8 @@ impl crate::editor::Editor {
     pub fn offer_said_now(&self) -> Option<&str> {
         let o = self.offers.first()?;
         // (a `y` that waited for it to be read: past once it has been — the card says `y` answers now)
-        let stale = |s: &str| s.contains("y waits until") && self.offer_seen_whole();
+        // (that refusal's own words only — a held yes says "y waits until <files> …" for as long as it holds)
+        let stale = |s: &str| s.contains("y waits until it's") && self.offer_seen_whole();
         self.offer_said.as_ref().filter(|s| (s.0, s.1) == (o.id, o.rev) && !stale(&s.2)).map(|s| s.2.as_str())
     }
 

@@ -796,6 +796,11 @@ impl Editor {
                     self.git_trust_check(r);
                 }
                 self.workspace.git_status = Some(st);
+                // (a stage or undo here may free a resolved rebase's `y` — #206: its card says it as it stands)
+                if self.workspace.rebase.as_ref().is_some_and(|r| !r.also.tracked.is_empty()) {
+                    let root = self.workspace.root.clone();
+                    self.rebase_recheck(&root);
+                }
             }
             Err(e) => {
                 self.workspace.git_status = None;

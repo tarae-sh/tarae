@@ -1835,7 +1835,8 @@ mod tests {
             },
         };
         let resolved = |root: &std::path::Path| {
-            let what = crate::offer::What::RebaseResolved { root: root.to_path_buf(), message: false };
+            let what =
+                crate::offer::What::RebaseResolved { root: root.to_path_buf(), message: false, made: false };
             crate::offer::Offer::new("Resolved".into(), "go on?", "", String::new(), what)
         };
         for root in [&back, &link] {
