@@ -6213,6 +6213,29 @@ fn test_panel_says_when_no_test_ran() {
     assert!(rows[2..].iter().any(|r| r.contains("test result: ok. 0 passed")), "the output under it: {text}");
 }
 
+/// §1.2: what Claude's runs made that the sandbox keeps, while it waits for its card, is said on the terminal's
+/// line — a build typed there runs it, and your keys can't be held for the card as your task and tests are.
+#[test]
+fn the_terminal_says_what_claudes_run_made() {
+    if crate::sandbox::no_pty_here("term::snapshot_tests::the_terminal_says_what_claudes_run_made") {
+        return;
+    }
+    let mut s = Shot::new(120, 24);
+    s.file("src/demo.rs", DEMO_RS);
+    s.ed.terminal_run(vec!["/bin/sh".into(), "-c".into(), "printf ready; sleep 30".into()], Vec::new());
+    s.until("output", |ed| {
+        ed.workspace.terminal.as_ref().is_some_and(|t| t.parser.screen().contents().contains("ready"))
+    });
+    let mark = "▲ Claude's run made build.rs — its card first";
+    assert!(!screen_text(&mut s).contains(mark), "nothing waits: not said");
+    s.ed.workspace.made_protected = vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into() }];
+    let text = screen_text(&mut s);
+    assert!(text.contains(mark), "{text}");
+    s.frames_both("terminal_made");
+    s.ed.workspace.made_protected.clear();
+    assert!(!screen_text(&mut s).contains(mark), "answered: gone");
+}
+
 /// The terminal panel under the code with a program's colored output, the keys in it.
 #[test]
 fn snapshot_terminal_panel() {

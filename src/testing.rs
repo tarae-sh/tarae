@@ -612,6 +612,12 @@ impl Editor {
     ) {
         // (its trace from the ask — the saves' time is in it)
         let trace = trace.unwrap_or_else(|| crate::trace::RunTrace::new(format!("tests: {}", target.label)));
+        // (they run what's there outside the sandbox: what Claude's runs made that the sandbox keeps, looked at
+        // first — §1.2, as a task)
+        if !self.workspace.made_protected.is_empty() {
+            trace.step("protected-made card up");
+            return crate::tools::ask_made(self, crate::tools::MadeThen::Tests { target, force, trace });
+        }
         // Save modified files first — tests run the code on disk (started once they're written)
         self.auto_save(" · before test");
         self.after_saves(move |ed| {

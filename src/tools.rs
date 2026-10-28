@@ -4333,6 +4333,16 @@ pub enum MadeThen {
         all: Vec<crate::preflight::Step>,
         set: crate::preflight::Set,
     },
+    /// Your tests (§1.2: they run what's there outside the sandbox, as your task does).
+    Tests {
+        target: crate::testing::Target,
+        force: bool,
+        trace: crate::trace::RunTrace,
+    },
+    /// `:restart`'s build in checkout `target` (§1.2: it runs the checkout's build scripts outside the sandbox).
+    Restart {
+        target: crate::restart::Target,
+    },
     /// Nothing runs yet: the checkout's language servers, paused while the names wait (`Editor::made_hold_sync`,
     /// compat B9) — a server loads what's there (rust-analyzer's check runs a new `build.rs`).
     Servers,
@@ -4348,6 +4358,8 @@ impl MadeThen {
                 let names: Vec<String> = set.of(all).iter().map(|s| s.name.clone()).collect();
                 format!("{}: {}", set.title(all), names.join(", "))
             }
+            MadeThen::Tests { target, .. } => format!("tests: {}", target.label),
+            MadeThen::Restart { target } => format!(":restart's build of {}", target.label),
             MadeThen::Servers => "This checkout's language servers — paused".into(),
         }
     }
@@ -4511,6 +4523,13 @@ pub fn made_answer(
                         answer(ed, c, Err(e.clone()));
                     }
                 }
+                MadeThen::Tests { trace, .. } => {
+                    trace.end("not run: a protected name Claude made");
+                    ed.set_status(format!("tests not run — Claude's last run made {}", some_named(&paths)));
+                }
+                MadeThen::Restart { .. } => {
+                    crate::restart::called_off(ed, format!("Claude's last run made {}", some_named(&paths)))
+                }
                 MadeThen::Task { trace, .. } => {
                     trace.end("not run: a protected name Claude made");
                     ed.set_status(format!("not run — Claude's last run made {}", some_named(&paths)));
@@ -4545,6 +4564,8 @@ fn made_go(ed: &mut Editor, then: MadeThen) {
     match then {
         MadeThen::Claude { job, call, ride } => guard_then_go(ed, For::Claude(call), job, *ride),
         MadeThen::Task { task, force, trace } => ed.task_start_now(task, force, Some(trace)),
+        MadeThen::Tests { target, force, trace } => ed.test_start_now(target, force, Some(trace)),
+        MadeThen::Restart { target } => crate::restart::build_or_check(ed, target),
         // (the servers come back once nothing waits; a name `r` left, or one made since the card went up, puts it
         // up again — `made_hold_sync`)
         MadeThen::Servers => ed.workspace.servers_asked.clear(),
@@ -4946,7 +4967,7 @@ pub fn run_dropped(ed: &mut Editor, why: &str) {
 const CHANGED_NAMED: usize = 12;
 
 /// `names`, at most `CHANGED_NAMED` of them, the rest counted (`a, b and 3 more`).
-fn some_named(names: &[String]) -> String {
+pub(crate) fn some_named(names: &[String]) -> String {
     let mut said = names.iter().take(CHANGED_NAMED).cloned().collect::<Vec<_>>().join(", ");
     if names.len() > CHANGED_NAMED {
         said.push_str(&format!(" and {} more", names.len() - CHANGED_NAMED));

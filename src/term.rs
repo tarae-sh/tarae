@@ -2683,6 +2683,16 @@ fn draw_terminal_panel(
     } else if screen.scrollback() > 0 {
         head.push((format!("  {} lines back", screen.scrollback()), faint));
     }
+    // What Claude's runs made that the sandbox keeps and nobody looked at yet: a build typed here runs it — your
+    // keys can't be held for its card, as your task and tests are (§1.2), so it's said where you type
+    if !editor.workspace.made_protected.is_empty() {
+        let paths: Vec<String> = editor.workspace.made_protected.iter().map(|m| m.path.clone()).collect();
+        let warn = Style { fg: editor.theme.try_get("warning").and_then(|s| s.fg), ..card };
+        head.push((
+            format!("  ▲ Claude's run made {} — its card first", crate::tools::some_named(&paths)),
+            warn,
+        ));
+    }
     let zoom = if editor.zoomed().is_some() { "back" } else { "full screen" };
     // (each key as bound — a remap moves the hint)
     let bound =

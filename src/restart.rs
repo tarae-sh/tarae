@@ -564,7 +564,6 @@ pub fn chosen(ed: &mut Editor, card: u64, choice: Choice, which: Option<usize>) 
     }
     let t = choice.targets[which].clone();
     let r = ed.restart.as_mut().expect("at its stage");
-    let build = Some(ed.config.restart_build.trim().to_string()).filter(|c| r.build && !c.is_empty());
     r.target = Some(t.clone());
     // (with work under way: restart anyway — what the card named is ended, said; not waited for)
     if !now.is_empty() {
@@ -572,8 +571,28 @@ pub fn chosen(ed: &mut Editor, card: u64, choice: Choice, which: Option<usize>) 
         let names: Vec<String> = now.into_iter().map(|(_, said)| said).collect();
         ed.set_warning(format!("restarting anyway — it ends {}", names.join(", ")));
     }
+    build_or_check(ed, t);
+}
+
+/// The chosen checkout `t` built (`editor.restart-build`), else its binary checked — the build waiting first on
+/// what Claude's runs made there that the sandbox keeps (§1.2: it runs that checkout's build scripts outside the
+/// sandbox, as a task does): the front session's card, or — another session's checkout — called off, said where.
+pub(crate) fn build_or_check(ed: &mut Editor, t: Target) {
+    let Some(r) = ed.restart.as_ref().filter(|r| r.target.as_ref() == Some(&t)) else { return };
+    let build = Some(ed.config.restart_build.trim().to_string()).filter(|c| r.build && !c.is_empty());
     // (no build: its card said whether the binary is older than HEAD)
     let Some(cmd) = build else { return check(ed, t.bin, true) };
+    let made = std::iter::once(&ed.workspace)
+        .chain(&ed.workspaces)
+        .find(|w| !w.made_protected.is_empty() && t.root.starts_with(&w.root));
+    if let Some(w) = made {
+        if w.id == ed.workspace.id {
+            return crate::tools::ask_made(ed, crate::tools::MadeThen::Restart { target: t });
+        }
+        let why =
+            format!("{}'s Claude made a name the sandbox keeps there — answer its card first", w.label());
+        return cancel(ed, why);
+    }
     let task = crate::task::Task { name: "restart build".into(), cmd, cwd: t.root.clone() };
     let Some(generation) = ed.task_start_restart(task) else {
         return cancel(ed, "the build didn't start".into());
@@ -740,6 +759,13 @@ fn at(ed: &Editor, id: u64, stage: &Stage) -> bool {
 fn cancel(ed: &mut Editor, why: String) {
     ed.restart = None;
     ed.set_error(format!("not restarting: {why}"));
+}
+
+/// The restart called off on a card's no (the protected-made card before its build — `tools::made_answer`).
+pub(crate) fn called_off(ed: &mut Editor, why: String) {
+    if ed.restart.is_some() {
+        cancel(ed, why);
+    }
 }
 
 /// `bin --version` says it's a tarae, within `CHECK_WAIT` — a binary that won't run here (another
@@ -2343,6 +2369,65 @@ mod tests {
         let run = ed.workspace.task_run.as_ref().expect("the build ran as a task");
         assert_eq!((run.task.cmd.as_str(), &run.state), ("true", &crate::task::State::Passed));
         assert!(ed.workspace.task_last.is_none(), "not the task space m m runs again");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// §1.2: `:restart`'s build runs the checkout's build scripts outside the sandbox, so it waits on the card about
+    /// what Claude's runs made there that the sandbox keeps, as your task does: `n` calls the restart off, nothing
+    /// built; `y` builds. (The build a marker in the test's own folder; the names listed, nothing made.)
+    #[test]
+    fn restarts_build_waits_on_what_claudes_run_made() {
+        let dir = temp("made");
+        let bin = fake_tarae(&dir, "tarae 9.9.9");
+        let made = || vec![crate::snapshot::Made { path: "build.rs".into(), hash: "h".into() }];
+        let mut ed = editing(&dir, "touch built", &bin);
+        ed.workspace.made_protected = made();
+        // (the restart's — not the paused servers' card the names put up too)
+        let card = |ed: &Editor| {
+            ed.offers
+                .iter()
+                .any(|o| matches!(&o.what, crate::offer::What::ProtectedMade { then, .. } if !then.servers()))
+        };
+        // (the restart's own cards answered wherever they stand — the paused servers' card is in front)
+        let settle = |ed: &mut Editor, done: &dyn Fn(&Editor) -> bool| {
+            let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+            while !done(ed) {
+                if let Some(i) =
+                    ed.offers.iter().position(|o| matches!(o.what, crate::offer::What::Restart(_)))
+                {
+                    ed.offer_to_front(i);
+                    ed.offer_accept();
+                    continue;
+                }
+                let ev = ed.events.recv_timeout(end.saturating_duration_since(std::time::Instant::now()));
+                ed.handle_event(ev.unwrap_or_else(|| panic!("stuck: {}", toasts(ed))));
+            }
+        };
+        let mine = |ed: &mut Editor| {
+            let i = ed.offers.iter().position(
+                |o| matches!(&o.what, crate::offer::What::ProtectedMade { then, .. } if !then.servers()),
+            );
+            ed.offer_to_front(i.expect("the restart's card"));
+        };
+        feed(&mut ed, ":restart<ret>");
+        settle(&mut ed, &|ed| card(ed) || ed.restart.is_none());
+        mine(&mut ed);
+        let q = &ed.offers[0].question;
+        assert!(
+            q.starts_with(":restart's build of ") && q.contains("Claude's last run made build.rs"),
+            "{q}"
+        );
+        ed.offer_dismiss();
+        assert!(ed.restart.is_none() && !dir.join("built").exists(), "n: called off, nothing built");
+        assert!(toasts(&ed).contains("not restarting: Claude's last run made build.rs"), "{}", toasts(&ed));
+        // y: built
+        feed(&mut ed, ":restart<ret>");
+        settle(&mut ed, &|ed| card(ed) || ed.restart.is_none());
+        mine(&mut ed);
+        ed.offer_accept();
+        settle(&mut ed, &|ed| ed.should_quit || ed.restart.as_ref().and_then(Restart::ready).is_some());
+        assert!(dir.join("built").exists(), "{}", toasts(&ed));
+        assert_eq!(ed.restart.as_ref().and_then(Restart::ready), Some(bin.as_path()));
         std::fs::remove_dir_all(&dir).ok();
     }
 

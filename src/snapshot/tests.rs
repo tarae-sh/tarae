@@ -1449,6 +1449,37 @@ fn your_task_and_preflight_wait_on_what_claudes_run_made() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// §1.2: your tests run what's there outside the sandbox too, so they wait on the card as your task does — `n`
+/// runs nothing, `y` runs them. (A harmless command: a marker in the test's own repository.)
+#[test]
+fn your_tests_wait_on_what_claudes_run_made() {
+    let dir = repo("tests");
+    let (mut ed, generation) = turn_in(&dir);
+    let me = (generation, dir.as_path());
+    claude_runs(&mut ed, me, 1, "mkdir sub && printf '[package]\\n' > sub/Cargo.toml");
+    pump_until(&mut ed, &|_| answered(1).is_some(), "Claude's run");
+    let how = crate::testing::How::Pack {
+        lang: "rust".into(),
+        argv: vec!["touch".into(), "tested".into()],
+        lines: None,
+        junit: None,
+    };
+    let target = crate::testing::Target { label: "all".into(), cwd: dir.clone(), how };
+    ed.test_start(target.clone());
+    pump_until(&mut ed, &|ed| !ed.offers.is_empty(), "the card before your tests");
+    let o = &ed.offers[0];
+    assert_eq!(o.title, crate::tools::MADE_YOURS_TITLE);
+    assert!(o.question.starts_with("tests: all\n\nClaude's last run made sub/Cargo.toml"), "{}", o.question);
+    ed.offer_dismiss();
+    assert!(ed.offers.is_empty() && !dir.join("tested").exists(), "n: nothing ran");
+    ed.test_start(target);
+    pump_until(&mut ed, &|ed| !ed.offers.is_empty(), "asked again");
+    settled(&mut ed);
+    ed.offer_accept();
+    pump_until(&mut ed, &|_| dir.join("tested").exists(), "y: your tests");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// What `r` couldn't remove is asked about again before the run goes on: the card comes back with only that
 /// name, the run hasn't run, what was removed is gone — and `n` there tells Claude no. (A file changed after
 /// the card asked stands in for one `r` refuses; harmless files in the test's repository.)
