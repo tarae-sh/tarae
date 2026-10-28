@@ -65,7 +65,7 @@ JSON for programs, and a short text form for people and Claude, from the same st
 
 ```json
 {
-  "v": 17,
+  "v": 20,
   "tarae": { "pid": 4182, "boot": "9f3ac1d0", "version": "0.9.0" },
   "frame": 4812,
   "input": 1033,
@@ -372,7 +372,8 @@ Short, so they can be read in prose and typed. Unique within one tarae process.
 - `v` is the schema version.
 - Adding a field doesn't change it. Readers ignore fields they don't know.
 - Removing or renaming a field, or changing what one means, bumps `v`. Each bump and its reason is on `uistate::V`
-  — now 11: the chat's `view` `line` / `lines` count its transcript's lines, a paragraph each (panes P2c).
+  — now 20: a key is its shown name (#202): `keys.pending` and a card's `answers[].key` say `enter`, `-`,
+  `↑ ↓ ← →` where they said `ret`, `minus`, `up` `down` `left` `right` (the keymap file keeps Helix's notation).
 - The text form isn't a contract (people and Claude read it). The JSON is.
 - A golden test pins the JSON of one fixed scene (two sessions, a card, a review, a run), the way the
   `term_snapshots` pin frames. A change to the shape shows up as a diff in review.

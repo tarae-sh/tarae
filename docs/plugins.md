@@ -227,11 +227,13 @@ shows the card again.
 
 While the panel has the keys, tarae moves through its rows as through every list panel's — the same keys, the same
 acts, on every surface: `j` `k` (`↓` `↑`, `C-n` `C-p`) a row, `C-e` `C-y` the view a row (the selection stays
-unless it would leave the rows in sight), `C-d` `C-u` half the rows in sight, `C-f` `C-b` (`PageDown` `PageUp`)
-all of them, `g` `G` (`Home` `End`) the first and last, the wheel; `esc` gives the keys back to the code, and
+unless it would leave the rows in sight), `C-d` `C-u` half the rows in sight, `C-f` `C-b` (`pagedown` `pageup`)
+all of them, `g` `G` (`home` `end`) the first and last, the wheel; `esc` gives the keys back to the code, and
 `space`, `:` and `C-w` stay the editor's. **These are tarae's on every panel and side tab, a plugin's too — they never
 come to the plugin**: a panel that wants a key of its own picks another (`d`, `ret`, `C-k`). Every other key comes to
-the plugin as `key`, with the row selected and its id — the plugin decides what `d` or `ret` does. A side tab keeps
+the plugin as `key`, with the row selected and its id — the plugin decides what `d` or `ret` does. A `key` names it in
+the keymap's notation (`ret`, `minus`, `up`), and so do a panel's and a side tab's `keys`: tarae shows them by the names it
+shows every key by (`enter`, `-`, `↑` — [Keys](configuration.md#keys)). A side tab keeps
 `h` `l` (fold), `enter`, `tab`, `q` too. A click on the panel gives it the keys. While the terminal has its place,
 it's out of sight and takes no keys.
 

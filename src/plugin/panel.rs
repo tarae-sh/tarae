@@ -102,7 +102,8 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
         _ => {
             let (plugin, row) = (st.plugin.clone(), (n > 0).then_some(st.selected as u64));
             let id = row.and_then(|_| st.panel.ids.get(st.selected).cloned());
-            ed.plugin_events(&plugin, vec![HostEvent::Key(key.to_string(), row, id)]);
+            // (the plugin API's name for it, the keymap's notation — `ret`)
+            ed.plugin_events(&plugin, vec![HostEvent::Key(key.notation(), row, id)]);
         }
     }
     true
@@ -200,13 +201,16 @@ impl Editor {
     }
 
     /// A plugin's panel of `rows` one-cell rows, as its command shows it (the keys its) — the plugin thread started,
-    /// no plugin loaded: what the panel does with its keys is tarae's alone.
+    /// no plugin loaded: what the panel does with its keys is tarae's alone. Its header names keys of its own as a
+    /// plugin writes them (`ret`, `C-minus` — the keymap's notation; shown `enter`, `C--`).
     #[cfg(test)]
     pub(crate) fn plugin_panel_stand_in(&mut self, rows: usize) {
         assert!(self.plugins.is_some() || self.plugins_start(), "the plugin thread started");
         self.plugins.as_mut().unwrap().answering = Some("demo".into());
         let rows = (0..rows).map(|i| vec![format!("row {i}")]).collect();
-        self.plugin_panel("demo", Some(Panel { title: "demo".into(), rows, ..Panel::default() }));
+        let keys = [("ret", "open"), ("C-minus", "less"), ("d", "delete")];
+        let keys = keys.map(|(k, d)| (k.to_string(), d.to_string())).into();
+        self.plugin_panel("demo", Some(Panel { title: "demo".into(), rows, keys, ..Panel::default() }));
     }
 
     /// A plugin's `prompt`: the command line with its name and label — if it's answering you, and no line
@@ -427,5 +431,33 @@ impl Editor {
             doc.set_selection(crate::selection::Selection::point(end));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl Editor {
+    /// A plugin's side tab, given the keys, its own keys written as a plugin writes them (`ret`, `minus` — shown
+    /// `enter`, `-`) — the plugin thread started, no plugin loaded.
+    pub(crate) fn plugin_side_stand_in(&mut self) {
+        assert!(self.plugins.is_some() || self.plugins_start(), "the plugin thread started");
+        let row = |id: &str| super::abi::SideRow {
+            id: id.into(),
+            depth: 0,
+            text: id.into(),
+            detail: String::new(),
+            tone: Tone::Info,
+            at: None,
+            note: false,
+        };
+        let keys = [("ret", "logs"), ("minus", "fold")];
+        let side = Side {
+            title: "pods".into(),
+            note: String::new(),
+            rows: vec![row("web-1"), row("web-2")],
+            keys: keys.map(|(k, d)| (k.to_string(), d.to_string())).into(),
+            open: true,
+            focus: true,
+        };
+        self.plugin_side("demo", Some(side));
     }
 }

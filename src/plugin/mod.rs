@@ -1145,6 +1145,43 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// What the demo's panel hears for `enter` and `-`, each as it says it (`key ret Some(0) …`).
+    fn panel_heard() -> Vec<String> {
+        let (mut ed, dir) = setup("panel-keys", "x\n");
+        answer(&mut ed, approval, true);
+        ed.plugin_run("table", "").unwrap();
+        settle_until(&mut ed, |ed| panel(ed).is_some());
+        let mut heard = Vec::new();
+        for k in ["ret", "minus"] {
+            ed.toasts.clear();
+            key(&mut ed, k);
+            settle_until(&mut ed, |ed| toasts(ed).contains("key "));
+            let said = toasts(&ed);
+            let at = said.find("key ").unwrap();
+            heard.push(said[at..].split(" · ").next().unwrap().to_string());
+        }
+        std::fs::remove_dir_all(dir).ok();
+        heard
+    }
+
+    /// #202's review: a panel's plugin hears a key in the keymap's notation, the plugin API's word — `ret`, `minus`,
+    /// never the shown `enter`, `-` (the k8s plugin matches `"ret"`).
+    #[test]
+    fn a_plugin_hears_keys_in_the_keymaps_notation() {
+        assert_eq!(
+            panel_heard(),
+            [r#"key ret Some(0) Some("default/web-0")"#, r#"key minus Some(0) Some("default/web-0")"#]
+        );
+    }
+
+    /// …and it would see a key sent by its shown name.
+    #[test]
+    fn the_plugin_key_test_sees_a_key_sent_by_its_shown_name() {
+        let _back = crate::key::Broken::NotationAsShown.set();
+        let heard = panel_heard();
+        assert!(heard[0].starts_with("key enter ") && heard[1].starts_with("key - "), "{heard:?}");
+    }
+
     /// A plugin's panel moves by tarae's moving keys — they never come to the plugin (docs/plugins.md, the WIT's
     /// `panel`; user, 2026-10-21) — by the rows it drew: `C-d` half of them, `C-f` all, `C-e`/`C-y` the view a row
     /// with the selection kept in sight; a letter still comes.
@@ -1541,6 +1578,9 @@ mod tests {
         until_said(&mut ed, r#"key ret Some(2) Some("pod")"#);
         key(&mut ed, "e");
         until_said(&mut ed, r#"key e Some(2) Some("pod")"#);
+        // (in the keymap's notation, the plugin API's word: never the shown `-` — #202's review)
+        key(&mut ed, "minus");
+        until_said(&mut ed, r#"key minus Some(2) Some("pod")"#);
         // A buffer it shows then takes the keys from its tab
         ed.plugin_run("view", "").unwrap();
         settle_until(&mut ed, |ed| ed.doc().title.as_deref() == Some("web-1 · demo"));

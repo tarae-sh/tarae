@@ -136,7 +136,7 @@ impl Node {
     fn untaken(&self, want: &[String], letters: &[char]) -> Option<String> {
         fn walk(node: &Node, prefix: &str, want: &[String], letters: &[char], best: &mut Option<String>) {
             for (k, t) in node.map.iter().filter(|(k, _)| !crate::zellij::takes(k, letters)) {
-                let seq = if prefix.is_empty() { k.shown() } else { format!("{prefix} {}", k.shown()) };
+                let seq = if prefix.is_empty() { k.to_string() } else { format!("{prefix} {k}") };
                 match t {
                     KeyTrie::Node(n) => walk(n, &seq, want, letters, best),
                     KeyTrie::Leaf(c) if cmd_names(c) == want => {
@@ -540,7 +540,7 @@ impl Keymaps {
         type Best = HashMap<&'static str, (bool, String)>;
         fn walk(node: &Node, prefix: &str, taken: bool, letters: &[char], out: &mut Best) {
             for (k, t) in &node.map {
-                let seq = if prefix.is_empty() { k.shown() } else { format!("{prefix} {}", k.shown()) };
+                let seq = if prefix.is_empty() { k.to_string() } else { format!("{prefix} {k}") };
                 let taken = taken || crate::zellij::takes(k, letters);
                 match t {
                     KeyTrie::Node(n) => walk(n, &seq, taken, letters, out),
@@ -603,7 +603,7 @@ impl Keymaps {
                 if mode == Mode::Select && same {
                     continue;
                 }
-                let keys = seq.iter().map(Key::shown).collect::<Vec<_>>().join(" ");
+                let keys = seq.iter().map(Key::to_string).collect::<Vec<_>>().join(" ");
                 out.push((name, keys, names.join(" + "), self.twin(mode, &seq, letters)));
             }
         }
@@ -627,7 +627,7 @@ impl Keymaps {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn keys(s: &str) -> Vec<Key> {
@@ -705,14 +705,14 @@ mod tests {
         (
             "A card, focused",
             "`y` `n`",
-            "Yes · no (some take `a` this chat, `s` this session, `A` always here); Esc never answers one",
+            "Yes · no (some take `a` this chat, `s` this session, `A` always here); `esc` never answers one",
         ),
         (
             "A card",
             "`C-q`",
             "Focus it from wherever the keys are — one that came on its own waits in a faint frame (`▲1 waiting · \
              C-q`), one your key asked for is focused as it comes; a click or `C-w w` focuses it too (the status line \
-             says CARD); Esc or `C-w` goes back, unanswered",
+             says CARD); `esc` or `C-w` goes back, unanswered",
         ),
         (
             "No card here",
@@ -737,7 +737,7 @@ mod tests {
             "Accept them all · review them one by one · every change in a buffer · decline them all",
         ),
         ("An edit's review", "`y` `n` `a` `tab`", "Accept this change · reject it · accept all left · next"),
-        ("An edit's review", "Esc", "Back to the chat, the change unanswered — `C-q` answers it"),
+        ("An edit's review", "`esc`", "Back to the chat, the change unanswered — `C-q` answers it"),
         (
             "An edit's review",
             "`C-d` `C-u` `C-f` `C-b` `C-e` `C-y`, wheel",
@@ -770,12 +770,12 @@ mod tests {
         ),
         (
             "The chat",
-            "`C-u` `C-d`, `PageUp` `PageDown`, `↑` `↓`, wheel",
+            "`C-u` `C-d`, `pageup` `pagedown`, `↑` `↓`, wheel",
             "Scroll the conversation — half the rows in sight, a page, a row; `C-u` and the arrows from an empty input (with text `C-u` clears to the cursor)",
         ),
         (
             "A list or output panel (side panel, review rail, `:procs`, test, task, terminal, a plugin's)",
-            "`j` `k` `↓` `↑` `C-n` `C-p` · `C-e` `C-y` · `C-d` `C-u` · `C-f` `C-b` `PageDown` `PageUp` · `g` `G` `Home` `End`",
+            "`j` `k` `↓` `↑` `C-n` `C-p` · `C-e` `C-y` · `C-d` `C-u` · `C-f` `C-b` `pagedown` `pageup` · `g` `G` `home` `end`",
             "A row · the view a row, the selection staying unless it would leave it (the wheel too, three rows, while the panel has the keys) · half the rows in sight · all of them · the ends — the same keys everywhere, as the code's; a plugin's panel never gets them",
         ),
         ("Hover text, docs", "`C-d` `C-u` · `C-e` `C-y`", "Scroll it half its rows · a row"),
@@ -786,12 +786,12 @@ mod tests {
         ),
         (
             "A picker",
-            "`C-n` `C-p` `↓` `↑` `Tab` · `C-d` `C-u` · `PageDown` `PageUp` · `Home` `End`",
+            "`C-n` `C-p` `↓` `↑` `tab` · `C-d` `C-u` · `pagedown` `pageup` · `home` `end`",
             "A row · half the rows in sight · all of them · the first and last",
         ),
         (
             "A picker of files or places",
-            "`C-v` `C-s` · `A-ret`",
+            "`C-v` `C-s` · `A-enter`",
             "Open it in a split, beside · under (Helix's keys) · open it, the list kept up",
         ),
         ("A picker", "`C-t` · `C-f` `C-b`, wheel over it", "The preview away and back · scroll it"),
@@ -819,7 +819,7 @@ mod tests {
             "The way back to the code (`esc esc`, `esc` with nothing said yet), then `:model` · `:chat-resume` · \
              `:chat-screen` · `:chat-point` — in the input `:` is a character",
         ),
-        ("A list or output panel", "`C-n` `C-p` · `C-b`", "`j` `k` · `PageUp`"),
+        ("A list or output panel", "`C-n` `C-p` · `C-b`", "`j` `k` · `pageup`"),
         (
             "A picker",
             "`C-n` `C-p` · `C-b` · `C-t`",
@@ -834,7 +834,7 @@ mod tests {
 
     /// `docs/reference/keymap.md` — the default keymap per mode and submode (descriptions = command docs,
     /// the same text which-key and the palette show), then every `:` command from `cmdline::COMMANDS`.
-    fn reference() -> String {
+    pub(crate) fn reference() -> String {
         use crate::settings::{md_cell, md_code};
         let km = Keymaps::default();
         let mut out = String::from(
@@ -843,8 +843,24 @@ mod tests {
              # Default keymap\n\n\
              The keys tarae ships with, from [`src/default_keys.toml`](../../src/default_keys.toml). Command names \
              are the same as Helix's,\nso Helix key configs carry over. Rebind anything in `[keys.normal]`, \
-             `[keys.select]`, or `[keys.insert]` —\nsee the [configuration guide](../configuration.md#keys).\n\n\
-             In the editor you don't need this page: `space ?` finds any command by what it does, and after a \
+             `[keys.select]`, or `[keys.insert]` —\nsee the [configuration guide](../configuration.md#keys).\n\n",
+        );
+        // (how to write a key copied from here: said once — only the names a config refuses differ, a few keys among
+        // hundreds, and the refusal names the spelling too)
+        let apart = crate::key::spelled_apart();
+        let (shown, spelled): (Vec<String>, Vec<String>) =
+            apart.iter().map(|(s, n)| (format!("`{s}`"), format!("`{n}`"))).unzip();
+        out.push_str(&format!(
+            "Keys are written as tarae shows them, and a key copied from here into your config reads as written \
+             but {}:\nwrite {} (`C-{}` as `C-{}` — a config's warning says it too). Helix's `ret` and `minus` read \
+             as well.\n\n",
+            shown.join(" "),
+            spelled.join(" "),
+            apart[0].0,
+            apart[0].1,
+        ));
+        out.push_str(
+            "In the editor you don't need this page: `space ?` finds any command by what it does, and after a \
              prefix key\n(`space`, `g`, `m`, `[`, `]`) a card shows what comes next.\n",
         );
         node_tables(&mut out, &km.normal, &mut Vec::new(), "## Normal mode");
@@ -930,7 +946,7 @@ mod tests {
         }
 
         out.push_str(
-            "\n## `:` commands\n\nType `:` in normal mode. `Tab` completes command names and their arguments \
+            "\n## `:` commands\n\nType `:` in normal mode. `tab` completes command names and their arguments \
              (paths, themes, settings, languages).\n\n| Command | Aliases | Description |\n|---|---|---|\n",
         );
         for c in crate::cmdline::COMMANDS {
@@ -1013,7 +1029,7 @@ mod tests {
                     path.push(*k);
                     for (key, desc, _) in km.children(mode, path) {
                         if desc.chars().count() > 30 {
-                            let at: Vec<String> = path.iter().chain([&key]).map(Key::shown).collect();
+                            let at: Vec<String> = path.iter().chain([&key]).map(Key::to_string).collect();
                             long.push(format!("{mode:?} {}: {desc}", at.join(" ")));
                         }
                     }
@@ -1033,7 +1049,7 @@ mod tests {
         assert!(long.is_empty(), "{long:#?}");
     }
 
-    /// Keys are shown as they're typed: `C-w -`, not the config's `minus` (uxaudit D11).
+    /// Keys are shown as they're typed: `C-w -`, not the config's `minus` (uxaudit D11; #202: `Display`).
     #[test]
     fn keys_are_shown_as_typed() {
         let km = Keymaps::default();
@@ -1041,7 +1057,7 @@ mod tests {
         // (the config's name stays the config's: `minus` round-trips, `-` is what's shown — the drawn card is
         // term's `which_key_draws_keys_as_typed`)
         let minus = "C-minus".parse::<Key>().unwrap();
-        assert_eq!((minus.to_string(), minus.shown()), ("C-minus".to_string(), "C--".to_string()));
-        assert_eq!("A-minus".parse::<Key>().unwrap().shown(), "A--");
+        assert_eq!((minus.notation(), minus.to_string()), ("C-minus".to_string(), "C--".to_string()));
+        assert_eq!("A-minus".parse::<Key>().unwrap().to_string(), "A--");
     }
 }

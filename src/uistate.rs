@@ -50,7 +50,9 @@ use crate::workspace::At;
 /// 18: keep-warm gone, idle compaction in its place (audit 2.C): a session's `usage.keep_warm` is
 /// `usage.idle_compact` (`at_ms`, `off`, `min_tokens`); the `kept-warm` usage event gone.
 /// 19: what Claude is doing now (`now.rs`): the front session's `turn.now` (`step`, `waits`, `since_ms`, `said`, `plan`).
-pub const V: u64 = 19;
+/// 20: a key is its shown name (#202, `Key`'s `Display`): `keys.pending` and a card's `answers[].key` say `enter`,
+/// `-`, `↑ ↓ ← →` where they said `ret`, `minus`, `up` `down` `left` `right`.
+pub const V: u64 = 20;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;

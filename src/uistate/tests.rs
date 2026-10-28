@@ -1061,6 +1061,136 @@ fn no_key_is_refused_in_silence() {
     assert!(off.is_empty(), "keys refused in silence:\n{}", off.join("\n"));
 }
 
+/// The keys whose notation differs from their shown name, as the routing matrix's probes write them (#202) — with
+/// `enter` sent only where it isn't the chat's (there it would send a message).
+const NAMED: &[&str] = &["<ret>", "<minus>", "<C-minus>", "<up>", "<left>", "<del>", "<backspace>", "<lt>"];
+
+/// The words of `text` that are one of `names` — a key written in the keymap's notation where it's shown by another
+/// name (`C-w minus`'s `minus`).
+fn notation_words(text: &str, names: &[String]) -> Vec<String> {
+    let cut = |c: char| c.is_whitespace() || "`'\",.;:()[]{}·—…│─".contains(c);
+    text.split(cut).filter(|w| names.iter().any(|n| n == w)).map(String::from).collect()
+}
+
+/// Where a key is shown by anything but its one name (`Key`'s `Display`): every scene of the routing matrix × every
+/// probe, move and named key — the frame before and after (which-key, the hints, the status line) and what the key
+/// said (a refusal, an unused key); then the palette's bindings and the keymap reference. Each a line naming where.
+fn notation_shown() -> Vec<String> {
+    notation_shown_in(&SCENES.iter().chain(PLUGIN_SCENES).copied().collect::<Vec<_>>())
+}
+
+/// A plugin's panel and side tab, each with keys of its own written as a plugin writes them (`ret`, `minus`), shown
+/// by their one name (`key::said`) — the one-name walk's own scenes (no plugin behind them).
+const PLUGIN_SCENES: &[Scene] = &[
+    ("a plugin's panel, its keys", |ed| ed.plugin_panel_stand_in(3)),
+    ("a plugin's side tab, its keys", |ed| ed.plugin_side_stand_in()),
+];
+
+fn notation_shown_in(scenes: &[Scene]) -> Vec<String> {
+    // (`ret`, `minus` with any modifiers are never prose: looked for in every frame; an arrow's `up` is a word too,
+    // looked for only in what that key said)
+    let always: Vec<String> =
+        ["", "C-", "A-", "C-A-"].iter().flat_map(|m| ["ret", "minus"].map(|n| format!("{m}{n}"))).collect();
+    let mut out = Vec::new();
+    for (name, setup) in scenes {
+        for probe in PROBES.iter().chain(MOVES).chain(NAMED) {
+            let mut ed = editor();
+            setup(&mut ed);
+            let before = shown(&mut ed);
+            let k = key(probe);
+            if k.code == crate::key::Code::Enter
+                && matches!(ed.keys_to().region, Region::Chat | Region::Unfold)
+            {
+                continue;
+            }
+            let said_from = ed.messages.len();
+            ed.handle_key(k);
+            let after = shown(&mut ed);
+            for (when, frame) in [("before", &before), ("after", &after)] {
+                for w in notation_words(frame, &always) {
+                    out.push(format!("frame · {name} · {probe} · {when}: {w:?}"));
+                }
+            }
+            let mut names = always.clone();
+            if k.notation() != k.to_string() {
+                names.push(k.notation());
+            }
+            for (_, _, text, _) in &ed.messages[said_from.min(ed.messages.len())..] {
+                for w in notation_words(text, &names) {
+                    out.push(format!("said · {name} · {probe}: {w:?} in {text:?}"));
+                }
+            }
+        }
+    }
+    let km = crate::keymap::Keymaps::default();
+    let arrows: Vec<String> = ["up", "down", "left", "right"].map(String::from).into();
+    let names: Vec<String> = always.iter().chain(&arrows).cloned().collect();
+    for (cmd, seq) in km.bindings() {
+        for w in notation_words(&seq, &names) {
+            out.push(format!("palette · {cmd}: {w:?} in {seq:?}"));
+        }
+    }
+    // (the reference's key column: a row's first cell, and a submode's heading)
+    for line in crate::keymap::tests::reference().lines() {
+        let keys = match line.strip_prefix("| ") {
+            Some(row) => row.split(" | ").next().unwrap_or_default(),
+            None => line.strip_prefix("### `").unwrap_or_default(),
+        };
+        for w in notation_words(keys, &names) {
+            out.push(format!("reference: {w:?} in {line:?}"));
+        }
+    }
+    out
+}
+
+/// #202: a key is shown by one name wherever tarae shows it — `enter`, `-`, `↑` — never the keymap's notation
+/// (`ret`, `minus`, `up`), which only the keymap file spells.
+#[test]
+fn every_key_is_shown_by_its_one_name() {
+    if no_pty_here("every_key_is_shown_by_its_one_name") {
+        return;
+    }
+    let off = notation_shown();
+    assert!(off.is_empty(), "a key shown by its notation:\n{}", off.join("\n"));
+}
+
+/// …and it would see a key shown by its notation: `Display` broken to write it (`ret`, `minus`, `up`) shows in every
+/// surface the test reads — a frame, what a key said, the palette, the reference.
+#[test]
+fn the_one_name_test_sees_a_key_shown_by_its_notation() {
+    if no_pty_here("the_one_name_test_sees_a_key_shown_by_its_notation") {
+        return;
+    }
+    let _back = crate::key::Broken::ShownAsNotation.set();
+    let off = notation_shown();
+    for surface in ["frame · ", "said · ", "palette · ", "reference: "] {
+        assert!(
+            off.iter().any(|l| l.starts_with(surface)),
+            "{surface}broken, and the test passes:\n{}",
+            off.join("\n")
+        );
+    }
+}
+
+/// …and it would see a plugin's own keys shown as it wrote them (`ret`, `C-minus`: `key::said` left out) — in its
+/// panel's header and its side tab's foot (#202's review).
+#[test]
+fn the_one_name_test_sees_a_plugins_keys_shown_as_written() {
+    if no_pty_here("the_one_name_test_sees_a_plugins_keys_shown_as_written") {
+        return;
+    }
+    let _back = crate::key::Broken::SaidAsWritten.set();
+    let off = notation_shown_in(PLUGIN_SCENES);
+    for (name, _) in PLUGIN_SCENES {
+        let at = format!("frame · {name} · ");
+        assert!(
+            off.iter().any(|l| l.starts_with(&at)),
+            "{name}: broken, and the test passes:\n{}",
+            off.join("\n")
+        );
+    }
+}
+
 /// A woven view's `enter` (`weave::enter` — not among the probes: in the chat it starts a claude) goes where `keys_to`
 /// says — its own in normal mode, the code's or the prompt's with a sequence under way, a character awaited, insert
 /// mode, the command line over it — and never in silence: on a line nobody changed it says so.

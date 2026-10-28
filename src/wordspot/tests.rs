@@ -753,7 +753,8 @@ fn a_hint_names_its_keys_or_none() {
     assert_eq!(said("space l"), v(&["space", "l"]));
     assert_eq!(said("C-w j"), v(&["C-w", "j"]));
     assert_eq!(said("[r"), v(&["[", "r"]));
-    assert_eq!(said("↑"), v(&["up"]));
+    assert_eq!(keys("↑"), Some(vec!["up".parse().unwrap()]));
+    assert_eq!((said("↑"), said("enter"), said("C-w -")), (v(&["↑"]), v(&["enter"]), v(&["C-w", "-"])));
     assert_eq!(said(":procs").map(|k| k.len()), Some(7));
     for none in ["j k", "[r ]r", "type", "h j k l", "click", ""] {
         assert_eq!(said(none), None, "{none}");

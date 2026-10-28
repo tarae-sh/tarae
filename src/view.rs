@@ -899,12 +899,10 @@ fn key_in(ed: &mut Editor, key: Key) {
 }
 
 /// The key a view mode's command is bound to, as a hint names it: `like` when that's one of them (`i` before
-/// `a` and `ret`), else the shortest — None when nothing is (a remap took it away).
+/// `a` and `enter`), else the shortest — None when nothing is (a remap took it away).
 pub fn bound(ed: &Editor, surface: Surface, name: &str, like: &str) -> Option<String> {
     let keys = ed.keymaps.view(surface, Mode::Normal).keys_for(name);
-    let k = keys.iter().find(|k| k.as_str() == like).or(keys.first())?;
-    // (as every hint names it)
-    Some(if k == "ret" { "enter".into() } else { k.clone() })
+    keys.iter().find(|k| k.as_str() == like).or(keys.first()).cloned()
 }
 
 /// A key the terminal's view mode has no use for: said where the user looks, with the way to type (§3.1).

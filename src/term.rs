@@ -1770,7 +1770,7 @@ fn slot_hints(editor: &Editor, lay: &Layout) -> Vec<(String, &'static str)> {
     // (`:procs`' detail has no run to catch up with)
     let run = slot != crate::sizes::Slot::Procs;
     [
-        (bound("view_take", "ret").filter(|_| quotes), "quote"),
+        (bound("view_take", "enter").filter(|_| quotes), "quote"),
         (bound("view_copy", "y"), "copy"),
         (bound("search", "/"), "search"),
         (bound("view_latest", "G").filter(|_| run), "latest"),
@@ -2687,7 +2687,7 @@ fn draw_terminal_panel(
     let to_program = editor.keymaps.normal.keys_for("terminal_focus").into_iter().next();
     let quotes = crate::view::quotes(editor);
     let viewing: Vec<(Option<String>, &str)> = vec![
-        (bound("view_take", "ret").filter(|_| quotes), "quote"),
+        (bound("view_take", "enter").filter(|_| quotes), "quote"),
         (bound("view_input", "i").filter(|_| t.exited.is_none()), "type"),
         (bound("view_copy", "y"), "copy"),
         (bound("search", "/"), "search"),
@@ -3305,7 +3305,9 @@ fn draw_plugin_panel<W: Write>(
     let clean = |s: &str| crate::plugin::shown(s).replace(['\n', '\t'], " ");
     let (x0, y0, w) = (lay.slot_x, lay.slot_y(), lay.slot_w);
     let title = crate::whole::fit(&clean(&panel.title), (w / 2).max(12));
-    let keys: Vec<(String, String)> = panel.keys.iter().map(|(k, d)| (clean(k), clean(d))).collect();
+    // (a plugin names its keys as its `key` event does, `ret`: shown by their one name)
+    let keys: Vec<(String, String)> =
+        panel.keys.iter().map(|(k, d)| (crate::key::said(&clean(k)), clean(d))).collect();
     let mut hints: Vec<(&str, &str)> = keys.iter().map(|(k, d)| (k.as_str(), d.as_str())).collect();
     let focus = editor.plugin_panel_focused();
     hints.push(if focus { ("esc", "code") } else { ("click", "keys") });
@@ -10223,7 +10225,7 @@ fn draw_statusline(
         let bound = |name: &str, like: &str| crate::view::bound(editor, s, name, like);
         // (an ended program takes no typing)
         let typed = bound("view_input", "i").filter(|_| crate::view::typeable(editor));
-        let quote = bound("view_take", "ret").filter(|_| crate::view::quotes(editor));
+        let quote = bound("view_take", "enter").filter(|_| crate::view::quotes(editor));
         let pairs = [(quote, "quote"), (typed, "type"), (bound("view_leave", "esc"), "code")];
         for (k, what) in pairs.iter().filter_map(|(k, d)| Some((k.as_ref()?, *d))) {
             left.push(Seg {
@@ -10243,8 +10245,8 @@ fn draw_statusline(
     // A run panel's output: `enter` quotes a selection, else runs your run waiting behind; the way out — as bound
     if let Keys::Output(_) = keys {
         let bound = |name: &str, like: &str| crate::rundoc::bound(editor, name, like);
-        let quote = bound("view_take", "ret").filter(|_| crate::rundoc::quotes(editor));
-        let run_now = bound("view_take", "ret")
+        let quote = bound("view_take", "enter").filter(|_| crate::rundoc::quotes(editor));
+        let run_now = bound("view_take", "enter")
             .filter(|_| !crate::rundoc::quotes(editor) && crate::rundoc::run_waits(editor));
         let pairs = [(quote, "quote"), (run_now, "run now"), (bound("view_leave", "esc"), "code")];
         for (k, what) in pairs.iter().filter_map(|(k, d)| Some((k.as_ref()?, *d))) {
@@ -13030,7 +13032,7 @@ fn draw_which_key(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) 
         })
         .collect();
     let twin_w = |t: &Option<String>| t.as_ref().map_or(0, |t| t.width() + 2);
-    let kw = entries.iter().map(|(k, _, _)| k.shown().width()).max().unwrap_or(1);
+    let kw = entries.iter().map(|(k, _, _)| k.to_string().width()).max().unwrap_or(1);
     const DESC: usize = 30;
     let dw =
         entries.iter().zip(&twins).map(|((_, d, _), t)| d.width().min(DESC) + twin_w(t)).max().unwrap_or(0);
@@ -13075,7 +13077,7 @@ fn draw_which_key(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) 
             let i = c * rows + r;
             let used = match entries.get(i) {
                 Some((k, d, group)) => {
-                    let ks = k.shown();
+                    let ks = k.to_string();
                     let twin = twins[i].as_deref();
                     apply(out, if twin.is_some() { Style { bold: true, ..dim } } else { key_style })?;
                     queue!(out, Print(format!("{ks:<kw$}  ")))?;
@@ -14101,8 +14103,11 @@ fn draw_sidebar(
         }
     } else if editor.workspace.is_at(At::Side) && sb.mode == SMode::Plugin {
         // Its keys, then the panel's
-        let keys: Vec<(&str, &str)> =
-            side.map(|s| s.keys.iter().map(|(k, d)| (k.as_str(), d.as_str())).collect()).unwrap_or_default();
+        // (a plugin names its keys as its `key` event does, `ret`: shown by their one name)
+        let said: Vec<(String, &str)> = side
+            .map(|s| s.keys.iter().map(|(k, d)| (crate::key::said(k), d.as_str())).collect())
+            .unwrap_or_default();
+        let keys: Vec<(&str, &str)> = said.iter().map(|(k, d)| (k.as_str(), *d)).collect();
         [h(&keys), h(&[("enter", "go"), ("esc", "code"), ("tab", "files")])]
     } else if editor.workspace.is_at(At::Side) {
         [h(&[("enter", "open"), ("tab", tab.trim_start())]), h(&[("esc", "code"), ("q", "close")])]
@@ -16715,7 +16720,7 @@ fn draw_chat(
     // (`enter` quotes what's selected — said while something is)
     let quotes = crate::view::quotes(editor);
     let viewing = [
-        (bound("view_take", "ret").filter(|_| quotes), "quote"),
+        (bound("view_take", "enter").filter(|_| quotes), "quote"),
         (bound("view_input", "i"), "type"),
         (bound("view_copy", "y"), "copy"),
         (bound("search", "/"), "search"),

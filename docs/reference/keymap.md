@@ -5,6 +5,9 @@ The keys tarae ships with, from [`src/default_keys.toml`](../../src/default_keys
 so Helix key configs carry over. Rebind anything in `[keys.normal]`, `[keys.select]`, or `[keys.insert]` —
 see the [configuration guide](../configuration.md#keys).
 
+Keys are written as tarae shows them, and a key copied from here into your config reads as written but `↑` `↓` `←` `→`:
+write `up` `down` `left` `right` (`C-↑` as `C-up` — a config's warning says it too). Helix's `ret` and `minus` read as well.
+
 In the editor you don't need this page: `space ?` finds any command by what it does, and after a prefix key
 (`space`, `g`, `m`, `[`, `]`) a card shows what comes next.
 
@@ -72,6 +75,10 @@ In the editor you don't need this page: `space ?` finds any command by what it d
 | `Z` | … | More keys — see `Z` below |
 | `\|` | `shell_pipe` | Pipe selections through a command |
 | `~` | `switch_case` | Switch (toggle) case |
+| `←` | `move_char_left` | Move left |
+| `↑` | `move_visual_line_up` | Move up (visual line) |
+| `→` | `move_char_right` | Move right |
+| `↓` | `move_visual_line_down` | Move down (visual line) |
 | `A-!` | `shell_append_output` | Insert a command's output after |
 | `A-.` | `repeat_last_motion` | Repeat last motion |
 | `A-;` | `flip_selections` | Flip selection cursor and anchor |
@@ -79,18 +86,18 @@ In the editor you don't need this page: `space ?` finds any command by what it d
 | `A-C` | `copy_selection_on_prev_line` | Copy selection on previous line |
 | `A-c` | `change_selection_noyank` | Change selection without yanking |
 | `A-d` | `delete_selection_noyank` | Delete selection without yanking |
-| `A-down` | `shrink_selection` | Shrink selection back |
 | `A-i` | `shrink_selection` | Shrink selection back |
 | `A-K` | `remove_selections` | Remove selections matching the regex |
-| `A-left` | `select_prev_sibling` | Select previous syntax sibling |
 | `A-n` | `select_next_sibling` | Select next syntax sibling |
 | `A-o` | `expand_selection` | Grow selection to the enclosing syntax node |
 | `A-p` | `select_prev_sibling` | Select previous syntax sibling |
-| `A-right` | `select_next_sibling` | Select next syntax sibling |
 | `A-s` | `split_selection_on_newline` | Split selection on newlines |
-| `A-up` | `expand_selection` | Grow selection to the enclosing syntax node |
 | `A-x` | `extend_to_line_bounds` | Extend selection to line bounds |
 | `A-\|` | `shell_pipe_to` | Send selections to a command |
+| `A-←` | `select_prev_sibling` | Select previous syntax sibling |
+| `A-↑` | `expand_selection` | Grow selection to the enclosing syntax node |
+| `A-→` | `select_next_sibling` | Select next syntax sibling |
+| `A-↓` | `shrink_selection` | Shrink selection back |
 | `C-\` | `terminal_focus` | Terminal: give it the keys |
 | `C-b` | `page_up` | Move page up |
 | `C-c` | `toggle_comments` | Comment or uncomment lines |
@@ -101,18 +108,14 @@ In the editor you don't need this page: `space ?` finds any command by what it d
 | `C-s` | `save_selection` | Save this spot to jump back to |
 | `C-u` | `half_page_up` | Move half page up |
 | `C-w` | … | More keys — see `C-w` below |
-| `down` | `move_visual_line_down` | Move down (visual line) |
 | `end` | `goto_line_end` | Go to line end |
 | `esc` | `normal_mode` | Enter normal mode |
 | `home` | `goto_line_start` | Go to line start |
-| `left` | `move_char_left` | Move left |
 | `pagedown` | `page_down` | Move page down |
 | `pageup` | `page_up` | Move page up |
-| `right` | `move_char_right` | Move right |
 | `S-tab` | `rotate_view` | Next window |
 | `space` | … | More keys — see `space` below |
 | `tab` | `jump_forward` | Jump forward again |
-| `up` | `move_visual_line_up` | Move up (visual line) |
 
 ### `[`
 
@@ -231,6 +234,7 @@ In the editor you don't need this page: `space ?` finds any command by what it d
 | Key | Command | Description |
 |---|---|---|
 | `C-w +` | `bottom_taller` | Taller: the bottom panel |
+| `C-w -` | `bottom_shorter` | Shorter: the bottom panel |
 | `C-w <` | `panel_narrower` | Narrower: chat or side panel |
 | `C-w =` | `sizes_auto` | Sizes back to automatic |
 | `C-w >` | `panel_wider` | Wider: chat or side panel |
@@ -252,7 +256,6 @@ In the editor you don't need this page: `space ?` finds any command by what it d
 | `C-w w` | `rotate_view` | Next window |
 | `C-w z` | `zoom_toggle` | Full screen: on / off |
 | `C-w C-w` | `rotate_view` | Next window |
-| `C-w minus` | `bottom_shorter` | Shorter: the bottom panel |
 
 ### `space`
 
@@ -335,6 +338,7 @@ In the editor you don't need this page: `space ?` finds any command by what it d
 | Key | Command | Description |
 |---|---|---|
 | `space w +` | `bottom_taller` | Taller: the bottom panel |
+| `space w -` | `bottom_shorter` | Shorter: the bottom panel |
 | `space w <` | `panel_narrower` | Narrower: chat or side panel |
 | `space w =` | `sizes_auto` | Sizes back to automatic |
 | `space w >` | `panel_wider` | Wider: chat or side panel |
@@ -356,7 +360,6 @@ In the editor you don't need this page: `space ?` finds any command by what it d
 | `space w w` | `rotate_view` | Next window |
 | `space w z` | `zoom_toggle` | Full screen: on / off |
 | `space w C-w` | `rotate_view` | Next window |
-| `space w minus` | `bottom_shorter` | Shorter: the bottom panel |
 
 ### `space x`
 
@@ -383,15 +386,19 @@ In the editor you don't need this page: `space ?` finds any command by what it d
 | `l` | `extend_char_right` | Extend right |
 | `v` | `normal_mode` | Enter normal mode |
 | `w` | `extend_next_word_start` | Extend to start of next word |
-| `down` | `extend_visual_line_down` | Extend down (visual line) |
-| `left` | `extend_char_left` | Extend left |
-| `right` | `extend_char_right` | Extend right |
-| `up` | `extend_visual_line_up` | Extend up (visual line) |
+| `←` | `extend_char_left` | Extend left |
+| `↑` | `extend_visual_line_up` | Extend up (visual line) |
+| `→` | `extend_char_right` | Extend right |
+| `↓` | `extend_visual_line_down` | Extend down (visual line) |
 
 ## Insert mode
 
 | Key | Command | Description |
 |---|---|---|
+| `←` | `move_char_left` | Move left |
+| `↑` | `move_visual_line_up` | Move up (visual line) |
+| `→` | `move_char_right` | Move right |
+| `↓` | `move_visual_line_down` | Move down (visual line) |
 | `A-backspace` | `delete_word_backward` | Delete previous word |
 | `A-d` | `delete_word_forward` | Delete next word |
 | `A-del` | `delete_word_forward` | Delete next word |
@@ -406,17 +413,13 @@ In the editor you don't need this page: `space ?` finds any command by what it d
 | `C-w` | `delete_word_backward` | Delete previous word |
 | `C-x` | `completion` | Invoke completion popup (LSP) |
 | `del` | `delete_char_forward` | Delete next char |
-| `down` | `move_visual_line_down` | Move down (visual line) |
 | `end` | `goto_line_end_newline` | Go to end of line (after the last char) |
+| `enter` | `insert_newline` | Insert newline char |
 | `esc` | `normal_mode` | Enter normal mode |
 | `home` | `goto_line_start` | Go to line start |
-| `left` | `move_char_left` | Move left |
 | `pagedown` | `page_down` | Move page down |
 | `pageup` | `page_up` | Move page up |
-| `ret` | `insert_newline` | Insert newline char |
-| `right` | `move_char_right` | Move right |
 | `tab` | `insert_tab` | Insert tab char |
-| `up` | `move_visual_line_up` | Move up (visual line) |
 
 ## The run panels' output
 
@@ -433,8 +436,8 @@ A task's output, a preflight's, the tests' failure or output (`C-w j` to the pan
 | `y` | `view_copy` | Copy, to paste anywhere |
 | `C-e` | `scroll_down` | Scroll down a line |
 | `C-y` | `scroll_up` | Scroll up a line |
+| `enter` | `view_take` | Quote it to the chat, or type |
 | `esc` | `view_leave` | Leave view mode |
-| `ret` | `view_take` | Quote it to the chat, or type |
 | `tab` | `slot_next` | Next tab of the bottom panel |
 
 ## View mode
@@ -450,8 +453,8 @@ A cursor on what a surface shows. The chat's conversation (`esc` from its input)
 | `i` | `view_input` | Back to typing |
 | `q` | `view_leave` | Leave view mode |
 | `y` | `view_copy` | Copy, to paste anywhere |
+| `enter` | `view_take` | Quote it to the chat, or type |
 | `esc` | `view_leave` | Leave view mode |
-| `ret` | `view_take` | Quote it to the chat, or type |
 
 ### The terminal's (`[keys.view.terminal]`)
 
@@ -476,7 +479,7 @@ A cursor on what a surface shows. The chat's conversation (`esc` from its input)
 
 | Key | Command | Description |
 |---|---|---|
-| `A-ret` | `insert_newline` | Insert newline char |
+| `A-enter` | `insert_newline` | Insert newline char |
 | `C-a` | `goto_line_start` | Go to line start |
 | `C-e` | `goto_line_end_newline` | Go to end of line (after the last char) |
 | `esc` | `chat_view` | View the chat |
@@ -485,6 +488,8 @@ A cursor on what a surface shows. The chat's conversation (`esc` from its input)
 
 | Key | Command | Description |
 |---|---|---|
+| `↑` | `prompt_history_older` | Earlier line typed here |
+| `↓` | `prompt_history_newer` | Later line typed here |
 | `A-b` | `input_word_left` | Back a word, in a typed line |
 | `A-f` | `input_word_right` | On a word, in a typed line |
 | `C-a` | `goto_line_start` | Go to line start |
@@ -493,12 +498,10 @@ A cursor on what a surface shows. The chat's conversation (`esc` from its input)
 | `C-del` | `delete_word_forward` | Delete next word |
 | `C-e` | `goto_line_end_newline` | Go to end of line (after the last char) |
 | `C-f` | `move_char_right` | Move right |
-| `C-left` | `input_word_left` | Back a word, in a typed line |
 | `C-n` | `prompt_history_newer` | Later line typed here |
 | `C-p` | `prompt_history_older` | Earlier line typed here |
-| `C-right` | `input_word_right` | On a word, in a typed line |
-| `down` | `prompt_history_newer` | Later line typed here |
-| `up` | `prompt_history_older` | Earlier line typed here |
+| `C-←` | `input_word_left` | Back a word, in a typed line |
+| `C-→` | `input_word_right` | On a word, in a typed line |
 
 ### Taken from the terminal's program (`[keys.terminal]` — every other key is the program's; `to_program` gives one of these back)
 
@@ -513,15 +516,15 @@ Keys of what's up on the screen — not rebindable, so not in `default_keys.toml
 
 | Where | Key | What it does |
 |---|---|---|
-| A card, focused | `y` `n` | Yes · no (some take `a` this chat, `s` this session, `A` always here); Esc never answers one |
-| A card | `C-q` | Focus it from wherever the keys are — one that came on its own waits in a faint frame (`▲1 waiting · C-q`), one your key asked for is focused as it comes; a click or `C-w w` focuses it too (the status line says CARD); Esc or `C-w` goes back, unanswered |
+| A card, focused | `y` `n` | Yes · no (some take `a` this chat, `s` this session, `A` always here); `esc` never answers one |
+| A card | `C-q` | Focus it from wherever the keys are — one that came on its own waits in a faint frame (`▲1 waiting · C-q`), one your key asked for is focused as it comes; a click or `C-w w` focuses it too (the status line says CARD); `esc` or `C-w` goes back, unanswered |
 | No card here | `C-q` | To the session whose Claude waits for you — its card comes up there; nothing waiting, to a session whose turn ended (`done`) |
 | A card cut to fit | `v` | All of it in a buffer — `y` waits until its end was on screen |
 | A run card listing others like it | `Y` | Run it and the cards it lists — the same run each, read whole first |
 | The stale drafts card | `y` `r` `n` | Close them · list just them (`C-x` closes one) · keep them |
 | Claude's change to several files | `y` `r` `v` `n` | Accept them all · review them one by one · every change in a buffer · decline them all |
 | An edit's review | `y` `n` `a` `tab` | Accept this change · reject it · accept all left · next |
-| An edit's review | Esc | Back to the chat, the change unanswered — `C-q` answers it |
+| An edit's review | `esc` | Back to the chat, the change unanswered — `C-q` answers it |
 | An edit's review | `C-d` `C-u` `C-f` `C-b` `C-e` `C-y`, wheel | Scroll it — `space`, `:` and `C-w` work over it too |
 | Code review rail | click on `◦` | Mark the file viewed (a second click leaves it marked) |
 | Code review rail | click on `↑ N more` / `↓ N more`, wheel | Scroll the files |
@@ -532,12 +535,12 @@ Keys of what's up on the screen — not rebindable, so not in `default_keys.toml
 | A preflight's steps | `o` | The step picked, its whole output in a buffer |
 | Task panel | `K` | Where Claude's command in it ran, and why — its sandbox, the card it ran from, its warnings |
 | The chat | click on a command's row end (`ok · sandbox ▲1`) | Why it ran there — its sandbox, the card it ran from, Claude's reason, its warnings |
-| The chat | `C-u` `C-d`, `PageUp` `PageDown`, `↑` `↓`, wheel | Scroll the conversation — half the rows in sight, a page, a row; `C-u` and the arrows from an empty input (with text `C-u` clears to the cursor) |
-| A list or output panel (side panel, review rail, `:procs`, test, task, terminal, a plugin's) | `j` `k` `↓` `↑` `C-n` `C-p` · `C-e` `C-y` · `C-d` `C-u` · `C-f` `C-b` `PageDown` `PageUp` · `g` `G` `Home` `End` | A row · the view a row, the selection staying unless it would leave it (the wheel too, three rows, while the panel has the keys) · half the rows in sight · all of them · the ends — the same keys everywhere, as the code's; a plugin's panel never gets them |
+| The chat | `C-u` `C-d`, `pageup` `pagedown`, `↑` `↓`, wheel | Scroll the conversation — half the rows in sight, a page, a row; `C-u` and the arrows from an empty input (with text `C-u` clears to the cursor) |
+| A list or output panel (side panel, review rail, `:procs`, test, task, terminal, a plugin's) | `j` `k` `↓` `↑` `C-n` `C-p` · `C-e` `C-y` · `C-d` `C-u` · `C-f` `C-b` `pagedown` `pageup` · `g` `G` `home` `end` | A row · the view a row, the selection staying unless it would leave it (the wheel too, three rows, while the panel has the keys) · half the rows in sight · all of them · the ends — the same keys everywhere, as the code's; a plugin's panel never gets them |
 | Hover text, docs | `C-d` `C-u` · `C-e` `C-y` | Scroll it half its rows · a row |
 | The terminal, its program with the keys | `S-pageup` `S-pagedown` | Scroll back a page · forward (the program's next key brings it down; a full-screen program gets them) |
-| A picker | `C-n` `C-p` `↓` `↑` `Tab` · `C-d` `C-u` · `PageDown` `PageUp` · `Home` `End` | A row · half the rows in sight · all of them · the first and last |
-| A picker of files or places | `C-v` `C-s` · `A-ret` | Open it in a split, beside · under (Helix's keys) · open it, the list kept up |
+| A picker | `C-n` `C-p` `↓` `↑` `tab` · `C-d` `C-u` · `pagedown` `pageup` · `home` `end` | A row · half the rows in sight · all of them · the first and last |
+| A picker of files or places | `C-v` `C-s` · `A-enter` | Open it in a split, beside · under (Helix's keys) · open it, the list kept up |
 | A picker | `C-t` · `C-f` `C-b`, wheel over it | The preview away and back · scroll it |
 | A picker's query | `[keys.prompt]` over insert mode's moves and deletes, a press, a drag | Edit it as a prompt's line, its cursor anywhere — the picker's own keys above come first (`←` `→` open and fold in the file tree while nothing is typed) |
 
@@ -556,13 +559,13 @@ zellij's default normal mode takes `C-g` `C-q` `C-p` `C-n` `C-s` `C-t` `C-h` `C-
 | insert mode | `C-s` (`commit_undo_checkpoint`) | none |
 | A card waiting | `C-q` | The way back to the code — `esc` from insert mode, a prompt, a picker, a panel, a view mode or a chat with nothing said yet · `esc esc` from the chat's input · `C-\ C-\` from the terminal's program — then `space I` (the inbox, `enter` goes to it and focuses it), for the card in front too. A turn that ended: the way back, then `space W` |
 | The chat's input | `C-t` · `C-p` · `C-s` · `C-o` | The way back to the code (`esc esc`, `esc` with nothing said yet), then `:model` · `:chat-resume` · `:chat-screen` · `:chat-point` — in the input `:` is a character |
-| A list or output panel | `C-n` `C-p` · `C-b` | `j` `k` · `PageUp` |
+| A list or output panel | `C-n` `C-p` · `C-b` | `j` `k` · `pageup` |
 | A picker | `C-n` `C-p` · `C-b` · `C-t` | `↓` `↑` · the wheel over the preview · none (the preview away) |
 | A picker of files or places | `C-s` · `C-q` | none (`C-v` opens it beside) · none (the places kept as the list) |
 
 ## `:` commands
 
-Type `:` in normal mode. `Tab` completes command names and their arguments (paths, themes, settings, languages).
+Type `:` in normal mode. `tab` completes command names and their arguments (paths, themes, settings, languages).
 
 | Command | Aliases | Description |
 |---|---|---|

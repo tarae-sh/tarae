@@ -89,10 +89,10 @@ configs carry over as they are.
   parameter. Enter between brackets `{|}` puts the closer on a line of its own with the cursor indented
   between. The new indentation is the line above's plus the tree's difference, so a file's own style
   survives an imperfect query; the unit is the file's own (tabs in Go and Makefiles, 2 or 4 spaces as the
-  file does), and `Tab`, `>`, `<` use it too. Without a grammar: one level more after an opening bracket.
+  file does), and `tab`, `>`, `<` use it too. Without a grammar: one level more after an opening bracket.
   A whitespace-only line keeps none of it when you leave it
 - Insert mode keeps Helix's keys: `C-w`/`A-Backspace` delete a word back, `A-d` forward, `C-u`/`C-k` to the line
-  start/end, `C-r x` types register x, `C-s` makes what you've typed an undo step, `C-h` `C-d` `C-j`, `Home`/`End`
+  start/end, `C-r x` types register x, `C-s` makes what you've typed an undo step, `C-h` `C-d` `C-j`, `home`/`end`
 - Auto-pairs `editor.auto-pairs` — `( [ { " ' `` ` `` get their closer (not before a word, and a quote not after one, so
   `don't` stays one quote; Rust lifetimes don't pair); typing the closer steps over it; backspace in `()` removes both
 - Syntax moves (tree-sitter) — `A-o` grows the selection to the enclosing node, `A-i` shrinks it back, `A-n`/`A-p`
@@ -128,7 +128,7 @@ configs carry over as they are.
   background to the terminal so its color and blur show through. The default `theme = "default"` asks the terminal for
   its background color (OSC 11 — it never waits, even on terminals that don't answer) and picks meok on dark, hanji on
   light; force it with `TARAE_BACKGROUND=light|dark`. `space t` (`:theme`) opens a small picker that previews each theme
-  live on your code — `Esc` reverts, `Enter` saves it to your config ([screenshot](screenshots/ux-theme-picker.png);
+  live on your code — `esc` reverts, `enter` saves it to your config ([screenshot](screenshots/ux-theme-picker.png);
   the screen above [in hanji](screenshots/hero-hanji.png)).
   You can also [write your own](configuration.md#custom-themes)
 - **One accent color** — coral in meok, vermilion in hanji — used boldly and sparingly; syntax colors stay calm
@@ -234,8 +234,8 @@ configs carry over as they are.
   case), what `.gitignore` leaves out left out and hidden files searched (not `.git`), each key's search stopping
   the one before, the first results within a fraction of a second and the rest as they come. Each row is a line's code with its matches standing out, the preview at
   the line. A pattern not finished yet (`fn draw(`) keeps the last results and says why beside the query —
-  quietly, no error. Lists fill in on a worker thread. `C-n`/`C-p` or arrows, `Tab`, `C-d`/`C-u` half the rows in
-  sight, `PageDown`/`PageUp` all of them, `Home`/`End` the first and last, `Enter`, `Esc` — and Helix's: `C-v` opens a
+  quietly, no error. Lists fill in on a worker thread. `C-n`/`C-p` or arrows, `tab`, `C-d`/`C-u` half the rows in
+  sight, `pagedown`/`pageup` all of them, `home`/`end` the first and last, `enter`, `esc` — and Helix's: `C-v` opens a
   file or a place beside, `C-s` under (a split), `A-Enter` opens it with the list kept up, `C-t` puts the preview away
   and back. The query edits as a prompt's line does: its cursor goes anywhere in it (`←` `→`, `C-a` `C-e`, a word
   with `A-b` `A-f`, a press on it), Helix's prompt keys delete there (`C-w`, `C-k`, `A-d` …) and a drag selects —
@@ -345,8 +345,8 @@ configs carry over as they are.
 - **Replace across files** — in the `space /` results, `C-r` asks for the replacement (`$1` for groups) and replaces
   the matches still listed (type to narrow them first). A preview lists each file with its diff; Enter replaces in
   every listed file (one undo step each, unsaved buffers included); `:wa` saves them
-- **Search** `/ ? n N *` — matches highlight as you type, the view follows the first match (`Esc` puts you back), and
-  the status line shows `/pattern  8/13`. `Esc` in normal mode clears the highlight
+- **Search** `/ ? n N *` — matches highlight as you type, the view follows the first match (`esc` puts you back), and
+  the status line shows `/pattern  8/13`. `esc` in normal mode clears the highlight
   ([screenshot](screenshots/ux-search.png))
 - **Split windows** — every surface is a pane (the code's, the side panel, the review's rail, the bottom slot, the
   chat): `C-w v` side by side · `C-w s` stacked (from the chat or a panel it's the code pane last focused that splits;
@@ -373,7 +373,7 @@ configs carry over as they are.
   back to the pane under it once it goes. Your panes are kept per folder (`$state/layouts.json`, written as they
   change) and come back with the files on the start screen's `r`
 - **`:` completion** — command names (fuzzy, with aliases and descriptions), then arguments: file paths, themes,
-  setting paths and their values, languages — for the word before the cursor, what's after it kept. `Tab`/`Shift-Tab`
+  setting paths and their values, languages — for the word before the cursor, what's after it kept. `tab`/`S-tab`
   cycle; `→` at the line's end takes the dimmed suggestion ([screenshot](screenshots/ux-cmdline-complete.png))
 - **A prompt's line edits as Helix's prompt** (`:`, `/`, `select:` …): `←` `→` `C-b` `C-f`, `A-b` `A-f` a word,
   `C-a` `C-e` its ends, `C-w` `A-d` a word out, `C-u` `C-k` to an end, `C-r` a register; a press puts the cursor on
@@ -530,7 +530,7 @@ cursor or document moved on are dropped.
   word, case as written) show at once, titled `text matches`, and the server's references take their place when
   they come (it says so). A server that answers within a moment never shows them
 - **Jump list** per pane — `C-o` back · `C-i`/Tab forward · `C-s` saves a spot · `space j` lists them (with a preview;
-  picking one keeps where you were, so `Tab` comes back). Go-tos, searches, `gg`/`ge` and
+  picking one keeps where you were, so `tab` comes back). Go-tos, searches, `gg`/`ge` and
   switching files record where you were, and a saved spot follows later edits · `ga` = the file shown before this one
 - `space h` selects every use of the symbol under the cursor in this file (the server's, not text matches) — then `c`
   edits them all · `space D` lists diagnostics in every file the server reported, open or not, errors first ·

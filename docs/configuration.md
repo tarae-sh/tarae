@@ -79,7 +79,7 @@ The name of a setting is its `:set` path — the same dotted name as in the file
 | `:config-show` | The full effective configuration, with descriptions as comments, in a new buffer — usable as a config file as it is |
 | `:config-open` · `:config-reload` | Open your config file · reread it |
 
-`Tab` completes setting paths and, for on/off and choice settings, their values. `space t` picks a theme with a live
+`tab` completes setting paths and, for on/off and choice settings, their values. `space t` picks a theme with a live
 preview and saves your choice.
 
 ## Full example
@@ -125,6 +125,11 @@ e = "file_picker"                                # tables are sub-menus (space e
 
 - Keys: `a`, `A` (shift), `C-x` (ctrl), `A-x` (alt), and names like `space`, `ret`, `esc`, `tab`, `S-tab` (shift),
   `backspace`, `del`, `left`, `pageup`, `home`, `F5`
+- That's Helix's notation, for the file. Everywhere tarae shows a key — which-key, the palette, hints, a message, the
+  [keymap reference](reference/keymap.md) — a few go by the name people call them: `ret` is shown `enter`, `minus`
+  `-`, `lt` and `gt` `<` and `>`, `up` `down` `left` `right` `↑` `↓` `←` `→`; the rest are the same in both. In the
+  file `enter`, `-`, `<` and `>` read too, the arrows only by their names: a `↑` copied from the reference is
+  refused with its spelling (`keys.normal.↑: "↑" — write up`), never a binding no key reaches
 - Sub-menus merge key by key — adding `space e` keeps the rest of `space`
 - Like Helix, `[keys.normal]` doesn't spill into select mode; bind a key in `[keys.select]` too if you want it there
 - View mode (the chat's and the terminal's) is normal mode on what they show: `[keys.normal]` spills in (kept to

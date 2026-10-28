@@ -1,4 +1,5 @@
-//! Key representation — 1:1 with helix config notation ("C-y", "A-x", "space", "ret").
+//! Key representation — read in helix config notation ("C-y", "A-x", "space", "ret"), shown by one name per key
+//! (`Display`: `enter`, `-`, `↑` — #202).
 
 use std::fmt;
 use std::str::FromStr;
@@ -192,7 +193,18 @@ impl FromStr for Key {
             _ => {
                 let mut it = rest.chars();
                 match (it.next(), it.next()) {
-                    (Some(c), None) => Code::Char(c),
+                    (Some(c), None) => {
+                        // A name only shown (`↑`, copied from the reference) is a character no key sends: refused,
+                        // its spelling said (#202) — `enter`, `-`, `<`, `>` read as the keys they show
+                        let only_shown =
+                            SHOWN.iter().find(|(code, _, said)| *said == rest && *code != Code::Char(c));
+                        if let Some((_, notation, _)) =
+                            only_shown.filter(|_| !broken(Broken::ShownReadAsChar))
+                        {
+                            return Err(format!("{s:?} — write {}{notation}", &s[..s.len() - rest.len()]));
+                        }
+                        Code::Char(c)
+                    }
                     _ => return Err(format!("unknown key: {s:?}")),
                 }
             }
@@ -207,21 +219,102 @@ impl FromStr for Key {
     }
 }
 
-impl Key {
-    /// The key as people type it, for what's shown (which-key, the palette, hints): as `Display` writes it for the
-    /// config, but `-` as itself (`minus` is only the config's name for it, `C-w -` not `C-w minus`).
-    pub fn shown(&self) -> String {
-        match self.code {
-            Code::Char('-') => {
-                format!("{}{}-", if self.ctrl { "C-" } else { "" }, if self.alt { "A-" } else { "" })
-            }
-            _ => self.to_string(),
-        }
+/// The names that differ between the keymap file (Helix's notation, `FromStr`) and what's shown (`Display`) —
+/// every other key is written the same in both.
+const SHOWN: &[(Code, &str, &str)] = &[
+    (Code::Enter, "ret", "enter"),
+    (Code::Char('-'), "minus", "-"),
+    (Code::Up, "up", "↑"),
+    (Code::Down, "down", "↓"),
+    (Code::Left, "left", "←"),
+    (Code::Right, "right", "→"),
+];
+
+/// A break a trap makes, to see its test fail (test builds only — `broken` is false in others; one at a time,
+/// `Broken::set`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Broken {
+    #[cfg(test)]
+    No,
+    /// `Display` writes the keymap's notation (`every_key_is_shown_by_its_one_name`).
+    ShownAsNotation,
+    /// `notation` writes the shown name: a plugin hears `enter` (`a_plugin_hears_keys_in_the_keymaps_notation`).
+    NotationAsShown,
+    /// `said` leaves a plugin's keys as it wrote them, `ret` (`every_key_is_shown_by_its_one_name`, its plugin's).
+    SaidAsWritten,
+    /// A config reads a shown arrow as the character it is (`every_shown_name_in_a_config_is_its_key_or_refused`).
+    ShownReadAsChar,
+}
+
+#[cfg(test)]
+thread_local! {
+    static BROKEN: std::cell::Cell<Broken> = const { std::cell::Cell::new(Broken::No) };
+}
+
+/// Broken this way until it goes (dropped — a failed assertion too).
+#[cfg(test)]
+pub(crate) struct Back;
+
+#[cfg(test)]
+impl Drop for Back {
+    fn drop(&mut self) {
+        BROKEN.set(Broken::No);
     }
 }
 
-impl fmt::Display for Key {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+#[cfg(test)]
+impl Broken {
+    pub(crate) fn set(self) -> Back {
+        BROKEN.set(self);
+        Back
+    }
+}
+
+#[cfg(test)]
+fn broken(b: Broken) -> bool {
+    BROKEN.get() == b
+}
+
+/// The shown names a config refuses, with their spelling there (`↑`, `up`) — the keymap reference says them.
+#[cfg(test)]
+pub(crate) fn spelled_apart() -> Vec<(&'static str, &'static str)> {
+    let refused = |shown: &str| shown.parse::<Key>().is_err();
+    SHOWN
+        .iter()
+        .filter(|(_, _, shown)| refused(shown))
+        .map(|(_, notation, shown)| (*shown, *notation))
+        .collect()
+}
+
+#[cfg(not(test))]
+fn broken(_: Broken) -> bool {
+    false
+}
+
+impl Key {
+    /// The key in the keymap file's notation, Helix's (`ret`, `minus`, `up`) — what a plugin's `key` event names
+    /// (the plugin API's word for it); everything shown is `Display`'s.
+    pub fn notation(&self) -> String {
+        let mut s = String::new();
+        self.write(&mut s, broken(Broken::NotationAsShown)).expect("a String takes it");
+        s
+    }
+
+    /// A key as shown (`Display`) read back — a hint's word pressed (`wordspot`); the keymap's notation reads too.
+    pub fn from_shown(s: &str) -> Option<Key> {
+        // (the prefixes as `FromStr` takes them — `C--` is ctrl and `-`)
+        let mut rest = s;
+        while rest.len() > 2 && rest.as_bytes()[1] == b'-' && matches!(rest.as_bytes()[0], b'C' | b'A' | b'S')
+        {
+            rest = &rest[2..];
+        }
+        let mods = &s[..s.len() - rest.len()];
+        let name =
+            SHOWN.iter().find(|(_, _, shown)| *shown == rest).map_or(rest, |(_, notation, _)| notation);
+        format!("{mods}{name}").parse().ok()
+    }
+
+    fn write(&self, f: &mut impl fmt::Write, shown: bool) -> fmt::Result {
         if self.ctrl {
             f.write_str("C-")?;
         }
@@ -231,28 +324,45 @@ impl fmt::Display for Key {
         if self.shift {
             f.write_str("S-")?;
         }
+        if let Some((_, notation, said)) = SHOWN.iter().find(|(c, ..)| *c == self.code) {
+            return f.write_str(if shown { said } else { notation });
+        }
         match self.code {
             Code::Char(' ') => f.write_str("space"),
-            Code::Char('-') => f.write_str("minus"),
             Code::Char(c) => write!(f, "{c}"),
-            Code::Enter => f.write_str("ret"),
             Code::Esc => f.write_str("esc"),
             Code::Tab => f.write_str("tab"),
             // (shift + tab: the keymap's name for it, Helix's and the one people say — #199)
             Code::BackTab => f.write_str("S-tab"),
             Code::Backspace => f.write_str("backspace"),
             Code::Delete => f.write_str("del"),
-            Code::Left => f.write_str("left"),
-            Code::Right => f.write_str("right"),
-            Code::Up => f.write_str("up"),
-            Code::Down => f.write_str("down"),
             Code::Home => f.write_str("home"),
             Code::End => f.write_str("end"),
             Code::PageUp => f.write_str("pageup"),
             Code::PageDown => f.write_str("pagedown"),
             Code::F(n) => write!(f, "F{n}"),
+            Code::Enter | Code::Up | Code::Down | Code::Left | Code::Right => unreachable!("in SHOWN"),
         }
     }
+}
+
+/// The one name a key is shown by, wherever tarae shows it — which-key, the palette, hints, what a key refused says,
+/// the keymap reference (#202): `enter`, `-`, `↑`, as people say them; the keymap file keeps Helix's notation
+/// (`notation`), which `FromStr` reads.
+impl fmt::Display for Key {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.write(f, !broken(Broken::ShownAsNotation))
+    }
+}
+
+/// A sequence written in either notation (`ret`, `C-w minus`), each word that's a key as shown — what a plugin
+/// names in its keys' hints; a word that isn't a key (`click`) stays.
+pub fn said(seq: &str) -> String {
+    if broken(Broken::SaidAsWritten) {
+        return seq.to_string();
+    }
+    let word = |w: &str| w.parse::<Key>().map_or(w.to_string(), |k| k.to_string());
+    seq.split(' ').map(word).collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -340,11 +450,110 @@ mod tests {
     }
 
     #[test]
-    fn display_roundtrips() {
-        for s in ["x", "A-x", "C-y", "space", "minus", "ret", "C-A-backspace", "F3", "S-pagedown", "C-S-tab"]
+    fn notation_roundtrips() {
+        for s in
+            ["x", "A-x", "C-y", "space", "minus", "ret", "C-A-backspace", "F3", "S-pagedown", "C-S-tab", "up"]
         {
-            assert_eq!(k(s).to_string(), s);
+            assert_eq!(k(s).notation(), s);
         }
+    }
+
+    /// #202: a key is shown by one name — `enter`, `-`, the arrows as `↑ ↓ ← →` — the rest as the keymap writes them;
+    /// what's shown reads back as the same key (a hint's word pressed), and the keymap's notation reads as before.
+    #[test]
+    fn every_key_is_shown_by_one_name_that_reads_back() {
+        let shown = [
+            ("ret", "enter"),
+            ("A-ret", "A-enter"),
+            ("C-minus", "C--"),
+            ("A-minus", "A--"),
+            ("minus", "-"),
+            ("up", "↑"),
+            ("C-left", "C-←"),
+            ("lt", "<"),
+            ("gt", ">"),
+            ("del", "del"),
+            ("backspace", "backspace"),
+            ("S-pageup", "S-pageup"),
+            ("space", "space"),
+            ("esc", "esc"),
+            ("S-tab", "S-tab"),
+        ];
+        for (notation, said) in shown {
+            assert_eq!(k(notation).to_string(), said, "{notation}");
+            assert_eq!(Key::from_shown(said), Some(k(notation)), "{said} reads back");
+        }
+        for key in every_kind() {
+            assert_eq!(Key::from_shown(&key.to_string()), Some(key), "{key}");
+            assert_eq!(key.notation().parse::<Key>(), Ok(key), "{}", key.notation());
+        }
+        assert_eq!(said("C-w minus"), "C-w -");
+        assert_eq!(said("ret"), "enter");
+        assert_eq!(said("click"), "click", "a word that isn't a key stays");
+    }
+
+    /// A key of every kind, with and without ctrl and alt (and the shifted page key).
+    fn every_kind() -> Vec<Key> {
+        let codes =
+            [Code::Enter, Code::Esc, Code::Tab, Code::BackTab, Code::Backspace, Code::Delete, Code::Left]
+                .into_iter()
+                .chain([
+                    Code::Right,
+                    Code::Up,
+                    Code::Down,
+                    Code::Home,
+                    Code::End,
+                    Code::PageUp,
+                    Code::PageDown,
+                ])
+                .chain([Code::F(5), Code::Char(' '), Code::Char('-'), Code::Char('x'), Code::Char('<')])
+                .chain([Code::Char('>')]);
+        let mods = [(false, false), (true, false), (false, true), (true, true)];
+        let keys = codes.flat_map(|code| mods.map(|(ctrl, alt)| Key { code, ctrl, alt, shift: false }));
+        keys.chain([k("S-pageup")]).collect()
+    }
+
+    /// Where a key's shown name (`Display`), written in a config, isn't that key nor refused with the key's spelling
+    /// (which reads as it) — a dead binding, unsaid (#202's review: `↑` copied from the reference read as the
+    /// character). Each a line naming it.
+    fn shown_in_a_config() -> Vec<String> {
+        let mut out = Vec::new();
+        for key in every_kind() {
+            let shown = key.to_string();
+            match shown.parse::<Key>() {
+                Ok(read) if read == key => {}
+                Ok(read) => out.push(format!("{shown:?} reads as another key: {read:?}")),
+                Err(e) => match e.rsplit_once(" — write ").map(|(_, w)| w.parse::<Key>()) {
+                    Some(Ok(spelled)) if spelled == key => {}
+                    _ => out.push(format!("{shown:?} refused without its spelling: {e}")),
+                },
+            }
+        }
+        out
+    }
+
+    /// #202's review: a name only shown (the arrows) is refused in a config with the key's spelling, `"↑" — write up`;
+    /// every other shown name is the key it shows (`enter`, `-`, `C--`, `<`).
+    #[test]
+    fn every_shown_name_in_a_config_is_its_key_or_refused() {
+        let off = shown_in_a_config();
+        assert!(off.is_empty(), "{off:#?}");
+        assert_eq!("↑".parse::<Key>(), Err("\"↑\" — write up".to_string()));
+        assert_eq!("C-←".parse::<Key>(), Err("\"C-←\" — write C-left".to_string()));
+        assert_eq!((k("enter"), k("-"), k("C--")), (k("ret"), k("minus"), k("C-minus")));
+        // (a config's warning names where: `keys.normal.↑: "↑" — write up`)
+        let table: toml::Table = toml::from_str("\"↑\" = \"move_line_up\"").unwrap();
+        let mut warnings = Vec::new();
+        crate::keymap::Node::from_toml(&table, "keys.normal", &mut warnings);
+        assert_eq!(warnings, ["keys.normal.↑: \"↑\" — write up"]);
+    }
+
+    /// …and it would see a shown arrow read as the character it is.
+    #[test]
+    fn the_config_test_sees_a_shown_arrow_read_as_a_character() {
+        let _back = Broken::ShownReadAsChar.set();
+        let off = shown_in_a_config();
+        assert!(off.iter().any(|l| l.starts_with("\"↑\" reads as another key")), "{off:#?}");
     }
 
     /// #199: shift + tab is `S-tab` wherever a key is shown — which-key, the palette, a card's refusal, `:config-show`,
@@ -353,9 +562,12 @@ mod tests {
     #[test]
     fn shift_tab_is_named_s_tab_wherever_a_key_is_shown() {
         let ev = Key::from_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)).unwrap();
-        assert_eq!((ev.to_string(), ev.shown()), ("S-tab".to_string(), "S-tab".to_string()));
+        assert_eq!((ev.to_string(), ev.notation()), ("S-tab".to_string(), "S-tab".to_string()));
         assert_eq!(k("S-tab"), ev);
-        assert_eq!((k("A-S-tab").to_string(), k("C-S-tab").shown()), ("A-S-tab".into(), "C-S-tab".into()));
+        assert_eq!(
+            (k("A-S-tab").to_string(), k("C-S-tab").to_string()),
+            ("A-S-tab".into(), "C-S-tab".into())
+        );
         assert!("backtab".parse::<Key>().is_err(), "one name");
     }
 

@@ -87,14 +87,7 @@ pub fn keys(said: &str) -> Option<Vec<Key>> {
         return None;
     }
     let one = |w: &str| -> Option<Vec<Key>> {
-        let arrow = match w {
-            "↑" => Some("up"),
-            "↓" => Some("down"),
-            "←" => Some("left"),
-            "→" => Some("right"),
-            _ => None,
-        };
-        if let Ok(k) = arrow.unwrap_or(w).parse::<Key>() {
+        if let Some(k) = Key::from_shown(w) {
             return Some(vec![k]);
         }
         let mut c = w.chars();

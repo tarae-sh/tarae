@@ -989,8 +989,7 @@ pub fn run_where(ed: &mut Editor) {
 /// — None when nothing is (a remap took it away).
 pub fn bound(ed: &Editor, name: &str, like: &str) -> Option<String> {
     let keys = ed.keymaps.run_keys_for(name);
-    let k = keys.iter().find(|k| k.as_str() == like).or(keys.first())?;
-    Some(if k == "ret" { "enter".into() } else { k.clone() })
+    keys.iter().find(|k| k.as_str() == like).or(keys.first()).cloned()
 }
 
 /// Whether `enter` quotes on the output with the keys now: something selected.

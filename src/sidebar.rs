@@ -1291,7 +1291,8 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
                 return true;
             }
             (Code::Char(c), false) if !"jkgGhlq :".contains(c) => {
-                ed.plugin_side_key(&key.to_string(), i);
+                // (the plugin API's name for it, the keymap's notation — `ret`)
+                ed.plugin_side_key(&key.notation(), i);
                 return true;
             }
             _ => {}
