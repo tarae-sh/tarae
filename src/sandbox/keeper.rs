@@ -114,6 +114,10 @@ struct Slot {
     exited: Option<Result<i32, String>>,
     /// A held run's end of its handoff socket: a byte on it once its pid is known, and it goes on to its exec.
     hold: Option<Arc<OwnedFd>>,
+    /// The keys outside the project its child hides (`Run::loose`, in its order) and where what it says it left of
+    /// them goes (`Msg::Skipped`, `linux::Confine::skipped`).
+    loose: Vec<PathBuf>,
+    skipped: Option<Arc<Mutex<Option<super::linux::Skipped>>>>,
 }
 
 /// Every keeper there is (a session's, and ones superseded still ending their runs). Held only to look or
@@ -576,6 +580,18 @@ impl Keeper {
             Msg::Reaped { n } => {
                 self.log().line("sandbox", "info", &format!("keeper {} reaped {n} left by runs", self.pid));
             }
+            // (each by its place in the run's loose keys, as sent — one past them isn't one)
+            Msg::Skipped { id, keys, more } => {
+                if let Some(slot) = s.runs.get(&id)
+                    && let Some(to) = &slot.skipped
+                {
+                    let keys = keys
+                        .iter()
+                        .filter_map(|(at, replaced)| Some((slot.loose.get(*at as usize)?.clone(), *replaced)))
+                        .collect();
+                    *lock(to) = Some(super::linux::Skipped { keys, more });
+                }
+            }
             #[cfg(test)]
             Msg::Usage { rss_kb, pss_kb } => s.usage = Some((rss_kb, pss_kb)),
             other => self.log().line("sandbox", "warn", &format!("its keeper said {other:?}")),
@@ -753,13 +769,14 @@ impl Keeper {
     }
 
     /// Asks for run `req` with its descriptors (the ruleset, stdin, stdout, stderr — and served or held, the
-    /// handoff socket's child end) and waits for its start (`STARTED_WITHIN`): its pid and pidfd. `hold`, a held
-    /// run's end of that socket: its byte goes once its pid is known (`heard`).
+    /// handoff socket's child end) and waits for its start (`STARTED_WITHIN`): its pid and pidfd. `slot`, what tarae
+    /// keeps of it until it's heard: a held run's end of that socket (`hold` — its byte goes once its pid is known,
+    /// `heard`), its loose keys and where what its child left of them goes.
     fn run(
         &self,
         mut req: channel::Run,
         fds: &[BorrowedFd],
-        hold: Option<Arc<OwnedFd>>,
+        slot: Slot,
         held: bool,
     ) -> io::Result<(u32, Arc<OwnedFd>)> {
         let id = {
@@ -773,7 +790,7 @@ impl Keeper {
             }
             s.next += 1;
             let id = s.next;
-            s.runs.insert(id, Slot { hold, ..Slot::default() });
+            s.runs.insert(id, slot);
             id
         };
         req.id = id;
@@ -844,7 +861,12 @@ impl Keeper {
             return Err(io::Error::other("a served run starts with its supervisor (start_served)"));
         }
         let (rules, covers) = c.rules_and_covers();
-        let asks = Asks { no_userns: super::tier::runs_refuse_userns(), ptys: false, covers: Some(covers) };
+        let asks = Asks {
+            no_userns: super::tier::runs_refuse_userns(),
+            ptys: false,
+            covers: Some(covers),
+            skipped: Some(c.skipped.clone()),
+        };
         let held = c.keeper.as_ref().filter(|h| h.of(self));
         let started = self.start_with(cmd, comm, rules, c.net, asks, held.is_some()).map(|(s, _)| s);
         if let Some(h) = held {
@@ -878,9 +900,9 @@ impl Keeper {
         asks: Asks<'_>,
         held: bool,
     ) -> io::Result<(Started, Option<Arc<OwnedFd>>)> {
-        let Asks { no_userns, ptys, covers } = asks;
+        let Asks { no_userns, ptys, covers, skipped } = asks;
         // (only a keeper in a user namespace can give its run a mount namespace of its own)
-        let covers = covers.filter(|c| !c.keys.is_empty() || !c.seals.is_empty());
+        let covers = covers.filter(|c| !c.keys.is_empty() || !c.loose.is_empty() || !c.seals.is_empty());
         // (the break-once: the mounts skipped, the rules left whole — 7d's key tests fail where keys are mounted over)
         #[cfg(test)]
         let covers = covers.filter(|_| std::env::var_os("TARAE_TEST_NO_COVERS").is_none());
@@ -957,7 +979,9 @@ impl Keeper {
         fds.extend(handoff.as_ref().map(|(_, theirs)| theirs.as_fd()));
         let ours = handoff.as_ref().map(|(ours, _)| ours.clone());
         let hold = ours.clone().filter(|_| req.held);
-        let (pid, _pidfd) = self.run(req, &fds, hold, held)?;
+        let loose: Vec<PathBuf> = covers.iter().flat_map(|c| &c.loose).map(|k| k.path.clone()).collect();
+        let skipped = skipped.filter(|_| !loose.is_empty());
+        let (pid, _pidfd) = self.run(req, &fds, Slot { hold, loose, skipped, ..Slot::default() }, held)?;
         let spawned = crate::spawn::Spawned { pid, stdout: Some(out_r), stderr: Some(err_r) };
         Ok((Started { spawned }, ours))
     }
@@ -965,12 +989,14 @@ impl Keeper {
 
 /// What a run's child is asked besides its rules (`Keeper::start_with`): its filter refuses new user namespaces
 /// (`no_userns`, `tier::runs_refuse_userns`); its way to a pty's other end goes to its supervisor (`ptys`: served, a
-/// pool granted in its rules — 3b); it hides these files named like keys by mounts first (`covers`, 7d).
-#[derive(Clone, Copy, Default)]
+/// pool granted in its rules — 3b); it hides these files named like keys by mounts first (`covers`, 7d), and what it
+/// says it left of those outside the project goes to `skipped` (`linux::Confine::skipped`).
+#[derive(Clone, Default)]
 struct Asks<'a> {
     no_userns: bool,
     ptys: bool,
     covers: Option<&'a super::linux::Covers>,
+    skipped: Option<Arc<Mutex<Option<super::linux::Skipped>>>>,
 }
 
 /// A `SOCK_STREAM` pair, close-on-exec: tarae's end (shared by who writes on it) and the child's.
@@ -1013,7 +1039,12 @@ impl Keeper {
         let to = super::supervisor::serve(policy, net, refused, tree, c.ptys.clone())?;
         let no_userns = super::tier::runs_refuse_userns();
         let (rules, covers) = c.rules_and_covers();
-        let asks = Asks { no_userns, ptys: c.ptys.is_some(), covers: Some(covers) };
+        let asks = Asks {
+            no_userns,
+            ptys: c.ptys.is_some(),
+            covers: Some(covers),
+            skipped: Some(c.skipped.clone()),
+        };
         let held = c.keeper.as_ref().filter(|h| h.of(self));
         let started = self.start_with(cmd, comm, rules, net, asks, held.is_some());
         if let Some(h) = held {
@@ -1723,17 +1754,34 @@ impl Kept {
         let _ = self.say(&started, &[pidfd.as_fd()]);
     }
 
-    /// Reads run `id`'s failure pipe: a failure (step, errno) is said; its end (the exec closed it) closes it.
+    /// Reads run `id`'s failure pipe: what its child left of its loose keys (`SkipRecord`, before its exec) is said
+    /// (`Skipped`), and a failure (step, errno); its end (the exec closed it) closes it. Each was one write a pipe
+    /// takes whole, the record's first: a read after `poll` saw it has it whole, and the failure if it came — the
+    /// record alone, the pipe is read again when there's more (the failure, or its end).
     fn failure(&mut self, id: u64) {
         let Some(c) = self.children.get_mut(&id) else { return };
         let Some(fd) = c.error.take() else { return };
-        let mut b = [0u8; 5];
+        let mut b = [0u8; SKIP_RECORD + 5];
         // SAFETY: a buffer of its size for the call.
         let n = unsafe { libc::read(fd.as_raw_fd(), b.as_mut_ptr().cast(), b.len()) };
-        if n == 5 {
-            let step = channel::Step::from_code(b[0]).unwrap_or(Step::Exec);
-            let errno = i32::from_le_bytes([b[1], b[2], b[3], b[4]]);
+        let mut rest = match n {
+            n if n > 0 => &b[..n as usize],
+            n if n < 0 && errno() == libc::EINTR => &[][..],
+            _ => return,
+        };
+        let mut again = n < 0;
+        if let Some((skipped, len)) = skipped_in(id, rest) {
+            let _ = self.say(&skipped, &[]);
+            rest = &rest[len..];
+            again = rest.is_empty();
+        }
+        if rest.len() == 5 {
+            let step = channel::Step::from_code(rest[0]).unwrap_or(Step::Exec);
+            let errno = i32::from_le_bytes([rest[1], rest[2], rest[3], rest[4]]);
             let _ = self.say(&Msg::Failed { id, errno, step }, &[]);
+        }
+        if again && let Some(c) = self.children.get_mut(&id) {
+            c.error = Some(fd);
         }
     }
 
@@ -1953,10 +2001,17 @@ fn child(run: &channel::Run, exec: &Exec, fds: &[OwnedFd], chan: RawFd, error: R
         }
         // (7d: before dumpable — a new user namespace's capabilities make it undumpable again; after its stdio, which
         // says why it failed)
-        if let Some(c) = &exec.covers
-            && let Err(e) = cover(c)
-        {
-            fail(Step::Covers, e);
+        if let Some(c) = &exec.covers {
+            let mut left = SkipRecord::new();
+            if let Err(e) = cover(c, &mut left) {
+                fail(Step::Covers, e);
+            }
+            // (what it left of the keys outside the project, said before its exec — none left said too, so tarae
+            // knows; `Kept::failure` reads it)
+            if !c.loose.is_empty() {
+                let r = left.record();
+                libc::write(error, r.as_ptr().cast(), r.len());
+            }
         }
         libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0);
         libc::prctl(libc::PR_SET_NAME, exec.comm.as_ptr());
@@ -1998,6 +2053,63 @@ fn child(run: &channel::Run, exec: &Exec, fds: &[OwnedFd], chan: RawFd, error: R
     // SAFETY: the program, argv and envp are NUL-terminated arrays of strings `exec` holds.
     unsafe { libc::execve(exec.program.as_ptr(), exec.argv_p.as_ptr(), exec.envp_p.as_ptr()) };
     fail(Step::Exec, errno())
+}
+
+/// The record a run's child says what it left of its loose keys in (`SkipRecord`): one write a pipe takes whole
+/// (`PIPE_BUF`), and reads whole.
+const SKIP_RECORD: usize = 4096;
+/// Its first byte: no step's code (`Step::code`, its place in `Step::ALL`) — a failure's record is told from it.
+const SKIP_MARK: u8 = 0xFE;
+/// The most loose keys it names (its header six bytes, each five): past them, `more`.
+pub(super) const SKIPPED_MAX: usize = (SKIP_RECORD - 6) / 5;
+
+/// What a run's child left of its loose keys (`cover`), on its stack (it allocates nothing — `child`): the record
+/// it writes on its failure pipe before its exec, `[SKIP_MARK, n u32, more u8, n × (its place in loose u32,
+/// replaced u8)]` — `Msg::Skipped`'s fields.
+struct SkipRecord {
+    b: [u8; SKIP_RECORD],
+    n: usize,
+    more: bool,
+}
+
+impl SkipRecord {
+    fn new() -> SkipRecord {
+        SkipRecord { b: [0; SKIP_RECORD], n: 0, more: false }
+    }
+
+    /// Loose key `at` left — `replaced`: another file is at its name; else none is.
+    fn push(&mut self, at: usize, replaced: bool) {
+        if self.n == SKIPPED_MAX {
+            self.more = true;
+            return;
+        }
+        let o = 6 + 5 * self.n;
+        self.b[o..o + 4].copy_from_slice(&(at as u32).to_le_bytes());
+        self.b[o + 4] = replaced as u8;
+        self.n += 1;
+    }
+
+    fn record(&mut self) -> &[u8] {
+        self.b[0] = SKIP_MARK;
+        self.b[1..5].copy_from_slice(&(self.n as u32).to_le_bytes());
+        self.b[5] = self.more as u8;
+        &self.b[..6 + 5 * self.n]
+    }
+}
+
+/// The keys run `id`'s child said it left (`SkipRecord`) at the start of `b`, as said to tarae, and the bytes it took
+/// — None: `b` doesn't start with one, or one cut short.
+fn skipped_in(id: u64, b: &[u8]) -> Option<(Msg, usize)> {
+    let (&mark, rest) = b.split_first()?;
+    let n = u32::from_le_bytes(rest.get(..4)?.try_into().ok()?) as usize;
+    let more = *rest.get(4)? == 1;
+    let len = 6 + 5 * n;
+    if mark != SKIP_MARK || n > SKIPPED_MAX || b.len() < len {
+        return None;
+    }
+    let keys =
+        b[6..len].chunks(5).map(|e| (u32::from_le_bytes([e[0], e[1], e[2], e[3]]), e[4] == 1)).collect();
+    Some((Msg::Skipped { id, keys, more }, len))
 }
 
 /// A byte from tarae on `handoff`, in a run's child (a raw read: nothing allocates) — else the errno (`EPIPE`: tarae's
@@ -2202,11 +2314,11 @@ unsafe fn seal(path: &std::ffi::CStr, dev: u64, ino: u64, read_only: bool) -> Re
 /// what it opened (so onto that file wherever it went since); then every capability dropped for good. The
 /// mounts in it, made in this namespace, aren't locked; what takes them back from a run is that it has no
 /// capability, and Landlock refuses a confined process every mount and unmount; in a namespace a run makes, they
-/// come locked. Err: an errno. Raw calls only, nothing allocated (`child`).
+/// come locked. Err: an errno. Each loose key it leaves goes in `left`. Raw calls only, nothing allocated (`child`).
 ///
 /// # Safety
 /// A run's child's: raw calls on what `c` holds.
-unsafe fn cover(c: &Covering) -> Result<(), i32> {
+unsafe fn cover(c: &Covering, left: &mut SkipRecord) -> Result<(), i32> {
     // SAFETY: raw calls on this process, `c`'s strings and buffers on the stack; each descriptor closed.
     unsafe {
         if libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) != 0 {
@@ -2242,26 +2354,31 @@ unsafe fn cover(c: &Covering) -> Result<(), i32> {
             seal(path, *dev, *ino, true)?;
         }
         // (the keys outside the project, `loose` — D-i: where every program writes, `/tmp`: one gone since the walk,
-        // or another file at its name now, is left — a key made since, found by the next run's walk; the run starts)
-        let all = c.keys.iter().map(|k| (k, true)).chain(c.loose.iter().map(|k| (k, false)));
-        for ((path, dev, ino), must) in all {
+        // or another file at its name now, is left — a key made since, found by the next run's walk; the run starts,
+        // and `left` says which)
+        let all =
+            c.keys.iter().map(|k| (k, None)).chain(c.loose.iter().enumerate().map(|(at, k)| (k, Some(at))));
+        for ((path, dev, ino), loose) in all {
             let mut how: libc::open_how = std::mem::zeroed();
             how.flags = (libc::O_PATH | libc::O_CLOEXEC | libc::O_NOFOLLOW) as u64;
             how.resolve = libc::RESOLVE_NO_SYMLINKS | libc::RESOLVE_NO_MAGICLINKS;
             let size = std::mem::size_of::<libc::open_how>();
             let key = libc::syscall(libc::SYS_openat2, libc::AT_FDCWD, path.as_ptr(), &raw const how, size);
             if key < 0 {
-                if !must {
+                let e = errno();
+                if let Some(at) = loose {
+                    // (nothing at its name, or a folder on the way gone: nothing to read — else something's there)
+                    left.push(at, !matches!(e, libc::ENOENT | libc::ENOTDIR));
                     continue;
                 }
-                return Err(errno());
+                return Err(e);
             }
             let key = key as libc::c_int;
             // (the test of the window below: the two-deep test's own loose key, in its own scratch folder, is
             // removed once opened, as another program in `/tmp` may — that one file, its path whole)
             #[cfg(test)]
             if let Some(gone) =
-                c.gone_in_the_window.as_ref().filter(|g| !must && g.as_bytes() == path.as_bytes())
+                c.gone_in_the_window.as_ref().filter(|g| loose.is_some() && g.as_bytes() == path.as_bytes())
             {
                 libc::unlink(gone.as_ptr());
             }
@@ -2271,7 +2388,8 @@ unsafe fn cover(c: &Covering) -> Result<(), i32> {
                 && (st.st_dev as u64, st.st_ino as u64) == (*dev, *ino);
             if !same {
                 libc::close(key);
-                if !must {
+                if let Some(at) = loose {
+                    left.push(at, true);
                     continue;
                 }
                 return Err(libc::ESTALE);
@@ -2329,8 +2447,10 @@ unsafe fn cover(c: &Covering) -> Result<(), i32> {
             libc::close(key);
             // (a loose key removed since it was opened: the kernel mounts on no file that's gone — ENOENT — and
             // there's nothing left at its name to read)
-            if !done && !(e == libc::ENOENT && !must) {
-                return Err(e);
+            match (done, loose) {
+                (true, _) => {}
+                (false, Some(at)) if e == libc::ENOENT => left.push(at, false),
+                (false, _) => return Err(e),
             }
         }
         capabilities_dropped(c.last_cap)
@@ -2596,6 +2716,73 @@ mod tests {
         if std::env::var_os("TARAE_KEEPER").is_some() {
             main();
         }
+    }
+
+    /// What a run's child left of its loose keys reaches tarae as it wrote it, on the pipe its failure takes: the
+    /// record read whole — the failure after it in the same read said too, in that order; the record alone, the pipe
+    /// kept for what comes next (the failure, or its end); past `SKIPPED_MAX`, `more`. A failure alone reads as
+    /// before.
+    #[test]
+    fn the_keys_a_runs_child_left_reach_tarae_before_its_failure() {
+        let (ours, theirs) = seqpacket().unwrap();
+        let mut k = Kept {
+            chan: ours,
+            signals: open_null(libc::O_RDONLY).unwrap(),
+            children: HashMap::new(),
+            reaped: 0,
+        };
+        let mut buf = Vec::new();
+        let mut heard = || match channel::recv(theirs.as_fd(), &mut buf) {
+            Ok(Some((Ok(m), _))) => m,
+            other => panic!("{other:?}"),
+        };
+        let write = |w: &io::PipeWriter, b: &[u8]| {
+            // SAFETY: a write of a buffer we own.
+            assert_eq!(unsafe { libc::write(w.as_raw_fd(), b.as_ptr().cast(), b.len()) }, b.len() as isize);
+        };
+        let failed = [Step::Landlock.code(), 13, 0, 0, 0];
+        // A record, then a failure, both there when it reads
+        let (r, w) = io::pipe().unwrap();
+        k.children.insert(1, Child { pid: 0, error: Some(r.into()) });
+        let mut left = SkipRecord::new();
+        left.push(2, true);
+        left.push(0, false);
+        write(&w, left.record());
+        write(&w, &failed);
+        k.failure(1);
+        assert_eq!(heard(), Msg::Skipped { id: 1, keys: vec![(2, true), (0, false)], more: false });
+        assert_eq!(heard(), Msg::Failed { id: 1, errno: 13, step: Step::Landlock });
+        assert!(k.children[&1].error.is_none(), "its failure said, the pipe is done");
+        // The record alone (none left: said so), the pipe kept; its end then closes it
+        let (r, w) = io::pipe().unwrap();
+        k.children.insert(2, Child { pid: 0, error: Some(r.into()) });
+        write(&w, SkipRecord::new().record());
+        k.failure(2);
+        assert_eq!(heard(), Msg::Skipped { id: 2, keys: Vec::new(), more: false });
+        assert!(k.children[&2].error.is_some(), "kept for its failure or its end");
+        drop(w);
+        k.failure(2);
+        assert!(k.children[&2].error.is_none(), "its end closes it");
+        // Past what a record holds: the first SKIPPED_MAX, and more
+        let mut many = SkipRecord::new();
+        for at in 0..SKIPPED_MAX + 5 {
+            many.push(at, false);
+        }
+        assert!(many.record().len() <= libc::PIPE_BUF, "one write a pipe takes whole");
+        let Some((Msg::Skipped { keys, more, .. }, _)) = skipped_in(3, many.record()) else {
+            panic!("a full record")
+        };
+        assert_eq!(
+            (keys.len(), keys.last().copied(), more),
+            (SKIPPED_MAX, Some(((SKIPPED_MAX - 1) as u32, false)), true)
+        );
+        // A failure alone, as before
+        let (r, w) = io::pipe().unwrap();
+        k.children.insert(4, Child { pid: 0, error: Some(r.into()) });
+        write(&w, &failed);
+        k.failure(4);
+        assert_eq!(heard(), Msg::Failed { id: 4, errno: 13, step: Step::Landlock });
+        assert_eq!(skipped_in(4, &failed), None, "a failure isn't a record");
     }
 
     /// The namespaces this system gives a keeper (`tier::get`): every test's keeper is born in them, so each

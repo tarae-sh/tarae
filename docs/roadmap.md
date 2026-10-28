@@ -255,8 +255,11 @@ The aim is to state what the sandbox guarantees and show that it holds.
    by type), the folders not reached named in the report; a hidden key a run can't remove is named too. Built
    outside, imported into the `sandboxa` session, six reviewer rounds; landed 2026-10-21 (`d6033711`) after the
    outside session's four tier-own runs (the two-deep test as a user, both break-onces caught — three of the
-   runs found the test's own fixture and assertions wanting, never the sandbox). Left: the child's skipped keys reported back before `exec` (a protocol
-   change — the report says "if still there"); nested user namespaces in tier own are a piece of their own.
+   runs found the test's own fixture and assertions wanting, never the sandbox). The child's skipped keys are
+   reported back before `exec` (2026-10-28, `Msg::Skipped`): the report names one replaced since the walk as readable
+   and counts the gone ones, no "if still there" hedge — and a run with no key nor protected name of its own has
+   those outside hidden too (the keeper dropped its mounts then). Left: nested user namespaces in tier own, a piece
+   of their own.
 
 ### 3. Frictions, and lighter cards and reviews
 

@@ -136,6 +136,9 @@ pub struct Confine {
     /// child mounts (tier own, D-i): those hidden by mounts as the project's are, those left open, and the folders
     /// the walk didn't reach (`outside_keys`).
     pub outside: Outside,
+    /// What its run's child said it left of those (`Outside::covered`, `Covers::loose`) before its exec — None until
+    /// a run of it said (`keeper::Keeper::heard`): the report hedges then.
+    pub skipped: Arc<std::sync::Mutex<Option<Skipped>>>,
     /// What the walk of the folders the user opened for writing couldn't look through (`OpenedNames.closed`), closed
     /// whole for its runs — and why each.
     pub unlooked: Vec<(PathBuf, String)>,
@@ -230,6 +233,7 @@ impl PartialEq for Confine {
             && self.project_sealed == other.project_sealed
             && Arc::ptr_eq(&self.made, &other.made)
             && Arc::ptr_eq(&self.kept, &other.kept)
+            && Arc::ptr_eq(&self.skipped, &other.skipped)
             && Arc::ptr_eq(&self.rules, &other.rules)
             && match (&self.keeper, &other.keeper) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
@@ -661,7 +665,7 @@ pub fn covers_said(c: &Confine) -> String {
     };
     format!(
         "{how}{sealed}{elsewhere}{holes}{whole}{unseen}{}{}",
-        outside_said(&c.outside),
+        outside_said(&c.outside, c.skipped.lock().unwrap_or_else(|e| e.into_inner()).as_ref()),
         unlooked_said(&c.unlooked) + &shut_said(c)
     )
 }
@@ -747,19 +751,59 @@ fn unlooked_said(unlooked: &[(PathBuf, String)]) -> String {
 }
 
 /// What the report says of the files named like keys in the places outside the project a run reads (D-i): how many
-/// its mounts hide, each left readable and why, and the folders not looked through past `WALK_MAX` — nothing
+/// its mounts hide — as its child said before its exec (`skipped`: those it left, each replaced one named; None: it
+/// hasn't said, hedged) —, each left readable and why, and the folders not looked through past `WALK_MAX` — nothing
 /// where there's none.
-pub fn outside_said(o: &Outside) -> String {
+pub fn outside_said(o: &Outside, skipped: Option<&Skipped>) -> String {
     const SAID: usize = 3;
-    let covered = match o.covered.len() {
-        0 => String::new(),
-        n => format!(
-            " {n} {} found before it started in the places outside the project it reads (the repository's other \
-             checkouts, the temp folders, what the user let it read or write) {} hidden by mounts too if still \
-             there as found — one gone or replaced since isn't.",
-            if n == 1 { "file named like a key" } else { "files named like keys" },
+    let files = |n: usize| if n == 1 { "file named like a key" } else { "files named like keys" };
+    let places = "in the places outside the project it reads (the repository's other checkouts, the temp folders, \
+                  what the user let it read or write)";
+    let covered = match (o.covered.len(), skipped) {
+        (0, _) => String::new(),
+        (n, None) => format!(
+            " {n} {} found before it started {places} {} hidden by mounts too if still there as found — one gone or \
+             replaced since isn't.",
+            files(n),
             if n == 1 { "is" } else { "are" }
         ),
+        (n, Some(s)) => {
+            let replaced: Vec<&PathBuf> = s.keys.iter().filter(|(_, r)| *r).map(|(k, _)| k).collect();
+            let gone = s.keys.len() - replaced.len();
+            let hidden = n.saturating_sub(s.keys.len());
+            let mut said = match hidden {
+                0 => String::new(),
+                h => format!(
+                    " {h} {} found before it started {places} {} hidden by mounts too.",
+                    files(h),
+                    if h == 1 { "is" } else { "are" }
+                ),
+            };
+            for k in replaced.iter().take(SAID) {
+                said += &format!(
+                    " {} was replaced since that walk: the file there now stays readable — the next run's walk finds it.",
+                    crate::allow::tilde(k)
+                );
+            }
+            if replaced.len() > SAID {
+                said += &format!(
+                    " So were {} more files named like keys outside the project.",
+                    replaced.len() - SAID
+                );
+            }
+            if gone > 0 {
+                said += &format!(
+                    " {gone} {} found then {} gone when it started: nothing there to read.",
+                    files(gone),
+                    if gone == 1 { "was" } else { "were" }
+                );
+            }
+            if s.more {
+                said += " Past those, more weren't hidden than its run could list: one may stay readable — the next \
+                         run's walk finds it.";
+            }
+            said
+        }
     };
     let mut open: String = o
         .open
@@ -1161,6 +1205,15 @@ pub struct Outside {
     pub mounts: Vec<PathBuf>,
     /// The places and folders not looked through, and why (`Walked.failed`).
     pub failed: Vec<(PathBuf, String)>,
+}
+
+/// The keys outside the project a run's child didn't hide (`Covers::loose`), as it said before its exec: each with
+/// whether another file is at its name now (replaced since the walk: that one stays readable — the next run's walk
+/// finds it) or none (gone: nothing to read); `more`, past what its record holds (`keeper::SKIPPED_MAX`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Skipped {
+    pub keys: Vec<(PathBuf, bool)>,
+    pub more: bool,
 }
 
 /// The files named like keys (`key_named_below` its place) in the places outside the project runs read
@@ -2064,6 +2117,7 @@ pub(super) fn confine_in(
         closed_whole,
         unseen: unseen.iter().map(|k| k.strip_prefix(&p.root).unwrap_or(k).to_path_buf()).collect(),
         outside,
+        skipped: Default::default(),
         unlooked: opened.closed,
         shut,
         shut_unlooked,
@@ -2976,7 +3030,7 @@ mod tests {
         let big = g.join("big");
         let w = outside_keys(&p, opened, std::slice::from_ref(&big), &[], WALK_MAX);
         assert!(w.keys.contains(&near) && !w.keys.contains(&far) && w.mounts == [big.clone()], "{w:?}");
-        let said = outside_said(&Outside { mounts: w.mounts, ..Default::default() });
+        let said = outside_said(&Outside { mounts: w.mounts, ..Default::default() }, None);
         assert!(said.contains("isn't looked through before a command") && said.contains("/big/"), "{said}");
         // (a place on a network's or FUSE's filesystem isn't opened at all, named with why — by the mount holding
         // it in the table, the deepest; a local one below it isn't that)
@@ -3006,7 +3060,7 @@ mod tests {
             w.keys.is_empty() && w.failed == [(linked.clone(), "a link now, not followed".into())],
             "{w:?}"
         );
-        let said = outside_said(&Outside { failed: w.failed, ..Default::default() });
+        let said = outside_said(&Outside { failed: w.failed, ..Default::default() }, None);
         assert!(said.contains("wasn't looked through before a command (a link now, not followed)"), "{said}");
         std::fs::remove_dir_all(&t).ok();
     }
@@ -3088,7 +3142,7 @@ mod tests {
         let Walked { keys, unwalked, .. } = outside_keys(&p, &[], &[], &[], 10);
         assert_eq!(keys, vec![key], "the checkout's key before the place runs fill");
         assert!(unwalked.contains(&tmp) && unwalked.contains(&checkout.join("out")), "{unwalked:?}");
-        let said = outside_said(&Outside { unwalked, ..Default::default() });
+        let said = outside_said(&Outside { unwalked, ..Default::default() }, None);
         assert!(said.contains("more than the 20,000 entries"), "{said}");
         std::fs::remove_dir_all(&t).ok();
     }

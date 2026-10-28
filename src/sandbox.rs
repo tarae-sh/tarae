@@ -12608,7 +12608,9 @@ mod tests {
     /// place's and the folder between them keep their times (question 4's premise: a cache by the place's own mtime
     /// would never look again) — is hidden from the next run by a mount, as the project's are (tier own): refused,
     /// its text not read, the report saying it's hidden, the run's key rule closing it (its panel offers that file);
-    /// one the walk found and gone before the run starts doesn't keep it from starting.
+    /// one the walk found and gone before the run starts doesn't keep it from starting — and the report says what
+    /// the run's child left, as it said before its exec: a replaced one named as readable, a gone one counted. A
+    /// project with no keys nor protected names of its own still has those outside hidden.
     /// In tiers host and offline nothing closes it outside the project: read, and nothing says it's hidden.
     #[cfg(not(target_os = "macos"))]
     #[test]
@@ -12665,6 +12667,11 @@ mod tests {
                     said.contains(" found before it started in the places outside the project"),
                     "{said}"
                 );
+                // (its child said what it left before its exec: not this one — so the report says it without a hedge)
+                let left = |c: &linux::Confine| c.skipped.lock().unwrap().clone();
+                let skipped = left(c).expect("the run's child said what it left");
+                assert!(!skipped.keys.iter().any(|(k, _)| *k == key), "{skipped:?}");
+                assert!(said.contains("hidden by mounts too.") && !said.contains("if still there"), "{said}");
                 let closed = matches!(next.key_rule(&key), Some(policy::KeyRule::Closed(_)));
                 assert!(closed, "the run's key rule closes it: its panel offers that file");
                 // (hidden, it can't be removed by the run either — as the project's: busy. A run that may write the
@@ -12733,6 +12740,18 @@ mod tests {
                     };
                     let (ok, out, err) = sh_confined(&then, &root, &format!("cat '{}'", read.display()));
                     assert!(ok && out.contains(want), "a key gone {at} stopped the run: {out} {err}");
+                    // (what its child left, as it said: the swapped one stays readable — named; a gone one counted)
+                    let skipped = left(tc).unwrap_or_else(|| panic!("{at}: its child said nothing"));
+                    let replaced = name == "swapped.pem";
+                    assert!(skipped.keys.contains(&(gone.clone(), replaced)), "{at}: {skipped:?}");
+                    let said = linux::covers_said(tc);
+                    let named = format!("{} was replaced since that walk", crate::allow::tilde(&gone));
+                    match replaced {
+                        true => assert!(said.contains(&named) && said.contains("stays readable"), "{said}"),
+                        false => {
+                            assert!(!said.contains(&named) && said.contains("gone when it started"), "{said}")
+                        }
+                    }
                     match name {
                         "swapped.pem" => std::fs::remove_file(&gone).unwrap(),
                         _ => assert!(!gone.exists(), "{at}: the test build's child removes it once opened"),
@@ -12744,7 +12763,7 @@ mod tests {
                 let empty = std::fs::canonicalize(&t).unwrap().join("keyless");
                 std::fs::create_dir_all(&empty).unwrap();
                 let bare = confined(Policy::for_project(&Env {
-                    root: empty,
+                    root: empty.clone(),
                     key_places: vec![g.clone()],
                     run_env: run_env_here(),
                     ..Env::default()
@@ -12756,6 +12775,18 @@ mod tests {
                 let open =
                     b.outside.open.iter().any(|(k, why)| *k == key && why.contains("no folder of its own"));
                 assert!(open && said.contains("stays readable"), "{:?} {said}", b.outside);
+                // (the same project with a folder for its run: no key nor protected name of its own to mount over,
+                // and the keys outside are hidden all the same)
+                let keyless = run(&bare);
+                let Some(Ok(k)) = &keyless.confine else { panic!("{:?}", keyless.confine) };
+                assert!(
+                    k.covers.keys.is_empty() && k.covers.seals.is_empty(),
+                    "the fixture's premise: {:?}",
+                    k.covers
+                );
+                assert!(k.outside.covered.contains(&key), "{:?}", k.outside);
+                let (ok, out, err) = sh_confined(&keyless, &empty, &format!("cat '{}'", key.display()));
+                assert!(!ok && !out.contains("tarae-fake-token") && err.contains(KEY_DENIED), "{out} {err}");
             }
             false => {
                 assert!(

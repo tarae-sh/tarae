@@ -197,6 +197,14 @@ pub enum Msg {
         rss_kb: u64,
         pss_kb: u64,
     },
+    /// The keys outside the project (`Run::loose`) its child didn't hide, said before its exec: each by its place in
+    /// `loose`, and whether another file is at its name now (true: replaced since the walk — that file stays readable)
+    /// or none (gone: nothing there to read). `more`: more than its child's record holds (`keeper::SKIPPED_MAX`).
+    Skipped {
+        id: u64,
+        keys: Vec<(u32, bool)>,
+        more: bool,
+    },
 }
 
 impl Msg {
@@ -212,6 +220,7 @@ impl Msg {
             Msg::Exited { .. } => 67,
             Msg::Reaped { .. } => 68,
             Msg::Usage { .. } => 69,
+            Msg::Skipped { .. } => 70,
         }
     }
 
@@ -285,6 +294,18 @@ pub fn encode(msg: &Msg) -> Result<Vec<u8>, Refused> {
         Msg::Usage { rss_kb, pss_kb } => {
             b.extend(rss_kb.to_le_bytes());
             b.extend(pss_kb.to_le_bytes());
+        }
+        Msg::Skipped { id, keys, more } => {
+            if keys.len() > LIST_MAX {
+                return Err(Refused("a list past its limit"));
+            }
+            b.extend(id.to_le_bytes());
+            b.extend((keys.len() as u32).to_le_bytes());
+            for (at, replaced) in keys {
+                b.extend(at.to_le_bytes());
+                b.push(*replaced as u8);
+            }
+            b.push(*more as u8);
         }
     }
     if b.len() > MSG_MAX {
@@ -458,6 +479,19 @@ pub fn decode(b: &[u8], fds: usize) -> Result<Msg, Refused> {
         67 => Msg::Exited { id: r.u64()?, status: r.i32()? },
         68 => Msg::Reaped { n: r.u32()? },
         69 => Msg::Usage { rss_kb: r.u64()?, pss_kb: r.u64()? },
+        70 => {
+            let id = r.u64()?;
+            let n = r.u32()? as usize;
+            // (each entry is five bytes: a count past what's left can't be true)
+            if n > LIST_MAX || n > (r.b.len() - r.at) / 5 {
+                return Err(Refused("a list past its limit"));
+            }
+            let mut keys = Vec::with_capacity(n);
+            for _ in 0..n {
+                keys.push((r.u32()?, r.flag()?));
+            }
+            Msg::Skipped { id, keys, more: r.flag()? }
+        }
         _ => return Err(Refused("a kind that isn't one")),
     };
     r.done()?;
@@ -632,6 +666,8 @@ mod tests {
             Msg::Exited { id: 7, status: 3 << 8 },
             Msg::Reaped { n: 2 },
             Msg::Usage { rss_kb: 3100, pss_kb: 900 },
+            Msg::Skipped { id: 7, keys: Vec::new(), more: false },
+            Msg::Skipped { id: 7, keys: vec![(0, false), (3, true), (1023, false)], more: true },
         ]
     }
 
