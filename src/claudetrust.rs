@@ -329,6 +329,15 @@ fn yours_of(label: &'static str, read: FileRead) -> Vec<Item> {
     }
 }
 
+/// Where Claude Code reads each of `FILES` for a chat whose claude runs in `root` (`llm::command`'s folder):
+/// `.claude/settings.json` from `root` itself ("no parent-directory fallback"), `.claude/settings.local.json` from
+/// the git repository's top "even when you start Claude Code in a subdirectory" (its permissions docs) — above
+/// `root` where a `.tarae.toml` keeps the project to a subfolder (`project.rs`). It reads the disk: a worker's.
+pub fn paths(root: &Path) -> Vec<PathBuf> {
+    let top = root.ancestors().find(|a| a.join(".git").exists()).unwrap_or(root);
+    FILES.iter().map(|(f, source)| if *source == "local" { top.join(f) } else { root.join(f) }).collect()
+}
+
 /// The project's Claude settings now, the answer kept for them (`store`: `trust.rs`'s; None: none kept), and
 /// what claude would have without them — on a worker. `user`: your own Claude settings file (None: none read);
 /// `yours`: whether the local file is the user's own (git says untracked and ignored); `env`: a variable of
@@ -344,8 +353,8 @@ pub fn look(
     let mut mine = yours_of("your settings", user.and_then(read_file));
     let files: Vec<(&'static str, FileRead)> = FILES
         .iter()
-        .map(|(name, source)| {
-            let path = root.join(name);
+        .zip(paths(root))
+        .map(|((name, source), path)| {
             let read = read_file(&path);
             if *source == "local" && matches!(read, Some(Ok(_))) && yours(&path) {
                 mine.extend(yours_of(name, read));
@@ -667,8 +676,8 @@ fn watch(ed: &mut Editor, id: u64) {
     c.settings.watch = Some(waker.clone());
     let tx = ed.events.sender();
     let places = Places::of(ed);
-    let paths: Vec<PathBuf> = FILES.iter().map(|(f, _)| places.root.join(f)).collect();
     crate::event::thread("tarae-claudeset", move || {
+        let paths = paths(&places.root);
         let stamps = || -> Vec<_> {
             paths.iter().map(|p| std::fs::metadata(p).ok().map(|m| (m.modified().ok(), m.len()))).collect()
         };

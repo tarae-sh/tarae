@@ -1297,30 +1297,25 @@ const TAKEN_KEPT_S: u64 = 30 * 24 * 3600;
 /// What a save narrows, as `storewrite::Pending.over` has it: every save writes the whole list.
 const SAVED: &str = "sessions";
 
-/// The folder they're kept in (in the state folder) · what earlier builds called it, and the list in a file
-/// and in `:restart`'s state — still read, so nothing kept is lost on upgrade.
+/// The folder they're kept in (in the state folder).
 const DIR: &str = "sessions";
-const OLD_NAME: &str = "lanes";
 
 pub fn default_dir() -> Option<PathBuf> {
     Some(crate::config::state_dir()?.join(DIR))
 }
 
 pub fn load(dir: &Path, common: &Path) -> Stored {
-    let read = |d: &Path| std::fs::read_to_string(crate::chats::file(d, common)).ok();
-    // (one an earlier build kept, while this folder has none of its own)
-    let old = || read(&dir.with_file_name(OLD_NAME)).filter(|_| dir.ends_with(DIR));
-    let Some(v) = read(dir).or_else(old).and_then(|b| serde_json::from_str::<Value>(&b).ok()) else {
+    let body = std::fs::read_to_string(crate::config::state_file(dir, common)).ok();
+    let Some(v) = body.and_then(|b| serde_json::from_str::<Value>(&b).ok()) else {
         return Stored::default();
     };
     let rev = crate::storewrite::Rev::of(&v["rev"]).unwrap_or_default();
     Stored { sessions: kept_list(&v), front: v["front"].as_str().map(PathBuf::from), rev }
 }
 
-/// The kept sessions in `v` (a file's, `:restart`'s state) — under their old name if an earlier build wrote it.
+/// The kept sessions in `v` (a file's, `:restart`'s state).
 fn kept_list(v: &Value) -> Vec<Kept> {
-    let list = v.get("sessions").or_else(|| v.get(OLD_NAME));
-    list.and_then(Value::as_array).into_iter().flatten().filter_map(Kept::from_json).collect()
+    v.get("sessions").and_then(Value::as_array).into_iter().flatten().filter_map(Kept::from_json).collect()
 }
 
 /// Written (on a worker, its turn taken: this tarae's saves land in the order made — `Editor::workspaces_write`).
@@ -1337,7 +1332,7 @@ pub(crate) fn save(
 ) -> std::io::Result<(crate::storewrite::Rev, Vec<(PathBuf, String)>)> {
     let _one = SAVING.lock().unwrap_or_else(|e| e.into_inner());
     std::fs::create_dir_all(dir)?;
-    let file = crate::chats::file(dir, common);
+    let file = crate::config::state_file(dir, common);
     // (beside it: the file itself is replaced by each write)
     let lock = {
         use std::os::unix::fs::OpenOptionsExt as _;
@@ -1634,27 +1629,43 @@ impl Editor {
         };
         let start = self.start_root();
         self.events.shared_jobs().spawn(move || {
+            // (and git's own word on the checkout's top, beside `project::of`'s look at the files: said only where the
+            // project holds a `.git` and git takes another top — a `.git` that's no repository's, git climbing past it.
+            // A project with no `.git` of its own — a subfolder a `.tarae.toml` marks, a folder under a dotfiles
+            // `~/.git` that home's ceiling left out — is no checkout's top by design)
+            let top = crate::gitrepo::repo(&start).ok().and_then(|r| r.work_tree.clone());
+            let holds = std::fs::symlink_metadata(start.join(".git")).is_ok();
+            let parted = top.filter(|t| holds && *t != start).map(|t| (start.clone(), t));
             let found = common_dir(&start).ok().map(|common| {
                 let s = load(&dir, &common);
                 let (here, gone) = still_there(s.sessions);
                 (here, gone, s.front, common, s.rev)
             });
-            move |ed: &mut Editor| match found {
-                Some((here, gone, front, common, rev)) => {
-                    ed.workspace_store.repo = Some(common);
-                    // (the take-backs kept there up to it are in what came back: seen)
-                    *ed.workspace_store.seen.lock().unwrap_or_else(|e| e.into_inner()) = rev;
-                    let take = !ed.workspace_store.keyed;
-                    let gone = ed.workspaces_back(here, gone, front, take);
-                    if !gone.is_empty() {
-                        ed.set_warning(format!(
-                            "{} — {} removed outside tarae; dropped",
-                            gone.join(", "),
-                            if gone.len() == 1 { "its checkout was" } else { "their checkouts were" }
-                        ));
-                    }
+            move |ed: &mut Editor| {
+                if let Some((project, top)) = parted {
+                    ed.set_warning(format!(
+                        "the project is {} (its .git) — git says the checkout's top is {}",
+                        crate::allow::tilde(&project),
+                        crate::allow::tilde(&top)
+                    ));
                 }
-                None => ed.workspace_store.restored = true,
+                match found {
+                    Some((here, gone, front, common, rev)) => {
+                        ed.workspace_store.repo = Some(common);
+                        // (the take-backs kept there up to it are in what came back: seen)
+                        *ed.workspace_store.seen.lock().unwrap_or_else(|e| e.into_inner()) = rev;
+                        let take = !ed.workspace_store.keyed;
+                        let gone = ed.workspaces_back(here, gone, front, take);
+                        if !gone.is_empty() {
+                            ed.set_warning(format!(
+                                "{} — {} removed outside tarae; dropped",
+                                gone.join(", "),
+                                if gone.len() == 1 { "its checkout was" } else { "their checkouts were" }
+                            ));
+                        }
+                    }
+                    None => ed.workspace_store.restored = true,
+                }
             }
         });
     }
@@ -6292,29 +6303,6 @@ mod tests {
         assert_eq!(size_text((48 << 20, false)), "over 48 MB");
     }
 
-    /// What earlier builds kept — `$state/lanes/<hash>.json`, its list under `"lanes"`, and `:restart`'s state
-    /// the same — still comes back; once this build has written its own file, that one is read.
-    #[test]
-    fn sessions_kept_by_earlier_builds_come_back() {
-        let scratch = crate::scratch::Scratch::new("kept-old");
-        let state = scratch.to_path_buf();
-        let (dir, common) = (state.join(DIR), Path::new("/repo/.git"));
-        let kept = |name: &str| json!({ "root": format!("/wt/{name}"), "name": name, "branch": name });
-        let old = json!({ "repo": common, "front": "/wt/a", OLD_NAME: [kept("a")] });
-        std::fs::create_dir_all(state.join(OLD_NAME)).unwrap();
-        std::fs::write(crate::chats::file(&state.join(OLD_NAME), common), old.to_string()).unwrap();
-        let s = load(&dir, common);
-        assert_eq!(s.sessions.iter().map(|k| k.name.as_str()).collect::<Vec<_>>(), ["a"]);
-        assert_eq!(s.front.as_deref(), Some(Path::new("/wt/a")));
-        let s = Stored { sessions: vec![Kept::from_json(&kept("b")).unwrap()], ..Default::default() };
-        save(&dir, common, s, &[], Default::default()).unwrap();
-        assert_eq!(load(&dir, common).sessions[0].name, "b", "its own file wins");
-        // (a folder not named as the state's isn't paired with an old one)
-        assert!(load(&state.join("elsewhere"), common).sessions.is_empty());
-        assert_eq!(kept_list(&json!({ OLD_NAME: [kept("c")] }))[0].name, "c", ":restart's state");
-        std::fs::remove_dir_all(&state).ok();
-    }
-
     /// cardauto 6: what the user let a session's Claude do for the session (`s`) is kept with it — each answer
     /// with its scope and time, in its file and `:restart`'s state — and comes back onto it, beside what was
     /// answered there before the list came back; a session kept by an earlier build has none.
@@ -6889,7 +6877,7 @@ mod tests {
         let s = Stored { sessions: vec![kept.clone()], front: Some("/wt/a".into()), rev: Default::default() };
         save(&dir, &common, s, &[], Default::default()).unwrap();
         assert_eq!(default_dir().map(|d| d.ends_with("sessions")), Some(true), "$state/sessions, as before");
-        let file = crate::chats::file(&dir, &common);
+        let file = crate::config::state_file(&dir, &common);
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(keys, ["front", "repo", "rev", "sessions", "taken"]);

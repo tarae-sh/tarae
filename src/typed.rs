@@ -137,7 +137,16 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
             Ok(())
         }
         "workspace-open" if !rest.trim().is_empty() => {
+            let front = editor.workspace.id;
             let id = editor.workspace_open(Path::new(rest.trim()))?;
+            // (a folder of the project in front — a subfolder opens its checkout: this one)
+            if id == front {
+                editor.set_status(format!(
+                    "{} is in this project — its workspace is the one in front",
+                    rest.trim()
+                ));
+                return Ok(());
+            }
             let all = editor.sessions_in_order();
             let at = all.iter().position(|l| l.id == id).map_or(all.len(), |i| i + 1);
             let msg =
@@ -726,9 +735,11 @@ fn run_shell(cmd: &str, dir: &std::path::Path) -> Result<Option<String>, String>
     }
 }
 
-/// A path typed after `:open` / `:w`: home spelled out, then from the root.
+/// A path typed after `:open` / `:w`: home spelled out, then from where tarae was started (`Workspace.start` — a
+/// shell's way: the project's top only when started there).
 pub(crate) fn typed_path(editor: &Editor, p: &str) -> PathBuf {
-    editor.path_of(&expand_home(p, crate::allow::home().as_deref()))
+    let p = expand_home(p, crate::allow::home().as_deref());
+    if p.is_absolute() { p } else { editor.workspace.start().join(p) }
 }
 
 /// A typed path with home spelled out: `~`, `~/…`, `$HOME`, `${HOME}` at its start (`home`: the user's

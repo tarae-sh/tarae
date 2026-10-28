@@ -59,11 +59,15 @@ pub struct Workspace {
     pub claude: crate::session::Session,
     /// Where you are in it: the keys, the focus, what floats, the side panel (`Viewer`) — one a workspace you visit.
     pub viewer: Viewer,
-    /// The checkout, links resolved: where git, the terminal, tasks, Claude, pickers and searches run, what
-    /// paths are shown relative to, what a relative path means (follow mode goes nowhere else). Read once,
-    /// in `Editor::with_root`; nothing reads the process's folder after that. Tests with a project of their
-    /// own in a temp folder set it.
+    /// The project, links resolved (`project::of`: its checkout's top, or the folder a `.tarae.toml` marks): where
+    /// git, the terminal, tasks, Claude, pickers and searches run, what paths are shown relative to, what every
+    /// store keys by (follow mode goes nowhere else). Read once, in `Editor::with_root`; nothing reads the process's
+    /// folder after that. Tests with a project of their own in a temp folder set it.
     pub root: PathBuf,
+    /// Where tarae was started, from `root` (empty: at its top — always, but for the checkout started in a subfolder):
+    /// what a path you type is from (`start`, `typed::typed_path`), where the file picker opens first, the start
+    /// screen's `carry › src`. Relative, so it never leaves the project, whatever sets `root`.
+    pub start_in: PathBuf,
     /// The folders outside it added to it (`:folder-add`, `folders.rs`) — Claude works there as in the checkout.
     pub folders: Vec<crate::folders::Folder>,
     /// Its kept folders as it came back, judged again on a worker before they're `folders` (`folders_back`) — kept
@@ -360,6 +364,7 @@ impl Workspace {
             claude: crate::session::Session::new(crate::session::born_with(id)),
             viewer: Viewer::new(view),
             in_log: crate::log::Checkout::new(&root, &name),
+            start_in: PathBuf::new(),
             root,
             folders: Vec::new(),
             folders_judging: Vec::new(),
@@ -545,6 +550,11 @@ impl Workspace {
     /// (`log::Session::line`).
     pub fn log(&self) -> crate::log::Session {
         crate::log::Session::named(self.label())
+    }
+
+    /// Where tarae was started in it (`start_in`): its root, but for the checkout started in a subfolder.
+    pub fn start(&self) -> PathBuf {
+        self.root.join(&self.start_in)
     }
 
     /// What the tabs, the chip and the list call it: a session by its name (its branch), the checkout tarae
@@ -1286,13 +1296,17 @@ impl Editor {
         self.docs.iter().position(|d| d.id == id).unwrap_or(0)
     }
 
-    /// `:workspace-open <folder>` — a session for that checkout (a worktree, a clone), in front; the one there
-    /// already if it has a session.
+    /// `:workspace-open <folder>` — a session for that folder's project (`project::of`: a worktree's, a clone's top —
+    /// a subfolder opens its checkout), in front; the one there already if it has a session.
     pub fn workspace_open(&mut self, folder: &Path) -> Result<WorkspaceId, String> {
-        let folder = self.path_of(folder);
-        let root = std::fs::canonicalize(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
-        if !root.is_dir() {
-            return Err(format!("{} isn't a folder", root.display()));
+        let folder = crate::typed::typed_path(self, &folder.to_string_lossy());
+        let real = std::fs::canonicalize(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+        if !real.is_dir() {
+            return Err(format!("{} isn't a folder", real.display()));
+        }
+        let crate::project::Found { root, skipped } = crate::project::of(&real);
+        if let Some(why) = crate::project::said(&skipped) {
+            self.set_warning(why);
         }
         if let Some(id) =
             std::iter::once(&self.workspace).chain(&self.workspaces).find(|l| l.root == root).map(|l| l.id)

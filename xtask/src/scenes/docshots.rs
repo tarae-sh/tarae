@@ -367,7 +367,7 @@ const DOC_SCENES: &[DocScene] = &[
     // (`C-t` in the chat: the models the stand-in's `initialize` answer offers)
     scene("model", Fixture::Calc, LIB, &["@1", " ", "l", "@1", "\x14", "@1"]).claude("models"),
     // (`:chat-resume`: the project's earlier conversations, the newest previewed — waited on by its title, so a
-    // seed `chats::file` no longer finds fails the shot rather than show an empty list)
+    // seed `config::state_file` no longer finds fails the shot rather than show an empty list)
     scene(
         "conversations",
         Fixture::Calc,

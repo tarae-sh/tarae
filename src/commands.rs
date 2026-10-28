@@ -1924,7 +1924,10 @@ fn file_picker(cx: &mut Context) {
     for f in &cx.editor.workspace.folders {
         title = format!("{title} · {}", f.name);
     }
-    // Nothing typed: a folder tree opened up to the file being edited (a folder's file by its whole path)
+    // Nothing typed: a folder tree opened up to the file being edited (a folder's file by its whole path) — with none,
+    // the folder tarae was started in (`Workspace.start`; a folder named with its `/`)
+    let start = Some(&cx.editor.workspace.start_in).filter(|r| !r.as_os_str().is_empty());
+    let start = start.map(|r| format!("{}/", r.to_string_lossy()));
     let reveal = cx
         .editor
         .doc()
@@ -1934,7 +1937,8 @@ fn file_picker(cx: &mut Context) {
             Ok(r) => Some(r),
             Err(_) => roots.folders().iter().any(|f| p.starts_with(f)).then_some(p),
         })
-        .map(|r| r.to_string_lossy().replace('\\', "/"));
+        .map(|r| r.to_string_lossy().replace('\\', "/"))
+        .or(start);
     let picker = crate::picker::Picker::of("files", title, Vec::new(), true)
         .with_tree(root, reveal)
         .in_folders(roots.folders());

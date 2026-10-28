@@ -347,7 +347,7 @@ impl Sandbox {
         use std::os::unix::ffi::OsStrExt;
         self.git(&["init", "-q"]);
         let common = fs::canonicalize(self.work().join(".git")).unwrap();
-        // (the store's name: `chats::file`'s hash of the repository's git folder, by its real path)
+        // (the store's name: `config::state_file`'s hash of the repository's git folder, by its real path)
         let h = common
             .to_string_lossy()
             .bytes()

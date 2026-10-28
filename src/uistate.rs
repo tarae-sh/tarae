@@ -54,7 +54,9 @@ use crate::workspace::At;
 /// `-`, `↑ ↓ ← →` where they said `ret`, `minus`, `up` `down` `left` `right`.
 /// 21: the plugins' overlays (`plugin/overlay.rs`): `overlays[]` (`plugin`, `text`, `rect`, `until_ms`).
 /// 22: where the mouse is (#215, `kinds.rs`): `pointer` (`x`, `y`, `under`, `kind`, `does`, `lit`).
-pub const V: u64 = 22;
+/// 23: where a project starts (`project.rs`): a workspace's `root` is its project, `start` where tarae was started in it
+/// (only when that isn't its root).
+pub const V: u64 = 23;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;
@@ -1003,8 +1005,11 @@ pub struct WorkspaceState {
     pub branch: Option<String>,
     /// What it was made from (`Workspace.base`) — None: the checkout tarae started in.
     pub base: Option<String>,
-    /// Its checkout — `tarae state` finds the tarae whose workspace holds the folder it's run in.
+    /// Its project (`project.rs`: its checkout's top) — `tarae state` finds the tarae whose workspace holds the folder
+    /// it's run in.
     pub root: String,
+    /// Where tarae was started in it (`Workspace.start`) — None at its top.
+    pub start: Option<String>,
     /// The folders added to it (`folders.rs`): where each is.
     pub folders: Vec<String>,
     /// Its reviewer (`reviewer.rs`): `reviewing` while it reads — None else. A field of its own beside
@@ -1706,6 +1711,7 @@ impl Editor {
             branch: l.branch.clone().or_else(|| l.git_branch.clone()),
             base: l.base.clone(),
             root: l.root.display().to_string(),
+            start: (!l.start_in.as_os_str().is_empty()).then(|| l.start().display().to_string()),
             folders: l.folders.iter().map(|f| f.at.display().to_string()).collect(),
             reviewer: crate::reviewer::session_said(self, l),
             reviewer_run: ReviewerState::of(self, l),
@@ -2006,6 +2012,9 @@ impl UiState {
                 }
                 if let Some(b) = &s.base {
                     v["base"] = json!(b);
+                }
+                if let Some(at) = &s.start {
+                    v["start"] = json!(at);
                 }
                 if !s.folders.is_empty() {
                     v["folders"] = json!(s.folders);

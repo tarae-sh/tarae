@@ -5909,7 +5909,8 @@ impl Editor {
     pub fn cmdline_completion(&self) -> Option<crate::cmdline::Completion> {
         let p = self.prompt.as_ref().filter(|p| p.kind == PromptKind::Command)?;
         let base = p.cycle.as_ref().map_or_else(|| p.split().0, |(b, _)| b.clone());
-        Some(crate::cmdline::complete(&base, &self.workspace.root, &self.cmd_lists))
+        // (from where you started, as the path you type — `typed::typed_path`)
+        Some(crate::cmdline::complete(&base, &self.workspace.start(), &self.cmd_lists))
     }
 
     /// If the lists a candidate needs (folders, themes) aren't read yet, read them on a worker thread.
@@ -5920,7 +5921,7 @@ impl Editor {
         match crate::cmdline::find(name).map(|c| c.arg) {
             Some(crate::cmdline::Arg::File) => {
                 let token = text.rsplit(char::is_whitespace).next().unwrap_or_default();
-                let (dir, _) = crate::cmdline::file_query(token, &self.workspace.root);
+                let (dir, _) = crate::cmdline::file_query(token, &self.workspace.start());
                 if self.cmd_lists.dirs.contains_key(&dir) || !self.cmd_loading.insert(dir.clone()) {
                     return;
                 }
@@ -16845,6 +16846,107 @@ mod tests {
         drop(ed);
         std::fs::remove_dir_all(&root).ok();
         std::fs::remove_dir_all(&out).ok();
+    }
+
+    /// Started in a subfolder (`project.rs`, `.sb/projects-plan.md`): the project is the checkout's top — the root
+    /// everything runs in and keys by — while where you started stays where you are: the file picker opens there
+    /// with nothing open, a path you type (`:open`, its completion, `:w`) is from there, the state says it, and
+    /// `:workspace-open` of a folder in the project says it's this one.
+    #[test]
+    fn started_in_a_subfolder_the_project_is_its_checkout_and_paths_you_type_are_from_there() {
+        let root = std::fs::canonicalize(git_repo("start-sub", &[("a.txt", "top\n")])).unwrap();
+        std::fs::create_dir_all(root.join("src/deep")).unwrap();
+        // (a folder listed before it: the start folder in hand isn't the first row by chance)
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(root.join("docs/d.txt"), "doc\n").unwrap();
+        std::fs::write(root.join("src/b.txt"), "in src\n").unwrap();
+        std::fs::write(root.join("src/deep/c.txt"), "deeper\n").unwrap();
+        let start = root.join("src");
+        assert_eq!(crate::project::of(&start).root, root, "the checkout's top");
+        let mut ed = editor("");
+        ed.workspace.root = root.clone();
+        ed.workspace.start_in = "src".into();
+        assert_eq!(ed.workspace.start(), start);
+        // The file picker, nothing open: the start folder opened and in hand
+        feed(&mut ed, "<space>f");
+        wait_for(&mut ed, |ed| ed.picker.as_ref().is_some_and(|p| !p.loading && p.current().is_some()));
+        let at = ed.picker.as_ref().and_then(|p| p.current()).map(|i| i.action.clone());
+        assert!(matches!(&at, Some(crate::picker::Action::Dir(d)) if d == "src"), "{at:?}");
+        feed(&mut ed, "<esc>");
+        // A typed path: from the start folder, the top one step up
+        crate::typed::execute(&mut ed, "open b.txt").unwrap();
+        assert_eq!(ed.doc().path.as_deref(), Some(start.join("b.txt").as_path()));
+        crate::typed::execute(&mut ed, "open ../a.txt").unwrap();
+        assert_eq!(ed.doc().path.as_deref(), Some(root.join("a.txt").as_path()));
+        // …and its completion lists what's there
+        assert_eq!(crate::cmdline::file_query("deep/c", &ed.workspace.start()).0, start.join("deep/"));
+        // `:w <name>`: written where you started
+        crate::typed::execute(&mut ed, "w copy.txt").unwrap();
+        let copy = start.join("copy.txt");
+        wait_for(&mut ed, |_| std::fs::read_to_string(&copy).is_ok_and(|t| t == "top\n"));
+        assert!(copy.is_file() && !root.join("copy.txt").exists(), "in src, not at the top");
+        // The state says both: the project, where you started in it
+        let v = ed.ui_state().json();
+        assert_eq!(v["workspaces"][0]["root"], root.display().to_string());
+        assert_eq!(v["workspaces"][0]["start"], start.display().to_string());
+        // A folder of this project: its workspace is the one in front
+        let front = ed.workspace.id;
+        crate::typed::execute(&mut ed, "workspace-open deep").unwrap();
+        assert_eq!((ed.workspace.id, ed.workspaces.len()), (front, 0), "no second workspace");
+        assert_eq!(said(&ed, ToastKind::Info, "deep is in this project"), 1);
+        drop(ed);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The project as the files say (`project::of`) and git's own word on the checkout's top part where a `.git` is
+    /// no repository's — git climbs past it: the files' stays the project, and the difference is said, naming the
+    /// project the look was for. A project with no `.git` of its own isn't one: a subfolder a `.tarae.toml` marks, or a
+    /// folder under a dotfiles `~/.git` (home's ceiling left it out) — nothing said there.
+    #[test]
+    fn a_project_git_reads_otherwise_is_said() {
+        let root = std::fs::canonicalize(git_repo("parted", &[("a.txt", "a\n")])).unwrap();
+        std::fs::create_dir_all(root.join("sub/.git")).unwrap();
+        let sub = root.join("sub");
+        assert_eq!(crate::project::of(&sub).root, sub, "its `.git`, as the files say");
+        let store = crate::scratch::Scratch::new("parted-store");
+        let mut ed = editor("");
+        ed.workspace.root = sub.clone();
+        ed.workspace_store.dir = Some(store.to_path_buf());
+        ed.workspaces_restore();
+        // (another project in front by the time the look lands: the word is still about the one it was for)
+        ed.workspace.root = root.clone();
+        wait_for(&mut ed, |ed| ed.workspace_store.restored);
+        let want = format!(
+            "the project is {} (its .git) — git says the checkout's top is",
+            crate::allow::tilde(&sub)
+        );
+        assert_eq!(said(&ed, ToastKind::Warning, &want), 1, "{:?}", ed.messages);
+        // A project file there instead: the project kept to the subfolder on purpose — nothing said
+        std::fs::remove_dir_all(root.join("sub/.git")).unwrap();
+        std::fs::write(sub.join(".tarae.toml"), "").unwrap();
+        assert_eq!(crate::project::of(&sub).root, sub);
+        let mut ed = editor("");
+        ed.workspace.root = sub.clone();
+        ed.workspace_store.dir = Some(store.to_path_buf());
+        ed.workspaces_restore();
+        wait_for(&mut ed, |ed| ed.workspace_store.restored);
+        assert_eq!(said(&ed, ToastKind::Warning, "git says"), 0);
+        // Under a dotfiles repository (git's top is home, which is never a project): a folder in it is its own
+        // project, git's word on home no news
+        let home = std::fs::canonicalize(git_repo("dotfiles", &[(".bashrc", "x\n")])).unwrap();
+        let work = home.join("work/a");
+        std::fs::create_dir_all(&work).unwrap();
+        let found = crate::project::of_in(&work, Some(&home), crate::project::Me::now());
+        assert_eq!(found.root, work);
+        let mut ed = editor("");
+        ed.workspace.root = work.clone();
+        ed.workspace_store.dir = Some(store.to_path_buf());
+        ed.workspaces_restore();
+        wait_for(&mut ed, |ed| ed.workspace_store.restored);
+        assert_eq!(said(&ed, ToastKind::Warning, "git says"), 0, "{:?}", ed.messages);
+        drop(ed);
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&home).ok();
     }
 
     /// The whole review: changes against HEAD file by file (a changed file, a deleted one, a new one), `]g`

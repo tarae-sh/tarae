@@ -1,6 +1,6 @@
 //! The chat's conversations, kept per project — so closing tarae doesn't end one.
 //!
-//! - `$XDG_STATE_HOME/tarae/chats/<project hash>.json`: the latest `KEEP` conversations, newest first — each
+//! - `$XDG_STATE_HOME/tarae/chats/<project hash>.json` (`config::state_file`; the project: `project.rs`): the latest `KEEP` conversations, newest first — each
 //!   claude's id for it, a title (the first question), when it was last used, and its rows as the chat
 //!   showed them. Written after each turn, read when the chat opens — both on worker threads.
 //! - Claude's memory of it is claude's own (`--resume <id>`, measured: stream-json keeps the id and the
@@ -16,6 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use crate::chat::{Link, Look, Msg, Role};
+use crate::config::state_file as file;
 
 /// Conversations kept per project.
 const KEEP: usize = 20;
@@ -52,15 +53,6 @@ static SAVING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
-}
-
-/// The file for the project at `root`, in `dir` (the state dir's `chats/`).
-pub fn file(dir: &Path, root: &Path) -> PathBuf {
-    let h = root
-        .to_string_lossy()
-        .bytes()
-        .fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3));
-    dir.join(format!("{h:016x}.json"))
 }
 
 pub fn default_dir() -> Option<PathBuf> {

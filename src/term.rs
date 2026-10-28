@@ -11397,6 +11397,15 @@ fn draw_welcome(
     // Tests: a fixed project name (the checkout folder's name varies — worktrees, CI)
     #[cfg(test)]
     let folder = folder.map(|_| "tarae".to_string());
+    // (started in a subfolder: the project, then where you are in it — the path bar's `›`)
+    let inside = Some(editor.workspace.start_in.as_path()).filter(|r| !r.as_os_str().is_empty());
+    let folder = match (folder, inside) {
+        (Some(f), Some(r)) => {
+            let parts = r.components().map(|c| c.as_os_str().to_string_lossy().into_owned());
+            Some(std::iter::once(f).chain(parts).collect::<Vec<_>>().join(" › "))
+        }
+        (f, _) => f,
+    };
     // (its folder cut to 30 cells, the foot from the left: its card says both whole)
     let foot = |f: Option<String>| {
         let f = f.map(|f| format!("{f} · ")).unwrap_or_default();

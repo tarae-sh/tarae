@@ -2085,7 +2085,7 @@ fn a_sessions_take_back_is_written_where_kept_or_said() {
     answer(&mut ed, &Grant::Port(8080), Scope::Session, false, "for the session");
     settle(&mut ed, "kept there", 0, &|ed, _| ed.workspace_store.repo.is_some());
     let kept = ed.workspace_store.repo.clone().unwrap();
-    let file = crate::chats::file(ed.workspace_store.dir.as_deref().unwrap(), &kept);
+    let file = crate::config::state_file(ed.workspace_store.dir.as_deref().unwrap(), &kept);
     // (the list, not the take-backs kept beside it)
     let read = |f: &Path| {
         let v =

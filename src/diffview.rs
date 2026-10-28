@@ -45,7 +45,7 @@ impl Editor {
             return Err("the review is showing this file's changes — space v q ends it".into());
         }
         let (id, version, text) = (doc.id, doc.version(), doc.text.clone());
-        let (as_file, against) = (self.path_of(Path::new(against)), against.to_string());
+        let (as_file, against) = (crate::typed::typed_path(self, against), against.to_string());
         let places = self.git_places(&path);
         self.events.jobs().spawn(move || {
             let result = base_text(&places, &path, &against, as_file).map(|(base, label)| {

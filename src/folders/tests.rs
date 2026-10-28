@@ -51,6 +51,18 @@ fn place(name: &str) -> (crate::scratch::Scratch, PathBuf, PathBuf, Editor) {
     (s, project, infra, ed)
 }
 
+/// Started in a subfolder of the project (`project.rs`), `:folder-add` of a relative path takes it from there, as every
+/// path you type (`typed::typed_path`): `../../infra` from `project/sub` is the folder beside the project.
+#[test]
+fn a_relative_folder_is_from_where_tarae_started() {
+    let (_s, project, infra, mut ed) = place("from-start");
+    std::fs::create_dir_all(project.join("sub")).unwrap();
+    ed.workspace.start_in = "sub".into();
+    let said = add(&mut ed, Path::new("../../infra"));
+    assert!(said.starts_with("folder infra added"), "{said}");
+    assert_eq!(ed.workspace.folders.iter().map(|f| &f.at).collect::<Vec<_>>(), [&infra]);
+}
+
 /// `:folder-add` makes a folder the front workspace's — its name, its instruction files looked for, said; `:folders`
 /// floats it as a list with the keys (`╭─ folders`, its place and files on its row, its rows in the state), `d`
 /// removes it (the list going with the last); Claude's context names it only while it's there; the state lists it.

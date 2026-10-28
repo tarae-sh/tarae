@@ -65,7 +65,7 @@ JSON for programs, and a short text form for people and Claude, from the same st
 
 ```json
 {
-  "v": 22,
+  "v": 23,
   "tarae": { "pid": 4182, "boot": "9f3ac1d0", "version": "0.9.0" },
   "frame": 4812,
   "input": 1033,
@@ -165,6 +165,9 @@ side git · 4 rows · in hand git:src/term.rs
   `text` (its rows' whole text, a row a line), `rect` (`[x, y, w, h]` where the last frame drew it; null while it gives
   way, or under a picker or a prompt), `until_ms` (until it's gone — what a driver waits on, never a sleep). Chrome:
   Claude's level never has it.
+- **`workspaces[].root`, `.start`** (V 23, `project.rs`) — `root` is the workspace's project (the nearest `.git` or
+  `.tarae.toml` of yours above where tarae started); `start` where tarae was started in it, only when that isn't its
+  root (`Workspace::start`).
 - **`workspaces`** (V 16, collab C0: the place and the participants apart) — each a checkout: `w0` …, its name,
   branch, `base`, root, `cards`, `rebasing`, the reviewer's fields below, `overlaps`, `panes`, and its `sessions`
   (one each for now: its Claude) — `s0` …, `doing`, `answer`, `usage`, `billing`, `sandbox`, `writing`, `at`, …;
@@ -382,8 +385,8 @@ Short, so they can be read in prose and typed. Unique within one tarae process.
 
 - `v` is the schema version.
 - A field added, gone, renamed or changing what it means bumps `v` — one way for every change of the shape. Readers
-  still ignore fields they don't know. Each bump and its reason is on `uistate::V` — now 22: where the mouse is,
-  `pointer`; before it, 21: the plugins' overlays, `overlays[]`; 20: a key is its shown name (#202): `keys.pending` and
+  still ignore fields they don't know. Each bump and its reason is on `uistate::V` — now 23: where tarae was started
+  in a workspace's project, `workspaces[].start`; before it, 22: where the mouse is, `pointer`; 21: the plugins' overlays, `overlays[]`; 20: a key is its shown name (#202): `keys.pending` and
   a card's `answers[].key` say `enter`, `-`, `↑ ↓ ← →` where they said `ret`, `minus`, `up` `down` `left` `right` (the
   keymap file keeps Helix's notation).
 - The text form isn't a contract (people and Claude read it). The JSON is.

@@ -247,7 +247,7 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         path: "editor.restore-files",
         kind: Kind::Bool,
-        doc: "Reopen the files you had open in this folder (with cursor positions) when started without files",
+        doc: "Reopen the files you had open in this project (with cursor positions) when started without files",
         get: |c| Value::from(c.restore_files),
         set: |c, v| c.restore_files = b(v),
     },
@@ -766,10 +766,6 @@ pub static SETTINGS: &[Setting] = &[
     },
 ];
 
-/// Settings that had another name: (old path, new path). A config file's old name still applies, and a
-/// warning names the new one.
-const RENAMED: [(&str, &str); 1] = [("editor.restore-session", "editor.restore-files")];
-
 pub fn find(path: &str) -> Option<&'static Setting> {
     SETTINGS.iter().find(|s| s.path == path)
 }
@@ -843,14 +839,7 @@ fn walk(
             Some(line) => format!("{file}:{line}: "),
             None => format!("{file}: "),
         };
-        if let Some(&(_, new)) = RENAMED.iter().find(|r| r.0 == path) {
-            if pass(new, v)
-                && let Err(e) = apply(cfg, new, v)
-            {
-                w.push(format!("{}{e}", at()));
-            }
-            w.push(format!("{}'{path}' is called '{new}' now — rename it there", at()));
-        } else if find(&path).is_some() {
+        if find(&path).is_some() {
             if !pass(&path, v) {
                 continue;
             }
@@ -1047,25 +1036,6 @@ mod tests {
         assert!(w.iter().any(|m| m.starts_with("config.toml:2: editor.scrolloff: expected integer 0..=100")));
         assert!(w.iter().any(|m| m.starts_with("config.toml:3: unknown setting 'editor.nope'")));
         assert!(w.iter().any(|m| m.starts_with("config.toml:4: editor.cursor.insert")));
-    }
-
-    /// A setting under its old name still applies, and the warning names the new one — nothing a user set
-    /// goes quietly unread. Every new name is a setting.
-    #[test]
-    fn an_old_name_still_applies_and_says_the_new_one() {
-        let src = "[editor]\nrestore-session = true\n";
-        let table: toml::Table = toml::from_str(src).unwrap();
-        let mut cfg = EditorConfig::default();
-        let mut w = Vec::new();
-        apply_table(&mut cfg, &table, src, "config.toml", &mut w);
-        assert!(cfg.restore_files);
-        assert_eq!(
-            w,
-            [
-                "config.toml:2: 'editor.restore-session' is called 'editor.restore-files' now — rename it there"
-            ]
-        );
-        assert!(RENAMED.iter().all(|r| find(r.1).is_some() && find(r.0).is_none()));
     }
 
     /// `llm.sandbox-hosts` (C1b): unset is the packs' registries, said `"registries"` so it round-trips; `"*"` is

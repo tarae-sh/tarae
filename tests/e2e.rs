@@ -1410,7 +1410,7 @@ fn a_driver_reads_where_the_keys_go() {
     let mut t = sb.spawn(&["a.txt"]);
     t.wait_text("one");
     let s = t.state_json(0);
-    assert_eq!(s["v"], 22, "the schema's version (`uistate::V`)");
+    assert_eq!(s["v"], 23, "the schema's version (`uistate::V`)");
     assert_eq!((s["keys"]["region"].as_str(), s["keys"]["takes"].as_str()), (Some("code"), Some("commands")));
     assert_eq!(s["tarae"]["pid"], t.pid());
     let input = s["input"].as_u64().unwrap();
@@ -1859,13 +1859,15 @@ fn the_project_search_needs_no_rg() {
     t.wait_for("src.rs at the hit", |s| s.rows[0].contains("› src.rs") && s.status().contains(" 3:4 "));
 }
 
-/// `tarae <folder>`: tarae works there on the start screen — even with files kept to reopen there — and the
-/// file picker lists its files; `editor.restore-files` reopens them. A quit from the start screen keeps
-/// them; closing every file clears them. A file given beside it is read from where the command ran.
+/// `tarae <folder>`: tarae works in its project (`project.rs` — here the folder, its `.tarae.toml` marks it) on the
+/// start screen — even with files kept to reopen there — and the file picker lists its files; `editor.restore-files`
+/// reopens them. A quit from the start screen keeps them; closing every file clears them. A file given beside it is
+/// read from where the command ran. Started in a subfolder, the project is the same, where you started said.
 #[test]
 fn a_folder_argument_opens_there_on_the_start_screen() {
     let sb = Sandbox::new("folder");
     fs::create_dir_all(sb.file("app/src")).unwrap();
+    sb.write("app/.tarae.toml", "# a project of its own\n");
     sb.write("app/src/lib.rs", "pub fn lib() {}\n");
     sb.write("outside.txt", "from outside\n");
     let mut t = sb.spawn(&["app"]);
@@ -1902,6 +1904,20 @@ fn a_folder_argument_opens_there_on_the_start_screen() {
 
     let mut t = sb.spawn(&["app", "outside.txt"]);
     t.wait_text("from outside");
+    t.command("q");
+    assert_eq!(t.wait_exit().code(), Some(0));
+
+    // Started in its subfolder: the project is app all the same — its files kept are offered (the outside one, from the
+    // quit above), the colophon says where in it, the picker opens there
+    sb.write_config(BASE_CONFIG);
+    let mut t = sb.spawn(&["app/src"]);
+    let s = t.wait_text("t a r a e");
+    assert!(s.contains("app › src · tarae "), "{s}");
+    assert!(s.contains("Continue where you left off") && s.contains("outside.txt"), "the project's: {s}");
+    t.send(" f");
+    t.wait_for("the picker on app's files", |s| s.contains("files in app") && s.contains("lib.rs"));
+    t.send("\x1b");
+    t.wait_for("the picker closed", |s| !s.contains("files in app"));
     t.command("q");
     assert_eq!(t.wait_exit().code(), Some(0));
 }

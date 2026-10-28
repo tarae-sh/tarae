@@ -288,7 +288,7 @@ pub(super) fn seed(seed: Seed, state: &Path, home: &Path, cwd: &Path, now: u64) 
     }
 }
 
-/// The name of a project's conversations file in `chats/` — `chats::file`'s: FNV-1a (64) of its root.
+/// The name of a project's conversations file in `chats/` — `config::state_file`'s: FNV-1a (64) of its root.
 fn chats_file(root: &str) -> String {
     let h =
         root.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3));
@@ -391,7 +391,7 @@ mod tests {
     }
 
     /// A seed names files as tarae reads them: recent files that exist (in both projects), the last open files
-    /// under the shot's folder as its key, a conversations file by `chats::file`'s name (FNV-1a's own test
+    /// under the shot's folder as its key, a conversations file by `config::state_file`'s name (FNV-1a's own test
     /// vectors) whose titles are their first questions, older than the chat continues.
     #[test]
     fn a_seed_names_files_as_tarae_reads_them() {

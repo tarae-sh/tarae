@@ -136,6 +136,7 @@ mod plugin;
 mod preflight;
 mod presence;
 mod procs;
+mod project;
 mod prompt;
 mod pty;
 mod queued;
@@ -357,8 +358,10 @@ fn main() -> Result<()> {
     if let Some(light) = light.or_else(term::detect_light_background) {
         theme::set_light(light);
     }
-    // (the one look at where tarae runs — from here on the editor's root is what everything goes by)
-    let root = editor::started_in();
+    // (the one look at where tarae runs — from here on the editor's root, the project it's in, is what everything
+    // goes by: `project.rs`)
+    let start = editor::started_in();
+    let project::Found { root, skipped } = project::of(&start);
     // The language table — the packs, a runtime folder's read from disk here, once: files opened, fences drawn
     // and servers started from now on read memory (the config checks its servers against it)
     let packs = languages::get();
@@ -368,6 +371,18 @@ fn main() -> Result<()> {
     }
     let (config, warnings) = config::load(&root, &config::Sources::own());
     let mut editor = editor::Editor::with_root(config, root);
+    editor.workspace.start_in =
+        start.strip_prefix(&editor.workspace.root).unwrap_or(std::path::Path::new("")).to_path_buf();
+    // (a mark on the way that isn't yours, passed over: said once — a `.tarae.toml` at the project or above it is the
+    // config's to say, as it isn't read either: `config::load`)
+    let top = &editor.workspace.root;
+    let skipped: Vec<_> = skipped
+        .into_iter()
+        .filter(|(p, _)| !(p.ends_with(".tarae.toml") && p.parent().is_some_and(|d| top.starts_with(d))))
+        .collect();
+    if let Some(why) = project::said(&skipped) {
+        editor.set_warning(why);
+    }
     // (where answers about repositories' own git commands are kept — `gitrepo` reads them as it resolves)
     gitrepo::set_trust_store(editor.trust_path.clone());
     // (and where a resolve that finds them unanswered puts the card up — any repository, any git call)

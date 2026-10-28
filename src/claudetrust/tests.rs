@@ -322,6 +322,29 @@ fn your_own_local_file_isnt_asked_about_and_answers_are_kept() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+/// A project kept to a subfolder (a `.tarae.toml` there — `project.rs`): its claude runs there, and Claude Code
+/// reads `.claude/settings.json` from there but `.claude/settings.local.json` from the git repository's top "even
+/// when you start Claude Code in a subdirectory" — so that's the local file judged and held, never one beside the
+/// subfolder's project file.
+#[test]
+fn the_local_file_is_read_at_the_checkouts_top_where_claude_reads_it() {
+    let top = temp("top");
+    std::fs::create_dir_all(top.join(".git")).unwrap();
+    let sub = top.join("services/api");
+    std::fs::create_dir_all(sub.join(".claude")).unwrap();
+    std::fs::write(sub.join(".tarae.toml"), "").unwrap();
+    assert_eq!(paths(&sub), [sub.join(PROJECT), top.join(LOCAL)]);
+    assert_eq!(paths(&top), [top.join(PROJECT), top.join(LOCAL)], "at the top: both there");
+    std::fs::write(top.join(LOCAL), r#"{"apiKeyHelper": "printf stand-in"}"#).unwrap();
+    std::fs::write(sub.join(LOCAL), "{}").unwrap();
+    let seen = look(&sub, None, None, |_| false, |_| None);
+    assert_eq!(seen.state, State::Ask, "the top's local file is asked about");
+    let scan = seen.scan.expect("its helper held");
+    assert_eq!(keys(&scan), [(Kind::Command, "apiKeyHelper")]);
+    assert_eq!(seen.file, sub.join(PROJECT), "the answer kept under the project's own file's place");
+    std::fs::remove_dir_all(&top).ok();
+}
+
 // ── The chat ────────────────────────────────────────────────────────────────
 
 /// A stand-in claude: writes its arguments, one a line, to `argv` and appends what it's sent to `stdin`, in the

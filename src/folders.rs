@@ -146,13 +146,15 @@ impl Inside {
     }
 }
 
-/// `given` as `:folder-add` takes it: `~` your home, a relative path from the project.
-fn given_path(project: &Path, given: &str, home: Option<&Path>) -> PathBuf {
+/// `given` as `:folder-add` takes it: `~` your home, a relative path from `start` (where tarae was started — as every
+/// path you type: `typed::typed_path`). Taken as given, never climbed to a project's top: a folder is a reach you
+/// give, and you may mean only `infra/` of another repository.
+fn given_path(start: &Path, given: &str, home: Option<&Path>) -> PathBuf {
     match (given.strip_prefix('~'), home) {
         (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with('/') => {
             home.join(rest.trim_start_matches('/'))
         }
-        _ => project.join(given),
+        _ => start.join(given),
     }
 }
 
@@ -284,7 +286,7 @@ impl Editor {
         let home = self.caps_home.clone();
         #[cfg(not(test))]
         let home = crate::allow::home();
-        let path = given_path(roots.project(), &given, home.as_deref());
+        let path = given_path(&self.workspace.start(), &given, home.as_deref());
         let id = self.workspace.id;
         self.events.jobs().spawn(move || {
             let r = std::fs::canonicalize(&path).map_err(|e| e.to_string()).and_then(|at| {

@@ -622,6 +622,17 @@ fn snapshot_welcome_80() {
     s.check("welcome_80");
 }
 
+/// Started in a subfolder (`project.rs`): the colophon names the project, then where you are in it, as the path bar
+/// does (`tarae › src › deep`) — the same row, the same left edge.
+#[test]
+fn the_colophon_says_where_in_the_project_tarae_started() {
+    let mut s = Shot::new(80, 24);
+    s.ed.workspace.start_in = "src/deep".into();
+    let shown = screen_text(&mut s);
+    let rows: Vec<&str> = shown.lines().collect();
+    assert!(rows[22].contains("tarae › src › deep · tarae "), "{shown}");
+}
+
 /// frictions29 89: the first start's trust card over the start screen's column (`:tutor   Learn the keys in 10` cut
 /// under its edge). Where the column fits beside the card it goes there, whole, three tenths down as ever; else it's
 /// lifted over the card (80×24, a card of one setting); else what doesn't fit over it folds from the bottom (a card

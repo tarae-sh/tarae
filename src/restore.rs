@@ -3,8 +3,7 @@
 //! `$XDG_STATE_HOME/tarae/restore.json` (default `~/.local/state/tarae/restore.json`):
 //! `{ "positions": { path: [cursor, top line] }, "folders": { dir: { "files": [...], "current": n } },
 //!   "notes": { dir: [note…] } }` (Claude's notes per project — `notes::to_json`).
-//! Read once at startup, written once on quit (a small file). Earlier builds wrote `session.json`, its
-//! folders under `"sessions"` — read when there's no `restore.json` yet, so nothing is lost on upgrade.
+//! Read once at startup, written once on quit (a small file). Keyed by the project (`project.rs`).
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -17,9 +16,8 @@ use crate::selection::Selection;
 
 /// Number of file positions remembered (oldest dropped first).
 const KEEP_POSITIONS: usize = 500;
-/// The file · what earlier builds called it.
+/// The file.
 const FILE: &str = "restore.json";
-const OLD_FILE: &str = "session.json";
 
 fn file() -> Option<PathBuf> {
     Some(crate::config::state_dir()?.join(FILE))
@@ -41,20 +39,13 @@ impl State {
         }
     }
 
-    /// The file in state folder `dir` — or what an earlier build left there.
+    /// The file in state folder `dir`.
     fn load_from(dir: &Path) -> State {
-        let read = |name: &str| {
-            std::fs::read_to_string(dir.join(name))
-                .ok()
-                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-                .and_then(|v| v.as_object().cloned())
-        };
-        let mut root = read(FILE).or_else(|| read(OLD_FILE)).unwrap_or_default();
-        if !root.contains_key("folders")
-            && let Some(old) = root.remove("sessions")
-        {
-            root.insert("folders".into(), old);
-        }
+        let root = std::fs::read_to_string(dir.join(FILE))
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default();
         State { root, opened: false }
     }
 
@@ -388,26 +379,6 @@ mod tests {
         assert_eq!(s.position(Path::new("/nope")), None);
         let (files, cur) = s.files(Path::new("/proj")).unwrap();
         assert_eq!((files.len(), cur), (2, 1));
-    }
-
-    /// What an earlier build wrote (`session.json`, its folders under `"sessions"`) is read while there's no
-    /// `restore.json` — and once there is, that one wins.
-    #[test]
-    fn what_earlier_builds_kept_is_restored() {
-        let scratch = crate::scratch::Scratch::new("restore-old");
-        let dir = scratch.to_path_buf();
-        let old = json!({ "positions": { "/a.rs": [4, 1] },
-            "sessions": { "/proj": { "files": ["/a.rs"], "current": 0 } } });
-        std::fs::write(dir.join(OLD_FILE), old.to_string()).unwrap();
-        let s = State::load_from(&dir);
-        assert_eq!(s.files(Path::new("/proj")), Some((vec![PathBuf::from("/a.rs")], 0)));
-        assert_eq!(s.position(Path::new("/a.rs")), Some((4, 1)));
-        assert!(!s.root.contains_key("sessions"), "kept under its new name from now on");
-        let new = json!({ "folders": { "/proj": { "files": ["/b.rs"], "current": 0 } } });
-        std::fs::write(dir.join(FILE), new.to_string()).unwrap();
-        let s = State::load_from(&dir);
-        assert_eq!(s.files(Path::new("/proj")), Some((vec![PathBuf::from("/b.rs")], 0)));
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

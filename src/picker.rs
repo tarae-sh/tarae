@@ -287,7 +287,7 @@ struct TreeMode {
     /// Browsing: the whole list's tree (once it's listed) and the open folders.
     all: Option<Tree>,
     open: HashSet<String>,
-    /// A file to show opened up to once the list arrives.
+    /// A file to show opened up to once the list arrives — a folder with its `/` (`src/`): opened, its row selected.
     reveal: Option<String>,
     rows: Vec<crate::filetree::Row>,
     /// Browsing: the folder rows' items (`Action::Dir`) — a row's item past `items` is one of these.
@@ -537,10 +537,16 @@ impl Picker {
             _ => None,
         };
         self.sync();
-        // Start on the file being edited
+        // Start on the file being edited — or the folder named (`src/`: opened above, as its own parent, its row
+        // selected)
         if let Some(r) = reveal {
-            let path = self.tree.as_ref().map(|t| t.root.join(&r));
-            self.select_where(|a| matches!(a, Action::Open(p) if Some(p) == path.as_ref()));
+            match r.strip_suffix('/') {
+                Some(dir) => self.select_where(|a| matches!(a, Action::Dir(d) if d == dir)),
+                None => {
+                    let path = self.tree.as_ref().map(|t| t.root.join(&r));
+                    self.select_where(|a| matches!(a, Action::Open(p) if Some(p) == path.as_ref()));
+                }
+            }
             self.center = true;
         }
     }

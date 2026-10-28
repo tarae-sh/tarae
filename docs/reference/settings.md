@@ -30,7 +30,7 @@ The name is also the `:set` path: `:set editor.scrolloff 8` changes it until you
 | `editor.offer-grammars` | bool | `true` | When a file's language has no syntax grammar yet, offer to download and build it (y/n) |
 | `editor.offer-installs` | bool | `true` | When a language server is missing, offer to install it the way its pack says (y/n/N) |
 | `editor.render-doc-comments` | bool | `true` | Show doc comments (///, //!, /** */) rendered as Markdown; raw when the cursor enters the block |
-| `editor.restore-files` | bool | `false` | Reopen the files you had open in this folder (with cursor positions) when started without files |
+| `editor.restore-files` | bool | `false` | Reopen the files you had open in this project (with cursor positions) when started without files |
 | `editor.inline-diagnostics` | bool | `true` | Show diagnostic messages at the end of their line and tint error/warning lines |
 | `editor.cursor-diagnostics` | bool | `true` | Cursor on an underlined problem whose message doesn't fit at the line end: show it in full in a card (Esc hides it) |
 | `editor.soft-wrap` | `"always"` · `"prose"` · `"never"` | `"always"` | Show long lines as several rows: always, in prose only (Markdown, commit messages, plain text), or never |

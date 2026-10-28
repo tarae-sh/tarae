@@ -1343,7 +1343,7 @@ pub fn past_picker(ed: &mut Editor) {
     let now_id = ed.workspace.claude.chat.as_ref().and_then(|c| c.conversation.clone());
     let fill: crate::picker::Fill = Box::new(move || {
         let now = crate::chats::now();
-        let store = crate::chats::file(&dir, &root);
+        let store = crate::config::state_file(&dir, &root);
         let items: Vec<Item> = crate::chats::load(&dir, &root)
             .into_iter()
             .filter(|s| Some(&s.id) != now_id.as_ref())

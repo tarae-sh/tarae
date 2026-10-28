@@ -218,18 +218,38 @@ pub fn state_dir() -> Option<PathBuf> {
     Some(state.join("tarae"))
 }
 
-/// `.tarae.toml` found by walking up from `root` (the editor's).
+/// The file in state folder `dir` kept for `key` — a project's root (`project.rs`: conversations, turns), a
+/// repository's git folder (its sessions): FNV-1a (64) of the path as written, `<hash>.json`.
+pub fn state_file(dir: &Path, key: &Path) -> PathBuf {
+    let h = key
+        .to_string_lossy()
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3));
+    dir.join(format!("{h:016x}.json"))
+}
+
+/// `.tarae.toml` found by walking up from `root` (the editor's): the nearest that's yours (`project_found`).
 pub fn project_path(root: &Path) -> Option<PathBuf> {
-    let mut dir = root.to_path_buf();
-    loop {
+    project_found(root, crate::project::Me::now()).0
+}
+
+/// The nearest `.tarae.toml` from `root` up that's `me`'s — it and its folder owned by `me`, neither writable by
+/// anyone (`project::mine`, the one rule with a project's mark: no one else's `/tmp/.tarae.toml` is ever read as a
+/// project's config) — and those passed over on the way, each with why (`load` says them).
+pub fn project_found(root: &Path, me: crate::project::Me) -> (Option<PathBuf>, Vec<(PathBuf, &'static str)>) {
+    let mut skipped = Vec::new();
+    for dir in root.ancestors() {
         let p = dir.join(".tarae.toml");
-        if p.is_file() {
-            return Some(p);
+        let Ok(m) = std::fs::metadata(&p) else { continue };
+        if !m.is_file() {
+            continue;
         }
-        if !dir.pop() {
-            return None;
+        match crate::project::mine(&p, &m, me) {
+            Ok(()) => return (Some(p), skipped),
+            Err(why) => skipped.push((p, why)),
         }
     }
+    (None, skipped)
 }
 
 fn layers(root: &Path, user: Option<&Path>) -> Vec<PathBuf> {
@@ -307,7 +327,13 @@ pub fn load(root: &Path, from: &Sources) -> (Config, Vec<String>) {
     let store = crate::trust::Store::read(from.trust.as_deref());
     let local = local_path(root).filter(|p| p.is_file()).map(|p| (root.to_path_buf(), p));
     let project = project_layer(root).filter(|p| from.user.as_ref() != Some(p));
-    load_layers(from.user.clone(), project, local, &store)
+    let (config, mut warnings) = load_layers(from.user.clone(), project, local, &store);
+    // (a project file on the way that isn't yours: passed over, said — `project_found`)
+    let (_, skipped) = project_found(root, crate::project::Me::now());
+    for (p, why) in skipped {
+        warnings.push(format!("{} isn't read as the project's config — {why}", crate::allow::tilde(&p)));
+    }
+    (config, warnings)
 }
 
 /// (tests: the layers without a local one)
@@ -1470,6 +1496,40 @@ Z = ["move_line_down", ":sh touch marker"]
         let (c, _) = load_from(project_layer(&root), None, &crate::trust::Store::default());
         let t = c.editor.tasks.iter().find(|t| t.name == "t").map(|t| t.cwd.clone());
         assert_eq!(t, Some(PathBuf::from("sub")), "as written");
+    }
+
+    /// A `.tarae.toml` that isn't yours is never read as the project's config — the one rule with a project's mark
+    /// (`project::mine`): someone else owns it (a stand-in uid, never a chown) or anyone can write it, it's passed
+    /// over for the next one up that's yours, and `load` says it.
+    #[test]
+    fn a_project_file_not_yours_is_never_read_as_its_config() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let scratch = crate::scratch::Scratch::new("config-owner");
+        let root = std::fs::canonicalize(&scratch).unwrap();
+        let (deep, near, far) = (root.join("a/b"), root.join("a/.tarae.toml"), root.join(".tarae.toml"));
+        std::fs::create_dir_all(&deep).unwrap();
+        fs::write(&far, "[editor]\nscrolloff = 7\n").unwrap();
+        fs::write(&near, "[editor]\nscrolloff = 9\n").unwrap();
+        let me = crate::project::Me::now();
+        assert_eq!(project_found(&deep, me), (Some(near.clone()), Vec::new()), "yours: the nearest");
+        let other = crate::project::Me { uid: me.uid.wrapping_add(1) };
+        let (found, skipped) = project_found(&deep, other);
+        assert_eq!(found, None);
+        assert_eq!(
+            skipped,
+            [(near.clone(), crate::project::OTHER_OWNER), (far.clone(), crate::project::OTHER_OWNER)]
+        );
+        // (anyone can write the nearer one: the one above, yours, is read — and the passed one said)
+        std::fs::set_permissions(&near, std::fs::Permissions::from_mode(0o666)).unwrap();
+        assert_eq!(project_path(&deep), Some(far.clone()));
+        let (c, w) = load(&deep, &Sources::default());
+        assert_eq!(c.editor.scrolloff, 7, "not the nearer file's 9");
+        let said = format!(
+            "{} isn't read as the project's config — {}",
+            crate::allow::tilde(&near),
+            crate::project::WRITABLE
+        );
+        assert!(w.contains(&said), "{w:?}");
     }
 
     #[test]

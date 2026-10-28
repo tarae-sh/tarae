@@ -1814,7 +1814,7 @@ counts the runs that only read text, by program.
 
 Claude can pin **notes** to lines of code: a bug, a risk, or a question tied to specific lines. A note shows as
 `¶ first words` at the end of its line, and with the cursor on those lines a card shows the whole thread. Notes
-ride edits (lines added above push them down), and the next start in this folder brings them back.
+ride edits (lines added above push them down), and the next start in this project brings them back.
 
 Talk back right there: `space n` on a note line replies. Your reply goes to Claude together with those lines and
 the thread so far, and Claude answers on the thread. `space n` on a line without a note asks Claude about that

@@ -30,10 +30,20 @@ You don't need to know the keys to start:
   cards and `C-q`, the review, sessions and the inbox ([screenshot](screenshots/ux-tutor.png))
 - **Start screen** — launched without a file, tarae shows first steps and your recent files; open one with its number key
   ([screenshot](screenshots/ux-welcome.png))
-- **A folder** — `tarae .` or `tarae ~/src/app` works in that folder (its `.tarae.toml`), starting on the start
-  screen. When you had files open there last time, the start screen's first row offers them back: `r` continues
-  where you left off ([screenshot](screenshots/ux-welcome-continue.png)). `editor.restore-files = true` reopens
-  them right away instead
+- **A folder** — `tarae .` or `tarae ~/src/app` works in that folder's project, starting on the start screen. The
+  project is the nearest folder from there up holding `.git` or a `.tarae.toml` — never your home or above it; none,
+  the folder itself (Helix's rule, `.tarae.toml` for its `.helix`). So `tarae` in a checkout's `src/` works in the
+  whole checkout: its conversations, turns, notes, layout and answers are the checkout's, Claude reads and runs there.
+  Where you started stays where you are: the start screen's colophon says it (`app › src`), the file picker opens
+  there, and a path you type (`:open`, `:w`, `:folder-add` …) is from there. A `.tarae.toml` in a subfolder (a
+  monorepo's `services/api/`) keeps the project — and Claude's runs — to that folder; outside git, one above groups
+  the folders under it into one project. A mark counts only when it's yours — git's `safe.directory` owner rule
+  (you own it and its folder), and nothing anyone can write (a group's write is fine, as git's: a
+  `git init --shared=group` repository is a project); one that isn't is passed over and said, so no one else's
+  `/tmp/.git` makes `/tmp` your project. What a `.tarae.toml` sets that runs something still waits for its trust card.
+  When you had files open there last time, the start screen's first row offers them back: `r`
+  continues where you left off ([screenshot](screenshots/ux-welcome-continue.png)). `editor.restore-files = true`
+  reopens them right away instead
 - **Mouse** — click to place the cursor, drag to select, alt+click for another cursor, ctrl+click to go there
   (`gd`: a definition, a page's link followed; an http(s) address in code opened as a page — `C-o` comes back), wheel to scroll. In pickers the
   wheel moves the selection and a click opens. Every line between two things with sizes drags — the chat's and the side
@@ -404,7 +414,7 @@ configs carry over as they are.
   the copy; `:q` removes them all, a hangup or `:restart` keeps them. Never copied: files where keys are (`~/.ssh`,
   `~/.aws`, `~/.gnupg`, credentials …, by their real path), files named like keys anywhere (`.env`, `*.pem`,
   `*.key`, `id_ed25519` …), files over 8 MB, and what `editor.recovery-skip` lists
-- **Restore** — launched without arguments, tarae reopens the files you had open in this folder, at their
+- **Restore** — launched without arguments, tarae reopens the files you had open in this project, at their
   cursor and scroll positions; open a file by name and you land where you last were in it
 - **Persistent undo** — on save, the last 1000 undo steps are written next to your state, so `u`/`U` keep working after
   a restart. If the file changed outside tarae, the history is quietly dropped
