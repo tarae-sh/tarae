@@ -1080,6 +1080,7 @@ pub fn write_choices(
     home: &Path,
     root: &Path,
     later: &crate::sandbox::RunsLater,
+    kept: &[PathBuf],
 ) -> Vec<PathBuf> {
     let mut at =
         if target.is_dir() { Some(target.to_path_buf()) } else { target.parent().map(Path::to_path_buf) };
@@ -1090,7 +1091,7 @@ pub fn write_choices(
     while let Some(dir) = at {
         at = dir.parent().map(Path::to_path_buf);
         let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-        if !write_refused(&dir, home, root, later) && !out.contains(&dir) {
+        if !write_refused(&dir, home, root, later, kept) && !out.contains(&dir) {
             out.push(dir);
         }
     }
@@ -1105,22 +1106,57 @@ pub fn write_place(
     home: &Path,
     root: &Path,
     later: &crate::sandbox::RunsLater,
+    kept: &[PathBuf],
 ) -> Option<PathBuf> {
-    (target.is_dir() && !write_refused(target, home, root, later)).then(|| target.to_path_buf())
+    (target.is_dir() && !write_refused(target, home, root, later, kept)).then(|| target.to_path_buf())
+}
+
+/// Why no card would open folder `dir` (real) to writes today (`write_refused`'s rule) — what a write grant kept
+/// from before is judged again by each time a run's policy is made (`tools::with_allowed`); None: it opens.
+pub fn write_refused_why(
+    dir: &Path,
+    home: &Path,
+    root: &Path,
+    later: &crate::sandbox::RunsLater,
+    kept: &[PathBuf],
+) -> Option<String> {
+    if home.starts_with(dir) {
+        return Some(if home == dir { "it's your home".into() } else { "it holds your home".into() });
+    }
+    if let Some(n) = SECRETS
+        .iter()
+        .chain(NEVER_WRITE.iter())
+        .map(|s| home.join(s))
+        .find(|n| n.starts_with(dir) || dir.starts_with(n))
+    {
+        return Some(format!("it's where keys are or what runs later ({})", tilde(&n)));
+    }
+    if let Some(why) = later.refuses(dir) {
+        return Some(why);
+    }
+    if let Some(k) = kept.iter().find(|k| k.starts_with(dir) || dir.starts_with(k)) {
+        return Some(format!("what's there is kept from every run ({})", tilde(k)));
+    }
+    // (no checkout: none to be in)
+    if !root.as_os_str().is_empty() && (dir.starts_with(root) || root.starts_with(dir)) {
+        return Some("it's the project's or holds it".into());
+    }
+    (dir.components().count() <= WRITE_DEPTH).then(|| "it's too near the top of the disk".into())
 }
 
 /// Whether no card may open folder `dir` (real) to writes: home or above it, one that holds keys or a place
 /// that runs something later (`NEVER_WRITE`; `later`: the folders of programs the user runs, the shared
-/// caches, a toolchain's home and all in it), one in (or holding) the project, or one shallower than
-/// `WRITE_DEPTH`.
-fn write_refused(dir: &Path, home: &Path, root: &Path, later: &crate::sandbox::RunsLater) -> bool {
-    let never = || SECRETS.iter().chain(NEVER_WRITE.iter()).map(|s| home.join(s));
-    home.starts_with(dir)
-        || never().any(|n| n.starts_with(dir) || dir.starts_with(n))
-        || later.refuses(dir).is_some()
-        || dir.starts_with(root)
-        || root.starts_with(dir)
-        || dir.components().count() <= WRITE_DEPTH
+/// caches, a toolchain's home and all in it), one in or holding what's kept from every run (`kept`,
+/// `sandbox::kept_places`: the user's own Go build cache — a yes there would open nothing), one in (or holding)
+/// the project, or one shallower than `WRITE_DEPTH`.
+fn write_refused(
+    dir: &Path,
+    home: &Path,
+    root: &Path,
+    later: &crate::sandbox::RunsLater,
+    kept: &[PathBuf],
+) -> bool {
+    write_refused_why(dir, home, root, later, kept).is_some()
 }
 
 /// The places a card may offer to let Claude's commands read, for a read the sandbox denied at `target` (a
@@ -2212,7 +2248,7 @@ pub(crate) mod tests {
         };
         let path = [home.join("tools/bin")];
         let later = crate::sandbox::RunsLater::new(&home, &crate::sandbox::vars_in(&home, &here), &path);
-        let at = |t: &str| write_choices(&home.join(t), &home, &root, &later);
+        let at = |t: &str| write_choices(&home.join(t), &home, &root, &later, &[]);
         // (the file itself, and a folder not there yet, aren't offered — the nearest that is, and up)
         assert_eq!(at("data/new/x/y.json"), [home.join("data/new"), home.join("data")]);
         // (npm's home, at its default and moved: what `npx` fetched runs from there later)
@@ -2249,18 +2285,32 @@ pub(crate) mod tests {
         let deep = base.join("o/a/b/c/d");
         std::fs::create_dir_all(&deep).unwrap();
         let deep = std::fs::canonicalize(deep).unwrap();
-        let got = write_choices(&deep.join("x"), &home, &root, &later);
+        let got = write_choices(&deep.join("x"), &home, &root, &later, &[]);
         assert_eq!(got.len(), WRITE_CHOICES, "{got:?}");
         assert_eq!(got[0], deep);
-        assert!(write_choices(Path::new("/opt/x/y"), &home, &root, &later).is_empty(), "{got:?}");
+        assert!(write_choices(Path::new("/opt/x/y"), &home, &root, &later, &[]).is_empty(), "{got:?}");
         // A folder refused itself: that folder first; named by `also`, that folder alone — never one above
         assert_eq!(at("data/new"), [home.join("data/new"), home.join("data")], "the folder itself first");
-        let place = |t: &Path| write_place(t, &home, &root, &later);
+        let place = |t: &Path| write_place(t, &home, &root, &later, &[]);
         assert_eq!(place(&home.join("data/new")), Some(home.join("data/new")));
         assert_eq!(place(&home.join("data/new/x.json")), None, "not a folder");
         for t in [home.clone(), home.join(".local/bin"), home.join("work/proj"), home.join("opt/cargo/x")] {
             assert_eq!(place(&t), None, "{t:?}");
         }
+        // What's kept from every run (`kept` — the user's own Go build cache, the go pack's `{user-cache}/go-build`):
+        // never offered, nor what holds it — a yes there would open nothing, the run's rules keeping it closed
+        let cache = home.join("data/cache/go-build");
+        std::fs::create_dir_all(cache.join("ab")).unwrap();
+        let unkept = at("data/cache/go-build/ab/x");
+        assert_eq!(unkept, [cache.join("ab"), cache.clone(), home.join("data/cache"), home.join("data")]);
+        let kept = [cache.clone()];
+        let offered = write_choices(&cache.join("ab/x"), &home, &root, &later, &kept);
+        assert!(offered.is_empty(), "in it, or holding it: {offered:?}");
+        assert_eq!(write_place(&cache, &home, &root, &later, &kept), None);
+        assert_eq!(
+            write_place(&home.join("data/new"), &home, &root, &later, &kept),
+            Some(home.join("data/new"))
+        );
     }
 
     /// A read refused at a folder (`space m s`) offers that folder first, then those above; named by `also`,

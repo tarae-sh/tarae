@@ -147,8 +147,11 @@ Kept:
   test: `sandbox::tests::bytecode_beside_its_source_is_kept_and_a_virtualenvs_isnt` ·
   `sandbox::tests::what_runs_later_stays_as_it_is_under_the_real_profile` (every name, macOS)
 - Folders that hold what runs later outside the project — toolchain homes, folders on `PATH`, shared caches — are
-  never written and never offered on a grant card.
+  never written and never offered on a grant card, nor what's kept from every run (the user's own Go build cache).
+  A write grant kept from before is judged again by that rule at every run (2026-10-28): one it refuses now stays
+  closed, said; only `llm.sandbox-write`, set by hand, goes past it.
   test: `sandbox::tests::what_runs_later_is_never_an_asked_folder` · `allow::tests::which_folders_a_denied_write_may_open`
+  · `sandbox::tests::a_kept_write_grant_is_judged_again`
 - Claude changes a protected file only through an edit you review, with a warning — even with review at the end.
   test: `edits::tests::review_at_the_end_still_asks_for_a_protected_file_with_its_warning` ·
   `refactor::tests::a_protected_file_in_a_change_set_is_reviewed_with_its_warning`

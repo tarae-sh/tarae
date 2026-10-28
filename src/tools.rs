@@ -1116,7 +1116,7 @@ fn also_grant(
             if !r.is_dir() {
                 return Err(format!("also write names a folder — {} isn't one", crate::allow::tilde(&r)));
             }
-            let place = crate::allow::write_place(&r, home, &caps.root, &caps.later);
+            let place = crate::allow::write_place(&r, home, &caps.root, &caps.later, &caps.kept);
             place.map(|p| Some(Grant::Write(p))).ok_or_else(|| never(&r))
         }
     }
@@ -3430,14 +3430,18 @@ pub struct Widened {
     pub keys: Vec<PathBuf>,
     /// The workspace's folders (`folders.rs`, real): written as the project is (`sandbox::Env.folders`).
     pub folders: Vec<PathBuf>,
+    /// The write grants the card's rule refuses today, and why (`allow::write_refused_why`): left closed, said
+    /// (`Policy.refused_write`).
+    pub refused_write: Vec<(PathBuf, String)>,
 }
 
 impl Widened {
     /// What no setting carries, onto the policy made from `llm`: how the result says what was allowed, the
     /// sockets, the hosts its proxy rules let through, the terminals, the files named like keys (where the
-    /// policy closes them: `Policy.keys`).
+    /// policy closes them: `Policy.keys`), the write grants left closed.
     pub fn onto(self, p: &mut crate::sandbox::Policy) {
         (p.granted, p.sockets, p.egress.answered) = (self.granted, self.sockets, self.hosts);
+        p.refused_write = self.refused_write;
         // (piece C: a grant naming a registry opens its pack's caches to this run — its rules are made once)
         p.open_granted_caches(&crate::sandboxpack::get().registries);
         p.terminals = self.terminals;
@@ -3465,6 +3469,16 @@ pub fn with_allowed(
         g => vec![g.clone()],
     });
     for g in caps.run_grants(llm.sandbox_network).into_iter().chain(once) {
+        // (a write grant judged again by the rule the card offers folders by today: one kept from before that rule
+        // refused it, or from before the user's PATH or a toolchain moved, stays closed — said)
+        if let (Grant::Write(p), Some(home)) = (&g, &caps.home)
+            && let Some(why) = crate::allow::write_refused_why(p, home, &caps.root, &caps.later, &caps.kept)
+        {
+            if !w.refused_write.iter().any(|(r, _)| r == p) {
+                w.refused_write.push((p.clone(), why));
+            }
+            continue;
+        }
         match &g {
             Grant::Read(p) if !w.reads.contains(p) => w.reads.push(p.clone()),
             Grant::Write(p) => w.llm.sandbox_write.push(p.display().to_string()),

@@ -286,6 +286,11 @@ pub struct Policy {
     pub named_by: String,
     /// The folders the packs' `ask` named that stay closed, and why (`ask_dir_verdict` — Go's caches).
     pub refused_asked: Vec<(PathBuf, String)>,
+    /// The write grants that stay closed, and why (`tools::with_allowed`, `allow::write_refused`): judged again each
+    /// time a run's policy is made, by the rule the card offers folders by today — one kept from before that rule
+    /// refused it, or from before the user's `PATH` or a toolchain moved. Never `llm.sandbox-write`: what's set by
+    /// hand is the way past that rule.
+    pub refused_write: Vec<(PathBuf, String)>,
     /// Where it may read (card model P2).
     pub reads: Reads,
     /// What the run's environment gets from the packs: the variables that point a tool at a home of the run's
@@ -1334,6 +1339,7 @@ impl Policy {
             key_spared,
             refused,
             refused_asked,
+            refused_write: Vec::new(),
             named_by: env.builder.who.clone(),
             reads,
             env: Vec::new(),

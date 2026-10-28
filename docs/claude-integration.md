@@ -1317,7 +1317,10 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
   your own state (`$XDG_STATE_HOME/tarae/sandbox.json`), and `:granted` lists it with what Claude may
   read, `d` taking one back. Some places are never offered, only set by hand in `llm.sandbox-write`: home and
   above it, folders that hold keys, folders on your `PATH`, shell, git and tarae settings, launch agents, the
-  project's `.git`. Neither are the ports in the table above. Running it outside is a weighty card of its own,
+  project's `.git`, what's kept from every run (your own Go build cache). A folder you answered for before is
+  judged again at every run by that same rule: one it refuses now — your `PATH` or a toolchain moved, or the rule
+  grew — stays closed, and the result and the run's panel say so (`:granted` takes the answer back). Neither are
+  the ports in the table above. Running it outside is a weighty card of its own,
   and only ever once. These runs are yours, not Claude's: when one runs again a command that failed in
   Claude's last turn, and the chat is idle in the same conversation, how it ended goes to Claude at once and
   Claude goes on (the card says so — a turn you didn't type, so it uses some of your plan); otherwise Claude

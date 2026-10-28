@@ -836,7 +836,7 @@ fn apply(w: &mut World, ed: &mut Editor, step: &Step, ledger: &mut Ledger, front
             let caps = ed.caps_basis().build();
             let home = caps.home.clone().unwrap();
             let widest = match write {
-                true => crate::allow::write_choices(&target, &home, &caps.root, &caps.later)
+                true => crate::allow::write_choices(&target, &home, &caps.root, &caps.later, &caps.kept)
                     .pop()
                     .map(Grant::Write),
                 false => crate::allow::read_choices(&target, &home, &caps.kept).pop().map(Grant::Read),

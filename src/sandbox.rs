@@ -853,6 +853,22 @@ impl Guard {
                         )
                     }
                 };
+                // (write grants kept from before that the card's rule refuses now — `tools::with_allowed`)
+                let refused = match p.refused_write.is_empty() {
+                    true => refused,
+                    false => {
+                        let each: Vec<String> = p
+                            .refused_write
+                            .iter()
+                            .map(|(d, why)| format!("{} ({why})", crate::allow::tilde(d)))
+                            .collect();
+                        format!(
+                            "{refused} It kept closed folders the user's answers opened for writing that no run \
+                             may write now: {} — writing there fails; :granted takes the answer back.",
+                            each.join("; ")
+                        )
+                    }
+                };
                 let names = protected_names().collect::<Vec<_>>().join(", ");
                 let rules: Vec<&str> = p.caches_said.iter().map(|c| c.rule.as_str()).collect();
                 let crates = match p.caches.is_empty() {
@@ -3377,15 +3393,19 @@ pub fn panel_line(
     // (nothing denied yet: what the checkout's build tool config named and stays closed — #20)
     let Some(first) = b.seen.first() else {
         let Guard::In(p) = g else { return None };
-        let all = p.refused.len() + p.refused_asked.len();
+        let all = p.refused.len() + p.refused_asked.len() + p.refused_write.len();
         let more = if all > 1 { format!("  +{}", all - 1) } else { String::new() };
         if let Some((d, _)) = p.refused.first() {
             let (d, by) = (crate::allow::tilde(d), &p.named_by);
             return Some((format!("sandbox kept {d} closed — {by}'s config named it{more}"), None));
         }
-        let (d, which) = p.refused_asked.first()?;
-        let (d, which) = (crate::allow::tilde(d), which.split(" — ").next().unwrap_or(which));
-        return Some((format!("sandbox kept {d} closed — {which} named it{more}"), None));
+        if let Some((d, which)) = p.refused_asked.first() {
+            let (d, which) = (crate::allow::tilde(d), which.split(" — ").next().unwrap_or(which));
+            return Some((format!("sandbox kept {d} closed — {which} named it{more}"), None));
+        }
+        let (d, why) = p.refused_write.first()?;
+        let d = crate::allow::tilde(d);
+        return Some((format!("sandbox kept {d} closed — your answer opened it, but {why}{more}"), None));
     };
     let more = if b.distinct > 1 { format!("  +{}", b.distinct - 1) } else { String::new() };
     let quiet = (running && last_output.elapsed() >= QUIET).then(|| {
@@ -7433,6 +7453,63 @@ mod tests {
         assert!(refused(Path::new("/b/pkg/mod"), &but).starts_with(in_home));
     }
 
+    /// A write grant kept from before (`A`, or this session's) is judged again each time a run's policy is made
+    /// (`tools::with_allowed`), by the rule the card offers folders by today: a folder of the user's programs, one
+    /// holding keys, what's kept from every run (the user's own Go build cache, the go pack's `{user-cache}/go-build`)
+    /// or what holds it stays closed — said in the result and on the panel; a folder that's none of those opens. The
+    /// user's own `llm.sandbox-write` is the way past that rule, and stays open.
+    #[test]
+    fn a_kept_write_grant_is_judged_again() {
+        let s = crate::scratch::Scratch::new("write-grant-again");
+        let home = std::fs::canonicalize(s.path()).unwrap();
+        let root = home.join("work/p");
+        let cache = home.join(".cache/go-build");
+        let refused = [
+            (home.join(".local/bin"), "programs you run"),
+            (home.join("go/bin"), "programs you run"),
+            (cache.join("ab"), "what's there is kept from every run"),
+            (home.join(".cache"), ""),
+            (home.join(".ssh/x"), "keys"),
+        ];
+        let open = home.join("data/out");
+        for d in refused.iter().map(|(d, _)| d).chain([&open, &root]) {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let env = [("HOME".to_string(), home.clone().into_os_string())].into();
+        let here = Here { env, os: Os::Linux, ..Here::default() };
+        let write = refused.iter().map(|(d, _)| d.clone()).chain([open.clone()]).collect();
+        let kept = crate::allow::Allowed { write, ..Default::default() };
+        let none = crate::allow::Allowed::default();
+        let mut caps = crate::caps::Caps::granted(&root, &kept, &none, &none);
+        caps.home = Some(home.clone());
+        caps.later = RunsLater::new(&home, &vars_in(&home, &here), &[]);
+        caps.kept = kept_places(&home, &here);
+        // (by hand: the way past the card's rule)
+        let llm = crate::llm::LlmConfig { sandbox_write: vec!["~/.local/bin".into()], ..Default::default() };
+        let w = crate::tools::with_allowed(&llm, &caps, None);
+        let mut p = run_policy_in(&root, &w.llm, &w.reads, &here).expect("a run's policy");
+        w.onto(&mut p);
+        assert!(p.writes_allow(&open.join("x")), "{:?}", p.write);
+        assert!(
+            p.writes_allow(&home.join(".local/bin/x")),
+            "llm.sandbox-write stays the user's: {:?}",
+            p.write
+        );
+        for (d, said) in &refused[1..] {
+            let why = p.refused_write.iter().find(|(r, _)| r == d).map(|(_, w)| w.as_str());
+            assert!(why.is_some_and(|w| w.contains(said)), "{}: {why:?}", d.display());
+            assert!(!p.writes_allow(&d.join("x")), "{} opened", d.display());
+        }
+        assert!(p.refused_write.iter().any(|(r, _)| *r == refused[0].0), "the grant's own refusal is said");
+        let g = Guard::In(Box::new(p));
+        let said = g.report(&[]);
+        let words =
+            "It kept closed folders the user's answers opened for writing that no run may write now: ";
+        assert!(said.contains(words) && said.contains(":granted takes the answer back"), "{said}");
+        let (line, _) = panel_line(Some(&g), false, std::time::Instant::now()).expect("the panel says it");
+        assert!(line.contains(" closed — your answer opened it, but ") && line.ends_with("  +4"), "{line}");
+    }
+
     /// A toolchain's shared cache its `ask` names (Go's module cache) is kept as the packs' `caches` are: read,
     /// written only with the network open, said when a write there was kept — and judged as any folder it
     /// names (one that's a home stays closed). (Names only.)
@@ -7663,7 +7740,7 @@ mod tests {
             );
             let later = RunsLater::new(&home, &vars_in(&home, &here), &[]);
             assert!(later.refuses(&at).is_some(), "{}", at.display());
-            let offered = crate::allow::write_choices(&at.join("x"), &home, &root, &later);
+            let offered = crate::allow::write_choices(&at.join("x"), &home, &root, &later, &[]);
             assert!(offered.is_empty(), "{}: offered {offered:?}", at.display());
             // (its default stays refused when a variable moves it, as every home's does — compat7 verify 2)
             let default = home.join(".cache/node/corepack");
@@ -7682,9 +7759,9 @@ mod tests {
             let here = Here { env, os: *os, ..Here::default() };
             let later = RunsLater::new(&home, &vars_in(&home, &here), &[]);
             assert!(later.refuses(d).is_some(), "{}", d.display());
-            let offered = crate::allow::write_choices(&d.join("x"), &home, &root, &later);
+            let offered = crate::allow::write_choices(&d.join("x"), &home, &root, &later, &[]);
             assert!(offered.is_empty(), "{}: offered {offered:?}", d.display());
-            assert_eq!(crate::allow::write_place(d, &home, &root, &later), None, "{}", d.display());
+            assert_eq!(crate::allow::write_place(d, &home, &root, &later, &[]), None, "{}", d.display());
         }
         // (where pnpm itself looks once the XDG variables are set: `$XDG_CACHE_HOME/pnpm` and `$XDG_DATA_HOME/pnpm`
         // on every system — compat7 verify 1)
@@ -7708,7 +7785,7 @@ mod tests {
                 let f = d.join("index.json");
                 assert!(p.reads_allow(&f) && !p.writes_allow(&f), "{os:?} {}", d.display());
                 assert!(later.refuses(d).is_some(), "{os:?} {}", d.display());
-                let offered = crate::allow::write_choices(&d.join("x"), &home, &root, &later);
+                let offered = crate::allow::write_choices(&d.join("x"), &home, &root, &later, &[]);
                 assert!(offered.is_empty(), "{os:?} {}: offered {offered:?}", d.display());
             }
         }
@@ -7768,7 +7845,7 @@ mod tests {
         assert_eq!(store, mnt.join(".pnpm-store"), "the topmost on its filesystem, not above it");
         let later = RunsLater { stores: vec![store.clone()], ..RunsLater::default() };
         assert!(later.refuses(&store).is_some() && later.refuses(&store.join("v11")).is_some());
-        assert!(crate::allow::write_choices(&store.join("v11/x"), &home, &root, &later).is_empty());
+        assert!(crate::allow::write_choices(&store.join("v11/x"), &home, &root, &later, &[]).is_empty());
         let one = |p: &Path| (p.starts_with(&base) && p.exists()).then_some(1);
         assert_eq!(found(&root, env(&[]), &one), None, "one filesystem");
         let pnpm_home = mnt.join("pnpm-home");
@@ -8074,7 +8151,8 @@ mod tests {
         let above = found(&in_home, env(&[("PNPM_HOME", &pnpm_home)]), &all_two);
         assert_eq!(above.as_deref(), Some(base.join(".pnpm-store").as_path()), "above home");
         let later = RunsLater { stores: vec![base.join(".pnpm-store")], ..RunsLater::default() };
-        let offered = crate::allow::write_choices(&base.join(".pnpm-store/v11/x"), &home, &in_home, &later);
+        let offered =
+            crate::allow::write_choices(&base.join(".pnpm-store/v11/x"), &home, &in_home, &later, &[]);
         assert!(offered.is_empty(), "offered {offered:?}");
     }
 
@@ -8420,7 +8498,10 @@ mod tests {
         let caps =
             crate::caps::Basis { root: root.clone(), ..Default::default() }.build_in(Some(&home), &here);
         assert!(caps.later.refuses(&store).is_some(), "{:?}", caps.later.stores);
-        assert!(crate::allow::write_choices(&store.join("v11/x"), &home, &root, &caps.later).is_empty());
+        assert!(
+            crate::allow::write_choices(&store.join("v11/x"), &home, &root, &caps.later, &caps.kept)
+                .is_empty()
+        );
         // (the run's command gets them — nothing on the way strips them — and its report says which store)
         // (no pnpm on PATH, no pin: its version unknown — the variable its newer versions read alone, said; F3)
         let c = command(Some(&p), "/bin/sh", &[]);
@@ -11936,6 +12017,7 @@ mod tests {
             refused: Vec::new(),
             named_by: String::new(),
             refused_asked: Vec::new(),
+            refused_write: Vec::new(),
             reads: Reads::default(),
             env: Vec::new(),
             disk_stores: DiskStores::default(),
@@ -13757,6 +13839,7 @@ mod tests {
                 refused: Vec::new(),
                 named_by: String::new(),
                 refused_asked: Vec::new(),
+                refused_write: Vec::new(),
                 reads: Reads::default(),
                 env: Vec::new(),
                 disk_stores: DiskStores::default(),
@@ -13847,6 +13930,7 @@ mod tests {
             refused: Vec::new(),
             named_by: String::new(),
             refused_asked: Vec::new(),
+            refused_write: Vec::new(),
             reads: Reads::default(),
             env: Vec::new(),
             disk_stores: DiskStores::default(),
@@ -13924,6 +14008,7 @@ mod tests {
             refused: Vec::new(),
             named_by: String::new(),
             refused_asked: Vec::new(),
+            refused_write: Vec::new(),
             reads: Reads::default(),
             env: Vec::new(),
             disk_stores: DiskStores::default(),
@@ -15469,6 +15554,7 @@ mod tests {
             refused: Vec::new(),
             named_by: String::new(),
             refused_asked: Vec::new(),
+            refused_write: Vec::new(),
             reads: Reads::default(),
             env: Vec::new(),
             disk_stores: DiskStores::default(),

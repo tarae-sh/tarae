@@ -157,10 +157,12 @@ pub fn choices_by(
             }));
         }
         if file && !d.terminal() && (d.op.starts_with("file-write") || d.op == crate::sandbox::EITHER) {
-            found.extend(crate::allow::write_choices(&target, home, root, later).into_iter().map(|dir| {
-                let why = format!("{} was writing {} in it", d.process, below(&dir));
-                Choice { hint: below(&dir), grant: Grant::Write(dir), why }
-            }));
+            found.extend(crate::allow::write_choices(&target, home, root, later, kept).into_iter().map(
+                |dir| {
+                    let why = format!("{} was writing {} in it", d.process, below(&dir));
+                    Choice { hint: below(&dir), grant: Grant::Write(dir), why }
+                },
+            ));
         } else if let Some(n) = d.port_here()
             && !crate::sandbox::RISKY_PORTS.iter().any(|(p, _)| *p == n)
         {
