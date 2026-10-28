@@ -1,5 +1,5 @@
 //! What's cut is whole where you look at it — one way (the user, 2026-10-27, frictions #187): every `…` tarae draws —
-//! a tool's row in the chat (a note's, a reply's), the queued line, the code's line ends (blame, a diagnostic), a list's
+//! a tool's row in the chat (a note's, a reply's), a thought folded (#197b), the queued line, the code's line ends (blame, a diagnostic), a list's
 //! row — stays as it is (nothing unfolds, nothing moves) and shows whole on a borderless card over it (`term::cut_card`),
 //! its first row on the cut one: while the mouse is over it, and while it's the row in hand (the chat's view mode's
 //! cursor on it, a list's selected row while the list has the keys) — one card at a time, the mouse's first. What's kept

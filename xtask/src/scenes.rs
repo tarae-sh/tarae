@@ -264,6 +264,10 @@ const WORDS_KEYS: [&[&str]; 4] = [
     &["@1", " ", "l", "@1", "how is the map filled?", "\r", "@30?That is all.", "@1", "@hover?follow", "@1"],
 ];
 
+/// #197a: a buffer's name on the code's line under the mouse, the chat open with the keys (the line faded) — only its
+/// ground lightens, its text's colour as drawn.
+const WORDS_TAB: &[&str] = &["@1", " ", "l", "@1", "@hover?wide.rs", "@1"];
+
 /// #185: what goes with the message, the mouse over its chip over the chat's input — the whole file quoted
 /// (`%`, `space >`), in its colours; a line quoted, the screen (`C-s`), then lines 3–9 from the code (`C-w h`), folded
 /// to `3 things`; the whole file's chip pressed — the quote whole in a read-only buffer.
@@ -2112,6 +2116,7 @@ const SCENES: &[Scene] = &[
     Scene { name: "words-card", claude: "now", files: MAIN, keys: WORDS_KEYS[1] },
     Scene { name: "words-foot", claude: "footshort", files: MAIN, keys: WORDS_KEYS[2] },
     Scene { name: "words-follow", claude: "footshort", files: MAIN, keys: WORDS_KEYS[3] },
+    Scene { name: "words-tab", claude: "idle", files: &["src/main.rs", "src/wide.rs"], keys: WORDS_TAB },
     // (motion §4: a turn of 20 stops — reads, lookups, edits, runs, one failing — its trail rows; the follow card's strip)
     Scene { name: "strip-trail", claude: "strip", files: MAIN, keys: STRIP_KEYS[0] },
     Scene { name: "strip", claude: "strip", files: MAIN, keys: STRIP_KEYS[1] },

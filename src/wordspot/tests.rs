@@ -165,6 +165,81 @@ fn the_mouse_over_a_word_lights_it() {
     assert!(ed.unchanged, "a move over nothing draws nothing");
 }
 
+/// frictions #197a: a word under the mouse keeps its text's colour, only its ground lightens — every kind of word, drawn
+/// faded (a buffer's name on the code's line, the chat having the keys) or at full strength (the chat's own), meok and
+/// hanji: each cell's text colour as it was, its ground another. One already on the selected row's ground (#197's
+/// review: a name flashing, brought into sight from a link — the pane's buffer tab, the slot's tab) on another still.
+#[test]
+fn a_lit_word_keeps_its_texts_colour() {
+    // (colours drawn though tarae's test runner sets NO_COLOR)
+    crossterm::style::force_color_output(true);
+    for theme in ["meok", "hanji"] {
+        let mut ed = editor();
+        ed.theme = crate::theme::load(theme).unwrap();
+        let mut other = crate::document::Document::from_str(77, "other\n");
+        other.path = Some(ed.workspace.root.join("other.rs"));
+        ed.docs.push(other);
+        // (a task's run in the slot: its tab on the slot's line)
+        let t = crate::task::Task {
+            name: "check".into(),
+            cmd: "cargo check".into(),
+            cwd: ed.workspace.root.clone(),
+        };
+        ed.workspace.task_run = Some(crate::task::Run::for_test(t));
+        working(&mut ed);
+        let keys = |s: &Spot| matches!(&s.press, Press::Keys(_)) && s.on == Surface::Chat;
+        let words: Vec<Spot> = {
+            let spots = ed.screen.word_spots.borrow();
+            let of = |p: Press| spots.iter().find(|s| s.press == p).cloned();
+            [of(Press::Buffer(77)), of(Press::Follow), spots.iter().find(|s| keys(s)).cloned()]
+                .into_iter()
+                .map(|s| s.expect("a buffer's name, `follow`, a hint at the chat's foot"))
+                .collect()
+        };
+        // (the slot's tab: a word with a record of its own)
+        let own = ed.screen.word_lit.borrow().first().map(|l| (l.0, l.1, l.2));
+        let own = own.unwrap_or_else(|| panic!("{theme}: a word with a record of its own"));
+        // (flashing: the buffer's pane, the slot's run)
+        let pane = match words[0].on {
+            Surface::PaneTop(id) => format!("pane#{id}"),
+            on => panic!("{theme}: the buffer's name on {on:?}"),
+        };
+        let run = format!("run#{}", ed.workspace.task_run.as_ref().unwrap().trace.id());
+        let flashing = [(Some(pane), (words[0].y, words[0].from, words[0].to)), (Some(run), own)];
+        // (the clock held: a flash lasts the whole test, whatever the machine's pace)
+        let held = crate::clock::hold();
+        let cells = |ed: &mut Editor, flash: &Option<String>, (y, a, b): (usize, usize, usize)| {
+            ed.ui_flash = flash.clone().map(|id| (id, held));
+            ed.focus_sync();
+            let mut bytes = Vec::new();
+            crate::term::render(ed, &mut bytes, 120, 40).unwrap();
+            let mut p = vt100::Parser::new(40, 120, 0);
+            p.process(&bytes);
+            let cell =
+                |x: usize| p.screen().cell(y as u16, x as u16).map(|c| (c.fgcolor(), c.bgcolor())).unwrap();
+            (a..b).map(cell).collect::<Vec<_>>()
+        };
+        let at = words.iter().map(|s| (None, (s.y, s.from, s.to))).chain([(None, own)]).chain(flashing);
+        for (flash, (y, a, b)) in at {
+            let said = format!(
+                "{theme}: row {y} {a}..{b}{}",
+                flash.as_ref().map_or(String::new(), |f| format!(", {f} flashing"))
+            );
+            let before = cells(&mut ed, &flash, (y, a, b));
+            ed.handle_event(Event::Hover(a as u16, y as u16));
+            let lit = cells(&mut ed, &flash, (y, a, b));
+            assert_eq!(ed.word_hover.get().map(|w| w.0), Some(y), "{said}: lit");
+            let fg = |c: &[(vt100::Color, vt100::Color)]| c.iter().map(|c| c.0).collect::<Vec<_>>();
+            assert_eq!(fg(&lit), fg(&before), "{said}: keeps its text's colour");
+            assert!(lit.iter().zip(&before).all(|(l, b)| l.1 != b.1), "{said}: its ground lit");
+            // (the mouse off it, onto the code's text)
+            ed.handle_event(Event::Hover(5, 3));
+            assert_eq!(cells(&mut ed, &flash, (y, a, b)), before, "{said}: let go");
+        }
+        crate::clock::release();
+    }
+}
+
 fn until(ed: &mut Editor, what: &str, done: impl Fn(&Editor) -> bool) {
     let end = std::time::Instant::now() + crate::test_results::PATIENCE;
     while !done(ed) {

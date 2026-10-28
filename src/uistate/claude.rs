@@ -14,7 +14,7 @@
 //!   `•` — until the next question; none on toasts.
 
 use std::ops::Range;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -465,7 +465,7 @@ impl Editor {
 
     /// Whether `id` flashes now (brought into sight from a link, `FLASH` ago at most).
     pub fn ui_flashing(&self, id: &str) -> bool {
-        self.ui_flash.as_ref().is_some_and(|(f, at)| f == id && at.elapsed() < FLASH)
+        self.ui_flash.as_ref().is_some_and(|(f, at)| f == id && crate::clock::since(*at) < FLASH)
     }
 
     /// The mark an element carries: `•` cited by this turn's answer, `◦` given to Claude this turn — the
@@ -563,7 +563,7 @@ impl Editor {
             },
         };
         if shown {
-            self.ui_flash = Some((id.to_string(), Instant::now()));
+            self.ui_flash = Some((id.to_string(), crate::clock::now()));
         } else {
             self.set_status(self.ui_gone_said(id));
         }

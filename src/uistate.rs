@@ -2601,7 +2601,7 @@ pub fn undrawn(ed: &mut Editor) {
 pub fn after_frame(ed: &mut Editor) {
     watch::after_frame(ed);
     // (a flash over: this frame drew it gone — nothing to look ids up for, no frame to ask for)
-    if ed.ui_flash.as_ref().is_some_and(|f| f.1.elapsed() >= claude::FLASH) {
+    if ed.ui_flash.as_ref().is_some_and(|f| crate::clock::since(f.1) >= claude::FLASH) {
         ed.ui_flash = None;
     }
     if ed.ui_asks.is_empty() {

@@ -2447,7 +2447,7 @@ fn top_line(
     use crate::wordspot::{Press, Spot};
     let word = |at: usize, press: Press, spans: Vec<(String, Style)>| {
         if let Some(w) = &head.words {
-            w.spots.borrow_mut().push(Spot::new(w.on, press, (at, y), spans));
+            w.spots.borrow_mut().push(word_spot(w.on, press, (at, y), spans));
         }
     };
     if right_cells > 0 {
@@ -2481,7 +2481,7 @@ fn top_line(
             && let Some(w) = &head.words
         {
             let spans = vec![(k.to_string(), head.key), (format!(" {v}"), head.faint)];
-            let spot = Spot::new(w.on, Press::Keys(k.to_string()), (at + gap.len(), y), spans);
+            let spot = word_spot(w.on, Press::Keys(k.to_string()), (at + gap.len(), y), spans);
             let home = if w.way_in == Some(*k) { Some(At::Code) } else { w.home };
             w.spots.borrow_mut().push(Spot { home, ..spot });
         }
@@ -5162,15 +5162,17 @@ fn draw(
 }
 
 /// The word the mouse is over (`wordspot.rs`) — the one a press there lands on, none under a card or a picker — drawn
-/// again lit: each of its spans in the accent on the selected row's ground, its weight kept (a list's row in hand, the
-/// strip's mark under the mouse), at full strength wherever it is.
+/// again lit: only its ground lightens, to the selected row's (user, 2026-10-28, #197a: never its text's colour) —
+/// each span as it was drawn, faded or not (`as_drawn`), on that ground; one already on it (a name flashing, brought
+/// into sight from a link — `flashed`) on the primary selection's, else the selection's: lit is always another ground.
 fn light_word(editor: &Editor, ui: &Ui, out: &mut impl Write) -> io::Result<()> {
     let over = editor.presence.hover_at.and_then(|(x, y)| crate::wordspot::lit(editor, x, y));
     editor.word_hover.set(over.as_ref().map(|l| (l.0, l.1, l.2)));
     let Some((y, from, _, spans)) = over else { return Ok(()) };
     queue!(out, MoveTo(from as u16, y as u16))?;
     for (text, st) in &spans {
-        let lit = Style { fg: ui.accent.fg, bold: st.bold, ..selected_row(ui, editor, *st) };
+        let grounds = [selected_row(ui, editor, *st).bg, ui.selection_primary.bg, ui.selection.bg];
+        let lit = Style { bg: grounds.into_iter().flatten().find(|&g| Some(g) != st.bg), ..*st };
         apply_full(out, lit)?;
         queue!(out, Print(text))?;
     }
@@ -5206,7 +5208,26 @@ fn spans_in<'a>(
 /// `y`, lit while the mouse is over it (`wordspot::lit`).
 fn word_lit(editor: &Editor, y: usize, (a, b): (usize, usize), spans: Vec<(String, Style)>) {
     if b > a && !spans.is_empty() {
-        editor.screen.word_lit.borrow_mut().push((y, a, b, spans));
+        editor.screen.word_lit.borrow_mut().push((y, a, b, as_drawn(spans)));
+    }
+}
+
+/// A word that does its key, drawn from (`x`, `y`) on `on` (`wordspot::Spot`), its spans as drawn (`as_drawn`).
+fn word_spot(
+    on: crate::mouse::Surface,
+    press: crate::wordspot::Press,
+    at: (usize, usize),
+    spans: Vec<(String, Style)>,
+) -> crate::wordspot::Spot {
+    crate::wordspot::Spot::new(on, press, at, as_drawn(spans))
+}
+
+/// A word's spans with the colour their text was drawn in — faded where the region drawn hasn't the keys (`Fade`) —
+/// so lit under the mouse it keeps that colour exactly, only its ground changed (`light_word`).
+fn as_drawn(spans: Vec<(String, Style)>) -> Vec<(String, Style)> {
+    match FADING.get() {
+        Some(ground) => spans.into_iter().map(|(t, st)| (t, faded(st, ground))).collect(),
+        None => spans,
     }
 }
 
@@ -9988,7 +10009,7 @@ fn code_line(
     for ((name, press), &(a, b)) in names.iter().zip(left_press).zip(&cols) {
         if let Some(press) = press.filter(|_| b > a) {
             let spans = vec![(crate::whole::fit_own(name.0.shown(), b - a), name.1)];
-            let spot = crate::wordspot::Spot::new(crate::mouse::Surface::PaneTop(id), press, (a, y0), spans);
+            let spot = word_spot(crate::mouse::Surface::PaneTop(id), press, (a, y0), spans);
             editor.screen.word_spots.borrow_mut().push(spot);
         }
     }
@@ -9997,7 +10018,7 @@ fn code_line(
         let (k, what) = (&names[i], &names[i + 1]);
         let hint = [("C-c", " stop"), ("enter", " go there")].contains(&(k.0.shown(), what.0.shown()));
         if let (true, Some(&(a, _))) = (hint, cols.get(i)) {
-            let spot = crate::wordspot::Spot::new(
+            let spot = word_spot(
                 crate::mouse::Surface::PaneTop(id),
                 crate::wordspot::Press::Keys(k.0.shown().to_string()),
                 (a, y0),
@@ -10827,7 +10848,7 @@ fn status_words(editor: &Editor, left: &[Seg], right: &[Seg], (y, right_x): (usi
             match (p, &last) {
                 (Some(p), Some(l)) if p == *l => runs.last_mut().expect("a run").spans.push(span),
                 (Some(p), _) => {
-                    runs.push(Spot::new(crate::mouse::Surface::Status, p.clone(), (x, y), vec![span]));
+                    runs.push(word_spot(crate::mouse::Surface::Status, p.clone(), (x, y), vec![span]));
                     last = Some(p);
                 }
                 (None, _) => last = None,
@@ -10846,7 +10867,7 @@ fn status_words(editor: &Editor, left: &[Seg], right: &[Seg], (y, right_x): (usi
         }
         spans.retain(|s| !s.0.is_empty());
         if !spans.is_empty() {
-            words.push(Spot::new(on, press, (from + lead, y), spans));
+            words.push(word_spot(on, press, (from + lead, y), spans));
         }
     }
 }
@@ -13906,7 +13927,7 @@ fn draw_follow_card(
         Some(m) => vec![(m.said.clone(), dim)],
         None => bottom_keys(keys, width.saturating_sub(6), key, faint, frame_line(ui, card)),
     };
-    use crate::wordspot::{Press, Spot};
+    use crate::wordspot::Press;
     let on = crate::mouse::Surface::FollowCard;
     let follow = Some(crate::mouse::Lights::Follow);
     let line = draw_frame(out, ui, editor, on, card, rect, &[], &bottom, &[], (follow, false))?;
@@ -13939,7 +13960,7 @@ fn draw_follow_card(
         // (the word alone: not the blank before it nor the one the strip after it keeps)
         let lead = text.len() - text.trim_start().len();
         let spans = vec![(crate::whole::fit_own(text.trim(), (b - a).saturating_sub(lead)), *st)];
-        Some(Spot::new(on, press, (a + lead, y0), spans))
+        Some(word_spot(on, press, (a + lead, y0), spans))
     };
     words.extend(word(1, Press::Card).filter(|_| waits));
     words.extend(word(names.len(), Press::Follow).filter(|_| paused));
@@ -13951,7 +13972,7 @@ fn draw_follow_card(
                 // (by what each key is, never where the keys are: the turn's own — `C-c stop`, `C-f` — the chat's; the
                 // ways in — `space l open the chat`, `[r replay` — typed in the code)
                 let home = if matches!(k, "C-c" | "C-f") { At::Chat } else { At::Code };
-                let spot = Spot::new(on, Press::Keys(k.to_string()), (at, y0 + h - 1), pair.to_vec());
+                let spot = word_spot(on, Press::Keys(k.to_string()), (at, y0 + h - 1), pair.to_vec());
                 words.push(spot.home(home));
             }
             at += pair.iter().map(|s| s.0.width()).sum::<usize>() + " · ".width();
@@ -14322,7 +14343,7 @@ fn draw_sidebar(
                 if b > a {
                     let spans = vec![(crate::whole::fit_own(&name.0, b - a), name.1)];
                     let press = crate::wordspot::Press::Side(v.1);
-                    spots.push(crate::wordspot::Spot::new(crate::mouse::Surface::Side, press, (a, 0), spans));
+                    spots.push(word_spot(crate::mouse::Surface::Side, press, (a, 0), spans));
                 }
             }
             drop(spots);
@@ -15950,29 +15971,83 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
                 let live = i + 1 == n && c.busy();
                 // (room kept for the `…` that says rows are folded away: before its first row live, after its
                 // last folded)
-                let all = thought_rows(&m.text, mw - 2 - if live { 2 } else { 1 }, dim, faint, editor);
+                let (all, drawn) =
+                    thought_rows_drawn(&m.text, mw - 2 - if live { 2 } else { 1 }, dim, faint, editor);
                 let keep = if live { 8 } else { 2 };
-                // Folded: the first two rows with words (a bold step title and the start of its text)
-                let body: Vec<&Vec<Span>> = all.iter().filter(|r| live || !blank(r)).collect();
+                // Folded: the first two rows with words (a bold step title and the start of its text) — each by its
+                // place among them all
+                let body: Vec<usize> = (0..all.len()).filter(|&j| live || !blank(&all[j])).collect();
                 let shown = if live {
                     &body[body.len().saturating_sub(keep)..]
                 } else {
                     &body[..body.len().min(keep)]
                 };
-                for (k, row) in shown.iter().enumerate() {
+                // (what of row `j` isn't the text's: a code row's lead, a wrapped row's hanging indent)
+                let lead = |j: usize| {
+                    let d = &drawn[j];
+                    (if d.code { d.lead } else { 0 }) + d.join.map_or(0, |j| j.drop)
+                };
+                // (the thought's own text from row `j` on, each break as the layout made it — a wrap's space or none,
+                // a paragraph's line — never a space put into a word the wrap cut, as a path)
+                let text_from = |j: usize| {
+                    let rows: Vec<ChatRow> = (j..all.len())
+                        .map(|i| ChatRow {
+                            spans: all[i].clone(),
+                            skip: lead(i),
+                            join: drawn[i].join.map(|j| j.space),
+                            rest: drawn[i].rest.clone(),
+                            ..ChatRow::default()
+                        })
+                        .collect();
+                    crate::chatdoc::lines_of(&rows).0.trim_end_matches('\n').to_string()
+                };
+                for (k, &j) in shown.iter().enumerate() {
+                    let row = &all[j];
                     let mut r = vec![sp("▎ ".into(), faint)];
                     r.extend(row.iter().cloned());
                     // (its bar isn't the text's, nor the `…` that says rows are folded away)
-                    let (mut skip, mut tail) = (2, 0);
-                    if live && k == 0 && body.len() > keep {
+                    let (mut skip, mut tail) = (2 + lead(j), 0);
+                    let folded_before = live && k == 0 && body.len() > keep;
+                    let folded_after = !live && k + 1 == shown.len() && body.len() > keep;
+                    if folded_before {
                         r.insert(1, sp("… ".into(), faint));
                         skip += 2;
                     }
-                    if !live && k + 1 == shown.len() && body.len() > keep {
+                    if folded_after {
                         r.push(sp("…".into(), faint));
                         tail += 1;
                     }
-                    lines.push(ChatRow { spans: r, skip, tail, ..ChatRow::default() });
+                    // (a row the layout wrapped goes on from the one before, on its line in the transcript — but the
+                    // first in sight, whose row before is folded away)
+                    let join = drawn[j].join.filter(|_| k > 0).map(|j| j.space);
+                    // (a cut code row's rest kept, as an answer's: the transcript has its line whole)
+                    let rest = drawn[j].rest.clone();
+                    let mut row_of = ChatRow { spans: r, skip, tail, join, rest, ..ChatRow::default() };
+                    // (#197b: the `…` row whole on its card, as every cut — folded, from its own text on: what's above it
+                    // in sight, what it stands for after, and the transcript keeps that too (`/`, `y`); live, the
+                    // thought all of it, its start folded away above)
+                    if folded_before || folded_after {
+                        let text = text_from(if folded_after { j } else { 0 });
+                        if folded_after {
+                            // (the transcript's line: its paragraphs' breaks a space — every line there has a row,
+                            // `wrap::Given`, and what the `…` stands for has none; its card keeps them)
+                            let line: Vec<&str> = text.split('\n').filter(|l| !l.trim().is_empty()).collect();
+                            crate::chatdoc::keep_whole(&mut row_of, &line.join(" "));
+                        }
+                        let style = row.iter().find(|s| !s.text.trim().is_empty()).map_or(dim, |s| s.style);
+                        let to = row_of.spans.iter().map(|s| s.text.width()).sum();
+                        let whole = crate::whole::Whole {
+                            on: crate::whole::On::Transcript,
+                            text,
+                            style,
+                            pieces: Vec::new(),
+                            cols: (0, 0),
+                            state: None,
+                            float: None,
+                        };
+                        row_of.cut = Some((2, to, whole));
+                    }
+                    lines.push(row_of);
                 }
             }
             // `◦ read  src/lib.rs  L10–49` — one quiet row per call; a run of them stays together
@@ -16600,7 +16675,7 @@ fn draw_chat(
     for (i, press) in presses {
         if let (Some(&(a, b)), Some((text, st))) = (laid.get(i), details.get(i)) {
             let spans = vec![(crate::whole::fit_own(text, b - a), *st)];
-            editor.screen.word_spots.borrow_mut().push(crate::wordspot::Spot::new(on, press, (a, y), spans));
+            editor.screen.word_spots.borrow_mut().push(word_spot(on, press, (a, y), spans));
         }
     }
     // (where its names and its granted chip were drawn: their clicks)
@@ -16943,7 +17018,7 @@ fn draw_chat(
         if crate::wordspot::pressable(k, d) {
             let mut spans = vec![(k.to_string(), key)];
             spans.extend((!d.is_empty()).then(|| (format!(" {d}"), faint)));
-            let spot = crate::wordspot::Spot::new(
+            let spot = word_spot(
                 crate::mouse::Surface::Chat,
                 crate::wordspot::Press::Keys(k.to_string()),
                 (text_x + used, y),
@@ -17144,18 +17219,6 @@ pub(crate) fn usage_row_for_test(ed: &Editor, w: usize) -> Vec<crate::markdown::
     .unwrap_or_default()
 }
 
-/// Answer markdown → rows. Code blocks as a "well" of editor bg (sunk a tone inside the card) — text and
-/// code separate at a glance. Code is truncated, not wrapped (`…` at the end if cut). Rules in `rule` (faint),
-/// a stacked table's header names in `label` (dim — they say what each value is).
-fn chat_markdown(
-    lines: &[crate::markdown::Line],
-    w: usize,
-    styles: (Style, Style),
-    well: Option<crossterm::style::Color>,
-) -> Vec<Vec<crate::markdown::Span>> {
-    chat_markdown_drawn(lines, (w, w), styles, well).0
-}
-
 /// A row of the chat's transcript (`chatdoc::Shown`) with its view mode's selections, matches and cursors painted
 /// over its spans: a selection's background over the spans' own colours, a cursor in the code's style (the
 /// primary's apart, as the code's). Its first `skip` characters, and what follows its text, are the drawer's — but
@@ -17313,8 +17376,11 @@ fn marks_at(marks: &[(usize, usize, Style)], at: usize, base: Style) -> Style {
     marks.iter().filter(|m| (m.0..m.1).contains(&at)).fold(base, |s, m| s.patch(m.2))
 }
 
-/// `chat_markdown`, and what of each row it drew rather than the text wrote (`markdown::Drawn`) — what bleeding ink
-/// leaves alone. Text wraps at `measure` (≤ `w`), code rows take `w`.
+/// Answer markdown → rows. Code blocks as a "well" of editor bg (sunk a tone inside the card) — text and
+/// code separate at a glance. Code is truncated, not wrapped (`…` at the end if cut). Rules in `rule` (faint),
+/// a stacked table's header names in `label` (dim — they say what each value is). And what of each row it drew
+/// rather than the text wrote (`markdown::Drawn`) — what bleeding ink leaves alone. Text wraps at `measure` (≤ `w`),
+/// code rows take `w`.
 fn chat_markdown_drawn(
     lines: &[crate::markdown::Line],
     (w, measure): (usize, usize),
@@ -18746,8 +18812,21 @@ fn thought_rows(
     faint: Style,
     editor: &Editor,
 ) -> Vec<Vec<crate::markdown::Span>> {
+    thought_rows_drawn(text, w, dim, faint, editor).0
+}
+
+/// `thought_rows`, and what of each row the layout drew rather than the text wrote (`markdown::Drawn`): where each
+/// break was — the chat's transcript and a folded thought's whole take the text back from them.
+fn thought_rows_drawn(
+    text: &str,
+    w: usize,
+    dim: Style,
+    faint: Style,
+    editor: &Editor,
+) -> (Vec<Vec<crate::markdown::Span>>, Vec<crate::markdown::Drawn>) {
     let rendered = crate::markdown::render(text.trim(), &editor.theme, None);
-    chat_markdown(&rendered, w, (faint, dim), None)
+    let (rows, drawn) = chat_markdown_drawn(&rendered, (w, w), (faint, dim), None);
+    let rows = rows
         .into_iter()
         .map(|row| {
             row.into_iter()
@@ -18758,7 +18837,8 @@ fn thought_rows(
                 })
                 .collect()
         })
-        .collect()
+        .collect();
+    (rows, drawn)
 }
 
 /// A clickable span in the chat pane: (start col, end col, target).

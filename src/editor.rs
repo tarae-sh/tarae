@@ -4114,7 +4114,7 @@ impl Editor {
         let next = [next, reviewer].into_iter().flatten().min();
         // An element flashing (a link followed): one frame when its flash is over, to take it away
         let flash = self.ui_flash.as_ref().and_then(|(_, at)| {
-            let left = crate::uistate::claude::FLASH.checked_sub(at.elapsed())?;
+            let left = crate::uistate::claude::FLASH.checked_sub(crate::clock::since(*at))?;
             Some(left + std::time::Duration::from_millis(2))
         });
         // A run of Claude's going silent, in any session: one frame then — the inbox counts it (#157)

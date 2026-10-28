@@ -1363,6 +1363,95 @@ fn a_cut_wait_is_whole_on_a_fresh_frame_and_a_cached_one() {
     crate::clock::release();
 }
 
+/// frictions #197b: a thought folded to its first two rows once a stop came after it (`…` at its second's end) is whole
+/// under the mouse — that row on, the rest of the thought — and the transcript keeps all of it; its rows cached with the
+/// message.
+#[test]
+fn a_folded_thought_is_whole_on_a_fresh_frame_and_a_cached_one() {
+    let thought = format!(
+        "**Reading the map**\n\nThe map is filled in one pass over the strands, {}and farewell.",
+        "each knot counted as it is met, ".repeat(6)
+    );
+    let mut ed = chat(vec![
+        Msg::new(Role::User, "how is the map filled?", ""),
+        Msg::new(Role::Thought, thought, ""),
+        run_row("cargo test"),
+    ]);
+    chat_of(&mut ed).state = crate::chat::State::Thinking;
+    whole_fresh_and_cached(&mut ed, On::Transcript, "farewell", |ed| chat_of(ed).msgs[1].changed());
+    assert!(
+        transcript_text(&ed).contains("met, and farewell."),
+        "the transcript keeps it:\n{}",
+        transcript_text(&ed)
+    );
+}
+
+/// #197's review: a folded thought's whole is its own text from its `…` row on, every break as the layout made it — a
+/// path the wrap cut mid-word whole, no space put into it, on its card and in the transcript (`/`, `y`); a paragraph's
+/// break a line of its card (the transcript's line a space: every line there has a row).
+#[test]
+fn a_folded_thoughts_whole_keeps_its_breaks() {
+    let path = format!("src/{}map.rs", "strand/".repeat(24));
+    let thought = format!(
+        "**Reading the map**\n\nThe map is filled from {path} in one pass.\n\nThen each knot is counted, and farewell."
+    );
+    let mut ed = chat(vec![
+        Msg::new(Role::User, "how is the map filled?", ""),
+        Msg::new(Role::Thought, thought, ""),
+        run_row("cargo test"),
+    ]);
+    chat_of(&mut ed).state = crate::chat::State::Thinking;
+    let screen = frame(&mut ed);
+    assert!(!screen.contains("map.rs"), "the path cut by the wrap, folded away:\n{screen}");
+    let (.., w) = cut_text(&ed, "farewell").unwrap_or_else(|| panic!("recorded as cut:\n{screen}"));
+    assert!(w.text.contains(&path), "the path whole on its card: {:?}", w.text);
+    assert!(w.text.contains("in one pass.\n"), "a paragraph's break a line of its card: {:?}", w.text);
+    let doc = transcript_text(&ed);
+    assert!(
+        doc.contains(&format!("from {path} in one pass. Then each knot")),
+        "the transcript keeps it:\n{doc}"
+    );
+}
+
+/// #197's third review: a code row the layout cut (its `…`) in what a folded thought's `…` stands for — its line whole on
+/// the card and in the transcript, no `…` in either: the cut row's rest carried through.
+#[test]
+fn a_folded_thoughts_whole_keeps_a_cut_code_row() {
+    let code = format!("let strands = [{}\"farewell\"];", "\"knot\", ".repeat(30));
+    let thought = format!(
+        "**Reading the map**\n\nThe map is filled in one pass.\n\n```\n{code}\n```\n\nThen each knot is counted."
+    );
+    let mut ed = chat(vec![
+        Msg::new(Role::User, "how is the map filled?", ""),
+        Msg::new(Role::Thought, thought, ""),
+        run_row("cargo test"),
+    ]);
+    chat_of(&mut ed).state = crate::chat::State::Thinking;
+    let screen = frame(&mut ed);
+    // (found by what comes after the code: with its rest lost, `farewell` is nowhere)
+    let (.., w) =
+        cut_text(&ed, "each knot is counted").unwrap_or_else(|| panic!("recorded as cut:\n{screen}"));
+    assert!(w.text.contains(&code), "the code row whole on its card: {:?}", w.text);
+    assert!(!w.text.contains('…'), "no `…` on its card: {:?}", w.text);
+    let doc = transcript_text(&ed);
+    assert!(doc.contains(&code), "the transcript keeps the code row whole:\n{doc}");
+    assert!(!doc.contains("\"knot\", …"), "no cut row's `…` in the transcript:\n{doc}");
+}
+
+/// frictions #197b: a thought under way past its eight rows (`… ` at its first row in sight, its start folded away above)
+/// is whole under the mouse, from its start.
+#[test]
+fn a_live_thought_is_whole_on_a_fresh_frame_and_a_cached_one() {
+    let thought = format!(
+        "Hello first of all. {}",
+        "each knot counted as it is met, and the strands laid out. ".repeat(12)
+    );
+    let mut ed =
+        chat(vec![Msg::new(Role::User, "how is the map filled?", ""), Msg::new(Role::Thought, thought, "")]);
+    chat_of(&mut ed).state = crate::chat::State::Thinking;
+    whole_fresh_and_cached(&mut ed, On::Transcript, "Hello first", |ed| chat_of(ed).msgs[1].changed());
+}
+
 /// The queued line: its rows cached while nothing changed (`Chat.queued_laid`).
 #[test]
 fn a_cut_queued_line_is_whole_on_a_fresh_frame_and_a_cached_one() {

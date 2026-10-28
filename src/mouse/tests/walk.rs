@@ -230,6 +230,25 @@ const MOUSE_SCENES: &[Scene] = &[
         chat(ed, "");
         crate::quote::add(ed, vec![quote_of("src/a.rs L1–40", 40)]);
     }),
+    // (#197b: Claude's thinking folded — to its first two rows once a stop came after it, `…` at their end; under way,
+    // to its last eight, `… ` before them)
+    ("the chat, a thought folded", |ed| {
+        chat(ed, "");
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        let thought =
+            format!("**Reading the map**\n\nThe map is filled {}once.", "as each knot is met, ".repeat(8));
+        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "a question", ""));
+        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Thought, thought, ""));
+        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "An answer, in a few words.", ""));
+    }),
+    ("the chat, a thought under way", |ed| {
+        chat(ed, "");
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        let thought = "Each knot is counted as it is met, the strands laid out one by one. ".repeat(14);
+        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "a question", ""));
+        c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Thought, thought, ""));
+        c.state = crate::chat::State::Thinking;
+    }),
     ("the chat, three things over its input", |ed| {
         chat(ed, "");
         crate::quote::add(ed, vec![quote_of("src/a/rather/long/path/to/a/module.rs L1–3", 3)]);

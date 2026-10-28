@@ -1,8 +1,8 @@
 //! A word that names a state does its key on a press (motion's now-plan §B; the mouse plan's landing W, frictions
 //! #147): `follow` · `paused` on a top line follows again or stops, the turn's word follows Claude's place, `▲ waits`
 //! is `C-q`'s, the model's name `C-t`'s, a key hint's pair (`C-q answer`, `esc code`, `space l focus`) its key — and
-//! the mouse over one lights it, as a list's row in hand (the selected ground, the accent), so it reads as a thing to
-//! press before it's pressed. Each is recorded where it's drawn (`Screen.word_spots`, its spans with it); what a press
+//! the mouse over one lights its ground, the selected row's — never its text's colour (#197a) — so it reads as a thing
+//! to press before it's pressed. Each is recorded where it's drawn (`Screen.word_spots`, its spans with it); what a press
 //! lands on is `mouse_under`'s (`Word::Does`), and the one lit is the same answer for the pointer's cell, so a word
 //! under a card or a picker is neither lit nor pressed. Never a press that costs on a stray one: the mode, a save, a
 //! weighty answer have no spot.
