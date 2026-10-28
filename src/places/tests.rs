@@ -81,7 +81,7 @@ fn a_line_and_column_come_off_a_name() {
 #[test]
 fn a_place_is_found_in_the_line_not_the_row() {
     use crate::markdown::Span;
-    let span = |t: &str| Span { cut: None, text: t.into(), style: Default::default() };
+    let span = |t: &str| Span { cut: None, hint: false, text: t.into(), style: Default::default() };
     let row = |t: &str, skip: usize, join: Option<bool>| ChatRow {
         spans: vec![span(t)],
         skip,

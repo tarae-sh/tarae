@@ -65,7 +65,7 @@ JSON for programs, and a short text form for people and Claude, from the same st
 
 ```json
 {
-  "v": 21,
+  "v": 22,
   "tarae": { "pid": 4182, "boot": "9f3ac1d0", "version": "0.9.0" },
   "frame": 4812,
   "input": 1033,
@@ -244,6 +244,12 @@ side git · 4 rows · in hand git:src/term.rs
   (`Editor::tick_wanted`: the waiting animation's step, a toast's fade, a motion's …; absent: nothing wakes it), and
   (only while true) that the terminal said its focus went elsewhere (`CSI O`, until `CSI I`: the animation rests). A
   check of what animates judges these, never frames per second. Not at Claude's level.
+- **`pointer`** (V 22, panes4, 2026-10-28, #215) — where the mouse last moved (`x`, `y`, cells from 0) and what's under it on
+  the frame last drawn, as a press there would land: `under` (`mouse_under`'s surface and part, `PaneTop(PaneId(1))/
+  Word(Does(4))`), `kind` (the five kinds, `kinds.rs`: `button` · `reveal` · `text` · `handle` · `none`), `does` (a
+  word that does its key: what a press does, `Buffer(DocId(3))`) and `lit` (`y`, `from`, `to`: the word lit there) —
+  so a driver says what your pointer is on and why it lights or doesn't. Absent before the mouse moved. Not at Claude's
+  level.
 - **`limits`** (apibill, `limits.rs`) — the account's plan limits as any claude said them: each window known now
   by Claude Code's name (`five_hour`, `seven_day`, `seven_day_<family>`, `seven_day:<model_scoped name>`) →
   `percent` (whole), `resets_at` and `seen_at` (unix ms), `status` (`allowed` · `allowed_warning` · `rejected`,
@@ -375,10 +381,10 @@ Short, so they can be read in prose and typed. Unique within one tarae process.
 ## Versioning
 
 - `v` is the schema version.
-- Adding a field doesn't change it. Readers ignore fields they don't know.
-- Removing or renaming a field, or changing what one means, bumps `v`. Each bump and its reason is on `uistate::V`
-  — now 21: the plugins' overlays, `overlays[]`; before it, 20: a key is its shown name (#202): `keys.pending` and a
-  card's `answers[].key` say `enter`, `-`, `↑ ↓ ← →` where they said `ret`, `minus`, `up` `down` `left` `right` (the
+- A field added, gone, renamed or changing what it means bumps `v` — one way for every change of the shape. Readers
+  still ignore fields they don't know. Each bump and its reason is on `uistate::V` — now 22: where the mouse is,
+  `pointer`; before it, 21: the plugins' overlays, `overlays[]`; 20: a key is its shown name (#202): `keys.pending` and
+  a card's `answers[].key` say `enter`, `-`, `↑ ↓ ← →` where they said `ret`, `minus`, `up` `down` `left` `right` (the
   keymap file keeps Helix's notation).
 - The text form isn't a contract (people and Claude read it). The JSON is.
 - A golden test pins the JSON of one fixed scene (two sessions, a card, a review, a run), the way the

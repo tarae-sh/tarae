@@ -386,7 +386,7 @@ impl Fit {
 
     /// It as a span in `style`, its cut carried.
     pub fn span(self, style: Style) -> crate::markdown::Span {
-        crate::markdown::Span { text: self.text, style, cut: self.cut.map(Box::new) }
+        crate::markdown::Span { text: self.text, style, cut: self.cut.map(Box::new), hint: false }
     }
 
     /// Its text and its cut apart (a holder of its own: a status line's piece).
@@ -651,7 +651,7 @@ pub fn open(ed: &mut Editor, title: &str, text: &str, paint: Vec<(usize, usize, 
 }
 
 /// The cut row at (`x`, `y`) on the frame last drawn — or its card, the mouse gone onto it.
-fn under(ed: &Editor, x: usize, y: usize) -> Option<Cut> {
+pub(crate) fn under(ed: &Editor, x: usize, y: usize) -> Option<Cut> {
     if let Some(c) = ed.screen.cut_card.borrow().as_ref()
         && c.holds(ed, x, y)
     {

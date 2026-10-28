@@ -471,6 +471,20 @@ pub fn wheel(ed: &mut Editor, focused: bool) {
     }
 }
 
+/// A press of yours that put another file in code pane `p` (a buffer's name on its top line — `wordspot::Press::Buffer`):
+/// follow leading that pane pauses, said, as a key of yours that moves its view (`your_view`) — never Claude's file
+/// put back over the one you chose (#215).
+pub fn shown_by_you(ed: &mut Editor, p: crate::split::PaneId) {
+    if pane(ed) != p {
+        return;
+    }
+    let Some(f) = follow(ed).filter(|f| f.active()) else { return };
+    f.paused = true;
+    if ed.workspace.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
+        took_over(ed);
+    }
+}
+
 /// Follow paused by you, said with the key that follows Claude again where your keys are — the chat's `C-f` (the code's
 /// pages down), from the code `space F` (`follow_next`) while it comes back to this session, else the chat's named so.
 fn took_over(ed: &mut Editor) {

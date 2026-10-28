@@ -1657,6 +1657,8 @@ fn the_state_as_json_is_pinned() {
     task_panel(&mut ed);
     light_card(&mut ed);
     ed.set_warning("a.rs changed on disk");
+    // (the pointer on the edit's review: what's under it there, read from the frame drawn after it moved — #215)
+    ed.handle_event(crate::event::Event::Hover(8, 3));
     frame(&mut ed);
     let actual = serde_json::to_string_pretty(&steady(ed.ui_state().json())).unwrap() + "\n";
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/snapshots/ui_state.json");

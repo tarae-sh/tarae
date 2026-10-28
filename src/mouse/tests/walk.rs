@@ -1489,3 +1489,297 @@ fn the_docs_mouse_table_is_the_codes() {
     let missing: Vec<&String> = walk().found.iter().filter(|f| !listed.contains(f)).collect();
     assert!(missing.is_empty(), "surfaces with no row in docs/mouse.md: {missing:?}");
 }
+
+/// What still reacts against its kind (the five kinds — CLAUDE.md's mouse bullet, the user 2026-10-28, #215/#216), as
+/// the kinds walk meets it: `act Surface/Part` (a hint drawn: `hint Surface/Part · key meaning`). Each is a gap a
+/// landing fills (#197 a lit word's colour, B the rows' hover and the hints as buttons, C the wheel); a list that only
+/// shrinks — one no longer met fails until it's taken off.
+const KIND_GAPS: &[&str] = &[
+    // B: a waiting card's peek (its digit: #200 lights the answers, not the peeks), the keycast's overlay (its text
+    // changes under the pointer)
+    "hover Card/Answer",
+    "hover Overlay/Row",
+    // B: a list's rows, a mark, a chip light under the pointer
+    "hover Completion/Row",
+    "hover EditReview/Row",
+    "hover Floatlist/Row",
+    "hover List/Row",
+    "hover Picker/Row",
+    "hover Prompt/Row",
+    "hover Rail/Row",
+    "hover Side/Row",
+    "hover Toast/Row",
+    "hover Welcome/Row",
+    "hover WhichKey/Row",
+    "hover Rail/Mark",
+    "hover Status/Word(Now)",
+    "hover Chat/Word(With)",
+    // B: #216, the tab in front pressed gives the slot the keys
+    "press SlotLine/Word(Tab)",
+    // B: a key hint is a button, or plain faint words where its key costs
+    "hint Chat/Blank · / search",
+    "hint Chat/Blank · C-c clear",
+    "hint Chat/Blank · C-s screen",
+    "hint Chat/Blank · backspace take",
+    "hint Chat/Blank · enter quote",
+    "hint Chat/Blank · y copy",
+    "hint Ask/Blank · esc stop",
+    "hint Edge/Border · / search",
+    "hint Edge/Border · enter quote",
+    "hint Edge/Border · l log",
+    "hint Edge/Border · o buffer",
+    "hint Edge/Border · q hide",
+    "hint Edge/Border · tab detail",
+    "hint Edge/Border · y copy",
+    "hint Float/Frame(Move) · / search",
+    "hint Float/Frame(Move) · G latest",
+    "hint Float/Frame(Move) · enter go",
+    "hint Float/Frame(Move) · enter switch",
+    "hint Float/Frame(Move) · esc code",
+    "hint Float/Frame(Move) · o new",
+    "hint Float/Frame(Move) · q close",
+    "hint Float/Frame(Move) · tab output",
+    "hint Float/Frame(Move) · y copy",
+    "hint Float/Frame(Size) · enter done",
+    "hint Float/Frame(Size) · h j k l move",
+    "hint FollowCard/Blank · C-c clear",
+    "hint NoteCard/Blank · :note-close",
+    "hint NoteCard/Blank · ]n next",
+    "hint NoteCard/Blank · space N all",
+    "hint NoteCard/Blank · space n reply",
+    "hint Output/Blank · y copy",
+    "hint Picker/Outside · C-x close",
+    "hint Picker/Outside · enter open",
+    "hint Picker/Outside · esc close",
+    "hint Picker/Outside · type narrow",
+    "hint Prompt/Outside · enter run",
+    "hint Prompt/Outside · enter search",
+    "hint Prompt/Outside · esc close",
+    "hint Prompt/Outside · tab complete",
+    "hint Rail/Blank · ]F file",
+    "hint Rail/Blank · ]g hunk",
+    "hint Rail/Blank · ]u unviewed",
+    "hint Rail/Blank · enter open",
+    "hint Rail/Blank · esc code",
+    "hint Rail/Blank · j k files",
+    "hint Rail/Blank · m viewed,",
+    "hint Rail/Blank · q end",
+    "hint Rail/Blank · space n comment",
+    "hint Rail/Blank · space u undo",
+    "hint Rail/Blank · space v q keep",
+    "hint Rail/Blank · space v u undo",
+    "hint Rail/Blank · u next",
+    "hint Side/Blank · enter open",
+    "hint Side/Blank · esc code",
+    "hint Side/Blank · q close",
+    "hint Side/Blank · space e files",
+    "hint Side/Blank · space g back",
+    "hint Side/Blank · space o outline",
+    "hint Side/Blank · tab git",
+    "hint Status/Blank · C-d scroll",
+    "hint Status/Blank · C-u scroll",
+    "hint Status/Blank · C-x complete",
+    "hint Status/Blank · enter accept",
+    "hint Status/Blank · esc close",
+    "hint Status/Blank · tab select",
+    // C: a line half under the pointer while a window prefix is under way
+    "hover Edge/Border",
+    "hover Float/Frame(Move)",
+];
+
+/// The lines tarae draws surfaces and frames with.
+const LINES: &str = "─│┬┴├┤┼╭╮╰╯";
+
+/// A frame drawn in colour (as the terminal shows it): its rows' cells and each cell's (fg, bg).
+fn painted(ed: &mut Editor) -> (Vec<Vec<char>>, Vec<(vt100::Color, vt100::Color)>) {
+    crossterm::style::force_color_output(true);
+    ed.focus_sync();
+    let mut bytes = Vec::new();
+    crate::term::render(ed, &mut bytes, W as u16, H as u16).unwrap();
+    let mut vt = vt100::Parser::new(H as u16, W as u16, 0);
+    vt.process(&bytes);
+    let text = crate::screen::text(&bytes, W as u16, H as u16).unwrap_or_default();
+    let mut rows: Vec<Vec<char>> = text.lines().map(cells).collect();
+    rows.resize(H, Vec::new());
+    let s = vt.screen();
+    let colours = (0..H * W)
+        .map(|i| s.cell((i / W) as u16, (i % W) as u16).map_or_default(|c| (c.fgcolor(), c.bgcolor())))
+        .collect();
+    (rows, colours)
+}
+
+/// `u` as the gaps name it: its surface without its ids, its part's kind.
+fn short(u: Under) -> String {
+    let surface = format!("{:?}", u.surface);
+    format!("{}/{}", surface.split('(').next().unwrap_or_default(), part_kind(u.part))
+}
+
+/// The kinds walk over one scene: each gap met — its name (`KIND_GAPS`' form) and where — and the kinds met. Every key
+/// hint shown is a button; under the pointer a button's ground lightens (its text's colour stays: #197's, judged once it
+/// lands), a reveal's card shows, text and none change nothing, a handle lights; a press on a button acts, on a reveal
+/// doesn't, on text puts the cursor — the pointer's only where the frame holds still.
+fn kinds_scene(scene: &str, setup: fn(&mut Editor), n: usize) -> (Vec<(String, String)>, Vec<&'static str>) {
+    use crate::kinds::Kind;
+    let mut ed = fresh(setup);
+    let (rows, base) = painted(&mut ed);
+    // (a frame that moves by itself — a draft written as it comes: its hints judged, not what the pointer changes)
+    let still = !scene.contains("being written") && painted(&mut ed) == (rows.clone(), base.clone());
+    let mut gaps: Vec<(String, String)> = Vec::new();
+    let mut gap = |name: String, what: String| {
+        if !gaps.iter().any(|g| g.0 == name) {
+            gaps.push((name, format!("{scene} · {what}")));
+        }
+    };
+    let mut met = Vec::new();
+    // Every key hint shown is a button: its key's first cell is one a press acts on
+    let hints = ed.screen.hints.borrow().clone();
+    for h in hints {
+        let row = &rows[h.y];
+        let shown: String =
+            row.get(h.from..h.to).unwrap_or_default().iter().filter(|c| **c != '\0').collect();
+        if shown != h.key {
+            continue;
+        }
+        let word = |c: &&char| **c != ' ' && !LINES.contains(**c);
+        let meaning: String = row.get(h.to + 1..).unwrap_or_default().iter().take_while(word).collect();
+        let u = ed.mouse_at(h.from, h.y);
+        // (under a prompt, a picker or pointing a press anywhere else only closes it — but their own keys, on the status
+        // line, are theirs)
+        let modal = u.part == Part::Outside || u.surface == Surface::Pointing;
+        if modal && h.y + 1 != H {
+            continue;
+        }
+        if !matches!(ed.kind_at(h.from, h.y), Kind::Button(_)) {
+            let at =
+                format!("{} {meaning} at {},{} is {}", h.key, h.from, h.y, ed.kind_at(h.from, h.y).word());
+            gap(format!("hint {} · {} {meaning}", short(u), h.key).trim_end().to_string(), at);
+        }
+    }
+    if !still {
+        return (gaps, met);
+    }
+    // Under the pointer, each thing as its kind
+    let text = rows.iter().map(|r| r.iter().filter(|c| **c != '\0').collect::<String>()).collect::<Vec<_>>();
+    let (targets, _) = targets(&ed, &text.join("\n"));
+    for &((x, y), u) in &targets {
+        let kind = ed.kind_at(x, y);
+        if !met.contains(&kind.word()) {
+            met.push(kind.word());
+        }
+        ed.handle_event(Event::Hover(x as u16, y as u16));
+        let (_, over) = painted(&mut ed);
+        let (was, now) = (base[y * W + x], over[y * W + x]);
+        // (a surface's lines light half under the pointer whatever's on them — its own rule, not its elements')
+        let line = rows[y].get(x).is_some_and(|c| LINES.contains(*c));
+        // (a line lit full already by the keys of what it heads, a floating frame's by its own)
+        let frames = ed.screen.frames.borrow().clone();
+        let keyed = holds(&ed, u)
+            || frames
+                .iter()
+                .rev()
+                .find(|f| {
+                    (f.rect.0..f.rect.0 + f.rect.2).contains(&x)
+                        && (f.rect.1..f.rect.1 + f.rect.3).contains(&y)
+                })
+                .is_some_and(|f| f.lit == Lit::Keys);
+        let off = match kind {
+            Kind::Button(_) if was.1 == now.1 => Some("its ground stays under the pointer"),
+            // (#197a: only its ground lightens)
+            Kind::Button(_) if was.0 != now.0 => Some("its text changes colour under the pointer"),
+            Kind::Reveal if ed.cut_hover.is_none() || over == base => Some("no card under the pointer"),
+            Kind::Text | Kind::None if was != now && !line => Some("it changes under the pointer"),
+            Kind::Handle if was == now && !keyed => Some("it doesn't light under the pointer"),
+            _ => None,
+        };
+        if let Some(what) = off {
+            gap(format!("hover {}", short(u)), format!("{} at {x},{y} ({}): {what}", short(u), kind.word()));
+        }
+    }
+    // A press, on one of each surface's (the walk's sample)
+    let mut walk = Walk::default();
+    for ((x, y), u) in sample(targets, n) {
+        let kind = ed.kind_at(x, y);
+        let mut ed = fresh(setup);
+        let s0 = snap(&mut ed);
+        let b0 = before(&ed, u, (x, y));
+        send(&mut ed, K::Down, x, y, scene, &mut walk);
+        send(&mut ed, K::Up, x, y, scene, &mut walk);
+        let d = did(&s0, &snap(&mut ed), Act::Press, u);
+        // (a slot's tab in front: done only where the slot has the keys — #216, the walk's `holds` takes it as done)
+        let done = match u.part {
+            Part::Word(crate::mouse::Word::Tab(_)) => fresh(setup).bottom_has_keys(),
+            _ => b0.holds,
+        };
+        let off = match kind {
+            Kind::Button(_) if !(d.acted || d.said || done || b0.pending) => Some("a press does nothing"),
+            // (its surface given the keys — a card focused, said on it — is the surface's rule, not an act of the reveal's;
+            // a cut row that is text itself — blame, a folded thought — puts the cursor, as its text does)
+            Kind::Reveal if d.selected && !matches!(u.part, Part::Text { .. }) => Some("a press acts"),
+            Kind::Text if !(d.acted || b0.empty || b0.holds) => Some("a press puts no cursor"),
+            _ => None,
+        };
+        if let Some(what) = off {
+            gap(
+                format!("press {}", short(u)),
+                format!("{} at {x},{y} ({}): {what} — {}", short(u), kind.word(), d.what),
+            );
+        }
+    }
+    (gaps, met)
+}
+
+/// The kinds walk over every scene (the walk's, 120×40): what reacts against its kind, by name, and the kinds met.
+fn kinds_walk() -> (Vec<(String, String)>, Vec<&'static str>) {
+    let (mut gaps, mut met): (Vec<(String, String)>, Vec<&'static str>) = (Vec::new(), Vec::new());
+    for (n, &(scene, setup)) in SCENES.iter().chain(MOUSE_SCENES).enumerate() {
+        crate::clock::hold();
+        let (g, m) = kinds_scene(scene, setup, n);
+        crate::clock::release();
+        gaps.extend(g.into_iter().filter(|g| !gaps.iter().any(|h| h.0 == g.0)).collect::<Vec<_>>());
+        met.extend(m.into_iter().filter(|k| !met.contains(k)).collect::<Vec<_>>());
+    }
+    (gaps, met)
+}
+
+/// Every element reacts as its kind (the five kinds — CLAUDE.md, the mouse's bullet, the user 2026-10-28): in every
+/// scene, every key hint shown is a button, and each thing under the pointer — hovered and pressed — acts as its kind
+/// says (`kinds_scene`); what doesn't yet is `KIND_GAPS`, a list that only shrinks.
+#[test]
+fn every_element_reacts_as_its_kind() {
+    if !pty("every_element_reacts_as_its_kind") {
+        return;
+    }
+    let (gaps, met) = kinds_walk();
+    let new: Vec<String> = (gaps.iter())
+        .filter(|g| !KIND_GAPS.contains(&g.0.as_str()))
+        .map(|g| format!("{:?} — {}", g.0, g.1))
+        .collect();
+    assert!(new.is_empty(), "{} not as their kind:\n{}", new.len(), new.join("\n"));
+    let gone: Vec<&&str> = KIND_GAPS.iter().filter(|k| !gaps.iter().any(|g| g.0 == **k)).collect();
+    assert!(gone.is_empty(), "met no more — take them off KIND_GAPS: {gone:?}");
+    // (each kind met somewhere — a walk that lost one doesn't pass by not looking)
+    for k in ["button", "reveal", "text", "handle", "none"] {
+        assert!(met.contains(&k), "no {k} met: {met:?}");
+    }
+}
+
+/// The kinds walk sees what it's for, broken once: every key hint drawn with no button (`wordspot::UNBUTTONED`) — the
+/// chat's `esc code`, a slot's `C-w j scroll` — is a hint the walk names, none of them on `KIND_GAPS`.
+#[test]
+fn the_kinds_walk_sees_a_hint_drawn_with_no_button() {
+    if !pty("the_kinds_walk_sees_a_hint_drawn_with_no_button") {
+        return;
+    }
+    let scene = |name: &str| *SCENES.iter().chain(MOUSE_SCENES).find(|s| s.0 == name).expect("the scene");
+    let (name, setup) = scene("the chat, empty");
+    crate::clock::hold();
+    let whole = kinds_scene(name, setup, 0).0;
+    crate::wordspot::UNBUTTONED.set(true);
+    let broken = kinds_scene(name, setup, 0);
+    crate::wordspot::UNBUTTONED.set(false);
+    crate::clock::release();
+    let hint = |g: &(String, String)| g.0.starts_with("hint ") && !KIND_GAPS.contains(&g.0.as_str());
+    assert!(!whole.iter().any(hint), "whole, no hint off its list: {whole:?}");
+    let broken = broken.0;
+    assert!(broken.iter().any(hint), "every hint unbuttoned, none named: {broken:?}");
+}

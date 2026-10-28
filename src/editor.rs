@@ -571,13 +571,13 @@ pub struct Screen {
     /// The words that do their keys — a top line's `follow`, the turn's word, a key hint's pair — where they were
     /// drawn and what they say (`wordspot.rs`).
     pub word_spots: std::cell::RefCell<Vec<crate::wordspot::Spot>>,
-    /// The words with a record of their own (a session's tab, the status line's chip, a slot's tab, a member's name, a
-    /// preflight's step chip):
-    /// what's drawn there, lit while the mouse is over it (`wordspot::lit`).
-    pub word_lit: std::cell::RefCell<Vec<crate::wordspot::Lit>>,
-    /// The front card's answers a press does, as drawn on its bottom line — lit while the mouse is over one (#200,
-    /// `term::OfferCard::answers_lit`).
-    pub answer_lit: std::cell::RefCell<Vec<crate::wordspot::Lit>>,
+    /// The elements drawn to light, their kind with each (`kinds.rs`, `Screen::record`): every word that does its key
+    /// (`word_spots`' and those with a record of their own — a session's tab, the status line's chip, a slot's tab, a
+    /// member's name, a preflight's step chip) and the front card's answers on its bottom line (#200,
+    /// `term::OfferCard::answers_lit`) — what's drawn there, lit while the mouse is over it (`wordspot::lit`).
+    pub elements: std::cell::RefCell<Vec<crate::kinds::Element>>,
+    /// Every key hint printed this frame: its key's cells (`kinds::hint`) — each must be a button.
+    pub hints: std::cell::RefCell<Vec<crate::kinds::Hint>>,
     /// The code review's file rail: (row, file index) — a click opens that file.
     pub review_rail: std::cell::RefCell<Vec<(usize, usize)>>,
     /// The rail's file rows' viewed marks: (row, file index, column) — a click there marks it viewed (#67) ·

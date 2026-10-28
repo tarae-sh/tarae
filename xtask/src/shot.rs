@@ -9,7 +9,8 @@
 //! on screen (a language server indexing …) — at most 120 s, or `@30?ready` 30; `@!ready` (`@30!ready`) until it's
 //! gone from it. `@press?text`, `@drag?text`, `@release?text` press, drag and let go of the mouse's left button on
 //! the first cell of `text` on screen (`@drag+3?text` three cells after it); `@hover?text` (`@hover+3?text`) moves
-//! the mouse there with no button down. `@~300` sends the key after it and keeps every frame drawn in the 300 ms after it: `out-01.png` (the
+//! the mouse there with no button down; `@wheel-down?text` (`-up`, `-left`, `-right`; `@wheel-down*5?text` five notches;
+//! `@S-wheel-down?text` with shift, `A-` alt, `C-` ctrl — any of the mouse's acts) turns the wheel there. `@~300` sends the key after it and keeps every frame drawn in the 300 ms after it: `out-01.png` (the
 //! screen before the key), `out-02.png` … and `out-sheet.png`, all side by side — a motion's contact sheet
 //! (`TARAE_MOTION_AT=<ms>` instead pins every motion at that age, for one picture of a step; `TARAE_SHOT_SHEET_ROWS=0,5-6`
 //! makes the sheet those rows of each frame, one frame's strip under the one before). A wait that times out
@@ -26,6 +27,8 @@
 //! - `TARAE_SHOT_FILES` (default `src/transaction.rs src/selection.rs`), `TARAE_SHOT_CWD` (default the repo),
 //!   `TARAE_SHOT_COLS`/`TARAE_SHOT_ROWS` (default 112×30).
 //! - `TARAE_SHOT_REPLAY=<file>` — draw terminal bytes recorded elsewhere instead of running tarae.
+//! - `TARAE_SHOT_NO_HOVER=1` — the `@hover` keys left out (the rest sent as they are): the frame as it is without the
+//!   pointer, for `scenes --compare` against the one with it.
 //! - `TARAE_SHOT_BIN` — another tarae binary (absolute; a saved "before" build for a before/after), not built.
 //! - `TARAE_SHOT_ZELLIJ=1` — the tarae runs as inside zellij (`ZELLIJ=0`, as zellij sets it: the hints say the twins
 //!   of the keys zellij takes — `src/zellij.rs`). Without it `ZELLIJ` is taken out, so a shot taken from inside
@@ -590,13 +593,21 @@ fn drive(
             }
             continue;
         }
-        if let Some((report, cells, text)) = button_key(k) {
-            match cell_of(vt.parser.screen(), text) {
+        if let Some((report, cells, at)) = button_key(k) {
+            // (the same keys without the pointer's moves: what a hover changed is what `scenes --compare` finds)
+            if report.code & !28 == 35 && std::env::var_os("TARAE_SHOT_NO_HOVER").is_some_and(|v| v == "1") {
+                continue;
+            }
+            let cell = match at {
+                At::Text(text) => cell_of(vt.parser.screen(), text),
+                At::Cell(col, row) => Some((row, col)),
+            };
+            match cell {
                 Some((row, col)) => {
-                    let _ = master.write_all(report(col + cells + 1, row + 1).as_bytes());
+                    let _ = master.write_all(report.at(col + cells + 1, row + 1).as_bytes());
                     pump(vt, 0.35);
                 }
-                None => missed.push(format!("{k}: {text:?} not on screen")),
+                None => missed.push(format!("{k}: not on screen")),
             }
             continue;
         }
@@ -657,23 +668,69 @@ fn cell_of(screen: &vt100::Screen, text: &str) -> Option<(u16, u16)> {
     })
 }
 
-/// A mouse report for a column and row (1-based).
-type Report = fn(u16, u16) -> String;
+/// A mouse report: its SGR button code (the modifiers' bits in), its last byte (`M`, or `m` let go) and how many times
+/// it's sent.
+#[derive(Debug, PartialEq)]
+struct Report {
+    code: u16,
+    end: char,
+    times: usize,
+}
+
+impl Report {
+    /// The report at a column and row (1-based), each time it's sent.
+    fn at(&self, x: u16, y: u16) -> String {
+        format!("\x1b[<{};{x};{y}{}", self.code, self.end).repeat(self.times)
+    }
+}
 
 /// `@press?text`, `@drag?text`, `@release?text` (`@drag+3?text`: that many cells after its first): the left button
 /// pressed on, dragged to, let go at `text`'s first cell on screen — its SGR report for a column and row (1-based),
 /// the cells on, the text. `@hover?text` (`@hover+3?text`): the mouse moved there, no button down.
-fn button_key(key: &str) -> Option<(Report, u16, &str)> {
-    let (head, text) = key.strip_prefix('@')?.split_once('?')?;
-    let (act, cells) = head.split_once('+').map_or(Some((head, 0)), |(a, n)| Some((a, n.parse().ok()?)))?;
-    let report: Report = match act {
-        "press" => |x, y| format!("\x1b[<0;{x};{y}M"),
-        "drag" => |x, y| format!("\x1b[<32;{x};{y}M"),
-        "release" => |x, y| format!("\x1b[<0;{x};{y}m"),
-        "hover" => |x, y| format!("\x1b[<35;{x};{y}M"),
+/// `@wheel-up?text`, `wheel-down`, `wheel-left`, `wheel-right`: a notch of the wheel there (`@wheel-down*5?text` five, `@wheel-down+3*5?text`
+/// three cells on).
+/// Any of them with the keys' modifiers before it, as a key is written: `@S-wheel-down?text` (shift), `A-` alt, `C-` ctrl.
+/// A cell instead of a text: `@hover:70,12` — its column and row, from 0 (a divider, the second of two same panes).
+fn button_key(key: &str) -> Option<(Report, u16, At<'_>)> {
+    let key = key.strip_prefix('@')?;
+    let (head, at) = match key.split_once('?') {
+        Some((head, text)) => (head, (!text.is_empty()).then_some(At::Text(text))?),
+        None => {
+            let (head, cell) = key.split_once(':')?;
+            let (c, r) = cell.split_once(',')?;
+            (head, At::Cell(c.trim().parse().ok()?, r.trim().parse().ok()?))
+        }
+    };
+    let (head, times) = head.split_once('*').map_or(Some((head, 1)), |(a, n)| Some((a, n.parse().ok()?)))?;
+    let (mut act, cells) =
+        head.split_once('+').map_or(Some((head, 0)), |(a, n)| Some((a, n.parse().ok()?)))?;
+    let mut mods = 0;
+    while let Some((bit, rest)) = [("S-", 4), ("A-", 8), ("C-", 16)]
+        .iter()
+        .find_map(|(m, bit)| act.strip_prefix(m).map(|rest| (*bit, rest)))
+    {
+        mods |= bit;
+        act = rest;
+    }
+    let (code, end) = match act {
+        "press" => (0, 'M'),
+        "drag" => (32, 'M'),
+        "release" => (0, 'm'),
+        "hover" => (35, 'M'),
+        "wheel-up" => (64, 'M'),
+        "wheel-down" => (65, 'M'),
+        "wheel-left" => (66, 'M'),
+        "wheel-right" => (67, 'M'),
         _ => return None,
     };
-    (!text.is_empty()).then_some((report, cells, text))
+    (times > 0).then_some((Report { code: code | mods, end, times }, cells, at))
+}
+
+/// Where a mouse key lands: the first cell of a text on screen, or a cell given (column, row, from 0).
+#[derive(Debug, PartialEq)]
+enum At<'a> {
+    Text(&'a str),
+    Cell(u16, u16),
 }
 
 /// `@!text` / `@30!text`: wait until `text` is gone from the screen — as `wait_key`'s limits.
@@ -1111,6 +1168,35 @@ mod tests {
         assert_eq!(cell_of(p.screen(), "▲◦"), Some((1, 3)));
         assert_eq!(cell_of(p.screen(), "b"), Some((0, 1)));
         assert_eq!(cell_of(p.screen(), "zz"), None);
+    }
+
+    /// The mouse's keys: each act's SGR report at its cell, the modifiers' bits, a count of notches.
+    #[test]
+    fn a_mouse_key_is_its_sgr_report() {
+        fn at(k: &str, x: u16, y: u16) -> Option<(String, u16, At<'_>)> {
+            button_key(k).map(|(r, cells, at)| (r.at(x, y), cells, at))
+        }
+        let a = At::Text("a");
+        assert_eq!(at("@hover+3?main", 4, 2), Some(("\x1b[<35;4;2M".into(), 3, At::Text("main"))));
+        assert_eq!(at("@release?a", 1, 1), Some(("\x1b[<0;1;1m".into(), 0, a)));
+        assert_eq!(at("@wheel-down?a", 7, 9), Some(("\x1b[<65;7;9M".into(), 0, At::Text("a"))));
+        assert_eq!(at("@S-wheel-up?a", 7, 9), Some(("\x1b[<68;7;9M".into(), 0, At::Text("a"))));
+        assert_eq!(at("@C-A-press?a", 2, 3), Some(("\x1b[<24;2;3M".into(), 0, At::Text("a"))));
+        let two = "\x1b[<67;2;3M\x1b[<67;2;3M";
+        assert_eq!(at("@wheel-right+1*2?a", 2, 3), Some((two.into(), 1, At::Text("a"))));
+        assert_eq!(at("@hover:70,12", 71, 13), Some(("\x1b[<35;71;13M".into(), 0, At::Cell(70, 12))));
+        assert_eq!(at("@hover?a:1,2", 1, 1).map(|t| t.2), Some(At::Text("a:1,2")));
+        for bad in [
+            "@wheel?a",
+            "@wheel-down*0?a",
+            "@X-press?a",
+            "@press?",
+            "@wheel-down*x?a",
+            "@hover:1",
+            "@hover:a,2",
+        ] {
+            assert_eq!(button_key(bad), None, "{bad}");
+        }
     }
 
     #[test]

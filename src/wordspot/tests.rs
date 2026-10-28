@@ -197,7 +197,10 @@ fn a_lit_word_keeps_its_texts_colour() {
                 .collect()
         };
         // (the slot's tab: a word with a record of its own)
-        let own = ed.screen.word_lit.borrow().first().map(|l| (l.0, l.1, l.2));
+        let tab = |e: &&crate::kinds::Element| {
+            matches!(e.kind, crate::kinds::Kind::Button(crate::mouse::Part::Word(crate::mouse::Word::Tab(_))))
+        };
+        let own = ed.screen.elements.borrow().iter().find(tab).map(|e| (e.y, e.from, e.to));
         let own = own.unwrap_or_else(|| panic!("{theme}: a word with a record of its own"));
         // (flashing: the buffer's pane, the slot's run)
         let pane = match words[0].on {

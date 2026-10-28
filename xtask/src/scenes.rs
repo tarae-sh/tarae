@@ -1218,10 +1218,96 @@ const FOLLOW_PANE_CF: &[&str] = &[
 ];
 /// The session list docked right (`C-w L`), `j` and `enter`: in fix, the list staying (`sessions-docked`).
 const SESSIONS_DOCKED: &[&str] = waits_keys!(" ", "W", "@1", "\x17", "L", "@1", "k", "\r", "@2");
+/// Two files open: the buffer tabs on the code's top line (`hover-tabs`).
+const TWO: &[&str] = &["src/main.rs", "src/thread.rs"];
+/// The hover audit (2026-10-28): the pointer over one thing, the frame after it. In order: the code with the side panel's
+/// keys; the code with its own; a split's divider; the split's other pane (the new one has the keys); a slot's top line
+/// (the terminal, the keys back in the code); a side panel's row, the keys in the code; the review's rail, the keys in the
+/// code; a chat tool row cut, the keys in the code; the chat's foot `i type`, its view mode; a buffer tab; the status
+/// line's `▲ waiting`; a waiting ask's answer; a toast; the follow card's trail; a `:messages` row, its keys given back;
+/// a picker's row; the mode's word; the line numbers.
+const HOVER_KEYS: [&[&str]; 18] = [
+    &["@1", " ", "e", "@?main.rs", "@1", "@hover+4?fn main", "@1"],
+    &["@1", "@hover+4?fn main", "@1"],
+    &["@1", "\x17", "v", "@1", "@hover?│", "@1"],
+    &["@1", "\x17", "v", "@1", "@hover+4?fn main", "@1"],
+    &["@1", " ", "T", "@2", "\x17", "k", "@1", "@hover+4?terminal", "@1"],
+    &["@1", " ", "e", "@?main.rs", "@1", "\x17", "l", "@1", "@hover?README", "@1"],
+    &["@1", " ", "v", "v", "@?knot.rs", "@1", "\x17", "l", "@1", "@hover?thread.rs", "@1"],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "tidy it",
+        "\r",
+        "@30?That is all.",
+        "@1",
+        "\x17",
+        "h",
+        "@1",
+        "@hover?cargo fmt",
+        "@1",
+    ],
+    &["@1", " ", "l", "@1", "tidy it", "\r", "@30?That is all.", "@1", "\x1b", "@1", "@hover?i type", "@1"],
+    &["@1", "@hover?thread.rs", "@1"],
+    &["@1", " ", "l", "@1", "run the tests", "\r", "\x17", "h", "@?Its reason", "@1", "@hover?waiting", "@1"],
+    &["@1", " ", "l", "@1", "run the tests", "\r", "\x17", "h", "@?Its reason", "@1", "@hover?y Run", "@1"],
+    &["@1", ":nope\r", "@1", "@hover?nope", "@1"],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "keep the first strand on a repeat",
+        "\r",
+        "@10?cargo test",
+        "\x1b",
+        "\x1b",
+        "@1",
+        "@hover?cargo test",
+        "@1",
+    ],
+    &[
+        "@1",
+        ":w\r",
+        "@1",
+        ":nope\r",
+        "@1",
+        ":messages\r",
+        "@?messages",
+        "@1",
+        "\x1b",
+        "@1",
+        "@hover?nope",
+        "@1",
+    ],
+    &["@1", " ", "f", "@?README", "@1", "@hover?Cargo.toml", "@1"],
+    &["@1", "@hover+2?normal", "@1"],
+    &["@1", "@hover+1? 3 ", "@1"],
+];
+/// More of the hover audit, by cell where no text tells the place: the side panel's edge, the keys in the code; a split's
+/// divider with the side panel's keys (neither pane's); the line between a split over and under, the keys in the top
+/// pane; the review's path bar name (the preview's, a word); the rail with the keys, the pointer in the code.
+const HOVER_MORE: [&[&str]; 5] = [
+    &["@1", " ", "e", "@?main.rs", "@1", "\x17", "l", "@1", "@hover?│", "@1"],
+    &["@1", "\x17", "v", "@1", " ", "e", "@?README", "@1", "@hover:88,20", "@1"],
+    &["@1", "\x17", "s", "@1", "\x17", "k", "@1", "@hover:60,20", "@1"],
+    &["@1", " ", "v", "v", "@?knot.rs", "@1", "@hover?knot.rs ›", "@1"],
+    &["@1", " ", "v", "v", "@?knot.rs", "@1", "\x17", "h", "@1", "@hover+4?pub fn", "@1"],
+];
+/// The hover audit: in fix, main waiting — fix's chat open, the pointer on main's name on its top line; the peek of
+/// main's card; the session list, the pointer on main's row (its report line cut).
+const HOVER_CHAT_NAME: &[&str] = waits_keys!(" ", "l", "@2", "@hover?main ▲", "@1");
+const HOVER_PEEK: &[&str] = waits_keys!("@1", "@hover?asks", "@1");
+const HOVER_SESSIONS: &[&str] = waits_keys!(" ", "W", "@2", "@hover+4?The tests need", "@1");
 /// Nine sessions (`strip-nine`): main and fix overlapping, seven more checkouts — docs and parser waiting on their
 /// Claude's card, keys's Claude on its run's card (a shot's sandbox is none: no run goes unasked, so none is stuck —
-/// `session_tabs`' tests have that), web's turn ended behind (done) — then main's chat open, its top line naming them.
-const STRIP_NINE: &[&str] = overlap_keys!(
+/// `session_tabs`' tests have that), web's turn ended behind (done) — then main's chat open, its top line naming them;
+/// then `$more`.
+macro_rules! strip_nine_keys {
+    ($($more:expr),* $(,)?) => {
+        overlap_keys!(
     ":",
     "sh for n in docs parser sbspeed keys pull web motion; do git worktree add -q ../$n; done",
     "\r",
@@ -1291,8 +1377,14 @@ const STRIP_NINE: &[&str] = overlap_keys!(
     "@2",
     " ",
     "l",
-    "@2"
-);
+    "@2",
+    $($more),*
+        )
+    };
+}
+const STRIP_NINE: &[&str] = strip_nine_keys!();
+/// …the pointer on its `+N` (the hover audit).
+const HOVER_CHAT_MORE: &[&str] = strip_nine_keys!("@hover?+", "@1");
 /// collab C3: two more checkouts — fix's own commit on the `threads.insert` line, docs untouched — then main's own way
 /// of that line committed in the checkout tarae started in: main moved, and its one card names both workspaces behind
 /// it, fix's would-be conflict in words (`basemoved`).
@@ -3263,6 +3355,47 @@ const SCENES: &[Scene] = &[
     Scene { name: "strip-nine", claude: "nine", files: MAIN, keys: STRIP_NINE },
     // (…the session list docked right, `enter` on the next row: switched, the list still there)
     Scene { name: "sessions-docked", claude: "card", files: MAIN, keys: SESSIONS_DOCKED },
+    // (the hover audit, 2026-10-28: the pointer over each surface that reacts — and a few that shouldn't — at 140 wide)
+    Scene { name: "hover-code", claude: "idle", files: MAIN, keys: HOVER_KEYS[0] },
+    Scene { name: "hover-code-own", claude: "idle", files: MAIN, keys: HOVER_KEYS[1] },
+    Scene { name: "hover-divider", claude: "idle", files: MAIN, keys: HOVER_KEYS[2] },
+    Scene { name: "hover-split-pane", claude: "idle", files: MAIN, keys: HOVER_KEYS[3] },
+    Scene { name: "hover-slot-line", claude: "idle", files: MAIN, keys: HOVER_KEYS[4] },
+    Scene { name: "hover-side-row", claude: "idle", files: MAIN, keys: HOVER_KEYS[5] },
+    Scene { name: "hover-rail", claude: "idle", files: MAIN, keys: HOVER_KEYS[6] },
+    Scene { name: "hover-chat-name", claude: "card", files: MAIN, keys: HOVER_CHAT_NAME },
+    Scene { name: "hover-chat-more", claude: "nine", files: MAIN, keys: HOVER_CHAT_MORE },
+    Scene { name: "hover-chat-tool", claude: "cuthand", files: MAIN, keys: HOVER_KEYS[7] },
+    Scene { name: "hover-chat-type", claude: "cuthand", files: MAIN, keys: HOVER_KEYS[8] },
+    Scene { name: "hover-tabs", claude: "idle", files: TWO, keys: HOVER_KEYS[9] },
+    // (#215: the buffer names beside the chat — the pointer on one, the keys in the code; then pressed)
+    Scene {
+        name: "hover-tabs-chat",
+        claude: "idle",
+        files: TWO,
+        keys: &["@1", " ", "l", "@1", "\x17", "h", "@1", "@hover?thread.rs", "@1"],
+    },
+    Scene {
+        name: "press-tabs-chat",
+        claude: "idle",
+        files: TWO,
+        keys: &["@1", " ", "l", "@1", "\x17", "h", "@1", "@press?thread.rs", "@release?thread.rs", "@1"],
+    },
+    Scene { name: "hover-waiting", claude: "card", files: MAIN, keys: HOVER_KEYS[10] },
+    Scene { name: "hover-answer", claude: "card", files: MAIN, keys: HOVER_KEYS[11] },
+    Scene { name: "hover-peek", claude: "card", files: MAIN, keys: HOVER_PEEK },
+    Scene { name: "hover-toast", claude: "idle", files: MAIN, keys: HOVER_KEYS[12] },
+    Scene { name: "hover-follow", claude: "now", files: MAIN, keys: HOVER_KEYS[13] },
+    Scene { name: "hover-messages", claude: "idle", files: MAIN, keys: HOVER_KEYS[14] },
+    Scene { name: "hover-sessions", claude: "card", files: MAIN, keys: HOVER_SESSIONS },
+    Scene { name: "hover-picker", claude: "idle", files: MAIN, keys: HOVER_KEYS[15] },
+    Scene { name: "hover-mode", claude: "idle", files: MAIN, keys: HOVER_KEYS[16] },
+    Scene { name: "hover-gutter", claude: "idle", files: MAIN, keys: HOVER_KEYS[17] },
+    Scene { name: "hover-side-edge", claude: "idle", files: MAIN, keys: HOVER_MORE[0] },
+    Scene { name: "hover-divider-off", claude: "idle", files: MAIN, keys: HOVER_MORE[1] },
+    Scene { name: "hover-hsplit-line", claude: "idle", files: MAIN, keys: HOVER_MORE[2] },
+    Scene { name: "hover-path-name", claude: "idle", files: MAIN, keys: HOVER_MORE[3] },
+    Scene { name: "hover-rail-keys", claude: "idle", files: MAIN, keys: HOVER_MORE[4] },
     // (the docs' `claude-reviews.png`: the reviewer read in the background — three findings on thread.rs's lines,
     // one's card open under it, its report beside it in a split (`space v r` — read, the status line's
     // `¶ 3 findings` goes, as decided))
@@ -3442,9 +3575,54 @@ fn compared_but(
     match boxed {
         None => Compared::Same,
         Some((x0, y0, x1, y1)) => {
-            Compared::Differs(format!("in x {x0}..={x1}, y {y0}..={y1} (of {}×{})", x.0, x.1))
+            let cells = cells_differing(w, h, px.max(1), &x.2, &y.2, left_out);
+            Compared::Differs(format!("in x {x0}..={x1}, y {y0}..={y1} (of {}×{}){cells}", x.0, x.1))
         }
     }
+}
+
+/// The cells two shots of one `w`×`h` size differ in, a row at a time (`row 3: 10–14, 40`): the grid as `shot` lays
+/// it out — 9×21 pixels a cell, `PAD` around, at the scale that fits the picture whole; empty when none does.
+fn cells_differing(
+    w: usize,
+    h: usize,
+    px: usize,
+    a: &[u8],
+    b: &[u8],
+    left_out: &dyn Fn(usize, usize, usize, usize) -> bool,
+) -> String {
+    let Some(s) = (1..=4).find(|s| {
+        let (pad, cw, ch) = (shot::PAD * s, 9 * s, 21 * s);
+        w > 2 * pad && h > 2 * pad && (w - 2 * pad).is_multiple_of(cw) && (h - 2 * pad).is_multiple_of(ch)
+    }) else {
+        return String::new();
+    };
+    let (pad, cw, ch) = (shot::PAD * s, 9 * s, 21 * s);
+    let (cols, rows) = ((w - 2 * pad) / cw, (h - 2 * pad) / ch);
+    let differs = |c: usize, r: usize| {
+        (r * ch + pad..(r + 1) * ch + pad).any(|y| {
+            (c * cw + pad..(c + 1) * cw + pad).any(|x| {
+                let i = (y * w + x) * px;
+                a[i..i + px] != b[i..i + px] && !left_out(x, y, w, h)
+            })
+        })
+    };
+    let mut said = Vec::new();
+    for r in 0..rows {
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        for c in (0..cols).filter(|&c| differs(c, r)) {
+            match runs.last_mut() {
+                Some(run) if run.1 + 1 == c => run.1 = c,
+                _ => runs.push((c, c)),
+            }
+        }
+        if !runs.is_empty() {
+            let runs: Vec<String> =
+                runs.iter().map(|&(a, b)| if a == b { a.to_string() } else { format!("{a}–{b}") }).collect();
+            said.push(format!("row {r}: {}", runs.join(", ")));
+        }
+    }
+    format!("\n    cells (row: columns, from 0) — {}", said.join(" · "))
 }
 
 const SIZES: [(u16, u16); 2] = [(80, 24), (160, 45)];

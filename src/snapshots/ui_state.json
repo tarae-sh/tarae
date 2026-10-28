@@ -191,6 +191,12 @@
       ]
     }
   },
+  "pointer": {
+    "kind": "button",
+    "under": "EditReview/Row(0)",
+    "x": 8,
+    "y": 3
+  },
   "procs": {
     "checks": [],
     "looked_ms": null,
@@ -232,7 +238,7 @@
       "where": "card"
     }
   ],
-  "v": 21,
+  "v": 22,
   "workspaces": [
     {
       "cards": 1,

@@ -206,6 +206,67 @@ fn follow_opens_what_claude_reads_in_its_own_pane() {
     assert_eq!((ed.cursor_line(), drawn(&ed, b)[0]), (0, 0), "yours where you left it");
 }
 
+/// A press on a buffer's name on the line of the pane follow leads (#215): that file shown there is yours — follow
+/// pauses, said, as a key of yours that moves the view, and Claude's next read leaves it where you put it.
+#[test]
+fn a_buffers_name_pressed_in_the_followed_pane_pauses_follow() {
+    use crate::event::{Event, Mouse, MouseKind};
+    let Scene { mut ed, dir, g, a, .. } = scene("pane-follow-buffer", true);
+    press(&mut ed, "<C-w>h");
+    read(&mut ed, g, &dir, "c.rs", 2);
+    frame(&mut ed);
+    assert_eq!(
+        (shows(&ed, a), crate::follow::pane(&ed)),
+        ("c.rs".into(), a),
+        "follow leads the pane with the keys"
+    );
+    let b_rs = ed.docs.iter().find(|d| d.path.as_ref().is_some_and(|p| p.ends_with("b.rs"))).unwrap().id;
+    let spot = (ed.screen.word_spots.borrow().iter())
+        .find(|s| {
+            s.on == crate::mouse::Surface::PaneTop(a) && s.press == crate::wordspot::Press::Buffer(b_rs)
+        })
+        .map(|s| (s.from, s.y))
+        .expect("b.rs named on the followed pane's line");
+    for kind in [MouseKind::Down, MouseKind::Up] {
+        let (x, y) = (spot.0 as u16, spot.1 as u16);
+        ed.handle_event(Event::Mouse(Mouse { kind, x, y, alt: false, ctrl: false }));
+    }
+    assert_eq!(shows(&ed, a), "b.rs", "the file pressed");
+    assert!(follow(&ed).paused, "follow paused: the pane's file is yours now");
+    assert!(said(&ed, "you took over"), "said");
+    read(&mut ed, g, &dir, "a.rs", 40);
+    frame(&mut ed);
+    assert_eq!(shows(&ed, a), "b.rs", "Claude's next read leaves it");
+}
+
+/// A press on the name of the file the followed pane already shows changes nothing there: follow keeps leading, nothing
+/// said, and Claude's next read still moves the pane.
+#[test]
+fn the_shown_files_name_pressed_leaves_follow_leading() {
+    use crate::event::{Event, Mouse, MouseKind};
+    let Scene { mut ed, dir, g, a, .. } = scene("pane-follow-buffer-same", true);
+    press(&mut ed, "<C-w>h");
+    read(&mut ed, g, &dir, "c.rs", 2);
+    frame(&mut ed);
+    let c_rs = ed.doc().id;
+    assert_eq!(shows(&ed, a), "c.rs");
+    let spot = (ed.screen.word_spots.borrow().iter())
+        .find(|s| {
+            s.on == crate::mouse::Surface::PaneTop(a) && s.press == crate::wordspot::Press::Buffer(c_rs)
+        })
+        .map(|s| (s.from, s.y))
+        .expect("c.rs named on the followed pane's line");
+    for kind in [MouseKind::Down, MouseKind::Up] {
+        let (x, y) = (spot.0 as u16, spot.1 as u16);
+        ed.handle_event(Event::Mouse(Mouse { kind, x, y, alt: false, ctrl: false }));
+    }
+    assert!(!follow(&ed).paused, "the file it shows already: follow still leads");
+    assert!(!said(&ed, "you took over"), "nothing said");
+    read(&mut ed, g, &dir, "a.rs", 40);
+    frame(&mut ed);
+    assert_eq!(shows(&ed, a), "a.rs", "Claude's next read moves the pane");
+}
+
 /// `C-f` with follow leading another pane: it moves to the code pane you were in, said; again, off. A turn begun from
 /// there takes that pane too.
 #[test]

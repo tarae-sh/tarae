@@ -17,6 +17,9 @@ pub struct Span {
     /// Its text cut from a whole (`whole::Fit`): carried with it — a chat row cached with its message — to where it's
     /// printed, which records it (`term::chat_spans_at`).
     pub cut: Option<Box<crate::whole::Of>>,
+    /// A key hint's key (`term::hint_spans` sets it): carried with it — through a wrap, a card's rows — to where it's
+    /// printed, which records it (`kinds::hint`), so every hint drawn is known and is a button (the five kinds).
+    pub hint: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -183,7 +186,7 @@ pub fn render_reading(src: &str, theme: &Theme, default_lang: Option<&str>, read
         }
         if let Some(rest) = t.strip_prefix("> ").or_else(|| (t == ">").then_some("")) {
             flush(&mut para, &mut out);
-            let head = Span { cut: None, text: "▎ ".into(), style: quote };
+            let head = Span { cut: None, hint: false, text: "▎ ".into(), style: quote };
             para = Some((rest.to_string(), 2, quote, Some(head)));
             continue;
         }
@@ -197,7 +200,8 @@ pub fn render_reading(src: &str, theme: &Theme, default_lang: Option<&str>, read
             });
         if let Some((mark, rest)) = item {
             flush(&mut para, &mut out);
-            let head = Span { cut: None, text: format!("{}{mark} ", " ".repeat(lead)), style: bullet };
+            let head =
+                Span { cut: None, hint: false, text: format!("{}{mark} ", " ".repeat(lead)), style: bullet };
             let indent = head.text.width();
             para = Some((rest.to_string(), indent, Style::default(), Some(head)));
             continue;
@@ -241,7 +245,7 @@ fn inline(text: &str, base: Style, theme: &Theme) -> Vec<Span> {
     let mut spans: Vec<Span> = Vec::new();
     let mut push = |s: &str, style: Style| match spans.last_mut() {
         Some(last) if last.style == style => last.text.push_str(s),
-        _ => spans.push(Span { cut: None, text: s.to_string(), style }),
+        _ => spans.push(Span { cut: None, hint: false, text: s.to_string(), style }),
     };
     let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
@@ -456,7 +460,7 @@ pub fn code_lines(code: &str, lang: Option<&str>, theme: &Theme) -> Vec<Line> {
             let style = styles.get(cap as usize).copied().flatten().unwrap_or_default();
             match spans.last_mut() {
                 Some(last) if last.style == style => last.text.push(ch),
-                _ => spans.push(Span { cut: None, text: ch.to_string(), style }),
+                _ => spans.push(Span { cut: None, hint: false, text: ch.to_string(), style }),
             }
         }
         out.push(Line::Code(spans));
@@ -545,7 +549,9 @@ pub fn wrap_drawn(lines: &[Line], width: usize, rule: Style, label: Style) -> (V
         let mut joins = Vec::new();
         match line {
             Line::Blank => out.push(Vec::new()),
-            Line::Rule => out.push(vec![Span { cut: None, text: "─".repeat(width), style: rule }]),
+            Line::Rule => {
+                out.push(vec![Span { cut: None, hint: false, text: "─".repeat(width), style: rule }])
+            }
             // Code wraps too (a card is narrower than code) — continuation rows hang under its indentation
             Line::Code(spans) => {
                 let lead = spans.iter().flat_map(|s| s.text.chars()).take_while(|c| *c == ' ').count();
@@ -601,17 +607,17 @@ fn wrap_row(
     // Narrow box: a deep indent mustn't leave no room for text
     let indent = indent.min(width / 2);
     let mut join = None;
-    let mut push = |row: &[(char, Style)], join: Option<Join>| {
+    let mut push = |row: &[Cell], join: Option<Join>| {
         out.push(group(row));
         joins.push(join);
     };
-    let cells: Vec<(char, Style)> =
-        spans.iter().flat_map(|s| s.text.chars().map(move |c| (c, s.style))).collect();
-    let mut row: Vec<(char, Style)> = Vec::new();
+    let cells: Vec<Cell> =
+        spans.iter().flat_map(|s| s.text.chars().map(move |c| (c, s.style, s.hint))).collect();
+    let mut row: Vec<Cell> = Vec::new();
     let mut w = 0;
     let mut i = 0;
     while i < cells.len() {
-        let (c, _) = cells[i];
+        let (c, ..) = cells[i];
         let cw = c.width().unwrap_or(0);
         // A row holding only the indent takes the char even if it overflows (else no progress)
         if w + cw > width && row.len() > indent {
@@ -619,29 +625,29 @@ fn wrap_row(
             if c == ' ' {
                 push(&row, join);
                 join = Some(Join { drop: indent, space: true });
-                row = vec![(' ', Style::default()); indent];
+                row = vec![(' ', Style::default(), false); indent];
                 w = indent;
                 i += 1;
                 continue;
             }
             // Break at the last space (excluding spaces inside the indent), else mid-word
-            let brk = row.iter().rposition(|(x, _)| *x == ' ').filter(|&p| p >= indent.max(1));
-            let rest: Vec<(char, Style)> = match brk {
+            let brk = row.iter().rposition(|(x, ..)| *x == ' ').filter(|&p| p >= indent.max(1));
+            let rest: Vec<Cell> = match brk {
                 Some(p) => {
                     let rest = row.split_off(p + 1);
                     row.pop();
                     rest
                 }
-                None => match row.iter().rposition(|(x, _)| *x == '/').filter(|&p| p > indent) {
+                None => match row.iter().rposition(|(x, ..)| *x == '/').filter(|&p| p > indent) {
                     Some(p) => row.split_off(p + 1),
                     None => Vec::new(),
                 },
             };
             push(&row, join);
             join = Some(Join { drop: indent, space: brk.is_some() });
-            row = vec![(' ', Style::default()); indent];
+            row = vec![(' ', Style::default(), false); indent];
             row.extend(rest);
-            w = row.iter().map(|(x, _)| x.width().unwrap_or(0)).sum();
+            w = row.iter().map(|(x, ..)| x.width().unwrap_or(0)).sum();
             continue;
         }
         row.push(cells[i]);
@@ -651,12 +657,15 @@ fn wrap_row(
     push(&row, join);
 }
 
-fn group(cells: &[(char, Style)]) -> Vec<Span> {
+/// A character a row is wrapped by: its style, and whether it's a key hint's key (`Span.hint`).
+type Cell = (char, Style, bool);
+
+fn group(cells: &[Cell]) -> Vec<Span> {
     let mut spans: Vec<Span> = Vec::new();
-    for &(c, style) in cells {
+    for &(c, style, hint) in cells {
         match spans.last_mut() {
-            Some(last) if last.style == style => last.text.push(c),
-            _ => spans.push(Span { cut: None, text: c.to_string(), style }),
+            Some(last) if last.style == style && last.hint == hint => last.text.push(c),
+            _ => spans.push(Span { cut: None, hint, text: c.to_string(), style }),
         }
     }
     spans
@@ -721,7 +730,7 @@ fn table(
         if i > 0 {
             line.push(pad(GAP));
         }
-        line.push(Span { cut: None, text: "─".repeat(w), style: rule });
+        line.push(Span { cut: None, hint: false, text: "─".repeat(w), style: rule });
     }
     out.push(trimmed(line));
     for (k, r) in body.iter().enumerate() {
@@ -798,7 +807,7 @@ fn stacked(
         }
         let title: Vec<Span> = row[0]
             .iter()
-            .map(|s| Span { cut: None, text: s.text.clone(), style: s.style.patch(bold) })
+            .map(|s| Span { cut: None, hint: false, text: s.text.clone(), style: s.style.patch(bold) })
             .collect();
         wrap_row(&title, 0, width, out, &mut Vec::new());
         for (h, cell) in header.iter().zip(row).skip(1) {
@@ -811,7 +820,7 @@ fn stacked(
             for (j, mut l) in lines.into_iter().enumerate() {
                 let mut line = if j == 0 {
                     let gap = indent - 2 - name.width();
-                    vec![pad(2), Span { cut: None, text: name.clone(), style: label }, pad(gap)]
+                    vec![pad(2), Span { cut: None, hint: false, text: name.clone(), style: label }, pad(gap)]
                 } else {
                     vec![pad(indent)]
                 };
@@ -823,7 +832,7 @@ fn stacked(
 }
 
 fn pad(n: usize) -> Span {
-    Span { cut: None, text: " ".repeat(n), style: Style::default() }
+    Span { cut: None, hint: false, text: " ".repeat(n), style: Style::default() }
 }
 
 /// Without empty spans and trailing spaces (a row's padding).
@@ -871,6 +880,7 @@ mod tests {
     fn code_wraps_under_its_indentation() {
         let line = Line::Code(vec![Span {
             cut: None,
+            hint: false,
             text: "    let total = items.iter().sum();".into(),
             style: Style::default(),
         }]);
@@ -966,7 +976,7 @@ mod tests {
     #[test]
     fn a_word_that_just_fits_stays_on_its_row() {
         let text = Line::Text {
-            spans: vec![Span { cut: None, text: "aaa bbb ccc".into(), style: Style::default() }],
+            spans: vec![Span { cut: None, hint: false, text: "aaa bbb ccc".into(), style: Style::default() }],
             indent: 0,
         };
         assert_eq!(plain(&wrap(&[text], 7, Style::default())), ["aaa bbb", "ccc"]);
@@ -1130,7 +1140,7 @@ mod tests {
     #[test]
     fn deep_indent_in_a_narrow_box_still_wraps() {
         let text = |s: &str, indent| Line::Text {
-            spans: vec![Span { cut: None, text: s.into(), style: Style::default() }],
+            spans: vec![Span { cut: None, hint: false, text: s.into(), style: Style::default() }],
             indent,
         };
         // Indent wider than the box (used to loop forever: rows of only indent)
@@ -1147,7 +1157,7 @@ mod tests {
     #[test]
     fn a_long_path_breaks_after_a_slash() {
         let text = |s: &str| Line::Text {
-            spans: vec![Span { cut: None, text: s.into(), style: Style::default() }],
+            spans: vec![Span { cut: None, hint: false, text: s.into(), style: Style::default() }],
             indent: 6,
         };
         let rows =

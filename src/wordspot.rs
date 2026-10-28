@@ -177,8 +177,13 @@ pub fn press(ed: &mut Editor, i: usize) {
                 ed.focus_pane(p);
             }
             ed.workspace.viewer.at = At::Code;
-            if let Some(i) = ed.docs.iter().position(|d| d.id == id) {
+            if let Some(i) = ed.docs.iter().position(|d| d.id == id)
+                && i != ed.current
+            {
                 ed.current = i;
+                // (another file in the pane: yours, as a key of yours that moves its view — follow leading it pauses, #215)
+                let pane = ed.workspace.viewer.focus;
+                crate::follow::shown_by_you(ed, pane);
             }
         }
         Press::Reveal(path) => ed.sidebar_reveal(&path),
@@ -232,7 +237,17 @@ const PRESSABLE: &[&str] = &[
 /// Whether a key hint — its key as written and what it says it does — is a word that does its key: one sequence
 /// (`keys`), its meaning one a stray press can't cost (`PRESSABLE`).
 pub fn pressable(key: &str, what: &str) -> bool {
+    #[cfg(test)]
+    if UNBUTTONED.get() {
+        return false;
+    }
     keys(key).is_some() && PRESSABLE.contains(&what.trim())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The kinds walk's trap (`the_kinds_walk_sees_a_hint_drawn_with_no_button`): every key hint drawn as no button.
+    pub(crate) static UNBUTTONED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Why a key hint's keys can't go as typed now, said: the code where they go (`home`, else where the keys are) in a
@@ -251,26 +266,19 @@ fn refused(ed: &Editor, home: Option<At>) -> Option<String> {
 pub type Lit = (usize, usize, usize, Vec<(String, Style)>);
 
 /// What lights with the mouse at (`x`, `y`) on the frame last drawn: the word a press there lands on — `mouse_under`'s
-/// answer, so one under a card, a picker or a floating pane is none — as it was drawn: one of these spots, a word
-/// with a record of its own (a session's tab, the status line's chip, a slot's tab, a preflight's step chip —
-/// `Screen.word_lit`), or a card's answer on its bottom line (#200 — `Screen.answer_lit`). Not the three
-/// whose hover says more: what Claude is doing now (its card), a mark of the strip (its words) and a chip over the
-/// chat's input (what goes).
+/// answer, so one under a card, a picker or a floating pane is none — as it was drawn: the element recorded there whose
+/// act is that answer (`Screen.elements`: these spots, the words with a record of their own — a session's tab, the
+/// status line's chip, a slot's tab, a preflight's step chip — and a card's answers on its bottom line, #200), so a
+/// word lights only where its press lands. Not the three whose hover says more: what Claude is doing now (its card), a
+/// mark of the strip (its words) and a chip over the chat's input (what goes).
 pub fn lit(ed: &Editor, x: usize, y: usize) -> Option<Lit> {
     use crate::mouse::{Part, Word};
     match ed.mouse_under(crate::event::MouseKind::Down, x, y).part {
-        Part::Word(Word::Does(i)) => {
-            ed.screen.word_spots.borrow().get(i).map(|s| (s.y, s.from, s.to, s.spans.clone()))
-        }
         Part::Word(Word::Now | Word::Stop(_) | Word::With(_)) => None,
         // (a card's answers on its bottom line — its way in, each answer a press does: `term::OfferCard::answers_lit`)
-        Part::Answer(_) => {
-            let lit = ed.screen.answer_lit.borrow();
-            lit.iter().find(|l| l.0 == y && (l.1..l.2).contains(&x)).cloned()
-        }
-        Part::Word(_) => {
-            let lit = ed.screen.word_lit.borrow();
-            lit.iter().rev().find(|l| l.0 == y && (l.1..l.2).contains(&x)).cloned()
+        p @ (Part::Word(_) | Part::Answer(_)) => {
+            let e = ed.screen.element(crate::kinds::Kind::Button(p), x, y)?;
+            Some((e.y, e.from, e.to, e.spans))
         }
         _ => None,
     }

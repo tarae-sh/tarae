@@ -93,6 +93,7 @@ mod jumplist;
 mod keepclose;
 mod key;
 mod keymap;
+mod kinds;
 mod kubeconfig;
 mod labels;
 #[cfg(target_os = "linux")]

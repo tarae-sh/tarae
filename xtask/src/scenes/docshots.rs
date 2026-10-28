@@ -1485,7 +1485,9 @@ mod tests {
         assert!(matches!(said(cell(0, 4)), Compared::Differs(_)), "the row above");
         assert_eq!(
             compared(&a, &b, "x.png"),
-            Compared::Differs("in x 54..=54, y 24..=24 (of 118×91)".into())
+            Compared::Differs(
+                "in x 54..=54, y 24..=24 (of 118×91)\n    cells (row: columns, from 0) — row 0: 4".into()
+            )
         );
     }
 

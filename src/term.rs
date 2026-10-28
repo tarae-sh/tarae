@@ -667,8 +667,8 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         chat_mini: Default::default(),
         session_spots: Default::default(),
         word_spots: Default::default(),
-        word_lit: Default::default(),
-        answer_lit: Default::default(),
+        elements: Default::default(),
+        hints: Default::default(),
         review_rail: Default::default(),
         review_rail_marks: Default::default(),
         review_rail_more: Default::default(),
@@ -2094,10 +2094,12 @@ fn slot_header(
     }
     // (its tabs and its members' names: lit under the mouse, as every word that does its key)
     let laid = || names.iter().chain(&beyond_names).zip(&cols).map(|((t, st), &(a, _))| (a, t.shown(), *st));
+    use crate::mouse::Word;
     let named = editor.screen.member_names.borrow();
-    let words = spots.iter().map(|s| (s.0, s.1, s.2)).chain(named.iter().map(|s| (s.0, s.1, s.2)));
-    for (_, a, b) in words.filter(|s| s.0 == y0) {
-        word_lit(editor, y0, (a, b), spans_in(laid(), a, b));
+    let tabs = spots.iter().map(|s| (s.0, s.1, s.2, Word::Tab(s.3)));
+    let words = tabs.chain(named.iter().map(|s| (s.0, s.1, s.2, Word::Member(s.3))));
+    for (_, a, b, word) in words.filter(|s| s.0 == y0) {
+        word_lit(editor, word, y0, (a, b), spans_in(laid(), a, b));
     }
     Ok(y0 + crate::chrome::SLOT_HEAD)
 }
@@ -2143,7 +2145,8 @@ fn member_line(
     let cols = top_line(out, line, card, (x, y, w), ("", "", "┬"), &[], true, &head)?;
     if let Some(&(a, b)) = cols.first().filter(|c| c.1 > c.0) {
         editor.screen.member_names.borrow_mut().push((y, a, b, m.ids.1));
-        word_lit(editor, y, (a, b), vec![(crate::whole::fit_own(names[0].0.shown(), b - a), names[0].1)]);
+        let spans = vec![(crate::whole::fit_own(names[0].0.shown(), b - a), names[0].1)];
+        word_lit(editor, crate::mouse::Word::Member(m.ids.1), y, (a, b), spans);
     }
     Ok(())
 }
@@ -2480,6 +2483,7 @@ fn top_line(
         apply_put(&mut buf, card, gap)?;
         apply_put(&mut buf, head.key, k)?;
         apply_put(&mut buf, head.faint, &format!(" {v}"))?;
+        crate::kinds::hint(k, (at + gap.len(), y));
         if crate::wordspot::pressable(k, v)
             && let Some(w) = &head.words
         {
@@ -2937,8 +2941,8 @@ fn draw_task_panel(
             }
             x += s.width();
         }
-        for (_, (y, from, to, spans)) in lit {
-            word_lit(editor, y, (from, to), spans);
+        for (k, (y, from, to, spans)) in lit {
+            word_lit(editor, crate::mouse::Word::Step(k), y, (from, to), spans);
         }
     }
     // The sandbox's line, when it blocked something: the bottom row, under the output — and over it, what
@@ -3282,6 +3286,7 @@ fn draw_queued(
         if keyed {
             // (ending where the header's keys end)
             queue!(out, MoveTo((x0 + w - 3 - hint_w) as u16, yy))?;
+            crate::kinds::hints_in(&hint, (x0 + w - 3 - hint_w, yy as usize), hint_w);
             for s in &hint {
                 apply(out, s.style)?;
                 queue!(out, Print(&s.text))?;
@@ -4967,6 +4972,7 @@ fn draw(
 ) -> io::Result<()> {
     queue!(out, BeginSynchronizedUpdate, Hide)?;
     crate::whole::begin();
+    crate::kinds::begin();
     // What has the keys is drawn at full strength, the rest a step fainter (`chrome::FADE`)
     let keys = editor.keys_at();
     if lay.header {
@@ -5137,7 +5143,8 @@ fn draw(
     };
     // A cut text whole on its card — a tooltip, over everything but the lit word and pointing's labels
     cut_card(editor, ui, lay, false, out)?;
-    // The word the mouse is over, lit — over everything but pointing's labels
+    // The word the mouse is over, lit — over everything but pointing's labels (the frame's elements and hints recorded)
+    crate::kinds::settle(editor);
     light_word(editor, ui, out)?;
     // Pointing: a label on every element with an id, over everything
     if let Some(p) = &editor.pointing {
@@ -5218,11 +5225,17 @@ fn spans_in<'a>(
 }
 
 /// A word with a record of its own (a session's tab, the chip, a slot's tab): what's drawn at columns `a..b` of row
-/// `y`, lit while the mouse is over it (`wordspot::lit`).
-fn word_lit(editor: &Editor, y: usize, (a, b): (usize, usize), spans: Vec<(String, Style)>) {
-    if b > a && !spans.is_empty() {
-        editor.screen.word_lit.borrow_mut().push((y, a, b, as_drawn(spans)));
-    }
+/// `y`, a button pressed as `word` (what `mouse_under` answers there), lit while the mouse is over it
+/// (`wordspot::lit`) — its spans as drawn (`as_drawn`).
+fn word_lit(
+    editor: &Editor,
+    word: crate::mouse::Word,
+    y: usize,
+    (a, b): (usize, usize),
+    spans: Vec<(String, Style)>,
+) {
+    let kind = crate::kinds::Kind::Button(crate::mouse::Part::Word(word));
+    editor.screen.record(crate::kinds::Element { y, from: a, to: b, kind, spans: as_drawn(spans) });
 }
 
 /// A word that does its key, drawn from (`x`, `y`) on `on` (`wordspot::Spot`), its spans as drawn (`as_drawn`).
@@ -7609,7 +7622,7 @@ pub(crate) fn fold_rows(
     use crate::markdown::{self as md, Line, Span};
     let t = &editor.theme;
     let accent = accent_color(t);
-    let plain = |text: String, style: Style| Span { cut: None, text, style };
+    let plain = |text: String, style: Style| Span { cut: None, hint: false, text, style };
     let mut out = Vec::new();
     let wrap = |spans: Vec<Span>, indent: usize, out: &mut Vec<(Spans, bool)>| {
         for row in md::wrap(&[Line::Text { spans, indent }], width, Style::default()) {
@@ -8014,7 +8027,7 @@ fn reason_rows(
         rows[rows.len().saturating_sub(REASON_ROWS)..].to_vec()
     });
     if let Some(first) = rows.first_mut() {
-        first.insert(0, crate::markdown::Span { cut: None, text: "… ".into(), style: faint });
+        first.insert(0, crate::markdown::Span { cut: None, hint: false, text: "… ".into(), style: faint });
     }
     rows
 }
@@ -9105,6 +9118,9 @@ fn draw_picker(
                 let at = (b.x + 2 + used, y as usize);
                 let cut = (s.text.as_str(), s.cut.as_deref());
                 crate::whole::placed(crate::whole::On::Picker, cut, at, s.style, (b.x, b.x + lw + 2), None);
+                if s.hint {
+                    crate::kinds::hint(&s.text, at);
+                }
                 used += s.text.width();
             }
             apply(out, card)?;
@@ -10033,11 +10049,14 @@ fn code_line(
             editor.screen.word_spots.borrow_mut().push(spot);
         }
     }
-    // (its key hints pressed do their keys, in this pane — `wordspot.rs`: `C-c stop` a page's read, `enter go there`)
+    // (its key hints — a key in `hint_spans`' look, its meaning after it: `C-c stop` a page's read, `enter go there` —
+    // each recorded, and pressed does its key, in this pane — `wordspot.rs`)
+    let hint_key = hint_spans(ui, &[("k", "")], dim, faint)[0].style;
     for i in 0..names.len().saturating_sub(1) {
         let (k, what) = (&names[i], &names[i + 1]);
-        let hint = [("C-c", " stop"), ("enter", " go there")].contains(&(k.0.shown(), what.0.shown()));
-        if let (true, Some(&(a, _))) = (hint, cols.get(i)) {
+        let Some(&(a, _)) = cols.get(i).filter(|_| k.1 == lit(hint_key)) else { continue };
+        crate::kinds::hint(k.0.shown(), (a, y0));
+        if crate::wordspot::pressable(k.0.shown(), what.0.shown()) {
             let spot = word_spot(
                 crate::mouse::Surface::PaneTop(id),
                 crate::wordspot::Press::Keys(k.0.shown().to_string()),
@@ -10769,7 +10788,7 @@ fn draw_statusline(
     let mut chip_at: Option<(usize, usize)> = None;
     let mut reviewer_at: Option<(usize, usize)> = None;
     let mut now_at: Option<(usize, usize)> = None;
-    // (each segment where it went: what a word there lights — `Screen.word_lit`)
+    // (each segment where it went: what a word there lights — `Screen.elements`)
     let mut laid: Vec<(usize, &str, Style)> = Vec::new();
     for s in &left {
         apply(out, s.style)?;
@@ -10787,6 +10806,10 @@ fn draw_statusline(
             );
         }
         laid.push((used, &s.text, s.style));
+        // (a floating list's or the docs' keys: each pair's key a hint — its meaning the segment after it)
+        if s.keep == HINTS && s.style.bold {
+            crate::kinds::hint(&s.text, (used + s.text.len() - s.text.trim_start().len(), status_y));
+        }
         // (a click on the name: the list; on the count: the inbox — not the gap before them)
         let lead = s.text.len() - s.text.trim_start().len();
         let (a, b) = (used + lead, used + s.text.width());
@@ -10819,7 +10842,8 @@ fn draw_statusline(
     }
     // (the chip, the count waiting, the reviewer: lit under the mouse, as every word that does its key)
     for s in editor.screen.session_spots.borrow().iter().filter(|s| s.0 == status_y) {
-        word_lit(editor, status_y, (s.1, s.2), spans_in(laid.iter().copied(), s.1, s.2));
+        let word = crate::mouse::Word::Session(s.3);
+        word_lit(editor, word, status_y, (s.1, s.2), spans_in(laid.iter().copied(), s.1, s.2));
     }
     // (the line of what Claude is doing: a press follows Claude's place, the mouse over it its words whole — `now_card`)
     if let Some((a, b)) = now_at {
@@ -11494,6 +11518,7 @@ fn draw_toasts(
         .map(|l| crate::markdown::Line::Text {
             spans: vec![crate::markdown::Span {
                 cut: None,
+                hint: false,
                 text: l.trim_end().to_string(),
                 style: Style::default(),
             }],
@@ -11829,7 +11854,12 @@ fn card_rows(text: &str, w: usize) -> Vec<String> {
         (lead, _) => lead + 4,
     };
     let para = [crate::markdown::Line::Text {
-        spans: vec![crate::markdown::Span { cut: None, text: text.to_string(), style: Style::default() }],
+        spans: vec![crate::markdown::Span {
+            cut: None,
+            hint: false,
+            text: text.to_string(),
+            style: Style::default(),
+        }],
         indent,
     }];
     crate::markdown::wrap(&para, w, Style::default())
@@ -13109,13 +13139,13 @@ impl OfferCard {
             .collect();
         let answers = (self.buttons.iter())
             .filter(|b| b.0 == row && !b.3.is_ascii_digit() && !editor.offer_press_held(b.3))
-            .map(|b| (b.0, b.1, b.2));
-        let mut lit = editor.screen.answer_lit.borrow_mut();
-        for (y, a, b) in answers.chain(self.way_at.filter(|w| w.0 == row)) {
-            let spans = spans_in(laid.iter().copied(), a, b);
-            if !spans.is_empty() {
-                lit.push((y, a, b, as_drawn(spans)));
-            }
+            .map(|b| (b.0, b.1, b.2, b.3));
+        let way = self.way_at.filter(|w| w.0 == row).map(|w| (w.0, w.1, w.2, crate::mouse::WAY));
+        // (each a button pressed as `mouse_under` names it there: its key, the way in's `WAY`)
+        for (y, a, b, key) in answers.chain(way) {
+            let kind = crate::kinds::Kind::Button(crate::mouse::Part::Answer(key));
+            let spans = as_drawn(spans_in(laid.iter().copied(), a, b));
+            editor.screen.record(crate::kinds::Element { y, from: a, to: b, kind, spans });
         }
     }
 
@@ -13628,7 +13658,7 @@ fn draw_ask_stream(
         queue!(out, MoveTo(x0 as u16, (y + 1 + body) as u16))?;
         apply(out, card)?;
         queue!(out, Print("  "))?;
-        let used = chat_spans(out, &stop, card, inner)?;
+        let used = hinted_spans(out, &stop, card, inner, (x0 + 2, y + 1 + body))?;
         apply(out, card)?;
         queue!(out, Spaces(inner + 2 - used))?;
     }
@@ -13726,7 +13756,7 @@ fn draw_follow_card(
         Some((k, n)) if replaying || !c.busy() => format!("{k}/{n}"),
         _ => timer(crate::clock::since(c.started), !editor.moving()),
     };
-    let sp = |text: &str, style: Style| Span { cut: None, text: text.into(), style };
+    let sp = |text: &str, style: Style| Span { cut: None, hint: false, text: text.into(), style };
     // The title, in both forms (글타래 P6: the stop that headed the card is the turn's knot `●` now): who and how it
     // goes — minimized, Claude's commands without a sandbox too (in warning) — then, as the chat's title says it,
     // what it's at and how long. Narrow, what it's at gives way first, then `› no sandbox` goes shorter
@@ -13978,6 +14008,7 @@ fn draw_follow_card(
         queue!(out, Print(if hand { "▎" } else { " " }))?;
         let on_sel = |s: &Span| Span {
             cut: None,
+            hint: s.hint,
             text: s.text.clone(),
             style: if s.style.bg == card.bg { Style { bg: sel.bg, ..s.style } } else { s.style },
         };
@@ -14045,6 +14076,7 @@ fn draw_follow_card(
         let mut at = x0 + 3;
         for pair in bottom.split(|s| s.0 == " · ") {
             let k = pair.first().map_or("", |s| s.0.as_str());
+            crate::kinds::hint(k, (at, y0 + h - 1));
             if crate::wordspot::pressable(k, pair.get(1).map_or("", |s| s.0.as_str())) {
                 // (by what each key is, never where the keys are: the turn's own — `C-c stop`, `C-f` — the chat's; the
                 // ways in — `space l open the chat`, `[r replay` — typed in the code)
@@ -14179,8 +14211,8 @@ fn behind_row(
     let back = if w >= LEAD.width() + "space g back to it".width() { "back to it" } else { "back" };
     let pairs = [("space g", back)];
     let mut row = vec![
-        Span { cut: None, text: "review behind".into(), style: says },
-        Span { cut: None, text: "  ".into(), style: card },
+        Span { cut: None, hint: false, text: "review behind".into(), style: says },
+        Span { cut: None, hint: false, text: "  ".into(), style: card },
     ];
     row.extend(hint_spans(ui, whole_pairs(&pairs, w.saturating_sub(LEAD.width())), key, faint));
     row
@@ -14221,7 +14253,12 @@ fn spans_left(row: &[crate::markdown::Span], w: usize) -> Vec<crate::markdown::S
             drop = drop.saturating_sub(c.width);
         }
         if at < s.text.len() {
-            out.push(crate::markdown::Span { cut: None, text: s.text[at..].to_string(), style: s.style });
+            out.push(crate::markdown::Span {
+                cut: None,
+                hint: s.hint,
+                text: s.text[at..].to_string(),
+                style: s.style,
+            });
         }
     }
     out
@@ -14279,7 +14316,7 @@ fn draw_sidebar(
     let selected = selected_row(ui, editor, card);
     let key = Style { bold: true, fg: ui.virt.fg, ..card };
     let dragged = grab(editor, |b| b == crate::sizes::Border::Side);
-    let sp = |text: &str, style: Style| Span { cut: None, text: text.to_string(), style };
+    let sp = |text: &str, style: Style| Span { cut: None, hint: false, text: text.to_string(), style };
     let w = lay.rail_w.saturating_sub(GAP + PAD + PAD_R).max(1);
     let lines = sb.lines();
     // Unfocused, only the row the editor is on is marked (nothing, on a file outside the list)
@@ -14433,7 +14470,7 @@ fn draw_sidebar(
             queue!(out, Spaces(PAD))?;
         }
         let used = match (y, list) {
-            (1, _) if !behind.is_empty() => chat_spans(out, &behind, card, w)?,
+            (1, _) if !behind.is_empty() => hinted_spans(out, &behind, card, w, (PAD, y))?,
             (_, Some(i)) => match shown.get(i).map(|&r| (r, &lines[r])) {
                 Some((r, l)) => {
                     // (a file another session is in, or whose changes would conflict with yours: each its initial
@@ -14505,8 +14542,8 @@ fn draw_sidebar(
                 crate::whole::at(crate::whole::On::Side, &said, (PAD, y), st, (0, usize::MAX));
                 said.width()
             }
-            _ if y + 2 == lay.body_h => chat_spans(out, &hints[0], card, w)?,
-            _ if y + 1 == lay.body_h => chat_spans(out, &hints[1], card, w)?,
+            _ if y + 2 == lay.body_h => hinted_spans(out, &hints[0], card, w, (PAD, y))?,
+            _ if y + 1 == lay.body_h => hinted_spans(out, &hints[1], card, w, (PAD, y))?,
             _ => 0,
         };
         apply(out, card)?;
@@ -14849,7 +14886,7 @@ fn review_rail_hints(
     accent: Style,
 ) -> Vec<Vec<crate::markdown::Span>> {
     use crate::markdown::Span;
-    let sp = |text: &str, style: Style| Span { cut: None, text: text.to_string(), style };
+    let sp = |text: &str, style: Style| Span { cut: None, hint: false, text: text.to_string(), style };
     let hint = |pairs: &[(&str, &str)]| hint_spans(ui, pairs, key, faint);
     // (`]g` a hunk, `]F` the next file — #49: `]g` stopped at each small change, and the next file had no
     // key)
@@ -15371,7 +15408,7 @@ fn draw_review_rail(
     let selected = selected_row(ui, editor, card);
     let key = Style { bold: true, ..dim };
     let w = rail_text_w(lay);
-    let sp = |text: String, style: Style| Span { cut: None, text, style };
+    let sp = |text: String, style: Style| Span { cut: None, hint: false, text, style };
     // A file's drafts waiting to go: yours, and the reviewer's findings (`rail_drafts`)
     let drafts_in = |f: &crate::codereview::File| rail_drafts(editor, f);
     let reviewer_fg = reviewer_style(editor, ui).fg;
@@ -15601,7 +15638,12 @@ fn draw_review_rail(
             true => {
                 lit = row
                     .iter()
-                    .map(|s| Span { cut: None, text: s.text.clone(), style: Style { bg: bg.bg, ..s.style } })
+                    .map(|s| Span {
+                        cut: None,
+                        hint: s.hint,
+                        text: s.text.clone(),
+                        style: Style { bg: bg.bg, ..s.style },
+                    })
                     .collect();
                 &lit
             }
@@ -15698,26 +15740,32 @@ fn session_tabs(
     };
     let mark = |l: &crate::workspace::Workspace| match editor.doing(l) {
         // (the calm states faint: what needs you stands out — collab C1)
-        Doing::Working => Some(Span { cut: None, text: " working".into(), style: faint }),
+        Doing::Working => Some(Span { cut: None, hint: false, text: " working".into(), style: faint }),
         // (a card waits · a turn ended: said apart — #86, one `▲` meant both)
         Doing::Waiting => Some(Span {
             cut: None,
+            hint: false,
             text: match cards(l) {
                 n @ 2.. => format!(" ▲{n} waits"),
                 _ => " ▲ waits".into(),
             },
             style: warn,
         }),
-        Doing::Done => Some(Span { cut: None, text: " done".into(), style: accent }),
-        d @ Doing::Stuck { .. } => Some(Span { cut: None, text: format!(" ◦ {}", d.said()), style: warn }),
+        Doing::Done => Some(Span { cut: None, hint: false, text: " done".into(), style: accent }),
+        d @ Doing::Stuck { .. } => {
+            Some(Span { cut: None, hint: false, text: format!(" ◦ {}", d.said()), style: warn })
+        }
         // (at work, held back in line — calm, not stuck's warning)
-        d @ Doing::Queued { .. } => Some(Span { cut: None, text: format!(" {}", d.said()), style: faint }),
+        d @ Doing::Queued { .. } => {
+            Some(Span { cut: None, hint: false, text: format!(" {}", d.said()), style: faint })
+        }
         Doing::Idle => None,
     };
     // A rebase under way there: `rebasing 2/5` — in the warning color once it waits for you
     let rebasing = |l: &crate::workspace::Workspace| {
         l.rebase.as_ref().map(|r| Span {
             cut: None,
+            hint: false,
             text: format!(" {}", r.said()),
             style: if r.stopped() { warn } else { dim },
         })
@@ -15732,10 +15780,10 @@ fn session_tabs(
         // (who it is: its name in its colour, the front's bold — its state after it)
         let own = colour(l.claude.colour);
         let own = Style { bold: l.id == editor.workspace.id || own.bold, ..own };
-        let mut v = vec![Span { cut: None, text: l.label().to_string(), style: own }];
+        let mut v = vec![Span { cut: None, hint: false, text: l.label().to_string(), style: own }];
         let folded = |m: Span| match m.text.trim_start().chars().next() {
             _ if states => Some(m),
-            Some(g @ ('▲' | '◦')) => Some(Span { cut: None, text: format!(" {g}"), ..m }),
+            Some(g @ ('▲' | '◦')) => Some(Span { cut: None, hint: false, text: format!(" {g}"), ..m }),
             _ if m.text == " done" => Some(m),
             _ => None,
         };
@@ -15743,18 +15791,19 @@ fn session_tabs(
         // (whom its changes would conflict with — `≈ main`, each in its colour: `overlap.rs`)
         let others = crate::overlap::others(editor, l.id);
         if !whom && !others.is_empty() {
-            v.push(Span { cut: None, text: " ≈".into(), style: warn });
+            v.push(Span { cut: None, hint: false, text: " ≈".into(), style: warn });
         }
         for (k, (name, c)) in others.into_iter().enumerate().filter(|_| whom) {
             v.push(Span {
                 cut: None,
+                hint: false,
                 text: if k == 0 { " ≈ " } else { ", " }.into(),
                 style: if k == 0 { warn } else { faint },
             });
-            v.push(Span { cut: None, text: name, style: c.map_or(faint, colour) });
+            v.push(Span { cut: None, hint: false, text: name, style: c.map_or(faint, colour) });
         }
         if let Some(file) = crate::presence::file_of(editor, l.id).filter(|_| files) {
-            v.push(Span { cut: None, text: format!(" {file}"), style: dim });
+            v.push(Span { cut: None, hint: false, text: format!(" {file}"), style: dim });
         }
         // (its reviewer reading — beside its chat's mark, in the reviewer's colour: #195; the front session's left to
         // the status line's segment while that shows — bgreview)
@@ -15765,7 +15814,7 @@ fn session_tabs(
                 (true, true) => " ¶ reviewing",
                 (true, false) => " ¶ waits",
             };
-            v.push(Span { cut: None, text: said.into(), style: reviewer });
+            v.push(Span { cut: None, hint: false, text: said.into(), style: reviewer });
         }
         if states {
             v.extend(rebasing(l));
@@ -15773,11 +15822,11 @@ fn session_tabs(
         // (news while it was behind: files came again from disk — #6, its reviewer ended — #195; a sign already, kept
         // at every fold, as `+N` carries it)
         if l.news() {
-            v.push(Span { cut: None, text: " •".into(), style: dim });
+            v.push(Span { cut: None, hint: false, text: " •".into(), style: dim });
         }
         // (a message typed in its chat, not sent — its input isn't on screen; folding never drops it)
         if unsent(l) {
-            v.push(Span { cut: None, text: " unsent".into(), style: dim });
+            v.push(Span { cut: None, hint: false, text: " unsent".into(), style: dim });
         }
         v
     };
@@ -15800,7 +15849,7 @@ fn session_tabs(
         let (mut spans, mut spots, mut x) = (Vec::new(), Vec::new(), 0);
         let mut put = |spans: &mut Vec<Span>, text: String, style: Style| {
             x += text.width();
-            spans.push(Span { cut: None, text, style });
+            spans.push(Span { cut: None, hint: false, text, style });
             x
         };
         let mut before = None;
@@ -15906,7 +15955,7 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
     let (w, mw) = chat_widths(chat_w, editor.sizes.chat.is_some());
     let lang = editor.doc().syntax.as_ref().map(|s| s.lang.name.clone());
     use crate::chat::{ChatRow, Laid, LaidKey};
-    let sp = |text: String, style: Style| Span { cut: None, text, style };
+    let sp = |text: String, style: Style| Span { cut: None, hint: false, text, style };
     let plain = |spans: Vec<Span>| ChatRow { spans, ..ChatRow::default() };
     let n = c.msgs.len();
     let string = card.patch(t.try_get("string").unwrap_or(dim));
@@ -16356,15 +16405,15 @@ fn told_row(text: &str, w: usize, dim: Style, theme: &Theme) -> crate::chat::Cha
         true => shown.len(),
         false => shown.strip_suffix('…').filter(|k| plain.starts_with(k)).unwrap_or(&shown).len(),
     };
-    let mut spans = vec![Span { cut: None, text: MARK.into(), style: dim }];
+    let mut spans = vec![Span { cut: None, hint: false, text: MARK.into(), style: dim }];
     for (r, style) in &pieces {
         let (a, b) = (r.start, r.end.min(kept));
         if a < b {
-            spans.push(Span { cut: None, text: plain[a..b].to_string(), style: *style });
+            spans.push(Span { cut: None, hint: false, text: plain[a..b].to_string(), style: *style });
         }
     }
     if kept < shown.len() {
-        spans.push(Span { cut: None, text: shown[kept..].to_string(), style: dim });
+        spans.push(Span { cut: None, hint: false, text: shown[kept..].to_string(), style: dim });
     }
     let mut row = ChatRow { spans, skip: hang, ..ChatRow::default() };
     crate::chatdoc::keep_whole(&mut row, &plain);
@@ -16412,9 +16461,9 @@ fn queued_rows(
         let head = if k == 0 {
             lead.clone().span(accent)
         } else {
-            Span { cut: None, text: " ".repeat(hang), style: faint }
+            Span { cut: None, hint: false, text: " ".repeat(hang), style: faint }
         };
-        let spans = vec![head, Span { cut: None, text, style: faint }];
+        let spans = vec![head, Span { cut: None, hint: false, text, style: faint }];
         ChatRow { spans, skip: hang, join: (k > 0).then_some(space), ..ChatRow::default() }
     };
     let rows: Vec<ChatRow> = crate::cut::fit_in_hand(last, room, false, true)
@@ -16556,7 +16605,7 @@ fn draw_chat(
     // ── Message rows (filled from the bottom)
     // (its top line + plan + divider·hint + usage)
     let area = rows.saturating_sub(input_h + 3 + plan_h + usage_h);
-    let sp = |text: String, style: Style| Span { cut: None, text, style };
+    let sp = |text: String, style: Style| Span { cut: None, hint: false, text, style };
     let plain = |spans: Vec<Span>| ChatRow { spans, ..ChatRow::default() };
     let own = |row: ChatRow| -> std::sync::Arc<[ChatRow]> { std::sync::Arc::from(vec![row]) };
     let called = c.busy() && c.msgs.last().is_some_and(|m| m.role == Role::Tool);
@@ -16840,7 +16889,7 @@ fn draw_chat(
     let details = fits(&details);
     let laid = || names.iter().chain(&details).zip(&cols).map(|((t, st), &(a, _))| (a, t.shown(), *st));
     for s in editor.screen.session_spots.borrow().iter().filter(|s| s.0 == y && s.1 >= lx) {
-        word_lit(editor, y, (s.1, s.2), spans_in(laid(), s.1, s.2));
+        word_lit(editor, crate::mouse::Word::Session(s.3), y, (s.1, s.2), spans_in(laid(), s.1, s.2));
     }
     y += 1;
     if !plan_rows.is_empty() {
@@ -17161,6 +17210,7 @@ fn draw_chat(
         queue!(out, Print(k))?;
         apply(out, faint)?;
         queue!(out, Print(&what))?;
+        crate::kinds::hint(k, (text_x + used, y));
         // (a pair pressed does its key — `wordspot.rs`: one a stray press can't cost)
         if crate::wordspot::pressable(k, d) {
             let mut spans = vec![(k.to_string(), key)];
@@ -17220,7 +17270,7 @@ fn usage_spans(
 ) -> Option<Vec<crate::markdown::Span>> {
     use crate::markdown::Span;
     use crate::usage::{Cache, count, dollars, tokens, until};
-    let sp = |text: String, style: Style| Span { cut: None, text, style };
+    let sp = |text: String, style: Style| Span { cut: None, hint: false, text, style };
     let conv = u.conv.as_ref();
     let turn = conv.and_then(|c| u.turns.iter().rev().find(|t| t.conversation == c.id));
     let reported = conv.is_some_and(|c| c.last.is_some()) || turn.is_some();
@@ -17391,7 +17441,7 @@ fn chat_paint(
     let (to, end) = (s.start - ls + s.len, s.end.map(|e| e - ls));
     let push = |text: &str, style: Style, out: &mut Vec<Span>| match out.last_mut() {
         Some(last) if last.style == style => last.text.push_str(text),
-        _ => out.push(Span { cut: None, text: text.to_string(), style }),
+        _ => out.push(Span { cut: None, hint: false, text: text.to_string(), style }),
     };
     let mut out: Vec<Span> = Vec::new();
     let mut drawn_at = Vec::new();
@@ -17436,7 +17486,7 @@ fn chat_paint(
             if cursors.contains(&e) {
                 drawn_at.push(cells);
             }
-            out.push(Span { cut: None, text: " ".into(), style: cell });
+            out.push(Span { cut: None, hint: false, text: " ".into(), style: cell });
         }
     }
     Some((out, drawn_at))
@@ -17542,8 +17592,12 @@ fn chat_markdown_drawn(
             Line::Code(spans) => {
                 let full: usize = spans.iter().map(|s| s.text.width()).sum();
                 let inner = w.saturating_sub(2);
-                let mut row =
-                    vec![Span { cut: None, text: " ".into(), style: Style { bg: well, ..Style::default() } }];
+                let mut row = vec![Span {
+                    cut: None,
+                    hint: false,
+                    text: " ".into(),
+                    style: Style { bg: well, ..Style::default() },
+                }];
                 let mut used = 0;
                 let mut rest = String::new();
                 for s in spans {
@@ -17556,11 +17610,12 @@ fn chat_markdown_drawn(
                     let t = fit(&s.text, room);
                     used += t.width();
                     rest.push_str(&s.text[t.len()..]);
-                    row.push(Span { cut: None, text: t, style: Style { bg: well, ..s.style } });
+                    row.push(Span { cut: None, hint: false, text: t, style: Style { bg: well, ..s.style } });
                 }
                 if full > inner {
                     row.push(Span {
                         cut: None,
+                        hint: false,
                         text: "…".into(),
                         style: Style { bg: well, fg: rule.fg, ..Style::default() },
                     });
@@ -17569,6 +17624,7 @@ fn chat_markdown_drawn(
                 let pad = inner.saturating_sub(used) + 1;
                 row.push(Span {
                     cut: None,
+                    hint: false,
                     text: " ".repeat(pad),
                     style: Style { bg: well, ..Style::default() },
                 });
@@ -17626,7 +17682,7 @@ fn plan_block(
 ) -> Vec<Vec<crate::markdown::Span>> {
     use crate::markdown::Span;
     use crate::plan::Status;
-    let sp = |text: String, style: Style| Span { cut: None, text, style };
+    let sp = |text: String, style: Style| Span { cut: None, hint: false, text, style };
     let n = p.steps.len();
     let count = if p.finished() { format!("all {n} done") } else { format!("{}/{n}", p.done()) };
     let title = if p.title.is_empty() { "plan".to_string() } else { p.title.clone() };
@@ -17682,8 +17738,8 @@ fn plan_now(
     let i = p.current()?;
     let at = format!("{}/{} ", i + 1, p.steps.len());
     Some(vec![
-        Span { cut: None, text: "› ".into(), style: accent },
-        Span { cut: None, text: at.clone(), style: faint },
+        Span { cut: None, hint: false, text: "› ".into(), style: accent },
+        Span { cut: None, hint: false, text: at.clone(), style: faint },
         crate::whole::fit(&p.steps[i].text, w.saturating_sub(2 + at.width())).span(dim),
     ])
 }
@@ -17708,7 +17764,7 @@ fn trail_row(
 /// strip draws it.
 fn knot(look: &crate::chat::Look, in_hand: bool, st: &TrailStyles) -> crate::markdown::Span {
     let (glyph, style) = mark_span(look.mark(), in_hand, st);
-    crate::markdown::Span { cut: None, text: glyph.into(), style }
+    crate::markdown::Span { cut: None, hint: false, text: glyph.into(), style }
 }
 
 /// A mark as drawn (motion §4): the one in hand (the stop the follow card shows) in the accent, bold; else an edit
@@ -17739,7 +17795,7 @@ fn knot_stamps(ui: &Ui, stamps: &[crate::stamp::Stamp], lit: f32, on: Style) -> 
     let mut out = Vec::new();
     for (k, s) in stamps.iter().enumerate() {
         if k > 0 {
-            out.push(crate::markdown::Span { cut: None, text: " ".into(), style: on });
+            out.push(crate::markdown::Span { cut: None, hint: false, text: " ".into(), style: on });
         }
         out.extend(stamp_spans(ui, *s, lit, on));
     }
@@ -17760,7 +17816,7 @@ fn trail_row_at(
     st: &TrailStyles,
 ) -> (Vec<crate::markdown::Span>, Option<(usize, usize)>, usize) {
     use crate::markdown::Span;
-    let sp = |text: String, style: Style| Span { cut: None, text, style };
+    let sp = |text: String, style: Style| Span { cut: None, hint: false, text, style };
     let end = w.min(crate::chrome::MEASURE);
     let stamps_w: usize = stamps.iter().map(|s| s.text.width()).sum();
     let verb_w = 2 + crate::chat::label(look.verb).width().max(6);
@@ -17786,7 +17842,7 @@ fn trail_spans(
     st: &TrailStyles,
 ) -> (Vec<crate::markdown::Span>, Option<(usize, usize)>) {
     use crate::markdown::Span;
-    let sp = |text: String, style: Style| Span { cut: None, text, style };
+    let sp = |text: String, style: Style| Span { cut: None, hint: false, text, style };
     let head = if slim { " ".to_string() } else { format!(" {:<6} ", crate::chat::label(look.verb)) };
     let name = match std::path::Path::new(&look.what).file_name() {
         // (only files — a plan's title may have a `/` in it)
@@ -17849,7 +17905,7 @@ fn tool_rows(
 ) -> Vec<crate::chat::ChatRow> {
     use crate::chat::ChatRow;
     use crate::markdown::Span;
-    let sp = |text: String, style: Style| Span { cut: None, text, style };
+    let sp = |text: String, style: Style| Span { cut: None, hint: false, text, style };
     let width = |spans: &[Span]| spans.iter().map(|s| s.text.width()).sum::<usize>();
     let head = format!(" {:<6} ", crate::chat::label(look.verb));
     let hang = knot.text.chars().count() + head.chars().count();
@@ -18327,7 +18383,7 @@ fn with_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io
     if room < 16 || cap == 0 {
         return Ok(());
     }
-    let sp = |text: String, style: Style| Span { cut: None, text, style };
+    let sp = |text: String, style: Style| Span { cut: None, hint: false, text, style };
     let wrapped = |s: &str| crate::cut::fit_in_hand(s, room, false, true).into_iter().map(|p| p.text);
     let items = c.with_items();
     let mut rows: Vec<Vec<Span>> = Vec::new();
@@ -18411,7 +18467,7 @@ fn with_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io
         queue!(out, MoveTo(x as u16, (top + k) as u16))?;
         apply(out, ground)?;
         queue!(out, Print(" "))?;
-        let used = chat_spans(out, row, ground, inner)?;
+        let used = hinted_spans(out, row, ground, inner, (x + 1, top + k))?;
         apply(out, ground)?;
         queue!(out, Spaces(width - 1 - used))?;
     }
@@ -18449,7 +18505,7 @@ fn now_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io:
     if room < 16 || y < 2 {
         return Ok(());
     }
-    let sp = |text: String, style: Style| Span { cut: None, text, style };
+    let sp = |text: String, style: Style| Span { cut: None, hint: false, text, style };
     let wrapped = |s: &str, w: usize| crate::cut::fit_in_hand(s, w, false, true).into_iter().map(|p| p.text);
     let mut rows: Vec<Vec<Span>> = Vec::new();
     // The step: its sign, its verb and what it acts on whole, its time
@@ -18510,7 +18566,7 @@ fn now_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io:
         queue!(out, MoveTo(x as u16, (top + k) as u16))?;
         apply(out, ground)?;
         queue!(out, Print(" "))?;
-        let used = chat_spans(out, row, ground, inner)?;
+        let used = hinted_spans(out, row, ground, inner, (x + 1, top + k))?;
         apply(out, ground)?;
         queue!(out, Spaces(width - 1 - used))?;
     }
@@ -18687,7 +18743,7 @@ fn turn_window(
 ) -> (Vec<CardRow>, Option<usize>) {
     use crate::markdown::Span;
     let n = rows.len();
-    let cut = || (vec![Span { cut: None, text: "…".into(), style: faint }], None);
+    let cut = || (vec![Span { cut: None, hint: false, text: "…".into(), style: faint }], None);
     let bare = |i: usize| blank(&rows[i].0);
     // (the knot in hand's place in what shows: rows from `start` on shown from `at`)
     let placed = |start: usize, at: usize| hand.filter(|&h| h >= start).map(|h| h - start + at);
@@ -18737,7 +18793,7 @@ fn turn_window(
         _ if from > 0 => {
             let mut row = rows[from].clone();
             let mut kept = spans_left(&row.0, inner.saturating_sub(2));
-            kept.insert(0, Span { cut: None, text: "… ".into(), style: faint });
+            kept.insert(0, Span { cut: None, hint: false, text: "… ".into(), style: faint });
             row.0 = kept;
             (vec![row], hand.filter(|&h| h == from).map(|_| 0))
         }
@@ -18856,7 +18912,12 @@ fn bleed(
                     if !w {
                         seen(&text);
                     }
-                    out.push(Span { cut: None, text, style: if w { s.style } else { to(s.style) } });
+                    out.push(Span {
+                        cut: None,
+                        hint: false,
+                        text,
+                        style: if w { s.style } else { to(s.style) },
+                    });
                 }
                 run_bleeds = Some(w);
                 run.push(c);
@@ -18867,7 +18928,12 @@ fn bleed(
                 if w {
                     seen(&run);
                 }
-                out.push(Span { cut: None, text: run, style: if w { to(s.style) } else { s.style } });
+                out.push(Span {
+                    cut: None,
+                    hint: false,
+                    text: run,
+                    style: if w { to(s.style) } else { s.style },
+                });
             }
         }
         *row = out;
@@ -18981,6 +19047,7 @@ fn thought_rows_drawn(
                     style: Style { italic: !s.style.bold, bold: s.style.bold, ..dim },
                     text: s.text,
                     cut: s.cut,
+                    hint: s.hint,
                 })
                 .collect()
         })
@@ -19041,7 +19108,7 @@ fn underline_refs<'a>(
                 Some(_) => Style { underline: true, ..s.style },
                 None => Style { underline: s.style.underline || inside, ..s.style },
             };
-            out.push(Span { cut: None, text: joined[a..b].to_string(), style });
+            out.push(Span { cut: None, hint: false, text: joined[a..b].to_string(), style });
         }
         at = end;
     }
@@ -19127,8 +19194,9 @@ fn chat_spans(
     base: Style,
     w: usize,
 ) -> io::Result<usize> {
-    // (a cut span is printed where its cut is recorded: `chat_spans_at`)
+    // (a cut span is printed where its cut is recorded: `chat_spans_at`; a hint where it's recorded: `hinted_spans`)
     debug_assert!(spans.iter().all(|s| s.cut.is_none()), "a cut printed unrecorded: {spans:?}");
+    debug_assert!(spans.iter().all(|s| !s.hint), "a key hint printed unrecorded: {spans:?}");
     let mut used = 0;
     for s in spans {
         let text = fit(&s.text, w.saturating_sub(used));
@@ -19139,7 +19207,22 @@ fn chat_spans(
     Ok(used)
 }
 
-/// `chat_spans` from (`x`, `y`) on `on`: each cut it shows (`whole::fit`) recorded where it stands, its card in `cols`.
+/// `chat_spans` from (`x`, `y`), its key hints recorded where they stand (`kinds::hint`) — for a row with no cut.
+fn hinted_spans(
+    out: &mut impl Write,
+    spans: &[crate::markdown::Span],
+    base: Style,
+    w: usize,
+    at: (usize, usize),
+) -> io::Result<usize> {
+    crate::kinds::hints_in(spans, at, w);
+    let plain: Vec<crate::markdown::Span> =
+        spans.iter().map(|s| crate::markdown::Span { hint: false, ..s.clone() }).collect();
+    chat_spans(out, &plain, base, w)
+}
+
+/// `chat_spans` from (`x`, `y`) on `on`: each cut it shows (`whole::fit`) recorded where it stands, its card in `cols`,
+/// each key hint where it stands (`kinds::hint`).
 fn chat_spans_at(
     out: &mut impl Write,
     spans: &[crate::markdown::Span],
@@ -19154,6 +19237,9 @@ fn chat_spans_at(
         apply(out, st)?;
         queue!(out, Print(&text))?;
         crate::whole::placed(on, (&text, s.cut.as_deref()), (x + used, y), st, cols, None);
+        if s.hint && text == s.text {
+            crate::kinds::hint(&text, (x + used, y));
+        }
         used += text.width();
     }
     Ok(used)
@@ -19170,6 +19256,9 @@ fn spans_placed(
     for s in spans {
         let text = fit(&s.text, w.saturating_sub(used));
         crate::whole::placed(on, (&text, s.cut.as_deref()), (x + used, y), s.style, cols, None);
+        if s.hint && text == s.text {
+            crate::kinds::hint(&text, (x + used, y));
+        }
         used += text.width();
     }
 }
@@ -19197,15 +19286,16 @@ fn hint_spans(ui: &Ui, pairs: &[(&str, &str)], key: Style, faint: Style) -> Vec<
     let mut out = Vec::new();
     for (i, (k, v)) in pairs.iter().enumerate() {
         if i > 0 {
-            out.push(Span { cut: None, text: "  ".into(), style: faint });
+            out.push(Span { cut: None, hint: false, text: "  ".into(), style: faint });
         }
         out.push(Span {
             cut: None,
+            hint: true,
             text: k.to_string(),
             style: Style { bold: true, fg: ui.hint_key.or(key.fg), ..key },
         });
         if !v.is_empty() {
-            out.push(Span { cut: None, text: format!(" {v}"), style: faint });
+            out.push(Span { cut: None, hint: false, text: format!(" {v}"), style: faint });
         }
     }
     out
@@ -19339,7 +19429,7 @@ fn stamp_spans(ui: &Ui, stamp: crate::stamp::Stamp, lit: f32, on: Style) -> [cra
         MOTION_SEEN.with_borrow_mut(|s| s.push(("press", at, format!("{} {ink:?}", stamp.0))));
     }
     let edge = Style { fg: ink, bg: on.bg, ..Style::default() };
-    let sp = |text: &str, style: Style| Span { cut: None, text: text.into(), style };
+    let sp = |text: &str, style: Style| Span { cut: None, hint: false, text: text.into(), style };
     let key = stamp.0.to_string();
     match on.bg {
         Some(paper) => [
@@ -19712,6 +19802,9 @@ fn draw_doc_box(
             let text = fit(&sp.text, inner - used);
             apply(out, popup.patch(sp.style))?;
             queue!(out, Print(&text))?;
+            if sp.hint && text == sp.text {
+                crate::kinds::hint(&text, (x0 + 2 + used, y0 + 1 + i));
+            }
             used += text.width();
             if used >= inner {
                 break;
@@ -19774,7 +19867,10 @@ fn draw_note_card(
                     s.text.replace_range(..2, "");
                 }
                 let faint = Style { fg: ui.linenr.fg, ..Style::default() };
-                first.insert(0, crate::markdown::Span { cut: None, text: "… ".into(), style: faint });
+                first.insert(
+                    0,
+                    crate::markdown::Span { cut: None, hint: false, text: "… ".into(), style: faint },
+                );
             }
             rows
         }
@@ -19833,7 +19929,7 @@ fn note_lines(
     use crate::markdown::{Line, Span};
     use crate::notes::By;
     let lang = editor.doc().syntax.as_ref().map(|s| s.lang.name.clone());
-    let sp = |text: &str, style: Style| Span { cut: None, text: text.to_string(), style };
+    let sp = |text: &str, style: Style| Span { cut: None, hint: false, text: text.to_string(), style };
     let accent = Style { fg: ui.accent.fg, ..Style::default() };
     let dim = Style { fg: ui.virt.fg, ..Style::default() };
     let faint = Style { fg: ui.linenr.fg, ..Style::default() };
@@ -19996,7 +20092,7 @@ fn draw_conflict_card(
     let side = |label: &str, what: &str| {
         if label.is_empty() { what.to_string() } else { format!("{what} ({label})") }
     };
-    let sp = |text: String, style: Style| Span { cut: None, text, style };
+    let sp = |text: String, style: Style| Span { cut: None, hint: false, text, style };
     let lines = vec![
         Line::Text {
             spans: vec![
@@ -20111,7 +20207,7 @@ fn diagnostic_lines(
         // (lines its server's pack hides are gone already — `ServerTraits::shown_message`)
         let mut lines = d.message.lines().map(str::trim_end).filter(|l| !l.trim().is_empty());
         let color = Style { fg: ui.sign[d.severity.min(4) as usize].fg, ..Style::default() };
-        let mut spans = vec![Span { cut: None, text: format!("{glyph} "), style: color }];
+        let mut spans = vec![Span { cut: None, hint: false, text: format!("{glyph} "), style: color }];
         // Errors/warnings lead in bold; info/hints (often "expected due to this") step back
         let head_style = if d.severity <= 2 {
             Style { bold: true, ..Style::default() }
@@ -20123,12 +20219,12 @@ fn diagnostic_lines(
         // Source only when it changes (a hint right after its error repeats it)
         let source = diagnostic_source(&d.raw);
         if let Some(src) = source.as_ref().filter(|&s| last_source.as_ref() != Some(s)) {
-            spans.push(Span { cut: None, text: format!("  {src}"), style: faint });
+            spans.push(Span { cut: None, hint: false, text: format!("  {src}"), style: faint });
         }
         last_source = source;
         out.push(Line::Text { spans, indent: 2 });
         for l in lines {
-            let mut spans = vec![Span { cut: None, text: "  ".into(), style: Style::default() }];
+            let mut spans = vec![Span { cut: None, hint: false, text: "  ".into(), style: Style::default() }];
             spans.extend(message_spans(l, Style::default(), lang.as_deref(), editor));
             out.push(Line::Text { spans, indent: 2 });
         }
@@ -20146,7 +20242,7 @@ fn message_spans(text: &str, base: Style, lang: Option<&str>, editor: &Editor) -
     while let Some(open) = rest.find('`') {
         let Some(len) = rest[open + 1..].find('`') else { break };
         if open > 0 {
-            out.push(Span { cut: None, text: rest[..open].to_string(), style: base });
+            out.push(Span { cut: None, hint: false, text: rest[..open].to_string(), style: base });
         }
         let code = &rest[open + 1..open + 1 + len];
         // Inline-code color underneath, syntax colors on top (unparsed bits still read as code)
@@ -20154,12 +20250,12 @@ fn message_spans(text: &str, base: Style, lang: Option<&str>, editor: &Editor) -
             Some(Line::Code(spans)) => {
                 out.extend(spans.into_iter().map(|sp| Span { style: raw.patch(sp.style), ..sp }))
             }
-            _ => out.push(Span { cut: None, text: code.to_string(), style: raw }),
+            _ => out.push(Span { cut: None, hint: false, text: code.to_string(), style: raw }),
         }
         rest = &rest[open + 1 + len + 1..];
     }
     if !rest.is_empty() {
-        out.push(Span { cut: None, text: rest.to_string(), style: base });
+        out.push(Span { cut: None, hint: false, text: rest.to_string(), style: base });
     }
     out
 }
@@ -21466,7 +21562,7 @@ mod tests {
     #[test]
     fn spans_left_takes_the_padding_first() {
         use crate::markdown::Span;
-        let sp = |t: &str| Span { cut: None, text: t.into(), style: Style::default() };
+        let sp = |t: &str| Span { cut: None, hint: false, text: t.into(), style: Style::default() };
         let row = vec![sp("let x = 1;"), sp("      ")];
         let cut: String = spans_left(&row, 12).into_iter().map(|s| s.text).collect();
         assert_eq!(cut, "let x = 1;  ");
@@ -21792,8 +21888,9 @@ mod tests {
     /// The thought card's log keeps its newest rows, but not a lone fragment of a cut paragraph on top.
     #[test]
     fn a_log_cut_skips_a_lone_fragment() {
-        let row =
-            |t: &str| vec![crate::markdown::Span { cut: None, text: t.into(), style: Style::default() }];
+        let row = |t: &str| {
+            vec![crate::markdown::Span { cut: None, hint: false, text: t.into(), style: Style::default() }]
+        };
         let body: Vec<_> = ["a1", "a2", "a3", "", "b1", "b2", "", "c1"].iter().map(|t| row(t)).collect();
         let log_cut =
             |body: &[Vec<crate::markdown::Span>], max| log_cut_by(body.len(), |i| blank(&body[i]), max);
@@ -22236,6 +22333,7 @@ mod tests {
             .map(|i| {
                 crate::markdown::Line::Code(vec![crate::markdown::Span {
                     cut: None,
+                    hint: false,
                     text: format!("doc {i}"),
                     style: Style::default(),
                 }])
@@ -23279,9 +23377,9 @@ mod tests {
         assert_eq!(s.len, "The latest answer starts here.".len());
         let red = Style { fg: Some(crossterm::style::Color::Red), ..Style::default() };
         let spans = vec![
-            Span { cut: None, text: "▎ ".into(), style: Style::default() },
-            Span { cut: None, text: "The latest".into(), style: red },
-            Span { cut: None, text: " answer starts here.".into(), style: Style::default() },
+            Span { cut: None, hint: false, text: "▎ ".into(), style: Style::default() },
+            Span { cut: None, hint: false, text: "The latest".into(), style: red },
+            Span { cut: None, hint: false, text: " answer starts here.".into(), style: Style::default() },
         ];
         let (p, cursors) = chat_paint(d, None, s, 2, &spans, &ui, true).expect("the selected row is painted");
         let text: String = p.iter().map(|s| s.text.as_str()).collect();
@@ -23724,7 +23822,7 @@ mod tests {
     #[test]
     fn a_cut_code_row_is_the_lines_start_and_keeps_its_end() {
         use crate::markdown::{Line, Span};
-        let sp = |t: &str| Span { cut: None, text: t.into(), style: Style::default() };
+        let sp = |t: &str| Span { cut: None, hint: false, text: t.into(), style: Style::default() };
         let lines = [Line::Code(vec![sp("aaaa"), sp("宽"), sp("zz")])];
         // (8 cells: its edge, 5 of text and the `…`, a pad — the wide one needs 2 where 1 is left)
         let (rows, drawn) = chat_markdown_drawn(&lines, (8, 8), (Style::default(), Style::default()), None);
@@ -25422,6 +25520,7 @@ mod tests {
                 .map(|i| {
                     crate::markdown::Line::Code(vec![crate::markdown::Span {
                         cut: None,
+                        hint: false,
                         text: format!("doc {i}"),
                         style: Style::default(),
                     }])

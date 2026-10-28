@@ -53,7 +53,8 @@ use crate::workspace::At;
 /// 20: a key is its shown name (#202, `Key`'s `Display`): `keys.pending` and a card's `answers[].key` say `enter`,
 /// `-`, `↑ ↓ ← →` where they said `ret`, `minus`, `up` `down` `left` `right`.
 /// 21: the plugins' overlays (`plugin/overlay.rs`): `overlays[]` (`plugin`, `text`, `rect`, `until_ms`).
-pub const V: u64 = 21;
+/// 22: where the mouse is (#215, `kinds.rs`): `pointer` (`x`, `y`, `under`, `kind`, `does`, `lit`).
+pub const V: u64 = 22;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;
@@ -760,6 +761,34 @@ pub struct UiState {
     pub tick_in_ms: Option<u64>,
     /// The terminal said its focus went elsewhere (`CSI O`, until `CSI I`) — the animation rests; never Claude's.
     pub unfocused: bool,
+    /// Where the mouse last moved and what's under it on the frame last drawn (#215: a driver says what your pointer is
+    /// on) — None before it moved, or away; never Claude's.
+    pub pointer: Option<PointerState>,
+}
+
+/// The pointer's cell and what's under it: what a press there lands on (`mouse_under`'s surface and part), its kind
+/// (`kinds.rs`), what a press does where it's a word that does its key, and what's lit there (row, columns).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PointerState {
+    pub x: usize,
+    pub y: usize,
+    pub under: String,
+    pub kind: &'static str,
+    pub does: Option<String>,
+    pub lit: Option<(usize, usize, usize)>,
+}
+
+impl PointerState {
+    fn json(&self) -> serde_json::Value {
+        let mut v = json!({ "x": self.x, "y": self.y, "under": self.under, "kind": self.kind });
+        if let Some(d) = &self.does {
+            v["does"] = json!(d);
+        }
+        if let Some((y, from, to)) = self.lit {
+            v["lit"] = json!({ "y": y, "from": from, "to": to });
+        }
+        v
+    }
 }
 
 /// A motion as the state lists it: its kind (`flash`, `press`, `wet`), what it shows (`undo`, `yank`, `stamp`, `write`,
@@ -1774,7 +1803,28 @@ impl Editor {
             starting: self.events.starts_out().into_iter().map(|(at, out)| starting_said(at, out)).collect(),
             tick_in_ms: self.tick_wanted().map(|d| d.as_millis() as u64),
             unfocused: self.unfocused,
+            pointer: self.ui_pointer(),
         }
+    }
+
+    /// The pointer as the state says it (`UiState.pointer`): read from the frame last drawn, as a press there would be.
+    fn ui_pointer(&self) -> Option<PointerState> {
+        let (x, y) = self.presence.hover_at?;
+        let u = self.mouse_under(crate::event::MouseKind::Down, x, y);
+        let does = match u.part {
+            crate::mouse::Part::Word(crate::mouse::Word::Does(i)) => {
+                self.screen.word_spots.borrow().get(i).map(|s| format!("{:?}", s.press))
+            }
+            _ => None,
+        };
+        Some(PointerState {
+            x,
+            y,
+            under: format!("{:?}/{:?}", u.surface, u.part),
+            kind: self.kind_at(x, y).word(),
+            does,
+            lit: self.word_hover.get(),
+        })
     }
 
     /// Every card of every session — up in front (the front one, the ones stacked behind it), parked in the
@@ -2108,6 +2158,9 @@ impl UiState {
         if self.unfocused {
             v["unfocused"] = json!(true);
         }
+        if let Some(p) = &self.pointer {
+            v["pointer"] = p.json();
+        }
         v
     }
 
@@ -2118,6 +2171,11 @@ impl UiState {
         out.push(format!("tarae {} · frame {} · input {}{size}", self.pid, self.frame, self.input));
         out.extend(self.keys_line());
         out.push(self.mode_line());
+        if let Some(p) = &self.pointer {
+            let does = p.does.as_ref().map(|d| format!(" · does {d}")).unwrap_or_default();
+            let lit = p.lit.map(|(y, a, b)| format!(" · lit {a}..{b} on row {y}")).unwrap_or_default();
+            out.push(format!("pointer {},{}: {} · {}{does}{lit}", p.x, p.y, p.under, p.kind));
+        }
         if self.workspaces.len() > 1 {
             let s: Vec<String> = self
                 .workspaces

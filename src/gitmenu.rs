@@ -305,8 +305,8 @@ impl Editor {
                 // Long lines wrap in the card, continuing under the code (past the marker and indent)
                 let indent = 2 + text.chars().take_while(|c| *c == ' ').count();
                 let spans = vec![
-                    crate::markdown::Span { cut: None, text: mark.to_string(), style },
-                    crate::markdown::Span { text, style, cut: None },
+                    crate::markdown::Span { cut: None, hint: false, text: mark.to_string(), style },
+                    crate::markdown::Span { text, style, cut: None, hint: false },
                 ];
                 lines.push(crate::markdown::Line::Text { spans, indent });
             }

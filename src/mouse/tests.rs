@@ -14,6 +14,7 @@ mod resize;
 mod select;
 mod sequences;
 mod walk;
+mod wheel_audit;
 
 const W: u16 = 160;
 const H: u16 = 40;

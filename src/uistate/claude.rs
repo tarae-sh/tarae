@@ -59,8 +59,9 @@ impl Editor {
         s.frames_for.clear();
         s.events_for.clear();
         s.starting.clear();
-        // (the plugins' overlays are chrome: Claude sees its own work)
+        // (the plugins' overlays are chrome: Claude sees its own work; where your pointer is, the drivers')
         s.overlays.clear();
+        s.pointer = None;
         for t in &mut s.toasts {
             t.strength = None;
         }
