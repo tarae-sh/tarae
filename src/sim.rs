@@ -46,6 +46,7 @@ mod motion;
 mod now;
 mod orchestra;
 mod overlap;
+mod overlay;
 mod panes;
 mod places;
 mod presence;

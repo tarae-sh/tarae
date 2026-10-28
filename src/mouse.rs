@@ -46,6 +46,9 @@ pub enum Surface {
     PickerPreview,
     /// The notification card.
     Toast,
+    /// A plugin's overlay (`plugin/overlay.rs`): a press is its plugin's (`pressed`, the row from 0) — news,
+    /// never the keys; the wheel and a hover pass to what's under it.
+    Overlay,
     /// The front card and its stack's rows, the grammar download's buttons.
     Card,
     /// The ask's waiting card (`space i`, a commit draft — `term::draw_ask_stream`): a press gives the keys to where its
@@ -217,6 +220,7 @@ impl Under {
                 | S::Picker
                 | S::PickerPreview
                 | S::Toast
+                | S::Overlay
                 | S::Card
                 | S::Edge
                 | S::Floatlist(_)
@@ -350,6 +354,12 @@ impl Editor {
         let on_toast = s.toast_card.get().is_some_and(|t| inside(t, x, y));
         if down && on_toast && !on_card && button.is_none() && self.picker.is_none() {
             return at(S::Toast, Part::Row(y));
+        }
+        if down && !on_card && button.is_none() && self.picker.is_none() {
+            let drawn = s.overlays.borrow();
+            if let Some((_, (_, oy, ..))) = drawn.iter().rev().find(|o| inside(o.1, x, y)) {
+                return at(S::Overlay, Part::Row(y - oy));
+            }
         }
         if down && (button.is_some() || on_card) {
             return at(S::Card, button.map_or(Part::Blank, Part::Answer));
@@ -1193,6 +1203,13 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             A::Release => RELEASE,
             A::Hover => HOVER,
         },
+        // (its plugin's: `pressed` comes to it; only a press is the overlay's — the rest is what's under it)
+        Su::Overlay => match act {
+            A::Press => Acts,
+            A::Double => AS_ONE,
+            A::Drag | A::Wheel | A::Hover => Not("what's under it takes it"),
+            A::Release => RELEASE,
+        },
         Su::Card => match act {
             A::Press => Acts,
             A::Double => AS_ONE,
@@ -1507,6 +1524,7 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ("Cards", "an answer, the card", Su::Card, Part::Answer('y')),
         ("The ask's card (`space i`, a commit draft)", "", Su::Ask, Part::Blank),
         ("The notification card", "", Su::Toast, Part::Row(0)),
+        ("A plugin's overlay", "a row", Su::Overlay, Part::Row(0)),
         ("A picker", "a row", Su::Picker, Part::Row(0)),
         ("A picker", "its query", Su::Picker, Part::Text { line: 0, col: 0 }),
         ("A picker", "its frame's other rows", Su::Picker, Part::Blank),

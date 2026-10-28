@@ -59,6 +59,8 @@ impl Editor {
         s.frames_for.clear();
         s.events_for.clear();
         s.starting.clear();
+        // (the plugins' overlays are chrome: Claude sees its own work)
+        s.overlays.clear();
         for t in &mut s.toasts {
             t.strength = None;
         }

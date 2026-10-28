@@ -225,6 +225,10 @@ shows the card again.
 | `show` (a view) | a buffer of its own, in front, colored by its language — shown again with the same id, replaced |
 | `append` (id, text) | added to that buffer's end; a cursor at the end follows it (a log). When you close it, the plugin is told (`failed`, with its id: time to stop following), and appending to it fails |
 
+| Action | |
+|---|---|
+| `overlay` (rows, hold) | a few rows floating over the screen — news, never taking a key (no frame, no focus), one a plugin, replaced by its next, none: gone. Spans in roles, never colours (`text`, `faint`, `key` a keycap); 3 rows of 80 cells at most. It shows at once, stays `hold` ms (none: its text's reading time) and fades; a row that changed lands lit and dries; while it's up it never gets narrower. It floats bottom-right, where tarae's asks stand — it's not drawn while one does, nor while which-key is up, and comes back after. It gives way to a card, a toast, the cursor's row and the change in hand (moved up a few rows at most, else not drawn that frame), and doesn't show under a picker or a prompt. A press on it comes to the plugin as `pressed` (the row, from 0); a row cut to fit is whole under the mouse |
+
 While the panel has the keys, tarae moves through its rows as through every list panel's — the same keys, the same
 acts, on every surface: `j` `k` (`↓` `↑`, `C-n` `C-p`) a row, `C-e` `C-y` the view a row (the selection stays
 unless it would leave the rows in sight), `C-d` `C-u` half the rows in sight, `C-f` `C-b` (`pagedown` `pageup`)

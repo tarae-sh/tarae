@@ -125,6 +125,7 @@ fn floats(s: crate::mouse::Surface) -> bool {
             | S::Picker
             | S::PickerPreview
             | S::Toast
+            | S::Overlay
             | S::Card
             | S::Ask
             | S::Float(_)
@@ -173,6 +174,8 @@ pub enum On {
     Chat,
     Status,
     Toast,
+    /// A plugin's overlay: its rows (`term::draw_overlays`).
+    Overlay,
     /// A card: its title, a peek's, its rows.
     Card,
     /// The waiting card of `space i`'s ask (`term::draw_ask_stream`): its instruction, on its own surface (`Surface::Ask`,
@@ -244,6 +247,7 @@ impl On {
                 | (On::Chat, S::Chat | S::Transcript | S::Input)
                 | (On::Status, S::Status)
                 | (On::Toast, S::Toast)
+                | (On::Overlay, S::Overlay)
                 | (On::Card, S::Card)
                 | (On::Ask, S::Ask)
                 | (On::Review, S::EditReview)
@@ -269,6 +273,7 @@ impl On {
             On::Top | On::Frame(..) => "line",
             On::Status => "status line",
             On::Toast => "message",
+            On::Overlay => "overlay",
             On::Card => "card",
             On::Ask => "ask",
             On::WhichKey => "keys",

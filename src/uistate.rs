@@ -52,7 +52,8 @@ use crate::workspace::At;
 /// 19: what Claude is doing now (`now.rs`): the front session's `turn.now` (`step`, `waits`, `since_ms`, `said`, `plan`).
 /// 20: a key is its shown name (#202, `Key`'s `Display`): `keys.pending` and a card's `answers[].key` say `enter`,
 /// `-`, `↑ ↓ ← →` where they said `ret`, `minus`, `up` `down` `left` `right`.
-pub const V: u64 = 20;
+/// 21: the plugins' overlays (`plugin/overlay.rs`): `overlays[]` (`plugin`, `text`, `rect`, `until_ms`).
+pub const V: u64 = 21;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;
@@ -726,6 +727,8 @@ pub struct UiState {
     pub notes: Vec<NoteState>,
     /// Motions on a clock under way (`motion.rs`) — a driver waits for one to end, never sleeps; never Claude's.
     pub motions: Vec<MotionState>,
+    /// The plugins' overlays while they're up (`plugin/overlay.rs`), by plugin — chrome, never Claude's.
+    pub overlays: Vec<OverlayState>,
     /// The last frame went out in parts and the whole screen is still to go once input rests
     /// (`term::RESTING_REDRAW`, `Editor.redraw_due`) — a frame of its own a driver waiting for quiet waits for;
     /// said only while true, never Claude's.
@@ -761,6 +764,16 @@ pub struct UiState {
 pub struct MotionState {
     pub kind: &'static str,
     pub act: &'static str,
+    pub until_ms: u64,
+}
+
+/// A plugin's overlay as the state lists it: whose, its rows' whole text (a row a line), where the last frame drew it
+/// (None: not drawn — giving way, or under a picker), the ms until it's gone.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OverlayState {
+    pub plugin: String,
+    pub text: String,
+    pub rect: Option<(usize, usize, usize, usize)>,
     pub until_ms: u64,
 }
 
@@ -1740,6 +1753,7 @@ impl Editor {
                         as u64,
                 })
                 .collect(),
+            overlays: self.ui_overlays(),
             redraw_due: self.redraw_due,
             frames_written: self.frames_written,
             frames_for: self
@@ -2036,6 +2050,19 @@ impl UiState {
                 .map(|m| json!({ "kind": m.kind, "act": m.act, "until_ms": m.until_ms }))
                 .collect::<Vec<_>>(),
         });
+        if !self.overlays.is_empty() {
+            v["overlays"] = self
+                .overlays
+                .iter()
+                .map(|o| {
+                    json!({
+                        "plugin": o.plugin, "text": o.text,
+                        "rect": o.rect.map(|(x, y, w, h)| [x, y, w, h]), "until_ms": o.until_ms,
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into();
+        }
         if self.redraw_due {
             v["redraw_due"] = json!(true);
         }

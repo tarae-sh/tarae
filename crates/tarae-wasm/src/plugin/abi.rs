@@ -12,7 +12,7 @@ use super::cabi::{Mem, T, V};
 use crate::{Instance, Limits, Module, Trap, Ty, Val};
 
 /// The API version plugins are built for. Until 1.0 each 0.x breaks plugins: only this one loads.
-pub const API: &str = "0.2";
+pub const API: &str = "0.3";
 /// For freeing an answer (`cabi_post_*`).
 const POST_FUEL: u64 = 100_000_000;
 /// The wit-bindgen the SDK pins (what a plugin should be rebuilt with).
@@ -204,6 +204,7 @@ pub enum Action {
     Find(u64, String),
     WriteOwn(u64, String, Vec<u8>),
     OfferInstall(u64, String),
+    Overlay(Option<Overlay>),
 }
 
 impl Action {
@@ -268,6 +269,27 @@ pub struct SideRow {
     pub note: bool,
 }
 
+/// How an overlay's span reads — the theme gives each its colour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    Text,
+    Faint,
+    Key,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Span {
+    pub text: String,
+    pub role: Role,
+}
+
+/// A plugin's overlay: its rows of spans, how long it stays (ms; None: its text's reading time).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Overlay {
+    pub rows: Vec<Vec<Span>>,
+    pub hold: Option<u64>,
+}
+
 /// A list to choose from: items are (id, label).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pick {
@@ -295,6 +317,8 @@ pub enum HostEvent {
     Found(u64, Vec<String>),
     Written(u64, String),
     Installed(u64),
+    /// A press on its overlay: the row.
+    Pressed(u64),
 }
 
 // ── The WIT types, and converting to and from them ───────────────────────────
@@ -394,7 +418,34 @@ fn actions_t() -> T {
         id_str(),
         Some(rec(vec![T::U64, T::Str, T::Bytes])),
         id_str(),
+        Some(opt(overlay_t())),
     ]))
+}
+
+fn overlay_t() -> T {
+    let role = T::Var(vec![None; 3]);
+    rec(vec![list(list(rec(vec![T::Str, role]))), opt(T::U64)])
+}
+
+fn overlay_of(v: V) -> Overlay {
+    let mut f = Fields::of(v);
+    let span = |s: V| {
+        let mut f = Fields::of(s);
+        let text = f.str();
+        let role = match f.next() {
+            V::Var(0, _) => Role::Text,
+            V::Var(1, _) => Role::Faint,
+            V::Var(2, _) => Role::Key,
+            _ => unreachable!("a role"),
+        };
+        Span { text, role }
+    };
+    let rows = items(f.next()).into_iter().map(|r| items(r).into_iter().map(span).collect()).collect();
+    let hold = match f.next() {
+        V::Opt(o) => o.map(|n| u64_of(*n)),
+        _ => unreachable!("an option"),
+    };
+    Overlay { rows, hold }
 }
 
 fn tone_t() -> T {
@@ -425,6 +476,7 @@ fn host_events_t() -> T {
         Some(rec(vec![T::U64, T::Str])),
         Some(rec(vec![T::U64, list(T::Str)])),
         Some(rec(vec![T::U64, T::Str])),
+        Some(T::U64),
         Some(T::U64),
     ]))
 }
@@ -500,6 +552,7 @@ fn host_events_v(events: &[HostEvent]) -> V {
                 HostEvent::Found(id, paths) => case(11, pair(*id, strs_v(paths))),
                 HostEvent::Written(id, path) => case(12, pair(*id, str_v(path))),
                 HostEvent::Installed(id) => case(13, V::U64(*id)),
+                HostEvent::Pressed(row) => case(14, V::U64(*row)),
             })
             .collect(),
     )
@@ -772,6 +825,10 @@ fn actions_of(v: V) -> Vec<Action> {
                         let mut f = Fields::of(*b);
                         Some((f.str(), tone_of(f.next())))
                     }
+                    _ => None,
+                }),
+                28 => Action::Overlay(match p {
+                    V::Opt(Some(o)) => Some(overlay_of(*o)),
                     _ => None,
                 }),
                 _ => {
@@ -1217,11 +1274,11 @@ mod tests {
         // Built for another 0.x of the API (each breaks plugins until 1.0)
         let mut other = DEMO.to_vec();
         let at = other.windows(13).position(|w| w == b"tarae:plugin@").unwrap();
-        other[at + 15] = b'3';
+        other[at + 15] = b'4';
         let e = match Plugin::new(&other, Limits::default(), FUEL) {
-            Ok(_) => panic!("loaded a plugin for API 0.3"),
+            Ok(_) => panic!("loaded a plugin for API 0.4"),
             Err(e) => e,
         };
-        assert!(e.contains("API 0.3.0, this tarae speaks 0.2"), "{e}");
+        assert!(e.contains("API 0.4.0, this tarae speaks 0.3"), "{e}");
     }
 }

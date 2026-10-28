@@ -5,7 +5,7 @@
 // Until 1.0 any 0.x version may break plugins: tarae loads only plugins built for its own.
 // SPDX-License-Identifier: MIT OR Apache-2.0 — like the rest of the SDK, so a plugin can be under any license.
 
-package tarae:plugin@0.2.0;
+package tarae:plugin@0.3.0;
 
 interface types {
     /// A command to register: `:name args`, `":name"` in a keymap, and `doc` in the command palette.
@@ -201,6 +201,34 @@ interface types {
         focus: bool,
     }
 
+    /// How a span reads — a role, never a colour: the theme gives each its colour.
+    enum role {
+        /// Full ink: what's there to be read.
+        text,
+        /// Dim: what goes with it.
+        faint,
+        /// A keycap: the text on the selected row's ground, a cell of it each side.
+        key,
+    }
+
+    record span {
+        text: string,
+        role: role,
+    }
+
+    /// The plugin's overlay: a few rows floating over the screen, borderless — news, never taking a key. It
+    /// shows at once and stays `hold` milliseconds (none: the time its text takes to read), then fades out;
+    /// shown again, it's replaced (a row that changed lands lit and dries). At most 3 rows of 80 cells (a newline
+    /// is a space, control characters are replaced). While it's up it's never narrower
+    /// than it was.
+    /// It floats bottom-right, where tarae's asks stand: not drawn while one does, nor while which-key is up —
+    /// back when the corner is empty. Never over a card, a toast, the cursor's row or the change in hand: it
+    /// moves a few rows up out of their way, else it isn't drawn until they go; never under a picker or a prompt.
+    record overlay {
+        rows: list<list<span>>,
+        hold: option<u64>,
+    }
+
     /// A list to choose from (tarae's picker): the choice comes back as `answer` (its id, or none: esc).
     record pick {
         id: u64,
@@ -273,6 +301,8 @@ interface types {
         /// Offers to install a tool the language packs know how to (`kustomize`): a card you answer. Once
         /// it's in, `installed`; if the install fails, `failed`. Once per tool until tarae quits.
         offer-install(tuple<u64, string>),
+        /// Its overlay (replacing the one it showed) — or none: gone at once.
+        overlay(option<overlay>),
     }
 
     /// What comes back from what a plugin asked for.
@@ -306,6 +336,8 @@ interface types {
         written(tuple<u64, string>),
         /// A tool it offered is installed.
         installed(u64),
+        /// A press on its overlay: the row pressed, from 0.
+        pressed(u64),
     }
 }
 

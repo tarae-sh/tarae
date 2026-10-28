@@ -19,6 +19,7 @@
 mod cli;
 mod events;
 mod io;
+pub(crate) mod overlay;
 mod panel;
 mod perm;
 // (the plugin API and its thread are the runtime's crate's, crates/tarae-wasm — here, the editor's side)
@@ -36,6 +37,10 @@ use abi::Action;
 pub use abi::Event as PluginEvent;
 pub use abi::HostEvent as PluginHostEvent;
 pub use abi::Permission as PluginPermission;
+pub use abi::Role as OverlayRole;
+// (the simulation shows overlays as an answer would)
+#[cfg(test)]
+pub use abi::{Overlay as PluginOverlay, Span as OverlaySpan};
 // (the sandbox's tests start a stand-in the way a plugin's spawn does)
 pub use abi::Side as PluginSide;
 pub use abi::Tone as PluginTone;
@@ -142,6 +147,8 @@ pub struct Plugins {
     /// The side panel's plugin tab (the last plugin to show one), and the status line's plugin text.
     pub side: Option<(String, abi::Side)>,
     pub badge: Option<(String, String, abi::Tone)>,
+    /// Each plugin's overlay while it's up (`overlay.rs`), by plugin.
+    pub overlays: std::collections::BTreeMap<String, overlay::Shown>,
     /// The tools plugins offered to install since tarae started (once each).
     pub(crate) offered: std::collections::HashSet<String>,
     /// Where each plugin's own folder is (`<this>/<plugin>`): the state folder's `plugins`.
@@ -185,6 +192,7 @@ impl Plugins {
         if self.badge.as_ref().is_some_and(|(p, ..)| p == plugin) {
             self.badge = None;
         }
+        self.overlays.remove(plugin);
     }
 }
 
@@ -238,10 +246,46 @@ impl Editor {
             hints: Default::default(),
             side: None,
             badge: None,
+            overlays: Default::default(),
             offered: Default::default(),
             own_root: crate::config::state_dir().map(|s| s.join("plugins")),
         });
         true
+    }
+
+    /// The plugins' side with no plugin thread (`Host::detached`): what a simulation drives by hand — an overlay shown
+    /// through `plugin_overlay` as an answer would.
+    #[cfg(test)]
+    pub(crate) fn plugins_detached(&mut self) {
+        self.plugins = Some(Plugins {
+            host: Host::detached(),
+            commands: Vec::new(),
+            status: Default::default(),
+            events: Default::default(),
+            permissions: Default::default(),
+            approvals: Default::default(),
+            asked: Default::default(),
+            held: Default::default(),
+            perm_store: None,
+            perm_mtime: None,
+            procs: Default::default(),
+            socks: Default::default(),
+            pending: Default::default(),
+            timers: Default::default(),
+            clock: Default::default(),
+            outbox: Default::default(),
+            serial: 0,
+            panel: None,
+            answering: None,
+            prompts: Default::default(),
+            views: Default::default(),
+            hints: Default::default(),
+            side: None,
+            badge: None,
+            overlays: Default::default(),
+            offered: Default::default(),
+            own_root: None,
+        });
     }
 
     fn plugin_note(&mut self, note: Note) {
@@ -504,6 +548,10 @@ impl Editor {
                 }
                 Action::Pick(p) => {
                     self.plugin_pick(plugin, p.clone());
+                    Ok(())
+                }
+                Action::Overlay(o) => {
+                    self.plugin_overlay(plugin, o.clone());
                     Ok(())
                 }
                 Action::Panel(panel) => {

@@ -288,6 +288,12 @@ pub struct Host {
 }
 
 impl Host {
+    /// A host with no thread behind it: what's sent to it is dropped (a call says the thread stopped) — for the
+    /// editor's simulations, where only the simulation's threads may run.
+    pub fn detached() -> Host {
+        Host { tx: channel().0 }
+    }
+
     /// Starts the thread; `notify` gets its notes (on that thread), `invalid` judges what a plugin asks for.
     pub fn start(notify: impl Fn(Note) + Send + 'static, invalid: Invalid) -> Option<Host> {
         let (tx, rx) = channel();

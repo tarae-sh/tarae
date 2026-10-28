@@ -642,6 +642,9 @@ pub struct Screen {
     /// The notification card (x, y, width, height) — None when there's none, or it's folded into the status
     /// line.
     pub toast_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
+    /// The plugins' overlays this frame: (plugin, its rect) — a press on one is its plugin's.
+    #[allow(clippy::type_complexity)]
+    pub overlays: std::cell::RefCell<Vec<(String, (usize, usize, usize, usize))>>,
     /// How strong this frame drew the notification card, in percent (its fade-in and fade-out —
     /// `Editor::toast_alpha`, rounded down: 100 only once it's whole) — None with no card drawn.
     pub toast_strength: std::cell::Cell<Option<u8>>,
@@ -3173,6 +3176,15 @@ impl Editor {
                 took_mouse(S::Toast);
                 self.toast_press(y);
             }
+            // A plugin's overlay: a press is its plugin's (`pressed`, its row of text) — the keys stay where they are
+            (S::Overlay, part) => {
+                took_mouse(S::Overlay);
+                let row = match part {
+                    Part::Row(r) => r,
+                    _ => 0,
+                };
+                self.overlay_press(x, y, row);
+            }
             // A card: a press on one that waits focuses it (P3 §3.8 — its answers answer it from then on, a press on
             // one as it came up never one), a stacked one brought to the front with the keys; focused, its answers
             (S::Card, part) => {
@@ -4105,7 +4117,12 @@ impl Editor {
             crate::writing::reveal_wake(self).filter(|_| !self.unfocused || crate::sound::playing(self));
         // A motion on its own clock (`motion.rs`): a frame each step while it dries, one as it goes
         let motion = self.motion_wake();
-        [next, flash, self.silent_wake(), settle, tag, edge, reveal, motion].into_iter().flatten().min()
+        // A plugin's overlay: a frame each step while a row dries or it fades, one as its fade starts
+        let overlay = self.overlays_wake();
+        [next, flash, self.silent_wake(), settle, tag, edge, reveal, motion, overlay]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// Whether the main loop draws after a batch of events (`unchanged`: every one of them said it changed
@@ -4167,7 +4184,7 @@ impl Editor {
     }
 
     pub(crate) fn schedule_tick(&mut self) {
-        if self.motions_prune() {
+        if self.motions_prune() | self.overlays_prune() {
             self.unchanged = false; // gone from the screen: drawn
         }
         if !self.toasts.is_empty() && !self.toasts.iter().any(Toast::alive) {

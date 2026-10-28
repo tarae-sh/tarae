@@ -1308,6 +1308,21 @@ fn an_idle_editor_draws_nothing_and_sleeps() {
     idle(&mut t, "the terminal");
     t.send("\x1c\x1c");
     t.wait_state("the code has the keys", |s| s["keys"]["region"] == "code");
+    // A plugin's overlay shown, held, faded and gone (`plugin/overlay.rs`): its clock ends with it — the demo plugin let
+    // in (its permissions' card answered), its `:overlay` held 300 ms
+    let plugins = sb.home().join(".config/tarae/plugins");
+    fs::create_dir_all(&plugins).unwrap();
+    let demo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugin-sdk/demo.wasm");
+    fs::copy(demo, plugins.join("demo.wasm")).unwrap();
+    t.wait_state("the demo's card", |s| s["cards"].as_array().is_some_and(|c| !c.is_empty()));
+    t.send("\x11y");
+    t.wait_state("its card answered", |s| s["cards"].as_array().is_some_and(Vec::is_empty));
+    t.send(":overlay text 300 the stress test passes\r");
+    t.wait_state("the overlay up", |s| s["overlays"].as_array().is_some_and(|o| !o.is_empty()));
+    t.wait_state("the overlay gone", |s| s.get("overlays").is_none());
+    // (`Plugin demo: approved` fades on its own clock)
+    t.wait_state("the toasts gone", |s| s["toasts"].as_array().is_some_and(Vec::is_empty));
+    idle(&mut t, "an overlay faded");
     t.send(" l");
     t.wait_text("Ask about");
     idle(&mut t, "the chat");
@@ -1318,6 +1333,7 @@ fn an_idle_editor_draws_nothing_and_sleeps() {
     assert_eq!(watching.events().len(), 1, "only its `watching` line: {:#?}", watching.events());
     drop(watching);
     drop(t);
+    fs::remove_file(plugins.join("demo.wasm")).unwrap();
     let mut t = sb.spawn(&["a.txt"]);
     t.wait_text("two");
     // (as at the first start: the gutter's mark under the picker landed in the window — its `+1`, its `▎`)

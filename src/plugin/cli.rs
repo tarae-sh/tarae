@@ -228,7 +228,9 @@ mod tests {
         let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
         assert_eq!(package_name(&manifest).as_deref(), Some("my-plugin"));
         assert!(
-            std::fs::read_to_string(dir.join("wit/tarae.wit")).unwrap().contains("package tarae:plugin@0.2.")
+            std::fs::read_to_string(dir.join("wit/tarae.wit"))
+                .unwrap()
+                .contains(&format!("package tarae:plugin@{}.", super::super::abi::API))
         );
         assert!(std::fs::read_to_string(dir.join(".cargo/config.toml")).unwrap().contains(TARGET));
         assert!(new(&dir).is_err(), "not over an existing folder");

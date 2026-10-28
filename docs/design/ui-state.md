@@ -65,7 +65,7 @@ JSON for programs, and a short text form for people and Claude, from the same st
 
 ```json
 {
-  "v": 20,
+  "v": 21,
   "tarae": { "pid": 4182, "boot": "9f3ac1d0", "version": "0.9.0" },
   "frame": 4812,
   "input": 1033,
@@ -161,6 +161,10 @@ side git · 4 rows · in hand git:src/term.rs
   now, as the status line says it (`now::state`): `step` (`running cargo test -q`, `asks to run …`, `queued 2nd · …`),
   `waits` (it waits on you), `since_ms` (when that step began, the step's own time — not the turn's), `said` (the last
   sentence Claude finished) and `plan` (the plan's step, `3/4 …`). Claude's level never has it: it's Claude's own doing.
+- **`overlays`** (V 20; absent while none is up) — the plugins' overlays (`plugin/overlay.rs`), by plugin: `plugin`,
+  `text` (its rows' whole text, a row a line), `rect` (`[x, y, w, h]` where the last frame drew it; null while it gives
+  way, or under a picker or a prompt), `until_ms` (until it's gone — what a driver waits on, never a sleep). Chrome:
+  Claude's level never has it.
 - **`workspaces`** (V 16, collab C0: the place and the participants apart) — each a checkout: `w0` …, its name,
   branch, `base`, root, `cards`, `rebasing`, the reviewer's fields below, `overlaps`, `panes`, and its `sessions`
   (one each for now: its Claude) — `s0` …, `doing`, `answer`, `usage`, `billing`, `sandbox`, `writing`, `at`, …;

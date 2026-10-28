@@ -136,11 +136,13 @@ fn shot_env(zellij: Option<std::ffi::OsString>) -> Vec<(&'static str, Option<&'s
 /// in `state` (left there), the screen saved to `out`.
 pub fn take(setup: &Setup, keys: &[String], size: (u16, u16), state: &Path, out: &Path) -> Result<()> {
     let (cols, rows) = size;
+    // (at `TARAE_SHOT_SCALE`, as `cargo xtask shot` takes it: a 1080p recording's picture)
+    let scale = scale(std::env::var("TARAE_SHOT_SCALE").ok().as_deref())?;
     let mut vt = Vt::new(rows, cols);
     let missed = drive(&mut vt, setup, keys, state, &[], cols, rows)?;
     // (a scene's `@~N` frames too, as `cargo xtask shot` keeps them)
-    contact_sheet(&vt, 1, out)?;
-    picture_of(&vt, 1, out, &missed)
+    contact_sheet(&vt, scale, out)?;
+    picture_of(&vt, scale, out, &missed)
 }
 
 /// `take` for a picture the docs show (`scenes --docs`): at `scale`, and with tarae's homes in `homes` rather than

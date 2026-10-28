@@ -1,7 +1,9 @@
 //! A tarae plugin with a command for every action, and some that misbehave on purpose.
 wit_bindgen::generate!({ path: "../wit", world: "plugin" });
 
-use tarae::plugin::types::{Connect, Edit, Hint, Hints, Panel, Pick, Side, SideRow, Spawn, Tone, View};
+use tarae::plugin::types::{
+    Connect, Edit, Hint, Hints, Overlay, Panel, Pick, Role, Side, SideRow, Span, Spawn, Tone, View,
+};
 
 struct Demo;
 
@@ -46,6 +48,7 @@ impl Guest for Demo {
             cmd("question", "A line to type at", false),
             cmd("view", "A buffer of its own", false),
             cmd("more", "Add to that buffer", false),
+            cmd("overlay", "Its overlay: KIND [HOLD-MS] [TEXT]", false),
         ]
     }
 
@@ -220,6 +223,7 @@ impl Guest for Demo {
             "boom" => panic!("boom"),
             "deep" => vec![Action::Status(format!("{}", deep(std::hint::black_box(1))))],
             "stray" => vec![Action::Edits(vec![Edit { from: 1 << 40, to: 1 << 40, insert: "x".into() }])],
+            "overlay" => vec![Action::Overlay(overlay(&cx.args))],
             _ => vec![Action::Error(format!("unknown command {name}"))],
         }
     }
@@ -276,6 +280,7 @@ impl Guest for Demo {
                 }
                 HostEvent::Written((id, path)) => format!("written {id} {path}"),
                 HostEvent::Installed(id) => format!("installed {id}"),
+                HostEvent::Pressed(row) => format!("pressed {row}"),
             })
             .collect();
         let mut out = vec![Action::Status(format!("{} · {} · {}", each.join(" | "), now.millis, now.entropy.len()))];
@@ -325,6 +330,36 @@ impl Guest for Demo {
             Event::Shown => Vec::new(),
         }
     }
+}
+
+/// `overlay`'s argument: a kind — `keys` (a keycast's row), `text` (the rest, its rows split at ` | `); `none` or
+/// nothing: gone — then a hold in milliseconds if a number comes next.
+fn overlay(args: &str) -> Option<Overlay> {
+    let mut words = args.split_whitespace();
+    let kind = words.next().filter(|k| *k != "none")?;
+    let rest: Vec<&str> = words.collect();
+    let (hold, rest) = match rest.first().and_then(|w| w.parse::<u64>().ok()) {
+        Some(ms) => (Some(ms), &rest[1..]),
+        None => (None, &rest[..]),
+    };
+    let span = |text: &str, role| Span { text: text.into(), role };
+    let rows = match kind {
+        "keys" => vec![vec![
+            span("j", Role::Key),
+            span(" ×4   ", Role::Faint),
+            span("w", Role::Key),
+            span("   ", Role::Text),
+            span("C-w", Role::Key),
+            span(" ", Role::Text),
+            span("v", Role::Key),
+            span("   ", Role::Text),
+            span("space", Role::Key),
+            span(" ", Role::Text),
+            span("f", Role::Key),
+        ]],
+        _ => rest.join(" ").split(" | ").map(|row| vec![span(row, Role::Text)]).collect(),
+    };
+    Some(Overlay { rows, hold })
 }
 
 /// Edits removing the spaces at the ends of lines.

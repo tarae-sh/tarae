@@ -237,6 +237,18 @@ const MOUSE_SCENES: &[Scene] = &[
         c.pointed.push("chat".into());
         c.with.push(crate::chat::With::Pointed);
     }),
+    // (a plugin's overlay in the asks' corner, through a host with no thread — a press is its plugin's, its answer after
+    // the walk's look: `plugin::overlay::tests` hears it; a row cut to `CELLS_MAX`, whole under the mouse)
+    ("a plugin's overlay", |ed| {
+        use crate::plugin::{OverlayRole as Role, OverlaySpan as Span, PluginOverlay as Overlay};
+        ed.plugins_detached();
+        let span = |text: &str, role| Span { text: text.into(), role };
+        let rows = vec![
+            vec![span("C-w", Role::Key), span(" v ", Role::Text), span("space", Role::Key)],
+            vec![span(&format!("a row past its cells, {}and farewell", "on and on ".repeat(8)), Role::Faint)],
+        ];
+        ed.plugin_overlay("demo", Some(Overlay { rows, hold: Some(600_000) }));
+    }),
 ];
 
 /// A quote of `n` lines of code, its chip `label`.
@@ -541,6 +553,8 @@ fn holds(ed: &Editor, u: Under) -> bool {
         }
         // (the code's keys, where its `esc stop` is typed — a shortcut over them, `keys_chain`)
         Surface::Ask => matches!(r, R::Code | R::Weave | R::Page),
+        // (news: a press leaves the keys where they are — what it does is its plugin's, heard after the walk's look)
+        Surface::Overlay => true,
         // (a chip's press shows what it stands for — the keys given aren't all it does; `N things`' is)
         Surface::Chat if matches!(u.part, Part::Word(crate::mouse::Word::With(Some(_)))) => false,
         Surface::Chat | Surface::Transcript | Surface::Input => matches!(r, R::Chat | R::View(_)),

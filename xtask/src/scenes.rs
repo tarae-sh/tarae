@@ -569,6 +569,17 @@ const PRESENCE_TWO: &[&str] = presence_keys!(
     "\x1b",
     "@2"
 );
+/// The overlay scenes (`.sb/overlays-plan.md` §3 K): the demo plugin let in (its card, `C-q y`; its toast waited out),
+/// its keycast row shown in the asks' corner (`:overlay keys`, ten minutes), then `$more`.
+macro_rules! overlay_keys {
+    ($($more:expr),* $(,)?) => {
+        &["@?waiting", "\x11", "y", "@!waiting", "@6", ":", "overlay keys 600000", "\r", "@1", $($more),*]
+    };
+}
+const OVERLAY_KEYS: &[&str] = overlay_keys!();
+/// …and a question to Claude, whose card comes to that corner: the keycast gives way while the ask stands there.
+const OVERLAY_KEYS_ASK: &[&str] =
+    overlay_keys!(" ", "l", "@1", "why does insert clone the name?", "\r", "@10?C-q", "\x1b", "\x1b", "@2");
 /// The line `threads.insert` is on changed and saved in the checkout tarae started in, then another checkout opened as
 /// a session and the same line changed its own way and saved there: their changes would conflict (`overlap` scenes,
 /// collab C2 — said once the trees are still, a few seconds after the save).
@@ -2879,6 +2890,9 @@ const SCENES: &[Scene] = &[
         keys: SESSION_SET_CHILD,
     },
     // (…the follow card framed, one session: named `follow`, the turn's time at its line's right)
+    // (overlays A1: the demo's keycast row in the asks' corner — alone, and gone while Claude's ask stands there)
+    Scene { name: "overlay-keys", claude: "idle", files: MAIN, keys: OVERLAY_KEYS },
+    Scene { name: "overlay-keys-ask", claude: "card", files: MAIN, keys: OVERLAY_KEYS_ASK },
     Scene { name: "follow-one", claude: "writemid", files: MAIN, keys: FOLLOW_ONE },
     // (panes P3 step 8: per-pane follow — your keys in the other pane on the same file, on another, and `C-f` moving it)
     Scene { name: "follow-pane", claude: "writemid", files: MAIN, keys: FOLLOW_PANE },
@@ -3177,6 +3191,14 @@ fn one(
     let demo = dir.0.join("tarae-demo");
     demo_crate_with(&demo, scene.name == "trusted", &run_files(scene.name))?;
     let config = dir.0.join("xdg");
+    // (the overlay scenes': the SDK's demo plugin, its permissions asked as it loads — `C-q y` in their keys)
+    if scene.name.starts_with("overlay-") {
+        let wasm =
+            std::fs::read(root().join("plugin-sdk/demo.wasm")).map_err(|e| format!("demo.wasm: {e}"))?;
+        std::fs::create_dir_all(config.join("tarae/plugins")).map_err(|e| format!("plugins: {e}"))?;
+        std::fs::write(config.join("tarae/plugins/demo.wasm"), wasm)
+            .map_err(|e| format!("demo.wasm: {e}"))?;
+    }
     let mut toml = config_toml(me, scene.claude);
     if transparent {
         let theme = if bg == "dark" { "meok-transparent" } else { "hanji-transparent" };

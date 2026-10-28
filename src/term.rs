@@ -721,6 +721,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         thought_card: Default::default(),
         ask_card: Default::default(),
         toast_card: Default::default(),
+        overlays: Default::default(),
         toast_strength: Default::default(),
         // (the card's place, decided once — kept from the frame before)
         toast_narrow: std::cell::Cell::new(editor.screen.toast_narrow.get()),
@@ -5096,6 +5097,11 @@ fn draw(
     if (!editor.pending.is_empty() || output || viewing) && editor.picker.is_none() {
         draw_which_key(editor, ui, lay, out)?;
     }
+    // The plugins' overlays: out of every card's way, which-key's and the toast's too, the cursor's row's, the change in
+    // hand's — the asks' corner theirs while one stands there
+    let floating = [editor.screen.which_key.get(), editor.screen.toast_card.get()].into_iter().flatten();
+    let taken: Vec<Rect4> = taken.iter().copied().chain(floating.map(kept_apart)).collect();
+    draw_overlays(editor, ui, lay, &taken, offer.is_some(), out)?;
     let picker_cursor = match &editor.picker {
         Some(p) => Some(draw_picker(p, editor, ui, lay, out)?),
         None => None,
@@ -11532,6 +11538,120 @@ fn draw_toasts(
         crate::whole::at(crate::whole::On::Toast, text, (x0 + 3, y), *style, (0, lay.edit_w));
     }
     Ok(true)
+}
+
+/// The plugins' overlays (`plugin/overlay.rs`, `.sb/overlays-plan.md` A1) — news, never a pane with the keys: no frame
+/// (a frame says "this has the keys"), the toast's slight ground, `PAD` each side of its rows. Bottom-right, where the
+/// asks stand (the keycast's): there never while one does (`asks`: a card, another session's peek — or a toast at its
+/// bottom spot) nor while which-key is up, back once the corner is empty. It gives way, never covers — a card, a toast,
+/// the cursor's row, the change in hand (`taken`): moved up `OVERLAY_REACH` rows at most out of their way, else not drawn
+/// this frame — never a far jump; two never touch. Under a picker or a prompt, none. It fades as its hold ends; a row
+/// that changed lands lit and dries (`flash_bg`).
+///
+/// ```text
+///                                         j  ×4   w    C-w   v    space   f
+/// ── ● normal ──────────────────────────────────────────────
+/// ```
+fn draw_overlays(
+    editor: &Editor,
+    ui: &Ui,
+    lay: &Layout,
+    taken: &[Rect4],
+    asks: bool,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    use crate::plugin::OverlayRole as Role;
+    /// The most rows an overlay moves out of something's way — past it, hidden for the frame.
+    const OVERLAY_REACH: usize = 3;
+    /// The narrowest an overlay is cut to (its padding in) — where less room is left, it isn't drawn that frame.
+    const OVERLAY_MIN: usize = 28;
+    let Some(p) = editor.plugins.as_ref().filter(|p| !p.overlays.is_empty()) else { return Ok(()) };
+    if editor.picker.is_some() || editor.prompt.is_some() {
+        return Ok(());
+    }
+    let (now, moving) = (crate::clock::now(), editor.moving());
+    let card = card_style(ui, editor, "ui.popup");
+    let ground = blend(card.bg, ui.tint, 1.0 - PEEK_STEP).or(card.bg);
+    let cap = editor.theme.try_get("ui.menu.selected").and_then(|s| s.bg);
+    let (top, floor) = (lay.text_top as usize, card_floor(lay));
+    let (_, (ax, aw, atop, arows)) = asks_area(editor, lay);
+    // (a toast at its bottom spot stands where the asks do)
+    let toast_low = editor.screen.toast_card.get().is_some_and(|(_, y, _, h)| 2 * (y + h) > top + floor + 1);
+    if asks || toast_low || editor.screen.which_key.get().is_some() {
+        return Ok(());
+    }
+    let pad = crate::chrome::PAD;
+    let mut taken = taken.to_vec();
+    for (plugin, o) in &p.overlays {
+        let a = o.alpha(now, moving);
+        if a <= 0.0 || o.rows.is_empty() {
+            continue;
+        }
+        let h = o.rows.len();
+        // (as wide as its rows, else as the room it's given — its rows cut, `…`; never under `OVERLAY_MIN` cells)
+        let full = o.width + 2 * pad;
+        let Some(w) = Some(full.min(aw.saturating_sub(2))).filter(|&w| w >= full.min(OVERLAY_MIN)) else {
+            continue;
+        };
+        let x = (ax + aw).saturating_sub(w + 1);
+        let Some(from) = (atop + arows).checked_sub(h) else { continue };
+        let free =
+            |y: usize| y >= top && y + h <= floor + 1 && taken.iter().all(|&r| !overlaps((x, y, w, h), r));
+        let Some(y0) = (from.saturating_sub(OVERLAY_REACH)..=from).rev().find(|&y| free(y)) else { continue };
+        taken.push(kept_apart((x, y0, w, h)));
+        editor.screen.overlays.borrow_mut().push((plugin.clone(), (x, y0, w, h)));
+        let inner = w - 2 * pad;
+        let bg = blend(ground, ui.tint, a).or(ground);
+        for (i, row) in o.rows.iter().enumerate() {
+            let cut = crate::plugin::overlay::cut(row, inner);
+            let row = cut.as_deref().unwrap_or(row);
+            let k = o.wetness(i, now, moving);
+            let bg = if k > 0.0 { flash_bg(ui, bg, k).or(bg) } else { bg };
+            let fade = |c: Option<Color>| blend(c, bg, a).or(c);
+            let plain = Style { fg: fade(card.fg), bg, ..Style::default() };
+            queue!(out, MoveTo(x as u16, (y0 + i) as u16))?;
+            apply(out, plain)?;
+            queue!(out, Spaces(pad))?;
+            for s in row {
+                let (fg, bold) = match s.role {
+                    Role::Text => (card.fg, false),
+                    Role::Faint => (ui.virt.fg.or(card.fg), false),
+                    Role::Key => (card.fg, true),
+                };
+                let style = Style { fg: fade(fg), bold, ..plain };
+                if s.role == Role::Key {
+                    apply(out, Style { bg: blend(cap, bg, a).or(cap).or(bg), ..style })?;
+                    queue!(out, Print(format!(" {} ", s.text)))?;
+                } else {
+                    apply(out, style)?;
+                    queue!(out, Print(&s.text))?;
+                }
+            }
+            let used: usize = row.iter().map(crate::plugin::overlay::span_width).sum();
+            apply(out, plain)?;
+            queue!(out, Spaces(w - pad - used))?;
+            // (cut — to its room here, or to `CELLS_MAX` as it came: whole on a card over it, under the mouse)
+            let whole = o.whole[i].clone().or_else(|| {
+                cut.is_some().then(|| o.rows[i].iter().map(|s| s.text.as_str()).collect::<String>())
+            });
+            if let Some(text) = whole {
+                let (a, y) = (x + pad, y0 + i);
+                let float = None;
+                let on = crate::whole::On::Overlay;
+                let w = crate::whole::Whole {
+                    on,
+                    text,
+                    style: plain,
+                    pieces: Vec::new(),
+                    cols: (x, x + w),
+                    state: None,
+                    float,
+                };
+                crate::whole::record(editor, (y, a, a + used), w, None);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A toast's rows cut into what's plain and its painted words (`Toast.paint`): each word the first found after the
