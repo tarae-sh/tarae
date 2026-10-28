@@ -248,6 +248,10 @@ impl Under {
     }
 }
 
+/// A card's way in pressed (`Part::Answer`): `C-q answer` while it waits — focused, as a press anywhere on it; once
+/// focused `esc back` in its place — the keys back, as `esc` (#200: every pair on its bottom line does its key).
+pub const WAY: char = '\u{1b}';
+
 /// What a press on the prompt's card off its line and its completions says.
 pub const PROMPT_ROWS: &str = "a completion's row fills it in — enter runs the line · esc close";
 /// What the middle button says where there's no text to paste into.
@@ -349,7 +353,8 @@ impl Editor {
         if down && self.picker.is_some() && !s.picker_box.get().is_some_and(|b| inside(b, x, y)) {
             return at(S::Picker, Part::Outside);
         }
-        let button = s.offer_buttons.iter().find(|b| on(b.0, b.1, b.2, x, y)).map(|b| b.3);
+        let way = s.offer_way.filter(|w| on(w.0, w.1, w.2, x, y)).map(|_| WAY);
+        let button = s.offer_buttons.iter().find(|b| on(b.0, b.1, b.2, x, y)).map(|b| b.3).or(way);
         let on_card = s.offer_card.is_some_and(|c| inside(c, x, y));
         let on_toast = s.toast_card.get().is_some_and(|t| inside(t, x, y));
         if down && on_toast && !on_card && button.is_none() && self.picker.is_none() {
@@ -1217,6 +1222,9 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             // (a cut card's body)
             A::Wheel => Acts,
             A::Release => RELEASE,
+            // (an answer on its bottom line lit, as every word that does its key — #200; a peek, its "more lines" row and
+            // an answer held until it's read lights nothing: the walk's `Before.unlit`)
+            A::Hover if matches!(part, Part::Answer(_)) => Acts,
             A::Hover => HOVER,
         },
         // (its press the keys to the code, where its `esc stop` is typed — never the stop itself)

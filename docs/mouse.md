@@ -47,7 +47,7 @@ that fills it (S selection).
 | A floating list (sessions, `:messages`) | off its rows | ✓ | — the press did it | ✗ S: a drag follows the pointer's row | as one press | ✓ | — nothing on hover |
 | A floating pane | its frame | ✓ | — a click keeps nothing; a drag's release keeps it | ✓ | as one press | ✓ | — nothing on hover |
 | A floating pane | inside | ✓ | — the press did it | ✗ S: its text selects | as one press | ✓ | — nothing on hover |
-| Cards | an answer, the card | ✓ | — the press did it | says: a card's text isn't selected — v shows it whole, to copy | as one press | ✓ | — nothing on hover |
+| Cards | an answer, the card | ✓ | — the press did it | says: a card's text isn't selected — v shows it whole, to copy | as one press | ✓ | ✓ |
 | The ask's card (`space i`, a commit draft) |  | ✓ | — the press did it | says: the ask's card isn't selected — its change comes to the buffer, reviewed there | as one press | — nothing to scroll | — nothing on hover |
 | The notification card |  | ✓ | — the press did it | — the press opened :messages | — the first press opened :messages | — news isn't scrolled | — nothing on hover |
 | A plugin's overlay | a row | ✓ | — the press did it | — what's under it takes it | as one press | — what's under it takes it | — what's under it takes it |

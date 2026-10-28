@@ -91,6 +91,17 @@ impl Editor {
         }
     }
 
+    /// `C-q` as a card's way in says it, first on its bottom line (`C-q answer`): as said while the card waits, whether
+    /// it holds the keys or not — never with the card's own `esc` first — so the line is laid the same waiting and
+    /// focused, and each answer keeps its cell as a press focuses the card and `esc` lets it go (#211: `esc esc space I`
+    /// made a focused card's line 4 cells wider, and a second press landed on the answer to the left).
+    pub fn card_way_said(&self) -> String {
+        match self.twinned("C-q") {
+            true => then(beneath_card(self), c_q_tail(self, Reach::Next)),
+            false => "C-q".into(),
+        }
+    }
+
     /// `C-q` as said once the keys are back in the code's normal mode — for a line that tells the way back itself
     /// (the prompt's `esc close — then …`).
     pub fn c_q_from_code(&self) -> String {
@@ -133,13 +144,20 @@ fn bound(node: &Node, command: &str, like: &str) -> String {
 /// (focused — it says what isn't its answer) lets go first with its `esc`, back to what it took them from; then the
 /// way from there (`from`).
 fn way_back(ed: &Editor) -> Vec<String> {
+    let mut back = Vec::new();
+    if matches!(ed.keys_to().region, Region::Card(_)) && ed.card_has_keys() {
+        back.push("esc".to_string());
+    }
+    back.extend(beneath_card(ed));
+    back
+}
+
+/// The way back to the code's normal mode from where the keys go — a card holding them left out: from what it took
+/// them from, where its `esc` gives them back.
+fn beneath_card(ed: &Editor) -> Vec<String> {
     let keys = ed.keys_to();
     match keys.region {
-        Region::Card(_) if ed.card_has_keys() => {
-            let mut back = vec!["esc".to_string()];
-            back.extend(from(ed, keys.under.unwrap_or(Region::Code)));
-            back
-        }
+        Region::Card(_) if ed.card_has_keys() => from(ed, keys.under.unwrap_or(Region::Code)),
         region => from(ed, region),
     }
 }

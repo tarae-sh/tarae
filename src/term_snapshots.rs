@@ -1195,6 +1195,71 @@ fn snapshot_instructions_card() {
     s.frames_both("instructions_card");
 }
 
+/// frictions #211's screens, for their screenshots — by hand, `TARAE_FRAMES_DIR` given (both themes there, 140×30 and
+/// 100×30, named by `TARAE_FRAMES_WHICH`; `.sb/f211/shots.sh` draws them, each card waiting over itself focused;
+/// what they show is `wordspot::tests::a_focusing_press_moves_no_answer`'s to hold):
+/// inside zellij's hints, the code in insert mode (its way in `esc space I answer`) — Claude's run card, its grant card
+/// and the bring card (its answers in short words), each waiting, then focused by a press on its last answer; the grant
+/// card focused again with the mouse on `a` (#200's light).
+#[test]
+#[ignore = "by hand: #211's screenshots (.sb/f211/shots.sh)"]
+fn frictions211_frames() {
+    use crate::event::{Mouse, MouseKind};
+    assert!(std::env::var_os("TARAE_FRAMES_DIR").is_some(), "TARAE_FRAMES_DIR: where its frames go");
+    let which = std::env::var("TARAE_FRAMES_WHICH").unwrap_or_else(|_| "after".into());
+    let mouse = |s: &mut Shot, kind: MouseKind, (x, y): (usize, usize)| {
+        let m = Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false };
+        s.ed.handle_event(Event::Mouse(m));
+    };
+    for w in [140, 100] {
+        for name in ["run", "grant", "bring"] {
+            let mut s = Shot::new(w, 30);
+            s.ed.offer_popups = true;
+            s.ed.zellij = true;
+            s.file("src/demo.rs", DEMO_RS);
+            s.keys("i");
+            match name {
+                "run" => {
+                    let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "run",
+                        "arguments": {"command": "cargo test --quiet", "outside_sandbox": true,
+                            "reason": "cargo needs to fetch the registry index"}}});
+                    assert!(crate::tools::mcp(&mut s.ed, 0, "c1", &msg).is_none(), "it waits for the user");
+                }
+                _ => {
+                    let card = chat112_cards().into_iter().find(|c| c.0 == name).unwrap().1;
+                    s.ed.push_offer(card);
+                }
+            }
+            s.frame();
+            assert!(!s.ed.card_has_keys() && !s.ed.offers.is_empty(), "{name}: waiting");
+            s.frames_both(&format!("{name}-{w}-1waiting-{which}"));
+            let answers = |s: &Shot| {
+                (s.ed.screen.offer_buttons.iter())
+                    .filter(|b| b.3.is_ascii_alphabetic())
+                    .copied()
+                    .collect::<Vec<_>>()
+            };
+            let last = *answers(&s).last().expect("its answers");
+            mouse(&mut s, MouseKind::Down, (last.1, last.0));
+            mouse(&mut s, MouseKind::Up, (last.1, last.0));
+            s.frame();
+            assert!(s.ed.card_has_keys(), "{name}: focused by the press");
+            // (what the press said, at full strength: fully faded in, seconds before the fade-out)
+            let fresh = Instant::now().checked_sub(Duration::from_millis(500)).unwrap();
+            for t in &mut s.ed.toasts {
+                (t.at, t.shown) = (fresh, true);
+            }
+            s.frames_both(&format!("{name}-{w}-2focused-{which}"));
+            if name == "grant" {
+                let a = *answers(&s).iter().find(|b| b.3 == 'a').expect("its a");
+                s.ed.handle_event(Event::Hover(a.1 as u16, a.0 as u16));
+                s.frame();
+                s.frames_both(&format!("{name}-{w}-3hover-{which}"));
+            }
+        }
+    }
+}
+
 /// frictions36's screens, for their screenshots (only with `TARAE_FRAMES_DIR` set: both themes there, 80×24 and
 /// 160×40; `cargo xtask shot` draws them with `TARAE_SHOT_REPLAY`): 68 a rebase's reloads — one toast a file
 /// (before) and one line (after); 67 a send right after a restart — refused (before) and queued while the chat

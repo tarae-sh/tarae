@@ -409,6 +409,9 @@ struct Snap {
     said: u64,
     /// What the mouse over a word shows: the word lit, a presence tag, the now line's card, a strip mark's words.
     over: String,
+    /// The word lit alone (`Editor.word_hover`) — what a card's answer shows under the mouse (#200; a peek's cut title
+    /// whole on its card is drawn, not an act).
+    word: String,
 }
 
 impl PartialEq for Snap {
@@ -477,7 +480,8 @@ fn snap(ed: &mut Editor) -> Snap {
     let frame = colourless(&frame);
     let strip = ed.workspace.claude.chat.as_ref().and_then(|c| c.follow.hover.clone());
     let over = format!("{:?} {:?} {:?} {strip:?}", ed.word_hover.get(), ed.presence.hover, ed.cut_hover);
-    Snap { frame, text, keys, sel, lit: format!("{:?}", ed.border_lit()), said: ed.said, over }
+    let word = format!("{:?}", ed.word_hover.get());
+    Snap { frame, text, keys, sel, lit: format!("{:?}", ed.border_lit()), said: ed.said, over, word }
 }
 
 /// A snap where an act is judged, and whether the frame then holds still: a second snap with no event between. A frame
@@ -531,7 +535,12 @@ fn colourless(frame: &[u8]) -> Vec<u8> {
 /// drawn, not an act (a cut row whole; a line that drags, lit: `Did.drawn`); in a scene whose frame moves by itself (a
 /// draft being written), neither is the frame.
 fn did(a: &Snap, b: &Snap, act: Act, u: Under) -> Did {
-    let word = act == Act::Hover && matches!(u.part, Part::Word(_)) && a.over != b.over;
+    let word = act == Act::Hover
+        && match u.part {
+            Part::Word(_) => a.over != b.over,
+            Part::Answer(_) => a.word != b.word,
+            _ => false,
+        };
     let moved = a.keys != b.keys || a.sel != b.sel || word;
     let drawn = !MOVING.get() && (a.frame != b.frame || a.lit != b.lit);
     Did {
@@ -749,6 +758,16 @@ struct Before {
     pending: bool,
     /// On the floating pane `C-w m` moves (`STATES`): a press says how it moves.
     moving_here: bool,
+    /// On a card's answer that lights nothing under the mouse (#200): a peek's row, its "more lines" row (off its bottom
+    /// line), an answer held until its text is read whole (`Editor::offer_press_held`).
+    unlit: bool,
+}
+
+/// Whether the card's answer under `u` at row `y` lights nothing (`Before.unlit`).
+fn unlit(ed: &Editor, u: Under, y: usize) -> bool {
+    let Part::Answer(k) = u.part else { return false };
+    let bottom = ed.screen.offer_card.is_some_and(|c| y + 1 == c.1 + c.3);
+    k.is_ascii_digit() || !bottom || ed.offer_press_held(k)
 }
 
 fn judge(
@@ -803,6 +822,11 @@ fn state_expect(u: Under, act: Act, before: Before) -> Option<Expect> {
     if before.pending && act == Act::Press {
         return Some(STATES[1].2);
     }
+    if before.unlit && act == Act::Hover {
+        return Some(Expect::Not(
+            "a peek, its more lines' row or an answer held until it's read: nothing lit",
+        ));
+    }
     if !before.moving_here {
         return None;
     }
@@ -841,6 +865,7 @@ fn before(ed: &Editor, u: Under, (x, y): (usize, usize)) -> Before {
         // (as the scene's keys left it: `UNDER_WAY` — before its first press, which ends it)
         pending: SCENE_UNDER_WAY.get(),
         moving_here: ed.float_moving.is_some() && ed.float_at(x, y).map(|f| f.0) == ed.float_moving,
+        unlit: unlit(ed, u, y),
     }
 }
 
@@ -1049,7 +1074,8 @@ fn wheel_at(
     ed.handle_event(Event::Hover(x as u16, y as u16));
     let (s1, still1) = after(walk, &mut ed, scene, at, "after the hover");
     if let Some(u) = pressed.filter(|_| still0 && still1) {
-        judge(walk, scene, u, Act::Hover, Before::default(), did(&s0, &s1, Act::Hover, u));
+        let with = Before { unlit: unlit(&ed, u, y), ..Before::default() };
+        judge(walk, scene, u, Act::Hover, with, did(&s0, &s1, Act::Hover, u));
     }
     send(&mut ed, K::ScrollDown, x, y, scene, walk);
     let (s2, still2) = after(walk, &mut ed, scene, at, "after the wheel down");

@@ -959,6 +959,13 @@ impl Offer {
             || (c == 'h' && self.highs().is_some())
     }
 
+    /// Whether answer `c` waits for its text to be read whole while the card is cut to fit: a weighty card's weighty
+    /// answer — the one rule for what the key does (`act`: `SeeAllFirst`), what its label says (`once it's read`) and
+    /// what a press does (`Editor::offer_press_held`). A card that isn't weighty answers at once, cut or not.
+    pub fn read_first(&self, c: char) -> bool {
+        self.weighty() && self.weighty_answer(c)
+    }
+
     /// Whether `key` is one of its answers that only a settled card in sight takes (`y`, and the letters
     /// that do something too).
     pub fn weighty_answer(&self, c: char) -> bool {
@@ -995,7 +1002,7 @@ impl Offer {
             if !st.whole {
                 match c {
                     'v' => return Some(A::View),
-                    c if self.weighty_answer(c) => return Some(A::SeeAllFirst),
+                    c if self.read_first(c) => return Some(A::SeeAllFirst),
                     _ => {}
                 }
             }
@@ -2397,6 +2404,13 @@ impl crate::editor::Editor {
         }
     }
 
+    /// Whether a press on the front card's answer `c` is held until its text has been seen whole: a weighty card's
+    /// weighty answer, cut to fit (`Offer::read_first`, as its key) — its label says `once it's read`, a press says so
+    /// (`offer_see_all_first`) and answers nothing, so it doesn't light under the mouse (#200).
+    pub fn offer_press_held(&self, c: char) -> bool {
+        !self.offer_seen_whole() && self.offers.first().is_some_and(|o| o.read_first(c))
+    }
+
     /// `y` on a card cut to fit: not an answer yet — said on the card (and its cut row too).
     pub fn offer_see_all_first(&mut self) {
         self.offer_early.set(self.offers.first().map(|o| (o.id, o.rev)));
@@ -2552,7 +2566,9 @@ impl crate::editor::Editor {
         }
     }
 
-    /// `r` on a change set's card: one by one — on a protected-made card: remove them (as `y`).
+    /// `r` on a change set's card: one by one — on a protected-made card: remove them (as `y`). Tests' stand-in for `r`
+    /// on a card no frame drew (a press and a key go through `offer_key`).
+    #[cfg(test)]
     pub fn offer_one_by_one(&mut self) {
         if self.offers.first().is_some_and(Offer::made) {
             return self.offer_accept_by('r');

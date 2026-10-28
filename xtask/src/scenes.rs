@@ -268,6 +268,41 @@ const WORDS_KEYS: [&[&str]; 4] = [
 /// ground lightens, its text's colour as drawn.
 const WORDS_TAB: &[&str] = &["@1", " ", "l", "@1", "@hover?wide.rs", "@1"];
 
+/// #200: a card's answers lit under the mouse as every word that does its key — Claude's card focused (`C-q`), the mouse
+/// on its `y`; waiting, on its way in (`C-q answer`).
+const WORDS_ANSWER: [&[&str]; 2] = [
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "run the tests",
+        "\r",
+        "\x17",
+        "h",
+        "@?Its reason",
+        "@1",
+        "\x11",
+        "@1",
+        "@hover?y Run",
+        "@1",
+    ],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "run the tests",
+        "\r",
+        "\x17",
+        "h",
+        "@?Its reason",
+        "@1",
+        "@hover+1?C-q answer",
+        "@1",
+    ],
+];
+
 /// #185: what goes with the message, the mouse over its chip over the chat's input — the whole file quoted
 /// (`%`, `space >`), in its colours; a line quoted, the screen (`C-s`), then lines 3–9 from the code (`C-w h`), folded
 /// to `3 things`; the whole file's chip pressed — the quote whole in a read-only buffer.
@@ -2117,6 +2152,9 @@ const SCENES: &[Scene] = &[
     Scene { name: "words-foot", claude: "footshort", files: MAIN, keys: WORDS_KEYS[2] },
     Scene { name: "words-follow", claude: "footshort", files: MAIN, keys: WORDS_KEYS[3] },
     Scene { name: "words-tab", claude: "idle", files: &["src/main.rs", "src/wide.rs"], keys: WORDS_TAB },
+    // (#200: a card's answers lit — focused, the mouse on `y`; waiting, on `C-q answer`)
+    Scene { name: "words-answer", claude: "card", files: MAIN, keys: WORDS_ANSWER[0] },
+    Scene { name: "words-answer-waiting", claude: "card", files: MAIN, keys: WORDS_ANSWER[1] },
     // (motion §4: a turn of 20 stops — reads, lookups, edits, runs, one failing — its trail rows; the follow card's strip)
     Scene { name: "strip-trail", claude: "strip", files: MAIN, keys: STRIP_KEYS[0] },
     Scene { name: "strip", claude: "strip", files: MAIN, keys: STRIP_KEYS[1] },

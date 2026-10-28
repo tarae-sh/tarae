@@ -818,6 +818,423 @@ fn said(k: &str) -> Option<Vec<String>> {
     keys(k).map(|v| v.iter().map(|k| k.to_string()).collect())
 }
 
+/// A card asking (a weighty one: the project's trust), short enough to be drawn whole — or, `long`, cut to fit.
+fn trust_card(ed: &mut Editor, long: bool) {
+    let body = match long {
+        true => (0..80).map(|i| format!("line {i} of what it asks")).collect::<Vec<_>>().join("\n"),
+        false => "x = 1".to_string(),
+    };
+    let what = crate::offer::What::ProjectTrust { hash: [0; 32] };
+    ed.push_offer(crate::offer::Offer::new("Trust?".into(), &body, "", String::new(), what));
+    frame(ed);
+}
+
+/// The front card's words on its bottom line, as a press finds them: its way in, then each answer (row, from, to, key —
+/// `mouse::WAY` the way in's).
+fn answers(ed: &Editor) -> Vec<(usize, usize, usize, char)> {
+    let s = &ed.screen;
+    let bottom = s.offer_card.map(|c| c.1 + c.3 - 1).expect("a card drawn");
+    let way = s.offer_way.map(|w| (w.0, w.1, w.2, crate::mouse::WAY));
+    way.into_iter().chain(s.offer_buttons.iter().copied().filter(|b| b.0 == bottom)).collect()
+}
+
+/// Where the front card's way in is drawn, read from the frame itself (#200's review: never `Screen.offer_way`, the
+/// code's own reckoning) — its words on a card's bottom line (`╰`): `C-q answer` waiting, `esc back` focused.
+fn way_drawn(ed: &Editor) -> (usize, usize, usize) {
+    let words = match ed.card_has_keys() {
+        true => "esc back".to_string(),
+        false => format!("{} answer", ed.key_said("C-q")),
+    };
+    let shown = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
+    let found = shown.lines().enumerate().find_map(|(y, row)| {
+        let i = row.find(&words).filter(|_| row.contains('╰'))?;
+        let a = row[..i].chars().count();
+        Some((y, a, a + words.chars().count()))
+    });
+    found.unwrap_or_else(|| panic!("`{words}` on a card's bottom line:\n{shown}"))
+}
+
+/// The cells from `a` to `b` on row `y`, rendered anew: what each holds, its text's colour, its ground.
+fn cells(ed: &mut Editor, (y, a, b): (usize, usize, usize)) -> Vec<(String, vt100::Color, vt100::Color)> {
+    ed.focus_sync();
+    let mut bytes = Vec::new();
+    crate::term::render(ed, &mut bytes, 120, 40).unwrap();
+    let mut p = vt100::Parser::new(40, 120, 0);
+    p.process(&bytes);
+    let cell = |x: usize| {
+        p.screen().cell(y as u16, x as u16).map(|c| (c.contents().to_string(), c.fgcolor(), c.bgcolor()))
+    };
+    (a..b).map(|x| cell(x).unwrap()).collect()
+}
+
+/// A press and its release at (`x`, `y`), then a frame — a while after the last one (never a double).
+fn press_at(ed: &mut Editor, at: (usize, usize)) {
+    crate::clock::advance(std::time::Duration::from_secs(1));
+    mouse(ed, MouseKind::Down, at);
+    mouse(ed, MouseKind::Up, at);
+    frame(ed);
+}
+
+/// frictions #200: a card's answers on its bottom line light under the mouse as every word that does its key — its
+/// ground only, its text's colour as drawn (meok, hanji; the card's ground is the screen's, the lit one another) — each
+/// lit where a press lands on it (`mouse_under`: that answer's key). Waiting, its way in `C-q answer` and its answers
+/// light (a press focuses it: the way in pressed, it has the keys); focused, `esc back` in the way in's place lights,
+/// and pressed gives the keys back.
+#[test]
+fn a_cards_answers_light_where_a_press_lands() {
+    use crate::mouse::{Part, Surface as S, Under, WAY};
+    // (colours drawn though tarae's test runner sets NO_COLOR)
+    crossterm::style::force_color_output(true);
+    crate::clock::hold();
+    for theme in ["meok", "hanji"] {
+        let mut ed = editor();
+        ed.theme = crate::theme::load(theme).unwrap();
+        trust_card(&mut ed, false);
+        for focused in [false, true] {
+            assert_eq!(ed.card_has_keys(), focused, "{theme}");
+            let words = answers(&ed);
+            let said = |k: char| if k == WAY { "its way in".to_string() } else { format!("{k}") };
+            assert!(
+                words.iter().any(|w| w.3 == 'y') && words.iter().any(|w| w.3 == WAY),
+                "{theme}: {words:?}"
+            );
+            // (its way in where the frame has its words: what the press, the hover and the light go by)
+            let way = words.iter().find(|w| w.3 == WAY).map(|w| (w.0, w.1, w.2));
+            assert_eq!(way, Some(way_drawn(&ed)), "{theme}, focused {focused}: its way in as drawn");
+            for &(y, a, b, k) in &words {
+                let said = format!("{theme}, focused {focused}: {} at {y} {a}..{b}", said(k));
+                assert_eq!(ed.mouse_at(a, y), Under { surface: S::Card, part: Part::Answer(k) }, "{said}");
+                let cells = |ed: &mut Editor| {
+                    ed.focus_sync();
+                    let mut bytes = Vec::new();
+                    crate::term::render(ed, &mut bytes, 120, 40).unwrap();
+                    let mut p = vt100::Parser::new(40, 120, 0);
+                    p.process(&bytes);
+                    let cell =
+                        |x: usize| p.screen().cell(y as u16, x as u16).map(|c| (c.fgcolor(), c.bgcolor()));
+                    (a..b).map(|x| cell(x).unwrap()).collect::<Vec<_>>()
+                };
+                let before = cells(&mut ed);
+                ed.handle_event(Event::Hover((b - 1) as u16, y as u16));
+                let lit = cells(&mut ed);
+                assert_eq!(ed.word_hover.get(), Some((y, a, b)), "{said}: lit, as a press finds it");
+                let fg = |c: &[(vt100::Color, vt100::Color)]| c.iter().map(|c| c.0).collect::<Vec<_>>();
+                assert_eq!(fg(&lit), fg(&before), "{said}: keeps its text's colour");
+                assert!(lit.iter().zip(&before).all(|(l, b)| l.1 != b.1), "{said}: its ground lit");
+                ed.handle_event(Event::Hover(5, 3));
+                assert_eq!(cells(&mut ed), before, "{said}: let go");
+            }
+            // (its way in pressed: waiting, the card focused; focused, `esc back` — the keys back, the card waiting)
+            let way = words.iter().find(|w| w.3 == WAY).unwrap();
+            press_at(&mut ed, (way.1, way.0));
+            assert_eq!(ed.card_has_keys(), !focused, "{theme}: its way in pressed");
+            assert_eq!(ed.offers.len(), 1, "{theme}: unanswered");
+            if focused {
+                press_at(&mut ed, (way.1, way.0));
+            }
+        }
+    }
+    crate::clock::release();
+}
+
+/// #200's review: the card as a one-row bar over the status line, its text read in its buffer (`v`) — its answers light
+/// where a press lands on them, as on a framed card: each one's words where the frame has them, its cells' text and
+/// colour as drawn, its ground another (meok, hanji). Its `y`, held until the text is read to its end, lights nothing
+/// until then.
+#[test]
+fn the_bars_answers_light_where_a_press_lands() {
+    use crate::mouse::{Part, Surface as S, Under};
+    crossterm::style::force_color_output(true);
+    crate::clock::hold();
+    for theme in ["meok", "hanji"] {
+        let mut ed = editor();
+        ed.theme = crate::theme::load(theme).unwrap();
+        trust_card(&mut ed, true);
+        ed.offer_view();
+        frame(&mut ed);
+        assert!(ed.offer_bar(), "{theme}: a bar over the status line");
+        for whole in [false, true] {
+            if whole {
+                let id = ed.offers.first().map(|o| (o.id, o.rev)).unwrap();
+                ed.offer_read_whole(id);
+                frame(&mut ed);
+                assert!(ed.offer_bar(), "{theme}: still a bar");
+            }
+            let bar = ed.screen.offer_card.map(|c| c.1).expect("drawn");
+            let words: Vec<_> = (ed.screen.offer_buttons.iter())
+                .filter(|b| b.0 == bar && b.3.is_ascii_lowercase())
+                .copied()
+                .collect();
+            assert!(
+                words.iter().any(|w| w.3 == 'y') && words.iter().any(|w| w.3 == 'n'),
+                "{theme}: {words:?}"
+            );
+            for &(y, a, b, k) in &words {
+                let said = format!("{theme}, read whole {whole}: {k} at {y} {a}..{b}");
+                let before = cells(&mut ed, (y, a, b));
+                assert_eq!(before[0].0, k.to_string(), "{said}: its key where the frame has it");
+                assert_eq!(ed.mouse_at(a, y), Under { surface: S::Card, part: Part::Answer(k) }, "{said}");
+                ed.handle_event(Event::Hover((b - 1) as u16, y as u16));
+                let lit = cells(&mut ed, (y, a, b));
+                if k == 'y' && !whole {
+                    assert_eq!(ed.word_hover.get(), None, "{said}: held, it lights nothing");
+                    assert_eq!(lit, before, "{said}: held, drawn as it was");
+                } else {
+                    assert_eq!(ed.word_hover.get(), Some((y, a, b)), "{said}: lit, as a press finds it");
+                    let text = |c: &[(String, vt100::Color, vt100::Color)]| {
+                        c.iter().map(|c| (c.0.clone(), c.1)).collect::<Vec<_>>()
+                    };
+                    assert_eq!(text(&lit), text(&before), "{said}: its text and its colour as drawn");
+                    assert!(lit.iter().zip(&before).all(|(l, b)| l.2 != b.2), "{said}: its ground lit");
+                }
+                ed.handle_event(Event::Hover(5, 3));
+                assert_eq!(cells(&mut ed, (y, a, b)), before, "{said}: let go");
+            }
+        }
+    }
+    crate::clock::release();
+}
+
+/// #200's review: `esc back` pressed is `esc` typed — the card's own key, all it does: after a window prefix left the
+/// card (`C-w`, then `esc`: the card remembered as the pane it left) and a press focused it again, the keys back by
+/// either way leave the editor the same — a press that only took the focus away kept that memory, which `esc` forgets.
+#[test]
+fn esc_back_pressed_is_esc_typed() {
+    let key = |ed: &mut Editor, k: &str| {
+        ed.handle_key(k.parse().unwrap());
+        frame(ed);
+    };
+    crate::clock::hold();
+    let ends = [true, false].map(|pressed| {
+        let mut ed = editor();
+        trust_card(&mut ed, false);
+        key(&mut ed, "C-q");
+        key(&mut ed, "C-w");
+        key(&mut ed, "esc");
+        assert!(!ed.card_has_keys(), "pressed {pressed}: the prefix took the keys back");
+        assert!(ed.float_left.is_some(), "pressed {pressed}: the card the pane the prefix left");
+        let (y, a, _) = way_drawn(&ed);
+        press_at(&mut ed, (a, y));
+        assert!(ed.card_has_keys(), "pressed {pressed}: its way in pressed, focused");
+        match pressed {
+            true => {
+                let (y, a, _) = way_drawn(&ed);
+                press_at(&mut ed, (a, y));
+            }
+            false => key(&mut ed, "esc"),
+        }
+        assert!(!ed.card_has_keys() && ed.offers.len() == 1, "pressed {pressed}: the keys back, unanswered");
+        let at = format!("{:?}", ed.workspace.viewer.at);
+        (ed.card_focus, ed.card_next, ed.pending.len(), ed.float_left.is_some(), at)
+    });
+    assert_eq!(ends[0], ends[1], "`esc back` pressed leaves the editor as `esc` typed");
+    assert!(!ends[1].3, "typed: the pane the prefix left forgotten");
+    crate::clock::release();
+}
+
+/// #200: an answer held until its card's text is read whole — a weighty card cut to fit, its `y` saying `once it's
+/// read` — lights nothing under the mouse, waiting or focused: a press there answers nothing (it says so). Its `n` lights;
+/// once the text was read whole, its `y` does.
+#[test]
+fn a_held_answer_lights_nothing() {
+    use crate::mouse::{Part, Surface as S};
+    crate::clock::hold();
+    let mut ed = editor();
+    trust_card(&mut ed, true);
+    assert!(!ed.offer_seen_whole(), "cut to fit");
+    let at = |ed: &Editor, k: char| answers(ed).into_iter().find(|w| w.3 == k).map(|w| (w.1, w.0));
+    let lit = |ed: &mut Editor, (x, y): (usize, usize)| {
+        ed.handle_event(Event::Hover(x as u16, y as u16));
+        frame(ed);
+        ed.word_hover.get().is_some()
+    };
+    for focused in [false, true] {
+        let y = at(&ed, 'y').expect("its y drawn");
+        assert_eq!(ed.mouse_at(y.0, y.1).part, Part::Answer('y'), "a press lands on it");
+        assert!(!lit(&mut ed, y), "focused {focused}: its held y lights nothing");
+        let n = at(&ed, 'n').expect("its n drawn");
+        assert!(lit(&mut ed, n), "focused {focused}: its n lights");
+        if !focused {
+            press_at(&mut ed, n);
+            assert!(ed.card_has_keys(), "its n pressed, waiting: focused");
+        }
+    }
+    // (pressed, it says why and answers nothing)
+    let y = at(&ed, 'y').unwrap();
+    press_at(&mut ed, y);
+    assert_eq!(ed.offers.len(), 1, "unanswered");
+    assert!(ed.messages.iter().any(|m| m.2.contains("y waits until")), "said");
+    // Read whole: its y lights
+    let id = ed.offers.first().map(|o| (o.id, o.rev)).unwrap();
+    ed.offer_read_whole(id);
+    frame(&mut ed);
+    let y = at(&ed, 'y').unwrap();
+    assert!(lit(&mut ed, y), "read whole: its y lights");
+    assert_eq!(ed.mouse_at(y.0, y.1).surface, S::Card);
+    crate::clock::release();
+}
+
+/// frictions #211: a press on a waiting card's answer focuses it, and every answer stays in its cell — focused and then
+/// waiting again (`esc`) — so a second press where you aimed lands on the same answer, and answers it. Claude's grant
+/// card (five answers), the code in insert mode, inside zellij's hints (its way in `esc space I answer`; once the card
+/// held the keys `C-q`'s twin was `esc esc space I`, the line 4 cells wider and its answers moved) and outside them.
+/// Each answer pressed first in turn; `n`, which runs nothing, pressed again: answered.
+#[test]
+fn a_focusing_press_moves_no_answer() {
+    use crate::mouse::{Part, Surface as S, Under};
+    crate::clock::hold();
+    let card = |zellij: bool| {
+        let mut ed = editor();
+        ed.zellij = zellij;
+        ed.handle_key("i".parse().unwrap());
+        let job =
+            crate::tools::Job::Command("npm test".into(), std::path::PathBuf::from("/tmp/tarae-not-there"));
+        let run = crate::blocked::BlockedRun {
+            claude: Some(crate::tools::Call::test(1)),
+            ..crate::blocked::BlockedRun::of(job)
+        };
+        let grant = crate::allow::Grant::Write(std::path::PathBuf::from("/tmp/tarae-not-there/npm-cache"));
+        let reason = "npm keeps its cache there";
+        ed.push_offer(crate::blocked::also_card(
+            grant,
+            reason,
+            "npm test",
+            Box::new(run),
+            None,
+            Vec::new(),
+            false,
+        ));
+        frame(&mut ed);
+        assert!(!ed.card_has_keys(), "zellij {zellij}: it waits");
+        ed
+    };
+    // (its answers on its bottom line, the way in left out — `esc back` takes the place of `C-q answer` by design)
+    let laid = |ed: &Editor| {
+        (
+            ed.screen.offer_card,
+            answers(ed).into_iter().filter(|w| w.3 != crate::mouse::WAY).collect::<Vec<_>>(),
+        )
+    };
+    for zellij in [true, false] {
+        let keys: Vec<char> = laid(&card(zellij)).1.iter().map(|w| w.3).collect();
+        assert_eq!(keys, ['y', 'a', 's', 'A', 'n'], "zellij {zellij}: five answers");
+        let line = crate::term::card_line(&card(zellij)).unwrap();
+        assert_eq!(
+            line.contains("esc space I answer"),
+            zellij,
+            "zellij {zellij}: its way in as said there: {line}"
+        );
+        for k in keys {
+            let mut ed = card(zellij);
+            let waiting = laid(&ed);
+            let w = waiting.1.iter().find(|w| w.3 == k).copied().unwrap();
+            press_at(&mut ed, (w.1, w.0));
+            let said = format!("zellij {zellij}, {k} pressed");
+            assert!(ed.card_has_keys() && ed.offers.len() == 1, "{said}: focused, unanswered");
+            assert_eq!(laid(&ed), waiting, "{said}: every answer in its cell, focused");
+            assert_eq!(
+                ed.mouse_at(w.1, w.0),
+                Under { surface: S::Card, part: Part::Answer(k) },
+                "{said}: again there"
+            );
+            ed.handle_key("esc".parse().unwrap());
+            frame(&mut ed);
+            assert!(!ed.card_has_keys(), "{said}: esc, waiting again");
+            assert_eq!(laid(&ed), waiting, "{said}: every answer in its cell, waiting again");
+            if k == 'n' {
+                press_at(&mut ed, (w.1, w.0));
+                press_at(&mut ed, (w.1, w.0));
+                assert!(ed.offers.is_empty(), "{said}: pressed again where it was, answered");
+            }
+        }
+    }
+    crate::clock::release();
+}
+
+/// #200's review: a card that isn't weighty, cut to fit, answers at once as its keys do (`Offer::act` holds only a
+/// weighty card's answers until its text is read — `Offer::read_first`): its `y` never says `once it's read`, its `y`
+/// and `a` light waiting and focused, and `a` pressed answers it — as `a` typed does.
+#[test]
+fn a_light_cards_answers_are_never_held() {
+    crate::clock::hold();
+    let card = |ed: &mut Editor| {
+        let body = (0..80).map(|i| format!("line {i} of what it asks")).collect::<Vec<_>>().join("\n");
+        let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
+        ed.push_offer(crate::offer::Offer::new("Claude asks".into(), &body, "", String::new(), what));
+        frame(ed);
+        assert!(!ed.offers[0].weighty() && !ed.offer_seen_whole(), "light, cut to fit");
+    };
+    let (mut pressed, mut typed) = (editor(), editor());
+    card(&mut pressed);
+    card(&mut typed);
+    let line = crate::term::card_line(&pressed).expect("drawn");
+    assert!(!line.contains("once"), "nothing waits to be read: {line}");
+    let at = |ed: &Editor, k: char| answers(ed).into_iter().find(|w| w.3 == k).map(|w| (w.1, w.0));
+    let lit = |ed: &mut Editor, (x, y): (usize, usize)| {
+        ed.handle_event(Event::Hover(x as u16, y as u16));
+        frame(ed);
+        ed.word_hover.get().is_some()
+    };
+    for focused in [false, true] {
+        for k in ['y', 'a'] {
+            assert!(!pressed.offer_press_held(k), "focused {focused}: its {k} isn't held");
+            let spot = at(&pressed, k).unwrap_or_else(|| panic!("its {k} drawn: {line}"));
+            assert!(lit(&mut pressed, spot), "focused {focused}: its {k} lights");
+        }
+        if !focused {
+            let n = at(&pressed, 'n').unwrap();
+            press_at(&mut pressed, n);
+            assert!(pressed.card_has_keys(), "its n pressed, waiting: focused");
+        }
+    }
+    let a = at(&pressed, 'a').unwrap();
+    press_at(&mut pressed, a);
+    typed.handle_key("C-q".parse().unwrap());
+    typed.handle_key("a".parse().unwrap());
+    assert!(typed.offers.is_empty(), "typed: answered");
+    assert!(pressed.offers.is_empty(), "pressed: answered, as typed");
+    crate::clock::release();
+}
+
+/// #200: a press on a card's answer does what its key does (`Offer::act`, the one table) — so every answer that lights
+/// acts: a review's end card held for a high-risk change, its `h` (a press's own list of answers had none: it did
+/// nothing) says what typing `h` says.
+#[test]
+fn a_pressed_answer_does_what_its_key_does() {
+    let held = |ed: &mut Editor| {
+        let what = crate::offer::What::ReviewEnd {
+            session: crate::event::WorkspaceId::HOME,
+            started: std::time::Instant::now(),
+        };
+        let mut o = crate::offer::Offer::new(
+            "End the review?".into(),
+            "1 high-risk change.",
+            "",
+            String::new(),
+            what,
+        );
+        o.held = Some("a high-risk change no one has looked at".into());
+        ed.push_offer(o);
+        frame(ed);
+        ed.handle_key("C-q".parse().unwrap());
+        frame(ed);
+        assert!(ed.card_has_keys());
+    };
+    crate::clock::hold();
+    let (mut pressed, mut typed) = (editor(), editor());
+    held(&mut pressed);
+    held(&mut typed);
+    let h = answers(&pressed).into_iter().find(|w| w.3 == 'h').expect("its h drawn");
+    let said = pressed.said;
+    press_at(&mut pressed, (h.1, h.0));
+    assert!(pressed.said != said, "its h pressed: said");
+    typed.handle_key("h".parse().unwrap());
+    let last = |ed: &Editor| ed.messages.last().map(|m| m.2.clone());
+    assert_eq!(last(&pressed), last(&typed), "as typed");
+    assert_eq!(pressed.offer_said_now(), typed.offer_said_now(), "on the card, as typed");
+    crate::clock::release();
+}
+
 /// A hint's keys as typed: a sequence after a prefix, a motion's pair, an arrow, a `:` command — never several keys
 /// side by side that are each their own, nor a word.
 #[test]

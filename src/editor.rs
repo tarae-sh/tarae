@@ -525,6 +525,9 @@ pub struct Screen {
     pub picker_list: Option<(usize, usize)>,
     /// Grammar download offer buttons: (row, start col, end col, key to feed when clicked).
     pub offer_buttons: Vec<(usize, usize, usize, char)>,
+    /// The front card's way in on its bottom line (row, start col, end col): `C-q answer` while it waits, `esc back`
+    /// once focused — a press there is that key's (`mouse::WAY`).
+    pub offer_way: Option<(usize, usize, usize)>,
     /// The front card as drawn, its back cards' rows too (x, y, width, height) — the UI state's `at`.
     pub offer_card: Option<(usize, usize, usize, usize)>,
     /// How many of the front card's lines its drawing left out (`↓ 2 more lines`; 0: drawn whole) — None
@@ -572,6 +575,9 @@ pub struct Screen {
     /// preflight's step chip):
     /// what's drawn there, lit while the mouse is over it (`wordspot::lit`).
     pub word_lit: std::cell::RefCell<Vec<crate::wordspot::Lit>>,
+    /// The front card's answers a press does, as drawn on its bottom line — lit while the mouse is over one (#200,
+    /// `term::OfferCard::answers_lit`).
+    pub answer_lit: std::cell::RefCell<Vec<crate::wordspot::Lit>>,
     /// The code review's file rail: (row, file index) — a click opens that file.
     pub review_rail: std::cell::RefCell<Vec<(usize, usize)>>,
     /// The rail's file rows' viewed marks: (row, file index, column) — a click there marks it viewed (#67) ·
@@ -3766,28 +3772,20 @@ impl Editor {
         match button {
             Some(d) if d.is_ascii_digit() => self.offer_peek(d.to_digit(10).unwrap_or(0) as usize),
             Some(_) if has && double => {}
-            Some(k) if has => {
-                let weighty = self.offers.first().is_some_and(|o| o.weighty_answer(k));
-                match k {
-                    _ if weighty && !self.offer_seen_whole() => self.offer_see_all_first(),
-                    'y' => self.offer_accept(),
-                    'v' => self.offer_view(),
-                    'r' => self.offer_one_by_one(),
-                    'a' => self.offer_for_chat(),
-                    's' if self.offers.first().is_some_and(crate::offer::Offer::for_workspace) => {
-                        self.offer_for_session()
-                    }
-                    'A' => self.offer_always(),
-                    'D' => self.offer_remove(true),
-                    'R' => self.offer_remove(false),
-                    'c' => self.offer_commit_first(),
-                    'p' => self.offer_preflight_first(),
-                    'X' => self.offer_abort(),
-                    'n' => self.offer_dismiss(),
-                    'N' => self.offer_never(),
-                    _ => {}
-                }
+            // (its way in, focused: `esc back` — `esc` itself, through the card's own keys: the keys back, the card waiting)
+            Some(crate::mouse::WAY) if has => {
+                self.card_key(Key::plain(Code::Esc));
             }
+            Some(k) if has => match k {
+                _ if self.offer_press_held(k) => self.offer_see_all_first(),
+                // (an answer as its key answers it: `Offer::act`, the one place a card's letters are decided — its
+                // "more lines" row's `v` views any card cut short)
+                _ => {
+                    if !self.offer_key(Key::plain(Code::Char(k))) && k == 'v' {
+                        self.offer_view();
+                    }
+                }
+            },
             _ if !has && self.offers.first().is_some_and(|o| !o.installing()) => {
                 self.card_focus_front();
                 self.card_pressed = self.offers.first().map(|o| (o.id, crate::clock::now()));

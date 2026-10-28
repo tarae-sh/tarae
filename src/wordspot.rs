@@ -4,7 +4,7 @@
 //! the mouse over one lights its ground, the selected row's — never its text's colour (#197a) — so it reads as a thing
 //! to press before it's pressed. Each is recorded where it's drawn (`Screen.word_spots`, its spans with it); what a press
 //! lands on is `mouse_under`'s (`Word::Does`), and the one lit is the same answer for the pointer's cell, so a word
-//! under a card or a picker is neither lit nor pressed. Never a press that costs on a stray one: the mode, a save, a
+//! under a card or a picker is neither lit nor pressed — the card's own answers are (`Part::Answer`, #200). Never a press that costs on a stray one: the mode, a save, a
 //! weighty answer have no spot.
 
 use crate::editor::Editor;
@@ -251,9 +251,9 @@ fn refused(ed: &Editor, home: Option<At>) -> Option<String> {
 pub type Lit = (usize, usize, usize, Vec<(String, Style)>);
 
 /// What lights with the mouse at (`x`, `y`) on the frame last drawn: the word a press there lands on — `mouse_under`'s
-/// answer, so one under a card, a picker or a floating pane is none — as it was drawn: one of these spots, or a word
+/// answer, so one under a card, a picker or a floating pane is none — as it was drawn: one of these spots, a word
 /// with a record of its own (a session's tab, the status line's chip, a slot's tab, a preflight's step chip —
-/// `Screen.word_lit`). Not the three
+/// `Screen.word_lit`), or a card's answer on its bottom line (#200 — `Screen.answer_lit`). Not the three
 /// whose hover says more: what Claude is doing now (its card), a mark of the strip (its words) and a chip over the
 /// chat's input (what goes).
 pub fn lit(ed: &Editor, x: usize, y: usize) -> Option<Lit> {
@@ -263,6 +263,11 @@ pub fn lit(ed: &Editor, x: usize, y: usize) -> Option<Lit> {
             ed.screen.word_spots.borrow().get(i).map(|s| (s.y, s.from, s.to, s.spans.clone()))
         }
         Part::Word(Word::Now | Word::Stop(_) | Word::With(_)) => None,
+        // (a card's answers on its bottom line — its way in, each answer a press does: `term::OfferCard::answers_lit`)
+        Part::Answer(_) => {
+            let lit = ed.screen.answer_lit.borrow();
+            lit.iter().find(|l| l.0 == y && (l.1..l.2).contains(&x)).cloned()
+        }
         Part::Word(_) => {
             let lit = ed.screen.word_lit.borrow();
             lit.iter().rev().find(|l| l.0 == y && (l.1..l.2).contains(&x)).cloned()

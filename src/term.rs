@@ -647,6 +647,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         }),
         popup: std::cell::Cell::new(None),
         offer_buttons: offer.as_ref().map(|c| c.buttons.clone()).unwrap_or_default(),
+        offer_way: offer.as_ref().and_then(|c| c.way_at),
         offer_card: offer.as_ref().map(OfferCard::rect),
         offer_held: offer.is_none()
             && !editor.pending.is_empty()
@@ -667,6 +668,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         session_spots: Default::default(),
         word_spots: Default::default(),
         word_lit: Default::default(),
+        answer_lit: Default::default(),
         review_rail: Default::default(),
         review_rail_marks: Default::default(),
         review_rail_more: Default::default(),
@@ -932,6 +934,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         // (this frame's card already says so)
         offer = OfferCard::new(editor, &lay);
         editor.screen.offer_buttons = offer.as_ref().map(|c| c.buttons.clone()).unwrap_or_default();
+        editor.screen.offer_way = offer.as_ref().and_then(|c| c.way_at);
         editor.screen.offer_card = offer.as_ref().map(OfferCard::rect);
         editor.screen.offer_cut = offer.as_ref().filter(|c| !c.bar).map(|c| c.cut);
     }
@@ -11745,6 +11748,9 @@ struct OfferCard {
     /// Its way in, first on that line while it waits (`C-q` as said now — `C-q answer`; focused, `esc back` in its
     /// place); None where the line has no room for it.
     way: Option<String>,
+    /// Where its way in's words are drawn, as it stands this frame (row, start col, end col) — a press there is its key
+    /// (`Screen.offer_way`: waiting, focused; focused, the keys back).
+    way_at: Option<(usize, usize, usize)>,
     /// The key that lists every card waiting, its line's last pair while others wait behind it (`INBOX_SAYS`), where
     /// there's room after its answers.
     inbox: Option<String>,
@@ -11826,7 +11832,7 @@ fn card_short(editor: &Editor, lay: &Layout) -> Option<String> {
     // in its short words — `answer_forms` — and what lists the cards behind it)
     let short = o.answers_short(editor.preflight_quick().is_some());
     let keys = short.iter().map(|(k, l)| pair_w(if o.lasting(*k) { l } else { "" }));
-    let way = way_w(&editor.key_said("C-q")) + 3;
+    let way = way_w(&editor.card_way_said()) + 3;
     let behind = editor.cards_behind_said().map_or(0, |_| inbox_w(&editor.inbox_key()) + 3);
     let answer = keys.map(|w| w + 3).sum::<usize>().checked_sub(3).map(|w| w + way + behind);
     let side = editor.workspace.viewer.sidebar.is_some();
@@ -11956,7 +11962,7 @@ pub(crate) fn card_line_holds(ed: &Editor, says: &str) -> Result<(), String> {
     // (the line: `╰─`, a run where `esc back` took the way in's place — the cells between them —, `says`, a run, `╯`)
     let back = format!("{} {}", ESC_BACK.0, ESC_BACK.1);
     let lead = match says.starts_with(&back) {
-        true => way_w(&ed.key_said("C-q")).saturating_sub(back.width()),
+        true => way_w(&ed.card_way_said()).saturating_sub(back.width()),
         false => 0,
     };
     let head = format!("╰─{} {says} ", "─".repeat(lead));
@@ -12155,6 +12161,7 @@ impl OfferCard {
             buttons,
             labels: Vec::new(),
             way: None,
+            way_at: None,
             inbox: None,
             waits: None,
             pad: 0,
@@ -12247,7 +12254,8 @@ impl OfferCard {
         let widest = wrap.unwrap_or(right.saturating_sub(8));
         // (its text at its reading width: its answers fit the card, never the card its answers — the user, 2026-10-25)
         let quick = editor.preflight_quick().is_some();
-        let way_key = editor.key_said("C-q");
+        // (as said while it waits, focused or not: the line laid the same both ways, every answer in its cell — #211)
+        let way_key = editor.card_way_said();
         let mut max_inner = reading;
         // Paragraphs' last rows left a word or two (`proxy`, `run.`): up to `CARD_SLACK` cells wider, never past
         // `widest`, when that takes rows back — the narrowest as short as the widest (piece F: `y Once` made the
@@ -12469,6 +12477,7 @@ impl OfferCard {
                     buttons,
                     labels: labels.iter().map(|(k, l)| (*k, l.to_string())).collect(),
                     way: None,
+                    way_at: None,
                     inbox: None,
                     waits: None,
                     pad: 0,
@@ -12588,7 +12597,7 @@ impl OfferCard {
         // way in, what lasts (`Offer::lasting`), what a cut yes waits for, nor what lists the cards behind it; past
         // that the card grows left for its line, and only a screen too narrow for that draws none.
         let room = fixed.unwrap_or_else(|| inner.max(reading)).saturating_sub(2);
-        let read = labels.iter().position(|(k, _)| *k == 'y' && o.weighty_answer(*k)).filter(|_| cut > 0);
+        let read = labels.iter().position(|(k, _)| *k == 'y' && o.read_first(*k)).filter(|_| cut > 0);
         let (mut whole, mut short) = (labels.clone(), o.answers_short(quick));
         let mut keep = None;
         if (cut > 0 || above > 0) && o.acts_on('v') && !labels.iter().any(|a| a.0 == 'v') {
@@ -12675,7 +12684,16 @@ impl OfferCard {
                 (k + 1, title, started, matches!(p.state, OfferState::Failed(_)), p.id, about)
             })
             .collect::<Vec<_>>();
-        // (its bottom line: `╰─ `, its way in and ` · ` when it stands, then each answer — ` · ` between)
+        // (its bottom line: `╰─ `, its way in and ` · ` when it stands, then each answer — ` · ` between; the way in's
+        // words at its end, focused the shorter `esc back` after a run of the line — `answer_spans`)
+        let way_at = way.as_deref().map(|k| {
+            let end = x + 3 + way_w(k);
+            let said = match editor.card_has_keys() {
+                true => ESC_BACK.0.width() + 1 + ESC_BACK.1.width(),
+                false => way_w(k),
+            };
+            (y + h - 1, end - said.min(way_w(k)), end)
+        });
         let mut buttons = Vec::new();
         if has_buttons {
             let row = y + h - 1;
@@ -12711,6 +12729,7 @@ impl OfferCard {
                 buttons,
                 labels,
                 way,
+                way_at,
                 inbox,
                 waits,
                 pad,
@@ -12834,7 +12853,11 @@ impl OfferCard {
             spot(self.id, self.x, self.y, self.inner + 5);
             // (what it says after its title: how far the reading is, dim — or a key it refused, a warning)
             let how = if self.warn.contains(&1) { warning } else { dim };
-            return self.draw_bar(body, how, bar, strong, key, out);
+            let answers = self.draw_bar(body, how, bar, strong, key, out)?;
+            // (its buttons are screen columns, as the mouse finds them: its answers are drawn from the first's)
+            let from = self.buttons.first().map_or(self.x, |b| b.1);
+            self.answers_lit(editor, self.y, from, &answers);
+            return Ok(());
         }
         let width = self.width();
         // Back cards first (deeper = narrower, dimmer) — one title row each, the topmost up to the top edge
@@ -13026,6 +13049,8 @@ impl OfferCard {
             }
             (true, _) => Vec::new(),
         };
+        // (laid as `draw_frame` lays its bottom line, after `╰─ `)
+        self.answers_lit(editor, self.y + self.rows() - 1, self.x + 3, &answers);
         let rect = (self.x, self.y, width, self.rows());
         let of = Some(crate::mouse::Lights::Card);
         draw_frame(
@@ -13043,6 +13068,33 @@ impl OfferCard {
         Ok(())
     }
 
+    /// Its answers a press does, as drawn on its bottom line (`spans`, from column `x0` of row `row`), recorded to light
+    /// under the mouse as every word that does its key — its ground only (#200, `light_word`): its way in (waiting, a press
+    /// focuses it; focused, `esc back` gives the keys back), and each answer but one held until its text is read whole
+    /// (`Editor::offer_press_held`: it says `once it's read`, and a press answers nothing — it says so). Waiting, an
+    /// answer lights too: a press there focuses the card, its next press answers.
+    fn answers_lit(&self, editor: &Editor, row: usize, x0: usize, spans: &[(String, Style)]) {
+        let mut x = x0;
+        let laid: Vec<(usize, &str, Style)> = spans
+            .iter()
+            .map(|(t, st)| {
+                let at = x;
+                x += t.width();
+                (at, t.as_str(), *st)
+            })
+            .collect();
+        let answers = (self.buttons.iter())
+            .filter(|b| b.0 == row && !b.3.is_ascii_digit() && !editor.offer_press_held(b.3))
+            .map(|b| (b.0, b.1, b.2));
+        let mut lit = editor.screen.answer_lit.borrow_mut();
+        for (y, a, b) in answers.chain(self.way_at.filter(|w| w.0 == row)) {
+            let spans = spans_in(laid.iter().copied(), a, b);
+            if !spans.is_empty() {
+                lit.push((y, a, b, as_drawn(spans)));
+            }
+        }
+    }
+
     /// The card as a bar while its text is read (U8):
     ///
     /// ```text
@@ -13056,9 +13108,10 @@ impl OfferCard {
         strong: Style,
         key: Style,
         out: &mut impl Write,
-    ) -> io::Result<()> {
+    ) -> io::Result<Vec<(String, Style)>> {
         let width = self.inner + 5;
-        let buttons_x = self.buttons.first().map_or(width, |b| b.1);
+        // (from its own first column: its buttons are the screen's)
+        let buttons_x = self.buttons.first().map_or(width, |b| b.1.saturating_sub(self.x));
         let (title, how) = (&self.lines[0].0, &self.lines[1].0);
         // The title first; how far the reading is gets what's left (dropped when that's too little)
         let room = buttons_x.saturating_sub(3 + 3);
@@ -13092,20 +13145,23 @@ impl OfferCard {
         apply(out, body)?;
         queue!(out, Spaces(buttons_x.saturating_sub(used)))?;
         used = used.max(buttons_x);
+        // (its answers, as drawn: what lights under the mouse — `answers_lit`)
+        let mut answers: Vec<(String, Style)> = Vec::new();
         for (i, (k, l)) in self.labels.iter().enumerate() {
             if i > 0 {
-                apply(out, body)?;
-                queue!(out, Print("   "))?;
-                used += 3;
+                answers.push(("   ".into(), body));
             }
-            apply(out, key)?;
-            queue!(out, Print(k))?;
-            apply(out, if i == 0 { body } else { dim })?;
-            queue!(out, Print(" "), Print(l))?;
-            used += 2 + l.width();
+            answers.push((k.to_string(), key));
+            answers.push((format!(" {l}"), if i == 0 { body } else { dim }));
+        }
+        for (text, st) in &answers {
+            apply(out, *st)?;
+            queue!(out, Print(text))?;
+            used += text.width();
         }
         apply(out, body)?;
-        queue!(out, Spaces(width.saturating_sub(used)))
+        queue!(out, Spaces(width.saturating_sub(used)))?;
+        Ok(answers)
     }
 }
 
