@@ -28,6 +28,8 @@ pageup = "page_up"
 C-o = "jump_backward"
 C-i = "jump_forward"
 tab = "jump_forward"
+# The next pane, `C-w w`'s round — from every pane where tarae has the keys (a list, a run's output, a view mode)
+S-tab = "rotate_view"
 C-s = "save_selection"
 "." = "repeat_last_insert"
 A-o = "expand_selection"
@@ -363,12 +365,12 @@ esc = "view_leave"
 q = "view_leave"
 
 # The terminal: its view mode's own on top of [view] — `C-\` (the round: code → program → view → code, a selection
-# or not), the
-# slot's other tabs, `q` hides the panel (the shell runs on) as every output panel's `q` closes it
+# or not), `tab` the slot's other tabs, `S-tab` the next pane as everywhere (its table keeps normal mode's moves
+# only), `q` hides the panel (the shell runs on) as every output panel's `q` closes it
 [view.terminal]
 "C-\\" = "view_code"
 tab = "slot_next"
-S-tab = "slot_prev"
+S-tab = "rotate_view"
 q = "wclose"
 
 # `space` in the terminal's view mode: what it has of the editor's menu there — the rest acts on the code, out of
@@ -380,13 +382,12 @@ I = "inbox"
 "?" = "command_palette"
 
 # The run panels — the task's output, a preflight's, the tests' detail — are read-only documents with normal mode's
-# keys (your [keys.normal] too); these on top: the slot's other tabs, where Claude's command ran, a preflight step's
-# whole output, `G` caught up, `y` a copy to paste anywhere, `enter` quotes a selection (nothing selected: your run
-# waiting behind, else the chat's input), `esc` collapses a selection then goes to the code, `q` closes the panel
-# once its run has ended
+# keys (your [keys.normal] too — `S-tab` the next pane); these on top: `tab` the slot's other tabs, where Claude's
+# command ran, a preflight step's whole output, `G` caught up, `y` a copy to paste anywhere, `enter` quotes a
+# selection (nothing selected: your run waiting behind, else the chat's input), `esc` collapses a selection then goes
+# to the code, `q` closes the panel once its run has ended
 [run]
 tab = "slot_next"
-S-tab = "slot_prev"
 # (a row, as on every output panel)
 C-e = "scroll_down"
 C-y = "scroll_up"

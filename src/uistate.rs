@@ -488,8 +488,9 @@ impl Editor {
         }
         // The panels: normal mode, no prefix, no prompt
         if self.mode == Mode::Normal && !pending && self.prompt.is_none() {
+            // (`space`, `:` and `S-tab` — the next pane, #199 — the editor's from every list)
             let editors = |more: &[Key]| {
-                let mut v = vec![ch(' '), ch(':')];
+                let mut v = vec![ch(' '), ch(':'), Key::plain(Code::BackTab)];
                 v.extend_from_slice(more);
                 Filter::Except(v)
             };

@@ -123,8 +123,8 @@ C-k = ":sh tmux split-window -h"                 # … including shell commands
 e = "file_picker"                                # tables are sub-menus (space e)
 ```
 
-- Keys: `a`, `A` (shift), `C-x` (ctrl), `A-x` (alt), and names like `space`, `ret`, `esc`, `tab`, `backspace`, `del`,
-  `left`, `pageup`, `home`, `F5`
+- Keys: `a`, `A` (shift), `C-x` (ctrl), `A-x` (alt), and names like `space`, `ret`, `esc`, `tab`, `S-tab` (shift),
+  `backspace`, `del`, `left`, `pageup`, `home`, `F5`
 - Sub-menus merge key by key — adding `space e` keeps the rest of `space`
 - Like Helix, `[keys.normal]` doesn't spill into select mode; bind a key in `[keys.select]` too if you want it there
 - View mode (the chat's and the terminal's) is normal mode on what they show: `[keys.normal]` spills in (kept to

@@ -109,6 +109,7 @@ In the editor you don't need this page: `space ?` finds any command by what it d
 | `pagedown` | `page_down` | Move page down |
 | `pageup` | `page_up` | Move page up |
 | `right` | `move_char_right` | Move right |
+| `S-tab` | `rotate_view` | Next window |
 | `space` | … | More keys — see `space` below |
 | `tab` | `jump_forward` | Jump forward again |
 | `up` | `move_visual_line_up` | Move up (visual line) |
@@ -430,7 +431,6 @@ A task's output, a preflight's, the tests' failure or output (`C-w j` to the pan
 | `o` | `preflight_output` | A preflight step's output |
 | `q` | `wclose` | Close this window or panel |
 | `y` | `view_copy` | Copy, to paste anywhere |
-| `backtab` | `slot_prev` | Previous bottom panel tab |
 | `C-e` | `scroll_down` | Scroll down a line |
 | `C-y` | `scroll_up` | Scroll up a line |
 | `esc` | `view_leave` | Leave view mode |
@@ -458,8 +458,8 @@ A cursor on what a surface shows. The chat's conversation (`esc` from its input)
 | Key | Command | Description |
 |---|---|---|
 | `q` | `wclose` | Close this window or panel |
-| `backtab` | `slot_prev` | Previous bottom panel tab |
 | `C-\` | `view_code` | To the code, at once |
+| `S-tab` | `rotate_view` | Next window |
 | `space` | … | More keys — see `space` below |
 | `tab` | `slot_next` | Next tab of the bottom panel |
 
@@ -528,7 +528,7 @@ Keys of what's up on the screen — not rebindable, so not in `default_keys.toml
 | Code review | `space v q` | End it — asked on a card while files aren't viewed |
 | Task panel | click on a preflight step | Its output; wheel, `C-u` `C-d` scroll |
 | Task panel | `o` | A preflight step's whole output in a buffer — the failed one's, else the one in view (`:preflight-output &lt;step>`); beside the steps' list, the step in view selected there |
-| A task's places, a preflight's steps (beside the output) | `j` `k` and every list's moves · `enter` · `tab` `S-tab` · `q` | Pick one — the output follows: the place's line, the step's heading at the top · the place in the code (a step's first place, else its output from its heading) · the output and back · close once the run has ended |
+| A task's places, a preflight's steps (beside the output) | `j` `k` and every list's moves · `enter` · `tab` · `q` | Pick one — the output follows: the place's line, the step's heading at the top · the place in the code (a step's first place, else its output from its heading) · the output, `tab` again the slot's next tab (or back to the list when it's the one) · close once the run has ended |
 | A preflight's steps | `o` | The step picked, its whole output in a buffer |
 | Task panel | `K` | Where Claude's command in it ran, and why — its sandbox, the card it ran from, its warnings |
 | The chat | click on a command's row end (`ok · sandbox ▲1`) | Why it ran there — its sandbox, the card it ran from, Claude's reason, its warnings |

@@ -19072,7 +19072,7 @@ fn frame_style(ui: &Ui, card: Style, lit: Lit) -> Style {
 
 /// A pane's names as its top line has them (panes plan §2.1c, D3) — one model for a frame's top line and a docked
 /// group's header: a pane alone is one name, a stacked group names all its members, `·` between (the faint
-/// wash), the one in sight lit (`ui.text.focus`), the others in the dim wash. `tab`/`S-tab` move between them.
+/// wash), the one in sight lit (`ui.text.focus`), the others in the dim wash. `tab` moves between them.
 fn pane_names(ui: &Ui, editor: &Editor, base: Style, names: &[&str], current: usize) -> Vec<(String, Style)> {
     let strong = editor.theme.try_get("ui.text.focus").unwrap_or(Style { bold: true, ..Style::default() });
     let lit = Style { bg: base.bg, ..base.patch(strong) };

@@ -444,7 +444,10 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
         return true;
     }
     match (key.code, key.ctrl, key.alt) {
-        (Code::Char(' ' | ':'), false, false) | (Code::Char('w'), true, false) => return false,
+        // (the editor's: the space menu, the command line, the windows — `S-tab` the next pane)
+        (Code::Char(' ' | ':') | Code::BackTab, false, false) | (Code::Char('w'), true, false) => {
+            return false;
+        }
         // (`esc` as the code's: its search's matches unlit too)
         (Code::Esc, ..) => {
             if let Some(p) = ed.float_list_mut(kind) {

@@ -173,7 +173,6 @@ impl FromStr for Key {
             "ret" | "enter" => Code::Enter,
             "esc" => Code::Esc,
             "tab" => Code::Tab,
-            "backtab" => Code::BackTab,
             "backspace" => Code::Backspace,
             "del" => Code::Delete,
             "left" => Code::Left,
@@ -239,7 +238,8 @@ impl fmt::Display for Key {
             Code::Enter => f.write_str("ret"),
             Code::Esc => f.write_str("esc"),
             Code::Tab => f.write_str("tab"),
-            Code::BackTab => f.write_str("backtab"),
+            // (shift + tab: the keymap's name for it, Helix's and the one people say — #199)
+            Code::BackTab => f.write_str("S-tab"),
             Code::Backspace => f.write_str("backspace"),
             Code::Delete => f.write_str("del"),
             Code::Left => f.write_str("left"),
@@ -341,9 +341,22 @@ mod tests {
 
     #[test]
     fn display_roundtrips() {
-        for s in ["x", "A-x", "C-y", "space", "minus", "ret", "C-A-backspace", "F3", "S-pagedown"] {
+        for s in ["x", "A-x", "C-y", "space", "minus", "ret", "C-A-backspace", "F3", "S-pagedown", "C-S-tab"]
+        {
             assert_eq!(k(s).to_string(), s);
         }
+    }
+
+    /// #199: shift + tab is `S-tab` wherever a key is shown — which-key, the palette, a card's refusal, `:config-show`,
+    /// the keymap reference and a plugin's key all write `Display`'s — as the keymap writes it, Helix too, and people
+    /// say it; one name for it (`backtab` was only the code's).
+    #[test]
+    fn shift_tab_is_named_s_tab_wherever_a_key_is_shown() {
+        let ev = Key::from_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)).unwrap();
+        assert_eq!((ev.to_string(), ev.shown()), ("S-tab".to_string(), "S-tab".to_string()));
+        assert_eq!(k("S-tab"), ev);
+        assert_eq!((k("A-S-tab").to_string(), k("C-S-tab").shown()), ("A-S-tab".into(), "C-S-tab".into()));
+        assert!("backtab".parse::<Key>().is_err(), "one name");
     }
 
     /// C-\\ comes from a terminal as 0x1c, which reads back as C-4 — it's C-\\ (the terminal's way out).

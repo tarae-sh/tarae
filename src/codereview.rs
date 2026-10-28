@@ -4812,7 +4812,8 @@ pub fn rail_key(ed: &mut Editor, key: Key) -> bool {
         return true;
     }
     match (key.code, key.ctrl) {
-        (Code::Char(' ') | Code::Char(':'), false) | (Code::Char('w'), true) => return false,
+        // (the editor's: the space menu, the command line, the windows — `S-tab` the next pane)
+        (Code::Char(' ') | Code::Char(':') | Code::BackTab, false) | (Code::Char('w'), true) => return false,
         // (opened: a buffer of its own, not the preview the review's walk shows)
         (Code::Enter | Code::Char('l') | Code::Right, false) => {
             let i = r.selected;

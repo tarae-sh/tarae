@@ -1301,8 +1301,9 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
     let rows = ed.screen.sidebar.borrow().len();
     let Some(s) = ed.workspace.viewer.sidebar.as_mut() else { return false };
     match (key.code, key.ctrl) {
-        // Still the editor's: the space menu, the command line, the windows (`C-w l` back to the code)
-        (Code::Char(' ') | Code::Char(':'), false) | (Code::Char('w'), true) => return false,
+        // Still the editor's: the space menu, the command line, the windows (`C-w l` back to the code, `S-tab` the
+        // next pane)
+        (Code::Char(' ') | Code::Char(':') | Code::BackTab, false) | (Code::Char('w'), true) => return false,
         _ if let Some(m) = crate::key::list_move(key, rows) => match m {
             crate::key::ListMove::By(by) => s.move_by(by, &lines),
             // (`C-e`/`C-y`: the view, the selection staying unless it would leave it — the wheel's rule too)

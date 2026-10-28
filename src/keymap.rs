@@ -754,8 +754,8 @@ mod tests {
         ),
         (
             "A task's places, a preflight's steps (beside the output)",
-            "`j` `k` and every list's moves · `enter` · `tab` `S-tab` · `q`",
-            "Pick one — the output follows: the place's line, the step's heading at the top · the place in the code (a step's first place, else its output from its heading) · the output and back · close once the run has ended",
+            "`j` `k` and every list's moves · `enter` · `tab` · `q`",
+            "Pick one — the output follows: the place's line, the step's heading at the top · the place in the code (a step's first place, else its output from its heading) · the output, `tab` again the slot's next tab (or back to the list when it's the one) · close once the run has ended",
         ),
         ("A preflight's steps", "`o`", "The step picked, its whole output in a buffer"),
         (

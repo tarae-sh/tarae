@@ -135,9 +135,11 @@ configs carry over as they are.
 - **Edges** — where docked surfaces meet (the side panel, the code, the chat, the bottom panel's top) there's one
   thin line, as zellij divides panes, never a box; the docked panels sit on the code's own ground. The surface with
   the keys has its lines in the accent, every other line is a faint wash — move with `C-w h/j/k/l` and the accent
-  moves with you. A group of panels shown one at
+  moves with you; `S-tab` goes to the next pane, `C-w w`'s round, from every pane where tarae has the keys (the code,
+  a list, a run's output, a view mode — never while you type: insert mode, a prompt, a picker, the chat's input and
+  the terminal's program keep it). A group of panels shown one at
   a time names them all in its header — the side panel's `files · outline · git`, the bottom panel's `terminal ·
-  tests · task` — the one in sight lit; `tab` / `S-tab` go to the next. The bottom panel's header is the line where
+  tests · task` — the one in sight lit; `tab` goes to the next. The bottom panel's header is the line where
   it meets the code — `─ tests ▲ ── all tests ● 1 ▲ 1 648ms ────── tab failure  q close ─`, as a frame names itself in its
   top line: its panels, what the one in front says, its keys at the right (they fold first when narrow); the code
   keeps the row a separate rule took. A click on a name brings that panel in front; a press anywhere else on the line
@@ -178,7 +180,7 @@ configs carry over as they are.
   it has run, its CPU and memory now and the most since `:procs` opened, tarae's checks on it; one that ended while
   selected stays in the table, said `gone`, until the selection leaves it (`s` and `r` refuse it). The two are a
   linked group as the tests' panel is: `tab`, `enter` or `C-w l` to the detail (normal mode on it, read-only: search,
-  select, `y` copies, `enter` quotes), `tab` again or `S-tab` round the bottom slot's other tabs; narrower than about
+  select, `y` copies, `enter` quotes), `tab` again round the bottom slot's other tabs; narrower than about
   96 columns they're stacked, one open, both named in the slot's line. tarae looks every 30 s while the list is closed (well under a thousandth of a
   core) and checks what it sees: busy for minutes, memory far above what that program usually takes, a server
   left running with no file of it open (stopped), one that keeps exiting (not started again until `r`), a child
@@ -262,7 +264,7 @@ configs carry over as they are.
   closes it once the run has ended — one under way is left running and says `space m c` stops it (the test panel's
   `q` the same, with `space x c`); Esc gives the keys to the code (its header says `esc code`).
   - **The tests panel is two panes** — the list of results and, beside it, the failure picked (else the output),
-    under one header, one `q` closing both. `C-w h`/`l` or `tab`/`S-tab` go between them; on the list `j`/`k` (and
+    under one header, one `q` closing both. `C-w h`/`l` or `tab` go between them; on the list `j`/`k` (and
     every list's moves) pick a test — the failure beside it follows — and `enter` goes to its place in the code.
     Each names itself in the line over its own column, as every pane does (`─ tests ▲ › results ── all tests ● 1 ▲ 1
     ─┬─ failure ── src/main.rs:31 ─`); the one with the keys has its stretch of that line lit and its name strong, the
@@ -294,7 +296,7 @@ configs carry over as they are.
     count. It holds still: what the run prints meanwhile comes in below the rows in sight (the head says `↓ output
     after`), `G` catches up; a key that moves neither the selection nor the view moves no row (`v`, `y`). `enter`
     on a selection quotes it to Claude (`<quoted from="task"` … `"preflight"`, `"test"` with the test's name); with nothing selected, your run waiting behind Claude's runs now (the status line
-    says `enter run now`), else the chat's input. `tab` / `S-tab` the slot's other panels, `K` where Claude's
+    says `enter run now`), else the chat's input. `tab` the slot's other panels (`S-tab` the next pane, as everywhere), `K` where Claude's
     command ran, `o` a preflight step's whole output (beside the steps' list, the step in view selected there), `esc`
     (a selection collapses first) to the code, `q` closes the
     panel once its run has ended. `C-w`, `:` and `space` are the editor's, as from every panel; `]x` / `[x` (the

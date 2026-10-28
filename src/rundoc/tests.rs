@@ -335,7 +335,7 @@ fn the_tests_detail_is_the_failure_picked_and_follows_x() {
 }
 
 /// A preflight's: `● normal · preflight`, its step's heading receding (painted), `o` its step's output in a buffer
-/// of its own (the keys to it), `K` says the run isn't Claude's; `tab` / `S-tab` the slot's other panel and back.
+/// of its own (the keys to it), `K` says the run isn't Claude's; `tab` the slot's other panel, and again back.
 #[test]
 fn a_preflights_o_and_k_and_tab_to_the_tests() {
     let mut ed = task(0);
@@ -365,7 +365,7 @@ fn a_preflights_o_and_k_and_tab_to_the_tests() {
     feed(&mut ed, "<tab>");
     assert_eq!(region(&ed), "output:preflight");
     assert!(status(&frame(&mut ed)).contains("● normal · preflight"));
-    feed(&mut ed, "<S-tab>");
+    feed(&mut ed, "<tab>");
     assert_eq!(region(&ed), "output:tests");
     feed(&mut ed, "<tab>K");
     assert!(said(&ed).contains("this run isn't one"), "{}", said(&ed));
@@ -374,11 +374,13 @@ fn a_preflights_o_and_k_and_tab_to_the_tests() {
     assert!(ed.doc().text.to_string().contains("fmt-says-ok"), "{}", ed.doc().text);
 }
 
-/// `tab`/`S-tab` go round the slot's tabs from the `:procs` panel too — its group's members first (panes P3 step 4:
-/// the table, its detail), as every group's; back onto it, its detail first.
+/// `tab` goes round the slot's tabs from the `:procs` panel too — its group's members first (panes P3 step 4: the
+/// table, its detail), as every group's; back (`slot_prev`, yours to bind since #199 — here on `S-tab`) onto it, its
+/// detail first.
 #[test]
 fn tab_goes_round_the_slot_from_procs_too() {
     let mut ed = task(3);
+    ed.keymaps = crate::config::parse("[keys.normal]\nS-tab = \"slot_prev\"\n").0.keymaps;
     feed(&mut ed, ":procs<ret>");
     assert_eq!((ed.slot(), region(&ed).as_str()), (Some(Slot::Procs), "list:procs"));
     feed(&mut ed, "<tab>");

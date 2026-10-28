@@ -175,6 +175,178 @@ fn c_w_swaps_and_turns_the_codes_panes_and_c_w_w_goes_round_every_kind() {
     }
 }
 
+/// Where `keys` take the keys from where they are in `ed`: the pane's kind and the region's name — another pane than
+/// the one they're on.
+fn lands(mut ed: Editor, keys: &str) -> (Option<Shows>, String) {
+    let from = ed.at_pane();
+    feed(&mut ed, keys);
+    let to = ed.at_pane();
+    assert_ne!(from, to, "{keys}: another pane, from {from:?}");
+    (to.and_then(|id| ed.workspace.shows(id)), ed.keys_to().region.name())
+}
+
+/// The chat's view mode (`esc` from its input) on a question and its answer.
+fn chat_view(ed: &mut Editor) {
+    use crate::chat::{Msg, Role};
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs.push(Msg::new(Role::User, "a question", ""));
+    c.msgs.push(Msg::new(Role::Assistant, "An answer, in a few words.", ""));
+    ed.workspace.viewer.at = At::Chat;
+    frame(ed);
+    feed(ed, "<esc>");
+}
+
+/// #199 (the user, at work): `S-tab` is the next pane — `C-w w`'s round, the same order — from every pane where tarae
+/// has the keys: the code, the side panel, the review's rail, a plugin's panel, a floating list, the chat's view mode,
+/// a run panel's output, the terminal's view mode (two panes of one buffer too). While typing it stays the field's — insert mode, a prompt, a picker, the chat's input,
+/// the terminal's program (`CSI Z`); a focused card refuses it aloud, as any key not its answer; the slot's `tab`
+/// still goes round its tabs.
+#[test]
+fn s_tab_goes_to_the_next_pane_from_every_pane() {
+    let from = |at: &dyn Fn(&mut Editor)| {
+        let make = || {
+            let mut ed = every_surface();
+            at(&mut ed);
+            frame(&mut ed);
+            ed
+        };
+        let (s_tab, c_w_w) = (lands(make(), "<S-tab>"), lands(make(), "<C-w>w"));
+        assert_eq!(s_tab, c_w_w, "S-tab is C-w w's round");
+        s_tab
+    };
+    let code = from(&|_| {});
+    assert_eq!(code.1, "output:tests", "from the code: the slot, as C-w w");
+    from(&|ed| ed.workspace.viewer.at = At::Side);
+    // (the lists that read their keys by hand let it go on as `space`, `:` and `C-w`: the review's rail, a plugin's
+    // panel, a floating list — the session list, `:messages`)
+    let rail = |ed: &mut Editor| {
+        let root = ed.workspace.root.clone();
+        let r = crate::codereview::CodeReview::for_test(crate::codereview::Base::Head, root, Vec::new());
+        ed.workspace.code_review = Some(r);
+        ed.workspace.viewer.at = At::Rail;
+        frame(ed);
+        assert_eq!(ed.keys_to().region.name(), "review");
+    };
+    from(&rail);
+    let plugin = |ed: &mut Editor| {
+        ed.plugin_panel_stand_in(3);
+        frame(ed);
+        assert!(ed.plugin_panel_focused(), "the plugin's panel has the keys");
+    };
+    from(&plugin);
+    // (the list reads each checkout's git on a worker: a folder of its own, never tarae's repository)
+    let dir = crate::scratch::Scratch::new("pane-s-tab");
+    let sessions = |ed: &mut Editor| {
+        ed.workspace.root = dir.to_path_buf();
+        ed.session_list();
+        frame(ed);
+        assert_eq!(ed.keys_to().region.name(), "list:sessions");
+    };
+    from(&sessions);
+    let messages = |ed: &mut Editor| {
+        ed.set_status("one");
+        ed.messages_open(None);
+        frame(ed);
+        assert_eq!(ed.keys_to().region.name(), "list:messages");
+    };
+    from(&messages);
+    let chat = |ed: &mut Editor| {
+        chat_view(ed);
+        assert_eq!(ed.keys_to().region.name(), "view:chat");
+    };
+    from(&chat);
+    let output = |ed: &mut Editor| {
+        feed(ed, "<C-w>j");
+        assert_eq!(ed.keys_to().region.name(), "output:tests");
+    };
+    from(&output);
+    // (two panes of one buffer: the keys to the other)
+    let mut ed = Editor::new(Config::default());
+    frame(&mut ed);
+    feed(&mut ed, "<C-w>v");
+    let new = ed.workspace.viewer.focus;
+    feed(&mut ed, "<S-tab>");
+    assert!(ed.workspace.is_at(At::Code) && ed.workspace.viewer.focus != new, "the other code pane");
+    // The terminal's view mode — its program first, which keeps `S-tab` (`CSI Z`); `tab` there the slot's next tab
+    let terminal = || {
+        let mut ed = every_surface();
+        let sent = crate::terminal::stand_in(&mut ed, 10, 80, 100);
+        frame(&mut ed);
+        (ed, sent)
+    };
+    let drained = |sent: &std::sync::mpsc::Receiver<Vec<u8>>| sent.try_iter().flatten().collect::<Vec<u8>>();
+    let (mut ed, sent) = terminal();
+    assert!(ed.workspace.program_has_keys());
+    drained(&sent);
+    feed(&mut ed, "<S-tab>");
+    assert_eq!(drained(&sent), b"\x1b[Z", "the program's");
+    assert!(ed.workspace.program_has_keys(), "the program keeps the keys");
+    feed(&mut ed, "<C-\\>");
+    assert_eq!(ed.keys_to().region.name(), "view:terminal");
+    let viewed = || {
+        let (mut ed, sent) = terminal();
+        feed(&mut ed, "<C-\\>");
+        (ed, sent)
+    };
+    let ((a, _s1), (b, _s2)) = (viewed(), viewed());
+    let (s_tab, c_w_w) = (lands(a, "<S-tab>"), lands(b, "<C-w>w"));
+    assert_eq!(s_tab, c_w_w, "from the terminal's view mode: C-w w's round");
+    let slot = ed.slot();
+    feed(&mut ed, "<tab>");
+    assert!(ed.slot() != slot && ed.workspace.is_at(At::Slot), "tab: the slot's next tab, {:?}", ed.slot());
+    // (run on the editor, the view's document put back first: round to a code pane of another buffer than the one
+    // last focused, that pane's buffer is the code's — run on the view's, putting it back took the code back too)
+    let mut ed = Editor::new(Config::default());
+    frame(&mut ed);
+    let (a, first) = (ed.workspace.viewer.focus, ed.doc().id);
+    feed(&mut ed, "<C-w>v");
+    ed.new_scratch();
+    let _sent = crate::terminal::stand_in(&mut ed, 10, 80, 100);
+    frame(&mut ed);
+    feed(&mut ed, "<C-\\>");
+    assert_eq!(ed.keys_to().region.name(), "view:terminal");
+    feed(&mut ed, "<S-tab>");
+    assert_eq!(
+        (ed.workspace.viewer.at, ed.workspace.viewer.focus),
+        (At::Code, a),
+        "round to the first code pane"
+    );
+    assert_eq!(ed.doc().id, first, "its own buffer the code's");
+    // Typing: the field's
+    let mut ed = every_surface();
+    let text = ed.doc().text.to_string();
+    feed(&mut ed, "i<S-tab>");
+    assert_eq!((ed.mode, ed.workspace.viewer.at), (crate::editor::Mode::Insert, At::Code), "insert mode");
+    assert_eq!(ed.doc().text.to_string(), text, "nothing typed");
+    let mut ed = every_surface();
+    feed(&mut ed, ":<S-tab>");
+    assert!(ed.prompt.is_some() && ed.floating().contains(&Floating::Prompt), "a prompt's");
+    let mut ed = every_surface();
+    feed(&mut ed, " b<S-tab>");
+    assert!(ed.picker.is_some() && ed.floating().contains(&Floating::Picker), "a picker's");
+    let mut ed = every_surface();
+    ed.workspace.viewer.at = At::Chat;
+    feed(&mut ed, "a draft<S-tab>");
+    assert_eq!(ed.workspace.viewer.at, At::Chat, "the chat's input");
+    // A focused card: every key its but the window prefix — `S-tab` no answer, said on it
+    let mut ed = every_surface();
+    ed.push_offer(crate::offer::Offer::new(
+        "End the review?".into(),
+        "2 files not viewed.",
+        "",
+        String::new(),
+        crate::offer::What::ReviewEnd {
+            session: crate::event::WorkspaceId::HOME,
+            started: std::time::Instant::now(),
+        },
+    ));
+    frame(&mut ed);
+    feed(&mut ed, "<C-q><S-tab>");
+    assert!(ed.card_has_keys() && ed.offers.len() == 1, "the card keeps the keys, unanswered");
+    let said = ed.offer_said.as_ref().map(|s| s.2.as_str()).unwrap_or_default();
+    assert!(said.contains("S-tab isn't an answer here"), "said on it, by the key's name: {said:?}");
+}
+
 /// `C-w s` from the default tree: the two code panes are a split of their own in the code's column (not the slot's
 /// siblings), so `C-w t` turns them side by side — and back — the slot staying under them.
 #[test]
@@ -217,7 +389,7 @@ fn with_results(ed: &mut Editor) {
 }
 
 /// §2.1b: the tests panel is a linked group — the list and the detail two panes in the slot, under one header: `C-w
-/// h/l` and `tab`/`S-tab` between them, the list's own keys moving its selection (which the detail follows), `esc`
+/// h/l` and `tab` between them, the list's own keys moving its selection (which the detail follows), `esc`
 /// to the code, one `q` closing the group; the state lists both members, the slot's keys the detail's.
 #[test]
 fn the_tests_panel_is_a_linked_group_of_two_panes() {
@@ -259,7 +431,7 @@ fn the_tests_panel_is_a_linked_group_of_two_panes() {
     assert!(shown(&mut ed).contains("left != right"), "the failure beside it");
     feed(&mut ed, "k");
     assert!(!shown(&mut ed).contains("left != right"), "a passed test: the output");
-    // (tab to the detail, S-tab back; the one tab there is rounds its two members)
+    // (tab to the detail, tab again back: the one tab there is rounds its two members)
     feed(&mut ed, "<tab>");
     assert!(ed.workspace.is_at(At::Slot), "tab: the detail");
     let state = ed.ui_state();
@@ -273,8 +445,8 @@ fn the_tests_panel_is_a_linked_group_of_two_panes() {
     ed.focus_pane(g.list);
     feed(&mut ed, "<C-w>w");
     assert!(ed.workspace.is_at(At::Slot), "C-w w from the list: its detail");
-    feed(&mut ed, "<S-tab>");
-    assert_eq!(ed.workspace.viewer.at, At::List(g.list), "S-tab: the list");
+    feed(&mut ed, "<tab>");
+    assert_eq!(ed.workspace.viewer.at, At::List(g.list), "tab: the list");
     // (the state: both members, the keys the list's)
     let state = ed.ui_state();
     let panes = &state.workspaces.iter().find(|s| s.front).unwrap().panes;

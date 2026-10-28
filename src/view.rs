@@ -878,9 +878,10 @@ fn key_in(ed: &mut Editor, key: Key) {
     };
     let keys = std::mem::take(&mut ed.pending);
     let count = ed.count.take();
-    let editors = |c: &crate::keymap::MappableCommand| matches!(c, crate::keymap::MappableCommand::Static(s) if EDITORS.contains(&s.name));
+    // (the window table's too — `S-tab`'s `rotate_view` — as the chat's view mode and an output run them)
+    let editors = |c: &crate::keymap::MappableCommand| matches!(c, crate::keymap::MappableCommand::Static(s) if EDITORS.contains(&s.name) || ed.keymaps.in_window_table(s.name));
     match cmds {
-        // (the editor's own, once the view's document is put back — `space ?`, `space I`, `space l`)
+        // (the editor's own, once the view's document is put back — `space ?`, `space I`, `space l`, `S-tab`)
         Some(cmds) if cmds.iter().any(editors) => {
             if let Some(v) = ed.workspace.viewer.view.as_mut() {
                 v.deferred = cmds;

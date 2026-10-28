@@ -192,53 +192,56 @@ impl Editor {
     /// The plugins folder's contents changed (the config watcher noticed): load new and changed plugins, drop
     /// missing ones. The first time there's something, the plugin thread starts.
     pub fn plugins_sync(&mut self, found: Found) {
-        if self.plugins.is_none() {
-            if found.is_empty() {
-                return;
-            }
-            let events = self.events.shared_sender();
-            let started = Host::start(
-                move |note| {
-                    let _ = events.send(Event::Job(Box::new(move |ed: &mut Editor| ed.plugin_note(note))));
-                },
-                perm::invalid,
-            );
-            let Some(host) = started else {
-                self.set_error("plugins: couldn't start their thread");
-                return;
-            };
-            self.plugins = Some(Plugins {
-                host,
-                commands: Vec::new(),
-                status: Default::default(),
-                events: Default::default(),
-                permissions: Default::default(),
-                approvals: perm::load(perm::store_path().as_deref()),
-                asked: Default::default(),
-                held: Default::default(),
-                perm_store: perm::store_path(),
-                perm_mtime: None,
-                procs: Default::default(),
-                socks: Default::default(),
-                pending: Default::default(),
-                timers: Default::default(),
-                clock: Default::default(),
-                outbox: Default::default(),
-                serial: 0,
-                panel: None,
-                answering: None,
-                prompts: Default::default(),
-                views: Default::default(),
-                hints: Default::default(),
-                side: None,
-                badge: None,
-                offered: Default::default(),
-                own_root: crate::config::state_dir().map(|s| s.join("plugins")),
-            });
+        if self.plugins.is_none() && (found.is_empty() || !self.plugins_start()) {
+            return;
         }
         if let Some(p) = &self.plugins {
             p.host.sync(found);
         }
+    }
+
+    /// The plugin thread started, nothing loaded yet. false if it couldn't start (said).
+    fn plugins_start(&mut self) -> bool {
+        let events = self.events.shared_sender();
+        let started = Host::start(
+            move |note| {
+                let _ = events.send(Event::Job(Box::new(move |ed: &mut Editor| ed.plugin_note(note))));
+            },
+            perm::invalid,
+        );
+        let Some(host) = started else {
+            self.set_error("plugins: couldn't start their thread");
+            return false;
+        };
+        self.plugins = Some(Plugins {
+            host,
+            commands: Vec::new(),
+            status: Default::default(),
+            events: Default::default(),
+            permissions: Default::default(),
+            approvals: perm::load(perm::store_path().as_deref()),
+            asked: Default::default(),
+            held: Default::default(),
+            perm_store: perm::store_path(),
+            perm_mtime: None,
+            procs: Default::default(),
+            socks: Default::default(),
+            pending: Default::default(),
+            timers: Default::default(),
+            clock: Default::default(),
+            outbox: Default::default(),
+            serial: 0,
+            panel: None,
+            answering: None,
+            prompts: Default::default(),
+            views: Default::default(),
+            hints: Default::default(),
+            side: None,
+            badge: None,
+            offered: Default::default(),
+            own_root: crate::config::state_dir().map(|s| s.join("plugins")),
+        });
+        true
     }
 
     fn plugin_note(&mut self, note: Note) {

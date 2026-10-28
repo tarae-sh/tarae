@@ -427,10 +427,11 @@ impl Editor {
         }
     }
 
-    /// `tab` / `S-tab` while the slot has the keys: the next tab in front, or the one before. On a group (§2.1c: the
-    /// tests', a task's places, a preflight's steps, `:procs`) its members come first, in order — `tab` from the list
-    /// to its detail, from the detail on to the next tab, which starts at its first member, the list; `S-tab` the
-    /// other way, onto a group at its last member, the detail.
+    /// `tab` while the slot has the keys (`slot_next`; `slot_prev`, unbound since `S-tab` went to the next pane —
+    /// #199, the other way): the next tab in front, or the one before. On a group (§2.1c: the tests', a task's
+    /// places, a preflight's steps, `:procs`) its members come first, in order — `tab` from the list to its detail,
+    /// from the detail on to the next tab, which starts at its first member, the list; backward the other way, onto
+    /// a group at its last member, the detail.
     pub fn slot_step(&mut self, by: isize) {
         // (a docked group: its own members only — the slot's tabs are the slot's)
         if self.slot_in_hand().is_some() {

@@ -129,8 +129,9 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World) -> String {
                 "i",
                 "ox",
                 "<C-w>k",
-                "<C-w>j<S-tab>",
-                "<C-w>j<S-tab>j",
+                "<C-w>j<C-w>h",
+                "<C-w>j<C-w>hj",
+                // (the next pane, #199)
                 "<S-tab>k",
             ]);
             let mut chars = keys.chars();

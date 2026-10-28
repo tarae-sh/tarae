@@ -1,8 +1,8 @@
 //! A linked group's list (panes P3 §2.1, `pane::Group`): one handler for every kind's. It moves as every list does
 //! (`key::list_move`, the list's measures — its selection drives the detail beside it), `enter` is the kind's act,
-//! `tab`/`S-tab` the next/previous member (then the slot's next tab — `slot_step`), `q` the group's one close (a
-//! run's only once it has ended — `Editor::slot_close`), `esc` back to the code; `space`, `:` and `C-w` are the
-//! editor's, anything else is said. The kind supplies its rows, its `enter`, the link and its words: the tests'
+//! `tab` the next member (then the slot's next tab — `slot_step`), `q` the group's one close (a run's only once it
+//! has ended — `Editor::slot_close`), `esc` back to the code; `space`, `:`, `C-w` and `S-tab` (the next pane, #199)
+//! are the editor's, anything else is said. The kind supplies its rows, its `enter`, the link and its words: the tests'
 //! (`testing.rs`), the task's places and a preflight's steps (§2.2: the one output document beside them, scrolled to
 //! the place's line or the step's heading), `:procs`' table (its detail what the row selected is — `procs::detail`;
 //! its own `s` stop, `r` restart, `l` log, `enter` the detail); git and the review come with P3's step 5 (until then
@@ -298,7 +298,7 @@ impl Editor {
         self.workspace.groups.iter().find(|g| g.list == id && self.group_laid(g)).copied()
     }
 
-    /// The keys to kind `kind`'s list (`C-w h` from its detail, `S-tab`, a click on its rows).
+    /// The keys to kind `kind`'s list (`C-w h` from its detail, `tab` round the slot, a click on its rows).
     pub fn list_focus(&mut self, kind: GroupKind) {
         let why = match kind {
             GroupKind::Tests => "no results to list yet — the output is all the panel has",
@@ -435,14 +435,17 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
         return true;
     }
     match (key.code, key.ctrl, key.alt) {
-        (Code::Char(' ' | ':'), false, false) | (Code::Char('w'), true, false) => return false,
+        // (the editor's: the space menu, the command line, the windows — `S-tab` the next pane, never the members:
+        // `tab` goes round those)
+        (Code::Char(' ' | ':') | Code::BackTab, false, false) | (Code::Char('w'), true, false) => {
+            return false;
+        }
         (Code::Esc, ..) => ed.workspace.viewer.at = At::Code,
         (Code::Char('q'), false, false) => close(ed, g.kind),
         (Code::Enter, false, false) => open(ed, g.kind),
         (Code::Char('o'), false, false) if output(ed, g.kind) => {}
         (Code::Char(c @ ('s' | 'r' | 'l')), false, false) if g.kind == GroupKind::Procs => ed.procs_act(c),
         (Code::Tab, false, false) => ed.slot_step(1),
-        (Code::BackTab, false, false) => ed.slot_step(-1),
         _ => ed.key_unused(key, g.kind.what(), "esc code"),
     }
     true

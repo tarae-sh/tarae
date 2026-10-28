@@ -356,12 +356,15 @@ fn another_conversation_leaves_the_terminals_view_alone() {
     assert!(frame(&mut ed).contains("later-output"), "taken in as it's left");
 }
 
-/// `tab` / `S-tab` in its view mode step to the slot's other tabs, on and back (three tabs: the next and the one
-/// before differ): another tab in front ends the view, what was held taken in; back on the terminal, its view mode
-/// again (tarae's keys on its panel).
+/// `tab` in its view mode steps to the slot's other tabs, and back (`slot_prev`, yours to bind since #199 — here on
+/// `S-tab`, three tabs: the next and the one before differ): another tab in front ends the view, what was held taken
+/// in; back on the terminal, its view mode again (tarae's keys on its panel).
 #[test]
 fn tab_steps_to_the_slots_other_tab_and_back() {
-    let (mut ed, _sent) = term(Config::default(), 3);
+    let yours = "[keys.normal]\nS-tab = \"slot_prev\"\n[keys.view.terminal]\nS-tab = \"slot_prev\"\n";
+    let (config, warnings) = crate::config::parse(yours);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let (mut ed, _sent) = term(config, 3);
     let task = crate::task::Task { name: "check".into(), cmd: "true".into(), cwd: ed.workspace.root.clone() };
     ed.workspace.task_run = Some(crate::task::Run::for_test(task));
     ed.workspace.viewer.slot_front = Some(crate::sizes::Slot::Terminal);

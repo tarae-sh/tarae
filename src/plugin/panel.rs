@@ -93,8 +93,11 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
         return true;
     }
     match (key.code, key.ctrl, key.alt) {
-        // Still the editor's: the space menu, the command line, the windows
-        (Code::Char(' ') | Code::Char(':'), false, false) | (Code::Char('w'), true, false) => return false,
+        // Still the editor's: the space menu, the command line, the windows (`S-tab` the next pane)
+        (Code::Char(' ') | Code::Char(':') | Code::BackTab, false, false)
+        | (Code::Char('w'), true, false) => {
+            return false;
+        }
         (Code::Esc, ..) => ed.workspace.viewer.at = At::Code,
         _ => {
             let (plugin, row) = (st.plugin.clone(), (n > 0).then_some(st.selected as u64));
@@ -194,6 +197,16 @@ impl Editor {
     /// Code clicked: the panel gives the keys back.
     pub fn plugin_panel_unfocus(&mut self) {
         self.workspace.leave(At::Plugin);
+    }
+
+    /// A plugin's panel of `rows` one-cell rows, as its command shows it (the keys its) — the plugin thread started,
+    /// no plugin loaded: what the panel does with its keys is tarae's alone.
+    #[cfg(test)]
+    pub(crate) fn plugin_panel_stand_in(&mut self, rows: usize) {
+        assert!(self.plugins.is_some() || self.plugins_start(), "the plugin thread started");
+        self.plugins.as_mut().unwrap().answering = Some("demo".into());
+        let rows = (0..rows).map(|i| vec![format!("row {i}")]).collect();
+        self.plugin_panel("demo", Some(Panel { title: "demo".into(), rows, ..Panel::default() }));
     }
 
     /// A plugin's `prompt`: the command line with its name and label — if it's answering you, and no line

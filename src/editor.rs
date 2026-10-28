@@ -6312,7 +6312,7 @@ mod tests {
         assert_eq!(text(&ed), "write", "several → the first");
         feed(&mut ed, "<tab>");
         assert_ne!(text(&ed), "write", "pressing again → next candidate");
-        feed(&mut ed, "<backtab>");
+        feed(&mut ed, "<S-tab>");
         assert_eq!(text(&ed), "write", "Shift-Tab goes backward");
         feed(&mut ed, "<esc>:tut<tab>");
         assert_eq!(text(&ed), "tutor", "only one — argless command, no trailing space");

@@ -129,10 +129,11 @@ fn a_tasks_places_list_beside_its_output_drives_it() {
     let rows = list_rows(&shown);
     assert!(rows.len() == 2 && rows[0].contains("b.rs:10") && rows[1].contains("a.rs:5"), "{rows:?}");
     assert!(shown.contains("› places ") && shown.contains("┬─ output "), "{shown}");
-    // The list's keys (`S-tab` from the output), on the place found first — the warning, second row
+    // The list's keys (`tab` from the output: the one tab there is rounds its two members), on the place found
+    // first — the warning, second row
     feed(&mut ed, "<C-w>j");
     if region(&ed) != "list:task" {
-        feed(&mut ed, "<S-tab>");
+        feed(&mut ed, "<tab>");
     }
     assert_eq!(region(&ed), "list:task");
     assert_eq!(ed.workspace.task_run.as_ref().unwrap().picked, 0);
@@ -163,8 +164,8 @@ fn a_tasks_places_list_beside_its_output_drives_it() {
     feed(&mut ed, "<tab>");
     assert_eq!(region(&ed), "output:task");
     assert_eq!(cursor(&ed), warning, "the keys land on the place's line");
-    // `S-tab` back, `k` to the error, `enter`: the place in the code, the code's keys
-    feed(&mut ed, "<S-tab>");
+    // `tab` again back to the list (one tab), `k` to the error, `enter`: the place in the code, the code's keys
+    feed(&mut ed, "<tab>");
     assert_eq!(region(&ed), "list:task");
     feed(&mut ed, "gg<ret>");
     assert_eq!(ed.workspace.viewer.at, At::Code);
@@ -257,10 +258,11 @@ fn a_click_on_a_places_row_picks_it() {
     assert_eq!(cursor(&ed), r.origin(1).line.unwrap(), "the output at its line");
 }
 
-/// `tab` and `S-tab` go round the slot's groups member by member (P3 step 4: onto a group going forward its list,
-/// going back its detail) — the task's places and the tests' results, both tabs.
+/// `tab` goes round the slot's groups member by member (P3 step 4: onto a group going forward its list, going back —
+/// `slot_prev`, yours to bind since #199 — its detail) — the task's places and the tests' results, both tabs; `S-tab`
+/// is the next pane from a member, `C-w w`'s round, never the slot's.
 #[test]
-fn tab_and_s_tab_go_round_each_groups_members() {
+fn tab_goes_round_each_groups_members_and_s_tab_to_the_next_pane() {
     let dir = crate::scratch::Scratch::new("group-round");
     let a = dir.path().join("a.rs");
     std::fs::write(&a, "fn a() {}\n").unwrap();
@@ -285,6 +287,8 @@ fn tab_and_s_tab_go_round_each_groups_members() {
         round.push(region(&ed));
     }
     assert_eq!(round, ["list:task", "output:task", "list:tests", "output:tests", "list:task"], "forward");
+    // (your `S-tab = "slot_prev"`: back, onto a group its detail)
+    ed.keymaps = crate::config::parse("[keys.normal]\nS-tab = \"slot_prev\"\n").0.keymaps;
     let mut back = Vec::new();
     for _ in 0..4 {
         feed(&mut ed, "<S-tab>");
@@ -295,6 +299,21 @@ fn tab_and_s_tab_go_round_each_groups_members() {
         ["output:tests", "list:tests", "output:task", "list:task"],
         "back: onto a group, its detail"
     );
+    // The default `S-tab`: from the list, `C-w w`'s round — out of the slot to the code, never the tests' tab
+    ed.keymaps = crate::config::Config::default().keymaps;
+    let mut panes = |keys: &str| {
+        ed.list_focus(GroupKind::Task);
+        frame(&mut ed);
+        (0..3)
+            .map(|_| {
+                feed(&mut ed, keys);
+                region(&ed)
+            })
+            .collect::<Vec<_>>()
+    };
+    let (s_tab, c_w_w) = (panes("<S-tab>"), panes("<C-w>w"));
+    assert_eq!(s_tab, c_w_w, "S-tab is C-w w");
+    assert!(s_tab.contains(&"code".to_string()) && !s_tab.contains(&"list:tests".to_string()), "{s_tab:?}");
 }
 
 /// The status line's word with a list's keys names the surface as its header does (`● preflight` on a preflight's
