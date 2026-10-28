@@ -668,7 +668,11 @@ the step's commit message. "Ran" is where the whole suite passed.
 5. **The egress proxy** (D17, D20, D23; §The egress proxy, `proxy.rs`). One proxy, threads in tarae: connections go
    out by host name, read from the CONNECT line or the TLS SNI, never decrypted; plain HTTP too. A host the rules
    don't name waits for the user's card (`llm.sandbox-hosts`); through tarae's own upstream proxy where it has one
-   (`llm.sandbox-upstream`).
+   (`llm.sandbox-upstream`) — http://, SOCKS5, or https:// (2026-10-28, srt's `parent-proxy.ts`: TLS to the proxy,
+   verified as the page fetch verifies, CONNECT inside; that TLS on a bridge thread between the upstream's socket
+   and one end of a pair the relay polls and splices as any socket — `bridge.rs`). Basic only, as srt.
+   - Tests: `an_https_upstream_is_spoken_to_inside_tls`, `a_big_tunnel_goes_whole_through_the_bridge`,
+     `an_https_upstreams_tls_failures_are_said` (a stand-in TLS upstream under the page fetch's test CA).
    - Tests: `the_connect_parser_never_panics`, `the_sni_parser_never_panics`, `it_connects_to_the_address_it_checked`,
      `sni_must_match_the_connect_host`, `the_proxy_knows_only_what_a_message_carries` (D23). The "outside" is
      always the test's own listeners on this machine.

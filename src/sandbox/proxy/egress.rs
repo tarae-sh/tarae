@@ -4,13 +4,15 @@
 //! addresses beyond loopback; an IPv4-mapped address as its IPv4 one), the connection made to the very address
 //! checked: one lookup, never a second. Or, where tarae itself goes out through a proxy (step 5g, `upstream`),
 //! through that one: the run's name goes to it unresolved — its addresses are the upstream's to look up, so the
-//! address checks don't hold there, and the run's report says so.
+//! address checks don't hold there, and the run's report says so. An https:// one is spoken to inside TLS to it,
+//! that TLS then the bridge's (`bridge`).
 
-use std::io;
+use std::io::{self, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use super::bridge::{self, Out};
 use super::upstream::{self, Failed, Proto, Upstream, Way};
 use crate::sandbox::route;
 
@@ -223,7 +225,7 @@ pub fn connect(
 /// Where a request was let out: the connection, and the upstream it goes through (None: direct). A tunnel through
 /// an upstream is open to its host already (the upstream answered 2xx).
 pub struct Reached {
-    pub stream: TcpStream,
+    pub stream: Out,
     pub through: Option<Upstream>,
 }
 
@@ -250,21 +252,79 @@ pub fn reach(
     let up = match rules.upstream.way(name, port, tunnel) {
         Way::Direct => {
             let stream = connect(rules, resolve, name, port, timeout).map_err(NotReached::Refused)?;
-            return Ok(Reached { stream, through: None });
+            return Ok(Reached { stream: Out::Tcp(stream), through: None });
         }
         Way::Unusable(u) => return Err(NotReached::Upstream(u.var, Failed::Unusable(u.why))),
         Way::Through(up) => up,
     };
     let failed = |f: Failed| NotReached::Upstream(up.var, upstream_said(up, name, port, f));
     let stream = dial_upstream(up, resolve, timeout).map_err(failed)?;
-    // (an http one: a tunnel asked of it, a plain request goes as it is in absolute form; a SOCKS5 one: either
-    // asked by name, then what the run sends goes on as it would to the host)
-    match up.proto {
-        Proto::Http if tunnel => tunnel_through(&stream, up, name, port, timeout).map_err(failed)?,
-        Proto::Http => {}
-        Proto::Socks5 => socks_through(&stream, up, name, port, timeout).map_err(failed)?,
-    }
+    let by = crate::clock::now() + timeout;
+    // (an http one: a tunnel asked of it, a plain request goes as it is in absolute form — an https one the same
+    // inside TLS to it; a SOCKS5 one: either asked by name, then what the run sends goes on as it would to the host)
+    let stream = match up.proto {
+        Proto::Http if up.tls => {
+            let mut conn = handshake(&stream, up, by, timeout).map_err(failed)?;
+            if tunnel {
+                let mut sock = &stream;
+                let mut inside = rustls::Stream::new(&mut conn, &mut sock);
+                tunnel_through(&mut inside, &stream, up, name, port, by, timeout).map_err(failed)?;
+            }
+            let _ = (stream.set_read_timeout(None), stream.set_write_timeout(None));
+            bridge::start(conn, stream).map_err(|e| failed(Failed::Unreachable(e.kind().to_string())))?
+        }
+        Proto::Http if tunnel => {
+            tunnel_through(&mut &stream, &stream, up, name, port, by, timeout).map_err(failed)?;
+            Out::Tcp(stream)
+        }
+        Proto::Http => Out::Tcp(stream),
+        Proto::Socks5 => {
+            socks_through(&stream, up, name, port, timeout).map_err(failed)?;
+            Out::Tcp(stream)
+        }
+    };
     Ok(Reached { stream, through: Some(up.clone()) })
+}
+
+/// TLS to an https:// upstream on `s`, its handshake done by `by` (srt's recipe): its name the server name — an
+/// address sends none and is checked as an address —, verified as the system verifies (`upstream::tls`).
+fn handshake(
+    s: &TcpStream,
+    up: &Upstream,
+    by: Instant,
+    timeout: Duration,
+) -> Result<rustls::ClientConnection, Failed> {
+    use rustls::pki_types::ServerName;
+    let config = upstream::tls().map_err(|_| Failed::Tls("the system's certificates couldn't be read"))?;
+    let name = match up.host.parse::<IpAddr>() {
+        Ok(ip) => ServerName::IpAddress(ip.into()),
+        Err(_) => {
+            ServerName::try_from(up.host.clone()).map_err(|_| Failed::Tls("its name isn't one TLS takes"))?
+        }
+    };
+    let mut conn =
+        rustls::ClientConnection::new(config, name).map_err(|e| Failed::Tls(upstream::tls_said(&e)))?;
+    while conn.is_handshaking() {
+        let left = by.saturating_duration_since(crate::clock::now());
+        if left.is_zero()
+            || s.set_read_timeout(Some(left)).is_err()
+            || s.set_write_timeout(Some(left)).is_err()
+        {
+            return Err(Failed::Silent(timeout));
+        }
+        if let Err(e) = conn.complete_io(&mut &*s) {
+            return Err(match e.kind() {
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => Failed::Silent(timeout),
+                io::ErrorKind::Interrupted => continue,
+                io::ErrorKind::UnexpectedEof => Failed::Cut,
+                _ => match e.get_ref().and_then(|e| e.downcast_ref::<rustls::Error>()) {
+                    Some(e) => Failed::Tls(upstream::tls_said(e)),
+                    None => Failed::Unreachable(e.kind().to_string()),
+                },
+            });
+        }
+    }
+    Ok(conn)
 }
 
 /// The upstream's failure for `name:port`, said in tarae's log — where it is (host:port, which a report never
@@ -292,19 +352,28 @@ fn dial_upstream(up: &Upstream, resolve: &Resolve, timeout: Duration) -> Result<
     Err(last)
 }
 
-/// A tunnel asked of the upstream on `s`: its CONNECT sent, its answer read whole within `timeout` — 2xx with
-/// nothing after it, else why not (a 407 as tarae's credentials meet it).
+/// A tunnel asked of the upstream on `s` — the socket `sock` itself, or TLS to it on `sock`: its CONNECT sent, its
+/// answer read whole by `by` (`timeout` from the start) — 2xx with nothing after it, else why not (a 407 as
+/// tarae's credentials meet it).
+#[allow(clippy::too_many_arguments)]
 fn tunnel_through(
-    s: &TcpStream,
+    s: &mut (impl Read + Write),
+    sock: &TcpStream,
     up: &Upstream,
     name: &str,
     port: u16,
+    by: Instant,
     timeout: Duration,
 ) -> Result<(), Failed> {
-    use std::io::{Read, Write};
     let silent = Failed::Silent(timeout);
-    (&*s).write_all(&up.connect_head(name, port)).map_err(|e| Failed::Unreachable(e.kind().to_string()))?;
-    let by = std::time::Instant::now() + timeout;
+    let left = by.saturating_duration_since(crate::clock::now());
+    if left.is_zero() || sock.set_write_timeout(Some(left)).is_err() {
+        return Err(silent);
+    }
+    s.write_all(&up.connect_head(name, port)).map_err(|e| match e.kind() {
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => Failed::Silent(timeout),
+        k => Failed::Unreachable(k.to_string()),
+    })?;
     let (mut buf, mut chunk) = (Vec::new(), [0u8; 4096]);
     let a = loop {
         match upstream::answer(&buf) {
@@ -312,21 +381,25 @@ fn tunnel_through(
             Ok(None) => {}
             Err(why) => return Err(Failed::Unreadable(why)),
         }
-        let left = by.saturating_duration_since(std::time::Instant::now());
-        if left.is_zero() || s.set_read_timeout(Some(left)).is_err() {
+        let left = by.saturating_duration_since(crate::clock::now());
+        if left.is_zero() || sock.set_read_timeout(Some(left)).is_err() {
             return Err(silent);
         }
-        match (&*s).read(&mut chunk) {
+        match s.read(&mut chunk) {
             Ok(0) => return Err(Failed::Cut),
             Ok(n) => buf.extend_from_slice(&chunk[..n]),
             Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
                 return Err(silent);
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            // (a record that doesn't decrypt, through an https:// one)
+            Err(e) if e.get_ref().is_some_and(|e| e.is::<rustls::Error>()) => {
+                return Err(Failed::Tls("a record that didn't decrypt"));
+            }
             Err(_) => return Err(Failed::Cut),
         }
     };
-    let _ = s.set_read_timeout(None);
+    let _ = (sock.set_read_timeout(None), sock.set_write_timeout(None));
     match a.status {
         200..=299 if buf.len() > a.len => Err(Failed::Extra),
         200..=299 => Ok(()),
@@ -345,8 +418,7 @@ fn socks_through(
     port: u16,
     timeout: Duration,
 ) -> Result<(), Failed> {
-    use std::io::Write;
-    let by = std::time::Instant::now() + timeout;
+    let by = crate::clock::now() + timeout;
     let send = |b: &[u8]| (&*s).write_all(b).map_err(|e| Failed::Unreachable(e.kind().to_string()));
     let not = Failed::Unreadable("not a SOCKS5 reply");
     send(&up.socks_greeting())?;
@@ -390,11 +462,10 @@ fn read_exactly(
     by: std::time::Instant,
     timeout: Duration,
 ) -> Result<Vec<u8>, Failed> {
-    use std::io::Read;
     let mut got = vec![0u8; n];
     let mut at = 0;
     while at < n {
-        let left = by.saturating_duration_since(std::time::Instant::now());
+        let left = by.saturating_duration_since(crate::clock::now());
         if left.is_zero() || s.set_read_timeout(Some(left)).is_err() {
             return Err(Failed::Silent(timeout));
         }

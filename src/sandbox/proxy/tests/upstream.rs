@@ -8,7 +8,7 @@ use super::*;
 use crate::sandbox::proxy::upstream::{self as up, Setting, Upstreams};
 
 /// A head, read to its blank line.
-fn read_head(s: &mut TcpStream) -> Vec<u8> {
+fn read_head(s: &mut impl Read) -> Vec<u8> {
     let (mut got, mut b) = (Vec::new(), [0u8; 1]);
     while !got.ends_with(b"\r\n\r\n") {
         match s.read(&mut b) {
@@ -201,7 +201,7 @@ fn plain_http_goes_upstream_in_absolute_form() {
 
 /// What failed at the upstream is said as the upstream's (`network-upstream`), apart from tarae's own refusals:
 /// unreachable, silent, its 407 three ways (credentials refused, none given, a scheme tarae doesn't speak), its
-/// own refusal, an https:// one tarae can't chain to, a plain request's 407. The run gets 502 — never the
+/// own refusal, a SOCKS4 one tarae can't chain to, a plain request's 407. The run gets 502 — never the
 /// upstream's challenge (it would answer it with its own token) nor its words; the report names the variable,
 /// never where the upstream is; `:sandbox-blocked` offers nothing, as no answer of the user's would lift it.
 #[test]
@@ -211,7 +211,7 @@ fn the_upstreams_failures_are_said_as_its_own() {
         (outside(asks_basic), outside(asks_negotiate), outside(forbids), outside(silent));
     let f = start(resolver(Vec::new()).0, Limits { connect: Duration::from_millis(400), ..limits() });
     let creds = Some(("u", "tarae-fake-token-3"));
-    let https = format!("https://u:tarae-fake-token-3@{}", basic.at);
+    let socks4 = format!("socks4a://u:tarae-fake-token-3@{}", basic.at);
     let get = "GET http://example.invalid/ HTTP/1.1\r\n\r\n".to_string();
     let connect = connect_head("example.invalid:443");
     let cases: Vec<(Upstreams, &String, &str)> = vec![
@@ -226,9 +226,9 @@ fn the_upstreams_failures_are_said_as_its_own() {
         ),
         (via(refusing.at, creds), &connect, "it answered 403 (Forbidden — its own refusal)"),
         (
-            up::of(&env(&[("HTTPS_PROXY", https)]), Setting::Env),
+            up::of(&env(&[("HTTPS_PROXY", socks4)]), Setting::Env),
             &connect,
-            "tarae's own HTTPS_PROXY names an https:// proxy, which tarae's proxy doesn't chain to yet",
+            "tarae's own HTTPS_PROXY names a SOCKS proxy other than SOCKS5",
         ),
         (via(basic.at, creds), &get, "it refused the credentials in tarae's HTTP_PROXY (407)"),
     ];
@@ -260,6 +260,215 @@ fn the_upstreams_failures_are_said_as_its_own() {
             [],
             "{why}"
         );
+    }
+}
+
+// --- An https:// upstream (TLS to the proxy itself, srt's recipe) ---
+
+type Tls = rustls::StreamOwned<rustls::ServerConnection, TcpStream>;
+
+/// A stand-in https:// upstream: TLS under `config` (its handshake done by the first read), then `serve` inside
+/// it — what it got, after a first line naming the server name the client's hello carried.
+fn over_tls(s: TcpStream, config: Arc<rustls::ServerConfig>, serve: fn(&mut Tls) -> Vec<u8>) -> Vec<u8> {
+    let _ = s.set_read_timeout(Some(WAIT));
+    let mut t = Tls::new(rustls::ServerConnection::new(config).unwrap(), s);
+    let got = serve(&mut t);
+    let name = t.conn.server_name().unwrap_or("none").to_string();
+    [format!("server name {name}\n").into_bytes(), got].concat()
+}
+
+/// Inside: the CONNECT read, 200, then what comes echoed until the client's close_notify — an end without one
+/// (the connection cut) said as ` (cut)` after what came.
+fn opens_inside(t: &mut Tls) -> Vec<u8> {
+    let mut got = read_head(t);
+    let _ = t.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n");
+    let mut b = [0u8; 16 * 1024];
+    loop {
+        match t.read(&mut b) {
+            Ok(0) => break,
+            Ok(n) => {
+                got.extend_from_slice(&b[..n]);
+                if t.write_all(&b[..n]).is_err() {
+                    break;
+                }
+            }
+            Err(_) => {
+                got.extend_from_slice(b" (cut)");
+                break;
+            }
+        }
+    }
+    got
+}
+
+/// Inside: a plain request's head (no body) read, its answer, close_notify.
+fn web_inside(t: &mut Tls) -> Vec<u8> {
+    let got = read_head(t);
+    let _ = t.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+    t.conn.send_close_notify();
+    let _ = t.flush();
+    got
+}
+
+/// Inside: a 407 to the first head.
+fn asks_basic_inside(t: &mut Tls) -> Vec<u8> {
+    let got = read_head(t);
+    let _ = t.write_all(
+        b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"corp\"\r\n\
+          Content-Length: 0\r\n\r\n",
+    );
+    let _ = t.flush();
+    got
+}
+
+/// A proxy that speaks no TLS: plain HTTP's refusal at once, whatever comes.
+fn speaks_plain(mut s: TcpStream) -> Vec<u8> {
+    let _ = s.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n");
+    let mut got = Vec::new();
+    let _ = s.read_to_end(&mut got);
+    got
+}
+
+fn tls_opens(s: TcpStream) -> Vec<u8> {
+    over_tls(s, crate::web::fetch::tests::server_tls(), opens_inside)
+}
+
+fn tls_web(s: TcpStream) -> Vec<u8> {
+    over_tls(s, crate::web::fetch::tests::server_tls(), web_inside)
+}
+
+fn tls_asks_basic(s: TcpStream) -> Vec<u8> {
+    over_tls(s, crate::web::fetch::tests::server_tls(), asks_basic_inside)
+}
+
+fn tls_stranger(s: TcpStream) -> Vec<u8> {
+    over_tls(s, crate::web::fetch::tests::stranger_tls(), opens_inside)
+}
+
+/// tarae's environment naming an https:// upstream `name:port` for both kinds, with these credentials.
+fn via_https(name: &str, port: u16, creds: (&str, &str)) -> Upstreams {
+    let url = format!("https://{}:{}@{name}:{port}", pct(creds.0), pct(creds.1));
+    up::of(&env(&[("HTTPS_PROXY", url.clone()), ("HTTP_PROXY", url)]), Setting::Env)
+}
+
+/// Through an https:// upstream (srt's recipe): TLS to it first — its name the server name, its certificate
+/// checked as the system checks one —, then the tunnel asked inside, `CONNECT host:port` with tarae's credentials,
+/// and the run's own ClientHello after it, checked as ever; what the host sends back reaches the run, and the run's
+/// close ends the bridge (the upstream reads its close_notify). A plain request goes inside in absolute form.
+/// tarae looks up the upstream's own name only, never the run's.
+#[test]
+fn an_https_upstream_is_spoken_to_inside_tls() {
+    let (tunnels, web) = (outside(tls_opens), outside(tls_web));
+    let (resolve, lookups) =
+        resolver(vec![("localhost", vec![vec![tunnels.at]]), ("page.test", vec![vec![web.at]])]);
+    let f = start(resolve, limits());
+    let creds = ("u", "tarae-fake-token-8");
+    let basic = parse::base64(b"u:tarae-fake-token-8");
+    let rules = rules_via(&["example.invalid"], via_https("localhost", tunnels.at.port(), creds));
+    let (mut c, _) = connection(&f.proxy, 1, 1, rules);
+    assert_eq!(ask(&mut c, &connect_head("example.invalid:443")), 200);
+    c.write_all(curl_hello()).unwrap();
+    let mut back = vec![0u8; curl_hello().len()];
+    c.read_exact(&mut back).unwrap();
+    assert_eq!(back, curl_hello(), "the host's side comes back through the bridge");
+    drop(c);
+    let head = format!(
+        "CONNECT example.invalid:443 HTTP/1.1\r\nHost: example.invalid:443\r\nProxy-Authorization: Basic {basic}\r\n\r\n"
+    );
+    let got = tunnels.got.recv_timeout(WAIT).expect("the run's close reached the upstream");
+    let want = [b"server name localhost\n", head.as_bytes(), curl_hello()].concat();
+    assert_eq!(got, want, "{}", String::from_utf8_lossy(&got));
+    assert_eq!(lookups.load(Ordering::SeqCst), 1, "the upstream's own name, never the run's");
+    // A plain request: inside, in absolute form, its answer back whole
+    let rules = rules_via(&["web.example.invalid"], via_https("page.test", web.at.port(), creds));
+    let (mut c, _) = connection(&f.proxy, 1, 1, rules);
+    c.write_all(b"GET http://web.example.invalid/x HTTP/1.1\r\nHost: web.example.invalid\r\n\r\n").unwrap();
+    let answer = String::from_utf8(to_close(&mut c)).unwrap();
+    assert!(answer.starts_with("HTTP/1.1 200 ") && answer.ends_with("\r\n\r\nok"), "{answer}");
+    let got = String::from_utf8(web.got.recv_timeout(WAIT).unwrap()).unwrap();
+    assert_eq!(
+        got,
+        format!(
+            "server name page.test\nGET http://web.example.invalid/x HTTP/1.1\r\nHost: web.example.invalid\r\n\
+             Connection: close\r\nProxy-Authorization: Basic {basic}\r\n\r\n"
+        )
+    );
+}
+
+/// A tunnel through an https:// upstream carries more than the bridge and the relay hold at once (64 KiB each),
+/// both ways at the same time — every byte back in order, none lost to either one's limit (Linux: the relay
+/// splices the bridge's end).
+#[test]
+fn a_big_tunnel_goes_whole_through_the_bridge() {
+    let upstream = outside(tls_opens);
+    let (resolve, _) = resolver(vec![("localhost", vec![vec![upstream.at]])]);
+    let f = start(resolve, limits());
+    let rules = rules_via(&["example.invalid"], via_https("localhost", upstream.at.port(), ("u", "p")));
+    let (mut c, _) = connection(&f.proxy, 1, 1, rules);
+    assert_eq!(ask(&mut c, &connect_head("example.invalid:443")), 200);
+    // (a ClientHello first, as the proxy checks it; then 4 MiB of a pattern no shift can match)
+    let mut sent = curl_hello().to_vec();
+    sent.extend((0..4 << 20).map(|i: u32| (i % 251) as u8));
+    let mut w = c.try_clone().unwrap();
+    let all = sent.clone();
+    let writer = crate::event::thread("tarae-writer", move || w.write_all(&all));
+    let mut back = vec![0u8; sent.len()];
+    c.read_exact(&mut back).unwrap();
+    writer.join().unwrap().unwrap();
+    assert!(
+        back == sent,
+        "{} bytes back, the first wrong at {:?}",
+        back.len(),
+        back.iter().zip(&sent).position(|(a, b)| a != b)
+    );
+}
+
+/// What fails at an https:// upstream's TLS is said as the upstream's, in tarae's words — never the
+/// certificate's: one no CA of the system's issued, one for another name, a proxy that speaks no TLS, one that
+/// never answers the handshake; and a 407 inside the TLS is read as ever. The run gets 502.
+#[test]
+fn an_https_upstreams_tls_failures_are_said() {
+    let (good, stranger, plain, quiet, basic) = (
+        outside(tls_opens),
+        outside(tls_stranger),
+        outside(speaks_plain),
+        outside(silent),
+        outside(tls_asks_basic),
+    );
+    let (resolve, _) = resolver(vec![
+        ("localhost", vec![vec![stranger.at]]),
+        ("proxy.example.invalid", vec![vec![good.at]]),
+        ("plain.test", vec![vec![plain.at]]),
+        ("quiet.test", vec![vec![quiet.at]]),
+        ("page.test", vec![vec![basic.at]]),
+    ]);
+    let f = start(resolve, Limits { connect: Duration::from_millis(400), ..limits() });
+    let creds = ("u", "tarae-fake-token-9");
+    let cases = [
+        (
+            via_https("localhost", stranger.at.port(), creds),
+            "TLS to it: its certificate isn't one this system trusts",
+        ),
+        (
+            via_https("proxy.example.invalid", good.at.port(), creds),
+            "TLS to it: its certificate is for another name",
+        ),
+        (via_https("plain.test", plain.at.port(), creds), "TLS to it: the handshake failed"),
+        (via_https("quiet.test", quiet.at.port(), creds), "it didn't answer within 0.4 s"),
+        (
+            via_https("page.test", basic.at.port(), creds),
+            "it refused the credentials in tarae's HTTPS_PROXY (407)",
+        ),
+    ];
+    for (upstream, why) in cases {
+        let (mut c, d) = connection(&f.proxy, 1, 1, rules_via(&["example.invalid"], upstream));
+        c.write_all(connect_head("example.invalid:443").as_bytes()).unwrap();
+        let head = head_of(&mut c);
+        assert!(head.starts_with("HTTP/1.1 502 "), "{why}: {head}");
+        let denial = d.recv_timeout(WAIT).expect("said");
+        assert_eq!(denial.op, UPSTREAM_OP, "{why}: {}", denial.target);
+        assert!(denial.target.contains(why), "{why}: {}", denial.target);
+        assert!(!denial.target.contains("tarae-fake-token-9") && !denial.target.contains("stranger"));
     }
 }
 
@@ -565,7 +774,7 @@ impl Rng {
 /// The credentials in tarae's proxy variable go to the upstream and nowhere else. Random fake ones — `@ : % /`
 /// and more in them, percent-encoded as a URL holds them — through every way a connection goes: let through,
 /// refused before the upstream, a ClientHello for another server, the upstream's 407s, its 403, unreachable,
-/// silent, a plain request and its 407, an https:// and a SOCKS4 upstream; through SOCKS5, a tunnel, a plain
+/// silent, a plain request and its 407, an https:// one (inside its TLS), a SOCKS4 one; through SOCKS5, a tunnel, a plain
 /// request, its sign-in refused. What the run gets back, every refusal as its report says it, tarae's log, the
 /// run's rules line, the policy's `Debug` and key, and the run's environment hold none of the user, the password
 /// (as written or encoded) or the `Basic` value; the upstream gets them once a request — as `Basic` (http), as
@@ -582,9 +791,12 @@ fn upstream_credentials_go_only_to_the_upstream() {
     );
     let (socks_tunnel, socks_plain, socks_refusing) =
         (outside(socks_echo), outside(socks_web), outside(socks_refuses_sign_in));
+    let tls_opening = outside(tls_opens);
     let (_held, closed) = refused_at();
     let limits = Limits { hold: Duration::from_millis(200), connect: Duration::from_millis(300), ..limits() };
-    let f = start(resolver(Vec::new()).0, limits);
+    // (an https:// one by its name: its certificate's)
+    let f = start(resolver(vec![("localhost", vec![vec![tls_opening.at]])]).0, limits);
+    let tls_at = format!("localhost:{}", tls_opening.at.port());
     let mut rng = Rng(0x5ec2_e75e_ed00_0005);
     let mut seen: Vec<String> = Vec::new();
     let mut forms: Vec<String> = Vec::new();
@@ -598,8 +810,10 @@ fn upstream_credentials_go_only_to_the_upstream() {
         let sign_in =
             [&[1, user.len() as u8][..], user.as_bytes(), &[password.len() as u8], password.as_bytes()]
                 .concat();
-        let url = |scheme: &str, at: SocketAddr| format!("{scheme}://{}:{}@{at}", pct(&user), pct(&password));
-        let named = |scheme: &str, at| {
+        let url = |scheme: &str, at: &dyn std::fmt::Display| {
+            format!("{scheme}://{}:{}@{at}", pct(&user), pct(&password))
+        };
+        let named = |scheme: &str, at: &dyn std::fmt::Display| {
             let u = url(scheme, at);
             up::of(&env(&[("HTTPS_PROXY", u.clone()), ("http_proxy", u)]), Setting::Env)
         };
@@ -612,21 +826,21 @@ fn upstream_credentials_go_only_to_the_upstream() {
         let (http, socks) = (&header[..], &sign_in[..]);
         type Reaches<'a> = Option<(&'a Outside, &'a [u8])>;
         let paths: Vec<(Vec<u8>, Upstreams, Reaches)> = vec![
-            (hello.clone(), named("http", opening.at), Some((&opening, http))),
-            (connect_head("refused.example.invalid:443").into_bytes(), named("http", opening.at), None),
-            (other, named("http", opening.at), Some((&opening, http))),
-            (hello.clone(), named("http", basic.at), Some((&basic, http))),
-            (hello.clone(), named("http", negotiate.at), Some((&negotiate, http))),
-            (hello.clone(), named("http", refusing.at), Some((&refusing, http))),
-            (hello.clone(), named("http", closed), None),
-            (hello.clone(), named("http", quiet.at), Some((&quiet, http))),
-            (get.clone(), named("http", webs.at), Some((&webs, http))),
-            (get.clone(), named("http", basic.at), Some((&basic, http))),
-            (hello.clone(), named("https", opening.at), None),
-            (hello.clone(), named("socks4a", opening.at), None),
-            (hello.clone(), named("socks5h", socks_tunnel.at), Some((&socks_tunnel, socks))),
-            (get, named("socks5", socks_plain.at), Some((&socks_plain, socks))),
-            (hello, named("socks5h", socks_refusing.at), Some((&socks_refusing, socks))),
+            (hello.clone(), named("http", &opening.at), Some((&opening, http))),
+            (connect_head("refused.example.invalid:443").into_bytes(), named("http", &opening.at), None),
+            (other, named("http", &opening.at), Some((&opening, http))),
+            (hello.clone(), named("http", &basic.at), Some((&basic, http))),
+            (hello.clone(), named("http", &negotiate.at), Some((&negotiate, http))),
+            (hello.clone(), named("http", &refusing.at), Some((&refusing, http))),
+            (hello.clone(), named("http", &closed), None),
+            (hello.clone(), named("http", &quiet.at), Some((&quiet, http))),
+            (get.clone(), named("http", &webs.at), Some((&webs, http))),
+            (get.clone(), named("http", &basic.at), Some((&basic, http))),
+            (hello.clone(), named("https", &tls_at), Some((&tls_opening, http))),
+            (hello.clone(), named("socks4a", &opening.at), None),
+            (hello.clone(), named("socks5h", &socks_tunnel.at), Some((&socks_tunnel, socks))),
+            (get, named("socks5", &socks_plain.at), Some((&socks_plain, socks))),
+            (hello, named("socks5h", &socks_refusing.at), Some((&socks_refusing, socks))),
         ];
         for (request, upstream, reaches) in paths {
             seen.push(format!("{upstream:?}"));
@@ -647,7 +861,7 @@ fn upstream_credentials_go_only_to_the_upstream() {
         let policy = crate::sandbox::Policy::for_project(&crate::sandbox::Env {
             root: "/w/p".into(),
             network: true,
-            upstream: named("http", opening.at),
+            upstream: named("http", &opening.at),
             ..Default::default()
         });
         seen.push(crate::sandbox::Guard::In(Box::new(policy.clone())).rules());

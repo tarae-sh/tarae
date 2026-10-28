@@ -69,9 +69,10 @@ from each other. Daemons such as Gradle's stay warm between runs.
    the run's rules don't name waits for the user's card; `llm.sandbox-hosts` lists the ones allowed. On macOS each
    run gets a port and a token of its own. On Linux the relay splices a connection once it has read its start.
    Tools that ignore the proxy variables are told by their packs. Where tarae itself goes out through a proxy,
-   it chains to that one, http:// or SOCKS5 (host and SNI checks kept; the address checks are that proxy's, said
-   in the report).
-   Later: an `https://` upstream, and Negotiate/NTLM.
+   it chains to that one, http://, https:// or SOCKS5 (host and SNI checks kept; the address checks are that
+   proxy's, said in the report). An https:// one (2026-10-28) as Anthropic's sandbox runtime does it: TLS to the
+   proxy, checked as the system checks a certificate, then CONNECT inside. Basic only, as srt and Claude Code:
+   for NTLM or Kerberos, a local helper (Px, cntlm) named as an http:// proxy.
 6. **Out by the proxy alone** — done. Every tier goes out by step 5's proxy variable. A tool that ignores it, or
    raw TCP, fails closed, and the report points at `outside_sandbox`.
 7. **Sessions kept apart** — done. Tests that one session can't reach another's processes, sockets or files, on

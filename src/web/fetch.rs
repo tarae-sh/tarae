@@ -118,19 +118,22 @@ pub fn claudes(
 /// fetch's worker (Linux reads the distro's certificates there).
 pub fn tls() -> Result<Arc<rustls::ClientConfig>, String> {
     static TLS: OnceLock<Result<Arc<rustls::ClientConfig>, String>> = OnceLock::new();
-    TLS.get_or_init(|| {
-        use rustls_platform_verifier::BuilderVerifierExt;
-        let mut c =
-            rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-                .with_safe_default_protocol_versions()
-                .map_err(|e| format!("TLS: {e}"))?
-                .with_platform_verifier()
-                .map_err(|e| format!("the system's certificates: {e}"))?
-                .with_no_client_auth();
-        c.alpn_protocols = vec![b"http/1.1".to_vec()];
-        Ok(Arc::new(c))
-    })
-    .clone()
+    TLS.get_or_init(|| platform(vec![b"http/1.1".to_vec()])).clone()
+}
+
+/// rustls on ring, the OS's verifier, TLS 1.2 and 1.3, speaking `alpn` — the page's (`tls`) and an https://
+/// upstream proxy's (`proxy::upstream::tls`, none).
+pub fn platform(alpn: Vec<Vec<u8>>) -> Result<Arc<rustls::ClientConfig>, String> {
+    use rustls_platform_verifier::BuilderVerifierExt;
+    let mut c =
+        rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .map_err(|e| format!("TLS: {e}"))?
+            .with_platform_verifier()
+            .map_err(|e| format!("the system's certificates: {e}"))?
+            .with_no_client_auth();
+    c.alpn_protocols = alpn;
+    Ok(Arc::new(c))
 }
 
 /// A fetch's way to stop: its socket, shut down from another thread — one call that never waits — so its worker's

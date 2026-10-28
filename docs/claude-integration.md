@@ -1215,7 +1215,9 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
 - **Through your own proxy.** Where tarae itself goes out through a proxy — `HTTPS_PROXY`, `HTTP_PROXY` or
   `ALL_PROXY` in the environment you started it from, lowercase forms first, as curl reads them — tarae's proxy
   goes on through that one, with the `user:password` its URL carries. Through an `http://` one a tunnel becomes a
-  `CONNECT` for the same host and port, and a plain request goes to it in the form proxies take. Through a SOCKS5
+  `CONNECT` for the same host and port, and a plain request goes to it in the form proxies take. An `https://` one
+  is the same inside TLS to the proxy itself (port 443 when the URL names none), its certificate checked as your
+  system checks one — a company's own root in the system's store works. Through a SOCKS5
   one (`socks5h://`, as local VPN and proxy clients set `ALL_PROXY`, or `socks5://`: the same, since tarae always
   sends the host's name) both are asked of it by name, signed in with the user and password where there are any.
   The host and TLS server-name checks still
@@ -1227,8 +1229,10 @@ the same rules — [what differs](#on-linux)). What you run yourself doesn't.
   variables name tarae's. Its credentials stay in tarae's memory: they're sent to that proxy alone, never
   logged, and never in a command's environment or report. The report names the variable only, never where the
   proxy is; tarae's log names its host and port. When that proxy refuses, can't be reached or answers 407, the
-  report says so as the proxy's (`network-upstream`), not the sandbox's. An `https://` or SOCKS4 proxy, or one
-  asking for Negotiate/NTLM, isn't spoken to yet: nothing goes that way, and the report says why.
+  report says so as the proxy's (`network-upstream`), not the sandbox's. A SOCKS4 proxy, or one asking for
+  Negotiate/NTLM, isn't spoken to: nothing goes that way, and the report says why. Only Basic is spoken, as
+  Anthropic's sandbox runtime and Claude Code speak it; for a proxy that wants NTLM or Kerberos, a local helper
+  (Px, cntlm) that signs in for you, named as an `http://` proxy, is the way.
   `llm.sandbox-upstream = "none"` sends the commands straight out, with every check
 - Each command gets a folder of its own as `TMPDIR`, in tarae's cache (`~/.cache/tarae/runs/`, or under
   `$XDG_CACHE_HOME`) — not in a temp folder, which every command writes: no other command, this session's or

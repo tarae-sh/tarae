@@ -44,7 +44,6 @@ fn the_upstream_comes_from_taraes_environment() {
     assert_eq!(way_of(&of(&env(&[]), Setting::Env), "a.example.invalid", 443, true), "direct");
     let secret = "tarae-fake-token-7";
     for (url, why) in [
-        (format!("https://u:{secret}@p.example.invalid:3128"), "https://"),
         (format!("socks4a://u:{secret}@p.example.invalid:1080"), "other than SOCKS5"),
         (format!("socks://u:{secret}@p.example.invalid:1080"), "other than SOCKS5"),
         // (RFC 1929 carries 1–255 bytes of user, at most 255 of password)
@@ -78,6 +77,14 @@ fn an_upstreams_url_and_credentials() {
     };
     assert_eq!(one("p.example.invalid:3128").at(), "p.example.invalid:3128");
     assert_eq!(one("http://P.Example.Invalid/").at(), "p.example.invalid:80");
+    // (an https:// one: http inside TLS to it, at 443 when it names no port — as srt and curl)
+    let https = one("https://u:p@p.example.invalid");
+    assert_eq!(
+        (https.proto, https.tls, https.at()),
+        (Proto::Http, true, "p.example.invalid:443".to_string())
+    );
+    assert_eq!(format!("{https:?}"), "Upstream(HTTPS_PROXY https p.example.invalid:443, credentials: true)");
+    assert!(!one("http://p.example.invalid").tls && !one("p.example.invalid").tls);
     assert_eq!(one("http://[::1]:3128").at(), "[::1]:3128");
     assert_eq!(one("http://127.0.0.1:3128/x").at(), "127.0.0.1:3128");
     let auth = |u: &Upstream| -> Option<(Vec<u8>, Vec<u8>)> {

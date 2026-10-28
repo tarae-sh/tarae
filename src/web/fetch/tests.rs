@@ -113,25 +113,51 @@ fn ring() -> Arc<rustls::crypto::CryptoProvider> {
 
 /// The client's TLS: as `tls()`'s, but trusting the test's CA alone.
 fn client() -> Arc<rustls::ClientConfig> {
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(made().ca.clone().into()).unwrap();
-    let mut c = rustls::ClientConfig::builder_with_provider(ring())
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+    let mut c = Arc::unwrap_or_clone(client_without_alpn());
     c.alpn_protocols = vec![b"http/1.1".to_vec()];
     Arc::new(c)
 }
 
-fn server_tls() -> Arc<rustls::ServerConfig> {
+/// An https:// upstream proxy's TLS in tests (`proxy::upstream::tls`): the test's CA alone, no ALPN.
+pub(crate) fn client_without_alpn() -> Arc<rustls::ClientConfig> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(made().ca.clone().into()).unwrap();
+    let c = rustls::ClientConfig::builder_with_provider(ring())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Arc::new(c)
+}
+
+/// A server's TLS under the test's leaf (`page.test`, `other.test`, `localhost`) — the page servers', and a stand-in
+/// https:// upstream proxy's.
+pub(crate) fn server_tls() -> Arc<rustls::ServerConfig> {
     let m = made();
-    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(m.key.clone().into());
+    with_cert(m.leaf.clone(), m.key.clone())
+}
+
+/// A server's TLS under a certificate for `localhost` that no CA of the test's issued — signed by its own key.
+pub(crate) fn stranger_tls() -> Arc<rustls::ServerConfig> {
+    use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING as ALG, EcdsaKeyPair, KeyPair};
+    let rng = ring::rand::SystemRandom::new();
+    let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ALG, &rng).unwrap();
+    let key = EcdsaKeyPair::from_pkcs8(&ALG, pkcs8.as_ref(), &rng).unwrap();
+    let ext = [
+        extension(ALT_NAMES, false, &seq(&[&tlv(0x82, b"localhost")])),
+        extension(KEY_PURPOSES, false, &seq(&[SERVER_AUTH])),
+    ];
+    let cert = certificate(3, "localhost", key.public_key().as_ref(), "a stranger", &key, &ext);
+    with_cert(cert, pkcs8.as_ref().to_vec())
+}
+
+fn with_cert(cert: Vec<u8>, key: Vec<u8>) -> Arc<rustls::ServerConfig> {
+    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(key.into());
     let c = rustls::ServerConfig::builder_with_provider(ring())
         .with_safe_default_protocol_versions()
         .unwrap()
         .with_no_client_auth()
-        .with_single_cert(vec![m.leaf.clone().into()], key)
+        .with_single_cert(vec![cert.into()], key)
         .unwrap();
     Arc::new(c)
 }

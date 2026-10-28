@@ -17,6 +17,7 @@ use std::net::{Shutdown, TcpStream};
 use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
 
+use super::bridge::Out;
 use super::parse;
 
 /// The random a ServerHello carries when it's a HelloRetryRequest (RFC 8446 §4.1.3: SHA-256 of
@@ -70,7 +71,7 @@ enum Look {
 /// status is read, and a 407 (that proxy's, about tarae's credentials) ends the relay with none of it sent on.
 pub fn relay(
     client: TcpStream,
-    server: TcpStream,
+    server: impl Into<Out>,
     name: Option<&str>,
     hello_time: Duration,
     first: &[u8],
@@ -136,7 +137,7 @@ pub fn spliced_now(end: std::net::SocketAddr) -> Option<usize> {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn relay_with(
     client: TcpStream,
-    server: TcpStream,
+    server: impl Into<Out>,
     name: Option<&str>,
     hello_time: Duration,
     first: &[u8],
@@ -144,10 +145,10 @@ pub(super) fn relay_with(
     upstream: bool,
     pipes: fn() -> io::Result<Pipes>,
 ) -> End {
-    let sides = [client, server];
     // (taken now: a socket shut down both ways has no peer to say by its end — macOS)
     #[cfg(test)]
-    let peer = sides[0].peer_addr();
+    let peer = client.peer_addr();
+    let sides = [Out::Tcp(client), server.into()];
     #[cfg(test)]
     if let Ok(peer) = peer {
         started(peer);
@@ -216,7 +217,7 @@ pub(super) fn one_page_pipes() -> io::Result<Pipes> {
 /// nothing is left to judge or waits in tarae (Linux; `pipes` an Err: it pumps on), which counts what it moves
 /// in `spliced`.
 fn pump(
-    sides: &[TcpStream; 2],
+    sides: &[Out; 2],
     f: &mut Flow,
     first: &[u8],
     pipes: fn() -> io::Result<Pipes>,
@@ -428,10 +429,10 @@ fn feed(f: &mut Flow, from: usize, bytes: &[u8], end: bool) -> Option<End> {
 #[cfg(target_os = "linux")]
 mod splice {
     use std::io;
-    use std::net::{Shutdown, TcpStream};
+    use std::net::Shutdown;
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
-    use super::{End, Pipe, Pipes};
+    use super::{End, Out, Pipe, Pipes};
 
     /// What one pipe holds at most (Linux's default size: no `F_SETPIPE_SZ`) — in bytes; it can be full sooner
     /// (`full`).
@@ -492,7 +493,7 @@ mod splice {
     }
 
     /// The splice loop — `eof`, `shut`, `hup` as the pump left them; what it moves to the sides counted in `spliced`.
-    pub fn run(sides: &[TcpStream; 2], mut pipes: Pipes, state: [[bool; 2]; 3], spliced: &mut usize) -> End {
+    pub fn run(sides: &[Out; 2], mut pipes: Pipes, state: [[bool; 2]; 3], spliced: &mut usize) -> End {
         hold_sigpipe();
         let [mut eof, mut shut, mut hup] = state;
         // full[i]: pipe i said "not now" while it held bytes — side i unread until it gives some out

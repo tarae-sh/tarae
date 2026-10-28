@@ -1246,6 +1246,12 @@ const BRANCHES: &[(&str, &str, &str)] = &[
     ("src/sandbox/proxy/relay.rs", "in fn relay_with: if let Ok(peer) = peer {", RECORD),
     ("src/sandbox/proxy/relay.rs", "in fn relay_with: if let Ok(peer) = peer {", RECORD),
     ("src/sandbox/proxy/relay.rs", "in fn relay_with: peer", RECORD),
+    (
+        "src/sandbox/proxy/upstream.rs",
+        "in fn tls: return Ok(crate::web::fetch::tests::client_without",
+        UPSTREAM_TLS,
+    ),
+    ("src/sandbox/proxy/upstream.rs", "in fn tls: {", UPSTREAM_TLS),
     ("src/sandbox/supervisor.rs", "in fn kept_apart: if APART_OFF.load(Relaxed) == self.session {", HOOK),
     ("src/sandbox/supervisor.rs", "in fn routed: if p.resolvers.iter().any(|r| r.ip().to_canonical(", RECORD),
     ("src/sandbox/supervisor.rs", "in fn serve: ENDED.lock().unwrap_or_else(|e| e.into_inner()).pu", RECORD),
@@ -1280,6 +1286,8 @@ const ASKS: &str = "the proxy's questions go to a test's sender (`TEST_ASKS`): t
 const NAMES: &str = "names resolved from `TEST_NAMES`/`TEST_RECORDS` only, never the network — the network lane \
                      needs a seam (piece 5)";
 const BEYOND: &str = "macOS: addresses a test stands for beyond this machine (`TEST_BEYOND`): none";
+const UPSTREAM_TLS: &str = "an https:// upstream's TLS trusts the tests' own CA alone: compat names no upstream \
+                            proxy, so none is spoken to";
 
 #[cfg(test)]
 mod tests {

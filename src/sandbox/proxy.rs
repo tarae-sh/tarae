@@ -17,6 +17,7 @@
 //! host and server-name checks as ever, the addresses the upstream's — and its failures said apart
 //! (`UPSTREAM_OP`). A cloud metadata server's own name is refused whichever way (`route::never_named`).
 
+pub mod bridge;
 pub mod egress;
 pub mod parse;
 pub mod relay;
@@ -994,7 +995,7 @@ fn serve(c: Conn, shared: &Shared) {
     }
 }
 
-fn relay_send(mut up: &TcpStream, bytes: &[u8]) -> io::Result<()> {
+fn relay_send(mut up: &bridge::Out, bytes: &[u8]) -> io::Result<()> {
     up.write_all(bytes)
 }
 

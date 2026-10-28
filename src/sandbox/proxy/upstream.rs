@@ -1,6 +1,9 @@
 //! The proxy tarae itself goes out by (step 5g, `.sb/step5g-plan.md`): where tarae's own environment names
 //! one, the egress proxy chains to it, with the credentials its URL carries, sent at once. An http:// one: a
-//! tunnel becomes a `CONNECT host:port` to it, a plain request goes to it in absolute form. A SOCKS5 one
+//! tunnel becomes a `CONNECT host:port` to it, a plain request goes to it in absolute form. An https:// one (srt's
+//! recipe, `parent-proxy.ts`: 2026-10-28) the same inside TLS to the proxy itself — verified as the page fetch
+//! verifies (the system's trust: a company's own root works), its name the server name (none for an address), the
+//! TLS on a thread of its own between it and the relay (`bridge`). A SOCKS5 one
 //! (`socks5h://` and `socks5://` alike — the user's decision 2026-10-08: the name goes to it either way, never an
 //! address of tarae's looking up, so the same checks hold as an http one's): RFC 1928's CONNECT with the domain
 //! name, signed in with none or RFC 1929's user and password, then a tunnel as it is and a plain request in origin
@@ -10,8 +13,10 @@
 //!
 //! Through an upstream the proxy never looks the run's names up: the upstream does. So the host and server-name
 //! checks hold and the address checks can't — the run's report says so. `NO_PROXY`'s hosts go direct, with every
-//! check. An upstream tarae can't speak to (`https://`, SOCKS4, a value it can't read) fails closed: nothing goes
-//! that way, said; `llm.sandbox-upstream = "none"` sends the runs direct.
+//! check. An upstream tarae can't speak to (SOCKS4, a value it can't read) fails closed: nothing goes that way,
+//! said; `llm.sandbox-upstream = "none"` sends the runs direct. Only Basic is spoken: an upstream that asks for
+//! NTLM or Negotiate is said so, as srt and Claude Code speak neither (a local helper — Px, cntlm — chained to as
+//! an http:// one is the way).
 //!
 //! The credentials are kept as they're sent (`Secret`), whose `Debug` shows nothing; the report
 //! names the variable only (the user's decision 2026-10-07: a corporate proxy's name can be an internal one, and
@@ -89,6 +94,8 @@ pub enum Proto {
 pub struct Upstream {
     pub var: &'static str,
     pub proto: Proto,
+    /// An https:// one: spoken to inside TLS to it (`Proto::Http` only).
+    pub tls: bool,
     /// A name (lowercase) or an address.
     pub host: String,
     pub port: u16,
@@ -99,9 +106,10 @@ pub struct Upstream {
 /// credentials.
 impl std::fmt::Debug for Upstream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let how = match self.proto {
-            Proto::Http => "",
-            Proto::Socks5 => "socks5 ",
+        let how = match (self.proto, self.tls) {
+            (Proto::Http, false) => "",
+            (Proto::Http, true) => "https ",
+            (Proto::Socks5, _) => "socks5 ",
         };
         write!(f, "Upstream({} {how}{}, credentials: {})", self.var, self.at(), self.auth.is_some())
     }
@@ -243,21 +251,19 @@ pub fn of(env: &HashMap<String, OsString>, setting: Setting) -> Upstreams {
     Upstreams { tunnel, plain, direct, mixed }
 }
 
-/// An upstream's URL: `[http://|socks5://|socks5h://][user[:password]@]host[:port][/…]` — the port 80 (http) or
-/// 1080 (SOCKS5) when it has none; the credentials percent-decoded. Another scheme, credentials SOCKS5 can't
-/// carry, or what isn't such a URL: unusable, said without the value.
+/// An upstream's URL: `[http://|https://|socks5://|socks5h://][user[:password]@]host[:port][/…]` — the port 80
+/// (http), 443 (https, as srt and curl) or 1080 (SOCKS5) when it has none; the credentials percent-decoded. Another
+/// scheme, credentials SOCKS5 can't carry, or what isn't such a URL: unusable, said without the value.
 fn read(var: &'static str, url: &str) -> Result<Upstream, Unusable> {
     let unusable = |why| Unusable { var, why };
     let unreadable = unusable("isn't a proxy URL tarae reads");
-    let (proto, rest) = match url.split_once("://") {
+    let (proto, tls, rest) = match url.split_once("://") {
         Some((scheme, rest)) => match scheme.to_ascii_lowercase().as_str() {
-            "http" => (Proto::Http, rest),
+            "http" => (Proto::Http, false, rest),
+            "https" => (Proto::Http, true, rest),
             // (socks5:// asks the client to look the name up; tarae never does — the name goes to it as with
             // socks5h://, so its checks are the same either way)
-            "socks5" | "socks5h" => (Proto::Socks5, rest),
-            "https" => {
-                return Err(unusable("names an https:// proxy, which tarae's proxy doesn't chain to yet"));
-            }
+            "socks5" | "socks5h" => (Proto::Socks5, false, rest),
             s if s.starts_with("socks") => {
                 return Err(unusable(
                     "names a SOCKS proxy other than SOCKS5 (socks5:// or socks5h://), which tarae's proxy doesn't \
@@ -266,7 +272,7 @@ fn read(var: &'static str, url: &str) -> Result<Upstream, Unusable> {
             }
             _ => return Err(unreadable),
         },
-        None => (Proto::Http, url),
+        None => (Proto::Http, false, url),
     };
     let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
     let (userinfo, hostport) = match authority.rsplit_once('@') {
@@ -305,12 +311,13 @@ fn read(var: &'static str, url: &str) -> Result<Upstream, Unusable> {
             (h, port)
         }
     };
-    let default = match proto {
-        Proto::Http => 80,
-        Proto::Socks5 => 1080,
+    let default = match (proto, tls) {
+        (Proto::Http, false) => 80,
+        (Proto::Http, true) => 443,
+        (Proto::Socks5, _) => 1080,
     };
     let port = port.map_err(|_| unreadable)?.unwrap_or(default);
-    Ok(Upstream { var, proto, host, port, auth })
+    Ok(Upstream { var, proto, tls, host, port, auth })
 }
 
 fn port_of(p: &str) -> Result<u16, ()> {
@@ -442,6 +449,42 @@ pub struct Answer {
     pub schemes: Vec<&'static str>,
 }
 
+/// The TLS to an https:// upstream: the page fetch's (`web::fetch::platform`: rustls on ring, the system's
+/// verifier) with no ALPN — a proxy is spoken HTTP/1.1 to, as srt speaks it. Made once, on the first connection's
+/// thread (Linux reads the distro's certificates there). Tests: their own CA's alone.
+pub fn tls() -> Result<std::sync::Arc<rustls::ClientConfig>, String> {
+    #[cfg(test)]
+    return Ok(crate::web::fetch::tests::client_without_alpn());
+    #[cfg(not(test))]
+    {
+        static TLS: std::sync::OnceLock<Result<std::sync::Arc<rustls::ClientConfig>, String>> =
+            std::sync::OnceLock::new();
+        TLS.get_or_init(|| crate::web::fetch::platform(Vec::new())).clone()
+    }
+}
+
+/// A TLS failure in tarae's words — what the report and the log say; never the certificate's own text.
+pub fn tls_said(e: &rustls::Error) -> &'static str {
+    use rustls::{CertificateError as C, Error as E};
+    match e {
+        E::InvalidCertificate(C::UnknownIssuer | C::BadSignature) => {
+            "its certificate isn't one this system trusts (a company's root goes in the system's store)"
+        }
+        E::InvalidCertificate(C::NotValidForName | C::NotValidForNameContext { .. }) => {
+            "its certificate is for another name"
+        }
+        E::InvalidCertificate(C::Expired | C::ExpiredContext { .. }) => "its certificate has expired",
+        E::InvalidCertificate(C::NotValidYet | C::NotValidYetContext { .. }) => {
+            "its certificate isn't valid yet"
+        }
+        E::InvalidCertificate(C::Revoked) => "its certificate was revoked",
+        E::InvalidCertificate(_) => "its certificate isn't valid",
+        E::AlertReceived(_) => "it refused the handshake",
+        E::NoCertificatesPresented => "it presented no certificate",
+        _ => "the handshake failed",
+    }
+}
+
 /// The schemes a 407 may offer that tarae names (it speaks only Basic).
 const SCHEMES: [&str; 6] = ["Basic", "Negotiate", "NTLM", "Digest", "Kerberos", "Bearer"];
 
@@ -548,6 +591,8 @@ pub enum Failed {
     Cut,
     /// Its answer isn't one tarae reads.
     Unreadable(&'static str),
+    /// TLS to an https:// one failed — why, in tarae's words (never its certificate's).
+    Tls(&'static str),
     /// It sent bytes past its tunnel's answer, before the client's first.
     Extra,
     /// 407, and tarae's variable carries no credentials.
@@ -583,6 +628,7 @@ impl Failed {
             Failed::Silent(t) => format!("it didn't answer within {} s", t.as_secs_f32()),
             Failed::Cut => "it closed before its answer".into(),
             Failed::Unreadable(why) => format!("its answer: {why}"),
+            Failed::Tls(why) => format!("TLS to it: {why}"),
             Failed::Extra => "it sent bytes before the client's own".into(),
             Failed::NoCredentials => format!("it asks for credentials (407), and tarae's {var} gives none"),
             Failed::WrongCredentials => format!("it refused the credentials in tarae's {var} (407)"),

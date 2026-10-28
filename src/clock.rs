@@ -144,7 +144,6 @@ mod tests {
         ("sandbox/keeper.rs", 13),
         ("sandbox/linux.rs", 3),
         ("sandbox/proxy.rs", 3),
-        ("sandbox/proxy/egress.rs", 4),
         ("sandbox/proxy/relay.rs", 2),
         ("sandbox/supervisor.rs", 2),
         ("share.rs", 8),

@@ -10022,12 +10022,15 @@ mod tests {
             r.contains("can't go out; never link-local addresses") && !r.contains("tarae itself uses"),
             "{r}"
         );
+        // (an https:// one is chained to as an http:// one is — inside TLS to it)
         let r = said(&[("HTTPS_PROXY", "https://corp-proxy.example.invalid:3129")]);
+        assert!(r.contains("(https through tarae's own HTTPS_PROXY, plain http direct)"), "{r}");
+        let r = said(&[("HTTPS_PROXY", "socks4a://corp-proxy.example.invalid:1080")]);
         assert!(
             r.contains(
-                "can't go out; beyond it: https nowhere — tarae's own HTTPS_PROXY names an https:// proxy, which \
-                 tarae's proxy doesn't chain to yet (llm.sandbox-upstream = \"none\" sends it direct), plain http \
-                 direct; never link-local addresses"
+                "can't go out; beyond it: https nowhere — tarae's own HTTPS_PROXY names a SOCKS proxy other than \
+                 SOCKS5 (socks5:// or socks5h://), which tarae's proxy doesn't chain to (llm.sandbox-upstream = \
+                 \"none\" sends it direct), plain http direct; never link-local addresses"
             ),
             "{r}"
         );
