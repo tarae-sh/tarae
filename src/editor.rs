@@ -1685,9 +1685,9 @@ impl Editor {
     /// and that checkout's HEAD, as session 0's (the other sessions' are watched as they open).
     pub fn watches_start(&mut self) {
         let root = self.started_root().to_path_buf();
-        crate::config::watch(self.events.shared_sender(), root.clone(), self.config_sources());
+        crate::config::watch(&self.events, root.clone(), self.config_sources());
         self.events_for(crate::event::WorkspaceId::HOME);
-        crate::git::watch(self.events.sender(), root);
+        crate::git::watch(&self.events, root);
         self.events_for(self.workspace.id);
     }
 
@@ -8516,7 +8516,7 @@ mod tests {
         ed.open(&dir.join("a.txt")).unwrap();
         let base = |ed: &Editor| ed.doc().git_base.as_deref().map(|b| b.to_string());
         settle_until(&mut ed, |ed| base(ed).as_deref() == Some("one\n"));
-        crate::git::watch(ed.events.sender(), dir.clone());
+        crate::git::watch(&ed.events, dir.clone());
         settle_until(&mut ed, |ed| ed.workspace.git_branch.is_some());
         // Committed outside: the branch's ref moves (HEAD's own file doesn't)
         git_in(&dir, &["commit", "-q", "-am", "two"]);
@@ -8525,6 +8525,104 @@ mod tests {
         git_in(&dir, &["reset", "-q", "--mixed", "HEAD~1"]);
         settle_until(&mut ed, |ed| base(ed).as_deref() == Some("one\n"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The start's jobs out from `file` (`src/git.rs`) on queue `q`, how long each has been.
+    fn starts_from(q: &crate::event::Queue, file: &str) -> Vec<std::time::Duration> {
+        q.starts_out().into_iter().filter(|(at, _)| at.file() == file).map(|(_, d)| d).collect()
+    }
+
+    /// A queue of the watches' own, for the editor's workspace in front: what they send waits there unapplied (#210's
+    /// tests read the start's count with nothing able to let it go meanwhile).
+    fn watches_queue(ed: &Editor) -> crate::event::Queue {
+        let q = crate::event::Queue::default();
+        q.set_workspace(ed.workspace.id, ed.claude_of(ed.workspace.id));
+        q.set_starting(true);
+        q
+    }
+
+    /// #210: a watch made in the start is the start's until its first look lands — the git watch's first round (its
+    /// repository resolved first: on a loaded Mac it landed in a settled tarae's rest), sent and not yet applied, then
+    /// gone with it; the config watch's look at the plugins folder (none here: nothing sent) let go on its thread,
+    /// whenever that is (so only its going is waited for); one made after the start never counted.
+    #[test]
+    fn a_watchs_first_look_is_the_starts() {
+        let dir = git_repo("start-watch", &[("a.txt", "one\n")]);
+        let mut ed = editor("");
+        ed.workspace.root = dir.clone();
+        let q = watches_queue(&ed);
+        crate::git::watch(&q, dir.clone());
+        crate::config::watch(&q, dir.clone(), ed.config_sources());
+        q.started();
+        let round = q.recv_timeout(crate::test_results::PATIENCE).expect("the git watch's first round");
+        assert_eq!(starts_from(&q, "src/git.rs").len(), 1, "sent, not applied: {:?}", q.starts_out());
+        ed.handle_event(round);
+        assert!(ed.workspace.git_branch.is_some(), "the round applied");
+        assert!(starts_from(&q, "src/git.rs").is_empty(), "its count with it: {:?}", q.starts_out());
+        settle_until(&mut ed, |_| q.starts_out().is_empty());
+        crate::git::watch(&q, dir.clone());
+        assert!(q.starts_out().is_empty(), "made after the start");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #210: the config watch's first look that finds plugins holds the start's count in what it sends — still out
+    /// once it's sent, gone with it (dropped unapplied here: a test's plugin host starts only in its own state,
+    /// `plugins_sync_in`; applied, the result lets it go after `plugins_sync`, as the git watch's round does).
+    #[test]
+    fn a_config_watchs_first_look_that_finds_plugins_holds_the_start() {
+        let scratch = crate::scratch::Scratch::new("start-plugins");
+        let dir = scratch.path().to_path_buf();
+        std::fs::create_dir_all(dir.join("plugins")).unwrap();
+        std::fs::write(dir.join("plugins/stand-in.wasm"), b"not a plugin").unwrap();
+        let ed = editor("");
+        let q = watches_queue(&ed);
+        let from = crate::config::Sources { user: Some(dir.join("config.toml")), trust: None };
+        crate::config::watch(&q, dir.clone(), from);
+        q.started();
+        let sync = q.recv_timeout(crate::test_results::PATIENCE).expect("the plugins found");
+        assert_eq!(starts_from(&q, "src/config.rs").len(), 1, "sent, not applied: {:?}", q.starts_out());
+        drop(sync);
+        assert!(q.starts_out().is_empty(), "gone with it: {:?}", q.starts_out());
+    }
+
+    /// #210: a session restored at the start has its checkout's watch made as the restore's result is applied — the
+    /// start's through the chain (`Queue.chain`): out from the moment it's made, out since the restore went out (its
+    /// work paused a while first, so a watch dated from its own making is younger than the restore was), until its
+    /// first round lands in that workspace.
+    #[test]
+    fn a_restored_sessions_watch_is_the_starts_from_its_chain() {
+        let other = git_repo("start-chain", &[("a.txt", "one\n")]);
+        let mut ed = editor("");
+        ed.git_auto = true;
+        ed.events.set_starting(true);
+        let to = other.clone();
+        ed.events.jobs().spawn(move || {
+            crate::event::pause(std::time::Duration::from_millis(300));
+            move |ed: &mut Editor| {
+                ed.workspace_add(to);
+            }
+        });
+        ed.events.started();
+        // (each result applied by hand until the restore's is: how long it was out, read right before it's applied)
+        let restore = loop {
+            let ev = ed.events.recv_timeout(crate::test_results::PATIENCE).expect("the restore's result");
+            let was = starts_from(&ed.events, "src/editor.rs");
+            ed.handle_event(ev);
+            if starts_from(&ed.events, "src/editor.rs").is_empty() {
+                break *was.first().expect("the restore out until its result was applied");
+            }
+        };
+        let watch = starts_from(&ed.events, "src/git.rs");
+        assert!(
+            !watch.is_empty(),
+            "the restored session's watch the start's as it's made: {:?}",
+            ed.events.starts_out()
+        );
+        assert!(watch.iter().all(|w| *w >= restore), "out since the restore went ({restore:?}): {watch:?}");
+        settle_until(&mut ed, |ed| starts_from(&ed.events, "src/git.rs").is_empty());
+        let back = ed.workspaces.iter().find(|w| w.root == other).expect("the session back");
+        assert!(back.git_branch.is_some(), "its first round landed in it");
+        std::fs::remove_dir_all(&other).ok();
     }
 
     /// #72: a preflight's output scrolls back — a click on a step's chip goes to its output (and gives the
@@ -16698,7 +16796,7 @@ mod tests {
         }
         feed(&mut ed, "<esc>");
         ed.workspace.viewer.sidebar = None;
-        crate::git::watch(ed.events.sender(), ed.workspace.root.clone());
+        crate::git::watch(&ed.events, ed.workspace.root.clone());
         wait_for(&mut ed, |ed| ed.workspace.git_branch.is_some());
         if ed.workspace.git_branch.as_deref() != Some("tarae-own-root") {
             wrong.push(format!("the branch watched is {:?}", ed.workspace.git_branch));

@@ -206,6 +206,16 @@ impl Queue {
         self.starting.get().then(|| (self.starts.clone(), self.chain.get()))
     }
 
+    /// The start's count for a watch's first look (`git::watch`, `config::watch` — a thread, not a job: `Jobs::spawn`
+    /// counts those by itself): what it finds is sent unasked, so it's out until that result is applied (the count
+    /// dropped with it) or the look found nothing to send (#210: the git watch's first round, its repository resolved
+    /// first, landed in a settled tarae's rest on a loaded Mac). None once the start is over.
+    #[track_caller]
+    pub fn start_out(&self) -> Option<StartOut> {
+        let site = Location::caller();
+        self.start().map(|(s, chain)| s.out(site, chain))
+    }
+
     /// The start is over (its first frame drawn): what runs from now on is the start's only as a result of one of
     /// its jobs (`Queue.starting`).
     pub fn started(&self) {

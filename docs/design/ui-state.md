@@ -233,7 +233,8 @@ side git · 4 rows · in hand git:src/term.rs
 - **`starting`** (ci, #191, 2026-10-28) — the start's jobs whose results haven't landed, each as `frames_for` says a
   job's result (`job src/worktree.rs:1588`): what tarae spawned before its first frame (the sessions' restore,
   recovery's look, the languages' loads, Reduce Motion's read, …) and what those results spawned in turn
-  (`event::Starts`) — never a job once its work waits, on time or on a watch (`event::waits`, from `event::sleep` and
+  (`event::Starts`), and a watch made then until its first look lands (`Queue::start_out`: the git watch's first
+  round, the config watch's look at the plugins folder — #210, the git round in a rest) — never a job once its work waits, on time or on a watch (`event::waits`, from `event::sleep` and
   `fswatch::Watcher::wait`: the usage watch, the disk watch's rounds, a frame's tick), nor what its result spawns
   (#201: the usage watch, armed by the restore's result, held it open up to an hour). Out past `event::START_LATE`
   (5 s) an entry says for how long (`job src/usage.rs:1218 out 54m 00s`). An idle check settles only once there are

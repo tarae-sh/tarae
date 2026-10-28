@@ -362,6 +362,12 @@ impl Sandbox {
     }
 }
 
+/// Whether an answer of the state has the sessions' restore among the start's jobs out (`Held`).
+pub fn restore_out(s: &serde_json::Value) -> bool {
+    let mut out = s["starting"].as_array().into_iter().flatten().filter_map(|j| j.as_str());
+    out.any(|j| j.starts_with("job src/worktree.rs:"))
+}
+
 /// The restore held (`Sandbox::hold_restore`).
 pub struct Held {
     fifo: PathBuf,
@@ -369,16 +375,30 @@ pub struct Held {
 }
 
 impl Held {
-    /// The restore reads an empty store (no sessions kept) — its result goes to the main loop.
-    pub fn release(self) {
-        let (done, opened) = std::sync::mpsc::channel();
-        let fifo = self.fifo.clone();
-        // (opening it for writing waits for its reader, the restore's worker; closed at once: an empty store)
-        thread::spawn(move || {
-            let _ = done.send(fs::OpenOptions::new().write(true).open(&fifo).map(drop));
-        });
-        let opened = opened.recv_timeout(self.timeout).expect("the restore never read its store");
-        opened.unwrap_or_else(|e| panic!("{}: {e}", self.fifo.display()));
+    /// The restore reads an empty store (no sessions kept) — its result goes to the main loop, `t`'s state says when.
+    /// Until then, each look opens the pipe for writing without waiting and closes it at once: an empty store to the
+    /// reader waiting in its open, none while there's no reader (`ENXIO` — its worker not there yet, or done). Never a
+    /// writer that waits for its reader and goes (#210: under load the restore then slept in its open for good, 3 in
+    /// 288 runs; this way 0 in 480) — and again while it hasn't landed, so no wake missed is waited out.
+    pub fn release(self, t: &mut Term) {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let deadline = Instant::now() + self.timeout;
+        let mut opened = 0;
+        loop {
+            match fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(&self.fifo) {
+                Ok(f) => {
+                    drop(f);
+                    opened += 1;
+                }
+                Err(e) if e.raw_os_error() == Some(libc::ENXIO) => {}
+                Err(e) => panic!("{}: {e}", self.fifo.display()),
+            }
+            if !restore_out(&t.state_json(0)) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "the restore never landed: its store opened {opened} times");
+            thread::sleep(POLL);
+        }
     }
 }
 

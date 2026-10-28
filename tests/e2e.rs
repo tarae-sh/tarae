@@ -1697,19 +1697,20 @@ fn a_job_of_the_start_s_is_waited_out_before_a_rest() {
     let flashed = |s: &serde_json::Value| s["motions"].as_array().is_some_and(Vec::is_empty);
     let s = t.wait_state("the flash gone", flashed);
     let out: Vec<&str> = s["starting"].as_array().into_iter().flatten().filter_map(|j| j.as_str()).collect();
-    // (beside it maybe others of the start's not landed yet — the gutter's read of the repository, on a loaded machine)
+    // (beside it maybe others of the start's not landed yet on a loaded machine — the gutter's read of the repository,
+    // the git watch's first round: #210, once in the rest)
     assert!(
         out.iter().any(|j| j.starts_with("job src/worktree.rs:")),
         "the restore held, among the start's jobs out: {out:?}"
     );
     // (its frames settled — where the harness settled before, the restore then landing in the rest, its one event —
-    // nothing left owed: what keeps a settle off is the restore alone)
+    // nothing left owed: what keeps a settle off is the start's jobs out, the restore among them)
     let deadline = std::time::Instant::now() + TIMEOUT;
     let frames = |t: &mut Term| t.wait_state("the flash gone", flashed);
     settle_on(&mut t, frames, owes, |_| None, |t| t.tarae_frames(), deadline).expect("the flash's frames");
     let early = t.settle_by("held", flashed, std::time::Instant::now() + 10 * POLL);
     assert!(early.is_err(), "settled with the restore out: {early:?}");
-    held.release();
+    held.release(&mut t);
     let s = t.settle("the restore landed", flashed);
     let slept = t.rest(&s);
     assert!(slept.woken().is_none(), "after the restore: {slept}\n{}", t.screen());

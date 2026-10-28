@@ -1330,7 +1330,7 @@ impl Editor {
         if self.git_auto {
             // (its results are its session's — tagged so while the watch is made)
             self.events_for(id);
-            crate::git::watch(self.events.sender(), root);
+            crate::git::watch(&self.events, root);
             self.events_for(self.workspace.id);
         }
         id

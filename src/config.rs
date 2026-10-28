@@ -648,8 +648,11 @@ fn drop_typed(t: &mut toml::Table, path: &str, pass: &mut impl FnMut(String, &Va
 
 /// Config file watcher thread — sleeps until the files may have changed (inotify/kqueue, see `fswatch`),
 /// then compares mtimes. On change, it reads and parses here and sends only the result to the main loop.
-/// The project's files are `root`'s (the editor's); yours and the trust answers are `from`'s.
-pub fn watch(tx: crate::event::Tx, root: PathBuf, from: Sources) {
+/// The project's files are `root`'s (the editor's); yours and the trust answers are `from`'s. Its results are applied
+/// in whatever session is in front; made in the start, its first look is the start's until what it found (the
+/// plugins there) is applied, or it found nothing (`Queue::start_out`).
+pub fn watch(events: &crate::event::Queue, root: PathBuf, from: Sources) {
+    let (tx, mut start) = (events.shared_sender(), events.start_out());
     let mut paths = layers(&root, from.user.as_deref());
     let p = root.join(".tarae.toml");
     if !paths.contains(&p) {
@@ -674,7 +677,11 @@ pub fn watch(tx: crate::event::Tx, root: PathBuf, from: Sources) {
                 watcher.folder(d);
             }
             if let Some(found) = plugins.changed() {
-                let sync = move |ed: &mut Editor| ed.plugins_sync(found);
+                let start = start.take();
+                let sync = move |ed: &mut Editor| {
+                    ed.plugins_sync(found);
+                    drop(start);
+                };
                 if tx.send(Event::Job(Box::new(sync))).is_err() {
                     break;
                 }
@@ -691,6 +698,8 @@ pub fn watch(tx: crate::event::Tx, root: PathBuf, from: Sources) {
                     break;
                 }
             }
+            // (the first look done: what it sent holds the start's count, or nothing did)
+            drop(start.take());
             watcher.wait();
         }
     });

@@ -57,8 +57,10 @@ fn head_ref(head: &Path) -> Option<PathBuf> {
 /// Watcher thread for `dir`'s repository — reads once at first, then whenever HEAD moves: its file (a
 /// checkout, a rebase) or the ref it points to (a commit, a rebase's end, a reset). Then the branch is read
 /// again and the session's buffers take the index as it is now (#74: after a rebase in a session's
-/// terminal the status line said +62 −62 over a clean tree).
-pub fn watch(tx: crate::event::Tx, dir: PathBuf) {
+/// terminal the status line said +62 −62 over a clean tree). Its results are `events`' workspace in front now; made
+/// in the start, its first round is the start's until applied (`Queue::start_out`).
+pub fn watch(events: &crate::event::Queue, dir: PathBuf) {
+    let (tx, mut start) = (events.sender(), events.start_out());
     crate::event::thread("tarae-git-watch", move || {
         let Some(head) = find_head(&dir) else { return };
         // (its own commands held until answered: the card, once — `gittrust.rs`; a submodule's its own)
@@ -99,8 +101,11 @@ pub fn watch(tx: crate::event::Tx, dir: PathBuf) {
                         Err(_) => {}
                     }
                 }
-                let (dir, common) = (dir.clone(), common.clone());
-                let apply = move |ed: &mut Editor| watch_round(ed, &dir, (branch, common), moved);
+                let (dir, common, start) = (dir.clone(), common.clone(), start.take());
+                let apply = move |ed: &mut Editor| {
+                    watch_round(ed, &dir, (branch, common), moved);
+                    drop(start);
+                };
                 if tx.send(Event::Job(Box::new(apply))).is_err() {
                     break;
                 }
