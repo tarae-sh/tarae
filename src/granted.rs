@@ -146,6 +146,7 @@ fn kind_heading(k: Kind) -> &'static str {
         Kind::Claude => "Claude's settings",
         Kind::Git => "git's own commands",
         Kind::Hook => "git hooks",
+        Kind::Code => "code language servers run",
     }
 }
 
@@ -518,6 +519,9 @@ impl Editor {
         if project {
             self.project_trust_forgotten();
         }
+        if kind == Kind::Code {
+            self.code_trust_forgotten();
+        }
         for id in chats {
             self.with_workspace(id, crate::claudetrust::forgotten);
         }
@@ -528,6 +532,7 @@ impl Editor {
             Kind::Claude => "Taken back — Claude runs without the project's settings; their card asks again",
             Kind::Git => "Taken back — tarae's git holds this repository's commands; its card asks again",
             Kind::Hook => "Taken back — the hook is asked about before it runs again",
+            Kind::Code => "Taken back — its language servers stopped; its card asks before they start again",
         });
     }
 }

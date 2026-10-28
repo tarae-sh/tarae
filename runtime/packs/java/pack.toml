@@ -115,6 +115,8 @@ steps = [{ name = "mvn test", cmd = "mvn -B test" }]
 # root has no build file (measured: ext/clone/pom.xml became project "v"; dot-folders it skips itself).
 # Globs over the folder holding a build file — the folder itself and below; vscode-java's defaults kept.
 [server.jdtls]
+# It imports the build as it starts (G13): Gradle runs the build scripts, Maven its plugins
+runs-project-code = "its Gradle build scripts or Maven plugins"
 leave-out = { init = "settings.java.import.exclusions", each = ["**/{rel}", "**/{rel}/**"], keep = ["**/node_modules/**", "**/.metadata/**", "**/archetype-resources/**", "**/META-INF/maven/**"] }
 # Its folder for a project's build state and index (-data): the launcher's default hashes only the folder's
 # name, so two `app`s would mix — the whole path's hash instead. Never change it: a new folder re-imports every

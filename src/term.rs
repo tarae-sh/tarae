@@ -10626,7 +10626,9 @@ fn draw_statusline(
         use crate::lsp_editor::LspDot;
         let state = editor.lsp_state().map(|s| s.0);
         let style = match state {
-            Some(LspDot::Paused) => Style { fg: editor.theme.try_get("warning").and_then(|s| s.fg), ..dim },
+            Some(LspDot::Paused | LspDot::Untrusted) => {
+                Style { fg: editor.theme.try_get("warning").and_then(|s| s.fg), ..dim }
+            }
             Some(LspDot::Starting) => Style { italic: true, ..dim },
             Some(LspDot::Ready) => {
                 Style { fg: editor.theme.try_get("diff.plus").and_then(|s| s.fg).or(ui.accent.fg), ..dim }
@@ -10635,8 +10637,13 @@ fn draw_statusline(
             Some(LspDot::Missing) => Style { fg: ui.linenr.fg, ..dim },
             None => dim,
         };
-        // (paused: said in words — a protected name Claude's run made waits for its card)
-        let paused = if state == Some(LspDot::Paused) { " paused" } else { "" };
+        // (paused, untrusted: said in words — a protected name Claude's run made waits for its card; the
+        // repository's trust for its code, G13)
+        let paused = match state {
+            Some(LspDot::Paused) => " paused",
+            Some(LspDot::Untrusted) => " untrusted",
+            _ => "",
+        };
         let lang = crate::syntax::shown(&s.lang.name);
         right.push(Seg { cut: None, text: format!("{lang}{paused}"), style, keep: 60 });
         // Servers beside the main one, faint: `python + ruff`

@@ -1130,6 +1130,11 @@ const BRANCHES: &[(&str, &str, &str)] = &[
         "in fn with_root: read_outside",
         "not a run's: only Claude's Read and tarae's read and search tools go by it (`reads::Gate`)",
     ),
+    (
+        "src/editor.rs",
+        "in fn with_root: code_gate",
+        "not a run's: only which language servers start goes by it (`codetrust.rs`)",
+    ),
     ("src/editor.rs", "in fn with_root: recovery", NOT_RUNS),
     (
         "src/editor.rs",

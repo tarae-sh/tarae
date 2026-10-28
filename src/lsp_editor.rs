@@ -344,6 +344,8 @@ pub enum LspDot {
     Missing,
     /// Its session's servers are paused while protected names a run made wait (`Editor::made_hold_sync`).
     Paused,
+    /// Its server runs the project's code and waits for the repository's trust (`codetrust.rs`, G13).
+    Untrusted,
 }
 
 /// A server initialized this recently that hasn't finished any work yet hasn't begun loading its project.
@@ -557,6 +559,8 @@ impl Editor {
         let has_main = doc.lsp.client.is_some();
         if !has_main {
             match lsp::find_server(&spec.name, &self.config.lsp) {
+                // (one that runs the project's code waits for the repository's trust — G13, `codetrust.rs`)
+                Some(server) if !self.code_trusted(&server, &lsp::find_root_for(&spec.name, &path), id) => {}
                 Some(server) => {
                     self.lsp.server_for.insert(spec.name.clone(), server.name.clone());
                     // (one for a repository's checkouts: `share.rs` — None while it's being arranged)
@@ -610,7 +614,9 @@ impl Editor {
             }
         }
         for server in also {
-            if attached.contains(&server.name) {
+            if attached.contains(&server.name)
+                || !self.code_trusted(&server, &lsp::find_root_for(&spec.name, &path), id)
+            {
                 continue;
             }
             let Some(cid) = self.lsp_spawn(&server, &spec.name, &path) else { continue };
@@ -3512,6 +3518,9 @@ impl Editor {
             .any(|l| Some(l.id) == session && l.servers_held)
         {
             return Some((LspDot::Paused, lang.clone()));
+        }
+        if self.code_trust_waits().is_some() {
+            return Some((LspDot::Untrusted, lang.clone()));
         }
         if let Some(server) = self.lsp.server_for.get(lang)
             && self.lsp.failed.contains_key(server)

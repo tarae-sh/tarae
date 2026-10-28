@@ -604,6 +604,8 @@ Type `:` in normal mode. `tab` completes command names and their arguments (path
 | `:config-show` |  | Show every setting with its value |
 | `:project-trust` |  | Look again at what this project's .tarae.toml runs, and trust it or not |
 | `:project-untrust` |  | Stop running what this project's .tarae.toml sets |
+| `:code-trust` |  | Look again at the language servers that run this repository's code, and trust it or not |
+| `:code-untrust` |  | Stop the language servers that run this repository's code |
 | `:claude-settings` |  | Look again at what this project's Claude settings run in the chat, and trust them or not |
 | `:git-trust` |  | Look again at what this repository's own git settings run, and trust them or not |
 | `:claude-update` |  | Look for a newer claude and install it (claude update, as you) |

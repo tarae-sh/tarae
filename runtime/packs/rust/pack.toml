@@ -151,6 +151,9 @@ report = "cargo's {what} lock"
 
 # Worktrees and checkouts inside the project aren't scanned (paths from its root; no defaults to keep)
 [server.rust-analyzer]
+# It runs the project's code as it starts (G13): `cargo metadata` runs the toolchain `rust-toolchain.toml` names and
+# `.cargo/config`'s `rustc-wrapper`, then the build scripts and proc macros — it waits for the repository's trust
+runs-project-code = "its build scripts and proc macros, and the toolchain and rustc wrapper it names"
 leave-out = { init = "files.exclude", each = "{rel}" }
 # One for every checkout of a repository on one toolchain (`editor.lsp-share`): rustup's toolchain files say
 # which; `checkOnSave` held off while a swap's new one loads (a start with checks checks every folder); it

@@ -1080,6 +1080,11 @@ pub struct Editor {
     /// Claude reads outside home unasked where the capability model does (`reads::by_default`, D3) — off in
     /// tests, for the same reason.
     pub read_outside: bool,
+    /// A language server that runs the project's code waits for the repository's trust (`codetrust.rs`, G13) — off
+    /// in tests, whose stand-in servers run nothing; a test turns it on.
+    pub code_gate: bool,
+    /// Each server root's trust for its code, as read and answered (`codetrust.rs`).
+    pub code_trust: std::collections::HashMap<std::path::PathBuf, crate::codetrust::Root>,
     /// tarae runs inside zellij: a hinted key it takes is said by its twin (`zellij.rs`) — off in tests, which
     /// set it.
     pub zellij: bool,
@@ -1422,6 +1427,8 @@ impl Editor {
             tokens_told: Vec::new(),
             read_temp: !cfg!(test),
             read_outside: !cfg!(test),
+            code_gate: !cfg!(test),
+            code_trust: Default::default(),
             zellij: crate::zellij::inside(),
             #[cfg(test)]
             caps_home: None,

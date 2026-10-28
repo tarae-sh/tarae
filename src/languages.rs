@@ -527,6 +527,7 @@ pub(crate) const SERVER_KEYS: &[&str] = &[
     "progress",
     "virtual",
     "client-commands",
+    "runs-project-code",
 ];
 
 fn server_of(e: &Entry) -> Result<(ServerSpec, ServerTraits), String> {
@@ -654,6 +655,7 @@ fn traits_of(t: &Table) -> Result<ServerTraits, String> {
         progress,
         virtual_docs,
         client_commands,
+        runs_project_code: string(t, "runs-project-code")?,
     })
 }
 

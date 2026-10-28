@@ -98,6 +98,9 @@ progress = { method = "x/status", kind = "type", text = "message", done = ["Read
 virtual = { scheme = "gleam://", fetch = "gleam/source", language = "gleam", title-join = "." }
 # Commands it hands back for the client to run: "apply-edit" (each argument a WorkspaceEdit, applied here)
 client-commands = { "gleam.applyEdit" = "apply-edit" }
+# It runs the project's code as it starts or works — its build script, its build's plugins: it waits for the
+# repository's trust (one card, every checkout's answer — `:code-trust`, `:code-untrust`), these words on the card
+runs-project-code = "its gleam.toml's build scripts"
 
 [server.gleam.init]                  # its initializationOptions, as TOML
 checkOnSave = true                   # what the server reads as it starts

@@ -31,6 +31,7 @@ mod brings;
 mod cardwait;
 mod chatstream;
 mod claudestart;
+mod codetrust;
 mod commit;
 mod diskroom;
 mod diskwatch;

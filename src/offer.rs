@@ -186,6 +186,9 @@ pub enum What {
     /// (`repotrust.rs`) — `parts` are their own cards, in order (tarae's, Claude's, git's); `y` trusts each, `n`
     /// holds each back, `v` shows each whole.
     RepoTrust { root: PathBuf, parts: Vec<Offer> },
+    /// A server root's language servers that run its code wait for the repository's trust (`codetrust.rs`, G13):
+    /// `y` trusts it (kept), `n` holds them back until you quit.
+    CodeTrust { root: PathBuf },
     /// Test builds only: a card Claude's call waits on that asks nothing in particular — `y` once, `a` this chat,
     /// `n` no, answered as such — the stand-in where tests look at how cards stand, wait and go (the screen card
     /// was, until Claude's `screen` went: audit 2.G). Every other card of Claude's is weighty.
@@ -323,6 +326,7 @@ pub const KINDS: &[&str] = &[
     "claude-settings",
     "git-trust",
     "repo-trust",
+    "code-trust",
     "web-read",
     "preflight",
     "branch-delete",
@@ -442,6 +446,7 @@ impl What {
             | What::ClaudeSettings { .. }
             | What::GitTrust(_)
             | What::RepoTrust { .. }
+            | What::CodeTrust { .. }
             | What::Recover(_)
             | What::Restart(_)
             | What::RestartSame { .. }
@@ -751,6 +756,7 @@ impl Offer {
                 | What::ClaudeSettings { .. }
                 | What::GitTrust(_)
                 | What::RepoTrust { .. }
+                | What::CodeTrust { .. }
                 | What::Read { .. }
                 | What::Grant { .. }
                 | What::Outside { .. }
@@ -1338,6 +1344,7 @@ impl Offer {
             }
             W::GitTrust(_) => vec![lasts('y', "Trust"), plain('n', "Hold back")],
             W::RepoTrust { .. } => vec![lasts('y', "Trust"), plain('v', "Details"), plain('n', "Hold back")],
+            W::CodeTrust { .. } => vec![lasts('y', "Trust"), plain('n', "Not now")],
             W::NoSandbox { first: true, .. } => {
                 vec![plain('y', "Ask each time"), lasts('s', "This session"), lasts('n', "Don't run them")]
             }
@@ -1603,6 +1610,7 @@ impl Offer {
             W::ClaudeSettings { .. } => "claude-settings",
             W::GitTrust(_) => "git-trust",
             W::RepoTrust { .. } => "repo-trust",
+            W::CodeTrust { .. } => "code-trust",
             // (none outside tests: no kind in `KINDS`)
             #[cfg(test)]
             W::Asks { .. } => ASKS,
@@ -1771,7 +1779,11 @@ impl crate::editor::Editor {
             || o.host().is_some()
             || matches!(
                 o.what,
-                What::PluginAsk { .. } | What::GitTrust(_) | What::RepoTrust { .. } | What::Instructions(_)
+                What::PluginAsk { .. }
+                    | What::GitTrust(_)
+                    | What::RepoTrust { .. }
+                    | What::CodeTrust { .. }
+                    | What::Instructions(_)
             );
         if let Some(old) = self.offers.iter_mut().find(|x| x.title == o.title).filter(|_| !own) {
             // Replaced whole — what it says with what it does — its focus gone with its `rev` (`card_focus`): a key
@@ -2029,6 +2041,7 @@ impl crate::editor::Editor {
             What::ClaudeSettings { hash } => self.claude_settings_answer(id, hash, true),
             What::GitTrust(ask) => self.git_trust_answer(id, *ask, true),
             What::RepoTrust { parts, .. } => crate::repotrust::answer(self, id, parts, true),
+            What::CodeTrust { root } => self.code_trust_answer(id, &root, true),
             What::Read { pending, keep, folder } => {
                 crate::reads::answer(self, id, *pending, Some(crate::allow::Scope::Once), keep, folder)
             }
@@ -2765,6 +2778,7 @@ impl crate::editor::Editor {
             What::ClaudeSettings { hash } => self.claude_settings_answer(o.id, hash, false),
             What::GitTrust(ask) => self.git_trust_answer(o.id, *ask, false),
             What::RepoTrust { parts, .. } => crate::repotrust::answer(self, o.id, parts, false),
+            What::CodeTrust { root } => self.code_trust_answer(o.id, &root, false),
             What::Read { pending, keep, folder } => {
                 crate::reads::answer(self, o.id, *pending, None, keep, folder)
             }

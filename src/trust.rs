@@ -238,11 +238,18 @@ pub enum Kind {
     Git,
     /// A hook in a hooks folder inside the checkout, by its content (`hooks.rs`).
     Hook,
+    /// A repository's code its language servers run (`codetrust.rs`, G13).
+    Code,
 }
 
 impl Kind {
-    const WORDS: [(Kind, &str); 4] =
-        [(Kind::Tarae, "tarae"), (Kind::Claude, "claude"), (Kind::Git, "git"), (Kind::Hook, "hook")];
+    const WORDS: [(Kind, &str); 5] = [
+        (Kind::Tarae, "tarae"),
+        (Kind::Claude, "claude"),
+        (Kind::Git, "git"),
+        (Kind::Hook, "hook"),
+        (Kind::Code, "code"),
+    ];
 
     fn word(self) -> &'static str {
         Kind::WORDS.iter().find(|(k, _)| *k == self).map_or("", |(_, w)| w)

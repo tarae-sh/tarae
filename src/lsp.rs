@@ -59,6 +59,9 @@ pub struct ServerTraits {
     pub virtual_docs: Option<Virtual>,
     /// `client-commands`: commands it hands back for the client to run, by what tarae does for each.
     pub client_commands: Vec<(String, ClientAction)>,
+    /// `runs-project-code`: what of the project it runs as it starts and works — its build scripts, its build
+    /// files — in the words its trust card says (G13: it waits for the repository's trust, `codetrust.rs`).
+    pub runs_project_code: Option<String>,
 }
 
 /// A pack's `progress = { … }`: a server's own notification of what it's doing, shown as progress.
@@ -204,6 +207,7 @@ pub static NO_TRAITS: ServerTraits = ServerTraits {
     progress: None,
     virtual_docs: None,
     client_commands: Vec::new(),
+    runs_project_code: None,
 };
 
 /// The names `spec` goes by in the packs: its own, then the built-in servers whose command it runs (`[lsp.py]

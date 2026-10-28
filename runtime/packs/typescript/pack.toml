@@ -44,6 +44,8 @@ rev = "b1bf4825d9eaa0f3bdeb1e52f099533328acfbdf"
 subpath = "tsx"
 
 [server.typescript-language-server]
+# tsserver loads the plugins `tsconfig.json` names from the project's node_modules (G13 — as VS Code, untrusted)
+runs-project-code = "the TypeScript plugins its tsconfig.json names, from its node_modules"
 args = ["--stdio"]
 
 [tasks]

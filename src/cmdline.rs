@@ -85,6 +85,12 @@ pub const COMMANDS: &[TypedCmd] = &[
     ),
     c(&["project-untrust"], Arg::None, "Stop running what this project's .tarae.toml sets"),
     c(
+        &["code-trust"],
+        Arg::None,
+        "Look again at the language servers that run this repository's code, and trust it or not",
+    ),
+    c(&["code-untrust"], Arg::None, "Stop the language servers that run this repository's code"),
+    c(
         &["claude-settings"],
         Arg::None,
         "Look again at what this project's Claude settings run in the chat, and trust them or not",
