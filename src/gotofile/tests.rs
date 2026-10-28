@@ -110,6 +110,40 @@ fn gf_opens_the_path_or_page_named_here() {
     assert_eq!(name(&ed).as_deref(), Some("a.rs"));
 }
 
+/// `gf` on a name given alone, as the chat's places (#196, `places.rs`): one file of the project ends with it — opened at
+/// its line; two — their picker; none — said.
+#[test]
+fn gf_finds_a_name_given_alone_in_the_project() {
+    let root = crate::scratch::Scratch::new("gotofile-alone");
+    let text = "see Device.java:2 and Util.java:1 and Gone.java\n";
+    for (f, t) in
+        [("notes.md", text), ("src/dev/Device.java", "one\ntwo\n"), ("a/Util.java", ""), ("b/Util.java", "")]
+    {
+        std::fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
+        std::fs::write(root.join(f), t).unwrap();
+    }
+    let mut ed = Editor::new(crate::config::Config::default());
+    ed.workspace.root = std::fs::canonicalize(root.path()).unwrap();
+    ed.open(&ed.workspace.root.join("notes.md")).unwrap();
+    let name = |ed: &Editor| {
+        ed.doc().path.as_deref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned())
+    };
+    put(&mut ed, text, "Device");
+    feed(&mut ed, "gf");
+    settle_until(&mut ed, "Device.java", |ed| name(ed).as_deref() == Some("Device.java"));
+    let d = ed.doc();
+    assert_eq!(d.selection().primary().cursor(&d.text), "one\n".len(), "at line 2");
+    feed(&mut ed, "<C-o>");
+    put(&mut ed, text, "Util");
+    feed(&mut ed, "gf");
+    settle_until(&mut ed, "the picker", |ed| ed.picker.is_some());
+    assert!(ed.picker.as_ref().unwrap().title.contains("2 files"), "{}", ed.picker.as_ref().unwrap().title);
+    ed.picker = None;
+    put(&mut ed, text, "Gone");
+    feed(&mut ed, "gf");
+    settle_until(&mut ed, "said", |ed| said(ed, "gf: no file Gone.java"));
+}
+
 /// `gf` on a folder: its files in the file picker's tree, rooted there; on several selections each one opened, the last
 /// in front, the others in the buffers, `C-o` back through them in turn, and what opened nothing said beside them.
 #[test]

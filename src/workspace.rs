@@ -192,6 +192,10 @@ pub struct Workspace {
     /// When a file in its checkout was last saved or written (Claude's edit, a change set) — a run under way
     /// since then is no longer the one the same command would run (`queued::join`).
     pub wrote: Option<Instant>,
+    /// How many times its list of files may have changed (`Editor::files_moved`: a file made, removed or moved, a run
+    /// ended, its HEAD moved; a message sent, for what tarae doesn't see) — the chat's names are found again
+    /// (`places.rs`). A file's text written isn't one.
+    pub listing: u64,
     /// Protected names Claude's runs made where none was (`snapshot::Found::protected`, from its root) — its
     /// next run waits on a card about them (`tools::ask_made`); a `y` there clears it.
     pub made_protected: Vec<crate::snapshot::Made>,
@@ -412,6 +416,7 @@ impl Workspace {
             asleep: Vec::new(),
             runs_next: Default::default(),
             wrote: None,
+            listing: 0,
             made_protected: Vec::new(),
             servers_held: false,
             servers_asked: Vec::new(),

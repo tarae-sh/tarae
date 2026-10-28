@@ -17,6 +17,9 @@ const AROUND: usize = 1000;
 enum Found {
     Page(String),
     File(PathBuf, Option<(usize, usize)>),
+    /// A name given alone (or with its last folders) several of the project's files end with (`places.rs`): what it
+    /// said, how many, their lines.
+    Several(String, usize, Vec<crate::lsp_editor::Place>),
     Folder(PathBuf),
     /// Why it opens nothing.
     Not(String),
@@ -74,14 +77,26 @@ pub fn goto_file(ed: &mut Editor) {
         doc.path.as_deref().and_then(Path::parent).map(Path::to_path_buf).into_iter().collect();
     places.push(ed.workspace.root.clone());
     let home = crate::allow::home();
+    let roots: Vec<PathBuf> = ed.workspace.roots().all().map(Path::to_path_buf).collect();
+    let open: std::collections::HashMap<PathBuf, Rope> =
+        ed.docs.iter().filter_map(|d| Some((d.path.clone()?, d.text.clone()))).collect();
     ed.events.jobs().spawn(move || {
-        let found: Vec<Found> = names.iter().map(|n| found(n, &places, home.as_deref())).collect();
+        let mut files = crate::places::Files::new(roots);
+        let found: Vec<Found> =
+            names.iter().map(|n| found(n, &places, home.as_deref(), &mut files, &open)).collect();
         move |ed: &mut Editor| opened(ed, found)
     });
 }
 
-/// What `name` is: an address, or the first of `places` it's a file or folder in (as typed, then as `file:line:col`).
-fn found(name: &str, places: &[PathBuf], home: Option<&Path>) -> Found {
+/// What `name` is: an address, or the first of `places` it's a file or folder in (as typed, then as `file:line:col`);
+/// else, given alone or with its last folders, the project's files that end with it (`places::in_files`).
+fn found(
+    name: &str,
+    places: &[PathBuf],
+    home: Option<&Path>,
+    files: &mut crate::places::Files,
+    open: &std::collections::HashMap<PathBuf, Rope>,
+) -> Found {
     if crate::web::facts::followed(name) {
         return Found::Page(name.to_string());
     }
@@ -97,6 +112,7 @@ fn found(name: &str, places: &[PathBuf], home: Option<&Path>) -> Found {
         None => name.to_string(),
     };
     let path = crate::typed::expand_home(&path, home);
+    let relative = (!path.is_absolute()).then(|| path.to_string_lossy().into_owned());
     let tries = match path.is_absolute() {
         true => vec![path],
         false => places.iter().map(|p| p.join(&path)).collect(),
@@ -112,6 +128,22 @@ fn found(name: &str, places: &[PathBuf], home: Option<&Path>) -> Found {
             return Found::File(file, Some((line, col)));
         }
     }
+    if let Some(rel) = relative {
+        let (file, at) = crate::places::line_split(&rel);
+        match crate::places::in_files(file, files) {
+            crate::places::Found::File(f) => return Found::File(f, at),
+            crate::places::Found::Several(all, n) => {
+                let line = at.map_or(0, |a| a.0);
+                let lines = crate::lsp_editor::read_places(
+                    all.iter().map(|p| (p.clone(), line, 0)).collect(),
+                    open,
+                    None,
+                );
+                return Found::Several(name.to_string(), n, lines);
+            }
+            crate::places::Found::Not => {}
+        }
+    }
     Found::Not(format!("no file {name}"))
 }
 
@@ -125,6 +157,10 @@ fn opened(ed: &mut Editor, found: Vec<Found>) {
             Found::File(p, None) => {
                 ed.push_jump();
                 ed.open(&p).map_err(|e| format!("{e:#}"))
+            }
+            Found::Several(said, n, lines) => {
+                crate::places::several(ed, &said, n, lines);
+                Ok(())
             }
             Found::Folder(p) => {
                 folder(ed, p);

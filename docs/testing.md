@@ -270,7 +270,10 @@ report = "cargo's {what} lock"        # Claude's report (`for` unless set)
 A task's places come the same way. Every tool's `path:line[:col]: [severity] message` is tarae's own; a form one
 tool has beyond it is its pack's `[[places]]` — `match` with groups `path`, `line`, `col` (or `place`, a
 `path:line:col` text), `severity`, `message`; `then` when the place comes on a later line; `message = "…"` for one
-of its own. A rule whose place isn't a file lets the next try. `checks` names the commands whose places a run of
+of its own. A rule whose place isn't a file lets the next try. A path is looked for from the run's folder and the folders above
+it, then, given alone (`TestDevice.java:12`), as the project's one file that ends with it (the project's and the
+workspace's folders' files, listed once a run, the first time a name isn't found as written) — several such files, and
+the line is no place. `checks` names the commands whose places a run of
 Claude's puts in your list (`]q`); `color-off` what turns a tool's colours off in the runs tarae reads.
 
 ```toml

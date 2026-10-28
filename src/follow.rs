@@ -128,6 +128,9 @@ pub struct Follow {
     moved: Option<std::time::Instant>,
     /// The chat's scroll the editor last followed while you read the answer.
     pub read_at: Option<usize>,
+    /// The turn ended with no walk-through: the editor goes to its answer's place once the names before it are
+    /// answered (`answer_place`).
+    answer_wait: bool,
     /// The walk-through's stops still to show, and how many tags of which message were taken · the one
     /// showing, until when (its wake-up is this generation's).
     queue: std::collections::VecDeque<(usize, usize, Stop, usize)>,
@@ -172,6 +175,7 @@ impl Follow {
         self.stops.clear();
         self.moved = None;
         self.read_at = None;
+        self.answer_wait = false;
         self.queue.clear();
         self.tags_seen = (0, 0);
         self.tour_len = 0;
@@ -733,10 +737,10 @@ enum Mention {
     Name(String, Option<String>),
 }
 
-/// Mentions in `text` (with where they end), in order — relative places from `root`. `in_code`: the text
-/// starts inside a `code span`.
-fn mentions(root: &Path, text: &str, in_code: bool) -> Vec<(usize, Mention)> {
-    let mut out: Vec<(usize, Mention)> = refs_in(root, text)
+/// Mentions in `text` (with where they end), in order — each place's name taken by `to` (`placed`). `in_code`: the
+/// text starts inside a `code span`.
+fn mentions(text: &str, in_code: bool, to: impl Fn(&str) -> Option<PathBuf>) -> Vec<(usize, Mention)> {
+    let mut out: Vec<(usize, Mention)> = refs_in(text, to)
         .into_iter()
         .map(|(r, link)| {
             // `path:12-30` / `path:12–30`: to 30
@@ -775,6 +779,17 @@ fn mentions(root: &Path, text: &str, in_code: bool) -> Vec<(usize, Mention)> {
     out
 }
 
+/// Where follow takes a place's name while the words come: the file the chat's answer says (`places::Known` — what it
+/// underlines; a name several files end with or none is no place to go); not known yet, the name as written from the
+/// root (asked after the frame — one given alone is the turn's end's, `answer_place`).
+fn placed(known: &crate::places::Known, root: &Path, name: &str) -> Option<PathBuf> {
+    match known.of(name) {
+        Some(crate::places::Found::File(p)) => Some(p.clone()),
+        Some(_) => None,
+        None => Some(crate::chat::resolve(root, name)),
+    }
+}
+
 /// Every chat event while it thinks or writes: the newest place or `name` in its words since the last
 /// look — the editor goes there. Words are read up to their last blank (a half-written one waits) — all of
 /// them once the turn is over (`all`).
@@ -802,7 +817,7 @@ pub fn on_words(ed: &mut Editor, all: bool) {
         .enumerate()
         .skip(seen)
         .filter_map(|(k, (_, at, why))| {
-            let (_, m) = mentions(&ed.workspace.root, at, false)
+            let (_, m) = mentions(at, false, |n| placed(&c.places, &ed.workspace.root, n))
                 .into_iter()
                 .find(|m| matches!(m.1, Mention::Place(..)))?;
             let Mention::Place(path, lines) = m else { return None };
@@ -812,7 +827,8 @@ pub fn on_words(ed: &mut Editor, all: bool) {
         .collect();
     let taken = tags.len();
     // Places inside a tag are the tag's
-    let found: Vec<(usize, Mention)> = mentions(&ed.workspace.root, &text[from..cut], in_code)
+    let to = |n: &str| placed(&c.places, &ed.workspace.root, n);
+    let found: Vec<(usize, Mention)> = mentions(&text[from..cut], in_code, to)
         .into_iter()
         .filter(|(at, _)| !tags.iter().any(|t| t.0.contains(&(from + at - 1))))
         .collect();
@@ -1134,19 +1150,10 @@ pub fn on_done(ed: &mut Editor) {
     if stops.iter().any(|s| s.shown) {
         stops.retain(|s| s.shown);
     } else {
-        // (the last of its words this turn that point anywhere — a closing line may not)
-        let first = ed.workspace.claude.chat.as_ref().and_then(|c| {
-            let turn = c.msgs.iter().rposition(|m| m.role == Role::User).map_or(0, |i| i + 1);
-            c.msgs[turn..]
-                .iter()
-                .rev()
-                .filter(|m| m.role == Role::Assistant)
-                .find_map(|m| refs_in(&ed.workspace.root, &m.text).into_iter().next())
-                .map(|(_, l)| l)
-        });
-        if let Some(link) = &first {
-            go(ed, &link.path, link.line);
+        if let Some(f) = follow(ed) {
+            f.answer_wait = true;
         }
+        answer_place(ed);
     }
     let free = ed.workspace.qlist.as_ref().is_none_or(|l| l.items.is_empty() || l.title == TOUR);
     if stops.len() < 2 || !free {
@@ -1186,6 +1193,46 @@ pub fn on_done(ed: &mut Editor) {
     }
 }
 
+/// The turn's end with no walk-through: the editor at the first place of the last of its words that point anywhere (a
+/// closing line may not) — a place as the chat takes it (`places::Known`, what it underlines: a name several files end
+/// with or none isn't one). A name not answered yet holds it — every one is asked after the frame, and their answers
+/// landing call it again (`places::landed`). True when the editor went there.
+pub fn answer_place(ed: &mut Editor) -> bool {
+    use crate::places::Found;
+    let Some(c) = ed.workspace.claude.chat.as_ref().filter(|c| c.follow.answer_wait) else { return false };
+    let turn = c.msgs.iter().rposition(|m| m.role == Role::User).map_or(0, |i| i + 1);
+    // (newest first, each message's places in order — every name looked up, so all the unknown ones are asked at once)
+    let said: Vec<Vec<(Option<Found>, usize)>> = c.msgs[turn..]
+        .iter()
+        .rev()
+        .filter(|m| m.role == Role::Assistant)
+        .map(|m| {
+            let names = crate::places::names_in(&m.text).into_iter();
+            names.map(|(_, path, line)| (c.places.of(&m.text[path]).cloned(), line)).collect()
+        })
+        .collect();
+    let mut first = None;
+    for (found, line) in said.into_iter().flatten() {
+        match found {
+            None => return false,
+            Some(Found::File(p)) => {
+                first = Some((p, line));
+                break;
+            }
+            Some(_) => {}
+        }
+    }
+    if let Some(f) = follow(ed) {
+        f.answer_wait = false;
+    }
+    let Some((path, line)) = first else { return false };
+    in_followed(ed, |ed| {
+        let before = view_key(ed);
+        go(ed, &path, line);
+        view_key(ed) != before
+    })
+}
+
 /// After the turn, while you read the answer: when the chat scrolls, the editor shows the first place the
 /// chat now shows (its links, as the last frame drew them). True when it moved — draw again.
 pub fn reading(ed: &mut Editor) -> bool {
@@ -1195,6 +1242,8 @@ pub fn reading(ed: &mut Editor) -> bool {
         || !c.follow.active()
         || ed.screen.chat_x.is_none()
         || c.follow.read_at.is_none_or(|r| r == c.scroll)
+        // (its places still being found: read once they're links — `places.rs`)
+        || c.places.waiting()
     {
         return false;
     }
@@ -1858,8 +1907,8 @@ mod tests {
     #[test]
     fn places_and_names_in_what_claude_says() {
         let cwd = Path::new("/proj");
+        let mentions = |text, in_code| mentions(text, in_code, |n| Some(cwd.join(n)));
         let m = mentions(
-            cwd,
             "Built in src/filetree.rs:120-140, then `Tree::rows()` lays it out (see `open`).",
             false,
         );
@@ -1871,15 +1920,12 @@ mod tests {
                 &Mention::Name("open".into(), None),
             ]
         );
-        assert!(
-            mentions(cwd, "a `let x = 1` and ```rust\nfn a() {}\n```", false).is_empty(),
-            "code, not names"
-        );
+        assert!(mentions("a `let x = 1` and ```rust\nfn a() {}\n```", false).is_empty(), "code, not names");
         assert_eq!(
-            mentions(cwd, "src/a.rs:7–9 and 12:30", false)[0].1,
+            mentions("src/a.rs:7–9 and 12:30", false)[0].1,
             Mention::Place(cwd.join("src/a.rs"), 6..9)
         );
         // Started inside a span: the next backtick closes it
-        assert_eq!(mentions(cwd, "still code` then `wind`", true).len(), 1);
+        assert_eq!(mentions("still code` then `wind`", true).len(), 1);
     }
 }

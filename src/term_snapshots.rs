@@ -1786,6 +1786,9 @@ fn snapshot_chat_empty() {
 fn snapshot_chat_explore() {
     use crate::chat::{Link, Look, Msg, Role};
     let mut s = Shot::new(100, 30);
+    // (a project of its own: `src/lib.rs` is no file as written, so its name is looked for in the project's files —
+    // never with git in this repository, `places.rs`)
+    s.in_project();
     s.file("src/demo.rs", DEMO_RS);
     s.ed.config.llm.command = "sh".into();
     s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
@@ -6371,10 +6374,51 @@ fn reading_the_answer_moves_the_editor() {
     let cwd = std::env::current_dir().unwrap();
     s.ed.workspace.claude.chat.as_mut().unwrap().scroll = 1000; // to the top
     s.frame();
+    // (a place is one once its name came to a file — found on a worker, `places.rs`)
+    s.until("its places found", crate::places::answered);
     assert_eq!(at(&s), (cwd.join("src/filetree.rs"), 29), "the top of the answer");
     s.ed.workspace.claude.chat.as_mut().unwrap().scroll = 0;
     s.frame();
+    s.until("its places found", crate::places::answered);
     assert_eq!(at(&s), (cwd.join("src/sidebar.rs"), 59), "its end");
+}
+
+/// #196's look: a name given alone underlined once it's found, a path the wrap breaks underlined on each of its rows,
+/// one no file has plain (`TARAE_FRAMES_DIR`: its frames in both themes, for the shots).
+#[test]
+fn a_place_the_wrap_breaks_is_underlined_on_every_row() {
+    use crate::chat::{Msg, Role};
+    // (a project of its own: a name given alone is looked for in its files — never git in this repository)
+    let scratch = crate::scratch::Scratch::new("places-shot");
+    let root = std::fs::canonicalize(&*scratch).unwrap();
+    for f in ["src/main/java/dev/TestDevice.java", "src/test/java/com/example/devices/fixtures/Registry.java"]
+    {
+        std::fs::create_dir_all(root.join(f).parent().unwrap()).unwrap();
+        std::fs::write(root.join(f), "class A {}\n").unwrap();
+    }
+    let mut s = Shot::new(100, 30);
+    s.root = root.clone();
+    s.ed.workspace.root = root;
+    s.file("src/demo.rs", DEMO_RS);
+    s.ed.config.llm.command = "sh".into();
+    s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+    s.keys(" l");
+    let answer = "The device is set up in TestDevice.java:61 — a name alone, found once. Its fixtures are in \
+                  src/test/java/com/example/devices/fixtures/Registry.java:1, which the wrap breaks. Gone.java:3 \
+                  is in no file.";
+    let c = s.ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs = vec![Msg::new(Role::User, "where is the rule?", ""), Msg::new(Role::Assistant, answer, "")];
+    s.frame();
+    s.until("its places found", crate::places::answered);
+    let bytes = s.frame();
+    let text = snapshot(&s.ed, "t", &bytes, s.w, s.h);
+    assert!(text.contains("TestDevice.java:61") && text.contains("Gone.java:3"), "{text}");
+    let links = s.ed.screen.chat_links.borrow().clone();
+    assert!(links.iter().any(|l| l.3.path.ends_with("dev/TestDevice.java")), "found: {links:?}");
+    let fixtures = links.iter().filter(|l| l.3.path.ends_with("fixtures/Registry.java")).count();
+    assert!(fixtures >= 2, "on each row the wrap put it on: {links:?}");
+    assert!(!links.iter().any(|l| l.3.path.ends_with("Gone.java")), "no file: no place");
+    s.frames_both("places-wrap");
 }
 
 /// A name too long for the side panel keeps its end there; selected with the keys in the panel, it shows

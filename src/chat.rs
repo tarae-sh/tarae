@@ -179,9 +179,9 @@ pub enum Hop {
 
 /// An answer's places and element ids, in the order written — a place inside an id (`list:src/a.rs:12`)
 /// is the id's.
-fn answer_hops(root: &Path, text: &str) -> Vec<Hop> {
+fn answer_hops(text: &str, to: impl Fn(&str) -> Option<PathBuf>) -> Vec<Hop> {
     let ids = crate::uistate::claude::ids_in(text);
-    let mut all: Vec<(usize, Hop)> = refs_in(root, text)
+    let mut all: Vec<(usize, Hop)> = refs_in(text, to)
         .into_iter()
         .filter(|(r, _)| !ids.iter().any(|(i, _)| i.start <= r.start && r.end <= i.end))
         .map(|(r, l)| (r.start, Hop::Place(l, None)))
@@ -361,6 +361,9 @@ pub struct ChatRow {
     /// A row cut to one: the columns of its cut text (from, to — its card's text starts at `from`) and its whole
     /// (`whole.rs`: on a card while the mouse is over it or it's in hand; its card's columns set where it's drawn).
     pub cut: Option<(usize, usize, crate::whole::Whole)>,
+    /// The places its message's text names, their part on this row (`places::mark_rows`: found in the message's
+    /// lines, so one the wrap broke is on each of its rows) — underlined where the name comes to a file.
+    pub places: Vec<crate::places::Named>,
 }
 
 /// What goes with the input's next message, each kind in the order added (`Chat.with`).
@@ -550,6 +553,8 @@ pub struct Chat {
     /// The queued line's rows as last laid out (`term::chat_laid`), and what they were laid out for — the same rows
     /// while nothing changed, so the transcript keeps its piece (`chatdoc::follow`).
     pub queued_laid: RefCell<Option<(u64, std::sync::Arc<[ChatRow]>)>>,
+    /// What the names of its places came to (`places.rs`): a place is drawn as one only where its name is a file.
+    pub places: crate::places::Known,
     /// Hosts the next run of this conversation's Claude that starts reaches, then spent — `y` on a host card whose
     /// run had ended (`hosts::next_run`, frictions29 16); the conversation over, gone (`conversation_left`).
     pub hosts_next: Vec<(String, u16)>,
@@ -955,6 +960,7 @@ impl Chat {
             session_tools: false,
             framed: false,
             queued_laid: RefCell::new(None),
+            places: Default::default(),
             hosts_next: Vec::new(),
             screen: None,
             conversation: None,
@@ -1136,7 +1142,8 @@ impl Chat {
     }
 
     /// Everything `C-]` goes to, oldest first: the places (`targets`) and, in Claude's answers, the UI
-    /// elements it cites by id (`card#12`, `git:src/a.rs`) in the order written.
+    /// elements it cites by id (`card#12`, `git:src/a.rs`) in the order written — an answer's places those it
+    /// underlines (`places::Known::link`: a name that came to no file, or isn't known yet, is no stop).
     pub fn hops(&self, root: &Path) -> Vec<Hop> {
         let mut out: Vec<Hop> = Vec::new();
         for m in &self.msgs {
@@ -1146,7 +1153,7 @@ impl Chat {
                     .iter()
                     .filter_map(|l| Some(Hop::Place(l.link.clone()?, Some(m.call.clone()))))
                     .collect(),
-                Role::Assistant => answer_hops(root, &m.text),
+                Role::Assistant => answer_hops(&m.text, |n| self.places.link(root, n)),
                 Role::User => m.attached.iter().map(|l| Hop::Place(l.clone(), None)).collect(),
                 _ => Vec::new(),
             };
@@ -2778,7 +2785,13 @@ pub fn pointed_said(ed: &Editor, id: &str, pass: &[std::path::PathBuf]) -> Strin
 /// The chat input's own message: with what the user pointed at (its chips), and the files named like keys a
 /// `y` let go with it (`reads::input_pass`).
 fn submit_input(ed: &mut Editor, question: &str) -> bool {
-    submit_as(ed, question, None, None, true, None)
+    let sent = submit_as(ed, question, None, None, true, None);
+    // (files tarae didn't see made — the terminal's, another program's: the chat's names found again, `places.rs` —
+    // a message sent at once or after waiting its turn alike)
+    if sent {
+        ed.workspace.listing += 1;
+    }
+    sent
 }
 
 fn submit_as(
@@ -3579,44 +3592,27 @@ pub fn displayed(text: &str) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Owned(out)
 }
 
-/// `path:line` references in text (byte range of `path:line` · target). Paths must look like files
-/// (a `/` or an extension) — no disk access, a miss only shows when followed. Relative ones are from `root`.
-pub fn refs_in(root: &Path, text: &str) -> Vec<(Range<usize>, Link)> {
-    let is_path = |c: char| c.is_ascii_alphanumeric() || "_./-~+@".contains(c);
-    let b = text.as_bytes();
-    let mut out = Vec::new();
-    for (i, _) in text.match_indices(':') {
-        let digits = text[i + 1..].bytes().take_while(u8::is_ascii_digit).count();
-        if digits == 0 {
-            continue;
-        }
-        let start = text[..i]
-            .rfind(|c: char| !is_path(c))
-            .map_or(0, |j| j + text[j..].chars().next().map_or(1, char::len_utf8));
-        let path = text[start..i].trim_end_matches('.');
-        let file_like = path.contains('/')
-            || path
-                .rsplit_once('.')
-                .is_some_and(|(a, e)| !a.is_empty() && e.chars().any(|c| c.is_ascii_alphabetic()));
-        // URLs (`http://x.com:80`) and times (`12:30`) aren't files
-        if path.is_empty()
-            || !file_like
-            || (start > 0 && b[start - 1] == b':')
-            || !path.chars().any(|c| c.is_ascii_alphabetic())
-        {
-            continue;
-        }
-        let Ok(line) = text[i + 1..i + 1 + digits].parse::<usize>() else { continue };
-        out.push((start..i + 1 + digits, Link { path: resolve(root, path), line: line.saturating_sub(1) }));
-    }
-    out
+/// `path:line` references in text (byte range of `path:line` · target) — `places::names_in`'s, each name taken by
+/// `to` (None: no place): the chat's by what it came to (`places::Known`), a tool's output's from the root as written
+/// (`replay.rs`). No disk access.
+pub fn refs_in(text: &str, to: impl Fn(&str) -> Option<PathBuf>) -> Vec<(Range<usize>, Link)> {
+    let found = crate::places::names_in(text).into_iter();
+    found.filter_map(|(whole, path, line)| Some((whole, Link { path: to(&text[path])?, line }))).collect()
 }
 
-/// Opens a link (keeps the chat's focus — the code shows beside the conversation).
+/// Opens a link (keeps the chat's focus — the code shows beside the conversation). One that isn't a file as written
+/// (a name given alone, or with only its last folders) is found the one way (`places::open_named`): the one file
+/// opened, several a picker of them.
 pub fn jump(ed: &mut Editor, link: Link) {
     if !link.path.is_file() {
-        return ed.set_status(format!("{} isn't a file here", shown(&ed.workspace.root, &link.path)));
+        let name = link.path.strip_prefix(&ed.workspace.root).unwrap_or(&link.path);
+        return crate::places::open_named(ed, name.to_string_lossy().into_owned(), link.line);
     }
+    open_place(ed, link);
+}
+
+/// A file opened at a link's line, centred.
+pub fn open_place(ed: &mut Editor, link: Link) {
     match ed.open_at(&link.path, link.line, 0) {
         // Centered — the code around it is what the conversation is about
         Ok(()) => ed.align_view(crate::viewalign::Place::Center),
@@ -5408,12 +5404,15 @@ mod tests {
     fn refs_in_answers() {
         let text = "See `src/lib.rs:12` and main.rs:3-5 — 파일 /abs/p.rs:7. Not 12:30 or http://x.com:80.";
         let root = Path::new("/proj");
+        let refs_in = |text| refs_in(text, |n| Some(resolve(root, n)));
         let got: Vec<(String, usize)> =
-            refs_in(root, text).into_iter().map(|(r, l)| (text[r].to_string(), l.line)).collect();
+            refs_in(text).into_iter().map(|(r, l)| (text[r].to_string(), l.line)).collect();
         assert_eq!(got, [("src/lib.rs:12".into(), 11), ("main.rs:3".into(), 2), ("/abs/p.rs:7".into(), 6)]);
-        assert_eq!(refs_in(root, "/abs/p.rs:7")[0].1.path, Path::new("/abs/p.rs"));
-        assert_eq!(refs_in(root, "src/lib.rs:12")[0].1.path, root.join("src/lib.rs"), "from the root");
-        assert!(refs_in(root, "no refs: 1, v1.2:3").is_empty());
+        assert_eq!(refs_in("/abs/p.rs:7")[0].1.path, Path::new("/abs/p.rs"));
+        assert_eq!(refs_in("src/lib.rs:12")[0].1.path, root.join("src/lib.rs"), "from the root");
+        assert!(refs_in("no refs: 1, v1.2:3").is_empty());
+        // (a name taken for no place isn't one)
+        assert!(super::refs_in("Gone.java:3", |_| None).is_empty());
     }
 
     /// Motion §4: a run's mark is `▲` exactly when its verdict says it failed — read from the verdicts as `tools.rs`

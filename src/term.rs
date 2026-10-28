@@ -543,6 +543,8 @@ fn render_drawn(editor: &mut Editor, out: &mut impl Write, w: u16, h: u16) -> io
     editor.frames += 1;
     // (the reviews under way: what of them this frame shows — the review record's time)
     crate::reviews::after_frame(editor);
+    // (the chat's place names this frame drew unanswered: found on a worker — `places.rs`)
+    crate::places::after_frame(editor);
     Ok(())
 }
 
@@ -15935,7 +15937,10 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
             .map(|l| l.rows.clone());
         let rows = kept.unwrap_or_else(|| {
             let mut read = md::Read::default();
-            let rows: std::sync::Arc<[ChatRow]> = laid_out(i, m, &mut read).into();
+            let mut rows = laid_out(i, m, &mut read);
+            // (its places found in its lines, each on every row the wrap put it on — #196)
+            crate::places::mark_rows(&mut rows);
+            let rows: std::sync::Arc<[ChatRow]> = rows.into();
             let lang = read.default_lang.then_some(lang_hash);
             *m.cache.borrow_mut() = Some(Laid { key, lang, unloaded: read.unloaded, rows: rows.clone() });
             rows
@@ -16545,7 +16550,7 @@ fn draw_chat(
                 }
                 // `path:line` and an element's id in an answer: underlined, clickable
                 None => {
-                    let (l, found, ids) = underline_refs(editor, &r.spans, faint);
+                    let (l, found, ids) = underline_refs(editor, r, &c.places, faint);
                     for (a, b, link) in found {
                         chat_links.push((y, text_x + a, text_x + b, link));
                     }
@@ -18624,19 +18629,28 @@ type RefSpot = (usize, usize, crate::chat::Link);
 /// …one that's a UI element's id (`card#12`, `git:src/a.rs`).
 type IdSpot = (usize, usize, String);
 
-/// Underlines the `path:line` references in one answer row, and the UI elements' ids (`card#12` — one that
-/// never was an element here stays plain, in `faint`) → (row, where they are — relative ones from `root`).
+/// Underlines the places on one answer row — their parts on it (`ChatRow.places`), each only where its name comes to
+/// a file (`places::Known`: one asked for after this frame isn't yet) — and the UI elements' ids (`card#12` — one that
+/// never was an element here stays plain, in `faint`) → (row, where they are). A name several files end with is a
+/// place too: pressed, its picker.
 fn underline_refs<'a>(
     editor: &Editor,
-    row: &'a [crate::markdown::Span],
+    r: &'a crate::chat::ChatRow,
+    known: &crate::places::Known,
     faint: Style,
 ) -> (std::borrow::Cow<'a, [crate::markdown::Span]>, Vec<RefSpot>, Vec<IdSpot>) {
     use crate::markdown::Span;
+    let row = &r.spans[..];
     let joined: String = row.iter().map(|s| s.text.as_str()).collect();
     let ids = if joined.contains(['#', ':']) { crate::uistate::claude::ids_in(&joined) } else { Vec::new() };
-    let refs: Vec<_> = crate::chat::refs_in(&editor.workspace.root, &joined)
-        .into_iter()
-        .filter(|(r, _)| !ids.iter().any(|(i, _)| i.start <= r.start && r.end <= i.end))
+    let root = &editor.workspace.root;
+    let refs: Vec<_> = (r.places.iter())
+        .filter(|p| !ids.iter().any(|(i, _)| i.start <= p.bytes.start && p.bytes.end <= i.end))
+        .filter_map(|p| {
+            // (a name several files end with: pressed, found again — its picker, `chat::jump`)
+            let path = known.link(root, &p.name)?;
+            Some((p.bytes.clone(), crate::chat::Link { path, line: p.line }))
+        })
         .collect();
     if refs.is_empty() && ids.is_empty() {
         return (std::borrow::Cow::Borrowed(row), Vec::new(), Vec::new());
@@ -22993,7 +23007,9 @@ mod tests {
         use crate::chat::{Look, Msg, Role};
         let mut ed = Editor::new(Config::default());
         let mut c = crate::chat::Chat::new();
-        let answer = "Here's how `parse` works — it reads src/lib.rs:12 and keeps **every** line it can.\n\n\
+        // (its place a file here as written — the editor's root is this checkout: a name no file has would be looked for
+        // in its files, with git in this repository, `places.rs`)
+        let answer = "Here's how `parse` works — it reads src/main.rs:12 and keeps **every** line it can.\n\n\
                       ```rust\nfn parse(s: &str) -> u32 {\n    s.lines().count() as u32\n}\n```\n\n\
                       - the caller hands it the whole text\n- nothing is copied twice\n\n\
                       ```\nlet n = parse(text);\n```\n\nThat's all there is to it, as far as the tests go.";

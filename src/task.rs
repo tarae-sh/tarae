@@ -112,13 +112,13 @@ impl PlaceRule {
     }
 
     /// What this rule makes of `line`: a place, a message waiting for its place, or nothing.
-    fn read_line(&self, cwd: &Path, line: &str) -> Option<Read> {
+    fn read_line(&self, cwd: &Path, line: &str, files: &mut crate::places::Files) -> Option<Read> {
         let caps = self.re.captures(line)?;
         let (sev, msg) = self.said(&caps);
         if self.then.is_some() {
             return Some(Read::Waits(sev, msg));
         }
-        Some(Read::Place(placed(cwd, &caps, sev, msg)))
+        Some(Read::Place(placed(cwd, &caps, sev, msg, files)))
     }
 
     /// The severity and message a line says.
@@ -137,28 +137,60 @@ enum Read {
 }
 
 /// The place `caps` names — `place`, else `path`, `line`, `col` — if it's a file.
-fn placed(cwd: &Path, caps: &regex::Captures, sev: u8, msg: String) -> Option<Item> {
+fn placed(
+    cwd: &Path,
+    caps: &regex::Captures,
+    sev: u8,
+    msg: String,
+    files: &mut crate::places::Files,
+) -> Option<Item> {
     if let Some(p) = caps.name("place") {
         let (path, l, c, _) = split_place(p.as_str())?;
-        return item(cwd, path, l, c, sev, msg);
+        return item(cwd, (path, l, c), sev, msg, files);
     }
     let n = |k: &str| caps.name(k).and_then(|m| m.as_str().parse::<usize>().ok());
-    item(cwd, caps.name("path")?.as_str(), n("line")?, n("col").unwrap_or(1), sev, msg)
+    item(cwd, (caps.name("path")?.as_str(), n("line")?, n("col").unwrap_or(1)), sev, msg, files)
 }
 
 /// Reads places out of a task's output, a line at a time: the forms the packs say (`[[places]]` — tsc's,
 /// rustc's long one, Python's tracebacks), then the one every tool shares, `path:line[:col]: [error|warning]
 /// message` (rustc `--message-format=short`, gcc/clang, go, eslint, ruff, mypy). Only paths that exist
-/// count — a URL or a timestamp isn't a place.
+/// count — a URL or a timestamp isn't a place — found as `places.rs` finds every name: from the run's folder or one
+/// above it, else a name given alone or with its last folders when exactly one of the project's files ends with it.
 pub struct Matcher {
     rules: std::sync::Arc<Vec<PlaceRule>>,
     /// A message waiting for its place: the rule's index, its severity and text.
     pending: Option<(usize, u8, String)>,
+    /// The project's files, listed the first time a name isn't found as written (`with_files`; none: not looked for).
+    files: crate::places::Files,
 }
 
 impl Matcher {
     pub fn new(rules: std::sync::Arc<Vec<PlaceRule>>) -> Matcher {
-        Matcher { rules, pending: None }
+        Matcher { rules, pending: None, files: crate::places::Files::none() }
+    }
+
+    /// Names given alone looked for in these roots' files (the project's, then its workspace's folders).
+    pub fn with_files(self, roots: Vec<PathBuf>) -> Matcher {
+        Matcher { files: crate::places::Files::new(roots), ..self }
+    }
+
+    /// It listed the roots' files (tests).
+    #[cfg(test)]
+    pub(crate) fn listed(&self) -> bool {
+        self.files.listed()
+    }
+
+    /// Names given alone looked for in `files` (tests: a stand-in listing).
+    #[cfg(test)]
+    pub(crate) fn with_listed(self, files: crate::places::Files) -> Matcher {
+        Matcher { files, ..self }
+    }
+
+    /// Files a name was compared with so far (tests: the work its lines cost).
+    #[cfg(test)]
+    pub(crate) fn compared(&self) -> usize {
+        self.files.compared()
     }
 
     /// The built-in packs' rules (tests).
@@ -178,12 +210,12 @@ impl Matcher {
         if let Some((i, sev, msg)) = self.pending.take() {
             let then = self.rules[i].then.as_ref().expect("a waiting rule has a `then`");
             match then.captures(trimmed) {
-                Some(caps) => return placed(cwd, &caps, sev, msg),
+                Some(caps) => return placed(cwd, &caps, sev, msg, &mut self.files),
                 None => self.pending = Some((i, sev, msg)),
             }
         }
         for (i, r) in self.rules.iter().enumerate() {
-            match r.read_line(cwd, trimmed) {
+            match r.read_line(cwd, trimmed, &mut self.files) {
                 Some(Read::Waits(sev, msg)) => {
                     self.pending = Some((i, sev, msg));
                     return None;
@@ -194,7 +226,7 @@ impl Matcher {
         }
         let (path, l, c, rest) = split_place(trimmed)?;
         let (sev, msg) = severity(rest.trim());
-        item(cwd, path, l, c, sev, msg)
+        item(cwd, (path, l, c), sev, msg, &mut self.files)
     }
 }
 
@@ -236,13 +268,21 @@ fn severity(rest: &str) -> (u8, String) {
     (1, rest.to_string())
 }
 
-fn item(cwd: &Path, path: &str, line: usize, col: usize, severity: u8, message: String) -> Option<Item> {
+fn item(
+    cwd: &Path,
+    (path, line, col): (&str, usize, usize),
+    severity: u8,
+    message: String,
+    files: &mut crate::places::Files,
+) -> Option<Item> {
     let path = path.trim().trim_start_matches("./");
     if path.is_empty() || path.contains("://") || line == 0 {
         return None;
     }
-    // Relative to the task's folder — or a folder above it (cargo prints paths from the workspace's root)
-    let full = cwd.ancestors().take(6).map(|d| d.join(path)).find(|p| p.is_file())?;
+    // Relative to the task's folder — or a folder above it (cargo prints paths from the workspace's root); else the
+    // one project file that ends with it (several: no one place — `places.rs`)
+    let bases: Vec<PathBuf> = cwd.ancestors().take(6).map(Path::to_path_buf).collect();
+    let crate::places::Found::File(full) = crate::places::find(path, &bases, files) else { return None };
     let path = std::fs::canonicalize(&full).unwrap_or(full);
     Some(Item { path, line: line - 1, col: col.saturating_sub(1), message, severity, mark: None })
 }
@@ -1048,6 +1088,8 @@ impl Editor {
             };
             tx.send(crate::event::Event::Job(Box::new(apply))).is_ok()
         };
+        // (where a name given alone is looked for: the project's files and its folders')
+        let roots: Vec<PathBuf> = self.workspace.roots().all().map(Path::to_path_buf).collect();
         crate::event::thread("tarae-task", move || {
             // (the packs read here — one of one's own is a file)
             let waits = std::sync::Arc::new(crate::waits::Rules::load());
@@ -1058,10 +1100,10 @@ impl Editor {
                 let Some(s) = stream else { continue };
                 let (tx, send_lines, waits, eof) =
                     (tx.clone(), send_lines.clone(), waits.clone(), eof.clone());
-                let places = places.clone();
+                let (places, roots) = (places.clone(), roots.clone());
                 readers += 1;
                 crate::event::thread("tarae-task-read", move || {
-                    let mut matcher = Matcher::new(places);
+                    let mut matcher = Matcher::new(places).with_files(roots);
                     read_batches(s, |lines| send_lines(&tx, &mut matcher, &waits, err, lines));
                     let _ = eof.send(());
                 });
@@ -1076,6 +1118,8 @@ impl Editor {
             let done = move |ed: &mut Editor| {
                 // (a host its proxy holds for it has no one left to ask for — its card goes)
                 crate::hosts::run_ended(ed, run_id);
+                // (it may have made, removed or moved files: the chat's names are found again — `places.rs`)
+                ed.workspace.listing += 1;
                 let session = ed.workspace.log();
                 let Some(r) = ed.workspace.task_run.as_mut().filter(|r| r.generation == generation) else {
                     return;

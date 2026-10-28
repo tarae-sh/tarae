@@ -243,7 +243,9 @@ pub fn hits(root: &Path, text: &str) -> Vec<(PathBuf, usize)> {
             }
             continue;
         }
-        if let Some((_, link)) = crate::chat::refs_in(root, l).into_iter().next() {
+        if let Some((_, link)) =
+            crate::chat::refs_in(l, |n| Some(crate::chat::resolve(root, n))).into_iter().next()
+        {
             close(&mut file, &mut out);
             out.push((link.path, link.line));
             continue;

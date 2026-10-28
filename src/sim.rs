@@ -47,6 +47,7 @@ mod now;
 mod orchestra;
 mod overlap;
 mod panes;
+mod places;
 mod presence;
 #[cfg(not(target_os = "linux"))]
 mod ptybroker;

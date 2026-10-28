@@ -314,13 +314,27 @@ fn a_flash_asks_for_one_frame_at_its_end() {
 #[test]
 fn an_id_in_the_answer_is_a_link() {
     let mut ed = editor();
+    // (a project of its own holding `src/a.rs`: a place is one once the chat found its file — `places.rs`)
+    let scratch = crate::scratch::Scratch::new("ui-id-link");
+    let root = std::fs::canonicalize(&*scratch).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/a.rs"), "one\ntwo\nthree\n").unwrap();
+    ed.workspace.root = root.clone();
     let id = card(&mut ed, "End the review?");
     chat(&mut ed, "");
     let answer = format!("It came up for src/a.rs:3 — card#{id} asks whether to end it.");
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "why?", ""));
     c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, answer, ""));
-    let hops = c.hops(&ed.workspace.root.clone());
+    frame(&mut ed);
+    let end = Instant::now() + crate::test_results::PATIENCE;
+    while !crate::places::answered(&ed) {
+        assert!(Instant::now() < end, "its place found");
+        if let Some(ev) = ed.events.recv_timeout(Duration::from_millis(20)) {
+            ed.handle_event(ev);
+        }
+    }
+    let hops = ed.workspace.claude.chat.as_ref().unwrap().hops(&root);
     assert!(
         matches!(&hops[..], [crate::chat::Hop::Place(..), crate::chat::Hop::Element(e)] if *e == format!("card#{id}")),
         "{hops:?}"

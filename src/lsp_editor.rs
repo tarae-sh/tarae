@@ -207,7 +207,7 @@ pub fn read_places(
 }
 
 /// The list's items: the declaration first (marked), the rest by file then line — each row its code.
-fn place_items(
+pub(crate) fn place_items(
     root: &std::path::Path,
     mut places: Vec<Place>,
     declared: &[(std::path::PathBuf, usize)],

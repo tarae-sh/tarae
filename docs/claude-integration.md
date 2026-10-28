@@ -434,8 +434,16 @@ and the selected ground), and its mark on the card's strip sits on that same gro
 both when its changes went both ways) — pressed by your key, it lands lit and dries to its dim ink in 0.3 s, as an
 edit review's change head and a turn's file in the review rail do ([`editor.motion`](reference/settings.md)). The other open files are listed in the context, and unsaved ones send their text,
 since Claude would otherwise read the stale copy on disk. Answers cite code as `path:line`. Those references are
-underlined, and a click opens them. `C-]` (or `C-g` — zellij takes that one) walks every place the conversation points at, newest first, centering
-each one while the chat keeps the keys.
+underlined, and a click opens them — only those that name a file: from the project's root or one of the workspace's
+folders, or, for a name given alone or with only its last folders (`TestDevice.java:357`, `dev/TestDevice.java:357`),
+the project's one file that ends with it. When several do, the click opens a list of them at that line (its title says
+how many, and that it lists the first 50 when there are more); when none does, the name stays plain text. A name is
+found again only once the project's files may have changed — a file made, removed or moved, a run ended, a commit or
+checkout, your next message — never for a file's text written. A path the chat's width wraps is underlined on each of
+its rows, and a click on any of them opens it. `gf` and a run's places find a name the same way. `C-]` (or `C-g` —
+zellij takes that one) walks every place the conversation points at, newest first, centering each one while the chat
+keeps the keys — an answer's places are the ones it underlines, so a name no file has is no stop; and at a turn's
+end, follow goes to the answer's first underlined place once its names are found.
 
 ![After the answer: the lookups Claude made as quiet rows, its folded thinking, and the answer's path:line links, with the editor on the first one](screenshots/chat-explore.png)
 

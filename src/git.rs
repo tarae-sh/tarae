@@ -375,8 +375,9 @@ impl Editor {
         for id in ids {
             self.git_load_base(id);
         }
-        // (its tree may have moved with it: taken again for overlaps)
+        // (its tree may have moved with it: taken again for overlaps, the chat's names found again)
         crate::overlap::moved(self, dir);
+        self.files_moved(dir);
     }
 
     /// On every event: if the current document's diff is stale, redo it on a worker thread shortly after

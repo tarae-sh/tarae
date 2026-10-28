@@ -366,6 +366,10 @@ pub(crate) fn landed(
         }
     };
     ed.wrote(&f.path);
+    // (a file made, removed or moved: the chat's names are found again — `places.rs`)
+    if !matches!(f.op, Op::Text) {
+        ed.files_moved(&f.path);
+    }
     match &f.op {
         Op::Text | Op::Create => {
             ed.disk_take(&f.path, &f.after, stamp);

@@ -128,6 +128,7 @@ mod pane;
 mod patch;
 mod paths;
 mod picker;
+mod places;
 mod plan;
 mod plugin;
 mod preflight;

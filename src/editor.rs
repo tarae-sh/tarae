@@ -7145,6 +7145,9 @@ mod tests {
         let sent = std::fs::read_to_string(&log).unwrap();
         assert!(sent.contains("<open-files>") && sent.contains("lib.rs (unsaved)"), "{sent}");
         assert!(sent.contains("<unsaved-file"), "unsaved text rides along: {sent}");
+        // (the answer's reference is a place once the chat drew it and found its file — `places.rs`)
+        crate::term::render(&mut ed, &mut Vec::new(), 120, 30).unwrap();
+        settle_until(&mut ed, crate::places::answered);
         // C-g: the answer's reference, then the read before it — the chat keeps the keys
         feed(&mut ed, "<C-g>");
         assert_eq!(ed.doc().path.as_deref(), Some(lib.as_path()));

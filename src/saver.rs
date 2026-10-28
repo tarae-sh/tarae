@@ -414,11 +414,17 @@ impl Editor {
             let same_file = doc.path.as_ref() == Some(&d.path);
             match d.result {
                 Ok(stamp) => {
+                    // (a file it made — none there as it was opened, or another name: the chat's names are found
+                    // again, `places.rs`)
+                    let made = !same_file || doc.disk.is_none();
                     if same_file {
                         doc.saved_at(d.version, stamp);
                     }
                     // (a run under way no longer runs what's there — `queued::join`)
                     self.wrote(&d.path);
+                    if made {
+                        self.files_moved(&d.path);
+                    }
                     match d.then {
                         Then::Command => saved.push(d.id),
                         Then::Auto(w) => {
