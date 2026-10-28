@@ -3880,7 +3880,7 @@ pub(crate) fn guard_then_go(ed: &mut Editor, who: For, job: Job, ride: Ride) {
             told = crate::tokens::to_tell(&p.reads.copies.told, said.as_deref());
             // Its denials watched from before it starts (the stream up first — measured)
             p.watch = crate::sandbox::watch_for(&p);
-            std::thread::sleep(crate::sandbox::watch_wait(&p));
+            crate::event::pause(crate::sandbox::watch_wait(&p));
             Ok(p)
         });
         let hint = crate::sandbox::profile_hint();

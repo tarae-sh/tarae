@@ -58,6 +58,7 @@ impl Editor {
         (s.redraw_due, s.frames_written, s.tick_in_ms, s.unfocused, s.events) = (false, 0, None, false, 0);
         s.frames_for.clear();
         s.events_for.clear();
+        s.starting.clear();
         for t in &mut s.toasts {
             t.strength = None;
         }

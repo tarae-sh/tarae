@@ -1412,7 +1412,7 @@ pub fn draft(
     // (its time limit: a draft still being written then is stopped, and said)
     let generation = ed.llm_generation;
     ed.events.jobs().spawn(move || {
-        std::thread::sleep(DRAFT_LIMIT);
+        crate::event::sleep(DRAFT_LIMIT);
         move |ed: &mut Editor| stop_waiting(ed, Some(generation), DRAFT_LIMIT_SAID)
     });
     Ok(())

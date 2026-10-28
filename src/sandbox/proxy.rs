@@ -656,7 +656,7 @@ fn accepting(
                     }
                 }
                 Err(e) => match after_accept_error(&e) {
-                    Some(pause) => std::thread::sleep(pause),
+                    Some(pause) => crate::event::pause(pause),
                     None => return Some(e),
                 },
             }

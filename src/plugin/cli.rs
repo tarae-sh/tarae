@@ -211,7 +211,7 @@ fn dev(dir: &Path) -> anyhow::Result<()> {
                 std::io::Write::write_all(&mut std::io::stderr(), &build.stderr)?;
             }
         }
-        std::thread::sleep(Duration::from_millis(300));
+        crate::event::pause(Duration::from_millis(300));
     }
 }
 

@@ -58,6 +58,7 @@ mod rundoc;
 mod sessions;
 mod shimmer;
 mod sound;
+mod starts;
 mod stuckstop;
 mod termview;
 mod toasts;
@@ -295,7 +296,8 @@ pub fn sleep(d: Duration) -> bool {
     match role {
         Role::Driver => h.lock().now += d,
         Role::Helper(_) => {
-            h.fail("a thread the simulation doesn't model sleeps".into());
+            let name = std::thread::current().name().unwrap_or("unnamed").to_string();
+            h.fail(format!("a thread the simulation doesn't model ({name}) sleeps"));
             return false;
         }
         Role::Job(id) => {

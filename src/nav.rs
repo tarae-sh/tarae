@@ -253,7 +253,7 @@ fn ask(ed: &mut Editor, call: Call, path: PathBuf, line: Option<usize>, name: Na
             // A server that says nothing in time: the text matches are the answer
             let wait = refs_wait(ed);
             ed.events.jobs().spawn(move || {
-                std::thread::sleep(wait);
+                crate::event::sleep(wait);
                 move |ed: &mut Editor| {
                     if let Some(a) = ed.lsp.tool_asks.remove(&n) {
                         let why = format!("{} didn't answer within {}", a.server, secs(wait));
@@ -611,7 +611,7 @@ fn ask_symbols(ed: &mut Editor, call: Call, path: PathBuf, line: Option<usize>) 
             ed.lsp.tool_symbols.insert(n, SymAsk { call, path, line, server, cid });
             let wait = refs_wait(ed);
             ed.events.jobs().spawn(move || {
-                std::thread::sleep(wait);
+                crate::event::sleep(wait);
                 move |ed: &mut Editor| {
                     if let Some(a) = ed.lsp.tool_symbols.remove(&n) {
                         let why = format!("{} didn't answer within {}", a.server, secs(wait));
@@ -1081,7 +1081,7 @@ fn wait_defs(ed: &mut Editor, n: u64, a: DefAsk) {
     ed.lsp.tool_defs.insert(n, a);
     let wait = refs_wait(ed);
     ed.events.jobs().spawn(move || {
-        std::thread::sleep(wait);
+        crate::event::sleep(wait);
         move |ed: &mut Editor| {
             let Some(a) = ed.lsp.tool_defs.get_mut(&n) else { return };
             for (_, server) in a.waiting.drain(..) {
@@ -1621,7 +1621,7 @@ pub fn diagnostics(ed: &mut Editor, call: Call, args: &Value) -> Result<(), Stri
             // (looked at again when it may have settled with nothing to wake it, and at the end)
             for after in [SETTLE, QUIET, wait] {
                 ed.events.jobs().spawn(move || {
-                    std::thread::sleep(after.saturating_sub(since.elapsed()));
+                    crate::event::sleep(after.saturating_sub(since.elapsed()));
                     crate::nav::diagnostics_moved
                 });
             }

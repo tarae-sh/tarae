@@ -798,7 +798,7 @@ impl Editor {
         }
         if again {
             self.events.jobs().spawn(|| {
-                std::thread::sleep(RESAVE_QUIET);
+                crate::event::sleep(RESAVE_QUIET);
                 |ed: &mut Editor| ed.saves_again()
             });
         }
@@ -839,7 +839,7 @@ impl Editor {
         }
         if later {
             self.events.jobs().spawn(|| {
-                std::thread::sleep(RESAVE_QUIET);
+                crate::event::sleep(RESAVE_QUIET);
                 |ed: &mut Editor| ed.saves_again()
             });
         }
@@ -851,7 +851,7 @@ impl Editor {
     pub(crate) fn lsp_saved_outside(&mut self, id: DocId) {
         self.lsp.held_saves.insert(id, std::time::Instant::now());
         self.events.jobs().spawn(|| {
-            std::thread::sleep(SAVE_QUIET);
+            crate::event::sleep(SAVE_QUIET);
             |ed: &mut Editor| ed.saves_due(false)
         });
     }
@@ -946,7 +946,7 @@ impl Editor {
                     // it begins now (indexing), or after a moment if it begins none
                     if self.lsp.ask_when_idle.as_ref().is_some_and(|w| w.0 == cid) {
                         self.events.jobs().spawn(move || {
-                            std::thread::sleep(std::time::Duration::from_millis(if cfg!(test) {
+                            crate::event::pause(std::time::Duration::from_millis(if cfg!(test) {
                                 5
                             } else {
                                 500
@@ -1615,7 +1615,7 @@ impl Editor {
             return;
         };
         self.events.jobs().spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(120));
+            crate::event::pause(std::time::Duration::from_millis(120));
             move |ed: &mut Editor| {
                 if ed.picker.as_ref().is_some_and(|p| p.requery && p.query() == query) {
                     ed.lsp_request_raw(Kind::WorkspaceSymbols, "workspace/symbol", json!({ "query": query }));
@@ -1811,7 +1811,7 @@ impl Editor {
         self.lsp.inlay_waiting = true;
         let version = self.doc().version();
         self.events.jobs().spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(INLAY_DEBOUNCE_MS));
+            crate::event::pause(std::time::Duration::from_millis(INLAY_DEBOUNCE_MS));
             move |ed: &mut Editor| {
                 ed.lsp.inlay_waiting = false;
                 // Typed again meanwhile — wait once more
@@ -2251,7 +2251,7 @@ impl Editor {
         let since = std::time::Instant::now();
         self.lsp.unused.insert(cid, since);
         self.events.jobs().spawn(move || {
-            std::thread::sleep(wait);
+            crate::event::sleep(wait);
             move |ed: &mut Editor| ed.lsp_stop_if_unused(cid, since, wait)
         });
     }
@@ -2272,7 +2272,7 @@ impl Editor {
                     self.lsp.resting.insert(cid, since);
                     let wait = self.lsp.rest_after.unwrap_or(IDLE_STOP);
                     self.events.shared_jobs().spawn(move || {
-                        std::thread::sleep(wait);
+                        crate::event::sleep(wait);
                         move |ed: &mut Editor| ed.lsp_stop_resting(cid, since, wait)
                     });
                 }
@@ -2358,7 +2358,7 @@ impl Editor {
         for cid in out {
             self.lsp.unseen.insert(cid, now);
             self.events.shared_jobs().spawn(move || {
-                std::thread::sleep(wait);
+                crate::event::sleep(wait);
                 move |ed: &mut Editor| ed.lsp_stop_unseen(cid, now, wait)
             });
         }
@@ -2580,7 +2580,7 @@ impl Editor {
         // Several servers: a slow one doesn't hold the others' list past a second (one alone is waited for)
         if self.lsp.actions_waiting > 1 {
             self.events.jobs().spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                crate::event::sleep(std::time::Duration::from_secs(1));
                 move |ed: &mut Editor| {
                     if ed.lsp.actions_gen == list && ed.lsp.actions_waiting > 0 {
                         ed.lsp.actions_waiting = 0;
@@ -2685,7 +2685,7 @@ impl Editor {
         };
         self.note("formatting…");
         self.events.jobs().spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(2));
+            crate::event::sleep(std::time::Duration::from_secs(2));
             move |ed: &mut Editor| {
                 if ed.lsp.pending.remove(&(cid, id)).is_some() {
                     ed.format_save_done(doc_id, quit, Some("the formatter took too long — saved as is"));
@@ -2842,7 +2842,7 @@ impl Editor {
             return self.set_status(format!("{name} is still settling the project — try again in a moment"));
         }
         self.events.jobs().spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(if cfg!(test) { 5 } else { 300 }));
+            crate::event::pause(std::time::Duration::from_millis(if cfg!(test) { 5 } else { 300 }));
             move |ed: &mut Editor| ed.ask_again(cid)
         });
     }
@@ -2981,7 +2981,7 @@ impl Editor {
             });
             // (a server that answers within the grace never shows text matches — no flash of a list, even
             // while its answer's lines are still being read)
-            std::thread::sleep(grace.saturating_sub(asked.elapsed()));
+            crate::event::pause(grace.saturating_sub(asked.elapsed()));
             move |ed: &mut Editor| {
                 if ed.lsp.refs.generation != generation || ed.lsp.refs.answered || ed.picker.is_some() {
                     return;
@@ -4147,6 +4147,59 @@ mod tests {
         ed.handle_event(crate::event::Event::Resize);
         assert!(ed.doc().lsp.client.is_some(), "shown: its server");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #201: the start's result that puts the project's file in front (the sessions' restore; its view synced and
+    /// sight looked at, as every event ends) arms the stop of a server outside it, out of sight — a timer of `sight_after` (`IDLE_STOP`: minutes), spawned as the start's;
+    /// as it sleeps it's the start's no more, so the state's `starting` is empty while it waits.
+    #[test]
+    fn a_sight_timer_armed_by_the_start_is_not_the_start_s() {
+        let scratch = crate::scratch::Scratch::new("lsp-sight-start");
+        for d in ["proj", "elsewhere"] {
+            std::fs::create_dir_all(scratch.join(d)).unwrap();
+            std::fs::write(scratch.join(d).join("a.toml"), "x = 1\n").unwrap();
+        }
+        let dir = std::fs::canonicalize(&scratch).unwrap();
+        let cfg = "[lsp.tomlfake]\ncommand = \"sh\"\nargs = [\"-c\", \"cat > /dev/null\"]\n\
+                   [lang.toml]\nlsp = [\"tomlfake\"]\n";
+        let (config, w) = crate::config::parse(cfg);
+        assert!(w.is_empty(), "{w:?}");
+        let mut ed = Editor::new(config);
+        ed.workspace.root = dir.join("proj");
+        // (asleep past the test's end)
+        ed.lsp.sight_after = Some(Duration::from_secs(3600));
+        ed.open(&dir.join("elsewhere/a.toml")).unwrap();
+        let out_srv = ed.doc().lsp.client.expect("the outside file's server");
+        ed.open(&dir.join("proj/a.toml")).unwrap();
+        assert!(!ed.lsp.unseen.contains_key(&out_srv), "not armed before the start");
+        // The start: its result looks at what's in sight, the outside server's stop armed by it
+        ed.events.set_starting(true);
+        ed.events.jobs().spawn(|| {
+            |ed: &mut Editor| {
+                ed.sync_focus_view();
+                ed.servers_follow_sight(std::time::Instant::now())
+            }
+        });
+        ed.events.started();
+        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+        while !ed.lsp.unseen.contains_key(&out_srv) && std::time::Instant::now() < end {
+            if let Some(crate::event::Event::Job(apply) | crate::event::Event::For(_, _, apply)) =
+                ed.events.recv_timeout(Duration::from_millis(50))
+            {
+                apply(&mut ed);
+            }
+        }
+        assert!(ed.lsp.unseen.contains_key(&out_srv), "the start's result armed its stop");
+        // (its worker on its way to the sleep)
+        while !ed.events.starts_out().is_empty() && std::time::Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            ed.events.starts_out().is_empty(),
+            "a sight timer still the start's: {:?}",
+            ed.events.starts_out()
+        );
+        assert!(ed.client(out_srv).is_some(), "its server still up, the timer asleep");
     }
 
     /// A server that takes its settings by section (pyright) gets the project's left-out folders when it asks —

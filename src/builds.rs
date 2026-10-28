@@ -562,7 +562,7 @@ impl Builds {
         loop {
             match child.try_wait() {
                 Ok(Some(s)) if s.success() => break,
-                Ok(None) if Instant::now() < end => std::thread::sleep(Duration::from_millis(20)),
+                Ok(None) if Instant::now() < end => crate::event::pause(Duration::from_millis(20)),
                 _ => {
                     let _ = child.kill();
                     let _ = child.wait();

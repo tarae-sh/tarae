@@ -145,6 +145,8 @@ impl Watcher {
     /// Until something watched may have changed (then until its burst of writes settles), the backstop
     /// passes, or the waker is used.
     pub fn wait(&mut self) -> Woke {
+        // (a job waiting on a watch is never the start's: its next round may be an hour away)
+        crate::event::waits();
         let first = self.wait_for(if self.polling { POLL } else { BACKSTOP });
         if first != Woke::Changed {
             return first;
@@ -173,7 +175,7 @@ impl Watcher {
                     None => Woke::TimedOut,
                 },
                 None => {
-                    std::thread::sleep(timeout);
+                    crate::event::sleep(timeout);
                     Woke::TimedOut
                 }
             },

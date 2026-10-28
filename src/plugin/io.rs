@@ -107,7 +107,7 @@ impl Flow {
             if self.gone.load(Ordering::SeqCst) {
                 return false;
             }
-            std::thread::sleep(Duration::from_millis(5));
+            crate::event::pause(Duration::from_millis(5));
         }
         !self.gone.load(Ordering::SeqCst)
     }

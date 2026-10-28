@@ -779,7 +779,7 @@ fn hold_with(own: &Path, between: &dyn Fn()) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _};
     for n in 0..HOLD_TRIES {
         if n > 0 {
-            crate::event::sleep(HOLD_WAIT);
+            crate::event::pause(HOLD_WAIT);
         }
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(own)?;
         let f = std::fs::OpenOptions::new()

@@ -952,7 +952,7 @@ fn play(ed: &mut Editor) {
     }
     go_range(ed, &stop.path, lines);
     ed.events.jobs().spawn(move || {
-        std::thread::sleep(dwell);
+        crate::event::sleep(dwell);
         move |ed: &mut Editor| {
             let Some(f) = follow(ed) else { return };
             if f.playing.is_some_and(|p| p.1 == generation) {

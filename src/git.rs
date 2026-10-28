@@ -393,7 +393,7 @@ impl Editor {
         let (id, version, text) = (doc.id, doc.version(), doc.text.clone());
         self.git_diffing = true;
         self.events.jobs().spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(if cfg!(test) { 0 } else { 80 }));
+            crate::event::pause(std::time::Duration::from_millis(if cfg!(test) { 0 } else { 80 }));
             let hunks = hunks(&base, &text.to_string());
             move |ed: &mut Editor| {
                 ed.git_diffing = false;
@@ -422,6 +422,38 @@ pub fn watched(l: &mut crate::workspace::Workspace, branch: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #201's fourth round: at the start a file's base read lands and its gutter's diff is spawned as the start's;
+    /// its debounce is an `event::pause`, so it stays the start's until its hunks land — a settle
+    /// waits for them (they came after it once its sleep let go of the count).
+    #[test]
+    fn the_gutter_s_diff_at_the_start_stays_the_start_s_through_its_debounce() {
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.doc_mut().text = ropey::Rope::from("a\nchanged\n");
+        // (the base read's result, as `git_load_base`'s: the base in, the diff stale, the diff scheduled)
+        ed.events.set_starting(true);
+        ed.events.jobs().spawn(|| {
+            |ed: &mut Editor| {
+                let d = ed.doc_mut();
+                d.git_base = Some(std::sync::Arc::new("a\nb\n".into()));
+                d.git_version = u64::MAX;
+                ed.git_schedule();
+            }
+        });
+        ed.events.started();
+        let next = |ed: &mut Editor| match ed.events.recv_timeout(crate::test_results::PATIENCE) {
+            Some(crate::event::Event::Job(apply) | crate::event::Event::For(_, _, apply)) => apply,
+            _ => panic!("a result"),
+        };
+        next(&mut ed)(&mut ed);
+        assert!(ed.git_diffing, "the diff spawned");
+        // (its result here: its debounce and its diff done)
+        let diffed = next(&mut ed);
+        let out: Vec<String> = ed.events.starts_out().iter().map(|(at, _)| at.file().to_string()).collect();
+        assert_eq!(out, ["src/git.rs"], "the gutter's diff, still the start's through its debounce");
+        diffed(&mut ed);
+        assert!(!ed.doc().git_hunks.is_empty() && ed.events.starts_out().is_empty(), "its hunks landed");
+    }
 
     /// A watch round that changes nothing draws nothing: the first round's branch already known, a round of
     /// another session's; a new branch or a HEAD moved is a change (`watch_round`).

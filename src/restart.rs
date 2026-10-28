@@ -759,7 +759,7 @@ fn answers(bin: &Path) -> Result<(), String> {
     let status = loop {
         match child.try_wait() {
             Ok(Some(s)) => break s,
-            Ok(None) if Instant::now() < end => std::thread::sleep(Duration::from_millis(10)),
+            Ok(None) if Instant::now() < end => crate::event::pause(Duration::from_millis(10)),
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();

@@ -338,6 +338,50 @@ impl Sandbox {
     }
 }
 
+impl Sandbox {
+    /// A stand-in hold on the start's restore of the kept sessions (`worktree::workspaces_restore`): its store a named
+    /// pipe, which the restore's read on its worker waits on until `Held::release` — its result lands when the test
+    /// says, as on a loaded machine (#191: after a settle). The work folder becomes a repository (the restore reads a
+    /// repository's only).
+    pub fn hold_restore(&self) -> Held {
+        use std::os::unix::ffi::OsStrExt;
+        self.git(&["init", "-q"]);
+        let common = fs::canonicalize(self.work().join(".git")).unwrap();
+        // (the store's name: `chats::file`'s hash of the repository's git folder, by its real path)
+        let h = common
+            .to_string_lossy()
+            .bytes()
+            .fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3));
+        let dir = self.state().join("sessions");
+        fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join(format!("{h:016x}.json"));
+        let c = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: a NUL-terminated path in the test's own folder.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo {}", fifo.display());
+        Held { fifo, timeout: self.timeout() }
+    }
+}
+
+/// The restore held (`Sandbox::hold_restore`).
+pub struct Held {
+    fifo: PathBuf,
+    timeout: Duration,
+}
+
+impl Held {
+    /// The restore reads an empty store (no sessions kept) — its result goes to the main loop.
+    pub fn release(self) {
+        let (done, opened) = std::sync::mpsc::channel();
+        let fifo = self.fifo.clone();
+        // (opening it for writing waits for its reader, the restore's worker; closed at once: an empty store)
+        thread::spawn(move || {
+            let _ = done.send(fs::OpenOptions::new().write(true).open(&fifo).map(drop));
+        });
+        let opened = opened.recv_timeout(self.timeout).expect("the restore never read its store");
+        opened.unwrap_or_else(|e| panic!("{}: {e}", self.fifo.display()));
+    }
+}
+
 impl Drop for Sandbox {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
@@ -840,16 +884,25 @@ impl Term {
     /// redraw still to go after a frame sent in parts (`redraw_due`, half a second after it). An answer that
     /// owes one is waited out and asked again: the frame read may not be the one it owed (CI's macOS: a
     /// shuttle's end drew just after the answer, taken for the redraw — which then came in the idle check's
-    /// window). Nothing asked after it (an ask is a frame: a clock or a wave on screen would write again), so
-    /// from here a frame is something new — what an idle check measures from, never a quiet second.
+    /// window). And none of the start's jobs still out (`starting`: one that lands later is an event in the rest —
+    /// #191's restore, on a loaded machine). Nothing asked after it (an ask is a frame: a clock or a wave on screen
+    /// would write again), so from here a frame is something new — what an idle check measures from, never a quiet
+    /// second.
     pub fn settle(&mut self, what: &str, done: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
         let deadline = Instant::now() + self.timeout;
-        let owes = |s: &serde_json::Value| {
-            (s["frames_written"].as_u64().unwrap_or(0), s.get("redraw_due").is_some())
-        };
-        // (the running tarae's frames: after a `:restart` the last one's are on the terminal too, never in its count)
-        settle_on(self, |t| t.wait_state(what, &done), owes, |t| t.tarae_frames(), deadline)
+        self.settle_by(what, done, deadline)
             .unwrap_or_else(|e| panic!("{what}: {e} after {:?}", self.timeout))
+    }
+
+    /// `settle`, Err once `deadline` passed unsettled.
+    pub fn settle_by(
+        &mut self,
+        what: &str,
+        done: impl Fn(&serde_json::Value) -> bool,
+        deadline: Instant,
+    ) -> Result<serde_json::Value, String> {
+        // (the running tarae's frames: after a `:restart` the last one's are on the terminal too, never in its count)
+        settle_on(self, |t| t.wait_state(what, &done), owes, starts_out, |t| t.tarae_frames(), deadline)
     }
 
     /// `REST` of a tarae settled at `settled` (`Term::settle`'s answer — nothing asked since): what it did meanwhile
@@ -976,6 +1029,16 @@ impl Drop for Watching {
     }
 }
 
+/// What an answer of the state owes the terminal (`Term::settle`): the frames written, the resting redraw due.
+pub fn owes(s: &serde_json::Value) -> (u64, bool) {
+    (s["frames_written"].as_u64().unwrap_or(0), s.get("redraw_due").is_some())
+}
+
+/// The start's jobs an answer of the state says are still out (`starting`), None when none is (`Term::settle`).
+pub fn starts_out(s: &serde_json::Value) -> Option<String> {
+    s.get("starting").map(ToString::to_string)
+}
+
 /// Whether an answer of the state (`written` frames, the resting redraw `due`) leaves nothing owed once `read`
 /// frames were read here (`Term::settle`): no redraw to come, and no frame read past what it knew of — one is
 /// something that drew after the answer, never the redraw it owed, and its own redraw may be to come.
@@ -984,17 +1047,27 @@ pub fn settled(written: u64, due: bool, read: usize) -> bool {
 }
 
 /// `Term::settle`'s loop, apart from the terminal: `ask` an answer, wait until `read` has caught up with what it
-/// owes (`owes`: its frames written, its redraw due), and ask again until one leaves nothing owed (`settled`) —
-/// that answer. Err: the deadline passed, with what was owed and read.
+/// owes (`owes`: its frames written, its redraw due), and ask again until one leaves nothing owed (`settled`) and
+/// has none of the start's jobs `out` (what they are) — that answer. Err: the deadline passed, with what was owed
+/// and read, or still out.
 pub fn settle_on<T, A>(
     t: &mut T,
     mut ask: impl FnMut(&mut T) -> A,
     owes: impl Fn(&A) -> (u64, bool),
+    out: impl Fn(&A) -> Option<String>,
     read: impl Fn(&T) -> usize,
     deadline: Instant,
 ) -> Result<A, String> {
     loop {
         let a = ask(t);
+        // (a result of the start's still to come is an event to come: asked again once it's landed)
+        if let Some(out) = out(&a) {
+            if Instant::now() >= deadline {
+                return Err(format!("the start's jobs still out: {out}"));
+            }
+            thread::sleep(POLL);
+            continue;
+        }
         let (written, due) = owes(&a);
         let owed = written as usize + due as usize;
         while read(t) < owed {
@@ -1381,24 +1454,44 @@ pub fn rfind(hay: &[u8], needle: &[u8]) -> Option<usize> {
 mod tests {
     use super::*;
 
-    /// A tarae as `settle_on` sees it: each answer (frames written, redraw due) and the frames read here once it
-    /// came — the answers asked so far counted.
+    /// A tarae as `settle_on` sees it: each answer (frames written, redraw due), the frames read here once it came
+    /// and whether one of the start's jobs was out — the answers asked so far counted.
     struct Scripted {
-        answers: Vec<((u64, bool), usize)>,
+        answers: Vec<((u64, bool), usize, bool)>,
         asked: usize,
         read: usize,
     }
 
     fn settle(script: Vec<((u64, bool), usize)>) -> (Result<(u64, bool), String>, usize) {
+        let (got, asked) = settle_started(script.into_iter().map(|(a, r)| (a, r, false)).collect(), TIMEOUT);
+        (got.map(|(w, d, _)| (w, d)), asked)
+    }
+
+    /// `settle`, each answer saying too whether one of the start's jobs is still out.
+    fn settle_started(
+        script: Vec<((u64, bool), usize, bool)>,
+        within: Duration,
+    ) -> (Result<(u64, bool, bool), String>, usize) {
         let mut t = Scripted { answers: script, asked: 0, read: 0 };
         let ask = |t: &mut Scripted| {
-            let (answer, read) = t.answers[t.asked.min(t.answers.len() - 1)];
+            let ((written, due), read, out) = t.answers[t.asked.min(t.answers.len() - 1)];
             (t.asked, t.read) = (t.asked + 1, read);
-            answer
+            (written, due, out)
         };
-        let deadline = Instant::now() + TIMEOUT;
-        let got = settle_on(&mut t, ask, |a| *a, |t| t.read, deadline);
+        let owes = |a: &(u64, bool, bool)| (a.0, a.1);
+        let out = |a: &(u64, bool, bool)| a.2.then(|| "[\"job src/worktree.rs:1588\"]".to_string());
+        let got = settle_on(&mut t, ask, owes, out, |t: &Scripted| t.read, Instant::now() + within);
         (got, t.asked)
+    }
+
+    /// A settle waits out the start's jobs (#191: on a loaded machine the sessions' restore landed after a settle,
+    /// an event in the rest): an answer with one out is asked again, whatever it owes; one never landing is said.
+    #[test]
+    fn a_settle_waits_for_the_start_s_jobs() {
+        let script = vec![((3, false), 3, true), ((4, false), 4, true), ((5, false), 5, false)];
+        assert_eq!(settle_started(script, TIMEOUT), (Ok((5, false, false)), 3), "asked until none was out");
+        let (got, _) = settle_started(vec![((3, false), 3, true)], Duration::ZERO);
+        assert_eq!(got, Err("the start's jobs still out: [\"job src/worktree.rs:1588\"]".into()));
     }
 
     /// A settle ends only on an answer that owes nothing unread: CI's macOS (ci round 4) had an answer say 19

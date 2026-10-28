@@ -2948,7 +2948,7 @@ impl Watch {
     pub fn unless_claimed_within(self: &std::sync::Arc<Self>, within: std::time::Duration) {
         let w = std::sync::Arc::downgrade(self);
         crate::event::thread("tarae-watch", move || {
-            std::thread::sleep(within);
+            crate::event::sleep(within);
             if let Some(w) = w.upgrade().filter(|w| !w.claimed.load(std::sync::atomic::Ordering::SeqCst)) {
                 w.fail(format!("its run didn't start within {}s", within.as_secs()));
                 w.finish();
@@ -2970,7 +2970,7 @@ impl Watch {
                 w.upgrade().is_none_or(|w| w.stopped.load(std::sync::atomic::Ordering::SeqCst))
             };
             while there() {
-                std::thread::sleep(WATCH_LOOKS);
+                crate::event::pause(WATCH_LOOKS);
                 if stopped(&w) {
                     return;
                 }
@@ -2979,7 +2979,7 @@ impl Watch {
                 w.ended.store(true, std::sync::atomic::Ordering::SeqCst);
                 w.marks().gone = Some(w.born.elapsed());
             }
-            std::thread::sleep(WATCH_LAST);
+            crate::event::pause(WATCH_LAST);
             if let Some(w) = w.upgrade() {
                 w.finish();
             }
@@ -5728,7 +5728,7 @@ pub fn spawn_as(
             crate::event::thread("tarae-tidy", move || {
                 // SAFETY: signal 0 only asks whether the process is there.
                 while unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
-                    std::thread::sleep(WATCH_LOOKS);
+                    crate::event::pause(WATCH_LOOKS);
                 }
                 made.tidy();
             });

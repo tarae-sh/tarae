@@ -672,7 +672,7 @@ impl Keeper {
             let (root, serial) = (self.root.clone(), self.serial);
             crate::event::thread("tarae-kleft", move || {
                 super::end_left_by_tag(&root);
-                let left = super::owners::OWNERS.let_go(serial, super::owners::live, std::thread::sleep);
+                let left = super::owners::OWNERS.let_go(serial, super::owners::live, crate::event::sleep);
                 if left > 0 {
                     let why = format!(
                         "{left} sockets of what a dead keeper's runs left ({}) still held after {}: kept as its \

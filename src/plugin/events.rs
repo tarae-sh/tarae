@@ -249,7 +249,7 @@ impl Editor {
         p.events.idle += 1;
         let idle = p.events.idle;
         self.events.jobs().spawn(move || {
-            std::thread::sleep(CHANGED_IDLE);
+            crate::event::pause(CHANGED_IDLE);
             move |ed: &mut Editor| {
                 if ed.plugins.as_ref().is_some_and(|p| p.events.idle == idle) {
                     ed.plugin_changed_now();
@@ -305,7 +305,7 @@ impl Editor {
         let then: Then = Box::new(move |ed: &mut Editor| ed.plugins_saved_before(doc, n, None));
         self.plugin_chain(Event::BeforeSave, doc, subs, Some(n), Some(then));
         self.events.jobs().spawn(move || {
-            std::thread::sleep(wait);
+            crate::event::sleep(wait);
             move |ed: &mut Editor| {
                 ed.plugins_saved_before(doc, n, Some("the plugins took too long before saving — saved as is"))
             }

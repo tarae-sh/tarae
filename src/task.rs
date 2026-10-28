@@ -1071,7 +1071,7 @@ impl Editor {
             let over = after_run();
             // Its last denials reach the watch before its end is told (here, not on the main loop)
             if watched {
-                std::thread::sleep(crate::sandbox::WATCH_LAST);
+                crate::event::pause(crate::sandbox::WATCH_LAST);
             }
             let done = move |ed: &mut Editor| {
                 // (a host its proxy holds for it has no one left to ask for — its card goes)

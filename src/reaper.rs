@@ -197,7 +197,7 @@ pub fn end(pids: &[u32], wait: Duration) -> Vec<u32> {
         };
         let all_dead = |until: Instant| {
             while Instant::now() < until && !held.iter().all(|(_, fd)| dead(fd)) {
-                std::thread::sleep(Duration::from_millis(20));
+                crate::event::pause(Duration::from_millis(20));
             }
         };
         all_dead(Instant::now() + wait);

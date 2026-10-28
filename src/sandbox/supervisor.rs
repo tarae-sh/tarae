@@ -142,7 +142,7 @@ pub fn reaches(pid: u32, pidfd: BorrowedFd<'_>, program: &str) -> Result<(), Str
         if crate::clock::now() >= until {
             return Err(format!("it wasn't running {program} within {} ms", EXEC_WITHIN.as_millis()));
         }
-        crate::event::sleep(std::time::Duration::from_millis(5));
+        crate::event::pause(std::time::Duration::from_millis(5));
     }
     let mem = std::fs::OpenOptions::new().read(true).write(true).open(format!("/proc/{pid}/mem"));
     if exited(pidfd) {

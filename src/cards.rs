@@ -680,7 +680,7 @@ pub fn wait_written(max: std::time::Duration) -> bool {
         if Instant::now() >= until {
             return false;
         }
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        crate::event::pause(std::time::Duration::from_millis(2));
     }
     true
 }

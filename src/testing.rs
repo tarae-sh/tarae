@@ -738,7 +738,7 @@ impl Editor {
             let over = after_run();
             // Its last denials reach the watch before its end is told (here, not on the main loop)
             if watched {
-                std::thread::sleep(crate::sandbox::WATCH_LAST);
+                crate::event::pause(crate::sandbox::WATCH_LAST);
             }
             let cases = junit.map(|(reports, src)| crate::test_results::junit(&reports, wall, &src));
             let done = move |ed: &mut Editor| {

@@ -1196,7 +1196,7 @@ fn send(ed: &mut Editor, n: u64, mut a: RenameAsk, prepared: bool) {
                 return;
             }
             ed.events.jobs().spawn(move || {
-                std::thread::sleep(RENAME_WAIT);
+                crate::event::sleep(RENAME_WAIT);
                 move |ed: &mut Editor| {
                     if let Some(a) = ed.lsp.tool_renames.remove(&n) {
                         let why = format!("{} didn't answer within {}", a.server, nav::secs(RENAME_WAIT));

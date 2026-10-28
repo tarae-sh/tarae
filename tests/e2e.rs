@@ -1664,6 +1664,41 @@ fn a_motion_ends_and_tarae_sleeps() {
     assert!(slept.woken().is_none(), "after the flash: {slept}\n{}", t.screen());
 }
 
+/// A job of the start's that lands late is waited out before a rest (#191, `a_motion_ends_and_tarae_sleeps` on a
+/// loaded Mac: `1 events ["job src/worktree.rs:1620"]`, the sessions' restore landing in the rest). The stand-in:
+/// the restore's store a named pipe (`Sandbox::hold_restore`) — held, the state names it (`starting`) and no settle
+/// comes, the flash over or not; let go, it lands, settled, and nothing wakes tarae.
+#[test]
+fn a_job_of_the_start_s_is_waited_out_before_a_rest() {
+    let sb = Sandbox::new("started");
+    sb.write("a.txt", "one two\n");
+    let held = sb.hold_restore();
+    let mut t = sb.spawn(&["a.txt"]);
+    t.send("wd");
+    t.wait_for("the word gone", |s| !s.contains("one two"));
+    t.send("u");
+    t.wait_for("undone", |s| s.contains("one two"));
+    let flashed = |s: &serde_json::Value| s["motions"].as_array().is_some_and(Vec::is_empty);
+    let s = t.wait_state("the flash gone", flashed);
+    let out: Vec<&str> = s["starting"].as_array().into_iter().flatten().filter_map(|j| j.as_str()).collect();
+    // (beside it maybe others of the start's not landed yet — the gutter's read of the repository, on a loaded machine)
+    assert!(
+        out.iter().any(|j| j.starts_with("job src/worktree.rs:")),
+        "the restore held, among the start's jobs out: {out:?}"
+    );
+    // (its frames settled — where the harness settled before, the restore then landing in the rest, its one event —
+    // nothing left owed: what keeps a settle off is the restore alone)
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let frames = |t: &mut Term| t.wait_state("the flash gone", flashed);
+    settle_on(&mut t, frames, owes, |_| None, |t| t.tarae_frames(), deadline).expect("the flash's frames");
+    let early = t.settle_by("held", flashed, std::time::Instant::now() + 10 * POLL);
+    assert!(early.is_err(), "settled with the restore out: {early:?}");
+    held.release();
+    let s = t.settle("the restore landed", flashed);
+    let slept = t.rest(&s);
+    assert!(slept.woken().is_none(), "after the restore: {slept}\n{}", t.screen());
+}
+
 /// A chat turn's usage on screen: a stand-in claude streaming what claude does (a request writing 4k to
 /// the 5m cache, its result with the conversation's cost and the model's window) — the line under the chat
 /// says until when the cache stays warm, the context's share, the turn's cost; `:usage` lists the turn; the

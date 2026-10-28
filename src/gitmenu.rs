@@ -438,7 +438,7 @@ impl Editor {
         // Once the text has stood still that long: typing puts it off (it used to run back to back while
         // typing — hidden then anyway — and git blame over a long history can take seconds of a core)
         self.events.jobs().spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(250));
+            crate::event::pause(std::time::Duration::from_millis(250));
             move |ed: &mut Editor| {
                 ed.unchanged = true; // (nothing to draw yet)
                 if ed.doc().id == id && ed.doc().version() == version {

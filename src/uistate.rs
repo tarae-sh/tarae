@@ -741,6 +741,10 @@ pub struct UiState {
     /// The last events handled (`Editor.events_kept`): each its number and what it was, as `frames_for` says it;
     /// never Claude's.
     pub events_for: Vec<(u64, String)>,
+    /// The start's jobs whose results haven't landed (`event::Starts`), each as `frames_for` says a job's result and,
+    /// out past `event::START_LATE`, for how long (`starting_said`) — an idle check waits until there are none: one
+    /// landing later is an event in its rest; never Claude's.
+    pub starting: Vec<String>,
     /// When a frame is next wanted with nothing else happening (`Editor::tick_wanted`: the waiting animation's
     /// step, a toast's fade, …), in ms — None: nothing wakes it; never Claude's.
     pub tick_in_ms: Option<u64>,
@@ -1742,6 +1746,7 @@ impl Editor {
                 .collect(),
             events: self.events_handled,
             events_for: self.events_kept.iter().map(|(n, of)| (*n, of.to_string())).collect(),
+            starting: self.events.starts_out().into_iter().map(|(at, out)| starting_said(at, out)).collect(),
             tick_in_ms: self.tick_wanted().map(|d| d.as_millis() as u64),
             unfocused: self.unfocused,
         }
@@ -1822,6 +1827,16 @@ impl Editor {
             cards.extend(l.parked.iter().map(|o| card(o, l.id, "parked")));
         }
         cards
+    }
+}
+
+/// One of the start's jobs out (`UiState.starting`): `job src/worktree.rs:1588`, and past `START_LATE` how long it's
+/// been out (`job src/usage.rs:1218 out 54m`) — a stuck one shows in the state, never only as a settle timing out.
+fn starting_said(at: &'static std::panic::Location<'static>, out: std::time::Duration) -> String {
+    let job = crate::editor::DrawnFor::Job(at);
+    match out >= crate::event::START_LATE {
+        true => format!("{job} out {}", crate::term::run_duration(out)),
+        false => job.to_string(),
     }
 }
 
@@ -2042,6 +2057,9 @@ impl UiState {
                 .map(|(n, of)| json!({ "event": n, "was": of }))
                 .collect::<Vec<_>>()
                 .into();
+        }
+        if !self.starting.is_empty() {
+            v["starting"] = json!(self.starting);
         }
         if let Some(ms) = self.tick_in_ms {
             v["tick_in_ms"] = json!(ms);

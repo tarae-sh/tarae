@@ -725,7 +725,7 @@ pub fn ran(ed: &mut Editor, generation: u64) -> bool {
 /// While git runs: the step it's at, read every `POLL` (nothing once it's done).
 fn poll(ed: &Editor, root: PathBuf, generation: u64, dir: Option<PathBuf>) {
     ed.events.jobs().spawn(move || {
-        std::thread::sleep(POLL);
+        crate::event::pause(POLL);
         let dir = dir.or_else(|| git_dir(&root));
         let step = dir.as_deref().and_then(state_dir).as_deref().and_then(step_of);
         move |ed: &mut Editor| {

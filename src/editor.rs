@@ -4349,7 +4349,7 @@ impl Editor {
         let now = self.live_search.clone();
         let tx = self.events.sender();
         self.events.jobs().spawn(move || {
-            std::thread::sleep(LIVE_PAUSE);
+            crate::event::pause(LIVE_PAUSE);
             let stop = || now.load(Ordering::Relaxed) != generation;
             let found = if stop() {
                 None

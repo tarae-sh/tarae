@@ -226,6 +226,15 @@ side git · 4 rows · in hand git:src/term.rs
   nothing but the wakes on a clock of their own — the disk watch's backstop (`a disk watch round`, 5 s) and the
   sampler's looks (`a look at the processes`, `a look at the disk`) — each once a 2 s window at most (e2e
   `Term::rest`). Said only when there are any; not at Claude's level.
+- **`starting`** (ci, #191, 2026-10-28) — the start's jobs whose results haven't landed, each as `frames_for` says a
+  job's result (`job src/worktree.rs:1588`): what tarae spawned before its first frame (the sessions' restore,
+  recovery's look, the languages' loads, Reduce Motion's read, …) and what those results spawned in turn
+  (`event::Starts`) — never a job once its work waits, on time or on a watch (`event::waits`, from `event::sleep` and
+  `fswatch::Watcher::wait`: the usage watch, the disk watch's rounds, a frame's tick), nor what its result spawns
+  (#201: the usage watch, armed by the restore's result, held it open up to an hour). Out past `event::START_LATE`
+  (5 s) an entry says for how long (`job src/usage.rs:1218 out 54m 00s`). An idle check settles only once there are
+  none (e2e `Term::settle`): on a loaded machine the restore's result landed after a settle, an event in the rest.
+  Said only when there are any; not at Claude's level.
 - **`tick_in_ms`**, **`unfocused`** (ci, 2026-10-24) — when a frame is next wanted with nothing else happening
   (`Editor::tick_wanted`: the waiting animation's step, a toast's fade, a motion's …; absent: nothing wakes it), and
   (only while true) that the terminal said its focus went elsewhere (`CSI O`, until `CSI I`: the animation rests). A

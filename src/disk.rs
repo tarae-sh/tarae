@@ -46,7 +46,7 @@ const SETTLE_MAX: Duration = Duration::from_millis(400);
 /// stopped changing for `SETTLE` together (a checkout's hundred files wait once, not each), with its text when
 /// it's worth reading — read, then stat'ed again: a file that changed under the read is waited for again
 /// (`SETTLE_MAX` in all). One back as it's held after all isn't a change. On the watch's worker; `pause` waits
-/// `SETTLE` (`event::sleep` — a test passes its own, which writes while the round waits).
+/// `SETTLE` (`event::pause` — a test passes its own, which writes while the round waits).
 fn settled(
     mut changed: Vec<(DocId, PathBuf, Option<Stamp>, Option<Stamp>)>,
     mut pause: impl FnMut(Duration),
@@ -328,7 +328,7 @@ impl Editor {
                     .filter(|(_, _, known, now)| now != known)
                     .collect();
                 // (read once they stopped changing: never a write half-done — frictions29 90 a)
-                let stats = settled(changed, crate::event::sleep);
+                let stats = settled(changed, crate::event::pause);
                 // (a change that isn't in the stats — a neighbour's, or a folder that appeared: look again)
                 if !stats.is_empty() || watcher.is_none_or(|mut w| w.wait() != crate::fswatch::Woke::Changed)
                 {
@@ -645,7 +645,7 @@ impl Editor {
         self.idle_save_gen += 1;
         let generation = self.idle_save_gen;
         self.events.jobs().spawn(move || {
-            std::thread::sleep(IDLE_SAVE);
+            crate::event::sleep(IDLE_SAVE);
             move |ed: &mut Editor| {
                 if ed.idle_save_gen == generation {
                     ed.auto_save(" (idle)");

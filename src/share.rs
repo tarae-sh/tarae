@@ -556,7 +556,7 @@ impl Editor {
     /// `share_sync` again once a gathering is over.
     fn share_wake(&mut self) {
         self.events.shared_jobs().spawn(|| {
-            std::thread::sleep(GATHER + ms(5));
+            crate::event::sleep(GATHER + ms(5));
             |ed: &mut Editor| ed.share_sync()
         });
     }
@@ -870,7 +870,7 @@ impl Editor {
                 .swap_switch(b, format!(" — it didn't agree with the old one in {AGREE_TRIES} rounds"));
         }
         self.events.shared_jobs().spawn(move || {
-            std::thread::sleep(AGREE_AGAIN);
+            crate::event::sleep(AGREE_AGAIN);
             move |ed: &mut Editor| {
                 if ed.client(b).is_some_and(|c| c.quiescent == Some(true)) {
                     ed.swap_check(b);
@@ -939,7 +939,7 @@ impl Editor {
         let asked = self.lsp.pending.iter().any(|((c, _), p)| *c == a && !matches!(p.kind, Kind::Shutdown));
         if asked && since.elapsed() < A_FINISH {
             self.events.shared_jobs().spawn(move || {
-                std::thread::sleep(ms(20));
+                crate::event::pause(ms(20));
                 move |ed: &mut Editor| ed.swap_finish_a(a, since)
             });
             return;
@@ -949,7 +949,7 @@ impl Editor {
             return self.share_drop(a);
         }
         self.events.shared_jobs().spawn(move || {
-            std::thread::sleep(A_FINISH);
+            crate::event::sleep(A_FINISH);
             move |ed: &mut Editor| {
                 if ed.lsp.share.leaving(a) {
                     ed.share_drop(a);
@@ -1022,7 +1022,7 @@ impl Editor {
     fn share_watch(&mut self, b: ClientId) {
         let read = self.read_room();
         self.events.shared_jobs().spawn(move || {
-            std::thread::sleep(WATCH_EVERY);
+            crate::event::sleep(WATCH_EVERY);
             let room = read();
             move |ed: &mut Editor| ed.share_watched(b, room)
         });

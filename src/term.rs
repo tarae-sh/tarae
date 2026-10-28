@@ -231,6 +231,8 @@ fn event_loop(editor: &mut Editor) -> Result<()> {
                 resting.wrote(screen.patched(), crate::clock::now());
             }
             editor.frames_written += ended as u64;
+            // (the first frame drawn: the start is over — what runs from here is its only as its jobs' results)
+            editor.events.started();
             editor.frame_went(ended);
             editor.redraw_due = resting.due();
             // (snapshots asked: as of this frame, written — what went to the terminal and what's still to go)

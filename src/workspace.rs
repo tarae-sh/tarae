@@ -861,7 +861,7 @@ impl Editor {
             return;
         }
         self.events.shared_jobs().spawn(move || {
-            std::thread::sleep(NUDGE_AFTER);
+            crate::event::sleep(NUDGE_AFTER);
             move |ed: &mut Editor| ed.card_nudge(id, card)
         });
     }

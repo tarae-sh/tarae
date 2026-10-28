@@ -8,7 +8,7 @@
 use std::panic::Location;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::editor::Editor;
 use crate::key::Key;
@@ -144,6 +144,15 @@ pub struct Queue {
     /// Writes under way the process's end waits for (`Editor::writes_flush`): every `background` job, and what a
     /// spawned job writes that an answer is kept in (`Writes::start`).
     writes: Writes,
+    /// What runs now is the start's (`Starts`): from the queue's making until the first frame (`started`), and while
+    /// the result of a job of the start's is applied — what it spawns is the start's too. Off in tests: an editor
+    /// made in-process has no start.
+    starting: std::cell::Cell<bool>,
+    /// While the result of a job of the start's is applied: since when its chain is out — what it spawns is out as
+    /// long (a poll that respawns from its own result ages as one job, so it's said late once past `START_LATE`).
+    chain: std::cell::Cell<Option<Instant>>,
+    /// The start's jobs whose results haven't landed.
+    starts: Starts,
     /// The simulation it was made in (`sim.rs`): what its senders send goes there.
     #[cfg(test)]
     sim: Option<crate::sim::Handle>,
@@ -158,6 +167,9 @@ impl Default for Queue {
             at: Default::default(),
             asked: Default::default(),
             writes: Writes::default(),
+            starting: std::cell::Cell::new(!cfg!(test)),
+            chain: Default::default(),
+            starts: Starts::default(),
             #[cfg(test)]
             sim: crate::sim::current(),
         }
@@ -186,7 +198,31 @@ impl Queue {
     }
 
     pub fn jobs(&self) -> Jobs {
-        Jobs { tx: self.sender(), asked: self.asked.get(), writes: self.writes.clone() }
+        Jobs { tx: self.sender(), asked: self.asked.get(), writes: self.writes.clone(), start: self.start() }
+    }
+
+    /// The start's count, for a job made now, with the chain it's out in (`chain`) — None once the start is over.
+    fn start(&self) -> Option<(Starts, Option<Instant>)> {
+        self.starting.get().then(|| (self.starts.clone(), self.chain.get()))
+    }
+
+    /// The start is over (its first frame drawn): what runs from now on is the start's only as a result of one of
+    /// its jobs (`Queue.starting`).
+    pub fn started(&self) {
+        self.starting.set(false);
+    }
+
+    /// What runs from now on is the start's (`on`) or not — a test's editor, as the binary's is until its first frame.
+    #[cfg(test)]
+    pub fn set_starting(&self, on: bool) {
+        self.starting.set(on);
+    }
+
+    /// The start's jobs whose results haven't landed, each by the line that spawned it and how long it's been out
+    /// (the state's `starting`).
+    pub fn starts_out(&self) -> Vec<(&'static Location<'static>, Duration)> {
+        let out = self.starts.0.lock().unwrap_or_else(|p| p.into_inner());
+        out.iter().map(|(site, since)| (*site, crate::clock::since(*since))).collect()
     }
 
     /// The writes under way the process's end waits for.
@@ -197,7 +233,12 @@ impl Queue {
     /// Jobs whose results are applied in whatever session is in front when they land — work about sessions
     /// themselves (making, ending one: `worktree.rs`), never swapped into the session it's about.
     pub fn shared_jobs(&self) -> Jobs {
-        Jobs { tx: self.shared_sender(), asked: self.asked.get(), writes: self.writes.clone() }
+        Jobs {
+            tx: self.shared_sender(),
+            asked: self.asked.get(),
+            writes: self.writes.clone(),
+            start: self.start(),
+        }
     }
 
     /// Results made from now on are for workspace `w` and its session `s`.
@@ -289,6 +330,9 @@ pub struct Jobs {
     /// work only; a long-lived sender (a task's output, a server's) carries none.
     asked: Option<u64>,
     writes: Writes,
+    /// Made while the start ran (`Queue.starting`): its jobs are the start's, counted until their results land —
+    /// out since the chain they're in went out (`Queue.chain`), else since their spawn.
+    start: Option<(Starts, Option<Instant>)>,
 }
 
 impl Jobs {
@@ -300,17 +344,29 @@ impl Jobs {
         A: FnOnce(&mut Editor) + Send + 'static,
     {
         let (tx, asked, site) = (self.tx.clone(), self.asked, Location::caller());
+        // (counted until its result is applied — or dropped unapplied, or its work panics, or waits: `waits`)
+        let out = self.start.as_ref().map(|(s, since)| s.out(site, *since));
         run(
             site,
             Box::new(move || {
+                let working = Working::with(out);
                 let apply = work();
-                let apply = move |ed: &mut Editor| match asked {
-                    None => apply(ed),
-                    Some(_) => {
-                        let was = ed.events.set_asked(asked);
-                        apply(ed);
+                let out = working.done();
+                let apply = move |ed: &mut Editor| {
+                    let asked = asked.map(|_| ed.events.set_asked(asked));
+                    // (what a result of the start's spawns is the start's too, out since this one's chain)
+                    let starting = out
+                        .as_ref()
+                        .map(|o| (ed.events.starting.replace(true), ed.events.chain.replace(Some(o.2))));
+                    apply(ed);
+                    if let Some((was, chain)) = starting {
+                        ed.events.starting.set(was);
+                        ed.events.chain.set(chain);
+                    }
+                    if let Some(was) = asked {
                         ed.events.set_asked(was);
                     }
+                    drop(out);
                 };
                 let _ = tx.send_from(Event::Job(Box::new(apply)), site);
             }),
@@ -356,9 +412,30 @@ impl Jobs {
     }
 }
 
-/// `thread::sleep` for a job's work — a timer, a debounce, a poll. In a simulation (test builds) the job
-/// yields until the simulated clock reaches its wake, and other threads run meanwhile.
+/// A wait: `thread::sleep` for a time that has to come — a timer (an idle stop, a nudge, a frame's tick, a draft's
+/// limit, idle compaction), a deadline or a cap (a server's answer, a format), a quiet given to someone else (the
+/// servers, a tree before its overlap round, the shared server's gathering), a look again later (the shared
+/// server's watch). A job of the start's that waits lets go of its count (`waits`): what a wait ends in isn't the
+/// start's work, however soon. Its kind is the call's, never its length (#201's fifth round: the shared server's
+/// timers were 1 s in release and 20 ms in tests, a wait in one and a pause in the other). The one sleep with
+/// `pause` — nothing else in tarae calls `thread::sleep`.
 pub fn sleep(d: Duration) {
+    waits();
+    nap(d);
+}
+
+/// A pause in the work: holds back tarae's own work under way — a debounce before it (the gutter's diff, blame,
+/// inlay hints, a live search, a plugin's changed text), a poll's step while it finishes (a process, a lock, a file
+/// settling, a busy server asked again). Its job stays the start's, so a settle waits for what it then does
+/// (#201's fourth round: the gutter's hunks at the start); a poll that goes on is said late once past
+/// `START_LATE`, its respawns too (`Queue.chain`).
+pub fn pause(d: Duration) {
+    nap(d);
+}
+
+/// In a simulation (test builds) a job yields until the simulated clock reaches its wake, and other threads run
+/// meanwhile.
+fn nap(d: Duration) {
     #[cfg(test)]
     if crate::sim::sleep(d) {
         return;
@@ -399,6 +476,76 @@ impl Drop for Writing {
         *lock.lock().unwrap_or_else(|p| p.into_inner()) -= 1;
         cv.notify_all();
     }
+}
+
+/// The start's jobs whose results haven't landed, each by the line that spawned it and since when: what tarae
+/// spawned before its first frame (the sessions' restore, recovery's look, the languages' loads, Reduce Motion's read
+/// …) and what their results spawned in turn — but never one whose work waits (`waits`) — the state's `starting`,
+/// which an idle check waits out (#191: on a loaded machine the restore's result landed in a settled tarae's rest).
+#[derive(Clone, Default)]
+pub struct Starts(std::sync::Arc<std::sync::Mutex<Vec<(&'static Location<'static>, Instant)>>>);
+
+/// One of the start's jobs out — counted until dropped.
+pub struct StartOut(Starts, &'static Location<'static>, Instant);
+
+/// A job of the start's out this long is said with its time in the state's `starting` (`uistate.rs`): one that
+/// should have landed by now — stuck, or waiting on something that isn't the start's work.
+pub const START_LATE: Duration = Duration::from_secs(5);
+
+impl Starts {
+    /// One more out from `site`, since `chain` (what spawned it is out since then) or now.
+    fn out(&self, site: &'static Location<'static>, chain: Option<Instant>) -> StartOut {
+        let since = chain.unwrap_or_else(crate::clock::now);
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).push((site, since));
+        StartOut(self.clone(), site, since)
+    }
+}
+
+impl Drop for StartOut {
+    fn drop(&mut self) {
+        let mut out = self.0.0.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(i) = out.iter().position(|s| *s == (self.1, self.2)) {
+            out.remove(i);
+        }
+    }
+}
+
+thread_local! {
+    /// The start's job whose work this thread runs now (`Jobs::spawn`) — until it waits (`waits`).
+    static WORKING: std::cell::RefCell<Option<StartOut>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A job's work under way on this thread, holding its count as the start's (`WORKING`) — let go if it panics.
+struct Working;
+
+impl Working {
+    fn with(out: Option<StartOut>) -> Working {
+        WORKING.with(|w| *w.borrow_mut() = out);
+        Working
+    }
+
+    /// The work done: still the start's unless it waited.
+    fn done(self) -> Option<StartOut> {
+        WORKING.with(|w| w.borrow_mut().take())
+    }
+}
+
+impl Drop for Working {
+    fn drop(&mut self) {
+        let _ = WORKING.try_with(|w| w.borrow_mut().take());
+    }
+}
+
+/// The job whose work runs on this thread waits — on time (`sleep`: a timer) or for something to happen (a watch's
+/// next round, `fswatch::Watcher::wait`, however soon it comes — a watch's wait has no end of its own): from here
+/// it's never the start's, nor is what its result spawns, whoever spawned it (#201: the usage watch, armed by the
+/// restore's result, held the start open up to an hour). One rule at the wait itself, so no timer or watch has to
+/// remember to leave: every sleep in the code is `sleep` or `pause`
+/// (`every_sleep_in_the_code_goes_through_event_sleep`) — a wait that's neither time nor a watch (a channel, a
+/// process), or a poll of `pause`s that goes on (respawning from its own result too: `Queue.chain`), shows in the
+/// state's `starting` once past `START_LATE`.
+pub fn waits() {
+    let _ = WORKING.try_with(|w| drop(w.borrow_mut().take()));
 }
 
 impl Editor {
@@ -654,43 +801,92 @@ mod tests {
         assert_eq!(tag(&ed), front, "the front's again");
     }
 
-    /// A job's work waits through `event::sleep` — in a simulation the clock moves instead of the thread
-    /// sleeping (`sim.rs`). What still calls `thread::sleep` is on this list, which only shrinks.
+    /// The start's jobs (`Starts`, the state's `starting`) are counted from their spawn until their results are
+    /// applied, with what those results spawn — one that pauses too (a debounce), never one once its work waits, on
+    /// time however short (a timer: the shared server's are 20 ms in tests) or on a watch (the disk's rounds), nor what
+    /// its result spawns, nor what's spawned after the start; one whose result is dropped unapplied isn't left counted.
+    /// (Long timers let go as well: the servers' sight timer, `lsp_editor`'s test, and the usage watch, `sim::starts`;
+    /// a poll that respawns ages as one job, `sim::starts` too.)
+    #[test]
+    fn the_start_s_jobs_are_counted_until_they_land() {
+        let mut ed = Editor::new(crate::config::Config::default());
+        let land = |ed: &mut Editor| match ed.events.recv_timeout(crate::test_results::PATIENCE) {
+            Some(Event::Job(apply) | Event::For(_, _, apply)) => apply(ed),
+            _ => panic!("a result"),
+        };
+        assert!(ed.events.starts_out().is_empty(), "an editor made in a test has no start");
+        // (a pause before its work: still the start's until its result lands)
+        ed.events.set_starting(true);
+        ed.events.jobs().spawn(move || {
+            pause(Duration::from_millis(10));
+            |_: &mut Editor| {}
+        });
+        ed.events.started();
+        let Some(Event::Job(apply) | Event::For(_, _, apply)) =
+            ed.events.recv_timeout(crate::test_results::PATIENCE)
+        else {
+            panic!("a result")
+        };
+        assert_eq!(ed.events.starts_out().len(), 1, "a job that paused is the start's until it lands");
+        apply(&mut ed);
+        assert!(ed.events.starts_out().is_empty(), "landed");
+        // (a short wait on time — a timer, as the shared server's in a test build: let go, whatever its length)
+        ed.events.set_starting(true);
+        ed.events.jobs().spawn(move || {
+            sleep(Duration::from_millis(10));
+            |ed: &mut Editor| ed.events.jobs().spawn(|| |_: &mut Editor| {})
+        });
+        ed.events.started();
+        land(&mut ed);
+        assert!(
+            ed.events.starts_out().is_empty(),
+            "a timer isn't the start's, however short, nor what it spawned"
+        );
+        land(&mut ed);
+        // (a job waiting on a watch — the disk's rounds, each result starting the next: its wait over at once)
+        ed.events.set_starting(true);
+        let waker = crate::fswatch::Waker::new();
+        waker.wake();
+        ed.events.jobs().spawn(move || {
+            let _ = crate::fswatch::Watcher::with_waker(waker).wait();
+            |ed: &mut Editor| ed.events.jobs().spawn(|| |_: &mut Editor| {})
+        });
+        ed.events.started();
+        land(&mut ed);
+        assert!(
+            ed.events.starts_out().is_empty(),
+            "a watch's round isn't the start's, nor what its result spawned"
+        );
+        land(&mut ed);
+        ed.events.set_starting(true);
+        ed.events.shared_jobs().spawn(|| |ed: &mut Editor| ed.events.jobs().spawn(|| |_: &mut Editor| {}));
+        ed.events.started();
+        let first = ed.events.starts_out();
+        assert_eq!(first.len(), 1, "the start's job, out");
+        land(&mut ed);
+        let then = ed.events.starts_out();
+        assert!(
+            then.len() == 1 && then[0].0 != first[0].0,
+            "landed; what its result spawned is the start's: {then:?}"
+        );
+        land(&mut ed);
+        assert!(ed.events.starts_out().is_empty(), "both landed");
+        ed.events.jobs().spawn(|| |_: &mut Editor| {});
+        assert!(ed.events.starts_out().is_empty(), "after the start: not the start's");
+        land(&mut ed);
+        ed.events.set_starting(true);
+        ed.events.jobs().spawn(|| |_: &mut Editor| {});
+        drop(ed.events.recv_timeout(crate::test_results::PATIENCE).expect("a result"));
+        assert!(ed.events.starts_out().is_empty(), "dropped unapplied: not left counted");
+    }
+
+    /// Every sleep in the code goes through `event::sleep`: in a simulation the clock moves instead of the thread
+    /// sleeping (`sim.rs`), and a job of the start's that sleeps lets go of its count (`waits`, #201) — so no timer
+    /// has to remember to leave. None calls `thread::sleep` but `event::sleep` and `event::pause` themselves.
     #[test]
     fn every_sleep_in_the_code_goes_through_event_sleep() {
         // (called, or passed as a value)
         let now = crate::sim::lint::counts(&["thread::sleep"], &["event.rs"]);
-        crate::sim::lint::only_shrinks("thread::sleep", &now, RAW_SLEEPS);
+        crate::sim::lint::only_shrinks("thread::sleep", &now, &[]);
     }
-
-    /// `thread::sleep` calls left, per file (paths under `src/`, a crate's from the repository's root).
-    const RAW_SLEEPS: &[(&str, usize)] = &[
-        ("builds.rs", 1),
-        ("cards.rs", 1),
-        ("disk.rs", 1),
-        ("editor.rs", 1),
-        ("follow.rs", 1),
-        ("fswatch.rs", 1),
-        ("git.rs", 1),
-        ("gitmenu.rs", 1),
-        ("llm.rs", 1),
-        ("lsp_editor.rs", 13),
-        ("nav.rs", 4),
-        ("plugin/cli.rs", 1),
-        ("plugin/events.rs", 2),
-        ("plugin/io.rs", 1),
-        ("reaper.rs", 1),
-        ("rebase.rs", 1),
-        ("refactor.rs", 1),
-        ("restart.rs", 1),
-        ("sandbox.rs", 4),
-        ("sandbox/keeper.rs", 1),
-        ("sandbox/proxy.rs", 1),
-        ("saver.rs", 1),
-        ("workspace.rs", 1),
-        ("share.rs", 5),
-        ("task.rs", 1),
-        ("testing.rs", 1),
-        ("tools.rs", 1),
-    ];
 }

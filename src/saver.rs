@@ -394,7 +394,7 @@ impl Editor {
         self.saver.waits.push(Wait { asked, session: self.workspace.id, input, then: Box::new(then) });
         if first {
             self.events.jobs().spawn(|| {
-                std::thread::sleep(SAY_WAITING);
+                crate::event::sleep(SAY_WAITING);
                 |ed: &mut Editor| {
                     if !ed.saver.waits.is_empty() {
                         ed.set_step(WAITING, "still writing files — going on once they're saved");
