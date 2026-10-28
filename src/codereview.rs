@@ -3812,6 +3812,9 @@ pub fn show(ed: &mut Editor, i: usize, at_end: bool) -> Option<DocId> {
 fn show_at(ed: &mut Editor, i: usize, at: Land) -> Option<DocId> {
     let r = ed.workspace.code_review.as_mut()?;
     r.shows = Some(i);
+    // (the rail's selection too: with the rail's keys that's what it marks and scrolls to — a file shown from
+    // elsewhere, `]F` or the git tab, never left out of sight behind the selection a press made: #207)
+    r.selected = i;
     let r = &*r;
     let f = r.files.get(i).cloned()?;
     let from = match &r.base {

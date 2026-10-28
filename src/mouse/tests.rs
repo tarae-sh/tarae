@@ -309,6 +309,38 @@ fn a_press_on_a_rail_file_with_the_rails_keys_selects_it() {
     assert!(!ed.doc().preview, "kept");
 }
 
+/// #207's follow-up: with the rail's keys (a press leaves them there now), a file shown from outside the rail — `]F`
+/// run from the palette, `space` being the editor's there — is the rail's selection: its `▎` on it, `enter` opening it.
+/// The selection stayed on the file pressed, the rail marking and scrolling to that one while the code showed another.
+#[test]
+fn a_file_shown_from_outside_the_rail_with_its_keys_is_its_selection() {
+    let scratch = crate::scratch::Scratch::new("rail-shown-outside");
+    let mut ed = editor();
+    turn_review_on_disk(&mut ed, &scratch);
+    crate::codereview::rail_focus(&mut ed);
+    frame(&mut ed);
+    assert_eq!(ed.workspace.code_review.as_ref().unwrap().selected, 0, "on the file in hand");
+    feed(&mut ed, "<space>?next file of the review<ret>");
+    assert!(ed.picker.is_none(), "the palette ran it");
+    assert_eq!(ed.keys_to().region, Region::Rail, "still the rail's keys");
+    assert!(front(&ed).contains("b.rs"), "the next file shown: {}", front(&ed));
+    assert_eq!(ed.workspace.code_review.as_ref().unwrap().selected, 1, "the file shown selected");
+    // (the rail's `▎` on its row, left of its mark — on no other file's)
+    let text = frame(&mut ed);
+    let lines: Vec<&str> = text.lines().collect();
+    let bar = |i: usize| {
+        let (y, x) = rail_file(&ed, i);
+        lines[y].chars().take(x).any(|c| c == '▎')
+    };
+    assert!(bar(1), "its row marked: {}", lines[rail_file(&ed, 1).0]);
+    assert!(!bar(0) && !bar(2), "no other row marked");
+    // `enter` opens the file shown, never the one selected before
+    feed(&mut ed, "<ret>");
+    assert_eq!(ed.keys_to().region, Region::Code, "opened: the code's keys");
+    assert!(front(&ed).contains("b.rs"), "{}", front(&ed));
+    assert!(!ed.doc().preview, "kept");
+}
+
 /// #207: a press on a file's mark in the rail, the code reading another, marks it viewed and gives the rail the keys on
 /// it — as a press on its row.
 #[test]
