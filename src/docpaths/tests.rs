@@ -99,7 +99,7 @@ fn many(name: &str) -> (Editor, Scratch) {
     // (each checkout's git watch as tarae starts them — the front's at the start, the others' as they're made — their
     // first rounds reading each one's repository (`git_common`), applied in it behind; the rest of tarae's git off)
     ed.git_auto = true;
-    crate::git::watch(ed.events.sender(), root(0));
+    crate::git::watch(&ed.events, root(0));
     for k in 1..SESSIONS {
         let id = ed.workspace_add(root(k));
         ed.workspace_by_id(id).unwrap().name = format!("w{k}");
