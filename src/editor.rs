@@ -722,7 +722,7 @@ impl View {
     }
 }
 
-/// Frames kept with what drew them (`Editor.frames_for`).
+/// Frames kept with what drew them (`Editor.frames_for`), and events with what they were (`Editor.events_kept`).
 pub const FRAMES_FOR_KEPT: usize = 16;
 
 /// What drew a frame (`Editor.frames_for`, the state's `frames_for`): each event of the batch before it that
@@ -1018,6 +1018,13 @@ pub struct Editor {
     /// The last `FRAMES_FOR_KEPT` frames written, each its number (`frames_written` then) and what drew it — the
     /// state's `frames_for`: a late frame in an idle check says its cause the first time, never guessed.
     pub frames_for: std::collections::VecDeque<(u64, Vec<DrawnFor>)>,
+    /// Events the main loop has handled (`term::handle_noting`), each wakes it or rides a batch that did — the
+    /// state's `events`: an idle check counts what woke tarae by what tarae did, never by the OS's context
+    /// switches, which a loaded machine adds to (#191).
+    pub events_handled: u64,
+    /// The last `FRAMES_FOR_KEPT` events handled, each its number (`events_handled` then) and what it was, drawn
+    /// or not — the state's `events_for`: an event an idle check didn't expect says what it was.
+    pub events_kept: std::collections::VecDeque<(u64, DrawnFor)>,
     /// A git diff is running on a worker thread.
     pub git_diffing: bool,
     /// Whether to read HEAD contents when opening a file (off in tests — keeps event order stable;
@@ -1382,6 +1389,8 @@ impl Editor {
             event_from: None,
             drawn_by: Vec::new(),
             frames_for: Default::default(),
+            events_handled: 0,
+            events_kept: Default::default(),
             git_diffing: false,
             git_auto: !cfg!(test),
             chats_dir: if cfg!(test) { None } else { crate::chats::default_dir() },
@@ -13487,6 +13496,32 @@ mod tests {
         ed.drawn_by.push(DrawnFor::Named("the resting redraw"));
         ed.frame_went(false);
         assert!(ed.drawn_by.is_empty() && ed.frames_for.len() == 1);
+    }
+
+    /// #191: every event the main loop handles is counted, drawn or not, and the last `FRAMES_FOR_KEPT` kept with
+    /// what each was — the state's `events` and `events_for`, what an idle check judges by.
+    #[test]
+    fn every_event_handled_is_counted_and_the_last_kept() {
+        let mut ed = editor("one\n");
+        let n = FRAMES_FOR_KEPT as u64 + 4;
+        for i in 0..n {
+            let job = Event::Job(Box::new(move |ed: &mut Editor| match i % 3 {
+                0 => ed.unchanged = true,
+                1 => ed.drawn_for("a named job"),
+                _ => {}
+            }));
+            crate::term::handle_noting(&mut ed, job);
+        }
+        assert_eq!(ed.events_handled, n, "each event counted, those that changed nothing too");
+        let kept: Vec<u64> = ed.events_kept.iter().map(|(at, _)| *at).collect();
+        assert_eq!(kept, (5..=n).collect::<Vec<_>>(), "the last {FRAMES_FOR_KEPT}, each its number");
+        let s = ed.ui_state().json();
+        assert_eq!(s["events"], n, "{s}");
+        let was: Vec<&str> =
+            s["events_for"].as_array().unwrap().iter().filter_map(|e| e["was"].as_str()).collect();
+        // (a job's result handed in as it is, not sent: "a job" — sent, it says the line it came from)
+        let want: Vec<&str> = (4..n).map(|i| if i % 3 == 1 { "a named job" } else { "a job" }).collect();
+        assert_eq!(was, want, "{s}");
     }
 
     /// A frame drawn though every event of its batch said nothing changed says what was owed (`batch_done`'s

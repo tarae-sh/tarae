@@ -135,6 +135,15 @@ fn claudes_level_holds_back_unsent_text_and_other_sessions() {
     ed.frames_for.push_back((7, vec![crate::editor::DrawnFor::Job(std::panic::Location::caller()), owed]));
     let drawn_for = ed.ui_state().json()["frames_for"].clone();
     assert!(drawn_for.to_string().contains("A secret owed card"), "the full level has it: {drawn_for}");
+    // (the events handled and what they were: the drivers' too, #191)
+    ed.events_handled += 3;
+    ed.events_kept.push_back((ed.events_handled, crate::editor::DrawnFor::Named("a secret event")));
+    let full_json = ed.ui_state().json();
+    assert!(
+        full_json["events"].as_u64().is_some()
+            && full_json["events_for"].to_string().contains("a secret event"),
+        "the full level has them: {full_json}"
+    );
     let full = ed.ui_state().text();
     assert!(full.contains("a secret prompt"), "the full level has it — the filter matters:\n{full}");
     assert!(full.contains("Their own card") && full.contains(&theirs), "{full}");
@@ -152,6 +161,8 @@ fn claudes_level_holds_back_unsent_text_and_other_sessions() {
     let json = s.json().to_string();
     assert!(!json.contains("Their own card"), "{json}");
     assert!(s.json().get("frames_for").is_none(), "what drew the frames at Claude's level: {json}");
+    let (events, events_for) = (s.json().get("events").cloned(), s.json().get("events_for").cloned());
+    assert_eq!((events, events_for), (None, None), "the events handled at Claude's level: {json}");
     assert_eq!(strength(&s.json()), None, "the card's strength at Claude's level: {}", s.json()["toasts"]);
     assert!(!json.contains("A secret owed card") && !json.contains("job src/"), "{json}");
     let theirs =

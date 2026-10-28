@@ -659,6 +659,11 @@ impl Term {
         usage(self.child.id())
     }
 
+    /// How often tarae's threads have woken so far (`Wakes`).
+    pub fn wakes(&self) -> Wakes {
+        wakes(self.child.id())
+    }
+
     /// What each of tarae's threads has done so far (`threads`) — two of them apart say which woke (`woke`).
     pub fn threads(&self) -> Vec<Thread> {
         threads(self.child.id())
@@ -847,6 +852,43 @@ impl Term {
             .unwrap_or_else(|e| panic!("{what}: {e} after {:?}", self.timeout))
     }
 
+    /// `REST` of a tarae settled at `settled` (`Term::settle`'s answer — nothing asked since): what it did meanwhile
+    /// (`Rest`), its events read by one ask after it.
+    pub fn rest(&mut self, settled: &serde_json::Value) -> Rest {
+        let (frames, before, wakes, threads) = (self.frames(), self.usage(), self.wakes(), self.threads());
+        thread::sleep(REST);
+        let (frames, used, work, threads) = (
+            self.frames() - frames,
+            self.usage() - before,
+            self.wakes().since(&wakes),
+            woke(&threads, &self.threads()),
+        );
+        // (each answer is an ask the main loop handled, counted: none counted is a count gone — never a rest)
+        let counted = |s: &serde_json::Value, what: &str| {
+            s["events"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("{what}: no `events` in the state — the count is gone\n{s}"))
+        };
+        let since = counted(settled, "the settled answer");
+        let after = self.state_json(0);
+        let all = counted(&after, "the rest's ask");
+        assert!(all > since, "the rest's ask isn't counted: {since} events, then {all}\n{after}");
+        let mut was = after["events_for"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|e| e["event"].as_u64().is_some_and(|n| n > since))
+            .filter_map(|e| e["was"].as_str().map(String::from))
+            .collect::<Vec<_>>();
+        // (the ask that read them is among them: the last ask — an event of the same batch may come after it)
+        let events = all - since - 1;
+        let Some(ask) = was.iter().rposition(|e| e == "a UI-state ask") else {
+            panic!("the rest's ask isn't among the events kept ({was:?}) — `events_for` gone\n{after}")
+        };
+        was.remove(ask);
+        Rest { frames, events, was, used, work, threads }
+    }
+
     /// Esc on its own — handled and drawn before anything else is sent (an Esc with a key right behind it
     /// reads as Alt + that key) — then `done` waited for in the state.
     pub fn esc_state(&mut self, what: &str, done: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
@@ -1001,11 +1043,97 @@ pub fn in_frame_after(bytes: &[u8], was: bool) -> bool {
     }
 }
 
+/// The wakes of an idle tarae's main loop on a clock of their own, as the state's `events_for` names them, each with
+/// the work it brings (`Rest.work`): the disk watch's backstop round (`disk::ROUND`, 5 s — the other watchers'
+/// backstops wake with it) and the sampler's looks (`procs::LOOK_PROCS`, `LOOK_DISK` — 5 s at the fastest) — each
+/// once in a `Term::rest` at most. Measured (#191's review), quiet and loaded alike: a disk round 2–4 wakes on
+/// macOS (room 2), 7 on Linux (room 3) — with the disk's look beside it 3–7 there; a look is its thread's one
+/// wake and its result's (room 1). A thread polling every 100 ms is 20 a rest: past every sum, a clock's wake
+/// beside it or not (e2e's break: 21–22 beside a round on macOS, 24–27 beside a round and a look on Linux).
+pub const ON_CLOCKS: [(&str, u64); 3] = [
+    ("a disk watch round", ROUND_WORK),
+    ("a look at the processes", LOOK_WORK),
+    ("a look at the disk", LOOK_WORK),
+];
+
+/// A disk watch round's own work (`ON_CLOCKS`).
+const ROUND_WORK: u64 = if cfg!(target_os = "macos") { 6 } else { 10 };
+/// A sampler's look's own work (`ON_CLOCKS`).
+const LOOK_WORK: u64 = 3;
+
+/// What an idle tarae's threads may do (`Rest.work`) in a `Term::rest` beside its wakes on a clock (`ON_CLOCKS`): a
+/// settled tarae does none (measured: 0 on both systems, quiet and loaded) — room for a stray wake or so.
+pub const WORK_MAX: u64 = 5;
+
+/// What a settled tarae did in `REST` (`Term::rest`) — counted in work, never time, so a loaded machine changes none
+/// of it (#191).
+#[derive(Debug)]
+pub struct Rest {
+    /// Frames written to the terminal.
+    pub frames: usize,
+    /// Events its main loop handled — the ask that read them left out.
+    pub events: u64,
+    /// What each of them was, those the state still lists (`events_for`).
+    pub was: Vec<String>,
+    pub used: Usage,
+    /// How often its threads woke (`Wakes::since`).
+    pub work: u64,
+    /// Which threads did something (`woke`).
+    pub threads: String,
+}
+
+/// How long a `Term::rest` lasts.
+pub const REST: Duration = Duration::from_secs(2);
+
+impl Rest {
+    /// The wakes on a clock of their own among its events (`ON_CLOCKS`), each with the work it brings.
+    pub fn on_clocks(&self) -> Vec<(&'static str, u64)> {
+        self.was.iter().filter_map(|e| ON_CLOCKS.iter().find(|c| c.0 == e)).copied().collect()
+    }
+
+    /// What woke it that shouldn't have: a frame, an event other than a wake on a clock (or one of those twice),
+    /// or its threads' work past `WORK_MAX` and each of those wakes' own (a thread that wakes without the main
+    /// loop — a clock's wake beside it never hides it). None: it slept.
+    pub fn woken(&self) -> Option<String> {
+        let clocks = self.on_clocks();
+        if self.frames > 0 {
+            return Some(format!("{} frames", self.frames));
+        }
+        if self.events > clocks.len() as u64 {
+            return Some(format!("{} events not on a clock", self.events - clocks.len() as u64));
+        }
+        if let Some((c, _)) = ON_CLOCKS.iter().find(|c| clocks.iter().filter(|e| e.0 == c.0).count() > 1) {
+            return Some(format!("{c:?} twice"));
+        }
+        let budget = WORK_MAX + clocks.iter().map(|c| c.1).sum::<u64>();
+        (self.work >= budget).then(|| {
+            let theirs = clocks.iter().map(|(c, n)| format!(" + {n} {c}")).collect::<String>();
+            let of = if theirs.is_empty() { String::new() } else { format!(" ({WORK_MAX} at rest{theirs})") };
+            format!("work {} ≥ {budget}{of}", self.work)
+        })
+    }
+}
+
+impl std::fmt::Display for Rest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} frames, {} events {:?}, work {}, {:?} in {REST:?} — woke:\n{}",
+            self.frames, self.events, self.was, self.work, self.used, self.threads
+        )
+    }
+}
+
 /// A process's CPU time and context switches so far.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Usage {
     pub cpu: Duration,
+    /// Context switches, every thread's — a loaded machine adds to them (a thread taken off its CPU), so only
+    /// reported (#191: 31 at `:preflight`'s load ~18; 33 here beside a build and a `yes` a CPU, for a disk round
+    /// that's 5–7 quiet). On Linux the live threads' only: one that ends takes its own with it.
     pub switches: u64,
+    /// The system calls tarae's threads made (macOS; 0 elsewhere) — reported only: what a wake did.
+    pub calls: u64,
     /// Resident memory now, in bytes (not a running total: a difference keeps the later one).
     pub rss: u64,
     /// Physical footprint now (macOS; RSS elsewhere) — what Activity Monitor shows: memory freed back to
@@ -1019,6 +1147,7 @@ impl std::ops::Sub for Usage {
         Usage {
             cpu: self.cpu.saturating_sub(before.cpu),
             switches: self.switches.saturating_sub(before.switches),
+            calls: self.calls.saturating_sub(before.calls),
             rss: self.rss,
             footprint: self.footprint,
         }
@@ -1125,12 +1254,14 @@ pub fn usage(pid: u32) -> Usage {
         let ticks = (info.pti_total_user + info.pti_total_system) as u128;
         let nanos = ticks * tb.numer as u128 / tb.denom.max(1) as u128;
         let mut ri: libc::rusage_info_v2 = std::mem::zeroed();
-        let ok = libc::proc_pid_rusage(pid as i32, libc::RUSAGE_INFO_V2, (&raw mut ri).cast()) == 0;
+        let got = libc::proc_pid_rusage(pid as i32, libc::RUSAGE_INFO_V2, (&raw mut ri).cast());
+        assert_eq!(got, 0, "proc_pid_rusage({pid})");
         Usage {
             cpu: Duration::from_nanos(nanos as u64),
             switches: info.pti_csw as u64,
+            calls: (info.pti_syscalls_unix + info.pti_syscalls_mach) as u64,
             rss: info.pti_resident_size,
-            footprint: if ok { ri.ri_phys_footprint } else { info.pti_resident_size },
+            footprint: ri.ri_phys_footprint,
         }
     }
 }
@@ -1144,21 +1275,83 @@ pub fn usage(pid: u32) -> Usage {
     // SAFETY: sysconf only reads a constant.
     let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as u64;
     let ticks: u64 = f[11].parse::<u64>().unwrap() + f[12].parse::<u64>().unwrap();
-    let mut switches = 0;
     let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
     let kb = |key: &str| {
         status.lines().find_map(|l| l.strip_prefix(key)?.split_whitespace().next()?.parse::<u64>().ok())
     };
     let rss = kb("VmRSS:").unwrap_or(0) * 1024;
-    for task in fs::read_dir(format!("/proc/{pid}/task")).into_iter().flatten().flatten() {
-        let status = fs::read_to_string(task.path().join("status")).unwrap_or_default();
-        switches += status
-            .lines()
-            .filter(|l| l.contains("ctxt_switches"))
-            .filter_map(|l| l.split_whitespace().last()?.parse::<u64>().ok())
-            .sum::<u64>();
+    let switches = threads(pid).iter().map(|t| t.done).sum();
+    Usage { cpu: Duration::from_millis(ticks * 1000 / hz), switches, calls: 0, rss, footprint: rss }
+}
+
+/// How often a process's threads have woken so far, as the OS counts it, never time (#191) — two readings apart,
+/// `Wakes::since`. macOS: the times a timer woke one (`ri_interrupt_wkups`, Activity Monitor's idle wake-ups),
+/// the task's own count — a thread that ends leaves its wakes in it. Linux: the times one waited and was woken
+/// (voluntary context switches), each live thread's apart, by its id and start (a reused id is another thread) —
+/// the kernel keeps an ended thread's only in the process's own `getrusage`, which nothing outside reads, so a sum
+/// of the live ones drops when one ends (the settle's `tarae-ui-peer`), and that drop hid another's wakes. The same
+/// loaded or not. Not the system calls (#191's first form): a disk round makes 77–153 by what's open, a thread
+/// polling every 100 ms 57 — no budget tells them apart, where a round is 2–4 wakes and the poll 19. A thread
+/// that spins without sleeping wakes nothing here.
+#[derive(Clone, Debug)]
+pub struct Wakes(
+    #[cfg(target_os = "macos")] u64,
+    /// (thread id, its start in clock ticks since boot, its voluntary switches)
+    #[cfg(not(target_os = "macos"))]
+    Vec<(u64, u64, u64)>,
+);
+
+impl Wakes {
+    /// The wakes between `before` and this reading.
+    #[cfg(target_os = "macos")]
+    pub fn since(&self, before: &Wakes) -> u64 {
+        self.0.checked_sub(before.0).expect("a task's wakes only grow")
     }
-    Usage { cpu: Duration::from_millis(ticks * 1000 / hz), switches, rss, footprint: rss }
+
+    /// The wakes between `before` and this reading: a thread there both times its count's growth, a new one its
+    /// whole count. One gone by now counts none: what it did after `before` went with it (nothing outside the
+    /// process reads an ended thread's count), and what it did before `before` isn't this stretch's — so its end
+    /// takes nothing from the others' wakes, where a sum of the live ones lost its whole count and could hide
+    /// theirs. Unseen is only the gone thread's own last wakes: a short-lived thread (an ask's peer) is a wake
+    /// of the main loop's too, which the events count; a poll that wakes tarae idle is one that stays.
+    #[cfg(not(target_os = "macos"))]
+    pub fn since(&self, before: &Wakes) -> u64 {
+        let was = |id, born| before.0.iter().find(|b| (b.0, b.1) == (id, born)).map_or(0, |b| b.2);
+        self.0.iter().map(|&(id, born, n)| n.saturating_sub(was(id, born))).sum()
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn wakes(pid: u32) -> Wakes {
+    // SAFETY: a plain out-struct; the call only fills it in.
+    let mut ri: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+    // SAFETY: as above, of the size the flavour names.
+    let got = unsafe { libc::proc_pid_rusage(pid as i32, libc::RUSAGE_INFO_V2, (&raw mut ri).cast()) };
+    // (a count not read never reads as none: the idle checks judge by it)
+    assert_eq!(got, 0, "proc_pid_rusage({pid})");
+    Wakes(ri.ri_interrupt_wkups)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn wakes(pid: u32) -> Wakes {
+    let tasks = fs::read_dir(format!("/proc/{pid}/task")).into_iter().flatten().flatten();
+    // (a thread that ends between the listing and its reads is one gone by this reading)
+    let threads: Vec<_> = tasks
+        .filter_map(|task| {
+            let id = task.file_name().to_str()?.parse().ok()?;
+            // (its start: field 22, the 20th after the command's closing parenthesis and the state)
+            let stat = fs::read_to_string(task.path().join("stat")).ok()?;
+            let born = stat[stat.rfind(')')? + 2..].split_whitespace().nth(19)?.parse().ok()?;
+            let status = fs::read_to_string(task.path().join("status")).ok()?;
+            let n = status
+                .lines()
+                .find_map(|l| l.strip_prefix("voluntary_ctxt_switches:")?.trim().parse().ok())?;
+            Some((id, born, n))
+        })
+        .collect();
+    // (a count not read never reads as none: the idle checks judge by it)
+    assert!(!threads.is_empty(), "/proc/{pid}/task/*: no thread's voluntary_ctxt_switches");
+    Wakes(threads)
 }
 
 /// Polls a file on disk until it holds `want` (saves are immediate today, but the test shouldn't care).
@@ -1241,5 +1434,46 @@ mod tests {
         seen.extend_from_slice(&second);
         assert_eq!(frames_after(&seen, 7), 1, "its last byte come: started, one frame since");
         assert_eq!(TARAE_START.len(), FRAME_END.len(), "one look back holds both marks");
+    }
+
+    /// A thread that ends inside a rest takes nothing from the others' wakes (#191's third review: on Linux a sum of
+    /// the live threads' lost an ended one's whole count — the settle's `tarae-ui-peer` — and a poll beside it
+    /// read as 0). Here, in this process: a thread with 200 wakes behind it ends between two readings while
+    /// another, still there at the second, sleeps 20 times.
+    #[test]
+    fn a_thread_that_ends_hides_none_of_another_s_wakes() {
+        use std::sync::mpsc::channel;
+        const POLLS: u64 = 20;
+        let (ready, woke) = (channel(), channel());
+        let (end, ends) = channel::<()>();
+        let ending = thread::spawn(move || {
+            for _ in 0..200 {
+                thread::sleep(Duration::from_micros(50));
+            }
+            ready.0.send(()).unwrap();
+            ends.recv().ok();
+        });
+        ready.1.recv().unwrap();
+        let before = wakes(std::process::id());
+        let (stay, stays) = channel::<()>();
+        let polls = thread::spawn(move || {
+            for _ in 0..POLLS {
+                thread::sleep(Duration::from_millis(5));
+            }
+            woke.0.send(()).unwrap();
+            stays.recv().ok();
+        });
+        end.send(()).unwrap();
+        ending.join().unwrap();
+        woke.1.recv().unwrap();
+        let after = wakes(std::process::id());
+        stay.send(()).unwrap();
+        polls.join().unwrap();
+        // (half: a timer may wake two sleeps at once; the rest of this process only adds)
+        let n = after.since(&before);
+        assert!(
+            n >= POLLS / 2,
+            "{n} wakes for {POLLS} sleeps beside a thread that ended\n{before:?}\n{after:?}"
+        );
     }
 }

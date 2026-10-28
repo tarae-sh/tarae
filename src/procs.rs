@@ -700,6 +700,11 @@ pub fn look(s: &mut Sampler, reaper: &mut crate::reaper::Reaper, now: Instant) -
     sample
 }
 
+/// What the sampling thread's results are, as the state's `frames_for` and `events_for` say them — the one wake
+/// of an idle tarae's main loop that's meant (e2e `an_idle_editor_draws_nothing_and_sleeps` counts them apart).
+pub const LOOK_PROCS: &str = "a look at the processes";
+pub const LOOK_DISK: &str = "a look at the disk";
+
 /// The sampling thread: a look now, then one every `QUIET_EVERY` (`OPEN_EVERY` while `:procs` is open), each
 /// sent to the main loop. It ends with the editor.
 pub fn start(events: crate::event::Tx, usual_path: Option<PathBuf>) -> Sender<Wake> {
@@ -729,11 +734,11 @@ pub fn start(events: crate::event::Tx, usual_path: Option<PathBuf>) -> Sender<Wa
                     sample.shot = shot;
                     looks.looked(Look::Procs, now, open, &free);
                     sample.free = free;
-                    Box::new(move |ed: &mut Editor| ed.procs_sampled(sample))
+                    sampled(sample)
                 }
                 Look::Disk => {
                     looks.looked(Look::Disk, now, open, &free);
-                    Box::new(move |ed: &mut Editor| ed.procs_disk_looked(free, shot))
+                    disk_seen(free, shot)
                 }
             };
             if events.send(Event::Job(job)).is_err() {
@@ -748,6 +753,22 @@ pub fn start(events: crate::event::Tx, usual_path: Option<PathBuf>) -> Sender<Wa
     };
     let _ = std::thread::Builder::new().name("tarae-procs".into()).spawn(run);
     tx
+}
+
+/// A look at the processes as the main loop gets it, named (`LOOK_PROCS`).
+fn sampled(sample: Sample) -> Box<dyn FnOnce(&mut Editor) + Send> {
+    Box::new(move |ed: &mut Editor| {
+        ed.drawn_for(LOOK_PROCS);
+        ed.procs_sampled(sample)
+    })
+}
+
+/// A look at the disk as the main loop gets it, named (`LOOK_DISK`).
+fn disk_seen(free: Vec<Volume>, shot: bool) -> Box<dyn FnOnce(&mut Editor) + Send> {
+    Box::new(move |ed: &mut Editor| {
+        ed.drawn_for(LOOK_DISK);
+        ed.procs_disk_looked(free, shot)
+    })
 }
 
 /// What the sampling thread looks at next.
@@ -3823,6 +3844,19 @@ pub(crate) mod tests {
         for k in keys.split_whitespace() {
             ed.handle_key(k.parse().unwrap());
         }
+    }
+
+    /// #191: the sampler's two looks say what they are where the main loop keeps its events (`events_kept`, the
+    /// state's `events_for`) — the idle e2e checks count them as wakes on a clock (`ON_CLOCKS`) by these names; one
+    /// that lost its name would read `a job` there, a failure only when a look lands inside a rest.
+    #[test]
+    fn the_samplers_looks_name_themselves_among_the_events() {
+        let mut ed = Editor::new(crate::config::Config::default());
+        let free = vec![Volume { at: PathBuf::from("/Volumes/x"), free: 1 << 40, total: 1 << 41 }];
+        crate::term::handle_noting(&mut ed, Event::Job(sampled(Sample::of(Vec::new()))));
+        crate::term::handle_noting(&mut ed, Event::Job(disk_seen(free, false)));
+        let was: Vec<String> = ed.events_kept.iter().map(|(_, of)| of.to_string()).collect();
+        assert_eq!(was, [LOOK_PROCS, LOOK_DISK]);
     }
 
     /// #168: the disk's levels through both looks (`diskroom.rs`) — a look at the processes and one at the disk

@@ -55,8 +55,9 @@ impl Editor {
         }
         s.prompt = s.prompt.map(|(label, _)| (label, String::new()));
         // (how the terminal is written to: the drivers')
-        (s.redraw_due, s.frames_written, s.tick_in_ms, s.unfocused) = (false, 0, None, false);
+        (s.redraw_due, s.frames_written, s.tick_in_ms, s.unfocused, s.events) = (false, 0, None, false, 0);
         s.frames_for.clear();
+        s.events_for.clear();
         for t in &mut s.toasts {
             t.strength = None;
         }

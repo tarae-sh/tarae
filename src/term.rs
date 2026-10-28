@@ -326,6 +326,11 @@ pub(crate) fn handle_noting(editor: &mut Editor, ev: crate::event::Event) -> boo
     editor.handle_event(ev);
     let unchanged = std::mem::take(&mut editor.unchanged);
     let from = editor.event_from.take().or(kind).unwrap_or(DrawnFor::Named("a job"));
+    editor.events_handled += 1;
+    if editor.events_kept.len() == crate::editor::FRAMES_FOR_KEPT {
+        editor.events_kept.pop_front();
+    }
+    editor.events_kept.push_back((editor.events_handled, from.clone()));
     // (a burst — a server's messages, a run's lines — said once, a few kinds at most)
     if !unchanged && !editor.drawn_by.contains(&from) && editor.drawn_by.len() < 8 {
         editor.drawn_by.push(from);

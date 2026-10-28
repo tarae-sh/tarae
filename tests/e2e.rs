@@ -1135,11 +1135,10 @@ fn counting_features_wakes_nothing_and_is_written_at_the_end() {
     t.send("jj");
     t.wait_state("two keys handled", |s| s["input"].as_u64().is_some_and(|n| n >= 2));
     // Settled (no motion, every frame written read, no redraw owed — `Term::settle`, never a quiet second), then two
-    // seconds: no frame, next to no wakes
-    t.settle("the keys' frames", |s| s["motions"].as_array().is_some_and(Vec::is_empty));
-    let (frames, before, was, threads) = (t.frames(), t.usage(), t.screen(), t.threads());
-    std::thread::sleep(std::time::Duration::from_secs(2));
-    let (drawn, used) = (t.frames() - frames, t.usage() - before);
+    // seconds: no frame, no wake (`Term::rest`)
+    let s = t.settle("the keys' frames", |s| s["motions"].as_array().is_some_and(Vec::is_empty));
+    let was = t.screen();
+    let slept = t.rest(&s);
     // (on failure: what woke — each thread's share — and which rows a late frame changed)
     let now = t.screen();
     let changed: Vec<String> = was
@@ -1150,12 +1149,7 @@ fn counting_features_wakes_nothing_and_is_written_at_the_end() {
         .filter(|(_, (a, b))| a != b)
         .map(|(i, (a, b))| format!("row {i}: {a:?}\n    → {b:?}"))
         .collect();
-    assert!(
-        drawn == 0 && used.switches < 30,
-        "counting: {drawn} frames, {used:?} in 2 s — woke:\n{}\nchanged:\n{}\n{now}",
-        woke(&threads, &t.threads()),
-        changed.join("\n")
-    );
+    assert!(slept.woken().is_none(), "counting: {slept}\nchanged:\n{}\n{now}", changed.join("\n"));
     let path = sb.state().join("features.json");
     assert!(!path.exists(), "nothing written yet — no timer of its own");
     let said: serde_json::Value = serde_json::from_str(&t.state(&["--features", "--json"])).unwrap();
@@ -1205,11 +1199,9 @@ fn a_page_reads_into_its_buffer_and_then_sleeps() {
     // Landed: its toast gone, settled (`Term::settle`, never a quiet second), then two seconds with no frame and
     // nothing woken (the line's age is drawn when a frame comes, never a frame of its own)
     t.wait_for("its toast gone", |s| !s.status().contains(" chars · "));
-    t.settle("the page landed", |s| s["motions"].as_array().is_some_and(Vec::is_empty));
-    let (frames, before) = (t.frames(), t.usage());
-    std::thread::sleep(std::time::Duration::from_secs(2));
-    let (drawn, used) = (t.frames() - frames, t.usage() - before);
-    assert!(drawn == 0 && used.switches < 30, "{drawn} frames, {used:?} in 2 s\n{}", t.screen());
+    let s = t.settle("the page landed", |s| s["motions"].as_array().is_some_and(Vec::is_empty));
+    let slept = t.rest(&s);
+    assert!(slept.woken().is_none(), "{slept}\n{}", t.screen());
     t.command("q");
     assert_eq!(t.wait_exit().code(), Some(0));
 }
@@ -1218,8 +1210,9 @@ fn a_page_reads_into_its_buffer_and_then_sleeps() {
 /// no rows yet) draws, then the files show; a query nothing matches draws too.
 /// An idle tarae sleeps — a file open in a git repository, then the side panel, the git tab, the terminal,
 /// the chat, and a picker over an error waiting for its card: once settled, nothing goes out for seconds
-/// and nothing wakes it (CPU time and context switches stay near nothing). The error under the picker
-/// woke the main loop 14 times a second (U7 restarted its time every frame): 146 switches in 3 s.
+/// and nothing wakes it: no frame, no event of its main loop but its wakes on a clock (the disk watch's backstop,
+/// the sampler's looks), its threads' work near nothing (`Term::rest`). The error under the picker woke the main
+/// loop 14 times a second (U7 restarted its time every frame): 146 switches in 3 s.
 #[test]
 fn an_idle_editor_draws_nothing_and_sleeps() {
     let sb = Sandbox::new("idle");
@@ -1248,14 +1241,15 @@ fn an_idle_editor_draws_nothing_and_sleeps() {
         let s = t.settle(what, |s| {
             s["workspaces"][0]["branch"] == "main" && s["motions"].as_array().is_some_and(Vec::is_empty)
         });
-        let (frames, before, was, threads) = (t.frames(), t.usage(), t.screen(), t.threads());
+        let (frames, was) = (t.frames(), t.screen());
         let settled = format!(
             "settled at {frames} frames read: {} written, redraw due {}, tick {}",
             s["frames_written"], s["redraw_due"], s["tick_in_ms"]
         );
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        let (drawn, used) = (t.frames() - frames, t.usage() - before);
-        let woke = woke(&threads, &t.threads());
+        // Judged by what tarae did, never by time or the OS's switches, which a loaded machine adds to (#191: 31
+        // at load 18, 0 frames and 2.4 ms of CPU): frames, the events its main loop handled but its wakes on a
+        // clock of their own, and where none of those came its threads' work (`Term::rest`, `Rest::woken`)
+        let rest = t.rest(&s);
         // (a frame drawn: which rows it changed — what landed late)
         let now = t.screen();
         let changed: Vec<String> = was
@@ -1266,8 +1260,7 @@ fn an_idle_editor_draws_nothing_and_sleeps() {
             .filter(|(_, (a, b))| a != b)
             .map(|(i, (a, b))| format!("row {i}: {a:?}\n    → {b:?}"))
             .collect();
-        // (a wake is a few switches: 14 a second came to ~100 in 2 s; at rest it's under 10)
-        if drawn > 0 || used.switches >= 30 {
+        if let Some(woken) = rest.woken() {
             // (what drew each frame since the settle, as tarae says it — `frames_for`: an event's kind, a job's
             // result by where it was sent from or its own name, `owed: …`, the resting redraw)
             let written = frames as u64;
@@ -1279,7 +1272,7 @@ fn an_idle_editor_draws_nothing_and_sleeps() {
                 .map(|f| format!("frame {}: {}", f["frame"], f["for"]))
                 .collect();
             panic!(
-                "{what}: {drawn} frames, {used:?} in 2 s ({settled}) — drawn for:\n{}\nwoke:\n{woke}\nchanged:\n{}\n{now}",
+                "{what}: woken — {woken}: {rest} ({settled}) — drawn for:\n{}\nchanged:\n{}\n{now}",
                 late.join("\n"),
                 changed.join("\n")
             );
@@ -1641,17 +1634,10 @@ fn bleeding_ink_draws_no_frame_after_the_turn() {
     assert_eq!(head, rest, "the turn ended: the head in the ink of the rest\n{}", t.screen());
     // Settled (the frame that draws it dry, every frame read, no redraw owed — `Term::settle`) — then nothing: no
     // tick for the ink drying
-    t.settle("the turn's last frame", |s| s["motions"].as_array().is_some_and(Vec::is_empty));
-    // (nor a wake: a tick that draws nothing new is no frame, but it wakes the loop — at rest it's a few
-    // switches in 2 s, a 100 ms tick ~100, as `an_idle_editor_draws_nothing_and_sleeps` measures)
-    let (frames, before) = (t.frames(), t.usage());
-    std::thread::sleep(Duration::from_secs(2));
-    let (drawn, used) = (t.frames() - frames, t.usage() - before);
-    assert!(
-        drawn == 0 && used.switches < 30,
-        "after the turn's end: {drawn} frames, {used:?}\n{}",
-        t.screen()
-    );
+    let s = t.settle("the turn's last frame", |s| s["motions"].as_array().is_some_and(Vec::is_empty));
+    // (nor a wake: a tick that draws nothing new is no frame, but it's an event of the main loop — `Term::rest`)
+    let slept = t.rest(&s);
+    assert!(slept.woken().is_none(), "after the turn's end: {slept}\n{}", t.screen());
 }
 
 /// A flash on its own clock, then sleep: `u` flashes what it took back — its key's frame, a step as it dries, one as it
@@ -1673,11 +1659,9 @@ fn a_motion_ends_and_tarae_sleeps() {
     assert!(drawn >= 2, "the key's frame and the flash's going: {drawn} frames\n{}", t.screen());
     // Settled (every frame read, no redraw owed — `Term::settle`, never a quiet second) — then nothing: no tick for
     // the flash
-    t.settle("the flash's last frame", |s| s["motions"].as_array().is_some_and(Vec::is_empty));
-    let (frames, before) = (t.frames(), t.usage());
-    std::thread::sleep(Duration::from_secs(2));
-    let (drawn, used) = (t.frames() - frames, t.usage() - before);
-    assert!(drawn == 0 && used.switches < 30, "after the flash: {drawn} frames, {used:?}\n{}", t.screen());
+    let s = t.settle("the flash's last frame", |s| s["motions"].as_array().is_some_and(Vec::is_empty));
+    let slept = t.rest(&s);
+    assert!(slept.woken().is_none(), "after the flash: {slept}\n{}", t.screen());
 }
 
 /// A chat turn's usage on screen: a stand-in claude streaming what claude does (a request writing 4k to

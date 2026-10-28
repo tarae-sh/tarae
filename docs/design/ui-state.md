@@ -219,6 +219,13 @@ side git · 4 rows · in hand git:src/term.rs
   gives itself: `a tick`, `a git watch round`, `a UI-state ask`), `owed: …` when none did, `the resting redraw`,
   `the first frame`. A late frame in an idle check says its cause the first time. Said only when there are any;
   not at Claude's level.
+- **`events`**, **`events_for`** (ci, #191, 2026-10-28) — the events the main loop has handled (this answer's ask
+  too), and the last 16, each `{event, was}`: its number and what it was, drawn or not, in `frames_for`'s words. An
+  idle check counts what woke tarae by these, never by the OS's context switches, which a loaded machine adds to
+  (#191: 31 at load 18 for a 2 s window with no frame and 2.4 ms of CPU): between a settled answer and the next ask,
+  nothing but the wakes on a clock of their own — the disk watch's backstop (`a disk watch round`, 5 s) and the
+  sampler's looks (`a look at the processes`, `a look at the disk`) — each once a 2 s window at most (e2e
+  `Term::rest`). Said only when there are any; not at Claude's level.
 - **`tick_in_ms`**, **`unfocused`** (ci, 2026-10-24) — when a frame is next wanted with nothing else happening
   (`Editor::tick_wanted`: the waiting animation's step, a toast's fade, a motion's …; absent: nothing wakes it), and
   (only while true) that the terminal said its focus went elsewhere (`CSI O`, until `CSI I`: the animation rests). A

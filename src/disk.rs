@@ -267,6 +267,10 @@ pub struct DiskBatch {
     began: std::time::Instant,
 }
 
+/// What a disk round's result is, as the state's `frames_for` and `events_for` say it — its backstop (`fswatch`'s,
+/// 5 s) wakes an idle tarae's main loop, meant (e2e `an_idle_editor_draws_nothing_and_sleeps` counts it apart).
+pub const ROUND: &str = "a disk watch round";
+
 /// The longest a git action's reloads go unsaid (`DiskBatch`).
 const BATCH_MAX: std::time::Duration = std::time::Duration::from_secs(180);
 
@@ -332,6 +336,7 @@ impl Editor {
                 }
             };
             move |ed: &mut Editor| {
+                ed.drawn_for(ROUND);
                 // (a backstop round that found nothing is nothing to draw)
                 ed.unchanged = stats.is_empty();
                 // (a reload landed while this round looked — an earlier round's, handled first, which may have
@@ -792,6 +797,22 @@ mod tests {
             let ev = ed.events.recv_timeout(crate::test_results::PATIENCE).expect("disk stat");
             ed.handle_event(ev);
         }
+    }
+
+    /// #191: a watch round's result says what it is where the main loop keeps its events (`events_kept`, the
+    /// state's `events_for`) — the idle e2e checks count its backstop's wake as one on a clock (`ON_CLOCKS`) by
+    /// this name; one that lost it would read `a job` there, a failure only when a round lands inside a rest.
+    #[test]
+    fn a_watch_round_names_itself_among_the_events() {
+        let mut ed = Editor::new(Config::default());
+        ed.disk_poll(false);
+        let round = ed.disk_poll_gen;
+        while ed.disk_poll_gen == round {
+            let ev = ed.events.recv_timeout(crate::test_results::PATIENCE).expect("the round's result");
+            crate::term::handle_noting(&mut ed, ev);
+        }
+        let was = ed.events_kept.back().map(|(_, of)| of.to_string());
+        assert_eq!(was.as_deref(), Some(ROUND));
     }
 
     /// A Rust file open with a stand-in server (`cat` into `sent.log`), up: writes from outside, and the

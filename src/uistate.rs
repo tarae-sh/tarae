@@ -735,6 +735,12 @@ pub struct UiState {
     /// an event's kind, a job's result by where it was sent from or the name it gives itself, `owed: …`, the
     /// resting redraw — so a frame an idle check didn't expect says its cause; never Claude's.
     pub frames_for: Vec<(u64, Vec<String>)>,
+    /// Events the main loop has handled, this answer's ask too (`Editor.events_handled`) — an idle check's count
+    /// of what woke tarae, the same on any machine; never Claude's.
+    pub events: u64,
+    /// The last events handled (`Editor.events_kept`): each its number and what it was, as `frames_for` says it;
+    /// never Claude's.
+    pub events_for: Vec<(u64, String)>,
     /// When a frame is next wanted with nothing else happening (`Editor::tick_wanted`: the waiting animation's
     /// step, a toast's fade, …), in ms — None: nothing wakes it; never Claude's.
     pub tick_in_ms: Option<u64>,
@@ -1734,6 +1740,8 @@ impl Editor {
                 .iter()
                 .map(|(n, by)| (*n, by.iter().map(ToString::to_string).collect()))
                 .collect(),
+            events: self.events_handled,
+            events_for: self.events_kept.iter().map(|(n, of)| (*n, of.to_string())).collect(),
             tick_in_ms: self.tick_wanted().map(|d| d.as_millis() as u64),
             unfocused: self.unfocused,
         }
@@ -2021,6 +2029,17 @@ impl UiState {
                 .frames_for
                 .iter()
                 .map(|(n, by)| json!({ "frame": n, "for": by }))
+                .collect::<Vec<_>>()
+                .into();
+        }
+        if self.events > 0 {
+            v["events"] = json!(self.events);
+        }
+        if !self.events_for.is_empty() {
+            v["events_for"] = self
+                .events_for
+                .iter()
+                .map(|(n, of)| json!({ "event": n, "was": of }))
                 .collect::<Vec<_>>()
                 .into();
         }
