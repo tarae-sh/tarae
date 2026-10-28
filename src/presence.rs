@@ -23,6 +23,7 @@ use std::sync::Arc;
 use crate::document::{DocId, Document};
 use crate::editor::Editor;
 use crate::event::WorkspaceId;
+use crate::workspace::Workspace;
 
 /// What a session does at a place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,6 +137,11 @@ struct Kept {
 #[derive(Default)]
 pub struct State {
     pub now: Vec<Presence>,
+    /// Each place of `now` once — a checkout's file — with its presences there (their indices, in order): what's asked
+    /// of places rather than of every presence (`ask`, `marks`), made as `now` changes.
+    places: Vec<Vec<usize>>,
+    /// Each busy session's presence as last gathered, and what it was made from (`Built`).
+    built: Vec<Built>,
     /// By (the file, a buffer of another checkout).
     maps: HashMap<(PathBuf, DocId), Kept>,
     /// Two checkouts (in order) of one repository, as git says.
@@ -168,6 +174,11 @@ impl State {
         self.maps.keys().map(|k| k.1).collect()
     }
 
+    /// Each busy session's kept presence (`Built`): its session and the stops' version it was made from.
+    pub fn kept(&self) -> Vec<(WorkspaceId, u64)> {
+        self.built.iter().map(|b| (b.session, b.replay)).collect()
+    }
+
     /// How long since session `s` was last seen writing, in any file — None: not within its tag's stay and fade.
     pub fn wrote_since(&self, s: WorkspaceId) -> Option<std::time::Duration> {
         self.wrote.iter().filter(|((w, _), _)| *w == s).map(|(_, t)| crate::clock::since(*t)).min()
@@ -179,74 +190,177 @@ fn pair(a: &Path, b: &Path) -> (PathBuf, PathBuf) {
     if a <= b { (a.to_path_buf(), b.to_path_buf()) } else { (b.to_path_buf(), a.to_path_buf()) }
 }
 
-/// Every session's place now — none with one session open (there's no one else to show).
-fn gather(ed: &Editor) -> Vec<Presence> {
-    let mut out = Vec::new();
+/// A busy session's presence as last gathered, and what it was made from: its edits' places are kept while its turn's
+/// stops (their version), its name, colour and checkout and the stamp of each file its turn wrote hold — an event in a
+/// long turn makes none of them again (#214: every place of every busy turn made anew every event, each looking its
+/// file up among every buffer and every stop, held the main loop for seconds with four Claudes at work).
+struct Built {
+    session: WorkspaceId,
+    replay: u64,
+    name: String,
+    colour: u8,
+    root: PathBuf,
+    /// Each file its turn wrote, how many of its edits did, and its text's stamp as gathered.
+    files: Vec<(PathBuf, usize, Stamp)>,
+    /// The lines each edit left.
+    edits: Vec<Presence>,
+    /// Where it is — the edit it's writing, else where it looks: gathered every event.
+    here: Vec<Presence>,
+}
+
+/// Every busy session's presence gathered into `built` (kept where it holds, made again where it doesn't) — none with
+/// one session open (there's no one else to show). Whether any of it changed (`now` is made again).
+fn gather(ed: &Editor, built: &mut Vec<Built>) -> bool {
     if ed.workspaces.is_empty() {
-        return out;
+        let changed = !built.is_empty();
+        built.clear();
+        return changed;
     }
+    crate::docpaths::within(ed, |ed| gather_in(ed, built))
+}
+
+fn gather_in(ed: &Editor, built: &mut Vec<Built>) -> bool {
+    let mut was = std::mem::take(built);
+    let mut changed = false;
     for l in std::iter::once(&ed.workspace).chain(&ed.workspaces) {
         let Some(c) = l.claude.chat.as_ref().filter(|c| c.busy()) else { continue };
-        let at = |p: &Path| if p.is_absolute() { p.to_path_buf() } else { l.root.join(p) };
-        let turn = c.follow.replay.turns.back();
-        let written = |path: &Path| {
-            turn.map_or(0, |t| {
-                t.stops
-                    .iter()
-                    .filter(|s| !s.hunks.is_empty() && s.path.as_deref().map(at).as_deref() == Some(path))
-                    .count()
-            })
-        };
-        let stamp = |path: &Path| match ed.docs.iter().find(|d| d.path.as_deref() == Some(path)) {
+        // A file's text as of now: its buffer's version, else the disk's stamp and how many of the turn's edits wrote it
+        let stamp = |path: &Path, written: usize| match crate::docpaths::find(ed, path) {
             Some(d) => Stamp::Doc(d.id, d.version()),
-            None => Stamp::Disk(written(path), ed.presence.disk.get(path).and_then(|s| s.stamp)),
-        };
-        let mut put = |path: PathBuf, lines: Option<Range<usize>>, act: Act, here: bool| {
-            let stamp = stamp(&path);
-            out.push(Presence {
-                session: l.id,
-                name: l.label().to_string(),
-                colour: l.claude.colour,
-                root: l.root.clone(),
-                path,
-                lines,
-                act,
-                here,
-                stamp,
-            });
-        };
-        // The edits its turn wrote: the lines each left
-        for s in turn.into_iter().flat_map(|t| &t.stops) {
-            let Some(path) = s.path.as_deref().map(at) else { continue };
-            for h in &s.hunks {
-                let lines = h.lines.start..h.lines.end.max(h.lines.start + 1);
-                put(path.clone(), Some(lines), Act::Editing, false);
+            None => {
+                crate::docpaths::worked(1);
+                Stamp::Disk(written, ed.presence.disk.get(path).and_then(|s| s.stamp))
             }
+        };
+        // (the busy sessions in the order they were: each the first of what's left)
+        let k = was.iter().position(|b| b.session == l.id);
+        changed |= k != Some(0);
+        let name = l.label();
+        let holds = |b: &Built| {
+            b.replay == c.follow.replay.version()
+                && b.name == name
+                && b.colour == l.claude.colour
+                && b.root == l.root
+                && b.files.iter().all(|(p, n, s)| stamp(p, *n) == *s)
+        };
+        let mut b = match k.map(|k| was.remove(k)) {
+            Some(b) if holds(&b) => b,
+            _ => {
+                changed = true;
+                build(l, c, &stamp)
+            }
+        };
+        let here = here(l, c, &b.files, &stamp);
+        if here != b.here {
+            (b.here, changed) = (here, true);
         }
-        // Where it is: the edit it's writing (its items each, the last one where it is), else where it looks
-        let writing: Vec<(PathBuf, Range<usize>)> = c
-            .writing
-            .calls
-            .iter()
-            .flat_map(|call| &call.items)
-            .filter_map(|it| match &it.place {
-                crate::writing::Place::Found(f) => Some((f.path.clone(), f.lines.0..f.lines.1 + 1)),
-                _ => None,
-            })
-            .collect();
-        let n = writing.len();
-        for (k, (path, lines)) in writing.into_iter().enumerate() {
-            put(path, Some(lines), Act::Writing, k + 1 == n);
-        }
-        if n == 0
-            && let Some(g) = c.follow.gaze.as_ref()
-            && let Some(path) = g.path.as_deref().map(at)
-        {
-            let act = if g.edit.is_empty() { Act::Reading } else { Act::Editing };
-            put(path, g.lines.clone(), act, true);
+        built.push(b);
+    }
+    changed || !was.is_empty()
+}
+
+/// Tests: every busy session's presence gathered with nothing kept — what `now` is, whatever was kept.
+#[cfg(test)]
+pub fn gathered_anew(ed: &Editor) -> Vec<Presence> {
+    let mut built = Vec::new();
+    gather(ed, &mut built);
+    built.iter().flat_map(|b| b.edits.iter().chain(&b.here)).cloned().collect()
+}
+
+/// The places session `l`'s turn wrote, made from its stops: each stop's file joined once, its text's stamp once a file.
+fn build(l: &Workspace, c: &crate::chat::Chat, stamp: &dyn Fn(&Path, usize) -> Stamp) -> Built {
+    let edits: Vec<(PathBuf, &[crate::replay::Hunk])> = (c.follow.replay.turns().back())
+        .into_iter()
+        .flat_map(|t| &t.stops)
+        .filter(|s| !s.hunks.is_empty())
+        .filter_map(|s| Some((in_checkout(l, s.path.as_deref()?), &s.hunks[..])))
+        .collect();
+    // (how many of them wrote each file — a file no buffer holds is told apart by it)
+    let mut written: HashMap<&Path, usize> = HashMap::new();
+    for (path, _) in &edits {
+        crate::docpaths::worked(1);
+        *written.entry(path).or_default() += 1;
+    }
+    let files: Vec<(PathBuf, usize, Stamp)> =
+        written.iter().map(|(&p, &n)| (p.to_path_buf(), n, stamp(p, n))).collect();
+    let stamps: HashMap<&Path, Stamp> = files.iter().map(|(p, _, s)| (p.as_path(), *s)).collect();
+    let mut out = Vec::new();
+    for (path, hunks) in &edits {
+        crate::docpaths::worked(1);
+        let stamp = stamps[path.as_path()];
+        for h in *hunks {
+            let lines = h.lines.start..h.lines.end.max(h.lines.start + 1);
+            out.push(presence(l, path.clone(), stamp, Some(lines), Act::Editing, false));
         }
     }
+    let (name, colour) = (l.label().to_string(), l.claude.colour);
+    Built {
+        session: l.id,
+        replay: c.follow.replay.version(),
+        name,
+        colour,
+        root: l.root.clone(),
+        files,
+        edits: out,
+        here: Vec::new(),
+    }
+}
+
+/// Where session `l` is now: the edit it's writing (its items each, the last one where it is), else where it looks.
+fn here(
+    l: &Workspace,
+    c: &crate::chat::Chat,
+    files: &[(PathBuf, usize, Stamp)],
+    stamp: &dyn Fn(&Path, usize) -> Stamp,
+) -> Vec<Presence> {
+    // (a file its turn wrote: its stamp as gathered, which holds)
+    let stamp_of = |path: &Path| {
+        (files.iter().find(|(p, ..)| crate::docpaths::same(Some(p), path)))
+            .map_or_else(|| stamp(path, 0), |(_, _, s)| *s)
+    };
+    let mut out = Vec::new();
+    let writing: Vec<(PathBuf, Range<usize>)> = c
+        .writing
+        .calls
+        .iter()
+        .flat_map(|call| &call.items)
+        .filter_map(|it| match &it.place {
+            crate::writing::Place::Found(f) => Some((f.path.clone(), f.lines.0..f.lines.1 + 1)),
+            _ => None,
+        })
+        .collect();
+    let n = writing.len();
+    for (k, (path, lines)) in writing.into_iter().enumerate() {
+        let stamp = stamp_of(&path);
+        out.push(presence(l, path, stamp, Some(lines), Act::Writing, k + 1 == n));
+    }
+    if n == 0
+        && let Some(g) = c.follow.gaze.as_ref()
+        && let Some(path) = g.path.as_deref().map(|p| in_checkout(l, p))
+    {
+        let act = if g.edit.is_empty() { Act::Reading } else { Act::Editing };
+        let stamp = stamp_of(&path);
+        out.push(presence(l, path, stamp, g.lines.clone(), act, true));
+    }
     out
+}
+
+/// A path a stop or a gaze names, in session `l`'s checkout.
+fn in_checkout(l: &Workspace, p: &Path) -> PathBuf {
+    crate::docpaths::worked(1);
+    if p.is_absolute() { p.to_path_buf() } else { l.root.join(p) }
+}
+
+fn presence(
+    l: &Workspace,
+    path: PathBuf,
+    stamp: Stamp,
+    lines: Option<Range<usize>>,
+    act: Act,
+    here: bool,
+) -> Presence {
+    let (name, colour, root) = (l.label().to_string(), l.claude.colour, l.root.clone());
+    Presence { session: l.id, name, colour, root, path, lines, act, here, stamp }
 }
 
 /// Whether `p`'s session is still there with its turn under way — what was gathered at the last event, read by a frame
@@ -267,16 +381,26 @@ pub fn followed(ed: &Editor) -> Option<WorkspaceId> {
 /// Every event (`handle_event`): the presence as things are now, and the line maps the buffers in sight need asked for
 /// — nothing when nothing moved (an idle tarae isn't woken).
 pub fn sync(ed: &mut Editor) {
-    let now = gather(ed);
-    if now != ed.presence.now {
-        ed.presence.now = now;
+    let mut built = std::mem::take(&mut ed.presence.built);
+    let changed = gather(ed, &mut built);
+    if changed {
+        let now: Vec<Presence> = built.iter().flat_map(|b| b.edits.iter().chain(&b.here)).cloned().collect();
+        let mut seen: HashMap<(&Path, &Path), usize> = HashMap::new();
+        let mut places: Vec<Vec<usize>> = Vec::new();
+        for (i, p) in now.iter().enumerate() {
+            let k = *seen.entry((p.root.as_path(), p.path.as_path())).or_insert(places.len());
+            match places.get_mut(k) {
+                Some(at) => at.push(i),
+                None => places.push(vec![i]),
+            }
+        }
+        (ed.presence.now, ed.presence.places) = (now, places);
     }
+    ed.presence.built = built;
     // (each session's writing, where: its tag stays a while after — the rest forgotten once past it)
     let at = crate::clock::now();
-    let writing: Vec<(WorkspaceId, PathBuf)> = ed
-        .presence
-        .now
-        .iter()
+    let writing: Vec<(WorkspaceId, PathBuf)> = (ed.presence.built.iter())
+        .flat_map(|b| &b.here)
         .filter(|p| p.act == Act::Writing)
         .map(|p| (p.session, p.path.clone()))
         .collect();
@@ -372,6 +496,7 @@ fn in_sight(ed: &Editor) -> Vec<&Document> {
 
 /// A presence in another checkout at a document's path there (relative to each checkout).
 fn same_place(p: &Presence, root: &Path, path: &Path) -> bool {
+    crate::docpaths::worked(1);
     p.root != root
         && p.path.strip_prefix(&p.root).ok().is_some_and(|rel| path.strip_prefix(root).ok() == Some(rel))
 }
@@ -385,9 +510,11 @@ type Wanted = ((PathBuf, DocId), (Stamp, u64), PathBuf, ropey::Rope);
 fn ask(ed: &mut Editor) {
     let root = ed.workspace.root.clone();
     let mut wanted: Vec<Wanted> = Vec::new();
+    // (each place once — the first presence there, as every presence in order would give: #214)
+    let places = || ed.presence.places.iter().filter_map(|at| ed.presence.now.get(at[0]));
     for d in in_sight(ed) {
         let Some(path) = d.path.as_deref() else { continue };
-        for p in ed.presence.now.iter().filter(|p| same_place(p, &root, path)) {
+        for p in places().filter(|p| same_place(p, &root, path)) {
             let key = (p.path.clone(), d.id);
             if !wanted.iter().any(|(k, ..)| *k == key) {
                 wanted.push((key, (p.stamp, d.version()), p.root.clone(), d.text.clone()));
@@ -395,10 +522,7 @@ fn ask(ed: &mut Editor) {
         }
     }
     // The checkouts beside this one: whether each is of this repository (the side panel's `◦` needs it too)
-    let roots: Vec<PathBuf> = ed
-        .presence
-        .now
-        .iter()
+    let roots: Vec<PathBuf> = places()
         .filter(|p| p.root != root)
         .map(|p| p.root.clone())
         .collect::<HashSet<_>>()
@@ -542,16 +666,35 @@ pub fn marks(ed: &Editor, doc: &Document) -> Vec<Mark> {
     let last = crate::movement::last_line(&doc.text);
     let followed = followed(ed);
     let cursor = doc.text.byte_to_line(doc.selection().primary().cursor(&doc.text).min(doc.text.len_bytes()));
-    let mut out: Vec<Mark> = ed
-        .presence
-        .now
-        .iter()
-        .filter(|p| live(ed, p))
-        .filter_map(|p| {
+    // Each place once: this file, or another checkout's with a line map to this buffer — then its presences, in their
+    // order (#214: every presence asked, a path compared and copied each, every frame)
+    let mut drawn: Vec<(usize, Option<&LineMap>)> = Vec::new();
+    for at in &ed.presence.places {
+        let Some(p) = ed.presence.now.get(at[0]) else { continue };
+        crate::docpaths::worked(1);
+        let map = match p.path == path {
+            true => None,
+            false => match ed.presence.maps.get(&(p.path.clone(), doc.id)).and_then(|k| k.map.as_deref()) {
+                Some(m) => Some(m),
+                None => continue,
+            },
+        };
+        drawn.extend(at.iter().map(|&i| (i, map)));
+    }
+    crate::sorting::by_key(&mut drawn, |(i, _)| *i);
+    let busy: Vec<WorkspaceId> = (std::iter::once(&ed.workspace).chain(&ed.workspaces))
+        .filter(|l| l.claude.chat.as_ref().is_some_and(|c| c.busy()))
+        .map(|l| l.id)
+        .collect();
+    let mut out: Vec<Mark> = drawn
+        .into_iter()
+        .filter_map(|(i, map)| Some((ed.presence.now.get(i)?, map)))
+        .filter(|(p, _)| busy.contains(&p.session))
+        .filter_map(|(p, map)| {
             let lines = p.lines.clone()?;
-            let lines = match p.path == path {
-                true => lines,
-                false => ed.presence.maps.get(&(p.path.clone(), doc.id))?.map.as_ref()?.range(lines),
+            let lines = match map {
+                None => lines,
+                Some(m) => m.range(lines),
             };
             let start = lines.start.min(last);
             let lines = start..lines.end.min(last + 1).max(start + 1);

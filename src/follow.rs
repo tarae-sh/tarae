@@ -1572,8 +1572,8 @@ pub struct StripMark {
 pub fn strip(c: &crate::chat::Chat) -> Vec<StripMark> {
     let replay = &c.follow.replay;
     let turn = match replay.at {
-        Some((t, _)) => replay.turns.get(t),
-        None => replay.turns.back(),
+        Some((t, _)) => replay.turns().get(t),
+        None => replay.turns().back(),
     };
     let hand = c.in_hand();
     turn.into_iter()
@@ -1731,8 +1731,7 @@ pub fn page_read(
     let Some(f) = follow(ed) else { return };
     let waiting =
         |s: &crate::replay::Stop| s.page.as_ref().is_some_and(|p| p.url == asked && p.copy.is_none());
-    let stops = f.replay.turns.iter_mut().rev().flat_map(|t| t.stops.iter_mut().rev());
-    let Some(stop) = stops.into_iter().find(|s| waiting(s)) else { return };
+    let Some(stop) = f.replay.find_mut(waiting) else { return };
     if let Some(p) = stop.page.as_mut() {
         p.copy = Some((url.to_string(), at));
     }

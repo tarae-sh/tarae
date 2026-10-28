@@ -598,9 +598,12 @@ impl Editor {
             .map(|c| c.id)
             .collect();
         for a in ids {
-            let want = self.share_wanted(a);
+            let want = self.share_wanted(a, &self.owners());
             let have = self.client(a).map(|c| c.roots.clone()).unwrap_or_default();
-            let same = want.len() == have.len() && want.iter().all(|r| have.contains(r));
+            let same = want.len() == have.len() && {
+                let have: std::collections::HashSet<&Path> = have.iter().map(PathBuf::as_path).collect();
+                want.iter().all(|r| have.contains(r.as_path()))
+            };
             if same || want.is_empty() {
                 self.lsp.share.due.remove(&a);
                 continue;
@@ -622,24 +625,32 @@ impl Editor {
 
     /// The folders server `a` should serve: its own that are still wanted — a file of it open, or a
     /// session's checkout, and the same toolchain still — then the ones joining.
-    fn share_wanted(&self, a: ClientId) -> Vec<PathBuf> {
+    fn share_wanted(&self, a: ClientId, owners: &crate::workspace::Owners) -> Vec<PathBuf> {
         let Some(c) = self.client(a) else { return Vec::new() };
-        let mut want: Vec<PathBuf> =
-            c.roots
-                .iter()
-                .filter(|r| {
-                    if self.lsp.share.keys.get(*r).is_some_and(|k| k.as_ref() != c.share.as_ref()) {
-                        return false;
-                    }
-                    let open = self.docs.iter().any(|d| {
-                        d.lsp.client == Some(a) && d.path.as_deref().is_some_and(|p| p.starts_with(r))
-                    });
-                    (open || self.workspace_of(r).is_some()) && !self.share_held(r)
-                })
-                .cloned()
-                .collect();
+        let mut want: Vec<PathBuf> = c
+            .roots
+            .iter()
+            .filter(|r| {
+                if self.lsp.share.keys.get(*r).is_some_and(|k| k.as_ref() != c.share.as_ref()) {
+                    return false;
+                }
+                let open = || {
+                    self.docs.iter().any(|d| {
+                        d.lsp.client == Some(a)
+                            && d.path.as_deref().is_some_and(|p| {
+                                crate::docpaths::worked(1);
+                                p.starts_with(r)
+                            })
+                    })
+                };
+                // (who holds it from the index — its buffers searched only for a folder no session holds: #214)
+                let holder = owners.holder(r);
+                (holder.is_some() || open()) && !holder.is_some_and(|l| l.servers_held)
+            })
+            .cloned()
+            .collect();
         for r in self.lsp.share.joining.get(&a).into_iter().flatten() {
-            if !want.contains(r) && !self.share_held(r) {
+            if !want.contains(r) && !owners.holder(r).is_some_and(|l| l.servers_held) {
                 want.push(r.clone());
             }
         }

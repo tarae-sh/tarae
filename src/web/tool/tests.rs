@@ -350,7 +350,7 @@ fn a_page_read_is_a_stop_showing_the_copy_read() {
     settle(&mut ed, &|_| answered(21).is_some());
     heads.recv_timeout(crate::test_results::PATIENCE).expect("fetched once");
     let stop =
-        ed.workspace.claude.chat.as_ref().unwrap().follow.replay.turns.back().unwrap().stops[0].clone();
+        ed.workspace.claude.chat.as_ref().unwrap().follow.replay.turns().back().unwrap().stops[0].clone();
     let copy = stop.page.as_ref().and_then(|p| p.copy.clone()).expect("the stop has its copy");
     assert_eq!(copy.0, "https://page.test/a");
     assert_eq!(stop.lines, Some(2..3));

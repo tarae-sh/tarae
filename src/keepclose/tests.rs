@@ -190,6 +190,46 @@ fn one_card_names_every_workspace_behind_and_what_would_conflict_where() {
     assert_eq!(s.ed.offers.iter().filter(|o| matches!(o.what, What::BaseMoved(_))).count(), 1);
 }
 
+/// A workspace never in front has its base watched (#214's review, round 1): the bases come from each workspace's
+/// `git_common`, which its own git watch reads — started as the workspace is made, its rounds applied in it behind.
+/// Nothing filled by hand: the real git watch, the front's never started; then `main` moved, the card offers to move it.
+#[test]
+fn a_workspace_never_in_front_has_its_base_watched() {
+    let dir = Scratch::new("keepclose-never-in-front");
+    let main = dir.join("main");
+    std::fs::create_dir_all(&main).unwrap();
+    let main = std::fs::canonicalize(main).unwrap();
+    std::fs::write(main.join("a.rs"), twelve()).unwrap();
+    git(&main, &["init", "-q"]);
+    git(&main, &["add", "-A"]);
+    git(&main, &["commit", "-qm", "first"]);
+    git(&main, &["worktree", "add", "-q", "-b", "fix", "../fix"]);
+    let mut ed = Editor::new(Config::default());
+    ed.workspace.root = main.clone();
+    ed.workspace.name = "main".into();
+    // (its git watch started as it's made — `workspace_add`; the rest of tarae's git stays off, as in every test)
+    ed.git_auto = true;
+    let fix = ed.workspace_add(std::fs::canonicalize(dir.join("fix")).unwrap());
+    ed.git_auto = false;
+    ed.workspace_by_id(fix).unwrap().base = Some("main".into());
+    let of = |ed: &Editor| ed.workspaces.iter().find(|l| l.id == fix).unwrap().git_common.clone();
+    until(&mut ed, "fix's repository read by its own watch", |ed| of(ed).is_some());
+    assert_eq!(ed.workspace.id, WorkspaceId::HOME, "fix never in front");
+    assert_eq!(ed.workspace.git_common, None, "the front's read by nobody");
+    let common = crate::gitrepo::repo(&main).unwrap().common_dir.clone();
+    assert_eq!(of(&ed).as_deref(), Some(common.as_path()));
+    let base = (common, "main".to_string());
+    // (what `sync` starts a base's watch on, with the watch on — off in tests: its tips said as it says them)
+    assert_eq!(unwatched(&ed), std::slice::from_ref(&base), "fix's base, to watch");
+    tip(&mut ed, base.clone(), git(&main, &["rev-parse", "main"]));
+    line(&main.join("a.rs"), 3, "line 3, main's");
+    git(&main, &["commit", "-qam", "main's"]);
+    tip(&mut ed, base, git(&main, &["rev-parse", "main"]));
+    until(&mut ed, "the card", |ed| card(ed).is_some());
+    let q = card(&ed).unwrap().question.clone();
+    assert!(q.contains("  fix — 1 behind"), "{q}");
+}
+
 #[test]
 fn y_moves_the_clean_ones_their_changes_along_and_says_each_once() {
     let mut s = scene("keepclose-y");

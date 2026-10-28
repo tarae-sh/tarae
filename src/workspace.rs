@@ -11,6 +11,7 @@
 //!   files aren't taken up — `refactor::next`), follow mode's moves (its trail is kept). Claude waiting on one
 //!   is said once, named. A tag for a workspace that's gone runs in front — the generation checks drop it.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -18,6 +19,24 @@ use crate::document::{DocId, Document};
 use crate::editor::{Editor, Mode, View};
 use crate::event::WorkspaceId;
 use crate::key::{Code, Key};
+
+/// Who holds each folder (`Editor::owners`): every workspace's checkout and folders by path, for a pass that asks it
+/// of many folders (#214: `workspace_of` once a folder, each a look at every workspace, every event — a shared
+/// server's folders times the sessions).
+pub(crate) struct Owners<'a> {
+    by: HashMap<&'a Path, &'a Workspace>,
+}
+
+impl<'a> Owners<'a> {
+    /// The workspace whose checkout or folder `path` is in, the innermost — `Editor::workspace_of`'s answer: its
+    /// nearest folder up from `path` that one holds (the roots are real paths, so the longest that `path` starts with).
+    pub(crate) fn holder(&self, path: &Path) -> Option<&'a Workspace> {
+        path.ancestors().find_map(|a| {
+            crate::docpaths::worked(1);
+            self.by.get(a).copied()
+        })
+    }
+}
 
 /// Where a session's keys are — one value (panes P2a, `.sb/panes-plan.md` §2.3): the code, a surface
 /// beside it, the left rail's two, or a floating pane over them (P2b, §2.1c). Inside a surface its own sub-state
@@ -938,9 +957,24 @@ impl Editor {
             .flat_map(|l| {
                 std::iter::once(&l.root).chain(l.folders.iter().map(|f| &f.at)).map(move |r| (l.id, r))
             })
-            .filter(|(_, r)| path.starts_with(r))
+            .filter(|(_, r)| {
+                crate::docpaths::worked(1);
+                path.starts_with(r)
+            })
             .max_by_key(|(_, r)| r.as_os_str().len())
             .map(|(id, _)| id)
+    }
+
+    /// Who holds each folder, laid out once for a pass that asks it of many (`Owners`).
+    pub(crate) fn owners(&self) -> Owners<'_> {
+        let mut by = HashMap::new();
+        for l in std::iter::once(&self.workspace).chain(&self.workspaces) {
+            for r in std::iter::once(&l.root).chain(l.folders.iter().map(|f| &f.at)) {
+                crate::docpaths::worked(1);
+                by.insert(r.as_path(), l);
+            }
+        }
+        Owners { by }
     }
 
     /// The workspaces whose checkout is on `branch` of workspace `of`'s repository (`of` among them when it is) —
@@ -989,9 +1023,12 @@ impl Editor {
         if self.workspaces.is_empty() {
             return;
         }
-        let in_front = |ed: &Editor, cid| {
-            ed.docs.iter().any(|d| ed.workspace.docs.contains(&d.id) && d.lsp.clients().any(|c| c == cid))
-        };
+        // (the servers the front's buffers use, and who holds each folder: each laid out once — #214, every server's
+        // folders asked of every workspace, and of every buffer, each event)
+        let front: HashSet<DocId> = self.workspace.docs.iter().copied().collect();
+        let in_front: HashSet<crate::lsp::ClientId> =
+            self.docs.iter().filter(|d| front.contains(&d.id)).flat_map(|d| d.lsp.clients()).collect();
+        let owners = self.owners();
         let resting: Vec<(crate::lsp::ClientId, bool)> = self
             .lsp
             .clients
@@ -999,12 +1036,13 @@ impl Editor {
             .map(|c| {
                 // (a shared server: every checkout it serves behind and idle; never mid-swap)
                 let idle = c.roots.iter().all(|r| {
-                    let behind = self.workspaces.iter().find(|l| Some(l.id) == self.workspace_of(r));
+                    let behind = owners.holder(r).filter(|l| l.id != self.workspace.id);
                     behind.is_some_and(|l| !l.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy))
                 });
-                (c.id, idle && !in_front(self, c.id) && !self.lsp.share.swapping(c.id))
+                (c.id, idle && !in_front.contains(&c.id) && !self.lsp.share.swapping(c.id))
             })
             .collect();
+        drop(owners);
         self.lsp_rest(&resting);
         // A session behind whose Claude started a turn: its servers back (its tools ask them)
         let woken: Vec<DocId> = self

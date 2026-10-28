@@ -1289,9 +1289,12 @@ fn gone_title(f: &File) -> String {
 
 /// File `f`'s document, if it's open (a gone one's: its empty stand-in).
 fn doc_of<'a>(ed: &'a Editor, f: &File) -> Option<&'a crate::document::Document> {
+    if !f.gone {
+        return crate::docpaths::find(ed, &f.path);
+    }
     ed.docs.iter().find(|d| match &d.path {
         Some(p) => *p == f.path,
-        None => f.gone && d.title.as_deref() == Some(gone_title(f).as_str()),
+        None => d.title.as_deref() == Some(gone_title(f).as_str()),
     })
 }
 
@@ -1345,6 +1348,12 @@ impl Viewed {
         text: Option<u64>,
     ) -> Self {
         Viewed { keys, added, text, checked: Default::default() }
+    }
+
+    /// A mark of nothing (tests: a file marked viewed, so what's changed since is asked of it).
+    #[cfg(test)]
+    pub fn stand_in() -> Self {
+        Viewed::new(Default::default(), Vec::new(), None)
     }
 }
 

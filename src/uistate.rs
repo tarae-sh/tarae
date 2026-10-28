@@ -1684,6 +1684,11 @@ impl Editor {
 
     /// The state as of the last frame drawn.
     pub fn ui_state(&self) -> UiState {
+        // (a review's files each asked of their buffers — laid out by path once, #214)
+        crate::docpaths::within(self, Editor::ui_state_in)
+    }
+
+    fn ui_state_in(&self) -> UiState {
         let front = &self.workspace;
         let now_ms = crate::usage::now_ms();
         let session = |l: &crate::workspace::Workspace, is_front: bool| SessionState {

@@ -51,6 +51,7 @@ mod dock;
 #[cfg(test)]
 mod doclinks;
 mod docpane;
+mod docpaths;
 mod document;
 mod dsyms;
 mod editdiff;

@@ -245,6 +245,9 @@ pub fn attach(ed: &mut Editor) {
 
 /// `attach` for one session's notes.
 fn attach_in(notes: &mut Notes, docs: &mut [crate::document::Document]) {
+    // (a note whose file isn't open looks for its buffer every event: the buffers laid out by path once, at the
+    // first — a mark added changes no path. #214: each such note searched every buffer)
+    let mut by_path: Option<crate::docpaths::Index> = None;
     for n in notes.list.iter_mut().filter(|n| !n.placing) {
         match n
             .at
@@ -257,9 +260,8 @@ fn attach_in(notes: &mut Notes, docs: &mut [crate::document::Document]) {
             }
             None => {
                 n.at = None;
-                if let Some(doc) =
-                    docs.iter_mut().find(|d| d.path.as_deref() == Some(n.path.as_path()) && !d.loading)
-                {
+                let by_path = by_path.get_or_insert_with(|| crate::docpaths::Index::of(docs));
+                if let Some(doc) = by_path.first(docs, &n.path, |d| !d.loading).map(|i| &mut docs[i]) {
                     // Saved last time: follow its first line if the file moved it meanwhile
                     if let Some(want) = n.anchor.take() {
                         let shift = nearest_line(&doc.text, n.lines.start, &want);
@@ -1710,5 +1712,29 @@ mod tests {
         assert_eq!((n.lines.clone(), n.thread.len()), (4..5, 2), "re-anchored on its line's text");
         assert_eq!(ed.workspace.claude.notes.list[1].lines, 5..6, "clamped to the last line");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #214: a note whose file's first buffer is still loading takes the next buffer of that file that isn't — the
+    /// buffers by path give the first with it, and the search goes on past one that's turned down.
+    #[test]
+    fn a_note_passes_over_a_buffer_still_loading() {
+        use crate::document::Document;
+        let scratch = crate::scratch::Scratch::new("notes-loading");
+        let dir = std::fs::canonicalize(scratch.path()).unwrap();
+        let (f, other) = (dir.join("a.rs"), dir.join("b.rs"));
+        std::fs::write(&f, "one\ntwo\nthree\n").unwrap();
+        std::fs::write(&other, "x\n").unwrap();
+        let mut docs = vec![
+            Document::open(1, &other).unwrap(),
+            Document::placeholder(2, &f),
+            Document::open(3, &other).unwrap(),
+            Document::open(4, &f).unwrap(),
+        ];
+        let mut notes = Notes::default();
+        let saved = vec![json!({"path": f, "lines": [1, 2], "thread": [["claude", "here"]]})];
+        restore_from(&mut notes, &mut docs, saved);
+        let n = &notes.list[0];
+        assert_eq!(n.at.map(|(d, _)| d), Some(4), "the loaded buffer of its file, past the loading one");
+        assert_eq!(n.lines, 1..2);
     }
 }

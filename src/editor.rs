@@ -8084,7 +8084,7 @@ mod tests {
         let stops: Vec<String> = c
             .follow
             .replay
-            .turns
+            .turns()
             .back()
             .unwrap()
             .stops

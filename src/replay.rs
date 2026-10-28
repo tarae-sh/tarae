@@ -55,18 +55,55 @@ pub struct Turn {
 
 #[derive(Default)]
 pub struct Replay {
-    /// Oldest first; the last is the turn under way (or the latest).
-    pub turns: VecDeque<Turn>,
+    /// Oldest first; the last is the turn under way (or the latest). Changed only by the methods here, each giving
+    /// the stops a new `version`.
+    turns: VecDeque<Turn>,
+    /// The stops' version: a number no other stops anywhere had (`VERSIONS`), new at each change — 0: none yet.
+    /// What's made from them is kept while it holds (`presence.rs`: #214, each busy session's places made anew every
+    /// event).
+    version: u64,
     /// The stop showing — (turn, stop) — while you step through them; None: live.
     pub at: Option<(usize, usize)>,
 }
 
+/// The last stops' version given, every replay's (so one replay's version is never another's stops).
+static VERSIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl Replay {
+    /// The turns kept, oldest first.
+    pub fn turns(&self) -> &VecDeque<Turn> {
+        &self.turns
+    }
+
+    /// The stops' version (`version`): the same while they are.
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// The stops are about to change: a new version.
+    fn changes(&mut self) {
+        self.version = VERSIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    }
+
+    /// The newest stop `pick` takes, to change — a new version only when there is one (#214: a lookup that found
+    /// nothing made every busy session's presence again).
+    pub fn find_mut(&mut self, pick: impl Fn(&Stop) -> bool) -> Option<&mut Stop> {
+        let (t, s) = self
+            .turns
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(t, turn)| turn.stops.iter().rposition(&pick).map(|s| (t, s)))?;
+        self.changes();
+        Some(&mut self.turns[t].stops[s])
+    }
+
     /// A new question: a turn of its own (an empty last one is reused), the oldest beyond `TURNS` dropped.
     pub fn begin(&mut self) {
         if self.turns.back().is_some_and(|t| t.stops.is_empty()) {
             return;
         }
+        self.changes();
         self.turns.push_back(Turn::default());
         while self.turns.len() > TURNS {
             self.turns.pop_front();
@@ -75,6 +112,7 @@ impl Replay {
     }
 
     pub fn add(&mut self, stop: Stop) {
+        self.changes();
         if self.turns.is_empty() {
             self.turns.push_back(Turn::default());
         }
@@ -86,7 +124,7 @@ impl Replay {
         if call.is_empty() {
             return None;
         }
-        self.turns.iter_mut().rev().flat_map(|t| t.stops.iter_mut().rev()).find(|s| s.call == call)
+        self.find_mut(|s| s.call == call)
     }
 
     /// Where the stop of `call` is.
@@ -108,6 +146,11 @@ impl Replay {
     /// An edit to `path` moved its lines (`changes`: old → new line ranges, in order): the stops recorded
     /// before it there follow (a read of lines below it, an earlier edit's lines).
     pub fn edited(&mut self, path: &Path, changes: &[(Range<usize>, Range<usize>)]) {
+        // (a new version only when a stop is there — the edit of a file the turn never looked at moves none)
+        if !self.turns.iter().flat_map(|t| &t.stops).any(|s| s.path.as_deref() == Some(path)) {
+            return;
+        }
+        self.changes();
         for stop in self.turns.iter_mut().flat_map(|t| t.stops.iter_mut()) {
             if stop.path.as_deref() != Some(path) {
                 continue;
@@ -327,6 +370,27 @@ mod tests {
         r.edited(Path::new("a.rs"), &[(3..6, 3..5), (8..8, 7..9)]);
         let lines: Vec<_> = r.turns[0].stops.iter().map(|s| s.lines.clone().unwrap()).collect();
         assert_eq!(lines, [0..2, 11..16, 10..15, 3..5]);
+    }
+
+    /// The stops' version is new only when a stop is found or moved (#214): a lookup that finds nothing — an id no stop
+    /// has, an empty one, an edit of a file no stop is in — keeps it; one that finds a stop, or an edit that moves one,
+    /// doesn't.
+    #[test]
+    fn a_lookup_finding_nothing_keeps_the_version() {
+        let mut r = Replay::default();
+        r.begin();
+        r.add(Stop { call: "c1".into(), ..stop("a.rs", 0..2) });
+        let v = r.version();
+        assert!(r.by_call("c2").is_none());
+        assert!(r.by_call("").is_none());
+        assert!(r.find_mut(|s| s.page.is_some()).is_none());
+        r.edited(Path::new("b.rs"), &[(0..1, 0..2)]);
+        assert_eq!(r.version(), v, "nothing found, nothing moved");
+        assert!(r.by_call("c1").is_some());
+        let found = r.version();
+        assert_ne!(found, v, "a stop found, to change");
+        r.edited(Path::new("a.rs"), &[(0..1, 0..2)]);
+        assert_ne!(r.version(), found, "a stop moved");
     }
 
     /// Stepping: from live, back is the newest stop and forward the latest turn's first; across turns; past

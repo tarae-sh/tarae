@@ -1099,9 +1099,15 @@ pub mod lint {
     /// How often each of `patterns` appears per file of tarae's code (under `src/`, keyed by the path from
     /// there) — in what a non-test build compiles; `except` left out.
     pub fn counts(patterns: &[&str], except: &[&str]) -> BTreeMap<String, usize> {
+        counts_by(except, &|code| patterns.iter().map(|p| code.matches(p).count()).sum())
+    }
+
+    /// `counts` by a function of each file's code (comments out, literals emptied, test-only items out): how many
+    /// of what it looks for that code holds.
+    pub fn counts_by(except: &[&str], count: &dyn Fn(&str) -> usize) -> BTreeMap<String, usize> {
         let mut out = BTreeMap::new();
         for (rel, files) in trees() {
-            out.extend(count_tree(&files, patterns, &[]).into_iter().map(|(p, n)| (keyed(&rel, &p), n)));
+            out.extend(count_tree_by(&files, &[], count).into_iter().map(|(p, n)| (keyed(&rel, &p), n)));
         }
         out.retain(|p, _| !except.contains(&p.as_str()));
         out
@@ -1237,6 +1243,15 @@ pub mod lint {
         patterns: &[&str],
         except: &[&str],
     ) -> BTreeMap<String, usize> {
+        count_tree_by(files, except, &|code| patterns.iter().map(|p| code.matches(p).count()).sum())
+    }
+
+    /// `count_tree` by a function of each file's code (`counts_by`).
+    pub fn count_tree_by(
+        files: &[(String, String)],
+        except: &[&str],
+        count: &dyn Fn(&str) -> usize,
+    ) -> BTreeMap<String, usize> {
         let split: BTreeMap<&str, Split> = files.iter().map(|(p, t)| (p.as_str(), split(t))).collect();
         let tests = test_only(&split);
         let mut out = BTreeMap::new();
@@ -1244,7 +1259,7 @@ pub mod lint {
             if except.contains(path) || tests.contains(*path) {
                 continue;
             }
-            let n: usize = patterns.iter().map(|p| s.code.matches(p).count()).sum();
+            let n = count(&s.code);
             if n > 0 {
                 out.insert(path.to_string(), n);
             }

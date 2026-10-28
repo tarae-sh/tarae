@@ -43,8 +43,8 @@ pub type Base = (PathBuf, String);
 pub struct State {
     /// Each base's tip as last read — the first read is the baseline, never a move.
     tips: HashMap<Base, String>,
-    /// Bases with a watch going.
-    watched: HashSet<Base>,
+    /// Bases with a watch going: each repository's branches.
+    watched: HashMap<PathBuf, HashSet<String>>,
     /// A move not yet answered, by base.
     pending: HashMap<Base, Pending>,
     /// Workspaces to move once idle (answered, or unasked by `idle`), in the order they came.
@@ -80,7 +80,7 @@ impl Default for State {
     fn default() -> State {
         State {
             tips: HashMap::new(),
-            watched: HashSet::new(),
+            watched: HashMap::new(),
             pending: HashMap::new(),
             waits: Vec::new(),
             moving: None,
@@ -344,32 +344,51 @@ fn mode(ed: &Editor) -> &str {
     ed.config.workspace_sync.as_str()
 }
 
-/// A session's base branch: its own, else the branch of the checkout tarae started in (the home one has none).
-fn base_of(ed: &Editor, l: &Workspace) -> Option<String> {
-    let home = || sessions(ed).find(|s| s.id == WorkspaceId::HOME).and_then(|s| s.git_branch.clone());
+/// The branch of the checkout tarae started in.
+fn home_branch(ed: &Editor) -> Option<&str> {
+    sessions(ed).find(|s| s.id == WorkspaceId::HOME).and_then(|s| s.git_branch.as_deref())
+}
+
+/// A session's base branch: its own, else the branch of the checkout tarae started in (`home`; the home one has none).
+fn base_of<'a>(home: Option<&'a str>, l: &'a Workspace) -> Option<&'a str> {
     match l.id {
         WorkspaceId::HOME => None,
-        _ => l.base.clone().or_else(home),
+        _ => l.base.as_deref().or(home),
     }
 }
 
-/// Every event: each base watched (its repository known — `gitrepo::cached`, no git here), and the next workspace
-/// waiting moved once it's idle.
+/// Every event: each base watched, and the next workspace waiting moved once it's idle.
 pub fn sync(ed: &mut Editor) {
     if mode(ed) == "off" || ed.workspaces.is_empty() {
         return;
     }
     if ed.keep_close.watch {
-        let bases: Vec<Base> = sessions(ed)
-            .filter_map(|l| Some((crate::gitrepo::cached(&l.root)?.common_dir.clone(), base_of(ed, l)?)))
-            .collect();
-        for b in bases {
-            if ed.keep_close.watched.insert(b.clone()) {
-                watch(ed.events.shared_sender(), b);
+        for (common, branch) in unwatched(ed) {
+            if ed.keep_close.watched.entry(common.clone()).or_default().insert(branch.clone()) {
+                watch(ed.events.shared_sender(), (common, branch));
             }
         }
     }
     next(ed);
+}
+
+/// The bases no watch is on yet, each once: every session's repository as its git watch read it (`git_common` —
+/// nothing on disk here) and its base branch, looked up where they're watched (#214: each session's repository
+/// asked of `gitrepo::cached`, which stats every file it was resolved from, held the main loop every event).
+pub fn unwatched(ed: &Editor) -> Vec<Base> {
+    let home = home_branch(ed);
+    let mut out: Vec<Base> = Vec::new();
+    for l in sessions(ed) {
+        let (Some(common), Some(branch)) = (l.git_common.as_deref(), base_of(home, l)) else { continue };
+        crate::docpaths::worked(1);
+        if ed.keep_close.watched.get(common).is_some_and(|b| b.contains(branch)) {
+            continue;
+        }
+        if !out.iter().any(|(c, b)| c == common && b == branch) {
+            out.push((common.to_path_buf(), branch.to_string()));
+        }
+    }
+    out
 }
 
 /// `branch`'s tip as git's files have it — its loose ref, else `packed-refs`' line (no git run). None: no such
@@ -458,8 +477,9 @@ fn look(ed: &mut Editor, base: &Base) {
     let Some(p) = ed.keep_close.pending.get_mut(base) else { return };
     p.looking = true;
     let (from, to) = (p.from.clone(), p.to.clone());
+    let home = home_branch(ed);
     let on: Vec<(WorkspaceId, String, PathBuf, Conflicts)> = sessions(ed)
-        .filter(|l| base_of(ed, l).as_deref() == Some(base.1.as_str()))
+        .filter(|l| base_of(home, l) == Some(base.1.as_str()))
         .map(|l| (l.id, l.label().to_string(), l.root.clone(), conflicts(ed, l.id, &base.1)))
         .collect();
     let base = base.clone();

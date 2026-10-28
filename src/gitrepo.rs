@@ -113,6 +113,7 @@ pub type Stamp = Option<[(i64, i64); 2]>;
 
 fn stamp(p: &Path) -> Stamp {
     use std::os::unix::fs::MetadataExt as _;
+    crate::docpaths::worked(2);
     let own = std::fs::symlink_metadata(p).ok()?;
     let to = std::fs::metadata(p).unwrap_or_else(|_| own.clone());
     let s = [(own.ctime(), own.ctime_nsec()), (to.ctime(), to.ctime_nsec())];
@@ -313,6 +314,7 @@ impl Kept {
     fn get(&mut self, root: &Path) -> Option<Arc<Repo>> {
         let i = self.entries.iter().position(|(k, ..)| k == root)?;
         let (r, epoch) = (&self.entries[i].1, self.entries[i].2);
+        crate::docpaths::worked(2);
         let own = std::fs::symlink_metadata(root.join(".git")).is_ok();
         let changed = r.racy || r.stamps.iter().any(|(p, t)| stamp(p) != *t) || epoch != (self.epoch_now)();
         if !r.git_dir.is_dir() || (own && r.work_tree.as_deref() != Some(root)) || changed {
