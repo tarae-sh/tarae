@@ -637,6 +637,8 @@ pub struct Screen {
     /// The note card and the thought card this frame (x, y, width, height).
     pub note_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
     pub thought_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
+    /// The ask's waiting card this frame (x, y, width, height — `term::draw_ask_stream`): a press there is its own.
+    pub ask_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
     /// The notification card (x, y, width, height) — None when there's none, or it's folded into the status
     /// line.
     pub toast_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
@@ -3176,6 +3178,24 @@ impl Editor {
                 };
                 self.drag_says = Some((u, false, crate::mouse::CARD_DRAG));
                 self.card_press(button);
+            }
+            // The ask's waiting card (`space i`, a commit draft): it takes no keys of its own — its one key, `esc stop`, is
+            // the code's (`llm::esc_stops`) — so a press gives the code the keys, as a press focuses a card that waits;
+            // never its answer (the press stops nothing), nothing under it pressed
+            (S::Ask, _) => {
+                took_mouse(S::Ask);
+                if !down {
+                    return;
+                }
+                self.drag_says = Some((u, false, crate::mouse::ASK_DRAG));
+                self.code_takes_keys();
+                // (said only when the mode is what stands before its `esc stop`: a sequence under way the press ended
+                // above, as every press; an answer done since the frame the card was drawn in has nothing to stop)
+                let writing = self.workspace.claude.review.as_ref().is_some_and(|r| !r.ready);
+                if writing && self.mode != Mode::Normal {
+                    let mode = format!("{:?}", self.mode).to_lowercase();
+                    self.set_status(format!("{mode} mode: esc first — then esc stops the answer"));
+                }
             }
             // Which-key: a row presses its key, as typed (the same row again at once is that one press); off its rows,
             // said; the wheel has nothing to scroll there, nothing under it scrolled

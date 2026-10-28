@@ -345,6 +345,212 @@ fn the_wheel_sideways_goes_by_cells_and_pauses_follow() {
     assert_eq!(ed.doc().left, 4);
 }
 
+/// #192: the ask's waiting card (`space i`, a commit draft) is a surface of its own — nothing under it is pressed through
+/// it (a divider between panes here: a drag from it sized them), the wheel there scrolls nothing. A press gives the code
+/// the keys, where its `esc stop` is typed — from the chat here — and never stops the answer; a drag from it says why it
+/// selects nothing; in insert mode the press says `esc` comes first.
+#[test]
+fn a_press_on_the_asks_waiting_card_is_its_own() {
+    let mut ed = editor();
+    feed(&mut ed, "<C-w>v<C-w>v");
+    let mut rev = crate::llm::Review::new(1, ed.doc().id, "name it", Vec::new());
+    rev.streamed = "fn total(a: u32) -> u32 {\n    a + 1\n".into();
+    ed.workspace.claude.review = Some(rev);
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    frame(&mut ed);
+    assert_eq!(ed.keys_to().region, Region::Chat, "the chat had them");
+    let (cx, cy, cw, ch) = ed.screen.ask_card.get().expect("the ask's card drawn");
+    for (x, y) in (cy..cy + ch).flat_map(|y| (cx..cx + cw).map(move |x| (x, y))) {
+        assert_eq!(ed.mouse_at(x, y).surface, crate::mouse::Surface::Ask, "its cell {x},{y}");
+    }
+    // (the line before a pane that starts inside the card: a divider under it)
+    let starts = ed.screen.panes.iter().map(|p| p.1.x).find(|&px| px > cx + 1 && px < cx + cw);
+    let x = starts.expect("a divider under the card") - 1;
+    let rects = |ed: &Editor| ed.screen.panes.iter().map(|p| p.1).collect::<Vec<_>>();
+    let tops = |ed: &Editor| (ed.doc().top, ed.workspace.views.iter().map(|v| v.top).collect::<Vec<_>>());
+    let (before, top) = (rects(&ed), tops(&ed));
+    mouse(&mut ed, MouseKind::Down, x, cy + 1);
+    mouse(&mut ed, MouseKind::Drag, x + 6, cy + 1);
+    mouse(&mut ed, MouseKind::Up, x + 6, cy + 1);
+    assert_eq!(rects(&ed), before, "the divider under it never dragged");
+    assert_eq!(said(&ed), crate::mouse::ASK_DRAG);
+    assert_eq!(ed.keys_to().region, Region::Code, "the code's keys");
+    assert!(crate::llm::esc_stops(&ed), "its `esc stop` over them");
+    assert!(ed.workspace.claude.review.as_ref().is_some_and(|r| !r.ready), "the answer still being written");
+    mouse(&mut ed, MouseKind::ScrollDown, x + 2, cy + 1);
+    assert_eq!(tops(&ed), top, "no pane under it scrolled");
+    // (in insert mode: the keys the code's already, its `esc` first)
+    feed(&mut ed, "i");
+    press(&mut ed, x + 2, cy + 1);
+    assert!(said(&ed).starts_with("insert mode: esc first"), "said: {}", said(&ed));
+    assert_eq!(ed.mode, crate::editor::Mode::Insert, "the mode kept");
+}
+
+/// `space i`'s answer being written (`Review` not ready), the chat's, the code's keys.
+fn asking(ed: &mut Editor) {
+    let mut rev = crate::llm::Review::new(1, ed.doc().id, "name it", Vec::new());
+    rev.streamed = "fn total(a: u32) -> u32 {\n    a + 1\n".into();
+    ed.workspace.claude.review = Some(rev);
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    ed.workspace.viewer.at = crate::workspace::At::Code;
+    frame(ed);
+}
+
+fn ask_cell(ed: &Editor) -> (usize, usize) {
+    let (x, y, w, h) = ed.screen.ask_card.get().expect("the ask's card drawn");
+    (x + w / 2, y + h / 2)
+}
+
+fn writing(ed: &Editor) -> bool {
+    ed.workspace.claude.review.as_ref().is_some_and(|r| !r.ready)
+}
+
+/// #192: while the answer is written the code beside its card is the code's — "editing isn't blocked": a press puts
+/// the cursor, a drag selects, a double a word; the answer still written, nothing said of a review.
+#[test]
+fn a_press_beside_the_asks_card_is_the_codes() {
+    let mut ed = editor();
+    asking(&mut ed);
+    let (x, y) = code_cell(&ed, 3);
+    let card = ed.screen.ask_card.get().expect("the ask's card drawn");
+    assert!(
+        !(card.0..card.0 + card.2).contains(&x) || !(card.1..card.1 + card.3).contains(&y),
+        "beside the card"
+    );
+    assert!(matches!(ed.mouse_at(x, y).surface, crate::mouse::Surface::Code(_)), "{:?}", ed.mouse_at(x, y));
+    press(&mut ed, x, y);
+    let line_start = |ed: &Editor, l| crate::movement::line_start(&ed.doc().text, l);
+    assert_eq!(
+        ed.doc().selection().primary().head,
+        line_start(&ed, 3) + 2,
+        "the cursor where it was pressed"
+    );
+    assert_ne!(said(&ed), crate::mouse::REVIEW_OFF);
+    // (elsewhere: a press there again at once would be a double)
+    let ((_, y9), (_, y11)) = (code_cell(&ed, 9), code_cell(&ed, 11));
+    mouse(&mut ed, MouseKind::Down, x, y9);
+    mouse(&mut ed, MouseKind::Drag, x, y11);
+    mouse(&mut ed, MouseKind::Up, x, y11);
+    let sel = ed.doc().selection().primary();
+    assert_eq!(
+        (sel.from(), sel.to()),
+        (line_start(&ed, 9) + 2, line_start(&ed, 11) + 3),
+        "selected by the drag"
+    );
+    let (x7, y7) = code_cell(&ed, 7);
+    press(&mut ed, x7, y7);
+    press(&mut ed, x7, y7);
+    let sel = ed.doc().selection().primary();
+    assert_eq!(
+        (sel.from(), sel.to()),
+        (line_start(&ed, 7), line_start(&ed, 7) + 4),
+        "a double: its word, `line`"
+    );
+    assert!(writing(&ed), "the answer still being written");
+    assert_eq!(ed.keys_to().region, Region::Code);
+}
+
+/// #192: what's drawn after the ask's card takes the pointer over it — a picker, the follow card, the minimized chat,
+/// hover text under the wheel (each laid over the card's cell as the frame would record it there).
+#[test]
+fn what_is_drawn_over_the_asks_card_takes_the_pointer_there() {
+    use crate::mouse::Surface as S;
+    let fresh = || {
+        let mut ed = editor();
+        asking(&mut ed);
+        let at = ask_cell(&ed);
+        assert_eq!(ed.mouse_at(at.0, at.1).surface, S::Ask, "the card's own, with nothing over it");
+        (ed, at)
+    };
+    // (a picker: everything outside it is its outside)
+    let (mut ed, (x, y)) = fresh();
+    feed(&mut ed, "<space>?");
+    assert!(ed.picker.is_some(), "the palette open");
+    assert_eq!(ed.mouse_at(x, y).surface, S::Picker, "a picker's");
+    // (the follow card, the minimized chat: each over it)
+    for mini in [false, true] {
+        let (ed, (x, y)) = fresh();
+        let over = Some((x - 2, y - 1, 6, 3));
+        if mini {
+            ed.screen.chat_mini.set(over)
+        } else {
+            ed.screen.thought_card.set(over)
+        }
+        assert_eq!(ed.mouse_at(x, y).surface, S::FollowCard, "the follow card's (minimized: {mini})");
+        assert_eq!(ed.mouse_at(x + 6, y).surface, S::Ask, "the card's beside it");
+    }
+    // (hover text: the wheel's, a press still the card's)
+    let (mut ed, (x, y)) = fresh();
+    ed.popup = Some(crate::markdown::render("Some hover text.", &ed.theme, None));
+    frame(&mut ed);
+    ed.screen.popup.set(Some((x - 2, y - 1, 6, 3)));
+    assert_eq!(ed.mouse_under(MouseKind::ScrollDown, x, y).surface, S::Popup, "the wheel: hover text's");
+    assert_eq!(ed.mouse_at(x, y).surface, S::Ask, "a press: the card's");
+}
+
+/// #192: the press's words say what stands before its `esc stop` — the mode only when it's the reason; a sequence under
+/// way ended by the press says nothing of a mode; an answer done since the card's frame, nothing of stopping.
+#[test]
+fn a_press_on_the_asks_card_says_the_mode_only_when_its_the_reason() {
+    let mut ed = editor();
+    asking(&mut ed);
+    // (its left end, the chat closed: off which-key, at the screen's bottom right)
+    ed.workspace.claude.chat = None;
+    frame(&mut ed);
+    let (cx, cy, _, ch) = ed.screen.ask_card.get().expect("the ask's card drawn");
+    let (x, y) = (cx + 1, cy + ch / 2);
+    for keys in ["g", "3", "f"] {
+        feed(&mut ed, keys);
+        assert!(ed.sequence_under_way(), "{keys} under way");
+        assert_eq!(
+            ed.mouse_at(x, y).surface,
+            crate::mouse::Surface::Ask,
+            "{keys}: {:?}",
+            ed.screen.which_key.get()
+        );
+        ed.messages.clear();
+        press(&mut ed, x, y);
+        assert!(!ed.sequence_under_way(), "{keys} ended by the press");
+        assert!(crate::llm::esc_stops(&ed), "its `esc stop` over the code's keys after {keys}");
+        assert_eq!(said(&ed), "", "nothing said after {keys}");
+    }
+    feed(&mut ed, "v");
+    press(&mut ed, x, y);
+    assert!(said(&ed).starts_with("select mode: esc first"), "said: {}", said(&ed));
+    feed(&mut ed, "<esc>");
+    // (the answer done since the frame the card was drawn in: nothing left to stop, no word of it)
+    feed(&mut ed, "i");
+    ed.workspace.claude.review.as_mut().unwrap().ready = true;
+    ed.messages.clear();
+    ed.handle_mouse(Mouse { kind: MouseKind::Down, x: x as u16, y: y as u16, alt: false, ctrl: false });
+    assert!(!said(&ed).contains("stops the answer"), "said: {}", said(&ed));
+}
+
+/// #192: the ask's card has no frame (as a toast) — none recorded over it, nothing lit under the pointer; were one
+/// drawn there, it would light as every card's frame does (`lights_at`'s arm, so the two can't drift apart).
+#[test]
+fn the_asks_card_lights_only_a_frame_drawn_there() {
+    let mut ed = editor();
+    asking(&mut ed);
+    let card = ed.screen.ask_card.get().expect("the ask's card drawn");
+    let (x, y) = ask_cell(&ed);
+    let meets = |r: (usize, usize, usize, usize)| {
+        r.0 < card.0 + card.2 && card.0 < r.0 + r.2 && r.1 < card.1 + card.3 && card.1 < r.1 + r.3
+    };
+    assert!(!ed.screen.frames.borrow().iter().any(|f| meets(f.rect)), "no frame recorded over it");
+    let u = ed.mouse_at(x, y);
+    assert_eq!(u.surface, crate::mouse::Surface::Ask);
+    assert_eq!(ed.lights_at(u, x, y), None, "nothing lit");
+    let framed = crate::mouse::Framed {
+        rect: card,
+        of: Some(crate::mouse::Lights::Card),
+        lit: crate::mouse::Lit::Wash,
+    };
+    ed.screen.frames.borrow_mut().push(framed);
+    assert_eq!(ed.lights_at(u, x, y), Some(crate::mouse::Lights::Card), "a frame drawn there lights");
+}
+
 #[test]
 fn the_wheel_sideways_scrolls_the_codes_columns() {
     let mut ed = editor();

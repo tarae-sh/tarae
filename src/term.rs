@@ -710,6 +710,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         completion_rows: Default::default(),
         note_card: Default::default(),
         thought_card: Default::default(),
+        ask_card: Default::default(),
         toast_card: Default::default(),
         toast_strength: Default::default(),
         // (the card's place, decided once — kept from the frame before)
@@ -13379,6 +13380,7 @@ fn draw_ask_stream(
         queue!(out, Spaces(inner + 2 - used))?;
     }
     card_edge(out, card, x0, y + 1 + body + hint, width)?;
+    editor.screen.ask_card.set(Some((x0, y0, width, h)));
     Ok(Some((x0, y0, width, h)))
 }
 

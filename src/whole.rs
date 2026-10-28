@@ -126,6 +126,7 @@ fn floats(s: crate::mouse::Surface) -> bool {
             | S::PickerPreview
             | S::Toast
             | S::Card
+            | S::Ask
             | S::Float(_)
             | S::Floatlist(_)
             | S::Popup
@@ -174,9 +175,8 @@ pub enum On {
     Toast,
     /// A card: its title, a peek's, its rows.
     Card,
-    /// The waiting card of `space i`'s ask (`term::draw_ask_stream`): its instruction. It has no surface of its own —
-    /// the pointer over it is over its review not ready yet (`mouse_under`'s `EditReview`, outside), so it's seen
-    /// there, floating over the panes (U2's fourth review: as `Card` it was never under the mouse).
+    /// The waiting card of `space i`'s ask (`term::draw_ask_stream`): its instruction, on its own surface (`Surface::Ask`,
+    /// #192), floating over the panes (U2's fourth review: as `Card` it was never under the mouse).
     Ask,
     /// Claude's edit review in the buffer: its head.
     Review,
@@ -245,7 +245,7 @@ impl On {
                 | (On::Status, S::Status)
                 | (On::Toast, S::Toast)
                 | (On::Card, S::Card)
-                | (On::Ask, S::EditReview)
+                | (On::Ask, S::Ask)
                 | (On::Review, S::EditReview)
                 | (On::WhichKey, S::WhichKey)
                 | (On::Follow, S::FollowCard)

@@ -48,6 +48,9 @@ pub enum Surface {
     Toast,
     /// The front card and its stack's rows, the grammar download's buttons.
     Card,
+    /// The ask's waiting card (`space i`, a commit draft — `term::draw_ask_stream`): a press gives the keys to where its
+    /// one key is typed, the code (its `esc stop` — `llm::esc_stops`), as a press focuses a card that waits.
+    Ask,
     /// A line between two things with sizes (`Part::Border`).
     Edge,
     /// A floating pane's frame and what's in it but a list's rows.
@@ -252,6 +255,8 @@ pub const POINTING_DRAG: &str = "pointing takes a press — a drag picks nothing
 pub const MOVING_PRESS: &str = "moving this pane — h j k l move it, enter done, its top line drags it";
 /// What a drag from a card says (Q11: a card is a question, not a document).
 pub const CARD_DRAG: &str = "a card's text isn't selected — v shows it whole, to copy";
+/// What a drag from the ask's waiting card says: what it writes comes to the buffer, reviewed there.
+pub const ASK_DRAG: &str = "the ask's card isn't selected — its change comes to the buffer, reviewed there";
 /// What a press or a drag off an edit's review says while it waits.
 pub const REVIEW_OFF: &str = "the review waits for its answer — y accepts the change, n rejects it";
 /// What a drag on the start screen says.
@@ -413,6 +418,16 @@ impl Editor {
             if self.mouse_in_terminal {
                 return at(self.terminal_surface(), self.terminal_cell(x, y, true));
             }
+        }
+        // The ask's waiting card: over the panes, the floating ones too — under what's drawn after it (the follow card,
+        // hover text, a picker); nothing under it pressed through it
+        if let Some(card) = s.ask_card.get()
+            && inside(card, x, y)
+            && self.picker.is_none()
+            && !s.thought_card.get().or(s.chat_mini.get()).is_some_and(|r| inside(r, x, y))
+            && !(wheel && self.popup.is_some() && s.popup.get().is_some_and(|r| inside(r, x, y)))
+        {
+            return at(S::Ask, Part::Blank);
         }
         // Floating panes: the topmost there takes it, nothing under it pressed through it
         let floated = self.float_at(x, y).map(|f| f.0).filter(|_| self.picker.is_none());
@@ -665,8 +680,9 @@ impl Editor {
             }
             return at(S::Chat, Part::Blank);
         }
-        if let Some(r) = self.workspace.claude.review.as_ref() {
-            if r.ready && s.review_area.get().is_some_and(|a| inside(a, x, y)) {
+        // (Claude's edit review in place of the code — an answer still being written leaves the code the code's)
+        if self.workspace.claude.review.as_ref().is_some_and(|r| r.ready) {
+            if s.review_area.get().is_some_and(|a| inside(a, x, y)) {
                 let hunk = s.review_rows.borrow().iter().find(|c| c.0 == y).map(|c| c.1);
                 return at(S::EditReview, hunk.map_or(Part::Blank, Part::Row));
             }
@@ -719,7 +735,8 @@ impl Editor {
             S::Output(_) | S::List(_) | S::Terminal | S::TerminalView | S::Plugin | S::SlotLine => {
                 Some(group().map_or(Lights::Slot, Lights::Dock))
             }
-            S::Card | S::FollowCard => {
+            // (the ask's card records no frame — it has none, as a toast: nothing lit, unless one is drawn there)
+            S::Card | S::FollowCard | S::Ask => {
                 let frames = self.screen.frames.borrow();
                 frames.iter().rev().find(|f| inside(f.rect, x, y)).and_then(|f| f.of)
             }
@@ -1185,6 +1202,15 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             A::Release => RELEASE,
             A::Hover => HOVER,
         },
+        // (its press the keys to the code, where its `esc stop` is typed — never the stop itself)
+        Su::Ask => match act {
+            A::Press => Acts,
+            A::Double => AS_ONE,
+            A::Drag => Says(ASK_DRAG),
+            A::Wheel => NO_SCROLL,
+            A::Release => RELEASE,
+            A::Hover => HOVER,
+        },
         // (pressed it's held, lit; let go where it was pressed, the keys to what it heads; under the pointer, lit)
         Su::Edge => match act {
             A::Press | A::Release | A::Drag | A::Hover => Acts,
@@ -1479,6 +1505,7 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ("A floating pane", "its frame", Su::Float(GroupKind::Tests), Part::Frame(Grip::Move(0, 0))),
         ("A floating pane", "inside", Su::Float(GroupKind::Tests), Part::Blank),
         ("Cards", "an answer, the card", Su::Card, Part::Answer('y')),
+        ("The ask's card (`space i`, a commit draft)", "", Su::Ask, Part::Blank),
         ("The notification card", "", Su::Toast, Part::Row(0)),
         ("A picker", "a row", Su::Picker, Part::Row(0)),
         ("A picker", "its query", Su::Picker, Part::Text { line: 0, col: 0 }),

@@ -539,6 +539,8 @@ fn holds(ed: &Editor, u: Under) -> bool {
         Surface::Code(p) | Surface::PaneTop(p) => {
             matches!(r, R::Code | R::Weave | R::Page) && ed.workspace.viewer.focus == p
         }
+        // (the code's keys, where its `esc stop` is typed — a shortcut over them, `keys_chain`)
+        Surface::Ask => matches!(r, R::Code | R::Weave | R::Page),
         // (a chip's press shows what it stands for — the keys given aren't all it does; `N things`' is)
         Surface::Chat if matches!(u.part, Part::Word(crate::mouse::Word::With(Some(_)))) => false,
         Surface::Chat | Surface::Transcript | Surface::Input => matches!(r, R::Chat | R::View(_)),
