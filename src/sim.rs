@@ -44,6 +44,7 @@ mod keepclose;
 mod kubecard;
 mod motion;
 mod now;
+mod orchestra;
 mod overlap;
 mod panes;
 mod presence;

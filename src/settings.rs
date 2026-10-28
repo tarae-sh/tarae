@@ -507,6 +507,20 @@ pub static SETTINGS: &[Setting] = &[
         set: |c, v| c.llm.screen_terminal = b(v),
     },
     Setting {
+        path: "llm.session-tools",
+        kind: Kind::Enum(crate::orchestra::MODES),
+        doc: "Chat: whose Claude can start sessions of its own and steer them — \"home\": the checkout tarae started in; \"any\": any session but a child; \"off\". Only your own config sets it",
+        get: |c| Value::from(c.llm.session_tools.as_str()),
+        set: |c, v| c.llm.session_tools = s(v).to_string(),
+    },
+    Setting {
+        path: "llm.children-max",
+        kind: Kind::Int { min: 0, max: 16 },
+        doc: "Chat: how many sessions one Claude may have started and open at once (each its own checkout, build and Claude). Only your own config sets it",
+        get: |c| Value::from(c.llm.children_max as i64),
+        set: |c, v| c.llm.children_max = n(v),
+    },
+    Setting {
         path: "llm.docker-inert",
         kind: Kind::StrList,
         doc: "Chat: what a Docker card's a lets vary of a command whose code is pinned — \"cargo xtask linux: clippy test --userns --bin= --\" (an act, a switch, an option and its value, test names after --)",

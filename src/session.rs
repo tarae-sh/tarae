@@ -106,6 +106,13 @@ pub struct Session {
     /// leaves it as it was): the state reads it with no lock or probe. Shown only, never a run's input. None: no
     /// sandboxed run started yet — a keeper is born with the first.
     pub sandbox: Option<crate::sandbox::guarantees::Guarantees>,
+    /// The session whose Claude started this one (`orchestra.rs`, `sessions_start`'s `y`) — its parent: only it may
+    /// send this one messages, and a child's own chat lists no session tool (no children of children). Kept with
+    /// its workspace as the parent's checkout (`worktree::Kept.parent`); one whose parent didn't come back is its own.
+    pub parent: Option<crate::event::SessionId>,
+    /// Its Claude's `sessions_start` under way — from the call to its answer (`orchestra::answered`, in
+    /// `tools::answer_parts`): one at a time, so two calls side by side can't both pass `llm.children-max`.
+    pub starting: Vec<crate::tools::Call>,
 }
 
 impl Session {
@@ -138,6 +145,8 @@ impl Session {
             web_reads: Vec::new(),
             web_once: Vec::new(),
             allowed: Default::default(),
+            parent: None,
+            starting: Vec::new(),
             caps: None,
             caps_asked: 0,
             sandbox: None,

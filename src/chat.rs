@@ -121,10 +121,13 @@ const TOOLS: &str = "";
 /// and `read` outside it only as Read would, on its card — `reads::Gate`; `rename` and `replace` land as Claude's
 /// edits do, in the review — `refactor.rs`, and `edit` too — `edittool.rs`; none of them reads or changes a file
 /// named like a key before Claude was let read it — `reads::Keys`; `ui` the screen's structure at Claude's level
-/// — `uistate/claude.rs`; `git` only git's reads, on the guarded path — `gittool.rs`)
+/// — `uistate/claude.rs`; `git` only git's reads, on the guarded path — `gittool.rs`; `sessions_start` asks on its
+/// own card, `session_send` reaches only the chat's own children, and only a parent's chat lists them —
+/// `orchestra.rs`)
 const ALLOWED: &str = "mcp__tarae__note,mcp__tarae__run_tests,mcp__tarae__run,mcp__tarae__plan,\
 mcp__tarae__references,mcp__tarae__search,mcp__tarae__read,mcp__tarae__symbols,mcp__tarae__definition,\
-mcp__tarae__diagnostics,mcp__tarae__rename,mcp__tarae__replace,mcp__tarae__ui,mcp__tarae__edit,mcp__tarae__git";
+mcp__tarae__diagnostics,mcp__tarae__rename,mcp__tarae__replace,mcp__tarae__ui,mcp__tarae__edit,mcp__tarae__git,\
+mcp__tarae__sessions_start,mcp__tarae__session_send";
 
 /// Settings laid over the user's and the project's when they're loaded (`llm.chat-settings`) — with what the
 /// project's own aren't trusted for held back (`claudetrust.rs`). `Skill` denied: a project skill's
@@ -299,6 +302,9 @@ pub struct Msg {
     /// A change's row (`edit`, `write`, `rename`, `replace`): the keys that decided it, each once, `y` before `n`
     /// (`stamp_call` — its review's answers, its card's) — none while undecided, unasked or unknown.
     pub stamps: Vec<crate::stamp::Stamp>,
+    /// A message another session's Claude sent (`orchestra.rs` — its parent's): that session's name. Drawn as its,
+    /// headed `main's Claude`, never in your message's style.
+    pub from: Option<String>,
     /// Goes up with every change to what it shows (`changed`) — a word replaced, a row's verdict — so its rows
     /// are laid out again, even when the text's length stays.
     version: u64,
@@ -396,6 +402,7 @@ impl Msg {
             key_pass: Vec::new(),
             ran: None,
             stamps: Vec::new(),
+            from: None,
             version: 0,
             cache: RefCell::new(None),
         }
@@ -535,6 +542,11 @@ pub struct Chat {
     /// What waits for this turn's end besides the message, in order: the review's notes (`space v s`), a reply on
     /// a note — they were refused while Claude answered (frictions29 18), and go first, one a turn.
     pub sends: Vec<Later>,
+    /// Whether its process lists the session tools (`orchestra::may_parent` as it was spawned): fixed for the
+    /// process's life — the tools are the cache's prefix, the same to the byte while it runs; `:set` changes the next.
+    pub session_tools: bool,
+    /// The line that says who a parent's message is from went in this conversation (`orchestra::FRAMING`): once.
+    pub framed: bool,
     /// The queued line's rows as last laid out (`term::chat_laid`), and what they were laid out for — the same rows
     /// while nothing changed, so the transcript keeps its piece (`chatdoc::follow`).
     pub queued_laid: RefCell<Option<(u64, std::sync::Arc<[ChatRow]>)>>,
@@ -833,13 +845,25 @@ impl Chat {
     pub fn queued_said(&self) -> Option<(String, String)> {
         let n = self.queued.as_ref().map_or(0, |_| self.queued_n.max(1));
         let reviews = self.sends.iter().filter(|l| matches!(l, Later::Review(_))).count();
-        let replies = self.sends.len() - reviews;
+        let parents: Vec<&str> = self
+            .sends
+            .iter()
+            .filter_map(|l| if let Later::Parent { from, .. } = l { Some(from.as_str()) } else { None })
+            .collect();
+        let replies = self.sends.len() - reviews - parents.len();
         let mut parts = Vec::new();
         if reviews > 0 {
             parts.push("review notes".to_string());
         }
         if replies > 0 {
             parts.push(if replies == 1 { "a reply".into() } else { format!("{replies} replies") });
+        }
+        if let Some(from) = parents.first() {
+            let n = parents.len();
+            parts.push(match n {
+                1 => format!("a message from {from}'s Claude"),
+                _ => format!("{n} messages from {from}'s Claude"),
+            });
         }
         if n > 0 {
             let mut what: Vec<String> = Vec::new();
@@ -879,6 +903,7 @@ impl Chat {
         self.hosts_next.clear();
         self.web_hosts.clear();
         self.web_refused.clear();
+        self.framed = false;
     }
 
     pub(crate) fn new() -> Self {
@@ -927,6 +952,8 @@ impl Chat {
             view_wanted: false,
             transcript: None,
             sends: Vec::new(),
+            session_tools: false,
+            framed: false,
             queued_laid: RefCell::new(None),
             hosts_next: Vec::new(),
             screen: None,
@@ -1632,6 +1659,14 @@ pub(crate) fn stand_in(c: &mut Chat) -> std::sync::mpsc::Receiver<String> {
     rx
 }
 
+/// `stand_in`, its process a generation of its own as a real one's is — a tool call's answer reaches this chat alone
+/// where several chats have stand-ins (orchestra's simulation).
+#[cfg(test)]
+pub(crate) fn stand_in_own(c: &mut Chat) -> std::sync::mpsc::Receiver<String> {
+    c.generation = crate::tools::generation();
+    stand_in(c)
+}
+
 /// The turn over — a stand-in claude's (a simulation's step): what was queued goes, as at a real turn's end.
 #[cfg(test)]
 pub(crate) fn stand_in_done(ed: &mut Editor) {
@@ -1640,10 +1675,21 @@ pub(crate) fn stand_in_done(ed: &mut Editor) {
     send_queued(ed);
 }
 
+/// The turn over refused for money — a stand-in claude's: what was queued stays (`hold_queued`), as at a real
+/// refused turn's end.
+#[cfg(test)]
+pub(crate) fn stand_in_broke(ed: &mut Editor) {
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+    c.state = State::Idle;
+    hold_queued(ed);
+}
+
 fn ensure_proc(ed: &mut Editor) {
     // (a key passed on until the session ends — the key card's `y`, `envkey.rs`)
     let cfg = llm::LlmConfig { keep_env_key: llm::keeps_key(ed), ..ed.config.llm.clone() };
     let tx = ed.events.sender();
+    // (whether this process lists the session tools: as it starts, for its life — `Chat.session_tools`)
+    let parent = crate::orchestra::may_parent(ed);
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     if c.proc.is_some() {
         return;
@@ -1662,6 +1708,7 @@ fn ensure_proc(ed: &mut Editor) {
     #[cfg(test)]
     if let Some(tx) = ed.claude_lines.clone() {
         c.proc = Some(Proc { stdin: llm::Lines::to(tx), pid: 0 });
+        c.session_tools = parent;
         return;
     }
     let mut args = llm::with_tools(&cfg.args, TOOLS, ALLOWED);
@@ -1717,6 +1764,7 @@ fn ensure_proc(ed: &mut Editor) {
     c.generation = crate::tools::generation();
     let generation = c.generation;
     c.proc = Some(Proc { stdin, pid: child.id() });
+    c.session_tools = parent;
     llm::pump(child, false, tx, move |ev| {
         Some(Box::new(move |ed: &mut Editor| on_event(ed, generation, ev)))
     });
@@ -2473,13 +2521,25 @@ pub(crate) fn send_queued(ed: &mut Editor) {
         return;
     }
     // (what waits besides a message goes first, one a turn — frictions29 18; one that sends nothing now, its
-    // drafts gone meanwhile, lets the next go)
-    while let Some(later) =
-        ed.workspace.claude.chat.as_mut().filter(|c| !c.sends.is_empty()).map(|c| c.sends.remove(0))
-    {
+    // drafts gone meanwhile, lets the next go — but a parent's message after the user's queued one: the person
+    // first, nothing of theirs delayed for a program)
+    let next = |c: &mut Chat| {
+        let i = c.sends.iter().position(|l| c.queued.is_none() || !matches!(l, Later::Parent { .. }))?;
+        Some(c.sends.remove(i))
+    };
+    while let Some(later) = ed.workspace.claude.chat.as_mut().and_then(next) {
         match later {
             Later::Review(lines) => crate::codereview::send_as(ed, lines),
             Later::Reply { id, text, fresh, why } => crate::notes::send(ed, id, &text, fresh, why, None),
+            Later::Parent { from, text } => {
+                if !submit_from(ed, &from, &text)
+                    && let Some(c) = ed.workspace.claude.chat.as_mut()
+                {
+                    // (it couldn't go — its claude ended: it waits again, first, for the next start)
+                    c.sends.insert(0, Later::Parent { from, text });
+                    return;
+                }
+            }
         }
         if held(ed) {
             return;
@@ -2524,6 +2584,9 @@ pub enum Later {
     Review(Option<bool>),
     /// A reply on note `id` (`notes::send`'s).
     Reply { id: u64, text: String, fresh: bool, why: Option<String> },
+    /// A message from its parent session's Claude (`orchestra.rs`, `session_send`): `from` its name. It goes after a
+    /// message of the user's queued before it — the person first.
+    Parent { from: String, text: String },
 }
 
 /// The turn ended refused for money: the message queued during it stays queued, said — it goes once the
@@ -2624,7 +2687,14 @@ pub fn send(ed: &mut Editor) {
 /// input's: what was pointed at stays for the input's own message (`submit_input`), and a `y` given for that
 /// one isn't this one's.
 pub fn submit(ed: &mut Editor, question: &str, about: Option<String>, chip: Option<String>) -> bool {
-    submit_as(ed, question, about, chip, false)
+    submit_as(ed, question, about, chip, false, None)
+}
+
+/// A message from the session `from`'s Claude — this one's parent (`orchestra.rs`) — as the next turn: in
+/// `<from-session>`, the line saying who it's from before it the first time in a conversation; its row headed
+/// `from's Claude`. False if it couldn't go (busy, no process).
+pub fn submit_from(ed: &mut Editor, from: &str, text: &str) -> bool {
+    submit_as(ed, text, None, None, false, Some(from))
 }
 
 /// `text` sent as it is, a turn of its own — no editor context: a slash command is read only at a message's start
@@ -2708,7 +2778,7 @@ pub fn pointed_said(ed: &Editor, id: &str, pass: &[std::path::PathBuf]) -> Strin
 /// The chat input's own message: with what the user pointed at (its chips), and the files named like keys a
 /// `y` let go with it (`reads::input_pass`).
 fn submit_input(ed: &mut Editor, question: &str) -> bool {
-    submit_as(ed, question, None, None, true)
+    submit_as(ed, question, None, None, true, None)
 }
 
 fn submit_as(
@@ -2717,6 +2787,7 @@ fn submit_as(
     about: Option<String>,
     chip: Option<String>,
     input: bool,
+    from: Option<&str>,
 ) -> bool {
     if ed.workspace.claude.chat.as_ref().is_none_or(Chat::busy) {
         return false;
@@ -2769,9 +2840,14 @@ fn submit_as(
         true => context,
         false => format!("{context}\n{}", blocks.join("\n")),
     };
+    // (a parent's words: whose they are, said once a conversation — `orchestra::framed`)
+    let asked = match from {
+        Some(f) => crate::orchestra::framed(f, question, !c.framed),
+        None => question.to_string(),
+    };
     let content = match about {
-        Some(a) => format!("{context}\n{a}\n\n{question}"),
-        None => format!("{context}\n\n{question}"),
+        Some(a) => format!("{context}\n{a}\n\n{asked}"),
+        None => format!("{context}\n\n{asked}"),
     };
     // A write that fails: the process stopped reading — it ended, and its exit, on the way (`llm::pump`), says
     // why. Until then the message is the turn's, as one written a moment before that exit is: for a conversation
@@ -2847,7 +2923,9 @@ fn submit_as(
     }
     msg.chip = chip;
     (msg.quotes, msg.screen, msg.pointed, msg.key_pass) = (quotes, shot, pointed, passed);
+    msg.from = from.map(str::to_string);
     let c = ed.workspace.claude.chat.as_mut().expect("sent above");
+    c.framed |= from.is_some();
     c.msgs.push(msg);
     c.scroll = 0;
     c.state = State::Thinking;
@@ -3414,6 +3492,28 @@ fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
                 range,
                 link: Some(Link { path, line: 0 }),
             }
+        }
+        // (orchestra: the sessions asked for, by name — their briefs on the card; a message's words whole, as a note's)
+        "mcp__tarae__sessions_start" => {
+            let names: Vec<&str> = input["sessions"]
+                .as_object()
+                .map(|o| o.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            let range = input["base"]
+                .as_str()
+                .filter(|b| !b.trim().is_empty())
+                .map_or(String::new(), |b| format!("from {b}"));
+            Look { verb: "start", what: names.join(", "), pattern: false, range, link: None }
+        }
+        "mcp__tarae__session_send" => {
+            let text = s("message");
+            let gist = text
+                .lines()
+                .map(str::trim_end)
+                .filter(|l| !l.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            Look { verb: "send", what: s("session"), pattern: false, range: gist, link: None }
         }
         other => {
             Look { verb: "use", what: other.to_string(), pattern: false, range: String::new(), link: None }

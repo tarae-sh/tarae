@@ -46,6 +46,9 @@ pub struct Offer {
     /// The question's lines that keep their end (`read ~/…/x.patch · 515 B · 2 files`): one row, never wrapped —
     /// their first word whole, the rest cut on the left (`term::fit_left`) so a path's name and what follows stay.
     pub ends: Vec<usize>,
+    /// The question's lines that are a list's rows (a set card's sessions, `orchestra.rs`): one row each, never
+    /// wrapped, cut at their end — the text given is what the cut card under the mouse says whole.
+    pub rows: Vec<(usize, String)>,
     /// The question's lines that tell, never decide — drawn faint (or in warning) whatever `decided` covers: a
     /// kubectl run's context, information about what it reaches, not what `y` decides (#182).
     pub told: Vec<usize>,
@@ -200,6 +203,9 @@ pub enum What {
     ForcePush(Box<crate::gitpanel::ForcePush>),
     /// A new session (`worktree.rs`): `y` makes its branch and checkout as the card says.
     SessionNew(Box<crate::worktree::Making>),
+    /// Sessions Claude asks to start (`orchestra.rs`, `sessions_start`): `y` makes each behind, its brief its first
+    /// message; `$` and `b` as a new session's, for the set; `v` the briefs whole; `n` none. Its call waits on it.
+    SessionSet(Box<crate::orchestra::Set>),
     /// Ending a session that has something to lose (`worktree.rs`): `y` removes its checkout and keeps its
     /// branch, `D` deletes the branch too, `n` keeps it all.
     WorkspaceEnd(Box<crate::worktree::Ending>),
@@ -321,6 +327,7 @@ pub const KINDS: &[&str] = &[
     "branch-delete",
     "force-push",
     "session-new",
+    "session-set",
     "workspace-end",
     "close-reviewed",
     "change-set",
@@ -478,6 +485,7 @@ impl What {
             | What::EnvKey { .. }
             // (the review it's for ends with the restart)
             | What::Board(_)
+            | What::SessionSet(_)
             | What::Limit(_) => Lost,
             #[cfg(test)]
             What::Asks { .. } => Lost,
@@ -556,6 +564,7 @@ impl Offer {
             #[cfg(test)]
             What::Asks { call } => Some(Asker::Tool(call.clone())),
             What::WebRead(a) => Some(Asker::Tool(a.call.clone())),
+            What::SessionSet(s) => Some(Asker::Tool(s.call.clone())),
             // (one `also` raised: Claude's call waits on it — `tools::also_ask`)
             What::Grant { run, .. } if run.claude.is_some() => run.claude.clone().map(Asker::Tool),
             What::ProtectedMade { then, .. } => then.call().map(|c| Asker::Tool(c.clone())),
@@ -611,6 +620,7 @@ impl Offer {
             warnings: Vec::new(),
             diff: None,
             ends: Vec::new(),
+            rows: Vec::new(),
             told: Vec::new(),
             folds: Vec::new(),
             since: crate::clock::now(),
@@ -747,6 +757,8 @@ impl Offer {
                 | What::BranchDelete { .. }
                 | What::ForcePush(_)
                 | What::SessionNew(_)
+                // (its yes spends: a Claude and a cold build a session)
+                | What::SessionSet(_)
                 | What::WorkspaceEnd(_)
                 | What::ChangeSet { .. }
                 | What::Rebase(_)
@@ -784,7 +796,16 @@ impl Offer {
     /// Whether `$` steps it: a new session's card asking who pays for its Claude (the plan's weekly window is
     /// near its limit — `worktree::Making::billing_ask`).
     pub fn bills(&self) -> bool {
-        matches!(&self.what, What::SessionNew(m) if m.billing_ask.is_some())
+        self.making().is_some_and(|m| m.billing_ask.is_some())
+    }
+
+    /// What a new session's card makes — a set's first, which says its base and billing for all of them.
+    pub fn making(&self) -> Option<&crate::worktree::Making> {
+        match &self.what {
+            What::SessionNew(m) => Some(m),
+            What::SessionSet(s) => s.sessions.first().map(|(m, _)| m),
+            _ => None,
+        }
     }
 
     /// The host it asks about, if it's that card — or a raw connection's, or a lookup's (6e+).
@@ -1049,7 +1070,7 @@ impl Offer {
 
     /// Whether `b` answers it: a new session's card with another base to make it from (#85).
     pub fn base_steps(&self) -> bool {
-        matches!(&self.what, What::SessionNew(m) if !m.others.is_empty())
+        self.making().is_some_and(|m| !m.others.is_empty())
     }
 
     /// Whether `D` answers it: the end card of a session on a branch (removes both).
@@ -1370,6 +1391,20 @@ impl Offer {
                 v.push(plain('n', "Not now"));
                 v
             }
+            W::SessionSet(s) => {
+                let mut v = vec![plain('y', if s.sessions.len() == 1 { "Make it" } else { "Make them" })];
+                if self.bills() {
+                    let api =
+                        s.sessions.first().is_some_and(|(m, _)| m.billing == crate::billing::Billing::Api);
+                    v.push(lasts('$', if api { "Bill plan" } else { "Bill API" }));
+                }
+                v.push(plain('v', if s.sessions.len() == 1 { "Its brief" } else { "Briefs" }));
+                if self.base_steps() {
+                    v.push(plain('b', "Other base"));
+                }
+                v.push(plain('n', "None"));
+                v
+            }
             // (work in no commit: no `y` — committing leads, removing takes a capital)
             W::WorkspaceEnd(_) if self.commits_first() => vec![
                 lasts('c', "Commit, then end"),
@@ -1553,6 +1588,7 @@ impl Offer {
             W::BranchDelete { .. } => "branch-delete",
             W::ForcePush(_) => "force-push",
             W::SessionNew(_) => "session-new",
+            W::SessionSet(_) => "session-set",
             W::WorkspaceEnd(_) => "workspace-end",
             W::CloseReviewed { .. } => "close-reviewed",
             W::ChangeSet { .. } => "change-set",
@@ -1988,6 +2024,7 @@ impl crate::editor::Editor {
             What::BranchDelete { top, branch, tip } => self.git_branch_delete_answer(id, top, branch, tip),
             What::ForcePush(f) => self.git_force_push(id, *f),
             What::SessionNew(m) => self.session_make(id, *m),
+            What::SessionSet(s) => crate::orchestra::answer(self, id, *s, true),
             What::WorkspaceEnd(e) => self.session_remove(*e, false, Some(id)),
             What::CloseReviewed { doc, force } => {
                 self.offer_finished(id, Ok(()));
@@ -2069,13 +2106,23 @@ impl crate::editor::Editor {
 
     /// `$` on a new session's card that asks who pays: the other way — the card says so, and settles again.
     pub fn offer_session_billing(&mut self) {
-        let Some(What::SessionNew(m)) = self.offers.first().map(|o| o.what.clone()) else { return };
-        let mut m = *m;
-        m.billing = match m.billing {
+        let other = |b| match b {
             crate::billing::Billing::Subscription => crate::billing::Billing::Api,
             crate::billing::Billing::Api => crate::billing::Billing::Subscription,
         };
-        let card = self.session_card(&m);
+        let card = match self.offers.first().map(|o| o.what.clone()) {
+            Some(What::SessionNew(m)) => {
+                let mut m = *m;
+                m.billing = other(m.billing);
+                self.session_card(&m)
+            }
+            // (one answer for the set — orchestra decision 10)
+            Some(What::SessionSet(mut s)) => {
+                s.sessions.iter_mut().for_each(|(m, _)| m.billing = other(m.billing));
+                crate::orchestra::card(self, *s)
+            }
+            _ => return,
+        };
         self.push_offer(card);
     }
 
@@ -2231,14 +2278,23 @@ impl crate::editor::Editor {
     /// `b` on a new session's card: made from the next base it offers — the card says so, and settles again
     /// before `y` (#85).
     pub fn offer_session_base(&mut self) {
-        let Some(What::SessionNew(m)) = self.offers.first().map(|o| o.what.clone()) else { return };
-        let mut m = *m;
-        if m.others.is_empty() {
-            return;
-        }
-        let (b, s) = m.others.remove(0);
-        m.others.push((std::mem::replace(&mut m.base, b), std::mem::replace(&mut m.base_sha, s)));
-        let card = self.session_card(&m);
+        let step = |m: &mut crate::worktree::Making| {
+            let (b, s) = m.others.remove(0);
+            m.others.push((std::mem::replace(&mut m.base, b), std::mem::replace(&mut m.base_sha, s)));
+        };
+        let card = match self.offers.first().map(|o| o.what.clone()) {
+            Some(What::SessionNew(m)) if !m.others.is_empty() => {
+                let mut m = *m;
+                step(&mut m);
+                self.session_card(&m)
+            }
+            // (the set from one base: each steps with it)
+            Some(What::SessionSet(mut s)) if s.sessions.iter().all(|(m, _)| !m.others.is_empty()) => {
+                s.sessions.iter_mut().for_each(|(m, _)| step(m));
+                crate::orchestra::card(self, *s)
+            }
+            _ => return,
+        };
         self.push_offer(card);
     }
 
@@ -2677,6 +2733,7 @@ impl crate::editor::Editor {
             What::BranchDelete { branch, .. } => self.set_status(format!("Kept {branch}")),
             What::ForcePush(f) => self.set_status(format!("Not pushed — {} as it was", f.upstream())),
             What::SessionNew(m) => self.set_status(format!("No session {} — nothing was made", m.branch)),
+            What::SessionSet(s) => crate::orchestra::answer(self, o.id, *s, false),
             What::WorkspaceEnd(e) => self.set_status(format!("Kept {} as it is", e.name)),
             What::CloseReviewed { .. } => {
                 self.set_status("kept open — Claude's change still waits for y or n")

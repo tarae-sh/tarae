@@ -842,6 +842,55 @@ Not kept:
 Planned: on Linux, the scopes (ABI 6) and the audit (ABI 7) checked live on a 6.12+ kernel — colima's, where the
 live check runs, is ABI 4.
 
+### 2.x Sessions Claude starts (orchestra)
+
+The chat of the checkout tarae started in can start sessions of its own (`sessions_start`) and put words into them
+(`session_send`) — Claude in one session steering Claude in others. This half covers words going into children; the
+second (what a child's reports carry back to its parent) comes with reading back.
+
+Kept:
+- **Starting spends, so it's yours, on one card**: a weighty card, Claude's — it waits unfocused until `C-q` or a press,
+  answers only once drawn — naming each session, its brief's first line (each whole under the mouse and on `v`), where
+  their checkouts go and build, who pays. `n` makes nothing; a bad name refuses the whole set before any card.
+  test: `orchestra::tests::a_set_is_made_behind_each_brief_its_first_message` ·
+  `orchestra::tests::no_on_the_set_card_makes_nothing` · `orchestra::tests::a_bad_name_refuses_the_whole_set`
+- **Who may start them, and how many, is your config's alone**: `llm.session-tools` (`home` by default: the checkout
+  tarae started in; `any`; `off`) and `llm.children-max` (3) are `trust::YOURS_ONLY` — a project can't turn them on or
+  raise them. The tools a chat lists are fixed as its claude starts; a `:set` applies to the next. One set at a time
+  from its call to its answer — a second asked beside it is refused, so two can't both pass the cap — and the cap is
+  asked again at `y`.
+  test: `orchestra::tests::the_session_tools_are_fixed_per_chat_process` ·
+  `orchestra::tests::children_max_is_asked_before_any_card` · `orchestra::tests::two_starts_side_by_side_pass_no_cap` ·
+  `orchestra::tests::the_cap_is_asked_again_at_yes`
+- **No children of children**: a child's chat lists no session tool, and a call naming one is refused there — one
+  level, so what a parent may reach is one step from a chat you read.
+  test: `orchestra::tests::a_childs_chat_lists_no_session_tool` · `orchestra::tests::a_child_is_never_a_parent`
+- **A child is a session as any**: its own checkout, sandbox, cards and grants — none of its parent's answers carry
+  over; every act of its Claude asks as yours would. Its cards, a bring and its end stay yours: no session tool answers
+  a card — with a card of Claude's focused in the parent and one waiting in each child, `session_send` to an idle
+  child and a working one and `sessions_start` leave every card unanswered where it was, and the keys where they were.
+  test: `orchestra::tests::no_session_tool_answers_a_card`
+- **A parent reaches only its own children**: `session_send` to any other name — a session of yours, the parent
+  itself, another parent's child, none — gets one answer, which doesn't tell a session that exists from one that
+  doesn't. Its message is never your input or your queued message, and goes after one of yours queued there and after
+  its own sent before (one held by a turn refused for money too). It never hears that a child waits on a card — only
+  that it's working.
+  test: `orchestra::tests::a_parent_reaches_only_its_own_children` ·
+  `orchestra::tests::a_parents_message_goes_after_the_users_queued_one` ·
+  `orchestra::tests::a_parent_never_hears_its_child_waits_on_a_card` · `sim::orchestra::children_and_their_sends`
+- **Whose words are whose, in sight**: a brief and a message are headed `main's Claude` in the child's chat, never in
+  your message's style; its Claude is told once a conversation that they're the parent's. Their frame closes only by
+  its own id, one the text doesn't hold: a brief or message printing `</from-session>` can't end it early and have what
+  follows read as your words.
+  test: `orchestra::tests::a_set_is_made_behind_each_brief_its_first_message` ·
+  `orchestra::tests::text_that_closes_the_frame_stays_inside_it`
+
+Not kept:
+- **A brief is the parent Claude's words, and its Claude takes them as instructions**, as it takes yours. What the
+  parent read — a file, a page, someone else's words — can reach a child that way; the child can do with them what the
+  parent's own Claude could in its session, now in another checkout, and every act still asks. A misled parent can
+  spend up to `llm.children-max` sessions once you say `y` on the card.
+
 ## 3. What tarae runs as you, outside the sandbox
 
 Not Claude's, but a hostile repository reaches them:

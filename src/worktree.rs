@@ -124,9 +124,12 @@ pub struct Kept {
     /// The folders added to it (`Workspace.folders`, and those still being judged as they came back —
     /// `folders_judging`).
     pub folders: Vec<crate::folders::Folder>,
+    /// Its parent's checkout (`Session.parent`, `orchestra.rs`): linked again once both are back.
+    pub parent: Option<PathBuf>,
 }
 
 impl Kept {
+    /// `l` as kept — its parent's checkout not looked up (`in_editor` does).
     pub fn of(l: &crate::workspace::Workspace) -> Kept {
         Kept {
             root: l.root.clone(),
@@ -136,7 +139,19 @@ impl Kept {
             billing: Some(l.claude.billing),
             allowed: l.claude.allowed.clone(),
             folders: l.folders.iter().chain(&l.folders_judging).cloned().collect(),
+            parent: None,
         }
+    }
+
+    /// `l` as kept, with its parent's checkout while that session is open.
+    pub fn in_editor(ed: &Editor, l: &crate::workspace::Workspace) -> Kept {
+        let parent = l.claude.parent.and_then(|p| {
+            std::iter::once(&ed.workspace)
+                .chain(&ed.workspaces)
+                .find(|w| w.claude.id == p)
+                .map(|w| w.root.clone())
+        });
+        Kept { parent, ..Kept::of(l) }
     }
 
     fn json(&self) -> Value {
@@ -148,6 +163,9 @@ impl Kept {
         }
         if !self.folders.is_empty() {
             v["folders"] = self.folders.iter().map(crate::folders::Folder::json).collect();
+        }
+        if let Some(p) = &self.parent {
+            v["parent"] = json!(p);
         }
         v
     }
@@ -167,6 +185,7 @@ impl Kept {
                 .flatten()
                 .filter_map(crate::folders::Folder::from_json)
                 .collect(),
+            parent: v["parent"].as_str().map(PathBuf::from),
         })
     }
 }
@@ -438,7 +457,7 @@ fn copy_instructions(top: &Path, path: &Path, files: &[String]) -> Vec<String> {
 
 impl Making {
     /// `main (a1b2c3d)` · `a1b2c3d` for a commit.
-    fn base_said(&self) -> String {
+    pub(crate) fn base_said(&self) -> String {
         match self.base == self.base_sha {
             true => self.base_sha[..7].to_string(),
             false => format!("{} ({})", self.base, &self.base_sha[..7]),
@@ -546,20 +565,7 @@ pub fn making(
     builds: Option<&crate::builds::Builds>,
 ) -> Result<Making, String> {
     let top = top_of(root)?;
-    let branch = branch_name(&top, name.trim())?;
-    if sha(&top, &format!("refs/heads/{branch}")).is_ok() {
-        let list = git(&top, &["worktree", "list", "--porcelain"], None).unwrap_or_default();
-        let held = crate::gitpanel::parse_worktrees(&list)
-            .into_iter()
-            .find(|(_, b)| b.as_deref() == Some(branch.as_str()));
-        return Err(match held {
-            Some((at, _)) => format!(
-                "there's a branch {branch} already, checked out in {} — pick another name",
-                crate::gitpanel::worktree_shown(&top, &std::fs::canonicalize(&at).unwrap_or(at.clone()))
-            ),
-            None => format!("there's a branch {branch} already — pick another name"),
-        });
-    }
+    let (branch, path) = named(&top, name, setting)?;
     let (base, base_sha, others) = match base {
         Some(b) if b.starts_with('-') => return Err(format!("{b:?} isn't a commit")),
         Some(b) => {
@@ -583,11 +589,6 @@ pub fn making(
             (base, base_sha, bases)
         }
     };
-    let common = common_dir(&top)?;
-    let path = worktrees_dir(setting, &common)?.join(branch.replace('/', "-"));
-    if path.exists() {
-        return Err(format!("{} is there already", crate::allow::tilde(&path)));
-    }
     let until = Instant::now() + MEASURE_FOR;
     let big = big_ignored(&top, until);
     let files = tracked_size(&top, until);
@@ -620,6 +621,37 @@ pub fn making(
         billing_ask: None,
         billing_note: None,
     })
+}
+
+/// `making` for another session from the same checkout and base as `first` (orchestra's set — what `first`
+/// measured holds for each): only its name looked at, as a branch and where its checkout goes. On a worker.
+pub fn making_beside(first: &Making, name: &str, setting: &str) -> Result<Making, String> {
+    let (branch, path) = named(&first.top, name, setting)?;
+    Ok(Making { branch, path, ..first.clone() })
+}
+
+/// `name` as a new branch here and where its checkout would go — neither there yet.
+fn named(top: &Path, name: &str, setting: &str) -> Result<(String, PathBuf), String> {
+    let branch = branch_name(top, name.trim())?;
+    if sha(top, &format!("refs/heads/{branch}")).is_ok() {
+        let list = git(top, &["worktree", "list", "--porcelain"], None).unwrap_or_default();
+        let held = crate::gitpanel::parse_worktrees(&list)
+            .into_iter()
+            .find(|(_, b)| b.as_deref() == Some(branch.as_str()));
+        return Err(match held {
+            Some((at, _)) => format!(
+                "there's a branch {branch} already, checked out in {} — pick another name",
+                crate::gitpanel::worktree_shown(top, &std::fs::canonicalize(&at).unwrap_or(at.clone()))
+            ),
+            None => format!("there's a branch {branch} already — pick another name"),
+        });
+    }
+    let common = common_dir(top)?;
+    let path = worktrees_dir(setting, &common)?.join(branch.replace('/', "-"));
+    if path.exists() {
+        return Err(format!("{} is there already", crate::allow::tilde(&path)));
+    }
+    Ok((branch, path))
 }
 
 /// The repository's main branch, a local one: the remote's default (`origin/HEAD`), else `main` or
@@ -671,7 +703,7 @@ fn big_ignored(top: &Path, until: Instant) -> Vec<(String, (u64, bool))> {
 
 /// `git worktree add -b` for the card's plan (on a worker), its instruction files copied in — the
 /// checkout's real path, and what couldn't be copied.
-fn make(m: &Making) -> Result<(PathBuf, Vec<String>), String> {
+pub(crate) fn make(m: &Making) -> Result<(PathBuf, Vec<String>), String> {
     if let Some(parent) = m.path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", crate::allow::tilde(parent)))?;
     }
@@ -1360,7 +1392,7 @@ fn still_there(sessions: Vec<Kept>) -> (Vec<Kept>, Vec<Kept>) {
 
 /// The sessions for `:restart`'s state (`restart.rs`): theirs and which is in front.
 pub fn snapshot(ed: &Editor) -> Value {
-    let sessions: Vec<Value> = ed.sessions_in_order().iter().map(|l| Kept::of(l).json()).collect();
+    let sessions: Vec<Value> = ed.sessions_in_order().iter().map(|l| Kept::in_editor(ed, l).json()).collect();
     // (and the repository they're kept for — the last write's that landed, its result applied or not: a take-back
     // after the restart says a write it can't make — and the file's counter as seen)
     let landed = ed.workspace_store.landed.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -1569,7 +1601,7 @@ impl Editor {
     fn workspaces_stored(&self) -> Option<(PathBuf, PathBuf, Stored)> {
         let dir = self.workspace_store.dir.clone().filter(|_| self.workspace_store.restored)?;
         let s = Stored {
-            sessions: self.sessions_in_order().into_iter().map(Kept::of).collect(),
+            sessions: self.sessions_in_order().into_iter().map(|l| Kept::in_editor(self, l)).collect(),
             front: Some(self.workspace.root.clone()),
             rev: Default::default(),
         };
@@ -1624,6 +1656,8 @@ impl Editor {
         let mut changed = !gone.is_empty();
         let mut took = false;
         let mut judging = Vec::new();
+        // (each child with its parent's checkout and its name: linked once all are back)
+        let mut children: Vec<(WorkspaceId, PathBuf, String)> = Vec::new();
         for mut k in here {
             let id = match std::iter::once(&self.workspace).chain(&self.workspaces).find(|l| l.root == k.root)
             {
@@ -1645,6 +1679,9 @@ impl Editor {
             if !k.folders.is_empty() {
                 judging.push(id);
             }
+            if let Some(p) = k.parent.take() {
+                children.push((id, p, k.name.clone()));
+            }
             if let Some(l) = self.workspace_by_id(id) {
                 (l.name, l.branch, l.base) = (k.name, k.branch, k.base);
                 // (judged again before they're read as the workspace's — `folders_back`)
@@ -1659,6 +1696,26 @@ impl Editor {
             }
             if granted {
                 self.caps_sync_of(id);
+            }
+        }
+        // A child back with its parent is its child again; one whose parent didn't come back is a session of its
+        // own — said once, and kept so (orchestra §1)
+        for (id, root, name) in children {
+            let parent = std::iter::once(&self.workspace)
+                .chain(&self.workspaces)
+                .find(|l| l.root == root)
+                .map(|l| l.claude.id);
+            match parent {
+                Some(p) => {
+                    if let Some(l) = self.workspace_by_id(id) {
+                        l.claude.parent = Some(p);
+                    }
+                }
+                None => {
+                    changed = true;
+                    let from = crate::allow::tilde(&root);
+                    self.set_status(format!("{name} — the session that started it ({from}) didn't come back; it's a session of its own"));
+                }
             }
         }
         self.workspace_store.restored = true;
@@ -1985,7 +2042,7 @@ impl Editor {
         // (the proxy's answers for it go with it, its overlaps and their folder too)
         crate::hosts::workspace_ended(&session);
         crate::overlap::ended(self, id);
-        let kept = Kept::of(&session);
+        let kept = Kept::in_editor(self, &session);
         // What it has now is what opening it again in this run brings back (`workspace_kept_back`): its notes
         // where the restore reads them (with its files still open, for their anchors), its turns written
         let notes = crate::notes::to_json(&session.claude.notes, &self.docs);
@@ -6358,6 +6415,38 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// orchestra: a child is kept with its parent's checkout (the store's and `:restart`'s state alike) and is its
+    /// child again once both are back; one whose parent didn't come back is a session of its own — said, and kept so.
+    #[test]
+    fn a_child_comes_back_with_its_parent() {
+        let scratch = crate::scratch::Scratch::new("kept-parent");
+        let dir = std::fs::canonicalize(scratch.path()).unwrap();
+        let (home, kid) = (dir.join("home"), dir.join("kid"));
+        let mut ed = Editor::new(Config::default());
+        ed.workspace.root = home.clone();
+        let k = ed.workspace_add(kid.clone());
+        let me = ed.workspace.claude.id;
+        ed.workspace_by_id(k).unwrap().claude.parent = Some(me);
+        let kept = kept_list(&snapshot(&ed));
+        let child = kept.iter().find(|k| k.root == kid).expect("kept");
+        assert_eq!(child.parent.as_deref(), Some(home.as_path()));
+        assert_eq!(Kept::from_json(&child.json()).as_ref(), Some(child), "its file's round trip");
+        // Back with its parent: linked again
+        let mut back = Editor::new(Config::default());
+        back.workspace.root = home.clone();
+        back.workspaces_back(kept.clone(), Vec::new(), None, false);
+        let l = back.workspaces.iter().find(|l| l.root == kid).expect("back");
+        assert_eq!(l.claude.parent, Some(back.workspace.claude.id));
+        // Its parent gone: its own, said
+        let mut alone = Editor::new(Config::default());
+        alone.workspace.root = dir.join("elsewhere");
+        let kid_only: Vec<Kept> = kept.into_iter().filter(|k| k.root == kid).collect();
+        alone.workspaces_back(kid_only, Vec::new(), None, false);
+        let l = alone.workspaces.iter().find(|l| l.root == kid).expect("back");
+        assert_eq!(l.claude.parent, None);
+        assert!(says(&alone, "didn't come back; it's a session of its own"), "{}", said(&alone));
+    }
+
     /// C0 (collab-plan decision 13): the workspaces are kept in the store's file as the sessions were — its folder,
     /// its name and its keys — so what every live workspace kept comes back across the split, and a file the build
     /// before it wrote reads back whole.
@@ -6373,6 +6462,7 @@ mod tests {
             billing: Some(crate::billing::Billing::Api),
             allowed: Default::default(),
             folders: Vec::new(),
+            parent: None,
         };
         let s = Stored { sessions: vec![kept.clone()], front: Some("/wt/a".into()), rev: Default::default() };
         save(&dir, &common, s, &[], Default::default()).unwrap();

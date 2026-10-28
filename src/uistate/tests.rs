@@ -246,6 +246,12 @@ fn a_long_carry_out_card_waits_to_be_read() {
     assert_eq!(ed.ui_state().json()["cards"][0]["refused"], "y — see it whole first (v)");
 }
 
+/// Claude's set of sessions (`orchestra.rs`), its answers making nothing here (`stand_in_card`).
+fn set_card(ed: &mut Editor) {
+    let o = crate::orchestra::stand_in_card(ed, &["one", "two"]);
+    ed.push_offer(o);
+}
+
 /// A weighty card whose answers do nothing here: a change set of a chat process that isn't there.
 fn weighty_card(ed: &mut Editor) {
     let q = "Claude renames `a` to `b` in 3 files.\n\nOne review for the set.";
@@ -377,6 +383,23 @@ pub(crate) const SCENES: &[Scene] = &[
         ed.open_prompt(crate::editor::PromptKind::Command, "");
     }),
     ("a light card", light_card),
+    // (orchestra: Claude's set of sessions — waiting as it came, focused, and behind a card of yours)
+    ("a set card, waiting", set_card),
+    ("a set card, focused by a press", |ed| {
+        set_card(ed);
+        frame(ed);
+        focus(ed);
+    }),
+    ("a set card behind a card of yours", |ed| {
+        set_card(ed);
+        // (`y` ends a code review — none here: nothing happens)
+        let what =
+            What::ReviewEnd { session: crate::event::WorkspaceId::HOME, started: std::time::Instant::now() };
+        let mut o = Offer::new("End the review?".into(), "2 files not viewed.", "", String::new(), what);
+        o.yours = true;
+        ed.push_offer(o);
+        frame(ed);
+    }),
     ("a weighty card, focused by a press", |ed| {
         weighty_card(ed);
         frame(ed);

@@ -132,6 +132,9 @@ pub fn rows_of(msgs: &[Msg]) -> Vec<Value> {
             if !m.chip.is_empty() {
                 v["chip"] = json!(m.chip);
             }
+            if let Some(from) = &m.from {
+                v["from"] = json!(from);
+            }
             if let Some(l) = &m.look {
                 v["look"] = json!({
                     "verb": l.verb, "what": l.what, "pattern": l.pattern, "range": l.range,
@@ -146,7 +149,7 @@ pub fn rows_of(msgs: &[Msg]) -> Vec<Value> {
 /// Stored rows back as the panel's (unknown roles or verbs are skipped — a newer tarae wrote them).
 pub fn msgs_of(rows: &[Value]) -> Vec<Msg> {
     // (the tools' own names since 2026-10-03; the older words are still read)
-    const VERBS: [&str; 26] = [
+    const VERBS: [&str; 28] = [
         "read",
         "search",
         "grep",
@@ -172,6 +175,8 @@ pub fn msgs_of(rows: &[Value]) -> Vec<Msg> {
         "where",
         "about",
         "check",
+        "start",
+        "send",
         "use",
     ];
     rows.iter()
@@ -186,6 +191,7 @@ pub fn msgs_of(rows: &[Value]) -> Vec<Msg> {
                 _ => return None,
             };
             let mut m = Msg::new(role, s("text"), s("chip"));
+            m.from = r["from"].as_str().map(str::to_string);
             if role == Role::Tool {
                 let l = &r["look"];
                 let verb = VERBS.into_iter().find(|v| l["verb"] == *v).unwrap_or("use");

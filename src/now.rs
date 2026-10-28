@@ -127,6 +127,8 @@ pub fn step(ed: &Editor, l: &Workspace) -> Option<Step> {
             "plan" => ("planning", look.what.clone()),
             "git" => ("reading git", look.what.clone()),
             "ui" => ("looking at", look.what.clone()),
+            "start" => ("starting", look.what.clone()),
+            "send" => ("messaging", look.what.clone()),
             _ => ("using", look.what.clone()),
         };
         return Some(Step::new(Sign::Mark(look.mark()), verb, what, format!("call:{call}")));

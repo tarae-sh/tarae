@@ -12099,7 +12099,8 @@ impl OfferCard {
             // (as the card draws them: a diff's line, or one that keeps its end, is cut — one row whatever the width)
             let diffs = o.diff.clone().unwrap_or(0..0);
             let rows = |w: usize| {
-                let cut = |k: usize| diffs.contains(&k) || o.ends.contains(&k);
+                let cut =
+                    |k: usize| diffs.contains(&k) || o.ends.contains(&k) || o.rows.iter().any(|r| r.0 == k);
                 let row = |(k, p): (usize, &str)| if cut(k) { 1 } else { card_rows(p, w).len() };
                 o.question.split('\n').enumerate().map(row).sum::<usize>()
             };
@@ -12167,8 +12168,19 @@ impl OfferCard {
                             continue;
                         }
                         // (a diff's line is code: cut to the card, never wrapped — only prose wraps)
+                        let listed = o.rows.iter().find(|r| r.0 == k).map(|r| r.1.as_str());
                         let mut rows = match (diffs.contains(&k), o.ends.contains(&k)) {
                             (true, _) => vec![(crate::cut::fit(part, max_inner).into(), true)],
+                            // (a list's row: one row, cut at its end, its whole the row's own text)
+                            // (a part of more — its row says `…` — the whole on its card; else only where it's cut)
+                            _ if listed.is_some() => {
+                                let whole = listed.unwrap_or(part);
+                                let fit = match whole == part.trim() {
+                                    true => crate::whole::fit(part, max_inner),
+                                    false => crate::whole::fit_part(part, max_inner, whole),
+                                };
+                                vec![(fit, true)]
+                            }
                             // (a path's line: its first word, then the rest with its end kept)
                             (_, true) => {
                                 let (head, rest) = part.split_once(' ').map_or(("", part), |(h, r)| (h, r));
@@ -15689,6 +15701,43 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
     let laid_out = |i: usize, m: &crate::chat::Msg, read: &mut md::Read| -> Vec<ChatRow> {
         let mut lines: Vec<ChatRow> = Vec::new();
         match m.role {
+            // A parent session's Claude's message (`orchestra.rs`): headed by whose it is — the session's name in its
+            // colour, as everywhere it's named; no context chip (what went is this checkout's own view, nothing the
+            // parent chose) — its bar and words a step down from yours: the person reading the child knows who asked
+            Role::User if m.from.is_some() => {
+                let from = m.from.as_deref().unwrap_or_default();
+                let head = crate::whole::fit(&format!("{from}'s Claude"), w);
+                let mut sessions = std::iter::once(&editor.workspace).chain(&editor.workspaces);
+                let colour = sessions.find(|l| l.label() == from).map(|l| l.claude.colour);
+                let spans = match colour.filter(|_| !from.is_empty() && head.shown().starts_with(from)) {
+                    Some(c) => {
+                        let (name, rest) = head.split_at(from.len());
+                        vec![name.span(Style { fg: ui.participant(c, true), ..dim }), rest.span(dim)]
+                    }
+                    None => vec![head.span(dim)],
+                };
+                lines.push(ChatRow { spans, ..ChatRow::default() });
+                for part in m.text.split('\n').map(|l| l.trim_end_matches('\r')) {
+                    let para = [md::Line::Text { spans: vec![sp(part.to_string(), dim)], indent: 0 }];
+                    let (rows, drawn) = match part.trim().is_empty() {
+                        true => Default::default(),
+                        false => md::wrap_drawn(&para, mw - 2, faint, faint),
+                    };
+                    if rows.is_empty() {
+                        lines.push(ChatRow {
+                            spans: vec![sp("▎".into(), faint)],
+                            skip: 1,
+                            ..ChatRow::default()
+                        });
+                    }
+                    for (l, d) in rows.into_iter().zip(drawn) {
+                        let mut row = vec![sp("▎ ".into(), faint)];
+                        row.extend(l);
+                        let (skip, join) = (2 + d.join.map_or(0, |j| j.drop), d.join.map(|j| j.space));
+                        lines.push(ChatRow { spans: row, skip, join, ..ChatRow::default() });
+                    }
+                }
+            }
             Role::User => {
                 if !m.chip.is_empty() {
                     // The screen that went with it is a link (it opens its copy): underlined like the
@@ -21564,6 +21613,7 @@ mod tests {
                 warnings: Vec::new(),
                 diff: None,
                 ends: Vec::new(),
+                rows: Vec::new(),
                 told: Vec::new(),
                 since: std::time::Instant::now(),
                 drawn: Default::default(),

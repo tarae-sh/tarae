@@ -119,7 +119,7 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
     let result = match method {
         "tools/list" => {
             sandbox_look(ed);
-            Ok(list())
+            Ok(list(crate::orchestra::lists(ed)))
         }
         "tools/call" => {
             // (side by side with another call still unanswered? — `calls.rs`; `sized` sees it answered)
@@ -148,6 +148,17 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
                     Ok(()) => return None,
                     Err(e) => Err(e),
                 },
+                // (only a chat that lists them — a child's has no such tools)
+                Some(name @ ("sessions_start" | "session_send")) if crate::orchestra::lists(ed) => {
+                    let asked = match name {
+                        "sessions_start" => crate::orchestra::start(ed, call(), args),
+                        _ => crate::orchestra::send(ed, call(), args),
+                    };
+                    match asked {
+                        Ok(()) => return None,
+                        Err(e) => Err(e),
+                    }
+                }
                 Some(
                     name @ ("references" | "search" | "read" | "symbols" | "definition" | "diagnostics"
                     | "rename" | "replace" | "edit"),
@@ -199,9 +210,10 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
     })
 }
 
-/// `tools/list`'s answer — the same to the byte every time (the tools come first in the cache's prefix).
-pub fn list() -> Value {
-    let tools = vec![
+/// `tools/list`'s answer — the same to the byte every time (the tools come first in the cache's prefix): a chat
+/// that may start sessions (`orchestra::may_parent`) has the session tools after the rest, a second fixed list.
+pub fn list(parent: bool) -> Value {
+    let mut tools = vec![
         crate::notes::tool_schema(),
         run_tests_schema(),
         run_schema(),
@@ -218,6 +230,9 @@ pub fn list() -> Value {
         crate::gittool::schema(),
         crate::edittool::schema(),
     ];
+    if parent {
+        tools.extend([crate::orchestra::start_schema(), crate::orchestra::send_schema()]);
+    }
     json!({ "tools": tools.into_iter().map(annotated).collect::<Vec<_>>() })
 }
 
@@ -240,6 +255,8 @@ pub(crate) fn annotated(mut schema: Value) -> Value {
         "edit" => ("Edit files", Some("destructiveHint")),
         "ui" => ("What's on screen, by id", Some("readOnlyHint")),
         "git" => ("Read the repository", Some("readOnlyHint")),
+        "sessions_start" => ("Start sessions", None),
+        "session_send" => ("Message a session", None),
         _ => return schema,
     };
     let mut a = json!({ "title": title });
@@ -372,6 +389,9 @@ fn answered(call: &Call, r: &Result<Vec<Part>, String>) {
 pub fn answer_parts(ed: &mut Editor, call: Call, r: Result<Vec<Part>, String>) {
     #[cfg(test)]
     answered(&call, &r);
+    if call.tool == "sessions_start" {
+        crate::orchestra::answered(ed, &call);
+    }
     if let Some(t) = &call.trace {
         match &r {
             Ok(_) => t.end("answered"),

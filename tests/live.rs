@@ -859,6 +859,137 @@ fn chat_prompt_tokens() {
     assert!(!p.is_empty(), "claude's usage in its stream");
 }
 
+/// `chat_prompt_tokens` in a session's chat (`:session-new` — not the checkout tarae started in): under
+/// `llm.session-tools = "home"` its tools are a child's, so against `TARAE_BIN` (the build before the session
+/// tools) its first request's prompt must differ by nothing (orchestra P0).
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "live: run with `cargo live` (uses Claude)"]
+fn chat_prompt_tokens_in_a_session() {
+    if !have("claude") {
+        return;
+    }
+    let sb = Sandbox::live("chat-tokens-session");
+    // (its checkout beside the project, never in your own worktrees folder)
+    let (out, sent) =
+        teed_both(&sb, &format!("[workspace]\nworktrees = \"{}\"\n", sb.outside("wt").display()));
+    sb.write("notes.txt", "alpha\n");
+    sb.git(&["init", "-q", "-b", "main"]);
+    sb.git(&["add", "-A"]);
+    sb.git(&["commit", "-q", "-m", "one"]);
+    let mut t = sb.spawn(&["notes.txt"]);
+    new_session(&mut t, "kid");
+    // (no toast up — the context's `ui:` line would name it: the same footing as `chat_prompt_tokens_in_a_child`)
+    t.wait_state("no toast up", |v| v["toasts"].as_array().is_none_or(|a| a.is_empty()));
+    chat_turn(&mut t, "Reply with the single word ok. Use no tools.");
+    said_last(&sent);
+    let stream = std::fs::read_to_string(&out).unwrap_or_default();
+    let p = prompts(&stream);
+    let cost = measure(&stream, "").cost;
+    eprintln!("TOKENS first request's prompt: {:?} (all requests: {p:?}), ${cost:.4}", p.first());
+    assert!(!p.is_empty(), "claude's usage in its stream");
+}
+
+/// `teed`, and what each claude is sent copied to `sent.jsonl` beside it: (stream, sent).
+#[cfg(target_os = "macos")]
+fn teed_both(sb: &Sandbox, llm: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let out = teed(sb, llm);
+    let sent = sb.outside("sent.jsonl");
+    let script =
+        format!("#!/bin/sh\ntee -a '{}' | claude \"$@\" | tee -a '{}'\n", sent.display(), out.display());
+    std::fs::write(sb.outside("claude-tee.sh"), script).unwrap();
+    (out, sent)
+}
+
+/// The last one-word question's message as sent (`teed_both`), printed `SENT` — where two arms' prompts differ.
+#[cfg(target_os = "macos")]
+fn said_last(sent: &Path) {
+    let asked = std::fs::read_to_string(sent).unwrap_or_default();
+    let last = asked.lines().rfind(|l| l.contains("single word ok") && !l.contains("from-session"));
+    eprintln!("SENT {}", last.unwrap_or_default());
+}
+
+/// `chat_prompt_tokens` in a real child (orchestra P1a): the home chat's Claude starts session `kid` with
+/// `sessions_start`, its card's `y`, the brief its first message; then a new conversation in `kid` (`:chat-new`)
+/// asked the one-word question, on the session arm's footing (its scratch buffer in front, no toast up). Against `chat_prompt_tokens_in_a_session` on the build
+/// before (`TARAE_BIN`) that conversation's first prompt must differ by nothing; the brief's first prompt beside it
+/// is what a parent's framing costs. The `TOKENS` line's `$` is every claude's of the run, the home's too.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "live: run with `cargo live` (uses Claude)"]
+fn chat_prompt_tokens_in_a_child() {
+    if !have("claude") {
+        return;
+    }
+    let sb = Sandbox::live("chat-tokens-child");
+    let (out, sent) =
+        teed_both(&sb, &format!("[workspace]\nworktrees = \"{}\"\n", sb.outside("wt").display()));
+    sb.write("notes.txt", "alpha\n");
+    sb.git(&["init", "-q", "-b", "main"]);
+    sb.git(&["add", "-A"]);
+    sb.git(&["commit", "-q", "-m", "one"]);
+    let mut t = sb.spawn(&["notes.txt"]);
+    t.send(" l");
+    t.wait_for("the chat, focused", |s| s.contains("enter send"));
+    t.send(
+        "Call sessions_start once: sessions {\"kid\": \"Reply with the single word ok. Use no tools.\"}, base \
+         main. Do nothing else.\r",
+    );
+    t.wait_for("the set's card", |s| s.contains("Start a session?"));
+    // (Claude's card: waits unfocused — `C-q` takes it, then its `y` once drawn)
+    t.send("\x11");
+    t.wait_for("the card focused", |s| s.status().contains("● card"));
+    // (drawn focused by now: the one `y` answers it — another would be typed into the chat)
+    t.send("y");
+    t.wait_for("the set made", |s| s.contains("space W lists them"));
+    // (each claude's lines, from its `init` on — its folder's name, then its lines)
+    let segments = |stream: &str| -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        for line in stream.lines() {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap_or_default();
+            if v["type"] == "system" && v["subtype"] == "init" {
+                let cwd = v["cwd"].as_str().unwrap_or_default();
+                out.push((cwd.rsplit('/').next().unwrap_or_default().to_string(), String::new()));
+            }
+            if let Some((_, s)) = out.last_mut() {
+                s.push_str(line);
+                s.push('\n');
+            }
+        }
+        out
+    };
+    let kid_done = |s: &str| segments(s).iter().any(|(w, s)| w == "kid" && s.contains("\"type\":\"result\""));
+    wait_file_until(&out, "has kid's brief answered", LIVE_TIMEOUT, kid_done);
+    t.wait_for("main's turn over", chat_idle);
+    // (into kid — its scratch buffer in front, as the session arm's — and a new conversation there)
+    esc(&mut t);
+    t.send(" W");
+    t.wait_for("the session list", |s| s.contains("kid"));
+    t.send("2");
+    t.wait_for("in kid", |s| s.contains("main's Claude"));
+    esc(&mut t);
+    t.command("chat-new");
+    t.wait_for("a new conversation", |s| !s.contains("main's Claude"));
+    // (no toast up — the context's `ui:` line would name it, as `chat_prompt_tokens_with_a_toast_up`)
+    t.wait_state("no toast up", |v| v["toasts"].as_array().is_none_or(|a| a.is_empty()));
+    chat_turn(&mut t, "Reply with the single word ok. Use no tools.");
+    said_last(&sent);
+    let asked = std::fs::read_to_string(&sent).unwrap_or_default();
+    eprintln!("SENT brief {}", asked.lines().find(|l| l.contains("from-session")).unwrap_or_default());
+    let stream = std::fs::read_to_string(&out).unwrap_or_default();
+    let segs = segments(&stream);
+    let kids: Vec<&String> = segs.iter().filter(|(w, _)| w == "kid").map(|(_, s)| s).collect();
+    let brief = kids.first().and_then(|s| prompts(s).first().copied());
+    let fresh = kids.get(1).and_then(|s| prompts(s).first().copied());
+    let cost: f64 = segs.iter().map(|(_, s)| measure(s, "").cost).sum();
+    eprintln!("TOKENS first request's prompt: {fresh:?} (the brief's: {brief:?}), ${cost:.4}");
+    assert!(
+        fresh.is_some() && brief.is_some(),
+        "kid's two conversations in the stream: {} claudes",
+        segs.len()
+    );
+}
+
 /// A quote's framing (view P2): the same three lines of a file asked about two ways, each in a fresh chat — as the
 /// code's selection the context carries by itself (`<selection lines=…>`), and quoted with `space >` (`<quoted
 /// id=… from="code" path=… lines=…>`, the selection then not sent again). The two first requests' prompts differ

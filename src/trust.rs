@@ -65,7 +65,7 @@ pub const RISKY: [&str; 24] = [
 /// credential and memory (`review.skeptics-max`, `review.board-at-once`), whether your workspaces' trees are
 /// rewritten unasked (`workspace.sync`), how much moves on your screen (`editor.motion`), whether and how your
 /// machine sounds (`editor.sound*`) — a project never does.
-pub const YOURS_ONLY: [&str; 14] = [
+pub const YOURS_ONLY: [&str; 16] = [
     "llm.card-record",
     "review.record",
     "llm.environment-key",
@@ -86,6 +86,9 @@ pub const YOURS_ONLY: [&str; 14] = [
     // (whether your machine makes a sound, and how loud: a project's would click on someone's call)
     "editor.sound",
     "editor.sound-volume",
+    // (whether your Claude may start sessions that spend your plan or key, and how many)
+    "llm.session-tools",
+    "llm.children-max",
 ];
 
 pub fn yours_only(setting: &str) -> bool {

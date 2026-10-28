@@ -698,6 +698,61 @@ const ASKS_CLOSED: &[&str] = &[
 /// Claude's card, the keys back in the code, then the chat open again (`asks-open`).
 const ASKS_OPEN: &[&str] =
     &["@1", " ", "l", "@1", "run the tests", "\r", "\x17", "h", "@?Its reason", "@1", " ", "l", "@2"];
+/// Claude's set of sessions asked for (orchestra P1a), its card focused by `C-q` (`sessionset-*`).
+/// (the chat open again over following, as `asks-open`: the card above its input)
+const SESSION_SET: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "split the work",
+    "\r",
+    "@?Start ",
+    "\x17",
+    "h",
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "\x11",
+    "@1",
+];
+/// The set's `y`, then into the child (`sessionset-child`): its chat opened behind with main's brief as its first message,
+/// headed `main's Claude`, its Claude's answer, then a message of yours under it — shown from the transcript's top.
+const SESSION_SET_CHILD: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "split the work",
+    "\r",
+    "@?Start ",
+    "\x11",
+    "@1",
+    "y",
+    "@20?space W lists them",
+    "@2",
+    "\x1b",
+    " ",
+    "W",
+    "@1",
+    "2",
+    "@10?Each thread",
+    "@1",
+    "and keep ties in name order",
+    "\r",
+    "@10?Right —",
+    "@1",
+    // (the transcript from its top, in its view mode: the brief's heading in sight at 80 columns too)
+    "\x1b",
+    "g",
+    "g",
+    "@?main's Claude",
+    "@1",
+];
+/// …and as it comes, waiting (`sessionset-waits`).
+const SESSION_SET_WAITS: &[&str] =
+    &["@1", " ", "l", "@1", "split the work", "\r", "@?Start ", "\x17", "h", "@1", " ", "l", "@2"];
 // (main's card behind, fix's Claude asking too, then two cards of yours: four in the stack, over two sessions)
 const ASKS_STACK: &[&str] = waits_keys!(
     " ",
@@ -2810,6 +2865,19 @@ const SCENES: &[Scene] = &[
     // (…four asks over two sessions in one stack: two cards your keys asked for in front, fix's Claude's behind them,
     // main's a peek named in its colour)
     Scene { name: "asks-stack", claude: "card", files: MAIN, keys: ASKS_STACK },
+    // (orchestra P1a: Claude asks to start sessions — one card for the set, focused: one, three, a long brief cut)
+    Scene { name: "sessionset-one", claude: "startone", files: MAIN, keys: SESSION_SET },
+    Scene { name: "sessionset-three", claude: "startthree", files: MAIN, keys: SESSION_SET },
+    Scene { name: "sessionset-long", claude: "startlong", files: MAIN, keys: SESSION_SET },
+    // (…and waiting unfocused, as it comes: its frame faint, `C-q answer` its bottom line's first pair)
+    Scene { name: "sessionset-waits", claude: "startthree", files: MAIN, keys: SESSION_SET_WAITS },
+    // (…its `y`, and the child's chat: main's brief its first message, headed `main's Claude`, a step down from yours)
+    Scene {
+        name: "sessionset-child",
+        claude: "main=startgo,knot-count=childcount",
+        files: MAIN,
+        keys: SESSION_SET_CHILD,
+    },
     // (…the follow card framed, one session: named `follow`, the turn's time at its line's right)
     Scene { name: "follow-one", claude: "writemid", files: MAIN, keys: FOLLOW_ONE },
     // (panes P3 step 8: per-pane follow — your keys in the other pane on the same file, on another, and `C-f` moving it)
@@ -3114,6 +3182,9 @@ fn one(
         let theme = if bg == "dark" { "meok-transparent" } else { "hanji-transparent" };
         toml = format!("theme = \"{theme}\"\n{toml}");
     }
+    // (a session's checkout made by tarae — orchestra's set — in the shot's own folder, never yours)
+    let worktrees = toml::Value::String(dir.0.join("worktrees").to_string_lossy().into_owned());
+    toml = format!("{toml}\n[workspace]\nworktrees = {worktrees}\n");
     write(&config.join("tarae/config.toml"), &toml)?;
     let setup = Setup {
         bin: bin.to_path_buf(),
@@ -3491,6 +3562,9 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "home-docs" => turn.home_docs()?,
             "readlast" => turn.read_last()?,
             "cuthand" => turn.cut_hand()?,
+            "startone" | "startthree" | "startlong" => turn.sessions_start(&script[5..])?,
+            "startgo" => turn.sessions_started()?,
+            "childcount" => turn.child_count(&line)?,
             _ => {}
         }
     }
@@ -3502,6 +3576,10 @@ pub(crate) fn ask_edit() -> Value {
     json!({"edits": [{"file_path": "src/main.rs", "old_string": "    threads.insert(first.name.clone(), first);",
         "new_string": "    threads.entry(first.name.clone()).or_insert(first);"}]})
 }
+
+/// The `knot-count` session's brief in orchestra P1a's scenes.
+const COUNT_BRIEF: &str = "Count the knots of each thread in src/main.rs and print the threads most-knotted first.\n\
+    Keep Thread as it is; a test in src/thread.rs for the order. Done: cargo test passes.";
 
 struct Turn<'a, W, L> {
     out: &'a mut W,
@@ -3542,6 +3620,61 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             }
         }
         Ok(())
+    }
+
+    /// orchestra P1a's scenes: Claude asks for sessions on one card — `one`, `three`, or three with a brief whose first
+    /// line is long (`long`) — and waits there, its call unanswered, until tarae goes.
+    fn sessions_start(&mut self, which: &str) -> io::Result<()> {
+        let count = "knot-count";
+        let count_brief = COUNT_BRIEF;
+        let docs_brief = "Write a one-line doc comment for every public item in src/thread.rs, saying what it's for.\n\
+            No code changes. Done: cargo doc warns of nothing.";
+        let spool = match which {
+            "long" => {
+                "Find out why filling the map in src/main.rs clones each thread's name twice — once for the key and \
+                once inside the Thread itself — and make it clone each name once at most, the map's order and every test kept.\n\
+                Measure it before and after with 100,000 threads. Done: the clones halved, cargo test passes."
+            }
+            _ => {
+                "Make filling the map in src/main.rs clone each thread's name once, not twice.\n\
+                Measure it with 100,000 threads. Done: the clones halved, cargo test passes."
+            }
+        };
+        let sessions = match which {
+            "one" => json!({ count: count_brief }),
+            _ => json!({ count: count_brief, "thread-docs": docs_brief, "spool-clones": spool }),
+        };
+        let words = match which {
+            "one" => "The count is a piece of its own, so it can go in a session beside us.",
+            _ => "These three touch different files, so each can go in a session of its own.",
+        };
+        self.words(words)?;
+        self.text("\n")?;
+        self.call(1, "sessions_start", json!({"sessions": sessions, "base": "main"}))?;
+        self.lines.by_ref().try_for_each(|l| l.map(drop))
+    }
+
+    /// `sessionset-child`'s main: one session asked for, then — the set made — its turn's end.
+    fn sessions_started(&mut self) -> io::Result<()> {
+        self.words("The count is a piece of its own, so it can go in a session beside us.")?;
+        self.text("\n")?;
+        self.call(1, "sessions_start", json!({"sessions": {"knot-count": COUNT_BRIEF}, "base": "main"}))?;
+        self.words("Started **knot-count**; I'll keep to the map here.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// `sessionset-child`'s child: main's brief answered with a read and a plan; a message of yours after it, briefly.
+    fn child_count(&mut self, line: &str) -> io::Result<()> {
+        if !line.contains("from-session") {
+            self.words("Right — ties keep their names' order, so the sort is stable on the name.")?;
+            return self.line(json!({"type": "result", "result": "done"}));
+        }
+        self.words("Reading how the threads are kept first.")?;
+        self.text("\n\n")?;
+        self.call(1, "read", json!({"files": ["src/main.rs:1-20"]}))?;
+        self.words("Each thread keeps its knots in a list, so the count is its length. I'll sort by it, most-knotted first, \
+            and add the order's test in **src/thread.rs**.")?;
+        self.line(json!({"type": "result", "result": "done"}))
     }
 
     /// #157's scenes: a read of `src/wide.rs`'s last five lines (as many as the file in the folder it runs in has), then
