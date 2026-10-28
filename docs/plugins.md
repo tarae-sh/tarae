@@ -172,6 +172,29 @@ fn permissions() -> Vec<Permission> {
 | `env(name)` | `read-env` that variable | — |
 | `network` | `connect` over TCP — never to a cloud metadata server, link-local, multicast or broadcast; this machine only by its own names (below) | each new host:port, once |
 | `project` | `read-file` in the project tarae started in, and `find` there (`"**/kustomization.yaml"`: absolute paths back, as the file picker lists them) — not files named like keys and tokens (`.env`, `*.pem`, `id_rsa` …, the list in `runtime/secret-names.txt`): `find` leaves them out | reading one of those, once |
+| `keys` | hear the keys you press, as `keys` events — commands only (below); only while your own config's `plugins.keys` is on (off as it comes; a project's `.tarae.toml` can't turn it on), the status line saying `keys → <plugin>` while one hears. It's asked alone: with any other permission — `network`, `run`, `read`, `env`, `project` — the plugin doesn't load nor is it approved (said, and `tarae plugin list` says why), so it reads, connects to and runs nothing; what it hears stays in tarae: it shows it in its overlay only (below) | — |
+
+A `keys` event is a list of key events, each the sequence so far in the names tarae's hints use (`["space", "f"]`,
+`["C-w", "h"]`, `["3", "j"]`, `["esc"]`, `["enter"]`, `["↑"]` — the names it shows, not the keymap's notation a
+panel's `key` names), whether it's `done` (false: more keys to come, which-key may be up) and the
+mode after it. **Never a character typed**: in insert mode only the key that entered it and the one that left it (none
+named when a binding of letters left it, `j k`); in a line being typed — a prompt, a `:` line, a picker's query, the
+chat — only `enter` and `esc`; nothing the terminal's program gets (tarae's own `[terminal]` rows only); never the
+character a command waits for (`f x`, `r x`, `"a` are `f`, `r`, `"`). Only the keys you press: what tarae feeds itself
+(`.` replaying an insert, a macro) isn't heard. Keys that come while the plugin is busy go in one event, the newest 64.
+
+**What it heard stays in tarae.** A plugin that asks for `keys` — approved or not, hearing now or not — answers
+any call (a key event, a command, any other event) with its `overlay`, `timer` and `stop` only. Everything else is
+refused as it's answered, and said once in tarae's words (`plugin <name> hears keys: an edit refused …`), nothing of
+the plugin's own: edits and selections, a `run`, a message (`status` … `error`), `status-bar`, `open`,
+`show`/`append`, `panel`, `side`, `badge`, `hints`, `pick`, `prompt`, a read (`read-file`, `read-env`, `find` — the
+path it picks would be a lookup the filesystem makes, a server's on a network mount, even for a file that isn't
+there), `spawn`, `connect`/`send`, `write-own`, `offer-install` — a request with an id gets `failed` back, and no
+card asks. So nothing it heard reaches your text, the filesystem, another plugin, tarae's log or Claude: its
+overlay is never at Claude's level of the state (the `ui` tool, the context's `ui:` line). What does carry it is yours:
+the screen you see, so a screenshot, a recording, or `C-s` sending the screen to Claude holds the overlay as it holds
+the rest. No action reaches the clipboard. An action a later API adds is refused until it's decided
+(`keys::refused` matches every one).
 
 Requests are actions, and what they bring comes back later to `on-events(events, now)`, in the order it happened:
 
@@ -375,5 +398,7 @@ paths = ["migrations/**"]
 | “plugins can run movement commands only” | `run` named something that isn't a movement command |
 | “its answer is too big” | over 64 MB of text and lists in one answer |
 | “crashed (a panic?)” | the plugin panicked |
+| “it asks to hear keys and for “…”” / “can't be approved” | a plugin that asks for `keys` asks for nothing else: drop the rest from `permissions()` |
+| “plugin … hears keys: … refused” / `failed`: “…: a plugin that hears keys shows what it hears in its overlay only” | a key-hearing plugin answers with its overlay and timers only: drop the rest |
 | `failed`: “it didn't ask to …” | add it to `permissions()` (then you approve it again) |
 | `failed`: “its permissions wait for your approval” | you said not now: `:plugin-approve <plugin>`, `y`, then ask again |

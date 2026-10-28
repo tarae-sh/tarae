@@ -69,6 +69,8 @@ pub enum Permission {
     Env(String),
     Network,
     Project,
+    /// Hear the keys pressed as commands (`HostEvent::Keys`).
+    Keys,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -290,6 +292,22 @@ pub struct Overlay {
     pub hold: Option<u64>,
 }
 
+/// The editor's mode after a key (the WIT `mode`, in its order).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Normal,
+    Insert,
+    Select,
+}
+
+/// A key pressed, as a command: the sequence so far in tarae's hint names, whether it's done, the mode after it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyEvent {
+    pub keys: Vec<String>,
+    pub done: bool,
+    pub mode: Mode,
+}
+
 /// A list to choose from: items are (id, label).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pick {
@@ -319,6 +337,8 @@ pub enum HostEvent {
     Installed(u64),
     /// A press on its overlay: the row.
     Pressed(u64),
+    /// Keys pressed, in order.
+    Keys(Vec<KeyEvent>),
 }
 
 // ── The WIT types, and converting to and from them ───────────────────────────
@@ -348,7 +368,7 @@ fn subscriptions_t() -> T {
 }
 
 fn permissions_t() -> T {
-    list(T::Var(vec![Some(T::Str), Some(T::Str), Some(T::Str), None, None]))
+    list(T::Var(vec![Some(T::Str), Some(T::Str), Some(T::Str), None, None, None]))
 }
 
 fn now_t() -> T {
@@ -478,6 +498,7 @@ fn host_events_t() -> T {
         Some(rec(vec![T::U64, T::Str])),
         Some(T::U64),
         Some(T::U64),
+        Some(list(rec(vec![list(T::Str), T::Bool, T::Var(vec![None; 3])]))),
     ]))
 }
 
@@ -553,6 +574,21 @@ fn host_events_v(events: &[HostEvent]) -> V {
                 HostEvent::Written(id, path) => case(12, pair(*id, str_v(path))),
                 HostEvent::Installed(id) => case(13, V::U64(*id)),
                 HostEvent::Pressed(row) => case(14, V::U64(*row)),
+                HostEvent::Keys(keys) => case(
+                    15,
+                    V::List(
+                        keys.iter()
+                            .map(|k| {
+                                let mode = match k.mode {
+                                    Mode::Normal => 0,
+                                    Mode::Insert => 1,
+                                    Mode::Select => 2,
+                                };
+                                V::Rec(vec![strs_v(&k.keys), V::Bool(k.done), V::Var(mode, None)])
+                            })
+                            .collect(),
+                    ),
+                ),
             })
             .collect(),
     )
@@ -650,6 +686,7 @@ fn permissions_of(v: V) -> Vec<Permission> {
             V::Var(1, Some(s)) => Permission::Read(string(*s)),
             V::Var(2, Some(s)) => Permission::Env(string(*s)),
             V::Var(4, None) => Permission::Project,
+            V::Var(5, None) => Permission::Keys,
             _ => Permission::Network,
         })
         .collect()
@@ -1051,6 +1088,28 @@ impl Plugin {
 /// The SDK's demo plugin as built (`plugin-sdk/demo.wasm`) — for tests, this crate's and the editor's.
 pub const DEMO: &[u8] = include_bytes!("../../../../plugin-sdk/demo.wasm");
 
+/// The demo's build asking for another set of permissions (its `PERMISSIONS` byte patched): `k` hears keys alone;
+/// `n` keys beside the network, `r` a program, `f` a read pattern, `e` a variable, `p` the project — for tests.
+pub fn demo_asking(set: u8) -> Vec<u8> {
+    let mut b = DEMO.to_vec();
+    demo_patch(&mut b, b"tarae-demo-permissions=", &[set]);
+    b
+}
+
+/// The demo's build reading by `pattern` (its `READ` patched; up to 200 bytes) — a pattern of a test's own scratch
+/// folder, so no test reads where anyone else could write.
+pub fn demo_reading(pattern: &str) -> Vec<u8> {
+    assert!(pattern.len() <= 200 && !pattern.contains('\0'), "{pattern}");
+    let mut b = DEMO.to_vec();
+    demo_patch(&mut b, b"tarae-demo-read=", &[pattern.as_bytes(), b"\0"].concat());
+    b
+}
+
+fn demo_patch(b: &mut [u8], mark: &[u8], with: &[u8]) {
+    let at = b.windows(mark.len()).position(|w| w == mark).expect("the demo's mark") + mark.len();
+    b[at..at + with.len()].copy_from_slice(with);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1169,7 +1228,7 @@ mod tests {
                 p.permissions(FUEL).unwrap(),
                 [
                     Permission::Run("true".into()),
-                    Permission::Read("/tmp/tarae-demo/**".into()),
+                    Permission::Read("/tarae-demo/**".into()),
                     Permission::Env("TARAE_DEMO".into()),
                     Permission::Network,
                     Permission::Project
@@ -1229,14 +1288,36 @@ mod tests {
                 HostEvent::Key("d".into(), Some(1), Some("default/web".into())),
                 HostEvent::Answer(6, Some("web".into())),
                 HostEvent::Failed(9, "no".into()),
+                HostEvent::Keys(vec![
+                    KeyEvent { keys: vec!["space".into()], done: false, mode: Mode::Normal },
+                    KeyEvent { keys: vec!["space".into(), "f".into()], done: true, mode: Mode::Normal },
+                    KeyEvent { keys: vec!["i".into()], done: true, mode: Mode::Insert },
+                    KeyEvent { keys: vec![], done: true, mode: Mode::Select },
+                ]),
             ];
             let now = Now { millis: 42, entropy: vec![1; 32] };
             let [Action::Status(said)] = &p.on_events(&events, &now, FUEL).unwrap()[..] else { panic!() };
             assert_eq!(
                 said,
-                r#"lines 1 ["x"] | exit 1 Some(0) [] | connected 2 | data 2 [0, 255] | closed 2 "" | file 3 1000 | env 4 None | tick 5 | key d Some(1) Some("default/web") | answer 6 Some("web") | failed 9 no · 42 · 32"#
+                r#"lines 1 ["x"] | exit 1 Some(0) [] | connected 2 | data 2 [0, 255] | closed 2 "" | file 3 1000 | env 4 None | tick 5 | key d Some(1) Some("default/web") | answer 6 Some("web") | failed 9 no | keys [space] more normal, [space f] done normal, [i] done insert, [] done select · 42 · 32"#
             );
         }
+    }
+
+    /// The demo's build patched (`demo_asking`) asks for what that letter says — the last permission, `keys`, read
+    /// whole; and reads by the pattern patched in (`demo_reading`).
+    #[test]
+    fn the_demo_patched_asks_to_hear_keys() {
+        let ask =
+            |set| Plugin::new(&demo_asking(set), Limits::default(), FUEL).unwrap().permissions(FUEL).unwrap();
+        assert_eq!(ask(b'n'), [Permission::Keys, Permission::Network]);
+        assert_eq!(ask(b'r'), [Permission::Keys, Permission::Run("true".into())]);
+        assert_eq!(ask(b'f'), [Permission::Keys, Permission::Read("/tarae-demo/**".into())]);
+        let mut reading = Plugin::new(&demo_reading("/a/b/**"), Limits::default(), FUEL).unwrap();
+        assert_eq!(reading.permissions(FUEL).unwrap()[1], Permission::Read("/a/b/**".into()), "patched");
+        assert_eq!(ask(b'e'), [Permission::Keys, Permission::Env("TARAE_DEMO".into())]);
+        assert_eq!(ask(b'p'), [Permission::Keys, Permission::Project]);
+        assert_eq!(ask(b'k'), [Permission::Keys]);
     }
 
     #[test]

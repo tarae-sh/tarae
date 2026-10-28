@@ -2800,7 +2800,12 @@ impl Editor {
         let asked = input.then(|| self.events.set_asked(Some(self.input_seq + 1)));
         match ev {
             Event::Key(k) => {
+                // (your key, as a command, to a plugin that hears keys — never one tarae feeds itself: `plugin::keys`)
+                let heard = self.keys_before(k);
                 self.handle_key(k);
+                if let Some(b) = heard {
+                    self.keys_after(k, b);
+                }
                 self.auto_save_idle();
                 self.plugin_input_went_in();
             }

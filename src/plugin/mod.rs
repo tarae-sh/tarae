@@ -19,6 +19,7 @@
 mod cli;
 mod events;
 mod io;
+pub(crate) mod keys;
 pub(crate) mod overlay;
 mod panel;
 mod perm;
@@ -151,7 +152,8 @@ pub struct Plugins {
     pub overlays: std::collections::BTreeMap<String, overlay::Shown>,
     /// The tools plugins offered to install since tarae started (once each).
     pub(crate) offered: std::collections::HashSet<String>,
-    /// Where each plugin's own folder is (`<this>/<plugin>`): the state folder's `plugins`.
+    /// Where each plugin's own folder is (`<this>/<plugin>`): the state folder's `plugins` (a test's scratch's).
+    /// Approvals' `perm_store` stays apart: none in tests unless a test sets one.
     own_root: Option<PathBuf>,
 }
 
@@ -200,7 +202,28 @@ impl Editor {
     /// The plugins folder's contents changed (the config watcher noticed): load new and changed plugins, drop
     /// missing ones. The first time there's something, the plugin thread starts.
     pub fn plugins_sync(&mut self, found: Found) {
-        if self.plugins.is_none() && (found.is_empty() || !self.plugins_start()) {
+        self.plugins_sync_rooted(found, crate::config::state_dir());
+    }
+
+    /// `plugins_sync` with the plugins' state in a test's own scratch (`state`): their own folders
+    /// (`state/plugins/<plugin>`). The host started any other way fails the test (`plugins_sync_rooted`).
+    #[cfg(test)]
+    pub(crate) fn plugins_sync_in(&mut self, state: &std::path::Path, found: Found) {
+        self.plugins_sync_rooted(found, Some(state.to_path_buf()));
+    }
+
+    /// `plugins_sync`, the plugin thread started with `state` as the state folder its plugins keep their files in.
+    fn plugins_sync_rooted(&mut self, found: Found, state: Option<PathBuf>) {
+        if self.plugins.is_none() && !found.is_empty() {
+            // A test's plugins write in its own scratch, never the real state folder (a `write-own` let past its
+            // gate once reached for `~/.local/state/tarae/plugins/demo`): `plugins_sync_in`
+            #[cfg(test)]
+            assert!(
+                state.as_deref().is_some_and(crate::scratch::holds),
+                "the plugin host rooted at {state:?}, outside the test's scratch — start it with `plugins_sync_in`"
+            );
+        }
+        if self.plugins.is_none() && (found.is_empty() || !self.plugins_start(state)) {
             return;
         }
         if let Some(p) = &self.plugins {
@@ -208,8 +231,9 @@ impl Editor {
         }
     }
 
-    /// The plugin thread started, nothing loaded yet. false if it couldn't start (said).
-    fn plugins_start(&mut self) -> bool {
+    /// The plugin thread started with `state` as the state folder its plugins keep their files in (None: none — a
+    /// test's stand-in that loads no plugin), nothing loaded yet. false if it couldn't start (said).
+    fn plugins_start(&mut self, state: Option<PathBuf>) -> bool {
         let events = self.events.shared_sender();
         let started = Host::start(
             move |note| {
@@ -248,7 +272,7 @@ impl Editor {
             badge: None,
             overlays: Default::default(),
             offered: Default::default(),
-            own_root: crate::config::state_dir().map(|s| s.join("plugins")),
+            own_root: state.map(|s| s.join("plugins")),
         });
         true
     }
@@ -413,7 +437,13 @@ impl Editor {
         let edits =
             |a: &Action| matches!(a, Action::ReplaceSelections(_) | Action::Edits(_) | Action::Select(_));
         let mut edited = false;
+        // (what a plugin that hears keys heard stays in tarae: its overlay, its timers — `keys::refused`)
+        let hears = self.plugin_hears_keys(plugin);
         for a in &actions {
+            if let Some(what) = keys::refused(a).filter(|_| hears) {
+                self.plugin_keys_refuse(plugin, a, what);
+                continue;
+            }
             if self.plugin_hold(plugin, a) {
                 continue;
             }
@@ -691,13 +721,18 @@ mod tests {
         ed.toasts.iter().map(|t| t.text.as_str()).collect::<Vec<_>>().join(" | ")
     }
 
-    /// An editor with the demo plugin loaded from its own folder, on `text`.
+    /// An editor with the demo plugin loaded from its own folder, on `text` — its state (`state/`) in that folder.
     fn setup(name: &str, text: &str) -> (Editor, PathBuf) {
+        setup_with(name, text, DEMO)
+    }
+
+    /// `setup` with the demo's build as `wasm` (patched: `abi::demo_reading`).
+    fn setup_with(name: &str, text: &str, wasm: &[u8]) -> (Editor, PathBuf) {
         let dir = crate::scratch::Scratch::new(&format!("plugins-{name}")).into_path();
-        std::fs::write(dir.join("demo.wasm"), DEMO).unwrap();
+        std::fs::write(dir.join("demo.wasm"), wasm).unwrap();
         let mut ed = Editor::new(Config::default());
         ed.docs[0].text = ropey::Rope::from_str(text);
-        ed.plugins_sync(host::scan(&dir));
+        ed.plugins_sync_in(&dir.join("state"), host::scan(&dir));
         settle_until(&mut ed, |ed| ed.plugin_command("shout").is_some());
         (ed, dir)
     }
@@ -723,7 +758,7 @@ mod tests {
         let dir = crate::scratch::Scratch::new("plugins-rule-refused");
         std::fs::write(dir.join("demo.wasm"), bytes).unwrap();
         let mut ed = Editor::new(Config::default());
-        ed.plugins_sync(host::scan(&dir));
+        ed.plugins_sync_in(&dir.join("state"), host::scan(&dir));
         // (refused or loaded, whichever comes: a rule not passed fails here at once, not at the patience's end)
         settle_until(&mut ed, |ed| {
             toasts(ed).contains("plugin demo:") || ed.plugin_command("shout").is_some()
@@ -891,15 +926,19 @@ mod tests {
 
     #[test]
     fn files_in_its_patterns_are_read_others_are_asked_about() {
-        let base = PathBuf::from("/tmp/tarae-demo").join(std::process::id().to_string());
-        std::fs::create_dir_all(&base).unwrap();
+        // The demo reads by a pattern of the test's own scratch folder, patched into its build — never a folder
+        // whose name anyone can guess (and so make first), nor a fixed one another run of the tests shares
+        let reads = crate::scratch::Scratch::new("plugins-files-reads");
+        let pattern = format!("{}/**", reads.display());
+        let (mut ed, dir) = setup_with("files", "x\n", &abi::demo_reading(&pattern));
+        let declared = &ed.plugins.as_ref().unwrap().permissions["demo"];
+        assert!(declared.contains(&abi::Permission::Read(pattern.clone())), "{declared:?}");
+        let base = reads.to_path_buf();
         std::fs::write(base.join("a.txt"), "hello").unwrap();
-        let outside = std::env::temp_dir().join(format!("tarae-outside-{}.txt", std::process::id()));
+        let outside = dir.join("outside.txt");
         std::fs::write(&outside, "secret").unwrap();
         let link = base.join("link");
-        let _ = std::fs::remove_file(&link);
         std::os::unix::fs::symlink(&outside, &link).unwrap();
-        let (mut ed, dir) = setup("files", "x\n");
         answer(&mut ed, approval, true);
         ed.plugin_run("fetch", &base.join("a.txt").display().to_string()).unwrap();
         until_said(&mut ed, "file 10 5");
@@ -923,8 +962,6 @@ mod tests {
         // A relative path isn't one
         ed.plugin_run("fetch", "a.txt").unwrap();
         until_said(&mut ed, "an absolute path, or one from ~/");
-        std::fs::remove_dir_all(&base).ok();
-        std::fs::remove_file(&outside).ok();
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -1379,7 +1416,7 @@ mod tests {
         let kept = perm::load(Some(&store));
         assert_eq!(
             kept["demo"].granted,
-            ["env TARAE_DEMO", "network", "project", "read /tmp/tarae-demo/**", "run true"]
+            ["env TARAE_DEMO", "network", "project", "read /tarae-demo/**", "run true"]
         );
         std::fs::remove_dir_all(dir).ok();
     }
@@ -1398,7 +1435,7 @@ mod tests {
         let row = p.items().iter().find(|i| i.label.starts_with("demo: ")).map(|i| i.label.clone());
         assert_eq!(
             row.as_deref(),
-            Some("demo: env TARAE_DEMO, network, project, read /tmp/tarae-demo/**, run true")
+            Some("demo: env TARAE_DEMO, network, project, read /tarae-demo/**, run true")
         );
         let heading = p.items().iter().any(|i| i.label == "plugins · everywhere");
         assert!(heading);
@@ -1713,13 +1750,13 @@ mod tests {
         let manifest = project.join("Cargo.toml");
         ed.plugin_run("fetch", &manifest.display().to_string()).unwrap();
         until_said(&mut ed, "file 10 ");
-        // Its own folder: written, nowhere else
-        ed.plugins.as_mut().unwrap().own_root = Some(dir.join("own"));
+        // Its own folder (the state folder's `plugins/demo`, the test's): written, nowhere else
         ed.plugin_run("keep", "").unwrap();
         until_said(&mut ed, "written 51 ");
-        assert_eq!(std::fs::read_to_string(dir.join("own/demo/notes/a.txt")).unwrap(), "hello");
+        let own = dir.join("state/plugins/demo/notes/a.txt");
+        assert_eq!(std::fs::read_to_string(&own).unwrap(), "hello");
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(dir.join("own/demo/notes/a.txt")).unwrap().permissions().mode();
+        let mode = std::fs::metadata(&own).unwrap().permissions().mode();
         assert_eq!(mode & 0o077, 0, "the plugin's alone: {mode:o}");
         // A tool there already: installed at once; one no pack knows: said so
         ed.plugin_run("install", "sh").unwrap();
@@ -1903,6 +1940,30 @@ mod tests {
         settle_until(&mut ed, |ed| ed.plugin_command("shout").is_none());
         assert_eq!(crate::typed::execute(&mut ed, "shout"), Err("no such command: 'shout'".into()));
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A test's plugin host keeps its plugins' files in the test's own scratch: started with the real state folder
+    /// (`plugins_sync`'s), a temp path of no test's, or one climbing out of the scratch, it fails the test before its
+    /// thread starts — nothing loaded, nothing written.
+    #[test]
+    fn a_tests_plugin_host_is_rooted_in_its_scratch() {
+        let dir = crate::scratch::Scratch::new("plugins-rooted");
+        std::fs::write(dir.join("demo.wasm"), DEMO).unwrap();
+        let started = |state: Option<PathBuf>| {
+            let mut ed = Editor::new(Config::default());
+            let start = std::panic::AssertUnwindSafe(|| match &state {
+                Some(s) => ed.plugins_sync_in(s, host::scan(&dir)),
+                None => ed.plugins_sync(host::scan(&dir)),
+            });
+            std::panic::catch_unwind(start).map_err(|e| {
+                let said = e.downcast_ref::<String>().cloned().unwrap_or_default();
+                assert!(said.contains("outside the test's scratch"), "{said}");
+            })
+        };
+        for outside in [None, Some(std::env::temp_dir().join("state")), Some(dir.join("../state"))] {
+            assert!(started(outside.clone()).is_err(), "{outside:?} let start");
+        }
+        assert!(started(Some(dir.join("state"))).is_ok());
     }
 
     #[test]

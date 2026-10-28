@@ -256,7 +256,6 @@ pub enum Filter {
 }
 
 impl Filter {
-    #[cfg(test)]
     fn takes(&self, key: Key) -> bool {
         match self {
             Filter::All => true,
@@ -303,8 +302,8 @@ pub struct KeysTo {
 }
 
 impl KeysTo {
-    /// Where `key` goes now (the routing test's model — `handle_key` takes the same way).
-    #[cfg(test)]
+    /// Where `key` goes now (the routing test's model — `handle_key` takes the same way; what a plugin hears of it,
+    /// `plugin::keys`).
     pub fn route(&self, key: Key) -> Region {
         self.chain.iter().find(|l| l.filter.takes(key)).map_or(Region::Code, |l| l.region)
     }
@@ -533,6 +532,19 @@ impl Editor {
         v
     }
 
+    /// What `region` does with a letter now.
+    pub(crate) fn takes_of(&self, region: Region) -> Takes {
+        match region {
+            Region::Card(_) | Region::EditReview => Takes::Answers,
+            Region::Program => Takes::Program,
+            Region::Unfold => Takes::Unfold,
+            Region::Point => Takes::Label,
+            Region::Picker | Region::Prompt | Region::Chat => Takes::Text,
+            Region::Code if self.mode == Mode::Insert => Takes::Text,
+            _ => Takes::Commands,
+        }
+    }
+
     /// The region the keys go to now — `keys_to().region`, nothing else built.
     pub(crate) fn keys_region(&self) -> Region {
         let chain = self.keys_chain();
@@ -552,15 +564,7 @@ impl Editor {
             _ => None,
         }
         .map(|l| l.region);
-        let takes = match region {
-            Region::Card(_) | Region::EditReview => Takes::Answers,
-            Region::Program => Takes::Program,
-            Region::Unfold => Takes::Unfold,
-            Region::Point => Takes::Label,
-            Region::Picker | Region::Prompt | Region::Chat => Takes::Text,
-            Region::Code if self.mode == Mode::Insert => Takes::Text,
-            _ => Takes::Commands,
-        };
+        let takes = self.takes_of(region);
         let answers = match region {
             // (none for a card the last frame had no room for: `card_key` refuses every key, said)
             Region::Card(id) if self.offer_unshown.get().is_some_and(|u| u.0 == id) => Vec::new(),

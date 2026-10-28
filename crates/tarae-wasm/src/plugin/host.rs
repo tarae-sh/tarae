@@ -196,16 +196,16 @@ fn budget(p: &Plugin) -> u64 {
     if p.compiled() { JIT_FUEL } else { INTERPRETER_FUEL }
 }
 
-/// Why a permission can't be granted as written, if it can't — the editor's rule (its `perm::invalid`): a plugin
-/// that asks for one doesn't load.
-pub type Invalid = fn(&Permission) -> Option<String>;
+/// Why what a plugin asks for can't be granted as written, if it can't — the editor's rule (its `perm::invalid`),
+/// over the whole list (one permission may rule out another): a plugin that asks for it doesn't load.
+pub type Invalid = fn(&[Permission]) -> Option<String>;
 
 fn load(bytes: &[u8], invalid: Invalid) -> Result<(Plugin, Manifest), String> {
     let mut p = Plugin::new(bytes, Limits::default(), LOAD_FUEL)?;
     let commands = p.commands(LOAD_FUEL)?;
     let subscriptions = p.subscriptions(LOAD_FUEL)?;
     let permissions = p.permissions(LOAD_FUEL)?;
-    if let Some(why) = permissions.iter().find_map(invalid) {
+    if let Some(why) = invalid(&permissions) {
         return Err(why);
     }
     Ok((p, Manifest { commands, subscriptions, permissions }))
@@ -341,8 +341,8 @@ mod tests {
     }
 
     /// A stand-in for the editor's rule: no programs.
-    fn no_programs(p: &Permission) -> Option<String> {
-        matches!(p, Permission::Run(_)).then(|| "no programs here".to_string())
+    fn no_programs(p: &[Permission]) -> Option<String> {
+        p.iter().any(|p| matches!(p, Permission::Run(_))).then(|| "no programs here".to_string())
     }
 
     /// The rule the editor passes judges what a plugin asks for as it loads: one it refuses doesn't load — its

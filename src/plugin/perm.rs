@@ -71,6 +71,7 @@ pub(super) fn key(p: &Permission) -> String {
         Permission::Env(name) => format!("env {name}"),
         Permission::Network => "network".into(),
         Permission::Project => "project".into(),
+        Permission::Keys => "keys".into(),
     }
 }
 
@@ -95,13 +96,44 @@ fn describe(p: &Permission) -> String {
              (.env, *.pem …): those it asks for"
                 .into()
         }
+        Permission::Keys => {
+            "hear the keys you press as commands, never a character typed — only while your own config's \
+             plugins.keys is on, said on the status line while it hears; it shows them in its overlay only, \
+             never edits, says, opens, keeps, reads, connects to or runs anything"
+                .into()
+        }
     }
+}
+
+/// Why what a plugin declares isn't what tarae takes, if it isn't: each permission as written (`invalid_one`), and
+/// a plugin that hears keys asking for nothing else (overlays plan §7 1: a keylogger needs a way out, a keycast
+/// none) — no `network`, no `run`, and no reads either: a path it picks is a lookup the filesystem makes, and on a
+/// network mount even a missing file's lookup reaches a server. What needs no permission — an edit, a message, a
+/// panel, its own file — is refused as it's answered (`keys::refused`), and its card says so (`describe`).
+pub(super) fn invalid(declared: &[Permission]) -> Option<String> {
+    if let Some(why) = declared.iter().find_map(invalid_one) {
+        return Some(why);
+    }
+    let other = declared.iter().find(|p| **p != Permission::Keys);
+    match (declared.contains(&Permission::Keys), other) {
+        (true, Some(p)) => Some(format!(
+            "it asks to hear keys and for “{}” — a plugin that hears keys asks for nothing else: it reads, \
+             connects to and runs nothing (what it hears stays in tarae)",
+            shown(&key(p))
+        )),
+        _ => None,
+    }
+}
+
+/// Whether a plugin that declared `declared` hears keys (`keys`) — and so writes nothing of its own.
+pub(super) fn hears_keys(declared: &[Permission]) -> bool {
+    declared.contains(&Permission::Keys)
 }
 
 /// Why a declared permission isn't one tarae takes, if it isn't: a program is a plain name, a variable a
 /// plain name, a pattern absolute (or from `~/`) with no `.` or `..` in it — so what the card shows is what
 /// it covers.
-pub(super) fn invalid(p: &Permission) -> Option<String> {
+fn invalid_one(p: &Permission) -> Option<String> {
     let plain = |s: &str, extra: &str| {
         !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || extra.contains(c))
     };
@@ -357,6 +389,9 @@ impl Editor {
         if declared.is_empty() {
             return Err(format!("{plugin} asks for nothing beyond the buffer"));
         }
+        if let Some(why) = invalid(&declared) {
+            return Err(format!("{plugin} can't be approved: {why}"));
+        }
         p.asked.insert(plugin.to_string());
         self.plugin_permissions_card(plugin, declared);
         Ok(())
@@ -398,6 +433,10 @@ impl Editor {
     /// Whether what a plugin asks for is what you approved (nothing to approve counts).
     pub(super) fn plugin_approved(&self, plugin: &str) -> bool {
         let Some(p) = &self.plugins else { return false };
+        // (what the load refuses is never approved either — a kept approval, a card from before)
+        if p.permissions.get(plugin).is_some_and(|d| invalid(d).is_some()) {
+            return false;
+        }
         let declared = p.permissions.get(plugin).map(|d| keys(d)).unwrap_or_default();
         declared.is_empty() || p.approvals.get(plugin).is_some_and(|a| a.granted == declared)
     }
@@ -409,6 +448,10 @@ impl Editor {
         declared: Vec<Permission>,
         allow: bool,
     ) {
+        if let Some(why) = invalid(&declared).filter(|_| allow) {
+            self.set_warning(format!("Plugin {plugin} can't be approved: {why}"));
+            return self.plugin_held_go(&plugin);
+        }
         if !allow {
             self.set_status(format!(
                 "Plugin {plugin} does nothing beyond the buffer until you approve — :plugin-approve {plugin}"

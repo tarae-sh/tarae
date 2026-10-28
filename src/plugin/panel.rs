@@ -205,7 +205,8 @@ impl Editor {
     /// plugin writes them (`ret`, `C-minus` — the keymap's notation; shown `enter`, `C--`).
     #[cfg(test)]
     pub(crate) fn plugin_panel_stand_in(&mut self, rows: usize) {
-        assert!(self.plugins.is_some() || self.plugins_start(), "the plugin thread started");
+        // (no state folder: no plugin loaded, nothing of one's kept)
+        assert!(self.plugins.is_some() || self.plugins_start(None), "the plugin thread started");
         self.plugins.as_mut().unwrap().answering = Some("demo".into());
         let rows = (0..rows).map(|i| vec![format!("row {i}")]).collect();
         let keys = [("ret", "open"), ("C-minus", "less"), ("d", "delete")];
@@ -439,7 +440,8 @@ impl Editor {
     /// A plugin's side tab, given the keys, its own keys written as a plugin writes them (`ret`, `minus` — shown
     /// `enter`, `-`) — the plugin thread started, no plugin loaded.
     pub(crate) fn plugin_side_stand_in(&mut self) {
-        assert!(self.plugins.is_some() || self.plugins_start(), "the plugin thread started");
+        // (no state folder: no plugin loaded, nothing of one's kept)
+        assert!(self.plugins.is_some() || self.plugins_start(None), "the plugin thread started");
         let row = |id: &str| super::abi::SideRow {
             id: id.into(),
             depth: 0,

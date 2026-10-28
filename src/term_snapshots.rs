@@ -844,17 +844,15 @@ fn snapshot_offer_grammar() {
 fn snapshot_plugin_panel() {
     let mut s = Shot::new(100, 30);
     s.file("app.yaml", "kind: Deployment\nmetadata:\n  name: web\n");
-    let dir = std::env::temp_dir().join(format!("tarae-shot-plugins-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = crate::scratch::Scratch::new("shot-plugins");
     std::fs::write(dir.join("demo.wasm"), include_bytes!("../plugin-sdk/demo.wasm")).unwrap();
-    s.ed.plugins_sync(crate::plugin::scan(&dir));
+    s.ed.plugins_sync_in(&dir.join("state"), crate::plugin::scan(&dir));
     s.until("the plugin", |ed| ed.plugin_command("table").is_some());
     s.ed.offers.clear(); // (its approval card — another shot)
     s.ed.plugin_run("table", "").unwrap();
     s.until("its panel", |ed| ed.plugins.as_ref().is_some_and(|p| p.panel.is_some()));
     s.keys("jj");
     s.check("plugin_panel");
-    std::fs::remove_dir_all(dir).ok();
 }
 
 /// Offer to install a missing language server — its command in sight, and `N Never`.

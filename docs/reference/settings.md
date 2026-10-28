@@ -96,6 +96,12 @@ The name is also the `:set` path: `:set editor.scrolloff 8` changes it until you
 |---|---|---|---|
 | `features.count` | bool | `false` | Count which of tarae's features you use — each command, card, panel, picker and Claude tool's count and last day, never what it was used on — in features.json in tarae's state folder, on this machine only (:features shows them). Only your own config turns it on |
 
+## `[plugins]`
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `plugins.keys` | bool | `false` | Plugins that ask for keys (a keycast) hear the keys you press — as commands, never a character typed in a buffer, a prompt, a picker or the terminal; the status line names them while one hears. Such a plugin shows them in its overlay only: it can't read a file, reach the network, run a program, edit, write a file or say anything elsewhere. Only your own config turns it on |
+
 ## `[workspace]`
 
 | Setting | Type | Default | Description |

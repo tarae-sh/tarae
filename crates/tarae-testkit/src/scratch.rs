@@ -4,8 +4,23 @@
 //! what's there: 0700, and the next number when its name is taken (`EEXIST`, a link too) — so it removes only
 //! what it made, when it's dropped.
 
+use std::cell::RefCell;
 use std::os::unix::fs::DirBuilderExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+
+thread_local! {
+    /// The scratch folders this thread made and hasn't dropped — a test's own (`holds`).
+    static MADE: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Whether `path` is in a scratch folder this thread made and still has (or is one): what a test hands code that
+/// writes, judged where that code starts — a guard that fails a test rooted in home, the state folder or a guessable
+/// temp path. As written: absolute, no `..` part. (`into_path`'s stay its own: the caller removes them.)
+pub fn holds(path: &Path) -> bool {
+    let plain = path.is_absolute()
+        && path.components().all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
+    plain && MADE.with(|m| m.borrow().iter().any(|s| path.starts_with(s)))
+}
 
 /// A folder of the test's own under the temp folder, removed (with what's in it) when dropped.
 #[derive(Debug)]
@@ -29,6 +44,7 @@ impl Scratch {
             match std::fs::DirBuilder::new().mode(0o700).create(&path) {
                 Ok(()) => {
                     let path = std::fs::canonicalize(&path).unwrap_or(path);
+                    MADE.with(|m| m.borrow_mut().push(path.clone()));
                     return Scratch { path };
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -87,6 +103,8 @@ impl AsRef<Path> for Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
+        // (`try_with`: one dropped as the thread ends finds its list gone)
+        let _ = MADE.try_with(|m| m.borrow_mut().retain(|p| p != &self.path));
         std::fs::remove_dir_all(&self.path).ok();
     }
 }
@@ -120,5 +138,25 @@ mod tests {
         assert!(!a_path.exists() && !b_path.exists(), "gone when dropped");
         assert_eq!(std::fs::read_to_string(theirs.join("keep")).unwrap(), "theirs", "never another's");
         assert!(link.is_symlink());
+    }
+
+    /// `holds`: in a scratch folder this thread made and still has — not another thread's, not one dropped, not a
+    /// path climbing out of one, never home or the temp folder itself.
+    #[test]
+    fn holds_is_a_scratch_folder_this_thread_has() {
+        let a = Scratch::new("scratch-holds");
+        assert!(holds(&a) && holds(&a.join("state/plugins")));
+        assert!(!holds(&a.join("../elsewhere")) && !holds(Path::new("state")));
+        assert!(!holds(&std::env::temp_dir()) && !holds(Path::new("/")));
+        if let Some(home) = std::env::var_os("HOME") {
+            assert!(!holds(&Path::new(&home).join(".local/state/tarae")));
+        }
+        let path = a.to_path_buf();
+        assert!(!std::thread::scope(|s| s.spawn(|| holds(&path)).join().unwrap()), "another thread's");
+        let kept = Scratch::new("scratch-holds-kept").into_path();
+        assert!(holds(&kept), "`into_path`'s stays the test's");
+        std::fs::remove_dir_all(&kept).ok();
+        drop(a);
+        assert!(!holds(&path), "dropped");
     }
 }

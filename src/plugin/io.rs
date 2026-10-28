@@ -73,16 +73,25 @@ fn thread(name: &str, f: impl FnOnce() + Send + 'static) -> Result<(), String> {
 pub(super) struct Outbox {
     generation: u64,
     /// A call is in flight: what comes meanwhile waits in `queued`, and goes in one call after it.
-    busy: bool,
-    queued: Vec<HostEvent>,
+    pub(super) busy: bool,
+    pub(super) queued: Vec<HostEvent>,
     /// The output bytes in `queued`.
     weight: usize,
     flow: Arc<Flow>,
+    /// It hears keys and answered with what it may not (`keys::refused`): said once a load.
+    pub(super) keys_refused: bool,
 }
 
 impl Outbox {
     pub(super) fn new(generation: u64) -> Outbox {
-        Outbox { generation, busy: false, queued: Vec::new(), weight: 0, flow: Arc::default() }
+        Outbox {
+            generation,
+            busy: false,
+            queued: Vec::new(),
+            weight: 0,
+            flow: Arc::default(),
+            keys_refused: false,
+        }
     }
 }
 
@@ -823,9 +832,19 @@ impl Editor {
     }
 
     /// `events` (carrying `w` bytes of output) to the plugin: now, or after the call in flight.
-    fn plugin_queue(&mut self, plugin: &str, events: Vec<HostEvent>, w: usize) {
+    pub(super) fn plugin_queue(&mut self, plugin: &str, events: Vec<HostEvent>, w: usize) {
         let Some(o) = self.plugins.as_mut().and_then(|p| p.outbox.get_mut(plugin)) else { return };
-        o.queued.extend(events);
+        for e in events {
+            match (o.queued.last_mut(), e) {
+                // (keys that came while a call was in flight: one event, the newest kept — `keys.rs`)
+                (Some(HostEvent::Keys(were)), HostEvent::Keys(more)) => {
+                    were.extend(more);
+                    let past = were.len().saturating_sub(super::keys::QUEUED_MAX);
+                    were.drain(..past);
+                }
+                (_, e) => o.queued.push(e),
+            }
+        }
         o.weight += w;
         self.plugin_flush(plugin);
     }
@@ -930,6 +949,7 @@ impl Editor {
 
     /// A plugin's `write-own`: a file in its own folder (`plugins/<name>/` in the state folder) — a plain
     /// relative name, up to 1 MB.
+    /// (One that hears keys never gets here: `keys::refused`.)
     pub(super) fn plugin_write_own(&mut self, plugin: &str, id: u64, name: &str, bytes: &[u8]) {
         let plain = !name.is_empty()
             && name.len() <= 200

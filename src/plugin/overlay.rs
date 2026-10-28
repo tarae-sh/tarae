@@ -23,6 +23,13 @@ pub const FADE: Duration = Duration::from_millis(400);
 /// How long a changed row dries (the flash's time).
 pub const DRYING: Duration = crate::motion::FLASH;
 
+#[cfg(test)]
+thread_local! {
+    /// Every overlay shown on this thread, (plugin, its text), oldest first — what a test reads of a plugin that says
+    /// only there (one that hears keys: `keys::refused`), each replacing the last on screen.
+    pub(crate) static SHOWN: std::cell::RefCell<Vec<(String, String)>> = Default::default();
+}
+
 /// A plugin's overlay as it's shown.
 #[derive(Clone, Debug)]
 pub struct Shown {
@@ -177,6 +184,8 @@ impl Editor {
         };
         let before = p.overlays.get(plugin).filter(|b| !b.gone(now, moving));
         let shown = Shown::new(o, now, before);
+        #[cfg(test)]
+        SHOWN.with(|s| s.borrow_mut().push((plugin.to_string(), shown.text())));
         p.overlays.insert(plugin.to_string(), shown);
     }
 

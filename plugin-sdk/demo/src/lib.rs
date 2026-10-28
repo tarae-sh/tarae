@@ -2,10 +2,42 @@
 wit_bindgen::generate!({ path: "../wit", world: "plugin" });
 
 use tarae::plugin::types::{
-    Connect, Edit, Hint, Hints, Overlay, Panel, Pick, Role, Side, SideRow, Span, Spawn, Tone, View,
+    Connect, Edit, Hint, Hints, Mode, Overlay, Panel, Pick, Role, Side, SideRow, Span, Spawn, Tone, View,
 };
 
 struct Demo;
+
+/// Which permissions it asks for: its last byte, `0` as built — tarae's tests patch it in a copy of the build
+/// (`abi::demo_asking`).
+static PERMISSIONS: [u8; 24] = *b"tarae-demo-permissions=0";
+
+fn permissions_set() -> u8 {
+    // (read as memory, so the build keeps the byte to patch rather than folding it away)
+    unsafe { core::ptr::read_volatile(&PERMISSIONS[PERMISSIONS.len() - 1]) }
+}
+
+/// The pattern it reads by, after its mark and up to a NUL: as built a stand-in at the root (`/tarae-demo/**`, a
+/// folder only root could make, which no test reads) — a test patches in a pattern of its own scratch folder
+/// (`abi::demo_reading`). Padded with `#`, not zeros, so the build keeps every byte of it.
+static READ: [u8; READ_MARK.len() + 201] = read_as_built();
+const READ_MARK: &[u8] = b"tarae-demo-read=";
+
+const fn read_as_built() -> [u8; READ_MARK.len() + 201] {
+    let pattern = b"/tarae-demo/**\0";
+    let mut b = [b'#'; READ_MARK.len() + 201];
+    let mut i = 0;
+    while i < READ_MARK.len() + pattern.len() {
+        b[i] = if i < READ_MARK.len() { READ_MARK[i] } else { pattern[i - READ_MARK.len()] };
+        i += 1;
+    }
+    b
+}
+
+fn read_pattern() -> String {
+    let b = unsafe { core::ptr::read_volatile(&READ) };
+    let p = &b[READ_MARK.len()..];
+    String::from_utf8_lossy(&p[..p.iter().position(|&c| c == 0).unwrap_or(p.len())]).into_owned()
+}
 
 fn cmd(name: &str, doc: &str, text: bool) -> Command {
     Command { name: name.into(), doc: doc.into(), text }
@@ -242,15 +274,26 @@ impl Guest for Demo {
         ]
     }
 
-    /// What it may do beyond the buffer: a little of each, for the tests.
+    /// What it may do beyond the buffer: a little of each, for the tests — or, its build patched (`PERMISSIONS`),
+    /// hearing keys: alone (`k`), or beside the network (`n`), a program (`r`), a read pattern (`f`), a variable
+    /// (`e`) or the project (`p`), which tarae refuses.
     fn permissions() -> Vec<Permission> {
-        vec![
-            Permission::Run("true".into()),
-            Permission::Read("/tmp/tarae-demo/**".into()),
-            Permission::Env("TARAE_DEMO".into()),
-            Permission::Network,
-            Permission::Project,
-        ]
+        let read = || Permission::Read(read_pattern());
+        match permissions_set() {
+            b'k' => vec![Permission::Keys],
+            b'n' => vec![Permission::Keys, Permission::Network],
+            b'r' => vec![Permission::Keys, Permission::Run("true".into())],
+            b'f' => vec![Permission::Keys, read()],
+            b'e' => vec![Permission::Keys, Permission::Env("TARAE_DEMO".into())],
+            b'p' => vec![Permission::Keys, Permission::Project],
+            _ => vec![
+                Permission::Run("true".into()),
+                read(),
+                Permission::Env("TARAE_DEMO".into()),
+                Permission::Network,
+                Permission::Project,
+            ],
+        }
     }
 
     /// What came back from what it asked for (programs, connections, files, timers, its panel's keys) —
@@ -281,9 +324,28 @@ impl Guest for Demo {
                 HostEvent::Written((id, path)) => format!("written {id} {path}"),
                 HostEvent::Installed(id) => format!("installed {id}"),
                 HostEvent::Pressed(row) => format!("pressed {row}"),
+                HostEvent::Keys(keys) => {
+                    let each: Vec<String> = keys
+                        .iter()
+                        .map(|k| {
+                            let mode = match k.mode {
+                                Mode::Normal => "normal",
+                                Mode::Insert => "insert",
+                                Mode::Select => "select",
+                            };
+                            format!("[{}] {} {mode}", k.keys.join(" "), if k.done { "done" } else { "more" })
+                        })
+                        .collect();
+                    format!("keys {}", each.join(", "))
+                }
             })
             .collect();
-        let mut out = vec![Action::Status(format!("{} · {} · {}", each.join(" | "), now.millis, now.entropy.len()))];
+        let said = format!("{} · {} · {}", each.join(" | "), now.millis, now.entropy.len());
+        // (hearing keys, it says it in its overlay: tarae refuses it anything else)
+        let mut out = vec![match permissions_set() {
+            b'k' => Action::Overlay(Some(Overlay { rows: vec![vec![Span { text: said, role: Role::Text }]], hold: None })),
+            _ => Action::Status(said),
+        }];
         // Connected: says ping
         if events.iter().any(|e| matches!(e, HostEvent::Connected(20))) {
             out.push(Action::Send((20, b"ping".to_vec())));

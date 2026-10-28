@@ -56,6 +56,12 @@ interface types {
         /// Read the files of the project you opened (the folder tarae started in): `read-file` there
         /// without asking, and `find`.
         project,
+        /// Hear the keys you press as commands (`keys` events) — only while your own config's `plugins.keys` is
+        /// on, said on the status line while it hears. Never a character typed. A plugin that asks for it asks
+        /// for nothing else — with `network`, `run`, `read`, `env` or `project` it doesn't load — and what it hears
+        /// stays in tarae: it answers with its `overlay`, `timer` and `stop` only — every other action, a read
+        /// too, is refused.
+        keys,
     }
 
     record selection {
@@ -229,6 +235,25 @@ interface types {
         hold: option<u64>,
     }
 
+    /// The editor's mode after a key.
+    enum mode {
+        normal,
+        insert,
+        select,
+    }
+
+    /// A key you pressed, as a command — never a character typed: in insert mode only the key that left it, in
+    /// a line being typed (a prompt, a picker, the chat) only `enter` and `esc`, nothing the terminal's program
+    /// gets, and never the character a command waits for (`f x`, `r x`, `"a`: only `f`, `r`, `"`).
+    record key-event {
+        /// The sequence so far, as tarae's hints name its keys: ["space", "f"], ["C-w", "h"], ["3", "j"],
+        /// ["esc"], ["enter"], ["-"], ["↑"] — the names tarae shows, not the keymap's notation `key` uses. Empty when insert mode was left by a binding of characters (`j k`): none is named.
+        keys: list<string>,
+        /// False: a sequence under way (more keys to come; which-key may be up).
+        done: bool,
+        mode: mode,
+    }
+
     /// A list to choose from (tarae's picker): the choice comes back as `answer` (its id, or none: esc).
     record pick {
         id: u64,
@@ -338,6 +363,8 @@ interface types {
         installed(u64),
         /// A press on its overlay: the row pressed, from 0.
         pressed(u64),
+        /// Keys you pressed, in order (`keys` permission): one call for those that came while it was busy.
+        keys(list<key-event>),
     }
 }
 

@@ -664,6 +664,13 @@ pub static SETTINGS: &[Setting] = &[
         set: |c, v| c.features_count = b(v),
     },
     Setting {
+        path: "plugins.keys",
+        kind: Kind::Bool,
+        doc: "Plugins that ask for keys (a keycast) hear the keys you press — as commands, never a character typed in a buffer, a prompt, a picker or the terminal; the status line names them while one hears. Such a plugin shows them in its overlay only: it can't read a file, reach the network, run a program, edit, write a file or say anything elsewhere. Only your own config turns it on",
+        get: |c| Value::from(c.plugins_keys),
+        set: |c, v| c.plugins_keys = b(v),
+    },
+    Setting {
         path: "workspace.sync",
         kind: Kind::Enum(crate::keepclose::MODES),
         doc: "When a workspace's base branch moves: \"ask\" — one card for every workspace behind it (what would conflict, and where), y moving the clean ones onto its tip once each is idle, their changes in no commit taken along; \"idle\" — the clean ones moved unasked, a card for the conflicting ones; \"off\" — left where they are. Only your own config sets it",

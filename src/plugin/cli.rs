@@ -89,32 +89,43 @@ fn plugins_dir() -> anyhow::Result<std::path::PathBuf> {
 
 /// What's installed, and whether each loads.
 fn list() -> anyhow::Result<()> {
-    let dir = plugins_dir()?;
-    let found = super::host::scan(&dir);
+    list_in(&plugins_dir()?, &mut std::io::stdout().lock())
+}
+
+/// `list`, of the plugins in `dir`, written to `out`.
+fn list_in(dir: &std::path::Path, out: &mut impl std::io::Write) -> anyhow::Result<()> {
+    let found = super::host::scan(dir);
     if found.is_empty() {
-        println!("no plugins in {} — tarae plugin new <name> starts one", dir.display());
+        writeln!(out, "no plugins in {} — tarae plugin new <name> starts one", dir.display())?;
     }
     for (name, (path, (_, len))) in found {
-        println!(
+        writeln!(
+            out,
             "{}  {}",
             paint("1", &name),
             paint("2", &format!("{} KB · {}", len.div_ceil(1024), path.display()))
-        );
+        )?;
         let loaded = std::fs::read(&path)
             .map_err(|e| e.to_string())
             .and_then(|b| Plugin::new(&b, Limits::default(), 100_000_000))
-            .and_then(|mut p| Ok((p.commands(100_000_000)?, p.subscriptions(100_000_000)?)));
+            .and_then(|mut p| {
+                // (what the editor refuses at load, said here too: `keys` beside `network` or `run`)
+                if let Some(why) = super::perm::invalid(&p.permissions(100_000_000)?) {
+                    return Err(why);
+                }
+                Ok((p.commands(100_000_000)?, p.subscriptions(100_000_000)?))
+            });
         match loaded {
             Ok((commands, subscriptions)) => {
                 for c in commands {
-                    println!("  :{:<20} {}", super::shown(&c.name), paint("2", &super::shown(&c.doc)));
+                    writeln!(out, "  :{:<20} {}", super::shown(&c.name), paint("2", &super::shown(&c.doc)))?;
                 }
                 if !subscriptions.is_empty() {
                     let events: Vec<&str> = subscriptions.iter().map(|s| s.event.name()).collect();
-                    println!("  {}", paint("2", &format!("on {}", events.join(", "))));
+                    writeln!(out, "  {}", paint("2", &format!("on {}", events.join(", "))))?;
                 }
             }
-            Err(e) => println!("  {} {}", paint("31", "can't load:"), super::shown(&e)),
+            Err(e) => writeln!(out, "  {} {}", paint("31", "can't load:"), super::shown(&e))?,
         }
     }
     Ok(())
@@ -261,6 +272,36 @@ mod tests {
             .unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         std::fs::remove_dir_all(root).ok();
+    }
+
+    /// `tarae plugin list` says why a plugin the editor refuses at load can't load — `keys` beside the network, a
+    /// program or a read — as the editor does, and lists one that only hears keys as it lists any.
+    #[test]
+    fn list_says_why_a_plugin_that_hears_keys_and_asks_for_more_cant_load() {
+        let dir = crate::scratch::Scratch::new("plugin-list-keys");
+        let listed = |set: u8| {
+            std::fs::write(dir.join("demo.wasm"), super::super::abi::demo_asking(set)).unwrap();
+            let mut out = Vec::new();
+            list_in(&dir, &mut out).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        let sets = [
+            (b'n', "network"),
+            (b'r', "run true"),
+            (b'f', "read /tarae-demo/**"),
+            (b'e', "env TARAE_DEMO"),
+            (b'p', "project"),
+        ];
+        for (set, what) in sets {
+            let out = listed(set);
+            let why = format!(
+                "can't load:\x1b[0m it asks to hear keys and for “{what}” — a plugin that hears keys asks for \
+                 nothing else: it reads, connects to and runs nothing"
+            );
+            assert!(out.contains(&why) && !out.contains(":echo"), "{set}: {out}");
+        }
+        let out = listed(b'k');
+        assert!(out.contains(":echo") && !out.contains("can't load"), "{out}");
     }
 
     /// The template, the demo and the version tarae names in its messages agree, and match the WIT's major.

@@ -10513,6 +10513,13 @@ fn draw_statusline(
         }
         None => {}
     }
+    // Who hears the keys you press, while a plugin does — never silent (`plugin/keys.rs`), faint
+    let hear = editor.keys_heard_by();
+    if !hear.is_empty() {
+        let text = format!("keys → {}", hear.join(", "));
+        right.push(Seg { cut: None, text, style: Style { fg: ui.linenr.fg, ..ui.status }, keep: KEYS_HEARD });
+        right.push(gap(KEYS_HEARD));
+    }
     // A plugin's badge (the cluster it's on), on every buffer — its tone's color when it's not just fine
     if let Some((_, text, tone)) = editor.plugins.as_ref().and_then(|p| p.badge.as_ref()) {
         use crate::plugin::PluginTone as T;
@@ -10650,7 +10657,7 @@ fn draw_statusline(
     // outranks them — a routine message after, beside them and all else above it)
     let cut_to_room = |left: &mut Vec<Seg>, right: &Vec<Seg>, i: usize, text: &str, rank: u8| {
         let others: usize = (left.iter().chain(right))
-            .filter(|s| s.keep >= rank || s.keep == INBOX)
+            .filter(|s| s.keep >= rank || matches!(s.keep, INBOX | KEYS_HEARD))
             .map(|s| s.text.width())
             .sum();
         let room = lay.width.saturating_sub(others - left[i].text.width() + 2);
@@ -10660,11 +10667,12 @@ fn draw_statusline(
         cut_to_room(&mut left, &right, *i, text, FOLDED);
     }
     // What a floating list or the docs take as keys (`enter open  esc close`): after the pill, before all but
-    // the pill, the position, an error waiting and the inbox's `▲N waiting` — whole pairs, as many as fit beside
-    // those (what waits for you is what's left when the room runs out: `INBOX`)
+    // the pill, the position, an error waiting, the inbox's `▲N waiting` and who hears your keys — whole pairs, as
+    // many as fit beside those (what waits for you is what's left when the room runs out: `INBOX`; a plugin that hears
+    // keys is never silent: `KEYS_HEARD`)
     if let Some(pairs) = key_hints(editor) {
         let fixed: usize = (left.iter().chain(&right))
-            .filter(|s| s.keep > HINTS || s.keep == INBOX)
+            .filter(|s| s.keep > HINTS || matches!(s.keep, INBOX | KEYS_HEARD))
             .map(|s| s.text.width())
             .sum::<usize>()
             + 2;
@@ -10859,6 +10867,10 @@ const CLAUDE_CHANGE: u8 = 220;
 const PROCS_MARK: u8 = 195;
 const PROCS_SAYS: u8 = 120;
 const DIAGNOSTICS: u8 = 210;
+/// The plugins hearing your keys (`keys → keycast`): a plugin that hears keys is never silent — only the mode and the
+/// position (or the keys under way in its place) outlast it, the inbox's count folds before it, and what's cut to fit
+/// (a list's keys, an error under a picker) leaves it its room.
+const KEYS_HEARD: u8 = 247;
 const INBOX_NEXT: u8 = INBOX - 1;
 
 /// The status line's `▲3 waiting` and `1 run quiet` (the inbox): they outlast the chip — what waits for you
@@ -24752,7 +24764,10 @@ mod tests {
         assert!(text.len() > 8 << 20);
         let mut ed = Editor::new(Config::default());
         ed.docs[0].text = Rope::from_str(&text);
-        ed.plugins_sync(crate::plugin::Watch::new(Some(dir.clone())).changed().unwrap());
+        ed.plugins_sync_in(
+            &dir.join("state"),
+            crate::plugin::Watch::new(Some(dir.clone())).changed().unwrap(),
+        );
         while ed.plugin_command("spin").is_none() {
             let ev = ed.events.recv_timeout(crate::test_results::PATIENCE).expect("the plugin loads");
             ed.handle_event(ev);

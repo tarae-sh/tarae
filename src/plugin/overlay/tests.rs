@@ -19,7 +19,7 @@ fn editor(name: &str, text: &str) -> (Editor, Scratch) {
     std::fs::write(dir.join("demo.wasm"), abi::DEMO).unwrap();
     let mut ed = Editor::new(crate::config::Config::default());
     ed.docs[0].text = ropey::Rope::from_str(text);
-    ed.plugins_sync(super::super::host::scan(&dir));
+    ed.plugins_sync_in(&dir.join("state"), super::super::host::scan(&dir));
     settle(&mut ed, |ed| ed.plugin_command("overlay").is_some());
     // (its permissions' card stands where the asks do: answered elsewhere, as far as these are concerned)
     ed.offers.clear();

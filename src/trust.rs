@@ -64,8 +64,8 @@ pub const RISKY: [&str; 24] = [
 /// `review.record`), what the board's Claudes are asked (`review.angles`) and how many of them run on your
 /// credential and memory (`review.skeptics-max`, `review.board-at-once`), whether your workspaces' trees are
 /// rewritten unasked (`workspace.sync`), how much moves on your screen (`editor.motion`), whether and how your
-/// machine sounds (`editor.sound*`) — a project never does.
-pub const YOURS_ONLY: [&str; 16] = [
+/// machine sounds (`editor.sound*`), whether a plugin hears your keys (`plugins.keys`) — a project never does.
+pub const YOURS_ONLY: [&str; 17] = [
     "llm.card-record",
     "review.record",
     "llm.environment-key",
@@ -89,6 +89,8 @@ pub const YOURS_ONLY: [&str; 16] = [
     // (whether your Claude may start sessions that spend your plan or key, and how many)
     "llm.session-tools",
     "llm.children-max",
+    // (whether a plugin hears the keys you press: a project's would turn a keylogger on)
+    "plugins.keys",
 ];
 
 pub fn yours_only(setting: &str) -> bool {

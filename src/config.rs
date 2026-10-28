@@ -91,6 +91,9 @@ pub struct EditorConfig {
     pub workspace_worktrees: String,
     /// Count which features get used, on this machine only (`features.rs`) — only your own config turns it on.
     pub features_count: bool,
+    /// Plugins that ask for `keys` hear the keys you press, as commands (`plugin/keys.rs`) — only your own config
+    /// turns it on.
+    pub plugins_keys: bool,
     /// Keep how long each reviewed change was looked at and what it ended as (`reviews.rs`:
     /// `$state/reviews/`) — only your own config sets it (`trust::YOURS_ONLY`).
     pub review_record: bool,
@@ -166,6 +169,7 @@ impl Default for EditorConfig {
             scrollbar: true,
             workspace_worktrees: String::new(),
             features_count: false,
+            plugins_keys: false,
             review_record: true,
             workspace_ended: Vec::new(),
             workspace_keep: Vec::new(),
