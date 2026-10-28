@@ -143,7 +143,10 @@ resolveAdditionalTextEditsSupport = true
 
 [server.jdtls.init.settings.java]
 signatureHelp = { enabled = true }
-inlayHints = { parameterNames = { enabled = "literals" } }
+# Inlay hints as rust-analyzer's (#195): a parameter's name before every argument — jdtls leaves out one named as
+# its parameter, and a method's `s1, s2, …` —, a `var`'s type and a lambda parameter's. jdtls's defaults (VS
+# Code's too) name only a literal argument's parameter (`add("grace", 3)`), no types: most code showed none
+inlayHints = { parameterNames = { enabled = "all" }, variableTypes = { enabled = true }, parameterTypes = { enabled = true } }
 # A dependency's class is its real source, not decompiled (source jars downloaded)
 maven = { downloadSources = true }
 eclipse = { downloadSources = true }

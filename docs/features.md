@@ -512,7 +512,9 @@ cursor or document moved on are dropped.
 - **Signature help** — after `(` or `,`, a card above the cursor line with the current parameter in accent and its docs
   below; `1/3` for overloads ([screenshot](screenshots/m3-signature.png))
 - **Inlay hints** — types and parameter names as dim italic text, requested only for what's on screen
-  (`editor.inlay-hints`, [screenshot](screenshots/m3-inlay-hints.png))
+  (`editor.inlay-hints`, [screenshot](screenshots/m3-inlay-hints.png)); none answered while the server was still at
+  work (jdtls importing the project) are asked again once it's done. Which kinds is the language pack's: Java's are
+  rust-analyzer's — every argument's parameter, a `var`'s type, a lambda parameter's
 - **Code actions** `space a` — quick fixes first, and a diff on the right shows exactly what each one will change before
   you pick it, across files ([screenshot](screenshots/m3-code-action-preview.png))
 - `space r` rename across files · `:format`, and `:w` formats first (`editor.format-on-save`; a slow or failing server

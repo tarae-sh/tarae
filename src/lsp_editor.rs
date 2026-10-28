@@ -58,8 +58,9 @@ pub struct LspState {
     /// Signature request in flight / more edits since (ask once more when the response arrives).
     signature_inflight: bool,
     signature_again: bool,
-    /// Inlay hints: in-flight request (doc, version, line range) / waiting briefly (ask once input pauses).
-    inlay_inflight: Option<(DocId, u64, (usize, usize))>,
+    /// Inlay hints: in-flight request (doc, version, line range, asked while its server was at work) / waiting
+    /// briefly (ask once input pauses).
+    inlay_inflight: Option<(DocId, u64, (usize, usize), bool)>,
     inlay_waiting: bool,
     /// The latest round of completion requests — its answers merge into one list (a late resolve for an
     /// older list is dropped).
@@ -1175,6 +1176,7 @@ impl Editor {
                         }
                         self.lsp.work_ended.insert(cid, std::time::Instant::now());
                         self.ask_again(cid);
+                        self.inlay_after_work(cid);
                         crate::nav::diagnostics_moved(self);
                     }
                     Some("begin") => {
@@ -1230,6 +1232,7 @@ impl Editor {
                     None => c.progress.remove(&key),
                 };
                 self.ask_again(cid);
+                self.inlay_after_work(cid);
             }
             "window/logMessage" => {
                 let level = ["", "error", "warning", "info", "log"]
@@ -1836,7 +1839,7 @@ impl Editor {
         let covers = |(v, (x, y)): (u64, (usize, usize))| {
             v == doc.version() && x <= a.max(doc.top) && y >= b.min(doc.top + self.viewport.0)
         };
-        let inflight = self.lsp.inlay_inflight.is_some_and(|(d, v, r)| d == doc.id && covers((v, r)));
+        let inflight = self.lsp.inlay_inflight.is_some_and(|(d, v, r, _)| d == doc.id && covers((v, r)));
         !inflight && !doc.lsp.inlay_have.is_some_and(covers)
     }
 
@@ -1854,21 +1857,47 @@ impl Editor {
         let last = mv::last_line(&doc.text);
         let range = json!({ "start": { "line": a.min(last), "character": 0 }, "end": { "line": (b + 1).min(last + 1), "character": 0 } });
         let params = json!({ "textDocument": { "uri": lsp::uri(&path) }, "range": range });
+        let at_work = self.at_work(cid);
         if self.lsp_send(cid, Kind::InlayHint { range: (a, b) }, "textDocument/inlayHint", params).is_some() {
-            self.lsp.inlay_inflight = Some((id, version, (a, b)));
+            self.lsp.inlay_inflight = Some((id, version, (a, b), at_work));
+        }
+    }
+
+    /// Server `cid` has work under way: a `$/progress` not ended, or its pack's status not done.
+    fn at_work(&self, cid: ClientId) -> bool {
+        self.client(cid).is_some_and(|c| !c.progress.is_empty())
+    }
+
+    /// Server `cid` has nothing left under way: the files it answered with no hints while at its work are asked
+    /// again — its own only, never another server's. jdtls answers `[]` while it imports the project (its
+    /// `inlayHint` waits for no import) and asks for no refresh after, so a file opened as it started kept none
+    /// until an edit (#195).
+    fn inlay_after_work(&mut self, cid: ClientId) {
+        if self.client(cid).is_none() || self.at_work(cid) {
+            return;
+        }
+        for d in self.docs.iter_mut().filter(|d| d.lsp.inlay_at_work == Some(cid)) {
+            d.lsp.inlay_at_work = None;
+            d.lsp.inlay_have = None;
         }
     }
 
     /// Hint response: drop if the doc changed since (shifted old hints hold their place until new ones come).
+    /// None while its server is at work: marked, asked again once it's done; none asked at work and answered
+    /// once it's done — its work ended between, nothing left to say so — not kept, asked again at once.
     fn on_inlay(&mut self, cid: ClientId, p: &Pending, range: (usize, usize), result: &Value) {
-        self.lsp.inlay_inflight = None;
+        let asked_at_work =
+            self.lsp.inlay_inflight.take().is_some_and(|(d, v, _, w)| d == p.doc && v == p.version && w);
+        let at_work = self.at_work(cid);
         let enc = self.encoding_of(cid);
         let Some(doc) = self.docs.iter_mut().find(|d| d.id == p.doc) else { return };
         if doc.version() != p.version {
             return;
         }
         doc.lsp.inlay = lsp::inlay_hints(&doc.text, result, enc);
-        doc.lsp.inlay_have = Some((p.version, range));
+        let none = doc.lsp.inlay.is_empty();
+        doc.lsp.inlay_at_work = (none && at_work).then_some(cid);
+        doc.lsp.inlay_have = (!(none && asked_at_work && !at_work)).then_some((p.version, range));
     }
 
     // ── Signature help ────────────────────────────────────────────────────
@@ -3520,6 +3549,9 @@ impl Editor {
                 d.lsp.inlay.clear();
                 d.lsp.inlay_have = None;
             }
+            if d.lsp.inlay_at_work == Some(cid) {
+                d.lsp.inlay_at_work = None;
+            }
             d.lsp.detach(cid);
         }
         if self.completion.as_ref().is_some_and(|c| c.has_client(cid)) {
@@ -4986,6 +5018,226 @@ mod tests {
         assert!(!narrow.contains(": Hash"), "{narrow}");
         assert!(narrow.contains("a: "), "the short one still fits: {narrow}");
         assert!(frame(&mut ed, 80).contains(": HashMap<String, Vec<u32>>"), "whole when it fits");
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// The screen's text, `w` wide and 8 rows.
+    fn screen_of(ed: &mut Editor, w: u16) -> String {
+        let mut buf = Vec::new();
+        crate::term::render(ed, &mut buf, w, 8).unwrap();
+        let mut p = vt100::Parser::new(8, w, 0);
+        p.process(&buf);
+        p.screen().contents()
+    }
+
+    /// Hints asked of the server (`answer`'s): one request, its answer `result`.
+    fn hints_answered(ed: &mut Editor, cid: ClientId, result: Value) {
+        ed.inlay_request();
+        let id = pending_of(ed, Kind::InlayHint { range: (0, 0) });
+        ed.on_lsp_message(cid, json!({ "id": id, "result": result }));
+    }
+
+    /// A server is told tarae takes inlay hints, registered at its start — so jdtls (1.61, its `InitHandler`)
+    /// says `inlayHintProvider` itself — and the server's own refresh (#195).
+    #[test]
+    fn the_client_says_it_takes_inlay_hints_and_their_refresh() {
+        let (ed, file, log) = setup("inlay-caps", "fn main() {}\n");
+        let out = sent_until(&log, &["\"method\":\"initialize\""]);
+        let body = &out[out.find('{').expect("a message")..];
+        let init: Value = serde_json::Deserializer::from_str(body).into_iter().next().unwrap().unwrap();
+        let caps = &init["params"]["capabilities"];
+        assert_eq!(caps["textDocument"]["inlayHint"], json!({ "dynamicRegistration": false }));
+        assert_eq!(caps["workspace"]["inlayHint"]["refreshSupport"], json!(true));
+        drop(ed);
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// Hints are asked once input pauses (`INLAY_DEBOUNCE_MS`), once however often it's scheduled meanwhile; an
+    /// answer for a version the text has left is dropped, and the text as it is asked for.
+    #[test]
+    fn inlay_hints_wait_for_a_pause_and_drop_an_old_answer() {
+        let (mut ed, file, _log) = setup("inlay-quiet", "fn main() {\n    add(1, 2);\n}\n");
+        let cid = up(&mut ed, json!({ "inlayHintProvider": true }));
+        ed.viewport = (10, 80);
+        let asked = |ed: &Editor| {
+            ed.lsp.pending.values().filter(|p| matches!(p.kind, Kind::InlayHint { .. })).count()
+        };
+        ed.inlay_schedule();
+        ed.inlay_schedule();
+        assert!(ed.lsp.inlay_waiting);
+        assert_eq!(asked(&ed), 0, "not before the pause");
+        crate::test_results::settle_saying(&mut ed, |ed| asked(ed) == 1, |ed| format!("asked {}", asked(ed)));
+        assert!(!ed.lsp.inlay_waiting);
+        let id = pending_of(&ed, Kind::InlayHint { range: (0, 0) });
+        feed(&mut ed, "jix<esc>");
+        let hint = json!({ "position": { "line": 1, "character": 8 }, "label": "a:", "paddingRight": true });
+        ed.on_lsp_message(cid, json!({ "id": id, "result": [hint] }));
+        assert!(
+            ed.doc().lsp.inlay.is_empty() && ed.doc().lsp.inlay_have.is_none(),
+            "for the text before the edit"
+        );
+        assert!(ed.inlay_stale(), "the text as it is is asked for");
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// jdtls's answer as it came (1.61, #195's fixture: a string label, `paddingRight`) is drawn before each
+    /// argument; not while the view is scrolled sideways, nor with `editor.inlay-hints` off, which drops them.
+    #[test]
+    fn jdtls_hints_are_drawn_but_not_scrolled_sideways_nor_turned_off() {
+        let src = "fn main() {\n    shop.add(\"grace\", 3, 4.0);\n}\n";
+        let (mut ed, file, _log) = setup_as("jdtls", "inlay-jdtls", src);
+        let cid = up(&mut ed, json!({ "inlayHintProvider": true }));
+        ed.viewport = (6, 80);
+        let hint = |c: u64, label: &str| json!({ "position": { "line": 1, "character": c }, "label": label, "paddingRight": true });
+        hints_answered(
+            &mut ed,
+            cid,
+            json!([hint(13, "customer:"), hint(22, "quantity:"), hint(25, "price:")]),
+        );
+        let drawn = r#"shop.add(customer: "grace", quantity: 3, price: 4.0);"#;
+        assert!(screen_of(&mut ed, 80).contains(drawn), "{}", screen_of(&mut ed, 80));
+        // (the cursor at the line's end, past a narrow screen's edge: in sight scrolled sideways)
+        ed.config.soft_wrap = "never".into();
+        feed(&mut ed, "jgl");
+        let s = screen_of(&mut ed, 24);
+        assert!(ed.doc().left > 0 && s.contains("4.0);") && !s.contains("price:"), "{s}");
+        feed(&mut ed, "gh");
+        assert!(screen_of(&mut ed, 80).contains(drawn) && ed.doc().left == 0, "back");
+        ed.config.inlay_hints = false;
+        ed.inlay_schedule();
+        let asked =
+            ed.lsp.inlay_waiting || ed.lsp.pending.values().any(|p| matches!(p.kind, Kind::InlayHint { .. }));
+        assert!(ed.doc().lsp.inlay.is_empty() && !asked, "off: dropped, nothing asked");
+        assert!(!screen_of(&mut ed, 80).contains("customer:"));
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// A server that answered no hints while at work is asked again once nothing is under way: jdtls answers `[]`
+    /// while it imports the project and asks for no refresh after (#195) — its `language/status`, as any server's
+    /// `$/progress`. Hints it gave aren't asked again when other work ends.
+    #[test]
+    fn hints_answered_empty_at_work_are_asked_again_when_it_ends() {
+        let (mut ed, file, _log) = setup_as("jdtls", "inlay-work", "fn main() {\n    add(1, 2);\n}\n");
+        let cid = up(&mut ed, json!({ "inlayHintProvider": true }));
+        ed.viewport = (10, 80);
+        let status = |kind: &str, message: &str| json!({ "jsonrpc": "2.0", "method": "language/status", "params": { "type": kind, "message": message } });
+        let progress = |kind: &str| json!({ "jsonrpc": "2.0", "method": "$/progress", "params": { "token": "import", "value": { "kind": kind, "title": "Importing" } } });
+        ed.on_lsp_message(
+            cid,
+            status("Starting", "10% Starting Java Language Server - Importing Maven project(s)"),
+        );
+        ed.on_lsp_message(cid, progress("begin"));
+        hints_answered(&mut ed, cid, json!([]));
+        assert!(!ed.inlay_stale(), "answered");
+        ed.on_lsp_message(cid, progress("end"));
+        assert!(!ed.inlay_stale(), "its status still says it's starting");
+        ed.on_lsp_message(cid, status("ServiceReady", "ServiceReady"));
+        assert!(ed.inlay_stale(), "done: asked again");
+        let hint = json!({ "position": { "line": 1, "character": 8 }, "label": "a:", "paddingRight": true });
+        hints_answered(&mut ed, cid, json!([hint]));
+        ed.on_lsp_message(cid, progress("begin"));
+        ed.on_lsp_message(cid, progress("end"));
+        assert!(!ed.inlay_stale(), "what it gave stays");
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// A server's `$/progress` for `token`, of `kind` (`begin`, `end`).
+    fn work(token: &str, kind: &str) -> Value {
+        json!({ "jsonrpc": "2.0", "method": "$/progress", "params": { "token": token, "value": { "kind": kind, "title": token } } })
+    }
+
+    /// A file with no hints, answered while its server was idle, isn't asked again each time its work ends —
+    /// rust-analyzer's check after every save (#195's review).
+    #[test]
+    fn hints_answered_empty_while_idle_stay_when_work_ends() {
+        let (mut ed, file, _log) = setup_as("rust-analyzer", "inlay-idle", "fn main() {}\n");
+        let cid = up(&mut ed, json!({ "inlayHintProvider": true }));
+        ed.viewport = (10, 80);
+        hints_answered(&mut ed, cid, json!([]));
+        ed.on_lsp_message(cid, work("flycheck", "begin"));
+        ed.on_lsp_message(cid, work("flycheck", "end"));
+        assert!(!ed.inlay_stale(), "none to show: not asked again");
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// Hints asked while jdtls imports, answered `[]` after its `ServiceReady`: its work ended between, nothing
+    /// left to mark the answer by — asked again at once; that answer, idle, is kept (#195's review).
+    #[test]
+    fn hints_asked_at_work_and_answered_after_it_are_asked_again() {
+        let (mut ed, file, _log) = setup_as("jdtls", "inlay-late", "fn main() {\n    add(1, 2);\n}\n");
+        let cid = up(&mut ed, json!({ "inlayHintProvider": true }));
+        ed.viewport = (10, 80);
+        let status = |kind: &str| json!({ "jsonrpc": "2.0", "method": "language/status", "params": { "type": kind, "message": kind } });
+        ed.on_lsp_message(cid, status("Starting"));
+        ed.inlay_request();
+        let id = pending_of(&ed, Kind::InlayHint { range: (0, 0) });
+        ed.on_lsp_message(cid, status("ServiceReady"));
+        ed.on_lsp_message(cid, json!({ "id": id, "result": [] }));
+        assert!(ed.inlay_stale(), "asked at its work, answered after: asked again");
+        hints_answered(&mut ed, cid, json!([]));
+        assert!(!ed.inlay_stale(), "answered idle: kept");
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// Work ending at one server asks again only the files it answered with none — another server's are left
+    /// alone (#195's review: rust-analyzer's check after a save re-asked the Java files).
+    #[test]
+    fn another_servers_work_leaves_a_files_hints_alone() {
+        let scratch = crate::scratch::Scratch::new("lsp-inlay-two");
+        let dir = scratch.to_path_buf();
+        std::fs::write(dir.join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]\nname = \"t\"\n").unwrap();
+        let (a_log, b_log) = (dir.join("a.log"), dir.join("b.log"));
+        let cfg = format!(
+            "[lsp.afake]\ncommand = \"sh\"\nargs = [\"-c\", \"cat > '{}'\"]\n\
+             [lsp.bfake]\ncommand = \"sh\"\nargs = [\"-c\", \"cat > '{}'\"]\n\
+             [lang.rust]\nlsp = [\"afake\"]\n[lang.toml]\nlsp = [\"bfake\"]\n",
+            a_log.display(),
+            b_log.display()
+        );
+        let (config, w) = crate::config::parse(&cfg);
+        assert!(w.is_empty(), "{w:?}");
+        let mut ed = Editor::new(config);
+        ed.open(&dir.join("main.rs")).unwrap();
+        let a = up(&mut ed, json!({ "inlayHintProvider": true }));
+        ed.viewport = (10, 80);
+        let main = ed.doc().id;
+        ed.on_lsp_message(a, work("import", "begin"));
+        hints_answered(&mut ed, a, json!([]));
+        ed.open(&dir.join("Cargo.toml")).unwrap();
+        let b = up(&mut ed, json!({ "inlayHintProvider": true }));
+        assert_ne!(a, b);
+        let asked = |ed: &Editor| ed.docs.iter().find(|d| d.id == main).unwrap().lsp.inlay_have.is_none();
+        ed.on_lsp_message(b, work("check", "begin"));
+        ed.on_lsp_message(b, work("check", "end"));
+        assert!(!asked(&ed), "another server's work: main.rs left alone");
+        ed.on_lsp_message(a, work("import", "end"));
+        assert!(asked(&ed), "its own server's: asked again");
+    }
+
+    /// rust-analyzer as #195's control: its labels in parts with their places, a type's `paddingLeft` false, drawn
+    /// as one text; its own `workspace/inlayHint/refresh` is answered and asks again.
+    #[test]
+    fn rust_analyzers_hints_are_drawn_and_its_refresh_asks_again() {
+        let src = "fn main() {\n    let v = make(3);\n}\n";
+        let (mut ed, file, log) = setup_as("rust-analyzer", "inlay-ra", src);
+        let cid = up(&mut ed, json!({ "inlayHintProvider": { "resolveProvider": true } }));
+        ed.viewport = (6, 80);
+        let place = json!({ "uri": "file:///std/vec.rs", "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 3 } } });
+        let hints = json!([
+            { "position": { "line": 1, "character": 9 }, "kind": 1, "paddingLeft": false, "paddingRight": false,
+              "label": [{ "value": ": " }, { "value": "Vec", "location": place }, { "value": "<i32>" }] },
+            { "position": { "line": 1, "character": 17 }, "kind": 2, "paddingLeft": false, "paddingRight": true,
+              "label": [{ "value": "n", "location": place }, { "value": ":" }] },
+        ]);
+        hints_answered(&mut ed, cid, hints);
+        let s = screen_of(&mut ed, 80);
+        assert!(s.contains("let v: Vec<i32> = make(n: 3);"), "{s}");
+        assert!(!ed.inlay_stale());
+        ed.on_lsp_message(cid, json!({ "jsonrpc": "2.0", "id": 7, "method": "workspace/inlayHint/refresh" }));
+        assert!(ed.inlay_stale(), "its refresh asks again");
+        let out = sent_until(&log, &["\"id\":7"]);
+        assert!(out.contains("\"id\":7") && out.contains("\"result\":null"), "answered: {out}");
         std::fs::remove_dir_all(file.parent().unwrap()).ok();
     }
 

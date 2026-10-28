@@ -149,6 +149,9 @@ pub struct DocLsp {
     /// and the version matches → don't ask again.
     pub inlay: Vec<crate::lsp::InlayHint>,
     pub inlay_have: Option<(u64, (usize, usize))>,
+    /// The server that answered no hints while at its work (`$/progress`, its pack's status): asked again once
+    /// it has nothing under way (`inlay_after_work`, #195).
+    pub inlay_at_work: Option<ClientId>,
 }
 
 impl DocLsp {
@@ -805,6 +808,7 @@ impl Document {
         self.lsp.diagnostics.clear();
         self.lsp.inlay.clear();
         self.lsp.inlay_have = None;
+        self.lsp.inlay_at_work = None;
     }
 
     pub fn save(&mut self) -> Result<()> {

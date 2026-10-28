@@ -377,7 +377,7 @@
 [servers]
   jdtls
     args-add: -data {cache}/jdtls/{root-name}-{root-hash} (unless -data)
-    init: {"extendedClientCapabilities":{"advancedGenerateAccessorsSupport":false,"advancedOrganizeImportsSupport":false,"classFileContentsSupport":true,"generateToStringPromptSupport":false,"overrideMethodsPromptSupport":false,"progressReportProvider":false,"resolveAdditionalTextEditsSupport":true},"settings":{"java":{"eclipse":{"downloadSources":true},"inlayHints":{"parameterNames":{"enabled":"literals"}},"maven":{"downloadSources":true},"signatureHelp":{"enabled":true}}}}
+    init: {"extendedClientCapabilities":{"advancedGenerateAccessorsSupport":false,"advancedOrganizeImportsSupport":false,"classFileContentsSupport":true,"generateToStringPromptSupport":false,"overrideMethodsPromptSupport":false,"progressReportProvider":false,"resolveAdditionalTextEditsSupport":true},"settings":{"java":{"eclipse":{"downloadSources":true},"inlayHints":{"parameterNames":{"enabled":"all"},"parameterTypes":{"enabled":true},"variableTypes":{"enabled":true}},"maven":{"downloadSources":true},"signatureHelp":{"enabled":true}}}}
     progress: language/status · type message · done Started ServiceReady ProjectStatus or ^100% · error Error
     virtual: jdt:// by java/classFileContents in java · titles joined by "."
     client-command: java.apply.workspaceEdit → ApplyEdit
