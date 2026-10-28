@@ -192,9 +192,9 @@ impl Facts {
 /// session keeps (a hover says `kept`), by address, when read, kept for `keep`.
 #[derive(Default)]
 pub struct Known {
-    pub(super) pages: HashMap<String, (Weak<Facts>, Option<Instant>)>,
-    pub(super) kept: HashMap<String, Instant>,
-    pub(super) keep: Duration,
+    pub pages: HashMap<String, (Weak<Facts>, Option<Instant>)>,
+    pub kept: HashMap<String, Instant>,
+    pub keep: Duration,
 }
 
 /// The server's answer to `method` with `params` (None: `null`), at `now`, an age said by `ago`.

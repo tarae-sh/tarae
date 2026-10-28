@@ -841,18 +841,20 @@ fn the_docs_tier_table_is_the_codes() {
 }
 
 /// What's wrong with a threat model's claims (`docs/threat-model.md`): each name after a "test:" (or "test (…):")
-/// that isn't a module path, or isn't a `#[test]` at its path under `src/`; and each bullet under a "Kept:" with
-/// no test that exists — its own, or in a section it points to (`§1.3`).
-fn unfounded_claims(doc: &str, src: &Path) -> Vec<String> {
+/// that isn't a module path, or isn't a `#[test]` at its path under one of the code's roots (`src/`, a crate's —
+/// `sim::lint::code_roots`); and each bullet under a "Kept:" with no test that exists — its own, or in a section it
+/// points to (`§1.3`).
+fn unfounded_claims(doc: &str, roots: &[PathBuf]) -> Vec<String> {
+    let exists = |name: &str| roots.iter().any(|src| test_exists(src, name));
     let mut wrong = Vec::new();
     for name in named(doc) {
         if !is_test_path(name) {
             wrong.push(format!("not a test's path: {name}"));
-        } else if !test_exists(src, name) {
+        } else if !exists(name) {
             wrong.push(format!("no test {name}"));
         }
     }
-    let shown = |text: &str| named(text).iter().any(|n| is_test_path(n) && test_exists(src, n));
+    let shown = |text: &str| named(text).iter().any(|n| is_test_path(n) && exists(n));
     // (a § to a section with a test that exists founds a claim too; one to no section doesn't)
     let pointed = |text: &str| {
         text.split('§').skip(1).any(|r| {
@@ -992,11 +994,17 @@ pub(crate) fn test_exists(src: &Path, name: &str) -> bool {
 fn every_claim_names_a_test_that_exists() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let src = root.join("src");
+    let roots: Vec<PathBuf> = crate::sim::lint::code_roots().into_iter().map(|(_, p)| p).collect();
     let doc = std::fs::read_to_string(root.join("docs/threat-model.md")).unwrap();
-    assert_eq!(unfounded_claims(&doc, &src), Vec::<String>::new());
-    // (it reads every name: against no source each is missing — and finds them where they are)
-    let names = unfounded_claims(&doc, &root.join("no-such-folder")).len();
+    assert_eq!(unfounded_claims(&doc, &roots), Vec::<String>::new());
+    // (it reads every name: against no source each is missing — and finds them where they are, a crate's too)
+    let names = unfounded_claims(&doc, &[root.join("no-such-folder")]).len();
     assert!(names > 140, "{names} names read");
+    let bomb = "no test media::tests::a_decompression_bomb_is_refused_said".to_string();
+    assert!(
+        unfounded_claims(&doc, std::slice::from_ref(&src)).contains(&bomb),
+        "tarae-web's, found in its root only"
+    );
     assert!(test_exists(&src, "sandbox::golden::every_claim_names_a_test_that_exists"));
     assert!(test_exists(&src, "sandbox::proxy::tests::sni_must_match_the_connect_host"));
     // broken: a test that isn't there, a non-test fn, a wrong module between, a name without its module or with a
@@ -1016,7 +1024,7 @@ fn every_claim_names_a_test_that_exists() {
                     - Untested.\n\nNot kept:\n- Said.\n\n\
                     ## 3. Untested\n\nWords only.\n";
     assert_eq!(
-        unfounded_claims(stand_in, &src),
+        unfounded_claims(stand_in, std::slice::from_ref(&src)),
         [
             "no test sandbox::golden::no_such_test",
             "no test sandbox::golden::unfounded_claims",

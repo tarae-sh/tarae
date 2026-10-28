@@ -1,8 +1,9 @@
-//! tarae's readers of what a sandboxed run sends, built apart for cargo-fuzz (`--cfg fuzzing`): their modules
-//! included from tarae's tree as they are (`#[path]` — tarae is a binary crate, no library to depend on), laid out
-//! as tarae lays them out where one reaches another (`proxy`). Each function here is a target's whole body: the
-//! property function the reader's in-tree loop calls too (its module's `check`), on libFuzzer's input. A property
-//! broken panics — libFuzzer's crash.
+//! tarae's readers of what a sandboxed run sends, built apart for cargo-fuzz (`--cfg fuzzing`): the sandbox's
+//! modules included from tarae's tree as they are (`#[path]` — tarae is a binary crate, no library to depend on),
+//! laid out as tarae lays them out where one reaches another (`proxy`); the web reader's from its crate
+//! (`tarae-web`, its `check` feature). Each function here is a target's whole body: the property function the
+//! reader's in-tree loop calls too (its module's `check`), on libFuzzer's input. A property broken panics —
+//! libFuzzer's crash.
 
 #[allow(dead_code)]
 #[path = "../../../src/sandbox/supervisor/wire.rs"]
@@ -11,15 +12,8 @@ mod wire;
 #[allow(dead_code)]
 mod proxy;
 
-#[allow(dead_code, unused_imports)]
-#[path = "../../../src/web/mod.rs"]
-mod web;
-
-#[allow(dead_code)]
-#[path = "../../../src/media.rs"]
-mod media;
-
 use proxy::parse;
+use tarae_web::check as web;
 
 /// A `struct sockaddr` as a call names it (`wire::parse`).
 pub fn sockaddr(b: &[u8]) {
@@ -59,18 +53,18 @@ pub fn response(b: &[u8]) {
     parse::check::response_input(b);
 }
 
-/// A gzip body (`web::gzip::gunzip`, the fetch's) — the first byte says how much it may make.
+/// A gzip body (`tarae_web::gzip::gunzip`, the fetch's) — the first byte says how much it may make.
 pub fn gzip(b: &[u8]) {
-    web::check::gzip_input(b);
+    web::gzip_input(b);
 }
 
-/// A web page's bytes (`web::read`) — the first byte says which part is read and the content type given.
+/// A web page's bytes (`tarae_web::read`) — the first byte says which part is read and the content type given.
 pub fn web(b: &[u8]) {
-    web::check::page_input(b);
+    web::page_input(b);
 }
 
-/// A web page's bytes read as `web` reads them, then asked of by the page's own language server (`web::facts`) —
-/// every request kind at every byte.
+/// A web page's bytes read as `web` reads them, then asked of by the page's own language server
+/// (`tarae_web::facts`) — every request kind at every byte.
 pub fn facts(b: &[u8]) {
-    web::check::facts_input(b, std::time::Instant::now());
+    web::facts_input(b, std::time::Instant::now());
 }

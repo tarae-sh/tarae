@@ -1268,14 +1268,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "cc",
- "crc32fast",
  "crossterm",
- "encoding_rs",
  "flate2",
  "grep-matcher",
  "grep-regex",
  "grep-searcher",
- "html5ever",
  "ignore",
  "image",
  "imara-diff",
@@ -1295,6 +1292,7 @@ dependencies = [
  "tarae-sorting",
  "tarae-testkit",
  "tarae-wasm",
+ "tarae-web",
  "toml",
  "toml_edit",
  "tree-sitter",
@@ -1324,6 +1322,21 @@ dependencies = [
  "tarae-sorting",
  "tarae-testkit",
  "wat",
+]
+
+[[package]]
+name = "tarae-web"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "encoding_rs",
+ "html5ever",
+ "image",
+ "miniz_oxide 0.9.1",
+ "ropey",
+ "serde_json",
+ "tarae-testkit",
+ "toml",
 ]
 
 [[package]]

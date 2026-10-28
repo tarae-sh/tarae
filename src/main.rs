@@ -105,14 +105,14 @@ mod lsp;
 mod lsp_editor;
 mod markdown;
 mod mcp;
-mod media;
+use tarae_web::media;
 mod messages;
 mod models;
 mod motion;
 mod mouse;
 mod movement;
 #[cfg(test)]
-mod mutate;
+use tarae_testkit::mutate;
 mod nav;
 mod nofile;
 mod notes;

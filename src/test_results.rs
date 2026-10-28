@@ -195,10 +195,10 @@ const DEADLINES: &[&str] = &[
 /// Deadlines left in tests, per file (from the repository's root) — none a guard of a test that runs unasked.
 #[cfg(test)]
 const TEST_DEADLINES: &[(&str, usize)] = &[
+    // (the mutation properties' length by hand, `TARAE_WEB_MUTATE_SECS`: how long, never a wait)
+    ("crates/tarae-web/src/tests.rs", 2),
     // (a by-hand measure's run limit, its row saying `killed after N s`)
     ("src/sandbox/macdeny_measure.rs", 1),
-    // (the mutation properties' length by hand, `TARAE_WEB_MUTATE_SECS`: how long, never a wait)
-    ("src/web/tests.rs", 2),
 ];
 
 /// Only test code counts — a test-only item or file, every file of `tests/` — never a comment, and not code a

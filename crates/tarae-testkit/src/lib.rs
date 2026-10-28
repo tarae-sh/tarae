@@ -1,6 +1,7 @@
-//! What the tests of tarae's crates share (a dev-dependency only): a test's own scratch folder (`scratch`) and the
-//! one patience every test waits with (`PATIENCE`).
+//! What the tests of tarae's crates share (a dev-dependency only): a test's own scratch folder (`scratch`), the
+//! one patience every test waits with (`PATIENCE`) and the readers' seeded mutators (`mutate`).
 
+pub mod mutate;
 pub mod scratch;
 
 /// How long a test waits for what it waits on before it calls it a hang. A guard, never the test's logic: it

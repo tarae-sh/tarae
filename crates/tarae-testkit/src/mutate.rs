@@ -6,6 +6,10 @@
 pub struct Rng(pub u64);
 
 impl Rng {
+    #[expect(
+        clippy::should_implement_trait,
+        reason = "a generator's step, never ending: as an Iterator every call would unwrap an Option"
+    )]
     pub fn next(&mut self) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
@@ -67,7 +71,8 @@ pub fn text(rng: &mut Rng, s: &mut String, words: &[&str]) {
 /// there by that name. For the ignored `writes_fuzz_seeds` tests, run by hand when a seed's builder changes
 /// (`cargo test writes_fuzz_seeds -- --ignored`) — tarae's tests never read `fuzz/`.
 pub fn fuzz_seeds(target: &str, seeds: impl IntoIterator<Item = (String, Vec<u8>)>) {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/parsers/seeds").join(target);
+    // (the repository's, from this crate's folder: crates/tarae-testkit)
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/parsers/seeds").join(target);
     std::fs::create_dir_all(&dir).unwrap();
     for (name, bytes) in seeds {
         assert!(!name.is_empty() && !name.contains(['/', '.']), "a seed's name: {name:?}");

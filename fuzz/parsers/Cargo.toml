@@ -22,18 +22,11 @@ doc = false
 [dependencies]
 libc = "0.2"
 libfuzzer-sys = "0.4"
-# The web reader's (src/web/) as tarae has them; media.rs's `kind` sniffs what isn't a page
-encoding_rs = "0.8"
-html5ever = "=0.39.0"
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
-# The fetch's gzip (web/gzip.rs): the inflate tarae has (miniz_oxide) and png's CRC
-miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
-crc32fast = "1.5"
-# The page's own language server's answers (web/facts.rs) are JSON-RPC values, as tarae's; its lines the rope's
-serde_json = "1"
-ropey = "1"
+# The web reader, the fetch's gzip and the page's own language server's answers: tarae's crate, its properties and
+# fuzz inputs (`check`) turned on
+tarae-web = { path = "../../crates/tarae-web", features = ["check"] }
 
-# `fuzzing`: what cargo-fuzz sets, and what builds the readers' `check` modules
+# `fuzzing`: what cargo-fuzz sets, and what builds the sandbox's readers' `check` modules (included by `#[path]`)
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
 

@@ -1,6 +1,8 @@
 //! The reader's property, for its loop in `tests.rs` and `fuzz/parsers`' `web` target: any bytes read — never a
 //! panic, the limits held, every link's place a link in the text, every anchor on a line there. The page's own
 //! server's (`facts.rs`), for the same loop and the `facts` target: on any page read, every request at every byte.
+//! And the inputs tests build that tarae's tests build too (a gzip body, pictures): the crate's `check` feature, which
+//! tarae's dev-dependency and `fuzz/parsers` turn on — never in tarae's own build.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -158,6 +160,78 @@ pub fn gzip(b: &[u8], max: usize) -> &'static str {
         }
         Err(_) => "refused",
     }
+}
+
+/// `data` as gzip: a header with `flags`' fields, deflate, the trailer.
+pub fn gzipped(data: &[u8], flags: u8) -> Vec<u8> {
+    use super::gzip::{FCOMMENT, FEXTRA, FHCRC, FNAME};
+    let mut b = vec![0x1f, 0x8b, 8, flags, 0, 0, 0, 0, 0, 3];
+    if flags & FEXTRA != 0 {
+        b.extend_from_slice(&[3, 0, b'a', b'b', b'c']);
+    }
+    if flags & FNAME != 0 {
+        b.extend_from_slice(b"page.html\0");
+    }
+    if flags & FCOMMENT != 0 {
+        b.extend_from_slice(b"a comment\0");
+    }
+    if flags & FHCRC != 0 {
+        b.extend_from_slice(&[0, 0]);
+    }
+    b.extend_from_slice(&miniz_oxide::deflate::compress_to_vec(data, 6));
+    b.extend_from_slice(&crc32fast::hash(data).to_le_bytes());
+    b.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    b
+}
+
+/// `img` as a PNG, written by `image`'s own encoder.
+fn png_of(img: image::RgbImage) -> Vec<u8> {
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(img).write_to(&mut out, image::ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+/// A white PNG `w`×`h`.
+pub fn png(w: u32, h: u32) -> Vec<u8> {
+    png_of(image::RgbImage::from_pixel(w, h, image::Rgb([255, 255, 255])))
+}
+
+/// A PNG `w`×`h` of noise — one that compresses badly (xorshift, the same each time).
+pub fn noise(w: u32, h: u32) -> Vec<u8> {
+    let mut x: u32 = 0x9E37_79B9;
+    png_of(image::RgbImage::from_fn(w, h, |_, _| {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        let [a, b, c, _] = x.to_le_bytes();
+        image::Rgb([a, b, c])
+    }))
+}
+
+/// A decompression bomb's stand-in: a PNG whose header says `w`×`h` (8-bit RGB) over a few bytes of data —
+/// written by hand, as no encoder makes one.
+pub fn bomb(w: u32, h: u32) -> Vec<u8> {
+    fn crc(b: &[u8]) -> u32 {
+        let mut c = !0u32;
+        for &x in b {
+            c ^= u32::from(x);
+            for _ in 0..8 {
+                c = if c & 1 == 1 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            }
+        }
+        !c
+    }
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    let mut chunk = |kind: &[u8], data: &[u8]| {
+        out.extend((data.len() as u32).to_be_bytes());
+        let body = [kind, data].concat();
+        out.extend(&body);
+        out.extend(crc(&body).to_be_bytes());
+    };
+    chunk(b"IHDR", &[&w.to_be_bytes()[..], &h.to_be_bytes(), &[8, 2, 0, 0, 0]].concat());
+    chunk(b"IDAT", &[0x78, 0x9C, 0x63, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01]);
+    chunk(b"IEND", &[]);
+    out
 }
 
 /// `bytes` read as `content_type` says: what's read holds.

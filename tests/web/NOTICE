@@ -1,4 +1,4 @@
-tests/web/pages/*.html are the web reader's test fixtures (src/web/tests.rs), read only by tarae's tests; nothing of
+tests/web/pages/*.html are the web reader's test fixtures (crates/tarae-web/src/tests.rs, and `:web`'s in src/web/tests.rs), read only by tarae's tests; nothing of
 them is built into tarae. All but one are web pages saved as they came on 2026-10-23 (pages.toml has each address),
 each its site's, under the site's own terms — every one of them lets the page be passed on, with its source said:
 

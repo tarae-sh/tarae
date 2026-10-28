@@ -33,21 +33,15 @@ ignore = "0.4"
 grep-searcher = "0.1"
 grep-regex = "0.1"
 grep-matcher = "0.1"
-# `read`'s pictures (media.rs): decoded, scaled and encoded in-process by memory-safe code — no external parser, no
-# decoder of tarae's own. Only PNG, JPEG, GIF and WebP (and the PNG and JPEG encoders they come with); no rayon
-image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
-# The web reader (src/web/): a page's bytes → its text, in-process by memory-safe code — only the WHATWG parser
-# (html5ever, into a tree of tarae's own, web/tree.rs) and the charsets a page may name (encoding_rs, WHATWG's
-# Encoding Standard); the article pick and the conversion are tarae's (the user's, 2026-10-23)
-html5ever = "=0.39.0"
-encoding_rs = "0.8"
+# The web reader and `read`'s pictures (crates/tarae-web): a page's bytes → its text (html5ever, encoding_rs), a
+# gzip body, an image decoded and scaled (image) — in-process by memory-safe code; the editor's side is src/web/
+tarae-web = { path = "crates/tarae-web" }
 # The page's fetch (web/fetch.rs; the user's, 2026-10-23): TLS is the one part that can't be ours — rustls (the protocol in
 # Rust) on ring (not aws-lc: +1.4 MB for what reading pages doesn't need), verified as the OS verifies (its keychain or
 # the distro's bundle: a company's own root works) — +794 KB measured (.sb/web-fetch-plan.md). HTTP is tarae's
-# own; gzip on the miniz_oxide above, its check on png's crc32fast
+# own; gzip tarae-web's
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-platform-verifier = "=0.7.1"
-crc32fast = "1.5"
 # The WebAssembly runtime and the plugin host (crates/tarae-wasm): the editor's side of plugins is src/plugin/
 tarae-wasm = { path = "crates/tarae-wasm" }
 # The one sort (clippy.toml), shared with the runtime's crate: `crate::sorting` re-exports it
@@ -142,8 +136,8 @@ toml = "1.1.6"
 # them here); the dev task crate (cargo xtask — .cargo/config.toml) a member only. None affects
 # `cargo install --path .`
 [workspace]
-members = ["xtask", "crates/tarae-wasm", "crates/tarae-sorting", "crates/tarae-testkit"]
-default-members = [".", "crates/tarae-wasm", "crates/tarae-sorting", "crates/tarae-testkit"]
+members = ["xtask", "crates/tarae-wasm", "crates/tarae-web", "crates/tarae-sorting", "crates/tarae-testkit"]
+default-members = [".", "crates/tarae-wasm", "crates/tarae-web", "crates/tarae-sorting", "crates/tarae-testkit"]
 
 [workspace.package]
 edition = "2024"
@@ -152,12 +146,16 @@ rust-version = "1.99"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/tarae-sh/tarae"
 
-# `fuzzing`: what cargo-fuzz sets (`--cfg fuzzing`) when fuzz/parsers includes a reader's module — its properties
-# (`check`) are built for tests and for it, never in tarae's own build
+# `fuzzing`: what cargo-fuzz sets (`--cfg fuzzing`) when fuzz/parsers includes a reader's module (the sandbox's two,
+# by `#[path]`; the web reader is tarae-web's `check` feature) — its properties (`check`) are built for tests and for
+# it, never in tarae's own build
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fuzzing)"] }
 
 [dev-dependencies]
 vt100 = "0.16.2"
-tarae-testkit = { path = "crates/tarae-testkit" }  # a test's scratch folder, the one patience
+tarae-testkit = { path = "crates/tarae-testkit" }  # a test's scratch folder, the one patience, the mutators
+tarae-web = { path = "crates/tarae-web", features = ["check"] }  # the gzip bodies and pictures tests build
+# tests/live.rs scales a screenshot past the ladder's first step
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 ring = "=0.17.14"  # the fetch's tests make their own certificate (rustls's crypto, already built)

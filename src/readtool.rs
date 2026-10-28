@@ -806,7 +806,7 @@ mod tests {
     fn an_image_is_read_as_a_picture() {
         let (dir, _, base) = places("image");
         std::fs::create_dir_all(dir.join("shots")).unwrap();
-        let png = crate::media::tests::png(400, 300);
+        let png = tarae_web::check::png(400, 300);
         std::fs::write(dir.join("shots/screen.png"), &png).unwrap();
         let gate = crate::reads::Gate::for_test(&dir);
         let (images, t) = pictures_of(read(&dir, &items(&["shots/screen.png", "src/a.rs:1"]), &gate, &[]));
@@ -827,9 +827,9 @@ mod tests {
     #[test]
     fn a_big_image_is_scaled_a_pdf_and_a_bomb_said() {
         let (dir, _, base) = places("big-image");
-        std::fs::write(dir.join("wide.png"), crate::media::tests::png(3000, 1500)).unwrap();
+        std::fs::write(dir.join("wide.png"), tarae_web::check::png(3000, 1500)).unwrap();
         std::fs::write(dir.join("paper.pdf"), "%PDF-1.7\n1 0 obj << /Type /Catalog >> endobj\n").unwrap();
-        std::fs::write(dir.join("bomb.png"), crate::media::tests::bomb(15_000, 15_000)).unwrap();
+        std::fs::write(dir.join("bomb.png"), tarae_web::check::bomb(15_000, 15_000)).unwrap();
         let gate = crate::reads::Gate::for_test(&dir);
         let specs = ["wide.png", "paper.pdf", "bomb.png", "src/a.rs:1"];
         let (images, t) = pictures_of(read(&dir, &items(&specs), &gate, &[]));
@@ -855,11 +855,11 @@ mod tests {
     fn an_answers_pictures_have_a_cap_and_a_huge_file_isnt_read() {
         let (dir, _, base) = places("picture-cap");
         // (noise that won't compress: each about 3.6 MB, 4.8 MB as sent)
-        let shot = crate::media::tests::noise(1100, 1100);
+        let shot = tarae_web::check::noise(1100, 1100);
         assert!(shot.len() <= crate::media::RAW_MAX && shot.len() > 3_000_000);
         std::fs::write(dir.join("shot.png"), &shot).unwrap();
         let huge = std::fs::File::create(dir.join("huge.png")).unwrap();
-        std::io::Write::write_all(&mut &huge, &crate::media::tests::png(4, 4)).unwrap();
+        std::io::Write::write_all(&mut &huge, &tarae_web::check::png(4, 4)).unwrap();
         huge.set_len(crate::media::FILE_MAX + 1).unwrap();
         let gate = crate::reads::Gate::for_test(&dir);
         let specs = ["shot.png", "shot.png", "shot.png", "huge.png"];
@@ -878,7 +878,7 @@ mod tests {
     #[test]
     fn a_key_named_image_asks_first() {
         let (dir, _, base) = places("key-image");
-        std::fs::write(dir.join("id_rsa"), crate::media::tests::png(4, 4)).unwrap();
+        std::fs::write(dir.join("id_rsa"), tarae_web::check::png(4, 4)).unwrap();
         let gate = crate::reads::Gate::for_test(&dir);
         match read(&dir, &items(&["src/a.rs:1", "id_rsa"]), &gate, &[]) {
             Ok(Err(ask)) => assert_eq!(ask.at_said(), dir.join("id_rsa").display().to_string()),

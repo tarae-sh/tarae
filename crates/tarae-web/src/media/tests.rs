@@ -1,55 +1,11 @@
 use super::*;
+use crate::check::{bomb, noise, png};
 
 /// `img` as a file of `format`, written by `image`'s own encoder.
 fn file_of(img: &DynamicImage, format: ImageFormat) -> Vec<u8> {
     let mut out = Cursor::new(Vec::new());
     img.write_to(&mut out, format).unwrap();
     out.into_inner()
-}
-
-/// A white PNG `w`×`h`.
-pub(crate) fn png(w: u32, h: u32) -> Vec<u8> {
-    let img = image::RgbImage::from_pixel(w, h, image::Rgb([255, 255, 255]));
-    file_of(&DynamicImage::ImageRgb8(img), ImageFormat::Png)
-}
-
-/// A PNG `w`×`h` of noise — one that compresses badly (xorshift, the same each time).
-pub(crate) fn noise(w: u32, h: u32) -> Vec<u8> {
-    let mut x: u32 = 0x9E37_79B9;
-    let img = image::RgbImage::from_fn(w, h, |_, _| {
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        let [a, b, c, _] = x.to_le_bytes();
-        image::Rgb([a, b, c])
-    });
-    file_of(&DynamicImage::ImageRgb8(img), ImageFormat::Png)
-}
-
-/// A decompression bomb's stand-in: a PNG whose header says `w`×`h` (8-bit RGB) over a few bytes of data —
-/// written by hand, as no encoder makes one.
-pub(crate) fn bomb(w: u32, h: u32) -> Vec<u8> {
-    fn crc(b: &[u8]) -> u32 {
-        let mut c = !0u32;
-        for &x in b {
-            c ^= u32::from(x);
-            for _ in 0..8 {
-                c = if c & 1 == 1 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
-            }
-        }
-        !c
-    }
-    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
-    let mut chunk = |kind: &[u8], data: &[u8]| {
-        out.extend((data.len() as u32).to_be_bytes());
-        let body = [kind, data].concat();
-        out.extend(&body);
-        out.extend(crc(&body).to_be_bytes());
-    };
-    chunk(b"IHDR", &[&w.to_be_bytes()[..], &h.to_be_bytes(), &[8, 2, 0, 0, 0]].concat());
-    chunk(b"IDAT", &[0x78, 0x9C, 0x63, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01]);
-    chunk(b"IEND", &[]);
-    out
 }
 
 /// Each kind by its first bytes (`image`'s table), a PDF by its `%PDF-`; text and other formats are none.

@@ -1,4 +1,4 @@
-# The reader's fixtures (src/web/tests.rs): each page's bytes as they came (decompressed), where from, when, and the
+# The reader's fixtures (crates/tarae-web/src/tests.rs): each page's bytes as they came (decompressed), where from, when, and the
 # Content-Type header it came with where it was kept (the first five were saved without their headers: none — the
 # reader then goes by the page's own <meta>). `hops`: the redirects before it, as the server said them. `made`: a
 # page made by hand, in a site's shape, its words ours. Whose each page is: NOTICE.

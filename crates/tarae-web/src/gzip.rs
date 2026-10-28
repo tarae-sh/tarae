@@ -17,10 +17,10 @@ pub enum Unpacked {
 }
 
 /// The header's flags (RFC 1952 §2.3.1).
-const FHCRC: u8 = 2;
-const FEXTRA: u8 = 4;
-const FNAME: u8 = 8;
-const FCOMMENT: u8 = 16;
+pub(crate) const FHCRC: u8 = 2;
+pub(crate) const FEXTRA: u8 = 4;
+pub(crate) const FNAME: u8 = 8;
+pub(crate) const FCOMMENT: u8 = 16;
 
 /// Inflated this much at a time.
 const STEP: usize = 32 << 10;
@@ -93,29 +93,9 @@ pub fn gunzip(b: &[u8], max: usize) -> Result<Unpacked, &'static str> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
-
-    /// `data` as gzip: a header with `flags`' fields, deflate, the trailer.
-    pub(crate) fn gzip(data: &[u8], flags: u8) -> Vec<u8> {
-        let mut b = vec![0x1f, 0x8b, 8, flags, 0, 0, 0, 0, 0, 3];
-        if flags & FEXTRA != 0 {
-            b.extend_from_slice(&[3, 0, b'a', b'b', b'c']);
-        }
-        if flags & FNAME != 0 {
-            b.extend_from_slice(b"page.html\0");
-        }
-        if flags & FCOMMENT != 0 {
-            b.extend_from_slice(b"a comment\0");
-        }
-        if flags & FHCRC != 0 {
-            b.extend_from_slice(&[0, 0]);
-        }
-        b.extend_from_slice(&miniz_oxide::deflate::compress_to_vec(data, 6));
-        b.extend_from_slice(&crc32fast::hash(data).to_le_bytes());
-        b.extend_from_slice(&(data.len() as u32).to_le_bytes());
-        b
-    }
+    use crate::check::gzipped as gzip;
 
     /// A member unpacks whole whatever fields its header holds; past `max` it's cut at `max` and one; a wrong CRC or
     /// length, a cut stream, bytes after it, another method or not gzip at all refused.
@@ -171,15 +151,15 @@ pub(crate) mod tests {
                 .enumerate()
                 .map(|(k, (flags, room))| (format!("page-{k}"), [&[room][..], &gzip(&page, flags)].concat()))
                 .collect();
-        let words: Vec<&str> = seeds.iter().map(|(_, b)| crate::web::check::gzip_input(b)).collect();
+        let words: Vec<&str> = seeds.iter().map(|(_, b)| crate::check::gzip_input(b)).collect();
         assert_eq!(words, ["whole", "whole", "whole", "cut"]);
-        crate::mutate::fuzz_seeds("gzip", seeds);
+        tarae_testkit::mutate::fuzz_seeds("gzip", seeds);
     }
 
     /// Whatever a gzip body holds, it unpacks as `check::gzip` has it: real ones mutated 50,000 times.
     #[test]
     fn the_gzip_reader_never_panics() {
-        use crate::mutate::{Rng, bytes};
+        use tarae_testkit::mutate::{Rng, bytes};
         let mut rng = Rng(0x921b_e5ee_d1ce_0008);
         let (mut whole, mut refused) = (0, 0);
         for _ in 0..50_000 {
@@ -188,7 +168,7 @@ pub(crate) mod tests {
             if rng.below(8) > 0 {
                 bytes(&mut rng, &mut b, &[&[0x1f, 0x8b], &[0; 8], &[0xff; 4]]);
             }
-            match crate::web::check::gzip(&b, 1 + rng.below(4000)) {
+            match crate::check::gzip(&b, 1 + rng.below(4000)) {
                 "whole" => whole += 1,
                 "refused" => refused += 1,
                 _ => {}

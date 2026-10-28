@@ -179,7 +179,10 @@ Items 1–3 are done (2026-10-16); 4 is the user's: the repository made public. 
    JIT's isn't a second copy of std's — 16.5 KB measured) and the dev-only `crates/tarae-testkit`; `fuzz/` builds
    again on the crate; build times within noise, the test build −2.7 s, the release binary +16,576 bytes. tarae as a
    library with a thin `main.rs` was measured and not landed (every edit's build +1.0 s; kept as carry's
-   `.sb/crates-2-lib.patch`). Next `tarae-web`; the sandbox a plan of its own.
+   `.sb/crates-2-lib.patch`). The second, `crates/tarae-web` (2026-10-28): the web reader and `media` (~3.2k lines;
+   3.0 % of tarae's dev unit by LLVM IR, html5ever's generics included), its builds within noise, its worth the
+   boundary — `fuzz/parsers` takes it as a dependency, the `#[path]`s and `cfg(fuzzing)`s for it gone. Next the
+   sandbox, a plan of its own.
 7. **What tarae carries, audited** (user, 2026-10-23 — after the main line in flight, before the crate split): a
    plan first — each feature's use (`:features`' counts, the card record), its code, its fit — keep · fold · a plugin
    · gone, the user deciding. Decided ahead (CLAUDE.md's "Cleanup" bullet): `llm.edit-tools`' other modes gone, the

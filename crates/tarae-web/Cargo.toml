@@ -1,0 +1,36 @@
+# tarae's web reader (the crate split's second member, 2026-10-28): a page's bytes → its text, links and headings,
+# a gzip body unpacked, the page's own language server's answers, what a file's bytes are when they aren't a page —
+# pure functions over anyone's bytes, by memory-safe code only. It names nothing of tarae; the fetch, the page's
+# buffer and Claude's `read` are tarae's (src/web/).
+[package]
+name = "tarae-web"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+# The readers' properties and the inputs tests build (`check`): tarae's tests and fuzz/parsers turn it on, never
+# tarae's own build
+check = []
+
+[dependencies]
+# Only the WHATWG parser (html5ever, into a tree of the crate's own, tree.rs) and the charsets a page may name
+# (encoding_rs, WHATWG's Encoding Standard); the article pick and the conversion are tarae's (the user's, 2026-10-23)
+html5ever = "=0.39.0"
+encoding_rs = "0.8"
+# The fetch's gzip (gzip.rs): the inflate tarae has (miniz_oxide) and png's CRC
+miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
+crc32fast = "1.5"
+# The page's own language server's answers (facts.rs) are JSON-RPC values, as tarae's; its lines the buffer's rope
+serde_json = "1.0.151"
+ropey = "1"
+# `read`'s pictures (media.rs): decoded, scaled and encoded in-process by memory-safe code — no external parser, no
+# decoder of tarae's own. Only PNG, JPEG, GIF and WebP (and the PNG and JPEG encoders they come with); no rayon
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+[dev-dependencies]
+tarae-testkit = { path = "../tarae-testkit" }  # the one patience, the seeded mutators
+toml = "1.1.6"  # the saved pages' list (tests/web/pages.toml)

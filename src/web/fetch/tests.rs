@@ -299,7 +299,7 @@ fn a_page_comes_through_the_proxy_as_it_was_sent() {
 #[test]
 fn a_body_comes_as_its_framing_and_coding_say() {
     let page = "<p>packed</p>".repeat(500);
-    let packed = crate::web::gzip::tests::gzip(page.as_bytes(), 0);
+    let packed = tarae_web::check::gzipped(page.as_bytes(), 0);
     let (at, _) = server(true, move |head| match path(head) {
         "/gzip" => {
             let mut b =
@@ -373,7 +373,7 @@ fn redirects_are_followed_and_another_host_said() {
 /// read; an answer that never comes ends at the deadline; a stop ends a fetch under way.
 #[test]
 fn limits_deadlines_and_a_stop_end_a_fetch() {
-    let bomb = crate::web::gzip::tests::gzip(&vec![b'a'; 4 << 20], 0);
+    let bomb = tarae_web::check::gzipped(&vec![b'a'; 4 << 20], 0);
     let (at, heads) = server(true, move |head| match path(head) {
         "/big" => ok(&"x".repeat(5000)),
         "/bomb" => {

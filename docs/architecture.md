@@ -298,7 +298,13 @@ crates/              tarae's own crates, workspace members beside the root packa
                      cabi.rs the canonical ABI subset
   tarae-sorting/     the one sort (clippy.toml) — std's sort copied once for every crate; src/sorting.rs
                      re-exports it
-  tarae-testkit/     what the crates' tests share (dev-only): a test's scratch folder, the one patience
+  tarae-web/         the web reader, pure functions over anyone's bytes: lib.rs `read` · reader.rs a page's
+                     bytes → markdown · tree.rs html5ever's tree · pick.rs the part read · convert.rs the
+                     markdown · charset.rs, lang.rs, url.rs · gzip.rs the fetch's bodies · facts.rs the page's own
+                     language server's answers · media.rs pictures for Claude · check.rs the properties (the
+                     `check` feature: tests and fuzz/parsers); the fetch and the page's buffer are src/web/
+  tarae-testkit/     what the crates' tests share (dev-only): a test's scratch folder, the one patience, the
+                     readers' seeded mutators
 runtime/
   queries/           tree-sitter queries (from Helix 25.07.1, MPL-2.0)
   packs/             language packs (built in; one in ~/.local/share/tarae/packs/ wins, table by table)
