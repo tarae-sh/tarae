@@ -170,9 +170,9 @@ fn it_hears_keys_alone_and_answers_with_its_overlay_only() {
     assert_eq!(Keycast::permissions(), [Permission::Keys]);
     assert_eq!(shown(&heard(vec![done(&["w"])], 0)).as_deref(), Some("[w]"));
     assert_eq!(shown(&Keycast::run("keycast-off".into(), cx())), None);
-    assert_eq!(heard(vec![done(&["ret"])], 100), []);
+    assert_eq!(heard(vec![done(&["enter"])], 100), []);
     assert_eq!(Keycast::run("keycast".into(), cx()), []);
-    assert_eq!(shown(&heard(vec![done(&["ret"])], 200)).as_deref(), Some("[ret]"), "from a fresh row");
+    assert_eq!(shown(&heard(vec![done(&["enter"])], 200)).as_deref(), Some("[enter]"), "from a fresh row");
     let pressed = Keycast::on_events(vec![HostEvent::Pressed(0)], Now { millis: 300, entropy: Vec::new() });
     assert_eq!(shown(&pressed), None);
     assert_eq!(shown(&heard(vec![done(&["b"])], 400)).as_deref(), Some("[b]"));

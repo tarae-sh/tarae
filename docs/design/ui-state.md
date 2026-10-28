@@ -161,7 +161,7 @@ side git · 4 rows · in hand git:src/term.rs
   now, as the status line says it (`now::state`): `step` (`running cargo test -q`, `asks to run …`, `queued 2nd · …`),
   `waits` (it waits on you), `since_ms` (when that step began, the step's own time — not the turn's), `said` (the last
   sentence Claude finished) and `plan` (the plan's step, `3/4 …`). Claude's level never has it: it's Claude's own doing.
-- **`overlays`** (V 20; absent while none is up) — the plugins' overlays (`plugin/overlay.rs`), by plugin: `plugin`,
+- **`overlays`** (V 21; absent while none is up) — the plugins' overlays (`plugin/overlay.rs`), by plugin: `plugin`,
   `text` (its rows' whole text, a row a line), `rect` (`[x, y, w, h]` where the last frame drew it; null while it gives
   way, or under a picker or a prompt), `until_ms` (until it's gone — what a driver waits on, never a sleep). Chrome:
   Claude's level never has it.
@@ -376,8 +376,9 @@ Short, so they can be read in prose and typed. Unique within one tarae process.
 - `v` is the schema version.
 - Adding a field doesn't change it. Readers ignore fields they don't know.
 - Removing or renaming a field, or changing what one means, bumps `v`. Each bump and its reason is on `uistate::V`
-  — now 20: a key is its shown name (#202): `keys.pending` and a card's `answers[].key` say `enter`, `-`,
-  `↑ ↓ ← →` where they said `ret`, `minus`, `up` `down` `left` `right` (the keymap file keeps Helix's notation).
+  — now 21: the plugins' overlays, `overlays[]`; before it, 20: a key is its shown name (#202): `keys.pending` and a
+  card's `answers[].key` say `enter`, `-`, `↑ ↓ ← →` where they said `ret`, `minus`, `up` `down` `left` `right` (the
+  keymap file keeps Helix's notation).
 - The text form isn't a contract (people and Claude read it). The JSON is.
 - A golden test pins the JSON of one fixed scene (two sessions, a card, a review, a run), the way the
   `term_snapshots` pin frames. A change to the shape shows up as a diff in review.
