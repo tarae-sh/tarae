@@ -532,7 +532,8 @@ pub fn rules_said(rules: &[crate::snapread::Rule]) -> String {
         })
         .collect();
     format!(
-        "The project's rules are in {}. Read them first, whole (in line ranges): they are the bar.{unread}",
+        "The project's rules are in {}. Read them first, whole — a long one asked alone answers its headings with \
+         their lines; then read it by those ranges, several in one call: they are the bar.{unread}",
         each.join(", ")
     )
 }
@@ -4641,7 +4642,9 @@ mod tests {
     fn a_file_left_out_of_the_snapshot_isnt_changed_since() {
         use crate::snapread::{FILE_MAX, Found, Left};
         let (dir, repo) = place("bg-big");
-        std::fs::write(repo.join("big.txt"), vec![b'x'; FILE_MAX as usize + 1]).unwrap();
+        // (sparse: its size without writing it)
+        let sized = |n: u64| std::fs::File::create(repo.join("big.txt")).unwrap().set_len(n).unwrap();
+        sized(FILE_MAX + 1);
         let mut ed = Editor::new(crate::config::Config::default());
         (ed.workspace.root, ed.workspace.name) = (repo.clone(), "author".into());
         ed.reviewer_stand_in = true;
@@ -4662,11 +4665,12 @@ mod tests {
         }
         let r = ed.workspace.reviewer.as_ref().unwrap();
         let big = |r: &Reviewer| r.digests.iter().find(|(p, _)| *p == repo.join("big.txt")).and_then(|e| e.1);
-        let whole = crate::sha256::digest(&vec![b'x'; FILE_MAX as usize + 1]);
-        assert!(big(r).is_some_and(|d| d != whole), "by its size and time, never read whole");
+        // (the sparse file reads as zeros: its digest read whole is theirs)
+        let whole = crate::sha256::digest(&vec![0; (FILE_MAX + 1) as usize]);
+        assert!(big(r).is_some_and(|d| d != whole), "a digest, never of it read whole");
         assert_eq!(r.changed, Some(Vec::new()), "nothing moved");
         // (another size since: changed)
-        std::fs::write(repo.join("big.txt"), vec![b'x'; FILE_MAX as usize + 2]).unwrap();
+        sized(FILE_MAX + 2);
         assert_eq!(crate::codereview::since_work(r.digests.clone())(), [repo.join("big.txt")]);
         std::fs::remove_dir_all(&dir).ok();
     }

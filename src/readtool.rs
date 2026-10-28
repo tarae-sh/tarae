@@ -558,8 +558,9 @@ fn read_snapshot_into(snap: &crate::snapread::Snap, args: &Value, seen: &mut See
             match got {
                 Ok(bytes) => {
                     read += 1;
-                    let none = |_: &str| Err(String::new());
-                    for l in section_of(&bytes, &none, rel, it, &mut left, &mut Vec::new()).lines() {
+                    // (its outline as a snapshot's file has it: asked whole, a long one comes as its headings)
+                    let outline = |text: &str| snap.outline(rel, text);
+                    for l in section_of(&bytes, &outline, rel, it, &mut left, &mut Vec::new()).lines() {
                         let from = if l.starts_with("== ") {
                             " — from the checkout: not in the snapshot"
                         } else {
@@ -716,6 +717,40 @@ mod tests {
         assert!(t.contains("\nfn f10  31–33\n"), "with its line numbers: {t}");
         assert!(!t.contains("let x"), "no text: {t}");
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// A markdown file's outline is its headings (frictions #188): a big one asked whole answers them, nested,
+    /// with their lines and no text.
+    #[test]
+    fn a_big_markdown_file_asked_whole_answers_its_headings() {
+        let (dir, _, base) = places("md-whole");
+        let gate = crate::reads::Gate::for_test(&dir);
+        std::fs::write(dir.join("guide.md"), big_markdown()).unwrap();
+        let t = text(read(&dir, &items(&["guide.md"]), &gate, &[]));
+        assert!(t.starts_with("== guide.md — ") && t.contains("its outline"), "{t}");
+        assert!(t.contains("\n# Guide  1–405\n  ## Rules  403–405"), "{t}");
+        assert!(!t.contains("a point of the guide"), "no text: {t}");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// `path:Heading` reads a markdown file's section by its heading's name, as a symbol by its name.
+    #[test]
+    fn a_markdown_heading_by_name_reads_its_section() {
+        let (dir, _, base) = places("md-name");
+        let gate = crate::reads::Gate::for_test(&dir);
+        std::fs::write(dir.join("guide.md"), big_markdown()).unwrap();
+        let t = text(read(&dir, &items(&["guide.md:Rules"]), &gate, &[]));
+        assert!(t.starts_with("== guide.md:Rules — ## Rules (403–405)"), "{t}");
+        assert!(t.contains("403: ## Rules\n") && t.contains("405: - the first rule"), "{t}");
+        assert!(!t.contains("a point of the guide"), "its section only: {t}");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// A markdown file past `WHOLE_MAX`: `# Guide` on line 1, 400 lines of points, `## Rules` on 403–405.
+    fn big_markdown() -> String {
+        let mut md = String::from("# Guide\n\n");
+        md += &"- a point of the guide, said at some length\n".repeat(400);
+        md + "## Rules\n\n- the first rule\n"
     }
 
     /// Read's rules, kept by the tool itself (it runs outside every sandbox): a file outside the project, a

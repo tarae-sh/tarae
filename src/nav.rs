@@ -722,6 +722,9 @@ pub(crate) fn outline_syms(path: &Path, text: Option<ropey::Rope>) -> Result<Vec
     parser.set_language(&lang.language).map_err(|e| e.to_string())?;
     let tree = parser.parse(rope.to_string(), None).ok_or("its parse failed")?;
     let line = |b: usize| rope.byte_to_line(b.min(rope.len_bytes()));
+    if spec.name == "markdown" {
+        return Ok(headings(&tree, &rope));
+    }
     Ok(crate::syntax::outline_members(&tree, &rope)
         .into_iter()
         .map(|d| {
@@ -737,6 +740,64 @@ pub(crate) fn outline_syms(path: &Path, text: Option<ropey::Rope>) -> Result<Vec
             Sym { depth: d.depth, kind, name: d.name, lines }
         })
         .collect())
+}
+
+/// Heading kinds by level, as a markdown file writes them.
+const HEADING: [&str; 6] = ["#", "##", "###", "####", "#####", "######"];
+
+/// A markdown file's outline — its grammar has no definitions: its headings (`## Rules  1300–1400`), each a
+/// section from its line to the line before the next heading of its level or above, nested under those above it
+/// (frictions #188: a long CLAUDE.md read whole came as its first lines; by its headings it's read section by
+/// section). A heading inside a code block is code, never one.
+fn headings(tree: &tree_sitter::Tree, rope: &ropey::Rope) -> Vec<Sym> {
+    let mut found: Vec<(usize, usize, String)> = Vec::new(); // level, first line, name
+    let mut cursor = tree.walk();
+    'walk: loop {
+        let n = cursor.node();
+        let level = match n.kind() {
+            "atx_heading" => (n.child(0).map(|m| m.kind()))
+                .and_then(|k| k.strip_prefix("atx_h")?.strip_suffix("_marker")?.parse::<usize>().ok()),
+            "setext_heading" => {
+                let h1 = (0..n.child_count())
+                    .any(|i| n.child(i).is_some_and(|c| c.kind() == "setext_h1_underline"));
+                Some(if h1 { 1 } else { 2 })
+            }
+            _ => None,
+        };
+        if let Some(level) = level.filter(|l| (1..=HEADING.len()).contains(l)) {
+            let text = rope.byte_slice(n.start_byte()..n.end_byte().min(rope.len_bytes())).to_string();
+            let first = text.lines().next().unwrap_or("");
+            let name = first.trim().trim_start_matches('#').trim().trim_end_matches('#').trim_end();
+            let name: String = name.chars().take(60).collect();
+            if !name.is_empty() {
+                found.push((level, rope.byte_to_line(n.start_byte()), name));
+            }
+        } else if cursor.goto_first_child() {
+            continue;
+        }
+        // (a heading's insides hold no heading: on to its next sibling, or up)
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                break 'walk;
+            }
+        }
+    }
+    let last = rope.byte_to_line(rope.len_bytes().saturating_sub(1));
+    let mut open: Vec<usize> = Vec::new();
+    (found.iter().enumerate())
+        .map(|(i, (level, at, name))| {
+            let end = found[i + 1..]
+                .iter()
+                .find(|(l, ..)| l <= level)
+                .map_or(last, |(_, a, _)| a.saturating_sub(1));
+            while open.last().is_some_and(|l| l >= level) {
+                open.pop();
+            }
+            let depth = open.len();
+            open.push(*level);
+            Sym { depth, kind: HEADING[level - 1], name: name.clone(), lines: (*at, end.max(*at)) }
+        })
+        .collect()
 }
 
 /// The answer: the outline, nested — or, with `line`, the symbols holding it, outermost first (by what
@@ -3170,6 +3231,40 @@ mod tests {
         let _ = std::io::Write::write_all(&mut std::io::stderr(), said.as_bytes());
         assert!(ms < 3000.0, "{ms:.0} ms (budget 3000)");
         assert!(again < 300.0, "{again:.0} ms (budget 300)");
+    }
+
+    /// A search hit in a markdown file names the section it's in, from its headings (frictions #188).
+    #[test]
+    fn a_search_hit_in_markdown_names_its_heading() {
+        let scratch = crate::scratch::Scratch::new("nav-search-md");
+        let dir = scratch.to_path_buf();
+        std::fs::write(dir.join("doc.md"), "# Doc\n\nintro\n\n## Setup\n\nthe needle here\n").unwrap();
+        let q = Query {
+            pattern: "needle".into(),
+            literal: true,
+            case: Case::Smart,
+            globs: Vec::new(),
+            context: 0,
+            output: Output::Lines,
+            offset: 0,
+            tests: true,
+            paths: Vec::new(),
+            types: Vec::new(),
+            multiline: false,
+            exclude: String::new(),
+            limit: HITS_SHOWN,
+        };
+        let text = run_search(&dir, None, &q, &[], &crate::reads::Keys::none_opened(&dir)).unwrap();
+        assert!(text.contains("doc.md\n  in ## Setup (5–7)\n  7: the needle here"), "{text}");
+    }
+
+    /// A markdown file's setext headings (`Title` over `===` or `---`) are its outline's, by their level; a `---`
+    /// that isn't one — front matter's at the file's top, a rule after a blank line — names nothing.
+    #[test]
+    fn setext_headings_by_level_and_a_rule_or_front_matter_isnt_one() {
+        let text = "---\ntitle: front\n---\n\nIntro\n\nTitle\n=====\n\ntext\n\n---\n\nSub\n---\n\nmore\n";
+        let syms = outline_syms(Path::new("a.md"), Some(ropey::Rope::from_str(text))).unwrap();
+        assert_eq!(syms, [sym(0, "#", "Title", 6, 16), sym(1, "##", "Sub", 13, 16)]);
     }
 
     /// With no server: tarae's outline from the syntax tree (when the grammar is there).

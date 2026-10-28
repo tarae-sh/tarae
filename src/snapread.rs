@@ -19,12 +19,15 @@ use std::io::{BufRead, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// A file past this isn't read: a blob comes whole into memory (there's no file to stream or map) and is kept for
-/// the run's other calls — and its change is in the diff the reviewer is sent.
-pub const FILE_MAX: u64 = 1 << 20;
+/// A file past this isn't read: a blob comes whole into memory (there's no file to stream or map) — and its change
+/// is in the diff the reviewer is sent. What's kept for the run's other calls is `KEPT_MAX`'s to bound, not this:
+/// this only keeps one blob's read in hand. Source grows past a round number unseen (term.rs went past the 1 MiB
+/// this was), so it's well over this repository's biggest — term.rs, 1.28 MB on 2026-10-28 —, the chat's `read`
+/// having no such wall for a text.
+pub const FILE_MAX: u64 = 8 << 20;
 
 /// The texts kept for a run's later calls at most (bytes): past it, the rest are read from git again each call.
-/// (This repository's whole tree is ~29 MB: a run's searches of all of it read git once.)
+/// (This repository's whole tree is ~35 MB: a run's searches of all of it read git once.)
 const KEPT_MAX: usize = 64 << 20;
 
 /// Why a file of the snapshot isn't read.
@@ -434,7 +437,8 @@ pub(crate) mod tests {
         std::fs::write(dir.join("src/a.rs"), "fn a() {}\n").unwrap();
         std::fs::write(dir.join("id_rsa"), "tarae-fake-token\n").unwrap();
         std::os::unix::fs::symlink("src/a.rs", dir.join("link")).unwrap();
-        std::fs::write(dir.join("big.txt"), vec![b'x'; FILE_MAX as usize + 1]).unwrap();
+        // (sparse: its size without writing it — git still reads it whole as it adds it)
+        std::fs::File::create(dir.join("big.txt")).unwrap().set_len(FILE_MAX + 1).unwrap();
         for args in [
             &["init", "-q", "-b", "main"][..],
             &["config", "user.email", "t@t"],
@@ -476,6 +480,36 @@ pub(crate) mod tests {
         }
         assert_eq!(snap.files_in("").collect::<Vec<_>>(), ["new.txt", "src/a.rs"]);
         assert_eq!(snap.files_in("src").collect::<Vec<_>>(), ["src/a.rs"]);
+    }
+
+    /// A file past what this read once (1 MiB — term.rs and editor.rs both went past it) is read as the chat reads
+    /// one: by range, by name and in a search's hits; one past `FILE_MAX` is still left out, said in its place.
+    #[test]
+    fn a_big_source_is_read_by_range_name_and_search_and_a_huge_one_is_said() {
+        let s = crate::scratch::Scratch::new("snapread-big");
+        let root = s.join("proj");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let filler = format!("// {}\n", "filler ".repeat(13));
+        let lines = 15_000;
+        let mut big = filler.repeat(lines);
+        big.push_str("fn needle_here() {\n    let found = 1;\n}\n");
+        assert!(big.len() as u64 > 1 << 20 && (big.len() as u64) < FILE_MAX, "{} bytes", big.len());
+        std::fs::write(root.join("src/big.rs"), &big).unwrap();
+        let tree = checkout(&root);
+        let snap = Snap::list(&root, &tree).unwrap();
+        assert_eq!(snap.found("src/big.rs"), Found::File);
+        let read = |f: &[&str]| crate::readtool::read_snapshot(&snap, &serde_json::json!({ "files": f }));
+        let at = lines + 2;
+        let got = read(&[&format!("src/big.rs:{at}-{at}"), "big.txt"]).unwrap();
+        assert!(got.contains(&format!("{at}:     let found = 1;")), "by range: {got}");
+        assert!(got.contains("== big.txt: ") && got.contains("past the 8 MB"), "the huge one said: {got}");
+        let got = read(&["src/big.rs:needle_here"]).unwrap();
+        assert!(got.contains("fn needle_here() {") && got.contains("let found = 1;"), "by name: {got}");
+        let search = |args| crate::nav::search_snapshot(&snap, &args);
+        let got = search(serde_json::json!({ "pattern": "let found" })).unwrap();
+        assert!(got.contains("src/big.rs") && got.contains(&format!("{at}:")), "searched: {got}");
+        let got = search(serde_json::json!({ "pattern": "x", "path": "big.txt" })).unwrap_err();
+        assert!(got.contains("past the 8 MB"), "the huge one said: {got}");
     }
 
     /// A snapshot let go here (the main loop, a card's `n`) frees its listing and texts on a worker.
@@ -540,6 +574,57 @@ pub(crate) mod tests {
         // finding)
         assert_eq!((rules.len(), rules[2].rel.as_str(), rules[2].lines), (3, "AGENTS.md", 0), "{rules:?}");
         assert!(rules[2].unread.as_deref().is_some_and(|w| w.contains("a link")), "{rules:?}");
+    }
+
+    /// frictions #188: a long git-ignored CLAUDE.md asked whole comes as its headings with their lines (a
+    /// snapshot's file's outline — never its first lines alone, nor the whole text past `WHOLE_MAX`), nested, a
+    /// heading in a code block not one; a section read by those lines.
+    #[test]
+    fn a_long_instruction_file_asked_whole_answers_its_headings_and_a_range_reads_a_section() {
+        let s = crate::scratch::Scratch::new("snapread-headings");
+        let root = s.join("proj");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".gitignore"), "CLAUDE.md\n").unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "t@t"],
+            &["config", "user.name", "t"],
+            &["add", "-A"],
+            &["commit", "-q", "-m", "base"],
+        ] {
+            git(&root, args);
+        }
+        let mut lines: Vec<String> = vec!["# Project".into(), String::new()];
+        lines.extend((0..400).map(|i| format!("- the project's direction, its point {i} of four hundred")));
+        let direction = lines.len() + 1;
+        lines.push("## Direction".into());
+        lines.extend(["- one way each", "```sh", "## not a heading", "```"].map(String::from));
+        let rules = lines.len() + 1;
+        lines.extend(["## Rules", "- the first rule", "- the second rule"].map(String::from));
+        let sub = lines.len() + 1;
+        lines.extend(["### Sub", "- a rule under it"].map(String::from));
+        let n = lines.len();
+        let text = lines.join("\n") + "\n";
+        assert!(text.len() > 16 * 1024, "past read's whole: {} bytes", text.len());
+        std::fs::write(root.join("CLAUDE.md"), &text).unwrap();
+        let snap = Snap::list(&root, &crate::snapshot::snap(&root).unwrap().id).unwrap();
+        let read =
+            |f: &str| crate::readtool::read_snapshot(&snap, &serde_json::json!({ "files": [f] })).unwrap();
+        let whole = read("CLAUDE.md");
+        assert!(whole.starts_with("== CLAUDE.md — ") && whole.contains("its outline"), "{whole}");
+        assert!(whole.contains("from the checkout"), "said the checkout's: {whole}");
+        for row in [
+            format!("# Project  1–{n}"),
+            format!("  ## Direction  {direction}–{}", rules - 1),
+            format!("  ## Rules  {rules}–{n}"),
+            format!("    ### Sub  {sub}–{n}"),
+        ] {
+            assert!(whole.lines().any(|l| l == row), "{row:?} in {whole}");
+        }
+        assert!(!whole.contains("not a heading") && !whole.contains("point 0"), "headings only: {whole}");
+        let section = read(&format!("CLAUDE.md:{rules}-{}", sub - 1));
+        assert!(section.contains(&format!("{rules}: ## Rules\n")), "{section}");
+        assert!(section.contains("- the second rule") && !section.contains("### Sub"), "{section}");
     }
 
     /// A path from the root or absolute under it (as given or as its real path) is the snapshot's; `..` past the

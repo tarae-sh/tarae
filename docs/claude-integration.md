@@ -1768,8 +1768,8 @@ Claude reads and searches through tarae itself — no process, no sandbox to sta
   without reading the file. The answer says the total and where the next page starts.
 - **`read`** — several files and line ranges in one call: `src/a.rs:10-40,90-120`, `src/a.rs:-30` (the last 30
   lines), `src/a.rs:run_search` or `src/a.rs:Editor::open` (a function, type or module by name, from its syntax
-  tree), or a file whole. A file over 16 KB asked whole comes as its outline with line numbers, and says how to
-  ask for its text.
+  tree), or a file whole. A file over 16 KB asked whole comes as its outline with line numbers — a markdown file's
+  its headings, each with its section's lines (`## Rules  1300–1400`) —, and says how to ask for its text.
   - **An image** (PNG, JPEG, GIF, WebP, told by its bytes, not its name) comes as a picture Claude sees. One
     within 2000×2000 and 3.75 MB goes as it is; a bigger one is scaled to fit and, past 3.75 MB still, written
     smaller step by step, as Claude Code's own Read does (a PNG compressed hardest, then JPEG at quality 80, 60,
@@ -2084,12 +2084,14 @@ continued from it, and nothing of the chat goes into what it's sent
   run then, and only once you've trusted them. Its `read` and `search` read that tree's files from git's own
   objects, so every file it reads is as it was then, never what you write after, and every line it names is the
   snapshot's. Nothing is written out, so no smudge filter or hook runs. Files named like keys, links, submodules
-  and files over 1 MB aren't read (asked for, it's told why), and neither is a file a partial clone doesn't have:
+  and files over 8 MB aren't read (asked for, it's told why; a big source file — tarae's own `term.rs` is 1.3 MB —
+  is read by range, by name and in searches, as the chat reads it), and neither is a file a partial clone doesn't have:
   git never fetches one for it, and the start says how many. The diff it's sent names such a file, and a file
   named like a key, in its place without its lines. Past 150 KB the diff leaves whole files out, never half of one,
   and names each with its changed lines to read itself; one no reader read is said at its end and in the report's
   first line. Its prompt names the project's rules — the checkout's CLAUDE.md, CLAUDE.local.md, AGENTS.md, one git
-  ignores read from the checkout (said so) — or says there are none, tarae having looked. (Listing and grading the changed files is the review's own,
+  ignores read from the checkout (said so; a long one asked whole answers its headings, the prompt saying to read it
+  by their ranges) — or says there are none, tarae having looked. (Listing and grading the changed files is the review's own,
   as `space v v`'s: in a partial clone that may fetch what it needs to count lines; none of it is sent.) No snapshot can be taken: it doesn't start, and says
   why.
 
