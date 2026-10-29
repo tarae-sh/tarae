@@ -205,12 +205,17 @@ impl Editor {
     /// plugin writes them (`ret`, `C-minus` — the keymap's notation; shown `enter`, `C--`).
     #[cfg(test)]
     pub(crate) fn plugin_panel_stand_in(&mut self, rows: usize) {
+        self.plugin_panel_stand_in_with(rows, &[("ret", "open"), ("C-minus", "less"), ("d", "delete")]);
+    }
+
+    /// The same, its header naming `keys`.
+    #[cfg(test)]
+    pub(crate) fn plugin_panel_stand_in_with(&mut self, rows: usize, keys: &[(&str, &str)]) {
         // (no state folder: no plugin loaded, nothing of one's kept)
         assert!(self.plugins.is_some() || self.plugins_start(None), "the plugin thread started");
         self.plugins.as_mut().unwrap().answering = Some("demo".into());
         let rows = (0..rows).map(|i| vec![format!("row {i}")]).collect();
-        let keys = [("ret", "open"), ("C-minus", "less"), ("d", "delete")];
-        let keys = keys.map(|(k, d)| (k.to_string(), d.to_string())).into();
+        let keys = keys.iter().map(|(k, d)| (k.to_string(), d.to_string())).collect();
         self.plugin_panel("demo", Some(Panel { title: "demo".into(), rows, keys, ..Panel::default() }));
     }
 

@@ -71,8 +71,8 @@
 18                                a ff
 19                                a
 20                                a
-21   B B fffff  B fffffff  B ffff a
-22   B ffffff  B ffffff ffffff    a
+21   B B fffff  f fffffff  B ffff a
+22   B ffffff  f ffffff ffffff    a
 23  a TTT                                                                                   dddd   ddddd dd   TTT
 ## legend
 bg: c=ui.cursorline.primary  P=ui.menu.selected

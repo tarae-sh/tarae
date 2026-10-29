@@ -508,6 +508,8 @@ pub fn placed(
     hand: Option<Hand>,
 ) {
     let Some((of, (a, b))) = cut.and_then(|of| Some((of, part_at(printed, of, x)?))) else { return };
+    // (in the colours it's drawn in — faded where its region hasn't the keys)
+    let style = crate::term::drawn_style(style);
     let w =
         Whole { on, text: of.whole.clone(), style, pieces: Vec::new(), cols, state: None, float: drawn_in() };
     PLACED.with_borrow_mut(|p| p.push(((y, a, b), w, hand)));
@@ -552,6 +554,7 @@ pub fn cut_at(
         return;
     };
     let float = drawn_in();
+    let style = crate::term::drawn_style(style);
     let w = Whole { on, text: of.whole.clone(), style, pieces: Vec::new(), cols, state: None, float };
     record(ed, (y, a, b), w, hand);
 }

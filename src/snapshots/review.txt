@@ -89,7 +89,7 @@
 24   BB ffff  BB ffff           a
 25   BBBBB B fffff  BB ffffffff a
 26   BBBBB B fffffff            a
-27   DDDDD D D aaaa a           a
+27   fffff f f ffff f           a
 28   BBBBB B B fff              a
 29  a TTTTTT   gg  ee                                                                       dddd   ddddd dd   TTT
 ## legend

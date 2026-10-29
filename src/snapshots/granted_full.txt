@@ -91,7 +91,7 @@
 26  a  d                           ddd d dd ddd d d dddddddd a f  fffffffffffffffffffffffffffffffffff
 27  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa f  f fff fffff ffffffff
 28                                                             f  DDDDD D fffff  DDDDD D fffff
-29  a TTTTTT   D ffff ff ffff  D D ffff  DDD fffff                              dddd   ddddd dd   TTT
+29  a TTTTTT   f ffff ff ffff  D D ffff  DDD fffff                              dddd   ddddd dd   TTT
 ## legend
 bg: P=ui.menu.selected
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr

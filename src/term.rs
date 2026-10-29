@@ -217,7 +217,7 @@ fn event_loop(editor: &mut Editor) -> Result<()> {
             }
             frame.clear();
             render_drawn(editor, &mut frame, w, h)?;
-            let bytes = screen.present(&frame, w, h);
+            let bytes = present(&mut screen, editor, &frame, w, h);
             let (own, wrote) = (std::mem::take(&mut editor.term_out), !bytes.is_empty());
             // (a frame that couldn't be read goes as it is, no synchronized update around it)
             let ended = bytes.ends_with(b"\x1b[?2026l");
@@ -484,6 +484,18 @@ fn spawn_input(tx: crate::event::Tx) {
     });
 }
 
+/// What goes to the terminal for `frame`, just drawn by `editor` (`Screen::present`).
+fn present<'a>(
+    screen: &'a mut crate::screen::Screen,
+    editor: &mut Editor,
+    frame: &'a [u8],
+    w: u16,
+    h: u16,
+) -> &'a [u8] {
+    // (read on from where its lit row's reading stopped — `light_rows`)
+    screen.present_drawn(frame, w, h, editor.drawn.take())
+}
+
 /// One frame: layout → scroll → draw. Callable without a terminal (performance budget test).
 #[cfg(test)]
 pub fn render(editor: &mut Editor, out: &mut impl Write, w: u16, h: u16) -> io::Result<()> {
@@ -574,6 +586,8 @@ fn over_fold(editor: &mut Editor, w: u16, h: u16) {
 }
 
 fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::Result<()> {
+    // (a frame drawn again: nothing of the last one's reading kept — `light_rows`)
+    editor.drawn.take();
     // (this frame's width first: what's docked beside the code and what folds into the slot are judged by it,
     // here and in the editor alike — `Editor::docked_in_sight`)
     editor.screen.width = Some(w as usize);
@@ -646,6 +660,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
             (b.x, b.x + b.list_w + 2)
         }),
         popup: std::cell::Cell::new(None),
+        popup_end: std::cell::Cell::new(None),
         offer_buttons: offer.as_ref().map(|c| c.buttons.clone()).unwrap_or_default(),
         offer_way: offer.as_ref().and_then(|c| c.way_at),
         offer_card: offer.as_ref().map(OfferCard::rect),
@@ -2484,7 +2499,8 @@ fn top_line(
     }
     // The keys at the right end: as many whole pairs as fit, from the first — a run of the line (`KEYS_AFTER`)
     // before them, so it reads as a line still
-    let pair = |(k, v): &(&str, &str)| k.width() + 1 + v.width();
+    // (a pair with no key is words alone — a plugin's own, `enter open`; one with no meaning its key alone)
+    let pair = |(k, v): &(&str, &str)| k.width() + v.width() + usize::from(!k.is_empty() && !v.is_empty());
     let mut keys_w = 0;
     let n = head
         .keys
@@ -2546,9 +2562,21 @@ fn top_line(
     for (i, (k, v)) in head.keys[..n].iter().enumerate() {
         let gap = if i == 0 { " " } else { "  " };
         apply_put(&mut buf, card, gap)?;
-        apply_put(&mut buf, head.key, k)?;
-        apply_put(&mut buf, head.faint, &format!(" {v}"))?;
-        crate::kinds::hint(k, (at + gap.len(), y));
+        // (no key: words alone, faint, never a hint nor a press — a plugin's own keys, `draw_plugin_panel`)
+        if k.is_empty() {
+            apply_put(&mut buf, head.faint, v)?;
+            at += gap.len() + pair(&(*k, *v));
+            continue;
+        }
+        // (a pair whose key costs, or names no key — `click keys`: plain faint words, never a hint)
+        let hint = crate::wordspot::is_hint(k, v);
+        apply_put(&mut buf, if hint { head.key } else { head.faint }, k)?;
+        if !v.is_empty() {
+            apply_put(&mut buf, head.faint, &format!(" {v}"))?;
+        }
+        if hint {
+            crate::kinds::hint(k, v, (at + gap.len(), y));
+        }
         if crate::wordspot::pressable(k, v)
             && let Some(w) = &head.words
         {
@@ -2557,7 +2585,7 @@ fn top_line(
             let home = if w.way_in == Some(*k) { Some(At::Code) } else { w.home };
             w.spots.borrow_mut().push(Spot { home, ..spot });
         }
-        at += gap.len() + k.width() + 1 + v.width();
+        at += gap.len() + pair(&(*k, *v));
     }
     if n > 0 {
         apply_put(&mut buf, card, " ")?;
@@ -3390,9 +3418,13 @@ fn draw_plugin_panel<W: Write>(
     let (x0, y0, w) = (lay.slot_x, lay.slot_y(), lay.slot_w);
     let title = crate::whole::fit(&clean(&panel.title), (w / 2).max(12));
     // (a plugin names its keys as its `key` event does, `ret`: shown by their one name)
-    let keys: Vec<(String, String)> =
-        panel.keys.iter().map(|(k, d)| (crate::key::said(&clean(k)), clean(d))).collect();
-    let mut hints: Vec<(&str, &str)> = keys.iter().map(|(k, d)| (k.as_str(), d.as_str())).collect();
+    // (its own keys are plain faint words, whole — a pair with no key, never read as a hint (`top_line`): a plugin's
+    // act tarae can't tell cheap from costly, so a press never does it, its meaning empty or not: round 3, the user
+    // 2026-10-29; tarae's own moving keys stay its)
+    let keys: Vec<String> = (panel.keys.iter())
+        .map(|(k, d)| format!("{} {}", crate::key::said(&clean(k)), clean(d)).trim_end().to_string())
+        .collect();
+    let mut hints: Vec<(&str, &str)> = keys.iter().map(|k| ("", k.as_str())).collect();
     let focus = editor.plugin_panel_focused();
     hints.push(if focus { ("esc", "code") } else { ("click", "keys") });
     let top = slot_header(out, editor, ui, lay, card, &[(title, strong)], &hints, &[], None)?;
@@ -5206,10 +5238,13 @@ fn draw(
         Some(p) => Some(draw_prompt(editor, p, editor.cmdline_completion().as_ref(), ui, lay, out)?),
         None => None,
     };
+    // (the frame's elements and hints recorded — every hint a button)
+    crate::kinds::settle(editor);
+    // The row the mouse is over, lit — under the cut texts' cards
+    light_rows(editor, ui, out)?;
     // A cut text whole on its card — a tooltip, over everything but the lit word and pointing's labels
     cut_card(editor, ui, lay, false, out)?;
-    // The word the mouse is over, lit — over everything but pointing's labels (the frame's elements and hints recorded)
-    crate::kinds::settle(editor);
+    // The word the mouse is over, lit — over everything but pointing's labels
     light_word(editor, ui, out)?;
     // Pointing: a label on every element with an id, over everything
     if let Some(p) = &editor.pointing {
@@ -5256,10 +5291,83 @@ fn light_word(editor: &Editor, ui: &Ui, out: &mut impl Write) -> io::Result<()> 
     let Some((y, from, _, spans)) = over else { return Ok(()) };
     queue!(out, MoveTo(from as u16, y as u16))?;
     for (text, st) in &spans {
-        let grounds = [selected_row(ui, editor, *st).bg, ui.selection_primary.bg, ui.selection.bg];
-        let lit = Style { bg: grounds.into_iter().flatten().find(|&g| Some(g) != st.bg), ..*st };
-        apply_full(out, lit)?;
+        apply_full(out, Style { bg: hover_ground(ui, editor, *st), ..*st })?;
         queue!(out, Print(text))?;
+    }
+    Ok(())
+}
+
+/// The one ground a button takes under the pointer (a word, a row): the selected row's — where it's on that already
+/// (the selected row itself, a name flashing), the primary selection's, else the selection's: lit is always another
+/// ground, its text's colour never touched (#197a).
+fn hover_ground(ui: &Ui, editor: &Editor, st: Style) -> Option<crossterm::style::Color> {
+    let grounds = [selected_row(ui, editor, st).bg, ui.selection_primary.bg, ui.selection.bg];
+    grounds.into_iter().flatten().find(|&g| Some(g) != st.bg)
+}
+
+/// The ground a row takes under the pointer (`light_rows`): a step weaker than the selected row's — `chrome::HOVER` of
+/// the way from its own ground (the tint where the theme paints none) — so it never reads as a second selection; the
+/// selected row itself, or a named colour, as a word lights (`hover_ground`).
+fn row_ground(ui: &Ui, editor: &Editor, st: Style) -> Option<crossterm::style::Color> {
+    let full = hover_ground(ui, editor, st);
+    if st.bg.is_some() && st.bg == selected_row(ui, editor, st).bg {
+        return full;
+    }
+    blend(full, st.bg.or(ui.tint), crate::chrome::HOVER).or(full)
+}
+
+/// The ground a row drawn on `ground` takes under the pointer, as `light_rows` paints it (`row_ground`) — the theme's
+/// floors read it (`theme::tests::a_hovered_row_reads_between_its_ground_and_the_selected`).
+#[cfg(test)]
+pub(crate) fn hovered_row(
+    editor: &Editor,
+    ground: crossterm::style::Color,
+) -> Option<crossterm::style::Color> {
+    row_ground(&Ui::new(editor), editor, Style { bg: Some(ground), ..Style::default() })
+}
+
+thread_local! {
+    /// This frame's lit row's cells and the ground each took (`light_rows`) — a cut card over it goes on with it.
+    static ROW_LIT: std::cell::RefCell<Vec<(usize, usize, Option<Color>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The row the mouse is over (`wordspot::row_lit`: a list's row, a mark, a toast, a peek, the trail, the now, a chip —
+/// the cells a press there acts on) lit as a word is: only its ground, to `hover_ground`, each cell's text as this frame
+/// drew it — read from the frame so far, so every drawer's rows light one way and none is missed; a frame's lines on it
+/// stay lines. Under the cut cards (a row in hand's whole text covers it) and the lit word. The frame so far is read
+/// into cells once (`screen::Drawn`), and what goes to the terminal reads on from there (`present`): a row lit costs
+/// its own cells, never the frame read again (piece B's review, #4). Its cells found here, once a frame — a move of the
+/// pointer within them asks nothing again (`wordspot::hovered`).
+fn light_rows(editor: &Editor, ui: &Ui, out: &mut Vec<u8>) -> io::Result<()> {
+    let at = editor.presence.hover_at;
+    let rows = at.map_or_default(|(x, y)| crate::wordspot::row_lit(editor, x, y));
+    let under = at.filter(|_| !rows.is_empty()).and_then(|(x, y)| crate::wordspot::row_under(editor, x, y));
+    editor.row_under.set(under);
+    editor.row_hover.replace(rows.clone());
+    ROW_LIT.with_borrow_mut(Vec::clear);
+    let (Some(w), Some(h)) = (editor.screen.width, editor.screen.height) else { return Ok(()) };
+    if rows.is_empty() {
+        return Ok(());
+    }
+    // (a frame with an escape tarae doesn't draw isn't read — nor lit: it goes out as it is, `Screen::present`)
+    // (`screen.height` is the status line's row: the frame's last)
+    let Some(drawn) = crate::screen::Drawn::read(out, w as u16, h as u16 + 1) else { return Ok(()) };
+    let mut lit = Vec::new();
+    for (y, from, to) in rows {
+        for x in from..to {
+            let Some((text, st)) = drawn.cell(x, y) else { continue };
+            if text.chars().next().is_some_and(|c| "─│┬┴├┤┼╭╮╰╯".contains(c)) {
+                continue;
+            }
+            lit.push((x, y, Style { bg: row_ground(ui, editor, st), ..st }, text.to_string()));
+        }
+    }
+    editor.drawn.replace(Some(drawn));
+    ROW_LIT.with_borrow_mut(|l| l.extend(lit.iter().map(|c| (c.0, c.1, c.2.bg))));
+    for (x, y, st, text) in lit {
+        queue!(out, MoveTo(x as u16, y as u16))?;
+        apply_full(out, st)?;
+        queue!(out, Print(if text.is_empty() { " " } else { text.as_str() }))?;
     }
     Ok(())
 }
@@ -5316,9 +5424,15 @@ fn word_spot(
 /// A word's spans with the colour their text was drawn in — faded where the region drawn hasn't the keys (`Fade`) —
 /// so lit under the mouse it keeps that colour exactly, only its ground changed (`light_word`).
 fn as_drawn(spans: Vec<(String, Style)>) -> Vec<(String, Style)> {
+    spans.into_iter().map(|(t, st)| (t, drawn_style(st))).collect()
+}
+
+/// A style as it's drawn here: faded where the region drawn hasn't the keys (`Fade`) — what a cut text's card prints
+/// its text in (`whole::placed`), so the mouse's card over it keeps its colours.
+pub(crate) fn drawn_style(st: Style) -> Style {
     match FADING.get() {
-        Some(ground) => spans.into_iter().map(|(t, st)| (t, faded(st, ground))).collect(),
-        None => spans,
+        Some(ground) => faded(st, ground),
+        None => st,
     }
 }
 
@@ -5431,7 +5545,12 @@ fn draw_floating(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut Vec<u8>) -> i
         // (over and under: its detail's top line meets the sides; side by side, the line between them its bottom)
         let members = editor.workspace.group(kind).and_then(|g| group_members(editor, lay, &g));
         let (middle, split) = (members.and_then(|m| over_under(&m)), members.and_then(|m| side_by_side(&m)));
-        float_sides(out, line, r, (middle, split), editor.float_moving == Some(kind))?;
+        // (its keys while it moves: hints as every hint is drawn — never the line's colour, which the pointer lights)
+        let hint = (
+            Style { fg: own.hint_key.or(own.virt.fg), bold: true, ..card },
+            Style { fg: own.linenr.fg, ..card },
+        );
+        float_sides(out, line, hint, r, (middle, split), editor.float_moving == Some(kind))?;
         editor.screen.floating.borrow_mut().push((kind, r));
     }
     Ok(())
@@ -5443,6 +5562,7 @@ fn draw_floating(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut Vec<u8>) -> i
 fn float_sides(
     out: &mut impl Write,
     line: Style,
+    (key, faint): (Style, Style),
     r: crate::split::Rect,
     (middle, split): (Option<usize>, Option<usize>),
     moving: bool,
@@ -5456,8 +5576,7 @@ fn float_sides(
         put_line(&mut buf, line, rr)?;
     }
     let keys: &[(&str, &str)] = if moving { &[("h j k l", "move"), ("enter", "done")] } else { &[] };
-    let key = Style { fg: line.fg, bold: true, ..line };
-    let head = TopLine { keys, key, faint: line, plain: true, ..TopLine::default() };
+    let head = TopLine { keys, key, faint, plain: true, ..TopLine::default() };
     let splits: Vec<usize> = split.into_iter().collect();
     top_line(&mut buf, line, line, (r.x, r.y + r.h - 1, r.w), ("╰", "╯", "┴"), &splits, true, &head)?;
     out.write_all(&buf)
@@ -9170,21 +9289,34 @@ fn draw_picker(
             queue!(out, Print("  "))?;
             let mut used = 0;
             let spans = match line {
+                // (a state's facts laid as pairs — `tier host`, `sandbox Seatbelt`: their look, no key to press)
                 HeadRow::Pairs(pairs) => {
-                    let pairs: Vec<(&str, &str)> = pairs.iter().map(|(k, v)| (*k, v.as_str())).collect();
-                    hint_spans(ui, &pairs, dim, faint)
+                    let bold = Style { bold: true, fg: ui.hint_key.or(dim.fg), ..dim };
+                    let span =
+                        |text: String, style| crate::markdown::Span { cut: None, hint: false, text, style };
+                    let mut spans = Vec::new();
+                    for (i, (k, v)) in pairs.iter().enumerate() {
+                        if i > 0 {
+                            spans.push(span("  ".into(), faint));
+                        }
+                        spans.push(span(k.to_string(), bold));
+                        if !v.is_empty() {
+                            spans.push(span(format!(" {v}"), faint));
+                        }
+                    }
+                    spans
                 }
                 HeadRow::Faint(said) => vec![said.clone().span(faint)],
                 HeadRow::Air => Vec::new(),
             };
-            for s in spans {
+            for (i, s) in spans.iter().enumerate() {
                 apply(out, s.style)?;
                 queue!(out, Print(&s.text))?;
                 let at = (b.x + 2 + used, y as usize);
                 let cut = (s.text.as_str(), s.cut.as_deref());
                 crate::whole::placed(crate::whole::On::Picker, cut, at, s.style, (b.x, b.x + lw + 2), None);
                 if s.hint {
-                    crate::kinds::hint(&s.text, at);
+                    crate::kinds::span_hint(&spans, i, at);
                 }
                 used += s.text.width();
             }
@@ -10120,7 +10252,7 @@ fn code_line(
     for i in 0..names.len().saturating_sub(1) {
         let (k, what) = (&names[i], &names[i + 1]);
         let Some(&(a, _)) = cols.get(i).filter(|_| k.1 == lit(hint_key)) else { continue };
-        crate::kinds::hint(k.0.shown(), (a, y0));
+        crate::kinds::hint(k.0.shown(), what.0.shown(), (a, y0));
         if crate::wordspot::pressable(k.0.shown(), what.0.shown()) {
             let spot = word_spot(
                 crate::mouse::Surface::PaneTop(id),
@@ -10818,6 +10950,8 @@ fn draw_statusline(
                 break;
             }
             room -= w;
+            // (a pair that names no key — `type narrow` — or whose key costs: plain faint words, never a hint)
+            let key = if crate::wordspot::is_hint(k, d) { key } else { what };
             segs.push(Seg { cut: None, text: format!("  {k}"), style: key, keep: HINTS });
             segs.push(Seg { cut: None, text: format!(" {d}"), style: what, keep: HINTS });
         }
@@ -10855,7 +10989,7 @@ fn draw_statusline(
     let mut now_at: Option<(usize, usize)> = None;
     // (each segment where it went: what a word there lights — `Screen.elements`)
     let mut laid: Vec<(usize, &str, Style)> = Vec::new();
-    for s in &left {
+    for (i, s) in left.iter().enumerate() {
         apply(out, s.style)?;
         queue!(out, Print(&s.text))?;
         // (what Claude is doing has its own card — `now_card`)
@@ -10873,7 +11007,8 @@ fn draw_statusline(
         laid.push((used, &s.text, s.style));
         // (a floating list's or the docs' keys: each pair's key a hint — its meaning the segment after it)
         if s.keep == HINTS && s.style.bold {
-            crate::kinds::hint(&s.text, (used + s.text.len() - s.text.trim_start().len(), status_y));
+            let said = left.get(i + 1).filter(|n| n.keep == HINTS).map_or("", |n| n.text.as_str());
+            crate::kinds::hint(&s.text, said, (used + s.text.len() - s.text.trim_start().len(), status_y));
         }
         // (a click on the name: the list; on the count: the inbox — not the gap before them)
         let lead = s.text.len() - s.text.trim_start().len();
@@ -11771,13 +11906,16 @@ fn draw_overlays(
             queue!(out, MoveTo(x as u16, (y0 + i) as u16))?;
             apply(out, plain)?;
             queue!(out, Spaces(pad))?;
-            for s in row {
-                let (fg, bold) = match s.role {
+            let role = |r: Role| {
+                let (fg, bold) = match r {
                     Role::Text => (card.fg, false),
                     Role::Faint => (ui.virt.fg.or(card.fg), false),
                     Role::Key => (card.fg, true),
                 };
-                let style = Style { fg: fade(fg), bold, ..plain };
+                Style { fg: fade(fg), bold, ..plain }
+            };
+            for s in row {
+                let style = role(s.role);
                 if s.role == Role::Key {
                     apply(out, Style { bg: blend(cap, bg, a).or(cap).or(bg), ..style })?;
                     queue!(out, Print(format!(" {} ", s.text)))?;
@@ -11797,11 +11935,28 @@ fn draw_overlays(
                 let (a, y) = (x + pad, y0 + i);
                 let float = None;
                 let on = crate::whole::On::Overlay;
+                // (its spans' colours on its card — its text unchanged under the mouse: each as far as the whole goes on as
+                // it, the rest the last one's)
+                let mut pieces: Vec<(std::ops::Range<usize>, Style)> = Vec::new();
+                let mut at = 0;
+                for s in &o.rows[i] {
+                    let same = (text[at..].char_indices().zip(s.text.chars()))
+                        .find(|((_, a), b)| a != b)
+                        .map_or(s.text.len().min(text.len() - at), |((k, _), _)| k);
+                    pieces.push((at..at + same, role(s.role)));
+                    at += same;
+                    if same < s.text.len() {
+                        break;
+                    }
+                }
+                if let Some(last) = pieces.last_mut() {
+                    last.0.end = text.len();
+                }
                 let w = crate::whole::Whole {
                     on,
                     text,
                     style: plain,
-                    pieces: Vec::new(),
+                    pieces,
                     cols: (x, x + w),
                     state: None,
                     float,
@@ -14149,9 +14304,10 @@ fn draw_follow_card(
     if hovered.is_none() {
         let mut at = x0 + 3;
         for pair in bottom.split(|s| s.0 == " · ") {
-            let k = pair.first().map_or("", |s| s.0.as_str());
-            crate::kinds::hint(k, (at, y0 + h - 1));
-            if crate::wordspot::pressable(k, pair.get(1).map_or("", |s| s.0.as_str())) {
+            let (k, said) =
+                (pair.first().map_or("", |s| s.0.as_str()), pair.get(1).map_or("", |s| s.0.as_str()));
+            crate::kinds::hint(k, said, (at, y0 + h - 1));
+            if crate::wordspot::pressable(k, said) {
                 // (by what each key is, never where the keys are: the turn's own — `C-c stop`, `C-f` — the chat's; the
                 // ways in — `space l open the chat`, `[r replay` — typed in the code)
                 let home = if matches!(k, "C-c" | "C-f") { At::Chat } else { At::Code };
@@ -14859,7 +15015,7 @@ fn review_rail_need(editor: &Editor, r: &crate::codereview::CodeReview) -> usize
     }
     let st = Style::default();
     for (focus, drafts, high) in [(true, 0, false), (false, 0, false), (false, 9, false), (false, 0, true)] {
-        for row in review_rail_hints(&Ui::new(editor), (focus, turn, drafts, high), st, st, st) {
+        for row in review_rail_hints(&Ui::new(editor), (focus, turn, drafts, high), st, st) {
             need = need.max(row.iter().map(|s| s.text.width()).sum());
         }
     }
@@ -14950,16 +15106,13 @@ fn head_moved_row(h: &crate::snapshot::HeadMove, w: usize) -> Fit {
 }
 
 /// The review rail's key hints — with its keys, on Claude's turn, or a review's (`send n` with drafts; on a
-/// high-risk change not looked at, `h looked at` — `high`).
+/// high-risk change not looked at, `h looked at` — `high`: both plain faint words, `wordspot::COSTS`).
 fn review_rail_hints(
     ui: &Ui,
     (focus, turn, drafts, high): (bool, bool, usize, bool),
     key: Style,
     faint: Style,
-    accent: Style,
 ) -> Vec<Vec<crate::markdown::Span>> {
-    use crate::markdown::Span;
-    let sp = |text: &str, style: Style| Span { cut: None, hint: false, text: text.to_string(), style };
     let hint = |pairs: &[(&str, &str)]| hint_spans(ui, pairs, key, faint);
     // (`]g` a hunk, `]F` the next file — #49: `]g` stopped at each small change, and the next file had no
     // key)
@@ -14986,11 +15139,11 @@ fn review_rail_hints(
         let mut v =
             vec![walk(), hint(&[("space e", "files"), ("]u", "unviewed")]), hint(&[("space n", "comment")])];
         if drafts > 0 {
-            v.push(vec![sp("space v s", key), sp(&format!(" send {drafts}"), accent)]);
+            v.push(hint(&[("space v s", &format!("send {drafts}"))]));
             v.push(hint(&[("space v q", "end")]));
         } else if high {
             // (no `q end`: a high-risk change not looked at holds the end)
-            v.push(vec![sp("space v h", key), sp(" looked at", accent)]);
+            v.push(hint(&[("space v h", "looked at")]));
         } else {
             v.push(hint(&[("space v m", "viewed")]));
             v.push(hint(&[("space v q", "end")]));
@@ -15676,7 +15829,7 @@ fn draw_review_rail(
         })
     });
     let rail_keys = editor.workspace.is_at(At::Rail);
-    let hints = review_rail_hints(ui, (rail_keys, turn, drafts, high_here), key, faint, accent);
+    let hints = review_rail_hints(ui, (rail_keys, turn, drafts, high_here), key, faint);
     let fill = lay.body_h.saturating_sub(rows.len() + 1 + hints.len());
     rows.extend(std::iter::repeat_n((Vec::new(), card, None), fill));
     rows.push((Vec::new(), card, None));
@@ -17329,11 +17482,15 @@ fn draw_chat(
         if used + wd > w {
             break;
         }
-        apply(out, key)?;
+        // (a key that costs on a stray press — the turn undone, the screen along, a new conversation: plain faint words)
+        let hint = crate::wordspot::is_hint(k, d);
+        apply(out, if hint { key } else { faint })?;
         queue!(out, Print(k))?;
         apply(out, faint)?;
         queue!(out, Print(&what))?;
-        crate::kinds::hint(k, (text_x + used, y));
+        if hint {
+            crate::kinds::hint(k, d, (text_x + used, y));
+        }
         // (a pair pressed does its key — `wordspot.rs`: one a stray press can't cost)
         if crate::wordspot::pressable(k, d) {
             let mut spans = vec![(k.to_string(), key)];
@@ -18321,9 +18478,13 @@ fn cut_card(editor: &Editor, ui: &Ui, lay: &Layout, docked: bool, out: &mut Vec<
         None => y + 1 - n,
     };
     let card = card_style(ui, editor, "ui.popup");
-    let ground = match hand {
-        Some(_) => selected_row(ui, editor, card),
-        None => Style { bg: blend(card.bg, ui.tint, 1.0 - PEEK_STEP).or(card.bg), ..card },
+    // (the mouse's over a button it lit — a list's row, a toast, a peek, an overlay's row: the lit row continued, on its
+    // ground — a button that's cut is a button with its card)
+    let lit = ROW_LIT.with_borrow(|l| l.iter().find(|c| c.1 == y && c.0 >= a).map(|c| c.2));
+    let ground = match (hand, lit) {
+        (_, Some(bg)) => Style { bg: bg.or(card.bg), ..card },
+        (Some(_), None) => selected_row(ui, editor, card),
+        (None, None) => Style { bg: blend(card.bg, ui.tint, 1.0 - PEEK_STEP).or(card.bg), ..card },
     };
     let text = Style { bg: ground.bg, fg: w.style.fg.or(ground.fg), ..w.style };
     let faint = Style { fg: ui.linenr.fg.or(card.fg), ..ground };
@@ -19354,14 +19515,14 @@ fn chat_spans_at(
     (on, x, y, cols): (crate::whole::On, usize, usize, (usize, usize)),
 ) -> io::Result<usize> {
     let mut used = 0;
-    for s in spans {
+    for (i, s) in spans.iter().enumerate() {
         let text = fit(&s.text, w.saturating_sub(used));
         let st = base.patch(s.style);
         apply(out, st)?;
         queue!(out, Print(&text))?;
         crate::whole::placed(on, (&text, s.cut.as_deref()), (x + used, y), st, cols, None);
         if s.hint && text == s.text {
-            crate::kinds::hint(&text, (x + used, y));
+            crate::kinds::span_hint(spans, i, (x + used, y));
         }
         used += text.width();
     }
@@ -19376,11 +19537,11 @@ fn spans_placed(
     (on, x, y, cols): (crate::whole::On, usize, usize, (usize, usize)),
 ) {
     let mut used = 0;
-    for s in spans {
+    for (i, s) in spans.iter().enumerate() {
         let text = fit(&s.text, w.saturating_sub(used));
         crate::whole::placed(on, (&text, s.cut.as_deref()), (x + used, y), s.style, cols, None);
         if s.hint && text == s.text {
-            crate::kinds::hint(&text, (x + used, y));
+            crate::kinds::span_hint(spans, i, (x + used, y));
         }
         used += text.width();
     }
@@ -19411,12 +19572,10 @@ fn hint_spans(ui: &Ui, pairs: &[(&str, &str)], key: Style, faint: Style) -> Vec<
         if i > 0 {
             out.push(Span { cut: None, hint: false, text: "  ".into(), style: faint });
         }
-        out.push(Span {
-            cut: None,
-            hint: true,
-            text: k.to_string(),
-            style: Style { bold: true, fg: ui.hint_key.or(key.fg), ..key },
-        });
+        // (a pair whose key costs on a stray press, or that names no key: plain faint words — every hint is a button)
+        let hint = crate::wordspot::is_hint(k, v);
+        let style = if hint { Style { bold: true, fg: ui.hint_key.or(key.fg), ..key } } else { faint };
+        out.push(Span { cut: None, hint, text: k.to_string(), style });
         if !v.is_empty() {
             out.push(Span { cut: None, hint: false, text: format!(" {v}"), style: faint });
         }
@@ -19806,8 +19965,9 @@ fn draw_popup(
     lay: &Layout,
     out: &mut impl Write,
 ) -> io::Result<()> {
-    let rect = draw_float(lines, at, editor.popup_scroll, 20, ui, editor, lay, out)?;
-    editor.screen.popup.set(rect);
+    let drawn = draw_float(lines, at, editor.popup_scroll, 20, ui, editor, lay, out)?;
+    editor.screen.popup.set(drawn.map(|d| d.0));
+    editor.screen.popup_end.set(drawn.map(|d| d.1));
     Ok(())
 }
 
@@ -19889,12 +20049,13 @@ fn draw_float(
     editor: &Editor,
     lay: &Layout,
     out: &mut impl Write,
-) -> io::Result<Option<(usize, usize, usize, usize)>> {
+) -> io::Result<Option<(Rect4, usize)>> {
     let Some(g) = float_geom(lines, at, cap, ui, editor, lay) else { return Ok(None) };
     // Skip as far as scrolled, but stop at the last page (so more C-d doesn't give an empty box)
-    let skip = scroll.min(g.rows.len().saturating_sub(g.max_rows));
+    let end = g.rows.len().saturating_sub(g.max_rows);
+    let skip = scroll.min(end);
     draw_doc_box(&g.rows[skip..], (g.x0, g.y0), g.inner, g.max_rows, ui, editor, out)?;
-    Ok(Some(g.rect()))
+    Ok(Some((g.rect(), end)))
 }
 
 fn dim_style(ui: &Ui, editor: &Editor) -> Style {
@@ -19921,12 +20082,12 @@ fn draw_doc_box(
         apply(out, popup)?;
         queue!(out, MoveTo(x0 as u16, (y0 + 1 + i) as u16), Print("  "))?;
         let mut used = 0;
-        for sp in spans {
+        for (k, sp) in spans.iter().enumerate() {
             let text = fit(&sp.text, inner - used);
             apply(out, popup.patch(sp.style))?;
             queue!(out, Print(&text))?;
             if sp.hint && text == sp.text {
-                crate::kinds::hint(&text, (x0 + 2 + used, y0 + 1 + i));
+                crate::kinds::span_hint(spans, k, (x0 + 2 + used, y0 + 1 + i));
             }
             used += text.width();
             if used >= inner {
@@ -20206,7 +20367,6 @@ fn draw_conflict_card(
         || !editor.pending.is_empty();
     let Some((i, c)) = editor.conflict_here().filter(|_| !busy) else { return Ok(false) };
     let n = editor.doc().conflicts.len();
-    let key = Style { fg: ui.accent.fg, bold: true, ..Style::default() };
     let faint = Style { fg: ui.linenr.fg, ..Style::default() };
     let plain = Style::default();
     // Each side in its wash's color, so the card reads as a legend
@@ -20227,13 +20387,14 @@ fn draw_conflict_card(
         },
         Line::Text {
             spans: vec![
-                sp("space g o".into(), key),
+                // (what a stray press would cost — a side of the conflict taken: plain faint words, never hints)
+                sp("space g o".into(), faint),
                 sp(format!(" {}", side(&c.ours, "ours")), ours_st),
                 sp("  ".into(), faint),
-                sp("t".into(), key),
+                sp("t".into(), faint),
                 sp(format!(" {}", side(&c.theirs, "theirs")), theirs_st),
                 sp("  ".into(), faint),
-                sp("a".into(), key),
+                sp("a".into(), faint),
                 sp(" both".into(), plain),
             ],
             indent: 2,
@@ -22837,6 +22998,117 @@ mod tests {
         let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
     }
 
+    /// A row under the pointer costs a frame little (piece B's review, #4): the side panel's files beside a 2,000-line file,
+    /// `j`/`k` a frame (each frame another) — key → frame → what goes to the terminal, the pointer on a file's row and
+    /// on the code; both medians and the difference said for `cargo perf`.
+    #[test]
+    fn perf_frames_with_a_row_under_the_pointer() {
+        if crate::test_results::unoptimized("term::tests::perf_frames_with_a_row_under_the_pointer") {
+            return;
+        }
+        let dir = crate::scratch::Scratch::new("perf-hover-row");
+        let path = dir.join("a.rs");
+        let text: String =
+            (0..2_000).map(|i| format!("fn f{i}() {{ let x = {i}; }} // line {i}\n")).collect();
+        std::fs::write(&path, &text).unwrap();
+        let (w, h) = (200u16, 50u16);
+        let mut ed = Editor::new(Config::default());
+        ed.open(&path).unwrap();
+        let files = (0..60).map(|i| format!("src/file_{i}.rs")).collect();
+        ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(dir.to_path_buf(), files));
+        ed.workspace.viewer.at = At::Code;
+        ed.goto_line(10);
+        let mut buf = Vec::with_capacity(1 << 16);
+        render(&mut ed, &mut buf, w, h).unwrap();
+        let row = (1..h as usize - 2).find(|&y| !crate::wordspot::row_lit(&ed, 4, y).is_empty());
+        let row = row.expect("a file's row in the side panel");
+        let code = (w as usize - 20, 10);
+        assert!(crate::wordspot::row_lit(&ed, code.0, code.1).is_empty(), "the code lights no row");
+        let mut screen = crate::screen::Screen::new();
+        let mut run = |ed: &mut Editor, (x, y): (usize, usize)| {
+            ed.handle_event(crate::event::Event::Hover(x as u16, y as u16));
+            let mut frames = Vec::new();
+            for i in 0..300 {
+                ed.handle_event(crate::event::Event::Key(
+                    (if i % 2 == 0 { "j" } else { "k" }).parse().unwrap(),
+                ));
+                buf.clear();
+                let t = Instant::now();
+                render(ed, &mut buf, w, h).unwrap();
+                std::hint::black_box(present(&mut screen, ed, &buf, w, h));
+                frames.push(t.elapsed());
+            }
+            frames.sort();
+            frames[frames.len() / 2]
+        };
+        // (each its best of 3 — the first run in a process also pays the clock ramping up)
+        let on_row = (0..3).map(|_| run(&mut ed, (4, row))).min().unwrap();
+        assert!(!ed.row_hover.borrow().is_empty(), "the row was lit");
+        let on_code = (0..3).map(|_| run(&mut ed, code)).min().unwrap();
+        let us = |d: Duration| d.as_secs_f64() * 1e6;
+        for (name, v) in [
+            ("frame_row_under_pointer_us", us(on_row)),
+            ("frame_no_row_under_pointer_us", us(on_code)),
+            ("frame_row_under_pointer_extra_us", us(on_row) - us(on_code)),
+        ] {
+            let line = format!("PERF {name} {v:.1} budget=16000 noise=20\n");
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+        }
+    }
+
+    /// Work budget (piece B's review, #4): a row under the pointer adds its own cells to a frame, never the frame read
+    /// again. The bytes read into cells for a frame and its trip to the terminal (`screen::PARSED`) are the frame's, once,
+    /// lit or not; what a press lands on (`mouse::ASKED`) is asked once a cell of the lit row more than with nothing lit;
+    /// and a move of the pointer within the row asks a few, whatever its width.
+    #[test]
+    fn a_row_under_the_pointer_reads_no_frame_again() {
+        use crate::{mouse::ASKED, screen::PARSED};
+        let dir = crate::scratch::Scratch::new("hover-row-work");
+        let path = dir.join("a.rs");
+        std::fs::write(&path, (0..300).map(|i| format!("fn f{i}() {{}}\n")).collect::<String>()).unwrap();
+        let (w, h) = (160u16, 40u16);
+        let mut ed = Editor::new(Config::default());
+        ed.open(&path).unwrap();
+        let files = (0..30).map(|i| format!("src/file_{i}.rs")).collect();
+        ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(dir.to_path_buf(), files));
+        ed.workspace.viewer.at = At::Code;
+        let mut screen = crate::screen::Screen::new();
+        let mut buf = Vec::new();
+        let mut frame = |ed: &mut Editor, key: &str| {
+            ed.handle_event(crate::event::Event::Key(key.parse().unwrap()));
+            buf.clear();
+            PARSED.set(0);
+            ASKED.set(0);
+            render(ed, &mut buf, w, h).unwrap();
+            let out = present(&mut screen, ed, &buf, w, h).len();
+            assert!(out > 0, "the frame changed: something went out");
+            (PARSED.get(), ASKED.get(), buf.len())
+        };
+        frame(&mut ed, "j");
+        let row =
+            (1..h as usize - 2).find(|&y| !crate::wordspot::row_lit(&ed, 4, y).is_empty()).expect("a row");
+        let code = (w as usize - 20, 10);
+        ed.handle_event(crate::event::Event::Hover(code.0 as u16, code.1 as u16));
+        let (read, asked, len) = frame(&mut ed, "k");
+        assert_eq!(read, len, "nothing lit: the frame read once, by what goes out");
+        ed.handle_event(crate::event::Event::Hover(4, row as u16));
+        let (lit_read, lit_asked, lit_len) = frame(&mut ed, "j");
+        let cells: usize = ed.row_hover.borrow().iter().map(|r| r.2 - r.1).sum();
+        assert!(cells > 4, "a row lit: {:?}", ed.row_hover.borrow());
+        assert_eq!(lit_read, lit_len, "a row lit: the frame read once still, its light with it");
+        assert!(lit_asked <= asked + cells + 4, "asked {lit_asked} lit against {asked} ({cells} cells lit)");
+        // (a move within the lit row, on the same thing: a few asks, no frame)
+        let (a, b) = {
+            let r = ed.row_hover.borrow()[0];
+            (r.1, r.2)
+        };
+        for x in [a, b - 1] {
+            ASKED.set(0);
+            ed.handle_event(crate::event::Event::Hover(x as u16, row as u16));
+            assert!(ASKED.get() <= 8, "a move to {x} asked {}", ASKED.get());
+        }
+    }
+
     /// A review's grades cost a frame little: 46 files, each with 20 graded changes of 10 lines (a few high, one
     /// looked at), the rail drawn — its rows ask every file's grades several times a frame (`rail_risk`, each
     /// row's mark). Medians of 300 frames, graded and not, both said for `cargo perf`.
@@ -25392,6 +25664,33 @@ mod tests {
             assert!(s.width() <= room, "{room}: {s}");
             assert!(s.ends_with("space v h") || room < "high · space v h".width(), "{room}: {s}");
         }
+    }
+
+    /// The rail's `space v s send N` (a Claude turn started) and `space v h looked at` (the high-risk gate, pressed on
+    /// purpose) are plain faint words, never hints — a stray click can't send the review nor look at a change (piece B
+    /// round 2, the user 2026-10-29); `space v q end` beside the first stays a hint.
+    #[test]
+    fn the_rails_send_and_look_are_faint_words() {
+        let ed = Editor::new(Config::default());
+        let ui = Ui::new(&ed);
+        let (key, faint) =
+            (Style { bold: true, ..Style::default() }, Style { dim: true, ..Style::default() });
+        let pairs = |drafts, high| {
+            let rows = review_rail_hints(&ui, (false, false, drafts, high), key, faint);
+            rows.into_iter()
+                .flatten()
+                .map(|s| (s.text.trim().to_string(), s.hint, s.style))
+                .collect::<Vec<_>>()
+        };
+        for (drafts, high, k, said) in
+            [(2, false, "space v s", "send 2"), (0, true, "space v h", "looked at")]
+        {
+            let spans = pairs(drafts, high);
+            let at = spans.iter().position(|s| s.0 == k).unwrap_or_else(|| panic!("{k} drawn: {spans:?}"));
+            assert_eq!((spans[at].1, spans[at].2), (false, faint), "{k}: no hint, faint");
+            assert_eq!((spans[at + 1].0.as_str(), spans[at + 1].2), (said, faint), "{k}: its words faint");
+        }
+        assert!(pairs(2, false).iter().any(|s| s.0 == "space v q" && s.1), "space v q end stays a hint");
     }
 
     /// A turn's HEAD move is one row of the review rail at any width it can have (#225: wrapped, its id

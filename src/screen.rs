@@ -139,11 +139,27 @@ impl Grid {
     /// Draw `frame` over what's there. None: it has something this doesn't read (the grid is then partly
     /// drawn — the caller throws it away).
     fn apply(&mut self, frame: &[u8]) -> Option<()> {
-        let (mut pos, mut style, mut visible) = (None::<(usize, usize)>, PLAIN, self.cursor.is_some());
+        let mut pen = Pen { pos: None, style: PLAIN, visible: self.cursor.is_some() };
+        self.feed(frame, 0, &mut pen)?;
+        self.finish(&pen)
+    }
+
+    /// The cursor where the frame left it.
+    fn finish(&mut self, pen: &Pen) -> Option<()> {
+        self.cursor = if pen.visible { Some(pen.pos.filter(|&(x, _)| x < self.w)?) } else { None };
+        Some(())
+    }
+
+    /// Draw `frame` — the part of one from byte `from` on — over what's there, the cursor and style where `pen` left
+    /// them (and kept there for the part after it).
+    fn feed(&mut self, frame: &[u8], from: usize, pen: &mut Pen) -> Option<()> {
+        #[cfg(test)]
+        PARSED.set(PARSED.get() + frame.len());
+        let Pen { mut pos, mut style, mut visible } = *pen;
         let mut i = 0;
         while i < frame.len() {
             let b = frame[i];
-            self.at = i;
+            self.at = from + i;
             if b == 0x1b {
                 if frame.get(i + 1) != Some(&b'[') {
                     return None;
@@ -246,8 +262,70 @@ impl Grid {
             pos = Some((x, y)); // (x = w: at the edge — more text would wrap, and is refused above)
             i = end;
         }
-        self.cursor = if visible { Some(pos.filter(|&(x, _)| x < self.w)?) } else { None };
+        *pen = Pen { pos, style, visible };
         Some(())
+    }
+}
+
+/// Where a frame's reading is: the cursor and the style its escapes set so far — kept between the two parts of a
+/// frame read in two (`Drawn`).
+#[derive(Clone, Copy, Debug)]
+struct Pen {
+    pos: Option<(usize, usize)>,
+    style: Style,
+    visible: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The frame's bytes read into cells since the test set it to 0 — a work budget's count
+    /// (`term::tests::a_row_under_the_pointer_reads_no_frame_again`).
+    pub static PARSED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A frame read into cells while it's drawn (`term::light_rows`: a lit row's cells as drawn so far) — its reading
+/// carried on by `Screen::present` from where it stopped, so a frame is read once, whoever reads it.
+pub struct Drawn {
+    grid: Grid,
+    pen: Pen,
+    /// Bytes of the frame read so far.
+    upto: usize,
+}
+
+impl Drawn {
+    /// The first `frame.len()` bytes of a `w`×`h` frame read. None: a frame this doesn't read.
+    pub fn read(frame: &[u8], w: u16, h: u16) -> Option<Drawn> {
+        let mut grid = Grid::new(w as usize, h as usize);
+        // (each cell's last write kept: what this frame didn't draw stays as the terminal shows it — `present`)
+        grid.writes = Some(vec![usize::MAX; grid.w * grid.h]);
+        let mut pen = Pen { pos: None, style: PLAIN, visible: false };
+        grid.feed(frame, 0, &mut pen)?;
+        Some(Drawn { grid, pen, upto: frame.len() })
+    }
+
+    /// The cell at (`x`, `y`) as drawn so far: its text and style. None: off the frame, or a wide character's right half.
+    pub fn cell(&self, x: usize, y: usize) -> Option<(&str, crate::theme::Style)> {
+        let c = (x < self.grid.w && y < self.grid.h).then(|| &self.grid.cells[y * self.grid.w + x])?;
+        if c.width == 0 {
+            return None;
+        }
+        let colour = |c: Color| match c.0 {
+            [0, ..] => None,
+            [1, n, ..] => Some(crossterm::style::Color::AnsiValue(n)),
+            [_, r, g, b] => Some(crossterm::style::Color::Rgb { r, g, b }),
+        };
+        let s = c.style;
+        let style = crate::theme::Style {
+            fg: colour(s.fg),
+            bg: colour(s.bg),
+            bold: s.attrs & BOLD != 0,
+            dim: s.attrs & DIM != 0,
+            italic: s.attrs & ITALIC != 0,
+            underline: s.underline != 0,
+            reversed: s.attrs & REVERSE != 0,
+            ..crate::theme::Style::default()
+        };
+        Some((std::str::from_utf8(c.text()).unwrap_or(" "), style))
     }
 }
 
@@ -509,7 +587,20 @@ impl Screen {
 
     /// What to write for `frame`, drawn for a `w`×`h` terminal: what changed — everything after
     /// `invalidate` — or the frame itself when it can't be read. Empty when nothing changed.
+    #[cfg(test)]
     pub fn present<'a>(&'a mut self, frame: &'a [u8], w: u16, h: u16) -> &'a [u8] {
+        self.present_drawn(frame, w, h, None)
+    }
+
+    /// `present`, the frame's first part already read while it was drawn (`drawn`, `term::light_rows`): read on from
+    /// there, never again from its start.
+    pub fn present_drawn<'a>(
+        &'a mut self,
+        frame: &'a [u8],
+        w: u16,
+        h: u16,
+        drawn: Option<Drawn>,
+    ) -> &'a [u8] {
         let (w, h) = (w as usize, h as usize);
         if (w, h) != (self.shown.w, self.shown.h) {
             self.shown = Grid::new(w, h);
@@ -520,8 +611,29 @@ impl Screen {
         }
         self.last.clear();
         self.last.extend_from_slice(frame);
-        self.next.clone_from(&self.shown);
-        let read = w > 0 && h > 0 && self.next.apply(frame).is_some();
+        let drawn = drawn.filter(|d| (d.grid.w, d.grid.h) == (w, h) && d.upto <= frame.len());
+        let read = w > 0
+            && h > 0
+            && match drawn {
+                Some(Drawn { grid, mut pen, upto }) => {
+                    self.next = grid;
+                    let read =
+                        self.next.feed(&frame[upto..], upto, &mut pen).and_then(|_| self.next.finish(&pen));
+                    // (what the frame didn't draw: as the terminal shows it, as a frame read over it whole leaves it)
+                    if let Some(writes) = self.next.writes.take() {
+                        for (i, at) in writes.into_iter().enumerate() {
+                            if at == usize::MAX {
+                                self.next.cells[i] = self.shown.cells[i];
+                            }
+                        }
+                    }
+                    read.is_some()
+                }
+                None => {
+                    self.next.clone_from(&self.shown);
+                    self.next.apply(frame).is_some()
+                }
+            };
         if !read {
             if !self.warned {
                 self.warned = true;

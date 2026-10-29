@@ -478,8 +478,9 @@ fn the_follow_cards_keys_are_homed_by_what_they_are() {
     }
 }
 
-/// The pressable hints are named, not every pair whose key parses: the idle chat's foot has `enter send` as a word and
-/// never `C-l new` (a new conversation by a stray click) nor `C-z undo turn`, `C-s screen`, `C-o point`.
+/// Every hint is a word but the pairs whose key costs (piece B, the user 2026-10-29): the idle chat's foot has `enter
+/// send` and `C-o point` as words and never `C-l new` (a new conversation by a stray click) nor `C-z undo turn`, `C-s
+/// screen` — those are drawn as plain faint words, no hint.
 #[test]
 fn only_named_hints_are_words() {
     let mut ed = editor();
@@ -495,13 +496,106 @@ fn only_named_hints_are_words() {
             .iter()
             .any(|s| s.on == Surface::Chat && s.press == Press::Keys(k.into()))
     };
-    assert!(on_chat(&ed, "enter"), "enter send");
+    assert!(on_chat(&ed, "enter") && on_chat(&ed, "C-o"), "enter send, C-o point");
     let text = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
     assert!(text.contains("C-l new") && text.contains("C-o point"), "the foot shows them: {text}");
-    for k in ["C-l", "C-z", "C-s", "C-o"] {
+    for k in ["C-l", "C-z", "C-s"] {
         assert!(!on_chat(&ed, k), "{k} is no word");
+        assert!(!ed.screen.hints.borrow().iter().any(|h| h.key == k), "{k} is no hint");
     }
     assert!(pressable("enter", "send") && pressable("C-c", " stop") && !pressable("C-l", "new"));
+    assert!(!crate::wordspot::is_hint("type", "narrow") && crate::wordspot::is_hint("j k", "files"));
+    // (round 2: the review's send and the high-risk look, whatever they say — the rail's and a note card's alike)
+    for (k, said) in [("space v s", "send 3"), ("space v s", "send the review"), ("space v h", "looked at")] {
+        assert!(!crate::wordspot::is_hint(k, said) && !pressable(k, said), "{k} {said}");
+    }
+    // (round 2's review: the rail's `viewed` drawn as a hint is a button — the look and the press one list)
+    assert!(crate::wordspot::is_hint("space v m", "viewed") && pressable("space v m", "viewed"));
+    // (round 3, the user 2026-10-29: by the key, not its spelling; a way out before a button's keys; the costs, past
+    // a way out too; what names no key plain words)
+    use crate::wordspot::is_hint;
+    for (k, said) in
+        [("ret", "logs"), ("minus", "fold"), ("esc esc space I", "answer card"), ("s u", "stage")]
+    {
+        assert!(is_hint(k, said), "{k} {said}");
+    }
+    assert!(pressable("ret", "logs") && pressable("esc :chat-point", "") && pressable("↑", "edit queued"));
+    for (k, said) in [
+        ("d", "take it back"),
+        ("d", "end"),
+        ("C", "Claude drafts"),
+        ("esc :chat-screen", ""),
+        ("esc esc :chat-screen", ""),
+        ("s", "stop"),
+        ("click", "keys"),
+        ("alt+drag", "select"),
+    ] {
+        assert!(!is_hint(k, said) && !pressable(k, said), "{k} {said}: plain words");
+    }
+}
+
+/// A hint whose keys neither list names fails where it's drawn, in any test (round 2's review): drawn by a pair's look
+/// (`is_hint` — `hint_spans`, the status line, the chat's foot) …
+#[test]
+#[should_panic(expected = "in neither `wordspot::BUTTONS` nor `COSTS`")]
+fn a_pair_whose_keys_no_list_names_fails_where_its_drawn() {
+    crate::wordspot::is_hint("C-k", "kill");
+}
+
+/// … or printed bold by hand (a top line, a card's bottom line: `kinds::pair`).
+#[test]
+#[should_panic(expected = "but a press does nothing")]
+fn a_hint_printed_whose_press_does_nothing_fails_where_its_drawn() {
+    crate::kinds::hint("C-k", "kill", (0, 0));
+}
+
+/// … and one printed by hand whose pair costs (round 3's review: the follow card's bottom line, a pane's line call
+/// `kinds::hint` without `is_hint`).
+#[test]
+#[should_panic(expected = "it costs on a stray press")]
+fn a_hint_printed_whose_pair_costs_fails_where_its_drawn() {
+    // (a button's key, `s`, whose pair costs: `:procs`' stop)
+    crate::kinds::hint("s", "stop", (0, 0));
+}
+
+/// A hint recorded whose pair costs is never made a button, whatever printed it (`kinds::buttons` — round 3's review):
+/// `:procs`' `s stop` on the status line gets no press (`s` a button's key: `s u stage`), `j move` beside it does.
+#[test]
+fn a_costly_pair_recorded_is_no_button() {
+    let mut ed = editor();
+    frame(&mut ed);
+    let y = ed.screen.height.expect("the status line drawn");
+    let hint = |key: &str, said: &str, from: usize| crate::kinds::Hint {
+        y,
+        from,
+        to: from + key.len(),
+        key: key.into(),
+        what: 1 + said.len(),
+        said: said.into(),
+    };
+    ed.screen.hints.borrow_mut().extend([hint("s", "stop", 40), hint("j", "move", 60)]);
+    crate::kinds::settle(&ed);
+    let pressed = |k: &str| ed.screen.word_spots.borrow().iter().any(|s| s.press == Press::Keys(k.into()));
+    assert!(pressed("j"), "j move: a button");
+    assert!(!pressed("s"), "s stop: no button");
+}
+
+/// A plugin panel's own keys are plain faint words, never a hint nor a press — one with nothing after it too (round 3's
+/// review: `q` alone became a working hint, its press the plugin's act).
+#[test]
+fn a_plugin_panels_own_keys_are_never_hints() {
+    let mut ed = editor();
+    ed.plugin_panel_stand_in_with(3, &[("q", ""), ("ret", ""), ("C-k", ""), ("d", "delete"), ("j", "down")]);
+    frame(&mut ed);
+    let text = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), 120, 40).unwrap();
+    assert!(text.contains("q  enter  C-k  d delete  j down"), "its keys drawn: {text}");
+    let on_line = |x: usize, y: usize| ed.mouse_at(x, y).surface == Surface::SlotLine;
+    for k in ["q", "enter", "C-k", "d", "j"] {
+        let hint = ed.screen.hints.borrow().iter().any(|h| h.key == k && on_line(h.from, h.y));
+        let spot = (ed.screen.word_spots.borrow().iter())
+            .any(|s| s.on == Surface::SlotLine && s.press == Press::Keys(k.into()));
+        assert!(!hint && !spot, "{k}: no hint, no press");
+    }
 }
 
 /// To the chat's input a word sends a chord, `enter` or `esc` only — letters would be typed into the draft: refused and

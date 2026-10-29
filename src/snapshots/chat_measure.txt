@@ -90,7 +90,7 @@
 25                                                                                                                                                 a
 26                                                                                                                                                 a  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 27                                                                                                                                                 a  A fff fffff ffffffff
-28                                                                                                                                                 a  DDDDD ffff  DDD ffffff  DDD fffff  DDD ffffff  DDD fffff  DDD ffff  DDD fff  DDD ffffffff
+28                                                                                                                                                 a  DDDDD ffff  DDD ffffff  DDD fffff  fff ffffff  DDD fffff  DDD ffff  fff fff  DDD ffffffff
 29  a TTTT                                                                                                                                                                                                                  dddd   ddddd dd   TTT
 ## legend
 bg: c=ui.cursorline.primary

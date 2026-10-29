@@ -152,6 +152,59 @@ fn a_press_on_a_panels_line_gives_it_the_keys_and_a_name_there_drags_the_line() 
     assert_eq!((ed.screen.bottom_h, ed.sizes.bottom), (h + 3, Some(h as u16 + 3)), "dragged from its name");
 }
 
+/// A tab pressed on the slot's line (#216, `Editor::slot_press`): the one in front already gives the slot the keys, as
+/// one behind does; with the keys there already they stay as they were, the tab in front; a docked group's panel gives
+/// them to its own pane, never to the slot's other tab.
+#[test]
+fn a_press_on_the_tab_in_front_gives_the_slot_the_keys() {
+    use crate::sizes::Slot;
+    let two_tabs = || {
+        let mut ed = editor();
+        crate::uistate::tests::task_panel(&mut ed);
+        let lines = (0..20).map(|i| format!("output line {i}")).collect();
+        ed.workspace.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), lines));
+        ed.workspace.viewer.at = At::Code;
+        frame(&mut ed);
+        ed
+    };
+    let front_tab = |ed: &Editor| {
+        let front = ed.slot_shown().expect("a panel in front");
+        let tabs = ed.screen.slot_tabs.borrow();
+        (front, tabs.iter().find(|t| t.3 == front).map(|t| (t.1, t.0)).expect("its tab"))
+    };
+    // The tab in front, the keys in the code
+    let mut ed = two_tabs();
+    assert_eq!(ed.screen.slot_tabs.borrow().len(), 2, "two tabs");
+    let (front, (x, y)) = front_tab(&ed);
+    press(&mut ed, x, y);
+    assert!(ed.bottom_has_keys(), "the slot's keys — {:?}", ed.workspace.viewer.at);
+    assert_eq!(ed.slot_shown(), Some(front), "its tab still in front");
+    // The keys there already: they stay
+    let mut ed = two_tabs();
+    ed.bottom_take_keys();
+    frame(&mut ed);
+    let at = ed.workspace.viewer.at;
+    let (front, (x, y)) = front_tab(&ed);
+    press(&mut ed, x, y);
+    assert_eq!((ed.workspace.viewer.at, ed.slot_shown()), (at, Some(front)), "as they were");
+    // A docked group: its own pane's keys, not the task's tab left in the slot
+    let mut ed = editor();
+    crate::uistate::tests::task_panel(&mut ed);
+    crate::uistate::tests::tests_group_list(&mut ed);
+    frame(&mut ed);
+    ed.dock(crate::pane::GroupKind::Tests, crate::pane::Side::Right);
+    ed.workspace.viewer.at = At::Code;
+    frame(&mut ed);
+    assert!(ed.slot_docked(Slot::Test), "docked");
+    ed.slot_press(Slot::Test);
+    frame(&mut ed);
+    assert!(
+        ed.slot_in_hand().is_some() && !ed.workspace.is_at(At::Slot),
+        "the docked group's keys — {:?}",
+        ed.workspace.viewer.at
+    );
+}
+
 /// A line pressed whose release never came (a pane switch mid-press): the next press is its own — the code's cursor
 /// where it landed, the line let go, nothing kept, said or given the keys.
 #[test]

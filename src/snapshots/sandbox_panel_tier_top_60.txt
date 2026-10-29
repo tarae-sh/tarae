@@ -73,7 +73,7 @@
 20
 21
 22
-23  a TTTTTT   DDDDD ffffff  DDDD ffffff  DDD fffff       TTT
+23  a TTTTTT   DDDDD ffffff  ffff ffffff  DDD fffff       TTT
 ## legend
 bg: 
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  B=bold

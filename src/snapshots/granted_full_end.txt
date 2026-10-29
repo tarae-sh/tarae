@@ -151,7 +151,7 @@
 46  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa f  fffffffffffffffffffffffffffffffffff
 47                                                             f  f fff fffff ffffffff
 48                                                             f  DDDDD D fffff  DDDDD D fffff
-49  a TTTTTT   D ffff ff ffff  D D ffff  DDD fffff                              dddd   ddddd dd   TTT
+49  a TTTTTT   f ffff ff ffff  D D ffff  DDD fffff                              dddd   ddddd dd   TTT
 ## legend
 bg: P=ui.menu.selected
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr

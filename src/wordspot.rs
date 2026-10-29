@@ -76,6 +76,12 @@ impl Spot {
 /// (`j k`, `[r ]r`: each its own), a word (`type`). A sequence after a prefix (`space l`, `C-w j`), a motion's pair
 /// (`[r`), an arrow (`↑`), a `:` command (typed, then `enter`).
 pub fn keys(said: &str) -> Option<Vec<Key>> {
+    // (a way out first — `esc esc space I`, zellij's twin of `C-q` from the chat's input: the `esc`s, then the keys)
+    let (out, rest) = way_out(said);
+    if out > 0 {
+        let esc: Key = "esc".parse().ok()?;
+        return Some(std::iter::repeat_n(esc, out).chain(keys(rest)?).collect());
+    }
     let plain = |c: char| Key::plain(Code::Char(c));
     if let Some(cmd) = said.strip_prefix(':').filter(|c| !c.is_empty() && !c.contains(char::is_whitespace)) {
         let enter: Key = "enter".parse().ok()?;
@@ -103,21 +109,40 @@ pub fn keys(said: &str) -> Option<Vec<Key>> {
     Some(out)
 }
 
+/// A hint's keys as its way out — the `esc`s before them (`esc esc space I`, `esc :chat-point`: out of the chat's input
+/// and its view first, as zellij's twins say them) — and what's pressed after it. `esc` alone is no way out.
+fn way_out(said: &str) -> (usize, &str) {
+    let (mut out, mut rest) = (0, said.trim());
+    // (`esc` then a blank — written apart, as the esc hints' scan reads a literal one as a hint's word)
+    while let Some(r) = rest.strip_prefix("esc").and_then(|r| r.strip_prefix(' ')) {
+        (out, rest) = (out + 1, r.trim_start());
+    }
+    (out, rest)
+}
+
 /// A press on word `i` of the frame last drawn: what it does.
 pub fn press(ed: &mut Editor, i: usize) {
     let spot = ed.screen.word_spots.borrow().get(i).map(|s| (s.on, s.press.clone(), s.home));
     let Some((on, p, home)) = spot else { return };
     match p {
         Press::Keys(said) => {
-            // (a sequence under way: ended on the press's Down, before this — `handle_mouse`, `Editor::sequence_end`)
-            if let Some(why) = refused(ed, home) {
+            // (a sequence under way: ended on the press's Down, before this — `handle_mouse`, `Editor::sequence_end`; the
+            // status line's keys are what's open's — a picker's, a prompt's, completion's — in whatever mode)
+            if let Some(why) = refused(ed, home).filter(|_| on != Surface::Status) {
                 return ed.set_status(format!("{why}: esc first — a word presses {said} in normal mode"));
             }
-            // (the chat's input types what it's given: there only a chord, `enter` or `esc` — never letters into the draft)
-            let typed = |k: &Key| !(k.ctrl || k.alt || matches!(k.code, Code::Enter | Code::Esc));
+            // (the chat's input types what it's given: there only a chord, `enter`, `esc` or `backspace` — the take-off
+            // of what goes with it, shown only while the draft is empty —, never letters into the draft)
+            // (a character is typed; a chord, `enter`, `esc`, an arrow — `↑ edit queued` — aren't; past a way out
+            // — `esc esc space I` — nothing is typed into the draft)
+            let typed = |k: &&Key| matches!(k.code, Code::Char(_)) && !(k.ctrl || k.alt);
             if home == Some(At::Chat)
                 && !crate::chatdoc::keyed(ed)
-                && keys(&said).unwrap_or_default().iter().any(typed)
+                && keys(&said)
+                    .unwrap_or_default()
+                    .iter()
+                    .take_while(|k| k.code != Code::Esc)
+                    .any(|k| typed(&k))
             {
                 return ed.set_status(format!(
                     "{said} would be typed into the chat's draft — a word presses a chord, enter or esc there"
@@ -132,6 +157,13 @@ pub fn press(ed: &mut Editor, i: usize) {
             {
                 ed.focus_pane(id);
             }
+            // (a floating frame's: that frame given the keys, as a press on it gives them — they stay; one moving by
+            // `C-w m` keeps its move's)
+            if let Surface::Float(kind) | Surface::Floatlist(kind) = on
+                && ed.float_moving != Some(kind)
+            {
+                ed.float_focus(kind);
+            }
             if let Some(h) = home.filter(|&h| !ed.workspace.is_at(h)) {
                 ed.workspace.viewer.at = h;
             }
@@ -144,7 +176,8 @@ pub fn press(ed: &mut Editor, i: usize) {
             // where they were. A pane's line is F's rule, a press gives the keys to what it lands on: that pane focused,
             // the keys there, they stay (`enter go there` goes there)
             // (one that closed where it was lent — the slot's `close` — gives them back too: nothing's there to keep them)
-            let lent = there != (was_at, was_focus) && !matches!(on, Surface::PaneTop(_));
+            let lent = there != (was_at, was_focus)
+                && !matches!(on, Surface::PaneTop(_) | Surface::Float(_) | Surface::Floatlist(_));
             let gone = home.is_some_and(|h| !standing(ed, h));
             if lent && ((ed.workspace.viewer.at, ed.workspace.viewer.focus) == there || gone) {
                 if ed.workspace.viewer.focus != was_focus {
@@ -199,49 +232,169 @@ fn standing(ed: &Editor, at: At) -> bool {
     }
 }
 
-/// The key hints a press does, by what they say they do (a remapped key moves only the key): the ways somewhere — the
-/// chat, the code, a view, the slot's way in, a run's output, its failure, its latest, a place —, `enter send` and
-/// `queue`, stop, a run's own (again, close), follow, the card waiting, full screen and back, replay. Never one that
-/// costs on a stray click: a new conversation (`C-l new`), a turn undone, a change applied, the screen or a point sent,
-/// what goes with a message taken off.
-const PRESSABLE: &[&str] = &[
-    "focus",
-    "open the chat",
-    "close",
-    "code",
-    "normal",
-    "view",
-    "type",
-    "scroll",
-    "send",
-    "queue",
-    "stop",
-    "stop it",
-    "again",
-    "output",
-    "failure",
-    "latest",
-    "go to it",
-    "go there",
-    "next",
-    "list",
-    "replay",
-    "replay what it did",
-    "follow",
-    "unfollow",
-    "answer card",
-    "full screen",
-    "back",
+/// The pairs whose key costs on a stray press (the user, 2026-10-29, piece B): the whole turn undone, the review's
+/// changes undone, a discard, the screen sent with the message, a new conversation — by what they say they do (a
+/// remapped key moves only the key), and the key where the word alone means another thing (`o new` is a session, a
+/// card asks first); `*` the key whatever it says (round 2, the user 2026-10-29: `space v s` sends the review's notes —
+/// a Claude turn started, as `C-s screen`'s; `space v h` is the high-risk gate, a look a person presses on purpose,
+/// never a stray click). Round 3 (the user 2026-10-29): `d` whatever it says (a discard, a session ended, a folder
+/// removed, a change taken back), a Claude draft started (`C Claude drafts`, a paid turn), `:chat-screen` (the screen
+/// sent, as `C-s screen`), and `:procs`' `s stop` and `s drop` (a server stopped, a queued run dropped). Matched past a
+/// way out (`esc :chat-screen`: `way_out`). Drawn as plain faint words, never a hint (`is_hint`); a conflict's ours,
+/// theirs and both too (drawn by hand: `term::draw_conflict_card`).
+const COSTS: &[(Option<&str>, &str)] = &[
+    (None, "undo turn"),
+    (None, "undo the whole turn"),
+    (Some("space v u"), "undo"),
+    (None, "discard"),
+    (None, "screen"),
+    (None, "Claude drafts"),
+    (Some("C-l"), "new"),
+    (Some("d"), "*"),
+    (Some("s"), "stop"),
+    (Some("s"), "drop"),
+    (Some(":chat-screen"), "*"),
+    (Some("space v s"), "*"),
+    (Some("space v h"), "*"),
 ];
 
-/// Whether a key hint — its key as written and what it says it does — is a word that does its key: one sequence
-/// (`keys`), its meaning one a stray press can't cost (`PRESSABLE`).
+/// The keys a hint draws as a button (piece B, the user 2026-10-29) — with `COSTS`, the pairs drawn as plain words, the
+/// two name every key a hint draws: one in neither is no button (`pressable`, `kinds::buttons`) and the kinds walk names
+/// it (`mouse::tests::walk::every_element_reacts_as_its_kind`), so a key is a button only once it's listed here, never by
+/// default. As written: a sequence whole (`C-w j`), keys side by side (`j k`) each their own; matched by the keys they
+/// are, not their spelling (`ret` is `enter`, `C-minus` is `C--` — `listed`). Round 3 (the user 2026-10-29): every
+/// cheap key a hint drew with no press — the moves, the lists' and panels' own keys, the ways in.
+const BUTTONS: &[&str] = &[
+    // (a list's, a pane's, a card's own keys)
+    "enter",
+    "esc",
+    "tab",
+    "backspace",
+    "q",
+    "y",
+    "u",
+    "h",
+    "j",
+    "k",
+    "l",
+    "i",
+    "m",
+    "o",
+    "G",
+    "/",
+    // (the user's split, piece B: `C-c` stops or clears, `C-o` points, `C-r` applies — and `backspace` takes a chip off)
+    "C-c",
+    "C-o",
+    "C-r",
+    "C-d",
+    "C-u",
+    "C-f",
+    "C-x",
+    "C-\\",
+    "C-w j",
+    "C-w z",
+    // (round 3: a list's, a panel's, the chat's own — `? keys`, `s u stage`, `c commit`, `b bring` (its card asks), `$
+    // billing`, `K where it ran`, `- fold`, `r restart` (it comes back), `↑ edit queued`, `C-y copy`, `C-v split`)
+    "?",
+    "$",
+    "-",
+    "↑",
+    "b",
+    "c",
+    "e",
+    "f",
+    "r",
+    "s",
+    "v",
+    "K",
+    "C-q",
+    "C-v",
+    "C-y",
+    "C-]",
+    "]F",
+    "]g",
+    "]m",
+    "[m",
+    "]n",
+    "]q",
+    "[r",
+    "]r",
+    "]u",
+    "space F",
+    "space I",
+    "space L",
+    "space N",
+    "space q",
+    "space e",
+    "space g",
+    "space l",
+    "space n",
+    "space o",
+    "space m c",
+    "space m m",
+    // (the rail's `viewed`: a file marked, pressed again unmarked — round 2's review)
+    "space v m",
+    "space v q",
+    "space x c",
+    "space x l",
+    "space x o",
+    ":note-close",
+    ":chat-point",
+];
+
+/// Whether a hint's key is a button (`BUTTONS`) — by the keys it is, whatever its spelling (`ret`, `enter`).
+pub fn listed(key: &str) -> bool {
+    static PARSED: std::sync::OnceLock<Vec<Vec<Key>>> = std::sync::OnceLock::new();
+    let key = key.trim();
+    let parsed = || PARSED.get_or_init(|| BUTTONS.iter().filter_map(|b| keys(b)).collect());
+    BUTTONS.contains(&key) || keys(key).is_some_and(|k| parsed().contains(&k))
+}
+
+/// Whether a pair's key costs on a stray press (`COSTS`), past its way out (`way_out`).
+pub fn costs(key: &str, what: &str) -> bool {
+    let key = way_out(key).1;
+    COSTS.iter().any(|&(k, w)| (w == "*" || w == what.trim()) && k.is_none_or(|k| k == key))
+}
+
+/// Whether every key a hint writes is a button's (`listed`): its one sequence (`keys`) — a way out before it
+/// (`way_out`) and a button's keys after —, or keys side by side each one (`j k`: each its own).
+pub fn buttons_all(key: &str) -> bool {
+    let (out, key) = way_out(key);
+    let each = || out == 0 && key.split_whitespace().all(|w| keys(w).is_some() && listed(w));
+    !key.is_empty() && (keys(key).is_some() && listed(key) || each())
+}
+
+/// Whether a pair is drawn as a key hint — a button: its keys a button's (`buttons_all`, the list a press goes by —
+/// `pressable`, `kinds::buttons`: one rule for the look and the press), its press one that can't cost (`costs`). Else
+/// it's plain faint words (`type narrow`, `C-l new`): nothing drawn as a hint does nothing. In tests a pair whose keys
+/// neither list names fails where it's drawn (`unlisted`).
+pub fn is_hint(key: &str, what: &str) -> bool {
+    #[cfg(test)]
+    unlisted(key, what);
+    buttons_all(key) && !costs(key, what)
+}
+
+/// In tests, a pair naming keys (one sequence, or each side by side) that no list names — not a button's, not a cost —
+/// fails where it's drawn, whatever draws it: a key a hint gains is a button or a cost once listed, never a faint word
+/// left by default (round 2's review, the user 2026-10-29).
+#[cfg(test)]
+fn unlisted(key: &str, what: &str) {
+    let key = key.trim();
+    let names = keys(key).is_some() || !key.is_empty() && key.split_whitespace().all(|w| keys(w).is_some());
+    assert!(
+        !names || buttons_all(key) || costs(key, what),
+        "`{key} {what}`: a key hint's keys in neither `wordspot::BUTTONS` nor `COSTS` — list it"
+    );
+}
+
+/// Whether a key hint drawn — its key as written and what it says it does — is a word that does its key: one sequence
+/// (`keys`), a button's (`listed`), its press one that can't cost (`costs`).
 pub fn pressable(key: &str, what: &str) -> bool {
     #[cfg(test)]
     if UNBUTTONED.get() {
         return false;
     }
-    keys(key).is_some() && PRESSABLE.contains(&what.trim())
+    keys(key).is_some() && buttons_all(key) && !costs(key, what)
 }
 
 #[cfg(test)]
@@ -284,11 +437,54 @@ pub fn lit(ed: &Editor, x: usize, y: usize) -> Option<Lit> {
     }
 }
 
-/// The mouse at (`x`, `y`) (`Event::Hover`): over a word, it's lit. Whether that changed — a move that changes nothing
-/// draws nothing.
+/// What lights as a row with the mouse at (`x`, `y`) on the frame last drawn: the button a press there lands on that no
+/// word of its own lights (`lit`) — a list's row, the rail's mark and `↑ N more`, a toast (the whole card: one press),
+/// a waiting card's peek, the follow card's trail, the status line's now, a chip over the chat's input — as the cells a
+/// press acts on the same way, so a row lights only where its press lands. Each row's columns; none elsewhere.
+pub fn row_lit(ed: &Editor, x: usize, y: usize) -> Vec<(usize, usize, usize)> {
+    let Some(u) = row_under(ed, x, y) else { return Vec::new() };
+    if u.surface == Surface::Toast
+        && let Some((tx, ty, tw, th)) = ed.screen.toast_card.get()
+    {
+        return (ty..ty + th).map(|r| (r, tx, tx + tw)).collect();
+    }
+    let under = |x: usize| ed.mouse_under(crate::event::MouseKind::Down, x, y);
+    let w = ed.screen.width.unwrap_or(x + 1);
+    let from = (0..x).rev().take_while(|&c| under(c) == u).last().unwrap_or(x);
+    let to = (x + 1..w).take_while(|&c| under(c) == u).last().map_or(x + 1, |c| c + 1);
+    vec![(y, from, to)]
+}
+
+/// What a press at (`x`, `y`) lands on, where it lights as a row (`row_lit`).
+pub fn row_under(ed: &Editor, x: usize, y: usize) -> Option<crate::mouse::Under> {
+    use crate::mouse::{Link, Part, Word};
+    let u = ed.mouse_under(crate::event::MouseKind::Down, x, y);
+    let row = match u.part {
+        Part::Row(_) | Part::Mark(_) | Part::More(_) | Part::Word(Word::Now | Word::With(_)) => true,
+        // (a card's answers on its bottom line light as words, #200: a peek's doesn't; a hint made a button at the
+        // frame's end — `kinds::buttons` — has no spans to light: its cells as drawn)
+        Part::Word(Word::Does(_)) => lit(ed, x, y).is_none(),
+        // (a peek, by its digit — a card's own answers light as words on its bottom line, a held one nothing: #200)
+        Part::Answer(c) => c.is_ascii_digit() && lit(ed, x, y).is_none(),
+        Part::Link(Link::Chat(_)) => u.surface == Surface::FollowCard,
+        _ => false,
+    };
+    row.then_some(u)
+}
+
+/// The mouse at (`x`, `y`) (`Event::Hover`): over a word, it's lit; over a row, the row. Whether that changed — a move
+/// that changes nothing draws nothing. A row's cells are the frame's to find, once (`term::light_rows`): here only
+/// whether the pointer is still in the one lit, on the same thing.
 pub fn hovered(ed: &mut Editor, x: usize, y: usize) -> bool {
     let over = lit(ed, x, y).map(|l| (l.0, l.1, l.2));
-    ed.word_hover.replace(over) != over
+    let same = match row_under(ed, x, y) {
+        Some(u) => {
+            ed.row_under.get() == Some(u)
+                && ed.row_hover.borrow().iter().any(|&(r, a, b)| r == y && (a..b).contains(&x))
+        }
+        None => ed.row_hover.borrow().is_empty(),
+    };
+    (ed.word_hover.replace(over) != over) | !same
 }
 
 #[cfg(test)]

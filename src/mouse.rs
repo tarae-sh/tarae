@@ -267,10 +267,20 @@ pub const CARD_DRAG: &str = "a card's text isn't selected — v shows it whole, 
 pub const ASK_DRAG: &str = "the ask's card isn't selected — its change comes to the buffer, reviewed there";
 /// What a press or a drag off an edit's review says while it waits.
 pub const REVIEW_OFF: &str = "the review waits for its answer — y accepts the change, n rejects it";
+/// What a drag from a word that does its key says, a key hint's or a name's, wherever it's drawn: it's a button, a drag
+/// starts beside it — text selects, a line sizes (piece B).
+pub const HINT_DRAG: &str = "this takes a press — a drag starts beside it";
 /// What a drag on the start screen says.
 pub const WELCOME_DRAG: &str = "the start screen has nothing to select — a press on a row presses its keys";
 
 thread_local!(pub static TOOK: std::cell::Cell<Option<Surface>> = const { std::cell::Cell::new(None) });
+
+#[cfg(test)]
+thread_local! {
+    /// `mouse_under` asked since the test set it to 0 — a work budget's count
+    /// (`term::tests::a_row_under_the_pointer_reads_no_frame_again`).
+    pub static ASKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 /// `handle_mouse`'s branch for `s` took the event — the routing test reads it.
 #[inline]
@@ -293,6 +303,8 @@ impl Editor {
     /// matters where today's rules make it: a press closes what's open, a drag goes where its press was, the wheel
     /// alone scrolls hover text.
     pub fn mouse_under(&self, kind: MouseKind, x: usize, y: usize) -> Under {
+        #[cfg(test)]
+        ASKED.set(ASKED.get() + 1);
         use MouseKind as K;
         use Surface as S;
         let s = &self.screen;
@@ -324,6 +336,19 @@ impl Editor {
         if matches!(kind, K::Drag | K::Up) && matches!(self.mouse_anchor, Some((Drag::Picker, _))) {
             return at(S::Picker, query_text(x));
         }
+        // (a key hint that presses its key on what holds every press — the status line's keys of a prompt or a picker, the
+        // note card's, the ask's, a floating frame's lines': its key, never the press that closes it or a drag of the frame)
+        let hint_on = |surface: Surface| {
+            let spots = s.word_spots.borrow();
+            spots.iter().rposition(|w| w.on == surface && on(w.y, w.from, w.to, x, y))
+        };
+        if down
+            && (self.prompt.is_some() || self.picker.is_some())
+            && s.height == Some(y)
+            && let Some(i) = hint_on(S::Status)
+        {
+            return at(S::Status, Part::Word(Word::Does(i)));
+        }
         // The prompt's card: a completion row, its line where it was drawn (#153); what's under it isn't pressed through
         // it
         if let Some(card) = s.prompt_card.get()
@@ -345,7 +370,8 @@ impl Editor {
             && (self.prompt.is_none() || replying)
             && s.note_card.get().is_some_and(|r| inside(r, x, y))
         {
-            return at(S::NoteCard, Part::Blank);
+            let hint = hint_on(S::NoteCard).filter(|_| down);
+            return at(S::NoteCard, hint.map_or(Part::Blank, |i| Part::Word(Word::Does(i))));
         }
         if down && self.prompt.is_some() {
             return at(S::Prompt, Part::Outside);
@@ -442,10 +468,22 @@ impl Editor {
             && !s.thought_card.get().or(s.chat_mini.get()).is_some_and(|r| inside(r, x, y))
             && !(wheel && self.popup.is_some() && s.popup.get().is_some_and(|r| inside(r, x, y)))
         {
-            return at(S::Ask, Part::Blank);
+            let hint = hint_on(S::Ask).filter(|_| down);
+            return at(S::Ask, hint.map_or(Part::Blank, |i| Part::Word(Word::Does(i))));
         }
         // Floating panes: the topmost there takes it, nothing under it pressed through it
         let floated = self.float_at(x, y).map(|f| f.0).filter(|_| self.picker.is_none());
+        // (a floating group's header is the slot's drawn in its frame: its keys there, on its top line)
+        let header = |kind: GroupKind| {
+            let top = self.float_at(x, y).filter(|f| f.1.y == y).map(|f| f.0) == Some(kind);
+            hint_on(S::Float(kind)).or_else(|| hint_on(S::SlotLine).filter(|_| top))
+        };
+        if down
+            && let Some(kind) = floated
+            && let Some(i) = header(kind)
+        {
+            return at(S::Float(kind), Part::Word(Word::Does(i)));
+        }
         if down
             && floated.is_some()
             && let Some((kind, grip)) = self.float_grip(x, y)
@@ -520,6 +558,9 @@ impl Editor {
             return at(S::SlotLine, Part::Word(Word::Member(id)));
         }
         if let Some(p) = self.picker.as_ref() {
+            if down && let Some(i) = hint_on(S::Picker) {
+                return at(S::Picker, Part::Word(Word::Does(i)));
+            }
             if s.picker_preview_x.is_some_and(|px| x >= px) {
                 return at(S::PickerPreview, Part::Blank);
             }
@@ -1160,6 +1201,12 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
     const AS_ONE: Expect = Expect::Again;
     const NO_SCROLL: Expect = Not("nothing to scroll");
     let text = matches!(part, Part::Text { .. });
+    // (a word that does its key — a key hint, a name that names a state — takes a press: a drag from it says so, on
+    // every surface it's drawn on, the slot's line's keys too; the rest of that line, its tabs' and members' names
+    // included, drags the slot — piece B)
+    if act == A::Drag && matches!(part, Part::Word(Word::Does(_))) && surface != Su::Pointing {
+        return Says(HINT_DRAG);
+    }
     match surface {
         Su::Pointing => match act {
             A::Press => Acts,
@@ -1243,6 +1290,8 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             A::Wheel => NO_SCROLL,
         },
         Su::Float(_) => match (part, act) {
+            // (a key hint on its lines: its key, lit under the pointer — never a drag of the frame: piece B)
+            (Part::Word(Word::Does(_)), A::Hover) => Acts,
             (_, A::Press) | (Part::Frame(_), A::Drag) => Acts,
             // (a click: nothing moved, nothing kept or said — a drag's release keeps and says its size)
             (Part::Frame(_), A::Release) => Not("a click keeps nothing; a drag's release keeps it"),
@@ -1268,13 +1317,13 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             (_, A::Release) => RELEASE,
             (_, A::Hover) => HOVER,
         },
-        // (a name on the slot's line is the line too: a drag from it sizes the slot)
-        Su::SlotLine => match act {
-            A::Press | A::Drag => Acts,
-            A::Double => AS_ONE,
-            A::Wheel => NO_SCROLL,
-            A::Release => RELEASE,
-            A::Hover => Acts,
+        // (a name on the slot's line is the line too: a drag from it sizes the slot — a key hint's says so, above)
+        Su::SlotLine => match (part, act) {
+            (_, A::Press | A::Drag) => Acts,
+            (_, A::Double) => AS_ONE,
+            (_, A::Wheel) => NO_SCROLL,
+            (_, A::Release) => RELEASE,
+            (_, A::Hover) => Acts,
         },
         Su::Popup => match act {
             A::Wheel => Acts,
@@ -1478,6 +1527,7 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ("Claude's edit review", "off it", Su::EditReview, Part::Outside),
         ("The review's rail", "a file", Su::Rail, Part::Row(0)),
         ("The review's rail", "off its rows", Su::Rail, Part::Blank),
+        ("The review's rail", "a key hint at its foot", Su::Rail, Part::Word(Word::Does(0))),
         ("The chat's conversation", "text", Su::Transcript, text),
         ("The chat's conversation", "a link, a tool row, an id", Su::Transcript, Part::Link(Link::Chat(0))),
         ("The chat's input", "text", Su::Input, text),
@@ -1504,7 +1554,12 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
             Part::Word(Word::Does(0)),
         ),
         ("The side panel", "a row", Su::Side, Part::Row(0)),
-        ("The side panel", "a tab's name on its top line", Su::Side, Part::Word(Word::Does(0))),
+        (
+            "The side panel",
+            "a tab's name on its top line, a key hint at its foot",
+            Su::Side,
+            Part::Word(Word::Does(0)),
+        ),
         ("The side panel", "off its rows", Su::Side, Part::Blank),
         ("Run output", "text", Su::Output(Slot::Test), text),
         ("Run output", "off its rows", Su::Output(Slot::Test), Part::Blank),
@@ -1529,13 +1584,21 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ),
         ("A floating pane", "its frame", Su::Float(GroupKind::Tests), Part::Frame(Grip::Move(0, 0))),
         ("A floating pane", "inside", Su::Float(GroupKind::Tests), Part::Blank),
+        (
+            "A floating pane",
+            "a key hint on its lines",
+            Su::Float(GroupKind::Tests),
+            Part::Word(Word::Does(0)),
+        ),
         ("Cards", "an answer, the card", Su::Card, Part::Answer('y')),
         ("The ask's card (`space i`, a commit draft)", "", Su::Ask, Part::Blank),
+        ("The ask's card (`space i`, a commit draft)", "a key hint", Su::Ask, Part::Word(Word::Does(0))),
         ("The notification card", "", Su::Toast, Part::Row(0)),
         ("A plugin's overlay", "a row", Su::Overlay, Part::Row(0)),
         ("A picker", "a row", Su::Picker, Part::Row(0)),
         ("A picker", "its query", Su::Picker, Part::Text { line: 0, col: 0 }),
         ("A picker", "its frame's other rows", Su::Picker, Part::Blank),
+        ("A picker", "a key hint on its frame", Su::Picker, Part::Word(Word::Does(0))),
         ("A picker", "outside it", Su::Picker, Part::Outside),
         ("A picker's preview", "", Su::PickerPreview, Part::Blank),
         ("The prompt", "a completion", Su::Prompt, Part::Row(0)),
@@ -1547,11 +1610,18 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ("The completion menu", "a row", Su::Completion, Part::Row(0)),
         ("The completion menu", "the rest of it, its docs", Su::Completion, Part::Blank),
         ("The note card", "", Su::NoteCard, Part::Blank),
+        ("The note card", "a key hint", Su::NoteCard, Part::Word(Word::Does(0))),
         (
             "The status line",
             "a word (`▲N waiting · C-q`, the chip, what Claude does now, the branch, `▲ N`, `full screen`)",
             Su::Status,
             Part::Word(Word::Now),
+        ),
+        (
+            "The status line",
+            "a key hint (a list's, a picker's, a prompt's)",
+            Su::Status,
+            Part::Word(Word::Does(0)),
         ),
         ("The status line", "the rest", Su::Status, Part::Blank),
         ("The start screen", "a row with keys", Su::Welcome, Part::Row(0)),

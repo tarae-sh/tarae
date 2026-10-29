@@ -553,6 +553,56 @@ mod tests {
         assert!(low.is_empty(), "under their floors:\n{}", low.join("\n"));
     }
 
+    /// A row under the pointer reads between its ground and the selected row's (`chrome::HOVER`, the user 2026-10-29):
+    /// its text clears the floors it clears on the selected row — the list's text and signals 4.0, dim 3, faint 2 — on a
+    /// card and on the ground alike, and the hovered ground stands apart from both (ΔE ≥ 2.5, past a step one sees; a
+    /// card's is ~3 from each in both themes, the ground's 5–7), so it reads as neither the bare row nor the selected one.
+    #[test]
+    fn a_hovered_row_reads_between_its_ground_and_the_selected() {
+        use crate::chrome::contrast;
+        let rgb = |c: Option<Color>| match c {
+            Some(Color::Rgb { r, g, b }) => [r, g, b],
+            other => panic!("a built-in theme's colour is a true colour: {other:?}"),
+        };
+        let c = |x: [u8; 3]| Some(Color::Rgb { r: x[0], g: x[1], b: x[2] });
+        let mut low = Vec::new();
+        for name in ["meok", "hanji"] {
+            let t = load(name).unwrap();
+            let (fg, bg) = (|k: &str| rgb(t.get(k).fg), |k: &str| rgb(t.get(k).bg));
+            let selected = bg("ui.menu.selected");
+            // (the ground drawn: `term::row_ground`, as a lit row is painted)
+            let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+            ed.theme = t.clone();
+            for (g, ground) in [("card", bg("ui.popup")), ("ground", bg("ui.background"))] {
+                let hovered = rgb(crate::term::hovered_row(&ed, c(ground).unwrap()));
+                assert_ne!(hovered, ground, "{name}: a hovered row of the {g} lightens");
+                for (k, floor) in [
+                    ("ui.text", 4.0),
+                    ("ui.text.focus", 4.0),
+                    ("ui.accent", 4.0),
+                    ("error", 4.0),
+                    ("warning", 4.0),
+                    ("ui.virtual", 3.0),
+                    ("ui.linenr", 2.0),
+                ] {
+                    let r = contrast(fg(k), hovered);
+                    if r < floor {
+                        low.push(format!("{name}: {k} on a hovered row of the {g} {r:.2} (floor {floor})"));
+                    }
+                }
+                for (what, other) in [(g, ground), ("selected row", selected)] {
+                    let de = delta_e(c(hovered), c(other));
+                    if de < 2.5 {
+                        low.push(format!(
+                            "{name}: a hovered row of the {g} is ΔE {de:.1} from the {what} (floor 2.5)"
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(low.is_empty(), "under their floors:\n{}", low.join("\n"));
+    }
+
     /// A warning never reads as code: its colour stands apart (CIE76 ΔE in CIELAB, ≥ 20) from every colour the code
     /// and the accent use. On ink a light signal amber has the room; on paper the code's ochres fill the amber band at
     /// their lightness, so hanji's warning is the amber's paper form — a deep burnt amber, apart by lightness (a grid

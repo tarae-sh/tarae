@@ -73,7 +73,7 @@
 20  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 21  TTTTT TTTTTTT TT TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT
 22
-23  a TTTTTT   DDDDD ffffff  DDDD ffffff  DDD fffff       TTT
+23  a TTTTTT   DDDDD ffffff  ffff ffffff  DDD fffff       TTT
 ## legend
 bg: P=ui.menu.selected
 fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  w=warning  B=bold

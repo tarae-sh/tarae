@@ -67,6 +67,10 @@ pub const LIST_MIN: usize = 12;
 pub const MEASURE: usize = 72;
 /// What an unfocused region keeps of its text's contrast against its background (WCAG ratio).
 pub const FADE: f64 = 0.88;
+/// How far a row under the pointer goes from its own ground toward the selected row's (the user, 2026-10-29, on piece
+/// B's shots: a hovered row as lit as the selected one read as a second selection) — a step weaker, in meok and hanji
+/// alike (`term::row_ground`; its floors: `theme::tests::a_hovered_row_reads_between_its_ground_and_the_selected`).
+pub const HOVER: f32 = 0.5;
 
 // ── Contrast ─────────────────────────────────────────────────────────────
 
@@ -423,6 +427,15 @@ impl Editor {
             self.plugin_panel_unfocus();
         }
         if keys {
+            self.bottom_take_keys();
+        }
+    }
+
+    /// A tab pressed: its panel in front, the keys there — the one in front already too (#216; CLAUDE.md, the mouse's
+    /// bullet: a press on a slot's line focuses what it heads).
+    pub fn slot_press(&mut self, s: Slot) {
+        self.slot_show(s);
+        if self.slot_there(s, false) && !self.slot_docked(s) && !self.bottom_has_keys() {
             self.bottom_take_keys();
         }
     }

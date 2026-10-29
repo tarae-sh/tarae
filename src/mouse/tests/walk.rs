@@ -817,7 +817,8 @@ fn judge(
 
 /// A state that decides an act whatever it lands on (`STATES`): a key sequence under way — a press ends it, then acts
 /// where it landed; `C-w m` moving a floating pane — a press on it (not its top line, which still drags it) says how it
-/// moves (a double says it again, its drag is that press's), elsewhere it takes the keys and the move ends with them.
+/// moves (a double says it again, its drag is that press's) but a key hint on it, which presses its key; elsewhere it
+/// takes the keys and the move ends with them.
 fn state_expect(u: Under, act: Act, before: Before) -> Option<Expect> {
     if before.pending && act == Act::Press {
         return Some(STATES[1].2);
@@ -833,6 +834,10 @@ fn state_expect(u: Under, act: Act, before: Before) -> Option<Expect> {
     // (its top line, pressed: held to drag it — the keys already the move's)
     if matches!(u.part, Part::Frame(_)) {
         return (act == Act::Press).then_some(Expect::Not("its top line still drags it"));
+    }
+    // (a key hint on its lines — `h j k l move`, `enter done`: its key, to the move, as every hint's)
+    if matches!(u.part, Part::Word(crate::mouse::Word::Does(_))) {
+        return None;
     }
     match act {
         Act::Press | Act::Double => Some(STATES[0].2),
@@ -1492,99 +1497,11 @@ fn the_docs_mouse_table_is_the_codes() {
 
 /// What still reacts against its kind (the five kinds — CLAUDE.md's mouse bullet, the user 2026-10-28, #215/#216), as
 /// the kinds walk meets it: `act Surface/Part` (a hint drawn: `hint Surface/Part · key meaning`). Each is a gap a
-/// landing fills (#197 a lit word's colour, B the rows' hover and the hints as buttons, C the wheel); a list that only
+/// landing fills (#197 a lit word's colour, B the rows' hover and the hints as buttons — landed, C the wheel); a list that only
 /// shrinks — one no longer met fails until it's taken off.
 const KIND_GAPS: &[&str] = &[
-    // B: a waiting card's peek (its digit: #200 lights the answers, not the peeks), the keycast's overlay (its text
-    // changes under the pointer)
-    "hover Card/Answer",
-    "hover Overlay/Row",
-    // B: a list's rows, a mark, a chip light under the pointer
-    "hover Completion/Row",
-    "hover EditReview/Row",
-    "hover Floatlist/Row",
-    "hover List/Row",
-    "hover Picker/Row",
-    "hover Prompt/Row",
-    "hover Rail/Row",
-    "hover Side/Row",
-    "hover Toast/Row",
-    "hover Welcome/Row",
-    "hover WhichKey/Row",
-    "hover Rail/Mark",
-    "hover Status/Word(Now)",
-    "hover Chat/Word(With)",
-    // B: #216, the tab in front pressed gives the slot the keys
-    "press SlotLine/Word(Tab)",
-    // B: a key hint is a button, or plain faint words where its key costs
-    "hint Chat/Blank · / search",
-    "hint Chat/Blank · C-c clear",
-    "hint Chat/Blank · C-s screen",
-    "hint Chat/Blank · backspace take",
-    "hint Chat/Blank · enter quote",
-    "hint Chat/Blank · y copy",
-    "hint Ask/Blank · esc stop",
-    "hint Edge/Border · / search",
-    "hint Edge/Border · enter quote",
-    "hint Edge/Border · l log",
-    "hint Edge/Border · o buffer",
-    "hint Edge/Border · q hide",
-    "hint Edge/Border · tab detail",
-    "hint Edge/Border · y copy",
-    "hint Float/Frame(Move) · / search",
-    "hint Float/Frame(Move) · G latest",
-    "hint Float/Frame(Move) · enter go",
-    "hint Float/Frame(Move) · enter switch",
-    "hint Float/Frame(Move) · esc code",
-    "hint Float/Frame(Move) · o new",
-    "hint Float/Frame(Move) · q close",
-    "hint Float/Frame(Move) · tab output",
-    "hint Float/Frame(Move) · y copy",
-    "hint Float/Frame(Size) · enter done",
-    "hint Float/Frame(Size) · h j k l move",
-    "hint FollowCard/Blank · C-c clear",
-    "hint NoteCard/Blank · :note-close",
-    "hint NoteCard/Blank · ]n next",
-    "hint NoteCard/Blank · space N all",
-    "hint NoteCard/Blank · space n reply",
-    "hint Output/Blank · y copy",
-    "hint Picker/Outside · C-x close",
-    "hint Picker/Outside · enter open",
-    "hint Picker/Outside · esc close",
-    "hint Picker/Outside · type narrow",
-    "hint Prompt/Outside · enter run",
-    "hint Prompt/Outside · enter search",
-    "hint Prompt/Outside · esc close",
-    "hint Prompt/Outside · tab complete",
-    "hint Rail/Blank · ]F file",
-    "hint Rail/Blank · ]g hunk",
-    "hint Rail/Blank · ]u unviewed",
-    "hint Rail/Blank · enter open",
-    "hint Rail/Blank · esc code",
-    "hint Rail/Blank · j k files",
-    "hint Rail/Blank · m viewed,",
-    "hint Rail/Blank · q end",
-    "hint Rail/Blank · space n comment",
-    "hint Rail/Blank · space u undo",
-    "hint Rail/Blank · space v q keep",
-    "hint Rail/Blank · space v u undo",
-    "hint Rail/Blank · u next",
-    "hint Side/Blank · enter open",
-    "hint Side/Blank · esc code",
-    "hint Side/Blank · q close",
-    "hint Side/Blank · space e files",
-    "hint Side/Blank · space g back",
-    "hint Side/Blank · space o outline",
-    "hint Side/Blank · tab git",
-    "hint Status/Blank · C-d scroll",
-    "hint Status/Blank · C-u scroll",
-    "hint Status/Blank · C-x complete",
-    "hint Status/Blank · enter accept",
-    "hint Status/Blank · esc close",
-    "hint Status/Blank · tab select",
     // C: a line half under the pointer while a window prefix is under way
     "hover Edge/Border",
-    "hover Float/Frame(Move)",
 ];
 
 /// The lines tarae draws surfaces and frames with.
@@ -1642,6 +1559,7 @@ fn kinds_scene(scene: &str, setup: fn(&mut Editor), n: usize) -> (Vec<(String, S
         }
         let word = |c: &&char| **c != ' ' && !LINES.contains(**c);
         let meaning: String = row.get(h.to + 1..).unwrap_or_default().iter().take_while(word).collect();
+        // (its key a button's: one in no list fails where it's drawn, in any test — `kinds::pair`)
         let u = ed.mouse_at(h.from, h.y);
         // (under a prompt, a picker or pointing a press anywhere else only closes it — but their own keys, on the status
         // line, are theirs)
@@ -1667,7 +1585,9 @@ fn kinds_scene(scene: &str, setup: fn(&mut Editor), n: usize) -> (Vec<(String, S
             met.push(kind.word());
         }
         ed.handle_event(Event::Hover(x as u16, y as u16));
-        let (_, over) = painted(&mut ed);
+        let (over_rows, over) = painted(&mut ed);
+        // (a letter of its own there still: a card over a cut button shows its whole there — another letter, a blank)
+        let same_letter = rows[y].get(x).is_some_and(|c| *c != ' ' && over_rows[y].get(x) == Some(c));
         let (was, now) = (base[y * W + x], over[y * W + x]);
         // (a surface's lines light half under the pointer whatever's on them — its own rule, not its elements')
         let line = rows[y].get(x).is_some_and(|c| LINES.contains(*c));
@@ -1683,9 +1603,12 @@ fn kinds_scene(scene: &str, setup: fn(&mut Editor), n: usize) -> (Vec<(String, S
                 })
                 .is_some_and(|f| f.lit == Lit::Keys);
         let off = match kind {
-            Kind::Button(_) if was.1 == now.1 => Some("its ground stays under the pointer"),
+            // (a frame's line on a lit row stays a line — `term::light_rows`)
+            Kind::Button(_) if was.1 == now.1 && !line => Some("its ground stays under the pointer"),
             // (#197a: only its ground lightens)
-            Kind::Button(_) if was.0 != now.0 => Some("its text changes colour under the pointer"),
+            Kind::Button(_) if was.0 != now.0 && same_letter => {
+                Some("its text changes colour under the pointer")
+            }
             Kind::Reveal if ed.cut_hover.is_none() || over == base => Some("no card under the pointer"),
             Kind::Text | Kind::None if was != now && !line => Some("it changes under the pointer"),
             Kind::Handle if was == now && !keyed => Some("it doesn't light under the pointer"),
@@ -1705,11 +1628,7 @@ fn kinds_scene(scene: &str, setup: fn(&mut Editor), n: usize) -> (Vec<(String, S
         send(&mut ed, K::Down, x, y, scene, &mut walk);
         send(&mut ed, K::Up, x, y, scene, &mut walk);
         let d = did(&s0, &snap(&mut ed), Act::Press, u);
-        // (a slot's tab in front: done only where the slot has the keys — #216, the walk's `holds` takes it as done)
-        let done = match u.part {
-            Part::Word(crate::mouse::Word::Tab(_)) => fresh(setup).bottom_has_keys(),
-            _ => b0.holds,
-        };
+        let done = b0.holds;
         let off = match kind {
             Kind::Button(_) if !(d.acted || d.said || done || b0.pending) => Some("a press does nothing"),
             // (its surface given the keys — a card focused, said on it — is the surface's rule, not an act of the reveal's;

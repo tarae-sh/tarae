@@ -1902,6 +1902,7 @@ fn snapshot_chat_explore() {
         msg(Role::Note, "2.4s", "", None),
     ];
     s.check("chat_explore");
+    s.frames_both("chat_explore");
 }
 
 /// An answer with tables in a 60-cell chat: one that fits (aligned columns, a rule under the header), one
@@ -1966,6 +1967,7 @@ fn snapshot_chat_measure() {
     }
     assert!(width("let counts") > MEASURE + 4, "the code runs wider\n{shown}");
     s.check("chat_measure");
+    s.frames_both("chat_measure");
 }
 
 /// #163 (the user, 2026-10-27): the measure is the automatic width's only — a width you set (`C-w >`, `C-w <`) the
@@ -5944,6 +5946,7 @@ fn snapshot_side_panel_git() {
     s.ed.workspace.viewer.at = crate::workspace::At::Side;
     s.keys("j");
     s.check("side_panel_git");
+    s.frames_both("side_panel_git");
 }
 
 /// #139: the commit draft's card (git tab `C` — Claude writing, streamed) stands in the code's room: right
@@ -6564,6 +6567,7 @@ fn snapshot_conflict_card() {
     s.file("src/demo.rs", &text);
     s.keys("]m");
     s.check("conflict_card");
+    s.frames_both("conflict_card");
 }
 
 /// `:diff` against another file: removed lines in place, changed and added ones on the green wash.

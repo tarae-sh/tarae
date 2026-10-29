@@ -132,7 +132,7 @@
 39                                                                                           a
 40                                                                                           a  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 41                                                                                           a  A fff fffff ffffffff
-42                                                                                           a  DDDDD ffff  DDD ffffff  DDD ffffff  DDD fffff
+42                                                                                           a  DDDDD ffff  DDD ffffff  fff ffffff  DDD fffff
 43  a TTTT                                                                                                                        dddd   ddddd dd   TTT
 ## legend
 bg: c=ui.cursorline.primary

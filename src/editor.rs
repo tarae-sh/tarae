@@ -543,6 +543,9 @@ pub struct Screen {
     pub picker_list_cols: Option<(usize, usize)>,
     /// The floating docs card this frame (x, y, width, height) — drawing fills it in; the wheel scrolls it.
     pub popup: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
+    /// The floating docs card's last page this frame — the first row it shows scrolled to its end (`term::draw_float`
+    /// stops there): past it a key moves nothing, said.
+    pub popup_end: std::cell::Cell<Option<usize>>,
     /// Clickable spots in the chat pane: (row, start col, end col, where it points) — drawing fills them in.
     pub chat_links: std::cell::RefCell<Vec<(usize, usize, usize, crate::chat::Link)>>,
     /// The chat's rows of tool calls: (row, call id) — a click goes to that call's replay stop.
@@ -793,6 +796,13 @@ pub struct Editor {
     pub cut_press: Option<crate::whole::Held>,
     /// The word the mouse is over — lit while it stays there (`wordspot.rs`): its row and columns.
     pub word_hover: std::cell::Cell<Option<(usize, usize, usize)>>,
+    /// The row the mouse is over — a list's, a mark, a toast, a peek, the now, a chip — lit while it stays there
+    /// (`wordspot::row_lit`): each of its rows and columns.
+    pub row_hover: std::cell::RefCell<Vec<(usize, usize, usize)>>,
+    /// What a press lands on in the lit row (`row_hover`) — a move within it, on the same thing, lights nothing new.
+    pub row_under: std::cell::Cell<Option<crate::mouse::Under>>,
+    /// The frame being drawn as read so far, for its lit row (`term::light_rows`) — `Screen::present` reads on from it.
+    pub drawn: std::cell::RefCell<Option<crate::screen::Drawn>>,
     /// Where two workspaces' changes would conflict, and what each was last taken as (`overlap.rs`).
     pub overlap: crate::overlap::State,
     /// The workspaces kept close to their base: its tips watched, its moves asked and made (`keepclose.rs`).
@@ -1312,6 +1322,9 @@ impl Editor {
             cut_hover: None,
             cut_press: None,
             word_hover: Default::default(),
+            row_hover: Default::default(),
+            row_under: Default::default(),
+            drawn: Default::default(),
             overlap: Default::default(),
             keep_close: Default::default(),
             behind: false,
@@ -2833,6 +2846,8 @@ impl Editor {
                     // (the mouse gone with the focus: a row it held whole folds — `whole.rs`)
                     self.cut_hover = None;
                     self.word_hover.set(None);
+                    self.row_hover.take();
+                    self.row_under.set(None);
                     if let Some(c) = self.workspace.claude.chat.as_mut() {
                         c.follow.hover = None;
                     }
@@ -3124,7 +3139,7 @@ impl Editor {
         if m.kind == K::Down
             && self.float_moving.is_some()
             && self.float_at(x, y).map(|f| f.0) == self.float_moving
-            && !matches!(u.part, Part::Frame(_))
+            && !matches!(u.part, Part::Frame(_) | Part::Word(Word::Does(_)))
         {
             took_mouse(u.surface);
             self.drag_says = Some((u, true, ""));
@@ -3160,6 +3175,21 @@ impl Editor {
             _ => None,
         };
         match (u.surface, u.part) {
+            // A word that names a state, a key hint's pair: its key (`wordspot.rs`) — wherever it's drawn, on what holds
+            // every other press too (a modal's status line, the note card, the ask's, a floating frame's lines)
+            // (a double is one press: a button pressed twice out of habit doesn't do its key twice — a toggle undone; its
+            // drag does nothing and says so, wherever it's drawn — the slot's line too, whose words are its keys: the rest
+            // of that line, a name included, drags the slot — `mouse::expect`, piece B)
+            (_, Part::Word(Word::Does(i))) => {
+                took_mouse(u.surface);
+                let at = self.screen.word_spots.borrow().get(i).map_or(0, |s| s.y << 16 | s.from);
+                if down && !self.clicked_again("word", at) {
+                    crate::wordspot::press(self, i);
+                }
+                if down {
+                    self.drag_says = Some((u, false, crate::mouse::HINT_DRAG));
+                }
+            }
             // The prompt's card: a completion row picks it (as `tab` cycling to it does); pressed outside it closes, as
             // `esc` — nothing else pressed (no click-through)
             (S::Prompt, part) => {
@@ -3417,23 +3447,10 @@ impl Editor {
                 took_mouse(u.surface);
                 self.session_spot(spot);
             }
-            // A word that names a state, a key hint's pair: its key (`wordspot.rs`)
-            // (a double is one press: a button pressed twice out of habit doesn't do its key twice — a toggle undone;
-            // a key on the slot's line is the line too, as its tabs are: a drag from it sizes the slot)
-            (_, Part::Word(Word::Does(i))) => {
-                took_mouse(u.surface);
-                let at = self.screen.word_spots.borrow().get(i).map_or(0, |s| s.y << 16 | s.from);
-                if down && !self.clicked_again("word", at) {
-                    crate::wordspot::press(self, i);
-                }
-                if u.surface == S::SlotLine {
-                    self.name_held(x, y);
-                }
-            }
             // (a name on a line is the line too: a drag from it does what one from the line beside it does)
             (_, Part::Word(Word::Tab(slot))) => {
                 took_mouse(u.surface);
-                self.slot_show(slot);
+                self.slot_press(slot);
                 self.name_held(x, y);
             }
             (_, Part::Word(Word::Member(id))) => {
@@ -3509,8 +3526,9 @@ impl Editor {
             (S::Popup, _) => {
                 took_mouse(S::Popup);
                 let lines = self.popup.as_ref().map_or(0, Vec::len);
+                let end = self.screen.popup_end.get().unwrap_or(lines);
                 match m.kind {
-                    K::ScrollDown => self.popup_scroll = (self.popup_scroll + 3).min(lines),
+                    K::ScrollDown => self.popup_scroll = (self.popup_scroll + 3).min(end),
                     K::ScrollUp => self.popup_scroll = self.popup_scroll.saturating_sub(3),
                     _ => {}
                 }
@@ -5539,7 +5557,16 @@ impl Editor {
             };
             if let Some(by) = by {
                 took(Handler::Popup);
-                return self.popup_scroll = self.popup_scroll.saturating_add_signed(by).min(lines.len());
+                // (its last page as drawn — not drawn yet, its lines)
+                let end = self.screen.popup_end.get().unwrap_or(lines.len());
+                let at = self.popup_scroll.min(end);
+                let to = at.saturating_add_signed(by).min(end);
+                // (nothing above its first line nor past its last page: said, never a key lost in silence)
+                if to == at {
+                    let edge = if by < 0 { "at the top of" } else { "at the end of" };
+                    return self.set_status(format!("{edge} the hover text"));
+                }
+                return self.popup_scroll = to;
             }
         }
         self.popup_scroll = 0;
@@ -6236,6 +6263,47 @@ mod tests {
         assert_eq!(text(&run("a\nb\n", "xd")), "b\n");
         assert_eq!(text(&run("a\nb\nc\n", "2xd")), "c\n");
         assert_eq!(text(&run("a\nb\nc\n", "xxd")), "c\n");
+    }
+
+    /// Hover text at an end: `C-u`/`C-y` at its top, `C-d`/`C-e` on its last page as drawn move nothing and say which —
+    /// never a key lost in silence — and the docs stay up.
+    #[test]
+    fn hover_text_says_its_edges() {
+        let line = |i: usize| {
+            let text = format!("doc {i}");
+            crate::markdown::Line::Code(vec![crate::markdown::Span {
+                cut: None,
+                hint: false,
+                text,
+                style: Default::default(),
+            }])
+        };
+        let last = |ed: &Editor| ed.messages.last().map(|m| m.2.clone()).unwrap_or_default();
+        let mut ed = run("x\n", "");
+        ed.popup = Some((0..60).map(line).collect());
+        crate::term::render(&mut ed, &mut Vec::new(), 120, 40).unwrap();
+        let end = ed.screen.popup_end.get().expect("its last page drawn");
+        assert!(end > 0, "60 lines on a 20-row card: a page past the first");
+        for keys in ["<C-u>", "<C-y>"] {
+            ed.messages.clear();
+            feed(&mut ed, keys);
+            assert_eq!((ed.popup_scroll, last(&ed).as_str()), (0, "at the top of the hover text"), "{keys}");
+        }
+        // (down to its last page, then a key past it)
+        while ed.popup_scroll < end {
+            feed(&mut ed, "<C-d>");
+        }
+        assert_eq!(ed.popup_scroll, end, "C-d stops at the last page");
+        for keys in ["<C-d>", "<C-e>"] {
+            ed.messages.clear();
+            feed(&mut ed, keys);
+            assert_eq!(
+                (ed.popup_scroll, last(&ed).as_str()),
+                (end, "at the end of the hover text"),
+                "{keys}"
+            );
+        }
+        assert!(ed.popup.is_some(), "the docs stay up");
     }
 
     #[test]

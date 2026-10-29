@@ -82,14 +82,14 @@
 17                              a  a AAAAAA                                                                       g
 18                              a                                                                                 g
 19                              a                                                                                 g
-20                              a  BBBBB B fffff  BBBBB B B ffff fff ffffff  BB ffff                              g
+20                              a  BBBBB B fffff  fffff f f ffff fff ffffff  BB ffff                              g
 21                              a                                                                                 g
 22                              a ffg                                                                             g
 23                              a ffg                     a                                                       g
 24   BB ffff  BB ffff           a ffg                                                                             g
 25   BBBBB B fffff  BB ffffffff a ffg                                                                             g
 26   BBBBB B fffffff            a ffg                                                                             g
-27   DDDDD D D aaaa a           a ffg                                                                             g
+27   fffff f f ffff f           a ffg                                                                             g
 28   BBBBB B B fff              a ffg                                                                             g
 29  a TTTTTT   ggg                                                                         dddd   ddddd dd   TTTT
 ## legend

@@ -3396,6 +3396,33 @@ const SCENES: &[Scene] = &[
     Scene { name: "hover-hsplit-line", claude: "idle", files: MAIN, keys: HOVER_MORE[2] },
     Scene { name: "hover-path-name", claude: "idle", files: MAIN, keys: HOVER_MORE[3] },
     Scene { name: "hover-rail-keys", claude: "idle", files: MAIN, keys: HOVER_MORE[4] },
+    // (piece B round 2: a comment saved as a draft, the rail's foot `space v s send 1` — plain faint words, the pointer
+    // on them lighting nothing)
+    Scene {
+        name: "hover-rail-send",
+        claude: "idle",
+        files: MAIN,
+        keys: &[
+            "@1",
+            " ",
+            "v",
+            "v",
+            "@?knot.rs",
+            "@1",
+            "\x17",
+            "l",
+            "@1",
+            " ",
+            "n",
+            "@1",
+            "tighten this",
+            "\r",
+            "@?send 1",
+            "@1",
+            "@hover?send 1",
+            "@1",
+        ],
+    },
     // (the docs' `claude-reviews.png`: the reviewer read in the background — three findings on thread.rs's lines,
     // one's card open under it, its report beside it in a split (`space v r` — read, the status line's
     // `¶ 3 findings` goes, as decided))
