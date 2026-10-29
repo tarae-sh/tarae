@@ -11435,11 +11435,31 @@ fn draw_signature(
     queue!(out, Print("  "))?;
     let mut used = 0;
     let mut col = 0;
-    if skip_cols > 0 {
-        apply(out, Style { fg: ui.virt.fg, ..card })?;
-        queue!(out, Print("…"))?;
+    let mut shown = String::new();
+    // (longer than its room: its start cut to keep the active parameter in sight, its end where the rest doesn't fit —
+    // each to its `…`, the signature whole under the mouse in its colours, #229)
+    let cut = (full > room).then(|| {
+        let mut pieces: Vec<(std::ops::Range<usize>, Style)> = Vec::new();
+        let mut at = 0;
+        for &(ch, st) in &cells {
+            match pieces.last_mut() {
+                Some((r, s)) if *s == st => r.end += ch.len_utf8(),
+                _ => pieces.push((at..at + ch.len_utf8(), st)),
+            }
+            at += ch.len_utf8();
+        }
+        let whole: String = cells.iter().map(|c| c.0).collect();
+        crate::whole::Of { from: 0, to: 0, whole, pieces }
+    });
+    let faint = Style { fg: ui.virt.fg, ..card };
+    if let Some(of) = cut.as_ref().filter(|_| skip_cols > 0) {
+        apply(out, faint)?;
+        queue!(out, Print(crate::whole::mark(of)))?;
+        shown.push_str(crate::whole::mark(of));
         used = 1;
     }
+    // (its end cut: a cell kept for its `…`)
+    let end = room - usize::from(used + full - skip_cols > room);
     let mut current = Style::default();
     for &(ch, st) in &cells {
         let w = ch.width().unwrap_or(0);
@@ -11447,7 +11467,7 @@ fn draw_signature(
         if col <= skip_cols {
             continue;
         }
-        if used + w > room {
+        if used + w > end {
             break;
         }
         if st != current {
@@ -11455,7 +11475,20 @@ fn draw_signature(
             current = st;
         }
         queue!(out, Print(ch))?;
+        shown.push(ch);
         used += w;
+    }
+    if let Some(of) = cut.as_ref().filter(|_| end < room) {
+        apply(out, faint)?;
+        queue!(out, Print(crate::whole::mark(of)))?;
+        shown.push_str(crate::whole::mark(of));
+        used += 1;
+    }
+    if let Some(of) = cut {
+        let of = crate::whole::Of { to: shown.len(), ..of };
+        let fit = Fit::from_parts(shown, Some(of));
+        let cols = (x0, lay.edit_w);
+        crate::whole::cut_at(editor, crate::whole::On::Code, (x0 + 2, y), &fit, card, cols, None);
     }
     apply(out, card)?;
     queue!(out, Spaces(inner - used - counter.width()))?;
@@ -16373,7 +16406,9 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
                     bleed_head("chat", &mut rows, &drawn, ui, card);
                 }
                 // (a code well's edge isn't the text's, nor a wrapped row's hanging indent — a list's bullet is)
-                lines.extend(rows.into_iter().zip(drawn).map(|(spans, d)| ChatRow {
+                // (a cut code row's whole the row's own: on its card under the mouse and the view mode's cursor)
+                lines.extend(rows.into_iter().zip(drawn).map(|(mut spans, d)| ChatRow {
+                    cut: crate::whole::lift(&mut spans, crate::whole::On::Transcript),
                     spans,
                     skip: if d.code { d.lead } else { 0 } + d.join.map_or(0, |j| j.drop),
                     join: d.join.map(|j| j.space),
@@ -16442,7 +16477,8 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
                     let join = drawn[j].join.filter(|_| k > 0).map(|j| j.space);
                     // (a cut code row's rest kept, as an answer's: the transcript has its line whole)
                     let rest = drawn[j].rest.clone();
-                    let mut row_of = ChatRow { spans: r, skip, tail, join, rest, ..ChatRow::default() };
+                    let cut = crate::whole::lift(&mut r, crate::whole::On::Transcript);
+                    let mut row_of = ChatRow { spans: r, skip, tail, join, rest, cut, ..ChatRow::default() };
                     // (#197b: the `…` row whole on its card, as every cut — folded, from its own text on: what's above it
                     // in sight, what it stands for after, and the transcript keeps that too (`/`, `y`); live, the
                     // thought all of it, its start folded away above)
@@ -17925,7 +17961,30 @@ fn chat_markdown_drawn(
                     text: " ".into(),
                     style: Style { bg: well, ..Style::default() },
                 }];
+                // (a cut row's whole on its card, #229: the line from its indentation on, in its colours — carried by
+                // every span of it drawn, its `…` too, one spot from where the code starts; its card's rows after the
+                // first hang under that start, as a card wraps code)
+                let cut = (full > inner).then(|| {
+                    let line: String = spans.iter().map(|s| s.text.as_str()).collect();
+                    let ind = line.len() - line.trim_start_matches(' ').len();
+                    let mut pieces = Vec::new();
+                    let mut at = 0;
+                    for s in spans {
+                        let (p, q) = (at.max(ind) - ind, (at + s.text.len()).max(ind) - ind);
+                        if p < q {
+                            pieces.push((p..q, s.style));
+                        }
+                        at += s.text.len();
+                    }
+                    (ind, crate::whole::Of { from: 0, to: 0, whole: line[ind..].to_string(), pieces })
+                });
+                let carried = |at: usize, t: &str| {
+                    let (ind, of) = cut.as_ref()?;
+                    let from = ind.saturating_sub(at).min(t.len());
+                    (from < t.len()).then(|| Box::new(crate::whole::Of { from, to: t.len(), ..of.clone() }))
+                };
                 let mut used = 0;
+                let mut at = 0;
                 let mut rest = String::new();
                 for s in spans {
                     // (once a span is cut nothing after it is drawn — a narrow one could fit where a wide one
@@ -17937,13 +17996,16 @@ fn chat_markdown_drawn(
                     let t = fit(&s.text, room);
                     used += t.width();
                     rest.push_str(&s.text[t.len()..]);
-                    row.push(Span { cut: None, hint: false, text: t, style: Style { bg: well, ..s.style } });
+                    let cut = carried(at, &t);
+                    at += s.text.len();
+                    row.push(Span { cut, hint: false, text: t, style: Style { bg: well, ..s.style } });
                 }
-                if full > inner {
+                if let Some((_, of)) = &cut {
+                    let mark = crate::whole::mark(of);
                     row.push(Span {
-                        cut: None,
+                        cut: carried(at, mark),
                         hint: false,
-                        text: "…".into(),
+                        text: mark.into(),
                         style: Style { bg: well, fg: rule.fg, ..Style::default() },
                     });
                     used += 1;

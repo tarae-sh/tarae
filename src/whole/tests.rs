@@ -51,8 +51,17 @@ const HELPERS: &[&str] = &["fit_middle", "fit_keeping", "fit_path_left", "fold_h
 
 /// What `term.rs` draws, a file at a time: its name, its lines, and the drawer each line is in.
 fn drawers(files: &[(String, String)]) -> Vec<(&str, Vec<&str>, Vec<&str>)> {
+    drawers_in(files, &[])
+}
+
+/// `drawers`, and the files `also` names (what lays out rows `term.rs` draws: `markdown.rs`).
+fn drawers_in<'a>(
+    files: &'a [(String, String)],
+    also: &[&str],
+) -> Vec<(&'a str, Vec<&'a str>, Vec<&'a str>)> {
     let top = regex::Regex::new(r"^(?:pub(?:\([\w:]+\))? )?fn (\w+)").unwrap();
-    let drawn = files.iter().filter(|(f, _)| f == "term.rs" || f.starts_with("term/"));
+    let drawn =
+        files.iter().filter(|(f, _)| f == "term.rs" || f.starts_with("term/") || also.contains(&f.as_str()));
     drawn
         .map(|(file, text)| {
             let lines: Vec<&str> = text.lines().collect();
@@ -87,6 +96,83 @@ fn bare_cuts(files: &[(String, String)]) -> Vec<String> {
         }
     }
     out
+}
+
+/// A `…` drawn by hand — a literal that's the mark alone (`"…"`, `" …"`, `'…'`) — carries no whole to its print, so
+/// the rule above never saw it (frictions #229: a chat code row's `…` was one, and no card came under the mouse). Each
+/// drawer that draws one (in `term.rs` and what lays out its rows, `markdown.rs`), how many, and what its `…` stands for:
+/// a whole recorded another way, or no text cut. The list only shrinks — a new one is a `whole::fit` or a cut carried on
+/// its spans (`whole::Of`), its `…` written by `whole::mark` (asked of the cut it carries: no literal to count); a line
+/// that hands it to `whole::` doesn't count.
+const HAND: &[(&str, usize, &str)] = &[
+    (
+        "cut",
+        1,
+        "a stacked table's header name (`markdown.rs`) — not yet whole under the mouse: #229's leftover",
+    ),
+    ("print_lit_painted", 1, "the `…`'s length, measured: nothing drawn"),
+    (
+        "reason_rows",
+        1,
+        "the edit review's why from its last sentences: the rest is Claude's words in the chat",
+    ),
+    ("draw_picker", 1, "a live search under way: a sign, no text cut"),
+    ("print_input_line", 2, "a prompt's input scrolled past its ends: its cursor brings the rest into sight"),
+    ("draw_diff_row", 1, "a diff's gap between hunks: lines left out, no text cut"),
+    ("code_line", 1, "a buffer loading: a sign, no text cut"),
+    ("chat_laid", 2, "a thought's rows folded away: its row's cut (`ChatRow.cut`)"),
+    ("told_row", 1, "the `…` of a cut taken off, measured: nothing drawn"),
+    ("turn_window", 2, "the follow card's log, rows folded away: the chat has them, a row each"),
+    ("head_rows", 1, "a `Fit`'s tail: carried with its whole to its print"),
+    (
+        "draw_note_card",
+        1,
+        "a note thread's start folded where its card is short of rows: `space N` lists it whole",
+    ),
+];
+
+/// Each drawer's `…` drawn by hand and how many, in the order they're met.
+fn hand_marks(files: &[(String, String)]) -> Vec<(String, usize)> {
+    let mark = regex::Regex::new(r#""\s*…\s*"|'…'"#).unwrap();
+    let mut out: Vec<(String, usize)> = Vec::new();
+    for (_, lines, drawer) in drawers_in(files, &["markdown.rs"]) {
+        for (line, within) in lines.iter().zip(drawer) {
+            let code = !line.trim_start().starts_with("//") && !line.contains("whole::");
+            let n = if code && !HELPERS.contains(&within) { mark.find_iter(line).count() } else { 0 };
+            match out.last_mut() {
+                _ if n == 0 => {}
+                Some(last) if last.0 == within => last.1 += n,
+                _ => out.push((within.to_string(), n)),
+            }
+        }
+    }
+    out
+}
+
+/// Every `…` drawn by hand is named (`HAND`), its count as many as there are: a new one fails (carry its whole), one gone
+/// fails until its count is lowered.
+#[test]
+fn every_mark_drawn_by_hand_is_named_and_the_list_only_shrinks() {
+    let counted = hand_marks(&crate::sim::lint::sources());
+    let listed: Vec<(String, usize)> = HAND.iter().map(|o| (o.0.to_string(), o.1)).collect();
+    assert_eq!(
+        counted, listed,
+        "a `…` drawn by hand, by drawer — a new one: carry its whole (`whole::Of`); one gone: lower `HAND`"
+    );
+}
+
+/// Broken once: a code row's `…` pushed as a span, as #229's was, counts — in `markdown.rs` too —; one in a comment, one
+/// handed to `whole::` and one in a fitting helper don't.
+#[test]
+fn a_mark_drawn_by_hand_counts() {
+    let src = "fn draw_x(out: &mut W) {\n    row.push(Span { text: \"…\".into() });\n    // (\"…\" in a comment)\n    \
+               let t = crate::whole::fit_part(&format!(\"{} …\", a), 4, b);\n    queue!(out, Print(\" …\"))?;\n}\n\
+               fn fit_keeping(s: &str) -> String {\n    \"…\".into()\n}\n";
+    let files = [("term.rs".to_string(), src.to_string())];
+    assert_eq!(hand_marks(&files), [("draw_x".to_string(), 2)]);
+    let laid = [("markdown.rs".to_string(), "fn cut(s: &str) {\n    out.push('…');\n}\n".to_string())];
+    assert_eq!(hand_marks(&laid), [("cut".to_string(), 1)]);
+    assert!(hand_marks(&[("chat.rs".to_string(), src.to_string())]).is_empty(), "only what's drawn");
 }
 
 /// The cuts `fit_own` makes — a plain string, nothing carried to its print, so what's wrapped in it passes the rule above
@@ -1501,6 +1587,176 @@ fn a_folded_thoughts_whole_keeps_a_cut_code_row() {
     let doc = transcript_text(&ed);
     assert!(doc.contains(&code), "the transcript keeps the code row whole:\n{doc}");
     assert!(!doc.contains("\"knot\", …"), "no cut row's `…` in the transcript:\n{doc}");
+}
+
+/// The code row of an answer the chat cuts with `…` (frictions #229).
+const CODE: &str = "    let counts: HashMap<String, Vec<Thread>> = threads.into_iter().fold(HashMap::new(), |mut acc, t| { \
+                    acc.entry(t.owner.clone()).or_default().push(t); acc }); // farewell";
+
+/// An answer with `CODE` in a Rust block.
+fn code_answer() -> Editor {
+    // (its grammar loaded first, so the block is painted at once — Rust's is in every test build: `dev = true`)
+    let rust = crate::syntax::spec("rust").expect("rust's pack");
+    crate::syntax::Loader::global().load(rust).expect("rust's grammar");
+    let answer = format!("Counted by owner:\n\n```rust\nfn count() {{\n{CODE}\n}}\n```\n\nThat's all.");
+    let mut ed = chat(vec![Msg::new(Role::User, "count them", ""), Msg::new(Role::Assistant, answer, "")]);
+    ed.workspace.viewer.at = crate::workspace::At::Code;
+    frame(&mut ed);
+    ed
+}
+
+/// frictions #229: a chat code block's line cut with `…` is whole under the mouse — its card's text where the code starts
+/// (its indentation left out, its rows after the first hanging under that start, as a card wraps code), the line in its
+/// syntax colours as drawn; the row stays one row, nothing moves; and a press on the card puts the transcript's cursor
+/// on that line, as a press on its text does.
+#[test]
+fn a_cut_code_row_in_the_chat_is_whole_under_the_mouse() {
+    let mut ed = code_answer();
+    let before = frame(&mut ed);
+    let (y, a, b, w) = cut_text(&ed, "farewell").unwrap_or_else(|| panic!("recorded as cut:\n{before}"));
+    assert_eq!(w.text, CODE.trim_start(), "the line whole, from its indentation's end");
+    let row: Vec<char> = before.lines().nth(y).unwrap_or_default().chars().collect();
+    assert_eq!(row.get(a), Some(&'l'), "its spot starts where the code does: {row:?}");
+    assert_eq!(row.get(b - 1), Some(&'…'), "and ends at the `…`: {row:?}");
+    assert_eq!(cut_spots_on(&ed, y), 1, "one spot a row, whatever its colours");
+    // (its colours: every byte of it in a piece, the syntax's more than one)
+    let covered: usize = w.pieces.iter().map(|(r, _)| r.len()).sum();
+    assert_eq!(covered, w.text.len(), "{:?}", w.pieces);
+    let styles: std::collections::HashSet<_> = w.pieces.iter().map(|p| format!("{:?}", p.1.fg)).collect();
+    assert!(styles.len() > 1, "in its syntax colours: {:?}", w.pieces);
+    ed.handle_event(Event::Hover(a as u16 + 3, y as u16));
+    assert!(!ed.unchanged, "taken in hand: a frame");
+    let screen = frame(&mut ed);
+    assert!(screen.contains("// farewell"), "whole:\n{screen}");
+    let (cx, top, _, h) = card(&ed).expect("its card");
+    assert_eq!((cx + 1, top), (a, y), "its text where the code starts, on the cut row");
+    assert!(h > 1, "wrapped:\n{screen}");
+    assert_eq!(
+        ed.screen.cut_card.borrow().as_ref().map(|c| c.from),
+        Some(cx),
+        "its rows hang under the code's start"
+    );
+    nothing_moved(&before, &screen, (cx, top, 0, h), H as usize);
+    // (a press on it: the transcript's cursor on the code's line)
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    click(&mut ed, a + 6, y + 1);
+    let line = crate::chatdoc::cursor_line(&ed).expect("the transcript's cursor");
+    let doc = transcript_text(&ed);
+    assert_eq!(doc.lines().nth(line).map(str::trim), Some(CODE.trim()), "on the code's line:\n{doc}");
+}
+
+/// frictions #229: a signature too long for its card, folded at its front to `…` to keep the active parameter in sight,
+/// is whole under the mouse — its start there too.
+#[test]
+fn a_signature_folded_at_its_front_is_whole_under_the_mouse() {
+    let mut ed = Editor::new(Config::default());
+    ed.docs[0].text = ropey::Rope::from_str("\n\n\n\nfn main() { weave() }\n");
+    feed(&mut ed, "4jw");
+    let params: Vec<String> = (1..=12).map(|i| format!("strand_{i}: &Strand")).collect();
+    let label = format!("fn weave(first_param: Loom, {}) -> Cloth", params.join(", "));
+    let active = label.find("strand_12").map(|a| (a, a + "strand_12: &Strand".len()));
+    let doc = ed.doc().id;
+    ed.signature = Some(crate::signature::Signature {
+        doc,
+        label: label.clone(),
+        active,
+        index: 0,
+        count: 1,
+        docs: String::new(),
+    });
+    let before = frame(&mut ed);
+    assert!(!before.contains("first_param"), "folded at its front:\n{before}");
+    let (y, a, _, w) = cut_text(&ed, "first_param").unwrap_or_else(|| panic!("recorded as cut:\n{before}"));
+    assert_eq!(w.text, label);
+    assert!(!w.pieces.is_empty(), "in its colours");
+    ed.handle_event(Event::Hover(a as u16 + 4, y as u16));
+    let screen = frame(&mut ed);
+    assert!(screen.contains("first_param"), "whole:\n{screen}");
+}
+
+/// #229's review: a signature too long for its card with its active parameter near its start (or none) is cut at its
+/// end — to its `…`, whole under the mouse, its end there too.
+#[test]
+fn a_signature_cut_at_its_end_is_whole_under_the_mouse() {
+    let params: Vec<String> = (1..=12).map(|i| format!("strand_{i}: &Strand")).collect();
+    let label = format!("fn weave(first_param: Loom, {}) -> Cloth", params.join(", "));
+    let near = label.find("first_param").map(|a| (a, a + "first_param: Loom".len()));
+    for active in [near, None] {
+        let mut ed = Editor::new(Config::default());
+        ed.docs[0].text = ropey::Rope::from_str("\n\n\n\nfn main() { weave() }\n");
+        feed(&mut ed, "4jw");
+        let doc = ed.doc().id;
+        let sig = crate::signature::Signature {
+            doc,
+            label: label.clone(),
+            active,
+            index: 0,
+            count: 1,
+            docs: "".into(),
+        };
+        ed.signature = Some(sig);
+        let before = frame(&mut ed);
+        assert!(before.contains("fn weave(first_param"), "its start in sight:\n{before}");
+        assert!(!before.contains("Cloth"), "cut at its end:\n{before}");
+        let (y, a, b, w) = cut_text(&ed, "Cloth").unwrap_or_else(|| panic!("recorded as cut:\n{before}"));
+        assert_eq!(w.text, label);
+        assert!(!w.pieces.is_empty(), "in its colours");
+        let row: Vec<char> = before.lines().nth(y).unwrap_or_default().chars().collect();
+        assert_eq!(row.get(a), Some(&'f'), "its spot from the signature's start: {row:?}");
+        assert_eq!(row.get(b - 1), Some(&'…'), "to the `…` at its end: {row:?}");
+        ed.handle_event(Event::Hover(a as u16 + 4, y as u16));
+        let screen = frame(&mut ed);
+        assert!(screen.contains("Cloth"), "whole:\n{screen}");
+    }
+}
+
+/// #229's review: spans side by side carrying one cut are one spot wherever they're printed — the follow card's thread
+/// too (`follow_thread` → `chat_spans_at`, no `lift`): a cut code row there is one spot, not one a syntax colour.
+#[test]
+fn a_cut_code_row_in_the_follow_card_is_one_spot() {
+    let mut ed = code_answer();
+    let c = chat_of(&mut ed);
+    c.unfolded = false;
+    c.follow.on = true;
+    c.state = crate::chat::State::Writing;
+    assert!(c.compact(), "follow's card, the chat minimized");
+    let screen = frame(&mut ed);
+    let spots = ed.screen.cut_spots.borrow();
+    let on_card: Vec<_> = spots
+        .iter()
+        .filter(|s| matches!(&s.3, Cut::Text(w) if w.on == On::Follow && w.text.contains("farewell")))
+        .collect();
+    assert_eq!(on_card.len(), 1, "one spot, whatever its colours:\n{screen}");
+    let (y, a, b) = (on_card[0].0, on_card[0].1, on_card[0].2);
+    let row: Vec<char> = screen.lines().nth(y).unwrap_or_default().chars().collect();
+    assert_eq!(row.get(a), Some(&'l'), "from where the code starts: {row:?}");
+    assert_eq!(row.get(b - 1), Some(&'…'), "to the `…`: {row:?}");
+}
+
+/// #229's review: a row lifted carries one cut — a second, different one on the same row would be drawn as `…` with
+/// nothing under the mouse, so it can't pass unseen.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "a second cut on one row")]
+fn a_second_cut_on_one_lifted_row_is_caught() {
+    let span = |text: &str, whole: &str| crate::markdown::Span {
+        cut: Some(Box::new(crate::whole::Of {
+            from: 0,
+            to: text.len(),
+            whole: whole.into(),
+            pieces: Vec::new(),
+        })),
+        hint: false,
+        text: text.into(),
+        style: Style::default(),
+    };
+    let mut spans = [span("let a…", "let a = 1;"), span(" let b…", "let b = 2;")];
+    crate::whole::lift(&mut spans, On::Transcript);
+}
+
+/// The cut spots recorded on row `y` of the last frame.
+fn cut_spots_on(ed: &Editor, y: usize) -> usize {
+    ed.screen.cut_spots.borrow().iter().filter(|s| s.0 == y).count()
 }
 
 /// frictions #197b: a thought under way past its eight rows (`… ` at its first row in sight, its start folded away above)

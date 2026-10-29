@@ -326,12 +326,14 @@ pub struct Fit {
     cut: Option<Of>,
 }
 
-/// Where a text's cut part is (its bytes `[from, to)`) and the whole it was cut from.
+/// Where a text's cut part is (its bytes `[from, to)`) and the whole it was cut from — `pieces`, its colours as drawn
+/// (byte ranges of `whole`: a code row's syntax, #229); none, the style it's printed in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Of {
     pub from: usize,
     pub to: usize,
     pub whole: String,
+    pub pieces: Vec<(std::ops::Range<usize>, Style)>,
 }
 
 impl Fit {
@@ -377,7 +379,7 @@ impl Fit {
         let part = |text: &str, lo: usize| {
             let cut = self.cut.as_ref().and_then(|of| {
                 let (from, to) = (of.from.max(lo) - lo, of.to.min(lo + text.len()).saturating_sub(lo));
-                (from < to).then(|| Of { from, to, whole: of.whole.clone() })
+                (from < to).then(|| Of { from, to, whole: of.whole.clone(), pieces: of.pieces.clone() })
             });
             Fit { text: text.to_string(), cut }
         };
@@ -421,7 +423,8 @@ impl Fit {
         let (lead, tail) =
             (self.text.get(from..was.from).unwrap_or(""), self.text.get(was.to..).unwrap_or(""));
         let whole = format!("{lead}{}{tail}", was.whole);
-        Fit { cut: Some(Of { from, to: shown.len(), whole }), text: shown }
+        let pieces = was.pieces.iter().map(|(r, s)| (r.start + lead.len()..r.end + lead.len(), *s)).collect();
+        Fit { cut: Some(Of { from, to: shown.len(), whole, pieces }), text: shown }
     }
 }
 
@@ -474,8 +477,12 @@ pub fn fit_own(text: &str, width: usize) -> String {
 
 /// `shown`, a cut of `whole` made another way (a list row's middle) — or `whole` itself, not cut.
 pub(crate) fn of(shown: String, whole: &str) -> Fit {
-    let cut =
-        (shown != whole && !shown.is_empty()).then(|| Of { from: 0, to: shown.len(), whole: whole.into() });
+    let cut = (shown != whole && !shown.is_empty()).then(|| Of {
+        from: 0,
+        to: shown.len(),
+        whole: whole.into(),
+        pieces: Vec::new(),
+    });
     Fit { text: shown, cut }
 }
 
@@ -498,7 +505,8 @@ pub fn at_in_hand(
 }
 
 /// `printed` put on `on` at (`x`, `y`) in `style` with the cut it carries (`cut`, a span's): recorded where its cut part
-/// stands, its card in `cols`.
+/// stands, its card in `cols` — one cut carried by spans side by side (a code row's colours, #229) one spot, from the
+/// first's start.
 pub fn placed(
     on: On,
     (printed, cut): (&str, Option<&Of>),
@@ -510,9 +518,51 @@ pub fn placed(
     let Some((of, (a, b))) = cut.and_then(|of| Some((of, part_at(printed, of, x)?))) else { return };
     // (in the colours it's drawn in — faded where its region hasn't the keys)
     let style = crate::term::drawn_style(style);
-    let w =
-        Whole { on, text: of.whole.clone(), style, pieces: Vec::new(), cols, state: None, float: drawn_in() };
-    PLACED.with_borrow_mut(|p| p.push(((y, a, b), w, hand)));
+    let pieces = of.pieces.clone();
+    let w = Whole { on, text: of.whole.clone(), style, pieces, cols, state: None, float: drawn_in() };
+    PLACED.with_borrow_mut(|p| match p.last_mut() {
+        Some(((ly, _, lb), lw, _))
+            if *ly == y && *lb == a && (lw.on, &lw.text, &lw.pieces) == (on, &w.text, &w.pieces) =>
+        {
+            *lb = b
+        }
+        _ => p.push(((y, a, b), w, hand)),
+    });
+}
+
+/// The cut `spans` carry (`placed`'s: one carried by spans side by side, a code row's), taken off them onto the row
+/// they make — its columns (from, to; its card's text starts at `from`) and its whole on `on` — for a row that records
+/// its own cut (`chat::ChatRow.cut`: in hand where the view mode's cursor is too).
+pub fn lift(spans: &mut [crate::markdown::Span], on: On) -> Option<(usize, usize, Whole)> {
+    use unicode_width::UnicodeWidthStr;
+    let (mut at, mut lifted) = (0, None::<(usize, usize, Whole)>);
+    for s in spans.iter_mut() {
+        let w = s.text.width();
+        if let Some(of) = s.cut.take()
+            && let Some((a, b)) = part_at(&s.text, &of, at)
+        {
+            match &mut lifted {
+                Some(l) if l.2.text == of.whole => l.1 = b,
+                // (a row lifted is one line's: the chat's markdown rows carry a cut only on a code row, one line
+                // and its whole — `chat_markdown_drawn` — and a row of a folded thought is one of those rows)
+                Some(l) => debug_assert_eq!(l.2.text, of.whole, "a second cut on one row"),
+                None => {
+                    let (text, pieces) = (of.whole, of.pieces);
+                    let w =
+                        Whole { on, text, style: s.style, pieces, cols: (0, 0), state: None, float: None };
+                    lifted = Some((a, b, w));
+                }
+            }
+        }
+        at += w;
+    }
+    lifted
+}
+
+/// The `…` of a cut whose whole `_of` carries — asked of it, so a drawer that writes its `…` through this is one
+/// `every_mark_drawn_by_hand_is_named_and_the_list_only_shrinks` tells from a bare one (#229's review).
+pub fn mark(_of: &Of) -> &'static str {
+    "…"
 }
 
 /// The columns of `printed`'s cut part `of`, printed from column `x` — None where nothing of it is drawn.
@@ -555,7 +605,8 @@ pub fn cut_at(
     };
     let float = drawn_in();
     let style = crate::term::drawn_style(style);
-    let w = Whole { on, text: of.whole.clone(), style, pieces: Vec::new(), cols, state: None, float };
+    let pieces = of.pieces.clone();
+    let w = Whole { on, text: of.whole.clone(), style, pieces, cols, state: None, float };
     record(ed, (y, a, b), w, hand);
 }
 

@@ -423,6 +423,11 @@ const LONG_QUEUED: &str = "Before the next step, read every place the strands ar
 /// #187: what's cut is whole on a card over it, one way — the chat's view mode's cursor on a cut `run` row (its card on
 /// the selected row's ground, the cursor kept); the side panel with the keys, its selected long name; a queued message
 /// past a card's rows, `↓ N more lines` under the mouse; then pressed — the message whole in a read-only buffer.
+/// #229: an answer's Rust block, its long line cut with `…` at the chat's edge — the pointer on it: the line whole on a
+/// card over it, in its colours, its rows after the first under where the code starts.
+const CUT_CODE_KEYS: &[&str] =
+    &["@1", " ", "l", "@1", "count them", "\r", "@30?That's all.", "@1", "@hover+6?let counts", "@1"];
+
 const CUT_KEYS: [&[&str]; 4] = [
     &["@1", " ", "l", "@1", "tidy it", "\r", "@30?That is all.", "@1", "\x1b", "/", "cargo fmt", "\r", "@1"],
     &["@1", " ", "e", "@?a_component", "@1"],
@@ -2489,6 +2494,7 @@ const SCENES: &[Scene] = &[
     Scene { name: "cut-hand-chat", claude: "cuthand", files: MAIN, keys: CUT_KEYS[0] },
     Scene { name: "cut-hand-list", claude: "idle", files: LONG_NAME, keys: CUT_KEYS[1] },
     Scene { name: "cut-more", claude: "strip", files: MAIN, keys: CUT_KEYS[2] },
+    Scene { name: "cut-code-chat", claude: "cutcode", files: MAIN, keys: CUT_CODE_KEYS },
     Scene { name: "cut-more-press", claude: "strip", files: MAIN, keys: CUT_KEYS[3] },
     Scene { name: "working-waits-chat", claude: "card", files: MAIN, keys: WORKING_KEYS[3] },
     Scene { name: "working-waits-follow", claude: "card", files: MAIN, keys: WORKING_KEYS[4] },
@@ -4146,6 +4152,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "home-docs" => turn.home_docs()?,
             "readlast" => turn.read_last()?,
             "cuthand" => turn.cut_hand()?,
+            "cutcode" => turn.cut_code()?,
             "startone" | "startthree" | "startlong" => turn.sessions_start(&script[5..])?,
             "startgo" => turn.sessions_started(false)?,
             "startgo3" => turn.sessions_started(true)?,
@@ -4900,6 +4907,18 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             self.line(json!({"type": "user", "message": {"role": "user", "content": [result]}}))?;
         }
         self.words("That is all.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// #229: an answer with a Rust block whose one long line the chat cuts with `…`.
+    fn cut_code(&mut self) -> io::Result<()> {
+        self.words("Counted by owner, in one pass:")?;
+        self.text(
+            "\n\n```rust\nfn count(threads: Vec<Thread>) -> HashMap<String, Vec<Thread>> {\n    let counts: \
+             HashMap<String, Vec<Thread>> = threads.into_iter().fold(HashMap::new(), |mut acc, t| { \
+             acc.entry(t.owner.clone()).or_default().push(t); acc });\n    counts\n}\n```\n\n",
+        )?;
+        self.words("That's all.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 
