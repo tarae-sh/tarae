@@ -546,6 +546,9 @@ pub struct Screen {
     /// The floating docs card's last page this frame — the first row it shows scrolled to its end (`term::draw_float`
     /// stops there): past it a key moves nothing, said.
     pub popup_end: std::cell::Cell<Option<usize>>,
+    /// The pointer's hover card this frame (`hoverrest.rs`) and its last page — as `popup`'s, for the wheel.
+    pub rest_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
+    pub rest_end: std::cell::Cell<Option<usize>>,
     /// Clickable spots in the chat pane: (row, start col, end col, where it points) — drawing fills them in.
     pub chat_links: std::cell::RefCell<Vec<(usize, usize, usize, crate::chat::Link)>>,
     /// The chat's rows of tool calls: (row, call id) — a click goes to that call's replay stop.
@@ -886,6 +889,8 @@ pub struct Editor {
     pub popup_name: String,
     /// How many lines the floating text is scrolled down (C-d / C-u).
     pub popup_scroll: usize,
+    /// Where the pointer rests on a name, and its hover card once answered (`hoverrest.rs`, #233).
+    pub hover_rest: crate::hoverrest::State,
     /// Insert-mode completion list.
     pub completion: Option<crate::completion::Completion>,
     /// Function signature floating above the cursor (on `(`·`,` in insert mode).
@@ -1371,6 +1376,7 @@ impl Editor {
             lsp: LspState::default(),
             popup: None,
             popup_name: String::new(),
+            hover_rest: Default::default(),
             popup_scroll: 0,
             completion: None,
             signature: None,
@@ -2815,6 +2821,8 @@ impl Editor {
             // (the surface under the pointer lights its lines half, a line that drags itself — a frame only when
             // either changed: a move within one draws nothing)
             let u = self.mouse_under(crate::event::MouseKind::Down, x, y);
+            // (resting on a name: its hover asked once it's stayed — the card of the one left gone)
+            let rest = crate::hoverrest::hovered(self, u, x, y);
             let edge = match u.part {
                 crate::mouse::Part::Border(b) => Some(b),
                 _ => None,
@@ -2823,7 +2831,7 @@ impl Editor {
             self.pointer = Some((x, y));
             let lit = edge != std::mem::replace(&mut self.border_hover, edge)
                 || over != std::mem::replace(&mut self.pointer_over, over);
-            self.unchanged = !(tag || mark || cut || word || lit);
+            self.unchanged = !(tag || mark || cut || word || lit || rest);
             return;
         }
         // Input means the terminal has focus, whatever it said last (a focus-in lost on the way)
@@ -2831,6 +2839,8 @@ impl Editor {
         let before = input.then(|| crate::edits::before_input(self));
         if input {
             self.unfocused = false;
+            // (your hands elsewhere: the pointer's hover card goes — but for the wheel over it)
+            crate::hoverrest::input(self, &ev);
         }
         // (what it asks for — now, or through jobs it starts — was asked by this input: the count it's about to
         // take, first thing in `handle_key`/`handle_paste`, at a click's press — #205)
@@ -2854,6 +2864,7 @@ impl Editor {
                     // (the pointer gone with the focus: nothing lit for it)
                     (self.pointer_over, self.border_hover, self.pointer) = (None, None, None);
                     crate::presence::away(self);
+                    crate::hoverrest::away(self);
                     // (the mouse gone with the focus: a row it held whole folds — `whole.rs`)
                     self.cut_hover = None;
                     self.word_hover.set(None);
@@ -3533,7 +3544,15 @@ impl Editor {
                     _ => {}
                 }
             }
-            // The wheel over the floating docs (hover, `space g p`) scrolls them
+            // The wheel over the floating docs (hover, `space g p`, the pointer's rest) scrolls them
+            (S::Popup, _) if crate::hoverrest::over_card(self, m.x as usize, m.y as usize) => {
+                took_mouse(S::Popup);
+                match m.kind {
+                    K::ScrollDown => crate::hoverrest::scroll(self, 3),
+                    K::ScrollUp => crate::hoverrest::scroll(self, -3),
+                    _ => {}
+                }
+            }
             (S::Popup, _) => {
                 took_mouse(S::Popup);
                 let lines = self.popup.as_ref().map_or(0, Vec::len);

@@ -736,6 +736,8 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         completion_rows: Default::default(),
         slash_card: Default::default(),
         slash_rows: Default::default(),
+        rest_card: Default::default(),
+        rest_end: Default::default(),
         note_card: Default::default(),
         thought_card: Default::default(),
         ask_card: Default::default(),
@@ -5192,6 +5194,8 @@ fn draw(
     if let (Some(lines), Some(at)) = (&editor.popup, text_cursor) {
         draw_popup(lines, at, ui, editor, lay, out)?;
     }
+    // (the pointer's hover card: `K`'s look, at the name it rests on — after the cursor's cards, the mouse's first)
+    draw_rest_card(editor, ui, lay, out)?;
     // (the list first: the signature goes where it isn't)
     if let (Some(c), Some(at)) = (&editor.completion, text_cursor) {
         draw_completion(c, at, ui, editor, lay, out)?;
@@ -20255,40 +20259,110 @@ fn draw_popup(
     lay: &Layout,
     out: &mut impl Write,
 ) -> io::Result<()> {
-    const CAP: usize = 20;
     editor.screen.popup.set(None);
     editor.screen.popup_end.set(None);
     let pane = focused_pane(editor, lay);
-    let (left, right) = (pane.x0, pane.edit_w);
-    let raised = card_style(ui, editor, "ui.popup");
-    let card = on_ground(ui, raised);
-    let faint = Style { fg: ui.linenr.fg, ..card };
-    let (container, body) = docs_container(lines);
-    let inner = docs_width(&body).clamp(24, 96).min(right.saturating_sub(left).saturating_sub(4));
-    if inner < 8 {
-        return Ok(());
-    }
-    let rows = docs_rows(&body, inner, raised.bg, ui);
-    // Never over the cursor's row: below if it fits, else above; if neither, the larger side, cut. Below, a row of air
-    // over what's under the code (the status line, a slot's line)
-    let (top, bottom) = (pane.text_top as usize, pane.text_top as usize + pane.text_rows);
-    let cy = cy as usize;
-    let (below, above) = (bottom.saturating_sub(cy + 2), cy.saturating_sub(top));
-    let want = rows.len().min(CAP) + 2;
-    let down = want <= below || (want > above && below >= above);
-    let room = if down { below } else { above };
-    if room < 3 {
-        return Ok(());
-    }
-    let shown = rows.len().min((room - 2).min(CAP));
-    let h = shown + 2;
-    let y0 = if down { cy + 1 } else { cy - h };
     // (the text under the name: its first cell at the name's)
     let doc = editor.doc();
     let at = doc.selection().primary().cursor(&doc.text);
     let start = crate::completion::word_start(&doc.text, at);
     let before = doc.text.byte_slice(start..at).to_string().width();
-    let x0 = (cx as usize).saturating_sub(before + 2).min(right.saturating_sub(inner + 4)).max(left);
+    let (container, body) = docs_container(lines);
+    let name = (cx as usize).saturating_sub(before);
+    let by = (name, cy as usize);
+    if let Some((rect, end)) =
+        docs_popup(&body, container, &editor.popup_name, editor.popup_scroll, by, &pane, ui, editor, out)?
+    {
+        editor.screen.popup.set(Some(rect));
+        editor.screen.popup_end.set(Some(end));
+    }
+    Ok(())
+}
+
+/// The pointer's hover card (`hoverrest.rs`, #233): `K`'s, at the name the pointer rests on — the problems underlined
+/// there first, as the cursor's card says them, then the docs; clear of the pointer's row as `K`'s is of the cursor's.
+/// Never while `K`'s is up (one card at a time), nor once its pane or document moved on.
+fn draw_rest_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io::Result<()> {
+    editor.screen.rest_card.set(None);
+    editor.screen.rest_end.set(None);
+    let Some(rest) = editor.hover_rest.rest.as_ref().filter(|_| editor.popup.is_none()) else {
+        return Ok(());
+    };
+    let Some(card) = rest.shown(editor) else { return Ok(()) };
+    let spot = &rest.spot;
+    let Some(pane) = panes(editor, lay).into_iter().find(|p| p.0 == spot.pane).map(|p| p.2) else {
+        return Ok(());
+    };
+    let Some(doc) = editor.docs.iter().find(|d| d.id == spot.doc) else { return Ok(()) };
+    let w = &spot.word;
+    let mut here: Vec<_> = doc
+        .lsp
+        .diagnostics
+        .iter()
+        .filter(|d| (d.from < w.end && w.start < d.to) || (d.from == d.to && w.contains(&d.from)))
+        .collect();
+    crate::sorting::by_key(&mut here, |d| (d.severity, d.from));
+    let mut body = diagnostic_lines(&here, editor, ui);
+    let (container, docs) = docs_container(&card.docs);
+    if !body.is_empty() && !docs.is_empty() {
+        body.push(crate::markdown::Line::Blank);
+    }
+    body.extend(docs);
+    if body.is_empty() {
+        return Ok(());
+    }
+    let name = match spot.name {
+        true => doc.text.byte_slice(w.clone()).to_string(),
+        false => "problem".to_string(),
+    };
+    if let Some((rect, end)) =
+        docs_popup(&body, container, &name, card.scroll, spot.cell, &pane, ui, editor, out)?
+    {
+        editor.screen.rest_card.set(Some(rect));
+        editor.screen.rest_end.set(Some(end));
+    }
+    Ok(())
+}
+
+/// A docs card by the name whose first cell is (`nx`, `cy`) in `pane` (#234's look): below its row if it fits, else
+/// above; at most 20 rows, scrolled `scroll`; framed and named `name` (the docs' `container` after it, faint), how many
+/// lines are past it in its bottom line. Where it went and its last page, if it fit.
+#[allow(clippy::too_many_arguments)]
+fn docs_popup(
+    body: &[crate::markdown::Line],
+    container: Option<String>,
+    name: &str,
+    scroll: usize,
+    (nx, cy): (usize, usize),
+    pane: &Layout,
+    ui: &Ui,
+    editor: &Editor,
+    out: &mut impl Write,
+) -> io::Result<Option<(Rect4, usize)>> {
+    const CAP: usize = 20;
+    let (left, right) = (pane.x0, pane.edit_w);
+    let raised = card_style(ui, editor, "ui.popup");
+    let card = on_ground(ui, raised);
+    let faint = Style { fg: ui.linenr.fg, ..card };
+    let inner = docs_width(body).clamp(24, 96).min(right.saturating_sub(left).saturating_sub(4));
+    if inner < 8 {
+        return Ok(None);
+    }
+    let rows = docs_rows(body, inner, raised.bg, ui);
+    // Never over the name's row: below if it fits, else above; if neither, the larger side, cut. Below, a row of air
+    // over what's under the code (the status line, a slot's line)
+    let (top, bottom) = (pane.text_top as usize, pane.text_top as usize + pane.text_rows);
+    let (below, above) = (bottom.saturating_sub(cy + 2), cy.saturating_sub(top));
+    let want = rows.len().min(CAP) + 2;
+    let down = want <= below || (want > above && below >= above);
+    let room = if down { below } else { above };
+    if room < 3 {
+        return Ok(None);
+    }
+    let shown = rows.len().min((room - 2).min(CAP));
+    let h = shown + 2;
+    let y0 = if down { cy + 1 } else { cy - h };
+    let x0 = nx.saturating_sub(2).min(right.saturating_sub(inner + 4)).max(left);
     // (a line inside the gutter would read as a digit of the numbers it stands beside: from the pane's edge then, over
     // the whole gutter, its right line where it was)
     let (x0, inner) = match x0 > left && x0 <= left + pane.gutter {
@@ -20298,8 +20372,8 @@ fn draw_popup(
     let width = inner + 4;
     // Scrolled as far as asked, but never past its last page
     let end = rows.len() - shown;
-    let skip = editor.popup_scroll.min(end);
-    let mut name = pane_names(ui, editor, card, &[&editor.popup_name], 0);
+    let skip = scroll.min(end);
+    let mut name = pane_names(ui, editor, card, &[name], 0);
     if let Some(c) = container {
         name.push((" ── ".into(), frame_line(ui, card)));
         name.push((c, faint));
@@ -20308,9 +20382,7 @@ fn draw_popup(
     let rect = (x0, y0, width, h);
     let on = crate::mouse::Surface::Popup;
     draw_docs_card(out, ui, editor, on, card, rect, &rows[skip..skip + shown], &name, &foot)?;
-    editor.screen.popup.set(Some(rect));
-    editor.screen.popup_end.set(Some(end));
-    Ok(())
+    Ok(Some((rect, end)))
 }
 
 /// The language server's docs as its cards lay them (#234), as the chat lays an answer: no rule (the code's wells set
@@ -20583,7 +20655,7 @@ fn draw_doc_box(
 }
 
 /// Whether diagnostic `d` underlines the cell at `pos` (an empty range marks the one cell at its start).
-fn underlines(d: &crate::lsp::Diagnostic, pos: usize) -> bool {
+pub(crate) fn underlines(d: &crate::lsp::Diagnostic, pos: usize) -> bool {
     d.from <= pos && (pos < d.to || (d.from == d.to && pos == d.from))
 }
 
@@ -20905,6 +20977,7 @@ fn draw_diagnostic_card(
 ) -> io::Result<()> {
     let busy = editor.mode == Mode::Insert
         || editor.popup.is_some()
+        || editor.hover_rest.rest.as_ref().is_some_and(|r| r.shown(editor).is_some())
         || editor.completion.is_some()
         || editor.signature.is_some()
         || editor.picker.is_some()

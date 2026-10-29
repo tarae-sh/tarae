@@ -50,6 +50,8 @@ pub struct EditorConfig {
     pub inline_diagnostics: bool,
     /// Cursor on an underline whose message doesn't fit at the line end → the message in full in a card.
     pub cursor_diagnostics: bool,
+    /// The pointer resting on a name in the code → the language server's hover there, with its problems (`hoverrest.rs`).
+    pub mouse_hover: bool,
     /// Insert mode: an opener gets its closer (`pairs.rs`).
     pub auto_pairs: bool,
     /// Long lines as several rows: "prose" (Markdown, commit messages, plain text) | "always" | "never".
@@ -148,6 +150,7 @@ impl Default for EditorConfig {
             restore_files: false,
             inline_diagnostics: true,
             cursor_diagnostics: true,
+            mouse_hover: true,
             auto_pairs: true,
             soft_wrap: "always".into(),
             zellij_hints: "auto".into(),

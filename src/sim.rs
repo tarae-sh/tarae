@@ -39,6 +39,7 @@ mod folders;
 mod follow_pane;
 mod gitbase;
 mod hosts;
+mod hoverrest;
 mod idlecompact;
 mod instructions;
 mod keepclose;

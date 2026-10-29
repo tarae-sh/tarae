@@ -266,6 +266,13 @@ pub static SETTINGS: &[Setting] = &[
         set: |c, v| c.cursor_diagnostics = b(v),
     },
     Setting {
+        path: "editor.mouse-hover",
+        kind: Kind::Bool,
+        doc: "The pointer resting on a name in the code: its docs and problems in a card, as K shows them (gone as it leaves)",
+        get: |c| Value::from(c.mouse_hover),
+        set: |c, v| c.mouse_hover = b(v),
+    },
+    Setting {
         path: "editor.soft-wrap",
         kind: Kind::Enum(&["always", "prose", "never"]),
         doc: "Show long lines as several rows: always, in prose only (Markdown, commit messages, plain text), or never",

@@ -533,7 +533,10 @@ cursor or document moved on are dropped.
   gets 2 s, then the file is saved as is) · server-sent edits, including creating, moving, and deleting files — one undo
   step per file
 - `gd` definition · `gD` declaration · `gy` type definition · `gi` implementation · `gr` references · `space k` hover
-  — docs render as Markdown with code in its own colors ([screenshot](screenshots/m3-hover.png)). A list of
+  — docs render as Markdown with code in its own colors ([screenshot](screenshots/m3-hover.png)). The pointer resting
+  on a name about half a second shows the same card at that name, the problems underlined there first; it never takes
+  the keys, the wheel over it scrolls it, and it goes as the pointer leaves the name and the card
+  (`editor.mouse-hover`). A list of
   places (`gr`, or several `gi`) shows each one's code: the line trimmed, the name standing out, line numbers
   right-aligned, by file then line. For `gr` the declaration (the server's own definition) comes first, marked `decl`.
   While the server is still starting or loading the project, `gr` doesn't wait: the name's text matches (whole

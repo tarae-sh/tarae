@@ -488,6 +488,7 @@ impl Editor {
             && self.picker.is_none()
             && !s.thought_card.get().or(s.chat_mini.get()).is_some_and(|r| inside(r, x, y))
             && !(wheel && self.popup.is_some() && s.popup.get().is_some_and(|r| inside(r, x, y)))
+            && !(wheel && crate::hoverrest::over_card(self, x, y))
         {
             let hint = hint_on(S::Ask).filter(|_| down);
             return at(S::Ask, hint.map_or(Part::Blank, |i| Part::Word(Word::Does(i))));
@@ -591,7 +592,11 @@ impl Editor {
             let row = s.picker_list.filter(|l| (l.0..l.0 + l.1).contains(&y)).and_then(|l| p.row_at(y - l.0));
             return at(S::Picker, row.map_or(Part::Blank, Part::Row));
         }
-        if wheel && self.popup.is_some() && s.popup.get().is_some_and(|r| inside(r, x, y)) {
+        // (the pointer's hover card alike — a press there is the code's under it, as on `K`'s: `hoverrest.rs`)
+        if wheel
+            && (self.popup.is_some() && s.popup.get().is_some_and(|r| inside(r, x, y))
+                || crate::hoverrest::over_card(self, x, y))
+        {
             return at(S::Popup, Part::Blank);
         }
         // The review's file rail: its columns, left of where the code and the slot under it start (#73)

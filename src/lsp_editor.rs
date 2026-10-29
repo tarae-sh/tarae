@@ -428,6 +428,10 @@ pub enum Kind {
         uri: String,
         pos: Value,
     },
+    /// The hover where the pointer rests, rest `n` (`hoverrest.rs`) — at the name pointed at, never the cursor.
+    PointerHover {
+        n: u64,
+    },
     /// A swap's definition in folder `root`, asked of both servers to see they agree (`share.rs`).
     SwapCheck {
         root: std::path::PathBuf,
@@ -449,7 +453,7 @@ impl Kind {
             Kind::Declared { .. } | Kind::ToolDeclared { .. } => ("goto", "definitionProvider"),
             Kind::ToolRefs { .. } => ("goto", "referencesProvider"),
             Kind::Highlights => ("highlights", "documentHighlightProvider"),
-            Kind::Hover => ("hover", "hoverProvider"),
+            Kind::Hover | Kind::PointerHover { .. } => ("hover", "hoverProvider"),
             Kind::CodeAction { .. } => ("code-action", "codeActionProvider"),
             Kind::Rename | Kind::ToolPrepareRename { .. } | Kind::ToolRename { .. } => {
                 ("rename", "renameProvider")
@@ -1052,6 +1056,13 @@ impl Editor {
                             self.lsp.action_previews.insert(index, ActionPreview::Failed(m.to_string()));
                         }
                     }
+                    // (the pointer asked nothing: its rest's problems alone, never an error said — `hoverrest.rs`)
+                    &Kind::PointerHover { n } if error.is_some() => {
+                        match error.and_then(|e| e["code"].as_i64()) {
+                            Some(-32801 | -32802) => crate::hoverrest::busy(self, n),
+                            _ => crate::hoverrest::failed(self, n),
+                        }
+                    }
                     // "Content modified" / "server cancelled": the project changed under the question (the
                     // server loading it) — not an error to show (the spec says so); asked again
                     Kind::Goto(_) | Kind::Hover | Kind::Highlights
@@ -1303,6 +1314,22 @@ impl Editor {
         self.lsp_send(cid, kind, method, params).is_some()
     }
 
+    /// The hover at `pos` of document `id`, for the pointer's rest `n` (`hoverrest.rs`) — on the hover's route
+    /// (`server_for_doc`), silent: with no server ready that does it, false, never a word on the status line.
+    pub(crate) fn lsp_hover_at(&mut self, id: DocId, pos: usize, n: u64) -> bool {
+        self.lsp_flush();
+        let kind = Kind::PointerHover { n };
+        let Some(cid) = self.server_for_doc(id, &kind).filter(|&c| self.client(c).is_some_and(|c| c.ready))
+        else {
+            return false;
+        };
+        let Some(doc) = self.docs.iter().find(|d| d.id == id) else { return false };
+        let Some(uri) = doc.lsp_uri() else { return false };
+        let position = lsp::to_position(&doc.text, pos, self.encoding_of(cid));
+        let params = json!({ "textDocument": { "uri": uri }, "position": position });
+        self.lsp_send_for(id, cid, kind, "textDocument/hover", params).is_some()
+    }
+
     /// The current doc's server for `kind` (`server_for`), if it's ready — else says why. Flushes pending
     /// edits first (else the server answers from the old doc — completion asks on new chars).
     fn ready_client(&mut self, kind: &Kind) -> Option<ClientId> {
@@ -1430,6 +1457,8 @@ impl Editor {
                     self.popup_name = name.unwrap_or_default();
                 }
             }
+            // (its version checked above — the name's rest, its own: `hoverrest.rs`)
+            Kind::PointerHover { n } => crate::hoverrest::answered(self, n, &lsp::hover_text(result)),
             Kind::DocumentSymbols => self.on_document_symbols(p.doc, result),
             Kind::WorkspaceSymbols => self.on_workspace_symbols(cid, result),
             Kind::Highlights => {
@@ -7015,6 +7044,217 @@ mod tests {
         crate::term::render(&mut ed, &mut buf, w, h).unwrap();
         let shown = crate::screen::text(&buf, w, h).unwrap();
         assert!(shown.lines().any(|l| l.contains("╭─ helper ─")), "its frame named:\n{shown}");
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// The pointer's rest (#233, `hoverrest.rs`): what's drawn, and where (rows of text, as the screen shows them).
+    fn rest_frame(ed: &mut Editor) -> Vec<String> {
+        let mut buf = Vec::new();
+        crate::term::render(ed, &mut buf, 80, 20).unwrap();
+        crate::screen::text(&buf, 80, 20).unwrap().lines().map(str::to_string).collect()
+    }
+
+    /// The cell of `what`'s `nth` letter in the frame, from the row holding `row`.
+    fn cell_of(rows: &[String], row: &str, what: &str, nth: usize) -> (u16, u16) {
+        let y = rows.iter().position(|r| r.contains(row)).expect(row);
+        let at = rows[y].find(what).unwrap();
+        ((rows[y][..at].chars().count() + nth) as u16, y as u16)
+    }
+
+    /// The pointer resting on a name in the code (#233): its hover asked there — never at the cursor — and `K`'s card
+    /// shown at that name, under its row, the problems there first; the keys and the cursor untouched. It stays while
+    /// the pointer is on the name or the card (the wheel scrolls it), and goes as the pointer leaves, at a key, off.
+    #[test]
+    fn the_pointer_resting_on_a_name_shows_its_hover_there() {
+        use crate::event::Event;
+        let text = "fn helper() {}\nfn main() { helper(); }\n";
+        let (mut ed, file, _log) = setup("rest", text);
+        let cid = ready(&mut ed);
+        let rows = rest_frame(&mut ed);
+        let (x, y) = cell_of(&rows, "fn main", "helper", 2);
+        let at = ed.workspace.viewer.at;
+        ed.handle_event(Event::Hover(x, y));
+        assert!(ed.lsp.pending.is_empty(), "nothing asked before the rest");
+        crate::hoverrest::rested(&mut ed);
+        let (&(_, id), p) = ed.lsp.pending.iter().next().expect("the hover asked");
+        assert!(matches!(p.kind, Kind::PointerHover { .. }), "{:?}", p.kind);
+        // (a problem on the name: said first, as the cursor's card says it)
+        let from = text.rfind("helper").unwrap();
+        ed.doc_mut().lsp.diagnostics.push(lsp::Diagnostic {
+            from,
+            to: from + 6,
+            severity: 2,
+            message: "helper is deprecated".into(),
+            raw: json!({}),
+            source: cid,
+        });
+        let hover =
+            json!({ "contents": { "kind": "markdown", "value": "```rust\nfn helper()\n```\nhelps" } });
+        ed.on_lsp_message(cid, json!({ "id": id, "result": hover }));
+        let rows = rest_frame(&mut ed);
+        let top = rows.iter().position(|r| r.contains("╭─ helper ─"));
+        let top = top.unwrap_or_else(|| panic!("its card:\n{}", rows.join("\n")));
+        assert_eq!(top, y as usize + 1, "under the name's row:\n{}", rows.join("\n"));
+        let said = |s: &str| rows.iter().position(|r| r.contains(s));
+        assert!(said("helper is deprecated") < said("helps"), "the problem first:\n{}", rows.join("\n"));
+        assert_eq!(ed.workspace.viewer.at, at, "never the keys");
+        assert_eq!(ed.doc().selection().primary().cursor(&ed.doc().text), 0, "nor the cursor");
+        // On the card, or moved within the name: it stays; the wheel over it is its own
+        ed.handle_event(Event::Hover(x + 1, y + 2));
+        ed.handle_event(Event::Hover(x - 1, y));
+        assert!(ed.screen.rest_card.get().is_some() && ed.hover_rest.rest.is_some());
+        let (cx, cy) = (x as usize, y as usize + 2);
+        assert_eq!(
+            ed.mouse_under(crate::event::MouseKind::ScrollDown, cx, cy).surface,
+            crate::mouse::Surface::Popup
+        );
+        ed.handle_event(Event::Mouse(crate::event::Mouse {
+            kind: crate::event::MouseKind::ScrollDown,
+            x: cx as u16,
+            y: cy as u16,
+            ctrl: false,
+            alt: false,
+        }));
+        assert!(ed.hover_rest.rest.as_ref().is_some_and(|r| r.card.is_some()), "the wheel over it keeps it");
+        // Off the name and the card: gone — a name further on rests anew, its card not yet asked
+        let (mx, my) = cell_of(&rows, "fn main", "main", 1);
+        ed.handle_event(Event::Hover(mx, my));
+        assert!(!ed.unchanged, "its going drawn");
+        assert!(ed.hover_rest.rest.as_ref().is_some_and(|r| r.card.is_none()));
+        assert!(!rest_frame(&mut ed).iter().any(|r| r.contains("╭─ helper")));
+        // An answer for the rest left is dropped: the newer one's replaces it
+        ed.handle_event(Event::Hover(x, y));
+        crate::hoverrest::rested(&mut ed);
+        let old = ed.lsp.pending.iter().filter(|(_, p)| matches!(p.kind, Kind::PointerHover { .. })).count();
+        let id = ed.lsp.pending.keys().map(|k| k.1).max().unwrap();
+        ed.handle_event(Event::Hover(mx, my));
+        ed.on_lsp_message(cid, json!({ "id": id, "result": hover }));
+        assert!(old >= 1 && ed.hover_rest.rest.as_ref().is_some_and(|r| r.card.is_none()), "a stale answer");
+        // The server busy loading: asked once more after another rest, then the problems alone (never on and on)
+        let busy = |ed: &mut Editor| {
+            let id = ed.lsp.pending.keys().map(|k| k.1).max().unwrap();
+            ed.on_lsp_message(cid, json!({ "id": id, "error": { "code": -32801, "message": "modified" } }));
+        };
+        crate::hoverrest::rested(&mut ed);
+        busy(&mut ed);
+        assert!(ed.hover_rest.rest.as_ref().is_some_and(|r| r.card.is_none()), "asked again later");
+        crate::hoverrest::rested(&mut ed);
+        busy(&mut ed);
+        assert!(ed.hover_rest.rest.as_ref().is_some_and(|r| r.card.is_some()), "once only");
+        // A key: gone
+        ed.handle_event(Event::Hover(x, y));
+        crate::hoverrest::rested(&mut ed);
+        let id = ed.lsp.pending.keys().map(|k| k.1).max().unwrap();
+        ed.on_lsp_message(cid, json!({ "id": id, "result": hover }));
+        assert!(ed.hover_rest.rest.as_ref().is_some_and(|r| r.card.is_some()));
+        assert!(rest_frame(&mut ed).iter().any(|r| r.contains("╭─ helper")));
+        // The text moved on under it (not your key — Claude's edit, a reload): not drawn
+        let old = ed.doc().text.clone();
+        let mut new = old.clone();
+        new.insert(text.len(), "// more\n");
+        let change = crate::disk::minimal_change(&old, &new).unwrap();
+        ed.doc_mut().apply(&crate::transaction::Transaction::new(vec![change]));
+        assert!(!rest_frame(&mut ed).iter().any(|r| r.contains("╭─ helper")), "the text moved on");
+        ed.handle_event(Event::Key("l".parse().unwrap()));
+        assert!(ed.hover_rest.rest.is_none(), "your key: gone");
+        // `K`'s card up: the rest is its (one card at a time); off: none
+        ed.popup = Some(Vec::new());
+        ed.handle_event(Event::Hover(x, y));
+        assert!(ed.hover_rest.rest.is_none(), "`K`'s up");
+        ed.popup = None;
+        ed.config.mouse_hover = false;
+        ed.handle_event(Event::Hover(x, y));
+        assert!(ed.hover_rest.rest.is_none(), "turned off");
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// The wheel over the rest's card scrolls it (#233), as over `K`'s: docs longer than its rows move three rows a
+    /// notch, never past its last page as drawn (`rest_end`), and back up to the top; its first row shown follows.
+    #[test]
+    fn the_wheel_over_the_rest_card_scrolls_it_to_its_last_page() {
+        use crate::event::{Event, Mouse, MouseKind};
+        let text = "fn helper() {}\nfn main() { helper(); }\n";
+        let (mut ed, file, _log) = setup("rest-wheel", text);
+        let cid = ready(&mut ed);
+        let rows = rest_frame(&mut ed);
+        let (x, y) = cell_of(&rows, "fn main", "helper", 2);
+        ed.handle_event(Event::Hover(x, y));
+        crate::hoverrest::rested(&mut ed);
+        let id = *ed.lsp.pending.keys().next().map(|(_, id)| id).expect("the hover asked");
+        // (a code block: a row a line, none blank between)
+        let long = format!("```\n{}```", (1..=40).map(|i| format!("line{i}\n")).collect::<String>());
+        ed.on_lsp_message(
+            cid,
+            json!({ "id": id, "result": { "contents": { "kind": "markdown", "value": long } } }),
+        );
+        rest_frame(&mut ed);
+        let end = ed.screen.rest_end.get().expect("drawn");
+        assert!(end > 3, "longer than its rows: {end}");
+        let card = ed.screen.rest_card.get().unwrap();
+        let (cx, cy) = (card.0 + 3, card.1 + 2);
+        let scroll =
+            |ed: &Editor| ed.hover_rest.rest.as_ref().and_then(|r| r.card.as_ref()).map(|c| c.scroll);
+        let wheel = |ed: &mut Editor, kind| {
+            ed.handle_event(Event::Mouse(Mouse {
+                kind,
+                x: cx as u16,
+                y: cy as u16,
+                ctrl: false,
+                alt: false,
+            }));
+            rest_frame(ed)
+        };
+        let first = |rows: &[String]| rows[card.1 + 1].clone();
+        assert!(first(&rest_frame(&mut ed)).contains("line1 "), "its top first");
+        let rows = wheel(&mut ed, MouseKind::ScrollDown);
+        assert_eq!(scroll(&ed), Some(3), "a notch: three rows");
+        assert!(first(&rows).contains("line4 "), "{}", rows.join("\n"));
+        let mut rows = rows;
+        for _ in 0..40 {
+            rows = wheel(&mut ed, MouseKind::ScrollDown);
+        }
+        assert_eq!(scroll(&ed), Some(end), "never past its last page");
+        assert_eq!(ed.screen.rest_card.get(), Some(card), "the card where it was");
+        assert!(rows[card.1 + card.3 - 2].contains("line40"), "its last line last:\n{}", rows.join("\n"));
+        for _ in 0..40 {
+            wheel(&mut ed, MouseKind::ScrollUp);
+        }
+        assert_eq!(scroll(&ed), Some(0), "back to its top");
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// A rest on a problem off a name, or with no server ready: no request — the problem alone, on the card at once; a
+    /// rest on blank text nothing. Near the screen's bottom, the card goes above the row.
+    #[test]
+    fn a_problem_off_a_name_shows_alone_and_near_the_bottom_above() {
+        use crate::event::Event;
+        // (its line the text's last row on screen)
+        let text = format!("{}fn main() {{ let x = 1 }}", "\n".repeat(17));
+        let (mut ed, file, _log) = setup("rest-problem", &text);
+        let cid = ready(&mut ed);
+        let from = text.rfind(" }").unwrap();
+        ed.doc_mut().lsp.diagnostics.push(lsp::Diagnostic {
+            from,
+            to: from + 1,
+            severity: 1,
+            message: "expected `;`".into(),
+            raw: json!({}),
+            source: cid,
+        });
+        let rows = rest_frame(&mut ed);
+        let (x, y) = cell_of(&rows, "fn main", "= 1 }", 3);
+        ed.handle_event(Event::Hover(x, y));
+        crate::hoverrest::rested(&mut ed);
+        assert!(ed.lsp.pending.is_empty(), "not a name: nothing asked");
+        let rows = rest_frame(&mut ed);
+        let top = rows.iter().position(|r| r.contains("╭─ problem ─"));
+        let top = top.unwrap_or_else(|| panic!("its card:\n{}", rows.join("\n")));
+        let foot = rows.iter().position(|r| r.contains("╰")).unwrap();
+        assert!(foot < y as usize && top < foot, "above the row:\n{}", rows.join("\n"));
+        assert!(rows[top + 1].contains("expected ;"), "{}", rows.join("\n"));
+        // Blank text: nothing rests
+        ed.handle_event(Event::Hover(70, y));
+        assert!(ed.hover_rest.rest.is_none());
         std::fs::remove_dir_all(file.parent().unwrap()).ok();
     }
 }

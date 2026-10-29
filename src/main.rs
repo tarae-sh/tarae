@@ -86,6 +86,7 @@ mod grep;
 mod grouplist;
 mod hooks;
 mod hosts;
+mod hoverrest;
 mod idlecompact;
 mod inbox;
 mod indent;
