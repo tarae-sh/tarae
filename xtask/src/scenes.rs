@@ -859,6 +859,47 @@ const ASKS_CLOSED: &[&str] = &[
 /// Claude's card, the keys back in the code, then the chat open again (`asks-open`).
 const ASKS_OPEN: &[&str] =
     &["@1", " ", "l", "@1", "run the tests", "\r", "\x17", "h", "@?Its reason", "@1", " ", "l", "@2"];
+/// #244: a long answer and Claude's card, the keys back in the code — the card waiting (`asks-beside`)…
+/// (following folds the chat as the keys leave it: `space l` opens it again, `C-w h` gives the code the keys)
+const ASKS_BESIDE: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "explain, then run the tests",
+    "\r",
+    "\x17",
+    "h",
+    "@?Its reason",
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "\x17",
+    "h",
+    "@2",
+];
+/// …and then focused by `C-q` (`asks-beside-focused`).
+const ASKS_BESIDE_FOCUSED: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "explain, then run the tests",
+    "\r",
+    "\x17",
+    "h",
+    "@?Its reason",
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "\x17",
+    "h",
+    "@1",
+    "\x11",
+    "@2",
+];
 /// Claude's set of sessions asked for (orchestra P1a), its card focused by `C-q` (`sessionset-*`).
 /// (the chat open again over following, as `asks-open`: the card above its input)
 const SESSION_SET: &[&str] = &[
@@ -3380,6 +3421,9 @@ const SCENES: &[Scene] = &[
     // (…four asks over two sessions in one stack: two cards your keys asked for in front, fix's Claude's behind them,
     // main's a peek named in its colour)
     Scene { name: "asks-stack", claude: "card", files: MAIN, keys: ASKS_STACK },
+    // (#244: the chat's transcript beside an ask over it — the card waiting with the keys in the code, then focused)
+    Scene { name: "asks-beside", claude: "cardlong", files: MAIN, keys: ASKS_BESIDE },
+    Scene { name: "asks-beside-focused", claude: "cardlong", files: MAIN, keys: ASKS_BESIDE_FOCUSED },
     // (orchestra P1a: Claude asks to start sessions — one card for the set, focused: one, three, a long brief cut)
     Scene { name: "sessionset-one", claude: "startone", files: MAIN, keys: SESSION_SET },
     Scene { name: "sessionset-three", claude: "startthree", files: MAIN, keys: SESSION_SET },
@@ -4281,6 +4325,8 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "ask" => turn.rewrite()?,
             "asktouching" => turn.rewrite_touching()?,
             "card" => turn.ask_outside()?,
+            // (#244: prose enough to reach the ask's rows in the chat, then the same card)
+            "cardlong" => turn.ask_outside_long()?,
             // (the session list's scene: a run asked for where the tests are asked, else an edit held mid-line)
             "manager" if line.contains("run the tests") => turn.ask_outside()?,
             "manager" => turn.explain_held(true, true, Some("nots.len());\\n\"}"))?,
@@ -5034,6 +5080,19 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.permission(4, "Read", json!({"file_path": format!("{home}/Sites/skein/knots.css")}))?;
         self.words("Read them: nothing in the project needs to change.")?;
         self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    fn ask_outside_long(&mut self) -> io::Result<()> {
+        for n in 1..=10 {
+            // (a paragraph at a time: ten of them word by word would outlast the scene's wait)
+            self.text(&format!(
+                "{n}. The skein keeps its threads in a map by name, and each thread counts its knots as it \
+                 is spun; the length is the sum of the strands between them, so a thread with no knots is \
+                 still as long as its one strand."
+            ))?;
+            self.text("\n\n")?;
+        }
+        self.ask_outside()
     }
 
     fn ask_outside(&mut self) -> io::Result<()> {

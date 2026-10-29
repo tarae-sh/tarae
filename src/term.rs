@@ -12619,8 +12619,9 @@ fn card_badge((here, elsewhere): (usize, usize), title_w: usize, room: usize) ->
 }
 
 /// Where the asks float (P3 step 7d, the user 2026-10-22: bottom-right is what needs you): over the right column's foot
-/// — the chat's while it's open, the transcript's newest line above it, else a session list docked right (the user
-/// 2026-10-24) — else the screen's right, above a bottom slot or the status line; as wide as what it says needs (#177,
+/// — the chat's while it's open, over its transcript (#244: it runs on beneath the card, covered only in the card's
+/// rect; kept above it only where the card leaves fewer than `BESIDE_MIN` of its text's cells beside it), else a session
+/// list docked right (the user 2026-10-24) — else the screen's right, above a bottom slot or the status line; as wide as what it says needs (#177,
 /// the user 2026-10-27: never the column's width), reaching left over the code when it's wider. The column's foot, if it's
 /// one (`asks_foot`), and the area: columns from `ax`, `aw` wide; rows from `atop`, `arows` of them (the last one air).
 type AsksArea = (Option<(usize, usize, usize, usize)>, (usize, usize, usize, usize));
@@ -17021,6 +17022,13 @@ fn chat_widths(chat_w: usize, set: bool) -> (usize, usize) {
 /// The chat's input shows this many of its rows at most.
 const CHAT_INPUT_MAX: usize = 5;
 
+/// The cells of the chat's text an ask over its foot leaves beside it for its transcript to run on there (#244) — fewer
+/// read as a fringe of cut words, so the transcript's newest line is kept above the card instead (P3 step 7d). Decided
+/// by the user, 2026-10-29 (#244, its before/after seen with a ~15-cell strip at 200 columns): the transcript runs on
+/// under the card, its last lines covered — the card and the follow card say them — never wrapped around it, never
+/// lifted while it leaves this much.
+const BESIDE_MIN: usize = 12;
+
 /// Where the asks float while the chat is open (P3 step 7d, the user 2026-10-22: bottom-right, over the chat's foot —
 /// their own width, #177): its columns from `x`, `w` wide (the card's right a cell in), and the row its input's line is on —
 /// as `draw_chat` lays them out. None: the chat isn't open beside the code (closed, minimized).
@@ -17246,13 +17254,16 @@ fn draw_chat(
     // In its view mode the chat holds still: from its transcript's top row (the frame's own rows trail its rows) —
     // else the newest, `scroll` up from the bottom
     let view = crate::chatdoc::transcript(editor).filter(|t| t.keyed && t.pane.doc_in().is_some());
-    // (the asks over its foot — P3 step 7d: the transcript's newest line stays in sight above the stack, a row of air
-    // between, as the input's growth takes its room)
+    // (the asks over its foot — a floating frame covers its own rect, never the rows beside it (#244, the user's choice
+    // 2026-10-29: run on beneath it, its last lines under the card, not wrapped around it nor lifted): the transcript
+    // runs on beside a card leaving `BESIDE_MIN` of its text's cells or more; only one leaving fewer has the
+    // transcript's newest line kept in sight above the stack — P3 step 7d — a row of air between, as the input's growth
+    // takes its room: there nothing beside it would read. Its view mode holds still on its whole area either way)
     let start = top + 1 + plan_h;
     // (a card grown left past the chat's edge for its bottom line still stands over its foot)
     let asks = editor.screen.offer_card.filter(|r| r.0 + r.2 > x0 && r.1 + r.3 > start && r.1 < start + area);
     let area_shown = match (asks, view) {
-        (Some(r), None) => r.1.saturating_sub(start + 1).min(area),
+        (Some(r), None) if r.0 < x0 + GAP + PAD + BESIDE_MIN => r.1.saturating_sub(start + 1).min(area),
         _ => area,
     };
     let (from, to) = match view {
@@ -22178,6 +22189,118 @@ mod tests {
             }
             assert_eq!(widths[0], widths[1], "{w}: one width, the chat open or closed");
         }
+    }
+
+    /// #244 (the user, at work, 2026-10-29 — the after chosen): an ask over the open chat's foot covers its own rect,
+    /// never the transcript beside it — a card leaving `BESIDE_MIN` or more of the chat's text cells beside it has the
+    /// transcript running on there, on every one of its rows, waiting (the keys in the code) or focused, its last lines
+    /// under the card; one leaving fewer (just under it, or wider than the chat) keeps the transcript's newest line above
+    /// it, a row of air between (P3 step 7d); the transcript's view mode holds its whole area either way.
+    #[test]
+    fn an_ask_over_the_chats_foot_leaves_the_transcript_beside_it() {
+        use crate::chat::{Msg, Role};
+        use crate::chrome::{GAP, PAD};
+        use crate::offer::{Offer, What};
+        // (`beside`: the chat sized to leave that many of its text's cells left of the card — None, its own width)
+        struct Drawn {
+            rows: Vec<String>,
+            card: Rect4,
+            text_x: usize,
+            keys: bool,
+            // (the card's rows the transcript's rows are recorded on — `Screen::chat_row`: a press, a drag, its view's page)
+            recorded: usize,
+        }
+        let draw = |(w, h): (u16, u16), beside: Option<usize>, focused: bool, view: bool| -> Drawn {
+            let mut ed = Editor::new(crate::config::Config::default());
+            let what = What::Asks { call: crate::tools::Call::test(1) };
+            ed.push_offer(Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what));
+            let mut c = crate::chat::Chat::new();
+            c.msgs.push(Msg::new(Role::User, "explain", ""));
+            let prose: Vec<String> = (1..=40).map(|i| format!("line{i:02} of the answer")).collect();
+            c.msgs.push(Msg::new(Role::Assistant, prose.join("\n\n").as_str(), ""));
+            ed.workspace.claude.chat = Some(c);
+            let frame = |ed: &mut Editor| {
+                let mut bytes = Vec::new();
+                render(ed, &mut bytes, w, h).unwrap();
+                let mut p = vt100::Parser::new(h, w, 0);
+                p.process(&bytes);
+                p.screen().rows(0, w).collect::<Vec<String>>()
+            };
+            if let Some(n) = beside {
+                // (the card's place doesn't follow the chat's width, #177: where it stands, then the chat's edge set by it)
+                frame(&mut ed);
+                let x = ed.screen.offer_card.expect("drawn").0;
+                ed.sizes.chat = Some((w as usize - (x - n - GAP - PAD)) as u16);
+            }
+            if focused {
+                ed.card_focus = ed.offers.first().map(|o| (o.id, o.rev));
+            }
+            if view {
+                // (from the chat's input, `esc`: its view mode — the card, come on its own, leaves the chat the keys)
+                ed.workspace.viewer.at = crate::workspace::At::Chat;
+                frame(&mut ed);
+                ed.handle_key("esc".parse().unwrap());
+                assert!(crate::chatdoc::transcript(&ed).is_some_and(|t| t.keyed), "in the chat's view mode");
+            }
+            let rows = frame(&mut ed);
+            let text_x = ed.screen.chat_x.expect("the chat") + GAP + PAD;
+            let card = ed.screen.offer_card.expect("drawn");
+            let recorded = (card.1..card.1 + card.3).filter(|&y| ed.screen.chat_row(y).is_some()).count();
+            Drawn { rows, card, text_x, keys: ed.card_has_keys(), recorded }
+        };
+        // (the rows of the card's with the transcript's text left of it; the row the newest line is on)
+        let said = |d: &Drawn| -> (usize, Option<usize>) {
+            let (x, y, _, ch) = d.card;
+            let beside =
+                |r: usize| -> String { d.rows[r].chars().skip(d.text_x).take(x - d.text_x).collect() };
+            let on =
+                (y..y + ch).filter(|&r| x > d.text_x && beside(r).trim_start().starts_with("line")).count();
+            (on, d.rows.iter().position(|r| r.contains("line40")))
+        };
+        let runs_on = |d: &Drawn, what: &str| {
+            let ((_, y, _, ch), s) = (d.card, d.rows.join("\n"));
+            let (on, newest) = said(d);
+            // (each row of the card's has the transcript beside it: a line of the answer, or the air between two)
+            assert!(2 * on + 1 >= ch, "{what}: the transcript beside the card on its rows\n{s}");
+            assert!(newest.is_some_and(|n| n >= y), "{what}: it runs on to the card's rows\n{s}");
+            assert_eq!(
+                d.recorded, ch,
+                "{what}: its rows there recorded — a press beside the card finds them"
+            );
+        };
+        let lifted = |d: &Drawn, what: &str| {
+            let ((_, y, _, _), s) = (d.card, d.rows.join("\n"));
+            let (on, newest) = said(d);
+            assert_eq!(on, 0, "{what}: nothing beside the card\n{s}");
+            assert!(newest.is_some_and(|n| n + 1 < y), "{what}: the newest line above the card\n{s}");
+            assert_eq!(d.recorded, 0, "{what}: none of its rows recorded on the card's");
+        };
+        let wide = (200u16, 50u16);
+        for focused in [false, true] {
+            let d = draw(wide, None, focused, false);
+            assert_eq!(d.keys, focused, "focused {focused}");
+            assert!(d.card.0 >= d.text_x + BESIDE_MIN, "the chat's own width leaves a strip");
+            runs_on(&d, &format!("200, its own width, focused {focused}"));
+        }
+        // (the edge: `BESIDE_MIN` cells beside it run on, one fewer lifts)
+        for (n, run) in [(BESIDE_MIN, true), (BESIDE_MIN - 1, false)] {
+            let d = draw(wide, Some(n), false, false);
+            assert_eq!(d.card.0 - d.text_x, n, "the chat sized to leave {n} cells\n{}", d.rows.join("\n"));
+            match run {
+                true => runs_on(&d, &format!("{n} cells beside")),
+                false => lifted(&d, &format!("{n} cells beside")),
+            }
+        }
+        // (the transcript's view mode: its whole area, however little is beside the card — drawn there, and its rows
+        // there its own: a press or a drag beside the card, its page's rows)
+        let d = draw(wide, Some(BESIDE_MIN - 1), false, true);
+        assert!(!d.keys, "the view mode keeps the keys");
+        assert!(said(&d).0 > 0, "in its view mode the transcript beside the card\n{}", d.rows.join("\n"));
+        assert_eq!(d.recorded, d.card.3, "in its view mode its rows on the card's recorded");
+        // (a card wider than the chat)
+        let d = draw((80, 24), None, false, false);
+        assert!(d.card.0 < d.text_x, "80: wider than the chat's text");
+        lifted(&d, "80, wider than the chat");
     }
 
     /// Which-key's columns: what fits at full width keeps it, short descriptions too (a floor on cutting once
