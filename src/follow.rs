@@ -130,7 +130,7 @@ pub struct Follow {
     pub read_at: Option<usize>,
     /// The turn ended with no walk-through: the editor goes to its answer's place once the names before it are
     /// answered (`answer_place`).
-    answer_wait: bool,
+    pub(crate) answer_wait: bool,
     /// The walk-through's stops still to show, and how many tags of which message were taken · the one
     /// showing, until when (its wake-up is this generation's).
     queue: std::collections::VecDeque<(usize, usize, Stop, usize)>,

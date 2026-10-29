@@ -1834,12 +1834,23 @@ Talk back right there: `space n` on a note line replies. Your reply goes to Clau
 the thread so far, and Claude answers on the thread. `space n` on a line without a note asks Claude about that
 line (or the selected lines), which starts a new note with your question.
 
+**What the answer says of a place shows at it.** Claude's answers name places as `path:line` far more often than it
+pins a note, so the last answer's places are notes too, with no tool call and nothing sent: when a turn ends, every
+`src/x.rs:120` (or `x.rs:120-140`, or a walk-through's stop) in its prose that comes to one file of the project or
+its folders shows at that line. The line end has the sentence that names it, and the card has the paragraph it's in
+(a list item: that item), named `chat · the last answer`. A paragraph naming three places gives each its own
+sentence. A name that comes to no file, or to several, is no place, and fenced code has none. They're the last
+answer's: the next answer that names a place replaces them, one whose names come to nothing leaves them, and none
+is kept past a restart. `]n`/`[n` go through them with the other notes. `space n` on one asks about it, and from
+then it's a thread like any other, kept and sent. A line where the same answer pinned its own `note` gets no chat
+note. Claude isn't told of them: they're its own words, put where they point.
+
 | Key | Notes |
 |---|---|
 | `space n` | Reply to the note here, or ask Claude about this line |
 | `]n` / `[n` | Next / previous note, across files (notes sharing a line one by one) |
 | `space N` | Every note, with a preview — `C-x` closes the one on the row, `A-x` all its author began |
-| `:note-close` / `:notes-clear [reviewer\|author\|you]` | Close the note here / all of them, or one author's (asks first when your unsent drafts are among them) |
+| `:note-close` / `:notes-clear [reviewer\|author\|you\|chat]` | Close the note here / all of them, or one author's (asks first when your unsent drafts are among them) |
 
 The card sits beside the note's lines, below them or above them, so the code the note is about stays in
 view. When several notes share a line, the line end says how many (`¶ 3 notes · …`). The card shows one at a time

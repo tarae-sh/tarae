@@ -253,6 +253,8 @@ pub struct Known {
     key: Option<(u64, Vec<PathBuf>)>,
     generation: u64,
     asking: bool,
+    /// The names the search under way was asked (`asking`), until it lands.
+    asked: Vec<Arc<str>>,
     wanted: RefCell<Vec<Arc<str>>>,
 }
 
@@ -271,6 +273,21 @@ impl Known {
             }
         }
         self.found.get(name).or_else(|| self.was.get(name))
+    }
+
+    /// Whether `name` waits for its answer: asked after the last frame, or in the search under way.
+    pub fn pending(&self, name: &str) -> bool {
+        self.asked.iter().chain(self.wanted.borrow().iter()).any(|n| &**n == name)
+    }
+
+    /// What `name` comes to as its notes take it (`chatnotes.rs`): Some(the file) — Some(None) for none or several
+    /// (no one place); None while it isn't answered for the checkout's files as they are (asked after this frame).
+    pub fn place(&self, name: &str) -> Option<Option<PathBuf>> {
+        self.of(name)?;
+        Some(match self.found.get(name)? {
+            Found::File(p) => Some(p.clone()),
+            _ => None,
+        })
     }
 
     /// What the chat takes `name` for — the file it came to, or, a name several files end with, the name as written
@@ -349,6 +366,7 @@ pub fn after_frame(ed: &mut Editor) {
     crate::sorting::by_key(&mut wanted, |n| n.clone());
     wanted.dedup();
     k.asking = true;
+    k.asked = wanted.clone();
     let generation = k.generation;
     ed.events.jobs().spawn(move || {
         let mut files = Files::new(roots.clone());
@@ -365,15 +383,17 @@ fn landed(ed: &mut Editor, generation: u64, found: Vec<(Arc<str>, Found)>) {
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     let k = &mut c.places;
     k.asking = false;
+    k.asked.clear();
     let mut same = true;
     if k.generation == generation {
         same = found.iter().all(|(n, f)| k.found.get(n).or_else(|| k.was.get(n)) == Some(f));
         k.found.extend(found);
     }
-    let pending = !k.wanted.get_mut().is_empty();
     // (the chat scrolled while they were found: `follow::reading` acts after the next frame)
     let reading = c.follow.read_at.is_some_and(|r| r != c.scroll);
     let went = crate::follow::answer_place(ed);
+    // (names that wait to be asked — `answer_place`'s among them, which it asks as it looks: the frame asks them)
+    let pending = ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.places.wanted.borrow().is_empty());
     ed.unchanged = same && !pending && !reading && !went;
 }
 

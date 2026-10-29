@@ -587,6 +587,9 @@ pub struct Chat {
     pub input: crate::chatinput::Input,
     pub state: State,
     pub started: Instant,
+    /// The turn under way began with tarae's own message, none of the user's (`submit_bare`: idle compaction's
+    /// `/compact`) — its end places no chat notes (`chatnotes::turn_over`).
+    pub turn_bare: bool,
     /// The turn's stream so far — what its word says it's doing (`shimmer.rs`).
     pub pace: crate::shimmer::Band,
     /// How many lines scrolled up from the bottom (0 = follow the bottom).
@@ -1064,6 +1067,7 @@ impl Chat {
             input: Default::default(),
             state: State::Idle,
             started: crate::clock::now(),
+            turn_bare: false,
             pace: Default::default(),
             scroll: 0,
             proc: None,
@@ -2359,6 +2363,8 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 })
             });
             crate::notes::turn_done(ed, answer.flatten());
+            // (what its answer says of a place, at it — #239: a whole answer's only, as the note's above)
+            crate::chatnotes::turn_over(ed, ok);
             crate::restart::turn_over(ed);
             crate::rebase::turn_over(ed);
             // (whatever the turn changed on disk, the git tab shows it — #29)
@@ -3028,6 +3034,7 @@ fn bare(ed: &mut Editor, text: &str, row: Msg) -> bool {
     c.scroll = 0;
     c.state = State::Thinking;
     c.started = crate::clock::now();
+    c.turn_bare = c.msgs.last().is_none_or(|m| m.role != Role::User);
     c.pace = crate::shimmer::Band::begin();
     crate::uistate::watch::turn(ed, "started", 0, None);
     true
@@ -3231,6 +3238,7 @@ fn submit_as(
     c.scroll = 0;
     c.state = State::Thinking;
     c.started = crate::clock::now();
+    c.turn_bare = false;
     c.pace = crate::shimmer::Band::begin();
     crate::reads::not_sent(ed, &withheld);
     crate::uistate::watch::turn(ed, "started", 0, None);

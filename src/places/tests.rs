@@ -21,6 +21,35 @@ fn project(name: &str, files: &[&str]) -> (crate::scratch::Scratch, PathBuf) {
     (scratch, root)
 }
 
+/// #239's follow-up review: a name `follow::answer_place` asks as it looks, once a search's answers land, gets its
+/// frame — what waits to be asked is weighed after it looked, never before (no frame: it waited until something else
+/// drew, and follow and the chat's notes with it).
+#[test]
+fn a_name_follow_asks_as_answers_land_gets_its_frame() {
+    let (_s, root) = project("places-follow-asks", &["src/a.rs", "src/b.rs"]);
+    let mut ed = Editor::new(Config::default());
+    ed.workspace.root = root.clone();
+    let mut c = Chat::new();
+    c.msgs = vec![
+        Msg::new(Role::User, "where?", ""),
+        Msg::new(Role::Assistant, "src/b.rs:2, then src/a.rs:1", ""),
+    ];
+    c.follow.answer_wait = true;
+    // (`src/a.rs` answered already, the same again: nothing on screen changes by the answer itself)
+    let a: Arc<str> = Arc::from("src/a.rs");
+    let file = Found::File(root.join("src/a.rs"));
+    c.places.found.insert(a.clone(), file.clone());
+    (c.places.asking, c.places.generation) = (true, 7);
+    ed.workspace.claude.chat = Some(c);
+    ed.unchanged = true;
+    landed(&mut ed, 7, vec![(a, file)]);
+    assert!(
+        ed.workspace.claude.chat.as_ref().unwrap().places.pending("src/b.rs"),
+        "follow asked it as it looked"
+    );
+    assert!(!ed.unchanged, "a frame is due: it asks the name");
+}
+
 /// The rule itself: as written from the first base it's a file in; else the files that end with it by whole parts —
 /// one it, several listed, none not; a name with `..`, one that doesn't look like a file and an absolute one not
 /// there are never looked for.

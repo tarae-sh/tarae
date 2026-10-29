@@ -56,7 +56,8 @@ use crate::workspace::At;
 /// 22: where the mouse is (#215, `kinds.rs`): `pointer` (`x`, `y`, `under`, `kind`, `does`, `lit`).
 /// 23: where a project starts (`project.rs`): a workspace's `root` is its project, `start` where tarae was started in it
 /// (only when that isn't its root).
-pub const V: u64 = 23;
+/// 24: a note's `kind` may be `chat` (#239: what the chat's last answer said of a place, at it).
+pub const V: u64 = 24;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;
@@ -832,7 +833,7 @@ pub struct NoteState {
 }
 
 impl NoteState {
-    fn of(root: &std::path::Path, n: &crate::notes::Note) -> NoteState {
+    pub(crate) fn of(root: &std::path::Path, n: &crate::notes::Note) -> NoteState {
         use crate::notes::By;
         let first = n.thread.first().map(|e| e.by);
         NoteState {
@@ -842,9 +843,11 @@ impl NoteState {
             kind: match first {
                 Some(By::Reviewer) => "finding",
                 Some(By::Author) => "claude",
+                Some(By::Chat) => "chat",
                 _ => "comment",
             },
-            sent: !crate::notes::unsent(n),
+            // (a chat note went to Claude only once you answered it: before, its words are Claude's own answer)
+            sent: !crate::notes::unsent(n) && !crate::notes::bare_chat(n),
             state: match n.waiting {
                 true => "waiting",
                 false if n.thread.iter().skip(1).any(|e| e.by == By::Author) => "answered",

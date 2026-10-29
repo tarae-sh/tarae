@@ -420,6 +420,39 @@ const LONG_QUEUED: &str = "Before the next step, read every place the strands ar
                            strand refused says its name and where it crossed, so the person reading it can find it \
                            without a debugger, and say goodbye";
 
+/// #239: a question, its answer naming places, the keys back to the code (`esc esc`) and a move there (`j`, follow
+/// paused: the cursor's line is the card's) — the line ends; then `]n` to the first, its card.
+const CHAT_NOTES_KEYS: [&[&str]; 2] = [
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "where is the map filled?",
+        "\r",
+        "@30?sums the knots",
+        "@1",
+        "\x1b",
+        "\x1b",
+        "j",
+        "@1",
+    ],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "where is the map filled?",
+        "\r",
+        "@30?sums the knots",
+        "@1",
+        "\x1b",
+        "\x1b",
+        "jgg]n",
+        "@1",
+    ],
+];
+
 /// #187: what's cut is whole on a card over it, one way — the chat's view mode's cursor on a cut `run` row (its card on
 /// the selected row's ground, the cursor kept); the side panel with the keys, its selected long name; a queued message
 /// past a card's rows, `↓ N more lines` under the mouse; then pressed — the message whole in a read-only buffer.
@@ -2560,6 +2593,9 @@ const SCENES: &[Scene] = &[
     Scene { name: "cut-hand-list", claude: "idle", files: LONG_NAME, keys: CUT_KEYS[1] },
     Scene { name: "cut-more", claude: "strip", files: MAIN, keys: CUT_KEYS[2] },
     Scene { name: "cut-code-chat", claude: "cutcode", files: MAIN, keys: CUT_CODE_KEYS },
+    // (#239: the last answer's places at their lines — the line ends, then `]n`'s card with the paragraph)
+    Scene { name: "chat-notes", claude: "chatnotes", files: MAIN, keys: CHAT_NOTES_KEYS[0] },
+    Scene { name: "chat-notes-card", claude: "chatnotes", files: MAIN, keys: CHAT_NOTES_KEYS[1] },
     Scene { name: "cut-more-press", claude: "strip", files: MAIN, keys: CUT_KEYS[3] },
     Scene { name: "working-waits-chat", claude: "card", files: MAIN, keys: WORKING_KEYS[3] },
     Scene { name: "working-waits-follow", claude: "card", files: MAIN, keys: WORKING_KEYS[4] },
@@ -4271,6 +4307,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "readlast" => turn.read_last()?,
             "cuthand" => turn.cut_hand()?,
             "cutcode" => turn.cut_code()?,
+            "chatnotes" => turn.chat_notes()?,
             "startone" | "startthree" | "startlong" | "startthreewake" => {
                 turn.sessions_start(&script[5..])?
             }
@@ -5059,6 +5096,18 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             self.line(json!({"type": "user", "message": {"role": "user", "content": [result]}}))?;
         }
         self.words("That is all.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// #239's scenes: an answer whose paragraph names two places of the demo's `main.rs`, and a list item one of
+    /// `thread.rs` — each a note at its line once the turn ends.
+    fn chat_notes(&mut self) -> io::Result<()> {
+        self.words(
+            "The map is filled in `src/main.rs:8-10`, keyed by each thread's name. The loop at src/main.rs:11 \
+             prints them in the map's own order, so the output's order changes from run to run.",
+        )?;
+        self.text("\n\n")?;
+        self.words("- `src/thread.rs:9` is where `length` sums the knots.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

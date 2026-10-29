@@ -2926,6 +2926,7 @@ impl Editor {
         crate::weave::sync(self);
         crate::motion::wet_sync(self);
         crate::web::open::sync(self);
+        crate::chatnotes::sync(self);
         crate::notes::attach(self);
         crate::edits::lost_review(self);
         crate::refactor::next(self);

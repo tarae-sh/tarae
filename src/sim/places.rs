@@ -4,8 +4,10 @@
 //! the answers landing as the main loop takes them, a frame when one is due. After every step: the answers kept for the
 //! checkout's files as they are say what each name comes to on disk now (one found before a file was made or removed
 //! never lands as theirs — its generation passed), and a file a press opened is one of the project's its name ends
-//! (found the one way, never the root joined to it). At the end, quiet
-//! after a last frame: every name the answer gives is answered, as the disk has it.
+//! (found the one way, never the root joined to it). The answer's turn has ended (#239): its places become notes once
+//! their names are answered — never at a file its name didn't come to alone (`Util.java` two files, `Gone.java` none).
+//! At the end, quiet after a last frame: every name the answer gives is answered, as the disk has it, and none of its
+//! places waits.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -56,8 +58,10 @@ fn run(choices: Choices) -> Vec<String> {
     let answer = "See Device.java:2 and Util.java:3, not Gone.java:1.";
     c.msgs = vec![Msg::new(Role::User, "where?", ""), Msg::new(Role::Assistant, answer, "")];
     ed.workspace.claude.chat = Some(c);
+    crate::chatnotes::turn_over(&mut ed, true);
     let check = |ed: &Editor| {
         crate::places::check(ed)?;
+        noted(ed, &root)?;
         opened(ed, &root, &world.borrow().pressed)
     };
     let print = |ed: &Editor| print(ed, &root);
@@ -67,7 +71,9 @@ fn run(choices: Choices) -> Vec<String> {
     sim.walk(&mut ed, 0, |_, _| String::new(), check, print);
     let answered: Vec<String> = crate::places::answers(&ed).into_iter().map(|a| a.0).collect();
     let key_now = crate::places::check(&ed);
+    let waits = ed.workspace.claude.notes.answer.is_some();
     sim.at_end(|| match NAMES.iter().all(|n| answered.iter().any(|a| a == n)) {
+        true if waits => Err("quiet after a frame, the answer's places still wait".into()),
         true => key_now,
         false => Err(format!("quiet after a frame, the names answered are {answered:?}")),
     });
@@ -118,6 +124,19 @@ fn input(sim: &mut Sim, ed: &mut Editor, root: &Path, w: &mut World) -> String {
     }
 }
 
+/// The answer's places are notes only at a `Device.java` (the one name that can come to one file), at its line.
+fn noted(ed: &Editor, root: &Path) -> Result<(), String> {
+    let list = &ed.workspace.claude.notes.list;
+    match list.iter().find(|n| !n.path.ends_with("Device.java") || n.lines.start != 1) {
+        Some(n) => Err(format!(
+            "a chat note at {}:{}",
+            n.path.strip_prefix(root).unwrap_or(&n.path).display(),
+            n.lines.start + 1
+        )),
+        None => Ok(()),
+    }
+}
+
 /// A file in front is one of the project's that a pressed name ends with — never the root joined to the name.
 fn opened(ed: &Editor, root: &Path, pressed: &[&str]) -> Result<(), String> {
     let ours = ["src/a/Device.java", "a/Util.java", "b/Util.java", "c/Device.java"];
@@ -143,5 +162,6 @@ fn print(ed: &Editor, root: &Path) -> String {
         .collect();
     let asking = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.places.waiting());
     let picker = ed.picker.as_ref().map(|p| p.title.replace(&root.display().to_string(), ""));
-    format!("[{}]{} · {:?}", said.join(" "), if asking { " asking" } else { "" }, picker)
+    let noted: Vec<String> = ed.workspace.claude.notes.list.iter().map(|n| rel(&n.path)).collect();
+    format!("[{}]{} · {:?} · notes {noted:?}", said.join(" "), if asking { " asking" } else { "" }, picker)
 }

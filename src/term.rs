@@ -20811,6 +20811,12 @@ fn note_lines(
         out.push(Line::Text {
             spans: match e.by {
                 By::Author => vec![sp("¶ ", accent), sp(By::Author.label(), Style { bold: true, ..accent })],
+                // (the chat's last answer, said where it names this place — #239)
+                By::Chat => vec![
+                    sp("¶ ", accent),
+                    sp(By::Chat.label(), Style { bold: true, ..accent }),
+                    sp(if crate::notes::bare_chat(n) { " · the last answer" } else { "" }, faint),
+                ],
                 By::You if e.draft => {
                     vec![
                         sp("› ", dim),

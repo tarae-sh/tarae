@@ -499,9 +499,9 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
         // (your unsent drafts among them: a card asks first)
         "notes-clear" => {
             let by = match rest.split_whitespace().next() {
-                Some(word) => {
-                    Some(crate::notes::by_word(word).ok_or("notes-clear takes reviewer, author or you")?)
-                }
+                Some(word) => Some(
+                    crate::notes::by_word(word).ok_or("notes-clear takes reviewer, author, you or chat")?,
+                ),
                 None => None,
             };
             crate::notes::close_by(editor, by);

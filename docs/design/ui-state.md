@@ -65,7 +65,7 @@ JSON for programs, and a short text form for people and Claude, from the same st
 
 ```json
 {
-  "v": 23,
+  "v": 24,
   "tarae": { "pid": 4182, "boot": "9f3ac1d0", "version": "0.9.0" },
   "frame": 4812,
   "input": 1033,
@@ -205,7 +205,8 @@ side git · 4 rows · in hand git:src/term.rs
   level has only its own session's.
 - **`notes`** (f24, `notes.rs`) — the front session's notes in the order pinned, where each is, never what it
   says: `id` (`note#4`), `path` (from the session's root), `line` (1-based), `kind` (`finding` the reviewer's ·
-  `comment` yours · `claude` its Claude's), `sent` (not a draft `space v s` hasn't sent), `state` (`waiting` for
+  `comment` yours · `claude` its Claude's · `chat` what its last answer said of that place, #239), `sent` (not a
+  draft `space v s` hasn't sent, nor a chat note no one answered), `state` (`waiting` for
   Claude's answer · `answered` · `open`). Claude's level lists only the sent ones (`notes sent to you: …`) —
   what `reply_to` answers; `reply_to` on a draft is refused.
 - **`motions`** (motion, `motion.rs`) — motions on a clock under way: `kind` (`flash` · `press` · `wet`), `act` (a flash's `undo` ·

@@ -33,6 +33,9 @@ pub enum By {
     You,
     /// The reviewer (`reviewer.rs`) — a second Claude, apart from the chat's.
     Reviewer,
+    /// What the chat's last answer said of a place (`chatnotes.rs`) — the chat's Claude's words, not a note it
+    /// pinned.
+    Chat,
 }
 
 impl By {
@@ -42,6 +45,7 @@ impl By {
             By::Author => "author",
             By::You => "you",
             By::Reviewer => "reviewer",
+            By::Chat => "chat",
         }
     }
 
@@ -52,6 +56,7 @@ impl By {
             By::Author => "claude",
             By::You => "you",
             By::Reviewer => "reviewer",
+            By::Chat => "chat",
         }
     }
 
@@ -59,6 +64,7 @@ impl By {
         match w {
             "you" => By::You,
             "reviewer" => By::Reviewer,
+            "chat" => By::Chat,
             _ => By::Author,
         }
     }
@@ -93,6 +99,9 @@ pub struct Note {
     /// A finding still being placed on the lines now from the snapshot its reviewer read (`pin_finding`): no
     /// mark yet.
     pub placing: bool,
+    /// A chat note's (`chatnotes.rs`): the sentence that names its place — the line end's words; its first entry
+    /// is the paragraph, the card's.
+    pub sentence: Option<String>,
 }
 
 /// What a finding of the board's carries beside its text: the angles that found it (the first pinned it),
@@ -128,10 +137,19 @@ pub fn unsent(n: &Note) -> bool {
 }
 
 impl Note {
-    /// The first thing said — what the line end shows.
+    /// The first thing said — what the line end shows (a chat note's, the sentence that names its place).
     pub fn gist(&self) -> &str {
+        if let Some(s) = self.sentence.as_deref() {
+            return s;
+        }
         self.thread.first().map_or("", |e| e.text.lines().find(|l| !l.trim().is_empty()).unwrap_or(""))
     }
+}
+
+/// Whether `n` is what the chat's last answer said of a place, nothing more (`chatnotes.rs`): the next answer's
+/// places replace it, never kept across a restart, never told to Claude. Answered with `space n`, it's a thread.
+pub fn bare_chat(n: &Note) -> bool {
+    n.thread.len() == 1 && n.thread[0].by == By::Chat
 }
 
 #[derive(Default)]
@@ -146,6 +164,11 @@ pub struct Notes {
     stale_asked: Vec<u64>,
     /// Findings placed on lines changed since their reviewer read them (`pin_finding`) — the stale card says so.
     since_read: Vec<u64>,
+    /// The notes the chat's Claude pinned in the turn under way — its answer's places take none on their lines
+    /// (`chatnotes::turn_over`).
+    pub pinned_now: Vec<u64>,
+    /// The last answer's places, waiting for what their names come to (`chatnotes::sync`).
+    pub answer: Option<crate::chatnotes::Waiting>,
 }
 
 /// The `note` tool as the MCP server lists it.
@@ -154,8 +177,9 @@ pub fn tool_schema() -> Value {
         "name": "note",
         "description": "Pin a short note to lines of code in the user's editor — it shows beside that code and \
     the user can reply there. Use it for observations tied to specific lines (a bug, a risk, a question, an idea); \
-    one or two sentences each, a few per answer at most. To answer the user on an existing note, pass reply_to \
-    with its id (path and line aren't needed then).",
+    one or two sentences each, a few per answer at most. A path:line in your answer already shows at that line \
+    with its sentence — don't repeat it as a note. To answer the user on an existing note, pass reply_to with its \
+    id (path and line aren't needed then).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -193,6 +217,7 @@ pub fn add(ed: &mut Editor, path: &Path, lines: Range<usize>, by: By, text: &str
         pinned: None,
         board: None,
         placing: false,
+        sentence: None,
     });
     ed.workspace.claude.notes.focus = Some(id);
     attach(ed);
@@ -211,6 +236,33 @@ pub fn add(ed: &mut Editor, path: &Path, lines: Range<usize>, by: By, text: &str
         });
     }
     id
+}
+
+/// A chat note on `lines` of `path` (`chatnotes::sync`): `sentence` at the line end, `paragraph` on its card. Not
+/// focused (a crowded line shows the note you stepped to) and no lines kept as pinned (no draft's: never stale).
+pub fn add_said(
+    ed: &mut Editor,
+    path: &Path,
+    lines: Range<usize>,
+    sentence: String,
+    paragraph: String,
+) -> u64 {
+    let notes = &mut ed.workspace.claude.notes;
+    notes.next += 1;
+    notes.list.push(Note {
+        id: notes.next,
+        path: path.to_path_buf(),
+        at: None,
+        lines,
+        thread: vec![Entry { by: By::Chat, text: paragraph, draft: false }],
+        waiting: false,
+        anchor: None,
+        pinned: None,
+        board: None,
+        placing: false,
+        sentence: Some(sentence),
+    });
+    notes.next
 }
 
 /// What a note keeps of its lines' text to tell a change (`Note.pinned`): a SHA-256 of them. None past the
@@ -311,7 +363,8 @@ pub fn to_json(notes: &Notes, docs: &[crate::document::Document]) -> Vec<Value> 
         .iter()
         // (a finding still being placed has the snapshot's lines and a copy that won't outlive a restart: not
         // kept on the wrong lines — its placing lands within the moment)
-        .filter(|n| !n.placing)
+        // (and the chat's last answer's places: the next answer's, not the next start's — #239)
+        .filter(|n| !n.placing && !bare_chat(n))
         .map(|n| {
             let anchor = n.anchor.clone().or_else(|| {
                 let doc = docs.iter().find(|d| d.path.as_deref() == Some(n.path.as_path()))?;
@@ -392,6 +445,7 @@ fn restore_from(notes: &mut Notes, docs: &mut crate::docpaths::Docs, saved: Vec<
             pinned: v["pinned"].as_str().and_then(of_hex),
             board: Mark::of(&v["board"]),
             placing: false,
+            sentence: None,
         });
     }
     attach_in(notes, docs);
@@ -438,6 +492,7 @@ pub fn tool_call(ed: &mut Editor, args: &Value) -> Result<String, String> {
     let (path, lines) = placed(&ed.workspace.root, args)?;
     let line = lines.start;
     let id = add(ed, &path, lines, By::Author, text);
+    ed.workspace.claude.notes.pinned_now.push(id);
     Ok(format!("note #{id} pinned at {}:{}", crate::chat::shown(&ed.workspace.root, &path), line + 1))
 }
 
@@ -547,6 +602,7 @@ pub fn pin_finding(
         pinned: None,
         board: mark,
         placing: true,
+        sentence: None,
     });
     place(ed, id, from, snap, lines);
     id
@@ -996,10 +1052,11 @@ pub fn began(ed: &Editor, id: u64) -> Option<By> {
     find(ed, id).and_then(|n| n.thread.first()).map(|e| e.by)
 }
 
-/// Who `word` names, as `:notes-clear` takes it: `reviewer`, `author` (or `claude`), `you`.
+/// Who `word` names, as `:notes-clear` takes it: `reviewer`, `author` (or `claude`), `you`, `chat`.
 pub fn by_word(word: &str) -> Option<By> {
     match word {
         "reviewer" => Some(By::Reviewer),
+        "chat" => Some(By::Chat),
         "author" | "claude" => Some(By::Author),
         "you" => Some(By::You),
         _ => None,
@@ -1168,7 +1225,8 @@ fn message(ed: &Editor, n: &Note, code: bool) -> String {
     );
     // The thread up to (not including) the message being sent
     for e in &n.thread[..n.thread.len().saturating_sub(1)] {
-        s.push_str(e.by.word());
+        // (a chat note's first entry is Claude's own answer: said as its words)
+        s.push_str(if e.by == By::Chat { "claude, in the chat" } else { e.by.word() });
         s.push_str(": ");
         s.push_str(&e.text);
         s.push('\n');
