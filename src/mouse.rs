@@ -379,6 +379,21 @@ impl Editor {
         if down && self.picker.is_some() && !s.picker_box.get().is_some_and(|b| inside(b, x, y)) {
             return at(S::Picker, Part::Outside);
         }
+        // The chat's slash list (#232), as it's drawn: over the toasts and an ask there, under which-key, the plugins'
+        // overlays and a picker (those take a press on them, below) — a row fills its name in, the input's, nothing under
+        // it pressed through it
+        let over_slash = (self.picker.is_some() && s.picker_box.get().is_some_and(|b| inside(b, x, y)))
+            || s.which_key.get().is_some_and(|r| inside(r, x, y))
+            || s.which_key_rows.borrow().iter().any(|r| on(r.0, r.1, r.2, x, y))
+            || s.overlays.borrow().iter().any(|o| inside(o.1, x, y));
+        if down
+            && !over_slash
+            && let Some(card) = s.slash_card.get()
+            && inside(card, x, y)
+        {
+            let row = s.slash_rows.borrow().iter().find(|r| r.0 == y).map(|r| r.1);
+            return at(S::Input, row.map_or(Part::Blank, Part::Row));
+        }
         let way = s.offer_way.filter(|w| on(w.0, w.1, w.2, x, y)).map(|_| WAY);
         let button = s.offer_buttons.iter().find(|b| on(b.0, b.1, b.2, x, y)).map(|b| b.3).or(way);
         let on_card = s.offer_card.is_some_and(|c| inside(c, x, y));

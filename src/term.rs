@@ -734,6 +734,8 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         completion_card: Default::default(),
         completion_docs: Default::default(),
         completion_rows: Default::default(),
+        slash_card: Default::default(),
+        slash_rows: Default::default(),
         note_card: Default::default(),
         thought_card: Default::default(),
         ask_card: Default::default(),
@@ -5216,6 +5218,8 @@ fn draw(
     if let Some(card) = offer {
         card.draw(editor, ui, out)?;
     }
+    // The chat's slash list over its input — over an ask there too: it's what your keys are typing (#232)
+    draw_slash_list(editor, ui, lay, out)?;
     // (a view mode's own sequence under way — `g`, `z`, `m` on the conversation — lists its keys too)
     let viewing = crate::view::viewing(editor).is_some_and(|(_, k)| !k.pending.is_empty());
     let output = crate::rundoc::keyed(editor).is_some_and(|(_, o)| !o.keys.pending.is_empty());
@@ -11361,6 +11365,104 @@ fn draw_completion(
     Ok(())
 }
 
+/// The chat's slash list (#232): while the chat's input has the keys and its line begins one of Claude Code's names
+/// (`chat::slash_list`), a borderless card standing on the input's rule — the code's completion menu's look (it takes no
+/// keys: the input does, as the code's insert mode does there): each name, the typed part lit as a match is, what it
+/// does in tarae's words, then its key faint (plain words: the name is the act). The name in hand is the one the line
+/// is now — what `enter` does. Its `/` stands over the typed one. Narrow, the key goes first, then the words are cut
+/// (whole on their card under the mouse — none at the narrowest chat: `chat::Slash`'s words fit it).
+fn draw_slash_list(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io::Result<()> {
+    const GAP: usize = 3;
+    const DOES_MIN: usize = 8;
+    let Some(c) = editor.workspace.claude.chat.as_ref().filter(|_| lay.chat_w > 0) else { return Ok(()) };
+    let (Some(list), Some(input), Some((cx, cw, _))) =
+        (slash_up(editor, c), editor.screen.chat_input.get(), chat_foot(editor, lay))
+    else {
+        return Ok(());
+    };
+    let pad = CARD_PAD;
+    // (on the input's rule: its last row of air right above it, its top under the chat's top line)
+    let rule = input.y.saturating_sub(1);
+    let rows = list.names.len().min(rule.saturating_sub(1 + 2 * pad));
+    if rows == 0 {
+        return Ok(());
+    }
+    let x0 = input.x.saturating_sub(2);
+    let room = (cx + cw).saturating_sub(x0 + crate::chrome::PAD_R);
+    let shown: Vec<&crate::chat::Slash> =
+        list.names.iter().take(rows).map(|&n| &crate::chat::SLASH[n]).collect();
+    let keys: Vec<String> = (shown.iter())
+        .map(|s| if s.key.starts_with("C-") { editor.key_said(s.key) } else { s.key.to_string() })
+        .collect();
+    let label_w = shown.iter().map(|s| s.name.width()).max().unwrap_or(0);
+    let mut does_w = shown.iter().map(|s| s.does.width()).max().unwrap_or(0);
+    let mut key_w = keys.iter().map(|k| k.width()).max().unwrap_or(0);
+    // [bar][ ][name][   does][   key][ ]
+    let fixed = 2 + label_w + 1;
+    if fixed + GAP + does_w + GAP + key_w > room {
+        key_w = 0;
+    }
+    if fixed + GAP + does_w > room {
+        does_w = room.saturating_sub(fixed + GAP);
+        if does_w < DOES_MIN {
+            does_w = 0;
+        }
+    }
+    let width = (fixed + [does_w, key_w].iter().filter(|w| **w > 0).map(|w| GAP + w).sum::<usize>())
+        .min(room.max(fixed));
+    let h = rows + 2 * pad;
+    let y0 = rule.saturating_sub(h);
+    let card = card_style(ui, editor, "ui.menu");
+    let selected = selected_row(ui, editor, card);
+    let matched = Style { fg: ui.accent.fg, bold: true, ..Style::default() };
+    let t = &editor.theme;
+    editor.screen.slash_card.set(Some((x0, y0, width, h)));
+    card_edge(out, card, x0, y0, width)?;
+    let typed: Vec<u32> = (0..list.typed as u32).collect();
+    let screen = (0, lay.width);
+    for (row, s) in shown.iter().enumerate() {
+        let y = y0 + pad + row;
+        let is_sel = list.selected == Some(row);
+        let base = if is_sel { selected } else { card };
+        editor.screen.slash_rows.borrow_mut().push((y, row));
+        queue!(out, MoveTo(x0 as u16, y as u16))?;
+        apply(out, if is_sel { Style { fg: ui.accent.fg, ..base } } else { base })?;
+        queue!(out, Print(if is_sel { "▎ " } else { "  " }))?;
+        let name = if is_sel { base.patch(t.try_get("ui.text.focus").unwrap_or_default()) } else { base };
+        let name = Style { bg: base.bg, ..name };
+        print_matched(out, s.name, &typed, name, matched, label_w)?;
+        apply(out, base)?;
+        queue!(out, Spaces(label_w - s.name.width()))?;
+        let mut used = 2 + label_w;
+        if does_w > 0 {
+            let d = crate::whole::fit(s.does, does_w);
+            let plain = Style { fg: ui.virt.fg, ..base };
+            // (whole under the mouse only: the list has no row in hand — the input has the keys)
+            let at = (x0 + used + GAP, y);
+            crate::whole::cut_at(editor, crate::whole::On::Chat, at, &d, plain, screen, None);
+            apply(out, plain)?;
+            queue!(out, Spaces(GAP), Print(d.shown()), Spaces(does_w - d.width()))?;
+            used += GAP + does_w;
+        }
+        if key_w > 0 {
+            apply(out, Style { fg: ui.linenr.fg, ..base })?;
+            queue!(out, Spaces(GAP), Print(&keys[row]), Spaces(key_w - keys[row].width()))?;
+            used += GAP + key_w;
+        }
+        apply(out, base)?;
+        queue!(out, Spaces(width.saturating_sub(used)))?;
+    }
+    card_edge(out, card, x0, y0 + pad + rows, width)
+}
+
+/// The chat's slash list, while it's up: the input has the keys and its line begins a name (#232).
+fn slash_up(editor: &Editor, c: &crate::chat::Chat) -> Option<crate::chat::SlashList> {
+    if !editor.workspace.is_at(At::Chat) || crate::chatdoc::keyed(editor) {
+        return None;
+    }
+    crate::chat::slash_list(c)
+}
+
 /// Signature card — **above** the cursor line (completion opens below, so no overlap), below if no room above
 /// (skipped if the list is open). Colored by that language's grammar; current param bold accent + underline.
 /// Long signatures fold the front into `…` to keep the current param visible. Param docs dimmed, ≤ 3 lines.
@@ -16986,6 +17088,8 @@ fn draw_chat(
         let mut intro = vec![vec![sp("▎ ".into(), accent), sp("Ask Claude".into(), strong)], vec![]];
         intro.extend(reads.iter().map(|l| vec![crate::whole::fit(l, w).span(dim)]));
         intro.push(vec![]);
+        // (`tab` and its suggestions: gone while the slash list is up — `tab` completes a name then, #232)
+        let tab_at = intro.len();
         intro
             .push(vec![sp("tab ".into(), Style { bold: true, ..dim }), sp("for a suggestion".into(), faint)]);
         // (the key for the model sits with the other first keys; the title names the one in use)
@@ -17003,6 +17107,7 @@ fn draw_chat(
             intro.push(vec![sp("› ".into(), faint), crate::whole::fit(s, w - 2).span(dim)]);
         }
         intro.push(vec![]);
+        let tab_end = intro.len();
         // A start begins a new conversation: the latest, a key away among the first keys — its age and size said
         // before a cold one is paid for (`continue_row`)
         if let Some(p) = c.past.iter().find(|p| Some(&p.id) != c.conversation.as_ref()) {
@@ -17023,6 +17128,14 @@ fn draw_chat(
             intro.pop();
         }
         let pad = area.saturating_sub(intro.len()) / 2;
+        // (placed as it stands whole: its top doesn't move as the list comes and goes)
+        if slash_up(editor, c).is_some() {
+            let n = intro.len();
+            intro.drain(tab_at.min(n)..tab_end.min(n));
+            while intro.last().is_some_and(|l| l.is_empty()) {
+                intro.pop();
+            }
+        }
         lines = std::iter::repeat_n(Vec::new(), pad).chain(intro).collect();
     }
     total += lines.len();
@@ -17496,25 +17609,41 @@ fn draw_chat(
     } else if !editor.workspace.is_at(At::Chat) {
         hints.push(("space l", "focus"));
         hints.push(("space L", "close"));
-    } else if c.busy() {
+    } else if c.busy() || crate::chat::slash_list(c).is_some() {
         // (a card up asks mid-turn: the chat keeps the keys, `C-q` hands them over — frictions26)
         // (not while it holds them already: given by `C-q`, its answers answer it)
-        if !editor.card_has_keys() && editor.offers.first().is_some_and(|o| !o.installing()) {
+        if c.busy() && !editor.card_has_keys() && editor.offers.first().is_some_and(|o| !o.installing()) {
             c_q = editor.key_said("C-q");
             hints.push((c_q.as_str(), "answer card"));
         }
-        // (Enter queues what's typed for this turn's end — #23; ↑ takes it back)
-        if !c.input.blank() {
-            hints.push(("enter", "queue"));
-        } else if c.queued.is_some() {
-            hints.push(("↑", "edit queued"));
-        } else if c.cleared.is_some() && c.input.is_empty() {
-            hints.push(("↑", "undo clear"));
+        if crate::chat::slash_list(c).is_some() {
+            // (the slash list up, #232: the `:` prompt's hints — `enter run` once the line is a name, at once while
+            // Claude works but `/compact`, which waits its turn, and `/clear` and `/resume`, refused mid-turn)
+            let enter = crate::chat::slash_named(&c.input.text()).and_then(|s| match s.act {
+                _ if crate::chat::slash_refused(c, s.act) => None,
+                crate::chat::SlashAct::Compact if c.busy() => Some("queue"),
+                _ => Some("run"),
+            });
+            if let Some(enter) = enter {
+                hints.push(("enter", enter));
+            }
+            hints.push(("tab", "complete"));
+            hints.push(esc);
+            hints.push(("C-c", "clear"));
+        } else {
+            // (Enter queues what's typed for this turn's end — #23; ↑ takes it back)
+            if !c.input.blank() {
+                hints.push(("enter", "queue"));
+            } else if c.queued.is_some() {
+                hints.push(("↑", "edit queued"));
+            } else if c.cleared.is_some() && c.input.is_empty() {
+                hints.push(("↑", "undo clear"));
+            }
+            // (what's typed first, then the turn — #175)
+            hints.push(("C-c", if c.input.blank() { "stop" } else { "clear" }));
+            hints.push(esc);
+            hints.push(("C-f", if c.follow.active() { "unfollow" } else { "follow" }));
         }
-        // (what's typed first, then the turn — #175)
-        hints.push(("C-c", if c.input.blank() { "stop" } else { "clear" }));
-        hints.push(esc);
-        hints.push(("C-f", if c.follow.active() { "unfollow" } else { "follow" }));
     } else {
         let code = c.last_code().is_some();
         // What waits to go with it: how it comes off — first, the one way back (an empty input sends nothing yet,

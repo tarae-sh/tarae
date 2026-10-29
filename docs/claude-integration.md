@@ -123,7 +123,7 @@ in that folder.
 **When Claude compacts.** Near its context limit Claude Code summarizes the conversation so far and carries on
 from the summary (or does it when you send `/compact`: typed, with or without its words, it goes as it is, without the
 editor context tarae puts before a message — claude reads a command only at a message's start — and alone, what's
-over the input staying there for your next message; any other `/…` you type is a message like the rest). Details it worked out before — a list it wrote, a plan's
+over the input staying there for your next message). Details it worked out before — a list it wrote, a plan's
 steps — may survive only as far as the summary kept them. While it compacts, which can take a minute, the chat
 (and the card beside the code, when following) says `compacting…` instead of `thinking…`. Then the chat says so
 where it happened, a beat of its own between what came before and after: `≈ Claude compacted this conversation (automatic, 812k
@@ -468,6 +468,16 @@ end, follow goes to the answer's first underlined place once its names are found
 | `C-p` | Continue an earlier conversation |
 | `C-t` | Choose the model (`:effort` — how hard it thinks) |
 | `esc` | The conversation's view mode ([below](#reading-the-conversation-view-mode)); `esc` again, back to the code. An empty conversation has nothing to read: `esc` goes straight to the code |
+
+**Claude Code's slash names.** `/` at the input's start lists the names you know from Claude Code, each doing tarae's
+own act: `/clear` a new conversation (`C-l`), `/compact` sent to Claude as it is (*When Claude compacts*, above), `/resume` an
+earlier conversation (`C-p`), `/model` the model and its effort (`C-t`), `/cost` what the turns cost (`:usage`). The
+list stands on the input, each name with what it does and its key; `tab` completes the name you began (several: `tab`
+goes round them, as the `:` prompt's), a press on a row fills it in, and `enter` does the name the line is — at once.
+While Claude works, `/model` and `/cost` still do; `/compact` waits its turn; `/clear` and `/resume` would end the turn or
+leave it, so they're refused (stop it with `C-c` first), the line kept. A line that's only the start of a name (`/cl`)
+isn't sent: the status line says what it begins. Any other `/…` is a message like the rest — a path (`/tmp is full`), a
+name with words after it (`/clear the cache`). The names are the input's: `:chat /clear` sends `/clear` as a message.
 
 The input is a small buffer in insert mode: what insert mode does in the code it does here — `A-backspace` a word
 back, `A-d` / `A-del` a word on, `C-k` to the line's end, `C-h` a character, `↑` `↓` a line in a message of

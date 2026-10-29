@@ -86,6 +86,67 @@ fn a_press_on_a_completion_row_accepts_it_and_the_wheel_moves_through_it() {
     assert_eq!(ed.mode, crate::editor::Mode::Insert, "still typing");
 }
 
+/// The chat's slash list (#232): a press on a row fills its name in, as `tab` going round to it — the list stays, the
+/// input keeps the keys, nothing sent; a press on its air does nothing under it.
+#[test]
+fn a_press_on_a_slash_row_fills_its_name_in() {
+    let mut ed = editor();
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    feed(&mut ed, "/c");
+    frame(&mut ed);
+    let (x, y, ..) = ed.screen.slash_card.get().expect("the list drawn");
+    let row = ed.screen.slash_rows.borrow().iter().find(|r| r.1 == 1).map(|r| r.0).expect("row 1");
+    press(&mut ed, x + 4, row);
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert_eq!(c.input.text(), "/compact", "filled in");
+    assert!(c.msgs.is_empty() && !c.busy(), "nothing sent");
+    assert!(ed.workspace.is_at(crate::workspace::At::Chat), "the input keeps the keys");
+    assert!(ed.screen.slash_card.get().is_some(), "the list stays");
+    // (the round goes on from it: the next `tab` the name after it)
+    feed(&mut ed, "<tab>");
+    assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().input.text(), "/cost");
+    // (its air: nothing under it pressed)
+    press(&mut ed, x + 4, y);
+    assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().input.text(), "/cost");
+}
+
+/// A picker opened over the slash list: the list stays up under it, and a press where the picker covers one of its rows
+/// is the picker's, never the hidden row's — the chat's input as it was (#232's review, round 2). A picker floats left of
+/// the chat, so it reaches the list only where the code's area is narrower than a picker's least width: the chat zoomed
+/// (`C-w z`), the picker one that keeps the screen's height (a preview's).
+#[test]
+fn a_picker_over_the_slash_list_takes_the_press_on_it() {
+    let mut ed = editor();
+    ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    feed(&mut ed, "<C-w>z/m");
+    let items: Vec<crate::picker::Item> = (0..60)
+        .map(|i| crate::picker::Item {
+            action: crate::picker::Action::Open(std::path::PathBuf::from(format!("/nowhere/f{i}.rs"))),
+            label: format!("f{i}.rs"),
+            hint: String::new(),
+            glyph: None,
+        })
+        .collect();
+    ed.picker = Some(crate::picker::Picker::new("files", items, true));
+    frame(&mut ed);
+    let card = ed.screen.slash_card.get().expect("the list up under the picker");
+    let b = ed.screen.picker_box.get().expect("the picker drawn");
+    let rows = ed.screen.slash_rows.borrow().clone();
+    let inside = |(rx, ry, rw, rh): (usize, usize, usize, usize), x: usize, y: usize| {
+        (rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y)
+    };
+    let (x, y) = (rows.iter())
+        .flat_map(|r| (card.0 + 2..card.0 + card.2).map(move |x| (x, r.0)))
+        .find(|&(x, y)| inside(b, x, y))
+        .unwrap_or_else(|| panic!("no row under the picker: {b:?} {card:?} {rows:?}\n{}", frame(&mut ed)));
+    assert_eq!(ed.mouse_at(x, y).surface, crate::mouse::Surface::Picker, "the picker's, over the list");
+    press(&mut ed, x, y);
+    assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().input.text(), "/m", "no name filled in under it");
+    assert!(ed.picker.is_some(), "the picker stays: a press inside it");
+}
+
 #[test]
 fn a_press_on_the_note_card_replies_and_nothing_under_it_is_pressed() {
     let mut ed = editor();

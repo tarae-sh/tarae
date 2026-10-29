@@ -643,6 +643,10 @@ pub struct Screen {
     pub completion_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
     pub completion_docs: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
     pub completion_rows: std::cell::RefCell<Vec<(usize, usize)>>,
+    /// The chat's slash list this frame (x, y, width, height — `term::draw_slash_list`, #232) and its rows: (screen
+    /// row, the name's place among those shown) — a press on one fills it in.
+    pub slash_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
+    pub slash_rows: std::cell::RefCell<Vec<(usize, usize)>>,
     /// The note card and the thought card this frame (x, y, width, height).
     pub note_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
     pub thought_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
@@ -3701,6 +3705,8 @@ impl Editor {
                             }
                             // A chip over the input: what goes, whole (`quote::pressed`) — never taken off
                             Part::Word(Word::With(which)) => crate::quote::pressed(self, which),
+                            // The slash list's row: its name filled in, as `tab` going round to it (#232)
+                            Part::Row(i) if u.surface == S::Input => crate::chat::slash_pick(self, i),
                             // The conversation's text: its view mode, the cursor on the character pressed (as the
                             // code's) — a drag from there selects
                             Part::Text { line, col } if u.surface == S::Transcript => {

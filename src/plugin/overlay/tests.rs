@@ -223,6 +223,48 @@ fn the_corner_overlay_gives_way_to_the_cursors_row() {
     assert!(moved, "the cursor's row never came into its corner");
 }
 
+/// The chat's slash list is drawn under the overlays (#232's review): a press where one covers it is the overlay's,
+/// never the hidden row's, and off the overlay the list's row is still the list's. (Which-key, drawn over it too, stands
+/// in the code's area and can't reach the chat's list.)
+#[test]
+fn an_overlay_over_the_chats_slash_list_takes_the_press_on_it() {
+    let (mut ed, _dir) = editor("slash", "fn main() {}\n");
+    overlay(&mut ed, "text 600000 one | two | three | four | five | six", |ed| up(ed) == 1);
+    let mut c = crate::chat::Chat::new();
+    c.input.set("/");
+    ed.workspace.claude.chat = Some(c);
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    frame(&mut ed);
+    let o = rect(&ed).expect("the overlay drawn");
+    let rows = ed.screen.slash_rows.borrow().clone();
+    let card = ed.screen.slash_card.get().expect("the list drawn");
+    let inside = |(rx, ry, rw, rh): (usize, usize, usize, usize), x: usize, y: usize| {
+        (rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y)
+    };
+    let (x, y) = (rows.iter())
+        .flat_map(|r| (card.0..card.0 + card.2).map(move |x| (x, r.0)))
+        .find(|&(x, y)| inside(o, x, y))
+        .unwrap_or_else(|| panic!("no row under the overlay: {o:?} {card:?} {rows:?}"));
+    let under = ed.mouse_at(x, y);
+    assert_eq!(under.surface, crate::mouse::Surface::Overlay, "the overlay's, over the list");
+    let m = crate::event::Mouse {
+        kind: crate::event::MouseKind::Down,
+        x: x as u16,
+        y: y as u16,
+        alt: false,
+        ctrl: false,
+    };
+    ed.handle_event(crate::event::Event::Mouse(m));
+    settle(&mut ed, |ed| ed.toasts.iter().any(|t| t.text.contains("pressed")));
+    assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().input.text(), "/", "no name filled in under it");
+    // (off the overlay, the list's row is still the list's)
+    let (x, y) = (rows.iter())
+        .flat_map(|r| (card.0 + 2..card.0 + card.2).map(move |x| (x, r.0)))
+        .find(|&(x, y)| !inside(o, x, y))
+        .unwrap_or_else(|| panic!("every row under the overlay: {o:?} {card:?} {rows:?}"));
+    assert_eq!(ed.mouse_at(x, y).surface, crate::mouse::Surface::Input);
+}
+
 /// A press on it is its plugin's (`pressed`, its row from 0) — the demo says it — and the keys stay where they were; a
 /// row cut to its room is whole on a card under the mouse.
 #[test]

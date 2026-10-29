@@ -143,6 +143,135 @@ pub const SUGGESTIONS: [&str; 3] = [
     "Why is this diagnostic happening?",
 ];
 
+/// What a slash name does — tarae's own act for Claude Code's name (#232).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlashAct {
+    Clear,
+    Compact,
+    Resume,
+    Model,
+    Cost,
+}
+
+/// A slash name the chat takes: as Claude Code names it, what it does here in tarae's words (whole in the narrowest
+/// chat's list: 18 cells at most), the key that does the same (said beside it — the faster way, learned on the way).
+pub struct Slash {
+    pub name: &'static str,
+    pub does: &'static str,
+    pub key: &'static str,
+    pub act: SlashAct,
+}
+
+/// Claude Code's slash names the chat takes, each tarae's own act (the user, 2026-10-29, #232) — the one table: `/` at
+/// the input's start lists them (`slash_list`), `tab` completes, `enter` does the one the line names (`send`). Any other
+/// `/…` is a message, as ever: a path (`/tmp is full`) is one.
+pub const SLASH: [Slash; 5] = [
+    Slash { name: "/clear", does: "a new conversation", key: "C-l", act: SlashAct::Clear },
+    Slash { name: "/compact", does: "shrink the context", key: "", act: SlashAct::Compact },
+    Slash { name: "/resume", does: "an earlier one", key: "C-p", act: SlashAct::Resume },
+    Slash { name: "/model", does: "model and effort", key: "C-t", act: SlashAct::Model },
+    Slash { name: "/cost", does: "what turns cost", key: ":usage", act: SlashAct::Cost },
+];
+
+/// The slash name `text` is, whole — `/compact` with its words too (`is_compact`); None for any other text, a message.
+pub fn slash_named(text: &str) -> Option<&'static Slash> {
+    let text = text.trim();
+    SLASH.iter().find(|s| text == s.name || (s.act == SlashAct::Compact && is_compact(text)))
+}
+
+/// The slash names `text` begins: a line that's `/` and the start of a name, nothing after it — each name's index in
+/// `SLASH`. Empty for anything else (a path, a word after it, a second line).
+pub fn slash_begun(text: &str) -> Vec<usize> {
+    if !text.starts_with('/') || text.contains(char::is_whitespace) {
+        return Vec::new();
+    }
+    (0..SLASH.len()).filter(|&i| SLASH[i].name.starts_with(text)).collect()
+}
+
+/// The list over the chat's input (#232): the names it shows, which one is in hand (the one the line is now — what
+/// `enter` does), and how much of each the line typed (lit as a completion's match is).
+pub struct SlashList {
+    pub names: Vec<usize>,
+    pub selected: Option<usize>,
+    pub typed: usize,
+}
+
+/// What the slash list shows for `c`'s input, if anything: the names the line begins — or, `tab` going round, those
+/// it began with when the round started (`Chat.slash`, held while the line is the name it filled in).
+pub fn slash_list(c: &Chat) -> Option<SlashList> {
+    let text = c.input.text();
+    let (base, _) = slash_round(c);
+    let names = slash_begun(&base);
+    if names.is_empty() {
+        return None;
+    }
+    let selected = names.iter().position(|&n| SLASH[n].name == text);
+    Some(SlashList { typed: base.len(), selected, names })
+}
+
+/// What the slash list goes by: the line as it was when `tab`'s round began, and the round's name now — while the line
+/// is still that name; else the line as it is, no round.
+fn slash_round(c: &Chat) -> (String, Option<usize>) {
+    let text = c.input.text();
+    match c
+        .slash
+        .as_ref()
+        .filter(|(base, i)| slash_begun(base).get(*i).is_some_and(|&n| SLASH[n].name == text))
+    {
+        Some((base, i)) => (base.clone(), Some(*i)),
+        None => (text, None),
+    }
+}
+
+/// `tab` on the slash list (#232), as the `:` prompt's (`Editor::cmdline_tab`): one name begun fills it in; several go
+/// round, each filled in in turn. False when the line begins no name (`tab` is then what it was).
+fn slash_tab(c: &mut Chat) -> bool {
+    let (base, now) = slash_round(c);
+    let next = now.map_or(0, |i| i + 1);
+    let names = slash_begun(&base);
+    if names.is_empty() {
+        return false;
+    }
+    let i = next % names.len();
+    c.input.set(SLASH[names[i]].name);
+    c.slash = (names.len() > 1).then_some((base, i));
+    true
+}
+
+/// A press on the slash list's row `row` (among those shown): its name filled in, as `tab` going round to it — the list
+/// stays, the next `tab` going on from it.
+pub fn slash_pick(ed: &mut Editor, row: usize) {
+    let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
+    let Some(list) = slash_list(c) else { return };
+    let Some(&n) = list.names.get(row) else { return };
+    let (base, _) = slash_round(c);
+    c.input.set(SLASH[n].name);
+    c.slash = (list.names.len() > 1).then_some((base, row));
+    ed.workspace.viewer.at = At::Chat;
+}
+
+/// Mid-turn, a slash name that would end the turn or leave it — `/clear` (a new conversation kills this one's claude),
+/// `/resume` (another conversation) — is refused, said as `continue_from` says it; `/model` and `/cost` go as their
+/// keys do, `/compact` waits its turn (`send`).
+pub fn slash_refused(c: &Chat, act: SlashAct) -> bool {
+    c.busy() && matches!(act, SlashAct::Clear | SlashAct::Resume)
+}
+
+/// What a refusal mid-turn says (`continue_from`, `slash_refused`).
+const STILL_ANSWERING: &str = "Claude is still answering — stop it (C-c) first";
+
+/// The slash name's act (`send`, the line cleared first) — the same as its key's.
+fn slash_do(ed: &mut Editor, act: SlashAct) {
+    match act {
+        SlashAct::Clear => reset(ed),
+        SlashAct::Resume => past_picker(ed),
+        SlashAct::Model => crate::models::picker(ed),
+        SlashAct::Cost => crate::usage::open(ed),
+        // (`send`'s own: it goes bare, or waits alone)
+        SlashAct::Compact => {}
+    }
+}
+
 /// Size limit for sending the whole file as context (beyond it, ±40 lines around the cursor).
 const WHOLE_FILE_MAX: usize = 60_000;
 /// Most lines an excerpt of a big file carries.
@@ -550,6 +679,9 @@ pub struct Chat {
     /// What `C-c` cleared from the input, and where its cursor was (#175): `↑` on the empty input puts it back —
     /// that clear's undo. Kept until a message is sent or another clear takes its place.
     pub cleared: Option<(String, usize)>,
+    /// The slash list's `tab` round (#232, `slash_tab`): what the line was when it began, and the name filled in now —
+    /// held only while the line is still that name.
+    pub slash: Option<(String, usize)>,
     /// What waits for this turn's end besides the message, in order: the review's notes (`space v s`), a reply on
     /// a note — they were refused while Claude answered (frictions29 18), and go first, one a turn.
     pub sends: Vec<Later>,
@@ -963,6 +1095,7 @@ impl Chat {
             queued_screen: None,
             queued_pointed: Vec::new(),
             cleared: None,
+            slash: None,
             view_wanted: false,
             transcript: None,
             sends: Vec::new(),
@@ -1306,7 +1439,7 @@ fn continue_as(ed: &mut Editor, saved: crate::chats::Saved, back: bool) {
 fn continue_from(ed: &mut Editor, saved: crate::chats::Saved, spawn: bool, back: bool) {
     let Some(c) = &ed.workspace.claude.chat else { return };
     if c.busy() {
-        return ed.set_status("Claude is still answering — stop it (C-c) first");
+        return ed.set_status(STILL_ANSWERING);
     }
     // (another conversation: the last one's answers go with it, as a new one's do — `reset`; a chat with none yet
     // — `:restart`'s, one just opened — leaves only answers it holds)
@@ -2681,6 +2814,16 @@ fn hold_queued(ed: &mut Editor) {
 /// Enter in the chat: the input goes as the next turn — or waits its turn while Claude works, or for the
 /// user's answer on a card their pointing raised (`reads::point`), said, the input kept.
 pub fn send(ed: &mut Editor) {
+    send_from(ed, true);
+}
+
+/// `:chat <text>`: `send`, the text a message whatever it is — the slash names are the chat input's only (#232).
+pub fn send_typed(ed: &mut Editor) {
+    send_from(ed, false);
+}
+
+/// `send` — the slash names taken only when `slash` (the input's `enter`).
+fn send_from(ed: &mut Editor, slash: bool) {
     // (its checkout being moved onto its base: the message waits for that as for a turn — `keepclose.rs`)
     let moving = ed.workspace.moving.is_some();
     let Some(c) = &mut ed.workspace.claude.chat else { return };
@@ -2688,6 +2831,22 @@ pub fn send(ed: &mut Editor) {
     // (a message going: what a `C-c` cleared before it is no longer what `↑` gives back)
     if !question.is_empty() {
         c.cleared = None;
+    }
+    // A slash name (#232): tarae's own act at once, as its key, the line cleared — but one that would end the turn or
+    // leave it, refused mid-turn (the line kept); `/compact` goes on below (bare, or waiting alone)
+    if let Some(s) = slash_named(&question).filter(|s| slash && s.act != SlashAct::Compact) {
+        if slash_refused(c, s.act) {
+            return ed.set_status(STILL_ANSWERING);
+        }
+        c.input.clear();
+        c.slash = None;
+        return slash_do(ed, s.act);
+    }
+    // (the start of one only: never a message — what it begins said, `tab` the way on)
+    let begun = slash_begun(&question);
+    if slash && !begun.is_empty() && slash_named(&question).is_none() {
+        let names: Vec<&str> = begun.iter().map(|&n| SLASH[n].name).collect();
+        return ed.set_status(format!("{question} begins {} — tab completes it", names.join(", ")));
     }
     // Claude is working: it waits its turn (#23) — said over the input, sent when this turn ends; a second
     // one joins it. So it does while the project's settings are read (`claudetrust.rs` — their card doesn't
@@ -2802,10 +2961,11 @@ const COMPACT_DROPPED: &str =
 /// Said when `/compact` was cut off with its conversation: the new one has nothing to compact, so it isn't sent again.
 const COMPACT_GONE: &str = "/compact dropped — its conversation is gone; the new one has nothing to compact";
 
-/// Whether `text` is `/compact`, with or without its words — the one slash command that goes bare (`submit_command`):
-/// claude reads one only at a message's start. Every other `/…` is a message, the editor context before it: a path
-/// (`/tmp is full`) is one, and `/clear`, `/model` or a project's own commands would change claude's conversation
-/// behind tarae (what it was sent, the model, the turn's checkpoints).
+/// Whether `text` is `/compact`, with or without its words — the one slash command that goes to claude, bare
+/// (`submit_command`): claude reads one only at a message's start. The chat's other slash names are tarae's own acts
+/// (`SLASH`); every other `/…` is a message, the editor context before it: a path (`/tmp is full`) is one, and a
+/// project's own commands would change claude's conversation behind tarae (what it was sent, the model, the turn's
+/// checkpoints).
 pub(crate) fn is_compact(text: &str) -> bool {
     text.strip_prefix("/compact").is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
 }
@@ -3839,6 +3999,10 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
     if ed.keymaps.chat.search(&[key]).is_some() {
         return crate::chatinput::key(ed, key);
     }
+    // `tab` on the slash list (#232): the name the line begins, completed — else `tab` is what it was
+    if key.code == Code::Tab && !key.ctrl && !key.alt && slash_tab(c) {
+        return true;
+    }
     match (key.code, key.ctrl, key.alt) {
         (Code::Esc, ..) => ed.workspace.viewer.at = At::Code,
         (Code::Enter, ..) => send(ed),
@@ -4073,6 +4237,199 @@ mod tests {
         let mut ed = Editor::new(crate::config::Config::default());
         ed.docs[0].text = ropey::Rope::from_str(text);
         ed
+    }
+
+    /// Claude Code's slash names (#232): `/` at the input's start lists them with what each does here, `tab` completes
+    /// (one name begun filled in, several gone round), `enter` does the one the line names — tarae's own act, as its key,
+    /// nothing sent — and the start of a name alone is said, never sent; `/compact` goes bare as before; any other `/…` is
+    /// a message, a path among them.
+    #[test]
+    fn slash_names_do_tarae_s_acts_and_any_other_slash_is_a_message() {
+        let mut ed = editor("");
+        // (a stand-in for the new conversation's claude, which reads and says nothing)
+        ed.config.llm.command = "sh".into();
+        ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+        let mut c = Chat::new();
+        let claude = stand_in(&mut c);
+        c.unfolded = true;
+        ed.workspace.claude.chat = Some(c);
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        let feed = |ed: &mut Editor, keys: &str| {
+            let mut chars = keys.chars();
+            while let Some(ch) = chars.next() {
+                let key: Key = match ch {
+                    '<' => chars.by_ref().take_while(|&c| c != '>').collect::<String>().parse().unwrap(),
+                    ch => Key::plain(crate::key::Code::Char(ch)),
+                };
+                ed.handle_key(key);
+            }
+        };
+        let screen = |ed: &mut Editor| {
+            let mut bytes = Vec::new();
+            crate::term::render(ed, &mut bytes, 140, 30).unwrap();
+            let mut p = vt100::Parser::new(30, 140, 0);
+            p.process(&bytes);
+            p.screen().contents()
+        };
+        let input = |ed: &Editor| ed.workspace.claude.chat.as_ref().unwrap().input.text();
+        let said = |ed: &Editor, t: &str| ed.messages.iter().filter(|m| m.2.contains(t)).count();
+        let sent = |claude: &std::sync::mpsc::Receiver<String>| -> Vec<String> {
+            claude
+                .try_iter()
+                .filter_map(|l| {
+                    let v: serde_json::Value = serde_json::from_str(&l).ok()?;
+                    (v["type"] == "user").then(|| v["message"]["content"].as_str().unwrap_or_default().into())
+                })
+                .collect()
+        };
+        // `/` alone: every name, with what it does here and its key
+        feed(&mut ed, "/");
+        let s = screen(&mut ed);
+        for (name, does) in SLASH.iter().map(|s| (s.name, s.does)) {
+            assert!(s.lines().any(|l| l.contains(name) && l.contains(does)), "{name}: {s}");
+        }
+        assert!(s.contains("C-l") && s.contains(":usage") && s.contains("tab complete"), "{s}");
+        // The start of several: `enter` says what it begins, sends nothing; `tab` goes round them, filling each in
+        feed(&mut ed, "c<ret>");
+        assert_eq!(said(&ed, "/c begins /clear, /compact, /cost — tab completes it"), 1);
+        assert_eq!(input(&ed), "/c", "kept");
+        assert!(sent(&claude).is_empty());
+        let mut round = Vec::new();
+        for _ in 0..4 {
+            feed(&mut ed, "<tab>");
+            round.push(input(&ed));
+        }
+        assert_eq!(round, ["/clear", "/compact", "/cost", "/clear"]);
+        assert!(screen(&mut ed).contains("enter run"));
+        // `/cost`: `:usage`
+        feed(&mut ed, "<C-c>/co<tab><tab>");
+        assert_eq!(input(&ed), "/cost");
+        feed(&mut ed, "<ret>");
+        assert_eq!(ed.doc().title.as_deref(), Some("usage"), "`:usage`'s buffer in front");
+        assert_eq!(input(&ed), "", "the line cleared");
+        // `/model`: the model's picker, as `C-t`
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        feed(&mut ed, "/m<tab><ret>");
+        assert_eq!(ed.picker.as_ref().map(|p| p.kind), Some("model"));
+        ed.picker = None;
+        // `/resume`: the conversations' picker, as `C-p` (none kept in tests: said so)
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        feed(&mut ed, "/resume<ret>");
+        assert_eq!(said(&ed, "conversations aren't kept here"), 1);
+        assert!(sent(&claude).is_empty(), "none of them went to Claude");
+        // A path is a message, the context before it — no list over it
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        feed(&mut ed, "/tmp");
+        screen(&mut ed);
+        assert!(ed.screen.slash_card.get().is_none(), "no name begun");
+        feed(&mut ed, " is full<ret>");
+        let s = sent(&claude);
+        assert!(
+            s.len() == 1 && s[0].starts_with("<editor-context>") && s[0].ends_with("\n\n/tmp is full"),
+            "{s:?}"
+        );
+        stand_in_done(&mut ed);
+        // `/compact`: bare, as before
+        feed(&mut ed, "/comp<tab><ret>");
+        assert_eq!(sent(&claude), ["/compact"]);
+        stand_in_done(&mut ed);
+        // `/clear`: a new conversation, as `C-l` — nothing sent
+        feed(&mut ed, "/cl<tab><ret>");
+        assert_eq!(said(&ed, "New conversation with Claude"), 1);
+        assert!(sent(&claude).is_empty());
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        assert!(c.started_new && c.input.text().is_empty());
+    }
+
+    /// Mid-turn (#232's review): `/clear` and `/resume` would end the turn or leave it — refused in the chat's words, the
+    /// line and the turn kept; `/model` and `/cost` do what their keys do, `/compact` waits its turn; the foot keeps
+    /// `C-q answer card` while a card asks, `enter` said only where it does something. `:chat /clear` is a message.
+    #[test]
+    fn mid_turn_the_slash_names_that_would_end_it_are_refused() {
+        let mut ed = editor("");
+        // (a stand-in for a new conversation's claude, should one start: it reads and says nothing)
+        ed.config.llm.command = "sh".into();
+        ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+        let mut c = Chat::new();
+        let claude = stand_in(&mut c);
+        c.unfolded = true;
+        c.state = State::Thinking;
+        ed.workspace.claude.chat = Some(c);
+        ed.workspace.viewer.at = crate::workspace::At::Chat;
+        let what = crate::offer::What::Asks { call: crate::tools::Call::test(1) };
+        let offer =
+            crate::offer::Offer::new("Claude asks".into(), "to see the screen", "", String::new(), what);
+        ed.push_offer(offer);
+        let typed = |ed: &mut Editor, text: &str, enter: bool| {
+            let c = ed.workspace.claude.chat.as_mut().unwrap();
+            c.input.set(text);
+            ed.workspace.viewer.at = crate::workspace::At::Chat;
+            if enter {
+                ed.handle_key("ret".parse().unwrap());
+            }
+        };
+        let foot = |ed: &mut Editor| {
+            let mut bytes = Vec::new();
+            crate::term::render(ed, &mut bytes, 200, 40).unwrap();
+            let mut p = vt100::Parser::new(40, 200, 0);
+            p.process(&bytes);
+            p.screen().contents()
+        };
+        let said = |ed: &Editor, t: &str| ed.messages.iter().filter(|m| m.2.contains(t)).count();
+        let sent = |claude: &std::sync::mpsc::Receiver<String>| -> Vec<String> {
+            (claude.try_iter())
+                .filter_map(|l| {
+                    let v: serde_json::Value = serde_json::from_str(&l).ok()?;
+                    (v["type"] == "user").then(|| v["message"]["content"].as_str().unwrap_or_default().into())
+                })
+                .collect()
+        };
+        // The list up mid-turn: the card's way in stays, beside the list's keys
+        typed(&mut ed, "/c", false);
+        let s = foot(&mut ed);
+        assert!(s.contains("C-q answer card") && s.contains("tab complete"), "{s}");
+        for (name, enter) in
+            [("/clear", None), ("/resume", None), ("/model", Some("run")), ("/cost", Some("run"))]
+                .into_iter()
+                .chain([("/compact", Some("queue"))])
+        {
+            typed(&mut ed, name, false);
+            let s = foot(&mut ed);
+            assert!(s.contains("C-q answer card"), "{name}: {s}");
+            match enter {
+                Some(e) => assert!(s.contains(&format!("enter {e}")), "{name}: enter {e}\n{s}"),
+                None => assert!(!s.contains("enter run") && !s.contains("enter queue"), "{name}: {s}"),
+            }
+        }
+        // `/clear` and `/resume`: refused, the line and the turn kept
+        for (n, name) in ["/clear", "/resume"].into_iter().enumerate() {
+            typed(&mut ed, name, true);
+            assert_eq!(said(&ed, "Claude is still answering — stop it (C-c) first"), n + 1, "{name}");
+            let c = ed.workspace.claude.chat.as_ref().unwrap();
+            assert_eq!(c.input.text(), name, "the line kept");
+            assert!(c.busy() && c.proc.is_some() && !c.started_new, "{name}: the turn goes on");
+            assert!(ed.picker.is_none(), "{name}: no picker");
+        }
+        assert_eq!(said(&ed, "conversations aren't kept here"), 0, "`/resume`'s act never ran");
+        // `/model` and `/cost`: as their keys, mid-turn too
+        typed(&mut ed, "/model", true);
+        assert_eq!(ed.picker.as_ref().map(|p| p.kind), Some("model"));
+        ed.picker = None;
+        typed(&mut ed, "/cost", true);
+        assert_eq!(ed.doc().title.as_deref(), Some("usage"));
+        // `/compact`: waits its turn, then goes bare
+        typed(&mut ed, "/compact", true);
+        assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().queued.as_deref(), Some("/compact"));
+        assert!(sent(&claude).is_empty(), "none sent mid-turn");
+        stand_in_done(&mut ed);
+        assert_eq!(sent(&claude), ["/compact"]);
+        stand_in_done(&mut ed);
+        // `:chat /clear`: a message, as before — the names are the input's only
+        ed.workspace.claude.chat.as_mut().unwrap().input.clear();
+        crate::typed::execute(&mut ed, "chat /clear").unwrap();
+        let s = sent(&claude);
+        assert!(s.len() == 1 && s[0].ends_with("\n\n/clear"), "{s:?}");
+        assert!(!ed.workspace.claude.chat.as_ref().unwrap().started_new);
     }
 
     /// `C-c` clears what's typed (#175) — what's typed first, then the turn, as Claude Code's: idle it clears and `↑`
@@ -4473,8 +4830,8 @@ mod tests {
         stand_in_done(&mut ed);
         let s = sent(&rx);
         assert!(s.len() == 1 && s[0].ends_with("\n\nmore") && s[0].contains("\nquoted\n</quoted"), "{s:?}");
-        // (a path and any other slash command are messages: the context before them)
-        for typed in ["/tmp is full", "/clear"] {
+        // (a path and any other slash command are messages: the context before them — a name with words after it too)
+        for typed in ["/tmp is full", "/clear the cache", "/review"] {
             stand_in_done(&mut ed);
             ed.workspace.claude.chat.as_mut().unwrap().input = typed.into();
             send(&mut ed);

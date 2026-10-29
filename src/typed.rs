@@ -373,7 +373,7 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
                 && let Some(c) = &mut editor.workspace.claude.chat
             {
                 c.input.set(rest);
-                crate::chat::send(editor);
+                crate::chat::send_typed(editor);
             }
             Ok(())
         }

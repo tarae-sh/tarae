@@ -1854,6 +1854,35 @@ fn snapshot_chat_empty() {
     s.check("chat_empty");
 }
 
+/// The empty chat with `/` typed (#232): the slash list on the input's rule; the intro's `tab for a suggestion` and its
+/// suggestions gone while it's up (`tab` completes a name then), the rest of it where it stood.
+#[test]
+fn snapshot_chat_slash() {
+    let mut s = Shot::new(100, 30);
+    s.file("src/demo.rs", DEMO_RS);
+    s.ed.config.llm.command = "sh".into();
+    s.ed.config.llm.args = vec!["-c".into(), "cat > /dev/null".into()];
+    s.keys(" l");
+    let rows = |s: &mut Shot| -> Vec<String> {
+        let mut parser = vt100::Parser::new(s.h, s.w, 0);
+        parser.process(&s.frame());
+        parser.screen().rows(0, s.w).collect()
+    };
+    let title = |rows: &[String]| rows.iter().position(|r| r.contains("Ask Claude"));
+    let before = rows(&mut s);
+    assert!(before.iter().any(|r| r.contains("tab for a suggestion")), "{before:#?}");
+    s.keys("/");
+    let rows = rows(&mut s);
+    assert!(rows.iter().any(|r| r.contains("/compact")), "the list up: {rows:#?}");
+    assert!(
+        !rows.iter().any(|r| r.contains("tab for a suggestion") || r.contains("Explain what this file")),
+        "{rows:#?}"
+    );
+    assert!(rows.iter().any(|r| r.contains("C-t for another model")), "the rest stays: {rows:#?}");
+    assert_eq!(title(&rows), title(&before), "its top where it stood");
+    s.check("chat_slash");
+}
+
 /// Chat panel after Claude explored the project in follow mode: a folded thought, tool rows
 /// (grep·glob·read, as Claude's own tools are named) and an answer whose `path:line` references are underlined links.
 #[test]
@@ -2953,6 +2982,28 @@ fn projects2_frames() {
         s.keys(" l");
         s.until("continued", |ed| ed.workspace.claude.chat.as_ref().is_some_and(|c| c.continued.is_some()));
         s.frames_both(&format!("behind-{w}"));
+    }
+}
+
+/// #232's screens, for their screenshots (only with `TARAE_FRAMES_DIR` set: both themes there; `cargo xtask shot` draws
+/// them with `TARAE_SHOT_REPLAY`): the slash list after `/` in the empty chat, and after `/c` gone round to `/compact` —
+/// at 160, 100 and 80 wide (the narrowest chat: its keys folded, its words cut).
+#[test]
+fn slash232_frames() {
+    if std::env::var_os("TARAE_FRAMES_DIR").is_none() {
+        return;
+    }
+    let (tx, _rx) = std::sync::mpsc::channel();
+    for (w, h) in [(160, 40), (100, 30), (80, 24)] {
+        let mut s = Shot::new(w, h);
+        s.file("src/demo.rs", DEMO_RS);
+        s.ed.claude_lines = Some(tx.clone());
+        s.keys(" l");
+        s.until("the chat", |ed| ed.workspace.claude.chat.is_some());
+        s.keys("/");
+        s.frames_both(&format!("slash-{w}"));
+        s.keys("c<tab><tab>");
+        s.frames_both(&format!("slash-c-{w}"));
     }
 }
 
