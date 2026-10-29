@@ -21,7 +21,9 @@
 //!   `share.rs`), `quiescent = { method, capability, field, health, message }`, `symbol-params`, `hide-lines`;
 //!   how it starts beyond `args` (`args-add`, `args-unless`, `init`); `progress = { method, kind, text, done,
 //!   done-text, error }`, `virtual = { scheme, fetch, language, title-join }` (`virtualdoc.rs`),
-//!   `client-commands`.
+//!   `client-commands`; `runs-project-code` (it waits for the repository's trust — `codetrust.rs`) and, only with
+//!   it, `[[…agents]]` = `{ name, files, uses, version, jars, at-least, arg, unless }`: what's loaded into it where the
+//!   project uses it (`lspagent.rs`).
 //! - `config-files = { toml = [...], json = [...] }`: files checked for parse errors before a save (`disk.rs`;
 //!   a name with a `/` is the path's last parts); `outputs`: tools' output folders that walks skip; `checks`:
 //!   the commands that check or build (`cargo test`, `tsc` — by their first words): the places Claude's run of
@@ -528,6 +530,7 @@ pub(crate) const SERVER_KEYS: &[&str] = &[
     "virtual",
     "client-commands",
     "runs-project-code",
+    "agents",
 ];
 
 fn server_of(e: &Entry) -> Result<(ServerSpec, ServerTraits), String> {
@@ -644,6 +647,20 @@ fn traits_of(t: &Table) -> Result<ServerTraits, String> {
             client_commands.push((name.clone(), action));
         }
     }
+    let runs_project_code = string(t, "runs-project-code")?;
+    let agents = match t.get("agents") {
+        None => Vec::new(),
+        Some(v) => {
+            let each = v.as_array().ok_or("`agents` isn't a list of tables")?;
+            each.iter().map(agent_of).collect::<Result<_, _>>()?
+        }
+    };
+    if !agents.is_empty() && runs_project_code.is_none() {
+        return Err(
+            "`agents` run inside it: it needs `runs-project-code` (it waits for the repository's trust)"
+                .into(),
+        );
+    }
     Ok(ServerTraits {
         share,
         quiescent,
@@ -655,7 +672,49 @@ fn traits_of(t: &Table) -> Result<ServerTraits, String> {
         progress,
         virtual_docs,
         client_commands,
-        runs_project_code: string(t, "runs-project-code")?,
+        runs_project_code,
+        agents,
+    })
+}
+
+/// One of a `[server.<name>]`'s `[[…agents]]` (`lspagent::Agent`).
+fn agent_of(v: &Value) -> Result<crate::lspagent::Agent, String> {
+    let t = v.as_table().ok_or("`agents` isn't a list of tables")?;
+    known(t, &["name", "files", "uses", "version", "jars", "at-least", "arg", "unless"], "an agent")?;
+    let re = |r: &str, k: &str| regex::Regex::new(r).map_err(|e| format!("an agent's `{k}`: {e}"));
+    let need =
+        |k: &str| strings(t.get(k), k)?.filter(|l| !l.is_empty()).ok_or(format!("an agent has no `{k}`"));
+    let uses = re(&string(t, "uses")?.ok_or("an agent has no `uses`")?, "uses")?;
+    let version = strings(t.get("version"), "version")?.unwrap_or_default();
+    let version: Vec<regex::Regex> = version.iter().map(|r| re(r, "version")).collect::<Result<_, _>>()?;
+    if let Some(r) = version.iter().find(|r| !r.capture_names().any(|n| n == Some("v"))) {
+        return Err(format!("an agent's `version`: {:?} has no `(?P<v>…)`", r.as_str()));
+    }
+    let jars = need("jars")?;
+    for j in &jars {
+        let from_home = j.starts_with("~/") || (j.starts_with('{') && !j.starts_with("{v}"));
+        if !from_home || j.split('/').filter(|s| *s == "{v}").count() != 1 {
+            return Err(format!(
+                "an agent's `jars`: {j:?} isn't a home's (`~/`, `{{gradle}}/`) with `{{v}}` one folder"
+            ));
+        }
+    }
+    let at_least = string(t, "at-least")?;
+    if let Some(v) = at_least.as_deref().filter(|v| crate::lspagent::numbers(v).is_none()) {
+        return Err(format!("an agent's `at-least`: {v:?} isn't a version (`1.18.4`)"));
+    }
+    let arg =
+        string(t, "arg")?.filter(|a| a.contains("{jar}")).ok_or("an agent has no `arg` with `{jar}`")?;
+    let name = string(t, "name")?.filter(|n| !n.is_empty()).ok_or("an agent has no `name`")?;
+    Ok(crate::lspagent::Agent {
+        name,
+        files: need("files")?,
+        uses,
+        version,
+        jars,
+        at_least,
+        arg,
+        unless: string(t, "unless")?,
     })
 }
 
@@ -804,6 +863,20 @@ mod tests {
             }
             for (cmd, action) in &t.client_commands {
                 said.push(format!("client-command: {cmd} → {action:?}"));
+            }
+            for a in &t.agents {
+                let version: Vec<&str> = a.version.iter().map(regex::Regex::as_str).collect();
+                let at_least = a.at_least.as_ref().map(|v| format!(" · at least {v}")).unwrap_or_default();
+                let unless = a.unless.as_ref().map(|u| format!(" (unless {u})")).unwrap_or_default();
+                said.push(format!(
+                    "agent {}: {}{unless} · where {} says {}",
+                    a.name,
+                    a.arg,
+                    a.files.join(" "),
+                    a.uses.as_str()
+                ));
+                said.push(format!("  its version: {}{at_least}", version.join("  ")));
+                said.push(format!("  its jars: {}", a.jars.join(" ")));
             }
             if !said.is_empty() {
                 writeln!(s, "  {n}").unwrap();
@@ -1136,6 +1209,20 @@ mod tests {
             ("badcmd", "[server.e]\nclient-commands = { \"x.run\" = \"run\" }\n"),
             ("nofetch", "[server.f]\nvirtual = { scheme = \"x:\", language = \"x\" }\n"),
             ("noinit", "[server.g]\ninit = 3\n"),
+            (
+                "agenttrust",
+                "[[server.h.agents]]\nname = \"x\"\nfiles = [\"pom.xml\"]\nuses = 'x'\njars = [\"~/x/{v}/x.jar\"]\narg = \"{jar}\"\n",
+            ),
+            (
+                "agentjar",
+                "[server.i]\nruns-project-code = \"x\"\n[[server.i.agents]]\nfiles = [\"pom.xml\"]\nuses = 'x'\n\
+                 jars = [\"/opt/{v}/x.jar\"]\narg = \"{jar}\"\n",
+            ),
+            (
+                "agentv",
+                "[server.j]\nruns-project-code = \"x\"\n[[server.j.agents]]\nfiles = [\"pom.xml\"]\nuses = 'x'\n\
+                 version = ['x(y)']\njars = [\"~/{v}/x.jar\"]\narg = \"{jar}\"\n",
+            ),
         ]);
         let ra = &t.traits["rust-analyzer"];
         let share = ra.share.as_ref().unwrap();
@@ -1155,7 +1242,10 @@ mod tests {
         assert!(said.contains("[server.e]: `client-commands.x.run`"), "{said}");
         assert!(said.contains("[server.f]: `virtual` has no `fetch`"), "{said}");
         assert!(said.contains("[server.g]: `init` isn't a table"), "{said}");
-        for gone in ["a", "b", "c", "d", "e", "f", "g"] {
+        assert!(said.contains("[server.h]: `agents` run inside it: it needs `runs-project-code`"), "{said}");
+        assert!(said.contains("[server.i]: an agent's `jars`: \"/opt/{v}/x.jar\" isn't a home's"), "{said}");
+        assert!(said.contains("[server.j]: an agent's `version`: \"x(y)\" has no `(?P<v>…)`"), "{said}");
+        for gone in ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"] {
             assert!(!t.traits.contains_key(gone) && !t.servers.iter().any(|s| s.name == gone), "{gone}");
         }
     }

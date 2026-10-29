@@ -62,6 +62,9 @@ pub struct ServerTraits {
     /// `runs-project-code`: what of the project it runs as it starts and works — its build scripts, its build
     /// files — in the words its trust card says (G13: it waits for the repository's trust, `codetrust.rs`).
     pub runs_project_code: Option<String>,
+    /// `agents`: what's loaded into it where the project uses it (a jar its JVM runs — `lspagent.rs`), found once
+    /// the repository's code is trusted.
+    pub agents: Vec<crate::lspagent::Agent>,
 }
 
 /// A pack's `progress = { … }`: a server's own notification of what it's doing, shown as progress.
@@ -208,6 +211,7 @@ pub static NO_TRAITS: ServerTraits = ServerTraits {
     virtual_docs: None,
     client_commands: Vec::new(),
     runs_project_code: None,
+    agents: Vec::new(),
 };
 
 /// The names `spec` goes by in the packs: its own, then the built-in servers whose command it runs (`[lsp.py]

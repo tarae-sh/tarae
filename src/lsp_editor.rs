@@ -686,13 +686,19 @@ impl Editor {
         checks_off: bool,
     ) -> Option<ClientId> {
         let root = roots.first()?;
+        // (what's loaded into it, found for this start once the repository's code was trusted — `lspagent.rs`;
+        // taken first, so a start that doesn't happen leaves none for a later one)
+        let agents = self.code_agents_take(&server.name, root);
         // It kept exiting: held until `r` in `:procs` (its red dot stays)
         if self.procs_held(&server.name, root) {
             return None;
         }
         self.lsp.next_id += 1;
         let cid = self.lsp.next_id;
-        let server = lsp::start_spec(server, root);
+        // (as configured, before its pack's `args-add`: what a look after its import goes by, as the first did)
+        let configured = server.args.clone();
+        let mut server = lsp::start_spec(server, root);
+        server.args.extend(agents.args());
         let mut options = lsp::options_for(&server, roots);
         // (a server with no setting for it can't be held)
         let checks = lsp::traits(&server).share.as_ref().and_then(|s| s.checks.clone());
@@ -708,6 +714,9 @@ impl Editor {
             self.lsp.clients.push(c);
             crate::share::served_moved();
             self.lsp_own_serve(cid);
+            if !agents.missing.is_empty() {
+                self.code_agents_started(&server.name, root, cid, agents.missing, configured);
+            }
             return Some(cid);
         }
         match Client::start(cid, &server, roots, options, self.events.shared_sender()) {
@@ -717,6 +726,10 @@ impl Editor {
                 self.lsp.failed.remove(&server.name);
                 self.lsp.clients.push(c);
                 crate::share::served_moved();
+                // (what its project uses and wasn't there: looked for again once its import is done)
+                if !agents.missing.is_empty() {
+                    self.code_agents_started(&server.name, root, cid, agents.missing, configured);
+                }
                 Some(cid)
             }
             Err(e) => {
@@ -1233,6 +1246,7 @@ impl Editor {
                 c.settled_once |= quiescent;
                 if quiescent {
                     self.share_quiescent(cid);
+                    self.code_agents_imported(cid);
                 }
             }
             // Its pack's `progress`: what it's doing while it starts (jdtls: importing the project, indexing)
@@ -1245,10 +1259,15 @@ impl Editor {
                 if let Some(text) = &text {
                     c.log().line(&c.name, "status", text);
                 }
+                let done = text.is_none();
                 match text {
                     Some(title) => c.progress.insert(key, lsp::Progress { title, ..Default::default() }),
                     None => c.progress.remove(&key),
                 };
+                // (its import of the build done: an agent its project uses, missing as it started, looked for again)
+                if done {
+                    self.code_agents_imported(cid);
+                }
                 self.ask_again(cid);
                 self.inlay_after_work(cid);
             }

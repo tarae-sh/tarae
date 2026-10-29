@@ -1102,6 +1102,8 @@ pub struct Editor {
     pub code_gate: bool,
     /// Each server root's trust for its code, as read and answered (`codetrust.rs`).
     pub code_trust: std::collections::HashMap<std::path::PathBuf, crate::codetrust::Root>,
+    /// The looks for servers' agents begun, and the home they look in (`codetrust::Looks`).
+    pub agent_looks: crate::codetrust::Looks,
     /// tarae runs inside zellij: a hinted key it takes is said by its twin (`zellij.rs`) — off in tests, which
     /// set it.
     pub zellij: bool,
@@ -1450,6 +1452,7 @@ impl Editor {
             read_outside: !cfg!(test),
             code_gate: !cfg!(test),
             code_trust: Default::default(),
+            agent_looks: Default::default(),
             zellij: crate::zellij::inside(),
             #[cfg(test)]
             caps_home: None,

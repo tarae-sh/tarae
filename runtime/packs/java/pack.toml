@@ -153,6 +153,39 @@ inlayHints = { parameterNames = { enabled = "all" }, variableTypes = { enabled =
 maven = { downloadSources = true }
 eclipse = { downloadSources = true }
 
+# Lombok (#228): its annotations make code as the project compiles (`@Slf4j`'s `log`, `@Getter`'s getters), which
+# jdtls sees only with Lombok's agent loaded — else "log cannot be resolved". VS Code's Java extension, Zed's and
+# mason's jdtls load a Lombok of their own; here the project's: where its build names Lombok, the jar its build
+# downloaded — the version it names where that one's there (a BOM's, Spring Boot's, names none), else the newest at
+# least VS Code's floor. Loaded through the launcher's `--jvm-arg`; one of yours naming lombok in your args stays
+# alone. It runs inside jdtls, so only once the repository's code is trusted (G13)
+[[server.jdtls.agents]]
+name = "Lombok"
+files = [
+    "pom.xml", "*/pom.xml", "*/*/pom.xml", "build.gradle", "build.gradle.kts", "*/build.gradle", "*/build.gradle.kts",
+    "*/*/build.gradle", "*/*/build.gradle.kts", "gradle/libs.versions.toml", "buildSrc/build.gradle",
+    "buildSrc/build.gradle.kts", "buildSrc/src/main/*/*.gradle", "buildSrc/src/main/*/*.gradle.kts",
+]
+# The dependency, or the Gradle plugin that adds it
+uses = 'org\.projectlombok|io\.freefair\.lombok'
+# Gradle's `org.projectlombok:lombok:1.18.30` (a catalog's string too), Maven's dependency and its `lombok.version`
+# property, a catalog's `[versions]` entry
+version = [
+    'org\.projectlombok:lombok:(?P<v>[0-9][0-9A-Za-z.\-]*)',
+    '<artifactId>lombok</artifactId>\s*<version>\s*(?P<v>[0-9][^<\s]*)\s*</version>',
+    '<lombok\.version>\s*(?P<v>[0-9][^<\s]*)\s*</lombok\.version>',
+    '(?m)^\s*lombok\s*=\s*"(?P<v>[0-9][^"]*)"',
+]
+# Gradle's downloads (`{hash}/lombok-1.18.30.jar`), Maven's local repository
+jars = [
+    "{gradle}/caches/modules-2/files-2.1/org.projectlombok/lombok/{v}/*/lombok-{v}.jar",
+    "~/.m2/repository/org/projectlombok/lombok/{v}/lombok-{v}.jar",
+]
+# Below it VS Code's extension takes its own Lombok instead of the project's
+at-least = "1.18.4"
+arg = "--jvm-arg=-javaagent:{jar}"
+unless = "lombok"
+
 [install.jdtls]
 what = "Java's language server (jdtls)"
 hint = "or a release from download.eclipse.org/jdtls/milestones (it runs on Java 21 or newer)"

@@ -108,6 +108,7 @@ mod llm;
 mod log;
 mod lsp;
 mod lsp_editor;
+mod lspagent;
 mod markdown;
 mod mcp;
 use tarae_web::media;

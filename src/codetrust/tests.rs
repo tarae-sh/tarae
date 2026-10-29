@@ -404,6 +404,155 @@ fn a_yes_in_the_store_never_outranks_this_answer() {
     }
 }
 
+/// A stand-in `jdtls` (a `sh` that writes the arguments it got after its script to `args.log`, then keeps what it's
+/// sent, both beside the project) for a Java project `folder/` in a scratch folder, Lombok's jars looked for in a stand-in home `home/` beside
+/// it (never the real one); the project's folder (real) and `Main.java`.
+fn java_project(s: &crate::scratch::Scratch, folder: &str, build: &str) -> (Editor, PathBuf, PathBuf) {
+    let top = std::fs::canonicalize(s.path()).unwrap();
+    let (dir, home) = (top.join(folder), top.join("home"));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(dir.join("build.gradle"), build).unwrap();
+    std::fs::write(dir.join("Main.java"), "class Main {}\n").unwrap();
+    // (its logs beside the project, not in it: its own arguments never name the project's folder)
+    let script = format!("echo \\\"$@\\\" > '{0}/args.log'; cat > '{0}/jdtls.log'", top.display());
+    let cfg = format!("[lsp.jdtls]\ncommand = \"sh\"\nargs = [\"-c\", \"{script}\", \"jdtls\"]\n");
+    let (config, w) = crate::config::parse(&cfg);
+    assert!(w.is_empty(), "{w:?}");
+    let mut ed = Editor::new(config);
+    ed.code_gate = true;
+    ed.trust_path = Some(dir.join("trust.json"));
+    ed.agent_looks.home = Some(home.clone());
+    (ed, dir, home)
+}
+
+const LOMBOK: &str = "dependencies { compileOnly 'org.projectlombok:lombok:1.18.30' }\n";
+
+/// Lombok 1.18.30 in the stand-in home's Gradle cache — the jar's path.
+fn lombok_jar(home: &Path) -> PathBuf {
+    let at = home.join(".gradle/caches/modules-2/files-2.1/org.projectlombok/lombok/1.18.30/ab12");
+    std::fs::create_dir_all(&at).unwrap();
+    let jar = at.join("lombok-1.18.30.jar");
+    std::fs::write(&jar, "").unwrap();
+    jar
+}
+
+fn jdtls(ed: &Editor) -> Option<&crate::lsp::Client> {
+    ed.lsp.clients.iter().find(|c| c.name == "jdtls")
+}
+
+/// Its project trusted: the file's jdtls is asked for (the card answered).
+fn trusted(ed: &mut Editor, dir: &Path, java: &Path) {
+    ed.open(java).unwrap();
+    assert!(until(ed, |ed| card(ed).is_some()), "asked once read");
+    let id = card(ed).unwrap().id;
+    ed.code_trust_answer(id, dir, true);
+}
+
+/// What the stand-in jdtls for the project at `dir` was started with after its script (`args.log` beside it: its
+/// pack's `-data` and what's loaded), once it has said it.
+fn started_with(dir: &Path) -> Vec<String> {
+    let dir = dir.parent().unwrap();
+    let log = dir.join("args.log");
+    let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+    loop {
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        if text.ends_with('\n') || std::time::Instant::now() > end {
+            let _ = std::fs::remove_file(&log);
+            return text.split_whitespace().map(str::to_string).collect();
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn no_agent(args: &[String]) -> bool {
+    !args.iter().any(|a| a.contains("javaagent"))
+}
+
+/// A server with agents of its pack's (jdtls's Lombok, `lspagent.rs`) has them looked for only once its code is
+/// trusted: its file waits for that worker after the yes, then it starts with the agent — the stand-in jdtls's own
+/// arguments say so. Each start looks again: stopped, the jar gone (Gradle's cleanup), it starts without it.
+#[test]
+fn a_servers_agents_are_looked_for_once_its_code_is_trusted() {
+    let s = crate::scratch::Scratch::new("code-trust-agents");
+    let (mut ed, dir, home) = java_project(&s, "app", LOMBOK);
+    let jar = lombok_jar(&home);
+    let java = dir.join("Main.java");
+    trusted(&mut ed, &dir, &java);
+    assert!(!has_server(&ed, &java), "its agents are looked for first");
+    assert!(until(&mut ed, |ed| has_server(ed, &java)), "then it starts");
+    let agent = format!("--jvm-arg=-javaagent:{}", jar.display());
+    let args = started_with(&dir);
+    assert!(args.contains(&agent), "the process got it: {args:?}");
+    let cid = jdtls(&ed).unwrap().id;
+    assert!(jdtls(&ed).unwrap().spec.args.contains(&agent));
+    std::fs::remove_file(&jar).unwrap();
+    ed.lsp_stopped(cid);
+    let id = ed.doc().id;
+    ed.attach_lsp(id);
+    assert!(!has_server(&ed, &java), "looked for again as it starts again, never the path found before");
+    assert!(until(&mut ed, |ed| has_server(ed, &java)));
+    let args = started_with(&dir);
+    assert!(no_agent(&args) && args.contains(&"-data".to_string()), "its jar gone: none — {args:?}");
+}
+
+/// jdtls's `language/status` saying its import is done.
+fn imported(ed: &mut Editor) {
+    let cid = jdtls(ed).unwrap().id;
+    let done = serde_json::json!({"jsonrpc": "2.0", "method": "language/status",
+        "params": {"type": "ServiceReady", "message": "ServiceReady"}});
+    ed.on_lsp_message(cid, done);
+}
+
+/// A fresh clone: its build names Lombok, but jdtls's own import is what downloads it, so the look as it starts finds
+/// none. Once jdtls says its import is done it's looked for again: there now, jdtls restarts with it — once, said;
+/// another "done" restarts nothing. Not there after the import either: it runs on as it is, looked for once. The
+/// project's folder is `lombok-demo`, so the `-data` its pack adds names lombok: the look after the import goes by
+/// the arguments jdtls is configured with, as the first did, never taking that folder for an agent of yours.
+#[test]
+fn lombok_its_import_downloaded_restarts_jdtls_with_it_once() {
+    let s = crate::scratch::Scratch::new("code-trust-agents-late");
+    let (mut ed, dir, home) = java_project(&s, "lombok-demo", LOMBOK);
+    let java = dir.join("Main.java");
+    trusted(&mut ed, &dir, &java);
+    assert!(until(&mut ed, |ed| has_server(ed, &java)), "it starts without");
+    let args = started_with(&dir);
+    assert!(no_agent(&args), "{args:?}");
+    let data = args.iter().skip_while(|a| *a != "-data").nth(1);
+    assert!(data.is_some_and(|d| d.contains("lombok-demo")), "its -data names the folder: {args:?}");
+    let first = jdtls(&ed).unwrap().id;
+    let jar = lombok_jar(&home);
+    imported(&mut ed);
+    let said = "Lombok found — jdtls restarts with it";
+    assert!(
+        until(&mut ed, |ed| jdtls(ed).is_some_and(|c| c.id != first) && has_server(ed, &java)),
+        "restarted"
+    );
+    assert!(ed.toasts.iter().any(|t| t.text == said), "said");
+    let args = started_with(&dir);
+    assert!(args.contains(&format!("--jvm-arg=-javaagent:{}", jar.display())), "{args:?}");
+    let looks = ed.agent_looks.count;
+    imported(&mut ed);
+    assert_eq!(ed.agent_looks.count, looks, "once: another done looks for nothing");
+    assert!(ed.code_trust[&dir].agents.is_empty());
+
+    let s = crate::scratch::Scratch::new("code-trust-agents-never");
+    let (mut ed, dir, _) = java_project(&s, "app", LOMBOK);
+    let java = dir.join("Main.java");
+    trusted(&mut ed, &dir, &java);
+    assert!(until(&mut ed, |ed| has_server(ed, &java)));
+    let cid = jdtls(&ed).unwrap().id;
+    let looks = ed.agent_looks.count;
+    imported(&mut ed);
+    imported(&mut ed);
+    assert_eq!(ed.agent_looks.count, looks + 1, "looked for again once, whatever it says after");
+    assert!(
+        until(&mut ed, |ed| ed.code_trust.get(&dir).is_some_and(|r| r.agents.is_empty())),
+        "looked, none"
+    );
+    assert_eq!(jdtls(&ed).map(|c| c.id), Some(cid), "runs on");
+}
+
 /// With the gate off (tests, or a server no pack marks), servers start as ever.
 #[test]
 fn a_server_no_pack_marks_starts() {

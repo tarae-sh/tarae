@@ -102,6 +102,23 @@ client-commands = { "gleam.applyEdit" = "apply-edit" }
 # repository's trust (one card, every checkout's and server root's answer — `:code-trust`, `:code-untrust`), these words on the card
 runs-project-code = "its gleam.toml's build scripts"
 
+# Only with `runs-project-code`: a jar its JVM loads where the project uses it (jdtls's Lombok, so `@Slf4j`'s `log`
+# resolves) — looked for each time it starts, once the repository's code is trusted. Used: one of `files` under its
+# root holds `uses`; the version: the first `version` match's `v` (its jar there), else the newest release at least
+# `at-least`; its jars from a home (`~/`, `{gradle}/`, `{v}` a version's folder), only where they're yours and no
+# sandboxed run writes; loaded by `arg` ({jar} its path), unless the server's own arguments hold `unless`. None
+# found: as ever — and, used but not downloaded yet, looked for again once the server says it's done loading (its
+# `progress` done, or `quiescent`): there now, it restarts with it, once, `name` saying so ("Lombok found — …")
+[[server.gleam.agents]]
+name = "Lombok"
+files = ["gleam.toml"]
+uses = 'name = "lombok"'
+version = ['lombok = "(?P<v>[0-9.]+)"']
+jars = ["~/.cache/x/lombok/{v}/lombok-{v}.jar"]
+at-least = "1.18.4"
+arg = "--jvm-arg=-javaagent:{jar}"
+unless = "lombok"
+
 [server.gleam.init]                  # its initializationOptions, as TOML
 checkOnSave = true                   # what the server reads as it starts
 ```

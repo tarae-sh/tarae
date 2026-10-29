@@ -1520,7 +1520,7 @@ pub fn cd_into(here: &Path, dir: &Word, expanded: &[(String, PathBuf)]) -> Resul
 /// The paths a glob of `*` and `?` names, as sh fills it in: each segment with a wildcard matched against
 /// what's in the folder so far (a name starting with `.` only by a segment that does), the rest joined as
 /// written and there.
-fn glob_paths(glob: &Path) -> Vec<PathBuf> {
+pub(crate) fn glob_paths(glob: &Path) -> Vec<PathBuf> {
     let mut at: Vec<PathBuf> = vec![PathBuf::new()];
     for c in glob.components() {
         let seg = c.as_os_str().to_string_lossy();

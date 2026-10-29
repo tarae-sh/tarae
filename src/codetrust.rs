@@ -59,11 +59,46 @@ pub struct Root {
     pub servers: Vec<(String, String)>,
     /// Its card went up since its answer was read (asked once; `:code-trust` again).
     asked: bool,
+    /// Each server's look for what it loads (`lspagent.rs`), by its name — trusted only.
+    pub agents: std::collections::HashMap<String, Look>,
+}
+
+/// A server's agents at a trusted root: looked for each time it starts, never kept past the start they were found
+/// for — a jar Gradle's cleanup took or something else put in its place since is never passed on.
+#[derive(Clone, Debug, Default)]
+pub struct Look {
+    /// The latest look begun (`Looks.count` then): a result of an older one — its trust taken back and given again
+    /// meanwhile, the places runs write worked out then — is dropped.
+    pub begun: u64,
+    /// None while it's looked for.
+    pub got: Option<Got>,
+    /// The files waiting for it, only while it's looked for.
+    pub held: Vec<DocId>,
+}
+
+#[derive(Clone, Debug)]
+pub enum Got {
+    /// Found by look `from`, for the server's next start (`lsp_start` takes it).
+    Ready { from: u64, found: crate::lspagent::Found },
+    /// Server `cid` started without agents its project uses (their names): its own import of the build may download
+    /// them (a fresh clone), so they're looked for again — once — when it says the import is done (`asked`), with
+    /// the arguments it's configured with (`args`, as the first look — never the ones it started with: its pack's
+    /// `args-add` names the root, `-data …/lombok-demo-…`, which `unless` would take for an agent of yours).
+    Waits { cid: crate::lsp::ClientId, missing: Vec<String>, args: Vec<String>, asked: bool },
+}
+
+/// The editor's count of looks begun (a root's `Root` goes with its trust, the count stays), and the home they look
+/// in — None: this process's (`lspagent::found`'s stand-in otherwise).
+#[derive(Debug, Default)]
+pub struct Looks {
+    pub count: u64,
+    pub home: Option<PathBuf>,
 }
 
 impl Editor {
     /// Whether `server` may start for files under `root` now — false: file `doc` waits for it, the root's trust
-    /// read, or asked about. Every server that runs no code of the project's starts.
+    /// read, or asked about, or — trusted — its agents looked for. Every server that runs no code of the project's
+    /// starts.
     pub(crate) fn code_trusted(&mut self, server: &crate::lsp::ServerSpec, root: &Path, doc: DocId) -> bool {
         if !self.code_gate {
             return true;
@@ -71,7 +106,7 @@ impl Editor {
         let Some(words) = crate::lsp::traits(server).runs_project_code.clone() else { return true };
         let r = self.code_trust.entry(root.to_path_buf()).or_default();
         if r.state == Some(State::Trusted) {
-            return true;
+            return self.code_agents_found(server, root, doc);
         }
         if !r.held.contains(&doc) {
             r.held.push(doc);
@@ -105,6 +140,137 @@ impl Editor {
     fn code_trust_reread(&mut self) {
         for r in self.code_trust.values_mut().filter(|r| r.reading) {
             r.again = true;
+        }
+    }
+
+    /// Whether `server`'s agents at the trusted `root` are known for its start (`lspagent.rs`) — false: file `doc`
+    /// waits while they're looked for, on a worker, each time it starts and only once its code is trusted. A server
+    /// with none, or one running there already: at once.
+    fn code_agents_found(&mut self, server: &crate::lsp::ServerSpec, root: &Path, doc: DocId) -> bool {
+        if crate::lsp::traits(server).agents.is_empty()
+            || self.lsp.clients.iter().any(|c| c.name == server.name && c.root == root)
+        {
+            return true;
+        }
+        let Some(r) = self.code_trust.get_mut(root) else { return true };
+        match r.agents.get_mut(&server.name) {
+            // (found by its latest look: a result of an older one never starts it)
+            Some(l) if matches!(l.got, Some(Got::Ready { from, .. }) if from == l.begun) => return true,
+            Some(look @ Look { got: None, .. }) => {
+                if !look.held.contains(&doc) {
+                    look.held.push(doc);
+                }
+                return false;
+            }
+            // (none yet, or the server it was for is gone: a look of its own for this start)
+            _ => {}
+        }
+        let agents = &crate::lsp::traits(server).agents;
+        let begun = self.code_agents_look(&server.name, agents, &server.args, root);
+        if let Some(r) = self.code_trust.get_mut(root) {
+            r.agents.insert(server.name.clone(), Look { begun, got: None, held: vec![doc] });
+        }
+        false
+    }
+
+    /// A look for server `name`'s `agents` at `root` (its arguments `args`) begun on a worker — its number.
+    fn code_agents_look(
+        &mut self,
+        name: &str,
+        agents: &'static [crate::lspagent::Agent],
+        args: &[String],
+        root: &Path,
+    ) -> u64 {
+        self.agent_looks.count += 1;
+        let begun = self.agent_looks.count;
+        // (where Claude's runs may write, worked out there: a jar one of them put in place is never loaded)
+        let writes = self.workspaces_writes();
+        let home = self.agent_looks.home.clone();
+        let (name, args, root) = (name.to_string(), args.to_vec(), root.to_path_buf());
+        self.events.jobs().spawn(move || {
+            let found = crate::lspagent::found(agents, &args, &root, writes(), home.as_deref());
+            move |ed: &mut Editor| ed.code_agents_read(&root, name, begun, found)
+        });
+        begun
+    }
+
+    /// Look `from` for `server`'s agents at `root` done: its files get it, started with them (`lsp_start`) — or,
+    /// looked for again after its import, it starts again with what's there now. A look begun since, or its trust
+    /// taken back meanwhile: nothing (the root's answer read again).
+    fn code_agents_read(&mut self, root: &Path, server: String, from: u64, found: crate::lspagent::Found) {
+        let Some(r) = self.code_trust.get_mut(root).filter(|r| r.state == Some(State::Trusted)) else {
+            return;
+        };
+        let Some(look) = r.agents.get_mut(&server).filter(|l| l.begun == from) else { return };
+        let Some(Got::Waits { cid, missing, .. }) = look.got.take() else {
+            look.got = Some(Got::Ready { from, found });
+            for d in std::mem::take(&mut look.held) {
+                self.attach_lsp(d);
+            }
+            return;
+        };
+        let now: Vec<String> =
+            found.loaded.iter().map(|(n, _)| n.clone()).filter(|n| missing.contains(n)).collect();
+        let running = self.lsp.clients.iter().any(|c| c.id == cid);
+        if now.is_empty() || !running {
+            r.agents.remove(&server);
+            return;
+        }
+        // (once: what it starts with now has nothing missing to look for again)
+        let found = crate::lspagent::Found { missing: Vec::new(), ..found };
+        look.got = Some(Got::Ready { from, found });
+        let served: Vec<DocId> =
+            self.docs.iter().filter(|d| d.lsp.clients().any(|c| c == cid)).map(|d| d.id).collect();
+        self.lsp_stopped(cid);
+        for d in served {
+            self.attach_lsp(d);
+        }
+        self.set_status(format!("{} found — {server} restarts with it", now.join(", ")));
+    }
+
+    /// What `server` starts with at `root` besides its arguments: its agents found for this start
+    /// (`code_agents_found`), taken — the next start looks again.
+    pub(crate) fn code_agents_take(&mut self, server: &str, root: &Path) -> crate::lspagent::Found {
+        let Some(r) = self.code_trust.get_mut(root) else { return Default::default() };
+        match r.agents.get(server) {
+            Some(Look { got: Some(Got::Ready { .. }), .. }) => match r.agents.remove(server) {
+                Some(Look { got: Some(Got::Ready { found, .. }), .. }) => found,
+                _ => Default::default(),
+            },
+            _ => Default::default(),
+        }
+    }
+
+    /// Server `cid` started at `root` without agents its project uses (`missing`), its configured arguments `args`:
+    /// looked for again once it says its import is done (`code_agents_imported`).
+    pub(crate) fn code_agents_started(
+        &mut self,
+        server: &str,
+        root: &Path,
+        cid: crate::lsp::ClientId,
+        missing: Vec<String>,
+        args: Vec<String>,
+    ) {
+        let Some(r) = self.code_trust.get_mut(root) else { return };
+        let look = r.agents.entry(server.to_string()).or_default();
+        look.got = Some(Got::Waits { cid, missing, args, asked: false });
+    }
+
+    /// Server `cid` says its import of the build is done (its pack's `progress` done, or `quiescent`): what its
+    /// project uses and wasn't there as it started is looked for again, once.
+    pub(crate) fn code_agents_imported(&mut self, cid: crate::lsp::ClientId) {
+        let Some(c) = self.lsp.clients.iter().find(|c| c.id == cid) else { return };
+        let (name, root, agents) = (c.name.clone(), c.root.clone(), &c.traits.agents);
+        let Some(look) = self.code_trust.get_mut(&root).and_then(|r| r.agents.get_mut(&name)) else { return };
+        let Some(Got::Waits { cid: c, asked, args, .. }) = &mut look.got else { return };
+        if *c != cid || *asked {
+            return;
+        }
+        *asked = true;
+        let args = args.clone();
+        let begun = self.code_agents_look(&name, agents, &args, &root);
+        if let Some(look) = self.code_trust.get_mut(&root).and_then(|r| r.agents.get_mut(&name)) {
+            look.begun = begun;
         }
     }
 
@@ -393,7 +559,12 @@ impl Editor {
     /// Root `root`'s running servers that run its code stopped, its trust read again — their files waiting for
     /// them; which stopped.
     fn code_servers_stop(&mut self, root: &Path) -> Vec<String> {
-        self.code_trust.remove(root);
+        // (a file waiting for a look waits for the trust again)
+        let looking: Vec<DocId> = self
+            .code_trust
+            .remove(root)
+            .map(|r| r.agents.into_values().flat_map(|l| l.held).collect())
+            .unwrap_or_default();
         let gone: Vec<crate::lsp::ClientId> = self
             .lsp
             .clients
@@ -412,6 +583,9 @@ impl Editor {
             for d in served {
                 self.attach_lsp(d);
             }
+        }
+        for d in looking {
+            self.attach_lsp(d);
         }
         stopped
     }
