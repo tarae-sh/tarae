@@ -840,8 +840,9 @@ fn project_root(root: &Path) -> PathBuf {
 // ── Becoming the new one ────────────────────────────────────────────────────
 
 /// After the loop (the terminal is back to normal, the restore file saved): the state written,
-/// everything this tarae started stopped — `exec` runs no destructors, so the editor is dropped here — and
-/// `bin` takes this process over. Returns only if that failed (the restore file still has the files).
+/// everything this tarae started stopped — `exec` runs no destructors, so the editor is let go here (`let_go`:
+/// its memory isn't freed, the exec gives it back at once) — and `bin` takes this process over. Returns only if
+/// that failed (the restore file still has the files).
 pub fn exec(ed: Editor, bin: &Path) -> String {
     match crate::config::state_dir() {
         Some(dir) => exec_with(ed, bin, &dir.join(format!("restart-{}.json", std::process::id()))),
@@ -861,7 +862,7 @@ fn exec_with(mut ed: Editor, bin: &Path, file: &Path) -> String {
     if let Err(e) = crate::disk::write_atomic(file, |w| std::io::Write::write_all(w, body.as_bytes())) {
         return format!("{}: {e}", file.display());
     }
-    drop(ed);
+    let memory = let_go(ed);
     // (std's are marked already, but not all are std's — one left open would keep its holder from ending)
     let marked = crate::spawn::close_on_exec();
     let signals = Signals::now();
@@ -880,7 +881,41 @@ fn exec_with(mut ed: Editor, bin: &Path, file: &Path) -> String {
         }
     }
     let _ = std::fs::remove_file(file);
+    // (tarae goes on to say why: its memory freed after all)
+    drop(std::mem::ManuallyDrop::into_inner(memory));
     format!("couldn't run {}: {err}", bin.display())
+}
+
+/// What an editor holds that's only memory — every buffer (its text, trees and undo), every session's turns (their
+/// texts), the run panels' output, the chats' transcripts: the bulk of a day's tarae, freed node by node (#227: 218
+/// of 220 samples of the exec's pause in the editor's drop, 72 of them the turns). What its drops do is give memory
+/// back, which the exec does at once — and a web read's `Fetching` shutting its socket, which the exec closes (it's
+/// close-on-exec, as every descriptor here then: `spawn::close_on_exec`). A `Drop` added in the code is sorted
+/// (`every_drop_in_the_code_is_sorted_for_the_exec`): one that can sit in here and does more is taken out in `let_go`.
+#[allow(dead_code, reason = "held, never read: forgotten by the exec, or freed whole when it fails")]
+struct Memory {
+    docs: crate::docpaths::Docs,
+    turns: Vec<crate::checkpoint::Checkpoints>,
+    outputs: Vec<crate::rundoc::Outputs>,
+    transcripts: Vec<crate::chatdoc::Transcript>,
+}
+
+/// The editor before the exec: what it started stopped as its drop stops them — a server killed, a claude, a run's
+/// group, the terminal's shell hung up, a keeper ended — its memory taken out first and held undropped.
+fn let_go(mut ed: Editor) -> std::mem::ManuallyDrop<Memory> {
+    let mut memory = Memory {
+        docs: std::mem::take(&mut ed.docs),
+        turns: Vec::new(),
+        outputs: Vec::new(),
+        transcripts: Vec::new(),
+    };
+    for w in std::iter::once(&mut ed.workspace).chain(&mut ed.workspaces) {
+        memory.turns.push(std::mem::take(&mut w.claude.checkpoints));
+        memory.outputs.push(std::mem::take(&mut w.outputs));
+        memory.transcripts.extend(w.claude.chat.as_mut().and_then(|c| c.transcript.take()));
+    }
+    drop(ed);
+    std::mem::ManuallyDrop::new(memory)
 }
 
 /// SIGPIPE's disposition and this thread's signal mask — what std's exec changes before it tries.
@@ -2052,6 +2087,153 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// #227: the editor `:restart` execs from is let go as its drop would — the rest of it dropped, what it started
+    /// stopped (its chat's claude) — but its memory isn't freed on the way: its buffers, every workspace's turns, a run
+    /// panel's output and the chat's transcript held until let out (a failed exec: `failed_exec_in_its_own_process`).
+    #[test]
+    fn the_editor_let_go_for_the_exec_frees_none_of_its_memory() {
+        use crate::checkpoint::{Checkpoint, Files};
+        use std::sync::Arc;
+        let (_, back, dir, mut ed) = two_sessions("let-go");
+        crate::chat::open(&mut ed);
+        settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().and_then(|c| c.pid()).is_some());
+        let claude = ed.workspace.claude.chat.as_ref().and_then(|c| c.pid()).unwrap();
+        let turn = |id| Checkpoint {
+            question: "q".into(),
+            files: Files::Here(Vec::new()),
+            undone: false,
+            seen: false,
+            id,
+            at: 0,
+            conv: None,
+            texts: Vec::new(),
+            head: Vec::new(),
+        };
+        ed.workspace.claude.checkpoints.list.push(turn(1));
+        let id = ed.workspace_add(back);
+        ed.workspace_by_id(id).unwrap().claude.checkpoints.list.push(turn(2));
+        // (each kind of document held watched by a text of its own)
+        let watched = |doc: &mut crate::document::Document| {
+            let base = Arc::new(String::from("base"));
+            let weak = Arc::downgrade(&base);
+            doc.git_base = Some(base);
+            weak
+        };
+        let buffer = watched(ed.doc_mut());
+        ed.workspace.task_run = Some(crate::task::Run::for_test(crate::task::Task {
+            name: "check".into(),
+            cmd: "true".into(),
+            cwd: dir.clone(),
+        }));
+        crate::rundoc::sync(&mut ed);
+        let output =
+            watched(ed.workspace.outputs.get_mut(crate::sizes::Slot::Task).expect("its output").doc_mut());
+        let mut transcript = crate::chatdoc::Transcript::new(ed.alloc_id());
+        let said = watched(transcript.pane.doc_mut());
+        ed.workspace.claude.chat.as_mut().unwrap().transcript = Some(transcript);
+        let rest = Arc::downgrade(&ed.allow_landed);
+        let memory = let_go(ed);
+        assert!(rest.upgrade().is_none(), "the rest of the editor is dropped");
+        // SAFETY: signal 0 only asks whether the process is there (a zombie still is, until reaped).
+        let gone = || unsafe { libc::kill(claude as i32, 0) } != 0;
+        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+        while !gone() && std::time::Instant::now() < end {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(gone(), "the chat's claude is stopped, as the editor's drop stops it");
+        for (weak, what) in [(&buffer, "a buffer"), (&output, "a run's output"), (&said, "the transcript")] {
+            assert!(weak.upgrade().is_some(), "{what} is held, not freed");
+        }
+        let turns: Vec<u64> = memory.turns.iter().flat_map(|t| &t.list).map(|c| c.id).collect();
+        assert_eq!(turns, [1, 2], "every workspace's turns are held");
+        drop(std::mem::ManuallyDrop::into_inner(memory));
+        assert!([buffer, output, said].iter().all(|w| w.upgrade().is_none()), "freed once let out");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #227: every type with a `Drop` in tarae's code, sorted for `:restart`'s exec — which forgets `Memory` (buffers,
+    /// turns, run output, transcripts) without dropping it. A new one fails here until it's sorted: can a document, a
+    /// turn, an output or a transcript hold it? If so and its drop does more than the exec does anyway (free memory,
+    /// close a descriptor, end this process's threads), `let_go` takes it out before forgetting the rest.
+    #[test]
+    fn every_drop_in_the_code_is_sorted_for_the_exec() {
+        // Each by its name and file (a name alone would let a new `Drop` on another type of that name through):
+        // can sit in `Memory` — what each drop does, the exec does too
+        const IN_MEMORY: &[(&str, &str)] = &[
+            ("DocPath", "docpaths.rs"),  // a count of moves, this process's
+            ("Fetching", "web/page.rs"), // a web read's socket shut: the exec closes it
+        ];
+        // (none of `Memory`'s types holds one: dropped with the rest before the exec, or never in the editor)
+        const ELSEWHERE: &[(&str, &str)] = &[
+            ("BareTarget", "sandbox/refused.rs"),
+            ("Chat", "chat.rs"),
+            ("Checkout", "log.rs"),
+            ("Claim", "basetree.rs"),
+            ("Client", "lsp.rs"),
+            ("Deadline", "sandbox/proxy/packs_tests.rs"),
+            ("DirTurn", "grammar.rs"),
+            ("ExecMem", "crates/tarae-wasm/src/jit/mod.rs"),
+            ("Fade", "term.rs"),
+            ("Fixture", "gitrepo/held/tests.rs"),
+            ("Fixture", "sandbox/golden.rs"),
+            ("Folder", "containers.rs"),
+            ("Gate", "claudetrust.rs"),
+            ("HeldBack", "recovery/tests.rs"),
+            ("Helper", "sim.rs"),
+            ("Hold", "sandbox/keeper.rs"),
+            ("Holder", "sandbox/owners/tests.rs"),
+            ("Mac", "sound/mac.rs"),
+            ("Made", "sandbox/linux.rs"),
+            ("Member", "reviewer.rs"),
+            ("Outbox", "plugin/io.rs"),
+            ("Place", "billing/tests.rs"),
+            ("Proc", "plugin/io.rs"),
+            ("PtyGuard", "sandbox/refused.rs"),
+            ("Run", "task.rs"),
+            ("RunCleanupGuard", "sandbox/refused.rs"),
+            ("RunDir", "sandbox.rs"),
+            ("SandboxedStandInGuard", "sandbox/refused.rs"),
+            ("Scratch", "crates/tarae-testkit/src/scratch.rs"),
+            ("Shared", "trace.rs"),
+            ("ShmGuard", "sandbox/refused.rs"),
+            ("Sim", "sim.rs"),
+            ("Snap", "snapread.rs"),
+            ("Sock", "plugin/io.rs"),
+            ("StandInGuard", "sandbox/refused.rs"),
+            ("StartOut", "event.rs"),
+            ("Terminal", "terminal.rs"),
+            ("TestRun", "testing.rs"),
+            ("Turn", "storewrite.rs"),
+            ("Watch", "sandbox.rs"),
+            ("Within", "whole.rs"),
+            ("Working", "event.rs"),
+            ("World", "caps/props.rs"),
+            ("Writing", "event.rs"),
+        ];
+        let mut found = std::collections::BTreeSet::new();
+        for (key, path) in crate::sim::lint::code_files() {
+            let src = std::fs::read_to_string(&path).unwrap();
+            let tests = crate::testcode::rust_test_lines(&src);
+            for (n, line) in src.lines().enumerate() {
+                let Some((head, after)) = line.split_once(" Drop for ") else { continue };
+                if !head.trim_start().starts_with("impl") || tests.iter().any(|t| t.contains(&n)) {
+                    continue;
+                }
+                let name: String = after.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                found.insert((name, key.clone()));
+            }
+        }
+        let sorted: std::collections::BTreeSet<(String, String)> =
+            IN_MEMORY.iter().chain(ELSEWHERE).map(|(n, f)| (n.to_string(), f.to_string())).collect();
+        let unsorted: Vec<_> = found.difference(&sorted).collect();
+        assert!(
+            unsorted.is_empty(),
+            "a Drop not sorted for the exec (this test's doc says how): {unsorted:?}"
+        );
+        let gone: Vec<_> = sorted.difference(&found).collect();
+        assert!(gone.is_empty(), "sorted, but no such Drop in the code any more: {gone:?}");
+    }
+
     /// The state file goes both ways between builds: one an earlier build wrote (no session blocks) brings
     /// the files back in the front, as then; and the one written now still has today's top-level fields —
     /// what an earlier build reads after `f` on the restart card — with the front's files and panes.
@@ -2744,8 +2926,14 @@ mod tests {
         }
         let dir = temp("exec");
         let file = dir.join("restart-state.json");
-        let said = exec_with(Editor::new(Config::default()), &dir.join("no-such-tarae"), &file);
+        let mut ed = Editor::new(Config::default());
+        // (a buffer's text, watched: held across the exec, freed once it failed — #227)
+        let base = std::sync::Arc::new(String::from("base"));
+        let held = std::sync::Arc::downgrade(&base);
+        ed.doc_mut().git_base = Some(base);
+        let said = exec_with(ed, &dir.join("no-such-tarae"), &file);
         assert!(said.starts_with("couldn't run ") && said.contains("no-such-tarae"), "{said}");
+        assert!(held.upgrade().is_none(), "the editor's memory is freed after a failed exec");
         assert!(!file.exists());
         std::fs::remove_dir_all(&dir).ok();
         // A write into a pipe whose reader is gone: an error, not the end of this process

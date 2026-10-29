@@ -184,7 +184,7 @@ pub struct Transcript {
 }
 
 impl Transcript {
-    fn new(id: crate::document::DocId) -> Transcript {
+    pub(crate) fn new(id: crate::document::DocId) -> Transcript {
         let mut doc = Document::from_str(id, "");
         doc.wrap = Some(true);
         doc.throwaway = true;
