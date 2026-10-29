@@ -185,6 +185,19 @@ pub fn turn(ticket: Ticket) -> Option<Turn> {
             }
             return Some(turn);
         }
+        // (a simulation's job yields — the write before it is another job, which runs only once it does. It looks
+        // again only once another of the simulation's jobs yields (`sim::blocked`), never at `TURNED`: a write ahead
+        // held by a thread that isn't a job — `hold` let go from the test's own thread, or a turn taken there (a
+        // `slow_next` one sleeping) — leaves it blocked, and the run fails as nothing being left to do it, though
+        // the write would land. No simulation today holds a write; one that does lets it go from a job of its own
+        // (`jobs().spawn`: its end readies this one))
+        #[cfg(test)]
+        if crate::sim::on_job() {
+            drop(s);
+            crate::sim::blocked();
+            s = stores();
+            continue;
+        }
         s = TURNED.wait(s).unwrap_or_else(|e| e.into_inner());
     }
 }

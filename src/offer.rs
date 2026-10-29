@@ -1827,7 +1827,7 @@ impl crate::editor::Editor {
     /// one at the front while it's being answered — its keys brought to it (`C-q`), its text open in its
     /// buffer — nor, for one of the user's, of a front card that came after the input that asked (it came while
     /// the work ran: maybe being read now). The focus is the front's by id: one put in front of it doesn't inherit it.
-    fn offer_place(&self, o: &Offer) -> usize {
+    pub(crate) fn offer_place(&self, o: &Offer) -> usize {
         let came_since = |f: &Offer| o.yours && f.came >= o.came;
         let held = self.offers.first().is_some_and(|f| {
             self.card_has_keys() || self.offer_viewing() || self.offer_bar() || came_since(f)

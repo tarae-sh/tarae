@@ -165,6 +165,245 @@ fn a_repositorys_card_says_its_checkouts_share_it() {
     assert!(q.contains("Every checkout of it shares the answer."), "{q}");
 }
 
+/// Every code trust card up or parked, any session's.
+fn cards(ed: &Editor) -> Vec<&crate::offer::Offer> {
+    let parked = std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked);
+    ed.offers
+        .iter()
+        .chain(parked)
+        .filter(|o| matches!(o.what, crate::offer::What::CodeTrust { .. }))
+        .collect()
+}
+
+/// A repository and three checkouts of it (`git worktree add`), a crate in each — made once, a next tarae finds
+/// them there; the editor's front session at the first, each checkout's stand-in server its own (what's looked at
+/// is the gate, not `share.rs`).
+fn repository(ed: &mut Editor, dir: &Path) -> Vec<PathBuf> {
+    ed.config.lsp.share = Some(Vec::new());
+    let main = dir.join("main");
+    let git = |args: &[&str]| {
+        let mut c = std::process::Command::new("git");
+        c.args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).current_dir(&main);
+        assert!(c.status().unwrap().success(), "git {args:?}");
+    };
+    let mut roots = vec![main.clone()];
+    if !main.exists() {
+        std::fs::create_dir(&main).unwrap();
+        git(&["init", "-q"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "first"]);
+    }
+    for n in 1..4 {
+        let w = dir.join(format!("w{n}"));
+        if !w.exists() {
+            git(&["worktree", "add", "-q", w.to_str().unwrap()]);
+        }
+        roots.push(w);
+    }
+    for root in &roots {
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"t\"\n").unwrap();
+    }
+    ed.workspace.root = main;
+    roots
+}
+
+/// A session behind for checkout `root`, its crate opened in it as a restore does — its trust read as that
+/// session's job.
+fn behind(ed: &mut Editor, root: &Path) -> crate::event::WorkspaceId {
+    let id = ed.workspace_add(root.to_path_buf());
+    let file = root.join("main.rs");
+    ed.with_workspace(id, move |ed| {
+        ed.open(&file).unwrap();
+    });
+    id
+}
+
+/// `repository`'s checkouts as sessions of one editor restored at once — the front one's crate opened in front,
+/// each other's behind. #226: each had a card of its own (parked with its session), and an answer took its own
+/// checkout only.
+fn checkouts(ed: &mut Editor, dir: &Path) -> Vec<PathBuf> {
+    let roots = repository(ed, dir);
+    ed.open(&roots[0].join("main.rs")).unwrap();
+    for root in &roots[1..] {
+        behind(ed, root);
+    }
+    roots
+}
+
+/// #226: a repository's checkouts restored at once ask on one card, up in front — every checkout's server named
+/// once. `n` holds every one back, said once; `:code-trust` asks again on one card, and `y` closes it and starts
+/// every checkout's server. The next tarae starts them all with no card in any checkout.
+#[test]
+fn a_repositorys_checkouts_restored_at_once_ask_on_one_card() {
+    let s = crate::scratch::Scratch::new("code-trust-checkouts");
+    let (mut ed, dir) = setup(&s);
+    let roots = checkouts(&mut ed, &dir);
+    let files: Vec<PathBuf> = roots.iter().map(|r| r.join("main.rs")).collect();
+    let read = |ed: &Editor| roots.iter().all(|r| ed.code_trust.get(r).is_some_and(|t| t.state.is_some()));
+    assert!(until(&mut ed, read), "every checkout's trust read");
+    let up = cards(&ed);
+    assert_eq!(
+        up.len(),
+        1,
+        "one card for the repository: {:?}",
+        up.iter().map(|o| &o.what).collect::<Vec<_>>()
+    );
+    assert!(card(&ed).is_some(), "up in front, not parked with another session");
+    let q = &card(&ed).unwrap().question;
+    assert_eq!(q.matches("rust-analyzer —").count(), 1, "its server named once: {q}");
+    assert!(files.iter().all(|f| !has_server(&ed, f)), "nothing started");
+    // n: every checkout held back, said once
+    let crate::offer::What::CodeTrust { root } = card(&ed).unwrap().what.clone() else { unreachable!() };
+    ed.code_trust_answer(card(&ed).unwrap().id, &root, false);
+    assert!(cards(&ed).is_empty(), "no card left in any session");
+    assert!(files.iter().all(|f| !has_server(&ed, f)));
+    assert_eq!(ed.messages.iter().filter(|m| m.2.contains("held back")).count(), 1, "said once");
+    assert_eq!(ed.lsp_state(), Some((LspDot::Untrusted, "rust".into())));
+    // :code-trust, y: one card, every checkout's server
+    ed.code_trust_ask().unwrap();
+    assert_eq!(cards(&ed).len(), 1, "asked again on one card");
+    let crate::offer::What::CodeTrust { root } = card(&ed).expect("in front").what.clone() else {
+        unreachable!()
+    };
+    ed.code_trust_answer(card(&ed).unwrap().id, &root, true);
+    assert!(cards(&ed).is_empty(), "closed in every session");
+    for f in &files {
+        assert!(has_server(&ed, f), "{} started on the one yes", f.display());
+    }
+    assert!(until(&mut ed, |ed| ed.trust_writing == 0), "kept");
+    // the next tarae: no card in any checkout
+    let (mut next, _) = setup(&s);
+    checkouts(&mut next, &dir);
+    assert!(
+        until(&mut next, |ed| files.iter().all(|f| has_server(ed, f))),
+        "every checkout's started once read"
+    );
+    assert!(cards(&next).is_empty(), "no card");
+}
+
+/// #226: the card parked with a session behind (its checkout read first) comes up in front once a file there waits
+/// for it — the same card, not a second: its id, when it came; not the user's own (it came on its own: unfocused,
+/// it waits for `C-q`) and about no one session, as a parked card that comes up with its session (`workspace_in`);
+/// its nudge from the session it was parked in finds nothing to say. The order fixed: the behind checkout's read
+/// lands before the front's file is opened.
+#[test]
+fn a_card_parked_behind_comes_up_in_front_once_a_file_there_waits() {
+    let s = crate::scratch::Scratch::new("code-trust-parked");
+    let (mut ed, dir) = setup(&s);
+    let roots = repository(&mut ed, &dir);
+    let w1 = behind(&mut ed, &roots[1]);
+    let parked = |ed: &Editor| {
+        let l = ed.workspaces.iter().find(|l| l.id == w1)?;
+        l.parked.iter().find(|o| matches!(o.what, crate::offer::What::CodeTrust { .. })).cloned()
+    };
+    assert!(until(&mut ed, |ed| parked(ed).is_some()), "parked with its session");
+    assert!(card(&ed).is_none(), "not up in front: no file there waits for it");
+    let was = parked(&ed).unwrap();
+    ed.open(&roots[0].join("main.rs")).unwrap();
+    assert!(until(&mut ed, |ed| card(ed).is_some()), "up in front once its file waits");
+    assert_eq!(cards(&ed).len(), 1, "moved, not a second");
+    let c = card(&ed).unwrap().clone();
+    assert_eq!((c.id, c.came, c.since), (was.id, was.came, was.since), "the same card");
+    assert!(!c.yours && c.about.is_none() && ed.card_focus.is_none(), "came on its own, about no session");
+    assert_eq!(c.question.matches("rust-analyzer —").count(), 1, "its server named once: {}", c.question);
+    // (its nudge, due: nothing — it's up)
+    let long_ago = crate::clock::now().checked_sub(crate::workspace::NUDGE_AFTER * 2).unwrap();
+    ed.offers.iter_mut().find(|o| o.id == c.id).unwrap().since = long_ago;
+    let said = ed.messages.len();
+    ed.card_nudge(w1, c.id);
+    assert_eq!(ed.messages.len(), said, "no nudge: it's up in front");
+    assert!(ed.workspaces.iter().all(|l| l.nudged.is_empty()));
+    // answered in front: both checkouts' servers
+    let crate::offer::What::CodeTrust { root } = c.what else { unreachable!() };
+    ed.code_trust_answer(c.id, &root, true);
+    assert!(cards(&ed).is_empty());
+    for r in &roots[..2] {
+        assert!(has_server(&ed, &r.join("main.rs")), "{} started", r.display());
+    }
+}
+
+/// #226: a checkout read after the card was answered takes the answer — its read under way as `y` or `n` is given.
+/// `y`: its server starts once read, no card. `n`: held back with the rest, no card — and nothing more said: the
+/// `n` said it for the repository, every checkout's (a toast for each checkout read after would say it again), and
+/// its file's status line says `untrusted` wherever it's looked at; `:code-trust` there asks again.
+#[test]
+fn a_checkout_read_after_the_answer_takes_it() {
+    for yes in [true, false] {
+        let s = crate::scratch::Scratch::new("code-trust-late");
+        let (mut ed, dir) = setup(&s);
+        let roots = repository(&mut ed, &dir);
+        ed.open(&roots[0].join("main.rs")).unwrap();
+        assert!(until(&mut ed, |ed| card(ed).is_some()));
+        // (no event handled from here to the answer: its read's result waits)
+        let w1 = behind(&mut ed, &roots[1]);
+        let state = |ed: &Editor| ed.code_trust.get(&roots[1]).and_then(|r| r.state);
+        assert_eq!(state(&ed), None, "still being read");
+        ed.code_trust_answer(card(&ed).unwrap().id, &roots[0], yes);
+        let late = roots[1].join("main.rs");
+        assert!(until(&mut ed, |ed| state(ed).is_some() && ed.trust_writing == 0), "read, y: {yes}");
+        assert!(cards(&ed).is_empty(), "no card for it, y: {yes}");
+        if yes {
+            assert_eq!(state(&ed), Some(State::Trusted));
+            assert!(has_server(&ed, &late), "y: started once read");
+            continue;
+        }
+        assert_eq!(state(&ed), Some(State::Ignored));
+        assert!(!has_server(&ed, &late), "n: held back");
+        assert_eq!(
+            ed.messages.iter().filter(|m| m.2.contains("held back")).count(),
+            1,
+            "said once, by the n"
+        );
+        assert!(!matches!(ed.workspace_switch(w1), crate::workspace::Switched::Gone));
+        assert_eq!(ed.lsp_state(), Some((LspDot::Untrusted, "rust".into())), "its file says why");
+        ed.code_trust_ask().unwrap();
+        assert_eq!(cards(&ed).len(), 1, "asked again there");
+    }
+}
+
+/// #226's review: a yes kept in the store doesn't outrank this tarae's answer for a checkout read after it. Another
+/// tarae's `y` lands in the store, then here `:code-trust` (asking) and maybe `n` (held back): a checkout whose read
+/// began after the yes landed and lands after them takes the repository's answer here — joins the card, or held
+/// back with the rest —, never trusted by the store's yes, its server never started.
+#[test]
+fn a_yes_in_the_store_never_outranks_this_answer() {
+    for no in [false, true] {
+        let s = crate::scratch::Scratch::new("code-trust-store-yes");
+        let (mut ed, dir) = setup(&s);
+        let roots = repository(&mut ed, &dir);
+        ed.open(&roots[0].join("main.rs")).unwrap();
+        assert!(until(&mut ed, |ed| card(ed).is_some()));
+        ed.code_trust_answer(card(&ed).unwrap().id, &roots[0], false);
+        // (another tarae's yes, kept)
+        let (mut other, _) = setup(&s);
+        repository(&mut other, &dir);
+        other.open(&roots[0].join("main.rs")).unwrap();
+        assert!(until(&mut other, |ed| card(ed).is_some()));
+        other.code_trust_answer(card(&other).unwrap().id, &roots[0], true);
+        assert!(until(&mut other, |ed| ed.trust_writing == 0), "kept");
+        // here: :code-trust, a checkout's read begun (it finds the yes), maybe n — no event handled until then
+        ed.code_trust_ask().unwrap();
+        behind(&mut ed, &roots[1]);
+        if no {
+            ed.code_trust_answer(card(&ed).unwrap().id, &roots[0], false);
+        }
+        let state = |ed: &Editor| ed.code_trust.get(&roots[1]).and_then(|r| r.state);
+        assert!(until(&mut ed, |ed| state(ed).is_some()), "read, n: {no}");
+        let late = roots[1].join("main.rs");
+        assert!(!has_server(&ed, &late), "not started on the store's yes, n: {no}");
+        match no {
+            false => {
+                assert_eq!(state(&ed), Some(State::Ask), "asked with the rest");
+                assert_eq!(cards(&ed).len(), 1, "joins the card up");
+            }
+            true => {
+                assert_eq!(state(&ed), Some(State::Ignored), "held back with the rest");
+                assert!(cards(&ed).is_empty(), "no card");
+            }
+        }
+    }
+}
+
 /// With the gate off (tests, or a server no pack marks), servers start as ever.
 #[test]
 fn a_server_no_pack_marks_starts() {

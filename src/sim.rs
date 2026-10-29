@@ -3,7 +3,7 @@
 //! time: the *baton*. The driver — the test's thread, the editor's main loop — holds it between steps and picks
 //! the next by seed: the scenario's next input, a job resumed (just spawned, or its sleep over), a result
 //! landed (`handle_event`, as the loop does), or the simulated clock moved to the next wake. A job yields when
-//! it ends or sleeps (`event::sleep`); its results wait in the simulation's inbox, in order per sending thread
+//! it ends, sleeps (`event::sleep`) or waits for another job's work (`blocked`: a store's line); its results wait in the simulation's inbox, in order per sending thread
 //! (one thread's sends stay in order, as on a channel) and freely between threads.
 //!
 //! What the simulation doesn't model is refused, never left to run real: a thread `event::thread` starts is
@@ -139,6 +139,8 @@ enum Run {
     /// Ready to run from this time on (spawned: now; sleeping: when it wakes).
     Waits(Duration),
     Runs,
+    /// Waiting for another job's work (`blocked`): ready again once another job yields.
+    Blocked,
     Done,
 }
 
@@ -221,6 +223,7 @@ impl Handle {
         }
         let mut s = self.helpers_end(self.lock(), id);
         s.jobs[id - 1].run = Run::Done;
+        unblock(&mut s, id);
         if s.holder == id {
             s.holder = 0;
         }
@@ -310,6 +313,7 @@ pub fn sleep(d: Duration) -> bool {
             let mut s = h.helpers_end(h.lock(), id);
             let at = s.now + d;
             s.jobs[id - 1].run = Run::Waits(at);
+            unblock(&mut s, id);
             s.holder = 0;
             drop(s);
             h.0.turn.notify_all();
@@ -317,6 +321,35 @@ pub fn sleep(d: Duration) -> bool {
         }
     }
     true
+}
+
+/// Whether this thread is a job of a simulation — one that waits for another's work yields (`blocked`) rather
+/// than waiting for real: the other could never run while it holds the baton.
+pub fn on_job() -> bool {
+    matches!(current_role(), Some((_, Role::Job(_))))
+}
+
+/// A job's wait for another job's work (a store's line, `storewrite::turn`): it yields, and is ready again once
+/// another job has yielded (ended or slept) — then it looks again. A wait that nothing ever ends fails the run
+/// once all else is quiet (`Sim::walk`). Off a job (`on_job`): nothing.
+pub fn blocked() {
+    let Some((h, Role::Job(id))) = current_role() else { return };
+    let mut s = h.helpers_end(h.lock(), id);
+    s.jobs[id - 1].run = Run::Blocked;
+    s.holder = 0;
+    drop(s);
+    h.0.turn.notify_all();
+    h.wait_turn(id);
+}
+
+/// The jobs waiting for another's work (`blocked`) ready to look again: job `by` yielded.
+fn unblock(s: &mut State, by: usize) {
+    let now = s.now;
+    for (i, j) in s.jobs.iter_mut().enumerate() {
+        if i + 1 != by && j.run == Run::Blocked {
+            j.run = Run::Waits(now);
+        }
+    }
 }
 
 /// A `Tx`'s send in a simulation (`event::Tx::send`): into the inbox, after what this thread sent before.
@@ -524,6 +557,12 @@ impl Sim {
             }
             let options = self.options(left > 0);
             if options.is_empty() {
+                let blocked = self.h.lock().jobs.iter().find(|j| j.run == Run::Blocked).map(|j| j.site);
+                if let Some(site) = blocked {
+                    self.fail_now(format!(
+                        "job {site} waits for another's work, and nothing is left to do it"
+                    ));
+                }
                 break;
             }
             if left == 0 {
@@ -624,6 +663,7 @@ impl Sim {
             .iter()
             .filter_map(|j| match j.run {
                 Run::Waits(at) => Some(format!("job {} at {} ms", j.site, at.as_millis())),
+                Run::Blocked => Some(format!("job {} waiting for another's work", j.site)),
                 _ => None,
             })
             .collect();
@@ -867,6 +907,36 @@ mod tests {
         assert!(sim.trace().iter().any(|l| l.starts_with("+600000 ms")), "{:?}", sim.trace());
         drop(sim);
         assert!(crate::clock::since(at) < Duration::from_secs(600), "the real clock again");
+    }
+
+    /// A job that waits for another's work (a store's line, `storewrite::turn`) yields rather than holding the
+    /// baton: whichever of two writes runs first, they take their turns in order, on every seed.
+    #[test]
+    fn a_job_waiting_for_anothers_work_yields() {
+        let dir = crate::scratch::Scratch::new("sim-blocked");
+        let path = dir.join("store.json");
+        let mut waited = false;
+        for seed in 0..8 {
+            let mut sim = Sim::new("blocked", Choices::seeded(seed), LIMIT);
+            let mut ed = Editor::new(crate::config::Config::default());
+            let order = Arc::new(Mutex::new(Vec::new()));
+            for i in 0..2 {
+                let null = serde_json::Value::Null;
+                let ticket = crate::storewrite::ticket(&path, format!("write {i}"), null, false, Vec::new());
+                let order = order.clone();
+                ed.events.jobs().spawn(move || {
+                    let turn = crate::storewrite::turn(ticket).unwrap();
+                    order.lock().unwrap().push(i);
+                    turn.done(true, Vec::new());
+                    |_: &mut Editor| {}
+                });
+            }
+            sim.walk(&mut ed, 0, |_, _| String::new(), |_| Ok(()), |_| String::new());
+            assert_eq!(*order.lock().unwrap(), [0, 1], "seed {seed}: {:?}", sim.trace());
+            // (the second resumed before the first: it yielded, and ran again)
+            waited |= sim.trace().iter().filter(|l| l.contains(" runs")).count() > 2;
+        }
+        assert!(waited, "some seed ran the second write's job first");
     }
 
     /// A thread started in a job that's still alive `HELPERS_WAIT` after the job yields isn't the simulation's

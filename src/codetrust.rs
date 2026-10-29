@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 use crate::document::DocId;
 use crate::editor::Editor;
+use crate::offer::What;
 use crate::trust::{Digest, Kind, Place, State};
 
 /// The place's name in `trust.json` and `:granted` — a repository's code, never a file of it.
@@ -46,6 +47,9 @@ pub struct Root {
     /// None while it's read.
     pub state: Option<State>,
     reading: bool,
+    /// A take-back came while it was read: what the read found may be from before it (a yes the store had then) —
+    /// read again as it lands, the take-back marked by then (`trust::taking`: read as never answered).
+    again: bool,
     /// Where its answer is kept, read with it (found on the disk) — a repository's, every checkout's and root's,
     /// or its own.
     place: Option<Place>,
@@ -76,45 +80,106 @@ impl Editor {
             r.servers.push((server.name.clone(), words));
         }
         match r.state {
-            None if !r.reading => {
-                r.reading = true;
-                let (path, root) = (self.trust_path.clone(), root.to_path_buf());
-                self.events.jobs().spawn(move || {
-                    let place = place(&root);
-                    let state = crate::trust::Store::read(path.as_deref()).state_at(&place, hash());
-                    move |ed: &mut Editor| ed.code_trust_read(&root, state, place)
-                });
-            }
+            None if !r.reading => self.code_trust_reading(root),
             Some(State::Ask) if !r.asked => self.code_trust_card(root),
             _ => {}
         }
         false
     }
 
-    /// A root's answer read: trusted, its files get their servers; else asked — a no kept from before asks again
-    /// too (`n` holds back until you quit only).
-    fn code_trust_read(&mut self, root: &Path, state: State, place: Place) {
-        let Some(r) = self.code_trust.get_mut(root) else { return };
-        (r.reading, r.place) = (false, Some(place));
-        match state {
-            State::Trusted => {
-                r.state = Some(State::Trusted);
-                self.code_trust_release(root);
-            }
-            _ => {
-                r.state = Some(State::Ask);
-                self.code_trust_card(root);
-            }
+    /// A root's answer read from the store, on a worker.
+    fn code_trust_reading(&mut self, root: &Path) {
+        if let Some(r) = self.code_trust.get_mut(root) {
+            (r.reading, r.again) = (true, false);
+        }
+        let (path, root) = (self.trust_path.clone(), root.to_path_buf());
+        self.events.jobs().spawn(move || {
+            let place = place(&root);
+            let state = crate::trust::Store::read(path.as_deref()).state_at(&place, hash());
+            move |ed: &mut Editor| ed.code_trust_read(&root, state, place)
+        });
+    }
+
+    /// A take-back given: every root still being read reads again as its read lands — the store may have said yes
+    /// to it before the take-back was marked (no root's place is known before its read: all of them).
+    fn code_trust_reread(&mut self) {
+        for r in self.code_trust.values_mut().filter(|r| r.reading) {
+            r.again = true;
         }
     }
 
-    /// Its card: which servers wait, and what of the repository each would run as you.
-    fn code_trust_card(&mut self, root: &Path) {
+    /// A root's answer read: trusted, its files get their servers; else asked — a no kept from before asks again
+    /// too (`n` holds back until you quit only). Another root of its repository answered since tarae started (a yes
+    /// maybe not in the store yet, a no never kept), its answer is this one's; one asking, this one joins its card —
+    /// either before the store's yes (#226's review: a yes kept, then `:code-trust` and `n`, and a checkout read
+    /// meanwhile came back trusted, its servers started while the repository was held back).
+    fn code_trust_read(&mut self, root: &Path, state: State, place: Place) {
         let Some(r) = self.code_trust.get_mut(root) else { return };
-        r.asked = true;
-        let (servers, repo) = (r.servers.clone(), matches!(r.place, Some(Place::Repo { .. })));
-        let name =
-            root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into());
+        if r.again {
+            return self.code_trust_reading(root);
+        }
+        (r.reading, r.place) = (false, Some(place));
+        let kin = self.code_trust_kin(root);
+        let kin_is = |s| kin[1..].iter().any(|p| self.code_trust.get(p).and_then(|r| r.state) == Some(s));
+        let state = match state {
+            _ if kin_is(State::Ignored) => State::Ignored,
+            _ if kin_is(State::Ask) => State::Ask,
+            _ if kin_is(State::Trusted) => State::Trusted,
+            State::Trusted => State::Trusted,
+            _ => State::Ask,
+        };
+        if let Some(r) = self.code_trust.get_mut(root) {
+            r.state = Some(state);
+        }
+        match state {
+            State::Trusted => self.code_trust_release(root),
+            // (held back with the others until you quit — said once, as `n` was answered)
+            State::Ignored => {}
+            _ => self.code_trust_card(root),
+        }
+    }
+
+    /// The roots that share `root`'s answer, `root` first: every root read with its place — its repository's, each
+    /// checkout's and a second cargo or gradle root's —, `root` alone until its place is read.
+    fn code_trust_kin(&self, root: &Path) -> Vec<PathBuf> {
+        let place = self.code_trust.get(root).and_then(|r| r.place.clone());
+        let mut kin: Vec<PathBuf> = self
+            .code_trust
+            .iter()
+            .filter(|(p, r)| place.is_some() && r.place == place && p.as_path() != root)
+            .map(|(p, _)| p.clone())
+            .collect();
+        crate::sorting::sort(&mut kin);
+        kin.insert(0, root.to_path_buf());
+        kin
+    }
+
+    /// Its card: which servers wait, and what of the repository each would run as you. One card a repository
+    /// (#226: each checkout of ten had its own): one up already — in front, or parked with any session — says every
+    /// root's servers, and a parked one comes up in front once a file there waits for it.
+    fn code_trust_card(&mut self, root: &Path) {
+        let kin = self.code_trust_kin(root);
+        let (mut servers, mut repo) = (Vec::<(String, String)>::new(), false);
+        for p in &kin {
+            let Some(r) = self.code_trust.get_mut(p) else { continue };
+            r.asked = true;
+            repo |= matches!(r.place, Some(Place::Repo { .. }));
+            for s in &r.servers {
+                if !servers.iter().any(|(n, _)| *n == s.0) {
+                    servers.push(s.clone());
+                }
+            }
+        }
+        let up = std::iter::once(&self.workspace)
+            .chain(&self.workspaces)
+            .flat_map(|l| &l.parked)
+            .chain(&self.offers)
+            .find_map(|o| match &o.what {
+                What::CodeTrust { root } if kin.contains(root) => Some(root.clone()),
+                _ => None,
+            });
+        let at = up.clone().unwrap_or_else(|| root.to_path_buf());
+        let name = at.file_name().map_or_else(|| at.display().to_string(), |n| n.to_string_lossy().into());
         let mut q =
             format!("Its language servers run {name}'s code as you, outside the sandbox, as they start:\n");
         for (s, words) in &servers {
@@ -129,24 +194,58 @@ impl Editor {
             &q,
             "",
             "Code trust".into(),
-            crate::offer::What::CodeTrust { root: root.to_path_buf() },
+            What::CodeTrust { root: at.clone() },
         )
         .deciding(2..2 + servers.len());
-        self.drop_cards(|w| matches!(w, crate::offer::What::CodeTrust { root: r } if r == root));
-        self.push_offer(o);
+        if up.is_none() {
+            return self.push_offer(o);
+        }
+        let same = |x: &crate::offer::Offer| matches!(&x.what, What::CodeTrust { root } if *root == at);
+        let fresh = |old: &mut crate::offer::Offer| {
+            if old.question != o.question {
+                (old.question, old.decided) = (o.question.clone(), o.decided.clone());
+                old.rev += 1;
+            }
+        };
+        if let Some(old) = self.offers.iter_mut().find(|x| same(x)) {
+            return fresh(old);
+        }
+        let front = !self.background();
+        let mut taken = None;
+        for l in std::iter::once(&mut self.workspace).chain(&mut self.workspaces) {
+            let Some(i) = l.parked.iter().position(same) else { continue };
+            match front {
+                true => taken = Some(l.parked.remove(i)),
+                false => fresh(&mut l.parked[i]),
+            }
+            break;
+        }
+        if let Some(mut old) = taken {
+            fresh(&mut old);
+            let i = self.offer_place(&old);
+            self.offers.insert(i, old);
+        }
     }
 
-    /// The answer on its card: `y` kept and the servers start; `n` they wait until you quit.
+    /// The answer on its card: `y` kept and the servers start; `n` they wait until you quit — at every root of its
+    /// repository read since tarae started (one that's still read takes it as it lands: `code_trust_read`).
     pub(crate) fn code_trust_answer(&mut self, id: u64, root: &Path, trusted: bool) {
         self.offer_finished(id, Ok(()));
-        let Some(r) = self.code_trust.get_mut(root) else { return };
-        let names: Vec<String> = r.servers.iter().map(|(n, _)| n.clone()).collect();
+        let Some(place) = self.code_trust.get(root).map(|r| r.place.clone()) else { return };
+        let kin = self.code_trust_kin(root);
+        let mut names: Vec<String> = Vec::new();
+        for p in &kin {
+            let Some(r) = self.code_trust.get_mut(p) else { continue };
+            r.state = Some(if trusted { State::Trusted } else { State::Ignored });
+            for (n, _) in &r.servers {
+                if !names.contains(n) {
+                    names.push(n.clone());
+                }
+            }
+        }
         if !trusted {
-            r.state = Some(State::Ignored);
             return self.set_status(format!("{} held back — :code-trust to look again", names.join(", ")));
         }
-        r.state = Some(State::Trusted);
-        let place = r.place.clone();
         if let Some(path) = self.trust_path.clone() {
             let seen = crate::storewrite::seen_now(&path);
             let w = crate::trust::Write::Answer {
@@ -164,8 +263,27 @@ impl Editor {
                 }
             });
         }
-        self.code_trust_release(root);
+        for p in &kin {
+            self.code_trust_release(p);
+        }
         self.set_success(format!("Trusted — {} start", names.join(", ")));
+    }
+
+    /// Another tarae's `y` for `root`'s repository, written to the store this one reads (the simulation's) — nothing
+    /// changes here until a root's read finds it.
+    #[cfg(test)]
+    pub(crate) fn code_trust_given_elsewhere(&mut self, root: &Path) {
+        let Some(path) = self.trust_path.clone() else { return };
+        let w = crate::trust::Write::Answer {
+            kind: Kind::Code,
+            place: Some(place(root)),
+            file: file(root),
+            hash: hash(),
+            trusted: true,
+            given: crate::trust::given(),
+            seen: crate::storewrite::seen_now(&path),
+        };
+        crate::trust::queue(self, path, vec![w], |_, _| {});
     }
 
     /// A trusted root's waiting files get their servers.
@@ -190,12 +308,23 @@ impl Editor {
         let root = self
             .code_trust
             .iter()
-            .find(|(_, r)| r.held.contains(&id) && r.state != Some(State::Trusted))
+            .filter(|(_, r)| r.held.contains(&id) && r.state != Some(State::Trusted))
+            // (a root read first — its repository known —, then by path: never the map's order)
+            .min_by_key(|(p, r)| (r.state.is_none(), p.to_path_buf()))
             .map(|(p, _)| p.clone())
             .ok_or("no language server here waits for this repository's trust")?;
-        if let Some(r) = self.code_trust.get_mut(&root) {
-            r.state = Some(State::Ask);
+        // (its repository's roots known once its answer is read — asked then by itself)
+        if self.code_trust.get(&root).is_some_and(|r| r.state.is_none()) {
+            return Err("this repository's trust is still being read — its card comes once it is".into());
         }
+        let kin = self.code_trust_kin(&root);
+        for p in &kin {
+            if let Some(r) = self.code_trust.get_mut(p) {
+                r.state = Some(State::Ask);
+            }
+        }
+        // (the one up comes again as yours — one parked with another session comes up here: `code_trust_card`)
+        self.drop_cards(|w| matches!(w, What::CodeTrust { root } if kin.contains(root)));
         self.code_trust_card(&root);
         Ok(())
     }
@@ -221,6 +350,7 @@ impl Editor {
             }
             None => crate::trust::taken(&place, given),
         }
+        self.code_trust_reread();
         let mut roots: Vec<PathBuf> = self
             .code_trust
             .iter()
@@ -248,6 +378,7 @@ impl Editor {
     /// `:granted`'s `d` on a code trust answer (forgotten in the store by then): every trusted root's servers
     /// that run its code stop, and its files wait for them, the store read again.
     pub(crate) fn code_trust_forgotten(&mut self) {
+        self.code_trust_reread();
         let roots: Vec<PathBuf> = self
             .code_trust
             .iter()
