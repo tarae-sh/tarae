@@ -307,6 +307,8 @@ const BUTTONS: &[&str] = &[
     "s",
     "v",
     "K",
+    // (the empty chat's first row, `C-p continue "…"`: the conversations' picker — projects step 2)
+    "C-p",
     "C-q",
     "C-v",
     "C-y",
