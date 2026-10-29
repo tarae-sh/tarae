@@ -1064,12 +1064,39 @@ fn git_tab_section_header_takes_k_and_stages_all() {
     let mut t = Term::spawn(&sb, &["tests/c.rs"], 130, ROWS);
     t.wait_text("two");
     t.send(" g");
-    t.wait_for("the changes listed", |s| s.contains("Changes") && s.contains("c.rs"));
+    // (judged from the state, never the screen: `c.rs` is in the path bar from the start, and "Staged everything"
+    // is a toast — up a few seconds, missed by a poll a loaded machine holds back longer, #242)
+    let side = |s: &serde_json::Value| s["panels"]["side"].clone();
+    let ids = |s: &serde_json::Value| -> Vec<String> {
+        let rows = side(s)["rows"].as_array().cloned().unwrap_or_default();
+        rows.iter().filter_map(|r| r["id"].as_str().map(String::from)).collect()
+    };
+    let in_hand = |s: &serde_json::Value| -> Option<String> {
+        let rows = side(s)["rows"].as_array().cloned().unwrap_or_default();
+        rows.iter().find(|r| r["selected"] == true).and_then(|r| r["id"].as_str().map(String::from))
+    };
+    let s = t.wait_state("the changes listed, the edited file in hand", |s| {
+        ids(s).iter().any(|id| id == "git:changes") && in_hand(s).as_deref() == Some("git:tests/c.rs")
+    });
     // Up from the file being edited (the last one) to the top — at once, as a quick hand does, while the
-    // file's hunks may still be read (they put the selection back on its row then)
+    // file's hunks may still be read (#187: they put the selection back on its row then)
+    let input = s["input"].as_u64().unwrap();
     t.send("kkkkkk");
+    let s = t.state_json(input + 6);
+    assert_eq!(
+        in_hand(&s).as_deref(),
+        Some("git:changes"),
+        "six rows up: the section's header\n{:#}",
+        side(&s)
+    );
     t.send("s");
-    t.wait_for("all of them staged", |s| s.contains("Staged everything"));
+    t.wait_state("all of them staged", |s| {
+        let ids = ids(s);
+        !ids.iter().any(|id| id == "git:changes")
+            && ["docs/b.md", "src/a.rs", "tests/c.rs"]
+                .iter()
+                .all(|f| ids.contains(&format!("git:staged/{f}")))
+    });
     let st = Command::new("git")
         .args(["diff", "--cached", "--name-only"])
         .current_dir(sb.work())
