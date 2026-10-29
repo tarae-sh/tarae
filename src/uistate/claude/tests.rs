@@ -288,6 +288,34 @@ fn a_parents_level_holds_nothing_of_a_session_it_didnt_start() {
     }
 }
 
+/// A session behind, swapped in for its own Claude's call, holds its own parked card at its level and none of another
+/// session's — a child's card parked there never reaches its parent's `ui` nor its context's `ui:` line (orchestra P2's
+/// simulation found every session's parked cards taken as its own).
+#[test]
+fn a_session_behind_sees_only_its_own_parked_cards() {
+    let mut ed = editor();
+    let dir = crate::scratch::Scratch::new("behind-parked");
+    let mine = behind(&mut ed, "mine", dir.join("mine"));
+    let theirs = behind(&mut ed, "theirs", dir.join("theirs"));
+    for (at, token) in [(mine, "[own-card]"), (theirs, "[their-card]")] {
+        ed.offer_seq += 1;
+        let what = What::ReviewEnd { session: at, started: Instant::now() };
+        let mut o = Offer::new(format!("{token} title"), &format!("{token} text"), "", String::new(), what);
+        o.id = ed.offer_seq;
+        ed.workspace_by_id(at).unwrap().parked.push(o);
+    }
+    let (mut level, mut context) = (String::new(), String::new());
+    ed.with_workspace(mine, |ed| {
+        let s = ed.ui_state_claude();
+        level = format!("{}\n{}", s.text_claude(true), s.json());
+        context = s.context_line().map(|l| l.0).unwrap_or_default();
+    });
+    assert!(context.contains("[own-card]") && level.contains("[own-card]"), "its own:\n{context}\n{level}");
+    for (at, text) in [("context", &context), ("level", &level)] {
+        assert!(!text.contains("[their-card]"), "another session's card in its {at}:\n{text}");
+    }
+}
+
 /// The context's `ui:` line: nothing up but the code and the chat, no line; a card, a toast, a run under
 /// way — each by id, and the ids are what went to Claude.
 #[test]

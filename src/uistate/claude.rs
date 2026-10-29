@@ -48,7 +48,9 @@ impl Editor {
             s.panels = Default::default();
             s.toasts.clear();
             s.prompt = None;
-            s.cards.retain(|c| c.up == "parked");
+            // (its own parked cards only: what waits parked in another session — a child's, orchestra's sim found — is
+            // that session's, a count here as in front; one shown here about another, a bring's, as its own)
+            s.cards.retain(|c| c.up == "parked" && (c.session == own || c.shown_in.as_ref() == Some(&own)));
             for c in &mut s.cards {
                 c.session = own.clone();
             }
