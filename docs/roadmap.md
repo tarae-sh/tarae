@@ -19,6 +19,8 @@ For how tarae is built and why, see [architecture.md](architecture.md). For what
 
 - [Done](#done)
   - [The Linux sandbox keeper](#the-linux-sandbox-keeper)
+  - [Sandbox follow-ups (2026-10-28)](#sandbox-follow-ups-2026-10-28)
+- [Now](#now)
 - [Next](#next)
 - [Alongside, not ordered](#alongside-not-ordered)
 - [Later](#later)
@@ -43,6 +45,7 @@ For how tarae is built and why, see [architecture.md](architecture.md). For what
 | **Queues** | A run waits its turn instead of being refused, and says what it waited for (phases 0, H and 1 of [design/async.md](design/async.md)) |
 | **UI state** | What's on screen as data: `tarae state`, a socket for outside programs, Claude's `ui` tool, ids that are links, pointing at things (phases 1–3 of [design/ui-state.md](design/ui-state.md)) |
 | **Notifications** | Toasts as one calm card, `:messages`, news from sessions behind, the inbox's count on the status line — all inside tarae |
+| **Projects** | A project starts at the nearest `.git` or `.tarae.toml` above where tarae starts — never home or above — and every store keys by it; where you started stays where you are (step 1, `28cc4485`). A start begins a new conversation, the latest a key away among the empty chat's first keys (`C-p continue "…" · 2h ago · 41k`); a session the list brought back continues its own and says so on its top line (step 2, `0c974bfc`) |
 | **Restart with sessions** | `:restart` brings back every session as it was, with its chat, code review and waiting cards; unsaved edits are kept and offered back after a crash ([features.md](features.md#updating-without-losing-your-place)) |
 | **Language packs** | A language is a folder of data: grammar, queries, servers, tests, debugger, and what its tools need from the sandbox. The core names no language |
 | **Shared rust-analyzer** | One server for a repository's checkouts, swapped in the background as sessions come and go |
@@ -70,8 +73,8 @@ from each other. Daemons such as Gradle's stay warm between runs.
    run gets a port and a token of its own. On Linux the relay splices a connection once it has read its start.
    Tools that ignore the proxy variables are told by their packs. Where tarae itself goes out through a proxy,
    it chains to that one, http://, https:// or SOCKS5 (host and SNI checks kept; the address checks are that
-   proxy's, said in the report). An https:// one (2026-10-28) as Anthropic's sandbox runtime does it: TLS to the
-   proxy, checked as the system checks a certificate, then CONNECT inside. Basic only, as srt and Claude Code:
+   proxy's, said in the report). An https:// one (2026-10-28, `3d6b6153`; its review `031c8e40`) as Anthropic's
+   sandbox runtime does it: TLS to the proxy, checked as the system checks a certificate, then CONNECT inside. Basic only, as srt and Claude Code:
    for NTLM or Kerberos, a local helper (Px, cntlm) named as an http:// proxy.
 6. **Out by the proxy alone** — done. Every tier goes out by step 5's proxy variable. A tool that ignores it, or
    raw TCP, fails closed, and the report points at `outside_sandbox`.
@@ -101,6 +104,36 @@ recipe, and the tests runnable without a cloud VM.
 5. **macOS denies by default**, as srt: every allow besides files and the network is one table, each row with the
    tool that needed it. Other processes' command lines and environments, System V IPC and priority are now kept.
 
+### Sandbox follow-ups (2026-10-28)
+
+Five pieces from the queue, read together by tarae's reviewer after (`031c8e40`: its six findings fixed).
+
+1. **An https:// upstream proxy** (`3d6b6153`) — keeper step 5 above.
+2. **Write grants judged again** (`c86f0f18`): a grant kept from before is judged at every run by the rule the card
+   offers folders by today — one it refuses now stays closed and is said; no card offers what's kept from every run,
+   the user's own Go build cache. Judged on the run path, never with no checkout or home (`031c8e40`).
+3. **G13, code trust** (`c84f693c`): a language server that runs the project's code waits for the repository's
+   trust — one card, every checkout's answer, as Claude Code keys its workspace trust; rust-analyzer, jdtls, zls and
+   tsserver marked by their packs. `:code-untrust` takes it back at every root (`031c8e40`).
+4. **§1.2** (`45fe0d02`): your tests and `:restart`'s build wait on the card about what Claude's runs made that the
+   sandbox keeps, as your task and preflight do; your terminal, whose keys can't be held, says it on its line.
+5. **D-i's left** (`a35e5c3f`) — §2 item 6.
+
+## Now
+
+Under way (2026-10-29):
+
+- **The mouse's five kinds, piece B** — rows, key hints as buttons, #216's press, marks, checked by A's walk
+  ([alongside](#alongside-not-ordered)).
+- **#214, piece 2** — what piece 1 left (`.sb/f214-next.md`): the side panel's file rows, the review rail's frame
+  besides lookups, what each event still does over every buffer or session while nothing changed, `focus_sync`, the
+  RSS growth.
+- **#213, the swap's retry** — the shared rust-analyzer's new server panicked (rust-analyzer's own bug) before it
+  took over, and the next swap began at once, each try loading every checkout beside the old one. tarae's part: after
+  a new server exits before it takes over, no next swap until the folders change again (or a back-off), said once.
+- **Projects, step 3** — a crash continues: the conversation's id in the recovery folder, the recovery card's restore
+  taking the chats back (carry's `.sb/projects-plan.md`).
+
 ## Next
 
 In this order.
@@ -115,8 +148,8 @@ it the `Viewer`; ids (machine, n), events tagged with both, `:workspace-*`, `[wo
 diagram model `fd2cc7bd`, the native edit modes `6a530588`, shuttle keys `97b2e30b`, the spare claude `a1c66678`,
 Claude's four rarely used tools `52085039` and the debugger `e0bc6b9b` gone — 13,500 lines net, the fixed prompt
 11,880 → 10,715 tokens a request (`4f6762d4`); `space i` a one-turn claude of its own with tarae's `read` and `edit`
-(`05092df7`, B′); keep-warm's pings replaced by Claude Code's idle compaction, on by default (`94cf92d8`)) → the crate split (§1 item 6; its first step done, `cb4c570b`: `crates/tarae-wasm`) → Orchestra Part I →
-P3b and the terminal line (§4). The Linux test red on main, an xattr error's order on kernel 6.8, is fixed (`071e028e`:
+(`05092df7`, B′); keep-warm's pings replaced by Claude Code's idle compaction, on by default (`94cf92d8`)) → the crate split (§1 item 6; `crates/tarae-wasm` `cb4c570b`, `crates/tarae-web` `9ebf029a`) → Orchestra Part I (P1a and P1b done, P2 next — §4) →
+the terminal line (§4; P3b's tabs dropped for zellij's — the user, 2026-10-27, #184/#186). The Linux test red on main, an xattr error's order on kernel 6.8, is fixed (`071e028e`:
 the running kernel's order, read once as Landlock's ABI is), as is the Read card's width pinned at macOS's path
 (`94ded1e6`). Plans and notes moved out of `target/` into each
 checkout's `.sb/` (`c09fa01a`, after a `cargo clean` took eight checkouts' notes; most rebuilt from tarae's turn
@@ -132,7 +165,9 @@ the checkout's own, a conflict after all putting it back exactly as it was). Sin
 on the status line (`7497ae62`) and one working sign in place of the wave and the band (`85d73fcb`) — motion,
 Alongside —, the mouse's first landings (the chat's drag and the plan's F, M0 and S — Alongside), and from the frictions the prompt's and the
 pickers' line edited as the chat's input, a selection that keeps the code's colours and the chat's prose filling a
-width you set (§3). Frictions go on. Code mode (§3) and the review lens's A + E wait on their records' data.
+width you set (§3). Since 2026-10-28: projects steps 1 and 2 and the sandbox follow-ups (Done), the mouse's five
+kinds A (Alongside), plugin API 0.3's overlays (§7) and frictions #188–#214 (§3). Frictions go on. Code mode (§3)
+and the review lens's A + E wait on their records' data.
 
 ### 1. Publishing
 
@@ -180,8 +215,8 @@ Items 1–3 are done (2026-10-16); 4 is the user's: the repository made public. 
    JIT's isn't a second copy of std's — 16.5 KB measured) and the dev-only `crates/tarae-testkit`; `fuzz/` builds
    again on the crate; build times within noise, the test build −2.7 s, the release binary +16,576 bytes. tarae as a
    library with a thin `main.rs` was measured and not landed (every edit's build +1.0 s; kept as carry's
-   `.sb/crates-2-lib.patch`). The second, `crates/tarae-web` (2026-10-28): the web reader and `media` (~3.2k lines;
-   3.0 % of tarae's dev unit by LLVM IR, html5ever's generics included), its builds within noise, its worth the
+   `.sb/crates-2-lib.patch`). The second, `crates/tarae-web` (2026-10-28, `9ebf029a`): the web reader and `media`
+   (~3.2k lines; 3.0 % of tarae's dev unit by LLVM IR, html5ever's generics included), its builds within noise, its worth the
    boundary — `fuzz/parsers` takes it as a dependency, the `#[path]`s and `cfg(fuzzing)`s for it gone. Next the
    sandbox, a plan of its own.
 7. **What tarae carries, audited** (user, 2026-10-23 — after the main line in flight, before the crate split): a
@@ -235,7 +270,7 @@ The aim is to state what the sandbox guarantees and show that it holds.
    which tarae owns in the session's, so tier own is served at scope 2 (the tier probe tries it on its keeper's
    run); without namespaces the session stays offline, said with the way out. No capability on tarae, no privileged
    helper (user decision).
-5. **A speed comparison** against a bubblewrap-style sandbox.
+5. **A speed comparison** against srt's Linux sandbox — paused (the user, 2026-10-28).
 6. **A file's attributes on Linux** (linmeta, found by the speed work's parity checks against srt and Codex):
    Landlock has no right for them. Part A done (2026-10-18, `dbe7086c`, D-h): the seccomp filter refuses a file's
    owner, extended attributes, ACLs and inode flags in every tier, the project's files too; its mode and times stay
@@ -421,6 +456,19 @@ Done so far, under way, and the order after it (2026-10-17, brought up to 2026-1
   (#137, `f0fd2ce3`); and tests that waited for a file's being there rather than its content, counted another test's
   processes or runs, held macOS to one way of answering or read an environment the test binary run alone hasn't
   (#132, #152, #154, #155, #158, #162, `59c0134e`).
+  Since 2026-10-28: an idle tarae judged by what it did — frames, the events it handled, its threads' wakes — never the
+  OS's context switches (#191, `8df596eb`), and an idle check settled only once the start's jobs have all landed
+  (#191e, #201, `f24da56f`); the reviewer reading a big source file by range, name and search, and a long CLAUDE.md
+  asked whole answering its headings (#193 + #188, `0f95e997`); Java's inlay hints as rust-analyzer's, asked again once
+  the server is done (#195, `01590410`); a place in the chat's text opening what it looks like it opens (#196,
+  `09f76fde`); a word under the mouse lightening only its ground, a folded thought whole under it (#197a + #197b,
+  `cd2a20ff`); `S-tab` the next pane (#199, `3cc424f2`); a card's answers lit under the mouse, keeping their cells as
+  a press focuses it (#200 + #211, `6b57016d`); a key shown by one name wherever tarae shows it (#202, `2bf01157`); a
+  resolved rebase stop's `y` staging only the files git named as conflicted (#206, `2c2e96b8`); a press on a file in
+  the review's rail giving it the keys, and the rail's selection the file shown (#207, `8cd89a06`, `02f186db`); a watch
+  made in the start the start's until its first look lands (#210, `3f78aa37`); and with many sessions open, an event
+  touching what changed and a frame each place once — no session against every other, no stat on the main loop (#214
+  piece 1, `75d119a7`, its test `dd9c7f23`; piece 2 [now](#now)).
 
 - **`:session-apply`** — done (2026-10-19, `a525a775`): an outside tree's change — a patch, `--base <rev>` for
   where it was made — brought in as one reviewed change set, never written unseen.
@@ -537,7 +585,7 @@ main that has what it waits for, and the user says go:
   every session reads and writes, shown wherever that file is, each session its name in its colour; C2 (`c4513975`) an overlap between workspaces said the moment it
   would conflict (to you; a Claude hears nothing of the others — the user, 2026-10-23) — 1 rebase in 3 stopped on a conflict over 10-16…21, ~6 min each; C2b the woven view (`:weave` — the user's name, 2026-10-22: a view, never a merge done) — everyone works in their own workspace and tarae shows the merge, each change in its
   participant's colour (part 1 `3501b885`: a file, in memory on a worker; 1b `320cc45e`: the name, deletions shown, numbers where each
-  line is, `enter` goes to that session's line), the woven tree's preflight on demand (part 2 — waits: the bring's preflight already catches a combined break); C3 (`4b8ece93`) workspaces kept close to their base — one card when it moves, what would conflict and where in words, `y` the clean ones moved once each is idle, `c` the conflicting ones too through the resolve loop, `workspace.sync` ask · idle · off) → **C0** the split of `Workspace` out of `Session` → **P3b** tabs (the workspace's) and the task list → the terminal line: several terminals → the engine →
+  line is, `enter` goes to that session's line), the woven tree's preflight on demand (part 2 — waits: the bring's preflight already catches a combined break); C3 (`4b8ece93`) workspaces kept close to their base — one card when it moves, what would conflict and where in words, `y` the clean ones moved once each is idle, `c` the conflicting ones too through the resolve loop, `workspace.sync` ask · idle · off) → **C0** the split of `Workspace` out of `Session` → **P3b** tabs (the workspace's) and the task list — its tabs dropped: zellij's tabs do that (the user, 2026-10-27, #184/#186) → the terminal line: several terminals → the engine →
   reflow → the shell understood → `tarae` verbs → output for Claude → another session beside → the floating
   terminal → shells across `:restart`. After its own terminal engine, then images at full
   resolution (kitty graphics, iTerm2's inline images) where the terminal speaks them, the half-block view
@@ -549,6 +597,12 @@ main that has what it waits for, and the user says go:
   nothing switches the front session or types into an input you can see. P1 children (start them on a card, send
   to them, read their reports, news told once), P2 watching (wakes, cost per child), P3 reviews and proposals.
   P1 builds on bgreview (landed; P3 builds on its start); what stays yours — cards, brings, ends — stays yours.
+  P1a done (2026-10-28, `e3afe033`): the home chat's Claude starts sessions of its own on one card (`sessions_start`,
+  each behind, its brief its first message, the front never moving) and puts words into them (`session_send`, its own
+  children only, after anything of yours queued there). P1b done (`e9160970`): `sessions` reads back its children's
+  states and the reply of the last turn it started there, framed as another Claude's words; a turn it started that
+  ended is news, told once; `session_send { fresh }` starts a child's conversation anew between its turns; children
+  follow their parent in the session list and on the chat's line. Next: P2, watching.
 
 ### 5. A remote split
 
@@ -589,6 +643,13 @@ One batch with the forge plugin: regions, cards, tools for Claude, a masked prom
 ([plugins.md](plugins.md)). The database plugin waits for its regions; the to-do and knowledge-base plugins wait for calls not in this
 list yet — a search through tarae's engine for both, a file's comments for the to-do one, a project file written
 on a reviewed edit and a link followed by `gd`/`enter` for the knowledge base ([queued](#queued-not-scheduled)).
+
+Its overlays first (the user, 2026-10-28, for videos): A1 (`86a90eaf`), a plugin's overlay — news floating in the
+asks' corner, never the keys, gone while an ask stands there and back with the latest; A2 (`58b49612`), the keys you
+press to a plugin that hears them — commands only, never a character typed, through your own `plugins.keys`, its
+`keys` approved and a sign on the status line, and a plugin that hears keys asks for nothing else; K (`718babfa`), the
+keycast — the keys as keycaps in the asks' corner, a repeat folded — and tarae's kubernetes and db plugins built for
+API 0.3 (the state's version 21, `e5317216`).
 
 ### 8. The forge plugin
 
@@ -706,8 +767,8 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
   no token spent. And one working sign (`85d73fcb`, #159, the wave plan's C): the wave beside the word and the band
   over it fold into one cell that rises, `▃▄▅▆` in the accent, the same in every place for the whole turn — its
   height the stream's level, a 2 s breath where nothing streams by nature, low and still when the stream stops — so
-  nothing moves a cell from a turn's start to its end. Then the breath alone (the user, 2026-10-28, on `cargo xtask
-  sign`'s animations of six candidates: the level read as stutters): an even 2 s breath the whole turn, from the floor
+  nothing moves a cell from a turn's start to its end. Then the breath alone (`703293f3`; the user, 2026-10-28, on
+  `cargo xtask sign`'s animations of six candidates: the level read as stutters): an even 2 s breath the whole turn, from the floor
   as the turn starts and as it leaves a stall, low and still while the stream has stopped.
 - **The mouse, one way on every surface** (user, 2026-10-26, after a day at work through Windows Terminal into WSL;
   panes4's `.sb/mouse-plan.md`, its twelve as recommended but the right button, which stays as it is): a press gives
@@ -720,7 +781,10 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
   from it and a walk that holds every scene to it; S (`53b05286`): a drag selects in run output, the terminal's view
   mode and Claude's edit review, a double press takes the word and a triple the line in every text, a drag held past
   the edge scrolls, the wheel never moves the cursor or the selection. Next: resize, then the words (with motion),
-  then the overlays.
+  then the overlays. Since, the five kinds (the user, 2026-10-28, #215/#216): every element a button, a reveal, text,
+  a handle or none, its look saying which. A (`2a029df9`): every element recorded with its kind where it's drawn,
+  every key hint printed known, one walk holding them to their kind — the pointer in `tarae state`; B
+  ([now](#now)): rows, hints as buttons, #216's press, marks; C: the wheel.
 - **Short videos, made ahead** (user, 2026-10-23): scripted scenes as docshots are — 16:9, English captions, no
   voice — for YouTube, the homepage and the README; a live stream once orchestra drives (Part I) and there's a
   homepage and a release to point at. Planned and measured (collab's spike: 1080p, MP4 ~600 KB a clip); made — `cargo xtask
