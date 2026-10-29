@@ -16352,6 +16352,10 @@ fn session_tabs(
     let unsent = |l: &crate::workspace::Workspace| {
         l.id != editor.workspace.id && l.claude.chat.as_ref().is_some_and(|c| !c.input.blank())
     };
+    // (a rebase that waits on you — resolved and waiting for its `y`, or stopped with nothing asked of its Claude; never
+    // while its Claude resolves it: `Rebase::waits_on_you`, the inbox's)
+    let stopped =
+        |l: &crate::workspace::Workspace| l.rebase.as_ref().is_some_and(|r| r.waits_on_you().is_some());
     // A session's words at a fold: `files` where it is in its turn, `whom` its overlaps' names (else `≈` alone, in
     // warning — whose, the list and the side panel say), `states` its state in words (else what needs you: `▲`, `◦`,
     // `done`, `¶`)
@@ -16395,7 +16399,8 @@ fn session_tabs(
             };
             v.push(Span { cut: None, hint: false, text: said.into(), style: reviewer });
         }
-        if states {
+        // (a rebase stopped for you waits on you: its words kept at every fold, as `▲` is)
+        if states || stopped(l) {
             v.extend(rebasing(l));
         }
         // (news while it was behind: files came again from disk — #6, its reviewer ended — #195; a sign already, kept
@@ -16409,9 +16414,10 @@ fn session_tabs(
         }
         v
     };
-    // What needs you: always in (with the front)
-    let needs =
-        |l: &crate::workspace::Workspace| matches!(editor.doing(l), Doing::Waiting | Doing::Stuck { .. });
+    // What needs you: always in (with the front) — a card, a stuck call, a rebase stopped for you
+    let needs = |l: &crate::workspace::Workspace| {
+        matches!(editor.doing(l), Doing::Waiting | Doing::Stuck { .. }) || stopped(l)
+    };
     // (a child after its parent or a sibling: joined by `›`, a group's inside — orchestra N6, the user on its shots)
     let inside = |i: usize, before: Option<usize>| {
         let parent = sessions[i].claude.parent;
@@ -16490,12 +16496,44 @@ fn session_tabs(
             return laid;
         }
     }
-    // Then sessions into `+N`, from the end of the order back — never the front nor one that needs you; the order kept,
-    // the room used (one that fits after one that didn't is shown)
+    // Then sessions into `+N`, one at a time: first those that don't need you, then those that do — the one waiting
+    // longest first, the newest kept longest (#237: never all at once, the line left empty); the order kept, the room
+    // used (one that fits after one that didn't is shown — the newest waiting first)
     let front = |l: &crate::workspace::Workspace| l.id == editor.workspace.id;
+    // (how long it has waited: its oldest card, as the inbox's oldest-first order — a stuck call's time, a stopped
+    // rebase's wait, whichever is longest)
+    let waited = |l: &crate::workspace::Workspace| {
+        let stuck = match editor.doing(l) {
+            Doing::Stuck { secs, .. } => std::time::Duration::from_secs(secs),
+            _ => std::time::Duration::ZERO,
+        };
+        let cards = l.parked.iter().map(|o| crate::clock::since(o.since));
+        let rebase = l.rebase.as_ref().and_then(|r| r.waits_on_you()).map(crate::clock::since);
+        cards.chain(rebase).fold(stuck, std::cmp::Ord::max)
+    };
+    let mut waiting: Vec<usize> =
+        (0..sessions.len()).filter(|&i| !front(sessions[i]) && needs(sessions[i])).collect();
+    crate::sorting::by_key(&mut waiting, |&i| std::cmp::Reverse(waited(sessions[i])));
     let mut shown: Vec<bool> = sessions.iter().map(|l| front(l) || needs(l)).collect();
+    for &i in &waiting {
+        if width(&lay(&items, &shown)) <= w {
+            break;
+        }
+        shown[i] = false;
+    }
     if width(&lay(&items, &shown)) <= w {
-        for i in 0..sessions.len() {
+        // (those waiting back newest first, up to the first that doesn't fit — never an older one past a newer)
+        for &i in waiting.iter().rev() {
+            if shown[i] {
+                continue;
+            }
+            shown[i] = true;
+            if width(&lay(&items, &shown)) > w {
+                shown[i] = false;
+                break;
+            }
+        }
+        for i in (0..sessions.len()).filter(|&i| !needs(sessions[i])) {
             if !shown[i] {
                 shown[i] = true;
                 shown[i] = width(&lay(&items, &shown)) <= w;
@@ -16503,8 +16541,7 @@ fn session_tabs(
         }
         return lay(&items, &shown);
     }
-    // Last, those that need you too: the front alone, `+N ▲k` — its name cut only where it alone can't fit
-    let shown: Vec<bool> = sessions.iter().map(|l| front(l)).collect();
+    // Last, the front alone, `+N ▲k` — its name cut only where it alone can't fit
     let over = width(&lay(&items, &shown)).saturating_sub(w);
     if over > 0
         && let Some(i) = sessions.iter().position(|l| front(l))
@@ -16965,6 +17002,35 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
     pieces
 }
 
+/// The chat line's names' room out of `room` (#237, the user's A): the details they never fold before — `no sandbox`,
+/// `follow` (at `kept`) and what's before them, `continued` bare — keep theirs after the names, a ` ── ` before them; the
+/// names fold first, down to their least (`least`: the front's name whole and `+N` with its signs). Short of that the names
+/// stay at their least and the details fold (`follow` before the warning — `draw_chat`); only the names' least past the
+/// room cuts the front's name.
+fn names_room_kept(
+    details: &[(String, Style)],
+    room: usize,
+    (warning, follow): (Option<usize>, Option<usize>),
+    least: impl FnOnce() -> usize,
+) -> usize {
+    let Some(upto) = warning.max(follow) else { return room };
+    let kept = details_w(details, upto).max(DETAILS_MIN) + 4;
+    let least = least();
+    match room >= kept + least {
+        true => room - kept,
+        false => least.min(room),
+    }
+}
+
+/// The cells the chat line's details up to `upto` take, their parts folded (`fold_details`: `continued` bare).
+fn details_w(details: &[(String, Style)], upto: usize) -> usize {
+    let pieces: Vec<usize> = (details[..=upto].iter())
+        .filter(|(t, _)| t != NAMES_SEP && !t.starts_with("· ") && !t.trim().is_empty())
+        .map(|(t, _)| t.trim().width())
+        .collect();
+    pieces.iter().sum::<usize>() + NAMES_SEP.width() * pieces.len().saturating_sub(1)
+}
+
 /// A parent chat's `told Claude: …` row (`orchestra::TOLD`): a note's `· ` and its words on one row, cut at its end
 /// (`fit_ellipsis`) as a tool row is, the transcript keeping it whole (`chatdoc::keep_whole`) and its card saying it
 /// whole (`cut_card`) — a child's reply can be a long line, and wrapped it took four or five rows at 100 columns. A
@@ -17409,20 +17475,19 @@ fn draw_chat(
     // Follow badge: accent while following, faint once the user took over — a press is `C-f`'s (frictions #147)
     // (paused lasts until the next question — only worth saying while Claude works)
     let paused = c.follow.paused && c.busy();
-    match (c.follow.on, paused) {
-        (false, _) => {}
-        (true, false) => presses.push((say("follow", accent), Press::Follow)),
-        (true, true) => presses.push((say("paused", faint), Press::Follow)),
-    }
+    let follow_at = match (c.follow.on, paused) {
+        (false, _) => None,
+        (true, false) => Some(say("follow", accent)),
+        (true, true) => Some(say("paused", faint)),
+    };
+    presses.extend(follow_at.map(|at| (at, Press::Follow)));
     // Claude's commands without a sandbox (off, or none here and agreed): said while it's so, in warning
     let warn = editor
         .theme
         .try_get("warning")
         .and_then(|s| s.fg)
         .map_or(accent, |fg| Style { fg: Some(fg), ..accent });
-    if crate::tools::unsandboxed(editor) {
-        say("no sandbox", warn);
-    }
+    let sandbox_at = crate::tools::unsandboxed(editor).then(|| say("no sandbox", warn));
     // Review at the end: Claude's edits go in unasked — said while it's on
     if c.edits.at_end.is_some() {
         say("review at end", accent);
@@ -17462,6 +17527,11 @@ fn draw_chat(
     };
     let right: Vec<(String, Style)> = status.into_iter().map(|s| (s.text, s.style)).collect();
     let right_w: usize = right.iter().map(|s| s.0.width()).sum();
+    // (a turn's time stands; the model's name gives way to what's on)
+    let keep_right = c.busy() || c.settings.waiting_since().is_some();
+    // (the names' room: the line's, less what stands at its right end while it's kept)
+    let names_room =
+        lw.saturating_sub(TOP_LINE_OWN + if right_w > 0 && keep_right { right_w + 3 } else { 0 });
     // The names: the sessions, as many of their words as fit before the right end (`session_tabs` folds them), or
     // `claude`
     let (names, spots): (Vec<(Fit, Style)>, Vec<_>) = match editor.workspaces.is_empty() {
@@ -17470,23 +17540,40 @@ fn draw_chat(
         }
         false => {
             let reviewer = Style { fg: reviewer_style(editor, ui).fg, ..card };
-            let busy = c.busy() || c.settings.waiting_since().is_some();
-            let room = lw.saturating_sub(TOP_LINE_OWN + if right_w > 0 && busy { right_w + 3 } else { 0 });
-            let (spans, spots) =
-                session_tabs(editor, room, lay.rail_w, [dim, faint, accent, warn_fg, reviewer], &|c| Style {
+            let tabs = |w: usize| {
+                session_tabs(editor, w, lay.rail_w, [dim, faint, accent, warn_fg, reviewer], &|c| Style {
                     fg: ui.participant(c, true),
                     ..card
-                });
+                })
+            };
+            let room = names_room_kept(&details, names_room, (sandbox_at, follow_at), || {
+                // (the names' least: the front's name whole and `+N` with its signs — `session_tabs` at no room cuts
+                // the name to its `…`, one cell: none for an empty name)
+                let least: usize = tabs(0).0.iter().map(|s| s.text.width()).sum();
+                let name = editor.workspace.label().width();
+                least + name - name.min(1)
+            });
+            let (spans, spots) = tabs(room);
             // (a name cut to fit carries its whole: `session_tabs`)
             let fit = |s: Span| (Fit::from_parts(s.text, s.cut.map(|c| *c)), s.style);
             (spans.into_iter().map(fit).collect(), spots)
         }
     };
+    // With names on the line and no room for both, `follow` goes before the warning (#237: never folded before it) — its
+    // ` · ` with it
+    if let (Some(f), Some(s), false) = (follow_at, sandbox_at, editor.workspaces.is_empty()) {
+        let names_w: usize = names.iter().map(|(n, _)| n.width()).sum();
+        if names_room.saturating_sub(names_w + 4) < details_w(&details, f.max(s)) {
+            details[f].0.clear();
+            let sep = if f > 0 && details[f - 1].0 == NAMES_SEP { f - 1 } else { f + 1 };
+            if let Some(d) = details.get_mut(sep).filter(|d| d.0 == NAMES_SEP) {
+                d.0.clear();
+            }
+        }
+    }
     queue!(out, MoveTo(x0 as u16, y as u16))?;
     put_gutter(out, edge(y))?;
     let key = Style { bold: true, ..dim };
-    // (a turn's time stands; the model's name gives way to what's on)
-    let keep_right = c.busy() || c.settings.waiting_since().is_some();
     // (its right end pressed: the turn's word follows Claude's place, the model's name is `C-t`'s)
     let right_press = match c.state {
         State::Idle if c.settings.waiting_since().is_some() => None,
@@ -21952,7 +22039,10 @@ mod tests {
         fn behind<'a>(ed: &'a mut Editor, name: &str) -> &'a mut crate::workspace::Workspace {
             ed.workspaces.iter_mut().find(|l| l.name == name).unwrap()
         }
-        behind(&mut ed, "docs").parked.push(card(1));
+        // (docs waiting a minute, parser just now: parser kept the longer)
+        let mut older = card(1);
+        older.since -= Duration::from_secs(60);
+        behind(&mut ed, "docs").parked.push(older);
         behind(&mut ed, "parser").parked.push(card(2));
         behind(&mut ed, "web").claude.turn_end = Some((std::time::Instant::now(), Ok(())));
         let s = Style::default();
@@ -21984,15 +22074,15 @@ mod tests {
                     assert_eq!(spots.last().unwrap().2, Spot::List, "{w}: +N opens the list");
                 }
             }
-            // (the front and what needs you: in while they fit, else the front alone with their signs)
+            // (the front and what needs you: in while they fit — one at a time, the newest waiting (parser) kept longest
+            // (#237), docs in wherever its room is — else the front alone with their signs)
+            let has = |n: &str| shown.iter().any(|r| r.split(' ').next() == Some(n));
             match shown.len() {
                 1 => assert!(shown[0].starts_with("main") && text.contains("+8 ▲2"), "{w}: {text}"),
-                _ => {
-                    for n in ["main", "docs", "parser"] {
-                        assert!(shown.iter().any(|r| r.split(' ').next() == Some(n)), "{w}: {n} in: {text}");
-                    }
-                }
+                _ => assert!(has("main") && has("parser"), "{w}: main and parser in: {text}"),
             }
+            let docs_back = text.width() + NAMES_SEP.width() + "docs ▲".width();
+            assert!(has("docs") || docs_back > w, "{w}: docs out with room for it: {text}");
             if w == 40 {
                 was = Some(shown);
             }
@@ -22062,6 +22152,199 @@ mod tests {
         assert_eq!(shown.len(), 1, "{text}");
         assert!(shown[0].starts_with("› th") && shown[0].ends_with('…'), "{text}");
         assert!(text.contains("+4"), "{text}");
+    }
+
+    /// The chat's top line at screen width `w` (as `draw_chat` lays it out): its names, and what's after them.
+    fn chats_line(ed: &mut Editor, w: u16) -> (String, String) {
+        let vt = screen_at(ed, w);
+        let x = ed.screen.chat_x.expect("the chat is open");
+        let row = vt.screen().rows(0, w).next().unwrap_or_default();
+        let line: String = row.chars().skip(x).collect();
+        let line = line.trim_start_matches(['│', '┌', '┬', '─', ' ']);
+        let (names, rest) = line.split_once(" ── ").unwrap_or((line, ""));
+        (names.trim_end_matches(['─', ' ']).to_string(), rest.to_string())
+    }
+
+    /// #237 (the user's A, 2026-10-29): with two sessions or more `follow` and `no sandbox` keep their room after the names
+    /// on the chat's top line — the names fold first (their own stages, then `+N`), down to their least (the front's name
+    /// and `+N` with its signs); then `follow` goes, the warning outlasting it; only past the names' least is the front's
+    /// name cut. Swept over every width, 2, 5 and 9 sessions (two waiting, one done), idle and at work, the sandbox on and
+    /// off: as a line narrows, nothing comes back once it went.
+    #[test]
+    fn follow_and_no_sandbox_keep_their_room_after_the_names() {
+        use crate::offer::{Offer, What};
+        let dir = crate::scratch::Scratch::new("f237-line");
+        let all = ["main", "fix", "docs", "parser", "sbspeed", "keys", "pull", "web", "motion"];
+        let card = |n: u64| {
+            let what = What::Asks { call: crate::tools::Call::test(n) };
+            Offer::new(format!("Claude asks {n}"), "to see the screen", "", String::new(), what)
+        };
+        // (the screen widths that give the chat each of its widths, widest first: narrow, the chat takes the whole screen)
+        let chat_w = |w: u16| crate::sizes::widths(w as usize, true, false, Default::default()).chat;
+        let mut widths: Vec<u16> = (20..=240).collect();
+        crate::sorting::by_key(&mut widths, |&w| std::cmp::Reverse(chat_w(w)));
+        widths.dedup_by_key(|w| chat_w(*w));
+        for n in [2, 5, 9] {
+            for (sandbox, busy) in [(true, false), (false, false), (true, true), (false, true)] {
+                let mut ed = Editor::new(crate::config::Config::default());
+                ed.config.llm.sandbox = sandbox;
+                ed.workspace.name = "main".into();
+                for (k, name) in all[1..n].iter().enumerate() {
+                    let id = ed.workspace_add(dir.path().join(name));
+                    let l = ed.workspace_by_id(id).unwrap();
+                    l.name = (*name).into();
+                    match *name {
+                        // (fix's oldest card ten minutes old and a new one, parser's a minute old: fix has waited
+                        // longest — by its oldest card, as the inbox orders them — parser is kept the longer)
+                        "fix" | "parser" => {
+                            let mut o = card(k as u64);
+                            o.since -= Duration::from_secs(if *name == "fix" { 600 } else { 60 });
+                            l.parked.push(o);
+                            if *name == "fix" {
+                                l.parked.push(card(100 + k as u64));
+                            }
+                        }
+                        "web" => l.claude.turn_end = Some((std::time::Instant::now(), Ok(()))),
+                        // (a rebase stopped on a conflict, nothing asked: waiting on you too, the newest)
+                        "pull" => l.rebase = Some(crate::rebase::stopped_for_test((1, 2), false)),
+                        // (one its Claude was asked to resolve: Claude's to do, not waiting on you)
+                        "keys" => l.rebase = Some(crate::rebase::stopped_for_test((1, 3), true)),
+                        _ => {}
+                    }
+                }
+                let mut c = crate::chat::Chat::new();
+                (c.follow.on, c.unfolded) = (true, true);
+                if busy {
+                    c.state = crate::chat::State::Thinking;
+                }
+                ed.workspace.claude.chat = Some(c);
+                ed.workspace.viewer.at = At::Chat;
+                let mut went: [Option<u16>; 2] = [None; 2];
+                let (mut folded, mut kept_while_folded) = (false, false);
+                for &w in &widths {
+                    let at = format!("{n} sessions, sandbox {sandbox}, busy {busy}, {w} wide");
+                    let (names, rest) = chats_line(&mut ed, w);
+                    let (follow, bare) = (rest.contains("follow"), rest.contains("no sandbox"));
+                    let parts: Vec<&str> = names.split(" · ").collect();
+                    let least = parts.len() == 2 && parts[1].starts_with('+') && parts[1] != "+";
+                    let whole = names == "main" || names.starts_with("main ");
+                    let line = format!("{names} ── {rest}");
+                    // (the front's name cut only where nothing is kept after it)
+                    assert!(whole || !follow && !bare, "{at}: {line}");
+                    // (the warning outlasts `follow`)
+                    assert!(sandbox || !follow || bare, "{at}: {line}");
+                    // (what's kept goes only once the names are at their least)
+                    assert!(follow || least || !whole, "{at}: follow gone first: {line}");
+                    assert!(sandbox || bare || least || !whole, "{at}: no sandbox gone first: {line}");
+                    // (narrowing, nothing comes back)
+                    for (k, (word, shown)) in
+                        [("follow", follow), ("no sandbox", bare)].into_iter().enumerate()
+                    {
+                        match went[k] {
+                            Some(gone) if shown => panic!("{at}: {word} back after going at {gone}: {line}"),
+                            None if !shown => went[k] = Some(w),
+                            _ => {}
+                        }
+                    }
+                    // (the names folded — their states to signs, or into `+N` — with `follow` still after them)
+                    let plus_n = parts.last().is_some_and(|p| p.len() > 1 && p.starts_with('+'));
+                    folded |= plus_n || !names.contains("waits");
+                    kept_while_folded |= follow && parts.len() > 2 && plus_n;
+                }
+                assert!(went[0].is_some(), "{n} {sandbox} {busy}: the sweep reaches where follow goes");
+                // (session by session, at every room: none folded while there's room for it — `+N` and its signs only
+                // shrink as one comes back, its words at their last fold at most its name, `▲` or `done` — and of those
+                // waiting the newest stays longest)
+                let s = Style::default();
+                let id = |name: &str| {
+                    let mut all = std::iter::once(&ed.workspace).chain(&ed.workspaces);
+                    all.find(|l| l.label() == name).map(|l| l.id)
+                };
+                for w in 0..=120 {
+                    let (spans, spots) = session_tabs(&ed, w, 0, [s; 5], &|_| s);
+                    let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+                    let shown: Vec<_> = (spots.iter())
+                        .filter_map(|s| match s.2 {
+                            crate::workspace::Spot::Session(id) => Some(id),
+                            _ => None,
+                        })
+                        .collect();
+                    let hidden = std::iter::once(&ed.workspace)
+                        .chain(&ed.workspaces)
+                        .filter(|l| !shown.contains(&l.id));
+                    // (those waiting, the longest first: one hidden while a newer one is — the newest come back first)
+                    let waiting = ["fix", "parser", "pull"];
+                    let rank = |l: &crate::workspace::Workspace| waiting.iter().position(|&n| n == l.label());
+                    let is_shown = |n: &str| id(n).is_some_and(|i| shown.contains(&i));
+                    let newer_hidden = |l: &crate::workspace::Workspace| {
+                        rank(l)
+                            .is_some_and(|r| waiting[r + 1..].iter().any(|n| id(n).is_some() && !is_shown(n)))
+                    };
+                    for l in hidden.filter(|l| !newer_hidden(l)) {
+                        let sign =
+                            match (l.parked.is_empty(), l.claude.turn_end.is_some(), l.rebase.is_some()) {
+                                (false, ..) => " ▲".width(),
+                                (true, _, true) => " rebasing 1/2".width(),
+                                (true, true, false) => " done".width(),
+                                (true, false, false) => 0,
+                            };
+                        let back = text.width() + NAMES_SEP.width() + l.label().width() + sign;
+                        assert!(back > w, "{n}, room {w}: {} folded with room for it: {text}", l.label());
+                    }
+                    // (of those waiting the newest kept longest; a stopped rebase's words at every fold)
+                    for (k, older) in waiting.iter().enumerate().filter(|(_, n)| is_shown(n)) {
+                        for newer in waiting[k + 1..].iter().filter(|n| id(n).is_some()) {
+                            assert!(is_shown(newer), "{n}, room {w}: {older} kept over {newer}: {text}");
+                        }
+                    }
+                    if is_shown("pull") {
+                        assert!(text.contains("pull rebasing 1/2"), "{n}, room {w}: its words: {text}");
+                    }
+                    // (the one its Claude resolves folds as any not waiting: at the states' fold — those waiting say
+                    // `▲`, not `▲ waits` — its words go)
+                    let at_fold = (is_shown("fix") || is_shown("parser")) && !text.contains("waits");
+                    if at_fold {
+                        assert!(
+                            !text.contains("keys rebasing"),
+                            "{n}, room {w}: Claude's rebase kept: {text}"
+                        );
+                    }
+                }
+                assert!(folded, "{n} {sandbox} {busy}: the names fold in the sweep");
+                if n == 9 {
+                    assert!(kept_while_folded, "{sandbox} {busy}: follow kept while others went into +N");
+                }
+            }
+        }
+    }
+
+    /// #237's review: a front session with no name (a checkout at `/`) folds as any — its least counted without a
+    /// name to cut, never below nothing — and `follow` keeps its room after it.
+    #[test]
+    fn a_nameless_front_session_folds_without_a_panic() {
+        let dir = crate::scratch::Scratch::new("f237-nameless");
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.name = String::new();
+        for name in ["fix", "docs", "parser"] {
+            let id = ed.workspace_add(dir.path().join(name));
+            ed.workspace_by_id(id).unwrap().name = name.into();
+        }
+        assert_eq!(ed.workspace.label(), "");
+        let mut c = crate::chat::Chat::new();
+        (c.follow.on, c.unfolded) = (true, true);
+        ed.workspace.claude.chat = Some(c);
+        ed.workspace.viewer.at = At::Chat;
+        let lines: Vec<(u16, String, String)> = (20..=140)
+            .map(|w| {
+                let (names, rest) = chats_line(&mut ed, w);
+                (w, names, rest)
+            })
+            .collect();
+        let at = |w: u16| lines.iter().find(|l| l.0 == w).expect("swept");
+        assert!(at(140).2.contains("follow"), "{:?}", at(140));
+        // (narrow: the names at their least, `+3`, follow after them)
+        let narrow = lines.iter().find(|l| l.1.contains("+3") && l.2.contains("follow"));
+        assert!(narrow.is_some(), "{lines:#?}");
     }
 
     /// `card_line_holds` reads the rule, not a width (#126: a path's length is the system's): a card's text narrower
@@ -25468,10 +25751,11 @@ mod tests {
                 ed.doing(&ed.workspace)
             );
             let mut out = Vec::new();
-            render(&mut ed, &mut out, 140, 36).unwrap();
-            let mut vt = vt100::Parser::new(36, 140, 0);
+            // (wide enough for the names' states and `follow` after them: narrower, the names fold first — #237)
+            render(&mut ed, &mut out, 180, 36).unwrap();
+            let mut vt = vt100::Parser::new(36, 180, 0);
             vt.process(&out);
-            vt.screen().rows(0, 140).next().unwrap()
+            vt.screen().rows(0, 180).next().unwrap()
         };
         for (stuck, glyph, said) in [(false, '▲', "main ▲ waits"), (true, '◦', "main ◦ symbols")] {
             let one = line(1, stuck);

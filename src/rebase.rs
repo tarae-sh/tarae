@@ -2140,6 +2140,26 @@ impl Editor {
     }
 }
 
+/// A rebase stopped on a conflict — its Claude asked to resolve it (`asked`: Claude's to do, not yours) or nothing
+/// asked yet (it waits on you) — for a session's line in tests (`term::tests`).
+#[cfg(test)]
+pub(crate) fn stopped_for_test(step: (usize, usize), asked: bool) -> Rebase {
+    Rebase {
+        branch: "dev".into(),
+        base: "main".into(),
+        stage: Stage::Stopped,
+        step: Some(step),
+        stop: Stop::default(),
+        asked,
+        waiting: None,
+        also: Besides::default(),
+        stashed: Vec::new(),
+        resolved_at: None,
+        messages: Default::default(),
+        rechecks: (0, 0),
+    }
+}
+
 /// A rebase stopped at conflicts, its Claude asked `question` as `rebase_ask` asks — for tests elsewhere of
 /// what reaches Claude with it (`chat::tests`).
 #[cfg(test)]

@@ -4316,6 +4316,7 @@ mod tests {
         );
         // It says so — the tabs over its chat, its row in the list
         let mut out = Vec::new();
+        // (a rebase stopped for you waits on you: its words kept beside `follow` — #237)
         crate::term::render(&mut ed, &mut out, 112, 30).unwrap();
         let mut vt = vt100::Parser::new(30, 112, 0);
         vt.process(&out);

@@ -1527,6 +1527,55 @@ macro_rules! strip_nine_keys {
     };
 }
 const STRIP_NINE: &[&str] = strip_nine_keys!();
+/// #237's shots (`follow` and `no sandbox` keep their room after the names on the chat's top line, the names folding
+/// first): main and fix overlapping, fix's Claude on its run's card; then `$more`; then back in main, its chat open
+/// (follow on: `llm.follow`). `--size` 100, 160 and 240 wide are where they fold.
+macro_rules! f237_keys {
+    ($($more:expr),* $(,)?) => {
+        overlap_keys!(
+            " ", "l", "@1", "run the tests", "\r", "@?Its reason", "\x1b",
+            $($more,)*
+            ":", "workspace-switch 0", "\r", "@2", " ", "l", "@2",
+        )
+    };
+}
+const F237_TWO: &[&str] = f237_keys!();
+/// …and three more: docs waiting on its card, web's turn ended (done), motion idle.
+const F237_FIVE: &[&str] = f237_keys!(
+    ":",
+    "sh for n in docs web motion; do git worktree add -q ../$n; done",
+    "\r",
+    "@4",
+    ":",
+    "workspace-open ../docs",
+    "\r",
+    "@3",
+    " ",
+    "l",
+    "@1",
+    "run the tests",
+    "\r",
+    "@?Its reason",
+    "\x1b",
+    ":",
+    "workspace-open ../web",
+    "\r",
+    "@3",
+    " ",
+    "l",
+    "@1",
+    "why does insert clone the name?",
+    "\r",
+    "@20?Change 1 of",
+    "@1",
+    "y",
+    "@20?Nothing else",
+    "\x1b",
+    ":",
+    "workspace-open ../motion",
+    "\r",
+    "@3",
+);
 /// …the pointer on its `+N` (the hover audit).
 const HOVER_CHAT_MORE: &[&str] = strip_nine_keys!("@hover?+", "@1");
 /// collab C3: two more checkouts — fix's own commit on the `threads.insert` line, docs untouched — then main's own way
@@ -3525,6 +3574,13 @@ const SCENES: &[Scene] = &[
     Scene { name: "follow-split-v", claude: "readlast", files: WIDE, keys: FOLLOW_SPLIT[1] },
     // (…the chat's top line with nine sessions: three waiting, two overlapping, one done — whole names, `+N`)
     Scene { name: "strip-nine", claude: "nine", files: MAIN, keys: STRIP_NINE },
+    // (#237: `follow` keeps its room after the names, 2, 5 and 9 sessions — and `no sandbox` (`llm.sandbox = false`,
+    // the names ending `-nosandbox`) its own, before `follow`)
+    Scene { name: "f237-two", claude: "nine", files: MAIN, keys: F237_TWO },
+    Scene { name: "f237-five", claude: "nine", files: MAIN, keys: F237_FIVE },
+    Scene { name: "f237-nine", claude: "nine", files: MAIN, keys: STRIP_NINE },
+    Scene { name: "f237-five-nosandbox", claude: "nine", files: MAIN, keys: F237_FIVE },
+    Scene { name: "f237-nine-nosandbox", claude: "nine", files: MAIN, keys: STRIP_NINE },
     // (…the session list docked right, `enter` on the next row: switched, the list still there)
     Scene { name: "sessions-docked", claude: "card", files: MAIN, keys: SESSIONS_DOCKED },
     // (the hover audit, 2026-10-28: the pointer over each surface that reacts — and a few that shouldn't — at 140 wide)
@@ -3939,6 +3995,10 @@ fn one(
             .map_err(|e| format!("demo.wasm: {e}"))?;
     }
     let mut toml = config_toml(me, scene.claude);
+    // (#237's: Claude's commands without a sandbox — the chat's top line says so)
+    if scene.name.ends_with("-nosandbox") {
+        toml = toml.replacen("[llm]\n", "[llm]\nsandbox = false\n", 1);
+    }
     if transparent {
         let theme = if bg == "dark" { "meok-transparent" } else { "hanji-transparent" };
         toml = format!("theme = \"{theme}\"\n{toml}");
