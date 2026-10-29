@@ -61,12 +61,14 @@ pub const RISKY: [&str; 24] = [
 /// Settings only your own config sets — refused from a project's `.tarae.toml` and `.tarae.local.toml` alike,
 /// trusted or not (said): they decide whose credentials Claude uses and who pays, whether what you use is
 /// counted (`features.count`), whether your cards and your time on reviewed changes are kept (`llm.card-record`,
-/// `review.record`), what the board's Claudes are asked (`review.angles`) and how many of them run on your
+/// `review.record`), how much of your turns' history is (`llm.turns-max-mb`), what the board's Claudes are asked (`review.angles`) and how many of them run on your
 /// credential and memory (`review.skeptics-max`, `review.board-at-once`), whether your workspaces' trees are
 /// rewritten unasked (`workspace.sync`), how much moves on your screen (`editor.motion`), whether and how your
 /// machine sounds (`editor.sound*`), whether a plugin hears your keys (`plugins.keys`) — a project never does.
-pub const YOURS_ONLY: [&str; 17] = [
+pub const YOURS_ONLY: [&str; 18] = [
     "llm.card-record",
+    // (a project's 1 would take your `space u` history back to its newest turn)
+    "llm.turns-max-mb",
     "review.record",
     "llm.environment-key",
     "llm.billing",

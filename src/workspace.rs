@@ -1460,8 +1460,8 @@ impl Editor {
         let (out, name, waits) =
             (self.workspace.id, self.workspace.label().to_string(), self.workspace.waits());
         self.workspace.waiting_told = waits;
-        // (the texts of its turns read back go again: their files have them — #218)
-        crate::checkpoint::shed(&mut self.workspace);
+        // (the texts of its turns in their files go: they're read again as needed — #218, #214)
+        crate::checkpoint::shed(&mut self.workspace, true);
         // (a view mode ends as its session goes behind — the terminal's document freed, the chat's where you were
         // kept)
         crate::view::leave(self);

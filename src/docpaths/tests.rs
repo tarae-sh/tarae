@@ -10,6 +10,7 @@ use crate::replay::{Hunk, Stop};
 use crate::scratch::Scratch;
 use std::path::PathBuf;
 
+mod grow;
 mod still;
 
 /// Sessions open (yours in front and 16 behind, each a checkout of one repository), the busy ones among those behind,

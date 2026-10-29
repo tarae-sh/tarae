@@ -16,15 +16,18 @@
 //! - A command of Claude's that isn't a check: what it changed in the checkout joins the turn the same way
 //!   (`record_run`, `snapshot.rs`) — a file it deleted comes back with undo, one that isn't text by its git
 //!   blob.
-//! - Kept on disk per project (`$XDG_STATE_HOME/tarae/turns/<project hash>/` — the newest `KEEP`, and the
-//!   turn in flight), written on a worker at each change: a new tarae (`:restart`, a crash) still has them. A
-//!   turn cut short comes back as one of its own, its files as they are now.
+//! - Kept on disk per project (`$XDG_STATE_HOME/tarae/turns/<project hash>/`, and the turn in flight), written on
+//!   a worker at each change: a new tarae (`:restart`, a crash) still has them. A turn cut short comes back as one
+//!   of its own, its files as they are now.
+//! - Kept as an editor keeps its history, by time (user, 2026-10-29): every turn while its conversation is — Claude
+//!   Code's `cleanupPeriodDays`, read where the chat's claude reads it (`idlecompact::Places`) — no count; and a
+//!   project's whole store within `llm.turns-max-mb`, its oldest turns going first, said once (`Room`, `save`).
+//! - A text is a file of its own in `texts/`, named by its content's digest (`Text`): written once however many
+//!   turns hold it (one turn's text after is the next one's before), and gone once no kept turn names it.
+//!   `index.json` says each turn's question, paths, time and texts by name.
 //! - Kept turns come back as their questions and paths only (`Files::Kept`, #218: 26 sessions' texts held
-//!   525 MB): `index.json` says them, each turn's texts are a file of their own (`<id>.json`, written once),
-//!   read on a worker when a step or a review needs them (`with_texts`) — and let go again when their session
-//!   goes behind (`shed`). The one file per project an earlier tarae kept (`<project hash>.json`, the texts in
-//!   it) is read back and moved over; one it writes after this one's (a `:restart` into it) beside the
-//!   folder joins it the same way — it never sees the folder, so never writes over it.
+//!   525 MB), their texts read on a worker when a step or a review needs them (`with_texts`). A turn's texts in
+//!   their files are let go where its session is behind, and in front past the newest `KEEP` (`shed`, #214).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -70,11 +73,16 @@ pub struct Checkpoint {
     /// v q`), or a git review showing all its files — not one written unseen whose review a later turn's
     /// replaced (`space v t` says so).
     pub seen: bool,
-    /// Its texts' file among the kept ones (`<id>.json`).
+    /// Which turn it is, among the kept ones — a new one whenever its files change (`own`).
     pub id: u64,
-    /// Its texts were read back from that file (`with_texts`, an earlier tarae's moved over): they go again
-    /// when its session goes behind (`shed`). A turn made since tarae started keeps its own.
-    pub read: bool,
+    /// When it was made (seconds since the epoch, `clock::system`): kept as long as its conversation would be.
+    pub at: u64,
+    /// Its conversation (claude's id; None: the chat had none yet, or a turn cut short) — the turn goes as it does,
+    /// counted from its last activity (`save`).
+    pub conv: Option<String>,
+    /// Each file's texts as kept, in `files`' order — empty until a save has written them (`filed`); whatever changes
+    /// its files empties it, with a new `id`.
+    pub texts: Vec<Texts>,
     /// HEAD's moves in its runs — the files they brought aren't its own (said at its review's head).
     pub head: Vec<crate::snapshot::HeadMove>,
 }
@@ -84,6 +92,41 @@ pub struct Checkpoint {
 pub enum Files {
     Here(Vec<Touched>),
     Kept(Vec<Kept>),
+}
+
+/// A text as kept: a file of its own in the project's `texts/`, named by its content's digest — written once,
+/// whichever turns hold it — and its size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Text {
+    pub hash: [u8; 32],
+    pub len: u64,
+}
+
+/// A file's texts as kept: before (None: the turn made it) and after.
+pub type Texts = (Option<Text>, Text);
+
+impl Text {
+    fn of(text: &str) -> Text {
+        Text { hash: crate::sha256::digest(text.as_bytes()), len: text.len() as u64 }
+    }
+
+    /// Its file's name in `texts/`.
+    fn name(&self) -> String {
+        self.hash.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn json(&self) -> Value {
+        json!({ "hash": self.name(), "len": self.len })
+    }
+
+    fn from_json(v: &Value) -> Option<Text> {
+        let hex = v["hash"].as_str().filter(|h| h.len() == 64)?;
+        let mut hash = [0; 32];
+        for (i, b) in hash.iter_mut().enumerate() {
+            *b = u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok()?;
+        }
+        Some(Text { hash, len: v["len"].as_u64()? })
+    }
 }
 
 /// A file of a turn kept on disk, without its texts.
@@ -153,9 +196,25 @@ impl Touched {
 impl Checkpoint {
     pub fn new(question: String, files: Vec<Touched>) -> Self {
         let seen = !files.iter().any(|t| t.unseen);
-        let (files, id) = (Files::Here(files), new_id());
-        Checkpoint { question, files, undone: false, seen, id, read: false, head: Vec::new() }
+        let (files, id, at) = (Files::Here(files), new_id(), now_s());
+        let (texts, head, conv) = (Vec::new(), Vec::new(), None);
+        Checkpoint { question, files, undone: false, seen, id, at, conv, texts, head }
     }
+
+    /// Its texts are in their files — written by a save, or read back from them: they may go (`shed`).
+    pub fn filed(&self) -> bool {
+        !self.texts.is_empty()
+    }
+}
+
+/// The conversation session `l`'s chat is in (claude's id) — a turn made now is its.
+fn conversation(l: &crate::workspace::Workspace) -> Option<String> {
+    l.claude.chat.as_ref()?.conversation.clone()
+}
+
+/// Now, in seconds since the epoch, as logic reads it.
+fn now_s() -> u64 {
+    crate::clock::system().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 /// A turn's id: when it was made (ns), one past the last given when that's later — never the same twice.
@@ -195,6 +254,8 @@ pub struct Checkpoints {
     pub restoring: bool,
     /// A turn's texts are being read (`with_texts`): a step waits.
     pub reading: bool,
+    /// A save let its oldest turns go past `llm.turns-max-mb`, said (`saved`): since then in `:messages` only.
+    pub told_full: bool,
 }
 
 /// An accepted edit of Claude's landed in document `id`: `before` was its text just before (None = no such
@@ -304,10 +365,13 @@ pub fn own(
         after: after.unwrap_or_default(),
         ..Default::default()
     });
+    let conv = conversation(&ed.workspace);
     let list = &mut ed.workspace.claude.checkpoints.list;
     let id = match list.iter_mut().find(|c| Some(c.id) == step) {
         Some(c) => {
             if let Files::Here(fs) = &mut c.files {
+                // (its texts change: written again — a save under way for the old ones finds no such turn)
+                (c.id, c.texts) = (new_id(), Vec::new());
                 for t in touched {
                     match fs.iter_mut().find(|f| f.path == t.path) {
                         Some(f) => (f.after, f.gone) = (t.after, t.gone),
@@ -318,7 +382,7 @@ pub fn own(
             c.id
         }
         None => {
-            let c = Checkpoint::new(question.to_string(), touched.collect());
+            let c = Checkpoint { conv, ..Checkpoint::new(question.to_string(), touched.collect()) };
             let id = c.id;
             list.push(c);
             id
@@ -338,6 +402,8 @@ pub fn own_drop(ed: &mut Editor, step: u64, paths: &[PathBuf]) {
         && let Files::Here(fs) = &mut c.files
     {
         fs.retain(|t| !paths.contains(&t.path));
+        // (written again: a save under way for its texts as they were has more files than it now — `filed`)
+        c.texts.clear();
     }
     list.retain(|c| c.id != step || !c.files.is_empty());
     keep(ed);
@@ -405,7 +471,8 @@ pub fn single(ed: &mut Editor, id: crate::document::DocId, before: Rope, what: &
     }
     let question = what.lines().next().unwrap_or_default().to_string();
     let files = vec![Touched { path, before: Some(before), after, ..Default::default() }];
-    ed.workspace.claude.checkpoints.list.push(Checkpoint::new(question, files));
+    let conv = conversation(&ed.workspace);
+    ed.workspace.claude.checkpoints.list.push(Checkpoint { conv, ..Checkpoint::new(question, files) });
     keep(ed);
 }
 
@@ -487,7 +554,8 @@ fn finish(
         .collect();
     let n = if names.len() <= 2 { names.join(", ") } else { format!("{} files", names.len()) };
     let question = question.lines().next().unwrap_or_default().to_string();
-    ed.workspace.claude.checkpoints.list.push(Checkpoint { head, ..Checkpoint::new(question, files) });
+    let conv = conversation(&ed.workspace);
+    ed.workspace.claude.checkpoints.list.push(Checkpoint { head, conv, ..Checkpoint::new(question, files) });
     keep(ed);
     Some(n)
 }
@@ -557,6 +625,8 @@ pub fn step(ed: &mut Editor, undo: bool) -> Result<(), String> {
     }
     ed.workspace.claude.checkpoints.list[i].undone = undo;
     keep(ed);
+    // (a turn read back for this step: its texts go again where its session is behind — the step needed them)
+    shed(&mut ed.workspace, ed.behind);
     put_blobs(ed, blobs);
     let what = if undo { "undid" } else { "brought back" };
     let files = match changed.as_slice() {
@@ -707,8 +777,37 @@ fn remove_beneath(root: &Path, path: &Path) -> std::io::Result<()> {
 
 // ── Kept on disk ────────────────────────────────────────────────────────────
 
-/// Checkpoints kept per project (the oldest go).
-const KEEP: usize = 10;
+/// The newest turns whose texts the session in front holds once their files have them (`shed`) — the rest are
+/// read back as a step or a review asks.
+pub(crate) const KEEP: usize = 10;
+
+/// What a project's kept turns may hold on disk: now (seconds since the epoch, `clock::system`, read on the loop),
+/// how many days a conversation is kept (`cleanupPeriodDays` as the chat's claude reads it; None: not known — no
+/// claude started for it — so none goes by age), each conversation's last activity tarae kept (`chats::Saved`'s
+/// `updated`, by claude's id) and the bytes their texts may take (`llm.turns-max-mb`).
+#[derive(Clone, Debug)]
+pub struct Room {
+    pub now: u64,
+    pub days: Option<u64>,
+    pub active: Vec<(String, u64)>,
+    pub max: u64,
+}
+
+impl Room {
+    /// Every turn kept, whatever its age and size (a project's turns forgotten; tests).
+    pub const ANY: Room = Room { now: 0, days: None, active: Vec::new(), max: u64::MAX };
+}
+
+/// What a save did: written (false: a later one was, or the disk said no), the texts it wrote for turns that had
+/// none written (by id), and the turns it let go — older than their conversation's days (`old`), the oldest past
+/// `Room.max` (`big`).
+#[derive(Debug, Default)]
+pub struct Saved {
+    pub written: bool,
+    pub texts: Vec<(u64, Vec<Texts>)>,
+    pub old: Vec<u64>,
+    pub big: Vec<u64>,
+}
 
 /// The question of a turn tarae ended in the middle of, when it didn't say.
 const CUT_SHORT: &str = "a turn cut short";
@@ -764,9 +863,18 @@ fn files_of(v: &Value) -> Vec<Touched> {
     v.as_array().into_iter().flatten().filter_map(touched_of).collect()
 }
 
-fn kept_json(k: &Kept) -> Value {
+fn kept_json(k: &Kept, (before, after): &Texts) -> Value {
     let bytes = k.bytes.as_ref().map(|b| json!({ "before": b.before, "after": b.after }));
-    json!({ "path": k.path, "unseen": k.unseen, "gone": k.gone, "bytes": bytes })
+    json!({ "path": k.path, "unseen": k.unseen, "gone": k.gone, "bytes": bytes,
+            "before": before.as_ref().map(Text::json), "after": after.json() })
+}
+
+fn texts_of(v: &Value) -> Option<Texts> {
+    let before = match &v["before"] {
+        Value::Null => None,
+        b => Some(Text::from_json(b)?),
+    };
+    Some((before, Text::from_json(&v["after"])?))
 }
 
 fn kept_of(v: &Value) -> Option<Kept> {
@@ -788,32 +896,60 @@ fn index_file(dir: &Path, root: &Path) -> PathBuf {
     folder(dir, root).join("index.json")
 }
 
-/// `files`' texts (as kept) from their turn's file — Err: whether they're gone for good (no such file, or it
-/// isn't their texts: written whole or not at all, `write_atomic`), and why. Any other failure to read it
-/// (too many files open, a permission) passes: the turn stays, asked again later.
-fn read_texts(path: &Path, files: &[Kept]) -> Result<Vec<Touched>, (bool, String)> {
-    let body = std::fs::read_to_string(path)
-        .map_err(|e| (e.kind() == std::io::ErrorKind::NotFound, e.to_string()))?;
-    let v: Value = serde_json::from_str(&body).map_err(|e| (true, e.to_string()))?;
-    drop(body);
-    let texts =
-        v.as_array().filter(|t| t.len() == files.len()).ok_or((true, "not its files' texts".to_string()))?;
+/// The folder of a project's texts, each a file by its digest (`Text::name`).
+fn texts_dir(folder: &Path) -> PathBuf {
+    folder.join("texts")
+}
+
+/// `files`' texts (as kept, `texts`) from the project's `folder` — Err: whether they're gone for good (no such
+/// file, or it isn't the text: written whole or not at all, `write_atomic`), and why. Any other failure to read
+/// one (too many files open, a permission) passes: the turn stays, asked again later.
+fn read_texts(folder: &Path, files: &[Kept], texts: &[Texts]) -> Result<Vec<Touched>, (bool, String)> {
+    if texts.len() != files.len() {
+        return Err((true, "not its files' texts".to_string()));
+    }
+    let dir = texts_dir(folder);
+    let read = |t: &Text| -> Result<Rope, (bool, String)> {
+        let gone = |e: &std::io::Error| {
+            matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidData)
+        };
+        let body = std::fs::read_to_string(dir.join(t.name())).map_err(|e| (gone(&e), e.to_string()))?;
+        match body.len() as u64 == t.len {
+            true => Ok(Rope::from_str(&body)),
+            false => Err((true, "a text of another size".to_string())),
+        }
+    };
     files
         .iter()
         .zip(texts)
-        .map(|(k, t)| {
+        .map(|(k, (before, after))| {
             Ok(Touched {
                 path: k.path.clone(),
-                before: t["before"].as_str().map(Rope::from_str),
-                after: Rope::from_str(
-                    t["after"].as_str().ok_or((true, "a file without its text after".to_string()))?,
-                ),
+                before: before.as_ref().map(read).transpose()?,
+                after: read(after)?,
                 unseen: k.unseen,
                 gone: k.gone,
                 bytes: k.bytes.clone(),
             })
         })
         .collect()
+}
+
+/// `text` in `dir` by its digest (`known`: already taken) — written only where no file has it yet. None: the disk
+/// said no.
+fn put_text(dir: &Path, text: &Rope, known: Option<Text>) -> Option<Text> {
+    if let Some(t) = known
+        && std::fs::symlink_metadata(dir.join(t.name())).is_ok()
+    {
+        return Some(t);
+    }
+    let body = text.to_string();
+    let t = known.unwrap_or_else(|| Text::of(&body));
+    let path = dir.join(t.name());
+    if std::fs::symlink_metadata(&path).is_err() {
+        crate::disk::write_atomic(&path, |w| std::io::Write::write_all(w, body.as_bytes())).ok()?;
+    }
+    Some(t)
 }
 
 /// The index's `seq` — it starts the file (`save`), so only its first bytes are read. 0: no index, or not one.
@@ -837,13 +973,17 @@ fn read_index(index: &Path) -> Stored {
         .into_iter()
         .flatten()
         .filter_map(|c| {
+            // (a turn with a file it can't say whole is left out — its texts couldn't be found)
+            let files = c["files"].as_array()?;
             Some(Checkpoint {
                 question: c["question"].as_str().unwrap_or_default().to_string(),
-                files: Files::Kept(c["files"].as_array()?.iter().filter_map(kept_of).collect()),
+                files: Files::Kept(files.iter().map(kept_of).collect::<Option<_>>()?),
                 undone: c["undone"].as_bool().unwrap_or(false),
                 seen: c["seen"].as_bool().unwrap_or(true),
                 id: c["id"].as_u64()?,
-                read: false,
+                at: c["at"].as_u64()?,
+                conv: c["conv"].as_str().map(String::from),
+                texts: files.iter().map(texts_of).collect::<Option<_>>()?,
                 head: heads_of(&c["head"]),
             })
         })
@@ -875,7 +1015,7 @@ pub fn load_whole(dir: &Path, root: &Path) -> Stored {
     for c in &mut s.list {
         // (one a save removed meanwhile stays kept)
         if let Files::Kept(k) = &c.files
-            && let Ok(texts) = read_texts(&folder(dir, root).join(format!("{}.json", c.id)), k)
+            && let Ok(texts) = read_texts(&folder(dir, root), k, &c.texts)
         {
             c.files = Files::Here(texts);
         }
@@ -883,42 +1023,105 @@ pub fn load_whole(dir: &Path, root: &Path) -> Stored {
     s
 }
 
-/// Written — unless what's there was taken later (on a worker): each turn's texts a file of its own, written
-/// once (a kept turn's is there already), then the index, then the files of turns it doesn't name any more
-/// go. False: not written (a later one was, or the disk said no).
-fn save(dir: &Path, root: &Path, s: Stored) -> bool {
+/// Written — unless what's there was taken later (on a worker): each text a turn holds in memory a file of its own
+/// by content where none has it yet, the turns `room` doesn't hold let go (those whose conversation was last active
+/// longer ago than its days, then the oldest while the texts the rest name take more than its bytes — the newest
+/// always stays), the index, then every text no turn left names goes, and the old format's turns (`old_turn`).
+fn save(dir: &Path, root: &Path, mut s: Stored, room: Room) -> Saved {
     let _one = SAVING.lock().unwrap_or_else(|e| e.into_inner());
     let (at, index) = (folder(dir, root), index_file(dir, root));
-    if seq_of(&index) > s.seq || std::fs::create_dir_all(&at).is_err() {
-        return false;
+    let mut out = Saved::default();
+    let texts = texts_dir(&at);
+    if seq_of(&index) > s.seq || std::fs::create_dir_all(&texts).is_err() {
+        return out;
     }
     let write = |path: &Path, body: String| {
         crate::disk::write_atomic(path, |w| std::io::Write::write_all(w, body.as_bytes())).is_ok()
     };
-    for c in &s.list {
+    for c in &mut s.list {
         let Files::Here(files) = &c.files else { continue };
-        let path = at.join(format!("{}.json", c.id));
-        if std::fs::symlink_metadata(&path).is_ok() {
-            continue;
+        let fresh = c.texts.len() != files.len();
+        let known = |i: usize| c.texts.get(i).filter(|_| !fresh);
+        let mut put = Vec::with_capacity(files.len());
+        for (i, t) in files.iter().enumerate() {
+            let before = match &t.before {
+                Some(b) => match put_text(&texts, b, known(i).and_then(|k| k.0)) {
+                    Some(b) => Some(b),
+                    None => return out,
+                },
+                None => None,
+            };
+            let Some(after) = put_text(&texts, &t.after, known(i).map(|k| k.1)) else { return out };
+            put.push((before, after));
         }
-        let texts: Vec<Value> = files
-            .iter()
-            .map(
-                |t| json!({ "before": t.before.as_ref().map(Rope::to_string), "after": t.after.to_string() }),
-            )
-            .collect();
-        if !write(&path, Value::Array(texts).to_string()) {
-            return false;
+        if fresh {
+            out.texts.push((c.id, put.clone()));
+            c.texts = put;
         }
     }
+    // (a kept turn whose texts aren't known can't be found again: out)
+    s.list.retain(|c| c.texts.len() == c.files.len());
+    // By age: as its conversation goes, counted from its last activity (claude's `cleanupPeriodDays` counts from a
+    // conversation's last write) — its newest turn, or later what tarae kept of it; a turn of none as the project's
+    // latest. A day at least, and the newest turn always stays.
+    if let Some(days) = room.days {
+        let from = room.now.saturating_sub(days.max(1).saturating_mul(86_400));
+        let mut last: std::collections::HashMap<Option<&str>, u64> = std::collections::HashMap::new();
+        for c in &s.list {
+            let e = last.entry(c.conv.as_deref()).or_default();
+            *e = (*e).max(c.at);
+        }
+        for (id, at) in &room.active {
+            if let Some(e) = last.get_mut(&Some(id.as_str())) {
+                *e = (*e).max(*at);
+            }
+        }
+        let project = last.values().chain(room.active.iter().map(|(_, at)| at)).max().copied().unwrap_or(0);
+        let newest = s.list.last().map(|c| c.id);
+        let old: Vec<u64> = s
+            .list
+            .iter()
+            .filter(|c| Some(c.id) != newest)
+            .filter(|c| c.conv.as_deref().map_or(project, |id| last[&Some(id)]) < from)
+            .map(|c| c.id)
+            .collect();
+        s.list.retain(|c| !old.contains(&c.id));
+        out.old = old;
+    }
+    // By size, oldest first: a text several turns name counted once, gone with the last of them
+    let names = |c: &Checkpoint| -> Vec<Text> {
+        c.texts.iter().flat_map(|(b, a)| b.iter().chain([a])).copied().collect()
+    };
+    let mut held: std::collections::HashMap<[u8; 32], (u64, usize)> = std::collections::HashMap::new();
+    for t in s.list.iter().flat_map(names) {
+        held.entry(t.hash).or_insert((t.len, 0)).1 += 1;
+    }
+    let mut total: u64 = held.values().map(|(len, _)| len).sum();
+    let mut cut = 0;
+    while total > room.max && cut + 1 < s.list.len() {
+        for t in names(&s.list[cut]) {
+            if let Some(e) = held.get_mut(&t.hash) {
+                e.1 -= 1;
+                if e.1 == 0 {
+                    total -= e.0;
+                    held.remove(&t.hash);
+                }
+            }
+        }
+        out.big.push(s.list[cut].id);
+        cut += 1;
+    }
+    s.list.drain(..cut);
     let list: Vec<Value> = s
         .list
         .iter()
         .map(|c| {
-            let files: Vec<Value> = c.files.kept().iter().map(kept_json).collect();
+            let files: Vec<Value> =
+                c.files.kept().iter().zip(&c.texts).map(|(k, t)| kept_json(k, t)).collect();
             let head: Vec<Value> = c.head.iter().map(crate::snapshot::HeadMove::to_json).collect();
             let (id, q, seen) = (c.id, &c.question, c.seen);
-            json!({ "id": id, "question": q, "files": files, "undone": c.undone, "seen": seen, "head": head })
+            json!({ "id": id, "at": c.at, "conv": c.conv, "question": q, "files": files, "undone": c.undone,
+                    "seen": seen, "head": head })
         })
         .collect();
     let turn: Vec<Value> = s.turn.iter().map(touched_json).collect();
@@ -927,22 +1130,36 @@ fn save(dir: &Path, root: &Path, s: Stored) -> bool {
         json!({ "root": root, "list": list, "turn": turn, "head": head, "question": s.question }).to_string();
     // (`seq` first: a save reads only it — `seq_of`)
     if !write(&index, format!("{{\"seq\":{},{}", s.seq, &rest[1..])) {
-        return false;
+        return out;
     }
-    // The texts of turns it doesn't name (all under `SAVING`: an older save that comes after this one writes
-    // nothing — `seq_of` above — so it never removes a newer turn's texts, nor names one removed)
-    let named: std::collections::HashSet<String> = s.list.iter().map(|c| format!("{}.json", c.id)).collect();
-    for e in std::fs::read_dir(&at).into_iter().flatten().flatten() {
+    // The texts no turn names (all under `SAVING`: an older save that comes after this one writes nothing —
+    // `seq_of` above — so it never removes a newer turn's texts, nor names one removed)
+    let named: std::collections::HashSet<String> =
+        held.keys().map(|hash| Text { hash: *hash, len: 0 }.name()).collect();
+    for e in std::fs::read_dir(&texts).into_iter().flatten().flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        // (`<id>.json`: not the index, nor a file being written)
-        let a_turns = name
-            .strip_suffix(".json")
-            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
-        if a_turns && !named.contains(&name) {
+        // (a text's digest: not a file being written)
+        let a_text = name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit());
+        if a_text && !named.contains(&name) {
             let _ = std::fs::remove_file(e.path());
         }
     }
-    true
+    // The old format's turns beside the index — no reader of them: gone, through no link, only what's named so
+    if let Ok(d) = crate::beneath::Dir::root(&at) {
+        for (name, kind) in d.entries().unwrap_or_default() {
+            if matches!(kind, crate::beneath::Kind::File) && old_turn(&name) {
+                let _ = d.remove(&name);
+            }
+        }
+    }
+    out.written = true;
+    out
+}
+
+/// A turn as an earlier tarae kept it, texts and all: `<id>.json` beside the index (no digests in its index).
+fn old_turn(name: &std::ffi::OsStr) -> bool {
+    let id = name.to_str().and_then(|n| n.strip_suffix(".json")).unwrap_or_default();
+    !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// The turns as they are now, kept (the texts are written out on a worker).
@@ -952,15 +1169,22 @@ pub(crate) fn keep(ed: &Editor) {
 
 /// `keep` for session `l` — one that's ending (out of the editor already) too.
 pub(crate) fn keep_of(ed: &Editor, l: &crate::workspace::Workspace) {
-    if let Some(save) = saving(l) {
-        ed.events.jobs().background(save);
+    if let Some(save) = saving(ed, l) {
+        ed.events.jobs().spawn(move || {
+            let s = save();
+            move |ed: &mut Editor| {
+                if saved(ed, s) {
+                    ed.unchanged = true;
+                }
+            }
+        });
     }
 }
 
 /// Tests: session `l`'s turns written now, on this thread (`keep_of` writes on a worker, unseen by events).
 #[cfg(test)]
-pub(crate) fn keep_now(l: &crate::workspace::Workspace) {
-    if let Some(save) = saving(l) {
+pub(crate) fn keep_now(ed: &Editor, l: &crate::workspace::Workspace) {
+    if let Some(save) = saving(ed, l) {
         save();
     }
 }
@@ -970,23 +1194,33 @@ pub(crate) fn keep_now(l: &crate::workspace::Workspace) {
 pub(crate) fn forget(ed: &Editor, root: PathBuf) {
     let Some(dir) = ed.turns_dir.clone() else { return };
     let none = Stored { seq: crate::chats::seq(), ..Default::default() };
-    ed.events.jobs().background(move || _ = save(&dir, &root, none));
+    ed.events.jobs().background(move || _ = save(&dir, &root, none, Room::ANY));
 }
 
 /// `keep`, then `then` on the main loop once it's written (at once when nothing is kept — tests, or
-/// before `restore` has them back).
+/// before `restore` has them back). Drawn after, whatever the save said: `then` goes on with what was asked.
 fn keep_then(ed: &mut Editor, then: impl FnOnce(&mut Editor) + Send + 'static) {
-    let Some(save) = saving(&ed.workspace) else { return then(ed) };
+    let Some(save) = saving(ed, &ed.workspace) else { return then(ed) };
     ed.events.jobs().spawn(move || {
-        save();
-        then
+        let s = save();
+        move |ed: &mut Editor| {
+            _ = saved(ed, s);
+            then(ed);
+        }
     });
 }
 
-/// Writing session `l`'s turns as they are now (for a worker) — None when they aren't kept.
-fn saving(l: &crate::workspace::Workspace) -> Option<impl FnOnce() + Send + 'static> {
+/// Writing session `l`'s turns as they are now, within what a project may keep (for a worker) — None when they
+/// aren't kept. How long a conversation is kept is read there, as the chat's claude reads it — where one was
+/// started (else none goes by age: a project's own settings, maybe held back, aren't what it runs with).
+fn saving(ed: &Editor, l: &crate::workspace::Workspace) -> Option<impl FnOnce() -> Saved + Send + 'static> {
     let dir = l.claude.checkpoints.dir.clone()?;
+    let started = l.claude.chat.as_ref().is_some_and(|c| c.launched.is_some());
+    let places = crate::idlecompact::Places::of_in(ed, l).filter(|_| started);
+    let max = ed.config.llm.turns_max_mb.saturating_mul(1 << 20);
+    let room = Room { now: now_s(), days: None, active: Vec::new(), max };
     let root = l.root.clone();
+    let chats = ed.chats_dir.clone();
     let list = &l.claude.checkpoints.list;
     let question = l
         .claude
@@ -996,15 +1230,82 @@ fn saving(l: &crate::workspace::Workspace) -> Option<impl FnOnce() + Send + 'sta
         .map(|m| m.text.lines().next().unwrap_or_default().to_string())
         .unwrap_or_default();
     let s = Stored {
-        list: list[list.len().saturating_sub(KEEP)..].to_vec(),
+        list: list.to_vec(),
         turn: l.claude.checkpoints.turn.clone(),
         head: l.claude.checkpoints.head.clone(),
         question,
         seq: crate::chats::seq(),
     };
     Some(move || {
-        save(&dir, &root, s);
+        let days = places.map(|p| p.cleanup_days().unwrap_or(crate::claudetrust::CLEANUP_DEFAULT));
+        // (each conversation's last activity as tarae kept it — only where age decides; its times alone, never the
+        // conversations' rows)
+        let active = match (days, chats) {
+            (Some(_), Some(chats)) => crate::chats::times(&chats, &root),
+            _ => Vec::new(),
+        };
+        save(&dir, &root, s, Room { days, active, ..room })
     })
+}
+
+/// A save's word back: the texts it wrote are the turns' (`filed`), and the turns it let go leave their session —
+/// past `llm.turns-max-mb` said, the first time since tarae started as a warning, after that in `:messages`. True:
+/// it had nothing to say, nothing changed on screen (what runs after it may still change something).
+fn saved(ed: &mut Editor, s: Saved) -> bool {
+    if s.texts.is_empty() && s.old.is_empty() && s.big.is_empty() {
+        return true;
+    }
+    if !s.texts.is_empty() {
+        filed(ed, &s.texts);
+    }
+    let mut big = 0;
+    for l in std::iter::once(&mut ed.workspace).chain(&mut ed.workspaces) {
+        for id in s.old.iter().chain(&s.big) {
+            let Some(at) = l.claude.checkpoints.list.iter().position(|c| c.id == *id) else { continue };
+            match drop_turn(l, at) {
+                true => big += usize::from(s.big.contains(id)),
+                // (its review is open: kept, but its texts are gone from the disk — not filed until the next save
+                // writes them again, so nothing lets them go meanwhile: `shed`)
+                false => l.claude.checkpoints.list[at].texts.clear(),
+            }
+        }
+    }
+    if !s.old.is_empty() {
+        crate::log::line(
+            "turns",
+            "info",
+            &format!("{} turns past their conversations' days let go", s.old.len()),
+        );
+    }
+    if big > 0 {
+        let mb = ed.config.llm.turns_max_mb;
+        let said = format!(
+            "the oldest {big} of Claude's turns let go — this project's kept turns passed llm.turns-max-mb ({mb} MB); \
+             space u reaches back as far as what's kept"
+        );
+        match std::mem::replace(&mut ed.workspace.claude.checkpoints.told_full, true) {
+            false => ed.set_warning(said),
+            true => ed.recorded(crate::editor::ToastKind::Warning, said),
+        }
+    }
+    false
+}
+
+/// Turn `at` out of session `l` (its file gone, or let go by a save), the indexes into its list kept right — not
+/// while a review is open on it (false: it stays, and the next save lets it go again).
+fn drop_turn(l: &mut crate::workspace::Workspace, at: usize) -> bool {
+    if let Some(crate::codereview::Base::Turn { at: open, .. }) = l.code_review.as_mut().map(|r| &mut r.base)
+    {
+        match (*open).cmp(&at) {
+            std::cmp::Ordering::Equal => return false,
+            std::cmp::Ordering::Greater => *open -= 1,
+            std::cmp::Ordering::Less => {}
+        }
+    }
+    let cps = &mut l.claude.checkpoints;
+    cps.list.remove(at);
+    cps.restored -= usize::from(at < cps.restored);
+    true
 }
 
 /// Turn `at`'s texts in memory, then `then(ed, at)` — at once when they are; else read from its file on a
@@ -1045,11 +1346,11 @@ fn texts_then(
     }
     // (a kept turn came from `dir`: it's set as they come back)
     let Some(dir) = cps.dir.clone() else { return };
-    let (id, files) = (cp.id, files.clone());
-    let path = folder(&dir, &ed.workspace.root).join(format!("{id}.json"));
+    let (id, files, kept) = (cp.id, files.clone(), cp.texts.clone());
+    let at_folder = folder(&dir, &ed.workspace.root);
     ed.workspace.claude.checkpoints.reading = true;
     ed.events.jobs().spawn(move || {
-        let texts = read_texts(&path, &files);
+        let texts = read_texts(&at_folder, &files, &kept);
         move |ed: &mut Editor| {
             let cps = &mut ed.workspace.claude.checkpoints;
             cps.reading = false;
@@ -1058,7 +1359,7 @@ fn texts_then(
                 Ok(texts) => {
                     let c = &mut cps.list[at];
                     if matches!(c.files, Files::Kept(_)) {
-                        (c.files, c.read) = (Files::Here(texts), true);
+                        c.files = Files::Here(texts);
                     }
                     then(ed, at);
                 }
@@ -1083,15 +1384,8 @@ fn texts_then(
                     if on_it(ed) {
                         crate::codereview::close(ed);
                     }
-                    let cps = &mut ed.workspace.claude.checkpoints;
-                    let question = cps.list.remove(at).question;
-                    cps.restored -= usize::from(at < cps.restored);
-                    if let Some(crate::codereview::Base::Turn { at: open, .. }) =
-                        ed.workspace.code_review.as_mut().map(|r| &mut r.base)
-                        && *open > at
-                    {
-                        *open -= 1;
-                    }
+                    let question = ed.workspace.claude.checkpoints.list[at].question.clone();
+                    drop_turn(&mut ed.workspace, at);
                     keep(ed);
                     let said =
                         format!("the turn “{}” isn't kept any more ({e}) — left out", quote(&question));
@@ -1107,19 +1401,81 @@ fn texts_then(
     });
 }
 
-/// Session `l` goes behind: the texts read back from disk go again (their files still have them) — not the
-/// turn its review is open on (that reads them as it shows), nor one past the newest `KEEP` (the next save
-/// removes its file).
-pub(crate) fn shed(l: &mut crate::workspace::Workspace) {
+/// Session `l`'s turns' texts let go where their files have them (#214: every turn made since tarae started kept
+/// its texts — a whole file's twice for each it changed): all of them `behind`, and in front those past the newest
+/// `KEEP` — they're read again as a step or a review needs them. Not the turn its review is open on (that reads
+/// them as it shows), nor any where nothing is kept (no folder: tests), nor one no save has written yet.
+pub(crate) fn shed(l: &mut crate::workspace::Workspace, behind: bool) {
+    if l.claude.checkpoints.dir.is_none() {
+        return;
+    }
     let open = match l.code_review.as_ref().map(|r| &r.base) {
         Some(crate::codereview::Base::Turn { at, .. }) => Some(*at),
         _ => None,
     };
     let from = l.claude.checkpoints.list.len().saturating_sub(KEEP);
-    for (i, c) in l.claude.checkpoints.list.iter_mut().enumerate().skip(from) {
-        if c.read && Some(i) != open {
-            (c.files, c.read) = (Files::Kept(c.files.kept()), false);
+    for (i, c) in l.claude.checkpoints.list.iter_mut().enumerate() {
+        if Some(i) != open && matches!(c.files, Files::Here(_)) && c.filed() && (behind || i < from) {
+            c.files = Files::Kept(c.files.kept());
         }
+    }
+}
+
+/// The turns `written` are in their files now (a save wrote their texts): `filed`, wherever they are — not one
+/// whose files changed since (`own_drop`: fewer) — and let go in the sessions behind.
+fn filed(ed: &mut Editor, written: &[(u64, Vec<Texts>)]) {
+    // (the one in front is behind while its result is applied for it — `Editor.behind` — and then the session in
+    // front is among those behind: it's left as it is)
+    let swapped = ed.behind;
+    for (i, l) in std::iter::once(&mut ed.workspace).chain(&mut ed.workspaces).enumerate() {
+        let mut any = false;
+        for c in l.claude.checkpoints.list.iter_mut().filter(|c| c.texts.is_empty()) {
+            if let Some((_, texts)) = written.iter().find(|(id, t)| *id == c.id && t.len() == c.files.len()) {
+                (c.texts, any) = (texts.clone(), true);
+            }
+        }
+        match (any, i == 0) {
+            (true, true) => shed(l, swapped),
+            (true, false) if !swapped => shed(l, true),
+            _ => {}
+        }
+    }
+}
+
+/// Tests: a project's store as it is on disk.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct StoreSeen {
+    pub turns: usize,
+    /// What the texts its turns name take, each once.
+    pub bytes: u64,
+    /// Texts a turn names that aren't there.
+    pub missing: usize,
+    /// Texts there that no turn names.
+    pub unnamed: usize,
+}
+
+#[cfg(test)]
+pub(crate) fn store_seen(dir: &Path, root: &Path) -> StoreSeen {
+    let s = load(dir, root);
+    let named: std::collections::HashMap<String, u64> = s
+        .list
+        .iter()
+        .flat_map(|c| c.texts.iter().flat_map(|(b, a)| b.iter().chain([a])))
+        .map(|t| (t.name(), t.len))
+        .collect();
+    let there: std::collections::HashSet<String> = std::fs::read_dir(texts_dir(&folder(dir, root)))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.len() == 64 && n.bytes().all(|b| b.is_ascii_hexdigit()))
+        .collect();
+    StoreSeen {
+        turns: s.list.len(),
+        bytes: named.values().sum(),
+        missing: named.keys().filter(|n| !there.contains(*n)).count(),
+        unnamed: there.iter().filter(|n| !named.contains_key(*n)).count(),
     }
 }
 
@@ -1271,7 +1627,7 @@ mod tests {
                     Checkpoint::new(format!("turn {t}"), touched)
                 })
                 .collect();
-            save(&dir, root, Stored { list, seq: 1, ..Default::default() });
+            put(&dir, root, Stored { list, seq: 1, ..Default::default() });
         }
         // (each project's folder: its index and its turns' texts)
         let on_disk: u64 = std::fs::read_dir(&dir)
@@ -1364,6 +1720,23 @@ mod tests {
         crate::test_results::settle_saying(ed, until, |_| what.to_string());
     }
 
+    /// `save` whatever the turns' age and size — written.
+    fn put(dir: &Path, root: &Path, s: Stored) -> bool {
+        save(dir, root, s, Room::ANY).written
+    }
+
+    /// The texts kept in the project's folder `at`, by name.
+    fn texts_in(at: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(texts_dir(at))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        crate::sorting::sort(&mut names);
+        names
+    }
+
     /// A temp folder of the test's own (real path), empty — the caller's to remove.
     fn temp(name: &str) -> PathBuf {
         crate::scratch::Scratch::new(name).into_path()
@@ -1380,8 +1753,8 @@ mod tests {
 
     /// #218: kept turns come back as their paths only, in every session — the one in front and those behind
     /// — and `space u` / `space U` still take each back and bring it again across the start, its texts read
-    /// from its own file as the step asks. A session going behind lets the texts it read go again (their
-    /// file still has them); the one coming in front keeps what it read.
+    /// from their files as the step asks. A session behind lets them go once the step is done, and one going
+    /// behind lets go what it read (their files still have them); in front they're held.
     #[test]
     fn every_sessions_turn_undoes_across_a_start_its_texts_read_as_asked() {
         use super::*;
@@ -1392,7 +1765,7 @@ mod tests {
             std::fs::create_dir_all(dir.join(n)).unwrap();
             std::fs::write(dir.join(n).join("a.txt"), "two\n").unwrap();
             let list = vec![one_to_two(&dir.join(n), &format!("turn in {n}"))];
-            assert!(save(
+            assert!(put(
                 &store,
                 &dir.join(n),
                 Stored { list, seq: crate::chats::seq(), ..Default::default() }
@@ -1425,15 +1798,468 @@ mod tests {
             settle(&mut ed, &format!("{n}: undone"), now("one\n"));
             ed.with_workspace(id, |ed| step(ed, false).unwrap());
             settle(&mut ed, &format!("{n}: brought back"), now("two\n"));
-            assert!(held(&ed, id), "{n}: read once, held while it's where it was");
+            assert_eq!(held(&ed, id), id == ids[0], "{n}: held in front only");
         }
-        // The front one goes behind: what it read goes; b1, in front now, keeps its own
+        // The front one goes behind: what it read goes
         assert!(ed.workspace_switch(ids[1]).is_in());
-        assert!(!held(&ed, ids[0]) && held(&ed, ids[1]));
+        assert!(!held(&ed, ids[0]) && !held(&ed, ids[1]));
         // …and is read again when asked
         ed.with_workspace(ids[0], |ed| step(ed, true).unwrap());
         let a = dir.join("front/a.txt");
         settle(&mut ed, "front: undone again", |_| std::fs::read_to_string(&a).unwrap() == "one\n");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #214: turns made since tarae started hold no texts their files have once their session is behind, and none
+    /// past the newest `KEEP` anywhere — each kept its own, a whole file twice for each it changed, for as long as
+    /// tarae ran (the driver's 17 sessions grew to ~537 MB). Turns in front and behind, each writing a file of
+    /// ~220 KB unseen, a git review open in each (so no turn's opens — the turn a review is open on keeps its texts,
+    /// one a session): the texts held stay flat in the turns made — none behind, the newest `KEEP` in front — while
+    /// the disk keeps every turn, each text once (a turn's before is the after of the turn three back: 14 texts for
+    /// 14 turns). The newest behind is still undone, its texts read back from their files; and after a restart
+    /// `space u` reaches back through all 14, the oldest's files made by it gone again.
+    #[test]
+    fn turns_made_hold_no_texts_their_files_have_behind_nor_past_keep() {
+        use super::*;
+        let dir = temp("turns-held");
+        let store = dir.join("turns");
+        let (front, back) = (dir.join("front"), dir.join("back"));
+        for r in [&front, &back] {
+            std::fs::create_dir_all(r).unwrap();
+        }
+        let mut ed = Editor::new(crate::config::Config::default());
+        (ed.workspace.root, ed.turns_dir) = (front.clone(), Some(store.clone()));
+        ed.workspace_kept_back(ed.workspace.id);
+        let ids = [ed.workspace.id, ed.workspace_add(back.clone())];
+        settle(&mut ed, "both sessions' turns read back", |ed| !ed.restoring());
+        for (id, root) in ids.into_iter().zip([&front, &back]) {
+            let review =
+                crate::codereview::CodeReview::for_test(crate::codereview::Base::Head, root.clone(), vec![]);
+            ed.with_workspace(id, |ed| ed.workspace.code_review = Some(review));
+        }
+        let list = |ed: &Editor, id| {
+            let mut all = std::iter::once(&ed.workspace).chain(&ed.workspaces);
+            all.find(|l| l.id == id).map(|l| l.claude.checkpoints.list.clone()).unwrap_or_default()
+        };
+        // (bytes of text held: before and after, every file of every turn with its texts here)
+        let held = |ed: &Editor, id| -> (usize, usize) {
+            let list = list(ed, id);
+            let here: Vec<&[Touched]> = list.iter().filter_map(|c| c.files.here()).collect();
+            let bytes = here.iter().flat_map(|f| f.iter());
+            (
+                here.len(),
+                bytes.map(|t| t.before.as_ref().map_or(0, Rope::len_bytes) + t.after.len_bytes()).sum(),
+            )
+        };
+        let big = "    let x = compute(a, b, c); // a line of a source file, as long as most\n".repeat(3000);
+        let mut most = Vec::new();
+        for t in 0..14 {
+            for (k, root) in [&front, &back].into_iter().enumerate() {
+                let path = root.join(format!("f{}.rs", t % 3));
+                let before = std::fs::read_to_string(&path).ok().map(|s| Rope::from_str(&s));
+                ed.with_workspace(ids[k], |ed| record_unseen(ed, path.clone(), before, |_| {}));
+                std::fs::write(&path, format!("{big}// turn {t}\n")).unwrap();
+                ed.with_workspace(ids[k], |ed| assert!(gather(ed, &format!("turn {t}")), "written unseen"));
+                // (its texts in its file: the save's word back)
+                settle(&mut ed, &format!("turn {t} of session {k} made and in its file"), |ed| {
+                    let l = list(ed, ids[k]);
+                    l.len() == t + 1 && l.last().is_some_and(Checkpoint::filed)
+                });
+            }
+            let (front_held, back_held) = (held(&ed, ids[0]), held(&ed, ids[1]));
+            assert_eq!(back_held, (0, 0), "turn {t}: behind, no texts held");
+            assert_eq!(front_held.0, (t + 1).min(KEEP), "turn {t}: in front, the newest KEEP turns' texts");
+            most.push(front_held.1);
+        }
+        // (at most `KEEP` turns' two texts of one file, at every turn)
+        let bound = KEEP * 2 * (big.len() + 16);
+        assert!(most.iter().all(|&b| b <= bound), "held in front past {bound} B: {most:?}");
+        // The newest turn behind, undone: its texts read back from its file
+        let f = back.join("f1.rs");
+        ed.with_workspace(ids[1], crate::codereview::close);
+        ed.with_workspace(ids[1], |ed| step(ed, true).unwrap());
+        settle(&mut ed, "behind: its newest turn undone", |_| {
+            std::fs::read_to_string(&f).unwrap().ends_with("// turn 10\n")
+        });
+        // Every turn on disk, each text once
+        for root in [&front, &back] {
+            assert_eq!(load(&store, root).list.len(), 14, "every turn kept: {}", root.display());
+            assert_eq!(texts_in(&folder(&store, root)).len(), 14, "each text once: {}", root.display());
+        }
+        settle(&mut ed, "its undo kept", |_| load(&store, &back).list.last().is_some_and(|c| c.undone));
+        drop(ed);
+        // A restart: `space u` behind reaches its oldest turn, each read back from its files as asked
+        let mut ed = Editor::new(crate::config::Config::default());
+        (ed.workspace.root, ed.turns_dir) = (front.clone(), Some(store.clone()));
+        ed.workspace_kept_back(ed.workspace.id);
+        let ids = [ed.workspace.id, ed.workspace_add(back.clone())];
+        settle(&mut ed, "both sessions' turns back", |ed| {
+            !ed.restoring() && ids.iter().all(|&id| list(ed, id).len() == 14)
+        });
+        for n in 2..=14 {
+            ed.with_workspace(ids[1], |ed| step(ed, true).unwrap());
+            settle(&mut ed, &format!("behind: {n} turns undone"), |ed| {
+                list(ed, ids[1]).iter().filter(|c| c.undone).count() == n
+            });
+            assert_eq!(held(&ed, ids[1]).0, 0, "behind again: the turn read for it let go");
+        }
+        for f in 0..3 {
+            assert!(!back.join(format!("f{f}.rs")).exists(), "f{f}.rs, made by the oldest turns, gone");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A project keeps its turns as an editor keeps its history, by time (user, 2026-10-29): a turn goes as its
+    /// conversation would — `cleanupPeriodDays` as the chat's claude reads it (here its `--settings`), the time read
+    /// through `clock` — and the project's texts stay within `llm.turns-max-mb`, its oldest turns going first, a text a
+    /// kept turn still names staying and the newest turn staying whatever its size. Said once, a warning; after that
+    /// in `:messages` only.
+    #[test]
+    fn turns_go_with_their_conversations_and_the_oldest_past_the_size_limit() {
+        use super::*;
+        let dir = temp("turns-room");
+        let (root, store) = (dir.join("p"), dir.join("turns"));
+        std::fs::create_dir_all(&root).unwrap();
+        let at = folder(&store, &root);
+        let mut ed = Editor::new(crate::config::Config::default());
+        (ed.workspace.root, ed.turns_dir) = (root.clone(), Some(store.clone()));
+        ed.workspace_kept_back(ed.workspace.id);
+        settle(&mut ed, "read back", |ed| !ed.restoring());
+        let mut chat = crate::chat::Chat::new();
+        let args = vec!["--settings".to_string(), r#"{"cleanupPeriodDays":5}"#.to_string()];
+        chat.launched = Some((crate::llm::LlmConfig { args, ..Default::default() }, Vec::new()));
+        ed.workspace.claude.chat = Some(chat);
+        crate::clock::hold();
+        // (a turn that made `<q>.txt` from `from` — kept, its texts in their files)
+        let turn = |ed: &mut Editor, q: &str, from: Option<&str>, to: &str| {
+            let t = Touched {
+                path: root.join(format!("{q}.txt")),
+                before: from.map(Rope::from_str),
+                after: Rope::from_str(to),
+                ..Default::default()
+            };
+            let c = Checkpoint { conv: conversation(&ed.workspace), ..Checkpoint::new(q.into(), vec![t]) };
+            ed.workspace.claude.checkpoints.list.push(c);
+            keep(ed);
+            settle(ed, &format!("turn {q} kept"), |ed| {
+                let l = &ed.workspace.claude.checkpoints.list;
+                l.iter().any(|c| c.question == q) && l.iter().all(Checkpoint::filed)
+            });
+        };
+        let questions = |ed: &Editor| -> Vec<String> {
+            ed.workspace.claude.checkpoints.list.iter().map(|c| c.question.clone()).collect()
+        };
+        let on_disk =
+            || -> Vec<String> { load(&store, &root).list.into_iter().map(|c| c.question).collect() };
+        let day = std::time::Duration::from_secs(86_400);
+        // By age: a's conversation was last active 6 days before the third save, b's 3
+        let talk = |ed: &mut Editor, id: &str| {
+            ed.workspace.claude.chat.as_mut().unwrap().conversation = Some(id.into())
+        };
+        talk(&mut ed, "c1");
+        turn(&mut ed, "a", None, "a\n");
+        crate::clock::advance(3 * day);
+        talk(&mut ed, "c2");
+        turn(&mut ed, "b", None, "b\n");
+        assert_eq!(questions(&ed), ["a", "b"]);
+        crate::clock::advance(3 * day);
+        keep(&ed);
+        settle(&mut ed, "a, past its conversation's days, let go", |ed| questions(ed) == ["b"]);
+        assert_eq!(on_disk(), ["b"]);
+        assert_eq!(texts_in(&at), [Text::of("b\n").name()], "a's text gone with it");
+        // By size (1 MiB): c's C and d's D are 1,000,000 B; e's E makes it 1.3 MB — b goes, c, then d (C is gone
+        // with it), and D stays: e's text before
+        ed.config.llm.turns_max_mb = 1;
+        let (big_c, big_d, big_e) = ("c".repeat(500_000), "d".repeat(500_000), "e".repeat(300_000));
+        turn(&mut ed, "c", None, &big_c);
+        turn(&mut ed, "d", Some(&big_c), &big_d);
+        assert_eq!(questions(&ed), ["b", "c", "d"], "within it");
+        turn(&mut ed, "e", Some(&big_d), &big_e);
+        assert_eq!(questions(&ed), ["e"]);
+        assert_eq!(on_disk(), ["e"]);
+        let mut de = vec![Text::of(&big_d).name(), Text::of(&big_e).name()];
+        crate::sorting::sort(&mut de);
+        assert_eq!(texts_in(&at), de, "D kept for e, C gone");
+        let full = |s: &str| s.contains("llm.turns-max-mb");
+        let toasts = |ed: &Editor| ed.toasts.iter().filter(|t| full(&t.text)).count();
+        assert_eq!(toasts(&ed), 1, "said: {:?}", ed.toasts);
+        // The newest stays past it, alone — and said again only in `:messages`
+        // (F under a MiB: a bigger file opens on a worker — the step would say it's still loading)
+        turn(&mut ed, "f", Some(&big_e), &"f".repeat(900_000));
+        assert_eq!(questions(&ed), ["f"]);
+        assert_eq!(toasts(&ed), 1, "said once: {:?}", ed.toasts);
+        assert_eq!(ed.messages.iter().filter(|m| full(&m.2)).count(), 2, "{:?}", ed.messages);
+        // Its undo, its texts read back from their files
+        shed(&mut ed.workspace, true);
+        assert!(ed.workspace.claude.checkpoints.list[0].files.here().is_none(), "let go");
+        std::fs::write(root.join("f.txt"), "f".repeat(900_000)).unwrap();
+        step(&mut ed, true).unwrap();
+        let f = root.join("f.txt");
+        settle(&mut ed, "f undone", |_| std::fs::read_to_string(&f).is_ok_and(|s| s == big_e));
+        crate::clock::release();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An editor keeping its turns in `dir`'s `turns/` for the project `dir/p`, read back, its chat's claude started
+    /// with `cleanupPeriodDays` 5 in conversation `c1` (review round 1).
+    fn kept_in(dir: &Path) -> (Editor, PathBuf, PathBuf) {
+        let (root, store) = (dir.join("p"), dir.join("turns"));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut ed = Editor::new(crate::config::Config::default());
+        (ed.workspace.root, ed.turns_dir) = (root.clone(), Some(store.clone()));
+        ed.workspace_kept_back(ed.workspace.id);
+        settle(&mut ed, "read back", |ed| !ed.restoring());
+        let mut chat = crate::chat::Chat::new();
+        let args = vec!["--settings".to_string(), r#"{"cleanupPeriodDays":5}"#.to_string()];
+        chat.launched = Some((crate::llm::LlmConfig { args, ..Default::default() }, Vec::new()));
+        chat.conversation = Some("c1".into());
+        ed.workspace.claude.chat = Some(chat);
+        (ed, root, store)
+    }
+
+    /// A turn that made `root`'s `<q>.txt` `to`, kept — settled once its texts are in their files.
+    fn kept_turn(ed: &mut Editor, q: &str, to: &str) {
+        let path = ed.workspace.root.join(format!("{q}.txt"));
+        let t = Touched { path, after: Rope::from_str(to), ..Default::default() };
+        let c = Checkpoint { conv: conversation(&ed.workspace), ..Checkpoint::new(q.into(), vec![t]) };
+        ed.workspace.claude.checkpoints.list.push(c);
+        keep(ed);
+        settle(ed, &format!("turn {q} kept"), |ed| {
+            ed.workspace.claude.checkpoints.list.iter().any(|c| c.question == q && c.filed())
+        });
+    }
+
+    fn questions(ed: &Editor) -> Vec<String> {
+        ed.workspace.claude.checkpoints.list.iter().map(|c| c.question.clone()).collect()
+    }
+
+    /// Review round 1: a turn goes as its conversation does — counted from its last activity, never from when the
+    /// turn was made: a conversation in use keeps its oldest turns; idle past its days, its turns go but the newest,
+    /// which a save never lets go (a `space u` step's after an idle week let every turn go).
+    #[test]
+    fn a_turn_goes_as_its_conversation_does_from_its_last_activity_and_the_newest_never() {
+        use super::*;
+        let dir = temp("turns-last-active");
+        let (mut ed, root, store) = kept_in(&dir);
+        let chats = dir.join("chats");
+        ed.chats_dir = Some(chats.clone());
+        crate::clock::hold();
+        let day = std::time::Duration::from_secs(86_400);
+        let active = |at: u64| {
+            let rows = Vec::new();
+            let c = crate::chats::Saved {
+                id: "c1".into(),
+                title: "t".into(),
+                updated: at,
+                rows,
+                plan: None,
+                usage: None,
+                seq: crate::chats::seq(),
+            };
+            crate::chats::save(&chats, &root, c);
+        };
+        let on_disk =
+            || -> Vec<String> { load(&store, &root).list.into_iter().map(|c| c.question).collect() };
+        // a on day 0, b on day 3, the conversation last active on day 4 (a message with no edit)
+        kept_turn(&mut ed, "a", "a\n");
+        crate::clock::advance(3 * day);
+        kept_turn(&mut ed, "b", "b\n");
+        active(now_s() + 86_400);
+        // (the conversations' rows are never what a save reads: their file gone, the times stay)
+        std::fs::write(crate::config::state_file(&chats, &root), "not read").unwrap();
+        // Day 8½: a made 8½ days ago, b 5½, the conversation active 4½ — kept by that alone
+        crate::clock::advance(5 * day + day / 2);
+        keep_now(&ed, &ed.workspace);
+        assert_eq!(on_disk(), ["a", "b"], "a conversation in use keeps its turns");
+        // Day 10: idle 6 days — a goes, b the newest stays
+        crate::clock::advance(2 * day);
+        keep(&ed);
+        settle(&mut ed, "a let go", |ed| questions(ed) == ["b"]);
+        assert_eq!(on_disk(), ["b"]);
+        // A year on, a step's save: the newest still there, undoable
+        crate::clock::advance(365 * day);
+        std::fs::write(root.join("b.txt"), "b\n").unwrap();
+        step(&mut ed, true).unwrap();
+        settle(&mut ed, "b undone", |_| !root.join("b.txt").exists());
+        keep(&ed);
+        settle(&mut ed, "saved", |_| load(&store, &root).list.first().is_some_and(|c| c.undone));
+        assert_eq!((questions(&ed), on_disk()), (vec!["b".to_string()], vec!["b".to_string()]));
+        crate::clock::release();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Review round 1: a save with nothing to say leaves the frame to what runs after it — `keep_then`'s `then`
+    /// changed the screen in the same event, and the frame waited for the next key.
+    #[test]
+    fn a_quiet_save_draws_what_its_then_changed() {
+        use super::*;
+        let dir = temp("turns-quiet-then");
+        let (mut ed, root, _) = kept_in(&dir);
+        use std::cell::Cell;
+        thread_local! {
+            /// Whether the event that said "written" changed nothing on screen.
+            static WRITTEN: Cell<Option<bool>> = const { Cell::new(None) };
+            /// An event said it changed nothing.
+            static QUIET: Cell<bool> = const { Cell::new(false) };
+        }
+        // (each event's word taken, then cleared for the next — as the loop does)
+        crate::editor::AFTER_EVENT.set(Some(|ed: &mut Editor| {
+            if WRITTEN.get().is_none() && ed.toasts.iter().any(|t| t.text == "written") {
+                WRITTEN.set(Some(ed.unchanged));
+            }
+            QUIET.set(QUIET.get() || ed.unchanged);
+            ed.unchanged = false;
+        }));
+        let files = vec![(root.join("a.txt"), Some(Rope::from_str("one\n")), Some(Rope::from_str("two\n")))];
+        ed.unchanged = false;
+        record_all(&mut ed, files, |ed| ed.set_status("written"));
+        settle(&mut ed, "then ran", |_| WRITTEN.get().is_some());
+        assert_eq!(WRITTEN.get(), Some(false), "the status `then` set is drawn");
+        // One with nothing after it: no frame
+        QUIET.set(false);
+        keep(&ed);
+        settle(&mut ed, "a save with nothing to say draws nothing", |_| QUIET.get());
+        crate::editor::AFTER_EVENT.set(None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Review round 1: the turn a review is open on stays when a save lets it go — its texts in memory, the review
+    /// whole — and the next save that has room for it writes it again, index and texts; once the review is closed,
+    /// the next save lets it go.
+    #[test]
+    fn a_turn_let_go_with_its_review_open_stays_and_is_written_again() {
+        use super::*;
+        let dir = temp("turns-review-open");
+        let (mut ed, root, store) = kept_in(&dir);
+        let at = folder(&store, &root);
+        ed.config.llm.turns_max_mb = 1;
+        let (big_a, big_b) = ("a".repeat(600_000), "b".repeat(600_000));
+        kept_turn(&mut ed, "a", &big_a);
+        let turn = crate::codereview::Base::Turn { at: 0, question: "a".into() };
+        ed.workspace.code_review =
+            Some(crate::codereview::CodeReview::for_test(turn, root.clone(), Vec::new()));
+        // b past the limit: a would go, but its review is open
+        kept_turn(&mut ed, "b", &big_b);
+        assert_eq!(questions(&ed), ["a", "b"], "kept in memory");
+        let on_disk =
+            || -> Vec<String> { load(&store, &root).list.into_iter().map(|c| c.question).collect() };
+        assert_eq!(on_disk(), ["b"]);
+        assert_eq!(texts_in(&at), [Text::of(&big_b).name()], "a's text gone from the disk");
+        let a = &ed.workspace.claude.checkpoints.list[0];
+        assert!(a.files.here().is_some_and(|f| f[0].after == big_a.as_str()), "its texts in memory");
+        // Room again: written back, readable from its files
+        ed.config.llm.turns_max_mb = 4;
+        keep_now(&ed, &ed.workspace);
+        assert_eq!(on_disk(), ["a", "b"]);
+        let whole = load_whole(&store, &root);
+        assert!(
+            whole.list[0].files.here().is_some_and(|f| f[0].after == big_a.as_str()),
+            "a read back whole"
+        );
+        // No room, the review closed: let go
+        ed.config.llm.turns_max_mb = 1;
+        ed.workspace.code_review = None;
+        keep(&ed);
+        settle(&mut ed, "a let go", |ed| questions(ed) == ["b"]);
+        assert_eq!(on_disk(), ["b"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Review round 2: a drop refused for its open review leaves the turn unfiled — the save took its texts off the
+    /// disk — so once the review closes and the session goes behind, nothing lets its texts go before the next save
+    /// writes them again, and `space u` still takes it back (it was let go as Kept, its file gone: "left out").
+    #[test]
+    fn a_turn_kept_for_its_review_keeps_its_texts_until_they_are_written_again() {
+        use super::*;
+        let dir = temp("turns-refused-drop");
+        let (mut ed, root, _) = kept_in(&dir);
+        ed.config.llm.turns_max_mb = 1;
+        let (big_a, big_b) = ("a".repeat(600_000), "b".repeat(600_000));
+        kept_turn(&mut ed, "a", &big_a);
+        let turn = crate::codereview::Base::Turn { at: 0, question: "a".into() };
+        ed.workspace.code_review =
+            Some(crate::codereview::CodeReview::for_test(turn, root.clone(), Vec::new()));
+        kept_turn(&mut ed, "b", &big_b);
+        assert_eq!(questions(&ed), ["a", "b"], "a refused: its review is open");
+        assert!(!ed.workspace.claude.checkpoints.list[0].filed(), "its texts gone from the disk: not filed");
+        // The review closed, the session behind: a's texts stay in memory
+        ed.workspace.code_review = None;
+        shed(&mut ed.workspace, true);
+        assert!(ed.workspace.claude.checkpoints.list[0].files.here().is_some(), "not let go unwritten");
+        // Room again, both taken back: a.txt goes with a's undo
+        ed.config.llm.turns_max_mb = 4;
+        std::fs::write(root.join("a.txt"), &big_a).unwrap();
+        std::fs::write(root.join("b.txt"), &big_b).unwrap();
+        step(&mut ed, true).unwrap();
+        settle(&mut ed, "b undone", |_| !root.join("b.txt").exists());
+        step(&mut ed, true).unwrap();
+        settle(&mut ed, "a undone", |_| !root.join("a.txt").exists());
+        assert_eq!(questions(&ed), ["a", "b"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Review round 2: a save reads each conversation's last activity, never its rows (it read the whole chats file
+    /// at every change to a turn) — the bytes it reads the same with 1 row a conversation as with 200.
+    #[test]
+    fn a_save_reads_the_conversations_times_whatever_their_rows() {
+        let dir = temp("turns-chat-times");
+        let root = dir.join("p");
+        let read = |rows: usize| -> (usize, u64) {
+            let store = dir.join(format!("chats-{rows}"));
+            for i in 0..20 {
+                let rows = vec![json!({ "role": "user", "text": "x".repeat(100) }); rows];
+                let c = crate::chats::Saved {
+                    id: format!("c{i:02}"),
+                    title: "t".into(),
+                    updated: 1_800_000_000,
+                    rows,
+                    plan: None,
+                    usage: None,
+                    seq: crate::chats::seq(),
+                };
+                crate::chats::save(&store, &root, c);
+            }
+            let times = crate::chats::times(&store, &root);
+            (times.len(), std::fs::metadata(crate::chats::times_file(&store, &root)).unwrap().len())
+        };
+        let (few, many) = (read(1), read(200));
+        assert_eq!(few.0, 20, "every conversation's time");
+        assert_eq!(few, many, "the same bytes whatever the rows");
+        assert!(many.1 < 1024, "{} bytes", many.1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Review round 1: an earlier tarae's turns (`<id>.json` beside the index — no reader of them) go at the next
+    /// save, through no link and only what's named so: another name, a folder, a link stay, and what a link leads to.
+    #[test]
+    fn the_old_formats_turn_files_go_at_a_save() {
+        use super::*;
+        let dir = temp("turns-old-format");
+        let (root, store) = (dir.join("p"), dir.join("turns"));
+        let at = folder(&store, &root);
+        std::fs::create_dir_all(at.join("456.json")).unwrap();
+        let outside = dir.join("kept.json");
+        std::fs::write(&outside, "mine").unwrap();
+        std::os::unix::fs::symlink(&outside, at.join("789.json")).unwrap();
+        for name in ["123.json", "1730000000000000000.json", "12a.json", ".json", "123.json.tmp", "notes.txt"]
+        {
+            std::fs::write(at.join(name), "{}").unwrap();
+        }
+        assert!(put(
+            &store,
+            &root,
+            Stored { list: vec![one_to_two(&root, "q")], seq: 1, ..Default::default() }
+        ));
+        let mut left: Vec<String> = std::fs::read_dir(&at)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        crate::sorting::sort(&mut left);
+        let stay =
+            [".json", "123.json.tmp", "12a.json", "456.json", "789.json", "index.json", "notes.txt", "texts"];
+        assert_eq!(left, stay);
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "mine");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1466,7 +2292,7 @@ mod tests {
         };
         let (turn, head, question) = (vec![t], vec![flying.clone()], "mid-turn".to_string());
         let seq = crate::chats::seq();
-        assert!(save(&store, &root, Stored { list, turn, head, question, seq }));
+        assert!(put(&store, &root, Stored { list, turn, head, question, seq }));
         // Read back as kept
         let s = load(&store, &root);
         assert_eq!((&s.list[0].head, &s.head), (&vec![done.clone()], &vec![flying.clone()]));
@@ -1491,7 +2317,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("a.txt"), "two\n").unwrap();
         let list = vec![one_to_two(&root, "q")];
-        assert!(save(&store, &root, Stored { list, seq: crate::chats::seq(), ..Default::default() }));
+        assert!(put(&store, &root, Stored { list, seq: crate::chats::seq(), ..Default::default() }));
         let mut ed = Editor::new(crate::config::Config::default());
         (ed.workspace.root, ed.turns_dir) = (root.clone(), Some(store.clone()));
         ed.workspace_kept_back(ed.workspace.id);
@@ -1502,7 +2328,7 @@ mod tests {
         let r = ed.workspace.code_review.as_ref().unwrap();
         let files: Vec<_> = r.files.iter().map(|f| (f.rel.as_str(), f.added, f.removed, f.new)).collect();
         assert_eq!(files, [("a.txt", 1, 1, false)]);
-        shed(&mut ed.workspace);
+        shed(&mut ed.workspace, true);
         assert!(
             ed.workspace.claude.checkpoints.list[0].files.here().is_some(),
             "held while its review is open"
@@ -1519,10 +2345,18 @@ mod tests {
         let (root, store) = (dir.join("p"), dir.join("turns"));
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("a.txt"), "two\n").unwrap();
-        let (first, second) = (one_to_two(&root, "first"), one_to_two(&root, "second"));
-        let texts = folder(&store, &root).join(format!("{}.json", second.id));
+        // (second's texts its own: b.txt from "x" to "y")
+        let first = one_to_two(&root, "first");
+        let b = Touched {
+            path: root.join("b.txt"),
+            before: Some(Rope::from_str("x\n")),
+            after: Rope::from_str("y\n"),
+            ..Default::default()
+        };
+        let second = Checkpoint::new("second".into(), vec![b]);
+        let texts = texts_dir(&folder(&store, &root)).join(Text::of("y\n").name());
         let list = vec![first, second];
-        assert!(save(&store, &root, Stored { list, seq: crate::chats::seq(), ..Default::default() }));
+        assert!(put(&store, &root, Stored { list, seq: crate::chats::seq(), ..Default::default() }));
         let mut ed = Editor::new(crate::config::Config::default());
         (ed.workspace.root, ed.turns_dir) = (root.clone(), Some(store.clone()));
         ed.workspace_kept_back(ed.workspace.id);
@@ -1552,37 +2386,61 @@ mod tests {
     }
 
     /// A save reads only the index's `seq` (it starts the file — an index whose rest isn't JSON still says it):
-    /// an older save writes nothing; each turn's texts are written once, and those of a turn the index
-    /// doesn't name any more go; forgetting leaves no texts.
+    /// an older save writes nothing. A text is one file however many turns hold it — a turn's text after is the
+    /// next one's before, and two turns may make a file the same — written once; one no turn the index names any
+    /// more holds goes; forgetting leaves no texts.
     #[test]
-    fn a_save_reads_only_seq_and_keeps_only_the_named_turns_texts() {
+    fn a_text_is_one_file_whatever_holds_it_and_goes_with_the_last() {
         use super::*;
         let dir = temp("turns-seq");
         let (root, store) = (dir.join("p"), dir.join("turns"));
-        let (a, b) = (one_to_two(&root, "a"), one_to_two(&root, "b"));
+        let turn = |q: &str, from: &str, to: &str| {
+            let t = Touched {
+                path: root.join("a.txt"),
+                before: Some(Rope::from_str(from)),
+                after: Rope::from_str(to),
+                ..Default::default()
+            };
+            Checkpoint::new(q.into(), vec![t])
+        };
+        // (one → two, two → three, three → two: four texts held, three of them)
+        let (a, b, c) =
+            (turn("a", "one\n", "two\n"), turn("b", "two\n", "three\n"), turn("c", "three\n", "two\n"));
+        let name = |s: &str| Text::of(s).name();
         let (at, index) = (folder(&store, &root), index_file(&store, &root));
-        let texts = |c: &Checkpoint| at.join(format!("{}.json", c.id));
         let seq = crate::chats::seq();
         let stored = |list: Vec<Checkpoint>, seq| Stored { list, seq, ..Default::default() };
-        assert!(save(&store, &root, stored(vec![a.clone(), b.clone()], seq)));
+        let saved = save(&store, &root, stored(vec![a.clone(), b.clone(), c.clone()], seq), Room::ANY);
+        assert!(saved.written);
         assert_eq!(seq_of(&index), seq);
-        assert!(texts(&a).is_file() && texts(&b).is_file());
-        assert!(!save(&store, &root, stored(vec![a.clone()], seq - 1)), "an older one");
-        assert!(texts(&b).is_file());
+        let mut three = vec![name("one\n"), name("two\n"), name("three\n")];
+        crate::sorting::sort(&mut three);
+        assert_eq!(texts_in(&at), three, "each text once");
+        assert_eq!(
+            saved.texts.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [a.id, b.id, c.id],
+            "all written now"
+        );
+        assert!(!put(&store, &root, stored(vec![c.clone()], seq - 1)), "an older one");
+        assert_eq!(texts_in(&at).len(), 3);
         std::fs::write(&index, format!("{{\"seq\":{},not json", seq + 1)).unwrap();
         assert_eq!(seq_of(&index), seq + 1, "only its head read");
-        assert!(!save(&store, &root, stored(vec![a.clone()], seq)));
-        // A later one without b: b's texts go, a's stay as written
-        let a_was = std::fs::metadata(texts(&a)).unwrap().modified().unwrap();
-        assert!(save(&store, &root, stored(vec![a.clone()], seq + 2)));
-        assert!(!texts(&b).exists());
-        assert_eq!(std::fs::metadata(texts(&a)).unwrap().modified().unwrap(), a_was, "written once");
+        assert!(!put(&store, &root, stored(vec![c.clone()], seq)));
+        // A later one without a: its "one" goes, "two" stays as written — b and c still hold it
+        let two = texts_dir(&at).join(name("two\n"));
+        let two_was = std::fs::metadata(&two).unwrap().modified().unwrap();
+        assert!(put(&store, &root, stored(vec![b.clone(), c.clone()], seq + 2)));
+        assert!(!texts_dir(&at).join(name("one\n")).exists());
+        assert_eq!(std::fs::metadata(&two).unwrap().modified().unwrap(), two_was, "written once");
+        let kept: Vec<Vec<Texts>> = load(&store, &root).list.into_iter().map(|c| c.texts).collect();
+        let t = Text::of;
+        assert_eq!(kept, [vec![(Some(t("two\n")), t("three\n"))], vec![(Some(t("three\n")), t("two\n"))]]);
         // Forgotten: nothing left
         let mut ed = Editor::new(crate::config::Config::default());
         ed.turns_dir = Some(store.clone());
         forget(&ed, root.clone());
-        settle(&mut ed, "forgotten", |_| !texts(&a).exists());
-        assert!(load(&store, &root).list.is_empty());
+        settle(&mut ed, "forgotten", |_| !two.exists());
+        assert!(load(&store, &root).list.is_empty() && texts_in(&at).is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1609,7 +2467,7 @@ mod tests {
             seq: crate::chats::seq(),
             ..Default::default()
         };
-        save(&store, &back, earlier);
+        put(&store, &back, earlier);
         let mut ed = Editor::new(crate::config::Config::default());
         (ed.workspace.root, ed.turns_dir) = (front, Some(store.clone()));
         let id = ed.workspace_add(back.clone());

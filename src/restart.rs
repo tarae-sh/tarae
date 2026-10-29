@@ -3488,7 +3488,7 @@ mod tests {
         }];
         std::fs::write(back.join("c.md"), "one\ntwo\nTHREE, cut\n").unwrap();
         // (kept as its edits land — `keep_of` writes on a worker)
-        crate::checkpoint::keep_now(session_at(&ed, &back));
+        crate::checkpoint::keep_now(&ed, session_at(&ed, &back));
         assert_eq!(blocker(&ed, true), None, "a turn's review doesn't stop it");
         // back's Claude still at work: restart anyway — its turn is cut
         let bin = fake_tarae(&dir, "tarae 9.9.9");

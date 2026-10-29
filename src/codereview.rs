@@ -5698,18 +5698,14 @@ mod tests {
         let store = dir.join("turns-kept");
         ed.workspace.claude.checkpoints.dir = Some(store.clone());
         crate::checkpoint::keep(&ed);
-        let file = format!("{}.json", ed.workspace.claude.checkpoints.list[last].id);
+        settle_until(&mut ed, |ed| ed.workspace.claude.checkpoints.list[last].filed());
+        // (the project's texts: a file each, by content)
         let written = |d: &Path| {
             let list = |p: &Path| -> Vec<PathBuf> {
                 std::fs::read_dir(p).into_iter().flatten().flatten().map(|e| e.path()).collect()
             };
-            list(d).iter().flat_map(|sub| list(sub)).find(|p| p.ends_with(&file))
+            list(d).iter().map(|sub| sub.join("texts")).find(|t| t.is_dir())
         };
-        let by = std::time::Instant::now() + crate::test_results::PATIENCE;
-        while written(&store).is_none() {
-            assert!(std::time::Instant::now() < by, "its texts never written");
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
         let kept = ["c.txt", "a.txt", "b.txt"].map(|rel| crate::checkpoint::Kept {
             path: dir.join(rel),
             unseen: false,
@@ -5733,7 +5729,7 @@ mod tests {
         assert!(ed.workspace.claude.checkpoints.list[last].files.here().is_some(), "read back");
         // Its kept file gone for good: the turn left out and the review on it closed — said in `:messages` as a
         // note, never a toast over the work (no one asked: the regrade of a save)
-        std::fs::remove_file(written(&store).expect("its file")).unwrap();
+        std::fs::remove_dir_all(written(&store).expect("its texts")).unwrap();
         ed.workspace.claude.checkpoints.list[last].files = crate::checkpoint::Files::Kept(kept.to_vec());
         std::fs::write(dir.join("b.txt"), "b2\nmore\nagain\nand more\n").unwrap();
         crate::reviewer::since_sync_shown(&mut ed);

@@ -479,6 +479,13 @@ pub static SETTINGS: &[Setting] = &[
         set: |c, v| c.llm.card_record = b(v),
     },
     Setting {
+        path: "llm.turns-max-mb",
+        kind: Kind::Int { min: 1, max: 1 << 20 },
+        doc: "How much of Claude's turns (space u) a project keeps on disk, in MB — past it the oldest turns go, said once; each goes anyway as its conversation does (Claude Code's cleanupPeriodDays)",
+        get: |c| Value::from(c.llm.turns_max_mb as i64),
+        set: |c, v| c.llm.turns_max_mb = n(v) as u64,
+    },
+    Setting {
         path: "llm.environment-key",
         kind: Kind::Enum(&["drop", "keep"]),
         doc: "Claude: an ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN in tarae's environment — \"drop\": Claude runs on your Claude Code login; \"keep\": passed on, for a login by key alone or a gateway (ANTHROPIC_BASE_URL with its token). When Claude isn't logged in and a key was dropped, a card offers it for the session, or A writes \"keep\" here. Inside a Claude Code session always dropped (the host's). Only your own config sets it",

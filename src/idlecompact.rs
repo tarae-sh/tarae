@@ -318,8 +318,13 @@ pub struct Places {
 impl Places {
     /// For session `ed.workspace`'s chat — None: it has none.
     pub fn of(ed: &Editor) -> Option<Places> {
+        Places::of_in(ed, &ed.workspace)
+    }
+
+    /// For workspace `w`'s chat — None: it has none.
+    pub fn of_in(ed: &Editor, w: &Workspace) -> Option<Places> {
         // (a simulation's stand-in was started with nothing: claude's own default, every scope)
-        let c = ed.workspace.claude.chat.as_ref()?;
+        let c = w.claude.chat.as_ref()?;
         let args = c.launched.as_ref().map_or(&[][..], |l| &l.0.args[..]);
         // (a test's stand-in is the whole of the environment, as `llm::spawn` lays it — else tarae's own, never in
         // a test build)
@@ -329,7 +334,7 @@ impl Places {
         Some(Places {
             sources: flag(args, "--setting-sources").map(String::from),
             settings: flag(args, "--settings").map(String::from),
-            root: ed.workspace.root.clone(),
+            root: w.root.clone(),
             user: ed.claude_user_settings.clone(),
             managed: if cfg!(test) { Vec::new() } else { managed() },
             env,
@@ -338,6 +343,20 @@ impl Places {
 
     /// The rule, read now — on a worker.
     pub fn rule(&self) -> Rule {
+        let layers = self.layers();
+        rule(&layers, |n| self.env.iter().find(|(k, _)| *k == n).map(|(_, v)| v.clone()))
+    }
+
+    /// `cleanupPeriodDays` as claude reads it — how many days it keeps a conversation (`checkpoint.rs` keeps a
+    /// turn as long) — read now, on a worker; None: no layer sets it (Claude Code's own default,
+    /// `claudetrust::CLEANUP_DEFAULT`).
+    pub fn cleanup_days(&self) -> Option<u64> {
+        let days = |l: &Map<String, Value>| l.get("cleanupPeriodDays")?.as_f64().filter(|d| d.is_finite());
+        self.layers().iter().rev().find_map(days).map(|d| d.max(0.0) as u64)
+    }
+
+    /// The settings claude loads, lowest first.
+    fn layers(&self) -> Vec<Map<String, Value>> {
         let sources = self.sources.as_deref().unwrap_or(crate::claudetrust::SOURCES);
         let loads = |s: &str| sources.split(',').any(|x| x.trim() == s);
         let mut layers = Vec::new();
@@ -357,7 +376,7 @@ impl Places {
             }
         }
         layers.extend(self.managed.iter().filter_map(|p| read_file(p)));
-        rule(&layers, |n| self.env.iter().find(|(k, _)| *k == n).map(|(_, v)| v.clone()))
+        layers
     }
 }
 

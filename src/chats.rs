@@ -120,9 +120,28 @@ pub fn save(dir: &Path, root: &Path, chat: Saved) {
                     "usage": c.usage, "seq": c.seq })
         })
         .collect();
+    let times: Vec<Value> = chats.iter().map(|c| json!([c["id"], c["updated"]])).collect();
     let body = json!({ "root": root, "chats": chats }).to_string();
     let _ = std::fs::create_dir_all(dir);
-    let _ = crate::disk::write_atomic(&file(dir, root), |w| w.write_all(body.as_bytes()));
+    if crate::disk::write_atomic(&file(dir, root), |w| w.write_all(body.as_bytes())).is_ok() {
+        let times = json!({ "times": times }).to_string();
+        let _ = crate::disk::write_atomic(&times_file(dir, root), |w| w.write_all(times.as_bytes()));
+    }
+}
+
+/// Beside the project's conversations, when each was last active — what a save of the turns reads (`checkpoint::
+/// saving`: a turn goes as its conversation does), never their rows.
+pub(crate) fn times_file(dir: &Path, root: &Path) -> PathBuf {
+    file(dir, root).with_extension("times")
+}
+
+/// Each kept conversation's last activity, (claude's id, unix seconds) — at most `KEEP`, whatever their rows (on a
+/// worker).
+pub fn times(dir: &Path, root: &Path) -> Vec<(String, u64)> {
+    let Ok(body) = std::fs::read_to_string(times_file(dir, root)) else { return Vec::new() };
+    let Ok(v) = serde_json::from_str::<Value>(&body) else { return Vec::new() };
+    let pair = |t: &Value| Some((t[0].as_str()?.to_string(), t[1].as_u64()?));
+    v["times"].as_array().into_iter().flatten().filter_map(pair).collect()
 }
 
 fn role_name(r: Role) -> &'static str {

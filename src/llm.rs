@@ -131,6 +131,9 @@ pub struct LlmConfig {
     /// Keep every card asked about Claude's work, and every run of its refused with no card, in the record
     /// (`cards.rs`: `$state/cards/`). Only your own config sets it (`trust::YOURS_ONLY`).
     pub card_record: bool,
+    /// How much a project's kept turns may take on disk, in MB (`checkpoint.rs`: past it the oldest go). Only your
+    /// own config sets it (`trust::YOURS_ONLY`).
+    pub turns_max_mb: u64,
     /// An `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` in tarae's environment goes on to claude (`llm.environment-key
     /// = "keep"`) — but inside a Claude Code session, where it's the host's (`claude_env`).
     pub keep_env_key: bool,
@@ -202,6 +205,7 @@ impl Default for LlmConfig {
             review_at_end: false,
             chat_settings: true,
             card_record: true,
+            turns_max_mb: 1024,
             keep_env_key: false,
             billing: Default::default(),
             reviewer_billing: None,
