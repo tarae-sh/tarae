@@ -698,6 +698,9 @@ pub struct Screen {
     pub toast_rows: std::cell::RefCell<Vec<(usize, u64)>>,
     /// The floating lists' rows on screen, for the state's panels (`messages:toast#N`).
     pub list_rows: std::cell::RefCell<Vec<(crate::pane::GroupKind, crate::uistate::panels::Row)>>,
+    /// Where each thing to read was drawn, by kind, bottom first (`regions.rs`, `term::record_regions`) — the UI
+    /// state's `regions`, a turn's reading path (`cargo xtask focus`).
+    pub regions: crate::regions::Regions,
     /// What an element drew of this frame, to tell whether the finished frame still shows it whole
     /// (`term::shown_whole`): its id, its cells (row, columns) and the bytes of the frame that drew them.
     pub owned: std::cell::RefCell<Vec<Owned>>,

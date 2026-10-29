@@ -156,6 +156,7 @@ mod rebase;
 mod recent;
 mod recovery;
 mod refactor;
+mod regions;
 mod repeat;
 mod replace;
 mod replay;

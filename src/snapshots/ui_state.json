@@ -203,6 +203,56 @@
     "rows": []
   },
   "prompt": null,
+  "regions": [
+    {
+      "kind": "code",
+      "lead": true,
+      "must": true,
+      "rect": [
+        0,
+        0,
+        120,
+        36
+      ]
+    },
+    {
+      "kind": "slot",
+      "rect": [
+        0,
+        36,
+        120,
+        3
+      ]
+    },
+    {
+      "kind": "toast",
+      "rect": [
+        94,
+        25,
+        25,
+        1
+      ]
+    },
+    {
+      "kind": "ask",
+      "must": true,
+      "rect": [
+        62,
+        28,
+        57,
+        7
+      ]
+    },
+    {
+      "kind": "status.rest",
+      "rect": [
+        0,
+        39,
+        120,
+        1
+      ]
+    }
+  ],
   "runs": [
     {
       "id": "run#-",
@@ -238,7 +288,7 @@
       "where": "card"
     }
   ],
-  "v": 24,
+  "v": 25,
   "workspaces": [
     {
       "cards": 1,

@@ -4365,6 +4365,12 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "parentwake" => turn.parent_wake(&line)?,
             "childlong" => turn.child_long(&line)?,
             "parent" => turn.parent(&line)?,
+            // (focus D1's turns — `cargo xtask focus`)
+            "focus-explain" => turn.focus_explain(false)?,
+            "focus-typing" => turn.focus_explain(true)?,
+            "focus-fix" => turn.focus_fix()?,
+            "focus-asks" => turn.focus_asks()?,
+            "focus-line" => turn.focus_line(&line)?,
             _ => {}
         }
     }
@@ -5155,6 +5161,97 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             self.line(json!({"type": "user", "message": {"role": "user", "content": [result]}}))?;
         }
         self.words("That is all.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// A call and its result as claude's stream says them — nothing runs, no request of tarae's (`run_tests` in a
+    /// scene: no test is built).
+    fn ran(&mut self, id: &str, name: &str, args: Value, said: &str) -> io::Result<()> {
+        let tool =
+            json!({"type": "tool_use", "id": id, "name": format!("mcp__tarae__{name}"), "input": args});
+        self.line(json!({"type": "assistant", "message": {"id": format!("m{id}"), "content": [tool]}}))?;
+        std::thread::sleep(Duration::from_millis(300));
+        let result =
+            json!({"type": "tool_result", "tool_use_id": id, "content": [{"type": "text", "text": said}]});
+        self.line(json!({"type": "user", "message": {"role": "user", "content": [result]}}))
+    }
+
+    /// focus D1's `focus-explain` (and `focus-typing`, `slow`: a pause after each read, while you type): three reads, then
+    /// three paragraphs — the first naming the loop's line, the other two (a summary and a caveat) naming none.
+    fn focus_explain(&mut self, slow: bool) -> io::Result<()> {
+        let gap = Duration::from_millis(if slow { 900 } else { 0 });
+        self.words("Let me read the loop and the thread it prints.")?;
+        self.text("\n\n")?;
+        for (n, at) in [(1, "src/main.rs:7-14"), (2, "src/thread.rs:1-5"), (3, "src/thread.rs:7-11")] {
+            self.call(n, "read", json!({"files": [at]}))?;
+            std::thread::sleep(gap);
+        }
+        self.words(
+            "The loop at src/main.rs:11 prints each thread's name, how many knots it has and its length, the sum of \
+             its knots.",
+        )?;
+        self.text("\n\n")?;
+        self.words(
+            "It prints them in the map's own order, which changes from run to run: a hash map keeps no order of \
+             insertion, so two runs over the same threads may list them differently.",
+        )?;
+        self.text("\n\n")?;
+        self.words(
+            "One caveat: a repeated name replaces the earlier strand before the loop ever sees it, so a skein with \
+             two threads of one name prints one. That is all.",
+        )?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// focus D1's `focus-fix`: the tests fail, two reads, an edit (its review, answered by the scene), the tests pass,
+    /// two paragraphs — the runs as the stream says them (no test is built in a scene).
+    fn focus_fix(&mut self) -> io::Result<()> {
+        self.words("Running the tests first to see what fails.")?;
+        self.text("\n\n")?;
+        let tests = json!({"path": "src/thread.rs"});
+        self.ran("f0", "run_tests", tests.clone(), "1 failed: length_sums_the_gaps — left: 6, right: 2")?;
+        self.call(1, "read", json!({"files": ["src/thread.rs:1-12"]}))?;
+        self.call(2, "read", json!({"files": ["src/main.rs:7-10"]}))?;
+        self.words("The length sums the knots themselves, not the gaps between them, which is what a strand's length is.")?;
+        self.text("\n")?;
+        let edit = json!({"edits": [{"file_path": "src/thread.rs", "old_string": "        self.knots.iter().sum()\n",
+            "new_string": "        self.knots.windows(2).map(|w| w[1] - w[0]).sum()\n"}]});
+        self.input(3, "edit", &edit.to_string(), None)?;
+        self.call(3, "edit", edit)?;
+        self.ran("f4", "run_tests", tests, "2 passed")?;
+        self.words("Fixed: src/thread.rs:10 now sums the gaps between the knots, so knots at 1, 2 and 3 make a strand 2 long.")?;
+        self.text("\n\n")?;
+        self.words("Nothing else calls the length, so no other change is needed. That is all.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// focus D1's `focus-asks`: a run asked for outside the sandbox (its card, answered by the scene), then the answer.
+    fn focus_asks(&mut self) -> io::Result<()> {
+        self.words("The tests need the registry, so I will ask to run them outside the sandbox.")?;
+        self.text("\n")?;
+        let run = json!({"command": "cargo test --quiet", "outside_sandbox": true,
+            "reason": "cargo needs to fetch the registry index"});
+        self.call(1, "run", run)?;
+        self.words("They pass outside the sandbox; nothing in the crate needed the change. That is all.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// focus D1's `focus-line`: `space n`'s question at a line — a read, then the answer in its thread (`reply_to` the
+    /// note the message names).
+    fn focus_line(&mut self, line: &str) -> io::Result<()> {
+        let id: u64 = line
+            .split("note id=\\\"")
+            .nth(1)
+            .map(|s| s.chars().take_while(char::is_ascii_digit).collect::<String>())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
+        self.words("Reading how the map is filled.")?;
+        self.text("\n\n")?;
+        self.call(1, "read", json!({"files": ["src/main.rs:7-12"]}))?;
+        let text = "It's a map, not a Vec: threads are keyed by name, so a repeated name replaces the strand before \
+                    it. A Vec would keep both, in order, and the loop would print each.";
+        self.call(2, "note", json!({"reply_to": id, "text": text}))?;
+        self.words("I answered at the note. That is all.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

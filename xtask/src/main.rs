@@ -47,6 +47,9 @@
 //!   (`hero-meok.json`, `hero-hanji.json`), first-frame PNGs, and 6-beat contact sheets (see [`homepage`]).
 //! - `sign [<out-dir>]` — the working sign's candidates as animated PNGs, one recorded turn each in meok and hanji,
 //!   and their frames a second (see [`sign`]).
+//! - `focus [scene …] [--layout L …] [--bin TARAE] [--compare]` — a turn's reading path from its frames: where new
+//!   words appear, the switches between those places, how far, how much away from the code; kept in
+//!   `target/focus/history.tsv` (see [`focus`]).
 
 // (clippy.toml's sort rule is for the tarae binary's size: these tasks aren't in it)
 #![allow(clippy::disallowed_methods, reason = "dev tasks: not in the release binary")]
@@ -61,6 +64,7 @@ mod cards;
 mod claudestub;
 mod compat;
 mod deb;
+mod focus;
 mod glyphs;
 mod homepage;
 mod linux;
@@ -111,6 +115,7 @@ fn main() {
         Some("compat") => compat::run(&args[1..]),
         Some("glyphs") => glyphs::run(&args[1..]),
         Some("homepage") => homepage::run(&args[1..]),
+        Some("focus") => focus::run(&args[1..]),
         Some("sign") => sign::run(&args[1..]),
         Some("sound") => sound::run(&args[1..]),
         Some("build-prune") => buildprune::run(&args[1..]),

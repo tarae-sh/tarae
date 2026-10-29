@@ -769,6 +769,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         toast_rows: Default::default(),
         list_rows: Default::default(),
         owned: Default::default(),
+        regions: Default::default(),
     };
     // (the conversation laid out for this frame, the transcript's document following it — keys act on what's drawn)
     if lay.chat_w > 0
@@ -5082,6 +5083,7 @@ fn draw(
     offer: Option<&OfferCard>,
     out: &mut Vec<u8>,
 ) -> io::Result<()> {
+    use crate::regions::Kind;
     queue!(out, BeginSynchronizedUpdate, Hide)?;
     crate::whole::begin();
     crate::kinds::begin();
@@ -5099,16 +5101,28 @@ fn draw(
             if let Some(rows) = review_rows {
                 let _fade = Fade::unless(keys.code(), ui);
                 draw_review(rev, rows, editor, ui, lay, out)?;
+                editor.screen.regions.code(code_area(lay), None, true, true);
             }
             None
         }
         None if editor.welcome() => {
+            editor.screen.regions.code(code_area(lay), None, true, false);
             let _fade = Fade::unless(keys.code(), ui);
             draw_welcome(editor, ui, lay, offer.map(OfferCard::rect), out)?;
             None
         }
         // (each pane fades by itself — the focused one only while the code has the keys)
-        None => draw_panes(editor, ui, lay, keys, out)?,
+        None => {
+            let cursor = draw_panes(editor, ui, lay, keys, out)?;
+            let lead = crate::follow::pane(editor);
+            for (id, r, ..) in &editor.screen.panes {
+                // (a pane at the top: its top line is the screen's first row, over its rect)
+                let top = if r.y == lay.text_top as usize { 0 } else { r.y };
+                let rect = (r.x, top, r.w, r.h + (r.y - top));
+                editor.screen.regions.code(rect, Some(*id), *id == lead, false);
+            }
+            cursor
+        }
     };
     if let Some(r) = editor.workspace.code_review.as_ref().filter(|_| editor.review_rail_up())
         && lay.rail_w > 0
@@ -5118,6 +5132,7 @@ fn draw(
     {
         let _fade = Fade::unless(keys == Keys::Review, ui);
         draw_review_rail(r, editor, ui, lay, out)?;
+        editor.screen.regions.add(crate::regions::Kind::Side, (0, 0, lay.rail_w, lay.body_h));
     } else if let Some(sb) = &editor.workspace.viewer.sidebar
         && lay.rail_w > 0
         && !editor.review_rail_up()
@@ -5125,6 +5140,7 @@ fn draw(
     {
         let _fade = Fade::unless(matches!(keys, Keys::Side(_)), ui);
         draw_sidebar(sb, editor, ui, lay, out)?;
+        editor.screen.regions.add(crate::regions::Kind::Side, (0, 0, lay.rail_w, lay.body_h));
     }
     let mut terminal_cursor = None;
     if lay.slot_h > 0 && lay.slot_w > 0 {
@@ -5148,8 +5164,13 @@ fn draw(
         } else if let (Some(Slot::Task), Some(k)) = (slot, &session.task_run) {
             draw_task_panel(k, editor, ui, lay, out)?;
         }
+        let at = (lay.slot_x, lay.slot_y(), lay.slot_w, lay.slot_h);
+        editor.screen.regions.add(crate::regions::Kind::Slot, at);
     }
     draw_docked(editor, ui, lay, out)?;
+    for (_, f) in editor.screen.docked.borrow().iter() {
+        drew(editor, Kind::Slot, Some((f.x, f.y, f.w, f.h)));
+    }
     let chat_cursor = match &editor.workspace.claude.chat {
         Some(c) if lay.chat_w > 0 => {
             let _fade = Fade::unless(keys.chat(), ui);
@@ -5157,10 +5178,20 @@ fn draw(
         }
         _ => None,
     };
+    if let Some((y, _, rows, _)) = editor.screen.chat_view.get().filter(|_| lay.chat_w > 0) {
+        let x = lay.edit_w;
+        drew(editor, Kind::ChatTop, Some((x, 0, lay.chat_w, y)));
+        drew(editor, Kind::ChatTranscript, Some((x, y, lay.chat_w, rows)));
+        drew(editor, Kind::ChatInput, Some((x, y + rows, lay.chat_w, lay.body_h.saturating_sub(y + rows))));
+    }
     // A docked surface's row in hand whole on its card — under what floats, as that surface is
     cut_card(editor, ui, lay, true, out)?;
+    drew(editor, Kind::Hover, editor.screen.cut_card.borrow().as_ref().filter(|c| c.under).map(|c| c.rect));
     // The floating panes over all that's docked, under the cards (the chat's cursor under one is hidden with it)
     draw_floating(editor, ui, lay, out)?;
+    for (_, f) in editor.screen.floating.borrow().iter() {
+        drew(editor, Kind::Float, Some((f.x, f.y, f.w, f.h)));
+    }
     let under_float = |at: Option<(u16, u16)>| {
         at.filter(|&(x, y)| {
             !lay.floats.iter().any(|f| {
@@ -5176,6 +5207,7 @@ fn draw(
         Some(rev) => draw_ask_stream(rev, editor, ui, lay, out)?,
         None => None,
     };
+    drew(editor, Kind::Ask, ask_rect);
     // Cards over the code share the screen without overlapping: the note at the cursor and an offer (a
     // command Claude wants to run) are placed first, the follow card takes a free corner (skipped if none is)
     let note_rect = text_cursor.and_then(|at| note_card_geom(editor, at, ui, lay)).map(|g| g.rect());
@@ -5192,25 +5224,35 @@ fn draw(
     {
         let avoid: Vec<Rect4> = [note_rect, offer_rect].into_iter().flatten().map(kept_apart).collect();
         follow_rect = draw_follow_card(c, editor, ui, lay, &avoid, out)?;
+        drew(editor, Kind::Follow, follow_rect);
     }
     if let (Some(lines), Some(at)) = (&editor.popup, text_cursor) {
         draw_popup(lines, at, ui, editor, lay, out)?;
+        drew(editor, Kind::Hover, editor.screen.popup.get());
     }
     // (the pointer's hover card: `K`'s look, at the name it rests on — after the cursor's cards, the mouse's first)
     draw_rest_card(editor, ui, lay, out)?;
+    drew(editor, Kind::Hover, editor.screen.rest_card.get());
     // (the list first: the signature goes where it isn't)
     if let (Some(c), Some(at)) = (&editor.completion, text_cursor) {
         draw_completion(c, at, ui, editor, lay, out)?;
+        drew(editor, Kind::Hover, editor.screen.completion_card.get());
+        drew(editor, Kind::Hover, editor.screen.completion_docs.get());
     }
     if let (Some(sig), Some(at)) = (&editor.signature, text_cursor) {
-        draw_signature(sig, at, ui, editor, lay, out)?;
+        drew(editor, Kind::Hover, draw_signature(sig, at, ui, editor, lay, out)?);
     }
     // The note under the cursor comes first; the diagnostic card otherwise
-    if let Some(at) = text_cursor
-        && !draw_note_card(editor, at, ui, lay, out)?
-        && !draw_conflict_card(editor, at, ui, lay, out)?
-    {
-        draw_diagnostic_card(editor, at, ui, lay, out)?;
+    if let Some(at) = text_cursor {
+        if draw_note_card(editor, at, ui, lay, out)? {
+            drew(editor, Kind::Note, editor.screen.note_card.get());
+        } else {
+            let (conflict, rect) = draw_conflict_card(editor, at, ui, lay, out)?;
+            drew(editor, Kind::Hover, rect);
+            if !conflict {
+                drew(editor, Kind::Hover, draw_diagnostic_card(editor, at, ui, lay, out)?);
+            }
+        }
     }
     // The notification card keeps out of every other card's way, off the cursor's row and the review's change
     // in hand (U9) — or folds into the status line
@@ -5220,26 +5262,39 @@ fn draw(
     let cards = [note_rect, follow_rect, offer_rect, ask_rect].into_iter().flatten().map(kept_apart);
     let taken: Vec<Rect4> = cards.chain([cursor_row, change].into_iter().flatten()).collect();
     let toast_folded = !draw_toasts(editor, ui, lay, &taken, out)?;
-    run_card(editor, ui, lay, out)?;
-    with_card(editor, ui, lay, out)?;
+    drew(editor, Kind::Toast, editor.screen.toast_card.get());
+    drew(editor, Kind::Hover, run_card(editor, ui, lay, out)?);
+    drew(editor, Kind::Hover, with_card(editor, ui, lay, out)?);
     if let Some(card) = offer {
         card.draw(editor, ui, out)?;
+        drew(editor, Kind::Ask, editor.screen.offer_card);
     }
     // The chat's slash list over its input — over an ask there too: it's what your keys are typing (#232)
     draw_slash_list(editor, ui, lay, out)?;
+    drew(editor, Kind::Float, editor.screen.slash_card.get());
     // (a view mode's own sequence under way — `g`, `z`, `m` on the conversation — lists its keys too)
     let viewing = crate::view::viewing(editor).is_some_and(|(_, k)| !k.pending.is_empty());
     let output = crate::rundoc::keyed(editor).is_some_and(|(_, o)| !o.keys.pending.is_empty());
     if (!editor.pending.is_empty() || output || viewing) && editor.picker.is_none() {
         draw_which_key(editor, ui, lay, out)?;
+        drew(editor, Kind::Float, editor.screen.which_key.get());
     }
     // The plugins' overlays: out of every card's way, which-key's and the toast's too, the cursor's row's, the change in
     // hand's — the asks' corner theirs while one stands there
     let floating = [editor.screen.which_key.get(), editor.screen.toast_card.get()].into_iter().flatten();
     let taken: Vec<Rect4> = taken.iter().copied().chain(floating.map(kept_apart)).collect();
     draw_overlays(editor, ui, lay, &taken, offer.is_some(), out)?;
+    for (_, o) in editor.screen.overlays.borrow().iter() {
+        drew(editor, Kind::Float, Some(*o));
+    }
     let picker_cursor = match &editor.picker {
-        Some(p) => Some(draw_picker(p, editor, ui, lay, out)?),
+        Some(p) => {
+            let at = draw_picker(p, editor, ui, lay, out)?;
+            // (a picker is drawn over a blank screen: nothing under it is seen)
+            editor.screen.regions.clear();
+            drew(editor, Kind::Float, editor.screen.picker_box.get());
+            Some(at)
+        }
         None => None,
     };
     // Folded into the status line: an error or warning still waiting for the card before the newest (U7)
@@ -5252,18 +5307,25 @@ fn draw(
         })
         .flatten();
     draw_statusline(editor, ui, lay, folded, out)?;
-    now_card(editor, ui, lay, out)?;
+    let y = lay.status_y as usize;
+    drew(editor, Kind::StatusRest, Some((0, y, lay.width, 1)));
+    let now =
+        editor.screen.cut_spots.borrow().iter().find(|c| c.3 == crate::whole::Cut::Now).map(|c| (c.1, c.2));
+    drew(editor, Kind::StatusNow, now.map(|(a, b)| (a, y, b.saturating_sub(a), 1)));
+    drew(editor, Kind::Hover, now_card(editor, ui, lay, out)?);
     // A prompt (`:`, `/`, `select:` …) is a card standing on the status line, its menu in it
     let prompt_cursor = match &editor.prompt {
         Some(p) => Some(draw_prompt(editor, p, editor.cmdline_completion().as_ref(), ui, lay, out)?),
         None => None,
     };
+    drew(editor, Kind::Prompt, editor.screen.prompt_card.get());
     // (the frame's elements and hints recorded — every hint a button)
     crate::kinds::settle(editor);
     // The row the mouse is over, lit — under the cut texts' cards
     light_rows(editor, ui, out)?;
     // A cut text whole on its card — a tooltip, over everything but the lit word and pointing's labels
     cut_card(editor, ui, lay, false, out)?;
+    drew(editor, Kind::Hover, editor.screen.cut_card.borrow().as_ref().filter(|c| !c.under).map(|c| c.rect));
     // The word the mouse is over, lit — over everything but pointing's labels
     light_word(editor, ui, out)?;
     // Pointing: a label on every element with an id, over everything
@@ -5453,6 +5515,19 @@ pub(crate) fn drawn_style(st: Style) -> Style {
     match FADING.get() {
         Some(ground) => faded(st, ground),
         None => st,
+    }
+}
+
+/// The code's area as a whole — the edit review's or the start screen's, in the panes' place.
+fn code_area(lay: &Layout) -> crate::regions::Rect {
+    (lay.rail_w, 0, lay.edit_w.saturating_sub(lay.rail_w), lay.text_top as usize + lay.text_rows)
+}
+
+/// Region `kind` drawn at `rect`, if it was (`regions.rs`) — said right after its drawer, so the frame's regions are in
+/// the order drawn: a cell is the last one's that holds it, as on screen.
+fn drew(editor: &Editor, kind: crate::regions::Kind, rect: Option<Rect4>) {
+    if let Some(r) = rect {
+        editor.screen.regions.add(kind, r);
     }
 }
 
@@ -11535,10 +11610,10 @@ fn draw_signature(
     editor: &Editor,
     lay: &Layout,
     out: &mut impl Write,
-) -> io::Result<()> {
+) -> io::Result<Option<Rect4>> {
     const DOC_ROWS: usize = 2;
     if sig.doc != editor.doc().id {
-        return Ok(());
+        return Ok(None);
     }
     let pane = focused_pane(editor, lay);
     let (left, right) = (pane.x0, pane.edit_w);
@@ -11598,7 +11673,7 @@ fn draw_signature(
     let y0 = match () {
         _ if cy >= top + h && clear(cy - h) => cy - h,
         _ if cy + 1 + h < bottom && clear(cy + 1) => cy + 1,
-        _ => return Ok(()),
+        _ => return Ok(None),
     };
     let width = inner + 4;
     // Its `(` over the call's (whole, its front not folded): the label's first cell that far left of it
@@ -11684,7 +11759,8 @@ fn draw_signature(
         docs_row(out, (on, x0 + 2, y + 1 + i, (x0, x0 + width)), r, card, inner)?;
     }
     let (on, of) = (crate::mouse::Surface::Popup, Some(crate::mouse::Lights::Popup));
-    draw_frame(out, ui, editor, on, card, (x0, y0, width, h), &[], &[], &[], (of, false)).map(|_| ())
+    draw_frame(out, ui, editor, on, card, (x0, y0, width, h), &[], &[], &[], (of, false))?;
+    Ok(Some((x0, y0, width, h)))
 }
 
 /// Where the call the cursor is in opens on its line (`typed`: the line up to the cursor): the byte of its `(` — the
@@ -18953,24 +19029,24 @@ fn covered(row: &str, start: usize, cx: usize) -> &str {
     ch.unwrap_or(" ")
 }
 
-fn run_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io::Result<()> {
+fn run_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io::Result<Option<Rect4>> {
     let cut = crate::whole::Cut::Run(crate::sizes::Slot::Task);
     if editor.cut_hover.as_ref() != Some(&cut) {
-        return Ok(());
+        return Ok(None);
     }
     let spot = editor.screen.cut_spots.borrow().iter().find(|s| s.3 == cut).map(|s| (s.0, s.1));
-    let (Some((y, a)), Some(r)) = (spot, editor.workspace.task_run.as_ref()) else { return Ok(()) };
+    let (Some((y, a)), Some(r)) = (spot, editor.workspace.task_run.as_ref()) else { return Ok(None) };
     let card = card_style(ui, editor, "ui.popup");
     let ground = Style { bg: blend(card.bg, ui.tint, 1.0 - PEEK_STEP).or(card.bg), ..card };
     let faint = Style { fg: ui.linenr.fg.or(card.fg), ..ground };
     let string = Style { fg: editor.theme.try_get("string").and_then(|s| s.fg).or(card.fg), ..ground };
     // (inside the columns of the panel whose line it is — the slot's, a floating group's frame's)
-    let Some((left, right)) = editor.screen.run_line.get() else { return Ok(()) };
+    let Some((left, right)) = editor.screen.run_line.get() else { return Ok(None) };
     // (a cell of the ground either side, `$ ` before the words — inside those columns, never past them: a panel with
     // no room for a card has none, `K` says it)
     let room = right.saturating_sub(left + 6);
     if room < 8 {
-        return Ok(());
+        return Ok(None);
     }
     let room = room.min(96);
     let mut rows: Vec<(String, Style)> = crate::cut::fit_in_hand(r.task.cmd.trim(), room, false, true)
@@ -18982,7 +19058,7 @@ fn run_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io:
     // `K` says it)
     let above = y.saturating_sub(lay.text_top as usize);
     if above == 0 {
-        return Ok(());
+        return Ok(None);
     }
     let cap = above.min(RUN_CARD_MAX);
     if rows.len() > cap {
@@ -19010,7 +19086,7 @@ fn run_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io:
         apply(out, ground)?;
         queue!(out, Spaces(width - 1 - text.width()))?;
     }
-    Ok(())
+    Ok(Some((x, top, width, rows.len())))
 }
 
 /// The most rows the card of what goes with the message (`with_card`) takes — past them a quote's last says how many more
@@ -19023,12 +19099,12 @@ const WITH_CARD_MAX: usize = 16;
 /// what its cut kept and the lines taken out, then its lines (each cut to the card, as a run's output is; past the rows
 /// `↓ N more lines`); an element pointed at, what the message says of it; the screen, that its rows go as text; `N
 /// things`, each chip whole. Nothing under it moves; the mouse leaving lets it go (`whole::drawn`).
-fn with_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io::Result<()> {
+fn with_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io::Result<Option<Rect4>> {
     use crate::chat::WithItem;
     use crate::markdown::Span;
-    let Some(cut @ crate::whole::Cut::With(which)) = editor.cut_hover.as_ref() else { return Ok(()) };
+    let Some(cut @ crate::whole::Cut::With(which)) = editor.cut_hover.as_ref() else { return Ok(None) };
     let spot = editor.screen.cut_spots.borrow().iter().find(|s| s.3 == *cut).map(|s| (s.0, s.1));
-    let (Some((y, a)), Some(c)) = (spot, editor.workspace.claude.chat.as_ref()) else { return Ok(()) };
+    let (Some((y, a)), Some(c)) = (spot, editor.workspace.claude.chat.as_ref()) else { return Ok(None) };
     let card = card_style(ui, editor, "ui.popup");
     let ground = Style { bg: blend(card.bg, ui.tint, 1.0 - PEEK_STEP).or(card.bg), ..card };
     let faint = Style { fg: ui.linenr.fg.or(card.fg), ..ground };
@@ -19036,7 +19112,7 @@ fn with_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io
     let room = lay.width.saturating_sub(4).min(96);
     let cap = y.saturating_sub(lay.text_top as usize).min(WITH_CARD_MAX);
     if room < 16 || cap == 0 {
-        return Ok(());
+        return Ok(None);
     }
     let sp = |text: String, style: Style| Span { cut: None, hint: false, text, style };
     let wrapped = |s: &str| crate::cut::fit_in_hand(s, room, false, true).into_iter().map(|p| p.text);
@@ -19111,7 +19187,7 @@ fn with_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io
                 rows.extend(wrapped(&chip).map(|l| vec![sp(l, accent)]));
             }
         }
-        Some(None) => return Ok(()),
+        Some(None) => return Ok(None),
     }
     rows.truncate(cap);
     let inner = rows.iter().map(|r| r.iter().map(|s| s.text.width()).sum::<usize>()).max().unwrap_or(0);
@@ -19126,25 +19202,25 @@ fn with_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io
         apply(out, ground)?;
         queue!(out, Spaces(width - 1 - used))?;
     }
-    Ok(())
+    Ok(Some((x, top, width, rows.len())))
 }
 
 /// The status line's word of what Claude is doing now, whole while the mouse is over it (`whole.rs`, `Cut::Now`): as the
 /// run card, a borderless card on the peek's slight ground right above the line, its words where the line's start —
 /// the step whole with its time, Claude's last sentence whole (italic: its thinking's), the plan's step whole, then
 /// the key that follows Claude as a press on the line does. Nothing under it moves; the mouse leaving lets it go.
-fn now_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io::Result<()> {
+fn now_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io::Result<Option<Rect4>> {
     use crate::markdown::Span;
     use crate::now::Sign;
     if editor.cut_hover.as_ref() != Some(&crate::whole::Cut::Now) {
-        return Ok(());
+        return Ok(None);
     }
     let spot =
         editor.screen.cut_spots.borrow().iter().find(|s| s.3 == crate::whole::Cut::Now).map(|s| (s.0, s.1));
     let (Some((y, a)), Some(step), Some(c)) =
         (spot, crate::now::step(editor, &editor.workspace), editor.workspace.claude.chat.as_ref())
     else {
-        return Ok(());
+        return Ok(None);
     };
     let card = card_style(ui, editor, "ui.popup");
     let ground = Style { bg: blend(card.bg, ui.tint, 1.0 - PEEK_STEP).or(card.bg), ..card };
@@ -19158,7 +19234,7 @@ fn now_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io:
         .map_or(accent, |fg| Style { fg: Some(fg), ..ground });
     let room = lay.width.saturating_sub(4).min(96);
     if room < 16 || y < 2 {
-        return Ok(());
+        return Ok(None);
     }
     let sp = |text: String, style: Style| Span { cut: None, hint: false, text, style };
     let wrapped = |s: &str, w: usize| crate::cut::fit_in_hand(s, w, false, true).into_iter().map(|p| p.text);
@@ -19225,7 +19301,7 @@ fn now_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io:
         apply(out, ground)?;
         queue!(out, Spaces(width - 1 - used))?;
     }
-    Ok(())
+    Ok(Some((x, top, width, rows.len())))
 }
 
 /// A card's place: (x, y, width, height).
@@ -21050,21 +21126,21 @@ fn reviewer_style(editor: &Editor, ui: &Ui) -> Style {
 }
 
 /// The merge conflict under the cursor: which of how many, and the keys that settle it (the labels git gave
-/// each side). True if drawn.
+/// each side). True if it's the cursor's card (the diagnostic's then not drawn), with where it was drawn.
 fn draw_conflict_card(
     editor: &Editor,
     at: (u16, u16),
     ui: &Ui,
     lay: &Layout,
     out: &mut impl Write,
-) -> io::Result<bool> {
+) -> io::Result<(bool, Option<Rect4>)> {
     use crate::markdown::{Line, Span};
     let busy = editor.mode == Mode::Insert
         || editor.popup.is_some()
         || editor.picker.is_some()
         || editor.prompt.is_some()
         || !editor.pending.is_empty();
-    let Some((i, c)) = editor.conflict_here().filter(|_| !busy) else { return Ok(false) };
+    let Some((i, c)) = editor.conflict_here().filter(|_| !busy) else { return Ok((false, None)) };
     let n = editor.doc().conflicts.len();
     let faint = Style { fg: ui.linenr.fg, ..Style::default() };
     let plain = Style::default();
@@ -21118,8 +21194,7 @@ fn draw_conflict_card(
         Some(r) if r + 1 + 5 <= pane.text_rows => (at.0, pane.text_top + r as u16),
         _ => at,
     };
-    draw_float(&lines, at, 0, 12, ui, editor, lay, out)?;
-    Ok(true)
+    Ok((true, draw_float(&lines, at, 0, 12, ui, editor, lay, out)?.map(|(r, _)| r)))
 }
 
 fn draw_diagnostic_card(
@@ -21128,7 +21203,7 @@ fn draw_diagnostic_card(
     ui: &Ui,
     lay: &Layout,
     out: &mut impl Write,
-) -> io::Result<()> {
+) -> io::Result<Option<Rect4>> {
     let busy = editor.mode == Mode::Insert
         || editor.popup.is_some()
         || editor.hover_rest.rest.as_ref().is_some_and(|r| r.shown(editor).is_some())
@@ -21142,20 +21217,20 @@ fn draw_diagnostic_card(
         || busy
         || editor.diag_card_hidden == Some((editor.doc().id, editor.cursor_line()))
     {
-        return Ok(());
+        return Ok(None);
     }
     let here = cursor_diagnostics(editor);
     // The line end shows the line's only diagnostic whole — and that's the one under the cursor
     let line = editor.cursor_line();
     let text = &editor.doc().text;
     if ui.cursor_diags_shown.get() && here.iter().all(|d| mv::line_of(text, d.from) == line) {
-        return Ok(());
+        return Ok(None);
     }
     let lines = diagnostic_lines(&here, editor, ui);
     if lines.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
-    draw_float(&lines, at, 0, 12, ui, editor, lay, out).map(|_| ())
+    Ok(draw_float(&lines, at, 0, 12, ui, editor, lay, out)?.map(|(r, _)| r))
 }
 
 /// Diagnostics underlining the cell under the cursor — most severe first.

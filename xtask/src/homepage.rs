@@ -332,7 +332,7 @@ fn sample_frames(raw: &[(u64, vt100::Screen)], beats: &[(u64, vt100::Screen)]) -
     out
 }
 
-fn screen_cells(screen: &vt100::Screen) -> Vec<Vec<String>> {
+pub(crate) fn screen_cells(screen: &vt100::Screen) -> Vec<Vec<String>> {
     let (rows, cols) = screen.size();
     let text = |r, c| screen.cell(r, c).map(|cell| cell.contents().to_string()).unwrap_or_default();
     (0..rows).map(|r| (0..cols).map(|c| text(r, c)).collect()).collect()

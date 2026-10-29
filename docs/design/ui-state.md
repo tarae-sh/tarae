@@ -254,6 +254,13 @@ side git · 4 rows · in hand git:src/term.rs
   word that does its key: what a press does, `Buffer(DocId(3))`) and `lit` (`y`, `from`, `to`: the word lit there) —
   so a driver says what your pointer is on and why it lights or doesn't. Absent before the mouse moved. Not at Claude's
   level.
+- **`regions`** (V 25, focus D1, 2026-10-30, `regions.rs`) — where each thing to read was drawn on the last frame,
+  bottom first (a cell is the last region holding it): `kind` (`code` · `chat.top` · `chat.transcript` · `chat.input` ·
+  `follow` · `ask` · `toast` · `status.now` · `status.rest` · `note` · `hover` · `side` · `slot` · `float` · `prompt`),
+  `rect` (`[x, y, w, h]`), a code pane's `pane`, `lead` (the pane follow leads, else the focused one), `must` (it waits
+  for your answer: an ask, the edit review). Each recorded where it's drawn, right after its drawer in `term::draw`
+  (`drew`) — so they're in the order drawn; the cards over the code are `hover`s of their own; a picker over the screen
+  leaves only itself. A turn's reading path is read from them (`cargo xtask focus`). Not at Claude's level.
 - **`limits`** (apibill, `limits.rs`) — the account's plan limits as any claude said them: each window known now
   by Claude Code's name (`five_hour`, `seven_day`, `seven_day_<family>`, `seven_day:<model_scoped name>`) →
   `percent` (whole), `resets_at` and `seen_at` (unix ms), `status` (`allowed` · `allowed_warning` · `rejected`,
@@ -386,8 +393,9 @@ Short, so they can be read in prose and typed. Unique within one tarae process.
 
 - `v` is the schema version.
 - A field added, gone, renamed or changing what it means bumps `v` — one way for every change of the shape. Readers
-  still ignore fields they don't know. Each bump and its reason is on `uistate::V` — now 23: where tarae was started
-  in a workspace's project, `workspaces[].start`; before it, 22: where the mouse is, `pointer`; 21: the plugins' overlays, `overlays[]`; 20: a key is its shown name (#202): `keys.pending` and
+  still ignore fields they don't know. Each bump and its reason is on `uistate::V` — now 25: where each thing to read was
+  drawn, `regions[]`; 24: a note's `kind` may be `chat`; 23: where tarae was started
+  in a workspace's project, `workspaces[].start`; 22: where the mouse is, `pointer`; 21: the plugins' overlays, `overlays[]`; 20: a key is its shown name (#202): `keys.pending` and
   a card's `answers[].key` say `enter`, `-`, `↑ ↓ ← →` where they said `ret`, `minus`, `up` `down` `left` `right` (the
   keymap file keeps Helix's notation).
 - The text form isn't a contract (people and Claude read it). The JSON is.
@@ -508,6 +516,7 @@ A snapshot is one question. An event stream tells you about change without polli
 | `toast-whole` | id (the card's newest toast), `written`: the frame that first drew the card whole (`strength` 100, as `frames_written` counts) | diff — kind `toasts`; what a check of the fade waits on without asking (ci round 5: an ask is a frame, drawing the fade forward itself) |
 | `procs` | processes `started`, `ended`; checks `found`, `over` — only when a look found something changed | explicit, at each `:procs` look (`procs_said`) |
 | `limits` (kind `usage`) | `limits` (above) — only when a reading changed what's known | explicit, at `limits::seen` |
+| `regions` | `regions` (above), `typing` (your letters become text: insert mode, a prompt, a picker's query, the chat's input with something in it), `written`: the frame that drew them (as `frames_written` counts) — when either changes, and once to a watcher as it comes | diff — only to a watcher that names `regions` (`watch::ASKED_ONLY`), never one of all kinds: a frame's layout is a driver's measure, not news |
 
 - **The diff:** after each batch of events, `uistate` compares a small summary (keys, card ids and revs,
   session `doing`, run states, toast ids) with the last one sent. That happens only while someone watches:

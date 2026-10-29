@@ -2323,6 +2323,167 @@ fn every_row_the_state_lists_is_on_the_frame() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A frame of `ed` at `w`×`h`, its regions checked: each inside the screen with something drawn in it, every cell drawn
+/// in one (`other` 0), one code pane leading when there's code — the regions as the state lists them.
+fn drawn_regions(ed: &mut Editor, (w, h): (u16, u16), what: &str) -> Vec<crate::regions::Region> {
+    ed.focus_sync();
+    crate::term::render(ed, &mut Vec::new(), w, h).unwrap();
+    let shown = crate::screen::text(ed.last_frame.as_ref().unwrap().0.as_slice(), w, h).unwrap();
+    let cells: Vec<Vec<char>> = shown.lines().map(|l| l.chars().collect()).collect();
+    let at = |x: usize, y: usize| cells.get(y).and_then(|r| r.get(x)).copied().unwrap_or(' ');
+    let regions = ed.ui_state().regions;
+    for r in &regions {
+        let (x, y, rw, rh) = r.rect;
+        assert!(x + rw <= w as usize && y + rh <= h as usize, "{what}: {r:?} past the screen");
+        let drawn = (y..y + rh).any(|y| (x..x + rw).any(|x| at(x, y) != ' '));
+        assert!(drawn, "{what}: {} at {:?} has nothing drawn\n{shown}", r.kind.name(), r.rect);
+    }
+    let other: Vec<(usize, usize)> = (0..h as usize)
+        .flat_map(|y| (0..w as usize).map(move |x| (x, y)))
+        .filter(|&(x, y)| at(x, y) != ' ' && crate::regions::at(&regions, x, y).is_none())
+        .collect();
+    let rows: std::collections::BTreeSet<usize> = other.iter().map(|c| c.1).collect();
+    assert!(
+        other.is_empty(),
+        "{what}: {} cells in no region, rows {rows:?}\n{regions:#?}\n{shown}",
+        other.len()
+    );
+    let code = regions.iter().filter(|r| r.kind == crate::regions::Kind::Code);
+    assert!(code.clone().count() == 0 || code.filter(|r| r.lead).count() == 1, "{what}: one code pane leads");
+    regions
+}
+
+/// Focus D1: every region the state lists was drawn — inside the screen, something in it — and every cell drawn is
+/// in one (`other` stays 0): the side panel, a task in the slot, the chat with a conversation, a card, a toast; then
+/// the chat minimized while Claude works (the follow card), then a picker over it all. Never at Claude's level.
+#[test]
+fn every_region_the_state_lists_is_drawn_and_every_cell_drawn_is_in_one() {
+    let dir = sock_dir("regions");
+    let mut ed = editor();
+    ed.workspace.root = dir.clone();
+    let rels = vec!["Cargo.toml".to_string(), "src/main.rs".into()];
+    ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(dir.clone(), rels));
+    task_panel(&mut ed);
+    chat(&mut ed, "");
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs.push(crate::chat::Msg::new(crate::chat::Role::User, "what does cut do?", ""));
+    c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "It walks blocks first.", ""));
+    ed.workspace.viewer.at = crate::workspace::At::Side;
+    light_card(&mut ed);
+    ed.set_status("saved a.rs");
+    let check = |ed: &mut Editor, what: &str| -> Vec<&'static str> {
+        drawn_regions(ed, (160, 40), what).iter().map(|r| r.kind.name()).collect()
+    };
+    let kinds = check(&mut ed, "docked");
+    for k in
+        ["code", "side", "slot", "chat.top", "chat.transcript", "chat.input", "ask", "toast", "status.rest"]
+    {
+        assert!(kinds.contains(&k), "docked: {k} listed: {kinds:?}");
+    }
+    assert!(
+        ed.ui_state().regions.iter().any(|r| r.kind == crate::regions::Kind::Ask && r.must),
+        "an ask is must"
+    );
+    assert!(ed.ui_state().json()["regions"].as_array().is_some_and(|a| !a.is_empty()), "in the JSON");
+    assert!(ed.ui_state_claude().regions.is_empty(), "never Claude's level");
+    assert!(ed.ui_state_claude().json().get("regions").is_none(), "never in Claude's JSON");
+    // Minimized while Claude works: the follow card over the code
+    ed.offers.clear();
+    chat_minimized(&mut ed);
+    let kinds = check(&mut ed, "minimized");
+    assert!(kinds.contains(&"follow"), "minimized: the follow card listed: {kinds:?}");
+    // A picker over it all
+    open_a_picker(&mut ed, "first message");
+    let kinds = check(&mut ed, "a picker");
+    assert!(kinds.contains(&"float"), "a picker: listed: {kinds:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The cards over the code are regions of their own, never the code's words — the cursor's diagnostic card here — and
+/// the regions are listed in the order drawn: where the diagnostic card and the ask (drawn after it) overlap, the cells
+/// are the ask's, as on screen. (Recorded after the fact, out of that order, the hover took them and `must` was lost.)
+#[test]
+fn a_card_over_the_code_is_its_own_region_and_the_one_drawn_last_holds_its_cells() {
+    use crate::regions::Kind;
+    let mut ed = editor();
+    let text: String = (1..=40).map(|n| format!("let line_{n} = the_value_of(line_{n});\n")).collect();
+    ed.docs[0].text = ropey::Rope::from_str(&text);
+    let at = text.find("let line_24 ").unwrap();
+    ed.docs[0].lsp.diagnostics = vec![crate::lsp::Diagnostic {
+        from: at,
+        to: at + 3,
+        severity: 1,
+        message:
+            "mismatched types\nexpected `HashMap<&str, u32>`, found `HashMap<&str, usize>` in the value given"
+                .into(),
+        raw: serde_json::json!({ "source": "rustc", "code": "E0308" }),
+        source: 0,
+    }];
+    feed(&mut ed, &["2", "4", "G"]);
+    light_card(&mut ed);
+    let regions = drawn_regions(&mut ed, (90, 30), "a diagnostic card and an ask");
+    let rect = |k: Kind| regions.iter().find(|r| r.kind == k).map(|r| r.rect);
+    let (Some(card), Some(ask)) = (rect(Kind::Hover), rect(Kind::Ask)) else {
+        panic!("the diagnostic card and the ask both listed: {regions:#?}");
+    };
+    let xs = card.0.max(ask.0)..(card.0 + card.2).min(ask.0 + ask.2);
+    let ys = card.1.max(ask.1)..(card.1 + card.3).min(ask.1 + ask.3);
+    assert!(!xs.is_empty() && !ys.is_empty(), "the scene overlaps them: {card:?} {ask:?}");
+    let held = crate::regions::at(&regions, xs.start, ys.start).unwrap();
+    assert!(held.kind == Kind::Ask && held.must, "the ask, drawn last, holds the cells both cover: {held:?}");
+    let order: Vec<Kind> =
+        regions.iter().map(|r| r.kind).filter(|k| matches!(k, Kind::Hover | Kind::Ask)).collect();
+    assert_eq!(order, [Kind::Hover, Kind::Ask], "in the order drawn");
+}
+
+/// You're typing (focus §7 I, the `regions` event's `typing`): insert mode yes; the chat's input with the keys but empty
+/// — just after a message went — no; with a draft in it, yes. (Letters becoming text alone, the empty input was typing.)
+#[test]
+fn typing_is_insert_mode_or_a_draft_never_an_empty_input() {
+    let mut ed = editor();
+    frame(&mut ed);
+    assert!(!watch::typing(&ed.ui_state()), "normal mode");
+    feed(&mut ed, &["i"]);
+    frame(&mut ed);
+    assert!(watch::typing(&ed.ui_state()), "insert mode");
+    feed(&mut ed, &["<esc>"]);
+    chat(&mut ed, "");
+    frame(&mut ed);
+    let s = ed.ui_state();
+    assert!((s.keys.region, s.keys.takes) == (Region::Chat, Takes::Text), "the chat's input has the keys");
+    assert!(!watch::typing(&s), "empty: not typing");
+    chat(&mut ed, "a draft");
+    frame(&mut ed);
+    assert!(watch::typing(&ed.ui_state()), "a draft: typing");
+}
+
+/// A watcher that asks for `regions` is told them after the next batch, with the frame that drew them, and again only
+/// when they change; a watcher of all kinds never is.
+#[test]
+fn a_regions_watcher_is_told_them_as_they_change() {
+    let mut ed = editor();
+    frame(&mut ed);
+    let (tx, got) = std::sync::mpsc::sync_channel(watch::UNREAD);
+    let (all_tx, all) = std::sync::mpsc::sync_channel(watch::UNREAD);
+    let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    ed.ui_watch_add(watch::Watcher { tx: all_tx, kinds: Vec::new(), overflowed: flag.clone() });
+    ed.ui_watch_add(watch::Watcher { tx, kinds: vec!["regions".into()], overflowed: flag });
+    let regions = |rx: &std::sync::mpsc::Receiver<String>| -> Vec<Value> {
+        let evs = rx.try_iter().map(|l| serde_json::from_str::<Value>(&l).unwrap());
+        evs.filter(|v| v["event"] == "regions").collect()
+    };
+    frame(&mut ed);
+    let first = regions(&got);
+    assert_eq!(first.len(), 1, "told once it came: {first:?}");
+    assert!(first[0]["regions"].as_array().is_some_and(|a| !a.is_empty()) && first[0]["written"].is_u64());
+    frame(&mut ed);
+    assert!(regions(&got).is_empty(), "unchanged: nothing");
+    chat(&mut ed, "");
+    frame(&mut ed);
+    assert_eq!(regions(&got).len(), 1, "the chat opened: told");
+    assert!(regions(&all).is_empty(), "a watcher of all kinds isn't told regions");
+}
+
 /// A run keeps one id from its ask to its end: the user's task waiting in line behind Claude's command is
 /// `run#N` queued, and the same `run#N` once it runs.
 #[test]

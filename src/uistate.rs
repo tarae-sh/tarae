@@ -57,7 +57,9 @@ use crate::workspace::At;
 /// 23: where a project starts (`project.rs`): a workspace's `root` is its project, `start` where tarae was started in it
 /// (only when that isn't its root).
 /// 24: a note's `kind` may be `chat` (#239: what the chat's last answer said of a place, at it).
-pub const V: u64 = 24;
+/// 25: where each thing to read was drawn (focus D1, `regions.rs`): `regions[]` (`kind`, `rect`, a code pane's `pane`,
+/// `lead`, `must`), bottom first; a watcher asking `regions` is told them as they change, with the frame `written`.
+pub const V: u64 = 25;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;
@@ -769,6 +771,9 @@ pub struct UiState {
     /// Where the mouse last moved and what's under it on the frame last drawn (#215: a driver says what your pointer is
     /// on) — None before it moved, or away; never Claude's.
     pub pointer: Option<PointerState>,
+    /// Where each thing to read was drawn on the last frame, by kind, bottom first (`regions.rs`) — a turn's reading
+    /// path (`cargo xtask focus`); chrome, never Claude's.
+    pub regions: Vec<crate::regions::Region>,
 }
 
 /// The pointer's cell and what's under it: what a press there lands on (`mouse_under`'s surface and part), its kind
@@ -1830,6 +1835,7 @@ impl Editor {
             tick_in_ms: self.tick_wanted().map(|d| d.as_millis() as u64),
             unfocused: self.unfocused,
             pointer: self.ui_pointer(),
+            regions: self.screen.regions.list(),
         }
     }
 
@@ -2189,6 +2195,9 @@ impl UiState {
         }
         if let Some(p) = &self.pointer {
             v["pointer"] = p.json();
+        }
+        if !self.regions.is_empty() {
+            v["regions"] = self.regions.iter().map(crate::regions::Region::json).collect();
         }
         v
     }

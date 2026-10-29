@@ -51,6 +51,10 @@ struct Summary {
     /// that drew it (`frames_written`) — a `toast-whole` event when that id first comes, so a driver checking a
     /// fade waits on it without asking (an ask is a frame: it would draw the fade forward itself).
     card_whole: Option<(String, u64)>,
+    /// Where each thing was drawn (`regions.rs`) and the frame that drew them (`frames_written`) — a `regions` event
+    /// when they change, only to a watcher that asked for them (a frame's layout is a driver's measure, not news).
+    /// None: owed to a watcher that just came. With them, whether you're typing (`typing`) — what arrives meanwhile.
+    regions: Option<(Vec<crate::regions::Region>, bool, u64)>,
 }
 
 /// The editor's watchers (each with when it came), what was last sent, and what was said since (explicit
@@ -114,7 +118,16 @@ fn summary(s: &super::UiState) -> Summary {
             .iter()
             .rfind(|t| t.strength == Some(100))
             .map(|t| (t.id.clone(), s.frames_written)),
+        regions: Some((s.regions.clone(), typing(s), s.frames_written)),
     }
+}
+
+/// You're typing (focus §7 I): your letters become text — insert mode, a prompt, a picker's query — but the chat's
+/// input only once something's in it (its keys there after a message sent aren't typing).
+pub(crate) fn typing(s: &super::UiState) -> bool {
+    let chat = s.keys.region == super::Region::Chat;
+    s.keys.takes == super::Takes::Text
+        && (!chat || s.panels.chat.as_ref().is_some_and(|c| !c.draft.is_empty()))
 }
 
 /// The events between two summaries.
@@ -183,7 +196,26 @@ fn diff(old: &Summary, new: &Summary) -> Vec<Value> {
         out.push(json!({ "event": "toast-whole", "id": id, "written": written,
                          "said": format!("{id}'s card drawn whole") }));
     }
+    if let Some((now, typing, written)) = &new.regions
+        && old.regions.as_ref().is_none_or(|(was, typed, _)| was != now || typed != typing)
+    {
+        let list: Vec<Value> = now.iter().map(crate::regions::Region::json).collect();
+        out.push(json!({ "event": "regions", "written": written, "typing": typing, "regions": list,
+                         "said": format!("{} regions as of frame {written}", now.len()) }));
+    }
     out
+}
+
+/// The kinds told only to a watcher that names them — none of a watcher's "all".
+pub const ASKED_ONLY: [&str; 1] = ["regions"];
+
+/// Whether a watcher that asked `kinds` (none: all) is told events of `kind` — the one rule its hello says too
+/// (`uisocket::told`).
+pub fn asked(kinds: &[String], kind: &str) -> bool {
+    match kinds.is_empty() {
+        true => !ASKED_ONLY.contains(&kind),
+        false => kinds.iter().any(|k| k == kind),
+    }
 }
 
 /// The kind a watcher names an event by.
@@ -272,6 +304,12 @@ impl Editor {
     pub fn ui_watch_add(&mut self, w: Watcher) {
         if self.ui_watch.watchers.is_empty() {
             self.ui_watch.last = Some(summary(&self.ui_state()));
+        }
+        // (its regions from the next batch's end: what's drawn then, whether it changed or not)
+        if w.kinds.iter().any(|k| ASKED_ONLY.contains(&k.as_str()))
+            && let Some(last) = self.ui_watch.last.as_mut()
+        {
+            last.regions = None;
         }
         // (its `procs` start from a look after it came: one now, so the first isn't two looks away)
         if w.kinds.is_empty() || w.kinds.iter().any(|k| k == "procs") {
@@ -393,7 +431,7 @@ pub fn after_frame(ed: &mut Editor) {
     ed.ui_watch.watchers.retain(|(w, came)| {
         for (ev, from) in &said {
             let kind = kind_of(ev["event"].as_str().unwrap_or_default());
-            if !w.kinds.is_empty() && !w.kinds.iter().any(|k| k == kind) || from.is_some_and(|f| f < *came) {
+            if !asked(&w.kinds, kind) || from.is_some_and(|f| f < *came) {
                 continue;
             }
             match w.tx.try_send(ev.to_string()) {

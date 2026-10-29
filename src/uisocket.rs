@@ -185,8 +185,15 @@ fn peer(stream: UnixStream, tx: crate::event::Tx) {
 
 /// The kinds of events a watcher may ask for (`{"watch":[…]}`; none: all).
 const KINDS: &[&str] = &[
-    "keys", "cards", "sessions", "reviewer", "review", "turns", "runs", "toasts", "usage", "procs", "sandbox",
+    "keys", "cards", "sessions", "reviewer", "review", "turns", "runs", "toasts", "usage", "procs",
+    "sandbox", "regions",
 ];
+
+/// The kinds a watcher that asked `kinds` (none: all) is told of, as its hello says them — the watch's own rule
+/// (`watch::asked`): all of them leaves out what's told only when named (`regions`).
+fn told(kinds: &[String]) -> Vec<String> {
+    KINDS.iter().filter(|k| crate::uistate::watch::asked(kinds, k)).map(|k| k.to_string()).collect()
+}
 
 /// `{"watch":["keys","cards",…]}`: this connection is told what changes, a JSON line an event, from the batch
 /// of events it's registered in on (`uistate/watch.rs`). It ends when the reader goes — or reads too slowly: then its
@@ -224,8 +231,7 @@ fn watch(mut out: UnixStream, kinds: &Value, line: &[u32], tx: &crate::event::Tx
     }
     match registered.recv_timeout(WAIT) {
         Ok(Ok((frame, input))) => {
-            let all = if kinds.is_empty() { KINDS.iter().map(|k| k.to_string()).collect() } else { kinds };
-            let hello = json!({ "event": "watching", "kinds": all, "frame": frame, "input": input,
+            let hello = json!({ "event": "watching", "kinds": told(&kinds), "frame": frame, "input": input,
                                 "said": "watching — events come as they happen" });
             if writeln!(out, "{hello}").is_err() {
                 return;
@@ -373,7 +379,7 @@ usage: tarae state [--json] [--pid PID] [--after-input N]
   --features         instead: which features get used, and which never (:features; counted only with
                      features.count on)
   --watch [KINDS]    what changes, a line an event, until interrupted — KINDS: keys,cards,sessions,reviewer,
-                     review,turns,runs,toasts,usage,procs,sandbox (all when left out)";
+                     review,turns,runs,toasts,usage,procs,sandbox (all when left out); regions only when named";
 
 /// `tarae state`: a reader that stops early (`| head -3`) ends it quietly — exit 0, nothing said.
 pub fn cli(args: &[String]) -> anyhow::Result<()> {
@@ -566,6 +572,22 @@ fn roots_in(v: &Value) -> Result<Vec<PathBuf>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A watcher's hello names the kinds it will be told of, by the rule that tells them: asking none, every kind but
+    /// `regions`; asking some, those.
+    #[test]
+    fn the_watchers_hello_says_the_kinds_it_is_told() {
+        let all = told(&[]);
+        for k in KINDS {
+            assert_eq!(all.contains(&k.to_string()), crate::uistate::watch::asked(&[], k), "{k}");
+        }
+        assert!(!all.contains(&"regions".to_string()) && all.len() == KINDS.len() - 1, "{all:?}");
+        let some = vec!["regions".to_string(), "keys".into()];
+        assert_eq!(told(&some), ["keys", "regions"], "in KINDS' order");
+        for k in KINDS {
+            assert_eq!(told(&some).contains(&k.to_string()), crate::uistate::watch::asked(&some, k), "{k}");
+        }
+    }
 
     /// `tarae state` finds its tarae among those answering — one whose state lists no `workspaces` (an older tarae's,
     /// `sessions` before V 16) is passed over as one that doesn't answer, never read as a tarae with nothing open.

@@ -193,6 +193,64 @@ pub(crate) fn record_at(
     Ok((ms(vt.captured), ms(vt.beats)))
 }
 
+/// `record_at`'s frames from `@rec` on, each with its number (not its time) among every frame tarae wrote (its `frames_written` then —
+/// one a synchronized update's end), and what a watcher of tarae's UI state asking `kinds` was told meanwhile, a JSON
+/// value a line (`cargo xtask focus`: the regions each frame was drawn in). The watcher connects to the tarae's own
+/// socket in `state` as soon as it's there.
+pub(crate) fn record_watched(
+    setup: &Setup,
+    keys: &[String],
+    size: (u16, u16),
+    state: &Path,
+    homes: &[(&str, std::ffi::OsString)],
+    kinds: &[&str],
+) -> Result<(Frames, Vec<serde_json::Value>)> {
+    use std::sync::{Arc, Mutex};
+    let (cols, rows) = size;
+    let mut vt = Vt::new(rows, cols);
+    let told: Arc<Mutex<Vec<serde_json::Value>>> = Arc::default();
+    let reader: std::cell::RefCell<Option<std::thread::JoinHandle<()>>> = Default::default();
+    let ask = serde_json::json!({ "watch": kinds }).to_string();
+    let on_spawn = |pid: u32| {
+        let sock = state.join("tarae/ui").join(format!("{pid}.sock"));
+        let (told, ask) = (told.clone(), ask.clone());
+        *reader.borrow_mut() = Some(std::thread::spawn(move || watched(&sock, &ask, &told)));
+    };
+    let missed = drive_with(&mut vt, setup, keys, state, homes, cols, rows, &on_spawn)?;
+    if let Some(r) = reader.borrow_mut().take() {
+        let _ = r.join();
+    }
+    if !missed.is_empty() {
+        return Err(missed.join("; "));
+    }
+    let frames = vt.captured.into_iter().zip(vt.captured_ends).map(|((_, s), n)| (n, s)).collect();
+    let told = std::mem::take(&mut *told.lock().map_err(|_| "the watcher's list".to_string())?);
+    Ok((frames, told))
+}
+
+/// A watcher of the UI state at `sock` (`ask`: its `{"watch":[…]}`): connected once the socket is there (at most 20 s),
+/// every line it's told kept in `told` until tarae goes.
+fn watched(sock: &Path, ask: &str, told: &std::sync::Mutex<Vec<serde_json::Value>>) {
+    use std::io::BufRead;
+    let end = Instant::now() + Duration::from_secs(20);
+    let stream = loop {
+        match std::os::unix::net::UnixStream::connect(sock) {
+            Ok(s) => break s,
+            Err(_) if Instant::now() < end => std::thread::sleep(Duration::from_millis(20)),
+            Err(e) => return eprintln!("focus: {}: {e}", sock.display()),
+        }
+    };
+    if writeln!(&stream, "{ask}").is_err() {
+        return;
+    }
+    for line in io::BufReader::new(&stream).lines() {
+        let Ok(line) = line else { return };
+        if let (Ok(v), Ok(mut all)) = (serde_json::from_str(&line), told.lock()) {
+            all.push(v);
+        }
+    }
+}
+
 /// The picture of a driven screen, saved either way — and an error when a wait in its keys timed out (`missed`):
 /// it's of the frame as it was then, likely not the one meant, and must not pass as a shot that worked.
 fn picture_of(vt: &Vt, scale: usize, out: &Path, missed: &[String]) -> Result<()> {
@@ -328,6 +386,10 @@ struct Vt {
     captured: Vec<(Duration, vt100::Screen)>,
     /// The beat snapshots `@beat` marked during `@rec`.
     beats: Vec<(Duration, vt100::Screen)>,
+    /// Frames read so far, every one (a synchronized update's end each — tarae's `frames_written`), and each
+    /// `captured` frame's count as it was kept.
+    ends: u64,
+    captured_ends: Vec<u64>,
 }
 
 impl Vt {
@@ -338,19 +400,31 @@ impl Vt {
             capturing: None,
             captured: Vec::new(),
             beats: Vec::new(),
+            ends: 0,
+            captured_ends: Vec::new(),
         }
+    }
+
+    /// The screen as it is now kept, at `at`.
+    fn keep(&mut self, at: Duration) {
+        self.captured.push((at, self.parser.screen().clone()));
+        self.captured_ends.push(self.ends);
     }
 
     fn feed(&mut self, data: &[u8]) {
         self.held.extend_from_slice(data);
         let Some(cut) = self.held.windows(FRAME_END.len()).rposition(|w| w == FRAME_END) else { return };
         let frames: Vec<u8> = self.held.drain(..cut + FRAME_END.len()).collect();
-        let Some(since) = self.capturing else { return self.process(&frames) };
+        let Some(since) = self.capturing else {
+            self.ends += frames.windows(FRAME_END.len()).filter(|w| *w == FRAME_END).count() as u64;
+            return self.process(&frames);
+        };
         // (one frame at a time, each kept as drawn)
         let mut rest = &frames[..];
         while let Some(end) = rest.windows(FRAME_END.len()).position(|w| w == FRAME_END) {
             self.process(&rest[..end + FRAME_END.len()]);
-            self.captured.push((since.elapsed(), self.parser.screen().clone()));
+            self.ends += 1;
+            self.keep(since.elapsed());
             rest = &rest[end + FRAME_END.len()..];
         }
     }
@@ -472,6 +546,21 @@ fn drive(
     cols: u16,
     rows: u16,
 ) -> Result<Vec<String>> {
+    drive_with(vt, setup, keys, state, homes, cols, rows, &|_| {})
+}
+
+/// `drive`, `on_spawn` told the tarae's pid as it starts.
+#[allow(clippy::too_many_arguments)]
+fn drive_with(
+    vt: &mut Vt,
+    setup: &Setup,
+    keys: &[String],
+    state: &Path,
+    homes: &[(&str, std::ffi::OsString)],
+    cols: u16,
+    rows: u16,
+    on_spawn: &dyn Fn(u32),
+) -> Result<Vec<String>> {
     if !setup.bin.is_file() {
         return Err(format!("{} not found", setup.bin.display()));
     }
@@ -507,6 +596,7 @@ fn drive(
     }
     let mut child = cmd.spawn().map_err(|e| format!("{}: {e}", setup.bin.display()))?;
     drop(slave);
+    on_spawn(child.id());
 
     // Drains the master until EOF — on macOS an exiting process whose tty output nobody reads hangs.
     let (tx, rx) = mpsc::channel();
@@ -559,16 +649,16 @@ fn drive(
         if k == "@rec" {
             let since = Instant::now();
             vt.captured.clear();
+            vt.captured_ends.clear();
             vt.beats.clear();
-            vt.captured.push((Duration::ZERO, vt.parser.screen().clone()));
+            vt.keep(Duration::ZERO);
             vt.capturing = Some(since);
             continue;
         }
         if k == "@beat" {
             let d = vt.capturing.map_or(Duration::ZERO, |s| s.elapsed());
-            let s = vt.parser.screen().clone();
-            vt.captured.push((d, s.clone()));
-            vt.beats.push((d, s));
+            vt.keep(d);
+            vt.beats.push((d, vt.parser.screen().clone()));
             continue;
         }
         if let Some(ms) = k.strip_prefix("@hold:").and_then(|s| s.parse::<u64>().ok()) {
@@ -627,7 +717,7 @@ fn drive(
         }
         if let Some(secs) = capture.take() {
             let since = Instant::now();
-            vt.captured.push((Duration::ZERO, vt.parser.screen().clone()));
+            vt.keep(Duration::ZERO);
             vt.capturing = Some(since);
             let _ = master.write_all(&unescape(k));
             pump(vt, secs);
