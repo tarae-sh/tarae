@@ -372,6 +372,131 @@ fn a_lists_status_word_is_its_headers() {
     assert!(status(&shown).starts_with("● tests"), "{}", status(&shown));
 }
 
+/// The wheel over a group's list scrolls its view only (the user, 2026-10-28: never the selection, nor the detail it
+/// drives) and the view holds where the wheel left it as rows come — a place listed before the ones in sight (an error
+/// found later) leaves the same places in sight; a key brings the view back to the selection. The tests' list while
+/// it runs follows its newest results until the wheel takes it off its end, and again once the wheel brings it back.
+#[test]
+fn a_lists_wheel_view_holds_as_rows_come() {
+    use crate::event::{Mouse, MouseKind};
+    let dir = crate::scratch::Scratch::new("group-wheel");
+    let a = dir.path().join("a.rs");
+    let mut ed = editor(dir.path());
+    for i in 0..40 {
+        print(&mut ed, 1, place(&a, i, 2, &format!("w{i:02}")));
+    }
+    frame(&mut ed);
+    feed(&mut ed, "<C-w>j");
+    if region(&ed) != "list:task" {
+        feed(&mut ed, "<tab>");
+    }
+    assert_eq!(region(&ed), "list:task");
+    let (_, rows, top) = ed.screen.list(GroupKind::Task).expect("the places' list drawn");
+    assert!(rows < 40 && top == 0, "{rows} rows from {top}");
+    let wheel = |ed: &mut Editor, kind, kind_of: GroupKind| {
+        let (y, ..) = ed.screen.list(kind_of).unwrap();
+        ed.handle_mouse(Mouse { kind, x: 3, y: y as u16, alt: false, ctrl: false });
+        frame(ed)
+    };
+    let output = |ed: &Editor| {
+        let r = ed.workspace.task_run.as_ref().unwrap();
+        (r.picked, r.top(crate::rundoc::rows(ed, Slot::Task)), cursor(ed))
+    };
+    let was = output(&ed);
+    wheel(&mut ed, MouseKind::ScrollDown, GroupKind::Task);
+    let shown = wheel(&mut ed, MouseKind::ScrollDown, GroupKind::Task);
+    assert_eq!(ed.screen.list(GroupKind::Task).unwrap().2, 6, "two notches: six rows down");
+    assert_eq!(output(&ed), was, "the place picked and the output beside it stay");
+    assert!(list_rows(&shown)[0].contains("w06"), "{:?}", list_rows(&shown));
+    // (an error, listed before every warning: the same places in sight, the view a row on)
+    print(&mut ed, 1, place(&a, 50, 1, "e00"));
+    let shown = frame(&mut ed);
+    assert!(list_rows(&shown)[0].contains("w06"), "held on its places: {:?}", list_rows(&shown));
+    assert_eq!(ed.screen.list(GroupKind::Task).unwrap().2, 7);
+    // (a key: the view back to the selection — the first warning's row, now the second, then the third)
+    feed(&mut ed, "j");
+    let (_, rows, top) = ed.screen.list(GroupKind::Task).unwrap();
+    assert!((top..top + rows).contains(&2), "the selection in sight again: {rows} rows from {top}");
+
+    // The tests' list, running
+    let mut ed = editor(dir.path());
+    ed.workspace.task_run = None;
+    let case = |i: usize| crate::test_results::Case {
+        name: format!("t::c{i:02}"),
+        status: crate::test_results::Status::Passed,
+        secs: None,
+        message: Vec::new(),
+        at: None,
+    };
+    let mut run = crate::testing::TestRun::finished("t", (0..40).map(case).collect(), vec!["ok".into()]);
+    run.state = crate::testing::RunState::Running;
+    ed.workspace.test_run = Some(run);
+    frame(&mut ed);
+    let (_, rows, top) = ed.screen.list(GroupKind::Tests).expect("the results' list drawn");
+    assert_eq!(top, 40 - rows, "its newest in sight");
+    let more = |ed: &mut Editor, from: usize| {
+        let r = ed.workspace.test_run.as_mut().unwrap();
+        r.cases.extend((from..from + 5).map(case));
+        frame(ed);
+        ed.screen.list(GroupKind::Tests).unwrap().2
+    };
+    assert_eq!(more(&mut ed, 40), 45 - rows, "it follows them");
+    wheel(&mut ed, MouseKind::ScrollUp, GroupKind::Tests);
+    assert_eq!(more(&mut ed, 45), 42 - rows, "off its end by the wheel: it stays");
+    for _ in 0..3 {
+        wheel(&mut ed, MouseKind::ScrollDown, GroupKind::Tests);
+    }
+    assert_eq!(ed.screen.list(GroupKind::Tests).unwrap().2, 50 - rows, "the wheel back at its end");
+    assert_eq!(more(&mut ed, 50), 55 - rows, "it follows them again");
+    assert_eq!(ed.workspace.test_run.as_ref().unwrap().selected, 0, "the selection never moved");
+    // (a key on the running list after the wheel: the view to the selection, not to the newest)
+    wheel(&mut ed, MouseKind::ScrollUp, GroupKind::Tests);
+    ed.list_focus(GroupKind::Tests);
+    feed(&mut ed, "j");
+    let (_, rows, top) = ed.screen.list(GroupKind::Tests).unwrap();
+    assert_eq!(ed.workspace.test_run.as_ref().unwrap().selected, 1);
+    assert!((top..top + rows).contains(&1), "j: the selection in sight, from row {top}");
+}
+
+/// With no wheel the selection stays in sight as rows come between the first row in sight and it: errors found later
+/// are listed after the errors before them, above the warning selected — the view keeps it in sight (the review: kept
+/// on its first row, the selection slipped out of sight, and `:procs`' `s` would have been refused on it).
+#[test]
+fn the_selection_stays_in_sight_as_rows_come_above_it() {
+    let dir = crate::scratch::Scratch::new("group-above");
+    let a = dir.path().join("a.rs");
+    let mut ed = editor(dir.path());
+    for i in 0..5 {
+        print(&mut ed, 1, place(&a, 100 + i, 1, &format!("e{i:02}")));
+    }
+    for i in 0..40 {
+        print(&mut ed, 1, place(&a, i, 2, &format!("w{i:02}")));
+    }
+    frame(&mut ed);
+    ed.list_focus(GroupKind::Task);
+    frame(&mut ed);
+    let (_, rows, _) = ed.screen.list(GroupKind::Task).expect("the places' list drawn");
+    // (the selection on the row after the view's last, the view a row or two down — its first row an error)
+    for _ in 0..rows + 1 {
+        feed(&mut ed, "j");
+    }
+    let (_, rows, top) = ed.screen.list(GroupKind::Task).unwrap();
+    let at = rows + 1;
+    assert!(
+        top > 0 && top < 5 && (top..top + rows).contains(&at),
+        "{rows} rows from {top}, the selection on {at}"
+    );
+    for i in 5..8 {
+        print(&mut ed, 1, place(&a, 100 + i, 1, &format!("e{i:02}")));
+    }
+    frame(&mut ed);
+    let r = ed.workspace.task_run.as_ref().unwrap();
+    let at = r.place_rows().iter().position(|&i| i == r.picked).unwrap();
+    assert_eq!(at, rows + 4, "three rows came above it");
+    let (_, rows, top) = ed.screen.list(GroupKind::Task).unwrap();
+    assert!((top..top + rows).contains(&at), "the selection in sight: {rows} rows from {top}, it on {at}");
+}
+
 /// The list's rows in a frame: the slot's rows with a place's mark, cut at the list's line.
 fn list_rows(shown: &str) -> Vec<String> {
     let rows = shown.lines().filter(|l| l.chars().take(4).any(|c| c == '▲' || c == '◦'));

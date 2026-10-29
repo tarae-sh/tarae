@@ -3153,10 +3153,14 @@ fn draw_task_group(
         Some(p) => (p.steps.len(), p.selected),
         None => (order.len(), order.iter().position(|&i| i == r.picked).unwrap_or(0)),
     };
-    let list_top = steps.map_or(&r.list_top, |p| &p.list_top);
-    // (the selection kept in sight from where the list is — `C-e`/`C-y` move it)
-    let first = list_top.get().min(sel).max((sel + 1).saturating_sub(list_rows)).min(n.saturating_sub(1));
-    list_top.set(first);
+    let (list_top, shown) = steps.map_or((&r.list_top, &r.list_shown), |p| (&p.list_top, &p.list_shown));
+    // (the selection kept in sight from where the list is — `C-e`/`C-y` move it —, but where the wheel left it while
+    // the selection stays: on its rows as the list grows; ids the steps', the places' by identity)
+    let ids: Vec<u64> = match steps {
+        Some(_) => (0..n as u64).collect(),
+        None => order.iter().map(|&i| i as u64).collect(),
+    };
+    let first = crate::floatlist::hold(list_top, shown, &ids, sel, list_rows, false);
     // (the output's text: beside the list, or stacked the slot's width inside its padding)
     let text = match side {
         true => (x0 + right_x + 1, right_w.saturating_sub(1)),
@@ -3453,15 +3457,9 @@ fn draw_plugin_panel<W: Write>(
     // The table, and the status line under it
     let header = !panel.columns.is_empty();
     let body = lay.slot_h.saturating_sub(lay.slot_head + 1 + header as usize);
-    let n = panel.rows.len();
-    // The selected row in sight
-    let mut scroll = st.scroll.get().min(n.saturating_sub(body));
-    if st.selected < scroll {
-        scroll = st.selected;
-    } else if body > 0 && st.selected >= scroll + body {
-        scroll = st.selected + 1 - body;
-    }
-    st.scroll.set(scroll);
+    // The selected row in sight, but where the wheel left it while the selection stays (`floatlist::hold`)
+    let ids = crate::plugin::plugin_panel_ids(panel);
+    let scroll = crate::floatlist::hold(&st.scroll, &st.shown, &ids, st.selected, body, false);
     let cols = st.widths.len();
     let widths: Vec<usize> = st.widths.iter().map(|&c| c.min(w / 2)).collect();
     let draw_cells = |out: &mut W, y: usize, cells: &[String], style: Style, mark: bool| -> io::Result<()> {
@@ -3710,13 +3708,10 @@ fn draw_procs_panel<W: Write>(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut 
     let n = p.rows.len();
     let checks_want = 1 + p.checks.len().clamp(1, 4);
     let list = n.max(1).min(room.saturating_sub(checks_want).max(room.min(4)));
-    let mut scroll = panel.scroll.get().min(n.saturating_sub(list));
-    if panel.selected < scroll {
-        scroll = panel.selected;
-    } else if list > 0 && panel.selected >= scroll + list {
-        scroll = panel.selected + 1 - list;
-    }
-    panel.scroll.set(scroll);
+    // (the selected row in sight, but where the wheel left it while the selection stays — on its process as rows come
+    // and go)
+    let ids: Vec<u64> = p.rows.iter().map(crate::procs::Row::id).collect();
+    let scroll = crate::floatlist::hold(&panel.scroll, &panel.shown, &ids, panel.selected, list, false);
     let first = head_y + 1;
     for i in 0..list {
         let y = first + i;
@@ -4185,13 +4180,11 @@ fn draw_test_panel(
         false => (body, rows),
     };
     editor.screen.test_panel.set(Some((y0, last, list_rows)));
-    // Keep the selection visible from where the list is (`C-e`/`C-y` move it); while running, the latest visible
-    let first = if r.state == RunState::Running {
-        r.cases.len().saturating_sub(list_rows)
-    } else {
-        r.list_top.get().min(r.selected).max((r.selected + 1).saturating_sub(list_rows))
-    };
-    r.list_top.set(first);
+    // Keep the selection visible from where the list is (`C-e`/`C-y` move it), but where the wheel left it while the
+    // selection stays; while running, the latest visible — until the wheel takes it off the end
+    let ids: Vec<u64> = (0..r.cases.len() as u64).collect();
+    let running = r.state == RunState::Running;
+    let first = crate::floatlist::hold(&r.list_top, &r.list_shown, &ids, r.selected, list_rows, running);
     if list.w > 0 {
         editor.screen.lists.borrow_mut().push((crate::pane::GroupKind::Tests, (body, list_rows, first)));
     }

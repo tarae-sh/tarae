@@ -47,7 +47,8 @@ You don't need to know the keys to start:
 - **Mouse** — click to place the cursor, drag to select, alt+click for another cursor, ctrl+click to go there
   (`gd`: a definition, a page's link followed; an http(s) address in code opened as a page — `C-o` comes back), wheel to scroll (Shift+wheel sideways) —
   the wheel only scrolls: it never takes the keys, moves a cursor or a list's selection (a key brings the view back
-  to it), and stops at each end. In pickers a click selects and a second one opens. Every line between two things with sizes drags — the chat's and the side
+  to it; `s`/`r` in `:procs`, or a plugin panel's own key, on a row left out of sight first bring it back and say so),
+  and stops at each end. In pickers a click selects and a second one opens. Every line between two things with sizes drags — the chat's and the side
   panel's edges, the review rail's (its width kept), the bottom panel's line (from its tabs too), the dividers between
   your panes, side by side and over and under — the accent while dragged; pressed without a drag, it gives the keys
   to what it heads. The surface under the pointer lights its lines half (its top line, its edges), the one with the

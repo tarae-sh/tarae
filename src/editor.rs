@@ -2320,6 +2320,17 @@ impl Editor {
         ((list.x..list.x + list.w).contains(&x) && (y0..y0 + rows).contains(&y)).then(|| first + y - y0)
     }
 
+    /// Whether screen cell (x, y) is over kind `kind`'s list as last drawn — its rows or the blank under them.
+    pub(crate) fn over_list(&self, kind: crate::pane::GroupKind, x: usize, y: usize) -> bool {
+        let Some(id) =
+            self.workspace.group(kind).map(|g| g.list).filter(|_| self.screen.list(kind).is_some())
+        else {
+            return false;
+        };
+        let list = self.screen.leaves.iter().find(|l| l.0 == id).map(|l| l.1);
+        list.is_some_and(|r| (r.x..r.x + r.w).contains(&x) && (r.y..r.y + r.h).contains(&y))
+    }
+
     /// The keys to pane `id`, landing where its surface takes them.
     pub fn focus_pane(&mut self, id: crate::split::PaneId) {
         use crate::pane::Shows;
@@ -3659,7 +3670,7 @@ impl Editor {
                 }
             }
             // A linked group's list: a press picks its row; `:procs`' table takes the keys off its rows too, and the
-            // wheel scrolls it as `C-e`/`C-y` do (the selection stays unless it would leave the rows in sight)
+            // wheel scrolls its view only (the selection and the detail it drives stay)
             (S::List(kind), part) => {
                 took_mouse(S::List(kind));
                 match (m.kind, row_of(part)) {
@@ -3671,7 +3682,7 @@ impl Editor {
                     _ => {}
                 }
             }
-            // A plugin's panel: a click takes the keys there (on a row, selects it); the wheel moves through it
+            // A plugin's panel: a click takes the keys there (on a row, selects it); the wheel scrolls its view only
             (S::Plugin, part) => {
                 took_mouse(S::Plugin);
                 match m.kind {

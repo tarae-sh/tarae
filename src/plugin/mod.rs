@@ -48,7 +48,7 @@ pub use abi::Tone as PluginTone;
 use host::{Call, Host, Input, Manifest, Note};
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) use io::plugin_process;
-pub use panel::{PanelState as PluginPanelState, key as plugin_panel_key};
+pub use panel::{PanelState as PluginPanelState, key as plugin_panel_key, row_ids as plugin_panel_ids};
 pub use perm::Ask as PluginAsk;
 
 use crate::document::DocId;
@@ -1306,7 +1306,7 @@ mod tests {
         key(&mut ed, "C-y");
         draw(&mut ed);
         assert_eq!(at(&ed), (1, 0), "C-y");
-        // The wheel: the same act, three rows — the selection follows into sight
+        // The wheel: its view three rows and nothing else — the selection stays, in sight or not (the user, 2026-10-28)
         let wheel = |ed: &mut Editor| {
             let m = crate::event::Mouse {
                 kind: crate::event::MouseKind::ScrollDown,
@@ -1319,14 +1319,34 @@ mod tests {
             draw(ed);
         };
         wheel(&mut ed);
-        assert_eq!(at(&ed), (3, 3), "the wheel past the selection: the nearest row in sight");
+        assert_eq!(at(&ed), (1, 3), "the wheel past the selection: it stays, out of sight");
+        // (a key: the view back to the selection, from the row it moved to)
         for _ in 0..4 {
             key(&mut ed, "j");
         }
         draw(&mut ed);
-        assert_eq!(at(&ed), (7, 3));
-        wheel(&mut ed);
-        assert_eq!(at(&ed), (7, 6), "the wheel: the view, the selection where it was");
+        let (sel, top) = at(&ed);
+        assert!(sel == 5 && (top..top + rows).contains(&5), "j: in sight again: {:?}", at(&ed));
+        for _ in 0..3 {
+            wheel(&mut ed);
+        }
+        assert_eq!(at(&ed), (5, (top + 9).min(30 - rows)), "the wheel: the view, the selection where it was");
+        // (the editor's keys over it — the space menu opened and closed — leave the wheel's view)
+        let wheeled = at(&ed);
+        key(&mut ed, "space");
+        draw(&mut ed);
+        key(&mut ed, "esc");
+        draw(&mut ed);
+        assert_eq!(at(&ed), wheeled, "space and esc: the view where the wheel left it");
+        // A plugin's own key on a row out of sight: the row back in sight first, said — the plugin hears nothing yet
+        key(&mut ed, "d");
+        let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        assert_eq!(said, "row 6 is selected, back in sight — d again for it");
+        draw(&mut ed);
+        let (_, top) = at(&ed);
+        assert!((top..top + rows).contains(&5), "brought back: {:?}", at(&ed));
+        settle_for(&mut ed, Duration::from_millis(100));
+        assert!(!toasts(&ed).contains("key d"), "the plugin heard d: {}", toasts(&ed));
         key(&mut ed, "g");
         key(&mut ed, "j");
         draw(&mut ed);

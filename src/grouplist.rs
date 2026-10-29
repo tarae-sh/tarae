@@ -182,12 +182,36 @@ pub fn click(ed: &mut Editor, kind: GroupKind, row: usize) {
     }
 }
 
-/// The wheel over kind `kind`'s list: its view `by` rows, the selection staying unless it would leave it, then the
-/// nearest — as `C-e`/`C-y` move it, through `List::set` (the link; `:procs`' gone row let go).
+/// The wheel over kind `kind`'s list: its view `by` rows and nothing else — the selection stays, in sight or not, and
+/// with it the detail it drives (the user, 2026-10-28: the wheel never moves a list's selection); the next key that
+/// moves it brings the view back to it (`floatlist::hold`, where it's drawn).
 pub fn wheel(ed: &mut Editor, kind: GroupKind, by: isize) {
     let Some(l) = List::of(ed, kind) else { return };
-    let (top, at) = crate::key::in_sight(by, l.top, l.selected, l.n, l.rows, 0);
-    List::set(ed, kind, at, top);
+    let top = l.top.saturating_add_signed(by).min(l.n.saturating_sub(l.rows.max(1)));
+    if let Some((c, shown)) = view(ed, kind) {
+        crate::floatlist::wheel_to(c, shown, top);
+    }
+}
+
+/// Kind `kind`'s list's view: its first row in sight and how it was last drawn (`floatlist::hold`).
+type View<'a> = (&'a std::cell::Cell<usize>, &'a std::cell::Cell<Option<crate::floatlist::Shown>>);
+
+fn view(ed: &Editor, kind: GroupKind) -> Option<View<'_>> {
+    match kind {
+        GroupKind::Tests => ed.workspace.test_run.as_ref().map(|r| (&r.list_top, &r.list_shown)),
+        GroupKind::Preflight => preflight(ed).map(|p| (&p.list_top, &p.list_shown)),
+        GroupKind::Task => ed.workspace.task_run.as_ref().map(|r| (&r.list_top, &r.list_shown)),
+        GroupKind::Procs => ed.procs.panel.as_ref().map(|p| (&p.scroll, &p.shown)),
+        _ => None,
+    }
+}
+
+/// A key of the list's: the view goes back to the selection at the next frame, wherever the wheel left it; false when
+/// the wheel's view the last frame drew still stood (no key since) with the selection out of it.
+fn bring_back(ed: &Editor, kind: GroupKind) -> bool {
+    let held = view(ed, kind).is_some_and(|(_, shown)| crate::floatlist::unwheel(shown));
+    let seen = List::of(ed, kind).zip(ed.screen.list(kind));
+    !held || seen.is_none_or(|(l, (_, rows, top))| l.n == 0 || (top..top + rows).contains(&l.selected))
 }
 
 /// `o` on a preflight's output beside its steps: the step in view (the cursor's) selected in the list, the keys
@@ -423,6 +447,7 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
     let Some(g) = ed.list_focused() else { return false };
     let Some(list) = List::of(ed, g.kind) else { return false };
     if let Some(m) = crate::key::list_move(key, list.rows) {
+        bring_back(ed, g.kind);
         let (selected, top) = match m {
             // (`C-e`/`C-y`: the view, the selection staying unless it would leave it)
             ListMove::Scroll(by) => {
@@ -442,9 +467,29 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
         }
         (Code::Esc, ..) => ed.workspace.viewer.at = At::Code,
         (Code::Char('q'), false, false) => close(ed, g.kind),
-        (Code::Enter, false, false) => open(ed, g.kind),
+        // (an act on the selection brings it back into sight, wherever the wheel left the view)
+        (Code::Enter, false, false) => {
+            bring_back(ed, g.kind);
+            open(ed, g.kind)
+        }
         (Code::Char('o'), false, false) if output(ed, g.kind) => {}
-        (Code::Char(c @ ('s' | 'r' | 'l')), false, false) if g.kind == GroupKind::Procs => ed.procs_act(c),
+        // (one that stops or starts a process acts only on a row in sight: a hidden one is brought back first, said —
+        // the next press acts)
+        (Code::Char(c @ ('s' | 'r')), false, false)
+            if g.kind == GroupKind::Procs && !bring_back(ed, g.kind) =>
+        {
+            let title =
+                ed.procs.panel.as_ref().and_then(|p| ed.procs.rows.get(p.selected)).map(|r| r.title.clone());
+            let act = if c == 's' { "stops it" } else { "starts it again" };
+            ed.set_status(format!(
+                "{} is selected, back in sight — {c} again {act}",
+                title.unwrap_or_default()
+            ));
+        }
+        (Code::Char(c @ ('s' | 'r' | 'l')), false, false) if g.kind == GroupKind::Procs => {
+            bring_back(ed, g.kind);
+            ed.procs_act(c)
+        }
         (Code::Tab, false, false) => ed.slot_step(1),
         _ => ed.key_unused(key, g.kind.what(), "esc code"),
     }

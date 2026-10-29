@@ -259,8 +259,11 @@ pub struct TestRun {
     pub cases: Vec<crate::test_results::Case>,
     parser: crate::test_results::Parser,
     pub selected: usize,
-    /// The list's first row in sight (the frame keeps the selection in it; `C-e`/`C-y` move it).
+    /// The list's first row in sight (the frame keeps the selection in it; `C-e`/`C-y` and the wheel move it).
     pub list_top: std::cell::Cell<usize>,
+    /// The list as last drawn: the wheel's view held while the selection and the rows in sight stay
+    /// (`floatlist::hold`).
+    pub list_shown: std::cell::Cell<Option<crate::floatlist::Shown>>,
     /// The wheel's first line of the pane's detail (`detail_top`); None = where it starts on its own.
     pub scroll: Option<usize>,
     /// Claude's `run_tests` waiting for this run's results (`tools.rs`).
@@ -361,6 +364,7 @@ impl TestRun {
             cases,
             selected: 0,
             list_top: Default::default(),
+            list_shown: Default::default(),
             scroll: None,
             chat: None,
             tell: None,
@@ -815,6 +819,7 @@ impl Editor {
             parser,
             selected: 0,
             list_top: Default::default(),
+            list_shown: Default::default(),
             scroll: None,
             chat: None,
             tell: None,

@@ -48,6 +48,9 @@ struct Look {
     lists: String,
     /// A card's place on the frame.
     card: String,
+    /// What a group's list drives beside it: the tests' failure's scroll, the task's output (its cursor and first line
+    /// in sight), `:procs`' detail.
+    detail: String,
     views: String,
     state: serde_json::Value,
     said: usize,
@@ -74,9 +77,32 @@ fn look(ed: &mut Editor) -> Look {
                 ed.workspace.code_review.as_ref().map(|r| r.selected),
                 [GroupKind::Messages, GroupKind::Sessions].map(|k| ed.float_list(k).map(|p| p.selected)),
                 ed.picker.as_ref().map(|p| p.selected),
+                // (a group's lists, `:procs`', a plugin's panel's)
+                ed.workspace.test_run.as_ref().map(|r| r.selected),
+                ed.workspace.task_run.as_ref().map(|r| r.picked),
+                ed.workspace.preflight.as_ref().map(|p| p.selected),
+                ed.procs.panel.as_ref().map(|p| p.selected),
+                ed.plugins.as_ref().and_then(|p| p.panel.as_ref()).map(|p| p.selected),
             )
         ),
         card: format!("{:?}", ed.screen.offer_card),
+        detail: {
+            let task = crate::sizes::Slot::Task;
+            let rows = crate::rundoc::rows(ed, task);
+            format!(
+                "{:?}",
+                (
+                    ed.workspace.test_run.as_ref().map(|r| r.scroll),
+                    crate::rundoc::cursor_line(ed, task),
+                    ed.workspace.task_run.as_ref().map(|r| r.top(rows)),
+                    (ed.workspace.outputs.doc(crate::sizes::Slot::Procs)).map(|d| d
+                        .text
+                        .lines()
+                        .next()
+                        .map(|l| l.to_string())),
+                )
+            )
+        },
         views: format!(
             "{}:{} {:?}",
             ed.doc().top,
@@ -125,6 +151,7 @@ fn changed(a: &Look, b: &Look) -> String {
         ("SELECTION", &a.selection, &b.selection),
         ("LISTS", &a.lists, &b.lists),
         ("CARD", &a.card, &b.card),
+        ("DETAIL", &a.detail, &b.detail),
         ("view", &a.views, &b.views),
     ] {
         if x != y {
@@ -171,6 +198,27 @@ fn find(ed: &mut Editor, text: &str, dx: usize) -> Option<(usize, usize)> {
 }
 
 type Case = (&'static str, fn(&mut Editor), &'static str);
+
+/// A group's list's view as the last frame drew it, `:procs`' and a plugin's panel's too: (its first row in sight, the
+/// rows in sight, its rows).
+fn list_view(ed: &Editor) -> Option<(usize, usize, usize)> {
+    if let Some((_, y1, first, scroll)) = ed.screen.plugin_panel.get() {
+        let n = ed.plugins.as_ref().and_then(|p| p.panel.as_ref()).map_or(0, |p| p.panel.rows.len());
+        return Some((scroll, y1 - first, n));
+    }
+    let lists = ed.screen.lists.borrow();
+    let (kind, (_, rows, top)) = *lists.iter().find(|(k, _)| {
+        matches!(k, GroupKind::Tests | GroupKind::Task | GroupKind::Preflight | GroupKind::Procs)
+    })?;
+    let w = &ed.workspace;
+    let n = match kind {
+        GroupKind::Tests => w.test_run.as_ref().map_or(0, |r| r.cases.len()),
+        GroupKind::Task => w.task_run.as_ref().map_or(0, |r| r.place_rows().len()),
+        GroupKind::Preflight => w.preflight.as_ref().map_or(0, |p| p.steps.len()),
+        _ => ed.procs.rows.len(),
+    };
+    Some((top, rows, n))
+}
 
 /// The surfaces: a name, its scene, the text the pointer rests on.
 const CASES: &[Case] = &[
@@ -245,6 +293,16 @@ const CASES: &[Case] = &[
     ("session list, its keys", |ed| keys(ed, &[" ", "W"]), "│▎"),
     ("session list, keys given back", |ed| keys(ed, &[" ", "W", "<esc>"]), "│▎"),
     ("session list docked, an ask at its foot", |ed| sessions_docked_asked(ed), "ws03"),
+    ("a group's list: the tests' results, its keys", |ed| results(ed, true, false), "case_05"),
+    ("a group's list: the tests' results, keys in the code", |ed| results(ed, false, false), "case_05"),
+    ("a group's list: the tests' results, running", |ed| results(ed, true, true), "case_75"),
+    ("a group's list: the task's places, its keys", |ed| places(ed, true), "place m05"),
+    ("a group's list: the task's places, keys in the code", |ed| places(ed, false), "place m05"),
+    ("a group's list: a preflight's steps, its keys", |ed| steps(ed, true), "step 05"),
+    ("a group's list: :procs, its keys", |ed| procs(ed, true), "job05"),
+    ("a group's list: :procs, keys in the code", |ed| procs(ed, false), "job05"),
+    ("a group's list: a plugin's panel, its keys", |ed| plugin(ed, true), "row 5"),
+    ("a group's list: a plugin's panel, keys in the code", |ed| plugin(ed, false), "row 5"),
     ("picker, its list", |ed| picker(ed), "row 3"),
     ("picker, its preview", |ed| picker(ed), "line_4 "),
     ("a card cut to fit", |ed| card(ed), "line 3 of what"),
@@ -410,6 +468,109 @@ fn sessions_docked_asked(ed: &mut Editor) {
     );
 }
 
+/// Eighty tests' results, the first one failed and selected (its failure the detail); `running`: still running, the
+/// list at its newest rows.
+fn results(ed: &mut Editor, focused: bool, running: bool) {
+    use crate::test_results::{Case, Status};
+    let case = |i: usize| Case {
+        name: format!("t::case_{i:02}"),
+        status: if i == 0 { Status::Failed } else { Status::Passed },
+        secs: None,
+        message: (0..40).map(|l| format!("failure line {l}")).collect(),
+        at: None,
+    };
+    let mut run = crate::testing::TestRun::finished("t", (0..80).map(case).collect(), vec!["ok".into()]);
+    if running {
+        run.state = crate::testing::RunState::Running;
+    }
+    ed.workspace.test_run = Some(run);
+    frame(ed);
+    if focused {
+        ed.list_focus(GroupKind::Tests);
+    }
+}
+
+/// A task's sixty places beside its output, the first picked.
+fn places(ed: &mut Editor, focused: bool) {
+    let root = ed.workspace.root.clone();
+    let t = crate::task::Task { name: "check".into(), cmd: "cargo check".into(), cwd: root.clone() };
+    let mut r = crate::task::Run::for_test(t);
+    r.state = crate::task::State::Passed;
+    for i in 0..60 {
+        (0..3).for_each(|l| r.push_line(false, format!("printed {i}.{l}"), false));
+        let message = format!("place m{i:02}");
+        let it = crate::quickfix::Item {
+            path: root.join("a.rs"),
+            line: i,
+            col: 0,
+            message,
+            severity: 2,
+            mark: None,
+        };
+        r.place(it, None);
+    }
+    ed.workspace.task_run = Some(r);
+    frame(ed);
+    if focused {
+        ed.list_focus(GroupKind::Task);
+    }
+}
+
+/// A preflight's sixty steps beside its output, the first selected.
+fn steps(ed: &mut Editor, focused: bool) {
+    let root = ed.workspace.root.clone();
+    let t = crate::task::Task { name: "preflight".into(), cmd: String::new(), cwd: root };
+    let mut r = crate::task::Run::for_test(t);
+    r.state = crate::task::State::Passed;
+    let step = |i: usize| crate::preflight::Step {
+        name: format!("step {i:02}"),
+        cmd: String::new(),
+        note: None,
+        from: String::new(),
+        full: false,
+    };
+    let all: Vec<_> = (0..60).map(step).collect();
+    let mut p =
+        crate::preflight::Preflight::new(r.generation(), &all, crate::preflight::Set::Full, "k".into());
+    p.steps.iter_mut().for_each(|s| s.state = crate::preflight::State::Passed);
+    for s in &all {
+        r.push_line(false, format!("── {} ──", s.name), true);
+        (0..5).for_each(|l| r.push_line(false, format!("its line {l}"), false));
+    }
+    ed.workspace.preflight = Some(p);
+    ed.workspace.task_run = Some(r);
+    frame(ed);
+    if focused {
+        ed.list_focus(GroupKind::Preflight);
+    }
+}
+
+/// `:procs` with sixty processes under tarae, the first of them selected (its detail beside — tarae's would list them
+/// all).
+fn procs(ed: &mut Editor, focused: bool) {
+    use crate::procs::tests::{os, sample};
+    let me = std::process::id();
+    let mut all = vec![os(me, 1, "tarae")];
+    // (names of their own: the pointer on the table's row, never the detail beside it)
+    all.extend((0..60).map(|i| os(50_000 + i, me, &format!("job{i:02}"))));
+    ed.procs_toggle();
+    ed.procs_sampled(sample(all));
+    ed.procs.panel.as_mut().unwrap().selected = 1;
+    frame(ed);
+    if !focused {
+        ed.workspace.viewer.at = At::Code;
+    }
+}
+
+/// A plugin's panel of eighty rows, the first selected.
+fn plugin(ed: &mut Editor, focused: bool) {
+    ed.plugin_panel_stand_in(80);
+    frame(ed);
+    if !focused {
+        ed.workspace.viewer.at = At::Code;
+    }
+}
+
 fn picker(ed: &mut Editor) {
     long_text(ed);
     let id = ed.doc().id;
@@ -538,6 +699,13 @@ fn the_wheel_only_scrolls() {
         setup(&mut ed);
         _kept = KEPT.take();
         let cell = find(&mut ed, at, 2).unwrap_or_else(|| panic!("{name}: {at:?} not on the frame"));
+        // (a list's case aims at the list, never the detail beside it)
+        let under = ed.mouse_under(K::ScrollDown, cell.0, cell.1).surface;
+        if name.starts_with("a group's list")
+            && !matches!(under, crate::mouse::Surface::List(_) | crate::mouse::Surface::Plugin)
+        {
+            off.push(format!("{name}: the pointer at {cell:?} is over {under:?}, not the list"));
+        }
         let mut fail =
             |what: &str, a: &Look, b: &Look| off.push(format!("{name}: {what} — {}", changed(a, b)));
         let mut looks = vec![look(&mut ed)];
@@ -549,11 +717,13 @@ fn the_wheel_only_scrolls() {
         // (at the end: one more notch, then one back)
         wheel(&mut ed, K::ScrollDown, cell, 1);
         let past_end = look(&mut ed);
+        let end_view = list_view(&ed);
         let end_text = past_end.text.join("\n");
         wheel(&mut ed, K::ScrollUp, cell, 1);
         let back_from_end = look(&mut ed);
         wheel(&mut ed, K::ScrollUp, cell, 120);
         let top = look(&mut ed);
+        let top_view = list_view(&ed);
         wheel(&mut ed, K::ScrollUp, cell, 1);
         let past_top = look(&mut ed);
         wheel(&mut ed, K::ScrollDown, cell, 1);
@@ -575,8 +745,11 @@ fn the_wheel_only_scrolls() {
         ]);
         for l in &looks {
             let still = |a: &Look, b: &Look| {
-                (&a.keys, &a.at, &a.focus, &a.doc, &a.selection, &a.lists, &a.card)
-                    == (&b.keys, &b.at, &b.focus, &b.doc, &b.selection, &b.lists, &b.card)
+                // (the detail a group's list drives: never moved by the wheel over the list)
+                let detail = !name.starts_with("a group's list") || a.detail == b.detail;
+                detail
+                    && (&a.keys, &a.at, &a.focus, &a.doc, &a.selection, &a.lists, &a.card)
+                        == (&b.keys, &b.at, &b.focus, &b.doc, &b.selection, &b.lists, &b.card)
             };
             if !still(&first, l) {
                 fail("the keys, a cursor, a selection or a card moved", &first, l);
@@ -608,6 +781,13 @@ fn the_wheel_only_scrolls() {
             && !(end_text.contains("output line 195") && end_text.contains("output line 199"))
         {
             fail("its output went past its last line", &first, &past_end);
+        }
+        // (a list's view reaches its last row and its first, wherever its selection is)
+        if name.starts_with("a group's list") {
+            match (end_view, top_view) {
+                (Some((t, rows, n)), Some((0, ..))) if t + rows >= n => {}
+                views => fail(&format!("its view never reached both ends: {views:?}"), &first, &past_end),
+            }
         }
     }
     assert!(off.is_empty(), "the wheel did more than scroll:\n{}", off.join("\n"));

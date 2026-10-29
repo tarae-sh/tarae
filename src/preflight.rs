@@ -222,6 +222,9 @@ pub struct Preflight {
     /// drawn).
     pub selected: usize,
     pub list_top: std::cell::Cell<usize>,
+    /// The list as last drawn: the wheel's view held while the selection and the rows in sight stay
+    /// (`floatlist::hold`).
+    pub list_shown: std::cell::Cell<Option<crate::floatlist::Shown>>,
 }
 
 impl Preflight {
@@ -251,6 +254,7 @@ impl Preflight {
             kept: Default::default(),
             selected: 0,
             list_top: Default::default(),
+            list_shown: Default::default(),
         }
     }
 

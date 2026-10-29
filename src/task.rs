@@ -334,6 +334,9 @@ pub struct Run {
     /// on its place as the list grows — and the list's first row in sight (as last drawn).
     pub picked: usize,
     pub list_top: std::cell::Cell<usize>,
+    /// The list as last drawn: the wheel's view held while the selection and the rows in sight stay
+    /// (`floatlist::hold`).
+    pub list_shown: std::cell::Cell<Option<crate::floatlist::Shown>>,
     /// Its places went to the user's list too (a check or a build — #28); the report says where they are.
     pub feeds: bool,
     /// An install's (`install.rs`): what goes on once it ends.
@@ -607,6 +610,7 @@ impl Run {
             origins: Vec::new(),
             picked: 0,
             list_top: Default::default(),
+            list_shown: Default::default(),
             feeds: true,
             after: None,
             install: false,
@@ -1202,6 +1206,7 @@ impl Editor {
             origins: Vec::new(),
             picked: 0,
             list_top: Default::default(),
+            list_shown: Default::default(),
             feeds,
             after,
             install,

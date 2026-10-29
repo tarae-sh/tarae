@@ -678,6 +678,10 @@ impl Editor {
             && in_slot
         {
             let output = at(S::Output(Slot::Test), Part::Blank);
+            // (the wheel scrolls what's under it: the list, else the output)
+            if wheel && self.over_list(GroupKind::Tests, x, y) {
+                return at(S::List(GroupKind::Tests), Part::Blank);
+            }
             if wheel {
                 return output;
             }
@@ -700,6 +704,9 @@ impl Editor {
                 return at(S::List(kind), Part::Row(i));
             }
             let output = at(S::Output(Slot::Task), Part::Blank);
+            if let Some(kind) = self.kind_of(Slot::Task).filter(|&k| wheel && self.over_list(k, x, y)) {
+                return at(S::List(kind), Part::Blank);
+            }
             if wheel {
                 return output;
             }

@@ -855,7 +855,7 @@ fn wait(rx: &Receiver<Wake>, every: Duration, open: &mut bool) -> Option<bool> {
 // ── What each one is for ─────────────────────────────────────────────────
 
 /// What a process is to tarae.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
     Tarae,
     Lsp(ClientId),
@@ -1000,6 +1000,17 @@ pub struct Row {
 impl Row {
     fn key(&self) -> (u32, u64) {
         (self.pid, self.started)
+    }
+
+    /// Its id while the table keeps its view (`floatlist::hold`): the row it is a look later, as `same` tells it.
+    pub fn id(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::hash::DefaultHasher::new();
+        match self.pid {
+            0 => self.kind.hash(&mut h),
+            _ => self.key().hash(&mut h),
+        }
+        h.finish()
     }
 
     /// Whether it's the row `other` was, a look later: the same process, or — for one with none (a held
@@ -1342,8 +1353,10 @@ fn usual_of(usual: &Usual, program: &str) -> Option<u64> {
 #[derive(Default)]
 pub struct Panel {
     pub selected: usize,
-    /// The first row in sight (drawing keeps the selected one in sight).
+    /// The first row in sight (drawing keeps the selected one in sight, but where the wheel left it).
     pub scroll: std::cell::Cell<usize>,
+    /// The table as last drawn (`floatlist::hold`).
+    pub shown: std::cell::Cell<Option<crate::floatlist::Shown>>,
     /// The tallest it's been (`term::procs_panel_h` — it doesn't shrink while it's open).
     pub tall: std::cell::Cell<usize>,
     /// The most memory each process took since it opened (its detail says it).
@@ -2507,15 +2520,14 @@ pub(crate) mod tests {
         assert_eq!(keeper_what(None, said, root), "the session's keeper · own (user net ipc pid mnt) · /p");
     }
 
-    fn os(pid: u32, ppid: u32, name: &str) -> Os {
+    pub(crate) fn os(pid: u32, ppid: u32, name: &str) -> Os {
         Os { pid, ppid, name: name.into(), started: 1_000, rss: 10 * MB, ..Default::default() }
     }
 
-    /// The wheel over `:procs` scrolls it as `C-e`/`C-y` do, three rows — the selection stays where it was until it
-    /// would leave the rows in sight, then on the nearest one: never out of sight, as `s` and `r` act on it (uxaudit
-    /// D7: the wheel moved the selection, as nowhere else but pickers; the review: a hidden row was stopped).
+    /// The wheel over `:procs` scrolls its view three rows and nothing else — the selection stays where it was, in
+    /// sight or not (the user, 2026-10-28: the wheel never moves a list's selection); a key brings the view back to it.
     #[test]
-    fn the_wheel_scrolls_procs_and_keeps_the_selection_in_sight() {
+    fn the_wheel_scrolls_procs_and_leaves_the_selection() {
         use crate::event::{Mouse, MouseKind};
         let mut ed = Editor::new(crate::config::Config::default());
         let me = std::process::id();
@@ -2538,19 +2550,21 @@ pub(crate) mod tests {
         }
         draw(&mut ed);
         assert_eq!(at(&ed), (5, 0));
-        // (selected, first row shown) — and the selected row always among the rows drawn
+        // (selected, first row shown)
         for (kind, want, why) in [
             (MouseKind::ScrollDown, (5, 3), "scrolled, the selection where it was"),
-            (MouseKind::ScrollDown, (6, 6), "it would have left: the nearest row in sight"),
-            (MouseKind::ScrollDown, (9, 9), "again"),
-            (MouseKind::ScrollUp, (9, 6), "back up, the selection where it was"),
+            (MouseKind::ScrollDown, (5, 6), "out of sight, still where it was"),
+            (MouseKind::ScrollDown, (5, 9), "again"),
+            (MouseKind::ScrollUp, (5, 6), "back up, the selection where it was"),
         ] {
             wheel(&mut ed, kind);
             draw(&mut ed);
             assert_eq!(at(&ed), want, "{why}");
-            let a = ed.screen.procs_panel.get().unwrap();
-            assert!((a.scroll..a.scroll + a.shown).contains(&at(&ed).0), "{why}: the selection out of sight");
         }
+        // (a key: the view back to the selection, from the row it moved to)
+        ed.handle_key(Key::plain(Code::Char('j')));
+        draw(&mut ed);
+        assert_eq!(at(&ed), (6, 6), "j: the next row, in sight");
         ed.handle_key(Key::plain(Code::Char('g')));
         draw(&mut ed);
         assert_eq!(at(&ed), (0, 0));
@@ -2563,11 +2577,11 @@ pub(crate) mod tests {
         }
     }
 
-    /// `s` acts on a row you can see: the wheel past the selection brings it along, into sight, and `s` names that
-    /// row (the review: a hidden row was stopped). Held servers' rows — `s` on one only says it isn't running: no
-    /// process is stopped in a test.
+    /// `s` acts on a row you can see (uxaudit D7's review: a hidden row was stopped): the wheel past the selection
+    /// leaves it out of sight, and `s` then brings it back into sight, saying which it is — the next `s` acts on it.
+    /// Held servers' rows — `s` on one only says it isn't running: no process is stopped in a test.
     #[test]
-    fn after_the_wheel_s_names_a_row_in_sight() {
+    fn after_the_wheel_s_brings_its_row_back_first() {
         use crate::event::{Mouse, MouseKind};
         let mut ed = Editor::new(crate::config::Config::default());
         let root = ed.workspace.root.clone();
@@ -2580,6 +2594,7 @@ pub(crate) mod tests {
         let a = ed.screen.procs_panel.get().expect(":procs drawn");
         assert!(ed.procs.rows.len() > a.shown + 6, "{} rows, {} shown", ed.procs.rows.len(), a.shown);
         ed.handle_key(Key::plain(Code::Char('j')));
+        draw(&mut ed);
         for _ in 0..4 {
             ed.handle_mouse(Mouse {
                 kind: MouseKind::ScrollDown,
@@ -2592,13 +2607,44 @@ pub(crate) mod tests {
         }
         let a = ed.screen.procs_panel.get().unwrap();
         let p = ed.procs.panel.as_ref().unwrap();
+        let sel = p.selected;
         assert!(a.scroll >= 12, "scrolled past the selection: from row {}", a.scroll);
-        assert!((a.scroll..a.scroll + a.shown).contains(&p.selected), "row {} out of sight", p.selected);
-        let title = ed.procs.rows[p.selected].title.clone();
+        assert!(!(a.scroll..a.scroll + a.shown).contains(&sel), "row {sel} still in sight");
+        let title = ed.procs.rows[sel].title.clone();
         assert!(title.starts_with("server"), "{title}");
+        let said = |ed: &Editor| ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
         ed.handle_key(Key::plain(Code::Char('s')));
-        let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
-        assert_eq!(said, format!("{title} isn't running — r starts it"), "s names the row in sight");
+        assert_eq!(said(&ed), format!("{title} is selected, back in sight — s again stops it"));
+        draw(&mut ed);
+        let a = ed.screen.procs_panel.get().unwrap();
+        assert!(
+            (a.scroll..a.scroll + a.shown).contains(&sel),
+            "row {sel} brought back: from row {}",
+            a.scroll
+        );
+        assert_eq!(ed.procs.panel.as_ref().unwrap().selected, sel, "the same row");
+        ed.handle_key(Key::plain(Code::Char('s')));
+        assert_eq!(said(&ed), format!("{title} isn't running — r starts it"), "s names the row in sight");
+        // `r` alike: the wheel past the row again, `r` brings it back and starts nothing (the held server stays held)
+        draw(&mut ed);
+        for _ in 0..4 {
+            ed.handle_mouse(Mouse {
+                kind: MouseKind::ScrollDown,
+                x: 5,
+                y: a.first as u16,
+                alt: false,
+                ctrl: false,
+            });
+            draw(&mut ed);
+        }
+        let a = ed.screen.procs_panel.get().unwrap();
+        assert!(!(a.scroll..a.scroll + a.shown).contains(&sel), "row {sel} out of sight again");
+        ed.handle_key(Key::plain(Code::Char('r')));
+        assert_eq!(said(&ed), format!("{title} is selected, back in sight — r again starts it again"));
+        assert_eq!(ed.procs.held.len(), 60, "nothing started");
+        draw(&mut ed);
+        let a = ed.screen.procs_panel.get().unwrap();
+        assert!((a.scroll..a.scroll + a.shown).contains(&sel), "row {sel} brought back");
     }
 
     fn region(ed: &Editor) -> String {
@@ -2797,10 +2843,10 @@ pub(crate) mod tests {
         assert!(text[at..].starts_with('·'), "on its character: {:?}", &text[at..]);
     }
 
-    /// The wheel over the table moves the selection as `C-e`/`C-y` do — off a gone row too, which then goes, the
-    /// selection and the view on the rows they were on.
+    /// The wheel over the table leaves a gone row and the selection on it where they are (the wheel never moves a
+    /// list's selection); the key that leaves it lets it go, the selection on the row it went to.
     #[test]
-    fn the_wheel_leaving_a_gone_row_lets_it_go() {
+    fn the_wheel_keeps_a_gone_row_a_key_lets_it_go() {
         use crate::event::{Mouse, MouseKind};
         let mut ed = Editor::new(crate::config::Config::default());
         let me = std::process::id();
@@ -2824,11 +2870,21 @@ pub(crate) mod tests {
             ctrl: false,
         };
         ed.handle_mouse(down);
+        screen(&mut ed, 120, 40);
+        let p = ed.procs.panel.as_ref().unwrap();
+        assert!(ed.procs.rows[1].gone.is_some(), "the gone row kept");
+        assert_eq!(
+            (p.scroll.get(), p.selected),
+            (3, 1),
+            "the view three rows down, the selection where it was"
+        );
+        keys(&mut ed, "j");
         assert!(ed.procs.rows.iter().all(|r| r.gone.is_none()), "the gone row let go");
+        screen(&mut ed, 120, 40);
         let p = ed.procs.panel.as_ref().unwrap();
         let selected = &ed.procs.rows[p.selected];
-        // (the view three rows down — the gone row above it went, so a row less; the selection its first row)
-        assert_eq!((p.scroll.get(), selected.pid), (2, 50_102), "{}", selected.title);
+        // (the row after the gone one, now where it was; the view back to it)
+        assert_eq!((p.scroll.get(), selected.pid), (1, 50_101), "{}", selected.title);
     }
 
     /// The wheel over the detail while the table has the keys scrolls the detail itself, three rows a turn: down
@@ -2899,7 +2955,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn sample(procs: Vec<Os>) -> Sample {
+    pub(crate) fn sample(procs: Vec<Os>) -> Sample {
         Sample {
             procs: procs.into_iter().map(|o| (o, Some(1.0))).collect(),
             took: Duration::ZERO,

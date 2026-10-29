@@ -788,7 +788,7 @@ pub(crate) mod tests {
         (
             "A list or output panel (side panel, review rail, `:procs`, test, task, terminal, a plugin's)",
             "`j` `k` `↓` `↑` `C-n` `C-p` · `C-e` `C-y` · `C-d` `C-u` · `C-f` `C-b` `pagedown` `pageup` · `g` `G` `home` `end`",
-            "A row · the view a row, the selection staying unless it would leave it (the wheel too, three rows, while the panel has the keys) · half the rows in sight · all of them · the ends — the same keys everywhere, as the code's; a plugin's panel never gets them",
+            "A row · the view a row, the selection staying unless it would leave it (the wheel: the view three rows, the selection staying, in sight or not) · half the rows in sight · all of them · the ends — the same keys everywhere, as the code's; a plugin's panel never gets them",
         ),
         ("Hover text, docs", "`C-d` `C-u` · `C-e` `C-y`", "Scroll it half its rows · a row"),
         (

@@ -187,6 +187,39 @@ fn the_wheels_view_holds_while_messages_are_said() {
     assert!((top..top + inner).contains(&at), "a key: the view back to it");
 }
 
+/// Any key of the list's brings the wheel's view back to the selection — one that changes nothing too (`j` on its last
+/// row, said at its end), as a group's list's does (CLAUDE.md: "it may leave sight; a key brings it back").
+#[test]
+fn a_key_at_its_end_brings_the_wheels_view_back() {
+    let mut ed = Editor::new(crate::config::Config::default());
+    for i in 0..60 {
+        ed.set_status(format!("said {i}"));
+    }
+    feed(&mut ed, ":messages<ret>");
+    let (_, inner, top) = ed.screen.list(GroupKind::Messages).unwrap();
+    let n = rows(&ed).len();
+    assert_eq!(top + inner, n, "opened at the newest, its selection, in sight");
+    let r = rect(&ed);
+    for _ in 0..2 {
+        let kind = crate::event::MouseKind::ScrollUp;
+        ed.handle_mouse(crate::event::Mouse {
+            kind,
+            x: (r.x + 4) as u16,
+            y: (r.y + 3) as u16,
+            alt: false,
+            ctrl: false,
+        });
+        frame(&mut ed);
+    }
+    let (_, inner, top) = ed.screen.list(GroupKind::Messages).unwrap();
+    assert!(top + inner < n, "the wheel took the view off the selection: {top} + {inner} of {n}");
+    let selected = here(&ed);
+    feed(&mut ed, "j");
+    assert_eq!(here(&ed), selected, "at its end: the selection where it was");
+    let (_, inner, top) = ed.screen.list(GroupKind::Messages).unwrap();
+    assert_eq!(top + inner, n, "the view back to it");
+}
+
 /// `n` messages said, then `:messages` up without the keys: the screen row the next message's row takes (the list as
 /// tall as its rows, one more).
 fn list_of(ed: &mut Editor, n: usize) -> usize {

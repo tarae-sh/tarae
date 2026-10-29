@@ -48,10 +48,26 @@ pub struct PanelState {
     pub plugin: String,
     pub panel: Panel,
     pub selected: usize,
-    /// The first row in sight (drawing keeps the selected one in sight).
+    /// The first row in sight (drawing keeps the selected one in sight, but where the wheel left it).
     pub scroll: Cell<usize>,
+    /// The table as last drawn (`floatlist::hold`).
+    pub shown: Cell<Option<crate::floatlist::Shown>>,
     /// Each column's widest cell (as shown), worked out once per panel rather than every frame.
     pub widths: Vec<usize>,
+}
+
+/// Its rows' ids while the view is kept (`floatlist::hold`): the plugin's own key for a row, else where it is.
+pub fn row_ids(panel: &Panel) -> Vec<u64> {
+    use std::hash::{Hash, Hasher};
+    let id = |i: usize| match panel.ids.get(i) {
+        Some(k) => {
+            let mut h = std::hash::DefaultHasher::new();
+            k.hash(&mut h);
+            h.finish() | 1 << 63
+        }
+        None => i as u64,
+    };
+    (0..panel.rows.len()).map(id).collect()
 }
 
 /// Each column's widest cell, as shown.
@@ -79,8 +95,14 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
         return false;
     };
     let n = st.panel.rows.len();
-    let rows = ed.screen.plugin_panel.get().map_or(0, |(_, y1, first, _)| y1.saturating_sub(first));
+    let drawn = ed.screen.plugin_panel.get();
+    let rows = drawn.map_or(0, |(_, y1, first, _)| y1.saturating_sub(first));
+    // (a key of the panel's — one that moves or acts on the selection, never the editor's — brings the view back to the
+    // selection, wherever the wheel left it: `floatlist::hold`)
+    let held = crate::floatlist::wheeled(&st.shown);
+    let seen = !held || n == 0 || drawn.is_none_or(|(.., top)| (top..top + rows).contains(&st.selected));
     if let Some(m) = crate::key::list_move(key, rows) {
+        crate::floatlist::unwheel(&st.shown);
         st.selected = match m {
             // (`C-e`/`C-y`: the view, the selection staying unless it would leave it)
             crate::key::ListMove::Scroll(by) => {
@@ -99,7 +121,15 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
             return false;
         }
         (Code::Esc, ..) => ed.workspace.viewer.at = At::Code,
+        // (the plugin's own keys act on the selected row — tarae can't tell a cheap act from a costly one: a row the
+        // wheel left out of sight is brought back first, said, and the next press is the plugin's)
+        _ if !seen => {
+            crate::floatlist::unwheel(&st.shown);
+            let (k, row) = (crate::key::said(&key.notation()), st.selected + 1);
+            ed.set_status(format!("row {row} is selected, back in sight — {k} again for it"));
+        }
         _ => {
+            crate::floatlist::unwheel(&st.shown);
             let (plugin, row) = (st.plugin.clone(), (n > 0).then_some(st.selected as u64));
             let id = row.and_then(|_| st.panel.ids.get(st.selected).cloned());
             // (the plugin API's name for it, the keymap's notation — `ret`)
@@ -146,6 +176,7 @@ impl Editor {
                         panel,
                         selected: 0,
                         scroll: Cell::new(0),
+                        shown: Cell::new(None),
                         widths,
                     },
                 };
@@ -171,15 +202,17 @@ impl Editor {
         self.plugin_panel_took_keys();
     }
 
-    /// The wheel over the panel: its view `by` rows, as `C-e`/`C-y` — the selection (what its keys act on) stays
-    /// unless it would leave the rows in sight, then the nearest.
+    /// The wheel over the panel: its view `by` rows and nothing else — the selection (what its keys act on) stays, in
+    /// sight or not (the user, 2026-10-28); the next key that moves it brings the view back (`floatlist::hold`).
     pub fn plugin_panel_wheel(&mut self, by: isize) {
         let rows = self.screen.plugin_panel.get().map_or(0, |(_, y1, first, _)| y1.saturating_sub(first));
-        if let Some(st) = self.plugins.as_mut().and_then(|p| p.panel.as_mut()) {
-            let n = st.panel.rows.len();
-            let (top, at) = crate::key::in_sight(by, st.scroll.get(), st.selected, n, rows, 0);
-            st.scroll.set(top);
-            st.selected = at;
+        if let Some(st) = self.plugins.as_ref().and_then(|p| p.panel.as_ref()) {
+            let end = st.panel.rows.len().saturating_sub(rows.max(1));
+            crate::floatlist::wheel_to(
+                &st.scroll,
+                &st.shown,
+                st.scroll.get().saturating_add_signed(by).min(end),
+            );
         }
     }
 
