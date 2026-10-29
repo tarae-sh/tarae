@@ -344,6 +344,64 @@ pub struct Rebase {
     /// `rebase_recheck`'s reads: the last asked · the last landed — only the last asked lands (an older one may have
     /// read the checkout before a stage); the two apart, one is out.
     pub rechecks: (u64, u64),
+    /// Its checkout's index watched while a tracked file holds a resolved stop's `y` (#245) — only then: gone once
+    /// none does or the stage moves on (`rebase_index_watch`), its thread ending with it.
+    index: Option<IndexWatch>,
+}
+
+/// A rebase's index watch (`watch_index`): its thread ends as this goes — told to stop, and woken.
+struct IndexWatch {
+    waker: crate::fswatch::Waker,
+    /// Set as this goes; the thread holds the other `Arc` until it ends (a test's `Weak` sees it gone).
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for IndexWatch {
+    fn drop(&mut self) {
+        // (the flag too: a waker with no pipe wakes nothing, its thread ends at the next backstop)
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.waker.wake();
+    }
+}
+
+/// Watches the index of the checkout at `root` (beside its HEAD, `git::find_head`) until `stop` (#245): a stage or
+/// undo by anyone — the git tab, a terminal, another program — reads the resolved card's checkout again
+/// (`Editor::rebase_index_moved`), as the git tab's own act does. Its first round reads too (a stage between the
+/// turn's end and the watch's start); a wake with the index as it was (the backstop, a neighbour in its folder)
+/// sends nothing — nothing reaches the loop while nobody touches the index, and it's gone before git does
+/// (`rebase_run`).
+fn watch_index(
+    events: &crate::event::Queue,
+    root: PathBuf,
+    waker: crate::fswatch::Waker,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::os::unix::fs::MetadataExt;
+    let tx = events.sender();
+    crate::event::thread("tarae-rb-index", move || {
+        let Some(index) = crate::git::find_head(&root).map(|h| h.with_file_name("index")) else { return };
+        let stamp = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.modified().ok(), m.len(), m.ino()));
+        let mut last = None;
+        loop {
+            let mut watcher = crate::fswatch::Watcher::with_waker(waker.clone()); // (armed before the stat)
+            watcher.file(&index);
+            if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            let now = Some(stamp(&index));
+            if now != last {
+                last = now;
+                let root = root.clone();
+                let told = move |ed: &mut Editor| ed.rebase_index_moved(&root);
+                if tx.send(crate::event::Event::Job(Box::new(told))).is_err() {
+                    break;
+                }
+            }
+            if watcher.wait() == crate::fswatch::Woke::Cancelled {
+                break;
+            }
+        }
+    });
 }
 
 /// The messages of the commits a rebase replays, where a resolution may have made them wrong (frictions29 #25:
@@ -1002,6 +1060,7 @@ impl Editor {
         if let Some(r) = self.workspace.rebase.as_mut() {
             r.stage = Stage::Running { generation, aborting };
         }
+        self.rebase_index_watch();
         // (its reloads said as one line once it's over — frictions29 #68; this run's, by its generation)
         self.disk_batch_start("rebase", generation);
         poll(self, root, generation, None);
@@ -1117,6 +1176,7 @@ impl Editor {
             resolved_at: None,
             messages: Default::default(),
             rechecks: (0, 0),
+            index: None,
         });
         let base = crate::packs::sh_quote(&m.base);
         let branch = m.branch.clone();
@@ -1366,6 +1426,7 @@ impl Editor {
         r.also = also;
         let mut stop = r.stop.clone();
         stop.files.extend(r.also.all());
+        self.rebase_index_watch();
         match stop.commit {
             // (the card once the review is open — it's about what the review shows)
             Some((sha, short, subject)) => {
@@ -1522,13 +1583,42 @@ impl Editor {
                     // again at the next stop, what it read isn't that one's)
                     let there = r.stage == Stage::Resolved && (r.stop == stop || broken(Broken::AnyStop));
                     if !there || r.also == now {
-                        return;
+                        // (nothing on screen changed: an index watch's read of a stage elsewhere draws nothing)
+                        return ed.unchanged = true;
                     }
                     r.also = now;
                     ed.rebase_card_again();
+                    ed.rebase_index_watch();
                 }
             });
         });
+    }
+
+    /// The front session's checkout's index watched (`watch_index`, #245) exactly while its rebase is resolved and a
+    /// tracked file holds `y` (`Rebase.index`): started once then, gone once that no longer holds — freed (a read
+    /// again lands with none, which reads again only while one holds), or the rebase going on or aborted
+    /// (`rebase_run`: git's own index writes never reach the loop). Not in tests (`Editor.index_watch`).
+    fn rebase_index_watch(&mut self) {
+        let (root, on) = (self.workspace.root.clone(), self.index_watch);
+        let Some(r) = self.workspace.rebase.as_mut() else { return };
+        if !on || r.stage != Stage::Resolved || r.also.tracked.is_empty() {
+            r.index = None;
+            return;
+        }
+        if r.index.is_some() {
+            return;
+        }
+        let (waker, stop) = (crate::fswatch::Waker::new(), std::sync::Arc::default());
+        r.index = Some(IndexWatch { waker: waker.clone(), stop: std::sync::Arc::clone(&stop) });
+        watch_index(&self.events, root, waker, stop);
+    }
+
+    /// The index of the checkout at `root` changed — whoever changed it (#245): its resolved rebase's checkout read
+    /// again (`rebase_recheck`), its card said as it now stands once that lands. Nothing on screen yet.
+    pub(crate) fn rebase_index_moved(&mut self, root: &Path) {
+        self.drawn_for("a rebase's index watch");
+        self.unchanged = true;
+        self.rebase_recheck(root);
     }
 
     /// The card of the rebase in front said again as it now stands (`rebase_card`), wherever it waits — the same
@@ -1893,6 +1983,7 @@ impl Editor {
                         r.also = besides;
                         ed.rebase_card_again();
                     }
+                    ed.rebase_index_watch();
                     ed.rebase_card_back(&msg);
                     return ed.set_warning(msg);
                 }
@@ -2018,6 +2109,7 @@ impl Editor {
             resolved_at: None,
             messages: Default::default(),
             rechecks: (0, 0),
+            index: None,
         });
     }
 
@@ -2157,6 +2249,7 @@ pub(crate) fn stopped_for_test(step: (usize, usize), asked: bool) -> Rebase {
         resolved_at: None,
         messages: Default::default(),
         rechecks: (0, 0),
+        index: None,
     }
 }
 
@@ -2177,6 +2270,7 @@ pub(crate) fn ask_for_test(ed: &mut Editor, question: &str) {
         resolved_at: None,
         messages: Default::default(),
         rechecks: (0, 0),
+        index: None,
     });
     let a = Ask { question: question.into(), about: "<conflicts/>".into(), chip: "rebase".into() };
     ed.rebase_ask(a);
@@ -2206,6 +2300,7 @@ pub(crate) fn resolved_for_test(ed: &mut Editor, message: &str, proposed: Option
         resolved_at: Some(std::time::Instant::now()),
         messages: Messages { proposed: proposed.map(String::from), ..Messages::default() },
         rechecks: (0, 0),
+        index: None,
     });
 }
 
@@ -2229,6 +2324,12 @@ pub(crate) fn resolved_at_for_test(ed: &mut Editor, n: usize, files: &[&str]) {
     let r = ed.workspace.rebase.as_mut().expect("a rebase");
     (r.stage, r.step, r.stop, r.also) = (Stage::Resolved, stop.step, stop, also);
     r.messages = Messages::default();
+}
+
+/// The front session's rebase's index watch, seen from outside: gone once its thread ended (#245's test).
+#[cfg(test)]
+pub(crate) fn index_watch_for_test(ed: &Editor) -> Option<std::sync::Weak<std::sync::atomic::AtomicBool>> {
+    ed.workspace.rebase.as_ref()?.index.as_ref().map(|w| std::sync::Arc::downgrade(&w.stop))
 }
 
 /// The front session's rebase going on — git at work, as `y` leaves it once its line starts (its cards gone) — for
@@ -2312,6 +2413,7 @@ mod tests {
             resolved_at: None,
             messages: Default::default(),
             rechecks: (0, 0),
+            index: None,
         };
         assert_eq!(r.said(), "rebasing 2/5");
         assert_eq!(r.why("feat"), "feat is rebasing 2/5 — :rebase-continue or :rebase-abort first");
@@ -2347,6 +2449,7 @@ mod tests {
             resolved_at: None,
             messages: Default::default(),
             rechecks: (0, 0),
+            index: None,
         };
         ed.with_workspace(a, |ed| ed.workspace.rebase = Some(running("main")));
         let label = |ed: &mut Editor, id| {

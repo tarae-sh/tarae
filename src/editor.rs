@@ -1064,6 +1064,9 @@ pub struct Editor {
     /// Whether to read HEAD contents when opening a file (off in tests — keeps event order stable;
     /// turn on when needed).
     pub git_auto: bool,
+    /// Whether a resolved rebase's index is watched (`rebase::watch_index`, #245: a thread) — off in tests, turned on
+    /// where one needs it.
+    pub index_watch: bool,
     /// Where the chat's conversations are kept (`chats.rs`) — None in tests (they set a temp dir).
     pub chats_dir: Option<std::path::PathBuf>,
     /// Where the copies of what went with messages are written (`chat::write_sent`): a folder of this tarae's own in
@@ -1439,6 +1442,7 @@ impl Editor {
             events_kept: Default::default(),
             git_diffing: false,
             git_auto: !cfg!(test),
+            index_watch: !cfg!(test),
             chats_dir: if cfg!(test) { None } else { crate::chats::default_dir() },
             sent_dir: if cfg!(test) { None } else { Some(crate::chat::sent_dir()) },
             turns_dir,

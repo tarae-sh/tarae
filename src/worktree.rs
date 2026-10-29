@@ -5149,6 +5149,57 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// #245: the file that holds the resolved card's `y` staged by git outside tarae (a terminal, another program) —
+    /// the card follows the index (its watch), offering `y` with no key pressed and the git tab never opened.
+    #[test]
+    fn a_file_staged_outside_tarae_frees_the_resolved_cards_y() {
+        let (repo, dir) = place("rebase-staged-outside");
+        let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
+        std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
+        let mut ed = editor(&repo, &dir);
+        ed.index_watch = true;
+        claude_does(
+            &mut ed,
+            &log,
+            &format!("cp '{}' a.txt; printf 'target/\\nsnap/\\n' > .gitignore;", answer.display()),
+        );
+        let (wt, _) = moved_apart(&mut ed, &repo, false);
+        rebase_asked(&mut ed);
+        settle_until(&mut ed, |ed| {
+            card(ed, "feat: conflicts resolved").is_some() || says(ed, "rebase feat:")
+        });
+        let held = "y waits until .gitignore is staged or undone — the git tab (space g)";
+        assert_eq!(card(&ed, "feat: conflicts resolved").unwrap().held.as_deref(), Some(held));
+        assert_eq!(card_in_sight(&mut ed), ['X', 'n'], "{}", said(&ed));
+        let watch =
+            crate::rebase::index_watch_for_test(&ed).expect("its index watched while .gitignore holds y");
+        // (the watch's first read landed, none out: what frees `y` is a later read, the stage's)
+        let rechecks = |ed: &Editor| ed.workspace.rebase.as_ref().map_or((0, 0), |r| r.rechecks);
+        settle_until(&mut ed, |ed| matches!(rechecks(ed), (n, m) if n == m && m >= 1));
+        let first = rechecks(&ed).1;
+        git_in(&wt, &["add", ".gitignore"]);
+        settle_until(&mut ed, |ed| card(ed, "feat: conflicts resolved").is_none_or(|c| c.held.is_none()));
+        assert!(
+            rechecks(&ed).1 > first,
+            "freed by the read after the stage: {:?} after {first}",
+            rechecks(&ed)
+        );
+        let up = card(&ed, "feat: conflicts resolved").expect("the card, freed");
+        assert!(up.question.contains("not staged yet: y stages it and goes on.\n\n"), "{}", up.question);
+        assert_eq!(card_in_sight(&mut ed), ['y', 'm', 'X', 'n'], "{}", said(&ed));
+        let git_tab =
+            ed.workspace.viewer.sidebar.as_ref().is_some_and(|s| s.mode == crate::sidebar::Mode::Git);
+        assert!(!git_tab, "the git tab never opened");
+        // (nothing holds `y` now: the watch is gone, its thread woken and ended)
+        assert!(crate::rebase::index_watch_for_test(&ed).is_none(), "the watch kept once freed");
+        settle_until(&mut ed, |_| watch.upgrade().is_none());
+        feed(&mut ed, "y");
+        settle_until(&mut ed, |ed| card(ed, "Rebased feat onto main").is_some() || says(ed, "rebase feat:"));
+        assert_eq!(git_in(&wt, &["show", "HEAD~1:.gitignore"]), "target/\nsnap/", "as staged outside");
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// The files `commit` holds that its parent doesn't have the same, sorted.
     fn commit_files(wt: &Path, commit: &str) -> String {
         git_in(wt, &["diff-tree", "--no-commit-id", "--name-only", "-r", commit])

@@ -1,7 +1,8 @@
 //! A resolved rebase's card read again, simulated (#206): two sessions' rebases resolved at a stop, a tracked file
 //! changed besides the conflict holding each card's `y` — and at random the card put up (as `:workspace-bring`
 //! does), focused, answered (`y` held and refused, read again; `X`; `n`), a frame, that file staged, unstaged,
-//! undone or changed again in its checkout, the git tab's status read (read again too), the rebase going on and
+//! undone or changed again in its checkout (a stage or unstage told by its index watch, as `watch_index` tells it —
+//! #245, read again too), the git tab's status read (read again too), the rebase going on and
 //! resolved at its next stop (whose conflicted file is the one that held the stop before), a switch, the user
 //! taking their time — each read again's job and its landing interleaved by seed. `y` and `X` start no git: a run
 //! in each task panel stands in, so the answer's rebase stays where it was as its line waits. After every step:
@@ -123,17 +124,21 @@ fn input(sim: &mut Sim, ed: &mut Editor, ids: &[(WorkspaceId, PathBuf)], seen: &
             frame(ed, seen);
             "a frame".into()
         }
-        // The file that holds stop 1's `y`, as you'd treat it in the git tab or the code
+        // The file that holds stop 1's `y`, as you'd treat it in the git tab, a terminal or the code — a change of the
+        // index told by its watch (#245: its thread off here, its word given as it sends it)
         4 => {
+            let told = |ed: &mut Editor| ed.rebase_index_moved(&root);
             let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             match c.below(4) {
                 0 => {
                     git(&root, &["add", "a.rs"]);
-                    format!("{name}: a.rs staged")
+                    told(ed);
+                    format!("{name}: a.rs staged, its index watch tells it")
                 }
                 1 => {
                     git(&root, &["reset", "-q", "--", "a.rs"]);
-                    format!("{name}: a.rs unstaged")
+                    told(ed);
+                    format!("{name}: a.rs unstaged, its index watch tells it")
                 }
                 2 => {
                     git(&root, &["checkout", "--", "a.rs"]);
@@ -263,5 +268,5 @@ fn the_read_again_simulation_sees_a_read_landing_at_the_next_stop() {
 /// …and it sees a card said again under the focus at the same `rev`, keeping the keys.
 #[test]
 fn the_read_again_simulation_sees_a_card_changed_under_the_focus() {
-    sees(Broken::SameRev, &[0], "has the keys, saying other than it said when drawn");
+    sees(Broken::SameRev, &[3], "has the keys, saying other than it said when drawn");
 }

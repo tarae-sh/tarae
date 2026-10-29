@@ -1117,6 +1117,11 @@ const BRANCHES: &[(&str, &str, &str)] = &[
     ("src/editor.rs", "in fn with_root: git_auto", NOT_RUNS),
     (
         "src/editor.rs",
+        "in fn with_root: index_watch",
+        "a resolved rebase's index watched (#245): not on the run path — compat rebases nothing, kept off",
+    ),
+    (
+        "src/editor.rs",
         "in fn with_root: offer_popups",
         "grammar and install offers: kept off, nothing offered for download",
     ),
