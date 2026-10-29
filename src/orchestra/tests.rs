@@ -376,6 +376,323 @@ fn sessions_reads_each_childs_last_report_framed() {
     );
 }
 
+/// What its sessions cost it so far (`usage::totals`): each child's on its row of `sessions`, and in all when it asks for
+/// all — never for one named; a parent's usage in the state says its children's in all, a child's says none.
+#[test]
+fn sessions_says_what_each_child_cost_and_all() {
+    let mut p = place("cost");
+    let kids = start_two(&mut p);
+    let turn = |cost| crate::usage::Turn { cost: Some(cost), ..Default::default() };
+    for (k, c) in [(kids[0], 0.25), (kids[0], 0.5), (kids[1], 1.0)] {
+        p.ed.with_workspace(k, |ed| ed.workspace.claude.usage.turns.push(turn(c)));
+    }
+    let r = text_of(&call(&mut p.ed, 75, "sessions", json!({})).unwrap());
+    assert!(r.contains(" one · working · $0.75 so far\n"), "{r}");
+    assert!(r.contains(" two · working · $1.00 so far\n"), "{r}");
+    assert!(r.ends_with("\n\n2 sessions · $1.75 so far"), "{r}");
+    let r = text_of(&call(&mut p.ed, 76, "sessions", json!({ "session": "two" })).unwrap());
+    assert!(r.contains("$1.00 so far") && !r.contains("2 sessions"), "one named, its own only: {r}");
+    p.ed.workspace.claude.usage.turns.push(turn(0.125));
+    let now = crate::usage::now_ms();
+    let v = crate::uistate::UsageState::of_session(&p.ed, &p.ed.workspace, now).unwrap().json();
+    assert_eq!(v["children"], json!({ "sessions": 2, "turns": 3, "cost": 1.75, "unpriced": 0 }));
+    assert_eq!(v["totals"]["cost"], json!(0.125), "its own apart");
+    let child = p.ed.workspaces.iter().find(|l| l.id == kids[1]).unwrap();
+    let v = crate::uistate::UsageState::of_session(&p.ed, child, now).unwrap().json();
+    assert!(v.get("children").is_none(), "{v}");
+}
+
+/// The set card says what a session started so costs, as the call-order record says the last ones did: each child's
+/// turns carry its mark there, its end says it whole, and the median of the last 5 whole ones is the card's — none ended
+/// yet, not known, never a guess. Asked to wake, the card says so with the cap; not asked, nothing of it.
+#[test]
+fn the_set_card_says_what_the_last_children_cost() {
+    let mut p = place("estimate");
+    let record = crate::scratch::Scratch::new("orchestra-record");
+    let dir = record.path().to_path_buf();
+    p.ed.calls_dir = Some(dir.clone());
+    let question = |ed: &Editor| {
+        let o = ed.offers.iter().find(|o| matches!(o.what, What::SessionSet(_))).expect("the set card");
+        o.question.clone()
+    };
+    let me = p.ed.workspace.label().to_string();
+    let sessions = json!({ "one": "Brief of one.", "two": "Brief of two." });
+    assert!(call(&mut p.ed, 1, "sessions_start", json!({ "sessions": sessions, "wake": true })).is_none());
+    settle_until(&mut p.ed, set_card);
+    let q = question(&p.ed);
+    assert!(!q.contains("≈ API"), "none ended yet: nothing said, never a guess — {q}");
+    assert!(q.contains(&format!("\n{me}'s Claude is woken as each ends, 6 an hour at most.")), "{q}");
+    p.ed.offer_accept();
+    settle_until(&mut p.ed, |_| answered(1).is_some());
+    let kids = children(&p.ed);
+    let marks: Vec<String> = kids
+        .iter()
+        .map(|k| p.ed.workspaces.iter().find(|l| l.id == *k).unwrap().claude.mark.clone().unwrap())
+        .collect();
+    assert_ne!(marks[0], marks[1], "each its own");
+    for k in &kids {
+        let c = p.ed.workspaces.iter().find(|l| l.id == *k).unwrap().claude.chat.as_ref().unwrap();
+        let brief = c.msgs.iter().find(|m| m.role == crate::chat::Role::User).unwrap();
+        assert!(brief.wake, "the set's wake is each brief's");
+    }
+    // A turn of the child's in the record carries its mark; its end, its whole
+    end_turn(&mut p.ed, kids[0], Ok("Done."));
+    p.ed.with_workspace(kids[0], |ed| {
+        ed.workspace.claude.usage.to_record.push(json!({ "what": "chat", "cost": 0.5 }));
+        ed.calls_record();
+    });
+    p.ed.workspace_end("one").unwrap();
+    settle_until(&mut p.ed, |ed| said(ed).contains("Ended one"));
+    let lines = crate::calls::recorded(&dir, 2);
+    assert!(lines.iter().any(|l| l["child"] == json!(marks[0]) && l["cost"] == json!(0.5)), "{lines:?}");
+    assert!(
+        lines.iter().any(|l| l["child"] == json!(marks[0]) && l["what"] == super::CHILD_WHOLE),
+        "{lines:?}"
+    );
+    assert_eq!(super::estimate(&dir, crate::clock::system()), Some((0.5, 1)));
+    // The next set's card says it; not asked to wake, nothing of waking
+    let one = json!({ "three": "Brief of three." });
+    assert!(call(&mut p.ed, 2, "sessions_start", json!({ "sessions": one })).is_none());
+    settle_until(&mut p.ed, set_card);
+    let q = question(&p.ed);
+    assert!(q.contains("\n≈ API $0.50, as the last session started so."), "{q}");
+    assert!(!q.contains("woken"), "{q}");
+}
+
+/// The events waiting, handled until none comes for a moment — what a step sent itself (a wake is the parent's own
+/// event) landed.
+fn drain(ed: &mut Editor) {
+    while let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(50)) {
+        ed.handle_event(ev);
+    }
+}
+
+/// The parent's turn over through the stream's own `Done`, what it spent first (`Spent`, as a result lands).
+fn parent_done(ed: &mut Editor) {
+    let g = ed.workspace.claude.chat.as_ref().unwrap().generation();
+    let spent = crate::usage::Spent { at_ms: crate::usage::now_ms(), ..Default::default() };
+    crate::chat::stream_event(ed, g, crate::llm::StreamEv::Spent(spent));
+    crate::chat::stream_event(ed, g, crate::llm::StreamEv::Done(Ok("ok".into())));
+}
+
+/// The parent's chat's notes.
+fn notes_of(ed: &Editor) -> Vec<String> {
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    c.msgs.iter().filter(|m| m.role == crate::chat::Role::Note).map(|m| m.text.clone()).collect()
+}
+
+/// `wake`: a turn the parent asked to be woken for ends — the parent idle, its news goes to it as a turn of its own
+/// (`WOKE`, the news in its `<editor-note>`), said with its cost as it ends, its record entry marked; busy, it waits and
+/// the parent's own turn's end wakes it; past `llm.parent-wakes` in an hour, not woken — said once, the news told with the
+/// next message. A turn sent without `wake`: never woken for.
+#[test]
+fn a_parent_is_woken_only_when_it_asked_and_is_idle() {
+    let mut p = place("wake");
+    let record = crate::scratch::Scratch::new("orchestra-wake-record");
+    p.ed.calls_dir = Some(record.path().to_path_buf());
+    let kids = start_two(&mut p);
+    let woke = "a turn you asked to be woken for ended";
+    // Not asked: news, no wake — nor as the parent's own turn ends with it waiting
+    assert!(crate::chat::submit(&mut p.ed, "[busy0]", None, None));
+    end_turn(&mut p.ed, kids[0], Ok("[plain] Done."));
+    drain(&mut p.ed);
+    parent_done(&mut p.ed);
+    drain(&mut p.ed);
+    assert_eq!((p.got(woke), p.ed.workspace.claude.news.len()), (0, 1), "{}", said(&p.ed));
+    let _ = call(&mut p.ed, 80, "sessions", json!({}));
+    // Asked, the parent idle: woken, its news with it
+    assert!(
+        call(&mut p.ed, 81, "session_send", json!({ "session": "one", "message": "[m1]", "wake": true }))
+            .is_none()
+    );
+    assert!(delivered(&mut p, 81).contains("sent — its turn started"));
+    end_turn(&mut p.ed, kids[0], Ok("[woken-one] Fixed."));
+    drain(&mut p.ed);
+    let line =
+        p.lines().iter().find(|l| l.contains(woke)).cloned().unwrap_or_else(|| panic!("{}", said(&p.ed)));
+    assert!(
+        line.contains("news of the sessions you started:") && line.contains("[woken-one] Fixed."),
+        "{line}"
+    );
+    assert!(p.ed.workspace.claude.news.is_empty(), "told once");
+    assert_eq!(p.ed.workspace.claude.wakes.len(), 1);
+    parent_done(&mut p.ed);
+    assert!(notes_of(&p.ed).iter().any(|n| n.starts_with("woke for one · ")), "{:?}", notes_of(&p.ed));
+    // (the `[busy0]` turn's line, then the wake's: both waited for — each written on a worker)
+    let lines = crate::calls::recorded(record.path(), 2);
+    assert_eq!(lines.iter().filter(|l| l["wake"] == true).count(), 1, "the wake's alone: {lines:?}");
+    // Asked, the parent busy: not now — its own turn's end wakes it
+    assert!(crate::chat::submit(&mut p.ed, "[busy]", None, None));
+    assert!(
+        call(&mut p.ed, 82, "session_send", json!({ "session": "two", "message": "[m2]", "wake": true }))
+            .is_none()
+    );
+    let _ = delivered(&mut p, 82);
+    end_turn(&mut p.ed, kids[1], Ok("[brief-two]"));
+    drain(&mut p.ed);
+    // (two's brief turn was its own first: [m2] waited behind it, a turn of its own)
+    end_turn(&mut p.ed, kids[1], Ok("[woken-two]"));
+    drain(&mut p.ed);
+    assert_eq!(p.got(woke), 1, "not while it works");
+    parent_done(&mut p.ed);
+    assert_eq!(p.got(woke), 2, "its turn's end woke it: {}", said(&p.ed));
+    parent_done(&mut p.ed);
+    // Past the cap: held, said, told with the next message
+    p.ed.config.llm.parent_wakes = 2;
+    assert!(
+        call(&mut p.ed, 83, "session_send", json!({ "session": "one", "message": "[m3]", "wake": true }))
+            .is_none()
+    );
+    let _ = delivered(&mut p, 83);
+    end_turn(&mut p.ed, kids[0], Ok("[held-one]"));
+    drain(&mut p.ed);
+    assert_eq!(p.got(woke), 2, "held");
+    let held = "not woken for one: 2 wakes this hour already (llm.parent-wakes) — Claude hears it with your next message";
+    assert_eq!(notes_of(&p.ed).iter().filter(|n| *n == held).count(), 1, "{:?}", notes_of(&p.ed));
+    assert!(crate::chat::submit(&mut p.ed, "[next]", None, None));
+    let line = p.lines().iter().find(|l| l.contains("[next]")).cloned().unwrap();
+    assert!(line.contains("[held-one]"), "told with the next message: {line}");
+    parent_done(&mut p.ed);
+    // The plan's limit pressing (on the plan): held too
+    p.ed.config.llm.parent_wakes = 6;
+    p.ed.workspace.claude.billing = crate::billing::Billing::Subscription;
+    let ev = json!({ "type": "rate_limit_event",
+        "rate_limit_info": { "rateLimitType": "five_hour", "utilization": 0.9, "status": "allowed_warning" } });
+    let report = crate::limits::of_event(&ev, crate::usage::now_ms()).unwrap();
+    crate::limits::seen(&mut p.ed, report);
+    assert!(
+        call(&mut p.ed, 84, "session_send", json!({ "session": "one", "message": "[m4]", "wake": true }))
+            .is_none()
+    );
+    let _ = delivered(&mut p, 84);
+    end_turn(&mut p.ed, kids[0], Ok("[pressed-one]"));
+    drain(&mut p.ed);
+    assert_eq!(p.got(woke), 2, "held while the plan's limit presses");
+    let pressed =
+        notes_of(&p.ed).into_iter().filter(|n| n.starts_with("not woken for one: the plan's ")).count();
+    assert_eq!(pressed, 1, "{:?}", notes_of(&p.ed));
+}
+
+/// A wake that came while the parent was idle but busy otherwise — a card up in front — isn't dropped: it goes once the
+/// card does, by whatever event took it (the parent's own turn never ended to look again).
+#[test]
+fn a_wake_held_by_a_card_goes_once_the_card_does() {
+    let mut p = place("wake-card");
+    let kids = start_two(&mut p);
+    let woke = "a turn you asked to be woken for ended";
+    end_turn(&mut p.ed, kids[0], Ok("[brief-one]"));
+    let _ = call(&mut p.ed, 60, "sessions", json!({}));
+    let what = What::ReviewEnd { session: p.ed.workspace.id, started: std::time::Instant::now() };
+    p.ed.push_offer(crate::offer::Offer::new("[a card]".into(), "?", "", String::new(), what));
+    assert!(
+        call(&mut p.ed, 61, "session_send", json!({ "session": "one", "message": "[m]", "wake": true }))
+            .is_none()
+    );
+    let _ = delivered(&mut p, 61);
+    // (its turn, which wakes its parent as it ends, says so on its row in the session list)
+    let wakes = |ed: &Editor| ed.session_shown().into_iter().find(|s| s.id == kids[0]).unwrap().wakes;
+    assert_eq!(wakes(&p.ed), Some(p.ed.workspace.label().to_string()));
+    end_turn(&mut p.ed, kids[0], Ok("[carded-one]"));
+    assert_eq!(wakes(&p.ed), None, "its turn over");
+    drain(&mut p.ed);
+    assert_eq!(p.got(woke), 0, "not while its card is up");
+    assert!(p.ed.workspace.claude.news.iter().any(|n| n.wake), "its wake kept");
+    p.ed.handle_event(crate::event::Event::Job(Box::new(|ed: &mut Editor| ed.offer_dismiss())));
+    drain(&mut p.ed);
+    assert_eq!(p.got(woke), 1, "woken once the card went: {}", said(&p.ed));
+    assert!(p.ed.workspace.claude.news.is_empty(), "told with it");
+}
+
+/// A wake held (past `llm.parent-wakes`) lets go of the wakes of the news it said — its conversation's — never another
+/// conversation's, which that one is woken for in its turn.
+#[test]
+fn a_held_wake_lets_go_only_of_its_conversations() {
+    let mut p = place("wake-conversations");
+    p.ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("[conv-a]".into());
+    let kids = start_two(&mut p);
+    end_turn(&mut p.ed, kids[0], Ok("[brief-one]"));
+    end_turn(&mut p.ed, kids[1], Ok("[brief-two]"));
+    let _ = call(&mut p.ed, 62, "sessions", json!({}));
+    let send = |p: &mut Place, n: u64, to: &str| {
+        let args = json!({ "session": to, "message": format!("[to-{to}]"), "wake": true });
+        assert!(call(&mut p.ed, n, "session_send", args).is_none());
+        // (delivered, not only answered: one delivered later would carry the news itself)
+        let _ = delivered(p, n);
+    };
+    send(&mut p, 63, "one");
+    crate::chat::reset(&mut p.ed);
+    p.ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("[conv-b]".into());
+    send(&mut p, 64, "two");
+    p.ed.config.llm.parent_wakes = 0;
+    end_turn(&mut p.ed, kids[0], Ok("[a-done]"));
+    end_turn(&mut p.ed, kids[1], Ok("[b-done]"));
+    drain(&mut p.ed);
+    let held = "not woken for two: llm.parent-wakes is 0 — Claude hears it with your next message";
+    assert!(notes_of(&p.ed).iter().any(|n| n == held), "{:?}", notes_of(&p.ed));
+    let wakes: Vec<(&str, bool)> =
+        p.ed.workspace.claude.news.iter().map(|n| (n.conversation.as_deref().unwrap(), n.wake)).collect();
+    assert_eq!(wakes, [("[conv-a]", true), ("[conv-b]", false)], "conv-a's wake is conv-a's");
+}
+
+/// A wake's cut-off paths: a parent's message that asked a wake, sent again as its child's conversation is found gone,
+/// keeps it; a wake's own turn ended by its claude's exit is said (`woke for one · cost not reported`), its wake over.
+#[test]
+fn a_wake_holds_through_its_claudes_exit() {
+    let mut p = place("wake-exit");
+    let woke = "a turn you asked to be woken for ended";
+    let sessions = json!({ "one": "Brief of one.", "two": "Brief of two." });
+    assert!(call(&mut p.ed, 65, "sessions_start", json!({ "sessions": sessions, "wake": true })).is_none());
+    settle_until(&mut p.ed, set_card);
+    p.ed.offer_accept();
+    settle_until(&mut p.ed, |_| answered(65).is_some());
+    let kids = children(&p.ed);
+    // A parent's message sent again at its child's exit: its wake with it
+    p.ed.with_workspace(kids[1], |ed| {
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        crate::chat::resuming(c, "[gone]");
+        let g = c.generation();
+        let err = "No conversation found with session ID: [gone]".to_string();
+        crate::chat::stream_event(ed, g, crate::llm::StreamEv::Exit(err));
+    });
+    let c = p.ed.workspaces.iter().find(|l| l.id == kids[1]).unwrap().claude.chat.as_ref().unwrap();
+    let last = c.msgs.iter().rfind(|m| m.role == crate::chat::Role::User).unwrap();
+    assert_eq!((last.text.as_str(), last.wake), ("Brief of two.", true), "sent again, its wake kept");
+    // A wake's turn cut off by the parent's claude's exit: said, its cost not reported
+    end_turn(&mut p.ed, kids[0], Ok("[woken-one]"));
+    drain(&mut p.ed);
+    assert_eq!(p.got(woke), 1, "{}", said(&p.ed));
+    assert!(p.ed.workspace.claude.chat.as_ref().unwrap().waking.is_some());
+    let g = p.ed.workspace.claude.chat.as_ref().unwrap().generation();
+    crate::chat::stream_event(&mut p.ed, g, crate::llm::StreamEv::Exit("[gone]".into()));
+    assert!(notes_of(&p.ed).iter().any(|n| n == "woke for one · cost not reported"), "{:?}", notes_of(&p.ed));
+    assert!(p.ed.workspace.claude.chat.as_ref().unwrap().waking.is_none(), "its wake over");
+}
+
+/// The record's medians: a child counts only once it ended whole, each its entries summed; the last 5; a wake each its
+/// own turn.
+#[test]
+fn the_estimates_take_only_whole_children_and_the_last_five() {
+    let record = crate::scratch::Scratch::new("orchestra-estimates");
+    let now = crate::clock::system();
+    let mut lines = Vec::new();
+    for (k, cost) in [(1, 1.0), (2, 2.0), (3, 3.0), (4, 4.0), (5, 5.0), (6, 6.0)] {
+        lines.push(json!({ "what": "chat", "child": format!("c{k}"), "cost": cost / 2.0 }));
+        lines.push(json!({ "what": "reviewer", "child": format!("c{k}"), "cost": cost / 2.0 }));
+        lines.push(json!({ "what": super::CHILD_WHOLE, "child": format!("c{k}") }));
+    }
+    // (one still open: part of a child only)
+    lines.push(json!({ "what": "chat", "child": "c7", "cost": 100.0 }));
+    for cost in [0.01, 0.03, 0.02] {
+        lines.push(json!({ "what": "chat", "wake": true, "cost": cost }));
+    }
+    lines.push(json!({ "what": "chat", "cost": 9.0 }));
+    crate::cards::append(record.path(), &crate::cards::month_file(now), &lines).unwrap();
+    assert_eq!(super::estimate(record.path(), now), Some((4.0, 5)), "c2..c6, whole: their median");
+    assert_eq!(super::wake_estimate(record.path(), now), Some((0.02, 3)));
+    let empty = crate::scratch::Scratch::new("orchestra-estimates-none");
+    assert_eq!((super::estimate(empty.path(), now), super::wake_estimate(empty.path(), now)), (None, None));
+}
+
 /// A turn the parent started that ended is news, told once — in its next session tool's answer (`sessions` now;
 /// `session_send`'s as it's delivered) or its next message (in its `<editor-note>`), whichever comes first — its chat
 /// saying what it was told; a turn the user started there is none. Stopped and failed turns are news too.

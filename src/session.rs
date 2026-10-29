@@ -116,6 +116,12 @@ pub struct Session {
     /// What its own acts as a parent came to, not told its Claude yet (`orchestra::News`): a turn it started in a child
     /// ended. Told once, by the next session tool's answer or the next message, whichever comes first.
     pub news: Vec<crate::orchestra::News>,
+    /// A child's mark in the call-order record (`orchestra::mark`): every turn of its, and its end, carry it — what the
+    /// next set's card says a session started so costs (`orchestra::estimate`). Kept with its workspace.
+    pub mark: Option<String>,
+    /// When its Claude was woken for a turn it started in a child (`orchestra::wake`, unix ms) — the last hour's,
+    /// against `llm.parent-wakes`.
+    pub wakes: Vec<u64>,
     /// The session list brought it back at this start (`workspaces_back`) — a task tarae brought back, not a start of
     /// yours: its chat continues its own last conversation as it opens, said on its top line (`Chat.continued`) — once:
     /// taken as its chat's conversations are read, cleared by a new conversation (`C-l`, `:chat-new`).
@@ -157,6 +163,8 @@ impl Session {
             parent: None,
             starting: Vec::new(),
             news: Vec::new(),
+            mark: None,
+            wakes: Vec::new(),
             brought_back: false,
             follow_armed: false,
             caps: None,

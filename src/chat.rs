@@ -438,6 +438,9 @@ pub struct Msg {
     /// — what this turn comes to is that conversation's news and report, never another's (`orchestra::turn_ended`,
     /// `report`).
     pub from_conversation: Option<String>,
+    /// With `from`: its parent's Claude asked to be woken as this turn ends (`wake` — `orchestra::wake`). Not kept: a
+    /// parent's news and wakes are this tarae's.
+    pub wake: bool,
     /// Goes up with every change to what it shows (`changed`) — a word replaced, a row's verdict — so its rows
     /// are laid out again, even when the text's length stays.
     version: u64,
@@ -540,6 +543,7 @@ impl Msg {
             stamps: Vec::new(),
             from: None,
             from_conversation: None,
+            wake: false,
             version: 0,
             cache: RefCell::new(None),
         }
@@ -690,6 +694,9 @@ pub struct Chat {
     pub session_tools: bool,
     /// The line that says who a parent's message is from went in this conversation (`orchestra::FRAMING`): once.
     pub framed: bool,
+    /// The turn under way is a wake (`orchestra::wake`): the children it was woken for, and how many turns its usage had
+    /// as it went — its cost said as it ends (`orchestra::woke_over`), its record entry marked `wake`.
+    pub waking: Option<(Vec<String>, usize)>,
     /// The queued line's rows as last laid out (`term::chat_laid`), and what they were laid out for — the same rows
     /// while nothing changed, so the transcript keeps its piece (`chatdoc::follow`).
     pub queued_laid: RefCell<Option<(u64, std::sync::Arc<[ChatRow]>)>>,
@@ -1101,6 +1108,7 @@ impl Chat {
             sends: Vec::new(),
             session_tools: false,
             framed: false,
+            waking: None,
             queued_laid: RefCell::new(None),
             places: Default::default(),
             hosts_next: Vec::new(),
@@ -2126,6 +2134,8 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
         StreamEv::Usage(seen) => ed.workspace.claude.usage.seen(seen),
         StreamEv::Spent(spent) => {
             ed.workspace.claude.usage.spent(spent);
+            // (a wake's turn: its record entry says so — `orchestra::wake_estimate`)
+            crate::orchestra::mark_wake(ed);
             ed.calls_record();
             crate::uistate::watch::usage(ed, "turn");
             crate::usage::view_sync(ed);
@@ -2325,6 +2335,8 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             // session behind, and by then a queued message may have made the last turn another's)
             let stop = if stopped { crate::orchestra::Stop::ByUser } else { crate::orchestra::Stop::No };
             crate::orchestra::turn_ended(ed, &ended, stop);
+            // (a wake's turn: said with its cost)
+            crate::orchestra::woke_over(ed);
             // (a key held back: the card asks whether Claude takes it)
             if login_hint.is_some() {
                 crate::envkey::ask(ed);
@@ -2378,6 +2390,9 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 true => hold_queued(ed),
                 false => send_queued(ed),
             }
+            // (a parent with news it asked to be woken for that came while it worked: woken now it's idle —
+            // `orchestra::wake` looks)
+            crate::orchestra::wake(ed);
         }
         StreamEv::Exit(err) => {
             c.proc = None;
@@ -2410,8 +2425,9 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 let parents = unanswered.filter(|&at| c.msgs[at].from.is_some()).map(|at| c.msgs.remove(at));
                 let unanswered = unanswered.filter(|_| parents.is_none());
                 if let Some(m) = parents {
-                    let (from, conversation) = (m.from.unwrap_or_default(), m.from_conversation);
-                    c.sends.insert(0, Later::Parent { from, conversation, text: m.text });
+                    let (from, conversation, wake) =
+                        (m.from.unwrap_or_default(), m.from_conversation, m.wake);
+                    c.sends.insert(0, Later::Parent { from, conversation, wake, text: m.text });
                 }
                 if let Some(at) = unanswered {
                     let m = c.msgs.remove(at);
@@ -2497,6 +2513,8 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             // (a turn cut off: what its requests reported, no cost)
             ed.workspace.claude.usage.cut_off(crate::usage::now_ms());
             ed.calls_record();
+            // (a wake's turn cut off: said, its cost not reported)
+            crate::orchestra::woke_over(ed);
             crate::usage::watch(ed);
             if login_hint.is_some() {
                 crate::envkey::ask(ed);
@@ -2745,12 +2763,12 @@ pub(crate) fn send_queued(ed: &mut Editor) {
         match later {
             Later::Review(lines) => crate::codereview::send_as(ed, lines),
             Later::Reply { id, text, fresh, why } => crate::notes::send(ed, id, &text, fresh, why, None),
-            Later::Parent { from, conversation, text } => {
-                if !submit_from(ed, &from, conversation.as_deref(), &text)
+            Later::Parent { from, conversation, wake, text } => {
+                if !submit_from(ed, &from, conversation.as_deref(), wake, &text)
                     && let Some(c) = ed.workspace.claude.chat.as_mut()
                 {
                     // (it couldn't go — its claude ended: it waits again, first, for the next start)
-                    c.sends.insert(0, Later::Parent { from, conversation, text });
+                    c.sends.insert(0, Later::Parent { from, conversation, wake, text });
                     return;
                 }
             }
@@ -2800,8 +2818,8 @@ pub enum Later {
     Reply { id: u64, text: String, fresh: bool, why: Option<String> },
     /// A message from its parent session's Claude (`orchestra.rs`, `session_send`): `from` its name, `conversation` the
     /// one of its chat it came from (`Msg.from_conversation`). It goes after a message of the user's queued before it —
-    /// the person first.
-    Parent { from: String, conversation: Option<String>, text: String },
+    /// the person first. `wake`: its Claude asked to be woken as its turn ends (`Msg.wake`).
+    Parent { from: String, conversation: Option<String>, wake: bool, text: String },
 }
 
 /// The turn ended refused for money: the message queued during it stays queued, said — it goes once the
@@ -2933,16 +2951,17 @@ pub fn submit(ed: &mut Editor, question: &str, about: Option<String>, chip: Opti
 
 /// A message from the session `from`'s Claude — this one's parent (`orchestra.rs`) — as the next turn: in
 /// `<from-session>`, the line saying who it's from before it the first time in a conversation; its row headed
-/// `from's Claude`. False if it couldn't go (busy, no process).
-pub fn submit_from(ed: &mut Editor, from: &str, conversation: Option<&str>, text: &str) -> bool {
+/// `from's Claude`; `wake`: its Claude asked to be woken as this turn ends. False if it couldn't go (busy, no process).
+pub fn submit_from(ed: &mut Editor, from: &str, conversation: Option<&str>, wake: bool, text: &str) -> bool {
     if !submit_as(ed, text, None, None, false, Some(from)) {
         return false;
     }
-    // (the message just pushed: which of the parent's conversations it came from)
+    // (the message just pushed: which of the parent's conversations it came from, and whether it wakes it)
     if let Some(m) =
         ed.workspace.claude.chat.as_mut().and_then(|c| c.msgs.iter_mut().rfind(|m| m.role == Role::User))
     {
         m.from_conversation = conversation.map(str::to_string);
+        m.wake = wake;
     }
     true
 }
@@ -3785,7 +3804,9 @@ fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
                 .as_str()
                 .filter(|b| !b.trim().is_empty())
                 .map_or(String::new(), |b| format!("from {b}"));
-            Look { verb: "start", what: names.join(", "), pattern: false, range, link: None }
+            // (asked to be woken as each ends: said after the names, as a send's)
+            let wakes = if input["wake"].as_bool() == Some(true) { crate::orchestra::WAKES_ME } else { "" };
+            Look { verb: "start", what: names.join(", ") + wakes, pattern: false, range, link: None }
         }
         "mcp__tarae__session_send" => {
             let text = s("message");
@@ -3800,7 +3821,9 @@ fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
                 true => format!("anew: {gist}"),
                 false => gist,
             };
-            Look { verb: "send", what: s("session"), pattern: false, range, link: None }
+            // (asked to be woken as its turn ends: after the name, before the words — `send  knot-count · wakes me  go`)
+            let wakes = if input["wake"].as_bool() == Some(true) { crate::orchestra::WAKES_ME } else { "" };
+            Look { verb: "send", what: s("session") + wakes, pattern: false, range, link: None }
         }
         // (checking on a session: its state and the reply of the last turn this Claude started there)
         "mcp__tarae__sessions" => {
@@ -6191,6 +6214,14 @@ mod tests {
         );
         assert_eq!((anew.what.as_str(), anew.range.as_str()), ("k", "anew: go"));
         assert_eq!((send.range.as_str(), check.what.as_str()), ("go", "all"));
+        // (a wake asked: said after the name — a turn the parent's Claude starts by itself is never unseen)
+        let woke = at(
+            "mcp__tarae__session_send",
+            serde_json::json!({"session": "k", "message": "go", "wake": true}),
+        );
+        assert_eq!((woke.what.as_str(), woke.range.as_str()), ("k · wakes me", "go"));
+        let set = serde_json::json!({"sessions": {"a": "b", "c": "d"}, "wake": true});
+        assert_eq!(at("mcp__tarae__sessions_start", set).what, "a, c · wakes me");
         for l in [start, send, anew, check] {
             assert!(label(l.verb).chars().count() <= 6, "{}: past the rows' six cells", l.verb);
         }

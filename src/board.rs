@@ -717,29 +717,28 @@ pub const WHOLE: &str = "board-whole";
 /// were — only boards that ended whole (`WHOLE`): one still reading, stopped, failed or ended with its
 /// session cost only part of a board. None: no such board in the record — never a guess.
 pub fn estimate(dir: &Path, now: std::time::SystemTime) -> Option<(f64, usize)> {
-    const LAST: usize = 5;
+    estimate_of(dir, now, "board", WHOLE)
+}
+
+/// The call-order record's entries in `dir` that hold `key` (a word of the line, looked for before it's parsed), this
+/// month's file and the calendar month's before it, oldest first.
+pub fn recorded_with(dir: &Path, now: std::time::SystemTime, key: &str) -> Vec<Value> {
     let (y, m, _) = crate::log::day(now);
     let (py, pm) = if m == 1 { (y - 1, 12) } else { (y, m - 1) };
     let files = [crate::cards::month_name(py, pm), crate::cards::month_file(now)];
-    let (mut boards, mut whole): (Vec<(String, f64)>, Vec<String>) = (Vec::new(), Vec::new());
+    let quoted = format!("\"{key}\"");
+    let mut out = Vec::new();
     for f in files {
         let text = std::fs::read_to_string(dir.join(f)).unwrap_or_default();
-        for line in text.lines().filter(|l| l.contains("\"board\"")) {
-            let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-            let Some(id) = v["board"].as_str() else { continue };
-            if v["what"] == WHOLE {
-                whole.push(id.to_string());
-                continue;
-            }
-            let Some(cost) = v["cost"].as_f64() else { continue };
-            match boards.iter_mut().find(|b| b.0 == id) {
-                Some(b) => b.1 += cost,
-                None => boards.push((id.to_string(), cost)),
-            }
-        }
+        out.extend(text.lines().filter(|l| l.contains(&quoted)).filter_map(|l| serde_json::from_str(l).ok()));
     }
-    boards.retain(|b| whole.contains(&b.0));
-    let mut last: Vec<f64> = boards.iter().rev().take(LAST).map(|b| b.1).collect();
+    out
+}
+
+/// The median of the last `LAST` of `costs` (oldest first) and how many it took — None: none.
+pub fn median_last(costs: &[f64]) -> Option<(f64, usize)> {
+    const LAST: usize = 5;
+    let mut last: Vec<f64> = costs.iter().rev().take(LAST).copied().collect();
     if last.is_empty() {
         return None;
     }
@@ -747,6 +746,26 @@ pub fn estimate(dir: &Path, now: std::time::SystemTime) -> Option<(f64, usize)> 
     let k = last.len();
     let median = if k % 2 == 1 { last[k / 2] } else { (last[k / 2 - 1] + last[k / 2]) / 2.0 };
     Some((median, k))
+}
+
+/// What the last of a kind cost (`estimate`'s rule for a board, `orchestra::estimate`'s for a child): each one's entries
+/// summed by the id under `key`, only those whose `whole` entry says they ended whole, the last `LAST`'s median.
+pub fn estimate_of(dir: &Path, now: std::time::SystemTime, key: &str, whole: &str) -> Option<(f64, usize)> {
+    let (mut each, mut ended): (Vec<(String, f64)>, Vec<String>) = (Vec::new(), Vec::new());
+    for v in recorded_with(dir, now, key) {
+        let Some(id) = v[key].as_str() else { continue };
+        if v["what"] == whole {
+            ended.push(id.to_string());
+            continue;
+        }
+        let Some(cost) = v["cost"].as_f64() else { continue };
+        match each.iter_mut().find(|b| b.0 == id) {
+            Some(b) => b.1 += cost,
+            None => each.push((id.to_string(), cost)),
+        }
+    }
+    each.retain(|b| ended.contains(&b.0));
+    median_last(&each.iter().map(|b| b.1).collect::<Vec<_>>())
 }
 
 /// The estimate as the start toast and the report say it.

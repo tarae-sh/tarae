@@ -65,7 +65,7 @@ pub const RISKY: [&str; 24] = [
 /// credential and memory (`review.skeptics-max`, `review.board-at-once`), whether your workspaces' trees are
 /// rewritten unasked (`workspace.sync`), how much moves on your screen (`editor.motion`), whether and how your
 /// machine sounds (`editor.sound*`), whether a plugin hears your keys (`plugins.keys`) — a project never does.
-pub const YOURS_ONLY: [&str; 18] = [
+pub const YOURS_ONLY: [&str; 19] = [
     "llm.card-record",
     // (a project's 1 would take your `space u` history back to its newest turn)
     "llm.turns-max-mb",
@@ -88,9 +88,10 @@ pub const YOURS_ONLY: [&str; 18] = [
     // (whether your machine makes a sound, and how loud: a project's would click on someone's call)
     "editor.sound",
     "editor.sound-volume",
-    // (whether your Claude may start sessions that spend your plan or key, and how many)
+    // (whether your Claude may start sessions that spend your plan or key, how many, and how often it's woken by them)
     "llm.session-tools",
     "llm.children-max",
+    "llm.parent-wakes",
     // (whether a plugin hears the keys you press: a project's would turn a keylogger on)
     "plugins.keys",
 ];

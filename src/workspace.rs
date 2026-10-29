@@ -186,6 +186,9 @@ pub struct Workspace {
     pub rebase: Option<crate::rebase::Rebase>,
     /// Its checkout being moved onto its base's tip (`keepclose.rs`) — that base: its messages and runs wait.
     pub moving: Option<String>,
+    /// A child brought into this base while it wasn't idle (its Claude answering, a rebase, a file unsaved): its end
+    /// card waits for it to be (`Editor::brought_ends_sync`, orchestra §7) — not kept past a restart.
+    pub end_when_idle: Option<String>,
     pub bring_after_preflight: bool,
     /// The bring card whose `p` that preflight runs for: up again, with what failed, if it doesn't pass
     /// (frictions34 42 — a toast was all, and the output went with the task panel's next run).
@@ -428,6 +431,7 @@ impl Workspace {
             preflight_kept: if cfg!(test) { None } else { crate::preflight::kept_path() },
             rebase: None,
             moving: None,
+            end_when_idle: None,
             bring_after_preflight: false,
             bring_card_after: None,
             bring_failed: None,
@@ -1882,6 +1886,7 @@ mod tests {
             ahead: Vec::new(),
             lost: Vec::new(),
             entries: Vec::new(),
+            brought: None,
             keep: crate::workspacekeep::Plan {
                 folders: Vec::new(),
                 differ: Vec::new(),
@@ -2661,6 +2666,8 @@ mod tests {
             waits: (0, 0),
             report: String::new(),
             context: None,
+            children: None,
+            wakes: None,
         };
         let row = &crate::worktree::items(&[shown(doing)])[0];
         assert!(row.hint.contains("stuck? symbols 42s"), "{}", row.hint);

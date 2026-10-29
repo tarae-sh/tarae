@@ -27,6 +27,66 @@ pub struct Set {
     pub conversation: Option<String>,
     /// Each session's making and brief, by name (the call's object, sorted). One base and billing for all.
     pub sessions: Vec<(Making, String)>,
+    /// Its Claude asked to be woken as each brief's turn ends (`wake`).
+    pub wake: bool,
+    /// What the last ones cost, from the call-order record (`estimate`, `wake_estimate`) — read with the set's look.
+    pub costs: Costs,
+}
+
+/// What a session started so, and a wake, cost lately (the call-order record's medians) — None: none yet, never a guess.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Costs {
+    pub child: Option<(f64, usize)>,
+    pub wake: Option<(f64, usize)>,
+}
+
+impl Costs {
+    /// From the call-order record in `dir` (none in tests unless given: nothing known). On a worker.
+    fn read(dir: Option<&std::path::Path>) -> Costs {
+        let Some(dir) = dir else { return Costs::default() };
+        let now = crate::clock::system();
+        Costs { child: estimate(dir, now), wake: wake_estimate(dir, now) }
+    }
+}
+
+/// The call-order record's entry (`what`) that says a child ended whole — brought or ended: every turn of its there.
+pub const CHILD_WHOLE: &str = "child-whole";
+
+/// A child's mark in the call-order record (`Session.mark`): this process, when it was made, its workspace's number —
+/// as a board's id (`:restart` keeps the pid and starts the count again: the time keeps two apart).
+pub fn mark(n: u64) -> String {
+    let ms = crate::clock::system().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    format!("c{}-{ms}-{n}", std::process::id())
+}
+
+/// What the last children cost, each in all: the median of the last 5 that ended whole (`CHILD_WHOLE`) — one still open,
+/// or one that ended before its turns were marked, is part of a child only. None: no such child in the record.
+pub fn estimate(dir: &std::path::Path, now: std::time::SystemTime) -> Option<(f64, usize)> {
+    crate::board::estimate_of(dir, now, "child", CHILD_WHOLE)
+}
+
+/// What the last wakes cost (`wake`'s turns, the record's `"wake": true`): the last 5's median.
+pub fn wake_estimate(dir: &std::path::Path, now: std::time::SystemTime) -> Option<(f64, usize)> {
+    let costs: Vec<f64> = crate::board::recorded_with(dir, now, "wake")
+        .iter()
+        .filter(|v| v["wake"] == true)
+        .filter_map(|v| v["cost"].as_f64())
+        .collect();
+    crate::board::median_last(&costs)
+}
+
+/// Child `mark` ended (brought or ended: its checkout gone): said whole in the call-order record — on a worker, nothing
+/// to bring back; none kept where there's no record.
+pub fn ended_whole(ed: &mut Editor, mark: String) {
+    let Some(dir) = ed.calls_dir.clone() else { return };
+    let now = crate::clock::system();
+    let e = json!({ "v": crate::calls::RECORD_V, "at": crate::log::stamp(now), "what": CHILD_WHOLE, "child": mark });
+    let file = crate::cards::month_file(now);
+    ed.events.jobs().background(move || {
+        if let Err(e) = crate::cards::append(&dir, &file, &[e]) {
+            crate::log::line("calls", "warn", &format!("{}: {e}", dir.join(&file).display()));
+        }
+    });
 }
 
 /// `sessions_start`: the set looked at on a worker (every name a new branch, its checkout's place free — one bad
@@ -45,6 +105,7 @@ pub fn start(ed: &mut Editor, call: crate::tools::Call, args: &Value) -> Result<
         set.push((name.trim().to_string(), brief.to_string()));
     }
     let base = args["base"].as_str().map(str::trim).filter(|b| !b.is_empty()).map(str::to_string);
+    let wake = args["wake"].as_bool().unwrap_or(false);
     let parent = ed.workspace.id;
     let waiting = ed.offers.iter().chain(&ed.workspace.parked);
     if let Some(o) = waiting
@@ -71,9 +132,12 @@ pub fn start(ed: &mut Editor, call: crate::tools::Call, args: &Value) -> Result<
     let builds = ed.workspace_store.builds.clone();
     let parent_name = ed.workspace.label().to_string();
     let conversation = conversation_of(ed);
+    let record = ed.calls_dir.clone();
     let work = move || makings(&root, &set, base.as_deref(), &setting, builds.as_ref());
     ed.events.jobs().spawn(move || {
         let found = work();
+        // (what the last ones cost, beside the look: the record read on the worker)
+        let costs = Costs::read(record.as_deref());
         move |ed: &mut Editor| match found {
             Err(e) => crate::tools::answer(ed, call, Err(e)),
             Ok(sessions) => {
@@ -87,7 +151,7 @@ pub fn start(ed: &mut Editor, call: crate::tools::Call, args: &Value) -> Result<
                             (m, brief)
                         })
                         .collect();
-                    let o = card(ed, Set { call, parent, parent_name, conversation, sessions });
+                    let o = card(ed, Set { call, parent, parent_name, conversation, sessions, wake, costs });
                     ed.push_offer(o);
                 });
             }
@@ -206,6 +270,29 @@ pub fn card(ed: &Editor, s: Set) -> crate::offer::Offer {
         let into = if n == 1 { "it" } else { "each" };
         q += &format!("\nCopied into {into} (not in git here): {}", first.copies.join("  "));
     }
+    // What the last ones cost in all (the call-order record's — none ended yet: nothing said, never a guess) and, asked,
+    // that its Claude is woken: a line each in the paragraph above, no row of air — at 80×24 a set of three fits whole
+    // (cut in height, its `y` would wait for `v`)
+    let each = if n == 1 { "" } else { " each" };
+    match s.costs.child {
+        Some((c, 1)) => {
+            q += &format!("\n≈ API {}{each}, as the last session started so.", crate::usage::dollars(c))
+        }
+        Some((c, k)) => {
+            q += &format!("\n≈ API {}{each}, as the last {k} sessions started so.", crate::usage::dollars(c))
+        }
+        None => {}
+    }
+    if s.wake {
+        let ends = if n == 1 { "it ends" } else { "each ends" };
+        let cost = s.costs.wake.map(|(c, _)| format!(" — ≈ API {} a time", crate::usage::dollars(c)));
+        q += &format!(
+            "\n{}'s Claude is woken as {ends}{}, {} an hour at most.",
+            s.parent_name,
+            cost.unwrap_or_default(),
+            ed.config.llm.parent_wakes
+        );
+    }
     let api = first.billing == crate::billing::Billing::Api;
     if let Some(window) = &first.billing_ask {
         let (on, other) = if api { ("your API key", "your plan") } else { ("your plan", "your API key") };
@@ -267,7 +354,7 @@ pub fn answer(ed: &mut Editor, id: u64, s: Set, yes: bool) {
         ed.offer_finished(id, Err(why.clone()));
         return crate::tools::answer(ed, s.call, Err(why));
     }
-    let Set { call, parent_name, conversation, sessions, .. } = s;
+    let Set { call, parent_name, conversation, sessions, wake, .. } = s;
     ed.events.shared_jobs().spawn(move || {
         let made: Vec<Made> = sessions
             .into_iter()
@@ -276,7 +363,7 @@ pub fn answer(ed: &mut Editor, id: u64, s: Set, yes: bool) {
                 (m, brief, r)
             })
             .collect();
-        move |ed: &mut Editor| self::made(ed, id, call, (parent, &parent_name, conversation), made)
+        move |ed: &mut Editor| self::made(ed, id, call, (parent, &parent_name, conversation, wake), made)
     });
 }
 
@@ -289,7 +376,7 @@ fn made(
     ed: &mut Editor,
     id: u64,
     call: crate::tools::Call,
-    (parent, parent_name, conversation): (SessionId, &str, Option<String>),
+    (parent, parent_name, conversation, wake): (SessionId, &str, Option<String>, bool),
     made: Vec<Made>,
 ) {
     let (mut names, mut failed, mut uncopied, mut base) = (Vec::new(), Vec::new(), Vec::new(), String::new());
@@ -308,6 +395,8 @@ fn made(
             // (who pays, as its card said)
             l.claude.billing = m.billing;
             l.claude.parent = Some(parent);
+            // (its turns and its end marked in the call-order record: what the next set's card says one costs)
+            l.claude.mark = Some(mark(child.n));
         }
         if m.billing == crate::billing::Billing::Api {
             ed.weakness_shown();
@@ -318,7 +407,7 @@ fn made(
         let (from, conversation) = (parent_name.to_string(), conversation.clone());
         in_workspace(ed, child, move |ed| {
             crate::chat::open(ed);
-            to_child(ed, (&from, conversation.as_deref()), &brief);
+            to_child(ed, (&from, conversation.as_deref(), wake), &brief);
         });
         names.push(m.branch);
     }
@@ -361,6 +450,18 @@ fn children(ed: &Editor, parent: SessionId) -> impl Iterator<Item = &crate::work
     std::iter::once(&ed.workspace).chain(&ed.workspaces).filter(move |l| l.claude.parent == Some(parent))
 }
 
+/// What the open children of `parent` cost so far, summed (`usage::totals`) — how many, and their turns; None: none open.
+pub fn children_cost(ed: &Editor, parent: SessionId) -> Option<(usize, crate::usage::Totals)> {
+    let mut t = crate::usage::Totals::default();
+    let n = children(ed, parent).inspect(|l| t.merge(&l.claude.usage.totals())).count();
+    (n > 0).then_some((n, t))
+}
+
+/// A cost as `sessions` says it to Claude: `$0.42` · `$0.42 + 1 turn not reported` — empty before any turn.
+fn cost_said(t: &crate::usage::Totals) -> String {
+    if t.turns == 0 { String::new() } else { t.cost_said() }
+}
+
 /// The one answer to a name that isn't a child of the asking session's: whether there's a session by that name at
 /// all isn't told.
 pub const NOT_YOURS: &str = "no session of yours is called that";
@@ -375,6 +476,7 @@ pub fn send(ed: &mut Editor, call: crate::tools::Call, args: &Value) -> Result<(
         .filter(|t| !t.is_empty())
         .ok_or("message: what to tell it")?;
     let fresh = args["fresh"].as_bool().unwrap_or(false);
+    let wake = args["wake"].as_bool().unwrap_or(false);
     let child = child_named(ed, name).map(|l| l.id).ok_or(NOT_YOURS)?;
     let (from, text) = (ed.workspace.label().to_string(), text.to_string());
     let conversation = conversation_of(ed);
@@ -383,7 +485,7 @@ pub fn send(ed: &mut Editor, call: crate::tools::Call, args: &Value) -> Result<(
     // there too: whether the child works is what it is when the message would go)
     let tag = ed.claude_of(child);
     let deliver = move |ed: &mut Editor| {
-        let by = (from.as_str(), conversation.as_deref());
+        let by = (from.as_str(), conversation.as_deref(), wake);
         let said = match fresh {
             true => anew(ed, &from).map(|()| format!("in a new conversation: {}", to_child(ed, by, &text))),
             false => Ok(to_child(ed, by, &text)),
@@ -403,7 +505,7 @@ fn conversation_of(ed: &Editor) -> Option<String> {
 /// `text` from `from`'s Claude (its name, the conversation it was sent from) into the chat of the session in
 /// `ed.workspace` (its child): a turn now when its Claude is idle and nothing of the user's waits, else queued after it
 /// — what the parent's answer says.
-fn to_child(ed: &mut Editor, (from, conversation): (&str, Option<&str>), text: &str) -> String {
+fn to_child(ed: &mut Editor, (from, conversation, wake): (&str, Option<&str>, bool), text: &str) -> String {
     if ed.workspace.claude.chat.is_none() {
         // (opened as a note's reply opens one: where the keys are there stays)
         let at = ed.workspace.viewer.at;
@@ -423,7 +525,7 @@ fn to_child(ed: &mut Editor, (from, conversation): (&str, Option<&str>), text: &
         && !busy
         && c.queued.is_none()
         && yours == 0
-        && crate::chat::submit_from(ed, from, conversation, text)
+        && crate::chat::submit_from(ed, from, conversation, wake, text)
     {
         return "sent — its turn started".into();
     }
@@ -434,6 +536,7 @@ fn to_child(ed: &mut Editor, (from, conversation): (&str, Option<&str>), text: &
     c.sends.push(crate::chat::Later::Parent {
         from: from.to_string(),
         conversation: conversation.map(str::to_string),
+        wake,
         text: text.to_string(),
     });
     // (a card it waits on is said as working, never named: a parent hears only what its own acts came to — the
@@ -533,6 +636,10 @@ pub fn sessions(ed: &Editor, args: &Value) -> Result<String, String> {
             _ => "working",
         };
         let mut head = format!("{} {} · {state}", crate::uistate::session_id(l.claude.id), l.label());
+        let cost = cost_said(&l.claude.usage.totals());
+        if !cost.is_empty() {
+            head += &format!(" · {cost} so far");
+        }
         let yours = c
             .map_or(0, |c| c.sends.iter().filter(|s| matches!(s, crate::chat::Later::Parent { .. })).count());
         if yours > 0 {
@@ -551,7 +658,14 @@ pub fn sessions(ed: &Editor, args: &Value) -> Result<String, String> {
             None => format!("{head}\nthe last turn you started there ended with no reply"),
         }
     };
-    Ok(mine.into_iter().map(one).collect::<Vec<_>>().join("\n\n"))
+    let all = name.is_none().then(|| children_cost(ed, me)).flatten();
+    let mut out = mine.into_iter().map(one).collect::<Vec<_>>().join("\n\n");
+    // (in all, when it asked for all: what its sessions cost it so far)
+    if let Some((n, t)) = all.filter(|(_, t)| t.turns > 0) {
+        let sessions = if n == 1 { "1 session".to_string() } else { format!("{n} sessions") };
+        out += &format!("\n\n{sessions} · {} so far", t.cost_said());
+    }
+    Ok(out)
 }
 
 /// A child's last report: the reply of the last turn its parent started there that ended (its last text, through
@@ -629,6 +743,8 @@ pub struct News {
     pub ended: Ended,
     /// The parent's conversation that started the turn (`Msg.from_conversation`): told to that one only.
     pub conversation: Option<String>,
+    /// Its Claude asked to be woken for it (`Msg.wake`): told as a turn of its own once it's idle (`wake`).
+    pub wake: bool,
 }
 
 /// How a turn the parent started ended — each text its first line whole: the parent's chat keeps it so (its row cut
@@ -720,11 +836,132 @@ pub fn turn_ended(ed: &mut Editor, how: &Result<(), String>, stop: Stop) {
         Err(_) if stop == Stop::ForSettings => Ended::Restarted,
         Err(e) => Ended::Failed(first_line(e)),
     };
-    let conversation = c.msgs[at].from_conversation.clone();
-    let news = News { child: ed.workspace.label().to_string(), ended, conversation };
+    let (conversation, wake) = (c.msgs[at].from_conversation.clone(), c.msgs[at].wake);
+    let news = News { child: ed.workspace.label().to_string(), ended, conversation, wake };
     // (the child is the one swapped in: its parent is among the rest)
-    if let Some(p) = ed.workspaces.iter_mut().find(|l| l.claude.id == parent) {
-        p.claude.news.push(news);
+    let Some(p) = ed.workspaces.iter_mut().find(|l| l.claude.id == parent) else { return };
+    p.claude.news.push(news);
+    // (asked to: woken, as the parent's own event — after this one, whichever is swapped in now)
+    if wake {
+        let to = p.id;
+        let _ = ed.events.shared_sender().send(crate::event::Event::For(to, parent, Box::new(self::wake)));
+    }
+}
+
+/// What a wake's message says (`tools::told`'s way: a turn the user didn't type) — its news in its `<editor-note>`, as
+/// any message's.
+pub const WOKE: &str =
+    "(tarae sent this: a turn you asked to be woken for ended — the user typed nothing. Go on from it.)";
+
+/// An hour, in ms: `llm.parent-wakes`' window.
+const HOUR_MS: u64 = 3_600_000;
+
+/// The session in `ed.workspace` — a parent with news it asked to be woken for (`wake`) — woken: its news goes to its
+/// Claude now as a message by itself, a turn the user didn't type. Only when it's idle (idle compaction's rule:
+/// `idlecompact::busy` — no turn, nothing queued, no review, card, run, rebase or move); else it's told with its next
+/// session tool's answer or message, and it looks again as its own turn ends (`chat`'s `Done`) and after every event
+/// while it waits (`wakes_sync`: a card gone, a review answered, a run over). Never past `llm.parent-wakes` in an hour,
+/// nor while the plan's limit presses: held so, said once in its chat, told with its next message.
+pub fn wake(ed: &mut Editor) {
+    let asked = asked(&ed.workspace);
+    if asked.is_empty() || !wakes_now(ed, &ed.workspace) {
+        return;
+    }
+    let now_ms = crate::usage::now_ms();
+    let on_plan = ed.workspace.claude.billing == crate::billing::Billing::Subscription;
+    let pressing = ed.limits.known(now_ms).into_iter().find(|r| on_plan && crate::limits::pressing(r));
+    let cap = ed.config.llm.parent_wakes;
+    let wakes = &mut ed.workspace.claude.wakes;
+    wakes.retain(|&t| now_ms.saturating_sub(t) < HOUR_MS);
+    let held = match () {
+        _ if cap == 0 => Some("llm.parent-wakes is 0".to_string()),
+        _ if wakes.len() >= cap => Some(format!("{cap} wakes this hour already (llm.parent-wakes)")),
+        _ => pressing.map(|r| format!("the plan's {} is near its limit", crate::limits::label(&r.window))),
+    };
+    if let Some(why) = held {
+        // (said once: its news stays, told with the next message or session tool's answer, its wake let go — the wakes
+        // of this conversation's news, the ones said; another's are its own)
+        let now = conversation_of(ed);
+        ed.workspace.claude.news.iter_mut().filter(|n| n.conversation == now).for_each(|n| n.wake = false);
+        if let Some(c) = ed.workspace.claude.chat.as_mut() {
+            c.note(&format!(
+                "not woken for {}: {why} — Claude hears it with your next message",
+                asked.join(", ")
+            ));
+        }
+        return;
+    }
+    let turns = ed.workspace.claude.usage.turns.len();
+    if crate::chat::submit(ed, WOKE, None, None) {
+        ed.workspace.claude.wakes.push(now_ms);
+        if let Some(c) = ed.workspace.claude.chat.as_mut() {
+            c.waking = Some((asked, turns));
+        }
+    }
+}
+
+/// Whether a turn of child `l`'s — under way or waiting to go — wakes its parent as it ends (`wake`): said on its row in
+/// the session list, so a turn its parent's Claude starts by itself is never unseen.
+pub fn wakes_parent(l: &crate::workspace::Workspace) -> bool {
+    let Some(c) = l.claude.chat.as_ref() else { return false };
+    let now = c.busy() && c.msgs.iter().rfind(|m| m.role == crate::chat::Role::User).is_some_and(|m| m.wake);
+    now || c.sends.iter().any(|s| matches!(s, crate::chat::Later::Parent { wake: true, .. }))
+}
+
+/// The sent row's words for a call that asked `wake` (`chat::look`): `knot-count · wakes me` — a turn it starts by
+/// itself said where it asked for it.
+pub const WAKES_ME: &str = " · wakes me";
+
+/// The children whose news session `s`'s Claude asked to be woken for, not told yet — its chat's conversation's only
+/// (another's news is told to that one).
+fn asked(s: &crate::workspace::Workspace) -> Vec<String> {
+    let now = s.claude.chat.as_ref().and_then(|c| c.conversation.as_ref());
+    let news = s.claude.news.iter().filter(|n| n.wake && n.conversation.as_ref() == now);
+    news.map(|n| n.child.clone()).collect()
+}
+
+/// Whether session `s` may be woken now: its claude running, no restart under way, idle as idle compaction reads idle
+/// (`idlecompact::busy` — no turn, nothing queued, no review, card, run, rebase or move).
+fn wakes_now(ed: &Editor, s: &crate::workspace::Workspace) -> bool {
+    ed.restart.is_none()
+        && s.claude.chat.as_ref().is_some_and(crate::chat::Chat::running)
+        && crate::idlecompact::busy(s, crate::idlecompact::cards_waiting(ed, s)).is_none()
+}
+
+/// After every event: a parent whose wake waits — busy as its news came or its own turn ended (a card up, edits in
+/// review, a run, a rebase, a move) — is woken once that's cleared, whichever event cleared it. Swapped in only then:
+/// none waiting, nothing done.
+pub fn wakes_sync(ed: &mut Editor) {
+    let due: Vec<_> = std::iter::once(&ed.workspace)
+        .chain(&ed.workspaces)
+        .filter(|s| s.claude.news.iter().any(|n| n.wake) && !asked(s).is_empty() && wakes_now(ed, s))
+        .map(|s| s.id)
+        .collect();
+    for id in due {
+        ed.with_workspace(id, wake);
+    }
+}
+
+/// A wake's turn ended (`chat`'s `Done`, its claude's exit): said in its chat with what it cost — `woke for one ·
+/// $0.04`, `· cost not reported` when its turn reported none.
+pub fn woke_over(ed: &mut Editor) {
+    let Some((names, before)) = ed.workspace.claude.chat.as_mut().and_then(|c| c.waking.take()) else {
+        return;
+    };
+    let u = &ed.workspace.claude.usage;
+    let cost = u.turns.get(before..).and_then(|t| t.last()).and_then(|t| t.cost);
+    let cost = cost.map_or_else(|| "cost not reported".into(), crate::usage::dollars);
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
+        c.note(&format!("woke for {} · {cost}", names.join(", ")));
+    }
+}
+
+/// A wake's turn reported what it spent (`chat`'s `Spent`, just pushed to the call-order record): its entry says it was
+/// a wake — what the next set's card says one costs (`wake_estimate`).
+pub fn mark_wake(ed: &mut Editor) {
+    let waking = ed.workspace.claude.chat.as_ref().is_some_and(|c| c.waking.is_some());
+    if let Some(e) = ed.workspace.claude.usage.to_record.last_mut().filter(|_| waking) {
+        e["wake"] = json!(true);
     }
 }
 
@@ -829,7 +1066,8 @@ pub fn start_schema() -> Value {
                     "description": "Branch name → brief: goal, where, what done means; it knows nothing of this chat",
                     "additionalProperties": { "type": "string" }
                 },
-                "base": { "type": "string" }
+                "base": { "type": "string" },
+                "wake": { "type": "boolean", "description": "Wake you as each turn ends" }
             },
             "required": ["sessions"]
         }
@@ -845,7 +1083,8 @@ pub fn send_schema() -> Value {
             "properties": {
                 "session": { "type": "string" },
                 "message": { "type": "string" },
-                "fresh": { "type": "boolean", "description": "New conversation" }
+                "fresh": { "type": "boolean", "description": "New conversation" },
+                "wake": { "type": "boolean", "description": "Wake you as its turn ends" }
             },
             "required": ["session", "message"]
         }
@@ -889,7 +1128,8 @@ pub(crate) fn stand_in_card(ed: &Editor, names: &[&str]) -> crate::offer::Offer 
     let call = crate::tools::Call::of(u64::MAX, "stand-in", json!("set"));
     let (parent, parent_name, conversation) =
         (ed.workspace.id, ed.workspace.label().to_string(), conversation_of(ed));
-    card(ed, Set { call, parent, parent_name, conversation, sessions })
+    let (wake, costs) = (false, Costs::default());
+    card(ed, Set { call, parent, parent_name, conversation, sessions, wake, costs })
 }
 
 #[cfg(test)]

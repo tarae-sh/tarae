@@ -191,6 +191,9 @@ pub struct LlmConfig {
     pub session_tools: String,
     /// How many sessions one parent's Claude may have open at once (`orchestra.rs`).
     pub children_max: usize,
+    /// How many turns of its own a parent's Claude may be woken for in an hour (`orchestra::wake`: a turn it started in
+    /// a child, asked with `wake`, ended).
+    pub parent_wakes: usize,
 }
 
 impl Default for LlmConfig {
@@ -227,6 +230,7 @@ impl Default for LlmConfig {
             stuck_after_outside: 30,
             session_tools: "home".into(),
             children_max: 3,
+            parent_wakes: 6,
         }
     }
 }

@@ -126,6 +126,8 @@ pub struct Kept {
     pub folders: Vec<crate::folders::Folder>,
     /// Its parent's checkout (`Session.parent`, `orchestra.rs`): linked again once both are back.
     pub parent: Option<PathBuf>,
+    /// A child's mark in the call-order record (`Session.mark`).
+    pub mark: Option<String>,
 }
 
 impl Kept {
@@ -140,6 +142,7 @@ impl Kept {
             allowed: l.claude.allowed.clone(),
             folders: l.folders.iter().chain(&l.folders_judging).cloned().collect(),
             parent: None,
+            mark: l.claude.mark.clone(),
         }
     }
 
@@ -167,6 +170,9 @@ impl Kept {
         if let Some(p) = &self.parent {
             v["parent"] = json!(p);
         }
+        if let Some(m) = &self.mark {
+            v["mark"] = json!(m);
+        }
         v
     }
 
@@ -186,6 +192,7 @@ impl Kept {
                 .filter_map(crate::folders::Folder::from_json)
                 .collect(),
             parent: v["parent"].as_str().map(PathBuf::from),
+            mark: v["mark"].as_str().map(str::to_string),
         })
     }
 }
@@ -739,6 +746,8 @@ pub struct Ending {
     /// checkout (`workspacekeep.rs`) — made again as it ends.
     pub entries: Vec<PathBuf>,
     pub keep: crate::workspacekeep::Plan,
+    /// Asked as its bring landed (a child's — orchestra §7): the base it's in now, which the card's title says.
+    pub brought: Option<String>,
 }
 
 impl Ending {
@@ -830,8 +839,12 @@ impl Ending {
         // (one range: the warned lines are the last ones, or one alone)
         let warning = warned.first().zip(warned.last()).map(|(a, b)| *a..*b + 1);
         lines.extend(tail.into_iter().map(|t| t.0));
+        let title = match &self.brought {
+            Some(base) => format!("{} is in {base} now — end it?", self.name),
+            None => format!("End {}?", self.name),
+        };
         let mut o = crate::offer::Offer::new(
-            format!("End {}?", self.name),
+            title,
             &lines.join("\n"),
             "Removing its checkout…",
             format!("Couldn't end {}", self.name),
@@ -924,6 +937,7 @@ fn ending(
         lost,
         entries,
         keep,
+        brought: None,
     })
 }
 
@@ -1218,6 +1232,12 @@ pub struct Shown {
     pub report: String,
     /// How full its Claude's context is, in percent (None: not reported).
     pub context: Option<u64>,
+    /// The sessions its Claude started, open now (orchestra), and what they cost so far in all (`$4.12`; empty before
+    /// any turn) — None: none.
+    pub children: Option<(usize, String)>,
+    /// A child's turn under way or waiting wakes its parent as it ends (`orchestra::wakes_parent`): its parent's name —
+    /// `working · wakes main`.
+    pub wakes: Option<String>,
 }
 
 impl Shown {
@@ -1715,6 +1735,7 @@ impl Editor {
             }
             if let Some(l) = self.workspace_by_id(id) {
                 (l.name, l.branch, l.base) = (k.name, k.branch, k.base);
+                l.claude.mark = k.mark.take();
                 // (judged again before they're read as the workspace's — `folders_back`)
                 l.folders_judging = k.folders;
                 // (its claude, if one already runs — session 0's chat opened before the list came back — keeps the
@@ -1887,28 +1908,21 @@ impl Editor {
     /// `workspace_end` — `always`: the card even with nothing to lose (its end asked again after `:restart`
     /// was never answered: asking again never acts).
     pub fn session_end_asking(&mut self, which: &str, always: bool) -> Result<(), String> {
+        self.ending_asked(which, always, None)
+    }
+
+    /// `session_end_asking`, always carded — `brought`: asked as its bring into that base landed, said in its title.
+    fn ending_asked(&mut self, which: &str, always: bool, brought: Option<String>) -> Result<(), String> {
         let (id, name) = self.session_named(which)?;
         if id == WorkspaceId::HOME {
             return Err(format!("{name} is the checkout tarae started in — it stays"));
         }
+        if let Some(why) = self.end_held(id, &name) {
+            return Err(why);
+        }
         let session =
             std::iter::once(&self.workspace).chain(&self.workspaces).find(|l| l.id == id).expect("named");
         let root = session.root.clone();
-        if let Some(r) = session.rebase.as_ref() {
-            return Err(format!("end {name}: {}", r.why(&name)));
-        }
-        if session.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
-            return Err(format!("{name}'s Claude is answering — stop it (C-c) or let it finish first"));
-        }
-        let unsaved: Vec<String> = self
-            .docs
-            .iter()
-            .filter(|d| d.is_modified() && d.path.as_ref().is_some_and(|p| p.starts_with(&root)))
-            .map(|d| d.display_name(&root))
-            .collect();
-        if !unsaved.is_empty() {
-            return Err(format!("unsaved changes in {} — save or close them first", unsaved.join(", ")));
-        }
         let (base, start) = (session.base.clone(), self.start_root());
         let entries = crate::workspacekeep::entries(&self.config.workspace_keep);
         let said = format!("Looking at {name} before it ends…");
@@ -1916,10 +1930,51 @@ impl Editor {
         let work = move || ending(n, &root, base, &start, entries);
         self.step(self.events.shared_jobs(), "session", said, work, move |ed, found| match found {
             Ok(e) if e.quiet() && !always => ed.session_remove(e, false, None),
-            Ok(e) => ed.push_offer(e.card()),
+            Ok(e) => ed.push_offer(Ending { brought, ..e }.card()),
             Err(e) => ed.set_error(format!("end {name}: {e}")),
         });
         Ok(())
+    }
+
+    /// Why session `id` (`name`) can't end now — a rebase under way, its Claude answering, a file of it unsaved — None:
+    /// it can.
+    fn end_held(&self, id: WorkspaceId, name: &str) -> Option<String> {
+        let session = std::iter::once(&self.workspace).chain(&self.workspaces).find(|l| l.id == id)?;
+        let root = &session.root;
+        if let Some(r) = session.rebase.as_ref() {
+            return Some(format!("end {name}: {}", r.why(name)));
+        }
+        if session.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) {
+            return Some(format!("{name}'s Claude is answering — stop it (C-c) or let it finish first"));
+        }
+        let unsaved: Vec<String> = self
+            .docs
+            .iter()
+            .filter(|d| d.is_modified() && d.path.as_ref().is_some_and(|p| p.starts_with(root)))
+            .map(|d| d.display_name(root))
+            .collect();
+        (!unsaved.is_empty())
+            .then(|| format!("unsaved changes in {} — save or close them first", unsaved.join(", ")))
+    }
+
+    /// After every event: a child brought while it wasn't idle (`Workspace.end_when_idle`) gets its end card once it is
+    /// — its turn over, no rebase, nothing of it unsaved — once (orchestra §7). None waiting: nothing done.
+    pub fn brought_ends_sync(&mut self) {
+        let due: Vec<(WorkspaceId, String)> = std::iter::once(&self.workspace)
+            .chain(&self.workspaces)
+            .filter(|l| l.end_when_idle.is_some())
+            .map(|l| (l.id, l.label().to_string()))
+            .filter(|(id, name)| self.end_held(*id, name).is_none())
+            .collect();
+        for (id, name) in due {
+            let all = std::iter::once(&mut self.workspace).chain(&mut self.workspaces);
+            let Some(base) = all.into_iter().find(|l| l.id == id).and_then(|l| l.end_when_idle.take()) else {
+                continue;
+            };
+            if let Err(e) = self.ending_asked(&name, true, Some(base)) {
+                crate::log::line("session", "info", &format!("{name}'s end after its bring: {e}"));
+            }
+        }
     }
 
     /// Its session closes (what it ran stops), then its checkout is removed on a worker — and its branch too
@@ -1931,6 +1986,11 @@ impl Editor {
             crate::docpane::later(self, move |ed| ed.session_remove(e, both, card));
             return;
         }
+        // (a child's mark: said whole in the call-order record once its checkout is gone — `orchestra::estimate`)
+        let mark = std::iter::once(&self.workspace)
+            .chain(&self.workspaces)
+            .find(|l| l.root == e.root)
+            .and_then(|l| l.claude.mark.clone());
         let kept = self.workspace_close(&e.root);
         if card.is_none() {
             self.set_step("session", format!("Ending {}…", e.name));
@@ -1957,6 +2017,9 @@ impl Editor {
                     Ok((freed, build, kept)) => {
                         if let Some(id) = card {
                             ed.offer_finished(id, Ok(()));
+                        }
+                        if let Some(m) = mark {
+                            crate::orchestra::ended_whole(ed, m);
                         }
                         // (its notes and turns go with its checkout — a session made there later starts
                         // without them)
@@ -2274,6 +2337,12 @@ impl Editor {
                 waits: waits(l.id),
                 report: crate::sessionpane::report(l.claude.chat.as_ref()),
                 context: context(&l.claude.usage),
+                children: crate::orchestra::children_cost(self, l.claude.id)
+                    .map(|(n, t)| (n, if t.turns == 0 { String::new() } else { t.cost_said() })),
+                wakes: l.claude.parent.filter(|_| crate::orchestra::wakes_parent(l)).and_then(|p| {
+                    let all = std::iter::once(&self.workspace).chain(&self.workspaces);
+                    all.into_iter().find(|w| w.claude.id == p).map(|w| w.label().to_string())
+                }),
             })
             .collect()
     }
@@ -2489,8 +2558,16 @@ impl Editor {
             match result {
                 Bringing::Brought(b) => {
                     let what = format!("{} of {}, now at {}", commits(b.count), b.branch, b.tip);
+                    // A child its parent's Claude started is done once it's in: its end offered at once, carded
+                    // even with nothing to lose (orchestra §7) — yours to answer; nothing did it before. Not idle
+                    // yet (its Claude answering, a rebase, a file unsaved): once it is, said here
+                    let child = std::iter::once(&ed.workspace)
+                        .chain(&ed.workspaces)
+                        .any(|l| l.id == id && l.claude.parent.is_some());
+                    let held = child && ed.end_held(id, &name).is_some();
+                    let later = if held { " · end it once it's idle" } else { "" };
                     ed.set_success(format!(
-                        "Brought {} of {} into {} — now at {}",
+                        "Brought {} of {} into {} — now at {}{later}",
                         commits(b.count),
                         b.branch,
                         b.base,
@@ -2500,6 +2577,14 @@ impl Editor {
                     ed.with_workspace(id, crate::codereview::base_reached);
                     ed.bring_regrade(id, &b.base);
                     ed.bring_queue_landed(id, what);
+                    if held {
+                        let all = std::iter::once(&mut ed.workspace).chain(&mut ed.workspaces);
+                        if let Some(l) = all.into_iter().find(|l| l.id == id) {
+                            l.end_when_idle = Some(b.base.clone());
+                        }
+                    } else if child && let Err(e) = ed.ending_asked(&name, true, Some(b.base.clone())) {
+                        crate::log::line("session", "info", &format!("{name}'s end after its bring: {e}"));
+                    }
                 }
                 Bringing::Moved(m) => ed.push_offer(m.card()),
                 // (nothing of its own, behind: moved up instead — #186)
@@ -6514,6 +6599,88 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// orchestra §7: a child its parent's Claude started is offered its end as its bring lands — carded though nothing
+    /// would be lost, its title saying where it is now; a session of yours brought isn't.
+    #[test]
+    fn a_child_brought_is_offered_its_end() {
+        for (name, child) in [("kid", true), ("mine", false)] {
+            let (repo, dir) = place(&format!("bring-end-{name}"));
+            let mut ed = editor(&repo, &dir);
+            let home = ed.workspace.claude.id;
+            let wt = new_session(&mut ed, name);
+            std::fs::write(wt.join("k.txt"), "x\n").unwrap();
+            git_in(&wt, &["add", "-A"]);
+            git_in(&wt, &["commit", "-qm", name]);
+            if child {
+                ed.workspace.claude.parent = Some(home);
+            }
+            ed.workspace_bring(name).unwrap();
+            settle_until(&mut ed, |ed| card(ed, &format!("Bring {name} into main")).is_some());
+            card_in_sight(&mut ed);
+            feed(&mut ed, "y");
+            settle_until(&mut ed, |ed| says(ed, &format!("Brought 1 commit of {name} into main")));
+            let end = format!("{name} is in main now — end it?");
+            match child {
+                true => settle_until(&mut ed, |ed| card(ed, &end).is_some()),
+                false => {
+                    while let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(200)) {
+                        ed.handle_event(ev);
+                    }
+                    let titles: Vec<&str> = ed.offers.iter().map(|o| o.title.as_str()).collect();
+                    assert!(
+                        !titles.iter().any(|t| t.contains("end it") || t.starts_with("End ")),
+                        "{titles:?}"
+                    );
+                }
+            }
+            drop(ed);
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    /// orchestra §7: a child brought while its Claude is answering isn't offered its end then (the end refuses it) — the
+    /// bring says it'll be once it's idle, and its turn over, the card comes, once.
+    #[test]
+    fn a_busy_child_brought_is_offered_its_end_once_idle() {
+        let (repo, dir) = place("bring-end-busy");
+        let mut ed = editor(&repo, &dir);
+        let home = ed.workspace.claude.id;
+        let wt = new_session(&mut ed, "kid");
+        let kid = ed.workspace.id;
+        std::fs::write(wt.join("k.txt"), "x\n").unwrap();
+        git_in(&wt, &["add", "-A"]);
+        git_in(&wt, &["commit", "-qm", "kid"]);
+        ed.workspace.claude.parent = Some(home);
+        let mut c = crate::chat::Chat::new();
+        c.state = crate::chat::State::Thinking;
+        ed.workspace.claude.chat = Some(c);
+        ed.workspace_bring("kid").unwrap();
+        settle_until(&mut ed, |ed| card(ed, "Bring kid into main").is_some());
+        card_in_sight(&mut ed);
+        feed(&mut ed, "y");
+        settle_until(&mut ed, |ed| says(ed, "Brought 1 commit of kid into main"));
+        assert!(says(&ed, "end it once it's idle"), "{}", said(&ed));
+        let end = "kid is in main now — end it?";
+        while let Some(ev) = ed.events.recv_timeout(std::time::Duration::from_millis(200)) {
+            ed.handle_event(ev);
+        }
+        assert!(card(&ed, end).is_none(), "not while it answers");
+        // Its turn over: the card, at the next event, once
+        let all = std::iter::once(&mut ed.workspace).chain(&mut ed.workspaces);
+        let l = all.into_iter().find(|l| l.id == kid).unwrap();
+        l.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+        ed.handle_event(crate::event::Event::Job(Box::new(|_: &mut Editor| {})));
+        settle_until(&mut ed, |ed| card(ed, end).is_some());
+        let ends = |ed: &Editor| ed.offers.iter().filter(|o| o.title == end).count();
+        ed.handle_event(crate::event::Event::Job(Box::new(|_: &mut Editor| {})));
+        assert_eq!(ends(&ed), 1, "once");
+        // (and asked once: a card like it again would take its place, unseen — the end no longer waits)
+        let waits = std::iter::once(&ed.workspace).chain(&ed.workspaces).any(|l| l.end_when_idle.is_some());
+        assert!(!waits, "its end asked, no longer waiting");
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// frictions29 24 (a): sessions ready at once, brought in turn — `space W`, `m` on each (the rows say their
     /// place), `B`, one `y`: `one` brought after its quick preflight; `clash`, rebased onto main's new tip, meets
     /// a conflict — out alone, its Claude asked as for a single bring; `two` rebased onto the tip, preflighted
@@ -6868,6 +7035,7 @@ mod tests {
             allowed: Default::default(),
             folders: Vec::new(),
             parent: None,
+            mark: None,
         };
         ed.workspaces_back(vec![k], Vec::new(), None, false);
         // The start: a new conversation, the last one offered
@@ -6945,9 +7113,12 @@ mod tests {
         let k = ed.workspace_add(kid.clone());
         let me = ed.workspace.claude.id;
         ed.workspace_by_id(k).unwrap().claude.parent = Some(me);
+        // (its mark in the call-order record kept with it — orchestra P2)
+        ed.workspace_by_id(k).unwrap().claude.mark = Some("c1-0-1".into());
         let kept = kept_list(&snapshot(&ed));
         let child = kept.iter().find(|k| k.root == kid).expect("kept");
         assert_eq!(child.parent.as_deref(), Some(home.as_path()));
+        assert_eq!(child.mark.as_deref(), Some("c1-0-1"));
         assert_eq!(Kept::from_json(&child.json()).as_ref(), Some(child), "its file's round trip");
         // Back with its parent: linked again
         let mut back = Editor::new(Config::default());
@@ -6955,6 +7126,7 @@ mod tests {
         back.workspaces_back(kept.clone(), Vec::new(), None, false);
         let l = back.workspaces.iter().find(|l| l.root == kid).expect("back");
         assert_eq!(l.claude.parent, Some(back.workspace.claude.id));
+        assert_eq!(l.claude.mark.as_deref(), Some("c1-0-1"), "its mark with it");
         // Its parent gone: its own, said
         let mut alone = Editor::new(Config::default());
         alone.workspace.root = dir.join("elsewhere");
@@ -6981,6 +7153,7 @@ mod tests {
             allowed: Default::default(),
             folders: Vec::new(),
             parent: None,
+            mark: None,
         };
         let s = Stored { sessions: vec![kept.clone()], front: Some("/wt/a".into()), rev: Default::default() };
         save(&dir, &common, s, &[], Default::default()).unwrap();

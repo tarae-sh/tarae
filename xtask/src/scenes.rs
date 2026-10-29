@@ -878,6 +878,64 @@ const SESSION_SET_CHILD: &[&str] = &[
     "@?main's Claude",
     "@1",
 ];
+/// orchestra P2 (`orchestra-woke`): main starts knot-count asking to be woken as its turn ends — the turn ends, main is
+/// woken with the news (its `told Claude: …` row, tarae's message), answers, and its row says what the wake cost.
+const ORCHESTRA_WOKE: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "split the work",
+    "\r",
+    "@?Start ",
+    "\x11",
+    "@1",
+    "y",
+    "@20?Started",
+    "@20?woke for",
+    "@2",
+];
+/// orchestra P2 (`orchestra-end`): main starts knot-count; in it a commit (yours, by `:sh`), then `:workspace-bring` — its
+/// card's `y` brings it into main, and its end is offered at once: `knot-count is in main now — end it?`, focused by `C-q`.
+const ORCHESTRA_END: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "split the work",
+    "\r",
+    "@?Start ",
+    "\x11",
+    "@1",
+    "y",
+    "@20?space W lists them",
+    "@2",
+    "\x1b",
+    " ",
+    "W",
+    "@1",
+    "2",
+    "@10?Each thread",
+    "@1",
+    "\x1b",
+    "\x17",
+    "h",
+    "@1",
+    ":",
+    "sh git commit --allow-empty -qm count",
+    "\r",
+    "@3",
+    ":",
+    "workspace-bring knot-count",
+    "\r",
+    "@20?Bring knot-count",
+    "@1",
+    "y",
+    "@20?is in main now",
+    "@1",
+    "\x11",
+    "@1",
+];
 /// orchestra P1b (`orchestra-list`): a session of yours (fix) opened, then main's Claude starts three — knot-count's turn
 /// ends (done), thread-docs asks for a run (▲ waits), spool-clones writes (working) — and main's chat open with the
 /// session list over it: the children right after main, each with a faint `›`, fix after them; the chat's top line
@@ -3292,6 +3350,27 @@ const SCENES: &[Scene] = &[
         files: MAIN,
         keys: SESSION_SET_CHILD,
     },
+    // (orchestra P2: the set card with what the last ones cost and that main is woken; main woken; a child's end offered
+    // as its bring lands; main's row with its children's cost)
+    Scene { name: "orchestra-estimate", claude: "startthreewake", files: MAIN, keys: SESSION_SET },
+    Scene {
+        name: "orchestra-woke",
+        claude: "main=parentwake,knot-count=childcount",
+        files: MAIN,
+        keys: ORCHESTRA_WOKE,
+    },
+    Scene {
+        name: "orchestra-end",
+        claude: "main=startgo,knot-count=childcount",
+        files: MAIN,
+        keys: ORCHESTRA_END,
+    },
+    Scene {
+        name: "orchestra-list-cost",
+        claude: "main=startgo3,knot-count=childcost,thread-docs=card,spool-clones=writemid",
+        files: MAIN,
+        keys: ORCHESTRA_LIST,
+    },
     // (orchestra P1b: three children of main's after it in the list and on the chat's top line, a faint `›` each; fix,
     // a session of yours, after them)
     Scene {
@@ -3777,6 +3856,29 @@ fn one(
     let worktrees = toml::Value::String(dir.0.join("worktrees").to_string_lossy().into_owned());
     toml = format!("{toml}\n[workspace]\nworktrees = {worktrees}\n");
     write(&config.join("tarae/config.toml"), &toml)?;
+    // (orchestra P2's set card: what the last five sessions started so cost, and three wakes — the call-order record
+    // in the shot's own state, as tarae keeps it: `$state/tarae/calls/<month>.jsonl`)
+    if scene.name == "orchestra-estimate" {
+        let mut lines = String::new();
+        for (k, cost) in [1.10, 1.40, 1.25, 1.62, 1.55].iter().enumerate() {
+            lines +=
+                &format!("{}\n", json!({"v": 1, "what": "chat", "child": format!("c1-0-{k}"), "cost": cost}));
+            lines += &format!("{}\n", json!({"v": 1, "what": "child-whole", "child": format!("c1-0-{k}")}));
+        }
+        for cost in [0.04, 0.05, 0.06] {
+            lines += &format!("{}\n", json!({"v": 1, "what": "chat", "wake": true, "cost": cost}));
+        }
+        // (this month as tarae names it — local and UTC alike, should they differ today)
+        for utc in [false, true] {
+            let mut date = std::process::Command::new("date");
+            if utc {
+                date.arg("-u");
+            }
+            let month = date.arg("+%Y-%m").output().map_err(|e| format!("date: {e}"))?;
+            let month = String::from_utf8_lossy(&month.stdout).trim().to_string();
+            write(&dir.0.join(format!("state/tarae/calls/{month}.jsonl")), &lines)?;
+        }
+    }
     let setup = Setup {
         bin: bin.to_path_buf(),
         files: scene.files.iter().map(|f| f.to_string()).collect(),
@@ -4153,10 +4255,15 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "readlast" => turn.read_last()?,
             "cuthand" => turn.cut_hand()?,
             "cutcode" => turn.cut_code()?,
-            "startone" | "startthree" | "startlong" => turn.sessions_start(&script[5..])?,
-            "startgo" => turn.sessions_started(false)?,
-            "startgo3" => turn.sessions_started(true)?,
-            "childcount" => turn.child_count(&line)?,
+            "startone" | "startthree" | "startlong" | "startthreewake" => {
+                turn.sessions_start(&script[5..])?
+            }
+            "startgo" => turn.sessions_started(false, false)?,
+            "startgo3" => turn.sessions_started(true, false)?,
+            "childcount" => turn.child_count(&line, None)?,
+            // (orchestra P2: a child whose turns say what they cost — its parent's row sums them)
+            "childcost" => turn.child_count(&line, Some(0.31))?,
+            "parentwake" => turn.parent_wake(&line)?,
             "childlong" => turn.child_long(&line)?,
             "parent" => turn.parent(&line)?,
             _ => {}
@@ -4244,13 +4351,15 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         };
         self.words(words)?;
         self.text("\n")?;
-        self.call(1, "sessions_start", json!({"sessions": sessions, "base": "main"}))?;
+        // (`threewake`: woken as each one's turn ends — the card says so, orchestra P2)
+        let wake = which.ends_with("wake");
+        self.call(1, "sessions_start", json!({"sessions": sessions, "base": "main", "wake": wake}))?;
         self.lines.by_ref().try_for_each(|l| l.map(drop))
     }
 
     /// `sessionset-child`'s main: one session asked for (`three`: `orchestra-*`'s three), then — the set made — its
     /// turn's end.
-    fn sessions_started(&mut self, three: bool) -> io::Result<()> {
+    fn sessions_started(&mut self, three: bool, wake: bool) -> io::Result<()> {
         self.words("The count is a piece of its own, so it can go in a session beside us.")?;
         self.text("\n")?;
         let sessions = match three {
@@ -4259,34 +4368,61 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
                 "spool-clones": "Make filling the map in src/main.rs clone each thread's name once, not twice."}),
             false => json!({"knot-count": COUNT_BRIEF}),
         };
-        self.call(1, "sessions_start", json!({"sessions": sessions, "base": "main"}))?;
+        self.call(1, "sessions_start", json!({"sessions": sessions, "base": "main", "wake": wake}))?;
         self.words(if three {
             "Started all three; I'll keep to the map here."
         } else {
             "Started **knot-count**; I'll keep to the map here."
         })?;
-        self.line(json!({"type": "result", "result": "done"}))
+        match wake {
+            // (what it cost so far, so the wake's turn after it says its own share)
+            true => self.line(json!({"type": "result", "result": "done", "session_id": "conv-main", "total_cost_usd": 0.12})),
+            false => self.line(json!({"type": "result", "result": "done"})),
+        }
+    }
+
+    /// orchestra P2's parent (`orchestra-woke`): main starts knot-count asking to be woken as its turn ends; woken, it
+    /// reads the news it was given and says what's next — the wake's turn $0.04 of the conversation's.
+    fn parent_wake(&mut self, line: &str) -> io::Result<()> {
+        // (its conversation said, as claude's `init` says it: each turn's cost its share of the conversation's)
+        self.line(json!({"type": "system", "subtype": "init", "session_id": "conv-main", "model": "claude-opus-5-5"}))?;
+        if !line.contains("a turn you asked to be woken for ended") {
+            return self.sessions_started(false, true);
+        }
+        self.words("knot-count is done: the threads print most-knotted first, ties by name. I'll read its change next.")?;
+        self.line(
+            json!({"type": "result", "result": "done", "session_id": "conv-main", "total_cost_usd": 0.16}),
+        )
     }
 
     /// `sessionset-child`'s child: main's brief answered with a read and a plan; a message of yours after it, briefly.
-    fn child_count(&mut self, line: &str) -> io::Result<()> {
+    fn child_count(&mut self, line: &str, cost: Option<f64>) -> io::Result<()> {
+        let done = match cost {
+            Some(c) => {
+                json!({"type": "result", "result": "done", "session_id": "conv-child", "total_cost_usd": c})
+            }
+            None => json!({"type": "result", "result": "done"}),
+        };
+        if cost.is_some() {
+            self.line(json!({"type": "system", "subtype": "init", "session_id": "conv-child", "model": "claude-opus-5-5"}))?;
+        }
         if !line.contains("from-session") {
             self.words("Right — ties keep their names' order, so the sort is stable on the name.")?;
-            return self.line(json!({"type": "result", "result": "done"}));
+            return self.line(done);
         }
         self.words("Reading how the threads are kept first.")?;
         self.text("\n\n")?;
         self.call(1, "read", json!({"files": ["src/main.rs:1-20"]}))?;
         self.words("Each thread keeps its knots in a list, so the count is its length. I'll sort by it, most-knotted first, \
             and add the order's test in **src/thread.rs**.")?;
-        self.line(json!({"type": "result", "result": "done"}))
+        self.line(done)
     }
 
     /// `orchestra-parent-long`'s child: main's brief answered with a reply whose first line runs past a news item's head
     /// (100 characters) and a few lines after it.
     fn child_long(&mut self, line: &str) -> io::Result<()> {
         if !line.contains("from-session") {
-            return self.child_count(line);
+            return self.child_count(line, None);
         }
         self.words(
             "Done: the threads now print most-knotted first, ties kept in their names' order, and a test in \
@@ -4321,7 +4457,7 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             self.words("Started knot-count over in a new conversation, with the narrower brief.")?;
             return self.line(json!({"type": "result", "result": "done"}));
         }
-        self.sessions_started(false)
+        self.sessions_started(false, false)
     }
 
     /// #157's scenes: a read of `src/wide.rs`'s last five lines (as many as the file in the folder it runs in has), then

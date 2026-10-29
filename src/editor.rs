@@ -2921,6 +2921,8 @@ impl Editor {
         crate::presence::sync(self);
         crate::overlap::sync(self);
         crate::keepclose::sync(self);
+        crate::orchestra::wakes_sync(self);
+        self.brought_ends_sync();
         crate::weave::sync(self);
         crate::motion::wet_sync(self);
         crate::web::open::sync(self);

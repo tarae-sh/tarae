@@ -1443,6 +1443,8 @@ pub struct UsageState {
     pub totals: crate::usage::Totals,
     /// Idle compaction (`idlecompact::json`): when it compacts if it stays idle, what turned it off, from what size.
     pub idle_compact: Value,
+    /// A parent's: the sessions its Claude started, open now, and what they cost in all (`orchestra::children_cost`).
+    pub children: Option<(usize, crate::usage::Totals)>,
 }
 
 impl UsageState {
@@ -1453,7 +1455,8 @@ impl UsageState {
         now_ms: u64,
     ) -> Option<UsageState> {
         let idle = crate::idlecompact::json(ed, s, now_ms);
-        Some(UsageState { idle_compact: idle, ..UsageState::of(&s.claude.usage, now_ms)? })
+        let children = crate::orchestra::children_cost(ed, s.claude.id);
+        Some(UsageState { idle_compact: idle, children, ..UsageState::of(&s.claude.usage, now_ms)? })
     }
 
     pub fn of(u: &crate::usage::Usage, now_ms: u64) -> Option<UsageState> {
@@ -1476,6 +1479,7 @@ impl UsageState {
             last_turn: u.last_turn().cloned(),
             totals: u.totals(),
             idle_compact: Value::Null,
+            children: None,
         })
     }
 
@@ -1511,12 +1515,19 @@ impl UsageState {
         let priced = self.totals.turns > self.totals.unpriced;
         totals["cost"] = if priced { json!(self.totals.cost) } else { Value::Null };
         totals["unpriced"] = json!(self.totals.unpriced);
-        json!({
+        let mut v = json!({
             "cache": self.cache, "seconds_left": self.seconds_left, "ttl": self.ttl,
             "context": { "tokens": self.context, "window": self.window,
                          "percent": self.percent().map(|p| (p * 10.0).round() / 10.0) },
             "last_turn": last, "totals": totals, "idle_compact": self.idle_compact,
-        })
+        });
+        // (a parent's: its children's cost in all, as its totals say theirs — orchestra §6; only where it has some)
+        if let Some((n, t)) = &self.children {
+            let priced = t.turns > t.unpriced;
+            v["children"] = json!({ "sessions": n, "turns": t.turns,
+                "cost": if priced { json!(t.cost) } else { Value::Null }, "unpriced": t.unpriced });
+        }
+        v
     }
 
     /// One line: `cache warm 54m (1h) · context 4% of 200k · last turn $0.0011 … · total $0.020 in 3 turns ·

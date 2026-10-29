@@ -535,6 +535,13 @@ pub static SETTINGS: &[Setting] = &[
         set: |c, v| c.llm.children_max = n(v),
     },
     Setting {
+        path: "llm.parent-wakes",
+        kind: Kind::Int { min: 0, max: 60 },
+        doc: "Chat: how many turns of its own a Claude that started sessions may be woken for in an hour, each as a turn it asked to be woken for ends there (0 = never). Only your own config sets it",
+        get: |c| Value::from(c.llm.parent_wakes as i64),
+        set: |c, v| c.llm.parent_wakes = n(v),
+    },
+    Setting {
         path: "llm.docker-inert",
         kind: Kind::StrList,
         doc: "Chat: what a Docker card's a lets vary of a command whose code is pinned — \"cargo xtask linux: clippy test --userns --bin= --\" (an act, a switch, an option and its value, test names after --)",

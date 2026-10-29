@@ -28,6 +28,8 @@ fn full(id: WorkspaceId, name: &str, doing: Doing) -> Shown {
         waits: (2, 1),
         report: "I will switch it to the entry API so a repeat keeps the first strand".into(),
         context: Some(84),
+        children: None,
+        wakes: None,
     }
 }
 
@@ -78,6 +80,27 @@ fn a_row_says_what_the_manager_needs() {
     let rebasing =
         Shown { rebasing: Some("rebasing 1/2".into()), ..full(WorkspaceId::here(1), "fix", Doing::Working) };
     assert_eq!(row(&rebasing).text(Col::State), "rebasing 1/2 · working");
+    // (a parent's cost: its children's in all after its own, faint — orchestra §6)
+    let parent =
+        Shown { children: Some((3, "$4.12".into())), ..full(WorkspaceId::HOME, "main", Doing::Working) };
+    assert_eq!(
+        row(&parent).cell(Col::Cost),
+        [("$0.42".to_string(), Ink::Text), (" · 3 children $4.12".into(), Ink::Faint)]
+    );
+    let one = Shown {
+        children: Some((1, String::new())),
+        claude: None,
+        ..full(WorkspaceId::HOME, "main", Doing::Working)
+    };
+    assert_eq!(row(&one).cell(Col::Cost), [("1 child".to_string(), Ink::Faint)]);
+    // (a child's turn that wakes its parent as it ends: in the state's column, faint — alone when the state says none)
+    let waking = Shown { wakes: Some("main".into()), ..full(WorkspaceId::here(1), "fix", Doing::Working) };
+    assert_eq!(
+        row(&waking).cell(Col::State),
+        [("working".to_string(), Ink::Faint), (" · wakes main".into(), Ink::Faint)]
+    );
+    let idle = Shown { wakes: Some("main".into()), ..full(WorkspaceId::here(1), "fix", Doing::Idle) };
+    assert_eq!(row(&idle).text(Col::State), "wakes main");
 }
 
 /// The list's width at 160 (the frame 96 wide) and at 80 (48): whole columns fold in `FOLDS`' order — the rest first,
@@ -101,6 +124,10 @@ fn the_row_folds_at_80_in_its_order() {
             .all(|c| shown.contains(c)),
         "at 160 the manager's columns all: {shown:?}"
     );
+    // (the cost after the report: a parent's children's total stays in sight while the report is cut — user, 2026-10-29)
+    assert!(shown.contains(&Col::Cost), "at 160 the cost stays: {shown:?}");
+    let report_gone = (0..400).rev().map(|r| cols(&lay(&rows, r))).find(|c| !c.contains(&Col::Report));
+    assert!(report_gone.is_some_and(|c| c.contains(&Col::Cost)), "the report goes before the cost");
     let at80 = cols(&lay(&rows, room(48)));
     assert!(!at80.contains(&Col::Report), "at 80 the report first: {at80:?}");
     assert!(
@@ -124,7 +151,8 @@ fn the_row_folds_at_80_in_its_order() {
         .map(|r| lay(&rows, r))
         .find(|l| l.1.iter().any(|c| c.0 == Col::Report && c.1 < REPORT_MAX));
     let cut = cut.expect("cut once").1;
-    assert!(cut.iter().all(|c| !FOLDS[..12].contains(&c.0)), "only once the rest went: {cut:?}");
+    let report_at = FOLDS.iter().position(|&c| c == Col::Report).unwrap();
+    assert!(cut.iter().all(|c| !FOLDS[..report_at].contains(&c.0)), "only once the rest went: {cut:?}");
     let (name_w, _) = lay(&rows, 3);
     assert_eq!(name_w, 3, "the names cut to the room, never gone");
 }

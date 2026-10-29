@@ -12,7 +12,11 @@
 //! for it still, and a turn the user started never is; `sessions` reads each child's last report as the reply of the
 //! last turn the parent started there that ended in its conversation. Now and then the parent's own chat starts anew
 //! (`chat::reset`) — a child at work on what its last conversation sent, maybe: what that conversation started is never
-//! told to the new one, nor read as its report (the review of P1b, 2026-10-28).
+//! told to the new one, nor read as its report (the review of P1b, 2026-10-28). P2: a send asks to `wake` the parent
+//! half the time; a card of Claude's comes in the parent or a child, the user answers one by its key; an hour passes;
+//! the user ends a child. And: a card goes only by the user's key, none of a child's words reach the parent's claude; a
+//! wake's news names a turn that asked, never comes while the parent's own card waits, never past `llm.parent-wakes`
+//! in an hour.
 
 use std::collections::HashMap;
 
@@ -55,6 +59,8 @@ struct Child {
     /// Its first claude's lines (kept, so its sends go): what it got is read off its chat — a claude started again is
     /// the shared stand-in.
     _claude: Receiver<String>,
+    /// Ended by the user (its checkout closed): no step reaches it any more.
+    ended: bool,
 }
 
 /// What the checks keep.
@@ -84,7 +90,21 @@ struct World {
     /// Every chat's claude restarted is a stand-in whose lines come here — the parent's after its chat started anew
     /// too: read for its news blocks (a child's never holds one).
     shared: Receiver<String>,
+    /// The cards put up (in the parent or a child): where, its id, its token (in its title and text), whether the
+    /// user answered it — by a key — and whether a turn of that session ended since (its Claude's own end: what it
+    /// asked goes with it). Nothing else takes one away — no session tool, no step of the parent's.
+    cards: Vec<(WorkspaceId, u64, String, bool, bool)>,
+    /// The reply tokens of the turns whose message asked to wake the parent (`wake`) — a wake's news names one.
+    wakers: Vec<String>,
+    /// When each wake was seen (the simulation's clock, ms): never more than `CAP` in an hour.
+    woke_at: Vec<u64>,
 }
+
+/// `llm.parent-wakes` here: small, so the walk meets it.
+const CAP: usize = 2;
+
+/// What a wake's message says (`orchestra::WOKE`), as its line holds it.
+const WOKE: &str = "a turn you asked to be woken for ended";
 
 fn run(choices: super::Choices) -> Vec<String> {
     // (the calls' ids start again each seed: the answers of the last one go)
@@ -93,6 +113,7 @@ fn run(choices: super::Choices) -> Vec<String> {
     let root = std::fs::canonicalize(dir.path()).unwrap();
     let mut sim = Sim::new("children_and_their_sends", choices, LIMIT);
     let mut ed = Editor::with_root(crate::config::Config::default(), root.join("home"));
+    ed.config.llm.parent_wakes = CAP;
     // (a claude started again — a fresh send's new conversation, one that exited — is a stand-in too: never a process)
     let (tx, shared) = std::sync::mpsc::channel();
     ed.claude_lines = Some(tx);
@@ -118,7 +139,17 @@ fn run(choices: super::Choices) -> Vec<String> {
             ed.workspace.claude.chat = Some(c);
         });
         let _claude = claude.expect("its stand-in");
-        children.push(Child { id, name, got: Vec::new(), conv: Vec::new(), draft, report: None, _claude });
+        let ended = false;
+        children.push(Child {
+            id,
+            name,
+            got: Vec::new(),
+            conv: Vec::new(),
+            draft,
+            report: None,
+            _claude,
+            ended,
+        });
     }
     let home = ed.workspace.id;
     let world = RefCell::new(World {
@@ -135,6 +166,9 @@ fn run(choices: super::Choices) -> Vec<String> {
         conv_of: HashMap::new(),
         reads: Vec::new(),
         shared,
+        cards: Vec::new(),
+        wakers: Vec::new(),
+        woke_at: Vec::new(),
     });
     sim.walk(
         &mut ed,
@@ -190,25 +224,40 @@ fn conv_of_turn(ed: &Editor, id: WorkspaceId, w: &World) -> usize {
 
 fn input(sim: &mut Sim, ed: &mut Editor, world: &RefCell<World>) -> String {
     let c = &mut sim.choices;
-    let k = c.below(2);
+    let mut k = c.below(2);
     let mut w = world.borrow_mut();
+    // (a turn's end or a claude's exit in a session lets the cards its Claude asked there go: marked before the arm —
+    // the arms that end one say so by `ends`)
+    let ends =
+        |w: &mut World, at: WorkspaceId| w.cards.iter_mut().filter(|x| x.0 == at).for_each(|x| x.4 = true);
+    // (a child ended: the other; both ended, time passes)
+    if w.children[k].ended {
+        k = 1 - k;
+    }
+    if w.children[k].ended {
+        drop(w);
+        sim.wait(Duration::from_millis(50));
+        return "both children ended: 50 ms pass".into();
+    }
     let (child, name, draft) = (w.children[k].id, w.children[k].name, w.children[k].draft.clone());
     // (by arm: the parent sends 4, the user types in a child 3, a child's turn ends 4, a switch 2, time 1, a child's turn
     // refused for money 1 — what waited stays, the child idle; the next end stands in for its billing's change —, the
     // parent reads `sessions` 2, the parent's own message or its turn's end 2, a child's claude exits or starts 2, the
     // parent's chat anew 1)
-    match c.weighted(&[4, 3, 4, 2, 1, 1, 2, 2, 2, 1]) {
+    // (P2: a card up in the parent or a child 2, the user answers one 2, an hour passes 1, the user ends a child 1)
+    match c.weighted(&[4, 3, 4, 2, 1, 1, 2, 2, 2, 1, 2, 2, 1, 1]) {
         0 => {
             w.n += 1;
             let token = format!("[p{}]", w.n);
             let fresh = c.below(3) == 0;
+            let wake = c.below(2) == 0;
             let users = chat_of(ed, child).and_then(|c| c.queued.as_deref()).map(tokens).unwrap_or_default();
             let (home, n) = (w.home, w.n as u64);
             w.sent.push((k, token.clone(), users, n));
             let conv = w.conv;
             w.conv_of.insert(token.clone(), conv);
             drop(w);
-            let args = serde_json::json!({ "session": name, "message": token, "fresh": fresh });
+            let args = serde_json::json!({ "session": name, "message": token, "fresh": fresh, "wake": wake });
             let msg = serde_json::json!({ "jsonrpc": "2.0", "id": n, "method": "tools/call",
                 "params": { "name": "session_send", "arguments": args } });
             // (the parent's call, in its own session — swapped in when the user is elsewhere)
@@ -219,7 +268,9 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &RefCell<World>) -> String {
                     "it's answered later"
                 );
             });
-            format!("the parent sends {name} {token}{}", if fresh { " fresh" } else { "" })
+            let how =
+                [(fresh, " fresh"), (wake, " wake")].iter().filter(|h| h.0).map(|h| h.1).collect::<String>();
+            format!("the parent sends {name} {token}{how}")
         }
         1 => {
             w.n += 1;
@@ -244,6 +295,12 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &RefCell<World>) -> String {
                 Some(true) => {
                     let conv = conv_of_turn(ed, child, &w);
                     w.news.push((token.clone(), conv));
+                    // (its message asked to wake the parent: a wake may name it)
+                    let last = chat_of(ed, child)
+                        .and_then(|c| c.msgs.iter().rfind(|m| m.role == crate::chat::Role::User));
+                    if last.is_some_and(|m| m.wake) {
+                        w.wakers.push(token.clone());
+                    }
                     // (its report only where the conversation now started it)
                     if conv == w.conv {
                         w.children[k].report = Some(Some(token.clone()));
@@ -252,6 +309,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &RefCell<World>) -> String {
                 Some(false) => w.users.push(token.clone()),
                 None => {}
             }
+            ends(&mut w, child);
             drop(w);
             // (through the stream's own end: its reply in, the parent's news made where every turn's end passes)
             ed.with_workspace(child, |ed| {
@@ -261,7 +319,10 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &RefCell<World>) -> String {
             format!("{name}'s turn ends ({token})")
         }
         3 => {
-            let to = *c.pick(&[w.home, w.children[0].id, w.children[1].id]);
+            let living: Vec<WorkspaceId> = std::iter::once(w.home)
+                .chain(w.children.iter().filter(|ch| !ch.ended).map(|ch| ch.id))
+                .collect();
+            let to = *c.pick(&living);
             w.front = to;
             drop(w);
             ed.workspace_switch(to);
@@ -278,6 +339,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &RefCell<World>) -> String {
             if turn_of(ed, child) == Some(true) && conv_of_turn(ed, child, &w) == w.conv {
                 w.children[k].report = Some(None);
             }
+            ends(&mut w, child);
             drop(w);
             ed.with_workspace(child, crate::chat::stand_in_broke);
             format!("{name}'s turn ends refused for money")
@@ -309,6 +371,9 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &RefCell<World>) -> String {
             w.n += 1;
             let token = format!("[m{}]", w.n);
             let home = w.home;
+            if chat_of(ed, home).is_some_and(crate::chat::Chat::busy) {
+                ends(&mut w, home);
+            }
             drop(w);
             let mut said = String::new();
             ed.with_workspace(home, |ed| match ed.workspace.claude.chat.as_ref().is_some_and(|c| c.busy()) {
@@ -325,6 +390,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &RefCell<World>) -> String {
         }
         8 => {
             let running = chat_of(ed, child).is_some_and(crate::chat::Chat::running);
+            ends(&mut w, child);
             if !running {
                 drop(w);
                 ed.with_workspace(child, crate::chat::gate_opened);
@@ -336,6 +402,12 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &RefCell<World>) -> String {
                 Some(true) => {
                     let conv = conv_of_turn(ed, child, &w);
                     w.news.push((token.clone(), conv));
+                    // (a turn that asked to wake the parent, cut off: a wake may name it as failed)
+                    let last = chat_of(ed, child)
+                        .and_then(|c| c.msgs.iter().rfind(|m| m.role == crate::chat::Role::User));
+                    if last.is_some_and(|m| m.wake) {
+                        w.wakers.push(token.clone());
+                    }
                     if conv == w.conv {
                         w.children[k].report = Some(None);
                     }
@@ -360,6 +432,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &RefCell<World>) -> String {
             for ch in &mut w.children {
                 ch.report = None;
             }
+            ends(&mut w, home);
             drop(w);
             ed.with_workspace(home, |ed| {
                 crate::chat::reset(ed);
@@ -368,6 +441,84 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &RefCell<World>) -> String {
                 }
             });
             format!("the parent's chat starts anew ({at_work} child turns of the last one at work)")
+        }
+        10 => {
+            // (a card of Claude's comes, in the parent or a child — its token in its title and its text: never in what
+            // the parent is told)
+            w.n += 1;
+            let token = format!("[card{}]", w.n);
+            let at = if c.below(2) == 0 { w.home } else { child };
+            let what = crate::offer::What::Asks { call: crate::tools::Call::test(1_000_000 + w.n as u64) };
+            let o = crate::offer::Offer::new(
+                format!("Claude asks {token}"),
+                &format!("to see {token}"),
+                "",
+                String::new(),
+                what,
+            );
+            drop(w);
+            ed.with_workspace(at, |ed| ed.push_offer(o));
+            world.borrow_mut().cards.push((at, ed.offer_seq, token.clone(), false, false));
+            format!("a card {token} comes in {at}")
+        }
+        11 => {
+            // (the user answers one: its session in front, the card focused, `n` — a key, the only way one goes)
+            let gone = |at: WorkspaceId| w.children.iter().any(|ch| ch.ended && ch.id == at);
+            let open: Vec<usize> = (0..w.cards.len())
+                .filter(|&i| !w.cards[i].3 && !w.cards[i].4 && !gone(w.cards[i].0))
+                .collect();
+            let Some(&i) = open.get(c.below(open.len().max(1))) else {
+                drop(w);
+                sim.wait(Duration::from_millis(50));
+                return "no card to answer: 50 ms pass".into();
+            };
+            let (at, id) = (w.cards[i].0, w.cards[i].1);
+            w.front = at;
+            drop(w);
+            ed.workspace_switch(at);
+            // (its cards up in arrival order: the ones before it answered first, each by its key)
+            let mut said = Vec::new();
+            while let Some(front) = ed.offers.first().map(|o| o.id) {
+                ed.card_focus_front();
+                ed.offer_key(crate::key::Key::plain(crate::key::Code::Char('n')));
+                let mut w = world.borrow_mut();
+                if let Some(card) = w.cards.iter_mut().find(|x| x.1 == front) {
+                    card.3 = true;
+                    said.push(card.2.clone());
+                }
+                if front == id || ed.offers.first().map(|o| o.id) == Some(front) {
+                    break;
+                }
+            }
+            format!("the user answers {} in {at}", said.join(", "))
+        }
+        12 => {
+            drop(w);
+            sim.wait(Duration::from_secs(3_600));
+            "an hour passes".into()
+        }
+        13 => {
+            // (the user ends a child behind with nothing of the parent's on its way there — its checkout closed)
+            let on_way = w.sent.iter().any(|(j, _, _, n)| {
+                *j == k
+                    && crate::tools::ANSWERED
+                        .with(|a| a.borrow().iter().all(|(id, _)| *id != serde_json::json!(n)))
+            });
+            if child == w.front || on_way {
+                drop(w);
+                sim.wait(Duration::from_millis(50));
+                return format!("{name} isn't ended (in front, or a message on its way): 50 ms pass");
+            }
+            w.children[k].ended = true;
+            drop(w);
+            let root = std::iter::once(&ed.workspace)
+                .chain(&ed.workspaces)
+                .find(|l| l.id == child)
+                .map(|l| l.root.clone());
+            if let Some(root) = root {
+                ed.workspace_close(&root);
+            }
+            format!("the user ends {name}")
         }
         _ => unreachable!("one arm a weight"),
     }
@@ -378,6 +529,12 @@ fn held(ed: &Editor, w: &mut World) -> Result<(), String> {
         return Err(format!("the front is {}, the user's last switch chose {}", ed.workspace.id, w.front));
     }
     for ch in &mut w.children {
+        if ch.ended {
+            if chat_of(ed, ch.id).is_some() {
+                return Err(format!("{} was ended and is still there", ch.name));
+            }
+            continue;
+        }
         let c = chat_of(ed, ch.id).ok_or("a child's chat is gone")?;
         if c.input.text() != ch.draft {
             return Err(format!(
@@ -430,6 +587,10 @@ fn held(ed: &Editor, w: &mut World) -> Result<(), String> {
             }
             continue;
         }
+        // (one waiting in a child the user ended goes with it)
+        if ch.ended && at(ch, token)?.is_none() {
+            continue;
+        }
         let waiting = chat_of(ed, ch.id).map_or(0, |c| {
             c.sends
                 .iter()
@@ -465,7 +626,56 @@ fn held(ed: &Editor, w: &mut World) -> Result<(), String> {
     }
     // Every turn the parent started that ended: told once to the conversation that started it, or kept for it still —
     // never to another; the user's never
-    let lines: Vec<String> = w.parent.try_iter().chain(w.shared.try_iter()).collect();
+    let (own, shared): (Vec<String>, Vec<String>) =
+        (w.parent.try_iter().collect(), w.shared.try_iter().collect());
+    // (the parent's: its own stand-in's, and of the shared one's those no child got — a child gets the parent's words
+    // framed, or the user's tokens)
+    let childs = |l: &&String| l.contains("<from-session") || tokens(l).iter().any(|t| t.starts_with("[u"));
+    let parents: Vec<&String> = own.iter().chain(shared.iter().filter(|l| !childs(l))).collect();
+    let lines: Vec<String> = own.iter().chain(&shared).cloned().collect();
+    // A card goes only by the user's key: each not answered still up where it came; nothing of any card in what the
+    // parent's claude got
+    for (at, id, token, answered, released) in &w.cards {
+        let front = ed.workspace.id == *at;
+        let all = std::iter::once(&ed.workspace).chain(&ed.workspaces);
+        let parked = all.filter(|l| l.id == *at).flat_map(|l| &l.parked).any(|o| o.id == *id);
+        let up = parked || (front && ed.offers.iter().any(|o| o.id == *id));
+        let gone = w.children.iter().any(|ch| ch.ended && ch.id == *at);
+        if !answered && !released && !up && !gone {
+            return Err(format!("card {token} in {at} went, unanswered by the user"));
+        }
+        if *answered && up {
+            return Err(format!("card {token} in {at} answered and still up"));
+        }
+        // (a card of its own session's is its own to see — Claude's level keeps its own cards)
+        if *at != w.home
+            && let Some(l) = parents.iter().find(|l| l.contains(token.as_str()))
+        {
+            return Err(format!("the parent's claude got a child's card's words: {l}"));
+        }
+    }
+    // A wake: only for a turn that asked, never while the parent's own card waits, never past `CAP` in an hour
+    let now_ms = crate::usage::now_ms();
+    let card_up = w.cards.iter().any(|(at, id, ..)| {
+        *at == w.home && {
+            let all = std::iter::once(&ed.workspace).chain(&ed.workspaces);
+            let parked = all.filter(|l| l.id == *at).flat_map(|l| &l.parked).any(|o| o.id == *id);
+            parked || (ed.workspace.id == *at && ed.offers.iter().any(|o| o.id == *id))
+        }
+    });
+    for l in lines.iter().filter(|l| l.contains(WOKE)) {
+        if !news_in(l).iter().flat_map(|b| tokens(b)).any(|t| w.wakers.contains(&t)) {
+            return Err(format!("a wake for no turn that asked: {l}"));
+        }
+        if card_up {
+            return Err(format!("woken while a card of the parent's waits: {l}"));
+        }
+        w.woke_at.push(now_ms);
+        let hour = w.woke_at.iter().filter(|&&t| now_ms.saturating_sub(t) < 3_600_000).count();
+        if hour > CAP {
+            return Err(format!("{hour} wakes within an hour, llm.parent-wakes {CAP}"));
+        }
+    }
     let conv = w.conv;
     w.told.extend(lines.iter().flat_map(|l| news_in(l)).map(|b| (b, conv)));
     let parent =

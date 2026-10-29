@@ -364,7 +364,11 @@ impl crate::editor::Editor {
     /// Hands the turns ended in the session in front to the call-order record (`DIR`), on a worker with
     /// nothing to bring back — none kept where there's no record (tests: none unless given).
     pub fn calls_record(&mut self) {
-        let entries = std::mem::take(&mut self.workspace.claude.usage.to_record);
+        let mut entries = std::mem::take(&mut self.workspace.claude.usage.to_record);
+        // (a child's turns carry its mark: what the next set's card says one costs — `orchestra::estimate`)
+        if let Some(mark) = &self.workspace.claude.mark {
+            entries.iter_mut().for_each(|e| e["child"] = serde_json::json!(mark));
+        }
         let Some(dir) = self.calls_dir.clone().filter(|_| !entries.is_empty()) else { return };
         let file = crate::cards::month_file(std::time::SystemTime::now());
         self.events.jobs().background(move || {

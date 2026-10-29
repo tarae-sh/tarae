@@ -10,8 +10,8 @@
 //! (cards, an edit to review — counted), `≈` whom it overlaps, `↓N` behind its base, its context, its last report line
 //! (its Claude's last sentence), then the rest the list always said (its branch, what's changed, where its Claude is,
 //! its reviewer, who pays, its cache and cost, its build folder, its processes). Each a column as wide as its widest,
-//! row under row; narrow, whole columns fold (`lay`): the rest first, then the report, the context, behind — what
-//! waits for you and the state last, the name never. Built from the sessions every frame it's drawn (`rows`), nothing
+//! row under row; narrow, whole columns fold (`lay`): the rest first, then the report, the cost, the context,
+//! behind — what waits for you and the state last, the name never. Built from the sessions every frame it's drawn (`rows`), nothing
 //! slow: git's part is read on a worker as it opens (`Editor::session_list`).
 //!
 //! Its keys are a floating list's (`floatlist.rs`: the moves, its own search, `esc code`, `q`), `enter` switches to
@@ -80,11 +80,11 @@ pub const COLS: [Col; 18] = [
 ];
 
 /// The order whole columns fold in when the pane is narrow, the first to go first: the rest from the last, then the
-/// report line, the context, behind, the overlaps — what waits for you and the state last (user, 2026-10-23).
+/// report line, the cost, the context, behind, the overlaps — what waits for you and the state last (user, 2026-10-23;
+/// the cost after the longer report, so a parent's children's total stays in sight longer: user, 2026-10-29).
 pub const FOLDS: [Col; 18] = [
     Col::Usage,
     Col::Build,
-    Col::Cost,
     Col::Cache,
     Col::Billing,
     Col::Reviewer,
@@ -95,6 +95,7 @@ pub const FOLDS: [Col; 18] = [
     Col::Ahead,
     Col::Branch,
     Col::Report,
+    Col::Cost,
     Col::Context,
     Col::Behind,
     Col::Overlap,
@@ -171,6 +172,11 @@ pub fn row(l: &crate::worktree::Shown) -> Row {
         ));
     }
     state.push((said, ink));
+    // (a child's turn that wakes its parent as it ends: in the column that folds last — never unseen)
+    if let Some(parent) = &l.wakes {
+        let sep = if state.iter().all(|p| p.0.is_empty()) { "" } else { " · " };
+        state.push((format!("{sep}wakes {parent}"), Ink::Faint));
+    }
     put(Col::State, state);
     // What waits for you there: its cards, its edits (a review, a change set, a read), counted
     let (cards, edits) = l.waits;
@@ -217,7 +223,16 @@ pub fn row(l: &crate::worktree::Shown) -> Row {
     put(Col::Billing, one(api.into(), Ink::Text));
     let (cache, cost) = l.claude.clone().unwrap_or_default();
     put(Col::Cache, one(cache, Ink::Faint));
-    put(Col::Cost, one(cost, Ink::Text));
+    // (a parent's: its children's in all after its own — orchestra §6, `main · 3 children $4.12`)
+    let mut costs = one(cost, Ink::Text);
+    if let Some((n, total)) = &l.children {
+        let sep = if costs[0].0.is_empty() { "" } else { " · " };
+        let said = if *n == 1 { "1 child".to_string() } else { format!("{n} children") };
+        let total = if total.is_empty() { String::new() } else { format!(" {total}") };
+        costs.push((format!("{sep}{said}{total}"), Ink::Faint));
+        costs.retain(|p| !p.0.is_empty());
+    }
+    put(Col::Cost, costs);
     put(
         Col::Build,
         one(

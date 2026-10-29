@@ -352,6 +352,16 @@ impl Totals {
         }
     }
 
+    /// `o`'s turns added to these (a parent's children summed — `orchestra::children_cost`).
+    pub fn merge(&mut self, o: &Totals) {
+        self.turns += o.turns;
+        self.counts.add(o.counts);
+        self.calls.add(o.calls);
+        self.counted += o.counted;
+        self.cost += o.cost;
+        self.unpriced += o.unpriced;
+    }
+
     /// `$1.23` · `$1.23 + 2 not reported` · `not reported`.
     pub fn cost_said(&self) -> String {
         match (self.turns - self.unpriced, self.unpriced) {
