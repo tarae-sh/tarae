@@ -6697,8 +6697,8 @@ fn completion_docs_left_of_the_list_leave_no_letter_between() {
     let bytes = s.frame();
     let shot = snapshot(&s.ed, "t", &bytes, s.w, s.h);
     let rows: Vec<&str> = shot.lines().skip(2).take(24).map(|l| l.get(3..).unwrap_or("")).collect();
-    let list = rows.iter().position(|r| r.contains("push")).expect("the list");
-    let x = rows[list].find("push").unwrap();
+    let list = rows.iter().position(|r| r.contains("ƒ push")).expect("the list");
+    let x = rows[list].find("ƒ push").unwrap();
     assert!(rows[list][..x].contains("Appends"), "docs on the left: {:?}", rows[list]);
     // No `x` of the code sits between the cards
     let a = rows[list].find("Appends").unwrap();
@@ -7883,6 +7883,59 @@ fn floating_cards_leave_nothing_against_their_edges() {
             s.ed.card_has_keys()
         );
     }
+    // `K`'s docs cut at the bottom of the code (#234): its bottom line, a row of air, then the status line — the row it
+    // gave up counted in its `↓ N more lines`
+    let mut s = hovering(64, 24);
+    s.frame();
+    let (_, y, _, h) = s.ed.screen.popup.get().expect("the docs");
+    let below = s.ed.screen.text_top + s.ed.screen.body_h;
+    assert_eq!(y + h + 1, below, "its bottom line, a row of air, then the status line");
+    let rows = drawn_rows(&s);
+    assert!(rows[y + h - 1].contains("↓ 3 more lines"), "{:?}", rows[y + h - 1]);
+    assert!(rows[y + h].trim().is_empty(), "the air: {:?}", rows[y + h]);
+    // The signature below the cursor (no room over it): its bottom line, a row of air, the status line — else not drawn
+    for h in [7u16, 8] {
+        let mut s = Shot::new(64, h);
+        let text = "fn main() { get(\n}\n";
+        s.file("src/demo.rs", text);
+        s.ed.doc_mut().set_selection(crate::selection::Selection::point(text.find('(').unwrap() + 1));
+        s.ed.signature = Some(crate::signature::Signature {
+            doc: s.ed.doc().id,
+            label: "fn get(k: &str) -> usize".into(),
+            active: None,
+            index: 0,
+            count: 1,
+            docs: "The key.".into(),
+        });
+        s.frame();
+        let at = drawn_rows(&s).iter().position(|r| r.contains("fn get(k"));
+        let below = s.ed.screen.text_top + s.ed.screen.body_h;
+        match (h, at) {
+            (7, at) => assert_eq!(at, None, "no row of air under it: not drawn"),
+            (_, Some(y)) => {
+                assert_eq!(y + 4, below, "its row, its docs, its bottom line, a row of air, the status line")
+            }
+            (_, None) => panic!("the signature not drawn at {h} rows"),
+        }
+    }
+    // The completion list under the cursor's first row, short of rows: fewer of them, its bottom line, a row of air, the
+    // status line — never over the cursor's row
+    let mut s = Shot::new(64, 10);
+    let text = "fn main() { te\n}\n";
+    s.file("src/demo.rs", text);
+    s.keys("A");
+    let head = s.ed.doc().selection().primary().head;
+    let items: Vec<serde_json::Value> =
+        (0..5).map(|i| json!({ "label": format!("text_{i}"), "kind": 6 })).collect();
+    let mut c =
+        crate::completion::Completion::new(1, s.ed.doc().id, head - 2, serde_json::Value::from(items));
+    c.filter("te");
+    s.ed.completion = Some(c);
+    s.frame();
+    let (_, y, _, h) = s.ed.screen.completion_card.get().expect("the list");
+    let below = s.ed.screen.text_top + s.ed.screen.body_h;
+    assert!(y > s.ed.screen.text_top, "under the cursor's row: {y}");
+    assert_eq!(y + h + 1, below, "its bottom line, a row of air, then the status line");
 }
 
 /// D3: two cards never touch — the notification card keeps a row and two cells off another card's edge; with no
@@ -7940,6 +7993,26 @@ fn two_cards_never_touch() {
     assert!(air.iter().all(|&c| c == ground), "the air row on the ground: {air:?}");
     let tab = r[back].chars().position(|c| c != ' ').unwrap();
     assert_ne!(bg(back, tab), ground, "the card behind on a surface of its own");
+    // Typing on a short screen (#234): the completion list above the cursor, its docs over it, the signature below —
+    // a row of air between each two
+    let mut s = typing(64, 24);
+    s.frame();
+    let list = s.ed.screen.completion_card.get().expect("the list");
+    let docs = s.ed.screen.completion_docs.get().expect("its docs");
+    let rows = drawn_rows(&s);
+    let y = rows.iter().position(|r| r.contains("pub fn get<Q>(")).expect("the signature");
+    let before = &rows[y][..rows[y].find("pub fn get<Q>(").unwrap()];
+    let x = before.chars().collect::<Vec<_>>().iter().rposition(|&c| c == '│').expect("its frame");
+    let at = |r: &String| r.chars().nth(x);
+    let bottom = (y..rows.len()).find(|&yy| at(&rows[yy]) == Some('╰')).expect("its bottom line");
+    let sig = (x, y - 1, 4, bottom + 2 - y);
+    let rows_touch = |a: (usize, usize, usize, usize), b: (usize, usize, usize, usize)| {
+        a.1 < b.1 + b.3 + 1 && b.1 < a.1 + a.3 + 1
+    };
+    for (a, b, what) in [(docs, list, "the docs and the list"), (sig, list, "the signature and the list")] {
+        assert!(!rows_touch(a, b), "{what} touch: {a:?} {b:?}\n{}", rows.join("\n"));
+    }
+    assert!(!rows_touch(sig, docs) || sig.0 >= docs.0 + docs.2 + 2, "the signature and the docs touch");
 }
 
 /// Every panel's text starts the same distance in from its visible edge — `PAD` cells from the line where it meets
@@ -9364,6 +9437,129 @@ fn frames_of_cardkeys_more() {
             l.parked.push(o);
         }
         s.frames_both(&format!("cardkeys-behind-{w}"));
+    }
+}
+
+/// rust-analyzer's hover on `HashMap::entry`, as it sends it: where it lives, its signature, a rule, the docs.
+const HOVER_ENTRY: &str = "```rust\nstd::collections::hash::map::HashMap\n```\n\n```rust\npub fn entry(&mut self, key: K) -> Entry<'_, K, V>\n```\n\n---\n\nGets the given key's corresponding entry in the map for in-place manipulation.\n\n# Examples\n\n```rust\nlet mut letters = HashMap::new();\nfor ch in \"a short treatise on fungi\".chars() {\n    letters.entry(ch).and_modify(|c| *c += 1).or_insert(1);\n}\n```\n\nSee also [`or_insert`](Entry::or_insert) and `and_modify`.";
+
+/// `K` on `entry` in `DEMO_RS`, its docs up (rendered in the shot's theme as it is).
+fn hovering(w: u16, h: u16) -> Shot {
+    let mut s = Shot::new(w, h);
+    s.in_project();
+    s.file("src/main.rs", DEMO_RS);
+    let at = DEMO_RS.find("entry(word)").unwrap() + 2;
+    s.ed.doc_mut().set_selection(crate::selection::Selection::point(at));
+    s.ed.popup_name = "entry".into();
+    s.ed.popup = Some(crate::markdown::render(HOVER_ENTRY, &s.ed.theme, Some("rust")));
+    s
+}
+
+/// Typing an argument in `DEMO_RS` (`counts.get(te`): the signature up, the list with `text` selected and its docs.
+fn typing(w: u16, h: u16) -> Shot {
+    let mut s = Shot::new(w, h);
+    s.in_project();
+    let text = DEMO_RS.replace("    println!", "    let n = counts.get(te\n    println!");
+    s.file("src/main.rs", &text);
+    let at = text.find("get(te").unwrap() + "get(te".len();
+    s.ed.doc_mut().set_selection(crate::selection::Selection::point(at));
+    s.keys("i");
+    let head = s.ed.doc().selection().primary().head;
+    s.ed.signature = Some(crate::signature::Signature {
+        doc: s.ed.doc().id,
+        label: "pub fn get<Q>(&self, k: &Q) -> Option<&V>".into(),
+        active: Some((21, 26)),
+        index: 0,
+        count: 1,
+        docs: "The key may be any borrowed form of the map's key type.".into(),
+    });
+    let items = json!([
+        { "label": "text", "kind": 6, "detail": "&str" },
+        { "label": "text.as_ref()", "kind": 2, "detail": "fn(&self) -> &T" },
+        { "label": "text.trim()", "kind": 2, "detail": "fn(&self) -> &str" },
+        { "label": "text.to_string()", "kind": 2, "detail": "fn(&self) -> String" },
+        { "label": "test_results", "kind": 9, "detail": "mod" },
+    ]);
+    let mut c = crate::completion::Completion::new(1, s.ed.doc().id, head - 2, items);
+    c.filter("te");
+    let text_at = (0..c.shown.len()).find(|&i| c.item(i).label == "text").unwrap();
+    c.selected = Some(text_at);
+    s.ed.completion = Some(c);
+    typing_docs(&mut s);
+    s
+}
+
+/// The selected item's docs, rendered in the shot's theme.
+fn typing_docs(s: &mut Shot) {
+    let md = "```rust\nlet text: &str\n```\n\nThe text whose words are counted, split on whitespace.";
+    let docs = crate::markdown::render(md, &s.ed.theme, Some("rust"));
+    let c = s.ed.completion.as_mut().unwrap();
+    c.docs = Some((c.current_index().unwrap(), docs));
+}
+
+/// `K`'s docs (#234): a thin frame named by the name it's about, rust-analyzer's first block — where it lives — faint
+/// after it, no rule, code in its well, the heading bold ink, what's past its last row in its bottom line; its keys the
+/// status line's.
+#[test]
+fn snapshot_lsp_hover() {
+    let mut s = hovering(100, 22);
+    s.check("lsp_hover");
+}
+
+/// The signature's `(` stands over the call's `(` it's typed in; where the list has to open above the cursor (a short
+/// screen), the signature goes below it — never over the list or its docs.
+#[test]
+fn the_signature_stands_over_its_call_and_never_over_the_list() {
+    let col = |row: &str, of: &str| row[..row.find(of).unwrap() + of.len() - 1].chars().count();
+    let mut s = typing(112, 30);
+    s.frame();
+    let rows = drawn_rows(&s);
+    let sig = rows.iter().find(|r| r.contains("pub fn get<Q>(")).expect("the signature drawn");
+    let call = rows.iter().find(|r| r.contains("counts.get(te")).expect("the call");
+    assert_eq!(col(sig, "get<Q>("), col(call, "get("), "{sig}\n{call}");
+    // Short: the list above the cursor, the signature below it
+    let mut s = typing(64, 24);
+    s.frame();
+    let rows = drawn_rows(&s);
+    let cy = rows.iter().position(|r| r.contains("counts.get(te")).expect("the call");
+    let list = s.ed.screen.completion_card.get().expect("the list");
+    assert!(list.1 + list.3 <= cy, "the list above the cursor: {list:?}, the cursor's row {cy}");
+    let y = rows.iter().position(|r| r.contains("pub fn get<Q>(")).expect("the signature drawn");
+    assert!(y > cy, "the signature below the cursor's row {cy}: row {y}");
+    for r in [s.ed.screen.completion_card.get(), s.ed.screen.completion_docs.get()].into_iter().flatten() {
+        assert!(!(r.1..r.1 + r.3).contains(&y), "row {y} is the list's or its docs' {r:?}");
+    }
+}
+
+/// A shot's rows as drawn last, its text only.
+fn drawn_rows(s: &Shot) -> Vec<String> {
+    let text = snapshot(&s.ed, "t", s.ed.last_frame.as_ref().unwrap().0.as_slice(), s.w, s.h);
+    text.lines().skip(2).take(s.h as usize).map(|l| l.get(3..).unwrap_or("").to_string()).collect()
+}
+
+/// #234's screens, for their screenshots (only with `TARAE_FRAMES_DIR` set: both themes there; `cargo xtask shot` draws
+/// them with `TARAE_SHOT_REPLAY`): `K`'s docs over real code and, typing, the signature over the completion list with its
+/// docs — wide (112×30) and narrow (64×24).
+#[test]
+fn frames_of_lsp_cards() {
+    let Some(dir) = std::env::var_os("TARAE_FRAMES_DIR") else { return };
+    // (each theme's frame with its docs rendered in that theme — `frames_both` would keep meok's colours in them)
+    let both = |s: &mut Shot, name: &str, seed: &dyn Fn(&mut Shot)| {
+        for theme in ["hanji", "meok"] {
+            s.ed.theme = crate::theme::load(theme).unwrap();
+            seed(s);
+            s.frame();
+            let bytes = s.frame();
+            std::fs::write(Path::new(&dir).join(format!("{name}-{theme}.bin")), &bytes).unwrap();
+            let text = snapshot(&s.ed, name, &bytes, s.w, s.h);
+            std::fs::write(Path::new(&dir).join(format!("{name}.txt")), text).unwrap();
+        }
+    };
+    for (w, h, size) in [(112, 30, "wide"), (64, 24, "narrow")] {
+        both(&mut hovering(w, h), &format!("lsp-hover-{size}"), &|s| {
+            s.ed.popup = Some(crate::markdown::render(HOVER_ENTRY, &s.ed.theme, Some("rust")));
+        });
+        both(&mut typing(w, h), &format!("lsp-typing-{size}"), &typing_docs);
     }
 }
 

@@ -147,6 +147,72 @@ fn a_picker_over_the_slash_list_takes_the_press_on_it() {
     assert!(ed.picker.is_some(), "the picker stays: a press inside it");
 }
 
+/// The list's keys are its frame's bottom line (#234), typed as they're pressed — in insert mode, where the list is: `tab`
+/// selects the next, `enter` accepts it.
+#[test]
+fn a_press_on_the_completion_lists_keys_does_them_while_typing() {
+    let mut ed = editor();
+    completing(&mut ed);
+    let spot = |ed: &Editor, key: &str| {
+        let spots = ed.screen.word_spots.borrow();
+        let press = crate::wordspot::Press::Keys(key.into());
+        let s = spots.iter().find(|s| s.on == crate::mouse::Surface::Completion && s.press == press);
+        s.map(|s| (s.from, s.y)).unwrap_or_else(|| panic!("{key} on the list's bottom line: {spots:?}"))
+    };
+    let (x, y, _, h) = ed.screen.completion_card.get().expect("the list drawn");
+    let (tx, ty) = spot(&ed, "tab");
+    assert_eq!(ty, y + h - 1, "on its bottom line");
+    assert!(tx > x);
+    press(&mut ed, tx, ty);
+    assert_eq!(ed.completion.as_ref().and_then(|c| c.selected), Some(1), "`tab` selected the next");
+    let label = ed.completion.as_ref().map(|c| c.item(1).label.clone()).unwrap_or_default();
+    let (ex, ey) = spot(&ed, "enter");
+    press(&mut ed, ex, ey);
+    assert!(ed.completion.is_none(), "accepted, closed");
+    assert!(ed.doc().text.line(0).to_string().ends_with(&format!("{label}\n")), "{}", ed.doc().text.line(0));
+    assert_eq!(ed.mode, crate::editor::Mode::Insert, "still typing");
+}
+
+/// The language server's popups (#234) — `K`'s docs, the signature — never have the keys, and light their frame's lines
+/// half while the pointer is on them, as every floating frame (#189): washed again once it's off.
+#[test]
+fn the_language_servers_popups_light_half_under_the_pointer() {
+    use crate::event::Event;
+    use crate::mouse::{Lights, Lit};
+    let lit = |ed: &Editor| {
+        let frames = ed.screen.frames.borrow();
+        frames.iter().find(|f| f.of == Some(Lights::Popup)).map(|f| (f.rect, f.lit)).expect("a popup's frame")
+    };
+    let hover = |ed: &mut Editor, x: usize, y: usize| {
+        ed.handle_event(Event::Hover(x as u16, y as u16));
+        frame(ed);
+    };
+    for which in ["K's docs", "the signature"] {
+        let mut ed = editor();
+        feed(&mut ed, "jj");
+        if which == "K's docs" {
+            ed.popup = Some(crate::markdown::render("Some hover text.", &ed.theme, None));
+            ed.popup_name = "word".into();
+        } else {
+            ed.signature = Some(crate::signature::Signature {
+                doc: ed.doc().id,
+                label: "fn get(k: &str) -> usize".into(),
+                active: None,
+                index: 0,
+                count: 1,
+                docs: String::new(),
+            });
+        }
+        frame(&mut ed);
+        let ((x, y, w, h), at_first) = lit(&ed);
+        assert_eq!(at_first, Lit::Wash, "{which}: the faint wash, never the keys'");
+        hover(&mut ed, x + w / 2, y + h / 2);
+        assert_eq!(lit(&ed).1, Lit::Half, "{which}: half lit with the pointer on it");
+        hover(&mut ed, x + w / 2, y + h + 2);
+        assert_eq!(lit(&ed).1, Lit::Wash, "{which}: washed again off it");
+    }
+}
+
 #[test]
 fn a_press_on_the_note_card_replies_and_nothing_under_it_is_pressed() {
     let mut ed = editor();

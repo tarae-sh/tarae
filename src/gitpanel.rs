@@ -679,6 +679,7 @@ impl Editor {
             `B` branches · `L` log · `z` stash · `Z` take it back\n\
             `b` blame on/off · `r` read again · `esc` the code";
         self.popup = Some(crate::markdown::render(md, &self.theme, None));
+        self.popup_name = "git".into();
     }
 
     /// Every event: the git tab's inline diff (panes P3 step 5) — while the tab has the keys, the code's file, when

@@ -1402,6 +1402,13 @@ impl Editor {
                 } else {
                     let lang = self.doc().syntax.as_ref().map(|s| s.lang.name.clone());
                     self.popup = Some(crate::markdown::render(&text, &self.theme, lang.as_deref()));
+                    // (its frame named by the name it's about: the one `K` asked of, where the request was sent — its
+                    // document and position)
+                    let name = self.docs.iter().find(|d| d.id == p.doc).map(|d| {
+                        let at = p.head.min(d.text.len_bytes());
+                        d.text.byte_slice(crate::completion::word_at(&d.text, at)).to_string()
+                    });
+                    self.popup_name = name.unwrap_or_default();
                 }
             }
             Kind::DocumentSymbols => self.on_document_symbols(p.doc, result),
@@ -6966,6 +6973,29 @@ mod tests {
         let id = pending_id(&ed);
         ed.on_lsp_message(cid, json!({ "id": id, "result": hover }));
         assert!(ed.popup.is_none(), "hover arriving after the cursor moved is dropped");
+        std::fs::remove_dir_all(file.parent().unwrap()).ok();
+    }
+
+    /// `K`'s docs are named by the whole name it asked about (#234) — the cursor inside it as `K` went — on its frame's
+    /// top line.
+    #[test]
+    fn the_hovers_frame_is_named_by_the_name_k_asked_of() {
+        let text = "fn helper() {}\nfn main() { helper(); }\n";
+        let (mut ed, file, _log) = setup("hover-name", text);
+        let cid = ready(&mut ed);
+        let at = text.rfind("lper").unwrap();
+        ed.doc_mut().set_selection(crate::selection::Selection::point(at));
+        feed(&mut ed, " k");
+        let id = *ed.lsp.pending.keys().next().map(|(_, id)| id).expect("hover asked");
+        let hover =
+            json!({ "contents": { "kind": "markdown", "value": "```rust\nfn helper()\n```\nhelps" } });
+        ed.on_lsp_message(cid, json!({ "id": id, "result": hover }));
+        assert_eq!(ed.popup_name, "helper");
+        let (w, h) = (80, 20);
+        let mut buf = Vec::new();
+        crate::term::render(&mut ed, &mut buf, w, h).unwrap();
+        let shown = crate::screen::text(&buf, w, h).unwrap();
+        assert!(shown.lines().any(|l| l.contains("╭─ helper ─")), "its frame named:\n{shown}");
         std::fs::remove_dir_all(file.parent().unwrap()).ok();
     }
 }

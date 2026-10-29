@@ -312,6 +312,7 @@ impl Editor {
             }
         }
         self.popup = Some(lines);
+        self.popup_name = "change".into();
     }
 
     /// `d` on a hunk in the git tab (`space g d` from the code, `space v u`, the palette's "Undo this change")

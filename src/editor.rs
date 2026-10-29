@@ -881,6 +881,9 @@ pub struct Editor {
     pub lsp: LspState,
     /// Text floating near the cursor (hover). Any key closes it.
     pub popup: Option<Vec<crate::markdown::Line>>,
+    /// What the floating text is about, its frame's name (#234): a hover's name, else what it is (`change`, `git`) —
+    /// set with `popup`, read only while it's up.
+    pub popup_name: String,
     /// How many lines the floating text is scrolled down (C-d / C-u).
     pub popup_scroll: usize,
     /// Insert-mode completion list.
@@ -1365,6 +1368,7 @@ impl Editor {
             live_search: Default::default(),
             lsp: LspState::default(),
             popup: None,
+            popup_name: String::new(),
             popup_scroll: 0,
             completion: None,
             signature: None,

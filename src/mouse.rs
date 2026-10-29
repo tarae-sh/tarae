@@ -183,6 +183,8 @@ pub enum Lights {
     /// The front card's frame (its peeks above it have none).
     Card,
     Follow,
+    /// The language server's popups (#234): `K`'s docs, the signature, a completion's docs — the frame drawn there.
+    Popup,
 }
 
 /// How a floating frame's lines are lit (#189): the faint wash, the accent half over it while the pointer is on it, the
@@ -427,6 +429,10 @@ impl Editor {
             if let Some(card) = s.completion_card.get()
                 && inside(card, x, y)
             {
+                // (its bottom line's keys, #234: theirs)
+                if let Some(i) = hint_on(S::Completion).filter(|_| down) {
+                    return at(S::Completion, Part::Word(Word::Does(i)));
+                }
                 let row = s.completion_rows.borrow().iter().find(|r| r.0 == y).map(|r| r.1);
                 return at(S::Completion, row.map_or(Part::Blank, Part::Row));
             }
@@ -792,6 +798,13 @@ impl Editor {
     /// `border_hover`), a picker, the status line — what has no lines of its own to light.
     pub fn lights_at(&self, u: Under, x: usize, y: usize) -> Option<Lights> {
         use Surface as S;
+        // (the language server's popups light where they're drawn, whatever a press there reaches — the code under the
+        // signature: the topmost frame there)
+        let framed =
+            self.screen.frames.borrow().iter().rev().find(|f| inside(f.rect, x, y)).and_then(|f| f.of);
+        if framed == Some(Lights::Popup) {
+            return framed;
+        }
         let group = || {
             self.float_at(x, y).map(|f| f.0).or_else(|| {
                 let docked = self.screen.docked.borrow();

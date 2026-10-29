@@ -4725,7 +4725,7 @@ impl Region {
             Lights::Chat => Region::Chat,
             Lights::Slot => Region::Slot,
             Lights::Dock(k) => Region::Dock(k),
-            Lights::Card | Lights::Follow => return None,
+            Lights::Card | Lights::Follow | Lights::Popup => return None,
         })
     }
 
@@ -5192,11 +5192,12 @@ fn draw(
     if let (Some(lines), Some(at)) = (&editor.popup, text_cursor) {
         draw_popup(lines, at, ui, editor, lay, out)?;
     }
-    if let (Some(sig), Some(at)) = (&editor.signature, text_cursor) {
-        draw_signature(sig, at, ui, editor, lay, out)?;
-    }
+    // (the list first: the signature goes where it isn't)
     if let (Some(c), Some(at)) = (&editor.completion, text_cursor) {
         draw_completion(c, at, ui, editor, lay, out)?;
+    }
+    if let (Some(sig), Some(at)) = (&editor.signature, text_cursor) {
+        draw_signature(sig, at, ui, editor, lay, out)?;
     }
     // The note under the cursor comes first; the diagnostic card otherwise
     if let Some(at) = text_cursor
@@ -11209,13 +11210,14 @@ const FOLDED: u8 = 250;
 /// to the rest — the diagnostics, the chip, a list's keys — cut to the room they leave.
 const SAID: u8 = 150;
 
-/// Completion list — below the word so the name column lines up with the typed word (above if no room).
+/// The completion list (#234) — below the word so the names line up with the typed word (above if no room), in a thin
+/// frame lit while it's up (it has `tab` and `enter`), its keys its bottom line; the selected item's docs beside it.
 ///
 /// ```text
-/// ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄   ← half-row margin (card: when the theme has a floating bg color)
-/// ▎ƒ get          Option<&V>  ← selected row: accent bar + strong background
-///  ƒ get_mut   Option<&mut V>▐ ← kind glyph in code colors, typed chars in accent, right edge = scrollbar
-/// ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+/// ╭─ complete ─────────────────────────╮
+/// │▎ƒ get           Option<&V>  │   ← selected row: accent bar + strong ground
+/// │ ƒ get_mut   Option<&mut V> ▎│   ← kind glyph in code colours, typed chars in the accent, the thumb
+/// ╰─ tab select · enter accept ───╯
 /// ```
 fn draw_completion(
     c: &crate::completion::Completion,
@@ -11229,13 +11231,22 @@ fn draw_completion(
     const LABEL_MAX: usize = 42;
     const DETAIL_MAX: usize = 30;
     let t = &editor.theme;
-    let card = card_style(ui, editor, "ui.menu");
+    let pane = focused_pane(editor, lay);
+    let (left, right) = (pane.x0, pane.edit_w);
+    let card = on_ground(ui, card_style(ui, editor, "ui.menu"));
     let selected = selected_row(ui, editor, card);
     let dim = Style { fg: ui.virt.fg, ..card };
-    let matched = Style { bold: true, ..Style { fg: ui.accent.fg, ..Style::default() } };
-    let pad = CARD_PAD;
+    let faint = Style { fg: ui.linenr.fg, ..card };
+    let matched = Style { bold: true, fg: ui.accent.fg, ..Style::default() };
     let n = c.shown.len();
-    let rows = n.min(ROWS).min(lay.text_rows.saturating_sub(2 * pad));
+    // Never over the cursor's row: below if it fits — a row of air over what's under the code —, else above; if neither,
+    // the larger side, fewer rows
+    let (top, bottom) = (pane.text_top as usize, pane.text_top as usize + pane.text_rows);
+    let cy = cy as usize;
+    let (room_below, room_above) = (bottom.saturating_sub(cy + 2), cy.saturating_sub(top));
+    let want = n.min(ROWS) + 2;
+    let below = want <= room_below || (want > room_above && room_below >= room_above);
+    let rows = n.min(ROWS).min((if below { room_below } else { room_above }).saturating_sub(2));
     if rows == 0 {
         return Ok(());
     }
@@ -11243,29 +11254,39 @@ fn draw_completion(
     let visible = first..first + rows;
     let label_w = visible.clone().map(|i| c.item(i).label.width()).max().unwrap_or(0).min(LABEL_MAX);
     let detail_w = visible.clone().map(|i| c.item(i).detail.width()).max().unwrap_or(0).min(DETAIL_MAX);
+    // (narrow: the details go first, then the names are cut)
+    let room = right.saturating_sub(left).saturating_sub(2 + 3 + 2);
+    let detail_w = if label_w + 3 + detail_w > room { 0 } else { detail_w };
+    let details = if detail_w > 0 { 3 + detail_w } else { 0 };
+    // (wide enough for its name and its first two keys, `tab select · enter accept`: the names take what's over)
+    const KEYS_MIN: usize = 31;
+    let label_w = label_w.max((KEYS_MIN - 7).saturating_sub(details)).min(room.saturating_sub(details));
     let scroll = n > rows;
-    // [bar][glyph][ ][name][   detail][ |scroll]
-    let width = (3 + label_w + if detail_w > 0 { 3 + detail_w } else { 0 } + 2).min(lay.edit_w);
+    // │[bar][glyph][ ][name][   detail][ ][thumb]│
+    let inner = 3 + label_w + details + 2;
+    let width = inner + 2;
     let doc = editor.doc();
     let head = doc.selection().primary().head;
     let typed = mv::visual_col(&doc.text, head, editor.config.tab_width)
         - mv::visual_col(&doc.text, c.start.min(head), editor.config.tab_width);
     let word_x = (cx as usize).saturating_sub(typed);
-    let x0 = word_x.saturating_sub(3).min(lay.edit_w.saturating_sub(width));
-    let (top, bottom) = (lay.text_top as usize, lay.text_top as usize + lay.text_rows);
-    let h = rows + 2 * pad;
-    let below = cy as usize + 1 + h <= bottom;
-    let y0 = if below { cy as usize + 1 } else { (cy as usize).saturating_sub(h).max(top) };
-    card_edge(out, card, x0, y0, width)?;
-    editor.screen.completion_card.set(Some((x0, y0, width, h)));
-    editor.screen.completion_rows.borrow_mut().extend((0..rows).map(|row| (y0 + pad + row, first + row)));
+    let x0 = word_x.saturating_sub(4).min(right.saturating_sub(width)).max(left);
+    let h = rows + 2;
+    let y0 = if below { cy + 1 } else { cy - h };
+    let rect = (x0, y0, width, h);
+    for y in y0..y0 + h {
+        card_edge(out, card, x0, y, width)?;
+    }
+    editor.screen.completion_card.set(Some(rect));
+    editor.screen.completion_rows.borrow_mut().extend((0..rows).map(|row| (y0 + 1 + row, first + row)));
     let thumb = scroll_thumb(rows, n, first);
     for row in 0..rows {
         let i = first + row;
         let item = c.item(i);
         let is_sel = c.selected == Some(i);
         let base = if is_sel { selected } else { card };
-        queue!(out, MoveTo(x0 as u16, (y0 + pad + row) as u16))?;
+        let y = y0 + 1 + row;
+        queue!(out, MoveTo((x0 + 1) as u16, y as u16))?;
         if is_sel {
             apply(out, Style { fg: ui.accent.fg, ..base })?;
             queue!(out, Print("▎"))?;
@@ -11288,12 +11309,11 @@ fn draw_completion(
         let hits = c.hits.get(i).map_or(&[][..], Vec::as_slice);
         let name = if is_sel { base.patch(t.try_get("ui.text.focus").unwrap_or_default()) } else { base };
         let name = Style { bg: base.bg, ..name };
-        // (cut: whole on a card over it — the selected item's name in hand)
-        let y = y0 + pad + row;
+        // (cut: whole on a card over it — the selected item's name in hand, outside the frame)
         let on = crate::whole::On::Completion;
         let screen = (0, lay.width);
-        let hand = is_sel.then_some(crate::whole::Hand::Outside((x0, y0, width, h), (0, lay.edit_w)));
-        crate::whole::cut_at(editor, on, (x0 + 3, y), &fit, name, screen, hand);
+        let hand = is_sel.then_some(crate::whole::Hand::Outside(rect, (0, lay.edit_w)));
+        crate::whole::cut_at(editor, on, (x0 + 4, y), &fit, name, screen, hand);
         print_matched(out, label, hits, name, matched, label_w)?;
         apply(out, base)?;
         queue!(out, Spaces(label_w - label.width()))?;
@@ -11301,64 +11321,80 @@ fn draw_completion(
         if detail_w > 0 {
             let d = crate::whole::fit(&item.detail, detail_w);
             let plain = Style { fg: ui.virt.fg, ..base };
-            let at = (x0 + used + 3 + detail_w - d.width(), y);
+            let at = (x0 + 1 + used + 3 + detail_w - d.width(), y);
             crate::whole::cut_at(editor, on, at, &d, plain, screen, None);
-            apply(out, Style { fg: ui.virt.fg, ..base })?;
+            apply(out, plain)?;
             queue!(out, Print("   "), Spaces(detail_w - d.width()), Print(d.shown()))?;
             used += 3 + detail_w;
         }
         apply(out, base)?;
-        queue!(out, Spaces(width.saturating_sub(used + 1)))?;
+        queue!(out, Spaces(inner.saturating_sub(used + 1)))?;
         if scroll && thumb.contains(&row) {
-            apply(out, Style { fg: ui.linenr.fg, ..card })?;
+            apply(out, faint)?;
             queue!(out, Print(THUMB))?;
         } else {
             apply(out, card)?;
             queue!(out, Print(" "))?;
         }
     }
-    card_edge(out, card, x0, y0 + pad + rows, width)?;
-    // Selected item's docs: one cell right of the list (left if no room), top-aligned with the list
-    if let Some((_, lines)) = c.docs.as_ref().filter(|(_, l)| !l.is_empty()) {
-        const MIN: usize = 24;
-        let natural = lines.iter().map(crate::markdown::Line::width).max().unwrap_or(0).max(MIN);
-        let right = lay.edit_w.saturating_sub(x0 + width + 1);
-        // If the list floats above the cursor, keep the docs off the cursor line too
-        let limit = if below { bottom } else { cy as usize };
-        let side = if right >= MIN + 4 {
-            Some((x0 + width + 1, natural.min(64).min(right - 4)))
-        } else if x0 > MIN + 4 {
-            let inner = natural.min(64).min(x0 - 5);
-            Some((x0 - inner - 5, inner))
-        } else {
-            None
-        };
-        match side {
-            Some((x, inner)) => {
-                let wrapped = crate::markdown::wrap(lines, inner, dim);
-                let max_rows = limit.saturating_sub(y0 + 2).clamp(1, 16);
-                draw_doc_box(&wrapped, (x, y0), inner, max_rows, ui, editor, out)?;
-                let docs = (x, y0, inner + 4, wrapped.len().min(max_rows) + 2);
-                editor.screen.completion_docs.set(Some(docs));
-                // The cell between the two cards: blank where both are (not a letter of the code behind)
-                let gap = if x > x0 { x0 + width } else { x0 - 1 };
-                apply(out, ui.base)?;
-                for y in y0..y0 + h.min(wrapped.len().min(max_rows) + 2) {
-                    queue!(out, MoveTo(gap as u16, y as u16), Print(" "))?;
-                }
+    // Its frame, lit: it has the keys while it's up — they're its bottom line, typed in the code
+    let key = Style { bold: true, fg: ui.virt.fg, ..card };
+    let pairs = [("tab", "select"), ("enter", "accept"), ("esc", "close")];
+    let keys = bottom_keys(&pairs, width.saturating_sub(6), key, faint, frame_line(ui, card));
+    let name = pane_names(ui, editor, card, &["complete"], 0);
+    let on = crate::mouse::Surface::Completion;
+    draw_frame(out, ui, editor, on, card, rect, &fits(&name), &keys, &[], (None, true))?;
+    frame_keys_said(editor, on, &keys, (x0 + 3, y0 + h - 1), |_| At::Code);
+    // The selected item's docs: a cell right of the list (left if no room), top with top — else under (over) it
+    let Some((_, lines)) = c.docs.as_ref().filter(|(_, l)| !l.is_empty()) else { return Ok(()) };
+    const DOCS_MIN: usize = 24;
+    const DOCS_MAX: usize = 48;
+    const DOCS_ROWS: usize = 12;
+    let well = card_style(ui, editor, "ui.popup").bg;
+    let lines = docs_lines(lines);
+    let want = docs_width(&lines).clamp(DOCS_MIN, DOCS_MAX);
+    let name = c.current().map(|i| pane_names(ui, editor, card, &[&i.label], 0)).unwrap_or_default();
+    let (right_of, left_of) = (right.saturating_sub(x0 + width + 1), x0.saturating_sub(left + 1));
+    let beside = if right_of >= DOCS_MIN + 4 {
+        Some((x0 + width + 1, want.min(right_of - 4)))
+    } else if left_of >= DOCS_MIN + 4 {
+        let w = want.min(left_of - 4);
+        Some((x0 - 1 - (w + 4), w))
+    } else {
+        None
+    };
+    let on = crate::mouse::Surface::Completion;
+    match beside {
+        Some((dx, inner)) => {
+            // (above the cursor, off its line too; below, a row of air over what's under the code)
+            let limit = if below { bottom - 1 } else { cy };
+            let rows = docs_rows(&lines, inner, well, ui);
+            let shown = rows.len().min(limit.saturating_sub(y0 + 2).clamp(1, DOCS_ROWS));
+            let docs = (dx, y0, inner + 4, shown + 2);
+            let foot = more_lines(rows.len() - shown, faint);
+            draw_docs_card(out, ui, editor, on, card, docs, &rows[..shown], &name, &foot)?;
+            editor.screen.completion_docs.set(Some(docs));
+            // The cell between the two frames: blank where both are (not a letter of the code behind)
+            let gap = if dx > x0 { x0 + width } else { x0 - 1 };
+            apply(out, ui.base)?;
+            for y in y0..y0 + h.min(shown + 2) {
+                queue!(out, MoveTo(gap as u16, y as u16), Print(" "))?;
             }
-            // No room beside: outside the list (below a downward list, above an upward one), same width
-            None => {
-                let inner = width.max(MIN + 4).min(lay.edit_w).saturating_sub(4);
-                let wrapped = crate::markdown::wrap(lines, inner, dim);
-                let room = if below { bottom.saturating_sub(y0 + h) } else { y0.saturating_sub(top) };
-                if room >= 4 {
-                    let max_rows = (room - 2).min(12);
-                    let dh = wrapped.len().min(max_rows) + 2;
-                    let y = if below { y0 + h } else { y0 - dh };
-                    draw_doc_box(&wrapped, (x0, y), inner, max_rows, ui, editor, out)?;
-                    editor.screen.completion_docs.set(Some((x0, y, inner + 4, dh)));
-                }
+        }
+        // No room beside: outside the list (under a list below the cursor, over one above it), as wide — a row of air
+        // between the two (two cards never touch) and, below, over what's under the code
+        None => {
+            let inner = width.max(DOCS_MIN + 4).min(right.saturating_sub(left)).saturating_sub(4);
+            let rows = docs_rows(&lines, inner, well, ui);
+            let room = if below { bottom.saturating_sub(y0 + h + 2) } else { y0.saturating_sub(top + 1) };
+            if room >= 3 && inner >= 8 {
+                let shown = rows.len().min((room - 2).min(DOCS_ROWS));
+                let dh = shown + 2;
+                let y = if below { y0 + h + 1 } else { y0 - 1 - dh };
+                let docs = (x0, y, inner + 4, dh);
+                let foot = more_lines(rows.len() - shown, faint);
+                draw_docs_card(out, ui, editor, on, card, docs, &rows[..shown], &name, &foot)?;
+                editor.screen.completion_docs.set(Some(docs));
             }
         }
     }
@@ -11463,9 +11499,11 @@ fn slash_up(editor: &Editor, c: &crate::chat::Chat) -> Option<crate::chat::Slash
     crate::chat::slash_list(c)
 }
 
-/// Signature card — **above** the cursor line (completion opens below, so no overlap), below if no room above
-/// (skipped if the list is open). Colored by that language's grammar; current param bold accent + underline.
-/// Long signatures fold the front into `…` to keep the current param visible. Param docs dimmed, ≤ 3 lines.
+/// The signature (#234) — **above** the cursor line (the completion list opens below), else below — never over the list
+/// or its docs (drawn first), none where neither side has room —, its `(` over the call's `(`. Coloured by that
+/// language's grammar, the parameter typed now in the accent, bold; longer than its room, its start cut to keep that
+/// parameter in sight and its end where the rest doesn't fit, each to its `…` — the signature whole under the mouse
+/// (#229). Its docs dim, ≤ 2 rows. A thin frame, never lit: it shows, and never takes the keys.
 fn draw_signature(
     sig: &crate::signature::Signature,
     (cx, cy): (u16, u16),
@@ -11474,17 +11512,20 @@ fn draw_signature(
     lay: &Layout,
     out: &mut impl Write,
 ) -> io::Result<()> {
+    const DOC_ROWS: usize = 2;
     if sig.doc != editor.doc().id {
         return Ok(());
     }
-    let card = card_style(ui, editor, "ui.popup");
-    let pad = CARD_PAD;
+    let pane = focused_pane(editor, lay);
+    let (left, right) = (pane.x0, pane.edit_w);
+    let raised = card_style(ui, editor, "ui.popup");
+    let card = on_ground(ui, raised);
     let lang = editor.doc().syntax.as_ref().map(|s| s.lang.name.clone());
     let label = sig.label.replace(['\n', '\t'], " ");
-    // Signature → (char, style) cells, overlaying emphasis on the current param span only
+    // Signature → (char, style) cells, the current parameter's in the accent
     let mut cells: Vec<(char, Style)> = Vec::new();
     let mut byte = 0;
-    let active = Style { fg: ui.accent.fg, bold: true, underline: true, ..Style::default() };
+    let active = Style { fg: ui.accent.fg, bold: true, ..Style::default() };
     for line in crate::markdown::code_lines(&label, lang.as_deref(), &editor.theme) {
         if let crate::markdown::Line::Code(spans) = line {
             for sp in spans {
@@ -11501,40 +11542,58 @@ fn draw_signature(
     }
     let counter = if sig.count > 1 { format!("  {}/{}", sig.index + 1, sig.count) } else { String::new() };
     let full: usize = cells.iter().map(|(c, _)| c.width().unwrap_or(0)).sum();
-    // So room (= inner − count indicator) never goes below 0 even on very narrow screens
-    let inner =
-        (full + counter.width()).clamp(10, 96).min(lay.edit_w.saturating_sub(4)).max(counter.width() + 4);
+    let docs = crate::markdown::render(&sig.docs, &editor.theme, lang.as_deref());
+    let docs = docs_lines(&docs);
+    // (as wide as the signature, its docs widening it up to the measure)
+    let inner = (full + counter.width())
+        .max(docs_width(&docs))
+        .clamp(10, 96)
+        .min(right.saturating_sub(left).saturating_sub(4))
+        .max(counter.width() + 4);
     let room = inner - counter.width();
-    // If long, cut the front so the current param lands at the 1/3 mark
+    // If long, cut the front so the current parameter lands at the 1/3 mark
     let active_col: usize = sig
         .active
         .map(|(a, _)| label[..a.min(label.len())].chars().map(|c| c.width().unwrap_or(0)).sum())
         .unwrap_or(0);
     let skip_cols = if full > room { active_col.saturating_sub(room / 3).min(full - room + 1) } else { 0 };
-    let docs = if sig.docs.is_empty() {
-        Vec::new()
-    } else {
-        let lines = crate::markdown::render(&sig.docs, &editor.theme, lang.as_deref());
-        crate::markdown::wrap(&lines, inner, Style { fg: ui.virt.fg, ..Style::default() })
-    };
-    let doc_rows = docs.len().min(3);
-    let h = 1 + doc_rows + 2 * pad;
-    let (top, bottom) = (lay.text_top as usize, lay.text_top as usize + lay.text_rows);
-    let y0 = if cy as usize >= top + h {
-        cy as usize - h
-    } else if editor.completion.is_none() && cy as usize + 1 + h <= bottom {
-        cy as usize + 1
-    } else {
-        return Ok(());
+    let dim = Style { fg: ui.virt.fg, ..Style::default() };
+    let docs: Vec<Vec<crate::markdown::Span>> = docs_rows(&docs, inner, raised.bg, ui)
+        .into_iter()
+        .take(DOC_ROWS)
+        .map(|r| r.into_iter().map(|s| crate::markdown::Span { style: dim.patch(s.style), ..s }).collect())
+        .collect();
+    let h = 1 + docs.len() + 2;
+    let (top, bottom) = (pane.text_top as usize, pane.text_top as usize + pane.text_rows);
+    let cy = cy as usize;
+    let s = &editor.screen;
+    let list = [s.completion_card.get(), s.completion_docs.get()];
+    // (never on the list or its docs — the cursor's row is always between them —, and below, a row of air over what's
+    // under the code)
+    let clear = |y0: usize| list.iter().flatten().all(|&(_, y, _, lh)| y0 + h <= y || y + lh <= y0);
+    let y0 = match () {
+        _ if cy >= top + h && clear(cy - h) => cy - h,
+        _ if cy + 1 + h < bottom && clear(cy + 1) => cy + 1,
+        _ => return Ok(()),
     };
     let width = inner + 4;
-    let x0 = (cx as usize).saturating_sub(2).min(lay.edit_w.saturating_sub(width));
-    card_edge(out, card, x0, y0, width)?;
+    // Its `(` over the call's (whole, its front not folded): the label's first cell that far left of it
+    let doc = editor.doc();
+    let head = doc.selection().primary().head;
+    let line_start = mv::line_start(&doc.text, mv::line_of(&doc.text, head));
+    let typed = doc.text.byte_slice(line_start..head).to_string();
+    let call = call_paren(&typed).map(|i| typed[i..].width());
+    let text_x = match (call, label.find('(').map(|i| label[..i].width())) {
+        (Some(after), Some(before)) if skip_cols == 0 => (cx as usize).saturating_sub(after + before),
+        _ => cx as usize,
+    };
+    let x0 = text_x.saturating_sub(2).min(right.saturating_sub(width)).max(left);
+    for y in y0..y0 + h {
+        card_edge(out, card, x0, y, width)?;
+    }
     // Signature row
-    let y = y0 + pad;
-    queue!(out, MoveTo(x0 as u16, y as u16))?;
-    apply(out, card)?;
-    queue!(out, Print("  "))?;
+    let y = y0 + 1;
+    queue!(out, MoveTo((x0 + 2) as u16, y as u16))?;
     let mut used = 0;
     let mut col = 0;
     let mut shown = String::new();
@@ -11595,27 +11654,27 @@ fn draw_signature(
     apply(out, card)?;
     queue!(out, Spaces(inner - used - counter.width()))?;
     apply(out, Style { fg: ui.linenr.fg, ..card })?;
-    queue!(out, Print(&counter), Print("  "))?;
-    // Param docs
-    for (i, spans) in docs.iter().take(doc_rows).enumerate() {
-        queue!(out, MoveTo(x0 as u16, (y + 1 + i) as u16))?;
-        apply(out, card)?;
-        queue!(out, Print("  "))?;
-        let mut used = 0;
-        for sp in spans {
-            let t = fit(&sp.text, inner - used);
-            apply(
-                out,
-                card.patch(Style { fg: ui.virt.fg, ..Style::default() })
-                    .patch(Style { fg: sp.style.fg.or(ui.virt.fg), ..sp.style }),
-            )?;
-            queue!(out, Print(&t))?;
-            used += t.width();
-        }
-        apply(out, card)?;
-        queue!(out, Spaces(inner - used + 2))?;
+    queue!(out, Print(&counter))?;
+    for (i, r) in docs.iter().enumerate() {
+        docs_row(out, (x0 + 2, y + 1 + i), r, card, inner)?;
     }
-    card_edge(out, card, x0, y + 1 + doc_rows, width)
+    let (on, of) = (crate::mouse::Surface::Popup, Some(crate::mouse::Lights::Popup));
+    draw_frame(out, ui, editor, on, card, (x0, y0, width, h), &[], &[], &[], (of, false)).map(|_| ())
+}
+
+/// Where the call the cursor is in opens on its line (`typed`: the line up to the cursor): the byte of its `(` — the
+/// last one not closed before the cursor.
+fn call_paren(typed: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, c) in typed.char_indices().rev() {
+        match c {
+            ')' => depth += 1,
+            '(' if depth == 0 => return Some(i),
+            '(' => depth -= 1,
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Welcome screen (no file): spaced-out name · one-line intro · first-step keys · recent files (number keys).
@@ -14463,23 +14522,13 @@ fn draw_follow_card(
     };
     words.extend(word(1, Press::Card).filter(|_| waits));
     words.extend(word(names.len(), Press::Follow).filter(|_| paused));
-    if hovered.is_none() {
-        let mut at = x0 + 3;
-        for pair in bottom.split(|s| s.0 == " · ") {
-            let (k, said) =
-                (pair.first().map_or("", |s| s.0.as_str()), pair.get(1).map_or("", |s| s.0.as_str()));
-            crate::kinds::hint(k, said, (at, y0 + h - 1));
-            if crate::wordspot::pressable(k, said) {
-                // (by what each key is, never where the keys are: the turn's own — `C-c stop`, `C-f` — the chat's; the
-                // ways in — `space l open the chat`, `[r replay` — typed in the code)
-                let home = if matches!(k, "C-c" | "C-f") { At::Chat } else { At::Code };
-                let spot = word_spot(on, Press::Keys(k.to_string()), (at, y0 + h - 1), pair.to_vec());
-                words.push(spot.home(home));
-            }
-            at += pair.iter().map(|s| s.0.width()).sum::<usize>() + " · ".width();
-        }
-    }
     drop(words);
+    if hovered.is_none() {
+        // (by what each key is, never where the keys are: the turn's own — `C-c stop`, `C-f` — the chat's; the ways in
+        // — `space l open the chat`, `[r replay` — typed in the code)
+        let home = |k: &str| if matches!(k, "C-c" | "C-f") { At::Chat } else { At::Code };
+        frame_keys_said(editor, on, &bottom, (x0 + 3, y0 + h - 1), home);
+    }
     // (each mark's cell, for the mouse, the state and pointing: a mark is its span's last cell)
     let mut taken = editor.screen.stop_marks.borrow_mut();
     for (m, &(_, b)) in shown_marks.iter().zip(cols.iter().skip(strip_at)) {
@@ -20194,23 +20243,209 @@ fn scroll_thumb(rows: usize, n: usize, first: usize) -> std::ops::Range<usize> {
     at..at + len
 }
 
-/// Floating docs (hover) — below the cursor (above if no room), text's first cell at the cursor column.
+/// `K`'s docs (and a change's preview, the git tab's keys — `Editor.popup`, #234) — below the cursor (above if no room),
+/// the text's first cell at the first of the name under it, at most 20 rows, scrolled `popup_scroll`. A thin frame named
+/// by what it's about (`Editor.popup_name`; rust-analyzer's first one-line block — where the name lives — after it,
+/// faint), how many lines are past it in its bottom line. Never lit: its keys (`C-d`, `esc`) are the status line's.
 fn draw_popup(
     lines: &[crate::markdown::Line],
-    at: (u16, u16),
+    (cx, cy): (u16, u16),
     ui: &Ui,
     editor: &Editor,
     lay: &Layout,
     out: &mut impl Write,
 ) -> io::Result<()> {
-    let drawn = draw_float(lines, at, editor.popup_scroll, 20, ui, editor, lay, out)?;
-    editor.screen.popup.set(drawn.map(|d| d.0));
-    editor.screen.popup_end.set(drawn.map(|d| d.1));
+    const CAP: usize = 20;
+    editor.screen.popup.set(None);
+    editor.screen.popup_end.set(None);
+    let pane = focused_pane(editor, lay);
+    let (left, right) = (pane.x0, pane.edit_w);
+    let raised = card_style(ui, editor, "ui.popup");
+    let card = on_ground(ui, raised);
+    let faint = Style { fg: ui.linenr.fg, ..card };
+    let (container, body) = docs_container(lines);
+    let inner = docs_width(&body).clamp(24, 96).min(right.saturating_sub(left).saturating_sub(4));
+    if inner < 8 {
+        return Ok(());
+    }
+    let rows = docs_rows(&body, inner, raised.bg, ui);
+    // Never over the cursor's row: below if it fits, else above; if neither, the larger side, cut. Below, a row of air
+    // over what's under the code (the status line, a slot's line)
+    let (top, bottom) = (pane.text_top as usize, pane.text_top as usize + pane.text_rows);
+    let cy = cy as usize;
+    let (below, above) = (bottom.saturating_sub(cy + 2), cy.saturating_sub(top));
+    let want = rows.len().min(CAP) + 2;
+    let down = want <= below || (want > above && below >= above);
+    let room = if down { below } else { above };
+    if room < 3 {
+        return Ok(());
+    }
+    let shown = rows.len().min((room - 2).min(CAP));
+    let h = shown + 2;
+    let y0 = if down { cy + 1 } else { cy - h };
+    // (the text under the name: its first cell at the name's)
+    let doc = editor.doc();
+    let at = doc.selection().primary().cursor(&doc.text);
+    let start = crate::completion::word_start(&doc.text, at);
+    let before = doc.text.byte_slice(start..at).to_string().width();
+    let x0 = (cx as usize).saturating_sub(before + 2).min(right.saturating_sub(inner + 4)).max(left);
+    // (a line inside the gutter would read as a digit of the numbers it stands beside: from the pane's edge then, over
+    // the whole gutter, its right line where it was)
+    let (x0, inner) = match x0 > left && x0 <= left + pane.gutter {
+        true => (left, inner + (x0 - left)),
+        false => (x0, inner),
+    };
+    let width = inner + 4;
+    // Scrolled as far as asked, but never past its last page
+    let end = rows.len() - shown;
+    let skip = editor.popup_scroll.min(end);
+    let mut name = pane_names(ui, editor, card, &[&editor.popup_name], 0);
+    if let Some(c) = container {
+        name.push((" ── ".into(), frame_line(ui, card)));
+        name.push((c, faint));
+    }
+    let foot = more_lines(rows.len() - skip - shown, faint);
+    let rect = (x0, y0, width, h);
+    let on = crate::mouse::Surface::Popup;
+    draw_docs_card(out, ui, editor, on, card, rect, &rows[skip..skip + shown], &name, &foot)?;
+    editor.screen.popup.set(Some(rect));
+    editor.screen.popup_end.set(Some(end));
     Ok(())
 }
 
-/// Lines in a doc box by the cursor (hover, diagnostic card): at most `cap` rows, scrolled `scroll` rows.
+/// The language server's docs as its cards lay them (#234), as the chat lays an answer: no rule (the code's wells set
+/// it apart), never two blank rows, none at either end.
+fn docs_lines(lines: &[crate::markdown::Line]) -> Vec<crate::markdown::Line> {
+    use crate::markdown::Line;
+    let mut out: Vec<Line> = Vec::new();
+    for l in lines {
+        let l = if matches!(l, Line::Rule) { Line::Blank } else { l.clone() };
+        if matches!(l, Line::Blank) && matches!(out.last(), Some(Line::Blank) | None) {
+            continue;
+        }
+        out.push(l);
+    }
+    while matches!(out.last(), Some(Line::Blank)) {
+        out.pop();
+    }
+    out
+}
+
+/// A hover's docs (`docs_lines`) and, where it opens with a one-line code block before another (rust-analyzer's: where
+/// the name lives, then its signature), that line apart — for its frame's top line.
+fn docs_container(lines: &[crate::markdown::Line]) -> (Option<String>, Vec<crate::markdown::Line>) {
+    use crate::markdown::Line;
+    match lines {
+        [Line::Code(c), Line::Blank, Line::Code(_), ..] => {
+            (Some(c.iter().map(|s| s.text.as_str()).collect()), docs_lines(&lines[2..]))
+        }
+        _ => (None, docs_lines(lines)),
+    }
+}
+
+/// The cells docs want: their widest line — code with its well's two cells, prose at most the chat's measure.
+fn docs_width(lines: &[crate::markdown::Line]) -> usize {
+    let code = |l: &crate::markdown::Line| matches!(l, crate::markdown::Line::Code(_));
+    let measure = crate::chrome::MEASURE;
+    lines.iter().map(|l| if code(l) { l.width() + 2 } else { l.width().min(measure) }).max().unwrap_or(0)
+}
+
+/// Docs laid in `w` cells as the chat lays an answer (`chat_markdown_drawn`): code in a well of `well`, prose at the
+/// measure.
+fn docs_rows(
+    lines: &[crate::markdown::Line],
+    w: usize,
+    well: Option<crossterm::style::Color>,
+    ui: &Ui,
+) -> Vec<Vec<crate::markdown::Span>> {
+    let (faint, dim) =
+        (Style { fg: ui.linenr.fg, ..Style::default() }, Style { fg: ui.virt.fg, ..Style::default() });
+    chat_markdown_drawn(lines, (w, crate::chrome::MEASURE.min(w)), (faint, dim), well).0
+}
+
+/// A docs card's row: `spans` from `(x, y)` on `card`, cut to `inner` cells and padded to them, its key hints recorded
+/// where they stand.
+fn docs_row(
+    out: &mut impl Write,
+    (x, y): (usize, usize),
+    spans: &[crate::markdown::Span],
+    card: Style,
+    inner: usize,
+) -> io::Result<()> {
+    queue!(out, MoveTo(x as u16, y as u16))?;
+    let mut used = 0;
+    for (k, sp) in spans.iter().enumerate() {
+        let text = fit(&sp.text, inner - used);
+        apply(out, card.patch(sp.style))?;
+        queue!(out, Print(&text))?;
+        if sp.hint && text == sp.text {
+            crate::kinds::span_hint(spans, k, (x + used, y));
+        }
+        used += text.width();
+        if used >= inner {
+            break;
+        }
+    }
+    apply(out, card)?;
+    queue!(out, Spaces(inner - used))
+}
+
+/// A docs card (#234: `K`'s, a completion's — the language server's popups): `rows` two cells in from its sides, in a
+/// thin frame named `name`, `foot` in its bottom line. They show and never take the keys: its lines the faint wash, half
+/// lit under the pointer as every floating frame's (#189).
 #[allow(clippy::too_many_arguments)]
+fn draw_docs_card(
+    out: &mut impl Write,
+    ui: &Ui,
+    editor: &Editor,
+    on: crate::mouse::Surface,
+    card: Style,
+    (x0, y0, w, h): Rect4,
+    rows: &[Vec<crate::markdown::Span>],
+    name: &[(String, Style)],
+    foot: &[(String, Style)],
+) -> io::Result<()> {
+    for y in y0..y0 + h {
+        card_edge(out, card, x0, y, w)?;
+    }
+    for (i, r) in rows.iter().take(h.saturating_sub(2)).enumerate() {
+        docs_row(out, (x0 + 2, y0 + 1 + i), r, card, w.saturating_sub(4))?;
+    }
+    let of = Some(crate::mouse::Lights::Popup);
+    draw_frame(out, ui, editor, on, card, (x0, y0, w, h), &fits(name), foot, &[], (of, false)).map(|_| ())
+}
+
+/// What's past a docs card's last row, for its bottom line: `↓ N more lines`, faint — none when nothing is.
+fn more_lines(more: usize, faint: Style) -> Vec<(String, Style)> {
+    match more {
+        0 => Vec::new(),
+        1 => vec![("↓ 1 more line".into(), faint)],
+        n => vec![(format!("↓ {n} more lines"), faint)],
+    }
+}
+
+/// A frame's bottom line's keys (`bottom_keys`, laid as `draw_frame` lays them from `(x, y)`, after `╰─ `): each recorded
+/// where it stands (`kinds::hint`), a press on one typing its key where `home` says it's typed.
+fn frame_keys_said(
+    editor: &Editor,
+    on: crate::mouse::Surface,
+    keys: &[(String, Style)],
+    (x, y): (usize, usize),
+    home: impl Fn(&str) -> At,
+) {
+    use crate::wordspot::Press;
+    let mut words = editor.screen.word_spots.borrow_mut();
+    let mut at = x;
+    for pair in keys.split(|s| s.0 == " · ") {
+        let (k, said) = (pair.first().map_or("", |s| s.0.as_str()), pair.get(1).map_or("", |s| s.0.as_str()));
+        crate::kinds::hint(k, said, (at, y));
+        if crate::wordspot::pressable(k, said) {
+            words.push(word_spot(on, Press::Keys(k.to_string()), (at, y), pair.to_vec()).home(home(k)));
+        }
+        at += pair.iter().map(|s| s.0.width()).sum::<usize>() + " · ".width();
+    }
+}
+
 /// Where a floating card goes, with its wrapped rows — placement only (`draw_float` draws).
 struct FloatGeom {
     x0: usize,
@@ -20797,8 +21032,9 @@ fn diagnostic_source(raw: &serde_json::Value) -> Option<String> {
 fn key_hints(editor: &Editor) -> Option<Vec<(&'static str, String)>> {
     let replace_list = |p: &Picker| p.current().is_some_and(|i| matches!(i.action, Action::ReplaceFile(_)));
     let hints = |h: &[(&'static str, &str)]| Some(h.iter().map(|&(k, d)| (k, d.to_string())).collect());
+    // (the completion list's keys are its frame's bottom line, #234)
     if editor.completion.is_some() {
-        hints(&[("tab", "select"), ("enter", "accept"), ("C-x", "complete"), ("esc", "close")])
+        None
     } else if editor.picker.as_ref().is_some_and(|p| p.grep.is_some()) {
         hints(&[("enter", "open"), ("C-r", "replace the listed matches"), ("esc", "close")])
     } else if let Some(p) = editor.picker.as_ref().filter(|p| p.make.is_some()) {

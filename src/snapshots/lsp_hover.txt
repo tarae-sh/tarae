@@ -1,0 +1,73 @@
+# lsp_hover · 100x22 · theme meok · cursor 9:22
+## text
+00 ─ tarae › src › main.rs › ƒ word_counts ────────────────────────────────────────────────────────────
+01   1 use std::collections::HashMap;
+02   2
+03   3 ▎ Counts how often each word appears.
+04     ▎
+05     ▎ Words are split on whitespace; case is kept.
+06   6 pub fn word_counts(text: &str) -> HashMap<&str, usize> {
+07   7     let mut counts = HashMap::new();
+08   8     for word in text.split_whitespace() {
+09   9     │   *counts.entry(word).or_insert(0) += 1;
+10  10     }         ╭─ entry ── std::collections::hash::map::HashMap ──────────────────────────╮
+11  11     counts    │  pub fn entry(&mut self, key: K) -> Entry<'_, K, V>                      │
+12  12 }             │                                                                          │
+13  13               │ Gets the given key's corresponding entry in the map for in-place         │
+14  14 fn main() {   │ manipulation.                                                            │
+15  15     let text =│                                                                          │
+16  16     let counts│ Examples                                                                 │
+17  17     println!("│                                                                          │
+18  18 }             │  let mut letters = HashMap::new();                                       │
+19                   ╰─ ↓ 5 more lines ─────────────────────────────────────────────────────────╯
+20
+21  ● normal   C-d scroll down  C-u scroll up  esc close                        rust   utf-8 LF   9:19
+## bg · surface per cell, blank = ui.background
+00
+01
+02
+03
+04
+05
+06
+07
+08
+09     ccccccccccccccccccAccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+10
+11                     pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp
+12
+13
+14
+15
+16
+17
+18                     pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp
+19
+20
+21
+## fg · visible glyphs only, blank = unlisted color, UPPERCASE = bold
+00 a ddddd f ddd f TTTTTTT f   ddddddddddd aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+01   f
+02   f
+03   f f
+04     f
+05     f
+06   f
+07   f
+08   f
+09   A     d
+10  ff               ff TTTTT ff ffffffffffffffffffffffffffffffffffff fffffffffffffffffffffffffff
+11  ff               f                                                                          f
+12  ff               f                                                                          f
+13  ff               f                                                                          f
+14  ff               f                                                                          f
+15  ff               f                                                                          f
+16  ff               f BBBBBBBB                                                                 f
+17  ff              gf                                                                          f
+18  ff               f                                                                          f
+19                   ff f f ffff fffff ffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+20
+21  a TTTTTT   DDD ffffff ffff  DDD ffffff ff  DDD fffff                        dddd   ddddd dd   TTTT
+## legend
+bg: c=ui.cursorline.primary  p=ui.popup  A=ui.cursor.primary
+fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  g=diff.plus  B=bold

@@ -127,8 +127,11 @@ pub fn press(ed: &mut Editor, i: usize) {
     match p {
         Press::Keys(said) => {
             // (a sequence under way: ended on the press's Down, before this — `handle_mouse`, `Editor::sequence_end`; the
-            // status line's keys are what's open's — a picker's, a prompt's, completion's — in whatever mode)
-            if let Some(why) = refused(ed, home).filter(|_| on != Surface::Status) {
+            // status line's keys are what's open's — a picker's, a prompt's —, the completion list's bottom line its own,
+            // in whatever mode)
+            if let Some(why) =
+                refused(ed, home).filter(|_| !matches!(on, Surface::Status | Surface::Completion))
+            {
                 return ed.set_status(format!("{why}: esc first — a word presses {said} in normal mode"));
             }
             // (the chat's input types what it's given: there only a chord, `enter`, `esc` or `backspace` — the take-off

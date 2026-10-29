@@ -83,8 +83,8 @@ pub struct Read {
 
 /// `render`, saying what it went by in `read`.
 pub fn render_reading(src: &str, theme: &Theme, default_lang: Option<&str>, read: &mut Read) -> Vec<Line> {
-    let heading =
-        theme.try_get("markup.heading").unwrap_or_default().patch(Style { bold: true, ..Style::default() });
+    // (a heading in docs and the chat is bold ink, never the accent nor the code's heading colour — #234)
+    let heading = Style { bold: true, ..Style::default() };
     let quote = theme.try_get("markup.quote").unwrap_or(Style { italic: true, ..Style::default() });
     let bullet = theme.try_get("markup.list").unwrap_or_default();
     let mut out: Vec<Line> = Vec::new();
@@ -874,6 +874,19 @@ fn cut(s: &str, w: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A heading in docs and the chat is bold ink (#234) — never the accent nor the theme's heading colour, which are the
+    /// code's (a markdown file's own headings).
+    #[test]
+    fn a_heading_is_bold_ink() {
+        for theme in ["meok", "hanji"] {
+            let theme = crate::theme::load(theme).unwrap();
+            let lines = render("# Panics\n\nWhen it's full.", &theme, None);
+            let Some(Line::Text { spans, .. }) = lines.first() else { panic!("{lines:?}") };
+            assert_eq!(spans[0].text, "Panics");
+            assert_eq!(spans[0].style, Style { bold: true, ..Style::default() }, "bold, in the ink");
+        }
+    }
 
     /// Code in a card wraps at a space, continuing under its own indentation.
     #[test]

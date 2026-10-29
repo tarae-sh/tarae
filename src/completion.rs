@@ -245,6 +245,14 @@ pub fn word_start(text: &Rope, pos: usize) -> usize {
     p
 }
 
+/// The identifier around `pos` (bytes): from its start to its end — empty where there's none.
+pub fn word_at(text: &Rope, pos: usize) -> std::ops::Range<usize> {
+    let start = word_start(text, pos);
+    let end =
+        text.chars_at(text.byte_to_char(pos)).take_while(|&c| is_word(c)).map(char::len_utf8).sum::<usize>();
+    start..pos + end
+}
+
 /// Kind → one glyph. Only ones every common monospace font has (JetBrains Mono·Hack·Menlo·SF Mono) —
 /// ƒ function · τ type · ν value · π constant · § module · ◦ field · # keyword · ¶ snippet.
 pub fn kind_glyph(kind: u8) -> &'static str {
@@ -406,5 +414,7 @@ mod tests {
         let t = Rope::from_str("let 타래_x = a.");
         assert_eq!(word_start(&t, 4 + 6 + 2), 4); // from the end of "타래_x" → start
         assert_eq!(word_start(&t, t.len_bytes()), t.len_bytes(), "empty word after '.'");
+        assert_eq!(word_at(&t, 4 + 3), 4..4 + 6 + 2, "the whole name around the cursor");
+        assert_eq!(word_at(&t, t.len_bytes()), t.len_bytes()..t.len_bytes());
     }
 }
