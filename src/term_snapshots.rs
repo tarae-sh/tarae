@@ -8933,6 +8933,35 @@ fn an_edit_reviews_reason_is_whole_sentences() {
     let shown = &shown[1..];
     assert!(!shown.is_empty() && words.ends_with(shown), "whole words, the reason's last: {rows:#?}");
     assert!(words[words.len() - shown.len() - 1].ends_with('.'), "a sentence's start: {rows:#?}");
+    // #235: the `…` whole on a card under the mouse — the reason from its first sentence, nothing under it moved
+    let spot = s.ed.screen.cut_spots.borrow().iter().find_map(|sp| match &sp.3 {
+        crate::whole::Cut::Text(w) if w.text == reason => Some((sp.1, sp.0, w.on)),
+        _ => None,
+    });
+    let (x, y, on) = spot.unwrap_or_else(|| panic!("the `…` recorded as cut: {rows:#?}"));
+    assert_eq!(on, crate::whole::On::Review);
+    s.ed.handle_event(crate::event::Event::Hover(x as u16, y as u16));
+    let hovered = rows_of(&mut s, (0, 0, 100, 30));
+    assert!(hovered.iter().any(|r| r.contains("Keying by the name")), "whole: {hovered:#?}");
+    // (its rows after the first from the pane's left edge: no digit of a line's number left beside it)
+    let (_, top, _, h) = s.ed.screen.cut_card.borrow().as_ref().expect("its card").rect;
+    assert_eq!(s.ed.screen.cut_card.borrow().as_ref().map(|c| c.from), Some(0), "from the pane's edge");
+    assert!(h > 1, "wrapped: {hovered:#?}");
+    for r in &hovered[top + 1..top + h] {
+        assert!(
+            r.starts_with("   ") && r.trim().len() > 3,
+            "from the edge, its text where the first row's is: {r:?}"
+        );
+    }
+    // (the pointer onto the hang over the gutter: the card's, kept; a press there the cut row's, never the gutter's)
+    s.ed.handle_event(crate::event::Event::Hover(0, (top + 1) as u16));
+    let kept = rows_of(&mut s, (0, 0, 100, 30));
+    assert!(kept.iter().any(|r| r.contains("Keying by the name")), "kept on its hang: {kept:#?}");
+    let m = |kind| crate::event::Mouse { kind, x: 0, y: (top + 1) as u16, alt: false, ctrl: false };
+    s.ed.handle_mouse(m(crate::event::MouseKind::Down));
+    assert_eq!(s.ed.cut_press, Some(crate::whole::Held::Row(x, y)), "the press the cut row's");
+    s.ed.handle_mouse(m(crate::event::MouseKind::Up));
+    s.ed.handle_event(crate::event::Event::Hover(0, 29));
     // A last sentence longer than the two rows alone: its end, `…` in front, no row past the code's width (one-
     // letter words: wrapped at the full width, its first row fills it — the mark would push it past)
     let long = format!("Short one. {}word end.", "a ".repeat(200));
@@ -9569,6 +9598,105 @@ fn frames_of_lsp_cards() {
         });
         both(&mut typing(w, h), &format!("lsp-typing-{size}"), &typing_docs);
     }
+}
+
+/// #235's screens (every `…` #229 listed by hand, whole under the mouse), for their screenshots (only with
+/// `TARAE_FRAMES_DIR` set: both themes there, 100×30; `cargo xtask shot` draws them with `TARAE_SHOT_REPLAY`), each with
+/// the mouse on its `…`, its card up: a stacked table's header in the chat and in `K`'s docs, a code line cut in `K`'s
+/// docs, the follow card's folded log (its card outside the card's frame), a note thread's folded start, the edit
+/// review's shortened why (its rows from the pane's edge); and a prompt's input scrolled past its start, the mouse on
+/// its `…`, no card.
+#[test]
+fn frames_of_f235() {
+    use crate::chat::{Chat, Msg, Role};
+    use crate::whole::Cut;
+    let Some(dir) = std::env::var_os("TARAE_FRAMES_DIR") else { return };
+    // (each theme's own shot from the start: a popup's and the chat's colours are laid in the theme as it is)
+    let shoot = |name: &str, word: &str, make: &dyn Fn(&mut Shot)| {
+        for theme in ["meok", "hanji"] {
+            let mut s = Shot::new(100, 30);
+            s.ed.theme = crate::theme::load(theme).unwrap();
+            make(&mut s);
+            s.frame();
+            let spot = s.ed.screen.cut_spots.borrow().iter().find_map(|c| match &c.3 {
+                Cut::Text(w) if w.text.contains(word) => Some((c.1, c.0)),
+                _ => None,
+            });
+            let (x, y) = spot.unwrap_or_else(|| panic!("{name}: `{word}` cut"));
+            s.ed.handle_event(Event::Hover(x as u16, y as u16));
+            s.frame();
+            std::fs::write(Path::new(&dir).join(format!("{name}-{theme}.bin")), s.frame()).unwrap();
+        }
+    };
+    let table = "| Strand | the_owner_whose_name_runs_far_and_farewell | kept_by_the_loom | tied_at_the_knot | \
+                 crossed_itself | named_twice_over |\n|---|---|---|---|---|---|\n\
+                 | first | Ada | yes | twice | no | once |\n| second | Grace | no | once | yes | never |";
+    let code = "```rust\nfn count(threads: Vec<Thread>) -> HashMap<String, Vec<Thread>> {\n    let counts: HashMap<String, \
+                Vec<Thread>> = threads.into_iter().fold(HashMap::new(), |mut acc, t| { \
+                acc.entry(t.owner.clone()).or_default().push(t); acc }).into_iter().filter(|(_, v)| !v.is_empty()) \
+                .map(|(k, v)| (k.trim().to_lowercase(), v)).collect(); // farewell\n    counts\n}\n```";
+    let chat = |s: &mut Shot, msgs: Vec<Msg>| {
+        s.file("src/demo.rs", DEMO_RS);
+        let mut c = Chat::new();
+        c.msgs = msgs;
+        s.ed.workspace.claude.chat = Some(c);
+        s.ed.workspace.viewer.at = crate::workspace::At::Code;
+    };
+    let docs = |s: &mut Shot, text: &str| {
+        s.in_project();
+        s.file("src/main.rs", DEMO_RS);
+        let at = DEMO_RS.find("entry(word)").unwrap() + 2;
+        s.ed.doc_mut().set_selection(crate::selection::Selection::point(at));
+        s.ed.popup_name = "entry".into();
+        s.ed.popup = Some(crate::markdown::render(text, &s.ed.theme, Some("rust")));
+    };
+    shoot("f235-table-chat", "farewell", &|s| {
+        let answer = format!("Who holds each strand:\n\n{table}\n\nThat's all.");
+        chat(s, vec![Msg::new(Role::User, "who holds them?", ""), Msg::new(Role::Assistant, answer, "")]);
+    });
+    shoot("f235-table-docs", "farewell", &|s| docs(s, &format!("Who holds each strand:\n\n{table}")));
+    shoot("f235-code-docs", "farewell", &|s| docs(s, &format!("Counts them by owner.\n\n{code}")));
+    shoot("f235-follow", "Firstly", &|s| {
+        let words: Vec<String> = std::iter::once("Firstly, the strands are kept by name.".to_string())
+            .chain((1..=12).map(|i| format!("Then the knot number {i} is tied where its strand crosses.")))
+            .collect();
+        chat(s, vec![Msg::new(Role::User, "go", ""), Msg::new(Role::Assistant, words.join("\n\n"), "")]);
+        let c = s.ed.workspace.claude.chat.as_mut().unwrap();
+        c.unfolded = false;
+        c.follow.on = true;
+        c.state = crate::chat::State::Writing;
+    });
+    shoot("f235-note", "Secondly", &|s| {
+        s.file("src/demo.rs", DEMO_RS);
+        let path = s.root.join("src/demo.rs");
+        let lines: Vec<String> =
+            ["The knot is tied twice here.", "Secondly, the strand that crosses itself is kept."]
+                .into_iter()
+                .map(String::from)
+                .chain((1..=14).map(|i| format!("Then line {i} of what it means for the loop.")))
+                .collect();
+        crate::notes::add(&mut s.ed, &path, 0..1, crate::notes::By::Author, &lines.join("\n"));
+    });
+    // (the prompt's input past its start: the pointer on its `…`, no card — what you type, the cursor brings it in)
+    for theme in ["meok", "hanji"] {
+        let mut s = Shot::new(100, 30);
+        s.ed.theme = crate::theme::load(theme).unwrap();
+        s.file("src/demo.rs", DEMO_RS);
+        s.keys(&format!(":sh echo farewell {}and goodbye", "a word that runs on ".repeat(8)));
+        let p = s.ed.screen.prompt_input.get().expect("the prompt's input");
+        s.ed.handle_event(Event::Hover((p.x - 1) as u16, p.y as u16));
+        s.frame();
+        std::fs::write(Path::new(&dir).join(format!("f235-prompt-{theme}.bin")), s.frame()).unwrap();
+    }
+    shoot("f235-reason", "Keying", &|s| {
+        ask_answered(s);
+        s.ed.toasts.clear();
+        s.ed.workspace.claude.review.as_mut().unwrap().reason =
+            "Keying by the name alone means a second strand with the same name replaces the first one in the map. \
+             The entry API keeps the one that came first. I will switch it so a repeat keeps the first strand, and \
+             since nothing else reads the map, no other line has to change."
+                .into();
+    });
 }
 
 /// U2's screens (#187: every `…` whole under the mouse), for their screenshots (only with `TARAE_FRAMES_DIR` set: both

@@ -104,31 +104,22 @@ fn bare_cuts(files: &[(String, String)]) -> Vec<String> {
 /// a whole recorded another way, or no text cut. The list only shrinks — a new one is a `whole::fit` or a cut carried on
 /// its spans (`whole::Of`), its `…` written by `whole::mark` (asked of the cut it carries: no literal to count); a line
 /// that hands it to `whole::` doesn't count.
+/// (#235: a stacked table's header, the follow card's folded log, a note thread's folded start and the edit review's
+/// shortened why carry theirs now — `whole::fit`, `whole::folded`.)
 const HAND: &[(&str, usize, &str)] = &[
-    (
-        "cut",
-        1,
-        "a stacked table's header name (`markdown.rs`) — not yet whole under the mouse: #229's leftover",
-    ),
     ("print_lit_painted", 1, "the `…`'s length, measured: nothing drawn"),
-    (
-        "reason_rows",
-        1,
-        "the edit review's why from its last sentences: the rest is Claude's words in the chat",
-    ),
     ("draw_picker", 1, "a live search under way: a sign, no text cut"),
-    ("print_input_line", 2, "a prompt's input scrolled past its ends: its cursor brings the rest into sight"),
+    (
+        "print_input_line",
+        2,
+        "a prompt's input and a picker's query scrolled past their ends: what you type, its cursor brings the rest in \
+         — a card would cover it (the user, 2026-10-29, #235)",
+    ),
     ("draw_diff_row", 1, "a diff's gap between hunks: lines left out, no text cut"),
     ("code_line", 1, "a buffer loading: a sign, no text cut"),
-    ("chat_laid", 2, "a thought's rows folded away: its row's cut (`ChatRow.cut`)"),
+    ("chat_laid", 2, "a thought's rows folded away: whole on its row's own card (`ChatRow.cut`, #197b)"),
     ("told_row", 1, "the `…` of a cut taken off, measured: nothing drawn"),
-    ("turn_window", 2, "the follow card's log, rows folded away: the chat has them, a row each"),
     ("head_rows", 1, "a `Fit`'s tail: carried with its whole to its print"),
-    (
-        "draw_note_card",
-        1,
-        "a note thread's start folded where its card is short of rows: `space N` lists it whole",
-    ),
 ];
 
 /// Each drawer's `…` drawn by hand and how many, in the order they're met.
@@ -1033,6 +1024,38 @@ fn a_framed_lists_row_in_hand_is_whole_outside_its_frame() {
     assert!(ed.doc().read_only.is_some() && ed.doc().text == longer.as_str(), "whole, read-only");
 }
 
+/// #235's review: a framed list's row in hand under the mouse has its card outside the frame — the list's rows between
+/// are rows of their own: the pointer onto another cut row there shows that row's card, never keeps the first.
+#[test]
+fn the_rows_between_a_lists_row_in_hand_and_its_card_are_their_own() {
+    let first = format!("choose {}farewell", "a long choice of words ".repeat(4));
+    let item = |label: &str| crate::picker::Item {
+        label: label.into(),
+        action: crate::picker::Action::Message,
+        hint: String::new(),
+        glyph: None,
+    };
+    let mut ed = Editor::new(Config::default());
+    let other = format!("pick {}goodbye", "another long choice ".repeat(5));
+    let items = vec![item(&first), item("a short one"), item(&other)];
+    ed.open_picker(crate::picker::Picker::of("buffers", "things", items, false), None);
+    let screen = frame(&mut ed);
+    let (y, a, b, _) = cut_text(&ed, "farewell").unwrap_or_else(|| panic!("the first cut:\n{screen}"));
+    ed.handle_event(Event::Hover(((a + b) / 2) as u16, y as u16));
+    frame(&mut ed);
+    let (_, top, _, _) = card(&ed).expect("its card");
+    let (y2, a2, b2, _) = cut_text(&ed, "goodbye").unwrap_or_else(|| panic!("the other cut:\n{screen}"));
+    assert!((y + 1..top).contains(&y2) || (top..y).contains(&y2), "between the row and its card");
+    ed.handle_event(Event::Hover(((a2 + b2) / 2) as u16, y2 as u16));
+    let screen = frame(&mut ed);
+    let shown = match &ed.cut_hover {
+        Some(Cut::Text(w)) => w.text.clone(),
+        other => panic!("a card under the mouse: {other:?}"),
+    };
+    assert_eq!(shown, other, "its own card:\n{screen}");
+    assert!(screen.contains("goodbye"), "whole:\n{screen}");
+}
+
 /// A list whose rows say their state first (`:granted`'s), each `(name, state)`, the first selected.
 fn granted_like(rows: &[(&str, &str)]) -> Editor {
     let items = (rows.iter())
@@ -1741,6 +1764,7 @@ fn a_cut_code_row_in_the_follow_card_is_one_spot() {
 fn a_second_cut_on_one_lifted_row_is_caught() {
     let span = |text: &str, whole: &str| crate::markdown::Span {
         cut: Some(Box::new(crate::whole::Of {
+            key: None,
             from: 0,
             to: text.len(),
             whole: whole.into(),
@@ -1752,6 +1776,242 @@ fn a_second_cut_on_one_lifted_row_is_caught() {
     };
     let mut spans = [span("let a…", "let a = 1;"), span(" let b…", "let b = 2;")];
     crate::whole::lift(&mut spans, On::Transcript);
+}
+
+/// A table too wide for its rows — its columns' longest words past any card's measure —, so each row is stacked
+/// (`markdown::stacked`), its second header far past its label's column.
+const WIDE_TABLE: &str = "| Strand | the_owner_whose_name_runs_far_and_farewell | kept_by_the_loom | tied_at_the_knot | \
+                          crossed_itself | named_twice_over |\n|---|---|---|---|---|---|\n\
+                          | one | first | second | third | fourth | fifth |";
+
+/// `K`'s docs up on the code with `text`.
+fn docs_up(text: &str) -> Editor {
+    let mut ed = Editor::new(Config::default());
+    ed.docs[0].text = ropey::Rope::from_str(&"fn main() {}\n".repeat(30));
+    feed(&mut ed, "jj");
+    ed.popup = Some(crate::markdown::render(text, &ed.theme, None));
+    ed.popup_name = "word".into();
+    frame(&mut ed);
+    ed
+}
+
+/// The surface the cut holding `word` is recorded on in the last frame.
+fn on_of(ed: &Editor, word: &str) -> On {
+    cut_text(ed, word).unwrap_or_else(|| panic!("{word} recorded as cut")).3.on
+}
+
+/// frictions #235: a stacked table's header name cut to its label's column is whole under the mouse — in the chat's
+/// answer and in `K`'s docs, which lay it as the chat does.
+#[test]
+fn a_stacked_tables_header_cut_is_whole_under_the_mouse() {
+    let answer = format!("A table:\n\n{WIDE_TABLE}\n\nThat's all.");
+    let mut ed = chat(vec![Msg::new(Role::User, "show them", ""), Msg::new(Role::Assistant, answer, "")]);
+    ed.workspace.viewer.at = crate::workspace::At::Code;
+    frame(&mut ed);
+    let whole = whole_under_the_mouse(&mut ed, On::Transcript, "farewell");
+    assert_eq!(whole, "the_owner_whose_name_runs_far_and_farewell");
+    let mut ed = docs_up(WIDE_TABLE);
+    let on = on_of(&ed, "farewell");
+    assert!(matches!(on, On::Docs(_)), "on the docs card: {on:?}");
+    whole_under_the_mouse(&mut ed, on, "farewell");
+}
+
+/// frictions #235 (#234's docs cards on #229): a code line cut with `…` inside `K`'s docs is whole under the mouse, in
+/// its colours, as the chat's — one spot, whatever its colours (its spans side by side merged where they're placed).
+#[test]
+fn a_cut_code_row_in_the_docs_is_whole_under_the_mouse() {
+    // (its grammar loaded first, so the block is painted in more than one colour — Rust's is in every test build)
+    let rust = crate::syntax::spec("rust").expect("rust's pack");
+    crate::syntax::Loader::global().load(rust).expect("rust's grammar");
+    let mut ed = docs_up(&format!("Counts them.\n\n```rust\nfn count() {{\n{CODE}\n}}\n```"));
+    let on = on_of(&ed, "farewell");
+    assert!(matches!(on, On::Docs(_)), "on the docs card: {on:?}");
+    let (y, _, _, w) = cut_text(&ed, "farewell").expect("recorded as cut");
+    let styles: std::collections::HashSet<_> = w.pieces.iter().map(|p| format!("{:?}", p.1.fg)).collect();
+    assert!(styles.len() > 1, "in its syntax colours: {:?}", w.pieces);
+    assert_eq!(cut_spots_on(&ed, y), 1, "one spot a row, whatever its colours");
+    assert_eq!(whole_under_the_mouse(&mut ed, on, "farewell"), CODE.trim_start());
+}
+
+/// frictions #235: the follow card's log, its oldest rows folded away under a `…` row — the `…` is whole under the
+/// mouse: the rows it stands for, from the turn's first words.
+#[test]
+fn the_follow_cards_folded_log_is_whole_under_the_mouse() {
+    let words: Vec<String> = std::iter::once("Firstly, the strands.".to_string())
+        .chain((1..=30).map(|i| format!("Line {i}.")))
+        .collect();
+    let mut ed =
+        chat(vec![Msg::new(Role::User, "go", ""), Msg::new(Role::Assistant, words.join("\n\n"), "")]);
+    ed.workspace.viewer.at = crate::workspace::At::Code;
+    let c = chat_of(&mut ed);
+    c.unfolded = false;
+    c.follow.on = true;
+    c.state = crate::chat::State::Writing;
+    assert!(c.compact(), "follow's card, the chat minimized");
+    // (as `whole_under_the_mouse`, but for the card's turn timer, which goes on between frames)
+    let before = frame(&mut ed);
+    assert!(!before.contains("Firstly"), "folded away:\n{before}");
+    let (y, a, b, w) =
+        cut_text(&ed, "Firstly").unwrap_or_else(|| panic!("the `…` recorded as cut:\n{before}"));
+    assert_eq!(w.on, On::Follow);
+    assert_eq!(
+        (b - a, before.lines().nth(y).and_then(|r| r.chars().nth(a))),
+        (1, Some('…')),
+        "its `…` alone"
+    );
+    assert!(
+        w.text.starts_with("Firstly, the strands.\n\nLine 1."),
+        "the rows folded away, each a line: {:?}",
+        w.text
+    );
+    ed.handle_event(Event::Hover(a as u16, y as u16));
+    let screen = frame(&mut ed);
+    assert!(screen.contains("Firstly, the strands."), "whole:\n{screen}");
+    // (the follow card a list in a frame: its card just outside it — above, the card at the screen's foot — never over
+    // its lines; as tall as the room there, the rest `↓ N more lines`)
+    let (_, top, _, h) = card(&ed).expect("its card");
+    let (_, fy, _, fh) = ed.screen.thought_card.get().expect("the follow card");
+    assert!(
+        top + h <= fy || top >= fy + fh,
+        "outside the follow card's frame {:?}: {:?}\n{screen}",
+        (fy, fh),
+        card(&ed)
+    );
+    assert!(
+        ed.screen.cut_card.borrow().as_ref().is_some_and(|c| c.more.is_some()),
+        "the rest said:\n{screen}"
+    );
+    ed.handle_event(Event::Hover(0, H - 1));
+    let after = frame(&mut ed);
+    assert!(card(&ed).is_none() && !after.contains("Firstly"), "gone as the mouse leaves:\n{after}");
+    // (the pointer from the `…` up onto its card — the rows between keep it, as the card does — then its `↓ N more
+    // lines` pressed: the log whole in a read-only buffer)
+    ed.handle_event(Event::Hover(a as u16, y as u16));
+    frame(&mut ed);
+    let more = ed.screen.cut_card.borrow().as_ref().and_then(|c| c.more).expect("its `↓ N more lines`");
+    for row in (more..y).rev() {
+        ed.handle_event(Event::Hover(a as u16, row as u16));
+        let screen = frame(&mut ed);
+        assert!(screen.contains("Firstly"), "kept, the pointer at row {row}:\n{screen}");
+    }
+    // (a press on its body: a reveal, nothing — the code it covers is out of sight, its cursor unmoved)
+    let (top, cursor, at) = (top, ed.doc().selection().primary(), ed.workspace.viewer.at);
+    click(&mut ed, a, top);
+    assert_eq!(
+        (ed.doc().selection().primary(), ed.workspace.viewer.at),
+        (cursor, at),
+        "nothing under it pressed"
+    );
+    assert!(frame(&mut ed).contains("Firstly"), "still in hand");
+    // (the log growing under a pointer resting on the card — Claude still writing: more rows fold away under its `…`,
+    // its card kept, its text following them)
+    ed.handle_event(Event::Hover(a as u16, more as u16));
+    frame(&mut ed);
+    let was = match &ed.cut_hover {
+        Some(Cut::Text(w)) => w.text.clone(),
+        other => panic!("in hand: {other:?}"),
+    };
+    let last = chat_of(&mut ed).msgs.last_mut().expect("the answer");
+    last.text.push_str("\n\nLine 31.\n\nLine 32.\n\nLine 33.");
+    let screen = frame(&mut ed);
+    let now = match &ed.cut_hover {
+        Some(Cut::Text(w)) => w.text.clone(),
+        other => panic!("kept as the log grew: {other:?}\n{screen}"),
+    };
+    assert!(now.len() > was.len() && now.starts_with(&was), "its text followed:\n{now}");
+    assert!(card(&ed).is_some() && screen.contains("Firstly"), "its card up:\n{screen}");
+    let more = ed.screen.cut_card.borrow().as_ref().and_then(|c| c.more).expect("its `↓ N more lines`");
+    click(&mut ed, a, more);
+    assert_eq!(ed.doc().title.as_deref(), Some("whole · follow"), "opened whole");
+    assert!(ed.doc().text.to_string().starts_with("Firstly, the strands."), "{}", ed.doc().text);
+}
+
+/// frictions #235: a note thread's start, folded where its card is short of rows (`…` under the speaker's name), is
+/// whole under the mouse — the words folded away and the row they go on into.
+#[test]
+fn a_note_threads_folded_start_is_whole_under_the_mouse() {
+    let mut ed = Editor::new(Config::default());
+    ed.docs[0].text = ropey::Rope::from_str(&"fn main() {}\n".repeat(30));
+    let path = std::path::Path::new("/r/src/knot.rs");
+    ed.docs[0].path.set(Some(path.to_path_buf()));
+    // (its first line at the code's line end too: the word looked for is the second's)
+    let lines: Vec<String> = ["The knot.", "Secondly the strand."]
+        .into_iter()
+        .map(String::from)
+        .chain((1..=30).map(|i| format!("Line {i}.")))
+        .collect();
+    crate::notes::add(&mut ed, path, 0..1, crate::notes::By::Author, &lines.join("\n"));
+    frame(&mut ed);
+    let on = on_of(&ed, "Secondly");
+    assert!(matches!(on, On::Docs(_)), "on the note card: {on:?}");
+    let whole = whole_under_the_mouse(&mut ed, on, "Secondly");
+    assert!(
+        whole.starts_with("The knot.\nSecondly the strand.\nLine 1."),
+        "its words from the start, unindented: {whole:?}"
+    );
+}
+
+/// frictions #235 (the user, on its shots): a prompt's input scrolled past its ends has no card on its `…` — its
+/// start's, the cursor at the end, nor its end's, the cursor at the start: it's what you type, the cursor brings the rest
+/// in, a card would cover it.
+#[test]
+fn a_prompts_input_scrolled_past_its_ends_has_no_card() {
+    let mut ed = Editor::new(Config::default());
+    ed.docs[0].text = ropey::Rope::from_str("fn main() {}\n");
+    let typed = format!("echo farewell {}and goodbye", "a word that runs on ".repeat(12));
+    feed(&mut ed, &format!(":{typed}"));
+    for (keys, word) in [("", "farewell"), ("<home>", "goodbye")] {
+        feed(&mut ed, keys);
+        let screen = frame(&mut ed);
+        let y = ed.screen.prompt_input.get().expect("the prompt's input").y;
+        let row: Vec<char> = screen.lines().nth(y).unwrap_or_default().chars().collect();
+        assert!(!row.iter().collect::<String>().contains(word), "scrolled past it: {row:?}");
+        let x = row.iter().position(|&c| c == '…').unwrap_or_else(|| panic!("its `…`: {row:?}"));
+        assert!(cut_text(&ed, word).is_none(), "nothing recorded for the mouse");
+        ed.handle_event(Event::Hover(x as u16, y as u16));
+        let hovered = frame(&mut ed);
+        assert!(ed.cut_hover.is_none() && card(&ed).is_none(), "no card on its `…`:\n{hovered}");
+        ed.handle_event(Event::Hover(0, 0));
+    }
+}
+
+/// A floating frame laid over the cut holding `word` (as a picker's, the prompt's or a card's would be drawn after it):
+/// the pointer on its `…` there shows no card. Taken off, the next frame: its card.
+fn hidden_under_a_frame(ed: &mut Editor, word: &str) {
+    let screen = frame(ed);
+    let (y, a, b, _) = cut_text(ed, word).unwrap_or_else(|| panic!("{word} cut:\n{screen}"));
+    let x = (a + b) / 2;
+    let over = crate::mouse::Framed {
+        rect: (x.saturating_sub(4), y.saturating_sub(1), 12, 3),
+        of: Some(crate::mouse::Lights::Card),
+        lit: crate::mouse::Lit::Wash,
+    };
+    ed.screen.frames.borrow_mut().push(over);
+    ed.handle_event(Event::Hover(x as u16, y as u16));
+    assert!(ed.cut_hover.is_none(), "a frame over it: no card");
+    ed.handle_event(Event::Hover(0, H - 1));
+    frame(ed);
+    ed.handle_event(Event::Hover(x as u16, y as u16));
+    assert!(frame(ed).contains(word), "nothing over it: its card");
+}
+
+/// #235's review: a docs card's cut is seen only where no other frame is drawn over it — `K`'s card (framed) under a
+/// picker's or the prompt's frame, and a note's thread (no frame of its own) under any floating frame: no card.
+#[test]
+fn a_docs_cards_cut_under_another_frame_is_not_in_hand() {
+    let mut ed = docs_up(&format!("Counts them.\n\n```rust\nfn count() {{\n{CODE}\n}}\n```"));
+    hidden_under_a_frame(&mut ed, "farewell");
+    let mut ed = Editor::new(Config::default());
+    ed.docs[0].text = ropey::Rope::from_str(&"fn main() {}\n".repeat(30));
+    let path = std::path::Path::new("/r/src/knot.rs");
+    ed.docs[0].path.set(Some(path.to_path_buf()));
+    let lines: Vec<String> = ["The knot.", "Secondly the strand."]
+        .into_iter()
+        .map(String::from)
+        .chain((1..=30).map(|i| format!("Line {i}.")))
+        .collect();
+    crate::notes::add(&mut ed, path, 0..1, crate::notes::By::Author, &lines.join("\n"));
+    hidden_under_a_frame(&mut ed, "Secondly");
 }
 
 /// The cut spots recorded on row `y` of the last frame.

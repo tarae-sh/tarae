@@ -36,8 +36,10 @@ pub enum Cut {
 /// — the code's pane for a line end, the chat's for its rows; the screen for a list's row, its card reaching right over
 /// what's beside it). `state`: where a row's trailing state starts (the dim column after a list row's name, its gap
 /// before it included) — kept whole on one row of the card, never split (the user, 2026-10-27). `float`: the floating pane
-/// it's drawn in (`drawn_in`), None for what's docked or floats over the panes.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// it's drawn in (`drawn_in`), None for what's docked or floats over the panes. `key`: a cut known by its place rather
+/// than its text (`Of.key`) — the same cut on the same surface while its text follows what it stands for (#235's
+/// review: the follow log's `…` grows with every row it folds away, its card in hand all the while).
+#[derive(Clone, Debug)]
 pub struct Whole {
     pub on: On,
     pub text: String,
@@ -46,7 +48,23 @@ pub struct Whole {
     pub cols: (usize, usize),
     pub state: Option<usize>,
     pub float: Option<GroupKind>,
+    pub key: Option<&'static str>,
 }
+
+impl PartialEq for Whole {
+    fn eq(&self, o: &Whole) -> bool {
+        match (self.key, o.key) {
+            (Some(a), Some(b)) => a == b && self.on == o.on,
+            _ => {
+                (&self.on, &self.text, &self.style, &self.pieces, &self.cols, &self.state, &self.float)
+                    == (&o.on, &o.text, &o.style, &o.pieces, &o.cols, &o.state, &o.float)
+                    && self.key == o.key
+            }
+        }
+    }
+}
+
+impl Eq for Whole {}
 
 impl Whole {
     /// Whether it's what's seen at (`x`, `y`), `surface` what the pointer is over there: on that surface, and in the
@@ -56,14 +74,17 @@ impl Whole {
         let floating = || ed.float_at(x, y).map(|f| f.0).filter(|_| ed.picker.is_none());
         // (a frame's line: that frame the topmost drawn at the cell — a picker, which-key or the prompt drawn over a card
         // is what's seen there, whatever `mouse_under` answers first: U2's fourth review)
+        let top = || {
+            let frames = ed.screen.frames.borrow();
+            let inside = |(fx, fy, fw, fh): (usize, usize, usize, usize)| {
+                (fx..fx + fw).contains(&x) && (fy..fy + fh).contains(&y)
+            };
+            frames.iter().rev().find(|f| inside(f.rect)).map(|f| f.rect)
+        };
         let on_top = match self.on {
-            On::Frame(_, rect) => {
-                let frames = ed.screen.frames.borrow();
-                let inside = |(fx, fy, fw, fh): (usize, usize, usize, usize)| {
-                    (fx..fx + fw).contains(&x) && (fy..fy + fh).contains(&y)
-                };
-                frames.iter().rev().find(|f| inside(f.rect)).map(|f| f.rect) == Some(rect)
-            }
+            On::Frame(_, rect) => top() == Some(rect),
+            // (a docs card: its own frame the topmost there, or — one with none, a note's — no frame over it)
+            On::Docs(rect) => top().is_none_or(|t| t == rect),
             _ => true,
         };
         self.on.under(surface)
@@ -110,8 +131,20 @@ impl Card {
     fn holds(&self, ed: &Editor, x: usize, y: usize) -> bool {
         let (cx, cy, cw, ch) = self.rect;
         let end = self.ends.get(y.wrapping_sub(cy)).copied().unwrap_or(cx + cw);
-        let mine = (cx..end).contains(&x) && (cy..cy + ch).contains(&y) && (y == cy || x >= self.from);
+        // (its rows after the first from `from` — right of its first beside a list, left of it where they hang over the
+        // edit review's gutter)
+        let start = if y == cy { cx } else { self.from };
+        let mine = (start..end).contains(&x) && (cy..cy + ch).contains(&y);
         mine && !(self.under && floats(ed.mouse_under(crate::event::MouseKind::Down, x, y).surface))
+    }
+
+    /// Whether the cell (`x`, `y`) is between the card and its cut's spot (`sy`, `a`..`b`) — the follow card's, set away
+    /// from its `…` outside the card's frame: the rows between them, across both their columns, the way the pointer goes
+    /// from the one onto the other.
+    fn bridges(&self, (sy, a, b): (usize, usize, usize), x: usize, y: usize) -> bool {
+        let (cx, cy, cw, ch) = self.rect;
+        let rows = if sy < cy { sy + 1..cy } else { cy + ch..sy };
+        rows.contains(&y) && (a.min(cx)..b.max(cx + cw)).contains(&x)
     }
 }
 
@@ -172,6 +205,10 @@ pub enum On {
     Frame(crate::mouse::Surface, (usize, usize, usize, usize)),
     /// The chat's rows that aren't the transcript's: its intro, a chip, a run's wait, its input's placeholder.
     Chat,
+    /// A card of text over the code (x, y, width, height) — the language server's docs (`K`'s, a completion's: framed),
+    /// a note's thread, a diagnostic's or a conflict's (no frame): seen where nothing framed is drawn over it (#235;
+    /// `K`'s takes no press, so the pointer is over the code there).
+    Docs((usize, usize, usize, usize)),
     Status,
     Toast,
     /// A plugin's overlay: its rows (`term::draw_overlays`).
@@ -245,6 +282,7 @@ impl On {
                         | S::Edge
                 )
                 | (On::Chat, S::Chat | S::Transcript | S::Input)
+                | (On::Docs(_), S::Code(_) | S::Popup | S::Completion | S::NoteCard)
                 | (On::Status, S::Status)
                 | (On::Toast, S::Toast)
                 | (On::Overlay, S::Overlay)
@@ -280,6 +318,7 @@ impl On {
             On::Follow => "follow",
             On::Welcome => "start",
             On::Preview => "preview",
+            On::Docs(_) => "docs",
         }
     }
 }
@@ -327,13 +366,15 @@ pub struct Fit {
 }
 
 /// Where a text's cut part is (its bytes `[from, to)`) and the whole it was cut from — `pieces`, its colours as drawn
-/// (byte ranges of `whole`: a code row's syntax, #229); none, the style it's printed in.
+/// (byte ranges of `whole`: a code row's syntax, #229); none, the style it's printed in. `key`: its place, where its
+/// whole follows what it stands for (`folded`) — the hover keeps it as its text changes (`Whole.key`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Of {
     pub from: usize,
     pub to: usize,
     pub whole: String,
     pub pieces: Vec<(std::ops::Range<usize>, Style)>,
+    pub key: Option<&'static str>,
 }
 
 impl Fit {
@@ -379,7 +420,13 @@ impl Fit {
         let part = |text: &str, lo: usize| {
             let cut = self.cut.as_ref().and_then(|of| {
                 let (from, to) = (of.from.max(lo) - lo, of.to.min(lo + text.len()).saturating_sub(lo));
-                (from < to).then(|| Of { from, to, whole: of.whole.clone(), pieces: of.pieces.clone() })
+                (from < to).then(|| Of {
+                    from,
+                    to,
+                    whole: of.whole.clone(),
+                    pieces: of.pieces.clone(),
+                    key: of.key,
+                })
             });
             Fit { text: text.to_string(), cut }
         };
@@ -424,7 +471,7 @@ impl Fit {
             (self.text.get(from..was.from).unwrap_or(""), self.text.get(was.to..).unwrap_or(""));
         let whole = format!("{lead}{}{tail}", was.whole);
         let pieces = was.pieces.iter().map(|(r, s)| (r.start + lead.len()..r.end + lead.len(), *s)).collect();
-        Fit { cut: Some(Of { from, to: shown.len(), whole, pieces }), text: shown }
+        Fit { cut: Some(Of { from, to: shown.len(), whole, pieces, key: was.key }), text: shown }
     }
 }
 
@@ -482,6 +529,7 @@ pub(crate) fn of(shown: String, whole: &str) -> Fit {
         to: shown.len(),
         whole: whole.into(),
         pieces: Vec::new(),
+        key: None,
     });
     Fit { text: shown, cut }
 }
@@ -519,7 +567,8 @@ pub fn placed(
     // (in the colours it's drawn in — faded where its region hasn't the keys)
     let style = crate::term::drawn_style(style);
     let pieces = of.pieces.clone();
-    let w = Whole { on, text: of.whole.clone(), style, pieces, cols, state: None, float: drawn_in() };
+    let (state, float, key) = (None, drawn_in(), of.key);
+    let w = Whole { on, text: of.whole.clone(), style, pieces, cols, state, float, key };
     PLACED.with_borrow_mut(|p| match p.last_mut() {
         Some(((ly, _, lb), lw, _))
             if *ly == y && *lb == a && (lw.on, &lw.text, &lw.pieces) == (on, &w.text, &w.pieces) =>
@@ -547,9 +596,9 @@ pub fn lift(spans: &mut [crate::markdown::Span], on: On) -> Option<(usize, usize
                 // and its whole — `chat_markdown_drawn` — and a row of a folded thought is one of those rows)
                 Some(l) => debug_assert_eq!(l.2.text, of.whole, "a second cut on one row"),
                 None => {
-                    let (text, pieces) = (of.whole, of.pieces);
-                    let w =
-                        Whole { on, text, style: s.style, pieces, cols: (0, 0), state: None, float: None };
+                    let (text, pieces, key) = (of.whole, of.pieces, of.key);
+                    let (style, cols) = (s.style, (0, 0));
+                    let w = Whole { on, text, style, pieces, cols, state: None, float: None, key };
                     lifted = Some((a, b, w));
                 }
             }
@@ -563,6 +612,28 @@ pub fn lift(spans: &mut [crate::markdown::Span], on: On) -> Option<(usize, usize
 /// `every_mark_drawn_by_hand_is_named_and_the_list_only_shrinks` tells from a bare one (#229's review).
 pub fn mark(_of: &Of) -> &'static str {
     "…"
+}
+
+/// A `…` standing for `whole`, folded away where it's drawn (#235: the follow card's log, a note thread's start, the edit
+/// review's why), `tail` after it (`"… "`'s space): a span in `style` carrying it, so its card says what it stands for —
+/// in `words`, the ink those words are drawn in where they're seen, never the mark's. Known by its place (`Of.key`):
+/// what it stands for grows as the follow log folds rows away, its card kept in hand.
+pub fn folded(whole: String, tail: &str, (style, words): (Style, Style)) -> crate::markdown::Span {
+    // (its spot the `…` alone, its card's text from there)
+    let pieces = vec![(0..whole.len(), words)];
+    let mut of = Of { from: 0, to: 0, whole, pieces, key: Some("folded") };
+    of.to = mark(&of).len();
+    let text = format!("{}{tail}", mark(&of));
+    crate::markdown::Span { text, style, cut: Some(Box::new(of)), hint: false }
+}
+
+/// The text of `rows` as a card says it: a row a line, a blank row a paragraph's break, none at the ends.
+pub fn rows_text(rows: &[Vec<crate::markdown::Span>]) -> String {
+    let lines: Vec<String> = rows
+        .iter()
+        .map(|r| r.iter().map(|s| s.text.as_str()).collect::<String>().trim_end().to_string())
+        .collect();
+    lines.join("\n").trim_matches('\n').to_string()
 }
 
 /// The columns of `printed`'s cut part `of`, printed from column `x` — None where nothing of it is drawn.
@@ -606,7 +677,7 @@ pub fn cut_at(
     let float = drawn_in();
     let style = crate::term::drawn_style(style);
     let pieces = of.pieces.clone();
-    let w = Whole { on, text: of.whole.clone(), style, pieces, cols, state: None, float };
+    let w = Whole { on, text: of.whole.clone(), style, pieces, cols, state: None, float, key: of.key };
     record(ed, (y, a, b), w, hand);
 }
 
@@ -660,6 +731,13 @@ pub fn pressed(ed: &mut Editor, x: usize, y: usize) -> Option<(usize, usize)> {
     if card.outside {
         return Some((x, y));
     }
+    // (a card set away from its row — the follow card's, outside the card's frame: a reveal, its body pressed does
+    // nothing; the row it's about is elsewhere, and what it covers is out of sight)
+    let (_, cy, _, ch) = card.rect;
+    if !(cy..cy + ch).contains(&sy) {
+        ed.cut_press = Some(Held::Taken);
+        return None;
+    }
     let row = (x.clamp(a, b.saturating_sub(1).max(a)), sy);
     ed.cut_press = Some(Held::Row(row.0, row.1));
     Some(row)
@@ -704,12 +782,19 @@ pub fn open(ed: &mut Editor, title: &str, text: &str, paint: Vec<(usize, usize, 
     ed.sync_focus_view();
 }
 
-/// The cut row at (`x`, `y`) on the frame last drawn — or its card, the mouse gone onto it.
+/// The cut row at (`x`, `y`) on the frame last drawn — or its card, the mouse gone onto it: a mouse's card stays while
+/// the pointer is on its `…` or on it, and the follow card's — set away from its `…`, outside the card's frame — on
+/// the rows between (#235: so the follow log's `↓ N more lines` can be pressed), gone once it leaves them all. Only the
+/// follow card's: a framed list's row in hand has its card outside the frame too, and the list's rows between are rows
+/// of their own, each with its card.
 pub(crate) fn under(ed: &Editor, x: usize, y: usize) -> Option<Cut> {
-    if let Some(c) = ed.screen.cut_card.borrow().as_ref()
-        && c.holds(ed, x, y)
-    {
-        return Some(c.cut.clone());
+    if let Some(c) = ed.screen.cut_card.borrow().as_ref() {
+        let spot = || ed.screen.cut_spots.borrow().iter().find(|s| s.3 == c.cut).map(|s| (s.0, s.1, s.2));
+        let follow = matches!(&c.cut, Cut::Text(w) if w.on == On::Follow);
+        let mouses = follow && ed.cut_hover.as_ref() == Some(&c.cut);
+        if c.holds(ed, x, y) || (mouses && spot().is_some_and(|s| c.bridges(s, x, y))) {
+            return Some(c.cut.clone());
+        }
     }
     // (the last drawn first; a cut text only where what it's drawn on is what the pointer is over, a chip only where the
     // chat is)

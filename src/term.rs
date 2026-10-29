@@ -8197,12 +8197,13 @@ fn review_file(editor: &Editor, doc: &crate::document::Document) -> String {
 }
 
 /// The end of an edit's reason in `REASON_ROWS` rows of `w` (`rows_of` wraps): as many whole sentences, from the
-/// last back, as fit — a last sentence too long alone keeps its end — `…` before them saying what went.
+/// last back, as fit — a last sentence too long alone keeps its end — `…` before them saying what went, the reason
+/// whole on its card under the mouse.
 fn reason_rows(
     reason: &str,
     w: usize,
     rows_of: impl Fn(&str, usize) -> Vec<Vec<crate::markdown::Span>>,
-    faint: Style,
+    (faint, dim): (Style, Style),
 ) -> Vec<Vec<crate::markdown::Span>> {
     let all = rows_of(reason, w);
     if all.len() <= REASON_ROWS {
@@ -8224,8 +8225,9 @@ fn reason_rows(
         let rows = rows_of(last, w);
         rows[rows.len().saturating_sub(REASON_ROWS)..].to_vec()
     });
+    // (the reason whole on its card — #235)
     if let Some(first) = rows.first_mut() {
-        first.insert(0, crate::markdown::Span { cut: None, hint: false, text: "… ".into(), style: faint });
+        first.insert(0, crate::whole::folded(reason.trim().to_string(), " ", (faint, dim)));
     }
     rows
 }
@@ -8265,7 +8267,7 @@ fn review_heads(
         true => Vec::new(),
         false => {
             let rows_of = |s: &str, w: usize| thought_rows(s, w, dim, faint, editor);
-            reason_rows(reason, width.saturating_sub(7), rows_of, faint)
+            reason_rows(reason, width.saturating_sub(7), rows_of, (faint, dim))
         }
     };
     (warned, reason)
@@ -8909,7 +8911,8 @@ fn draw_list_row(
                 let pieces = vec![(0..whole.0.len(), style), (whole.0.len()..text.len(), plain)];
                 let state = Some(whole.0.len());
                 let float = crate::whole::drawn_in();
-                let w = crate::whole::Whole { on, text, style, pieces, cols: (0, usize::MAX), state, float };
+                let cols = (0, usize::MAX);
+                let w = crate::whole::Whole { on, text, style, pieces, cols, state, float, key: None };
                 crate::whole::record(editor, (at.1, at.0, at.0 + r.label.width()), w, hand);
             }
             false => cut_at(editor, on, at, &label_fit, style, (0, usize::MAX), hand),
@@ -9485,8 +9488,9 @@ fn picker_input(p: &Picker, lw: usize, count: &str) -> PickerInput {
 }
 
 /// An input's line in sight (`prompt_window`'s `line` of `text`): a `…` in `cut` where it's cut, its text in `base`,
-/// what `sel` selects washed as the code's selection is — the prompt's line and a picker's query alike. The cells
-/// it took.
+/// what `sel` selects washed as the code's selection is — the prompt's line and a picker's query alike. Its `…` has
+/// no card (the user, 2026-10-29, #235): it's what you type, the cursor brings the rest in, a card would cover it. The
+/// cells it took.
 fn print_input_line(
     out: &mut impl Write,
     ui: &Ui,
@@ -11617,7 +11621,7 @@ fn draw_signature(
             at += ch.len_utf8();
         }
         let whole: String = cells.iter().map(|c| c.0).collect();
-        crate::whole::Of { from: 0, to: 0, whole, pieces }
+        crate::whole::Of { from: 0, to: 0, whole, pieces, key: None }
     });
     let faint = Style { fg: ui.virt.fg, ..card };
     if let Some(of) = cut.as_ref().filter(|_| skip_cols > 0) {
@@ -11662,8 +11666,9 @@ fn draw_signature(
     queue!(out, Spaces(inner - used - counter.width()))?;
     apply(out, Style { fg: ui.linenr.fg, ..card })?;
     queue!(out, Print(&counter))?;
+    let on = crate::whole::On::Docs((x0, y0, width, h));
     for (i, r) in docs.iter().enumerate() {
-        docs_row(out, (x0 + 2, y + 1 + i), r, card, inner)?;
+        docs_row(out, (on, x0 + 2, y + 1 + i, (x0, x0 + width)), r, card, inner)?;
     }
     let (on, of) = (crate::mouse::Surface::Popup, Some(crate::mouse::Lights::Popup));
     draw_frame(out, ui, editor, on, card, (x0, y0, width, h), &[], &[], &[], (of, false)).map(|_| ())
@@ -12181,6 +12186,7 @@ fn draw_overlays(
                     last.0.end = text.len();
                 }
                 let w = crate::whole::Whole {
+                    key: None,
                     on,
                     text,
                     style: plain,
@@ -14451,7 +14457,7 @@ fn draw_follow_card(
     };
     let room = gap_end - gap_top;
     let body_max = BODY.min((ph / 2).saturating_sub(fixed)).min(room - fixed).max(1);
-    let (body, hand_at) = turn_window(turn_rows, &knots, hand_row, body_max, replaying, inner, faint);
+    let (body, hand_at) = turn_window(turn_rows, &knots, hand_row, body_max, replaying, inner, (faint, card));
     let hand_at = hand_at.map(|k| top.len() + k);
     let mut rows: Vec<(Vec<Span>, Option<crate::chat::Link>)> = top.into_iter().map(|r| (r, None)).collect();
     rows.extend(body);
@@ -14474,7 +14480,7 @@ fn draw_follow_card(
         apply(out, Style { fg: ui.accent.fg, ..ground })?;
         queue!(out, Print(if hand { "▎" } else { " " }))?;
         let on_sel = |s: &Span| Span {
-            cut: None,
+            cut: s.cut.clone(),
             hint: s.hint,
             text: s.text.clone(),
             style: if s.style.bg == card.bg { Style { bg: sel.bg, ..s.style } } else { s.style },
@@ -16661,6 +16667,7 @@ fn chat_laid(c: &crate::chat::Chat, editor: &Editor, ui: &Ui, chat_w: usize) -> 
                         let style = row.iter().find(|s| !s.text.trim().is_empty()).map_or(dim, |s| s.style);
                         let to = row_of.spans.iter().map(|s| s.text.width()).sum();
                         let whole = crate::whole::Whole {
+                            key: None,
                             on: crate::whole::On::Transcript,
                             text,
                             style,
@@ -16901,6 +16908,7 @@ fn told_row(text: &str, w: usize, dim: Style, theme: &Theme) -> crate::chat::Cha
     if row.rest.is_some() {
         let to = row.spans.iter().map(|s| s.text.width()).sum();
         let whole = crate::whole::Whole {
+            key: None,
             on: crate::whole::On::Transcript,
             text: plain,
             style: dim,
@@ -16959,6 +16967,7 @@ fn queued_rows(
     if folded.rest.is_some() {
         let to = folded.spans.iter().map(|s| s.text.width()).sum();
         let whole = crate::whole::Whole {
+            key: None,
             on: crate::whole::On::Transcript,
             text: last.to_string(),
             style: faint,
@@ -18171,7 +18180,8 @@ fn chat_markdown_drawn(
                         }
                         at += s.text.len();
                     }
-                    (ind, crate::whole::Of { from: 0, to: 0, whole: line[ind..].to_string(), pieces })
+                    let whole = line[ind..].to_string();
+                    (ind, crate::whole::Of { from: 0, to: 0, whole, pieces, key: None })
                 });
                 let carried = |at: usize, t: &str| {
                     let (ind, of) = cut.as_ref()?;
@@ -18565,6 +18575,7 @@ fn tool_rows(
     if folded.rest.is_some() {
         let pieces = segs.iter().map(|&(a, b, s)| (a..b, s)).collect();
         let whole = crate::whole::Whole {
+            key: None,
             on: crate::whole::On::Transcript,
             text,
             style,
@@ -18613,13 +18624,15 @@ fn cut_card(editor: &Editor, ui: &Ui, lay: &Layout, docked: bool, out: &mut Vec<
     use crate::whole::Hand;
     // (what's been printed so far, its cuts where they stand)
     crate::whole::settle(editor);
-    let Some((cut, hand)) = crate::whole::shown(editor) else { return Ok(()) };
+    let Some((asked, hand)) = crate::whole::shown(editor) else { return Ok(()) };
+    // (the spot's own cut, drawn as it is now: one known by its place — the follow log's `…` — has its text grown since)
+    let spot =
+        editor.screen.cut_spots.borrow().iter().find(|s| s.3 == asked).map(|s| (s.0, s.1, s.2, s.3.clone()));
+    let Some((y, a, b, cut)) = spot else { return Ok(()) };
     let crate::whole::Cut::Text(w) = &cut else { return Ok(()) };
     if docked != (hand.is_some() && w.on.docked()) {
         return Ok(());
     }
-    let spot = editor.screen.cut_spots.borrow().iter().find(|s| s.3 == cut).map(|s| (s.0, s.1, s.2));
-    let Some((y, a, b)) = spot else { return Ok(()) };
     // (a toast's message: its card's left and right, its first row and the next message's, its kind)
     let toast = match w.on {
         crate::whole::On::Toast => editor.screen.toast_card.get().and_then(|(tx, ty, tw, th)| {
@@ -18633,8 +18646,13 @@ fn cut_card(editor: &Editor, ui: &Ui, lay: &Layout, docked: bool, out: &mut Vec<
     };
     // (the cells before its text: a cell of ground — a toast's margin, bar and margin)
     let lead = if toast.is_some() { 3 } else { 1 };
-    let (frame, ground) = match hand {
-        Some(Hand::Outside(f, g)) => (Some(f), g),
+    // (the follow card is a list in a frame: its rows' cards just outside it, below, else above, in the screen's columns
+    // — never over its lines, #235)
+    let follow =
+        editor.screen.thought_card.get().filter(|_| hand.is_none() && w.on == crate::whole::On::Follow);
+    let (frame, ground) = match (hand, follow) {
+        (Some(Hand::Outside(f, g)), _) => (Some(f), g),
+        (_, Some(f)) => (Some(f), (0, lay.width)),
         _ => (None, w.cols),
     };
     // (outside a frame, in the free ground's columns there)
@@ -18774,6 +18792,14 @@ fn cut_card(editor: &Editor, ui: &Ui, lay: &Layout, docked: bool, out: &mut Vec<
         true => width,
         false => (tail + 2).min(right.saturating_sub(from)),
     };
+    // (the edit review's head: its rows after the first from the pane's left edge, its gutter too — no digit of a line's
+    // number left beside the card, #235 — their text where the first row's starts)
+    let hang = match w.on {
+        crate::whole::On::Review if beside.is_none() => from.saturating_sub(left),
+        _ => 0,
+    };
+    // (the cells before a row's text)
+    let ind = |k: usize| if k == 0 { lead } else { lead + hang };
     let top = match frame {
         Some((_, fy, _, fh)) if n <= below || below >= above => fy + fh,
         Some((_, fy, ..)) => fy.saturating_sub(n.min(above)),
@@ -18792,11 +18818,10 @@ fn cut_card(editor: &Editor, ui: &Ui, lay: &Layout, docked: bool, out: &mut Vec<
     };
     let text = Style { bg: ground.bg, fg: w.style.fg.or(ground.fg), ..w.style };
     let faint = Style { fg: ui.linenr.fg.or(card.fg), ..ground };
-    use unicode_segmentation::UnicodeSegmentation as _;
     let cursors = editor.screen.cursors.borrow();
     let shown = n.min(bottom.saturating_sub(top));
     // (each row's first cell and width: the first's over its cut text, the rest's from `from`)
-    let place = |k: usize| if k == 0 { (x, width) } else { (from, rest_w) };
+    let place = |k: usize| if k == 0 { (x, width) } else { (from - hang, rest_w + hang) };
     // (a row ending inside a word of what's under it: on to that word's end)
     let ends: Vec<usize> = {
         let rows: Vec<(usize, usize)> = (0..shown).map(|k| (top + k, place(k).0 + place(k).1)).collect();
@@ -18824,7 +18849,7 @@ fn cut_card(editor: &Editor, ui: &Ui, lay: &Layout, docked: bool, out: &mut Vec<
                 apply(out, Style { fg: toast_color(editor, ui, t.4).or(ground.fg), ..ground })?;
                 queue!(out, Print(" ▎ "))?;
             }
-            _ => queue!(out, Spaces(lead))?,
+            _ => queue!(out, Spaces(ind(k)))?,
         }
         let pieces: Vec<(&str, Style)> = match w.pieces.is_empty() {
             true => vec![(row.as_str(), text)],
@@ -18846,24 +18871,21 @@ fn cut_card(editor: &Editor, ui: &Ui, lay: &Layout, docked: bool, out: &mut Vec<
             used += 2 + m.width();
         }
         apply(out, ground)?;
-        queue!(out, Spaces((width - lead).saturating_sub(used)))?;
+        queue!(out, Spaces((width - ind(k)).saturating_sub(used)))?;
         reach(out, k)?;
-        // (a view mode's cursor on the row it covers: kept — the one cursor stays in sight)
-        for &(cx, _) in cursors.iter().filter(|c| c.1 == ry && c.0 > x && c.0 < x + width) {
-            let mut col = x + lead;
-            let ch = row.graphemes(true).find(|g| {
-                col += g.width();
-                col > cx
-            });
+        // (a view mode's cursor on the row it covers: kept — the one cursor stays in sight, over the letter the card shows
+        // there, measured from where the row's text starts — the edit review's rows after the first past their hang)
+        for &(cx, _) in cursors.iter().filter(|c| c.1 == ry && c.0 >= x && c.0 < x + width) {
             queue!(out, MoveTo(cx as u16, ry as u16))?;
             apply(out, text.patch(ui.cursor_primary))?;
-            queue!(out, Print(ch.unwrap_or(" ")))?;
+            queue!(out, Print(covered(row, x + ind(k), cx)))?;
         }
     }
     if let Some(m) = more.as_ref().filter(|_| shown >= said && !inline) {
         let (x, width) = place(said - 1);
         queue!(out, MoveTo(x as u16, (top + said - 1) as u16))?;
         apply(out, faint)?;
+        let lead = ind(said - 1);
         queue!(out, Spaces(lead), Print(m), Spaces((width - lead).saturating_sub(m.width())))?;
         reach(out, said - 1)?;
     }
@@ -18880,10 +18902,26 @@ fn cut_card(editor: &Editor, ui: &Ui, lay: &Layout, docked: bool, out: &mut Vec<
         .max(if shown > 1 { from + rest_w } else { 0 })
         .max(ends.iter().copied().max().unwrap_or(0))
         - x;
-    let (under, outside) = (docked, frame.is_some());
+    // (`outside`: a framed list's row in hand — a press there is outside its list; the follow card's card, away from its
+    // row too, is a reveal: a press on its body does nothing — `whole::pressed`)
+    let outside = matches!(hand, Some(Hand::Outside(..)));
+    let (under, from) = (docked, from - hang);
     *editor.screen.cut_card.borrow_mut() =
         Some(crate::whole::Card { rect: (x, top, span, shown), ends, from, under, outside, more, cut });
     Ok(())
+}
+
+/// What a cut card's row shows at column `cx`, its text from column `start`: the letter there (a wide one's either cell),
+/// else a blank — a cell before its text (the lead, the edit review's hang over the gutter) or past its end.
+fn covered(row: &str, start: usize, cx: usize) -> &str {
+    use unicode_segmentation::UnicodeSegmentation as _;
+    let mut col = start;
+    let ch = row.graphemes(true).find(|g| {
+        let at = col;
+        col += g.width();
+        (at..col).contains(&cx)
+    });
+    ch.unwrap_or(" ")
 }
 
 fn run_card(editor: &Editor, ui: &Ui, lay: &Layout, out: &mut impl Write) -> io::Result<()> {
@@ -19327,11 +19365,14 @@ fn turn_window(
     max: usize,
     replaying: bool,
     inner: usize,
-    faint: Style,
+    (faint, words): (Style, Style),
 ) -> (Vec<CardRow>, Option<usize>) {
-    use crate::markdown::Span;
     let n = rows.len();
-    let cut = || (vec![Span { cut: None, hint: false, text: "…".into(), style: faint }], None);
+    // (the `…` row: the rows folded away whole on its card — #235)
+    let text_of = |r: std::ops::Range<usize>| {
+        crate::whole::rows_text(&rows[r].iter().map(|r| r.0.clone()).collect::<Vec<_>>())
+    };
+    let cut = |r: std::ops::Range<usize>| (vec![crate::whole::folded(text_of(r), "", (faint, words))], None);
     let bare = |i: usize| blank(&rows[i].0);
     // (the knot in hand's place in what shows: rows from `start` on shown from `at`)
     let placed = |start: usize, at: usize| hand.filter(|&h| h >= start).map(|h| h - start + at);
@@ -19351,7 +19392,7 @@ fn turn_window(
         while from < h && bare(from) {
             from += 1;
         }
-        let mut out = vec![cut()];
+        let mut out = vec![cut(0..from)];
         out.extend(rows[from..end].iter().cloned());
         return (out, placed(from, 1));
     }
@@ -19364,7 +19405,10 @@ fn turn_window(
         // (the knot in hand pushed out: pinned on top)
         Some(h) if h < from && max >= 3 => {
             let from = log_cut_by(n, bare, max - 2).max(h + 1);
-            let mut out = vec![rows[h].clone(), cut()];
+            // (the `…` under it: every row it pushed out — those before it and those between it and the newest — in
+            // order, the knot at its place among them: the log up to where the newest goes on. `from` is past row 1
+            // here — the newest crowd it out — so there's always one)
+            let mut out = vec![rows[h].clone(), cut(0..from)];
             out.extend(rows[from..].iter().cloned());
             (out, Some(0))
         }
@@ -19374,14 +19418,15 @@ fn turn_window(
             (out, Some(0))
         }
         _ if from > 0 && max > 1 => {
-            let mut out = vec![cut()];
+            let mut out = vec![cut(0..from)];
             out.extend(rows[from..].iter().cloned());
             (out, placed(from, 1))
         }
         _ if from > 0 => {
             let mut row = rows[from].clone();
             let mut kept = spans_left(&row.0, inner.saturating_sub(2));
-            kept.insert(0, Span { cut: None, hint: false, text: "… ".into(), style: faint });
+            // (what's folded away and this row's start, cut on its left)
+            kept.insert(0, crate::whole::folded(text_of(0..from + 1), " ", (faint, words)));
             row.0 = kept;
             (vec![row], hand.filter(|&h| h == from).map(|_| 0))
         }
@@ -20449,10 +20494,10 @@ fn docs_rows(
 }
 
 /// A docs card's row: `spans` from `(x, y)` on `card`, cut to `inner` cells and padded to them, its key hints recorded
-/// where they stand.
+/// where they stand, the cuts its spans carry on `on`, their cards in `cols`.
 fn docs_row(
     out: &mut impl Write,
-    (x, y): (usize, usize),
+    (on, x, y, cols): (crate::whole::On, usize, usize, (usize, usize)),
     spans: &[crate::markdown::Span],
     card: Style,
     inner: usize,
@@ -20463,6 +20508,8 @@ fn docs_row(
         let text = fit(&sp.text, inner - used);
         apply(out, card.patch(sp.style))?;
         queue!(out, Print(&text))?;
+        // (a code line cut with `…`, a table's header: whole on a card under the mouse — #235)
+        crate::whole::placed(on, (&text, sp.cut.as_deref()), (x + used, y), card.patch(sp.style), cols, None);
         if sp.hint && text == sp.text {
             crate::kinds::span_hint(spans, k, (x + used, y));
         }
@@ -20493,8 +20540,9 @@ fn draw_docs_card(
     for y in y0..y0 + h {
         card_edge(out, card, x0, y, w)?;
     }
+    let docs = crate::whole::On::Docs((x0, y0, w, h));
     for (i, r) in rows.iter().take(h.saturating_sub(2)).enumerate() {
-        docs_row(out, (x0 + 2, y0 + 1 + i), r, card, w.saturating_sub(4))?;
+        docs_row(out, (docs, x0 + 2, y0 + 1 + i, (x0, x0 + w)), r, card, w.saturating_sub(4))?;
     }
     let of = Some(crate::mouse::Lights::Popup);
     draw_frame(out, ui, editor, on, card, (x0, y0, w, h), &fits(name), foot, &[], (of, false)).map(|_| ())
@@ -20636,6 +20684,7 @@ fn draw_doc_box(
     let width = inner + 4;
     let more = if rows.len() > shown { format!(" +{} ", rows.len() - shown) } else { String::new() };
     card_edge(out, popup, x0, y0, width)?;
+    let on = crate::whole::On::Docs((x0, y0, width, shown + 2));
     for (i, spans) in rows.iter().take(shown).enumerate() {
         apply(out, popup)?;
         queue!(out, MoveTo(x0 as u16, (y0 + 1 + i) as u16), Print("  "))?;
@@ -20644,6 +20693,15 @@ fn draw_doc_box(
             let text = fit(&sp.text, inner - used);
             apply(out, popup.patch(sp.style))?;
             queue!(out, Print(&text))?;
+            let at = (x0 + 2 + used, y0 + 1 + i);
+            crate::whole::placed(
+                on,
+                (&text, sp.cut.as_deref()),
+                at,
+                popup.patch(sp.style),
+                (x0, x0 + width),
+                None,
+            );
             if sp.hint && text == sp.text {
                 crate::kinds::span_hint(spans, k, (x0 + 2 + used, y0 + 1 + i));
             }
@@ -20704,15 +20762,21 @@ fn draw_note_card(
         Some(h) if h < skip => {
             let mut rows = vec![g.rows[h].clone()];
             rows.extend(g.rows[skip + 1..].iter().cloned());
-            if let Some(first) = rows.get_mut(1) {
-                if let Some(s) = first.first_mut().filter(|s| s.text.starts_with("  ")) {
+            // (the words folded away and the row they go on into, whole on its card — #235: under the speaker's
+            // name, without the indentation that hangs them there)
+            let words = |r: &Vec<crate::markdown::Span>| {
+                let mut r = r.clone();
+                if let Some(s) = r.first_mut().filter(|s| s.text.starts_with("  ")) {
                     s.text.replace_range(..2, "");
                 }
+                r
+            };
+            let folded: Vec<_> = g.rows[h + 1..(skip + 2).min(g.rows.len())].iter().map(words).collect();
+            if let Some(first) = rows.get_mut(1) {
+                *first = words(first);
                 let faint = Style { fg: ui.linenr.fg, ..Style::default() };
-                first.insert(
-                    0,
-                    crate::markdown::Span { cut: None, hint: false, text: "… ".into(), style: faint },
-                );
+                let words = card_style(ui, editor, "ui.popup");
+                first.insert(0, crate::whole::folded(crate::whole::rows_text(&folded), " ", (faint, words)));
             }
             rows
         }
@@ -25290,6 +25354,55 @@ mod tests {
             card.pop();
         }
         card
+    }
+
+    /// #235's review: the follow card's `…` says exactly what it folds away. The knot in hand pinned on top: every row it
+    /// pushed out — those before the knot and those between it and the newest — in order, the knot at its place; one row
+    /// left: all the rows before it and that row whole (its start cut on the left).
+    #[test]
+    fn the_follow_logs_dots_say_what_they_fold() {
+        use crate::markdown::Span;
+        let row = |t: String| (vec![Span { cut: None, hint: false, text: t, style: Style::default() }], None);
+        let rows: Vec<CardRow> = (0..20).map(|i| row(format!("Word {i} of the turn's long log"))).collect();
+        let said = |r: std::ops::Range<usize>| -> String {
+            r.map(|i| format!("Word {i} of the turn's long log")).collect::<Vec<_>>().join("\n")
+        };
+        let dots = |out: &[CardRow]| -> Vec<(usize, String)> {
+            let at = out.iter().enumerate();
+            at.filter_map(|(k, r)| r.0.iter().find_map(|s| s.cut.as_ref().map(|c| (k, c.whole.clone()))))
+                .collect()
+        };
+        let mut knots = vec![false; 20];
+        knots[5] = true;
+        let styles = (Style::default(), Style::default());
+        // (pinned: the knot on top, the `…` under it, the newest after)
+        let (out, hand) = turn_window(rows.clone(), &knots, Some(5), 6, false, 40, styles);
+        assert_eq!((out.len(), hand), (6, Some(0)));
+        assert_eq!(out[0].0[0].text, "Word 5 of the turn's long log", "the knot on top");
+        assert_eq!(out[2].0[0].text, "Word 16 of the turn's long log", "the newest after the `…`");
+        assert_eq!(dots(&out), [(1, said(0..16))], "every row pushed out, in order, the knot at its place");
+        // (one row: its end, `…` in front saying all before it and the row whole)
+        let (out, _) = turn_window(rows, &knots, None, 1, false, 20, styles);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].0[0].text.starts_with('…'), "{:?}", out[0].0);
+        assert_eq!(dots(&out), [(0, said(0..20))], "all of it, the row cut on its left whole");
+    }
+
+    /// #235's review: what a cut card's row shows under a cursor kept there — measured from where its text starts (the
+    /// edit review's rows after the first: past the lead and the hang over the gutter), a blank before it or past it, a
+    /// wide letter on either of its cells.
+    #[test]
+    fn a_covered_rows_cursor_is_over_the_letter_the_card_shows() {
+        // (a row of the edit review's card past its first: the card from column 0, its text from column 3)
+        assert_eq!(covered("Keying by", 3, 0), " ", "the hang over the gutter: no letter");
+        assert_eq!(covered("Keying by", 3, 2), " ", "the lead: no letter");
+        assert_eq!(covered("Keying by", 3, 3), "K");
+        assert_eq!(covered("Keying by", 3, 7), "n");
+        assert_eq!(covered("Keying by", 3, 12), " ", "past its end");
+        assert_eq!(
+            (covered("타래 a", 1, 2), covered("타래 a", 1, 3), covered("타래 a", 1, 6)),
+            ("타", "래", "a")
+        );
     }
 
     /// 글타래 P6: the follow card shows the turn as its knots and words — its title says what Claude is at, the stop

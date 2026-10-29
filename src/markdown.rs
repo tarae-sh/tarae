@@ -814,13 +814,14 @@ fn stacked(
             if cell.iter().all(|s| s.text.trim().is_empty()) {
                 continue;
             }
-            let name = cut(&h.iter().map(|s| s.text.as_str()).collect::<String>(), label_w);
+            // (cut to its column, its whole carried: on a card under the mouse — #235)
+            let name = crate::whole::fit(&h.iter().map(|s| s.text.as_str()).collect::<String>(), label_w);
             let mut lines = Vec::new();
             wrap_row(cell, 0, width.saturating_sub(indent), &mut lines, &mut Vec::new());
             for (j, mut l) in lines.into_iter().enumerate() {
                 let mut line = if j == 0 {
                     let gap = indent - 2 - name.width();
-                    vec![pad(2), Span { cut: None, hint: false, text: name.clone(), style: label }, pad(gap)]
+                    vec![pad(2), name.clone().span(label), pad(gap)]
                 } else {
                     vec![pad(indent)]
                 };
@@ -847,28 +848,6 @@ fn trimmed(mut line: Vec<Span>) -> Vec<Span> {
         line.pop();
     }
     line
-}
-
-/// `s` in at most `w` cells, `…` at the end if cut.
-fn cut(s: &str, w: usize) -> String {
-    if s.width() <= w {
-        return s.to_string();
-    }
-    let mut out = String::new();
-    let mut used = 1;
-    for c in s.chars() {
-        let cw = c.width().unwrap_or(0);
-        if used + cw > w {
-            break;
-        }
-        used += cw;
-        out.push(c);
-    }
-    if w > 0 {
-        out.truncate(out.trim_end().len());
-        out.push('…');
-    }
-    out
 }
 
 #[cfg(test)]
