@@ -108,9 +108,13 @@ fn feed(ed: &mut Editor, keys: &str) {
 }
 
 fn frame(ed: &mut Editor) -> String {
+    frame_at(ed, 140)
+}
+
+fn frame_at(ed: &mut Editor, cols: u16) -> String {
     let mut bytes = Vec::new();
-    crate::term::render(ed, &mut bytes, 140, 34).unwrap();
-    let mut p = vt100::Parser::new(34, 140, 0);
+    crate::term::render(ed, &mut bytes, cols, 34).unwrap();
+    let mut p = vt100::Parser::new(34, cols, 0);
     p.process(&bytes);
     p.screen().contents()
 }
@@ -168,6 +172,84 @@ fn space_gt_quotes_the_codes_selection_and_the_input_takes_the_keys() {
     assert_eq!(c.take_off(), Some(crate::chat::With::Screen));
     assert_eq!(c.take_off(), Some(crate::chat::With::Quote));
     assert_eq!(c.with_chips(), ["[scratch] L1"]);
+}
+
+/// #243: the code's selection past a quote's limit goes in the message's context cut as a quote is — its ends kept,
+/// what was kept and its size said in `cut=` — and the input's line says so before it goes; the message's row says
+/// `cut` too. Within the limit it goes whole and nothing is said.
+#[test]
+fn a_selection_past_a_quotes_limit_goes_cut_and_says_so() {
+    let (mut ed, claude) = code();
+    let big: String = (1..=4000).map(|i| format!("let line_{i:04} = {i};\n")).collect();
+    ed.docs[0].text = Rope::from_str(&big);
+    // (a file's: the rest is Claude's to read)
+    let root = crate::scratch::Scratch::new("quote-selection-cut");
+    ed.workspace.root = root.path().to_path_buf();
+    ed.docs[0].path.set(Some(root.join("big.rs")));
+    feed(&mut ed, "%");
+    crate::chat::open(&mut ed);
+    assert_eq!(ed.keys_to().region.name(), "chat");
+    let shown = frame(&mut ed);
+    assert!(shown.contains("selection L1–4000 · cut goes with it"), "said before it goes:\n{shown}");
+    feed(&mut ed, "why?<ret>");
+    let msgs = sent(&claude);
+    assert_eq!(msgs.len(), 1, "{msgs:?}");
+    let content = &msgs[0];
+    let head = "<selection lines=\"1-4000\" cut=\"kept the first ";
+    let at = content.find(head).unwrap_or_else(|| panic!("cut and said: {content}"));
+    let tag = &content[at..at + content[at..].find(">\n").unwrap()];
+    let kb = big.len().div_ceil(1024);
+    assert!(
+        tag.ends_with(&format!("of 4000 lines, {kb} KB; read the lines between if they matter\"")),
+        "{tag}"
+    );
+    let body = &content[at + tag.len() + 2..content.find("\n</selection>").unwrap()];
+    assert!(body.len() <= QUOTE_MAX, "{} bytes", body.len());
+    assert!(body.starts_with("let line_0001 = 1;\n") && body.ends_with("let line_4000 = 4000;\n"), "{body}");
+    assert!(body.contains(" lines cut …\n"), "{body}");
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    let m = c.msgs.iter().rfind(|m| m.role == crate::chat::Role::User).unwrap();
+    assert!(m.chip.ends_with("L1–4000 · cut"), "{}", m.chip);
+    // Within the limit: whole, nothing said
+    let (mut ed, claude) = code();
+    feed(&mut ed, "%");
+    crate::chat::open(&mut ed);
+    assert!(!frame(&mut ed).contains("· cut"));
+    feed(&mut ed, "why?<ret>");
+    let msgs = sent(&claude);
+    assert!(msgs[0].contains("<selection lines=\"1-3\">\nfn main() {}\n"), "{msgs:?}");
+    // A file named like a key Claude may not read: nothing of it goes, so nothing is said of a cut
+    let (mut ed, claude) = code();
+    ed.docs[0].text = Rope::from_str(&big);
+    let root = crate::scratch::Scratch::new("quote-selection-cut-key");
+    ed.workspace.root = root.path().to_path_buf();
+    ed.docs[0].path.set(Some(root.join(".env")));
+    feed(&mut ed, "%");
+    crate::chat::open(&mut ed);
+    let shown = frame(&mut ed);
+    assert!(!shown.contains("· cut") && !shown.contains("cut selection"), "{shown}");
+    feed(&mut ed, "why?<ret>");
+    let msgs = sent(&claude);
+    assert!(!msgs[0].contains("<selection") && !msgs[0].contains("let line_0001"), "{msgs:?}");
+}
+
+/// #243, narrow: beside a quote's chip the cut stays to the last — the selection's lines fold first, then the chip to
+/// how many, then it goes; `cut selection` is still said.
+#[test]
+fn beside_a_chip_a_cut_selection_is_said_to_the_last() {
+    let (mut ed, _claude) = code();
+    let big: String = (1..=4000).map(|i| format!("let line_{i:04} = {i};\n")).collect();
+    ed.docs[0].text = Rope::from_str(&big);
+    feed(&mut ed, "x >");
+    feed(&mut ed, "<C-w>h%");
+    let row =
+        |shown: String| shown.lines().find(|l| l.contains("with it")).unwrap_or_default().trim().to_string();
+    let wide = row(frame_at(&mut ed, 200));
+    assert!(wide.contains("[scratch] L1 · selection L1–4000 · cut go with it"), "{wide}");
+    let narrow = row(frame_at(&mut ed, 112));
+    assert!(narrow.contains("│  1 quote · cut selection go with it"), "{narrow}");
+    let narrowest = row(frame_at(&mut ed, 90));
+    assert!(narrowest.contains("│  cut selection goes with it"), "{narrowest}");
 }
 
 /// A file named like a key Claude may not read isn't quoted — said, with the way that can; nothing taken.

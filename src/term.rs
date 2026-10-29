@@ -17808,6 +17808,7 @@ fn draw_chat(
     let mut used = 0;
     // (a message waiting for this turn's end is the transcript's last line, right over this one — `chat_laid`)
     let switched = editor.switch_parts();
+    let sel_cut = crate::chat::selection_cut(editor);
     if let Some((what, changed, back)) = switched.filter(|_| w > 16) {
         // A switch of billing, model or effort since the last message: what the next one costs, until it goes
         // (`switchcost.rs`) — the cost in the warning colour, the rest faint. Narrow: what changed folds first (it
@@ -17828,30 +17829,66 @@ fn draw_chat(
         queue!(out, Print(&tail))?;
         queue!(out, Print(" "))?;
         used = head.width() + tail.width() + 1;
-    } else if c.has_with() {
+    } else if c.has_with() || sel_cut.is_some() {
         // What goes with the message, in the order added: the elements pointed at (`C-o`), the screen (`C-s`), the
-        // quotes (`enter` on a view's selection, `space >`) — or how many
-        let what: Vec<String> = c.with_chips();
-        let said = if what.len() == 1 { " goes with it " } else { " go with it " };
-        let whole = what.iter().map(|s| s.width()).sum::<usize>() + 3 * (what.len() - 1);
-        let what = match whole + said.width() + 2 <= w {
-            true => what,
-            // (one: cut to the room left, its start kept — where it's from; several: how many)
-            false if what.len() == 1 => {
-                vec![crate::whole::fit_own(&what[0], w.saturating_sub(said.width() + 2).max(1))]
-            }
-            false => vec![format!("{} things", what.len())],
+        // quotes (`enter` on a view's selection, `space >`) — or how many; and the code's selection when it goes cut
+        // (#243): after them, faint — nothing to press. Narrow, the cut stays to the last: the selection's lines
+        // fold, then the chips to how many, then they go
+        let all: Vec<String> = c.with_chips();
+        let n = all.len();
+        // (`goes` or `go` by the things that go — `2 things go`, `1 quote · cut selection go`; chips gone, the selection's)
+        let said = |k: usize| if k == 1 { " goes with it " } else { " go with it " };
+        let goes = |chips: usize, sel: bool| if chips > 0 { n } else { 0 } + usize::from(sel);
+        let fits = |what: &[String], sel: bool| {
+            let wide = what.iter().map(|s| s.width()).sum::<usize>() + 3 * what.len().saturating_sub(1);
+            wide + said(goes(what.len() - usize::from(sel), sel)).width() + 2 <= w
         };
-        let wide = what.iter().map(|s| s.width()).sum::<usize>() + 3 * (what.len() - 1) + said.width();
+        let short = "cut selection".to_string();
+        let (part, sel): (Vec<String>, Option<String>) = match sel_cut {
+            // (one: cut to the room left, its start kept — where it's from; several: how many)
+            None if fits(&all, false) => (all, None),
+            None if n == 1 => {
+                (vec![crate::whole::fit_own(&all[0], w.saturating_sub(said(1).width() + 2).max(1))], None)
+            }
+            None => (vec![format!("{n} things")], None),
+            Some(long) => {
+                let count = match (n, c.quotes.len() == n) {
+                    (_, true) => crate::quote::count(n),
+                    (1, false) => "1 thing".to_string(),
+                    _ => format!("{n} things"),
+                };
+                let stages = [(all.clone(), long), (all, short.clone()), (vec![count], short.clone())];
+                let stages = stages.into_iter().filter(|(p, _)| n > 0 || p.is_empty());
+                // (the chips gone, the selection's words alone — never cut: where even they don't fit, the line
+                // says nothing and the message's row says `· cut`)
+                let found = stages
+                    .into_iter()
+                    .find(|(p, s)| fits(&[p.as_slice(), std::slice::from_ref(s)].concat(), true));
+                found.map_or((Vec::new(), Some(short)), |(p, s)| (p, Some(s)))
+            }
+        };
+        let chips = part.len();
+        // (the chips' part folded to how many: its press shows them all — `with_card`)
+        let folded = chips < n;
+        let said = said(goes(chips, sel.is_some()));
+        let what: Vec<String> = part.into_iter().chain(sel).collect();
+        let wide =
+            what.iter().map(|s| s.width()).sum::<usize>() + 3 * what.len().saturating_sub(1) + said.width();
         if wide + 2 <= w {
             // (each chip, or `N things`, shows what goes under the mouse — `with_card`)
-            let folded = c.with_items().len() > what.len();
             let mut at = text_x;
             for (i, s) in what.iter().enumerate() {
                 if i > 0 {
                     apply(out, faint)?;
                     queue!(out, Print(" · "))?;
                     at += 3;
+                }
+                if i >= chips {
+                    // (the selection's: words, not a chip)
+                    apply(out, faint)?;
+                    queue!(out, Print(s))?;
+                    at += s.width();
+                    continue;
                 }
                 apply(out, accent)?;
                 queue!(out, Print(s))?;

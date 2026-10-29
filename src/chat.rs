@@ -3364,6 +3364,58 @@ pub fn stop(ed: &mut Editor) {
 /// The context's words for a web page in front (`context`).
 pub const PAGE_NOT_SENT: &str = "web page, read-only; its text isn't sent — read takes its address";
 
+/// Whether a message's context carries `doc`'s text (its selection, its lines, its diagnostics): not a file named like
+/// a key Claude may not read (`pass`: what this message may carry), nor a woven view, nor a web page.
+fn text_goes(ed: &Editor, doc: &crate::document::Document, pass: &[PathBuf]) -> bool {
+    doc.path.as_deref().is_none_or(|p| !crate::reads::key_shut(ed, p, pass))
+        && doc.woven.is_none()
+        && doc.page.is_none()
+}
+
+/// The code's selection a message's context carries: the primary one only, wider than a character, not one a quote
+/// of the message carries (the quote has it) — its bytes and its first and last line.
+fn selection_sent(
+    doc: &crate::document::Document,
+    quotes: &[crate::quote::Quote],
+) -> Option<(usize, usize, usize, usize)> {
+    let (text, sel) = (&doc.text, doc.selection().primary());
+    let quoted = quotes.iter().any(|q| q.code == Some((doc.id, doc.version(), sel.from(), sel.to())));
+    if quoted || sel.to() <= crate::graphemes::next_boundary(text, sel.from()) {
+        return None;
+    }
+    let l1 = text.byte_to_line(sel.to().saturating_sub(1).max(sel.from()));
+    Some((sel.from(), sel.to(), text.byte_to_line(sel.from()), l1))
+}
+
+/// `L12` · `L12–18`.
+fn at_lines(l0: usize, l1: usize) -> String {
+    match l0 == l1 {
+        true => format!("L{}", l0 + 1),
+        false => format!("L{}–{}", l0 + 1, l1 + 1),
+    }
+}
+
+/// A cut selection's attribute: what `quote::cut` kept, of how much, and — from a file — that the rest is Claude's
+/// to read.
+fn selection_cut_said(kept: &str, bytes: usize, file: bool) -> String {
+    let rest = if file { "; read the lines between if they matter" } else { "" };
+    format!(" cut=\"{kept}, {} KB{rest}\"", bytes.div_ceil(1024))
+}
+
+/// The words on the chat input's line while its next message's selection would go cut (#243) — `selection L1–27970 ·
+/// cut`, said before it goes as a quote's chip says its own cut. None: no selection goes, or it goes whole.
+pub fn selection_cut(ed: &Editor) -> Option<String> {
+    let doc = ed.front_file()?;
+    let sel = doc.selection().primary();
+    // (the frame asks: the size first, nothing else looked at under the limit)
+    if sel.to() - sel.from() <= crate::quote::QUOTE_MAX {
+        return None;
+    }
+    let c = ed.workspace.claude.chat.as_ref()?;
+    let (_, _, l0, l1) = selection_sent(doc, &c.quotes)?;
+    text_goes(ed, doc, &crate::reads::input_pass(ed)).then(|| format!("selection {} · cut", at_lines(l0, l1)))
+}
+
 /// Context to send + summary chip + the document versions whose full text went along + the files named like
 /// keys whose text it left out (`reads::key_shut`: their names go, "not sent"). `ui`: the line naming what's
 /// up on screen by id (`UiState::context_line`); `pass`: those this message may carry all the same (a `y` for
@@ -3449,26 +3501,31 @@ fn context(
     };
     // A file named like a key, not open to Claude: its name only — no selection, text or diagnostics (a
     // diagnostic's message can quote a line); a woven view: not even its name
-    let its_text = withheld.is_empty() && !woven && page.is_none();
+    let its_text = text_goes(ed, doc, pass);
     if !its_text {
         chip.push_str(" · not sent");
     }
-    // Selection (only when more than one character is selected — and not quoted: the quote carries it)
-    let quoted = quotes.iter().any(|q| q.code == Some((doc.id, doc.version(), sel.from(), sel.to())));
-    if its_text && !quoted && sel.to() > crate::graphemes::next_boundary(text, sel.from()) {
-        let (l0, l1) =
-            (text.byte_to_line(sel.from()), text.byte_to_line(sel.to().saturating_sub(1).max(sel.from())));
-        ctx.push_str(&format!(
-            "<selection lines=\"{}-{}\">\n{}\n</selection>\n",
-            l0 + 1,
-            l1 + 1,
-            text.byte_slice(sel.from()..sel.to())
-        ));
-        chip.push_str(&if l0 == l1 {
-            format!(" · L{}", l0 + 1)
-        } else {
-            format!(" · L{}–{}", l0 + 1, l1 + 1)
-        });
+    // Selection: past a quote's limit cut as a quote is (`quote::cut`, #243 — a whole file left selected went with
+    // every request of a turn), what it kept said
+    if let Some((from, to, l0, l1)) = selection_sent(doc, quotes).filter(|_| its_text) {
+        let (body, cut) = match to - from <= crate::quote::QUOTE_MAX {
+            true => (text.byte_slice(from..to).to_string(), None),
+            false => {
+                // (a selection of whole lines ends with a line break: cut without it, as a quote's text is — its
+                // lines counted as `lines=` counts them)
+                let s = text.byte_slice(from..to).to_string();
+                let (lines, end) = s.strip_suffix('\n').map_or((s.as_str(), ""), |l| (l, "\n"));
+                let (body, cut) = crate::quote::cut(lines, crate::quote::QUOTE_MAX - end.len());
+                (body + end, cut)
+            }
+        };
+        let said =
+            cut.map(|kept| selection_cut_said(&kept, to - from, doc.path.is_some())).unwrap_or_default();
+        ctx.push_str(&format!("<selection lines=\"{}-{}\"{said}>\n{body}\n</selection>\n", l0 + 1, l1 + 1));
+        chip.push_str(&format!(" · {}", at_lines(l0, l1)));
+        if !said.is_empty() {
+            chip.push_str(" · cut");
+        }
     }
     // File: if this version hasn't been sent yet, the full text (if small) or around the cursor
     if its_text && !was_sent(doc) {
@@ -4800,6 +4857,36 @@ mod tests {
         assert_eq!((c.input.text().as_str(), c.scroll), ("", 6), "with text: cleared, not scrolled");
         press(&mut ed, "C-d");
         assert_eq!(scroll(&ed), 0);
+    }
+
+    /// #243: a cut selection's framing, measured on what the context sends for a whole file of k8s's size selected —
+    /// what an uncut `<selection>` wouldn't carry: the `cut=` attribute and the marker line between the ends. The way
+    /// to the rest only from a file.
+    #[test]
+    fn a_cut_selection_says_what_it_kept_in_a_few_words() {
+        use crate::selection::{Range, Selection};
+        let text: String =
+            (1..=27970).map(|i| format!("    let knot_{i:05} = Knot::new({i}, \"strand\");\n")).collect();
+        let mut ed = editor(&text);
+        ed.doc_mut().set_selection(Selection::single(Range::new(0, text.len())));
+        let framing = |ed: &Editor| {
+            let ctx = context(ed, None, &[], &[]).0;
+            let at = ctx.find("<selection").expect("a selection");
+            let tag = ctx[at..at + ctx[at..].find(">\n").unwrap() + 1].to_string();
+            let marker =
+                ctx.lines().find(|l| l.starts_with("… ") && l.ends_with(" lines cut …")).expect("cut");
+            (tag.len() - "<selection lines=\"1-27970\">".len() + marker.len() + 1, tag)
+        };
+        let file = ed.workspace.root.join("src/knots.rs");
+        ed.doc_mut().path.set(Some(file));
+        let (bytes, tag) = framing(&ed);
+        assert!(
+            tag.contains(" of 27970 lines, ") && tag.ends_with("; read the lines between if they matter\">")
+        );
+        // (≈ 4 bytes a token: some 35 tokens, for ~350k left out)
+        assert_eq!(bytes, 128, "{tag}");
+        ed.doc_mut().path.set(None);
+        assert!(!framing(&ed).1.contains("read"), "no file: nothing to read");
     }
 
     /// One character (a multi-byte grapheme) under the cursor isn't a selection; two are.
