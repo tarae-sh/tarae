@@ -6973,6 +6973,13 @@ mod tests {
         let before = Instance::make(&base, 779).unwrap();
         let tag_before = run_tag(&before, 0);
         drop(before);
+        // (its lock let go: a lock is the open file's, and a process another test forks meanwhile holds it until its
+        // exec — under load long enough that the name was taken next to it, #222; an exec lets go of it at once)
+        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+        while held(&base.join("779-0")) {
+            assert!(std::time::Instant::now() < end, "its lock never let go");
+            crate::event::pause(std::time::Duration::from_millis(10));
+        }
         let restarted = Instance::make(&base, 779).unwrap();
         assert_eq!(restarted.dir, base.join("779-0"), "its name taken over");
         assert_ne!(run_tag(&restarted, 0), tag_before, "a tag of the earlier one's");

@@ -2798,7 +2798,8 @@ mod tests {
     }
 
     /// A chat turn in flight is named on the card; `w` waits for it — the restart goes on when it ends (its
-    /// card again); `:restart` again, `y` on its card, cancels.
+    /// card again); `:restart` again, `y` on its card, cancels. (The stand-in claude ends its turn once the test
+    /// says so — `go` made —, never after a time of its own: under load the turn ended before the card asked, #222.)
     #[test]
     fn a_turn_in_flight_is_waited_for() {
         let dir = temp("turn");
@@ -2808,12 +2809,15 @@ mod tests {
         ed.config.restart_binary = bin.display().to_string();
         let init = json!({"type": "system", "subtype": "init", "session_id": "s-1"});
         let result = json!({"type": "result", "result": "done"});
+        let go = dir.join("go");
         ed.config.llm.command = "sh".into();
         ed.config.llm.args = vec![
             "-c".into(),
             format!(
-                "while read -r line; do case \"$line\" in '{{\"message\"'*) sleep 0.3; \
-                 printf '%s\\n' '{init}' '{result}';; esac; done"
+                "while read -r line; do case \"$line\" in '{{\"message\"'*) \
+                 while [ ! -e '{}' ]; do sleep 0.01; done; \
+                 printf '%s\\n' '{init}' '{result}';; esac; done",
+                go.display()
             ),
         ];
         feed(&mut ed, "<space>lhello<ret>");
@@ -2827,6 +2831,8 @@ mod tests {
         crate::typed::execute(&mut ed, "restart!").unwrap();
         wait_on_card(&mut ed, "Claude's turn");
         assert!(toasts(&ed).contains("tarae restarts once these end: Claude's turn"), "{}", toasts(&ed));
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().busy(), "still in its turn");
+        std::fs::write(&go, "").unwrap();
         settle_answering(&mut ed, |ed| ed.should_quit || ed.restart.is_none());
         assert!(!ed.workspace.claude.chat.as_ref().unwrap().busy(), "only after the turn");
         assert_eq!(ed.restart.as_ref().and_then(Restart::ready), Some(bin.as_path()), "{}", toasts(&ed));

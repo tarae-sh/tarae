@@ -749,6 +749,10 @@ mod tests {
         crate::now::sync(&mut ed);
         let s = crate::now::step(&ed, &ed.workspace).unwrap();
         assert_eq!((s.verb, s.what.as_str(), s.word()), ("queued", "1st · sh fast.sh", "queued"));
+        // (the clock held from here and moved on by its wait: what's compared is the step's own, never a machine's
+        // pace — #238, at load ~20 the run's own time passed 400 ms)
+        crate::clock::hold();
+        crate::clock::advance(Duration::from_secs(5));
         let started = |ed: &Editor| {
             ed.workspace.task_run.as_ref().is_some_and(|r| r.task.cmd == "sh fast.sh")
                 && crate::now::step(ed, &ed.workspace).is_some_and(|s| s.verb == "running")
@@ -756,10 +760,8 @@ mod tests {
         pump(&mut ed, "the second started", started);
         let s = crate::now::step(&ed, &ed.workspace).unwrap();
         assert_eq!(s.what, "sh fast.sh");
-        assert!(
-            crate::now::took(&ed.workspace, &s) < Duration::from_millis(400),
-            "its own time, not its wait's"
-        );
+        assert_eq!(crate::now::took(&ed.workspace, &s), Duration::ZERO, "its own time, not its wait's");
+        crate::clock::release();
         std::fs::remove_dir_all(&dir).ok();
     }
 
