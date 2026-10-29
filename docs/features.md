@@ -146,8 +146,8 @@ configs carry over as they are.
   thin line, as zellij divides panes, never a box; the docked panels sit on the code's own ground. The surface with
   the keys has its lines in the accent, every other line is a faint wash — move with `C-w h/j/k/l` and the accent
   moves with you; `S-tab` goes to the next pane, `C-w w`'s round, from every pane where tarae has the keys (the code,
-  a list, a run's output, a view mode — never while you type: insert mode, a prompt, a picker, the chat's input and
-  the terminal's program keep it). A group of panels shown one at
+  a list, a run's output, a view mode, the chat's input — a message never takes a back-tab — but never while you type
+  elsewhere: insert mode, a prompt, a picker and the terminal's program keep it). A group of panels shown one at
   a time names them all in its header — the side panel's `files · outline · git`, the bottom panel's `terminal ·
   tests · task` — the one in sight lit; `tab` goes to the next. The bottom panel's header is the line where
   it meets the code — `─ tests ▲ ── all tests ● 1 ▲ 1 648ms ────── tab failure  q close ─`, as a frame names itself in its

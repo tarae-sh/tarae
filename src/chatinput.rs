@@ -101,6 +101,13 @@ pub fn esc_said(ed: &Editor) -> (String, &'static str) {
     }
 }
 
+/// The input's keys to the next pane (`[chat]`'s `rotate_view`, #230 — `S-tab` by default, yours wherever you put
+/// it): the minimized chat passes them on as it passes `esc`, the chat left folded (`chat::unfold_key`, and
+/// `keys_to`'s layer for it).
+pub fn next_pane_keys(keymaps: &crate::keymap::Keymaps) -> impl Iterator<Item = Key> + '_ {
+    keymaps.chat.bound_to("rotate_view")
+}
+
 /// `key` with the input swapped in.
 fn typed(ed: &mut Editor, key: Key) {
     ed.pending.push(key);

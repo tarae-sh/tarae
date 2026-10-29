@@ -198,9 +198,10 @@ fn chat_view(ed: &mut Editor) {
 
 /// #199 (the user, at work): `S-tab` is the next pane — `C-w w`'s round, the same order — from every pane where tarae
 /// has the keys: the code, the side panel, the review's rail, a plugin's panel, a floating list, the chat's view mode,
-/// a run panel's output, the terminal's view mode (two panes of one buffer too). While typing it stays the field's — insert mode, a prompt, a picker, the chat's input,
-/// the terminal's program (`CSI Z`); a focused card refuses it aloud, as any key not its answer; the slot's `tab`
-/// still goes round its tabs.
+/// a run panel's output, the terminal's view mode (two panes of one buffer too), the chat's input (#230:
+/// `s_tab_goes_to_the_next_pane_from_the_chats_input`). While typing elsewhere it stays the field's — insert mode, a
+/// prompt, a picker, the terminal's program (`CSI Z`); a focused card refuses it aloud, as any key not its answer; the
+/// slot's `tab` still goes round its tabs.
 #[test]
 fn s_tab_goes_to_the_next_pane_from_every_pane() {
     let from = |at: &dyn Fn(&mut Editor)| {
@@ -324,10 +325,6 @@ fn s_tab_goes_to_the_next_pane_from_every_pane() {
     let mut ed = every_surface();
     feed(&mut ed, " b<S-tab>");
     assert!(ed.picker.is_some() && ed.floating().contains(&Floating::Picker), "a picker's");
-    let mut ed = every_surface();
-    ed.workspace.viewer.at = At::Chat;
-    feed(&mut ed, "a draft<S-tab>");
-    assert_eq!(ed.workspace.viewer.at, At::Chat, "the chat's input");
     // A focused card: every key its but the window prefix — `S-tab` no answer, said on it
     let mut ed = every_surface();
     ed.push_offer(crate::offer::Offer::new(
@@ -345,6 +342,92 @@ fn s_tab_goes_to_the_next_pane_from_every_pane() {
     assert!(ed.card_has_keys() && ed.offers.len() == 1, "the card keeps the keys, unanswered");
     let said = ed.offer_said.as_ref().map(|s| s.2.as_str()).unwrap_or_default();
     assert!(said.contains("S-tab isn't an answer here"), "said on it, by the key's name: {said:?}");
+}
+
+/// #230 (the user, at work): the chat's input takes `S-tab` as the next pane, `C-w w`'s round — a message never takes
+/// a back-tab — its draft and cursor kept as they were, and back to it with them; minimized while Claude works, the
+/// same, the chat left folded; `tab` keeps an empty chat's suggestions.
+#[test]
+fn s_tab_goes_to_the_next_pane_from_the_chats_input() {
+    let input = |ed: &Editor| {
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        (c.input.text(), c.input.cursor())
+    };
+    let at_chat = |draft: &str| {
+        let mut ed = every_surface();
+        ed.workspace.viewer.at = At::Chat;
+        frame(&mut ed);
+        feed(&mut ed, draft);
+        frame(&mut ed);
+        assert_eq!(ed.keys_to().region.name(), "chat");
+        ed
+    };
+    // (`C-w w` from an empty input: with a draft `C-w` deletes a word)
+    let c_w_w = lands(at_chat(""), "<C-w>w");
+    let mut ed = at_chat("a draft<left><left>");
+    let draft = input(&ed);
+    assert_eq!(draft, ("a draft".to_string(), 5));
+    let from = ed.at_pane();
+    feed(&mut ed, "<S-tab>");
+    assert_ne!(ed.at_pane(), from, "another pane");
+    assert_eq!((ed.at_pane().and_then(|id| ed.workspace.shows(id)), ed.keys_to().region.name()), c_w_w);
+    assert_eq!(input(&ed), draft, "the draft and its cursor as they were");
+    // (round again, back to the chat: the draft there to go on with)
+    while !ed.workspace.is_at(At::Chat) {
+        feed(&mut ed, "<S-tab>");
+    }
+    feed(&mut ed, "!");
+    assert_eq!(input(&ed).0, "a dra!ft", "typed where its cursor was");
+    // Minimized while Claude works: the next pane, the chat still folded, nothing typed
+    let mut ed = every_surface();
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.state = crate::chat::State::Thinking;
+    c.follow.on = true;
+    c.unfolded = false;
+    ed.workspace.viewer.at = At::Chat;
+    frame(&mut ed);
+    assert_eq!(ed.keys_to().region.name(), "chat-minimized");
+    assert_eq!(
+        ed.keys_to().route(crate::key::Key::plain(crate::key::Code::BackTab)).name(),
+        "chat",
+        "passed on"
+    );
+    feed(&mut ed, "<S-tab>");
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert!(
+        !ed.workspace.is_at(At::Chat) && c.compact() && c.input.is_empty(),
+        "the next pane, still folded"
+    );
+    // (yours moved: `rotate_view` on `A-n`, `S-tab` another command — the minimized chat passes `A-n` on, as bound,
+    // and `S-tab` brings it back as any key of the input's does)
+    let moved = || {
+        let mut ed = every_surface();
+        let (config, w) =
+            crate::config::parse("[keys.chat]\n\"A-n\" = \"rotate_view\"\n\"S-tab\" = \"goto_line_start\"\n");
+        assert!(w.is_empty(), "{w:?}");
+        ed.keymaps = config.keymaps;
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.state = crate::chat::State::Thinking;
+        c.follow.on = true;
+        c.unfolded = false;
+        ed.workspace.viewer.at = At::Chat;
+        frame(&mut ed);
+        ed
+    };
+    let mut ed = moved();
+    let to = |ed: &Editor, k: &str| ed.keys_to().route(k.parse().unwrap()).name();
+    assert_eq!((to(&ed, "A-n"), to(&ed, "S-tab")), ("chat".into(), "chat-minimized".into()));
+    feed(&mut ed, "<A-n>");
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert!(!ed.workspace.is_at(At::Chat) && c.compact(), "your key: the next pane, still folded");
+    let mut ed = moved();
+    feed(&mut ed, "<S-tab>");
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert!(ed.workspace.is_at(At::Chat) && !c.compact(), "S-tab, no longer the round: back, unfolded");
+    // `tab` from an empty chat: its suggestions, the keys kept
+    let mut ed = at_chat("");
+    feed(&mut ed, "<tab>");
+    assert!(ed.workspace.is_at(At::Chat) && !input(&ed).0.is_empty(), "a suggestion");
 }
 
 /// `C-w s` from the default tree: the two code panes are a split of their own in the code's column (not the slot's

@@ -3783,8 +3783,11 @@ pub fn unfold_key(ed: &mut Editor, key: Key) -> bool {
         return false;
     }
     let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.compact()) else { return false };
-    // (as `key`: from an empty input `C-w` is the windows')
-    if acts_unseen(key) || (key.ctrl && key.code == Code::Char('w') && c.input.is_empty()) {
+    // (as `key`: from an empty input `C-w` is the windows'; the input's keys to the next pane go on, #230)
+    if acts_unseen(key)
+        || (key.ctrl && key.code == Code::Char('w') && c.input.is_empty())
+        || crate::chatinput::next_pane_keys(&ed.keymaps).any(|k| k == key)
+    {
         return false;
     }
     c.unfolded = true;

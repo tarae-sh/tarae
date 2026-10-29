@@ -483,6 +483,7 @@ A cursor on what a surface shows. The chat's conversation (`esc` from its input)
 | `C-a` | `goto_line_start` | Go to line start |
 | `C-e` | `goto_line_end_newline` | Go to end of line (after the last char) |
 | `esc` | `chat_view` | View the chat |
+| `S-tab` | `rotate_view` | Next window |
 
 ### A prompt's line (`[keys.prompt]` — over insert mode's moves and deletes; `enter`, `esc`, `C-c`, `:`'s `tab` and `→` at its end are the prompt's own)
 

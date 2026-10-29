@@ -111,16 +111,19 @@ impl Node {
         node
     }
 
-    /// The keys bound to `name` here, shortest first (a hint names the key as bound — a remap moves it).
-    pub fn keys_for(&self, name: &str) -> Vec<String> {
-        let mut out: Vec<String> = self
-            .map
+    /// The single keys bound to `name` alone here, in no order.
+    pub fn bound_to<'a>(&'a self, name: &'a str) -> impl Iterator<Item = Key> + 'a {
+        self.map
             .iter()
-            .filter(|(_, t)| {
+            .filter(move |(_, t)| {
                 matches!(t, KeyTrie::Leaf(c) if matches!(c.as_slice(), [MappableCommand::Static(s)] if s.name == name))
             })
-            .map(|(k, _)| k.to_string())
-            .collect();
+            .map(|(k, _)| *k)
+    }
+
+    /// The keys bound to `name` here, shortest first (a hint names the key as bound — a remap moves it).
+    pub fn keys_for(&self, name: &str) -> Vec<String> {
+        let mut out: Vec<String> = self.bound_to(name).map(|k| k.to_string()).collect();
         crate::sorting::by(&mut out, |a, b| (a.len(), a).cmp(&(b.len(), b)));
         out
     }

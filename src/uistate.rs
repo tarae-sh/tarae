@@ -482,6 +482,8 @@ impl Editor {
             if c.input.is_empty() {
                 passes.extend([ctrl('w'), Key { alt: true, ..ctrl('w') }]);
             }
+            // (the input's keys to the next pane, as bound — #230)
+            passes.extend(crate::chatinput::next_pane_keys(&self.keymaps));
             v.push(layer(Region::Unfold, Filter::Except(passes)));
         }
         // `chat::key` — before the prompt: it doesn't ask whether one is open

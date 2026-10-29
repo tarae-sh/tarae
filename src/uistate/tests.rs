@@ -1033,20 +1033,11 @@ fn no_key_is_refused_in_silence() {
         .iter()
         .any(|p| name.contains(p)),
         " " => ["draft", "a prompt opened over it", "picker"].iter().any(|p| name.contains(p)),
-        // (`S-tab` while typing is the field's — insert mode, a prompt, a picker at its first row, the chat's input —
-        // never the next pane, and bound to nothing there (#199); between two panes of one buffer it moves the keys,
-        // which only the lit lines show — styles, not this walk's text: `s_tab_goes_to_the_next_pane_from_every_pane`)
-        "<S-tab>" => [
-            "insert mode",
-            "prompt",
-            "picker",
-            "the chat,",
-            "chat's draft",
-            "the chat back",
-            "two code panes",
-        ]
-        .iter()
-        .any(|p| name.contains(p)),
+        // (`S-tab` while typing is the field's — insert mode, a prompt, a picker at its first row — never the next
+        // pane, and bound to nothing there (#199; the chat's input takes it as the next pane, #230); between two panes
+        // of one buffer it moves the keys, which only the lit lines show — styles, not this walk's text:
+        // `s_tab_goes_to_the_next_pane_from_every_pane`)
+        "<S-tab>" => ["insert mode", "prompt", "picker", "two code panes"].iter().any(|p| name.contains(p)),
         _ => false,
     };
     let off: Vec<String> = silent()
