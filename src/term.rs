@@ -841,14 +841,14 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
     }
     if lay.rail_w > 0
         && editor.review_rail_up()
-        && let Some((marked, room)) = editor
+        && let Some((marked, room, rows)) = editor
             .workspace
             .code_review
             .as_ref()
-            .map(|r| (r.marked(editor), review_rail_list(&lay, editor, r)))
+            .map(|r| (r.marked(editor), review_rail_list(&lay, editor, r), rail_rows_laid(r, &lay)))
         && let Some(r) = editor.workspace.code_review.as_mut()
     {
-        r.fit(marked, room.1, room.0, rail_keys);
+        r.fit(rows, marked, room.1, room.0, rail_keys);
     }
     if let Some(p) = editor.picker.as_mut() {
         let pb = PickerBox::new(&lay, p);
@@ -1024,6 +1024,11 @@ struct Layout {
     /// The code panes' top lines and the dividers between them (`code_lines`, `code_dividers`), worked out once a frame:
     /// every edge that meets them asks.
     code: std::cell::OnceCell<CodeEdges>,
+    /// The review rail's head (`rail_head`), worked out once a frame: the scroll's fit (`render_frame`) counts its rows
+    /// and the drawing draws them (#214's third piece: three times a frame, every file's `since` asked twice each).
+    rail_head: std::cell::OnceCell<Vec<Vec<(Tone, Fit)>>>,
+    /// …and its files under their folders (`CodeReview::rail_rows`), built once a frame for both.
+    rail_rows: std::cell::OnceCell<Vec<crate::filetree::Row>>,
 }
 
 /// A code pane's top line: its row, first column, width, pane and whether it's the focused one (`code_lines`).
@@ -1589,6 +1594,8 @@ impl Layout {
             framed: false,
             floats: floats(editor, w as usize, (h as usize).saturating_sub(1)),
             code: std::cell::OnceCell::new(),
+            rail_head: std::cell::OnceCell::new(),
+            rail_rows: std::cell::OnceCell::new(),
         }
     }
 }
@@ -1680,6 +1687,8 @@ impl Layout {
             text_cols: r.w.saturating_sub(gutter + scrollbar as usize).max(1),
             // (the frame's code edges are the frame layout's to keep, not a pane's)
             code: std::cell::OnceCell::new(),
+            rail_head: std::cell::OnceCell::new(),
+            rail_rows: std::cell::OnceCell::new(),
             ..self.clone()
         }
     }
@@ -10309,42 +10318,60 @@ struct Seg {
     keep: u8,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Tests: the segments measured on this thread (`seg_w`).
+    static SEGS_MEASURED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A segment's cells.
+fn seg_w(s: &Seg) -> usize {
+    #[cfg(test)]
+    SEGS_MEASURED.with(|m| m.set(m.get() + 1));
+    s.text.width()
+}
+
 /// Drop less important segments from left/right until they fit in `width`.
 fn fit_segments(left: &mut Vec<Seg>, right: &mut Vec<Seg>, width: usize) {
-    let total = |l: &Vec<Seg>, r: &Vec<Seg>| l.iter().chain(r).map(|s| s.text.width()).sum::<usize>();
+    // (measured once, what's dropped taken off: #214's third piece — every segment measured again after each drop, a
+    // path bar of fifty buffers' names measured them some 1,300 times a frame)
+    let mut total = left.iter().chain(right.iter()).map(seg_w).sum::<usize>();
     // A blank spacer right after a segment with the same `keep` belongs to it — they go together, or a
     // stray gap is left behind (and the fill that should separate left from right goes missing)
     // — and a key hint's words go with its key (`  i`, ` type`): never one without the other. A blank spacer before a
     // run of its own `keep` (`  `, `enter`, ` go there`) leads it: it goes with the run, never alone — else the run
     // stays, touching what's before it (`1 conflictenter go there`)
-    let drop = |v: &mut Vec<Seg>, i: usize| {
+    // (the cells it took off)
+    let drop = |v: &mut Vec<Seg>, i: usize| -> usize {
         let s = v.remove(i);
+        let mut gone = seg_w(&s);
         let leads = i == 0 || v[i - 1].keep != s.keep;
         let run = |n: &Seg| n.keep == s.keep && !n.text.trim().is_empty();
         if s.text.trim().is_empty() && leads && v.get(i).is_some_and(run) {
             while v.get(i).is_some_and(|n| n.keep == s.keep && !n.text.trim().is_empty()) {
-                v.remove(i);
+                gone += seg_w(&v.remove(i));
             }
-            return;
+            return gone;
         }
         let key = matches!(s.keep, HINTS | VIEW_HINTS) && s.text.starts_with("  ");
         if v.get(i).is_some_and(|n| {
             n.keep == s.keep && (n.text.trim().is_empty() || key && !n.text.starts_with("  "))
         }) {
-            v.remove(i);
+            gone += seg_w(&v.remove(i));
         }
+        gone
     };
     // Left and right never touch (`main● 1`) — keep at least a two-cell gap while both sides have content
     let gap = |l: &Vec<Seg>, r: &Vec<Seg>| if l.is_empty() || r.is_empty() { 0 } else { 2 };
-    while total(left, right) + gap(left, right) > width {
+    while total + gap(left, right) > width {
         let lmin = left.iter().enumerate().min_by_key(|(_, s)| s.keep).map(|(i, s)| (s.keep, i));
         let rmin = right.iter().enumerate().min_by_key(|(_, s)| s.keep).map(|(i, s)| (s.keep, i));
-        match (lmin, rmin) {
+        total -= match (lmin, rmin) {
             (Some((lk, li)), Some((rk, _))) if lk <= rk => drop(left, li),
             (_, Some((_, ri))) => drop(right, ri),
             (Some((_, li)), None) => drop(left, li),
             (None, None) => break,
-        }
+        };
     }
 }
 
@@ -15161,8 +15188,22 @@ fn rail_text_w(lay: &Layout) -> usize {
 /// Where the review rail's files are: the row of the first one (under its head — `rail_head` — and the `↑ N
 /// more` row) and how many rows they have (above `↓ N more` and the keys).
 fn review_rail_list(lay: &Layout, editor: &Editor, r: &crate::codereview::CodeReview) -> (usize, usize) {
-    let top = rail_head(editor, r, rail_text_w(lay)).len() + 1;
+    let top = rail_head_laid(editor, r, lay).len() + 1;
     (top, lay.body_h.saturating_sub(top + 1 + RAIL_HINTS).max(1))
+}
+
+/// The review rail's head as this frame lays it out (`Layout.rail_head`).
+fn rail_head_laid<'a>(
+    editor: &Editor,
+    r: &crate::codereview::CodeReview,
+    lay: &'a Layout,
+) -> &'a [Vec<(Tone, Fit)>] {
+    lay.rail_head.get_or_init(|| rail_head(editor, r, rail_text_w(lay)))
+}
+
+/// The review rail's files under their folders as this frame lays them out (`Layout.rail_rows`).
+fn rail_rows_laid<'a>(r: &crate::codereview::CodeReview, lay: &'a Layout) -> &'a [crate::filetree::Row] {
+    lay.rail_rows.get_or_init(|| r.rail_rows())
 }
 
 /// The review rail's head, a row a list of toned pieces already cut to `w`: the title (its rule drawn on the
@@ -15214,7 +15255,15 @@ fn rail_head(editor: &Editor, r: &crate::codereview::CodeReview, w: usize) -> Ve
     rows.push(summary);
     // How many are viewed, and how many aren't yet (`]u` goes to them — changed since viewed among them): the
     // second folded first where the rail is narrow
-    let viewed = r.files.iter().filter(|f| r.viewed(editor, f)).count();
+    // (each file's since asked once: viewed is nothing since, changed since is something)
+    let (mut viewed, mut since) = (0, 0);
+    for f in &r.files {
+        match r.since(editor, f) {
+            Some(s) if s == Default::default() => viewed += 1,
+            Some(_) => since += 1,
+            None => {}
+        }
+    }
     let said = format!("{viewed} of {n} viewed");
     let left = format!(" · {} unviewed", n - viewed);
     rows.push(match viewed < n && said.width() + left.width() <= w {
@@ -15222,8 +15271,6 @@ fn rail_head(editor: &Editor, r: &crate::codereview::CodeReview, w: usize) -> Ve
         false => vec![tone(Tone::Faint, said)],
     });
     // Marked viewed, changed since (cardburden 1): what's left of each is its new lines — their `◦` warned
-    let since =
-        r.files.iter().filter(|f| r.since(editor, f).is_some_and(|s| s != Default::default())).count();
     if since > 0 {
         rows.push(vec![tone(Tone::Warn, crate::whole::fit(&format!("{since} changed since viewed"), w))]);
     }
@@ -15659,15 +15706,15 @@ fn draw_review_rail(
         Tone::Minus => minus,
         Tone::Key => key,
     };
-    let mut rows: Vec<(Vec<Span>, Style, Option<usize>)> = rail_head(editor, r, w)
-        .into_iter()
-        .map(|row| (row.into_iter().map(|(tone, text)| text.span(toned(tone))).collect(), card, None))
+    let mut rows: Vec<(Vec<Span>, Style, Option<usize>)> = rail_head_laid(editor, r, lay)
+        .iter()
+        .map(|row| (row.iter().map(|(tone, text)| text.clone().span(toned(*tone))).collect(), card, None))
         .collect();
     let turn = matches!(r.base, crate::codereview::Base::Turn { .. });
     // Files under their folders (filetree.rs, in the review's order) — from its scroll (`CodeReview::fit`),
     // the files out of sight counted in the blank rows around them
     let (_, room) = review_rail_list(lay, editor, r);
-    let tree = r.rail_rows();
+    let tree = rail_rows_laid(r, lay);
     let files_in = |rows: &[crate::filetree::Row]| rows.iter().filter(|t| t.item.is_some()).count();
     let more = |k: usize, arrow: &str| {
         let text = if k > 0 { vec![sp(format!("{arrow} {k} more"), faint)] } else { Vec::new() };
@@ -26628,6 +26675,26 @@ mod tests {
         );
         assert_eq!(v(&["TestDiv::test_half"]), ["test_half"]);
         assert_eq!(v(&["test_add", "TestDiv::test_half"]), ["test_add", "TestDiv::test_half"]);
+    }
+
+    /// A line of many segments (the path bar's fifty buffers) is measured once a segment as it's fitted, whatever is
+    /// dropped (#214's third piece: each drop measured every segment again, ~4,900 for these) — and fitted as before.
+    #[test]
+    fn fitting_a_line_measures_each_segment_once() {
+        let seg = |i: usize| Seg {
+            cut: None,
+            text: format!(" b{i}.rs"),
+            style: Style::default(),
+            keep: (i % 7) as u8,
+        };
+        let mut left: Vec<Seg> = (0..100).map(seg).collect();
+        let was = SEGS_MEASURED.with(std::cell::Cell::get);
+        fit_segments(&mut left, &mut Vec::new(), 40);
+        let measured = SEGS_MEASURED.with(std::cell::Cell::get) - was;
+        let kept: Vec<&str> = left.iter().map(|s| s.text.as_str()).collect();
+        // (the lowest ranks go first, the first of a rank before the rest: the last five of the highest stay)
+        assert_eq!(kept, [" b69.rs", " b76.rs", " b83.rs", " b90.rs", " b97.rs"]);
+        assert!(measured <= 2 * 100, "{measured} measures for 100 segments");
     }
 
     #[test]

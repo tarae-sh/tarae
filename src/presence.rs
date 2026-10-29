@@ -15,7 +15,7 @@
 //! bar follows it (`follow::follow_session`). The session list says where each is (`at`), the strip its file, the side
 //! panel's files and git tabs each session's initial on a file it's in (`file_marks`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -140,13 +140,18 @@ pub struct State {
     /// Each place of `now` once — a checkout's file — with its presences there (their indices, in order): what's asked
     /// of places rather than of every presence (`ask`, `marks`), made as `now` changes.
     places: Vec<Vec<usize>>,
+    /// Each place's file from its checkout's top, with the places there (their indices in `places`, in order): what a
+    /// side panel's file row and a buffer in sight ask (`in_file`, `ask`) — never every place a row (#214's third
+    /// piece: each row filtered and sorted every presence, ~120 µs a row with four Claudes at work), made with `places`.
+    by_rel: HashMap<PathBuf, Vec<usize>>,
     /// Each busy session's presence as last gathered, and what it was made from (`Built`).
     built: Vec<Built>,
     /// By (the file, a buffer of another checkout).
     maps: HashMap<(PathBuf, DocId), Kept>,
-    /// Two checkouts (in order) of one repository, as git says.
-    same: HashMap<(PathBuf, PathBuf), bool>,
-    asking_same: HashSet<(PathBuf, PathBuf)>,
+    /// Two checkouts of one repository, as git says: by the first of the two (in order), each second's answer — looked
+    /// up by borrowed paths (`same_of`), never a pair copied to ask.
+    same: HashMap<PathBuf, HashMap<PathBuf, bool>>,
+    asking_same: Vec<(PathBuf, PathBuf)>,
     /// By the file: the disk's stamps of the files the maps are worked out from.
     disk: HashMap<PathBuf, Seen>,
     /// When each session was last seen writing in each file (`clock`) — its tag stays `TAG_STAY` after.
@@ -167,6 +172,19 @@ pub const TAG_STAY: std::time::Duration = std::time::Duration::from_secs(3);
 pub const TAG_FADE: std::time::Duration = std::time::Duration::from_millis(100);
 const TAG_STEP: std::time::Duration = std::time::Duration::from_millis(25);
 
+impl State {
+    /// Whether checkouts `a` and `b` are of one repository, as git said — None: not asked yet.
+    fn same_of(&self, a: &Path, b: &Path) -> Option<bool> {
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        self.same.get(lo)?.get(hi).copied()
+    }
+
+    fn same_set(&mut self, a: &Path, b: &Path, same: bool) {
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        self.same.entry(lo.to_path_buf()).or_default().insert(hi.to_path_buf(), same);
+    }
+}
+
 #[cfg(test)]
 impl State {
     /// The buffers line maps are kept for (each in sight when the last event ended — `ask`).
@@ -179,15 +197,15 @@ impl State {
         self.built.iter().map(|b| (b.session, b.replay)).collect()
     }
 
+    /// Whether something is still asked on a worker: two checkouts' repository, or a line map.
+    pub fn asking(&self) -> bool {
+        !self.asking_same.is_empty() || self.maps.values().any(|k| k.asking)
+    }
+
     /// How long since session `s` was last seen writing, in any file — None: not within its tag's stay and fade.
     pub fn wrote_since(&self, s: WorkspaceId) -> Option<std::time::Duration> {
         self.wrote.iter().filter(|((w, _), _)| *w == s).map(|(_, t)| crate::clock::since(*t)).min()
     }
-}
-
-/// The pair of checkouts as `State.same` keeps it.
-fn pair(a: &Path, b: &Path) -> (PathBuf, PathBuf) {
-    if a <= b { (a.to_path_buf(), b.to_path_buf()) } else { (b.to_path_buf(), a.to_path_buf()) }
 }
 
 /// A busy session's presence as last gathered, and what it was made from: its edits' places are kept while its turn's
@@ -387,14 +405,21 @@ pub fn sync(ed: &mut Editor) {
         let now: Vec<Presence> = built.iter().flat_map(|b| b.edits.iter().chain(&b.here)).cloned().collect();
         let mut seen: HashMap<(&Path, &Path), usize> = HashMap::new();
         let mut places: Vec<Vec<usize>> = Vec::new();
+        let mut by_rel: HashMap<PathBuf, Vec<usize>> = HashMap::new();
         for (i, p) in now.iter().enumerate() {
             let k = *seen.entry((p.root.as_path(), p.path.as_path())).or_insert(places.len());
             match places.get_mut(k) {
                 Some(at) => at.push(i),
-                None => places.push(vec![i]),
+                None => {
+                    places.push(vec![i]);
+                    crate::docpaths::worked(1);
+                    if let Ok(rel) = p.path.strip_prefix(&p.root) {
+                        by_rel.entry(rel.to_path_buf()).or_default().push(k);
+                    }
+                }
             }
         }
-        (ed.presence.now, ed.presence.places) = (now, places);
+        (ed.presence.now, ed.presence.places, ed.presence.by_rel) = (now, places, by_rel);
     }
     ed.presence.built = built;
     // (each session's writing, where: its tag stays a while after — the rest forgotten once past it)
@@ -494,13 +519,6 @@ fn in_sight(ed: &Editor) -> Vec<&Document> {
     ed.docs.iter().filter(|d| ids.contains(&d.id)).collect()
 }
 
-/// A presence in another checkout at a document's path there (relative to each checkout).
-fn same_place(p: &Presence, root: &Path, path: &Path) -> bool {
-    crate::docpaths::worked(1);
-    p.root != root
-        && p.path.strip_prefix(&p.root).ok().is_some_and(|rel| path.strip_prefix(root).ok() == Some(rel))
-}
-
 /// A line map in sight: (the file, a buffer here), what it's of (the file's text, the buffer's version), the file's
 /// checkout, the buffer's text.
 type Wanted = ((PathBuf, DocId), (Stamp, u64), PathBuf, ropey::Rope);
@@ -510,35 +528,40 @@ type Wanted = ((PathBuf, DocId), (Stamp, u64), PathBuf, ropey::Rope);
 fn ask(ed: &mut Editor) {
     let root = ed.workspace.root.clone();
     let mut wanted: Vec<Wanted> = Vec::new();
-    // (each place once — the first presence there, as every presence in order would give: #214)
-    let places = || ed.presence.places.iter().filter_map(|at| ed.presence.now.get(at[0]));
+    // (each place once — the first presence there, as every presence in order would give: #214 — found by the
+    // buffer's file from this checkout's top, not each place asked of each buffer)
+    let place = |k: usize| ed.presence.places.get(k).and_then(|at| ed.presence.now.get(at[0]));
     for d in in_sight(ed) {
-        let Some(path) = d.path.as_deref() else { continue };
-        for p in places().filter(|p| same_place(p, &root, path)) {
+        let Some(rel) = d.path.as_deref().and_then(|p| p.strip_prefix(&root).ok()) else { continue };
+        crate::docpaths::worked(1);
+        let Some(at) = ed.presence.by_rel.get(rel) else { continue };
+        for p in at.iter().filter_map(|&k| place(k)).filter(|p| p.root != root) {
             let key = (p.path.clone(), d.id);
             if !wanted.iter().any(|(k, ..)| *k == key) {
                 wanted.push((key, (p.stamp, d.version()), p.root.clone(), d.text.clone()));
             }
         }
     }
-    // The checkouts beside this one: whether each is of this repository (the side panel's `◦` needs it too)
-    let roots: Vec<PathBuf> = places()
-        .filter(|p| p.root != root)
-        .map(|p| p.root.clone())
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    for r in roots {
-        let k = pair(&root, &r);
-        if ed.presence.same.contains_key(&k) || !ed.presence.asking_same.insert(k.clone()) {
+    // The checkouts beside this one: whether each is of this repository (the side panel's `◦` needs it too) — a place's
+    // checkout is its session's, so each busy session with a place once
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for b in ed.presence.built.iter().filter(|b| !b.edits.is_empty() || !b.here.is_empty()) {
+        let r = b.root.as_path();
+        let state = &ed.presence;
+        let asking = || state.asking_same.iter().any(|(x, y)| (x, y) == (&root, &b.root));
+        if r == root || state.same_of(&root, r).is_some() || asking() || roots.iter().any(|x| x == r) {
             continue;
         }
+        roots.push(r.to_path_buf());
+    }
+    for r in roots {
+        ed.presence.asking_same.push((root.clone(), r.clone()));
         let (a, b) = (root.clone(), r);
         ed.events.shared_jobs().spawn(move || {
             let same = same_repository(&a, &b);
             move |ed: &mut Editor| {
-                ed.presence.asking_same.remove(&k);
-                ed.presence.same.insert(k, same);
+                ed.presence.asking_same.retain(|(x, y)| (x, y) != (&a, &b));
+                ed.presence.same_set(&a, &b, same);
             }
         });
     }
@@ -580,7 +603,7 @@ fn ask(ed: &mut Editor) {
             Stamp::Doc(id, _) => ed.docs.iter().find(|d| d.id == id).map(|d| d.text.clone()),
             Stamp::Disk(..) => None,
         };
-        let same = state.same.get(&pair(&root, &other)).copied();
+        let same = state.same_of(&root, &other);
         let (here, path) = (root.clone(), key.0.clone());
         ed.events.shared_jobs().spawn(move || {
             let same = same.unwrap_or_else(|| same_repository(&here, &other));
@@ -596,7 +619,7 @@ fn ask(ed: &mut Editor) {
             };
             let map = from.filter(|_| same).map(|f| Arc::new(LineMap::of(&f, &to.to_string())));
             move |ed: &mut Editor| {
-                ed.presence.same.insert(pair(&here, &other), same);
+                ed.presence.same_set(&here, &other, same);
                 // (what it was worked out from: the stamp as read, which the next gather takes up)
                 let want = match want.0 {
                     Stamp::Disk(n, _) if same => {
@@ -752,13 +775,53 @@ pub fn file_of(ed: &Editor, id: WorkspaceId) -> Option<String> {
 /// The other sessions in file `rel` (from the front checkout's top) — its own checkout's or another of the repository's,
 /// each once, where it is first: its name, its colour, what it does there.
 pub fn in_file(ed: &Editor, rel: &Path) -> Vec<(String, u8, Act)> {
+    let (root, state) = (&ed.workspace.root, &ed.presence);
+    // Only the places at that file (`State.by_rel`), each a checkout of this repository: their presences, where each
+    // session is first — here before the lines its turn changed, each in order, as every presence sorted would give
+    crate::docpaths::worked(1);
+    let Some(at) = state.by_rel.get(rel) else { return Vec::new() };
+    let mut ps: Vec<(bool, usize)> = Vec::new();
+    let mut live_was: Option<(WorkspaceId, bool)> = None;
+    for at in at.iter().filter_map(|&k| state.places.get(k)) {
+        let Some(first) = at.first().and_then(|&i| state.now.get(i)) else { continue };
+        crate::docpaths::worked(1);
+        if first.root != *root && state.same_of(root, &first.root) != Some(true) {
+            continue;
+        }
+        for &i in at {
+            let Some(p) = state.now.get(i).filter(|p| p.session != ed.workspace.id) else { continue };
+            // (a place's presences are one session's, one after another: whether it's live asked once)
+            let is_live = match live_was {
+                Some((s, l)) if s == p.session => l,
+                _ => live(ed, p),
+            };
+            live_was = Some((p.session, is_live));
+            if is_live {
+                ps.push((!p.here, i));
+            }
+        }
+    }
+    crate::sorting::sort(&mut ps);
+    let mut out: Vec<(String, u8, Act)> = Vec::new();
+    for p in ps.into_iter().filter_map(|(_, i)| state.now.get(i)) {
+        if !out.iter().any(|x| x.0 == p.name) {
+            out.push((p.name.clone(), p.colour, p.act));
+        }
+    }
+    out
+}
+
+/// Tests: `in_file` as every presence filtered and sorted gives it — what the places by file must give.
+#[cfg(test)]
+pub fn in_file_anew(ed: &Editor, rel: &Path) -> Vec<(String, u8, Act)> {
     let root = &ed.workspace.root;
     let mut out: Vec<(String, u8, Act)> = Vec::new();
     let mut ps: Vec<&Presence> =
         ed.presence.now.iter().filter(|p| p.session != ed.workspace.id && live(ed, p)).collect();
     crate::sorting::by_key(&mut ps, |p| !p.here);
     for p in ps {
-        let same = p.root == *root || ed.presence.same.get(&pair(root, &p.root)).copied().unwrap_or(false);
+        crate::docpaths::worked(1);
+        let same = p.root == *root || ed.presence.same_of(root, &p.root).unwrap_or(false);
         if same && p.path.strip_prefix(&p.root).ok() == Some(rel) && !out.iter().any(|x| x.0 == p.name) {
             out.push((p.name.clone(), p.colour, p.act));
         }
@@ -785,21 +848,18 @@ pub const MARKS_MAX: usize = 3;
 /// Each name's shortest prefix no other name starts with (letters compared without case: `m` · `f`; `ma` · `me` for
 /// main and merge) — the whole name when every prefix is another's too.
 pub fn prefixes(names: &[String]) -> Vec<String> {
-    let low: Vec<Vec<char>> = names.iter().map(|n| n.to_lowercase().chars().collect()).collect();
-    names
-        .iter()
-        .enumerate()
-        .map(|(i, n)| {
-            let chars: Vec<char> = n.chars().collect();
-            let unique = |k: usize| {
-                low.iter()
-                    .enumerate()
-                    .all(|(j, o)| j == i || o.len() < k || o[..k] != low[i][..k.min(low[i].len())])
-            };
-            let k = (1..=chars.len()).find(|&k| unique(k)).unwrap_or(chars.len());
-            chars[..k].iter().collect()
-        })
-        .collect()
+    let others = |i: usize| names.iter().enumerate().filter(move |&(j, _)| j != i).map(|(_, o)| o.as_str());
+    names.iter().enumerate().map(|(i, n)| prefix_among(n, others(i))).collect()
+}
+
+/// `name`'s shortest prefix none of `others` starts with (letters compared without case) — the whole name when every
+/// prefix is one's too. Nothing made but the prefix: one past every start it shares with another, lowered.
+fn prefix_among<'a>(name: &str, others: impl Iterator<Item = &'a str>) -> String {
+    let low = || name.chars().flat_map(char::to_lowercase);
+    let lower = |o: &'a str| o.chars().flat_map(char::to_lowercase);
+    let shared = others.map(|o| low().zip(lower(o)).take_while(|(a, b)| a == b).count()).max().unwrap_or(0);
+    let k = (shared.min(low().count()) + 1).min(name.chars().count());
+    name.chars().take(k).collect()
 }
 
 /// File `rel`'s marks (from the front checkout's top): the sessions whose changes would conflict with yours there
@@ -822,20 +882,20 @@ pub fn file_marks(ed: &Editor, rel: &Path) -> (Vec<FileMark>, Vec<String>) {
     if who.is_empty() {
         return (Vec::new(), words);
     }
-    // (told apart from every open session, and from a branch named here)
-    let mut names: Vec<String> =
-        std::iter::once(&ed.workspace).chain(&ed.workspaces).map(|l| l.label().to_string()).collect();
-    for w in &who {
-        if !names.contains(&w.0) {
-            names.push(w.0.clone());
-        }
-    }
-    let short = prefixes(&names);
+    // (told apart from every open session, and from a branch named here — each its own name passed over once: a row's
+    // work is its marks', no list of every session's name made)
+    let labels = || std::iter::once(&ed.workspace).chain(&ed.workspaces).map(|l| l.label());
+    let branches = || who.iter().map(|w| w.0.as_str()).filter(move |n| !labels().any(|l| l == *n));
     let marks = who
-        .into_iter()
+        .iter()
         .map(|(name, colour, overlap)| {
-            let i = names.iter().position(|n| *n == name).unwrap_or(0);
-            FileMark { prefix: short[i].clone(), colour, overlap }
+            let mut passed = false;
+            let others = labels().chain(branches()).filter(|n| {
+                let me = !passed && n == name;
+                passed |= me;
+                !me
+            });
+            FileMark { prefix: prefix_among(name, others), colour: *colour, overlap: *overlap }
         })
         .collect();
     (marks, words)

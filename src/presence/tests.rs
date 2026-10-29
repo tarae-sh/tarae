@@ -608,6 +608,21 @@ fn the_side_panel_says_each_session_by_its_initial() {
     assert_eq!(prefixes(&v(&["main", "merge", "fix"])), v(&["ma", "me", "f"]));
     assert_eq!(prefixes(&v(&["Main", "merge"])), v(&["Ma", "me"]), "case aside, as written");
     assert_eq!(prefixes(&v(&["main", "main2"])), v(&["main", "main2"]), "one a prefix of the other: whole");
+    // (two sessions of one name — each passed over only as itself — and branches named beside them)
+    assert_eq!(prefixes(&v(&["fix", "fix", "docs"])), v(&["fix", "fix", "d"]), "the same name twice: whole");
+    assert_eq!(
+        prefixes(&v(&["Fix", "fix", "main"])),
+        v(&["Fix", "fix", "m"]),
+        "the same but its case: whole"
+    );
+    assert_eq!(
+        prefixes(&v(&["main", "fix", "fix-login", "feature/web", "docs"])),
+        v(&["m", "fix", "fix-", "fe", "d"]),
+        "a branch beside the sessions: told apart as they are"
+    );
+    assert_eq!(prefixes(&v(&["w1", "w10", "w2", "w23", "w3"])), v(&["w1", "w10", "w2", "w23", "w3"]));
+    assert_eq!(prefixes(&v(&["w4", "w10", "w23"])), v(&["w4", "w1", "w2"]));
+    assert_eq!(prefixes(&v(&["solo"])), v(&["s"]), "alone: its first letter");
     let mark = |p: &str, c: u8, overlap: bool| FileMark { prefix: p.into(), colour: Some(c), overlap };
     let (text, paint) = file_hint(&[mark("m", 1, true), mark("f", 2, false)], "M");
     assert_eq!(text, "≈m f  M");

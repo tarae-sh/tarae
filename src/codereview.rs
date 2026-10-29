@@ -517,6 +517,8 @@ impl CodeReview {
 
     /// The rail's rows: the files under their folders.
     pub fn rail_rows(&self) -> Vec<crate::filetree::Row> {
+        #[cfg(test)]
+        RAIL_WORK.with(|w| w.set((w.get().0, w.get().1 + 1)));
         crate::filetree::Tree::build(
             self.files.iter().enumerate().map(|(i, f)| (i, f.rel.as_str(), f.rel.len())),
             false,
@@ -544,10 +546,16 @@ impl CodeReview {
     /// click doesn't slide the list under the pointer, and the wheel's scroll stays. Its head grown or shrunk
     /// (a row said, the reviewer's verdict), a list longer than its rows moves the other way: each file stays
     /// on its row (one that fits them all moves down with the head — none hidden to keep it still). `keys`: the
-    /// rail has them.
-    pub fn fit(&mut self, marked: Option<usize>, room: usize, top: usize, keys: bool) {
+    /// rail has them. `rows`: its rows as the frame laid them out (`rail_rows`).
+    pub fn fit(
+        &mut self,
+        rows: &[crate::filetree::Row],
+        marked: Option<usize>,
+        room: usize,
+        top: usize,
+        keys: bool,
+    ) {
         self.room = room;
-        let rows = self.rail_rows();
         let end = rows.len().saturating_sub(room);
         if let Some(was) = self.top.replace(top)
             && was != top
@@ -1579,11 +1587,25 @@ fn added_keys(g: &crate::risk::Graded) -> &[crate::risk::Key] {
     &g.keys[g.removed..g.removed + g.added]
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Tests: what the rail asked on this thread — a file's `since`, its tree built (`rail_rows`).
+    static RAIL_WORK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// Tests: what the rail asked on this thread so far: (`since`, `rail_rows`).
+#[cfg(test)]
+pub fn rail_work() -> (usize, usize) {
+    RAIL_WORK.with(std::cell::Cell::get)
+}
+
 impl CodeReview {
     /// What changed in `f` since its viewed mark — None: not marked (a mark waiting for its file's base counts
     /// as nothing since). Open or not: its lines new since (its grades' keys), and its added lines taken out
     /// since (`counts_of` — one it can't tell makes it `unsure`).
     pub fn since(&self, ed: &Editor, f: &File) -> Option<Since> {
+        #[cfg(test)]
+        RAIL_WORK.with(|w| w.set((w.get().0 + 1, w.get().1)));
         if self.waits(&f.path) {
             return Some(Since::default());
         }

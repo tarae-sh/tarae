@@ -248,13 +248,15 @@ fn attach_in(notes: &mut Notes, docs: &mut crate::docpaths::Docs) {
     // (a note looks for its buffer every event — by id once attached, else by its path: the buffers laid out once,
     // kept while none moves (`Docs`; a mark added moves none). #214: each such note searched every buffer)
     for n in notes.list.iter_mut().filter(|n| !n.placing) {
+        // (its mark as stored, its ends snapped as `Document::mark` does — never a selection made for it each event:
+        // #214's third piece, an allocation a note)
         match n.at.and_then(|(d, m)| {
             let doc = &docs[docs.index_of(d)?];
-            Some((doc, doc.mark(m)?))
+            Some((doc, doc.mark_raw(m)?.primary()))
         }) {
-            Some((doc, sel)) => {
-                let r = sel.primary();
-                let (a, b) = (mv::line_of(&doc.text, r.anchor), mv::line_of(&doc.text, r.head));
+            Some((doc, r)) => {
+                let line = |p| mv::line_of(&doc.text, crate::graphemes::snap(&doc.text, p));
+                let (a, b) = (line(r.anchor), line(r.head));
                 n.lines = a.min(b)..a.max(b) + 1;
             }
             None => {

@@ -17,6 +17,18 @@ pub const ALLOCATED: i32 = 121;
 thread_local! {
     /// Allocations (and reallocations) made on this thread so far — no destructor, so readable to a thread's end.
     static MADE: Cell<usize> = const { Cell::new(0) };
+    /// Bytes allocated on this thread less those freed on it (a block freed on another thread is that one's).
+    static LIVE: Cell<isize> = const { Cell::new(0) };
+}
+
+/// Bytes this thread has allocated and not freed so far, as it sees it (what it freed of another's taken off).
+#[cfg_attr(tarae_optimized, allow(dead_code))]
+pub fn live() -> isize {
+    LIVE.try_with(Cell::get).unwrap_or(0)
+}
+
+fn grew(by: isize) {
+    let _ = LIVE.try_with(|l| l.set(l.get() + by));
 }
 
 /// The allocations this thread has made so far (a reallocation counts as one).
@@ -53,24 +65,28 @@ impl Watched {
 unsafe impl GlobalAlloc for Watched {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         Watched::made();
+        grew(layout.size() as isize);
         // SAFETY: as the caller's contract.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         Watched::made();
+        grew(layout.size() as isize);
         // SAFETY: as the caller's contract.
         unsafe { System.alloc_zeroed(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         Watched::check();
+        grew(-(layout.size() as isize));
         // SAFETY: as the caller's contract.
         unsafe { System.dealloc(ptr, layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new: usize) -> *mut u8 {
         Watched::made();
+        grew(new as isize - layout.size() as isize);
         // SAFETY: as the caller's contract.
         unsafe { System.realloc(ptr, layout, new) }
     }

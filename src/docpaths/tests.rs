@@ -91,12 +91,32 @@ fn busy() -> crate::chat::Chat {
 
 /// #214's scene: the sessions, their buffers, the busy ones' turns, the review in front with its files open and marked
 /// viewed (what's changed since is asked of each), its rail drawn, your notes, one shared server.
-fn many(name: &str) -> (Editor, Scratch) {
+fn many(name: &str) -> (Editor, Held) {
     many_of(name, SESSIONS)
 }
 
+/// A scene's folder, and its turn among the scenes (`one_at_a_time`).
+struct Held {
+    _dir: Scratch,
+    _one: std::sync::MutexGuard<'static, ()>,
+}
+
+/// The scenes one at a time: one holds up to 34 checkouts, and the repositories kept resolved are 64 across the process
+/// (`gitrepo::KEPT_MAX`) — two at once pushed each other's out, and a scene never had all of its own kept.
+fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ONE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// #214's scene with `sessions` open — the same busy ones, review and notes; the rest idle checkouts with their buffers.
-fn many_of(name: &str, sessions: usize) -> (Editor, Scratch) {
+fn many_of(name: &str, sessions: usize) -> (Editor, Held) {
+    let one = one_at_a_time();
+    let (ed, dir) = laid(name, sessions);
+    (ed, Held { _dir: dir, _one: one })
+}
+
+/// `many_of` within a turn the caller holds (two scenes side by side).
+fn laid(name: &str, sessions: usize) -> (Editor, Scratch) {
     let dir = Scratch::new(name);
     let roots = checkouts(&dir, sessions);
     let root = |k: usize| roots[k].clone();
@@ -185,6 +205,15 @@ fn many_of(name: &str, sessions: usize) -> (Editor, Scratch) {
         crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::You, "a note");
         ed.workspace.claude.notes.list.last_mut().unwrap().thread[0].draft = draft;
     }
+    // (what presence asks on workers landed — the checkouts one repository, the line maps in sight worked out — as in
+    // the driver's tarae a while after: a side panel's row then reads the busy ones' places, not the branch that skips)
+    ed.handle_event(crate::event::Event::Key("j".parse().unwrap()));
+    let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+    while ed.presence.asking() {
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        let ev = ed.events.recv_timeout(left).expect("presence's questions answered");
+        ed.handle_event(ev);
+    }
     (ed, dir)
 }
 
@@ -212,28 +241,45 @@ fn counted(ed: &mut Editor, buf: &mut Vec<u8>, key: &str) -> (usize, usize) {
 /// 2,466 (made anew every event), the workspaces' syncs 2,261 and 2,433 (as at e5317216), the notes 35,030, a frame
 /// 162,366 (no lookup by path) and 8,370 (the rail's notes walked a row), the state 57,366, the bases 254. With the
 /// buffers' lay-out and who serves what kept between events (#214's second piece): an event 436 (presence 336, the
-/// workspaces' syncs 0, the notes 100), a frame 1,310 — the same at 34 sessions (`still`).
+/// workspaces' syncs 0, the notes 100), a frame 1,310 — the same at 34 sessions (`still`). The third piece: an event
+/// 353 (presence 253 — a buffer in sight finds its places by file), a frame 624 (the rail's head once a frame, its
+/// files' since asked once there: 81 a frame, ~340 before; its tree once, not twice), presence 26 allocations an event
+/// (129: every place's checkout copied), the notes none (100: a selection made for each).
 #[test]
 fn many_sessions_compare_paths_once_a_place() {
     let (mut ed, _dir) = many("docpaths-budget");
     let mut buf = Vec::with_capacity(1 << 16);
     counted(&mut ed, &mut buf, "j");
+    let rail = crate::codereview::rail_work();
     let (event, frame) = counted(&mut ed, &mut buf, "k");
+    let rail = (crate::codereview::rail_work().0 - rail.0, crate::codereview::rail_work().1 - rail.1);
     let of = |ed: &mut Editor, f: fn(&mut Editor)| {
         let w = work();
         f(ed);
         work() - w
     };
+    let allocs = crate::allocs::count();
     let presence = of(&mut ed, crate::presence::sync);
+    let presence_allocs = crate::allocs::count() - allocs;
     let sessions = of(&mut ed, Editor::workspaces_sync);
     let state = of(&mut ed, |ed| drop(std::hint::black_box(ed.ui_state())));
+    let allocs = crate::allocs::count();
     let notes = of(&mut ed, crate::notes::attach);
+    let notes_allocs = crate::allocs::count() - allocs;
     // (the bases' watch is off in tests: what its every-event pass asks, asked)
     let bases = of(&mut ed, |ed| assert_eq!(crate::keepclose::unwatched(ed).len(), 1, "main, once"));
     eprintln!(
         "WORK event {event} frame {frame} — presence {presence}, workspaces {sessions}, state {state}, notes \
-         {notes}, bases {bases}"
+         {notes}, bases {bases}; the rail {rail:?} (since, trees); allocations: presence {presence_allocs}, notes \
+         {notes_allocs}"
     );
+    // (each busy session's place asked of what it holds — #214's third piece: every place's checkout copied each
+    // event to find the ones beside this one, 129 allocations)
+    assert!(presence_allocs <= 8 * BUSY, "presence: {presence_allocs} allocations for {BUSY} busy sessions");
+    // (the rail's head once a frame, every file's since asked once there, then each row's in sight — #214's third
+    // piece: the head three times a frame, twice a file each, ~340 a frame; its tree once, not for the fit and again)
+    assert!(rail.0 <= REVIEWED + H as usize, "the rail asked since {} times for {REVIEWED} files", rail.0);
+    assert_eq!(rail.1, 1, "the rail's tree built once a frame");
     assert!(
         ed.presence.now.len() > BUSY * STOPS,
         "the busy sessions' places gathered: {}",
@@ -248,9 +294,11 @@ fn many_sessions_compare_paths_once_a_place() {
     );
     assert!(sessions <= 8 * SESSIONS, "the workspaces' syncs: {sessions} paths for {SESSIONS} sessions");
     assert!(event <= 2 * (docs + files + NOTES + 4 * SESSIONS), "an event: {event} paths");
-    assert!(frame <= 4 * (docs + 8 * REVIEWED), "a frame: {frame} paths for {docs} buffers");
+    assert!(frame <= 2 * docs + 4 * REVIEWED, "a frame: {frame} paths for {docs} buffers");
     assert!(state <= 4 * (docs + 4 * REVIEWED), "the state: {state} paths for {docs} buffers");
     assert!(notes <= 4 * (docs + NOTES), "the notes: {notes} paths for {docs} buffers");
+    // (an attached note reads its mark as stored — #214's third piece: a selection made for each, 100 an event)
+    assert!(notes_allocs <= 4, "the notes: {notes_allocs} allocations for {NOTES} notes");
     assert!(bases <= 2 * SESSIONS, "the bases: {bases} paths for {SESSIONS} sessions");
 }
 
@@ -564,7 +612,8 @@ const SEARCHES: &[(&str, usize)] = &[
 /// #214's scene timed: an event (a key, every per-event sync), a frame and a side panel's file row (`presence::
 /// file_marks`), medians — said for `cargo perf` (2026-10-29, this Mac: an event 230 µs, a frame 375 µs, a row 110 µs;
 /// round 1's code on this scene ~500 and ~550 µs; the first, on a smaller one at e5317216, 15.7 ms and 3.0 ms; the
-/// second piece: an event 131 µs, a frame 290 µs, a row 124 µs).
+/// second piece: an event 131 µs, a frame 290 µs, a row 124 µs; the third: 92 µs, 200 µs, 1.8 µs).
+/// `F214_FRAMES=n` draws only that many frames, for a profiler (`.sb/f214-3-profile.sh`).
 #[test]
 fn perf_many_sessions_busy() {
     if crate::test_results::unoptimized("docpaths::tests::perf_many_sessions_busy") {
@@ -572,6 +621,13 @@ fn perf_many_sessions_busy() {
     }
     let (mut ed, _dir) = many("docpaths-perf");
     let mut buf = Vec::with_capacity(1 << 16);
+    if let Some(n) = std::env::var("F214_FRAMES").ok().and_then(|n| n.parse::<usize>().ok()) {
+        for _ in 0..n {
+            buf.clear();
+            crate::term::render(&mut ed, &mut buf, W, H).unwrap();
+        }
+        return;
+    }
     let (mut events, mut frames) = (Vec::new(), Vec::new());
     for i in 0..200 {
         let t = std::time::Instant::now();
