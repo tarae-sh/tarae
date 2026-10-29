@@ -16,6 +16,10 @@
 //! - Two servers side by side need room: B's peak is up to 1.7 × A. With memory pressure up, or less than
 //!   twice that free, the swap is a restart instead (`decide`). Pressure rising during a swap ends it: B
 //!   takes over at once, loaded or not. A server that never finished loading is restarted, not swapped.
+//! - A new server that exits before it takes over (#213: rust-analyzer's own panic loading 10 checkouts) leaves A
+//!   serving; the same folders wait `RETRY` before another try (doubled with each exit in a row), folders that
+//!   change swap at once (`swap_exited`, `share_sync`). Said once in the log and once on screen, never as the
+//!   server failing.
 //!
 //! What the user sees: the status line's server part (`share_said`), `:procs` (`share_procs`), and a line
 //! in the log for each swap or restart, saying why.
@@ -44,6 +48,13 @@ const AGREE_TRIES: u8 = 10;
 const A_FINISH: Duration = ms(if cfg!(test) { 300 } else { 3000 });
 /// How often memory is read while two servers run side by side.
 const WATCH_EVERY: Duration = ms(if cfg!(test) { 20 } else { 1000 });
+/// After a swap's new server exited before it took over, how long the same folders wait for another try —
+/// doubled with each exit in a row, up to `RETRY_MAX`; folders that change try at once (#213: rust-analyzer
+/// panicked loading 10 checkouts, and each try loaded them all beside the one in use — 4.9 GB, minutes of CPU).
+/// No wake of its own: the first event after it tries (`share_sync` runs on every one) — an idle tarae isn't woken
+/// to load them.
+pub(crate) const RETRY: Duration = Duration::from_secs(10 * 60);
+pub(crate) const RETRY_MAX: Duration = Duration::from_secs(60 * 60);
 const GB: u64 = 1 << 30;
 
 // ── What shares ─────────────────────────────────────────────────────────
@@ -296,6 +307,18 @@ pub struct Swap {
     pub switched: Option<Instant>,
 }
 
+/// The folders a swap's new server exited loading, before it took over: not swapped in again before `until`
+/// unless they change (`share_sync`).
+pub struct Held {
+    /// The server that exited (its exit is said by `swap_exited`, not `share_forget`).
+    b: ClientId,
+    want: Vec<PathBuf>,
+    until: Instant,
+    /// `until` on the wall clock (said) · exits in a row for these folders.
+    at: std::time::SystemTime,
+    tries: u32,
+}
+
 #[derive(Default)]
 pub struct Shares {
     /// Each folder's key, once read (None: not in a git checkout) · folders being read.
@@ -313,9 +336,18 @@ pub struct Shares {
     leaving: HashSet<ClientId>,
     /// Restarted servers (and swaps cut short): their checks come on once they're quiescent.
     restarted: HashSet<ClientId>,
+    /// By the server in use: the folders whose swap's new server exited before it took over.
+    held: HashMap<ClientId, Held>,
     /// How memory is read (tests: a stand-in).
     pub room: Option<ReadRoom>,
+    /// Tests: how a server is made instead of its process (the simulation's stand-ins, `Client::own`).
+    #[cfg(test)]
+    pub start: Option<StandIn>,
 }
+
+/// A server made for `lsp_start` in a test: its id, spec and folders given.
+#[cfg(test)]
+pub type StandIn = fn(&mut Editor, ClientId, &lsp::ServerSpec, &[PathBuf]) -> Client;
 
 impl Shares {
     /// A swap's new server that hasn't taken over — asked nothing, its diagnostics unheard.
@@ -338,6 +370,14 @@ impl Shares {
         !self.incoming(cid)
             && !self.leaving(cid)
             && !self.swaps.iter().any(|s| s.a == cid && s.switched.is_some())
+    }
+}
+
+/// The same folders, in any order.
+fn same_folders(x: &[PathBuf], y: &[PathBuf]) -> bool {
+    x.len() == y.len() && {
+        let x: HashSet<&Path> = x.iter().map(PathBuf::as_path).collect();
+        y.iter().all(|r| x.contains(r.as_path()))
     }
 }
 
@@ -589,7 +629,7 @@ impl Editor {
         if self.lsp.share.parked.is_empty() && !self.lsp.clients.iter().any(|c| c.share.is_some()) {
             return;
         }
-        let now = Instant::now();
+        let now = crate::clock::now();
         let ids: Vec<ClientId> = self
             .lsp
             .clients
@@ -600,13 +640,18 @@ impl Editor {
         for a in ids {
             let want = self.share_wanted(a, &self.owners());
             let have = self.client(a).map(|c| c.roots.clone()).unwrap_or_default();
-            let same = want.len() == have.len() && {
-                let have: std::collections::HashSet<&Path> = have.iter().map(PathBuf::as_path).collect();
-                want.iter().all(|r| have.contains(r.as_path()))
-            };
-            if same || want.is_empty() {
+            if same_folders(&want, &have) || want.is_empty() {
                 self.lsp.share.due.remove(&a);
                 continue;
+            }
+            // (the folders a new server exited loading: not again until they change, or its wait is over — #213)
+            if let Some(h) = self.lsp.share.held.get(&a) {
+                if !same_folders(&h.want, &want) {
+                    self.lsp.share.held.remove(&a);
+                } else if now < h.until {
+                    self.lsp.share.due.remove(&a);
+                    continue;
+                }
             }
             let due = match self.lsp.share.due.get(&a) {
                 Some(&d) => d,
@@ -752,7 +797,7 @@ impl Editor {
         self.lsp.share.swaps.push(Swap {
             a,
             b,
-            started: Instant::now(),
+            started: crate::clock::now(),
             why,
             new,
             agreed: Vec::new(),
@@ -897,15 +942,15 @@ impl Editor {
         let Some(s) = self.lsp.share.swaps.iter_mut().find(|s| s.b == b && s.switched.is_none()) else {
             return;
         };
-        s.switched = Some(Instant::now());
-        let (a, took, why) = (s.a, s.started.elapsed(), s.why.clone());
+        s.switched = Some(crate::clock::now());
+        let (a, took, why) = (s.a, crate::clock::since(s.started), s.why.clone());
         self.take_files(a, b);
         self.checks_on(b);
         self.share_move_joining(a, b, &[]);
         let name = self.client(b).map(|c| c.name.clone()).unwrap_or_default();
         let secs = crate::term::run_duration(took);
         crate::log::line(&name, "swap", &format!("switched to the new {name} after {secs}{note} — {why}"));
-        self.swap_finish_a(a, Instant::now());
+        self.swap_finish_a(a, crate::clock::now());
     }
 
     /// The files of A's that B has (as a shadow) become B's, A's diagnostics in them B's.
@@ -948,7 +993,7 @@ impl Editor {
     /// or after `A_FINISH` more.
     fn swap_finish_a(&mut self, a: ClientId, since: Instant) {
         let asked = self.lsp.pending.iter().any(|((c, _), p)| *c == a && !matches!(p.kind, Kind::Shutdown));
-        if asked && since.elapsed() < A_FINISH {
+        if asked && crate::clock::since(since) < A_FINISH {
             self.events.shared_jobs().spawn(move || {
                 crate::event::pause(ms(20));
                 move |ed: &mut Editor| ed.swap_finish_a(a, since)
@@ -1086,6 +1131,7 @@ impl Editor {
         s.due.remove(&cid);
         s.restarted.remove(&cid);
         s.leaving.remove(&cid);
+        s.held.remove(&cid);
         let joining = s.joining.remove(&cid).unwrap_or_default();
         if let Some(i) = s.swaps.iter().position(|w| w.a == cid) {
             let w = s.swaps.remove(i);
@@ -1114,11 +1160,62 @@ impl Editor {
             if w.switched.is_none() {
                 let list = s.joining.entry(w.a).or_default();
                 list.extend(w.new.into_iter().filter(|r| !list.contains(r)).collect::<Vec<_>>());
-                let name = self.client(w.a).map(|c| c.name.clone()).unwrap_or_default();
-                crate::log::line(&name, "swap", "the new one exited before it took over — the old one stays");
+                // (an exit says itself, with when it's tried again: `swap_exited`)
+                if !s.held.get(&w.a).is_some_and(|h| h.b == cid) {
+                    let name = self.client(w.a).map(|c| c.name.clone()).unwrap_or_default();
+                    crate::log::line(
+                        &name,
+                        "swap",
+                        "the new one went before it took over — the old one stays",
+                    );
+                }
             }
         }
         self.share_unpark();
+    }
+
+    /// Server `b`, a swap's new one, exited before it took over (`lsp_exited` — #213: rust-analyzer's own panic as
+    /// it loaded every folder): A stays and goes on serving its folders; the files B had wait to join A again; and
+    /// the same folders aren't swapped in again until they change or `RETRY` has passed (doubled with each exit in
+    /// a row) — each try loads every folder beside A. One line in the log each time; on screen the first time only.
+    pub(crate) fn swap_exited(&mut self, b: ClientId) {
+        let swap = self.lsp.share.swaps.iter().find(|s| s.b == b && s.switched.is_none());
+        let (Some(s), Some(c)) = (swap, self.client(b)) else {
+            self.lsp_stopped(b);
+            return;
+        };
+        let (a, new, want, name) = (s.a, s.new.clone(), c.roots.clone(), c.name.clone());
+        let tries =
+            self.lsp.share.held.get(&a).filter(|h| same_folders(&h.want, &want)).map_or(1, |h| h.tries + 1);
+        let wait = RETRY.saturating_mul(1 << (tries - 1).min(6)).min(RETRY_MAX);
+        let (until, at) = (crate::clock::now() + wait, crate::clock::system() + wait);
+        let theirs: Vec<DocId> = self.docs.iter().filter(|d| d.lsp.client == Some(b)).map(|d| d.id).collect();
+        let n = want.len();
+        self.lsp.share.held.insert(a, Held { b, want, until, at, tries });
+        // (B's folders join A again — `share_forget`)
+        self.lsp_stopped(b);
+        for id in theirs {
+            self.park(id);
+        }
+        let again = format!(
+            "again after {} (in {}), or once the checkouts change",
+            crate::log::clock(at),
+            crate::term::run_duration(wait)
+        );
+        let msg = format!(
+            "the new one exited before it took over — the old one stays; {} wait{}: {again}{}",
+            names(&new),
+            if new.len() == 1 { "s" } else { "" },
+            if tries > 1 { format!(" ({tries} exits in a row)") } else { String::new() }
+        );
+        crate::log::line(&name, "swap", &msg);
+        if tries == 1 {
+            self.set_warning(format!(
+                "the new shared {name} exited loading {n} checkouts — the one in use stays; {} wait for another try after {} (each loads them all), or a change of checkouts",
+                new.len(),
+                crate::log::clock(at)
+            ));
+        }
     }
 
     /// Server `cid` began loading its workspaces again (`Fetching`): its folders' keys are read again — one
@@ -1173,6 +1270,22 @@ impl Editor {
         if self.lsp.share.parked.contains(&doc.id) {
             let lang = lang_of(doc)?;
             let name = self.lsp.server_for.get(&lang)?;
+            // (its folder's swap exited before it took over: when it's tried again — `lang_of` read its path, so
+            // one with none never got here)
+            let now = crate::clock::now();
+            let path = doc.path.as_deref()?;
+            if let Some(h) = self
+                .lsp
+                .share
+                .held
+                .values()
+                .find(|h| now < h.until && h.want.iter().any(|r| path.starts_with(r)))
+            {
+                return Some(format!(
+                    "{name}: the last swap exited — again after {}",
+                    crate::log::clock(h.at)
+                ));
+            }
             return Some(format!("{name}: joining the shared one"));
         }
         let main = doc.lsp.client?;
@@ -1183,7 +1296,11 @@ impl Editor {
             None if !b.ready => "starting".into(),
             None => "checking it agrees".into(),
         };
-        Some(format!("{}: swap {} · {doing}", b.name, crate::term::run_duration(s.started.elapsed())))
+        Some(format!(
+            "{}: swap {} · {doing}",
+            b.name,
+            crate::term::run_duration(crate::clock::since(s.started))
+        ))
     }
 
     /// What `:procs` says a shared server is doing — None for one folder's own.
@@ -1193,7 +1310,7 @@ impl Editor {
         let s = self.lsp.share.swaps.iter().find(|s| s.a == c.id || s.b == c.id);
         Some(match s {
             Some(s) if s.b == c.id && s.switched.is_none() => {
-                let secs = crate::term::run_duration(s.started.elapsed());
+                let secs = crate::term::run_duration(crate::clock::since(s.started));
                 format!("swapping in for {of} — {secs} so far · {}", s.why)
             }
             Some(s) if s.a == c.id && s.switched.is_some() => {

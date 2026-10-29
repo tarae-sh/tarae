@@ -699,6 +699,15 @@ impl Editor {
         if let Some(key) = checks.filter(|_| checks_off) {
             options = crate::share::checks_held(options, key);
         }
+        // (a test's stand-in, no process: `share::StandIn`)
+        #[cfg(test)]
+        if let Some(make) = self.lsp.share.start {
+            let mut c = make(self, cid, &server, roots);
+            c.checks_off = checks_off;
+            self.lsp.clients.push(c);
+            self.lsp_own_serve(cid);
+            return Some(cid);
+        }
         match Client::start(cid, &server, roots, options, self.events.shared_sender()) {
             Ok(mut c) => {
                 c.checks_off = checks_off;
@@ -3472,6 +3481,12 @@ impl Editor {
         // (a swapped-out server exiting as it was told to)
         if self.lsp.share.leaving(cid) {
             return self.share_drop(cid);
+        }
+        // (a swap's new server, before it took over: the one in use stays, nothing failed — the swap says it once,
+        // never a toast at each try; not counted towards `:procs`' hold, which is by its first folder: the one in
+        // use's too — #213)
+        if self.lsp.share.incoming(cid) {
+            return self.swap_exited(cid);
         }
         let root = self.client(cid).map(|c| c.root.clone()).unwrap_or_default();
         let tool = self
