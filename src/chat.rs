@@ -471,9 +471,12 @@ pub struct Chat {
     pub follow: crate::follow::Follow,
     /// This claude doesn't know `--thinking-display` (older CLI) — spawn without it.
     no_thought_flag: bool,
-    /// A new conversation was asked for (`C-l`, `:chat-new`) — the recent one isn't continued when the
-    /// project's are read.
+    /// A new conversation was asked for (`C-l`, `:chat-new`) — a session brought back doesn't continue its own when
+    /// the project's are read.
     pub started_new: bool,
+    /// The conversation a session brought back continued by itself (`Session.brought_back`) — its top line says so
+    /// (`continued · 2h ago · 120k`) until its next message goes.
+    pub continued: Option<crate::chats::Past>,
     /// The user brought the panel back this turn (`space l`, a click on the minimized card).
     pub unfolded: bool,
     /// Claude's edits waiting for (or in) their review.
@@ -568,8 +571,8 @@ pub struct Chat {
     /// claude's id for this conversation (its `session_id`, from `init`) · the one the next process resumes.
     pub conversation: Option<String>,
     resume: Option<String>,
-    /// Earlier conversations (id, title, last used) — the empty chat lists them, `C-p` picks one.
-    pub past: Vec<(String, String, u64)>,
+    /// Earlier conversations, newest first — the empty chat offers the latest, `C-p` picks one.
+    pub past: Vec<crate::chats::Past>,
     /// Claude's plan for this conversation (`plan.rs`) — pinned under the title.
     pub plan: Option<crate::plan::Plan>,
     /// The models claude offers (its `initialize` answer) · the one answering: what `init` said this process
@@ -932,6 +935,7 @@ impl Chat {
             follow: Default::default(),
             no_thought_flag: false,
             started_new: false,
+            continued: None,
             unfolded: false,
             edits: Default::default(),
             allowed: Default::default(),
@@ -1248,8 +1252,9 @@ pub fn open(ed: &mut Editor) {
         None => {
             let mut c = Chat::new();
             c.follow.on = ed.config.llm.follow;
-            // The project's conversations, read on a worker — a recent one continues (the process spawned
-            // meanwhile gives way to one resuming it, unless something was said already)
+            // The project's conversations, read on a worker — the empty chat offers the latest; a session brought
+            // back continues its own (the process spawned meanwhile gives way to one resuming it, unless something
+            // was said already)
             if let Some(dir) = ed.chats_dir.clone() {
                 let root = ed.workspace.root.clone();
                 ed.events.jobs().spawn(move || {
@@ -1267,29 +1272,36 @@ pub fn open(ed: &mut Editor) {
     ensure_proc(ed);
 }
 
-/// The project's conversations are read: the latest continues if it's recent and nothing was said yet.
+/// The project's conversations are read. A start begins a new conversation — the latest a key away, on the empty chat's
+/// first row; a session the list brought back is a task, not a start: it continues its own, if nothing was said yet.
 fn loaded(ed: &mut Editor, saved: Vec<crate::chats::Saved>) {
+    // (once: its chat closed and opened again is a start of yours — it continues nothing by itself)
+    let back = std::mem::take(&mut ed.workspace.claude.brought_back);
     let Some(c) = &mut ed.workspace.claude.chat else { return };
-    c.past = saved.iter().map(|s| (s.id.clone(), s.title.clone(), s.updated)).collect();
-    let fresh = saved.first().filter(|s| crate::chats::now().saturating_sub(s.updated) < crate::chats::FRESH);
-    match fresh {
-        Some(s) if c.msgs.is_empty() && !c.busy() && !c.started_new => continue_with(ed, s.clone()),
+    c.past = saved.iter().map(crate::chats::Saved::past).collect();
+    match saved.into_iter().next() {
+        Some(s) if back && c.msgs.is_empty() && !c.busy() && !c.started_new => continue_as(ed, s, true),
         _ => {}
     }
 }
 
 /// Shows `saved` in the panel and resumes its conversation in claude (the process of now, if any, goes).
 pub fn continue_with(ed: &mut Editor, saved: crate::chats::Saved) {
-    // (as `reset`: once a pane's key has its document back)
-    if crate::docpane::lent(ed) {
-        crate::docpane::later(ed, move |ed| continue_with(ed, saved));
-        return;
-    }
-    continue_from(ed, saved, true);
+    continue_as(ed, saved, false);
 }
 
-/// `continue_with` — the process only when `spawn` (else the first message starts it, resuming).
-fn continue_from(ed: &mut Editor, saved: crate::chats::Saved, spawn: bool) {
+/// `continue_with` — `back`: by itself, a session brought back (`Chat.continued`).
+fn continue_as(ed: &mut Editor, saved: crate::chats::Saved, back: bool) {
+    // (as `reset`: once a pane's key has its document back)
+    if crate::docpane::lent(ed) {
+        crate::docpane::later(ed, move |ed| continue_as(ed, saved, back));
+        return;
+    }
+    continue_from(ed, saved, true, back);
+}
+
+/// `continue_as` — the process only when `spawn` (else the first message starts it, resuming).
+fn continue_from(ed: &mut Editor, saved: crate::chats::Saved, spawn: bool, back: bool) {
     let Some(c) = &ed.workspace.claude.chat else { return };
     if c.busy() {
         return ed.set_status("Claude is still answering — stop it (C-c) first");
@@ -1315,6 +1327,7 @@ fn continue_from(ed: &mut Editor, saved: crate::chats::Saved, spawn: bool) {
     c.msgs.retain(|m| !(m.role == Role::Note && m.text.starts_with("continued from ")));
     let when = crate::chats::ago(saved.updated, crate::chats::now());
     c.msgs.push(Msg::new(Role::Note, format!("continued from {when}"), ""));
+    c.continued = back.then(|| saved.past());
     c.plan = saved.plan.as_ref().and_then(crate::plan::Plan::from_json);
     c.conversation = Some(saved.id.clone());
     c.resume = Some(saved.id.clone());
@@ -1360,10 +1373,10 @@ pub fn past_picker(ed: &mut Editor) {
             Ok(items)
         }
     });
-    ed.open_picker(
-        crate::picker::Picker::of("conversations", "conversations", Vec::new(), false),
-        Some(fill),
-    );
+    // (their ages a column that keeps its width: a long title is cut, never its time)
+    let mut picker = crate::picker::Picker::of("conversations", "conversations", Vec::new(), false);
+    picker.times = true;
+    ed.open_picker(picker, Some(fill));
 }
 
 /// `:chat-resume <id>` — continue that conversation (read on a worker).
@@ -1428,14 +1441,14 @@ pub fn restore(ed: &mut Editor, r: Restored) {
         let saved = crate::chats::load(&dir, &root);
         move |ed: &mut Editor| {
             let Some(c) = &mut ed.workspace.claude.chat else { return };
-            c.past = saved.iter().map(|s| (s.id.clone(), s.title.clone(), s.updated)).collect();
+            c.past = saved.iter().map(crate::chats::Saved::past).collect();
             let Some(s) = saved.into_iter().find(|s| s.id == id) else {
                 if spawn {
                     ensure_proc(ed);
                 }
                 return;
             };
-            continue_from(ed, s, spawn);
+            continue_from(ed, s, spawn, false);
             let Some(c) = &mut ed.workspace.claude.chat else { return };
             c.scroll = r.scroll;
             c.msgs.retain(|m| !(m.role == Role::Note && m.text == RESTARTED));
@@ -1509,7 +1522,7 @@ pub fn close(ed: &mut Editor) {
 }
 
 /// New chat — fresh process (drops memory of the previous conversation): `C-l` in the chat, `:chat-new`
-/// (the chat opened first if it's closed — and the recent conversation not continued when it's read).
+/// (the chat opened first if it's closed — and a session brought back not continuing its own when it's read).
 pub fn reset(ed: &mut Editor) {
     reset_said(ed, "New conversation with Claude");
 }
@@ -1523,6 +1536,8 @@ pub fn reset_said(ed: &mut Editor, said: &str) {
     }
     // (what the last conversation's acts as a parent came to goes with it: never told to this one — `orchestra::News`)
     ed.workspace.claude.news.clear();
+    // (a new conversation asked for: a session brought back no longer continues its own by itself)
+    ed.workspace.claude.brought_back = false;
     // (the hosts this conversation's `a` let through go with it — the proxy keeps them as the session's, right
     // while a session has one conversation at a time)
     crate::hosts::chat_ended(ed);
@@ -1539,12 +1554,14 @@ pub fn reset_said(ed: &mut Editor, said: &str) {
     c.unfolded = true;
     ed.workspace.viewer.at = At::Chat;
     c.kill();
-    // The one just left is an earlier one now (the empty chat lists it)
+    // The one just left is an earlier one now (the empty chat offers it)
     if let Some(id) = c.conversation.take() {
         let title = c.msgs.iter().find(|m| m.role == Role::User).map(|m| m.text.clone()).unwrap_or_default();
-        c.past.retain(|p| p.0 != id);
-        c.past.insert(0, (id, title, crate::chats::now()));
+        c.past.retain(|p| p.id != id);
+        let context = ed.workspace.claude.usage.context().map(|(used, _)| used);
+        c.past.insert(0, crate::chats::Past { id, title, updated: crate::chats::now(), context });
     }
+    c.continued = None;
     c.msgs.clear();
     c.plan = None;
     c.conversation_left();
@@ -2822,6 +2839,7 @@ fn bare(ed: &mut Editor, text: &str, row: Msg) -> bool {
     }
     crate::usage::message_sent(&session, text.len(), 0);
     c.hop = 0;
+    c.continued = None;
     c.failed.1.clear();
     c.follow.new_turn();
     c.follow.pane = Some(focus);
@@ -2958,6 +2976,8 @@ fn submit_as(
     }
     c.sent.extend(sent);
     c.hop = 0;
+    // (continued by itself: said until a message of this run goes)
+    c.continued = None;
     // (a new turn: the last one's failed runs are no longer what Claude ended on)
     c.failed.1.clear();
     c.follow.new_turn();

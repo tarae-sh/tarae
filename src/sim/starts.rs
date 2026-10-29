@@ -4,7 +4,10 @@
 //! cache goes cold; after every step nothing of the start's is out past `START_LATE` of the simulated clock, and at
 //! the end none is out and the watch was armed. A job of the start's left out past `START_LATE`: the state's
 //! `starting` says how long; landed, it's gone. And a poll of the start's that respawns from its own result (a
-//! rebase's, the shared server's swap): its rounds age as one job, said late once past `START_LATE`.
+//! rebase's, the shared server's swap): its rounds age as one job, said late once past `START_LATE`. And a start's
+//! chats (projects step 2): the start's chat opened, its conversations read on a job, continues nothing and offers the
+//! latest; a session the list brought back continues its own — unless a message of yours went before its read landed,
+//! then that message begins a new one, never the old rows under a new conversation.
 
 use std::cell::Cell;
 use std::time::Duration;
@@ -24,6 +27,15 @@ fn a_restore_with_a_warm_conversation_leaves_nothing_of_the_start_out() {
 #[test]
 fn a_start_job_out_past_its_time_is_said_with_it() {
     super::seeds("a_start_job_out_past_its_time_is_said_with_it", SEEDS, late);
+}
+
+#[test]
+fn a_start_offers_its_last_conversation_and_a_session_brought_back_continues_its_own() {
+    super::seeds(
+        "a_start_offers_its_last_conversation_and_a_session_brought_back_continues_its_own",
+        SEEDS,
+        brought_back,
+    );
 }
 
 #[test]
@@ -107,6 +119,82 @@ fn restore(choices: Choices) -> Vec<String> {
         (true, true) => Ok(()),
         (false, _) => Err("the usage watch was never armed: the restore's conversation wasn't warm".into()),
         (true, false) => Err(format!("the start's still out: {out:?}")),
+    });
+    let trace = sim.trace().to_vec();
+    drop(sim);
+    drop(ed);
+    trace
+}
+
+/// A conversation of `root`'s kept two hours ago, its one row `title`.
+fn kept(dir: &std::path::Path, root: &std::path::Path, id: &str, title: &str) {
+    let rows = crate::chats::rows_of(&[crate::chat::Msg::new(crate::chat::Role::User, title, "")]);
+    let saved = crate::chats::Saved {
+        id: id.into(),
+        title: title.into(),
+        updated: crate::chats::now() - 2 * 3_600,
+        rows,
+        plan: None,
+        usage: None,
+        seq: crate::chats::seq(),
+    };
+    crate::chats::save(dir, root, saved);
+}
+
+fn brought_back(choices: Choices) -> Vec<String> {
+    let name = "a_start_offers_its_last_conversation_and_a_session_brought_back_continues_its_own";
+    let dir = crate::scratch::Scratch::new("sim-brought-back");
+    let mut sim = Sim::new(name, choices, LIMIT);
+    let mut ed = Editor::new(crate::config::Config::default());
+    ed.chats_dir = Some(dir.join("chats"));
+    // (claude a stand-in: what it's sent, never a process)
+    let (tx, _rx) = std::sync::mpsc::channel();
+    ed.claude_lines = Some(tx);
+    let (home, kid) = (ed.workspace.root.clone(), dir.join("kid"));
+    std::fs::create_dir_all(&kid).unwrap();
+    kept(&dir.join("chats"), &home, "c-home", "the start's");
+    kept(&dir.join("chats"), &kid, "c-kid", "the session's");
+    // (the start: its chat opened; a session the list brought back, its chat opened too — each read on a job)
+    crate::chat::open(&mut ed);
+    let id = ed.workspace_add(kid.clone());
+    ed.with_workspace(id, |ed| {
+        ed.workspace.claude.brought_back = true;
+        crate::chat::open(ed);
+    });
+    let chat_of = |ed: &Editor, root: &std::path::Path| {
+        std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|l| l.root == root).and_then(|l| {
+            let c = l.claude.chat.as_ref()?;
+            let old = c.msgs.iter().any(|m| m.text == "the start's" || m.text == "the session's");
+            Some((c.conversation.clone(), old, c.past.first().map(|p| p.id.clone())))
+        })
+    };
+    // A message in the session brought back, anywhere among the reads
+    let input = |_: &mut Sim, ed: &mut Editor| {
+        ed.with_workspace(id, |ed| {
+            ed.workspace.claude.chat.as_mut().unwrap().input = "go on".into();
+            crate::chat::send(ed);
+        });
+        "a message in kid".to_string()
+    };
+    let check = |ed: &Editor| {
+        let (Some(home_chat), Some(kid_chat)) = (chat_of(ed, &home), chat_of(ed, &kid)) else {
+            return Err("a chat closed".into());
+        };
+        if home_chat.0.is_some() || home_chat.1 {
+            return Err(format!("the start continued: {home_chat:?}"));
+        }
+        let (conv, old, ..) = kid_chat;
+        match old == (conv.as_deref() == Some("c-kid")) {
+            true => Ok(()),
+            false => Err(format!("kid's old rows {old} under conversation {conv:?}")),
+        }
+    };
+    let print = |ed: &Editor| format!("home {:?} · kid {:?}", chat_of(ed, &home), chat_of(ed, &kid));
+    sim.walk(&mut ed, 1, input, check, print);
+    let (home_chat, kid_chat) = (chat_of(&ed, &home), chat_of(&ed, &kid));
+    sim.at_end(|| match (home_chat, kid_chat) {
+        (Some((None, false, Some(offered))), Some(_)) if offered == "c-home" => Ok(()),
+        (home, _) => Err(format!("the start's chat: {home:?} — nothing continued, c-home offered")),
     });
     let trace = sim.trace().to_vec();
     drop(sim);

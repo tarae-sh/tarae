@@ -1,0 +1,97 @@
+# chat_empty_continue_narrow · 100x30 · theme meok · cursor 27:65
+## text
+00 ─ tarae › src › demo.rs ────────────────────────────────────┬─ claude ────────────────────── ready ─
+01   1 use std::collections::HashMap;                          │
+02   2                                                         │
+03   3 ▎ Counts how often each word appears.                   │
+04     ▎                                                       │
+05     ▎ Words are split on whitespace; case is kept.          │
+06   6 pub fn word_counts(text: &str) -> HashMap<&str, usize>  │
+07     {                                                       │  ▎ Ask Claude
+08   7     let mut counts = HashMap::new();                    │
+09   8     for word in text.split_whitespace() {               │  It reads the whole project,
+10   9     │   *counts.entry(word).or_insert(0) += 1;          │  starting from demo.rs.
+11  10     }                                                   │
+12  11     counts                                              │  tab for a suggestion
+13  12 }                                                       │  › Explain what this file does
+14  13                                                         │  › Where is this used across the pr…
+15  14 fn main() {                                             │  › Why is this diagnostic happening?
+16  15     let text = "the quick brown fox jumps over the lazy │
+17         dog";                                               │  C-p continue "why …" · 2h ago · 41k
+18  16     let counts = word_counts(text);                     │  C-t for another model
+19  17     println!("{} distinct words", counts.len()); //     │
+20         타래                                                │
+21  18 }                                                       │
+22                                                             │
+23                                                             │
+24                                                             │
+25                                                             │
+26                                                             │  ───────────────────────────────────
+27                                                             │  › Ask about demo.rs…
+28                                                             │  enter send  esc code  C-s screen
+29  ● chat                                                                      rust   utf-8 LF   1:1
+## bg · surface per cell, blank = ui.background
+00
+01     cccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+02
+03
+04
+05
+06
+07
+08
+09
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+## fg · visible glyphs only, blank = unlisted color, UPPERCASE = bold
+00 f ddddd f ddd f TTTTTTT ffffffffffffffffffffffffffffffffffffaa TTTTTT aaaaaaaaaaaaaaaaaaaaaa fffff a
+01   A                                                         a
+02   f                                                         a
+03   f f                                                       a
+04     f                                                       a
+05     f                                                       a
+06   f                                                         a
+07                                                             a  a TTT TTTTTT
+08   f                                                         a
+09   f                                                         a  dd ddddd ddd ddddd dddddddd
+10   f                                                         a  dddddddd dddd dddddddd
+11  ff                                                         a
+12  ff                                                         a  DDD fff f ffffffffff
+13  ff                                                         a  f ddddddd dddd dddd dddd dddd
+14  ff                                                         a  f ddddd dd dddd dddd dddddd ddd ddd
+15  ff                                                         a  f ddd dd dddd dddddddddd dddddddddd
+16  ff                gggg ggggg ggggg ggg ggggg gggg ggg gggg a
+17         gggg                                                a  BBB ffffffff ffff ff f ff fff f fff
+18  ff                                                         a  DDD fff fffffff fffff
+19  ff              ggg gggggggg gggggg                        a
+20                                                             a
+21  ff                                                         a
+22                                                             a
+23                                                             a
+24                                                             a
+25                                                             a
+26                                                             a  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+27                                                             a  A fff fffff ffffffff
+28                                                             a  DDDDD ffff  DDD ffff  DDD ffffff
+29  a TTTT                                                                      dddd   ddddd dd   TTT
+## legend
+bg: c=ui.cursorline.primary
+fg: a=ui.accent  t=ui.text.focus  d=ui.virtual  f=ui.linenr  g=diff.plus  B=bold

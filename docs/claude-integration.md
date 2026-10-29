@@ -109,10 +109,14 @@ choice applies to the conversation at once, with no restart and no lost context:
 new model. It's also saved (`llm.model`, `llm.effort`), so `space i` and later chats use it too.
 
 Conversations outlive tarae. Each one is kept for its project, and Claude keeps its own memory of it
-(`claude --resume`). Open the chat after a restart and the latest conversation carries on (`continued from 2h
-ago`) if you used it in the last 8 hours. Otherwise you get a fresh chat, and the empty panel lists your earlier
-conversations. `C-p` in the chat (or `:chat-resume`) picks any of them, with the conversation as the preview
-([screenshot](screenshots/chat-conversations.png)). The last 20 conversations of a project are kept, in
+(`claude --resume`). A start begins a new conversation. The empty chat offers the latest among its first keys:
+`C-p continue "why does adds() fail?" · 2h ago · 41k` gives its age and the context it would carry. Past the cache's
+hour, continuing it writes that whole context to the cache again, the costliest request a conversation makes, so you see
+the size before you pay for it. `C-p` in the chat (or `:chat-resume`) lists them all, newest first and selected, with the
+conversation as the preview ([screenshot](screenshots/chat-conversations.png)); `enter` continues one. Two cases
+continue by themselves. The sessions the session list brings back at a start are tasks rather than starts of yours, so
+each continues its own last conversation and says so on its chat's top line (`continued · 2h ago · 120k`) until you
+send it a message. And `:restart` brings every chat back exactly as it was. The last 20 conversations of a project are kept, in
 `~/.local/state/tarae/chats/`. Because Claude keeps the chat's conversations too, they also show in `claude --resume`
 in that folder.
 

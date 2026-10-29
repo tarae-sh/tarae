@@ -6,8 +6,9 @@
 //! - Claude's memory of it is claude's own (`--resume <id>`, measured: stream-json keeps the id and the
 //!   context); ours is only what the panel shows. A conversation claude no longer has ("No conversation
 //!   found") starts a fresh one with the rows still shown.
-//! - Opening the chat continues the latest conversation if it's recent (`FRESH`); `C-p` in the chat or
-//!   `:chat-resume` picks an earlier one.
+//! - A start begins a new conversation: the empty chat's first row offers the latest (`C-p continue "…" · 2h ago ·
+//!   41k` — its context said before a cold one is paid for), `C-p` in the chat or `:chat-resume` picks one. A session
+//!   the list brought back continues its own (`Session.brought_back`); `:restart` continues exactly (`chat::restore`).
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -22,9 +23,6 @@ use crate::config::state_file as file;
 const KEEP: usize = 20;
 /// Rows kept per conversation (the oldest go).
 const ROWS: usize = 400;
-/// The latest conversation is continued when the chat opens if it was used this recently.
-pub const FRESH: u64 = 8 * 3600;
-
 /// One conversation as stored.
 #[derive(Clone, Debug)]
 pub struct Saved {
@@ -41,6 +39,28 @@ pub struct Saved {
     /// When this snapshot was taken (ns) — saves run on workers and may finish out of order; an older one
     /// never replaces a newer (`save`).
     pub seq: u64,
+}
+
+/// An earlier conversation as the chat lists it: the empty chat's first row, `C-p`'s picker, a continued one's top line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Past {
+    pub id: String,
+    pub title: String,
+    /// Unix seconds.
+    pub updated: u64,
+    /// What its last request carried, as `usage` last saw it (`Usage::kept_context`) — None: not reported.
+    pub context: Option<u64>,
+}
+
+impl Saved {
+    pub fn past(&self) -> Past {
+        Past {
+            id: self.id.clone(),
+            title: self.title.clone(),
+            updated: self.updated,
+            context: self.usage.as_ref().and_then(crate::usage::Usage::kept_context),
+        }
+    }
 }
 
 /// A snapshot's `seq` — taken on the main loop, in order.

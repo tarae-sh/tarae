@@ -2698,30 +2698,260 @@ fn snapshot_chat_run_queued_behind_a_stopped_turns() {
     s.frames_both("chat_run_queued_behind_a_stopped_turns");
 }
 
-/// The empty chat's earlier conversations: their ages a column, right-aligned at the widest, each its largest unit.
+/// The empty chat's first row (projects step 2): a start begins a new conversation, the latest a key away — its title,
+/// its age (its largest unit) and its context as usage last saw it, right under the top line; the intro centred below.
+/// Narrow, the title is cut first, then `continue` goes. None kept: the intro alone.
 #[test]
-fn the_chats_earlier_conversations_line_up_their_ages() {
-    let mut s = Shot::new(120, 30);
-    s.file("src/demo.rs", DEMO_RS);
-    let mut chat = crate::chat::Chat::new();
-    chat.unfolded = true;
+fn the_empty_chat_offers_the_latest_conversation_on_its_first_row() {
     let now = crate::chats::now();
-    chat.past = vec![
-        ("a".into(), "why does adds() fail?".into(), now - 2 * 3_600 - 1_234),
-        ("b".into(), "can average overflow?".into(), now - 16 * 86_400),
+    let shot = |w: u16, past: Vec<crate::chats::Past>| {
+        let mut s = Shot::new(w, 30);
+        s.file("src/demo.rs", DEMO_RS);
+        let mut chat = crate::chat::Chat::new();
+        chat.unfolded = true;
+        chat.past = past;
+        s.ed.workspace.claude.chat = Some(chat);
+        s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+        let mut parser = vt100::Parser::new(s.h, s.w, 0);
+        parser.process(&s.frame());
+        let rows: Vec<String> = parser.screen().rows(0, s.w).collect();
+        (s, rows)
+    };
+    let past = |id: &str, title: &str, ago: u64, context: Option<u64>| crate::chats::Past {
+        id: id.into(),
+        title: title.into(),
+        updated: now - ago,
+        context,
+    };
+    let kept = || {
+        vec![
+            past("a", "why does adds() fail?", 2 * 3_600 + 1_234, Some(41_200)),
+            past("b", "can average overflow?", 16 * 86_400, Some(307_000)),
+        ]
+    };
+    // (its row among the first keys: the suggestions, a row of air, it, then `C-t`)
+    let at = |rows: &[String]| {
+        let i =
+            rows.iter().position(|r| r.contains("C-p continue \"")).unwrap_or_else(|| panic!("{rows:#?}"));
+        assert!(
+            rows[i - 2].contains("Why is this diagnostic") && rows[i + 1].contains("C-t for another model")
+        );
+        rows[i].trim_end().to_string()
+    };
+    let (mut s, rows) = shot(160, kept());
+    assert!(at(&rows).ends_with("C-p continue \"why does adds() fail?\" · 2h ago · 41k"), "{rows:#?}");
+    assert!(!rows.iter().any(|r| r.contains("can average")), "the latest only: {rows:#?}");
+    s.check("chat_empty_continue");
+    // (narrow: the title cut, `continue`, the age and the size kept)
+    let (mut s, rows) = shot(100, kept());
+    let row = at(&rows);
+    assert!(row.contains("C-p continue \"why") && row.ends_with("…\" · 2h ago · 41k"), "{row}");
+    s.check("chat_empty_continue_narrow");
+    // (narrower: the title down to its `…`, then the age gone, then the size — `continue` never)
+    let ui = Ui::new(&s.ed);
+    let row = |w: usize| {
+        let style = crate::theme::Style::default();
+        let spans = super::continue_row(&s.ed, &ui, &kept()[0], w, now, (style, style));
+        assert!(spans[0].hint && spans[0].text == "C-p", "its key a hint: {spans:?}");
+        spans.iter().map(|s| s.text.as_str()).collect::<String>()
+    };
+    assert_eq!(row(31), "C-p continue \"…\" · 2h ago · 41k");
+    assert_eq!(row(30), "C-p continue \"why does…\" · 41k");
+    assert_eq!(row(22), "C-p continue \"…\" · 41k");
+    assert_eq!(row(21), "C-p continue \"why d…\"");
+    assert_eq!(row(16), "C-p continue \"…\"", "at its narrowest, the key and the verb still there");
+    // (none kept: the intro alone, no row for it)
+    let (_, rows) = shot(160, Vec::new());
+    assert!(!rows.iter().any(|r| r.contains("C-p")), "{rows:#?}");
+}
+
+/// A top line's piece folds by its own parts before any piece goes (the user, 2026-10-29): `continued · 2h ago · 120k`
+/// before `follow` loses its size, then its age, then `follow` goes, `continued` alone the last.
+#[test]
+fn a_pieces_parts_fold_before_a_later_piece() {
+    use crate::whole::Fit;
+    let st = crate::theme::Style::default();
+    let details: Vec<(Fit, crate::theme::Style)> =
+        ["continued ", "· 2h ago ", "· 120k", super::NAMES_SEP, "follow"]
+            .map(|s| (Fit::from(s), st))
+            .to_vec();
+    let said = |room: usize| {
+        super::fold_details(&details, room).iter().map(|(s, ..)| s.shown().to_string()).collect::<String>()
+    };
+    assert_eq!(said(40), "continued · 2h ago · 120k · follow");
+    assert_eq!(said(30), "continued · 2h ago · follow");
+    assert_eq!(said(20), "continued · follow");
+    assert_eq!(said(12), "continued");
+}
+
+/// A press on the chat's top line lands on what it names after a piece's part folded (the reviewer, 2026-10-29): with
+/// `continued · 2h ago · 120k` narrowed to its word and age, `follow` still follows and `1 granted` still lists —
+/// each detail drawn is mapped back to its own by its index (`TopLine.kept`), never by its place.
+#[test]
+fn a_press_on_the_top_line_lands_after_a_part_folded() {
+    use crate::event::{Mouse, MouseKind};
+    let now = crate::chats::now();
+    let shot = |w: u16| {
+        let mut s = Shot::new(w, 30);
+        s.file("src/demo.rs", DEMO_RS);
+        let mut chat = crate::chat::Chat::new();
+        chat.unfolded = true;
+        chat.follow.on = true;
+        chat.continued = Some(crate::chats::Past {
+            id: "c".into(),
+            title: "t".into(),
+            updated: now - 7_300,
+            context: Some(120_400),
+        });
+        s.ed.workspace.claude.chat = Some(chat);
+        s.ed.workspace.claude.hosts.push(("crates.io".into(), 443));
+        s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+        let mut parser = vt100::Parser::new(s.h, s.w, 0);
+        parser.process(&s.frame());
+        let top = parser.screen().rows(0, s.w).next().unwrap();
+        (s, top)
+    };
+    // (the narrowest line that still says `follow` and `1 granted` with its size folded)
+    let (mut s, top) = (60..200)
+        .map(shot)
+        .find(|(_, t)| t.contains("continued · 2h ago · follow · 1 granted") && !t.contains("120k"))
+        .expect("a width where the size folds and the rest stays");
+    let press = |s: &mut Shot, word: &str| {
+        let x = top[..top.find(word).unwrap()].chars().count() as u16 + 1;
+        for kind in [MouseKind::Down, MouseKind::Up] {
+            s.ed.handle_event(Event::Mouse(Mouse { kind, x, y: 0, alt: false, ctrl: false }));
+        }
+        s.frame();
+    };
+    press(&mut s, "follow");
+    assert!(!s.ed.workspace.claude.chat.as_ref().unwrap().follow.on, "follow pressed: off ({top})");
+    press(&mut s, "1 granted");
+    // (its list made on a worker)
+    s.until("granted pressed: its list", |ed| ed.picker.as_ref().is_some_and(|p| p.kind == "granted"));
+}
+
+/// The conversations' picker keeps every row's age in its column (counters and timers keep their width): a long title is
+/// cut at its end, never its time (the user, 2026-10-29, on step 2's shots).
+#[test]
+fn the_conversations_picker_keeps_every_age() {
+    use crate::picker::{Action, Item, Picker};
+    let mut s = Shot::new(160, 40);
+    let item = |title: &str, ago: &str| Item {
+        label: title.into(),
+        action: Action::Conversation { id: title.into(), store: "/s.json".into() },
+        hint: ago.into(),
+        glyph: Some(("◦", "ui.virtual")),
+    };
+    let items = vec![
+        item("why does adds() fail?", "2h ago"),
+        item(
+            "should div return a Result instead of an Option, and what do its callers do with a None today?",
+            "3d ago",
+        ),
+        item("can average overflow?", "16d ago"),
     ];
-    s.ed.workspace.claude.chat = Some(chat);
-    s.ed.workspace.viewer.at = crate::workspace::At::Chat;
+    let mut p = Picker::of("conversations", "conversations", items, false);
+    p.times = true;
+    s.ed.open_picker(p, None);
     let mut parser = vt100::Parser::new(s.h, s.w, 0);
     parser.process(&s.frame());
     let rows: Vec<String> = parser.screen().rows(0, s.w).collect();
-    let end = |what: &str| {
-        let r = rows.iter().find(|r| r.contains(what)).unwrap_or_else(|| panic!("{what}: {rows:#?}"));
-        r[..r.find(" ago").unwrap()].chars().count()
+    let row = rows.iter().find(|r| r.contains("should div")).unwrap_or_else(|| panic!("{rows:#?}"));
+    assert!(row.contains("…") && row.contains("3d ago"), "{row}");
+    let end = |ago: &str| {
+        let r = rows.iter().find(|r| r.contains(ago))?;
+        Some(r[..r.find(ago)?].chars().count() + ago.len())
     };
-    assert!(rows.iter().any(|r| r.contains("why does adds() fail?") && r.contains("   2h ago")), "{rows:#?}");
-    assert!(rows.iter().any(|r| r.contains("can average overflow?") && r.contains("  16d ago")), "{rows:#?}");
-    assert_eq!(end("why does adds"), end("can average"), "{rows:#?}");
+    assert_eq!(end("3d ago"), end("16d ago"), "one column: {rows:#?}");
+}
+
+/// Projects step 2's screens, for their screenshots (only with `TARAE_FRAMES_DIR` set: both themes there; `cargo xtask
+/// shot` draws them with `TARAE_SHOT_REPLAY`): the empty chat with a conversation to continue at 160 and 100 wide,
+/// with none, `C-p`'s picker opened from it, and a session the list brought back — its top line saying it continued.
+#[test]
+fn projects2_frames() {
+    if std::env::var_os("TARAE_FRAMES_DIR").is_none() {
+        return;
+    }
+    let scratch = crate::scratch::Scratch::new("proj2-frames");
+    let chats = scratch.join("chats");
+    let now = crate::chats::now();
+    let kept = |root: &Path, id: &str, title: &str, ago: u64, context: u64| {
+        let rows = crate::chats::rows_of(&[
+            crate::chat::Msg::new(crate::chat::Role::User, title, ""),
+            crate::chat::Msg::new(
+                crate::chat::Role::Assistant,
+                "`add` returns `a - b`; the fix is `a + b`.",
+                "",
+            ),
+        ]);
+        let last = serde_json::json!({ "id": "r", "sent": 1, "counts": { "input": 2, "read": context - 2 } });
+        let saved = crate::chats::Saved {
+            id: id.into(),
+            title: title.into(),
+            updated: now - ago,
+            rows,
+            plan: None,
+            usage: Some(serde_json::json!({ "turns": [], "last": last })),
+            seq: crate::chats::seq() - ago,
+        };
+        crate::chats::save(&chats, root, saved);
+    };
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let shot = |w: u16, h: u16| {
+        let mut s = Shot::new(w, h);
+        s.file("src/demo.rs", DEMO_RS);
+        s.ed.chats_dir = Some(chats.clone());
+        s.ed.claude_lines = Some(tx.clone());
+        s
+    };
+    let open = |s: &mut Shot| {
+        s.keys(" l");
+        s.until("the conversations read", |ed| {
+            ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.past.is_empty() || c.started_new)
+        });
+    };
+    // None kept yet: the intro alone
+    let mut s = shot(160, 40);
+    s.keys(" l");
+    s.frame();
+    s.frames_both("none-160");
+    let root = s.ed.workspace.root.clone();
+    kept(&root, "c-mean", "can average overflow?", 16 * 86_400, 64_000);
+    kept(&root, "c-div", "should div return a Result instead of an Option?", 3 * 86_400, 307_000);
+    kept(&root, "c-add", "why does adds() fail?", 2 * 3_600 + 1_234, 41_200);
+    for (w, h) in [(160, 40), (100, 30)] {
+        let mut s = shot(w, h);
+        open(&mut s);
+        s.frames_both(&format!("continue-{w}"));
+        s.keys("<C-p>");
+        s.until("the conversations' picker", |ed| ed.picker.as_ref().is_some_and(|p| p.current().is_some()));
+        // (its preview read too, not `loading…` — where it has the room for one)
+        if w == 160 {
+            s.until("its preview", |ed| {
+                ed.picker.as_ref().is_some_and(|p| {
+                    let key = p.current().and_then(|i| i.action.preview_key());
+                    key.is_some_and(|k| matches!(p.previews.get(&k), Some(crate::picker::Preview::Ready(_))))
+                })
+            });
+        }
+        s.frames_both(&format!("picker-{w}"));
+    }
+    // A session the list brought back: its own conversation continued, said on its top line
+    for (w, h) in [(160, 40), (100, 30)] {
+        let mut s = shot(w, h);
+        s.ed.workspace.name = "main".into();
+        let fix = scratch.join(format!("fix-login-{w}"));
+        std::fs::create_dir_all(&fix).unwrap();
+        kept(&fix, "c-fix", "the login form loses its error on resize", 2 * 3_600 + 600, 120_400);
+        let id = s.ed.workspace_add(fix);
+        let l = s.ed.workspaces.iter_mut().find(|l| l.id == id).unwrap();
+        (l.name, l.claude.brought_back) = ("fix-login".into(), true);
+        s.ed.workspace_switch(id);
+        s.keys(" l");
+        s.until("continued", |ed| ed.workspace.claude.chat.as_ref().is_some_and(|c| c.continued.is_some()));
+        s.frames_both(&format!("behind-{w}"));
+    }
 }
 
 /// The stopped turn's run counts before the key that stops it: the key holds its column as the time gains a digit

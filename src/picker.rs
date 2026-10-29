@@ -155,6 +155,9 @@ pub struct Row {
     pub hint: String,
     /// The annotation is what the row is for (a state): it keeps its room, the label is cut instead.
     pub hint_first: bool,
+    /// The annotation is a time (an age): it keeps its room — a column of them never loses one —, the label is cut
+    /// at its end (`Picker::times`).
+    pub hint_whole: bool,
     pub glyph: Option<(&'static str, &'static str)>,
     /// A tree row's depth and kind (None = a plain list row).
     pub tree: Option<(usize, Kind)>,
@@ -391,6 +394,9 @@ pub struct Picker {
     /// Each row's hint keeps its room and a long label is cut in its middle (`:granted`: a place's start and end,
     /// and where it comes from).
     pub hints_first: bool,
+    /// Each row's hint is a time (the conversations' ages): it keeps its room, a long label cut at its end — a
+    /// column of times never loses one (counters and timers keep their width).
+    pub times: bool,
     /// Its rows end in a column of stamps (`stamp.rs`; `:granted`: your answers) — every row keeps the room, so
     /// the hints stay in line.
     pub stamps: bool,
@@ -460,6 +466,7 @@ impl Picker {
             keys: false,
             words: false,
             hints_first: false,
+            times: false,
             stamps: false,
             closing: None,
             kind: "test",
@@ -1050,6 +1057,7 @@ impl Picker {
                     selected: row == selected,
                     hint: item.hint.clone(),
                     hint_first: self.hints_first && !item.hint.is_empty(),
+                    hint_whole: self.times && !item.hint.is_empty(),
                     glyph: item.glyph,
                     tree: (item.action == Action::Heading).then_some((0, Kind::Group)),
                     spots: Vec::new(),
@@ -1129,6 +1137,7 @@ impl Picker {
                 selected: k == selected,
                 hint,
                 hint_first,
+                hint_whole: false,
                 glyph: item.and_then(|it| it.glyph),
                 tree: Some((r.depth, r.kind)),
                 spots,

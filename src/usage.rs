@@ -703,6 +703,12 @@ impl Usage {
         Some(v)
     }
 
+    /// What a conversation kept with `conv_json` carried last — since a compaction, what that kept: what continuing it
+    /// sends again (`context`'s, from what's kept).
+    pub fn kept_context(v: &Value) -> Option<u64> {
+        v["compacted_to"].as_u64().or_else(|| Request::from_json(&v["last"])?.counts.context())
+    }
+
     /// Conversation `id` continued from what was kept: its turns (unless they're here already), its cache,
     /// its cost so far.
     pub fn restore(&mut self, id: &str, v: &Value) {

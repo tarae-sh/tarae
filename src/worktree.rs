@@ -1691,7 +1691,11 @@ impl Editor {
                 Some(l) => l.id,
                 None => {
                     changed = true;
-                    self.workspace_add(k.root.clone())
+                    let id = self.workspace_add(k.root.clone());
+                    if let Some(l) = self.workspace_by_id(id) {
+                        l.claude.brought_back = true;
+                    }
+                    id
                 }
             };
             let came = k.allowed.clone();
@@ -6823,6 +6827,109 @@ mod tests {
         assert!(card(&ed, b).is_some_and(|o| o.held.is_none()));
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Projects step 2: a start begins a new conversation, the latest offered; a session the list brought back is a task,
+    /// not a start — its chat continues its own last conversation and says so on its top line (whole at 160, at 100 its
+    /// size and age folded before `follow`), until a message of this run goes.
+    #[test]
+    fn a_session_brought_back_continues_its_conversation_and_the_start_does_not() {
+        let scratch = crate::scratch::Scratch::new("brought-back");
+        let dir = std::fs::canonicalize(scratch.path()).unwrap();
+        let (home, kid, chats) = (dir.join("home"), dir.join("kid"), dir.join("chats"));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&kid).unwrap();
+        let mut ed = editor(&home, &dir);
+        ed.chats_dir = Some(chats.clone());
+        // Each checkout's last conversation, two hours old: the start's 41k, the session's 120k
+        let kept_conv = |root: &Path, id: &str, title: &str, context: u64| {
+            let rows = crate::chats::rows_of(&[crate::chat::Msg::new(crate::chat::Role::User, title, "")]);
+            let last = json!({ "id": "r", "sent": 1, "counts": { "input": 2, "read": context - 2 } });
+            let saved = crate::chats::Saved {
+                id: id.into(),
+                title: title.into(),
+                updated: crate::chats::now() - 2 * 3_600 - 60,
+                rows,
+                plan: None,
+                usage: Some(json!({ "turns": [], "last": last })),
+                seq: crate::chats::seq(),
+            };
+            crate::chats::save(&chats, root, saved);
+        };
+        kept_conv(&home, "c-home", "the start's", 41_000);
+        kept_conv(&kid, "c-kid", "the session's", 120_000);
+        let k = Kept {
+            root: kid.clone(),
+            name: "kid".into(),
+            branch: Some("kid".into()),
+            base: Some("main".into()),
+            billing: None,
+            allowed: Default::default(),
+            folders: Vec::new(),
+            parent: None,
+        };
+        ed.workspaces_back(vec![k], Vec::new(), None, false);
+        // The start: a new conversation, the last one offered
+        feed(&mut ed, "<space>l");
+        settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().past.is_empty());
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        let texts: Vec<&str> = c.msgs.iter().map(|m| m.text.as_str()).collect();
+        assert!(c.msgs.is_empty() && c.conversation.is_none() && c.continued.is_none(), "{texts:?}");
+        assert_eq!((c.past[0].id.as_str(), c.past[0].context), ("c-home", Some(41_000)));
+        // The session the list brought back: its own continues, said on its top line
+        let id = ed.workspaces.iter().find(|l| l.root == kid).expect("back").id;
+        assert!(ed.workspaces[0].claude.brought_back);
+        ed.workspace_switch(id);
+        feed(&mut ed, "<space>l");
+        settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().unwrap().continued.is_some());
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        assert_eq!(c.conversation.as_deref(), Some("c-kid"));
+        assert!(!ed.workspace.claude.brought_back, "taken once used");
+        assert!(c.msgs.iter().any(|m| m.text == "the session's"), "its rows back");
+        crossterm::style::force_color_output(true);
+        let mut bytes = Vec::new();
+        crate::term::render(&mut ed, &mut bytes, 160, 30).unwrap();
+        let mut p = vt100::Parser::new(30, 160, 0);
+        p.process(&bytes);
+        let top = p.screen().rows(0, 160).next().unwrap();
+        assert!(top.contains("continued · 2h ago · 120k"), "{top}");
+        // (narrow: its size and age fold before `follow` goes — `continued` the last to go)
+        let mut bytes = Vec::new();
+        crate::term::render(&mut ed, &mut bytes, 100, 30).unwrap();
+        let mut p = vt100::Parser::new(30, 100, 0);
+        p.process(&bytes);
+        let top = p.screen().rows(0, 100).next().unwrap();
+        assert!(top.contains("continued") && !top.contains("120k"), "{top}");
+        // A message of this run: the line has said it — a turn sent as it is (`/compact` typed: `chat::bare`)…
+        settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().unwrap().running());
+        let past = ed.workspace.claude.chat.as_ref().unwrap().continued.clone();
+        feed(&mut ed, "/compact<ret>");
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().continued.is_none(), "`/compact` went: said");
+        let mut bytes = Vec::new();
+        crate::term::render(&mut ed, &mut bytes, 160, 30).unwrap();
+        let mut p = vt100::Parser::new(30, 160, 0);
+        p.process(&bytes);
+        let top = p.screen().rows(0, 160).next().unwrap();
+        assert!(!top.contains("continued"), "{top}");
+        // …and one with the editor context (`submit_as`): the line said again, the turn the stand-in never ends over
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        (c.continued, c.state) = (past, crate::chat::State::Idle);
+        feed(&mut ed, "go on<ret>");
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().continued.is_none(), "a message went: said");
+        // Once: a new conversation (`C-l`) lets it go even where it's still there (set again: as a `C-l` before the
+        // session's read lands) — the chat closed and opened again is a start of yours, nothing continued
+        ed.workspace.claude.brought_back = true;
+        feed(&mut ed, "<C-l>");
+        crate::chat::close(&mut ed);
+        feed(&mut ed, "<space>l");
+        settle_until(&mut ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().past.is_empty());
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        assert!(
+            c.msgs.is_empty() && c.conversation.is_none() && c.continued.is_none(),
+            "{:?}",
+            c.conversation
+        );
+        assert!(!ed.workspace.claude.brought_back);
     }
 
     /// orchestra: a child is kept with its parent's checkout (the store's and `:restart`'s state alike) and is its

@@ -2184,6 +2184,9 @@ struct TopLine<'a> {
     ups: &'a [usize],
     /// Its keys — and what stands at its right end, given a press — do their keys on a press (`wordspot.rs`).
     words: Option<TopWords<'a>>,
+    /// Filled with each detail drawn, in order: its index in `details` (`fold_details` folds from the middle too — a
+    /// piece's parts — so a drawn detail's place says nothing of which it is).
+    kept: Option<&'a std::cell::RefCell<Vec<usize>>>,
 }
 
 /// Where a top line records its words (`TopLine.words`): the frame's spots, the surface the line is, what a press on
@@ -2223,7 +2226,8 @@ const DETAILS_MIN: usize = 8;
 /// important first (the time, then the counts); only a piece of words is cut (`fit_ellipsis`), never a number or a
 /// time half shown (counters and timers keep their width). The first without its leading blanks, the others a blank
 /// apart, as text runs on a line.
-fn fold_details(details: &[(Fit, Style)], room: usize) -> Vec<(Fit, Style)> {
+/// Each shown span with its index in `details`.
+fn fold_details(details: &[(Fit, Style)], room: usize) -> Vec<(Fit, Style, usize)> {
     use std::ops::Range;
     // (a piece's blanks trimmed: what it was cut from goes with it)
     let trimmed = |f: &Fit, lead: &str| {
@@ -2236,9 +2240,14 @@ fn fold_details(details: &[(Fit, Style)], room: usize) -> Vec<(Fit, Style)> {
         });
         Fit::from_parts(format!("{lead}{}", text.trim_start()), cut)
     };
-    let spans: Vec<(Fit, Style)> = details
+    // (each span's index in `details`, kept beside it through every fold: what's drawn is mapped back by it — a press on
+    // a detail lands on its own, whatever folded before it)
+    let said: Vec<(usize, &(Fit, Style))> =
+        details.iter().enumerate().filter(|(_, (s, _))| !s.shown().trim().is_empty()).collect();
+    let src: Vec<usize> = said.iter().map(|(i, _)| *i).collect();
+    let mut spans: Vec<(Fit, Style)> = said
         .iter()
-        .filter(|(s, _)| !s.shown().trim().is_empty())
+        .map(|(_, d)| *d)
         .enumerate()
         .map(|(i, (s, st))| match s.shown().trim_start() {
             _ if i == 0 => (trimmed(s, ""), *st),
@@ -2266,6 +2275,36 @@ fn fold_details(details: &[(Fit, Style)], room: usize) -> Vec<(Fit, Style)> {
             _ => units.push((p, c)),
         }
     }
+    // A piece's own parts — after its first span, one that starts with `· ` (`continued ` `· 2h ago ` `· 120k`) — fold
+    // before any piece goes, the line's last part first, the span left last losing its blank: a piece says its word
+    // longer than a later piece stays
+    let mut gone = vec![false; spans.len()];
+    let part = |i: usize| units.iter().any(|(u, c)| !c && i > u.start && i < u.end);
+    let parts: Vec<usize> =
+        (0..spans.len()).filter(|&i| part(i) && spans[i].0.shown().starts_with("· ")).collect();
+    let total = |spans: &[(Fit, Style)], gone: &[bool]| {
+        spans.iter().zip(gone).filter(|(_, g)| !**g).map(|((s, _), _)| s.width()).sum::<usize>()
+    };
+    for &i in parts.iter().rev() {
+        if total(&spans, &gone) <= room {
+            break;
+        }
+        gone[i] = true;
+        if let Some(j) = (0..i).rev().find(|&j| !gone[j]) {
+            let bare = spans[j].0.shown().trim_end().to_string();
+            spans[j].0 = Fit::from(bare.as_str());
+        }
+    }
+    let spans: Vec<(Fit, Style)> =
+        spans.into_iter().zip(&gone).filter(|(_, g)| !**g).map(|(s, _)| s).collect();
+    let src: Vec<usize> = src.into_iter().zip(&gone).filter(|(_, g)| !**g).map(|(i, _)| i).collect();
+    // (the units again, over what's left)
+    let mut at = 0;
+    for (u, _) in units.iter_mut() {
+        let n = (u.start..u.end).filter(|&i| !gone[i]).count();
+        *u = at..at + n;
+        at += n;
+    }
     let width = |r: &Range<usize>| spans[r.clone()].iter().map(|(s, _)| s.width()).sum::<usize>();
     let words = |r: &Range<usize>| {
         !spans[r.clone()].iter().any(|(s, _)| s.shown().chars().any(|c| c.is_ascii_digit()))
@@ -2282,13 +2321,14 @@ fn fold_details(details: &[(Fit, Style)], room: usize) -> Vec<(Fit, Style)> {
     }
     let mut shown = Vec::new();
     let mut left = room;
-    for (s, st) in units[..keep].iter().flat_map(|(r, _)| &spans[r.clone()]) {
+    for i in units[..keep].iter().flat_map(|(r, _)| r.clone()) {
+        let (s, st) = &spans[i];
         if s.width() > left && left < 4 {
             break;
         }
         let s = s.fit(left);
         left -= s.width();
-        shown.push((s, *st));
+        shown.push((s, *st, src[i]));
     }
     shown
 }
@@ -2377,6 +2417,7 @@ fn top_line(
     let mut said_cols = Vec::new();
     let said_after = |buf: &mut Vec<u8>,
                       at: &mut Vec<(usize, usize)>,
+                      src: &mut Vec<usize>,
                       line: Style,
                       details: &[(Fit, Style)],
                       col: &mut usize,
@@ -2390,10 +2431,11 @@ fn top_line(
         if !details.is_empty() {
             put(buf, line, if lead == 2 { "─ " } else { " ── " })?;
             *col += lead;
-            for (s, st) in &details {
+            for (s, st, i) in &details {
                 apply_put(buf, *st, s.shown())?;
                 crate::whole::at(on, s, (x + *col, y), *st, (x, x + w));
                 at.push((x + *col, x + *col + s.width()));
+                src.push(*i);
                 *col += s.width();
             }
         }
@@ -2403,7 +2445,20 @@ fn top_line(
     let right_w: usize = head.right.iter().map(|(s, _)| s.width()).sum();
     let keep_right = if right_w > 0 && head.keep_right { right_w + 3 } else { 0 };
     let most = short_of.min(room(col).saturating_sub(4 + keep_right));
-    said_after(&mut buf, &mut said_cols, line, head.details, &mut col, most, head.names.is_empty())?;
+    let mut kept = Vec::new();
+    said_after(
+        &mut buf,
+        &mut said_cols,
+        &mut kept,
+        line,
+        head.details,
+        &mut col,
+        most,
+        head.names.is_empty(),
+    )?;
+    if let Some(k) = head.kept {
+        *k.borrow_mut() = kept;
+    }
     // A group's detail past the first line down (`beyond`): this stretch's line to it, the join, then its own names
     // and details after `─ ` — the rest of the line in its stretch's look
     let mut line = line;
@@ -2418,7 +2473,17 @@ fn top_line(
         put(&mut buf, line, "─ ")?;
         col = s.max(col) + 1 + 2;
         names(&mut buf, b.names, &mut col)?;
-        said_after(&mut buf, &mut said_cols, line, b.details, &mut col, usize::MAX, b.names.is_empty())?;
+        let mut beyond = Vec::new();
+        said_after(
+            &mut buf,
+            &mut said_cols,
+            &mut beyond,
+            line,
+            b.details,
+            &mut col,
+            usize::MAX,
+            b.names.is_empty(),
+        )?;
     }
     // The keys at the right end: as many whole pairs as fit, from the first — a run of the line (`KEYS_AFTER`)
     // before them, so it reads as a line still
@@ -8598,7 +8663,7 @@ fn draw_list_row(
     // Annotation (keys, a line of code …) dimmed at the right end — the label comes first, the
     // annotation gets what's left (cut with …). An annotation that's what the row is for (a plugin tab's
     // state) comes first instead, the label keeping a few cells at least — every row says it.
-    let room = if r.hint_first || place {
+    let room = if r.hint_first || r.hint_whole || place {
         lw.saturating_sub(1 + used + usize::from(dir) + 2 + 8)
     } else {
         lw.saturating_sub(1 + used + r.label.width() + usize::from(dir) + 2)
@@ -14499,6 +14564,7 @@ fn draw_sidebar(
                         selected: Some(r) == mark,
                         hint,
                         hint_first: sb.mode == SMode::Plugin,
+                        hint_whole: false,
                         glyph: l.glyph,
                         tree: Some((l.depth, l.kind)),
                         spots: Vec::new(),
@@ -16563,6 +16629,47 @@ fn asks_foot(editor: &Editor, lay: &Layout) -> Option<(usize, usize, usize, usiz
     (w >= CARD_MIN_INNER + 6).then_some((x, w, r.y + 1, r.h.saturating_sub(1)))
 }
 
+/// The empty chat's continue row (projects step 2), among its first keys: the project's latest conversation, a key
+/// away — `C-p continue "<title>" · 2h ago · 41k`, its age and its context as `usage` last saw it. Its key a hint
+/// (`hint_spans`: recorded where it's printed, a button once hints are). Narrow, the title is cut first (whole under
+/// the mouse), down to `"…"`; then the age goes, then the size — `continue` never (the user, 2026-10-29). Inside
+/// zellij `C-p` is zellij's: its twin, a `:` command saying what it does itself.
+fn continue_row(
+    editor: &Editor,
+    ui: &Ui,
+    p: &crate::chats::Past,
+    w: usize,
+    now: u64,
+    (key, words): (Style, Style),
+) -> Vec<crate::markdown::Span> {
+    use crate::markdown::Span;
+    let sp = |text: String, style: Style| Span { cut: None, hint: false, text, style };
+    let said = editor.key_said("C-p");
+    let command = said.rsplit(' ').next().is_some_and(|w| w.starts_with(':'));
+    let age = format!(" · {}", crate::chats::ago(p.updated, now));
+    let size = p.context.map(|n| format!(" · {}", crate::usage::tokens(n))).unwrap_or_default();
+    let verb = if command { " \"" } else { " continue \"" };
+    let tails = [format!("\"{age}{size}"), format!("\"{size}"), "\"".into()];
+    let room = |t: &String| w.saturating_sub(said.width() + verb.width() + t.width());
+    // (the title down to its `…` before the age goes, the age before the size)
+    let tail = tails.iter().find(|t| room(t) >= 1).unwrap_or(&tails[2]);
+    let title = crate::whole::fit(p.title.lines().next().unwrap_or_default(), room(tail).max(1));
+    let mut row = hint_spans(ui, &[(&said, "")], key, words);
+    row.extend([sp(verb.into(), words), title.span(words), sp(tail.clone(), words)]);
+    row
+}
+
+/// A continued conversation as its top line says it (`Chat.continued`, a session brought back): `continued · 2h ago ·
+/// 120k` — one piece in its parts (`continued `, `· 2h ago `, `· 120k`), the size and then the age folding first
+/// (`fold_details`).
+fn continued_said(p: &crate::chats::Past, now: u64) -> Vec<String> {
+    let mut parts = vec!["continued".to_string(), format!("· {}", crate::chats::ago(p.updated, now))];
+    parts.extend(p.context.map(|n| format!("· {}", crate::usage::tokens(n))));
+    let last = parts.len() - 1;
+    parts.iter_mut().take(last).for_each(|s| s.push(' '));
+    parts
+}
+
 fn draw_chat(
     c: &crate::chat::Chat,
     editor: &Editor,
@@ -16663,26 +16770,19 @@ fn draw_chat(
             intro.push(vec![sp("› ".into(), faint), crate::whole::fit(s, w - 2).span(dim)]);
         }
         intro.push(vec![]);
-        intro.push(model_key);
-        // Earlier conversations in this project: the newest two, and the key for all of them
-        let past: Vec<_> = c.past.iter().filter(|p| Some(&p.0) != c.conversation.as_ref()).collect();
-        if !past.is_empty() {
-            let now = crate::chats::now();
-            intro.push(vec![]);
-            intro.push(first_key("C-p", "to continue an earlier one"));
-            // (their ages a column, right-aligned at the widest)
-            let old = |t: u64| ago(std::time::Duration::from_secs(now.saturating_sub(t)), true);
-            let when_w = past.iter().take(2).map(|p| old(p.2).width()).max().unwrap_or(0);
-            for (_, title, updated) in past.iter().take(2) {
-                let when = format!("  {}", pad_left(&old(*updated), when_w));
-                let first = title.lines().next().unwrap_or_default();
-                let room = w.saturating_sub(2 + when.width());
-                let first = crate::whole::fit(first, room);
-                let pad = " ".repeat(room.saturating_sub(first.width()));
-                let first = first.then(&pad);
-                intro.push(vec![sp("◦ ".into(), faint), first.span(dim), sp(when, faint)]);
-            }
+        // A start begins a new conversation: the latest, a key away among the first keys — its age and size said
+        // before a cold one is paid for (`continue_row`)
+        if let Some(p) = c.past.iter().find(|p| Some(&p.id) != c.conversation.as_ref()) {
+            intro.push(continue_row(
+                editor,
+                ui,
+                p,
+                w,
+                crate::chats::now(),
+                (Style { bold: true, ..dim }, faint),
+            ));
         }
+        intro.push(model_key);
         // Taller than its room: its end folds (the suggestions, the keys), never its start — messages keep their
         // last lines, this its first
         intro.truncate(area);
@@ -16757,8 +16857,9 @@ fn draw_chat(
     // (each a piece of its own after ` ── `, ` · ` between them — a slot's line says its state so)
     let mut details: Vec<(String, Style)> = Vec::new();
     // (each detail's place among them: the words that do their keys — `wordspot.rs`)
+    // (a piece's own part — `· 2h ago ` after `continued ` — goes on with it, folding first: `fold_details`)
     let mut say = |text: &str, style: Style| {
-        if !details.is_empty() {
+        if !details.is_empty() && !text.starts_with("· ") {
             details.push((NAMES_SEP.into(), faint));
         }
         details.push((text.into(), style));
@@ -16771,6 +16872,13 @@ fn draw_chat(
         if came {
             presses.push((say("new text after", dim), Press::Keys("G".into())));
         }
+    }
+    // A session brought back continued its own conversation by itself: how old and how big, until its next message —
+    // before `follow`, so it folds after it (the user, 2026-10-29)
+    // (its size, then its age, fold before any piece goes — `continued` alone stays the longest)
+    let continued = c.continued.as_ref().map(|p| continued_said(p, crate::chats::now()));
+    for part in continued.iter().flatten() {
+        say(part, faint);
     }
     // Follow badge: accent while following, faint once the user took over — a press is `C-f`'s (frictions #147)
     // (paused lasts until the next question — only worth saying while Claude works)
@@ -16799,9 +16907,7 @@ fn draw_chat(
         n @ 1..=99 => Some(format!("{n} granted")),
         _ => Some("99+ granted".into()),
     };
-    if let Some(g) = granted.as_ref() {
-        say(g, faint);
-    }
+    let granted_at = granted.as_ref().map(|g| say(g, faint));
     // Idle: the model it's talking to (`Opus 5.5 · high`), else "ready"
     let left = lw / 2;
     let status: Vec<Span> = match c.state {
@@ -16862,6 +16968,7 @@ fn draw_chat(
         _ => Some(Press::Now),
     };
     let on = crate::mouse::Surface::Chat;
+    let kept = std::cell::RefCell::new(Vec::new());
     let head = TopLine {
         names: &names,
         details: &fits(&details),
@@ -16877,13 +16984,17 @@ fn draw_chat(
             home: None,
             way_in: None,
         }),
+        kept: Some(&kept),
         ..TopLine::default()
     };
     let cols = top_line(out, line, card, (lx, y, lw), ("", "", "┬"), &[], true, &head)?;
-    // (its details that do their keys, where they were drawn — those the line had room for)
+    // (its details that do their keys, where they were drawn — those the line had room for, each found by its index in
+    // `details`: a piece's part folded shifts the ones after it)
     let laid = &cols[names.len().min(cols.len())..];
+    let kept = kept.into_inner();
+    let drawn = |i: usize| kept.iter().position(|&k| k == i).and_then(|at| laid.get(at)).copied();
     for (i, press) in presses {
-        if let (Some(&(a, b)), Some((text, st))) = (laid.get(i), details.get(i)) {
+        if let (Some((a, b)), Some((text, st))) = (drawn(i), details.get(i)) {
             let spans = vec![(crate::whole::fit_own(text, b - a), *st)];
             editor.screen.word_spots.borrow_mut().push(word_spot(on, press, (a, y), spans));
         }
@@ -16893,15 +17004,16 @@ fn draw_chat(
     if let Some(&(base, _)) = cols.first() {
         taken.extend(spots.into_iter().map(|(a, b, s)| (y, base + a, base + b, s)));
     }
-    let said = &cols[names.len().min(cols.len())..];
-    if granted.is_some() && said.len() == details.len() {
-        let (a, b) = said[said.len() - 1];
+    if let Some((a, b)) = granted_at.and_then(drawn) {
         taken.push((y, a, b, crate::workspace::Spot::Granted));
     }
     drop(taken);
     // (the sessions' names, `+N`, `N granted`: lit under the mouse, as every word that does its key)
     let details = fits(&details);
-    let laid = || names.iter().chain(&details).zip(&cols).map(|((t, st), &(a, _))| (a, t.shown(), *st));
+    let told =
+        kept.iter().zip(laid).filter_map(|(&i, &(a, _))| details.get(i).map(|(t, st)| (a, t.shown(), *st)));
+    let named = names.iter().zip(&cols).map(|((t, st), &(a, _))| (a, t.shown(), *st));
+    let laid = || named.clone().chain(told.clone());
     for s in editor.screen.session_spots.borrow().iter().filter(|s| s.0 == y && s.1 >= lx) {
         word_lit(editor, crate::mouse::Word::Session(s.3), y, (s.1, s.2), spans_in(laid(), s.1, s.2));
     }

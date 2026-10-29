@@ -11882,13 +11882,34 @@ mod tests {
         let all = kept(&dir);
         assert_eq!((all[0].id.as_str(), all[0].title.as_str()), ("s-1", "hello"));
         drop(ed);
-        // "Restart": a new editor, the chat opened again
+        // A start, the chat opened again: a new conversation (projects step 2) — the last one offered, never continued by
+        // itself; `C-p` opens the conversations with it selected, `enter` continues it
         let mut ed = editor("");
         fake(&mut ed, false);
-        feed(&mut ed, "<space>l");
-        settle_until(&mut ed, |ed| {
-            ed.workspace.claude.chat.as_ref().unwrap().msgs.iter().any(|m| m.text == "Hello back.")
-        });
+        let continued = |ed: &mut Editor| {
+            feed(ed, "<space>l");
+            settle_until(ed, |ed| !ed.workspace.claude.chat.as_ref().unwrap().past.is_empty());
+            let c = ed.workspace.claude.chat.as_ref().unwrap();
+            assert!(
+                c.msgs.is_empty() && c.conversation.is_none(),
+                "a start continues nothing: {}",
+                c.msgs.len()
+            );
+            assert_eq!(c.past[0].id, "s-1", "offered");
+            feed(ed, "<C-p>");
+            settle_until(ed, |ed| ed.picker.as_ref().is_some_and(|p| p.current().is_some()));
+            let p = ed.picker.as_ref().unwrap();
+            assert_eq!(
+                (p.kind, p.current().unwrap().label.as_str()),
+                ("conversations", "hello"),
+                "the latest selected"
+            );
+            feed(ed, "<ret>");
+            settle_until(ed, |ed| {
+                ed.workspace.claude.chat.as_ref().unwrap().msgs.iter().any(|m| m.text == "Hello back.")
+            });
+        };
+        continued(&mut ed);
         let c = ed.workspace.claude.chat.as_ref().unwrap();
         assert!(
             c.msgs.iter().any(|m| m.role == crate::chat::Role::User && m.text == "hello"),
@@ -11914,10 +11935,7 @@ mod tests {
         // it said so, answered in the new one, not lost with it
         let mut ed = editor("");
         fake(&mut ed, true);
-        feed(&mut ed, "<space>l");
-        settle_until(&mut ed, |ed| {
-            ed.workspace.claude.chat.as_ref().unwrap().msgs.iter().any(|m| m.text == "Hello back.")
-        });
+        continued(&mut ed);
         feed(&mut ed, "again<ret>");
         let answered = |ed: &Editor| {
             let c = ed.workspace.claude.chat.as_ref().unwrap();

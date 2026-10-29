@@ -430,7 +430,7 @@ mod tests {
         assert_eq!(all.len(), 3);
         for c in all {
             assert_eq!(c["title"], c["rows"][0]["text"]);
-            assert!(now - c["updated"].as_u64().unwrap() > 8 * 3600, "older than `chats::FRESH`: {c}");
+            assert!(now - c["updated"].as_u64().unwrap() > 8 * 3600, "hours old, as a real list: {c}");
         }
     }
 }

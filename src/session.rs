@@ -116,6 +116,10 @@ pub struct Session {
     /// What its own acts as a parent came to, not told its Claude yet (`orchestra::News`): a turn it started in a child
     /// ended. Told once, by the next session tool's answer or the next message, whichever comes first.
     pub news: Vec<crate::orchestra::News>,
+    /// The session list brought it back at this start (`workspaces_back`) — a task tarae brought back, not a start of
+    /// yours: its chat continues its own last conversation as it opens, said on its top line (`Chat.continued`) — once:
+    /// taken as its chat's conversations are read, cleared by a new conversation (`C-l`, `:chat-new`).
+    pub brought_back: bool,
 }
 
 impl Session {
@@ -151,6 +155,7 @@ impl Session {
             parent: None,
             starting: Vec::new(),
             news: Vec::new(),
+            brought_back: false,
             caps: None,
             caps_asked: 0,
             sandbox: None,
