@@ -5153,6 +5153,82 @@ mod tests {
         git_in(wt, &["diff-tree", "--no-commit-id", "--name-only", "-r", commit])
     }
 
+    /// #223: the base moves on while a stop waits resolved (another session brought into main): `y`'s continue
+    /// finishes onto the commit git stopped on, and that is the end — the Rebased card, never "git stopped
+    /// before it began" for main's tip being no ancestor of the branch.
+    #[test]
+    fn a_base_that_moves_while_a_stop_is_resolved_still_ends_rebased() {
+        let (repo, dir) = place("rebase-moved-again");
+        let (log, answer) = (dir.join("claude.log"), dir.join("answer.txt"));
+        std::fs::write(&answer, "one\nmain\nfeat\n").unwrap();
+        let mut ed = editor(&repo, &dir);
+        claude_does(&mut ed, &log, &format!("cp '{}' a.txt;", answer.display()));
+        // (commit 1 of 1, as the three seen: `feat a` alone, against main's own second line)
+        let wt = new_session(&mut ed, "feat");
+        std::fs::write(wt.join("a.txt"), "one\nfeat\n").unwrap();
+        git_in(&wt, &["commit", "-qam", "feat a"]);
+        std::fs::write(repo.join("a.txt"), "one\nmain\n").unwrap();
+        git_in(&repo, &["commit", "-qam", "main moves"]);
+        let onto = git_in(&repo, &["rev-parse", "HEAD"]);
+        rebase_asked(&mut ed);
+        settle_until(&mut ed, |ed| {
+            card(ed, "feat: conflicts resolved").is_some() || says(ed, "rebase feat:")
+        });
+        let q = &card(&ed, "feat: conflicts resolved").expect("resolved").question;
+        assert!(q.starts_with("a.txt resolved for commit 1 of 1 ("), "{q}");
+        // Another session brought into main while this one was resolved: main's tip is no ancestor of feat's
+        std::fs::write(repo.join("c.txt"), "c\n").unwrap();
+        git_in(&repo, &["add", "-A"]);
+        git_in(&repo, &["commit", "-qm", "another brought"]);
+        card_in_sight(&mut ed);
+        feed(&mut ed, "y");
+        let again = "Bring feat: main moved";
+        settle_until(&mut ed, |ed| {
+            card(ed, again).is_some()
+                || card(ed, "Rebased feat onto main").is_some()
+                || says(ed, "rebase feat:")
+        });
+        assert!(!says(&ed, "git stopped before it began"), "{}", said(&ed));
+        assert_eq!(git_in(&wt, &["log", "--format=%s", &format!("{onto}..HEAD")]), "feat a");
+        assert!(ed.workspace.rebase.is_none());
+        assert!(
+            says(&ed, "Rebased feat onto main — 1 commit on top, now at ")
+                && says(&ed, "; main moved 1 commit since — its card rebases again"),
+            "{}",
+            said(&ed)
+        );
+        // Not on main's tip: no bring card saying it is (its `y`, a fast-forward, can't land) — the rebase card
+        // again, as `:workspace-bring` gives
+        assert!(card(&ed, "Rebased feat onto main").is_none(), "{}", said(&ed));
+        let q = &card(&ed, again).expect("the rebase card again").question;
+        assert!(
+            q.starts_with(
+                "Rebase feat onto main first? main moved 1 commit since feat left it; feat is 1 commit \
+                 ahead."
+            ),
+            "{q}"
+        );
+        assert!(q.ends_with("Kept its message through a resolved conflict: «feat a» — read it before bringing (the git tab's log)."), "{q}");
+        assert_eq!(card_in_sight(&mut ed), ['y', 'n']);
+        feed(&mut ed, "y");
+        settle_until(&mut ed, |ed| card(ed, "Rebased feat onto main").is_some() || says(ed, "rebase feat:"));
+        let q = &card(&ed, "Rebased feat onto main").expect("the bring card").question;
+        assert!(q.starts_with("1 commit on main's tip now.\n\nBring it into main"), "{q}");
+        let main = git_in(&repo, &["rev-parse", "main"]);
+        assert_eq!(git_in(&wt, &["rev-parse", "HEAD~1"]), main, "on main's tip now");
+        assert_eq!(card_in_sight(&mut ed), ['y', 'p', 'n']);
+        feed(&mut ed, "y");
+        settle_until(&mut ed, |ed| says(ed, "Brought") || says(ed, "bring feat:"));
+        assert!(says(&ed, "Brought 1 commit of feat into main"), "{}", said(&ed));
+        assert_eq!(
+            git_in(&repo, &["log", "--format=%s", "-3", "main"]),
+            "feat a\nanother brought\nmain moves"
+        );
+        assert_eq!(git_in(&repo, &["show", "main:a.txt"]), "one\nmain\nfeat", "Claude's resolution, brought");
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// #206: an untracked build folder (not ignored) in the checkout as the rebase stops, and a file Claude made
     /// while resolving: `y` stages the conflicted file only — the commit holds what it held, the folder and the
     /// new file stay untracked; the card names the new file (left to you), never the folder that was there.

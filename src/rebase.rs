@@ -292,7 +292,8 @@ pub struct Stop {
     pub files: Vec<String>,
     /// The commit being replayed: (full sha, short, subject).
     pub commit: Option<(String, String, String)>,
-    /// The branch being rebased · what onto (short) — for one tarae didn't start.
+    /// The branch being rebased · the commit it's replayed onto (git's `onto`, whole) — the base for one tarae
+    /// didn't start, and what its end is judged against (#223: the base's branch may have moved since).
     pub head: Option<String>,
     pub onto: Option<String>,
     /// When git stopped there (its step file's time) — what waits since then, across a restart.
@@ -503,7 +504,7 @@ pub fn under_way(root: &Path) -> Option<Stop> {
         files,
         commit,
         head: read("head-name").map(|h| h.trim_start_matches("refs/heads/").to_string()),
-        onto: read("onto").map(|o| o.chars().take(7).collect()),
+        onto: read("onto"),
         since,
         message: git(root, &["log", "-1", "--format=%B", "REBASE_HEAD"], None)
             .ok()
@@ -517,10 +518,12 @@ pub fn under_way(root: &Path) -> Option<Stop> {
 pub enum Ended {
     /// Stopped (at a conflict — Claude's ask made ready — or for a reason the panel says).
     Stopped(Box<Stop>, Option<Ask>),
-    /// Done: the branch's commits on the base's tip, at `tip`.
+    /// Done: the branch's commits on the commit it was replayed onto, at `tip` — and the base's commits past that
+    /// one (`moved`: brought in by another session while a stop waited — #223), 0 when it's the base's tip.
     Done {
         ahead: usize,
         tip: String,
+        moved: usize,
     },
     Aborted,
     /// Nothing under way and not done: git stopped before it began (the panel says why).
@@ -537,7 +540,9 @@ pub enum Aside {
     Kept(String),
 }
 
-fn ended(root: &Path, branch: &str, base: &str, aborting: bool) -> (Ended, Aside) {
+/// `onto`: the commit a stop said it replays onto — done is judged against it, never the base's tip as it is now:
+/// another session brought into the base while the stop was resolved (#223) and it's no ancestor of the branch.
+fn ended(root: &Path, branch: &str, base: &str, onto: Option<&str>, aborting: bool) -> (Ended, Aside) {
     if let Some(mut stop) = under_way(root) {
         stop.before = Some(left_alone(root));
         let ask = (!stop.files.is_empty()).then(|| ask(root, branch, base, &stop));
@@ -547,10 +552,18 @@ fn ended(root: &Path, branch: &str, base: &str, aborting: bool) -> (Ended, Aside
     if aborting {
         return (Ended::Aborted, aside);
     }
-    let base_tip = crate::worktree::sha(root, &format!("{base}^{{commit}}"));
+    let base_tip = crate::worktree::sha(root, &format!("{}^{{commit}}", onto.unwrap_or(base)));
     let end = match (base_tip, crate::worktree::sha(root, "HEAD")) {
         (Ok(b), Ok(t)) if crate::worktree::is_ancestor(root, &b, &t) => {
-            Ended::Done { ahead: crate::worktree::count(root, &format!("{b}..{t}")), tip: t[..7].to_string() }
+            let moved = match crate::worktree::sha(root, &format!("{base}^{{commit}}")) {
+                Ok(now) if now != b => crate::worktree::count(root, &format!("{t}..{now}")),
+                _ => 0,
+            };
+            Ended::Done {
+                ahead: crate::worktree::count(root, &format!("{b}..{t}")),
+                tip: t[..7].to_string(),
+                moved,
+            }
         }
         _ => Ended::Failed,
     };
@@ -821,7 +834,8 @@ pub fn ran(ed: &mut Editor, generation: u64) -> bool {
     if g != generation {
         return false;
     }
-    let (root, branch, base) = (ed.workspace.root.clone(), r.branch.clone(), r.base.clone());
+    let (root, branch, base, onto) =
+        (ed.workspace.root.clone(), r.branch.clone(), r.base.clone(), r.stop.onto.clone());
     // (git's exit says too little — a stop at conflicts exits 1 — so the run reads as under way until its end
     // is read, then as git left it: `rebase_ended`)
     let exit = match ed.workspace.task_run.as_mut().filter(|t| t.generation() == generation) {
@@ -829,7 +843,7 @@ pub fn ran(ed: &mut Editor, generation: u64) -> bool {
         None => crate::task::State::Failed(None),
     };
     ed.events.jobs().spawn(move || {
-        let (end, aside) = ended(&root, &branch, &base, aborting);
+        let (end, aside) = ended(&root, &branch, &base, onto.as_deref(), aborting);
         move |ed: &mut Editor| ed.rebase_ended(generation, end, aside, exit)
     });
     true
@@ -1202,12 +1216,20 @@ impl Editor {
                     "its rebase stopped at {at} — bring it once it's resolved"
                 )));
             }
-            Ended::Done { ahead, tip } => {
+            Ended::Done { ahead, tip, moved } => {
                 let (stashed, kept) =
                     self.workspace.rebase.take().map(|r| (r.stashed, r.messages.kept)).unwrap_or_default();
                 self.rebase_cards_gone();
+                // (#223: the base moved on while a stop waited — rebased onto where it was, not its tip)
+                let since = match moved {
+                    0 => String::new(),
+                    n => format!(
+                        "; {base} moved {} since — its card rebases again",
+                        crate::worktree::commits(n)
+                    ),
+                };
                 let said = format!(
-                    "Rebased {branch} onto {base} — {} on top, now at {tip}{}",
+                    "Rebased {branch} onto {base} — {} on top, now at {tip}{since}{}",
                     crate::worktree::commits(ahead),
                     aside_said(&aside, &stashed)
                 );
@@ -1219,12 +1241,17 @@ impl Editor {
                 crate::instructions::follow(self);
                 // (a session's: bring it now? The checkout tarae started in has no base to go into — the bring
                 // queue's one under way goes on to its preflight instead)
+                // (the queue looks again, and rebases again if the base moved — `bring_queue_rebased`)
                 if self.workspace.id != crate::event::WorkspaceId::HOME && !self.bring_queue_rebased(Ok(())) {
                     let (root, quick, sid) =
                         (self.workspace.root.clone(), self.preflight_quick(), self.workspace.id);
-                    let mut card =
-                        Moved { root: root.clone(), name, branch, base: base.clone(), moved: 0, ahead }
-                            .bring_card(quick, true);
+                    let m = Moved { root: root.clone(), name, branch, base: base.clone(), moved, ahead };
+                    // (not on the base's tip: the bring's fast-forward can't land — the rebase card again, as
+                    // `:workspace-bring` gives)
+                    let mut card = match moved {
+                        0 => m.bring_card(quick, true),
+                        _ => m.card(),
+                    };
                     // (frictions29 #25: a resolution may have made a message wrong — named before it's brought)
                     if !kept.is_empty() {
                         let quoted: Vec<String> = kept.iter().map(|s| format!("«{s}»")).collect();
@@ -1236,7 +1263,10 @@ impl Editor {
                             if kept.len() == 1 { "it" } else { "them" },
                         ));
                     }
-                    crate::codereview::push_bring_card(self, sid, card, root, base);
+                    match moved {
+                        0 => crate::codereview::push_bring_card(self, sid, card, root, base),
+                        _ => self.push_offer(card),
+                    }
                 }
             }
             Ended::Aborted => {
@@ -1968,7 +1998,11 @@ impl Editor {
     pub(crate) fn rebase_adopt(&mut self, stop: Stop) {
         let s = &self.workspace;
         let branch = stop.head.clone().or_else(|| s.branch.clone()).unwrap_or_else(|| "HEAD".into());
-        let base = s.base.clone().or_else(|| stop.onto.clone()).unwrap_or_default();
+        let base = s
+            .base
+            .clone()
+            .or_else(|| stop.onto.as_ref().map(|o| o.chars().take(7).collect()))
+            .unwrap_or_default();
         self.workspace.rebase = Some(Rebase {
             branch,
             base,
