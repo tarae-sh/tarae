@@ -215,6 +215,29 @@ fn laid(name: &str, sessions: usize) -> (Editor, Scratch) {
         let ev = ed.events.recv_timeout(left).expect("presence's questions answered");
         ed.handle_event(ev);
     }
+    // (the file in front parsed, as the driver's was a while after opening it: its language loaded on a worker, then
+    // its tree on another — two results in turn, which the waits above took in or not as they came (#236: in one scene
+    // of a pair and not the other, its path bar's scope `ƒ a` drawn in one frame only, 9 allocations apart). A build
+    // with no Rust grammar (a release profile's tests without `dev-grammars`, none downloaded): the load's failure
+    // taken in instead — `offer_grammar`'s mark, or what it says — and nothing to parse)
+    let spec = ed.language_of(ed.doc().id).expect("a `.rs` file's language");
+    let grammar = crate::syntax::Loader::global().load(spec).is_ok();
+    let parsed = |ed: &Editor| {
+        let loaded = match grammar {
+            true => ed.doc().syntax.is_some(),
+            false => {
+                ed.grammar_hinted.contains(&spec.grammar)
+                    || ed.messages.iter().any(|m| m.2.starts_with("no highlighting"))
+            }
+        };
+        let settled = |s: &crate::syntax::Syntax| s.dormant || !(s.dirty || s.in_flight);
+        loaded && ed.docs.iter().all(|d| d.syntax.as_ref().is_none_or(settled))
+    };
+    while !parsed(&ed) {
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        let ev = ed.events.recv_timeout(left).expect("the file in front parsed");
+        ed.handle_event(ev);
+    }
     (ed, dir)
 }
 
