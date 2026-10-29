@@ -4736,7 +4736,7 @@ impl Region {
             Lights::Chat => Region::Chat,
             Lights::Slot => Region::Slot,
             Lights::Dock(k) => Region::Dock(k),
-            Lights::Card | Lights::Follow | Lights::Popup => return None,
+            Lights::Card | Lights::Follow | Lights::Popup | Lights::Note => return None,
         })
     }
 
@@ -11383,7 +11383,17 @@ fn draw_completion(
             let shown = rows.len().min(limit.saturating_sub(y0 + 2).clamp(1, DOCS_ROWS));
             let docs = (dx, y0, inner + 4, shown + 2);
             let foot = more_lines(rows.len() - shown, faint);
-            draw_docs_card(out, ui, editor, on, card, docs, &rows[..shown], &name, &foot)?;
+            draw_docs_card(
+                out,
+                ui,
+                editor,
+                (on, crate::mouse::Lights::Popup),
+                card,
+                docs,
+                &rows[..shown],
+                &name,
+                &foot,
+            )?;
             editor.screen.completion_docs.set(Some(docs));
             // The cell between the two frames: blank where both are (not a letter of the code behind)
             let gap = if dx > x0 { x0 + width } else { x0 - 1 };
@@ -11404,7 +11414,17 @@ fn draw_completion(
                 let y = if below { y0 + h + 1 } else { y0 - 1 - dh };
                 let docs = (x0, y, inner + 4, dh);
                 let foot = more_lines(rows.len() - shown, faint);
-                draw_docs_card(out, ui, editor, on, card, docs, &rows[..shown], &name, &foot)?;
+                draw_docs_card(
+                    out,
+                    ui,
+                    editor,
+                    (on, crate::mouse::Lights::Popup),
+                    card,
+                    docs,
+                    &rows[..shown],
+                    &name,
+                    &foot,
+                )?;
                 editor.screen.completion_docs.set(Some(docs));
             }
         }
@@ -14572,15 +14592,20 @@ fn bottom_keys(
     let mut spans = Vec::new();
     let mut used = 0;
     for (k, what) in pairs {
-        let w = k.width() + 1 + what.width() + if used > 0 { 3 } else { 0 };
+        // (a key that says itself, `:note-close`, has no meaning after it)
+        let said = if what.is_empty() { 0 } else { 1 + what.width() };
+        let w = k.width() + said + if used > 0 { 3 } else { 0 };
         if used + w > room {
             continue;
         }
         if used > 0 {
             spans.push((" · ".to_string(), line));
         }
-        spans.push((k.to_string(), key));
-        spans.push((format!(" {what}"), faint));
+        // (a pair whose press costs — `space v s send the review` — plain faint words, never a hint: `wordspot::is_hint`)
+        spans.push((k.to_string(), if crate::wordspot::is_hint(k, what) { key } else { faint }));
+        if !what.is_empty() {
+            spans.push((format!(" {what}"), faint));
+        }
         used += w;
     }
     spans
@@ -20439,7 +20464,17 @@ fn docs_popup(
     let foot = more_lines(rows.len() - skip - shown, faint);
     let rect = (x0, y0, width, h);
     let on = crate::mouse::Surface::Popup;
-    draw_docs_card(out, ui, editor, on, card, rect, &rows[skip..skip + shown], &name, &foot)?;
+    draw_docs_card(
+        out,
+        ui,
+        editor,
+        (on, crate::mouse::Lights::Popup),
+        card,
+        rect,
+        &rows[skip..skip + shown],
+        &name,
+        &foot,
+    )?;
     Ok(Some((rect, end)))
 }
 
@@ -20522,15 +20557,15 @@ fn docs_row(
     queue!(out, Spaces(inner - used))
 }
 
-/// A docs card (#234: `K`'s, a completion's — the language server's popups): `rows` two cells in from its sides, in a
-/// thin frame named `name`, `foot` in its bottom line. They show and never take the keys: its lines the faint wash, half
-/// lit under the pointer as every floating frame's (#189).
+/// A docs card (#234: `K`'s, a completion's — the language server's popups; #240: the note card): `rows` two cells in
+/// from its sides, in a thin frame named `name`, `foot` in its bottom line. They show and never take the keys: its lines
+/// the faint wash, half lit under the pointer (its surface `on`, its lights `of`) as every floating frame's (#189).
 #[allow(clippy::too_many_arguments)]
 fn draw_docs_card(
     out: &mut impl Write,
     ui: &Ui,
     editor: &Editor,
-    on: crate::mouse::Surface,
+    (on, of): (crate::mouse::Surface, crate::mouse::Lights),
     card: Style,
     (x0, y0, w, h): Rect4,
     rows: &[Vec<crate::markdown::Span>],
@@ -20544,8 +20579,8 @@ fn draw_docs_card(
     for (i, r) in rows.iter().take(h.saturating_sub(2)).enumerate() {
         docs_row(out, (docs, x0 + 2, y0 + 1 + i, (x0, x0 + w)), r, card, w.saturating_sub(4))?;
     }
-    let of = Some(crate::mouse::Lights::Popup);
-    draw_frame(out, ui, editor, on, card, (x0, y0, w, h), &fits(name), foot, &[], (of, false)).map(|_| ())
+    draw_frame(out, ui, editor, on, card, (x0, y0, w, h), &fits(name), foot, &[], (Some(of), false))
+        .map(|_| ())
 }
 
 /// What's past a docs card's last row, for its bottom line: `↓ N more lines`, faint — none when nothing is.
@@ -20557,8 +20592,9 @@ fn more_lines(more: usize, faint: Style) -> Vec<(String, Style)> {
     }
 }
 
-/// A frame's bottom line's keys (`bottom_keys`, laid as `draw_frame` lays them from `(x, y)`, after `╰─ `): each recorded
-/// where it stands (`kinds::hint`), a press on one typing its key where `home` says it's typed.
+/// A frame's bottom line's keys (`bottom_keys`, laid as `draw_frame` lays them from `(x, y)`, after `╰─ `): each hint
+/// recorded where it stands (`kinds::hint` — a pair that costs is plain words), a press on one typing its key where `home`
+/// says it's typed.
 fn frame_keys_said(
     editor: &Editor,
     on: crate::mouse::Surface,
@@ -20571,7 +20607,9 @@ fn frame_keys_said(
     let mut at = x;
     for pair in keys.split(|s| s.0 == " · ") {
         let (k, said) = (pair.first().map_or("", |s| s.0.as_str()), pair.get(1).map_or("", |s| s.0.as_str()));
-        crate::kinds::hint(k, said, (at, y));
+        if crate::wordspot::is_hint(k, said) {
+            crate::kinds::hint(k, said, (at, y));
+        }
         if crate::wordspot::pressable(k, said) {
             words.push(word_spot(on, Press::Keys(k.to_string()), (at, y), pair.to_vec()).home(home(k)));
         }
@@ -20603,15 +20641,17 @@ fn float_geom(
     editor: &Editor,
     lay: &Layout,
 ) -> Option<FloatGeom> {
-    float_geom_around(lines, cx, (cy as usize, cy as usize), cap, ui, editor, lay)
+    float_geom_around(lines, cx, (cy as usize, cy as usize), cap, 0, ui, editor, lay)
 }
 
-/// A floating card that keeps screen rows `first..=last` in sight (the lines it's about).
+/// A floating card that keeps screen rows `first..=last` in sight (the lines it's about), at least `min` cells inside.
+#[allow(clippy::too_many_arguments)]
 fn float_geom_around(
     lines: &[crate::markdown::Line],
     cx: u16,
     (first, last): (usize, usize),
     cap: usize,
+    min: usize,
     ui: &Ui,
     editor: &Editor,
     lay: &Layout,
@@ -20619,7 +20659,7 @@ fn float_geom_around(
     // Inside the pane it's about — never over the review's rail, the side panel, the chat or another pane
     let pane = focused_pane(editor, lay);
     let (left, right) = (pane.x0, pane.edit_w);
-    let natural = lines.iter().map(crate::markdown::Line::width).max().unwrap_or(0);
+    let natural = lines.iter().map(crate::markdown::Line::width).max().unwrap_or(0).max(min);
     let inner = natural.clamp(10, 76).min((right - left).saturating_sub(4));
     let rows = crate::markdown::wrap(lines, inner, dim_style(ui, editor));
     // Never cover those rows: below if it fits, else above; if neither fits, the larger side, truncated
@@ -20733,16 +20773,19 @@ pub(crate) fn underlines(d: &crate::lsp::Diagnostic, pos: usize) -> bool {
 /// The diagnostics under the cursor in full — the line end shows only a first line, cut to fit. A card by
 /// the cursor, only when it sits on an underline whose message the line end didn't show whole, and
 /// nothing else floats (normal/select mode).
-/// The note under the cursor, whole thread, below the cursor (it stays while you type a reply). True if drawn.
+/// The note under the cursor, whole thread, beside its lines (it stays while you type a reply) — #240: a docs card's
+/// look, its thin frame named `note` (which of how many here, `stale` after it), every entry under its author's head,
+/// its keys its bottom line as buttons (typed in the code). Half lit under the pointer; it never takes the keys. True
+/// if drawn.
 ///
 /// ```text
-///   ¶ claude
-///     Lex errors lose their position here — pass the `Span` along.
-///   › you
-///     why not return early?
-///   ▂▅▇ claude is replying…
-///
-///   space n reply   ]n next   space N all
+///   ╭─ note ── 1 of 2 here ──────────────────────────────╮
+///   │ ¶ author                                          │
+///   │   Lex errors lose their position here — pass it. │
+///   │                                                   │
+///   │ › you                                             │
+///   │   why not return early?                           │
+///   ╰─ space n reply · ]n next · space N all · :note-close ╯
 /// ```
 fn draw_note_card(
     editor: &Editor,
@@ -20753,8 +20796,8 @@ fn draw_note_card(
 ) -> io::Result<bool> {
     let Some(g) = note_card_geom(editor, at, ui, lay) else { return Ok(false) };
     editor.screen.note_card.set(Some(g.rect()));
-    // Short on room: the newest part (the latest word and the keys) stays in view — under the name of whoever
-    // says it, the cut words going on with `…`
+    // Short on room: the newest part (the latest word) stays in view — under the name of whoever says it, the cut
+    // words going on with `…`
     let skip = g.rows.len().saturating_sub(g.max_rows);
     let speaker =
         |r: &Vec<crate::markdown::Span>| r.first().is_some_and(|s| s.text == "¶ " || s.text == "› ");
@@ -20782,8 +20825,52 @@ fn draw_note_card(
         }
         _ => g.rows[skip..].to_vec(),
     };
-    draw_doc_box(&rows, (g.x0, g.y0), g.inner, g.max_rows, ui, editor, out)?;
+    let Some(n) = crate::notes::here(editor) else { return Ok(true) };
+    let replying = matches!(editor.prompt.as_ref().map(|p| p.kind), Some(crate::editor::PromptKind::Note(_)));
+    let (x0, y0, w, h) = g.rect();
+    let card = on_ground(ui, card_style(ui, editor, "ui.popup"));
+    let key = Style { bold: true, fg: ui.hint_key.or(ui.virt.fg), ..card };
+    let faint = Style { fg: ui.linenr.fg, ..card };
+    let name = note_name(n, editor, ui, card);
+    let foot = bottom_keys(&note_keys(n, replying), w.saturating_sub(6), key, faint, frame_line(ui, card));
+    let on = (crate::mouse::Surface::NoteCard, crate::mouse::Lights::Note);
+    draw_docs_card(out, ui, editor, on, card, (x0, y0, w, h), &rows, &name, &foot)?;
+    // (its keys typed in the code, as `space n` there)
+    frame_keys_said(editor, on.0, &foot, (x0 + 3, y0 + h - 1), |_| At::Code);
     Ok(true)
+}
+
+/// The note card's top line (#240): `note`, then which of how many notes start on its line and, on the stale card up,
+/// `stale · the card asks` (cardburden 6).
+fn note_name(n: &crate::notes::Note, editor: &Editor, ui: &Ui, card: Style) -> Vec<(String, Style)> {
+    let mut name = pane_names(ui, editor, card, &["note"], 0);
+    let all = crate::notes::all_here(editor);
+    let of = (all.len() > 1).then(|| (all.iter().position(|m| m.id == n.id).unwrap_or(0) + 1, all.len()));
+    let faint = Style { fg: ui.linenr.fg, ..card };
+    let mut details = Vec::new();
+    if let Some((i, k)) = of {
+        details.push(format!("{i} of {k} here"));
+    }
+    if crate::notes::stale_shown(editor).contains(&n.id) {
+        details.push("stale · the card asks".into());
+    }
+    if !details.is_empty() {
+        name.push((" ── ".into(), frame_line(ui, card)));
+        name.push((details.join(" · "), faint));
+    }
+    name
+}
+
+/// The note card's keys: none while you write a reply (the reply's prompt has the keys, said once on the status line —
+/// the user, 2026-10-29, on #240's reply shots; they come back as it ends), else the walk's.
+fn note_keys(n: &crate::notes::Note, replying: bool) -> Vec<(&'static str, &'static str)> {
+    match () {
+        _ if replying => Vec::new(),
+        _ if n.thread.iter().any(|e| e.draft) => {
+            vec![("space n", "reply"), ("space v s", "send the review"), ("]n", "next")]
+        }
+        _ => vec![("space n", "reply"), ("]n", "next"), ("space N", "all"), (":note-close", "")],
+    }
 }
 
 /// Most rows the note card takes.
@@ -20800,9 +20887,12 @@ fn note_card_geom(editor: &Editor, at: (u16, u16), ui: &Ui, lay: &Layout) -> Opt
         || (editor.prompt.is_some() && !replying)
         || !editor.pending.is_empty();
     let n = crate::notes::here(editor).filter(|_| !busy)?;
-    let all = crate::notes::all_here(editor);
-    let of = (all.len() > 1).then(|| (all.iter().position(|m| m.id == n.id).unwrap_or(0) + 1, all.len()));
-    let lines = note_lines(n, of, editor, ui, replying);
+    let lines = note_lines(n, editor, ui);
+    // (wide enough for the first two keys on its bottom line and its name on its top line, each a cell from the frame's
+    // corner as `top_line` lays them)
+    let pair = |(k, w): &(&str, &str)| k.width() + if w.is_empty() { 0 } else { 1 + w.width() };
+    let two = note_keys(n, replying).iter().take(2).map(pair).sum::<usize>() + " · ".width();
+    let min = two.max("note".width()) + 2;
     // Beside the note's lines, not over them (the code it's about stays in sight) — the rows of them on
     // screen (`view` rows count from the focused pane's top), the cursor's row among them
     let on = |r: &crate::codeview::Row| {
@@ -20811,11 +20901,12 @@ fn note_card_geom(editor: &Editor, at: (u16, u16), ui: &Ui, lay: &Layout) -> Opt
     let pane = focused_pane(editor, lay);
     let row = |r: usize| pane.text_top as usize + r;
     let span = editor.view.iter().position(on).zip(editor.view.iter().rposition(on));
-    let cursor = float_geom(&lines, at, NOTE_CAP, ui, editor, lay);
+    let cursor =
+        float_geom_around(&lines, at.0, (at.1 as usize, at.1 as usize), NOTE_CAP, min, ui, editor, lay);
     let Some((a, b)) = span.map(|(a, b)| (row(a).min(at.1 as usize), row(b).max(at.1 as usize))) else {
         return cursor;
     };
-    let around = float_geom_around(&lines, at.0, (a, b), NOTE_CAP, ui, editor, lay);
+    let around = float_geom_around(&lines, at.0, (a, b), NOTE_CAP, min, ui, editor, lay);
     // Lines too many to keep clear: whichever shows more of the thread (the cursor's own row stays clear)
     match (around, cursor) {
         (Some(g), Some(c)) if g.max_rows < c.max_rows.min(g.rows.len()) => Some(c),
@@ -20823,41 +20914,16 @@ fn note_card_geom(editor: &Editor, at: (u16, u16), ui: &Ui, lay: &Layout) -> Opt
     }
 }
 
-/// A note's thread as card lines — who said it (Claude in accent, you dim), the text with `code` colored,
-/// a waiting row while Claude answers, and the keys.
-fn note_lines(
-    n: &crate::notes::Note,
-    of: Option<(usize, usize)>,
-    editor: &Editor,
-    ui: &Ui,
-    replying: bool,
-) -> Vec<crate::markdown::Line> {
+/// A note's thread as card lines (its body: which note and its keys are its frame's — `draw_note_card`) — who said it
+/// (Claude in accent, you dim), the text with `code` colored, a waiting row while Claude answers.
+fn note_lines(n: &crate::notes::Note, editor: &Editor, ui: &Ui) -> Vec<crate::markdown::Line> {
     use crate::markdown::{Line, Span};
-    use crate::notes::By;
     let lang = editor.doc().syntax.as_ref().map(|s| s.lang.name.clone());
     let sp = |text: &str, style: Style| Span { cut: None, hint: false, text: text.to_string(), style };
     let accent = Style { fg: ui.accent.fg, ..Style::default() };
     let dim = Style { fg: ui.virt.fg, ..Style::default() };
     let faint = Style { fg: ui.linenr.fg, ..Style::default() };
-    let key = Style { bold: true, ..dim };
     let mut out = Vec::new();
-    // Several notes here: which one this is (]n walks them)
-    if let Some((i, k)) = of {
-        out.push(Line::Text {
-            spans: vec![sp(&format!("note {i} of {k} here · ]n next"), faint)],
-            indent: 0,
-        });
-    }
-    // (on the stale card up — cardburden 6: why the card asks to close it)
-    if crate::notes::stale_shown(editor).contains(&n.id) {
-        out.push(Line::Text {
-            spans: vec![
-                sp("stale · ", dim),
-                sp("its lines changed since it was pinned — the card asks", faint),
-            ],
-            indent: 0,
-        });
-    }
     // The newest three; older ones fold into a count
     const SHOWN: usize = 3;
     let skip = n.thread.len().saturating_sub(SHOWN);
@@ -20872,45 +20938,7 @@ fn note_lines(
         if i > skip {
             out.push(Line::Blank);
         }
-        out.push(Line::Text {
-            spans: match e.by {
-                By::Author => vec![sp("¶ ", accent), sp(By::Author.label(), Style { bold: true, ..accent })],
-                // (the chat's last answer, said where it names this place — #239)
-                By::Chat => vec![
-                    sp("¶ ", accent),
-                    sp(By::Chat.label(), Style { bold: true, ..accent }),
-                    sp(if crate::notes::bare_chat(n) { " · the last answer" } else { "" }, faint),
-                ],
-                By::You if e.draft => {
-                    vec![
-                        sp("› ", dim),
-                        sp(By::You.label(), Style { bold: true, ..dim }),
-                        sp(" · draft", faint),
-                    ]
-                }
-                By::You => vec![sp("› ", dim), sp(By::You.label(), Style { bold: true, ..dim })],
-                By::Reviewer => {
-                    let st = reviewer_style(editor, ui);
-                    // (the board's: the angles that found it and what its skeptic made of it)
-                    let mark = n.board.as_ref().filter(|_| i == 0);
-                    let who = mark.map_or_else(|| By::Reviewer.label().to_string(), |m| m.angles.join(" · "));
-                    let mut v = vec![sp("¶ ", st), sp(&who, Style { bold: true, ..st })];
-                    match mark.map(|m| m.verdict) {
-                        Some(crate::board::Verdict::Unchecked) => {
-                            let warn = editor.theme.try_get("warning").and_then(|s| s.fg).or(ui.accent.fg);
-                            v.push(sp(" · unchecked", Style { fg: warn, ..Style::default() }));
-                        }
-                        Some(v2) => v.push(sp(&format!(" · {}", v2.word()), dim)),
-                        None => {}
-                    }
-                    if e.draft {
-                        v.push(sp(" · not sent yet", faint));
-                    }
-                    v
-                }
-            },
-            indent: 0,
-        });
+        out.push(Line::Text { spans: note_head(n, i, e, editor, ui), indent: 0 });
         for l in e.text.lines().map(str::trim_end) {
             out.push(if l.trim().is_empty() {
                 Line::Blank
@@ -20921,7 +20949,9 @@ fn note_lines(
             });
         }
         // (its skeptic's trace — or why no one checked it — under it, faint, wrapped hanging)
-        if let Some(m) = n.board.as_ref().filter(|m| i == 0 && e.by == By::Reviewer && !m.trace.is_empty()) {
+        if let Some(m) =
+            n.board.as_ref().filter(|m| i == 0 && e.by == crate::notes::By::Reviewer && !m.trace.is_empty())
+        {
             let who = if m.verdict == crate::board::Verdict::Confirmed { "skeptic — " } else { "" };
             out.push(Line::Text {
                 spans: vec![sp("  ", Style::default()), sp(who, dim), sp(&m.trace, faint)],
@@ -20936,19 +20966,56 @@ fn note_lines(
             indent: 0,
         });
     }
-    out.push(Line::Blank);
-    let drafting = crate::codereview::drafting(editor);
-    let hints: &[(&str, &str)] = if replying && drafting {
-        &[("enter", "save draft"), ("esc", "cancel")]
-    } else if replying {
-        &[("enter", "send"), ("esc", "cancel")]
-    } else if n.thread.iter().any(|e| e.draft) {
-        &[("space n", "reply"), ("space v s", "send the review"), ("]n", "next")]
-    } else {
-        &[("space n", "reply"), ("]n", "next"), ("space N", "all"), (":note-close", "")]
-    };
-    out.push(Line::Text { spans: hint_spans(ui, hints, key, faint), indent: 0 });
     out
+}
+
+/// Who said entry `i` of `n`'s thread, as its card heads it: `¶ author`, `› you · draft`, the reviewer's angles and
+/// verdict.
+fn note_head(
+    n: &crate::notes::Note,
+    i: usize,
+    e: &crate::notes::Entry,
+    editor: &Editor,
+    ui: &Ui,
+) -> Vec<crate::markdown::Span> {
+    use crate::markdown::Span;
+    use crate::notes::By;
+    let sp = |text: &str, style: Style| Span { cut: None, hint: false, text: text.to_string(), style };
+    let accent = Style { fg: ui.accent.fg, ..Style::default() };
+    let dim = Style { fg: ui.virt.fg, ..Style::default() };
+    let faint = Style { fg: ui.linenr.fg, ..Style::default() };
+    match e.by {
+        By::Author => vec![sp("¶ ", accent), sp(By::Author.label(), Style { bold: true, ..accent })],
+        // (the chat's last answer, said where it names this place — #239)
+        By::Chat => vec![
+            sp("¶ ", accent),
+            sp(By::Chat.label(), Style { bold: true, ..accent }),
+            sp(if crate::notes::bare_chat(n) { " · the last answer" } else { "" }, faint),
+        ],
+        By::You if e.draft => {
+            vec![sp("› ", dim), sp(By::You.label(), Style { bold: true, ..dim }), sp(" · draft", faint)]
+        }
+        By::You => vec![sp("› ", dim), sp(By::You.label(), Style { bold: true, ..dim })],
+        By::Reviewer => {
+            let st = reviewer_style(editor, ui);
+            // (the board's: the angles that found it and what its skeptic made of it)
+            let mark = n.board.as_ref().filter(|_| i == 0);
+            let who = mark.map_or_else(|| By::Reviewer.label().to_string(), |m| m.angles.join(" · "));
+            let mut v = vec![sp("¶ ", st), sp(&who, Style { bold: true, ..st })];
+            match mark.map(|m| m.verdict) {
+                Some(crate::board::Verdict::Unchecked) => {
+                    let warn = editor.theme.try_get("warning").and_then(|s| s.fg).or(ui.accent.fg);
+                    v.push(sp(" · unchecked", Style { fg: warn, ..Style::default() }));
+                }
+                Some(v2) => v.push(sp(&format!(" · {}", v2.word()), dim)),
+                None => {}
+            }
+            if e.draft {
+                v.push(sp(" · not sent yet", faint));
+            }
+            v
+        }
+    }
 }
 
 /// A high-risk change's line end in `room` cells, after its `▲`: `high · unsafe (rust pack) · space v h` — the
@@ -27912,8 +27979,6 @@ mod tests {
             ("stop", 1),
             // pointing: the labels go, nothing opened or closes
             ("stop pointing", 2),
-            // a note being written: what's typed goes
-            ("cancel", 2),
         ];
         // The terminal's round: from the code into the program (`type`), from the program into its view mode (`view`)
         const TERMINAL: &[(&str, usize)] = &[("type", 1), ("view", 1)];

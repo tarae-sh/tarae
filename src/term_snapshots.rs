@@ -2146,15 +2146,15 @@ fn a_cut_note_keeps_who_is_talking() {
     let mut parser = vt100::Parser::new(s.h, s.w, 0);
     parser.process(&bytes);
     let rows: Vec<String> = parser.screen().rows(0, s.w).collect();
-    let card: Vec<&str> = rows[y..y + h]
-        .iter()
-        .map(|r| r.trim())
-        .filter(|r| !r.is_empty() && !r.starts_with(['▄', '▀']))
-        .collect();
-    assert!(card[0].starts_with("¶ author"), "{card:#?}");
-    assert!(card[1].starts_with("… Sentence number"), "{card:#?}");
+    let card: Vec<&str> = rows[y..y + h].iter().map(|r| r.trim().trim_matches(['│', ' '])).collect();
+    assert!(card[0].starts_with("╭─ note "), "{card:#?}");
+    assert!(card[1].starts_with("¶ author"), "{card:#?}");
+    assert!(card[2].starts_with("… Sentence number"), "{card:#?}");
     assert!(card.iter().any(|r| r.contains("Sentence number 12")), "the newest stays: {card:#?}");
-    assert!(card.last().unwrap().contains("space n"), "and the keys: {card:#?}");
+    assert!(
+        card.last().unwrap().starts_with("╰─ space n reply · "),
+        "and the keys, its bottom line: {card:#?}"
+    );
 }
 
 /// Who wrote each note, where it's seen: the reviewer's finding (`¶ reviewer · not sent yet` on its card, its
@@ -9697,6 +9697,119 @@ fn frames_of_f235() {
              since nothing else reads the map, no other line has to change."
                 .into();
     });
+}
+
+/// #240's note card (the user picked B, 2026-10-29: #234's frame named `note`, every entry under its author's head, the
+/// keys on its bottom line), for its shots: a one-entry note, a thread (the reviewer's finding, the author's answer, your
+/// reply; a second note on its line), the chat's and a stale draft — wide (112×30) and narrow (64×24), both themes;
+/// and, wide only, the one-entry note with a reply being written (no keys on its bottom line: the reply's prompt has them).
+/// Only with `TARAE_FRAMES_DIR` set (`.sb/f240-shots.sh`).
+#[test]
+fn frames_of_note_cards() {
+    use crate::notes::{By, Entry};
+    let Some(dir) = std::env::var_os("TARAE_FRAMES_DIR") else { return };
+    std::fs::create_dir_all(&dir).unwrap();
+    let scene = |w: u16, h: u16, which: &str| {
+        let mut s = Shot::new(w, h);
+        s.in_project();
+        s.file("src/main.rs", DEMO_RS);
+        let path = s.ed.doc().path.clone().unwrap();
+        match which {
+            "one" | "reply" => {
+                crate::notes::add(
+                    &mut s.ed,
+                    &path,
+                    8..9,
+                    By::Author,
+                    "Each word is hashed once here — `entry` keeps the slot it found.",
+                );
+            }
+            "thread" => {
+                let id = crate::notes::add(
+                    &mut s.ed,
+                    &path,
+                    7..9,
+                    By::Reviewer,
+                    "`split_whitespace` keeps punctuation: `end.` and `end` count apart.",
+                );
+                let n = s.ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id).unwrap();
+                n.thread.push(Entry {
+                    by: By::Author,
+                    text: "Kept as is — the doc comment says words are split on whitespace only.".into(),
+                    draft: false,
+                });
+                n.thread.push(Entry { by: By::You, text: "Say so in a test too.".into(), draft: false });
+                crate::notes::add(
+                    &mut s.ed,
+                    &path,
+                    8..9,
+                    By::Author,
+                    "`or_insert(0)` then `+= 1`: one lookup.",
+                );
+                for n in &mut s.ed.workspace.claude.notes.list {
+                    n.waiting = false;
+                }
+                s.ed.workspace.claude.notes.focus = Some(id);
+            }
+            "chat" => {
+                crate::notes::add_said(
+                    &mut s.ed,
+                    &path,
+                    5..6,
+                    "`word_counts` builds the map in one pass.".into(),
+                    "`word_counts` (src/main.rs:6) builds the map in one pass — every word goes through `entry`, so a \
+                     word seen twice costs one lookup, not two."
+                        .into(),
+                );
+            }
+            _ => {
+                let id = crate::notes::add(
+                    &mut s.ed,
+                    &path,
+                    6..7,
+                    By::You,
+                    "Start it with the text's word count?",
+                );
+                let n = s.ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id).unwrap();
+                (n.thread[0].draft, n.waiting) = (true, false);
+                crate::notes::stale_card(&mut s.ed, vec![id]);
+                assert!(!crate::notes::stale_shown(&s.ed).is_empty(), "the stale card up");
+            }
+        }
+        let line = match which {
+            "chat" => 5,
+            "stale" => 6,
+            _ => 8,
+        };
+        s.ed.goto_line(line);
+        if which == "reply" {
+            crate::notes::start(&mut s.ed);
+            for c in "Kept — a test says so.".chars() {
+                s.ed.handle_key(crate::key::Key::plain(crate::key::Code::Char(c)));
+            }
+            assert!(s.ed.prompt.is_some(), "the reply's line open");
+        }
+        s
+    };
+    for (w, h, size) in [(112, 30, "wide"), (64, 24, "narrow")] {
+        let reply = (size == "wide").then_some("reply");
+        for which in ["one", "thread", "chat", "stale"].into_iter().chain(reply) {
+            let mut s = scene(w, h, which);
+            for theme in ["meok", "hanji"] {
+                s.ed.theme = crate::theme::load(theme).unwrap();
+                s.frame();
+                let bytes = s.frame();
+                assert!(s.ed.screen.note_card.get().is_some(), "{which} {size}: the note card drawn");
+                let file = format!("note-{which}-{size}-{theme}");
+                std::fs::write(Path::new(&dir).join(format!("{file}.bin")), &bytes).unwrap();
+                std::fs::write(
+                    Path::new(&dir).join(format!("{file}.txt")),
+                    snapshot(&s.ed, &file, &bytes, s.w, s.h),
+                )
+                .unwrap();
+            }
+        }
+    }
 }
 
 /// U2's screens (#187: every `…` whole under the mouse), for their screenshots (only with `TARAE_FRAMES_DIR` set: both

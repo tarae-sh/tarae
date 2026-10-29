@@ -185,6 +185,8 @@ pub enum Lights {
     Follow,
     /// The language server's popups (#234): `K`'s docs, the signature, a completion's docs — the frame drawn there.
     Popup,
+    /// The note card's frame (#240).
+    Note,
 }
 
 /// How a floating frame's lines are lit (#189): the faint wash, the accent half over it while the pointer is on it, the
@@ -798,8 +800,8 @@ impl Editor {
     }
 
     /// Whose lines light half with the pointer at (`x`, `y`), `u` under it (`Lights`): a run panel's, a list's, the
-    /// terminal's are their group's where it's docked or floating, else the slot's; a card's or the follow card's, the
-    /// frame drawn there (`Screen.frames` — a card's peek has none). None on a line (a line that drags lights itself —
+    /// terminal's are their group's where it's docked or floating, else the slot's; a card's, the follow card's or the
+    /// note card's, the frame drawn there (`Screen.frames` — a card's peek has none). None on a line (a line that drags lights itself —
     /// `border_hover`), a picker, the status line — what has no lines of its own to light.
     pub fn lights_at(&self, u: Under, x: usize, y: usize) -> Option<Lights> {
         use Surface as S;
@@ -825,7 +827,7 @@ impl Editor {
                 Some(group().map_or(Lights::Slot, Lights::Dock))
             }
             // (the ask's card records no frame — it has none, as a toast: nothing lit, unless one is drawn there)
-            S::Card | S::FollowCard | S::Ask => {
+            S::Card | S::FollowCard | S::Ask | S::NoteCard => {
                 let frames = self.screen.frames.borrow();
                 frames.iter().rev().find(|f| inside(f.rect, x, y)).and_then(|f| f.of)
             }
@@ -1487,7 +1489,8 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
         Su::WhichKey | Su::Completion | Su::NoteCard => match (part, act) {
             (Part::Row(_), A::Press) => Acts,
             // (the completion list's keys on its bottom line, #234: buttons — a press does its key, the pointer lights it)
-            (Part::Word(Word::Does(_)), A::Press | A::Hover) if surface == Su::Completion => Acts,
+            // (and the note card's, #240)
+            (Part::Word(Word::Does(_)), A::Press | A::Hover) if surface != Su::WhichKey => Acts,
             (_, A::Press) if surface == Su::NoteCard => Acts,
             (_, A::Press) => Says("a row presses it"),
             (_, A::Double) => AS_ONE,
@@ -1648,7 +1651,7 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ("The completion menu", "the rest of it, its docs", Su::Completion, Part::Blank),
         ("The completion menu", "a key hint on its bottom line", Su::Completion, Part::Word(Word::Does(0))),
         ("The note card", "", Su::NoteCard, Part::Blank),
-        ("The note card", "a key hint", Su::NoteCard, Part::Word(Word::Does(0))),
+        ("The note card", "a key on its bottom line", Su::NoteCard, Part::Word(Word::Does(0))),
         (
             "The status line",
             "a word (`▲N waiting · C-q`, the chip, what Claude does now, the branch, `▲ N`, `full screen`)",

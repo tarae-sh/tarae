@@ -1410,6 +1410,7 @@ fn every_floating_frame_lights_half_under_the_pointer() {
     let kinds = [
         "a light card · Card",
         "the follow card over the code · Follow",
+        "a note on the cursor's line · Note",
         "the code, the session list floating without the keys · Dock(Sessions)",
         "the messages list, its keys given back · Dock(Messages)",
         "the folders list, its keys given back · Dock(Folders)",

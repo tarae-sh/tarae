@@ -1530,7 +1530,7 @@ mod tests {
         };
         let screen = rows(&mut ed);
         assert!(screen.contains("¶ stale · two is wrong"), "{screen}");
-        assert!(screen.contains("stale · its lines changed since it was pinned"), "{screen}");
+        assert!(screen.contains("╭─ note ── stale · the card asks ─"), "its card's top line: {screen}");
         assert!(!screen.contains("stale · three too"), "{screen}");
         // A later turn: the same card, grown — its `y` waits for the new list to be seen
         answer(&mut ed, "");
