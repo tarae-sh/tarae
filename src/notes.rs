@@ -244,15 +244,14 @@ pub fn attach(ed: &mut Editor) {
 }
 
 /// `attach` for one session's notes.
-fn attach_in(notes: &mut Notes, docs: &mut [crate::document::Document]) {
-    // (a note whose file isn't open looks for its buffer every event: the buffers laid out by path once, at the
-    // first — a mark added changes no path. #214: each such note searched every buffer)
-    let mut by_path: Option<crate::docpaths::Index> = None;
+fn attach_in(notes: &mut Notes, docs: &mut crate::docpaths::Docs) {
+    // (a note looks for its buffer every event — by id once attached, else by its path: the buffers laid out once,
+    // kept while none moves (`Docs`; a mark added moves none). #214: each such note searched every buffer)
     for n in notes.list.iter_mut().filter(|n| !n.placing) {
-        match n
-            .at
-            .and_then(|(d, m)| docs.iter().find(|doc| doc.id == d).and_then(|doc| Some((doc, doc.mark(m)?))))
-        {
+        match n.at.and_then(|(d, m)| {
+            let doc = &docs[docs.index_of(d)?];
+            Some((doc, doc.mark(m)?))
+        }) {
             Some((doc, sel)) => {
                 let r = sel.primary();
                 let (a, b) = (mv::line_of(&doc.text, r.anchor), mv::line_of(&doc.text, r.head));
@@ -260,8 +259,7 @@ fn attach_in(notes: &mut Notes, docs: &mut [crate::document::Document]) {
             }
             None => {
                 n.at = None;
-                let by_path = by_path.get_or_insert_with(|| crate::docpaths::Index::of(docs));
-                if let Some(doc) = by_path.first(docs, &n.path, |d| !d.loading).map(|i| &mut docs[i]) {
+                if let Some(doc) = docs.first(&n.path, |d| !d.loading).map(|i| &mut docs[i]) {
                     // Saved last time: follow its first line if the file moved it meanwhile
                     if let Some(want) = n.anchor.take() {
                         let shift = nearest_line(&doc.text, n.lines.start, &want);
@@ -360,7 +358,7 @@ pub fn restore_in(ed: &mut Editor, id: crate::event::WorkspaceId) {
     }
 }
 
-fn restore_from(notes: &mut Notes, docs: &mut [crate::document::Document], saved: Vec<Value>) {
+fn restore_from(notes: &mut Notes, docs: &mut crate::docpaths::Docs, saved: Vec<Value>) {
     for v in saved {
         let (Some(path), Some(lines)) = (v["path"].as_str(), v["lines"].as_array()) else { continue };
         let (Some(a), Some(b)) =
@@ -1724,12 +1722,12 @@ mod tests {
         let (f, other) = (dir.join("a.rs"), dir.join("b.rs"));
         std::fs::write(&f, "one\ntwo\nthree\n").unwrap();
         std::fs::write(&other, "x\n").unwrap();
-        let mut docs = vec![
+        let mut docs = crate::docpaths::Docs::of(vec![
             Document::open(1, &other).unwrap(),
             Document::placeholder(2, &f),
             Document::open(3, &other).unwrap(),
             Document::open(4, &f).unwrap(),
-        ];
+        ]);
         let mut notes = Notes::default();
         let saved = vec![json!({"path": f, "lines": [1, 2], "thread": [["claude", "here"]]})];
         restore_from(&mut notes, &mut docs, saved);

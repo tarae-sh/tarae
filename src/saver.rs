@@ -618,7 +618,7 @@ mod tests {
         ed.open(&dir.join("sub.aside/a.txt")).unwrap();
         std::fs::remove_file(dir.join("sub")).unwrap();
         std::os::unix::fs::symlink(&outside, dir.join("sub")).unwrap();
-        ed.doc_mut().path = Some(dir.join("sub/a.txt"));
+        ed.doc_mut().path.set(Some(dir.join("sub/a.txt")));
         ed.doc_mut().disk = crate::disk::stamp(&outside.join("a.txt"));
         feed(&mut ed, "cTHREE<esc>");
         let id = ed.doc().id;
@@ -648,7 +648,7 @@ mod tests {
     #[test]
     fn a_failed_write_is_reported() {
         let (mut ed, path) = opened("fail");
-        ed.doc_mut().path = Some(path.parent().unwrap().join("gone/deeper/a.txt"));
+        ed.doc_mut().path.set(Some(path.parent().unwrap().join("gone/deeper/a.txt")));
         feed(&mut ed, "cTWO<esc>:w<ret>");
         assert!(ed.flush_saves());
         assert!(ed.doc().is_modified());

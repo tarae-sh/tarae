@@ -176,7 +176,7 @@ fn a_file_named_like_a_key_is_refused_said() {
     let root = crate::scratch::Scratch::new("quote-key");
     let (mut ed, _claude) = code();
     ed.workspace.root = root.path().to_path_buf();
-    ed.docs[0].path = Some(root.join(".env"));
+    ed.docs[0].path.set(Some(root.join(".env")));
     feed(&mut ed, "x >");
     let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
     assert!(said.contains("named like a key — point at its pane (space @)"), "{said}");
@@ -593,7 +593,7 @@ fn a_code_quote_shows_in_its_colours_and_a_press_reads_it_whole() {
     };
     let (mut ed, _claude) = code();
     // (a file's: the startup scratch would give its place to the buffer a press opens)
-    ed.docs[0].path = Some(ed.workspace.root.join("src/main.rs"));
+    ed.docs[0].path.set(Some(ed.workspace.root.join("src/main.rs")));
     ed.docs[0].syntax = Some(crate::syntax::Syntax::parsed(rust, &ed.docs[0].text));
     feed(&mut ed, "% >");
     let q = ed.workspace.claude.chat.as_ref().unwrap().quotes[0].clone();
@@ -677,7 +677,7 @@ fn in_rust(ed: &mut Editor, text: &str) -> bool {
         return false;
     };
     ed.docs[0].text = Rope::from_str(text);
-    ed.docs[0].path = Some(ed.workspace.root.join("src/main.rs"));
+    ed.docs[0].path.set(Some(ed.workspace.root.join("src/main.rs")));
     ed.docs[0].syntax = Some(crate::syntax::Syntax::parsed(rust, &ed.docs[0].text));
     true
 }
@@ -739,7 +739,7 @@ fn a_cut_quote_keeps_its_colours_after_the_cut() {
 #[test]
 fn a_language_servers_document_is_the_file_in_front() {
     let (mut ed, _claude) = code();
-    ed.docs[0].path = Some(ed.workspace.root.join("src/main.rs"));
+    ed.docs[0].path.set(Some(ed.workspace.root.join("src/main.rs")));
     let id = ed.open_virtual("String.class", "public final class String {}\n");
     let d = ed.docs.iter_mut().find(|d| d.id == id).unwrap();
     d.virtual_uri = Some("jdt://contents/rt.jar/java.lang/String.class".into());
@@ -756,7 +756,7 @@ fn a_language_servers_document_is_the_file_in_front() {
 fn a_view_in_front_never_stands_for_the_file_in_front() {
     use crate::offer::{CARD_VIEW, Offer, What};
     let (mut ed, claude) = code();
-    ed.docs[0].path = Some(ed.workspace.root.join("src/main.rs"));
+    ed.docs[0].path.set(Some(ed.workspace.root.join("src/main.rs")));
     feed(&mut ed, "x >");
     let named = |ed: &mut Editor, view: &str| {
         let shown = frame(ed);

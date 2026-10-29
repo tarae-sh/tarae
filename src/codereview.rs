@@ -602,7 +602,7 @@ impl CodeReview {
     /// Which file the current document is.
     pub fn current(&self, ed: &Editor) -> Option<usize> {
         let doc = ed.doc();
-        match &doc.path {
+        match &*doc.path {
             Some(p) => self.files.iter().position(|f| &f.path == p),
             None => {
                 doc.title.as_ref().and_then(|t| self.files.iter().position(|f| f.gone && t == &gone_title(f)))
@@ -1292,7 +1292,7 @@ fn doc_of<'a>(ed: &'a Editor, f: &File) -> Option<&'a crate::document::Document>
     if !f.gone {
         return crate::docpaths::find(ed, &f.path);
     }
-    ed.docs.iter().find(|d| match &d.path {
+    ed.docs.iter().find(|d| match &*d.path {
         Some(p) => *p == f.path,
         None => d.title.as_deref() == Some(gone_title(f).as_str()),
     })

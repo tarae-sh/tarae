@@ -219,7 +219,7 @@ fn turn_review_on_disk(ed: &mut Editor, scratch: &crate::scratch::Scratch) {
 fn review_of_three(ed: &mut Editor, root: std::path::PathBuf, gone: bool) {
     use crate::codereview::{Base, CodeReview, File};
     // (a buffer of its own beside the review's: one empty unnamed buffer alone is the start screen)
-    ed.docs[0].path = Some(root.join("notes.txt"));
+    ed.docs[0].path.set(Some(root.join("notes.txt")));
     let file = |rel: &str| File {
         rel: rel.into(),
         path: root.join(rel),

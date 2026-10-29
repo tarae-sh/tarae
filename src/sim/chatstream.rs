@@ -121,7 +121,7 @@ fn run(choices: Choices) -> Vec<String> {
     let mut sim = Sim::new("the_chats_transcript_follows_an_answer_being_written", choices, LIMIT);
     let mut ed = Editor::new(crate::config::Config::default());
     ed.docs[0].text = ropey::Rope::from_str("fn main() {}\n");
-    ed.docs[0].path = Some(FILE.into());
+    ed.docs[0].path.set(Some(FILE.into()));
     let mut c = crate::chat::Chat::new();
     c.msgs = vec![
         Msg::new(Role::User, "why does insert clone the name?", ""),

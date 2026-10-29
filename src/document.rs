@@ -6,7 +6,7 @@
 
 use std::fs::File;
 use std::io::{self, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context as _, Result, bail};
 use ropey::Rope;
@@ -267,7 +267,8 @@ pub struct Snapshot {
 pub struct Document {
     pub id: DocId,
     pub text: Rope,
-    pub path: Option<PathBuf>,
+    /// Set through `DocPath::set` (`docpaths`: the buffers by path are kept until a path changes).
+    pub path: crate::docpaths::DocPath,
     /// View scroll (line, screen column) — kept when switching buffers.
     pub top: usize,
     pub left: usize,
@@ -453,7 +454,7 @@ impl Document {
         Self {
             id,
             text: Rope::from_str(text),
-            path: None,
+            path: Default::default(),
             top: 0,
             left: 0,
             top_rows: None,
@@ -529,7 +530,7 @@ impl Document {
     /// Empty placeholder for background loading — `finish_loading` fills it.
     pub fn placeholder(id: DocId, path: &Path) -> Self {
         let mut doc = Self::from_str(id, "");
-        doc.path = Some(path.to_path_buf());
+        doc.path.set(Some(path.to_path_buf()));
         doc.loading = true;
         doc
     }
@@ -833,7 +834,7 @@ impl Document {
         if self.loading {
             bail!("still loading — not saved");
         }
-        let Some(path) = &self.path else { bail!("no file name — use :w <path>") };
+        let Some(path) = &*self.path else { bail!("no file name — use :w <path>") };
         let now = crate::disk::stamp(path);
         // (a save of ours still being written changes the file too — that's not someone else)
         let changed = self.saving == 0 && self.disk.is_some() && now.is_some() && now != self.disk;
@@ -867,7 +868,7 @@ impl Document {
 
     /// What its servers call it: its file's URI, else its own address (a server's document, a web page).
     pub fn lsp_uri(&self) -> Option<String> {
-        match &self.path {
+        match &*self.path {
             Some(p) => Some(crate::lsp::uri(p)),
             None => self.virtual_uri.clone(),
         }
@@ -875,7 +876,7 @@ impl Document {
 
     /// Its path relative to `root` (the editor's), else its title.
     pub fn display_name(&self, root: &Path) -> String {
-        match &self.path {
+        match &*self.path {
             Some(p) => p.strip_prefix(root).unwrap_or(p).display().to_string(),
             None => self.title.clone().unwrap_or_else(|| "[scratch]".to_string()),
         }
@@ -902,7 +903,7 @@ mod tests {
         doc.commit_undo(before);
     }
 
-    fn temp_dir(name: &str) -> PathBuf {
+    fn temp_dir(name: &str) -> std::path::PathBuf {
         crate::scratch::Scratch::new(&format!("doc-{name}")).into_path()
     }
 

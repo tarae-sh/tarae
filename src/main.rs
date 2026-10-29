@@ -4,6 +4,8 @@
 // built with them isn't in it, and the binary's own build still checks the rest)
 #![cfg_attr(test, allow(clippy::disallowed_methods, reason = "tests: not in the release binary"))]
 
+#[cfg(test)]
+mod allocs;
 mod allow;
 mod apply;
 mod aside;

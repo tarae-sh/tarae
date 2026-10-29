@@ -1106,7 +1106,7 @@ mod tests {
         ed.open(&file).unwrap();
         let id = ed.doc().id;
         feed(&mut ed, "ge");
-        ed.doc_mut().path = Some(log); // stands in for the log (tests never write the real one)
+        ed.doc_mut().path.set(Some(log)); // stands in for the log (tests never write the real one)
         std::fs::write(&file, "a\nb\nc\nd\n").unwrap();
         let known = ed.doc().disk;
         ed.on_disk(vec![(id, known, stamp(&file), Some("a\nb\nc\nd\n".into()))]);

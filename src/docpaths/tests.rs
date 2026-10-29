@@ -10,6 +10,8 @@ use crate::replay::{Hunk, Stop};
 use crate::scratch::Scratch;
 use std::path::PathBuf;
 
+mod still;
+
 /// Sessions open (yours in front and 16 behind, each a checkout of one repository), the busy ones among those behind,
 /// each one's own buffers, its turn's stops (every other one an edit of two hunks, over `TURN_FILES` files, `OPEN` of
 /// them open), the review's files (each open) and your notes on files not open — #214's driver: 17 sessions, four
@@ -23,8 +25,8 @@ const OPEN: usize = 10;
 const REVIEWED: usize = 49;
 const NOTES: usize = 200;
 
-/// A repository and its 16 linked checkouts (`w0` the first): their real paths.
-fn checkouts(dir: &Scratch) -> Vec<PathBuf> {
+/// A repository and its `n - 1` linked checkouts (`w0` the first): their real paths.
+fn checkouts(dir: &Scratch, n: usize) -> Vec<PathBuf> {
     let git = |at: &std::path::Path, args: &[&str]| crate::gitrepo::fixture_git(at, args);
     let first = dir.join("w0");
     std::fs::create_dir_all(&first).unwrap();
@@ -32,17 +34,17 @@ fn checkouts(dir: &Scratch) -> Vec<PathBuf> {
     git(&first, &["init", "-q"]);
     git(&first, &["add", "-A"]);
     git(&first, &["commit", "-qm", "first"]);
-    for k in 1..SESSIONS {
+    for k in 1..n {
         git(&first, &["worktree", "add", "-q", &format!("../w{k}")]);
     }
-    (0..SESSIONS).map(|k| std::fs::canonicalize(dir.join(format!("w{k}"))).unwrap()).collect()
+    (0..n).map(|k| std::fs::canonicalize(dir.join(format!("w{k}"))).unwrap()).collect()
 }
 
 /// A buffer of `path` in session `k`'s workspace (0: the one in front).
 fn buffer(ed: &mut Editor, k: usize, path: PathBuf) {
     let id = ed.alloc_id();
     let mut d = Document::from_str(id, "fn a() {}\n");
-    d.path = Some(path);
+    d.path.set(Some(path));
     ed.docs.push(d);
     match k {
         0 => ed.workspace_keeps(id),
@@ -90,8 +92,13 @@ fn busy() -> crate::chat::Chat {
 /// #214's scene: the sessions, their buffers, the busy ones' turns, the review in front with its files open and marked
 /// viewed (what's changed since is asked of each), its rail drawn, your notes, one shared server.
 fn many(name: &str) -> (Editor, Scratch) {
+    many_of(name, SESSIONS)
+}
+
+/// #214's scene with `sessions` open — the same busy ones, review and notes; the rest idle checkouts with their buffers.
+fn many_of(name: &str, sessions: usize) -> (Editor, Scratch) {
     let dir = Scratch::new(name);
-    let roots = checkouts(&dir);
+    let roots = checkouts(&dir, sessions);
     let root = |k: usize| roots[k].clone();
     let mut ed = Editor::new(Config::default());
     ed.workspace.root = root(0);
@@ -100,7 +107,7 @@ fn many(name: &str) -> (Editor, Scratch) {
     // first rounds reading each one's repository (`git_common`), applied in it behind; the rest of tarae's git off)
     ed.git_auto = true;
     crate::git::watch(&ed.events, root(0));
-    for k in 1..SESSIONS {
+    for k in 1..sessions {
         let id = ed.workspace_add(root(k));
         ed.workspace_by_id(id).unwrap().name = format!("w{k}");
     }
@@ -111,7 +118,7 @@ fn many(name: &str) -> (Editor, Scratch) {
         let ev = ed.events.recv_timeout(left).expect("every checkout's repository read by its git watch");
         ed.handle_event(ev);
     }
-    for k in 1..SESSIONS {
+    for k in 1..sessions {
         for j in 0..BUFFERS {
             buffer(&mut ed, k, root(k).join(format!("lib/b{j}.rs")));
         }
@@ -152,7 +159,7 @@ fn many(name: &str) -> (Editor, Scratch) {
     let cid = ed.lsp_own("rust-analyzer", &TRAITS, Box::new(|_, _| None));
     let c = ed.lsp.clients.iter_mut().find(|c| c.id == cid).unwrap();
     // (the checkouts in the order they joined: yours last, the idle ones first — each asked whether it rests)
-    (c.root, c.roots) = (root(SESSIONS - 1), (0..SESSIONS).rev().map(root).collect());
+    (c.root, c.roots) = (root(sessions - 1), (0..sessions).rev().map(root).collect());
     c.share = Some(crate::share::Key { repo: "/nowhere/.git".into(), toolchain: String::new() });
     for d in ed.docs.iter_mut().filter(|d| d.path.is_some()) {
         d.lsp.attach(cid, false, true);
@@ -203,7 +210,9 @@ fn counted(ed: &mut Editor, buf: &mut Vec<u8>, key: &str) -> (usize, usize) {
 /// looked at on disk): an event 1,160 (presence 666, the workspaces' syncs 64, the notes 430), a frame 1,970, the state
 /// 688, the bases 16 — and each fix taken out alone (`.sb/f214-traps.sh`): presence 27,684 (no lookup by path) and
 /// 2,466 (made anew every event), the workspaces' syncs 2,261 and 2,433 (as at e5317216), the notes 35,030, a frame
-/// 162,366 (no lookup by path) and 8,370 (the rail's notes walked a row), the state 57,366, the bases 254.
+/// 162,366 (no lookup by path) and 8,370 (the rail's notes walked a row), the state 57,366, the bases 254. With the
+/// buffers' lay-out and who serves what kept between events (#214's second piece): an event 436 (presence 336, the
+/// workspaces' syncs 0, the notes 100), a frame 1,310 — the same at 34 sessions (`still`).
 #[test]
 fn many_sessions_compare_paths_once_a_place() {
     let (mut ed, _dir) = many("docpaths-budget");
@@ -243,6 +252,78 @@ fn many_sessions_compare_paths_once_a_place() {
     assert!(state <= 4 * (docs + 4 * REVIEWED), "the state: {state} paths for {docs} buffers");
     assert!(notes <= 4 * (docs + NOTES), "the notes: {notes} paths for {docs} buffers");
     assert!(bases <= 2 * SESSIONS, "the bases: {bases} paths for {SESSIONS} sessions");
+}
+
+/// The buffers laid out by path and id are kept only while nothing moves them (`Docs`, `DocPath`): a path set, a buffer
+/// put in another's place (the one there dropped), one added or removed — each found anew at the next lookup.
+#[test]
+fn a_buffer_moved_is_found_anew() {
+    let mut ed = Editor::new(Config::default());
+    let (a, b) = (PathBuf::from("/r/a.rs"), PathBuf::from("/r/b.rs"));
+    buffer(&mut ed, 0, a.clone());
+    let i = ed.docs.first(&a, |_| true).expect("added: found");
+    // (a path set)
+    ed.docs[i].path.set(Some(b.clone()));
+    assert_eq!((ed.docs.first(&a, |_| true), ed.docs.first(&b, |_| true)), (None, Some(i)), "a path set");
+    // (another put in its place: laid out with the new one made, then the one there dropped)
+    let id = ed.alloc_id();
+    let mut d = Document::from_str(id, "");
+    d.path.set(Some(a.clone()));
+    assert_eq!(ed.docs.first(&b, |_| true), Some(i));
+    ed.docs[i] = d;
+    assert_eq!(
+        (ed.docs.first(&a, |_| true), ed.docs.first(&b, |_| true)),
+        (Some(i), None),
+        "one in its place"
+    );
+    assert_eq!(ed.docs.index_of(id), Some(i));
+    // (one added before it, then it removed)
+    let id2 = ed.alloc_id();
+    let mut d2 = Document::from_str(id2, "");
+    d2.path.set(Some(b.clone()));
+    ed.docs.insert(0, d2);
+    assert_eq!(
+        (ed.docs.first(&a, |_| true), ed.docs.first(&b, |_| true)),
+        (Some(i + 1), Some(0)),
+        "one added"
+    );
+    ed.docs.remove(i + 1);
+    assert_eq!((ed.docs.first(&a, |_| true), ed.docs.index_of(id)), (None, None), "removed");
+    // (one made with its path, the rest laid out, then it added at the end)
+    let id3 = ed.alloc_id();
+    let mut d3 = Document::from_str(id3, "");
+    d3.path.set(Some(a.clone()));
+    assert_eq!(ed.docs.first(&a, |_| true), None);
+    ed.docs.push(d3);
+    assert_eq!(ed.docs.first(&a, |_| true), Some(ed.docs.len() - 1), "one pushed");
+}
+
+/// `first`'s `also` is the caller's, run after what's laid out is let go: one that looks a buffer up by path itself
+/// (laying out anew too, something having moved) finds it, never a borrow taken twice.
+#[test]
+fn a_lookup_inside_a_lookups_test_finds_its_buffer() {
+    let mut ed = Editor::new(Config::default());
+    let (a, b) = (PathBuf::from("/r/a.rs"), PathBuf::from("/r/b.rs"));
+    buffer(&mut ed, 0, a.clone());
+    buffer(&mut ed, 0, b.clone());
+    buffer(&mut ed, 0, a.clone());
+    let docs = &ed.docs;
+    let with = |p: &PathBuf| -> Vec<usize> {
+        docs.iter().enumerate().filter(|(_, d)| d.path.as_ref() == Some(p)).map(|(i, _)| i).collect()
+    };
+    let (a1, a2, b1) = (with(&a).first().copied(), with(&a).get(1).copied(), with(&b).first().copied());
+    // (the first with `a` turned down, by a lookup of `b`: the second found)
+    let second = docs.first(&a, |d| docs.by_path(&b).is_some_and(|o| o.id < d.id));
+    assert_eq!(second, a2);
+    // (laid out anew first, inside `also`)
+    moved();
+    assert_eq!(
+        docs.first(&a, |_| {
+            moved();
+            docs.first(&b, |_| true) == b1
+        }),
+        a1
+    );
 }
 
 /// What presence keeps from event to event (`presence::Built`) is what gathering it anew gives, after each change
@@ -482,7 +563,8 @@ const SEARCHES: &[(&str, usize)] = &[
 
 /// #214's scene timed: an event (a key, every per-event sync), a frame and a side panel's file row (`presence::
 /// file_marks`), medians — said for `cargo perf` (2026-10-29, this Mac: an event 230 µs, a frame 375 µs, a row 110 µs;
-/// round 1's code on this scene ~500 and ~550 µs; the first, on a smaller one at e5317216, 15.7 ms and 3.0 ms).
+/// round 1's code on this scene ~500 and ~550 µs; the first, on a smaller one at e5317216, 15.7 ms and 3.0 ms; the
+/// second piece: an event 131 µs, a frame 290 µs, a row 124 µs).
 #[test]
 fn perf_many_sessions_busy() {
     if crate::test_results::unoptimized("docpaths::tests::perf_many_sessions_busy") {

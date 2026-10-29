@@ -319,8 +319,37 @@ pub struct Held {
     tries: u32,
 }
 
+thread_local! {
+    /// Bumped whenever who serves what may have changed on this thread — a server started or gone, a server's
+    /// folders, a folder's key, one joining, a session made, ended or held, a session's folders: what `Served` laid out
+    /// is good while this stays (and the counts of sessions and servers with it).
+    static SERVED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Who serves what may have changed (`SERVED`).
+pub(crate) fn served_moved() {
+    SERVED.with(|s| s.set(s.get().wrapping_add(1)));
+}
+
+/// Each server's folders and who holds each (`Owners::holder`), and what each shared one should serve
+/// (`share_wanted`), laid out as of `at` — kept from event to event until it moves (`Editor::served`). A shared server
+/// serves every checkout: asking each of them every event grew with the sessions open (#214's second piece).
+pub(crate) struct Served {
+    /// `SERVED`, the sessions and the servers.
+    at: (u64, usize, usize),
+    /// Each server's folders' holders, in its folders' order.
+    pub holders: Vec<(ClientId, Vec<Option<crate::event::WorkspaceId>>)>,
+    /// Each shared server's folders as they should be — None where they're so already (or none is wanted).
+    wanted: Vec<(ClientId, Option<Vec<PathBuf>>)>,
+    /// Whether a folder no session holds was among them: what it should serve then turns on its open buffers too,
+    /// which `SERVED` doesn't follow — laid out again each event while so.
+    loose: bool,
+}
+
 #[derive(Default)]
 pub struct Shares {
+    /// What `Editor::served_sync` laid out last.
+    pub(crate) served: Option<Served>,
     /// Each folder's key, once read (None: not in a git checkout) · folders being read.
     keys: HashMap<PathBuf, Option<Key>>,
     reading: HashSet<PathBuf>,
@@ -442,6 +471,7 @@ impl Editor {
             // (outside git: nothing to share — no wait for a worker)
             None if !root.ancestors().any(|d| d.join(".git").exists()) => {
                 self.lsp.share.keys.insert(root.clone(), None);
+                served_moved();
                 None
             }
             None => {
@@ -465,6 +495,7 @@ impl Editor {
         let cid = self.lsp_start(server, std::slice::from_ref(&root), false)?;
         if let Some(c) = self.client_mut(cid) {
             c.share = Some(key);
+            served_moved();
         }
         Some(cid)
     }
@@ -488,6 +519,7 @@ impl Editor {
             move |ed: &mut Editor| {
                 ed.lsp.share.reading.remove(&root);
                 ed.lsp.share.keys.insert(root, key);
+                served_moved();
                 ed.share_unpark();
             }
         });
@@ -506,6 +538,7 @@ impl Editor {
     fn share_join(&mut self, a: ClientId, root: PathBuf, id: DocId) {
         self.park(id);
         let name = self.client(a).map(|c| c.name.clone()).unwrap_or_default();
+        served_moved();
         let list = self.lsp.share.joining.entry(a).or_default();
         if !list.contains(&root) {
             let joins = format!("{} joins the shared {name}", root.display());
@@ -568,6 +601,7 @@ impl Editor {
 
     fn share_session_key(&mut self, root: PathBuf, server: &str, key: Key) {
         self.lsp.share.keys.insert(root.clone(), Some(key.clone()));
+        served_moved();
         if self.share_held(&root) {
             return;
         }
@@ -630,42 +664,98 @@ impl Editor {
             return;
         }
         let now = crate::clock::now();
-        let ids: Vec<ClientId> = self
-            .lsp
-            .clients
-            .iter()
-            .filter(|c| c.share.is_some() && !self.lsp.share.swapping(c.id) && !self.lsp.share.leaving(c.id))
-            .map(|c| c.id)
-            .collect();
-        for a in ids {
-            let want = self.share_wanted(a, &self.owners());
-            let have = self.client(a).map(|c| c.roots.clone()).unwrap_or_default();
-            if same_folders(&want, &have) || want.is_empty() {
-                self.lsp.share.due.remove(&a);
+        // (what each should serve as laid out until something moves — `served`: #214, every folder of every shared
+        // server asked of every session each event)
+        self.served_sync();
+        let (mut wake, mut change) = (false, Vec::new());
+        let s = &mut self.lsp.share;
+        let served = s.served.as_ref().expect("laid out");
+        for (a, want) in &served.wanted {
+            let a = *a;
+            if s.swaps.iter().any(|w| w.a == a || w.b == a)
+                || s.deciding.contains(&a)
+                || s.leaving.contains(&a)
+            {
                 continue;
             }
-            // (the folders a new server exited loading: not again until they change, or its wait is over — #213)
-            if let Some(h) = self.lsp.share.held.get(&a) {
-                if !same_folders(&h.want, &want) {
-                    self.lsp.share.held.remove(&a);
+            let Some(want) = want else {
+                s.due.remove(&a);
+                continue;
+            };
+            // (the folders a new server exited loading: not again until they change, or its wait is over — #213;
+            // its clock isn't `served`'s, so asked here each event)
+            if let Some(h) = s.held.get(&a) {
+                if !same_folders(&h.want, want) {
+                    s.held.remove(&a);
                 } else if now < h.until {
-                    self.lsp.share.due.remove(&a);
+                    s.due.remove(&a);
                     continue;
                 }
             }
-            let due = match self.lsp.share.due.get(&a) {
-                Some(&d) => d,
+            match s.due.get(&a) {
                 None => {
-                    self.lsp.share.due.insert(a, now + GATHER);
-                    self.share_wake();
-                    continue;
+                    s.due.insert(a, now + GATHER);
+                    wake = true;
                 }
-            };
-            if now >= due {
-                self.lsp.share.due.remove(&a);
-                self.share_change(a, want);
+                Some(&due) if now >= due => {
+                    s.due.remove(&a);
+                    change.push((a, want.clone()));
+                }
+                Some(_) => {}
             }
         }
+        if wake {
+            self.share_wake();
+        }
+        for (a, want) in change {
+            self.share_change(a, want);
+        }
+    }
+
+    /// `Served` as things are now in `lsp.share.served` — laid out again only when something moved since
+    /// (`SERVED`, the sessions' and servers' counts) or a folder no session holds was among them.
+    pub(crate) fn served_sync(&mut self) {
+        let at = (SERVED.with(std::cell::Cell::get), self.workspaces.len(), self.lsp.clients.len());
+        if self.lsp.share.served.as_ref().is_some_and(|s| s.at == at && !s.loose) {
+            // (tests: what's kept is what laying it out anew gives — not where `cargo perf` times it)
+            #[cfg(all(test, not(tarae_optimized)))]
+            self.served_check();
+            return;
+        }
+        let served = self.served_laid(at);
+        self.lsp.share.served = Some(served);
+    }
+
+    fn served_laid(&self, at: (u64, usize, usize)) -> Served {
+        let owners = self.owners();
+        let holders: Vec<(ClientId, Vec<Option<crate::event::WorkspaceId>>)> = (self.lsp.clients.iter())
+            .map(|c| (c.id, c.roots.iter().map(|r| owners.holder(r).map(|l| l.id)).collect()))
+            .collect();
+        let loose = holders.iter().any(|(_, h)| h.iter().any(Option::is_none));
+        let wanted = (self.lsp.clients.iter().filter(|c| c.share.is_some()))
+            .map(|c| {
+                let want = self.share_wanted(c.id, &owners);
+                (c.id, (!same_folders(&want, &c.roots) && !want.is_empty()).then_some(want))
+            })
+            .collect();
+        Served { at, holders, wanted, loose }
+    }
+
+    /// Tests: what `served` keeps, while it holds, is what laying it out anew gives — a change of who serves what that
+    /// didn't tell `SERVED` would leave a server resting, or its folders unchanged (`workspaces_sync`, every event).
+    #[cfg(test)]
+    #[cfg_attr(tarae_optimized, allow(dead_code))]
+    fn served_check(&self) {
+        let Some(s) = self.lsp.share.served.as_ref() else { return };
+        let fresh = crate::docpaths::unworked(|| self.served_laid(s.at));
+        assert_eq!(
+            s.holders, fresh.holders,
+            "who holds each server's folders kept stale: a change without `SERVED`"
+        );
+        assert_eq!(
+            s.wanted, fresh.wanted,
+            "what a shared server should serve kept stale: a change without `SERVED`"
+        );
     }
 
     /// The folders server `a` should serve: its own that are still wanted — a file of it open, or a
@@ -737,6 +827,7 @@ impl Editor {
         let event = json!({ "event": { "added": [], "removed": gone } });
         c.notify("workspace/didChangeWorkspaceFolders", event);
         c.roots = want;
+        served_moved();
         let name = c.name.clone();
         crate::log::line(&name, "share", &format!("{why} — told it the folders that went; no restart"));
         self.share_unpark();
@@ -759,6 +850,7 @@ impl Editor {
 
     /// Folders joining `from` join `to` now.
     fn share_move_joining(&mut self, from: ClientId, to: ClientId, taken: &[PathBuf]) {
+        served_moved();
         let Some(list) = self.lsp.share.joining.remove(&from) else { return };
         let rest: Vec<PathBuf> = list.into_iter().filter(|r| !taken.contains(r)).collect();
         if !rest.is_empty() {
@@ -1126,6 +1218,7 @@ impl Editor {
     /// Server `cid` is gone (`lsp_stopped`): what waited on it. A swap's A gone before B took over → B takes
     /// over now, loaded or not; a swap's B gone → A goes on, and the folders it was to bring in join A again.
     pub(crate) fn share_forget(&mut self, cid: ClientId) {
+        served_moved();
         let s = &mut self.lsp.share;
         s.deciding.remove(&cid);
         s.due.remove(&cid);
@@ -1260,6 +1353,7 @@ impl Editor {
                 }
             }
             self.lsp.share.keys.insert(r, k);
+            served_moved();
         }
         self.unchanged = true;
     }
@@ -1370,6 +1464,36 @@ mod tests {
         ed.workspace.root = t.join("main");
         ed.lsp.share.room = Some(room);
         (t, ed)
+    }
+
+    /// What `served` keeps is laid out again when who serves what changes in place — a server's folders left, a
+    /// folder's key read — not only when the sessions' or servers' count moves: after each, what's kept is what laying
+    /// it out anew gives (`served_check`, as `served_sync` keeps it) and says the change.
+    #[test]
+    fn who_serves_what_kept_follows_a_change_in_place() {
+        let (t, mut ed) = fixture("served", &["w1", "w2"], plenty);
+        let roots: Vec<PathBuf> = ["main", "w1", "w2"].iter().map(|c| t.join(c)).collect();
+        for r in &roots[1..] {
+            ed.workspace_add(r.clone());
+        }
+        let key = Key { repo: t.join("main/.git"), toolchain: String::new() };
+        let cid = ed.lsp_own("rust-analyzer", ra(), Box::new(|_, _| None));
+        let c = ed.client_mut(cid).unwrap();
+        (c.roots, c.share) = (roots.clone(), Some(key.clone()));
+        crate::share::served_moved();
+        ed.served_sync();
+        let holders = |ed: &Editor| ed.lsp.share.served.as_ref().unwrap().holders.clone();
+        assert_eq!(holders(&ed)[0].1.len(), 3, "every checkout's folder held");
+        // (its folders left but two: kept no longer)
+        ed.share_leave(cid, roots[..2].to_vec(), "a test".into());
+        ed.served_sync();
+        assert_eq!(holders(&ed)[0].1.len(), 2, "the folder that left");
+        // (a folder's key read as another's: no longer wanted there)
+        let other = Key { repo: t.join("elsewhere/.git"), toolchain: String::new() };
+        ed.share_keys_read(cid, vec![(roots[1].clone(), Some(other), true)]);
+        ed.served_sync();
+        let wanted = &ed.lsp.share.served.as_ref().unwrap().wanted;
+        assert_eq!(wanted, &[(cid, Some(vec![roots[0].clone()]))], "the folder of another key not wanted");
     }
 
     /// Events until `done`, `what` said if it never comes.

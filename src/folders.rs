@@ -356,6 +356,8 @@ impl Editor {
 
     /// The front workspace's folders changed: kept, and what its Claude may do made again.
     fn folders_changed(&mut self) {
+        // (who holds a folder may have changed — `share::Served`)
+        crate::share::served_moved();
         self.workspaces_keep();
         self.caps_sync();
     }

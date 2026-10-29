@@ -775,7 +775,7 @@ impl std::fmt::Display for DrawnFor {
 }
 
 pub struct Editor {
-    pub docs: Vec<Document>,
+    pub docs: crate::docpaths::Docs,
     pub current: usize,
     /// The workspace in front — its checkout, panes, terminal, tests, tasks, git, its Claude's session and where
     /// you are in it (`workspace.rs`).
@@ -1303,7 +1303,7 @@ impl Editor {
         let saver = crate::saver::Saver::new(events.shared_sender());
         let turns_dir = if cfg!(test) { None } else { crate::checkpoint::default_dir() };
         let mut ed = Self {
-            docs: Vec::new(),
+            docs: Default::default(),
             current: 0,
             workspace: crate::workspace::Workspace::new(crate::event::WorkspaceId::HOME, root, 1),
             workspaces: Vec::new(),
@@ -2903,6 +2903,10 @@ impl Editor {
         if let Some(step) = AFTER_EVENT.get() {
             step(self);
         }
+        // (tests: the buffers by path kept from event to event are what laying them out anew gives — `docpaths`; not
+        // in an optimized build, where `cargo perf` times the event)
+        #[cfg(all(test, not(tarae_optimized)))]
+        self.docs.check_laid();
         // (one of them can clear it — `schedule_tick` when toasts went: drawn whatever the event was)
         self.unchanged &= unchanged;
     }
@@ -6265,7 +6269,7 @@ mod tests {
         let msg = "Subject\n\n- a bullet\n  wrapped on\n\nLinux checks\n";
         let commit = |keys: &str| {
             let mut ed = editor(msg);
-            ed.docs[0].path = Some(test_root().join(".git/COMMIT_EDITMSG"));
+            ed.docs[0].path.set(Some(test_root().join(".git/COMMIT_EDITMSG")));
             feed(&mut ed, keys);
             text(&ed)
         };
@@ -6367,7 +6371,7 @@ mod tests {
     fn j_and_k_step_over_folded_doc_comments() {
         let mut ed = Editor::new(Config::default());
         ed.docs[0].text = ropey::Rope::from_str("fn a() {}\n/// one\n/// two\n/// three\nfn b() {}\n");
-        ed.docs[0].path = Some("/tmp/x.rs".into());
+        ed.docs[0].path.set(Some("/tmp/x.rs".into()));
         feed(&mut ed, "j");
         assert_eq!(ed.cursor_line(), 1, "lands on the block (first line)");
         feed(&mut ed, "j");
@@ -17911,7 +17915,7 @@ mod tests {
         use crate::offer::{Offer, What};
         let mut ed = editor("text\n");
         // (a file's buffer: the blank startup one would be handed over to the first view)
-        ed.docs[0].path = Some(test_root().join("x.rs"));
+        ed.docs[0].path.set(Some(test_root().join("x.rs")));
         let long: String = (1..=80).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         let card = |title: &str| {
             Offer::new(title.into(), &long, "", String::new(), What::ProjectTrust { hash: [0; 32] })
@@ -20191,7 +20195,7 @@ q = \"delete_selection\"\n",
 
     fn rust_editor(text: &str) -> Editor {
         let mut ed = editor(text);
-        ed.docs[0].path = Some("/tmp/tarae-test.rs".into());
+        ed.docs[0].path.set(Some("/tmp/tarae-test.rs".into()));
         ed
     }
 
@@ -20280,7 +20284,7 @@ q = \"delete_selection\"\n",
     #[test]
     fn space_capital_c_falls_back_to_line_comments() {
         let mut ed = editor("x = 1\n");
-        ed.docs[0].path = Some("/tmp/tarae-test.py".into());
+        ed.docs[0].path.set(Some("/tmp/tarae-test.py".into()));
         feed(&mut ed, "<space>C");
         assert_eq!(text(&ed), "# x = 1\n");
         feed(&mut ed, "<space>C");

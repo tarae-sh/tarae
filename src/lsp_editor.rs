@@ -657,6 +657,7 @@ impl Editor {
         self.lsp.next_id += 1;
         let cid = self.lsp.next_id;
         self.lsp.clients.push(Client::own(cid, name, traits, serve));
+        crate::share::served_moved();
         self.lsp_own_serve(cid);
         cid
     }
@@ -705,6 +706,7 @@ impl Editor {
             let mut c = make(self, cid, &server, roots);
             c.checks_off = checks_off;
             self.lsp.clients.push(c);
+            crate::share::served_moved();
             self.lsp_own_serve(cid);
             return Some(cid);
         }
@@ -714,6 +716,7 @@ impl Editor {
                 // (started again after it exited: no longer the status line's red dot)
                 self.lsp.failed.remove(&server.name);
                 self.lsp.clients.push(c);
+                crate::share::served_moved();
                 Some(cid)
             }
             Err(e) => {
@@ -2245,7 +2248,7 @@ impl Editor {
             let rest = old.strip_prefix(&from).map(|r| r.to_path_buf()).unwrap_or_default();
             let new = if rest.as_os_str().is_empty() { to.clone() } else { to.join(rest) };
             doc.disk = crate::disk::stamp(&new);
-            doc.path = Some(new);
+            doc.path.set(Some(new));
             self.attach_lsp(id);
         }
         Ok(())
@@ -3553,6 +3556,7 @@ impl Editor {
     pub(crate) fn lsp_stopped(&mut self, cid: ClientId) -> Option<String> {
         let i = self.lsp.clients.iter().position(|c| c.id == cid)?;
         let name = self.lsp.clients.remove(i).name.clone();
+        crate::share::served_moved();
         // Its diagnostics in closed files go; the other servers' stay
         for list in self.lsp.elsewhere.values_mut() {
             list.retain(|d| d.0 != cid);

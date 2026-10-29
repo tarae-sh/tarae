@@ -611,17 +611,18 @@ fn write(editor: &mut Editor, path: &str, force: bool) -> Result<(), String> {
             // (written here: a save of the old name still under way finishes first)
             editor.flush_saves();
             let doc = editor.doc_mut();
-            let (old, disk, conflict) = (doc.path.replace(new.clone()), doc.disk.take(), doc.disk_conflict);
+            let (old, disk, conflict) =
+                (doc.path.replace(Some(new.clone())), doc.disk.take(), doc.disk_conflict);
             doc.disk_conflict = false;
             let saved = doc.save_as(force);
-            doc.path = old;
+            doc.path.set(old);
             if let Err(e) = saved {
                 (doc.disk, doc.disk_conflict) = (disk, conflict);
                 return Err(format!("{e:#}"));
             }
             // Servers forget the old name; language, server and git base follow the new one
             editor.lsp_did_close(id);
-            editor.doc_mut().path = Some(new);
+            editor.doc_mut().path.set(Some(new));
             editor.attach_syntax(id);
             editor.attach_lsp(id);
             editor.git_load_base(id);

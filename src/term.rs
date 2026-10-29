@@ -830,7 +830,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
             .workspace
             .code_review
             .as_ref()
-            .map(|r| crate::docpaths::within(editor, |ed| (r.marked(ed), review_rail_list(&lay, ed, r))))
+            .map(|r| (r.marked(editor), review_rail_list(&lay, editor, r)))
         && let Some(r) = editor.workspace.code_review.as_mut()
     {
         r.fit(marked, room.1, room.0, rail_keys);
@@ -944,10 +944,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         .filter(|_| offer.is_none() && card_short(editor, &lay).is_some())
         .map(|o| (o.id, o.rev));
     editor.offer_unshown.set(unshown);
-    // (the documents laid out by path once for the frame — the rail asks each file's buffer several times, #214)
-    crate::docpaths::within(editor, |ed| {
-        draw(ed, &lay, &ui, review_rows.as_deref().map(Vec::as_slice), offer.as_ref(), out)
-    })
+    draw(editor, &lay, &ui, review_rows.as_deref().map(Vec::as_slice), offer.as_ref(), out)
 }
 
 /// Whether a pane shows document `doc`'s last line (its last non-empty one, past a final newline).
@@ -6216,7 +6213,7 @@ fn draw_text(
         .chat
         .as_ref()
         .and_then(|c| c.follow.shown())
-        .filter(|g| g.path.is_some() && g.path == doc.path && doc.shown.is_none())
+        .filter(|g| g.path.is_some() && g.path == *doc.path && doc.shown.is_none())
         .and_then(|g| g.lines.clone());
     let gaze_bg = blend(ui.accent.fg, ui.tint, 0.09).or(ui.base.bg);
     // Code review: added and changed lines on a green wash (a step stronger on the cursor line); removed ones
@@ -13989,7 +13986,7 @@ fn draw_follow_card(
     let width = inner + 4;
     let x0 = (px + pw).saturating_sub(width + 1);
     // The lines being read stay readable: their rows, where their text reaches into the card's columns
-    let read: Vec<usize> = match (pane, gaze.filter(|g| g.path.is_some() && g.path == doc.path)) {
+    let read: Vec<usize> = match (pane, gaze.filter(|g| g.path.is_some() && g.path == *doc.path)) {
         (Some((_, _, gutter, view)), Some(g)) => g
             .lines
             .clone()
@@ -22034,7 +22031,7 @@ mod tests {
     fn review_folds_are_laid_out_again_for_another_grammar() {
         let mut ed = Editor::new(Config::default());
         ed.docs[0].text = Rope::from_str("/// One.\n///\n/// ```\n/// let x = 1;\n/// ```\nfn a() {}\n");
-        ed.docs[0].path = Some("/tmp/x.rs".into());
+        ed.docs[0].path.set(Some("/tmp/x.rs".into()));
         let doc = &ed.docs[0];
         let fresh = review_folds(&ed, doc, 80, None).expect("doc comments render in Rust");
         assert_eq!((fresh.blocks.len(), &fresh.key.4), (1, &None), "no grammar yet");
@@ -22052,7 +22049,7 @@ mod tests {
     fn the_edit_reviews_kept_rows_follow_what_they_are_built_from() {
         let mut ed = Editor::new(Config::default());
         ed.docs[0].text = Rope::from_str("/// One.\nfn a() {}\nfn b() {}\n");
-        ed.docs[0].path = Some("/tmp/x.rs".into());
+        ed.docs[0].path.set(Some("/tmp/x.rs".into()));
         let at = ed.docs[0].text.line_to_byte(2);
         let hunk = crate::llm::Hunk {
             from: at,
@@ -22101,7 +22098,7 @@ mod tests {
     fn doc_comments_render_until_cursor_enters() {
         let mut ed = Editor::new(Config::default());
         ed.docs[0].text = Rope::from_str("/// Adds `two` numbers.\nfn add() {}\n");
-        ed.docs[0].path = Some("/tmp/x.rs".into()); // doc comments only in languages that use that marker
+        ed.docs[0].path.set(Some("/tmp/x.rs".into())); // doc comments only in languages that use that marker
         ed.docs[0].set_selection(crate::selection::Selection::point(24)); // fn line
         let mut buf = Vec::new();
         render(&mut ed, &mut buf, 80, 10).unwrap();
@@ -22121,7 +22118,7 @@ mod tests {
         render(&mut ed, &mut buf, 80, 10).unwrap();
         assert!(String::from_utf8_lossy(&buf).contains("///"), "a selection wider than a char shows raw");
         // Markdown (`///` inside a code block) and unknown files stay as-is
-        ed.docs[0].path = Some("/tmp/x.md".into());
+        ed.docs[0].path.set(Some("/tmp/x.md".into()));
         ed.docs[0].set_selection(crate::selection::Selection::point(24));
         buf.clear();
         render(&mut ed, &mut buf, 80, 10).unwrap();
@@ -22138,7 +22135,7 @@ mod tests {
                    * @param key the key to look up, never {@code null}, and then some more words\n \
                    * @param load computes it\n * @return the value\n */\nint get();\n";
         ed.docs[0].text = Rope::from_str(src);
-        ed.docs[0].path = Some("/tmp/x.java".into());
+        ed.docs[0].path.set(Some("/tmp/x.java".into()));
         // (a cursor resting in it leaves it folded)
         ed.docs[0].set_selection(crate::selection::Selection::point(0));
         let mut buf = Vec::new();
@@ -22227,7 +22224,7 @@ mod tests {
         let mut ed = Editor::new(Config::default());
         let text: String = (0..1000).map(|i| format!("line {i}\n")).collect();
         ed.docs[0].text = Rope::from_str(&text);
-        ed.docs[0].path = Some("/tmp/x.rs".into()); // the doc-comment scan runs for languages that use it
+        ed.docs[0].path.set(Some("/tmp/x.rs".into())); // the doc-comment scan runs for languages that use it
         let at = mv::line_start(&ed.docs[0].text, 980);
         ed.docs[0].set_selection(crate::selection::Selection::point(at));
         let mut buf = Vec::new();
@@ -22726,7 +22723,7 @@ mod tests {
         let text: String = (0..600).map(|i| format!("{block}pub fn f{i}() {{\n{body}}}\n")).collect();
         let mut ed = Editor::new(Config::default());
         ed.docs[0].text = Rope::from_str(&text);
-        ed.docs[0].path = Some("/tmp/big.rs".into());
+        ed.docs[0].path.set(Some("/tmp/big.rs".into()));
         let doc = &ed.docs[0];
         assert!(doc.text.len_lines() > 12_000);
         let at = doc.text.line_to_byte(6_000);
@@ -22935,7 +22932,7 @@ mod tests {
             (0..200).map(|i| format!("{block}pub fn f{i}(total: u32) {{\n{body}}}\n")).collect();
         let mut ed = Editor::new(Config::default());
         ed.docs[0].text = Rope::from_str(&text);
-        ed.docs[0].path = Some("/tmp/review.rs".into());
+        ed.docs[0].path.set(Some("/tmp/review.rs".into()));
         if let Ok(lang) = crate::syntax::Loader::global().load(crate::syntax::spec("rust").unwrap()) {
             ed.docs[0].syntax = Some(crate::syntax::Syntax::parsed(lang, &ed.docs[0].text));
         }
@@ -22989,7 +22986,7 @@ mod tests {
             (0..200).map(|i| format!("{block}pub fn f{i}(total: u32) {{\n{body}}}\n")).collect();
         let mut ed = Editor::new(Config::default());
         ed.docs[0].text = Rope::from_str(&text);
-        ed.docs[0].path = Some("/tmp/preview.rs".into());
+        ed.docs[0].path.set(Some("/tmp/preview.rs".into()));
         if let Ok(lang) = crate::syntax::Loader::global().load(crate::syntax::spec("rust").unwrap()) {
             ed.docs[0].syntax = Some(crate::syntax::Syntax::parsed(lang, &ed.docs[0].text));
         }
@@ -23167,7 +23164,7 @@ mod tests {
                 let mut ed = Editor::new(Config::default());
                 ed.config.soft_wrap = wrap.into();
                 ed.docs[0].text = rope.clone();
-                ed.docs[0].path = Some(std::path::PathBuf::from("/nonexistent/doc_comments.rs"));
+                ed.docs[0].path.set(Some(std::path::PathBuf::from("/nonexistent/doc_comments.rs")));
                 let mut buf = Vec::with_capacity(1 << 16);
                 render(&mut ed, &mut buf, 120, 40).unwrap();
                 let folded = ed.view.iter().any(|r| matches!(r, crate::codeview::Row::Doc { .. }));
@@ -23201,7 +23198,7 @@ mod tests {
         let (worst, key) = worst_of_best(&keys, || {
             let mut ed = Editor::new(Config::default());
             ed.docs[0].text = rope.clone();
-            ed.docs[0].path = Some(std::path::PathBuf::from("/nonexistent/header.rs"));
+            ed.docs[0].path.set(Some(std::path::PathBuf::from("/nonexistent/header.rs")));
             let mut buf = Vec::with_capacity(1 << 16);
             render(&mut ed, &mut buf, 120, 40).unwrap();
             let rows = ed.view.iter().filter(|r| matches!(r, crate::codeview::Row::Doc { .. })).count();
@@ -23234,7 +23231,7 @@ mod tests {
             let mut ed = Editor::new(Config::default());
             ed.workspace.root = scratch.path().to_path_buf();
             ed.docs[0].text = rope.clone();
-            ed.docs[0].path = Some(std::path::PathBuf::from("/nonexistent/four.rs"));
+            ed.docs[0].path.set(Some(std::path::PathBuf::from("/nonexistent/four.rs")));
             let root = ed.workspace.root.clone();
             ed.workspace.viewer.sidebar =
                 Some(crate::sidebar::Sidebar::new(crate::sidebar::Mode::Outline, root));
@@ -23382,7 +23379,7 @@ mod tests {
         let run = |on: bool| {
             let mut ed = Editor::new(Config::default());
             ed.docs[0].text = Rope::from_str(&text);
-            ed.docs[0].path = Some(dir.join("big.txt"));
+            ed.docs[0].path.set(Some(dir.join("big.txt")));
             if on {
                 let mut r = crate::recovery::Recovery::new(dir.join("state"), ed.workspace.root.clone());
                 r.quiet = Duration::ZERO;
@@ -26619,7 +26616,7 @@ mod tests {
             (0..20).map(|a| format!("d{a}")).chain((0..30).map(|b| format!("d0/e{b}"))).collect();
         sb.set_open(dirs.iter().map(String::as_str), true);
         let mut ed = Editor::new(Config::default());
-        ed.docs[0].path = Some(root.join("d0/e29/f50.rs"));
+        ed.docs[0].path.set(Some(root.join("d0/e29/f50.rs")));
         ed.docs[0].text = Rope::from_str("fn main() {}\n");
         ed.workspace.viewer.sidebar = Some(sb);
         ed.workspace.viewer.at = crate::workspace::At::Side;

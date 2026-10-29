@@ -1054,7 +1054,7 @@ fn session_json(
             // (a preview comes back one — `:restart` carries the session as it was; restore, the next start's
             // reopening, never brings one back)
             let (top, left, preview) = (d.top, d.left, d.preview);
-            json!({ "path": d.path, "sel": ranges, "primary": sel.primary_index(), "top": top, "left": left, "preview": preview })
+            json!({ "path": d.path.as_deref(), "sel": ranges, "primary": sel.primary_index(), "top": top, "left": left, "preview": preview })
         })
         .collect();
     // (the focused pane shows the current document at its scroll — `sync_focus_view`, which a session

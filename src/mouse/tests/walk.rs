@@ -134,15 +134,15 @@ const MOUSE_SCENES: &[Scene] = &[
         ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(root, files));
     }),
     ("two buffers, a nested path", |ed| {
-        ed.docs[0].path = Some(ed.workspace.root.join("src/ui/card.rs"));
+        ed.docs[0].path.set(Some(ed.workspace.root.join("src/ui/card.rs")));
         let mut other = crate::document::Document::from_str(77, "other\n");
-        other.path = Some(ed.workspace.root.join("other.rs"));
+        other.path.set(Some(ed.workspace.root.join("other.rs")));
         ed.docs.push(other);
     }),
     ("a long diagnostic at a line's end", |ed| {
         long_text(ed);
         // (a file's: a server's diagnostics are never a scratch buffer's — `space d` lists a file's)
-        ed.docs[0].path = Some(ed.workspace.root.join("src/main.rs"));
+        ed.docs[0].path.set(Some(ed.workspace.root.join("src/main.rs")));
         let message = "mismatched types: expected `usize`, found `String` ".repeat(4);
         ed.docs[0].lsp.diagnostics = vec![crate::lsp::Diagnostic {
             from: 4,
@@ -186,7 +186,7 @@ const MOUSE_SCENES: &[Scene] = &[
     ("a note on the cursor's line", |ed| {
         long_text(ed);
         let path = std::env::temp_dir().join("tarae-mouse-walk-note.rs");
-        ed.docs[0].path = Some(path.clone());
+        ed.docs[0].path.set(Some(path.clone()));
         crate::notes::add(ed, &path, 0..1, crate::notes::By::Author, "A word about this line.");
     }),
     ("a card cut to fit, long", |ed| {

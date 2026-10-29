@@ -783,11 +783,12 @@ mod tests {
             let src = &roots.iter().find(|(_, d)| file.starts_with(d)).expect("under a root").1;
             let text = std::fs::read_to_string(&file).unwrap();
             // The module the tests are in: `a/b.rs` → `a::b::tests`, `a/tests.rs` → `a::tests`, a file of tests of
-            // its own `a/b_tests.rs` → `a::b_tests`
+            // its own `a/b_tests.rs` → `a::b_tests`, or in a folder of tests `a/tests/b.rs` → `a::tests::b`
             let rel = file.strip_prefix(src).unwrap().with_extension("");
             let module: Vec<String> = rel.iter().map(|s| s.to_string_lossy().to_string()).collect();
+            let in_tests = module.iter().rev().skip(1).any(|m| m == "tests");
             let module = match module.last().map(String::as_str) {
-                Some(m) if m == "tests" || m.ends_with("_tests") => module.join("::"),
+                Some(m) if m == "tests" || m.ends_with("_tests") || in_tests => module.join("::"),
                 _ => format!("{}::tests", module.join("::")),
             };
             let lines: Vec<&str> = text.lines().collect();

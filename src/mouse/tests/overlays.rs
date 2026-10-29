@@ -90,7 +90,7 @@ fn a_press_on_a_completion_row_accepts_it_and_the_wheel_moves_through_it() {
 fn a_press_on_the_note_card_replies_and_nothing_under_it_is_pressed() {
     let mut ed = editor();
     let path = std::env::temp_dir().join("tarae-mouse-overlays-note.rs");
-    ed.docs[0].path = Some(path.clone());
+    ed.docs[0].path.set(Some(path.clone()));
     crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::Author, "A word about this line.");
     frame(&mut ed);
     let before = ed.doc().selection().primary();
@@ -116,7 +116,7 @@ fn a_press_on_the_note_card_replies_and_nothing_under_it_is_pressed() {
 fn a_press_where_the_note_card_was_closes_another_prompt_and_never_replies() {
     let mut ed = editor();
     let path = std::env::temp_dir().join("tarae-mouse-overlays-note-prompt.rs");
-    ed.docs[0].path = Some(path.clone());
+    ed.docs[0].path.set(Some(path.clone()));
     crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::Author, "A word about this line.");
     frame(&mut ed);
     let (x, y, w, h) = ed.screen.note_card.get().expect("the note card drawn");

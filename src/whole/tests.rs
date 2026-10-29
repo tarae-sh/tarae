@@ -813,7 +813,7 @@ fn side_panel(at: crate::workspace::At) -> Editor {
         "a_very_long_file_name_farewell_the_panel_never_has_room_for_at_all.rs".to_string(),
     ];
     // (the code on the second: the row the panel marks without the keys too)
-    ed.docs[0].path = Some(std::path::Path::new("/r").join(&files[1]));
+    ed.docs[0].path.set(Some(std::path::Path::new("/r").join(&files[1])));
     let mut sb = crate::sidebar::Sidebar::with_files(std::path::PathBuf::from("/r"), files);
     sb.selected = 1;
     ed.workspace.viewer.sidebar = Some(sb);

@@ -2070,6 +2070,7 @@ impl Editor {
         self.with_workspace(id, Editor::reviews_end);
         let i = self.workspaces.iter().position(|l| l.id == id)?;
         let session = self.workspaces.remove(i);
+        crate::share::served_moved();
         // (the proxy's answers for it go with it, its overlaps and their folder too)
         crate::hosts::workspace_ended(&session);
         crate::overlap::ended(self, id);
@@ -2097,7 +2098,7 @@ impl Editor {
         let gone: Vec<crate::document::DocId> = self
             .docs
             .iter()
-            .filter(|d| match &d.path {
+            .filter(|d| match &*d.path {
                 Some(p) => p.starts_with(&session.root) || only_its(self, d),
                 // (its blank scratch — not one another session shows)
                 None => {

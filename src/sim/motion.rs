@@ -123,7 +123,7 @@ fn turn_review(ed: &mut Editor) {
     use crate::codereview::{Base, CodeReview, File};
     let path = std::path::PathBuf::from("/nowhere/sim/a.rs");
     let doc = ed.doc_mut();
-    doc.path = Some(path.clone());
+    doc.path.set(Some(path.clone()));
     let text = doc.text.to_string();
     let base = format!("base\n{}", text.split_once('\n').map_or("", |(_, rest)| rest));
     doc.review_base = Some(ropey::Rope::from_str(&base));

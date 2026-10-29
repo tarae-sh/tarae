@@ -1448,7 +1448,7 @@ mod tests {
     fn a_reviewed_files_hunks_stay_the_reviews() {
         let top = std::path::Path::new("/r");
         let mut doc = crate::document::Document::from_str(1, "one\nTWO\n");
-        doc.path = Some(top.join("a.txt"));
+        doc.path.set(Some(top.join("a.txt")));
         doc.git_version = doc.version();
         doc.git_hunks = vec![crate::git::Hunk {
             kind: crate::git::HunkKind::Modified,

@@ -1944,7 +1944,7 @@ fn own_usage() -> (u64, u64) {
 /// (`a_runs_child_allocates_nothing_before_its_exec` holds it.)
 fn child(run: &channel::Run, exec: &Exec, fds: &[OwnedFd], chan: RawFd, error: RawFd) -> ! {
     #[cfg(test)]
-    tests::NO_ALLOC.store(true, std::sync::atomic::Ordering::Relaxed);
+    crate::allocs::NO_ALLOC.store(true, std::sync::atomic::Ordering::Relaxed);
     let fail = |step: Step, errno: i32| -> ! {
         let mut b = [step.code(); 5];
         b[1..].copy_from_slice(&errno.to_le_bytes());
@@ -9948,53 +9948,9 @@ mod tests {
         assert!(said[1].starts_with("v6=::1 lookup6=getaddrinfo"), "without: {}", said[1]);
     }
 
-    /// Set first thing in a run's child (`child`): from then on the test binary's allocator ends that process
-    /// with `ALLOCATED` at any allocation or free, before it touches malloc's locks.
-    pub(super) static NO_ALLOC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    /// The exit status of a run's child that allocated before its exec.
-    const ALLOCATED: i32 = 121;
-
-    /// The test binary's allocator: the system's, watched — `NO_ALLOC` set, any call ends the process.
-    struct Watched;
-
-    impl Watched {
-        fn check() {
-            if NO_ALLOC.load(std::sync::atomic::Ordering::Relaxed) {
-                // SAFETY: the end of this process (a run's child), nothing allocated.
-                unsafe { libc::_exit(ALLOCATED) }
-            }
-        }
-    }
-
-    // SAFETY: the system's allocator, a check before each call.
-    unsafe impl std::alloc::GlobalAlloc for Watched {
-        unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
-            Watched::check();
-            // SAFETY: as the caller's contract.
-            unsafe { std::alloc::System.alloc(layout) }
-        }
-
-        unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
-            Watched::check();
-            // SAFETY: as the caller's contract.
-            unsafe { std::alloc::System.alloc_zeroed(layout) }
-        }
-
-        unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
-            Watched::check();
-            // SAFETY: as the caller's contract.
-            unsafe { std::alloc::System.dealloc(ptr, layout) }
-        }
-
-        unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new: usize) -> *mut u8 {
-            Watched::check();
-            // SAFETY: as the caller's contract.
-            unsafe { std::alloc::System.realloc(ptr, layout, new) }
-        }
-    }
-
-    #[global_allocator]
-    static ALLOC: Watched = Watched;
+    // (the exit status of a run's child that allocated before its exec — `crate::allocs`: the test binary's allocator
+    // ends a child that set `NO_ALLOC`)
+    use crate::allocs::ALLOCATED;
 
     /// The review's first finding: a run's child allocates and frees nothing between the keeper's fork and its exec
     /// — in a keeper with another thread (a test's) only async-signal-safe calls are safe there. Shown

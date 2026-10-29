@@ -11,7 +11,7 @@
 //!   files aren't taken up — `refactor::next`), follow mode's moves (its trail is kept). Claude waiting on one
 //!   is said once, named. A tag for a workspace that's gone runs in front — the generation checks drop it.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -1023,26 +1023,27 @@ impl Editor {
         if self.workspaces.is_empty() {
             return;
         }
-        // (the servers the front's buffers use, and who holds each folder: each laid out once — #214, every server's
-        // folders asked of every workspace, and of every buffer, each event)
-        let front: HashSet<DocId> = self.workspace.docs.iter().copied().collect();
-        let in_front: HashSet<crate::lsp::ClientId> =
-            self.docs.iter().filter(|d| front.contains(&d.id)).flat_map(|d| d.lsp.clients()).collect();
-        let owners = self.owners();
-        let resting: Vec<(crate::lsp::ClientId, bool)> = self
-            .lsp
-            .clients
-            .iter()
-            .map(|c| {
+        // (the servers the front's buffers use, the sessions at work, and who holds each server's folders — kept until
+        // that moves, `served`: #214, every server's folders asked of every workspace, and of every buffer, each event)
+        let in_front: Vec<crate::lsp::ClientId> = (self.workspace.docs.iter())
+            .filter_map(|&id| self.docs.index_of(id))
+            .flat_map(|i| self.docs[i].lsp.clients())
+            .collect();
+        let busy: Vec<WorkspaceId> = std::iter::once(&self.workspace)
+            .chain(&self.workspaces)
+            .filter(|l| l.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy))
+            .map(|l| l.id)
+            .collect();
+        self.served_sync();
+        let front = self.workspace.id;
+        let served = self.lsp.share.served.as_ref().expect("laid out");
+        let resting: Vec<(crate::lsp::ClientId, bool)> = (served.holders.iter())
+            .map(|(cid, holders)| {
                 // (a shared server: every checkout it serves behind and idle; never mid-swap)
-                let idle = c.roots.iter().all(|r| {
-                    let behind = owners.holder(r).filter(|l| l.id != self.workspace.id);
-                    behind.is_some_and(|l| !l.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy))
-                });
-                (c.id, idle && !in_front.contains(&c.id) && !self.lsp.share.swapping(c.id))
+                let idle = holders.iter().all(|h| h.is_some_and(|l| l != front && !busy.contains(&l)));
+                (*cid, idle && !in_front.contains(cid) && !self.lsp.share.swapping(*cid))
             })
             .collect();
-        drop(owners);
         self.lsp_rest(&resting);
         // A session behind whose Claude started a turn: its servers back (its tools ask them)
         let woken: Vec<DocId> = self
@@ -1101,6 +1102,7 @@ impl Editor {
     fn servers_hold(&mut self, id: WorkspaceId) {
         let Some(l) = self.workspace_mut(id) else { return };
         l.servers_held = true;
+        crate::share::served_moved();
         let (root, docs) = (l.root.clone(), l.docs.clone());
         let serving: Vec<crate::lsp::ClientId> = self
             .lsp
@@ -1157,6 +1159,7 @@ impl Editor {
         let front = id == self.workspace.id;
         let Some(l) = self.workspace_mut(id) else { return };
         l.servers_held = false;
+        crate::share::served_moved();
         l.servers_asked.clear();
         let woken = if front { std::mem::take(&mut l.asleep) } else { Vec::new() };
         if front {
@@ -1376,6 +1379,7 @@ impl Editor {
         ws.views.push(View::new(view, doc));
         (ws.viewer.current_doc, ws.scratch, ws.docs) = (doc, Some(doc), vec![doc]);
         self.workspaces.push(ws);
+        crate::share::served_moved();
         self.workspace_kept_back(id);
         // (its checkout joins its repository's shared language server now — `share.rs`)
         self.share_session(&root);

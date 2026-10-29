@@ -216,7 +216,7 @@ fn gather(ed: &Editor, built: &mut Vec<Built>) -> bool {
         built.clear();
         return changed;
     }
-    crate::docpaths::within(ed, |ed| gather_in(ed, built))
+    gather_in(ed, built)
 }
 
 fn gather_in(ed: &Editor, built: &mut Vec<Built>) -> bool {

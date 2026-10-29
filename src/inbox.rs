@@ -190,10 +190,13 @@ impl Editor {
             })
             .collect();
         for l in std::iter::once(&self.workspace).chain(&self.workspaces) {
-            let s = session_id(l.claude.id);
+            // (its id written only for what it has waiting: most sessions have nothing — #214, a string a session each
+            // time the inbox was asked, a few times a frame)
+            let sid = std::cell::OnceCell::new();
+            let s = || sid.get_or_init(|| session_id(l.claude.id)).clone();
             let entry = |id: String, kind, asks: String, since, up| {
                 (
-                    Entry { id, session: s.clone(), kind, asks, waited_ms: ms(since, real), up },
+                    Entry { id, session: s(), kind, asks, waited_ms: ms(since, real), up },
                     real.saturating_duration_since(since),
                     u64::MAX,
                 )
@@ -205,7 +208,7 @@ impl Editor {
                     Some(f) => format!("{change} · {f}"),
                     None => change,
                 };
-                v.push(entry(format!("edit#{s}:review"), "edit", asks, r.asked, "review"));
+                v.push(entry(format!("edit#{}:review", s()), "edit", asks, r.asked, "review"));
             }
             // Claude's run printing nothing for minutes: something to look at — its turn waits on it, and
             // only the user can stop it (#157). Waited since it went quiet.
@@ -215,14 +218,14 @@ impl Editor {
             // Its reviewer ended while it was behind (#195): news, not a question — what it found, where to
             // read it; gone once the session is in front
             if let Some((said, at)) = crate::reviewer::news(l) {
-                v.push(entry(format!("reviewer#{s}"), "reviewer", said, at, "ended"));
+                v.push(entry(format!("reviewer#{}", s()), "reviewer", said, at, "ended"));
             }
             // A rebase that waits on you, its card put away (`n`) — resolved, or stopped with nothing asked of
             // its Claude (one taken up after a restart): `enter` and `C-q` bring its card back. Waited since
             // it began to wait (`Rebase::waits_on_you`: git's own time for one tarae didn't start)
             if let Some(r) = l.rebase.as_ref()
                 && let Some(since) = r.waits_on_you()
-                && !cards.iter().any(|c| c.kind == "rebase-resolved" && c.session == s)
+                && !cards.iter().any(|c| c.kind == "rebase-resolved" && c.session == s())
             {
                 let asks = match r.stage {
                     crate::rebase::Stage::Resolved => {
@@ -230,17 +233,17 @@ impl Editor {
                     }
                     _ => format!("{}: {} stopped — y goes on, X aborts it", l.label(), r.said()),
                 };
-                v.push(entry(format!("rebase#{s}"), "rebase", asks, since, "put-away"));
+                v.push(entry(format!("rebase#{}", s()), "rebase", asks, since, "put-away"));
             }
             // The user's own change set (`:workspace-apply`), its files waiting for their review — on logic's
             // clock, as a card's
             if let Some(set) = l.applying.as_ref().filter(|set| set.waiting() > 0) {
                 let ((what, since), n) = (set.what(), set.waiting());
                 let asks = format!("{what} · {n} file{} to review", if n == 1 { "" } else { "s" });
-                let id = format!("apply#{s}");
+                let id = format!("apply#{}", s());
                 let e = Entry {
                     id,
-                    session: s.clone(),
+                    session: s(),
                     kind: "change-set",
                     asks,
                     waited_ms: ms(since, now),
@@ -252,13 +255,13 @@ impl Editor {
             for p in &c.reads {
                 let at = p.look.at.as_deref().map_or_else(|| p.look.given.clone(), crate::allow::tilde);
                 let asks = format!("Claude's {} of {at}", p.look.tool);
-                v.push(entry(format!("read#{s}:{}", p.request_id), "read", asks, p.since, "queued"));
+                v.push(entry(format!("read#{}:{}", s(), p.request_id), "read", asks, p.since, "queued"));
             }
             for (i, set) in c.edits.sets.iter().enumerate().filter(|(_, set)| set.waiting() > 0) {
                 let (what, since) = set.what();
                 let n = set.waiting();
                 let asks = format!("{what} · {n} file{} to review", if n == 1 { "" } else { "s" });
-                v.push(entry(format!("set#{s}:{i}"), "change-set", asks, since, "queued"));
+                v.push(entry(format!("set#{}:{i}", s()), "change-set", asks, since, "queued"));
             }
         }
 

@@ -177,7 +177,7 @@ fn a_lit_word_keeps_its_texts_colour() {
         let mut ed = editor();
         ed.theme = crate::theme::load(theme).unwrap();
         let mut other = crate::document::Document::from_str(77, "other\n");
-        other.path = Some(ed.workspace.root.join("other.rs"));
+        other.path.set(Some(ed.workspace.root.join("other.rs")));
         ed.docs.push(other);
         // (a task's run in the slot: its tab on the slot's line)
         let t = crate::task::Task {
@@ -656,7 +656,8 @@ fn each_status_line_word_does_its_own() {
     // The file's warnings: its diagnostics
     let mut ed = editor();
     // (a file's: the list is of a file's diagnostics)
-    ed.doc_mut().path = Some(ed.workspace.root.join("a.rs"));
+    let path = ed.workspace.root.join("a.rs");
+    ed.doc_mut().path.set(Some(path));
     ed.doc_mut().lsp.diagnostics = vec![crate::lsp::Diagnostic {
         from: 0,
         to: 3,
@@ -693,7 +694,7 @@ fn in_project(ed: &mut Editor) -> std::path::PathBuf {
     let rels = ["Cargo.toml", "src/main.rs", "src/ui/card.rs", "src/ui/list.rs"].map(String::from).to_vec();
     ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(root.clone(), rels));
     let path = root.join("src/ui/card.rs");
-    ed.docs[0].path = Some(path.clone());
+    ed.docs[0].path.set(Some(path.clone()));
     path
 }
 
@@ -725,7 +726,7 @@ fn a_tabs_name_on_the_side_panels_line_shows_that_tab() {
 fn a_buffers_name_on_the_codes_line_switches_to_it() {
     let mut ed = editor();
     let mut other = crate::document::Document::from_str(77, "other\n");
-    other.path = Some(ed.workspace.root.join("other.rs"));
+    other.path.set(Some(ed.workspace.root.join("other.rs")));
     ed.docs.push(other);
     frame(&mut ed);
     let s = spot(&ed, &Press::Buffer(77));
@@ -797,7 +798,7 @@ fn a_revealed_folder_stays_selected_when_the_listing_it_asked_lands() {
     ed.workspace.root = root.clone();
     let given = rels.map(String::from).to_vec();
     ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(root.clone(), given));
-    ed.docs[0].path = Some(root.join("src/ui/card.rs"));
+    ed.docs[0].path.set(Some(root.join("src/ui/card.rs")));
     frame(&mut ed);
     press_word(&mut ed, &Press::Reveal(root.join("src")));
     let selected = |ed: &Editor| {

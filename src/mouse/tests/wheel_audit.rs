@@ -313,7 +313,7 @@ fn rail_on_disk(ed: &mut Editor) {
     };
     let files = (0..80).map(file).collect();
     ed.workspace.root = root.clone();
-    ed.docs[0].path = Some(root.join("notes.txt"));
+    ed.docs[0].path.set(Some(root.join("notes.txt")));
     ed.workspace.code_review = Some(CodeReview::for_test(Base::Head, root, files));
     crate::codereview::show(ed, 0, false);
     frame(ed);
@@ -406,11 +406,11 @@ fn buffer_names_audit() {
         ] {
             let mut ed = editor();
             let root = ed.workspace.root.clone();
-            ed.docs[0].path = Some(root.join("src/scenes.rs"));
+            ed.docs[0].path.set(Some(root.join("src/scenes.rs")));
             long_text(&mut ed);
             for (n, name) in ["keymap.rs", "panel.rs", "configuration.md"].iter().enumerate() {
                 let mut d = crate::document::Document::from_str(70 + n as u64, "one\ntwo\n");
-                d.path = Some(root.join(name));
+                d.path.set(Some(root.join(name)));
                 ed.workspace.docs.push(d.id);
                 ed.docs.push(d);
             }

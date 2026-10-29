@@ -1190,7 +1190,7 @@ const BRANCHES: &[(&str, &str, &str)] = &[
     ("src/sandbox/keeper.rs", "in fn child: if exec.leak {", SEAM),
     (
         "src/sandbox/keeper.rs",
-        "in fn child: tests",
+        "in fn child: crate",
         "a flag checked in the forked child (no allocation): the same code",
     ),
     (

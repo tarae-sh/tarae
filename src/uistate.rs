@@ -1684,8 +1684,7 @@ impl Editor {
 
     /// The state as of the last frame drawn.
     pub fn ui_state(&self) -> UiState {
-        // (a review's files each asked of their buffers — laid out by path once, #214)
-        crate::docpaths::within(self, Editor::ui_state_in)
+        self.ui_state_in()
     }
 
     fn ui_state_in(&self) -> UiState {

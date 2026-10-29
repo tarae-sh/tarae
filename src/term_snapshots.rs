@@ -157,7 +157,7 @@ impl Shot {
         let path = self.root.join(rel);
         let doc = self.ed.doc_mut();
         doc.text = Rope::from_str(text);
-        doc.path = Some(path.clone());
+        doc.path.set(Some(path.clone()));
         let id = doc.id;
         // Only the built-in (core) grammars — others depend on what this machine has downloaded
         if crate::syntax::detect(&path).is_some_and(|l| CORE.contains(&l.name.as_str())) {

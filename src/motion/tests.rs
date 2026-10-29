@@ -371,7 +371,7 @@ fn a_run_that_rewrote_an_open_file_dries_as_it_reloads() {
     let change = crate::snapshot::Change { path: path.clone(), before: blob(was), after: blob(now) };
     let at = |text: &str| {
         let mut ed = editor(text);
-        ed.doc_mut().path = Some(path.clone());
+        ed.doc_mut().path.set(Some(path.clone()));
         ed
     };
     let mut ed = at(was);
