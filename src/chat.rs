@@ -1251,7 +1251,9 @@ pub fn open(ed: &mut Editor) {
         }
         None => {
             let mut c = Chat::new();
-            c.follow.on = ed.config.llm.follow;
+            // (`space F`'s mark taken whatever the setting says: once, never left for a chat opened later)
+            let armed = std::mem::take(&mut ed.workspace.claude.follow_armed);
+            c.follow.on = ed.config.llm.follow || armed;
             // The project's conversations, read on a worker — the empty chat offers the latest; a session brought
             // back continues its own (the process spawned meanwhile gives way to one resuming it, unless something
             // was said already)

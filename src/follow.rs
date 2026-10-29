@@ -1845,7 +1845,9 @@ pub fn follow_session(ed: &mut Editor, id: crate::event::WorkspaceId) {
 }
 
 /// `space F`: follow the next session at work after the one in front (Zed's "follow next collaborator") — the one in
-/// front too, last, when it's the only one at work and you aren't following it.
+/// front too, last, when it's the only one at work and you aren't following it. None at work: the one in front — its turn
+/// under way now (waiting on you, stuck, queued), else from its next turn (#231), the view left where it is until then; a
+/// Claude not started yet, its chat opening with follow on.
 pub fn follow_next(ed: &mut Editor) {
     let at_work =
         ed.sessions_in_order().iter().any(|l| matches!(ed.doing(l), crate::workspace::Doing::Working));
@@ -1854,7 +1856,21 @@ pub fn follow_next(ed: &mut Editor) {
         None if at_work => {
             ed.set_status(format!("already following {} — no other session is at work", ed.workspace.label()))
         }
-        None => ed.set_status("no session is at work"),
+        // (a turn under way but not working — waiting on you, stuck, queued: that turn followed now)
+        None if ed.workspace.claude.chat.as_ref().is_some_and(crate::chat::Chat::busy) => {
+            resume(ed);
+            ed.set_status(format!("following {}", ed.workspace.label()));
+        }
+        None => {
+            // (nothing runs: on, the view left where it is — the next turn's first look moves it, never the last
+            // turn's gaze nor its walk-through)
+            let focus = ed.workspace.viewer.focus;
+            match follow(ed) {
+                Some(f) => (f.on, f.pane) = (true, Some(focus)),
+                None => ed.workspace.claude.follow_armed = true,
+            }
+            ed.set_status(format!("following {} — from its next turn", ed.workspace.label()));
+        }
     }
 }
 

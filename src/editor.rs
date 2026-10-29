@@ -8001,6 +8001,172 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// `space F` with no session at work (#231): the one in front followed from its next turn, said so — follow off
+    /// before (`llm.follow` false, or `C-f`), on after: the chat's foot `C-f unfollow` (one session: its top line
+    /// `follow`), the next turn's first read
+    /// followed. `two`: another session beside it, idle (the front one's taken, not that one). `claude`: its chat open
+    /// first; else none yet, and the chat opened after follows.
+    fn space_f_idle(name: &str, two: bool, claude: bool) {
+        use serde_json::json;
+        let dir = crate::scratch::Scratch::new(name);
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (main, util) = (root.join("main.rs"), root.join("util.rs"));
+        std::fs::write(&main, "fn main() {}\n").unwrap();
+        std::fs::write(&util, "line 1\nline 2\n").unwrap();
+        let mut ed = editor("");
+        ed.config.llm.follow = false;
+        ed.workspace.root = root.clone();
+        ed.workspace.name = "main".into();
+        ed.open(&main).unwrap();
+        if two {
+            let other = root.join("other");
+            std::fs::create_dir_all(&other).unwrap();
+            ed.workspace_add(other);
+        }
+        let front = ed.workspace.id;
+        let read = json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "r1", "name": "Read", "input": {"file_path": util}}]}});
+        fake_claude_stream(&mut ed, &[read, json!({"type": "result", "result": "done"})]);
+        let rows = |ed: &mut Editor| -> Vec<String> {
+            let mut bytes = Vec::new();
+            crate::term::render(ed, &mut bytes, 240, 40).unwrap();
+            let mut vt = vt100::Parser::new(40, 240, 0);
+            vt.process(&bytes);
+            vt.screen().rows(0, 240).collect()
+        };
+        if claude {
+            // (an empty chat: `esc` goes straight to the code)
+            feed(&mut ed, "<space>l<esc>");
+            assert!(!ed.workspace.claude.chat.as_ref().unwrap().follow.on, "off before");
+            // (the chat's top line: `follow` while it's on, no word while it's off — one session's: with two the
+            // names take it)
+            let top = rows(&mut ed).remove(0);
+            assert!(two || (top.contains("─ claude ─") && !top.contains(" follow ")), "{top}");
+        }
+        feed(&mut ed, "<space>F");
+        assert_eq!(ed.workspace.id, front, "the one in front");
+        assert!(
+            ed.toasts.iter().any(|t| t.text == "following main — from its next turn"),
+            "said: {:?}",
+            ed.toasts.iter().map(|t| &t.text).collect::<Vec<_>>()
+        );
+        if claude {
+            assert!(ed.workspace.claude.chat.as_ref().unwrap().follow.on, "on");
+            let top = rows(&mut ed).remove(0);
+            assert!(two || top.contains("─ claude ── follow ─"), "its state says it: {top}");
+        } else {
+            assert!(ed.workspace.claude.chat.is_none(), "no Claude started by it");
+        }
+        // (the chat with the keys: its foot says it's on — a chat opened after too)
+        feed(&mut ed, "<space>l");
+        let r = rows(&mut ed);
+        assert!(r.iter().any(|r| r.contains("C-f unfollow")), "its state says it: {r:#?}");
+        feed(&mut ed, "where?<ret>");
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().follow.active(), "the turn follows");
+        settle_until(&mut ed, |ed| ed.doc().path.as_deref() == Some(util.as_path()));
+        assert_eq!(cursor_line(&ed), 0);
+    }
+
+    #[test]
+    fn space_f_with_nothing_at_work_follows_the_next_turn() {
+        space_f_idle("follow-space-f-one", false, true);
+    }
+
+    #[test]
+    fn space_f_with_nothing_at_work_follows_the_front_of_two() {
+        space_f_idle("follow-space-f-two", true, true);
+    }
+
+    #[test]
+    fn space_f_with_no_claude_yet_follows_its_first_turn() {
+        space_f_idle("follow-space-f-none", false, false);
+    }
+
+    /// `space F` while the front turn waits on you (an edit to review, nothing `Working`): that turn followed now, said
+    /// without "from its next turn".
+    #[test]
+    fn space_f_with_a_turn_waiting_on_a_review_follows_it_now() {
+        use serde_json::json;
+        let dir = crate::scratch::Scratch::new("follow-space-f-waits");
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (main, util) = (root.join("main.rs"), root.join("util.rs"));
+        std::fs::write(&main, "fn main() {}\n").unwrap();
+        std::fs::write(&util, "line 1\nline 2\n").unwrap();
+        let mut ed = editor("");
+        ed.config.llm.follow = false;
+        ed.workspace.root = root.clone();
+        ed.workspace.name = "main".into();
+        ed.open(&main).unwrap();
+        let made =
+            json!({"edits": [{"file_path": util, "old_string": "line 2\n", "new_string": "line two\n"}]});
+        claude_calls(&mut ed, &root, "edit", &made);
+        feed(&mut ed, "<space>l");
+        feed(&mut ed, "change it<ret>");
+        settle_until(&mut ed, |ed| ed.workspace.claude.review.as_ref().is_some_and(|r| r.ready));
+        assert_eq!(ed.doing(&ed.workspace), crate::workspace::Doing::Waiting);
+        assert!(!ed.workspace.claude.chat.as_ref().unwrap().follow.on, "off before");
+        feed(&mut ed, "<space>F");
+        let said: Vec<_> = ed.toasts.iter().map(|t| t.text.clone()).collect();
+        assert!(said.iter().any(|t| t == "following main"), "said: {said:?}");
+        assert!(!said.iter().any(|t| t.contains("next turn")), "not its next turn: {said:?}");
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().follow.active(), "this turn followed");
+    }
+
+    /// `space F` idle, the last turn ended on a stop (its gaze kept on util.rs): follow on, the view left where it is
+    /// — the next turn's first look moves it, not the last turn's.
+    #[test]
+    fn space_f_idle_leaves_the_view_until_the_next_turn() {
+        let dir = crate::scratch::Scratch::new("follow-space-f-stays");
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let (main, util) = (root.join("main.rs"), root.join("util.rs"));
+        std::fs::write(&main, "fn main() {}\n").unwrap();
+        std::fs::write(&util, "line 1\nline 2\nline 3\n").unwrap();
+        let mut ed = editor("");
+        ed.config.llm.follow = false;
+        ed.workspace.root = root.clone();
+        ed.workspace.name = "main".into();
+        ed.open(&main).unwrap();
+        feed(&mut ed, "<space>l<esc>");
+        let look = crate::chat::Look {
+            verb: "show",
+            what: "util.rs".into(),
+            pattern: false,
+            range: "L2".into(),
+            link: Some(crate::chat::Link { path: util.clone(), line: 1 }),
+        };
+        let f = &mut ed.workspace.claude.chat.as_mut().unwrap().follow;
+        f.gaze = Some(crate::follow::Gaze {
+            why: Some("the last stop".into()),
+            step: Some((1, 1)),
+            ..crate::follow::Gaze::new(look, Some(util.clone()), Some(1..2))
+        });
+        feed(&mut ed, "<space>F");
+        assert!(ed.toasts.iter().any(|t| t.text == "following main — from its next turn"));
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().follow.active(), "on");
+        assert_eq!(
+            ed.doc().path.as_deref(),
+            Some(main.as_path()),
+            "the view stays: no jump to the last stop"
+        );
+    }
+
+    /// `space F`'s mark is taken as the chat opens even when `llm.follow` is on: set off later, a chat opened then
+    /// doesn't follow from that `space F` long ago.
+    #[test]
+    fn space_f_s_mark_is_taken_whatever_the_setting() {
+        let mut ed = editor("");
+        ed.config.llm.follow = true;
+        feed(&mut ed, "<space>F");
+        assert!(ed.workspace.claude.follow_armed, "no Claude yet: marked");
+        feed(&mut ed, "<space>l<esc>");
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().follow.on);
+        assert!(!ed.workspace.claude.follow_armed, "taken");
+        feed(&mut ed, ":set llm.follow false<ret>");
+        assert!(!ed.config.llm.follow);
+        crate::chat::close(&mut ed);
+        feed(&mut ed, "<space>l<esc>");
+        assert!(!ed.workspace.claude.chat.as_ref().unwrap().follow.on, "the setting's, nothing left over");
+    }
+
     /// Paused, then the session goes behind before follow's wake-up comes: back in front and quiet, follow
     /// still takes over again on its own (the wake-up that landed behind once left it waiting for the rest
     /// of the chat).

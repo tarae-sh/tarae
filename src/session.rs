@@ -120,6 +120,8 @@ pub struct Session {
     /// yours: its chat continues its own last conversation as it opens, said on its top line (`Chat.continued`) — once:
     /// taken as its chat's conversations are read, cleared by a new conversation (`C-l`, `:chat-new`).
     pub brought_back: bool,
+    /// `space F` with no Claude here yet (#231): its chat opens following, whatever `llm.follow` says. Until you quit.
+    pub follow_armed: bool,
 }
 
 impl Session {
@@ -156,6 +158,7 @@ impl Session {
             starting: Vec::new(),
             news: Vec::new(),
             brought_back: false,
+            follow_armed: false,
             caps: None,
             caps_asked: 0,
             sandbox: None,

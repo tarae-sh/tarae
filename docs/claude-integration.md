@@ -646,7 +646,7 @@ the chat its file, and the side panel's files and git tabs each session's initia
 marks go when its turn ends. You follow one session at a time: by default the Claude of the session in front, as
 above; a click on another's name tag, `f` on its row in the session list, or `space F` (the next session at work)
 follows it — into its checkout, the view where its Claude is (your cursor as you left it there), `● follow` on
-the status line, the session's `fix` after it in its colour. Your first key stops it there as always, and `C-f` in its chat follows again. None of this is told
+the status line, the session's `fix` after it in its colour. Your first key stops it there as always, and `C-f` in its chat follows again. With no session at work, `space F` turns follow on for the one in front, as `C-f` and the chat's `follow` word do: its turn now while one waits on you (`following main`), else `following main — from its next turn`, the view left where it is until that turn looks somewhere; a session whose Claude hasn't started yet follows from its first. None of this is told
 to Claude.
 
 **Several sessions: an overlap, said the moment it happens.** Two sessions' changes that would conflict when merged —
