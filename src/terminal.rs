@@ -177,7 +177,9 @@ fn mouse_bytes(
         | MouseKind::ScrollUp
         | MouseKind::ScrollDown
         | MouseKind::ScrollLeft
-        | MouseKind::ScrollRight => mode != M::None,
+        | MouseKind::ScrollRight
+        | MouseKind::ShiftScrollUp
+        | MouseKind::ShiftScrollDown => mode != M::None,
         MouseKind::Up => matches!(mode, M::PressRelease | M::ButtonMotion | M::AnyMotion),
         MouseKind::Drag => matches!(mode, M::ButtonMotion | M::AnyMotion),
     };
@@ -192,6 +194,9 @@ fn mouse_bytes(
         MouseKind::ScrollDown => (65, true),
         MouseKind::ScrollLeft => (66, true),
         MouseKind::ScrollRight => (67, true),
+        // (Shift's bit, 4, as the terminal sent it)
+        MouseKind::ShiftScrollUp => (68, true),
+        MouseKind::ShiftScrollDown => (69, true),
         MouseKind::Middle => (1, true),
     };
     let (x, y) = (u32::from(col) + 1, u32::from(row) + 1);
@@ -720,17 +725,18 @@ impl Editor {
     /// copied when it ends.
     /// Alt with the press: tarae's own selection even over a program that has the mouse (most terminals
     /// keep shift-drag for their own selection, across the whole screen).
-    pub fn terminal_mouse(&mut self, kind: MouseKind, cell: Option<(u16, u16)>, alt: bool) {
+    pub fn terminal_mouse(&mut self, sent: MouseKind, cell: Option<(u16, u16)>, alt: bool) {
+        // (the wheel with Shift is the wheel here; only a program that asked for the mouse gets Shift's bit)
+        let kind = sent.unshifted();
         // In its view mode the mouse is the view's, whoever asked for it: the program's screen is held still, maybe
         // scrolled back — a click there isn't on what the program drew now. The wheel scrolls the view, a press puts
         // its cursor on that cell, as a click in the code (a double its word, a triple its line); a drag selects, as
         // the code's
         if crate::view::terminal_viewed(self) {
-            let row = cell.map(|c| c.0 as usize);
             let on = crate::editor::Drag::TerminalView;
             return match kind {
                 MouseKind::ScrollUp | MouseKind::ScrollDown => {
-                    crate::view::terminal_wheel(self, row, kind == MouseKind::ScrollUp)
+                    crate::view::terminal_wheel(self, kind == MouseKind::ScrollUp)
                 }
                 MouseKind::Down => {
                     if let Some(pos) = crate::view::terminal_click(self, cell) {
@@ -743,7 +749,12 @@ impl Editor {
                     }
                 }
                 // (`handle_mouse` takes the sideways wheel and the middle button before they come here)
-                MouseKind::Up | MouseKind::ScrollLeft | MouseKind::ScrollRight | MouseKind::Middle => {}
+                MouseKind::Up
+                | MouseKind::ScrollLeft
+                | MouseKind::ScrollRight
+                | MouseKind::ShiftScrollUp
+                | MouseKind::ShiftScrollDown
+                | MouseKind::Middle => {}
             };
         }
         let Some(t) = self.workspace.terminal.as_mut() else { return };
@@ -759,7 +770,7 @@ impl Editor {
                 self.workspace.viewer.at = At::Program;
             }
             // (what its mode doesn't ask for is dropped)
-            if let Some(bytes) = cell.and_then(|c| mouse_bytes(mode, encoding, kind, c)) {
+            if let Some(bytes) = cell.and_then(|c| mouse_bytes(mode, encoding, sent, c)) {
                 t.send(bytes);
             }
             return;
@@ -771,9 +782,9 @@ impl Editor {
                     let key = Key::plain(if up { Code::Up } else { Code::Down });
                     t.send(encode(key, app_cursor).unwrap_or_default().repeat(3));
                 } else {
-                    // (up: its view mode at the row under the pointer — tmux's copy mode by the wheel, §3.8)
+                    // (its past, the keys where they are — the wheel only scrolls)
                     t.selection = None;
-                    crate::view::terminal_wheel(self, cell.map(|c| c.0 as usize), up);
+                    crate::view::terminal_wheel(self, up);
                 }
             }
             MouseKind::Down => {
@@ -807,7 +818,11 @@ impl Editor {
                 };
                 crate::clipboard::copy(&self.events.jobs(), text, what);
             }
-            MouseKind::ScrollLeft | MouseKind::ScrollRight | MouseKind::Middle => {}
+            MouseKind::ScrollLeft
+            | MouseKind::ScrollRight
+            | MouseKind::ShiftScrollUp
+            | MouseKind::ShiftScrollDown
+            | MouseKind::Middle => {}
         }
     }
 }
@@ -1121,6 +1136,8 @@ mod tests {
         assert_eq!(b(M::PressRelease, E::Sgr, MouseKind::Up, (2, 9)).as_deref(), Some("\x1b[<0;10;3m"));
         assert_eq!(b(M::ButtonMotion, E::Sgr, MouseKind::Drag, (0, 0)).as_deref(), Some("\x1b[<32;1;1M"));
         assert_eq!(b(M::Press, E::Sgr, MouseKind::ScrollDown, (0, 0)).as_deref(), Some("\x1b[<65;1;1M"));
+        assert_eq!(b(M::Press, E::Sgr, MouseKind::ShiftScrollUp, (0, 0)).as_deref(), Some("\x1b[<68;1;1M"));
+        assert_eq!(b(M::Press, E::Sgr, MouseKind::ShiftScrollDown, (0, 0)).as_deref(), Some("\x1b[<69;1;1M"));
         assert_eq!(b(M::Press, E::Sgr, MouseKind::Up, (0, 0)), None, "X10 mode: presses only");
         assert_eq!(b(M::PressRelease, E::Sgr, MouseKind::Drag, (0, 0)), None, "no motion asked for");
         assert_eq!(

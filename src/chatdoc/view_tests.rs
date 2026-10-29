@@ -496,10 +496,11 @@ pub(crate) fn viewing(keys: &str) -> Editor {
     ed
 }
 
-/// The wheel over the conversation: its view mode at that point, the keys its; back down to the end, nothing
-/// selected, it ends — the keys where they were.
+/// The wheel over the conversation only scrolls (the user, 2026-10-28): from the code, the chat's rows three a notch,
+/// within what it laid out, the keys the code's — no view mode by the wheel; from its input, a key typed brings it back
+/// to its bottom; in its view mode, the view's rows, the keys staying there at its end too.
 #[test]
-fn the_wheel_enters_view_mode_and_leaves_it_at_the_end() {
+fn the_wheel_scrolls_the_conversation_and_never_takes_the_keys() {
     let mut ed = chat_with(Config::default(), long());
     ed.workspace.leave(crate::workspace::At::Chat);
     frame(&mut ed);
@@ -515,17 +516,54 @@ fn the_wheel_enters_view_mode_and_leaves_it_at_the_end() {
         });
         frame(ed);
     };
-    wheel(&mut ed, crate::event::MouseKind::ScrollUp);
-    assert_eq!(region(&ed), "view:chat");
-    assert_eq!(view(&ed).top_row(), first - 3, "scrolled as the wheel took it");
+    let scroll = |ed: &Editor| ed.workspace.claude.chat.as_ref().unwrap().scroll;
+    let first_shown = |ed: &Editor| ed.screen.chat_view.get().unwrap().3;
     assert!(rows > 5);
-    wheel(&mut ed, crate::event::MouseKind::ScrollDown);
-    assert!(!keyed(&ed), "back at the end: done reading");
-    assert_eq!(region(&ed), "code", "the keys where they were");
-    // (entered by a key, it stays)
-    ed.workspace.viewer.at = crate::workspace::At::Chat;
-    feed(&mut ed, "<esc>");
     wheel(&mut ed, crate::event::MouseKind::ScrollUp);
+    assert_eq!((region(&ed).as_str(), scroll(&ed)), ("code", 3), "its rows, the keys the code's");
+    assert_eq!(first_shown(&ed), first - 3, "scrolled as the wheel took it");
+    assert!(!keyed(&ed), "no view mode by the wheel");
+    for _ in 0..200 {
+        wheel(&mut ed, crate::event::MouseKind::ScrollUp);
+    }
+    let top = first_shown(&ed);
+    wheel(&mut ed, crate::event::MouseKind::ScrollDown);
+    assert_eq!(
+        first_shown(&ed),
+        top + 3,
+        "at its top the notches don't pile up: the first one back moves it"
+    );
+    // (the wheel with Shift: the wheel here — only the code turns it sideways)
+    wheel(&mut ed, crate::event::MouseKind::ShiftScrollDown);
+    assert_eq!(first_shown(&ed), top + 6, "Shift's wheel scrolls it as the wheel");
+    wheel(&mut ed, crate::event::MouseKind::ShiftScrollUp);
+    assert_eq!(first_shown(&ed), top + 3);
+    // (from its input: the keys stay there, a key typed brings it back down — a character, enter, backspace, a paste;
+    // a cursor move in the draft keeps where it was scrolled)
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    feed(&mut ed, "ab");
+    for typed in ["c", "<backspace>", "paste"] {
+        wheel(&mut ed, crate::event::MouseKind::ScrollUp);
+        assert_eq!(region(&ed), "chat");
+        let scrolled = scroll(&ed);
+        assert!(scrolled > 0);
+        feed(&mut ed, "<left><C-a><C-e><right>");
+        assert_eq!(scroll(&ed), scrolled, "a cursor move in the draft: where it was scrolled");
+        match typed {
+            "paste" => {
+                ed.handle_paste("pasted".into());
+                frame(&mut ed);
+            }
+            keys => feed(&mut ed, keys),
+        }
+        assert_eq!(scroll(&ed), 0, "{typed}: back at its bottom");
+    }
+    // (its view mode, entered by a key: the view's rows, and at its end the keys stay)
+    feed(&mut ed, "<esc>");
+    let top = view(&ed).top_row();
+    wheel(&mut ed, crate::event::MouseKind::ScrollUp);
+    assert_eq!(view(&ed).top_row(), top.saturating_sub(3));
+    wheel(&mut ed, crate::event::MouseKind::ScrollDown);
     wheel(&mut ed, crate::event::MouseKind::ScrollDown);
     assert_eq!(region(&ed), "view:chat");
 }

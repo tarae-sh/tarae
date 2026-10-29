@@ -1,5 +1,5 @@
 //! View mode — a cursor on what a surface shows (`.sb/quote-plan.md` §3). The chat's is normal mode on its
-//! transcript, a document of its own (`chatdoc.rs`, panes P2c); here the words they share (`Surface`, `Was`,
+//! transcript, a document of its own (`chatdoc.rs`, panes P2c); here the words they share (`Surface`,
 //! `has_keys`, `bound`) and the terminal's: its rows as a read-only document, Helix's moves, selections, search and
 //! counts on it (`COMMANDS`, the keymap's `[view]` tables), drawn by its own drawer with the selections painted
 //! over its cells (`term::view_marks`). `C-\` from its program, `i` back; `esc` or `C-\` to the code (tarae's keys
@@ -51,17 +51,6 @@ impl Surface {
 /// to the chat, never on the view's buffer.
 pub const EDITORS: &[&str] = &["chat_open", "inbox", "command_palette"];
 
-/// Where the keys were when the wheel brought a view mode — back there when the wheel takes it back down,
-/// nothing selected (§9 Q9): the code, the chat's input, the terminal's program, or another surface's view mode
-/// (made again: the chat's where you were, the terminal's at the rows in sight).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Was {
-    Code,
-    Chat,
-    Program,
-    View(Surface),
-}
-
 /// The terminal's view, as it was made: its program's run, its size, its rows of scrollback above the screen,
 /// its document's lines.
 #[derive(Clone, Copy, Debug)]
@@ -77,8 +66,6 @@ struct Made {
 enum Land {
     /// The program's cursor row when nothing is scrolled back (its prompt), else the last row in sight.
     InSight,
-    /// The row `n` of what's in sight (under the wheel's pointer).
-    Row(usize),
     /// The latest: the last row with text, never above the program's cursor.
     Latest,
 }
@@ -192,8 +179,6 @@ pub struct View {
     hits: Option<crate::search::SearchHits>,
     /// A prompt its `/`, `?` or `s` opened is up: its keys apply here.
     pub prompt: bool,
-    /// Entered by the wheel: where the keys were.
-    pub by_wheel: Option<Was>,
     after: Option<After>,
     /// What it was made of, and which of its lines wrapped into the next — with the blanks its line lost at its end
     /// — a quote joins them again.
@@ -293,49 +278,13 @@ pub fn terminal_view_of(ed: &Editor) -> Option<&View> {
     ed.workspace.viewer.view.as_ref()
 }
 
-/// Where the keys are now, as the wheel would give them back.
-pub fn was(ed: &Editor) -> Was {
-    if let Some(s) = has_keys(ed) {
-        Was::View(s)
-    } else if ed.workspace.program_has_keys() {
-        Was::Program
-    } else if ed.workspace.is_at(At::Chat) && ed.workspace.claude.chat.is_some() {
-        Was::Chat
-    } else {
-        Was::Code
-    }
-}
-
-/// The keys back where the wheel found them.
-pub fn give_back(ed: &mut Editor, was: Was) {
-    let chat = ed.workspace.claude.chat.is_some() && matches!(was, Was::Chat | Was::View(Surface::Chat));
-    let program = was == Was::Program
-        && ed.workspace.terminal.as_ref().is_some_and(|t| t.visible && t.exited.is_none());
-    ed.workspace.viewer.at = match (chat, program) {
-        (true, _) => At::Chat,
-        (_, true) => At::Program,
-        _ => At::Code,
-    };
-    if program && let Some(t) = ed.workspace.terminal.as_mut() {
-        t.parser.screen_mut().set_scrollback(0);
-    }
-    match was {
-        Was::View(Surface::Chat) => crate::chatdoc::view(ed),
-        Was::View(Surface::Terminal) if ed.workspace.terminal.as_ref().is_some_and(|t| t.visible) => {
-            terminal_enter(ed, Land::InSight, None)
-        }
-        _ => {}
-    }
-}
-
 /// The terminal's view mode's state, its keys under way none yet.
-fn made(doc: Document, by_wheel: Option<Was>, made: Made, wraps: Vec<Option<usize>>) -> View {
+fn made(doc: Document, made: Made, wraps: Vec<Option<usize>>) -> View {
     View {
         doc: Some(doc),
         keys: Keys::default(),
         hits: None,
         prompt: false,
-        by_wheel,
         after: None,
         made,
         wraps,
@@ -413,7 +362,7 @@ fn terminal_doc(ed: &mut Editor) -> Option<(Document, usize, Vec<Option<usize>>)
 
 /// The terminal's view mode: held still from now (its program's output kept back), its rows read, the cursor
 /// where `land` says, the rows in sight as they were — tarae's keys on its panel.
-fn terminal_enter(ed: &mut Editor, land: Land, by_wheel: Option<Was>) {
+fn terminal_enter(ed: &mut Editor, land: Land) {
     let Some(t) = ed.workspace.terminal.as_mut() else { return };
     t.hold();
     t.visible = true;
@@ -431,18 +380,13 @@ fn terminal_enter(ed: &mut Editor, land: Land, by_wheel: Option<Was>) {
     let line = match land {
         Land::InSight if off == 0 => back + cursor,
         Land::InSight => top + rows - 1,
-        // (inside the scrolloff margin: the view stays as the wheel found it)
-        Land::Row(r) => {
-            let so = ed.config.scrolloff.min((rows - 1) / 2);
-            top + r.clamp(so, rows - 1 - so)
-        }
         Land::Latest => latest(),
     }
     .min(last);
     doc.set_selection(Selection::point(mv::line_start(&doc.text, line)));
     doc.set_top(top.min(last));
     let made_of = Made { generation, size, back, lines: last + 1 };
-    ed.workspace.viewer.view = Some(made(doc, by_wheel, made_of, wraps));
+    ed.workspace.viewer.view = Some(made(doc, made_of, wraps));
     ed.workspace.viewer.at = At::Slot;
     ed.workspace.viewer.hand = None;
     ed.workspace.viewer.slot_front = Some(crate::sizes::Slot::Terminal);
@@ -453,39 +397,19 @@ fn terminal_enter(ed: &mut Editor, land: Land, by_wheel: Option<Was>) {
 /// started, the keys its program's (`C-\` from the code).
 pub fn terminal_view(ed: &mut Editor) {
     match ed.workspace.terminal.is_some() {
-        true => terminal_enter(ed, Land::InSight, None),
+        true => terminal_enter(ed, Land::InSight),
         false => ed.terminal_focus(),
     }
 }
 
-/// The wheel over the terminal (its program didn't ask for the mouse, not full-screen — or in its view mode):
-/// up, its view mode at that point, the cursor on the row under the pointer, the keys its; it scrolls the view;
-/// back down to the bottom, by the wheel, nothing selected, the keys go back where they were.
-pub fn terminal_wheel(ed: &mut Editor, row: Option<usize>, up: bool) {
-    if !terminal_viewed(ed) {
-        if !up {
-            // (left scrolled back: forward, as the wheel always did)
-            if let Some(t) = ed.workspace.terminal.as_mut() {
-                let s = t.parser.screen_mut();
-                let n = s.scrollback();
-                s.set_scrollback(n.saturating_sub(3));
-            }
-            return;
-        }
-        let was = was(ed);
-        terminal_enter(ed, row.map_or(Land::InSight, Land::Row), Some(was));
-    }
-    terminal_view_by(ed, if up { -3 } else { 3 });
-    let Some(v) = ed.workspace.viewer.view.as_ref() else { return };
-    let at_end = v.doc().top >= v.made.back;
-    if !up
-        && at_end
-        && !v.selects()
-        && !v.prompt
-        && let Some(was) = v.by_wheel
-    {
-        leave(ed);
-        give_back(ed, was);
+/// The wheel over the terminal (its program didn't ask for the mouse, not full-screen — or in its view mode): three
+/// rows and nothing else — the keys, the focus and the view's cursor stay where they are (the user, 2026-10-28: the
+/// wheel only scrolls). In its view mode, the view's rows; else its past, as far as it keeps — a key typed to its
+/// program brings it back to the bottom (`terminal_key`).
+pub fn terminal_wheel(ed: &mut Editor, up: bool) {
+    match terminal_viewed(ed) {
+        true => terminal_view_by(ed, if up { -3 } else { 3 }),
+        false => ed.terminal_scroll_by(if up { 3 } else { -3 }),
     }
 }
 
@@ -724,7 +648,7 @@ fn catch_up(ed: &mut Editor) {
     if let Some(t) = ed.workspace.terminal.as_mut() {
         t.release();
     }
-    terminal_enter(ed, Land::Latest, old.by_wheel);
+    terminal_enter(ed, Land::Latest);
     if let Some(v) = ed.workspace.viewer.view.as_mut() {
         v.keys = old.keys;
         let last = v.rows();
@@ -964,7 +888,7 @@ pub fn sync(ed: &mut Editor) {
     }
     match ed.slot() {
         Some(crate::sizes::Slot::Terminal) if ed.workspace.terminal.as_ref().is_some_and(|t| t.visible) => {
-            terminal_enter(ed, Land::InSight, None)
+            terminal_enter(ed, Land::InSight)
         }
         _ => {}
     }

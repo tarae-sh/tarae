@@ -1030,7 +1030,17 @@ pub fn wheel(ed: &mut Editor, slot: Slot, up: bool) {
 /// wheel's, a drag's held past its edge; the next key that moves the selection brings the view back to them).
 pub fn view_by(ed: &mut Editor, slot: Slot, by: isize) {
     let size = viewport(ed, slot);
+    let was = ed.workspace.outputs.doc(slot).map_or(0, |d| d.top);
     crate::docpane::swap(ed, Which::Output(slot), size, |ed| ed.view_by(by));
+    // (no further down than its last line at the bottom — a line a row, nothing wraps — as without the keys: a run's
+    // output has nothing past its end to make room for, the code's last line at the top is for typing below it; a key
+    // that took it further, as the code's, isn't undone by a notch down)
+    if let Some(d) = ed.workspace.outputs.get_mut(slot).and_then(|o| o.doc_in_mut()) {
+        let last = (mv::last_line(&d.text) + 1).saturating_sub(size.0);
+        if by > 0 && d.top > last {
+            d.set_top(last.max(was));
+        }
+    }
     pin(ed, slot);
 }
 

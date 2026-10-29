@@ -1363,6 +1363,13 @@ const HOVER_MORE: [&[&str]; 5] = [
 /// main's card; the session list, the pointer on main's row (its report line cut).
 const HOVER_CHAT_NAME: &[&str] = waits_keys!(" ", "l", "@2", "@hover?main ▲", "@1");
 const HOVER_PEEK: &[&str] = waits_keys!("@1", "@hover?asks", "@1");
+
+/// Kinds C: the trust card of a `.tarae.toml` with forty tasks (`run_files`), cut to fit as it comes — a card tarae puts
+/// up itself, no sandbox needed; then the wheel over it to its end — its place kept.
+const KINDSC_CARD: [&[&str]; 2] = [
+    &["@20?more lines", "@1"],
+    &["@20?more lines", "@1", "@wheel-down*20?step12.sh", "@20?lines above", "@1"],
+];
 const HOVER_SESSIONS: &[&str] = waits_keys!(" ", "W", "@2", "@hover+4?The tests need", "@1");
 /// Nine sessions (`strip-nine`): main and fix overlapping, seven more checkouts — docs and parser waiting on their
 /// Claude's card, keys's Claude on its run's card (a shot's sandbox is none: no run goes unasked, so none is stuck —
@@ -3476,6 +3483,10 @@ const SCENES: &[Scene] = &[
     Scene { name: "hover-picker", claude: "idle", files: MAIN, keys: HOVER_KEYS[15] },
     Scene { name: "hover-mode", claude: "idle", files: MAIN, keys: HOVER_KEYS[16] },
     Scene { name: "hover-gutter", claude: "idle", files: MAIN, keys: HOVER_KEYS[17] },
+    // (kinds C: the trust card of forty tasks, cut to fit, then read to its end by the wheel — its width and its left
+    // edge kept)
+    Scene { name: "kindsc-card", claude: "idle", files: MAIN, keys: KINDSC_CARD[0] },
+    Scene { name: "kindsc-card-end", claude: "idle", files: MAIN, keys: KINDSC_CARD[1] },
     Scene { name: "hover-side-edge", claude: "idle", files: MAIN, keys: HOVER_MORE[0] },
     Scene { name: "hover-divider-off", claude: "idle", files: MAIN, keys: HOVER_MORE[1] },
     Scene { name: "hover-hsplit-line", claude: "idle", files: MAIN, keys: HOVER_MORE[2] },
@@ -4092,6 +4103,11 @@ echo '    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.42s'
 /// never cargo's shared one).
 pub(crate) fn run_files(scene: &str) -> Vec<(&'static str, String)> {
     match scene {
+        // (kinds C: forty tasks — their trust card cut to fit)
+        "kindsc-card" | "kindsc-card-end" => {
+            let tasks: String = (1..=40).map(|i| format!("[task.step{i}]\ncmd = \"sh step{i}.sh\"\n")).collect();
+            vec![(".tarae.toml", tasks)]
+        }
         "output-task" | "panes-task-places" | "group-task-detail" | "group-task-stacked" => vec![
             (".tarae.toml", "[task.check]\ncmd = \"sh check.sh\"\n".into()),
             ("check.sh", CHECK_SH.into()),

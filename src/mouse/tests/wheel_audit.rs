@@ -1,10 +1,12 @@
-//! The wheel audit (2026-10-28, by hand): on each surface the wheel down, up, sideways and past each end, and what moved
-//! besides what's under the pointer — the keys, where they are, the focus, the code's cursor and selection, the state's
-//! other fields — and whether a wheel with nothing left is silent. It prints its table; nothing is held to it yet.
-//! `cargo test --bin tarae wheel_audit -- --ignored --nocapture`
+//! The wheel audit (2026-10-28): on each surface the wheel down, up, sideways and past each end, and what moved
+//! besides what's under the pointer — the keys, where they are, the focus, the code's cursor and selection, a list's,
+//! a card's place, the state's other fields — and whether a wheel with nothing left is silent. `wheel_audit` prints
+//! its table (`cargo test --bin tarae wheel_audit -- --ignored --nocapture`); `the_wheel_only_scrolls` holds every
+//! case to the mouse's rule (CLAUDE.md, the user 2026-10-28: the wheel only scrolls).
 
 use crate::editor::Editor;
 use crate::event::{Mouse, MouseKind as K};
+use crate::pane::GroupKind;
 use crate::uistate::tests::{chat, editor, frame};
 use crate::workspace::At;
 
@@ -42,6 +44,10 @@ struct Look {
     focus: String,
     doc: String,
     selection: String,
+    /// Each list's selection: the side panel's, the rail's file in hand, the floating lists', the picker's.
+    lists: String,
+    /// A card's place on the frame.
+    card: String,
     views: String,
     state: serde_json::Value,
     said: usize,
@@ -61,6 +67,16 @@ fn look(ed: &mut Editor) -> Look {
         focus: format!("{:?}", ed.workspace.viewer.focus),
         doc: format!("{:?}", ed.doc().id),
         selection: format!("{:?}", ed.doc().selection()),
+        lists: format!(
+            "{:?}",
+            (
+                ed.workspace.viewer.sidebar.as_ref().map(|s| s.selected),
+                ed.workspace.code_review.as_ref().map(|r| r.selected),
+                [GroupKind::Messages, GroupKind::Sessions].map(|k| ed.float_list(k).map(|p| p.selected)),
+                ed.picker.as_ref().map(|p| p.selected),
+            )
+        ),
+        card: format!("{:?}", ed.screen.offer_card),
         views: format!(
             "{}:{} {:?}",
             ed.doc().top,
@@ -107,6 +123,8 @@ fn changed(a: &Look, b: &Look) -> String {
         ("FOCUS", &a.focus, &b.focus),
         ("DOC", &a.doc, &b.doc),
         ("SELECTION", &a.selection, &b.selection),
+        ("LISTS", &a.lists, &b.lists),
+        ("CARD", &a.card, &b.card),
         ("view", &a.views, &b.views),
     ] {
         if x != y {
@@ -222,10 +240,11 @@ const CASES: &[Case] = &[
     ("terminal, its program's keys", |ed| terminal(ed, None), "line 290"),
     ("terminal, its view mode", |ed| terminal(ed, Some(&["<C-\\>"])), "line 290"),
     ("terminal, keys in the code", |ed| terminal(ed, Some(&["<C-\\>", "<C-\\>"])), "line 290"),
-    (":messages, its keys", |ed| messages(ed, false), "message 5 "),
-    (":messages, keys given back", |ed| messages(ed, true), "message 5 "),
+    (":messages, its keys", |ed| messages(ed, false), "message 55"),
+    (":messages, keys given back", |ed| messages(ed, true), "message 55"),
     ("session list, its keys", |ed| keys(ed, &[" ", "W"]), "│▎"),
     ("session list, keys given back", |ed| keys(ed, &[" ", "W", "<esc>"]), "│▎"),
+    ("session list docked, an ask at its foot", |ed| sessions_docked_asked(ed), "ws03"),
     ("picker, its list", |ed| picker(ed), "row 3"),
     ("picker, its preview", |ed| picker(ed), "line_4 "),
     ("a card cut to fit", |ed| card(ed), "line 3 of what"),
@@ -367,6 +386,30 @@ fn messages(ed: &mut Editor, back: bool) {
     }
 }
 
+/// Fifty sessions in the session list docked right, the keys in the code, an ask standing over its foot — the list's
+/// rows those above it.
+fn sessions_docked_asked(ed: &mut Editor) {
+    let scratch = crate::scratch::Scratch::new("wheel-audit-sessions");
+    for i in 0..50 {
+        let dir = scratch.path().join(format!("w{i:02}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = ed.workspace_add(dir);
+        ed.workspace_by_id(id).unwrap().name = format!("ws{i:02}");
+    }
+    KEPT.set(Some(scratch));
+    ed.sizes.sessions_dock = Some(crate::pane::Side::Right);
+    ed.session_list();
+    ed.float_list_leave(GroupKind::Sessions);
+    let what = crate::offer::What::ReviewAtEnd;
+    ed.push_offer(crate::offer::Offer::new("An ask".into(), "what it asks", "", String::new(), what));
+    frame(ed);
+    let (list, card) = (ed.screen.list(GroupKind::Sessions), ed.screen.offer_card);
+    assert!(
+        list.zip(card).is_some_and(|((y0, rows, _), c)| y0 + rows < c.1),
+        "the ask over its foot, rows above it: {list:?} {card:?}"
+    );
+}
+
 fn picker(ed: &mut Editor) {
     long_text(ed);
     let id = ed.doc().id;
@@ -473,6 +516,101 @@ fn buffer_names_audit() {
             drop(homes);
         }
     }
+}
+
+/// The wheel only scrolls (CLAUDE.md's mouse bullet, the user 2026-10-28), on every surface of the audit's table: down,
+/// up, past each end — the keys, where they are, the focus, the code's buffer, cursor and selection, every list's
+/// selection and a card's place never move (no view mode by the wheel, no row dragged along, a card read to its end
+/// keeps its width and its left edge); a notch past an end is silent and none piles up (the first one back moves
+/// what moved); a run's output stops with its last line at the bottom. What it found broken once: each of the eight
+/// fixes put back by hand, one at a time, failed it here (kinds C's commit says which assertion).
+#[test]
+fn the_wheel_only_scrolls() {
+    let pty = !crate::sandbox::no_pty_here("mouse::tests::wheel_audit::the_wheel_only_scrolls");
+    let mut off = Vec::new();
+    for &(name, setup, at) in CASES {
+        if name.starts_with("terminal") && !pty {
+            continue;
+        }
+        crate::clock::hold();
+        let _kept: Option<crate::scratch::Scratch>;
+        let mut ed = editor();
+        setup(&mut ed);
+        _kept = KEPT.take();
+        let cell = find(&mut ed, at, 2).unwrap_or_else(|| panic!("{name}: {at:?} not on the frame"));
+        let mut fail =
+            |what: &str, a: &Look, b: &Look| off.push(format!("{name}: {what} — {}", changed(a, b)));
+        let mut looks = vec![look(&mut ed)];
+        // (120 notches reach every case's end: its longest, the code's 200 lines wrapped, three rows a notch)
+        for (kind, n) in [(K::ScrollDown, 3), (K::ScrollUp, 3), (K::ScrollDown, 120)] {
+            wheel(&mut ed, kind, cell, n);
+            looks.push(look(&mut ed));
+        }
+        // (at the end: one more notch, then one back)
+        wheel(&mut ed, K::ScrollDown, cell, 1);
+        let past_end = look(&mut ed);
+        let end_text = past_end.text.join("\n");
+        wheel(&mut ed, K::ScrollUp, cell, 1);
+        let back_from_end = look(&mut ed);
+        wheel(&mut ed, K::ScrollUp, cell, 120);
+        let top = look(&mut ed);
+        wheel(&mut ed, K::ScrollUp, cell, 1);
+        let past_top = look(&mut ed);
+        wheel(&mut ed, K::ScrollDown, cell, 1);
+        let back_from_top = look(&mut ed);
+        crate::clock::release();
+        let first = looks[0].clone();
+        // (it scrolls at all: down from where it starts, or back up — a chat and a terminal start at their bottom)
+        let scrolls = looks[1].text != first.text || looks[2].text != looks[1].text;
+        // (the session list's own cases have one session: nothing to scroll)
+        if !scrolls && !name.starts_with("session list,") {
+            fail("the wheel scrolled nothing", &first, &looks[2]);
+        }
+        looks.extend([
+            past_end.clone(),
+            back_from_end.clone(),
+            top.clone(),
+            past_top.clone(),
+            back_from_top.clone(),
+        ]);
+        for l in &looks {
+            let still = |a: &Look, b: &Look| {
+                (&a.keys, &a.at, &a.focus, &a.doc, &a.selection, &a.lists, &a.card)
+                    == (&b.keys, &b.at, &b.focus, &b.doc, &b.selection, &b.lists, &b.card)
+            };
+            if !still(&first, l) {
+                fail("the keys, a cursor, a selection or a card moved", &first, l);
+                break;
+            }
+        }
+        let at_end = &looks[3];
+        if past_end.text != at_end.text {
+            fail("a notch past its end moved it", at_end, &past_end);
+        }
+        if past_top.text != top.text {
+            fail("a notch past its top moved it", &top, &past_top);
+        }
+        if scrolls && back_from_end.text == past_end.text {
+            fail(
+                "notches piled up past its end: the first one back moved nothing",
+                &past_end,
+                &back_from_end,
+            );
+        }
+        if scrolls && back_from_top.text == past_top.text {
+            fail(
+                "notches piled up past its top: the first one back moved nothing",
+                &past_top,
+                &back_from_top,
+            );
+        }
+        if name.starts_with("test output")
+            && !(end_text.contains("output line 195") && end_text.contains("output line 199"))
+        {
+            fail("its output went past its last line", &first, &past_end);
+        }
+    }
+    assert!(off.is_empty(), "the wheel did more than scroll:\n{}", off.join("\n"));
 }
 
 #[test]

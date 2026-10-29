@@ -316,6 +316,15 @@ pub struct Head {
     pub note: Option<String>,
 }
 
+/// The wheel's view of a picker (`Picker::visible`): the query as it scrolled, the rows and what its first row in sight
+/// picks as last drawn.
+#[derive(Clone, Debug)]
+struct Wheeled {
+    query: String,
+    len: usize,
+    first: Option<Action>,
+}
+
 pub struct Picker {
     /// Number assigned by the editor — so a late list doesn't land in a different (newer) picker.
     pub id: u64,
@@ -374,6 +383,13 @@ pub struct Picker {
     pub emphasis: Option<regex::Regex>,
     /// Preview scrolled this many lines from where it opens (back to 0 when the selection changes).
     pub preview_scroll: usize,
+    /// The most the preview scrolls, as last drawn: its last page in sight (`term::preview_lines`) — the wheel and
+    /// `C-f` stop there, so extra notches don't pile up.
+    pub preview_end: std::cell::Cell<usize>,
+    /// The wheel's view: until a key or a press moves the selection (`moved`) or the query changes, the list stays
+    /// where the wheel left it, on the same first row as results arrive (`visible`); the rows last drawn.
+    wheeled: Option<Wheeled>,
+    rows: usize,
     /// Paths shown as a folder tree (filetree.rs) — `selected`/`scroll` then count its rows.
     tree: Option<TreeMode>,
     /// Put the selection mid-list on the next draw (the tree opening on the file being edited).
@@ -457,6 +473,9 @@ impl Picker {
             grep: None,
             emphasis: None,
             preview_scroll: 0,
+            preview_end: Default::default(),
+            wheeled: None,
+            rows: 0,
             tree: None,
             center: false,
             previews: HashMap::new(),
@@ -712,6 +731,7 @@ impl Picker {
         if !self.pickable(row) {
             return false;
         }
+        self.moved();
         self.selected = row;
         self.preview_scroll = 0;
         true
@@ -726,6 +746,7 @@ impl Picker {
 
     /// Row `row` selected, or the nearest that picks something — the list refilled under the row in hand, gone.
     pub fn select_near(&mut self, row: usize) {
+        self.moved();
         self.selected = row.min(self.len().saturating_sub(1));
         self.settle(1);
     }
@@ -770,6 +791,7 @@ impl Picker {
     /// Enter on a folder: open / fold it, staying on it.
     pub fn tree_toggle(&mut self) {
         let Some((rel, true)) = self.current_rel() else { return };
+        self.moved();
         if let Some(tm) = self.tree.as_mut()
             && !tm.open.remove(&rel)
         {
@@ -791,6 +813,7 @@ impl Picker {
     /// ← : fold an open folder; otherwise go to the folder row it's in (past folders sharing a row).
     pub fn tree_left(&mut self) {
         let Some((rel, dir)) = self.current_rel() else { return };
+        self.moved();
         if dir && self.is_open(&rel) {
             return self.tree_toggle();
         }
@@ -957,6 +980,7 @@ impl Picker {
         if n == 0 {
             return;
         }
+        self.moved();
         self.preview_scroll = 0;
         let step = delta.signum();
         for _ in 0..delta.unsigned_abs() {
@@ -1010,23 +1034,58 @@ impl Picker {
         (self.matches.len().saturating_sub(h), self.items.len() - h)
     }
 
-    /// Visible lines. Scrolls so the selection shows.
+    /// The wheel over the list: its rows `by` and nothing else — the selection and the preview stay, the row in sight or
+    /// not (the user, 2026-10-28: the wheel never moves a list's selection), within the list: no wrapping round at its
+    /// ends. A key that moves the selection, or a query typed, brings the view back to it (`visible`).
+    pub fn wheel(&mut self, by: isize) {
+        let end = self.len().saturating_sub(self.rows.max(1));
+        self.scroll = self.scroll.saturating_add_signed(by).min(end);
+        self.wheeled = Some(Wheeled {
+            query: self.query.clone(),
+            len: self.len(),
+            first: self.item_at(self.scroll).map(|i| i.action.clone()),
+        });
+    }
+
+    /// A key or a press moved the selection: the view goes back to it (`visible`) — results arriving, which move
+    /// the row in hand too, don't.
+    fn moved(&mut self) {
+        self.wheeled = None;
+    }
+
+    /// Visible lines. Scrolls so the selection shows — but where the wheel left it, until a key moves the selection or
+    /// the query changes: results that arrive (a live search, a walk still listing) move it with its first row.
     pub fn visible(&mut self, rows: usize) -> Vec<Row> {
+        self.rows = rows;
+        self.wheeled = self.wheeled.take().filter(|w| w.query == self.query);
+        if let Some(w) = &self.wheeled
+            && w.len != self.len()
+            && let Some(first) = &w.first
+            && let Some(k) = (0..self.len()).find(|&k| self.item_at(k).is_some_and(|i| i.action == *first))
+        {
+            self.scroll = k;
+        }
+        let follow = self.wheeled.is_none();
         if std::mem::take(&mut self.center) {
             self.scroll = self.selected.saturating_sub(rows / 2);
         }
-        if self.selected < self.scroll {
+        if follow && self.selected < self.scroll {
             self.scroll = self.selected;
             // …with the headings just above it, so a match never shows without its folder
             while self.scroll > 0 && !self.pickable(self.scroll - 1) && self.selected + 1 - self.scroll < rows
             {
                 self.scroll -= 1;
             }
-        } else if self.selected >= self.scroll + rows {
+        } else if follow && self.selected >= self.scroll + rows {
             self.scroll = self.selected + 1 - rows;
         }
         // Never leave rows empty at the bottom while there are rows above (after a list shrinks)
         self.scroll = self.scroll.min(self.len().saturating_sub(rows));
+        let (len, scroll) = (self.len(), self.scroll);
+        let first = self.wheeled.as_ref().and_then(|_| self.item_at(scroll)).map(|i| i.action.clone());
+        if let Some(w) = self.wheeled.as_mut() {
+            (w.len, w.first) = (len, first);
+        }
         let pat = Pattern::parse(&self.query, CaseMatching::Smart, Normalization::Smart);
         let mut buf = Vec::new();
         let (scroll, selected) = (self.scroll, self.selected);
@@ -1077,7 +1136,7 @@ impl Picker {
             let next = crate::filetree::enclosing(|i| tm.rows[i].depth, at, rows / 2);
             let settled = next.len() == pins.len();
             pins = next;
-            if self.selected < self.scroll + pins.len() {
+            if follow && self.selected < self.scroll + pins.len() {
                 self.scroll = self.selected.saturating_sub(pins.len());
             } else if settled {
                 break;

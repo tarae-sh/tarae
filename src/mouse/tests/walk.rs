@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 use crate::editor::{Drag, Editor};
 use crate::event::{Event, Mouse, MouseKind as K};
-use crate::mouse::{ACTS, Act, Expect, Lit, Part, STATES, Surface, TOOK, Under, doc, expect, rows};
+use crate::mouse::{ACTS, Act, Expect, Lights, Lit, Part, STATES, Surface, TOOK, Under, doc, expect, rows};
 use crate::sizes::Border;
 use crate::uistate::tests::{SCENES, Scene, chat, editor, frame};
 
@@ -121,6 +121,16 @@ const MOUSE_SCENES: &[Scene] = &[
     ("a long test output", |ed| {
         let lines = (0..200).map(|i| format!("output line {i}")).collect();
         ed.workspace.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), lines));
+    }),
+    // (the side panel's line where it meets the code, the keys neither's: its wash, never in the accent)
+    ("the side panel beside a test output with the keys", |ed| {
+        let files = (0..80).map(|i| format!("f{i:02}.rs")).collect();
+        ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(std::env::temp_dir(), files));
+        let lines = (0..3).map(|i| format!("output line {i}")).collect();
+        ed.workspace.test_run = Some(crate::testing::TestRun::finished("t", Vec::new(), lines));
+        shown(ed);
+        // (the keys the slot's: the line beside the code is neither side's)
+        ed.bottom_take_keys();
     }),
     ("hover text, long", |ed| {
         let md: String = (0..80).map(|i| format!("line {i} of the docs\n\n")).collect();
@@ -620,6 +630,48 @@ fn holds(ed: &Editor, u: Under) -> bool {
             _ => false,
         },
         _ => false,
+    }
+}
+
+/// The surface with the keys as `keys_to()` says (the routing test's truth) — the pane the next key goes to, under
+/// which-key the window table's, never what the frame drew nor where a press would give them (`holds`) — as the docked
+/// surface whose rect lights its lines (`mouse::Lights`): one code pane, the side panel or the rail, the chat, the slot,
+/// one group docked or floating. None: what has the keys has no docked lines (a card, a picker, a prompt).
+fn keyed_lights(ed: &Editor) -> Option<Lights> {
+    use crate::uistate::Region as R;
+    match ed.keys_to().region {
+        R::Code | R::Weave | R::Page | R::EditReview => Some(Lights::Code(ed.workspace.viewer.focus)),
+        R::Side(_) | R::Rail => Some(Lights::Side),
+        R::Chat | R::Unfold | R::View(crate::view::Surface::Chat) => Some(Lights::Chat),
+        R::List(k) if crate::floatlist::is_list(k) => Some(Lights::Dock(k)),
+        R::Slot(_) | R::List(_) | R::Program | R::View(_) | R::Output(_) => {
+            match ed.slot_in_hand().and(ed.workspace.viewer.hand) {
+                Some(k) if ed.docked_in_sight(k) || ed.floating_in_sight(k) => Some(Lights::Dock(k)),
+                _ => Some(Lights::Slot),
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The surface line `b` heads, as `keyed_lights` names it.
+fn heads(b: Border) -> Lights {
+    match b {
+        Border::Chat => Lights::Chat,
+        Border::Side | Border::Rail => Lights::Side,
+        Border::Bottom => Lights::Slot,
+        Border::Leaf(k) => Lights::Dock(k),
+        Border::Divider { heads, .. } => Lights::Code(heads),
+    }
+}
+
+/// The surface whose rect holds cell (`x`, `y`), as `keyed_lights` names it (`Editor::lights_at`; an edit's review is
+/// its code pane's).
+fn lights_of(ed: &Editor, x: usize, y: usize) -> Option<Lights> {
+    let u = ed.mouse_under(K::Down, x, y);
+    match u.surface {
+        Surface::EditReview => Some(Lights::Code(ed.workspace.viewer.focus)),
+        _ => ed.lights_at(u, x, y),
     }
 }
 
@@ -1497,12 +1549,10 @@ fn the_docs_mouse_table_is_the_codes() {
 
 /// What still reacts against its kind (the five kinds — CLAUDE.md's mouse bullet, the user 2026-10-28, #215/#216), as
 /// the kinds walk meets it: `act Surface/Part` (a hint drawn: `hint Surface/Part · key meaning`). Each is a gap a
-/// landing fills (#197 a lit word's colour, B the rows' hover and the hints as buttons — landed, C the wheel); a list that only
-/// shrinks — one no longer met fails until it's taken off.
-const KIND_GAPS: &[&str] = &[
-    // C: a line half under the pointer while a window prefix is under way
-    "hover Edge/Border",
-];
+/// landing fills (#197 a lit word's colour, B the rows' hover and the hints as buttons, C the wheel — all landed: empty;
+/// C's line under a window prefix was none once a line's keys were read from `keys_to()`, `line_keyed`); a list that
+/// only shrinks — one no longer met fails until it's taken off.
+const KIND_GAPS: &[&str] = &[];
 
 /// The lines tarae draws surfaces and frames with.
 const LINES: &str = "─│┬┴├┤┼╭╮╰╯";
@@ -1523,6 +1573,16 @@ fn painted(ed: &mut Editor) -> (Vec<Vec<char>>, Vec<(vt100::Color, vt100::Color)
         .map(|i| s.cell((i / W) as u16, (i % W) as u16).map_or_default(|c| (c.fgcolor(), c.bgcolor())))
         .collect();
     (rows, colours)
+}
+
+/// The accent as the terminal shows it (a line lit full by the keys is drawn in it) — what a line `keys_to()` says has the
+/// keys is held to, never what decides it has them.
+fn accent(ed: &Editor) -> Option<vt100::Color> {
+    match crate::term::accent_color(&ed.theme)? {
+        crossterm::style::Color::Rgb { r, g, b } => Some(vt100::Color::Rgb(r, g, b)),
+        crossterm::style::Color::AnsiValue(n) => Some(vt100::Color::Idx(n)),
+        _ => None,
+    }
 }
 
 /// `u` as the gaps name it: its surface without its ids, its part's kind.
@@ -1591,17 +1651,26 @@ fn kinds_scene(scene: &str, setup: fn(&mut Editor), n: usize) -> (Vec<(String, S
         let (was, now) = (base[y * W + x], over[y * W + x]);
         // (a surface's lines light half under the pointer whatever's on them — its own rule, not its elements')
         let line = rows[y].get(x).is_some_and(|c| LINES.contains(*c));
-        // (a line lit full already by the keys of what it heads, a floating frame's by its own)
+        // (a line lit full already by the keys — as `keys_to()` hands them on, never as the frame drew it: of what it heads,
+        // or of the surface with the keys where the line borders its own rect, a line lighting for both sides; a floating
+        // frame's by its own)
         let frames = ed.screen.frames.borrow().clone();
-        let keyed = holds(&ed, u)
-            || frames
-                .iter()
-                .rev()
-                .find(|f| {
-                    (f.rect.0..f.rect.0 + f.rect.2).contains(&x)
-                        && (f.rect.1..f.rect.1 + f.rect.3).contains(&y)
-                })
-                .is_some_and(|f| f.lit == Lit::Keys);
+        let keys = keyed_lights(&ed);
+        let sides = [(x + 1, y), (x.wrapping_sub(1), y), (x, y + 1), (x, y.wrapping_sub(1))];
+        let borders =
+            |(x, y): (usize, usize)| x < W && y < H && keys.is_some() && lights_of(&ed, x, y) == keys;
+        let keyed = match u.part {
+            Part::Border(b) if u.surface == Surface::Edge => {
+                keys == Some(heads(b)) || sides.into_iter().any(borders)
+            }
+            _ => holds(&ed, u),
+        } || frames
+            .iter()
+            .rev()
+            .find(|f| {
+                (f.rect.0..f.rect.0 + f.rect.2).contains(&x) && (f.rect.1..f.rect.1 + f.rect.3).contains(&y)
+            })
+            .is_some_and(|f| f.lit == Lit::Keys);
         let off = match kind {
             // (a frame's line on a lit row stays a line — `term::light_rows`)
             Kind::Button(_) if was.1 == now.1 && !line => Some("its ground stays under the pointer"),
@@ -1612,6 +1681,12 @@ fn kinds_scene(scene: &str, setup: fn(&mut Editor), n: usize) -> (Vec<(String, S
             Kind::Reveal if ed.cut_hover.is_none() || over == base => Some("no card under the pointer"),
             Kind::Text | Kind::None if was != now && !line => Some("it changes under the pointer"),
             Kind::Handle if was == now && !keyed => Some("it doesn't light under the pointer"),
+            // (a docked line excused by the keys must be lit by them: drawn full, in the accent)
+            Kind::Handle
+                if u.surface == Surface::Edge && line && was == now && Some(was.0) != accent(&ed) =>
+            {
+                Some("it has the keys beside it, drawn unlit, and doesn't light under the pointer")
+            }
             _ => None,
         };
         if let Some(what) = off {

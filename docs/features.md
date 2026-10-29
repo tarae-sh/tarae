@@ -45,8 +45,9 @@ You don't need to know the keys to start:
   continues where you left off ([screenshot](screenshots/ux-welcome-continue.png)). `editor.restore-files = true`
   reopens them right away instead
 - **Mouse** — click to place the cursor, drag to select, alt+click for another cursor, ctrl+click to go there
-  (`gd`: a definition, a page's link followed; an http(s) address in code opened as a page — `C-o` comes back), wheel to scroll. In pickers the
-  wheel moves the selection and a click opens. Every line between two things with sizes drags — the chat's and the side
+  (`gd`: a definition, a page's link followed; an http(s) address in code opened as a page — `C-o` comes back), wheel to scroll (Shift+wheel sideways) —
+  the wheel only scrolls: it never takes the keys, moves a cursor or a list's selection (a key brings the view back
+  to it), and stops at each end. In pickers a click selects and a second one opens. Every line between two things with sizes drags — the chat's and the side
   panel's edges, the review rail's (its width kept), the bottom panel's line (from its tabs too), the dividers between
   your panes, side by side and over and under — the accent while dragged; pressed without a drag, it gives the keys
   to what it heads. The surface under the pointer lights its lines half (its top line, its edges), the one with the
@@ -254,7 +255,8 @@ configs carry over as they are.
   file you're editing (its functions, types, and modules from the tree-sitter tree, nested — no language server
   needed), `space q` the list below, `space g` git. Left alone it follows you: the current file with its folders
   opened, or the definition around the cursor. With the keys in it, `j`/`k` move (as in every list panel — `C-n`/`C-p`
-  a row too, `C-e`/`C-y` (and the wheel, three rows) the view with the selection staying in sight, `C-d`/`C-u` half the rows in sight,
+  a row too, `C-e`/`C-y` the view with the selection staying in sight (the wheel, three rows, the view only — the
+  selection stays, in sight or not), `C-d`/`C-u` half the rows in sight,
   `C-f`/`C-b` all of them, `g`/`G` the ends: the review's rail, `:procs`, the test, task and terminal panels, a
   plugin's), `h`/`l` fold and unfold, Enter
   opens (the code gets the keys back), Tab steps files → outline → list → git, Esc leaves it showing, `q` or the same key again closes it; `space` and `:` still
@@ -324,7 +326,7 @@ configs carry over as they are.
   (colors, full-screen programs, the lot — `esc` too). `C-\` goes round: from the code to the program, from the
   program to its **view mode**, from there to the code. `space T` shows it with the keys — from wherever it is,
   behind another tab or shown without them.
-  - **View mode** (`C-\` from the program, `C-w j` to its panel, or the wheel up over it): a cursor on its
+  - **View mode** (`C-\` from the program, `C-w j` to its panel): a cursor on its
     scrollback and screen as text, the code's normal mode on them — `j` `k` `w` `x` `v` `/` `n` `*` `gg`, counts,
     the `z` views; the arrows as in the code (`←` `→` a character, `↑` `↓` a line), `y` copies, `G` the latest. The panel's head says `● view`, the
     status line `● view · terminal`. It holds still: the program's output waits, and so does the program —
@@ -334,11 +336,10 @@ configs carry over as they are.
     to Claude — a chip over the chat's input, the program's wrapped lines joined, token-like lines taken out
     ([quoting](claude-integration.md#quoting-what-you-read); not while `llm.screen-terminal` is off). `i` (`a`,
     `enter` with nothing selected) types in the program again, `esc` (a selection collapses first) or `C-\` goes to the code, `q` hides the panel (the shell
-    runs on), `tab` the slot's other tabs. The wheel back down to the bottom, nothing selected, gives the keys
-    back where they were. `[keys.terminal]` adds keys taken from the program (`C-\` by default; every other key
+    runs on), `tab` the slot's other tabs. `[keys.terminal]` adds keys taken from the program (`C-\` by default; every other key
     is the program's), and `to_program` gives one back; `[keys.view.terminal]` remaps its view mode.
-  - Outside view mode `Shift+PageUp`/`Shift+PageDown` scroll its past a page while the program has the keys (the
-    next key it gets brings it back down; a full-screen program, which keeps no past, gets them as from any
+  - Outside view mode the wheel scrolls its past, the keys staying where they are, and `Shift+PageUp`/
+    `Shift+PageDown` a page while the program has the keys (the next key it gets brings it back down; a full-screen program, which keeps no past, gets them as from any
     terminal) — if your terminal leaves them to the program. A click in it gives the program the keys, a click
     outside takes them back; a drag selects text and copies it. A program that asks for the mouse (htop, vim, lazygit) gets clicks and the wheel instead
     (alt+drag still selects — the panel's title says so), a full-screen one that doesn't gets the wheel as arrow

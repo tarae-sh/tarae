@@ -14,8 +14,8 @@
 //! It's kept as the chat's own drawer's (`term::draw_chat` paints its rows' spans, the selections over them by the
 //! rows' places here), not `draw_text`'s: its rows are markdown's spans.
 //!
-//! The chat's view mode is normal mode on it (`esc` from the input, `space >`, the wheel; `i` back, `esc` again to
-//! the code): the keymap's chat table — normal mode whole, `[view]` and `[view.chat]` over it — run with the
+//! The chat's view mode is normal mode on it (`esc` from the input, `space >`, a press on it; `i` back, `esc` again to
+//! the code — the wheel only scrolls: never the keys, CLAUDE.md's mouse bullet): the keymap's chat table — normal mode whole, `[view]` and `[view.chat]` over it — run with the
 //! document swapped in (`docpane::swap`); an edit put back and said. While it has the keys it holds still — what
 //! comes is appended below what's in sight, said (`● normal · new text after`), `G` catches up; without them the chat
 //! shows its newest rows, `Chat.scroll` up from the bottom. Its selection is where you were: the next view lands
@@ -34,7 +34,7 @@ use crate::keymap::MappableCommand;
 use crate::movement as mv;
 use crate::selection::{Range, Selection};
 use crate::transaction::{Assoc, Change, Transaction};
-use crate::view::{Surface, Was};
+use crate::view::Surface;
 use crate::workspace::At;
 use crate::wrap::{Given, Part, Row};
 
@@ -175,12 +175,10 @@ impl Piece {
 pub struct Transcript {
     pub pane: Pane,
     pieces: Vec<Piece>,
-    /// Its view mode is on (`esc` from the input, `space >`, the wheel) — the keys its while the chat has them.
+    /// Its view mode is on (`esc` from the input, `space >`, a press) — the keys its while the chat has them.
     pub keyed: bool,
     /// What the conversation held when the view came or caught up (`seen`) — another now: something came after.
     seen: u64,
-    /// Entered by the wheel: where the keys were.
-    by_wheel: Option<Was>,
     /// Its cursor was placed in this conversation: the selection is where you were.
     visited: bool,
 }
@@ -191,14 +189,7 @@ impl Transcript {
         doc.wrap = Some(true);
         doc.throwaway = true;
         doc.rows = Some(Arc::new(Given::default()));
-        Transcript {
-            pane: Pane::new(doc),
-            pieces: Vec::new(),
-            keyed: false,
-            seen: 0,
-            by_wheel: None,
-            visited: false,
-        }
+        Transcript { pane: Pane::new(doc), pieces: Vec::new(), keyed: false, seen: 0, visited: false }
     }
 
     /// Its rows (the document's, frame rows not counted).
@@ -626,7 +617,7 @@ pub fn view(ed: &mut Editor) {
         (false, true) if ed.screen.chat_view.get().is_none() => return want(ed),
         _ => {}
     }
-    enter(ed, None, None);
+    enter(ed);
 }
 
 /// Its view mode asked for before its rows were laid out: made once a frame has (`wanted`).
@@ -664,16 +655,16 @@ fn last_answer(c: &Chat) -> Option<usize> {
         .or_else(|| c.msgs.iter().rposition(|m| m.role == Role::Assistant))
 }
 
-/// Its view mode, the keys its: the rows in sight as the chat showed them, the cursor on the row `row` (the
-/// wheel's, under the pointer), else where you were, else the last answer's first row (its first is the air above
-/// it), else the last. One view at a time: the terminal's ends.
-fn enter(ed: &mut Editor, row: Option<usize>, by_wheel: Option<Was>) {
-    come(ed, row, by_wheel);
+/// Its view mode, the keys its: the rows in sight as the chat showed them, the cursor where you were, else the last
+/// answer's first row (its first is the air above it), else the last. One view at a time: the terminal's ends.
+fn enter(ed: &mut Editor) {
+    come(ed, None);
     in_sight_now(ed);
 }
 
-/// `enter`'s view, the cursor landed, the rows in sight not moved for it yet.
-fn come(ed: &mut Editor, row: Option<usize>, by_wheel: Option<Was>) {
+/// `enter`'s view, the cursor landed — on the row `row` (a press's, under the pointer) — the rows in sight not moved
+/// for it yet.
+fn come(ed: &mut Editor, row: Option<usize>) {
     crate::view::leave(ed);
     let shown = ed.screen.chat_view.get().map_or(0, |a| a.3);
     let shown = doc_row_from(&ed.screen.chat_laid.borrow(), shown);
@@ -687,7 +678,7 @@ fn come(ed: &mut Editor, row: Option<usize>, by_wheel: Option<Was>) {
         None if t.visited => None,
         None => Some(answer.and_then(|i| t.row_of_msg(i, 1)).unwrap_or(last)),
     };
-    (t.keyed, t.visited, t.seen, t.by_wheel) = (true, true, now, by_wheel);
+    (t.keyed, t.visited, t.seen) = (true, true, now);
     let Some(d) = t.pane.doc_in_mut() else { return };
     let Some(g) = d.rows.clone() else { return };
     let (line, k) = g.place(shown.min(last));
@@ -711,7 +702,7 @@ pub fn click(ed: &mut Editor, row: usize, col: usize) -> Option<usize> {
     let row = doc_row(&ed.screen.chat_laid.borrow(), row)?;
     let s = transcript(ed).filter(|t| row < t.rows()).and_then(|t| t.row(row))?;
     if !has_keys(ed) {
-        come(ed, Some(row), None);
+        come(ed, Some(row));
     }
     let d = transcript_mut(ed).and_then(|t| t.pane.doc_in_mut())?;
     let pos = under(d, s, col);
@@ -819,7 +810,6 @@ pub fn leave(ed: &mut Editor) {
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     let Some(t) = c.transcript.as_mut().filter(|t| t.keyed && t.pane.doc_in().is_some()) else { return };
     t.keyed = false;
-    t.by_wheel = None;
     c.scroll = total.max(t.rows()).saturating_sub(laid_row(&laid, t.top_row()) + area);
     if t.pane.dropped() {
         ed.prompt = None;
@@ -1019,39 +1009,25 @@ pub fn search_unshown(ed: &mut Editor) {
     }
 }
 
-/// The wheel over the conversation: up, its view mode at that point — the cursor on `row` (the row under the
-/// pointer, of all the chat's), the keys its — then three rows; back down to the end, by the wheel, nothing
-/// selected, the keys go back where they were. Without the keys, down scrolls the chat. An empty conversation:
-/// nothing to read, nothing done.
-pub fn wheel(ed: &mut Editor, row: Option<usize>, up: bool) {
+/// The wheel over the conversation: three rows and nothing else — the keys, the focus, the cursor and the selection
+/// stay where they are (the user, 2026-10-28: the wheel only scrolls). In its view mode, its document's rows (a
+/// paragraph's each its own); else the chat's own, up from the bottom within what the last frame laid out — the next
+/// key typed in the input brings it back down (`chat::key`). An empty conversation: nothing to read, nothing done.
+pub fn wheel(ed: &mut Editor, up: bool) {
     if ed.workspace.claude.chat.as_ref().is_none_or(|c| c.msgs.is_empty() || c.transcript.is_none()) {
         return;
     }
-    if !has_keys(ed) {
-        if !up {
-            if let Some(c) = ed.workspace.claude.chat.as_mut() {
-                c.scroll = c.scroll.saturating_sub(3);
-            }
-            return;
-        }
-        let was = crate::view::was(ed);
-        let row = row.map(|r| doc_row_from(&ed.screen.chat_laid.borrow(), r));
-        enter(ed, row, Some(was));
+    if has_keys(ed) {
+        return view_by(ed, if up { -3 } else { 3 });
     }
-    ed.workspace.viewer.at = At::Chat;
-    // (three rows — the transcript's, a paragraph's each its own; the cursor and the selection stay)
-    view_by(ed, if up { -3 } else { 3 });
-    let (area, _) = viewport(ed);
-    let Some(t) = transcript(ed) else { return };
-    let at_end = t.top_row() + area >= t.rows();
-    if !up
-        && at_end
-        && !t.pane.selects()
-        && !t.pane.prompt
-        && let Some(was) = t.by_wheel
-    {
-        leave(ed);
-        crate::view::give_back(ed, was);
+    // (the rows the chat shows and every row the last frame laid out — `leave`'s measures)
+    let area = ed.screen.chat_view.get().map_or(20, |a| a.2.max(1));
+    let total: usize = ed.screen.chat_laid.borrow().iter().map(|(_, r)| r.len()).sum();
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
+        c.scroll = match up {
+            true => (c.scroll + 3).min(total.saturating_sub(area)),
+            false => c.scroll.saturating_sub(3),
+        };
     }
 }
 

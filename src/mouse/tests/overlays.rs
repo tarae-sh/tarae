@@ -698,4 +698,10 @@ fn the_wheel_sideways_scrolls_the_codes_columns() {
     mouse(&mut ed, MouseKind::ScrollLeft, x, y);
     mouse(&mut ed, MouseKind::ScrollLeft, x, y);
     assert_eq!(ed.doc().left, 0, "back to the first column, no further");
+    // (the wheel with Shift, as terminals send it: sideways over the code, down to the right)
+    let top = ed.doc().top;
+    mouse(&mut ed, MouseKind::ShiftScrollDown, x, y);
+    assert_eq!((ed.doc().left, ed.doc().top), (4, top), "Shift's wheel: sideways");
+    mouse(&mut ed, MouseKind::ShiftScrollUp, x, y);
+    assert_eq!(ed.doc().left, 0);
 }

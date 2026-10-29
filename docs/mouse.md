@@ -68,6 +68,7 @@ that fills it (S selection).
 | Which-key | the rest of it | says: a row presses it | — the press did it | — its press did it — a drag goes to what's under it | as one press | — nothing to scroll | — nothing on hover |
 | The completion menu | a row | ✓ | — the press did it | — its press did it — a drag goes to what's under it | as one press | ✓ | — nothing on hover |
 | The completion menu | the rest of it, its docs | says: a row presses it | — the press did it | — its press did it — a drag goes to what's under it | as one press | ✓ | — nothing on hover |
+| The completion menu | a key hint on its bottom line | ✓ | — the press did it | says: this takes a press — a drag starts beside it | as one press | ✓ | ✓ |
 | The note card |  | ✓ | — the press did it | — its press did it — a drag goes to what's under it | as one press | — nothing to scroll | — nothing on hover |
 | The note card | a key hint | ✓ | — the press did it | says: this takes a press — a drag starts beside it | as one press | — nothing to scroll | — nothing on hover |
 | The status line | a word (`▲N waiting · C-q`, the chip, what Claude does now, the branch, `▲ N`, `full screen`) | ✓ | — the press did it | — a line of state, no text to select | as one press | — nothing to scroll | ✓ |
@@ -89,5 +90,5 @@ The other buttons:
 | Button | What it does |
 |---|---|
 | The middle button | the clipboard pasted at the pointer, the cursor put there first, on text that takes it — the code in normal or insert mode, the chat's input, a prompt's line; anywhere else nothing, said |
-| The wheel sideways | the code pane under the pointer, its view's columns; elsewhere nothing to scroll |
+| The wheel sideways | the code pane under the pointer, its view's columns (Shift+wheel too, as terminals send it); elsewhere nothing to scroll — Shift+wheel there is the wheel, and a terminal's program that asked for the mouse gets it as it came |
 | The right button | the terminal's — tarae doesn't take it |

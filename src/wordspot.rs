@@ -242,7 +242,8 @@ fn standing(ed: &Editor, at: At) -> bool {
 /// a Claude turn started, as `C-s screen`'s; `space v h` is the high-risk gate, a look a person presses on purpose,
 /// never a stray click). Round 3 (the user 2026-10-29): `d` whatever it says (a discard, a session ended, a folder
 /// removed, a change taken back), a Claude draft started (`C Claude drafts`, a paid turn), `:chat-screen` (the screen
-/// sent, as `C-s screen`), and `:procs`' `s stop` and `s drop` (a server stopped, a queued run dropped). Matched past a
+/// sent, as `C-s screen`), and `:procs`' `s stop` and `s drop` (a server stopped, a queued run dropped); the notes list's
+/// `A-x` (every note its author began closed — kinds C's review: no scene had drawn it before). Matched past a
 /// way out (`esc :chat-screen`: `way_out`). Drawn as plain faint words, never a hint (`is_hint`); a conflict's ours,
 /// theirs and both too (drawn by hand: `term::draw_conflict_card`).
 const COSTS: &[(Option<&str>, &str)] = &[
@@ -259,6 +260,7 @@ const COSTS: &[(Option<&str>, &str)] = &[
     (Some(":chat-screen"), "*"),
     (Some("space v s"), "*"),
     (Some("space v h"), "*"),
+    (Some("A-x"), "*"),
 ];
 
 /// The keys a hint draws as a button (piece B, the user 2026-10-29) — with `COSTS`, the pairs drawn as plain words, the

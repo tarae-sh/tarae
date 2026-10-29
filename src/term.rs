@@ -450,20 +450,8 @@ fn spawn_input(tx: crate::event::Tx) {
                     Some(Event::Hover(at.0, at.1))
                 }
                 CtEvent::Mouse(m) => {
-                    use crate::event::{Mouse, MouseKind};
-                    let kind = match m.kind {
-                        MouseEventKind::Down(MouseButton::Left) => Some(MouseKind::Down),
-                        MouseEventKind::Drag(MouseButton::Left) => Some(MouseKind::Drag),
-                        MouseEventKind::Up(MouseButton::Left) => Some(MouseKind::Up),
-                        MouseEventKind::ScrollUp => Some(MouseKind::ScrollUp),
-                        MouseEventKind::ScrollDown => Some(MouseKind::ScrollDown),
-                        MouseEventKind::ScrollLeft => Some(MouseKind::ScrollLeft),
-                        MouseEventKind::ScrollRight => Some(MouseKind::ScrollRight),
-                        MouseEventKind::Down(MouseButton::Middle) => Some(MouseKind::Middle),
-                        // (the right button stays the terminal's way: not taken — CLAUDE.md, the mouse's bullet)
-                        _ => None,
-                    };
-                    kind.map(|kind| {
+                    use crate::event::Mouse;
+                    mouse_kind(m.kind, m.modifiers).map(|kind| {
                         Event::Mouse(Mouse {
                             kind,
                             x: m.column,
@@ -482,6 +470,27 @@ fn spawn_input(tx: crate::event::Tx) {
             }
         }
     });
+}
+
+/// A mouse event's kind as tarae takes it: the left button, the wheel and the middle button (the right one stays the
+/// terminal's way: not taken — CLAUDE.md, the mouse's bullet). The wheel with Shift is kept apart (`ShiftScrollUp`,
+/// `ShiftScrollDown`): sideways over the code, the wheel elsewhere — `Editor::handle_mouse` decides by what's under it.
+fn mouse_kind(kind: MouseEventKind, mods: KeyModifiers) -> Option<crate::event::MouseKind> {
+    use crate::event::MouseKind as K;
+    let shift = mods.contains(KeyModifiers::SHIFT);
+    Some(match kind {
+        MouseEventKind::Down(MouseButton::Left) => K::Down,
+        MouseEventKind::Drag(MouseButton::Left) => K::Drag,
+        MouseEventKind::Up(MouseButton::Left) => K::Up,
+        MouseEventKind::ScrollUp if shift => K::ShiftScrollUp,
+        MouseEventKind::ScrollDown if shift => K::ShiftScrollDown,
+        MouseEventKind::ScrollUp => K::ScrollUp,
+        MouseEventKind::ScrollDown => K::ScrollDown,
+        MouseEventKind::ScrollLeft => K::ScrollLeft,
+        MouseEventKind::ScrollRight => K::ScrollRight,
+        MouseEventKind::Down(MouseButton::Middle) => K::Middle,
+        _ => return None,
+    })
 }
 
 /// What goes to the terminal for `frame`, just drawn by `editor` (`Screen::present`).
@@ -4824,7 +4833,7 @@ fn put_line(out: &mut impl Write, style: Style, text: &str) -> io::Result<()> {
 
 /// The one accent: `ui.accent` (tarae's own key), else the primary cursor's background, else `special` —
 /// themes written for Helix get theirs from what they already say.
-fn accent_color(t: &Theme) -> Option<crossterm::style::Color> {
+pub(crate) fn accent_color(t: &Theme) -> Option<crossterm::style::Color> {
     t.try_get("ui.accent")
         .and_then(|s| s.fg)
         .or_else(|| t.try_get("ui.cursor.primary").and_then(|s| s.bg))
@@ -5654,20 +5663,15 @@ fn draw_sessions_pane(
     let here = editor.sessions_here();
     let selected = rows.iter().position(|row| Some(row.id) == here).unwrap_or(0);
     let p = editor.float_list(crate::pane::GroupKind::Sessions);
-    let top = p.map_or(0, |p| p.top.get());
     // (docked right, the asks over its foot — `asks_foot`: the selected row kept in sight above the stack, a row of air
     // between)
     let asks =
         // (a card grown left past the list's edge for its bottom line still stands over its foot)
         editor.screen.offer_card.filter(|c| !framed && c.0 + c.2 > x0 && c.1 + c.3 > y0 && c.1 < y0 + inner);
     let shown = asks.map_or(inner, |c| c.1.saturating_sub(y0 + 1).clamp(1, inner));
-    let mut top = crate::key::in_sight(0, top, selected, rows.len(), shown, 0).0;
-    if asks.is_some() {
-        top = top.clamp((selected + 1).saturating_sub(shown), selected);
-    }
-    if let Some(p) = p {
-        p.top.set(top);
-    }
+    // (an ask coming over its foot: fewer rows in sight, the selection brought above it once — the wheel's after)
+    let ids: Vec<u64> = rows.iter().map(|row| row.id.n).collect();
+    let top = crate::floatlist::top_drawn(p, &ids, selected, shown);
     // (its rows in sight: those above the stack — the moves page by them, the row under the card air)
     let inner = shown;
     editor.screen.lists.borrow_mut().push((crate::pane::GroupKind::Sessions, (y0, inner, top)));
@@ -5805,12 +5809,8 @@ fn draw_messages_pane(
     editor.screen.messages_room.set(room);
     let here = editor.float_list_here(GroupKind::Messages);
     let selected = rows.iter().position(|m| Some(m.id) == here).unwrap_or(rows.len().saturating_sub(1));
-    let p = editor.float_list(GroupKind::Messages);
-    let top = p.map_or(0, |p| p.top.get());
-    let top = crate::key::in_sight(0, top, selected, rows.len(), inner, 0).0;
-    if let Some(p) = p {
-        p.top.set(top);
-    }
+    let ids: Vec<u64> = rows.iter().map(|m| m.id).collect();
+    let top = crate::floatlist::top_drawn(editor.float_list(GroupKind::Messages), &ids, selected, inner);
     editor.screen.lists.borrow_mut().push((GroupKind::Messages, (y0, inner, top)));
     let sel = selected_row(ui, editor, card);
     // Its search's matches (its own `/`), as the session list's
@@ -5921,12 +5921,8 @@ fn draw_folders_pane(
     let room = r.w.saturating_sub(2 + 2 + 1);
     let here = editor.float_list_here(GroupKind::Folders);
     let selected = rows.iter().position(|f| Some(f.id) == here).unwrap_or(0);
-    let p = editor.float_list(GroupKind::Folders);
-    let top = p.map_or(0, |p| p.top.get());
-    let top = crate::key::in_sight(0, top, selected, rows.len(), inner, 0).0;
-    if let Some(p) = p {
-        p.top.set(top);
-    }
+    let ids: Vec<u64> = rows.iter().map(|f| f.id).collect();
+    let top = crate::floatlist::top_drawn(editor.float_list(GroupKind::Folders), &ids, selected, inner);
     editor.screen.lists.borrow_mut().push((GroupKind::Folders, (y0, inner, top)));
     let sel = selected_row(ui, editor, card);
     let re = crate::floatlist::lit(editor, GroupKind::Folders);
@@ -9189,12 +9185,15 @@ fn draw_picker(
     };
     let rows = b.list_rows + 4 + b.head;
     let head = p.head.as_ref().map(|h| head_rows(h, lw)).unwrap_or_default();
+    // (nothing to scroll unless it shows code or a diff taller than its rows)
+    p.preview_end.set(0);
     let preview = if b.preview_w > 0 { preview_lines(p, editor, b.list_rows, b.preview_w) } else { None };
     // Diffs scroll by dropping rows from the top (the last page stays); lines wider than the pane
     // continue on the next rows
     let preview = preview.map(|v| match v {
         PreviewView::Diff { files, mut rows, styles } => {
-            let skip = p.preview_scroll.min(rows.len().saturating_sub(b.list_rows));
+            p.preview_end.set(rows.len().saturating_sub(b.list_rows));
+            let skip = p.preview_scroll.min(p.preview_end.get());
             rows.drain(..skip);
             let room = b.preview_w.saturating_sub(7); // "{:>4} " + sign + space
             let tab = editor.config.tab_width;
@@ -9637,6 +9636,10 @@ fn preview_lines<'a>(
     let opens_at = focus.filter(|_| !matches!(action, Action::Buffer(_)));
     let code_w = width.saturating_sub(crate::chrome::SIGNS + num_w(doc));
     let at = (focus, opens_at, p.preview_scroll);
+    // (its last page: `rows_preview`'s first line can go no further down than that)
+    let last = mv::last_line(&doc.text);
+    let most = last.saturating_sub(rows.saturating_sub(1)).max(focus.unwrap_or(0).min(last));
+    p.preview_end.set(most.saturating_sub(focus.map_or(0, |f| f.saturating_sub(rows / 3))));
     Some(PreviewView::Code { doc, rows: rows_preview(editor, doc, lang, at, rows, code_w), focus })
 }
 
@@ -13060,8 +13063,16 @@ impl OfferCard {
                 (false, true) => CUT_OPEN,
                 (false, false) => CUT_UNREAD,
             };
-            cut_floor =
-                [CUT_UNREAD, CUT_OPEN, CUT_READ].map(|t| row(t).width()).into_iter().max().unwrap_or(0);
+            // (and either way it points — `↓ N more` while some is below, `↑ N above` once the wheel read it to its end —
+            // at the most it could count: scrolled, the card keeps its width and its left edge)
+            let most = |then: &str| {
+                let (down, up) = (
+                    format!("↓ {body_rows} more lines, {then}"),
+                    format!("↑ {body_rows} lines above, {then}"),
+                );
+                down.width().max(up.width()).max(row(then).width())
+            };
+            cut_floor = [CUT_UNREAD, CUT_OPEN, CUT_READ].map(most).into_iter().max().unwrap_or(0);
             cut_floor = cut_floor.min(widest);
             lines.push((crate::whole::fit(&row(then), widest), true));
             if early && !editor.offer_seen_whole() && !editor.offer_viewing() {
@@ -13105,7 +13116,9 @@ impl OfferCard {
         // way in, what lasts (`Offer::lasting`), what a cut yes waits for, nor what lists the cards behind it; past
         // that the card grows left for its line, and only a screen too narrow for that draws none.
         let room = fixed.unwrap_or_else(|| inner.max(reading)).saturating_sub(2);
-        let read = labels.iter().position(|(k, _)| *k == 'y' && o.read_first(*k)).filter(|_| cut > 0);
+        // (cut, or scrolled to its end: the same card — its yes keeps the form it had, the card its width)
+        let read =
+            labels.iter().position(|(k, _)| *k == 'y' && o.read_first(*k)).filter(|_| cut > 0 || above > 0);
         let (mut whole, mut short) = (labels.clone(), o.answers_short(quick));
         let mut keep = None;
         if (cut > 0 || above > 0) && o.acts_on('v') && !labels.iter().any(|a| a.0 == 'v') {
@@ -23152,12 +23165,28 @@ mod tests {
         assert_eq!(ed.cursor_line(), 55);
     }
 
-    /// The wheel scrolls what it's over: floating docs, a picker's preview (C-f/C-b too), or the list.
+    /// The wheel with Shift is kept apart, as terminals send it (crossterm reads SGR 64/65 with Shift as the vertical
+    /// wheel) — `handle_mouse` turns it sideways over the code only; a sideways wheel stays sideways, the plain wheel
+    /// vertical.
+    #[test]
+    fn shift_keeps_the_wheel_apart() {
+        use crate::event::MouseKind as K;
+        use crossterm::event::{KeyModifiers as M, MouseEventKind as E};
+        let kinds = [E::ScrollDown, E::ScrollUp, E::ScrollRight, E::ScrollLeft];
+        let with = |m: M| kinds.map(|k| mouse_kind(k, m));
+        let shifted = [K::ShiftScrollDown, K::ShiftScrollUp, K::ScrollRight, K::ScrollLeft].map(Some);
+        assert_eq!(with(M::SHIFT), shifted);
+        assert_eq!(with(M::NONE), [K::ScrollDown, K::ScrollUp, K::ScrollRight, K::ScrollLeft].map(Some));
+        assert_eq!(with(M::SHIFT | M::ALT), shifted, "alt beside it");
+    }
+
+    /// The wheel scrolls what it's over: floating docs, a picker's preview (C-f/C-b too) — no further than its last
+    /// page, extra notches never piling up — or the list's rows, never its selection, nor round past its ends.
     #[test]
     fn wheel_scrolls_popups_and_previews() {
         use crate::event::{Mouse, MouseKind};
         let mut ed = Editor::new(Config::default());
-        ed.docs[0].text = Rope::from_str("x\n");
+        ed.docs[0].text = Rope::from_str(&(0..40).map(|i| format!("line {i}\n")).collect::<String>());
         let (w, h) = (120, 30);
         render(&mut ed, &mut Vec::new(), w, h).unwrap();
         let docs: Vec<crate::markdown::Line> = (0..60)
@@ -23189,28 +23218,88 @@ mod tests {
             hint: String::new(),
             glyph: None,
         };
-        let items = vec![item(1), item(2), item(3)];
+        let items = (0..60).map(item).collect();
         ed.open_picker(Picker::new("buffers", items, false), None);
         render(&mut ed, &mut Vec::new(), w, h).unwrap();
         let x = ed.screen.picker_preview_x.expect("preview card at this width");
-        ed.handle_mouse(Mouse {
-            kind: MouseKind::ScrollDown,
-            x: (x + 3) as u16,
-            y: 10,
-            alt: false,
-            ctrl: false,
-        });
-        assert_eq!(ed.picker.as_ref().map(|p| (p.preview_scroll, p.selected)), Some((3, 0)));
+        let wheel = |ed: &mut Editor, kind, x: usize, n: usize| {
+            for _ in 0..n {
+                ed.handle_mouse(Mouse { kind, x: x as u16, y: 10, alt: false, ctrl: false });
+                render(ed, &mut Vec::new(), w, h).unwrap();
+            }
+        };
+        let at = |ed: &Editor| ed.picker.as_ref().map(|p| (p.preview_scroll, p.selected, p.scroll));
+        wheel(&mut ed, MouseKind::ScrollDown, x + 3, 1);
+        assert_eq!(at(&ed), Some((3, 0, 0)));
         ed.handle_key("C-b".parse().unwrap());
-        assert_eq!(ed.picker.as_ref().map(|p| p.preview_scroll), Some(0));
-        ed.handle_mouse(Mouse { kind: MouseKind::ScrollDown, x: 5, y: 10, alt: false, ctrl: false });
-        assert_eq!(
-            ed.picker.as_ref().map(|p| (p.preview_scroll, p.selected)),
-            Some((0, 0)),
-            "3 of 3 wraps to 0"
-        );
+        assert_eq!(at(&ed), Some((0, 0, 0)));
         ed.handle_key("C-f".parse().unwrap());
-        assert_eq!(ed.picker.as_ref().map(|p| p.preview_scroll), Some(10));
+        assert_eq!(at(&ed).map(|a| a.0), Some(10));
+        // (its last page: the wheel and `C-f` stop there, and the first notch back moves it)
+        let end = ed.picker.as_ref().unwrap().preview_end.get();
+        assert!(end > 10 && end < 40, "the preview's end: {end}");
+        wheel(&mut ed, MouseKind::ScrollDown, x + 3, 30);
+        ed.handle_key("C-f".parse().unwrap());
+        assert_eq!(at(&ed).map(|a| a.0), Some(end), "no further than its last page");
+        wheel(&mut ed, MouseKind::ScrollUp, x + 3, 1);
+        assert_eq!(at(&ed).map(|a| a.0), Some(end - 3), "one notch back, three lines");
+        // The list: its rows, the selection and its preview where they were; at its ends it stops, never round
+        wheel(&mut ed, MouseKind::ScrollUp, 5, 1);
+        assert_eq!(at(&ed), Some((end - 3, 0, 0)), "at its top: nothing moves");
+        wheel(&mut ed, MouseKind::ScrollDown, 5, 2);
+        assert_eq!(at(&ed), Some((end - 3, 0, 6)), "its rows, the selection out of sight");
+        wheel(&mut ed, MouseKind::ScrollDown, 5, 40);
+        let rows = ed.picker.as_ref().unwrap().view.len();
+        assert_eq!(at(&ed), Some((end - 3, 0, 60 - rows)), "at its end it stops");
+        // (a key moves the selection from where it was, the list back to it)
+        ed.handle_key("down".parse().unwrap());
+        render(&mut ed, &mut Vec::new(), w, h).unwrap();
+        assert_eq!(at(&ed), Some((0, 1, 1)));
+    }
+
+    /// The wheel's view of a picker holds while results arrive (a live search's batches, a walk still listing): on the
+    /// same first row as rows come before it and after, the row in hand still selected; a key brings it back.
+    #[test]
+    fn a_pickers_wheel_view_holds_while_results_arrive() {
+        use crate::event::{Mouse, MouseKind};
+        let mut ed = Editor::new(Config::default());
+        let (w, h) = (120, 30);
+        let item = |n: usize| crate::picker::Item {
+            label: format!("result {n:03}"),
+            action: Action::Typed(format!("r{n}")),
+            hint: String::new(),
+            glyph: None,
+        };
+        ed.open_picker(Picker::new("results", (10..50).map(item).collect(), false), None);
+        render(&mut ed, &mut Vec::new(), w, h).unwrap();
+        for _ in 0..3 {
+            ed.handle_mouse(Mouse { kind: MouseKind::ScrollDown, x: 5, y: 10, alt: false, ctrl: false });
+            render(&mut ed, &mut Vec::new(), w, h).unwrap();
+        }
+        let at = |ed: &Editor| {
+            let p = ed.picker.as_ref().unwrap();
+            (p.item_at(p.scroll).map(|i| i.label.clone()), p.current().map(|i| i.label.clone()))
+        };
+        let was = at(&ed);
+        assert_eq!(
+            was,
+            (Some("result 019".into()), Some("result 010".into())),
+            "scrolled, the selection stays"
+        );
+        // (a batch with rows before what's in sight, then one after)
+        for batch in [(0..60).collect::<Vec<_>>(), (0..90).collect()] {
+            ed.picker.as_mut().unwrap().set_found(batch.into_iter().map(item).collect());
+            render(&mut ed, &mut Vec::new(), w, h).unwrap();
+            assert_eq!(at(&ed), was, "the wheel's view and the row in hand, as results arrive");
+        }
+        ed.handle_key("down".parse().unwrap());
+        render(&mut ed, &mut Vec::new(), w, h).unwrap();
+        let p = ed.picker.as_ref().unwrap();
+        assert_eq!(
+            (p.current().map(|i| i.label.as_str()), p.scroll <= p.selected),
+            (Some("result 011"), true),
+            "a key: the view back to the selection"
+        );
     }
 
     /// A style goes out as one SGR sequence that a terminal reads just like crossterm's sequence a part.

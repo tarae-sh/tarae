@@ -146,6 +146,47 @@ fn a_message_whose_row_is_out_of_sight_comes_as_a_toast() {
     assert_eq!(ed.screen.list(GroupKind::Messages).map(|l| l.2), Some(top), "the list not scrolled to it");
 }
 
+/// `:messages` opens with its selection, the newest, in sight; the wheel's view holds while messages are said: full (`MESSAGES_KEPT`), each new one drops the oldest — every row
+/// moves up one, the selection's too — and the list stays on the rows the wheel left in sight, the selection where it
+/// was, out of sight; a key brings the view back to it.
+#[test]
+fn the_wheels_view_holds_while_messages_are_said() {
+    let mut ed = Editor::new(crate::config::Config::default());
+    for i in 0..crate::editor::MESSAGES_KEPT + 10 {
+        ed.set_status(format!("said {i}"));
+    }
+    feed(&mut ed, ":messages<ret>");
+    let (_, inner, top) = ed.screen.list(GroupKind::Messages).unwrap();
+    assert_eq!(top + inner, rows(&ed).len(), "opened at the newest, in sight");
+    let r = rect(&ed);
+    let first_row = |ed: &mut Editor| frame(ed).lines().nth(r.y + 1).unwrap_or_default().to_string();
+    let kind = crate::event::MouseKind::ScrollUp;
+    for _ in 0..2 {
+        ed.handle_mouse(crate::event::Mouse {
+            kind,
+            x: (r.x + 4) as u16,
+            y: (r.y + 3) as u16,
+            alt: false,
+            ctrl: false,
+        });
+        frame(&mut ed);
+    }
+    let (top, was, selected) =
+        (ed.screen.list(GroupKind::Messages).unwrap().2, first_row(&mut ed), here(&ed));
+    assert!(was.contains("said "), "{was}");
+    for i in 0..3 {
+        ed.set_status(format!("more {i}"));
+        frame(&mut ed);
+        assert_eq!(first_row(&mut ed), was, "the rows the wheel left in sight");
+    }
+    assert_eq!(ed.screen.list(GroupKind::Messages).unwrap().2, top - 3, "on them as the oldest went");
+    assert_eq!(here(&ed), selected, "the selection where it was");
+    feed(&mut ed, "k");
+    let (_, inner, top) = ed.screen.list(GroupKind::Messages).unwrap();
+    let at = rows(&ed).iter().position(|m| Some(m.text.clone()) == here(&ed)).unwrap();
+    assert!((top..top + inner).contains(&at), "a key: the view back to it");
+}
+
 /// `n` messages said, then `:messages` up without the keys: the screen row the next message's row takes (the list as
 /// tall as its rows, one more).
 fn list_of(ed: &mut Editor, n: usize) -> usize {

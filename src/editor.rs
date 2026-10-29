@@ -179,7 +179,7 @@ pub(crate) const NAME_ZOOMED: &str =
 const STEP_MAX: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Messages `:messages` keeps (and the most a card holds).
-const MESSAGES_KEPT: usize = 300;
+pub(crate) const MESSAGES_KEPT: usize = 300;
 
 /// An error stays up until a key is pressed — but at least this long, so a key already on its way doesn't
 /// take it before it's read.
@@ -2997,6 +2997,8 @@ impl Editor {
         {
             let text: String = text.chars().filter(|&c| c == '\n' || !c.is_control()).collect();
             c.input.insert_str(&text);
+            // (typed, as a key typed: the conversation back to its bottom)
+            c.scroll = 0;
             // (minimized, its input isn't on screen: it comes back with what was pasted — never text unseen)
             if c.compact() {
                 c.unfolded = true;
@@ -3060,12 +3062,24 @@ impl Editor {
     }
 
     /// A mouse event: what's under the pointer (`mouse_under` — the one truth, `mouse.rs`), then that surface's act.
-    pub fn handle_mouse(&mut self, m: crate::event::Mouse) {
+    pub fn handle_mouse(&mut self, mut m: crate::event::Mouse) {
         use crate::event::MouseKind as K;
         use crate::mouse::{Link, Part, Surface as S, Word, took_mouse};
         // The middle button: the clipboard pasted at the pointer, on text that takes it — never a left press
         if m.kind == K::Middle {
             return self.middle_paste(m.x as usize, m.y as usize);
+        }
+        // The wheel with Shift: sideways over a code pane, elsewhere the wheel as it was — and a terminal's program
+        // that asked for the mouse gets it as it came (`sent`)
+        let sent = m.kind;
+        if matches!(m.kind, K::ShiftScrollUp | K::ShiftScrollDown) {
+            let code =
+                matches!(self.mouse_under(K::ScrollDown, m.x as usize, m.y as usize).surface, S::Code(_));
+            m.kind = match (code, m.kind == K::ShiftScrollUp) {
+                (true, true) => K::ScrollLeft,
+                (true, false) => K::ScrollRight,
+                (false, _) => m.kind.unshifted(),
+            };
         }
         // The wheel sideways: the code pane under the pointer, its view's columns (nothing else moves); elsewhere there's
         // nothing to scroll sideways
@@ -3440,7 +3454,7 @@ impl Editor {
                 };
                 if owned || down || wheel {
                     self.mouse_in_terminal = (owned && m.kind == K::Drag) || (down && cell.is_some());
-                    self.terminal_mouse(m.kind, cell, m.alt);
+                    self.terminal_mouse(sent, cell, m.alt);
                     if m.kind == K::Drag {
                         crate::mouse::edge(self, x, y);
                     }
@@ -3516,8 +3530,9 @@ impl Editor {
                 }
                 let Some(p) = self.picker.as_mut() else { return };
                 match (m.kind, part) {
-                    (K::ScrollUp, _) => p.move_by(-3),
-                    (K::ScrollDown, _) => p.move_by(3),
+                    // (the wheel only scrolls: the selection and its preview stay — `Picker::wheel`)
+                    (K::ScrollUp, _) => p.wheel(-3),
+                    (K::ScrollDown, _) => p.wheel(3),
                     // A click selects the row (the preview follows); the same row again soon after — a double
                     // click — opens it, as Enter does (N3). A folder (nothing to preview) folds or unfolds at once.
                     (K::Down, Part::Row(row)) if p.select_row(row) => {
@@ -3540,7 +3555,8 @@ impl Editor {
                 let Some(p) = self.picker.as_mut() else { return };
                 match m.kind {
                     K::ScrollUp => p.preview_scroll = p.preview_scroll.saturating_sub(3),
-                    K::ScrollDown => p.preview_scroll += 3,
+                    // (no further than its last page: `Picker.preview_end`)
+                    K::ScrollDown => p.preview_scroll = (p.preview_scroll + 3).min(p.preview_end.get()),
                     K::Down => self
                         .set_status("the preview of the row in hand — a press on a row of the list picks it"),
                     _ => {}
@@ -3577,11 +3593,11 @@ impl Editor {
                     (K::Down, Part::More(by)) => by,
                     _ => 0,
                 };
-                // (with the keys, the file in hand follows into sight — as `C-e`/`C-y`; without them it's the code's
-                // file and the wheel only looks)
+                // (the wheel only scrolls, with the keys or without: the file in hand stays, in sight or not — the
+                // next key that moves it brings the view back to it, `CodeReview::fit`)
                 if by != 0 {
                     if let Some(r) = self.workspace.code_review.as_mut() {
-                        if rail_keys { r.scroll_keeping(by) } else { r.scroll_by(by) }
+                        r.scroll_by(by);
                     }
                     return;
                 }
@@ -3751,9 +3767,8 @@ impl Editor {
                             _ => {}
                         }
                     }
-                    // The wheel over the conversation: its view mode at that point (tmux's copy mode by the wheel —
-                    // §3.8), the cursor on the row under the pointer
-                    K::ScrollUp | K::ScrollDown => crate::chatdoc::wheel(self, s.chat_row(y), up),
+                    // The wheel over the conversation: it scrolls, the keys where they are (`chatdoc::wheel`)
+                    K::ScrollUp | K::ScrollDown => crate::chatdoc::wheel(self, up),
                     _ => {}
                 }
             }
@@ -3864,8 +3879,9 @@ impl Editor {
         use crate::event::MouseKind as K;
         let side_keys = self.workspace.is_at(At::Side);
         let Some(sb) = self.workspace.viewer.sidebar.as_mut() else { return };
-        // (with the keys, as `C-e`/`C-y`: the selection, what they act on, follows into sight; without them it
-        // marks where the code is and comes back there by itself — the wheel only looks)
+        // (the wheel only scrolls, with the keys or without: the selection stays, in sight or not — the next key that
+        // moves it brings the view back to it (`Sidebar::fit`); without the keys it marks where the code is and comes
+        // back there by itself)
         match kind {
             // (the git tab's file row: a click selects it and shows the file in the preview slot, the tab taking
             // the keys — as moving onto it; a double-click opens it, as `enter`)
@@ -3894,10 +3910,7 @@ impl Editor {
                 }
                 None => {}
             },
-            K::ScrollDown | K::ScrollUp if side_keys => {
-                sb.scroll_keeping(if kind == K::ScrollDown { 3 } else { -3 }, rows)
-            }
-            K::ScrollDown => sb.scroll += 3,
+            K::ScrollDown => sb.scroll = (sb.scroll + 3).min(sb.lines().len().saturating_sub(rows)),
             K::ScrollUp => sb.scroll = sb.scroll.saturating_sub(3),
             _ => {}
         }
@@ -4009,7 +4022,13 @@ impl Editor {
         let last = mv::last_line(&doc.text);
         match m.kind {
             // (taken above: `wheel_pane`, the sideways wheel and the middle button first thing in `handle_mouse`)
-            K::ScrollUp | K::ScrollDown | K::ScrollLeft | K::ScrollRight | K::Middle => {}
+            K::ScrollUp
+            | K::ScrollDown
+            | K::ScrollLeft
+            | K::ScrollRight
+            | K::ShiftScrollUp
+            | K::ShiftScrollDown
+            | K::Middle => {}
             K::Down | K::Drag => {
                 let line = line.min(last);
                 let pos = match picked {
@@ -4800,7 +4819,7 @@ impl Editor {
             (Code::PageDown, _) => p.move_by(rows as isize),
             (Code::PageUp, _) => p.move_by(-(rows as isize)),
             // The preview pane
-            (Code::Char('f'), true) => p.preview_scroll += 10,
+            (Code::Char('f'), true) => p.preview_scroll = (p.preview_scroll + 10).min(p.preview_end.get()),
             (Code::Char('b'), true) => p.preview_scroll = p.preview_scroll.saturating_sub(10),
             // (a list whose letters are keys has no query to edit)
             _ if p.keys => {}
@@ -18008,8 +18027,9 @@ mod tests {
         };
         let s = narrow(&mut ed, 80);
         // (at its reading width there, 40 — wider than the chat, #177 — the way in, `y once read` and `v read all`
-        // whole; never `y run`)
-        assert_eq!(line(&ed), "╰─ C-q answer · y once read · v read all · n ──╯", "80 columns:\n{s}");
+        // whole; never `y run` — as wide as its cut row's widest form, `↑ 12 lines above, open but not read to its end`,
+        // so `n no` fits: the card keeps its width as the wheel reads it)
+        assert_eq!(line(&ed), "╰─ C-q answer · y once read · v read all · n no ─╯", "80 columns:\n{s}");
         let plain = cut_color(&mut ed);
         let y_at = |ed: &Editor| ed.screen.offer_buttons.iter().find(|b| b.3 == 'y').map(|b| (b.0, b.1));
         let before = y_at(&ed);
@@ -18038,6 +18058,34 @@ mod tests {
             "its meaning back"
         );
         assert_eq!(y_at(&ed), waiting_at, "no narrower once read:\n{s}");
+    }
+
+    /// A cut card the wheel reads to its end keeps its place (kinds C, the user 2026-10-28): narrow, where its cut row
+    /// sets its width (`↓ 9 more lines, …` turning `↑ 3 lines above, …`) and its yes says `once read` until then, it
+    /// neither narrows nor moves its left edge, frame by frame.
+    #[test]
+    fn a_cut_card_read_to_its_end_by_the_wheel_keeps_its_place() {
+        let mut ed = editor("text\n");
+        ed.config.llm.sandbox = false;
+        ed.offer_popups = true;
+        crate::chat::open(&mut ed);
+        let generation = ed.workspace.claude.chat.as_ref().unwrap().generation();
+        let command: String = (1..=12).map(|i| format!("echo step {i}")).collect::<Vec<_>>().join("\n");
+        let msg = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "run", "arguments": {"command": command}}});
+        assert!(crate::tools::mcp(&mut ed, generation, "c1", &msg).is_none());
+        settle_until(&mut ed, |ed| ed.offers.iter().any(|o| matches!(o.what, crate::offer::What::Run(_))));
+        let draw = |ed: &mut Editor| {
+            crate::term::render(ed, &mut Vec::new(), 80, 18).unwrap();
+            ed.screen.offer_card
+        };
+        let at = draw(&mut ed);
+        assert!(at.is_some() && ed.offer_cut.is_some(), "drawn cut");
+        for _ in 0..8 {
+            ed.offer_scroll(3);
+            assert_eq!(draw(&mut ed), at, "read by the wheel, its place kept");
+        }
+        assert!(ed.offer_seen_whole(), "read to its end");
     }
 
     /// A card taller than the screen is still drawn — cut to fit, its buttons in sight, a row saying how much

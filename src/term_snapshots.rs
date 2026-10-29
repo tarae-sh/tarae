@@ -5431,21 +5431,24 @@ fn review_rail_c_e_counts_its_folders_rows() {
             assert_eq!(files.last(), Some(&29), "no further than the last file");
         }
     }
-    // The wheel while the rail has the keys: the same act, three rows at a time
+    // The wheel while the rail has the keys: the view only, three rows at a time — the file in hand stays, out of sight
+    // too (the user, 2026-10-28: the wheel never moves a list's selection); `j` brings the view back to it
     s.keys("g");
     let y = s.ed.screen.review_rail.borrow()[0].0 as u16;
-    for kind in
-        [crate::event::MouseKind::ScrollDown; 8].into_iter().chain([crate::event::MouseKind::ScrollUp; 8])
-    {
-        let before = hand(&s);
-        s.ed.handle_mouse(crate::event::Mouse { kind, x: 4, y, alt: false, ctrl: false });
-        s.frame();
-        let (now, files) = (hand(&s), drawn(&s));
-        assert!(files.contains(&now), "the wheel: file {now} in hand, not drawn ({files:?})");
-        if files.contains(&before) {
-            assert_eq!(now, before, "the wheel: file {before} still drawn, the hand moved to {now}");
+    let wheel = |s: &mut Shot, kind, n| {
+        for _ in 0..n {
+            s.ed.handle_mouse(crate::event::Mouse { kind, x: 4, y, alt: false, ctrl: false });
+            s.frame();
         }
-    }
+    };
+    wheel(&mut s, crate::event::MouseKind::ScrollDown, 8);
+    assert_eq!(hand(&s), 0, "the wheel: the file in hand where it was");
+    assert!(!drawn(&s).contains(&0), "scrolled past it ({:?})", drawn(&s));
+    s.keys("j");
+    assert_eq!(hand(&s), 1);
+    assert!(drawn(&s).contains(&1), "a key: the view back to it ({:?})", drawn(&s));
+    wheel(&mut s, crate::event::MouseKind::ScrollUp, 8);
+    assert_eq!(hand(&s), 1, "back up: still where it was");
 }
 
 /// frictions25 R1/R2: netgrant's review — its 50 files (3248e87f's) in folders, 14 with lines moved, scrolled
@@ -5876,7 +5879,8 @@ fn side_panel_c_e_scrolls_the_view_and_keeps_the_selection() {
     assert_eq!(at(&s), (1, 3), "back up, the selection where it was");
     s.keys("j");
     assert_eq!(at(&s), (1, 4), "j moves the selection");
-    // The wheel, while it has the keys: the same act, three rows at a time
+    // The wheel, while it has the keys: the view only, three rows at a time — the selection stays, out of sight too (the
+    // user, 2026-10-28: the wheel never moves a list's selection); `j` brings the view back to it
     let y = s.ed.screen.sidebar.borrow()[0].0 as u16;
     let wheel = |s: &mut Shot| {
         s.ed.handle_mouse(crate::event::Mouse {
@@ -5891,7 +5895,9 @@ fn side_panel_c_e_scrolls_the_view_and_keeps_the_selection() {
     wheel(&mut s);
     assert_eq!(at(&s), (4, 4), "the wheel: the view, the selection where it was");
     wheel(&mut s);
-    assert_eq!(at(&s), (7, 7), "the wheel past it: on the nearest row in sight");
+    assert_eq!(at(&s), (7, 4), "the wheel past it: the selection stays, out of sight");
+    s.keys("j");
+    assert_eq!(at(&s), (5, 5), "a key moves it from where it was, the view back to it");
 }
 
 /// `C-e`/`C-y` over a list with headings (the list tab: a file's heading over each place): wherever the view goes,

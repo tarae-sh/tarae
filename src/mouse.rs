@@ -1486,6 +1486,8 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
         // (a press on a row presses its key, accepts its item, replies; the rest of the card says so)
         Su::WhichKey | Su::Completion | Su::NoteCard => match (part, act) {
             (Part::Row(_), A::Press) => Acts,
+            // (the completion list's keys on its bottom line, #234: buttons — a press does its key, the pointer lights it)
+            (Part::Word(Word::Does(_)), A::Press | A::Hover) if surface == Su::Completion => Acts,
             (_, A::Press) if surface == Su::NoteCard => Acts,
             (_, A::Press) => Says("a row presses it"),
             (_, A::Double) => AS_ONE,
@@ -1530,7 +1532,9 @@ pub const BUTTONS: &[(&str, &str)] = &[
     ),
     (
         "The wheel sideways",
-        "the code pane under the pointer, its view's columns; elsewhere nothing to scroll",
+        "the code pane under the pointer, its view's columns (Shift+wheel too, as terminals send it); elsewhere \
+         nothing to scroll — Shift+wheel there is the wheel, and a terminal's program that asked for the mouse gets \
+         it as it came",
     ),
     ("The right button", "the terminal's — tarae doesn't take it"),
 ];
@@ -1642,6 +1646,7 @@ fn rows() -> Vec<(&'static str, &'static str, Surface, Part)> {
         ("Which-key", "the rest of it", Su::WhichKey, Part::Blank),
         ("The completion menu", "a row", Su::Completion, Part::Row(0)),
         ("The completion menu", "the rest of it, its docs", Su::Completion, Part::Blank),
+        ("The completion menu", "a key hint on its bottom line", Su::Completion, Part::Word(Word::Does(0))),
         ("The note card", "", Su::NoteCard, Part::Blank),
         ("The note card", "a key hint", Su::NoteCard, Part::Word(Word::Does(0))),
         (

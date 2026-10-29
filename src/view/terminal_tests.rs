@@ -296,11 +296,11 @@ fn a_flood_while_searching_leaves_the_search_and_the_view_as_they_are() {
     assert!(!ed.workspace.terminal.as_ref().unwrap().came(), "caught up");
 }
 
-/// The wheel across surfaces: over the chat while the terminal is viewed, the chat's view mode — the terminal's
-/// left, what it held taken in; back down to the end, the terminal's view mode again (where the keys were). And the
-/// other way round: from the chat's view mode, the terminal's wheel, back to the chat's.
+/// The wheel across surfaces scrolls what's under it, the keys where they are: over the chat while the terminal is
+/// viewed, the chat's rows — the terminal's view mode stays, still holding what came; the other way round, from the
+/// chat's view mode, the terminal's past, the chat's view mode keeping the keys.
 #[test]
-fn the_wheel_crosses_surfaces_and_back_to_the_view_it_left() {
+fn the_wheel_over_another_surface_leaves_the_view_with_the_keys() {
     use crate::chat::{Chat, Msg, Role};
     use crate::event::{Mouse, MouseKind as K};
     let (mut ed, _sent) = term(Config::default(), 60);
@@ -323,12 +323,12 @@ fn the_wheel_crosses_surfaces_and_back_to_the_view_it_left() {
     feed(&mut ed, "<C-\\>");
     print(&mut ed, "\r\nwhile-reading-the-chat\r\n$ ");
     chat_wheel(&mut ed, K::ScrollUp);
-    assert_eq!(region(&ed), "view:chat");
-    let t = ed.workspace.terminal.as_ref().unwrap();
-    assert!(!t.holding(), "the terminal's view left: nothing held");
-    assert!(t.parser.screen().contents().contains("while-reading-the-chat"), "what it held taken in");
-    chat_wheel(&mut ed, K::ScrollDown);
-    assert_eq!(region(&ed), "view:terminal", "back at the end: the view the keys were in");
+    assert_eq!(region(&ed), "view:terminal");
+    assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().scroll, 3, "the chat's rows");
+    assert!(
+        ed.workspace.terminal.as_ref().unwrap().holding(),
+        "the terminal's view stays, holding what came"
+    );
     // (the other way: the chat's view mode, the terminal's wheel, back)
     feed(&mut ed, "<esc>");
     ed.workspace.viewer.at = crate::workspace::At::Chat;
@@ -336,10 +336,9 @@ fn the_wheel_crosses_surfaces_and_back_to_the_view_it_left() {
     assert_eq!(region(&ed), "view:chat");
     ed.terminal_mouse(K::ScrollUp, Some((2, 0)), false);
     frame(&mut ed);
-    assert_eq!(region(&ed), "view:terminal");
-    ed.terminal_mouse(K::ScrollDown, Some((2, 0)), false);
-    frame(&mut ed);
-    assert_eq!(region(&ed), "view:chat", "back: the chat's view mode");
+    assert_eq!(region(&ed), "view:chat");
+    let back = ed.workspace.terminal.as_ref().unwrap().parser.screen().scrollback();
+    assert_eq!(back, 3, "the terminal's past");
 }
 
 /// A new or an earlier conversation forgets the chat's view — never the terminal's: it stays, its output held, and
@@ -611,24 +610,67 @@ fn y_copies_the_rows() {
     assert_eq!(region(&ed), "view:terminal");
 }
 
-/// The wheel up over the scrollback: its view mode at the row under the pointer; back down to the bottom, the
-/// keys where they were (the program). Entered by a key, it stays.
+/// The wheel only scrolls (the user, 2026-10-28): up over the program's screen, its past three rows a notch, the keys
+/// the program's still — no view mode by the wheel; a key typed brings it back to the bottom. In its view mode the
+/// wheel scrolls the view and the keys stay there, at its bottom too.
 #[test]
-fn the_wheel_enters_view_mode_and_leaves_it_at_the_bottom() {
+fn the_wheel_scrolls_the_terminal_and_never_takes_the_keys() {
     use crate::event::MouseKind as K;
     let (mut ed, _sent) = term(Config::default(), 60);
+    let back = |ed: &Editor| ed.workspace.terminal.as_ref().unwrap().parser.screen().scrollback();
+    ed.terminal_mouse(K::ScrollUp, Some((2, 0)), false);
     ed.terminal_mouse(K::ScrollUp, Some((2, 0)), false);
     frame(&mut ed);
-    assert_eq!(region(&ed), "view:terminal");
-    assert!(view(&ed).by_wheel == Some(Was::Program));
+    assert_eq!(
+        (region(&ed).as_str(), back(&ed)),
+        ("terminal-program", 6),
+        "its past, the keys the program's"
+    );
     ed.terminal_mouse(K::ScrollDown, Some((2, 0)), false);
     frame(&mut ed);
-    assert_eq!(region(&ed), "terminal-program", "back at the bottom: the keys where they were");
+    assert_eq!((region(&ed).as_str(), back(&ed)), ("terminal-program", 3));
+    feed(&mut ed, "a");
+    assert_eq!(back(&ed), 0, "a key typed: back at the bottom");
     feed(&mut ed, "<C-\\>");
+    let top = view(&ed).doc().top;
     ed.terminal_mouse(K::ScrollUp, Some((2, 0)), false);
-    ed.terminal_mouse(K::ScrollDown, Some((2, 0)), false);
     frame(&mut ed);
-    assert_eq!(region(&ed), "view:terminal", "entered by a key, it stays");
+    assert_eq!(view(&ed).doc().top, top - 3, "its view mode: the view's rows");
+    for _ in 0..3 {
+        ed.terminal_mouse(K::ScrollDown, Some((2, 0)), false);
+    }
+    frame(&mut ed);
+    assert_eq!(region(&ed), "view:terminal", "at its bottom, the keys stay");
+}
+
+/// The wheel with Shift over the terminal is the wheel (only the code turns it sideways): its past, as the plain
+/// wheel's; a program that asked for the mouse gets it as the terminal sent it, Shift's bit and all.
+#[test]
+fn the_wheel_with_shift_over_the_terminal_is_the_wheel_or_the_programs() {
+    use crate::event::MouseKind as K;
+    let (mut ed, sent) = term(Config::default(), 60);
+    let back = |ed: &Editor| ed.workspace.terminal.as_ref().unwrap().parser.screen().scrollback();
+    let (y0, _) = ed.screen.terminal_rows.expect("the terminal drawn");
+    let (x, y) = (ed.screen.slot_x + crate::chrome::PAD + 1, y0 + crate::chrome::SLOT_HEAD + 1);
+    let wheel = |ed: &mut Editor, kind| {
+        ed.handle_mouse(crate::event::Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
+        frame(ed);
+    };
+    wheel(&mut ed, K::ShiftScrollUp);
+    assert_eq!((region(&ed).as_str(), back(&ed)), ("terminal-program", 3), "its past, as the wheel");
+    wheel(&mut ed, K::ShiftScrollDown);
+    assert_eq!(back(&ed), 0);
+    // (the program asks for the mouse: SGR)
+    print(&mut ed, "\x1b[?1000h\x1b[?1006h");
+    while sent.try_recv().is_ok() {}
+    wheel(&mut ed, K::ShiftScrollDown);
+    wheel(&mut ed, K::ShiftScrollUp);
+    let got: Vec<String> = sent.try_iter().map(|b| String::from_utf8_lossy(&b).into_owned()).collect();
+    assert!(
+        got.len() == 2 && got[0].starts_with("\x1b[<69;") && got[1].starts_with("\x1b[<68;"),
+        "the program's, with Shift: {got:?}"
+    );
+    assert_eq!(back(&ed), 0, "nothing scrolled here");
 }
 
 /// The arrows are the code's normal mode's (#181): `↑`/`↓` a line, `←`/`→` a character, the view following the

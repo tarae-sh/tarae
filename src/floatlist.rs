@@ -18,6 +18,18 @@ use crate::pane::GroupKind;
 use crate::split::PaneId;
 use crate::workspace::At;
 
+/// A floating list's view as last drawn (`top_drawn`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shown {
+    /// The selected row's id.
+    selected: Option<u64>,
+    /// The rows in sight.
+    rows: usize,
+    /// The first row in sight, and its id.
+    top: usize,
+    first: Option<u64>,
+}
+
 /// A floating list while it's up.
 #[derive(Clone, Debug)]
 pub struct FloatList {
@@ -28,6 +40,9 @@ pub struct FloatList {
     pub selected: u64,
     /// Its first row in sight, as last drawn.
     pub top: std::cell::Cell<usize>,
+    /// The view as last drawn: while the selection and the rows in sight stay, the view stays where the wheel left it,
+    /// on its rows as others come and go (`top_drawn`).
+    pub shown: std::cell::Cell<Option<Shown>>,
     /// Its own search, as every pane's (never the code's): the last pattern, its matches lit while `hl`.
     pub search: Option<String>,
     pub hl: bool,
@@ -96,6 +111,7 @@ impl Editor {
             list: next,
             selected: first,
             top: Default::default(),
+            shown: Default::default(),
             search: None,
             hl: false,
             prompt: None,
@@ -398,14 +414,43 @@ pub fn prompt_typed(ed: &mut Editor) {
     }
 }
 
-/// The wheel over a list: its view three rows, the selection staying unless it would leave it (as `C-e`/`C-y`).
+/// The wheel over a list, its keys or not: its view three rows and nothing else — the selection stays, in sight or not
+/// (the user, 2026-10-28: the wheel never moves a list's selection); the next key that moves it brings the view back
+/// to it (`top_drawn`).
 pub fn wheel(ed: &mut Editor, kind: GroupKind, up: bool) {
-    let ids = ed.float_list_ids(kind);
-    let here = ed.float_list_here(kind).and_then(|id| ids.iter().position(|&x| x == id)).unwrap_or(0);
-    let top = top_was(ed, kind);
-    let (top, at) =
-        crate::key::in_sight(if up { -3 } else { 3 }, top, here, ids.len(), rows_in_sight(ed, kind), 0);
-    ed.float_list_select(kind, at, top);
+    let n = ed.float_list_ids(kind).len();
+    let rows = rows_in_sight(ed, kind).max(1);
+    if let Some(p) = ed.float_list(kind) {
+        let top = p.top.get().saturating_add_signed(if up { -3 } else { 3 });
+        p.top.set(top.min(n.saturating_sub(rows)));
+    }
+}
+
+/// The first row in sight this frame of a list whose rows are `ids`, `rows` of them in sight, its selection on row
+/// `at`: where the wheel left it while the selection (by its id) and the rows in sight stay — on the same first row as
+/// rows come and go (a message said, one dropped from the front) — else the selection brought into sight (a key moved
+/// it, an ask came over the list's foot).
+pub fn top_drawn(p: Option<&FloatList>, ids: &[u64], at: usize, rows: usize) -> usize {
+    let n = ids.len();
+    let (top, was) = p.map_or((0, None), |p| (p.top.get(), p.shown.get()));
+    let selected = ids.get(at).copied();
+    let top = match was.filter(|w| (w.selected, w.rows) == (selected, rows)) {
+        Some(w) => {
+            // (moved since by the wheel: where it left it; else on the row that was first)
+            let first = w.first.and_then(|f| ids.iter().position(|&i| i == f));
+            let top = if top == w.top { first.unwrap_or(top) } else { top };
+            top.min(n.saturating_sub(rows.max(1)))
+        }
+        None => {
+            let rows = rows.max(1);
+            top.clamp((at + 1).saturating_sub(rows), at).min(n.saturating_sub(rows))
+        }
+    };
+    if let Some(p) = p {
+        p.top.set(top);
+        p.shown.set(Some(Shown { selected, rows, top, first: ids.get(top).copied() }));
+    }
+    top
 }
 
 /// The list's first row in sight, as last drawn.

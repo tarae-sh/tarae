@@ -56,8 +56,24 @@ pub enum MouseKind {
     /// The wheel sideways (a trackpad, a tilt wheel).
     ScrollLeft,
     ScrollRight,
+    /// The vertical wheel with Shift, as terminals send it (SGR 64/65 with Shift's bit, which crossterm reads as the
+    /// vertical wheel): sideways over a code pane (`Editor::handle_mouse`), else the vertical wheel — a terminal's
+    /// program that asked for the mouse gets it as it came.
+    ShiftScrollUp,
+    ShiftScrollDown,
     /// The middle button's press: the clipboard pasted at the pointer, on text that takes it (`Editor::middle_paste`).
     Middle,
+}
+
+impl MouseKind {
+    /// The kind without Shift: the vertical wheel for Shift's, else itself.
+    pub fn unshifted(self) -> MouseKind {
+        match self {
+            MouseKind::ShiftScrollUp => MouseKind::ScrollUp,
+            MouseKind::ShiftScrollDown => MouseKind::ScrollDown,
+            k => k,
+        }
+    }
 }
 
 /// Which workspace a result belongs to (`workspace.rs`).

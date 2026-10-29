@@ -4008,6 +4008,16 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
     if !ed.workspace.is_at(At::Chat) {
         return false;
     }
+    // A key typed in the input — a character, enter, backspace — brings the conversation back to its bottom, as a
+    // terminal's past; a cursor move, a line's ends, `C-u`'s clear keep it where the wheel left it
+    let typed = (matches!(key.code, Code::Char(_)) && !key.ctrl && !key.alt)
+        || matches!(key.code, Code::Enter | Code::Backspace);
+    if typed
+        && !crate::chatdoc::keyed(ed)
+        && let Some(c) = ed.workspace.claude.chat.as_mut()
+    {
+        c.scroll = 0;
+    }
     // (a sequence of the input's under way: the key goes on with it, or what it typed goes in before the key)
     if !crate::chatdoc::keyed(ed) && crate::chatinput::under_way(ed, key) {
         return crate::chatinput::key(ed, key);
