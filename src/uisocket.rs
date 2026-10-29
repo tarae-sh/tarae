@@ -184,7 +184,7 @@ fn peer(stream: UnixStream, tx: crate::event::Tx) {
 }
 
 /// The kinds of events a watcher may ask for (`{"watch":[…]}`; none: all).
-const KINDS: [&str; 11] = [
+const KINDS: &[&str] = &[
     "keys", "cards", "sessions", "reviewer", "review", "turns", "runs", "toasts", "usage", "procs", "sandbox",
 ];
 

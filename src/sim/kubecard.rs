@@ -26,7 +26,7 @@ const INPUTS: usize = 40;
 
 const LIMIT: Duration = crate::test_results::PATIENCE;
 
-const CONTEXTS: [&str; 3] = ["standin-a", "standin-b", "standin-c"];
+const CONTEXTS: &[&str] = &["standin-a", "standin-b", "standin-c"];
 
 #[test]
 fn a_kubectl_card_names_a_context_its_file_held() {

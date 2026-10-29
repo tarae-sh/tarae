@@ -406,7 +406,7 @@ pub struct Making {
 /// The instruction files a session's checkout gets from this one when git doesn't carry them (#17: CLAUDE.md
 /// is ignored here, and a session's Claude started without the project's rules) — `.claude/settings*.json`
 /// too, never the rest of `.claude/`.
-pub(crate) const INSTRUCTIONS: [&str; 3] = ["CLAUDE.md", "CLAUDE.local.md", "AGENTS.md"];
+pub(crate) const INSTRUCTIONS: &[&str] = &["CLAUDE.md", "CLAUDE.local.md", "AGENTS.md"];
 
 /// An instruction file bigger than this isn't one — not copied.
 const INSTRUCTIONS_MAX: u64 = 1 << 20;

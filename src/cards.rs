@@ -70,10 +70,10 @@ impl Class {
 /// Where the systems mount other volumes (macOS `/Volumes` — a real path there is never the boot volume's
 /// link — and `/Network`; Linux `/media`, `/mnt`, `/run/media`). By the folders, not the mounts themselves:
 /// piece 3 (`caps.rs`) asks the system for those.
-const VOLUMES: [&str; 5] = ["/Volumes", "/Network", "/media", "/mnt", "/run/media"];
+const VOLUMES: &[&str] = &["/Volumes", "/Network", "/media", "/mnt", "/run/media"];
 /// Where the systems keep their users' homes — a home there not yours is another user's (`/Users/Shared`,
 /// everyone's, isn't).
-const HOMES: [&str; 2] = ["/Users", "/home"];
+const HOMES: &[&str] = &["/Users", "/home"];
 
 /// Where `at` (a real path; None: can't be told) is, for a session that may do `caps` (its defaults, home, what
 /// runs never read). A folder holding a place reads it too: `/` holds home, `/run` the volumes in `/run/media`.

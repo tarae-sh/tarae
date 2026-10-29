@@ -67,10 +67,10 @@ const B_TXT: ([&str; 2], &str, [&str; 2]) = (
 const KEY_NAMED: &str = ".env";
 
 /// Words of the code and of what the scenario types: none is ever in the record.
-const CODE: [&str; 7] = ["zebra", "kiwi", "quokka", "fake-token", "walrus", "api_key", "curl"];
+const CODE: &[&str] = &["zebra", "kiwi", "quokka", "fake-token", "walrus", "api_key", "curl"];
 
 /// What a step types in the file in front.
-const KEYS: [&str; 9] = [
+const KEYS: &[&str] = &[
     "j",
     "k",
     "gg",
@@ -177,7 +177,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &World, seen: &RefCell<Seen>) ->
         }
         // Keys, each its own turn of the main loop (`handle_event`: the diff asked again after it)
         1 => {
-            let keys = *c.pick(&KEYS);
+            let keys = *c.pick(KEYS);
             for key in parse(keys) {
                 seen.borrow_mut().inputs.push(crate::clock::now());
                 ed.handle_event(Event::Key(key));

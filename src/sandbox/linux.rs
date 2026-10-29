@@ -1375,7 +1375,7 @@ pub fn outside_keys(
 /// `outside_keys`) — the network's (NFS, SMB/CIFS, 9p, Ceph, GlusterFS, AFS) by their mount table types, and any
 /// FUSE (`fuse`, `fuseblk`, every `fuse.*`): a FUSE filesystem is whatever program serves it, so one not known is
 /// taken as one that can hang. Every other type (tmpfs, ext4, xfs, overlay, btrfs, a bind mount) is walked.
-const CAN_HANG: [&str; 9] = ["nfs", "nfs4", "cifs", "smb3", "smbfs", "9p", "ceph", "glusterfs", "afs"];
+const CAN_HANG: &[&str] = &["nfs", "nfs4", "cifs", "smb3", "smbfs", "9p", "ceph", "glusterfs", "afs"];
 
 /// A folder the walk couldn't open, and why — none for one gone since it was listed (nothing's there), nor for one
 /// the user may not open (another user's or root's 0700 folders in `/tmp`, `systemd-private-*`): a run is the user

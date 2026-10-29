@@ -32,7 +32,7 @@ pub enum Part {
 }
 
 /// Shells whose `-c '<body>'` is read as the body (once — not one inside another).
-const SHELLS: [&str; 4] = ["sh", "bash", "zsh", "dash"];
+const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash"];
 
 /// The parts of `line` (an `sh -c '…'` around it taken off), if it's only words, `cd` and `;` `&&` `||` `|`
 /// — None for anything else (see the module's doc).
@@ -64,8 +64,8 @@ pub fn piped(line: &str) -> Option<Vec<Vec<Word>>> {
 
 /// Programs that only filter what's piped into them — what follows one keeps or cuts the output, never runs
 /// more of the work.
-const FILTERS: [&str; 12] =
-    ["head", "tail", "grep", "egrep", "rg", "sort", "uniq", "wc", "cut", "awk", "sed", "tr"];
+const FILTERS: &[&str] =
+    &["head", "tail", "grep", "egrep", "rg", "sort", "uniq", "wc", "cut", "awk", "sed", "tr"];
 
 /// The first filter `line`'s output goes through when it's one command piped into filters only (`cargo test
 /// 2>&1 | grep -E 'result' | head -40`: `grep`) — what the user sees of it and the exit status are that
@@ -402,8 +402,8 @@ pub fn flat(line: &str) -> Option<Vec<Part>> {
 }
 
 /// Words that start a loop or a shell's own construct — never a command of a line `flat` judges.
-const KEYWORDS: [&str; 12] =
-    ["for", "while", "until", "do", "done", "if", "then", "else", "elif", "fi", "case", "esac"];
+const KEYWORDS: &[&str] =
+    &["for", "while", "until", "do", "done", "if", "then", "else", "elif", "fi", "case", "esac"];
 
 /// Commands a `while read` loop may read its paths from (`lists`), and what they may go through before it
 /// (`keeps_lines`).
@@ -669,7 +669,7 @@ fn env_name(s: &str) -> bool {
 /// name ending in `_` is a prefix, one starting with `_` a suffix (`CARGO_TARGET_<triple>_RUNNER`). Also
 /// what picks the toolchain, cargo's config and aliases, or git's repository. (A pattern takes only the
 /// names its card showed — #132 — so this list needn't be whole; it keeps such a name off any card.)
-const ENV_NEVER: [&str; 48] = [
+const ENV_NEVER: &[&str] = &[
     "CARGO_HOME",
     "CARGO_ALIAS_",
     "RUSTUP_HOME",
@@ -800,7 +800,7 @@ pub fn script_part(w: &[Word]) -> Option<&str> {
 }
 
 /// Endings a script may have; one without them must start with `#!`.
-const SCRIPT_ENDINGS: [&str; 3] = ["sh", "bash", "zsh"];
+const SCRIPT_ENDINGS: &[&str] = &["sh", "bash", "zsh"];
 
 /// The scripts `cmd` runs by path (`script_part`), each where it runs (after a `cd`) by its real path, with
 /// a hash of what's in it — on a worker. None: a line `parse` doesn't read, or a script that isn't there,
@@ -914,17 +914,17 @@ pub fn one_command(line: &str) -> Option<Vec<String>> {
 
 /// The commands that only read (with their options below), by name — `nm` `otool` `strings` `size` read
 /// a binary's tables and text (#116).
-const COMMANDS: [&str; 21] = [
+const COMMANDS: &[&str] = &[
     "ls", "cat", "head", "tail", "wc", "grep", "rg", "find", "tree", "stat", "file", "du", "diff", "sort",
     "uniq", "cut", "pwd", "nm", "otool", "strings", "size",
 ];
 
 /// Commands that read nothing — what they say is their words (`cargo clippy -q && echo clean`): none of
 /// them a path.
-const SAYS: [&str; 4] = ["echo", "printf", "true", "false"];
+const SAYS: &[&str] = &["echo", "printf", "true", "false"];
 
 /// Commands that read only what's piped in — no word of theirs names a file (`tr`'s are sets of characters).
-const STDIN_ONLY: [&str; 1] = ["tr"];
+const STDIN_ONLY: &[&str] = &["tr"];
 
 /// Whether a command only says its words (`SAYS`).
 pub fn says(w: &[Word]) -> bool {
@@ -934,7 +934,7 @@ pub fn says(w: &[Word]) -> bool {
 /// git's that only read — `branch` only bare (with words it creates, renames, deletes); `show` reads the
 /// repository (`git show :2:src/a.rs`, `HEAD~1:a`, #110); `diff --no-index` the files it names (judged as
 /// reads, `outside` — never a check's unasked run).
-const GIT: [&str; 4] = ["blame", "rev-parse", "ls-files", "show"];
+const GIT: &[&str] = &["blame", "rev-parse", "ls-files", "show"];
 
 /// Whether `cmd` only reads: a line `flat` reads (loops unrolled), each command in it one above with none
 /// of the options that make it write a file, run a program, or never end. Where it reads is `outside`'s.
@@ -951,8 +951,8 @@ pub fn read_only(cmd: &str) -> bool {
 /// (`getline`, and `close`/`fflush` on one), read the environment (`ENVIRON`, `PROCINFO`), read a file its
 /// words don't name (`ARGV`/`ARGC` set in the program; `SYMTAB` reaches them by name), load code (`@load`,
 /// `@include`, `@f()`).
-const AWK_NEVER: [&str; 10] =
-    ["system", "getline", "close", "fflush", "ENVIRON", "PROCINFO", "ARGV", "ARGC", "SYMTAB", "@"];
+const AWK_NEVER: &[&str] =
+    &["system", "getline", "close", "fflush", "ENVIRON", "PROCINFO", "ARGV", "ARGC", "SYMTAB", "@"];
 
 /// `awk` that only reads and prints to its output (#207): options `-F` and `-v` only (no `-f` file of code,
 /// `-i`/`-l` loading more, `-i inplace`), one program, then the files it reads (`files`; never a
@@ -982,8 +982,8 @@ pub fn awk_reads(args: &[&str], files: bool) -> bool {
 }
 
 /// Programs that move, copy or remove files and run none of them; git's below (#76).
-const MOVES: [&str; 7] = ["mv", "cp", "rm", "ln", "mkdir", "rmdir", "touch"];
-const GIT_MOVES: [&str; 3] = ["mv", "rm", "add"];
+const MOVES: &[&str] = &["mv", "cp", "rm", "ln", "mkdir", "rmdir", "touch"];
+const GIT_MOVES: &[&str] = &["mv", "rm", "add"];
 
 /// Whether every part of `line` only moves, copies, removes or reads files (a `cd` aside): nothing in it
 /// runs what a file says — `mv src/a.rs src/b.rs`, `git mv a b && ls` (#76). What it writes is the
@@ -1020,7 +1020,7 @@ impl AsRef<str> for Word {
 /// --no-optional-locks status` went to a card) — read as if they weren't there. Not `-c`, `--git-dir`,
 /// `--work-tree`, `--exec-path`, `--namespace`, `--config-env`, nor `-p`/`--paginate` (its pager runs):
 /// git's words stop at them, so they still ask.
-const GIT_QUIET: [&str; 9] = [
+const GIT_QUIET: &[&str] = &[
     "--no-pager",
     "-P",
     "--no-optional-locks",

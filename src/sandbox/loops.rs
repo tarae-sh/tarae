@@ -80,7 +80,7 @@ const ROOT: &str = "/Users/u/p";
 
 /// What the measurements' runs printed (`.sb`: compat, P2, Linux C): refusals in each tool's words, by an
 /// absolute path, one from the project, from home, a name in quotes — and lines about paths the rules allow.
-const OUTPUT: [&str; 14] = [
+const OUTPUT: &[&str] = &[
     "touch: cannot touch 'Makefile': Operation not permitted",
     "sh: 1: cannot create build.rs: Permission denied",
     "cp: cannot create regular file ‘sub/.envrc’: Operation not permitted",
@@ -124,7 +124,7 @@ fn the_output_reader_says_no_denial_the_policy_wouldnt_make() {
     for _ in 0..CASES {
         let out: Vec<(bool, String)> = (0..1 + rng.below(4))
             .map(|_| {
-                let mut l = rng.pick(&OUTPUT).to_string();
+                let mut l = rng.pick(OUTPUT).to_string();
                 mutate::text(&mut rng, &mut l, &words);
                 (true, l)
             })

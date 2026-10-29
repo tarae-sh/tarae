@@ -587,7 +587,7 @@ fn traits_of(t: &Table) -> Result<ServerTraits, String> {
         .map(|r| regex::Regex::new(r).map_err(|e| format!("`hide-lines`: {e}")))
         .collect::<Result<_, _>>()?;
     let args_add = strings(t.get("args-add"), "args-add")?.unwrap_or_default();
-    const ARG_VARS: [&str; 4] = ["cache", "root", "root-name", "root-hash"];
+    const ARG_VARS: &[&str] = &["cache", "root", "root-name", "root-hash"];
     for a in &args_add {
         let mut rest = a.as_str();
         while let Some(i) = rest.find('{') {

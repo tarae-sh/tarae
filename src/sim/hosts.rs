@@ -22,7 +22,7 @@ const INPUTS: usize = 60;
 /// A run's real time at most.
 const LIMIT: Duration = crate::test_results::PATIENCE;
 
-const HOSTS: [&str; 2] = ["registry.example.invalid", "docs.example.invalid"];
+const HOSTS: &[&str] = &["registry.example.invalid", "docs.example.invalid"];
 
 #[test]
 fn a_host_card_through_its_runs_end() {
@@ -90,7 +90,7 @@ fn input(
         0 => "(a run is going)".into(),
         1 => {
             let Some(&run) = going(ed).as_ref().or(runs.last()) else { return "(no run yet)".into() };
-            let host = *c.pick(&HOSTS);
+            let host = *c.pick(HOSTS);
             let ask = FromProxy::Ask {
                 session: workspace_of(root),
                 run,

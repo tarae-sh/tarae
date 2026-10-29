@@ -34,7 +34,7 @@ const ALLOWED: &str = "mcp__tarae__read,mcp__tarae__search,mcp__tarae__note";
 /// A skeptic's: its reading and its verdicts.
 const JUDGE_ALLOWED: &str = "mcp__tarae__read,mcp__tarae__search,mcp__tarae__judge";
 /// Its reading tools, as its stream names them (each call one read).
-const READS: [&str; 2] = ["mcp__tarae__read", "mcp__tarae__search"];
+const READS: &[&str] = &["mcp__tarae__read", "mcp__tarae__search"];
 /// What it may never use, named too (`--tools` already leaves them out).
 const DISALLOWED: &str = "Read,Grep,Glob,Edit,Write,NotebookEdit,Bash,WebFetch,WebSearch,Task";
 /// Its turns at most (a read is one): a review that wanders stops.
@@ -399,7 +399,7 @@ const CACHE_TTL: &str = "1h";
 
 /// What sets Claude Code's cache TTL over `promptCacheTtl` (its env-vars reference) — a board's members never
 /// get them: theirs must be `CACHE_TTL`.
-const CACHE_TTL_ENV: [&str; 2] = ["FORCE_PROMPT_CACHING_5M", "CLAUDE_CODE_PROMPT_CACHE_TTL"];
+const CACHE_TTL_ENV: &[&str] = &["FORCE_PROMPT_CACHING_5M", "CLAUDE_CODE_PROMPT_CACHE_TTL"];
 
 /// Member `role`'s claude, not started: `llm::command`'s; a board's member without `CACHE_TTL_ENV`.
 fn member_command(

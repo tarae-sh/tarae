@@ -17,7 +17,7 @@ use crate::allow::Scope;
 use crate::editor::Editor;
 
 /// The tools whose asks come here.
-pub const TOOLS: [&str; 3] = ["Read", "Grep", "Glob"];
+pub const TOOLS: &[&str] = &["Read", "Grep", "Glob"];
 
 /// What a call reads.
 #[derive(Clone, Debug, PartialEq, Eq)]

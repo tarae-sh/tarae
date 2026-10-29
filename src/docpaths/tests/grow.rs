@@ -43,7 +43,7 @@ fn stream(ed: &mut Editor, w: crate::event::WorkspaceId, ev: impl FnOnce() -> St
 const CALLS: usize = 30;
 
 /// The acts of a turn, and the bytes each left held (`allocs::total` across it), summed over a round.
-const ACTS: [&str; 7] = ["message", "words", "call", "answered", "result", "end", "frame"];
+const ACTS: &[&str] = &["message", "words", "call", "answered", "result", "end", "frame"];
 type Acts = [isize; ACTS.len()];
 
 fn act(acts: &mut Acts, i: usize, f: impl FnOnce()) {

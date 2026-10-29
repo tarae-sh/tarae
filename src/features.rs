@@ -132,7 +132,7 @@ impl Count {
 }
 
 /// The side panel's tabs, as counted.
-pub const PANELS: [&str; 5] = ["files", "outline", "list", "git", "plugin"];
+pub const PANELS: &[&str] = &["files", "outline", "list", "git", "plugin"];
 
 pub fn panel(mode: crate::sidebar::Mode) -> &'static str {
     use crate::sidebar::Mode;

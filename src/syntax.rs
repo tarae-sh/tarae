@@ -924,7 +924,7 @@ pub fn outline_members(tree: &Tree, text: &Rope) -> Vec<Def> {
 }
 
 /// The node kinds of an enum's variants, in the grammars that have them (named by their `name` field).
-const VARIANTS: [&str; 5] = ["enum_variant", "enum_constant", "enum_entry", "enumerator", "enum_assignment"];
+const VARIANTS: &[&str] = &["enum_variant", "enum_constant", "enum_entry", "enumerator", "enum_assignment"];
 
 fn defs(tree: &Tree, text: &Rope, members: bool) -> Vec<Def> {
     let mut out = Vec::new();

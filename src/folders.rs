@@ -18,7 +18,7 @@ use crate::caps::{Caps, Why};
 use crate::editor::Editor;
 
 /// The instruction files a folder's line names to Claude when it has them (never loaded).
-const INSTRUCTIONS: [&str; 3] = ["CLAUDE.md", "CLAUDE.local.md", "AGENTS.md"];
+const INSTRUCTIONS: &[&str] = &["CLAUDE.md", "CLAUDE.local.md", "AGENTS.md"];
 
 /// A folder added to a workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]

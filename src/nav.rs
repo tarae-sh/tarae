@@ -872,8 +872,8 @@ const TREE_FILE_MAX: usize = 4 << 20;
 
 /// Kinds of nodes that define what their `name` names, by their ends (`function_item`, `class_definition`,
 /// `method_declaration`, `type_spec`, `variable_declarator` …).
-const DEF_ENDS: [&str; 7] =
-    ["_item", "_definition", "_declaration", "_specifier", "_spec", "_declarator", "_signature"];
+const DEF_ENDS: &[&str] =
+    &["_item", "_definition", "_declaration", "_specifier", "_spec", "_declarator", "_signature"];
 
 /// Where a `definition` call points: the file, the line, and the name on it — or a column
 /// (from 0, in characters).

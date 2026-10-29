@@ -46,7 +46,7 @@ const FILES: [(&str, &str); 16] = [
     ("work/.cargo/config.toml", "[build]\njobs = 2\n"),
 ];
 
-const FOLDERS: [&str; 7] = [
+const FOLDERS: &[&str] = &[
     "Library/Application Support/go/telemetry",
     "Library/Caches/go-build",
     ".cache/go-build",

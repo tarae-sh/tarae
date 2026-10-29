@@ -671,8 +671,8 @@ pub(crate) mod tests {
             return;
         }
         let corpus = crate::test_results::corpus();
-        const PATHS: [&str; 8] =
-            ["src", "runtime", "docs", "tests", "xtask/src", "Cargo.toml", "README.md", "CONTRIBUTING.md"];
+        const PATHS: &[&str] =
+            &["src", "runtime", "docs", "tests", "xtask/src", "Cargo.toml", "README.md", "CONTRIBUTING.md"];
         let s = crate::scratch::Scratch::new("snapread-perf");
         let root = s.join("proj");
         std::fs::create_dir_all(&root).unwrap();

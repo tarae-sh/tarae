@@ -638,7 +638,7 @@ fn with_runs(own: Changed, runs: Option<Result<Vec<String>, String>>) -> Changed
 
 /// Programs that build or test what's in the folder they run in, no pack naming them — under the packs'
 /// `[claude] builders` (cargo, go, make…), which only add: a script calling one runs the project's code.
-const BUILDERS_FLOOR: [&str; 3] = ["ninja", "bazel", "xcodebuild"];
+const BUILDERS_FLOOR: &[&str] = &["ninja", "bazel", "xcodebuild"];
 
 /// Whether `name` is a program that builds or tests (`BUILDERS_FLOOR`, the packs' `builders`).
 pub(crate) fn builder(name: &str) -> bool {

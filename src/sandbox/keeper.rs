@@ -48,7 +48,7 @@ const LEFT_TERM: Duration = Duration::from_secs(1);
 const END_WITHIN: Duration = Duration::from_secs(5);
 /// The device places a keeper hands tarae with `Ready` (its own, in its mount namespace): its `devpts`, its
 /// `ptmx` there and at `/dev/ptmx` where that's a node bound over (not a link), its `/dev/shm`.
-pub const DEVICE_HANDLES: [&str; 4] = ["/dev/pts", "/dev/pts/ptmx", "/dev/ptmx", "/dev/shm"];
+pub const DEVICE_HANDLES: &[&str] = &["/dev/pts", "/dev/pts/ptmx", "/dev/ptmx", "/dev/shm"];
 /// D11: a session's keeper that ended this many times within `DEATHS_WITHIN` isn't made again.
 const DEATHS_MAX: usize = 2;
 const DEATHS_WITHIN: Duration = Duration::from_secs(600);

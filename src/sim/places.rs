@@ -28,7 +28,7 @@ const INPUTS: usize = 24;
 const LIMIT: Duration = crate::test_results::PATIENCE;
 
 /// The names the answer gives — one file's, two's (or one's, as `c/Device.java` comes and goes), none's.
-const NAMES: [&str; 3] = ["Device.java", "Util.java", "Gone.java"];
+const NAMES: &[&str] = &["Device.java", "Util.java", "Gone.java"];
 
 #[test]
 fn the_chats_names_are_found_for_the_files_as_they_are() {
@@ -110,7 +110,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, root: &Path, w: &mut World) -> String {
             "a/Util.java's text written".into()
         }
         3 => {
-            let name = *c.pick(&NAMES);
+            let name = *c.pick(NAMES);
             w.pressed.push(name);
             ed.picker = None;
             crate::chat::jump(ed, Link { path: root.join(name), line: 1 });

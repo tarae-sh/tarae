@@ -20,7 +20,7 @@ const INPUTS: usize = 30;
 
 const LIMIT: Duration = crate::test_results::PATIENCE;
 
-const FILES: [&str; 3] = ["a.txt", "b.txt", "c.txt"];
+const FILES: &[&str] = &["a.txt", "b.txt", "c.txt"];
 
 #[test]
 fn commit_from_a_review() {
@@ -144,7 +144,7 @@ fn input(sim: &mut Sim, ed: &mut Editor, repo: &std::path::Path, seen: &RefCell<
             }
         }
         2 => {
-            let f = *c.pick(&FILES);
+            let f = *c.pick(FILES);
             let mut s = seen.borrow_mut();
             s.n += 1;
             super::write(&repo.join(f), format!("one\nfix {}\n", s.n));

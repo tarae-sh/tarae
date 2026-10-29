@@ -707,8 +707,8 @@ fn watchable(d: &crate::document::Document) -> bool {
 /// toolchains' in their packs (`config-files`) — and break at once on a syntax error, by name (or the folder
 /// it's in). JSON with comments (`tsconfig.json`, VS Code's) isn't among them: a strict parser would call it
 /// broken. YAML neither: no parser for it here.
-const TOML_CONFIGS: [&str; 2] = [".tarae.toml", ".tarae.local.toml"];
-const JSON_CONFIGS: [&str; 1] = [".claude.json"];
+const TOML_CONFIGS: &[&str] = &[".tarae.toml", ".tarae.local.toml"];
+const JSON_CONFIGS: &[&str] = &[".claude.json"];
 
 /// The most text a parse check reads (a config this big is something else).
 const CONFIG_CHECK_MAX: usize = 512 << 10;

@@ -30,9 +30,9 @@ const ITEM_MAX: usize = 60;
 const ROWS_NAMED: usize = 12;
 
 /// The kinds of element ids with a number (`card#12`).
-const NUMBERED: [&str; 5] = ["card", "toast", "run", "pane", "note"];
+const NUMBERED: &[&str] = &["card", "toast", "run", "pane", "note"];
 /// The panels whose rows are named by their content (`git:src/a.rs`) — the side panel's tabs and the review.
-pub const ROWS: [&str; 6] = ["files", "outline", "list", "git", "plugin", "review"];
+pub const ROWS: &[&str] = &["files", "outline", "list", "git", "plugin", "review"];
 
 // ── Claude's level ───────────────────────────────────────────────────────
 
@@ -683,7 +683,7 @@ impl Editor {
 /// `card#12` → ("card", 12).
 fn numbered(id: &str) -> Option<(&'static str, u64)> {
     let (kind, n) = id.split_once('#')?;
-    Some((NUMBERED.into_iter().find(|k| *k == kind)?, n.parse().ok()?))
+    Some((NUMBERED.iter().copied().find(|k| *k == kind)?, n.parse().ok()?))
 }
 
 #[cfg(test)]

@@ -173,8 +173,8 @@ fn perf_overlap_round() {
     }
     use std::io::Write as _;
     let corpus = crate::test_results::corpus();
-    const PATHS: [&str; 8] =
-        ["src", "runtime", "docs", "tests", "xtask/src", "Cargo.toml", "README.md", "CONTRIBUTING.md"];
+    const PATHS: &[&str] =
+        &["src", "runtime", "docs", "tests", "xtask/src", "Cargo.toml", "README.md", "CONTRIBUTING.md"];
     let s = Scratch::new("overlap-perf");
     let main = s.join("main");
     std::fs::create_dir_all(&main).unwrap();

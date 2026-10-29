@@ -369,11 +369,11 @@ impl SpawnError {
 /// login by key alone, a gateway's `ANTHROPIC_BASE_URL` with its token), and never inside a Claude Code session,
 /// where they're the host's. `CLAUDE_CODE_OAUTH_TOKEN` is the host's there too (`THE_HOSTS`), else a subscription
 /// login you chose (`claude setup-token`) — passed.
-const CREDENTIALS: [&str; 2] = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
+const CREDENTIALS: &[&str] = &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
 
 /// What Claude Code (or its Agent SDK) sets in the processes it starts — inherited, always a parent session's,
 /// never passed. Claude Code's env-vars reference says so of each, but where noted.
-const SET_FOR_CHILDREN: [&str; 12] = [
+const SET_FOR_CHILDREN: &[&str] = &[
     // (the SDK drops it from what it inherits as well)
     "CLAUDECODE",
     // ("reliably distinguishes a nested session")
@@ -394,11 +394,11 @@ const SET_FOR_CHILDREN: [&str; 12] = [
 ];
 
 /// …and whole families of them: Remote Control's, and the session inbox's ("Set by Claude Code, not by you").
-const SET_FOR_CHILDREN_FAMILIES: [&str; 2] = ["CLAUDE_CODE_BRIDGE_", "CLAUDE_CODE_MESSAGING_"];
+const SET_FOR_CHILDREN_FAMILIES: &[&str] = &["CLAUDE_CODE_BRIDGE_", "CLAUDE_CODE_MESSAGING_"];
 
 /// A Claude Code host's own, seen in tarae's environment (L0) or named by the SDK as what its host passes — no doc
 /// lists them as yours to set. Left out only when tarae itself runs inside Claude Code (`ClaudeEnv::nested`).
-const THE_HOSTS: [&str; 10] = [
+const THE_HOSTS: &[&str] = &[
     // (the SDK: what a host passes the claude it starts — its login among them)
     "CLAUDE_CODE_OAUTH_TOKEN",
     "CLAUDE_CODE_HOST_SESSION_ID",
@@ -421,8 +421,8 @@ const THE_HOSTS: [&str; 10] = [
 /// those and its stdio MCP servers', `CLAUDE_CODE_HOST_SESSION_ID` what an SDK host passes the claude it starts
 /// (L0 found it in tarae's). Not `CLAUDECODE`: an IDE's terminal sets it too, and a shell there is no session's —
 /// your own `CLAUDE_CODE_OAUTH_TOKEN` stays.
-const NESTED_BY: [&str; 4] =
-    ["CLAUDE_CODE_CHILD_SESSION", "CLAUDE_PID", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_HOST_SESSION_ID"];
+const NESTED_BY: &[&str] =
+    &["CLAUDE_CODE_CHILD_SESSION", "CLAUDE_PID", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_HOST_SESSION_ID"];
 
 /// The OAuth scopes go with their refresh token ("Required when `CLAUDE_CODE_OAUTH_REFRESH_TOKEN` is set"): with
 /// it, they're yours; without it, inside Claude Code, the host's.
@@ -572,7 +572,7 @@ pub fn env_told(ed: &mut Editor) -> Option<String> {
 
 /// Claude Code's words when it has no login (its errors reference, under `-p`: "Not logged in · Please run /login",
 /// "Failed to authenticate…", "Please run /login · API Error: 401…").
-pub const NOT_LOGGED_IN: [&str; 3] = ["Not logged in", "Please run /login", "Failed to authenticate"];
+pub const NOT_LOGGED_IN: &[&str] = &["Not logged in", "Please run /login", "Failed to authenticate"];
 
 /// What a claude that failed with `error` for want of a login is told when tarae left a key out — None: not a
 /// login failure, or none left out (claude's own words say `/login`, as your own claude's do). With the key card
@@ -2217,7 +2217,7 @@ pub(crate) mod tests {
 
     /// The `ANTHROPIC_*` / `CLAUDE*` / `AI_AGENT` / `MCP_*` names apibill's L0 found in tarae's environment —
     /// tarae started from a shell a desktop-app Claude Code session started.
-    const L0: [&str; 20] = [
+    const L0: &[&str] = &[
         "AI_AGENT",
         "ANTHROPIC_BASE_URL",
         "CLAUDECODE",
@@ -2321,7 +2321,7 @@ pub(crate) mod tests {
     /// host's login goes with it.
     #[test]
     fn each_mark_of_a_parent_session_alone_makes_it_nested() {
-        for mark in NESTED_BY {
+        for &mark in NESTED_BY {
             let env = dropped([mark, "CLAUDE_CODE_OAUTH_TOKEN"]);
             assert!(env.nested, "{mark}");
             assert!(env.removed.iter().any(|n| n == "CLAUDE_CODE_OAUTH_TOKEN"), "{mark}: {:?}", env.removed);
@@ -2432,7 +2432,7 @@ pub(crate) mod tests {
                 .env("TARAE_CLAUDE_ENV_CHILD", how)
                 .envs(env.iter().copied());
             if how == "keep" {
-                for mark in NESTED_BY {
+                for &mark in NESTED_BY {
                     child.env_remove(mark);
                 }
             }

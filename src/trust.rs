@@ -20,7 +20,7 @@ use crate::keymap::Keymaps;
 
 /// Settings a project file sets only once trusted: they run commands, or change what Claude's commands do
 /// unasked (`llm.sandbox*` comes with the sandbox), or what Claude sees.
-pub const RISKY: [&str; 24] = [
+pub const RISKY: &[&str] = &[
     // (a project turning on the language servers the user turned off — rust-analyzer runs its build scripts)
     "editor.lsp",
     "editor.restart-build",
@@ -65,7 +65,7 @@ pub const RISKY: [&str; 24] = [
 /// credential and memory (`review.skeptics-max`, `review.board-at-once`), whether your workspaces' trees are
 /// rewritten unasked (`workspace.sync`), how much moves on your screen (`editor.motion`), whether and how your
 /// machine sounds (`editor.sound*`), whether a plugin hears your keys (`plugins.keys`) — a project never does.
-pub const YOURS_ONLY: [&str; 19] = [
+pub const YOURS_ONLY: &[&str] = &[
     "llm.card-record",
     // (a project's 1 would take your `space u` history back to its newest turn)
     "llm.turns-max-mb",
@@ -103,7 +103,7 @@ pub fn yours_only(setting: &str) -> bool {
 /// `:` commands only your own keys run (or you, typed): they switch who pays for Claude, read a file you name
 /// (`workspace-apply`'s patch), or make your machine sound (`sound`). A project's key binding to one is left out
 /// (`config.rs`).
-pub const YOURS_ONLY_COMMANDS: [&str; 3] = ["session-billing", "workspace-apply", "sound"];
+pub const YOURS_ONLY_COMMANDS: &[&str] = &["session-billing", "workspace-apply", "sound"];
 
 /// Whether the `:` line `line` (no `:`) runs one of `YOURS_ONLY_COMMANDS`.
 pub fn yours_only_command(line: &str) -> bool {
@@ -1328,7 +1328,7 @@ mod tests {
     #[test]
     fn every_sandbox_setting_waits_for_trust() {
         // (when tarae removes the kept run homes no run has used: nothing a run can do changes)
-        const HOUSEKEEPING: [&str; 1] = ["llm.sandbox-kept-days"];
+        const HOUSEKEEPING: &[&str] = &["llm.sandbox-kept-days"];
         let sandbox = crate::settings::SETTINGS.iter().filter(|s| s.path.starts_with("llm.sandbox"));
         let mut n = 0;
         for s in sandbox {

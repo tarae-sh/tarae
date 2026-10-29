@@ -86,7 +86,7 @@ pub struct Download {
 }
 
 /// The placeholders a template may hold.
-const PLACEHOLDERS: [&str; 4] = ["version", "file", "os", "arch"];
+const PLACEHOLDERS: &[&str] = &["version", "file", "os", "arch"];
 
 /// Where a download records the program it unpacked (relative to its folder).
 const PROGRAM_MARK: &str = ".tarae-program";

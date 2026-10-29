@@ -322,7 +322,7 @@ fn plain_request(line: &str, headers: &str) -> Result<Option<Head>, Refusal> {
 /// without it, its body read as another request).
 #[test]
 fn plain_http_takes_the_standard_methods_only() {
-    for m in METHODS {
+    for &m in METHODS {
         let h = plain_request(&format!("{m} http://a.test/x?y=1 HTTP/1.1"), "").unwrap().unwrap();
         assert!(matches!(h.request, Request::Plain { method, port: 80, .. } if method == m), "{m}");
     }

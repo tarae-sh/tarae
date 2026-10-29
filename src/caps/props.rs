@@ -353,7 +353,7 @@ fn value_wider(way: Way, bases: &[&Value], a: &Value) -> Option<String> {
 // ── The world the steps run in ──────────────────────────────────────────────────────────────────────────────
 
 /// Your config file's `[llm]` past the stand-in claude, one of these.
-const YOURS: [&str; 3] = ["", "sandbox-ports = [6379]\n", "sandbox-localhost = true\n"];
+const YOURS: &[&str] = &["", "sandbox-ports = [6379]\n", "sandbox-localhost = true\n"];
 
 /// The project's `.tarae.toml`, one of these (None: there's none) — risky ones held back until trusted.
 const PROJECTS: [Option<&str>; 4] = [

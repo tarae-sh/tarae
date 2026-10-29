@@ -108,8 +108,8 @@ const METADATA: [IpAddr; 4] = [
 /// The cloud metadata servers' own names, as their providers document them (Google Cloud's three, AWS's two):
 /// what the egress proxy refuses by name (step 5g) — through an upstream proxy, which looks names up itself,
 /// tarae never sees their addresses. A partial check: another name leading there (a wildcard DNS's) isn't caught.
-const METADATA_NAMES: [&str; 5] =
-    ["metadata.google.internal", "metadata.goog", "metadata", "instance-data", "instance-data.ec2.internal"];
+const METADATA_NAMES: &[&str] =
+    &["metadata.google.internal", "metadata.goog", "metadata", "instance-data", "instance-data.ec2.internal"];
 
 /// Whether `name` (as `proxy::parse::name` makes it: lowercase, no trailing dot) is a metadata server's own.
 pub fn never_named(name: &str) -> bool {

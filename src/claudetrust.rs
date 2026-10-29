@@ -80,12 +80,12 @@ pub const SOURCES: &str = "user,project,local";
 
 /// Keys that run a command as you, from any settings file (Claude Code's settings reference: each key typed as
 /// a shell command line whose scope is "Any file").
-pub const COMMANDS: [&str; 5] =
-    ["apiKeyHelper", "awsAuthRefresh", "awsCredentialExport", "gcpAuthRefresh", "otelHeadersHelper"];
+pub const COMMANDS: &[&str] =
+    &["apiKeyHelper", "awsAuthRefresh", "awsCredentialExport", "gcpAuthRefresh", "otelHeadersHelper"];
 
 /// Keys that run commands but are off in the chat already: `disableAllHooks` in its `--settings` turns hooks
 /// off and narrows the other three to managed settings (Claude Code's settings reference, `disableAllHooks`).
-pub const HELD: [&str; 4] = ["hooks", "statusLine", "subagentStatusLine", "fileSuggestion"];
+pub const HELD: &[&str] = &["hooks", "statusLine", "subagentStatusLine", "fileSuggestion"];
 
 /// The setting for how many days Claude Code keeps your conversations: a project's would decide for every
 /// project's (`0` deletes them all) — held.
@@ -244,7 +244,7 @@ fn read_one(file: &'static str, bytes: &[u8]) -> Result<Holds, String> {
     let json: Json = serde_json::from_slice(bytes).map_err(|_| "not JSON".to_string())?;
     let obj = json.as_object().ok_or("not a JSON object")?;
     let mut items = Vec::new();
-    for key in COMMANDS {
+    for &key in COMMANDS {
         if let Some(v) = obj.get(key) {
             let value = v.as_str().ok_or(format!("{key} isn't a string"))?;
             items.push(Item { file, kind: Kind::Command, key: key.into(), value: value.into() });
@@ -400,8 +400,8 @@ pub fn baseline(scan: Option<&Scan>, mine: &[Item], env: impl Fn(&str) -> Option
 /// `$SHELL` … on your `PATH`"). `HOME`, `TMPDIR`: a project's `env` can't set those at all (its settings
 /// reference, "Variables Claude Code ignores in `env`") — listed in case that changes. `USER`, `LANG`, `TERM`,
 /// `LC_*`: who runs, how text reads (runenv's floor) — no Claude Code page names them [tarae's choice].
-pub const RESTORED: [&str; 7] = ["PATH", "HOME", "SHELL", "TMPDIR", "USER", "LANG", "TERM"];
-const RESTORED_FAMILIES: [&str; 1] = ["LC_"];
+pub const RESTORED: &[&str] = &["PATH", "HOME", "SHELL", "TMPDIR", "USER", "LANG", "TERM"];
+const RESTORED_FAMILIES: &[&str] = &["LC_"];
 
 fn restored(name: &str) -> bool {
     RESTORED.contains(&name) || RESTORED_FAMILIES.iter().any(|f| name.starts_with(f))
@@ -425,7 +425,7 @@ pub fn overrides(seen: &Seen) -> (Map<String, Json>, Vec<&'static str>) {
     let source = |file: &str| FILES.iter().find(|(f, _)| *f == file).map(|(_, s)| *s);
     let (mut out, mut env, mut plugins, mut left_out) = (Map::new(), Map::new(), Map::new(), Vec::new());
     let mut ask: Vec<Json> = Vec::new();
-    for key in COMMANDS {
+    for &key in COMMANDS {
         let theirs: Vec<&&Item> = items.iter().filter(|i| i.kind == Kind::Command && i.key == key).collect();
         if !theirs.is_empty() && theirs.iter().all(|i| !held(i)) {
             continue;

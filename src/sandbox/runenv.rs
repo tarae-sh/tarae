@@ -28,7 +28,7 @@ use super::Here;
 /// What every run gets as it is: where things are, who runs, how text reads, the temp folder (a run with a
 /// folder of its own gets that instead) — and git's settings and identity: git is tarae's own
 /// (`tokens::sources_on` reads `GIT_CONFIG_GLOBAL` to find what to copy).
-const FLOOR: [&str; 21] = [
+const FLOOR: &[&str] = &[
     "PATH",
     "HOME",
     "USER",
@@ -53,11 +53,11 @@ const FLOOR: [&str; 21] = [
 ];
 
 /// The floor's families: the locale's parts (`LC_CTYPE` alone is common on macOS — no `LANG`).
-const FLOOR_FAMILIES: [&str; 1] = ["LC_"];
+const FLOOR_FAMILIES: &[&str] = &["LC_"];
 
 /// The user's proxies: never passed — while the network is open (`llm.sandbox-network`) tarae's egress proxy's
 /// own take their place (`proxy::run_env`), and those aren't said as left out.
-pub(crate) const PROXIES: [&str; 8] = [
+pub(crate) const PROXIES: &[&str] = &[
     "HTTP_PROXY",
     "HTTPS_PROXY",
     "ALL_PROXY",
@@ -69,11 +69,11 @@ pub(crate) const PROXIES: [&str; 8] = [
 ];
 
 /// What the shell keeps up itself (`sh -c` sets them again): not said as left out.
-const THE_SHELLS: [&str; 4] = ["PWD", "OLDPWD", "SHLVL", "_"];
+const THE_SHELLS: &[&str] = &["PWD", "OLDPWD", "SHLVL", "_"];
 
 /// The loader's variables: code it loads into every program. Never in a pack's `pass` — only the user's own
 /// `llm.sandbox-env` (`LD_LIBRARY_PATH`, decided 2026-10-06).
-pub(crate) const LOADER: [&str; 2] = ["LD_", "DYLD_"];
+pub(crate) const LOADER: &[&str] = &["LD_", "DYLD_"];
 
 /// Why a variable reaches the run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

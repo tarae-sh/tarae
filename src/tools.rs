@@ -91,8 +91,8 @@ impl Call {
 
 /// The tools whose calls wait on the editor's own work (servers, searches, a change set) — a run and tests wait
 /// on what may take long or on the user, and aren't watched.
-const WATCHED: [&str; 9] =
-    ["references", "search", "read", "symbols", "definition", "diagnostics", "rename", "replace", "edit"];
+const WATCHED: &[&str] =
+    &["references", "search", "read", "symbols", "definition", "diagnostics", "rename", "replace", "edit"];
 
 /// An MCP message from claude → the `mcp_response` (None = answered later with `answer`). Either revision
 /// (`mcp.rs`): after `initialize`, or each request naming its own.
@@ -176,7 +176,7 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
                         crate::chat::claim_for(ed, &format!("mcp__tarae__{name}"), args, &id);
                     }
                     // (watched while it waits — one silent too long marks its session: `workspace::Doing::Stuck`)
-                    let tool = WATCHED.into_iter().find(|t| *t == name).unwrap_or("tool");
+                    let tool = WATCHED.iter().copied().find(|t| *t == name).unwrap_or("tool");
                     let wait = match name {
                         "diagnostics" => args["wait"].as_u64().unwrap_or(0).min(crate::nav::WAIT_MAX),
                         _ => 0,
@@ -1353,13 +1353,13 @@ fn also_ask(
 }
 
 /// Git's read-only commands, which run without asking (git is tarae's own).
-const GIT_READS: [&str; 4] = ["git status", "git diff", "git log", "git show"];
+const GIT_READS: &[&str] = &["git status", "git diff", "git log", "git show"];
 
 /// Commands that run without asking: git's read-only ones and the checks the built-in packs name
 /// (`[claude] run-allow` — cargo's, go's) — by whole words, and only when the line has nothing the shell would
 /// read as more than words (`allowed`).
 pub fn run_allow() -> impl Iterator<Item = &'static str> {
-    GIT_READS.into_iter().chain(crate::sandboxpack::get().run_allow.iter().map(String::as_str))
+    GIT_READS.iter().copied().chain(crate::sandboxpack::get().run_allow.iter().map(String::as_str))
 }
 
 /// A command longer than this isn't put to the user (a card can't show it whole).
@@ -1367,7 +1367,7 @@ const COMMAND_MAX: usize = 600;
 const COMMAND_LINES_MAX: usize = 12;
 
 /// Options that make a command that otherwise reads write a file or run a program.
-pub const WRITES: [&str; 6] = ["--output", "--ext-diff", "--textconv", "--config", "--exec", "--upload-pack"];
+pub const WRITES: &[&str] = &["--output", "--ext-diff", "--textconv", "--config", "--exec", "--upload-pack"];
 
 /// The option of `WRITES` one of `words` passes, if any — no rule lets such a command through, so no card
 /// offers one for it (#169).
@@ -1433,7 +1433,7 @@ fn rule_env(rule: &str) -> (Vec<&str>, Vec<&str>) {
 
 /// Programs a check's output can go through and still count as the check (#32): they only read it
 /// (`sed` only as `sed -n '3,40p'` — `readonly::only_reads`; the rest with the options `filters.rs` lists).
-const FILTERS: [&str; 8] = ["grep", "head", "tail", "wc", "sort", "cut", "uniq", "sed"];
+const FILTERS: &[&str] = &["grep", "head", "tail", "wc", "sort", "cut", "uniq", "sed"];
 
 /// The first command's words when `cmd` is one command piped into filters and nothing else (`cargo test
 /// 2>&1 | grep -E "a|b" | head`): each filter one of `FILTERS` with only options its list allows
@@ -1561,7 +1561,7 @@ fn check_words(w: &[String]) -> bool {
 
 /// Programs that run whatever follows them — a pattern ending in one would allow anything. Interpreters
 /// among them run a script file (`INTERPRETERS` — its card shows it).
-const RUNNERS: [&str; 34] = [
+const RUNNERS: &[&str] = &[
     "sh",
     "bash",
     "zsh",
@@ -1854,7 +1854,7 @@ impl RunAgain {
 
 /// Filters a command's output can go through and still be that command, for `a` (#193 — the user's list;
 /// no `sed`). Each only reads what's piped in — `pipe_filter` says how.
-const PIPE_FILTERS: [&str; 10] = ["grep", "head", "tail", "cut", "wc", "sort", "uniq", "tr", "awk", "jq"];
+const PIPE_FILTERS: &[&str] = &["grep", "head", "tail", "cut", "wc", "sort", "uniq", "tr", "awk", "jq"];
 
 /// Whether `w` is a filter that only reads: one of `PIPE_FILTERS`, no glob; grep … tr with only the options
 /// `filters.rs` lists for each (`sort -o`, `sort --out=f`, `tail -f`, `uniq - out` aren't); `awk` and `jq`
@@ -1877,7 +1877,7 @@ fn pipe_filter(w: &[crate::readonly::Word]) -> bool {
 /// (no `-f`, `--rawfile`, `--slurpfile`, `-L`), and a filter that neither loads code (`include`, `import`)
 /// nor reads the environment (`env`, `$ENV`).
 fn jq_reads(args: &[&str]) -> bool {
-    const LONG: [&str; 13] = [
+    const LONG: &[&str] = &[
         "--raw-output",
         "--compact-output",
         "--slurp",
@@ -2533,7 +2533,7 @@ fn beyond_of(b: Option<&Beyond>) -> (bool, Option<PathBuf>) {
 /// x.py`, `perl x.pl` — the first word not an option; `awk -f x.awk`, `sed -f x.sed` — the value of `-f`;
 /// `deno run x.ts`, `bun run x.ts` — after the subcommand. An option that takes the code inline (`-c`,
 /// `-e`, `-m` a module) names no file.
-const INTERPRETERS: [&str; 22] = [
+const INTERPRETERS: &[&str] = &[
     "sh",
     "bash",
     "zsh",

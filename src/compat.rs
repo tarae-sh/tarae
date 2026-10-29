@@ -109,13 +109,13 @@ pub struct Manifest {
 /// Where the manifests and their fixtures are, from the checkout's root.
 pub const MANIFESTS: &str = "compat";
 
-const MANIFEST_KEYS: [&str; 11] =
-    ["stack", "pack", "tools", "fixture", "files", "prewarm", "watch", "writes", "entry", "image", "linux"];
+const MANIFEST_KEYS: &[&str] =
+    &["stack", "pack", "tools", "fixture", "files", "prewarm", "watch", "writes", "entry", "image", "linux"];
 /// `[linux]`'s: the places on Linux, in place of the manifest's own.
-const LINUX_KEYS: [&str; 2] = ["watch", "writes"];
-const ENTRY_KEYS: [&str; 10] =
-    ["name", "run", "cwd", "expect", "said", "cards", "settings", "writes", "pending", "baseline"];
-const ENTRY_KEYS_MORE: [&str; 3] = ["timeout", "quick", "asks"];
+const LINUX_KEYS: &[&str] = &["watch", "writes"];
+const ENTRY_KEYS: &[&str] =
+    &["name", "run", "cwd", "expect", "said", "cards", "settings", "writes", "pending", "baseline"];
+const ENTRY_KEYS_MORE: &[&str] = &["timeout", "quick", "asks"];
 
 /// An entry's time limit when it names none.
 const TIMEOUT: Duration = Duration::from_secs(600);
@@ -125,7 +125,7 @@ impl Manifest {
     /// on what's expected to pass refused, so a typo can't make an entry pass.
     pub fn parse(text: &str) -> Result<Manifest, String> {
         let t: toml::Table = text.parse().map_err(|e| format!("not TOML: {e}"))?;
-        unknown(&t, &MANIFEST_KEYS, "the manifest")?;
+        unknown(&t, MANIFEST_KEYS, "the manifest")?;
         let stack = string(&t, "stack")?.ok_or("no stack")?;
         let mut entries: Vec<Entry> = match t.get("entry") {
             None => Vec::new(),
@@ -135,7 +135,7 @@ impl Manifest {
         let linux = match t.get("linux") {
             None => toml::Table::new(),
             Some(toml::Value::Table(l)) => {
-                unknown(l, &LINUX_KEYS, "[linux]")?;
+                unknown(l, LINUX_KEYS, "[linux]")?;
                 l.clone()
             }
             Some(_) => return Err("linux: a table ([linux])".into()),
@@ -205,7 +205,7 @@ fn entry(v: &toml::Value) -> Result<Entry, String> {
     let t = v.as_table().ok_or("entry: a table")?;
     let name = string(t, "name")?.ok_or("an entry without a name")?;
     let at = |e: String| format!("entry {name}: {e}");
-    let keys: Vec<&str> = ENTRY_KEYS.iter().chain(&ENTRY_KEYS_MORE).copied().collect();
+    let keys: Vec<&str> = ENTRY_KEYS.iter().chain(ENTRY_KEYS_MORE).copied().collect();
     unknown(t, &keys, "it").map_err(at)?;
     let run = string(t, "run").map_err(at)?.ok_or_else(|| at("no run".into()))?;
     let said = strings(t, "said").map_err(at)?;
@@ -372,8 +372,8 @@ impl Failure {
 }
 
 /// The classes by rank: a cell names its entry's first. A failure with no cause said ranks first (§5).
-const CLASSES: [&str; 8] =
-    ["report", "hang", "card", "protected-name", "not-sandboxed", "writes", "not-ours", "unexplained"];
+const CLASSES: &[&str] =
+    &["report", "hang", "card", "protected-name", "not-sandboxed", "writes", "not-ours", "unexplained"];
 
 const NO_CAUSE: &str = "it failed, and the report names no cause";
 
@@ -967,7 +967,7 @@ impl Tree {
 pub fn checkout(project: &Path) -> Result<(), String> {
     // (git's repository variables from where the tests run — a hook, a git-driven script — would point it at
     // another repository, tarae's own included: none, and no climbing past the project)
-    const REPOSITORY_VARIABLES: [&str; 6] = [
+    const REPOSITORY_VARIABLES: &[&str] = &[
         "GIT_DIR",
         "GIT_WORK_TREE",
         "GIT_INDEX_FILE",
@@ -1032,7 +1032,7 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
 
 /// The files of the run path: from Claude's `run` to its answer — the card, the queue, the task, the policy and
 /// its enforcement, the report, the snapshot. A `cfg(test)` in them (but in a test module) is in `BRANCHES`.
-const RUN_PATH: [&str; 13] = [
+const RUN_PATH: &[&str] = &[
     "src/tools.rs",
     "src/queued.rs",
     "src/task.rs",

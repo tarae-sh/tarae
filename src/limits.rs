@@ -32,8 +32,8 @@ pub const WEEKLY: &str = "seven_day";
 
 /// `get_usage`'s windows that are one `{utilization, resets_at}` each (`SDKControlGetUsageResponse`) — the
 /// per-model rows of `model_scoped` come as `seven_day:<their name>`.
-const WINDOWS: [&str; 5] =
-    ["five_hour", "seven_day", "seven_day_oauth_apps", "seven_day_opus", "seven_day_sonnet"];
+const WINDOWS: &[&str] =
+    &["five_hour", "seven_day", "seven_day_oauth_apps", "seven_day_opus", "seven_day_sonnet"];
 
 /// How near the limit a window is, as `rate_limit_event` says (`get_usage` doesn't).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

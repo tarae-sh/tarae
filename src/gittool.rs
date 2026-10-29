@@ -31,7 +31,7 @@ use crate::editor::Editor;
 use crate::tools::Call;
 
 /// The subcommands it runs.
-const SUBCOMMANDS: [&str; 7] = ["log", "show", "diff", "status", "blame", "ls-tree", "grep"];
+const SUBCOMMANDS: &[&str] = &["log", "show", "diff", "status", "blame", "ls-tree", "grep"];
 
 /// What a subcommand takes — nothing else: long options by their whole name (`--stat`), those taking a value
 /// after `=` (`--since=2.weeks`), short flags (clustered too: `-nw`), short ones taking a value — the rest of
@@ -46,8 +46,8 @@ struct Takes {
     counts: bool,
 }
 
-const DIFF_VALUED: [&str; 5] = ["--unified", "--stat", "--diff-filter", "--find-renames", "--abbrev"];
-const LOG_LONG: [&str; 46] = [
+const DIFF_VALUED: &[&str] = &["--unified", "--stat", "--diff-filter", "--find-renames", "--abbrev"];
+const LOG_LONG: &[&str] = &[
     "--patch",
     "--no-patch",
     "--stat",
@@ -95,7 +95,7 @@ const LOG_LONG: [&str; 46] = [
     "--simplify-by-decoration",
     "--pickaxe-all",
 ];
-const LOG_VALUED: [&str; 18] = [
+const LOG_VALUED: &[&str] = &[
     "--unified",
     "--stat",
     "--diff-filter",
@@ -116,8 +116,8 @@ const LOG_VALUED: [&str; 18] = [
     "--decorate",
 ];
 const LOG: Takes = Takes {
-    long: &LOG_LONG,
-    valued: &LOG_VALUED,
+    long: LOG_LONG,
+    valued: LOG_VALUED,
     flags: "pswiEFR",
     short_valued: "nSG",
     attached: "MU",
@@ -153,7 +153,7 @@ fn takes(sub: &str) -> Takes {
                 "--staged",
                 "--merge-base",
             ],
-            valued: &DIFF_VALUED,
+            valued: DIFF_VALUED,
             flags: "pswbR",
             short_valued: "",
             attached: "MU",
@@ -234,7 +234,7 @@ fn takes(sub: &str) -> Takes {
 /// Settings on every run, over the user's: no color, the plain `a/` `b/` prefixes, names unquoted, no signature
 /// checked — and if one were asked for anyway, `false` is the program that would check it, never gpg — tarae's
 /// own config parameters on the guarded run, never the user's files.
-const PLAIN: [&str; 24] = [
+const PLAIN: &[&str] = &[
     "-c",
     "log.showSignature=false",
     "-c",
@@ -408,7 +408,7 @@ fn parse(words: &[String]) -> Result<Parsed, String> {
 }
 
 /// The formats `--format=` / `--pretty=` take: git's named ones only — never a `%` string.
-const FORMATS: [&str; 6] = ["oneline", "short", "medium", "full", "fuller", "reference"];
+const FORMATS: &[&str] = &["oneline", "short", "medium", "full", "fuller", "reference"];
 
 /// What `p` names that's a file named like a key, as the repository has it (`HEAD:.env`, `:2:a.pem`, a path
 /// after `--`) — the first.

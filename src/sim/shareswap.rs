@@ -34,7 +34,7 @@ const LOAD: Duration = Duration::from_secs(2);
 /// A swap that isn't a retry begins within this of the last checkout that joined.
 const PROMPT: Duration = Duration::from_secs(30);
 
-const WORKTREES: [&str; 3] = ["wt1", "wt2", "wt3"];
+const WORKTREES: &[&str] = &["wt1", "wt2", "wt3"];
 
 /// How often an event comes once the checkouts are open (`share_sync` runs on every one; a hold has no wake).
 const POKE: Duration = Duration::from_secs(5 * 60);
@@ -45,7 +45,7 @@ const EXITS: usize = 5;
 #[test]
 fn a_new_server_that_exits_isnt_tried_again_for_the_same_folders() {
     let name = "a_new_server_that_exits_isnt_tried_again_for_the_same_folders";
-    super::seeds(name, SEEDS, |choices| run(choices, name, &WORKTREES, 1, false));
+    super::seeds(name, SEEDS, |choices| run(choices, name, WORKTREES, 1, false));
 }
 
 #[test]
@@ -133,7 +133,7 @@ fn loaded(ed: &mut Editor, cid: ClientId) {
 /// — no git run), each a cargo project with `src/main.rs`.
 fn fixture(t: &Path) {
     std::fs::create_dir_all(t.join("main/.git")).unwrap();
-    for c in std::iter::once(&"main").chain(&WORKTREES) {
+    for c in std::iter::once(&"main").chain(WORKTREES) {
         std::fs::create_dir_all(t.join(c).join("src")).unwrap();
         std::fs::write(t.join(c).join("src/main.rs"), "fn main() {}\n").unwrap();
         std::fs::write(t.join(c).join("Cargo.toml"), "[package]\nname = \"t\"\n").unwrap();

@@ -1512,11 +1512,11 @@ fn pairs(v: &Value, what: &str) -> Result<Vec<(String, String)>, String> {
 
 /// The core's own variables (`Vars`, and a run home's `{home}` in what it appends) — no home may take one's
 /// name.
-const CORE_VARS: [&str; 7] =
-    ["user-config", "user-cache", "xdg-config", "xdg-cache", "xdg-data", "run", "home"];
+const CORE_VARS: &[&str] =
+    &["user-config", "user-cache", "xdg-config", "xdg-cache", "xdg-data", "run", "home"];
 
 /// Variables no tool's home comes from: they'd make it home, the folders on `PATH`, or the temp folders.
-const NOT_A_HOME: [&str; 4] = ["HOME", "PATH", "TMPDIR", "PWD"];
+const NOT_A_HOME: &[&str] = &["HOME", "PATH", "TMPDIR", "PWD"];
 
 /// What a place is for, for its check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1595,7 +1595,7 @@ fn check_place(p: &str, kind: Kind, homes: &[Home]) -> Result<(), String> {
 }
 
 /// Claude's own and tarae's state, from home — never in a pack's place.
-const OWN: [&str; 4] = [".claude", ".claude.json", ".local/state/tarae", ".config/tarae"];
+const OWN: &[&str] = &[".claude", ".claude.json", ".local/state/tarae", ".config/tarae"];
 
 /// Where place `p`'s start lands from home on each system: `~/` home itself, `{user-config}` macOS's and
 /// Linux's, a pack's home its `else` — None: a variable that's neither (`{run}` isn't in home).

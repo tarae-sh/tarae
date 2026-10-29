@@ -972,7 +972,7 @@ pub fn parse_raw(out: &str) -> Vec<Raw> {
 
 /// The options every `--raw`/`--numstat` listing of tarae's names, so the user's config can't change what it
 /// lists: no renames (each file by its own path), whole object names, no external diff or text conversion.
-const LISTED: [&str; 4] = ["--no-renames", "--no-abbrev", "--no-ext-diff", "--no-textconv"];
+const LISTED: &[&str] = &["--no-renames", "--no-abbrev", "--no-ext-diff", "--no-textconv"];
 
 /// Whether `id` names nothing (git's all-zeros: no file, or the working tree's).
 fn none(id: &str) -> bool {
@@ -1139,8 +1139,11 @@ fn grade_files(
     let mut counts = Counts::new();
     let raws: std::collections::HashMap<String, Raw> = match rev {
         Some(rev) => {
-            let args: Vec<&str> =
-                ["diff-index", "--raw", "-z"].into_iter().chain(LISTED).chain([rev]).collect();
+            let args: Vec<&str> = ["diff-index", "--raw", "-z"]
+                .into_iter()
+                .chain(LISTED.iter().copied())
+                .chain([rev])
+                .collect();
             parse_raw(&git(root, &args)?).into_iter().map(|r| (r.rel.clone(), r)).collect()
         }
         None => Default::default(),
@@ -2492,7 +2495,8 @@ pub fn highs_between(
 ) -> Result<Vec<Held>, String> {
     use crate::risk::{Grade, graded, lang_of};
     let list = |what: &str| -> Result<String, String> {
-        let args: Vec<&str> = ["diff", what, "-z"].into_iter().chain(LISTED).chain([from, to]).collect();
+        let args: Vec<&str> =
+            ["diff", what, "-z"].into_iter().chain(LISTED.iter().copied()).chain([from, to]).collect();
         git(root, &args)
     };
     let mut raws = parse_raw(&list("--raw")?);
@@ -3708,8 +3712,11 @@ fn key_kept_out(root: &Path, rel: &str) -> Option<String> {
 /// named like a key left out by an excluding pathspec — git never writes its lines — and named where its own
 /// section would be (`key_kept_out`).
 fn tree_diff(root: &Path, rev: &str, tree: &str) -> Sections {
-    let listed: Vec<&str> =
-        ["diff-tree", "-r", "-z", "--raw"].into_iter().chain(LISTED).chain([rev, tree]).collect();
+    let listed: Vec<&str> = ["diff-tree", "-r", "-z", "--raw"]
+        .into_iter()
+        .chain(LISTED.iter().copied())
+        .chain([rev, tree])
+        .collect();
     let raws = parse_raw(&unfetched(root, &listed, None).unwrap_or_default());
     // (a blob a partial clone lacks: never fetched for it — `snapread`'s rule — so named, not shown)
     let ids: String = raws
@@ -3996,7 +4003,7 @@ fn show_binary(ed: &mut Editor, i: usize, f: File) {
             // (as grading reads it: the listing's modes — `grade_files`)
             let args: Vec<&str> = ["diff-index", "--raw", "-z"]
                 .into_iter()
-                .chain(LISTED)
+                .chain(LISTED.iter().copied())
                 .chain([rev, "--", &file.rel])
                 .collect();
             mode = git(&root, &args).ok().and_then(|out| {

@@ -137,7 +137,7 @@ pub(crate) const CHAT_SETTINGS: &str =
     r#"{"permissions":{"ask":["Edit","Write"],"deny":["Skill"]},"disableAllHooks":true}"#;
 
 /// Example questions filled in with Tab in an empty chat.
-pub const SUGGESTIONS: [&str; 3] = [
+pub const SUGGESTIONS: &[&str] = &[
     "Explain what this file does",
     "Where is this used across the project?",
     "Why is this diagnostic happening?",

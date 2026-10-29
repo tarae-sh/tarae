@@ -363,8 +363,8 @@ impl std::ops::Deref for Served {
 }
 
 /// The calls a supervisor answers, as its counts name them.
-pub(super) const KINDS: [&str; 9] =
-    ["socket", "bind", "connect", "sendto", "sendmsg", "sendmmsg", "listen", "pty", "attributes"];
+pub(super) const KINDS: &[&str] =
+    &["socket", "bind", "connect", "sendto", "sendmsg", "sendmmsg", "listen", "pty", "attributes"];
 
 fn kind(nr: i32) -> usize {
     match nr as libc::c_long {

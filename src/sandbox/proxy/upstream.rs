@@ -55,10 +55,10 @@ impl Setting {
 }
 
 /// The variables a tunnel's upstream is read from, in the order taken: lowercase first, as curl.
-const TUNNEL_VARS: [&str; 4] = ["https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"];
+const TUNNEL_VARS: &[&str] = &["https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"];
 /// A plain request's.
-const PLAIN_VARS: [&str; 4] = ["http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"];
-const NO_PROXY_VARS: [&str; 2] = ["no_proxy", "NO_PROXY"];
+const PLAIN_VARS: &[&str] = &["http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"];
+const NO_PROXY_VARS: &[&str] = &["no_proxy", "NO_PROXY"];
 
 /// An upstream's credentials, decoded — for it alone (as `Basic` to an http one, RFC 1929's to a SOCKS5 one):
 /// what its `Debug` shows is nothing.
@@ -245,9 +245,9 @@ pub fn of(env: &HashMap<String, OsString>, setting: Setting) -> Upstreams {
         }
         Some((*var, taken))
     };
-    let tunnel = first(&TUNNEL_VARS).map(|(var, v)| read(var, &v));
-    let plain = first(&PLAIN_VARS).map(|(var, v)| read(var, &v));
-    let direct = first(&NO_PROXY_VARS).map(|(_, v)| no_proxy(&v)).unwrap_or_default();
+    let tunnel = first(TUNNEL_VARS).map(|(var, v)| read(var, &v));
+    let plain = first(PLAIN_VARS).map(|(var, v)| read(var, &v));
+    let direct = first(NO_PROXY_VARS).map(|(_, v)| no_proxy(&v)).unwrap_or_default();
     Upstreams { tunnel, plain, direct, mixed }
 }
 
@@ -486,7 +486,7 @@ pub fn tls_said(e: &rustls::Error) -> &'static str {
 }
 
 /// The schemes a 407 may offer that tarae names (it speaks only Basic).
-const SCHEMES: [&str; 6] = ["Basic", "Negotiate", "NTLM", "Digest", "Kerberos", "Bearer"];
+const SCHEMES: &[&str] = &["Basic", "Negotiate", "NTLM", "Digest", "Kerberos", "Bearer"];
 
 /// An answer's head at `buf`'s start — None while its blank line hasn't come (within `parse::HEAD_MAX`); Err:
 /// not an HTTP answer, or past the limit.

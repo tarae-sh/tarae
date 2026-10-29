@@ -628,7 +628,7 @@ fn align(followed: &[Followed], found: &[usize]) -> Vec<(usize, usize)> {
 }
 
 /// The names a change of mode is graded by (`risk::high`'s): the only rule a code review's change of mode has.
-const MODES: [&str; 2] = ["now executable", "now a symlink"];
+const MODES: &[&str] = &["now executable", "now a symlink"];
 
 #[cfg(test)]
 thread_local! {
@@ -895,7 +895,7 @@ fn landed(ed: &mut Editor, of: Of, file: String, at: Stamp, found: Vec<Found>) {
 /// File `path`'s change of mode as the review graded it: its rule's name.
 fn mode_rule(r: &crate::codereview::CodeReview, path: &std::path::Path) -> Option<&'static str> {
     let g = r.grades.get(path)?.iter().find(|g| g.mode)?;
-    MODES.into_iter().find(|m| *m == g.why)
+    MODES.iter().copied().find(|m| *m == g.why)
 }
 
 /// File `file`'s changes in its diff graded as the review grades them now — one gone keeps its last.

@@ -1018,7 +1018,7 @@ fn taking_after(root: &Path, given: u64) -> Vec<String> {
 /// cloud CLI's sign-in is kept the one way (#182: kubectl's, aws's, gcloud's, az's — the way is one command outside,
 /// asked), and where their variables move it too (the tools pack's `kept-moved`: `AWS_SHARED_CREDENTIALS_FILE`,
 /// `AWS_CONFIG_FILE`, `KUBECONFIG`'s every entry, `CLOUDSDK_CONFIG`, `AZURE_CONFIG_DIR`).
-pub(crate) const SECRETS: [&str; 15] = [
+pub(crate) const SECRETS: &[&str] = &[
     ".git-credentials",
     ".config/git/credentials",
     ".ssh",
@@ -1056,7 +1056,7 @@ pub fn secret(real: &Path, home: Option<&Path>) -> bool {
 /// caches (every project's build uses the crates and checkouts there; with the network closed the profile
 /// keeps them whatever is granted — `sandbox::Policy::caches`). Keys (`SECRETS`) neither. Nor are they ever
 /// removed as a session's build folder (`builds::Builds::fate`).
-pub(crate) const NEVER_WRITE: [&str; 8] = [
+pub(crate) const NEVER_WRITE: &[&str] = &[
     ".config/fish",
     ".config/git",
     ".config/tarae",

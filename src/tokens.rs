@@ -24,7 +24,7 @@ use crate::sandbox::Os;
 
 /// Keys named for a secret (lowercased, anywhere in the key: `//host/:_authToken`, `GITHUB_TOKEN`,
 /// `npmAuthIdent` — yarn's `user:password`). `auth` alone counts only as a word of the key (`AUTH_WORDS`).
-const SECRET_KEYS: [&str; 14] = [
+const SECRET_KEYS: &[&str] = &[
     "token",
     "password",
     "passwd",
@@ -43,14 +43,14 @@ const SECRET_KEYS: [&str; 14] = [
 
 /// Words of a key that name a secret on their own (`_auth`, `NPM_CONFIG__AUTH`, `BASIC_AUTH`,
 /// `YARN_NPM_AUTH_IDENT`) — a word, so `GIT_AUTHOR_NAME` isn't one.
-const AUTH_WORDS: [&str; 1] = ["auth"];
+const AUTH_WORDS: &[&str] = &["auth"];
 
 /// …but not a key that names where one is or how it's got (`password_file`, `token-cmd`, `credential.helper`).
-const NOT_THE_VALUE: [&str; 8] = ["file", "path", "helper", "command", "cmd", "url", "type", "env"];
+const NOT_THE_VALUE: &[&str] = &["file", "path", "helper", "command", "cmd", "url", "type", "env"];
 
 /// Tokens known by how they start: GitHub's, GitLab's, npm's, PyPI's, Slack's.
-const PREFIXES: [&str; 11] =
-    ["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "glpat-", "npm_", "pypi-Ag", "xoxb-", "xoxp-"];
+const PREFIXES: &[&str] =
+    &["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "glpat-", "npm_", "pypi-Ag", "xoxb-", "xoxp-"];
 
 /// Whether `line` holds what looks like a token: a URL with a password (`https://user:pass@`) or a long user
 /// (`https://ghp_…@`), a key named for one with a value written there (`token = …`, `//host/:_authToken=…`,
@@ -165,7 +165,7 @@ fn prefixed(s: &str) -> bool {
 }
 
 /// Headers whose value is a secret, lowercased (`header_secret`'s).
-const HEADERS: [&str; 3] = ["authorization:", "private-token:", "x-api-key:"];
+const HEADERS: &[&str] = &["authorization:", "private-token:", "x-api-key:"];
 
 /// What a token's place says once it's taken out.
 const GONE: &str = "…";
@@ -740,7 +740,7 @@ const BYTES_MAX: u64 = 32 << 20;
 /// Bigger files aren't settings.
 const FILE_MAX: u64 = 256 << 10;
 /// Pictures, documents and lock files — no language's: never settings.
-const NOT_SETTINGS_FLOOR: [&str; 6] = ["svg", "png", "jpg", "pdf", "lock", "sum"];
+const NOT_SETTINGS_FLOOR: &[&str] = &["svg", "png", "jpg", "pdf", "lock", "sum"];
 
 /// Whether a file of extension `ext` (lowercase) is code, docs or a picture: a `token = …` there is code, not a
 /// token — the built-in packs' `not-settings` (their code's extensions) and `NOT_SETTINGS_FLOOR`.

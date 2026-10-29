@@ -34,8 +34,7 @@ pub const FLOOR: u64 = 100_000;
 /// The variable that moves `MIN_TOKENS`.
 pub const MIN_VAR: &str = "CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS";
 /// What turns it off, in the order claude asks: the variables that turn compaction off, then the two settings.
-pub const OFF: [&str; 4] =
-    ["DISABLE_COMPACT", "DISABLE_AUTO_COMPACT", "autoCompactEnabled", "idleCompaction"];
+pub const OFF: &[&str] = &["DISABLE_COMPACT", "DISABLE_AUTO_COMPACT", "autoCompactEnabled", "idleCompaction"];
 /// What's sent.
 pub const COMMAND: &str = "/compact";
 /// A settings file bigger than this isn't read (claudetrust's limit).
@@ -278,7 +277,7 @@ pub fn rule(layers: &[Map<String, Value>], env: impl Fn(&str) -> Option<String>)
         let set = layers.iter().rev().find_map(|l| l.get("env")?.get(name)?.as_str().map(String::from));
         set.or_else(|| env(name))
     };
-    let off = OFF.into_iter().find(|&k| match k.starts_with("DISABLE_") {
+    let off = OFF.iter().copied().find(|&k| match k.starts_with("DISABLE_") {
         true => var(k).is_some_and(|v| truthy(&v)),
         false => setting(k) == Some(false),
     });
@@ -328,7 +327,7 @@ impl Places {
         let args = c.launched.as_ref().map_or(&[][..], |l| &l.0.args[..]);
         // (a test's stand-in is the whole of the environment, as `llm::spawn` lays it — else tarae's own, never in
         // a test build)
-        let names = std::iter::once(MIN_VAR).chain(OFF.into_iter().filter(|k| k.starts_with("DISABLE_")));
+        let names = std::iter::once(MIN_VAR).chain(OFF.iter().copied().filter(|k| k.starts_with("DISABLE_")));
         let env =
             names.filter_map(|n| crate::llm::env_var(ed.claude_env.as_ref(), n).map(|v| (n, v))).collect();
         Some(Places {

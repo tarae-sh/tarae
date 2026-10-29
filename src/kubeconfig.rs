@@ -23,7 +23,7 @@ const PROGRAM: &str = "kubectl";
 const READ_MAX: usize = 1 << 20;
 
 /// kubectl's own verbs (`kubectl help`, 1.3x) — any other runs a plugin, `kubectl-<verb>` on PATH.
-const VERBS: [&str; 45] = [
+const VERBS: &[&str] = &[
     "alpha",
     "annotate",
     "api-resources",
@@ -72,7 +72,7 @@ const VERBS: [&str; 45] = [
 ];
 
 /// kubectl's global options that take a value (`kubectl options`) — the word after one is that value, not its verb.
-const VALUED: [&str; 25] = [
+const VALUED: &[&str] = &[
     "--as",
     "--as-group",
     "--as-uid",
@@ -101,7 +101,7 @@ const VALUED: [&str; 25] = [
 ];
 
 /// kubectl's global options that take none.
-const BARE: [&str; 6] = [
+const BARE: &[&str] = &[
     "--insecure-skip-tls-verify",
     "--match-server-version",
     "--warnings-as-errors",
@@ -111,7 +111,7 @@ const BARE: [&str; 6] = [
 ];
 
 /// Options that name the cluster or its server past the context.
-const PAST_CONTEXT: [&str; 3] = ["--cluster", "--server", "-s"];
+const PAST_CONTEXT: &[&str] = &["--cluster", "--server", "-s"];
 
 /// Where a run's line is read for its card: the folder it runs in, the user's `KUBECONFIG` and home, and where
 /// Claude's runs write (`Editor::workspaces_writes` — None: they aren't sandboxed, anywhere).

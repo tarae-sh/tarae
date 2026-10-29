@@ -183,7 +183,7 @@ pub fn rows_of(msgs: &[Msg]) -> Vec<Value> {
 /// Stored rows back as the panel's (unknown roles or verbs are skipped — a newer tarae wrote them).
 pub fn msgs_of(rows: &[Value]) -> Vec<Msg> {
     // (the tools' own names since 2026-10-03; the older words are still read)
-    const VERBS: [&str; 28] = [
+    const VERBS: &[&str] = &[
         "read",
         "search",
         "grep",
@@ -229,7 +229,7 @@ pub fn msgs_of(rows: &[Value]) -> Vec<Msg> {
             m.from_conversation = r["from_conversation"].as_str().map(str::to_string);
             if role == Role::Tool {
                 let l = &r["look"];
-                let verb = VERBS.into_iter().find(|v| l["verb"] == *v).unwrap_or("use");
+                let verb = VERBS.iter().copied().find(|v| l["verb"] == *v).unwrap_or("use");
                 let link = l["path"]
                     .as_str()
                     .map(|p| Link { path: PathBuf::from(p), line: l["line"].as_u64().unwrap_or(0) as usize });

@@ -1072,14 +1072,14 @@ impl Reads {
 /// What every run reads in home besides what the toolchains read (the packs' `reads` — `sandboxpack.rs`),
 /// measured (`.sb/p2-measured.md`, every read in home reported): git's settings, the text encoding
 /// CoreFoundation reads in every process, the fonts a shot draws with.
-const HOME_READS: [&str; 4] = [".gitconfig", ".config/git", ".CFUserTextEncoding", "Library/Fonts"];
+const HOME_READS: &[&str] = &[".gitconfig", ".config/git", ".CFUserTextEncoding", "Library/Fonts"];
 
 /// What a run never reads at a toolchain's default home, whatever is granted and whatever the packs say — the
 /// floor under their `kept` (which adds where a variable moved the home), as `allow::SECRETS` is: cargo's
 /// credentials, and the user's Gradle daemons' registry — their ports and the token each takes (measured,
 /// `.sb/java-checkpoint.md` c0: with it readable and this machine's ports open, a sandboxed `./gradlew`
 /// hands its build to a daemon started outside, and the build runs outside the sandbox).
-pub const KEPT_FLOOR: [&str; 3] = [".cargo/credentials", ".cargo/credentials.toml", ".gradle/daemon"];
+pub const KEPT_FLOOR: &[&str] = &[".cargo/credentials", ".cargo/credentials.toml", ".gradle/daemon"];
 
 /// The packs' places (`sandboxpack::Vars`) for `home` as `here` says the variables — read from the process
 /// once, where a policy is made, and passed in: what's worked out from it is the same in a test as in a run (a
@@ -1230,7 +1230,7 @@ impl Here {
 }
 
 /// Claude's own, in home: its settings, conversations and token cache — kept from its runs like keys.
-const CLAUDES: [&str; 3] = [".claude", ".claude.json", ".claude.json.backup"];
+const CLAUDES: &[&str] = &[".claude", ".claude.json", ".claude.json.backup"];
 
 /// Where a run reads in `home` (real; `vars` its places): `HOME_READS`, the packs' `reads` (a home alone only
 /// where it's there — its variable may name a folder never made), tarae's grammars (its own tests and shots
@@ -1287,7 +1287,7 @@ pub fn kept_places(home: &Path, here: &Here) -> Vec<PathBuf> {
 /// `kept_reads` with the packs' `kept` given.
 fn kept_in(home: &Path, vars: &crate::sandboxpack::Vars, packs: &[String]) -> Vec<PathBuf> {
     let at = |p: PathBuf| profile_path(&p);
-    let floor = crate::allow::SECRETS.iter().chain(&CLAUDES).chain(&KEPT_FLOOR);
+    let floor = crate::allow::SECRETS.iter().chain(CLAUDES).chain(KEPT_FLOOR);
     let mut v: Vec<PathBuf> = floor.map(|s| at(home.join(s))).collect();
     v.extend(packs.iter().flat_map(|k| vars.places_both(k)).map(at));
     v.extend(vars.kept_moved.iter().cloned().map(at));
@@ -1366,7 +1366,7 @@ pub fn ask_dir_verdict(d: &Path, root: &Path, home: Option<&Path>, later: &RunsL
         return Err(why);
     }
     let Some(home) = home else { return Ok(()) };
-    let keys = crate::allow::SECRETS.iter().chain(&CLAUDES).chain(&KEPT_FLOOR).map(|k| home.join(k));
+    let keys = crate::allow::SECRETS.iter().chain(CLAUDES).chain(KEPT_FLOOR).map(|k| home.join(k));
     let mut keys = keys.chain(crate::config::state_dir().map(|s| profile_path(&s)));
     if keys.any(|k| k.starts_with(d) || d.starts_with(&k)) {
         return Err("it's where keys, Claude's or tarae's own are".into());
@@ -1518,7 +1518,7 @@ pub(crate) struct Filesystem {
 
 /// The local disks' filesystems, whose owners and modes say who may write: Linux's ext2/3/4, xfs, btrfs, f2fs,
 /// zfs; macOS's apfs, hfs.
-const OWNED: [&str; 7] = ["ext4", "xfs", "btrfs", "f2fs", "zfs", "apfs", "hfs"];
+const OWNED: &[&str] = &["ext4", "xfs", "btrfs", "f2fs", "zfs", "apfs", "hfs"];
 
 /// Linux's `f_type`s by name: the local disks' (ext2, 3 and 4 share one), then others said by name — nfs, cifs,
 /// smb2, fuse (sshfs, virtiofs, rclone…), 9p, overlay, tmpfs.
@@ -2694,8 +2694,8 @@ fn quiet_writes() -> &'static [PathBuf] {
 /// A shell's own startup files, right in home — closed with the rest of home on purpose (they hold tokens,
 /// and set what a command runs: a run is what its line says). zsh reads `~/.zshenv` for every `zsh -c` and
 /// starts without it, saying nothing; the report says so calmly, apart from what was blocked (`quiet_said`).
-const SHELL_SETUP: [&str; 8] =
-    [".zshenv", ".zprofile", ".zshrc", ".zlogin", ".profile", ".bashrc", ".bash_profile", ".bash_login"];
+const SHELL_SETUP: &[&str] =
+    &[".zshenv", ".zprofile", ".zshrc", ".zlogin", ".profile", ".bashrc", ".bash_profile", ".bash_login"];
 
 /// Whether `d` is a read of one of `SHELL_SETUP` in `home`.
 fn shell_setup(d: &Denial, home: Option<&Path>) -> bool {
@@ -3576,8 +3576,8 @@ fn named_in(line: &str, root: &Path) -> Vec<PathBuf> {
 
 /// The calls a refusal names its file after, as the system's error says it (`open fx: permission denied` — Go's
 /// `os.PathError`): `named_in`.
-const OP_WORDS: [&str; 11] =
-    ["open", "openat", "mkdir", "create", "remove", "unlink", "rename", "link", "symlink", "chmod", "write"];
+const OP_WORDS: &[&str] =
+    &["open", "openat", "mkdir", "create", "remove", "unlink", "rename", "link", "symlink", "chmod", "write"];
 
 /// Lines of output that say a permission was refused — what's left to go by when nothing watched.
 pub fn refused_lines(output: &[(bool, String)]) -> Vec<String> {
@@ -3598,8 +3598,8 @@ fn refusal(line: &str) -> bool {
 /// steps), direnv's, Claude's, the CI's and VS Code's settings and tasks, `.tarae.local.toml` (read as the
 /// user's own config, its preflight steps run unsandboxed: `config::personal`) and `.git`. The ecosystems'
 /// own — `build.rs`, `package.json`, `pom.xml` … — are their packs' (`packs::protect`).
-const CORE_NAMES: [&str; 7] =
-    [".tarae.toml", ".envrc", ".claude", ".github", ".vscode", ".tarae.local.toml", ".git"];
+const CORE_NAMES: &[&str] =
+    &[".tarae.toml", ".envrc", ".claude", ".github", ".vscode", ".tarae.local.toml", ".git"];
 
 /// What Claude's runs never write in the project, wherever the name sits in it (a crate's `build.rs`, a
 /// folder's `.cargo`) — what runs later outside the sandbox (the user's builds, `:preflight`, the terminal,
@@ -4012,7 +4012,7 @@ pub const PORTS_MAX: usize = 200;
 
 /// The keychain's servers: the only lookup `security find-generic-password` makes (measured) — the keychain
 /// files themselves are kept (`allow::SECRETS`).
-const KEYCHAIN: [&str; 2] = ["com.apple.SecurityServer", "com.apple.securityd"];
+const KEYCHAIN: &[&str] = &["com.apple.SecurityServer", "com.apple.securityd"];
 
 /// What a run never reaches: the clipboard (`pbpaste` reads it — measured, exit 0 open, 1 denied) and the
 /// keychain's servers. No toolchain looks either up (measured: preflight, Go, Node, a shot, e2e).
@@ -4024,7 +4024,7 @@ fn kept_services() -> String {
 
 /// Ways to get something run outside: Apple Events to other apps, LaunchServices (`open`).
 #[cfg_attr(target_os = "linux", allow(dead_code))] // (Seatbelt's — its tests run everywhere)
-const NO_WAY_OUT: [&str; 2] = [
+const NO_WAY_OUT: &[&str] = &[
     "appleevent-send",
     "mach-lookup (global-name \"com.apple.coreservices.launchservicesd\") (global-name-regex #\"^com\\.apple\\.lsd\\.\")",
 ];
@@ -4043,7 +4043,7 @@ fn seatbelt_process(target: &str) -> Option<(&str, &str)> {
 /// processes`). Not `process-info*` whole: listing pids has no target, and `lsof` of its own child failed
 /// (spike M7.3). Not `mach-task-read`: lldb attached through its deny (measured, 2026-10-10).
 #[cfg_attr(target_os = "linux", allow(dead_code))] // (Seatbelt's — its tests run everywhere)
-const OWN_PROCESSES: [&str; 3] = ["signal", "process-info-pidinfo", "mach-priv-task-port"];
+const OWN_PROCESSES: &[&str] = &["signal", "process-info-pidinfo", "mach-priv-task-port"];
 
 /// A new run's id — one counter for both systems: the proxy's questions name it, and the main loop finds the run
 /// by it (`hosts.rs`). A page's fetch takes one too (`web/fetch.rs`): its connections are the proxy's as a run's.
@@ -5643,7 +5643,7 @@ fn output_in(
 /// What tarae sets in every sandboxed run besides the packs' `env` (`inside_env`, `command`'s npm line and its
 /// `STATUS`, `task::color_off`, `containers::VAR`) — and `TARAE_UI`, never a run of Claude's: none said as left
 /// out of its environment.
-const SET_IN_RUNS: [&str; 7] = [
+const SET_IN_RUNS: &[&str] = &[
     MARK,
     STATUS,
     "GIT_OPTIONAL_LOCKS",
@@ -9520,7 +9520,7 @@ mod tests {
     fn the_kept_floor_holds_without_packs() {
         let home = Path::new("/Users/u");
         let kept = kept_in(home, &vars_in(home, &Here::default()), &[]);
-        for s in crate::allow::SECRETS.iter().chain(&CLAUDES).chain(&KEPT_FLOOR) {
+        for s in crate::allow::SECRETS.iter().chain(CLAUDES).chain(KEPT_FLOOR) {
             assert!(kept.contains(&home.join(s)), "{s}: {kept:?}");
         }
         assert!(crate::config::state_dir().is_none_or(|s| kept.contains(&profile_path(&s))), "{kept:?}");

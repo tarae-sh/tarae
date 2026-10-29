@@ -87,7 +87,7 @@ fn apart_in(apart: [bool; 5]) -> String {
 }
 
 /// The links of `/proc/<pid>/ns/` an `Ns` stands for (`Ns::of_pid`), in `of_apart`'s order.
-const NS_LINKS: [&str; 5] = ["user", "ipc", "mnt", "net", "pid"];
+const NS_LINKS: &[&str] = &["user", "ipc", "mnt", "net", "pid"];
 
 /// What a keeper's birth failed at, before its exec — on its birth pipe as (code, errno), as a run's failure
 /// pipe has it.

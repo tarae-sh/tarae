@@ -97,7 +97,7 @@ pub fn seen(ed: &mut Editor, version: &str) {
 /// The variables that keep claude from updating itself (`llm::spawn` gives every claude tarae starts one): left
 /// out of `:claude-update`'s run — a tarae started with one (from a shell that has it, under a Claude Code that
 /// sets it) passed it on to the task, and `claude update` did nothing.
-pub const UPDATES_OFF: [&str; 2] = ["DISABLE_UPDATES", "DISABLE_AUTOUPDATER"];
+pub const UPDATES_OFF: &[&str] = &["DISABLE_UPDATES", "DISABLE_AUTOUPDATER"];
 
 /// `:claude-update` — `claude update` (`llm.command`'s) as your own task, outside the sandbox, without
 /// `UPDATES_OFF`: it asks Anthropic's servers for a newer claude and installs it; the next chat process runs it.

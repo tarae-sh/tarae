@@ -266,7 +266,7 @@ impl Money {
 /// `rate_limit_error` like a throttle's, but `error_code: enforced_spend_limit_reached` and no `retry-after`, so
 /// never retried into success) and a limit you set (a 400) — the platform's rate limits page. A throttle's 429
 /// says none of them (Claude Code's `Request rejected (429)`).
-const SPEND_WORDS: [&str; 4] = [
+const SPEND_WORDS: &[&str] = &[
     "enforced_spend_limit_reached",
     "reached your API usage limits",
     "reached your specified API usage limits",

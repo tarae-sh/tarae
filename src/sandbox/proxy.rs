@@ -1025,7 +1025,7 @@ impl std::fmt::Debug for ProxyUrl {
 }
 
 /// The values a pack's proxy lines take (`{proxy.<name>}`).
-pub const URL_VALUES: [&str; 5] = ["host", "port", "user", "password", "url"];
+pub const URL_VALUES: &[&str] = &["host", "port", "user", "password", "url"];
 
 impl ProxyUrl {
     /// As the proxy variables name it: the password after the user (git and pip send nothing with a user alone,

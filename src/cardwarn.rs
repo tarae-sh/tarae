@@ -140,7 +140,7 @@ fn card_words(s: &str, what: &str, max: usize) -> Result<String, String> {
     Ok(s.to_string())
 }
 
-const KEYS: [&str; 13] = [
+const KEYS: &[&str] = &[
     "id",
     "run",
     "options",
@@ -430,8 +430,8 @@ pub fn command_words(
 
 /// How many of `words` lead a command without being it: `NAME=value`, and a shell's keywords.
 pub(crate) fn lead(words: &[String]) -> usize {
-    const KEYWORDS: [&str; 11] =
-        ["if", "then", "else", "elif", "do", "while", "until", "!", "{", "exec", "command"];
+    const KEYWORDS: &[&str] =
+        &["if", "then", "else", "elif", "do", "while", "until", "!", "{", "exec", "command"];
     words.iter().take_while(|w| assign(w).is_some() || KEYWORDS.contains(&w.as_str())).count()
 }
 

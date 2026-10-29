@@ -32,7 +32,7 @@ pub const RECORDS_MAX: usize = 8;
 const RECORD_MAX: usize = 16384;
 
 /// The plain-http methods taken (the user, 2026-10-07: the standard ones), each host-checked.
-pub const METHODS: [&str; 7] = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
+pub const METHODS: &[&str] = &["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
 
 /// Where a request goes: a name (lowercase, no trailing dot) or a literal address (an IPv4-mapped IPv6 one as
 /// its IPv4 address).
@@ -391,7 +391,7 @@ pub fn absolute(method: &str, host: &Host, port: u16, head: &[u8]) -> Vec<u8> {
 
 /// The headers a plain-http request's head loses on its way (`Host` made again from the URI) besides every
 /// `Proxy-*` one: the hop-by-hop ones (RFC 9110 §7.6.1).
-const HOP_BY_HOP: [&str; 5] = ["host", "connection", "keep-alive", "te", "upgrade"];
+const HOP_BY_HOP: &[&str] = &["host", "connection", "keep-alive", "te", "upgrade"];
 
 /// A plain-http request's target in absolute form (`http://host[:port]/path?query`) and the head that goes on.
 fn plain(
