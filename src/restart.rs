@@ -1009,7 +1009,7 @@ pub fn snapshot(ed: &mut Editor) -> Value {
             ("taking".into(), {
                 let landed = ed.allow_landed.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 let taking = ed.allow_taking.iter().filter(|(n, _, _)| !landed.contains(n));
-                json!(taking.map(|(n, r, w)| (r, w, n)).collect::<Vec<_>>())
+                json!(taking.map(|(n, r, w)| (r.to_str(), w, n)).collect::<Vec<_>>())
             }),
             ("trust_taking".into(), crate::trust::taking_now(ed)),
             // (the stores' writes not landed when the exec came — its take-backs and no's, given again — and the
@@ -1035,7 +1035,7 @@ pub fn snapshot(ed: &mut Editor) -> Value {
 /// had none beside it, or no restart went ahead.
 fn symbols(ed: &Editor) -> Value {
     match ed.restart.as_ref().and_then(|r| r.kept.as_ref()) {
-        Some(Ok(Some(k))) => json!({ "at": k.at, "pruned": k.pruned.as_ref().err() }),
+        Some(Ok(Some(k))) => json!({ "at": k.at.to_str(), "pruned": k.pruned.as_ref().err() }),
         Some(Err(e)) => json!({ "not": e }),
         Some(Ok(None)) | None => Value::Null,
     }
@@ -1068,9 +1068,10 @@ fn cards_of<'a>(
 }
 
 /// A document that comes along: a file — not a scratch, a review's deleted file, a `jdt://` class, or one
-/// outside the project Claude's turn opened that you never took up (`Document::aside`, #37).
+/// outside the project Claude's turn opened that you never took up (`Document::aside`, #37), or one whose path is no
+/// text (no store holds one).
 fn carried(d: &crate::document::Document) -> bool {
-    d.path.is_some() && d.virtual_uri.is_none() && !d.aside
+    d.path.as_ref().is_some_and(|p| p.to_str().is_some()) && d.virtual_uri.is_none() && !d.aside
 }
 
 /// Session `l`'s part of the state: `docs` (its files, `current` the one it shows), its panes, side panel,
@@ -1111,7 +1112,7 @@ fn session_json(
         .and_then(|s| Some(json!({ "mode": mode_name(s.mode)?, "focus": l.is_at(At::Side) })));
     let chat = l.claude.chat.as_ref().map(|c| {
         json!({ "conversation": c.conversation, "input": c.input.text(), "cursor": c.input.cursor(), "focused": l.is_at(At::Chat),
-                "scroll": c.scroll, "follow": c.follow.on, "at_end": c.edits.at_end })
+                "scroll": c.scroll, "follow": c.follow.on, "at_end": c.edits.at_end.as_deref().and_then(Path::to_str) })
     });
     let on = docs.iter().find(|d| d.id == current).and_then(|d| d.path.as_deref());
     let turns = l.claude.checkpoints.list.len();
@@ -1620,6 +1621,43 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert!(gone(), "reaped once it ended");
+    }
+
+    /// #251: a checkout or a file whose path is no text is no panic in `:restart`'s state (`json!` on one, a release build
+    /// aborts): the file stays behind, the checkout's name in it null.
+    #[test]
+    fn a_path_thats_no_text_goes_into_no_state() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let bad = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(b"/p/caf\xe9"));
+        let mut ed = Editor::new(Config::default());
+        ed.workspace.root = bad.clone();
+        ed.doc_mut().path.set(Some(bad.join("a.rs")));
+        ed.taking(bad.clone(), "x".to_string(), 1);
+        ed.workspace_store.repo = Some(bad.clone());
+        let mut chat = crate::chat::Chat::new();
+        chat.edits.at_end = Some(bad.clone());
+        ed.workspace.claude.chat = Some(chat);
+        use crate::codereview::{Base, CodeReview};
+        ed.workspace.code_review = Some(CodeReview::for_test(Base::Head, bad.clone(), Vec::new()));
+        let kept = crate::dsyms::Kept { at: bad.join("a.dSYM"), pruned: Ok(()) };
+        ed.restart = Some(Restart {
+            id: 7,
+            build: false,
+            stage: Stage::Finding,
+            target: None,
+            kept: Some(Ok(Some(kept))),
+            anyway: Vec::new(),
+            asked: crate::event::WorkspaceId::HOME,
+            build_run: None,
+        });
+        let state = snapshot(&mut ed);
+        assert_eq!(state["docs"], json!([]));
+        assert_eq!(state["sessions"]["front"], Value::Null);
+        assert_eq!(state["sessions"]["repo"], Value::Null);
+        assert_eq!(state["sessions"]["sessions"][0]["root"], Value::Null);
+        assert_eq!(state["chat"]["at_end"], Value::Null);
+        assert_eq!(state["review"], Value::Null, "a review there isn't carried");
+        assert_eq!(state["symbols"]["at"], Value::Null);
     }
 
     /// Files, multi-cursor selections, scroll, panes and `:set`s go through the state as they were; a

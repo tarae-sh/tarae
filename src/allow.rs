@@ -1046,6 +1046,12 @@ pub fn keepable(real: &Path, home: Option<&Path>) -> bool {
     !secret(real, Some(home))
 }
 
+/// Whether an answer about `real` may be kept: `keepable`, and a path a store can hold — one that's no text would be
+/// written as a lossy copy (`Grant::entry`), which could be another's. What every card's `keep` and `Caps::storable` go by.
+pub fn storable_place(real: &Path, home: Option<&Path>) -> bool {
+    real.to_str().is_some() && keepable(real, home)
+}
+
 /// Whether `real` is in a place under home that holds keys (`SECRETS`).
 pub fn secret(real: &Path, home: Option<&Path>) -> bool {
     home.is_some_and(|h| SECRETS.iter().any(|s| real.starts_with(h.join(s))))
@@ -1120,6 +1126,10 @@ pub fn write_refused_why(
     later: &crate::sandbox::RunsLater,
     kept: &[PathBuf],
 ) -> Option<String> {
+    // (a run's policy holds write places as text: a lossy copy of this one would open whatever that name leads to)
+    if dir.to_str().is_none() {
+        return Some("its path isn't text, so no run's policy can name it".into());
+    }
     if home.starts_with(dir) {
         return Some(if home == dir { "it's your home".into() } else { "it holds your home".into() });
     }
@@ -1147,7 +1157,7 @@ pub fn write_refused_why(
     (dir.components().count() <= WRITE_DEPTH).then(|| "it's too near the top of the disk".into())
 }
 
-/// Whether no card may open folder `dir` (real) to writes: home or above it, one that holds keys or a place
+/// Whether no card may open folder `dir` (real) to writes: a path that's no text, home or above it, one that holds keys or a place
 /// that runs something later (`NEVER_WRITE`; `later`: the folders of programs the user runs, the shared
 /// caches, a toolchain's home and all in it), one in or holding what's kept from every run (`kept`,
 /// `sandbox::kept_places`: the user's own Go build cache — a yes there would open nothing), one in (or holding)
@@ -1464,7 +1474,8 @@ fn keep_queued(
         ),
     };
     let added: Vec<String> = c.add.iter().map(Grant::shown).collect();
-    let carry = json!({ "root": root, "remove": c.remove, "add": added, "given": c.given, "ends": ends });
+    let carry =
+        json!({ "root": root.to_str(), "remove": c.remove, "add": added, "given": c.given, "ends": ends });
     // (its names: a failed take-back is moot once a later write of them lands — each written, kept or taken back,
     // from any checkout: named where their counters are, a repository's for all its checkouts (`Where::revs`) —
     // worked out on the worker, before its turn)
@@ -1771,6 +1782,20 @@ impl crate::editor::Editor {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    /// #251: a take-back for a checkout that's no text is no panic where its ticket is made (on the main loop), and it's
+    /// written.
+    #[test]
+    fn a_take_back_for_a_checkout_thats_no_text_is_written() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let scratch = crate::scratch::Scratch::new("allow-no-text");
+        let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        ed.allow_path = Some(scratch.join("sandbox.json"));
+        let bad = PathBuf::from(std::ffi::OsStr::from_bytes(b"/p/caf\xe9"));
+        let c = super::Change { remove: vec!["x".into()], ..Default::default() };
+        super::keep_queued(&mut ed, bad, vec![1], c, |ed, _| ed.set_status("landed"));
+        crate::test_results::settle_until(&mut ed, |ed| ed.messages.iter().any(|m| m.2 == "landed"));
+    }
+
     use super::*;
 
     /// f22 f: a container engine's socket is the containers pack's to name — by its file's name or a folder on

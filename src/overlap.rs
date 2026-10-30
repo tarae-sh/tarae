@@ -141,10 +141,9 @@ impl Folder {
 
 /// The folder for the checkout at `root`, in `dir` (by its path's hash, as the chats' files are).
 fn folder_of(dir: &Path, root: &Path) -> PathBuf {
-    let h = root
-        .to_string_lossy()
-        .bytes()
-        .fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3));
+    use std::os::unix::ffi::OsStrExt as _;
+    let bytes = root.as_os_str().as_bytes().iter();
+    let h = bytes.fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3));
     dir.join(format!("{h:016x}"))
 }
 

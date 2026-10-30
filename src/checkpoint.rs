@@ -837,10 +837,13 @@ pub fn hold_saves() -> std::sync::MutexGuard<'static, ()> {
     SAVING.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn touched_json(t: &Touched) -> Value {
+/// `t` as kept — None: its path is no text, a file no store holds (a turn kept comes back without it).
+fn touched_json(t: &Touched) -> Option<Value> {
     let bytes = t.bytes.as_ref().map(|b| json!({ "before": b.before, "after": b.after }));
-    json!({ "path": t.path, "before": t.before.as_ref().map(Rope::to_string), "after": t.after.to_string(),
-            "unseen": t.unseen, "gone": t.gone, "bytes": bytes })
+    Some(
+        json!({ "path": t.path.to_str()?, "before": t.before.as_ref().map(Rope::to_string), "after": t.after.to_string(),
+            "unseen": t.unseen, "gone": t.gone, "bytes": bytes }),
+    )
 }
 
 fn bytes_of(v: &Value) -> Option<Bytes> {
@@ -863,10 +866,11 @@ fn files_of(v: &Value) -> Vec<Touched> {
     v.as_array().into_iter().flatten().filter_map(touched_of).collect()
 }
 
-fn kept_json(k: &Kept, (before, after): &Texts) -> Value {
+/// `k` as kept — None as `touched_json`.
+fn kept_json(k: &Kept, (before, after): &Texts) -> Option<Value> {
     let bytes = k.bytes.as_ref().map(|b| json!({ "before": b.before, "after": b.after }));
-    json!({ "path": k.path, "unseen": k.unseen, "gone": k.gone, "bytes": bytes,
-            "before": before.as_ref().map(Text::json), "after": after.json() })
+    Some(json!({ "path": k.path.to_str()?, "unseen": k.unseen, "gone": k.gone, "bytes": bytes,
+            "before": before.as_ref().map(Text::json), "after": after.json() }))
 }
 
 fn texts_of(v: &Value) -> Option<Texts> {
@@ -1117,17 +1121,19 @@ fn save(dir: &Path, root: &Path, mut s: Stored, room: Room) -> Saved {
         .iter()
         .map(|c| {
             let files: Vec<Value> =
-                c.files.kept().iter().zip(&c.texts).map(|(k, t)| kept_json(k, t)).collect();
+                c.files.kept().iter().zip(&c.texts).filter_map(|(k, t)| kept_json(k, t)).collect();
             let head: Vec<Value> = c.head.iter().map(crate::snapshot::HeadMove::to_json).collect();
             let (id, q, seen) = (c.id, &c.question, c.seen);
             json!({ "id": id, "at": c.at, "conv": c.conv, "question": q, "files": files, "undone": c.undone,
                     "seen": seen, "head": head })
         })
         .collect();
-    let turn: Vec<Value> = s.turn.iter().map(touched_json).collect();
+    let turn: Vec<Value> = s.turn.iter().filter_map(touched_json).collect();
     let head: Vec<Value> = s.head.iter().map(crate::snapshot::HeadMove::to_json).collect();
+    // (`root` null where it's no text: nothing reads it, the folder's name is the key)
     let rest =
-        json!({ "root": root, "list": list, "turn": turn, "head": head, "question": s.question }).to_string();
+        json!({ "root": root.to_str(), "list": list, "turn": turn, "head": head, "question": s.question })
+            .to_string();
     // (`seq` first: a save reads only it — `seq_of`)
     if !write(&index, format!("{{\"seq\":{},{}", s.seq, &rest[1..])) {
         return out;
@@ -1749,6 +1755,31 @@ mod tests {
             question.into(),
             vec![Touched { path: root.join("a.txt"), before, after, ..Default::default() }],
         )
+    }
+
+    /// #251: a file whose path is no text is left out of its kept turn, the rest of the turn kept with each text still
+    /// its own file's (`json!` panics on such a path, a release build aborts); a project named so is no panic either.
+    #[test]
+    fn a_file_whose_path_is_no_text_is_left_out_of_its_kept_turn() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let dir = temp("turns-no-text");
+        let (root, store) = (dir.join("p"), dir.join("turns"));
+        std::fs::create_dir_all(&root).unwrap();
+        let bad = PathBuf::from(std::ffi::OsStr::from_bytes(b"/p/caf\xe9.rs"));
+        let file = |path: PathBuf| Touched { path, after: Rope::from_str("bad\n"), ..Default::default() };
+        let mut kept = one_to_two(&root, "q");
+        let Files::Here(files) = &mut kept.files else { panic!("a new turn's are here") };
+        files.insert(0, file(bad.clone()));
+        let turn = vec![file(bad.clone()), file(root.join("b.txt"))];
+        let list = vec![kept];
+        assert!(put(&store, &root, Stored { list, turn, seq: 1, ..Default::default() }));
+        let back = load_whole(&store, &root);
+        let Files::Here(files) = &back.list[0].files else { panic!("its texts read") };
+        let kept: Vec<_> = files.iter().map(|t| (t.path.clone(), t.after.to_string())).collect();
+        assert_eq!(kept, [(root.join("a.txt"), "two\n".to_string())]);
+        assert_eq!(back.turn.iter().map(|t| &t.path).collect::<Vec<_>>(), [&root.join("b.txt")]);
+        assert!(put(&store, &bad, Stored { seq: 1, ..Default::default() }));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// #218: kept turns come back as their paths only, in every session — the one in front and those behind

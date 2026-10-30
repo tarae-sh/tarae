@@ -512,11 +512,14 @@ impl Store {
     }
 }
 
-/// A place as kept (`trust.json`'s entries, `:restart`'s state).
+/// A place as kept (`trust.json`'s entries, `:restart`'s state). A path that's no text leaves `file` null, a place
+/// nothing reads back (a lossy path could be another's: trust is keyed by the real one) — asked again.
 fn place_json(p: &Place) -> Json {
     match p {
-        Place::File(f) => json!({ "file": f }),
-        Place::Repo { common, file } => json!({ "repository": common, "file": file }),
+        Place::File(f) => json!({ "file": f.to_str() }),
+        Place::Repo { common, file } => {
+            json!({ "repository": common.to_str(), "file": common.to_str().and(file.to_str()) })
+        }
     }
 }
 
@@ -581,7 +584,7 @@ impl Write {
         match self {
             Write::Answer { kind, place, file, hash, given, trusted, .. } => json!({
                 (if *trusted { "yes" } else { "no" }): kind.word(), "place": place.as_ref().map(place_json),
-                "file": file, "hash": hex(hash), "given": given,
+                "file": file.to_str(), "hash": hex(hash), "given": given,
             }),
             Write::Forget { kind, place, given } => {
                 json!({ "forget": kind.word(), "place": place_json(place), "given": given })
@@ -1147,6 +1150,35 @@ mod tests {
         record(path.clone(), Kind::Tarae, file.clone(), v(0xab), false).unwrap();
         assert_eq!(Store::read(Some(&path)).state(&file, v(0xab)), State::Ignored);
         assert!(Store::read(Some(&dir.join("none.json"))).answers.is_empty());
+    }
+
+    /// #251: a place whose path is no text is no panic in the store (`json!` on one, a release build aborts) and comes
+    /// back as no answer — it asks again — never as another place: a repository's isn't read as its file alone.
+    #[test]
+    fn a_place_thats_no_text_is_asked_again() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let scratch = crate::scratch::Scratch::new("trust-no-text");
+        let path = scratch.join("trust.json");
+        let bad = PathBuf::from(std::ffi::OsStr::from_bytes(b"/p/caf\xe9"));
+        let mut s = Store::default();
+        let in_bad = Place::Repo { common: bad.clone(), file: "/p/.tarae.toml".into() };
+        let bad_in = Place::Repo { common: "/p/.git".into(), file: bad.clone() };
+        for place in [Place::File(bad.clone()), in_bad, bad_in] {
+            s.answer_at(Kind::Tarae, &place, v(0xab), true, 0);
+        }
+        std::fs::write(&path, s.to_json()).unwrap();
+        assert!(Store::read_strict(&path).unwrap().answers.is_empty());
+        // (nor carried over a `:restart`: a no it could only write on another place)
+        let no = Write::Answer {
+            kind: Kind::Tarae,
+            place: None,
+            file: bad,
+            hash: v(0xab),
+            trusted: false,
+            given: 1,
+            seen: Default::default(),
+        };
+        assert!(Write::of_carried(&no.carried()).is_none());
     }
 
     /// Piece E: each answer is kept with its kind and time, as `:granted` lists them; `forget` takes back the

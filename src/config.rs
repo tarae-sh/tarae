@@ -222,12 +222,12 @@ pub fn state_dir() -> Option<PathBuf> {
 }
 
 /// The file in state folder `dir` kept for `key` — a project's root (`project.rs`: conversations, turns), a
-/// repository's git folder (its sessions): FNV-1a (64) of the path as written, `<hash>.json`.
+/// repository's git folder (its sessions): FNV-1a (64) of the path's bytes as written, `<hash>.json` — never a lossy
+/// form: two paths that aren't text would share a store.
 pub fn state_file(dir: &Path, key: &Path) -> PathBuf {
-    let h = key
-        .to_string_lossy()
-        .bytes()
-        .fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3));
+    use std::os::unix::ffi::OsStrExt as _;
+    let bytes = key.as_os_str().as_bytes().iter();
+    let h = bytes.fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3));
     dir.join(format!("{h:016x}.json"))
 }
 
@@ -840,6 +840,18 @@ fn set_path(doc: &mut DocumentMut, path: &str, v: &Value) -> Result<(), String> 
 
 #[cfg(test)]
 pub(crate) mod tests {
+    /// #252's review: a store's file is by the path's bytes — text as it always was (FNV-1a's vector for "a"), and two
+    /// paths that aren't text never one store, nor one with the replacement character a lossy form would give them.
+    #[test]
+    fn a_stores_file_is_by_the_paths_bytes() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let dir = std::path::Path::new("/d");
+        let file = |p: &[u8]| super::state_file(dir, std::path::Path::new(std::ffi::OsStr::from_bytes(p)));
+        assert_eq!(file(b"a"), dir.join("af63dc4c8601ec8c.json"));
+        assert_ne!(file(b"/p/caf\xe9"), file(b"/p/caf\xe8"));
+        assert_ne!(file(b"/p/caf\xe9"), file("/p/caf\u{fffd}".as_bytes()));
+    }
+
     use super::*;
 
     /// The ```toml blocks of a Markdown file.

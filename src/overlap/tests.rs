@@ -10,6 +10,14 @@ use crate::config::Config;
 use crate::key::{Code, Key};
 use crate::scratch::Scratch;
 
+/// #252's review: two checkouts whose paths aren't text have a folder each, never one by a lossy form.
+#[test]
+fn each_checkouts_own_folder_by_its_bytes() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let folder = |p: &[u8]| folder_of(Path::new("/d"), Path::new(std::ffi::OsStr::from_bytes(p)));
+    assert_ne!(folder(b"/p/caf\xe9"), folder(b"/p/caf\xe8"));
+}
+
 /// #168: the disk at its reserve, no round is armed (a round writes trees into tarae's cache); room again, the
 /// one that waited is.
 #[test]

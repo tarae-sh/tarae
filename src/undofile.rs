@@ -48,7 +48,8 @@ pub fn text_hash(text: &Rope) -> String {
 }
 
 fn file_for(dir: &Path, path: &Path) -> PathBuf {
-    dir.join(format!("{:016x}.json", fnv(path.to_string_lossy().bytes(), FNV_START)))
+    use std::os::unix::ffi::OsStrExt as _;
+    dir.join(format!("{:016x}.json", fnv(path.as_os_str().as_bytes().iter().copied(), FNV_START)))
 }
 
 fn sel_json(sel: &Selection) -> Value {
@@ -212,6 +213,14 @@ mod tests {
 
     fn st(s: &str, head: usize) -> (Rope, Selection) {
         (Rope::from_str(s), Selection::point(head))
+    }
+
+    /// #252's review: two paths that aren't text are two files here, never one by a lossy form.
+    #[test]
+    fn each_paths_own_file_by_its_bytes() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let file = |p: &[u8]| file_for(Path::new("/d"), Path::new(std::ffi::OsStr::from_bytes(p)));
+        assert_ne!(file(b"/p/caf\xe9"), file(b"/p/caf\xe8"));
     }
 
     #[test]

@@ -3011,7 +3011,7 @@ fn ask_with(
     let home = crate::allow::home();
     let keep = outside.is_none()
         && !reads.is_empty()
-        && reads.iter().all(|p| crate::allow::keepable(p, home.as_deref()));
+        && reads.iter().all(|p| crate::allow::storable_place(p, home.as_deref()));
     // What `a`/`A` allow: files beside each other (or beside one read once) as their folder (#102)
     let once = ed.workspace.claude.chat.as_ref().map(|c| c.read_once.clone()).unwrap_or_default();
     let grants = match keep {
@@ -5472,6 +5472,27 @@ pub fn verdict(result: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// #251's review: a run card reading a path that's no text (a link can lead to one) offers no longer yes than `y` —
+    /// `a` and `A` would keep it under a lossy key — where the same card for a path of text does.
+    #[test]
+    fn a_run_cards_read_of_a_path_thats_no_text_is_for_that_once() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let s = crate::scratch::Scratch::new("tools-no-text");
+        let mut ed = crate::editor::Editor::new(crate::config::Config::default());
+        ed.workspace.root = s.to_path_buf();
+        let card = |ed: &mut crate::editor::Editor, read: std::path::PathBuf| {
+            ed.offers.clear();
+            let (cwd, why) = (s.to_path_buf(), crate::cards::Why::ReadsOutside(Vec::new()));
+            let (call, what) = (super::Call::test(1), Default::default());
+            super::ask_with(ed, "cat x".into(), cwd, call, what, (vec![read], why), None).unwrap();
+            let crate::offer::What::Run(card) = &ed.offers[0].what else { panic!("a run card") };
+            (card.keep, card.grants.len())
+        };
+        assert_eq!(card(&mut ed, "/opt/cafe.txt".into()), (true, 1));
+        let bad = std::ffi::OsStr::from_bytes(b"/opt/caf\xe9.txt");
+        assert_eq!(card(&mut ed, bad.into()), (false, 0));
+    }
+
     /// A cloud CLI failing in the sandbox (#182): the packs' words for it under the report — the way, one command
     /// outside, asked — where the kernel named nothing (WSL: aws's "Unable to locate credentials"); once, and only
     /// for a failed run in the sandbox.
@@ -9643,6 +9664,30 @@ mod tests {
         ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("c2".into());
         assert!(super::env_left_out(&mut ed, ran("ok")).contains("GITHUB_TOKEN"), "a new conversation");
         assert_eq!(super::env_left_out(&mut ed, None), "", "outside the sandbox");
+    }
+
+    /// #251's review: a write grant on a path that's no text opens nothing, closed and said as any grant judged again
+    /// is: a run's policy holds write places as text, and a lossy copy, which a link of that name could lead anywhere,
+    /// never reaches it.
+    #[test]
+    fn a_write_grant_on_a_path_thats_no_text_stays_closed() {
+        use crate::allow::Grant;
+        use std::os::unix::ffi::OsStrExt as _;
+        let (root, home) = (std::path::Path::new("/p/project"), std::path::Path::new("/h"));
+        let basis = crate::caps::Basis {
+            root: root.to_path_buf(),
+            home: Some(home.to_path_buf()),
+            ..Default::default()
+        };
+        let caps = basis.build_in(Some(home), &crate::sandbox::Here::default());
+        let llm = crate::llm::LlmConfig::default();
+        let as_text = Grant::Write("/opt/a/b/cafe".into());
+        let opened = super::with_allowed(&llm, &caps, Some(&as_text));
+        assert_eq!(opened.llm.sandbox_write, ["/opt/a/b/cafe"], "{:?}", opened.refused_write);
+        let bad = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(b"/opt/a/b/caf\xe9"));
+        let w = super::with_allowed(&llm, &caps, Some(&Grant::Write(bad.clone())));
+        assert!(w.llm.sandbox_write.is_empty(), "{:?}", w.llm.sandbox_write);
+        assert_eq!(w.refused_write.iter().map(|r| &r.0).collect::<Vec<_>>(), [&bad]);
     }
 
     /// What a run's policy is made from holds where other sessions' runs and every kept write grant may write

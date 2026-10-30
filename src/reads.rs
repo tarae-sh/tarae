@@ -165,13 +165,17 @@ impl Gate {
         if self.granted.iter().any(|g| at.starts_with(g)) {
             return Ok(());
         }
+        // (a path that's no text — `json!` panics on one, a project can hold one, a link lead to one — has no words for
+        // `input`, which only says it: what's judged is where it leads, as a path in `input` is, never a lossy copy, which
+        // could be another's)
+        let (shown, no_text) = (at.to_string_lossy(), at.to_str().is_none().then_some(at));
         let (tool, input) = match file {
-            true => ("Read", json!({ "file_path": at })),
-            false => ("Grep", json!({ "path": at })),
+            true => ("Read", json!({ "file_path": shown })),
+            false => ("Grep", json!({ "path": shown })),
         };
         let caps = self.basis.build();
         // (a folder's own files named like keys don't count: tarae's tools leave them out by name — `Keys::shut`)
-        let (look, covered, class) = decide_with(tool, &input, &caps, &self.made, file);
+        let (look, covered, class) = decide_with(tool, &input, &caps, &self.made, file, no_text);
         if covered || by_default(class, &caps) {
             return Ok(());
         }
@@ -268,12 +272,12 @@ pub enum Own {
 /// goes through `look_with`.)
 #[cfg(test)]
 pub fn look(tool: &str, input: &Value, cwd: &Path) -> Look {
-    look_with(tool, input, cwd, true)
+    look_with(tool, input, cwd, true, None)
 }
 
 /// `look`; `folder_keys` false: a folder searched names none of the files named like keys in it (tarae's own
 /// search leaves them out by name), only itself when it's one.
-fn look_with(tool: &str, input: &Value, cwd: &Path, folder_keys: bool) -> Look {
+fn look_with(tool: &str, input: &Value, cwd: &Path, folder_keys: bool, no_text: Option<&Path>) -> Look {
     let s = |k: &str| input[k].as_str().unwrap_or_default().to_string();
     let rel = |p: &str| if p.is_empty() { cwd.to_path_buf() } else { cwd.join(p) };
     let (given, pattern, filter) = match tool {
@@ -281,10 +285,11 @@ fn look_with(tool: &str, input: &Value, cwd: &Path, folder_keys: bool) -> Look {
         "Grep" => (s("path"), s("pattern"), s("glob")),
         _ => (s("path"), s("pattern"), String::new()),
     };
-    let at = match tool {
+    let at = match (no_text, tool) {
+        (Some(path), _) => crate::paths::real(path),
         // Glob: the pattern's fixed folders are part of where it looks (`../../x/*.txt`, `/etc/*`)
-        "Glob" => glob_root(&rel(&given), &pattern).and_then(|p| crate::paths::real(&p)),
-        _ => crate::paths::real(&rel(&given)),
+        (None, "Glob") => glob_root(&rel(&given), &pattern).and_then(|p| crate::paths::real(&p)),
+        (None, _) => crate::paths::real(&rel(&given)),
     };
     let file = at.as_ref().is_some_and(|p| p.is_file());
     // (a folder outside the project, or holding it, is walked only where it would go unasked — `decide_with`)
@@ -1045,18 +1050,20 @@ pub fn decide(
     caps: &crate::caps::Caps,
     made: &Made,
 ) -> (Look, bool, crate::cards::Class) {
-    decide_with(tool, input, caps, made, true)
+    decide_with(tool, input, caps, made, true, None)
 }
 
-/// `decide`, a folder's own files named like keys counted or not (`look_with`).
+/// `decide`, a folder's own files named like keys counted or not (`look_with`) — `no_text`: the path, where `input` can't
+/// say it (`Gate::judge`).
 fn decide_with(
     tool: &str,
     input: &Value,
     caps: &crate::caps::Caps,
     made: &Made,
     folder_keys: bool,
+    no_text: Option<&Path>,
 ) -> (Look, bool, crate::cards::Class) {
-    let mut look = look_with(tool, input, &caps.root, folder_keys);
+    let mut look = look_with(tool, input, &caps.root, folder_keys, no_text);
     // (a folder outside the project, or holding it, searched where it would go unasked — a place read, or one
     // read by default: its files named like keys looked for now, so many entries at most; past them, it asks.
     // Where a card would ask for the place, nothing is walked: no Grep reaches that card today — the chat has no
@@ -1402,7 +1409,7 @@ pub fn next(ed: &mut Editor) {
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     let Some(p) = c.reads.pop_front() else { return };
     let home = crate::allow::home();
-    let keepable = |at: &Path| crate::allow::keepable(at, home.as_deref());
+    let keepable = |at: &Path| crate::allow::storable_place(at, home.as_deref());
     // (a file named like a key: once at a time — `Caps::storable`)
     let key_kept =
         |k: &PathBuf| crate::caps::Caps::storable(&crate::allow::Grant::Key(k.clone())) == Scope::Always;
@@ -1658,6 +1665,72 @@ pub fn turn_over(ed: &mut Editor) {
 mod tests {
     use super::*;
     use crate::allow::Allowed;
+
+    /// A path of `bytes`, which aren't text.
+    fn no_text(bytes: &[u8]) -> PathBuf {
+        use std::os::unix::ffi::OsStrExt as _;
+        PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
+    }
+
+    /// #251's review: a path that's no text (a project can hold one, or be one; a link can lead to one) is no panic
+    /// (`json!` on one, a release build aborts) and is judged as any path is, by the real one and never a lossy copy:
+    /// the project's files read unasked, a name like a key asks, outside the project its rule holds — the card naming
+    /// the real one, a yes holding for it.
+    #[test]
+    fn a_path_thats_no_text_is_judged_as_itself() {
+        let s = crate::scratch::Scratch::new("reads-no-text");
+        let root = std::fs::canonicalize(&*s).unwrap();
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.root = root.clone();
+        let judge = |ed: &Editor, at: &Path, file| Gate::of(ed, Vec::new()).judge(at, file);
+        assert!(judge(&ed, &root.join(no_text(b"caf\xe9.rs")), true).is_ok(), "a file of a project of text");
+        let key = root.join(no_text(b"caf\xe9.pem"));
+        assert_eq!(judge(&ed, &key, true).expect_err("a key").look.at, Some(key));
+        ed.workspace.root = no_text(b"/p/caf\xe9");
+        assert!(judge(&ed, &ed.workspace.root.join("a.rs"), true).is_ok(), "a project named so");
+        let key = ed.workspace.root.join(".env");
+        assert_eq!(judge(&ed, &key, true).expect_err("a key").look.at, Some(key));
+        // (a `..` past what's there: where it leads can't be told, as for text — never inside by its words)
+        let climbs = ed.workspace.root.join("../nope/../x");
+        assert_eq!(judge(&ed, &climbs, true).expect_err("it asks").look.at, None);
+        let outside = no_text(b"/opt/caf\xe9.txt");
+        for file in [true, false] {
+            let ask = judge(&ed, &outside, file).expect_err("outside, it asks");
+            assert_eq!(ask.look.at.as_ref(), Some(&outside));
+        }
+        assert!(Gate::of(&ed, vec![outside.clone()]).judge(&outside, true).is_ok(), "a yes holds");
+        ed.read_outside = true;
+        assert!(judge(&ed, &outside, true).is_ok(), "outside home unasked, as any file there");
+    }
+
+    /// #251's review: where a path that's no text does ask, its card offers no longer yes than `y` — `a` and `A` would
+    /// keep it under a lossy key — and no folder.
+    #[test]
+    fn a_card_for_a_path_thats_no_text_is_for_that_once() {
+        let s = crate::scratch::Scratch::new("reads-no-text-card");
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.root = s.to_path_buf();
+        let ask = Gate::of(&ed, Vec::new()).judge(&no_text(b"/opt/caf\xe9.txt"), true);
+        let Ask { look, class, found, repository, not_whole } = *ask.expect_err("it asks");
+        let mut chat = crate::chat::Chat::new();
+        chat.reads.push_back(Pending {
+            request_id: String::new(),
+            generation: 0,
+            input: Value::Null,
+            look,
+            class,
+            since: std::time::Instant::now(),
+            found,
+            repository,
+            not_whole,
+            own: None,
+            then: None,
+        });
+        ed.workspace.claude.chat = Some(chat);
+        next(&mut ed);
+        let what = &ed.offers[0].what;
+        assert!(matches!(what, crate::offer::What::Read { keep: false, folder: None, .. }), "{what:?}");
+    }
 
     /// Where each tool reads: Read its file, Grep its folder (the project when none), Glob its folder with
     /// the pattern's fixed folders — and none when a `..` comes after a wildcard.

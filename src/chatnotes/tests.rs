@@ -520,6 +520,46 @@ fn a_chat_closed_mid_turn_keeps_its_places_right() {
     assert_eq!(chat_notes(&ed, &root), [("src/a.rs".to_string(), 7, "It is set in src/a.rs:7.".to_string())]);
 }
 
+/// #252: a note closed with the chat open keeps the conversation's places, not its time: `updated` and its place in the
+/// list stay what its last message made them, so the continue picker's order and age say the talk.
+#[test]
+fn a_note_closed_leaves_the_conversations_time_alone() {
+    let (s, root, mut ed) = project("chatnotes-updated", &["src/a.rs"]);
+    let dir = s.join("chats");
+    answer(&mut ed, "It is read in src/a.rs:3.");
+    answer(&mut ed, "It is set in src/a.rs:7.");
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    let saved = |id: &str, updated: u64, places: Option<serde_json::Value>| crate::chats::Saved {
+        id: id.into(),
+        title: "where?".into(),
+        updated,
+        rows: crate::chats::rows_of(&c.msgs),
+        plan: None,
+        usage: None,
+        places,
+        seq: crate::chats::seq(),
+    };
+    let places = places_json(&ed.workspace.claude.notes, &c.msgs);
+    let (older, newer) = (saved("older", 1000, places), saved("newer", 2000, None));
+    crate::chats::save(&dir, &root, older);
+    crate::chats::save(&dir, &root, newer);
+    ed.chats_dir = Some(dir.clone());
+    // (claude a stand-in: what it's sent, never a process)
+    let (tx, _rx) = std::sync::mpsc::channel();
+    ed.claude_lines = Some(tx);
+    let older = crate::chats::load(&dir, &root).into_iter().find(|c| c.id == "older").unwrap();
+    crate::chat::continue_with(&mut ed, older);
+    ed.open(&root.join("src/a.rs")).unwrap();
+    feed(&mut ed, "3G");
+    crate::typed::execute(&mut ed, "note-close").unwrap();
+    let places = |c: &crate::chats::Saved| c.places.as_ref().map_or(0, |p| p.as_array().unwrap().len());
+    crate::test_results::settle_until(&mut ed, |_| {
+        crate::chats::load(&dir, &root).iter().any(|c| c.id == "older" && places(c) == 1)
+    });
+    let list: Vec<_> = crate::chats::load(&dir, &root).into_iter().map(|c| (c.id, c.updated)).collect();
+    assert_eq!(list, [("newer".to_string(), 2000), ("older".to_string(), 1000)]);
+}
+
 /// The reviewer's note 36, through a real keep: an answer's place in an added folder has its line's text in the store,
 /// what finds the line again on a continue.
 #[test]

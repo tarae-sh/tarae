@@ -713,6 +713,9 @@ pub struct Chat {
     /// claude's id for this conversation (its `session_id`, from `init`) · the one the next process resumes.
     pub conversation: Option<String>,
     resume: Option<String>,
+    /// When this conversation last had a message or a turn's end (unix seconds, `chats::Saved.updated`) — None: not
+    /// yet. What's done to its notes, a close or a restart never moves it: the picker's order and age say the talk.
+    said_at: Option<u64>,
     /// Earlier conversations, newest first — the empty chat offers the latest, `C-p` picks one.
     pub past: Vec<crate::chats::Past>,
     /// Claude's plan for this conversation (`plan.rs`) — pinned under the title.
@@ -1059,6 +1062,7 @@ impl Chat {
         self.web_hosts.clear();
         self.web_refused.clear();
         self.framed = false;
+        self.said_at = None;
     }
 
     pub(crate) fn new() -> Self {
@@ -1119,6 +1123,7 @@ impl Chat {
             screen: None,
             conversation: None,
             resume: None,
+            said_at: None,
             past: Vec::new(),
             plan: None,
             models: Vec::new(),
@@ -1486,6 +1491,7 @@ fn continue_from(ed: &mut Editor, saved: crate::chats::Saved, spawn: bool, back:
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     c.conversation = Some(saved.id.clone());
     c.resume = Some(saved.id.clone());
+    c.said_at = Some(saved.updated);
     c.scroll = 0;
     c.follow.new_turn();
     // (its turns, cost so far and cache, as far as they were kept)
@@ -1639,7 +1645,7 @@ fn kept_of(
         places: crate::chatnotes::places_json(&l.claude.notes, &c.msgs),
         id,
         title,
-        updated: crate::chats::now(),
+        updated: c.said_at.unwrap_or_else(crate::chats::now),
         rows: crate::chats::rows_of(&c.msgs),
         plan,
         seq: crate::chats::seq(),
@@ -1648,7 +1654,10 @@ fn kept_of(
 }
 
 /// The turn ended: the conversation is kept (on a worker) — its rows and claude's id for it.
-fn keep(ed: &Editor) {
+fn keep(ed: &mut Editor) {
+    if let Some(c) = &mut ed.workspace.claude.chat {
+        c.said_at = Some(crate::chats::now());
+    }
     let Some((dir, roots, saved)) = kept(ed) else { return };
     ed.events.jobs().background(move || crate::chats::save_in(&dir, &roots, saved));
 }
@@ -1656,11 +1665,11 @@ fn keep(ed: &Editor) {
 /// Its answers' notes changed (`chatnotes::kept_sync`): the conversation kept again with them — with the chat closed, as
 /// it stood then (`Notes.left`: a question whose turn it cut off is in no store yet, and `back` counts from the newest).
 pub fn keep_places(ed: &Editor) {
-    if ed.workspace.claude.chat.is_some() {
-        return keep(ed);
-    }
-    let (Some(dir), Some(saved)) = (ed.chats_dir.clone(), left_kept(ed)) else { return };
-    let roots = roots_of(&ed.workspace);
+    let saved = match ed.workspace.claude.chat.is_some() {
+        true => kept(ed),
+        false => ed.chats_dir.clone().zip(left_kept(ed)).map(|(dir, s)| (dir, roots_of(&ed.workspace), s)),
+    };
+    let Some((dir, roots, saved)) = saved else { return };
     ed.events.jobs().background(move || crate::chats::save_in(&dir, &roots, saved));
 }
 
@@ -1748,7 +1757,10 @@ pub fn reset_said(ed: &mut Editor, said: &str) {
         let title = c.msgs.iter().find(|m| m.role == Role::User).map(|m| m.text.clone()).unwrap_or_default();
         c.past.retain(|p| p.id != id);
         let context = ed.workspace.claude.usage.context().map(|(used, _)| used);
-        c.past.insert(0, crate::chats::Past { id, title, updated: crate::chats::now(), context });
+        // (by its time, as the store has it: leaving it isn't talking in it)
+        let updated = c.said_at.unwrap_or_else(crate::chats::now);
+        let at = c.past.iter().position(|p| p.updated <= updated).unwrap_or(c.past.len());
+        c.past.insert(at, crate::chats::Past { id, title, updated, context });
     }
     c.continued = None;
     c.msgs.clear();
@@ -3243,6 +3255,9 @@ fn submit_as(
     for id in &pointed {
         chip.push_str(&format!(" · {id}"));
     }
+    if let Some(c) = &mut ed.workspace.claude.chat {
+        c.said_at = Some(crate::chats::now());
+    }
     let mut msg = Msg::new(Role::User, question, String::new());
     if shot.is_some() || !quotes.is_empty() {
         // A copy of what went, to open from its row (written on a worker): the screen's text, the quotes' blocks
@@ -4278,6 +4293,57 @@ pub fn apply_code(ed: &mut Editor) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #252: a message moves a conversation's time as it's sent — a note closed mid-turn keeps that, not the last turn's.
+    #[test]
+    fn a_message_moves_the_conversations_time() {
+        let mut ed = Editor::new(crate::config::Config::default());
+        let mut c = Chat::new();
+        c.said_at = Some(1000);
+        drop(stand_in(&mut c));
+        ed.workspace.claude.chat = Some(c);
+        let before = crate::chats::now();
+        assert!(submit(&mut ed, "and then?", None, None), "asked");
+        assert!(ed.workspace.claude.chat.as_ref().unwrap().said_at >= Some(before));
+    }
+
+    /// #252: a conversation left for a new one is listed at its own time, as the store has it — the empty chat offers
+    /// what `C-p` lists, never one just left as "just now".
+    #[test]
+    fn a_conversation_left_keeps_its_time_in_the_list() {
+        let mut ed = Editor::new(crate::config::Config::default());
+        // (a claude that isn't there: the new chat's start fails, the list is what's looked at)
+        ed.config.llm.command = "/nonexistent/no-claude-here".into();
+        let mut c = Chat::new();
+        (c.conversation, c.said_at) = (Some("older".into()), Some(1000));
+        let newer =
+            crate::chats::Past { id: "newer".into(), title: "t".into(), updated: 2000, context: None };
+        c.past = vec![newer];
+        ed.workspace.claude.chat = Some(c);
+        reset(&mut ed);
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        let list: Vec<_> = c.past.iter().map(|p| (p.id.as_str(), p.updated)).collect();
+        assert_eq!(list, [("newer", 2000), ("older", 1000)]);
+    }
+
+    /// #252: a turn's end is what moves a conversation's time (a keep of its places alone doesn't —
+    /// `chatnotes::tests::a_note_closed_leaves_the_conversations_time_alone`).
+    #[test]
+    fn a_turns_end_moves_the_conversations_time() {
+        let scratch = crate::scratch::Scratch::new("chat-said-at");
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.root = scratch.to_path_buf();
+        ed.chats_dir = Some(scratch.join("chats"));
+        let mut c = Chat::new();
+        (c.conversation, c.said_at) = (Some("c1".into()), Some(1000));
+        ed.workspace.claude.chat = Some(c);
+        let before = crate::chats::now();
+        keep(&mut ed);
+        let store = scratch.join("chats");
+        let root = scratch.to_path_buf();
+        crate::test_results::settle_until(&mut ed, |_| !crate::chats::load(&store, &root).is_empty());
+        assert!(crate::chats::load(&store, &root)[0].updated >= before);
+    }
 
     /// cardburden 4: where a command ran is its guard's — the run's own record, nothing guessed: the sandbox
     /// (Seatbelt; Linux's tier from its confinement), a socket granted (Docker's: past the sandbox, as outside),

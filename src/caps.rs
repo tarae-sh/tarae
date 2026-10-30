@@ -194,7 +194,9 @@ impl Caps {
     /// `storable` for home `home`.
     pub fn storable_in(g: &Grant, home: Option<&Path>) -> Scope {
         match g {
-            Grant::Read(p) if !crate::allow::keepable(p, home) => Scope::Once,
+            Grant::Read(p) if !crate::allow::storable_place(p, home) => Scope::Once,
+            // (a path that's no text: no store holds it — `allow::storable_place`)
+            Grant::Write(p) if p.to_str().is_none() => Scope::Once,
             // (a file named like a key outside the project, opened as a place where runs don't close the name —
             // Linux: as a key is, once)
             Grant::Read(p) if crate::sandbox::key_named_below(Path::new("/"), p) => Scope::Once,
@@ -778,8 +780,10 @@ mod tests {
     /// for the project.
     #[test]
     fn what_may_be_kept_and_for_how_long() {
+        use std::os::unix::ffi::OsStrExt as _;
         let home = Path::new("/h");
         let s = |g: Grant| Caps::storable_in(&g, Some(home));
+        let no_text = PathBuf::from(std::ffi::OsStr::from_bytes(b"/opt/caf\xe9"));
         for (g, top) in [
             (Grant::Read("/h/code/x".into()), Scope::Always),
             (Grant::Read("/opt/x".into()), Scope::Always),
@@ -795,6 +799,9 @@ mod tests {
             (Grant::Socket("/run/docker.sock".into()), Scope::Once),
             (Grant::Socket("/p/.tarae/x.sock".into()), Scope::ThisChat),
             (Grant::Write("/h/w".into()), Scope::Always),
+            // (a path that's no text: no store holds it)
+            (Grant::Read(no_text.clone()), Scope::Once),
+            (Grant::Write(no_text), Scope::Once),
             (Grant::Port(5432), Scope::Always),
             // (piece C, cards.md decision 4: always is `llm.sandbox-network`)
             (Grant::Host("example.invalid".into(), 443), Scope::Session),

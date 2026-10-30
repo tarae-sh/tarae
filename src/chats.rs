@@ -29,7 +29,8 @@ pub struct Saved {
     /// claude's id for the conversation (its `session_id`).
     pub id: String,
     pub title: String,
-    /// Unix seconds.
+    /// Unix seconds of its last message or turn's end (`Chat.said_at`) — never what's done to its notes, a close or a
+    /// restart.
     pub updated: u64,
     pub rows: Vec<Value>,
     /// Its plan (`plan.rs`), if Claude made one.
@@ -89,8 +90,9 @@ pub fn load(dir: &Path, root: &Path) -> Vec<Saved> {
     all
 }
 
-/// The store as it is: what `save` writes back, so a file gone for a while (another branch) costs no conversation its
-/// place.
+/// The store as it is, no place marked `gone`: what `save_in` merges into, so a file gone for a while (another branch)
+/// costs the conversations it doesn't replace nothing. The one it saves holds what its notes hold then: a place a
+/// continue left out is gone from it.
 fn stored(dir: &Path, root: &Path) -> Vec<Saved> {
     let Ok(body) = std::fs::read_to_string(file(dir, root)) else { return Vec::new() };
     let Ok(v) = serde_json::from_str::<Value>(&body) else { return Vec::new() };
@@ -185,8 +187,9 @@ pub fn save(dir: &Path, root: &Path, chat: Saved) {
     save_in(dir, &[root.to_path_buf()], chat);
 }
 
-/// `chat` in front, replacing its older self (on a worker — read, merge, write): `roots` the project first (whose store
-/// it is), then its added folders — where its places' files are read (`texts_read`).
+/// `chat` replacing its older self (on a worker — read, merge, write), the newest by `updated` in front, so a keep of its
+/// places alone moves it past no one: `roots` the project first (whose store it is), then its added folders — where its
+/// places' files are read (`texts_read`).
 pub fn save_in(dir: &Path, roots: &[PathBuf], mut chat: Saved) {
     let root = &roots[0];
     let _one = SAVING.lock().unwrap_or_else(|e| e.into_inner());
@@ -199,7 +202,8 @@ pub fn save_in(dir: &Path, roots: &[PathBuf], mut chat: Saved) {
         texts_read(roots, places, before);
     }
     all.retain(|c| c.id != chat.id);
-    all.insert(0, chat);
+    let at = all.iter().position(|c| c.updated <= chat.updated).unwrap_or(all.len());
+    all.insert(at, chat);
     all.truncate(KEEP);
     let chats: Vec<Value> = all
         .into_iter()
@@ -209,7 +213,8 @@ pub fn save_in(dir: &Path, roots: &[PathBuf], mut chat: Saved) {
         })
         .collect();
     let times: Vec<Value> = chats.iter().map(|c| json!([c["id"], c["updated"]])).collect();
-    let body = json!({ "root": root, "chats": chats }).to_string();
+    // (null where it's no text: nothing reads it, the file's name is the key)
+    let body = json!({ "root": root.to_str(), "chats": chats }).to_string();
     let _ = std::fs::create_dir_all(dir);
     if crate::disk::write_atomic(&file(dir, root), |w| w.write_all(body.as_bytes())).is_ok() {
         let times = json!({ "times": times }).to_string();
@@ -260,7 +265,8 @@ pub fn rows_of(msgs: &[Msg]) -> Vec<Value> {
             if let Some(l) = &m.look {
                 v["look"] = json!({
                     "verb": l.verb, "what": l.what, "pattern": l.pattern, "range": l.range,
-                    "path": l.link.as_ref().map(|k| k.path.clone()), "line": l.link.as_ref().map(|k| k.line),
+                    // (null where it's no text: the row comes back with no link)
+                    "path": l.link.as_ref().and_then(|k| k.path.to_str()), "line": l.link.as_ref().map(|k| k.line),
                 });
             }
             v
@@ -539,6 +545,45 @@ mod tests {
         );
         assert_eq!(ago(100, 100), "just now");
         assert_eq!(ago(0, 7300), "2h ago");
+    }
+
+    /// #251: a project or a read's file whose path is no text costs the conversation nothing (`json!` panics on one, a
+    /// release build aborts): kept under the project's own key, that row without its link.
+    #[test]
+    fn a_path_thats_no_text_is_kept_out_of_the_store_not_its_conversation() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let scratch = crate::scratch::Scratch::new("chats-no-text");
+        let root = Path::new(std::ffi::OsStr::from_bytes(b"/p/caf\xe9"));
+        let mut tool = Msg::new(Role::Tool, "", "");
+        tool.look = Some(Look {
+            verb: "read",
+            what: "a.rs".into(),
+            pattern: false,
+            range: "L1".into(),
+            link: Some(Link { path: root.join("a.rs"), line: 0 }),
+        });
+        let rows = rows_of(&[tool]);
+        save(&scratch, root, Saved { rows, places: None, ..with_places("s1", Vec::new()) });
+        let all = load(&scratch, root);
+        assert_eq!(all.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["s1"]);
+        assert_eq!(msgs_of(&all[0].rows)[0].look.as_ref().unwrap().link, None);
+    }
+
+    /// #252: the order is by `updated`, so a keep of a conversation's places alone — a note closed, its time as it was —
+    /// moves it past no one (the continue picker's order, and which go past `KEEP`).
+    #[test]
+    fn a_keep_that_leaves_its_time_leaves_its_place_in_the_list() {
+        let scratch = crate::scratch::Scratch::new("chats-order");
+        let root = Path::new("/p/project");
+        let at = |id: &str, updated: u64| Saved { updated, ..with_places(id, Vec::new()) };
+        for (id, t) in [("older", 10), ("middle", 20), ("newest", 30), ("older", 10)] {
+            save(&scratch, root, at(id, t));
+        }
+        let order = |all: Vec<Saved>| all.into_iter().map(|c| (c.id, c.updated)).collect::<Vec<_>>();
+        let want = [("newest", 30), ("middle", 20), ("older", 10)].map(|(id, t)| (id.to_string(), t));
+        assert_eq!(order(load(&scratch, root)), want);
+        save(&scratch, root, at("older", 40));
+        assert_eq!(load(&scratch, root)[0].id, "older", "a message puts it in front");
     }
 
     /// A conversation `id` kept with `places`, one answer's.

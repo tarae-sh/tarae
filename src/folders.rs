@@ -33,7 +33,8 @@ pub struct Folder {
 
 impl Folder {
     pub fn json(&self) -> serde_json::Value {
-        serde_json::json!({ "at": self.at, "name": self.name })
+        // (null where it's no text: never a lossy path, it could be a folder Claude was never given)
+        serde_json::json!({ "at": self.at.to_str(), "name": self.name })
     }
 
     /// One kept (`json`) — judged again, its instruction files looked for again, as it comes back (`folders_back`).

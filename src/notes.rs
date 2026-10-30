@@ -201,6 +201,8 @@ pub struct Notes {
     pub noted_now: bool,
     /// The last answer's places, waiting for what their names come to (`chatnotes::sync`).
     pub answer: Option<crate::chatnotes::Waiting>,
+    /// A note on a path that's no text was said not to last (`unkept_said`) — once.
+    unkept_said: bool,
 }
 
 /// The `note` tool as the MCP server lists it.
@@ -234,8 +236,18 @@ pub(crate) fn find_mut(ed: &mut Editor, id: u64) -> Option<&mut Note> {
     ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id)
 }
 
+/// A note on `path` is about to count for the restore file: said, the first time, where its path is no text and
+/// `to_json` will leave it out — at the save, on quit, nobody's left to read it.
+fn unkept_said(ed: &mut Editor, path: &Path) {
+    if path.to_str().is_none() && !std::mem::replace(&mut ed.workspace.claude.notes.unkept_said, true) {
+        let said = format!("A note on {} stays only until you quit: its path isn't text", path.display());
+        ed.set_warning(said);
+    }
+}
+
 /// A new note on `lines` of `path`.
 pub fn add(ed: &mut Editor, path: &Path, lines: Range<usize>, by: By, text: &str) -> u64 {
+    unkept_said(ed, path);
     ed.workspace.claude.notes.next += 1;
     let id = ed.workspace.claude.notes.next;
     ed.workspace.claude.notes.list.push(Note {
@@ -398,7 +410,9 @@ pub(crate) fn nearest_line(text: &ropey::Rope, line: usize, want: &str) -> isize
     0
 }
 
-/// A session's notes as saved in the restore file: path, lines, the first line's text, the thread.
+/// A session's notes as saved in the restore file: path, lines, the first line's text, the thread. One on a path that's
+/// no text is left out (`json!` panics on it, and a lossy path could be another file): it lasts until you quit, said the
+/// first time (`unkept_said`: as a note is made, or a chat note answered into a thread).
 pub fn to_json(notes: &Notes, docs: &[crate::document::Document]) -> Vec<Value> {
     notes
         .list
@@ -406,7 +420,7 @@ pub fn to_json(notes: &Notes, docs: &[crate::document::Document]) -> Vec<Value> 
         // (a finding still being placed has the snapshot's lines and a copy that won't outlive a restart: not
         // kept on the wrong lines — its placing lands within the moment)
         // (and the chat's answers' places: kept with their conversation, never here — focus A1b)
-        .filter(|n| !n.placing && !bare_chat(n))
+        .filter(|n| !n.placing && !bare_chat(n) && n.path.to_str().is_some())
         .map(|n| {
             let anchor = n.anchor.clone().or_else(|| {
                 let doc = docs.iter().find(|d| d.path.as_deref() == Some(n.path.as_path()))?;
@@ -676,6 +690,7 @@ pub fn pin_finding(
         }
         return id;
     };
+    unkept_said(ed, path);
     ed.workspace.claude.notes.next += 1;
     let id = ed.workspace.claude.notes.next;
     ed.workspace.claude.notes.list.push(Note {
@@ -1281,6 +1296,9 @@ pub fn submit(ed: &mut Editor, target: Option<u64>, text: &str) {
             let n = find_mut(ed, id).expect("checked");
             n.thread.push(Entry { by: By::You, text: text.to_string(), draft });
             n.waiting = !draft;
+            // (a chat note answered is a thread now, the restore file's)
+            let path = n.path.clone();
+            unkept_said(ed, &path);
             id
         }
         None => {
@@ -1728,6 +1746,50 @@ mod tests {
 
     fn editor() -> Editor {
         Editor::new(crate::config::Config::default())
+    }
+
+    /// #251: a note on a path that's no text (`json!` panics on it, a release build aborts) is left out of what's saved
+    /// and stays until you quit, said once as it's made — at the save, on quit, no one would read it.
+    #[test]
+    fn a_note_on_a_path_thats_no_text_lasts_until_you_quit_said_once() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let bad = Path::new(std::ffi::OsStr::from_bytes(b"/p/caf\xe9.rs"));
+        let mut ed = editor();
+        add(&mut ed, Path::new("/p/a.rs"), 0..1, By::You, "kept");
+        add(&mut ed, bad, 0..1, By::You, "not kept");
+        add(&mut ed, bad, 1..2, By::You, "nor this");
+        let saved = to_json(&ed.workspace.claude.notes, &[]);
+        assert_eq!(saved.iter().map(|n| &n["path"]).collect::<Vec<_>>(), ["/p/a.rs"]);
+        assert_eq!(ed.workspace.claude.notes.list.len(), 3, "all there until you quit");
+        let said = ed.messages.iter().filter(|m| m.2.contains("its path isn't text")).count();
+        assert_eq!(said, 1, "{:?}", ed.messages);
+    }
+
+    /// #251's review: what doesn't come through `add` is said too — a reviewer's finding placed from its snapshot, and
+    /// a chat note answered into a thread (`to_json` leaves both out).
+    #[test]
+    fn a_finding_or_an_answered_chat_note_on_such_a_path_is_said() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let bad = Path::new(std::ffi::OsStr::from_bytes(b"/p/caf\xe9.rs"));
+        let said = |ed: &Editor| ed.messages.iter().any(|m| m.2.contains("its path isn't text"));
+        let s = crate::scratch::Scratch::new("notes-no-text");
+        let root = std::fs::canonicalize(&*s).unwrap();
+        std::fs::write(root.join("a.rs"), "one\n").unwrap();
+        for args in [&["init", "-q", "-b", "main"][..], &["add", "-A"]] {
+            crate::snapread::tests::git_in(&root, args, b"");
+        }
+        let tree = crate::snapshot::snap(&root).unwrap().id;
+        let snap = std::sync::Arc::new(crate::snapread::Snap::list(&root, &tree).unwrap());
+        let mut ed = editor();
+        pin_finding(&mut ed, bad, 0..1, "a finding", None, Some(("a.rs".into(), snap)));
+        assert!(said(&ed), "{:?}", ed.messages);
+        let mut ed = editor();
+        ed.workspace.root = root.clone();
+        ed.config.llm.command = root.join("no-claude-here").display().to_string();
+        let id = add_said(&mut ed, bad, 0..1, ("s".into(), "p".into()), Vec::new(), None);
+        assert!(!said(&ed), "a chat note's words are the conversation's");
+        submit(&mut ed, Some(id), "why?");
+        assert!(said(&ed), "{:?}", ed.messages);
     }
 
     /// frictions30's review (5): a reply Claude never saw is taken back by itself — a reply queued while Claude worked

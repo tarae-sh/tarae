@@ -1705,20 +1705,22 @@ pub fn since_here(ed: &Editor) -> Option<String> {
 /// root: each file's keys (hex) and added lines.
 pub fn viewed_snapshot(ed: &Editor) -> Value {
     let sessions = ed.sessions_in_order().into_iter().filter(|s| !s.viewed.is_empty());
-    Value::Array(sessions.map(|s| json!({ "root": s.root, "files": viewed_json(s) })).collect())
+    let session =
+        |s: &crate::workspace::Workspace| Some(json!({ "root": s.root.to_str()?, "files": viewed_json(s) }));
+    Value::Array(sessions.filter_map(session).collect())
 }
 
 /// A session's viewed marks as `:restart`'s state and the restore file keep them: each file's keys (hex),
 /// added lines and text's hash — never a file named like a key's (its lines' text: the review of frictions36;
-/// marked again after a restart).
+/// marked again after a restart), nor one whose path is no text (`notes::to_json`).
 pub fn viewed_json(s: &crate::workspace::Workspace) -> Vec<Value> {
     s.viewed
         .iter()
         .filter(|(p, _)| !crate::sandbox::key_named(&s.root, p))
-        .map(|(p, v)| {
+        .filter_map(|(p, v)| {
             let keys: Vec<String> = v.keys.iter().map(|k| crate::risk::key_hex(*k)).collect();
             let added: Vec<Value> = v.added.iter().map(|(t, n)| json!([t, n])).collect();
-            json!({ "path": p, "keys": keys, "added": added, "text": v.text })
+            Some(json!({ "path": p.to_str()?, "keys": keys, "added": added, "text": v.text }))
         })
         .collect()
 }
@@ -2076,7 +2078,7 @@ pub fn carried(r: &CodeReview, on: Option<&Path>, turns: usize) -> Option<Value>
         Base::Replay { .. } => return None,
     };
     let current = on.and_then(|p| r.files.iter().find(|f| f.path == p)).map(|f| f.rel.clone());
-    Some(json!({ "root": r.root, "base": base, "current": current }))
+    Some(json!({ "root": r.root.to_str()?, "base": base, "current": current }))
 }
 
 /// After `:restart`: the review `carried` kept, open again in the session it's applied in — against the same
@@ -5179,6 +5181,23 @@ pub fn send_as(ed: &mut Editor, lines: Option<bool>) {
 mod tests {
     use super::*;
     use crate::test_results::settle_until;
+
+    /// #251: a viewed file or a checkout whose path is no text is left out of what's kept (`json!` panics on one, a
+    /// release build aborts); the marks of the others stay.
+    #[test]
+    fn a_viewed_mark_on_a_path_thats_no_text_isnt_kept() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let bad = PathBuf::from(std::ffi::OsStr::from_bytes(b"/p/caf\xe9"));
+        let mut ed = Editor::new(crate::config::Config::default());
+        let mark = || Viewed::new(Default::default(), Vec::new(), None);
+        ed.workspace.viewed.insert(bad.join("a.rs"), mark());
+        ed.workspace.viewed.insert(PathBuf::from("/p/b.rs"), mark());
+        let kept = viewed_json(&ed.workspace);
+        assert_eq!(kept.iter().map(|v| &v["path"]).collect::<Vec<_>>(), ["/p/b.rs"]);
+        assert_eq!(viewed_snapshot(&ed).as_array().map(Vec::len), Some(1));
+        ed.workspace.root = bad;
+        assert_eq!(viewed_snapshot(&ed), json!([]));
+    }
 
     /// After a bring card's `h`, the status line says how back to the card: `C-q` — inside zellij its twin, the
     /// inbox (`zellij.rs`).

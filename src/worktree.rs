@@ -157,8 +157,10 @@ impl Kept {
         Kept { parent, ..Kept::of(l) }
     }
 
+    /// As kept — a path that's no text null, a session or a parent `from_json` then doesn't find (a lossy one could be
+    /// another checkout).
     fn json(&self) -> Value {
-        let mut v = json!({ "root": self.root, "name": self.name, "branch": self.branch, "base": self.base,
+        let mut v = json!({ "root": self.root.to_str(), "name": self.name, "branch": self.branch, "base": self.base,
             "billing": self.billing.map(crate::billing::Billing::name) });
         let allowed = self.allowed.entries("session");
         if !allowed.is_empty() {
@@ -168,7 +170,7 @@ impl Kept {
             v["folders"] = self.folders.iter().map(crate::folders::Folder::json).collect();
         }
         if let Some(p) = &self.parent {
-            v["parent"] = json!(p);
+            v["parent"] = json!(p.to_str());
         }
         if let Some(m) = &self.mark {
             v["mark"] = json!(m);
@@ -1387,11 +1389,12 @@ pub(crate) fn save(
         }
     }
     let rev = crate::storewrite::Rev { n: now.n + 1, tag: crate::storewrite::tag() };
-    taken
-        .extend(takes.iter().map(|(root, what)| json!({ "root": root, "what": what, "n": rev.n, "at": at })));
+    taken.extend(
+        takes.iter().map(|(r, what)| json!({ "root": r.to_str(), "what": what, "n": rev.n, "at": at })),
+    );
     let sessions: Vec<Value> = s.sessions.iter().map(Kept::json).collect();
-    let body =
-        json!({ "repo": common, "front": s.front, "sessions": sessions, "rev": rev.json(), "taken": taken });
+    let front = s.front.as_deref().and_then(Path::to_str);
+    let body = json!({ "repo": common.to_str(), "front": front, "sessions": sessions, "rev": rev.json(), "taken": taken });
     let body = body.to_string();
     crate::disk::write_atomic(&file, |w| std::io::Write::write_all(w, body.as_bytes()))?;
     Ok((rev, left))
@@ -1416,7 +1419,8 @@ pub fn snapshot(ed: &Editor) -> Value {
     let landed = ed.workspace_store.landed.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let seen = *ed.workspace_store.seen.lock().unwrap_or_else(|e| e.into_inner());
     let repo = landed.or_else(|| ed.workspace_store.repo.clone());
-    json!({ "sessions": sessions, "front": ed.workspace.root, "repo": repo, "seen": seen.json() })
+    let repo = repo.as_deref().and_then(Path::to_str);
+    json!({ "sessions": sessions, "front": ed.workspace.root.to_str(), "repo": repo, "seen": seen.json() })
 }
 
 /// Back from `:restart`'s state, the front one in front — before its files open. The names of those whose
@@ -1539,8 +1543,8 @@ impl Editor {
             ),
         };
         let again = !takes.is_empty();
-        let ticket =
-            crate::storewrite::ticket(&dir, said, json!({ "takes": takes }), again, vec![SAVED.into()]);
+        let carry = json!({ "takes": takes.iter().map(|(r, w)| (r.to_str(), w)).collect::<Vec<_>>() });
+        let ticket = crate::storewrite::ticket(&dir, said, carry, again, vec![SAVED.into()]);
         self.events.shared_jobs().spawn_kept(move || {
             // (none: cut off — a test's process that ended: nothing written, nothing back)
             let went = crate::storewrite::turn(ticket).map(|turn| {
@@ -7329,5 +7333,51 @@ mod tests {
         std::fs::write(&file, before.to_string()).unwrap();
         let back = load(&dir, &common);
         assert_eq!((back.sessions, back.front), (vec![kept], Some(PathBuf::from("/wt/a"))));
+    }
+
+    /// #251: a take-back of a checkout that's no text is no panic where its ticket is made (on the main loop): nothing
+    /// reads such a root back, and the write goes on.
+    #[test]
+    fn a_take_back_of_a_checkout_thats_no_text_is_written() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let scratch = crate::scratch::Scratch::new("sessions-take-no-text");
+        let dir = scratch.join("sessions");
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.root = scratch.to_path_buf();
+        (ed.workspace_store.dir, ed.workspace_store.restored) = (Some(dir.clone()), true);
+        let bad = PathBuf::from(std::ffi::OsStr::from_bytes(b"/wt/caf\xe9"));
+        ed.workspaces_taken_back(vec![(bad, "x".to_string())]);
+        crate::test_results::settle_until(&mut ed, |_| crate::storewrite::pending(&dir).is_empty());
+        assert!(!ed.messages.iter().any(|m| m.2.contains("couldn't write")), "{:?}", ed.messages);
+    }
+
+    /// #251: a path that's no text — a checkout's, its parent's, a folder's, the repository's — is no panic in the store
+    /// (`json!` on one, a release build aborts) and comes back as nothing, never a lossy path: that could be another's.
+    #[test]
+    fn a_path_thats_no_text_comes_back_as_nothing() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let scratch = crate::scratch::Scratch::new("sessions-no-text");
+        let dir = scratch.join("sessions");
+        let bad = PathBuf::from(std::ffi::OsStr::from_bytes(b"/wt/caf\xe9"));
+        let folder = crate::folders::Folder { at: bad.clone(), name: "f".into(), instructions: Vec::new() };
+        let kept = |root: &str| Kept {
+            root: root.into(),
+            name: "a".into(),
+            branch: None,
+            base: None,
+            billing: None,
+            allowed: Default::default(),
+            folders: vec![folder.clone()],
+            parent: Some(bad.clone()),
+            mark: None,
+        };
+        let sessions = vec![Kept { root: bad.clone(), ..kept("") }, kept("/wt/a")];
+        let s = Stored { sessions, front: Some(bad.clone()), rev: Default::default() };
+        let takes = [(bad.clone(), "x".to_string())];
+        save(&dir, &bad, s, &takes, Default::default()).unwrap();
+        let back = load(&dir, &bad);
+        assert_eq!(back.front, None);
+        let want = Kept { folders: Vec::new(), parent: None, ..kept("/wt/a") };
+        assert_eq!(back.sessions, [want]);
     }
 }
