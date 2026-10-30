@@ -346,6 +346,90 @@ fn note_close_acts_at_your_cursor_while_follow_holds_the_view() {
     assert_eq!(lines(&ed), [40]);
 }
 
+/// Follow leading at src/c.rs:40, the turn's card open there, your cursor on line 1 — an answer's note there when `yours`.
+fn led_apart(name: &str, yours: bool) -> (crate::scratch::Scratch, PathBuf, Editor) {
+    let (s, root, mut ed) = project(name, &["src/a.rs"]);
+    let long: String = (1..=60).map(|i| format!("let line_{i} = {i};\n")).collect();
+    std::fs::write(root.join("src/c.rs"), long).unwrap();
+    ed.open(&root.join("src/a.rs")).unwrap();
+    ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
+    screen(&mut ed);
+    if yours {
+        answer(&mut ed, "It starts in src/c.rs:1.");
+    }
+    answer(&mut ed, "It is read in src/c.rs:40.");
+    screen(&mut ed);
+    let claudes = newest_of(&ed, |n| n.lines.start == 39).map(|n| n.id);
+    assert_eq!(
+        (crate::follow::view_line(&ed), ed.cursor_line(), ed.workspace.claude.notes.open),
+        (Some(39), 0, claudes),
+        "Claude's place and its card, your cursor apart"
+    );
+    (s, root, ed)
+}
+
+/// Follow paused and the view back at your cursor (line 1).
+fn yours_again(ed: &mut Editor) -> bool {
+    let paused = ed.workspace.claude.chat.as_ref().unwrap().follow.paused;
+    paused
+        && crate::follow::view_line(ed).is_none()
+        && code_rows(ed).iter().any(|r| r.contains("let line_1 = 1;"))
+}
+
+/// #250: `space n` while follow holds the view replies to the note at your cursor, never the one at Claude's place; follow
+/// pauses and the view comes back to your cursor. With none on your line it's a new note there, never a reply to the
+/// turn's card at Claude's place — and that card says neither `space n` nor `enter`.
+#[test]
+fn space_n_acts_at_your_cursor_while_follow_holds_the_view() {
+    use crate::editor::PromptKind;
+    let kind = |ed: &Editor| ed.prompt.as_ref().map(|p| p.kind);
+    let (_s, _root, mut ed) = led_apart("chatnotes-reply-follow", true);
+    let yours = newest_of(&ed, |n| n.lines.start == 0).unwrap().id;
+    feed(&mut ed, " n");
+    assert!(matches!(kind(&ed), Some(PromptKind::Note(Some(i))) if i == yours), "{:?}", kind(&ed));
+    assert!(yours_again(&mut ed), "follow paused, the view back at your cursor");
+    let (_s, _root, mut ed) = led_apart("chatnotes-reply-follow-none", false);
+    let rows = code_rows(&mut ed).join("\n");
+    assert!(rows.contains("╭─ chat") && !rows.contains("space n") && !rows.contains("enter"), "{rows}");
+    feed(&mut ed, " n");
+    assert!(matches!(kind(&ed), Some(PromptKind::Note(None))), "{:?}", kind(&ed));
+    assert!(yours_again(&mut ed), "follow paused, the view back at your cursor");
+}
+
+/// #250: `enter` while follow holds the view opens the card of the note at your cursor — never shuts the turn's card at
+/// Claude's place; follow pauses and the view comes back to your cursor. With none on your line `enter` isn't the card's
+/// at all; `q` and `esc` still close the card that's open — shutting what's in sight acts on no note.
+#[test]
+fn enter_acts_at_your_cursor_while_follow_holds_the_view() {
+    use crate::key::{Code, Key};
+    let (_s, _root, mut ed) = led_apart("chatnotes-enter-follow", true);
+    let yours = newest_of(&ed, |n| n.lines.start == 0).unwrap().id;
+    feed(&mut ed, "<ret>");
+    assert_eq!(ed.workspace.claude.notes.open, Some(yours), "your note's card");
+    assert!(yours_again(&mut ed), "follow paused, the view back at your cursor");
+    let (_s, _root, ed) = led_apart("chatnotes-enter-follow-none", false);
+    let keys = crate::notes::card_keys(&ed);
+    assert!(!keys.contains(&Key::plain(Code::Enter)), "{keys:?}");
+    assert!(keys.contains(&Key::plain(Code::Char('q'))) && keys.contains(&Key::plain(Code::Esc)), "{keys:?}");
+}
+
+/// #250: `]n` while follow holds the view walks on from the note at your cursor, never from the one at Claude's place.
+#[test]
+fn next_note_walks_on_from_your_cursor_while_follow_holds_the_view() {
+    let (_s, _root, mut ed) = led_apart("chatnotes-step-follow", true);
+    crate::notes::tool_call(&mut ed, &serde_json::json!({"path": "src/c.rs", "line": 20, "text": "pinned"}))
+        .unwrap();
+    ed.workspace.claude.notes.focus = None;
+    assert_ne!(crate::follow::view_line(&ed).unwrap_or(0), 0, "follow holds the view apart");
+    // (the walk: the newest answer's 40, then 1 and 20 by line)
+    feed(&mut ed, "]n");
+    assert_eq!(ed.cursor_line(), 19, "the next after yours");
+    let paused = ed.workspace.claude.chat.as_ref().unwrap().follow.paused;
+    assert!(paused && crate::follow::view_line(&ed).is_none(), "follow paused");
+    let rows = code_rows(&mut ed).join("\n");
+    assert!(rows.contains("let line_20 = 20;") && rows.contains("pinned"), "its card in sight: {rows}");
+}
+
 /// Reading step 2 over: a turn's card leaves your cursor where it was, so its keys are said only where they act on it.
 /// With no note on your line `space n` and `enter` are the card's, its words pressed are the card's wherever you are;
 /// on another note's line the keys are that note's and the card doesn't say them, nor counts that line's notes as its own.

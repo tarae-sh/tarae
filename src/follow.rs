@@ -697,17 +697,24 @@ fn in_sight(ed: &Editor, path: &Path, lines: &Range<usize>) -> bool {
     doc.path.as_deref() == Some(path) && lines.clone().all(|l| shown.contains(&l)) && !shown.is_empty()
 }
 
-/// The walk-through's stop the cursor is on, or the view while follow holds it (its file, lines and why) — `space n`
-/// there asks about it.
+/// The walk-through's stop on screen: the view's while follow holds it, else your cursor's (its file, lines and why) —
+/// the follow card stays for it; `space n` asks about `stop_yours`.
 pub fn stop_here(ed: &Editor) -> Option<(PathBuf, Range<usize>, String)> {
+    // (follow holding the view: the stop on screen is where it holds it — your cursor is elsewhere)
+    stop_at(ed, view_line(ed).unwrap_or_else(|| ed.cursor_line()))
+}
+
+/// The walk-through's stop your cursor is on — what `space n` asks about: a key of yours acts at your cursor, never at
+/// the stop follow holds the view on (#250).
+pub fn stop_yours(ed: &Editor) -> Option<(PathBuf, Range<usize>, String)> {
+    stop_at(ed, ed.cursor_line())
+}
+
+fn stop_at(ed: &Editor, line: usize) -> Option<(PathBuf, Range<usize>, String)> {
     let g = ed.workspace.claude.chat.as_ref()?.follow.gaze.as_ref()?;
     let (path, lines, why) = (g.path.as_ref()?, g.lines.clone()?, g.why.clone()?);
     g.step?;
-    let doc = ed.doc();
-    // (follow holding the view: the stop on screen is where it holds it — your cursor is elsewhere)
-    let line =
-        view_line(ed).unwrap_or_else(|| doc.text.byte_to_line(doc.selection().primary().cursor(&doc.text)));
-    (doc.path.as_ref() == Some(path) && lines.contains(&line)).then(|| (path.clone(), lines, why))
+    (ed.doc().path.as_ref() == Some(path) && lines.contains(&line)).then(|| (path.clone(), lines, why))
 }
 
 /// The user is asking about what's showing: the walk-through holds still (the stop stays on the card).

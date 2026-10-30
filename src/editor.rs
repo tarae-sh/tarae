@@ -7843,10 +7843,20 @@ mod tests {
             ed.screen.thought_card.get().is_some()
         };
         assert!(card(&mut ed), "the stop's card stays");
+        // (`space n` acts at your cursor, #250: the card says it asks about the stop only once your cursor is in it)
+        let asks = |ed: &mut Editor| {
+            let mut bytes = Vec::new();
+            crate::term::render(ed, &mut bytes, 100, 30).unwrap();
+            let mut vt = vt100::Parser::new(30, 100, 0);
+            vt.process(&bytes);
+            vt.screen().contents().contains("ask about this")
+        };
+        assert!(!asks(&mut ed), "your cursor elsewhere: not said");
         feed(&mut ed, "<esc><esc>8G");
         // (as the loop sees each key: follow's look after it — `follow::watch`)
         ed.handle_event(crate::event::Event::Resize);
         assert!(card(&mut ed), "your cursor at the stop");
+        assert!(asks(&mut ed), "your cursor at the stop: said");
         assert!(!ed.workspace.claude.chat.as_ref().unwrap().follow.active(), "your move took over");
         feed(&mut ed, "gg");
         assert!(!card(&mut ed), "gone once the cursor leaves");
@@ -8547,9 +8557,11 @@ mod tests {
             (n.path.as_path(), n.lines.clone(), n.gist()),
             (lib.as_path(), 2..3, "Line 3 repeats line 2.")
         );
-        // Follow went to the note: its card is under the cursor
+        // Follow went to the note: its line in sight, your cursor apart — `space n` acts at your cursor (#250), so you go
+        // there first
         assert_eq!(ed.doc().path.as_deref(), Some(lib.as_path()));
-        assert_eq!(crate::notes::here(&ed).map(|n| n.id), Some(1));
+        assert_eq!(crate::follow::view_line(&ed), Some(2));
+        assert_eq!(crate::notes::here(&ed).map(|n| n.id), None, "not at your cursor");
         // The fake logs our control_response when it reads it — wait for that
         let logged = |needle: &str| {
             let end = std::time::Instant::now() + crate::test_results::PATIENCE;
@@ -8568,7 +8580,7 @@ mod tests {
         );
         assert!(sent.contains("\"request_id\":\"c7\"") && sent.contains("note #1 pinned at"), "{sent}");
         // Reply in place — the keys stay in the editor
-        feed(&mut ed, "<esc><esc><space>nwhy?<ret>");
+        feed(&mut ed, "<esc><esc>3G<space>nwhy?<ret>");
         assert!(ed.workspace.claude.notes.list[0].waiting);
         assert!(
             !ed.workspace.is_at(crate::workspace::At::Chat),

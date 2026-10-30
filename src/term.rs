@@ -14586,7 +14586,7 @@ fn draw_follow_card(
     // (only once the answer is done — a question can't go while Claude still writes)
     let asking = !c.busy()
         && gaze.is_some_and(|g| g.step.is_some() && why.is_some())
-        && crate::follow::stop_here(editor).is_some()
+        && crate::follow::stop_yours(editor).is_some()
         && !crate::codereview::drafting(editor);
     // Its keys, on its bottom line in order of use (the user, 2026-10-25: a floating card's keys are always there,
     // never a row inside): a stop's question after the turn; minimized, how to stop it or bring the panel back; the

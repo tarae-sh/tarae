@@ -749,7 +749,8 @@ reading. It's plain text in the answer: no extra requests, a few words per stop.
 
 ![A walk-through stop: the lines Claude explains are washed, and the card above them says what they do, with "space n ask about this" under its words](screenshots/follow-ask.png)
 
-You can talk back at a stop. Once the answer is done, the stop's card says `space n ask about this`. The last
+You can talk back at a stop. Once the answer is done, the stop's card says `space n ask about this` while your cursor
+is in its lines (`space n` acts at your cursor, not at the view follow holds). The last
 stop's card stays as long as your cursor is in its lines, even after the tour ends. Press `space n` and the tour
 holds still while you type. Your question becomes a [note](#notes) on the stop's lines, and Claude gets
 those lines along with what it said about them there. It answers in the note, next to the code.
@@ -1894,7 +1895,12 @@ no longer gives, is dropped, said once in `:messages`.
 | `q` / `esc` | Close the open card (`q` is Helix's macro replay again once it's closed) |
 | `]n` / `[n` | Next / previous note, across files (notes sharing a line one by one), its card opened |
 | `space N` | Every note, with a preview — `C-x` closes the one on the row, `A-x` all its author began |
-| `:note-close` / `:notes-clear [reviewer\|author\|you\|chat]` | Close the note on your cursor's line, for good; while follow holds the view too, the view coming back there (with none on your line, the open card's, never one at Claude's place) / all of them, or one author's (asks first when your unsent drafts are among them) |
+| `:note-close` / `:notes-clear [reviewer\|author\|you\|chat]` | Close the note on your cursor's line, for good (with none there, the open card's) / all of them, or one author's (asks first when your unsent drafts are among them) |
+
+While follow holds the view at Claude's place, these keys still act at your cursor: `space n`, `enter`, `]n`/`[n` and
+`:note-close` take the note on your line, follow pauses and the view comes back to your cursor. A card open at Claude's
+place isn't these keys' to reply to, unfold or close for good, and it doesn't offer them; `q` and `esc` still shut it,
+and a press on its words or its `… N earlier` row acts on it, as the mouse acts where it points.
 
 When several notes share a line, the line end says how many (`¶ 3 notes · …`). The card shows one at a time
 (`note 2 of 3 here`), and `]n` reads them in order. A code narrower than a card has room for says so, and the line

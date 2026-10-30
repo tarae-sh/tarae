@@ -516,12 +516,6 @@ pub fn marks(ed: &Editor) -> Vec<(DocId, u64)> {
     ed.workspace.claude.notes.list.iter().filter_map(|n| n.at).collect()
 }
 
-/// The line `here` reads: the cursor's — while follow holds the view, Claude's place there (`follow::view_line`: the
-/// screen is Claude's, your cursor elsewhere).
-fn here_line(ed: &Editor) -> usize {
-    crate::follow::view_line(ed).unwrap_or_else(|| ed.cursor_line())
-}
-
 /// Notes over `line` in the current document, in (first line, age) order.
 fn all_at(ed: &Editor, line: usize) -> Vec<&Note> {
     let Some(path) = ed.doc().path.as_deref() else { return Vec::new() };
@@ -539,10 +533,23 @@ pub fn opened<'a>(ed: &'a Editor, doc: &crate::document::Document) -> Option<&'a
 }
 
 /// The note under the cursor: the focused one (just pinned, or stepped to) if it's here, else the first —
-/// so `]n` reads a crowded line in order.
+/// so `]n` reads a crowded line in order. Your cursor's even while follow holds the view at Claude's place: a key of
+/// yours acts at your cursor, never at what follow shows (#250).
 pub fn here(ed: &Editor) -> Option<&Note> {
-    let line = here_line(ed);
+    let line = ed.cursor_line();
     first_of(ed, &all_at(ed, line), line)
+}
+
+/// Whether follow holds the view on note `n`'s lines — Claude's place, in sight but not where you are: a key of yours
+/// never takes its card (#250).
+fn at_claudes(ed: &Editor, n: &Note) -> bool {
+    crate::follow::view_line(ed)
+        .is_some_and(|l| ed.doc().path.as_deref() == Some(n.path.as_path()) && n.lines.contains(&l))
+}
+
+/// The card open in this file a key of yours may take: not one at Claude's place while follow holds the view there.
+fn opened_yours(ed: &Editor) -> Option<&Note> {
+    opened(ed, ed.doc()).filter(|n| !at_claudes(ed, n))
 }
 
 /// Of the notes over `line`: the one its line end shows — starting there, the focused one, else the first that is its
@@ -560,9 +567,10 @@ fn first_of<'a>(ed: &'a Editor, v: &[&'a Note], line: usize) -> Option<&'a Note>
 
 /// The note `space n` and `enter` act on: the one here, else the open card's in this file — a card a turn opened leaves
 /// your cursor where it was, and the card's keys are its own (`term::draw_note_card` says them only where they are).
+/// While follow holds the view: your cursor's, and the open card only where it isn't Claude's place (`opened_yours`).
 pub fn target(ed: &Editor) -> Option<&Note> {
     let notes = &ed.workspace.claude.notes;
-    here(ed).or_else(|| opened(ed, ed.doc()).map(|n| shown(notes, n)))
+    here(ed).or_else(|| opened_yours(ed).map(|n| shown(notes, n)))
 }
 
 /// Note `n` as the card and the line end show it: a chat note its line's newest answer (`group`), so what a key acts on
@@ -1250,9 +1258,11 @@ pub fn by_word(word: &str) -> Option<By> {
 
 // ── You ───────────────────────────────────────────────────────────────────
 
-/// `space n`: reply to the note here, or start one (asking Claude about the line or selection).
+/// `space n`: reply to the note here, or start one (asking Claude about the line or selection) — at your cursor: follow,
+/// holding the view, pauses and the view comes back to it (`follow::your_view`).
 pub fn start(ed: &mut Editor) {
     let at = target(ed).map(|n| n.id);
+    crate::follow::your_view(ed);
     start_on(ed, at);
 }
 
@@ -1290,7 +1300,7 @@ pub fn submit(ed: &mut Editor, target: Option<u64>, text: &str) {
     let draft = crate::codereview::drafting(ed);
     let fresh = target.filter(|&id| find(ed, id).is_some()).is_none();
     // A question at a walk-through's stop is about the stop: its lines, and what Claude said they do
-    let stop = (fresh && !draft).then(|| crate::follow::stop_here(ed)).flatten();
+    let stop = (fresh && !draft).then(|| crate::follow::stop_yours(ed)).flatten();
     let id = match target.filter(|&id| find(ed, id).is_some()) {
         Some(id) => {
             let n = find_mut(ed, id).expect("checked");
@@ -1444,9 +1454,7 @@ pub fn close_target(ed: &Editor) -> Option<&Note> {
     let open = opened(ed, ed.doc());
     let mine = all_at(ed, ed.cursor_line());
     let card = mine.iter().find(|n| open.is_some_and(|o| o.id == n.id)).copied();
-    let claudes = crate::follow::view_line(ed);
-    let elsewhere = open.filter(|n| !claudes.is_some_and(|l| n.lines.contains(&l)));
-    let at = card.or(first_of(ed, &mine, ed.cursor_line())).or(elsewhere);
+    let at = card.or(first_of(ed, &mine, ed.cursor_line())).or(opened_yours(ed));
     at.map(|n| shown(&ed.workspace.claude.notes, n))
 }
 
@@ -1505,8 +1513,10 @@ fn walk(notes: &Notes) -> Vec<(PathBuf, usize, u64)> {
 pub fn step(ed: &mut Editor, forward: bool) {
     let notes = &ed.workspace.claude.notes;
     let all = walk(notes);
-    // From the note shown here, else the open card's, else from the cursor line
-    let from = here(ed).or_else(|| notes.open.and_then(|id| find(ed, id))).map(|n| stop_of(notes, n));
+    // From the note shown here, else the open card's (not one at Claude's place: you aren't there), else from the cursor
+    // line
+    let card = notes.open.and_then(|id| find(ed, id)).filter(|n| !at_claudes(ed, n));
+    let from = here(ed).or(card).map(|n| stop_of(notes, n));
     let target = match from.and_then(|id| all.iter().position(|t| t.2 == id)) {
         Some(k) if forward => all.get(k + 1).or(all.first()),
         Some(k) => k.checked_sub(1).and_then(|k| all.get(k)).or(all.last()),
@@ -1525,6 +1535,9 @@ pub fn step(ed: &mut Editor, forward: bool) {
     };
     match target.cloned() {
         Some((p, l, id)) => {
+            // (a key of yours: follow, holding the view, pauses — said once, never left to notice a move, as a note on
+            // your own line moves nothing)
+            crate::follow::your_view(ed);
             ed.workspace.claude.notes.focus = Some(id);
             if let Err(e) = ed.open_at(&p, l, 0) {
                 ed.set_error(format!("{e:#}"));
@@ -1641,9 +1654,10 @@ pub fn card_keys(ed: &Editor) -> Vec<crate::key::Key> {
         && !ed.doc().loading
         && crate::weave::of(ed.doc()).is_none();
     let mut keys = Vec::new();
-    // (on a note's line; anywhere while the open card has earlier answers folded: its key says so)
+    // (on a note's line; anywhere while the open card has earlier answers folded: its key says so — not a card at
+    // Claude's place while follow holds the view there)
     let notes = &ed.workspace.claude.notes;
-    let folded = opened(ed, ed.doc()).is_some_and(|o| earlier_folded(notes, o) > 0);
+    let folded = opened_yours(ed).is_some_and(|o| earlier_folded(notes, o) > 0);
     if free && (here(ed).is_some() || folded) {
         keys.push(Key::plain(Code::Enter));
     }
@@ -1666,9 +1680,14 @@ pub fn card_key(ed: &mut Editor, key: crate::key::Key) -> bool {
         .zip(notes.open.and_then(|o| find(ed, o)))
         .filter(|(h, o)| group(notes, o).iter().any(|g| g.id == h.id));
     let folded = open_here.is_some_and(|(_, o)| earlier_folded(notes, o) > 0);
-    match (key.code, here.map(|n| n.id)) {
+    let (id, open_here) = (here.map(|n| n.id), open_here.is_some());
+    // (`enter` acts at your cursor: follow, holding the view, pauses and the view comes back to it)
+    if key.code == crate::key::Code::Enter {
+        crate::follow::your_view(ed);
+    }
+    match (key.code, id) {
         (crate::key::Code::Enter, _) if folded => ed.workspace.claude.notes.earlier = true,
-        (crate::key::Code::Enter, Some(id)) if open_here.is_none() => open(ed, id),
+        (crate::key::Code::Enter, Some(id)) if !open_here => open(ed, id),
         _ => close_card(ed),
     }
     true

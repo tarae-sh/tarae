@@ -260,11 +260,11 @@ fn a_cards_buttons_are_said_only_where_they_act_on_it() {
     assert!(ed.workspace.claude.notes.list.iter().all(|n| n.id != card), "the card's, as it said");
 }
 
-/// While follow leads to a card's line, `space n` reads Claude's place and is the card's, but `:note-close` goes by your
-/// cursor (closing is for good): the card keeps the first and drops the second — with a note on your line it'd close that
-/// one, with none it's refused. Follow paused, there's no one's place: the card's own again.
+/// While follow leads to a card's line, `space n` and `:note-close` go by your cursor (#250: a key of yours acts there):
+/// the card says neither — with a note on your line they'd act on that one, with none `space n` starts one there and
+/// `:note-close` is refused. Follow paused, there's no one's place: the card's own again.
 #[test]
-fn a_cards_close_button_goes_by_your_cursor_while_follow_leads() {
+fn a_cards_buttons_go_by_your_cursor_while_follow_leads() {
     let scratch = crate::scratch::Scratch::new("mouse-overlays-note-follow");
     let root = std::fs::canonicalize(&*scratch).unwrap();
     let path = root.join("a.rs");
@@ -282,14 +282,18 @@ fn a_cards_close_button_goes_by_your_cursor_while_follow_leads() {
     let shown = frame(&mut ed);
     assert_eq!(crate::follow::view_line(&ed), Some(20), "follow leads to the card's line");
     assert_eq!(ed.cursor_line(), 0, "your cursor on the other note");
-    assert!(shown.contains("space n") && !shown.contains(":note-close"), "{shown}");
-    // (none on your line: the card is at Claude's place, refused — no button)
+    assert!(!shown.contains("space n") && !shown.contains(":note-close"), "{shown}");
+    // (none on your line: the card is at Claude's place, not yours — no button)
     crate::notes::close(&mut ed, yours);
     let shown = frame(&mut ed);
-    assert!(shown.contains("space n") && !shown.contains(":note-close"), "{shown}");
+    assert!(!shown.contains("space n") && !shown.contains(":note-close"), "{shown}");
     // (paused: the open card's)
     ed.workspace.claude.chat.as_mut().unwrap().follow.paused = true;
-    assert!(frame(&mut ed).contains(":note-close"), "its own again, and it fits this wide");
+    let shown = frame(&mut ed);
+    assert!(
+        shown.contains(":note-close") && shown.contains("space n"),
+        "its own again, and it fits this wide: {shown}"
+    );
 }
 
 /// The note card's row of `… N earlier`, pressed: only a line's folded answers unfold — a thread's own fold row reads alike
