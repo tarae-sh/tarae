@@ -189,6 +189,9 @@ pub struct Reviewer {
     /// The checkout it reviews (relative paths are from there), and what it's of (`Base::label`).
     pub root: PathBuf,
     pub label: String,
+    /// The branch its changes are since (`Base::Branch`) — None: another base (uncommitted, a turn's). Each finding
+    /// keeps it (`Note.since`): what its change lands in, in the checkout tarae started in (`notes::landed_check`).
+    pub since: Option<String>,
     /// The snapshot its members read (`snapread.rs`: their `read` and `search`), held while it reads — each
     /// finding's placing holds it too, until it lands (None: over, or a test's reviewer of the checkout as it is).
     pub snap: Option<std::sync::Arc<crate::snapread::Snap>>,
@@ -244,6 +247,7 @@ impl Reviewer {
             took: None,
             root,
             label: "uncommitted".into(),
+            since: None,
             snap: None,
             at: std::time::SystemTime::UNIX_EPOCH,
             files: 1,
@@ -600,6 +604,12 @@ pub(crate) fn begin(ed: &mut Editor, t: crate::codereview::Taken, board: Option<
         }
     };
     let review = ed.workspace.code_review.as_ref().filter(|c| c.base.label() == t.label).map(|c| c.started);
+    let since = match &t.base {
+        crate::codereview::Base::Branch { name, .. } => Some(name.clone()),
+        _ => None,
+    };
+    // (an earlier round's findings on a change landed since leave, before this round's come — #248)
+    crate::notes::landed_check(ed);
     ed.workspace.reviewer = Some(Reviewer {
         members,
         board: board.map(Box::new),
@@ -609,6 +619,7 @@ pub(crate) fn begin(ed: &mut Editor, t: crate::codereview::Taken, board: Option<
         took: None,
         root: t.root,
         label: t.label,
+        since,
         snap: t.snap,
         at: t.at,
         files: n,
@@ -4802,6 +4813,102 @@ mod tests {
         );
         assert!(crate::notes::unsent(findings_in(&ed.workspace).unwrap()[0]), "held back, still a draft");
         settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.busy()));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #248: a round's findings on a change committed since — in the base, the checkout tarae started in — leave
+    /// as the next round begins, said once; `space v s` sends this round's and the earlier ones still on a change.
+    #[test]
+    fn a_findings_change_landed_since_leaves_before_the_next_round_and_isnt_sent() {
+        let (dir, repo) = place("landed");
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.root = repo.clone();
+        let steps = [
+            note_on("p1", 1, "a.txt", 2, "two is new"),
+            note_on("p2", 2, "b.txt", 1, "b is new"),
+            result("Two."),
+        ];
+        fake(&mut ed, &dir, &steps);
+        reviewed(&mut ed, &repo);
+        assert_eq!(findings_in(&ed.workspace).unwrap().len(), 2, "{:?}", ed.messages);
+        // b.txt's change committed: in main now; a.txt's still a change
+        git(&repo, &["add", "b.txt"]);
+        let who = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
+        git(&repo, &[&who[..], &["commit", "-qm", "b"][..]].concat());
+        fake(&mut ed, &dir, &[note_on("p1", 1, "a.txt", 1, "round two"), result("One.")]);
+        reviewed(&mut ed, &repo);
+        let closed = "closed 1 unsent finding of the reviewer's — its file has no uncommitted change now (landed or \
+                      undone)";
+        settle_until(&mut ed, |ed| ed.messages.iter().any(|m| m.2 == closed));
+        let left: Vec<&str> = (ed.workspace.claude.notes.list.iter()).map(|n| n.gist()).collect();
+        assert_eq!(left, ["two is new", "round two"]);
+        // `space v s` to a stand-in chat
+        let chat_log = dir.join("chat.log");
+        ed.config.llm.args = vec![
+            "-c".into(),
+            format!(
+                "while read -r line; do printf '%s\\n' \"$line\" >> '{}'; case \"$line\" in '{{\"message\"'*) \
+                 printf '%s\\n' '{{\"type\":\"result\",\"result\":\"ok\"}}';; esac; done",
+                chat_log.display()
+            ),
+        ];
+        keys(&mut ed, &["space", "v", "s"]);
+        settle_until(&mut ed, |ed| ed.workspace.claude.chat.as_ref().is_some_and(|c| !c.busy()));
+        let sent = std::fs::read_to_string(&chat_log).unwrap();
+        let msg = sent.lines().find(|l| l.contains("My review")).expect("sent");
+        assert!(msg.contains(r#"comments=\"2\""#), "{msg}");
+        assert!(msg.contains("two is new") && msg.contains("round two"), "{msg}");
+        assert!(!msg.contains("b is new") && !msg.contains("b.txt"), "{msg}");
+        assert_eq!(ed.messages.iter().filter(|m| m.2 == closed).count(), 1, "said once");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #248, the review's own base: in the checkout tarae started in a round since `main` leaves a finding on a file
+    /// committed on the branch (not in `main` yet) as it was, the next round of the uncommitted changes too — only
+    /// one whose change went (here undone) leaves, its words saying no more than that.
+    #[test]
+    fn a_review_since_a_branch_keeps_its_findings_on_the_branchs_commits() {
+        let (dir, repo) = place("landed-since");
+        git(&repo, &["checkout", "-q", "-b", "feat"]);
+        git(&repo, &["add", "b.txt"]);
+        let who = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
+        git(&repo, &[&who[..], &["commit", "-qm", "b"][..]].concat());
+        std::fs::write(repo.join("c.txt"), "c\n").unwrap();
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.root = repo.clone();
+        let steps = [
+            note_on("p1", 1, "a.txt", 2, "two is new"),
+            note_on("p2", 2, "b.txt", 1, "b is new"),
+            note_on("p3", 3, "c.txt", 1, "c is new"),
+            result("Three."),
+        ];
+        fake(&mut ed, &dir, &steps);
+        ask_in(&mut ed, repo.clone(), Some("main".into()), false);
+        settle_until(&mut ed, |ed| {
+            ed.workspace.reviewer.as_ref().is_some_and(|r| !r.reading() && r.placing == 0)
+        });
+        assert_eq!(findings_in(&ed.workspace).unwrap().len(), 3, "{:?}", ed.messages);
+        let kept = crate::notes::to_json(&ed.workspace.claude.notes, &[]);
+        assert!(kept.iter().all(|v| v["since"] == "main"), "its base kept across a restart: {kept:?}");
+        // c.txt's change undone; the next round reads the uncommitted ones only
+        std::fs::remove_file(repo.join("c.txt")).unwrap();
+        fake(&mut ed, &dir, &[note_on("p1", 1, "a.txt", 1, "round two"), result("One.")]);
+        reviewed(&mut ed, &repo);
+        let closed = "closed 1 unsent finding of the reviewer's — its file has no change since main now (landed or undone)";
+        settle_until(&mut ed, |ed| ed.messages.iter().any(|m| m.2 == closed));
+        let left: Vec<&str> = (ed.workspace.claude.notes.list.iter()).map(|n| n.gist()).collect();
+        assert_eq!(left, ["two is new", "b is new", "round two"], "b.txt's commit isn't in main");
+        // A third round of the uncommitted ones (d.txt new, a.txt's change undone): each finding by its own round's
+        // base — b's still since main, never HEAD's though the round before wasn't since a branch
+        std::fs::write(repo.join("d.txt"), "d\n").unwrap();
+        git(&repo, &["checkout", "-q", "--", "a.txt"]);
+        fake(&mut ed, &dir, &[note_on("p1", 1, "d.txt", 1, "d is new"), result("One.")]);
+        reviewed(&mut ed, &repo);
+        let closed = "closed 2 unsent findings of the reviewer's — their files have no change since their bases now \
+                      (landed or undone)";
+        settle_until(&mut ed, |ed| ed.messages.iter().any(|m| m.2 == closed));
+        let left: Vec<&str> = (ed.workspace.claude.notes.list.iter()).map(|n| n.gist()).collect();
+        assert_eq!(left, ["b is new", "d is new"], "b.txt's commit still isn't in main");
         std::fs::remove_dir_all(&dir).ok();
     }
 

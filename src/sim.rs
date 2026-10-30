@@ -44,6 +44,7 @@ mod idlecompact;
 mod instructions;
 mod keepclose;
 mod kubecard;
+mod landed;
 mod motion;
 mod now;
 mod orchestra;

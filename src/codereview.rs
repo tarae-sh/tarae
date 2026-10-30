@@ -1950,6 +1950,24 @@ fn changed(root: &Path, base: &Base) -> Result<Vec<File>, String> {
     Ok(files)
 }
 
+/// The checkout around `root`'s top (its real path) and the files changed there since `base` left it (their merge
+/// base) — None: against HEAD, the uncommitted ones — by real path: a draft on none of them is on a change the
+/// base holds now (`notes::landed_check`, #248).
+pub(crate) fn changed_since(root: &Path, base: Option<&str>) -> Result<(PathBuf, Vec<PathBuf>), String> {
+    let top = PathBuf::from(git(root, &["rev-parse", "--show-toplevel"])?.trim());
+    let top = std::fs::canonicalize(&top).unwrap_or(top);
+    let base = match base {
+        None => Base::Head,
+        Some(name) if name.starts_with('-') => return Err(format!("{name:?} isn't a branch")),
+        Some(name) => {
+            let commit = git(&top, &["merge-base", "HEAD", name])?.trim().to_string();
+            Base::Branch { name: name.to_string(), commit }
+        }
+    };
+    let files = changed(&top, &base)?.into_iter().map(|f| f.path).collect();
+    Ok((top, files))
+}
+
 /// A review since a branch whose branch has caught up (frictions25 R5: brought in, `review since main` stayed
 /// up over a checkout main now equals, 19 files of nothing): on a worker, whether the branch has HEAD's every
 /// commit and nothing differs from its tip — then the review ends, saying why (drafts stay notes). A bring's

@@ -102,6 +102,9 @@ pub struct Note {
     /// A chat note's (`chatnotes.rs`): the sentence that names its place — the line end's words; its first entry
     /// is the paragraph, the card's.
     pub sentence: Option<String>,
+    /// A finding's: the branch its round's changes were since (`Reviewer.since`; None: uncommitted, or not a
+    /// finding) — what its change lands in, in the checkout tarae started in (`landed_check`, #248).
+    pub since: Option<String>,
 }
 
 /// What a finding of the board's carries beside its text: the angles that found it (the first pinned it),
@@ -218,6 +221,7 @@ pub fn add(ed: &mut Editor, path: &Path, lines: Range<usize>, by: By, text: &str
         board: None,
         placing: false,
         sentence: None,
+        since: None,
     });
     ed.workspace.claude.notes.focus = Some(id);
     attach(ed);
@@ -261,6 +265,7 @@ pub fn add_said(
         board: None,
         placing: false,
         sentence: Some(sentence),
+        since: None,
     });
     notes.next
 }
@@ -375,7 +380,7 @@ pub fn to_json(notes: &Notes, docs: &[crate::document::Document]) -> Vec<Value> 
             let pinned = n.pinned.as_ref().map(hex);
             json!({
                 "path": n.path, "lines": [n.lines.start, n.lines.end], "anchor": anchor, "thread": thread,
-                "pinned": pinned, "board": n.board.as_ref().map(Mark::json),
+                "pinned": pinned, "board": n.board.as_ref().map(Mark::json), "since": n.since,
             })
         })
         .collect()
@@ -446,6 +451,7 @@ fn restore_from(notes: &mut Notes, docs: &mut crate::docpaths::Docs, saved: Vec<
             board: Mark::of(&v["board"]),
             placing: false,
             sentence: None,
+            since: v["since"].as_str().map(str::to_string),
         });
     }
     attach_in(notes, docs);
@@ -581,11 +587,13 @@ pub fn pin_finding(
     mark: Option<Mark>,
     from: Option<(String, std::sync::Arc<crate::snapread::Snap>)>,
 ) -> u64 {
+    // (what its round was since: its change lands there — #248)
+    let since = ed.workspace.reviewer.as_ref().and_then(|r| r.since.clone());
     let Some((from, snap)) = from else {
         let id = add(ed, path, lines, By::Reviewer, text);
         if let Some(n) = find_mut(ed, id) {
             n.thread[0].draft = true;
-            n.board = mark;
+            (n.board, n.since) = (mark, since);
         }
         return id;
     };
@@ -603,6 +611,7 @@ pub fn pin_finding(
         board: mark,
         placing: true,
         sentence: None,
+        since,
     });
     place(ed, id, from, snap, lines);
     id
@@ -964,6 +973,85 @@ pub fn stale_answer(ed: &mut Editor, card: u64, ids: Vec<u64>, yes: bool) {
     ed.workspace.claude.notes.list.retain(|n| !ids.contains(&n.id));
     let k = before - ed.workspace.claude.notes.list.len();
     ed.set_status(format!("{} closed", crate::nav::count(k, "draft")));
+}
+
+/// Whether note `n` is a finding of the reviewer's that leaves with its change (#248): unsent, placed, nothing of
+/// yours in its thread (your words never go unasked — `close_by`).
+fn landable(n: &Note) -> bool {
+    unsent(n) && n.thread[0].by == By::Reviewer && !n.placing && n.thread.iter().all(|e| e.by != By::You)
+}
+
+/// The reviewer's unsent findings whose change the base holds now leave, said once (#248: a piece's findings left
+/// on the rail went out with the next piece's at `space v s`, a turn spent answering them) — as a bring lands and as
+/// a new round begins. A finding is on a landed change when its file has no change since its base (a session's own
+/// base, else the start's branch; the checkout tarae started in: the branch its round was since — `Note.since`, each
+/// finding its own — else HEAD, committed there being in it) — or on one undone: either way nothing of it is left to
+/// review, and the words say no more. One on a file still changed stays (its lines changed since: the stale card's).
+/// Looked at on a worker, each base once.
+pub fn landed_check(ed: &mut Editor) {
+    let session = match ed.workspace.id == crate::event::WorkspaceId::HOME {
+        true => None,
+        false => match ed.workspace.base.clone().or_else(|| ed.start_branch()) {
+            Some(b) => Some(b),
+            None => return,
+        },
+    };
+    // (in the checkout tarae started in, reviewed since a branch: a finding there is on a commit of this branch, not
+    // in that one until it's brought — rounds of the uncommitted changes between leave it so)
+    let wanted: Vec<(u64, PathBuf, Option<String>)> = (ed.workspace.claude.notes.list.iter())
+        .filter(|n| landable(n))
+        .map(|n| (n.id, n.path.clone(), session.clone().or_else(|| n.since.clone())))
+        .collect();
+    if wanted.is_empty() {
+        return;
+    }
+    let root = ed.workspace.root.clone();
+    ed.events.jobs().spawn(move || {
+        let mut bases: Vec<(Option<String>, Option<Changed>)> = Vec::new();
+        let mut landed = Vec::new();
+        for (id, path, base) in wanted {
+            if !bases.iter().any(|(b, _)| *b == base) {
+                let changed = crate::codereview::changed_since(&root, base.as_deref());
+                if let Err(e) = &changed {
+                    crate::log::line("notes", "info", &format!("landed findings not looked at: {e}"));
+                }
+                bases.push((base.clone(), changed.ok()));
+            }
+            let Some((_, Some((top, changed)))) = bases.iter().find(|(b, _)| *b == base) else { continue };
+            // (a file outside the repository — a folder's: not its to say)
+            if crate::paths::real(&path).is_some_and(|p| p.starts_with(top) && !changed.contains(&p)) {
+                landed.push((id, base));
+            }
+        }
+        move |ed: &mut Editor| landed_close(ed, landed)
+    });
+}
+
+/// A checkout's top and the files changed there since a base (`codereview::changed_since`).
+type Changed = (PathBuf, Vec<PathBuf>);
+
+/// `landed_check`'s findings closed, each with its base — those still unsent and not answered by you — said once.
+fn landed_close(ed: &mut Editor, landed: Vec<(u64, Option<String>)>) {
+    let landed: Vec<(u64, Option<String>)> =
+        landed.into_iter().filter(|(id, _)| find(ed, *id).is_some_and(landable)).collect();
+    ed.workspace.claude.notes.list.retain(|n| !landed.iter().any(|(id, _)| *id == n.id));
+    let closed: Vec<Option<String>> = landed.into_iter().map(|(_, base)| base).collect();
+    let k = closed.len();
+    if k == 0 {
+        ed.unchanged = true;
+        return;
+    }
+    // (landed or undone — which, the check can't tell: it says what it saw)
+    let (its, has) = if k == 1 { ("its file", "has") } else { ("their files", "have") };
+    let what = match &closed[0] {
+        _ if closed.iter().any(|b| *b != closed[0]) => "no change since their bases".to_string(),
+        Some(b) => format!("no change since {b}"),
+        None => "no uncommitted change".to_string(),
+    };
+    ed.set_status(format!(
+        "closed {} of the reviewer's — {its} {has} {what} now (landed or undone)",
+        crate::nav::count(k, "unsent finding")
+    ));
 }
 
 /// Every note `by` began closed — every note, `None` — said: `:notes-clear [who]`, the notes list's `A-x`

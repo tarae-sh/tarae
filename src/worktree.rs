@@ -2575,6 +2575,8 @@ impl Editor {
                     ));
                     // (its review since the base is of nothing now: it ends, said — frictions25 R5)
                     ed.with_workspace(id, crate::codereview::base_reached);
+                    // (the reviewer's findings on what it brought leave with it — #248)
+                    ed.with_workspace(id, crate::notes::landed_check);
                     ed.bring_regrade(id, &b.base);
                     ed.bring_queue_landed(id, what);
                     if held {
@@ -3965,6 +3967,34 @@ mod tests {
         // Nothing to bring
         feed(&mut ed, ":workspace-bring<ret>");
         settle_until(&mut ed, |ed| says(ed, "nothing to bring"));
+        drop(ed);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// #248: a bring takes the reviewer's unsent findings on what it brought along — closed, said once, never sent
+    /// after; your own draft there stays, and a finding you answered (your words never go unasked).
+    #[test]
+    fn a_bring_closes_the_reviewers_unsent_findings_on_what_it_brought() {
+        let (repo, dir) = place("bring-findings");
+        let mut ed = editor(&repo, &dir);
+        let wt = new_session(&mut ed, "feat");
+        std::fs::write(wt.join("a.txt"), "feat\n").unwrap();
+        git_in(&wt, &["commit", "-qam", "feat"]);
+        let a = wt.join("a.txt");
+        crate::notes::pin_finding(&mut ed, &a, 0..1, "is feat tested?", None, None);
+        let answered = crate::notes::pin_finding(&mut ed, &a, 0..1, "is it fast?", None, None);
+        let mine = crate::notes::add(&mut ed, &a, 0..1, crate::notes::By::You, "why feat?");
+        let notes = &mut ed.workspace.claude.notes.list;
+        notes.iter_mut().filter(|n| n.id == mine).for_each(|n| n.thread[0].draft = true);
+        let you = crate::notes::Entry { by: crate::notes::By::You, text: "it is".into(), draft: true };
+        notes.iter_mut().filter(|n| n.id == answered).for_each(|n| n.thread.push(you.clone()));
+        bring_asked(&mut ed, "feat", "main");
+        let closed = "closed 1 unsent finding of the reviewer's — its file has no change since main now (landed or undone)";
+        settle_until(&mut ed, |ed| says(ed, closed) || says(ed, "bring feat:"));
+        assert!(says(&ed, "Brought 1 commit of feat into main"), "{}", said(&ed));
+        let left: Vec<u64> = ed.workspace.claude.notes.list.iter().map(|n| n.id).collect();
+        assert_eq!(left, [answered, mine], "the finding left; the one you answered and your draft stayed");
+        assert_eq!(ed.messages.iter().filter(|m| m.2.contains(closed)).count(), 1, "said once");
         drop(ed);
         std::fs::remove_dir_all(&dir).ok();
     }

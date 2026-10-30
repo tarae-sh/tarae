@@ -2170,6 +2170,12 @@ continued from it, and nothing of the chat goes into what it's sent
   your drafts and its findings together, and tells the author that the findings come from a second Claude,
   to weigh and not to obey. `:note-close` drops a finding first; `A-x` on one in `space N`, or
   `:notes-clear reviewer`, drops them all.
+- A finding not sent leaves with its change once nothing of that change is left to review: when a bring lands, and
+  when a new round begins, the findings on a file with no change since the base (a session's base; in the checkout
+  tarae started in, the branch the round that found it was since, else HEAD — committed there) are closed, said once (`closed 6
+  unsent findings of the reviewer's — their files have no change since main now (landed or undone)`, kept in
+  `:messages`), so `space v s` sends only what's still on a change. One you answered stays, as do your own drafts —
+  your words never go unasked; one on a file still changed stays too (its lines changed since: the card below).
 - Asked the author to fix them some other way (in the chat), the findings would stay drafts. So when a chat
   turn ends, drafts whose lines changed since they were pinned — yours and its — are named on a card: `y`
   closes them, `r` lists just them (the notes list: `enter` goes to one, `C-x` closes it, the card's list
