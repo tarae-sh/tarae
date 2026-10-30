@@ -67,6 +67,8 @@ pub struct Waiting {
     pub named: Vec<(Arc<str>, usize, Range<usize>)>,
     /// Where the turn stopped in a file (`stops`): its edits, newest first, then its reads.
     pub stops: Vec<(PathBuf, usize)>,
+    /// The question the answer answered: its first line that says something (`Note.asked`).
+    pub asked: Option<String>,
 }
 
 /// A block of an answer as it reads (`blocks`): its text, and whether it's a list item.
@@ -335,6 +337,9 @@ pub fn turn_over(ed: &mut Editor, ok: bool) {
         }
     }
     let stops = stops(c);
+    let asked =
+        turn.checked_sub(1).and_then(|i| c.msgs[i].text.lines().map(str::trim).find(|l| !l.is_empty()));
+    let asked = asked.map(str::to_string);
     if places.is_empty() && (noted || all.len() <= last || stops.is_empty()) {
         return;
     }
@@ -342,7 +347,8 @@ pub fn turn_over(ed: &mut Editor, ok: bool) {
     for s in &places {
         let _ = c.places.place(&s.name);
     }
-    ed.workspace.claude.notes.answer = Some(Waiting { places, own, noted, blocks: all, last, named, stops });
+    ed.workspace.claude.notes.answer =
+        Some(Waiting { places, own, noted, blocks: all, last, named, stops, asked });
     ed.unchanged = false;
     sync(ed);
 }
@@ -505,13 +511,13 @@ pub fn sync(ed: &mut Editor) {
             }
         }
     }
-    ed.workspace.claude.notes.answer = None;
+    let asked = ed.workspace.claude.notes.answer.take().and_then(|w| w.asked);
     if placed.is_empty() {
         return;
     }
     ed.workspace.claude.notes.list.retain(|n| !crate::notes::bare_chat(n));
     for (path, lines, sentence, paragraph, flow) in placed {
-        crate::notes::add_said(ed, &path, lines, (sentence, paragraph), flow);
+        crate::notes::add_said(ed, &path, lines, (sentence, paragraph), flow, asked.clone());
     }
     crate::notes::attach(ed);
     ed.unchanged = false;

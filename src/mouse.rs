@@ -370,10 +370,12 @@ impl Editor {
         // prompt open: a press there is outside that prompt, which closes it)
         let replying =
             matches!(self.prompt.as_ref().map(|p| p.kind), Some(crate::editor::PromptKind::Note(_)));
-        if (down || wheel)
-            && (self.prompt.is_none() || replying)
-            && s.note_card.get().is_some_and(|r| inside(r, x, y))
-        {
+        // (the wheel over the card between the lines scrolls the code it's in; a drag begun on its words goes on wherever
+        // the pointer goes — focus A1b)
+        if matches!(kind, K::Drag | K::Up) && self.note_marked.is_some() && s.note_card.get().is_some() {
+            return at(S::NoteCard, Part::Blank);
+        }
+        if down && (self.prompt.is_none() || replying) && s.note_card.get().is_some_and(|r| inside(r, x, y)) {
             let hint = hint_on(S::NoteCard).filter(|_| down);
             return at(S::NoteCard, hint.map_or(Part::Blank, |i| Part::Word(Word::Does(i))));
         }

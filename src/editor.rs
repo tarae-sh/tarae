@@ -417,6 +417,11 @@ pub struct InputDrawn {
     pub w: usize,
 }
 
+/// What an open note's card's height is laid out from (`Screen.note_rows`): the note, its thread's entries and their
+/// text's length, its waiting row, its flow's parts, its board's trace, the question it answers, and the code's (columns,
+/// rows) — a reply, a placing or a resize lays it out again.
+pub type NoteRowsKey = (u64, usize, usize, bool, usize, bool, usize, (usize, usize));
+
 /// Whose text a mouse drag selects — where its press was (`Editor.mouse_anchor`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Drag {
@@ -652,6 +657,9 @@ pub struct Screen {
     pub slash_rows: std::cell::RefCell<Vec<(usize, usize)>>,
     /// The note card and the thought card this frame (x, y, width, height).
     pub note_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
+    /// The open note's card's words as drawn this frame, a row each (its screen row, its first column, its spans) —
+    /// what a drag over them selects (`Editor.note_marked`, focus A1b).
+    pub note_text: std::cell::RefCell<Vec<(usize, usize, Vec<crate::markdown::Span>)>>,
     pub thought_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
     /// The ask's waiting card this frame (x, y, width, height — `term::draw_ask_stream`): a press there is its own.
     pub ask_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
@@ -1220,6 +1228,12 @@ pub struct Editor {
     /// A press that made what was under it go or change (a start-screen row opening a picker, a completion accepted,
     /// which-key's row, the note card's reply): (where, when) — a double's second press there is that one press.
     pub pressed_through: Option<(usize, usize, std::time::Instant)>,
+    /// A drag over the open note's card's words (focus A1b): from the press's (row of `Screen.note_text`, column) to the
+    /// pointer's, both included — copied as you let go; a press not dragged replies, as ever.
+    pub note_marked: Option<((usize, usize), (usize, usize))>,
+    /// The open note's card's rows, laid out once for what it says and the code's size (`term::note_rows`) — every
+    /// `codeview::Measure` asks, several a key; kept across frames, its key all it's laid out from.
+    pub note_rows: std::cell::RefCell<Option<(NoteRowsKey, usize)>>,
     /// The border under the pointer, as the last hover found it: lit half (`term::grab_style`).
     pub border_hover: Option<crate::sizes::Border>,
     /// The surface under the pointer, as the last hover found it: its lines lit half (`mouse::Lights`).
@@ -1556,6 +1570,8 @@ impl Editor {
             name_held: None,
             drag_says: None,
             pressed_through: None,
+            note_marked: None,
+            note_rows: Default::default(),
             border_hover: None,
             pointer_over: None,
             pointer: None,
@@ -3363,18 +3379,38 @@ impl Editor {
                     _ => {}
                 }
             }
-            // The note card: a press replies (`space n`); while its reply's line is open, said — its line is the reply's
+            // The note card: a drag over its words selects them, copied as you let go; a press not dragged replies
+            // (`space n`) as you let go; while its reply's line is open, said — its line is the reply's
             (S::NoteCard, _) => {
                 took_mouse(S::NoteCard);
-                if !down {
-                    return;
-                }
-                match self.prompt.as_ref().map(|p| p.kind) {
-                    Some(PromptKind::Note(_)) => self.set_status("replying — enter sends it · esc close"),
-                    _ => {
-                        self.pressed_through = Some((x, y, crate::clock::now()));
-                        crate::notes::start(self)
+                let at = crate::term::note_at(self, x, y);
+                match (m.kind, self.prompt.as_ref().map(|p| p.kind)) {
+                    (K::Down, Some(PromptKind::Note(_))) => {
+                        self.set_status("replying — enter sends it · esc close")
                     }
+                    (K::Down, _) => self.note_marked = at.map(|p| (p, p)),
+                    (K::Drag, _) => {
+                        if let (Some((a, _)), Some(p)) = (self.note_marked, at) {
+                            self.note_marked = Some((a, p));
+                        }
+                    }
+                    // (the gesture over with the release: what it held let go — else every later drag anywhere would
+                    // come here while the card is drawn, `mouse_under`)
+                    (K::Up, _) => match (crate::term::note_marked_text(self), self.note_marked.take()) {
+                        (Some(text), _) => {
+                            let what = match text.lines().count() {
+                                0 | 1 => format!("{} characters", text.chars().count()),
+                                n => format!("{n} lines"),
+                            };
+                            crate::clipboard::copy(&self.events.jobs(), text, what);
+                        }
+                        (None, Some(_)) => {
+                            self.pressed_through = Some((x, y, crate::clock::now()));
+                            crate::notes::start(self)
+                        }
+                        (None, None) => {}
+                    },
+                    _ => {}
                 }
             }
             // The start screen: a row presses its keys, as typed; off its rows, said
@@ -5756,6 +5792,10 @@ impl Editor {
         // A woven view's `enter`: to that change's workspace (`weave.rs`)
         if crate::weave::enter(self, key) {
             return took(Handler::Weave);
+        }
+        // A note's card between the lines: `enter` on its line opens it, `q`/`esc` close it (`notes.rs`, focus A1b)
+        if crate::notes::card_key(self, key) {
+            return took(Handler::NoteCard);
         }
         // A web page's `C-c` while it's read: stops the read (`web/page.rs`)
         if crate::web::page::key(self, key) {

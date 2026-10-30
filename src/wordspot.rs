@@ -40,6 +40,9 @@ pub enum Press {
     /// A folder's or the file's name in a code pane's path (`tarae › src › main.rs`): its row in the side panel's files,
     /// opened and unfolded down to it, the keys there (`space e`'s).
     Reveal(std::path::PathBuf),
+    /// A note's `¶` at its line's end: its card between the lines opens, or closes when it's the one open
+    /// (`notes::pressed`, focus A1b).
+    Note(u64),
 }
 
 /// A word where it's drawn: its row, its columns, the surface it's on as `mouse_under` names it, what a press does,
@@ -223,6 +226,7 @@ pub fn press(ed: &mut Editor, i: usize) {
             }
         }
         Press::Reveal(path) => ed.sidebar_reveal(&path),
+        Press::Note(id) => crate::notes::pressed(ed, id),
     }
 }
 
@@ -416,7 +420,7 @@ fn refused(ed: &Editor, home: Option<At>) -> Option<String> {
     use crate::uistate::Region;
     let code = match home {
         Some(h) => h == At::Code,
-        None => matches!(ed.keys_to().region, Region::Code | Region::Weave | Region::Page),
+        None => matches!(ed.keys_to().region, Region::Code | Region::Weave | Region::NoteCard | Region::Page),
     };
     let mode = format!("{:?}", ed.mode).to_lowercase();
     (code && ed.mode != crate::editor::Mode::Normal).then(|| format!("{mode} mode"))

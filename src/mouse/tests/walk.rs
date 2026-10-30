@@ -193,11 +193,12 @@ const MOUSE_SCENES: &[Scene] = &[
         c.selected = Some(0);
         ed.completion = Some(c);
     }),
-    ("a note on the cursor's line", |ed| {
+    ("a note's card open under its line", |ed| {
         long_text(ed);
         let path = std::env::temp_dir().join("tarae-mouse-walk-note.rs");
         ed.docs[0].path.set(Some(path.clone()));
-        crate::notes::add(ed, &path, 0..1, crate::notes::By::Author, "A word about this line.");
+        let id = crate::notes::add(ed, &path, 0..1, crate::notes::By::Author, "A word about this line.");
+        crate::notes::open(ed, id);
     }),
     ("a card cut to fit, long", |ed| {
         let body: Vec<String> = (0..80).map(|i| format!("line {i} of what it asks")).collect();
@@ -1410,7 +1411,7 @@ fn every_floating_frame_lights_half_under_the_pointer() {
     let kinds = [
         "a light card · Card",
         "the follow card over the code · Follow",
-        "a note on the cursor's line · Note",
+        "a note's card open under its line · Note",
         "the code, the session list floating without the keys · Dock(Sessions)",
         "the messages list, its keys given back · Dock(Messages)",
         "the folders list, its keys given back · Dock(Folders)",

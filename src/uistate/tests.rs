@@ -1215,6 +1215,54 @@ fn a_woven_views_enter_goes_where_keys_to_says() {
     }
 }
 
+/// Focus A1b: a note's card layer (`notes::card_key`) goes where `keys_to` says — `enter` on a note's line, `q` and
+/// `esc` with its card open, its own in normal mode; the code's with a sequence under way, a character awaited or in insert
+/// mode, the prompt's under the command line — and never in silence: its card opens or closes.
+#[test]
+fn a_note_cards_keys_go_where_keys_to_says() {
+    if no_pty_here("a_note_cards_keys_go_where_keys_to_says") {
+        return;
+    }
+    let cases: &[(&str, &[&str], Region)] = &[
+        ("normal mode", &[], Region::NoteCard),
+        ("a prefix under way", &["g"], Region::Code),
+        ("a character awaited", &["f"], Region::Code),
+        ("insert mode", &["i"], Region::Code),
+        ("the command line", &[":"], Region::Prompt),
+    ];
+    for (press, open) in [("<ret>", false), ("q", true), ("<esc>", true)] {
+        for (name, keys, want) in cases {
+            let mut ed = editor();
+            ed.docs[0].text = ropey::Rope::from_str("one\ntwo\n");
+            let path = std::env::temp_dir().join("tarae-uistate-note-card.rs");
+            ed.docs[0].path.set(Some(path.clone()));
+            let id = crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::Author, "A word.");
+            if open {
+                crate::notes::open(&mut ed, id);
+            }
+            frame(&mut ed);
+            feed(&mut ed, keys);
+            // (`q` and `esc` are the card's only while it's open; `enter` on its line opens it)
+            let said = ed.keys_to().route(key(press));
+            assert_eq!(said, *want, "{press} {name}");
+            TOOK.set(None);
+            ed.handle_key(key(press));
+            assert_eq!(TOOK.get(), Some(said.handler()), "{press} {name}");
+            if said == Region::NoteCard {
+                assert_eq!(
+                    ed.workspace.claude.notes.open,
+                    (!open).then_some(id),
+                    "{press}: opened or closed"
+                );
+            }
+        }
+    }
+    // (no card open: `q` is the code's — Helix's `replay_macro`)
+    let mut ed = editor();
+    frame(&mut ed);
+    assert_eq!(ed.keys_to().route(key("q")), Region::Code, "no card: `q` the code's");
+}
+
 /// A web page's `C-c` (`web::page::key`) goes where `keys_to` says — its own in normal mode while the page is read, the
 /// code's or the prompt's with a sequence under way, insert mode, the command line over it, the read over — and never
 /// in silence: it says it stopped.

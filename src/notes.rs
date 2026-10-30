@@ -105,6 +105,8 @@ pub struct Note {
     /// A chat note at the answer's place (`chatnotes::Part`, focus A1): the answer's flow its card draws — its first
     /// entry the same as one text. Empty for every other note.
     pub flow: Vec<crate::chatnotes::Part>,
+    /// A chat note's: the question its answer answered, its first line — the card's head says which answer (focus A1b).
+    pub asked: Option<String>,
     /// A finding's: the branch its round's changes were since (`Reviewer.since`; None: uncommitted, or not a
     /// finding) — what its change lands in, in the checkout tarae started in (`landed_check`, #248).
     pub since: Option<String>,
@@ -166,6 +168,10 @@ pub struct Notes {
     pub turn: Vec<u64>,
     /// The note shown when several share a line — the one just pinned, or the one `]n`/`[n` stepped to.
     pub focus: Option<u64>,
+    /// The note whose card is open between the lines, under its last one, in every pane that shows its file (focus
+    /// A1b): opened by an act only (`]n`/`[n`, `enter` on its line, a press on its `¶`), never by the cursor passing;
+    /// open until closed (`q`, `esc`, `enter` again) or another opens — leaving the file keeps it.
+    pub open: Option<u64>,
     /// Drafts the stale card asked about (`stale_card`) — not asked again.
     stale_asked: Vec<u64>,
     /// Findings placed on lines changed since their reviewer read them (`pin_finding`) — the stale card says so.
@@ -228,6 +234,7 @@ pub fn add(ed: &mut Editor, path: &Path, lines: Range<usize>, by: By, text: &str
         placing: false,
         sentence: None,
         flow: Vec::new(),
+        asked: None,
         since: None,
     });
     ed.workspace.claude.notes.focus = Some(id);
@@ -251,13 +258,14 @@ pub fn add(ed: &mut Editor, path: &Path, lines: Range<usize>, by: By, text: &str
 
 /// A chat note on `lines` of `path` (`chatnotes::sync`): `sentence` at the line end, `paragraph` on its card — or, at
 /// the answer's place, its `flow`. Not focused (a crowded line shows the note you stepped to) and no lines kept as pinned
-/// (no draft's: never stale).
+/// (no draft's: never stale). `asked`: the question the answer answered.
 pub fn add_said(
     ed: &mut Editor,
     path: &Path,
     lines: Range<usize>,
     (sentence, paragraph): (String, String),
     flow: Vec<crate::chatnotes::Part>,
+    asked: Option<String>,
 ) -> u64 {
     let notes = &mut ed.workspace.claude.notes;
     notes.next += 1;
@@ -274,6 +282,7 @@ pub fn add_said(
         placing: false,
         sentence: Some(sentence),
         flow,
+        asked,
         since: None,
     });
     notes.next
@@ -461,6 +470,7 @@ fn restore_from(notes: &mut Notes, docs: &mut crate::docpaths::Docs, saved: Vec<
             placing: false,
             sentence: None,
             flow: Vec::new(),
+            asked: None,
             since: v["since"].as_str().map(str::to_string),
         });
     }
@@ -481,6 +491,13 @@ pub fn all_here(ed: &Editor) -> Vec<&Note> {
         ed.workspace.claude.notes.list.iter().filter(|n| n.path == path && n.lines.contains(&line)).collect();
     crate::sorting::by_key(&mut v, |n| (n.lines.start, n.id));
     v
+}
+
+/// The note whose card is open in `doc` (`Notes.open`).
+pub fn opened<'a>(ed: &'a Editor, doc: &crate::document::Document) -> Option<&'a Note> {
+    let id = ed.workspace.claude.notes.open?;
+    let path = doc.path.as_deref()?;
+    ed.workspace.claude.notes.list.iter().find(|n| n.id == id && n.path == path)
 }
 
 /// The note under the cursor: the focused one (just pinned, or stepped to) if it's here, else the first —
@@ -624,6 +641,7 @@ pub fn pin_finding(
         placing: true,
         sentence: None,
         flow: Vec::new(),
+        asked: None,
         since,
     });
     place(ed, id, from, snap, lines);
@@ -1363,9 +1381,73 @@ pub fn step(ed: &mut Editor, forward: bool) {
             if let Err(e) = ed.open_at(&p, l, 0) {
                 ed.set_error(format!("{e:#}"));
             }
+            open(ed, id);
         }
         None => {
             ed.set_status("no notes yet — Claude pins them while it explores, or space n asks about a line")
+        }
+    }
+}
+
+// ── The card between the lines (focus A1b) ──────────────────────────────────────────────────────
+
+/// Note `id`'s card open (`Notes.open`, any other closed): its lines and the card under them put in sight as one block
+/// where its file is in front. A code too narrow for a card says so (its line end stays).
+pub fn open(ed: &mut Editor, id: u64) {
+    ed.workspace.claude.notes.open = Some(id);
+    ed.note_marked = None;
+    if ed.viewport.1 < crate::term::NOTE_MIN + 4 && ed.viewport.1 > 0 {
+        ed.set_status("too narrow for the note's card here — space N lists every note whole");
+    }
+    let lines =
+        find(ed, id).filter(|n| ed.doc().path.as_deref() == Some(n.path.as_path())).map(|n| n.lines.clone());
+    if let Some(lines) = lines {
+        ed.show_range(lines);
+    }
+}
+
+/// The keys the card layer takes now (`card_key` — the layer `keys_chain` names `Region::NoteCard`): in normal mode
+/// with nothing under way, on a file's code (a woven view has no notes) — `enter` on a note's line (its card opens, or
+/// closes when it's the one open), `q` and `esc` while a card is open in this file (it closes). Helix's `q`
+/// (`replay_macro`) is one `esc` away.
+pub fn card_keys(ed: &Editor) -> Vec<crate::key::Key> {
+    use crate::key::{Code, Key};
+    let free = ed.mode == crate::editor::Mode::Normal
+        && ed.pending.is_empty()
+        && ed.prompt.is_none()
+        && ed.on_next_char.is_none()
+        && !ed.doc().loading
+        && crate::weave::of(ed.doc()).is_none();
+    let mut keys = Vec::new();
+    if free && here(ed).is_some() {
+        keys.push(Key::plain(Code::Enter));
+    }
+    if free && opened(ed, ed.doc()).is_some() {
+        keys.extend([Key::plain(Code::Char('q')), Key::plain(Code::Esc)]);
+    }
+    keys
+}
+
+/// A key of the card layer's (`card_keys`); false: not its.
+pub fn card_key(ed: &mut Editor, key: crate::key::Key) -> bool {
+    if !card_keys(ed).contains(&key) {
+        return false;
+    }
+    ed.count = None;
+    match (key.code, here(ed).map(|n| n.id)) {
+        (crate::key::Code::Enter, Some(id)) if ed.workspace.claude.notes.open != Some(id) => open(ed, id),
+        _ => ed.workspace.claude.notes.open = None,
+    }
+    true
+}
+
+/// A press on note `id`'s line end (`¶`): its card opens, or closes when it's the one open.
+pub fn pressed(ed: &mut Editor, id: u64) {
+    match ed.workspace.claude.notes.open == Some(id) {
+        true => ed.workspace.claude.notes.open = None,
+        false => {
+            ed.workspace.claude.notes.focus = Some(id);
+            open(ed, id);
         }
     }
 }
@@ -1631,7 +1713,10 @@ mod tests {
         };
         let screen = rows(&mut ed);
         assert!(screen.contains("¶ stale · two is wrong"), "{screen}");
-        assert!(screen.contains("╭─ note ── stale · the card asks ─"), "its card's top line: {screen}");
+        let id = here(&ed).unwrap().id;
+        open(&mut ed, id);
+        let screen = rows(&mut ed);
+        assert!(screen.contains("╭─ review ── stale · the card asks ─"), "its card's top line: {screen}");
         assert!(!screen.contains("stale · three too"), "{screen}");
         // A later turn: the same card, grown — its `y` waits for the new list to be seen
         answer(&mut ed, "");

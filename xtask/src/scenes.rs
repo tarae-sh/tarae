@@ -358,6 +358,34 @@ const A1_LINE: &[&str] = &[
     "9G",
     "@1",
 ];
+/// Focus A1b's: `a1-flow`'s card, the chat closed, the view scrolled a row at a time (`zj`) until the screen's top cuts the
+/// card — its top line gone, the rows in sight drawn.
+const A1B_CUT: &[&str] =
+    a1_keys!(" ", "L", ":", "o src/main.rs", "\r", "gg]n", "gg", "zjzjzjzjzjzjzjzjzjzjzjzjzj");
+/// Focus A1b's: `A1_LINE`'s thread, its card opened by `]n` (the cursor on its line opens nothing now).
+const A1B_LINE: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "\x1b",
+    "@0.5",
+    "9",
+    "G",
+    "x",
+    " ",
+    "n",
+    "@1",
+    "why a Vec here?",
+    "\r",
+    "@20?answered",
+    "@2",
+    "\x1b",
+    "\x1b",
+    "9G",
+    "]n",
+    "@1",
+];
 
 /// Motion §4's scenes: the stand-in's 20-stop turn (one run failing), held at its last stop — the chat open, follow off
 /// (its trail rows); follow on (the follow card's top line, its strip); and the strip's second mark hovered (its words on
@@ -2838,6 +2866,8 @@ const SCENES: &[Scene] = &[
     Scene { name: "a1-none-closed", claude: "a1-none", files: MAIN, keys: A1_KEYS[2] },
     Scene { name: "a1-none-closed-card", claude: "a1-none", files: MAIN, keys: A1_KEYS[5] },
     Scene { name: "a1-line", claude: "focus-line", files: MAIN, keys: A1_LINE },
+    Scene { name: "a1b-line-card", claude: "focus-line", files: MAIN, keys: A1B_LINE },
+    Scene { name: "a1b-flow-cut", claude: "a1-flow", files: MAIN, keys: A1B_CUT },
     Scene { name: "a1-flow-open-card", claude: "a1-flow", files: MAIN, keys: A1_FLOW[0] },
     Scene { name: "a1-flow-closed-card", claude: "a1-flow", files: MAIN, keys: A1_FLOW[1] },
     // (W: a word that does its key, lit under the mouse — the chat's `paused`, the follow card's keys, the chat's foot)

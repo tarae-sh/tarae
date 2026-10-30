@@ -1940,7 +1940,8 @@ fn a_note_threads_folded_start_is_whole_under_the_mouse() {
         .map(String::from)
         .chain((1..=30).map(|i| format!("Line {i}.")))
         .collect();
-    crate::notes::add(&mut ed, path, 0..1, crate::notes::By::Author, &lines.join("\n"));
+    let id = crate::notes::add(&mut ed, path, 0..1, crate::notes::By::Author, &lines.join("\n"));
+    crate::notes::open(&mut ed, id);
     frame(&mut ed);
     let on = on_of(&ed, "Secondly");
     assert!(matches!(on, On::Docs(_)), "on the note card: {on:?}");
@@ -2010,7 +2011,8 @@ fn a_docs_cards_cut_under_another_frame_is_not_in_hand() {
         .map(String::from)
         .chain((1..=30).map(|i| format!("Line {i}.")))
         .collect();
-    crate::notes::add(&mut ed, path, 0..1, crate::notes::By::Author, &lines.join("\n"));
+    let id = crate::notes::add(&mut ed, path, 0..1, crate::notes::By::Author, &lines.join("\n"));
+    crate::notes::open(&mut ed, id);
     hidden_under_a_frame(&mut ed, "Secondly");
 }
 

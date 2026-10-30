@@ -164,11 +164,18 @@ fn the_last_answers_places_are_notes_at_their_lines() {
     assert_eq!(ed.cursor_line(), 2);
     let rows = screen(&mut ed);
     let line = rows.iter().find(|r| r.contains("let line_3 = 3;")).unwrap();
-    assert!(line.contains("¶ The count is read twice in src/a.rs:3."), "{line}");
+    // (its card open under it, named `chat`, headed by the question: the line end the `¶` alone — focus A1b)
+    assert!(line.contains('¶') && !line.contains("¶ The count"), "{line}");
     let card = rows.join("\n");
-    assert!(card.contains("¶ chat · the last answer"), "{card}");
+    assert!(card.contains("╭─ chat") && card.contains("› where?") && !card.contains("¶ chat"), "{card}");
     assert!(card.contains("▎ The count is read twice"), "the paragraph on the card, marked: {card}");
     assert!(card.contains("The fix goes in") && card.contains("- Same.rs:1 is two files"), "{card}");
+    // (closed: the line end its sentence)
+    feed(&mut ed, "<esc>");
+    let rows = screen(&mut ed);
+    let line = rows.iter().find(|r| r.contains("let line_3 = 3;")).unwrap();
+    assert!(line.contains("¶ The count is read twice in src/a.rs:3."), "{line}");
+    assert!(!rows.join("\n").contains("╭─ chat"), "closed");
     // (`]n` on to src/b.rs: its range's first line)
     feed(&mut ed, "]n");
     assert_eq!(ed.doc().path.as_deref(), Some(root.join("src/b.rs").as_path()));
@@ -319,8 +326,6 @@ fn the_answers_flow_is_one_card_at_its_place() {
     feed(&mut ed, "gg]n");
     assert_eq!(ed.cursor_line(), 5);
     let rows = code_rows(&mut ed);
-    let line = rows.iter().find(|r| r.contains("let line_6 = 6;")).unwrap();
-    assert!(line.contains("¶ The fix is in src/a.rs:6.") && !line.contains("notes"), "{line}");
     let card = rows.join("\n");
     assert!(!card.contains(" of 2 here"), "one note: {card}");
     for said in
@@ -329,6 +334,10 @@ fn the_answers_flow_is_one_card_at_its_place() {
         assert!(card.contains(said), "{said:?} on the card: {card}");
     }
     assert!(!card.contains("Let me look") && !card.contains("First I read"), "the narration: {card}");
+    feed(&mut ed, "q");
+    let rows = code_rows(&mut ed);
+    let line = rows.iter().find(|r| r.contains("let line_6 = 6;")).unwrap();
+    assert!(line.contains("¶ The fix is in src/a.rs:6.") && !line.contains("notes"), "{line}");
     // (`]n` on: the next file's — the line held one)
     feed(&mut ed, "]n");
     assert_eq!((ed.doc().path.as_deref(), ed.cursor_line()), (Some(root.join("src/b.rs").as_path()), 1));
@@ -401,9 +410,9 @@ fn a_long_flow_keeps_its_lines_paragraph_in_sight() {
     feed(&mut ed, "gg]n");
     let card = code_rows(&mut ed).join("\n");
     assert!(card.contains("▎ The fix is in src/a.rs:6.") && card.contains("Paragraph 9 "), "{card}");
-    let foot = card.lines().position(|r| r.starts_with('╰')).unwrap();
+    let foot = card.lines().position(|r| r.trim_start().starts_with('╰')).unwrap();
     let last = card.lines().nth(foot - 1).unwrap();
-    assert!(last.trim_matches(|c| c == '│' || c == ' ') == "are kept in order.", "{card}");
+    assert!(last.trim_matches(|c| c == '│' || c == ' ').ends_with("are kept in order."), "{card}");
 }
 
 /// The reviewer's (note 20): a place named again in a later paragraph — the same message or another — makes that

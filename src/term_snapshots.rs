@@ -2099,34 +2099,175 @@ fn snapshot_follow_offer_run() {
     s.check("follow_offer_run");
 }
 
-/// A note on several lines keeps them in sight: its card goes under (or over) all of them — the code it's
-/// about stays readable, wherever the note sits on screen.
+/// A note on several lines opens its card under them, between the lines (focus A1b): its lines in sight above it, the
+/// code after them moved down under it — never covered, wherever the note sits.
 #[test]
-fn a_note_card_leaves_its_lines_in_sight() {
+fn a_note_card_opens_under_its_lines() {
     for (first, cursor) in [(4, 4), (4, 7), (20, 20), (60, 62), (74, 79)] {
         let mut s = Shot::new(100, 30);
         let text: String = (1..=80).map(|i| format!("let line_{i} = {i};\n")).collect();
         s.file("src/demo.rs", &text);
         let path = s.ed.doc().path.clone().unwrap();
         s.ed.goto_line(cursor);
-        // Where the lines are before any card covers them
-        let mut parser = vt100::Parser::new(s.h, s.w, 0);
-        parser.process(&s.frame());
-        let rows: Vec<String> = parser.screen().rows(0, s.w).collect();
-        crate::notes::add(
+        let id = crate::notes::add(
             &mut s.ed,
             &path,
             first..first + 6,
             crate::notes::By::Author,
             "Six lines, one remark.",
         );
-        s.frame();
+        crate::notes::open(&mut s.ed, id);
+        let mut parser = vt100::Parser::new(s.h, s.w, 0);
+        parser.process(&s.frame());
+        let rows: Vec<String> = parser.screen().rows(0, s.w).collect();
         let (_, y, _, h) = s.ed.screen.note_card.get().unwrap_or_else(|| panic!("a card at {first}"));
+        let row = |k: usize| rows.iter().position(|r| r.contains(&format!("let line_{k} = ")));
         for k in first + 1..=first + 6 {
-            let r = rows.iter().position(|r| r.contains(&format!("let line_{k} = "))).expect("on screen");
-            assert!(!(y..y + h).contains(&r), "note at {first}: line {k} (row {r}) under the card {y}+{h}");
+            let r = row(k).unwrap_or_else(|| panic!("note at {first}: line {k} in sight"));
+            assert!(r < y, "note at {first}: line {k} (row {r}) above the card at {y}");
+        }
+        assert_eq!(row(first + 6), Some(y - 1), "note at {first}: the card right under its last line");
+        assert!(
+            rows.iter().any(|r| r.contains("╰─ space n reply")),
+            "note at {first}: the card whole in sight"
+        );
+        if let Some(r) = row(first + 7) {
+            assert_eq!(r, y + h, "note at {first}: the next line right under the card");
         }
     }
+}
+
+/// The screen's rows of `s`'s next frame.
+fn shown_rows(s: &mut Shot) -> Vec<String> {
+    let mut parser = vt100::Parser::new(s.h, s.w, 0);
+    parser.process(&s.frame());
+    parser.screen().rows(0, s.w).collect()
+}
+
+/// Focus A1b: a note's card opens by an act only — `enter` on its line (again: closed), `]n` —, never by the cursor
+/// passing; `q` and `esc` close it. Open, its line end is the `¶` alone and `j` steps over its rows to the next line;
+/// leaving the file keeps it open, there as you come back.
+#[test]
+fn a_note_card_opens_by_an_act_and_stays_until_closed() {
+    let mut s = Shot::new(100, 30);
+    let text: String = (1..=40).map(|i| format!("let line_{i} = {i};\n")).collect();
+    s.file("src/demo.rs", &text);
+    let path = s.ed.doc().path.clone().unwrap();
+    let remark = format!("A remark on ten. {}", "It goes on and on, past any reading measure. ".repeat(6));
+    let id = crate::notes::add(&mut s.ed, &path, 9..10, crate::notes::By::Author, &remark);
+    let open = |s: &Shot| s.ed.workspace.claude.notes.open;
+    let line_end = |s: &mut Shot| shown_rows(s).into_iter().find(|r| r.contains("let line_10 = ")).unwrap();
+    s.ed.goto_line(9);
+    assert!(line_end(&mut s).contains("¶ A remark on ten."), "its line end");
+    assert!(s.ed.screen.note_card.get().is_none(), "the cursor on its line opens nothing");
+    s.keys("<ret>");
+    assert_eq!(open(&s), Some(id), "`enter` on its line opens it");
+    let end = line_end(&mut s);
+    assert!(end.contains('¶') && !end.contains("¶ A remark"), "open: the `¶` alone — {end}");
+    let (x, y, w, h) = s.ed.screen.note_card.get().expect("its card drawn");
+    // (its words fill the frame — the code's width, not a reading measure)
+    let inside = |r: &String| r.chars().skip(x + 1).take(w - 2).collect::<String>().trim().chars().count();
+    let widest = shown_rows(&mut s)[y + 1..y + h - 1].iter().map(inside).max();
+    assert!(
+        widest.unwrap_or(0) + 8 > w && w > crate::chrome::MEASURE + 8,
+        "as wide as its frame {w}: {widest:?}"
+    );
+    s.keys("j");
+    assert_eq!(s.ed.cursor_line(), 10, "`j` over its rows to the next line");
+    assert_eq!(open(&s), Some(id), "the cursor moving leaves it open");
+    s.keys("k<ret>");
+    assert_eq!(open(&s), None, "`enter` again closes it");
+    s.keys("<ret>q");
+    assert_eq!(open(&s), None, "`q` closes it");
+    s.keys("<ret><esc>");
+    assert_eq!(open(&s), None, "`esc` closes it");
+    s.keys("gg]n");
+    assert_eq!((open(&s), s.ed.cursor_line()), (Some(id), 9), "`]n` goes there and opens it");
+    // Leaving the file keeps it: there as you come back
+    s.keys(":new<ret>");
+    s.frame();
+    assert_eq!((open(&s), s.ed.screen.note_card.get()), (Some(id), None), "another buffer: open, not drawn");
+    s.keys(":bp<ret>");
+    s.frame();
+    assert!(s.ed.screen.note_card.get().is_some(), "back: its card");
+}
+
+/// Focus A1b: the card scrolls a row at a time (`zj`), as a wrapped line does — the view's top inside it, the rows in
+/// sight drawn, its top line gone above — and shows in every pane on its file.
+#[test]
+fn a_note_card_scrolls_a_row_at_a_time_and_shows_in_every_pane() {
+    use crate::codeview::{OtherKind, Row};
+    let mut s = Shot::new(120, 30);
+    // (no margin: the cursor's line gone above with only its card in sight, the cursor goes to the next — else the view
+    // would come back to it)
+    s.ed.config.scrolloff = 0;
+    let text: String = (1..=40).map(|i| format!("let line_{i} = {i};\n")).collect();
+    s.file("src/demo.rs", &text);
+    let path = s.ed.doc().path.clone().unwrap();
+    let id = crate::notes::add(&mut s.ed, &path, 0..1, crate::notes::By::Author, "One.\nTwo.\nThree.");
+    crate::notes::open(&mut s.ed, id);
+    let rows = shown_rows(&mut s);
+    let (x, y, w, h) = s.ed.screen.note_card.get().expect("its card");
+    let first = rows.iter().position(|r| r.contains("let line_1 = ")).unwrap();
+    assert_eq!(first + 1, y, "under its line");
+    s.keys("zjzj");
+    let rows = shown_rows(&mut s);
+    assert!(
+        matches!(s.ed.view.first(), Some(Row::Other { kind: OtherKind::Note { index: 1 }, .. })),
+        "the top inside the card: {:?}",
+        s.ed.view.first()
+    );
+    assert_eq!(s.ed.screen.note_card.get(), Some((x, first, w, h - 1)), "its rows in sight");
+    assert!(!rows.iter().any(|r| r.contains("╭─ note")), "its top line above the screen");
+    assert!(rows.iter().any(|r| r.contains("╰─ space n reply")), "its bottom line in sight");
+    s.keys(&"zj".repeat(h - 1));
+    let rows = shown_rows(&mut s);
+    assert_eq!(s.ed.screen.note_card.get(), None, "scrolled past it");
+    assert!(rows[first].contains("let line_2 = "), "the next line on top: {}", rows[first]);
+    // Two panes on the file: in each
+    s.keys("gg<C-w>v");
+    let rows = shown_rows(&mut s);
+    assert_eq!(s.ed.screen.panes.len(), 2, "two panes");
+    let tops = rows.iter().map(|r| r.matches("╭─ note").count()).sum::<usize>();
+    assert_eq!(tops, 2, "its card in both: {rows:#?}");
+    // A long thread: at most half the pane's rows, its frame with it
+    let long: String = (1..=40).map(|i| format!("Line {i} of a long remark.\n")).collect();
+    let id = crate::notes::add(&mut s.ed, &path, 5..6, crate::notes::By::Author, &long);
+    crate::notes::open(&mut s.ed, id);
+    s.frame();
+    let (_, _, _, h) = s.ed.screen.note_card.get().expect("its card");
+    let pane = s.ed.screen.panes.iter().find(|p| p.0 == s.ed.workspace.viewer.focus).unwrap().1;
+    assert!(h <= pane.h / 2, "{h} rows in a pane {} tall", pane.h);
+}
+
+/// Focus A1b's review: an open card's height is laid out once for what it says and the code's size, however many times
+/// the moves ask it (`Editor.note_rows`, every `codeview::Measure`) — a budget of work: keys that change neither lay it
+/// out again, never once per `Measure`; a reply, or a resize, does once. (Its drawing lays it out once a pane a frame.)
+#[test]
+fn an_open_cards_height_is_laid_out_once_a_frame() {
+    let mut s = Shot::new(100, 30);
+    let text: String = (1..=80).map(|i| format!("let line_{i} = {i};\n")).collect();
+    s.file("src/demo.rs", &text);
+    let path = s.ed.doc().path.clone().unwrap();
+    let long: String = (1..=8).map(|i| format!("Sentence {i} of a remark that wraps.\n")).collect();
+    let id = crate::notes::add(&mut s.ed, &path, 9..10, crate::notes::By::Author, &long);
+    s.ed.goto_line(9);
+    crate::notes::open(&mut s.ed, id);
+    s.frame();
+    crate::term::NOTE_LAYOUTS.with(|c| c.set(0));
+    let keys = ["j", "j", "j", "zj", "zj", "k", "k", "zk"];
+    for k in keys {
+        s.keys(k);
+        s.frame();
+    }
+    let laid = crate::term::NOTE_LAYOUTS.with(|c| c.get());
+    assert_eq!(laid, 0, "{laid} layouts for {} keys and frames, nothing it says changed", keys.len());
+    // (what it says changed: once again)
+    let n = s.ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id).unwrap();
+    n.thread.push(crate::notes::Entry { by: crate::notes::By::You, text: "And?".into(), draft: false });
+    s.keys("j");
+    s.frame();
+    assert_eq!(crate::term::NOTE_LAYOUTS.with(|c| c.get()), 1, "a reply lays it out once");
 }
 
 /// A thread too long for the room keeps its newest words — under the name of whoever says them (`¶ author`),
@@ -2141,6 +2282,7 @@ fn a_cut_note_keeps_who_is_talking() {
     let id = crate::notes::add(&mut s.ed, &path, 5..6, crate::notes::By::You, "why?");
     crate::notes::tool_call(&mut s.ed, &serde_json::json!({"reply_to": id, "text": long})).unwrap();
     s.ed.goto_line(5);
+    crate::notes::open(&mut s.ed, id);
     let bytes = s.frame();
     let (_, y, _, h) = s.ed.screen.note_card.get().expect("a card");
     let mut parser = vt100::Parser::new(s.h, s.w, 0);
@@ -2175,13 +2317,23 @@ fn snapshot_review_notes_by_their_author() {
     n.thread
         .push(crate::notes::Entry { by: By::Author, text: "It is — two lines up.".into(), draft: false });
     s.ed.goto_line(11);
-    let mut parser = vt100::Parser::new(s.h, s.w, 0);
-    parser.process(&s.frame());
-    let rows: Vec<String> = parser.screen().rows(0, s.w).collect();
-    let has = |t: &str| rows.iter().any(|r| r.contains(t));
-    assert!(has("¶ reviewer · not sent yet") && has("¶ author"), "the card: {rows:#?}");
-    assert!(has("¶ reviewer · This value") && has("¶ draft · Name"), "the line ends: {rows:#?}");
-    assert!(has("¶1 ¶1"), "the rail: yours and the reviewer's, each in its colour: {rows:#?}");
+    let rows = |s: &mut Shot| {
+        let mut parser = vt100::Parser::new(s.h, s.w, 0);
+        parser.process(&s.frame());
+        parser.screen().rows(0, s.w).collect::<Vec<String>>()
+    };
+    let shown = rows(&mut s);
+    let has = |rows: &[String], t: &str| rows.iter().any(|r| r.contains(t));
+    assert!(
+        has(&shown, "¶ reviewer · This value") && has(&shown, "¶ draft · Name"),
+        "the line ends: {shown:#?}"
+    );
+    assert!(has(&shown, "¶1 ¶1"), "the rail: yours and the reviewer's, each in its colour: {shown:#?}");
+    // (the finding's card opened: named `review`, its entries under their authors)
+    crate::notes::open(&mut s.ed, id);
+    let shown = rows(&mut s);
+    assert!(has(&shown, "╭─ review"), "the card: {shown:#?}");
+    assert!(has(&shown, "¶ reviewer · not sent yet") && has(&shown, "¶ author"), "the card: {shown:#?}");
     s.check("review_notes_by_author");
 }
 
@@ -3316,14 +3468,27 @@ fn a_card_comes_moves_and_goes_through_diffs() {
     let (base, now) = five_and_thirty_added();
     let mut s = review_of(112, 30, &base, &now);
     let path = s.ed.doc().path.clone().unwrap();
+    let mut ids = Vec::new();
     for line in [11, 20] {
-        crate::notes::add(&mut s.ed, &path, line..line + 1, crate::notes::By::Author, "A remark about this.");
+        let id = crate::notes::add(
+            &mut s.ed,
+            &path,
+            line..line + 1,
+            crate::notes::By::Author,
+            "A remark about this.",
+        );
+        ids.push((line, id));
     }
     let mut screen = crate::screen::Screen::new();
     let mut through_diffs = vt100::Parser::new(s.h, s.w, 0);
     let mut cards = Vec::new();
+    // (opened by an act, between the lines — focus A1b: none, the one on 11, the one on 20, 11's again, none)
     for line in [3, 11, 20, 11, 3] {
         s.ed.goto_line(line);
+        match ids.iter().find(|i| i.0 == line) {
+            Some(&(_, id)) => crate::notes::open(&mut s.ed, id),
+            None => s.ed.workspace.claude.notes.open = None,
+        }
         let drawn = s.drawn();
         through_diffs.process(screen.present(&drawn, s.w, s.h));
         cards.push(s.ed.screen.note_card.get().map(|r| r.1));
@@ -3353,8 +3518,9 @@ fn a_note_card_stays_in_its_pane() {
                 cards get and has to be kept inside the pane rather than wherever it would fit.";
     let inside = |s: &mut Shot, what: &str| {
         let path = s.ed.doc().path.clone().unwrap();
-        crate::notes::add(&mut s.ed, &path, 11..12, crate::notes::By::Author, long);
+        let id = crate::notes::add(&mut s.ed, &path, 11..12, crate::notes::By::Author, long);
         s.ed.goto_line(11);
+        crate::notes::open(&mut s.ed, id);
         s.frame();
         let (x, _, w, _) = s.ed.screen.note_card.get().unwrap_or_else(|| panic!("{what}: the note card"));
         let focused = s.ed.workspace.viewer.focus;
@@ -3577,6 +3743,8 @@ fn floating_cards_never_overlap() {
             crate::notes::add(&mut s.ed, &path, 39..40, crate::notes::By::Author, long);
         }
         s.ed.goto_line(39);
+        let first = s.ed.workspace.claude.notes.list[0].id;
+        crate::notes::open(&mut s.ed, first);
         let c = s.ed.workspace.claude.chat.as_mut().unwrap();
         c.msgs.push(Msg::new(Role::Thought, "Thinking hard about it for a while.\n".repeat(6), ""));
         let look = Look {
@@ -7847,26 +8015,25 @@ fn floating_cards_leave_nothing_against_their_edges() {
     let (base, now) = five_and_thirty_added();
     let long = "A remark long enough to make its card as wide as the pane lets it be, so its left edge comes near the \
                 gutter and has to decide where it starts.";
-    let mut met = 0;
-    for w in (84..132).step_by(2) {
+    // (a note's card is the code's rows now — focus A1b: from the text's first column, its rows' gutter blank — no
+    // number nor removed row's `-` beside its edge)
+    for w in (84..132).step_by(8) {
         let mut s = review_of(w, 30, &base, &now);
         let path = s.ed.doc().path.clone().unwrap();
-        crate::notes::add(&mut s.ed, &path, 11..12, crate::notes::By::Author, long);
+        let id = crate::notes::add(&mut s.ed, &path, 11..12, crate::notes::By::Author, long);
         s.ed.goto_line(11);
-        s.keys("gl");
-        s.frame();
-        let Some((x, ..)) = s.ed.screen.note_card.get() else { continue };
+        crate::notes::open(&mut s.ed, id);
+        let bytes = s.frame();
+        let (x, y, _, h) = s.ed.screen.note_card.get().expect("the note card");
         let focused = s.ed.workspace.viewer.focus;
         let &(_, pane, gutter, _) = s.ed.screen.panes.iter().find(|p| p.0 == focused).expect("the pane");
-        assert!(
-            x <= pane.x || x > pane.x + gutter,
-            "{w}: the card at {x}, the gutter {}..={}",
-            pane.x,
-            pane.x + gutter
-        );
-        met += usize::from(x == pane.x);
+        assert_eq!(x, pane.x + gutter, "{w}: from the text's first column");
+        let vt = cells(&bytes, s.w, s.h);
+        for (row, col) in (y..y + h).flat_map(|r| (pane.x..x).map(move |c| (r, c))) {
+            let c = vt.screen().cell(row as u16, col as u16).unwrap().contents();
+            assert!(c.trim().is_empty(), "{w}: {c:?} beside the card at {col},{row}");
+        }
     }
-    assert!(met > 0, "the case: a card that had to start over the gutter");
     // Claude's card at the bottom, with the keys and without: a row of air over the status line
     let mut s = Shot::new(100, 30);
     s.ed.offer_popups = true;
@@ -9675,7 +9842,8 @@ fn frames_of_f235() {
                 .map(String::from)
                 .chain((1..=14).map(|i| format!("Then line {i} of what it means for the loop.")))
                 .collect();
-        crate::notes::add(&mut s.ed, &path, 0..1, crate::notes::By::Author, &lines.join("\n"));
+        let id = crate::notes::add(&mut s.ed, &path, 0..1, crate::notes::By::Author, &lines.join("\n"));
+        crate::notes::open(&mut s.ed, id);
     });
     // (the prompt's input past its start: the pointer on its `…`, no card — what you type, the cursor brings it in)
     for theme in ["meok", "hanji"] {
@@ -9763,6 +9931,7 @@ fn frames_of_note_cards() {
                             .into(),
                     ),
                     Vec::new(),
+                    Some("what does word_counts do?".into()),
                 );
             }
             _ => {
@@ -9785,6 +9954,10 @@ fn frames_of_note_cards() {
             _ => 8,
         };
         s.ed.goto_line(line);
+        // (opened by an act — focus A1b: the cursor on its line opens nothing)
+        if let Some(id) = crate::notes::here(&s.ed).map(|n| n.id) {
+            crate::notes::open(&mut s.ed, id);
+        }
         if which == "reply" {
             crate::notes::start(&mut s.ed);
             for c in "Kept — a test says so.".chars() {

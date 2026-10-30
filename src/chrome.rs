@@ -289,7 +289,7 @@ impl Editor {
             R::Point => Keys::Point,
             R::View(s) => Keys::View(s),
             R::Output(r) => Keys::Output(r),
-            R::Code | R::Prompt | R::NextCard | R::Popup | R::Weave | R::Page => Keys::Code,
+            R::Code | R::Prompt | R::NextCard | R::Popup | R::Weave | R::NoteCard | R::Page => Keys::Code,
         }
     }
 }

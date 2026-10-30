@@ -55,6 +55,9 @@ pub enum OtherKind {
     Writing { head: bool },
     /// A woven view's row that isn't a line (`weave.rs`).
     Woven(WovenRow),
+    /// Row `index` of the open note's card, between the lines under its last one (focus A1b, `notes::opened`) — `at`
+    /// that line.
+    Note { index: usize },
 }
 
 /// A woven view's row that isn't a line: a conflict's head — a stacked part's (`part`: 0 the tip's), or the side by
@@ -154,6 +157,8 @@ pub struct Shows {
     /// Where the sessions are in it (`presence::marks`): `▎` in the sign column on their lines, a name tag at the
     /// first line's end of where each is now — a pane's only.
     pub presence: Vec<crate::presence::Mark>,
+    /// A code pane's: which (an open note's card there records its words as that pane's — focus A1b); None elsewhere.
+    pub pane: Option<crate::split::PaneId>,
     /// What a mouse drag selected where there's no cursor to hold it (the edit review: the file's lines and the ones
     /// a change proposes alike): by row drawn, its text's display columns `from..to` on the selection's ground.
     pub marked: Vec<Option<(usize, usize)>>,
@@ -314,6 +319,8 @@ pub struct Measure<'a> {
     /// What Claude is writing here (`writing.rs`): each block's lines drawn as its rows, counted as a folded doc
     /// comment's are — its rows on its first line, none on the rest (counted once a width: `Block::counts`).
     writing: Option<&'a crate::writing::Shown>,
+    /// The open note's card: the line it's under and its rows (`term::note_rows`).
+    note: Option<(usize, usize)>,
 }
 
 /// A document's folded doc comment blocks' row counts (by first line) for one version, code width and tab width
@@ -363,6 +370,7 @@ impl<'a> Measure<'a> {
             far: Default::default(),
             folding,
             writing: crate::writing::shown(doc),
+            note: crate::term::note_rows(editor, doc, (cols, rows)),
         }
     }
 
@@ -390,6 +398,7 @@ impl<'a> Measure<'a> {
         let near = |b: &crate::doccomment::Block| b.end >= *self.near.start();
         self.wrap.is_none()
             && self.writing.is_none()
+            && self.note.is_none()
             && !self.changes.rows()
             // (a woven view's conflict heads and removal heads are rows of their own)
             && crate::weave::of(self.doc)
@@ -479,7 +488,7 @@ impl<'a> Measure<'a> {
         self.changes.rows_above(self.doc, l, self.wrap, self.tab)
     }
 
-    /// The rows `l` takes: the removed ones above it, then its own.
+    /// The rows `l` takes: the removed ones above it, then its own, then an open note's card under it.
     pub fn rows(&self, l: usize) -> usize {
         self.removed(l)
             + match self.folded(l) {
@@ -487,6 +496,12 @@ impl<'a> Measure<'a> {
                 Some(_) => 0,
                 None => self.wrapped(l).len(),
             }
+            + self.card(l)
+    }
+
+    /// The open note's card's rows under `l` (`term::note_rows`): its line's — or that line's folded block's first — only.
+    pub fn card(&self, l: usize) -> usize {
+        self.note.filter(|&(at, _)| self.shown_as(at) == l).map_or(0, |(_, n)| n)
     }
 
     /// The rows of `l` that can go above the screen while it's the top line: its own but the last (none under
@@ -495,11 +510,13 @@ impl<'a> Measure<'a> {
         if self.removed(l) > 0 {
             return 0;
         }
-        match self.folded(l) {
-            Some((a, _, n)) if l == a => n - 1,
-            Some(_) => 0,
-            None => self.wrapped(l).len() - 1,
-        }
+        // (an open note's card under it: its rows go by a row at a time too, the line's own all above with them)
+        self.card(l)
+            + match self.folded(l) {
+                Some((a, _, n)) if l == a => n - 1,
+                Some(_) => 0,
+                None => self.wrapped(l).len() - 1,
+            }
     }
 
     /// A top line as drawn: inside a folded block, its first line with the rows above `top` skipped.
@@ -590,6 +607,7 @@ impl Shows {
             claude: crate::follow::place(editor, id, doc),
             caret: crate::follow::caret_in(editor, id, doc),
             presence: crate::presence::marks(editor, doc),
+            pane: Some(id),
             marked: Vec::new(),
         }
     }
@@ -619,6 +637,7 @@ impl Shows {
             claude: None,
             caret: true,
             presence: Vec::new(),
+            pane: None,
             marked: Vec::new(),
         }
     }
@@ -645,6 +664,7 @@ impl Shows {
             claude: None,
             caret: true,
             presence: Vec::new(),
+            pane: None,
             marked: Vec::new(),
         }
     }
@@ -676,6 +696,7 @@ impl Shows {
             claude: None,
             caret: true,
             presence: Vec::new(),
+            pane: None,
             marked: Vec::new(),
         }
     }

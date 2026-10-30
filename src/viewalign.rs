@@ -145,10 +145,18 @@ impl Editor {
         let (top, last) = (doc.top, mv::last_line(&doc.text));
         let (rows, so) = (self.viewport.0.max(1), self.scrolloff());
         let m = self.measure(top);
-        let first = if top == 0 { 0 } else { (top + so).min(last) };
+        // (the top's own rows all above the screen, only its open note's card in sight: the next line is the first)
+        let skip = doc.top_skip();
+        let gone = skip > 0 && skip >= m.rows(top) - m.card(top);
+        let first = match (top, gone) {
+            (0, false) => 0,
+            (_, false) => (top + so).min(last),
+            (_, true) => (top + 1 + so).min(last),
+        };
+        let row_count = |l: usize| m.rows(l) - if l == top { skip.min(m.rows(l)) } else { 0 };
         let (mut l, mut used) = (top, 0);
-        while l < last && used + m.rows(l) + m.rows(l + 1) <= rows {
-            used += m.rows(l);
+        while l < last && used + row_count(l) + m.rows(l + 1) <= rows {
+            used += row_count(l);
             l += 1;
         }
         let bottom = if l >= last { last } else { l.saturating_sub(so).max(first) };
@@ -181,11 +189,36 @@ impl Editor {
                 d.top_rows = (k > 0).then_some((line, k));
             }
             None => {
-                // (as `scroll_view` clamps it)
-                let last = mv::last_line(&d.text);
-                d.set_top(d.top.saturating_add_signed(delta).min(last));
+                let from = (d.top, d.top_skip());
+                let to = self.top_moved(from, delta, false);
+                self.set_top_rows(to);
             }
         }
+    }
+
+    /// The view's top (line, its rows above the screen) moved `delta` lines from `top` — clamped to the text; through a
+    /// folded doc comment as one line (`folded`: a top inside one goes past it, down, or to its first line, up); an
+    /// open note's card under a line a row at a time, as its rows are the screen's (focus A1b).
+    fn top_moved(&self, (mut top, mut skip): (usize, usize), delta: isize, folded: bool) -> (usize, usize) {
+        let last = mv::last_line(&self.doc().text);
+        let m = self.measure(top);
+        for _ in 0..delta.unsigned_abs() {
+            match delta > 0 {
+                true if m.card(top) > 0 && skip < m.skippable(top) => skip += 1,
+                true if top >= last => break,
+                true => (top, skip) = (top + 1, 0),
+                false if skip > 0 && m.card(top) > 0 => skip -= 1,
+                false if top == 0 => (top, skip) = (0, 0),
+                false => {
+                    let prev = if folded { m.shown_as(top - 1) } else { top - 1 };
+                    (top, skip) = (prev, if m.card(prev) > 0 { m.skippable(prev) } else { 0 });
+                }
+            }
+            if folded && let Some((_, b, _)) = m.folded(top).filter(|&(a, ..)| top > a && delta > 0) {
+                (top, skip) = ((b + 1).min(last), 0);
+            }
+        }
+        (top, skip)
     }
 
     /// `zj` / `zk` — the view moves `delta` lines; the cursor only moves if the view would leave it. A document
@@ -194,20 +227,10 @@ impl Editor {
         if let Some(g) = self.doc().rows.clone() {
             return self.scroll_rows(&g, delta, extend);
         }
-        let last = mv::last_line(&self.doc().text);
-        let top = (self.doc().top as isize + delta).clamp(0, last as isize) as usize;
-        // (a folded doc comment is one line: the view steps over it)
-        let top = match self.measure(top).folded(top) {
-            Some((a, b, _)) if top > a => {
-                if delta > 0 {
-                    (b + 1).min(last)
-                } else {
-                    a
-                }
-            }
-            _ => top,
-        };
-        self.doc_mut().set_top(top);
+        // (a folded doc comment is one line: the view steps over it; an open note's card a row at a time)
+        let from = (self.doc().top, self.doc().top_skip());
+        let to = self.top_moved(from, delta, true);
+        self.set_top_rows(to);
         let (first, bottom) = self.inner_lines();
         let line = self.cursor_line();
         if line < first {

@@ -218,7 +218,8 @@ fn a_press_on_the_note_card_replies_and_nothing_under_it_is_pressed() {
     let mut ed = editor();
     let path = std::env::temp_dir().join("tarae-mouse-overlays-note.rs");
     ed.docs[0].path.set(Some(path.clone()));
-    crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::Author, "A word about this line.");
+    let id = crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::Author, "A word about this line.");
+    crate::notes::open(&mut ed, id);
     frame(&mut ed);
     let before = ed.doc().selection().primary();
     let (x, y, w, h) = ed.screen.note_card.get().expect("the note card drawn");
@@ -235,6 +236,74 @@ fn a_press_on_the_note_card_replies_and_nothing_under_it_is_pressed() {
     mouse(&mut ed, MouseKind::Up, x + w / 2, y + h / 2);
     assert!(ed.prompt.is_some(), "the reply's line kept");
     assert!(said(&ed).starts_with("replying"), "said: {}", said(&ed));
+}
+
+/// Focus A1b: a note's `¶` at its line's end is a button — pressed, its card opens between the lines; pressed again, it
+/// closes. A drag over the card's words selects them, on the selection's ground, copied as you let go — no reply; a press
+/// not dragged replies, as ever. The wheel over it scrolls the code it's in.
+#[test]
+fn a_notes_pilcrow_opens_its_card_and_a_drag_selects_its_words() {
+    let scratch = crate::scratch::Scratch::new("mouse-overlays-note-pilcrow");
+    let mut ed = editor();
+    let path = scratch.join("a.rs");
+    ed.docs[0].path.set(Some(path.clone()));
+    let id = crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::Author, "First words here, and more.");
+    frame(&mut ed);
+    let pilcrow = |ed: &Editor| {
+        let spots = ed.screen.word_spots.borrow();
+        spots.iter().find(|s| s.press == crate::wordspot::Press::Note(id)).map(|s| (s.from, s.y))
+    };
+    let (px, py) = pilcrow(&ed).expect("its `¶` a button");
+    press(&mut ed, px, py);
+    assert_eq!(ed.workspace.claude.notes.open, Some(id), "pressed: its card open");
+    frame(&mut ed);
+    assert!(ed.screen.note_card.get().is_some(), "drawn");
+    let (px, py) = pilcrow(&ed).expect("its `¶` still a button");
+    // (later — not a double's second press)
+    ed.list_click = None;
+    press(&mut ed, px, py);
+    assert_eq!(ed.workspace.claude.notes.open, None, "pressed again: closed");
+    // A drag over its words: selected, copied, no reply
+    crate::notes::open(&mut ed, id);
+    frame(&mut ed);
+    // (the wheel over it: the code it's in scrolls)
+    let (cx, cy, ..) = ed.screen.note_card.get().expect("drawn");
+    let before = (ed.doc().top, ed.doc().top_skip());
+    mouse(&mut ed, MouseKind::ScrollDown, cx + 2, cy + 1);
+    assert_ne!((ed.doc().top, ed.doc().top_skip()), before, "the wheel scrolled the code");
+    ed.doc_mut().set_top(0);
+    frame(&mut ed);
+    let (y, x, col) = {
+        let rows = ed.screen.note_text.borrow();
+        let words = |r: &&(usize, usize, Vec<crate::markdown::Span>)| -> String {
+            r.2.iter().map(|s| s.text.as_str()).collect()
+        };
+        let row = rows.iter().find(|r| words(r).contains("First words")).expect("its words recorded");
+        (row.0, row.1, words(&row).find("First").unwrap())
+    };
+    mouse(&mut ed, MouseKind::Down, x + col, y);
+    mouse(&mut ed, MouseKind::Drag, x + col + 10, y);
+    assert_eq!(crate::term::note_marked_text(&ed).as_deref(), Some("First words"), "what the drag holds");
+    let marked = frame(&mut ed);
+    mouse(&mut ed, MouseKind::Up, x + col + 10, y);
+    assert!(ed.prompt.is_none(), "a drag: no reply");
+    assert!(marked.contains("First words"), "still drawn under its ground");
+    assert_eq!(ed.note_marked, None, "the gesture over: let go");
+    // (a later drag elsewhere — the code under the card — is never the card's: it neither stretches nor copies it)
+    frame(&mut ed);
+    let (_, cy, _, ch) = ed.screen.note_card.get().expect("drawn");
+    mouse(&mut ed, MouseKind::Down, 2, cy + ch + 1);
+    mouse(&mut ed, MouseKind::Drag, 8, cy + ch + 1);
+    assert_eq!(ed.note_marked, None, "a drag on the code isn't the card's");
+    mouse(&mut ed, MouseKind::Up, 8, cy + ch + 1);
+    assert!(ed.prompt.is_none(), "nor its reply");
+    // A press not dragged: the reply
+    mouse(&mut ed, MouseKind::Down, x + col, y);
+    mouse(&mut ed, MouseKind::Up, x + col, y);
+    assert!(
+        matches!(ed.prompt.as_ref().map(|p| p.kind), Some(crate::editor::PromptKind::Note(_))),
+        "a press: its reply's line"
+    );
 }
 
 /// The note card's rows as drawn, from its top line to its bottom line.
@@ -270,7 +339,7 @@ fn the_note_card_is_framed_and_its_keys_are_buttons_on_its_bottom_line() {
     let path = scratch.join("a.rs");
     ed.docs[0].path.set(Some(path.clone()));
     let long = "A word about this line, long enough for the card to carry every one of its keys.";
-    crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::Author, long);
+    let first = crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::Author, long);
     crate::notes::add(
         &mut ed,
         &path,
@@ -278,15 +347,17 @@ fn the_note_card_is_framed_and_its_keys_are_buttons_on_its_bottom_line() {
         crate::notes::By::Author,
         &format!("Another, further down. {long}"),
     );
+    crate::notes::open(&mut ed, first);
     frame(&mut ed);
     let rows = note_card_rows(&ed);
     assert!(rows[0].starts_with("╭─ note ─") && !rows[0].contains("of 2"), "{rows:#?}");
     assert!(rows[1].starts_with("│ ¶ author"), "its author's head: {rows:#?}");
     let bottom = rows.last().unwrap();
-    assert!(bottom.starts_with("╰─ space n reply · ]n next · space N all · :note-close ─"), "{rows:#?}");
+    let foot = "╰─ space n reply · ]n next · q close · space N all · :note-close ─";
+    assert!(bottom.starts_with(foot), "{rows:#?}");
     assert!(!rows[1..rows.len() - 1].iter().any(|r| r.contains("space n")), "no keys in its body: {rows:#?}");
     let keys: Vec<String> = note_card_keys(&ed).into_iter().map(|k| k.0).collect();
-    assert_eq!(keys, ["space n", "]n", "space N", ":note-close"], "each key a button");
+    assert_eq!(keys, ["space n", "]n", "q", "space N", ":note-close"], "each key a button");
     // Half lit under the pointer, the wash off it
     let lit = |ed: &Editor| {
         let frames = ed.screen.frames.borrow();
@@ -306,6 +377,7 @@ fn the_note_card_is_framed_and_its_keys_are_buttons_on_its_bottom_line() {
     press(&mut ed, kx, ky);
     assert_eq!(ed.cursor_line(), 5, "`]n` went to the next note");
     assert!(ed.prompt.is_none(), "its key, not a reply");
+    assert_ne!(ed.workspace.claude.notes.open, Some(first), "its card open in the first's stead");
     // `:note-close` pressed: that note closed
     let (kx, ky) = at(&ed, ":note-close");
     press(&mut ed, kx, ky);
@@ -314,6 +386,7 @@ fn the_note_card_is_framed_and_its_keys_are_buttons_on_its_bottom_line() {
     // Two notes starting on one line: which this is, on its top line
     crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::You, "A second one here.");
     ed.goto_line(0);
+    crate::notes::open(&mut ed, first);
     frame(&mut ed);
     let rows = note_card_rows(&ed);
     assert!(rows[0].starts_with("╭─ note ── ") && rows[0].contains(" of 2 here ─"), "{rows:#?}");
@@ -328,15 +401,16 @@ fn the_note_cards_costly_key_is_plain_words() {
     let path = scratch.join("a.rs");
     ed.docs[0].path.set(Some(path.clone()));
     let long = "A draft of mine about this line, long enough to carry the card's keys on its bottom line.";
-    crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::You, long);
+    let id = crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::You, long);
     for n in &mut ed.workspace.claude.notes.list {
         (n.thread[0].draft, n.waiting) = (true, false);
     }
+    crate::notes::open(&mut ed, id);
     frame(&mut ed);
     let rows = note_card_rows(&ed);
     assert!(rows.last().unwrap().contains("space v s send the review"), "{rows:#?}");
     let keys: Vec<String> = note_card_keys(&ed).into_iter().map(|k| k.0).collect();
-    assert_eq!(keys, ["space n", "]n"], "the send no button");
+    assert_eq!(keys, ["space n", "]n", "q"], "the send no button");
     assert!(!ed.screen.hints.borrow().iter().any(|h| h.key == "space v s"), "nor a hint");
 }
 
@@ -353,7 +427,8 @@ fn a_note_card_shows_no_keys_while_its_reply_is_written() {
     let path = scratch.join("a.rs");
     ed.docs[0].path.set(Some(path.clone()));
     let long = "A word about this line, long enough for the card to carry every one of its keys.";
-    crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::Author, long);
+    let id = crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::Author, long);
+    crate::notes::open(&mut ed, id);
     let thread = |ed: &Editor| ed.workspace.claude.notes.list[0].thread.len();
     let replying =
         |ed: &Editor| matches!(ed.prompt.as_ref().map(|p| p.kind), Some(crate::editor::PromptKind::Note(_)));
@@ -363,7 +438,7 @@ fn a_note_card_shows_no_keys_while_its_reply_is_written() {
         assert!(replying(ed), "the reply's line open");
     };
     let keys = |ed: &Editor| note_card_keys(ed).into_iter().map(|k| k.0).collect::<Vec<_>>();
-    let walk = ["space n", "]n", "space N", ":note-close"];
+    let walk = ["space n", "]n", "q", "space N", ":note-close"];
     frame(&mut ed);
     assert_eq!(keys(&ed), walk, "its keys before the reply");
     reply(&mut ed);
@@ -404,7 +479,8 @@ fn a_press_where_the_note_card_was_closes_another_prompt_and_never_replies() {
     let mut ed = editor();
     let path = scratch.join("a.rs");
     ed.docs[0].path.set(Some(path.clone()));
-    crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::Author, "A word about this line.");
+    let id = crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::Author, "A word about this line.");
+    crate::notes::open(&mut ed, id);
     frame(&mut ed);
     let (x, y, w, h) = ed.screen.note_card.get().expect("the note card drawn");
     ed.handle_key(crate::key::Key::plain(crate::key::Code::Char(':')));

@@ -3242,7 +3242,10 @@ mod tests {
         ed.open(&a).unwrap();
         crate::codereview::close(&mut ed);
         ed.goto_line(1);
+        let id = board_notes(&ed)[0].id;
+        crate::notes::open(&mut ed, id);
         let screen = rows(&mut ed).join("\n");
+        assert!(screen.contains("╭─ review"), "the reviewer's card: {screen}");
         assert!(screen.contains("¶ correctness · security · confirmed · not sent yet"), "{screen}");
         assert!(screen.contains("skeptic — a.txt:2 sends it"), "{screen}");
         std::fs::remove_dir_all(&dir).ok();

@@ -1834,8 +1834,15 @@ counts the runs that only read text, by program.
 ![A note thread under its line: Claude's remark, your reply, and Claude's answer, with the line end showing ¶ and the reply count](screenshots/notes.png)
 
 Claude can pin **notes** to lines of code: a bug, a risk, or a question tied to specific lines. A note shows as
-`¶ first words` at the end of its line, and with the cursor on those lines a card shows the whole thread. Notes
-ride edits (lines added above push them down), and the next start in this project brings them back.
+`¶ first words` at the end of its line. Its card opens **between the lines**, under the note's last line, as wide as
+the code: the code below moves down, nothing is covered. It opens only when you ask: `enter` on the note's line, a
+press on its `¶`, or `]n`/`[n` stepping to it. The cursor passing by opens nothing. It stays open as you move or
+leave the file, until `q`, `esc` or `enter` again closes it or another card opens. While it's open the line end is
+the `¶` alone, since the card says the rest right below. The card is named for what it is: `chat` for an answer said
+at its place, `review` for the reviewer's finding, `note` for a thread you or Claude wrote in. It shows in every pane
+that has its file, scrolls with the code a row at a time, and takes at most half the pane. A drag over its words selects
+them and copies them as you let go; a plain press replies. Notes ride edits (lines added above push them down), and the
+next start in this project brings them back.
 
 Talk back right there: `space n` on a note line replies. Your reply goes to Claude together with those lines and
 the thread so far, and Claude answers on the thread. `space n` on a line without a note asks Claude about that
@@ -1845,8 +1852,9 @@ line (or the selected lines), which starts a new note with your question.
 pins a note, so the last answer's places are notes too, with no tool call and nothing sent: when a turn ends, every
 `src/x.rs:120` (or `x.rs:120-140`, or a walk-through's stop) in its prose that comes to one file of the project or
 its folders shows at that line. The line end has the sentence that names it, and the card has the paragraph it's in
-(a list item: that item), named `chat · the last answer`. A paragraph naming three places gives each its own
-sentence. A name that comes to no file, or to several, is no place, and fenced code has none. Where the answer also
+(a list item: that item), on a card named `chat` and headed by the question the answer answered. A paragraph naming
+three places gives each its own sentence. A name that comes to no file, or to several, is no place, and fenced code
+has none. Where the answer also
 says what no place takes (a summary, a caveat, what it said of a name that came to nothing), the note at the answer's
 place holds its flow. That place is the first one named in the newest of its messages that names one, where follow
 takes the view at the turn's end; an answer naming none goes to the turn's last edit, else its last read in the
@@ -1865,15 +1873,15 @@ note. Claude isn't told of them: they're its own words, put where they point.
 | Key | Notes |
 |---|---|
 | `space n` | Reply to the note here, or ask Claude about this line |
-| `]n` / `[n` | Next / previous note, across files (notes sharing a line one by one) |
+| `enter` | On a note's line: open its card between the lines, or close it |
+| `q` / `esc` | Close the open card (`q` is Helix's macro replay again once it's closed) |
+| `]n` / `[n` | Next / previous note, across files (notes sharing a line one by one), its card opened |
 | `space N` | Every note, with a preview — `C-x` closes the one on the row, `A-x` all its author began |
 | `:note-close` / `:notes-clear [reviewer\|author\|you\|chat]` | Close the note here / all of them, or one author's (asks first when your unsent drafts are among them) |
 
-The card sits beside the note's lines, below them or above them, so the code the note is about stays in
-view. When several notes share a line, the line end says how many (`¶ 3 notes · …`). The card shows one at a time
-(`note 2 of 3 here`), and `]n` reads them in order. Floating cards never cover each other. The note at the
-cursor is placed first, the minimized chat takes a free corner, and the thought card takes what's left. On a
-small screen, a card with no room waits for the next frame that has room.
+When several notes share a line, the line end says how many (`¶ 3 notes · …`). The card shows one at a time
+(`note 2 of 3 here`), and `]n` reads them in order. A code narrower than a card has room for says so, and the line
+end stays.
 
 Under the hood the chat process gets tarae's own `note` tool: an MCP server that lives inside tarae and speaks
 over the same stream as the conversation, so no server or port is involved.
