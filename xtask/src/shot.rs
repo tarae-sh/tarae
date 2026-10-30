@@ -20,7 +20,13 @@
 //! Environment:
 //! - `TARAE_SHOT_XDG` — config home (`tarae/config.toml` under it; default `/tmp/tarae-shot/xdg`). Point it at
 //!   an empty folder so your own settings don't leak in. Folders given here must be absolute (and the config
-//!   and start folders there already) — else the shot refuses.
+//!   and start folders there already) — else the shot refuses. A shot never starts the real `claude` by itself
+//!   (#247: your account, a request, a network card mid-shot): a config with no `llm.command` gets the scenes'
+//!   stand-in (`scenes --claude idle` — the shot's tarae reads a copy, the folder given is never written); one
+//!   whose command or its words name `claude` (`env claude`), or a `.tarae.toml`/`.tarae.local.toml` above the
+//!   start folder that does, is refused.
+//! - `TARAE_SHOT_CLAUDE` — the stand-in's script (`scenes.rs`'s `SCRIPTS`: `full`, `card` …; default `idle`; a name
+//!   it doesn't know refused), for a config that names no `llm.command`.
 //! - `TARAE_SHOT_STATE` — state home (files to restore, recent files, undo, chats); default a fresh temp dir, removed
 //!   afterwards — never the user's.
 //! - `TARAE_BACKGROUND=dark|light` — the theme (the virtual terminal doesn't answer the background query).
@@ -51,6 +57,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+use crate::scenes::Fresh;
 use crate::{Result, root};
 
 const SIZE: f32 = 15.0;
@@ -83,7 +90,9 @@ pub fn run(args: &[String]) -> Result<()> {
         let state = given
             .clone()
             .unwrap_or_else(|| std::env::temp_dir().join(format!("tarae-shot-state-{}", std::process::id())));
-        let res = Setup::from_env().and_then(|setup| drive(&mut vt, &setup, keys, &state, &[], cols, rows));
+        // (`_home`: the stand-in's config home, kept until the shot is done)
+        let res = Setup::from_env()
+            .and_then(|(setup, _home)| drive(&mut vt, &setup, keys, &state, &[], cols, rows));
         if given.is_none() {
             let _ = std::fs::remove_dir_all(&state);
         }
@@ -108,8 +117,8 @@ pub struct Setup {
 
 impl Setup {
     /// `cargo xtask shot`'s: from its variables (the top of this file), the shot profile's tarae built unless
-    /// `TARAE_SHOT_BIN` names one.
-    fn from_env() -> Result<Setup> {
+    /// `TARAE_SHOT_BIN` names one; and the stand-in claude's config home when it's made one (`claude_home`).
+    fn from_env() -> Result<(Setup, Option<Fresh>)> {
         let root = root();
         let bin = match folder("TARAE_SHOT_BIN", std::env::var_os("TARAE_SHOT_BIN"), false)? {
             Some(bin) => bin,
@@ -123,9 +132,114 @@ impl Setup {
         let cwd = folder("TARAE_SHOT_CWD", std::env::var_os("TARAE_SHOT_CWD"), true)?.unwrap_or(root);
         let config = folder("TARAE_SHOT_XDG", std::env::var_os("TARAE_SHOT_XDG"), true)?
             .unwrap_or_else(|| "/tmp/tarae-shot/xdg".into());
+        let (config, home) = claude_home(&config, &cwd, std::env::var("TARAE_SHOT_CLAUDE").ok().as_deref())?;
         let env = shot_env(std::env::var_os("TARAE_SHOT_ZELLIJ"));
-        Ok(Setup { bin, files, cwd, config, background: None, env })
+        Ok((Setup { bin, files, cwd, config, background: None, env }, home))
     }
+}
+
+/// The config home a plain shot's tarae reads (#247: never the real `claude` by itself): `config` as it is when its
+/// `tarae/config.toml` names its own `llm.command`; else a home made for the shot — that config with this xtask as
+/// claude running `script` (`idle` by default, as the scenes'), the rest of `config` linked in as it is (themes,
+/// plugins, git's own) — kept while the returned `Fresh` lives. Refused: a config, or a project file above `cwd`
+/// (`.tarae.toml` once trusted, `.tarae.local.toml` unasked — either wins over yours), naming the real `claude`.
+fn claude_home(config: &Path, cwd: &Path, script: Option<&str>) -> Result<(PathBuf, Option<Fresh>)> {
+    let file = config.join("tarae/config.toml");
+    let text = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("{}: {e}", file.display())),
+    };
+    let projects: Vec<(String, PathBuf)> = cwd
+        .ancestors()
+        .flat_map(|d| [d.join(".tarae.toml"), d.join(".tarae.local.toml")])
+        .filter_map(|p| Some((std::fs::read_to_string(&p).ok()?, p)))
+        .collect();
+    let me = std::env::current_exe().map_err(|e| format!("this xtask: {e}"))?;
+    let Some(text) = with_stand_in(&text, &file, &projects, &me, script)? else {
+        return Ok((config.to_path_buf(), None));
+    };
+    let home = Fresh::new("tarae-shot-config")?;
+    let own = home.0.join("tarae");
+    std::fs::create_dir(&own).map_err(|e| format!("{}: {e}", own.display()))?;
+    link_but(config, &home.0, "tarae")?;
+    link_but(&config.join("tarae"), &own, "config.toml")?;
+    let to = own.join("config.toml");
+    std::fs::write(&to, text).map_err(|e| format!("{}: {e}", to.display()))?;
+    Ok((home.0.clone(), Some(home)))
+}
+
+/// A shot's config `text` (from `file`) with the stand-in claude in it — this xtask (`me`) as `llm.command`, running
+/// `script` (`idle` if None) — when it names no `llm.command`; None when it names its own (a scene's script, a
+/// stand-in of yours). Refused where it or one of the `projects` files (their text, their path) names the real
+/// `claude`, and where `script` is given beside a command of the config's own.
+fn with_stand_in(
+    text: &str,
+    file: &Path,
+    projects: &[(String, PathBuf)],
+    me: &Path,
+    script: Option<&str>,
+) -> Result<Option<String>> {
+    let mut t: toml::Table = text.parse().map_err(|e| format!("{}: {e}", file.display()))?;
+    // (a project file tarae can't read it says so itself; here only what it would start)
+    let named =
+        projects.iter().filter_map(|(text, p)| Some((names_claude(&text.parse().ok()?)?, p.as_path())));
+    if let Some((c, p)) = std::iter::once(&t).filter_map(names_claude).map(|c| (c, file)).chain(named).next()
+    {
+        return Err(format!(
+            "{}: llm.command {c:?} starts the real claude — a shot never starts it (your account, a request, the \
+             network): leave llm.command out for the stand-in (`scenes --claude idle`, TARAE_SHOT_CLAUDE=<script> \
+             for another), or name a stand-in of your own",
+            p.display()
+        ));
+    }
+    if t.get("llm").and_then(|l| l.get("command")).is_some() {
+        return match script {
+            Some(s) => Err(format!(
+                "TARAE_SHOT_CLAUDE={s} is for the stand-in, but {} names its own llm.command — one or the other",
+                file.display()
+            )),
+            None => Ok(None),
+        };
+    }
+    // (a name the stand-in doesn't know it plays as `idle`: a shot of a chat that never answers — said here)
+    if let Some(s) = script.filter(|s| !crate::scenes::knows(s)) {
+        return Err(format!(
+            "TARAE_SHOT_CLAUDE={s} — no script of the stand-in's (scenes.rs's SCRIPTS lists them)"
+        ));
+    }
+    let llm = t.entry("llm").or_insert_with(|| toml::Value::Table(toml::Table::new()));
+    let llm = llm.as_table_mut().ok_or_else(|| format!("{}: llm isn't a table", file.display()))?;
+    llm.insert("command".into(), toml::Value::String(me.to_string_lossy().into_owned()));
+    let args = ["scenes", "--claude", script.unwrap_or("idle")];
+    llm.insert("args".into(), toml::Value::Array(args.map(|a| toml::Value::String(a.into())).to_vec()));
+    toml::to_string(&t).map(Some).map_err(|e| format!("{}: {e}", file.display()))
+}
+
+/// `t`'s `llm.command` with its `llm.args`, as one line, when it starts the real claude: a program named `claude`
+/// (on PATH or by its path) as the command or one of its words — `env claude`, `sh -c 'claude …'`. It catches a
+/// slip, not every way there: a script of yours that runs claude, or a package runner's name for it, it can't see.
+fn names_claude(t: &toml::Table) -> Option<String> {
+    let llm = t.get("llm")?;
+    let c = llm.get("command")?.as_str()?;
+    let args = llm.get("args").and_then(|a| a.as_array());
+    let args: Vec<&str> = args.into_iter().flatten().filter_map(|a| a.as_str()).collect();
+    let claude = |w: &str| Path::new(w).file_name().is_some_and(|n| n == "claude");
+    // (a word as a shell line has it: what a path can't hold around it ends it — `claude;`, `(claude`, `$(… claude)`)
+    let ends = |ch: char| ch.is_whitespace() || ";&|()$`'\"<>{}".contains(ch);
+    let mut words = std::iter::once(c).chain(args.iter().flat_map(|a| a.split(ends)));
+    let line = std::iter::once(c).chain(args.iter().copied()).collect::<Vec<_>>().join(" ");
+    words.any(claude).then_some(line)
+}
+
+/// What folder `from` holds but `but`, linked into `to` (`from` not there: nothing).
+fn link_but(from: &Path, to: &Path, but: &str) -> Result<()> {
+    let Ok(entries) = std::fs::read_dir(from) else { return Ok(()) };
+    for e in entries.flatten().filter(|e| e.file_name() != but) {
+        let at = to.join(e.file_name());
+        std::os::unix::fs::symlink(e.path(), &at).map_err(|err| format!("{}: {err}", at.display()))?;
+    }
+    Ok(())
 }
 
 /// The shot's own variables for tarae, `TARAE_SHOT_ZELLIJ` as given: `ZELLIJ` taken out — a shot taken from inside
@@ -856,8 +970,8 @@ pub fn build(root: &Path, profile: &str, features: &[&str]) -> Result<PathBuf> {
 /// itself: with it, every shot taken from a panel came out gray. `TARAE_SHOT_NO_DISK=1`: the machine's free
 /// space isn't the picture's — tarae's disk levels stay off (`Editor::disk_looked`).
 /// A folder given in `var`: absolute (tarae starts in `TARAE_SHOT_CWD`, so a relative one would mean another
-/// folder there), and there already when `must_exist` — a config folder that isn't found leaves tarae on its
-/// defaults, and the default `llm.command` is the real `claude` (a slip that started it once).
+/// folder there), and there already when `must_exist` — a config folder that isn't found is a slip, never the
+/// defaults (the stand-in claude stands in for those too: `claude_home`).
 fn folder(var: &str, value: Option<std::ffi::OsString>, must_exist: bool) -> Result<Option<PathBuf>> {
     let Some(p) = value.map(PathBuf::from) else { return Ok(None) };
     if !p.is_absolute() {
@@ -1449,6 +1563,83 @@ mod tests {
         assert_eq!(folder("TARAE_SHOT_STATE", Some(missing.clone().into()), false), Ok(Some(missing)));
         assert_eq!(folder("TARAE_SHOT_XDG", Some(tmp.clone().into()), true), Ok(Some(tmp)));
         assert_eq!(folder("TARAE_SHOT_XDG", None, true), Ok(None));
+    }
+
+    /// #247: a shot's config with no `llm.command` gets the stand-in claude (its script `idle`, or the one
+    /// named), the rest of it kept; one naming its own stands as it is; the real `claude` — by name, by path, or
+    /// in a project file above the start folder — is refused, and so is a script beside a command of the config's.
+    #[test]
+    fn a_shot_gets_the_stand_in_claude_and_never_the_real_one() {
+        let (file, me) = (Path::new("/x/tarae/config.toml"), Path::new("/t/xtask"));
+        let given = |text: &str, projects: &[(String, PathBuf)], script| {
+            with_stand_in(text, file, projects, me, script)
+                .map(|t| t.map(|t| t.parse::<toml::Table>().unwrap()))
+        };
+        let args = |t: &toml::Table| -> Vec<String> {
+            let a = t["llm"]["args"].as_array().unwrap();
+            a.iter().map(|a| a.as_str().unwrap().to_string()).collect()
+        };
+        let t = given("", &[], None).unwrap().expect("the stand-in");
+        assert_eq!(t["llm"]["command"].as_str(), Some("/t/xtask"));
+        assert_eq!(args(&t), ["scenes", "--claude", "idle"]);
+        let t = given("[editor]\nlsp = false\n[llm]\nfollow = false\nargs = [\"-x\"]\n", &[], Some("full"))
+            .unwrap()
+            .expect("the stand-in");
+        assert_eq!(args(&t), ["scenes", "--claude", "full"], "its args, never claude's");
+        assert_eq!((t["editor"]["lsp"].as_bool(), t["llm"]["follow"].as_bool()), (Some(false), Some(false)));
+        assert_eq!(given("[llm]\ncommand = \"/t/stand-in\"\n", &[], None), Ok(None), "its own stands");
+        let real = [
+            "[llm]\ncommand = \"claude\"",
+            "llm.command = \"/Users/u/.local/bin/claude\"",
+            "[llm]\ncommand = \"env\"\nargs = [\"claude\", \"-p\"]",
+            "[llm]\ncommand = \"sh\"\nargs = [\"-c\", \"exec 'claude' \\\"$@\\\"\"]",
+            "[llm]\ncommand = \"sh\"\nargs = [\"-c\", \"claude; true\"]",
+            "[llm]\ncommand = \"sh\"\nargs = [\"-c\", \"(claude -p)&&x\"]",
+            "[llm]\ncommand = \"sh\"\nargs = [\"-c\", \"exec $(command -v claude)\"]",
+        ];
+        for real in real {
+            let e = given(real, &[], None).unwrap_err();
+            assert!(e.starts_with("/x/tarae/config.toml: ") && e.contains("starts the real claude"), "{e}");
+        }
+        assert_eq!(
+            given("[llm]\ncommand = \"/t/xtask\"\nargs = [\"scenes\", \"--claude\", \"full\"]\n", &[], None),
+            Ok(None),
+            "the stand-in's own `--claude` isn't claude"
+        );
+        let e = given("", &[], Some("fulll")).unwrap_err();
+        assert!(
+            e.contains("TARAE_SHOT_CLAUDE=fulll") && e.contains("no script"),
+            "a script the stand-in doesn't know: {e}"
+        );
+        let local = [("[llm]\ncommand = \"claude\"\n".to_string(), PathBuf::from("/p/.tarae.local.toml"))];
+        let e = given("", &local, None).unwrap_err();
+        assert!(e.starts_with("/p/.tarae.local.toml: "), "a project file's wins over the stand-in: {e}");
+        let e = given("[llm]\ncommand = \"/t/stand-in\"\n", &[], Some("card")).unwrap_err();
+        assert!(e.contains("one or the other"), "{e}");
+        assert!(given("[llm\n", &[], None).is_err(), "a config that doesn't parse");
+    }
+
+    /// The stand-in's config home is made for the shot: the config written there, what else the folder given holds
+    /// linked in, the folder given never written; gone with the shot. A config naming its own claude is read where
+    /// it is.
+    #[test]
+    fn the_stand_ins_config_home_is_the_shots_own() {
+        let (given, cwd) = (Fresh::new("tarae-shot-given").unwrap(), Fresh::new("tarae-shot-cwd").unwrap());
+        std::fs::create_dir_all(given.0.join("tarae/themes")).unwrap();
+        std::fs::create_dir(given.0.join("git")).unwrap();
+        let (home, fresh) = claude_home(&given.0, &cwd.0, None).unwrap();
+        let fresh = fresh.expect("a home of the shot's own");
+        assert_ne!(home, given.0);
+        let t: toml::Table =
+            std::fs::read_to_string(home.join("tarae/config.toml")).unwrap().parse().unwrap();
+        assert_eq!(t["llm"]["args"][2].as_str(), Some("idle"));
+        assert!(home.join("tarae/themes").is_symlink() && home.join("git").is_symlink());
+        assert!(!given.0.join("tarae/config.toml").exists(), "the folder given never written");
+        drop(fresh);
+        assert!(!home.exists());
+        std::fs::write(given.0.join("tarae/config.toml"), "[llm]\ncommand = \"/t/stand-in\"\n").unwrap();
+        let (home, fresh) = claude_home(&given.0, &cwd.0, None).unwrap();
+        assert!(home == given.0 && fresh.is_none());
     }
 
     /// `--live` asks tarae `N`'s socket, else `TARAE_UI`'s, else the only one running — several or none say so.

@@ -4408,6 +4408,90 @@ fn wide_rs(lines: usize, width: usize) -> String {
 
 // ── The stand-in claude ──────────────────────────────────────────────────────
 
+/// Every script the stand-in plays: `claude`'s turns, the docs' own (`docshots::answered`), and `idle`, which
+/// answers nothing (as any name it doesn't know would — hence the list: `shot`'s `TARAE_SHOT_CLAUDE` is checked
+/// against it). `the_scripts_are_every_one_the_stand_in_plays` reads it against their arms.
+pub(crate) const SCRIPTS: &[&str] = &[
+    "idle",
+    "full",
+    "three",
+    "two",
+    "six",
+    "sixfollow",
+    "sixend",
+    "strip",
+    "now",
+    "nowcard",
+    "nowread",
+    "nowwrite",
+    "shimmer-prose",
+    "shimmer-think",
+    "shimmer-stall",
+    "shimmer-read",
+    "shimmer-all",
+    "shimmer-sign",
+    "writemid",
+    "mid",
+    "midlist",
+    "ask",
+    "asktouching",
+    "card",
+    "cardlong",
+    "manager",
+    "samebinary",
+    "nine",
+    "searchcard",
+    "volumecard",
+    "grants",
+    "big",
+    "foot41",
+    "foot93",
+    "footshort",
+    "boardmid",
+    "boarddone",
+    "reviewing",
+    "reviewdone",
+    "reviewfull",
+    "home-main",
+    "home-fix",
+    "home-docs",
+    "readlast",
+    "cuthand",
+    "cutcode",
+    "chatnotes",
+    "startone",
+    "startthree",
+    "startlong",
+    "startthreewake",
+    "startgo",
+    "startgo3",
+    "childcount",
+    "childcost",
+    "parentwake",
+    "childlong",
+    "parent",
+    "focus-explain",
+    "focus-typing",
+    "focus-fix",
+    "focus-asks",
+    "focus-line",
+    "models",
+    "answer",
+    "askdone",
+    "commitdraft",
+];
+
+/// Whether the stand-in plays `spec`: a script it knows, or a specification by checkout whose every script it
+/// knows (`script_for`).
+pub(crate) fn knows(spec: &str) -> bool {
+    match spec.contains('=') {
+        true => {
+            spec.split(',').all(|pair| pair.split_once('=').is_some_and(|(_, v)| SCRIPTS.contains(&v.trim())))
+        }
+        false => SCRIPTS.contains(&spec),
+    }
+}
+
 /// A script specification that names each session's checkout (`main=home-main,fix=home-fix,docs=card`) picks the
 /// script for `cwd`'s folder (`tarae-demo` is `main`); a plain script name stands as given.
 pub(crate) fn script_for<'a>(spec: &'a str, cwd: Option<&Path>) -> &'a str {
@@ -5719,6 +5803,41 @@ mod tests {
         let path = a.0.clone();
         drop(a);
         assert!(!path.exists());
+    }
+
+    /// `SCRIPTS` is every script the stand-in plays, and only those: the names its matches' arms take, in
+    /// `claude` and in `docshots::answered` (read from their code), and `idle`.
+    #[test]
+    fn the_scripts_are_every_one_the_stand_in_plays() {
+        let arms = |code: &str, head: &str| -> Vec<String> {
+            let body = &code[code.find(head).unwrap()..];
+            let body = &body[body.find("match script {\n").unwrap() + 15..];
+            let indent = body.len() - body.trim_start().len();
+            // (to the match's own `}`)
+            let end = format!("{}}}", " ".repeat(indent - 4));
+            let mut names = Vec::new();
+            for line in body.lines().take_while(|l| *l != end) {
+                // (an arm's head at the match's indentation, up to its guard or `=>` — or a head going on)
+                let lead = line.len() - line.trim_start().len();
+                let head = line.trim_start();
+                if lead != indent || !(head.starts_with('"') || head.starts_with("| \"")) {
+                    continue;
+                }
+                let head = head.split("=>").next().unwrap().split(" if ").next().unwrap();
+                names.extend(head.split('"').skip(1).step_by(2).map(str::to_string));
+            }
+            names
+        };
+        let mut played = arms(include_str!("scenes.rs"), "\nfn claude(");
+        played.extend(arms(include_str!("scenes/docshots.rs"), "\npub(super) fn answered("));
+        played.push("idle".into());
+        played.sort();
+        played.dedup();
+        let mut listed: Vec<String> = SCRIPTS.iter().map(|s| s.to_string()).collect();
+        listed.sort();
+        assert_eq!(listed, played);
+        assert!(knows("full") && knows("main=home-main, fix=card"));
+        assert!(!knows("fulll") && !knows("main=home-main,fix=nope"));
     }
 
     /// A per-session script specification picks each session's script by its checkout folder (`tarae-demo` →
