@@ -107,6 +107,51 @@ fn a_folder_is_added_listed_and_removed() {
     assert_eq!(crate::folders::context_line(&ed.workspace.folders), None);
 }
 
+/// The folders list's own `/`·`?`: a row matched by its name, its place or its instruction files, from the row in
+/// hand; `enter` with nothing typed its last search again, round the end (said); `?` the one before; a pattern that
+/// isn't one leaves the selection as it's typed and is said once entered; emptied, the line goes back to the row it
+/// opened on and a `backspace` more closes it.
+#[test]
+fn the_folders_list_is_searched_by_name_place_and_files() {
+    let (s, _project, infra, mut ed) = place("search");
+    let (web, ops) = (s.join("sites").join("web"), s.join("ops"));
+    for d in [&web, &ops] {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    std::fs::write(ops.join("CLAUDE.md"), "# ops\n").unwrap();
+    for at in [&infra, &web, &ops] {
+        let s = add(&mut ed, at);
+        assert!(s.contains("added"), "{s}");
+    }
+    feed(&mut ed, ":folders<ret>");
+    let here = |ed: &Editor| ed.float_list_here(GroupKind::Folders);
+    assert_eq!(here(&ed), Some(1), "on infra");
+    feed(&mut ed, "/sites<ret>");
+    assert_eq!(here(&ed), Some(2), "web, by its place alone");
+    assert_eq!(ed.search, None, "never the code's search");
+    feed(&mut ed, "/CLAUDE<ret>");
+    assert_eq!(here(&ed), Some(3), "ops, by its instruction file");
+    feed(&mut ed, "/<ret>");
+    assert_eq!((here(&ed), said(&ed)), (Some(1), "search wrapped around".into()), "the last search again");
+    feed(&mut ed, "?CLAUDE<ret>");
+    assert_eq!((here(&ed), said(&ed)), (Some(3), "search wrapped around".into()), "?: the one before");
+    feed(&mut ed, "/web");
+    assert_eq!(here(&ed), Some(2), "as it's typed");
+    feed(&mut ed, "(");
+    assert_eq!(here(&ed), Some(2), "unfinished: the selection stays");
+    assert!(!said(&ed).contains("unclosed group"), "nothing said while it's typed: {}", said(&ed));
+    feed(&mut ed, "<ret>");
+    assert_eq!(here(&ed), Some(2));
+    assert!(said(&ed).contains("unclosed group"), "said once entered: {}", said(&ed));
+    feed(&mut ed, "/ops");
+    assert_eq!(here(&ed), Some(3));
+    feed(&mut ed, "<backspace><backspace><backspace>");
+    assert_eq!((here(&ed), ed.prompt.is_some()), (Some(2), true), "emptied: back where it opened");
+    feed(&mut ed, "<backspace>");
+    assert_eq!((here(&ed), ed.prompt.is_none()), (Some(2), true), "closed");
+    assert!(ed.float_list_keys(GroupKind::Folders), "the keys still the list's");
+}
+
 /// What can't be a folder is refused and said why: not a folder, the project, in it, holding it, home or holding it,
 /// what runs never read, in a folder added or holding one, another checkout of the project's repository.
 #[test]

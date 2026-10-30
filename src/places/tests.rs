@@ -268,6 +268,43 @@ fn a_name_given_alone_opens_what_it_names_or_isnt_a_place() {
     assert!(ed.picker.is_none());
 }
 
+/// The workspace's folders are looked in after the project (`folders.rs`): a name given alone that only a folder's file
+/// ends with is underlined and opens it at its line; one a project's file and a folder's end with opens their picker,
+/// both listed; one in neither is said so, naming the folders too.
+#[test]
+fn a_name_is_found_in_the_workspaces_folders_too() {
+    let (_s, root) = project("places-folder-project", &["src/main.rs", "x/Util.java"]);
+    let (_f, infra) = project("places-folder-infra", &["modules/net/main.tf", "lib/Util.java"]);
+    let w = 140;
+    let mut ed = chat_on(&root, "See main.tf:2 and Util.java:1.");
+    let folder = crate::folders::Folder { at: infra.clone(), name: "infra".into(), instructions: Vec::new() };
+    ed.workspace.folders.push(folder);
+    let f = settled(&mut ed, w);
+    let runs = underlined(&f, false);
+    let texts: Vec<&str> = runs.iter().map(|r| r.0.as_str()).collect();
+    assert_eq!(texts, ["main.tf:2", "Util.java:1"], "both found");
+    press(&mut ed, runs[0].1[2], w);
+    assert_eq!(
+        ed.doc().path.as_deref(),
+        Some(infra.join("modules/net/main.tf").as_path()),
+        "the folder's file"
+    );
+    let d = ed.doc();
+    assert_eq!(d.text.byte_to_line(d.selection().primary().cursor(&d.text)), 1, "at its line");
+    press(&mut ed, runs[1].1[2], w);
+    until(&mut ed, w, "the picker", |ed| ed.picker.is_some());
+    let p = ed.picker.as_ref().unwrap();
+    assert!(p.title.starts_with("Util.java:1") && p.title.contains("2 files"), "{}", p.title);
+    let labels: Vec<&str> = p.items().iter().map(|i| i.label.as_str()).collect();
+    assert!(labels.iter().any(|l| l.starts_with("x/Util.java:1")), "the project's: {labels:?}");
+    assert!(labels.iter().any(|l| l.contains("places-folder-infra")), "the folder's: {labels:?}");
+    ed.picker = None;
+    let said = ed.said;
+    open_named(&mut ed, "Gone.java".into(), 0);
+    until(&mut ed, w, "said", |ed| ed.said > said);
+    assert_eq!(ed.messages.last().unwrap().2, "no file Gone.java in the project or its folders");
+}
+
 /// Answers are kept while the checkout's list of files can't have changed (#196's review: every write threw them away
 /// — one name no file has listed the project again on each of Claude's writes): a file's text written asks nothing
 /// again; a file made (`files_moved`, as a change set's create says) does, and the name it gives is underlined; an

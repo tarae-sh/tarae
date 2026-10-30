@@ -1561,6 +1561,57 @@ mod tests {
         ed.lsp_flush();
     }
 
+    /// `Owners::holder` is `workspace_of`'s answer laid out once (#214): the innermost root holding a path — a checkout
+    /// inside another's (a subfolder a `.tarae.toml` marks, opened as its own project), a folder added to a third —,
+    /// the root itself its own, none outside them all — the nested checkout added after the one holding it and behind,
+    /// or added first and switched to the front (a switch is one swap: the holder now the one behind).
+    #[test]
+    fn who_holds_a_path_is_the_same_laid_out_as_asked_one_by_one() {
+        let s = crate::scratch::Scratch::new("owners");
+        let top = std::fs::canonicalize(&*s).unwrap();
+        let (main, inner, other, infra) =
+            (top.join("main"), top.join("main/sub/inner"), top.join("other"), top.join("infra"));
+        for d in [&inner, &other, &infra] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        for inner_first in [false, true] {
+            let mut ed = Editor::new(crate::config::Config::default());
+            ed.workspace.root = main.clone();
+            let main_id = ed.workspace.id;
+            let (other_id, inner_id) = match inner_first {
+                false => (ed.workspace_add(other.clone()), ed.workspace_add(inner.clone())),
+                true => {
+                    let inner_id = ed.workspace_add(inner.clone());
+                    (ed.workspace_add(other.clone()), inner_id)
+                }
+            };
+            let folder =
+                crate::folders::Folder { at: infra.clone(), name: "infra".into(), instructions: Vec::new() };
+            ed.workspace_mut(other_id).unwrap().folders.push(folder);
+            if inner_first {
+                let k = ed.workspaces.iter().position(|l| l.id == inner_id).unwrap();
+                std::mem::swap(&mut ed.workspace, &mut ed.workspaces[k]);
+                assert_eq!(ed.workspace.id, inner_id, "the nested one in front");
+            }
+            let paths = [
+                (main.join("a.rs"), Some(main_id)),
+                (main.join("sub/c.rs"), Some(main_id)),
+                (main.clone(), Some(main_id)),
+                (inner.join("b.rs"), Some(inner_id)),
+                (inner.clone(), Some(inner_id)),
+                (infra.join("modules/x.tf"), Some(other_id)),
+                (other.join("d.rs"), Some(other_id)),
+                (top.join("elsewhere/e.rs"), None),
+                (top.join("mainly/f.rs"), None),
+            ];
+            for (p, want) in &paths {
+                let at = format!("{} (nested first: {inner_first})", p.display());
+                assert_eq!(ed.workspace_of(p), *want, "asked one by one: {at}");
+                assert_eq!(ed.owners().holder(p).map(|l| l.id), *want, "laid out: {at}");
+            }
+        }
+    }
+
     /// #205: a card the user's own input just asked for — through the work it started, as `space W` `n`'s step
     /// brings its card back — comes in front of Claude's card up, which stays, stacked and unanswered; it takes
     /// the keys and is the inbox's first while it's in front. One nobody asked for just now (a grammar for a

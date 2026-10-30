@@ -1059,6 +1059,25 @@ mod tests {
         assert!(w.iter().any(|m| m.starts_with("config.toml:4: editor.cursor.insert")));
     }
 
+    /// A removed setting is said as any unknown one, where it's written: in a table that still has settings, by its
+    /// key (`editor.restore-session`, gone with projects 1); in a table none of whose settings is left (the debugger's,
+    /// gone with audit 2.E), by the table at its header — what's under it isn't walked, so none of its keys is said.
+    #[test]
+    fn a_removed_setting_is_said_by_its_key_or_its_gone_table() {
+        let src = "[editor]\nrestore-session = true\n\n[debugger]\nadapter = \"lldb\"\nport = 1\n";
+        let table: toml::Table = toml::from_str(src).unwrap();
+        let mut w = Vec::new();
+        apply_table(&mut EditorConfig::default(), &table, src, "config.toml", &mut w);
+        w.sort();
+        assert_eq!(
+            w,
+            [
+                "config.toml:2: unknown setting 'editor.restore-session'",
+                "config.toml:4: unknown setting 'debugger'"
+            ]
+        );
+    }
+
     /// `llm.sandbox-hosts` (C1b): unset is the packs' registries, said `"registries"` so it round-trips; `"*"` is
     /// any host, `"any"` read the same (configs written before); a list is that list alone (`[]`: every host
     /// asked); another string is refused. A rule it can't read is refused where it's set, in the parser's words —
