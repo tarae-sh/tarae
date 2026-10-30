@@ -21083,7 +21083,39 @@ fn draw_note_card(
     let skip = g.rows.len().saturating_sub(g.max_rows);
     let speaker =
         |r: &Vec<crate::markdown::Span>| r.first().is_some_and(|s| s.text == "¶ " || s.text == "› ");
+    let flow = crate::notes::here(editor).is_some_and(|n| !n.flow.is_empty() && n.thread.len() == 1);
     let rows = match g.rows[..=skip.min(g.rows.len().saturating_sub(1))].iter().rposition(speaker) {
+        // (the answer's flow, focus A1: its paragraph about this line stays in sight — the start with it where both fit,
+        // else from it, what's before it folded into a `…` row; what's past the room folded into a last one, each whole
+        // on its card)
+        _ if flow && skip > 0 && g.max_rows >= 4 => {
+            let fold = |rows: &[Vec<crate::markdown::Span>]| {
+                let faint = Style { fg: ui.linenr.fg, ..Style::default() };
+                vec![crate::whole::folded(
+                    crate::whole::rows_text(rows),
+                    "",
+                    (faint, card_style(ui, editor, "ui.popup")),
+                )]
+            };
+            let bar = g.rows.iter().position(|r| r.first().is_some_and(|s| s.text == "▎ ")).unwrap_or(1);
+            let from = if bar + 1 < g.max_rows { 1 } else { bar };
+            // (what follows it short of the room: the window back over what's before it, the room filled)
+            let from = if from > 1 { from.min(g.rows.len() + 2 - g.max_rows) } else { from };
+            let mut rows = vec![g.rows[0].clone()];
+            if from > 1 {
+                rows.push(fold(&g.rows[1..from]));
+            }
+            let room = g.max_rows - rows.len();
+            let body = &g.rows[from..];
+            match body.len() > room {
+                true => {
+                    rows.extend(body[..room - 1].iter().cloned());
+                    rows.push(fold(&body[room - 1..]));
+                }
+                false => rows.extend(body.iter().cloned()),
+            }
+            rows
+        }
         Some(h) if h < skip => {
             let mut rows = vec![g.rows[h].clone()];
             rows.extend(g.rows[skip + 1..].iter().cloned());
@@ -21221,6 +21253,39 @@ fn note_lines(n: &crate::notes::Note, editor: &Editor, ui: &Ui) -> Vec<crate::ma
             out.push(Line::Blank);
         }
         out.push(Line::Text { spans: note_head(n, i, e, editor, ui), indent: 0 });
+        // (the answer's flow at its place, focus A1: this line's paragraph by a bar, one said at another place a faint
+        // line with that place, the rest whole — in the order written)
+        if i == 0 && !n.flow.is_empty() {
+            use crate::chatnotes::Part;
+            let mut item = false;
+            for (k, p) in n.flow.iter().enumerate() {
+                let b = p.block();
+                if k > 0 && !(item && b.item) {
+                    out.push(Line::Blank);
+                }
+                item = b.item;
+                let words = |text: &str| message_spans(text, Style::default(), lang.as_deref(), editor);
+                let dash = if b.item { "- " } else { "" };
+                out.push(match p {
+                    Part::Here(_) => Line::Marked {
+                        mark: vec![sp("▎ ", accent)],
+                        spans: words(&format!("{dash}{}", b.text)),
+                    },
+                    Part::Whole(_) => {
+                        let mut spans = vec![sp("  ", Style::default())];
+                        spans.extend(words(&format!("{dash}{}", b.text)));
+                        Line::Text { spans, indent: 2 + dash.len() }
+                    }
+                    Part::Elsewhere(at, _) => Line::Cut(vec![
+                        sp("› ", faint),
+                        sp(at, faint),
+                        sp("  ", faint),
+                        sp(&crate::chatnotes::plain_words(&format!("{dash}{}", b.text)), faint),
+                    ]),
+                });
+            }
+            continue;
+        }
         for l in e.text.lines().map(str::trim_end) {
             out.push(if l.trim().is_empty() {
                 Line::Blank

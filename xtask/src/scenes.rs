@@ -313,6 +313,52 @@ const B1_KEYS: [&[&str]; 7] = [
     &["@1", " ", "l", "@1", "keep the first strand on a repeat", "\r", "\x1b", "\x1b", "@10?writing", "@2"],
 ];
 
+/// Focus A1's keys: the question, its turn's end, the keys in the code, then `$more`.
+macro_rules! a1_keys {
+    ($($more:expr),* $(,)?) => {
+        &["@1", " ", "l", "@1", "what does the loop print?", "\r", "@20?That is all", "@2", "\x1b", "\x1b", $($more,)* "@1"]
+    };
+}
+
+/// Focus A1's scenes: following (its default), a question, the turn's end (its last words: the chat comes back with
+/// them), the keys in the code (`esc esc`) — the chat left open, or closed (`space L`); then the line ends, or the
+/// answer's card: `gg]n` (the place's one note), `]n` (the last read's first line). `A1_LINE`: focus-line's turn —
+/// `space n`'s question at line 9 (the chat open, the keys back in the code), answered in its thread: the card there,
+/// no other note.
+const A1_KEYS: [&[&str]; 6] = [
+    a1_keys!(),
+    a1_keys!("gg]n"),
+    a1_keys!(" ", "L"),
+    a1_keys!(" ", "L", "gg]n"),
+    a1_keys!("]n"),
+    a1_keys!(" ", "L", "]n"),
+];
+/// `a1-flow`'s: its place's card — the chat open, the view left on the last read (`thread.rs`): `gg]n]n`, its note,
+/// then round to the loop's; closed, the loop's file in front (`:o`).
+const A1_FLOW: [&[&str]; 2] = [a1_keys!("gg]n]n"), a1_keys!(" ", "L", ":", "o src/main.rs", "\r", "gg]n")];
+const A1_LINE: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "\x1b",
+    "@0.5",
+    "9",
+    "G",
+    "x",
+    " ",
+    "n",
+    "@1",
+    "why a Vec here?",
+    "\r",
+    "@20?answered",
+    "@2",
+    "\x1b",
+    "\x1b",
+    "9G",
+    "@1",
+];
+
 /// Motion §4's scenes: the stand-in's 20-stop turn (one run failing), held at its last stop — the chat open, follow off
 /// (its trail rows); follow on (the follow card's top line, its strip); and the strip's second mark hovered (its words on
 /// the card's bottom line); the keys in the code (`C-w h`) and `[r` back to the failed run (its replay: the strip around
@@ -2781,6 +2827,19 @@ const SCENES: &[Scene] = &[
     Scene { name: "b1-wait-min", claude: "nowcard", files: MAIN, keys: B1_KEYS[5] },
     // (…and an edit being written, its call not made: the head says what it writes — no knot in hand says it)
     Scene { name: "b1-write-min", claude: "nowwrite", files: MAIN, keys: B1_KEYS[6] },
+    // (focus A1: the answer's place — an answer with one placed and two place-less paragraphs, then one naming no place;
+    // the chat open and closed, the line ends, then the answer's note's card)
+    Scene { name: "a1-explain-open", claude: "focus-explain", files: MAIN, keys: A1_KEYS[0] },
+    Scene { name: "a1-explain-open-card", claude: "focus-explain", files: MAIN, keys: A1_KEYS[1] },
+    Scene { name: "a1-explain-closed", claude: "focus-explain", files: MAIN, keys: A1_KEYS[2] },
+    Scene { name: "a1-explain-closed-card", claude: "focus-explain", files: MAIN, keys: A1_KEYS[3] },
+    Scene { name: "a1-none-open", claude: "a1-none", files: MAIN, keys: A1_KEYS[0] },
+    Scene { name: "a1-none-open-card", claude: "a1-none", files: MAIN, keys: A1_KEYS[4] },
+    Scene { name: "a1-none-closed", claude: "a1-none", files: MAIN, keys: A1_KEYS[2] },
+    Scene { name: "a1-none-closed-card", claude: "a1-none", files: MAIN, keys: A1_KEYS[5] },
+    Scene { name: "a1-line", claude: "focus-line", files: MAIN, keys: A1_LINE },
+    Scene { name: "a1-flow-open-card", claude: "a1-flow", files: MAIN, keys: A1_FLOW[0] },
+    Scene { name: "a1-flow-closed-card", claude: "a1-flow", files: MAIN, keys: A1_FLOW[1] },
     // (W: a word that does its key, lit under the mouse — the chat's `paused`, the follow card's keys, the chat's foot)
     Scene { name: "words-paused", claude: "now", files: MAIN, keys: WORDS_KEYS[0] },
     Scene { name: "words-card", claude: "now", files: MAIN, keys: WORDS_KEYS[1] },
@@ -4475,6 +4534,8 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "focus-fix",
     "focus-asks",
     "focus-line",
+    "a1-none",
+    "a1-flow",
     "models",
     "answer",
     "askdone",
@@ -4601,6 +4662,10 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "focus-fix" => turn.focus_fix()?,
             "focus-asks" => turn.focus_asks()?,
             "focus-line" => turn.focus_line(&line)?,
+            // (focus A1's: an answer naming no place)
+            "a1-none" => turn.a1_none()?,
+            // (…and one with a paragraph placed elsewhere: its line on the place's card)
+            "a1-flow" => turn.a1_flow()?,
             _ => {}
         }
     }
@@ -5452,6 +5517,50 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.words(
             "One caveat: a repeated name replaces the earlier strand before the loop ever sees it, so a skein with \
              two threads of one name prints one. That is all.",
+        )?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// focus A1's answer that names no place: two reads, then two paragraphs naming none — its note at the last read
+    /// (its first line code: a note on a folded doc comment isn't drawn yet).
+    fn a1_none(&mut self) -> io::Result<()> {
+        self.words("Let me read the loop and the thread it prints.")?;
+        self.text("\n\n")?;
+        for (n, at) in [(1, "src/main.rs:7-14"), (2, "src/thread.rs:7-11")] {
+            self.call(n, "read", json!({"files": [at]}))?;
+        }
+        self.words(
+            "Each thread is printed once, with its name, its knots and its length, the sum of its knots.",
+        )?;
+        self.text("\n\n")?;
+        self.words(
+            "Nothing else reads the map, so the order it prints in is the only thing that changes from run to run. \
+             That is all.",
+        )?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// focus A1's flow: focus-explain's answer with a paragraph about another place between its own and the place-less
+    /// ones — on the loop's card, that paragraph is one line with its place.
+    fn a1_flow(&mut self) -> io::Result<()> {
+        self.words("Let me read the loop and the thread it prints.")?;
+        self.text("\n\n")?;
+        for (n, at) in [(1, "src/main.rs:7-14"), (2, "src/thread.rs:7-11")] {
+            self.call(n, "read", json!({"files": [at]}))?;
+        }
+        self.words(
+            "The loop at src/main.rs:11 prints each thread's name, how many knots it has and its length.",
+        )?;
+        self.text("\n\n")?;
+        self.words("The length comes from src/thread.rs:9, which sums the knots themselves rather than the gaps between them.")?;
+        self.text("\n\n")?;
+        self.words(
+            "It prints them in the map's own order, which changes from run to run: a hash map keeps no order of \
+             insertion.",
+        )?;
+        self.text("\n\n")?;
+        self.words(
+            "One caveat: a repeated name replaces the earlier strand before the loop sees it. That is all.",
         )?;
         self.line(json!({"type": "result", "result": "done"}))
     }

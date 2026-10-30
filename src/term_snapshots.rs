@@ -9756,10 +9756,13 @@ fn frames_of_note_cards() {
                     &mut s.ed,
                     &path,
                     5..6,
-                    "`word_counts` builds the map in one pass.".into(),
-                    "`word_counts` (src/main.rs:6) builds the map in one pass — every word goes through `entry`, so a \
-                     word seen twice costs one lookup, not two."
-                        .into(),
+                    (
+                        "`word_counts` builds the map in one pass.".into(),
+                        "`word_counts` (src/main.rs:6) builds the map in one pass — every word goes through `entry`, so \
+                         a word seen twice costs one lookup, not two."
+                            .into(),
+                    ),
+                    Vec::new(),
                 );
             }
             _ => {

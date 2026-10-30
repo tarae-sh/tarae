@@ -1846,9 +1846,19 @@ pins a note, so the last answer's places are notes too, with no tool call and no
 `src/x.rs:120` (or `x.rs:120-140`, or a walk-through's stop) in its prose that comes to one file of the project or
 its folders shows at that line. The line end has the sentence that names it, and the card has the paragraph it's in
 (a list item: that item), named `chat · the last answer`. A paragraph naming three places gives each its own
-sentence. A name that comes to no file, or to several, is no place, and fenced code has none. They're the last
-answer's: the next answer that names a place replaces them, one whose names come to nothing leaves them, and none
-is kept past a restart. `]n`/`[n` go through them with the other notes. `space n` on one asks about it, and from
+sentence. A name that comes to no file, or to several, is no place, and fenced code has none. Where the answer also
+says what no place takes (a summary, a caveat, what it said of a name that came to nothing), the note at the answer's
+place holds its flow. That place is the first one named in the newest of its messages that names one, where follow
+takes the view at the turn's end; an answer naming none goes to the turn's last edit, else its last read in the
+project. Its card is the answer's last words in the order written: the paragraph about that line beside a `▎` bar,
+every paragraph no place takes whole, and a paragraph placed elsewhere as one faint line, `› src/thread.rs:9  The
+length comes from…` (its place and first words, whole at its own line, whose note stays as it is). It's one note, never
+two: the line end is that line's sentence. Too long for its card, the paragraph about that line stays in sight and
+what's before and after it folds into `…` rows, whole under the mouse. Only the turn's last words count: what Claude
+said before its last call (`Let me read the loop…`) is the turn's narration, and the chat keeps it. A turn where Claude
+wrote at a note (pinned one, or replied in a thread) gets no flow: its answer is at the code already. A turn that
+stopped nowhere in the project and names no place leaves the last answer's notes. They're the last answer's: the next
+answer that places one replaces them, and none is kept past a restart. `]n`/`[n` go through them with the other notes. `space n` on one asks about it, and from
 then it's a thread like any other, kept and sent. A line where the same answer pinned its own `note` gets no chat
 note. Claude isn't told of them: they're its own words, put where they point.
 

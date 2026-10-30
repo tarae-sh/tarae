@@ -5,7 +5,9 @@
 //! checkout's files as they are say what each name comes to on disk now (one found before a file was made or removed
 //! never lands as theirs — its generation passed), and a file a press opened is one of the project's its name ends
 //! (found the one way, never the root joined to it). The answer's turn has ended (#239): its places become notes once
-//! their names are answered — never at a file its name didn't come to alone (`Util.java` two files, `Gone.java` none).
+//! their names are answered — never at a file its name didn't come to alone (`Util.java` two files, `Gone.java` none) —
+//! and its place-less paragraph is the flow (focus A1): on `Device.java`'s note, one note there, else (no place: the
+//! whole answer) a note at the turn's edit in `a/Util.java` — never both, never neither.
 //! At the end, quiet after a last frame: every name the answer gives is answered, as the disk has it, and none of its
 //! places waits.
 
@@ -55,8 +57,29 @@ fn run(choices: Choices) -> Vec<String> {
     let mut ed = Editor::new(crate::config::Config::default());
     ed.workspace.root = root.clone();
     let mut c = Chat::new();
-    let answer = "See Device.java:2 and Util.java:3, not Gone.java:1.";
+    let answer = "See Device.java:2 and Util.java:3, not Gone.java:1.\n\nNothing else changed.";
     c.msgs = vec![Msg::new(Role::User, "where?", ""), Msg::new(Role::Assistant, answer, "")];
+    // (the turn's one stop: an edit of `a/Util.java`'s first line — where the answer's note goes with no place)
+    c.follow.new_turn();
+    c.follow.replay.add(crate::replay::Stop {
+        call: "c".into(),
+        look: crate::chat::Look {
+            verb: "edit",
+            what: String::new(),
+            pattern: false,
+            range: String::new(),
+            link: None,
+        },
+        path: Some(root.join("a/Util.java")),
+        lines: Some(0..1),
+        hunks: vec![crate::replay::Hunk {
+            lines: 0..1,
+            removed: vec!["o".into()],
+            added: vec!["one".into()],
+        }],
+        why: String::new(),
+        page: None,
+    });
     ed.workspace.claude.chat = Some(c);
     crate::chatnotes::turn_over(&mut ed, true);
     let check = |ed: &Editor| {
@@ -72,8 +95,10 @@ fn run(choices: Choices) -> Vec<String> {
     let answered: Vec<String> = crate::places::answers(&ed).into_iter().map(|a| a.0).collect();
     let key_now = crate::places::check(&ed);
     let waits = ed.workspace.claude.notes.answer.is_some();
+    let none = ed.workspace.claude.notes.list.is_empty();
     sim.at_end(|| match NAMES.iter().all(|n| answered.iter().any(|a| a == n)) {
         true if waits => Err("quiet after a frame, the answer's places still wait".into()),
+        true if none => Err("quiet after a frame, the answer placed nothing".into()),
         true => key_now,
         false => Err(format!("quiet after a frame, the names answered are {answered:?}")),
     });
@@ -124,16 +149,25 @@ fn input(sim: &mut Sim, ed: &mut Editor, root: &Path, w: &mut World) -> String {
     }
 }
 
-/// The answer's places are notes only at a `Device.java` (the one name that can come to one file), at its line.
+/// The answer's places are notes only at a `Device.java` (the one name that can come to one file), at its line — its
+/// place-less paragraph in that note's flow, else, `Device.java` no place, the whole answer at the turn's edit.
 fn noted(ed: &Editor, root: &Path) -> Result<(), String> {
     let list = &ed.workspace.claude.notes.list;
-    match list.iter().find(|n| !n.path.ends_with("Device.java") || n.lines.start != 1) {
-        Some(n) => Err(format!(
-            "a chat note at {}:{}",
-            n.path.strip_prefix(root).unwrap_or(&n.path).display(),
-            n.lines.start + 1
-        )),
-        None => Ok(()),
+    let at = |n: &crate::notes::Note| {
+        let flow: Vec<&str> = n.flow.iter().map(|p| p.block().text.as_str()).collect();
+        let at = n.path.strip_prefix(root).unwrap_or(&n.path).display();
+        format!("{at}:{} {:?} {flow:?}", n.lines.start + 1, n.gist())
+    };
+    let said: Vec<String> = list.iter().map(at).collect();
+    let first = "See Device.java:2 and Util.java:3, not Gone.java:1.";
+    let flow = format!("[{first:?}, \"Nothing else changed.\"]");
+    match &said[..] {
+        [] => Ok(()),
+        // (no place: every paragraph is the flow's, its first sentence at the line end; else this line's paragraph and
+        // the place-less one)
+        [one] if *one == format!("a/Util.java:1 {first:?} {flow}") => Ok(()),
+        [one] if *one == format!("src/a/Device.java:2 {first:?} {flow}") => Ok(()),
+        _ => Err(format!("the chat notes {said:?}")),
     }
 }
 

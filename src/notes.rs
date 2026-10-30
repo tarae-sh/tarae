@@ -102,6 +102,9 @@ pub struct Note {
     /// A chat note's (`chatnotes.rs`): the sentence that names its place — the line end's words; its first entry
     /// is the paragraph, the card's.
     pub sentence: Option<String>,
+    /// A chat note at the answer's place (`chatnotes::Part`, focus A1): the answer's flow its card draws — its first
+    /// entry the same as one text. Empty for every other note.
+    pub flow: Vec<crate::chatnotes::Part>,
     /// A finding's: the branch its round's changes were since (`Reviewer.since`; None: uncommitted, or not a
     /// finding) — what its change lands in, in the checkout tarae started in (`landed_check`, #248).
     pub since: Option<String>,
@@ -170,6 +173,9 @@ pub struct Notes {
     /// The notes the chat's Claude pinned in the turn under way — its answer's places take none on their lines
     /// (`chatnotes::turn_over`).
     pub pinned_now: Vec<u64>,
+    /// The chat's Claude wrote at a note in the turn under way — pinned one or replied on one: its answer is at the code,
+    /// so it gets no flow at its place (`chatnotes::turn_over`).
+    pub noted_now: bool,
     /// The last answer's places, waiting for what their names come to (`chatnotes::sync`).
     pub answer: Option<crate::chatnotes::Waiting>,
 }
@@ -221,6 +227,7 @@ pub fn add(ed: &mut Editor, path: &Path, lines: Range<usize>, by: By, text: &str
         board: None,
         placing: false,
         sentence: None,
+        flow: Vec::new(),
         since: None,
     });
     ed.workspace.claude.notes.focus = Some(id);
@@ -242,14 +249,15 @@ pub fn add(ed: &mut Editor, path: &Path, lines: Range<usize>, by: By, text: &str
     id
 }
 
-/// A chat note on `lines` of `path` (`chatnotes::sync`): `sentence` at the line end, `paragraph` on its card. Not
-/// focused (a crowded line shows the note you stepped to) and no lines kept as pinned (no draft's: never stale).
+/// A chat note on `lines` of `path` (`chatnotes::sync`): `sentence` at the line end, `paragraph` on its card — or, at
+/// the answer's place, its `flow`. Not focused (a crowded line shows the note you stepped to) and no lines kept as pinned
+/// (no draft's: never stale).
 pub fn add_said(
     ed: &mut Editor,
     path: &Path,
     lines: Range<usize>,
-    sentence: String,
-    paragraph: String,
+    (sentence, paragraph): (String, String),
+    flow: Vec<crate::chatnotes::Part>,
 ) -> u64 {
     let notes = &mut ed.workspace.claude.notes;
     notes.next += 1;
@@ -265,6 +273,7 @@ pub fn add_said(
         board: None,
         placing: false,
         sentence: Some(sentence),
+        flow,
         since: None,
     });
     notes.next
@@ -451,6 +460,7 @@ fn restore_from(notes: &mut Notes, docs: &mut crate::docpaths::Docs, saved: Vec<
             board: Mark::of(&v["board"]),
             placing: false,
             sentence: None,
+            flow: Vec::new(),
             since: v["since"].as_str().map(str::to_string),
         });
     }
@@ -493,11 +503,13 @@ pub fn tool_call(ed: &mut Editor, args: &Value) -> Result<String, String> {
         }
         n.thread.push(Entry { by: By::Author, text: text.to_string(), draft: false });
         n.waiting = false;
+        ed.workspace.claude.notes.noted_now = true;
         return Ok(format!("replied on note #{id}"));
     }
     let (path, lines) = placed(&ed.workspace.root, args)?;
     let line = lines.start;
     let id = add(ed, &path, lines, By::Author, text);
+    ed.workspace.claude.notes.noted_now = true;
     ed.workspace.claude.notes.pinned_now.push(id);
     Ok(format!("note #{id} pinned at {}:{}", crate::chat::shown(&ed.workspace.root, &path), line + 1))
 }
@@ -611,6 +623,7 @@ pub fn pin_finding(
         board: mark,
         placing: true,
         sentence: None,
+        flow: Vec::new(),
         since,
     });
     place(ed, id, from, snap, lines);
