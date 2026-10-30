@@ -239,6 +239,80 @@ const NOW_KEYS: [&[&str]; 5] = [
     ],
 ];
 
+/// Focus B1's scenes: following (its default), the turn held reading, running, then waiting on its card — each with the
+/// chat brought back beside the code (`esc esc`, `space l`: following minimizes it as the turn starts), then minimized,
+/// the keys in the code (`esc esc`).
+const B1_KEYS: [&[&str]; 7] = [
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "keep the first strand on a repeat",
+        "\r",
+        "@10?thread.rs",
+        "\x1b",
+        "\x1b",
+        " ",
+        "l",
+        "@2",
+    ],
+    &["@1", " ", "l", "@1", "keep the first strand on a repeat", "\r", "@10?thread.rs", "\x1b", "\x1b", "@2"],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "keep the first strand on a repeat",
+        "\r",
+        "@10?cargo test",
+        "\x1b",
+        "\x1b",
+        " ",
+        "l",
+        "@2",
+    ],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "keep the first strand on a repeat",
+        "\r",
+        "@10?cargo test",
+        "\x1b",
+        "\x1b",
+        "@2",
+    ],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "keep the first strand on a repeat",
+        "\r",
+        "\x1b",
+        "\x1b",
+        " ",
+        "l",
+        "@10?Its reason",
+        "@2",
+    ],
+    &[
+        "@1",
+        " ",
+        "l",
+        "@1",
+        "keep the first strand on a repeat",
+        "\r",
+        "\x1b",
+        "\x1b",
+        "@10?Its reason",
+        "@2",
+    ],
+    &["@1", " ", "l", "@1", "keep the first strand on a repeat", "\r", "\x1b", "\x1b", "@10?writing", "@2"],
+];
+
 /// Motion §4's scenes: the stand-in's 20-stop turn (one run failing), held at its last stop — the chat open, follow off
 /// (its trail rows); follow on (the follow card's top line, its strip); and the strip's second mark hovered (its words on
 /// the card's bottom line); the keys in the code (`C-w h`) and `[r` back to the failed run (its replay: the strip around
@@ -2697,6 +2771,16 @@ const SCENES: &[Scene] = &[
     Scene { name: "now-card", claude: "nowcard", files: MAIN, keys: NOW_KEYS[3] },
     // (…the mouse over the line: its words whole on a card over it)
     Scene { name: "now-hover", claude: "now", files: MAIN, keys: NOW_KEYS[4] },
+    // (focus B1: following, a turn reading, running and waiting on its card — the chat open, then minimized: the step
+    // said once, on the follow card)
+    Scene { name: "b1-read-open", claude: "nowread", files: MAIN, keys: B1_KEYS[0] },
+    Scene { name: "b1-read-min", claude: "nowread", files: MAIN, keys: B1_KEYS[1] },
+    Scene { name: "b1-run-open", claude: "now", files: MAIN, keys: B1_KEYS[2] },
+    Scene { name: "b1-run-min", claude: "now", files: MAIN, keys: B1_KEYS[3] },
+    Scene { name: "b1-wait-open", claude: "nowcard", files: MAIN, keys: B1_KEYS[4] },
+    Scene { name: "b1-wait-min", claude: "nowcard", files: MAIN, keys: B1_KEYS[5] },
+    // (…and an edit being written, its call not made: the head says what it writes — no knot in hand says it)
+    Scene { name: "b1-write-min", claude: "nowwrite", files: MAIN, keys: B1_KEYS[6] },
     // (W: a word that does its key, lit under the mouse — the chat's `paused`, the follow card's keys, the chat's foot)
     Scene { name: "words-paused", claude: "now", files: MAIN, keys: WORDS_KEYS[0] },
     Scene { name: "words-card", claude: "now", files: MAIN, keys: WORDS_KEYS[1] },
@@ -4373,8 +4457,10 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "sixend" => turn.six(false)?,
             // (motion §4: twenty stops, one run failing, held at the last)
             "strip" => turn.strip()?,
-            "now" => turn.now(false)?,
-            "nowcard" => turn.now(true)?,
+            "now" => turn.now(Held::Run)?,
+            "nowcard" => turn.now(Held::Card)?,
+            "nowread" => turn.now(Held::Read)?,
+            "nowwrite" => turn.now(Held::Write)?,
             // (motion §3: a turn timed as the stream measured — prose from the start, a think, a stall)
             "shimmer-prose" | "shimmer-think" | "shimmer-stall" | "shimmer-read" | "shimmer-all"
             | "shimmer-sign" => turn.shimmer(&script[8..])?,
@@ -4435,6 +4521,16 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
         }
     }
     Ok(())
+}
+
+/// Where the `now` turn is held: its run in flight, its card up, a read in flight, or an edit being written (its call not
+/// made yet).
+#[derive(Clone, Copy, PartialEq)]
+enum Held {
+    Run,
+    Card,
+    Read,
+    Write,
 }
 
 /// `space i`'s edit in the scenes (`ask`, the docs' `askdone`): line 10 of the demo's `main.rs` keeping the first strand.
@@ -5172,9 +5268,9 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.line(json!({"type": "result", "result": "done"}))
     }
 
-    /// (`now-*`: a read, a plan, a sentence of intent, then the tests run — in flight, held there; `card`: asked to run
-    /// outside the sandbox, the card up)
-    fn now(&mut self, card: bool) -> io::Result<()> {
+    /// (`now-*`: a read, a plan, a sentence of intent, then the tests run — in flight, held there; `Card`: asked to run
+    /// outside the sandbox, the card up; `Read`: a read in flight instead, held there)
+    fn now(&mut self, held: Held) -> io::Result<()> {
         self.words("Let me look at how the map is filled first.")?;
         self.text("\n\n")?;
         self.call(1, "read", json!({"files": ["src/main.rs:7-14"]}))?;
@@ -5188,13 +5284,26 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.words("A repeated name now keeps the first strand.")?;
         self.words("I will run the unit tests to check that nothing else relied on the old replace.")?;
         self.text("\n")?;
-        if card {
+        if held == Held::Card {
             let run = json!({"command": "cargo test --quiet", "outside_sandbox": true,
                 "reason": "cargo needs to fetch the registry index"});
             self.call(3, "run", run)?;
             return self.lines.by_ref().try_for_each(|l| l.map(drop));
         }
-        let tool = json!({"type": "tool_use", "id": "t3", "name": "mcp__tarae__run", "input": {"command": "cargo test -q"}});
+        if held == Held::Write {
+            // (the two calls' results as claude's stream says them: no call left in flight, the edit's input the step)
+            for id in ["t1", "t2"] {
+                let result = json!({"type": "tool_result", "tool_use_id": id, "content": [{"type": "text", "text": "ok"}]});
+                self.line(json!({"type": "user", "message": {"role": "user", "content": [result]}}))?;
+            }
+            return self.input(3, "edit", &ask_edit().to_string(), Some("or_insert"));
+        }
+        let (name, input) = match held {
+            Held::Read => ("read", json!({"files": ["src/thread.rs:1-12"]})),
+            _ => ("run", json!({"command": "cargo test -q"})),
+        };
+        let tool =
+            json!({"type": "tool_use", "id": "t3", "name": format!("mcp__tarae__{name}"), "input": input});
         self.line(json!({"type": "assistant", "message": {"id": "m3", "content": [tool]}}))?;
         self.lines.by_ref().try_for_each(|l| l.map(drop))
     }

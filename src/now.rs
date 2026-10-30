@@ -1,7 +1,8 @@
 //! What Claude is doing now, in words (the user, 2026-10-26 — motion's `.sb/now-plan.md`): the step its turn is at,
 //! with that step's own time, its last finished sentence (its why) and the plan's step — the status line's one line,
-//! right after the mode word, while the front session's turn runs (`term::draw_statusline`). Read from what's streamed
-//! and nothing else; no token is spent on it.
+//! right after the mode word, while the front session's turn runs (`term::draw_statusline`); said once (focus B1): while
+//! the follow card is drawn for the turn, its head and body say it and the line keeps the turn's cell
+//! (`term::draw_follow_card` says whether its head kept it). Read from what's streamed and nothing else; no token is spent on it.
 //!
 //! `step` is the one place a turn's doing is put in words: the line's verb (`running`, `asks to run`, `queued`) and
 //! the top lines' word (`Step::word` — the chat's line, the follow card's head; `exploring` went with this). Its time
@@ -37,11 +38,13 @@ pub struct Step {
     pub took: Option<Duration>,
     /// Which step it is: another starts its time again.
     pub key: String,
+    /// The call it's at, whose row says what it acts on (the follow card's knot in hand) — empty: none.
+    pub call: String,
 }
 
 impl Step {
     fn new(sign: Sign, verb: &'static str, what: impl Into<String>, key: impl Into<String>) -> Step {
-        Step { sign, verb, what: what.into(), warn: false, took: None, key: key.into() }
+        Step { sign, verb, what: what.into(), warn: false, took: None, key: key.into(), call: String::new() }
     }
 
     /// The word the top lines say for it (the chat's, the follow card's head) beside the turn's time: the verb's
@@ -96,13 +99,15 @@ pub fn step(ed: &Editor, l: &Workspace) -> Option<Step> {
             };
             let call = live.map_or("", |(id, _)| id);
             let mut s = Step::new(sign, verb, what, format!("ask:{turn}:{call}"));
-            s.warn = true;
+            (s.warn, s.call) = (true, call.to_string());
             return Some(s);
         }
         Doing::Queued { pos } if live.is_some_and(|(_, look)| matches!(look.verb, "run" | "test")) => {
             let (call, look) = live?;
             let what = format!("{} · {}", crate::queued::ordinal(pos), look.what);
-            return Some(Step::new(Sign::Mark(Mark::Run), "queued", what, format!("queued:{call}")));
+            let mut s = Step::new(Sign::Mark(Mark::Run), "queued", what, format!("queued:{call}"));
+            s.call = call.to_string();
+            return Some(s);
         }
         Doing::Stuck { tool, secs } => {
             let mut s = Step::new(Sign::Mark(Mark::Read), "stuck?", tool, format!("stuck:{turn}:{tool}"));
@@ -131,7 +136,9 @@ pub fn step(ed: &Editor, l: &Workspace) -> Option<Step> {
             "send" => ("messaging", look.what.clone()),
             _ => ("using", look.what.clone()),
         };
-        return Some(Step::new(Sign::Mark(look.mark()), verb, what, format!("call:{call}")));
+        let mut s = Step::new(Sign::Mark(look.mark()), verb, what, format!("call:{call}"));
+        s.call = call.to_string();
+        return Some(s);
     }
     // (an edit's input streaming — its call not made yet: drawn in its buffer as it comes, `writing.rs`)
     if let Some(w) = c.writing.calls.iter().rev().find(|w| !w.done) {

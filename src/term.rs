@@ -5215,6 +5215,7 @@ fn draw(
     // Follow mode: one card — what Claude does and says, and while the panel is minimized the question and
     // its keys too (U4). After the turn, a walk-through's stop keeps it while the cursor is in it.
     let mut follow_rect = None;
+    let mut follow_says = false;
     if let Some(c) = editor.workspace.claude.chat.as_ref().filter(|c| {
         (c.follow.on && (c.busy() || c.follow.touring() || crate::follow::stop_here(editor).is_some()))
             || c.follow.replaying.is_some()
@@ -5223,7 +5224,8 @@ fn draw(
         && !editor.welcome()
     {
         let avoid: Vec<Rect4> = [note_rect, offer_rect].into_iter().flatten().map(kept_apart).collect();
-        follow_rect = draw_follow_card(c, editor, ui, lay, &avoid, out)?;
+        let drawn = draw_follow_card(c, editor, ui, lay, &avoid, out)?;
+        (follow_rect, follow_says) = (drawn.map(|d| d.0), drawn.is_some_and(|d| d.1));
         drew(editor, Kind::Follow, follow_rect);
     }
     if let (Some(lines), Some(at)) = (&editor.popup, text_cursor) {
@@ -5306,7 +5308,7 @@ fn draw(
             waiting.or(toasts.last()).copied()
         })
         .flatten();
-    draw_statusline(editor, ui, lay, folded, out)?;
+    draw_statusline(editor, ui, lay, folded, follow_says, out)?;
     let y = lay.status_y as usize;
     drew(editor, Kind::StatusRest, Some((0, y, lay.width, 1)));
     let now =
@@ -10466,6 +10468,11 @@ const NOW_STEP: u8 = 237;
 const NOW_SAID: u8 = 88;
 const NOW_PLAN: u8 = 75;
 
+/// What a step acts on on the follow card's head (focus B1): at most this wide, as the now line's (its whole under the
+/// mouse), at least this — else its verb alone.
+const NOW_WHAT_MAX: usize = 40;
+const NOW_WHAT_MIN: usize = 8;
+
 /// Between the step and Claude's sentence.
 const NOW_DASH: &str = " — ";
 
@@ -10517,16 +10524,40 @@ fn now_segments(editor: &Editor, ui: &Ui, left: &mut Vec<Seg>) -> Option<String>
     said.map(|(s, _)| s)
 }
 
+/// The now line's short form while the follow card says the step (focus B1, the user 2026-10-30: the step said once —
+/// `draw_follow_card`'s report): the turn's one cell (`turn_cell`: the working sign, `▲` waiting on you, `◦` maybe stuck) — none
+/// where the line's `▲N waiting` says it (`said`). The plan's step isn't here either: the minimized card's row above
+/// the turn says it, the open chat its plan.
+fn now_short(editor: &Editor, ui: &Ui, said: bool, left: &mut Vec<Seg>) {
+    if crate::now::step(editor, &editor.workspace).is_none() {
+        return;
+    }
+    let accent = ui.status.patch(ui.accent);
+    let warn = editor.theme.try_get("warning").map_or(accent, |s| ui.status.patch(Style { bg: None, ..s }));
+    // (`▲N waiting` says a wait, not that a call may be stuck)
+    let said = said && editor.doing(&editor.workspace) == crate::workspace::Doing::Waiting;
+    let (cell, style) = turn_cell(editor, accent, warn, said);
+    if cell.trim().is_empty() {
+        return;
+    }
+    left.push(Seg { cut: None, text: "   ".into(), style: ui.status, keep: NOW_STEP });
+    left.push(Seg { cut: None, text: cell, style, keep: NOW_STEP });
+}
+
 /// tarae statusline: `● normal  ▸ now  branch  progress ……… claude · diag · lang · encoding EOL · sel · pos`
 /// Mode = a dot and a word — where the keys go: the code's mode, or chat, git, review, picker, terminal …
 /// (`chrome::Keys::label`, lowercased); the rest dimmed — only mode, diagnostics, position catch the eye.
 /// With the header off, the file name goes here too. Symbols only from common monospace fonts (● ▲ · …).
-/// `folded`: the newest notification, when its card found no free place over the code.
+/// `folded`: the newest notification, when its card found no free place over the code. `short`: the follow card's head
+/// says what Claude is doing now (`draw_follow_card`'s report) — the now line its short form. Where no card is drawn
+/// (follow off, the code hidden, a pane too narrow, a review in place), its head had no room for the step, or it replays
+/// a stop, the line says it whole, as before.
 fn draw_statusline(
     editor: &Editor,
     ui: &Ui,
     lay: &Layout,
     folded: Option<&crate::editor::Toast>,
+    short: bool,
     out: &mut impl Write,
 ) -> io::Result<()> {
     let doc = editor.doc();
@@ -10658,9 +10689,32 @@ fn draw_statusline(
             left.push(Seg { cut: None, text: format!(" {}", r.said()), style, keep: CHIP });
         }
     }
+    // What waits for you, every session's — the inbox's count of what asks for an answer; a click lists them
+    // (`inbox.rs`). Not for the one card (or edit review) up here when that's all: it's in sight, and says so
+    // itself
+    let inbox = editor.inbox();
+    let waiting = inbox.iter().filter(|e| e.asks_answer()).count();
+    // (a card only when this frame draws it — on a screen too small for it, the count says what it needs: #201)
+    // (nor while it waits for the keys to go quiet — it came as they were coming in: friction 60)
+    // (or while the session list holds it back: its letters are keys)
+    let held = editor.card_waits();
+    let only_in_sight = waiting == 1
+        && !held
+        && match editor.next_up() {
+            crate::inbox::Next::Card(_) => editor.screen.offer_card.is_some(),
+            crate::inbox::Next::Review => true,
+            _ => false,
+        };
     // What Claude is doing now (`now.rs`), after the mode word — and after whose turn it is where the chip names it: the
-    // step and its time, its last sentence, the plan's step — the sentence cut to the room left below, once the rest is in
-    let now_said = now_segments(editor, ui, &mut left);
+    // step and its time, its last sentence, the plan's step — the sentence cut to the room left below, once the rest is in.
+    // While the follow card says the step (`short`, focus B1), the turn's cell alone — blank where `▲N waiting` says it
+    let now_said = match short {
+        true => {
+            now_short(editor, ui, waiting > 0 && !only_in_sight, &mut left);
+            None
+        }
+        false => now_segments(editor, ui, &mut left),
+    };
     // The session's reviewer in the background (bgreview): reading, waiting its turn, or what it found not read
     // yet — in its colour, the counts dim, then the key — while no review rail says it. A click reads its report
     if let Some((head, counts, key)) =
@@ -10680,22 +10734,6 @@ fn draw_statusline(
             });
         }
     }
-    // What waits for you, every session's — the inbox's count of what asks for an answer; a click lists them
-    // (`inbox.rs`). Not for the one card (or edit review) up here when that's all: it's in sight, and says so
-    // itself
-    let inbox = editor.inbox();
-    let waiting = inbox.iter().filter(|e| e.asks_answer()).count();
-    // (a card only when this frame draws it — on a screen too small for it, the count says what it needs: #201)
-    // (nor while it waits for the keys to go quiet — it came as they were coming in: friction 60)
-    // (or while the session list holds it back: its letters are keys)
-    let held = editor.card_waits();
-    let only_in_sight = waiting == 1
-        && !held
-        && match editor.next_up() {
-            crate::inbox::Next::Card(_) => editor.screen.offer_card.is_some(),
-            crate::inbox::Next::Review => true,
-            _ => false,
-        };
     let mut gap = if chip { " " } else { "  " };
     if waiting > 0 && !only_in_sight {
         left.push(Seg {
@@ -11130,7 +11168,8 @@ fn draw_statusline(
         if (REVIEWER - 2..=REVIEWER).contains(&s.keep) {
             reviewer_at = Some(reviewer_at.map_or((a, b), |(a0, _)| (a0, b)));
         }
-        if matches!(s.keep, NOW_STEP | NOW_SAID | NOW_PLAN) {
+        // (its short form says nothing a press or the mouse would add: the follow card's head does it — focus B1)
+        if !short && matches!(s.keep, NOW_STEP | NOW_SAID | NOW_PLAN) {
             now_at = Some(now_at.map_or((a, b), |(a0, _)| (a0, b)));
         }
         if s.keep == INBOX {
@@ -14247,6 +14286,9 @@ fn draw_ask_stream(
 ///
 /// Its frame's top line names whom it follows as the chrome does (one session: `follow`); it takes no keys.
 /// ```
+///
+/// With its rect, whether its head says the step the turn is at (focus B1: the status line short only then) — its verb
+/// kept, or the wait its state says (`▲ waits`); a head too narrow for the verb beside the names says none.
 fn draw_follow_card(
     c: &crate::chat::Chat,
     editor: &Editor,
@@ -14254,7 +14296,7 @@ fn draw_follow_card(
     lay: &Layout,
     avoid: &[Rect4],
     out: &mut impl Write,
-) -> io::Result<Option<Rect4>> {
+) -> io::Result<Option<(Rect4, bool)>> {
     use crate::chat::Role;
     use crate::markdown::Span;
     const BODY: usize = 7;
@@ -14312,11 +14354,16 @@ fn draw_follow_card(
     let waiting = c.busy()
         && !replaying
         && (asks || gaze.is_some_and(|g| g.look.verb == "edit") && editor.workspace.claude.review.is_some());
-    // Working: how long · a walk-through after the answer, or the replay: which stop (`‹1` turns back)
+    // The step its turn is at, said here once while the card is drawn — the status line short then (focus B1, `says`
+    // below): its verb, what it acts on, its own time; never while the replay shows a stop (the plan's step: the
+    // minimized card's row above the turn, the open chat's plan — not a third time here)
+    let step = crate::now::step(editor, &editor.workspace).filter(|_| c.busy() && !replaying);
+    // Working: the step's time · a walk-through after the answer, or the replay: which stop (`‹1` turns back)
     let back = c.follow.replay.at.map_or(0, |at| c.follow.replay.position(at).2);
-    let secs = match gaze.and_then(|g| g.step) {
-        Some((k, n)) if replaying && back > 0 => format!("‹{back} {k}/{n}"),
-        Some((k, n)) if replaying || !c.busy() => format!("{k}/{n}"),
+    let secs = match (gaze.and_then(|g| g.step), &step) {
+        (Some((k, n)), _) if replaying && back > 0 => format!("‹{back} {k}/{n}"),
+        (Some((k, n)), _) if replaying || !c.busy() => format!("{k}/{n}"),
+        (_, Some(s)) => timer(crate::now::took(&editor.workspace, s), !editor.moving()),
         _ => timer(crate::clock::since(c.started), !editor.moving()),
     };
     let sp = |text: &str, style: Style| Span { cut: None, hint: false, text: text.into(), style };
@@ -14324,12 +14371,20 @@ fn draw_follow_card(
     // goes — minimized, Claude's commands without a sandbox too (in warning) — then, as the chat's title says it,
     // what it's at and how long. Narrow, what it's at gives way first, then `› no sandbox` goes shorter
     let paused = c.follow.paused && c.busy();
-    // (what it's at: the step's word, as the status line says the step — `now::Step::word`)
-    let word = crate::now::step(editor, &editor.workspace).map(|s| format!(" {}", s.word()));
+    // (what it's at: the step's verb and what it acts on — that only where the knot in hand's row doesn't say it, the
+    // step's own call: said once on the card too; else its verb, else its word — `now::Step::word`)
+    let what = step
+        .as_ref()
+        .filter(|s| !s.what.is_empty() && c.in_hand() != Some(s.call.as_str()))
+        .map(|s| s.what.as_str());
+    let verb = step.as_ref().map(|s| format!(" {}", s.verb));
+    let word = step.as_ref().map(|s| format!(" {}", s.word()));
+    let whole =
+        what.zip(verb.as_deref()).filter(|(w, _)| w.width() <= NOW_WHAT_MAX).map(|(w, v)| format!("{v} {w}"));
     let doing: Vec<&str> = match () {
         _ if waiting => vec![" waiting for your answer", " waiting", ""],
         _ if replaying || !c.busy() => vec![""],
-        _ => vec![word.as_deref().unwrap_or(""), ""],
+        _ => [whole.as_deref(), verb.as_deref(), word.as_deref()].into_iter().flatten().chain([""]).collect(),
     };
     let bares: &[&str] = match compact && crate::tools::unsandboxed(editor) {
         true => &[" › no sandbox", " › bare", ""],
@@ -14398,17 +14453,33 @@ fn draw_follow_card(
         }
         details.push((b.to_string(), warn));
     }
+    // (what it acts on, where it doesn't fit whole: cut to the room left, the verb kept — as the now line cuts it; too
+    // little room, the verb alone)
+    let doing: crate::whole::Fit = match (what, verb.as_deref()) {
+        (Some(w), Some(v)) if !waiting && doing == v => {
+            let spare = room.saturating_sub(left_w + bare.width() + right_w(v) + 1).min(NOW_WHAT_MAX);
+            match spare >= NOW_WHAT_MIN {
+                true => crate::whole::fit(&format!("{} {w}", v.trim_start()), v.width() + spare),
+                false => v.trim_start().into(),
+            }
+        }
+        _ => if waiting { "" } else { doing.trim_start() }.into(),
+    };
     // (what it's at and how long, a blank between — waiting on you, its state says so: not twice)
-    let doing = if waiting { "" } else { doing.trim_start() };
     let mut right: Vec<(String, Style)> = Vec::new();
-    for part in [vec![(mark.clone(), mark_st)], vec![(doing.to_string(), dim)], vec![(secs.clone(), faint)]] {
-        if part.iter().all(|(s, _)| s.is_empty()) {
+    let mut doing_at = None;
+    let parts = [(mark.clone(), mark_st), (doing.shown().to_string(), dim), (secs.clone(), faint)];
+    for (k, part) in parts.into_iter().enumerate() {
+        if part.0.is_empty() {
             continue;
         }
         if !right.is_empty() {
             right.push((" ".into(), dim));
         }
-        right.extend(part);
+        if k == 1 {
+            doing_at = Some(right.len());
+        }
+        right.push(part);
     }
     let plus = Style { fg: ui.diff_plus.fg, ..card };
     let st = TrailStyles { faint, dim, string, accent, warn, plus };
@@ -14602,6 +14673,13 @@ fn draw_follow_card(
     let on = crate::mouse::Surface::FollowCard;
     let follow = Some(crate::mouse::Lights::Follow);
     let line = draw_frame(out, ui, editor, on, card, rect, &[], &bottom, &[], (follow, false))?;
+    // (what it acts on, cut: its whole under the mouse)
+    // (the step kept on the head: its verb, or waiting on you its state's `▲ waits` — else the status line says it)
+    let says = step.is_some() && (waiting || !doing.is_empty());
+    let mut right = fits(&right);
+    if let Some(i) = doing_at {
+        right[i].0 = doing;
+    }
     let head = TopLine {
         names: &fits(&names),
         details: &fits(&details),
@@ -14609,7 +14687,7 @@ fn draw_follow_card(
         faint,
         plain: true,
         frame: Some((on, rect)),
-        right: &fits(&right),
+        right: &right,
         keep_right: true,
         // (its right end pressed: Claude's place followed, as the status line's word)
         words: Some(TopWords {
@@ -14647,7 +14725,7 @@ fn draw_follow_card(
     for (m, &(_, b)) in shown_marks.iter().zip(cols.iter().skip(strip_at)) {
         taken.push((y0, b - 1, m.call.clone()));
     }
-    Ok(Some(rect))
+    Ok(Some((rect, says)))
 }
 
 /// A floating card's keys as its bottom line has them (`draw_frame`), in `room` cells: in order of use, whole pairs,

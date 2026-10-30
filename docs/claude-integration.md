@@ -73,9 +73,8 @@ the conversation, because it has none.
 closes it and `:chat-new` starts over. One
 process lives for the whole conversation, so Claude remembers what came before.
 
-**What it's doing now** is on the status line, in every layout (the chat open, minimized into the follow card or
-closed, following or not, a card up), right after the mode word (and after whose turn it is, where the status line
-names the session):
+**What it's doing now** is said once: on the follow card while it's drawn, else on the status line, right after the
+mode word (and after whose turn it is, where the status line names the session):
 
 ```
 ● follow   ▸ running cargo test -q 41s — I will run the unit tests to check that nothing else relied…   › 3/4 Run the unit tests
@@ -90,6 +89,14 @@ sentence ends, never with each word. Last comes the plan's step when Claude keep
 plan's step goes first, then the sentence is cut. The mouse over the line shows all of it on a card above it; a press
 on it follows Claude again (on, or back from a pause; `C-f` in the chat, `space F` in the code). None of it costs a
 token: it's what Claude already sent. Drivers read it in the state as the session's `turn.now`.
+
+While the follow card is drawn for the turn (following, the code in sight with room for it), the card says it and the
+status line keeps only the turn's cell (`● follow  ▃`, or `▲1 waiting · C-q` when something waits on you): the card's
+head has the step's verb and its own time (`follow ── ▃ running 41s`), its selected row what the step acts on
+(`▸ run  cargo test -q`) — the head says that too where no row does (`▃ writing src/trust.rs`, an edit as it comes) —
+its body the sentence Claude finished, and the plan's step is the minimized card's row above the turn (with the chat
+open, its plan). A press on the head's step follows Claude. Where no card is drawn — follow off, the code hidden or
+too narrow for it, a review in its place, a stop replayed on it — the status line says it all, as above.
 
 **While it works** the chat's title (and the follow card's) says what the turn is at, in the same words as the status
 line (`thinking 3.2s`, `writing`, `running`, `reading`), and whether anything is arriving. Before the word stands the

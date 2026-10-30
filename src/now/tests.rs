@@ -349,28 +349,136 @@ fn line_at(ed: &Editor) -> (u16, u16) {
     (s.1 as u16, s.0 as u16)
 }
 
-/// A press on the line follows Claude's place: paused, following again; off, on — as `C-f` does in the chat and
-/// `space F` in the code. A press elsewhere on the status line doesn't.
+/// Where a press follows Claude's place: the line's cells, or — while the follow card says the step (focus B1) — its
+/// head's right end, the step (`Press::Now` there).
+fn press_at(ed: &Editor) -> (u16, u16) {
+    let words = ed.screen.word_spots.borrow();
+    let card = |w: &&crate::wordspot::Spot| matches!(w.on, crate::mouse::Surface::FollowCard);
+    match words.iter().filter(card).find(|w| matches!(w.press, crate::wordspot::Press::Now)) {
+        Some(w) => (w.from as u16 + 1, w.y as u16),
+        None => {
+            drop(words);
+            let (x, y) = line_at(ed);
+            (x + 4, y)
+        }
+    }
+}
+
+fn press(ed: &mut Editor, (x, y): (u16, u16)) {
+    let m = crate::event::Mouse { kind: crate::event::MouseKind::Down, x, y, alt: false, ctrl: false };
+    ed.handle_event(crate::event::Event::Mouse(m));
+}
+
+/// A press on what says the step follows Claude's place: paused, following again (on the follow card's head, which says
+/// it then); off, on (on the line) — as `C-f` does in the chat and `space F` in the code. A press on the mode word
+/// doesn't.
 #[test]
 fn a_press_on_the_line_follows_claude() {
-    let press = |ed: &mut Editor, (x, y): (u16, u16)| {
-        let m = crate::event::Mouse { kind: crate::event::MouseKind::Down, x, y, alt: false, ctrl: false };
-        ed.handle_event(crate::event::Event::Mouse(m));
-    };
     for (on, paused) in [(true, true), (false, false)] {
         let mut ed = at_work();
         call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
         let f = &mut ed.workspace.claude.chat.as_mut().unwrap().follow;
         (f.on, f.paused) = (on, paused);
         ed.workspace.viewer.at = crate::workspace::At::Code;
-        status(&mut ed, 160, 40);
-        let (x, y) = line_at(&ed);
-        press(&mut ed, (2, y));
+        let line = status(&mut ed, 160, 40);
+        assert_eq!(
+            line.contains("running cargo test"),
+            !on,
+            "said on the line only without the card: {line}"
+        );
+        press(&mut ed, (2, 39));
         assert!(!ed.workspace.claude.chat.as_ref().unwrap().follow.active(), "the mode word isn't it");
         status(&mut ed, 160, 40);
-        press(&mut ed, (x + 4, y));
+        let at = press_at(&ed);
+        assert_eq!(at.1 == 39, !on, "the head's when the card says it: {at:?}");
+        press(&mut ed, at);
         let f = &ed.workspace.claude.chat.as_ref().unwrap().follow;
         assert!(f.active(), "following again from on={on} paused={paused}");
+    }
+}
+
+/// Focus B1, the step said once: while the follow card is drawn for the turn, the status line keeps only the turn's cell
+/// — the step, its time and the sentence on the card's head and body — and the head says the step's verb with its own
+/// time, what it acts on where the knot in hand's row doesn't (an edit being written); waiting on a card, `▲N waiting`
+/// alone. With no card drawn — follow off, a replay showing a stop — the line says it whole, as before.
+#[test]
+fn the_follow_card_says_the_step_and_the_line_keeps_its_cell() {
+    let following = |ed: &mut Editor| {
+        ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
+        ed.workspace.viewer.at = crate::workspace::At::Code;
+    };
+    // (the step's time read off a held clock: under a second however slow the machine)
+    crate::clock::hold();
+    let mut ed = at_work();
+    send(&mut ed, StreamEv::Text("I will run the unit tests to check the order.\n".into()));
+    call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
+    following(&mut ed);
+    let drawn = rows(&mut ed, 160, 40);
+    let head = drawn.iter().find(|r| r.contains("follow ─")).unwrap_or_else(|| panic!("{drawn:#?}"));
+    let line = &drawn[39];
+    assert!(
+        head.contains("running") && !head.contains("cargo test"),
+        "the knot in hand's row says what: {head}"
+    );
+    assert!(drawn.iter().any(|r| r.contains("▸ run") && r.contains("cargo test -q")), "{drawn:#?}");
+    assert!(
+        !line.contains("running") && !line.contains("I will run") && !line.contains("—"),
+        "short: {line}"
+    );
+    let cell = line.trim_start().strip_prefix("● normal").map(str::trim_start);
+    assert!(
+        cell.and_then(|c| c.chars().next()).is_some_and(|c| "▃▄▅▆".contains(c)),
+        "the turn's cell: {line}"
+    );
+    assert!(!ed.screen.cut_spots.borrow().iter().any(|s| s.3 == crate::whole::Cut::Now), "no line to hover");
+    // (the step's own time on the head, not the turn's five minutes)
+    ed.workspace.claude.chat.as_mut().unwrap().started -= Duration::from_secs(300);
+    let head = rows(&mut ed, 160, 40).into_iter().find(|r| r.contains("follow ─")).unwrap();
+    assert!(!head.contains("5m") && head.contains("ms"), "the step's time: {head}");
+    // An edit being written, its call not made: no knot in hand says it — the head does
+    send(&mut ed, StreamEv::ToolResult { id: "t1".into(), text: "ok".into(), error: false });
+    let piece =
+        |field, add: &str, closed| crate::writing::Piece::Text { item: 0, field, add: add.into(), closed };
+    let pieces = vec![
+        piece(crate::writing::Field::File, "src/main.rs", true),
+        piece(crate::writing::Field::Old, "fn", false),
+    ];
+    send(&mut ed, StreamEv::Writing(crate::writing::Delta { call: "e1".into(), pieces, done: false }));
+    let head = rows(&mut ed, 160, 40).into_iter().find(|r| r.contains("follow ─")).unwrap();
+    assert!(head.contains("writing src/main.rs"), "{head}");
+    // Waiting on a card: `▲N waiting` says it, no cell beside it
+    let mut ed = at_work();
+    call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
+    card(&mut ed);
+    following(&mut ed);
+    let line = status(&mut ed, 80, 24);
+    // (the card in sight and the only one: the cell's `▲`; else the count's)
+    assert!(!line.contains("asks to run"), "{line}");
+    assert_eq!(line.matches('▲').count(), 1, "once: {line}");
+    // A head with no room for the step beside its names (paused, on a narrow card): the line says it whole
+    let mut ed = at_work();
+    call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
+    following(&mut ed);
+    ed.workspace.claude.chat.as_mut().unwrap().follow.paused = true;
+    let drawn = rows(&mut ed, 100, 30);
+    let head = drawn.iter().find(|r| r.contains("follow ─")).unwrap_or_else(|| panic!("{drawn:#?}"));
+    assert!(head.contains("paused") && !head.contains("running"), "no room for the verb: {head}");
+    assert!(drawn[29].contains("▸ running cargo test -q"), "said whole: {}", drawn[29]);
+    // No card: follow off, or a stop replayed — the line whole
+    for replay in [false, true] {
+        let mut ed = at_work();
+        call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
+        following(&mut ed);
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        match replay {
+            false => c.follow.on = false,
+            true => {
+                let look = c.msgs.last().unwrap().look.clone().unwrap();
+                c.follow.replaying = Some(crate::follow::Gaze::new(look, None, None));
+            }
+        }
+        let line = status(&mut ed, 160, 40);
+        assert!(line.contains("▸ running cargo test -q"), "replay={replay}: {line}");
     }
 }
 
@@ -404,9 +512,10 @@ fn a_press_while_following_brings_the_view_to_claudes_place() {
     );
     gaze(&mut ed, 79..90);
     status(&mut ed, 160, 40);
-    let (x, y) = line_at(&ed);
-    let m = crate::event::Mouse { kind: crate::event::MouseKind::Down, x: x + 4, y, alt: false, ctrl: false };
-    ed.handle_event(crate::event::Event::Mouse(m));
+    // (following: the follow card's head says the step — focus B1)
+    let at = press_at(&ed);
+    assert!(at.1 < 39, "the card's head, not the line: {at:?}");
+    press(&mut ed, at);
     let f = &ed.workspace.claude.chat.as_ref().unwrap().follow;
     assert!(f.active(), "still following");
     assert_eq!(crate::follow::view_line(&ed), Some(79), "the view where Claude is now");
