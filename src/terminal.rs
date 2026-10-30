@@ -50,6 +50,10 @@ pub struct Terminal {
     /// Drains the wait thread ran out while held, its program gone (the tests read it: its end waited).
     #[cfg_attr(not(test), allow(dead_code))]
     drains_held: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// The reader is at a go-ahead, its next batch read: with one kept (`waiting`) it reads no more until that's
+    /// sent (the tests read it: `ready` means nothing before, the reader may empty the pty at any moment).
+    #[cfg_attr(not(test), allow(dead_code))]
+    reader_waits: std::sync::Arc<std::sync::atomic::AtomicBool>,
     master: OwnedFd,
     writer: Sender<Vec<u8>>,
     generation: u64,
@@ -133,6 +137,12 @@ impl Terminal {
     #[cfg(test)]
     pub fn drains_held(&self) -> u64 {
         self.drains_held.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The reader is at a go-ahead — the tests' record that, one kept, it reads no more.
+    #[cfg(test)]
+    pub fn reader_waits(&self) -> bool {
+        self.reader_waits.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Held still now (its view mode) — the simulation checks it's held exactly while viewed.
@@ -354,6 +364,8 @@ fn spawn(
     let answers_sent = answered.clone();
     let drains_held = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let drained_held = drains_held.clone();
+    let reader_waits = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let at_go_ahead = reader_waits.clone();
     // The shell waited for as it ends — a program it left behind holding the terminal (one that ignored
     // the hangup) mustn't keep it a zombie (#131); then what's left to read, `DRAIN_AFTER_EXIT` at most — counted
     // only while nothing is held: while the view holds, the reader waits for a go-ahead and reaches no end, so
@@ -400,7 +412,9 @@ fn spawn(
                     answers_sent.fetch_add(sent, std::sync::atomic::Ordering::SeqCst);
                     // (an error: the batch was dropped unshown — the editor is going)
                     if let Some(rx) = shown.take() {
+                        at_go_ahead.store(true, std::sync::atomic::Ordering::SeqCst);
                         let _ = rx.recv();
+                        at_go_ahead.store(false, std::sync::atomic::Ordering::SeqCst);
                     }
                     let (done, rx) = std::sync::mpsc::sync_channel(1);
                     shown = Some(rx);
@@ -435,6 +449,7 @@ fn spawn(
         holds,
         answered,
         drains_held,
+        reader_waits,
         master,
         writer,
         generation,
@@ -852,6 +867,7 @@ pub(crate) fn stand_in(
         holds: Default::default(),
         answered: Default::default(),
         drains_held: Default::default(),
+        reader_waits: Default::default(),
         master,
         writer,
         generation: ed.terminal_generation,
@@ -1599,18 +1615,19 @@ mod tests {
                 }
             }
         };
+        // (the reader at the kept go-ahead first: until then it's reading its next batch, and what `ready` says
+        // may be gone a moment later; from then on nothing reads the pty, so it can only stay)
         let held_and_full = |ed: &Editor| {
-            ed.workspace
-                .terminal
-                .as_ref()
-                .is_some_and(|t| t.came() && !t.waiting.is_empty() && ready(t.master.as_raw_fd()))
+            ed.workspace.terminal.as_ref().is_some_and(|t| {
+                t.came() && !t.waiting.is_empty() && t.reader_waits() && ready(t.master.as_raw_fd())
+            })
         };
         ed.handle_key(Key { code: Code::Char('\\'), ctrl: true, alt: false, shift: false });
         assert!(crate::view::terminal_viewed(&ed));
         wait(&mut ed, held_and_full);
         let t = ed.workspace.terminal.as_ref().unwrap();
         let held = t.held_len();
-        assert!(t.came() && !t.waiting.is_empty(), "a batch held, its go-ahead kept");
+        assert!(t.came() && !t.waiting.is_empty() && t.reader_waits(), "a batch held, its go-ahead kept");
         assert!(held <= BATCH + 64 * 1024, "one batch at most: {held} bytes");
         assert!(ready(t.master.as_raw_fd()), "the program's next output waits unread in the pty");
         // (what doesn't happen is seen only over a while — the one window here; a slow machine can't make it fail)
