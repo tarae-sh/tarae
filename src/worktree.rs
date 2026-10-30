@@ -7178,6 +7178,7 @@ mod tests {
                 rows,
                 plan: None,
                 usage: Some(json!({ "turns": [], "last": last })),
+                places: None,
                 seq: crate::chats::seq(),
             };
             crate::chats::save(&chats, root, saved);

@@ -1395,6 +1395,11 @@ pub fn open(ed: &mut Editor) {
             ed.workspace.viewer.at = At::Chat;
         }
         None => {
+            // (a new conversation: the last one's answers stayed at the code while the chat was closed, and go now —
+            // kept with theirs first, a reply that opened this chat having just made one a thread; a continue brings
+            // them back)
+            crate::chatnotes::kept_sync(ed);
+            crate::notes::forget_answers(ed);
             let mut c = Chat::new();
             // (`space F`'s mark taken whatever the setting says: once, never left for a chat opened later)
             let armed = std::mem::take(&mut ed.workspace.claude.follow_armed);
@@ -1476,6 +1481,9 @@ fn continue_from(ed: &mut Editor, saved: crate::chats::Saved, spawn: bool, back:
     c.msgs.push(Msg::new(Role::Note, format!("continued from {when}"), ""));
     c.continued = back.then(|| saved.past());
     c.plan = saved.plan.as_ref().and_then(crate::plan::Plan::from_json);
+    // (its answers' notes back, the last one's gone — their words cut again from these rows)
+    crate::chatnotes::restore(ed, saved.places.as_ref());
+    let Some(c) = &mut ed.workspace.claude.chat else { return };
     c.conversation = Some(saved.id.clone());
     c.resume = Some(saved.id.clone());
     c.scroll = 0;
@@ -1607,22 +1615,28 @@ pub fn restore(ed: &mut Editor, r: Restored) {
     });
 }
 
-/// The conversation as it's kept: (store, project, it) — None before claude gave it an id.
-fn kept(ed: &Editor) -> Option<(std::path::PathBuf, std::path::PathBuf, crate::chats::Saved)> {
+/// The conversation as it's kept: (store, its project and added folders, it) — None before claude gave it an id.
+fn kept(ed: &Editor) -> Option<(std::path::PathBuf, Vec<std::path::PathBuf>, crate::chats::Saved)> {
     kept_of(ed.chats_dir.clone()?, &ed.workspace)
+}
+
+/// Workspace `l`'s project, then its added folders (`chats::save_in`).
+fn roots_of(l: &crate::workspace::Workspace) -> Vec<std::path::PathBuf> {
+    std::iter::once(l.root.clone()).chain(l.folders.iter().map(|f| f.at.clone())).collect()
 }
 
 /// `kept` for session `l`'s chat, in front or behind.
 fn kept_of(
     dir: std::path::PathBuf,
     l: &crate::workspace::Workspace,
-) -> Option<(std::path::PathBuf, std::path::PathBuf, crate::chats::Saved)> {
+) -> Option<(std::path::PathBuf, Vec<std::path::PathBuf>, crate::chats::Saved)> {
     let c = l.claude.chat.as_ref()?;
     let id = c.conversation.clone()?;
     let title = c.msgs.iter().find(|m| m.role == Role::User).map(|m| m.text.clone()).unwrap_or_default();
     let plan = c.plan.as_ref().map(crate::plan::Plan::to_json);
     let saved = crate::chats::Saved {
         usage: l.claude.usage.conv_json(&id),
+        places: crate::chatnotes::places_json(&l.claude.notes, &c.msgs),
         id,
         title,
         updated: crate::chats::now(),
@@ -1630,13 +1644,33 @@ fn kept_of(
         plan,
         seq: crate::chats::seq(),
     };
-    Some((dir, l.root.clone(), saved))
+    Some((dir, roots_of(l), saved))
 }
 
 /// The turn ended: the conversation is kept (on a worker) — its rows and claude's id for it.
 fn keep(ed: &Editor) {
-    let Some((dir, root, saved)) = kept(ed) else { return };
-    ed.events.jobs().background(move || crate::chats::save(&dir, &root, saved));
+    let Some((dir, roots, saved)) = kept(ed) else { return };
+    ed.events.jobs().background(move || crate::chats::save_in(&dir, &roots, saved));
+}
+
+/// Its answers' notes changed (`chatnotes::kept_sync`): the conversation kept again with them — with the chat closed, as
+/// it stood then (`Notes.left`: a question whose turn it cut off is in no store yet, and `back` counts from the newest).
+pub fn keep_places(ed: &Editor) {
+    if ed.workspace.claude.chat.is_some() {
+        return keep(ed);
+    }
+    let (Some(dir), Some(saved)) = (ed.chats_dir.clone(), left_kept(ed)) else { return };
+    let roots = roots_of(&ed.workspace);
+    ed.events.jobs().background(move || crate::chats::save_in(&dir, &roots, saved));
+}
+
+/// The conversation a closed chat left (`Notes.left`) with its answers' places now, its `seq` now: of two keeps landing
+/// out of order the older is refused, a note closed never coming back.
+pub(crate) fn left_kept(ed: &Editor) -> Option<crate::chats::Saved> {
+    let notes = &ed.workspace.claude.notes;
+    let (left, users) = notes.left.as_ref()?;
+    let places = crate::chatnotes::places_of(notes, *users);
+    Some(crate::chats::Saved { places, seq: crate::chats::seq(), ..(**left).clone() })
 }
 
 /// Every session's kept now, on this thread — the last thing before `:restart` replaces this process (a
@@ -1644,8 +1678,8 @@ fn keep(ed: &Editor) {
 pub fn keep_now(ed: &Editor) {
     let Some(dir) = ed.chats_dir.clone() else { return };
     for l in ed.sessions_in_order() {
-        if let Some((dir, root, saved)) = kept_of(dir.clone(), l) {
-            crate::chats::save(&dir, &root, saved);
+        if let Some((dir, roots, saved)) = kept_of(dir.clone(), l) {
+            crate::chats::save_in(&dir, &roots, saved);
         }
     }
 }
@@ -1662,6 +1696,14 @@ pub fn close(ed: &mut Editor) {
     ed.calls_record();
     // (nor is its edit being written: its rows go with it — `writing.rs`)
     crate::writing::over(ed);
+    // (its answers stay at the code, still this conversation's: what's done to them is kept with it — `keep_places`)
+    let users = ed
+        .workspace
+        .claude
+        .chat
+        .as_ref()
+        .map_or(0, |c| c.msgs.iter().filter(|m| m.role == Role::User).count());
+    ed.workspace.claude.notes.left = kept(ed).map(|k| (Box::new(k.2), users));
     ed.workspace.claude.chat = None;
     // (what its answers let through goes with it at once — `:granted` and the chat's count too)
     ed.caps_sync();
@@ -1712,6 +1754,9 @@ pub fn reset_said(ed: &mut Editor, said: &str) {
     c.msgs.clear();
     c.plan = None;
     c.conversation_left();
+    // (its answers' notes go with it — focus A1b)
+    crate::notes::forget_answers(ed);
+    let Some(c) = &mut ed.workspace.claude.chat else { return };
     c.state = State::Idle;
     c.scroll = 0;
     c.follow.new_turn();

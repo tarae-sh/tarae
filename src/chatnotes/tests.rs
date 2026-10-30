@@ -1,5 +1,5 @@
-//! #239: what the chat's last answer says of a place shows at it — the sentence at the line end, the paragraph on the
-//! card, cut from the answer as written; the next answer that names places replaces them.
+//! #239: what the chat's answers say of a place shows at it — the sentence at the line end, the paragraph on the card,
+//! cut from the answer as written; kept for the conversation, newest first (focus A1b).
 
 use std::path::{Path, PathBuf};
 
@@ -69,6 +69,18 @@ fn chat_notes(ed: &Editor, root: &Path) -> Vec<(String, usize, String)> {
     v
 }
 
+/// `chat_notes` of the newest answer alone (focus A1b: the ones before it are kept beside them).
+fn newest_notes(ed: &Editor, root: &Path) -> Vec<(String, usize, String)> {
+    let k = crate::notes::newest(&ed.workspace.claude.notes);
+    let of_newest = |n: &crate::notes::Note| n.answer.as_ref().map(|o| o.n) == k;
+    let mut v: Vec<_> = (ed.workspace.claude.notes.list.iter())
+        .filter(|n| crate::notes::bare_chat(n) && of_newest(n))
+        .map(|n| (crate::chat::shown(root, &n.path), n.lines.start + 1, n.gist().to_string()))
+        .collect();
+    v.sort();
+    v
+}
+
 fn feed(ed: &mut Editor, keys: &str) {
     let mut chars = keys.chars();
     while let Some(c) = chars.next() {
@@ -87,6 +99,632 @@ fn screen(ed: &mut Editor) -> Vec<String> {
     let mut vt = vt100::Parser::new(H, W, 0);
     vt.process(&bytes);
     vt.screen().rows(0, W).collect()
+}
+
+/// Focus A1b: the conversation keeps its answers' places (`places_json`) and a continue brings them back from its rows
+/// (`restore`) — the same notes, the same words; a new conversation's empty store leaves none.
+#[test]
+fn the_answers_come_back_with_their_conversation() {
+    let (_s, root, mut ed) = project("chatnotes-kept", &["src/a.rs", "src/b.rs"]);
+    answer(&mut ed, "The count is read in src/a.rs:3.\n\nIt never changes after.");
+    answer(&mut ed, "The guard in src/a.rs:3 is enough; src/b.rs:2 checks it too.");
+    let before = chat_notes(&ed, &root);
+    assert_eq!(before.len(), 3, "both answers kept: {before:?}");
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    let places = places_json(&ed.workspace.claude.notes, &c.msgs).expect("two answers placed");
+    let rows = crate::chats::rows_of(&c.msgs);
+    // (a new conversation: they go)
+    crate::notes::forget_answers(&mut ed);
+    assert!(chat_notes(&ed, &root).is_empty());
+    // (continued: its rows back, then its places)
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs = crate::chats::msgs_of(&rows);
+    c.msgs.push(Msg::new(Role::Note, "continued from 1m ago", ""));
+    restore(&mut ed, Some(&places));
+    assert_eq!(chat_notes(&ed, &root), before, "{places}");
+    // (as kept: a continue has nothing to keep — else the next event saved it again, a conversation only looked at made
+    // the newest)
+    assert_eq!(ed.workspace.claude.notes.kept_bare, before.len());
+}
+
+/// The reviewer's (note 22): a continue through the store — the line texts of files that weren't open read there; a line
+/// the file moved since found again by its text as its file opens; a place the answer's words no longer give, and an
+/// answer whose question isn't where it was in the rows, left out and said once in `:messages`.
+#[test]
+fn a_continue_finds_moved_lines_and_says_what_it_lost() {
+    let (s, root, mut ed) = project("chatnotes-continue", &["src/a.rs", "src/b.rs", "src/c.rs"]);
+    answer(&mut ed, "The count is read in src/a.rs:3.\n\nIt never changes after.");
+    answer(&mut ed, "The guard in src/b.rs:2 is enough.");
+    answer(&mut ed, "Then src/b.rs:5.");
+    answer(&mut ed, "It was src/c.rs:2.");
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    let saved = crate::chats::Saved {
+        id: "c1".into(),
+        title: "where?".into(),
+        updated: crate::chats::now(),
+        rows: crate::chats::rows_of(&c.msgs),
+        plan: None,
+        usage: None,
+        places: places_json(&ed.workspace.claude.notes, &c.msgs),
+        seq: crate::chats::seq(),
+    };
+    let dir = s.join("chats");
+    crate::chats::save(&dir, &root, saved);
+    // (a file gone since it was kept)
+    std::fs::remove_file(root.join("src/c.rs")).unwrap();
+    let saved = crate::chats::load(&dir, &root).remove(0);
+    // (no file was open: the store read each line's text)
+    let answers = saved.places.as_ref().and_then(|p| p.as_array()).unwrap();
+    let texts: Vec<&str> = (answers.iter().flat_map(|a| a["places"].as_array().unwrap()))
+        .map(|p| p["text"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(texts, ["let line_3 = 3;", "let line_2 = 2;", "let line_5 = 5;", "let line_2 = 2;"]);
+    // Meanwhile: two lines above src/a.rs:3; the second answer's words changed, the third's question
+    let a = root.join("src/a.rs");
+    let text = std::fs::read_to_string(&a).unwrap();
+    std::fs::write(&a, format!("// one\n// two\n{text}")).unwrap();
+    let mut msgs = crate::chats::msgs_of(&saved.rows);
+    let k = msgs.iter().position(|m| m.text == "The guard in src/b.rs:2 is enough.").unwrap();
+    msgs[k].text = "The guard is enough.".into();
+    let q = msgs.iter().enumerate().filter(|(_, m)| m.role == Role::User).nth(2).unwrap().0;
+    msgs[q].text = "where else?".into();
+    crate::notes::forget_answers(&mut ed);
+    ed.workspace.claude.chat.as_mut().unwrap().msgs = msgs;
+    restore(&mut ed, saved.places.as_ref());
+    let first = ("src/a.rs".to_string(), 3, "The count is read in src/a.rs:3.".to_string());
+    assert_eq!(chat_notes(&ed, &root), [first]);
+    let said: Vec<&str> =
+        ed.messages.iter().map(|m| m.2.as_str()).filter(|m| m.contains("no longer found")).collect();
+    assert_eq!(said, ["3 places of the conversation's answers no longer found"]);
+    // (its file opened: the line found again by its text, two down — its flow with it)
+    ed.open(&a).unwrap();
+    crate::notes::attach(&mut ed);
+    assert_eq!(chat_notes(&ed, &root)[0].1, 5);
+    assert_eq!(flow_of(&ed, &a, 5).len(), 2, "{:?}", flow_of(&ed, &a, 5));
+}
+
+/// The reviewer's (note 21): a continue keeps where each answer's flow was — none for a turn that wrote at a note, and
+/// none moved to another place once its own note went (a thread now): never worked out again from the words.
+#[test]
+fn a_continue_keeps_where_the_flow_was() {
+    let (_s, root, mut ed) = project("chatnotes-flow-kept", &["src/a.rs", "src/b.rs"]);
+    let (a, b) = (root.join("src/a.rs"), root.join("src/b.rs"));
+    // (a turn that pinned a note: its place a note, no flow)
+    let pin = serde_json::json!({"path": "src/b.rs", "line": 9, "text": "pinned"});
+    crate::notes::tool_call(&mut ed, &pin).unwrap();
+    answers(&mut ed, &["It is src/a.rs:4.\n\nThat is all."], Vec::new());
+    assert!(flow_of(&ed, &a, 4).is_empty());
+    // (a flow at src/a.rs:6, its note answered: a thread)
+    answer(&mut ed, "The fix is in src/a.rs:6.\n\nThe guard in src/b.rs:2 stays.\n\nNothing else changes.");
+    assert!(!flow_of(&ed, &a, 6).is_empty());
+    let n = ed.workspace.claude.notes.list.iter_mut().find(|n| n.path == a && n.lines.start == 5).unwrap();
+    n.thread.push(Entry { by: By::You, text: "why there?".into(), draft: false });
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    let places = places_json(&ed.workspace.claude.notes, &c.msgs);
+    restore(&mut ed, places.as_ref());
+    assert!(flow_of(&ed, &a, 4).is_empty(), "the noted turn's: none");
+    assert!(flow_of(&ed, &b, 2).is_empty(), "the thread's flow moved nowhere");
+    let threads = ed.workspace.claude.notes.list.iter().filter(|n| !crate::notes::bare_chat(n)).count();
+    assert_eq!(threads, 2, "the pinned note and the thread stay");
+}
+
+/// The reviewer's note 24: what the conversation keeps is what's there as you leave it, with no turn since — a note you
+/// closed doesn't come back on a continue, and one answered with a reply comes back once, its thread, never a bare note
+/// beside it. Kept as it changes: a plain quit keeps nothing.
+#[test]
+fn a_continue_brings_back_no_note_you_closed_nor_one_beside_its_thread() {
+    let (s, root, mut ed) = project("chatnotes-closed", &["src/a.rs", "src/b.rs"]);
+    let dir = s.join("chats");
+    ed.chats_dir = Some(dir.clone());
+    ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("c1".into());
+    // (claude a stand-in: what it's sent, never a process)
+    let (tx, _rx) = std::sync::mpsc::channel();
+    ed.claude_lines = Some(tx);
+    answer(&mut ed, "It is read in src/a.rs:3.");
+    answer(&mut ed, "The guard in src/b.rs:2 checks it.");
+    answer(&mut ed, "It is set in src/a.rs:7.");
+    // Closed, and answered: no turn after either
+    ed.open(&root.join("src/a.rs")).unwrap();
+    feed(&mut ed, "3G");
+    crate::typed::execute(&mut ed, "note-close").unwrap();
+    let b = root.join("src/b.rs");
+    let n = ed.workspace.claude.notes.list.iter_mut().find(|n| n.path == b).unwrap();
+    n.thread.push(Entry { by: By::You, text: "why there?".into(), draft: false });
+    // (the lines the store keeps: this exact list — a count would pass on an earlier save still landing)
+    let kept = |dir: &Path, root: &Path| {
+        let places = crate::chats::load(dir, root).into_iter().next().and_then(|c| c.places);
+        let answers = places.as_ref().and_then(|p| p.as_array()).map_or(&[][..], |a| &a[..]);
+        let lines = answers.iter().flat_map(|a| a["places"].as_array().unwrap());
+        lines.map(|p| p["said"].as_u64().unwrap()).collect::<Vec<_>>()
+    };
+    crate::test_results::settle_until(&mut ed, |_| kept(&dir, &root) == [6]);
+    // A new conversation, then this one continued
+    crate::chat::reset_said(&mut ed, "a new conversation");
+    let saved = crate::chats::load(&dir, &root).remove(0);
+    crate::chat::continue_with(&mut ed, saved);
+    assert_eq!(
+        chat_notes(&ed, &root),
+        [
+            ("src/a.rs".to_string(), 7, "It is set in src/a.rs:7.".to_string()),
+            ("src/b.rs".to_string(), 2, "The guard in src/b.rs:2 checks it.".to_string()),
+        ]
+    );
+}
+
+/// `:note-close` closes for good, so the note at the cursor wins (the user, 2026-10-30): never another line's because
+/// its card is open; of a line's answers, the one its open card shows. With no note on the cursor's line, the open card's
+/// in this file; one in another file isn't in sight, and is left. `q` and `esc` fold, close nothing.
+#[test]
+fn note_close_takes_the_note_at_the_cursor_then_the_open_cards() {
+    let (_s, root, mut ed) = project("chatnotes-close", &["src/a.rs", "src/b.rs"]);
+    let close = |ed: &mut Editor| crate::typed::execute(ed, "note-close");
+    answer(&mut ed, "It is read in src/a.rs:3.");
+    answer(&mut ed, "Then src/a.rs:5.");
+    answer(&mut ed, "And src/a.rs:7.");
+    answer(&mut ed, "Again src/a.rs:7.");
+    ed.open(&root.join("src/a.rs")).unwrap();
+    let lines = |ed: &Editor| chat_notes(ed, &root).iter().map(|n| n.1).collect::<Vec<_>>();
+    let gist = |ed: &Editor, line: usize| {
+        let n = chat_notes(ed, &root);
+        n.iter().filter(|n| n.1 == line).map(|n| n.2.clone()).collect::<Vec<_>>()
+    };
+    // The turn's card open at line 7, the cursor on line 3: line 3's goes, the card stays
+    feed(&mut ed, "3G");
+    close(&mut ed).unwrap();
+    assert_eq!(lines(&ed), [5, 7, 7]);
+    assert!(ed.workspace.claude.notes.open.is_some(), "line 7's card still open");
+    // No note on the cursor's line: the open card's — the answer it shows, of its line's two
+    feed(&mut ed, "gg");
+    close(&mut ed).unwrap();
+    assert_eq!(gist(&ed, 7), ["And src/a.rs:7."], "the newest went: its card showed it");
+    assert_eq!(lines(&ed), [5, 7]);
+    // The cursor on a line of two answers, its card open: the card's, the newest, never the older one folded under it
+    answer(&mut ed, "Also src/a.rs:5.");
+    feed(&mut ed, "5G");
+    close(&mut ed).unwrap();
+    assert_eq!(gist(&ed, 5), ["Then src/a.rs:5."]);
+    feed(&mut ed, "7G<ret>");
+    close(&mut ed).unwrap();
+    assert_eq!(lines(&ed), [5]);
+    // `q` folds, closes nothing; then nothing at the cursor and no card: said
+    feed(&mut ed, "5G<ret>q");
+    assert_eq!(lines(&ed), [5]);
+    feed(&mut ed, "gg");
+    assert_eq!(close(&mut ed).unwrap_err(), "no note on this line");
+    // A card open in another file isn't in sight: left
+    answer(&mut ed, "Now src/b.rs:2.");
+    assert_eq!(close(&mut ed).unwrap_err(), "no note on this line");
+    assert_eq!(chat_notes(&ed, &root).len(), 2);
+    // The reviewer's note 31: a card you opened yourself, its note closed, holds no later turn's card back
+    feed(&mut ed, "5G<ret>");
+    assert!(ed.workspace.claude.notes.open.is_some() && !ed.workspace.claude.notes.turned, "yours");
+    close(&mut ed).unwrap();
+    answer(&mut ed, "Lastly src/b.rs:9.");
+    let open = ed.workspace.claude.notes.open;
+    let n = ed.workspace.claude.notes.list.iter().find(|n| Some(n.id) == open);
+    assert_eq!(n.map(|n| n.lines.start + 1), Some(9), "the turn's opened");
+}
+
+/// `:note-close` while follow holds the view (the user, 2026-10-30, CLAUDE.md's follow rule): a key of yours acts at your
+/// cursor — the note on your cursor's line goes, never the one at Claude's place, follow pauses and the view comes back
+/// to your cursor. With none on your line, the open card at Claude's place is refused too, and nothing moves; paused,
+/// that card is simply the open one.
+#[test]
+fn note_close_acts_at_your_cursor_while_follow_holds_the_view() {
+    let (_s, root, mut ed) = project("chatnotes-close-follow", &["src/a.rs"]);
+    let long: String = (1..=60).map(|i| format!("let line_{i} = {i};\n")).collect();
+    std::fs::write(root.join("src/c.rs"), long).unwrap();
+    ed.open(&root.join("src/a.rs")).unwrap();
+    ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
+    screen(&mut ed);
+    let close = |ed: &mut Editor| crate::typed::execute(ed, "note-close");
+    let lines = |ed: &Editor| chat_notes(ed, &root).iter().map(|n| n.1).collect::<Vec<_>>();
+    let paused = |ed: &Editor| ed.workspace.claude.chat.as_ref().unwrap().follow.paused;
+    answer(&mut ed, "It starts in src/c.rs:1.");
+    answer(&mut ed, "It is read in src/c.rs:40.");
+    screen(&mut ed);
+    assert_eq!(
+        (crate::follow::view_line(&ed), ed.cursor_line()),
+        (Some(39), 0),
+        "Claude's place, your cursor apart"
+    );
+    assert_ne!(ed.doc().top, 0, "the screen is Claude's");
+    close(&mut ed).unwrap();
+    assert_eq!(lines(&ed), [40], "your line's, never Claude's");
+    assert!(paused(&ed) && crate::follow::view_line(&ed).is_none(), "follow paused");
+    assert!(code_rows(&mut ed).iter().any(|r| r.contains("let line_1 = 1;")), "the view back at your cursor");
+    // Nothing on your line, the turn's card open at Claude's place: refused, follow leading on, the view where it was
+    answer(&mut ed, "Now src/c.rs:50.");
+    screen(&mut ed);
+    let top = ed.doc().top;
+    assert_eq!(close(&mut ed).unwrap_err(), "no note on this line");
+    assert!(!paused(&ed) && crate::follow::view_line(&ed) == Some(49), "follow still leads");
+    assert_eq!((ed.doc().top, lines(&ed)), (top, vec![40, 50]));
+    // (paused it's no one's place: the open card's)
+    ed.workspace.claude.chat.as_mut().unwrap().follow.paused = true;
+    close(&mut ed).unwrap();
+    assert_eq!(lines(&ed), [40]);
+}
+
+/// Reading step 2 over: a turn's card leaves your cursor where it was, so its keys are said only where they act on it.
+/// With no note on your line `space n` and `enter` are the card's, its words pressed are the card's wherever you are;
+/// on another note's line the keys are that note's and the card doesn't say them, nor counts that line's notes as its own.
+#[test]
+fn the_open_cards_keys_act_on_it_or_it_doesnt_say_them() {
+    let (_s, root, mut ed) = project("chatnotes-aimed", &["src/a.rs"]);
+    let a = root.join("src/a.rs");
+    answer(&mut ed, "First src/a.rs:2.");
+    answer(&mut ed, "It is read in src/a.rs:7.");
+    answer(&mut ed, "Again src/a.rs:7.");
+    let card = newest_of(&ed, |n| n.path == a && n.lines.start == 6).unwrap().id;
+    crate::notes::tool_call(&mut ed, &serde_json::json!({"path": "src/a.rs", "line": 2, "text": "pinned"}))
+        .unwrap();
+    let pinned = ed.workspace.claude.notes.list.iter().find(|n| n.answer.is_none()).unwrap().id;
+    let aimed = |ed: &Editor| ed.prompt.as_ref().map(|p| p.kind);
+    let is = |k: Option<crate::editor::PromptKind>, id: u64| matches!(k, Some(crate::editor::PromptKind::Note(Some(i))) if i == id);
+    ed.open(&a).unwrap();
+    // On another note's line: its keys, the card saying neither, nor that line's count
+    feed(&mut ed, "2G");
+    let rows = code_rows(&mut ed).join("\n");
+    assert!(rows.contains("… 1 earlier") && rows.contains("╭─ chat"), "{rows}");
+    assert!(!rows.contains("space n") && !rows.contains("enter"), "{rows}");
+    assert!(!rows.contains(" of "), "its own line holds one: {rows}");
+    feed(&mut ed, " n");
+    assert!(is(aimed(&ed), pinned), "{:?}", aimed(&ed));
+    feed(&mut ed, "<esc>");
+    // (its words pressed: the card's)
+    crate::notes::start_card(&mut ed);
+    assert!(is(aimed(&ed), card), "{:?}", aimed(&ed));
+    feed(&mut ed, "<esc>");
+    // On a line with none: the card's, and it says so
+    feed(&mut ed, "4G");
+    let rows = code_rows(&mut ed).join("\n");
+    assert!(rows.contains("space n") && rows.contains("enter"), "{rows}");
+    feed(&mut ed, " n");
+    assert!(is(aimed(&ed), card), "{:?}", aimed(&ed));
+    feed(&mut ed, "<esc><ret>");
+    assert!(ed.workspace.claude.notes.earlier, "`enter` unfolded them, as the card said");
+    let rows = code_rows(&mut ed).join("\n");
+    assert!(rows.contains("It is read in src/a.rs:7."), "{rows}");
+}
+
+/// Reading step 2 over: a line inside an older answer's range acts on the note whose `¶` is on it — what the line end
+/// says — never that older one because it began higher up.
+#[test]
+fn a_line_inside_an_older_answers_range_acts_on_its_own_note() {
+    let (_s, root, mut ed) = project("chatnotes-range", &["src/a.rs"]);
+    let a = root.join("src/a.rs");
+    answer(&mut ed, "It spans src/a.rs:3-6.");
+    answer(&mut ed, "Now src/a.rs:5.");
+    ed.open(&a).unwrap();
+    feed(&mut ed, "q5G n");
+    let own = ed.workspace.claude.notes.list.iter().find(|n| n.lines.start == 4).unwrap().id;
+    let kind = ed.prompt.as_ref().map(|p| p.kind);
+    assert!(matches!(kind, Some(crate::editor::PromptKind::Note(Some(i))) if i == own), "{kind:?}");
+    feed(&mut ed, "<esc><ret>");
+    assert_eq!(ed.workspace.claude.notes.open, Some(own));
+    crate::typed::execute(&mut ed, "note-close").unwrap();
+    assert_eq!(chat_notes(&ed, &root).iter().map(|n| n.1).collect::<Vec<_>>(), [3]);
+    // (a line inside a range two answers share, neither starting on it: the newest, what the card shows)
+    answer(&mut ed, "Still src/a.rs:3-6.");
+    feed(&mut ed, "q4G n");
+    let newest = newest_of(&ed, |n| n.path == a && n.lines.start == 2).unwrap().id;
+    let kind = ed.prompt.as_ref().map(|p| p.kind);
+    assert!(matches!(kind, Some(crate::editor::PromptKind::Note(Some(i))) if i == newest), "{kind:?}");
+}
+
+/// `:note-close` on a line where another note has the focus: the open card's goes, the one in sight — not the note pinned
+/// beside it.
+#[test]
+fn note_close_on_a_line_of_two_notes_takes_the_open_cards() {
+    let (_s, root, mut ed) = project("chatnotes-card-first", &["src/a.rs"]);
+    answer(&mut ed, "Here src/a.rs:9.");
+    crate::notes::tool_call(&mut ed, &serde_json::json!({"path": "src/a.rs", "line": 9, "text": "pinned"}))
+        .unwrap();
+    ed.open(&root.join("src/a.rs")).unwrap();
+    feed(&mut ed, "9G");
+    crate::typed::execute(&mut ed, "note-close").unwrap();
+    assert!(chat_notes(&ed, &root).is_empty(), "{:?}", chat_notes(&ed, &root));
+    assert_eq!(ed.workspace.claude.notes.list.len(), 1, "the pinned one stays");
+}
+
+/// Reading step 2 over: a place whose path is no text — under a folder so named, its name found by its last parts — is
+/// kept by no store; `json!` would panic, and a release build aborts on one.
+#[test]
+fn a_place_whose_path_is_no_text_is_left_out_of_the_store() {
+    use std::os::unix::ffi::OsStrExt;
+    let (_s, root, mut ed) = project("chatnotes-bytes", &["src/a.rs", "src/b.rs"]);
+    answer(&mut ed, "It is read in src/a.rs:3 and src/b.rs:2.");
+    let b = root.join("src/b.rs");
+    let n = ed.workspace.claude.notes.list.iter_mut().find(|n| n.path == b).unwrap();
+    n.path = PathBuf::from(std::ffi::OsStr::from_bytes(b"/x/\xff/b.rs"));
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    let places = places_json(&ed.workspace.claude.notes, &c.msgs).unwrap();
+    assert_eq!(places[0]["places"].as_array().unwrap().len(), 1, "{places}");
+}
+
+/// The reviewer's note 34: a line two answers name acts on the newest, what the card and the line end show — `space n`
+/// replies to it and `:note-close` closes it, with its card opened by `enter` or shut — never the older one folded under it.
+#[test]
+fn a_line_of_two_answers_acts_on_the_one_in_sight() {
+    let (_s, root, mut ed) = project("chatnotes-shown", &["src/a.rs"]);
+    let a = root.join("src/a.rs");
+    let close = |ed: &mut Editor| crate::typed::execute(ed, "note-close").unwrap();
+    let gists = |ed: &Editor| chat_notes(ed, &root).into_iter().map(|n| n.2).collect::<Vec<_>>();
+    answer(&mut ed, "It is read in src/a.rs:3.");
+    answer(&mut ed, "Again src/a.rs:3.");
+    ed.open(&a).unwrap();
+    feed(&mut ed, "q3G n");
+    let newest = newest_of(&ed, |n| n.path == a && n.lines.start == 2).unwrap().id;
+    let kind = ed.prompt.as_ref().map(|p| p.kind);
+    assert!(matches!(kind, Some(crate::editor::PromptKind::Note(Some(i))) if i == newest), "{kind:?}");
+    feed(&mut ed, "<esc>");
+    // (its card opened by `enter`: that answer's, and it's the one that goes)
+    feed(&mut ed, "<ret>");
+    assert_eq!(ed.workspace.claude.notes.open, Some(newest));
+    close(&mut ed);
+    assert_eq!(gists(&ed), ["It is read in src/a.rs:3."]);
+    // (the card shut: the same)
+    answer(&mut ed, "Once more src/a.rs:3.");
+    feed(&mut ed, "q");
+    close(&mut ed);
+    assert_eq!(gists(&ed), ["It is read in src/a.rs:3."]);
+    // (the older one's `¶` pressed: the card it opens still shows the newest on top, and that's what goes)
+    answer(&mut ed, "Yet again src/a.rs:3.");
+    feed(&mut ed, "q");
+    let notes = ed.workspace.claude.notes.list.iter();
+    let older = notes.into_iter().find(|n| n.gist().starts_with("It is read")).unwrap().id;
+    crate::notes::pressed(&mut ed, older);
+    assert_eq!(ed.workspace.claude.notes.open, Some(older));
+    close(&mut ed);
+    assert_eq!(gists(&ed), ["It is read in src/a.rs:3."]);
+}
+
+/// The reviewer's note 35: a chat closed mid-turn — your question in no store yet, a keep then counted from it — keeps its
+/// answers' places: a note closed then, the others come back on a continue, none said lost.
+#[test]
+fn a_chat_closed_mid_turn_keeps_its_places_right() {
+    let (s, root, mut ed) = project("chatnotes-mid-turn", &["src/a.rs"]);
+    let dir = s.join("chats");
+    ed.chats_dir = Some(dir.clone());
+    ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("c1".into());
+    // (claude a stand-in: what it's sent, never a process)
+    let (tx, _rx) = std::sync::mpsc::channel();
+    ed.claude_lines = Some(tx);
+    answer(&mut ed, "It is read in src/a.rs:3.");
+    answer(&mut ed, "It is set in src/a.rs:7.");
+    let kept = |dir: &Path, root: &Path| {
+        let places = crate::chats::load(dir, root).into_iter().find(|c| c.id == "c1").and_then(|c| c.places);
+        let answers = places.as_ref().and_then(|p| p.as_array()).map_or(&[][..], |a| &a[..]);
+        let lines = answers.iter().flat_map(|a| a["places"].as_array().unwrap());
+        lines.map(|p| p["said"].as_u64().unwrap()).collect::<Vec<_>>()
+    };
+    crate::test_results::settle_until(&mut ed, |_| kept(&dir, &root) == [2, 6]);
+    // The next question sent, its turn cut off by the close: kept nowhere
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs.push(Msg::new(Role::User, "and then?", ""));
+    crate::chat::close(&mut ed);
+    let earlier = crate::chat::left_kept(&ed).unwrap();
+    ed.open(&root.join("src/a.rs")).unwrap();
+    feed(&mut ed, "3G");
+    crate::typed::execute(&mut ed, "note-close").unwrap();
+    crate::test_results::settle_until(&mut ed, |_| kept(&dir, &root) == [6]);
+    // (a keep taken before that one landing after it: refused, the closed note stays closed)
+    crate::chats::save(&dir, &root, earlier);
+    assert_eq!(kept(&dir, &root), [6]);
+    crate::chat::open(&mut ed);
+    let saved = crate::chats::load(&dir, &root).into_iter().find(|c| c.id == "c1").unwrap();
+    crate::chat::continue_with(&mut ed, saved);
+    let lost = ed.messages.iter().any(|m| m.2.contains("no longer found"));
+    assert!(!lost, "{:?}", ed.messages.iter().map(|m| &m.2).collect::<Vec<_>>());
+    assert_eq!(chat_notes(&ed, &root), [("src/a.rs".to_string(), 7, "It is set in src/a.rs:7.".to_string())]);
+}
+
+/// The reviewer's note 36, through a real keep: an answer's place in an added folder has its line's text in the store,
+/// what finds the line again on a continue.
+#[test]
+fn a_place_in_a_folder_keeps_its_line_text() {
+    let (s, root, mut ed) = project("chatnotes-folder", &["src/a.rs"]);
+    let outside = crate::scratch::Scratch::new("chatnotes-folder-infra");
+    let infra = std::fs::canonicalize(&*outside).unwrap();
+    std::fs::write(infra.join("deploy.rs"), "let one = 1;\nlet two = 2;\n").unwrap();
+    let folder = crate::folders::Folder { at: infra, name: "infra".into(), instructions: Vec::new() };
+    ed.workspace.folders.push(folder);
+    let dir = s.join("chats");
+    ed.chats_dir = Some(dir.clone());
+    ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("c1".into());
+    answer(&mut ed, "It is set in deploy.rs:2.");
+    let text = |dir: &Path, root: &Path| {
+        let c = crate::chats::load(dir, root).into_iter().next();
+        c.and_then(|c| c.places).map(|p| p[0]["places"][0]["text"].clone())
+    };
+    crate::test_results::settle_until(&mut ed, |_| text(&dir, &root).is_some_and(|t| !t.is_null()));
+    assert_eq!(text(&dir, &root).unwrap(), "let two = 2;");
+}
+
+/// The reviewer's note 30: with the chat closed its answers are still at the code and still its conversation's — a note
+/// closed then, and one answered (the reply opens a chat: a new conversation), are kept as such, so a continue brings
+/// back neither the closed one nor a bare note beside the thread.
+#[test]
+fn what_you_do_with_the_chat_closed_stays_done_on_a_continue() {
+    let (s, root, mut ed) = project("chatnotes-left", &["src/a.rs", "src/b.rs"]);
+    let dir = s.join("chats");
+    ed.chats_dir = Some(dir.clone());
+    ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("c1".into());
+    // (claude a stand-in: what it's sent, never a process)
+    let (tx, _rx) = std::sync::mpsc::channel();
+    ed.claude_lines = Some(tx);
+    answer(&mut ed, "It is read in src/a.rs:3.");
+    answer(&mut ed, "The guard in src/b.rs:2 checks it.");
+    answer(&mut ed, "It is set in src/a.rs:7.");
+    let kept = |dir: &Path, root: &Path| {
+        let places = crate::chats::load(dir, root).into_iter().find(|c| c.id == "c1").and_then(|c| c.places);
+        let answers = places.as_ref().and_then(|p| p.as_array()).map_or(&[][..], |a| &a[..]);
+        let lines = answers.iter().flat_map(|a| a["places"].as_array().unwrap());
+        lines.map(|p| p["said"].as_u64().unwrap()).collect::<Vec<_>>()
+    };
+    crate::test_results::settle_until(&mut ed, |_| kept(&dir, &root) == [2, 1, 6]);
+    crate::chat::close(&mut ed);
+    // Closed, the chat closed
+    ed.open(&root.join("src/a.rs")).unwrap();
+    feed(&mut ed, "3G");
+    crate::typed::execute(&mut ed, "note-close").unwrap();
+    crate::test_results::settle_until(&mut ed, |_| kept(&dir, &root) == [1, 6]);
+    // Answered: the reply is in the thread as it opens the chat, which forgets the rest
+    let b = root.join("src/b.rs");
+    let n = ed.workspace.claude.notes.list.iter_mut().find(|n| n.path == b).unwrap();
+    n.thread.push(Entry { by: By::You, text: "why there?".into(), draft: false });
+    let id = n.id;
+    crate::notes::send(&mut ed, id, "why there?", false, None, None);
+    assert!(ed.workspace.claude.chat.is_some(), "the reply opened it");
+    crate::test_results::settle_until(&mut ed, |_| kept(&dir, &root) == [6]);
+    // Continued, the reply's turn over (the stand-in never answers it): the line left, and the thread once
+    ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+    let saved = crate::chats::load(&dir, &root).into_iter().find(|c| c.id == "c1").unwrap();
+    crate::chat::continue_with(&mut ed, saved);
+    assert_eq!(ed.workspace.claude.chat.as_ref().unwrap().conversation.as_deref(), Some("c1"), "continued");
+    assert_eq!(
+        chat_notes(&ed, &root),
+        [
+            ("src/a.rs".to_string(), 7, "It is set in src/a.rs:7.".to_string()),
+            ("src/b.rs".to_string(), 2, "The guard in src/b.rs:2 checks it.".to_string()),
+        ]
+    );
+}
+
+/// The reviewer's note 26: closing the chat leaves its answers at the code (the card reads best with the chat closed),
+/// but the chat's next opening is a new conversation: they go then, `:chat-new` with it closed too — never kept with the
+/// next one's rows — and a continue brings them back.
+#[test]
+fn a_new_conversation_after_the_chat_closed_takes_none_of_its_answers() {
+    let (s, root, mut ed) = project("chatnotes-chat-closed", &["src/a.rs", "src/b.rs"]);
+    let dir = s.join("chats");
+    ed.chats_dir = Some(dir.clone());
+    // (claude a stand-in: what it's sent, never a process)
+    let (tx, _rx) = std::sync::mpsc::channel();
+    ed.claude_lines = Some(tx);
+    let kept = |dir: &Path, root: &Path, id: &str| {
+        let c = crate::chats::load(dir, root).into_iter().find(|c| c.id == id);
+        let places = c.and_then(|c| c.places);
+        let answers = places.as_ref().and_then(|p| p.as_array()).map_or(&[][..], |a| &a[..]);
+        answers.iter().flat_map(|a| a["places"].as_array().unwrap()).count()
+    };
+    ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("c1".into());
+    answer(&mut ed, "It is read in src/a.rs:3.");
+    crate::test_results::settle_until(&mut ed, |_| kept(&dir, &root, "c1") == 1);
+    let first = [("src/a.rs".to_string(), 3, "It is read in src/a.rs:3.".to_string())];
+    // Closed: still at the code. Opened again: a new conversation
+    crate::chat::close(&mut ed);
+    assert_eq!(chat_notes(&ed, &root), first);
+    crate::chat::open(&mut ed);
+    assert!(chat_notes(&ed, &root).is_empty());
+    // (its keeps hold its own answers only)
+    ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("c2".into());
+    answer(&mut ed, "Then src/b.rs:2.");
+    crate::test_results::settle_until(&mut ed, |_| kept(&dir, &root, "c2") == 1);
+    // `:chat-new` with the chat closed: the same
+    crate::chat::close(&mut ed);
+    crate::chat::reset_said(&mut ed, "a new conversation");
+    assert!(chat_notes(&ed, &root).is_empty());
+    // The first continued: back
+    let saved = crate::chats::load(&dir, &root).into_iter().find(|c| c.id == "c1").unwrap();
+    crate::chat::continue_with(&mut ed, saved);
+    assert_eq!(chat_notes(&ed, &root), first);
+}
+
+/// Focus A1b: the turn's end opens the newest answer's first place's card (no key, your cursor where it was); `]n` walks
+/// that answer's places in the order written, then the rest by file; a line two answers name is one card, the newest on
+/// top, the earlier folded — `enter` unfolds it, `enter` again closes. A card you opened yourself keeps the turn's from
+/// opening; while you type it waits, then opens.
+#[test]
+fn the_newest_answer_opens_its_card_and_walks_first() {
+    let (_s, root, mut ed) = project("chatnotes-newest", &["src/a.rs", "src/b.rs"]);
+    let open = |ed: &Editor| {
+        let id = ed.workspace.claude.notes.open?;
+        let n = ed.workspace.claude.notes.list.iter().find(|n| n.id == id)?;
+        Some((crate::chat::shown(&root, &n.path), n.lines.start + 1))
+    };
+    let at = |p: &str, l: usize| Some((p.to_string(), l));
+    answer(&mut ed, "It is read in src/a.rs:3.");
+    assert_eq!(open(&ed), at("src/a.rs", 3));
+    answer(&mut ed, "Now src/b.rs:7 reads it, src/a.rs:9 sets it and src/a.rs:3 again.");
+    assert_eq!((open(&ed), ed.cursor_line()), (at("src/b.rs", 7), 0), "the newest's first place, no key");
+    // `]n`: the newest's places as written (by file, `src/a.rs:3` would come first)
+    ed.open(&root.join("src/b.rs")).unwrap();
+    feed(&mut ed, "]n");
+    assert_eq!(open(&ed), at("src/a.rs", 9));
+    feed(&mut ed, "]n");
+    assert_eq!((open(&ed), ed.cursor_line()), (at("src/a.rs", 3), 2));
+    // (its line's two answers one card: the newest on top, the earlier folded; `enter` unfolds, `enter` closes)
+    let card = code_rows(&mut ed).join("\n");
+    assert!(card.contains("2 answers here") && card.contains("… 1 earlier"), "{card}");
+    assert!(!card.contains("It is read in src/a.rs:3."), "the earlier folded: {card}");
+    feed(&mut ed, "<ret>");
+    let card = code_rows(&mut ed).join("\n");
+    assert!(card.contains("It is read in src/a.rs:3.") && !card.contains("… 1 earlier"), "{card}");
+    feed(&mut ed, "<ret>");
+    assert_eq!(open(&ed), None, "closed");
+    // A card you opened yourself: the next answer's doesn't take its place
+    feed(&mut ed, "gg]n");
+    let yours = open(&ed);
+    answer(&mut ed, "Then src/b.rs:2.");
+    assert_eq!(open(&ed), yours);
+    // Typing: the turn's card waits, then opens
+    feed(&mut ed, "q");
+    ed.workspace.claude.chat.as_mut().unwrap().input = "and then?".into();
+    answer(&mut ed, "Last src/b.rs:4.");
+    assert_eq!(open(&ed), None, "not while you type");
+    ed.workspace.claude.chat.as_mut().unwrap().input.clear();
+    sync(&mut ed);
+    assert_eq!(open(&ed), at("src/b.rs", 4));
+    // A new conversation (`C-l`): they go, their card with them (claude a stand-in: what it's sent, never a process)
+    let (tx, _rx) = std::sync::mpsc::channel();
+    ed.claude_lines = Some(tx);
+    crate::chat::reset_said(&mut ed, "a new conversation");
+    assert_eq!((chat_notes(&ed, &root), open(&ed)), (Vec::new(), None));
+}
+
+/// Focus A1b: where follow leads, the card the turn's end opens is in sight with its line — follow takes the view there
+/// as to the answer's place, your cursor where it was; off (or paused), the view stays yours.
+#[test]
+fn the_turns_card_is_in_sight_where_follow_leads() {
+    let (_s, root, mut ed) = project("chatnotes-sight", &["src/a.rs"]);
+    // (lines that wrap in the code beside the chat)
+    let tail = "// the strand kept in order, whatever the caller passes in, as the map holds it";
+    let long: String = (1..=60).map(|i| format!("let line_{i} = {i}; {tail}\n")).collect();
+    std::fs::write(root.join("src/c.rs"), long).unwrap();
+    ed.open(&root.join("src/a.rs")).unwrap();
+    ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
+    screen(&mut ed);
+    answer(
+        &mut ed,
+        "It is read in src/c.rs:40.\n\nIt never changes after that, whatever the caller passes in.",
+    );
+    let rows = code_rows(&mut ed);
+    assert_eq!(ed.doc().path.as_deref(), Some(root.join("src/c.rs").as_path()), "follow took the view there");
+    let line = rows.iter().position(|r| r.contains("let line_40 = 40;"));
+    let foot = rows.iter().position(|r| r.trim_start().starts_with('╰'));
+    assert!(line.is_some_and(|l| foot.is_some_and(|f| f > l)), "{}", rows.join("\n"));
+    assert_eq!(ed.cursor_line(), 0, "your cursor where it was");
+    // Its line in sight already at the pane's foot, wrapped beside the chat (the user's 80-column shot): the frame puts
+    // the card's foot in sight too, the block measured at the pane's size as laid, never the last key's
+    feed(&mut ed, "q");
+    ed.doc_mut().top = 33;
+    // (the keys in the chat, a question just sent)
+    ed.workspace.viewer.at = crate::workspace::At::Chat;
+    code_rows(&mut ed);
+    answer(&mut ed, "Still src/c.rs:45, and nothing else reads it after that, whatever the caller passes.");
+    let rows = code_rows(&mut ed);
+    let line = rows.iter().position(|r| r.contains("let line_45 = 45;"));
+    let foot = rows.iter().position(|r| r.trim_start().starts_with('╰'));
+    assert!(line.is_some_and(|l| foot.is_some_and(|f| f > l)), "{}", rows.join("\n"));
+    // (off: the view yours — at your cursor, as the frame keeps it; the card opens under its line, out of sight)
+    ed.workspace.claude.chat.as_mut().unwrap().follow.on = false;
+    answer(&mut ed, "Then src/c.rs:55.");
+    screen(&mut ed);
+    let notes = &ed.workspace.claude.notes;
+    let open = notes.open.and_then(|id| notes.list.iter().find(|n| n.id == id)).map(|n| n.lines.start);
+    assert_eq!((open, ed.doc().top), (Some(54), 0));
 }
 
 /// The cut, by the answer's text as written: a paragraph naming two places gives each its own sentence and both the
@@ -139,14 +777,18 @@ fn an_answer_is_cut_into_each_places_sentence_and_paragraph() {
     );
 }
 
-/// The key-sequence walk: an answer's places are notes at their lines — `]n` goes to them with the others, the line
-/// end its sentence, the card its paragraph named `chat`; a name that comes to no file (or to several) is no place and
-/// fenced code none — its block is the answer's note, at the answer's first place (focus A1); `space n` on one answers
-/// it, a thread then, kept when the next answer's places replace the rest; an answer whose names come to nothing, its
-/// turn stopped nowhere, leaves the last one's. None is kept across a restart but a thread.
+/// The key-sequence walk: an answer's places are notes at their lines — the turn's end opens its place's card, `]n`
+/// goes to them with the others, the line end its sentence, the card its paragraph named `chat`; a name that comes to
+/// no file (or to several) is no place and fenced code none — its block is the answer's note, at the answer's first
+/// place (focus A1); `space n` on one answers it, a thread then; the next answer's places join them, the line end the
+/// newest's words only (focus A1b); an answer whose names come to nothing, its turn stopped nowhere, adds none. A
+/// restart's notes keep only a thread (the answers' places come back with their conversation — `restore`).
 #[test]
-fn the_last_answers_places_are_notes_at_their_lines() {
+fn the_answers_places_are_notes_at_their_lines() {
     let (_s, root, mut ed) = project("chatnotes-walk", &["src/a.rs", "src/b.rs", "x/Same.rs", "y/Same.rs"]);
+    // (the answer's time as the head says it, from the clock logic reads — either side of a minute's edge)
+    let clock = || crate::log::clock(crate::clock::system());
+    let before = clock();
     answer(
         &mut ed,
         "The count is read twice in `src/a.rs:3`. The fix goes in src/b.rs:2-4, after the guard.\n\n\
@@ -157,17 +799,18 @@ fn the_last_answers_places_are_notes_at_their_lines() {
         ("src/b.rs".to_string(), 2, "The fix goes in src/b.rs:2-4, after the guard.".to_string()),
     ];
     assert_eq!(chat_notes(&ed, &root), first);
-    // `]n` from the top of src/a.rs: at its line, the sentence at the line end, the paragraph on its card — the
-    // answer's place: its paragraph by the bar, the item whose names came to nothing after it (focus A1)
+    // The turn's end opened the answer's place's card, no key pressed (focus A1b): src/a.rs's line 3 — its paragraph
+    // by the bar, the item whose names came to nothing after it (focus A1)
     ed.open(&root.join("src/a.rs")).unwrap();
-    feed(&mut ed, "gg]n");
-    assert_eq!(ed.cursor_line(), 2);
+    assert_eq!(ed.cursor_line(), 0, "your cursor where it was");
     let rows = screen(&mut ed);
     let line = rows.iter().find(|r| r.contains("let line_3 = 3;")).unwrap();
     // (its card open under it, named `chat`, headed by the question: the line end the `¶` alone — focus A1b)
     assert!(line.contains('¶') && !line.contains("¶ The count"), "{line}");
     let card = rows.join("\n");
-    assert!(card.contains("╭─ chat") && card.contains("› where?") && !card.contains("¶ chat"), "{card}");
+    assert!(card.contains("╭─ chat") && !card.contains("¶ chat"), "{card}");
+    let head = |t: &str| card.contains(&format!("› where? · {t}"));
+    assert!(head(&before) || head(&clock()), "headed by the question and its time: {card}");
     assert!(card.contains("▎ The count is read twice"), "the paragraph on the card, marked: {card}");
     assert!(card.contains("The fix goes in") && card.contains("- Same.rs:1 is two files"), "{card}");
     // (closed: the line end its sentence)
@@ -176,7 +819,10 @@ fn the_last_answers_places_are_notes_at_their_lines() {
     let line = rows.iter().find(|r| r.contains("let line_3 = 3;")).unwrap();
     assert!(line.contains("¶ The count is read twice in src/a.rs:3."), "{line}");
     assert!(!rows.join("\n").contains("╭─ chat"), "closed");
-    // (`]n` on to src/b.rs: its range's first line)
+    // (`]n` from the top: its line, the card again; on to src/b.rs: its range's first line)
+    feed(&mut ed, "gg]n");
+    assert_eq!(ed.cursor_line(), 2);
+    assert!(screen(&mut ed).join("\n").contains("╭─ chat"), "open again");
     feed(&mut ed, "]n");
     assert_eq!(ed.doc().path.as_deref(), Some(root.join("src/b.rs").as_path()));
     assert_eq!((ed.cursor_line(), ed.workspace.claude.notes.list[1].lines.clone()), (1, 1..4));
@@ -188,24 +834,33 @@ fn the_last_answers_places_are_notes_at_their_lines() {
     feed(&mut ed, "<esc>");
     let n = ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id).unwrap();
     n.thread.push(Entry { by: By::You, text: "why there?".into(), draft: false });
-    // A restart keeps the thread, never the bare one (the last answer's)
+    // A restart's notes keep the thread, never a bare one (those are the conversation's)
     let saved = crate::notes::to_json(&ed.workspace.claude.notes, &ed.docs);
     let words: Vec<(&str, &str)> =
         saved.iter().map(|n| (n["path"].as_str().unwrap(), n["thread"][0][0].as_str().unwrap())).collect();
     assert_eq!(words, [(root.join("src/b.rs").to_str().unwrap(), "chat")]);
-    // An answer whose names come to nothing leaves the last one's
+    // An answer whose names come to nothing adds none
     answer(&mut ed, "Nothing in Gone.rs:1 nor Same.rs:2.");
     assert_eq!(chat_notes(&ed, &root), first);
-    // The next one that names a place replaces the bare ones; the thread stays
+    // The next one that names a place joins them (focus A1b); the thread stays
     answer(&mut ed, "Now src/a.rs:5 holds it.");
     assert_eq!(
         chat_notes(&ed, &root),
         [
+            ("src/a.rs".to_string(), 3, "The count is read twice in src/a.rs:3.".to_string()),
             ("src/a.rs".to_string(), 5, "Now src/a.rs:5 holds it.".to_string()),
             ("src/b.rs".to_string(), 2, "The fix goes in src/b.rs:2-4, after the guard.".to_string()),
         ]
     );
-    assert_eq!(ed.workspace.claude.notes.list.iter().filter(|n| crate::notes::bare_chat(n)).count(), 1);
+    assert_eq!(ed.workspace.claude.notes.list.iter().filter(|n| crate::notes::bare_chat(n)).count(), 2);
+    // (the line ends: the newest answer's words, an older answer's line a `¶` alone)
+    ed.open(&root.join("src/a.rs")).unwrap();
+    feed(&mut ed, "<esc>");
+    let rows = code_rows(&mut ed);
+    let [l3, l5] =
+        ["let line_3 = 3;", "let line_5 = 5;"].map(|t| rows.iter().find(|r| r.contains(t)).unwrap());
+    assert!(l3.contains('¶') && !l3.contains("The count"), "{l3}");
+    assert!(l5.contains("¶ Now src/a.rs:5 holds it."), "{l5}");
     // (never told to Claude while bare: the state's notes sent are the thread only)
     let sent: Vec<(&str, bool)> = ed
         .workspace
@@ -216,7 +871,7 @@ fn the_last_answers_places_are_notes_at_their_lines() {
         .map(|n| crate::uistate::NoteState::of(&root, n))
         .map(|s| (s.kind, s.sent))
         .collect();
-    assert_eq!(sent, [("chat", true), ("chat", false)]);
+    assert_eq!(sent, [("chat", false), ("chat", true), ("chat", false)]);
 }
 
 /// A stop of the turn's at `lines` of `path`: an edit's (its changed lines) or a read's.
@@ -240,21 +895,22 @@ fn stop(path: &Path, lines: Range<usize>, edit: bool) -> crate::replay::Stop {
     }
 }
 
-/// The chat note at `path`'s line `line` (from 1) whose line end begins `gist`: its card's text.
+/// The newest answer's of the notes `which` takes.
+fn newest_of(ed: &Editor, which: impl Fn(&crate::notes::Note) -> bool) -> Option<&crate::notes::Note> {
+    let notes = ed.workspace.claude.notes.list.iter().filter(|n| which(n));
+    notes.max_by_key(|n| n.answer.as_ref().map_or(0, |o| o.n))
+}
+
+/// The chat note at `path`'s line `line` (from 1) whose line end begins `gist` — the newest answer's: its card's text.
 fn card_of(ed: &Editor, path: &Path, line: usize, gist: &str) -> String {
-    let n = ed
-        .workspace
-        .claude
-        .notes
-        .list
-        .iter()
-        .find(|n| n.path == path && n.lines.start + 1 == line && n.gist().starts_with(gist));
+    let n = newest_of(ed, |n| n.path == path && n.lines.start + 1 == line && n.gist().starts_with(gist));
     n.unwrap_or_else(|| panic!("no note at {}:{line}", path.display())).thread[0].text.clone()
 }
 
-/// The flow of the chat note at `path`'s line `line` (from 1): each part's kind, its place if elsewhere, its text.
+/// The flow of the chat note at `path`'s line `line` (from 1) — the newest answer's: each part's kind, its place if
+/// elsewhere, its text.
 fn flow_of(ed: &Editor, path: &Path, line: usize) -> Vec<(&'static str, String, String)> {
-    let n = ed.workspace.claude.notes.list.iter().find(|n| n.path == path && n.lines.start + 1 == line);
+    let n = newest_of(ed, |n| n.path == path && n.lines.start + 1 == line);
     let n = n.unwrap_or_else(|| panic!("no note at {}:{line}", path.display()));
     (n.flow.iter())
         .map(|p| match p {
@@ -321,10 +977,8 @@ fn the_answers_flow_is_one_card_at_its_place() {
          › src/b.rs:2  The guard in src/b.rs:2 stays as it is.\n\n\
          One caveat: a name two files end with is no place.\n\n- it stays\n- in the chat"
     );
-    // The keys: `]n` to it — one note on its line, the line end its sentence; the card the flow
+    // On screen: the turn's end opened it (focus A1b) — one note on its line, the line end its sentence; the card the flow
     ed.open(&a).unwrap();
-    feed(&mut ed, "gg]n");
-    assert_eq!(ed.cursor_line(), 5);
     let rows = code_rows(&mut ed);
     let card = rows.join("\n");
     assert!(!card.contains(" of 2 here"), "one note: {card}");
@@ -338,12 +992,15 @@ fn the_answers_flow_is_one_card_at_its_place() {
     let rows = code_rows(&mut ed);
     let line = rows.iter().find(|r| r.contains("let line_6 = 6;")).unwrap();
     assert!(line.contains("¶ The fix is in src/a.rs:6.") && !line.contains("notes"), "{line}");
-    // (`]n` on: the next file's — the line held one)
+    // (`]n` to it, then on: the answer's next place as written — the line held one)
+    feed(&mut ed, "gg]n");
+    assert_eq!(ed.cursor_line(), 5);
     feed(&mut ed, "]n");
     assert_eq!((ed.doc().path.as_deref(), ed.cursor_line()), (Some(root.join("src/b.rs").as_path()), 1));
-    // An answer all of whose blocks are placed: its notes alone, no flow
+    // An answer all of whose blocks are placed: its notes alone, no flow (the ones before kept)
     answer(&mut ed, "Only src/a.rs:2 now.");
-    assert_eq!(chat_notes(&ed, &root), [(s("src/a.rs"), 2, s("Only src/a.rs:2 now."))]);
+    let notes = chat_notes(&ed, &root);
+    assert!(notes.len() == 4 && notes[0] == (s("src/a.rs"), 2, s("Only src/a.rs:2 now.")), "{notes:?}");
     assert!(flow_of(&ed, &a, 2).is_empty());
 }
 
@@ -354,8 +1011,8 @@ fn a_paragraph_placed_elsewhere_is_one_row_on_a_narrow_card() {
     let long =
         "The guard in src/b.rs:2 stays as it is, since every caller checks the length before it gets there.";
     answer(&mut ed, &format!("The fix is in src/a.rs:6.\n\n{long}\n\nOne caveat: nothing else."));
+    // (its card the turn's end opened)
     ed.open(&root.join("src/a.rs")).unwrap();
-    feed(&mut ed, "gg]n");
     let rows = code_rows(&mut ed);
     let stub: Vec<&String> = rows.iter().filter(|r| r.contains("› src/b.rs:2")).collect();
     assert!(stub.len() == 1 && stub[0].contains('…'), "{}", rows.join("\n"));
@@ -392,8 +1049,8 @@ fn a_long_flow_keeps_its_lines_paragraph_in_sight() {
     let after: Vec<String> = (9..=20).map(para).collect();
     let text = format!("{}\n\nThe fix is in src/a.rs:6.\n\n{}", before.join("\n\n"), after.join("\n\n"));
     answer(&mut ed, &text);
+    // (its card the turn's end opened)
     ed.open(&root.join("src/a.rs")).unwrap();
-    feed(&mut ed, "gg]n");
     let card = code_rows(&mut ed).join("\n");
     assert!(card.contains("▎ The fix is in src/a.rs:6."), "{card}");
     assert!(!card.contains("Paragraph 1 ") && !card.contains("Paragraph 20"), "{card}");
@@ -407,11 +1064,12 @@ fn a_long_flow_keeps_its_lines_paragraph_in_sight() {
     // (what follows it short of the room: the window back over what's before it, no row left empty at its foot)
     let text = format!("{}\n\nThe fix is in src/a.rs:6.\n\n{}", before.join("\n\n"), para(9));
     answer(&mut ed, &text);
-    feed(&mut ed, "gg]n");
+    // (the same line's card: it stays open, this answer on top — the first folded under it, `… 1 earlier`)
     let card = code_rows(&mut ed).join("\n");
     assert!(card.contains("▎ The fix is in src/a.rs:6.") && card.contains("Paragraph 9 "), "{card}");
-    let foot = card.lines().position(|r| r.trim_start().starts_with('╰')).unwrap();
-    let last = card.lines().nth(foot - 1).unwrap();
+    // (its foot the earlier answer's row, a blank row above it)
+    let foot = card.lines().position(|r| r.contains("… 1 earlier")).unwrap();
+    let last = card.lines().nth(foot - 2).unwrap();
     assert!(last.trim_matches(|c| c == '│' || c == ' ').ends_with("are kept in order."), "{card}");
 }
 
@@ -489,8 +1147,7 @@ fn a_turn_that_wrote_at_a_note_gets_no_flow() {
 }
 
 /// Focus A1: an answer that names no place has its note at the turn's last edit, else its last read in the project —
-/// and replaces the last answer's notes (#239's rule as A1 changed it); a turn that stopped nowhere in the project leaves
-/// them.
+/// kept beside the answers' before it (focus A1b); a turn that stopped nowhere in the project adds none.
 #[test]
 fn an_answer_with_no_place_is_at_the_turns_last_stop() {
     let (_s, root, mut ed) = project("chatnotes-stops", &["src/a.rs", "src/b.rs"]);
@@ -498,7 +1155,7 @@ fn an_answer_with_no_place_is_at_the_turns_last_stop() {
     answer(&mut ed, "It is read in src/a.rs:3.");
     let last = [("src/a.rs".to_string(), 3, "It is read in src/a.rs:3.".to_string())];
     assert_eq!(chat_notes(&ed, &root), last);
-    // (stopped nowhere, or only outside the project: the last answer's stay)
+    // (stopped nowhere, or only outside the project: none added)
     answer(&mut ed, "Nothing else to add.");
     assert_eq!(chat_notes(&ed, &root), last);
     let outside = crate::scratch::Scratch::new("chatnotes-stops-outside");
@@ -507,16 +1164,17 @@ fn an_answer_with_no_place_is_at_the_turns_last_stop() {
     // The last edit, an earlier one and reads after it passed over
     let stops = vec![stop(&b, 6..8, true), stop(&a, 4..5, true), stop(&b, 0..2, false)];
     answers(&mut ed, &["Done. Nothing else relied on it."], stops);
-    assert_eq!(chat_notes(&ed, &root), [("src/a.rs".to_string(), 5, "Done.".to_string())]);
+    assert_eq!(newest_notes(&ed, &root), [("src/a.rs".to_string(), 5, "Done.".to_string())]);
+    assert_eq!(chat_notes(&ed, &root).len(), 2, "the first answer's kept");
     assert_eq!(card_of(&ed, &a, 5, "Done."), "Done. Nothing else relied on it.");
     // No edit: the last read in the project (one outside after it passed over)
     let stops = vec![stop(&a, 1..3, false), stop(&b, 7..9, false), stop(&outside.join("x.rs"), 0..2, false)];
     answers(&mut ed, &["Read both."], stops);
-    assert_eq!(chat_notes(&ed, &root), [("src/b.rs".to_string(), 8, "Read both.".to_string())]);
+    assert_eq!(newest_notes(&ed, &root), [("src/b.rs".to_string(), 8, "Read both.".to_string())]);
     // A place the answer names wins over the stops: the flow on its note there
     answers(&mut ed, &["Done.\n\nThe guard in src/b.rs:2 stays."], vec![stop(&a, 4..5, true)]);
     let s = |s: &str| s.to_string();
-    assert_eq!(chat_notes(&ed, &root), [(s("src/b.rs"), 2, s("The guard in src/b.rs:2 stays."))]);
+    assert_eq!(newest_notes(&ed, &root), [(s("src/b.rs"), 2, s("The guard in src/b.rs:2 stays."))]);
     assert_eq!(
         flow_of(&ed, &b, 2),
         [("whole", s(""), s("Done.")), ("here", s(""), s("The guard in src/b.rs:2 stays."))]
@@ -608,7 +1266,8 @@ fn only_a_whole_answer_to_your_message_places_notes() {
     // (focus A1: a whole answer naming no place, its turn's read in the project — its note there, the narration before
     // the read left out)
     ask(&mut ed, "what reads it?");
-    assert_eq!(chat_notes(&ed, &root), [("src/b.rs".to_string(), 2, "Nothing else reads it.".to_string())]);
+    assert_eq!(newest_notes(&ed, &root), [("src/b.rs".to_string(), 2, "Nothing else reads it.".to_string())]);
+    assert_eq!(chat_notes(&ed, &root).len(), 2, "the whole answer's before it kept");
 }
 
 /// The reviewer on the follow-up: another name waiting — one `follow::answer_place` asks as it looks for the answer's
@@ -686,5 +1345,5 @@ fn the_answers_own_note_keeps_its_line() {
     );
     // (the next turn pins nothing: the earlier note doesn't keep its line)
     answer(&mut ed, "Still src/b.rs:5.");
-    assert_eq!(chat_notes(&ed, &root), [("src/b.rs".to_string(), 5, "Still src/b.rs:5.".to_string())]);
+    assert_eq!(newest_notes(&ed, &root), [("src/b.rs".to_string(), 5, "Still src/b.rs:5.".to_string())]);
 }

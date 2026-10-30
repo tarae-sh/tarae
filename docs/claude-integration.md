@@ -1849,7 +1849,7 @@ the thread so far, and Claude answers on the thread. `space n` on a line without
 line (or the selected lines), which starts a new note with your question.
 
 **What the answer says of a place shows at it.** Claude's answers name places as `path:line` far more often than it
-pins a note, so the last answer's places are notes too, with no tool call and nothing sent: when a turn ends, every
+pins a note, so an answer's places are notes too, with no tool call and nothing sent: when a turn ends, every
 `src/x.rs:120` (or `x.rs:120-140`, or a walk-through's stop) in its prose that comes to one file of the project or
 its folders shows at that line. The line end has the sentence that names it, and the card has the paragraph it's in
 (a list item: that item), on a card named `chat` and headed by the question the answer answered. A paragraph naming
@@ -1865,19 +1865,36 @@ two: the line end is that line's sentence. Too long for its card, the paragraph 
 what's before and after it folds into `…` rows, whole under the mouse. Only the turn's last words count: what Claude
 said before its last call (`Let me read the loop…`) is the turn's narration, and the chat keeps it. A turn where Claude
 wrote at a note (pinned one, or replied in a thread) gets no flow: its answer is at the code already. A turn that
-stopped nowhere in the project and names no place leaves the last answer's notes. They're the last answer's: the next
-answer that places one replaces them, and none is kept past a restart. `]n`/`[n` go through them with the other notes. `space n` on one asks about it, and from
-then it's a thread like any other, kept and sent. A line where the same answer pinned its own `note` gets no chat
-note. Claude isn't told of them: they're its own words, put where they point.
+stopped nowhere in the project and names no place adds none. A line where the same answer pinned its own `note` gets
+no chat note. Claude isn't told of them: they're its own words, put where they point.
+
+**They're kept for the conversation.** Every answer's notes stay while its conversation does, so the code keeps what
+the chat said of it. A line several answers name is one card, newest first: each answer under its question and the time
+it was given (`› why a hash map? · 14:23`), the earlier ones folded into one faint `… 2 earlier` row at the card's
+foot (`enter`, or a press on that row, unfolds them; `enter` again closes the card). The line end says the newest
+answer's sentence; a line only older answers name keeps a faint `¶`. At a turn's end the newest answer's first place
+opens its own card, taking no keys and leaving your cursor where it was; where follow leads, the view goes there as it
+goes to the answer's place, so the line and its card are in sight. While you type (insert mode, a prompt, a message
+in the chat's input) it waits, then opens. A card you opened yourself keeps it from opening; the turn's card stays
+until the next answer opens its own or you close it. After a turn `]n`/`[n` walk the newest answer's places in the
+order it wrote them, then every other note by file. `space n` on one asks about it, and from then it's a thread like
+any other, kept and sent.
+
+A new conversation (`C-l`, `/clear`) clears them; a thread you started on one stays, it's yours. Closing the chat
+(`space L`) leaves them at the code, and the chat's next opening is a new conversation, which clears them. Continuing a
+conversation (`C-p`, or `:restart`'s `--resume`) brings its answers' notes back: the conversation keeps their places
+only (the name as written, the file, the lines and the line's text), and their words are cut again from the
+conversation's own rows. A line that moved is found again by its text; a place whose file is gone, or that the answer
+no longer gives, is dropped, said once in `:messages`.
 
 | Key | Notes |
 |---|---|
-| `space n` | Reply to the note here, or ask Claude about this line |
-| `enter` | On a note's line: open its card between the lines, or close it |
+| `space n` | Reply to the note on your line (with none there, the open card's), or ask Claude about this line |
+| `enter` | On a note's line: open its card between the lines, unfold its earlier answers, or close it |
 | `q` / `esc` | Close the open card (`q` is Helix's macro replay again once it's closed) |
 | `]n` / `[n` | Next / previous note, across files (notes sharing a line one by one), its card opened |
 | `space N` | Every note, with a preview — `C-x` closes the one on the row, `A-x` all its author began |
-| `:note-close` / `:notes-clear [reviewer\|author\|you\|chat]` | Close the note here / all of them, or one author's (asks first when your unsent drafts are among them) |
+| `:note-close` / `:notes-clear [reviewer\|author\|you\|chat]` | Close the note on your cursor's line, for good; while follow holds the view too, the view coming back there (with none on your line, the open card's, never one at Claude's place) / all of them, or one author's (asks first when your unsent drafts are among them) |
 
 When several notes share a line, the line end says how many (`¶ 3 notes · …`). The card shows one at a time
 (`note 2 of 3 here`), and `]n` reads them in order. A code narrower than a card has room for says so, and the line

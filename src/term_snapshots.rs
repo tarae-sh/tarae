@@ -3077,6 +3077,7 @@ fn projects2_frames() {
             rows,
             plan: None,
             usage: Some(serde_json::json!({ "turns": [], "last": last })),
+            places: None,
             seq: crate::chats::seq() - ago,
         };
         crate::chats::save(&chats, root, saved);

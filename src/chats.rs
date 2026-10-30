@@ -36,6 +36,8 @@ pub struct Saved {
     pub plan: Option<Value>,
     /// What its turns cost and its cache, as far as tarae saw (`usage.rs` — `Usage::conv_json`).
     pub usage: Option<Value>,
+    /// Its answers' places in the code (focus A1b, `chatnotes::places_json`) — places only, the words are its rows'.
+    pub places: Option<Value>,
     /// When this snapshot was taken (ns) — saves run on workers and may finish out of order; an older one
     /// never replaces a newer (`save`).
     pub seq: u64,
@@ -79,8 +81,17 @@ pub fn default_dir() -> Option<PathBuf> {
     Some(crate::config::state_dir()?.join("chats"))
 }
 
-/// The project's conversations, newest first (on a worker).
+/// The project's conversations, newest first (on a worker) — each place whose file is gone marked for the continue that
+/// reads it (`marked_gone`).
 pub fn load(dir: &Path, root: &Path) -> Vec<Saved> {
+    let mut all = stored(dir, root);
+    all.iter_mut().filter_map(|c| c.places.as_mut()).for_each(marked_gone);
+    all
+}
+
+/// The store as it is: what `save` writes back, so a file gone for a while (another branch) costs no conversation its
+/// place.
+fn stored(dir: &Path, root: &Path) -> Vec<Saved> {
     let Ok(body) = std::fs::read_to_string(file(dir, root)) else { return Vec::new() };
     let Ok(v) = serde_json::from_str::<Value>(&body) else { return Vec::new() };
     v["chats"]
@@ -95,6 +106,7 @@ pub fn load(dir: &Path, root: &Path) -> Vec<Saved> {
                         rows: c["rows"].as_array().cloned().unwrap_or_default(),
                         plan: c.get("plan").filter(|p| !p.is_null()).cloned(),
                         usage: c.get("usage").filter(|u| !u.is_null()).cloned(),
+                        places: c.get("places").filter(|p| !p.is_null()).cloned(),
                         seq: c["seq"].as_u64().unwrap_or(0),
                     })
                 })
@@ -103,12 +115,88 @@ pub fn load(dir: &Path, root: &Path) -> Vec<Saved> {
         .unwrap_or_default()
 }
 
-/// `chat` in front, replacing its older self (on a worker — read, merge, write).
+/// A conversation's answers' places (`Saved.places`), those whose file is gone now marked `gone` — looked at here, on the
+/// worker that reads the store, so a continue never waits on the disk; `chatnotes::restore` leaves them out and says so.
+fn marked_gone(places: &mut Value) {
+    for p in places.as_array_mut().into_iter().flatten().filter_map(|a| a["places"].as_array_mut()).flatten()
+    {
+        let there = p["path"].as_str().is_some_and(|f| Path::new(f).is_file());
+        let Some(place) = p.as_object_mut() else { continue };
+        if there {
+            place.remove("gone");
+        } else {
+            place.insert("gone".into(), true.into());
+        }
+    }
+}
+
+/// The biggest file a place's line text is read from (`texts_read`).
+const TEXT_FROM_MAX: usize = 8 << 20;
+
+/// File `path` of one of `roots` (the project, its added folders) as `beneath.rs` reaches it — every folder on the way and
+/// the file through no link from that root's real path, a plain file — with its name there. None: a link, not a plain
+/// file, in none of them, or named like a key (`sandbox::key_named`, which reads a real path: only here is this one).
+fn plain_file<'a>(roots: &[PathBuf], path: &'a Path) -> Option<(crate::beneath::Dir, &'a std::ffi::OsStr)> {
+    let root = roots.iter().find(|r| path.starts_with(r))?;
+    let rel = path.strip_prefix(root).ok()?;
+    let (name, parent) = (rel.file_name()?, rel.parent()?);
+    let dir = crate::beneath::Dir::root(root).and_then(|d| d.folder(parent, false)).ok()?;
+    (matches!(dir.kind(name), Ok(crate::beneath::Kind::File)) && !crate::sandbox::key_named(root, path))
+        .then_some((dir, name))
+}
+
+/// `chat`'s places with no line text (their file wasn't open as the answer placed them) given one — what finds a moved
+/// line again on a continue (`notes::attach_in`'s anchor): the one this conversation kept before for that place of that
+/// answer (a newer answer at the same name and line is another time: the file may have moved between), else its line
+/// read from the file now, here on the store's worker. A new place's text is written only for a file `plain_file` takes
+/// — one from an open buffer too: never a line of a key, by its name or through a link to it; nor past `TEXT_FROM_MAX`.
+fn texts_read(roots: &[PathBuf], places: &mut Value, before: Option<&Value>) {
+    let key = |p: &Value| (p["name"].clone(), p["said"].clone(), p["path"].clone());
+    let before = before.and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
+    for answer in places.as_array_mut().into_iter().flatten() {
+        let same = |b: &&Value| b["at"] == answer["at"] && b["asked"] == answer["asked"];
+        let kept: Vec<&Value> =
+            (before.iter().filter(same)).filter_map(|a| a["places"].as_array()).flatten().collect();
+        for p in answer["places"].as_array_mut().into_iter().flatten() {
+            if let Some(was) = kept.iter().find(|k| key(k) == key(p) && !k["text"].is_null()) {
+                p["text"] = was["text"].clone();
+                continue;
+            }
+            let (path, line) = (p["path"].as_str().map(Path::new), p["lines"][0].as_u64());
+            let Some(((dir, name), line)) = path.and_then(|f| plain_file(roots, f)).zip(line) else {
+                p["text"] = Value::Null;
+                continue;
+            };
+            if !p["text"].is_null() {
+                continue;
+            }
+            let bytes = dir.read_at_most(name, TEXT_FROM_MAX).ok().flatten().unwrap_or_default();
+            let text = String::from_utf8_lossy(&bytes);
+            if let Some(l) = text.lines().nth(line as usize) {
+                p["text"] = l.trim().into();
+            }
+        }
+    }
+}
+
+/// `save_in` for a project with no added folders.
+#[cfg(test)]
 pub fn save(dir: &Path, root: &Path, chat: Saved) {
+    save_in(dir, &[root.to_path_buf()], chat);
+}
+
+/// `chat` in front, replacing its older self (on a worker — read, merge, write): `roots` the project first (whose store
+/// it is), then its added folders — where its places' files are read (`texts_read`).
+pub fn save_in(dir: &Path, roots: &[PathBuf], mut chat: Saved) {
+    let root = &roots[0];
     let _one = SAVING.lock().unwrap_or_else(|e| e.into_inner());
-    let mut all = load(dir, root);
+    let mut all = stored(dir, root);
     if all.iter().any(|c| c.id == chat.id && c.seq > chat.seq) {
         return;
+    }
+    if let Some(places) = chat.places.as_mut() {
+        let before = all.iter().find(|c| c.id == chat.id).and_then(|c| c.places.as_ref());
+        texts_read(roots, places, before);
     }
     all.retain(|c| c.id != chat.id);
     all.insert(0, chat);
@@ -117,7 +205,7 @@ pub fn save(dir: &Path, root: &Path, chat: Saved) {
         .into_iter()
         .map(|c| {
             json!({ "id": c.id, "title": c.title, "updated": c.updated, "rows": c.rows, "plan": c.plan,
-                    "usage": c.usage, "seq": c.seq })
+                    "usage": c.usage, "places": c.places, "seq": c.seq })
         })
         .collect();
     let times: Vec<Value> = chats.iter().map(|c| json!([c["id"], c["updated"]])).collect();
@@ -339,6 +427,7 @@ mod tests {
                     rows: rows.clone(),
                     plan: None,
                     usage: None,
+                    places: None,
                     seq: seq(),
                 };
                 save(&dir, root, chat);
@@ -421,6 +510,7 @@ mod tests {
             rows: rows_of(&msgs),
             plan: Some(json!({"title": "t", "steps": [{"text": "a", "status": "doing"}]})),
             usage: Some(json!({"turns": [], "cost_so_far": 0.25})),
+            places: None,
             seq: t,
         };
         save(&dir, root, saved("s1", 10));
@@ -449,5 +539,127 @@ mod tests {
         );
         assert_eq!(ago(100, 100), "just now");
         assert_eq!(ago(0, 7300), "2h ago");
+    }
+
+    /// A conversation `id` kept with `places`, one answer's.
+    fn with_places(id: &str, places: Vec<Value>) -> Saved {
+        let places = json!([{ "back": 0, "asked": "why?", "at": 1, "places": places, "flow": null }]);
+        Saved {
+            id: id.into(),
+            title: "why?".into(),
+            updated: 1,
+            rows: Vec::new(),
+            plan: None,
+            usage: None,
+            places: Some(places),
+            seq: seq(),
+        }
+    }
+
+    /// Focus A1b: a place whose file is gone comes back marked for the continue to leave out and say (on the store's
+    /// worker, never at the continue) — and stays in the store: the reviewer's note 23, a save of another conversation
+    /// while the file is away (another branch) costs this one nothing.
+    #[test]
+    fn a_gone_files_place_is_marked_and_stays_kept() {
+        let scratch = crate::scratch::Scratch::new("chats-places");
+        let (dir, root) = (scratch.join("chats"), scratch.join("project"));
+        std::fs::create_dir_all(&root).unwrap();
+        let (here, away) = (root.join("a.rs"), root.join("away.rs"));
+        std::fs::write(&here, "x\n").unwrap();
+        std::fs::write(&away, "x\n").unwrap();
+        let place = |p: &Path| json!({ "name": "a.rs", "said": 0, "path": p, "lines": [0, 1], "text": "x" });
+        save(&dir, &root, with_places("c1", vec![place(&here), place(&away)]));
+        std::fs::remove_file(&away).unwrap();
+        save(&dir, &root, with_places("c2", vec![place(&here)]));
+        let of = |id: &str| {
+            let c = load(&dir, &root).into_iter().find(|c| c.id == id).unwrap();
+            c.places.unwrap()[0]["places"].clone()
+        };
+        let mut gone = place(&away);
+        gone["gone"] = true.into();
+        assert_eq!(of("c1"), json!([place(&here), gone]));
+        // (the file back: the place as it was)
+        std::fs::write(&away, "x\n").unwrap();
+        assert_eq!(of("c1"), json!([place(&here), place(&away)]));
+    }
+
+    /// The reviewer's note 25: a place's line text is what its file held the first time it was kept, never what sits at
+    /// that line number after the file moved (the anchor would find the wrong line) — and never a key-named file's, nor
+    /// one past `TEXT_FROM_MAX`.
+    #[test]
+    fn a_places_line_text_is_read_once_and_never_a_keys() {
+        let scratch = crate::scratch::Scratch::new("chats-texts");
+        let (dir, root) = (scratch.join("chats"), scratch.join("project"));
+        std::fs::create_dir_all(&root).unwrap();
+        let (a, key, big) = (root.join("a.rs"), root.join(".env"), root.join("big.rs"));
+        std::fs::write(&a, "one\n  two  \n").unwrap();
+        std::fs::write(&key, "A=1\nB=2\n").unwrap();
+        std::fs::write(&big, "one\ntwo\n").unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&big).unwrap();
+        file.set_len(TEXT_FROM_MAX as u64 + 1).unwrap();
+        // (as memory holds them: no text, their files not open)
+        let place = |p: &Path| json!({ "name": "x", "said": 1, "path": p, "lines": [1, 2], "text": null });
+        let places = || vec![place(&a), place(&key), place(&big)];
+        save(&dir, &root, with_places("c1", places()));
+        std::fs::write(&a, "zero\none\n  two  \n").unwrap();
+        save(&dir, &root, with_places("c1", places()));
+        let kept = load(&dir, &root).remove(0).places.unwrap();
+        let texts: Vec<&Value> = kept[0]["places"].as_array().unwrap().iter().map(|p| &p["text"]).collect();
+        assert_eq!(texts, [&json!("two"), &Value::Null, &Value::Null]);
+        // The reviewer's note 27: a newer answer at the same name and line reads the file as it is now, never the older
+        // answer's text (that's another line since)
+        let newer = json!({ "back": 0, "asked": "and now?", "at": 2, "places": [place(&a)], "flow": null });
+        let mut both = with_places("c1", vec![place(&a)]);
+        both.places.as_mut().unwrap().as_array_mut().unwrap().push(newer);
+        save(&dir, &root, both);
+        let kept = load(&dir, &root).remove(0).places.unwrap();
+        assert_eq!(kept[0]["places"][0]["text"], "two", "the first answer's as it was");
+        assert_eq!(kept[1]["places"][0]["text"], "one", "the newer's: line 2 now");
+    }
+
+    /// The reviewer's note 32: a line of a key is never written here through a link — to the file or a folder on its way —
+    /// whether it's read from the file or came from a buffer opened through that link.
+    #[test]
+    fn a_link_to_a_key_gives_no_line_text() {
+        let scratch = crate::scratch::Scratch::new("chats-links");
+        let (dir, root) = (scratch.join("chats"), std::fs::canonicalize(&*scratch).unwrap().join("project"));
+        std::fs::create_dir_all(root.join("keys")).unwrap();
+        std::fs::write(root.join("keys/.env"), "A=1\nB=2\n").unwrap();
+        std::os::unix::fs::symlink(root.join("keys/.env"), root.join("notes.txt")).unwrap();
+        std::os::unix::fs::symlink(root.join("keys"), root.join("folder")).unwrap();
+        let place = |p: &Path, text: Value| json!({ "name": "x", "said": 1, "path": p, "lines": [1, 2], "text": text });
+        let (link, through) = (root.join("notes.txt"), root.join("folder/.env"));
+        let places =
+            vec![place(&link, Value::Null), place(&through, Value::Null), place(&link, json!("B=2"))];
+        save(&dir, &root, with_places("c1", places));
+        let kept = load(&dir, &root).remove(0).places.unwrap();
+        let texts: Vec<&Value> = kept[0]["places"].as_array().unwrap().iter().map(|p| &p["text"]).collect();
+        assert_eq!(texts, [&Value::Null; 3]);
+    }
+
+    /// The reviewer's note 36: a place in an added folder keeps its line text as the project's do — read through no link
+    /// from that folder's own real path, a key named there kept out — and one in no root of the conversation's has none.
+    #[test]
+    fn a_place_in_an_added_folder_keeps_its_text() {
+        let scratch = crate::scratch::Scratch::new("chats-folders");
+        let real = std::fs::canonicalize(&*scratch).unwrap();
+        let (dir, root, added, other) =
+            (real.join("chats"), real.join("project"), real.join("infra"), real.join("other"));
+        for (place, file) in [(&root, "a.rs"), (&added, "b.rs"), (&added, ".env"), (&other, "c.rs")] {
+            std::fs::create_dir_all(place).unwrap();
+            std::fs::write(place.join(file), "one\ntwo\n").unwrap();
+        }
+        std::os::unix::fs::symlink(added.join(".env"), added.join("notes.txt")).unwrap();
+        let place = |p: PathBuf| json!({ "name": "x", "said": 1, "path": p, "lines": [1, 2], "text": null });
+        let places = vec![
+            place(added.join("b.rs")),
+            place(added.join(".env")),
+            place(added.join("notes.txt")),
+            place(other.join("c.rs")),
+        ];
+        save_in(&dir, &[root.clone(), added.clone()], with_places("c1", places));
+        let kept = load(&dir, &root).remove(0).places.unwrap();
+        let texts: Vec<&Value> = kept[0]["places"].as_array().unwrap().iter().map(|p| &p["text"]).collect();
+        assert_eq!(texts, [&json!("two"), &Value::Null, &Value::Null, &Value::Null]);
     }
 }

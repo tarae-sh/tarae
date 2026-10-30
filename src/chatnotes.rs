@@ -15,16 +15,24 @@
 //!   its last read in the project — is one card of those words in the order written (`Part`): the paragraph about that
 //!   line marked, every place-less one whole, one placed elsewhere a line with its place. One note there, never two:
 //!   that line's own place note is it. Its line end is that line's sentence (at a stop, the first place-less one's).
-//! - The last answer that places a note has them: the next one that does replaces them, one with neither a place nor
-//!   a stop leaves them. One you answered with `space n` is a thread — kept, as every note is.
+//! - Kept for the conversation (focus A1b, reversing #239's "the last answer's, replaced by the next"): every answer's
+//!   notes stay while its conversation does — a new one (`C-l`, `:chat-new`, `/clear`) clears them, a continue
+//!   (`--resume` after `:restart`, `C-p`) brings them back (`restore`). Kept with the conversation (`places_json`):
+//!   places only — the name as written, the path, the lines, the line's text —, the words cut again from its rows. One
+//!   line's answers are one card, newest first (`notes::group`); the line end says the newest answer's places only.
+//! - The newest answer opens its own card at the turn's end (`notes::open_by_turn`), never while you type; it stays
+//!   until the next answer opens its own or you close it. One you answered with `space n` is a thread — kept, as
+//!   every note is.
 //! - A line where the same answer's own `note` sits gets no chat note there (Claude said it there already); a turn that
 //!   wrote at a note at all (a new one or a reply) gets no flow — its answer is at the code already.
-//! - Never kept across a restart (they're the last answer's); a thread one is.
 
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use serde_json::{Value, json};
+
+use crate::chat::{Msg, Role};
 use crate::editor::Editor;
 
 /// Places an answer gives notes at most.
@@ -69,6 +77,25 @@ pub struct Waiting {
     pub stops: Vec<(PathBuf, usize)>,
     /// The question the answer answered: its first line that says something (`Note.asked`).
     pub asked: Option<String>,
+    /// Its question's place among the conversation's messages of yours, from 0 (`Origin.turn`).
+    pub turn: usize,
+}
+
+/// Which answer a chat note is of, and where in it (focus A1b): what the conversation keeps of it (`places_json`) and
+/// finds again in its words on a continue (`restore`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Origin {
+    /// The answer's number in this chat, from 1 — the newest the highest.
+    pub n: u64,
+    /// When it was given, unix seconds.
+    pub at: u64,
+    /// Its question's place among the conversation's messages of yours, from 0.
+    pub turn: usize,
+    /// The place as written (`src/a.rs`) and its first line as written, from 0 — a flow at a stop: no name.
+    pub name: Arc<str>,
+    pub said: usize,
+    /// Its line's text as placed — what finds it again once the file moved it.
+    pub text: Option<String>,
 }
 
 /// A block of an answer as it reads (`blocks`): its text, and whether it's a list item.
@@ -314,43 +341,55 @@ pub fn turn_over(ed: &mut Editor, ok: bool) {
     let own = std::mem::take(&mut notes.pinned_now);
     let noted = std::mem::take(&mut notes.noted_now);
     let Some(c) = ed.workspace.claude.chat.as_ref().filter(|c| ok && !c.turn_bare) else { return };
-    let turn = c.msgs.iter().rposition(|m| m.role == crate::chat::Role::User).map_or(0, |i| i + 1);
-    let (mut places, mut all, mut named): (Vec<Said>, Vec<Block>, Vec<_>) = Default::default();
-    let called = c.msgs[turn..].iter().rposition(|m| m.role == crate::chat::Role::Tool).map_or(0, |i| i + 1);
-    let mut last = 0;
-    for (i, m) in c.msgs[turn..].iter().enumerate().filter(|(_, m)| m.role == crate::chat::Role::Assistant) {
-        let these = blocks(&m.text);
-        let said = cut_blocks(&these, all.len());
-        all.extend(these);
-        // (said before a call: the turn's narration)
-        if i < called {
-            last = all.len();
-        }
-        // (the newest message's places first, each message's in order)
-        named.splice(0..0, said.iter().map(|s| (s.name.clone(), s.lines.start, s.blocks.clone())));
-        for s in said {
-            if places.len() < PLACES_MAX
-                && !places.iter().any(|p| p.name == s.name && p.lines.start == s.lines.start)
-            {
-                places.push(s);
-            }
-        }
-    }
+    let turn = c.msgs.iter().rposition(|m| m.role == Role::User).map_or(0, |i| i + 1);
+    let mut said = read_answer(&c.msgs[turn..]);
     let stops = stops(c);
-    let asked =
-        turn.checked_sub(1).and_then(|i| c.msgs[i].text.lines().map(str::trim).find(|l| !l.is_empty()));
-    let asked = asked.map(str::to_string);
-    if places.is_empty() && (noted || all.len() <= last || stops.is_empty()) {
+    if said.places.is_empty() && (noted || said.blocks.len() <= said.last || stops.is_empty()) {
         return;
     }
     // (asked after this frame — a turn's end draws one)
-    for s in &places {
+    for s in &said.places {
         let _ = c.places.place(&s.name);
     }
-    ed.workspace.claude.notes.answer =
-        Some(Waiting { places, own, noted, blocks: all, last, named, stops, asked });
+    said.asked = asked(&c.msgs[..turn]);
+    said.turn = c.msgs[..turn].iter().filter(|m| m.role == Role::User).count().saturating_sub(1);
+    (said.own, said.noted, said.stops) = (own, noted, stops);
+    ed.workspace.claude.notes.answer = Some(said);
     ed.unchanged = false;
     sync(ed);
+}
+
+/// The question a turn answered, from the messages up to its answer: its first line that says something.
+fn asked(before: &[Msg]) -> Option<String> {
+    let q = before.last().filter(|m| m.role == Role::User)?;
+    q.text.lines().map(str::trim).find(|l| !l.is_empty()).map(str::to_string)
+}
+
+/// An answer as it reads, from `msgs` — one turn's, after its question: its places (each the first time it's named),
+/// its blocks, every place named (the newest message's first) and where its last words begin. What `turn_over` reads
+/// at its end and `restore` again from the conversation's rows.
+fn read_answer(msgs: &[Msg]) -> Waiting {
+    let mut w = Waiting::default();
+    let called = msgs.iter().rposition(|m| m.role == Role::Tool).map_or(0, |i| i + 1);
+    for (i, m) in msgs.iter().enumerate().filter(|(_, m)| m.role == Role::Assistant) {
+        let these = blocks(&m.text);
+        let said = cut_blocks(&these, w.blocks.len());
+        w.blocks.extend(these);
+        // (said before a call: the turn's narration)
+        if i < called {
+            w.last = w.blocks.len();
+        }
+        // (the newest message's places first, each message's in order)
+        w.named.splice(0..0, said.iter().map(|s| (s.name.clone(), s.lines.start, s.blocks.clone())));
+        for s in said {
+            if w.places.len() < PLACES_MAX
+                && !w.places.iter().any(|p| p.name == s.name && p.lines.start == s.lines.start)
+            {
+                w.places.push(s);
+            }
+        }
+    }
+    w
 }
 
 /// Where the turn stopped in a file (this turn's stops, `replay`): its edits' first changed lines, newest first, then
@@ -422,10 +461,87 @@ pub fn plain_words(text: &str) -> String {
     plain(text)
 }
 
+/// A note an answer places (`placed`): where, what it says, and where it came from in the answer.
+struct Placed {
+    path: PathBuf,
+    lines: Range<usize>,
+    sentence: String,
+    paragraph: String,
+    flow: Vec<Part>,
+    name: Arc<str>,
+    said: usize,
+}
+
+/// The notes answer `said` places, in its order: `found` its places that came to a file here, `own` the lines its own
+/// `note`s took, `end` where its flow goes (focus A1), `shown` a path as a place is shown.
+fn placed(
+    said: &Waiting,
+    found: &[(PathBuf, &Said)],
+    own: &[(&PathBuf, &Range<usize>)],
+    end: Option<(PathBuf, usize)>,
+    shown: &dyn Fn(&Path) -> String,
+) -> Vec<Placed> {
+    let place_of = |n: &Arc<str>, l: usize| found.iter().find(|(_, s)| s.name == *n && s.lines.start == l);
+    let mut placed: Vec<Placed> = found
+        .iter()
+        .filter(|(p, s)| !own.iter().any(|(op, ol)| *op == p && ol.contains(&s.lines.start)))
+        .map(|(p, s)| Placed {
+            path: p.clone(),
+            lines: s.lines.clone(),
+            sentence: s.sentence.clone(),
+            paragraph: s.paragraph.clone(),
+            flow: Vec::new(),
+            name: s.name.clone(),
+            said: s.lines.start,
+        })
+        .collect();
+    let Some((path, line)) = end else { return placed };
+    // (each block: about this line, else the first place it names that's placed — newest message first, each
+    // message's in order: a block's names are in one message)
+    let n = said.blocks.len();
+    let (mut here, mut at): (Vec<bool>, Vec<Option<String>>) = (vec![false; n], vec![None; n]);
+    for (name, l, blocks) in &said.named {
+        let Some((p, _)) = place_of(name, *l) else { continue };
+        for b in blocks.clone().filter(|&b| b < n) {
+            if *p == path && *l == line {
+                here[b] = true;
+            } else if at[b].is_none() {
+                at[b] = Some(format!("{}:{}", shown(p), l + 1));
+            }
+        }
+    }
+    let parts = flow(&said.blocks, said.last, &here, &at);
+    // (only where it says something no place takes; that line's own place notes are it)
+    let Some(first) = parts.iter().find(|p| matches!(p, Part::Whole(_))) else { return placed };
+    let first = first_sentence(&first.block().text);
+    let mine = |p: &Placed| p.path == path && p.said == line;
+    let k = placed.iter().position(mine);
+    let (lines, sentence, name) = k.map_or((line..line + 1, first, "".into()), |k| {
+        (placed[k].lines.clone(), placed[k].sentence.clone(), placed[k].name.clone())
+    });
+    let paragraph = flow_text(&parts);
+    let note = Placed { path: path.clone(), lines, sentence, paragraph, flow: parts, name, said: line };
+    match k {
+        // (in that note's stead: the notes keep the answer's order)
+        Some(k) => {
+            placed[k] = note;
+            let mut i = 0;
+            placed.retain(|p| {
+                i += 1;
+                i - 1 == k || !mine(p)
+            });
+        }
+        None => placed.push(note),
+    }
+    placed
+}
+
 /// Every event: the answer's places, once every name is answered for the files as they are, are its notes, and what
-/// none of them says one more at the turn's end place — the last answer's going — or, none a file and no stop,
-/// nothing changes.
+/// none of them says one more at the turn's end place — kept with the answers before it, its first place's card
+/// opened — or, none a file and no stop, nothing changes.
 pub fn sync(ed: &mut Editor) {
+    crate::notes::opening_sync(ed);
+    kept_sync(ed);
     if ed.workspace.claude.notes.answer.is_none() {
         return;
     }
@@ -460,66 +576,189 @@ pub fn sync(ed: &mut Editor) {
     let inside = |p: &PathBuf| roots.iter().any(|r| crate::paths::inside(r, p).is_some());
     let found: Vec<(PathBuf, &Said)> = found.into_iter().filter(|(p, _)| inside(p)).collect();
     let place_of = |n: &Arc<str>, l: usize| found.iter().find(|(_, s)| s.name == *n && s.lines.start == l);
-    type Placed = (PathBuf, Range<usize>, String, String, Vec<Part>);
-    let mut placed: Vec<Placed> = found
-        .iter()
-        .filter(|(p, s)| !own.iter().any(|(op, ol)| *op == p && ol.contains(&s.lines.start)))
-        .map(|(p, s)| (p.clone(), s.lines.clone(), s.sentence.clone(), s.paragraph.clone(), Vec::new()))
-        .collect();
     // The answer's flow at its place: the first place named in its newest message that came to a file here, else its
     // last stop — none where the turn wrote at a note (its answer is there)
     let end = (said.named.iter())
         .find_map(|(n, l, _)| Some((place_of(n, *l)?.0.clone(), *l)))
         .or_else(|| said.stops.iter().find(|(p, _)| inside(p)).cloned())
         .filter(|_| !said.noted);
-    if let Some((path, line)) = end {
-        // (each block: about this line, else the first place it names that's placed — newest message first, each
-        // message's in order: a block's names are in one message)
-        let n = said.blocks.len();
-        let (mut here, mut at): (Vec<bool>, Vec<Option<String>>) = (vec![false; n], vec![None; n]);
-        for (name, l, blocks) in &said.named {
-            let Some((p, _)) = place_of(name, *l) else { continue };
-            for b in blocks.clone().filter(|&b| b < n) {
-                if *p == path && *l == line {
-                    here[b] = true;
-                } else if at[b].is_none() {
-                    at[b] = Some(format!("{}:{}", crate::chat::shown(&ed.workspace.root, p), l + 1));
-                }
-            }
-        }
-        let parts = flow(&said.blocks, said.last, &here, &at);
-        // (only where it says something no place takes; that line's own place notes are it)
-        if let Some(first) = parts.iter().find(|p| matches!(p, Part::Whole(_))) {
-            let first = first_sentence(&first.block().text);
-            let mine = |(p, l, ..): &Placed| *p == path && l.start == line;
-            let at = placed.iter().position(mine);
-            let (lines, sentence) =
-                at.map_or((line..line + 1, first), |k| (placed[k].1.clone(), placed[k].2.clone()));
-            let note = (path.clone(), lines, sentence, flow_text(&parts), parts);
-            match at {
-                // (in that note's stead: the notes keep the answer's order)
-                Some(k) => {
-                    placed[k] = note;
-                    placed = placed
-                        .into_iter()
-                        .enumerate()
-                        .filter(|(i, p)| *i == k || !mine(p))
-                        .map(|p| p.1)
-                        .collect();
-                }
-                None => placed.push(note),
-            }
-        }
-    }
-    let asked = ed.workspace.claude.notes.answer.take().and_then(|w| w.asked);
+    let root = ed.workspace.root.clone();
+    let placed = placed(said, &found, &own, end.clone(), &|p| crate::chat::shown(&root, p));
+    let Some(w) = ed.workspace.claude.notes.answer.take() else { return };
     if placed.is_empty() {
         return;
     }
-    ed.workspace.claude.notes.list.retain(|n| !crate::notes::bare_chat(n));
-    for (path, lines, sentence, paragraph, flow) in placed {
-        crate::notes::add_said(ed, &path, lines, (sentence, paragraph), flow, asked.clone());
+    let notes = &mut ed.workspace.claude.notes;
+    notes.answers += 1;
+    let (n, at) = (notes.answers, crate::clock::system().duration_since(std::time::UNIX_EPOCH));
+    let at = at.map_or(0, |d| d.as_secs());
+    // (its first place's card opens: where follow takes the view — the flow's place, else the first)
+    let mut first = None;
+    for p in placed {
+        // (an open buffer's line; else the store reads it from the file as it keeps them — never a key-named file's)
+        let text = (ed.docs.iter())
+            .find(|d| d.path.as_deref() == Some(p.path.as_path()))
+            .filter(|d| p.lines.start < d.text.len_lines())
+            .filter(|_| !crate::sandbox::key_named(&ed.workspace.root, &p.path))
+            .map(|d| d.text.line(p.lines.start).to_string().trim().to_string());
+        let lead = end.as_ref().is_some_and(|(e, l)| *e == p.path && *l == p.said);
+        let origin = Origin { n, at, turn: w.turn, name: p.name, said: p.said, text };
+        let id =
+            crate::notes::add_said(ed, &p.path, p.lines, (p.sentence, p.paragraph), p.flow, w.asked.clone());
+        crate::notes::find_mut(ed, id).expect("just added").answer = Some(origin);
+        if first.is_none() || lead && !first.is_some_and(|f: (u64, bool)| f.1) {
+            first = Some((id, lead));
+        }
     }
     crate::notes::attach(ed);
+    if let Some((id, _)) = first {
+        crate::notes::open_by_turn(ed, id);
+    }
+    // (kept with its conversation now — the turn's own keep went before its places were known)
+    kept_sync(ed);
+    ed.unchanged = false;
+}
+
+/// Every event: the conversation kept again when its answers' notes changed — one placed, closed, or turned a thread by
+/// a reply — so what it keeps is what's there, however it's left next: another conversation, `C-l`, a plain quit (none
+/// of which keeps it), the chat closed too (`chat::keep_places`). Never a note closed coming back on a continue, nor one
+/// beside its own thread.
+pub fn kept_sync(ed: &mut Editor) {
+    let notes = &mut ed.workspace.claude.notes;
+    let bare = notes.list.iter().filter(|n| crate::notes::bare_chat(n)).count();
+    if bare != std::mem::replace(&mut notes.kept_bare, bare) {
+        crate::chat::keep_places(ed);
+    }
+}
+
+/// The conversation's answers' places as it keeps them (focus A1b, `chats::Saved.places`): each answer by its question
+/// counted back from the newest of `msgs`' messages of yours, each place's name and line as written, its path, its
+/// lines now and its line's text, and which of them holds its flow (`flow`: its path and line as written — null where
+/// the turn had none, a turn that wrote at a note, or that note is gone: a thread now, or closed) — places only, the
+/// words are the conversation's. None: no answer placed any.
+pub fn places_json(notes: &crate::notes::Notes, msgs: &[Msg]) -> Option<Value> {
+    places_of(notes, msgs.iter().filter(|m| m.role == Role::User).count())
+}
+
+/// `places_json` of a conversation with `users` messages of yours — what's left of it once the chat closed.
+pub fn places_of(notes: &crate::notes::Notes, users: usize) -> Option<Value> {
+    let mut answers: Vec<(u64, Value)> = Vec::new();
+    for n in notes.list.iter().filter(|n| crate::notes::bare_chat(n)) {
+        let Some(o) = &n.answer else { continue };
+        let Some(back) = users.checked_sub(o.turn + 1) else { continue };
+        // (a path that's no text — under a folder named so, `json!` panics on it — is one no store holds)
+        let Some(path) = n.path.to_str() else { continue };
+        let place = json!({
+            "name": &*o.name, "said": o.said, "path": path, "lines": [n.lines.start, n.lines.end], "text": o.text,
+        });
+        let a = match answers.iter().position(|(k, _)| *k == o.n) {
+            Some(i) => &mut answers[i].1,
+            None => {
+                let a = json!({ "back": back, "asked": n.asked, "at": o.at, "places": [], "flow": null });
+                answers.push((o.n, a));
+                &mut answers.last_mut().expect("just pushed").1
+            }
+        };
+        a["places"].as_array_mut().expect("made so").push(place);
+        if !n.flow.is_empty() {
+            a["flow"] = json!([path, o.said]);
+        }
+    }
+    crate::sorting::by_key(&mut answers, |a| a.0);
+    (!answers.is_empty()).then(|| Value::Array(answers.into_iter().map(|a| a.1).collect()))
+}
+
+/// A place as the conversation kept it (`places_json`): its name and line as written, its path, its lines, its line's
+/// text.
+type Kept = (Arc<str>, usize, PathBuf, Range<usize>, Option<String>);
+
+/// A conversation continued (`chat::continue_from`: `--resume` after `:restart`, `C-p`): the chat notes of the one
+/// before go and this one's answers' places come back (`places_json`), their words cut again from its rows as they
+/// were at its turn's end — no card opened (no turn ended). A place whose file is gone, its words no longer give, or
+/// whose question isn't in the rows kept, is left out, said once in `:messages`.
+pub fn restore(ed: &mut Editor, places: Option<&Value>) {
+    crate::notes::forget_answers(ed);
+    let Some(answers) = places.and_then(Value::as_array) else { return };
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return };
+    let users: Vec<usize> =
+        (c.msgs.iter().enumerate()).filter(|(_, m)| m.role == Role::User).map(|p| p.0).collect();
+    let root = ed.workspace.root.clone();
+    let (mut back, mut lost) = (Vec::new(), 0);
+    for (k, a) in answers.iter().enumerate() {
+        let stored = a["places"].as_array().map_or(&[][..], |p| &p[..]);
+        let at = |i: usize| users.get(i).copied();
+        let turn = (a["back"].as_u64()).and_then(|b| users.len().checked_sub(b as usize + 1));
+        let Some((turn, i)) = turn.and_then(|t| Some((t, at(t)?))) else {
+            lost += stored.len();
+            continue;
+        };
+        let end = at(turn + 1).unwrap_or(c.msgs.len());
+        let mut said = read_answer(&c.msgs[i + 1..end]);
+        said.asked = asked(&c.msgs[..i + 1]);
+        if said.asked.as_deref() != a["asked"].as_str() {
+            lost += stored.len();
+            continue;
+        }
+        // (each place's name as written and its line: the file it came to then)
+        let kept: Vec<Kept> = stored
+            .iter()
+            // (a gone file's: `chats::load` looked)
+            .filter(|p| p["gone"] != true)
+            .filter_map(|p| {
+                let lines = p["lines"].as_array()?;
+                let (a, b) = (lines.first()?.as_u64()? as usize, lines.get(1)?.as_u64()? as usize);
+                let text = p["text"].as_str().map(str::to_string);
+                let name: Arc<str> = p["name"].as_str()?.into();
+                Some((
+                    name,
+                    p["said"].as_u64()? as usize,
+                    PathBuf::from(p["path"].as_str()?),
+                    a..b.max(a + 1),
+                    text,
+                ))
+            })
+            .collect();
+        lost += stored.len() - kept.len();
+        let found: Vec<(PathBuf, &Said)> = (said.places.iter())
+            .filter_map(|s| {
+                let k = kept.iter().find(|k| k.0 == s.name && k.1 == s.lines.start)?;
+                Some((k.2.clone(), s))
+            })
+            .collect();
+        // (the flow's place as kept — never worked out again: a turn that wrote at a note had none, and one whose note
+        // went has none to move elsewhere)
+        let flow = &a["flow"];
+        let end = (flow[0].as_str()).zip(flow[1].as_u64()).map(|(p, l)| (PathBuf::from(p), l as usize));
+        let n = k as u64 + 1;
+        let when = a["at"].as_u64().unwrap_or(0);
+        let placed = placed(&said, &found, &[], end, &|p| crate::chat::shown(&root, p));
+        for k in &kept {
+            let Some(p) = placed.iter().find(|p| p.path == k.2 && p.said == k.1) else {
+                lost += 1;
+                continue;
+            };
+            let origin = Origin { n, at: when, turn, name: k.0.clone(), said: k.1, text: k.4.clone() };
+            let words = (p.sentence.clone(), p.paragraph.clone(), p.flow.clone());
+            back.push((k.2.clone(), k.3.clone(), words, said.asked.clone(), origin));
+        }
+    }
+    for (path, lines, (sentence, paragraph, flow), asked, origin) in back {
+        let anchor = origin.text.clone();
+        let id = crate::notes::add_said(ed, &path, lines, (sentence, paragraph), flow, asked);
+        let notes = &mut ed.workspace.claude.notes;
+        notes.answers = notes.answers.max(origin.n);
+        let note = crate::notes::find_mut(ed, id).expect("just added");
+        (note.answer, note.anchor) = (Some(origin), anchor);
+    }
+    crate::notes::attach(ed);
+    // (as kept: a continue changes nothing to keep)
+    let notes = &mut ed.workspace.claude.notes;
+    notes.kept_bare = notes.list.iter().filter(|n| crate::notes::bare_chat(n)).count();
+    if lost > 0 {
+        let s = if lost == 1 { "" } else { "s" };
+        let said = format!("{lost} place{s} of the conversation's answers no longer found");
+        ed.recorded(crate::editor::ToastKind::Info, said);
+    }
     ed.unchanged = false;
 }
 

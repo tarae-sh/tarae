@@ -419,8 +419,9 @@ pub struct InputDrawn {
 
 /// What an open note's card's height is laid out from (`Screen.note_rows`): the note, its thread's entries and their
 /// text's length, its waiting row, its flow's parts, its board's trace, the question it answers, and the code's (columns,
-/// rows) — a reply, a placing or a resize lays it out again.
-pub type NoteRowsKey = (u64, usize, usize, bool, usize, bool, usize, (usize, usize));
+/// rows) — a reply, a placing or a resize lays it out again. A line's answers (focus A1b): all their words, and (how many,
+/// how many folded).
+pub type NoteRowsKey = (u64, usize, usize, bool, (usize, usize), bool, usize, (usize, usize));
 
 /// Whose text a mouse drag selects — where its press was (`Editor.mouse_anchor`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3404,9 +3405,13 @@ impl Editor {
                             };
                             crate::clipboard::copy(&self.events.jobs(), text, what);
                         }
+                        // (on its `… N earlier`: the line's earlier answers unfolded — focus A1b)
+                        (None, Some(_)) if crate::term::note_earlier_at(self, y) => {
+                            crate::notes::unfold_earlier(self)
+                        }
                         (None, Some(_)) => {
                             self.pressed_through = Some((x, y, crate::clock::now()));
-                            crate::notes::start(self)
+                            crate::notes::start_card(self)
                         }
                         (None, None) => {}
                     },

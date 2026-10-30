@@ -120,6 +120,7 @@ const HAND: &[(&str, usize, &str)] = &[
     ("chat_laid", 2, "a thought's rows folded away: whole on its row's own card (`ChatRow.cut`, #197b)"),
     ("told_row", 1, "the `…` of a cut taken off, measured: nothing drawn"),
     ("head_rows", 1, "a `Fit`'s tail: carried with its whole to its print"),
+    ("note_earlier_at", 1, "a note card's `… N earlier` row read back for a press: nothing drawn"),
 ];
 
 /// Each drawer's `…` drawn by hand and how many, in the order they're met.

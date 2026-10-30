@@ -861,6 +861,7 @@ fn an_earlier_conversation_asked_in_a_panes_key_waits_until_its_over() {
             rows: Vec::new(),
             plan: None,
             usage: None,
+            places: None,
             seq: 0,
         };
         under(&mut ed, which, |ed| crate::chat::continue_with(ed, saved));
@@ -1264,6 +1265,7 @@ fn another_conversation_ends_the_view_and_keeps_nothing_of_it() {
         rows: Vec::new(),
         plan: None,
         usage: None,
+        places: None,
         seq: 0,
     };
     crate::chat::continue_with(&mut ed, saved);

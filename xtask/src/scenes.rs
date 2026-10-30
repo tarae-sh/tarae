@@ -362,6 +362,29 @@ const A1_LINE: &[&str] = &[
 /// card — its top line gone, the rows in sight drawn.
 const A1B_CUT: &[&str] =
     a1_keys!(" ", "L", ":", "o src/main.rs", "\r", "gg]n", "gg", "zjzjzjzjzjzjzjzjzjzjzjzjzj");
+/// Focus A1b step 2's keys: two questions to `a1b-two`, each to its turn's end, the keys in the code (`esc esc`), then
+/// `$more`.
+macro_rules! a1b_two_keys {
+    ($($more:expr),* $(,)?) => {
+        &["@1", " ", "l", "@1", "what does the loop print?", "\r", "@20?That is all", "@2", "why a hash map?", "\r",
+          "@20?A Vec", "@2", "\x1b", "\x1b", $($more,)* "@1"]
+    };
+}
+
+/// Focus A1b step 2's scenes: the turn's end with its card opened by itself — the loop's line's two answers newest first,
+/// the earlier folded; the insert's line only the first answer names (a faint `¶`) — the chat open, then closed; the
+/// earlier unfolded (`enter` on the loop's line); a new conversation (`C-l`: they go) and the first continued (`C-p`,
+/// `enter`: they're back, as after `:restart`'s `--resume`), its line ends, then the loop's card by `enter`.
+const A1B_TWO: [&[&str]; 5] = [
+    a1b_two_keys!(),
+    a1b_two_keys!(" ", "L"),
+    a1b_two_keys!(" ", "L", "11G", "\r"),
+    a1b_two_keys!(" ", "l", "@1", "\x0c", "@1", "\x10", "@2", "\r", "@2", "\x1b", "\x1b", " ", "L", "9G"),
+    a1b_two_keys!(
+        " ", "l", "@1", "\x0c", "@1", "\x10", "@2", "\r", "@2", "\x1b", "\x1b", " ", "L", "11G", "\r"
+    ),
+];
+
 /// Focus A1b's: `A1_LINE`'s thread, its card opened by `]n` (the cursor on its line opens nothing now).
 const A1B_LINE: &[&str] = &[
     "@1",
@@ -2868,6 +2891,12 @@ const SCENES: &[Scene] = &[
     Scene { name: "a1-line", claude: "focus-line", files: MAIN, keys: A1_LINE },
     Scene { name: "a1b-line-card", claude: "focus-line", files: MAIN, keys: A1B_LINE },
     Scene { name: "a1b-flow-cut", claude: "a1-flow", files: MAIN, keys: A1B_CUT },
+    // (focus A1b step 2: the conversation's answers kept, newest first, the newest opening itself)
+    Scene { name: "a1b2-turn-open", claude: "a1b-two", files: MAIN, keys: A1B_TWO[0] },
+    Scene { name: "a1b2-turn-closed", claude: "a1b-two", files: MAIN, keys: A1B_TWO[1] },
+    Scene { name: "a1b2-earlier", claude: "a1b-two", files: MAIN, keys: A1B_TWO[2] },
+    Scene { name: "a1b2-continued", claude: "a1b-two", files: MAIN, keys: A1B_TWO[3] },
+    Scene { name: "a1b2-continued-card", claude: "a1b-two", files: MAIN, keys: A1B_TWO[4] },
     Scene { name: "a1-flow-open-card", claude: "a1-flow", files: MAIN, keys: A1_FLOW[0] },
     Scene { name: "a1-flow-closed-card", claude: "a1-flow", files: MAIN, keys: A1_FLOW[1] },
     // (W: a word that does its key, lit under the mouse — the chat's `paused`, the follow card's keys, the chat's foot)
@@ -4566,6 +4595,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "focus-line",
     "a1-none",
     "a1-flow",
+    "a1b-two",
     "models",
     "answer",
     "askdone",
@@ -4612,6 +4642,8 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
     let cwd = std::env::current_dir().ok();
     let script = script_for(script, cwd.as_deref());
     let mut lines = input.lines();
+    // (the messages answered so far — a script whose turns differ)
+    let mut turns = 0;
     while let Some(line) = lines.next() {
         let line = line?;
         // (the docs' own scripts first)
@@ -4621,6 +4653,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
         if !line.starts_with("{\"message\"") {
             continue;
         }
+        turns += 1;
         let mut turn = Turn { out: &mut *out, lines: &mut lines, pause };
         match script {
             "full" => turn.explain(true, false)?,
@@ -4696,6 +4729,8 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "a1-none" => turn.a1_none()?,
             // (…and one with a paragraph placed elsewhere: its line on the place's card)
             "a1-flow" => turn.a1_flow()?,
+            // (focus A1b's: two answers naming the loop's line, the first one the line above it too)
+            "a1b-two" => turn.a1b_two(turns)?,
             _ => {}
         }
     }
@@ -5593,6 +5628,37 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             "One caveat: a repeated name replaces the earlier strand before the loop sees it. That is all.",
         )?;
         self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// focus A1b's two answers, by `turns` (the messages so far): the first names the loop's line and the insert above
+    /// it, with a place-less paragraph; the second names the loop's line again — its card the two newest first, the
+    /// insert's line only the first's (a faint `¶`).
+    fn a1b_two(&mut self, turns: usize) -> io::Result<()> {
+        // (a conversation of its own: kept, so a new one can continue it — `C-p`)
+        let id = "conv-a1b";
+        self.line(
+            json!({"type": "system", "subtype": "init", "session_id": id, "model": "claude-opus-5-5"}),
+        )?;
+        self.words("Let me read the loop.")?;
+        self.text("\n\n")?;
+        self.call(turns as u64, "read", json!({"files": ["src/main.rs:7-14"]}))?;
+        if turns == 1 {
+            self.words(
+                "The loop at src/main.rs:11 prints each thread's name, how many knots it has and its length.",
+            )?;
+            self.text("\n\n")?;
+            self.words("The first thread goes into the map at src/main.rs:10, before the loop starts.")?;
+            self.text("\n\n")?;
+            self.words("It prints them in the map's own order, which changes from run to run. That is all.")?;
+        } else {
+            self.words(
+                "The loop at src/main.rs:11 walks a HashMap, so a repeated name replaces the earlier strand: one \
+                 entry a name.",
+            )?;
+            self.text("\n\n")?;
+            self.words("A Vec would keep the order, but let two threads share a name. That is all.")?;
+        }
+        self.line(json!({"type": "result", "result": "done", "session_id": id}))
     }
 
     /// focus D1's `focus-fix`: the tests fail, two reads, an edit (its review, answered by the scene), the tests pass,

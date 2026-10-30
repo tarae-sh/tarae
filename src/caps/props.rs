@@ -949,6 +949,7 @@ fn apply(w: &mut World, ed: &mut Editor, step: &Step, ledger: &mut Ledger, front
                         rows,
                         plan,
                         usage,
+                        places: None,
                         seq: 0,
                     };
                     crate::chat::continue_with(ed, saved);
@@ -2623,6 +2624,7 @@ fn a_conversation_left_takes_its_answers_with_it() {
                     rows,
                     plan: None,
                     usage: None,
+                    places: None,
                     seq: 0,
                 };
                 crate::chat::continue_with(&mut ed, saved);

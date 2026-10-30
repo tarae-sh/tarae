@@ -2054,6 +2054,7 @@ mod tests {
                 rows,
                 plan: None,
                 usage: None,
+                places: None,
                 seq: crate::chats::seq(),
             };
             crate::chats::save(&chats, &root, c);
@@ -2215,6 +2216,7 @@ mod tests {
                     rows,
                     plan: None,
                     usage: None,
+                    places: None,
                     seq: crate::chats::seq(),
                 };
                 crate::chats::save(&store, &root, c);

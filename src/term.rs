@@ -803,6 +803,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
                 let above = review_lead(ed, &ui, &pl);
                 ed.align_writing(line, above);
             }
+            crate::follow::card_sight(ed);
             if let Some(l) = crate::follow::view_line(ed) {
                 let at = mv::line_start(&ed.doc().text, l);
                 scroll_to(ed, &pl, Some(at));
@@ -818,6 +819,8 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         let above = review_lead(editor, &ui, &lay);
         editor.align_writing(line, above);
     }
+    // The card a turn's end opened, where follow leads: its line and the card in sight at this frame's size (focus A1b)
+    crate::follow::card_sight(editor);
     // During `/` preview the screen follows the match, not the cursor; while follow leads, Claude's place (the row it
     // writes, the lines it reads) — never moving your cursor (collab C1)
     // (where the wheel left it, while the cursor and the text are as they were then — the mouse rule: it scrolls the
@@ -6247,7 +6250,20 @@ fn draw_text(
     // (the note the card shows — the focused one, else the first — and how many start on that line)
     let mut note_at: Vec<Option<(&crate::notes::Note, usize)>> = vec![None; span];
     if let Some(p) = doc.path.as_deref() {
-        for n in editor.workspace.claude.notes.list.iter().filter(|n| n.path == p) {
+        // (a line's answers are one card: its newest answer's note stands for them — focus A1b)
+        let notes = &editor.workspace.claude.notes;
+        let mut newest: Vec<(usize, u64, u64)> = Vec::new();
+        for n in notes.list.iter().filter(|n| n.path == p && crate::notes::bare_chat(n)) {
+            let (k, id) = (n.answer.as_ref().map_or(0, |o| o.n), n.id);
+            match newest.iter_mut().find(|e| e.0 == n.lines.start) {
+                Some(e) if (k, id) > (e.1, e.2) => (e.1, e.2) = (k, id),
+                Some(_) => {}
+                None => newest.push((n.lines.start, k, id)),
+            }
+        }
+        let stop =
+            |n: &&crate::notes::Note| !crate::notes::bare_chat(n) || newest.iter().any(|e| e.2 == n.id);
+        for n in notes.list.iter().filter(|n| n.path == p).filter(stop) {
             if let Some(slot) = n.lines.start.checked_sub(top).and_then(|r| note_at.get_mut(r)) {
                 *slot = Some(match *slot {
                     None => (n, 1),
@@ -7200,15 +7216,23 @@ fn draw_text(
                     (false, false, false) => "",
                 };
                 // (its card open under it: the card says it, right below — the `¶` alone, focus A1b)
-                let open = crate::notes::opened(editor, doc).is_some_and(|o| o.id == n.id);
+                let open = crate::notes::opened(editor, doc).is_some_and(|o| {
+                    crate::notes::group(&editor.workspace.claude.notes, o).iter().any(|g| g.id == n.id)
+                });
+                // (only older answers name this line: a faint `¶` alone — the newest's places have the words)
+                let older = count == 1 && crate::notes::older(&editor.workspace.claude.notes, n);
                 let gist = match () {
-                    _ if open => String::new(),
+                    _ if open || older => String::new(),
                     _ if count > 1 => format!("{count} notes · {draft}{}", n.gist()),
                     _ => format!("{draft}{}", n.gist()),
                 };
                 let tail = if open { String::new() } else { tail };
                 let body = crate::whole::fit(&gist, room.saturating_sub(2 + tail.width()));
-                let glyph_fg = if reviewer { reviewer_style(editor, ui).fg } else { ui.accent.fg };
+                let glyph_fg = match () {
+                    _ if older => ui.linenr.fg,
+                    _ if reviewer => reviewer_style(editor, ui).fg,
+                    _ => ui.accent.fg,
+                };
                 apply(out, line_base)?;
                 queue!(out, Print("   "))?;
                 apply(out, Style { fg: glyph_fg, ..line_base })?;
@@ -21173,12 +21197,21 @@ fn draw_note_card(
     ui: &Ui,
     out: &mut impl Write,
 ) -> io::Result<Rect4> {
+    // (a line's answers, focus A1b: their `… N earlier` row stays its last, whatever folds above it)
+    let mut g = g;
+    let notes = &editor.workspace.claude.notes;
+    let answers = crate::notes::group(notes, n).len() > 1;
+    let earlier =
+        (crate::notes::earlier_folded(notes, n) > 0 && g.max_rows >= 3).then(|| g.rows.pop()).flatten();
+    if earlier.is_some() {
+        g.max_rows -= 1;
+    }
     // Short on room: the newest part (the latest word) stays in view — under the name of whoever says it, the cut
-    // words going on with `…`
+    // words going on with `…`; the answer's flow or a line's answers (the newest first) from their start
     let skip = g.rows.len().saturating_sub(g.max_rows);
     let speaker =
         |r: &Vec<crate::markdown::Span>| r.first().is_some_and(|s| s.text == "¶ " || s.text == "› ");
-    let flow = !n.flow.is_empty() && n.thread.len() == 1;
+    let flow = !n.flow.is_empty() && n.thread.len() == 1 || answers;
     let rows = match g.rows[..=skip.min(g.rows.len().saturating_sub(1))].iter().rposition(speaker) {
         // (the answer's flow, focus A1: its paragraph about this line stays in sight — the start with it where both fit,
         // else from it, what's before it folded into a `…` row; what's past the room folded into a last one, each whole
@@ -21232,8 +21265,12 @@ fn draw_note_card(
             }
             rows
         }
+        _ if answers => g.rows[..g.max_rows.min(g.rows.len())].to_vec(),
         _ => g.rows[skip..].to_vec(),
     };
+    let mut rows = rows;
+    let folded = earlier.is_some();
+    rows.extend(earlier);
     let replying = matches!(editor.prompt.as_ref().map(|p| p.kind), Some(crate::editor::PromptKind::Note(_)));
     let (x0, y0, w, h) = g.rect();
     // (a screen's edge across it: only the rows in sight, `y0` the first of them — its frame's lines there or not)
@@ -21243,7 +21280,23 @@ fn draw_note_card(
     let key = Style { bold: true, fg: ui.hint_key.or(ui.virt.fg), ..card };
     let faint = Style { fg: ui.linenr.fg, ..card };
     let name = note_name(n, editor, ui, card);
-    let foot = bottom_keys(&note_keys(n, replying), w.saturating_sub(6), key, faint, frame_line(ui, card));
+    let mut keys = note_keys(n, replying);
+    // (`space n` and `enter` go to the note at your cursor: said here only where that's this card — it may be yours
+    // elsewhere, the turn's card leaving your cursor where it was)
+    let mine = |t: &crate::notes::Note| crate::notes::group(notes, n).iter().any(|g| g.id == t.id);
+    let aimed = crate::notes::target(editor).is_some_and(mine);
+    // (closing has its own rule, your cursor even while follow holds the view: it's for good)
+    let closes = crate::notes::close_target(editor).is_some_and(mine);
+    keys.retain(|k| match k.0 {
+        "space n" => aimed,
+        ":note-close" => closes,
+        _ => true,
+    });
+    // (a line's earlier answers folded: `enter` there unfolds them — after the reply, focus A1b)
+    if folded && !replying && aimed {
+        keys.insert(1, ("enter", "earlier"));
+    }
+    let foot = bottom_keys(&keys, w.saturating_sub(6), key, faint, frame_line(ui, card));
     let on = (crate::mouse::Surface::NoteCard, crate::mouse::Lights::Note);
     let rect = (x0, y0, w, shown);
     for y in y0..y0 + shown {
@@ -21331,6 +21384,19 @@ fn note_text_in_card(editor: &Editor) -> Vec<(usize, usize, Vec<crate::markdown:
     editor.screen.note_text.borrow().iter().filter(inside).cloned().collect()
 }
 
+/// Whether row `y` of the note card is its `… N earlier` (`note_lines`): a press there unfolds them. N the answers the
+/// card has folded: a thread's own fold row (`… N earlier — the chat has them`) reads alike, with nothing to unfold.
+pub(crate) fn note_earlier_at(editor: &Editor, y: usize) -> bool {
+    let notes = &editor.workspace.claude.notes;
+    let open = notes.open.and_then(|o| notes.list.iter().find(|n| n.id == o));
+    let folded = open.map_or(0, |n| crate::notes::earlier_folded(notes, n));
+    let rows = note_text_in_card(editor);
+    let Some((_, _, spans)) = rows.iter().find(|r| r.0 == y) else { return false };
+    let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+    let mut words = text.strip_prefix("… ").unwrap_or_default().split(' ');
+    folded > 0 && words.next() == Some(folded.to_string().as_str()) && words.next() == Some("earlier")
+}
+
 /// Where (`x`, `y`) is among the note card's words (`note_text_in_card`): (its row, its column) — above or below its
 /// rows, the first or the last, left of them their start.
 pub(crate) fn note_at(editor: &Editor, x: usize, y: usize) -> Option<(usize, usize)> {
@@ -21398,9 +21464,13 @@ pub(crate) fn note_rows(
     let n = crate::notes::opened(editor, doc)?;
     let line = n.lines.end.saturating_sub(1).max(n.lines.start);
     // (once for what it says and the size: every `Measure` asks, several a key — the review of step 1)
-    let said = n.thread.iter().map(|e| e.text.len()).sum::<usize>();
-    let asked = n.asked.as_ref().map_or(0, String::len);
-    let key = (n.id, n.thread.len(), said, n.waiting, n.flow.len(), n.board.is_some(), asked, size);
+    // (a line's answers, focus A1b: every one's words, and how many folded)
+    let notes = &editor.workspace.claude.notes;
+    let all = crate::notes::group(notes, n);
+    let said = all.iter().flat_map(|m| &m.thread).map(|e| e.text.len()).sum::<usize>();
+    let asked = all.iter().map(|m| m.asked.as_ref().map_or(0, String::len) + m.flow.len()).sum::<usize>();
+    let kept = (all.len(), crate::notes::earlier_folded(notes, n));
+    let key = (n.id, n.thread.len(), said, n.waiting, kept, n.board.is_some(), asked, size);
     if let Some((k, h)) = *editor.note_rows.borrow()
         && k == key
     {
@@ -21423,10 +21493,21 @@ thread_local! {
 /// `stale · the card asks` (cardburden 6).
 fn note_name(n: &crate::notes::Note, editor: &Editor, ui: &Ui, card: Style) -> Vec<(String, Style)> {
     let mut name = pane_names(ui, editor, card, &[note_kind(n)], 0);
-    let all = crate::notes::all_here(editor);
-    let of = (all.len() > 1).then(|| (all.iter().position(|m| m.id == n.id).unwrap_or(0) + 1, all.len()));
+    // (a line's answers are one card, one of the notes here — focus A1b)
+    let notes = &editor.workspace.claude.notes;
+    let mine = crate::notes::group(notes, n);
+    let first = |m: &crate::notes::Note| crate::notes::group(notes, m).first().map(|f| f.id) == Some(m.id);
+    // (its own line's, wherever your cursor is: a turn's card leaves it elsewhere)
+    let on_line = |m: &&crate::notes::Note| m.path == n.path && m.lines.contains(&n.lines.start) && first(m);
+    let mut all: Vec<_> = notes.list.iter().filter(on_line).collect();
+    crate::sorting::by_key(&mut all, |m| (m.lines.start, m.id));
+    let at = all.iter().position(|m| mine.iter().any(|g| g.id == m.id)).unwrap_or(0);
+    let of = (all.len() > 1).then(|| (at + 1, all.len()));
     let faint = Style { fg: ui.linenr.fg, ..card };
     let mut details = Vec::new();
+    if mine.len() > 1 {
+        details.push(format!("{} answers here", mine.len()));
+    }
     if let Some((i, k)) = of {
         details.push(format!("{i} of {k} here"));
     }
@@ -21471,9 +21552,47 @@ fn note_keys(n: &crate::notes::Note, replying: bool) -> Vec<(&'static str, &'sta
 /// Most rows the note card takes.
 const NOTE_CAP: usize = 18;
 
-/// A note's thread as card lines (its body: which note and its keys are its frame's — `draw_note_card`) — who said it
-/// (Claude in accent, you dim), the text with `code` colored, a waiting row while Claude answers.
+/// A note's card lines (its body: which note and its keys are its frame's — `draw_note_card`): its thread, or a line's
+/// answers (focus A1b) — the newest first, each under its question, the older ones folded into one faint `… N earlier`
+/// row, its last (`notes::earlier_folded`: `enter` or a press there unfolds them).
 fn note_lines(n: &crate::notes::Note, editor: &Editor, ui: &Ui) -> Vec<crate::markdown::Line> {
+    use crate::markdown::{Line, Span};
+    let notes = &editor.workspace.claude.notes;
+    let all = crate::notes::group(notes, n);
+    if all.len() < 2 {
+        return note_thread_lines(n, editor, ui);
+    }
+    let folded = crate::notes::earlier_folded(notes, n);
+    let mut out = Vec::new();
+    for (k, m) in all.iter().enumerate().take(all.len() - folded) {
+        if k > 0 {
+            out.push(Line::Blank);
+        }
+        out.extend(note_thread_lines(m, editor, ui));
+    }
+    if folded > 0 {
+        let faint = Style { fg: ui.linenr.fg, ..Style::default() };
+        let mut said = format!("… {folded} earlier");
+        for m in &all[all.len() - folded..] {
+            said.push_str(&format!(" · {}", m.asked.as_deref().unwrap_or("an answer")));
+            if let Some(o) = &m.answer {
+                said.push_str(&format!(" {}", answer_time(o.at)));
+            }
+        }
+        out.push(Line::Blank);
+        out.push(Line::Cut(vec![Span { cut: None, hint: false, text: said, style: faint }]));
+    }
+    out
+}
+
+/// When an answer was given, as its head says it: its local time (`14:02`).
+fn answer_time(at: u64) -> String {
+    crate::log::clock(std::time::UNIX_EPOCH + std::time::Duration::from_secs(at))
+}
+
+/// One note's thread as card lines — who said it (Claude in accent, you dim), the text with `code` colored, a waiting
+/// row while Claude answers.
+fn note_thread_lines(n: &crate::notes::Note, editor: &Editor, ui: &Ui) -> Vec<crate::markdown::Line> {
     use crate::markdown::{Line, Span};
     let lang = editor.doc().syntax.as_ref().map(|s| s.lang.name.clone());
     let sp = |text: &str, style: Style| Span { cut: None, hint: false, text: text.to_string(), style };
@@ -21579,8 +21698,13 @@ fn note_head(
         // (an answer alone under its `chat` frame: which answer — the question it answered, never `chat` again; in a
         // thread, who said it, as every entry)
         By::Chat if crate::notes::bare_chat(n) => {
-            let asked = n.asked.as_deref().unwrap_or("the last answer");
-            vec![sp("› ", faint), sp(asked, Style { bold: true, ..dim })]
+            let asked = n.asked.as_deref().unwrap_or("an answer");
+            let mut v = vec![sp("› ", faint), sp(asked, Style { bold: true, ..dim })];
+            // (when it was given — one line's answers stand newest first: focus A1b)
+            if let Some(o) = &n.answer {
+                v.push(sp(&format!(" · {}", answer_time(o.at)), faint));
+            }
+            v
         }
         By::Chat => vec![sp("¶ ", accent), sp(By::Chat.label(), Style { bold: true, ..accent })],
         By::You if e.draft => {

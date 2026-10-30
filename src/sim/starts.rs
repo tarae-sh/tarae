@@ -91,6 +91,7 @@ fn restore(choices: Choices) -> Vec<String> {
         rows: Vec::new(),
         plan: None,
         usage: u.conv_json("conv-1"),
+        places: None,
         seq: crate::chats::seq(),
     };
     crate::chats::save(&dir, &ed.workspace.root, saved);
@@ -136,6 +137,7 @@ fn kept(dir: &std::path::Path, root: &std::path::Path, id: &str, title: &str) {
         rows,
         plan: None,
         usage: None,
+        places: None,
         seq: crate::chats::seq(),
     };
     crate::chats::save(dir, root, saved);

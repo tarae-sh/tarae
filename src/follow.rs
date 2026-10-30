@@ -131,6 +131,9 @@ pub struct Follow {
     /// The turn ended with no walk-through: the editor goes to its answer's place once the names before it are
     /// answered (`answer_place`).
     pub(crate) answer_wait: bool,
+    /// The card a turn's end opened, its document's lines — put in sight with its line by the next frame, at the pane's
+    /// size as laid (`show_card`, `card_sight`).
+    card: Option<(DocId, Range<usize>)>,
     /// The walk-through's stops still to show, and how many tags of which message were taken · the one
     /// showing, until when (its wake-up is this generation's).
     queue: std::collections::VecDeque<(usize, usize, Stop, usize)>,
@@ -1245,6 +1248,32 @@ pub fn answer_place(ed: &mut Editor) -> bool {
         go(ed, &path, line);
         view_key(ed) != before
     })
+}
+
+/// The turn's end opened the card of a note at `lines` of `path` (focus A1b, `notes::open_by_turn`): follow takes the
+/// view there as it takes it to the answer's place — its line and the card under it in sight as one block, your cursor
+/// where it is. The block's rows are known only at the pane's size as the frame lays it (the code beside the chat wraps
+/// narrower than the last key's measure said), so the frame places it (`card_sight`). Only where follow leads (on, not
+/// paused, nothing under way): off or paused, the view stays yours, and the card waits under its line for `]n` or
+/// `enter`.
+pub fn show_card(ed: &mut Editor, path: &Path, lines: Range<usize>) {
+    go_range(ed, path, lines.clone());
+    // (where it went: follow leads that document at that line now)
+    let doc = in_followed(ed, |ed| (ed.doc().path.as_deref() == Some(path)).then(|| ed.doc().id));
+    let Some(f) = follow(ed) else { return };
+    if doc.is_some_and(|d| f.led == Some((d, lines.start))) {
+        f.card = doc.map(|d| (d, lines));
+    }
+}
+
+/// A frame of the pane follow leads (lent the focus, its viewport the pane's as laid): the card a turn's end opened put
+/// in sight with its line (`show_card`) — once, while follow still leads that document.
+pub fn card_sight(ed: &mut Editor) {
+    let Some(f) = follow(ed) else { return };
+    let Some((doc, lines)) = f.card.take() else { return };
+    if doc == ed.doc().id && led_in(ed, ed.workspace.viewer.focus).is_some() {
+        ed.show_range(lines);
+    }
 }
 
 /// After the turn, while you read the answer: when the chat scrolls, the editor shows the first place the

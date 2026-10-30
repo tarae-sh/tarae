@@ -1762,6 +1762,7 @@ mod tests {
                 rows: crate::chats::rows_of(&msgs),
                 plan: None,
                 usage: None,
+                places: None,
                 seq: crate::chats::seq(),
             };
             crate::chats::save(&store, &cwd, saved);
@@ -1820,6 +1821,7 @@ mod tests {
             rows: crate::chats::rows_of(&msgs),
             plan: None,
             usage: None,
+            places: None,
             seq: crate::chats::seq(),
         };
         crate::chats::save(store, root, saved);
