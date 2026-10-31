@@ -2,7 +2,8 @@
 //! with that step's own time, its last finished sentence (its why) and the plan's step — the status line's one line,
 //! right after the mode word, while the front session's turn runs (`term::draw_statusline`); said once (focus B1): while
 //! the follow card is drawn for the turn, its head and body say it and the line keeps the turn's cell
-//! (`term::draw_follow_card` says whether its head kept it). Read from what's streamed and nothing else; no token is spent on it.
+//! (`term::draw_follow_card` says whether its head kept it, `term::head_in_sight` whether nothing drawn after covers
+//! it). Read from what's streamed and nothing else; no token is spent on it.
 //!
 //! `step` is the one place a turn's doing is put in words: the line's verb (`running`, `asks to run`, `queued`) and
 //! the top lines' word (`Step::word` — the chat's line, the follow card's head; `exploring` went with this). Its time

@@ -483,7 +483,7 @@ fn the_note_card_is_framed_and_its_keys_are_buttons_on_its_bottom_line() {
     frame(&mut ed);
     let rows = note_card_rows(&ed);
     assert!(rows[0].starts_with("╭─ note ─") && !rows[0].contains("of 2"), "{rows:#?}");
-    assert!(rows[1].starts_with("│ ¶ author"), "its author's head: {rows:#?}");
+    assert!(rows[1].starts_with("│ ¶ claude"), "its author's head: {rows:#?}");
     let bottom = rows.last().unwrap();
     let foot = "╰─ space n reply · ]n next · q close · space N all · :note-close ─";
     assert!(bottom.starts_with(foot), "{rows:#?}");

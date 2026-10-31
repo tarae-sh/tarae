@@ -5306,6 +5306,16 @@ fn draw(
         }
         None => None,
     };
+    // A prompt (`:`, `/`, `select:` …) is a card standing on the status line, its menu in it — drawn before the line
+    // (it covers none of its row) so that what covers the follow card's head is known as the line is laid (#253)
+    let prompt_cursor = match &editor.prompt {
+        Some(p) => Some(draw_prompt(editor, p, editor.cmdline_completion().as_ref(), ui, lay, out)?),
+        None => None,
+    };
+    drew(editor, Kind::Prompt, editor.screen.prompt_card.get());
+    // (the line short only while the card's head that says the step is in sight — #253: a picker, which-key, a prompt
+    // or a card over it, and the line says it whole)
+    let follow_says = follow_says && head_in_sight(editor, follow_rect);
     // Folded into the status line: an error or warning still waiting for the card before the newest (U7)
     let folded = toast_folded
         .then(|| {
@@ -5321,13 +5331,11 @@ fn draw(
     let now =
         editor.screen.cut_spots.borrow().iter().find(|c| c.3 == crate::whole::Cut::Now).map(|c| (c.1, c.2));
     drew(editor, Kind::StatusNow, now.map(|(a, b)| (a, y, b.saturating_sub(a), 1)));
-    drew(editor, Kind::Hover, now_card(editor, ui, lay, out)?);
-    // A prompt (`:`, `/`, `select:` …) is a card standing on the status line, its menu in it
-    let prompt_cursor = match &editor.prompt {
-        Some(p) => Some(draw_prompt(editor, p, editor.cmdline_completion().as_ref(), ui, lay, out)?),
-        None => None,
-    };
-    drew(editor, Kind::Prompt, editor.screen.prompt_card.get());
+    // (not while a prompt stands on the line: it takes the rows right above it the card would cover — what you type
+    // stays in sight, as when it was drawn last, #253's review)
+    if editor.prompt.is_none() {
+        drew(editor, Kind::Hover, now_card(editor, ui, lay, out)?);
+    }
     // (the frame's elements and hints recorded — every hint a button)
     crate::kinds::settle(editor);
     // The row the mouse is over, lit — under the cut texts' cards
@@ -5530,6 +5538,16 @@ pub(crate) fn drawn_style(st: Style) -> Style {
 /// The code's area as a whole — the edit review's or the start screen's, in the panes' place.
 fn code_area(lay: &Layout) -> crate::regions::Rect {
     (lay.rail_w, 0, lay.edit_w.saturating_sub(lay.rail_w), lay.text_top as usize + lay.text_rows)
+}
+
+/// Whether the follow card drawn at `card` still shows its head — its top line, where it says the step (focus B1) — once
+/// all that floats is drawn (#253): its region still listed (a picker clears what's under it) and none listed after it
+/// on a cell of that line.
+fn head_in_sight(editor: &Editor, card: Option<Rect4>) -> bool {
+    let Some((x, y, w, _)) = card else { return false };
+    let regions = editor.screen.regions.list();
+    let Some(at) = regions.iter().rposition(|r| r.kind == crate::regions::Kind::Follow) else { return false };
+    !regions[at + 1..].iter().any(|r| overlaps(r.rect, (x, y, w, 1)))
 }
 
 /// Region `kind` drawn at `rect`, if it was (`regions.rs`) — said right after its drawer, so the frame's regions are in
@@ -21182,7 +21200,7 @@ pub(crate) fn underlines(d: &crate::lsp::Diagnostic, pos: usize) -> bool {
 ///
 /// ```text
 ///   ╭─ note ── 1 of 2 here ──────────────────────────────╮
-///   │ ¶ author                                          │
+///   │ ¶ claude                                          │
 ///   │   Lex errors lose their position here — pass it. │
 ///   │                                                   │
 ///   │ › you                                             │
@@ -21678,7 +21696,7 @@ fn note_thread_lines(n: &crate::notes::Note, editor: &Editor, ui: &Ui) -> Vec<cr
     out
 }
 
-/// Who said entry `i` of `n`'s thread, as its card heads it: `¶ author`, `› you · draft`, the reviewer's angles and
+/// Who said entry `i` of `n`'s thread, as its card heads it: `¶ claude`, `› you · draft`, the reviewer's angles and
 /// verdict.
 fn note_head(
     n: &crate::notes::Note,
@@ -22016,7 +22034,7 @@ fn key_hints(editor: &Editor) -> Option<Vec<(&'static str, String)>> {
                 hints(&[("enter", "go to it"), ("C-x", "close it"), ("esc", "back to the card")])
             }
             Some(by) => {
-                let all = format!("close all the {}'s", by.label());
+                let all = format!("close all {} began", by.label());
                 hints(&[("enter", "go to it"), ("C-x", "close it"), ("A-x", &all), ("esc", "close")])
             }
             None => hints(&[("enter", "go to it"), ("type", "narrow"), ("esc", "close")]),

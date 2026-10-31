@@ -42,7 +42,7 @@ impl By {
     /// How it's shown: on the note's card, in the notes list and the review rail.
     pub fn label(self) -> &'static str {
         match self {
-            By::Author => "author",
+            By::Author => "claude",
             By::You => "you",
             By::Reviewer => "reviewer",
             By::Chat => "chat",
@@ -1191,7 +1191,7 @@ pub fn close_by(ed: &mut Editor, by: Option<By>) -> bool {
     }
     q.push_str("\n\nKept, space v s still sends them; C-x in the notes list closes one.");
     let title = match by {
-        Some(by) => format!("Close the {}'s {}?", by.label(), crate::nav::count(ids.len(), "note")),
+        Some(by) => format!("Close the {} {} began?", crate::nav::count(ids.len(), "note"), by.label()),
         None => format!("Close all {}?", crate::nav::count(ids.len(), "note")),
     };
     let what = crate::offer::What::NotesClose { by, ids };
@@ -1214,7 +1214,7 @@ fn close_ids(ed: &mut Editor, by: Option<By>, ids: &[u64]) {
     ed.workspace.claude.notes.list.retain(|n| !ids.contains(&n.id));
     let n = before - ed.workspace.claude.notes.list.len();
     ed.set_status(match by {
-        Some(by) => format!("{n} of the {}'s notes closed", by.label()),
+        Some(by) => format!("{} {} began closed", crate::nav::count(n, "note"), by.label()),
         None => format!("{} closed", crate::nav::count(n, "note")),
     });
 }
@@ -1245,12 +1245,13 @@ pub fn began(ed: &Editor, id: u64) -> Option<By> {
     find(ed, id).and_then(|n| n.thread.first()).map(|e| e.by)
 }
 
-/// Who `word` names, as `:notes-clear` takes it: `reviewer`, `author` (or `claude`), `you`, `chat`.
+/// Who `word` names, as `:notes-clear` takes it — the words the cards head entries with: `you`, `claude`, `reviewer`,
+/// `chat`.
 pub fn by_word(word: &str) -> Option<By> {
     match word {
         "reviewer" => Some(By::Reviewer),
         "chat" => Some(By::Chat),
-        "author" | "claude" => Some(By::Author),
+        "claude" => Some(By::Author),
         "you" => Some(By::You),
         _ => None,
     }
@@ -2141,11 +2142,11 @@ mod tests {
         assert_eq!(gists(&ed), ["the author's", "mine", "the author's again"], "the reviewer's, all");
         let rows = ed.picker.as_ref().map(|p| (p.items().len(), p.shown().count()));
         assert_eq!(rows, Some((3, 0)), "the list follows (narrowed to `found two`: none left)");
-        assert!(ed.toasts.iter().any(|t| t.text.contains("2 of the reviewer's notes closed")), "said");
+        assert!(ed.toasts.iter().any(|t| t.text.contains("2 notes reviewer began closed")), "said");
         feed(&mut ed, "<esc><space>Nmine<C-x>");
         assert_eq!(gists(&ed), ["the author's", "the author's again"]);
         feed(&mut ed, "<esc>");
-        crate::typed::execute(&mut ed, "notes-clear author").unwrap();
+        crate::typed::execute(&mut ed, "notes-clear claude").unwrap();
         assert!(ed.workspace.claude.notes.list.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -2176,7 +2177,7 @@ mod tests {
         // The command line: asked, `n` keeps them
         crate::typed::execute(&mut ed, "notes-clear reviewer").unwrap();
         let o = ed.offers.first().expect("the card");
-        assert!(o.title.contains("the reviewer's 2 notes"), "{}", o.title);
+        assert_eq!(o.title, "Close the 2 notes reviewer began?");
         assert!(
             o.question.contains("a.rs:2 · found one") && !o.question.contains("found two"),
             "{}",

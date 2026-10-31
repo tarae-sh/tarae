@@ -500,7 +500,7 @@ pub fn execute(editor: &mut Editor, line: &str) -> Result<(), String> {
         "notes-clear" => {
             let by = match rest.split_whitespace().next() {
                 Some(word) => Some(
-                    crate::notes::by_word(word).ok_or("notes-clear takes reviewer, author, you or chat")?,
+                    crate::notes::by_word(word).ok_or("notes-clear takes you, claude, reviewer or chat")?,
                 ),
                 None => None,
             };

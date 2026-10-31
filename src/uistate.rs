@@ -59,7 +59,8 @@ use crate::workspace::At;
 /// 24: a note's `kind` may be `chat` (#239: what the chat's last answer said of a place, at it).
 /// 25: where each thing to read was drawn (focus D1, `regions.rs`): `regions[]` (`kind`, `rect`, a code pane's `pane`,
 /// `lead`, `must`), bottom first; a watcher asking `regions` is told them as they change, with the frame `written`.
-pub const V: u64 = 25;
+/// 26: a finding's `thread` names the session's Claude `claude` (was `author`), as the note's card and `kind` do (#254).
+pub const V: u64 = 26;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;
@@ -2607,7 +2608,7 @@ pub struct Finding {
     /// On a high-risk change, by the grades of the snapshot its reviewer read.
     pub high: bool,
     pub answered: bool,
-    /// (who, text): `reviewer` · `you` · `author`.
+    /// (who, text): `reviewer` · `you` · `claude`.
     pub thread: Vec<(&'static str, String)>,
 }
 

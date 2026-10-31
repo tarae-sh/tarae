@@ -114,17 +114,29 @@ const fn wait_time(row: u16, cols: (u16, u16)) -> Varies {
     Varies { row, cols, what: "the follow card's wait (`4.7s`), right-aligned", holds: seconds_right }
 }
 
-/// The time the status line says beside the step under way (`● waits for your review of … 1.6s`): how long that step
-/// has gone when the shot is taken. `now_segments` writes it after a space, left-aligned and padded to five cells under
-/// a minute, to `RUN_TIME_W`'s seven past it, then ` — ` — as the docs run reads `chat-edit`'s row 29: `main.rs 1.6s  —`,
-/// past a minute `main.rs 1m 03s  —`. `cols` are those five and the cell after them: `1.6s  ` (the padding, then
-/// ` — `'s space), `1m 03s` (its padding beyond them) — the time left-aligned, blanks after it.
-const fn step_time(row: u16, cols: (u16, u16)) -> Varies {
-    Varies { row, cols, what: "the step's time (`1.6s`), left-aligned", holds: seconds_left }
+/// The cursor line's blame, from its age to where its text ends (`5s ago · A skein of threads`): the fixture's commit is
+/// made as the scene starts, so its age is the scene's own pace — a second either way, and past nine seconds a cell wider,
+/// the summary after it moved by one (its cut too). `cols` start at the age's first digit and reach a cell past the
+/// summary's end as a one-digit age draws it (or to the cut, `…`, where it's cut).
+const fn blame_age(row: u16, cols: (u16, u16)) -> Varies {
+    Varies { row, cols, what: "the blame's age and summary (`5s ago · …`)", holds: blame_aged }
+}
+
+/// A blame's age as `run_duration`'s largest unit writes it (`5s ago`, `12s ago`, `1m ago`), then nothing or ` · ` and
+/// the summary — its cells as drawn, the age their first.
+fn blame_aged(t: &str) -> bool {
+    let Some((age, rest)) = t.split_once(" ago") else { return false };
+    let n = age.strip_suffix('s').or_else(|| age.strip_suffix('m')).unwrap_or_default();
+    let number = !n.is_empty()
+        && n.len() <= 2
+        && n.bytes().all(|c| c.is_ascii_digit())
+        && (n == "0" || !n.starts_with('0'));
+    number && (rest.trim_end().is_empty() || rest.starts_with(" · "))
 }
 
 /// The inbox's three ages, right-aligned at its rows' end, and the status line's wait for main's run after `cargo test
-/// --quiet`: how long each ask has waited when the shot is taken (`inbox`).
+/// --quiet` (said whole there: the picker covers the follow card's head — #253): how long each ask has waited when the
+/// shot is taken (`inbox`).
 const INBOX_WAITS: &[Varies] = &[
     Varies { row: 4, cols: (110, 117), what: "main's ask's age (`24.5s`)", holds: seconds_padded },
     Varies { row: 5, cols: (110, 117), what: "api's ask's age (`16.3s`)", holds: seconds_padded },
@@ -154,11 +166,6 @@ fn seconds_padded(t: &str) -> bool {
 /// A time right-aligned in its cells as drawn: blanks before it, its last character the cells' last.
 fn seconds_right(t: &str) -> bool {
     seconds(t.trim_start_matches(' '))
-}
-
-/// A time left-aligned in its cells as drawn: its first character the cells' first, blanks after it.
-fn seconds_left(t: &str) -> bool {
-    seconds(t.trim_end_matches(' '))
 }
 
 /// `cargo xtask shot`'s default size, most pictures'.
@@ -375,7 +382,7 @@ const DOC_SCENES: &[DocScene] = &[
         &["@1", ":", "chat-resume", "\r", "@10?why does adds() fail", "@1"],
     )
     .seed(Seed::Chats),
-    // (your code review: the first change in hand, a comment being written at it)
+    // (your code review: the first change in hand, a comment written at it, its card opened — `enter` on its line)
     scene(
         "codereview",
         Fixture::Calc,
@@ -394,6 +401,8 @@ const DOC_SCENES: &[DocScene] = &[
             "n",
             "@1",
             "Should min say which one it returns when they're equal, as max now does?",
+            "\r",
+            "@1",
             "\r",
             "@1",
         ],
@@ -491,6 +500,64 @@ const DOC_SCENES: &[DocScene] = &[
     )
     .claude("commitdraft"),
     // (a review whose changes are graded high: an `unsafe` line, a new build script)
+    // (a walk-through's last stop with your cursor in its lines, the tour over: its card says `space n ask about this` —
+    // `space n` acts at your cursor, #250; the answer's own card, opened at the turn's end at its first place (A1b), shut
+    // by `esc` in the code first)
+    scene(
+        "followask",
+        Fixture::Demo,
+        MAIN,
+        &[
+            "@1",
+            " ",
+            "l",
+            "@1",
+            "how does main work?",
+            "\r",
+            "@60?walk-through",
+            "@1",
+            "\x1b",
+            "\x1b",
+            "\x1b",
+            "12G",
+            "@?ask about this",
+            "@1",
+        ],
+    )
+    .claude("tour"),
+    // (a note Claude pinned, your reply in its thread and Claude's answer there — its card opened by `]n`, between the
+    // lines under the note's line)
+    scene(
+        "notethread",
+        Fixture::Demo,
+        MAIN,
+        &[
+            "@1",
+            " ",
+            "l",
+            "@1",
+            "anything off in the loop?",
+            "\r",
+            "@30?One thing to watch",
+            "@1",
+            "\x1b",
+            "\x1b",
+            "10G",
+            " ",
+            "n",
+            "@1",
+            "why not keep a Vec?",
+            "\r",
+            "@30?answered at the note",
+            "@2",
+            "\x1b",
+            "\x1b",
+            "gg",
+            "]n",
+            "@1",
+        ],
+    )
+    .claude("notethread"),
     scene("risk", Fixture::Words, MAIN, &["@1", " ", "v", "v", "@?high", "@1"]),
     // (…and its end held while they're not looked at — asked once the review's toast has gone: caught fading, the
     // picture came out different at each take)
@@ -643,7 +710,7 @@ const DOCS: &[DocShot] = &[
     row("chat-conversations.png", Some("conversations"), S),
     row("inbox.png", Some("inbox"), (120, 34)).varies(INBOX_WAITS),
     row("inbox-hanji.png", Some("inbox"), (120, 34)).light().varies(INBOX_WAITS),
-    row("chat-point-hanji.png", Some("point"), (140, 34)).light(),
+    row("chat-point-hanji.png", Some("point"), (140, 34)).light().varies(&[blame_age(1, (75, 91))]),
     row("chat-ids.png", None, (140, 34)),
     row("chat-explore.png", None, S),
     // (`chatmid` shows neither the wash nor the thinking these show: phase 3's `thinking` script)
@@ -651,21 +718,24 @@ const DOCS: &[DocShot] = &[
     row("follow-hanji.png", None, S).light(),
     row("follow-thinking.png", None, S),
     row("follow-show.png", None, (140, 40)),
-    row("follow-ask.png", None, S),
+    // (the cursor line's blame: its age the scene's pace)
+    row("follow-ask.png", Some("followask"), S).varies(&[blame_age(14, (33, 62))]),
     // (the turn's time on the chat's last answer row, right-aligned: tarae's clock, a tenth either way)
-    row("m4-chat-hanji.png", Some("chatanswer"), S).light().varies(&[turn_time(23, (103, 111))]),
+    row("m4-chat-hanji.png", Some("chatanswer"), S)
+        .light()
+        .varies(&[blame_age(1, (43, 67)), turn_time(23, (103, 111))]),
     row("chat-plan.png", None, S),
     // (its head quotes what was asked, as every review of Claude's change does — frictions34 43)
-    // (the follow card's wait on its frame's top line, right-aligned: how long the scene took to get there — and the
-    // status line's time of the step under way, the review it waits for)
-    row("chat-edit.png", Some("review"), S).varies(&[wait_time(18, (102, 108)), step_time(29, (52, 58))]),
+    // (the follow card's wait on its frame's top line, right-aligned: how long the scene took to get there — the
+    // status line says no step while the card does, focus B1)
+    row("chat-edit.png", Some("review"), S).varies(&[wait_time(18, (102, 108))]),
     row("chat-edit-why.png", None, S),
     row("chat-turn-review.png", None, (200, 36)),
     row("chat-review-at-end.png", Some("reviewatend"), S),
     row("chat-undo-turn.png", None, S),
     row("chat-tests.png", None, S),
-    row("chat-run.png", Some("runcard"), S).varies(&[wait_time(1, (102, 108)), step_time(29, (46, 52))]),
-    row("notes.png", None, S),
+    row("chat-run.png", Some("runcard"), S).varies(&[blame_age(1, (43, 70)), wait_time(1, (102, 108))]),
+    row("notes.png", Some("notethread"), S),
     row("commit-draft.png", Some("commitdraft"), S),
     row("review.png", Some("codereview"), S),
     row("claude-reviews.png", Some("bgreviewnote"), S),
@@ -682,17 +752,18 @@ const DOCS: &[DocShot] = &[
     row("ux-doc-comments.png", Some("doccomments"), S),
     row("ux-doc-comments-open.png", Some("doccommentsopen"), S),
     row("ux-guides.png", None, S),
-    row("ux-side-panel.png", Some("code"), S),
+    row("ux-side-panel.png", Some("code"), S).varies(&[blame_age(1, (75, 103))]),
     row("ux-outline.png", Some("outline"), S),
     row("m2-file-picker.png", Some("filepicker"), S),
-    row("ux-search.png", Some("search"), S),
+    // (the cursor line's blame: its age the scene's pace)
+    row("ux-search.png", Some("search"), S).varies(&[blame_age(12, (48, 74))]),
     row("ux-splits.png", Some("splits"), S),
     row("ux-cmdline-complete.png", Some("cmdline"), S),
     row("ux-git.png", Some("gutter"), S),
     row("syntax-helm.png", None, S),
     row("grammar-offer.png", None, S),
     row("offer-stack.png", None, S),
-    row("syntax-injections.png", Some("injections"), S),
+    row("syntax-injections.png", Some("injections"), S).varies(&[blame_age(1, (25, 51))]),
     row("ux-error-lens.png", None, S),
     row("m3-completion.png", None, S),
     row("m3-signature.png", None, S),
@@ -1514,23 +1585,45 @@ mod tests {
             let e = d.varies_hold(&screen(moved)).unwrap_err();
             assert!(e.contains("row 1 cols 4..9") && e.contains("the layout moved"), "{moved:?}: {e}");
         }
-        // (the cells as the docs run read them: the follow card's wait right-aligned, the step's time left-aligned —
-        // each refused the other way round, with the line or the dash beside it, or with a word before it; `1m 07s`
-        // takes every cell, both ways)
-        for right in ["  5.2s", "  2.8s", " 12.3s"] {
-            assert!(seconds_right(right) && !seconds_left(right), "{right:?}");
+        // (the cells as the docs run read them: the follow card's wait right-aligned — refused left-aligned, with the
+        // line beside it, or with a word before it; `1m 07s` takes every cell)
+        for right in ["  5.2s", "  2.8s", " 12.3s", "1m 07s"] {
+            assert!(seconds_right(right), "{right:?}");
         }
-        for left in ["1.6s  ", "1.9s  ", "12.3s "] {
-            assert!(seconds_left(left) && !seconds_right(left), "{left:?}");
-        }
-        assert!(seconds_right("1m 07s") && seconds_left("1m 03s"));
-        for not in ["─  5.2s", "5.2s ─", "1.6s —", "▲ 5.2s", "waits 5.2s", "      "] {
-            assert!(!seconds_right(not) && !seconds_left(not), "{not:?}");
+        for not in ["1.6s  ", "─  5.2s", "5.2s ─", "▲ 5.2s", "waits 5.2s", "      "] {
+            assert!(!seconds_right(not), "{not:?}");
         }
         // (an unwritten cell is a blank, as drawn)
         let blanks: Vec<String> = ["", "", "5", ".", "2", "s"].map(String::from).to_vec();
         const RIGHT: &[Varies] = &[Varies { row: 0, cols: (0, 6), what: "", holds: seconds_right }];
         assert_eq!(row("x.png", None, (6, 1)).varies(RIGHT).varies_hold(&[blanks]), Ok(()));
+    }
+
+    /// A blame's age passes with what follows it — its summary whole, moved a cell by a two-digit age, or cut — and
+    /// anything else in its cells fails: a layout that moved them, another word, an age of another form.
+    #[test]
+    fn a_blames_age_is_checked_with_what_follows_it() {
+        for ok in [
+            "5s ago · A skein of threads",
+            "12s ago · A skein of thread",
+            "6s ago · A skei…",
+            "1m ago · A skein",
+            "5s ago · Small arithmetic ",
+            "0s ago ",
+        ] {
+            assert!(blame_aged(ok), "{ok:?}");
+        }
+        for not in [
+            "demo, 5s ago · A",
+            " 5s ago · A",
+            "5 ago · A",
+            "05s ago · A",
+            "5s ago A",
+            "5h ago · A",
+            "      ",
+        ] {
+            assert!(!blame_aged(not), "{not:?}");
+        }
     }
 
     /// Every row's `wait_time` holds the follow card's top line as `timer` and `top_line` lay it — the line's `─`, three
@@ -1560,37 +1653,6 @@ mod tests {
                 let mut screen = vec![Vec::new(); usize::from(v.row)];
                 screen.push(line);
                 assert_eq!(d.varies_hold(&screen), Ok(()), "{picture} {t:?}");
-            }
-        }
-    }
-
-    /// Every row's `step_time` holds the status line's step time as `now_segments` lays it — after a space, padded to
-    /// five cells under a minute and to seven (`RUN_TIME_W`) past it, then ` — ` — its cells ending right before the
-    /// dash under a minute, and taking `1m 02s` whole past it (under ten minutes: a docs shot's).
-    #[test]
-    fn a_steps_time_is_named_where_its_padding_puts_it() {
-        let what = step_time(0, (0, 0)).what;
-        let steps: Vec<(&str, &'static Varies)> = DOCS
-            .iter()
-            .flat_map(|d| d.varies.iter().filter(|v| v.what == what).map(move |v| (d.picture, v)))
-            .collect();
-        assert_eq!(steps.len(), 2, "chat-edit's and chat-run's");
-        for (picture, v) in steps {
-            let d = DocShot { varies: std::slice::from_ref(v), ..row(picture, None, S) };
-            for (t, w) in [("1.6s", 5), ("12.3s", 5), ("59.9s", 5), ("1m 02s", 7), ("9m 59s", 7)] {
-                let before = "x".repeat(usize::from(v.cols.0) - 1);
-                let line: Vec<String> =
-                    format!("{before} {t:<w$} — I will switch it").chars().map(String::from).collect();
-                let mut screen = vec![Vec::new(); usize::from(v.row)];
-                screen.push(line.clone());
-                assert_eq!(d.varies_hold(&screen), Ok(()), "{picture} {t:?}");
-                if w == 5 {
-                    assert_eq!(
-                        line[usize::from(v.cols.1)],
-                        "—",
-                        "{picture} {t:?}: the dash right after its cells"
-                    );
-                }
             }
         }
     }

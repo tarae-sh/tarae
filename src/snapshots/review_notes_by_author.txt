@@ -17,7 +17,7 @@
 14                              │    │ ¶ reviewer · not sent yet                                                 │▎
 15                              │    │   This value is never checked before use.                                 │▎
 16                              │    │                                                                           │▎
-17                              │    │ ¶ author                                                                  │▎
+17                              │    │ ¶ claude                                                                  │▎
 18                              │    │   It is — two lines up.                                                   │▎
 19                              │    ╰─ space n reply · space v s send the review · ]n next · q close ───────────╯▎
 20                              │ 13▎let added_8 = 8;                                                             ▎

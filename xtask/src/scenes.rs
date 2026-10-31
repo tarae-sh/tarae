@@ -3858,8 +3858,8 @@ const SCENES: &[Scene] = &[
         ],
     },
     // (the docs' `claude-reviews.png`: the reviewer read in the background — three findings on thread.rs's lines,
-    // one's card open under it, its report beside it in a split (`space v r` — read, the status line's
-    // `¶ 3 findings` goes, as decided))
+    // one's card opened under it (`enter` on its line: a card opens by an act only), its report beside it in a split
+    // (`space v r` — read, the status line's `¶ 3 findings` goes, as decided))
     Scene {
         name: "bgreviewnote",
         claude: "reviewfull",
@@ -3889,6 +3889,8 @@ const SCENES: &[Scene] = &[
             "15",
             "\r",
             "@8",
+            "\r",
+            "@1",
         ],
     },
     // (the same without the report: the findings on their lines, one's card, the status line's `¶ 3 findings ▲ ·
@@ -3911,6 +3913,8 @@ const SCENES: &[Scene] = &[
             "15",
             "\r",
             "@8",
+            "\r",
+            "@1",
         ],
     },
     Scene {
@@ -4593,6 +4597,8 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "focus-fix",
     "focus-asks",
     "focus-line",
+    "tour",
+    "notethread",
     "a1-none",
     "a1-flow",
     "a1b-two",
@@ -4725,6 +4731,8 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "focus-fix" => turn.focus_fix()?,
             "focus-asks" => turn.focus_asks()?,
             "focus-line" => turn.focus_line(&line)?,
+            "tour" => turn.tour()?,
+            "notethread" => turn.note_thread(&line)?,
             // (focus A1's: an answer naming no place)
             "a1-none" => turn.a1_none()?,
             // (…and one with a paragraph placed elsewhere: its line on the place's card)
@@ -5710,6 +5718,50 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
                     it. A Vec would keep both, in order, and the loop would print each.";
         self.call(2, "note", json!({"reply_to": id, "text": text}))?;
         self.words("I answered at the note. That is all.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// The docs' `follow-ask.png`: an answer that walks through the demo's `main.rs` in three stops — a `<show at=…>` line
+    /// before each piece, in the order of the flow, as Claude is asked to write one — a sentence each.
+    fn tour(&mut self) -> io::Result<()> {
+        self.call(1, "read", json!({"files": ["src/main.rs"]}))?;
+        for (at, what, about) in [
+            (
+                "src/main.rs:1-4",
+                "the map and the thread type come in",
+                "A HashMap keys the threads by name; Thread is the crate's own, from thread.rs.",
+            ),
+            (
+                "src/main.rs:8-10",
+                "the first thread goes into the map",
+                "A thread of three knots is made and put in under its name, cloned because the map keeps the key.",
+            ),
+            (
+                "src/main.rs:11-13",
+                "each thread is printed with its knots and its length",
+                "The loop walks the map in its own order and prints each name, how many knots it has and how long it is.",
+            ),
+        ] {
+            self.text(&format!("<show at=\"{at}\">{what}</show>\n"))?;
+            self.words(about)?;
+            self.text("\n\n")?;
+        }
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// The docs' `notes.png`: a question answered with a note pinned at its line; your reply there (a message naming the
+    /// note) answered in its thread, as `focus-line` answers.
+    fn note_thread(&mut self, line: &str) -> io::Result<()> {
+        if line.contains("note id=") {
+            return self.focus_line(line);
+        }
+        self.words("Reading the loop.")?;
+        self.text("\n\n")?;
+        self.call(1, "read", json!({"files": ["src/main.rs:7-14"]}))?;
+        let text = "insert keys the map by name: a second strand with the same name replaces this one, and nothing \
+                    says so.";
+        self.call(2, "note", json!({"path": "src/main.rs", "line": 10, "text": text}))?;
+        self.words("One thing to watch there: I pinned a note on it.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

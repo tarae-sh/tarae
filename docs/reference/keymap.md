@@ -661,7 +661,7 @@ Type `:` in normal mode. `tab` completes command names and their arguments (path
 | `:review-turn` |  | Review what Claude changed in its last turn |
 | `:soft-wrap` |  | Wrap this buffer's long lines, or scroll sideways (on/off) |
 | `:note-close` |  | Close Claude's note on this line |
-| `:notes-clear` |  | Close all notes (or one author's: reviewer, author, you, chat) |
+| `:notes-clear` |  | Close all notes (or one author's: you, claude, reviewer, chat) |
 | `:commit` |  | Commit every change from a review all viewed (message file) |
 | `:commit-draft` |  | Let Claude draft the commit message |
 | `:undo-turn` |  | Undo what Claude changed in its last turn |

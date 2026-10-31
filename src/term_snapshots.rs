@@ -2270,7 +2270,7 @@ fn an_open_cards_height_is_laid_out_once_a_frame() {
     assert_eq!(crate::term::NOTE_LAYOUTS.with(|c| c.get()), 1, "a reply lays it out once");
 }
 
-/// A thread too long for the room keeps its newest words — under the name of whoever says them (`¶ author`),
+/// A thread too long for the room keeps its newest words — under the name of whoever says them (`¶ claude`),
 /// the cut words going on with `…`.
 #[test]
 fn a_cut_note_keeps_who_is_talking() {
@@ -2290,7 +2290,7 @@ fn a_cut_note_keeps_who_is_talking() {
     let rows: Vec<String> = parser.screen().rows(0, s.w).collect();
     let card: Vec<&str> = rows[y..y + h].iter().map(|r| r.trim().trim_matches(['│', ' '])).collect();
     assert!(card[0].starts_with("╭─ note "), "{card:#?}");
-    assert!(card[1].starts_with("¶ author"), "{card:#?}");
+    assert!(card[1].starts_with("¶ claude"), "{card:#?}");
     assert!(card[2].starts_with("… Sentence number"), "{card:#?}");
     assert!(card.iter().any(|r| r.contains("Sentence number 12")), "the newest stays: {card:#?}");
     assert!(
@@ -2333,7 +2333,7 @@ fn snapshot_review_notes_by_their_author() {
     crate::notes::open(&mut s.ed, id);
     let shown = rows(&mut s);
     assert!(has(&shown, "╭─ review"), "the card: {shown:#?}");
-    assert!(has(&shown, "¶ reviewer · not sent yet") && has(&shown, "¶ author"), "the card: {shown:#?}");
+    assert!(has(&shown, "¶ reviewer · not sent yet") && has(&shown, "¶ claude"), "the card: {shown:#?}");
     s.check("review_notes_by_author");
 }
 
@@ -2423,6 +2423,7 @@ fn the_reviewers_verdict_and_findings_go_to_a_driver_whole() {
         crate::notes::add(&mut s.ed, &path, 1..2, By::Reviewer, "A name that says nothing.\nRename it.");
     let n = s.ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == low).unwrap();
     n.thread.push(crate::notes::Entry { by: By::You, text: "Kept on purpose.".into(), draft: false });
+    n.thread.push(crate::notes::Entry { by: By::Author, text: "Fine by me.".into(), draft: false });
     let verdict = "One risk: the unsafe call has no SAFETY comment.\nThe rest reads fine.";
     let mut rv =
         crate::reviewer::Reviewer::for_test(root, crate::reviewer::State::Done, vec![high, low], verdict);
@@ -2452,6 +2453,8 @@ fn the_reviewers_verdict_and_findings_go_to_a_driver_whole() {
     assert_eq!((&f[0]["answered"], &f[0]["thread"][0]["by"]), (&json!(false), &json!("reviewer")));
     assert_eq!((&f[1]["high"], &f[1]["answered"]), (&json!(false), &json!(true)));
     assert_eq!(f[1]["thread"][1], json!({ "by": "you", "text": "Kept on purpose." }));
+    // (the session's own Claude by the word its card heads it with — #254, `uistate::V` 26)
+    assert_eq!(f[1]["thread"][2], json!({ "by": "claude", "text": "Fine by me." }));
     let text = rx.try_recv().expect("the text form too");
     assert!(text.contains("The rest reads fine."), "{text}");
     assert!(text.contains("- src/demo.rs:6 ▲ high\n  reviewer: unsafe without"), "{text}");

@@ -482,6 +482,62 @@ fn the_follow_card_says_the_step_and_the_line_keeps_its_cell() {
     }
 }
 
+/// #253: the line goes short only while the follow card's head is in sight — a picker (the palette, `space b`) over it,
+/// or which-key or a prompt over its head, and the line says the step whole; each gone, short again. Wherever it's
+/// drawn, at either size: short exactly when a row of the frame shows the head saying the step.
+#[test]
+fn the_line_is_whole_while_something_covers_the_cards_head() {
+    crate::clock::hold();
+    let feed = |ed: &mut Editor, keys: &str| {
+        let mut chars = keys.chars();
+        while let Some(c) = chars.next() {
+            let key: crate::key::Key = match c {
+                '<' => chars.by_ref().take_while(|&c| c != '>').collect::<String>().parse().unwrap(),
+                c => crate::key::Key::plain(crate::key::Code::Char(c)),
+            };
+            ed.handle_key(key);
+            sync(ed);
+        }
+    };
+    // (not 80 columns: a picker's hints leave the step no room there, short or whole)
+    for (w, h) in [(160, 40), (120, 34)] {
+        let mut ed = at_work();
+        call(&mut ed, "t1", "run", json!({"command": "cargo test -q"}));
+        ed.workspace.claude.chat.as_mut().unwrap().follow.on = true;
+        ed.workspace.viewer.at = crate::workspace::At::Code;
+        let mut wholes = Vec::new();
+        for (keys, what) in [
+            ("", "nothing over it"),
+            (" ?", "the palette"),
+            ("<esc>", "the palette gone"),
+            (" b", "the buffer picker"),
+            ("<esc>", "the picker gone"),
+            (" ", "which-key"),
+            ("<esc>", "which-key gone"),
+            (":", "a prompt"),
+            ("<esc>", "the prompt gone"),
+        ] {
+            feed(&mut ed, keys);
+            let drawn = rows(&mut ed, w, h);
+            let (line, above) = drawn.split_last().unwrap();
+            let head = above.iter().any(|r| r.contains("follow ─") && r.contains("running"));
+            let whole = line.contains("▸ running cargo test -q");
+            assert_eq!(
+                whole, !head,
+                "{w}×{h}, {what}: the line whole exactly when no head says it — {drawn:#?}"
+            );
+            if whole {
+                wholes.push(what);
+            }
+        }
+        assert!(!wholes.contains(&"nothing over it"), "{w}×{h}: {wholes:?}");
+        assert!(
+            wholes.contains(&"the palette") && wholes.contains(&"the buffer picker"),
+            "{w}×{h}, a picker over the card: the line whole — {wholes:?}"
+        );
+    }
+}
+
 /// Following and leading already, the view held somewhere else than where Claude is now (its last place): a press on
 /// the line brings the view to Claude's place — its read's lines — your cursor where it was.
 #[test]
@@ -551,4 +607,19 @@ fn the_mouse_over_the_line_shows_it_whole() {
     ed.handle_event(crate::event::Event::Hover(x, 2));
     assert_eq!(ed.cut_hover, None);
     assert_eq!(untimed(&rows(&mut ed, 100, 30)), untimed(&before), "gone as the mouse leaves");
+    // A prompt standing on the line: the card doesn't cover what you type (#253 draws the prompt before the line)
+    ed.handle_key(crate::key::Key::plain(crate::key::Code::Char(':')));
+    rows(&mut ed, 160, 30);
+    let (x, y) = line_at(&ed);
+    ed.handle_event(crate::event::Event::Hover(x + 2, y));
+    assert_eq!(ed.cut_hover, Some(crate::whole::Cut::Now), "the line cut under the prompt too");
+    let over = rows(&mut ed, 160, 30);
+    assert!(!over.iter().any(|r| r.contains("space F follow Claude")), "no card over the prompt: {over:#?}");
+    let regions = ed.screen.regions.list();
+    let prompt =
+        regions.iter().position(|r| r.kind == crate::regions::Kind::Prompt).expect("the prompt drawn");
+    assert!(
+        !regions[prompt..].iter().any(|r| r.kind == crate::regions::Kind::Hover),
+        "nothing hovers over the prompt: {regions:?}"
+    );
 }

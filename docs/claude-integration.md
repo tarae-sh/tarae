@@ -96,7 +96,8 @@ head has the step's verb and its own time (`follow ── ▃ running 41s`), its
 (`▸ run  cargo test -q`) — the head says that too where no row does (`▃ writing src/trust.rs`, an edit as it comes) —
 its body the sentence Claude finished, and the plan's step is the minimized card's row above the turn (with the chat
 open, its plan). A press on the head's step follows Claude. Where no card is drawn — follow off, the code hidden or
-too narrow for it, a review in its place, a stop replayed on it — the status line says it all, as above.
+too narrow for it, a review in its place, a stop replayed on it — or its head is out of sight under what's open over
+it (a picker, the palette, which-key, a prompt, a card), the status line says it all, as above.
 
 **While it works** the chat's title (and the follow card's) says what the turn is at, in the same words as the status
 line (`thinking 3.2s`, `writing`, `running`, `reading`), and whether anything is arriving. Before the word stands the
@@ -747,7 +748,7 @@ announced once the tour is over, so its message doesn't compete with the stop's 
 chat stops the tour and moves the editor to the first reference the chat shows, so the code follows what you're
 reading. It's plain text in the answer: no extra requests, a few words per stop.
 
-![A walk-through stop: the lines Claude explains are washed, and the card above them says what they do, with "space n ask about this" under its words](screenshots/follow-ask.png)
+![A walk-through's last stop with the cursor in its lines: the lines Claude explains are washed, and the follow card says what they do, with "space n ask about this" on its bottom line](screenshots/follow-ask.png)
 
 You can talk back at a stop. Once the answer is done, the stop's card says `space n ask about this` while your cursor
 is in its lines (`space n` acts at your cursor, not at the view follow holds). The last
@@ -1832,7 +1833,7 @@ counts the runs that only read text, by program.
 
 ### Notes
 
-![A note thread under its line: Claude's remark, your reply, and Claude's answer, with the line end showing ¶ and the reply count](screenshots/notes.png)
+![A note thread opened between the lines under its line: Claude's remark, your reply, and Claude's answer, the code below moved down](screenshots/notes.png)
 
 Claude can pin **notes** to lines of code: a bug, a risk, or a question tied to specific lines. A note shows as
 `¶ first words` at the end of its line. Its card opens **between the lines**, under the note's last line, as wide as
@@ -1895,7 +1896,7 @@ no longer gives, is dropped, said once in `:messages`.
 | `q` / `esc` | Close the open card (`q` is Helix's macro replay again once it's closed) |
 | `]n` / `[n` | Next / previous note, across files (notes sharing a line one by one), its card opened |
 | `space N` | Every note, with a preview — `C-x` closes the one on the row, `A-x` all its author began |
-| `:note-close` / `:notes-clear [reviewer\|author\|you\|chat]` | Close the note on your cursor's line, for good (with none there, the open card's) / all of them, or one author's (asks first when your unsent drafts are among them) |
+| `:note-close` / `:notes-clear [you\|claude\|reviewer\|chat]` | Close the note on your cursor's line, for good (with none there, the open card's) / all of them, or one author's (asks first when your unsent drafts are among them) |
 
 While follow holds the view at Claude's place, these keys still act at your cursor: `space n`, `enter`, `]n`/`[n` and
 `:note-close` take the note on your line, follow pauses and the view comes back to your cursor. A card open at Claude's
