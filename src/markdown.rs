@@ -542,6 +542,8 @@ pub struct Drawn {
     pub code: bool,
     pub join: Option<Join>,
     pub rest: Option<std::sync::Arc<str>>,
+    /// A row of prose (`Line::Text`) — what an older answer's stub may fold (`chatdoc::Fold`), never a table's.
+    pub prose: bool,
 }
 
 /// A row that goes on from the one before it, where the layout wrapped a line: its first `drop` characters
@@ -627,9 +629,10 @@ pub fn wrap_drawn(lines: &[Line], width: usize, rule: Style, label: Style) -> (V
                 }
                 _ => false,
             };
-            let code = matches!(line, Line::Code(_));
+            let (code, prose) = (matches!(line, Line::Code(_)), matches!(line, Line::Text { .. }));
             let join = joins.get(k).copied().flatten();
-            drawn.push(Drawn { whole, lead: if k == 0 { lead } else { 0 }, tail: 0, code, join, rest: None });
+            let lead = if k == 0 { lead } else { 0 };
+            drawn.push(Drawn { whole, lead, tail: 0, code, join, rest: None, prose });
         }
     }
     (out, drawn)

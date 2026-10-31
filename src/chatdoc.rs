@@ -33,6 +33,7 @@ use crate::key::{Code, Key};
 use crate::keymap::MappableCommand;
 use crate::movement as mv;
 use crate::selection::{Range, Selection};
+use crate::theme::Style;
 use crate::transaction::{Assoc, Change, Transaction};
 use crate::view::Surface;
 use crate::workspace::At;
@@ -145,6 +146,212 @@ pub fn lines_of(rows: &[ChatRow]) -> (String, Vec<Place>) {
     (text, at)
 }
 
+/// What the chat folds this frame (focus A1b step 3): the conversation reads as one — the newest answer whole until the
+/// next one has come, an older answer's paragraphs whose words a note holds at the code folded to one stub row
+/// (`◂ main.rs:11  first words…`), whole on its cut card under the mouse or the view mode's cursor. The document keeps
+/// every word: the row's text is the paragraph's start, what it folds its `rest` (`keep_whole`), so search and `y` find
+/// and copy all of it, and a selection wider than a character on it opens it (the doc comments' rule).
+#[derive(Debug, Default)]
+pub struct Fold {
+    /// The messages before it are older answers': the question of the newest answer that's done.
+    upto: usize,
+    /// Each message's question's place among your messages, while there's something to fold.
+    turns: Vec<usize>,
+    stubs: Vec<crate::chatnotes::Stub>,
+    /// Each turn's stubs hashed, by turn: what a message's rows depend on, worked out once a frame.
+    keys: Vec<(usize, u64)>,
+    /// (message, paragraph) held open: its lines with words before it, a stub's and a whole paragraph's alike.
+    open: Vec<(usize, usize)>,
+}
+
+/// What of a message folds (`Fold::of_msg`).
+type MsgFold<'a> = (&'a [crate::chatnotes::Stub], &'a [(usize, usize)]);
+
+impl Fold {
+    pub fn of(c: &Chat, notes: &crate::notes::Notes) -> Fold {
+        use crate::chat::Role;
+        // (the turn under way isn't an answer yet: the one before it stays whole until it's done)
+        let end = match c.busy() {
+            true => c.msgs.iter().rposition(|m| m.role == Role::User).unwrap_or(c.msgs.len()),
+            false => c.msgs.len(),
+        };
+        let answer = c.msgs[..end].iter().rposition(|m| m.role == Role::Assistant);
+        let upto = answer.and_then(|a| c.msgs[..a].iter().rposition(|m| m.role == Role::User)).unwrap_or(0);
+        let stubs = crate::chatnotes::stubs(notes);
+        if upto == 0 || stubs.is_empty() {
+            return Fold::default();
+        }
+        let mut users = 0;
+        let turns = (c.msgs.iter())
+            .map(|m| {
+                users += usize::from(m.role == Role::User);
+                users.saturating_sub(1)
+            })
+            .collect();
+        let mut keys: Vec<(usize, u64)> = Vec::new();
+        for chunk in stubs.chunk_by(|a, b| a.turn == b.turn) {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::hash::DefaultHasher::new();
+            chunk.hash(&mut h);
+            keys.push((chunk[0].turn, h.finish()));
+        }
+        let open = c.transcript.as_ref().map_or_else(Vec::new, Transcript::open);
+        Fold { upto, turns, stubs, keys, open }
+    }
+
+    /// What of message `i` folds, its stubs and the paragraphs held open; None: it stays whole.
+    fn of_msg(&self, i: usize) -> Option<MsgFold<'_>> {
+        let turn = *self.turns.get(i).filter(|_| i < self.upto)?;
+        let from = self.stubs.partition_point(|s| s.turn < turn);
+        let to = self.stubs.partition_point(|s| s.turn <= turn);
+        let open = (self.open.partition_point(|o| o.0 < i), self.open.partition_point(|o| o.0 <= i));
+        (from < to).then(|| (&self.stubs[from..to], &self.open[open.0..open.1]))
+    }
+
+    /// What message `i`'s rows depend on here (`LaidKey.state`) — the notes that hold its paragraphs, which of them a
+    /// selection holds open; 0: it stays whole.
+    pub fn key(&self, i: usize) -> u64 {
+        let Some((_, open)) = self.of_msg(i) else { return 0 };
+        let turn = self.turns[i];
+        let at = self.keys.partition_point(|k| k.0 < turn);
+        let key = open.iter().fold(self.keys[at].1, |h, o| h.rotate_left(7) ^ o.1 as u64);
+        key | 1
+    }
+
+    /// `rows` of message `i`, its places marked, each paragraph whose note holds its words one stub row `w` wide. Only the
+    /// paragraph that first names a place: a later naming's words are on no card, so they stay here. Two stubs in a
+    /// row have no air between them: its blank line goes from the document with its row (every line has a row).
+    pub fn rows(
+        &self,
+        c: &Chat,
+        i: usize,
+        rows: Vec<ChatRow>,
+        w: usize,
+        styles: (Style, Style),
+    ) -> Vec<ChatRow> {
+        use crate::chat::Role;
+        let Some((stubs, open)) = self.of_msg(i) else { return rows };
+        let start = c.msgs[..i].iter().rposition(|m| m.role == Role::User).map_or(0, |u| u + 1);
+        let words = c.msgs[start..i].iter().filter(|m| m.role == Role::Assistant);
+        let mut seen: Vec<(Arc<str>, usize)> = words
+            .flat_map(|m| {
+                let names = crate::places::names_in(&m.text);
+                let name = |n: (std::ops::Range<usize>, std::ops::Range<usize>, usize)| {
+                    (Arc::from(&m.text[n.1]), n.2)
+                };
+                names.into_iter().map(name).collect::<Vec<_>>()
+            })
+            .collect();
+        let mut out: Vec<ChatRow> = Vec::with_capacity(rows.len());
+        let (mut k, mut paragraph) = (0, 0);
+        while k < rows.len() {
+            let end = k + 1 + rows[k + 1..].iter().take_while(|r| r.join.is_some()).count();
+            let para = &rows[k..end];
+            k = end;
+            let text = lines_of(para).0;
+            let text = text.trim_end_matches('\n');
+            if text.trim().is_empty() {
+                out.extend_from_slice(para);
+                continue;
+            }
+            let held = open.iter().any(|o| o.1 == paragraph);
+            paragraph += 1;
+            let names = || para.iter().flat_map(|r| &r.places);
+            let place = names().find_map(|n| {
+                let new = !seen.iter().any(|s| *s.0 == *n.name && s.1 == n.line);
+                stubs.iter().find(|s| new && *s.name == *n.name && s.said == n.line)
+            });
+            seen.extend(names().map(|n| (n.name.clone(), n.line)));
+            match place.filter(|_| !held && para.iter().all(|r| r.prose)) {
+                Some(s) => {
+                    // (only air: a list's item between two stubs has none around it, and is words)
+                    let air = out.last().is_some_and(|r| r.spans.is_empty());
+                    if air && out.len() >= 2 && out[out.len() - 2].stub.is_some() {
+                        out.pop();
+                    }
+                    out.push(stub_row(para, text, s, w, styles));
+                }
+                None => out.extend_from_slice(para),
+            }
+        }
+        out
+    }
+}
+
+/// The least of a paragraph's first words a stub shows: less room, its place alone.
+const STUB_WORDS_MIN: usize = 8;
+
+/// `para`'s one row, `w` wide: `◂ main.rs:11  first words…`, faint, a link to its place, `whole` its text — cut first by
+/// its words, then its place — and whole on its card in the answer's own colours, `card` under them.
+fn stub_row(
+    para: &[ChatRow],
+    whole: &str,
+    s: &crate::chatnotes::Stub,
+    w: usize,
+    (faint, card): (Style, Style),
+) -> ChatRow {
+    use crate::markdown::Span;
+    let file = s.path.file_name().map_or_else(String::new, |f| f.to_string_lossy().into_owned());
+    let place = format!("{file}:{}", s.line + 1);
+    let room = w.saturating_sub("◂ ".width() + place.width() + "  ".width());
+    let (place, words) = match room >= STUB_WORDS_MIN {
+        true => (place, crate::cut::fit_ellipsis(whole, room)),
+        false => (crate::cut::fit_ellipsis(&place, w.saturating_sub("◂ ".width())), String::new()),
+    };
+    let head = format!("◂ {place}  ");
+    let skip = head.chars().count();
+    let span = |text: String| Span { cut: None, hint: false, text, style: faint };
+    let to = (head.width() + words.width()).min(w);
+    let mut row = ChatRow {
+        spans: vec![span(head), span(words)],
+        skip,
+        link: Some(crate::chat::Link { path: s.path.clone(), line: s.line }),
+        stub: Some(s.note),
+        ..ChatRow::default()
+    };
+    keep_whole(&mut row, whole);
+    if row.rest.is_some() {
+        let whole = crate::whole::Whole {
+            key: None,
+            on: crate::whole::On::Transcript,
+            text: whole.to_string(),
+            style: card,
+            pieces: pieces_of(para, card),
+            cols: (0, 0),
+            state: None,
+            float: None,
+        };
+        // (from the row's first cell: the paragraph where it would stand, nothing of the stub beside it)
+        row.cut = Some((0, to, whole));
+    }
+    row
+}
+
+/// The styles of `para`'s text over `card`, each on its bytes of the line it makes (`lines_of`).
+fn pieces_of(para: &[ChatRow], card: Style) -> Vec<(std::ops::Range<usize>, Style)> {
+    let (mut out, mut at) = (Vec::new(), 0);
+    for r in para {
+        // (the space a wrap took: a card draws only its pieces)
+        if r.join == Some(true) {
+            let s = r.spans.iter().find(|s| !s.text.trim().is_empty());
+            out.push((at..at + 1, s.map_or(card, |s| card.patch(s.style))));
+            at += 1;
+        }
+        // (as the document has it: blanks at a row's end aren't the line's — `body`)
+        let (mut left, mut skip) = (body(r).0.len(), r.skip);
+        for s in &r.spans {
+            let chars = s.text.chars().count();
+            let len = s.text.chars().skip(skip).map(char::len_utf8).sum::<usize>().min(left);
+            skip = skip.saturating_sub(chars);
+            if len > 0 {
+                out.push((at..at + len, card.patch(s.style)));
+                (at, left) = (at + len, left - len);
+            }
+        }
+    }
+    out
+}
+
 /// A piece of the document: what it was made of (the layout's own rows — the same `Arc` is the same rows), its
 /// bytes and lines, its rows' places, and its part of `Document.rows` (`given`).
 struct Piece {
@@ -192,6 +399,37 @@ impl Transcript {
         Transcript { pane: Pane::new(doc), pieces: Vec::new(), keyed: false, seen: 0, visited: false }
     }
 
+    /// The paragraphs a selection wider than a character is on (`Fold.open`, sorted): each message's, by its lines
+    /// with words before it — what folding leaves as it was, so a stub and its unfolded rows are one paragraph.
+    fn open(&self) -> Vec<(usize, usize)> {
+        let Some(d) = self.pane.doc_in() else { return Vec::new() };
+        let text = &d.text;
+        let wide = |r: &&Range| crate::graphemes::next_boundary(text, r.from()) < r.to();
+        let of = |r: &Range| {
+            (text.byte_to_line(r.from()), text.byte_to_line(crate::graphemes::prev_boundary(text, r.to())))
+        };
+        let lines: Vec<(usize, usize)> = d.selection().ranges().iter().filter(wide).map(of).collect();
+        let (mut out, mut base) = (Vec::new(), 0);
+        for p in self.pieces.iter().filter(|_| !lines.is_empty()) {
+            let on = |l: usize| lines.iter().any(|&(a, b)| a <= l && l <= b);
+            if let Of::Msg(i) = p.of
+                && (base..base + p.lines).any(on)
+            {
+                let mut words = 0;
+                for l in base..base + p.lines {
+                    if !text.line(l).to_string().trim().is_empty() {
+                        if on(l) {
+                            out.push((i, words));
+                        }
+                        words += 1;
+                    }
+                }
+            }
+            base += p.lines;
+        }
+        out
+    }
+
     /// Its rows (the document's, frame rows not counted).
     pub fn rows(&self) -> usize {
         self.pane.doc_in().and_then(|d| d.rows.as_deref()).map_or(0, Given::len)
@@ -214,6 +452,19 @@ impl Transcript {
             None => (drawn_end == mv::line_end(&d.text, line)).then_some(drawn_end),
         };
         Some(Shown { line, start: r.start, len, x0: r.x0, end })
+    }
+
+    /// The stub the document's `line` is: where it goes, and the note that holds its words.
+    fn stub_at(&self, line: usize) -> Option<(crate::chat::Link, u64)> {
+        let mut base = 0;
+        for p in &self.pieces {
+            if line < base + p.lines {
+                let r = &p.rows[p.at.iter().position(|a| a.line == line - base)?];
+                return Some((r.link.clone()?, r.stub?));
+            }
+            base += p.lines;
+        }
+        None
     }
 
     /// The row the view starts at (its top line's rows above the screen counted).
@@ -314,9 +565,14 @@ fn follow(t: &mut Transcript, laid: &Laid) {
         if was != text {
             // (only what differs: a message being written grows at its end — the cursor and the view on its
             // earlier lines stay where they are)
-            let (pre, suf) = same_ends(&was, &text);
-            let insert = text[pre..text.len() - suf].to_string();
-            changes.push(Change { from: at + pre, to: at + old.len - suf, insert });
+            match blank_changes(&was, &text, at) {
+                Some(blanks) => changes.extend(blanks),
+                None => {
+                    let (pre, suf) = same_ends(&was, &text);
+                    let insert = text[pre..text.len() - suf].to_string();
+                    changes.push(Change { from: at + pre, to: at + old.len - suf, insert });
+                }
+            }
         }
         at += old.len;
         pieces.push(p);
@@ -366,6 +622,35 @@ fn follow(t: &mut Transcript, laid: &Laid) {
     }
     t.pieces = pieces;
     given(d, &mut t.pieces);
+}
+
+/// The changes from `was` to `text`, the piece at `at`, where only blank lines differ — a stub opening or closing, one
+/// between two others bringing two at once: each line its own change, so the words between them are never replaced and
+/// what's selected there stays. One that comes goes before the line break above it, not at the next paragraph's first
+/// byte, where `Assoc::Before` would leave what starts there behind it. None: words differ.
+fn blank_changes(was: &str, text: &str, at: usize) -> Option<Vec<Change>> {
+    let (mut old, mut new) = (was.split_inclusive('\n').peekable(), text.split_inclusive('\n').peekable());
+    let (mut pos, mut out): (usize, Vec<Change>) = (at, Vec::new());
+    loop {
+        match (old.peek().copied(), new.peek().copied()) {
+            (None, None) => return Some(out),
+            (Some(a), Some(b)) if a == b => {
+                pos += a.len();
+                old.next();
+                new.next();
+            }
+            (_, Some("\n")) => {
+                out.push(Change::insert(if pos > at { pos - 1 } else { pos }, "\n"));
+                new.next();
+            }
+            (Some("\n"), _) => {
+                out.push(Change::delete(pos, pos + 1));
+                pos += 1;
+                old.next();
+            }
+            _ => return None,
+        }
+    }
 }
 
 /// The bytes `a` and `b` share at their start, and then at their end (not overlapping) — on character boundaries.
@@ -917,6 +1202,23 @@ pub fn key(ed: &mut Editor, key: Key) -> Option<crate::uistate::Handler> {
     Some(Handler::ChatView)
 }
 
+/// The stub under its view mode's cursor (`ChatRow.stub`): where it goes, and the note that holds its words.
+pub fn stub_here(ed: &Editor) -> Option<(crate::chat::Link, u64)> {
+    let t = transcript(ed).filter(|_| has_keys(ed))?;
+    let d = t.pane.doc_in()?;
+    t.stub_at(mv::line_of(&d.text, d.selection().primary().cursor(&d.text)))
+}
+
+/// A stub's `enter` or a press on it: its place in the code, its note's card open with its answer in sight — the keys
+/// where they are, as a link's (`chat::jump`). A file gone says so; no card opens on nothing.
+pub fn go(ed: &mut Editor, link: crate::chat::Link, note: u64) {
+    let path = link.path.clone();
+    crate::chat::jump(ed, link);
+    if ed.doc().path.as_deref() == Some(path.as_path()) {
+        crate::notes::open_answer(ed, note);
+    }
+}
+
 /// What a command asked for, once its key is done.
 fn after(ed: &mut Editor) {
     let Some(t) = transcript_mut(ed) else { return };
@@ -927,7 +1229,12 @@ fn after(ed: &mut Editor) {
             ed.workspace.leave(At::Chat);
         }
         // (the input: the keys stay the chat's)
-        After::Input | After::Enter => leave(ed),
+        After::Input => leave(ed),
+        // (nothing selected: a stub goes to its place, anything else to the input)
+        After::Enter => match stub_here(ed) {
+            Some((link, note)) => go(ed, link, note),
+            None => leave(ed),
+        },
         After::Latest => catch_up(ed),
         After::Take => take(ed),
         After::ChatView => ed.set_status(
@@ -1051,6 +1358,8 @@ pub fn state(ed: &Editor) -> Option<serde_json::Value> {
     }))
 }
 
+#[cfg(test)]
+mod fold_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

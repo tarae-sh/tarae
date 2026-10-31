@@ -500,6 +500,11 @@ pub struct ChatRow {
     /// The places its message's text names, their part on this row (`places::mark_rows`: found in the message's
     /// lines, so one the wrap broke is on each of its rows) — underlined where the name comes to a file.
     pub places: Vec<crate::places::Named>,
+    /// A row of prose (`markdown::Drawn.prose`): what an older answer's stub may fold.
+    pub prose: bool,
+    /// An older answer's paragraph folded to this one row (`chatdoc::Fold`, focus A1b step 3): the note at the code that
+    /// holds its words.
+    pub stub: Option<u64>,
 }
 
 /// What goes with the input's next message, each kind in the order added (`Chat.with`).

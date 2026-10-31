@@ -511,7 +511,7 @@ as from every panel.
 |---|---|
 | `←` `→` `↑` `↓` | A character or a row, as in the code — the view following the cursor (`z j` `z k` scroll it, the cursor carried at the edge; only the wheel leaves the cursor behind) |
 | `y` | Copy what's selected, as written (a paragraph one line) — to the clipboard, and to `p` in the code |
-| `enter` | Quote what's selected to Claude ([below](#quoting-what-you-read)) — nothing selected, back to the input |
+| `enter` | Quote what's selected to Claude ([below](#quoting-what-you-read)) — nothing selected, back to the input; on a [stub](#notes), to its place in the code with its card open |
 | `G` | The latest: the conversation caught up, the cursor on its last line (`5G`: line 5) |
 | `i` `a` | Back to the input, your text as it was |
 | `esc` `q` | A selection collapses first; with none, back to the code |
@@ -1888,6 +1888,20 @@ conversation (`C-p`, or `:restart`'s `--resume`) brings its answers' notes back:
 only (the name as written, the file, the lines and the line's text), and their words are cut again from the
 conversation's own rows. A line that moved is found again by its text; a place whose file is gone, or that the answer
 no longer gives, is dropped, said once in `:messages`.
+
+**The chat folds what the code holds.** So the chat reads as the conversation, the newest answer stays whole, and once
+the next answer's turn ends, an older answer's paragraphs whose words are on a card at the code fold to one faint row:
+`◂ main.rs:11  The loop at src/main.rs:11 prints…`. What no place takes stays whole, so talk that isn't about code
+reads as it was written. A stub shows its whole paragraph while the mouse is over it, or while the view mode's cursor
+is on it. A press on it, or `enter` on it, goes to its place and opens its card, the keys staying in the chat as for
+any link; on a line a newer answer names too, its card opens with the earlier answers unfolded, so the one you came
+for is in sight. In a narrow chat a stub loses its words first, then its place is cut.
+
+Only the paragraph that first names a place folds: a later one naming it again isn't on any card, so it stays whole,
+and so does a table's row. Close the note and its paragraph is whole again. An answer all placed is its stubs, with no
+blank row between two of them. Nothing is lost: the conversation's text keeps every word, so `/` searches and `y`
+copies them, and a selection wider than a character on a stub opens it while it lasts — a search hit, `x`, a word,
+`%` over all of it.
 
 | Key | Notes |
 |---|---|

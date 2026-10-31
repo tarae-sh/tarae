@@ -385,6 +385,15 @@ const A1B_TWO: [&[&str]; 5] = [
     ),
 ];
 
+/// Focus A1b step 3's scenes: the first answer's placed paragraphs stubs, its place-less one whole, the newest whole; the
+/// mouse over a stub (its cut card); the view mode's cursor on one (its card in hand); a search hit inside one (unfolded).
+const A1B_FOLD: [&[&str]; 4] = [
+    a1b_two_keys!(),
+    a1b_two_keys!("@wheel-up*6?replay its", "@1", "@hover+20?◂ main.rs:11"),
+    a1b_two_keys!(" ", "l", "@1", "\x1b", "@1", "gg", "7j"),
+    a1b_two_keys!(" ", "l", "@1", "\x1b", "@1", "gg", "/", "length", "\r"),
+];
+
 /// Focus A1b's: `A1_LINE`'s thread, its card opened by `]n` (the cursor on its line opens nothing now).
 const A1B_LINE: &[&str] = &[
     "@1",
@@ -2897,6 +2906,12 @@ const SCENES: &[Scene] = &[
     Scene { name: "a1b2-earlier", claude: "a1b-two", files: MAIN, keys: A1B_TWO[2] },
     Scene { name: "a1b2-continued", claude: "a1b-two", files: MAIN, keys: A1B_TWO[3] },
     Scene { name: "a1b2-continued-card", claude: "a1b-two", files: MAIN, keys: A1B_TWO[4] },
+    // (focus A1b step 3: the chat folds an older answer's placed paragraphs)
+    Scene { name: "a1b3-stubs", claude: "a1b-two", files: MAIN, keys: A1B_FOLD[0] },
+    Scene { name: "a1b3-mouse", claude: "a1b-two", files: MAIN, keys: A1B_FOLD[1] },
+    Scene { name: "a1b3-cursor", claude: "a1b-two", files: MAIN, keys: A1B_FOLD[2] },
+    Scene { name: "a1b3-search", claude: "a1b-two", files: MAIN, keys: A1B_FOLD[3] },
+    Scene { name: "a1b3-all-placed", claude: "a1b-all", files: MAIN, keys: A1B_FOLD[0] },
     Scene { name: "a1-flow-open-card", claude: "a1-flow", files: MAIN, keys: A1_FLOW[0] },
     Scene { name: "a1-flow-closed-card", claude: "a1-flow", files: MAIN, keys: A1_FLOW[1] },
     // (W: a word that does its key, lit under the mouse — the chat's `paused`, the follow card's keys, the chat's foot)
@@ -4602,6 +4617,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "a1-none",
     "a1-flow",
     "a1b-two",
+    "a1b-all",
     "models",
     "answer",
     "askdone",
@@ -4738,7 +4754,9 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             // (…and one with a paragraph placed elsewhere: its line on the place's card)
             "a1-flow" => turn.a1_flow()?,
             // (focus A1b's: two answers naming the loop's line, the first one the line above it too)
-            "a1b-two" => turn.a1b_two(turns)?,
+            "a1b-two" => turn.a1b_two(turns, false)?,
+            // (focus A1b step 3's: `a1b-two`, its first answer all placed)
+            "a1b-all" => turn.a1b_two(turns, true)?,
             _ => {}
         }
     }
@@ -5641,7 +5659,7 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
     /// focus A1b's two answers, by `turns` (the messages so far): the first names the loop's line and the insert above
     /// it, with a place-less paragraph; the second names the loop's line again — its card the two newest first, the
     /// insert's line only the first's (a faint `¶`).
-    fn a1b_two(&mut self, turns: usize) -> io::Result<()> {
+    fn a1b_two(&mut self, turns: usize, all_placed: bool) -> io::Result<()> {
         // (a conversation of its own: kept, so a new one can continue it — `C-p`)
         let id = "conv-a1b";
         self.line(
@@ -5650,7 +5668,13 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.words("Let me read the loop.")?;
         self.text("\n\n")?;
         self.call(turns as u64, "read", json!({"files": ["src/main.rs:7-14"]}))?;
-        if turns == 1 {
+        if turns == 1 && all_placed {
+            self.words(
+                "The loop at src/main.rs:11 prints each thread's name, how many knots it has and its length.",
+            )?;
+            self.text("\n\n")?;
+            self.words("The length comes from src/thread.rs:9, which sums the knots. That is all.")?;
+        } else if turns == 1 {
             self.words(
                 "The loop at src/main.rs:11 prints each thread's name, how many knots it has and its length.",
             )?;

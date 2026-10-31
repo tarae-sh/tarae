@@ -7,7 +7,8 @@
 //! a keep lands. After every step: every chat note is of an answer the conversation's rows
 //! hold (its question where its `Origin` says), none of one answer twice on a line, the newest's number the highest.
 //! At the end, nothing racing: two answers and a note closed, then the store holds exactly the notes that are there, the
-//! close with it, and a resume brings back exactly what it keeps: the places it writes again are the ones read.
+//! close with it, and a resume brings back exactly what it keeps: the places it writes again are the ones read; and the
+//! chat, its older answers folded to stubs, still has every word of every answer in its document.
 
 use std::path::Path;
 use std::time::Duration;
@@ -88,6 +89,28 @@ fn run(choices: Choices) -> Vec<String> {
         true if before.is_none() => Err("notes were placed, the store keeps no place".into()),
         true => Ok(()),
         false => Err(format!("the store kept {before:?}, a resume brought back {now:?}")),
+    });
+    // The chat folds the older answers (focus A1b step 3): every word of every answer is still in its document
+    crate::term::render(&mut ed, &mut Vec::new(), 120, 30).unwrap();
+    // (an older answer folded at all: else the words below hold for nothing folded)
+    let laid = ed.screen.chat_laid.borrow();
+    let stubs = laid.iter().flat_map(|(_, rows)| rows.iter()).filter(|r| r.stub.is_some()).count();
+    drop(laid);
+    sim.at_end(|| match stubs {
+        0 => Err("no older answer folded, two answers with notes kept".into()),
+        _ => Ok(()),
+    });
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    let doc =
+        c.transcript.as_ref().and_then(|t| t.pane.doc_in()).map_or(String::new(), |d| d.text.to_string());
+    let answers = c.msgs.iter().filter(|m| m.role == Role::Assistant);
+    let lost: Vec<String> = answers
+        .flat_map(|m| m.text.split_whitespace().map(str::to_string).collect::<Vec<_>>())
+        .filter(|w| !doc.contains(w.as_str()))
+        .collect();
+    sim.at_end(|| match lost.is_empty() {
+        true => Ok(()),
+        false => Err(format!("words gone from the transcript: {lost:?}")),
     });
     let trace = sim.trace().to_vec();
     drop(sim);

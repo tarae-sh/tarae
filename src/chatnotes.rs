@@ -98,6 +98,41 @@ pub struct Origin {
     pub text: Option<String>,
 }
 
+/// A place of an answer whose note holds its paragraph at the code (focus A1b step 3): what the chat folds that
+/// paragraph to once a newer answer came (`chatdoc::Fold`).
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub struct Stub {
+    /// Its answer's question's place among the conversation's messages of yours (`Origin.turn`).
+    pub turn: usize,
+    /// The place as written (`Origin.name`, `Origin.said`).
+    pub name: Arc<str>,
+    pub said: usize,
+    pub path: PathBuf,
+    /// Its line now, from 0.
+    pub line: usize,
+    pub note: u64,
+}
+
+/// Every place the conversation's answers have a note at, by answer (a flow at a stop has no name, so no paragraph
+/// comes to it). A note closed is no stub: its paragraph is whole again.
+pub fn stubs(notes: &crate::notes::Notes) -> Vec<Stub> {
+    let mut out: Vec<Stub> = (notes.list.iter())
+        .filter_map(|n| {
+            let o = n.answer.as_ref()?;
+            Some(Stub {
+                turn: o.turn,
+                name: o.name.clone(),
+                said: o.said,
+                path: n.path.clone(),
+                line: n.lines.start,
+                note: n.id,
+            })
+        })
+        .collect();
+    crate::sorting::by_key(&mut out, |s| (s.turn, s.note));
+    out
+}
+
 /// A block of an answer as it reads (`blocks`): its text, and whether it's a list item.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Block {

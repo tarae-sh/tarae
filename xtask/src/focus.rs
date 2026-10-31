@@ -2,8 +2,8 @@
 //! frames (focus D1, `.sb/focus-plan.md` §1): where on screen something new to read appears, in order, and how far the
 //! eye goes between those places. It says what was drawn, never what was meant to be.
 //!
-//! Each scene is one turn of the stand-in claude (`scenes --claude focus-…`: no network, no account) on a demo crate
-//! of its own, at each layout (`LAYOUTS`: 160×45 with the chat open, the same minimized, 80×24 open, 160×45 with a
+//! Each scene is one turn of the stand-in claude (`scenes --claude focus-…`: no network, no account; `a1b-two` the
+//! second of two, the first before the recording) on a demo crate of its own, at each layout (`LAYOUTS`: 160×45 with the chat open, the same minimized, 80×24 open, 160×45 with a
 //! second session). Every frame from the message's `enter` to the end is kept with its number among the frames tarae
 //! wrote, and a watcher of tarae's UI state asking `regions` is told where each thing was drawn as that changes
 //! (`src/regions.rs`): each frame's cells are read by the regions of the frame that drew them.
@@ -43,10 +43,12 @@ const HISTORY_FILE: &str = "target/focus/history.tsv";
 /// A word: at least this many letters in a row.
 const WORD_MIN: usize = 3;
 
-/// How a scene asks: in the chat, or `space n` at a line.
+/// How a scene asks: in the chat, in the chat after a turn of its own (its first question's answer ending in `That is
+/// all`: the turn measured is the second), or `space n` at a line.
 #[derive(Clone, Copy, Debug)]
 enum Ask {
     Chat(&'static str),
+    Second(&'static str, &'static str),
     Line(&'static str),
 }
 
@@ -74,6 +76,13 @@ const SCENES: &[Scene] = &[
         typed: &[],
     },
     Scene { name: "focus-line", ask: Ask::Line("why a Vec here?"), after: &["@8"], typed: &[] },
+    // (focus A1b step 3: a second answer, the first's placed paragraphs folding as it ends)
+    Scene {
+        name: "a1b-two",
+        ask: Ask::Second("what does the loop print?", "why a hash map?"),
+        after: &["@20?A Vec", "@8"],
+        typed: &[],
+    },
     // (you type in the code while Claude reads: the keys back to the code, a line opened under the loop)
     Scene {
         name: "focus-typing",
@@ -136,6 +145,9 @@ fn keys(scene: &Scene, layout: Layout) -> Vec<String> {
     }
     match scene.ask {
         Ask::Chat(q) => k.extend([" ", "l", "@1", q, "@rec", "\r"]),
+        Ask::Second(first, q) => {
+            k.extend([" ", "l", "@1", first, "\r", "@20?That is all", "@2", q, "@rec", "\r"]);
+        }
         // (the chat open beside the code, the keys back in the code — minimized: it opens as the question goes)
         Ask::Line(q) => {
             if layout != Layout::Min160 {
@@ -144,7 +156,7 @@ fn keys(scene: &Scene, layout: Layout) -> Vec<String> {
             k.extend(["9", "G", "x", " ", "n", "@1", q, "@rec", "\r"]);
         }
     }
-    if layout == Layout::Min160 && matches!(scene.ask, Ask::Chat(_)) {
+    if layout == Layout::Min160 && matches!(scene.ask, Ask::Chat(_) | Ask::Second(..)) {
         k.extend(["@0.3", "\x1b", "\x1b"]);
     }
     k.extend(scene.after);
@@ -445,9 +457,12 @@ fn one(scene: &Scene, layout: Layout, bin: &Path, me: &Path) -> Result<Numbers> 
     }
     let frames: Vec<(u64, Grid)> =
         frames.iter().map(|(n, s)| (*n, crate::homepage::screen_cells(s))).collect();
-    let (Ask::Chat(q) | Ask::Line(q)) = scene.ask;
+    let asked = match scene.ask {
+        Ask::Chat(q) | Ask::Line(q) => vec![q],
+        Ask::Second(first, q) => vec![first, q],
+    };
     let mut typed = HashMap::new();
-    for t in scene.typed.iter().chain([&q]) {
+    for t in scene.typed.iter().chain(&asked) {
         run_words(t, (false, false), &mut typed);
     }
     let typed: HashSet<String> = typed.into_keys().collect();

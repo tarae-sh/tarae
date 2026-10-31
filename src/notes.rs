@@ -1569,6 +1569,16 @@ pub fn open(ed: &mut Editor, id: u64) {
     }
 }
 
+/// A stub of the chat's going to its note (`chatdoc::go`): `id`'s card open, its own answer in sight — an older answer's
+/// on a line a newer one names too, the earlier unfolded: it's what the stub stands for.
+pub fn open_answer(ed: &mut Editor, id: u64) {
+    ed.workspace.claude.notes.focus = Some(id);
+    open(ed, id);
+    let notes = &ed.workspace.claude.notes;
+    let under = find(ed, id).is_some_and(|n| group(notes, n).first().is_some_and(|f| f.id != id));
+    ed.workspace.claude.notes.earlier = under;
+}
+
 /// A turn's end: its answer's first place's card opens (focus A1b) — no keys taken, your cursor where it is; where
 /// follow leads, its view takes the line and the card in sight (`follow::show_card`); not while you type (`typing`: it
 /// waits, `opening_sync`), never over a card you opened yourself, which stays until you close it. It stays until the

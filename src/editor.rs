@@ -559,6 +559,8 @@ pub struct Screen {
     pub chat_links: std::cell::RefCell<Vec<(usize, usize, usize, crate::chat::Link)>>,
     /// The chat's rows of tool calls: (row, call id) — a click goes to that call's replay stop.
     pub chat_calls: std::cell::RefCell<Vec<(usize, String)>>,
+    /// The stubs among them (`ChatRow.stub`): (row, its note).
+    pub chat_stubs: std::cell::RefCell<Vec<(usize, u64)>>,
     /// Where a text that's cut is: (row, start col, end col, which) — the mouse over it shows it whole (`whole.rs`).
     pub cut_spots: std::cell::RefCell<Vec<(usize, usize, usize, crate::whole::Cut)>>,
     /// Which of `cut_spots` is the row in hand — a list's selected row, the chat's view mode's cursor's: whole on its
@@ -3803,7 +3805,11 @@ impl Editor {
                                 };
                                 let call =
                                     s.chat_calls.borrow().iter().find(|c| c.0 == y).map(|c| c.1.clone());
-                                if !call.is_some_and(|call| crate::follow::replay_call(self, &call)) {
+                                // (an older answer's folded paragraph: its place, its card open)
+                                let stub = s.chat_stubs.borrow().iter().find(|c| c.0 == y).map(|c| c.1);
+                                if let Some(note) = stub {
+                                    crate::chatdoc::go(self, link, note);
+                                } else if !call.is_some_and(|call| crate::follow::replay_call(self, &call)) {
                                     crate::chat::jump(self, link);
                                 }
                             }
