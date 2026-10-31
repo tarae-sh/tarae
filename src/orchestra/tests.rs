@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use crate::editor::Editor;
 use crate::event::WorkspaceId;
 use crate::offer::What;
+use crate::reviewer::{Reviewer, State};
 
 /// A chat that may not start sessions (a child, another session under `home`) lists today's tools, none of the
 /// session tools; a parent's list is today's with the three after it (the cache's prefix kept).
@@ -21,7 +22,7 @@ fn a_childs_chat_lists_no_session_tool() {
     let (child, parent) = (names(false), names(true));
     assert!(!child.iter().any(|n| n.starts_with("session")), "{child:?}");
     assert_eq!(parent[..child.len()], child[..]);
-    assert_eq!(parent[child.len()..], ["sessions_start", "session_send", "sessions"]);
+    assert_eq!(parent[child.len()..], ["sessions_start", "session_send", "sessions", "session_act"]);
     let all = crate::tools::list(true);
     assert!(all["tools"].as_array().unwrap().iter().all(|t| t["annotations"]["title"].is_string()));
 }
@@ -359,10 +360,15 @@ fn sessions_reads_each_childs_last_report_framed() {
     end_turn(&mut p.ed, kids[0], Ok("[user-reply]"));
     let r = text_of(&call(&mut p.ed, 60, "sessions", json!({})).unwrap());
     let mine = r.split("news of the sessions you started:").next().unwrap();
-    assert!(mine.contains(" one · idle · the user's turn since yours\nits last report:"), "{r}");
-    assert_eq!(reports(mine, "one"), [reply], "the reply whole, inside its own frame:\n{r}");
+    // (all: each report's first line, framed — Q5)
+    assert!(mine.contains(" one · idle · the user's turn since yours\nits last report begins:"), "{r}");
+    assert_eq!(reports(mine, "one"), ["[report-one] Fixed the parser."], "its first line only:\n{r}");
     assert!(!r.contains("[user-reply]") && !r.contains("[user-q]"), "the user's turn is theirs:\n{r}");
     assert!(mine.contains(" two · working\nno report yet"), "{r}");
+    // (one named: whole, inside its own frame)
+    let r = text_of(&call(&mut p.ed, 63, "sessions", json!({ "session": "one" })).unwrap());
+    assert!(r.contains(" one · idle · the user's turn since yours\nits last report:\n"), "{r}");
+    assert_eq!(reports(&r, "one"), [reply], "the reply whole, inside its own frame:\n{r}");
     let r = text_of(&call(&mut p.ed, 61, "sessions", json!({ "session": "two" })).unwrap());
     assert!(r.contains(" two · ") && !r.contains(" one · "), "{r}");
     let r = call(&mut p.ed, 62, "sessions", json!({ "session": "nobody" })).unwrap();
@@ -1190,4 +1196,530 @@ fn no_session_tool_answers_a_card() {
     }
     p.ed.focus_sync();
     assert_eq!(keys(&p.ed), before, "the keys where they were");
+}
+
+/// Child `id`'s reviewer as one its parent started (`ForParent`, the front session's): a finding pinned on its `a.txt`
+/// line 1 for each of `texts`, the first `in_run` of them its findings, `state` how it stands. The pinned ids.
+fn reviewed_by_parent(
+    ed: &mut Editor,
+    id: WorkspaceId,
+    texts: &[&str],
+    in_run: usize,
+    state: State,
+) -> Vec<u64> {
+    let parent = asked(ed, super::Act::Review, "").review;
+    let mut ids = Vec::new();
+    ed.with_workspace(id, |ed| {
+        let root = ed.workspace.root.clone();
+        for t in texts {
+            let args = json!({ "path": "a.txt", "line": 1, "text": t });
+            ids.push(crate::notes::finding(ed, &root, &args).unwrap().0);
+        }
+        let mut r = Reviewer::for_test(root, state, ids[..in_run].to_vec(), "[verdict] Looks right.");
+        r.parent = Some(parent);
+        ed.workspace.reviewer = Some(r);
+    });
+    ids
+}
+
+fn note_of(ed: &Editor, id: WorkspaceId, note: u64) -> crate::notes::Note {
+    let l = std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|l| l.id == id).unwrap();
+    l.claude.notes.list.iter().find(|n| n.id == note).unwrap().clone()
+}
+
+/// `session_act send`: the child's `space v s` of the reviewer's findings of the run its parent started — only those,
+/// only the reviewer's words (a finding you replied to in a draft stays yours to send), a finding of no run of the
+/// parent's never; headed as the parent's message; sent once (again: nothing to send); a review the parent didn't
+/// start, none.
+#[test]
+fn send_sends_only_the_reviewers_findings_of_the_parents_run() {
+    let mut p = place("act-send");
+    let kids = start_two(&mut p);
+    p.ed.with_workspace(kids[0], crate::chat::stand_in_done);
+    let act = |ed: &mut Editor, n, to: &str| {
+        text_of(&call(ed, n, "session_act", json!({ "session": to, "act": "send" })).unwrap())
+    };
+    assert!(act(&mut p.ed, 80, "one").contains("no review of yours there"));
+    let ids = reviewed_by_parent(
+        &mut p.ed,
+        kids[0],
+        &["[f-one] Sent.", "[f-two] Replied.", "[f-out] Not the run's."],
+        2,
+        State::Done,
+    );
+    // (your draft reply on the second: it stays yours)
+    p.ed.with_workspace(kids[0], |ed| {
+        let n = ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == ids[1]).unwrap();
+        n.thread.push(crate::notes::Entry { by: crate::notes::By::You, text: "[mine]".into(), draft: true });
+    });
+    let r = act(&mut p.ed, 81, "one");
+    assert_eq!(r, "sending one its reviewer's 1 finding — if they can't go, you hear why");
+    let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+    while p.got("The reviewer's findings") == 0 {
+        assert!(std::time::Instant::now() < end, "never reached the child's claude: {}", said(&p.ed));
+        if let Some(ev) = p.ed.events.recv_timeout(std::time::Duration::from_millis(50)) {
+            p.ed.handle_event(ev);
+        }
+    }
+    let line =
+        p.lines().iter().find(|l| l.contains("The reviewer's findings")).cloned().expect("sent to the child");
+    let text = sent_text(&line, "The reviewer's findings");
+    assert!(text.contains("[f-one]") && !text.contains("[f-two]") && !text.contains("[f-out]"), "{text}");
+    assert!(!text.contains("[mine]") && text.contains("<from-session name=\""), "{text}");
+    assert!(!note_of(&p.ed, kids[0], ids[0]).thread[0].draft, "sent");
+    assert!(
+        note_of(&p.ed, kids[0], ids[1]).thread[0].draft && note_of(&p.ed, kids[0], ids[2]).thread[0].draft
+    );
+    let child = p.ed.workspaces.iter().find(|l| l.id == kids[0]).unwrap();
+    let last =
+        child.claude.chat.as_ref().unwrap().msgs.iter().rfind(|m| m.role == crate::chat::Role::User).unwrap();
+    assert_eq!(last.from.as_deref(), Some(p.ed.workspace.label()), "its row the parent's");
+    assert!(act(&mut p.ed, 82, "one").starts_with("nothing to send"));
+    // (a review the parent didn't start: none of its)
+    p.ed.with_workspace(kids[1], |ed| {
+        ed.workspace.reviewer =
+            Some(Reviewer::for_test(ed.workspace.root.clone(), State::Done, Vec::new(), ""));
+    });
+    assert!(act(&mut p.ed, 83, "two").contains("no review of yours there"));
+}
+
+/// A review the parent started ends: its news — counts only, `▲` the high-risk ones — told once with its next session
+/// tool's answer, its end told once (a stop and the end after it are one); `sessions` with `review` reads its verdict and
+/// findings framed, unsent ones too; another child's review isn't its.
+#[test]
+fn a_parents_review_ends_as_news_and_reads_whole() {
+    let mut p = place("act-review");
+    let kids = start_two(&mut p);
+    let ids = reviewed_by_parent(&mut p.ed, kids[0], &["[f-one] A.", "[f-two] B."], 2, State::Done);
+    p.ed.with_workspace(kids[0], |ed| {
+        ed.workspace.reviewer.as_mut().unwrap().high = vec![ids[1]];
+        super::review_ended(ed);
+        super::review_ended(ed);
+    });
+    let r = text_of(&call(&mut p.ed, 90, "sessions", json!({ "session": "one", "review": true })).unwrap());
+    assert!(r.contains("one · its reviewer is done — 2 findings ▲1"), "{r}");
+    let inside = reports(&r, "one reviewer");
+    assert_eq!(inside.len(), 1, "{r}");
+    assert!(
+        inside[0]
+            .starts_with("verdict: [verdict] Looks right.\na.txt:1 — [f-one] A.\n▲ a.txt:1 — [f-two] B."),
+        "{r}"
+    );
+    let news: Vec<&str> = r.lines().filter(|l| l.starts_with("one: ")).collect();
+    assert_eq!(
+        news,
+        ["one: its reviewer is done — 2 findings ▲1 · sessions with review reads them"],
+        "once:\n{r}"
+    );
+    assert!(notes_of(&p.ed).iter().any(|n| n.contains("one's reviewer is done — 2 findings ▲1")));
+    let r = text_of(&call(&mut p.ed, 91, "sessions", json!({ "session": "two", "review": true })).unwrap());
+    assert!(r.contains("no review of yours there"), "{r}");
+    let r = call(&mut p.ed, 92, "sessions", json!({ "review": true })).unwrap();
+    assert!(r.contains("review: name the session"), "{r}");
+}
+
+/// What `session_act` carries for `act` on `child` (`Asked`), the front session its parent.
+fn asked(ed: &Editor, act: super::Act, child: &str) -> super::Asked {
+    let (parent, conversation) = (ed.workspace.claude.id, super::conversation_of(ed));
+    let review = super::ForParent { parent, conversation: conversation.clone(), wake: false, told: false };
+    let proposal = super::Proposal {
+        act,
+        parent,
+        workspace: ed.workspace.id,
+        by: ed.workspace.label().to_string(),
+        child: child.into(),
+        why: String::new(),
+        conversation,
+    };
+    super::Asked { review, proposal }
+}
+
+/// The parent's news waiting to be told, as its Claude would hear it.
+fn news_of(ed: &Editor) -> Vec<String> {
+    ed.workspace.claude.news.iter().map(super::News::line).collect()
+}
+
+/// Whether what an act on the child at `root` asked has come to its end: a card about that checkout (a bring's or an
+/// end's, wherever it waits) other than `seen` (one there already, `(id, rev)`: counted once asked again — its `rev`
+/// moved), or the parent's news. Every proposal's job ends in one of them, so a test waits on this and then asserts
+/// what came — never on a card that may never come (a broken carry waited out the whole patience).
+fn came(ed: &Editor, root: &Path, seen: Option<(u64, u64)>) -> bool {
+    let parked = std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked);
+    let about = |o: &crate::offer::Offer| {
+        o.bring_root() == Some(root) || matches!(&o.what, What::WorkspaceEnd(e) if e.root == root)
+    };
+    let new = |o: &crate::offer::Offer| seen.is_none_or(|(id, rev)| o.id != id || o.rev > rev);
+    // (the parent's news wherever the parent is — in front or behind)
+    let news = std::iter::once(&ed.workspace).chain(&ed.workspaces).any(|l| !l.claude.news.is_empty());
+    news || parked.chain(&ed.offers).any(|o| about(o) && new(o))
+}
+
+/// The checkout of child `id`.
+fn root_of(ed: &Editor, id: WorkspaceId) -> PathBuf {
+    ed.workspaces.iter().find(|l| l.id == id).unwrap().root.clone()
+}
+
+/// Every card a parent's Claude proposed, wherever it waits.
+fn proposed_cards(ed: &Editor) -> Vec<&crate::offer::Offer> {
+    let parked = std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked);
+    parked.chain(&ed.offers).filter(|o| o.proposed.is_some()).collect()
+}
+
+/// A board the parent's Claude asked for asks, a yes of yours there before or not (`board::start`'s `asked`, carried by
+/// the act — no timer): its card comes, carrying the parent's ask and the proposal; its `n` takes both with it, the
+/// parent hearing the key.
+#[test]
+fn a_proposed_board_always_asks() {
+    let mut ed = Editor::new(crate::config::Config::default());
+    // (should a broken guard start the board: a claude that can't start)
+    ed.config.llm.command = "/nonexistent/claude-stand-in".into();
+    ed.workspace.claude.board_yes = Some(None);
+    let root = ed.workspace.root.clone();
+    let a = asked(&ed, super::Act::Board, "kid");
+    crate::board::start(&mut ed, crate::codereview::Taken::for_test(root), None, Some(a));
+    assert!(ed.workspace.reviewer.is_none(), "no board started unasked");
+    let o = ed.offers.iter().find(|o| matches!(o.what, What::Board(_))).expect("its card");
+    let What::Board(b) = &o.what else { unreachable!() };
+    assert!(b.for_parent.is_some(), "the parent's ask goes with the card");
+    assert!(o.proposed.is_some() && !o.yours, "the act's card");
+    ed.card_focus_front();
+    ed.offer_dismiss();
+    assert!(proposed_cards(&ed).is_empty() && ed.workspace.reviewer.is_none(), "gone with its card");
+    assert_eq!(news_of(&ed), ["kid: the user answered the board you proposed — n"]);
+}
+
+/// A proposed board the user said yes to that doesn't start after all — its reviewer reading by then, or its members
+/// unable to start (`reviewer::begin`'s settings check) — is the parent's news, never its ask dropped while it waits
+/// for the board's end.
+#[test]
+fn a_proposed_board_that_doesnt_start_after_yes_is_said() {
+    let mut ed = Editor::new(crate::config::Config::default());
+    ed.config.llm.command = "/nonexistent/claude-stand-in".into();
+    let root = ed.workspace.root.clone();
+    let a = asked(&ed, super::Act::Board, "kid");
+    crate::board::start(&mut ed, crate::codereview::Taken::for_test(root.clone()), None, Some(a));
+    assert!(ed.offers.iter().any(|o| matches!(o.what, What::Board(_))), "its card");
+    ed.workspace.reviewer = Some(Reviewer::for_test(root.clone(), State::Reading, Vec::new(), ""));
+    ed.offer_accept();
+    let news = news_of(&ed);
+    assert!(
+        news.iter().any(|n| n.ends_with("the board didn't start — its reviewer was still reading")),
+        "{news:?}"
+    );
+    ed.workspace.claude.news.clear();
+    ed.workspace.reviewer = None;
+    ed.config.llm.args = vec!["--settings".into(), "/nowhere/settings.json".into()];
+    let board = crate::board::Board::new(crate::board::built_in());
+    let p = asked(&ed, super::Act::Board, "kid").review;
+    crate::reviewer::begin(&mut ed, crate::codereview::Taken::for_test(root), Some(board), Some(p));
+    let news = news_of(&ed);
+    assert!(
+        news.len() == 1 && news[0].contains("the board didn't start — llm.args passes --settings"),
+        "{news:?}"
+    );
+    assert!(ed.workspace.reviewer.is_none());
+}
+
+/// Your own end card (`:workspace-end` asked again) meeting the end card the parent's Claude proposed: the card is yours
+/// — no "proposed by" on it, about the child, your answer no news — and the parent told its proposal has no card.
+#[test]
+fn your_own_end_after_a_proposed_end_is_yours() {
+    let mut p = place("act-end-yours");
+    let kids = start_two(&mut p);
+    p.ed.with_workspace(kids[0], crate::chat::stand_in_done);
+    let args = json!({ "session": "one", "act": "end" });
+    assert!(text_of(&call(&mut p.ed, 108, "session_act", args).unwrap()).starts_with("proposed"));
+    let root = root_of(&p.ed, kids[0]);
+    settle_until(&mut p.ed, |ed| came(ed, &root, None));
+    let first =
+        proposed_cards(&p.ed).first().map(|o| (o.id, o.rev)).expect("the act's card, carrying its proposal");
+    p.ed.session_end_asking("one", true).unwrap();
+    // (yours asked again: the same title, so the card there takes its words — its `rev` moves)
+    settle_until(&mut p.ed, |ed| came(ed, &root, Some(first)));
+    let news = news_of(&p.ed);
+    assert_eq!(news, ["one: the end you proposed has no card — the user's own card took its place"]);
+    assert!(proposed_cards(&p.ed).is_empty(), "never 'proposed by' on yours");
+    let o = p.ed.offers.iter().find(|o| matches!(o.what, What::WorkspaceEnd(_))).expect("your card");
+    assert_eq!(o.about, Some(kids[0]), "about the child");
+    p.ed.card_focus_front();
+    p.ed.offer_dismiss();
+    assert_eq!(news_of(&p.ed), news, "your answer is no news");
+}
+
+/// The same with the parent behind, its proposed end parked as its ask in its own workspace: your own end for that
+/// child takes its place wherever it waits — one end card for it in every stack, the switch back to the parent bringing
+/// no second —, and a second proposal meeting yours leaves it as it is (never replaced: its focus and rank yours). The
+/// parent told each time.
+#[test]
+fn one_end_card_a_child_wherever_the_proposal_waits() {
+    let mut p = place("act-end-behind");
+    let kids = start_two(&mut p);
+    let home = p.ed.workspace.id;
+    p.ed.with_workspace(kids[0], crate::chat::stand_in_done);
+    let root = root_of(&p.ed, kids[0]);
+    let ends = |ed: &Editor| {
+        let parked = std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked);
+        let ends =
+            parked.chain(&ed.offers).filter(|o| matches!(&o.what, What::WorkspaceEnd(e) if e.root == root));
+        ends.map(|o| (o.id, o.rev, o.proposed.is_some(), o.about)).collect::<Vec<_>>()
+    };
+    let news = |ed: &Editor| {
+        let l = std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|l| l.id == home).unwrap();
+        l.claude.news.iter().map(super::News::line).collect::<Vec<_>>()
+    };
+    let propose = |ed: &mut Editor, n| {
+        let mut r = None;
+        ed.with_workspace(home, |ed| {
+            r = call(ed, n, "session_act", json!({ "session": "one", "act": "end" }))
+        });
+        assert!(text_of(&r.unwrap()).starts_with("proposed"));
+    };
+    p.ed.workspace_switch(kids[1]);
+    propose(&mut p.ed, 110);
+    settle_until(&mut p.ed, |ed| came(ed, &root, None));
+    let first = ends(&p.ed);
+    assert!(first.len() == 1 && first[0].2, "the proposal's card, parked as the parent's ask: {first:?}");
+    p.ed.session_end_asking("one", true).unwrap();
+    settle_until(&mut p.ed, |ed| came(ed, &root, Some((first[0].0, first[0].1))));
+    let mine = ends(&p.ed);
+    assert_eq!(mine.len(), 1, "one end card for it: {mine:?}");
+    assert!(!mine[0].2 && mine[0].3 == Some(kids[0]), "yours, about the child: {mine:?}");
+    assert_eq!(news(&p.ed), ["one: the end you proposed has no card — the user's own card took its place"]);
+    // (its call's answer tells the parent the news before it, so the news is empty as it goes: the act's outcome
+    // waited on — a card in place of yours, or the parent's news)
+    propose(&mut p.ed, 111);
+    settle_until(&mut p.ed, |ed| came(ed, &root, Some((mine[0].0, mine[0].1))));
+    assert_eq!(ends(&p.ed), mine, "yours left as it is — its id, its rev, no proposal");
+    assert_eq!(
+        news(&p.ed),
+        ["one: the end you proposed has no card — the user has that card up already, their own"]
+    );
+    p.ed.workspace_switch(home);
+    let after = ends(&p.ed);
+    assert!(after.len() == 1 && !after[0].2, "still one, yours, back in the parent: {after:?}");
+}
+
+/// A parent's send that can't go — here none of its findings is the reviewer's alone any more as it goes — is the
+/// parent's news (`not_sent`), the findings left unsent (the act's answer promises only "sending": `send_sends_only_…`).
+#[test]
+fn a_parents_send_that_cant_go_is_said() {
+    let mut p = place("act-not-sent");
+    let kids = start_two(&mut p);
+    p.ed.with_workspace(kids[0], crate::chat::stand_in_done);
+    let ids = reviewed_by_parent(&mut p.ed, kids[0], &["[f] A."], 1, State::Done);
+    let by = super::SentBy {
+        from: p.ed.workspace.label().to_string(),
+        conversation: super::conversation_of(&p.ed),
+        wake: false,
+        ids: ids.clone(),
+    };
+    // (a draft of yours on it since: no longer the reviewer's alone)
+    p.ed.with_workspace(kids[0], |ed| {
+        let n = ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == ids[0]).unwrap();
+        n.thread.push(crate::notes::Entry { by: crate::notes::By::You, text: "[mine]".into(), draft: true });
+        crate::codereview::send_only(ed, None, Some(&by));
+    });
+    let news = news_of(&p.ed);
+    assert_eq!(news.len(), 1, "{news:?}");
+    assert!(
+        news[0].starts_with("one: the findings you sent didn't go — none is the reviewer's alone now"),
+        "{news:?}"
+    );
+    assert!(note_of(&p.ed, kids[0], ids[0]).thread[0].draft, "left unsent");
+}
+
+/// `session_act board` and `review` on children with nothing to review: no card, no reviewer — the parent told why,
+/// nothing kept on the child (never a later board or review of yours there taken for the parent's).
+#[test]
+fn a_proposed_board_or_review_with_nothing_to_review_is_said() {
+    let mut p = place("act-board");
+    let kids = start_two(&mut p);
+    let act = |ed: &mut Editor, n, to: &str, act: &str| {
+        text_of(&call(ed, n, "session_act", json!({ "session": to, "act": act })).unwrap())
+    };
+    assert!(act(&mut p.ed, 100, "one", "board").starts_with("asked"));
+    assert!(act(&mut p.ed, 103, "two", "review").contains("reads its changes"));
+    // (each snapshot's end says so to you, beside the parent's news: waited on, then the news asserted)
+    settle_until(&mut p.ed, |ed| said(ed).matches("no changes to review").count() == 2);
+    // (two snapshots on workers: whichever ends first is told first)
+    let mut news = news_of(&p.ed);
+    news.sort();
+    assert!(
+        news[0].starts_with("one: the board you proposed has no card — no changes to review"),
+        "{news:?}"
+    );
+    assert!(
+        news[1].starts_with("two: the review you asked for didn't start — no changes to review"),
+        "{news:?}"
+    );
+    for k in &kids {
+        let kid = p.ed.workspaces.iter().find(|l| l.id == *k).unwrap();
+        assert!(kid.parked.is_empty() && kid.reviewer.is_none(), "nothing left of it");
+    }
+    assert!(proposed_cards(&p.ed).is_empty());
+    let r = text_of(&call(&mut p.ed, 104, "sessions", json!({ "session": "one" })).unwrap());
+    assert!(r.contains("\none: the board you proposed has no card"), "{r}");
+    assert!(notes_of(&p.ed).iter().any(|n| n.contains("board one has no card: no changes to review")));
+}
+
+/// `session_act bring` with nothing to bring: no card — the parent told why, nothing kept anywhere.
+#[test]
+fn a_proposed_bring_with_nothing_to_bring_is_said() {
+    let mut p = place("act-nothing");
+    let kids = start_two(&mut p);
+    p.ed.with_workspace(kids[0], crate::chat::stand_in_done);
+    let args = json!({ "session": "one", "act": "bring" });
+    assert!(text_of(&call(&mut p.ed, 105, "session_act", args).unwrap()).starts_with("proposed"));
+    // (the look's refusal says so to you, beside the parent's news: waited on, then the news asserted)
+    settle_until(&mut p.ed, |ed| said(ed).contains("bring one: nothing to bring"));
+    let news = news_of(&p.ed);
+    assert!(news[0].starts_with("one: the bring you proposed has no card — nothing to bring"), "{news:?}");
+    assert!(proposed_cards(&p.ed).is_empty(), "no card");
+}
+
+/// Your own `:workspace-bring` right after a proposal on the same child: its card yours — never the proposal's, about the
+/// child where yours go, its answer no news; the proposal's card it replaced is said gone to the parent.
+#[test]
+fn your_own_bring_after_a_proposal_is_yours() {
+    let mut p = place("act-yours");
+    let kids = start_two(&mut p);
+    p.ed.with_workspace(kids[0], crate::chat::stand_in_done);
+    let root = p.ed.workspaces.iter().find(|l| l.id == kids[0]).unwrap().root.clone();
+    std::fs::write(root.join("b.txt"), "two\n").unwrap();
+    assert!(git_in(&root, &["add", "-A"]) && git_in(&root, &["commit", "-q", "-m", "b"]));
+    let args = json!({ "session": "one", "act": "bring" });
+    assert!(text_of(&call(&mut p.ed, 106, "session_act", args).unwrap()).starts_with("proposed"));
+    settle_until(&mut p.ed, |ed| came(ed, &root, None));
+    let first = proposed_cards(&p.ed).first().map(|o| o.id).expect("the act's card, carrying its proposal");
+    p.ed.workspace_bring("one").unwrap();
+    // (wherever it waits: a card that wrongly took the proposal is parked as the parent's ask, never the front's)
+    let mine = |ed: &Editor| {
+        let parked = std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked);
+        let o = parked.chain(&ed.offers).find(|o| o.bring_root() == Some(root.as_path()) && o.id != first);
+        o.map(|o| (o.proposed.is_none(), o.about))
+    };
+    settle_until(&mut p.ed, |ed| mine(ed).is_some());
+    let (unproposed, about) = mine(&p.ed).unwrap();
+    assert!(unproposed && about == Some(kids[0]), "yours, about the child");
+    assert!(proposed_cards(&p.ed).is_empty(), "the proposal's card replaced");
+    let news = news_of(&p.ed);
+    assert_eq!(news, ["one: the bring you proposed has no card — the user's own card took its place"]);
+    p.ed.card_focus_front();
+    p.ed.offer_dismiss();
+    assert_eq!(news_of(&p.ed), news, "your answer is no news");
+}
+
+/// A bring into the base landed: a proposed bring card waiting in the parent is graded again as that proposal
+/// (`bring_regrade`) — the new card carries it, nothing said for the one it replaced, and its answer is the parent's news.
+#[test]
+fn a_regraded_proposal_keeps_its_card_and_its_answer_is_news() {
+    let mut p = place("act-regrade");
+    let kids = start_two(&mut p);
+    p.ed.with_workspace(kids[0], crate::chat::stand_in_done);
+    let root = p.ed.workspaces.iter().find(|l| l.id == kids[0]).unwrap().root.clone();
+    std::fs::write(root.join("b.txt"), "two\n").unwrap();
+    assert!(git_in(&root, &["add", "-A"]) && git_in(&root, &["commit", "-q", "-m", "b"]));
+    let args = json!({ "session": "one", "act": "bring", "why": "done" });
+    assert!(text_of(&call(&mut p.ed, 107, "session_act", args).unwrap()).starts_with("proposed"));
+    settle_until(&mut p.ed, |ed| came(ed, &root, None));
+    let first =
+        proposed_cards(&p.ed).first().map(|o| (o.id, o.rev)).expect("the act's card, carrying its proposal");
+    // (the base moves on: another session's bring landed there)
+    std::fs::write(p.repo.join("c.txt"), "three\n").unwrap();
+    assert!(git_in(&p.repo, &["add", "-A"]) && git_in(&p.repo, &["commit", "-q", "-m", "c"]));
+    p.ed.bring_regrade(kids[1], "main");
+    settle_until(&mut p.ed, |ed| came(ed, &root, Some(first)));
+    let cards = proposed_cards(&p.ed);
+    assert_eq!(cards.len(), 1, "one card a session");
+    assert!(matches!(cards[0].what, What::Rebase(_)), "graded again: rebase first — {}", cards[0].title);
+    assert!(cards[0].proposed.as_ref().unwrap().line().ends_with("“done”"));
+    assert!(news_of(&p.ed).is_empty(), "nothing said of the card it replaced");
+    p.ed.card_focus_front();
+    p.ed.offer_dismiss();
+    assert_eq!(news_of(&p.ed), ["one: the user answered the bring you proposed — n"]);
+}
+
+/// A busy child's `send`: queued (said as a review waiting), sent at its turn's end — the reviewer's words alone, looked at
+/// again then: a draft of yours written on one meanwhile keeps that one yours.
+#[test]
+fn a_queued_send_takes_only_what_is_still_the_reviewers() {
+    let mut p = place("act-queued");
+    let kids = start_two(&mut p);
+    let ids = reviewed_by_parent(&mut p.ed, kids[1], &["[f-kept] A.", "[f-mine] B."], 2, State::Done);
+    let r =
+        text_of(&call(&mut p.ed, 101, "session_act", json!({ "session": "two", "act": "send" })).unwrap());
+    assert_eq!(r, "queued — its reviewer's 2 findings go to two as its turn ends");
+    let queued = |ed: &Editor| {
+        let l = ed.workspaces.iter().find(|l| l.id == kids[1]).unwrap();
+        l.claude.chat.as_ref().unwrap().queued_said().map(|q| q.0).unwrap_or_default()
+    };
+    assert!(queued(&p.ed).contains("review"), "{}", queued(&p.ed));
+    p.ed.with_workspace(kids[1], |ed| {
+        let n = ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == ids[1]).unwrap();
+        n.thread.push(crate::notes::Entry { by: crate::notes::By::You, text: "[mine]".into(), draft: true });
+    });
+    end_turn(&mut p.ed, kids[1], Ok("brief done"));
+    let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+    while p.got("The reviewer's findings") == 0 {
+        assert!(std::time::Instant::now() < end, "never sent: {}", said(&p.ed));
+        if let Some(ev) = p.ed.events.recv_timeout(std::time::Duration::from_millis(50)) {
+            p.ed.handle_event(ev);
+        }
+    }
+    let line = p.lines().iter().find(|l| l.contains("The reviewer's findings")).cloned().unwrap();
+    let text = sent_text(&line, "The reviewer's findings");
+    assert!(text.contains("[f-kept]") && !text.contains("[f-mine]") && !text.contains("[mine]"), "{text}");
+    assert!(note_of(&p.ed, kids[1], ids[1]).thread[0].draft, "yours to send");
+}
+
+/// `session_act end`: the end card, asked with nothing to lose, in the parent's stack — its first line who proposed it.
+#[test]
+fn a_proposed_end_is_the_parents_card() {
+    let mut p = place("act-end");
+    let kids = start_two(&mut p);
+    p.ed.with_workspace(kids[0], crate::chat::stand_in_done);
+    let args = json!({ "session": "one", "act": "end", "why": "its work is in" });
+    assert!(text_of(&call(&mut p.ed, 102, "session_act", args).unwrap()).starts_with("proposed"));
+    let root = root_of(&p.ed, kids[0]);
+    settle_until(&mut p.ed, |ed| came(ed, &root, None));
+    let o = p.ed.offers.iter().find(|o| o.proposed.is_some()).expect("the act's card, carrying its proposal");
+    assert!(matches!(o.what, What::WorkspaceEnd(_)), "{}", o.title);
+    assert_eq!(o.about, Some(p.ed.workspace.id));
+    assert!(o.proposed.as_ref().unwrap().line().ends_with("“its work is in”"));
+}
+
+/// `session_act bring`: the bring card in the parent's stack, its first line who proposed it and why, `main asks` —
+/// `C-q` goes to it there, never to the child it brings; answered by your key, the parent hears the key, nothing else.
+/// The child's Claude answering: refused, nothing asked.
+#[test]
+fn a_proposed_bring_is_the_parents_card_and_its_answer_its_news() {
+    let mut p = place("act-bring");
+    let kids = start_two(&mut p);
+    p.ed.with_workspace(kids[0], crate::chat::stand_in_done);
+    let root = p.ed.workspaces.iter().find(|l| l.id == kids[0]).unwrap().root.clone();
+    std::fs::write(root.join("b.txt"), "two\n").unwrap();
+    assert!(git_in(&root, &["add", "-A"]) && git_in(&root, &["commit", "-q", "-m", "b"]));
+    let bring = |ed: &mut Editor, n, to: &str| {
+        let args = json!({ "session": to, "act": "bring", "why": "tests pass, reviewer clean" });
+        text_of(&call(ed, n, "session_act", args).unwrap())
+    };
+    assert!(bring(&mut p.ed, 95, "two").contains("is answering"), "busy: refused");
+    assert!(bring(&mut p.ed, 96, "one").starts_with("proposed"));
+    settle_until(&mut p.ed, |ed| came(ed, &root, None));
+    let o = p.ed.offers.iter().find(|o| o.proposed.is_some()).expect("the act's card, carrying its proposal");
+    let (id, line) = (o.id, o.proposed.as_ref().unwrap().line());
+    assert_eq!(
+        line,
+        format!("proposed by {}'s Claude — “tests pass, reviewer clean”", p.ed.workspace.label())
+    );
+    assert_eq!(o.about, Some(p.ed.workspace.id), "the parent's ask");
+    assert!(!o.yours, "it waits for C-q");
+    let card = p.ed.ui_cards().into_iter().find(|c| c.id == format!("card#{id}")).unwrap();
+    assert_eq!(card.session, crate::uistate::session_id(p.ed.workspace.claude.id), "listed where it stands");
+    assert!(matches!(p.ed.next_up(), crate::inbox::Next::Card(c) if c == id), "C-q goes to it here");
+    p.ed.card_focus_front();
+    p.ed.offer_dismiss();
+    let r = text_of(&call(&mut p.ed, 97, "sessions", json!({ "session": "one" })).unwrap());
+    assert!(r.contains("\none: the user answered the bring you proposed — n"), "{r}");
+    assert!(notes_of(&p.ed).iter().any(|n| n.contains("you answered bring one — n")));
 }

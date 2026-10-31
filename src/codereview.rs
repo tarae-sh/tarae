@@ -5008,26 +5008,53 @@ pub fn send(ed: &mut Editor) {
 /// (`reads::ask_own`), whose answer sends it again: `lines` Some(true) with their lines, Some(false) with
 /// those files' names only (None: not asked yet).
 pub fn send_as(ed: &mut Editor, lines: Option<bool>) {
+    send_only(ed, lines, None);
+}
+
+/// `send_as` — or, `by` given, only the findings it names, sent by its parent's Claude (`session_act send`, orchestra
+/// P3: the one exception to "sent only by you", for a review that parent started): its row headed as that parent's,
+/// a file named like a key by its name only (`lines` Some(false) — no card asked for it), queued as its own.
+pub fn send_only(ed: &mut Editor, lines: Option<bool>, by: Option<&crate::orchestra::SentBy>) {
+    let lines = if by.is_some() { Some(false) } else { lines };
     // (a finding still being placed on the lines now waits: sent on the snapshot's lines it would never be placed —
     // it goes with the next `space v s`, a moment later)
     let placing = ed.workspace.claude.notes.list.iter().filter(|n| n.placing).count();
     let drafts: Vec<u64> = (ed.workspace.claude.notes.list.iter())
         .filter(|n| !n.placing && n.thread.iter().any(|e| e.draft))
+        // (a parent's: the reviewer's words alone, looked at again as they go — a draft of yours written on one while it
+        // waited for the turn's end keeps that one yours to send)
+        .filter(|n| {
+            by.is_none_or(|b| {
+                b.ids.contains(&n.id) && n.thread.iter().filter(|e| e.draft).all(|e| e.by == By::Reviewer)
+            })
+        })
         .map(|n| n.id)
         .collect();
+    let later = || match by {
+        Some(b) => crate::chat::Later::Findings(Box::new(b.clone())),
+        None => crate::chat::Later::Review(lines),
+    };
+    // (a parent's send that can't go — at once, or queued as the child's turn ended: that parent told why)
+    let not_sent = |ed: &mut Editor, why: &str| {
+        if let Some(b) = by {
+            crate::orchestra::not_sent(ed, b, why);
+        }
+    };
     if drafts.is_empty() && placing > 0 {
+        not_sent(ed, "its findings are still being placed on the lines — send again in a moment");
         return ed.set_status(
             "the reviewer's findings are still being placed on the lines — space v s in a moment",
         );
     }
     if drafts.is_empty() {
+        not_sent(ed, "none is the reviewer's alone now — the user wrote on them, sent or closed them");
         return ed.set_status("no drafts — space n on a line writes one");
     }
     // (Claude answering: the notes wait for its turn's end, as a message does — frictions29 18: refused, they sat
     // unsent while a message after them was taken to have gone; drafts until then)
     if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.busy()) {
-        if !c.sends.contains(&crate::chat::Later::Review(lines)) {
-            c.sends.push(crate::chat::Later::Review(lines));
+        if !c.sends.contains(&later()) {
+            c.sends.push(later());
         }
         let k = drafts.len();
         return ed.set_status(format!(
@@ -5129,8 +5156,9 @@ pub fn send_as(ed: &mut Editor, lines: Option<bool>) {
             crate::nav::count(findings, "finding")
         ),
     };
+    let mine = if by.is_some() { "The reviewer's findings" } else { "My review" };
     let mut question = format!(
-        "My review: {what} on {}. Address each — change the code where it calls for it, and answer every one on \
+        "{mine}: {what} on {}. Address each — change the code where it calls for it, and answer every one on \
          its note.",
         crate::nav::count(f, "file")
     );
@@ -5146,12 +5174,24 @@ pub fn send_as(ed: &mut Editor, lines: Option<bool>) {
         if k == 1 { "" } else { "s" },
         if f == 1 { "" } else { "s" }
     );
-    if !crate::chat::submit(ed, &question, Some(body), Some(chip)) {
+    let sent = match by {
+        Some(b) => crate::chat::submit_from_with(
+            ed,
+            &b.from,
+            b.conversation.as_deref(),
+            b.wake,
+            &question,
+            body,
+            chip,
+        ),
+        None => crate::chat::submit(ed, &question, Some(body), Some(chip)),
+    };
+    if !sent {
         // (its claude starting — the project's settings read first, as after `:restart`: the review waits for it,
         // frictions29 #67; it went out as "couldn't reach claude" while the chat said nothing of it)
         if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.settings.waiting()) {
-            if !c.sends.contains(&crate::chat::Later::Review(lines)) {
-                c.sends.push(crate::chat::Later::Review(lines));
+            if !c.sends.contains(&later()) {
+                c.sends.push(later());
             }
             let k = drafts.len();
             return ed.set_status(format!(
@@ -5160,6 +5200,7 @@ pub fn send_as(ed: &mut Editor, lines: Option<bool>) {
                 if k == 1 { "es" } else { "" }
             ));
         }
+        not_sent(ed, "couldn't reach its claude — the findings are kept unsent");
         return ed.set_warning("couldn't reach claude — the chat panel says why (the drafts are kept)");
     }
     for n in ed.workspace.claude.notes.list.iter_mut().filter(|n| drafts.contains(&n.id)) {
@@ -5174,7 +5215,15 @@ pub fn send_as(ed: &mut Editor, lines: Option<bool>) {
         0 => String::new(),
         n => format!(" · {} still being placed — space v s sends them next", crate::nav::count(n, "finding")),
     };
-    ed.set_success(format!("review sent — {k} comment{}{held}", if k == 1 { "" } else { "s" }));
+    match by {
+        Some(b) => ed.set_success(format!(
+            "{}'s Claude sent {}'s reviewer's {}",
+            b.from,
+            ed.workspace.label(),
+            crate::nav::count(k, "finding")
+        )),
+        None => ed.set_success(format!("review sent — {k} comment{}{held}", if k == 1 { "" } else { "s" })),
+    }
 }
 
 #[cfg(test)]

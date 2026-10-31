@@ -231,6 +231,9 @@ pub struct Reviewer {
     pub unseen: bool,
     /// Who pays for its claude — what its `apiKeySource` is checked against (`billing.rs`).
     pub billing: crate::billing::Billing,
+    /// Its session's parent's Claude started it (`orchestra::ForParent`): its end is that parent's news, its findings
+    /// what the parent may send (`session_act send`).
+    pub parent: Option<crate::orchestra::ForParent>,
 }
 
 impl Reviewer {
@@ -268,6 +271,7 @@ impl Reviewer {
             cost: None,
             unseen: false,
             billing: Default::default(),
+            parent: None,
         }
     }
 
@@ -326,8 +330,27 @@ impl Reviewer {
 /// the one pass started on it, or the board's angles chosen and its card (`board::start`). One reading already:
 /// said, not doubled.
 pub fn ask_in(ed: &mut Editor, cwd: PathBuf, branch: Option<String>, board: bool) {
+    ask_in_for(ed, cwd, branch, board, None);
+}
+
+/// `ask_in` — `asked`: its session's parent's Claude asked it (`session_act review`/`board`), carried to the one pass it
+/// begins or the board's card it raises; where neither comes, the parent told why (`orchestra::no_card`).
+pub fn ask_in_for(
+    ed: &mut Editor,
+    cwd: PathBuf,
+    branch: Option<String>,
+    board: bool,
+    asked: Option<crate::orchestra::Asked>,
+) {
+    const READING: &str = "the reviewer is still reading — :reviewer-stop stops it";
+    let none = |ed: &mut Editor, asked: Option<crate::orchestra::Asked>, why: &str| {
+        if let Some(a) = asked {
+            crate::orchestra::no_card(ed, a.proposal, why);
+        }
+    };
     if ed.workspace.reviewer.as_ref().is_some_and(Reviewer::reading) {
-        return ed.set_status("the reviewer is still reading — :reviewer-stop stops it");
+        none(ed, asked, "its reviewer is still reading");
+        return ed.set_status(READING);
     }
     let work = crate::codereview::taking(ed, cwd, branch);
     // (a board: what the last boards cost, from the call-order record, for its card)
@@ -340,15 +363,24 @@ pub fn ask_in(ed: &mut Editor, cwd: PathBuf, branch: Option<String>, board: bool
         true => ("board", "the board takes a snapshot of the changes…"),
         false => ("reviewer", "the reviewer takes a snapshot of the changes…"),
     };
-    ed.step(ed.events.jobs(), key, said, work, move |ed, taken| match taken {
-        Err(e) => ed.set_error(format!("review: {e}")),
-        Ok((t, _)) if t.files.is_empty() => ed.set_status(format!("no changes to review — {}", t.label)),
-        // (one began meanwhile — a second key before the snapshot came)
-        Ok(_) if ed.workspace.reviewer.as_ref().is_some_and(Reviewer::reading) => {
-            ed.set_status("the reviewer is still reading — :reviewer-stop stops it")
+    ed.step(ed.events.jobs(), key, said, work, move |ed, taken| {
+        match taken {
+            Err(e) => {
+                none(ed, asked, &format!("its changes couldn't be read — {e}"));
+                ed.set_error(format!("review: {e}"));
+            }
+            Ok((t, _)) if t.files.is_empty() => {
+                none(ed, asked, &format!("no changes to review — {}", t.label));
+                ed.set_status(format!("no changes to review — {}", t.label));
+            }
+            // (one began meanwhile — a second key before the snapshot came)
+            Ok(_) if ed.workspace.reviewer.as_ref().is_some_and(Reviewer::reading) => {
+                none(ed, asked, "its reviewer is still reading");
+                ed.set_status(READING);
+            }
+            Ok((t, estimate)) if board => crate::board::start(ed, t, estimate, asked),
+            Ok((t, _)) => begin(ed, t, None, asked.map(|a| a.review)),
         }
-        Ok((t, estimate)) if board => crate::board::start(ed, t, estimate),
-        Ok((t, _)) => begin(ed, t, None),
     });
 }
 
@@ -562,11 +594,22 @@ static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 
 /// The reviewer made on snapshot `t`, its members waiting in the line — the one pass's one, or the board's
 /// angles — and the line moved on (`pump`). One reading before is dropped (its processes killed).
-pub(crate) fn begin(ed: &mut Editor, t: crate::codereview::Taken, board: Option<crate::board::Board>) {
+/// `parent`: its session's parent's Claude asked it (`Reviewer.parent`: its end that parent's news).
+pub(crate) fn begin(
+    ed: &mut Editor,
+    t: crate::codereview::Taken,
+    board: Option<crate::board::Board>,
+    parent: Option<crate::orchestra::ForParent>,
+) {
     // (a board its members can't be started for: said once, before any is asked — never its settings dropped)
     if board.is_some()
         && let Err(e) = args_for(&ed.config.llm.args, Role::Angle(0))
     {
+        // (one its parent's Claude proposed: that parent told, never left waiting for its end)
+        if let Some(p) = parent {
+            let child = ed.workspace.label().to_string();
+            crate::orchestra::review_not_started(ed, p, &child, true, &e);
+        }
         return ed.set_error(format!("the board: {e}"));
     }
     let n = t.files.len();
@@ -640,6 +683,7 @@ pub(crate) fn begin(ed: &mut Editor, t: crate::codereview::Taken, board: Option<
         cost: None,
         unseen: false,
         billing: Default::default(),
+        parent,
     });
     match aside.is_empty() {
         true => ed.set_status(said),
@@ -1199,6 +1243,8 @@ fn finish(ed: &mut Editor) {
         crate::notes::stale_card(ed, since_read);
     }
     since_sync(ed);
+    // (one its parent's Claude started: its end that parent's news)
+    crate::orchestra::review_ended(ed);
 }
 
 /// `since_sync` while a review is open — only there is it shown (the rail, the end card): a save of a file it
@@ -1757,6 +1803,7 @@ pub fn stop(ed: &mut Editor) {
             if !since_read.is_empty() {
                 crate::notes::stale_card(ed, since_read);
             }
+            crate::orchestra::review_ended(ed);
             pump(ed);
         }
         None => ed.set_status("the reviewer isn't reading"),
@@ -2844,6 +2891,38 @@ mod tests {
         }
         assert!(ed.workspace.claude.notes.list.is_empty(), "none pinned");
         assert!(ed.offers.is_empty() && ed.workspace.parked.is_empty(), "no card");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A review its session's parent's Claude asked for (`ask_in_for`, orchestra P3) is the reviewer's that act begins,
+    /// carried through its snapshot — never one of yours (`ask_in`) begun on its own —, and its end passes
+    /// `review_ended` (told).
+    #[test]
+    fn a_review_the_parent_asked_for_is_its_reviewers_to_its_end() {
+        let (dir, repo) = place("parent");
+        let mut ed = Editor::new(crate::config::Config::default());
+        fake(&mut ed, &dir, &[result("Fine.")]);
+        reviewed(&mut ed, &repo);
+        assert!(ed.workspace.reviewer.as_ref().unwrap().parent.is_none(), "yours is yours");
+        let parent = ed.workspace.claude.id;
+        let review = crate::orchestra::ForParent { parent, conversation: None, wake: false, told: false };
+        let proposal = crate::orchestra::Proposal {
+            act: crate::orchestra::Act::Review,
+            parent,
+            workspace: ed.workspace.id,
+            by: "main".into(),
+            child: "kid".into(),
+            why: String::new(),
+            conversation: None,
+        };
+        fake(&mut ed, &dir, &[result("Fine again.")]);
+        let asked = crate::orchestra::Asked { review, proposal };
+        ask_in_for(&mut ed, repo.clone(), None, false, Some(asked));
+        settle_until(&mut ed, |ed| {
+            ed.workspace.reviewer.as_ref().is_some_and(|r| r.verdict == "Fine again." && !r.reading())
+        });
+        let r = ed.workspace.reviewer.as_ref().unwrap();
+        assert!(r.parent.as_ref().expect("carried by the act").told, "its end told");
         std::fs::remove_dir_all(&dir).ok();
     }
 

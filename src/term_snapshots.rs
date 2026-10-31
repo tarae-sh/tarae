@@ -3377,6 +3377,8 @@ fn the_boards_card_folds_its_angles_rather_than_be_cut() {
             taken: Box::new(crate::codereview::Taken::for_test("/p".into())),
             angles: crate::board::built_in(),
             estimate: None,
+            parent: None,
+            for_parent: None,
         })
     };
     // (`how`: as it's drawn — 0 plain, 1 its keys brought by `C-q`, 2 a key refused on it)

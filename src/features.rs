@@ -194,6 +194,7 @@ pub const CLAUDE_TOOLS: &[&str] = &[
     "run",
     "run_tests",
     "search",
+    "session_act",
     "session_send",
     "sessions",
     "sessions_start",

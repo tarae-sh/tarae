@@ -150,12 +150,13 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
                 },
                 // (only a chat that lists them — a child's has no such tools; an answer now carries the parent's news,
                 // one later gets it as it's delivered)
-                Some(name @ ("sessions_start" | "session_send" | "sessions"))
+                Some(name @ ("sessions_start" | "session_send" | "sessions" | "session_act"))
                     if crate::orchestra::lists(ed) =>
                 {
                     let asked = match name {
                         "sessions_start" => crate::orchestra::start(ed, call(), args).map(|()| None),
                         "session_send" => crate::orchestra::send(ed, call(), args).map(|()| None),
+                        "session_act" => crate::orchestra::act(ed, args).map(Some),
                         _ => crate::orchestra::sessions(ed, args).map(Some),
                     };
                     let mut news = || crate::orchestra::news_for_answer(ed, name);
@@ -241,6 +242,7 @@ pub fn list(parent: bool) -> Value {
             crate::orchestra::start_schema(),
             crate::orchestra::send_schema(),
             crate::orchestra::sessions_schema(),
+            crate::orchestra::act_schema(),
         ]);
     }
     json!({ "tools": tools.into_iter().map(annotated).collect::<Vec<_>>() })
@@ -267,6 +269,7 @@ pub(crate) fn annotated(mut schema: Value) -> Value {
         "git" => ("Read the repository", Some("readOnlyHint")),
         "sessions_start" => ("Start sessions", None),
         "session_send" => ("Message a session", None),
+        "session_act" => ("Act on a session", None),
         "sessions" => ("Your sessions", Some("readOnlyHint")),
         _ => return schema,
     };

@@ -11,6 +11,8 @@ fn the_boards_card_asks_then_says_the_cost() {
         taken: Box::new(crate::codereview::Taken::for_test("/p".into())),
         angles: built_in(),
         estimate,
+        parent: None,
+        for_parent: None,
     };
     let first = |o: &crate::offer::Offer| o.question.lines().next().unwrap_or_default().to_string();
     let o = card(ask(Some((4.1, 5))));
@@ -18,6 +20,10 @@ fn the_boards_card_asks_then_says_the_cost() {
     assert_eq!(first(&o), "≈ API $4.10 — the last 5 boards here");
     assert_eq!(first(&card(ask(Some((3.0, 1))))), "≈ API $3.00 — the last board here");
     assert_eq!(first(&card(ask(None))), "its cost isn't known yet — no board has ended whole here");
+    // (a child's card: one its parent's Claude proposes asks, a yes here or not)
+    assert!(o.question.ends_with("starts without asking."));
+    let child = card(Ask { parent: Some("main".into()), ..ask(None) });
+    assert!(child.question.ends_with("starts without asking (not one main's Claude proposes)."));
 }
 
 fn changed(rel: &str, grade: Grade) -> Changed {

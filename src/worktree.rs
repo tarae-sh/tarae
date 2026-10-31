@@ -1912,11 +1912,24 @@ impl Editor {
     /// `workspace_end` — `always`: the card even with nothing to lose (its end asked again after `:restart`
     /// was never answered: asking again never acts).
     pub fn session_end_asking(&mut self, which: &str, always: bool) -> Result<(), String> {
-        self.ending_asked(which, always, None)
+        self.ending_asked(which, always, None, None)
     }
 
-    /// `session_end_asking`, always carded — `brought`: asked as its bring into that base landed, said in its title.
-    fn ending_asked(&mut self, which: &str, always: bool, brought: Option<String>) -> Result<(), String> {
+    /// `session_act end`: the end card, always, carrying proposal `p` (`orchestra::carry`) — or, where the look ends
+    /// with none, its parent told why (`orchestra::no_card`).
+    pub fn session_end_proposed(&mut self, which: &str, p: crate::orchestra::Proposal) -> Result<(), String> {
+        self.ending_asked(which, true, None, Some(p))
+    }
+
+    /// `session_end_asking`, always carded — `brought`: asked as its bring into that base landed, said in its title;
+    /// `proposed`: a parent's Claude proposed it, its card carries that.
+    fn ending_asked(
+        &mut self,
+        which: &str,
+        always: bool,
+        brought: Option<String>,
+        proposed: Option<crate::orchestra::Proposal>,
+    ) -> Result<(), String> {
         let (id, name) = self.session_named(which)?;
         if id == WorkspaceId::HOME {
             return Err(format!("{name} is the checkout tarae started in — it stays"));
@@ -1934,8 +1947,13 @@ impl Editor {
         let work = move || ending(n, &root, base, &start, entries);
         self.step(self.events.shared_jobs(), "session", said, work, move |ed, found| match found {
             Ok(e) if e.quiet() && !always => ed.session_remove(e, false, None),
-            Ok(e) => ed.push_offer(Ending { brought, ..e }.card()),
-            Err(e) => ed.set_error(format!("end {name}: {e}")),
+            Ok(e) => ed.push_offer(crate::orchestra::carry(Ending { brought, ..e }.card(), proposed)),
+            Err(e) => {
+                if let Some(p) = proposed {
+                    crate::orchestra::no_card(ed, p, e.clone());
+                }
+                ed.set_error(format!("end {name}: {e}"));
+            }
         });
         Ok(())
     }
@@ -1975,7 +1993,7 @@ impl Editor {
             let Some(base) = all.into_iter().find(|l| l.id == id).and_then(|l| l.end_when_idle.take()) else {
                 continue;
             };
-            if let Err(e) = self.ending_asked(&name, true, Some(base)) {
+            if let Err(e) = self.ending_asked(&name, true, Some(base), None) {
                 crate::log::line("session", "info", &format!("{name}'s end after its bring: {e}"));
             }
         }
@@ -2454,50 +2472,68 @@ impl Editor {
     /// quick preflight, then brings: #155, it brought at once). The base moved since: a card offers to rebase
     /// it first (`rebase.rs`). Not while a rebase is under way there.
     pub fn workspace_bring(&mut self, which: &str) -> Result<(), String> {
-        self.bringing(which, How::Card)
+        self.bringing(which, How::Card, None)
+    }
+
+    /// `workspace_bring` — `proposed`: `session_act bring`, the card it raises carrying that (`orchestra::carry`), or
+    /// its parent told why none came (`orchestra::no_card`).
+    pub fn workspace_bring_as(
+        &mut self,
+        which: &str,
+        proposed: Option<crate::orchestra::Proposal>,
+    ) -> Result<(), String> {
+        self.bringing(which, How::Card, proposed)
     }
 
     /// The bring card's `y` (or its preflight passed): its base moved up to its branch, fast-forward only (a
     /// worker).
     pub(crate) fn workspace_bring_now(&mut self, which: &str) -> Result<(), String> {
-        self.bringing(which, How::Now)
+        self.bringing(which, How::Now, None)
     }
 
     /// The bring queue's one under way, looked at as `:workspace-bring` does — what's found goes to the queue
     /// (`bring_queue_looked`), never a card.
     pub(crate) fn bringing_queued(&mut self, id: WorkspaceId) -> Result<(), String> {
-        self.bringing(&id.to_string(), How::Queue)
+        self.bringing(&id.to_string(), How::Queue, None)
     }
 
     /// A bring into `base` landed (session `landed`'s): the other sessions waiting with a card that brings into
     /// it are graded again against its new tip, at once — their card says the base moved and `y` rebases first,
     /// where a `y` on the old card would have been refused by the fast-forward (frictions29 24: seven brought in a
     /// row, four `n`s to keep them in order, a preflight run on a tip already gone).
-    fn bring_regrade(&mut self, landed: crate::event::WorkspaceId, base: &str) {
-        // (a bring card is up wherever it was asked — its checkout says whose it is)
+    /// A card its parent's Claude proposed is graded again as that proposal: the new card carries it, or the parent hears
+    /// none came.
+    pub(crate) fn bring_regrade(&mut self, landed: crate::event::WorkspaceId, base: &str) {
+        // (a bring card is up wherever it was asked — its checkout says whose it is; a proposed one waits in its parent's)
         let front = !self.background();
-        let waits = |l: &crate::workspace::Workspace, offers: &[crate::offer::Offer]| {
-            let up = offers.iter().filter(|_| front);
-            l.parked.iter().chain(up).any(|o| match &o.what {
+        let up = self.offers.iter().filter(|_| front);
+        let all = std::iter::once(&self.workspace).chain(&self.workspaces);
+        let cards: Vec<&crate::offer::Offer> = all.clone().flat_map(|l| &l.parked).chain(up).collect();
+        let waiting = |l: &crate::workspace::Workspace| {
+            cards.iter().find(|o| match &o.what {
                 crate::offer::What::Rebased(m) | crate::offer::What::UpTo(m) => {
                     m.base == base && m.root == l.root
                 }
                 _ => false,
             })
         };
-        let names: Vec<String> = std::iter::once(&self.workspace)
-            .chain(&self.workspaces)
-            .filter(|l| l.id != landed && l.id != WorkspaceId::HOME && waits(l, &self.offers))
-            .map(|l| l.name.clone())
+        let names: Vec<(String, Option<crate::orchestra::Proposal>)> = all
+            .filter(|l| l.id != landed && l.id != WorkspaceId::HOME)
+            .filter_map(|l| waiting(l).map(|o| (l.name.clone(), o.proposed.clone())))
             .collect();
-        for name in names {
-            if let Err(e) = self.workspace_bring(&name) {
+        for (name, proposed) in names {
+            if let Err(e) = self.workspace_bring_as(&name, proposed) {
                 crate::log::line("session", "info", &format!("bring {name} graded again: {e}"));
             }
         }
     }
 
-    fn bringing(&mut self, which: &str, how: How) -> Result<(), String> {
+    fn bringing(
+        &mut self,
+        which: &str,
+        how: How,
+        proposed: Option<crate::orchestra::Proposal>,
+    ) -> Result<(), String> {
         let (id, name) = self.session_named(which)?;
         if id == WorkspaceId::HOME {
             return Err(format!("{name} is the checkout tarae started in — bring a session into it instead"));
@@ -2519,6 +2555,10 @@ impl Editor {
         // (a rebase stopped there: its card, to go on or abort — #175)
         if session.rebase.is_some() {
             let offered = self.rebase_offer(id).map_err(|e| format!("bring {name}: {e}"));
+            // (the rebase's card is no bring card: the parent told so, the card the user's)
+            if let Some(p) = proposed.filter(|_| offered.is_ok()) {
+                crate::orchestra::no_card(self, p, REBASE_UP);
+            }
             return match queued {
                 true => Err(offered.err().unwrap_or_else(|| "a rebase is under way there — its card".into())),
                 false => offered,
@@ -2530,6 +2570,9 @@ impl Editor {
             self.docs.iter().filter(|d| d.is_modified()).filter_map(|d| d.path.clone()).collect();
         let said = format!("Bringing {name} in…");
         let who = name.clone();
+        // (a regrade that raised none leaves the proposal's card up: the parent hears its answer, not "no card")
+        let checkout = root.clone();
+        let proposed = proposed.filter(|_| how == How::Card);
         let work = move || match crate::rebase::under_way(&root) {
             Some(stop) => Bringing::Rebasing(stop),
             None => match moved(&root, &who, base.clone(), &start) {
@@ -2588,18 +2631,21 @@ impl Editor {
                         if let Some(l) = all.into_iter().find(|l| l.id == id) {
                             l.end_when_idle = Some(b.base.clone());
                         }
-                    } else if child && let Err(e) = ed.ending_asked(&name, true, Some(b.base.clone())) {
+                    } else if child && let Err(e) = ed.ending_asked(&name, true, Some(b.base.clone()), None) {
                         crate::log::line("session", "info", &format!("{name}'s end after its bring: {e}"));
                     }
                 }
-                Bringing::Moved(m) => ed.push_offer(m.card()),
+                Bringing::Moved(m) => ed.push_offer(crate::orchestra::carry(m.card(), proposed)),
                 // (nothing of its own, behind: moved up instead — #186)
-                Bringing::Ready(m) if m.ahead == 0 => ed.push_offer(m.up_card()),
+                Bringing::Ready(m) if m.ahead == 0 => {
+                    ed.push_offer(crate::orchestra::carry(m.up_card(), proposed))
+                }
                 Bringing::Ready(m) => {
                     let mut quick = None;
                     ed.with_workspace(id, |ed| quick = ed.preflight_quick());
                     let (root, base) = (m.root.clone(), m.base.clone());
-                    crate::codereview::push_bring_card(ed, id, m.bring_card(quick, false), root, base);
+                    let card = crate::orchestra::carry(m.bring_card(quick, false), proposed);
+                    crate::codereview::push_bring_card(ed, id, card, root, base);
                 }
                 // (one tarae didn't start: taken up, so continue and abort know it — and its card up)
                 Bringing::Rebasing(stop) => {
@@ -2608,11 +2654,21 @@ impl Editor {
                             ed.rebase_adopt(stop);
                         }
                     });
-                    if let Err(e) = ed.rebase_offer(id) {
+                    let offered = ed.rebase_offer(id);
+                    if let Some(p) = proposed.filter(|_| !proposed_up(ed, &checkout)) {
+                        let why = offered.as_ref().map_or_else(Clone::clone, |_| REBASE_UP.to_string());
+                        crate::orchestra::no_card(ed, p, why);
+                    }
+                    if let Err(e) = offered {
                         ed.set_error(format!("bring {name}: {e}"));
                     }
                 }
-                Bringing::Refused(e) => ed.set_error(format!("bring {name}: {e}")),
+                Bringing::Refused(e) => {
+                    if let Some(p) = proposed.filter(|_| !proposed_up(ed, &checkout)) {
+                        crate::orchestra::no_card(ed, p, e.clone());
+                    }
+                    ed.set_error(format!("bring {name}: {e}"));
+                }
             }
             ed.git_refresh();
             ed.git_reload_bases();
@@ -2620,6 +2676,15 @@ impl Editor {
         Ok(())
     }
 }
+
+/// Whether a bring card a parent's Claude proposed for checkout `root` is up, wherever it waits.
+fn proposed_up(ed: &Editor, root: &Path) -> bool {
+    let all = std::iter::once(&ed.workspace).chain(&ed.workspaces).flat_map(|l| &l.parked);
+    all.chain(&ed.offers).any(|o| o.proposed.is_some() && o.bring_root() == Some(root))
+}
+
+/// A proposed bring met a rebase stopped in the child: what its parent is told (`orchestra::no_card`).
+const REBASE_UP: &str = "a rebase stopped there — its card is the user's, to go on or abort";
 
 /// Who asked for a bring: `:workspace-bring` and `b` (a card first), the card's `y` or a preflight passed (now),
 /// the bring queue (`bringqueue.rs`: what's found goes to it).

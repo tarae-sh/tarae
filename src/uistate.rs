@@ -1896,8 +1896,12 @@ impl Editor {
                     let early = self.offer_early.get() == Some((o.id, o.rev));
                     (is_front && early && !whole).then(|| "y — see it whole first (v)".to_string())
                 });
-            // (a bring card is about the session it brings, wherever it stands — frictions29 #70)
-            let about = o.bring_root().and_then(|r| self.session_at(r)).unwrap_or(sid);
+            // (a bring card is about the session it brings, wherever it stands — frictions29 #70 — but one a parent's
+            // Claude proposed is that parent's ask, where it stands: `C-q` goes there, never to the child it brings)
+            let about = match o.proposed {
+                Some(_) => sid,
+                None => o.bring_root().and_then(|r| self.session_at(r)).unwrap_or(sid),
+            };
             CardState {
                 id: format!("card#{}", o.id),
                 session: session_id(self.claude_of(about)),

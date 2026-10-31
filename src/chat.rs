@@ -127,7 +127,7 @@ const TOOLS: &str = "";
 const ALLOWED: &str = "mcp__tarae__note,mcp__tarae__run_tests,mcp__tarae__run,mcp__tarae__plan,\
 mcp__tarae__references,mcp__tarae__search,mcp__tarae__read,mcp__tarae__symbols,mcp__tarae__definition,\
 mcp__tarae__diagnostics,mcp__tarae__rename,mcp__tarae__replace,mcp__tarae__ui,mcp__tarae__edit,mcp__tarae__git,\
-mcp__tarae__sessions_start,mcp__tarae__session_send,mcp__tarae__sessions";
+mcp__tarae__sessions_start,mcp__tarae__session_send,mcp__tarae__sessions,mcp__tarae__session_act";
 
 /// Settings laid over the user's and the project's when they're loaded (`llm.chat-settings`) — with what the
 /// project's own aren't trusted for held back (`claudetrust.rs`). `Skill` denied: a project skill's
@@ -1007,7 +1007,8 @@ impl Chat {
     /// queued`, the last message's text when there's one): frictions29 18. None: nothing waits.
     pub fn queued_said(&self) -> Option<(String, String)> {
         let n = self.queued.as_ref().map_or(0, |_| self.queued_n.max(1));
-        let reviews = self.sends.iter().filter(|l| matches!(l, Later::Review(_))).count();
+        let reviews =
+            self.sends.iter().filter(|l| matches!(l, Later::Review(_) | Later::Findings(_))).count();
         let parents: Vec<&str> = self
             .sends
             .iter()
@@ -2830,6 +2831,7 @@ pub(crate) fn send_queued(ed: &mut Editor) {
     while let Some(later) = ed.workspace.claude.chat.as_mut().and_then(next) {
         match later {
             Later::Review(lines) => crate::codereview::send_as(ed, lines),
+            Later::Findings(by) => crate::codereview::send_only(ed, Some(false), Some(&by)),
             Later::Reply { id, text, fresh, why } => crate::notes::send(ed, id, &text, fresh, why, None),
             Later::Parent { from, conversation, wake, text } => {
                 if !submit_from(ed, &from, conversation.as_deref(), wake, &text)
@@ -2882,6 +2884,8 @@ pub(crate) fn send_queued(ed: &mut Editor) {
 pub enum Later {
     /// The review's notes (`codereview::send_as`'s `lines`).
     Review(Option<bool>),
+    /// Its reviewer's findings, sent by its parent's Claude (`codereview::send_only`, `session_act send`).
+    Findings(Box<crate::orchestra::SentBy>),
     /// A reply on note `id` (`notes::send`'s).
     Reply { id: u64, text: String, fresh: bool, why: Option<String> },
     /// A message from its parent session's Claude (`orchestra.rs`, `session_send`): `from` its name, `conversation` the
@@ -3021,7 +3025,21 @@ pub fn submit(ed: &mut Editor, question: &str, about: Option<String>, chip: Opti
 /// `<from-session>`, the line saying who it's from before it the first time in a conversation; its row headed
 /// `from's Claude`; `wake`: its Claude asked to be woken as this turn ends. False if it couldn't go (busy, no process).
 pub fn submit_from(ed: &mut Editor, from: &str, conversation: Option<&str>, wake: bool, text: &str) -> bool {
-    if !submit_as(ed, text, None, None, false, Some(from)) {
+    submit_from_with(ed, from, conversation, wake, text, String::new(), String::new())
+}
+
+/// `submit_from` with `about` and its `chip`, as `submit`'s (empty: none) — the reviewer's findings its parent sent.
+pub fn submit_from_with(
+    ed: &mut Editor,
+    from: &str,
+    conversation: Option<&str>,
+    wake: bool,
+    text: &str,
+    about: String,
+    chip: String,
+) -> bool {
+    let (about, chip) = ((!about.is_empty()).then_some(about), (!chip.is_empty()).then_some(chip));
+    if !submit_as(ed, text, about, chip, false, Some(from)) {
         return false;
     }
     // (the message just pushed: which of the parent's conversations it came from, and whether it wakes it)
@@ -3959,6 +3977,19 @@ fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
         "mcp__tarae__sessions" => {
             let what = input["session"].as_str().filter(|n| !n.trim().is_empty()).unwrap_or("all");
             Look { verb: "check", what: what.to_string(), pattern: false, range: String::new(), link: None }
+        }
+        // (an act on a session: a review started there, its findings sent, or a card asked of you — `ask  bring
+        // knot-count  tests pass` — the reason its range)
+        "mcp__tarae__session_act" => {
+            let name = s("session");
+            let (verb, what) = match input["act"].as_str().unwrap_or_default() {
+                "review" => ("review", name),
+                "send" => ("send", format!("{name} the reviewer's findings")),
+                "board" => ("ask", format!("a board on {name}")),
+                act => ("ask", format!("{act} {name}")),
+            };
+            let wakes = if input["wake"].as_bool() == Some(true) { crate::orchestra::WAKES_ME } else { "" };
+            Look { verb, what: what + wakes, pattern: false, range: s("why"), link: None }
         }
         other => {
             Look { verb: "use", what: other.to_string(), pattern: false, range: String::new(), link: None }

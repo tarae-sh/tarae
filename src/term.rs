@@ -13076,6 +13076,11 @@ impl OfferCard {
                 // (the card's rows with the question's lines `skip` left out — their warning and diff rows marked)
                 let build = |skip: &[usize], warn: &mut Vec<usize>, diff: &mut Vec<(usize, char)>| {
                     let mut v = vec![(Fit::from(&title), false)];
+                    // (a parent's Claude proposed it: who and why, faint under the title — two rows at most, then
+                    // `…`, whole on its card)
+                    if let Some(p) = &o.proposed {
+                        v.extend(wrapped(&p.line(), 2));
+                    }
                     for (k, part) in o.question.split('\n').enumerate() {
                         if skip.contains(&k) {
                             continue;
@@ -24198,6 +24203,7 @@ mod tests {
                 output: None,
                 about: None,
                 paint: Vec::new(),
+                proposed: None,
             });
             let result =
                 serde_json::json!([{"label": "line_one", "detail": "fn line_one()"}, {"label": "lx"}]);

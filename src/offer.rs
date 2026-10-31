@@ -93,6 +93,10 @@ pub struct Offer {
     /// Words of its text painted in a theme scope, in order — each the first found after the one before (`Toast.paint`'s
     /// rule): BaseMoved's workspaces in their participant colours.
     pub paint: Vec<(String, &'static str)>,
+    /// A parent's Claude proposed what it asks (`session_act`: a bring, an end, a board on its child) — its first line
+    /// under the title says so, with the reason (`orchestra::carry`: set by the act's own command); how you answer is
+    /// its news.
+    pub proposed: Option<crate::orchestra::Proposal>,
 }
 
 /// Where a card stands among the ones up (`Editor::offer_place`): the lower first, arrival order within.
@@ -642,6 +646,7 @@ impl Offer {
             output: None,
             about: None,
             paint: Vec::new(),
+            proposed: None,
         }
     }
 
@@ -1165,6 +1170,8 @@ impl Offer {
                     }
             )
             || matches!(&self.what, What::ProtectedMade { then, .. } if then.call().is_some())
+            // (a parent's Claude proposed it: its ask, ranked and kept as Claude's — orchestra §4)
+            || self.proposed.is_some()
     }
 
     /// Whether it's the protected-made card (`r` removes them, `v` shows them).
@@ -1282,6 +1289,15 @@ impl Offer {
             What::ReviewEnd { .. } => Some(None),
             What::Rebased(m) => Some(Some((m.root.clone(), m.base.clone()))),
             _ => None,
+        }
+    }
+
+    /// The checkout a card that's one a checkout is about, and whether it's a bring's (`bring_root`) or the end's —
+    /// `push_offer` keeps one of each, wherever it waits.
+    pub fn one_a_checkout(&self) -> Option<(&std::path::Path, bool)> {
+        match &self.what {
+            What::WorkspaceEnd(e) => Some((e.root.as_path(), false)),
+            _ => self.bring_root().map(|r| (r, true)),
         }
     }
 
@@ -1734,24 +1750,46 @@ impl crate::editor::Editor {
         // (the user's own: the input that asked is the last one given — a card that comes after more typing,
         // or from work nobody's input started, waits its turn: #205)
         o.came = self.input_seq;
-        o.yours = o.yours_kind() && self.events.asked() == Some(self.input_seq);
+        // (one a parent's Claude proposed is its act's, never your key's — `orchestra::carry`)
+        o.yours = o.proposed.is_none() && o.yours_kind() && self.events.asked() == Some(self.input_seq);
         o.about = o.about.or_else(|| self.offer_about(&o));
-        // One bring card a session: a new one takes the place of the one waiting for that checkout, wherever it
-        // waits — its going said (the gone ring: one card replaced); one whose bring is under way stays
-        if let Some(root) = o.bring_root().map(std::path::Path::to_path_buf) {
-            let same = |x: &Offer| x.bring_root() == Some(root.as_path());
-            let waiting: Vec<(u64, bool)> = std::iter::once(&self.workspace)
-                .chain(&self.workspaces)
-                .flat_map(|l| &l.parked)
-                .chain(&self.offers)
-                .filter(|x| same(x))
-                .map(|x| (x.id, x.installing()))
-                .collect();
+        // One bring card a session, and one end card: a new one takes the place of the one waiting for that checkout,
+        // wherever it waits — a parent's ask parked in its workspace too —, its going said (the gone ring: one card
+        // replaced); one whose bring or end is under way stays
+        if let Some((root, bring)) = o.one_a_checkout().map(|(r, b)| (r.to_path_buf(), b)) {
+            let same = |x: &Offer| x.one_a_checkout() == Some((root.as_path(), bring));
+            let all = || {
+                std::iter::once(&self.workspace)
+                    .chain(&self.workspaces)
+                    .flat_map(|l| &l.parked)
+                    .chain(&self.offers)
+            };
+            let waiting: Vec<(u64, bool)> =
+                all().filter(|x| same(x)).map(|x| (x.id, x.installing())).collect();
+            // (a proposal meeting your own card for it: yours left as it is — its id, focus and rank, never "proposed
+            // by" on what you asked, your answer never the parent's news —, the proposal gone, the parent told)
+            let yours_up = o.proposed.is_some() && all().any(|x| same(x) && x.proposed.is_none());
+            // (a proposal's card replaced by one that isn't that proposal's — your own: the parent told, never carried
+            // onto yours; a regrade's carries it itself, `bring_regrade`; a newer proposal's takes its place unsaid)
+            let replaced: Vec<crate::orchestra::Proposal> = match o.proposed {
+                Some(_) => Vec::new(),
+                None => all().filter(|x| same(x)).filter_map(|x| x.proposed.clone()).collect(),
+            };
             if waiting.iter().any(|w| w.1) {
-                return self.set_status("a bring of it is under way — its card says how it goes");
+                let said = if bring { "a bring of it is under way" } else { "its end is under way" };
+                if let Some(p) = o.proposed {
+                    crate::orchestra::no_card(self, p, format!("{said} already"));
+                }
+                return self.set_status(format!("{said} — its card says how it goes"));
+            }
+            if let Some(p) = o.proposed.take_if(|_| yours_up) {
+                return crate::orchestra::no_card(self, p, "the user has that card up already, their own");
             }
             for (id, _) in waiting {
                 self.card_how(id, format!("replaced by card#{}", o.id));
+            }
+            for p in replaced {
+                crate::orchestra::no_card(self, p, "the user's own card took its place");
             }
             self.offers.retain(|x| !same(x));
             for l in std::iter::once(&mut self.workspace).chain(&mut self.workspaces) {
@@ -1761,6 +1799,17 @@ impl crate::editor::Editor {
         // (the call it holds waits on it — watched until it's answered: `asking_sync`)
         if let Some(asker) = o.asker() {
             self.workspace.claude.asking.push(Asking { card: o.id, asker, what: o.title.clone() });
+        }
+        // (a parent's proposal is its ask: kept in its workspace while another is in front — `main asks`, there as you go)
+        if o.proposed.is_some()
+            && let Some(at) = o.about.filter(|&a| a != self.workspace.id)
+            && self.workspaces.iter().any(|l| l.id == at)
+        {
+            self.count(crate::features::Area::Card, o.kind());
+            if let Some(l) = self.workspaces.iter_mut().find(|l| l.id == at) {
+                l.parked.push(o);
+            }
+            return;
         }
         // From a session behind: it waits in that session, and comes up when the session is in front (`workspace_in`)
         if self.background() {
@@ -1788,6 +1837,8 @@ impl crate::editor::Editor {
         if let Some(old) = self.offers.iter_mut().find(|x| x.title == o.title).filter(|_| !own) {
             // Replaced whole — what it says with what it does — its focus gone with its `rev` (`card_focus`): a key
             // meant for what it said isn't an answer to what it says now. Asked again by your own key: yours again
+            // (a proposed card never gets here: bring and end cards are one a checkout, above, a board's one at a time —
+            // `board::ask`)
             let yours = o.yours;
             if !old.installing() {
                 (old.question, old.working, old.failed) = (o.question, o.working, o.failed);
@@ -2737,6 +2788,7 @@ impl crate::editor::Editor {
         let entry = o.said(&self.workspace.log(), &key.to_string(), self.workspace.claude.caps());
         self.cards_record(vec![entry]);
         self.card_how(o.id, format!("answered {key}"));
+        crate::orchestra::proposal_answered(self, o, key);
         if self.counting() {
             self.features.answer(o.kind(), key);
         }

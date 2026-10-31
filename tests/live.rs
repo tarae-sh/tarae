@@ -812,8 +812,51 @@ fn teed_lsp(sb: &Sandbox, llm: &str, lsp: bool) -> std::path::PathBuf {
     std::fs::write(&script, format!("#!/bin/sh\nclaude \"$@\" | tee -a '{}'\n", out.display())).unwrap();
     std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let off = if lsp { "" } else { "lsp = false\n" };
-    sb.write_config(&format!("{LIVE_CONFIG}{off}[llm]\ncommand = \"{}\"\n{llm}", script.display()));
+    let billing = live_billing().map(|b| format!("billing = \"{b}\"\n")).unwrap_or_default();
+    sb.write_config(&format!("{LIVE_CONFIG}{off}[llm]\ncommand = \"{}\"\n{billing}{llm}", script.display()));
     out
+}
+
+/// Who pays for a teed run's claudes: `TARAE_LIVE_BILLING` (`api` or `subscription`), read by this test process only
+/// — laid into the run's own config as `llm.billing` (yours there: its own `XDG_CONFIG_HOME`), every session's and
+/// reviewer's claude on it. Unset: tarae's default, the plan.
+fn live_billing() -> Option<String> {
+    let b = std::env::var("TARAE_LIVE_BILLING").ok()?;
+    assert!(
+        matches!(b.as_str(), "api" | "subscription"),
+        "TARAE_LIVE_BILLING: api or subscription, not {b:?}"
+    );
+    Some(b)
+}
+
+/// Each claude in a teed `stream` ran on the credential `TARAE_LIVE_BILLING` asked for, as its `init` says
+/// (`apiKeySource`: an API session's `apiKeyHelper`, the plan's `none`) — printed as `BILLED`.
+fn billed(stream: &str) {
+    let Some(b) = live_billing() else { return };
+    let want = if b == "api" { "apiKeyHelper" } else { "none" };
+    let sources: Vec<String> = stream
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["type"] == "system" && v["subtype"] == "init")
+        .map(|v| v["apiKeySource"].as_str().unwrap_or("(not said)").to_string())
+        .collect();
+    eprintln!("BILLED {b}: {} claude inits, apiKeySource {sources:?}", sources.len());
+    assert!(!sources.is_empty() && sources.iter().all(|s| s == want), "not all on {want}: {sources:?}");
+}
+
+/// What a teed `stream`'s claudes spent so far: per claude conversation (`session_id`) its largest `total_cost_usd`
+/// (cumulative over that claude's turns), summed — every claude's lines interleave in the one file.
+fn spent(stream: &str) -> f64 {
+    let mut by: std::collections::BTreeMap<String, f64> = std::collections::BTreeMap::new();
+    for v in stream.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()) {
+        if v["type"] == "result" {
+            let id = v["session_id"].as_str().unwrap_or_default().to_string();
+            let c = v["total_cost_usd"].as_f64().unwrap_or(0.0);
+            let e = by.entry(id).or_insert(0.0);
+            *e = e.max(c);
+        }
+    }
+    by.values().sum()
 }
 
 /// Each request's prompt as claude's `usage` counts it — input + cache written + cache read, the whole
@@ -857,6 +900,7 @@ fn chat_prompt_tokens() {
     let cost = measure(&stream, "").cost;
     eprintln!("TOKENS first request's prompt: {:?} (all requests: {p:?}), ${cost:.4}", p.first());
     assert!(!p.is_empty(), "claude's usage in its stream");
+    billed(&stream);
 }
 
 /// `chat_prompt_tokens` in a session's chat (`:session-new` — not the checkout tarae started in): under
@@ -888,6 +932,7 @@ fn chat_prompt_tokens_in_a_session() {
     let cost = measure(&stream, "").cost;
     eprintln!("TOKENS first request's prompt: {:?} (all requests: {p:?}), ${cost:.4}", p.first());
     assert!(!p.is_empty(), "claude's usage in its stream");
+    billed(&stream);
 }
 
 /// `teed`, and what each claude is sent copied to `sent.jsonl` beside it: (stream, sent).
@@ -988,6 +1033,137 @@ fn chat_prompt_tokens_in_a_child() {
         "kid's two conversations in the stream: {} claudes",
         segs.len()
     );
+    billed(&stream);
+}
+
+/// The end-to-end's cap on what its claudes spend, every one's (`spent`): past it the test stops — its tarae and
+/// their claudes go with it.
+const P3_CAP_USD: f64 = 2.0;
+
+/// Waits until `done` holds on screen, looking at what the run's claudes spent (`spent` of `out`) every two seconds —
+/// past `P3_CAP_USD`, the test stops there.
+fn capped_wait(t: &mut Term, out: &Path, what: &str, done: impl Fn(&Screen) -> bool) -> Screen {
+    let end = Instant::now() + LIVE_TIMEOUT * 2;
+    loop {
+        if let Some(s) = t.poll_for(Duration::from_secs(2), &done) {
+            return s;
+        }
+        let so_far = spent(&std::fs::read_to_string(out).unwrap_or_default());
+        assert!(
+            so_far <= P3_CAP_USD,
+            "stopped: ${so_far:.4} spent, past the cap ${P3_CAP_USD} — waiting for {what}"
+        );
+        assert!(Instant::now() < end, "never {what} (${so_far:.4} spent)\n{}", t.screen());
+    }
+}
+
+/// orchestra P3 end to end, on the real claude and the real reviewer (`TARAE_LIVE_BILLING=api` puts every one on the API
+/// key): the home chat's Claude starts `kid`; a change committed there (by the test — Claude has no git that writes); asked
+/// to, it calls `session_act review` with `wake`, is woken by the reviewer's end, reads `sessions` with `review` and
+/// proposes the bring. The real bring card stands in main's stack, its first line who proposed it; `C-q` focuses it
+/// there (never kid, the session it brings); `n` answers it, and main's Claude hears the key with its next session tool.
+/// Its spend capped at `P3_CAP_USD`, said as `SPENT`.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "live: run with `cargo live` (uses Claude)"]
+fn orchestra_p3_end_to_end() {
+    if !have("claude") {
+        return;
+    }
+    let sb = Sandbox::live("orchestra-p3");
+    let wt = sb.outside("wt");
+    let (out, sent) = teed_both(&sb, &format!("[workspace]\nworktrees = \"{}\"\n", wt.display()));
+    sb.write("count.txt", "1\n");
+    sb.git(&["init", "-q", "-b", "main"]);
+    sb.git(&["add", "-A"]);
+    sb.git(&["commit", "-q", "-m", "one"]);
+    let mut t = sb.spawn(&["count.txt"]);
+    t.send(" l");
+    t.wait_for("the chat, focused", |s| s.contains("enter send"));
+    t.send(
+        "Call sessions_start once: sessions {\"kid\": \"Reply with the single word ok. Use no tools.\"}, base \
+         main. Do nothing else.\r",
+    );
+    capped_wait(&mut t, &out, "the set's card", |s| s.contains("Start a session?"));
+    t.send("\x11");
+    t.wait_for("the card focused", |s| s.status().contains("● card"));
+    t.send("y");
+    capped_wait(&mut t, &out, "the set made", |s| s.contains("space W lists them"));
+    capped_wait(&mut t, &out, "main's turn over", chat_idle);
+    // (kid's brief answered: a result from a claude whose init's cwd is kid's checkout)
+    let kid_done = |s: &str| {
+        let mut kid_ids = Vec::new();
+        for v in s.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()) {
+            let id = v["session_id"].as_str().unwrap_or_default().to_string();
+            if v["subtype"] == "init" && v["cwd"].as_str().is_some_and(|c| c.ends_with("/kid")) {
+                kid_ids.push(id);
+            } else if v["type"] == "result" && kid_ids.contains(&id) {
+                return true;
+            }
+        }
+        false
+    };
+    wait_file_until(&out, "has kid's brief answered", LIVE_TIMEOUT, kid_done);
+    // (a change committed in kid's checkout: what its reviewer reads, what the bring brings)
+    let kid = std::fs::read_dir(&wt)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .flat_map(|p| [p.join("kid"), p.clone()])
+        .find(|p| p.ends_with("kid") && p.join(".git").is_file())
+        .unwrap_or_else(|| panic!("kid's checkout under {}", wt.display()));
+    std::fs::write(kid.join("count.txt"), "1\n2\n").unwrap();
+    sb.git(&["-C", kid.to_str().unwrap(), "commit", "-q", "-am", "count to two"]);
+    chat_turn(
+        &mut t,
+        "Call session_act once: session kid, act review, wake true; then end your turn. When you are woken for the \
+         review's end: call sessions with session kid and review true, then session_act with session kid, act bring \
+         and a one-line why. Nothing else.",
+    );
+    // (the reviewer reads; its end wakes main's Claude, which reads it and proposes the bring)
+    capped_wait(&mut t, &out, "the proposed bring card", |s| s.contains("proposed by main's Claude"));
+    let card = t.wait_state("the bring card in the state", |v| {
+        v["cards"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|c| c["title"].as_str().is_some_and(|x| x.contains("Bring kid"))))
+    });
+    let card = card["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["title"].as_str().unwrap().contains("Bring kid"))
+        .unwrap()
+        .clone();
+    eprintln!("CARD {card}");
+    // (listed where it stands, main's — a bring card of yours is listed under the session it brings, `shown_in` main)
+    assert!(card["shown_in"].is_null(), "listed where it stands: {card}");
+    t.send("\x11");
+    t.wait_for("the bring card focused in main", |s| {
+        s.status().contains("● card") && s.contains("proposed by")
+    });
+    t.send("n");
+    t.wait_for("the card gone", |s| !s.contains("proposed by"));
+    capped_wait(&mut t, &out, "main's turn over", chat_idle);
+    chat_turn(&mut t, "Call sessions with session kid once. Nothing else.");
+    let asked = std::fs::read_to_string(&sent).unwrap_or_default();
+    let stream = std::fs::read_to_string(&out).unwrap_or_default();
+    let total = spent(&stream);
+    let tools: Vec<String> = stream
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .flat_map(|v| v["message"]["content"].as_array().cloned().unwrap_or_default())
+        .filter(|c| c["type"] == "tool_use")
+        .map(|c| format!("{} {}", c["name"].as_str().unwrap_or_default(), c["input"]))
+        .collect();
+    eprintln!("SPENT ${total:.4} (cap ${P3_CAP_USD})");
+    eprintln!("CALLS {tools:#?}");
+    billed(&stream);
+    assert!(asked.contains("reviewer is done") || asked.contains("stopped"), "main told of the review's end");
+    assert!(asked.contains("the user answered the bring you proposed — n"), "main told the key");
+    assert!(tools.iter().any(|c| c.contains("\"act\":\"review\"")), "{tools:?}");
+    assert!(tools.iter().any(|c| c.contains("\"act\":\"bring\"")), "{tools:?}");
+    assert!(total <= P3_CAP_USD, "${total:.4} spent, past the cap");
 }
 
 /// A quote's framing (view P2): the same three lines of a file asked about two ways, each in a fresh chat — as the

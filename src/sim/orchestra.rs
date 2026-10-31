@@ -98,6 +98,9 @@ struct World {
     wakers: Vec<String>,
     /// When each wake was seen (the simulation's clock, ms): never more than `CAP` in an hour.
     woke_at: Vec<u64>,
+    /// P3: the parent's cards its Claude proposed (`Offer.proposed`), by card id: the token its news names (in the
+    /// proposal's child name) and the conversation that proposed it — answered by your key, news once.
+    proposed: HashMap<u64, (String, usize)>,
 }
 
 /// `llm.parent-wakes` here: small, so the walk meets it.
@@ -169,6 +172,7 @@ fn run(choices: super::Choices) -> Vec<String> {
         cards: Vec::new(),
         wakers: Vec::new(),
         woke_at: Vec::new(),
+        proposed: HashMap::new(),
     });
     sim.walk(
         &mut ed,
@@ -245,7 +249,8 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &RefCell<World>) -> String {
     // parent reads `sessions` 2, the parent's own message or its turn's end 2, a child's claude exits or starts 2, the
     // parent's chat anew 1)
     // (P2: a card up in the parent or a child 2, the user answers one 2, an hour passes 1, the user ends a child 1)
-    match c.weighted(&[4, 3, 4, 2, 1, 1, 2, 2, 2, 1, 2, 2, 1, 1]) {
+    // (P3: a review the parent started in a child ends 1 — and half the parent's cards its Claude's proposals)
+    match c.weighted(&[4, 3, 4, 2, 1, 1, 2, 2, 2, 1, 2, 2, 1, 1, 1]) {
         0 => {
             w.n += 1;
             let token = format!("[p{}]", w.n);
@@ -456,10 +461,35 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &RefCell<World>) -> String {
                 String::new(),
                 what,
             );
+            // (P3: one in the parent its Claude proposed — its answer news for the conversation that proposed it, the
+            // news's token in the proposal's child name: the key alone is told, never the card's words)
+            // (carried as the act's own command carries it to the card it raises: `orchestra::carry`)
+            let pc = (at == w.home && c.below(2) == 0).then(|| format!("[pc{}]", w.n));
+            let proposal = pc.as_ref().map(|pc| {
+                let parent = std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|l| l.id == w.home);
+                crate::orchestra::Proposal {
+                    act: crate::orchestra::Act::Bring,
+                    parent: parent.map(|l| l.claude.id).expect("the parent"),
+                    workspace: w.home,
+                    by: "home".into(),
+                    child: format!("{name}{pc}"),
+                    why: String::new(),
+                    conversation: Some(conversation(w.conv)),
+                }
+            });
+            let o = crate::orchestra::carry(o, proposal);
+            let conv = w.conv;
             drop(w);
             ed.with_workspace(at, |ed| ed.push_offer(o));
-            world.borrow_mut().cards.push((at, ed.offer_seq, token.clone(), false, false));
-            format!("a card {token} comes in {at}")
+            let mut w = world.borrow_mut();
+            w.cards.push((at, ed.offer_seq, token.clone(), false, false));
+            if let Some(pc) = pc.clone() {
+                w.proposed.insert(ed.offer_seq, (pc, conv));
+            }
+            format!(
+                "a card {token} comes in {at}{}",
+                pc.map(|p| format!(", proposed {p}")).unwrap_or_default()
+            )
         }
         11 => {
             // (the user answers one: its session in front, the card focused, `n` — a key, the only way one goes)
@@ -485,6 +515,10 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &RefCell<World>) -> String {
                 if let Some(card) = w.cards.iter_mut().find(|x| x.1 == front) {
                     card.3 = true;
                     said.push(card.2.clone());
+                }
+                // (a proposal answered by your key: news for the conversation that proposed it)
+                if let Some(news) = w.proposed.remove(&front) {
+                    w.news.push(news);
                 }
                 if front == id || ed.offers.first().map(|o| o.id) == Some(front) {
                     break;
@@ -519,6 +553,33 @@ fn input(sim: &mut Sim, ed: &mut Editor, world: &RefCell<World>) -> String {
                 ed.workspace_close(&root);
             }
             format!("the user ends {name}")
+        }
+        14 => {
+            // (P3: a review the parent started in a child stops — its why its token —, told as it stops and again as its
+            // end passes: news once, for the conversation that asked)
+            w.n += 1;
+            let token = format!("[rv{}]", w.n);
+            let conv = w.conv;
+            w.news.push((token.clone(), conv));
+            let home = w.home;
+            drop(w);
+            let parent = std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|l| l.id == home);
+            let asked = crate::orchestra::ForParent {
+                parent: parent.map(|l| l.claude.id).expect("the parent"),
+                conversation: Some(conversation(conv)),
+                wake: false,
+                told: false,
+            };
+            ed.with_workspace(child, |ed| {
+                let state = crate::reviewer::State::Failed(token.clone());
+                let mut r =
+                    crate::reviewer::Reviewer::for_test(ed.workspace.root.clone(), state, Vec::new(), "");
+                r.parent = Some(asked);
+                ed.workspace.reviewer = Some(r);
+                crate::orchestra::review_ended(ed);
+                crate::orchestra::review_ended(ed);
+            });
+            format!("a review the parent started in {name} stops ({token})")
         }
         _ => unreachable!("one arm a weight"),
     }
@@ -682,7 +743,8 @@ fn held(ed: &Editor, w: &mut World) -> Result<(), String> {
         std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|l| l.id == w.home).ok_or("no parent")?;
     let now = parent.claude.chat.as_ref().and_then(|c| c.conversation.clone());
     let kept = |t: &str| {
-        let of = |n: &&crate::orchestra::News| format!("{:?}", n.ended).contains(t);
+        // (the whole news: a proposal's token is in its child's name)
+        let of = |n: &&crate::orchestra::News| format!("{n:?}").contains(t);
         // (one kept for an earlier conversation is never told: as good as gone)
         parent.claude.news.iter().filter(of).filter(|n| n.conversation == now).count()
     };

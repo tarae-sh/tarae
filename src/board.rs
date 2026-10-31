@@ -251,17 +251,27 @@ fn angles_for(ed: &crate::editor::Editor, t: &crate::codereview::Taken) -> Vec<A
 }
 
 /// `space v C`, its snapshot `t` taken (`reviewer::ask_in`) and what the last boards cost read: the angles its
-/// changes call for, then the card — or, said yes to already in this work, the board started on it.
-pub fn start(ed: &mut crate::editor::Editor, t: crate::codereview::Taken, estimate: Option<(f64, usize)>) {
+/// changes call for, then the card — or, said yes to already in this work, the board started on it. `asked`: its
+/// session's parent's Claude proposed it (`session_act board`) — always the card, carrying that; none, the parent told.
+pub fn start(
+    ed: &mut crate::editor::Editor,
+    t: crate::codereview::Taken,
+    estimate: Option<(f64, usize)>,
+    asked: Option<crate::orchestra::Asked>,
+) {
     let chosen = angles_for(ed, &t);
     if chosen.is_empty() {
+        if let Some(a) = asked {
+            crate::orchestra::no_card(ed, a.proposal, "no angle's `when` holds for its changes");
+        }
         return ed.set_status("no angle's `when` holds for these changes — space v c reads them in one pass");
     }
     // (asked once for this session and its conversation — a second board in the same work starts unasked)
-    if ed.workspace.claude.board_yes.as_ref() == Some(&conversation(ed)) {
-        return crate::reviewer::begin(ed, t, Some(Board { estimate, ..Board::new(chosen) }));
+    // (one its parent's Claude proposed always asks: a yes of yours here before was for your own)
+    if ed.workspace.claude.board_yes.as_ref() == Some(&conversation(ed)) && asked.is_none() {
+        return crate::reviewer::begin(ed, t, Some(Board { estimate, ..Board::new(chosen) }), None);
     }
-    ask(ed, chosen, t, estimate);
+    ask(ed, chosen, t, estimate, asked);
 }
 
 /// A board asks before it starts — the one key that spends money (frictions29 32, the user's choice 2026-10-19: a
@@ -281,6 +291,11 @@ pub struct Ask {
     pub angles: Vec<Angle>,
     /// What the last boards cost (`estimate`), read before the card.
     pub estimate: Option<(f64, usize)>,
+    /// The session's parent's name, if it has one: its Claude may propose a board here, and that one always asks.
+    pub parent: Option<String>,
+    /// The parent's ask, when its Claude proposed this board (`orchestra::Asked`, carried by the act): `y` gives it to
+    /// the board; the card gone otherwise, it goes with it.
+    pub for_parent: Option<crate::orchestra::ForParent>,
 }
 
 /// The conversation a yes on the board's card holds for: the session's chat's, if one's begun.
@@ -294,18 +309,26 @@ fn ask(
     angles: Vec<Angle>,
     t: crate::codereview::Taken,
     estimate: Option<(f64, usize)>,
+    asked: Option<crate::orchestra::Asked>,
 ) {
     if ed.offers.iter().any(|o| matches!(&o.what, crate::offer::What::Board(_))) {
+        if let Some(a) = asked {
+            crate::orchestra::no_card(ed, a.proposal, "a board's card is up there already");
+        }
         return ed.set_status("the board's card is up — y starts it, n doesn't");
     }
-    ed.push_offer(card(Ask {
+    let (for_parent, proposal) = asked.map(|a| (a.review, a.proposal)).unzip();
+    let o = card(Ask {
         session: ed.workspace.id,
         name: ed.workspace.name.clone(),
         conversation: conversation(ed),
         taken: Box::new(t),
         angles,
         estimate,
-    }));
+        parent: crate::orchestra::parent_label(ed),
+        for_parent,
+    });
+    ed.push_offer(crate::orchestra::carry(o, proposal));
 }
 
 /// The card: the question its title (`Start a board on frictions31?`), what the last boards cost its first line
@@ -327,10 +350,12 @@ pub fn card(a: Ask) -> crate::offer::Offer {
     // user's decision 2026-10-20; then, still cut (a refused key's reason under it), how long a yes holds, with the
     // blank before it — back as soon as there's room; the cost and what it reads stay)
     let them = format!("{}{}", them[..1].to_uppercase(), &them[1..]);
+    // (a child's: one its parent's Claude proposes always asks — `start`'s `asked`)
+    let not = a.parent.as_ref().map(|p| format!(" (not one {p}'s Claude proposes)")).unwrap_or_default();
     let q = format!(
         "{cost}\n\n{n} the changes ({what}) in the background.\n{them} — {} — then a skeptic checks each group \
          of their claims.\n\nA yes holds for this session and its conversation: another board here starts without \
-         asking.",
+         asking{not}.",
         names.join(", ")
     );
     let title = format!("Start a board on {}?", a.name);
@@ -342,14 +367,19 @@ pub fn card(a: Ask) -> crate::offer::Offer {
 /// The changes moved since the card came (the tree taken again on a worker — user decision 2026-10-19): the
 /// snapshot taken again and the board started on what's there now, the angles those call for — said when they
 /// differ from the card's.
-pub fn answer(ed: &mut crate::editor::Editor, a: Ask, yes: bool) {
+/// One its parent's Claude proposed (`for_parent`): where it doesn't start after all, the parent told why — it heard
+/// the `y` (`orchestra::review_not_started`).
+pub fn answer(ed: &mut crate::editor::Editor, mut a: Ask, yes: bool) {
     if !yes {
         return ed.set_status("no board — space v C asks again");
     }
+    let (parent, child) = (a.for_parent.take(), a.name.clone());
     if ed.workspace.id != a.session {
+        not_started(ed, parent, &child, "its session wasn't in front as the user said yes");
         return ed.set_status("that session isn't in front — no board started");
     }
     if ed.workspace.reviewer.as_ref().is_some_and(crate::reviewer::Reviewer::reading) {
+        not_started(ed, parent, &child, "its reviewer was still reading");
         return ed.set_status("the reviewer is still reading — :reviewer-stop stops it");
     }
     ed.workspace.claude.board_yes = Some(a.conversation.clone());
@@ -364,12 +394,17 @@ pub fn answer(ed: &mut crate::editor::Editor, a: Ask, yes: bool) {
     };
     ed.step(ed.events.jobs(), "board", "the board checks the changes…", work, move |ed, again| {
         if ed.workspace.reviewer.as_ref().is_some_and(crate::reviewer::Reviewer::reading) {
+            not_started(ed, parent, &child, "its reviewer was still reading");
             return ed.set_status("the reviewer is still reading — :reviewer-stop stops it");
         }
         let (t, angles) = match again {
             None => (*a.taken, a.angles),
-            Some(Err(e)) => return ed.set_error(format!("review: {e}")),
+            Some(Err(e)) => {
+                not_started(ed, parent, &child, &format!("its changes couldn't be read again — {e}"));
+                return ed.set_error(format!("review: {e}"));
+            }
             Some(Ok(t)) if t.files.is_empty() => {
+                not_started(ed, parent, &child, "no changes to review now — they moved since the card");
                 return ed
                     .set_status(format!("no changes to review — {} (they moved since the card)", t.label));
             }
@@ -383,14 +418,29 @@ pub fn answer(ed: &mut crate::editor::Editor, a: Ask, yes: bool) {
                     ));
                 }
                 if angles.is_empty() {
+                    not_started(ed, parent, &child, "no angle's `when` holds for its changes now");
                     return ed
                         .set_status("no angle's `when` holds for these changes now — space v c reads them");
                 }
                 (t, angles)
             }
         };
-        crate::reviewer::begin(ed, t, Some(Board { estimate: a.estimate, ..Board::new(angles) }));
+        // (one its parent's Claude proposed: its ask the board's)
+        let board = Board { estimate: a.estimate, ..Board::new(angles) };
+        crate::reviewer::begin(ed, t, Some(board), parent);
     });
+}
+
+/// A board its parent's Claude proposed (`p`), `y` given, that didn't start (`why`): that parent told.
+fn not_started(
+    ed: &mut crate::editor::Editor,
+    p: Option<crate::orchestra::ForParent>,
+    child: &str,
+    why: &str,
+) {
+    if let Some(p) = p {
+        crate::orchestra::review_not_started(ed, p, child, true, why);
+    }
 }
 
 /// What a skeptic made of a claim — none yet while it's open.

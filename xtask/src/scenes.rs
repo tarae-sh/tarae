@@ -1379,6 +1379,102 @@ const ORCHESTRA_STRIP: &[&str] = &[
     "@20?▲1 waiting",
     "@3",
 ];
+/// orchestra P3 (`orchestra-propose-bring`): main starts knot-count; in it a commit (yours, by `:sh`); back in main you
+/// say “bring it in” — main's Claude proposes the bring, and the real bring card comes, its first line who proposed it
+/// and why, focused by `C-q`.
+const ORCHESTRA_PROPOSE_BRING: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "split the work",
+    "\r",
+    "@?Start ",
+    "\x11",
+    "@1",
+    "y",
+    "@20?space W lists them",
+    "@2",
+    "\x1b",
+    " ",
+    "W",
+    "@1",
+    "2",
+    "@10?Each thread",
+    "@1",
+    "\x1b",
+    "\x17",
+    "h",
+    "@1",
+    ":",
+    "sh git commit --allow-empty -qm count",
+    "\r",
+    "@3",
+    " ",
+    "W",
+    "@1",
+    "1",
+    "@3",
+    " ",
+    "l",
+    "@1",
+    "bring it in",
+    "\r",
+    "@20?Bring knot-count",
+    "@1",
+    // (`C-q`: main's card, where it stands — never the child it brings)
+    "\x11",
+    "@1",
+];
+/// …as it comes, waiting unfocused in main's chat (`orchestra-propose-bring-waits`).
+const ORCHESTRA_PROPOSE_BRING_WAITS: &[&str] =
+    ORCHESTRA_PROPOSE_BRING.split_at(ORCHESTRA_PROPOSE_BRING.len() - 2).0;
+/// …and (`orchestra-propose-board`) a change of its committed there, then “get a board on it”: the board's card, asked in
+/// knot-count where the board would read, its first line who proposed it and why — `C-q` takes you to it.
+const ORCHESTRA_PROPOSE_BOARD: &[&str] = &[
+    "@1",
+    " ",
+    "l",
+    "@1",
+    "split the work",
+    "\r",
+    "@?Start ",
+    "\x11",
+    "@1",
+    "y",
+    "@20?space W lists them",
+    "@2",
+    "\x1b",
+    " ",
+    "W",
+    "@1",
+    "2",
+    "@10?Each thread",
+    "@1",
+    "\x1b",
+    "\x17",
+    "h",
+    "@1",
+    ":",
+    "sh printf '\\n// counted\\n' >> src/main.rs && git commit -qam count",
+    "\r",
+    "@3",
+    " ",
+    "W",
+    "@1",
+    "1",
+    "@3",
+    " ",
+    "l",
+    "@1",
+    "get a board on it",
+    "\r",
+    "@20?A board spends",
+    "@2",
+    "\x11",
+    "@20?Start a board",
+    "@1",
+];
 /// …and as it comes, waiting (`sessionset-waits`).
 const SESSION_SET_WAITS: &[&str] =
     &["@1", " ", "l", "@1", "split the work", "\r", "@?Start ", "\x17", "h", "@1", " ", "l", "@2"];
@@ -3724,6 +3820,26 @@ const SCENES: &[Scene] = &[
         files: MAIN,
         keys: ORCHESTRA_LIST,
     },
+    // (orchestra P3: main's Claude proposes knot-count's bring, and asks for a board on it — the real cards, their
+    // first line who proposed them and why)
+    Scene {
+        name: "orchestra-propose-bring",
+        claude: "main=parentpropose,knot-count=childcount",
+        files: MAIN,
+        keys: ORCHESTRA_PROPOSE_BRING,
+    },
+    Scene {
+        name: "orchestra-propose-bring-waits",
+        claude: "main=parentpropose,knot-count=childcount",
+        files: MAIN,
+        keys: ORCHESTRA_PROPOSE_BRING_WAITS,
+    },
+    Scene {
+        name: "orchestra-propose-board",
+        claude: "main=parentpropose,knot-count=childcount",
+        files: MAIN,
+        keys: ORCHESTRA_PROPOSE_BOARD,
+    },
     // (orchestra P1b: three children of main's after it in the list and on the chat's top line, a faint `›` each; fix,
     // a session of yours, after them)
     Scene {
@@ -4607,6 +4723,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "parentwake",
     "childlong",
     "parent",
+    "parentpropose",
     "focus-explain",
     "focus-typing",
     "focus-fix",
@@ -4741,6 +4858,8 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "parentwake" => turn.parent_wake(&line)?,
             "childlong" => turn.child_long(&line)?,
             "parent" => turn.parent(&line)?,
+            // (orchestra P3: main proposes knot-count's bring, or asks for a board on it)
+            "parentpropose" => turn.parent_propose(&line)?,
             // (focus D1's turns — `cargo xtask focus`)
             "focus-explain" => turn.focus_explain(false)?,
             "focus-typing" => turn.focus_explain(true)?,
@@ -4894,6 +5013,28 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.line(
             json!({"type": "result", "result": "done", "session_id": "conv-main", "total_cost_usd": 0.16}),
         )
+    }
+
+    /// orchestra P3's parent (`orchestra-propose-*`): main starts knot-count; told to bring it in, it proposes the bring
+    /// with its reason; told to have it reviewed, it asks for a board on it — each the real card, yours to answer.
+    fn parent_propose(&mut self, line: &str) -> io::Result<()> {
+        let (act, why, said) = if line.contains("bring it in") {
+            (
+                "bring",
+                "its test passes, the threads print most-knotted first, and nothing else reads the order it \
+                 changed — the report and the strip both sort again on their own",
+                "The bring is yours — its card is up.",
+            )
+        } else if line.contains("board") {
+            ("board", "it changes the order every report reads", "A board spends, so it's your card.")
+        } else {
+            return self.sessions_started(false, false);
+        };
+        self.words("knot-count is done and its test passes.")?;
+        self.text("\n")?;
+        self.call(1, "session_act", json!({"session": "knot-count", "act": act, "why": why}))?;
+        self.words(said)?;
+        self.line(json!({"type": "result", "result": "done"}))
     }
 
     /// `sessionset-child`'s child: main's brief answered with a read and a plan; a message of yours after it, briefly.
