@@ -121,18 +121,19 @@ Five pieces from the queue, read together by tarae's reviewer after (`031c8e40`:
 
 ## Now
 
-Under way (2026-10-29):
+Under way (2026-10-31):
 
-- **The mouse's five kinds, piece B** — rows, key hints as buttons, #216's press, marks, checked by A's walk
-  ([alongside](#alongside-not-ordered)).
-- **#214, piece 2** — what piece 1 left (`.sb/f214-next.md`): the side panel's file rows, the review rail's frame
-  besides lookups, what each event still does over every buffer or session while nothing changed, `focus_sync`, the
-  RSS growth.
-- **#213, the swap's retry** — the shared rust-analyzer's new server panicked (rust-analyzer's own bug) before it
-  took over, and the next swap began at once, each try loading every checkout beside the old one. tarae's part: after
-  a new server exits before it takes over, no next swap until the folders change again (or a back-off), said once.
+- **Orchestra P3** — a parent's review and proposals as one tool, `session_act { session, act, why?, wake? }`
+  (decided 2026-10-31): `review`, `board`, `send`, `bring` and `end` proposed, every card still yours; its review
+  round's fixes in progress (orchestra's `.sb/orchestra-p3-next.md`). Then a week of Part I in use, then Part II's P6
+  ([§4](#4-panes-the-terminal-line-and-orchestra)).
+- **The chat and the code as one flow, a day of use before E1** — D1, B1, A1 and A1b steps 1–3 are in
+  ([next](#next)); E1, the turn as a map (tree, outline, gutter by role), comes after a day of real work with them,
+  then the rest in main's `.sb/focus-plan.md` order.
 - **Projects, step 3** — a crash continues: the conversation's id in the recovery folder, the recovery card's restore
   taking the chats back (carry's `.sb/projects-plan.md`).
+
+No friction of #223–#254 is open ([§3](#3-frictions-and-lighter-cards-and-reviews)).
 
 ## Next
 
@@ -148,7 +149,7 @@ it the `Viewer`; ids (machine, n), events tagged with both, `:workspace-*`, `[wo
 diagram model `fd2cc7bd`, the native edit modes `6a530588`, shuttle keys `97b2e30b`, the spare claude `a1c66678`,
 Claude's four rarely used tools `52085039` and the debugger `e0bc6b9b` gone — 13,500 lines net, the fixed prompt
 11,880 → 10,715 tokens a request (`4f6762d4`); `space i` a one-turn claude of its own with tarae's `read` and `edit`
-(`05092df7`, B′); keep-warm's pings replaced by Claude Code's idle compaction, on by default (`94cf92d8`)) → the crate split (§1 item 6; `crates/tarae-wasm` `cb4c570b`, `crates/tarae-web` `9ebf029a`) → Orchestra Part I (P1a and P1b done, P2 next — §4) →
+(`05092df7`, B′); keep-warm's pings replaced by Claude Code's idle compaction, on by default (`94cf92d8`)) → the crate split (§1 item 6; `crates/tarae-wasm` `cb4c570b`, `crates/tarae-web` `9ebf029a`) → Orchestra Part I (P1 and P2 done, P3 under way — §4) →
 the terminal line (§4; P3b's tabs dropped for zellij's — the user, 2026-10-27, #184/#186). The Linux test red on main, an xattr error's order on kernel 6.8, is fixed (`071e028e`:
 the running kernel's order, read once as Landlock's ABI is), as is the Read card's width pinned at macOS's path
 (`94ded1e6`). Plans and notes moved out of `target/` into each
@@ -166,7 +167,12 @@ on the status line (`7497ae62`) and one working sign in place of the wave and th
 Alongside —, the mouse's first landings (the chat's drag and the plan's F, M0 and S — Alongside), and from the frictions the prompt's and the
 pickers' line edited as the chat's input, a selection that keeps the code's colours and the chat's prose filling a
 width you set (§3). Since 2026-10-28: projects steps 1 and 2 and the sandbox follow-ups (Done), the mouse's five
-kinds A (Alongside), plugin API 0.3's overlays (§7) and frictions #188–#214 (§3). Frictions go on. Code mode (§3)
+kinds A (Alongside), plugin API 0.3's overlays (§7) and frictions #188–#214 (§3). Since 2026-10-29: Orchestra P2
+(§4), the mouse's five kinds B and C (Alongside), the focus plan's first pieces — D1 the measure (`1cf0e527`: where each
+thing to read is drawn in the UI state, `cargo xtask focus`), B1 the step said once, on the follow card (`026c1cda`), A1
+the answer's place (`877ad7f2`), A1b a note card opening between the lines (`e26a185d`), every answer's notes kept for
+the conversation (`1c476659`) and an older answer's placed paragraphs folded to a row in the chat (`b1d84ecf`) — and
+frictions #213, #214's pieces 2–4 and #223–#254 (§3). Frictions go on. Code mode (§3)
 and the review lens's A + E wait on their records' data.
 
 ### 1. Publishing
@@ -468,7 +474,25 @@ Done so far, under way, and the order after it (2026-10-17, brought up to 2026-1
   the review's rail giving it the keys, and the rail's selection the file shown (#207, `8cd89a06`, `02f186db`); a watch
   made in the start the start's until its first look lands (#210, `3f78aa37`); and with many sessions open, an event
   touching what changed and a frame each place once — no session against every other, no stat on the main loop (#214
-  piece 1, `75d119a7`, its test `dd9c7f23`; piece 2 [now](#now)).
+  piece 1, `75d119a7`, its test `dd9c7f23`; pieces 2–4 `6728ccd7`, `137184e3`, `c4f676e2`: a still event the same
+  work with 34 sessions open, a file row asking only its file's places, a turn's texts let go once their files have
+  them); a swap's new server that exits before it takes over not tried again at once for the same folders (#213,
+  `97b5a683`).
+  Since 2026-10-29, #223–#254 all closed (#224 and #225 already covered, #246 not a gap): the language server's
+  popups in one thin frame and its hover where the pointer rests (#234, `3d2e2d35`; #233, `51ed7ad5`); the note card
+  today's card (#240, `bddd2ea2`) and what the chat's answer says of a place shown at it (#239, `b0fcae76`); Claude
+  Code's slash names in the chat (#232, `bd3aae42`) and `S-tab` from its input (#230, `48da0be7`); `space F` with
+  nothing at work following from the next turn (#231, `9c93f79f`), `follow` and `no sandbox` keeping their room with
+  2+ sessions (#237, `2638f3e2`); the `…`s left given their cards (#229, `8ccfca03`; #235, `a9c9ac26`) and an ask
+  over the chat's foot covering only its own rect (#244, `15c6e927`); code trust one card a repository (#226,
+  `dc400fce`); jdtls loading the project's Lombok (#228, `64facd99`); a resolved rebase said finished and its card
+  following the index (#223, `9993abf4`; #245, `c48dfd07`); `:restart`'s exec no longer freeing the editor first (#227,
+  `97ac8a33`); the chat's context cutting a selection past a quote's limit (#243, `5ed67cd3`); the reviewer's findings
+  leaving with their change (#248, `317ac720`, `1b425a20`); `cargo xtask shot` never starting the real claude (#247,
+  `6f57e396`); the tables of names as slices (#241, `88107a95`); a note key acting at your cursor while follow leads
+  (#250, `364a7f78`); no panic on a path that's no text (#251 + #252, `5b97028c`); the status line short only while
+  the follow card's head is in sight, and `¶ claude` (#253 + #254, `cc2ab1fd`); and tests that failed under load
+  waiting on what they check (#222, #236, #238, #242, #249 — `9e4ffc78`, `ef6c1141`, `f4b807c6`, `4747652e`).
 
 - **`:session-apply`** — done (2026-10-19, `a525a775`): an outside tree's change — a patch, `--base <rev>` for
   where it was made — brought in as one reviewed change set, never written unseen.
@@ -602,7 +626,10 @@ main that has what it waits for, and the user says go:
   children only, after anything of yours queued there). P1b done (`e9160970`): `sessions` reads back its children's
   states and the reply of the last turn it started there, framed as another Claude's words; a turn it started that
   ended is news, told once; `session_send { fresh }` starts a child's conversation anew between its turns; children
-  follow their parent in the session list and on the chat's line. Next: P2, watching.
+  follow their parent in the session list and on the chat's line. P2 done (`0e3a602d`): a turn it asked to be woken
+  for wakes it once it's idle (`wake`, `llm.parent-wakes`, never while the plan's limit presses, each wake said with
+  its cost); what its children cost is in `sessions`, the session list and the state. Under way: P3, one
+  `session_act` ([now](#now)); then a week of Part I in use before Part II's P6.
 
 ### 5. A remote split
 
@@ -783,8 +810,9 @@ and watch." · "An editor where AI does the work and you keep the say. Watch tar
   the edge scrolls, the wheel never moves the cursor or the selection. Next: resize, then the words (with motion),
   then the overlays. Since, the five kinds (the user, 2026-10-28, #215/#216): every element a button, a reveal, text,
   a handle or none, its look saying which. A (`2a029df9`): every element recorded with its kind where it's drawn,
-  every key hint printed known, one walk holding them to their kind — the pointer in `tarae state`; B
-  ([now](#now)): rows, hints as buttons, #216's press, marks; C: the wheel.
+  every key hint printed known, one walk holding them to their kind — the pointer in `tarae state`; B (`e4eafaa4`,
+  `b9e5a4bc`): every key hint drawn a button but the pairs that cost, a row under the pointer lit a step weaker than
+  the selected one; C (`7cf6c4a6`, `83e23059`): the wheel only scrolls — never the keys, never a list's selection.
 - **Short videos, made ahead** (user, 2026-10-23): scripted scenes as docshots are — 16:9, English captions, no
   voice — for YouTube, the homepage and the README; a live stream once orchestra drives (Part I) and there's a
   homepage and a release to point at. Planned and measured (collab's spike: 1080p, MP4 ~600 KB a clip); made — `cargo xtask
