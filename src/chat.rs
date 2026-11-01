@@ -717,7 +717,7 @@ pub struct Chat {
     pub screen: Option<Shot>,
     /// claude's id for this conversation (its `session_id`, from `init`) · the one the next process resumes.
     pub conversation: Option<String>,
-    resume: Option<String>,
+    pub resume: Option<String>,
     /// When this conversation last had a message or a turn's end (unix seconds, `chats::Saved.updated`) — None: not
     /// yet. What's done to its notes, a close or a restart never moves it: the picker's order and age say the talk.
     said_at: Option<u64>,
@@ -1405,34 +1405,62 @@ pub fn open(ed: &mut Editor) {
             c.unfolded = true;
             ed.workspace.viewer.at = At::Chat;
         }
-        None => {
-            // (a new conversation: the last one's answers stayed at the code while the chat was closed, and go now —
-            // kept with theirs first, a reply that opened this chat having just made one a thread; a continue brings
-            // them back)
-            crate::chatnotes::kept_sync(ed);
-            crate::notes::forget_answers(ed);
-            let mut c = Chat::new();
-            // (`space F`'s mark taken whatever the setting says: once, never left for a chat opened later)
-            let armed = std::mem::take(&mut ed.workspace.claude.follow_armed);
-            c.follow.on = ed.config.llm.follow || armed;
-            // The project's conversations, read on a worker — the empty chat offers the latest; a session brought
-            // back continues its own (the process spawned meanwhile gives way to one resuming it, unless something
-            // was said already)
-            if let Some(dir) = ed.chats_dir.clone() {
-                let root = ed.workspace.root.clone();
-                ed.events.jobs().spawn(move || {
-                    let saved = crate::chats::load(&dir, &root);
-                    move |ed: &mut Editor| loaded(ed, saved)
-                });
-            }
-            ed.workspace.claude.chat = Some(c);
-            ed.workspace.viewer.at = At::Chat;
-            ed.caps_sync();
-            crate::edits::at_end_new_chat(ed);
-            crate::reads::kept_keys_load(ed);
-        }
+        None => made(ed),
     }
     ensure_proc(ed);
+}
+
+/// Tests: whether its claude is started.
+#[cfg(test)]
+pub fn started(c: &Chat) -> bool {
+    c.proc.is_some()
+}
+
+/// This session's chat made, the keys in it — its claude not started.
+fn made(ed: &mut Editor) {
+    // (a new conversation: the last one's answers stayed at the code while the chat was closed, and go now —
+    // kept with theirs first, a reply that opened this chat having just made one a thread; a continue brings
+    // them back)
+    crate::chatnotes::kept_sync(ed);
+    crate::notes::forget_answers(ed);
+    let mut c = Chat::new();
+    // (`space F`'s mark taken whatever the setting says: once, never left for a chat opened later)
+    let armed = std::mem::take(&mut ed.workspace.claude.follow_armed);
+    c.follow.on = ed.config.llm.follow || armed;
+    read_kept(ed);
+    ed.workspace.claude.chat = Some(c);
+    ed.workspace.viewer.at = At::Chat;
+    ed.caps_sync();
+    crate::edits::at_end_new_chat(ed);
+    crate::reads::kept_keys_load(ed);
+}
+
+/// The project's conversations, read on a worker — the empty chat offers the latest; a session brought back continues its
+/// own (the process spawned meanwhile gives way to one resuming it, unless something was said already).
+fn read_kept(ed: &mut Editor) {
+    let Some(dir) = ed.chats_dir.clone() else { return };
+    let root = ed.workspace.root.clone();
+    ed.events.jobs().spawn(move || {
+        let saved = crate::chats::load(&dir, &root);
+        move |ed: &mut Editor| loaded(ed, saved)
+    });
+}
+
+/// A crash's restore (`recovery.rs`): this session's conversation `id` back, as a session brought back continues its own
+/// but by that id, its chat made at once, so the keeper and a `:restart` see it as any chat. In front it shows, the keys
+/// where they are; behind, no claude until its first message, as `:restart` brings one back there. What came of it is
+/// said once its read has landed (`loaded`).
+pub fn left_back(ed: &mut Editor, id: String) {
+    ed.workspace.claude.continues = Some(id);
+    if ed.workspace.claude.chat.is_some() {
+        return read_kept(ed);
+    }
+    let at = ed.workspace.viewer.at;
+    made(ed);
+    ed.workspace.viewer.at = at;
+    if !ed.behind {
+        ensure_proc(ed);
+    }
 }
 
 /// The project's conversations are read. A start begins a new conversation — the latest a key away, on the empty chat's
@@ -1440,27 +1468,51 @@ pub fn open(ed: &mut Editor) {
 fn loaded(ed: &mut Editor, saved: Vec<crate::chats::Saved>) {
     // (once: its chat closed and opened again is a start of yours — it continues nothing by itself)
     let back = std::mem::take(&mut ed.workspace.claude.brought_back);
+    let left = ed.workspace.claude.continues.take();
+    let spawn = left.is_none() || !ed.behind;
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     c.past = saved.iter().map(crate::chats::Saved::past).collect();
-    match saved.into_iter().next() {
-        Some(s) if back && c.msgs.is_empty() && !c.busy() && !c.started_new => continue_as(ed, s, true),
+    let free = c.msgs.is_empty() && !c.busy() && !c.started_new;
+    let there = left.is_some() && left == c.conversation;
+    let wanted = match &left {
+        Some(id) => saved.into_iter().find(|s| s.id == *id),
+        None if back => saved.into_iter().next(),
+        None => None,
+    };
+    match wanted {
+        Some(s) if free => {
+            continue_as(ed, s, spawn, true);
+            if left.is_some() {
+                crate::recovery::chat_back(ed);
+            }
+        }
+        _ if there => crate::recovery::chat_back(ed),
+        // (a crash's restore answered late: never over what you've begun since, a key away as ever)
+        Some(_) if left.is_some() => {
+            let past = ed.key_said("C-p");
+            ed.set_status(format!(
+                "the chat has a conversation of its own — {past} continues the one it left"
+            ));
+        }
+        None if left.is_some() => ed.set_status("that conversation is no longer kept"),
         _ => {}
     }
 }
 
 /// Shows `saved` in the panel and resumes its conversation in claude (the process of now, if any, goes).
 pub fn continue_with(ed: &mut Editor, saved: crate::chats::Saved) {
-    continue_as(ed, saved, false);
+    continue_as(ed, saved, true, false);
 }
 
-/// `continue_with` — `back`: by itself, a session brought back (`Chat.continued`).
-fn continue_as(ed: &mut Editor, saved: crate::chats::Saved, back: bool) {
+/// `continue_with` — `spawn`: its claude now, else with its first message · `back`: by itself, a session brought back
+/// (`Chat.continued`).
+fn continue_as(ed: &mut Editor, saved: crate::chats::Saved, spawn: bool, back: bool) {
     // (as `reset`: once a pane's key has its document back)
     if crate::docpane::lent(ed) {
-        crate::docpane::later(ed, move |ed| continue_as(ed, saved, back));
+        crate::docpane::later(ed, move |ed| continue_as(ed, saved, spawn, back));
         return;
     }
-    continue_from(ed, saved, true, back);
+    continue_from(ed, saved, spawn, back);
 }
 
 /// `continue_as` — the process only when `spawn` (else the first message starts it, resuming).
@@ -1496,6 +1548,7 @@ fn continue_from(ed: &mut Editor, saved: crate::chats::Saved, spawn: bool, back:
     crate::chatnotes::restore(ed, saved.places.as_ref());
     let Some(c) = &mut ed.workspace.claude.chat else { return };
     c.conversation = Some(saved.id.clone());
+    crate::recovery::moved(&mut ed.recovery);
     c.resume = Some(saved.id.clone());
     c.said_at = Some(saved.updated);
     c.scroll = 0;
@@ -1586,6 +1639,10 @@ pub const RESTARTED: &str = "tarae restarted — same conversation";
 /// After `:restart`: the panel as it was — its conversation (resumed in claude, not the latest one
 /// guessed), the words being typed, where it was scrolled.
 pub fn restore(ed: &mut Editor, r: Restored) {
+    // (back: what the tarae before kept of it is no crash's to offer — `recovery.rs`)
+    if let (Some(keeper), Some(id)) = (ed.recovery.as_mut(), &r.conversation) {
+        keeper.back(id.clone());
+    }
     let mut c = Chat::new();
     c.follow.on = r.follow;
     c.input.set_at(&r.input, r.cursor);
@@ -1720,6 +1777,7 @@ pub fn close(ed: &mut Editor) {
         .map_or(0, |c| c.msgs.iter().filter(|m| m.role == Role::User).count());
     ed.workspace.claude.notes.left = kept(ed).map(|k| (Box::new(k.2), users));
     ed.workspace.claude.chat = None;
+    crate::recovery::moved(&mut ed.recovery);
     // (what its answers let through goes with it at once — `:granted` and the chat's count too)
     ed.caps_sync();
     crate::restart::turn_over(ed);
@@ -1742,6 +1800,7 @@ pub fn reset_said(ed: &mut Editor, said: &str) {
     ed.workspace.claude.news.clear();
     // (a new conversation asked for: a session brought back no longer continues its own by itself)
     ed.workspace.claude.brought_back = false;
+    ed.workspace.claude.continues = None;
     // (the hosts this conversation's `a` let through go with it — the proxy keeps them as the session's, right
     // while a session has one conversation at a time)
     crate::hosts::chat_ended(ed);
@@ -1779,6 +1838,7 @@ pub fn reset_said(ed: &mut Editor, said: &str) {
     c.scroll = 0;
     c.follow.new_turn();
     c.conversation = None;
+    crate::recovery::moved(&mut ed.recovery);
     c.resume = None;
     c.switched = None;
     // (a refusal for money read in a turn the new chat cut off is that turn's — `money_out` never sees it)
@@ -2166,6 +2226,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
                 ed.workspace.claude.usage.key_source = key_source;
             }
             c.conversation = Some(id);
+            crate::recovery::moved(&mut ed.recovery);
             c.model = model;
             if new {
                 keep(ed);
@@ -2477,6 +2538,7 @@ fn on_stream_event(ed: &mut Editor, generation: u64, ev: StreamEv) {
             if err.contains("No conversation found") && c.resume.is_some() {
                 c.resume = None;
                 c.conversation = None;
+                crate::recovery::moved(&mut ed.recovery);
                 let unanswered = match std::mem::replace(&mut c.state, State::Idle) {
                     State::Idle => None,
                     _ => c.msgs.iter().rposition(|m| m.role == Role::User),

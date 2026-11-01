@@ -399,11 +399,24 @@ impl Fit {
         self.cut.is_some()
     }
 
+    /// Its text before the `…` its cut left at its end — all of it, where it isn't cut.
+    pub fn uncut(&self) -> &str {
+        self.text.strip_suffix('…').filter(|_| self.is_cut()).unwrap_or(&self.text)
+    }
+
     /// `lead` before it (its cut moved along).
     pub fn lead(mut self, lead: &str) -> Fit {
         self.text.insert_str(0, lead);
         if let Some(of) = &mut self.cut {
             (of.from, of.to) = (of.from + lead.len(), of.to + lead.len());
+        }
+        self
+    }
+
+    /// Its whole's first `name` bytes in `style`, the rest in `rest`, where it's cut (`Of.pieces`).
+    pub fn named(mut self, name: usize, style: Style, rest: Style) -> Fit {
+        if let Some(of) = &mut self.cut {
+            of.pieces = vec![(0..name, style), (name..of.whole.len(), rest)];
         }
         self
     }

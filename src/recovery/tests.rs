@@ -241,7 +241,9 @@ fn quit(ed: Editor, dir: &Path, meanwhile: impl FnOnce() + Send + 'static) {
         .map(|rd| rd.flatten().map(|e| e.path().join(LOCK)).filter(|l| l.exists()).collect())
         .unwrap_or_default();
     for lock in &locks {
-        until(&format!("{} let go", lock.display()), || File::open(lock).is_ok_and(|f| f.try_lock().is_ok()));
+        // (gone is let go: an answer's `Forget` removes its folder, as late as this)
+        let free = || File::open(lock).map_or(true, |f| f.try_lock().is_ok());
+        until(&format!("{} let go", lock.display()), free);
     }
     going.join().unwrap();
 }
@@ -513,5 +515,854 @@ fn the_newest_copy_of_a_file_is_the_one_offered() {
     assert_eq!(copies_in(&dir).len(), 1, "the older went");
     ed.offer_accept();
     assert_eq!(ed.doc().text.to_string(), "NEWERne\n");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// `editor`, its conversations kept in `dir/chats`, claude a stand-in: what it's sent, never a process.
+fn chatting(dir: &Path) -> Editor {
+    let mut ed = editor(dir);
+    ed.chats_dir = Some(dir.join("chats"));
+    let (tx, rx) = channel();
+    std::mem::forget(rx);
+    ed.claude_lines = Some(tx);
+    ed
+}
+
+/// `chatting`, its look at what gone taraes left done.
+fn chatting_started(dir: &Path) -> Editor {
+    let mut ed = chatting(dir);
+    ed.recovery_scan();
+    settle_until(&mut ed, |ed| ed.recovery.as_ref().is_some_and(|r| r.scans > 0));
+    ed
+}
+
+/// Conversation `id` of `root` in the store: 41k, its last request `ago` back on the hour's cache.
+fn stored(dir: &Path, root: &Path, id: &str, ago: Duration) {
+    let title = format!("about {id}");
+    let saved = crate::chats::Saved {
+        rows: crate::chats::rows_of(&[crate::chat::Msg::new(crate::chat::Role::User, &title, "")]),
+        id: id.into(),
+        title,
+        updated: crate::chats::now(),
+        plan: None,
+        usage: Some(json!({
+            "compacted_to": 41_000,
+            "touched": crate::usage::now_ms() - ago.as_millis() as u64,
+            "ttl": "1h",
+        })),
+        places: None,
+        seq: crate::chats::seq(),
+    };
+    crate::chats::save(&dir.join("chats"), root, saved);
+}
+
+/// A gone tarae's folder `name`, keeping conversation `id` of `root` — the store holding it, an hour and more cold.
+fn chat_gone(dir: &Path, name: &str, root: &Path, id: &str) -> PathBuf {
+    stored(dir, root, id, Duration::from_secs(7_200));
+    let folder = dir.join("state").join(name);
+    chat_left(&folder, 1, root, root, id);
+    folder
+}
+
+fn root_of(dir: &Path) -> PathBuf {
+    chatting(dir).workspace.root.clone()
+}
+
+fn conversation(ed: &Editor) -> Option<&str> {
+    ed.workspace.claude.chat.as_ref()?.conversation.as_deref()
+}
+
+/// The chat's conversation is `id` now, as the keeper is told.
+fn in_conversation(ed: &mut Editor, id: Option<&str>) {
+    ed.workspace.claude.chat.as_mut().unwrap().conversation = id.map(str::to_string);
+    moved(&mut ed.recovery);
+    ed.recovery_sync();
+    recovery(ed).flush();
+}
+
+fn kept_ids(folder: &Path) -> Vec<String> {
+    let mut ids: Vec<String> = chats_in(folder).iter().filter_map(|f| read_chat(f)).map(|c| c.id).collect();
+    ids.sort();
+    ids
+}
+
+/// What each session's chat is in stays beside the copies as it changes: a conversation, the next one, none (a new
+/// conversation not begun); a session behind its own; gone with its session, and all of it with `editor.recovery` off.
+#[test]
+fn each_sessions_conversation_is_kept_as_it_changes() {
+    let dir = place("kept-chat");
+    let mut ed = chatting(&dir);
+    crate::chat::open(&mut ed);
+    in_conversation(&mut ed, Some("one"));
+    let folder = recovery(&mut ed).folder().to_path_buf();
+    assert_eq!(kept_ids(&folder), ["one"]);
+    let c = read_chat(&chats_in(&folder)[0]).unwrap();
+    assert_eq!((&c.root, &c.origin), (&ed.workspace.root, &ed.workspace.root));
+    in_conversation(&mut ed, Some("two"));
+    assert_eq!(kept_ids(&folder), ["two"]);
+    in_conversation(&mut ed, None);
+    assert!(kept_ids(&folder).is_empty(), "a new conversation not begun: nothing to continue");
+    in_conversation(&mut ed, Some("three"));
+    let kid = ed.workspace_add(dir.join("project"));
+    ed.with_workspace(kid, |ed| {
+        crate::chat::open(ed);
+        ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("kid's".into());
+    });
+    moved(&mut ed.recovery);
+    ed.recovery_sync();
+    recovery(&mut ed).flush();
+    assert_eq!(kept_ids(&folder), ["kid's", "three"]);
+    ed.workspaces.retain(|w| w.id != kid);
+    moved(&mut ed.recovery);
+    ed.recovery_sync();
+    recovery(&mut ed).flush();
+    assert_eq!(kept_ids(&folder), ["three"], "its session ended");
+    ed.config.recovery = false;
+    ed.recovery_sync();
+    recovery(&mut ed).flush();
+    assert!(kept_ids(&folder).is_empty(), "recovery off keeps nothing");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A crash with nothing unsaved leaves a card of its own, saying the size and that it's read anew; no `c`. `y` continues
+/// that conversation, its chat shown, the keys where they were — and the keeper's file and folder go.
+#[test]
+fn a_conversation_with_no_unsaved_edits_is_a_card_of_its_own() {
+    let dir = place("chat-card");
+    let folder = chat_gone(&dir, "gone", &root_of(&dir), "left");
+    let mut ed = chatting_started(&dir);
+    assert!(ed.workspace.claude.chat.is_none(), "nothing comes back by itself");
+    let cards = cards(&ed);
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].kind(), "recover-chats");
+    assert_eq!(cards[0].title, "A conversation left open");
+    let q = &cards[0].question;
+    assert!(q.contains("41k · ") && q.contains(" · read anew · \"about left\""), "{q}");
+    assert!(q.contains("Read anew: past its cache"), "{q}");
+    assert_eq!(cards[0].answers(false).iter().map(|a| a.0).collect::<String>(), "yDn");
+    let stands = crate::offer::Stands { drawn: true, whole: true };
+    let compare = matches!(cards[0].act('c', stands), Some(crate::offer::Act::Compare));
+    assert!(!compare, "no copy to compare");
+    let at = ed.workspace.viewer.at;
+    ed.offer_accept();
+    assert!(self::cards(&ed).is_empty());
+    settle_until(&mut ed, |ed| ed.workspace.claude.continues.is_none());
+    assert_eq!(conversation(&ed), Some("left"));
+    let c = ed.workspace.claude.chat.as_ref().unwrap();
+    assert_eq!(c.resume.as_deref(), Some("left"));
+    assert!(c.msgs.iter().any(|m| m.text == "about left"), "its rows back");
+    assert_eq!(ed.workspace.viewer.at, at, "the keys stay");
+    recovery(&mut ed).flush();
+    assert!(!folder.exists(), "its file and folder go");
+    assert!(cards_after(&dir).is_empty(), "asked once");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// The chat a restore brought back says itself where it's drawn; where this frame didn't draw it (too narrow a screen), a
+/// toast says so, once.
+#[test]
+fn the_restored_chat_is_said_only_where_it_isnt_drawn() {
+    let said = |t: &crate::editor::Toast| t.text.contains("Restored the chat");
+    let dir = place("chat-sight");
+    let root = root_of(&dir);
+    chat_gone(&dir, "wide", &root, "left");
+    let mut buf = Vec::new();
+    let mut ed = chatting_started(&dir);
+    ed.offer_accept();
+    settle_until(&mut ed, |ed| ed.workspace.claude.continues.is_none());
+    crate::term::render(&mut ed, &mut buf, 140, 40).unwrap();
+    assert!(ed.screen.chat_x.is_some(), "drawn");
+    assert!(!ed.toasts.iter().any(said), "nothing said: it's there");
+    quit(ed, &dir, || {});
+    chat_gone(&dir, "narrow", &root, "left");
+    let mut ed = chatting_started(&dir);
+    ed.offer_accept();
+    crate::term::render(&mut ed, &mut buf, 64, 24).unwrap();
+    assert!(!ed.toasts.iter().any(said), "not before its read has landed: it may not come back");
+    settle_until(&mut ed, |ed| ed.workspace.claude.continues.is_none());
+    buf.clear();
+    crate::term::render(&mut ed, &mut buf, 64, 24).unwrap();
+    assert!(ed.screen.chat_x.is_none(), "too narrow to draw it");
+    assert_eq!(ed.toasts.iter().filter(|t| said(t)).count(), 1);
+    buf.clear();
+    ed.toasts.clear();
+    crate::term::render(&mut ed, &mut buf, 64, 24).unwrap();
+    assert!(!ed.toasts.iter().any(said), "once");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// Every way a conversation moves reaches the keeper by itself, nothing looking unless one did (`recovery_sync`'s own
+/// check fails a site that forgets to say so): claude's id, a resume that found it gone, a new conversation, a chat
+/// closed, a session added and closed.
+#[test]
+fn every_way_a_conversation_moves_reaches_the_keeper() {
+    use crate::llm::StreamEv;
+    let conversation_is = |id: &str| StreamEv::Conversation {
+        id: id.into(),
+        model: "m".into(),
+        version: None,
+        key_source: None,
+    };
+    let stream = |ed: &mut Editor, ev: StreamEv| {
+        let generation = ed.workspace.claude.chat.as_ref().map_or(0, crate::chat::Chat::generation);
+        crate::chat::stream_event(ed, generation, ev);
+    };
+    let dir = place("chat-moves");
+    let mut ed = chatting(&dir);
+    crate::chat::open(&mut ed);
+    stream(&mut ed, conversation_is("one"));
+    let folder = recovery(&mut ed).folder().to_path_buf();
+    let told = |ed: &mut Editor| {
+        ed.recovery_sync();
+        recovery(ed).flush();
+        kept_ids(&folder)
+    };
+    assert_eq!(told(&mut ed), ["one"], "claude gave it its id");
+    ed.workspace.claude.chat.as_mut().unwrap().resume = Some("one".into());
+    stream(&mut ed, StreamEv::Exit("No conversation found with session ID: one".into()));
+    assert!(told(&mut ed).is_empty(), "gone from claude");
+    stream(&mut ed, conversation_is("two"));
+    assert_eq!(told(&mut ed), ["two"]);
+    crate::chat::reset_said(&mut ed, "");
+    assert!(told(&mut ed).is_empty(), "a new conversation asked for");
+    stream(&mut ed, conversation_is("three"));
+    assert_eq!(told(&mut ed), ["three"]);
+    crate::chat::close(&mut ed);
+    assert!(told(&mut ed).is_empty(), "the chat closed");
+    let kid = dir.join("project");
+    let id = ed.workspace_add(kid.clone());
+    ed.with_workspace(id, |ed| {
+        crate::chat::open(ed);
+        stream(ed, conversation_is("four"));
+    });
+    assert_eq!(told(&mut ed), ["four"]);
+    assert!(recovery(&mut ed).rules.roots.contains(&kid), "a session added: its root's rules too");
+    ed.workspace_close(&kid);
+    assert!(told(&mut ed).is_empty(), "its session ended");
+    assert!(!recovery(&mut ed).rules.roots.contains(&kid));
+    // (one with no chat: nothing of a chat's says it)
+    ed.workspace_add(kid.clone());
+    told(&mut ed);
+    assert!(recovery(&mut ed).rules.roots.contains(&kid), "added, no chat");
+    ed.workspace_close(&kid);
+    told(&mut ed);
+    assert!(!recovery(&mut ed).rules.roots.contains(&kid), "closed, no chat");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// Budget of work: an event touches what changed (#214). With twenty sessions, keys look at none of them; a conversation
+/// that moved, each once; nothing after. The roots' compare too: only then.
+#[test]
+fn an_event_looks_at_the_sessions_only_when_one_moved() {
+    const SESSIONS: usize = 20;
+    let dir = place("chat-work");
+    let mut ed = chatting(&dir);
+    for _ in 0..SESSIONS {
+        ed.workspace_add(dir.join("project"));
+    }
+    crate::chat::open(&mut ed);
+    in_conversation(&mut ed, Some("one"));
+    let looked = recovery(&mut ed).looks;
+    feed(&mut ed, "abc");
+    ed.handle_event(Event::Key(key("backspace")));
+    assert_eq!(recovery(&mut ed).looks, looked, "keys move no session's conversation");
+    in_conversation(&mut ed, Some("two"));
+    assert_eq!(recovery(&mut ed).looks, looked + SESSIONS + 1, "each once");
+    feed(&mut ed, "d");
+    assert_eq!(recovery(&mut ed).looks, looked + SESSIONS + 1, "and no more");
+    ed.config.recovery = false;
+    feed(&mut ed, "e");
+    let off = recovery(&mut ed).looks;
+    assert_eq!(off, looked + 2 * (SESSIONS + 1), "the setting turned off: looked at once, its files going");
+    feed(&mut ed, "f");
+    assert_eq!(recovery(&mut ed).looks, off);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// The cards a next start raises.
+fn cards_after(dir: &Path) -> Vec<String> {
+    let ed = chatting_started(dir);
+    self::cards(&ed).iter().map(|o| o.title.clone()).collect()
+}
+
+/// The first copy's card carries the conversation, its `y` bringing back both, the rest of the cards their files alone;
+/// the folder goes with the last answer.
+#[test]
+fn a_copys_restore_brings_the_conversation_back_with_it() {
+    let dir = place("chat-rides");
+    let file = left_behind(&dir);
+    let folder = copies_in(&dir)[0].parent().unwrap().to_path_buf();
+    let root = root_of(&dir);
+    stored(&dir, &root, "left", Duration::from_secs(60));
+    chat_left(&folder, 1, &root, &root, "left");
+    let other = dir.join("project/b.txt");
+    let head = header(&other, &root, None, false, 4);
+    std::fs::write(folder.join("8.txt"), format!("{head}\nnew\n")).unwrap();
+    let mut ed = chatting_started(&dir);
+    let cards = cards(&ed);
+    assert_eq!(cards.len(), 2);
+    let (first, second) = (&cards[0], &cards[1]);
+    assert!(first.title.ends_with("a.txt"), "{}", first.title);
+    assert_eq!(first.kind(), "recover");
+    let q = &first.question;
+    assert!(q.contains("Its conversation comes back with them") && q.contains("41k"), "{q}");
+    assert!(q.contains("Discarded, the chat starts fresh too; C-p still lists it."), "{q}");
+    assert!(!q.contains("read anew"), "warm: {q}");
+    assert!(first.decided_lines().contains(&2), "what `y` decides: its row, at full strength");
+    assert!(first.rows.iter().any(|(k, row)| q.split('\n').nth(*k) == Some(row)), "a row, cut at its end");
+    assert!(!second.question.contains("conversation"), "{}", second.question);
+    ed.offer_accept();
+    assert_eq!(ed.doc().path.as_deref(), Some(file.as_path()));
+    assert_eq!(ed.doc().text.to_string(), "TWOne\n");
+    settle_until(&mut ed, |ed| ed.workspace.claude.continues.is_none());
+    assert_eq!(conversation(&ed), Some("left"));
+    assert_eq!(self::cards(&ed).len(), 1);
+    assert!(folder.exists(), "a card still asks about it");
+    ed.offer_discard();
+    recovery(&mut ed).flush();
+    assert!(!folder.exists(), "the last answer takes the folder");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// `n` leaves the conversation to the next start, nothing back; `D` starts fresh, and it's asked no more.
+#[test]
+fn discard_starts_fresh_and_not_now_asks_again() {
+    let dir = place("chat-discard");
+    let folder = chat_gone(&dir, "gone", &root_of(&dir), "left");
+    let mut ed = chatting_started(&dir);
+    ed.offer_dismiss();
+    assert!(cards(&ed).is_empty() && ed.workspace.claude.chat.is_none());
+    assert_eq!(kept_ids(&folder), ["left"]);
+    quit(ed, &dir, || {});
+    let mut ed = chatting_started(&dir);
+    assert_eq!(cards(&ed).len(), 1, "asked again");
+    ed.offer_discard();
+    assert!(ed.workspace.claude.chat.is_none(), "nothing opened");
+    assert!(ed.toasts.last().is_some_and(|t| t.text.contains("starts fresh")));
+    recovery(&mut ed).flush();
+    assert!(!folder.exists(), "its file and folder go");
+    assert!(cards_after(&dir).is_empty());
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// The same with a copy: `D` on its card takes the copy and starts fresh; `n` keeps both.
+#[test]
+fn a_copys_answers_take_its_conversation_along() {
+    let dir = place("chat-both");
+    left_behind(&dir);
+    let copy = copies_in(&dir)[0].clone();
+    let folder = copy.parent().unwrap().to_path_buf();
+    let root = root_of(&dir);
+    stored(&dir, &root, "left", Duration::from_secs(60));
+    chat_left(&folder, 1, &root, &root, "left");
+    let mut ed = chatting_started(&dir);
+    ed.offer_dismiss();
+    assert!(copy.exists() && kept_ids(&folder) == ["left"], "n keeps both");
+    assert!(recovery(&mut ed).held.is_empty(), "its folder let go, nothing left to ask");
+    quit(ed, &dir, || {});
+    let mut ed = chatting_started(&dir);
+    ed.offer_discard();
+    assert!(ed.workspace.claude.chat.is_none());
+    recovery(&mut ed).flush();
+    assert!(!folder.exists(), "both and the folder go");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// The file changed since: the card's warning stays on that line, with a conversation's rows above it.
+#[test]
+fn the_warning_stays_on_its_line_beside_a_conversation() {
+    let dir = place("chat-warn");
+    let file = left_behind(&dir);
+    std::fs::write(&file, "changed\n").unwrap();
+    let folder = copies_in(&dir)[0].parent().unwrap().to_path_buf();
+    let root = root_of(&dir);
+    stored(&dir, &root, "left", Duration::from_secs(60));
+    chat_left(&folder, 1, &root, &root, "left");
+    let ed = chatting_started(&dir);
+    let card = cards(&ed)[0];
+    let warned = card.warning.clone().expect("it warns");
+    let line = card.question.split('\n').nth(warned.start).unwrap();
+    assert!(line.contains("they'd go over it"), "{line}");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// `:restart`'s tarae brings its chats back itself and passes over what the one before kept of them. An exec that failed,
+/// or an error before it, brought none back: the next start offers them. A signal keeps them too, a quit takes them.
+#[test]
+fn a_conversation_restart_brought_back_is_not_offered_and_a_failed_exec_keeps_it() {
+    let dir = place("chat-ends");
+    let root = root_of(&dir);
+    stored(&dir, &root, "left", Duration::from_secs(60));
+    let up = |dir: &Path| {
+        let mut ed = chatting(dir);
+        crate::chat::open(&mut ed);
+        in_conversation(&mut ed, Some("left"));
+        ed
+    };
+    // (`recovery_end(true)`: as `:restart` ends, its exec still to come)
+    let mut ed = up(&dir);
+    let folder = recovery(&mut ed).folder().to_path_buf();
+    ed.recovery_end(true);
+    assert_eq!(kept_ids(&folder), ["left"], "kept for the exec's failure");
+    quit(ed, &dir, || {});
+    let mut ed = chatting(&dir);
+    let restored = crate::chat::Restored {
+        conversation: Some("left".into()),
+        input: String::new(),
+        cursor: 0,
+        focused: false,
+        scroll: 0,
+        follow: false,
+        at_end: None,
+        lazy: true,
+    };
+    crate::chat::restore(&mut ed, restored);
+    ed.recovery_scan();
+    settle_until(&mut ed, |ed| ed.recovery.as_ref().is_some_and(|r| r.scans > 0));
+    assert!(cards(&ed).is_empty(), "back already");
+    assert!(!folder.exists(), "its file and folder went");
+    quit(ed, &dir, || {});
+    let mut ed = up(&dir);
+    let folder = recovery(&mut ed).folder().to_path_buf();
+    ed.recovery_end(true);
+    quit(ed, &dir, || {});
+    assert_eq!(
+        cards_after(&dir),
+        ["A conversation left open"],
+        "no new tarae took over: a failed exec's next start"
+    );
+    std::fs::remove_dir_all(&folder).ok();
+    let mut ed = up(&dir);
+    let folder = recovery(&mut ed).folder().to_path_buf();
+    recovery(&mut ed).keep = true;
+    ed.recovery_end(false);
+    assert_eq!(kept_ids(&folder), ["left"], "the signal's");
+    std::fs::remove_dir_all(&folder).ok();
+    let mut ed = up(&dir);
+    let folder = recovery(&mut ed).folder().to_path_buf();
+    ed.recovery_end(false);
+    assert!(!folder.exists(), "the quit's");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// `y` for a session that isn't here (not back yet, no longer listed): nothing done and nothing lost — said, its folder
+/// let go, asked again at the next start.
+#[test]
+fn a_session_not_here_keeps_its_conversation_for_the_next_start() {
+    let dir = place("chat-away");
+    let root = root_of(&dir);
+    let kid = dir.join("project");
+    stored(&dir, &kid, "left", Duration::from_secs(60));
+    let folder = dir.join("state/gone");
+    chat_left(&folder, 1, &kid, &root, "left");
+    let mut ed = chatting_started(&dir);
+    assert_eq!(cards(&ed).len(), 1);
+    ed.offer_accept();
+    assert!(ed.toasts.last().is_some_and(|t| t.text.contains("isn't here")));
+    assert!(ed.workspace.claude.chat.is_none());
+    assert!(recovery(&mut ed).held.is_empty(), "its folder let go");
+    quit(ed, &dir, || {});
+    assert_eq!(kept_ids(&folder), ["left"]);
+    assert_eq!(cards_after(&dir).len(), 1, "asked again");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// `y` once the store no longer holds it: said, the chat as it was, and no word of a restore. `y` on a chat already in
+/// it: nothing to do, no refusal — it's back.
+#[test]
+fn a_conversation_gone_since_is_said_and_one_already_there_stays() {
+    let dir = place("chat-since");
+    let root = root_of(&dir);
+    chat_gone(&dir, "gone", &root, "left");
+    let mut ed = chatting_started(&dir);
+    std::fs::remove_file(crate::config::state_file(&dir.join("chats"), &root)).unwrap();
+    ed.offer_accept();
+    settle_until(&mut ed, |ed| ed.workspace.claude.continues.is_none());
+    assert_eq!(conversation(&ed), None);
+    assert!(ed.toasts.iter().any(|t| t.text.contains("no longer kept")));
+    assert!(!recovery(&mut ed).unseen, "nothing came back");
+    quit(ed, &dir, || {});
+    chat_gone(&dir, "again", &root, "left");
+    let mut ed = chatting_started(&dir);
+    crate::chat::open(&mut ed);
+    in_conversation(&mut ed, Some("left"));
+    let msg = crate::chat::Msg::new(crate::chat::Role::User, "said since", "");
+    ed.workspace.claude.chat.as_mut().unwrap().msgs.push(msg);
+    ed.offer_accept();
+    settle_until(&mut ed, |ed| ed.workspace.claude.continues.is_none());
+    assert_eq!(conversation(&ed), Some("left"));
+    assert!(ed.toasts.iter().all(|t| !t.text.contains("of its own")), "it's that one");
+    assert!(recovery(&mut ed).unseen, "it's where the restore asked");
+    quit(ed, &dir, || {});
+    // (the store has lost it, the chat hasn't: it's still there, not gone)
+    chat_gone(&dir, "third", &root, "left");
+    let mut ed = chatting_started(&dir);
+    crate::chat::open(&mut ed);
+    in_conversation(&mut ed, Some("left"));
+    std::fs::remove_file(crate::config::state_file(&dir.join("chats"), &root)).unwrap();
+    ed.offer_accept();
+    settle_until(&mut ed, |ed| ed.workspace.claude.continues.is_none());
+    assert_eq!(conversation(&ed), Some("left"));
+    assert!(ed.toasts.iter().all(|t| !t.text.contains("no longer kept")), "it's in the chat");
+    assert!(recovery(&mut ed).unseen);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// Several: the card counts them and names each row by its session, the start's first; `n` lets go of both folders and
+/// `y` takes both.
+#[test]
+fn several_conversations_are_one_card_named_the_starts_first() {
+    let dir = place("chat-several");
+    let (a, z) = (dir.join("project/a"), dir.join("project/z"));
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&z).unwrap();
+    let store = dir.join("chats");
+    stored(&dir, &a, "of a", Duration::from_secs(60));
+    stored(&dir, &z, "of z", Duration::from_secs(60));
+    let state = dir.join("state");
+    chat_left(&state.join("one"), 1, &a, &z, "of a");
+    chat_left(&state.join("two"), 2, &z, &z, "of z");
+    // (z is where this one started: first, though it sorts last)
+    let left = scan(&state, Path::new("own"), &z, &[], Some(&store), &[]).left;
+    assert_eq!(left.iter().map(|l| l.root.clone()).collect::<Vec<_>>(), [z.clone(), a.clone()]);
+    let card = chats_card(left, "C-p");
+    assert_eq!(card.title, "2 conversations left open");
+    let lines: Vec<&str> = card.question.split('\n').collect();
+    assert_eq!(lines[0], "The chats were in them when tarae ended:");
+    assert!(lines[1].starts_with("z · 41k") && lines[2].starts_with("a · 41k"), "{lines:?}");
+    assert_eq!(card.rows.iter().map(|r| r.0).collect::<Vec<_>>(), [1, 2]);
+    let up = |dir: &Path| {
+        let mut ed = chatting(dir);
+        ed.workspace_add(a.clone());
+        ed.workspace_add(z.clone());
+        ed.recovery = Some(Recovery::new(state.clone(), z.clone()));
+        ed.recovery_scan();
+        settle_until(&mut ed, |ed| !cards(ed).is_empty());
+        ed
+    };
+    let mut ed = up(&dir);
+    assert_eq!(cards(&ed).len(), 1);
+    ed.offer_dismiss();
+    assert!(recovery(&mut ed).held.is_empty(), "both folders let go");
+    quit(ed, &dir, || {});
+    let mut ed = up(&dir);
+    ed.offer_accept();
+    until("both folders go", || !state.join("one").exists() && !state.join("two").exists());
+    drop(ed);
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// Only what can be continued is offered: a conversation the store no longer holds goes (its folder too, with nothing
+/// else in it); of two a session left, the newest; another project's stays for a tarae started there.
+#[test]
+fn what_can_be_continued_is_offered_and_another_projects_is_left() {
+    let dir = place("chat-which");
+    let root = root_of(&dir);
+    let unknown = dir.join("state/unknown");
+    chat_left(&unknown, 1, &root, &root, "no longer kept");
+    let older = chat_gone(&dir, "older", &root, "older");
+    let newer = chat_gone(&dir, "newer", &root, "newer");
+    let elsewhere = dir.join("project");
+    let theirs = dir.join("state/theirs");
+    chat_left(&theirs, 1, &elsewhere, &elsewhere, "theirs");
+    let ed = chatting_started(&dir);
+    let cards = cards(&ed);
+    assert_eq!(cards.len(), 1);
+    assert!(cards[0].question.contains("about newer"), "{}", cards[0].question);
+    assert!(!unknown.exists(), "nothing to continue");
+    assert!(kept_ids(&older).is_empty(), "the older went");
+    assert_eq!(kept_ids(&newer), ["newer"]);
+    assert_eq!(kept_ids(&theirs), ["theirs"], "another project's, its folder kept");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A row says what's known: a name only among several, a size as reported, `read anew` only past the TTL — never a guess.
+#[test]
+fn a_conversations_row_says_what_is_known() {
+    let row = |context, cold, named| {
+        let past = crate::chats::Past { id: "c".into(), title: "why?\nand more".into(), updated: 0, context };
+        let name = "main".to_string();
+        let (file, dir) = (PathBuf::new(), PathBuf::new());
+        let left = Left { root: PathBuf::new(), name, past, cold, at: UNIX_EPOCH, file, dir };
+        chat_row(&left, named, 7_200)
+    };
+    assert_eq!(row(Some(41_000), false, false), "41k · 2h ago · \"why?\"");
+    assert_eq!(row(Some(41_000), true, false), "41k · 2h ago · read anew · \"why?\"");
+    assert_eq!(row(None, false, true), "main · 2h ago · \"why?\"");
+    use crate::usage::Usage;
+    let kept = |touched: u64, ttl: &str| json!({ "touched": touched, "ttl": ttl });
+    assert!(Usage::kept_cold(&kept(0, "1h"), 3_600_000));
+    assert!(!Usage::kept_cold(&kept(0, "1h"), 3_599_999));
+    assert!(Usage::kept_cold(&kept(0, "5m"), 300_000));
+    assert!(!Usage::kept_cold(&json!({ "touched": 0 }), u64::MAX), "its TTL not reported");
+}
+
+/// A row begins with its session's name only among several (`Offer.named` says so where `chat_row` does).
+#[test]
+fn the_named_rows_are_those_with_a_name() {
+    let (a, b) = (Path::new("/a"), Path::new("/b"));
+    assert!(chats_card_of(&[("one", a)]).named.is_empty());
+    let card = chats_card_of(&[("one", a), ("three", b)]);
+    let want = vec![(1, 3, a.to_path_buf()), (2, 5, b.to_path_buf())];
+    assert_eq!(card.named, want);
+    let lines: Vec<&str> = card.question.split('\n').collect();
+    assert!(lines[1].starts_with("one ·") && lines[2].starts_with("three ·"), "{lines:?}");
+    // (riding on a copy's card: its rows below its first line and the lead)
+    let copy = Found {
+        path: PathBuf::from("/a/f"),
+        file: PathBuf::new(),
+        dir: PathBuf::new(),
+        text: Rope::new(),
+        at: UNIX_EPOCH,
+        disk: Disk::Same,
+        base: Rope::new(),
+        added: 1,
+        removed: 0,
+        chats: lefts_of(&[("one", a), ("three", b)]),
+    };
+    let card = super::card(copy, a, "C-p");
+    assert_eq!(card.named, vec![(2, 3, a.to_path_buf()), (3, 5, b.to_path_buf())]);
+    let lines: Vec<&str> = card.question.split('\n').collect();
+    assert!(lines[2].starts_with("one ·") && lines[3].starts_with("three ·"), "{lines:?}");
+}
+
+/// `y` after you began a conversation of your own: yours stays, said, the one it left a key away.
+#[test]
+fn a_restore_answered_late_stays_off_what_you_began() {
+    let dir = place("chat-late");
+    chat_gone(&dir, "gone", &root_of(&dir), "left");
+    let mut ed = chatting_started(&dir);
+    crate::chat::open(&mut ed);
+    in_conversation(&mut ed, Some("mine"));
+    let msg = crate::chat::Msg::new(crate::chat::Role::User, "mine", "");
+    ed.workspace.claude.chat.as_mut().unwrap().msgs.push(msg);
+    ed.offer_accept();
+    settle_until(&mut ed, |ed| ed.workspace.claude.continues.is_none());
+    assert_eq!(conversation(&ed), Some("mine"));
+    assert!(ed.toasts.last().is_some_and(|t| t.text.contains("conversation of its own")));
+    assert!(!recovery(&mut ed).unseen, "nothing came back");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A session's name where a row's cut falls: in its colour while it's there whole, plain once the cut reaches it — each
+/// byte of the `…` met, wide characters too. (A `.chat` stays until it's answered: a row that can't be drawn is every
+/// start's at that width.)
+#[test]
+fn a_name_at_a_rows_cut_is_in_its_colour_whole_or_not_at_all() {
+    let dir = place("chat-cut");
+    let mut ed = chatting(&dir);
+    let (root, other) = (ed.workspace.root.clone(), dir.join("other"));
+    let mut buf = Vec::new();
+    for letter in ["n", "한"] {
+        let (mut whole, mut reached) = (0, 0);
+        for n in 1..70 {
+            let name = letter.repeat(n);
+            ed.push_offer(chats_card_of(&[(&name, &root), ("other", &other)]));
+            buf.clear();
+            crate::term::render(&mut ed, &mut buf, 160, 30).unwrap();
+            let row = format!("{name} · ");
+            let spots = ed.screen.cut_spots.borrow();
+            let spot = spots.iter().find_map(|s| match &s.3 {
+                crate::whole::Cut::Text(w) if w.text.starts_with(&row) => Some((s.2 - s.1, w)),
+                _ => None,
+            });
+            let (cells, cut) = spot.unwrap_or_else(|| panic!("{name}'s row, cut"));
+            // (the row's cells less its `…`)
+            let there = unicode_width::UnicodeWidthStr::width(name.as_str()) < cells;
+            let coloured = cut.pieces.first().map(|p| p.0.clone());
+            assert_eq!(coloured, there.then_some(0..name.len()), "{name} in {cells} cells");
+            *(if there { &mut whole } else { &mut reached }) += 1;
+            drop(spots);
+            ed.offers.clear();
+        }
+        assert!(whole > 0 && reached > 0, "{letter}: {whole} whole, {reached} reached");
+    }
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A conversation is kept under what the chrome calls its session, and that's what the next start's card says: the home
+/// session its branch — its folder's name only until the branch is known, told again once it is and as it moves, the
+/// conversation the same —, a session behind its name.
+#[test]
+fn a_conversation_is_kept_under_the_name_the_chrome_calls_its_session() {
+    let dir = place("chat-name");
+    let root = root_of(&dir);
+    let kid = dir.join("project");
+    let ago = Duration::from_secs(60);
+    stored(&dir, &root, "home's", ago);
+    stored(&dir, &kid, "kid's", ago);
+    let mut ed = chatting(&dir);
+    crate::chat::open(&mut ed);
+    in_conversation(&mut ed, Some("home's"));
+    let folder = recovery(&mut ed).folder().to_path_buf();
+    let kept = || -> Vec<(String, String)> {
+        let mut all: Vec<_> = chats_in(&folder).iter().filter_map(|f| read_chat(f)).collect();
+        all.sort_by_key(|c| c.id.clone());
+        all.into_iter().map(|c| (c.id, c.name)).collect()
+    };
+    let told = |id: &str, name: &str| (id.to_string(), name.to_string());
+    let own = ed.workspace.name.clone();
+    assert_eq!(kept(), [told("home's", &own)], "the branch not known yet");
+    let branch = |ed: &mut Editor, name: &str| {
+        let root = ed.workspace.root.clone();
+        crate::git::watch_round(ed, &root, (Some(name.into()), None), false);
+        ed.recovery_sync();
+        recovery(ed).flush();
+    };
+    branch(&mut ed, "trunk");
+    assert_eq!(kept(), [told("home's", "trunk")]);
+    branch(&mut ed, "topic");
+    assert_eq!(kept(), [told("home's", "topic")], "it moved");
+    let id = ed.workspace_add(kid.clone());
+    ed.with_workspace(id, |ed| {
+        crate::chat::open(ed);
+        ed.workspace.claude.chat.as_mut().unwrap().conversation = Some("kid's".into());
+    });
+    moved(&mut ed.recovery);
+    ed.recovery_sync();
+    recovery(&mut ed).flush();
+    assert_eq!(kept(), [told("home's", "topic"), told("kid's", "project")]);
+    recovery(&mut ed).killed();
+    drop(ed);
+    let mut ed = chatting(&dir);
+    ed.workspace_add(kid);
+    ed.recovery_scan();
+    settle_until(&mut ed, |ed| ed.recovery.as_ref().is_some_and(|r| r.scans > 0));
+    let card = cards(&ed)[0];
+    let lines: Vec<&str> = card.question.split('\n').collect();
+    assert!(lines[1].starts_with("topic · ") && lines[2].starts_with("project · "), "{lines:?}");
+    assert_eq!(card.named[0], (1, "topic".len(), root), "its colour's bytes, its branch's");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// The cards a next start raises with a session of checkout `kid` behind.
+fn cards_after_with_kid(dir: &Path, kid: &Path) -> usize {
+    let mut ed = chatting(dir);
+    ed.workspace_add(kid.to_path_buf());
+    ed.recovery_scan();
+    settle_until(&mut ed, |ed| ed.recovery.as_ref().is_some_and(|r| r.scans > 0));
+    let n = cards(&ed).len();
+    ed.offer_dismiss();
+    quit(ed, dir, || {});
+    n
+}
+
+fn session(ed: &Editor, id: WorkspaceId) -> &crate::workspace::Workspace {
+    std::iter::once(&ed.workspace).chain(&ed.workspaces).find(|w| w.id == id).unwrap()
+}
+
+/// A session behind: `y` continues that conversation in its chat, whichever the store has first, with no claude until its
+/// first message — a chat as any, so its conversation is kept by this tarae at once: a second crash before you go there
+/// loses nothing. A new conversation asked for meanwhile drops it. `D` leaves it to start fresh, never going on by itself.
+#[test]
+fn a_session_behind_continues_by_that_id_or_starts_fresh() {
+    let dir = place("chat-behind");
+    let root = root_of(&dir);
+    let kid = dir.join("project");
+    stored(&dir, &kid, "left", Duration::from_secs(7_200));
+    stored(&dir, &kid, "later", Duration::from_secs(60));
+    let back = |ed: &mut Editor| {
+        let id = ed.workspace_add(dir.join("project"));
+        ed.workspace_by_id(id).unwrap().claude.brought_back = true;
+        id
+    };
+    let gone = |name: &str| chat_left(&dir.join("state").join(name), 1, &kid, &root, "left");
+    let restored = |t: &crate::editor::Toast| t.text.contains("Restored");
+    gone("first");
+    let mut ed = chatting(&dir);
+    let id = back(&mut ed);
+    ed.recovery_scan();
+    settle_until(&mut ed, |ed| !cards(ed).is_empty());
+    ed.offer_accept();
+    assert!(!ed.toasts.iter().any(restored), "not before its read has landed");
+    let chat = session(&ed, id).claude.chat.as_ref().expect("its chat, at once");
+    assert!(!crate::chat::started(chat), "before its conversation's read lands too");
+    settle_until(&mut ed, |ed| session(ed, id).claude.continues.is_none());
+    let chat = session(&ed, id).claude.chat.as_ref().expect("its chat, whatever comes before you go there");
+    assert_eq!(chat.conversation.as_deref(), Some("left"));
+    assert!(ed.toasts.last().is_some_and(|t| t.text == "project · Restored the chat"));
+    assert!(!crate::chat::started(chat), "no claude until its first message");
+    ed.recovery_sync();
+    recovery(&mut ed).flush();
+    let own = recovery(&mut ed).folder().to_path_buf();
+    assert_eq!(kept_ids(&own), ["left"], "kept here now");
+    recovery(&mut ed).killed();
+    drop(ed);
+    assert_eq!(cards_after_with_kid(&dir, &kid), 1, "a second crash: offered again");
+    gone("second");
+    let mut ed = chatting(&dir);
+    let id = back(&mut ed);
+    ed.recovery_scan();
+    settle_until(&mut ed, |ed| !cards(ed).is_empty());
+    ed.offer_accept();
+    ed.with_workspace(id, |ed| crate::chat::reset_said(ed, ""));
+    assert_eq!(session(&ed, id).claude.continues, None, "a new conversation asked for");
+    settle_until(&mut ed, |ed| session(ed, id).claude.chat.as_ref().is_some_and(|c| !c.past.is_empty()));
+    let conv = session(&ed, id).claude.chat.as_ref().and_then(|c| c.conversation.as_deref());
+    assert_eq!(conv, None, "the read landed after: nothing continued");
+    assert!(!ed.toasts.iter().any(restored), "nor said");
+    quit(ed, &dir, || {});
+    gone("third");
+    let mut ed = chatting(&dir);
+    let id = back(&mut ed);
+    ed.recovery_scan();
+    settle_until(&mut ed, |ed| !cards(ed).is_empty());
+    ed.offer_discard();
+    assert!(!session(&ed, id).claude.brought_back, "discard starts fresh");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A session the list brought back goes on with no word of a restore: no crash, nothing restored.
+#[test]
+fn a_session_brought_back_says_nothing_of_a_restore() {
+    let dir = place("chat-listed");
+    let kid = dir.join("project");
+    stored(&dir, &kid, "its own", Duration::from_secs(60));
+    let mut ed = chatting(&dir);
+    let id = ed.workspace_add(kid);
+    ed.workspace_by_id(id).unwrap().claude.brought_back = true;
+    ed.with_workspace(id, crate::chat::open);
+    settle_until(&mut ed, |ed| !session(ed, id).claude.brought_back);
+    let chat = session(&ed, id).claude.chat.as_ref().unwrap();
+    assert_eq!(chat.conversation.as_deref(), Some("its own"));
+    assert!(ed.toasts.iter().all(|t| !t.text.contains("Restored")));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+/// A session behind whose conversation can't come back: what became of it is said once it's known, by that session's
+/// name, and never that it was restored — the store has lost it, or its chat has one of its own.
+#[test]
+fn a_restore_behind_that_cant_come_back_says_so_by_its_name() {
+    let dir = place("chat-behind-not");
+    let root = root_of(&dir);
+    let kid = dir.join("project");
+    let up = |name: &str| {
+        stored(&dir, &kid, "left", Duration::from_secs(60));
+        chat_left(&dir.join("state").join(name), 1, &kid, &root, "left");
+        let mut ed = chatting(&dir);
+        let id = ed.workspace_add(kid.clone());
+        ed.recovery_scan();
+        settle_until(&mut ed, |ed| !cards(ed).is_empty());
+        (ed, id)
+    };
+    let (mut ed, id) = up("gone");
+    std::fs::remove_file(crate::config::state_file(&dir.join("chats"), &kid)).unwrap();
+    ed.offer_accept();
+    settle_until(&mut ed, |ed| session(ed, id).claude.continues.is_none());
+    assert!(ed.toasts.iter().any(|t| t.text == "project · that conversation is no longer kept"));
+    assert!(ed.toasts.iter().all(|t| !t.text.contains("Restored")));
+    quit(ed, &dir, || {});
+    let (mut ed, id) = up("own");
+    ed.with_workspace(id, |ed| {
+        crate::chat::open(ed);
+        let msg = crate::chat::Msg::new(crate::chat::Role::User, "mine", "");
+        ed.workspace.claude.chat.as_mut().unwrap().msgs.push(msg);
+    });
+    ed.offer_accept();
+    settle_until(&mut ed, |ed| session(ed, id).claude.continues.is_none());
+    let said =
+        |t: &crate::editor::Toast| t.text.starts_with("project · the chat has a conversation of its own");
+    assert!(ed.toasts.iter().any(said), "{:?}", ed.toasts.last().map(|t| &t.text));
+    assert!(ed.toasts.iter().all(|t| !t.text.contains("Restored")));
     std::fs::remove_dir_all(dir).ok();
 }

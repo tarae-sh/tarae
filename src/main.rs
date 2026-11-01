@@ -423,7 +423,7 @@ fn main() -> Result<()> {
     // `space u` and `space v t` (a restart's, or ones a crash cut short) — the checkout tarae started in;
     // the other sessions' came back with them
     editor.workspace_kept_back(crate::event::WorkspaceId::HOME);
-    // Unsaved edits a tarae that's gone kept (a crash, a kill) — a card each (`recovery.rs`)
+    // Unsaved edits a tarae that's gone kept (a crash, a kill) — a card each — and the conversations it was in (`recovery.rs`)
     editor.recovery_scan();
     // Kept run homes no run needs any more — unused, replaced, their project gone (`runhomes.rs`; a worker's)
     let days = editor.config.llm.sandbox_kept_days;

@@ -137,6 +137,8 @@ pub(crate) fn watch_round(
     ed.workspace.git_branch = branch;
     // (the log names it as the list does: the checkout tarae started in by its branch)
     ed.workspace.in_log.named(ed.workspace.label());
+    // (and so does a kept conversation: told by then under its folder's name, or another branch's)
+    crate::recovery::moved(&mut ed.recovery);
     if moved {
         ed.git_reload_bases_in(dir);
         // (moved into the branch a review is since: that review may be of nothing now)

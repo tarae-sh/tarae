@@ -195,7 +195,7 @@ pub static SETTINGS: &[Setting] = &[
     Setting {
         path: "editor.recovery",
         kind: Kind::Bool,
-        doc: "Keep a copy of each buffer with unsaved edits (after a pause in typing, in your state folder) — after a crash or a kill, the next start offers them back",
+        doc: "Keep a copy of each buffer with unsaved edits (after a pause in typing, in your state folder), and which conversation each chat is in — after a crash or a kill, the next start offers them back",
         get: |c| Value::from(c.recovery),
         set: |c, v| c.recovery = b(v),
     },

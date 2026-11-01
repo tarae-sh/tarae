@@ -45,7 +45,7 @@ For how tarae is built and why, see [architecture.md](architecture.md). For what
 | **Queues** | A run waits its turn instead of being refused, and says what it waited for (phases 0, H and 1 of [design/async.md](design/async.md)) |
 | **UI state** | What's on screen as data: `tarae state`, a socket for outside programs, Claude's `ui` tool, ids that are links, pointing at things (phases 1–3 of [design/ui-state.md](design/ui-state.md)) |
 | **Notifications** | Toasts as one calm card, `:messages`, news from sessions behind, the inbox's count on the status line — all inside tarae |
-| **Projects** | A project starts at the nearest `.git` or `.tarae.toml` above where tarae starts — never home or above — and every store keys by it; where you started stays where you are (step 1, `28cc4485`). A start begins a new conversation, the latest a key away among the empty chat's first keys (`C-p continue "…" · 2h ago · 41k`); a session the list brought back continues its own and says so on its top line (step 2, `0c974bfc`) |
+| **Projects** | A project starts at the nearest `.git` or `.tarae.toml` above where tarae starts — never home or above — and every store keys by it; where you started stays where you are (step 1, `28cc4485`). A start begins a new conversation, the latest a key away among the empty chat's first keys (`C-p continue "…" · 2h ago · 41k`); a session the list brought back continues its own and says so on its top line (step 2, `0c974bfc`). After a crash the recovery card's restore brings the conversations back by their ids, each said with its size and, past its cache, that it's read anew; discard starts fresh (step 3) |
 | **Restart with sessions** | `:restart` brings back every session as it was, with its chat, code review and waiting cards; unsaved edits are kept and offered back after a crash ([features.md](features.md#updating-without-losing-your-place)) |
 | **Language packs** | A language is a folder of data: grammar, queries, servers, tests, debugger, and what its tools need from the sandbox. The core names no language |
 | **Shared rust-analyzer** | One server for a repository's checkouts, swapped in the background as sessions come and go |
@@ -121,17 +121,14 @@ Five pieces from the queue, read together by tarae's reviewer after (`031c8e40`:
 
 ## Now
 
-Under way (2026-10-31):
+Under way (2026-11-01):
 
-- **Orchestra P3** — a parent's review and proposals as one tool, `session_act { session, act, why?, wake? }`
-  (decided 2026-10-31): `review`, `board`, `send`, `bring` and `end` proposed, every card still yours; its review
-  round's fixes in progress (orchestra's `.sb/orchestra-p3-next.md`). Then a week of Part I in use, then Part II's P6
+- **Orchestra P3 landed** (`72b18178`) — a parent's review and proposals as one tool, `session_act { session, act, why?,
+  wake? }`, every card still yours: Part I is complete. Now its week of use, then Part II's P6
   ([§4](#4-panes-the-terminal-line-and-orchestra)).
 - **The chat and the code as one flow, a day of use before E1** — D1, B1, A1 and A1b steps 1–3 are in
   ([next](#next)); E1, the turn as a map (tree, outline, gutter by role), comes after a day of real work with them,
   then the rest in main's `.sb/focus-plan.md` order.
-- **Projects, step 3** — a crash continues: the conversation's id in the recovery folder, the recovery card's restore
-  taking the chats back (carry's `.sb/projects-plan.md`).
 
 No friction of #223–#254 is open ([§3](#3-frictions-and-lighter-cards-and-reviews)).
 

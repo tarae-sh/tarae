@@ -1367,6 +1367,7 @@ impl Editor {
     /// A workspace for the checkout in `root` (a real path), behind, its Claude born with it — its first pane on a
     /// blank scratch, its branch watched.
     pub(crate) fn workspace_add(&mut self, root: PathBuf) -> WorkspaceId {
+        crate::recovery::moved(&mut self.recovery);
         self.next_workspace = self.next_workspace.next();
         let id = self.next_workspace;
         let view = self.next_pane;

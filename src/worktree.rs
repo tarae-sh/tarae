@@ -2155,6 +2155,7 @@ impl Editor {
         self.with_workspace(id, Editor::reviews_end);
         let i = self.workspaces.iter().position(|l| l.id == id)?;
         let session = self.workspaces.remove(i);
+        crate::recovery::moved(&mut self.recovery);
         crate::share::served_moved();
         // (the proxy's answers for it go with it, its overlaps and their folder too)
         crate::hosts::workspace_ended(&session);

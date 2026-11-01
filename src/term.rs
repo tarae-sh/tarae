@@ -538,6 +538,8 @@ fn render_drawn(editor: &mut Editor, out: &mut impl Write, w: u16, h: u16) -> io
         | crate::whole::drawn(editor)
         // (and a flash's words that it didn't draw: their toast — `motion.rs`)
         | editor.words_drawn()
+        // (and a chat a restore brought back that it didn't draw: said — `recovery.rs`)
+        | crate::recovery::chat_drawn(editor)
     {
         frame.clear();
         render_frame(editor, &mut frame, w, h)?;
@@ -12482,6 +12484,8 @@ struct OfferCard {
     /// Rows of `lines` that are a diff's (`Offer::diff`) and their sign: `+` added, `-` removed, `@` a hunk's
     /// header and ` ` the lines around (dim), `f` a file's path.
     diff: Vec<(usize, char)>,
+    /// Rows of `lines` that begin with a session's name (`Offer.named`): (row, the name's bytes, its colour).
+    names: Vec<(usize, usize, u8)>,
     /// (row, start col, end col, key) — for mouse (`Screen.offer_buttons`; digit = bring back card N forward)
     buttons: Vec<(usize, usize, usize, char)>,
     /// The buttons: (key, label) as its bottom line says them (`answer_forms`: whole, short or the key alone) — the
@@ -12906,6 +12910,7 @@ impl OfferCard {
             lines: Vec::new(),
             warn: Vec::new(),
             diff: Vec::new(),
+            names: Vec::new(),
             buttons,
             labels: Vec::new(),
             way: None,
@@ -13053,6 +13058,13 @@ impl OfferCard {
         };
         let mut warn = Vec::new();
         let mut diff = Vec::new();
+        let mut names = Vec::new();
+        // (a line's session name: its bytes and that session's colour now — none where it isn't here)
+        let name_at = |k: usize| {
+            let (_, n, root) = o.named.iter().find(|x| x.0 == k)?;
+            let mut all = std::iter::once(&editor.workspace).chain(&editor.workspaces);
+            Some((*n, all.find(|l| l.root == *root)?.claude.colour))
+        };
         let (mut lines, labels) = match &o.state {
             OfferState::Asking => {
                 let b = o.answers(quick);
@@ -13074,7 +13086,10 @@ impl OfferCard {
                 // (and a row of air under it — `bottom` below; its answers are its frame's bottom line)
                 let room = arows.saturating_sub(2 * pad + said_rows + 1);
                 // (the card's rows with the question's lines `skip` left out — their warning and diff rows marked)
-                let build = |skip: &[usize], warn: &mut Vec<usize>, diff: &mut Vec<(usize, char)>| {
+                let build = |skip: &[usize],
+                             warn: &mut Vec<usize>,
+                             diff: &mut Vec<(usize, char)>,
+                             names: &mut Vec<(usize, usize, u8)>| {
                     let mut v = vec![(Fit::from(&title), false)];
                     // (a parent's Claude proposed it: who and why, faint under the title — two rows at most, then
                     // `…`, whole on its card)
@@ -13123,6 +13138,9 @@ impl OfferCard {
                                 .unwrap_or('f');
                             diff.extend((v.len()..v.len() + rows.len()).map(|r| (r, sign)));
                         }
+                        if let Some((n, colour)) = name_at(k) {
+                            names.push((v.len(), n, colour));
+                        }
                         v.extend(rows);
                     }
                     // Claude's calls held back behind it (#87 — claude makes them one after another, so its
@@ -13155,8 +13173,8 @@ impl OfferCard {
                 };
                 let mut skip: Vec<usize> = Vec::new();
                 let v = loop {
-                    (warn, diff) = (Vec::new(), Vec::new());
-                    let v = build(&skip, &mut warn, &mut diff);
+                    (warn, diff, names) = (Vec::new(), Vec::new(), Vec::new());
+                    let v = build(&skip, &mut warn, &mut diff, &mut names);
                     let next = o.folds.iter().find(|f| !(f.start..f.end).all(|k| skip.contains(&k)));
                     match next.filter(|_| v.len() > room) {
                         Some(f) => skip.extend(f.clone()),
@@ -13225,6 +13243,7 @@ impl OfferCard {
                     y,
                     inner: width.saturating_sub(5),
                     lines: vec![(title, false), (how, true)],
+                    names: Vec::new(),
                     warn: if said.is_some() { vec![1] } else { Vec::new() },
                     diff: Vec::new(),
                     buttons,
@@ -13489,6 +13508,7 @@ impl OfferCard {
                 lines,
                 warn,
                 diff,
+                names,
                 buttons,
                 labels,
                 way,
@@ -13725,6 +13745,11 @@ impl OfferCard {
                 body
             });
             apply(out, row_style)?;
+            // (a session's name: in its colour, at full strength in a faint row too, whole on its row's card as here —
+            // only one that's there whole: the row's cut can reach it, and the `…` is no part of it)
+            let name = (self.names.iter().find(|n| n.0 == i))
+                .filter(|n| text.uncut().is_char_boundary(n.1))
+                .map(|&(_, n, colour)| (n, Style { fg: ui.participant(colour, true), bold: true, ..body }));
             match text.shown().split_once(' ').filter(|_| self.busy && i == 1) {
                 // Downloading: wave in accent, text dimmed
                 Some((w, rest)) => {
@@ -13732,6 +13757,14 @@ impl OfferCard {
                     queue!(out, Print(w))?;
                     apply(out, dim)?;
                     queue!(out, Print(" "), Print(rest))?;
+                }
+                None if name.is_some() => {
+                    let (n, style) = name.unwrap_or((0, row_style));
+                    let (who, rest) = text.shown().split_at(n);
+                    apply(out, style)?;
+                    queue!(out, Print(who))?;
+                    apply(out, row_style)?;
+                    queue!(out, Print(rest))?;
                 }
                 // (a workspace's name in its colour, at full strength in a faint row too)
                 None if !self.paint.is_empty() => {
@@ -13749,9 +13782,10 @@ impl OfferCard {
                 }
                 None => queue!(out, Print(text.shown()))?,
             }
+            let named = name.map(|(n, style)| text.clone().named(n, style, row_style));
             crate::whole::at(
                 crate::whole::On::Card,
-                text,
+                named.as_ref().unwrap_or(text),
                 (self.x + 2, row),
                 row_style,
                 (self.x, self.x + width),
@@ -24188,6 +24222,7 @@ mod tests {
                 diff: None,
                 ends: Vec::new(),
                 rows: Vec::new(),
+                named: Vec::new(),
                 told: Vec::new(),
                 since: std::time::Instant::now(),
                 drawn: Default::default(),

@@ -719,6 +719,13 @@ impl Usage {
         v["compacted_to"].as_u64().or_else(|| Request::from_json(&v["last"])?.counts.context())
     }
 
+    /// Whether the cache of a conversation kept with `conv_json` is past its TTL at `now_ms`: continuing it reads its whole
+    /// context anew. False where that wasn't reported.
+    pub fn kept_cold(v: &Value, now_ms: u64) -> bool {
+        let ttl = v["ttl"].as_str().and_then(Ttl::named);
+        v["touched"].as_u64().zip(ttl).is_some_and(|(at, ttl)| now_ms >= at + ttl.ms())
+    }
+
     /// Conversation `id` continued from what was kept: its turns (unless they're here already), its cache,
     /// its cost so far.
     pub fn restore(&mut self, id: &str, v: &Value) {

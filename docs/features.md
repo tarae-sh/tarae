@@ -415,7 +415,9 @@ configs carry over as they are.
   the file changed on disk since, or was deleted. Saving, undoing back to the file or closing the buffer removes
   the copy; `:q` removes them all, a hangup or `:restart` keeps them. Never copied: files where keys are (`~/.ssh`,
   `~/.aws`, `~/.gnupg`, credentials …, by their real path), files named like keys anywhere (`.env`, `*.pem`,
-  `*.key`, `id_ed25519` …), files over 8 MB, and what `editor.recovery-skip` lists
+  `*.key`, `id_ed25519` …), files over 8 MB, and what `editor.recovery-skip` lists. The conversations the chats were in
+  come back the same way, on the first card or, with nothing unsaved, a card of their own
+  ([the chat panel](claude-integration.md#chat-panel))
 - **Restore** — launched without arguments, tarae reopens the files you had open in this project, at their
   cursor and scroll positions; open a file by name and you land where you last were in it
 - **Persistent undo** — on save, the last 1000 undo steps are written next to your state, so `u`/`U` keep working after

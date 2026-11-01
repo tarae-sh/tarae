@@ -49,6 +49,9 @@ pub struct Offer {
     /// The question's lines that are a list's rows (a set card's sessions, `orchestra.rs`): one row each, never
     /// wrapped, cut at their end — the text given is what the cut card under the mouse says whole.
     pub rows: Vec<(usize, String)>,
+    /// The question's lines that begin with a session's name: (line, the name's bytes, its session's checkout) — drawn in
+    /// that session's colour, as everywhere (the session looked up as it's drawn: it may come back after the card).
+    pub named: Vec<(usize, usize, std::path::PathBuf)>,
     /// The question's lines that tell, never decide — drawn faint (or in warning) whatever `decided` covers: a
     /// kubectl run's context, information about what it reaches, not what `y` decides (#182).
     pub told: Vec<usize>,
@@ -276,6 +279,8 @@ pub enum What {
     /// A buffer's unsaved edits a gone tarae kept (`recovery.rs`): `y` restores them into the buffer, `c`
     /// compares them with the file, `D` discards them, `n` leaves them for the next start.
     Recover(Box<crate::recovery::Found>),
+    /// The conversations a tarae that's gone was in, with no unsaved edits for them to ride on (`recovery.rs`).
+    RecoverChats(Vec<crate::recovery::Left>),
     /// A run of Claude's printing nothing at next to no CPU for minutes (`stuck.rs`, #181): `y` stops it, `w`
     /// shows what its threads wait in (its output), `n` keeps waiting. Gone once it prints or ends.
     Stuck(Box<crate::stuck::Stuck>),
@@ -356,6 +361,7 @@ pub const KINDS: &[&str] = &[
     "notes-stale",
     "notes-close",
     "recover",
+    "recover-chats",
     "stuck",
     "host",
     "containers",
@@ -452,6 +458,7 @@ impl What {
             | What::RepoTrust { .. }
             | What::CodeTrust { .. }
             | What::Recover(_)
+            | What::RecoverChats(_)
             | What::Restart(_)
             | What::RestartSame { .. }
             | What::RestartCancel { .. }
@@ -631,6 +638,7 @@ impl Offer {
             diff: None,
             ends: Vec::new(),
             rows: Vec::new(),
+            named: Vec::new(),
             told: Vec::new(),
             folds: Vec::new(),
             since: crate::clock::now(),
@@ -784,6 +792,7 @@ impl Offer {
                 | What::Restart(_)
                 | What::RestartSame { .. }
                 | What::Recover(_)
+                | What::RecoverChats(_)
                 | What::Stuck(_)
                 | What::Host(_)
                 // (what Claude read can go there in the address it asks for)
@@ -875,6 +884,11 @@ impl Offer {
 
     /// Whether `c` (compare) and `D` (discard) answer it: unsaved edits a gone tarae kept.
     pub fn recovers(&self) -> bool {
+        matches!(self.what, What::Recover(_) | What::RecoverChats(_))
+    }
+
+    /// `c` shows a copy against its file: a card with a copy.
+    fn compares(&self) -> bool {
         matches!(self.what, What::Recover(_))
     }
 
@@ -943,7 +957,7 @@ impl Offer {
                     || self.made()
                     || matches!(self.what, What::NotesStale { .. })))
             || (c == 'R' && self.end_dirty())
-            || (c == 'c' && (self.commits_first() || self.recovers() || self.moves_mixed()))
+            || (c == 'c' && (self.commits_first() || self.compares() || self.moves_mixed()))
             || (c == 'D' && (self.recovers() || self.both()))
             || (c == 'Y' && !self.like.is_empty())
             || (c == 'a'
@@ -1023,7 +1037,7 @@ impl Offer {
         Some(match c {
             'R' if self.end_dirty() => A::Remove(false),
             'c' if self.commits_first() => A::CommitFirst,
-            'c' if self.recovers() => A::Compare,
+            'c' if self.compares() => A::Compare,
             'c' if self.moves_mixed() => A::KeepClose('c'),
             'D' if self.recovers() => A::Discard,
             'y' => A::Accept,
@@ -1561,6 +1575,7 @@ impl Offer {
                     plain('n', "Not now"),
                 ]
             }
+            W::RecoverChats(_) => vec![plain('y', "Restore"), lasts('D', "Discard"), plain('n', "Not now")],
             W::ChangeSet { ops: true, .. } => {
                 vec![plain('y', "Accept all"), plain('v', "See them"), plain('n', "Decline all")]
             }
@@ -1655,6 +1670,7 @@ impl Offer {
             W::NotesStale { .. } => "notes-stale",
             W::NotesClose { .. } => "notes-close",
             W::Recover(_) => "recover",
+            W::RecoverChats(_) => "recover-chats",
             W::Stuck(_) => "stuck",
             W::LeftRunning { .. } => "left-running",
             W::Host(_) => "host",
@@ -2156,6 +2172,7 @@ impl crate::editor::Editor {
             What::NotesStale { ids } => crate::notes::stale_answer(self, id, ids, true),
             What::NotesClose { by, ids } => crate::notes::close_by_answer(self, id, by, ids, true),
             What::Recover(f) => crate::recovery::restore(self, id, *f),
+            What::RecoverChats(left) => crate::recovery::restore_chats(self, id, left),
             What::Stuck(s) => {
                 self.offer_finished(id, Ok(()));
                 crate::stuck::stop(self, &s);
@@ -2248,8 +2265,10 @@ impl crate::editor::Editor {
         let o = self.offers.remove(0);
         self.offer_said(&o, 'D');
         self.card_answered(o.id);
-        if let What::Recover(f) = o.what {
-            crate::recovery::discard(self, *f);
+        match o.what {
+            What::Recover(f) => crate::recovery::discard(self, *f),
+            What::RecoverChats(left) => crate::recovery::discard_chats(self, left),
+            _ => {}
         }
     }
 
@@ -2876,6 +2895,7 @@ impl crate::editor::Editor {
             What::NotesStale { ids } => crate::notes::stale_answer(self, o.id, ids, false),
             What::NotesClose { by, ids } => crate::notes::close_by_answer(self, o.id, by, ids, false),
             What::Recover(f) => crate::recovery::not_now(self, *f),
+            What::RecoverChats(left) => crate::recovery::chats_not_now(self, left),
             What::Stuck(s) => crate::stuck::keep_waiting(self, &s),
             What::LeftRunning { .. } => {
                 self.set_status("left running — space m c stops the task, space x c the tests")

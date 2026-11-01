@@ -128,6 +128,21 @@ send it a message. And `:restart` brings every chat back exactly as it was. The 
 `~/.local/state/tarae/chats/`. Because Claude keeps the chat's conversations too, they also show in `claude --resume`
 in that folder.
 
+**After a crash** (a kill, a power cut, a terminal closed under tarae), nothing comes back by itself: what comes back is
+shown first, and acts on your key. Each chat's conversation is kept beside the copies of your unsaved buffers, so the next
+start in that project offers it. It rides on the first [recovery card](features.md#files-and-git), whose `y` restores the
+buffer and the conversation together (`Its conversation comes back with them:`). With nothing unsaved it has a card of its
+own, `A conversation left open`, with `y` and `D`. Each one is a row, `41k · 2h ago · read anew · "why does adds() fail?"`,
+with its session's name first in its colour when there are several: the context it would carry, its age, and `read anew` once it's past
+its cache's time, because the next message then writes that whole context to the cache again. A size or a time tarae
+didn't see reported isn't said. `y` continues that conversation by its id, with its chat shown and the keys where they
+were; in a session behind its chat comes back at once, with no process until your first message there. `D` starts fresh
+(on a file's card it takes the unsaved copy too, and the card says so), and `C-p` still lists what it left. `n` asks again
+at the next start, and so does a session that isn't here yet, saying so. A chat where you've begun something of your own in
+the meantime stays in it, and says so. Closed chats and conversations not yet begun leave nothing to offer, `:restart`
+brings its chats back itself so they aren't offered (an exec that failed leaves them for the next start), and
+`editor.recovery = false` keeps none of this.
+
 **When Claude compacts.** Near its context limit Claude Code summarizes the conversation so far and carries on
 from the summary (or does it when you send `/compact`: typed, with or without its words, it goes as it is, without the
 editor context tarae puts before a message — claude reads a command only at a message's start — and alone, what's

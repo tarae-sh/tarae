@@ -409,6 +409,37 @@ fn every_session_is_named_one_way_in_the_chrome() {
     let docs_row = row_of(&r, "▲ waits ");
     assert_eq!(fg_of(&p, &r, docs_row, "▲"), warning, "what needs you, in warning: {}", r[docs_row]);
     press(&mut ed, "q");
+    // A recovery card's rows: each name in its colour, its row faint or not; one whose session isn't here, plain
+    let on_card: Vec<(String, std::path::PathBuf)> = std::iter::once(&ed.workspace)
+        .chain(&ed.workspaces)
+        .map(|l| (l.label().to_string(), l.root.clone()))
+        .collect();
+    let mut listed: Vec<(&str, &std::path::Path)> =
+        on_card.iter().map(|(n, r)| (n.as_str(), r.as_path())).collect();
+    let gone = _dir.join("gone");
+    listed.push(("away", &gone));
+    ed.push_offer(crate::recovery::chats_card_of(&listed));
+    let p = frame(&mut ed, 160);
+    let r = rows(&p);
+    for ((id, name), &c) in all.iter().zip(&colours) {
+        let y = row_of(&r, &format!("{name} · 41k"));
+        assert_eq!(named(&p, &r, y, name, 0), c, "{name} (session {id}) on the card: {r:#?}");
+    }
+    let y = row_of(&r, "away · 41k");
+    assert!(!colours.contains(&named(&p, &r, y, "away", 0)), "a name no session has: {}", r[y]);
+    // (and whole on a cut row's card, as drawn)
+    let cuts: Vec<(String, Option<std::ops::Range<usize>>)> = (ed.screen.cut_spots.borrow().iter())
+        .filter_map(|c| match &c.3 {
+            crate::whole::Cut::Text(w) => Some((w.text.clone(), w.pieces.first().map(|p| p.0.clone()))),
+            _ => None,
+        })
+        .collect();
+    for (_, name) in &all {
+        let cut = cuts.iter().find(|c| c.0.starts_with(&format!("{name} · ")));
+        assert_eq!(cut.and_then(|c| c.1.clone()), Some(0..name.len()), "{name}'s row cut: {cuts:?}");
+    }
+    assert!(cuts.iter().any(|c| c.0.starts_with("away · ") && c.1.is_none()), "{cuts:?}");
+    ed.offers.retain(|o| !o.recovers());
     // The strip over a chat: each name in its colour, its state after it — docs' `▲ waits` in warning (the chat with
     // the keys: a surface without them fades all its text alike)
     ed.workspace.claude.chat = Some(crate::chat::Chat::new());
