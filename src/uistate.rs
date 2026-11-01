@@ -472,8 +472,13 @@ impl Editor {
             }
         }
         // `chat::unfold_key`: minimized, what would type brings it back — its own keys (and `C-w` from an
-        // empty input) go on
-        let chat = self.workspace.claude.chat.as_ref().filter(|_| self.workspace.is_at(At::Chat));
+        // empty input) go on; a line open over the chat has them all, it or `chat::key` none
+        let chat = self
+            .workspace
+            .claude
+            .chat
+            .as_ref()
+            .filter(|_| self.workspace.is_at(At::Chat) && self.prompt.is_none());
         if let Some(c) = chat.filter(|c| c.compact() && !pending) {
             let mut passes: Vec<Key> = [
                 Key::plain(Code::Esc),
@@ -496,7 +501,7 @@ impl Editor {
             passes.extend(crate::chatinput::next_pane_keys(&self.keymaps));
             v.push(layer(Region::Unfold, Filter::Except(passes)));
         }
-        // `chat::key` — before the prompt: it doesn't ask whether one is open
+        // `chat::key`
         if let Some(c) = chat.filter(|_| !pending && viewing.is_none()) {
             v.push(match c.input.is_empty() {
                 true => layer(Region::Chat, Filter::Except(vec![ctrl('w'), Key { alt: true, ..ctrl('w') }])),

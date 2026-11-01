@@ -21207,7 +21207,7 @@ fn frame_keys_said(
     (x, y): (usize, usize),
     home: impl Fn(&str) -> At,
 ) {
-    use crate::wordspot::Press;
+    use crate::wordspot::{Press, Spot};
     let mut words = editor.screen.word_spots.borrow_mut();
     let mut at = x;
     for pair in keys.split(|s| s.0 == " · ") {
@@ -21216,7 +21216,9 @@ fn frame_keys_said(
             crate::kinds::hint(k, said, (at, y));
         }
         if crate::wordspot::pressable(k, said) {
-            words.push(word_spot(on, Press::Keys(k.to_string()), (at, y), pair.to_vec()).home(home(k)));
+            // (as the frame drew them: its line is unfaded whatever fades round it — `TopLine.plain`, the note card in a
+            // code pane without the keys — so never `word_spot`'s fade, or lit it'd take another colour: #197a)
+            words.push(Spot::new(on, Press::Keys(k.to_string()), (at, y), pair.to_vec()).home(home(k)));
         }
         at += pair.iter().map(|s| s.0.width()).sum::<usize>() + " · ".width();
     }

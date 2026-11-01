@@ -1494,16 +1494,19 @@ pub fn expect(surface: Surface, part: Part, act: Act) -> Expect {
             (Part::Word(_), A::Hover) => Acts,
             (_, A::Hover) => Not("no hover from the language server — K"),
         },
-        // (a press on a row presses its key, accepts its item, replies; the rest of the card says so)
+        // (a press on a row presses its key, accepts its item; the rest of the card says so — but the note card's body,
+        // whose press only holds: let go it replies, dragged its words are selected, copied as you let go — focus A1b)
         Su::WhichKey | Su::Completion | Su::NoteCard => match (part, act) {
             (Part::Row(_), A::Press) => Acts,
             // (the completion list's keys on its bottom line, #234: buttons — a press does its key, the pointer lights it)
             // (and the note card's, #240)
             (Part::Word(Word::Does(_)), A::Press | A::Hover) if surface != Su::WhichKey => Acts,
-            (_, A::Press) if surface == Su::NoteCard => Acts,
+            (_, A::Press) if surface == Su::NoteCard => Not("held: its release or a drag decides"),
+            (Part::Blank, A::Release | A::Drag) if surface == Su::NoteCard => Acts,
             (_, A::Press) => Says("a row presses it"),
             (_, A::Double) => AS_ONE,
-            (_, A::Wheel) if surface == Su::Completion => Acts,
+            // (the note card's: it's between the code's lines, the code it's in scrolls)
+            (_, A::Wheel) if surface != Su::WhichKey => Acts,
             (_, A::Wheel) => NO_SCROLL,
             (_, A::Drag) => Not("its press did it — a drag goes to what's under it"),
             (_, A::Release) => RELEASE,

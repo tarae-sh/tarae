@@ -69,8 +69,8 @@ that fills it (S selection).
 | The completion menu | a row | ✓ | — the press did it | — its press did it — a drag goes to what's under it | as one press | ✓ | — nothing on hover |
 | The completion menu | the rest of it, its docs | says: a row presses it | — the press did it | — its press did it — a drag goes to what's under it | as one press | ✓ | — nothing on hover |
 | The completion menu | a key hint on its bottom line | ✓ | — the press did it | says: this takes a press — a drag starts beside it | as one press | ✓ | ✓ |
-| The note card |  | ✓ | — the press did it | — its press did it — a drag goes to what's under it | as one press | — nothing to scroll | — nothing on hover |
-| The note card | a key on its bottom line | ✓ | — the press did it | says: this takes a press — a drag starts beside it | as one press | — nothing to scroll | ✓ |
+| The note card |  | — held: its release or a drag decides | ✓ | ✓ | as one press | ✓ | — nothing on hover |
+| The note card | a key on its bottom line | ✓ | — the press did it | says: this takes a press — a drag starts beside it | as one press | ✓ | ✓ |
 | The status line | a word (`▲N waiting · C-q`, the chip, what Claude does now, the branch, `▲ N`, `full screen`) | ✓ | — the press did it | — a line of state, no text to select | as one press | — nothing to scroll | ✓ |
 | The status line | a key hint (a list's, a picker's, a prompt's) | ✓ | — the press did it | says: this takes a press — a drag starts beside it | as one press | — nothing to scroll | ✓ |
 | The status line | the rest | — no word there: the mode and the position say where the keys are | — the press did it | — a line of state, no text to select | as one press | — nothing to scroll | — nothing on hover |

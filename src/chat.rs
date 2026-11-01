@@ -4206,7 +4206,7 @@ pub fn acts_unseen(key: Key) -> bool {
 /// (the leader: slip 3 was `space W` typed into it), Enter and editing keys only bring it back, said so.
 /// True if it was that key.
 pub fn unfold_key(ed: &mut Editor, key: Key) -> bool {
-    if !ed.pending.is_empty() {
+    if !ed.pending.is_empty() || ed.prompt.is_some() {
         return false;
     }
     if !ed.workspace.is_at(At::Chat) {
@@ -4243,9 +4243,12 @@ pub fn key(ed: &mut Editor, key: Key) -> bool {
     if !ed.pending.is_empty() {
         return false;
     }
-    // (its view mode has the keys — what reaches here is the chat's chords, and `C-w`: the windows'; a prompt it
-    // let up — `:` — takes them all)
-    if crate::chatdoc::keyed(ed) && (ed.prompt.is_some() || !crate::chatdoc::chat_chord(ed, key)) {
+    // (a line open takes them all, whatever opened it: its view mode's `:`, the sessions' `+`, a picker's rename — #256)
+    if ed.prompt.is_some() {
+        return false;
+    }
+    // (its view mode has the keys — what reaches here is the chat's chords, and `C-w`: the windows')
+    if crate::chatdoc::keyed(ed) && !crate::chatdoc::chat_chord(ed, key) {
         return false;
     }
     let page = page(ed);

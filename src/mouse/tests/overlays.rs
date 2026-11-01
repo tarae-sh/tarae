@@ -7,6 +7,7 @@ use super::{code_cell, editor, feed, frame, press, said};
 use crate::editor::Editor;
 use crate::event::{Mouse, MouseKind};
 use crate::uistate::Region;
+use crate::workspace::At;
 
 fn mouse(ed: &mut Editor, kind: MouseKind, x: usize, y: usize) {
     ed.handle_mouse(Mouse { kind, x: x as u16, y: y as u16, alt: false, ctrl: false });
@@ -236,6 +237,190 @@ fn a_press_on_the_note_card_replies_and_nothing_under_it_is_pressed() {
     mouse(&mut ed, MouseKind::Up, x + w / 2, y + h / 2);
     assert!(ed.prompt.is_some(), "the reply's line kept");
     assert!(said(&ed).starts_with("replying"), "said: {}", said(&ed));
+}
+
+/// What's in the chat's input through a road to a line: it stays whole.
+const DRAFT: &str = "half a message";
+
+fn draft(ed: &Editor) -> String {
+    ed.workspace.claude.chat.as_ref().map_or_else(String::new, |c| c.input.text().to_string())
+}
+
+/// The chat with the keys and a draft, a second session (the `+` on its line) and a note's card open beside it.
+fn over_the_chat(scratch: &crate::scratch::Scratch) -> Editor {
+    let mut ed = editor();
+    ed.workspace.root = scratch.path().to_path_buf();
+    let path = scratch.join("a.rs");
+    std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+    ed.docs[0].path.set(Some(path.clone()));
+    let other = scratch.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    ed.workspace_open(&other).unwrap();
+    assert!(ed.workspace_switch(crate::event::WorkspaceId::HOME).is_in());
+    let id = crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::Author, "A word about this line.");
+    crate::uistate::tests::chat(&mut ed, DRAFT);
+    crate::notes::open(&mut ed, id);
+    frame(&mut ed);
+    ed
+}
+
+fn by_plus(ed: &mut Editor) {
+    let spots = ed.screen.session_spots.borrow().clone();
+    let plus = spots.iter().find(|s| s.3 == crate::workspace::Spot::New).expect("the `+` drawn");
+    press(ed, plus.1, plus.0);
+}
+
+fn by_note_body(ed: &mut Editor) {
+    // (Claude at work: the reply waits for its turn's end, nothing to start)
+    ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Thinking;
+    let (x, y, w, h) = ed.screen.note_card.get().expect("the note card drawn");
+    press(ed, x + w / 2, y + h / 2);
+}
+
+fn item(label: &str, action: crate::picker::Action) -> crate::picker::Item {
+    crate::picker::Item { label: label.into(), action, hint: String::new(), glyph: None }
+}
+
+fn by_branch_rename(ed: &mut Editor) {
+    let branch = crate::picker::Action::Branch { name: "old".into(), held: None };
+    let picker = crate::picker::Picker::of("branches", "branches", vec![item("old", branch)], false);
+    ed.open_picker(picker, None);
+    frame(ed);
+    feed(ed, "<C-r>");
+}
+
+fn by_replace(ed: &mut Editor) {
+    let path = ed.docs[0].path.clone().expect("its file");
+    let hit = crate::picker::Action::Goto { path, line: 0, col: 0 };
+    let mut picker = crate::picker::Picker::of("search", "search", vec![item("a.rs:1: one", hit)], false);
+    picker.grep = Some("one".into());
+    ed.open_picker(picker, None);
+    frame(ed);
+    feed(ed, "<C-r>");
+}
+
+/// A way to a line over the chat: its name, what opens it, and what its `enter` came to, `x` typed on it.
+type Road = (&'static str, fn(&mut Editor), fn(&Editor) -> bool);
+
+/// #256: every road, a press or a key. What its `enter` came to is its own act's: never the chat's.
+const ROADS: &[Road] = &[
+    ("the sessions' `+`", by_plus, |ed| said(ed).contains("what x would take")),
+    ("the note card's body", by_note_body, |ed| {
+        let replied = |n: &crate::notes::Note| n.thread.last().is_some_and(|e| e.text == "x");
+        ed.workspace.claude.notes.list.iter().any(replied)
+    }),
+    ("the branches picker's rename", by_branch_rename, |ed| {
+        let lines = ed.prompt_history.of(crate::editor::PromptKind::Command);
+        lines.and_then(|l| l.back()).is_some_and(|l| l == "git-branch-rename old oldx")
+    }),
+    ("the search's replace", by_replace, |ed| ed.replace_targets.is_none()),
+];
+
+/// #256: a line over the chat has the keys, whichever road opened it — what you typed went into the chat's input, `enter`
+/// sent it. Typed on it, its `enter` is its own and neither `enter` nor `esc` touches the draft; closed, the keys are back
+/// in the chat and the message goes on being typed.
+#[test]
+fn every_road_to_a_line_over_the_chat_has_its_keys() {
+    for &(road, open, came) in ROADS {
+        for close in ["<esc>", "<ret>"] {
+            let scratch = crate::scratch::Scratch::new("mouse-overlays-roads");
+            let mut ed = over_the_chat(&scratch);
+            open(&mut ed);
+            frame(&mut ed);
+            assert_eq!(ed.keys_to().region, Region::Prompt, "{road}: the line has the keys");
+            let on = ed.prompt.as_ref().expect("its line open").text();
+            feed(&mut ed, "x");
+            let typed = ed.prompt.as_ref().expect("its line still open").text();
+            assert_eq!(typed, format!("{on}x"), "{road}: typed on the line");
+            assert_eq!(draft(&ed), DRAFT, "{road}: none of it in the chat's input");
+            feed(&mut ed, close);
+            frame(&mut ed);
+            assert!(ed.prompt.is_none(), "{road}: {close} closed it");
+            if close == "<ret>" {
+                assert!(came(&ed), "{road}: its enter was its own — said: {}", said(&ed));
+            }
+            assert_eq!(ed.keys_to().region, Region::Chat, "{road}: {close}, back in the chat");
+            assert_eq!(draft(&ed), DRAFT, "{road}: {close}, the draft whole");
+            feed(&mut ed, "!");
+            assert_eq!(draft(&ed), format!("{DRAFT}!"), "{road}: {close}, the message goes on");
+        }
+    }
+}
+
+/// The same over the minimized chat, which comes first with a key that would type.
+#[test]
+fn a_line_over_the_minimized_chat_has_its_keys() {
+    for close in ["<esc>", "<ret>"] {
+        let mut ed = editor();
+        crate::uistate::tests::chat_minimized(&mut ed);
+        ed.workspace.claude.chat.as_mut().unwrap().input.set(DRAFT);
+        ed.open_prompt(crate::editor::PromptKind::Command, "");
+        frame(&mut ed);
+        assert_eq!(ed.keys_to().region, Region::Prompt);
+        feed(&mut ed, "x");
+        assert_eq!(ed.prompt.as_ref().map(|p| p.text()).as_deref(), Some("x"), "typed on the line");
+        assert_eq!(draft(&ed), DRAFT, "none of it in the chat's input");
+        feed(&mut ed, close);
+        frame(&mut ed);
+        assert_eq!(ed.keys_to().region, Region::Unfold, "{close}, back in the minimized chat");
+        assert_eq!(draft(&ed), DRAFT, "{close}, the draft whole");
+    }
+}
+
+/// A chat that fills the screen keeps it under every line and after it (`C-w z` ends once it hasn't the keys): the note
+/// card's isn't there to press.
+#[test]
+fn a_zoomed_chat_stays_zoomed_under_a_line() {
+    for &(road, open, _) in ROADS.iter().filter(|r| r.0 != "the note card's body") {
+        let scratch = crate::scratch::Scratch::new("mouse-overlays-zoomed");
+        let mut ed = over_the_chat(&scratch);
+        ed.zoom_toggle();
+        frame(&mut ed);
+        assert!(ed.zoomed().is_some(), "{road}: the chat fills the screen");
+        open(&mut ed);
+        frame(&mut ed);
+        assert!(ed.prompt.is_some(), "{road}: its line open");
+        assert!(ed.zoomed().is_some(), "{road}: the line up, the chat still zoomed");
+        feed(&mut ed, "<esc>");
+        frame(&mut ed);
+        assert!(ed.zoomed().is_some(), "{road}: closed, the chat still zoomed");
+    }
+}
+
+/// `+` pressed from the chat's view mode: the keys the line's (it isn't the view's own), then back in the view mode.
+#[test]
+fn a_line_over_the_chats_view_mode_comes_back_to_it() {
+    let scratch = crate::scratch::Scratch::new("mouse-overlays-view");
+    let mut ed = over_the_chat(&scratch);
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "An answer, in a few words.", ""));
+    frame(&mut ed);
+    feed(&mut ed, "<esc>");
+    frame(&mut ed);
+    assert!(crate::chatdoc::keyed(&ed), "in the chat's view mode");
+    by_plus(&mut ed);
+    frame(&mut ed);
+    assert_eq!(ed.keys_to().region, Region::Prompt);
+    feed(&mut ed, "x");
+    assert_eq!(ed.prompt.as_ref().map(|p| p.text()).as_deref(), Some("x"), "typed on the line");
+    assert_eq!(draft(&ed), DRAFT);
+    feed(&mut ed, "<esc>");
+    frame(&mut ed);
+    assert!(crate::chatdoc::keyed(&ed), "back in its view mode");
+}
+
+/// A press on the line of the chat's view mode (`/`) leaves it the chat's: the search is the transcript's.
+#[test]
+fn a_press_on_the_chats_own_line_leaves_it_the_chats() {
+    let mut ed = editor();
+    crate::uistate::tests::chat_view(&mut ed);
+    feed(&mut ed, "/");
+    frame(&mut ed);
+    assert_eq!(ed.keys_to().region, Region::Prompt);
+    let line = ed.screen.prompt_input.get().expect("its line drawn");
+    press(&mut ed, line.x, line.y);
+    assert!(ed.workspace.is_at(At::Chat), "under it the chat still");
+    assert!(crate::chatdoc::keyed(&ed), "its view mode with it");
 }
 
 /// A card says `:note-close` and `space n` only where they act on it, the frame's buttons being those keys: on another

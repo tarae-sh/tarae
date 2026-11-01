@@ -286,7 +286,7 @@ pub(crate) fn chat(ed: &mut Editor, draft: &str) {
 }
 
 /// Minimized while Claude works (follow on): the panel is a small card, its input not on screen.
-fn chat_minimized(ed: &mut Editor) {
+pub(crate) fn chat_minimized(ed: &mut Editor) {
     chat(ed, "");
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.state = crate::chat::State::Thinking;
@@ -378,9 +378,17 @@ pub(crate) const SCENES: &[Scene] = &[
         let c = ed.workspace.claude.chat.as_mut().unwrap();
         c.input.set("half a thought");
     }),
+    // (the user, 2026-11-02, #256: a line open over the chat has the keys however it opened, a key or a press — `chat::key`
+    // and `chat::unfold_key` give way, `keys_to()` says so, and under it the chat stays where the keys go back to)
     ("the chat, a prompt opened over it", |ed| {
         chat(ed, "hello");
         ed.open_prompt(crate::editor::PromptKind::Command, "");
+        assert_eq!(ed.keys_region(), Region::Prompt, "the line has the keys");
+    }),
+    ("the chat minimized, a prompt opened over it", |ed| {
+        chat_minimized(ed);
+        ed.open_prompt(crate::editor::PromptKind::Command, "");
+        assert_eq!(ed.keys_region(), Region::Prompt, "the line has the keys");
     }),
     ("a light card", light_card),
     // (orchestra: Claude's set of sessions — waiting as it came, focused, and behind a card of yours)

@@ -29,6 +29,14 @@ fn long_text(ed: &mut Editor) {
         ropey::Rope::from_str(&(0..60).map(|i| format!("let line_{i} = {i};\n")).collect::<String>());
 }
 
+fn note_card(ed: &mut Editor) {
+    long_text(ed);
+    let path = std::env::temp_dir().join("tarae-mouse-walk-note.rs");
+    ed.docs[0].path.set(Some(path.clone()));
+    let id = crate::notes::add(ed, &path, 0..1, crate::notes::By::Author, "A word about this line.");
+    crate::notes::open(ed, id);
+}
+
 /// The mouse's own scenes (§3), beside the routing test's: what only the mouse meets.
 const MOUSE_SCENES: &[Scene] = &[
     ("a split side by side", |ed| {
@@ -193,12 +201,10 @@ const MOUSE_SCENES: &[Scene] = &[
         c.selected = Some(0);
         ed.completion = Some(c);
     }),
-    ("a note's card open under its line", |ed| {
-        long_text(ed);
-        let path = std::env::temp_dir().join("tarae-mouse-walk-note.rs");
-        ed.docs[0].path.set(Some(path.clone()));
-        let id = crate::notes::add(ed, &path, 0..1, crate::notes::By::Author, "A word about this line.");
-        crate::notes::open(ed, id);
+    ("a note's card open under its line", note_card),
+    ("a note's card open, the chat holding the keys", |ed| {
+        chat(ed, "");
+        note_card(ed);
     }),
     ("a card cut to fit, long", |ed| {
         let body: Vec<String> = (0..80).map(|i| format!("line {i} of what it asks")).collect();
@@ -282,8 +288,7 @@ const MOUSE_SCENES: &[Scene] = &[
         ed.plugin_overlay("demo", Some(Overlay { rows, hold: Some(600_000) }));
     }),
     // (focus E1: the turn's map — a file row's marks and the code's signs, each a button: its ground lightens, a press
-    // is its stop. Last: a scene's place picks the cells it's walked at, `sample`'s `n`, so one put among the others
-    // moves theirs)
+    // is its stop)
     ("the turn's map", |ed| {
         long_text(ed);
         let root = std::env::temp_dir();
@@ -455,12 +460,14 @@ struct Snap {
     /// The word lit alone (`Editor.word_hover`) — what a card's answer shows under the mouse (#200; a peek's cut title
     /// whole on its card is drawn, not an act).
     word: String,
+    /// An answer still awaited (a draft, `space i`): what tells a press that stopped it, in a frame that moves by itself.
+    waiting: bool,
 }
 
 impl PartialEq for Snap {
     fn eq(&self, o: &Snap) -> bool {
-        (&self.frame, &self.keys, &self.sel, &self.lit, self.said)
-            == (&o.frame, &o.keys, &o.sel, &o.lit, o.said)
+        (&self.frame, &self.keys, &self.sel, &self.lit, self.said, self.waiting)
+            == (&o.frame, &o.keys, &o.sel, &o.lit, o.said, o.waiting)
     }
 }
 
@@ -475,6 +482,9 @@ fn changed(a: &Snap, b: &Snap) -> String {
     }
     if a.lit != b.lit {
         out.push(format!("lit {} → {}", a.lit, b.lit));
+    }
+    if a.waiting != b.waiting {
+        out.push(format!("an answer awaited {} → {}", a.waiting, b.waiting));
     }
     let rows = a.text.lines().zip(b.text.lines()).enumerate().filter(|(_, (x, y))| x != y);
     for (i, (x, y)) in rows.take(2) {
@@ -510,6 +520,8 @@ fn snap(ed: &mut Editor) -> Snap {
             sel += &format!(" {on:?} {:?}", d.selection());
         }
     }
+    // (and the note card's words a drag holds: a ground only, as the edit review's)
+    sel += &format!(" {:?}", crate::term::note_marked_text(ed));
     let frame = ed.last_frame.as_ref().unwrap().0.clone();
     let text = crate::screen::text(&frame, W as u16, H as u16).unwrap_or_default();
     // (the stand-in for a state that changes by itself, `DRIFT`: landing after this snap's frames, as a thread's write
@@ -524,7 +536,8 @@ fn snap(ed: &mut Editor) -> Snap {
     let strip = ed.workspace.claude.chat.as_ref().and_then(|c| c.follow.hover.clone());
     let over = format!("{:?} {:?} {:?} {strip:?}", ed.word_hover.get(), ed.presence.hover, ed.cut_hover);
     let word = format!("{:?}", ed.word_hover.get());
-    Snap { frame, text, keys, sel, lit: format!("{:?}", ed.border_lit()), said: ed.said, over, word }
+    let waiting = ed.workspace.claude.review.as_ref().is_some_and(|r| !r.ready);
+    Snap { frame, text, keys, sel, lit: format!("{:?}", ed.border_lit()), said: ed.said, over, word, waiting }
 }
 
 /// A snap where an act is judged, and whether the frame then holds still: a second snap with no event between. A frame
@@ -576,7 +589,7 @@ fn colourless(frame: &[u8]) -> Vec<u8> {
 /// What an act did between two snaps. A hover acts where it moves the keys or a selection, or on a word, where it shows
 /// what that word is (lit, its tag, its card, its words — `Snap.over`; tests draw no colours) — what else it shows is
 /// drawn, not an act (a cut row whole; a line that drags, lit: `Did.drawn`); in a scene whose frame moves by itself (a
-/// draft being written), neither is the frame.
+/// draft being written), neither is the frame: there an answer stopped is what's seen.
 fn did(a: &Snap, b: &Snap, act: Act, u: Under) -> Did {
     let word = act == Act::Hover
         && match u.part {
@@ -584,7 +597,7 @@ fn did(a: &Snap, b: &Snap, act: Act, u: Under) -> Did {
             Part::Answer(_) => a.word != b.word,
             _ => false,
         };
-    let moved = a.keys != b.keys || a.sel != b.sel || word;
+    let moved = a.keys != b.keys || a.sel != b.sel || a.waiting != b.waiting || word;
     let drawn = !MOVING.get() && (a.frame != b.frame || a.lit != b.lit);
     Did {
         acted: moved || (drawn && act != Act::Hover),
@@ -636,7 +649,8 @@ fn holds(ed: &Editor, u: Under) -> bool {
         Surface::Card => matches!(r, R::Card(_)),
         Surface::EditReview => r == R::EditReview,
         Surface::Picker | Surface::PickerPreview => r == R::Picker,
-        Surface::Prompt => r == R::Prompt,
+        // (the note card's body gives them to its reply's line as it opens it)
+        Surface::Prompt | Surface::NoteCard => r == R::Prompt,
         Surface::Output(_) | Surface::List(_) | Surface::Plugin => {
             matches!(r, R::Output(_) | R::Slot(_) | R::List(_))
         }
@@ -727,6 +741,8 @@ fn drag_to(ed: &Editor, u: Under, x: usize, y: usize) -> (usize, usize) {
 fn part_kind(p: Part) -> String {
     let head = |d: String| d.split(['(', ' ', '{']).next().unwrap_or_default().to_string();
     match p {
+        // (each its own: `+` opens a line, a name switches, `+N` lists — one standing for the others hid `+`, #256)
+        Part::Word(crate::mouse::Word::Session(s)) => format!("Word(Session {})", head(format!("{s:?}"))),
         Part::Word(w) => format!("Word({})", head(format!("{w:?}"))),
         Part::Frame(g) => format!("Frame({})", head(format!("{g:?}"))),
         _ => head(format!("{p:?}")),
@@ -800,9 +816,10 @@ struct Walk {
     cuts: Vec<String>,
     /// The scenes where a chip over the chat's input was met (`cuts_in`).
     chips: Vec<String>,
-    /// `scene · surface/part at x,y: the keys …` where a press `gives_keys` left them elsewhere (#207).
+    /// `scene · surface/part at x,y: the keys …` where a press `gives_keys` left them elsewhere (#207), or opened a line
+    /// without them (#256).
     keys: Vec<String>,
-    /// `surface/part` of every press `gives_keys` judged.
+    /// `surface/part` of every press `gives_keys` judged, and of every press that opened a line.
     given: Vec<String>,
     events: usize,
 }
@@ -959,31 +976,14 @@ fn before(ed: &Editor, u: Under, (x, y): (usize, usize)) -> Before {
     }
 }
 
-fn walk_scene(walk: &mut Walk, n: usize, (scene, setup): Scene) {
+fn walk_scene(walk: &mut Walk, (scene, setup): Scene) {
     // (one instant for the whole scene: a double is two presses at it, an age drawn never moves between two frames)
     crate::clock::hold();
-    walk_held(walk, n, scene, setup);
+    walk_held(walk, scene, setup);
     crate::clock::release();
 }
 
-/// One part of each surface (§3's cost: the whole walk took 38 s) — the `n`th scene its `n`th part, round, so every part
-/// is met across the scenes.
-fn sample(targets: Vec<Target>, n: usize) -> Vec<Target> {
-    let mut surfaces: Vec<Surface> = Vec::new();
-    for t in &targets {
-        if !surfaces.contains(&t.1.surface) {
-            surfaces.push(t.1.surface);
-        }
-    }
-    let of = |s: Surface| targets.iter().filter(move |t| t.1.surface == s).copied().collect::<Vec<_>>();
-    let mut out: Vec<Target> = surfaces.into_iter().map(|s| of(s)[n % of(s).len()]).collect();
-    // (and a chip over the chat's input wherever one is drawn: only its own scenes have one — #185)
-    let chip = |t: &&Target| matches!(t.1.part, Part::Word(crate::mouse::Word::With(_)));
-    out.extend(targets.iter().filter(chip).filter(|t| !out.contains(t)).copied().collect::<Vec<_>>());
-    out
-}
-
-fn walk_held(walk: &mut Walk, n: usize, scene: &str, setup: fn(&mut Editor)) {
+fn walk_held(walk: &mut Walk, scene: &str, setup: fn(&mut Editor)) {
     SCENE_UNDER_WAY.set(UNDER_WAY.contains(&scene));
     let mut ed = fresh(setup);
     // (a scene whose frame moves by itself: what arrives on the stand-in Claude's stream, a draft revealed as it comes)
@@ -995,7 +995,7 @@ fn walk_held(walk: &mut Walk, n: usize, scene: &str, setup: fn(&mut Editor)) {
     }
     cuts_in(walk, &ed, &text, scene, setup);
     keys_given(walk, scene, setup, &targets);
-    for &((x, y), u) in &sample(targets, n) {
+    for &((x, y), u) in &targets {
         let found = format!("{:?}", u.surface);
         let found = found.split('(').next().unwrap_or_default().to_string();
         if !walk.found.contains(&found) {
@@ -1008,11 +1008,20 @@ fn walk_held(walk: &mut Walk, n: usize, scene: &str, setup: fn(&mut Editor)) {
         let front = |ed: &Editor| ed.offers.first().map(|o| o.id);
         let card = front(&ed);
         let word = word_at(&ed, u);
+        let line = ed.prompt.is_some();
         send(&mut ed, K::Down, x, y, scene, walk);
         let (s1, still1) = after(walk, &mut ed, scene, u, "after the press");
         let b1 = Before { holds: holds(&ed, u), ..Before::default() };
         send(&mut ed, K::Up, x, y, scene, walk);
         let (s2, still2) = after(walk, &mut ed, scene, u, "after the release");
+        // (what your own press opened is focused at once: a line it opened has the keys — the sessions' `+`, #256)
+        if !line && ed.prompt.is_some() && ed.keys_region() != crate::uistate::Region::Prompt {
+            let region = ed.keys_region();
+            walk.keys.push(format!("{scene} · {} at {x},{y}: its line opened, the keys {region:?}", name(u)));
+        }
+        if !line && ed.prompt.is_some() && !walk.given.contains(&name(u)) {
+            walk.given.push(name(u));
+        }
         // (the double is on what the press there is now — the first may have moved the screen, or answered a card and
         // brought the next one under the pointer: another card's press. Where the first press made what was under it go
         // — a start-screen row's picker, a completion accepted, which-key's next level — the second press lands on
@@ -1067,6 +1076,8 @@ fn gives_keys(u: Under) -> bool {
     match u.surface {
         Surface::Rail => matches!(u.part, Part::Row(_) | Part::Mark(_) | Part::Blank),
         Surface::Code(_) => matches!(u.part, Part::Text { .. }),
+        Surface::NoteCard => u.part == Part::Blank,
+        Surface::Prompt => u.part != Part::Outside,
         _ => false,
     }
 }
@@ -1192,13 +1203,14 @@ fn wheel_at(
     }
 }
 
-/// The walk, once for the tests that read it.
+/// The walk, once for the tests that read it: every target of every scene (#255: a sample of them hid a row of the table
+/// that was false), about a minute alone on this Mac against the sample's 43 s, shared so that it's paid once a run.
 fn walk() -> &'static Walk {
     static WALK: OnceLock<Walk> = OnceLock::new();
     WALK.get_or_init(|| {
         let mut walk = Walk::default();
-        for (n, &scene) in SCENES.iter().chain(MOUSE_SCENES).enumerate() {
-            walk_scene(&mut walk, n, scene);
+        for &scene in SCENES.iter().chain(MOUSE_SCENES) {
+            walk_scene(&mut walk, scene);
         }
         walk
     })
@@ -1222,7 +1234,8 @@ fn mouse_at_is_where_handle_mouse_sends_every_press() {
 }
 
 /// A press gives the keys to the surface it lands on (the mouse rule), wherever `gives_keys` says it does, in every scene
-/// — #207: a press on the review rail's file row or mark, the code reading a file, left the keys in the code.
+/// — #207: a press on the review rail's file row or mark, the code reading a file, left the keys in the code; #256: a
+/// press on the note card's body, the chat holding them, left its reply's line without them.
 #[test]
 fn a_press_gives_its_surface_the_keys() {
     if !pty("a_press_gives_its_surface_the_keys") {
@@ -1230,7 +1243,17 @@ fn a_press_gives_its_surface_the_keys() {
     }
     let w = walk();
     // (each part met somewhere — a scene that lost it doesn't pass by not looking)
-    for part in ["Rail/Row", "Rail/Mark", "Rail/Blank"] {
+    let parts = [
+        "Rail/Row",
+        "Rail/Mark",
+        "Rail/Blank",
+        "NoteCard/Blank",
+        "Prompt/Text",
+        "Prompt/Row",
+        "Prompt/Blank",
+        "Chat/Word(Session New)",
+    ];
+    for part in parts {
         assert!(w.given.iter().any(|g| g == part), "no press on {part} judged: {:?}", w.given);
     }
     assert!(w.keys.is_empty(), "{}:\n{}", w.keys.len(), w.keys.join("\n"));
@@ -1249,7 +1272,8 @@ fn every_drawn_cell_is_under_something() {
 
 /// The walk: every act on everything under the pointer does what the table says — a press, a drag or a wheel that
 /// does nothing says why where the user looks; nothing at all only for a hover, a release, a wheel with nothing to
-/// scroll, a double whose press did it all, and the gaps a landing fills (`Expect::Gap`, silent until it does).
+/// scroll, a double whose press did it all, a press held for its release (the note card's body) and the gaps a landing
+/// fills (`Expect::Gap`, silent until it does).
 #[test]
 fn no_press_is_lost_in_silence() {
     if !pty("no_press_is_lost_in_silence") {
@@ -1503,7 +1527,7 @@ fn a_frame_that_moves_between_two_looks_is_named_not_blamed_on_an_act() {
         DRIFT.set(snaps);
         UNGUARDED.set(unguarded);
         let mut walk = Walk::default();
-        walk_scene(&mut walk, 0, scene);
+        walk_scene(&mut walk, scene);
         DRIFT.set(0);
         UNGUARDED.set(false);
         walk
@@ -1629,7 +1653,7 @@ fn short(u: Under) -> String {
 /// hint shown is a button; under the pointer a button's ground lightens (its text's colour stays: #197's, judged once it
 /// lands), a reveal's card shows, text and none change nothing, a handle lights; a press on a button acts, on a reveal
 /// doesn't, on text puts the cursor — the pointer's only where the frame holds still.
-fn kinds_scene(scene: &str, setup: fn(&mut Editor), n: usize) -> (Vec<(String, String)>, Vec<&'static str>) {
+fn kinds_scene(scene: &str, setup: fn(&mut Editor)) -> (Vec<(String, String)>, Vec<&'static str>) {
     use crate::kinds::Kind;
     let mut ed = fresh(setup);
     let (rows, base) = painted(&mut ed);
@@ -1727,9 +1751,9 @@ fn kinds_scene(scene: &str, setup: fn(&mut Editor), n: usize) -> (Vec<(String, S
             gap(format!("hover {}", short(u)), format!("{} at {x},{y} ({}): {what}", short(u), kind.word()));
         }
     }
-    // A press, on one of each surface's (the walk's sample)
+    // A press, on each
     let mut walk = Walk::default();
-    for ((x, y), u) in sample(targets, n) {
+    for ((x, y), u) in targets {
         let kind = ed.kind_at(x, y);
         let mut ed = fresh(setup);
         let s0 = snap(&mut ed);
@@ -1759,9 +1783,9 @@ fn kinds_scene(scene: &str, setup: fn(&mut Editor), n: usize) -> (Vec<(String, S
 /// The kinds walk over every scene (the walk's, 120×40): what reacts against its kind, by name, and the kinds met.
 fn kinds_walk() -> (Vec<(String, String)>, Vec<&'static str>) {
     let (mut gaps, mut met): (Vec<(String, String)>, Vec<&'static str>) = (Vec::new(), Vec::new());
-    for (n, &(scene, setup)) in SCENES.iter().chain(MOUSE_SCENES).enumerate() {
+    for &(scene, setup) in SCENES.iter().chain(MOUSE_SCENES) {
         crate::clock::hold();
-        let (g, m) = kinds_scene(scene, setup, n);
+        let (g, m) = kinds_scene(scene, setup);
         crate::clock::release();
         gaps.extend(g.into_iter().filter(|g| !gaps.iter().any(|h| h.0 == g.0)).collect::<Vec<_>>());
         met.extend(m.into_iter().filter(|k| !met.contains(k)).collect::<Vec<_>>());
@@ -1791,6 +1815,27 @@ fn every_element_reacts_as_its_kind() {
     }
 }
 
+/// #197a in a pane drawn faded: a word on the note card's bottom line is drawn as the frame's line is, unfaded, and lit
+/// it stays that colour, only its ground lightening.
+#[test]
+fn a_word_on_the_note_cards_line_lights_as_its_drawn() {
+    let mut ed = fresh(|ed| {
+        chat(ed, "");
+        note_card(ed);
+    });
+    let (_, base) = painted(&mut ed);
+    assert_eq!(ed.keys_region(), crate::uistate::Region::Chat, "the code faded");
+    let spots = ed.screen.word_spots.borrow().clone();
+    let spot = spots.iter().find(|s| s.on == Surface::NoteCard).expect("a word on the card's line");
+    ed.handle_event(Event::Hover(spot.from as u16, spot.y as u16));
+    let (_, over) = painted(&mut ed);
+    for x in spot.from..spot.to {
+        let (was, now) = (base[spot.y * W + x], over[spot.y * W + x]);
+        assert_eq!(was.0, now.0, "its text at {x}: the colour it's drawn in");
+        assert_ne!(was.1, now.1, "its ground at {x} lightens");
+    }
+}
+
 /// The kinds walk sees what it's for, broken once: every key hint drawn with no button (`wordspot::UNBUTTONED`) — the
 /// chat's `esc code`, a slot's `C-w j scroll` — is a hint the walk names, none of them on `KIND_GAPS`.
 #[test]
@@ -1801,9 +1846,9 @@ fn the_kinds_walk_sees_a_hint_drawn_with_no_button() {
     let scene = |name: &str| *SCENES.iter().chain(MOUSE_SCENES).find(|s| s.0 == name).expect("the scene");
     let (name, setup) = scene("the chat, empty");
     crate::clock::hold();
-    let whole = kinds_scene(name, setup, 0).0;
+    let whole = kinds_scene(name, setup).0;
     crate::wordspot::UNBUTTONED.set(true);
-    let broken = kinds_scene(name, setup, 0);
+    let broken = kinds_scene(name, setup);
     crate::wordspot::UNBUTTONED.set(false);
     crate::clock::release();
     let hint = |g: &(String, String)| g.0.starts_with("hint ") && !KIND_GAPS.contains(&g.0.as_str());
