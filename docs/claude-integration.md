@@ -752,6 +752,29 @@ of that stop and its mark on the card's strip take the accent too. Stepping past
 follows Claude again. A click on a tool's row in the chat, or `C-]` there, goes to that call's stop. The last
 eight turns of the chat are kept. The chat's last row says `[r ]r replay its 7 stops`.
 
+**The turn as a map.** The same stops, on the code's own structure: what the last turn touched, kept until the next
+turn starts, with one session as with several (the front session's turn; the others stay as presence shows them).
+The side panel's file rows say each file's roles, the heaviest first — `▲` failed · `●` changed · `▸` run over · `•`
+searched · `◦` read, with a count when it was read more than once (`● ▸ ◦ 2`), the same marks as the chat's rows and
+the follow card's strip — in the files tab and the git tab; a narrow row says the strongest, its name giving way. A
+folded folder says its strongest and how many of its files the turn touched (`● 3/12`). The outline marks the
+definitions whose own lines were touched, a read of a method marking the method, not the `impl` around it, wherever the
+outline has rows. The sign column carries a faint mark on the lines, under every other sign. The panel's top line names
+the turn where there's room beside its tabs (`turn 14`, what you asked whole under the mouse) and how many stops were
+outside the project (`· 2 outside`, never marked); the row in hand says its roles in words at the panel's foot.
+
+`▸` is a claim, so it has one rule: a `run_tests` that passed, after the last change to that file, whose target holds a
+change there — the file's tests, or the test or group at the line asked. A plain `run` never marks it, whatever it
+prints: tarae can't know what a command exercised. A `run_tests` of another file doesn't either. `▲` claims less — a
+test failed there — and stands until that run passes or the file is changed.
+
+Each mark is a button: a press is that stop, as `]r` steps to it, and pressed again the next stop of that role. `[r` into
+an older turn shows that turn's map, the stop in hand lit in the accent on the tree and on the lines. Closing the chat
+keeps the map, as its answers stay at the code: a press and `]r` still go to the places, and the next turn clears it. A buffer you
+changed keeps its file row and loses its signs in every turn before your edit, `[r` into one too: the stops don't follow
+your edits, and a mark on the wrong line reads worse than none. A file you change during a turn stays without signs until
+the next one. None of this goes to Claude.
+
 It follows what Claude talks about, too, not only what it reads. While it thinks, every `path:line` or
 `path:start-end` it mentions shows at once, and a `name` in backticks goes to that definition in a file open here.
 When it explains how something works, Claude writes a walk-through into its answer: a

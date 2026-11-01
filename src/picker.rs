@@ -142,6 +142,8 @@ pub struct Paint {
     pub hint: Vec<(std::ops::Range<usize>, &'static str)>,
     /// Those of the hint's ranges drawn bold too (a session's initial in the side panel — `presence::file_hint`).
     pub bold: Vec<std::ops::Range<usize>>,
+    /// Those of the hint's ranges that are buttons: the turn's map's marks, each its stop (`turnmap::hint`).
+    pub presses: Vec<(std::ops::Range<usize>, (usize, usize))>,
 }
 
 /// One visible line.

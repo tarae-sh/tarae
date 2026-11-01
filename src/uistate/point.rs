@@ -102,6 +102,10 @@ impl Editor {
             let at = if i % 2 == 0 { (*x, y.saturating_sub(1)) } else { (*x, y + 1) };
             out.push(Target { id: super::panels::stop_id(call), x: *x, y: *y, w: 1, at });
         }
+        // (the turn's map: a mark a cell, its label above it)
+        for (y, x, id, ..) in s.map_marks.borrow().iter() {
+            out.push(Target { id: id.clone(), x: *x, y: *y, w: 1, at: (*x, y.saturating_sub(1)) });
+        }
         crate::sorting::by_key(&mut out, |t| (t.at.1, t.at.0));
         out.dedup_by(|a, b| a.id == b.id);
         out.truncate(ALPHABET.len() * ALPHABET.len());

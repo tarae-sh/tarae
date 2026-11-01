@@ -394,7 +394,13 @@ pub fn pointed_said(ed: &Editor, id: &str) -> String {
         let m = crate::follow::strip(c).into_iter().find(|m| m.call == call)?;
         Some(format!("{id} · {:?} — a mark of your stops on the follow card", m.said))
     });
-    own.or(row).or(slot).or(stop).unwrap_or_else(|| ed.ui_gone_said(id))
+    // (a mark of the turn's map: what your last turn did there, in the words of the row in hand)
+    let map = id.strip_prefix("map:").and_then(|_| {
+        let marks = ed.screen.map_marks.borrow();
+        let m = marks.iter().find(|m| m.2 == id)?;
+        Some(format!("{id} · {:?} — a mark of your last turn, on the code", m.3))
+    });
+    own.or(row).or(slot).or(stop).or(map).unwrap_or_else(|| ed.ui_gone_said(id))
 }
 
 // ── Ids in text ──────────────────────────────────────────────────────────

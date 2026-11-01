@@ -378,6 +378,17 @@ impl Look {
         }
     }
 
+    /// A test run whose verdict says it passed (`tools::verdict`'s `12 passed`, `passed`).
+    pub fn passed(&self) -> bool {
+        self.verb == "test" && self.range.ends_with("passed")
+    }
+
+    /// A run that says how its code went: it passed, it failed, a command ended `ok` — not one under way, never started
+    /// or with no test in it (`tools::verdict`'s `not run`, `no tests ran`).
+    pub fn ended(&self) -> bool {
+        self.failed() || self.passed() || (self.verb == "run" && self.range == "ok")
+    }
+
     /// Its mark (`Mark`): by its kind, a failure over a run's.
     pub fn mark(&self) -> Mark {
         match self.verb {
@@ -1424,6 +1435,10 @@ fn made(ed: &mut Editor) {
     crate::chatnotes::kept_sync(ed);
     crate::notes::forget_answers(ed);
     let mut c = Chat::new();
+    // (the stops the closed chat left: the turn's map stays until the next turn starts)
+    if let Some(left) = ed.workspace.claude.stops_left.take() {
+        c.follow.replay = left;
+    }
     // (`space F`'s mark taken whatever the setting says: once, never left for a chat opened later)
     let armed = std::mem::take(&mut ed.workspace.claude.follow_armed);
     c.follow.on = ed.config.llm.follow || armed;
@@ -1776,6 +1791,11 @@ pub fn close(ed: &mut Editor) {
         .as_ref()
         .map_or(0, |c| c.msgs.iter().filter(|m| m.role == Role::User).count());
     ed.workspace.claude.notes.left = kept(ed).map(|k| (Box::new(k.2), users));
+    // (as its stops stay for the turn's map, until the next turn starts — `turnmap.rs`)
+    let session = &mut ed.workspace.claude;
+    if let Some(c) = session.chat.as_mut() {
+        session.stops_left = Some(std::mem::take(&mut c.follow.replay));
+    }
     ed.workspace.claude.chat = None;
     crate::recovery::moved(&mut ed.recovery);
     // (what its answers let through goes with it at once — `:granted` and the chat's count too)
@@ -3380,6 +3400,8 @@ fn submit_as(
         c.note(&row);
     }
     c.msgs.push(msg);
+    let n = c.msgs.iter().filter(|m| m.role == Role::User).count();
+    c.follow.replay.asked(n, question);
     c.scroll = 0;
     c.state = State::Thinking;
     c.started = crate::clock::now();
@@ -3776,7 +3798,7 @@ fn on_screen(ed: &Editor) -> Vec<(DocId, Range<usize>)> {
 // ── Links ─────────────────────────────────────────────────────────────────
 
 /// A tool call → its row (paths from `root`).
-fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
+pub(crate) fn look(root: &Path, name: &str, input: &serde_json::Value) -> Look {
     let s = |k: &str| input[k].as_str().unwrap_or_default().to_string();
     let n = |k: &str| input[k].as_u64().map(|v| v as usize);
     let shown = |p: &Path| shown(root, p);

@@ -448,6 +448,9 @@ pub enum Drag {
 pub type MousePress =
     ((Drag, crate::document::DocId, crate::split::PaneId, usize), std::time::Instant, usize);
 
+/// A mark of the turn's map as drawn (`Screen.map_marks`): row, column, id, what it says, whether it's the stop in hand.
+pub type MapMark = (usize, usize, String, String, bool);
+
 /// A list as drawn (`Screen.lists`): its first row's screen row, the rows it has, the first of its rows in sight.
 pub type ListDrawn = (usize, usize, usize);
 
@@ -687,6 +690,9 @@ pub struct Screen {
     /// The follow card's strip as drawn (motion §4): each mark's (row, column, its stop's call) — a hover names it, a
     /// press replays it, the state lists it (`stop:<call>`) and pointing labels it.
     pub stop_marks: std::cell::RefCell<Vec<(usize, usize, String)>>,
+    /// The turn's map's marks as drawn (`turnmap.rs`): each one's (row, column, id, what it says, whether it's the stop
+    /// in hand) — the state lists them (`map:src/a.rs:●`) and pointing labels them; a press is its `word_spots`' own.
+    pub map_marks: std::cell::RefCell<Vec<MapMark>>,
     /// The prompt's card (x, y, width, height) — a click on it is its own, not the code's under it — and its
     /// completions' rows as drawn: (screen row, candidate) — a press on one picks it.
     pub prompt_card: std::cell::Cell<Option<(usize, usize, usize, usize)>>,
@@ -810,6 +816,8 @@ pub struct Editor {
     pub(crate) next_workspace: crate::event::WorkspaceId,
     /// Where every session is reading and writing, and what draws it in other checkouts (`presence.rs`).
     pub presence: crate::presence::State,
+    /// The turn as a map: what the last turn touched, by role (`turnmap.rs`).
+    pub turnmap: crate::turnmap::State,
     /// The cut row the mouse is over — drawn whole while it stays there (`whole.rs`).
     pub cut_hover: Option<crate::whole::Cut>,
     /// A press that landed on a cut text's card, until its release: its drags and release are that row's too
@@ -1356,6 +1364,7 @@ impl Editor {
             workspaces: Vec::new(),
             next_workspace: crate::event::WorkspaceId::HOME,
             presence: Default::default(),
+            turnmap: Default::default(),
             cut_hover: None,
             cut_press: None,
             word_hover: Default::default(),
@@ -2956,6 +2965,8 @@ impl Editor {
         crate::writing::reveal(self);
         crate::follow::watch(self);
         crate::presence::sync(self);
+        crate::turnmap::sync(self);
+        self.sidebar_map();
         crate::overlap::sync(self);
         crate::keepclose::sync(self);
         crate::orchestra::wakes_sync(self);
@@ -7545,6 +7556,70 @@ mod tests {
         ed.doc().text.byte_to_line(ed.doc().selection().primary().cursor(&ed.doc().text))
     }
 
+    /// The turn's map from claude's stream, the whole way (focus E1): an edit, then `run_tests` of its file — the report as
+    /// claude hands it back, through `tools::verdict`, the row and `follow::on_result` — ends in `● ▸`; one that failed
+    /// says `▲`; a read refused on its card (`is_error`) claims nothing, and a batched read's row words stay its first's.
+    #[test]
+    fn the_stream_carries_a_run_tests_to_run_over() {
+        use serde_json::json;
+        let s = crate::scratch::Scratch::new("stream-run-over");
+        let dir = std::fs::canonicalize(&*s).unwrap();
+        let lines: String = (1..=8).map(|i| format!("line {i}\n")).collect();
+        for f in ["edit.rs", "lib.rs", "main.rs", "kept.rs"] {
+            std::fs::write(dir.join(f), &lines).unwrap();
+        }
+        let tool = |id: &str, name: &str, input: serde_json::Value| json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": id, "name": name, "input": input}]}});
+        let result = |id: &str, text: &str| json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": text}]}});
+        let refused = |id: &str| json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id, "is_error": true, "content": "the user said no"}]}});
+        let edit = json!({"edits": [{"file_path": dir.join("edit.rs"), "old_string": "line 3\n", "new_string": "three\n"}]});
+        let steps = vec![
+            tool("r1", "mcp__tarae__read", json!({"files": ["main.rs:1-2", "main.rs:5-6"]})),
+            result("r1", "== main.rs:1-2\n1: line 1\n2: line 2\n== main.rs:5-6\n5: line 5\n6: line 6\n"),
+            tool("r2", "mcp__tarae__read", json!({"files": ["kept.rs:1-2", "kept.rs:4-5"]})),
+            refused("r2"),
+            tool("e0", "mcp__tarae__edit", edit.clone()),
+            json!({"type": "control_request", "request_id": "q0", "request": {"subtype": "mcp_message",
+                "server_name": "tarae", "message": {"jsonrpc": "2.0", "id": 0, "method": "tools/call",
+                "params": {"name": "edit", "arguments": edit}}}}),
+            json!("while read -r l; do case \"$l\" in *'\"request_id\":\"q0\"'*) break;; esac; done"),
+            result("e0", "written"),
+            tool("t1", "mcp__tarae__run_tests", json!({"path": "edit.rs"})),
+            result("t1", "passed in 0.4s — edit.rs\n$ cargo test\n3 passed\n"),
+            tool("t2", "mcp__tarae__run_tests", json!({"path": "lib.rs"})),
+            result("t2", "failed (exit 101) in 1.2s — lib.rs\n$ cargo test\n1 passed, 2 failed\n"),
+            json!({"type": "result", "result": "done"}),
+        ];
+        let mut ed = editor("");
+        ed.workspace.root = dir.clone();
+        ed.config.llm.review_at_end = true;
+        ed.open(&dir.join("main.rs")).unwrap();
+        fake_claude_stream(&mut ed, &steps);
+        feed(&mut ed, "<space>lchange it<ret><esc>");
+        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+        let mut started = false;
+        while !started || ed.workspace.claude.chat.as_ref().unwrap().busy() {
+            started |= ed.workspace.claude.chat.as_ref().unwrap().busy();
+            let left = end.saturating_duration_since(std::time::Instant::now());
+            ed.handle_event(ed.events.recv_timeout(left).expect("the turn goes on"));
+        }
+        crate::turnmap::sync(&mut ed);
+        let said = |ed: &Editor, f: &str| -> Vec<String> {
+            let roles = ed.turnmap.files.get(Path::new(f)).map(|f| f.roles.as_slice()).unwrap_or_default();
+            roles.iter().map(crate::turnmap::Role::said).collect()
+        };
+        assert_eq!(said(&ed, "edit.rs"), ["●", "▸"], "{:?}", ed.turnmap.files.keys());
+        assert_eq!(said(&ed, "lib.rs"), ["▲"]);
+        assert_eq!(said(&ed, "main.rs"), ["◦ 2"]);
+        assert_eq!(said(&ed, "kept.rs"), Vec::<String>::new(), "refused: it read nothing");
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        let stops = &c.follow.replay.turns().back().unwrap().stops;
+        assert_eq!(
+            stops[0].look.range,
+            c.msgs.iter().find(|m| m.call == "r1").unwrap().look.as_ref().unwrap().range
+        );
+        assert_eq!(stops[1].look.range, "L5–6", "a further place keeps its own");
+    }
+
     /// The line follow keeps in sight (collab C1: follow moves the view, never your cursor) — `usize::MAX` none.
     fn led_line(ed: &Editor) -> usize {
         crate::follow::view_line(ed).unwrap_or(usize::MAX)
@@ -8522,6 +8597,17 @@ mod tests {
         );
         feed(&mut ed, "]r]r]r]r]r]r");
         assert!(ed.status.as_ref().is_some_and(|(m, _)| m.contains("newest stop")), "{:?}", ed.status);
+        // The same stops as a map, the whole way from claude's stream (`turnmap.rs`): the turn named by what asked it, the
+        // file by what was done there
+        ed.handle_event(crate::event::Event::Resize);
+        assert_eq!(ed.turnmap.said(), ["turn 1"]);
+        assert_eq!(ed.turnmap.asked.as_ref().map(|a| a.1.as_str()), Some("change it"));
+        let said = |ed: &Editor, name: &str| -> Vec<String> {
+            let f = ed.turnmap.files.iter().find(|(p, _)| p.ends_with(name));
+            f.expect(name).1.roles.iter().map(|r| r.said()).collect()
+        };
+        assert_eq!(said(&ed, "edit.rs"), ["●"]);
+        assert_eq!(said(&ed, "lib.rs"), ["•", "◦"]);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -8722,6 +8808,7 @@ mod tests {
         let target = crate::testing::Target {
             label: "slow".into(),
             cwd: std::env::temp_dir(),
+            holds: None,
             how: crate::testing::How::Pack {
                 lang: "python".into(),
                 argv: vec!["sleep".into(), "5".into()],

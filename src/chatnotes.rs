@@ -431,7 +431,7 @@ fn read_answer(msgs: &[Msg]) -> Waiting {
 /// its reads' first lines, newest first.
 fn stops(c: &crate::chat::Chat) -> Vec<(PathBuf, usize)> {
     let stops = c.follow.replay.turns().back().map_or(&[][..], |t| &t.stops[..]);
-    let at = |s: &crate::replay::Stop| Some((s.path.clone()?, s.lines.as_ref()?.start));
+    let at = |s: &crate::replay::Stop| Some((s.path.clone()?, s.lines.as_ref().map_or(0, |l| l.start)));
     let read = |s: &&crate::replay::Stop| s.page.is_none() && s.look.mark() == crate::chat::Mark::Read;
     let edits = stops.iter().rev().filter(|s| !s.hunks.is_empty()).filter_map(at);
     edits.chain(stops.iter().rev().filter(read).filter_map(at)).collect()

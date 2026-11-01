@@ -60,7 +60,8 @@ use crate::workspace::At;
 /// 25: where each thing to read was drawn (focus D1, `regions.rs`): `regions[]` (`kind`, `rect`, a code pane's `pane`,
 /// `lead`, `must`), bottom first; a watcher asking `regions` is told them as they change, with the frame `written`.
 /// 26: a finding's `thread` names the session's Claude `claude` (was `author`), as the note's card and `kind` do (#254).
-pub const V: u64 = 26;
+/// 27: the turn's map (`turnmap.rs`): `panels.lists` may hold a `map` list, its marks as drawn (`map:src/a.rs:●`).
+pub const V: u64 = 27;
 
 /// A card's `asks` in the one-line forms (the text form, a watch's lines): cut here — the JSON has it whole.
 const ASKS_MAX: usize = 300;

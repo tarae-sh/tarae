@@ -255,7 +255,9 @@ configs carry over as they are.
 - **Side panel** — `space e` shows the project's files as a tree left of the code, `space o` the outline of the
   file you're editing (its functions, types, and modules from the tree-sitter tree, nested — no language server
   needed), `space q` the list below, `space g` git. Left alone it follows you: the current file with its folders
-  opened, or the definition around the cursor. With the keys in it, `j`/`k` move (as in every list panel — `C-n`/`C-p`
+  opened, or the definition around the cursor. What Claude's last turn touched is marked on its rows by role
+  ([the turn as a map](claude-integration.md#follow-mode)).
+  With the keys in it, `j`/`k` move (as in every list panel — `C-n`/`C-p`
   a row too, `C-e`/`C-y` the view with the selection staying in sight (the wheel, three rows, the view only — the
   selection stays, in sight or not), `C-d`/`C-u` half the rows in sight,
   `C-f`/`C-b` all of them, `g`/`G` the ends: the review's rail, `:procs`, the test, task and terminal panels, a

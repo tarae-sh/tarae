@@ -1016,6 +1016,7 @@ fn stop(path: &Path, lines: Range<usize>, edit: bool) -> crate::replay::Stop {
         hunks: if edit { vec![hunk] } else { Vec::new() },
         why: String::new(),
         page: None,
+        map: Default::default(),
     }
 }
 

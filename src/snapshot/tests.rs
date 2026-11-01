@@ -1251,6 +1251,7 @@ fn checks_and_tests_are_covered_and_ignored_deletions_said() {
     let target = crate::testing::Target {
         label: "deletes".into(),
         cwd: dir.clone(),
+        holds: None,
         how: crate::testing::How::Pack {
             lang: "python".into(),
             argv: vec!["sh".into(), "-c".into(), "rm src/a.txt && echo ok".into()],
@@ -1464,7 +1465,7 @@ fn your_tests_wait_on_what_claudes_run_made() {
         lines: None,
         junit: None,
     };
-    let target = crate::testing::Target { label: "all".into(), cwd: dir.clone(), how };
+    let target = crate::testing::Target { label: "all".into(), cwd: dir.clone(), how, holds: None };
     ed.test_start(target.clone());
     pump_until(&mut ed, &|ed| !ed.offers.is_empty(), "the card before your tests");
     let o = &ed.offers[0];

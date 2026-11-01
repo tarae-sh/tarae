@@ -524,6 +524,7 @@ fn run_tests(ed: &mut Editor, call: Call, args: &Value) -> Result<(), String> {
         move |ed: &mut Editor| match found {
             Ok(target) => {
                 call.step("found");
+                crate::follow::test_holds(ed, &what, &target);
                 start(ed, call, target)
             }
             Err(Found::NoGrammar(spec)) => {

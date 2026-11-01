@@ -62,6 +62,8 @@ pub struct Found {
     pub lines: Option<crate::test_results::Rules>,
     /// `parse = "junit"`: the folders the reports land in, and the source roots.
     pub junit: Option<(Vec<PathBuf>, Vec<PathBuf>)>,
+    /// What it runs of the file: a test's or a group's bytes — None, the file's tests.
+    pub holds: Option<std::ops::Range<usize>>,
 }
 
 /// A pack's `[test]`.
@@ -1562,7 +1564,7 @@ impl Tests {
         let sep = &self.group_sep;
 
         let kind = |k: &Option<String>| k.as_ref().and_then(|k| self.kinds.get(k));
-        let (set, label_default) = match (test, whole_file) {
+        let (set, label_default, holds) = match (test, whole_file) {
             (Some(t), false) => {
                 let gs = groups_of(t.range.start);
                 let path_ = gs.iter().cloned().chain([t.name.clone()]).collect();
@@ -1573,7 +1575,7 @@ impl Tests {
                     Some(k) => settings.test.over(&k.t),
                     None => settings.test.clone(),
                 };
-                (set, "{name}")
+                (set, "{name}", Some(t.range.clone()))
             }
             _ => {
                 let gs = if whole_file { Vec::new() } else { groups_of(cursor) };
@@ -1591,11 +1593,14 @@ impl Tests {
                     {
                         return Err("no tests in this file".into());
                     }
-                    (settings.file.clone(), "{filename}")
+                    (settings.file.clone(), "{filename}", None)
                 } else {
                     vars.insert("groups".into(), Var::Parts(gs.clone(), sep.clone()));
                     vars.insert("path".into(), Var::Parts(gs, sep.clone()));
-                    (settings.group.clone(), "{groups}")
+                    // (the innermost group around it is what the path of groups runs)
+                    let inner =
+                        groups.iter().filter(|g| around(&g.range, cursor)).max_by_key(|g| g.range.start);
+                    (settings.group.clone(), "{groups}", inner.map(|g| g.range.clone()))
                 }
             }
         };
@@ -1616,6 +1621,7 @@ impl Tests {
             argv,
             lines: self.lines.clone(),
             junit,
+            holds,
         })
     }
 

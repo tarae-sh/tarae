@@ -162,6 +162,10 @@ pub struct Follow {
 /// While the answer streams, the editor moves at most this often (it records every place — `]q`).
 pub(crate) const PACE: std::time::Duration = std::time::Duration::from_millis(1500);
 
+/// A search's or a lookup's files past its first that become stops of their own (`found`): the first this many, in the
+/// order it named them.
+const HIT_FILES: usize = 16;
+
 impl Follow {
     /// A new question: follow again, forget this turn's previews (they're the user's now).
     pub fn new_turn(&mut self) {
@@ -259,6 +263,10 @@ fn cursor_key(ed: &Editor) -> (DocId, usize, usize) {
 pub fn on_tool(ed: &mut Editor, id: &str, name: &str, input: &serde_json::Value, look: &Look) {
     // (its words right before this call — the replay's card says them at this stop)
     let said = ed.workspace.claude.chat.as_ref().map(crate::edits::reason).unwrap_or_default();
+    let more = match name {
+        "mcp__tarae__read" => more_read(&ed.workspace.root, id, input, &said),
+        _ => Vec::new(),
+    };
     let Some(f) = follow(ed) else { return };
     f.calls.push((id.to_string(), name.to_string(), input.clone()));
     let mut page = None;
@@ -309,17 +317,75 @@ pub fn on_tool(ed: &mut Editor, id: &str, name: &str, input: &serde_json::Value,
             call: id.to_string(),
             look: look.clone(),
             path: path.clone(),
-            lines: lines.clone().or_else(|| path.as_ref().map(|_| line..line + 1)),
+            // (a read with no lines of its own is of the file, none of them: the turn's map says so — `turnmap.rs`)
+            lines: match matches!(name, "Read" | "mcp__tarae__read") {
+                true => lines.clone(),
+                false => lines.clone().or_else(|| path.as_ref().map(|_| line..line + 1)),
+            },
             hunks: Vec::new(),
             why: said,
             page,
+            // (`run_tests` with no line runs the file's tests; a line's target is known once found — `test_holds`)
+            map: crate::replay::Mapped {
+                holds: (name == "mcp__tarae__run_tests" && !input["line"].is_u64())
+                    .then_some(crate::replay::Holds::File),
+                ..Default::default()
+            },
         });
+        more.into_iter().for_each(|s| f.replay.add(s));
     }
     // (a `name` still being looked for is older than this)
     f.wanted = None;
     f.gaze = Some(Gaze { call: id.to_string(), ..Gaze::new(look.clone(), path.clone(), lines.clone()) });
     if let Some(p) = path {
         go_range(ed, &p, lines.unwrap_or(line..line + 1));
+    }
+}
+
+/// A batched read's places after its first — each further range, each further file, never a page: a stop each
+/// (`Mapped.more`), so the turn's map and `]r` have every place it read, not only the first.
+fn more_read(root: &Path, call: &str, input: &serde_json::Value, why: &str) -> Vec<crate::replay::Stop> {
+    use crate::readtool::Want;
+    let items = input["files"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str);
+    let mut out = Vec::new();
+    for (i, item) in items.enumerate().filter(|(_, item)| !crate::web::tool::is_url(item)) {
+        let look = crate::chat::look(root, "mcp__tarae__read", &serde_json::json!({ "files": [item] }));
+        let ranges: Vec<Option<Range<usize>>> = match crate::readtool::item(item).want {
+            Want::Lines(r) => r.iter().map(|&(a, b)| Some(a.max(1) - 1..b)).collect(),
+            _ => vec![None],
+        };
+        for (k, lines) in ranges.into_iter().enumerate().filter(|&(k, _)| i + k > 0) {
+            out.push(crate::replay::Stop {
+                call: call.to_string(),
+                // (the row's words are its first's: a further place says its own)
+                look: Look {
+                    range: lines.as_ref().map_or(String::new(), crate::replay::l_range),
+                    ..look.clone()
+                },
+                path: look.link.as_ref().map(|l| l.path.clone()),
+                lines,
+                hunks: Vec::new(),
+                why: if k == 0 { why.to_string() } else { String::new() },
+                page: None,
+                map: crate::replay::Mapped { more: true, ..Default::default() },
+            });
+        }
+    }
+    out
+}
+
+/// The `run_tests` shown as `what` is running `target`: what it holds, for the turn's map (`turnmap.rs`) — a test's or a
+/// group's lines where it named a line. Never a plain `run`'s: tarae can't know what a command exercised.
+pub fn test_holds(ed: &mut Editor, what: &str, target: &crate::testing::Target) {
+    let holds = match &target.holds {
+        Some(l) => crate::replay::Holds::Lines(l.clone()),
+        None => crate::replay::Holds::File,
+    };
+    let Some(f) = follow(ed) else { return };
+    let ours =
+        |s: &crate::replay::Stop| s.look.verb == "test" && s.look.what == what && s.map.holds.is_none();
+    if let Some(s) = f.replay.find_mut(ours) {
+        s.map.holds = Some(holds);
     }
 }
 
@@ -584,15 +650,21 @@ pub fn edit_landed(ed: &mut Editor, call: &str, real: &Path, before: &ropey::Rop
         (_, n) => format!("L{}–{}{}", lines.start + 1, lines.end, more(n)),
     };
     let background = ed.background();
+    let root = ed.workspace.root.clone();
+    crate::turnmap::landed(ed, real);
     let Some(f) = follow(ed) else { return };
     f.replay.edited(real, &moves);
-    let Some(stop) = f.replay.by_call(call).filter(|s| s.path.as_deref().is_none_or(|p| p == real)) else {
-        return;
-    };
+    let Some(stop) = f.replay.at_place(call, real) else { return };
     stop.path = Some(real.to_path_buf());
     stop.lines = Some(lines.clone());
     stop.hunks = hunks.clone();
     stop.look.range = range.clone();
+    // (a further file of its call: its own stop for the map and `]r` — the row, the view and the card stay its first's)
+    if stop.map.more {
+        stop.look.what = crate::chat::shown(&root, real);
+        stop.look.link = Some(crate::chat::Link { path: real.to_path_buf(), line: lines.start });
+        return;
+    }
     if let Some(link) = stop.look.link.as_mut() {
         link.line = lines.start;
     }
@@ -727,6 +799,19 @@ pub fn hold(ed: &mut Editor) {
     }
 }
 
+/// A file Claude's `call` removed or moved (`refactor::landed`, no lines to land): a stop saying so, for the turn's map.
+pub fn file_landed(ed: &mut Editor, call: &str, path: &Path) {
+    let root = ed.workspace.root.clone();
+    let Some(f) = follow(ed) else { return };
+    let Some(stop) = f.replay.at_place(call, path) else { return };
+    stop.path = Some(path.to_path_buf());
+    stop.map.whole = true;
+    if stop.map.more {
+        stop.look.what = crate::chat::shown(&root, path);
+        stop.look.link = None;
+    }
+}
+
 /// Something the editor brings to Claude's attention and the user's alike (a test Claude ran failed there):
 /// `lines` of `path` washed, the card saying `verb what` and `why`.
 pub fn point(
@@ -749,6 +834,7 @@ pub fn point(
         hunks: Vec::new(),
         why: why.clone().unwrap_or_default(),
         page: None,
+        map: Default::default(),
     });
     f.gaze = Some(Gaze { why, ..Gaze::new(look, Some(path.to_path_buf()), Some(lines.clone())) });
     go_range(ed, path, lines);
@@ -1104,13 +1190,39 @@ pub fn on_result(ed: &mut Editor, id: &str, text: &str, error: bool) {
     if let (Some(range), Some(stop)) = (row, f.replay.by_call(id)) {
         stop.look.range = range;
     }
+    if error {
+        f.replay.of_call(id).for_each(|s| s.map.errored = true);
+    }
     match name.as_str() {
         "Grep" | "Glob" | "mcp__tarae__search" | "mcp__tarae__references" | "mcp__tarae__definition"
             if !error =>
         {
             found(ed, id, text);
         }
+        "mcp__tarae__read" if !error => read_named(ed, id, text),
         _ => {}
+    }
+}
+
+/// A read by name: its lines are in its answer (`replay::read_sections`), what it asked says none.
+fn read_named(ed: &mut Editor, id: &str, text: &str) {
+    use crate::readtool::Want;
+    let Some(f) = follow(ed) else { return };
+    let named = |s: &crate::replay::Stop| {
+        s.call == id
+            && s.lines.is_none()
+            && matches!(crate::readtool::item(&s.look.what).want, Want::Symbol(_))
+    };
+    let Some((t, _)) = f.replay.place_of(id) else { return };
+    if !f.replay.turns()[t].stops.iter().any(named) {
+        return;
+    }
+    let sections = crate::replay::read_sections(text);
+    for stop in f.replay.of_call(id).filter(|s| s.lines.is_none()) {
+        let at = format!("{} —", stop.look.what);
+        if let Some((_, lines)) = sections.iter().find(|s| s.0.starts_with(&at)) {
+            stop.lines = Some(lines.clone());
+        }
     }
 }
 
@@ -1120,7 +1232,15 @@ fn found(ed: &mut Editor, id: &str, text: &str) {
     let root = ed.workspace.root.clone();
     let hits = crate::replay::hits(&root, text);
     let count = crate::replay::count(text, &hits, text.len() >= 4000);
-    let first = hits.into_iter().find(|(p, _)| p.starts_with(&root) || !p.is_absolute());
+    // (its first hit, then each other file's first: a stop each, for the turn's map and `]r`)
+    let mut files: Vec<(PathBuf, usize)> = Vec::new();
+    for (p, l) in hits.into_iter().filter(|(p, _)| p.starts_with(&root) || !p.is_absolute()) {
+        if files.len() <= HIT_FILES && !files.iter().any(|f| f.0 == p) {
+            files.push((p, l));
+        }
+    }
+    let mut files = files.into_iter();
+    let first = files.next();
     if let Some(m) =
         ed.workspace.claude.chat.as_mut().and_then(|c| c.msgs.iter_mut().rev().find(|m| m.call == id))
         && let Some(l) = m.look.as_mut()
@@ -1142,6 +1262,14 @@ fn found(ed: &mut Editor, id: &str, text: &str) {
         if let Some((p, l)) = &first {
             stop.path = Some(p.clone());
             stop.lines = Some(*l..*l + 1);
+        }
+        let stop = stop.clone();
+        for (p, l) in files {
+            let link = Some(crate::chat::Link { path: p.clone(), line: l });
+            let look = Look { link, ..stop.look.clone() };
+            let lines = Some(l..l + 1);
+            let more = crate::replay::Stop { look, path: Some(p), lines, ..stop.clone() };
+            f.replay.after_call(id, more);
         }
     }
     let Some(g) = f.gaze.as_mut().filter(|g| g.call == id) else { return };
@@ -1563,7 +1691,22 @@ fn resume_due(ed: &mut Editor) {
 /// holds follow (you're looking back); past the newest stop it follows again.
 pub fn replay_step(ed: &mut Editor, forward: bool) {
     let Some(c) = ed.workspace.claude.chat.as_mut() else {
-        return ed.set_status("no chat — nothing to replay");
+        // (the chat closed: the stops it left, to their places — the turn's map stays)
+        let Some(r) = ed.workspace.claude.stops_left.as_mut() else {
+            return ed.set_status("no chat — nothing to replay");
+        };
+        // (as the open chat's, below: past the newest it's back to live, at the oldest the hand stays)
+        return match r.step(forward) {
+            Some(at) => replay_at(ed, at),
+            None if forward && r.at.is_some() => {
+                r.at = None;
+                ed.set_status("that was the newest stop");
+            }
+            None => {
+                let said = no_step(r);
+                ed.set_status(said);
+            }
+        };
     };
     let busy = c.busy();
     let f = &mut c.follow;
@@ -1586,10 +1729,18 @@ pub fn replay_step(ed: &mut Editor, forward: bool) {
             }
             sync_shown(ed);
         }
-        None if f.replay.latest() == 0 => {
-            ed.set_status("nothing to replay yet — Claude's reads, edits and searches show here")
+        None => {
+            let said = no_step(&f.replay);
+            ed.set_status(said);
         }
-        None => ed.set_status("that was the first stop kept"),
+    }
+}
+
+/// What a step that goes nowhere says: nothing kept, or the oldest stop reached.
+fn no_step(r: &crate::replay::Replay) -> &'static str {
+    match r.latest() {
+        0 => "nothing to replay yet — Claude's reads, edits and searches show here",
+        _ => "that was the first stop kept",
     }
 }
 
@@ -1614,7 +1765,7 @@ pub fn strip(c: &crate::chat::Chat) -> Vec<StripMark> {
     let hand = c.in_hand();
     turn.into_iter()
         .flat_map(|t| &t.stops)
-        .filter(|s| !s.call.is_empty() && s.look.marked())
+        .filter(|s| !s.call.is_empty() && !s.map.more && s.look.marked())
         .map(|s| StripMark {
             call: s.call.clone(),
             mark: s.look.mark(),
@@ -1650,6 +1801,42 @@ fn strip_hovered_to(ed: &mut Editor, over: Option<String>) -> bool {
     let changed = c.follow.hover != over;
     c.follow.hover = over;
     changed
+}
+
+/// A press on a mark of the turn's map (`turnmap.rs`): the stop at `at`, as `]r`/`[r` step to it.
+pub fn replay_at(ed: &mut Editor, at: (usize, usize)) {
+    if ed.workspace.claude.chat.is_some() {
+        return match ed.workspace.claude.chat.as_ref().is_some_and(|c| c.follow.replay.get(at).is_some()) {
+            true => show_stop(ed, at),
+            false => ed.set_status("that stop is no longer kept"),
+        };
+    }
+    // (the chat closed: the card and an edit's shown changes are its, the place isn't)
+    let left = ed.workspace.claude.stops_left.as_mut();
+    let Some((r, stop)) = left.and_then(|r| r.get(at).cloned().map(|s| (r, s))) else {
+        return ed.set_status("that stop is no longer kept");
+    };
+    r.at = Some(at);
+    let root = ed.workspace.root.clone();
+    let inside = |p: &PathBuf| p.is_file() && std::fs::canonicalize(p).is_ok_and(|p| p.starts_with(&root));
+    // (no place to go to: said here, as the card says it with the chat open)
+    let Some(path) = stop.path.clone().filter(inside) else {
+        let gone = stop.path.is_some_and(|p| !p.is_file());
+        let said = stop.look.said();
+        return ed.set_status(if gone { format!("{said} — its file is gone") } else { said });
+    };
+    let lines = stop.lines.unwrap_or(0..1);
+    if let Err(e) = ed.open_for_claude(&path) {
+        return ed.set_error(format!("{e:#}"));
+    }
+    if ed.doc().loading {
+        ed.goto_after_load = Some((ed.doc().id, lines.start, 0));
+        return;
+    }
+    let doc = ed.doc_mut();
+    let line = lines.start.min(crate::movement::last_line(&doc.text));
+    doc.set_selection(Selection::point(crate::movement::line_start(&doc.text, line)));
+    ed.show_range(lines);
 }
 
 /// A press on a mark of the strip: that stop's replay, as `]r`/`[r` step to it. False: its stop is gone.

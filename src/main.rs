@@ -220,6 +220,7 @@ mod tools;
 mod trace;
 mod transaction;
 mod trust;
+mod turnmap;
 mod tutor;
 mod typed;
 mod uisocket;

@@ -38,6 +38,29 @@ pub struct Stop {
     pub why: String,
     /// A page's read (`read` of a URL, web-plan D14): shown from the copy Claude read, never fetched again.
     pub page: Option<PageAt>,
+    /// What the turn's map reads of it (`turnmap.rs`) beside what replay shows.
+    pub map: Mapped,
+}
+
+/// A stop as the turn's map reads it, beside its place.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Mapped {
+    /// A further place of its call: a batched read's next range or file, an edit's next file, a search's next file —
+    /// a stop of its own for `]r` and the map, the follow card's strip keeping one mark a call.
+    pub more: bool,
+    /// The file itself changed hands — removed, moved away or moved here: changed, with no lines to say so.
+    pub whole: bool,
+    /// What a `run_tests` runs (`testing::Target::holds`) — None on any other stop.
+    pub holds: Option<Holds>,
+    /// Its call came back an error, failed or refused: what it set out to do didn't happen.
+    pub errored: bool,
+}
+
+/// What a test run holds of the file it runs (`testing::find`): all of it, or a test or group's lines (0-based).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Holds {
+    File,
+    Lines(Range<usize>),
 }
 
 /// A page Claude read: the address asked, and — once its answer landed — the copy read: its address after redirects
@@ -51,6 +74,10 @@ pub struct PageAt {
 #[derive(Default)]
 pub struct Turn {
     pub stops: Vec<Stop>,
+    /// Which message of the conversation asked it and what it said — None: a turn no message of yours began.
+    pub asked: Option<(usize, String)>,
+    /// `Replay.begun` as it began.
+    begun: u64,
 }
 
 #[derive(Default)]
@@ -64,6 +91,12 @@ pub struct Replay {
     version: u64,
     /// The stop showing — (turn, stop) — while you step through them; None: live.
     pub at: Option<(usize, usize)>,
+    /// Turns begun so far, an empty one begun again counted too.
+    begun: u64,
+    /// The files you changed, by path from the checkout's top, each with `begun` at your last change: lines the stops
+    /// don't follow, so a turn begun by then leaves their signs out (`yours_in`, `turnmap.rs`). The session's, as its
+    /// stops are; one goes once no turn kept began by then.
+    pub yours: std::collections::HashMap<PathBuf, u64>,
 }
 
 /// The last stops' version given, every replay's (so one replay's version is never another's stops).
@@ -100,15 +133,42 @@ impl Replay {
 
     /// A new question: a turn of its own (an empty last one is reused), the oldest beyond `TURNS` dropped.
     pub fn begin(&mut self) {
-        if self.turns.back().is_some_and(|t| t.stops.is_empty()) {
+        self.begun += 1;
+        // (begun anew: what you changed before this question isn't after it)
+        if let Some(t) = self.turns.back_mut().filter(|t| t.stops.is_empty()) {
+            t.begun = self.begun;
             return;
         }
         self.changes();
-        self.turns.push_back(Turn::default());
+        self.turns.push_back(Turn { begun: self.begun, ..Turn::default() });
         while self.turns.len() > TURNS {
             self.turns.pop_front();
             self.at = self.at.and_then(|(t, s)| t.checked_sub(1).map(|t| (t, s)));
         }
+        let oldest = self.turns.front().map_or(0, |t| t.begun);
+        self.yours.retain(|_, at| *at >= oldest);
+    }
+
+    /// You changed `rel`: every turn begun so far holds lines of it that have moved under them, on the map in sight or
+    /// not. Each key of yours: no stop is looked at.
+    pub fn you_changed(&mut self, rel: &Path) {
+        if !self.turns.is_empty() && self.yours.get(rel) != Some(&self.begun) {
+            self.yours.insert(rel.to_path_buf(), self.begun);
+        }
+    }
+
+    /// You changed `rel` since turn `t` began: its lines there aren't the stops'.
+    pub fn yours_in(&self, t: usize, rel: &Path) -> bool {
+        self.turns.get(t).zip(self.yours.get(rel)).is_some_and(|(t, at)| t.begun <= *at)
+    }
+
+    /// The turn just begun: message `n` of the conversation asked it (`Turn.asked`).
+    pub fn asked(&mut self, n: usize, text: &str) {
+        self.changes();
+        if self.turns.is_empty() {
+            self.turns.push_back(Turn::default());
+        }
+        self.turns.back_mut().expect("just made").asked = Some((n, text.to_string()));
     }
 
     pub fn add(&mut self, stop: Stop) {
@@ -119,18 +179,62 @@ impl Replay {
         self.turns.back_mut().expect("just made").stops.push(stop);
     }
 
-    /// The stop of tool call `call` (the newest with that id).
-    pub fn by_call(&mut self, call: &str) -> Option<&mut Stop> {
-        if call.is_empty() {
-            return None;
-        }
-        self.find_mut(|s| s.call == call)
+    /// `stop`, a further place of `call`'s (`Mapped.more`), right after that call's last stop.
+    pub fn after_call(&mut self, call: &str, mut stop: Stop) {
+        let Some((t, s)) = self.turns.iter().enumerate().rev().find_map(|(t, turn)| {
+            turn.stops.iter().rposition(|s| !call.is_empty() && s.call == call).map(|s| (t, s))
+        }) else {
+            return;
+        };
+        self.changes();
+        stop.map.more = true;
+        self.turns[t].stops.insert(s + 1, stop);
+        self.at = self.at.map(|(at, k)| (at, k + usize::from(at == t && k > s)));
     }
 
-    /// Where the stop of `call` is.
+    /// The stop of `call` at `path`: the one there, else the call's with no place yet, else one more of its own after
+    /// the call's last (a call that wrote several files) — a copy of it, to fill in. None: no stop of that call.
+    pub fn at_place(&mut self, call: &str, path: &Path) -> Option<&mut Stop> {
+        let (t, _) = self.place_of(call)?;
+        let of = |s: &Stop| s.call == call;
+        let stops = &self.turns[t].stops;
+        let there = stops.iter().position(|s| of(s) && s.path.as_deref() == Some(path));
+        let at = there.or_else(|| stops.iter().position(|s| of(s) && s.path.is_none()));
+        if let Some(s) = at {
+            self.changes();
+            return Some(&mut self.turns[t].stops[s]);
+        }
+        let last = stops.iter().rposition(of)?;
+        let mut more = stops[last].clone();
+        more.hunks.clear();
+        more.map = Mapped::default();
+        more.path = Some(path.to_path_buf());
+        self.after_call(call, more);
+        Some(&mut self.turns[t].stops[last + 1])
+    }
+
+    /// `call`'s stops, to change — a new version only when there's one.
+    pub fn of_call(&mut self, call: &str) -> impl Iterator<Item = &mut Stop> {
+        let turn = self.place_of(call).map(|p| p.0);
+        if turn.is_some() {
+            self.changes();
+        }
+        let stops = turn.and_then(|t| self.turns.get_mut(t)).map(|t| &mut t.stops);
+        stops.into_iter().flatten().filter(move |s| s.call == call)
+    }
+
+    /// The stop of tool call `call`, to change — its first, a call of several places: the one its row is (`place_of`), a
+    /// further place keeping its own words.
+    pub fn by_call(&mut self, call: &str) -> Option<&mut Stop> {
+        let (t, s) = self.place_of(call)?;
+        self.changes();
+        self.turns.get_mut(t)?.stops.get_mut(s)
+    }
+
+    /// Where the stop of `call` is — its first, a call of several places.
     pub fn place_of(&self, call: &str) -> Option<(usize, usize)> {
         self.turns.iter().enumerate().rev().find_map(|(t, turn)| {
-            turn.stops.iter().rposition(|s| !call.is_empty() && s.call == call).map(|s| (t, s))
+            turn.stops.iter().position(|s| !call.is_empty() && s.call == call).map(|s| (t, s))
         })
     }
 
@@ -164,6 +268,9 @@ impl Replay {
                     let tail = rest.find(' ').map_or("", |i| &rest[i..]);
                     stop.look.range = format!("{}{tail}", l_range(l));
                 }
+            }
+            if let Some(Holds::Lines(l)) = &mut stop.map.holds {
+                *l = moved_range(l, changes);
             }
             for h in &mut stop.hunks {
                 h.lines = if h.lines.is_empty() {
@@ -257,6 +364,29 @@ fn moved_range(r: &Range<usize>, changes: &[(Range<usize>, Range<usize>)]) -> Ra
     start..end.max(start + 1)
 }
 
+/// The lines each section of a `read` answer gave (`== what …`, then `12: code`): its header after `== `, and the first
+/// and last numbered line under it (0-based, past the last) — a read by name's lines come only from its answer.
+pub fn read_sections(text: &str) -> Vec<(&str, Range<usize>)> {
+    let mut out: Vec<(&str, Range<usize>)> = Vec::new();
+    let mut open: Option<&str> = None;
+    for l in text.lines() {
+        if let Some(head) = l.strip_prefix("== ") {
+            open = Some(head);
+            continue;
+        }
+        let digits = l.bytes().take_while(u8::is_ascii_digit).count();
+        let Some(n) = l[..digits].parse::<usize>().ok().filter(|_| l[digits..].starts_with(':')) else {
+            continue;
+        };
+        let line = n.saturating_sub(1);
+        match out.last_mut().filter(|s| Some(s.0) == open) {
+            Some(s) => s.1.end = line + 1,
+            None => out.extend(open.map(|head| (head, line..line + 1))),
+        }
+    }
+    out
+}
+
 /// The places a search's or a lookup's answer names, in order (its first 4 KB): `path:line` (Grep's
 /// content mode, a definition), a path line followed by indented `  12: code` hits (tarae's search and
 /// references), or bare paths (files only). Relative paths are from `root`.
@@ -339,7 +469,31 @@ mod tests {
         let look = Look { verb: "read", what: path.into(), pattern: false, range: String::new(), link: None };
         let path = Some(PathBuf::from(path));
         let why = String::new();
-        Stop { call: String::new(), look, path, lines: Some(lines), hunks: Vec::new(), why, page: None }
+        let (hunks, map) = (Vec::new(), Mapped::default());
+        Stop { call: String::new(), look, path, lines: Some(lines), hunks, why, page: None, map }
+    }
+
+    /// What a test run holds moves as a stop's lines do ("run over" compares it with the changes as they are now), and
+    /// a further place put after its call keeps the stop in hand the one it was.
+    #[test]
+    fn holds_follow_edits_and_a_further_place_keeps_the_hand() {
+        let mut r = Replay::default();
+        let mut held = stop("a.rs", 5..6);
+        held.map.holds = Some(Holds::Lines(5..9));
+        r.add(held);
+        r.edited(Path::new("a.rs"), &[(1..1, 1..4)]);
+        assert_eq!(r.get((0, 0)).unwrap().map.holds, Some(Holds::Lines(8..12)));
+
+        let mut r = Replay::default();
+        let of = |call: &str| Stop { call: call.into(), ..stop("a.rs", 0..1) };
+        [of("one"), of("two")].into_iter().for_each(|s| r.add(s));
+        r.at = Some((0, 1));
+        r.after_call("one", of("one"));
+        assert_eq!(r.at, Some((0, 2)), "still `two`, one further on");
+        assert!(r.get((0, 1)).unwrap().map.more);
+        r.at = Some((0, 0));
+        r.after_call("two", of("two"));
+        assert_eq!(r.at, Some((0, 0)), "before it: where it was");
     }
 
     /// An edit's hunks: the lines it left, the ones they replaced — and the old ranges, for moving others.
@@ -391,6 +545,40 @@ mod tests {
         assert_ne!(found, v, "a stop found, to change");
         r.edited(Path::new("a.rs"), &[(0..1, 0..2)]);
         assert_ne!(r.version(), found, "a stop moved");
+    }
+
+    /// Your edit is under every turn begun by then and none begun after it, and goes once no such turn is kept.
+    #[test]
+    fn your_edit_holds_for_the_turns_before_it() {
+        let a = Path::new("a.rs");
+        let mut r = Replay::default();
+        r.you_changed(a);
+        assert!(r.yours.is_empty(), "no turn to be under");
+        r.begin();
+        r.add(stop("a.rs", 0..1));
+        r.you_changed(a);
+        r.begin();
+        r.add(stop("a.rs", 0..1));
+        assert!(r.yours_in(0, a) && !r.yours_in(1, a));
+        assert!(!r.yours_in(0, Path::new("b.rs")));
+        for _ in 0..TURNS {
+            r.begin();
+            r.add(stop("a.rs", 0..1));
+        }
+        assert!(r.yours.is_empty(), "no turn kept began by then");
+    }
+
+    /// A call of several places: what's said of its row goes to its first stop — the row's words on its last place's would
+    /// overwrite that place's own.
+    #[test]
+    fn a_calls_row_is_its_first_stop() {
+        let mut r = Replay::default();
+        r.begin();
+        r.add(Stop { call: "c1".into(), ..stop("a.rs", 0..2) });
+        r.after_call("c1", Stop { call: "c1".into(), ..stop("b.rs", 4..5) });
+        r.by_call("c1").unwrap().look.range = "L1–2 +1 more".into();
+        let said: Vec<&str> = r.turns[0].stops.iter().map(|s| s.look.range.as_str()).collect();
+        assert_eq!(said, ["L1–2 +1 more", ""]);
     }
 
     /// Stepping: from live, back is the newest stop and forward the latest turn's first; across turns; past

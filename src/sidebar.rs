@@ -74,6 +74,9 @@ pub struct Line {
 
 /// What the git tab's rows were built from: the status read, the current file, each opened file's
 /// (hunks version, conflicts version).
+/// What an outline's roles are made from: the outline as it was, the turn's map as it was (`turnmap::State.made`).
+type RolesOf = (Option<(DocId, u64)>, u64);
+
 type GitOf = (u64, Option<PathBuf>, Vec<(String, u64, u64)>);
 
 pub struct Sidebar {
@@ -98,6 +101,8 @@ pub struct Sidebar {
     revealed: Option<PathBuf>,
     /// Outline: which document version it's of, and one being worked out.
     outline_of: Option<(DocId, u64)>,
+    /// Each definition's roles on the turn's map, and what they were made from.
+    def_roles: (RolesOf, Vec<Vec<crate::turnmap::Role>>),
     pending: Option<(DocId, u64)>,
     pub defs: Vec<Def>,
     /// The list's rows, rebuilt every event while it shows (`sidebar_sync`) · the row of its current item.
@@ -165,6 +170,7 @@ impl Sidebar {
             loading: true,
             revealed: None,
             outline_of: None,
+            def_roles: Default::default(),
             pending: None,
             defs: Vec::new(),
             list: Default::default(),
@@ -293,6 +299,11 @@ impl Sidebar {
                 .collect(),
             Mode::List | Mode::Git | Mode::Plugin => return Cow::Borrowed(&self.list),
         })
+    }
+
+    /// An outline row's roles on the turn's map (`Editor::sidebar_map`).
+    pub fn def_roles(&self, row: usize) -> &[crate::turnmap::Role] {
+        self.def_roles.1.get(row).map_or(&[], Vec::as_slice)
     }
 
     /// The row of what the editor is on: the current file, or the innermost definition around the cursor.
@@ -688,6 +699,30 @@ fn ancestors(rel: &str) -> impl Iterator<Item = &str> {
 }
 
 impl Editor {
+    /// The outline's rows on the turn's map, made again when the outline or the map changed — only while it's the tab in
+    /// sight, and on no text but the file it's of.
+    pub fn sidebar_map(&mut self) {
+        let key = |s: &Sidebar| (s.outline_of, self.turnmap.made);
+        let Some(s) = self.workspace.viewer.sidebar.as_ref().filter(|s| s.mode == Mode::Outline) else {
+            return;
+        };
+        if s.def_roles.0 == key(s) {
+            return;
+        }
+        let doc = self.doc();
+        let rel = doc.path.as_deref().and_then(|p| p.strip_prefix(&self.workspace.root).ok());
+        let roles = match rel {
+            Some(rel) if !self.turnmap.is_empty() && !crate::turnmap::yours(self, rel) => {
+                self.turnmap.outline(rel, &s.defs, &doc.text)
+            }
+            _ => Vec::new(),
+        };
+        let made = (s.outline_of, self.turnmap.made);
+        if let Some(s) = self.workspace.viewer.sidebar.as_mut() {
+            s.def_roles = (made, roles);
+        }
+    }
+
     /// `space e` / `space o` — show the panel in `mode` and focus it; on it already, close it.
     pub fn sidebar_show(&mut self, mode: Mode) {
         self.sidebar_open(mode, false)

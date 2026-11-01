@@ -315,6 +315,17 @@ impl Editor {
                 p.lists.push(("follow".into(), rows));
             }
         }
+        // The turn's map (`turnmap.rs`): its marks on screen, each once however many rows it's on
+        let mut rows: Vec<Row> = Vec::new();
+        for (.., id, said, in_hand) in s.map_marks.borrow().iter() {
+            if !rows.iter().any(|r| r.id == *id) {
+                let (id, label) = (id.clone(), said.clone());
+                rows.push(Row { id, label, selected: *in_hand, viewed: None });
+            }
+        }
+        if !rows.is_empty() {
+            p.lists.push(("map".into(), rows));
+        }
         if s.bottom_h > 0 {
             let tabs = self
                 .slot_tabs()

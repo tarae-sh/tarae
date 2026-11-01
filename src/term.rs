@@ -768,6 +768,7 @@ fn render_frame(editor: &mut Editor, out: &mut Vec<u8>, w: u16, h: u16) -> io::R
         review_area: Default::default(),
         spots: Default::default(),
         stop_marks: Default::default(),
+        map_marks: Default::default(),
         // (kept from the frame before until the list draws again)
         messages_room: std::cell::Cell::new(editor.screen.messages_room.get()),
         toast_rows: Default::default(),
@@ -6612,6 +6613,34 @@ fn draw_text(
                 ("▎", Style { fg: ui.participant(m.colour, m.followed), bold: m.followed, ..ui.base })
             })
         };
+    // What the last turn did on line `l` (`turnmap.rs`): its mark faint, in the sign column under everything else; a
+    // button, and the stop in hand lit
+    let map_style = |s: &crate::turnmap::Sign| {
+        use crate::chat::Mark;
+        let fg = match s.mark {
+            _ if s.in_hand => ui.accent.fg,
+            Mark::Edit => blend(ui.diff_plus.fg, ui.base.bg.or(ui.tint), 0.5).or(ui.diff_plus.fg),
+            Mark::Failed => ui.sign[2].fg,
+            Mark::Read | Mark::Lookup | Mark::Run => ui.linenr.fg,
+        };
+        Style { fg, bold: s.in_hand, ..ui.base }
+    };
+    let map_sign = |s: &crate::turnmap::Sign, y: usize| {
+        if let Some(pane) = shows.pane {
+            let at = (lay.x0 + signs - 1, y);
+            let glyph = s.mark.glyph().to_string();
+            let press = crate::wordspot::Press::Stop(s.at);
+            let spot =
+                word_spot(crate::mouse::Surface::Code(pane), press, at, vec![(glyph.clone(), map_style(s))]);
+            editor.screen.word_spots.borrow_mut().push(spot.home(At::Code));
+            let rel = doc.path.as_deref().and_then(|p| p.strip_prefix(&editor.workspace.root).ok());
+            let rel = rel.map(|p| p.display().to_string()).unwrap_or_default();
+            let line = s.lines.start + 1;
+            let id = format!("map:{rel}@{line}:{glyph}");
+            editor.screen.map_marks.borrow_mut().push((y, at.0, id, format!("{rel}:{line}"), s.in_hand));
+        }
+        (s.mark.glyph(), map_style(s))
+    };
     // Whose caret and place this document shows: its checkout's session's colour, full while you follow it
     let (writer, followed) = crate::presence::colour_of(editor, doc);
     let caret_fg = ui.participant(writer, followed);
@@ -6671,7 +6700,10 @@ fn draw_text(
                     // (a session's place on any of its lines under the rest — `presence.rs`)
                     let (glyph, st) = match *index == 0 {
                         true => match sign_of(*start, *end) {
-                            (" ", _) => (*start..=*end).find_map(&presence_sign).unwrap_or((" ", ui.base)),
+                            (" ", _) => (*start..=*end).find_map(&presence_sign).unwrap_or_else(|| {
+                                let on = (*start..=*end).find_map(|l| crate::turnmap::sign_at(&shows.map, l));
+                                on.map_or((" ", ui.base), |s| map_sign(s, y as usize))
+                            }),
                             s => s,
                         },
                         false => (" ", ui.base),
@@ -6908,7 +6940,10 @@ fn draw_text(
                         }
                         s
                     }
-                    None => (" ", ui.base),
+                    None => match crate::turnmap::sign_at(&shows.map, line) {
+                        Some(s) => map_sign(s, y as usize),
+                        None => (" ", ui.base),
+                    },
                 },
                 s => s,
             };
@@ -9096,6 +9131,21 @@ fn draw_list_row(
     if hint_w > 0 && hint_w < lw {
         queue!(out, Spaces(lw - used - hint_w + 1))?;
         let plain = Style { fg: ui.virt.fg, ..base };
+        // (a mark of the turn's map: a button — its ground lightens, a press is its stop; only the side panel's rows have
+        // them, at its left)
+        for (range, stop) in r.paint.iter().flat_map(|p| &p.presses) {
+            let Some((_, x, y, _)) = at else { continue };
+            let glyph = r.paint.iter().flat_map(|p| &p.hint).find(|p| p.0.start == range.start);
+            let Some((g, scope)) = glyph else { continue };
+            let Some(range) = crate::turnmap::press_kept(&r.hint, hint, &g.clone(), range) else { continue };
+            let inked = Style { fg: scope_fg(scope).or(plain.fg), ..base };
+            let spans =
+                vec![(hint[g.clone()].to_string(), inked), (hint[g.end..range.end].to_string(), plain)];
+            let cell = (x + 3 + lw - hint_w + hint[..range.start].width(), y);
+            let spot =
+                word_spot(crate::mouse::Surface::Side, crate::wordspot::Press::Stop(*stop), cell, spans);
+            editor.screen.word_spots.borrow_mut().push(spot.home(At::Code));
+        }
         // (a painted hint's ranges in their scopes — what's cut off by the fit isn't there to paint)
         let mut at = 0;
         for (range, scope) in r.paint.iter().flat_map(|p| &p.hint) {
@@ -15049,12 +15099,53 @@ fn side_rel<'a>(
     sb: &'a crate::sidebar::Sidebar,
     l: &'a crate::sidebar::Line,
 ) -> Option<&'a std::path::Path> {
+    let none = editor.presence.now.is_empty() && editor.overlap.now.is_empty() && editor.turnmap.is_empty();
     match &l.target {
-        _ if editor.presence.now.is_empty() && editor.overlap.now.is_empty() => None,
+        _ if none => None,
         crate::sidebar::Target::File(p) => p.strip_prefix(sb.root()).ok(),
         crate::sidebar::Target::Change { rel, file: true, .. } => Some(std::path::Path::new(rel)),
         _ => None,
     }
+}
+
+/// A side panel row's hint: the turn's map's marks (`turnmap::hint`) before who's in the file (`presence::file_hint`) and
+/// what the row says itself — and whether its marks take room from its name, and the roles they say. A row too narrow for
+/// all its marks says the strongest, its name giving way (narrow, the map folds first to it).
+fn side_hint(
+    editor: &Editor,
+    sb: &crate::sidebar::Sidebar,
+    l: &crate::sidebar::Line,
+    row: usize,
+    lw: usize,
+) -> (String, Option<crate::picker::Paint>, bool, Vec<crate::turnmap::Role>) {
+    use crate::sidebar::{Mode, Target};
+    let map = &editor.turnmap;
+    let rel = side_rel(editor, sb, l);
+    let rest = match rel {
+        Some(rel) => crate::presence::file_hint(&crate::presence::file_marks(editor, rel).0, &l.hint),
+        None => (l.hint.clone(), None),
+    };
+    let (roles, count) = match (&l.target, l.kind) {
+        _ if sb.mode == Mode::Outline => (sb.def_roles(row).to_vec(), None),
+        _ if map.is_empty() => (Vec::new(), None),
+        (Target::Dir(d), crate::filetree::Kind::Dir { open: Some(false) }) => {
+            match map.folded(std::path::Path::new(d)) {
+                Some((role, n)) => (vec![role], Some(n)),
+                None => (Vec::new(), None),
+            }
+        }
+        _ => (rel.and_then(|r| map.files.get(r)).map_or(Vec::new(), |f| f.roles.clone()), None),
+    };
+    if roles.is_empty() {
+        return (rest.0, rest.1, false, roles);
+    }
+    let (text, paint) = crate::turnmap::hint(map, &roles, count, false, rest.clone());
+    let room = lw.saturating_sub(1 + tree_guides(l.depth).width() + 2 + l.label.width() + 1 + 2);
+    if text.width() <= room {
+        return (text, paint, false, roles);
+    }
+    let (text, paint) = crate::turnmap::hint(map, &roles, count, true, rest);
+    (text, paint, true, roles)
 }
 
 /// List rows of the side panel: all but the header (its title and rule), a row saying a review is behind
@@ -15122,7 +15213,13 @@ fn draw_sidebar(
     let current = views.iter().position(|v| v.1 == sb.mode).unwrap_or(0);
     // (on its top line: the views as a group's members, what the one in sight is of after them — folded first)
     let head = pane_names(ui, editor, card, &names, current);
-    let of = [(of, faint)];
+    // The turn on the map (`turnmap.rs`) before what it's of: details, so they fold first and the views stay whole
+    // (`fold_details`) — `turn 14` whole or gone, what the turn asked whole under the mouse
+    let turn = editor.turnmap.said();
+    let of: Vec<(String, Style)> = match turn.is_empty() {
+        true => vec![(of, faint)],
+        false => turn.iter().cloned().chain([format!(" {of}")]).map(|t| (t, faint)).collect(),
+    };
     let tab = match sb.mode {
         SMode::Files => " outline",
         SMode::Outline if has_list => " list",
@@ -15209,7 +15306,10 @@ fn draw_sidebar(
     // (the row in hand: its file's sessions said in words at the foot)
     let foot = match mark.and_then(|r| lines.get(r)).and_then(|l| Some((l, side_rel(editor, sb, l)?))) {
         Some((l, rel)) => {
-            let (_, words) = crate::presence::file_marks(editor, rel);
+            let (_, mut words) = crate::presence::file_marks(editor, rel);
+            if let Some(f) = editor.turnmap.files.get(rel) {
+                words.extend(crate::turnmap::State::words(&f.roles));
+            }
             let name = rel.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(l.label.clone());
             if words.is_empty() { String::new() } else { format!("{name} — {}", words.join(" · ")) }
         }
@@ -15228,6 +15328,25 @@ fn draw_sidebar(
             let line = edge_style(ui, card, Region::Side);
             let top = TopLine { names: &fits(&head), details: &fits(&of), key, faint, ..TopLine::default() };
             let cols = top_line(out, line, card, (0, 0, lay.rail_w - GAP), ("", "", "┬"), &[], true, &top)?;
+            // (what the turn asked: whole under the mouse, on the card of what's cut)
+            let asked = editor.turnmap.asked.as_ref().filter(|_| !turn.is_empty());
+            if let Some(((a, b), asked)) = cols.get(head.len()).zip(asked) {
+                let text = asked.1.clone();
+                let pieces = vec![(0..text.len(), faint)];
+                let (float, cols) = (crate::whole::drawn_in(), (0, usize::MAX));
+                let on = crate::whole::On::Side;
+                let w = crate::whole::Whole {
+                    on,
+                    text,
+                    style: faint,
+                    pieces,
+                    cols,
+                    state: None,
+                    float,
+                    key: None,
+                };
+                crate::whole::record(editor, (0, *a, *b), w, None);
+            }
             // (each tab's name pressed shows that tab — `pane_names` puts a ` · ` between two: every other one a name)
             let mut spots = editor.screen.word_spots.borrow_mut();
             for (k, &(a, b)) in cols.iter().take(head.len()).enumerate().step_by(2) {
@@ -15253,19 +15372,15 @@ fn draw_sidebar(
                 Some((r, l)) => {
                     // (a file another session is in, or whose changes would conflict with yours: each its initial
                     // in its colour after the name, `≈` before it for a conflict — `presence::file_marks`)
-                    let (hint, paint) = match side_rel(editor, sb, l) {
-                        Some(rel) => {
-                            crate::presence::file_hint(&crate::presence::file_marks(editor, rel).0, &l.hint)
-                        }
-                        None => (l.hint.clone(), None),
-                    };
+                    // (and the turn's map first: what the last turn did here, by role — `turnmap.rs`)
+                    let (hint, paint, hint_whole, roles) = side_hint(editor, sb, l, r, w + PAD - 2);
                     let row = crate::picker::Row {
                         label: l.label.clone(),
                         marks: Vec::new(),
                         selected: Some(r) == mark,
                         hint,
                         hint_first: sb.mode == SMode::Plugin,
-                        hint_whole: false,
+                        hint_whole,
                         glyph: l.glyph,
                         tree: Some((l.depth, l.kind)),
                         spots: Vec::new(),
@@ -15289,6 +15404,7 @@ fn draw_sidebar(
                         editor.workspace.is_at(At::Side).then_some(hand),
                     ));
                     // The row's own background runs on to the padding (its bar in the padding before it)
+                    let pressed = editor.screen.word_spots.borrow().len();
                     let used = draw_list_row(
                         out,
                         &row,
@@ -15302,6 +15418,19 @@ fn draw_sidebar(
                         at,
                     )?;
                     queue!(out, Spaces((w + PAD - 2).saturating_sub(used)))?;
+                    // (its marks, for the state)
+                    if !roles.is_empty() {
+                        let spots = editor.screen.word_spots.borrow();
+                        let mut marks = editor.screen.map_marks.borrow_mut();
+                        for spot in &spots[pressed..] {
+                            let Some(glyph) = spot.spans.first().map(|s| s.0.as_str()) else { continue };
+                            let Some(role) = roles.iter().find(|r| r.mark.glyph() == glyph) else { continue };
+                            let id = format!("{}:{glyph}", crate::uistate::panels::side_id(editor, "map", l));
+                            let word = crate::turnmap::State::words(std::slice::from_ref(role)).concat();
+                            let said = format!("{} {word}", l.label);
+                            marks.push((spot.y, spot.from, id, said, editor.turnmap.lit(role)));
+                        }
+                    }
                     w
                 }
                 // Why it's empty, wrapped by word — cut, it read "nothing to commit — the tree"
@@ -26741,6 +26870,7 @@ mod tests {
                 hunks: Vec::new(),
                 why: String::new(),
                 page: None,
+                map: Default::default(),
             });
             c.follow.gaze = Some(crate::follow::Gaze {
                 call: format!("s{i}"),
@@ -26897,6 +27027,7 @@ mod tests {
             hunks: Vec::new(),
             why: String::new(),
             page: None,
+            map: Default::default(),
         });
         c.follow.gaze =
             Some(crate::follow::Gaze { call: "s20".into(), ..crate::follow::Gaze::new(look, None, None) });
@@ -26934,6 +27065,7 @@ mod tests {
                 hunks: Vec::new(),
                 why: String::new(),
                 page: None,
+                map: Default::default(),
             });
         }
         let check = |ed: &mut Editor, hand: &str, row: &str, other: &str, what: &str| {

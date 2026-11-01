@@ -360,6 +360,12 @@ pub(crate) fn landed(
             crate::edittool::saw(ed, g, p, stamp)
         }
     };
+    // (a file itself gone or moved: the turn's map says so, a stop with no lines)
+    let moved = |ed: &mut Editor, p: &Path| {
+        if let (Whose::Claude(_), Some(call)) = (whose, row) {
+            crate::follow::file_landed(ed, call, p);
+        }
+    };
     let close = |ed: &mut Editor, p: &Path| {
         if let Some(id) = ed.docs.iter().find(|d| d.path.as_deref() == Some(p)).map(|d| d.id) {
             ed.close_doc(id);
@@ -385,12 +391,17 @@ pub(crate) fn landed(
                 crate::follow::wrote(ed, row, &f.path, &f.before, &f.after);
             }
         }
-        Op::Delete => close(ed, &f.path),
+        Op::Delete => {
+            close(ed, &f.path);
+            moved(ed, &f.path);
+        }
         Op::Move { to, .. } => {
             close(ed, &f.path);
             ed.wrote(to);
             ed.disk_take(to, &f.after, stamp);
             saw(ed, to);
+            moved(ed, &f.path);
+            moved(ed, to);
         }
     }
 }

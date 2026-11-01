@@ -426,7 +426,7 @@ fn a_name_is_found_again_after_tests_ran() {
         let argv = ["sh", "-c", "touch src/Gone.java"].map(String::from).to_vec();
         let lines = crate::test_results::Rules::builtin("other");
         let how = How::Pack { lang: "other".into(), argv, lines, junit: None };
-        ed.test_start(Target { label: "t".into(), cwd: root.to_path_buf(), how });
+        ed.test_start(Target { label: "t".into(), cwd: root.to_path_buf(), how, holds: None });
         handled_until(ed, "the run's end", |ed| {
             ed.workspace.test_run.as_ref().is_some_and(|r| r.state != RunState::Running)
         });

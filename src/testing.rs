@@ -28,6 +28,9 @@ pub struct Target {
     pub label: String,
     pub cwd: PathBuf,
     pub how: How,
+    /// What it runs of its file: a test's or a group's lines (0-based) — None, the file's tests. The turn's map's "run
+    /// over" reads it (`turnmap.rs`).
+    pub holds: Option<std::ops::Range<usize>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,7 +85,9 @@ pub fn find(
         crate::packs::tests(lang, &tree.language()).ok_or(format!("no test runner for {lang} yet"))??;
     let f = pack.find(path, src, tree, cursor.min(src.len()), scope == Scope::File)?;
     let how = How::Pack { lang: lang.to_string(), argv: f.argv, lines: f.lines, junit: f.junit };
-    Ok(Target { label: f.label, cwd: f.cwd, how })
+    let line = |b: usize| src[..b.min(src.len())].matches('\n').count();
+    let holds = f.holds.map(|r| line(r.start)..line(r.end) + 1);
+    Ok(Target { label: f.label, cwd: f.cwd, how, holds })
 }
 
 fn up_to(start: &Path, found: impl Fn(&Path) -> bool) -> Option<PathBuf> {
@@ -353,7 +358,7 @@ impl TestRun {
         };
         TestRun {
             parser: parser_of(&how),
-            target: Target { label: label.into(), cwd: std::env::temp_dir(), how },
+            target: Target { label: label.into(), cwd: std::env::temp_dir(), how, holds: None },
             state: RunState::Failed(Some(1)),
             output: output.into_iter().map(|l| (false, l)).collect(),
             trims: Default::default(),
@@ -966,6 +971,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
+    /// What a target holds of its file, for the turn's map's "run over": a test its lines, the file's tests nothing of
+    /// their own (`turnmap.rs`).
+    #[test]
+    fn a_target_says_the_lines_it_holds() {
+        let src = "package p\n\nfunc Helper() {}\n\nfunc TestParse(t *testing.T) {\n\tx := 1\n}\n";
+        let Some(tree) = parse("go", src) else { return };
+        let f = Path::new("/p/parse_test.go");
+        let nearest = find("go", f, src, &tree, at(src, "x := 1"), Scope::Nearest).unwrap();
+        assert_eq!(nearest.holds, Some(4..7));
+        let file = find("go", f, src, &tree, 0, Scope::File).unwrap();
+        assert_eq!(file.holds, None);
+    }
+
     #[test]
     fn go_picks_the_enclosing_test_func() {
         let src = "package p\n\nfunc helper() {}\n\nfunc TestParse(t *testing.T) {\n\tx := 1\n}\n\nfunc TestLex(t *testing.T) {}\n\nfunc Testify() {}\n\nfunc BenchmarkParse(b *testing.B) {}\n";
@@ -1286,6 +1304,7 @@ mod tests {
             ed.test_start(Target {
                 label: "t".into(),
                 cwd: d.clone(),
+                holds: None,
                 how: How::Pack {
                     lang: parse.into(),
                     argv: vec!["sh".into(), "-c".into(), script.into()],
@@ -1328,6 +1347,7 @@ mod tests {
         ed.test_start(Target {
             label: "waits::stand_in".into(),
             cwd: d.clone(),
+            holds: None,
             how: How::Pack {
                 lang: "rust".into(),
                 argv: vec!["sh".into(), "-c".into(), script.into()],
@@ -1383,6 +1403,7 @@ mod tests {
         let target = |python: &str| Target {
             label: "t".into(),
             cwd: d.clone(),
+            holds: None,
             how: How::Pack {
                 lang: "python".into(),
                 argv: vec![python.into(), "-m".into(), "pytest".into(), "x".into()],

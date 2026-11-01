@@ -281,6 +281,38 @@ const MOUSE_SCENES: &[Scene] = &[
         ];
         ed.plugin_overlay("demo", Some(Overlay { rows, hold: Some(600_000) }));
     }),
+    // (focus E1: the turn's map — a file row's marks and the code's signs, each a button: its ground lightens, a press
+    // is its stop. Last: a scene's place picks the cells it's walked at, `sample`'s `n`, so one put among the others
+    // moves theirs)
+    ("the turn's map", |ed| {
+        long_text(ed);
+        let root = std::env::temp_dir();
+        ed.workspace.root = root.clone();
+        // (the last row: the one the walk presses is another file — the one in front opens nothing)
+        ed.doc_mut().path.set(Some(root.join("f03.rs")));
+        let files = (0..4).map(|i| format!("f{i:02}.rs")).collect();
+        ed.workspace.viewer.sidebar = Some(crate::sidebar::Sidebar::with_files(root.clone(), files));
+        chat(ed, "");
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        let look = crate::chat::Look {
+            verb: "read",
+            what: "f03.rs".into(),
+            pattern: false,
+            range: String::new(),
+            link: None,
+        };
+        c.follow.replay.add(crate::replay::Stop {
+            call: "r1".into(),
+            look,
+            path: Some(root.join("f03.rs")),
+            lines: Some(1..3),
+            hunks: Vec::new(),
+            why: String::new(),
+            page: None,
+            map: Default::default(),
+        });
+        crate::turnmap::sync(ed);
+    }),
 ];
 
 /// A quote of `n` lines of code, its chip `label`.

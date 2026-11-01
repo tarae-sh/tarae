@@ -79,6 +79,7 @@ fn run(choices: Choices) -> Vec<String> {
         }],
         why: String::new(),
         page: None,
+        map: Default::default(),
     });
     ed.workspace.claude.chat = Some(c);
     crate::chatnotes::turn_over(&mut ed, true);

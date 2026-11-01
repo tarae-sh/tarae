@@ -336,6 +336,36 @@ const A1_KEYS: [&[&str]; 6] = [
 /// `a1-flow`'s: its place's card — the chat open, the view left on the last read (`thread.rs`): `gg]n]n`, its note,
 /// then round to the loop's; closed, the loop's file in front (`:o`).
 const A1_FLOW: [&[&str]; 2] = [a1_keys!("gg]n]n"), a1_keys!(" ", "L", ":", "o src/main.rs", "\r", "gg]n")];
+/// Focus E1's scenes: a turn with reads, a search, an edit and a `run_tests`, its review answered, the turn over and the
+/// keys back in the code — then `$more`.
+macro_rules! e1_keys {
+    ($($more:expr),*) => {
+        &[
+            "@1",
+            " ",
+            "l",
+            "@1",
+            "the length test fails, fix it",
+            "\r",
+            "@20?Change 1 of 1",
+            "@1",
+            "y",
+            "@20?That is all",
+            "@1",
+            "\x1b",
+            "\x1b",
+            $($more),*
+        ]
+    };
+}
+// (the tree: each file's roles · the outline's · the chat closed, the code wide · a stop stepped back to, lit on the map ·
+// a folder folded)
+const E1_TREE: &[&str] = e1_keys!(" ", "e", "@?main.rs", "@1");
+const E1_OUTLINE: &[&str] = e1_keys!(" ", "o", "@1");
+const E1_CLOSED: &[&str] = e1_keys!(" ", "L", "@1", " ", "e", "@?main.rs", "@1");
+const E1_HAND: &[&str] = e1_keys!(" ", "e", "@?main.rs", "@1", "\x1b", "[", "r", "[", "r", "[", "r", "@1");
+const E1_FOLDED: &[&str] = e1_keys!(" ", "e", "@?main.rs", "@1", "g", "@0.5", "\r", "@1");
+
 const A1_LINE: &[&str] = &[
     "@1",
     " ",
@@ -1000,6 +1030,25 @@ const SESSIONS_FLOAT: &[&str] = overlap_keys!(
 );
 // (…the strip over fix's chat: `fix ≈ main`, `main ≈ fix`, each name in its colour)
 const OVERLAP_STRIP: &[&str] = overlap_keys!(" ", "l", "@2");
+// (focus E1, 2+ sessions: fix's turn on the map, main's overlap and marks beside it)
+const E1_SESSIONS: &[&str] = overlap_keys!(
+    " ",
+    "l",
+    "@1",
+    "the length test fails, fix it",
+    "\r",
+    "@20?Change 1 of 1",
+    "@1",
+    "y",
+    "@20?That is all",
+    "@1",
+    "\x1b",
+    "\x1b",
+    " ",
+    "e",
+    "@?main.rs",
+    "@1"
+);
 // (…the list: `≈ main` on fix's row, `≈ fix` on main's)
 const OVERLAP_LIST: &[&str] = overlap_keys!(" ", "W", "@2");
 // (…the file tree: `≈m` on src/main.rs — main's initial in its colour — and the row in hand's words at its foot)
@@ -2993,6 +3042,14 @@ const SCENES: &[Scene] = &[
     Scene { name: "a1-none-open-card", claude: "a1-none", files: MAIN, keys: A1_KEYS[4] },
     Scene { name: "a1-none-closed", claude: "a1-none", files: MAIN, keys: A1_KEYS[2] },
     Scene { name: "a1-none-closed-card", claude: "a1-none", files: MAIN, keys: A1_KEYS[5] },
+    // (focus E1: the turn as a map)
+    Scene { name: "e1-tree", claude: "e1-map", files: MAIN, keys: E1_TREE },
+    Scene { name: "e1-outline", claude: "e1-map", files: MAIN, keys: E1_OUTLINE },
+    Scene { name: "e1-closed", claude: "e1-map", files: MAIN, keys: E1_CLOSED },
+    Scene { name: "e1-hand", claude: "e1-map", files: MAIN, keys: E1_HAND },
+    Scene { name: "e1-folded", claude: "e1-map", files: MAIN, keys: E1_FOLDED },
+    Scene { name: "e1-failed", claude: "e1-failed", files: MAIN, keys: E1_TREE },
+    Scene { name: "e1-sessions", claude: "e1-map", files: MAIN, keys: E1_SESSIONS },
     Scene { name: "a1-line", claude: "focus-line", files: MAIN, keys: A1_LINE },
     Scene { name: "a1b-line-card", claude: "focus-line", files: MAIN, keys: A1B_LINE },
     Scene { name: "a1b-flow-cut", claude: "a1-flow", files: MAIN, keys: A1B_CUT },
@@ -4735,6 +4792,8 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "a1-flow",
     "a1b-two",
     "a1b-all",
+    "e1-map",
+    "e1-failed",
     "models",
     "answer",
     "askdone",
@@ -4866,6 +4925,8 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "focus-fix" => turn.focus_fix()?,
             "focus-asks" => turn.focus_asks()?,
             "focus-line" => turn.focus_line(&line)?,
+            "e1-map" => turn.e1_map(false)?,
+            "e1-failed" => turn.e1_map(true)?,
             "tour" => turn.tour()?,
             "notethread" => turn.note_thread(&line)?,
             // (focus A1's: an answer naming no place)
@@ -5853,6 +5914,31 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
         self.words("Fixed: src/thread.rs:10 now sums the gaps between the knots, so knots at 1, 2 and 3 make a strand 2 long.")?;
         self.text("\n\n")?;
         self.words("Nothing else calls the length, so no other change is needed. That is all.")?;
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// focus E1's turn: a batched read, a search, a whole file, the same file again, an edit (its review, answered by the
+    /// scene) and the tests of the file it changed, passing or not — the run as the stream says it.
+    fn e1_map(&mut self, failed: bool) -> io::Result<()> {
+        self.words("Reading how a strand's length is worked out.")?;
+        self.text("\n\n")?;
+        self.call(1, "read", json!({"files": ["src/thread.rs:1-12", "src/main.rs:7-10"]}))?;
+        let hits = "2 matching lines in 2 files:\nsrc/knot.rs\n  1: knots\nsrc/thread.rs\n  4: pub knots: Vec<u32>,\n";
+        self.ran("m2", "search", json!({"pattern": "knots", "path": "src"}), hits)?;
+        self.call(3, "read", json!({"files": ["src/knot.rs"]}))?;
+        self.call(4, "read", json!({"files": ["src/main.rs:1-6"]}))?;
+        self.words("The length sums the knots themselves, not the gaps between them.")?;
+        self.text("\n")?;
+        let edit = json!({"edits": [{"file_path": "src/thread.rs", "old_string": "        self.knots.iter().sum()\n",
+            "new_string": "        self.knots.windows(2).map(|w| w[1] - w[0]).sum()\n"}]});
+        self.input(5, "edit", &edit.to_string(), None)?;
+        self.call(5, "edit", edit)?;
+        let said = match failed {
+            true => "failed in 0.4s\n$ cargo test thread\n1 failed, 1 passed",
+            false => "passed in 0.4s\n$ cargo test thread\n2 passed",
+        };
+        self.ran("m6", "run_tests", json!({"path": "src/thread.rs"}), said)?;
+        self.words("Fixed: src/thread.rs:10 now sums the gaps between the knots. That is all.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

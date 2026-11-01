@@ -846,6 +846,7 @@ mod tests {
         crate::testing::Target {
             label: label.into(),
             cwd: dir.to_path_buf(),
+            holds: None,
             how: crate::testing::How::Pack {
                 lang: "python".into(),
                 argv: vec!["sh".into(), "-c".into(), script.into()],

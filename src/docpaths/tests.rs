@@ -78,6 +78,7 @@ fn busy() -> crate::chat::Chat {
                 hunks: if edit { vec![hunks(k), hunks(k + 10)] } else { Vec::new() },
                 why: String::new(),
                 page: None,
+                map: Default::default(),
             }
         })
         .collect();
@@ -435,6 +436,7 @@ fn presence_kept_is_presence_gathered_anew() {
         hunks: vec![hunk],
         why: String::new(),
         page: None,
+        map: Default::default(),
     });
     check(&mut ed, "an edit landed");
     assert_eq!(ed.presence.now.len(), before + 1);
