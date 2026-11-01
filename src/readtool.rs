@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 
 use crate::editor::Editor;
 use crate::media::Kind;
+use crate::replay::Shown;
 use crate::tools::{Call, Part, answer};
 
 /// A file asked whole bigger than this (bytes) comes as its outline.
@@ -167,12 +168,12 @@ fn go(ed: &mut Editor, call: Call, items: Vec<Item>, args: Value, granted: Vec<P
             })
             .collect();
         let r = match items.is_empty() {
-            true => Ok(Ok(Vec::new())),
+            true => Ok(Ok((Vec::new(), Vec::new()))),
             false => read(&root, &items, &gate, &unsaved),
         };
         // (a file's card asked first: no page is fetched for an answer that waits)
         let (r, got) = match (r, pages) {
-            (Ok(Ok(mut parts)), Some(pages)) => {
+            (Ok(Ok((mut parts, shown))), Some(pages)) => {
                 let (text, got) = pages.fetch();
                 match parts.last_mut() {
                     Some(Part::Text(t)) => {
@@ -181,7 +182,7 @@ fn go(ed: &mut Editor, call: Call, items: Vec<Item>, args: Value, granted: Vec<P
                     }
                     _ => parts.push(Part::Text(text.trim_end().to_string())),
                 }
-                (Ok(Ok(parts)), got)
+                (Ok(Ok((parts, shown))), got)
             }
             (r, _) => (r, Vec::new()),
         };
@@ -190,9 +191,17 @@ fn go(ed: &mut Editor, call: Call, items: Vec<Item>, args: Value, granted: Vec<P
                 ed.workspace.claude.web_reads.retain(|s| !s.same(stop));
             }
             match r {
-                Ok(Ok(parts)) => {
+                Ok(Ok((parts, shown))) => {
+                    let went: Vec<PathBuf> = (stamps.iter())
+                        .filter(|(p, s)| crate::edittool::went(ed, call.generation(), p, *s))
+                        .map(|(p, _)| p.clone())
+                        .collect();
                     for (p, s) in stamps {
                         crate::edittool::saw(ed, call.generation(), &p, s);
+                    }
+                    // (a stop of the chat's only where the read is: `space i`'s are nothing the chat's turn saw)
+                    if let Some(row) = crate::chat::row_of(ed, &call) {
+                        crate::follow::shown(ed, &row, shown, &went);
                     }
                     crate::web::tool::answered(ed, &call);
                     crate::web::tool::landed(ed, got);
@@ -212,9 +221,9 @@ fn go(ed: &mut Editor, call: Call, items: Vec<Item>, args: Value, granted: Vec<P
     });
 }
 
-/// What a read answers: its text, pictures among it — Ok(Err): a file Read would ask about, the card's question
-/// (the whole call waits on it).
-type Answer = Result<Result<Vec<Part>, Box<crate::reads::Ask>>, String>;
+/// What a read answers: its text, pictures among it, the lines it gave — Ok(Err): a file Read would ask about, the
+/// card's question (the whole call waits on it).
+type Answer = Result<Result<(Vec<Part>, Vec<Shown>), Box<crate::reads::Ask>>, String>;
 
 /// The answer: each item's lines under its heading (`== path:a-b (of N lines)`), an image's picture after its
 /// own, or what's said instead. A worker's.
@@ -275,7 +284,7 @@ fn read_between(
         found.push(f);
     }
     between();
-    let (mut out, mut parts) = (String::new(), Vec::new());
+    let (mut out, mut parts, mut shown) = (String::new(), Vec::new(), Vec::new());
     let (mut left, mut images) = (LINES_MAX, Room { pictures: IMAGES_MAX, bytes: crate::media::ANSWER_MAX });
     let mut dirty = Vec::new();
     for (it, f) in items.iter().zip(found) {
@@ -290,11 +299,12 @@ fn read_between(
                 continue;
             }
         };
-        let shown = crate::nav::rel(&root, &o.real);
+        let name = crate::nav::rel(&root, &o.real);
         if unsaved.contains(&o.real) {
-            dirty.push(shown.clone());
+            dirty.push(name.clone());
         }
-        for p in section(o, &shown, it, &mut left, &mut images) {
+        let (real, mut seen) = (o.real.clone(), Vec::new());
+        for p in section(o, &name, it, &mut left, &mut images, &mut seen) {
             match p {
                 Part::Text(t) => out.push_str(&t),
                 Part::Image(i) => {
@@ -305,6 +315,8 @@ fn read_between(
                 }
             }
         }
+        let lines = seen.into_iter().map(|(a, b)| a - 1..b);
+        shown.extend(lines.map(|lines| Shown { path: real.clone(), lines, old: false }));
     }
     if !dirty.is_empty() {
         out.push_str(&format!(
@@ -316,7 +328,7 @@ fn read_between(
     if !out.is_empty() || parts.is_empty() {
         parts.push(Part::Text(out.to_string()));
     }
-    Ok(Ok(parts))
+    Ok(Ok((parts, shown)))
 }
 
 /// What's left of an answer's room for pictures: how many, and their bytes as sent (`media::ANSWER_MAX`).
@@ -326,13 +338,14 @@ struct Room {
 }
 
 /// One item's part of the answer, read from its opened file, at most `left` lines of text and what's left of
-/// `room` for pictures (taken from them).
+/// `room` for pictures (taken from them) — the lines it gives in `seen`.
 fn section(
     mut o: crate::paths::Opened,
     shown: &str,
     it: &Item,
     left: &mut usize,
     room: &mut Room,
+    seen: &mut Vec<(usize, usize)>,
 ) -> Vec<Part> {
     use std::io::Read;
     // Its first bytes say what it is: a picture or a PDF past `FILE_MAX` is said before the rest is read
@@ -358,7 +371,7 @@ fn section(
     }
     let (real, stamp) = (o.real.as_path(), crate::testcode::stamp_of(&o.meta));
     let outline = |text: &str| crate::outlines::of_text(real, stamp, text);
-    vec![Part::Text(section_of(&bytes, &outline, shown, it, left, &mut Vec::new()))]
+    vec![Part::Text(section_of(&bytes, &outline, shown, it, left, seen))]
 }
 
 /// An image's part: its heading — what it is, how it's sent, what it costs — then the picture, while `room` has
@@ -430,7 +443,7 @@ fn section_of(
     let of = of_lines(n);
     let ranges: Vec<(usize, usize, String)> = match &it.want {
         Want::Whole if bytes.len() > WHOLE_MAX => {
-            return outline(outline_of(&text), shown, &lines, bytes.len(), left);
+            return outline(outline_of(&text), shown, &lines, bytes.len(), left, seen);
         }
         Want::Whole | Want::Tail(_) | Want::Lines(_) => ranges(&it.want, n, shown).unwrap_or_default(),
         Want::Symbol(name) => match outline_of(&text) {
@@ -605,6 +618,7 @@ fn outline(
     lines: &[&str],
     bytes: usize,
     left: &mut usize,
+    seen: &mut Vec<(usize, usize)>,
 ) -> String {
     let n = lines.len();
     let ask = format!(
@@ -631,6 +645,9 @@ fn outline(
         _ => {
             let take = HEAD_LINES.min(n).min(*left);
             *left -= take;
+            if take > 0 {
+                seen.push((1, take));
+            }
             let mut out = format!("== {shown}:1-{take} (of {n} lines, {kb} KB — no outline for it). {ask}\n");
             for (i, l) in lines[..take].iter().enumerate() {
                 out.push_str(&format!("{}: {}\n", i + 1, crate::nav::clip(l, LINE_MAX)));
@@ -681,7 +698,7 @@ mod tests {
 
     fn text(r: Answer) -> String {
         match r {
-            Ok(Ok(parts)) => crate::tools::said(&parts),
+            Ok(Ok((parts, _))) => crate::tools::said(&parts),
             Ok(Err(ask)) => panic!("asks the user about {}", ask.at_said()),
             Err(e) => panic!("{e}"),
         }
@@ -689,6 +706,84 @@ mod tests {
 
     fn items(specs: &[&str]) -> Vec<Item> {
         specs.iter().map(|s| item(s)).collect()
+    }
+
+    /// What `specs`' answer showed: file names and lines from 1, both ends in.
+    fn gave(dir: &Path, specs: &[&str]) -> Vec<(String, usize, usize)> {
+        let gate = crate::reads::Gate::for_test(dir);
+        let Ok(Ok((_, shown))) = read(dir, &items(specs), &gate, &[]) else { panic!("read") };
+        let name = |p: &Path| p.file_name().unwrap().to_string_lossy().into_owned();
+        shown.iter().map(|x| (name(&x.path), x.lines.start + 1, x.lines.end)).collect()
+    }
+
+    /// Focus F0: what an answer showed is its numbered lines, never what was asked — a range clamped to the file, a tail,
+    /// a symbol; a big file asked whole shows its outline and no line, or with no outline its first lines; an answer cut
+    /// at `LINES_MAX` no line past the cut; a missing file nothing.
+    #[test]
+    fn an_answer_shows_the_lines_it_gave() {
+        let (dir, _, base) = places("gave");
+        let a = |x, y| ("a.rs".to_string(), x, y);
+        assert_eq!(gave(&dir, &["src/a.rs:2-3,8-500"]), [a(2, 3), a(8, 9)]);
+        assert_eq!(gave(&dir, &["src/a.rs:-2"]), [a(8, 9)]);
+        assert_eq!(gave(&dir, &["src/a.rs"]), [a(1, 9)]);
+        assert_eq!(gave(&dir, &["src/a.rs:Thing::run"]), [a(4, 6)]);
+        assert_eq!(gave(&dir, &["src/big.rs"]), [], "its outline: no line of it");
+        assert_eq!(gave(&dir, &["src/nope.rs", "src"]), []);
+        let long: String = (0..3000).map(|i| format!("row {i}\n")).collect();
+        std::fs::write(dir.join("long.txt"), long).unwrap();
+        let name = |x, y| ("long.txt".to_string(), x, y);
+        assert_eq!(gave(&dir, &["long.txt:1-2000"]), [name(1, LINES_MAX)], "cut at the answer's limit");
+        assert_eq!(gave(&dir, &["long.txt"]), [name(1, HEAD_LINES)], "no outline: its first lines");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Focus F0: a claude process counts its request ids itself, so `space i`'s read can carry the id of a chat's call: what
+    /// it showed is no stop's of the chat's, and what it finds changed marks none of the chat's reads. The chat's own does.
+    #[test]
+    fn a_read_of_another_claude_is_no_stop_of_the_chats() {
+        use crate::chat::{Called, claim_for, look};
+        let (dir, _, base) = places("another");
+        let a = crate::paths::real(&dir.join("src/a.rs")).unwrap();
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.root = dir.clone();
+        ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        let chat = ed.workspace.claude.chat.as_ref().unwrap().generation();
+        let (tool, input) = ("mcp__tarae__read", json!({ "files": ["src/a.rs:1-2"] }));
+        for id in ["earlier", "r"] {
+            let called = Called { id: id.to_string(), name: tool.to_string(), input: input.clone() };
+            ed.workspace.claude.chat.as_mut().unwrap().calls.push(called);
+            let shown = look(&dir, tool, &input);
+            crate::follow::on_tool(&mut ed, id, tool, &input, &shown);
+        }
+        claim_for(&mut ed, tool, &input, &json!(1));
+        claim_for(&mut ed, tool, &input, &json!(915));
+        let was = crate::replay::Shown { path: a.clone(), lines: 0..1, old: false };
+        crate::follow::shown(&mut ed, "earlier", vec![was], &[]);
+        // (Claude's claim on the file: not what's there, so a read now finds it changed)
+        let stale = |ed: &mut Editor| {
+            let seen = (std::time::SystemTime::UNIX_EPOCH, 1);
+            ed.workspace.claude.chat.as_mut().unwrap().edits.seen.insert(a.clone(), seen);
+        };
+        let stops = |ed: &Editor, id: &str| {
+            let c = ed.workspace.claude.chat.as_ref().unwrap();
+            let s = c.follow.replay.turns().iter().flat_map(|t| &t.stops).find(|s| s.call == id);
+            s.expect("its stop").map.shown.clone()
+        };
+        let reads =
+            || crate::tools::ANSWERED.with(|a| a.borrow().iter().filter(|(k, _)| *k == json!(915)).count());
+        let go = |ed: &mut Editor, generation: u64, n: usize| {
+            call(ed, Call::of(generation, "", json!(915)), &input).unwrap();
+            crate::test_results::settle_until(ed, |_| reads() == n);
+        };
+        stale(&mut ed);
+        go(&mut ed, chat + 1, 1);
+        assert_eq!(stops(&ed, "r"), [], "another claude's lines");
+        assert!(!stops(&ed, "earlier")[0].old, "another claude's look at the file");
+        stale(&mut ed);
+        go(&mut ed, chat, 2);
+        assert_eq!(stops(&ed, "r").len(), 1, "the chat's own");
+        assert!(stops(&ed, "earlier")[0].old, "the chat's own look");
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     /// Ranges, a file's end, a symbol by its type's name, several in one answer, numbered; a big file asked
@@ -792,7 +887,7 @@ mod tests {
     /// The pictures of an answer, and its text with each as `[image/png w×h]`.
     fn pictures_of(r: Answer) -> (Vec<crate::media::Image>, String) {
         let parts = match r {
-            Ok(Ok(parts)) => parts,
+            Ok(Ok((parts, _))) => parts,
             Ok(Err(ask)) => panic!("asks the user about {}", ask.at_said()),
             Err(e) => panic!("{e}"),
         };
@@ -884,7 +979,7 @@ mod tests {
             Ok(Err(ask)) => assert_eq!(ask.at_said(), dir.join("id_rsa").display().to_string()),
             other => panic!(
                 "read unasked: {:?}",
-                other.map(|r| r.map(|p| crate::tools::said(&p)).map_err(|a| a.at_said()))
+                other.map(|r| r.map(|p| crate::tools::said(&p.0)).map_err(|a| a.at_said()))
             ),
         }
         std::fs::remove_dir_all(&base).unwrap();

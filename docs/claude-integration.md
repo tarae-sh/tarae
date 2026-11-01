@@ -754,7 +754,7 @@ eight turns of the chat are kept. The chat's last row says `[r ]r replay its 7 s
 
 **The turn as a map.** The same stops, on the code's own structure: what the last turn touched, kept until the next
 turn starts, with one session as with several (the front session's turn; the others stay as presence shows them).
-The side panel's file rows say each file's roles, the heaviest first — `▲` failed · `●` changed · `▸` run over · `•`
+The side panel's file rows say each file's roles, the heaviest first — `▲` failed · `●` changed · `▸` tested · `•`
 searched · `◦` read, with a count when it was read more than once (`● ▸ ◦ 2`), the same marks as the chat's rows and
 the follow card's strip — in the files tab and the git tab; a narrow row says the strongest, its name giving way. A
 folded folder says its strongest and how many of its files the turn touched (`● 3/12`). The outline marks the
@@ -1919,6 +1919,31 @@ in the chat's input) it waits, then opens. A card you opened yourself keeps it f
 until the next answer opens its own or you close it. After a turn `]n`/`[n` walk the newest answer's places in the
 order it wrote them, then every other note by file. `space n` on one asks about it, and from then it's a thread like
 any other, kept and sent.
+
+Each place an answer names says what tarae saw of it in that turn, faint, on the card beside the answer's question and
+time. A doubt says so at the line end too, before the sentence; a place with nothing to doubt keeps its line end as it
+was. It never says whether the sentence is true, and nothing of it reaches Claude.
+
+| It says | Meaning |
+|---|---|
+| `read this turn` | an answer showed Claude every line of the place |
+| `not read this turn` | not every line was shown: said from memory, an earlier turn or a guess |
+| `read, changed since` | the file isn't what was read any more: your edit, saved or not, or another program's |
+| `changed, no test seen` | the turn changed these lines, and no `run_tests` holding the change passed after |
+| `changed, tested` | the turn changed them, and one did |
+| `tested, changed since` | one did, and the file has changed since |
+| `changed, test failed` | a test failed there after the change |
+
+Only `read this turn` and `changed, tested` stay off the line end: the rest are doubts.
+
+Read means shown, not asked for. A range covers only its range, a big file asked for whole shows its outline and no
+line, an answer cut at its limit nothing past the cut, and a search hit its own line. `run_tests` is what counts as run,
+the same rule as `▸` on the turn's map: a `cargo test` through `run` doesn't, because tarae can't know what a command
+went over. Where a line end runs out of room the doubt stays and the sentence is cut; beside code too long for the doubt
+whole, it's cut itself, whole under the mouse.
+
+An older answer keeps what its own turn saw, on its card. A place the answer didn't name (its words at the turn's last
+stop) says nothing, and neither does a conversation you continued, whose stops aren't kept.
 
 A new conversation (`C-l`, `/clear`) clears them; a thread you started on one stays, it's yours. Closing the chat
 (`space L`) leaves them at the code, and the chat's next opening is a new conversation, which clears them. Continuing a

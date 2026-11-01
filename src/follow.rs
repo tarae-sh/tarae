@@ -1204,6 +1204,16 @@ pub fn on_result(ed: &mut Editor, id: &str, text: &str, error: bool) {
     }
 }
 
+/// What call `row`'s answer showed Claude (`Mapped.shown`), kept on its stop. `went`: files a read found changed since
+/// Claude last saw them (`Replay::went_under`).
+pub fn shown(ed: &mut Editor, row: &str, shown: Vec<crate::replay::Shown>, went: &[PathBuf]) {
+    let Some(f) = follow(ed) else { return };
+    went.iter().for_each(|p| f.replay.went_under(row, p));
+    if let Some(stop) = f.replay.by_call(row) {
+        stop.map.shown = shown;
+    }
+}
+
 /// A read by name: its lines are in its answer (`replay::read_sections`), what it asked says none.
 fn read_named(ed: &mut Editor, id: &str, text: &str) {
     use crate::readtool::Want;
@@ -1268,7 +1278,8 @@ fn found(ed: &mut Editor, id: &str, text: &str) {
             let link = Some(crate::chat::Link { path: p.clone(), line: l });
             let look = Look { link, ..stop.look.clone() };
             let lines = Some(l..l + 1);
-            let more = crate::replay::Stop { look, path: Some(p), lines, ..stop.clone() };
+            let map = crate::replay::Mapped { shown: Vec::new(), ..stop.map.clone() };
+            let more = crate::replay::Stop { look, path: Some(p), lines, map, ..stop.clone() };
             f.replay.after_call(id, more);
         }
     }

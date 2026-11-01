@@ -366,6 +366,30 @@ const E1_CLOSED: &[&str] = e1_keys!(" ", "L", "@1", " ", "e", "@?main.rs", "@1")
 const E1_HAND: &[&str] = e1_keys!(" ", "e", "@?main.rs", "@1", "\x1b", "[", "r", "[", "r", "[", "r", "@1");
 const E1_FOLDED: &[&str] = e1_keys!(" ", "e", "@?main.rs", "@1", "g", "@0.5", "\r", "@1");
 
+/// Focus F0's keys: `F0_ASKS` to `f0-saw`, its edit taken, its turn's end, the keys in the code (`esc esc`), then `$more`.
+macro_rules! f0_keys {
+    ($($more:expr),* $(,)?) => {
+        &["@1", " ", "l", "@1", "why is a strand too long?", "\r", "@20?Change 1 of 1", "@1", "y", "@20?That is all",
+          "@2", "\x1b", "\x1b", "@20!walk-through", $($more,)* "@1"]
+    };
+}
+/// `f0_keys`, then a second question to its turn's end, then `$more`.
+macro_rules! f0_two_keys {
+    ($($more:expr),* $(,)?) => {
+        &["@1", " ", "l", "@1", "why is a strand too long?", "\r", "@20?Change 1 of 1", "@1", "y", "@20?That is all",
+          "@2", "does anything else read it?", "\r", "@20?Only that", "@2", "\x1b", "\x1b", "@20!walk-through",
+          "q", " ", "L", ":", "o src/thread.rs", "\r", "@1", $($more,)* "@1"]
+    };
+}
+/// Focus F0's scenes: the turn's end, its card open · the card closed, the line ends · the chat closed too · an edit of
+/// yours since the read · a second answer: an older answer's card, then a line both answers name, the earlier unfolded.
+const F0_CARD: &[&str] = f0_keys!();
+const F0_LINES: &[&str] = f0_keys!("q");
+const F0_WIDE: &[&str] = f0_keys!("q", " ", "L");
+const F0_EDITED: &[&str] = f0_keys!("q", "4G", "ix", "\x1b", "j");
+const F0_OLDER: &[&str] = f0_two_keys!("4G", "\r");
+const F0_LINE: &[&str] = f0_two_keys!("10G", "\r", "\r");
+
 const A1_LINE: &[&str] = &[
     "@1",
     " ",
@@ -3050,6 +3074,14 @@ const SCENES: &[Scene] = &[
     Scene { name: "e1-folded", claude: "e1-map", files: MAIN, keys: E1_FOLDED },
     Scene { name: "e1-failed", claude: "e1-failed", files: MAIN, keys: E1_TREE },
     Scene { name: "e1-sessions", claude: "e1-map", files: MAIN, keys: E1_SESSIONS },
+    Scene { name: "f0-card", claude: "f0-saw", files: MAIN, keys: F0_CARD },
+    Scene { name: "f0-lines", claude: "f0-saw", files: MAIN, keys: F0_LINES },
+    Scene { name: "f0-wide", claude: "f0-saw", files: MAIN, keys: F0_WIDE },
+    Scene { name: "f0-edited", claude: "f0-saw", files: MAIN, keys: F0_EDITED },
+    Scene { name: "f0-tested", claude: "f0-tested", files: MAIN, keys: F0_WIDE },
+    Scene { name: "f0-failed", claude: "f0-failed", files: MAIN, keys: F0_WIDE },
+    Scene { name: "f0-older", claude: "f0-saw", files: MAIN, keys: F0_OLDER },
+    Scene { name: "f0-line", claude: "f0-saw", files: MAIN, keys: F0_LINE },
     Scene { name: "a1-line", claude: "focus-line", files: MAIN, keys: A1_LINE },
     Scene { name: "a1b-line-card", claude: "focus-line", files: MAIN, keys: A1B_LINE },
     Scene { name: "a1b-flow-cut", claude: "a1-flow", files: MAIN, keys: A1B_CUT },
@@ -4794,6 +4826,9 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "a1b-all",
     "e1-map",
     "e1-failed",
+    "f0-saw",
+    "f0-tested",
+    "f0-failed",
     "models",
     "answer",
     "askdone",
@@ -4927,6 +4962,12 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             "focus-line" => turn.focus_line(&line)?,
             "e1-map" => turn.e1_map(false)?,
             "e1-failed" => turn.e1_map(true)?,
+            // (focus F0's: the three verdicts on one answer, a second answer on the same lines)
+            "f0-saw" => turn.f0_saw(turns, None)?,
+            "f0-tested" => turn.f0_saw(turns, Some("passed in 0.4s\n$ cargo test thread\n2 passed"))?,
+            "f0-failed" => {
+                turn.f0_saw(turns, Some("failed in 0.4s\n$ cargo test thread\n1 failed, 1 passed"))?
+            }
             "tour" => turn.tour()?,
             "notethread" => turn.note_thread(&line)?,
             // (focus A1's: an answer naming no place)
@@ -5893,6 +5934,34 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             self.words("A Vec would keep the order, but let two threads share a name. That is all.")?;
         }
         self.line(json!({"type": "result", "result": "done", "session_id": id}))
+    }
+
+    /// focus F0's turn: a read of a range, a search through the real tool, an edit, `report` its tests' if they ran — and
+    /// an answer naming a line read, the search's hit, the change and a line none of them showed. Its second answer (by
+    /// `turns`, the messages so far) reads another file and names the first's lines again.
+    fn f0_saw(&mut self, turns: usize, report: Option<&str>) -> io::Result<()> {
+        if turns > 1 {
+            self.call(1, "read", json!({"files": ["src/main.rs:7-14"]}))?;
+            self.words("The loop at src/main.rs:12 only prints it.")?;
+            self.text("\n\n")?;
+            self.words("So the fix at src/thread.rs:10 is the one change. Only that.")?;
+            return self.line(json!({"type": "result", "result": "done"}));
+        }
+        self.call(1, "read", json!({"files": ["src/thread.rs:1-6"]}))?;
+        self.call(2, "search", json!({"pattern": "pub fn length", "path": "src"}))?;
+        let edit = json!({"edits": [{"file_path": "src/thread.rs", "old_string": "        self.knots.iter().sum()\n",
+            "new_string": "        self.knots.windows(2).map(|w| w[1] - w[0]).sum()\n"}]});
+        self.input(3, "edit", &edit.to_string(), None)?;
+        self.call(3, "edit", edit)?;
+        if let Some(report) = report {
+            self.ran("f4", "run_tests", json!({"path": "src/thread.rs"}), report)?;
+        }
+        self.words("The knots live in src/thread.rs:4, positions along the strand.")?;
+        self.text("\n\n")?;
+        self.words("The length starts at src/thread.rs:9. It summed the positions: src/thread.rs:10 sums the gaps now.")?;
+        self.text("\n\n")?;
+        self.words("Nothing past src/thread.rs:15 reads the length, so the callers stay. That is all.")?;
+        self.line(json!({"type": "result", "result": "done"}))
     }
 
     /// focus D1's `focus-fix`: the tests fail, two reads, an edit (its review, answered by the scene), the tests pass,

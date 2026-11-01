@@ -7620,6 +7620,124 @@ mod tests {
         assert_eq!(stops[1].look.range, "L5–6", "a further place keeps its own");
     }
 
+    /// What tarae saw of an answer's places (focus F0), the whole way from claude's stream: a read and a search through
+    /// their real tools, what each answer showed past the stream's 4 KB too; a change landed in the file read, its other
+    /// lines still as read, and an answer naming them.
+    #[test]
+    fn the_stream_carries_what_each_place_saw() {
+        use serde_json::json;
+        let s = crate::scratch::Scratch::new("stream-saw");
+        let dir = std::fs::canonicalize(&*s).unwrap();
+        let lines: String = (1..=8).map(|i| format!("line {i}\n")).collect();
+        for f in ["main.rs", "lib.rs", "other.rs", "twice.rs", "real.rs", "still.rs"] {
+            std::fs::write(dir.join(f), &lines).unwrap();
+        }
+        std::os::unix::fs::symlink(dir.join("real.rs"), dir.join("alias.rs")).unwrap();
+        std::os::unix::fs::symlink(dir.join("still.rs"), dir.join("quiet.rs")).unwrap();
+        let long: String = (1..=400).map(|i| format!("a row long enough to fill the stream {i}\n")).collect();
+        std::fs::write(dir.join("long.rs"), long).unwrap();
+        let tool = |id: &str, name: &str, input: &serde_json::Value| json!({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": id, "name": name, "input": input}]}});
+        let asks = |q: &str, name: &str, n: u64, input: &serde_json::Value| {
+            json!({"type": "control_request", "request_id": q, "request": {"subtype": "mcp_message",
+            "server_name": "tarae", "message": {"jsonrpc": "2.0", "id": n, "method": "tools/call",
+            "params": {"name": name, "arguments": input}}}})
+        };
+        let answered = |q: &str| {
+            json!(format!(
+                "while read -r l; do case \"$l\" in *'\"request_id\":\"{q}\"'*) break;; esac; done"
+            ))
+        };
+        let result = |id: &str, text: &str| json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": text}]}});
+        let read = json!({"files": ["main.rs:1-4", "long.rs:1-400", "alias.rs:1-3", "quiet.rs:1-3"]});
+        let search = json!({"pattern": "line 6"});
+        let edit = json!({"edits": [{"file_path": dir.join("main.rs"), "old_string": "line 3\n", "new_string": "one\nmore\nthree\n"}]});
+        let linked = json!({"edits": [{"file_path": dir.join("alias.rs"), "old_string": "line 1\n", "new_string": "zero\nline 1\n"}]});
+        let (first, again) = (json!({"files": ["twice.rs:1-2"]}), json!({"files": ["twice.rs:4-5"]}));
+        let text = "Line main.rs:1 opens it. The change is at main.rs:4. The hit is lib.rs:6 and other.rs:6. The row at long.rs:390 stays. Line main.rs:7 comes first. Line main.rs:8 is what follows. Line twice.rs:1 was read first. Line twice.rs:5 was read after. Line alias.rs:1 went in by its link. Line alias.rs:3 stays as read. Line alias.rs:5 was not. Line quiet.rs:2 was only read by its link.";
+        let steps = vec![
+            tool("r", "mcp__tarae__read", &read),
+            asks("q1", "read", 1, &read),
+            answered("q1"),
+            result("r", "read"),
+            tool("s", "mcp__tarae__search", &search),
+            asks("q2", "search", 2, &search),
+            answered("q2"),
+            result("s", "lib.rs\n  6: line 6\nmain.rs\n  6: line 6\nother.rs\n  6: line 6\n"),
+            tool("e", "mcp__tarae__edit", &edit),
+            asks("q3", "edit", 3, &edit),
+            answered("q3"),
+            result("e", "written"),
+            tool("l", "mcp__tarae__edit", &linked),
+            asks("q6", "edit", 6, &linked),
+            answered("q6"),
+            result("l", "written"),
+            tool("t1", "mcp__tarae__read", &first),
+            asks("q4", "read", 4, &first),
+            answered("q4"),
+            result("t1", "read"),
+            json!(format!("printf 'grown\\n' >> '{}'", dir.join("twice.rs").display())),
+            tool("t2", "mcp__tarae__read", &again),
+            asks("q5", "read", 5, &again),
+            answered("q5"),
+            result("t2", "read"),
+            json!({"type": "result", "result": text}),
+        ];
+        let mut ed = editor("");
+        ed.workspace.root = dir.clone();
+        ed.config.llm.review_at_end = true;
+        for f in ["real.rs", "long.rs", "lib.rs", "main.rs"] {
+            ed.open(&dir.join(f)).unwrap();
+        }
+        fake_claude_stream(&mut ed, &steps);
+        feed(&mut ed, "<space>lchange it<ret><esc>");
+        let end = std::time::Instant::now() + crate::test_results::PATIENCE;
+        let mut started = false;
+        while !started || ed.workspace.claude.chat.as_ref().unwrap().busy() {
+            started |= ed.workspace.claude.chat.as_ref().unwrap().busy();
+            let left = end.saturating_duration_since(std::time::Instant::now());
+            ed.handle_event(ed.events.recv_timeout(left).expect("the turn goes on"));
+        }
+        crate::term::render(&mut ed, &mut Vec::new(), 120, 40).unwrap();
+        crate::test_results::settle_until(&mut ed, |ed| {
+            crate::places::answered(ed) && ed.workspace.claude.notes.answer.is_none()
+        });
+        let saw = |ed: &Editor, f: &str, line: usize| {
+            let path = dir.join(f);
+            let n =
+                ed.workspace.claude.notes.list.iter().find(|n| n.path == path && n.lines.start + 1 == line);
+            let n = n.unwrap_or_else(|| panic!("no note at {f}:{line}"));
+            crate::docpaths::find(ed, &path).and_then(|d| crate::notes::check_word(n, d))
+        };
+        assert_eq!(saw(&ed, "main.rs", 1), Some("read this turn"), "past Claude's edit in the same file");
+        assert_eq!(saw(&ed, "main.rs", 4), Some("changed, no test seen"));
+        assert_eq!(saw(&ed, "lib.rs", 6), Some("read this turn"), "a hit's line");
+        assert_eq!(saw(&ed, "long.rs", 390), Some("read this turn"), "past the stream's 4 KB");
+        assert_eq!(saw(&ed, "main.rs", 8), Some("read this turn"), "the hit at 6, moved by the edit");
+        assert_eq!(saw(&ed, "main.rs", 7), Some("not read this turn"), "between the read and the hit");
+        // (a link: read, changed and named by it, every place the file it leads to)
+        assert_eq!(saw(&ed, "real.rs", 1), Some("changed, no test seen"), "changed by the link");
+        assert_eq!(saw(&ed, "real.rs", 3), Some("read this turn"), "read by it, moved by that change");
+        assert_eq!(saw(&ed, "real.rs", 5), Some("not read this turn"), "past the lines read");
+        let notes = &ed.workspace.claude.notes.list;
+        let check_of = |f: &str, line: usize| {
+            let n = notes.iter().find(|n| n.path == dir.join(f) && n.lines.start + 1 == line).unwrap();
+            n.check.map(|j| j.check)
+        };
+        assert_eq!(
+            check_of("other.rs", 6),
+            None,
+            "a hit not open as the turn ended: nothing to hold it against"
+        );
+        use crate::turnmap::Check;
+        assert_eq!(check_of("twice.rs", 1), Some(Check::ReadThenChanged), "the file changed under it");
+        assert_eq!(check_of("twice.rs", 5), Some(Check::Read), "the read that found it");
+        assert_eq!(check_of("still.rs", 2), Some(Check::Read), "read by a link alone, not open");
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        let stops = &c.follow.replay.turns().back().unwrap().stops;
+        let holding = stops.iter().filter(|s| !s.map.shown.is_empty()).count();
+        assert_eq!(holding, 4, "each call's first stop alone: {stops:#?}");
+    }
+
     /// The line follow keeps in sight (collab C1: follow moves the view, never your cursor) — `usize::MAX` none.
     fn led_line(ed: &Editor) -> usize {
         crate::follow::view_line(ed).unwrap_or(usize::MAX)

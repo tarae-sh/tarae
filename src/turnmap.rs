@@ -1,5 +1,5 @@
 //! focus E1 — a turn as a map, not a log (`.sb/focus-plan.md` §7 E): the places the last turn touched, on the code's own
-//! structure, by role — `◦` read · `•` searched · `●` changed · `▸` run over · `▲` failed, motion's one vocabulary
+//! structure, by role — `◦` read · `•` searched · `●` changed · `▸` tested · `▲` failed, motion's one vocabulary
 //! (`chat::Mark`). The side panel's file rows say each file's roles by weight, a folded folder its strongest, the outline
 //! a definition's, the sign column a faint mark on the lines (under every other sign, as presence's `▎`), and the panel's
 //! top line names the turn. No token, no process, no timer: read only from the replay's stops (`replay.rs`), folded again
@@ -7,7 +7,7 @@
 //! where presence draws nothing; with 2+ sessions the front session's turn only, the others stay presence's. The turn is
 //! the one replay shows (`follow::strip`'s rule): `[r` into an older turn shows that turn's map, the stop in hand lit.
 //!
-//! **Run over** is a claim, so it has one rule: a `run_tests` that passed, after the last change to that file, whose
+//! **Tested** is a claim, so it has one rule: a `run_tests` that passed, after the last change to that file, whose
 //! target holds a change there (`testing::Target::holds`: the file's tests, or a test's or group's lines). A plain `run`
 //! never — tarae can't know what a command exercised — nor a `run_tests` of another file. `▲` claims less — a test failed
 //! there — so any failure the editor went to says it, until that run passes or its file is changed.
@@ -15,12 +15,20 @@
 //! Your own edits move lines the stops don't follow: in every turn begun before your edit, on the map in sight or not, a
 //! buffer you changed keeps its file row and loses its signs (`Replay.yours`) — a mark on the wrong line reads worse than
 //! none.
+//!
+//! **What tarae knows without asking** (focus F0, `.sb/focus-plan.md` §7 F): the same fold, at a turn's end, judges each
+//! place its answer names (`Judge`, `File::check`) — read this turn, not read, changed and no test seen, E1's rule. It says
+//! what tarae saw, never whether the answer is true: `Read` only of lines an answer showed Claude (`Mapped.shown`), and
+//! only while the file is as Claude last saw it (`Judged::word`, by `Edits.seen`'s stamps). A card says every verdict, a
+//! line end only its doubts (`Judged::doubt`). A place is judged by its real path, as what was shown and seen are kept
+//! (`places::Known::place`).
 
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use crate::chat::Mark;
+use crate::disk::Stamp;
 use crate::document::{DocId, Document};
 use crate::editor::Editor;
 use crate::event::WorkspaceId;
@@ -58,7 +66,7 @@ impl Role {
         match self.mark {
             Mark::Failed => "failed".into(),
             Mark::Edit => "changed".into(),
-            Mark::Run => "run over".into(),
+            Mark::Run => "tested".into(),
             Mark::Lookup => "searched".into(),
             Mark::Read => match self.stops.len() {
                 n if n > 1 => format!("read {n}×"),
@@ -87,6 +95,134 @@ pub struct Touched {
 pub struct File {
     pub roles: Vec<Role>,
     pub lines: Vec<Touched>,
+    /// The roles a stop of gave the file with no lines: a change of the file itself, a failure of a run of it.
+    whole: Vec<Mark>,
+    /// What answers showed Claude of it, with whether the file changed under them since (`replay::Shown`).
+    shown: Vec<(Range<usize>, bool)>,
+    /// A read's answer showed lines of it, by whatever name it was asked: a read through a link has its role on the
+    /// link's own path, what it showed here.
+    shown_read: bool,
+}
+
+/// What tarae saw of a place an answer names, in the turn that answered (focus F0). Never whether what's said is true.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Check {
+    /// An answer showed Claude every line of it.
+    Read,
+    /// …but a later read found the file changed under them.
+    ReadThenChanged,
+    /// Not every line of it was shown: said from memory, an earlier turn or a guess.
+    NotRead,
+    /// The turn changed it, and no `run_tests` holding the change passed after (`▸`'s rule).
+    NotRunOver,
+    /// …and one did.
+    RunOver,
+    /// …and a test failed there since (`▲`'s).
+    Failed,
+}
+
+impl File {
+    /// What the turn folded here saw of `lines`: a change there first — what's changed was written, not read —, then
+    /// whether they were shown.
+    pub fn check(&self, lines: &Range<usize>) -> Check {
+        let meets = |l: &Range<usize>| l.start < lines.end && lines.start < l.end;
+        let at = |m: Mark| self.lines.iter().filter(move |t| t.mark == m && meets(&t.lines));
+        let (whole, changed) = (self.whole.contains(&Mark::Edit), at(Mark::Edit).count() > 0);
+        if whole || changed {
+            let ran = |t: &Touched| at(Mark::Run).any(|r| r.lines == t.lines);
+            return match () {
+                _ if self.whole.contains(&Mark::Failed) || at(Mark::Failed).count() > 0 => Check::Failed,
+                _ if whole && !self.whole.contains(&Mark::Run) => Check::NotRunOver,
+                _ if at(Mark::Edit).all(ran) => Check::RunOver,
+                _ => Check::NotRunOver,
+            };
+        }
+        let covered = |old: bool| {
+            let mut parts: Vec<&Range<usize>> =
+                self.shown.iter().filter(|(_, was)| old || !was).map(|(l, _)| l).collect();
+            crate::sorting::by_key(&mut parts, |l| l.start);
+            let mut from = lines.start;
+            for l in parts {
+                if l.start > from {
+                    break;
+                }
+                from = from.max(l.end);
+            }
+            from >= lines.end
+        };
+        match () {
+            _ if covered(false) => Check::Read,
+            _ if covered(true) => Check::ReadThenChanged,
+            _ => Check::NotRead,
+        }
+    }
+}
+
+/// A place's verdict as a note keeps it (`Note.check`): judged once, as its turn ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Judged {
+    pub check: Check,
+    /// The file as tarae knew it then — what `Read` and `RunOver` hold only while it's still so.
+    saw: Option<Stamp>,
+}
+
+impl Judged {
+    /// As the note says it, `doc` the file's buffer: what the file is now, unsaved edits too (`read` reads the disk). Every
+    /// frame it's drawn: two stamps compared, no disk.
+    pub fn word(&self, doc: &Document) -> &'static str {
+        let since = doc.is_modified() || doc.disk.is_some_and(|d| Some(d) != self.saw);
+        match self.check {
+            Check::Read if since => "read, changed since",
+            Check::Read => "read this turn",
+            Check::ReadThenChanged => "read, changed since",
+            Check::NotRead => "not read this turn",
+            Check::NotRunOver => "changed, no test seen",
+            Check::RunOver if since => "tested, changed since",
+            Check::RunOver => "changed, tested",
+            Check::Failed => "changed, test failed",
+        }
+    }
+
+    /// `word` where it's a doubt — what a line end says; what's as it should be stays on the card.
+    pub fn doubt(&self, doc: &Document) -> Option<&'static str> {
+        let word = self.word(doc);
+        (!matches!(word, "read this turn" | "changed, tested")).then_some(word)
+    }
+}
+
+/// A turn's stops as its answer's places are judged, taken as it ended (`chatnotes::turn_over`): the places are placed
+/// later, and another turn may have begun by then.
+#[derive(Clone, Debug, Default)]
+pub struct Judge {
+    root: PathBuf,
+    files: HashMap<PathBuf, File>,
+    /// What Claude last saw of the files the turn read or changed (`Edits.seen`).
+    seen: HashMap<PathBuf, Stamp>,
+}
+
+impl Judge {
+    pub fn of(stops: &[Stop], root: &Path, seen: &HashMap<PathBuf, Stamp>) -> Judge {
+        let files = fold_all(stops, root).0;
+        let looked =
+            |f: &File| f.shown_read || f.roles.iter().any(|r| matches!(r.mark, Mark::Read | Mark::Edit));
+        let seen = seen.iter().filter(|(p, _)| files.get(rel_of(p, root)).is_some_and(looked));
+        Judge { root: root.to_path_buf(), seen: seen.map(|(p, s)| (p.clone(), *s)).collect(), files }
+    }
+
+    /// The verdict on `lines` of `path`, `doc` its buffer if it has one. None where `Read` or `RunOver` has nothing to
+    /// hold against later — a search's file not open —: nothing said, never a guess.
+    pub fn judged(&self, path: &Path, lines: &Range<usize>, doc: Option<&Document>) -> Option<Judged> {
+        let file = self.files.get(rel_of(path, &self.root));
+        let check = file.map_or(Check::NotRead, |f| f.check(lines));
+        let open = || doc.filter(|d| !d.is_modified()).and_then(|d| d.disk);
+        let saw = self.seen.get(path).copied().or_else(open);
+        (saw.is_some() || !matches!(check, Check::Read | Check::RunOver)).then_some(Judged { check, saw })
+    }
+}
+
+/// `path` as the map keys it: from the checkout's top, a place outside the project whole.
+fn rel_of<'a>(path: &'a Path, root: &Path) -> &'a Path {
+    path.strip_prefix(root).unwrap_or(path)
 }
 
 /// The sign column's mark on lines of a buffer (`Shows.map`).
@@ -123,13 +259,9 @@ pub struct State {
     seen: HashMap<DocId, u64>,
 }
 
-/// What a stop is on the map: the file it's at, from the checkout's top — Err: a place outside the project.
-fn place<'a>(s: &'a Stop, root: &Path) -> Option<Result<&'a Path, ()>> {
-    let p = s.path.as_deref().filter(|_| s.page.is_none())?;
-    Some(match p.is_absolute() {
-        true => p.strip_prefix(root).map_err(|_| ()),
-        false => Ok(p),
-    })
+/// The file a stop is at: from the checkout's top, a place outside the project whole (`rel_of`).
+fn place<'a>(s: &'a Stop, root: &Path) -> Option<&'a Path> {
+    Some(rel_of(s.path.as_deref().filter(|_| s.page.is_none())?, root))
 }
 
 /// A role's stops at a file as they're folded, each with its lines where it has them.
@@ -142,6 +274,8 @@ struct Work {
     over: Stops,
     searched: Stops,
     read: Stops,
+    shown: Vec<(Range<usize>, bool)>,
+    shown_read: bool,
 }
 
 /// A failure the editor went to, or a failed test run at its target: until that run passes or its file is changed.
@@ -157,20 +291,30 @@ fn at_least_a_line(l: &Range<usize>) -> Range<usize> {
     l.start..l.end.max(l.start + 1)
 }
 
-/// The stops of one turn as a map: each file's roles by weight, and how many stops were outside the project.
+/// The stops of one turn as a map: each file's roles by weight, and how many stops were outside the project — what's
+/// marked is the project's ("what Claude reads elsewhere is never opened").
 fn fold(stops: &[Stop], root: &Path) -> (HashMap<PathBuf, File>, usize) {
+    let (mut files, outside) = fold_all(stops, root);
+    files.retain(|rel, f| rel.is_relative() && !f.roles.is_empty());
+    (files, outside)
+}
+
+/// `fold`, every place kept: those of another folder (`:folder-add`) are judged the same (`Judge`), a file only hits
+/// past `follow::HIT_FILES` showed too.
+fn fold_all(stops: &[Stop], root: &Path) -> (HashMap<PathBuf, File>, usize) {
     let mut work: HashMap<&Path, Work> = HashMap::new();
     let mut failed: Vec<Failed> = Vec::new();
     let mut outside = 0;
     // (the run a failure the editor went to belongs to: the one just before it)
     let mut ran: Option<&str> = None;
     for (i, s) in stops.iter().enumerate() {
-        let rel = place(s, root);
-        if rel.is_some_and(|r| r.is_err()) {
-            outside += 1;
-            continue;
+        for x in &s.map.shown {
+            let w = work.entry(rel_of(&x.path, root)).or_default();
+            w.shown.push((x.lines.clone(), x.old));
+            w.shown_read |= s.look.mark() == Mark::Read;
         }
-        let rel = rel.and_then(Result::ok);
+        let rel = place(s, root);
+        outside += usize::from(rel.is_some_and(Path::is_absolute));
         match s.look.verb {
             "failed" => {
                 failed.extend(rel.map(|rel| Failed { run: ran, rel, lines: s.lines.clone(), stop: i }))
@@ -222,11 +366,11 @@ fn fold(stops: &[Stop], root: &Path) -> (HashMap<PathBuf, File>, usize) {
         add(f, Mark::Run, &w.over);
         add(f, Mark::Lookup, &w.searched);
         add(f, Mark::Read, &w.read);
+        (f.shown, f.shown_read) = (w.shown, w.shown_read);
     }
     for x in failed {
         add(files.entry(x.rel.to_path_buf()).or_default(), Mark::Failed, &[(x.stop, x.lines)]);
     }
-    files.retain(|_, f| !f.roles.is_empty());
     files.values_mut().for_each(|f| crate::sorting::by_key(&mut f.roles, |r| weight(r.mark)));
     (files, outside)
 }
@@ -257,6 +401,9 @@ fn add(f: &mut File, mark: Mark, stops: &[(usize, Option<Range<usize>>)]) {
             f.roles[at].stops.push(*stop);
         }
         f.lines.extend(lines.clone().map(|lines| Touched { lines, mark, stop: *stop }));
+        if lines.is_none() && !f.whole.contains(&mark) {
+            f.whole.push(mark);
+        }
     }
 }
 
@@ -351,7 +498,7 @@ impl State {
         Some((Role { mark: strongest, stops }, under().count()))
     }
 
-    /// The roles in words, for the row in hand's foot (`changed · run over · read 3×`).
+    /// The roles in words, for the row in hand's foot (`changed · tested · read 3×`).
     pub fn words(roles: &[Role]) -> Vec<String> {
         roles.iter().map(Role::word).collect()
     }

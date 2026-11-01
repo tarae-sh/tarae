@@ -245,6 +245,11 @@ pub fn saw(ed: &mut Editor, generation: u64, path: &Path, stamp: Option<crate::d
     };
 }
 
+/// Whether `path` isn't, by `stamp`, what claude process `generation` last saw — never where it has no claim.
+pub fn went(ed: &mut Editor, generation: u64, path: &Path, stamp: Option<crate::disk::Stamp>) -> bool {
+    seen_of(ed, generation).and_then(|s| s.get(path)).is_some_and(|was| Some(*was) != stamp)
+}
+
 /// No claim of what claude process `generation` has seen of `path` (it was saved where its stamp isn't known).
 pub fn forget(ed: &mut Editor, generation: u64, path: &Path) {
     saw(ed, generation, path, None)

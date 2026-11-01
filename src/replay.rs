@@ -54,6 +54,19 @@ pub struct Mapped {
     pub holds: Option<Holds>,
     /// Its call came back an error, failed or refused: what it set out to do didn't happen.
     pub errored: bool,
+    /// What the call's answer showed Claude, file by file, on its first stop (`follow::shown`): a read's numbered lines, a
+    /// search's or a lookup's hits — taken from the whole answer as it went out, never the stream's first 4 KB, nor what
+    /// was asked (an outline, a read cut at `LINES_MAX`, a search's later hits). What a place's check reads (`turnmap::File::check`).
+    pub shown: Vec<Shown>,
+}
+
+/// Lines of a file an answer showed Claude.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shown {
+    pub path: PathBuf,
+    pub lines: Range<usize>,
+    /// The file was seen to change under them since, by no edit of Claude's (`Replay::went_under`).
+    pub old: bool,
 }
 
 /// What a test run holds of the file it runs (`testing::find`): all of it, or a test or group's lines (0-based).
@@ -162,6 +175,15 @@ impl Replay {
         self.turns.get(t).zip(self.yours.get(rel)).is_some_and(|(t, at)| t.begun <= *at)
     }
 
+    /// A read of `call` found `path` changed since Claude last saw it, by no edit of its: what this turn's earlier calls
+    /// showed of it isn't what's there.
+    pub fn went_under(&mut self, call: &str, path: &Path) {
+        self.changes();
+        let turn = self.turns.back_mut().into_iter().flat_map(|t| t.stops.iter_mut());
+        let earlier = turn.filter(|s| s.call != call).flat_map(|s| s.map.shown.iter_mut());
+        earlier.filter(|x| x.path == path).for_each(|x| x.old = true);
+    }
+
     /// The turn just begun: message `n` of the conversation asked it (`Turn.asked`).
     pub fn asked(&mut self, n: usize, text: &str) {
         self.changes();
@@ -251,11 +273,15 @@ impl Replay {
     /// before it there follow (a read of lines below it, an earlier edit's lines).
     pub fn edited(&mut self, path: &Path, changes: &[(Range<usize>, Range<usize>)]) {
         // (a new version only when a stop is there — the edit of a file the turn never looked at moves none)
-        if !self.turns.iter().flat_map(|t| &t.stops).any(|s| s.path.as_deref() == Some(path)) {
+        let shown = |s: &Stop| s.map.shown.iter().any(|x| x.path == path);
+        if !self.turns.iter().flat_map(|t| &t.stops).any(|s| s.path.as_deref() == Some(path) || shown(s)) {
             return;
         }
         self.changes();
         for stop in self.turns.iter_mut().flat_map(|t| t.stops.iter_mut()) {
+            for x in stop.map.shown.iter_mut().filter(|x| x.path == path) {
+                x.lines = moved_range(&x.lines, changes);
+            }
             if stop.path.as_deref() != Some(path) {
                 continue;
             }
@@ -391,12 +417,24 @@ pub fn read_sections(text: &str) -> Vec<(&str, Range<usize>)> {
 /// content mode, a definition), a path line followed by indented `  12: code` hits (tarae's search and
 /// references), or bare paths (files only). Relative paths are from `root`.
 pub fn hits(root: &Path, text: &str) -> Vec<(PathBuf, usize)> {
-    let mut out: Vec<(PathBuf, usize)> = Vec::new();
+    places_in(root, text).into_iter().map(|(p, l, _)| (p, l)).collect()
+}
+
+/// The lines `text`, a search's or a lookup's whole answer, showed: a hit each, never a path alone (`output: files`).
+pub fn hit_lines(root: &Path, text: &str) -> Vec<Shown> {
+    let hit =
+        |(path, l, line): (PathBuf, usize, bool)| line.then(|| Shown { path, lines: l..l + 1, old: false });
+    places_in(root, text).into_iter().filter_map(hit).collect()
+}
+
+/// `hits`, each with whether the answer shows that line — false: a path alone, line 0 only standing in.
+fn places_in(root: &Path, text: &str) -> Vec<(PathBuf, usize, bool)> {
+    let mut out: Vec<(PathBuf, usize, bool)> = Vec::new();
     // A path line not yet followed by its hits — a hit of its own (line 1) if none come
     let mut file: Option<(PathBuf, bool)> = None;
-    let close = |file: &mut Option<(PathBuf, bool)>, out: &mut Vec<(PathBuf, usize)>| {
+    let close = |file: &mut Option<(PathBuf, bool)>, out: &mut Vec<(PathBuf, usize, bool)>| {
         if let Some((p, false)) = file.take() {
-            out.push((p, 0));
+            out.push((p, 0, false));
         }
     };
     for l in text.lines() {
@@ -411,7 +449,7 @@ pub fn hits(root: &Path, text: &str) -> Vec<(PathBuf, usize)> {
                 && t[digits..].starts_with(':')
                 && let Ok(n) = t[..digits].parse::<usize>()
             {
-                out.push((p.clone(), n.saturating_sub(1)));
+                out.push((p.clone(), n.saturating_sub(1), true));
                 *seen = true;
             }
             continue;
@@ -420,7 +458,7 @@ pub fn hits(root: &Path, text: &str) -> Vec<(PathBuf, usize)> {
             crate::chat::refs_in(l, |n| Some(crate::chat::resolve(root, n))).into_iter().next()
         {
             close(&mut file, &mut out);
-            out.push((link.path, link.line));
+            out.push((link.path, link.line, true));
             continue;
         }
         // A bare path: one word that looks like a file
@@ -473,7 +511,7 @@ mod tests {
         Stop { call: String::new(), look, path, lines: Some(lines), hunks, why, page: None, map }
     }
 
-    /// What a test run holds moves as a stop's lines do ("run over" compares it with the changes as they are now), and
+    /// What a test run holds moves as a stop's lines do ("tested" compares it with the changes as they are now), and
     /// a further place put after its call keeps the stop in hand the one it was.
     #[test]
     fn holds_follow_edits_and_a_further_place_keeps_the_hand() {
@@ -608,6 +646,51 @@ mod tests {
             r.add(stop("e", 0..1));
         }
         assert_eq!(r.turns.len(), TURNS, "only the last few turns");
+    }
+
+    /// Focus F0: a search's or a lookup's answer shows its hits' lines, whole or by its path lines, never a path alone.
+    #[test]
+    fn the_lines_an_answer_showed_are_its_hits_alone() {
+        let root = Path::new("/p");
+        let shown = |text: &str| -> Vec<(String, usize)> {
+            let hits = hit_lines(root, text);
+            hits.iter().map(|x| (x.path.display().to_string(), x.lines.start + 1)).collect()
+        };
+        let at = |p: &str, l| (p.to_string(), l);
+        // (a search with its path lines, a place written whole; never a path alone — `output: files`)
+        assert_eq!(
+            shown("src/a.rs\n  in fn x (1–9)\n  12: code\n  --\n  30: more\nb.rs:7: code\n"),
+            [at("/p/src/a.rs", 12), at("/p/src/a.rs", 30), at("/p/b.rs", 7)]
+        );
+        assert_eq!(shown("src/a.rs\nsrc/b.rs\n"), []);
+        assert_eq!(hits(root, "src/a.rs\n"), [(PathBuf::from("/p/src/a.rs"), 0)], "as a place it stays");
+    }
+
+    /// What an answer showed follows Claude's edits wherever the stop is, a search's other files too; a read that finds the
+    /// file changed under it marks what this turn's earlier calls showed of it — no other file's, no other turn's, nor its own.
+    #[test]
+    fn what_was_shown_follows_edits_and_goes_old() {
+        let shown = |path: &str, lines| Shown { path: path.into(), lines, old: false };
+        let with = |call: &str, x: Vec<Shown>| Stop {
+            call: call.to_string(),
+            map: Mapped { shown: x, ..Mapped::default() },
+            ..stop("other", 0..1)
+        };
+        let mut r = Replay::default();
+        r.begin();
+        r.add(with("before", vec![shown("a", 0..2)]));
+        r.begin();
+        r.add(with("s", vec![shown("a", 10..11), shown("b", 10..11)]));
+        r.add(with("r", vec![shown("a", 20..21)]));
+        r.edited(Path::new("a"), &[(2..2, 2..5)]);
+        let at = |r: &Replay, t: usize, s: usize| r.turns()[t].stops[s].map.shown.clone();
+        assert_eq!(at(&r, 1, 0)[0].lines, 13..14);
+        assert_eq!(at(&r, 1, 0)[1].lines, 10..11, "another file's stay");
+        r.went_under("r", Path::new("a"));
+        let old = |x: Vec<Shown>| x.iter().map(|x| x.old).collect::<Vec<_>>();
+        assert_eq!(old(at(&r, 1, 0)), [true, false], "the earlier call's, that file's alone");
+        assert_eq!(old(at(&r, 1, 1)), [false], "the read that found it");
+        assert_eq!(old(at(&r, 0, 0)), [false], "an earlier turn was judged at its end");
     }
 
     /// The places a search names, in its tools' shapes.

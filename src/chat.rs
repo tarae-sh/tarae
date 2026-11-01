@@ -875,7 +875,7 @@ pub fn claim_call(ed: &mut Editor, tool: &str, input: &serde_json::Value) -> Opt
 }
 
 /// `claim_call` for tarae's change tool's request `mcp_id` (as it comes — its change lands later, maybe after one
-/// asked after it): kept by that id for its landing (`row_for`).
+/// asked after it), or for one that shows Claude code: kept by that id for its landing (`row_for`).
 pub fn claim_for(ed: &mut Editor, tool: &str, input: &serde_json::Value, mcp_id: &serde_json::Value) {
     if let Some(row) = claim_call(ed, tool, input)
         && let Some(c) = ed.workspace.claude.chat.as_mut()
@@ -888,6 +888,13 @@ pub fn claim_for(ed: &mut Editor, tool: &str, input: &serde_json::Value, mcp_id:
 pub fn row_for(ed: &Editor, mcp_id: &serde_json::Value) -> Option<String> {
     let c = ed.workspace.claude.chat.as_ref()?;
     c.rows.iter().find(|(m, _)| m == mcp_id).map(|(_, row)| row.clone())
+}
+
+/// The row `call` claimed, where it's the chat's own: each claude process counts its request ids itself, so one of
+/// `space i`'s, or of a claude before this one, can equal a call's here.
+pub fn row_of(ed: &Editor, call: &crate::tools::Call) -> Option<String> {
+    ed.workspace.claude.chat.as_ref().filter(|c| c.generation() == call.generation())?;
+    row_for(ed, call.mcp_id())
 }
 
 /// A change of Claude's was answered by `keys` (its review's, its card's): the row of call `id` — the one it

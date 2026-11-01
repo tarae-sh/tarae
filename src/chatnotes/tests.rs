@@ -941,7 +941,7 @@ fn the_answers_places_are_notes_at_their_lines() {
     feed(&mut ed, "<esc>");
     let rows = screen(&mut ed);
     let line = rows.iter().find(|r| r.contains("let line_3 = 3;")).unwrap();
-    assert!(line.contains("¶ The count is read twice in src/a.rs:3."), "{line}");
+    assert!(line.contains("¶ not read this turn · The count is read t…"), "{line}");
     assert!(!rows.join("\n").contains("╭─ chat"), "closed");
     // (`]n` from the top: its line, the card again; on to src/b.rs: its range's first line)
     feed(&mut ed, "gg]n");
@@ -984,7 +984,7 @@ fn the_answers_places_are_notes_at_their_lines() {
     let [l3, l5] =
         ["let line_3 = 3;", "let line_5 = 5;"].map(|t| rows.iter().find(|r| r.contains(t)).unwrap());
     assert!(l3.contains('¶') && !l3.contains("The count"), "{l3}");
-    assert!(l5.contains("¶ Now src/a.rs:5 holds it."), "{l5}");
+    assert!(l5.contains("¶ not read this turn · Now src/a.rs:5 hold…"), "{l5}");
     // (never told to Claude while bare: the state's notes sent are the thread only)
     let sent: Vec<(&str, bool)> = ed
         .workspace
@@ -1018,6 +1018,366 @@ fn stop(path: &Path, lines: Range<usize>, edit: bool) -> crate::replay::Stop {
         page: None,
         map: Default::default(),
     }
+}
+
+// ── What tarae saw of the places (focus F0) ──────────────────────────────────────────────────
+
+/// A read's stop whose answer showed `lines` of `path`, Claude's claim on the file as it is.
+fn read_of(ed: &mut Editor, path: &Path, lines: Range<usize>) -> crate::replay::Stop {
+    let stamp = crate::disk::stamp(path).unwrap();
+    ed.workspace.claude.chat.as_mut().unwrap().edits.seen.insert(path.to_path_buf(), stamp);
+    let mut s = stop(path, lines.clone(), false);
+    s.map.shown.push(crate::replay::Shown { path: path.to_path_buf(), lines, old: false });
+    s
+}
+
+/// A `run_tests` of `path`, its report `verdict`.
+fn tests_of(path: &Path, verdict: &str) -> crate::replay::Stop {
+    let mut s = stop(path, 0..1, false);
+    s.look.verb = "test";
+    s.look.range = verdict.to_string();
+    s.lines = None;
+    s.map.holds = Some(crate::replay::Holds::File);
+    s
+}
+
+/// What the newest note at `line` (from 1) of `path` says tarae saw.
+fn saw(ed: &Editor, path: &Path, line: usize) -> Option<&'static str> {
+    let n = newest_of(ed, |n| n.path == path && n.lines.start + 1 == line)?;
+    crate::notes::check_word(n, crate::docpaths::find(ed, path)?)
+}
+
+/// `screen` at `w` cells wide.
+fn screen_at(ed: &mut Editor, w: u16) -> Vec<String> {
+    let mut bytes = Vec::new();
+    crate::term::render(ed, &mut bytes, w, H).unwrap();
+    let mut vt = vt100::Parser::new(H, w, 0);
+    vt.process(&bytes);
+    vt.screen().rows(0, w).collect()
+}
+
+/// An answer's three verdicts: the line ends of its doubts say them before the words, faint; the place whose card the
+/// turn's end opened says it on the card's head instead, its line end `¶` alone.
+#[test]
+fn each_place_says_what_tarae_saw_of_it() {
+    let (_s, root, mut ed) = project("chatnotes-check", &["src/a.rs"]);
+    let a = root.join("src/a.rs");
+    ed.open(&a).unwrap();
+    let read = read_of(&mut ed, &a, 0..4);
+    let text = "The count starts at src/a.rs:2.\n\nThe guard moved to src/a.rs:7.\n\nNothing past src/a.rs:9 reads it.";
+    answers(&mut ed, &[text], vec![read, stop(&a, 6..7, true)]);
+    assert_eq!(saw(&ed, &a, 2), Some("read this turn"));
+    assert_eq!(saw(&ed, &a, 7), Some("changed, no test seen"));
+    assert_eq!(saw(&ed, &a, 9), Some("not read this turn"));
+    let rows = screen(&mut ed);
+    let row = |want: &str| rows.iter().any(|r| r.contains(want));
+    assert!(row("¶ changed, no test seen · The guard moved"), "{rows:#?}");
+    assert!(row("¶ not read this turn · Nothing past"), "{rows:#?}");
+    let open = crate::notes::opened(&ed, ed.doc()).expect("the turn's end opened a card");
+    let word = saw(&ed, &a, open.lines.start + 1).unwrap();
+    assert!(rows.iter().any(|r| r.contains("where?") && r.contains(word)), "{rows:#?}");
+    assert!(!row(&format!("¶ {word}")), "its card says it: {rows:#?}");
+}
+
+/// A line end says doubts only: what's as it should be — `read this turn`, `changed, tested` — keeps the line end it had
+/// before there were verdicts, the card saying it. Doubted since, it says so there too.
+#[test]
+fn a_line_end_says_doubts_only() {
+    let (_s, root, mut ed) = project("chatnotes-calm", &["src/a.rs"]);
+    let a = root.join("src/a.rs");
+    ed.open(&a).unwrap();
+    let read = read_of(&mut ed, &a, 0..4);
+    let stops = vec![read, stop(&a, 6..7, true), tests_of(&a, "12 passed")];
+    let text = "The last is src/a.rs:9.\n\nIt starts at src/a.rs:2.\n\nThe guard moved to src/a.rs:7.";
+    answers(&mut ed, &[text], stops);
+    assert_eq!(saw(&ed, &a, 2), Some("read this turn"));
+    assert_eq!(saw(&ed, &a, 7), Some("changed, tested"));
+    let rows = code_rows(&mut ed);
+    let end_of =
+        |want: &str| rows.iter().find(|r| r.contains(want)).unwrap().split('¶').nth(1).unwrap().trim();
+    assert_eq!(end_of("line_2 "), "It starts at src/a.rs:2.", "as before: {rows:#?}");
+    assert_eq!(end_of("line_7 "), "The guard moved to src/a.rs:7.", "as before: {rows:#?}");
+    assert_eq!(end_of("line_9 "), "", "a doubt with its card open: the card says it, `¶` alone: {rows:#?}");
+    // Its card says it all the same, and the file moving under it makes it a doubt
+    let at = |ed: &Editor, line: usize| newest_of(ed, |n| n.lines.start == line).unwrap().id;
+    let id = at(&ed, 6);
+    crate::notes::open(&mut ed, id);
+    assert!(code_rows(&mut ed).iter().any(|r| r.contains("where?") && r.contains("changed, tested")));
+    let id = at(&ed, 8);
+    crate::notes::open(&mut ed, id);
+    std::fs::write(&a, std::fs::read_to_string(&a).unwrap() + "more\n").unwrap();
+    ed.doc_mut().disk = crate::disk::stamp(&a);
+    let rows = code_rows(&mut ed);
+    assert!(rows.iter().any(|r| r.contains("¶ tested, changed since · The guard")), "{rows:#?}");
+}
+
+/// What's cut at a line end is the note's words: its card starts where they do, after the check.
+#[test]
+fn the_words_cut_card_starts_after_the_check() {
+    let (_s, root, mut ed) = project("chatnotes-cut", &["src/a.rs"]);
+    let a = root.join("src/a.rs");
+    ed.open(&a).unwrap();
+    let read = read_of(&mut ed, &a, 0..4);
+    let long = "The rest of it lives past src/a.rs:9 where nothing reads it and nothing writes it either, as far as it goes.";
+    answers(&mut ed, &[&format!("It starts at src/a.rs:2.\n\n{long}")], vec![read]);
+    let rows = screen(&mut ed);
+    let y = rows.iter().position(|r| r.contains("line_9") && r.contains("¶ not read")).expect("its line");
+    assert!(rows[y].contains('…'), "{}", rows[y]);
+    let x = rows[y].chars().position(|c| c == '·').unwrap() + 2;
+    let spots = ed.screen.cut_spots.borrow();
+    assert!(spots.iter().any(|s| s.0 == y && s.1 == x), "at {y}:{x}: {}", rows[y]);
+}
+
+/// A chat note answered is a thread: its head still says what tarae saw of the place.
+#[test]
+fn a_note_you_answered_keeps_what_tarae_saw() {
+    let (_s, root, mut ed) = project("chatnotes-answered", &["src/a.rs"]);
+    let a = root.join("src/a.rs");
+    ed.open(&a).unwrap();
+    let read = read_of(&mut ed, &a, 0..4);
+    answers(&mut ed, &["It starts at src/a.rs:2."], vec![read]);
+    let id = newest_of(&ed, |n| n.path == a).unwrap().id;
+    let entry = Entry { by: By::You, text: "why?".to_string(), draft: false };
+    crate::notes::find_mut(&mut ed, id).unwrap().thread.push(entry);
+    crate::notes::open(&mut ed, id);
+    let rows = screen(&mut ed);
+    assert!(rows.iter().any(|r| r.contains("¶ chat · read this turn")), "{rows:#?}");
+}
+
+/// Its stops are taken as the turn ends: a next turn begun before its places land changes nothing of what they say.
+#[test]
+fn the_places_are_judged_by_the_turn_that_named_them() {
+    let (_s, root, mut ed) = project("chatnotes-next", &["src/a.rs"]);
+    let a = root.join("src/a.rs");
+    ed.open(&a).unwrap();
+    let read = read_of(&mut ed, &a, 0..4);
+    let c = ed.workspace.claude.chat.as_mut().unwrap();
+    c.msgs.push(Msg::new(Role::User, "where?", ""));
+    c.follow.new_turn();
+    c.follow.replay.add(read);
+    c.msgs.push(Msg::new(Role::Assistant, "It starts at src/a.rs:2.", ""));
+    turn_over(&mut ed, true);
+    ed.workspace.claude.chat.as_mut().unwrap().follow.replay.begin();
+    crate::term::render(&mut ed, &mut Vec::new(), W, H).unwrap();
+    crate::test_results::settle_until(&mut ed, |ed| {
+        crate::places::answered(ed) && ed.workspace.claude.notes.answer.is_none()
+    });
+    assert_eq!(saw(&ed, &a, 2), Some("read this turn"));
+}
+
+/// A test that passed says so; one that failed says that; a read and a run stay what they are only while the file is as
+/// Claude last saw it — an edit of yours, unsaved or undone, a save, what another program wrote. What changed and wasn't
+/// run, and what wasn't read, say the same whatever came after.
+#[test]
+fn a_file_changed_since_the_read_says_so() {
+    let (_s, root, mut ed) = project("chatnotes-since", &["src/a.rs", "src/b.rs"]);
+    let (a, b) = (root.join("src/a.rs"), root.join("src/b.rs"));
+    ed.open(&b).unwrap();
+    ed.open(&a).unwrap();
+    ed.workspace.viewer.at = crate::workspace::At::Code;
+    let read = read_of(&mut ed, &a, 0..4);
+    ed.workspace.claude.chat.as_mut().unwrap().edits.seen.insert(b.clone(), crate::disk::stamp(&b).unwrap());
+    let stops = vec![read, stop(&b, 2..3, true), tests_of(&b, "12 passed")];
+    answers(
+        &mut ed,
+        &["It starts at src/a.rs:2.\n\nIt ends at src/b.rs:3.\n\nAnd src/a.rs:9 is left."],
+        stops,
+    );
+    assert_eq!(saw(&ed, &a, 2), Some("read this turn"));
+    assert_eq!(saw(&ed, &b, 3), Some("changed, tested"));
+    // An edit of yours, unsaved: `read` reads the disk, so the buffer isn't what was read
+    feed(&mut ed, "ix<esc>");
+    assert!(ed.doc().is_modified());
+    assert_eq!(saw(&ed, &a, 2), Some("read, changed since"));
+    assert_eq!(saw(&ed, &a, 9), Some("not read this turn"));
+    // Undone: as it was
+    feed(&mut ed, "u");
+    assert_eq!(saw(&ed, &a, 2), Some("read this turn"));
+    // Written by something else, the watch's reload having taken it
+    std::fs::write(&a, "changed by another program\n").unwrap();
+    ed.doc_mut().disk = crate::disk::stamp(&a);
+    assert_eq!(saw(&ed, &a, 2), Some("read, changed since"));
+    let doc = ed.docs.iter_mut().find(|d| d.path.as_deref() == Some(b.as_path())).unwrap();
+    std::fs::write(&b, "changed by another program\n").unwrap();
+    doc.disk = crate::disk::stamp(&b);
+    assert_eq!(saw(&ed, &b, 3), Some("tested, changed since"));
+}
+
+/// Changed during the turn, after the read: said as it ends. Two reads with a save between: the first's lines aren't
+/// what's there, the second's are.
+#[test]
+fn a_file_changed_during_the_turn_says_so_at_its_end() {
+    let (_s, root, mut ed) = project("chatnotes-during", &["src/a.rs"]);
+    let a = root.join("src/a.rs");
+    ed.open(&a).unwrap();
+    let read = read_of(&mut ed, &a, 0..4);
+    std::fs::write(&a, std::fs::read_to_string(&a).unwrap() + "more\n").unwrap();
+    ed.doc_mut().disk = crate::disk::stamp(&a);
+    answers(&mut ed, &["It starts at src/a.rs:2."], vec![read]);
+    assert_eq!(saw(&ed, &a, 2), Some("read, changed since"));
+    let was = read_of(&mut ed, &a, 0..4);
+    let mut old = was.clone();
+    old.map.shown[0].old = true;
+    let again = read_of(&mut ed, &a, 6..8);
+    answers(&mut ed, &["First src/a.rs:2 then src/a.rs:7."], vec![old, again]);
+    assert_eq!(saw(&ed, &a, 2), Some("read, changed since"));
+    assert_eq!(saw(&ed, &a, 7), Some("read this turn"));
+}
+
+/// An older answer keeps what its own turn saw, past the stops kept (`replay::TURNS`) — on its card's head, never its line
+/// end (`¶` alone); a place with a newer answer on its line says the newer's; a continue has no stops: nothing said.
+#[test]
+fn an_older_answer_says_what_its_own_turn_saw() {
+    let (_s, root, mut ed) = project("chatnotes-older", &["src/a.rs", "src/b.rs"]);
+    let (a, b) = (root.join("src/a.rs"), root.join("src/b.rs"));
+    ed.open(&a).unwrap();
+    let read = read_of(&mut ed, &a, 0..4);
+    answers(&mut ed, &["It starts at src/a.rs:2.\n\nThe rest is at src/a.rs:8."], vec![read]);
+    for i in 0..crate::replay::TURNS + 1 {
+        answer(&mut ed, &format!("Turn {i} is about src/b.rs:{}.", i % 5 + 1));
+    }
+    let older = newest_of(&ed, |n| n.path == a && n.lines.start == 1).unwrap();
+    assert!(crate::notes::older(&ed.workspace.claude.notes, older));
+    let id = older.id;
+    assert_eq!(saw(&ed, &a, 2), Some("read this turn"), "its stops long gone");
+    assert_eq!(saw(&ed, &a, 8), Some("not read this turn"));
+    let rows = screen(&mut ed);
+    assert!(rows.iter().all(|r| !r.contains("read this turn")), "never at an older line's end: {rows:#?}");
+    // Its card: the word on its answer's head, under its question
+    crate::notes::open(&mut ed, id);
+    let rows = screen(&mut ed);
+    assert!(rows.iter().any(|r| r.contains("where?") && r.contains("read this turn")), "{rows:#?}");
+    // Continued: its words back, what tarae saw of them gone with the stops
+    let places = {
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        places_json(&ed.workspace.claude.notes, &c.msgs)
+    };
+    restore(&mut ed, places.as_ref());
+    assert_eq!(saw(&ed, &a, 2), None);
+    ed.open(&b).unwrap();
+    assert_eq!(saw(&ed, &b, 1), None);
+}
+
+/// A flow at a stop names no place: it claims nothing of its line, so nothing's said of it.
+#[test]
+fn a_place_the_answer_didnt_name_says_nothing() {
+    let (_s, root, mut ed) = project("chatnotes-unnamed", &["src/a.rs"]);
+    let a = root.join("src/a.rs");
+    ed.open(&a).unwrap();
+    let read = read_of(&mut ed, &a, 0..4);
+    answers(&mut ed, &["Nothing else reads it."], vec![read]);
+    assert!(newest_of(&ed, |n| n.path == a).is_some());
+    assert_eq!(saw(&ed, &a, 1), None);
+}
+
+/// A search's file, not open as the turn ended, has no stamp to hold a read against: nothing said, never a guess. Open,
+/// the buffer's own; a file Claude read, its own stamp.
+#[test]
+fn a_hit_with_nothing_to_hold_it_against_says_nothing() {
+    let (_s, root, mut ed) = project("chatnotes-hit", &["src/a.rs", "src/b.rs"]);
+    let (a, b) = (root.join("src/a.rs"), root.join("src/b.rs"));
+    ed.open(&a).unwrap();
+    let hit = |path: &Path| {
+        let mut s = stop(path, 2..3, false);
+        s.look.verb = "search";
+        s.map.shown.push(crate::replay::Shown { path: path.to_path_buf(), lines: 2..3, old: false });
+        s
+    };
+    answers(&mut ed, &["Found at src/a.rs:3 and src/b.rs:3."], vec![hit(&a), hit(&b)]);
+    assert_eq!(saw(&ed, &a, 3), Some("read this turn"));
+    assert_eq!(newest_of(&ed, |n| n.path == b).and_then(|n| n.check), None);
+    ed.open(&b).unwrap();
+    assert_eq!(saw(&ed, &b, 3), None);
+    // Claude's stamp of an earlier turn says nothing of what a hit showed in this one
+    let seen = (std::time::SystemTime::UNIX_EPOCH, 1);
+    ed.workspace.claude.chat.as_mut().unwrap().edits.seen.insert(a.clone(), seen);
+    answers(&mut ed, &["Again at src/a.rs:3."], vec![hit(&a)]);
+    assert_eq!(saw(&ed, &a, 3), Some("read this turn"));
+    // A buffer with unsaved edits holds what no search read: nothing to hold a hit against
+    ed.open(&a).unwrap();
+    ed.workspace.viewer.at = crate::workspace::At::Code;
+    feed(&mut ed, "ix<esc>");
+    answers(&mut ed, &["Last at src/a.rs:3."], vec![hit(&a)]);
+    assert_eq!(saw(&ed, &a, 3), None);
+}
+
+/// A narrow line end keeps its doubt and cuts the sentence in what's left; a few cells of it past the doubt are no
+/// sentence, so the doubt stands alone. With no room for it whole the doubt is what's cut, never given up for the
+/// sentence — whole under the mouse.
+#[test]
+fn the_doubt_stays_and_the_sentence_is_cut() {
+    let (_s, root, mut ed) = project("chatnotes-narrow", &["src/a.rs"]);
+    let a = root.join("src/a.rs");
+    ed.open(&a).unwrap();
+    let read = read_of(&mut ed, &a, 0..4);
+    let long =
+        "Nothing past src/a.rs:9 reads it, whatever the rest of the file says of it, as far as it goes.";
+    answers(&mut ed, &[&format!("It starts at src/a.rs:2.\n\n{long}")], vec![read]);
+    let word = "not read this turn";
+    let (mut cut, mut alone, mut short) = (false, false, false);
+    for w in 40..=W {
+        let rows = screen_at(&mut ed, w);
+        let Some(y) = rows.iter().position(|r| r.contains("line_9") && r.contains('¶')) else { continue };
+        let row = &rows[y];
+        let after = row.split('¶').nth(1).unwrap().split('│').next().unwrap().trim();
+        match after.strip_prefix(word) {
+            Some("") => alone = true,
+            Some(rest) => {
+                let words = rest.strip_prefix(" · ").unwrap_or_else(|| panic!("at {w}: {row}"));
+                assert!(words.starts_with("Not"), "at {w}: {row}");
+                cut |= words.ends_with('…');
+            }
+            None => {
+                short = true;
+                let kept = after.strip_suffix('…').unwrap_or_else(|| panic!("at {w}: {row}"));
+                assert!(word.starts_with(kept), "at {w}: {row}");
+                let x = row.chars().position(|c| c == '¶').unwrap() + 2;
+                let spots = ed.screen.cut_spots.borrow();
+                assert!(spots.iter().any(|s| s.0 == y && s.1 == x), "its card, at {w}: {row}");
+            }
+        }
+    }
+    assert!(cut && alone && short, "all seen: sentence cut {cut}, doubt alone {alone}, doubt cut {short}");
+}
+
+/// A place named through a link is the file it leads to: its note is on that file's buffer, its verdict what Claude's
+/// answers showed of that file, kept by real path.
+#[test]
+fn a_place_named_through_a_link_is_its_file() {
+    let (_s, root, mut ed) = project("chatnotes-link", &["src/a.rs"]);
+    let (a, link) = (root.join("src/a.rs"), root.join("src/link.rs"));
+    std::os::unix::fs::symlink(&a, &link).unwrap();
+    ed.open(&a).unwrap();
+    let read = read_by(&mut ed, &a, &link);
+    answers(&mut ed, &["It starts at src/link.rs:2.\n\nAnd src/link.rs:9 is left."], vec![read]);
+    assert_eq!(saw(&ed, &a, 2), Some("read this turn"));
+    assert_eq!(saw(&ed, &a, 9), Some("not read this turn"));
+    let rows = code_rows(&mut ed);
+    assert!(rows.iter().any(|r| r.contains("line_9") && r.contains("¶ not read this turn")), "{rows:#?}");
+}
+
+/// A read through a link, as the tool lands it: its stop keeps the name asked, what it showed and Claude's stamp the file.
+fn read_by(ed: &mut Editor, real: &Path, link: &Path) -> crate::replay::Stop {
+    crate::replay::Stop { path: Some(link.to_path_buf()), ..read_of(ed, real, 0..4) }
+}
+
+/// A file only ever read through a link holds that read as any file does: not open, the verdict stands on Claude's stamp;
+/// open, a change after the read is seen, not taken for what Claude read.
+#[test]
+fn a_file_read_through_a_link_holds_what_was_read() {
+    let (_s, root, mut ed) = project("chatnotes-link-read", &["src/a.rs", "src/b.rs"]);
+    let (a, b) = (root.join("src/a.rs"), root.join("src/b.rs"));
+    let (la, lb) = (root.join("src/la.rs"), root.join("src/lb.rs"));
+    std::os::unix::fs::symlink(&a, &la).unwrap();
+    std::os::unix::fs::symlink(&b, &lb).unwrap();
+    ed.open(&a).unwrap();
+    let reads = vec![read_by(&mut ed, &a, &la), read_by(&mut ed, &b, &lb)];
+    std::fs::write(&a, std::fs::read_to_string(&a).unwrap() + "more\n").unwrap();
+    ed.doc_mut().disk = crate::disk::stamp(&a);
+    answers(&mut ed, &["It starts at src/la.rs:2.\n\nThe other at src/lb.rs:2."], reads);
+    assert_eq!(saw(&ed, &a, 2), Some("read, changed since"));
+    let not_open = newest_of(&ed, |n| n.path == b).and_then(|n| n.check).map(|j| j.check);
+    assert_eq!(not_open, Some(crate::turnmap::Check::Read));
 }
 
 /// The newest answer's of the notes `which` takes.
@@ -1116,7 +1476,7 @@ fn the_answers_flow_is_one_card_at_its_place() {
     feed(&mut ed, "q");
     let rows = code_rows(&mut ed);
     let line = rows.iter().find(|r| r.contains("let line_6 = 6;")).unwrap();
-    assert!(line.contains("¶ The fix is in src/a.rs:6.") && !line.contains("notes"), "{line}");
+    assert!(line.contains("¶ not read this turn · The fix is in") && !line.contains("notes"), "{line}");
     // (`]n` to it, then on: the answer's next place as written — the line held one)
     feed(&mut ed, "gg]n");
     assert_eq!(ed.cursor_line(), 5);

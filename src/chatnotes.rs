@@ -79,6 +79,8 @@ pub struct Waiting {
     pub asked: Option<String>,
     /// Its question's place among the conversation's messages of yours, from 0 (`Origin.turn`).
     pub turn: usize,
+    /// Its turn's stops, as it ended — what its places are judged by (`turnmap::Judge`, focus F0).
+    pub judge: crate::turnmap::Judge,
 }
 
 /// Which answer a chat note is of, and where in it (focus A1b): what the conversation keeps of it (`places_json`) and
@@ -389,6 +391,8 @@ pub fn turn_over(ed: &mut Editor, ok: bool) {
     said.asked = asked(&c.msgs[..turn]);
     said.turn = c.msgs[..turn].iter().filter(|m| m.role == Role::User).count().saturating_sub(1);
     (said.own, said.noted, said.stops) = (own, noted, stops);
+    let turn = c.follow.replay.turns().back().map_or(&[][..], |t| &t.stops[..]);
+    said.judge = crate::turnmap::Judge::of(turn, &ed.workspace.root, &c.edits.seen);
     ed.workspace.claude.notes.answer = Some(said);
     ed.unchanged = false;
     sync(ed);
@@ -637,10 +641,14 @@ pub fn sync(ed: &mut Editor) {
             .filter(|_| !crate::sandbox::key_named(&ed.workspace.root, &p.path))
             .map(|d| d.text.line(p.lines.start).to_string().trim().to_string());
         let lead = end.as_ref().is_some_and(|(e, l)| *e == p.path && *l == p.said);
+        // (a place the answer named: a flow at a stop names none, and claims nothing of it)
+        let doc = crate::docpaths::find(ed, &p.path);
+        let check = w.judge.judged(&p.path, &p.lines, doc).filter(|_| !p.name.is_empty());
         let origin = Origin { n, at, turn: w.turn, name: p.name, said: p.said, text };
         let id =
             crate::notes::add_said(ed, &p.path, p.lines, (p.sentence, p.paragraph), p.flow, w.asked.clone());
-        crate::notes::find_mut(ed, id).expect("just added").answer = Some(origin);
+        let note = crate::notes::find_mut(ed, id).expect("just added");
+        (note.answer, note.check) = (Some(origin), check);
         if first.is_none() || lead && !first.is_some_and(|f: (u64, bool)| f.1) {
             first = Some((id, lead));
         }

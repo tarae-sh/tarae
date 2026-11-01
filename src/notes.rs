@@ -113,6 +113,9 @@ pub struct Note {
     /// A finding's: the branch its round's changes were since (`Reviewer.since`; None: uncommitted, or not a
     /// finding) — what its change lands in, in the checkout tarae started in (`landed_check`, #248).
     pub since: Option<String>,
+    /// A chat note's on a place its answer named: what tarae saw of that place in its turn (focus F0). None where its
+    /// stops weren't kept (a continue brought it back): nothing said.
+    pub check: Option<crate::turnmap::Judged>,
 }
 
 /// What a finding of the board's carries beside its text: the angles that found it (the first pinned it),
@@ -266,6 +269,7 @@ pub fn add(ed: &mut Editor, path: &Path, lines: Range<usize>, by: By, text: &str
         asked: None,
         answer: None,
         since: None,
+        check: None,
     });
     ed.workspace.claude.notes.focus = Some(id);
     attach(ed);
@@ -315,8 +319,19 @@ pub fn add_said(
         asked,
         answer: None,
         since: None,
+        check: None,
     });
     notes.next
+}
+
+/// What note `n` says tarae saw of its place, `doc` the file's buffer — nothing for a note no answer's check is on.
+pub fn check_word(n: &Note, doc: &crate::document::Document) -> Option<&'static str> {
+    n.check.as_ref().map(|c| c.word(doc))
+}
+
+/// `check_word` where it's a doubt: what its line end says (`Judged::doubt`).
+pub fn check_doubt(n: &Note, doc: &crate::document::Document) -> Option<&'static str> {
+    n.check.as_ref().and_then(|c| c.doubt(doc))
 }
 
 /// What a note keeps of its lines' text to tell a change (`Note.pinned`): a SHA-256 of them. None past the
@@ -506,6 +521,7 @@ fn restore_from(notes: &mut Notes, docs: &mut crate::docpaths::Docs, saved: Vec<
             asked: None,
             answer: None,
             since: v["since"].as_str().map(str::to_string),
+            check: None,
         });
     }
     attach_in(notes, docs);
@@ -716,6 +732,7 @@ pub fn pin_finding(
         flow: Vec::new(),
         asked: None,
         answer: None,
+        check: None,
         since,
     });
     place(ed, id, from, snap, lines);

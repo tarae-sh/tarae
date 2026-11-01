@@ -172,8 +172,12 @@ pub fn mcp(ed: &mut Editor, generation: u64, request_id: &str, msg: &Value) -> O
                 ) => {
                     let call = call();
                     // (a change: its call's row, found now by its input — it may land later than one called after
-                    // it, a rename on its server's answer)
-                    if matches!(name, "rename" | "replace" | "edit") {
+                    // it, a rename on its server's answer; what shows Claude code too: what it showed goes on that
+                    // row's stop as it lands — `follow::shown`)
+                    if matches!(
+                        name,
+                        "rename" | "replace" | "edit" | "read" | "search" | "references" | "definition"
+                    ) {
                         crate::chat::claim_for(ed, &format!("mcp__tarae__{name}"), args, &id);
                     }
                     // (watched while it waits — one silent too long marks its session: `workspace::Doing::Stuck`)
@@ -450,6 +454,7 @@ fn deliver(ed: &mut Editor, call: Call, r: Result<Vec<Part>, String>) {
                 },
             };
             ed.workspace.claude.tool_waits.retain(|w| !w.is(call.generation, &call.id));
+            hits_shown(ed, &call, &r);
             let (len, pictures) = r.as_ref().map_or_else(|e| (e.len(), 0), |p| (parts_len(p), pictures(p)));
             sized(ed, &call.tool, len, call.output, pictures);
             let response = response(&call, r);
@@ -465,6 +470,23 @@ fn deliver(ed: &mut Editor, call: Call, r: Result<Vec<Part>, String>) {
             let _ = ed.events.shared_sender().send(crate::event::Event::For(session, tag, Box::new(later)));
         }
     }
+}
+
+/// A search's or a lookup's answer going out: the lines it shows, from its whole text (`Mapped.shown`).
+fn hits_shown(ed: &mut Editor, call: &Call, r: &Result<Vec<Part>, String>) {
+    let ("search" | "references" | "definition", Ok(parts)) = (call.tool.as_str(), r) else { return };
+    let Some(row) = crate::chat::row_of(ed, call) else { return };
+    // (`output: count`'s `src/a.rs:12` is twelve hits in the file, no line of it)
+    let calls = ed.workspace.claude.chat.iter().flat_map(|c| &c.calls);
+    if calls.filter(|k| k.id == row).any(|k| k.input["output"] == "count") {
+        return;
+    }
+    let root = ed.workspace.root.clone();
+    let shown = (parts.iter())
+        .filter_map(|p| if let Part::Text(t) = p { Some(t.as_str()) } else { None })
+        .flat_map(|t| crate::replay::hit_lines(&root, t))
+        .collect();
+    crate::follow::shown(ed, &row, shown, &[]);
 }
 
 /// A new claude process's generation — the chats' and `space i`'s from one count, so a `Call`'s names one process.
@@ -9725,5 +9747,56 @@ mod tests {
             let named = here.others_write.iter().any(|o| o == w);
             assert!(named, "{}: {:?}", w.display(), here.others_write);
         }
+    }
+
+    /// Focus F0: a search's or a lookup's answer goes out with what it shows on its call's stop, from its whole text — never
+    /// what the stream keeps of it; another tool's says nothing; an error shows nothing.
+    #[test]
+    fn a_lookups_answer_says_what_it_showed() {
+        use crate::editor::Editor;
+        use crate::tools::{Call, Part, hits_shown};
+        use serde_json::json;
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.workspace.root = std::path::PathBuf::from("/p");
+        ed.workspace.claude.chat = Some(crate::chat::Chat::new());
+        let far: String =
+            (1..=400).map(|i| format!("  {i}: a hit long enough to pass the stream's cut\n")).collect();
+        let answer = format!("src/a.rs\n{far}");
+        let claimed = |ed: &mut Editor, n: usize, name: &str, input: serde_json::Value| {
+            let (id, tool) = (format!("t{n}"), format!("mcp__tarae__{name}"));
+            let called = crate::chat::Called { id: id.clone(), name: tool.clone(), input: input.clone() };
+            ed.workspace.claude.chat.as_mut().unwrap().calls.push(called);
+            let look = crate::chat::look(&ed.workspace.root.clone(), &tool, &input);
+            crate::follow::on_tool(ed, &id, &tool, &input, &look);
+            crate::chat::claim_for(ed, &tool, &input, &json!(n));
+            id
+        };
+        let stops = |ed: &Editor, id: &str| {
+            let c = ed.workspace.claude.chat.as_ref().unwrap();
+            let turns = c.follow.replay.turns();
+            let s = turns.iter().flat_map(|t| &t.stops).find(|s| s.call == id);
+            s.expect("its stop").map.shown.len()
+        };
+        let tools = [("search", true), ("references", true), ("definition", true), ("symbols", false)];
+        for (n, (name, says)) in tools.into_iter().enumerate() {
+            let id = claimed(&mut ed, n, name, json!({"n": n}));
+            let call = Call::new(0, "q", json!(n), Default::default(), name);
+            hits_shown(&mut ed, &call, &Err("no".to_string()));
+            let another = Call::new(1, "q", json!(n), Default::default(), name);
+            hits_shown(&mut ed, &another, &Ok(vec![Part::Text(answer.clone())]));
+            assert_eq!(stops(&ed, &id), 0, "{name}: an error, or another claude's id");
+            hits_shown(&mut ed, &call, &Ok(vec![Part::Text(answer.clone())]));
+            assert_eq!(stops(&ed, &id), if says { 400 } else { 0 }, "{name}");
+        }
+        // (`output: count` writes `path:hits`, a place to the eye: no line of the file reached Claude)
+        let counted = Part::Text("src/a.rs:12\nsrc/b.rs:3\n".to_string());
+        let id = claimed(&mut ed, 8, "search", json!({"pattern": "x", "output": "count"}));
+        let call = Call::new(0, "q", json!(8), Default::default(), "search");
+        hits_shown(&mut ed, &call, &Ok(vec![counted.clone()]));
+        assert_eq!(stops(&ed, &id), 0, "a count");
+        let id = claimed(&mut ed, 9, "search", json!({"pattern": "x", "output": "lines"}));
+        let call = Call::new(0, "q", json!(9), Default::default(), "search");
+        hits_shown(&mut ed, &call, &Ok(vec![counted]));
+        assert_eq!(stops(&ed, &id), 2, "anything else: its places");
     }
 }

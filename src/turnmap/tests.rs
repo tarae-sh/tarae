@@ -1,4 +1,4 @@
-//! The turn's map: the run-over rule first, then its roles, then what's drawn and what a press does.
+//! The turn's map: the rule of `tested` first, then its roles, then what's drawn and what a press does.
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -52,7 +52,7 @@ fn said(stops: &[Stop], rel: &str) -> Vec<String> {
     map(stops).get(Path::new(rel)).map_or(Vec::new(), |f| f.roles.iter().map(Role::said).collect())
 }
 
-// ── Run over: the one rule ──────────────────────────────────────────────────────────────────
+// ── Tested: the one rule ────────────────────────────────────────────────────────────────────
 
 /// A plain `run` never marks `▸`: no coverage, tarae can't know what a command exercised — even one that says its tests
 /// passed, even one naming the file.
@@ -87,6 +87,15 @@ fn a_run_tests_holding_the_change_marks_it() {
     assert_eq!(said(&on, "a.rs"), ["●", "▸"]);
     let off = [edit("a.rs", 3..4), test("a.rs", Some(Holds::Lines(10..20)), "passed")];
     assert_eq!(said(&off, "a.rs"), ["●"]);
+}
+
+/// The row in hand's foot says the roles in words: `tested`, as a note's card says the same rule.
+#[test]
+fn the_foot_says_tested() {
+    let run = test("a.rs", Some(Holds::File), "12 passed");
+    let turn = [edit("a.rs", 3..4), run, read("a.rs", 1..2), read("a.rs", 5..6)];
+    let f = &map(&turn)[Path::new("a.rs")];
+    assert_eq!(State::words(&f.roles), ["changed", "tested", "read 2×"]);
 }
 
 /// "Ran after the last change": a change after the run takes `▸` back, the run before it never gave it.
@@ -129,7 +138,7 @@ fn a_failure_stands_until_its_run_passes_or_its_file_changes() {
     gone.push(test("a.rs", held(), "12 passed"));
     assert_eq!(said(&gone, "b.rs"), Vec::<String>::new(), "its run passed: the failure went with it");
     let broke = [edit("a.rs", 3..4), test("a.rs", held(), "12 passed"), test("a.rs", held(), "1 failed")];
-    assert_eq!(said(&broke, "a.rs"), ["▲", "●"], "it passed, then failed: not run over");
+    assert_eq!(said(&broke, "a.rs"), ["▲", "●"], "it passed, then failed: not tested");
     // (again, but nothing ran: it stands — under way, never started, no test in it)
     for verdict in ["", "not run", "no tests ran"] {
         let mut again = failed.to_vec();
@@ -833,7 +842,7 @@ fn an_edit_and_a_search_are_a_stop_a_file() {
     assert_eq!(found, [("src/deep/c.rs".to_string(), Some(2..3)), ("src/a.rs".into(), Some(4..5))]);
 }
 
-/// `run_tests`' target reaches its stop: what "run over" reads, by the words its row shows, never another's.
+/// `run_tests`' target reaches its stop: what "tested" reads, by the words its row shows, never another's.
 #[test]
 fn a_run_tests_target_reaches_its_stop() {
     let s = crate::scratch::Scratch::new("turnmap-target");
@@ -886,6 +895,138 @@ fn a_removed_or_moved_file_lands_on_the_map() {
         assert_eq!(ed.turnmap.files[Path::new(rel)].roles[0].mark, Mark::Edit, "{rel}");
     }
     assert!(!ed.turnmap.files.contains_key(Path::new("src/a.rs")), "yours isn't the turn's");
+}
+
+// ── What tarae saw of a place (focus F0) ────────────────────────────────────────────────────
+
+/// `s`, its answer having shown `lines` of `rel`.
+fn showed(mut s: Stop, rel: &str, lines: Range<usize>) -> Stop {
+    s.map.shown.push(crate::replay::Shown { path: at(rel), lines, old: false });
+    s
+}
+
+/// What the turn `stops` saw of `lines` of `rel`.
+fn check(stops: &[Stop], rel: &str, lines: Range<usize>) -> Check {
+    let files = fold_all(stops, Path::new(ROOT)).0;
+    files.get(Path::new(rel)).map_or(Check::NotRead, |f| f.check(&lines))
+}
+
+/// A read covers what its answer showed, not what it asked: a range only its range, every line of a place or it isn't
+/// read; a whole file answered by its outline (a stop of the file, nothing shown) no line, an answer cut short none past
+/// the cut — a read of the file on the map all the same.
+#[test]
+fn a_read_covers_only_the_lines_its_answer_showed() {
+    let turn = [showed(read("a.rs", 2..5), "a.rs", 2..5)];
+    assert_eq!(check(&turn, "a.rs", 2..5), Check::Read);
+    assert_eq!(check(&turn, "a.rs", 3..4), Check::Read);
+    assert_eq!(check(&turn, "a.rs", 4..6), Check::NotRead, "its last line past the read");
+    assert_eq!(check(&turn, "a.rs", 1..3), Check::NotRead, "its first before it");
+    assert_eq!(check(&turn, "a.rs", 5..6), Check::NotRead, "the line after");
+    assert_eq!(check(&turn, "b.rs", 2..5), Check::NotRead, "another file");
+    let outline = [stop("read", Some(at("a.rs")), None)];
+    assert_eq!(check(&outline, "a.rs", 2..3), Check::NotRead);
+    assert_eq!(said(&outline, "a.rs"), ["◦"]);
+    let cut = [showed(read("a.rs", 0..2000), "a.rs", 0..1500)];
+    assert_eq!(check(&cut, "a.rs", 1499..1500), Check::Read);
+    assert_eq!(check(&cut, "a.rs", 1500..1501), Check::NotRead);
+}
+
+/// Reads cover a place together, end to end, in any order — never over a gap.
+#[test]
+fn reads_cover_a_place_together() {
+    let turn = [
+        showed(read("a.rs", 3..6), "a.rs", 3..6),
+        showed(read("a.rs", 8..9), "a.rs", 8..9),
+        showed(read("a.rs", 0..3), "a.rs", 0..3),
+    ];
+    assert_eq!(check(&turn, "a.rs", 2..5), Check::Read);
+    assert_eq!(check(&turn, "a.rs", 5..9), Check::NotRead, "6 and 7 were never shown");
+}
+
+/// A search hit counts for its line only — a hit in a file with no stop of its own too (past `follow::HIT_FILES`), that
+/// file no row on the map.
+#[test]
+fn a_search_hit_counts_for_its_line_only() {
+    let turn = [showed(search("a.rs", 7), "a.rs", 7..8)];
+    assert_eq!(check(&turn, "a.rs", 7..8), Check::Read);
+    assert_eq!(check(&turn, "a.rs", 6..7), Check::NotRead);
+    assert_eq!(check(&turn, "a.rs", 8..9), Check::NotRead);
+    assert_eq!(check(&turn, "a.rs", 7..9), Check::NotRead);
+    let far = [showed(search("a.rs", 7), "z.rs", 4..5)];
+    assert_eq!(check(&far, "z.rs", 4..5), Check::Read);
+    assert!(!map(&far).contains_key(Path::new("z.rs")));
+}
+
+/// A place the turn changed is `▸`'s to judge, read or not, by the one rule: a `run_tests` that passed after the last
+/// change, holding it — never a plain `run`, another file's, one before it or one missing it; one that failed says so.
+/// The lines round it are the reads'.
+#[test]
+fn a_changed_place_is_judged_by_run_overs_rule() {
+    let (edit3, over) = (edit("a.rs", 3..4), test("a.rs", Some(Holds::File), "passed"));
+    let turn = [showed(read("a.rs", 0..9), "a.rs", 0..9), edit3.clone()];
+    assert_eq!(check(&turn, "a.rs", 3..4), Check::NotRunOver);
+    assert_eq!(check(&turn, "a.rs", 6..7), Check::Read);
+    assert_eq!(check(&turn, "a.rs", 2..5), Check::NotRunOver, "a place only meeting the change");
+    assert_eq!(check(&[edit3.clone(), over.clone()], "a.rs", 3..4), Check::RunOver);
+    let run = Stop { look: look("run", "cargo test", "ok"), ..stop("run", None, None) };
+    assert_eq!(check(&[edit3.clone(), run], "a.rs", 3..4), Check::NotRunOver);
+    let other = test("tests.rs", Some(Holds::File), "passed");
+    assert_eq!(check(&[edit3.clone(), other], "a.rs", 3..4), Check::NotRunOver);
+    let missed = test("a.rs", Some(Holds::Lines(10..20)), "passed");
+    assert_eq!(check(&[edit3.clone(), missed], "a.rs", 3..4), Check::NotRunOver);
+    let again = [edit3.clone(), over.clone(), edit("a.rs", 3..4)];
+    assert_eq!(check(&again, "a.rs", 3..4), Check::NotRunOver, "changed after it ran");
+    let failed = test("a.rs", Some(Holds::File), "1 failed");
+    assert_eq!(check(&[edit3.clone(), failed], "a.rs", 3..4), Check::Failed);
+}
+
+/// A place over two changes is run over only once both are; a file moved here is changed whole, run over by its file's
+/// tests alone.
+#[test]
+fn every_change_of_a_place_must_be_run_over() {
+    let two = [edit("a.rs", 3..4), edit("a.rs", 5..6)];
+    let held = |lines: Range<usize>| test("a.rs", Some(Holds::Lines(lines)), "passed");
+    let one = [two[0].clone(), two[1].clone(), held(3..4)];
+    assert_eq!(check(&one, "a.rs", 2..7), Check::NotRunOver);
+    assert_eq!(check(&one, "a.rs", 3..4), Check::RunOver);
+    let both = [two[0].clone(), two[1].clone(), held(3..6)];
+    assert_eq!(check(&both, "a.rs", 2..7), Check::RunOver);
+    let map = Mapped { whole: true, ..Mapped::default() };
+    let moved = Stop { map, ..stop("edit", Some(at("a.rs")), None) };
+    assert_eq!(check(std::slice::from_ref(&moved), "a.rs", 9..10), Check::NotRunOver);
+    let over = test("a.rs", Some(Holds::File), "passed");
+    assert_eq!(check(&[moved, over], "a.rs", 9..10), Check::RunOver);
+}
+
+/// A later read that found the file changed under an earlier one leaves that one's lines `read, changed since`, the ones
+/// shown again read.
+#[test]
+fn a_read_the_file_changed_under_is_no_read_of_it() {
+    let mut was = showed(read("a.rs", 0..4), "a.rs", 0..4);
+    was.map.shown[0].old = true;
+    let turn = [was, showed(read("a.rs", 2..3), "a.rs", 2..3)];
+    assert_eq!(check(&turn, "a.rs", 0..1), Check::ReadThenChanged);
+    assert_eq!(check(&turn, "a.rs", 2..3), Check::Read);
+    assert_eq!(check(&turn, "a.rs", 1..3), Check::ReadThenChanged);
+    assert_eq!(check(&turn, "a.rs", 5..6), Check::NotRead);
+}
+
+/// A place in another folder is judged the same, and the map stays the project's: the stop outside counted, no row.
+#[test]
+fn a_place_in_another_folder_is_judged_the_same() {
+    let (out, seen) = (PathBuf::from("/elsewhere/b.rs"), HashMap::new());
+    let mut s = stop("read", Some(out.clone()), Some(1..3));
+    s.map.shown.push(crate::replay::Shown { path: out.clone(), lines: 1..3, old: false });
+    let turn = [s];
+    let (files, outside) = fold(&turn, Path::new(ROOT));
+    assert!(files.is_empty() && outside == 1, "{files:?} {outside}");
+    let judge = Judge::of(&turn, Path::new(ROOT), &seen);
+    let time = std::time::SystemTime::UNIX_EPOCH;
+    let seen = HashMap::from([(out.clone(), (time, 3))]);
+    let judge_seen = Judge::of(&turn, Path::new(ROOT), &seen);
+    assert_eq!(judge.judged(&out, &(1..2), None), None, "read, with nothing to hold it against");
+    assert_eq!(judge_seen.judged(&out, &(1..2), None).map(|j| j.check), Some(Check::Read));
+    assert_eq!(judge_seen.judged(&out, &(5..6), None).map(|j| j.check), Some(Check::NotRead));
 }
 
 /// The stops the sign column reads are found by line, the heaviest on it first and the one in hand over all.

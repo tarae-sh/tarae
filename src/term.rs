@@ -7283,7 +7283,18 @@ fn draw_text(
                     _ => format!("{draft}{}", n.gist()),
                 };
                 let tail = if open { String::new() } else { tail };
-                let body = crate::whole::fit(&gist, room.saturating_sub(2 + tail.width()));
+                let left = room.saturating_sub(2 + tail.width());
+                // (a doubt about the place, focus F0, before its words: laid first, the words in what's left, and cut
+                // itself only with no room for it whole — the card says every verdict)
+                let doubt = crate::notes::check_doubt(n, doc).filter(|_| !open && !older);
+                let saw = crate::whole::fit(doubt.unwrap_or_default(), left);
+                let saw_w = saw.shown().width();
+                let (dot, words) = match doubt {
+                    None => ("", left),
+                    Some(_) if saw_w + 3 + NOTE_WORDS_MIN <= left => (" · ", left - saw_w - 3),
+                    Some(_) => ("", 0),
+                };
+                let body = crate::whole::fit(&gist, words);
                 let glyph_fg = match () {
                     _ if older => ui.linenr.fg,
                     _ if reviewer => reviewer_style(editor, ui).fg,
@@ -7301,10 +7312,13 @@ fn draw_text(
                     let spot = word_spot(on, crate::wordspot::Press::Note(n.id), at, spans);
                     editor.screen.word_spots.borrow_mut().push(spot.home(At::Code));
                 }
+                apply(out, Style { fg: ui.linenr.fg, ..line_base })?;
+                queue!(out, Print(saw.shown()), Print(dot))?;
+                cut_end(used, 2, &saw, Style { fg: ui.linenr.fg, ..line_base });
                 let fg = blend(glyph_fg, line_base.bg.or(ui.tint), 0.62).or(ui.virt.fg);
                 apply(out, Style { fg, italic: true, ..line_base })?;
                 queue!(out, Print(body.shown()))?;
-                cut_end(used, 2, &body, Style { fg, italic: true, ..line_base });
+                cut_end(used, 2 + saw_w + dot.width(), &body, Style { fg, italic: true, ..line_base });
                 apply(out, Style { fg: ui.linenr.fg, ..line_base })?;
                 queue!(out, Print(&tail))?;
             }
@@ -21790,6 +21804,9 @@ fn note_lines(n: &crate::notes::Note, editor: &Editor, ui: &Ui) -> Vec<crate::ma
     out
 }
 
+/// The least of a note's words a line end shows after a doubt: fewer, the doubt alone.
+const NOTE_WORDS_MIN: usize = 4;
+
 /// When an answer was given, as its head says it: its local time (`14:02`).
 fn answer_time(at: u64) -> String {
     crate::log::clock(std::time::UNIX_EPOCH + std::time::Duration::from_secs(at))
@@ -21898,6 +21915,7 @@ fn note_head(
     let accent = Style { fg: ui.accent.fg, ..Style::default() };
     let dim = Style { fg: ui.virt.fg, ..Style::default() };
     let faint = Style { fg: ui.linenr.fg, ..Style::default() };
+    let saw = crate::docpaths::find(editor, &n.path).and_then(|d| crate::notes::check_word(n, d));
     match e.by {
         By::Author => vec![sp("¶ ", accent), sp(By::Author.label(), Style { bold: true, ..accent })],
         // (an answer alone under its `chat` frame: which answer — the question it answered, never `chat` again; in a
@@ -21909,9 +21927,15 @@ fn note_head(
             if let Some(o) = &n.answer {
                 v.push(sp(&format!(" · {}", answer_time(o.at)), faint));
             }
+            // (what tarae saw of the place in that answer's turn, focus F0)
+            v.extend(saw.map(|w| sp(&format!(" · {w}"), faint)));
             v
         }
-        By::Chat => vec![sp("¶ ", accent), sp(By::Chat.label(), Style { bold: true, ..accent })],
+        By::Chat => {
+            let mut v = vec![sp("¶ ", accent), sp(By::Chat.label(), Style { bold: true, ..accent })];
+            v.extend(saw.map(|w| sp(&format!(" · {w}"), faint)));
+            v
+        }
         By::You if e.draft => {
             vec![sp("› ", dim), sp(By::You.label(), Style { bold: true, ..dim }), sp(" · draft", faint)]
         }

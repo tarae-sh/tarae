@@ -42,7 +42,7 @@ fn a_name_follow_asks_as_answers_land_gets_its_frame() {
     (c.places.asking, c.places.generation) = (true, 7);
     ed.workspace.claude.chat = Some(c);
     ed.unchanged = true;
-    landed(&mut ed, 7, vec![(a, file)]);
+    landed(&mut ed, 7, vec![(a, file)], Vec::new());
     assert!(
         ed.workspace.claude.chat.as_ref().unwrap().places.pending("src/b.rs"),
         "follow asked it as it looked"

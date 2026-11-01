@@ -250,6 +250,8 @@ pub fn mark_rows(rows: &mut [ChatRow]) {
 pub struct Known {
     found: HashMap<Arc<str>, Found>,
     was: HashMap<Arc<str>, Found>,
+    /// The file each name that came to one leads to, links followed (`place`): looked up on the worker with its answer.
+    real: HashMap<Arc<str>, PathBuf>,
     key: Option<(u64, Vec<PathBuf>)>,
     generation: u64,
     asking: bool,
@@ -280,12 +282,13 @@ impl Known {
         self.asked.iter().chain(self.wanted.borrow().iter()).any(|n| &**n == name)
     }
 
-    /// What `name` comes to as its notes take it (`chatnotes.rs`): Some(the file) — Some(None) for none or several
-    /// (no one place); None while it isn't answered for the checkout's files as they are (asked after this frame).
+    /// What `name` comes to as its notes take it (`chatnotes.rs`): Some(the file, by its real path — a buffer's, as what
+    /// Claude read and changed are kept) — Some(None) for none or several (no one place); None while it isn't answered
+    /// for the checkout's files as they are (asked after this frame).
     pub fn place(&self, name: &str) -> Option<Option<PathBuf>> {
         self.of(name)?;
         Some(match self.found.get(name)? {
-            Found::File(p) => Some(p.clone()),
+            Found::File(p) => Some(self.real.get(name).unwrap_or(p).clone()),
             _ => None,
         })
     }
@@ -372,14 +375,18 @@ pub fn after_frame(ed: &mut Editor) {
         let mut files = Files::new(roots.clone());
         let found: Vec<(Arc<str>, Found)> =
             wanted.into_iter().map(|n| (n.clone(), find(&n, &roots, &mut files))).collect();
-        move |ed: &mut Editor| landed(ed, generation, found)
+        let lead = |p: &PathBuf| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+        let real: Vec<(Arc<str>, PathBuf)> = (found.iter())
+            .filter_map(|(n, f)| if let Found::File(p) = f { Some((n.clone(), lead(p))) } else { None })
+            .collect();
+        move |ed: &mut Editor| landed(ed, generation, found, real)
     });
 }
 
 /// A search's answers: kept when they're for the checkout's files as they are (an answer from before they changed is
 /// dropped — asked again); follow's wait on them over (`follow::answer_place`). A frame only where something on screen
 /// changes: an answer other than the one drawn, names that wait to be asked, follow moved or held on them.
-fn landed(ed: &mut Editor, generation: u64, found: Vec<(Arc<str>, Found)>) {
+fn landed(ed: &mut Editor, generation: u64, found: Vec<(Arc<str>, Found)>, real: Vec<(Arc<str>, PathBuf)>) {
     let Some(c) = ed.workspace.claude.chat.as_mut() else { return };
     let k = &mut c.places;
     k.asking = false;
@@ -388,6 +395,7 @@ fn landed(ed: &mut Editor, generation: u64, found: Vec<(Arc<str>, Found)>) {
     if k.generation == generation {
         same = found.iter().all(|(n, f)| k.found.get(n).or_else(|| k.was.get(n)) == Some(f));
         k.found.extend(found);
+        k.real.extend(real);
     }
     // (the chat scrolled while they were found: `follow::reading` acts after the next frame)
     let reading = c.follow.read_at.is_some_and(|r| r != c.scroll);
