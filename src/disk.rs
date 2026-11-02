@@ -594,10 +594,12 @@ impl Editor {
     /// unseen, `checkpoint::gather`): an open buffer without unsaved edits takes it now, as the watch would
     /// a moment later. One with unsaved edits is left to the watch (it says the file changed). Its servers
     /// hear the change and a save, as from the watch (#160: the watch then skips it — a rebase's resolution
-    /// left rust-analyzer's check on the conflict markers).
+    /// left rust-analyzer's check on the conflict markers). Whether it has it already is the text's to say, never
+    /// the stamp's: a write of the same size within one tick of the filesystem's clock (a jiffy on older Linux
+    /// kernels) keeps the stamp the buffer was read at (#283: Claude's `two` → `TWO` left the buffer as it was).
     pub fn disk_take(&mut self, path: &Path, body: &Rope, stamp: Option<Stamp>) {
         let Some(doc) = self.docs.iter_mut().find(|d| d.path.as_deref() == Some(path)) else { return };
-        if doc.is_modified() || doc.loading || stamp.is_none() || doc.disk == stamp {
+        if doc.is_modified() || doc.loading || stamp.is_none() {
             return;
         }
         let changed = reload_text(doc, body);
@@ -1049,6 +1051,28 @@ mod tests {
         s.pump(PAST_QUIET);
         assert_eq!(s.saves(), 3, "nothing changed");
         std::fs::remove_dir_all(&s.dir).ok();
+    }
+
+    /// #283: a write of the same size within one tick of the filesystem's clock keeps the stamp the buffer was read
+    /// at (a jiffy on older Linux kernels — K1's and K3's VMs, where Claude's `two` → `TWO` written unseen never
+    /// reached the buffer, nor its wet ink): the buffer takes the text it's handed at its own stamp all the same, and
+    /// what it already holds stays one undo away from nothing.
+    #[test]
+    fn a_text_written_at_the_buffers_own_stamp_is_taken() {
+        let dir = crate::scratch::Scratch::new("disk-same-stamp");
+        let file = std::fs::canonicalize(dir.join("")).unwrap().join("a.rs");
+        std::fs::write(&file, "one\ntwo\n").unwrap();
+        let mut ed = Editor::new(Config::default());
+        ed.open(&file).unwrap();
+        let held = ed.doc().disk;
+        assert!(held.is_some());
+        // (the write's stamp the buffer's own, as a coarse clock gives it: the same mtime, the same size)
+        ed.disk_take(&file, &Rope::from_str("one\nTWO\n"), held);
+        assert_eq!(ed.doc().text.to_string(), "one\nTWO\n", "taken at its own stamp");
+        assert!(!ed.doc().is_modified() && ed.doc().disk == held);
+        let version = ed.doc().version();
+        ed.disk_take(&file, &Rope::from_str("one\nTWO\n"), held);
+        assert_eq!(ed.doc().version(), version, "what it holds: nothing applied");
     }
 
     /// `diagnostics` sends the held saves first — the check they start is what it waits for.
