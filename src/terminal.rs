@@ -1489,13 +1489,32 @@ mod tests {
     /// raced the runner): the question comes only after the first batch is held, by the test's go-ahead.
     #[test]
     fn a_question_read_while_the_view_holds_is_answered_at_once() {
-        if no_pty_here("a_question_read_while_the_view_holds_is_answered_at_once") {
+        question_while_held("a_question_read_while_the_view_holds_is_answered_at_once", false);
+    }
+
+    /// The same, the program's output before its question read in two batches — the order K2's VM showed (Linux's
+    /// line discipline hands `first-batch` and the newline's `\r\n` to the master in two pushes, and the reader
+    /// can read between them), made here on purpose by a go-ahead between the two writes: the second batch read
+    /// waits at the first one's kept go-ahead, so nothing reads the pty and the question would wait with it. The
+    /// test catches up first (`G`), as one does to read what came, until the reader holds nothing back.
+    #[test]
+    fn a_question_after_output_read_in_two_batches_is_answered_at_once() {
+        question_while_held("a_question_after_output_read_in_two_batches_is_answered_at_once", true);
+    }
+
+    fn question_while_held(test: &str, split: bool) {
+        if no_pty_here(test) {
             return;
         }
         let scratch = crate::scratch::Scratch::new("terminal-question-held");
         let fifo = fifo_in(&scratch);
+        let first = if split {
+            format!("printf first-; read -r _ < \"{0}\"; echo batch", fifo.display())
+        } else {
+            "echo first-batch".into()
+        };
         let script = format!(
-            "exec bash -c 'read -r _ < \"{0}\"; stty -icanon -echo; echo first-batch; read -r _ < \"{0}\"; \
+            "exec bash -c 'read -r _ < \"{0}\"; stty -icanon -echo; {first}; read -r _ < \"{0}\"; \
              printf \"\\033[c\"; IFS= read -r -d c _; echo ANSWERED; sleep 30'",
             fifo.display()
         );
@@ -1508,8 +1527,25 @@ mod tests {
         }
         wait(&mut ed, |ed| term(ed).came());
         assert!(term(&ed).came(), "the first batch held while viewed");
+        if split {
+            let_go(&fifo);
+        }
+        // The reader holds nothing back: all the program wrote before its question is held (its last byte the
+        // newline), so the question is the reader's next read. `came()` alone isn't that: a batch read after the
+        // held one waits at its kept go-ahead, and nothing reads the pty until the view catches up.
+        let whole = |ed: &Editor| term(ed).held.as_ref().is_some_and(|h| h.ends_with(b"\n"));
+        let next_read = |ed: &Editor| term(ed).reader_waits() && !term(ed).waiting.is_empty();
+        for _ in 0..8 {
+            wait(&mut ed, |ed| whole(ed) || next_read(ed));
+            if whole(&ed) || !next_read(&ed) {
+                break;
+            }
+            ed.handle_key(Key::plain(Code::Char('G')));
+        }
+        let held = term(&ed).held.as_ref().map(|h| String::from_utf8_lossy(h).into_owned());
+        assert!(whole(&ed), "all of it held, nothing at a go-ahead: {held:?}");
         assert_eq!(term(&ed).answered(), 0);
-        // The question, in the reader's next batch — read while the first one's go-ahead is kept back
+        // The question, in the reader's next batch — read while the last one's go-ahead is kept back
         let_go(&fifo);
         wait(&mut ed, |ed| term(ed).answered() > 0);
         assert_eq!(term(&ed).answered(), 1, "answered as it was read");
