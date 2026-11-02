@@ -347,6 +347,41 @@ fn every_road_to_a_line_over_the_chat_has_its_keys() {
     }
 }
 
+/// C1b, the review: `tab` on a note's line over the chat keeps the words as a draft and leaves the chat as it was, its message
+/// and its conversation (`C-l`'s second press was the chat's new conversation). A second press lands in the chat: your message
+/// stays, in a chat with no messages yet too, where `tab` is the example questions'.
+#[test]
+fn tab_on_a_line_over_the_chat_keeps_it_and_the_chat_stays() {
+    for said_before in [false, true] {
+        let scratch = crate::scratch::Scratch::new("mouse-overlays-tab");
+        let mut ed = over_the_chat(&scratch);
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.conversation = Some("the conversation".into());
+        if said_before {
+            c.msgs.push(crate::chat::Msg::new(crate::chat::Role::Assistant, "An answer.", ""));
+        }
+        frame(&mut ed);
+        by_note_body(&mut ed);
+        frame(&mut ed);
+        assert_eq!(ed.keys_to().region, Region::Prompt, "the line has the keys");
+        feed(&mut ed, "kept<tab>");
+        frame(&mut ed);
+        assert!(ed.prompt.is_none(), "the line closed");
+        let n = &ed.workspace.claude.notes.list[0];
+        let e = n.thread.last().unwrap();
+        assert!(e.draft && e.text == "kept", "a draft: {:?}", n.thread);
+        assert_eq!(ed.keys_to().region, Region::Chat, "back in the chat");
+        assert_eq!(draft(&ed), DRAFT, "its message whole");
+        feed(&mut ed, "<tab>");
+        frame(&mut ed);
+        let c = ed.workspace.claude.chat.as_ref().unwrap();
+        assert_eq!(c.conversation.as_deref(), Some("the conversation"), "the conversation stays");
+        assert_eq!(c.msgs.len(), usize::from(said_before), "nothing sent");
+        assert_eq!(draft(&ed).trim_end(), DRAFT, "the second press takes no word of yours");
+        assert_eq!(crate::notes::drafts(&ed), 1, "one draft");
+    }
+}
+
 /// The same over the minimized chat, which comes first with a key that would type.
 #[test]
 fn a_line_over_the_minimized_chat_has_its_keys() {
@@ -726,7 +761,7 @@ fn the_note_cards_costly_key_is_plain_words() {
     crate::notes::open(&mut ed, id);
     frame(&mut ed);
     let rows = note_card_rows(&ed);
-    assert!(rows.last().unwrap().contains("space v s send the review"), "{rows:#?}");
+    assert!(rows.last().unwrap().contains("space v s send 1"), "{rows:#?}");
     let keys: Vec<String> = note_card_keys(&ed).into_iter().map(|k| k.0).collect();
     assert_eq!(keys, ["space n", "]n", "q"], "the send no button");
     assert!(!ed.screen.hints.borrow().iter().any(|h| h.key == "space v s"), "nor a hint");
@@ -760,10 +795,10 @@ fn a_note_card_says_its_lines_keys_while_its_reply_is_written() {
     frame(&mut ed);
     assert_eq!(keys(&ed), walk, "its keys before the reply");
     reply(&mut ed);
-    assert_eq!(keys(&ed), ["enter", "esc"], "the line's keys, on the card that holds it");
+    assert_eq!(keys(&ed), ["enter", "tab", "esc"], "the line's keys, on the card that holds it");
     let rows = note_card_rows(&ed);
     let bottom = rows.last().unwrap();
-    assert!(bottom.contains("enter send · esc close"), "{rows:#?}");
+    assert!(bottom.contains("enter send · tab later · esc close"), "{rows:#?}");
     let (x, y, ..) = ed.screen.note_card.get().unwrap();
     let shown = frame(&mut ed);
     let status = shown.lines().last().unwrap_or("");

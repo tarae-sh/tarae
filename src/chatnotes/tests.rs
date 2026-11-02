@@ -760,7 +760,8 @@ fn what_you_do_with_the_chat_closed_stays_done_on_a_continue() {
     let n = ed.workspace.claude.notes.list.iter_mut().find(|n| n.path == b).unwrap();
     n.thread.push(Entry { by: By::You, text: "why there?".into(), draft: false });
     let id = n.id;
-    crate::notes::send(&mut ed, id, "why there?", false, None, None);
+    let reply = crate::notes::Reply { id, text: "why there?".into(), fresh: false, why: None };
+    crate::notes::send(&mut ed, vec![reply], None);
     assert!(ed.workspace.claude.chat.is_some(), "the reply opened it");
     crate::test_results::settle_until(&mut ed, |_| kept(&dir, &root) == [6]);
     // Continued, the reply's turn over (the stand-in never answers it): the line left, and the thread once

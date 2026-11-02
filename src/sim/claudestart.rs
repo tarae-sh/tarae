@@ -109,7 +109,7 @@ fn held(ed: &Editor, rx: &Receiver<String>, seen: &mut Seen) -> Result<(), Strin
     }
     let waits = |text: &str| {
         ed.workspace.claude.chat.as_ref().is_some_and(|c| {
-            c.sends.iter().any(|l| matches!(l, crate::chat::Later::Reply { text: t, .. } if t == text))
+            c.sends.iter().any(|l| matches!(l, crate::chat::Later::Reply { reply, .. } if reply.text == text))
         })
     };
     for r in &seen.replies {

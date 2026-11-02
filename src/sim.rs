@@ -60,6 +60,7 @@ mod quota;
 mod quotes;
 mod rebasemsg;
 mod rebaserecheck;
+mod replyline;
 mod reveal;
 mod reviews;
 mod rundoc;

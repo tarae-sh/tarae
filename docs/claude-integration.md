@@ -1890,8 +1890,8 @@ line (or the selected lines), which starts a new note with your question.
 
 You type at the lines it's about. A question gets a card of its own between the code's lines, under the last line
 selected, holding only `ask claude:` until it's sent; a reply is the last row of the note's card, under the newest
-entry, the card shown if it was closed. Its keys are on the card's bottom line (`enter send · esc close`), and `esc`
-leaves everything as it was, the view too. Sent, what you wrote stays there, on the note's card, and the view with it
+entry, the card shown if it was closed. Its keys are on the card's bottom line (`enter send · tab later · esc close`),
+and `esc` leaves everything as it was, the view too. Sent, what you wrote stays there, on the note's card, and the view with it
 until a key moves the cursor. A card you pressed to reply stays in sight the same way, wherever your cursor is. A card
 open on another line stays open: `space n` still asks at your line, the question's card standing in for it until it's
 sent or dropped, and to reply there you go to its line or press its words. The view keeps the line in sight:
@@ -1899,6 +1899,22 @@ it moves only as far as the card needs, on a selection taller than the screen to
 around it without ever losing it. It edits as any prompt does (`C-w` a word, a press puts the cursor, a drag selects).
 Where no card can stand — a code too narrow, a buffer with no file, the code hidden — the line stands on the status
 line, as `:` and `/` always do. A comment in a code review is typed the same way, with no card left after it.
+
+**Several replies at once.** What you write while Claude works goes together: at its turn's end the replies waiting are
+one message, each note once with its lines and thread, then your words in the order you wrote them, each by its note's
+id, and Claude answers each on its note. The words count them (`3 replies queued — they go as one message when Claude's
+turn ends`), as the chat's queued row does. A reply alone goes as it always did. Closing a note takes its reply out of
+line. Something else in line keeps its place: a review or a message from a parent session between two replies goes
+between them, so they're two messages. On a file named like a key one card asks about all of them before they go, and
+nothing behind them goes until you answer it; what you write meanwhile goes after them. Closing a note the card asks
+about takes the card down: what's left of its replies goes on, with a card of its own if a key is still named.
+
+**Kept for later.** `tab` on the line keeps what you typed as a draft instead of sending it, a question or a reply: nothing
+goes to Claude, and the status line says how many wait for as long as they do (`2 drafts · space v s`, a press on it sends
+them). While one waits every `space n` writes a draft, as in a code review: `enter` keeps it too, and the card says so
+(`enter later · esc close`, `1 draft` on its top line; a new note's line reads `comment on line 12:`). A note with a draft
+says `draft ·` at its line end and `space v s send 2` on its card. `space v s` sends them all in one message, as a review's
+comments, and `enter` sends again. `:note-close` drops a note with its draft.
 
 **What the answer says of a place shows at it.** Claude's answers name places as `path:line` far more often than it
 pins a note, so an answer's places are notes too, with no tool call and nothing sent: when a turn ends, every

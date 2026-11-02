@@ -663,7 +663,8 @@ fn a_reply_sent_while_claude_starts_waits_for_it() {
     vt.process(&bytes);
     assert!(vt.screen().contents().contains(" starting "), "{}", vt.screen().contents());
     let id = crate::notes::add(&mut ed, &root.join("a.rs"), 0..1, crate::notes::By::You, "why this?");
-    crate::notes::send(&mut ed, id, "why this?", true, None, Some(true));
+    let reply = crate::notes::Reply { id, text: "why this?".into(), fresh: true, why: None };
+    crate::notes::send(&mut ed, vec![reply], Some(true));
     let said = ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
     assert_eq!(said, "reply queued — claude is starting; it goes once it's up");
     // (what sends what waits while it's still starting — `:session-billing`'s `billing_changed` — returns, the reply
@@ -692,7 +693,8 @@ fn a_re_read_while_claude_runs_holds_no_send() {
     let id = crate::notes::add(&mut ed, &root.join("a.rs"), 0..1, crate::notes::By::You, "and this?");
     let c = ed.workspace.claude.chat.as_mut().unwrap();
     c.settings.reading_since(crate::clock::now());
-    c.sends.push(crate::chat::Later::Reply { id, text: "and this?".into(), fresh: true, why: None });
+    let reply = crate::notes::Reply { id, text: "and this?".into(), fresh: true, why: None };
+    c.sends.push(crate::chat::Later::Reply { reply, lines: None });
     // (its turn over, the re-read still under way)
     crate::chat::send_queued(&mut ed);
     let sent: Vec<String> = rx.try_iter().collect();

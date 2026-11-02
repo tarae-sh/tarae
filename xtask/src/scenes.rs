@@ -421,6 +421,40 @@ macro_rules! c1_reply_keys {
 }
 const C1_REPLY: &[&str] = c1_reply_keys!("should it warn, or keep the first?");
 const C1_SENT: &[&str] = c1_reply_keys!("should it warn, or keep the first?", "\r");
+/// Focus C1b's: a question's and a reply's input (`c1-new`'s, `c1-reply`'s keys) with `tab later` on the bottom line · kept,
+/// the line closed and the status line saying how many · its card, `space v s send 1` · `space n` while one waits, on another
+/// line and on the same note: `enter later`, how many on the top line.
+const C1B_KEPT: &[&str] = c1_reply_keys!("should it warn, or keep the first?", "\t");
+const C1B_KEPT_CARD: &[&str] = c1_reply_keys!("should it warn, or keep the first?", "\t", "@6");
+const C1B_DRAFTING: &[&str] =
+    c1_reply_keys!("should it warn, or keep the first?", "\t", "@1", "gg", " ", "n", "@1", "and this line?");
+/// Two kept, the card closed, the toast gone: the status line's `2 drafts · space v s` at rest.
+const C1B_STATUS: &[&str] = c1_reply_keys!(
+    "should it warn, or keep the first?",
+    "\t",
+    "@1",
+    "gg",
+    " ",
+    "n",
+    "@1",
+    "and this line?",
+    "\r",
+    "@8"
+);
+const C1B_DRAFTING_REPLY: &[&str] =
+    c1_reply_keys!("should it warn, or keep the first?", "\t", "@1", " ", "n", "@1", "one more thought");
+/// Three questions written while Claude works, the chat beside them: its queued row, the status line's words — `idle`'s turn
+/// never ends — and, `c1b-batch`'s, the one message they went as, answered on their notes.
+macro_rules! c1b_queued_keys {
+    ($($more:expr),* $(,)?) => {
+        &["@1", " ", "l", "@1", "look over the loop", "\r", "@1", "\x17", "h",
+          "8G", " ", "n", "@1", "why a HashMap?", "\r", "@1",
+          "11G", " ", "n", "@1", "and if two names clash?", "\r", "@1",
+          "14G", " ", "n", "@1", "does this need sorting?", "\r", "@1", $($more,)*]
+    };
+}
+const C1B_QUEUED: &[&str] = c1b_queued_keys!(" ", "l", "@1");
+const C1B_WENT: &[&str] = c1b_queued_keys!("@30?Answered each", "@1");
 /// Its card sent, your cursor gone to a line with no note: no `space n` on its bottom line · `space n` there, a question
 /// standing in for that card, the note's line end saying what it says · a reply on a closed card, the line end left to it.
 const C1_OTHER_LINE: &[&str] = c1_reply_keys!("should it warn, or keep the first?", "\r", "@1", "gg");
@@ -3152,6 +3186,16 @@ const SCENES: &[Scene] = &[
     Scene { name: "c1-other-line", claude: "notethread", files: MAIN, keys: C1_OTHER_LINE },
     Scene { name: "c1-stand-in", claude: "notethread", files: MAIN, keys: C1_STAND_IN },
     Scene { name: "c1-closed", claude: "notethread", files: MAIN, keys: C1_CLOSED },
+    // (focus C1b: several replies at once — kept for later from the card's input, queued as one message)
+    Scene { name: "c1b-ask", claude: "idle", files: MAIN, keys: C1_NEW },
+    Scene { name: "c1b-reply", claude: "notethread", files: MAIN, keys: C1_REPLY },
+    Scene { name: "c1b-kept", claude: "notethread", files: MAIN, keys: C1B_KEPT },
+    Scene { name: "c1b-kept-card", claude: "notethread", files: MAIN, keys: C1B_KEPT_CARD },
+    Scene { name: "c1b-status", claude: "notethread", files: MAIN, keys: C1B_STATUS },
+    Scene { name: "c1b-drafting", claude: "notethread", files: MAIN, keys: C1B_DRAFTING },
+    Scene { name: "c1b-drafting-reply", claude: "notethread", files: MAIN, keys: C1B_DRAFTING_REPLY },
+    Scene { name: "c1b-queued", claude: "idle", files: MAIN, keys: C1B_QUEUED },
+    Scene { name: "c1b-went", claude: "c1b-batch", files: MAIN, keys: C1B_WENT },
     Scene { name: "a1-line", claude: "focus-line", files: MAIN, keys: A1_LINE },
     Scene { name: "a1b-line-card", claude: "focus-line", files: MAIN, keys: A1B_LINE },
     Scene { name: "a1b-flow-cut", claude: "a1-flow", files: MAIN, keys: A1B_CUT },
@@ -4890,6 +4934,7 @@ pub(crate) const SCRIPTS: &[&str] = &[
     "focus-line",
     "tour",
     "notethread",
+    "c1b-batch",
     "a1-none",
     "a1-flow",
     "a1b-two",
@@ -5040,6 +5085,7 @@ fn claude(script: &str, input: impl BufRead, out: &mut impl Write, pause: Durati
             }
             "tour" => turn.tour()?,
             "notethread" => turn.note_thread(&line)?,
+            "c1b-batch" => turn.c1b_batch(&line, turns)?,
             // (focus A1's: an answer naming no place)
             "a1-none" => turn.a1_none()?,
             // (…and one with a paragraph placed elsewhere: its line on the place's card)
@@ -6136,6 +6182,28 @@ impl<W: Write, L: Iterator<Item = io::Result<String>>> Turn<'_, W, L> {
             self.words(about)?;
             self.text("\n\n")?;
         }
+        self.line(json!({"type": "result", "result": "done"}))
+    }
+
+    /// Focus C1b's: a first turn long enough to write three questions in; the message they went as, each answered on its
+    /// note by `reply_to`, a line of prose after.
+    fn c1b_batch(&mut self, line: &str, turns: usize) -> io::Result<()> {
+        if turns == 1 {
+            self.words("Reading the loop.")?;
+            std::thread::sleep(Duration::from_secs(14));
+            self.words("Nothing off so far.")?;
+            return self.line(json!({"type": "result", "result": "done"}));
+        }
+        let number = |s: &str| {
+            s.trim_start_matches(['\\', '"']).split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+        };
+        let ids: Vec<u64> = line.split("note id=").skip(1).filter_map(number).collect();
+        for (k, id) in ids.iter().enumerate() {
+            let text =
+                "A map by name: each strand is looked up once per line, and a Vec would walk them all.";
+            self.call(k as u64 + 1, "note", json!({"reply_to": id, "text": text}))?;
+        }
+        self.words("Answered each on its note.")?;
         self.line(json!({"type": "result", "result": "done"}))
     }
 

@@ -206,6 +206,14 @@ const MOUSE_SCENES: &[Scene] = &[
         chat(ed, "");
         note_card(ed);
     }),
+    // (its card closed: it's the status line's word walked here)
+    ("a draft waiting", |ed| {
+        chat(ed, "");
+        note_card(ed);
+        let id = ed.workspace.claude.notes.list[0].id;
+        crate::notes::keep(ed, Some(id), "for later");
+        ed.workspace.claude.notes.open = None;
+    }),
     ("a card cut to fit, long", |ed| {
         let body: Vec<String> = (0..80).map(|i| format!("line {i} of what it asks")).collect();
         let what = crate::offer::What::ReviewAtEnd;

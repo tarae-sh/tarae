@@ -1387,17 +1387,60 @@ fn start_on(ed: &mut Editor, target: Option<u64>) {
     }
 }
 
+/// How many notes hold a draft — what `space v s` sends.
+pub fn drafts(ed: &Editor) -> usize {
+    ed.workspace.claude.notes.list.iter().filter(|n| is_draft(n)).count()
+}
+
+/// The status line's count of what `space v s` sends (`2 drafts · space v s`) this frame, `rail_w` its rail's width: none
+/// where a review's rail counts them, nor where the reviewer's own segment says the same, its findings alone waiting.
+pub fn drafts_said(ed: &Editor, rail_w: usize) -> Option<usize> {
+    let mine = |n: &Note| n.thread.iter().any(|e| e.draft && e.by == By::You);
+    let rail = ed.review_rail_up() && rail_w > 0;
+    let findings =
+        !ed.workspace.claude.notes.list.iter().any(mine) && crate::reviewer::status_shows(ed, rail_w);
+    Some(drafts(ed)).filter(|&k| k > 0 && !rail && !findings)
+}
+
+/// A reply on its way to Claude (`chat::Later::Reply`, `reads::Own::Replies`): `text` on note `id` — `fresh`: the note came
+/// with it, gone with it if Claude never sees it — and `why`, what the user said at a walk-through's stop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reply {
+    pub id: u64,
+    pub text: String,
+    pub fresh: bool,
+    pub why: Option<String>,
+}
+
 /// The prompt was sent. Whether its card stays: false with nothing to send, and for a review's comment.
 pub fn submit(ed: &mut Editor, target: Option<u64>, text: &str) -> bool {
+    write(ed, target, text, false)
+}
+
+/// `space n`'s line kept for later (its `tab`): a draft, as a review's comment is, whatever `drafting` says till now — then
+/// it does, until `space v s` sends them all. Whether its card stays, as `submit`'s.
+pub fn keep(ed: &mut Editor, target: Option<u64>, text: &str) -> bool {
+    write(ed, target, text, true)
+}
+
+/// Whether a reply written now goes behind what's waiting: Claude answering, or replies in line before it — the order they
+/// were written. (A card holding some: `send` puts it behind them.)
+fn in_line(ed: &Editor) -> bool {
+    let queued =
+        |c: &crate::chat::Chat| c.sends.iter().any(|l| matches!(l, crate::chat::Later::Reply { .. }));
+    ed.workspace.claude.chat.as_ref().is_some_and(|c| c.busy() || queued(c))
+}
+
+/// `space n`'s line sent, or (`later`) kept: its thread takes it either way, `submit` and `keep`.
+fn write(ed: &mut Editor, target: Option<u64>, text: &str, later: bool) -> bool {
     let text = text.trim();
     if text.is_empty() {
         return false;
     }
-    // (Claude answering: the reply is in its thread now and goes at the turn's end — frictions29 18)
-    let busy =
-        ed.workspace.claude.chat.as_ref().is_some_and(|c| c.busy()) && !crate::codereview::drafting(ed);
     // During a review it's a draft: it goes with the rest (`space v s`), nothing is sent now
-    let draft = crate::codereview::drafting(ed);
+    let draft = later || crate::codereview::drafting(ed);
+    // (Claude answering: the reply is in its thread now and goes at the turn's end — frictions29 18)
+    let queues = in_line(ed) && !draft;
     let fresh = target.filter(|&id| find(ed, id).is_some()).is_none();
     // A question at a walk-through's stop is about the stop: its lines, and what Claude said they do
     let stop = (fresh && !draft).then(|| crate::follow::stop_yours(ed)).flatten();
@@ -1405,7 +1448,8 @@ pub fn submit(ed: &mut Editor, target: Option<u64>, text: &str) -> bool {
         Some(id) => {
             let n = find_mut(ed, id).expect("checked");
             n.thread.push(Entry { by: By::You, text: text.to_string(), draft });
-            n.waiting = !draft;
+            // (a draft leaves what it waits for as it was: a reply sent or in line still has its answer to come)
+            n.waiting |= !draft;
             // (a chat note answered is a thread now, the restore file's)
             let path = n.path.clone();
             unkept_said(ed, &path);
@@ -1426,12 +1470,16 @@ pub fn submit(ed: &mut Editor, target: Option<u64>, text: &str) -> bool {
         }
     };
     if draft {
-        let k = ed.workspace.claude.notes.list.iter().filter(|n| n.thread.iter().any(|e| e.draft)).count();
+        let k = drafts(ed);
         // (outside a review too, while drafts wait — a background reviewer's findings among them: bgreview)
         // (in a review the rail counts them; outside one it's said where you look, the user's decision 2026-10-19)
         match ed.workspace.code_review.is_some() {
             true => ed.note(format!("draft saved — {k} in this review · space v s sends them")),
-            false => ed.set_status(format!("draft saved — {k} waiting · space v s sends them")),
+            false => {
+                ed.toasts.retain(|t| !t.text.contains("draft saved —"));
+                let k = crate::nav::count(k, "draft");
+                ed.set_status(format!("draft saved — {k} · space v s sends them"))
+            }
         };
         return false;
     }
@@ -1441,20 +1489,95 @@ pub fn submit(ed: &mut Editor, target: Option<u64>, text: &str) -> bool {
     (notes.open, notes.turned, notes.opening) = (Some(id), false, None);
     hold_view(ed);
     let why = stop.map(|(_, _, why)| why.to_string());
-    if busy && let Some(c) = ed.workspace.claude.chat.as_mut() {
-        c.sends.push(crate::chat::Later::Reply { id, text: text.to_string(), fresh, why });
-        ed.set_status("reply queued — it goes when Claude's turn ends");
+    let reply = Reply { id, text: text.to_string(), fresh, why };
+    if queues && let Some(c) = ed.workspace.claude.chat.as_mut() {
+        c.sends.push(crate::chat::Later::Reply { reply, lines: None });
+        // (nothing holding them any more — a turn cut off left them there: they go now, this one with them)
+        crate::chat::send_queued(ed);
+        queued_said(ed);
         return true;
     }
-    send(ed, id, text, fresh, why, None);
+    send(ed, vec![reply], None);
     true
 }
 
-/// Note `id`'s message goes to Claude — `text` the reply just added (`fresh`: the note with it), `why` what
-/// the user said at a walk-through's stop. On a file named like a key Claude may not read, the card asks
-/// first (`reads::ask_own`), and its answer sends it again: `lines` Some(true) with the lines, Some(false)
-/// with the file's name only (None: not asked yet).
-pub fn send(ed: &mut Editor, id: u64, text: &str, fresh: bool, why: Option<String>, lines: Option<bool>) {
+/// The replies in line, said: how many, what they wait for, and how they'll go — with none left (they went, or their notes
+/// closed), what was said of them goes.
+fn queued_said(ed: &mut Editor) {
+    let asked = crate::reads::replies_ask(ed);
+    // (a count that changes is one message that changes, never a stack of them: `say_size`)
+    ed.toasts.retain(|t| !t.text.contains("reply queued —") && !t.text.contains("replies queued —"));
+    let Some(c) = ed.workspace.claude.chat.as_ref() else { return };
+    let k = c.sends.iter().filter(|l| matches!(l, crate::chat::Later::Reply { .. })).count();
+    let (queued, go) = match k {
+        0 => return,
+        1 => ("reply queued".to_string(), "it goes"),
+        k => (format!("{k} replies queued"), "they go as one message"),
+    };
+    let when = match () {
+        _ if c.settings.waiting() && !c.running() => format!("claude is starting; {go} once it's up"),
+        _ if asked => format!("{go} once the card is answered"),
+        _ => format!("{go} when Claude's turn ends"),
+    };
+    ed.set_status(format!("{queued} — {when}"));
+}
+
+/// `replies` back in line, first, as they were: a card's `lines` kept for when they go.
+fn back_in_line(ed: &mut Editor, replies: Vec<Reply>, lines: Option<bool>) {
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
+        c.sends.splice(0..0, replies.into_iter().map(|reply| crate::chat::Later::Reply { reply, lines }));
+    }
+    queued_said(ed);
+}
+
+/// Every event: a reply whose note went while it waited — closed, whichever of the ways a note goes took it — is taken back:
+/// the line counts what will go. A card holding one goes, what it asks no longer so (its `a` would open a key for nothing,
+/// and it holds the line): what's left of its batch is first in line again, a card of its own for the keys still named.
+pub fn queue_sync(ed: &mut Editor) {
+    let notes = &ed.workspace.claude.notes;
+    let mut dropped = false;
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
+        let there = |l: &crate::chat::Later| match l {
+            crate::chat::Later::Reply { reply, .. } => notes.list.iter().any(|n| n.id == reply.id),
+            _ => true,
+        };
+        if !c.sends.iter().all(there) {
+            c.sends.retain(there);
+            dropped = true;
+        }
+    }
+    let carded = crate::reads::replies_carded(ed).filter(|r| r.iter().any(|r| find(ed, r.id).is_none()));
+    let Some(replies) = carded.cloned() else {
+        // (the words count what will go: one fewer, or none)
+        if dropped {
+            queued_said(ed);
+        }
+        return;
+    };
+    crate::reads::replies_card_gone(ed);
+    let left: Vec<Reply> = replies.into_iter().filter(|r| find(ed, r.id).is_some()).collect();
+    if let Some(c) = ed.workspace.claude.chat.as_mut() {
+        c.sends.splice(0..0, left.into_iter().map(|reply| crate::chat::Later::Reply { reply, lines: None }));
+    }
+    crate::chat::send_queued(ed);
+    queued_said(ed);
+}
+
+/// `k` replies, as a person counts them.
+fn replies_count(k: usize) -> String {
+    if k == 1 { "1 reply".into() } else { format!("{k} replies") }
+}
+
+/// What a message of several replies says of itself, after their notes: which words are whose, and where each is answered
+/// (a lone reply has its note's id before it and only one to answer: `send` says nothing).
+const REPLIES_SAID: &str = "(my replies follow, each after its note's id: answer each on its note)";
+
+/// `replies` go to Claude as one message — a lone one as it always went, its note's lines and thread and then its words;
+/// several, each note once with its lines and thread (`message`) and then the replies in the order written, each by its
+/// note's id. One whose note went meanwhile goes no further. On files named like keys Claude may not read, one card asks
+/// first (`reads::ask_own`), and its answer sends them again: `lines` Some(true) with the lines, Some(false) with those
+/// files' names only (None: not asked yet); while it waits, nothing goes past them (`chat::send_queued`).
+pub fn send(ed: &mut Editor, replies: Vec<Reply>, lines: Option<bool>) {
     // The chat panel carries the conversation — opened in the background if closed; the keys stay here
     if ed.workspace.claude.chat.is_none() {
         let at = ed.workspace.viewer.at;
@@ -1464,53 +1587,89 @@ pub fn send(ed: &mut Editor, id: u64, text: &str, fresh: bool, why: Option<Strin
             c.unfolded = false;
         }
     }
-    let Some(path) = find(ed, id).map(|n| n.path.clone()) else { return };
-    // (the chat just opened: what the project keeps open is read first — no card about one it does)
-    let own = || crate::reads::Own::Note { id, text: text.to_string(), fresh, why: why.clone() };
-    if lines.is_none() && crate::reads::wait_for_kept(ed, std::slice::from_ref(&path), own()) {
+    let replies: Vec<Reply> = replies.into_iter().filter(|r| find(ed, r.id).is_some()).collect();
+    if replies.is_empty() {
         return;
     }
-    let Some(n) = find(ed, id) else { return };
-    if lines.is_none() && crate::reads::key_shut(ed, &n.path, &[]) {
-        let (key, text) = (n.path.clone(), text.to_string());
-        return crate::reads::ask_own(ed, vec![key], crate::reads::Own::Note { id, text, fresh, why });
+    // (a card up holds the ones before these: behind them — the kept keys' read let more than one through)
+    if lines.is_none() && crate::reads::replies_ask(ed) {
+        return back_in_line(ed, replies, lines);
     }
-    let chip = format!(
-        "¶ #{id} · {} L{}",
-        n.path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default(),
-        n.lines.start + 1
-    );
-    let mut about = message(ed, n, lines != Some(false));
-    if let Some(why) = &why {
-        let at = about.len() - "</note>".len();
-        about.insert_str(at, &format!("(a stop of your walk-through — you said: {why})\n"));
-    }
-    if crate::chat::submit(ed, text, Some(about), Some(chip)) {
-        ed.workspace.claude.notes.turn = vec![id];
-        return;
-    }
-    // (its claude starting — the project's settings read first: the reply waits for it, frictions29 #67)
-    if let Some(c) = ed.workspace.claude.chat.as_mut().filter(|c| c.settings.waiting()) {
-        c.sends.push(crate::chat::Later::Reply { id, text: text.to_string(), fresh, why });
-        return ed.set_status("reply queued — claude is starting; it goes once it's up");
-    }
-    // Claude never saw it — take it back (the chat panel says why)
-    if fresh {
-        ed.workspace.claude.notes.list.retain(|n| n.id != id);
-    } else if let Some(n) = find_mut(ed, id) {
-        // (this reply — the last of yours with its text, not merely the last: one queued while Claude worked may
-        // have others after it by now)
-        if let Some(at) = n.thread.iter().rposition(|e| e.by == By::You && e.text == text && !e.draft) {
-            n.thread.remove(at);
+    let mut ids: Vec<u64> = Vec::new();
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    for r in &replies {
+        if !ids.contains(&r.id) {
+            ids.push(r.id);
         }
-        n.waiting = false;
+        if let Some(n) = find(ed, r.id).filter(|n| !paths.contains(&n.path)) {
+            paths.push(n.path.clone());
+        }
+    }
+    // (the chat just opened: what the project keeps open is read first — no card about one it does)
+    if lines.is_none() {
+        let own = crate::reads::Own::Replies(replies.clone());
+        if crate::reads::wait_for_kept(ed, &paths, own) {
+            return;
+        }
+    }
+    let keys: Vec<std::path::PathBuf> =
+        paths.iter().filter(|p| crate::reads::key_shut(ed, p, &[])).cloned().collect();
+    if lines.is_none() && !keys.is_empty() {
+        return crate::reads::ask_own(ed, keys, crate::reads::Own::Replies(replies));
+    }
+    let mut blocks = Vec::new();
+    for id in &ids {
+        let Some(n) = find(ed, *id) else { continue };
+        let mine: Vec<&Reply> = replies.iter().filter(|r| r.id == *id).collect();
+        let sending: Vec<&str> = mine.iter().map(|r| r.text.as_str()).collect();
+        let mut about = message(ed, n, !(lines == Some(false) && keys.contains(&n.path)), &sending);
+        for why in mine.iter().filter_map(|r| r.why.as_ref()) {
+            let at = about.len() - "</note>".len();
+            about.insert_str(at, &format!("(a stop of your walk-through — you said: {why})\n"));
+        }
+        blocks.push(about);
+    }
+    let (question, about, chip) = match replies.as_slice() {
+        [r] => {
+            let n = find(ed, r.id).expect("it's there: filtered above");
+            let name = n.path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+            (r.text.clone(), blocks.join("\n"), format!("¶ #{} · {name} L{}", r.id, n.lines.start + 1))
+        }
+        _ => {
+            let words: Vec<String> = replies.iter().map(|r| format!("#{}: {}", r.id, r.text)).collect();
+            let chip =
+                format!("¶ {} · {}", replies_count(replies.len()), crate::nav::count(paths.len(), "file"));
+            (words.join("\n"), format!("{}\n{REPLIES_SAID}", blocks.join("\n")), chip)
+        }
+    };
+    if crate::chat::submit(ed, &question, Some(about), Some(chip)) {
+        ed.workspace.claude.notes.turn = ids;
+        return;
+    }
+    // (its claude starting — the project's settings read first: they wait for it, frictions29 #67 — or a turn begun
+    // while a card held them: at its end, the card's answer kept, never "couldn't reach claude")
+    if ed.workspace.claude.chat.as_ref().is_some_and(|c| c.settings.waiting() || c.busy()) {
+        return back_in_line(ed, replies, lines);
+    }
+    // Claude never saw them — take them back (the chat panel says why)
+    for r in replies {
+        if r.fresh {
+            ed.workspace.claude.notes.list.retain(|n| n.id != r.id);
+        } else if let Some(n) = find_mut(ed, r.id) {
+            // (this reply — the last of yours with its text, not merely the last: one queued while Claude worked may
+            // have others after it by now)
+            if let Some(at) = n.thread.iter().rposition(|e| e.by == By::You && e.text == r.text && !e.draft) {
+                n.thread.remove(at);
+            }
+            n.waiting = false;
+        }
     }
     ed.set_warning("couldn't reach claude — the chat panel says why");
 }
 
-/// What goes to Claude with a reply: where the note is, the code there (`code`; else what the context says of
-/// a file named like a key — `reads::NOT_SENT`) and the thread so far.
-fn message(ed: &Editor, n: &Note, code: bool) -> String {
+/// What goes to Claude with a note's replies `sending`: where it is, the code there (`code`; else what the context says of
+/// a file named like a key — `reads::NOT_SENT`) and the thread so far, what's kept for later left out.
+fn message(ed: &Editor, n: &Note, code: bool, sending: &[&str]) -> String {
     let withheld = (!code).then(|| format!("({})\n", crate::reads::NOT_SENT));
     let code = withheld.unwrap_or_else(|| {
         ed.docs
@@ -1533,8 +1692,20 @@ fn message(ed: &Editor, n: &Note, code: bool) -> String {
         n.lines.end,
         code
     );
-    // The thread up to (not including) the message being sent
-    for e in &n.thread[..n.thread.len().saturating_sub(1)] {
+    // The thread but the words being sent and those still in line behind them, the last of yours with each text (Claude
+    // may have answered after one queued)
+    let line = ed.workspace.claude.chat.iter().flat_map(|c| &c.sends);
+    let behind = line.filter_map(|l| match l {
+        crate::chat::Later::Reply { reply, .. } if reply.id == n.id => Some(reply.text.as_str()),
+        _ => None,
+    });
+    let mut told: Vec<&Entry> = n.thread.iter().filter(|e| !e.draft).collect();
+    for text in sending.iter().copied().chain(behind) {
+        if let Some(at) = told.iter().rposition(|e| e.by == By::You && e.text == text) {
+            told.remove(at);
+        }
+    }
+    for e in told {
         // (a chat note's first entry is Claude's own answer: said as its words)
         s.push_str(if e.by == By::Chat { "claude, in the chat" } else { e.by.word() });
         s.push_str(": ");
@@ -1934,9 +2105,325 @@ mod tests {
         for t in ["queued reply", "a later one"] {
             find_mut(&mut ed, id).unwrap().thread.push(Entry { by: By::You, text: t.into(), draft: false });
         }
-        send(&mut ed, id, "queued reply", false, None, Some(true));
+        let reply = Reply { id, text: "queued reply".into(), fresh: false, why: None };
+        send(&mut ed, vec![reply], Some(true));
         let left: Vec<&str> = find(&ed, id).unwrap().thread.iter().map(|e| e.text.as_str()).collect();
         assert_eq!(left, ["first", "a later one"]);
+    }
+
+    /// C1b: a project's `a.rs` with Claude at work — its claude a stand-in keeping what it's sent, a first message's turn
+    /// under way: (the folder, the file, the editor, what it's sent from here on).
+    fn at_work(name: &str) -> (crate::scratch::Scratch, PathBuf, Editor, std::sync::mpsc::Receiver<String>) {
+        let s = crate::scratch::Scratch::new(name);
+        let root = std::fs::canonicalize(&*s).unwrap();
+        let text: String = (0..30).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(root.join("a.rs"), &text).unwrap();
+        let mut ed = Editor::with_root(crate::config::Config::default(), root.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        ed.claude_lines = Some(tx);
+        let path = root.join("a.rs");
+        ed.open(&path).unwrap();
+        crate::chat::open(&mut ed);
+        assert!(crate::chat::submit(&mut ed, "first", None, None));
+        assert_eq!(rx.try_iter().count(), 1, "the first message");
+        (s, path, ed, rx)
+    }
+
+    /// Claude's turn ends: what's in line goes.
+    fn turn_ends(ed: &mut Editor) {
+        ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+        crate::chat::send_queued(ed);
+    }
+
+    /// The text of each message the stand-in got since.
+    fn sent(rx: &std::sync::mpsc::Receiver<String>) -> Vec<String> {
+        let text = |l: String| {
+            let v: Value = serde_json::from_str(&l).expect("a line of json");
+            let content = &v["message"]["content"];
+            content.as_str().map_or_else(|| content.to_string(), str::to_string)
+        };
+        rx.try_iter().map(text).collect()
+    }
+
+    /// What's in the chat's line.
+    fn line(ed: &Editor) -> Vec<&crate::chat::Later> {
+        ed.workspace.claude.chat.as_ref().unwrap().sends.iter().collect()
+    }
+
+    fn status(ed: &Editor) -> String {
+        ed.status.as_ref().map(|s| s.0.clone()).unwrap_or_default()
+    }
+
+    /// C1b: three replies written while Claude works — two on notes with their threads, a question that's a note of its
+    /// own — go as one message at its turn's end: each note once with its lines and the thread so far, then the replies in
+    /// the order written, each by its note's id, saying so. The words say how many, the chat's row too; the turn's notes are
+    /// all three, waiting.
+    #[test]
+    fn replies_written_while_claude_works_go_as_one_message() {
+        let (_s, path, mut ed, rx) = at_work("c1b-one");
+        let a = add(&mut ed, &path, 1..2, By::Author, "this one looks odd");
+        let b = add(&mut ed, &path, 4..6, By::Author, "and these lines");
+        assert!(submit(&mut ed, Some(a), "why odd?"));
+        assert_eq!(status(&ed), "reply queued — it goes when Claude's turn ends");
+        assert!(submit(&mut ed, Some(b), "is it safe?"));
+        assert_eq!(status(&ed), "2 replies queued — they go as one message when Claude's turn ends");
+        ed.goto_line(9);
+        assert!(submit(&mut ed, None, "and this line?"));
+        assert_eq!(status(&ed), "3 replies queued — they go as one message when Claude's turn ends");
+        assert_eq!(ed.toasts.iter().filter(|t| t.text.contains(" queued —")).count(), 1, "one that changes");
+        let c = ed.workspace.claude.notes.list.last().unwrap().id;
+        let said = ed.workspace.claude.chat.as_ref().unwrap().queued_said().map(|q| q.0);
+        assert_eq!(said.as_deref(), Some("3 replies queued"));
+        assert!(sent(&rx).is_empty(), "nothing while it works");
+        turn_ends(&mut ed);
+        let got = sent(&rx);
+        assert_eq!(got.len(), 1, "one message: {got:#?}");
+        let m = &got[0];
+        let at = |s: &str| m.find(s).unwrap_or_else(|| panic!("{s} in {m}"));
+        assert!(
+            at(&format!("<note id=\"{a}\" path=\"a.rs\" lines=\"2-2\">")) < at(&format!("<note id=\"{b}\""))
+        );
+        assert!(
+            at(&format!("<note id=\"{b}\" path=\"a.rs\" lines=\"5-6\">")) < at(&format!("<note id=\"{c}\""))
+        );
+        assert!(
+            m.contains("<code>\nline 1\n</code>") && m.contains("<code>\nline 4\nline 5\n</code>"),
+            "{m}"
+        );
+        assert!(m.contains("claude: this one looks odd\n</note>"), "the thread so far, not the reply: {m}");
+        assert!(m.contains(REPLIES_SAID), "{m}");
+        let words = format!("#{a}: why odd?\n#{b}: is it safe?\n#{c}: and this line?");
+        assert!(m.ends_with(&words), "in the order written: {m}");
+        assert_eq!(m.matches("why odd?").count(), 1, "said once: {m}");
+        assert!(line(&ed).is_empty());
+        assert_eq!(ed.workspace.claude.notes.turn, [a, b, c]);
+        assert!([a, b, c].iter().all(|&id| find(&ed, id).unwrap().waiting));
+        let row = ed.workspace.claude.chat.as_ref().unwrap().msgs.last().unwrap();
+        assert_eq!((row.text.as_str(), row.chip.as_str()), (words.as_str(), "¶ 3 replies · 1 file"));
+    }
+
+    /// C1b, the review: a note closed takes its reply out of line and the words count what's left; the last one closed, what
+    /// was said of them goes, and the turn's end sends nothing.
+    #[test]
+    fn a_note_closed_counts_what_is_left_in_line() {
+        let (_s, path, mut ed, rx) = at_work("c1b-closed-count");
+        let tick = |ed: &mut Editor| ed.handle_event(crate::event::Event::Job(Box::new(|_: &mut Editor| {})));
+        let queued = |ed: &Editor| ed.toasts.iter().filter(|t| t.text.contains(" queued —")).count();
+        let a = add(&mut ed, &path, 1..2, By::Author, "this one looks odd");
+        let b = add(&mut ed, &path, 4..6, By::Author, "and these lines");
+        assert!(submit(&mut ed, Some(a), "why odd?"));
+        assert!(submit(&mut ed, Some(b), "is it safe?"));
+        assert_eq!(status(&ed), "2 replies queued — they go as one message when Claude's turn ends");
+        close(&mut ed, a);
+        tick(&mut ed);
+        assert_eq!(status(&ed), "reply queued — it goes when Claude's turn ends");
+        assert_eq!(queued(&ed), 1, "one that changes");
+        close(&mut ed, b);
+        tick(&mut ed);
+        assert!(line(&ed).is_empty());
+        assert_eq!(queued(&ed), 0, "nothing in line, nothing said of it: {:?}", ed.toasts);
+        turn_ends(&mut ed);
+        assert!(sent(&rx).is_empty(), "{:?}", sent(&rx));
+    }
+
+    /// C1b: a reply alone in line goes as a lone reply always went, to the byte: its note, a blank line, its words, its chip —
+    /// and Claude's plain answer is that note's (`turn_done`: one note).
+    #[test]
+    fn a_lone_reply_goes_as_it_always_did() {
+        let (_s, path, mut ed, rx) = at_work("c1b-lone");
+        let a = add(&mut ed, &path, 1..2, By::Author, "this one looks odd");
+        submit(&mut ed, Some(a), "why odd?");
+        turn_ends(&mut ed);
+        let got = sent(&rx);
+        let about = format!(
+            "<note id=\"{a}\" path=\"a.rs\" lines=\"2-2\">\n<code>\nline 1\n</code>\nclaude: this one looks odd\n</note>\n\nwhy odd?"
+        );
+        assert!(got.len() == 1 && got[0].ends_with(&about), "{got:#?}");
+        assert!(!got[0].contains(REPLIES_SAID), "{got:#?}");
+        assert_eq!(ed.workspace.claude.notes.turn, [a]);
+        let row = ed.workspace.claude.chat.as_ref().unwrap().msgs.last().unwrap();
+        assert_eq!(row.chip, format!("¶ #{a} · a.rs L2"));
+    }
+
+    /// C1b: two replies on one note: it's one block and both words go, in order, its thread holding neither; a reply kept
+    /// for later on it stays out. An answer that came after the first was queued stays in the thread.
+    #[test]
+    fn replies_on_one_note_are_one_block() {
+        let (_s, path, mut ed, rx) = at_work("c1b-same");
+        let (a, b) =
+            (add(&mut ed, &path, 1..2, By::Author, "one"), add(&mut ed, &path, 3..4, By::Author, "two"));
+        submit(&mut ed, Some(a), "first word");
+        find_mut(&mut ed, a).unwrap().thread.push(Entry {
+            by: By::Author,
+            text: "meanwhile".into(),
+            draft: false,
+        });
+        submit(&mut ed, Some(b), "on the other");
+        submit(&mut ed, Some(a), "second word");
+        find_mut(&mut ed, a).unwrap().thread.push(Entry { by: By::You, text: "not yet".into(), draft: true });
+        turn_ends(&mut ed);
+        let got = sent(&rx);
+        assert_eq!(got.len(), 1, "{got:#?}");
+        let m = &got[0];
+        assert_eq!(m.matches(&format!("<note id=\"{a}\"")).count(), 1, "{m}");
+        assert!(m.contains("claude: one\nclaude: meanwhile\n</note>"), "{m}");
+        assert!(m.ends_with(&format!("#{a}: first word\n#{b}: on the other\n#{a}: second word")), "{m}");
+        assert!(!m.contains("not yet"), "a draft stays yours: {m}");
+        assert_eq!(ed.workspace.claude.notes.turn, [a, b]);
+    }
+
+    /// C1b: what stands between keeps its place: replies join only what's next to them, so a review, then a parent's
+    /// message, go in the order they were put in line, one a turn, and no reply goes past either.
+    #[test]
+    fn a_review_and_a_parents_message_keep_their_places() {
+        use crate::chat::Later;
+        let (_s, path, mut ed, rx) = at_work("c1b-places");
+        let ids: Vec<u64> =
+            [0, 2, 4, 6].iter().map(|&l| add(&mut ed, &path, l..l + 1, By::Author, "note")).collect();
+        let draft = add(&mut ed, &path, 8..9, By::You, "my comment");
+        let d = find_mut(&mut ed, draft).unwrap();
+        (d.thread[0].draft, d.waiting) = (true, false);
+        // (the draft above makes every reply a draft: these are put in line as they were before it)
+        let reply = |ed: &mut Editor, id: u64, text: &str| {
+            find_mut(ed, id).unwrap().thread.push(Entry { by: By::You, text: text.into(), draft: false });
+            let reply = Reply { id, text: text.into(), fresh: false, why: None };
+            ed.workspace.claude.chat.as_mut().unwrap().sends.push(Later::Reply { reply, lines: None });
+        };
+        reply(&mut ed, ids[0], "one");
+        reply(&mut ed, ids[1], "two");
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.sends.push(Later::Review(None));
+        c.sends.push(Later::Parent {
+            from: "main".into(),
+            conversation: None,
+            wake: false,
+            text: "the parent".into(),
+        });
+        reply(&mut ed, ids[2], "three");
+        reply(&mut ed, ids[3], "four");
+        let mut went = Vec::new();
+        for _ in 0..4 {
+            turn_ends(&mut ed);
+            let got = sent(&rx);
+            assert_eq!(got.len(), 1, "one a turn: {got:#?}");
+            went.push(got[0].clone());
+        }
+        assert!(went[0].ends_with(&format!("#{}: one\n#{}: two", ids[0], ids[1])), "{went:#?}");
+        assert!(went[1].contains("<review of="), "{went:#?}");
+        assert!(went[2].contains("the parent"), "{went:#?}");
+        assert!(went[3].ends_with(&format!("#{}: three\n#{}: four", ids[2], ids[3])), "{went:#?}");
+        turn_ends(&mut ed);
+        assert!(sent(&rx).is_empty() && line(&ed).is_empty());
+    }
+
+    /// C1b: a user's queued message keeps a parent's message behind it, as ever — replies go on past a parent's there, as
+    /// `first` lets them, and join across it.
+    #[test]
+    fn with_a_message_queued_replies_join_past_a_parents() {
+        use crate::chat::Later;
+        let (_s, path, mut ed, rx) = at_work("c1b-parent");
+        let (a, b) = (add(&mut ed, &path, 0..1, By::Author, "a"), add(&mut ed, &path, 2..3, By::Author, "b"));
+        submit(&mut ed, Some(a), "one");
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        c.sends.push(Later::Parent {
+            from: "main".into(),
+            conversation: None,
+            wake: false,
+            text: "the parent".into(),
+        });
+        submit(&mut ed, Some(b), "two");
+        ed.workspace.claude.chat.as_mut().unwrap().queued = Some("yours".into());
+        turn_ends(&mut ed);
+        let got = sent(&rx);
+        assert!(got.len() == 1 && got[0].ends_with(&format!("#{a}: one\n#{b}: two")), "{got:#?}");
+        turn_ends(&mut ed);
+        let got = sent(&rx);
+        assert!(got.len() == 1 && got[0].contains("yours"), "the person first: {got:#?}");
+        turn_ends(&mut ed);
+        let got = sent(&rx);
+        assert!(got.len() == 1 && got[0].contains("the parent"), "{got:#?}");
+    }
+
+    /// C1b: a note closed while its reply is queued takes the reply out of line at once — the count and the chat's row say
+    /// what will go —, the rest go without it; the last one left goes as a lone reply; none left, the next in line goes on.
+    #[test]
+    fn a_reply_taken_back_while_queued_leaves_the_line() {
+        use crate::chat::Later;
+        let (_s, path, mut ed, rx) = at_work("c1b-back");
+        let ids: Vec<u64> =
+            [0, 2, 4].iter().map(|&l| add(&mut ed, &path, l..l + 1, By::Author, "n")).collect();
+        for (id, text) in ids.iter().zip(["one", "two", "three"]) {
+            submit(&mut ed, Some(*id), text);
+        }
+        close(&mut ed, ids[1]);
+        queue_sync(&mut ed);
+        let said = ed.workspace.claude.chat.as_ref().unwrap().queued_said().map(|q| q.0);
+        assert_eq!(said.as_deref(), Some("2 replies queued"));
+        close(&mut ed, ids[2]);
+        queue_sync(&mut ed);
+        assert!(matches!(line(&ed)[..], [Later::Reply { .. }]), "{:?}", line(&ed));
+        turn_ends(&mut ed);
+        let got = sent(&rx);
+        assert!(got.len() == 1 && got[0].ends_with("</note>\n\none"), "a lone reply: {got:#?}");
+        // (one gone in the same moment the turn ends, before any event: `send` leaves it out, the next goes on)
+        let (a, b) = (add(&mut ed, &path, 6..7, By::Author, "a"), add(&mut ed, &path, 8..9, By::Author, "b"));
+        submit(&mut ed, Some(a), "gone");
+        submit(&mut ed, Some(b), "gone too");
+        ed.workspace.claude.chat.as_mut().unwrap().queued = Some("the message behind".into());
+        ed.workspace.claude.notes.list.retain(|n| n.id != a && n.id != b);
+        turn_ends(&mut ed);
+        let got = sent(&rx);
+        assert!(got.len() == 1 && got[0].contains("the message behind"), "{got:#?}");
+    }
+
+    /// C1b: a reply left in line by a turn cut off (no turn's end to send it) goes with the next one written, as one message,
+    /// never sitting behind it waiting for a turn that isn't under way.
+    #[test]
+    fn what_a_cut_turn_left_in_line_goes_with_the_next_reply() {
+        let (_s, path, mut ed, rx) = at_work("c1b-cut");
+        let (a, b) = (add(&mut ed, &path, 0..1, By::Author, "a"), add(&mut ed, &path, 2..3, By::Author, "b"));
+        submit(&mut ed, Some(a), "left in line");
+        ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+        submit(&mut ed, Some(b), "the next");
+        let got = sent(&rx);
+        assert!(
+            got.len() == 1 && got[0].ends_with(&format!("#{a}: left in line\n#{b}: the next")),
+            "{got:#?}"
+        );
+        assert!(line(&ed).is_empty());
+    }
+
+    /// C1b: what each reply carries goes with it: `why` in its own note only, and a batch Claude never saw is taken back
+    /// reply by reply — a `fresh` one's note gone, the others' words alone —, said once.
+    #[test]
+    fn each_reply_keeps_what_it_carries() {
+        let (s, path, mut ed, rx) = at_work("c1b-carries");
+        let (a, b) = (add(&mut ed, &path, 0..1, By::You, "q"), add(&mut ed, &path, 2..3, By::Author, "b"));
+        find_mut(&mut ed, b).unwrap().thread.push(Entry { by: By::You, text: "two".into(), draft: false });
+        let c = ed.workspace.claude.chat.as_mut().unwrap();
+        let at_stop = Reply { id: a, text: "q".into(), fresh: true, why: Some("it ranks them".into()) };
+        let other = Reply { id: b, text: "two".into(), fresh: false, why: None };
+        for reply in [at_stop.clone(), other.clone()] {
+            c.sends.push(crate::chat::Later::Reply { reply, lines: None });
+        }
+        turn_ends(&mut ed);
+        let m = sent(&rx).remove(0);
+        let said = "(a stop of your walk-through — you said: it ranks them)\n</note>";
+        assert_eq!(m.matches(said).count(), 1, "{m}");
+        assert!(m.find(said) < m.find(&format!("<note id=\"{b}\"")), "in its own note: {m}");
+        // No claude to reach, nothing starting
+        let mut ed = editor();
+        ed.workspace.root = s.to_path_buf();
+        ed.config.llm.command = s.join("no-claude-here").display().to_string();
+        let a = add(&mut ed, &path, 0..1, By::You, "q");
+        let b = add(&mut ed, &path, 2..3, By::Author, "b");
+        find_mut(&mut ed, b).unwrap().thread.push(Entry { by: By::You, text: "two".into(), draft: false });
+        send(&mut ed, vec![Reply { id: a, ..at_stop }, Reply { id: b, ..other }], Some(true));
+        assert!(find(&ed, a).is_none(), "its note went with it");
+        let n = find(&ed, b).unwrap();
+        assert_eq!(n.thread.len(), 1, "the reply off its thread: {:?}", n.thread);
+        assert!(!n.waiting);
+        assert_eq!(ed.toasts.iter().filter(|t| t.text.contains("couldn't reach claude")).count(), 1);
     }
 
     /// Each entry says who wrote it — the chat's `note` the author, the reviewer's `finding` the reviewer

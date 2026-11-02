@@ -864,6 +864,10 @@ const PROBES: &[&str] = &[
     "<S-tab>",
 ];
 
+/// `tab`, `space n`'s line's own as it's `:`'s: routed as `keys_to` says in every scene. Not a probe: where it's bound to
+/// nothing it's still silent (a picker, a run's output …), which `no_key_is_refused_in_silence` would walk.
+const ROUTED: &[&str] = &["<tab>"];
+
 /// The keys that move, as every surface takes them (uxaudit D7, Z2, H1): a row, half the rows, a page, the ends,
 /// the terminal's past, a picker's split, preview and keep-open keys — the routing test sends them too.
 const MOVES: &[&str] =
@@ -874,7 +878,7 @@ const MOVES: &[&str] =
 fn mismatches(scenes: &[Scene], model: impl Fn(&Editor) -> KeysTo) -> Vec<String> {
     let mut off = Vec::new();
     for (name, setup) in scenes {
-        for probe in PROBES.iter().chain(MOVES) {
+        for probe in PROBES.iter().chain(MOVES).chain(ROUTED) {
             let mut ed = editor();
             setup(&mut ed);
             frame(&mut ed);
@@ -926,7 +930,7 @@ fn keys_to_is_where_handle_key_sends_every_key() {
         return;
     }
     let off = mismatches(SCENES, Editor::keys_to);
-    let all = SCENES.len() * (PROBES.len() + MOVES.len());
+    let all = SCENES.len() * (PROBES.len() + MOVES.len() + ROUTED.len());
     assert!(off.is_empty(), "{} of {all}:\n{}", off.len(), off.join("\n"));
 }
 

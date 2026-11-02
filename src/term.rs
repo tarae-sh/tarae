@@ -10962,6 +10962,13 @@ fn draw_statusline(
         let runs = if quiet == 1 { "run" } else { "runs" };
         left.push(Seg { cut: None, text: format!("{gap}{quiet} {runs} quiet"), style: dim, keep: INBOX });
     }
+    // Your drafts, while they wait: calm, apart from what asks for you (no `▲`, not `waiting`); a press sends them
+    if let Some(k) = crate::notes::drafts_said(editor, lay.rail_w) {
+        let count = format!("  {}", crate::nav::count(k, "draft"));
+        left.push(Seg { cut: None, text: count, style: dim, keep: DRAFTS });
+        let key = " · space v s".to_string();
+        left.push(Seg { cut: None, text: key, style: Style { bold: true, ..dim }, keep: DRAFTS_KEY });
+    }
     // A restart under way, until it happens (#194: a toast said it once; a second `:restart` called it off)
     if let Some(r) = crate::restart::pending(editor) {
         left.push(Seg::of(crate::whole::fit(&r, 40).lead("  "), accent, CHIP));
@@ -11409,8 +11416,9 @@ fn draw_statusline(
 /// The status line's words that do their keys (`wordspot.rs`), by their segments' rank: what's typed in the chat
 /// while it's out of sight (the chat), the branch and how much the file changed (the git tab), `full screen C-w z back`,
 /// Claude's change waiting (`C-q`, the review), what's abnormal among tarae's processes (`:procs`), the file's errors and
-/// warnings (its diagnostics), the inbox's `· C-q` after its count (the card). Each run of segments of one press one
-/// word, from its first mark to its last; `right_x` where the right side starts.
+/// warnings (its diagnostics), the inbox's `· C-q` after its count (the card), the drafts' count (`space v s`: its press
+/// sends, the user's call for this word, the key's hints elsewhere staying `wordspot::COSTS`' plain words). Each run of
+/// segments of one press one word, from its first mark to its last; `right_x` where the right side starts.
 fn status_words(editor: &Editor, left: &[Seg], right: &[Seg], (y, right_x): (usize, usize)) {
     use crate::wordspot::{Press, Spot};
     let review = editor.workspace.claude.review.as_ref().is_some_and(|r| r.ready);
@@ -11422,6 +11430,7 @@ fn status_words(editor: &Editor, left: &[Seg], right: &[Seg], (y, right_x): (usi
         PROCS_MARK | PROCS_SAYS => Some(Press::Command(":procs")),
         DIAGNOSTICS => Some(Press::Command("diagnostics_picker")),
         INBOX_NEXT => Some(Press::Card),
+        DRAFTS | DRAFTS_KEY => Some(Press::Command("review_send")),
         _ => None,
     };
     let laid = |segs: &[Seg], x0: usize| -> Vec<(usize, Option<Press>, (String, Style))> {
@@ -11503,6 +11512,11 @@ const PATH_HINTS: u8 = 238;
 /// program and the session's name outlast it); its counts one below, its key two — the key folds first, the
 /// head last.
 const REVIEWER: u8 = 234;
+
+/// The status line's `2 drafts · space v s` (`notes::drafts_said`): below the reviewer's segment, its key one below — the
+/// key folds first, the count last.
+const DRAFTS: u8 = 231;
+const DRAFTS_KEY: u8 = DRAFTS - 1;
 
 /// The status line's `keep` for a floating list's keys (`key_hints`): only the mode, the position and an error
 /// or warning waiting there (`FOLDED`) outlast them — and they're cut to fit beside those and the inbox's count,
@@ -21524,8 +21538,17 @@ fn draw_note_card(
     let (above, below) = cut;
     let shown = h.saturating_sub(above + below);
     let card = on_ground(ui, card_style(ui, editor, "ui.popup"));
-    let name = note_name(n, editor, ui, card);
-    let mut keys = note_keys(n, replying);
+    let mut name = note_name(n, editor, ui, card);
+    if let Some(waiting) = note_drafts(editor, ui, card).filter(|_| replying) {
+        name.push((" ── ".into(), frame_line(ui, card)));
+        name.push(waiting);
+    }
+    // (outside a review `space v s` sends what waits, no review of anything: its count, as the rail's `send 3`)
+    let send = match editor.workspace.code_review.is_some() {
+        true => "send the review".to_string(),
+        false => format!("send {}", crate::notes::drafts(editor)),
+    };
+    let mut keys = note_keys(n, replying, editor, &send);
     // (`space n` goes to the note at your cursor, `enter` there too or to this card with none: said here only where they
     // act on it — the turn's card leaves your cursor where it was)
     let mine = |t: &crate::notes::Note| crate::notes::group(notes, n).iter().any(|g| g.id == t.id);
@@ -21607,7 +21630,7 @@ fn note_input_row(
 }
 
 /// What a note's card's frame says: its name, and its keys.
-type NoteWords<'a> = (&'a [(String, Style)], &'a [(&'static str, &'static str)]);
+type NoteWords<'a> = (&'a [(String, Style)], &'a [(&'static str, &'a str)]);
 
 /// A note's card's frame: its name on the top line, `keys` on the bottom one — lit while it holds `space n`'s line
 /// (`asks`: what's under them the prompt's, typed where the keys are; else typed in the code, as `space n` there).
@@ -21661,8 +21684,13 @@ fn draw_ask_card(
     let (a, b) = (lines.start + 1, lines.end);
     let said = if b > a { format!("lines {a}–{b}") } else { format!("line {a}") };
     name.push((said, Style { fg: ui.linenr.fg, ..card }));
+    if let Some(waiting) = note_drafts(editor, ui, card) {
+        name.push((" · ".into(), frame_line(ui, card)));
+        name.push(waiting);
+    }
     let input = note_input_row(editor, ui, (x0 + 2, y0, g.inner), (h, above, below), card, out)?;
-    note_frame(editor, ui, (card, rect), (&name, NOTE_INPUT_KEYS), (above > 0, below > 0), true, out)?;
+    let keys = note_input_keys(editor);
+    note_frame(editor, ui, (card, rect), (&name, keys), (above > 0, below > 0), true, out)?;
     Ok((rect, input.map(|(drawn, cursor, _)| (drawn, cursor, rect))))
 }
 
@@ -21931,16 +21959,36 @@ fn note_kind(n: &crate::notes::Note) -> &'static str {
     }
 }
 
-/// The keys of `space n`'s line while a card holds it (focus C1): the line's own, on the bottom line — the status line
-/// says none (`key_hints`).
-const NOTE_INPUT_KEYS: &[(&str, &str)] = &[("enter", "send"), ("esc", "close")];
+/// The keys of `space n`'s line (focus C1): `enter` sends, `tab` keeps it for later; while drafts wait (`drafting`, a review
+/// too) `enter` keeps it and only `space v s` sends — said, so it's never taken for a send. On a card's bottom line, the
+/// status line saying none, else there (`key_hints`).
+fn note_input_keys(editor: &Editor) -> &'static [(&'static str, &'static str)] {
+    match crate::codereview::drafting(editor) {
+        true => &[("enter", "later"), ("esc", "close")],
+        false => &[("enter", "send"), ("tab", "later"), ("esc", "close")],
+    }
+}
 
-/// The note card's keys: `space n`'s line's while you write a reply on it, else the walk's.
-fn note_keys(n: &crate::notes::Note, replying: bool) -> Vec<(&'static str, &'static str)> {
+/// Your drafts' count on `space n`'s card, said on its top line: while they wait `enter` keeps this one with them (a
+/// review's rail counts them).
+fn note_drafts(editor: &Editor, ui: &Ui, card: Style) -> Option<(String, Style)> {
+    let k = crate::notes::drafts(editor);
+    (k > 0 && editor.workspace.code_review.is_none())
+        .then(|| (crate::nav::count(k, "draft"), Style { fg: ui.linenr.fg, ..card }))
+}
+
+/// The note card's keys: `space n`'s line's while you write a reply on it, else the walk's — `send` what `space v s` says
+/// on a card with a draft.
+fn note_keys<'a>(
+    n: &crate::notes::Note,
+    replying: bool,
+    editor: &Editor,
+    send: &'a str,
+) -> Vec<(&'static str, &'a str)> {
     match () {
-        _ if replying => NOTE_INPUT_KEYS.to_vec(),
+        _ if replying => note_input_keys(editor).to_vec(),
         _ if n.thread.iter().any(|e| e.draft) => {
-            vec![("space n", "reply"), ("space v s", "send the review"), ("]n", "next"), ("q", "close")]
+            vec![("space n", "reply"), ("space v s", send), ("]n", "next"), ("q", "close")]
         }
         _ => vec![
             ("space n", "reply"),
@@ -22456,6 +22504,7 @@ fn key_hints(editor: &Editor) -> Option<Vec<(&'static str, String)>> {
         let enter = prompt_enter(p.kind);
         match p.kind {
             _ if editor.screen.note_input.get().is_some() => None,
+            crate::editor::PromptKind::Note(_) => hints(note_input_keys(editor)),
             crate::editor::PromptKind::Command => {
                 hints(&[("enter", enter), ("tab", "complete"), ("esc", "close")])
             }
@@ -23702,6 +23751,43 @@ mod tests {
         for (y, line) in s.lines().enumerate() {
             assert!(line.width() <= 50, "row {y} past the edge:\n{s}");
         }
+    }
+
+    /// C1b: `2 drafts · space v s` folds as the status line's pieces do — its key first, never half of it, the count outlasting
+    /// it — and the mode, and a card's `▲`, outlast it.
+    #[test]
+    fn the_drafts_count_folds_its_key_first() {
+        use crate::offer::{Offer, What};
+        let mut ed = Editor::new(crate::config::Config::default());
+        ed.docs[0].path.set(Some(std::path::PathBuf::from("/nowhere/a.rs")));
+        let path = ed.docs[0].path.clone().unwrap();
+        let id = crate::notes::add(&mut ed, &path, 0..1, crate::notes::By::Author, "a note");
+        crate::notes::keep(&mut ed, Some(id), "kept");
+        let what = What::Asks { call: crate::tools::Call::test(1) };
+        ed.push_offer(Offer::new("Claude asks".into(), "?", "", String::new(), what));
+        ed.toasts.clear();
+        let status = |ed: &mut Editor, cols: u16| {
+            let mut bytes = Vec::new();
+            render(ed, &mut bytes, cols, 24).unwrap();
+            let mut p = vt100::Parser::new(24, cols, 0);
+            p.process(&bytes);
+            p.screen().rows(0, cols).nth(23).unwrap_or_default()
+        };
+        let (mut whole, mut count, mut none) = (false, false, false);
+        for cols in 20..=140 {
+            let line = status(&mut ed, cols);
+            let (key, said) = (line.contains("· space v s"), line.contains("1 draft"));
+            assert!(!key || said, "{cols} columns, the key without its count: {line:?}");
+            assert!(!line.contains("space v") || key, "{cols} columns, half the key: {line:?}");
+            assert!(
+                !said || line.contains("▲") || cols < 40,
+                "{cols} columns, it outlasted the card: {line:?}"
+            );
+            whole |= key;
+            count |= said && !key;
+            none |= !said;
+        }
+        assert!(whole && count && none, "whole {whole}, the count alone {count}, gone {none}");
     }
 
     /// frictions23 (e2e `an_idle_editor_draws_nothing_and_sleeps` on Linux): an error under a picker is on the

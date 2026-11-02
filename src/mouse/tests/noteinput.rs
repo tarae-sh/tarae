@@ -49,7 +49,7 @@ fn a_question_is_typed_in_a_card_under_its_lines() {
     assert_eq!(h, 3, "its line in its frame: {rows:#?}");
     assert!(rows[0].contains("note ── lines 2–3"), "{rows:#?}");
     assert!(rows[1].contains("ask claude: why this"), "{rows:#?}");
-    assert!(rows[2].contains("enter send · esc close"), "{rows:#?}");
+    assert!(rows[2].contains("enter send · tab later · esc close"), "{rows:#?}");
     assert!(row(&mut ed, y - 1).contains("line 2"), "under the selection's end");
     assert!(row(&mut ed, y + h).contains("line 3"), "the next line under the card");
     let d = ed.screen.prompt_input.get().expect("the line drawn");
@@ -107,6 +107,252 @@ fn a_reviews_comment_is_typed_there_and_leaves_no_card() {
     assert!(matches!(ed.prompt.as_ref().map(|p| p.kind), Some(PromptKind::Note(None))), "the next comment");
 }
 
+/// A note of Claude's on line `line` of the file, its id; drafts and sends need a claude: a stand-in keeping its lines.
+fn noted(ed: &mut Editor, path: &std::path::Path, line: usize, text: &str) -> u64 {
+    crate::notes::add(ed, path, line..line + 1, By::Author, text)
+}
+
+/// What a line's card keeps from a reply kept for later: `(by you, draft)` of its last entry.
+fn last_entry(ed: &Editor, id: u64) -> (String, bool) {
+    let n = ed.workspace.claude.notes.list.iter().find(|n| n.id == id).unwrap();
+    let e = n.thread.last().unwrap();
+    (e.text.clone(), e.draft)
+}
+
+/// C1b: `tab` from a reply's input keeps it: a draft, nothing sent, its line closed, the note waiting on nothing, the words
+/// saying how many and how they go. From there `enter` keeps too — the bottom line says so, the top line how many —, whatever
+/// note it's on; `space v s` sends them all in one message and `enter` sends again.
+#[test]
+fn tab_keeps_a_reply_for_later_and_space_v_s_gets_out() {
+    let (_s, path, mut ed) = project("c1b-kept");
+    let (tx, rx) = std::sync::mpsc::channel();
+    ed.claude_lines = Some(tx);
+    let (a, b) = (noted(&mut ed, &path, 3, "odd"), noted(&mut ed, &path, 9, "odder"));
+    feed(&mut ed, "4G nlater please<tab>");
+    assert!(ed.prompt.is_none(), "the line closed");
+    assert_eq!(last_entry(&ed, a), ("later please".to_string(), true));
+    let n = ed.workspace.claude.notes.list.iter().find(|n| n.id == a).unwrap();
+    assert!(!n.waiting, "it waits on you");
+    assert!(ed.workspace.claude.chat.is_none(), "nothing sent, no chat opened for it");
+    assert_eq!(said(&ed), "draft saved — 1 draft · space v s sends them");
+    // A question while it waits is a draft too, said on its card
+    feed(&mut ed, "<esc>20G n");
+    let rows = note_card_rows(&ed);
+    assert!(rows[0].contains("note ── line 20 · 1 draft"), "{rows:#?}");
+    assert!(rows[1].contains("comment on line 20:"), "{rows:#?}");
+    assert!(rows[2].contains("enter later · esc close"), "{rows:#?}");
+    feed(&mut ed, "<esc>10G n");
+    assert_eq!(
+        note_card_keys(&ed).into_iter().map(|k| k.0).collect::<Vec<_>>(),
+        ["enter", "esc"],
+        "no second way to keep it"
+    );
+    let rows = note_card_rows(&ed);
+    assert!(rows.last().unwrap().contains("enter later · esc close"), "{rows:#?}");
+    assert!(rows[0].contains("1 draft"), "how many, on its top line: {rows:#?}");
+    let (x, y, ..) = ed.screen.note_card.get().unwrap();
+    press(&mut ed, x + 4, y + 2);
+    assert_eq!(said(&ed), "replying — enter keeps it for later · esc close");
+    feed(&mut ed, "a second<ret>");
+    assert_eq!(last_entry(&ed, b), ("a second".to_string(), true));
+    assert_eq!(said(&ed), "draft saved — 2 drafts · space v s sends them");
+    assert_eq!(ed.toasts.iter().filter(|t| t.text.contains("draft saved")).count(), 1, "one that changes");
+    // A card with a draft says what `space v s` sends; a review's says it as ever
+    feed(&mut ed, "<esc>10G<ret>");
+    assert!(note_card_rows(&ed).last().unwrap().contains("space v s send 2"), "{:#?}", note_card_rows(&ed));
+    feed(&mut ed, "q vs");
+    let lines: Vec<String> = rx.try_iter().filter(|l| l.contains("\"user\"")).collect();
+    assert_eq!(lines.len(), 1, "one message: {lines:#?}");
+    assert!(lines[0].contains("later please") && lines[0].contains("a second"), "{lines:#?}");
+    assert!(!last_entry(&ed, a).1, "sent");
+    assert!(!crate::codereview::drafting(&ed), "out of it");
+    ed.workspace.claude.chat.as_mut().unwrap().state = crate::chat::State::Idle;
+    feed(&mut ed, "20G n");
+    assert!(note_card_rows(&ed).last().unwrap().contains("enter send · tab later"), "back");
+    assert!(!note_card_rows(&ed)[0].contains("draft"), "{:#?}", note_card_rows(&ed));
+}
+
+/// C1b: `tab` from a question's input: the note is a draft on those lines, its card gone with the line and the view back,
+/// as a review's comment. Nothing typed keeps nothing. While drafts wait `enter` is the word said, and a `tab` of habit still
+/// keeps, typing nothing.
+#[test]
+fn tab_keeps_a_question_and_nothing_typed_keeps_nothing() {
+    let (_s, _path, mut ed) = project("c1b-question");
+    let before = frame(&mut ed);
+    feed(&mut ed, " n<tab>");
+    assert!(ed.prompt.is_none() && ed.workspace.claude.notes.list.is_empty(), "nothing made");
+    assert_eq!(frame(&mut ed), before, "the code as it was");
+    feed(&mut ed, "4G nwhy here<tab>");
+    let n = &ed.workspace.claude.notes.list[0];
+    assert!(n.thread[0].draft && !n.waiting, "a draft");
+    assert_eq!(ed.workspace.claude.notes.open, None, "no card left");
+    assert!(ed.prompt.is_none());
+    feed(&mut ed, "8G nanother<tab>");
+    assert!(ed.prompt.is_none(), "it keeps while drafts wait");
+    assert_eq!(ed.workspace.claude.notes.list.len(), 2);
+    assert_eq!(ed.workspace.claude.notes.list[1].thread[0].text, "another", "no tab typed in it");
+}
+
+/// C1b: the second press of a double `tab` lands on the code: the cursor and the text stay, nothing but the draft came of it.
+#[test]
+fn a_double_tab_on_the_line_moves_nothing_in_the_code() {
+    let (_s, _path, mut ed) = project("c1b-double");
+    feed(&mut ed, "4G nkept<tab><tab>");
+    frame(&mut ed);
+    assert_eq!(ed.cursor_line(), 3, "the cursor where it was");
+    assert!(ed.doc().text.to_string().starts_with("line 0\n"), "the text as it was");
+    assert_eq!(ed.workspace.claude.notes.list.len(), 1, "one draft");
+    assert!(ed.prompt.is_none());
+}
+
+/// C1b, the review: a reply kept on a note whose reply is out — sent, or in line — leaves it waiting for that answer: Claude's
+/// plain answer lands on the note, and the draft stays yours.
+#[test]
+fn a_draft_leaves_a_note_waiting_for_its_answer() {
+    let (_s, path, mut ed) = project("c1b-waits-on");
+    let (tx, _rx) = std::sync::mpsc::channel();
+    ed.claude_lines = Some(tx);
+    let a = noted(&mut ed, &path, 3, "odd");
+    feed(&mut ed, "4G nwhy so?<ret>");
+    let waits = |ed: &Editor| ed.workspace.claude.notes.list.iter().find(|n| n.id == a).unwrap().waiting;
+    assert!(waits(&ed), "sent: its answer to come");
+    feed(&mut ed, "4G nand one for later<tab>");
+    assert!(waits(&ed), "a draft takes nothing back");
+    crate::notes::turn_done(&mut ed, Some("Because it is.".into()));
+    assert!(!waits(&ed));
+    let n = ed.workspace.claude.notes.list.iter().find(|n| n.id == a).unwrap();
+    let last = n.thread.last().unwrap();
+    assert_eq!((last.text.as_str(), last.by), ("Because it is.", By::Author), "{:?}", n.thread);
+    assert!(n.thread.iter().any(|e| e.draft && e.text == "and one for later"), "the draft stays");
+}
+
+/// C1b: the word is a button on the card's bottom line — its ground lightens under the mouse and a press keeps the reply —
+/// and `tab` is this line's alone: the command line's completes, the search's types nothing and keeps nothing, and `C-l`, the
+/// chat's new conversation, is nothing on this line.
+#[test]
+fn the_word_later_keeps_it_and_tab_is_only_this_lines() {
+    let (_s, path, mut ed) = project("c1b-word");
+    let a = noted(&mut ed, &path, 3, "odd");
+    feed(&mut ed, "4G nby the word");
+    let (_, (x, y)) = note_card_keys(&ed).into_iter().find(|k| k.0 == "tab").expect("later, a word");
+    let plain = crate::wordspot::lit(&ed, x, y).expect("the word lights where its press lands");
+    assert_eq!(plain.3.iter().map(|s| s.0.as_str()).collect::<String>(), "tab later", "{plain:?}");
+    assert!(crate::wordspot::hovered(&mut ed, x, y), "the mouse over it: a ground to draw");
+    feed(&mut ed, "<C-l>");
+    assert_eq!(typed(&ed), "by the word", "`C-l` keeps nothing here");
+    press(&mut ed, x, y);
+    assert!(ed.prompt.is_none(), "the line closed");
+    assert_eq!(last_entry(&ed, a), ("by the word".to_string(), true));
+    let (_s, _path, mut ed) = project("c1b-other-prompts");
+    feed(&mut ed, ":wri<tab>");
+    assert!(matches!(ed.prompt.as_ref().map(|p| p.kind), Some(PromptKind::Command)), "its own tab");
+    assert!(typed(&ed).starts_with("wri"), "completed: {:?}", typed(&ed));
+    feed(&mut ed, "<esc>/wor<tab>");
+    assert!(
+        matches!(ed.prompt.as_ref().map(|p| p.kind), Some(PromptKind::Search { .. })),
+        "still the search"
+    );
+    assert_eq!(typed(&ed), "wor");
+    assert!(ed.workspace.claude.notes.list.is_empty());
+}
+
+/// C1b: the line on the status line, where no card can stand, says the same keys.
+#[test]
+fn where_no_card_stands_the_status_line_says_later_too() {
+    let (_s, _path, mut ed) = project("c1b-status");
+    ed.docs[0].path.set(None);
+    frame(&mut ed);
+    feed(&mut ed, " nwords");
+    let shown = frame(&mut ed);
+    assert!(shown.lines().last().unwrap_or("").contains("tab later"), "{shown}");
+}
+
+/// The status line's piece that sends the drafts, as drawn.
+fn drafts_word(ed: &mut Editor) -> Option<crate::wordspot::Spot> {
+    frame(ed);
+    let spots = ed.screen.word_spots.borrow().clone();
+    spots.into_iter().find(|s| s.press == crate::wordspot::Press::Command("review_send"))
+}
+
+/// C1b: while drafts wait the status line says how many and the key, calm — no `▲`, not the cards' `waiting` — past the
+/// toast, and the whole of it is one button: its ground lightens under the mouse, a press sends them from wherever the keys
+/// are, and with none left it's gone. A press while Claude works queues them, as the key does.
+#[test]
+fn the_status_line_counts_the_drafts_and_a_press_sends_them() {
+    let (_s, path, mut ed) = project("c1b-drafts-word");
+    let (tx, rx) = std::sync::mpsc::channel();
+    ed.claude_lines = Some(tx);
+    assert!(drafts_word(&mut ed).is_none(), "none waiting: nothing said");
+    let (_, _) = (noted(&mut ed, &path, 3, "odd"), noted(&mut ed, &path, 9, "odder"));
+    feed(&mut ed, "4G none<tab>");
+    ed.toasts.clear();
+    let line = |ed: &mut Editor| frame(ed).lines().last().unwrap_or_default().to_string();
+    let shown = line(&mut ed);
+    assert!(shown.contains("1 draft · space v s"), "{shown}");
+    assert!(!shown.contains('▲') && !shown.contains("waiting"), "it reads apart from the cards': {shown}");
+    feed(&mut ed, "<esc>10G ntwo<ret>");
+    assert!(line(&mut ed).contains("2 drafts · space v s"), "{}", line(&mut ed));
+    let s = drafts_word(&mut ed).expect("a word");
+    let word: String = s.spans.iter().map(|s| s.0.as_str()).collect();
+    assert_eq!(word, "2 drafts · space v s", "count and key one button");
+    assert_eq!(s.on, crate::mouse::Surface::Status);
+    assert!(crate::wordspot::lit(&ed, s.from, s.y).is_some(), "its first cell");
+    assert!(crate::wordspot::lit(&ed, s.to - 1, s.y).is_some(), "its last");
+    press(&mut ed, s.from + 3, s.y);
+    let sent: Vec<String> = rx.try_iter().filter(|l| l.contains("\"user\"")).collect();
+    assert_eq!(sent.len(), 1, "one message: {sent:#?}");
+    assert!(sent[0].contains("one") && sent[0].contains("two"), "{sent:#?}");
+    assert!(drafts_word(&mut ed).is_none(), "none left: {}", line(&mut ed));
+    // Claude at work: a press queues them
+    feed(&mut ed, "20G nthree<tab>");
+    let s = drafts_word(&mut ed).expect("a word");
+    press(&mut ed, s.from, s.y);
+    assert_eq!(rx.try_iter().filter(|l| l.contains("\"user\"")).count(), 0, "Claude's turn first");
+    assert_eq!(said(&ed), "review queued — its 1 comment goes when Claude's turn ends");
+}
+
+/// C1b: the reviewer's findings alone are drafts too, and its own segment says them (`¶ 2 findings · space v r`): not said
+/// twice, nor offered to a press unread. A draft of yours beside them counts them all, what `space v s` sends; its report
+/// read, its segment gone, they're counted.
+#[test]
+fn the_reviewers_findings_alone_are_its_own_segments() {
+    use crate::reviewer::{Reviewer, State};
+    let (_s, path, mut ed) = project("c1b-findings");
+    let finding = |ed: &mut Editor, line, text| {
+        let id = crate::notes::add(ed, &path, line..line + 1, By::Reviewer, text);
+        let n = ed.workspace.claude.notes.list.iter_mut().find(|n| n.id == id).unwrap();
+        n.thread[0].draft = true;
+        id
+    };
+    let ids = vec![finding(&mut ed, 3, "one"), finding(&mut ed, 9, "two")];
+    let root = ed.workspace.root.clone();
+    ed.workspace.reviewer = Some(Reviewer::for_test(root, State::Done, ids, "[verdict] Looks right."));
+    assert!(crate::reviewer::status_shows(&ed, 0), "its segment says them");
+    assert_eq!(crate::notes::drafts_said(&ed, 0), None, "not said twice");
+    let a = noted(&mut ed, &path, 20, "odd");
+    crate::notes::keep(&mut ed, Some(a), "mine");
+    assert_eq!(crate::notes::drafts_said(&ed, 0), Some(3), "yours among them: all of what goes");
+    crate::notes::close(&mut ed, a);
+    assert_eq!(crate::notes::drafts_said(&ed, 0), None);
+    ed.workspace.reviewer.as_mut().unwrap().report_seen = true;
+    assert!(!crate::reviewer::status_shows(&ed, 0));
+    assert_eq!(crate::notes::drafts_said(&ed, 0), Some(2), "nothing else says them now");
+}
+
+/// C1b: the review's rail has the count, so the status line doesn't say it twice; the rail out of sight, it does.
+#[test]
+fn the_rail_counts_the_drafts_where_it_stands() {
+    use crate::codereview::{Base, CodeReview};
+    let (_s, path, mut ed) = project("c1b-drafts-rail");
+    let a = noted(&mut ed, &path, 3, "odd");
+    crate::notes::keep(&mut ed, Some(a), "kept");
+    assert_eq!(crate::notes::drafts_said(&ed, 0), Some(1), "no rail");
+    assert_eq!(crate::notes::drafts_said(&ed, 30), Some(1), "a side panel isn't the rail");
+    ed.workspace.code_review = Some(CodeReview::for_test(Base::Head, ed.workspace.root.clone(), vec![]));
+    assert_eq!(crate::notes::drafts_said(&ed, 30), None, "the rail says it");
+    assert_eq!(crate::notes::drafts_said(&ed, 0), Some(1), "the rail folded away");
+}
+
 /// Many lines selected, the cursor at their start: the card under their end — and the view there, the line in sight
 /// whatever the selection's size; `esc` brings the view back to the cursor.
 #[test]
@@ -154,6 +400,8 @@ fn a_line_at_the_panes_foot_brings_its_card_into_sight() {
     assert_eq!(ed.doc().top, top, "`esc`: the view as it was");
     feed(&mut ed, " n<ret>");
     assert_eq!(ed.doc().top, top, "nothing typed: as `esc`");
+    feed(&mut ed, " n<tab>");
+    assert_eq!(ed.doc().top, top, "nothing typed to keep: as `esc`");
     assert!(ed.workspace.claude.notes.list.is_empty(), "nothing made");
     // A review's comment leaves no card: as `esc` too
     let path = ed.doc().path.clone().unwrap();
@@ -238,8 +486,8 @@ fn a_reply_stands_under_the_newest_entry_of_its_card() {
     assert!(rows[grown - 2].contains("reply: sure"), "{rows:#?}");
     assert!(rows[grown - 3].trim_matches(['│', ' ']).is_empty(), "{rows:#?}");
     assert!(rows[grown - 4].contains("and the next?"), "under the newest: {rows:#?}");
-    assert!(rows[grown - 1].contains("enter send · esc close"), "{rows:#?}");
-    assert_eq!(note_card_keys(&ed).into_iter().map(|k| k.0).collect::<Vec<_>>(), ["enter", "esc"]);
+    assert!(rows[grown - 1].contains("enter send · tab later · esc close"), "{rows:#?}");
+    assert_eq!(note_card_keys(&ed).into_iter().map(|k| k.0).collect::<Vec<_>>(), ["enter", "tab", "esc"]);
     let lit = ed
         .screen
         .frames

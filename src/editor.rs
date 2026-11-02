@@ -2991,6 +2991,7 @@ impl Editor {
         self.offer_view_sync();
         self.offer_group_sync();
         crate::notes::stale_sync(self);
+        crate::notes::queue_sync(self);
         crate::stuck::sync(self);
         crate::now::sync(self);
         self.bring_queue_sync();
@@ -3427,7 +3428,10 @@ impl Editor {
                             crate::clipboard::copy(&self.events.jobs(), text, what);
                         }
                         (None, Some(_)) if replying => {
-                            self.set_status("replying — enter sends it · esc close")
+                            self.set_status(match crate::codereview::drafting(self) {
+                                true => "replying — enter keeps it for later · esc close",
+                                false => "replying — enter sends it · esc close",
+                            })
                         }
                         // (on its `… N earlier`: the line's earlier answers unfolded — focus A1b)
                         (None, Some(_)) if crate::term::note_earlier_at(self, y) => {
@@ -6224,8 +6228,8 @@ impl Editor {
     }
 
     /// A key for the prompt: its own first (`enter` runs, `esc`/`C-c` close, `backspace` on an empty line closes,
-    /// `:`'s `tab` and `→` at the end, a new session's `C-b`), then its line's (`prompt::key`: `[prompt]` over
-    /// `[insert]`, typed).
+    /// `:`'s `tab` and `→` at the end, a new session's `C-b`, `space n`'s `tab`), then its line's (`prompt::key`:
+    /// `[prompt]` over `[insert]`, typed).
     pub(crate) fn handle_prompt_key(&mut self, key: Key) {
         // (a sequence or an awaited character of the line's under way — `C-r`'s register, the `j` of a `j k`: a key
         // that goes on with it is the line's; else what it typed goes in first and the key is the prompt's as ever)
@@ -6261,6 +6265,14 @@ impl Editor {
             }
             Code::Backspace if plain && empty => self.cancel_prompt(),
             Code::Char('c') if key.ctrl && !key.alt => self.cancel_prompt(),
+            // `space n`'s line kept for later: a draft, `space v s` sends it with the rest (the line has no completion)
+            Code::Tab if plain && matches!(kind, PromptKind::Note(_)) => {
+                let Some(p) = self.prompt.take() else { return };
+                let PromptKind::Note(target) = p.kind else { return };
+                if !crate::notes::keep(self, target, &p.text()) {
+                    self.prompt_view_back(Some(&p));
+                }
+            }
             // A new session's name: another base to make it from
             Code::Char('b') if key.ctrl && !key.alt && kind == PromptKind::Session => {
                 let name = self.prompt.take().map(|p| p.text()).unwrap_or_default();
