@@ -321,8 +321,10 @@ fn suite_cmd(k: &Kernel, mode: Mode, filter: Option<&str>, docker: &Docker) -> C
 }
 
 /// What a kernel's Docker is asked for its facts: uname, Landlock's ABI as the kernel answers it (a program built
-/// in the image, seccomp lifted so Docker's filter doesn't answer for the kernel), Yama, the restriction.
+/// in the image, seccomp lifted so Docker's filter doesn't answer for the kernel), Yama, the restriction — and its
+/// disk (`df -P /`'s row: where its volumes are too), for `room`.
 const FACTS: &str = r#"echo "uname: $(uname -r)"
+echo "disk: $(df -P / | sed -n 2p)"
 echo "arch: $(uname -m)"
 echo "yama: $(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo none)"
 echo "userns restriction: $(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo none)"
@@ -900,16 +902,40 @@ fn one_kernel(
     }
     eprint!("{}", facts.text);
     let _ = std::fs::write(run.dir.join(format!("{}-facts.txt", k.name)), &facts.text);
+    let down = |x: &Path| match &k.at {
+        At::Colima { .. } => stop_colima.iter().for_each(|p| colima_down(p, x)),
+        At::Lima { .. } => lima_down(k, keep_vm, x),
+    };
+    // (#280: past 90 % its runs would fail by the thousand with ENOSPC — not measured, said before any runs)
+    if let Err(why) = room(k, &facts) {
+        down(x);
+        return run.not_measured(k, &why);
+    }
     for m in &k.modes {
         run.mode(k, &facts, (&m.name(), *m), &suite_cmd(k, *m, Some(FILTER), &docker), repeat, x);
     }
     let whole = format!("whole-{}", k.whole.name());
     run.mode(k, &facts, (&whole, k.whole), &suite_cmd(k, k.whole, None, &docker), repeat, x);
-    match &k.at {
-        At::Colima { .. } => stop_colima.iter().for_each(|p| colima_down(p, x)),
-        At::Lima { .. } => lima_down(k, keep_vm, x),
-    }
+    down(x);
     eprintln!("{}: {} min", k.name, minutes(started.elapsed()));
+}
+
+/// Err: the kernel's Docker disk (its facts' `disk`) past `linux::DISK_STOP`, said with what frees it — colima's
+/// profile by `cargo xtask linux prune` on its Docker; a Lima VM's disk is made for the run, holding what was carried
+/// in. A disk not read: Ok, its runs say the rest.
+fn room(k: &Kernel, facts: &Facts) -> std::result::Result<(), String> {
+    let Some(full) = crate::linux::disk(&facts.get("disk")).and_then(crate::linux::too_full) else {
+        return Ok(());
+    };
+    let frees = match &k.at {
+        At::Colima { profile, .. } => {
+            format!("`DOCKER_CONTEXT={} cargo xtask linux prune` frees it", colima_context(profile))
+        }
+        At::Lima { .. } => {
+            "its VM's disk is made for the run (`disk:` in its file, `lima_yaml`): a bigger one".into()
+        }
+    };
+    Err(format!("its Docker: {full} — {frees}"))
 }
 
 fn lima_down(k: &Kernel, keep_vm: bool, x: &Path) {
@@ -1230,5 +1256,29 @@ mod tests {
             all.contains("limactl start --name=tarae-k3") && all.contains("limactl delete --force tarae-k3"),
             "{all}"
         );
+    }
+
+    /// #280: a kernel whose Docker disk is past 90 % (its facts' `disk`) isn't measured — said before its runs, with
+    /// what frees it for colima's profile or the Lima VM; under it, or not read, its runs go on.
+    #[test]
+    fn a_kernels_disk_past_90_percent_isnt_measured() {
+        let t = the_table();
+        let k3 = t.kernels.iter().find(|k| k.name == "K3").unwrap();
+        let at = |pct| Facts {
+            // (`df -P /`'s row as colima's tarae-test printed it, 2026-11-03)
+            text: format!(
+                "uname: 6.1.0\ndisk: overlay           82380556 37197472  41601788      {pct}% /\n"
+            ),
+        };
+        assert_eq!(room(&t.kernels[0], &at(89)), Ok(()));
+        assert_eq!(room(&t.kernels[0], &Facts::default()), Ok(()), "not read");
+        assert_eq!(
+            room(&t.kernels[0], &at(94)),
+            Err("its Docker: the disk 94 % used (38 of 84 GB), past 90 % — \
+                 `DOCKER_CONTEXT=colima-tarae-test cargo xtask linux prune` frees it"
+                .into())
+        );
+        assert!(room(k3, &at(90)).unwrap_err().contains("`lima_yaml`): a bigger one"));
+        assert!(FACTS.contains("echo \"disk: $(df -P / | sed -n 2p)\""));
     }
 }

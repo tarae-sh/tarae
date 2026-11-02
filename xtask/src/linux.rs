@@ -42,6 +42,8 @@
 //! targets, which ends and `prune` free, apart from the shared ones (colima's disk filled at 40 GB, 2026-10-06,
 //! with nothing said); a Docker that can't measure them is said so. The line says the disk's use too (the
 //! container's `df -P /target`, read off its output), and comes past `DISK_SAY` (80 %) however little they take.
+//! Past `DISK_STOP` (90 %) before a run (a container's `df -P /`) nothing runs: said with what takes the disk and
+//! what frees it — a disk near full turned 2,312 tests red with ENOSPC, said only after.
 //!
 //! `--platform linux/amd64` runs them on another architecture, its target and rustup volumes its own — on
 //! colima's aarch64 VM under qemu-user: slow, and a build was seen to stall (2026-10-05); a Docker on a real
@@ -469,6 +471,12 @@ pub fn run(args: &[String]) -> Result<()> {
             Tree::Streamed
         }
     };
+    // (the disk before anything runs: near full, tests fail by the thousand with ENOSPC — #280: 2,312)
+    let disk = disk_now(&pin, platform);
+    if let Err(why) = room(disk) {
+        say_sizes(disk);
+        return Err(why);
+    }
     let mut docker = Command::new("docker");
     // (always a name — tarae's prefix's, else one of this process's own: a signal ends the container by it)
     let name = container_name(std::env::var("TARAE_CONTAINER_PREFIX").ok().as_deref(), "checks")
@@ -1179,6 +1187,14 @@ const VOLUMES_SAY: u64 = 30_000_000_000;
 /// tarae's volumes take however little that is — a disk filled by others' fills for tarae too.
 const DISK_SAY: u32 = 80;
 
+/// Past this share of the disk used, a run doesn't start (`room`): a test writing its build or its scratch fails
+/// for want of room — a disk near full turned 2,312 tests red with ENOSPC (#280).
+pub(crate) const DISK_STOP: u32 = 90;
+
+/// What frees the Docker disk for a run.
+const DISK_FREES: &str = "`cargo xtask linux prune` frees the targets of checkouts gone or landed (`--yes` drops them), \
+                          `prune --all` the repository's but live checkouts', `docker system prune` what isn't tarae's";
+
 /// The line the checks' script ends with (`script`'s trap, on any exit): `df -P /target`'s row after it.
 const DISK_MARK: &str = "tarae-xtask-disk: ";
 
@@ -1197,6 +1213,45 @@ pub(crate) fn disk(row: &str) -> Option<Disk> {
     let [_, size, used, _, pct, ..] = f[..] else { return None };
     let kb = |n: &str| n.parse::<u64>().ok().map(|n| n * 1024);
     Some(Disk { pct: pct.strip_suffix('%')?.parse().ok()?, used: kb(used)?, size: kb(size)? })
+}
+
+/// The disk past `DISK_STOP`, said (`the disk 93 % used (55 of 59 GB), past 90 %`) — None: room enough.
+pub(crate) fn too_full(d: Disk) -> Option<String> {
+    (d.pct >= DISK_STOP).then(|| format!("{}, past {DISK_STOP} %", disk_said(d)))
+}
+
+/// The Docker disk as a container of the run's image sees its `/` (where the volumes are too, as compat reads it) —
+/// None: it couldn't be read.
+fn disk_now(pin: &str, platform: Option<&str>) -> Option<Disk> {
+    let name = container_name(std::env::var("TARAE_CONTAINER_PREFIX").ok().as_deref(), "disk");
+    let mut docker = Command::new("docker");
+    docker.args(with_name(vec!["run".into(), "--rm".into()], name));
+    if let Some(p) = platform {
+        docker.args(["--platform", p]);
+    }
+    docker.args([image(pin).as_str(), "df", "-P", "/"]).stdin(std::process::Stdio::null());
+    let out = docker.stderr(std::process::Stdio::null()).output().ok().filter(|o| o.status.success())?;
+    disk_of(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The disk in what `df -P` printed: the row under its header.
+fn disk_of(printed: &str) -> Option<Disk> {
+    printed.lines().nth(1).and_then(disk)
+}
+
+/// Whether a run starts on the disk `disk_now` read: Err past `DISK_STOP`, said with what frees it (`run` says what
+/// takes it first), nothing run; a disk that couldn't be read is said and the run goes on.
+fn room(d: Option<Disk>) -> Result<()> {
+    let Some(d) = d else {
+        eprintln!("the Docker disk's use couldn't be read before the run");
+        return Ok(());
+    };
+    match too_full(d) {
+        None => Ok(()),
+        Some(full) => {
+            Err(format!("not run: {full} — tests would fail for want of room (ENOSPC). {DISK_FREES}"))
+        }
+    }
 }
 
 /// What the container's output said besides passing through (`forwarded`).
@@ -1377,6 +1432,11 @@ pub(crate) fn df(docker: &mut Command) -> std::result::Result<String, String> {
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| e.to_string())?;
+    df_answer(&out)
+}
+
+/// `df`'s answer from what `docker` printed and how it ended.
+fn df_answer(out: &std::process::Output) -> std::result::Result<String, String> {
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         let why = err.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("it didn't answer");
@@ -2892,24 +2952,88 @@ mod tests {
         assert!(prune_cmd(&["--some".to_string()]).unwrap_err().starts_with("usage:"));
     }
 
-    /// The template `say_sizes` asks for, run against the Docker that's there (skipped without one): Docker
-    /// takes it, and every row it prints is one `sizes` reads — else the line would never be said. A Docker
-    /// that refuses it is said why.
+    /// What `docker system df -v --format DF_FORMAT` printed — rows of it recorded once (colima's tarae-test,
+    /// 2026-11-03; the home folder shortened to `/w`): compat's caches labelled, a target with its checkout and machine,
+    /// an anonymous volume, the shared ones with no labels, a size in `kB`.
+    const DF_PRINTED: &str = "tarae-compat-python-uv-cache\t36.6MB\ttarae.compat=python-uv\n\
+         tarae-target-1.99.0-a6b731c93d60cdd3\t2.777GB\ttarae.checkout=/w/worktrees/tarae-8f35164e/collab,\
+         tarae.machine=f9382b4030fa4b07e558cb2f38debb8b\n\
+         0268478ddb906ffed8074bff8de6c43f6e60830948a931a2525dcb3a79473746\t0B\tcom.docker.volume.anonymous=\n\
+         tarae-registry\t175.1MB\t\n\
+         tarae-compat-rust-cache\t1.016kB\ttarae.compat=rust\n\
+         tarae-rustup-1.99.0-linux-amd64\t822.6MB\t\n";
+
+    /// What `df -P /` printed in a container of `rust:1.99` there, the same day.
+    const DF_P_PRINTED: &str = "Filesystem     1024-blocks     Used Available Capacity Mounted on\n\
+                                overlay           82380556 37197472  41601788      48% /\n";
+
+    /// `docker system df`'s answer, from what Docker printed (#276: never the live daemon's state, which a container
+    /// removed meanwhile turned into its own error): every row is one `sizes` reads — else the line would never be
+    /// said; a Docker that refuses is said why, its first line.
     #[test]
     fn docker_takes_the_size_template() {
-        if reachable(&mut Command::new("docker")).is_err() {
-            return;
-        }
-        let listed = df(&mut Command::new("docker")).unwrap();
+        use std::os::unix::process::ExitStatusExt as _;
+        let printed = |code: i32, stdout: &str, stderr: &str| std::process::Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+        };
+        let listed = df_answer(&printed(0, DF_PRINTED, "")).unwrap();
         for row in listed.lines().filter(|l| !l.trim().is_empty()) {
             let cols: Vec<&str> = row.split('\t').collect();
             assert!(cols.len() == 3 && !cols[0].is_empty() && bytes(cols[1].trim()).is_some(), "{row:?}");
         }
+        assert_eq!(
+            sizes(&listed),
+            [
+                ("tarae-compat-python-uv-cache".into(), 36_600_000, String::new()),
+                (
+                    "tarae-target-1.99.0-a6b731c93d60cdd3".into(),
+                    2_777_000_000,
+                    "/w/worktrees/tarae-8f35164e/collab".into()
+                ),
+                ("tarae-registry".into(), 175_100_000, String::new()),
+                ("tarae-compat-rust-cache".into(), 1016, String::new()),
+                ("tarae-rustup-1.99.0-linux-amd64".into(), 822_600_000, String::new()),
+            ]
+        );
+        let gone =
+            "Error response from daemon: snapshotter.Usage failed for a3f: no such file or directory\n";
+        assert_eq!(
+            df_answer(&printed(1, "", &format!("\n{gone}"))),
+            Err(format!("docker system df: {}", gone.trim())),
+        );
+        assert_eq!(df_answer(&printed(1, "", "")), Err("docker system df: it didn't answer".into()));
+    }
+
+    /// By hand (#276): the template against the Docker that's there — Docker takes it, and what it prints is what
+    /// `DF_PRINTED` stands in for.
+    #[test]
+    #[ignore = "by hand: the live Docker's `system df`"]
+    fn docker_takes_the_size_template_live() {
+        let listed = df(&mut Command::new("docker")).unwrap();
         let tarae = listed.lines().filter(|l| l.starts_with("tarae-")).count();
         assert_eq!(sizes(&listed).len(), tarae, "{listed}");
-        let mut refused = Command::new("docker");
-        refused.env("DOCKER_HOST", "unix:///nonexistent/tarae-test.sock").env_remove("DOCKER_CONTEXT");
-        assert!(df(&mut refused).unwrap_err().starts_with("docker system df: "));
+    }
+
+    /// #280: a run doesn't start on a Docker disk past 90 % — said with what takes it and what frees it; under it, or
+    /// a disk that couldn't be read, it goes on.
+    #[test]
+    fn a_docker_disk_past_90_percent_stops_the_run_before_it_starts() {
+        let recorded = disk_of(DF_P_PRINTED);
+        assert_eq!(recorded, Some(Disk { pct: 48, used: 37_197_472 * 1024, size: 82_380_556 * 1024 }));
+        assert_eq!(room(recorded), Ok(()));
+        let at = |pct| disk_of(&DF_P_PRINTED.replace("48%", &format!("{pct}%")));
+        assert_eq!(room(at(89)), Ok(()));
+        assert_eq!(room(None), Ok(()));
+        let said = room(at(90)).unwrap_err();
+        assert!(
+            said.starts_with(
+                "not run: the disk 90 % used (38 of 84 GB), past 90 % — tests would fail for want of room"
+            ) && said.contains("`cargo xtask linux prune`"),
+            "{said}"
+        );
+        assert_eq!(too_full(at(97).unwrap()), Some("the disk 97 % used (38 of 84 GB), past 90 %".into()));
     }
 
     /// The machine id: made once in the folder, the same after; one that isn't an id is left as it is (never

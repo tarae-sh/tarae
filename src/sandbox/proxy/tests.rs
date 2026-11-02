@@ -636,7 +636,9 @@ fn the_bytes_through_are_the_same_spliced_or_not() {
 /// What waits in tarae when the look ends goes first, in order: the client sends while the outside hasn't
 /// answered (its bytes fill the sockets and the relay's 64 KB to the outside), then the outside answers — the
 /// look is over — and reads everything: the same bytes, none skipped by the switch to pipes (Linux: spliced
-/// after).
+/// after). On Linux the client writes again only once its relay has switched to splicing, so what tarae copied is
+/// of what was written before, and the rest — what the sockets held of it too — spliced (#285: writing on as the
+/// outside answered, a slow VM's relay copied 2.6 MB of what came after, once).
 #[test]
 fn what_waits_in_tarae_goes_before_the_switch() {
     const N: usize = 16 << 20;
@@ -674,6 +676,13 @@ fn what_waits_in_tarae_goes_before_the_switch() {
     c.set_nonblocking(false).unwrap();
     assert!(n > 64 << 10, "the sockets and tarae's 64 KB filled first: {n}");
     go.send(()).unwrap();
+    let mut hello = vec![0u8; server_hello(&[7; 32]).len()];
+    c.set_read_timeout(Some(LIMIT)).unwrap();
+    c.read_exact(&mut hello).unwrap();
+    assert_eq!(hello, server_hello(&[7; 32]));
+    if cfg!(target_os = "linux") {
+        assert!(relay::switched_by(end), "its relay switched to splicing");
+    }
     let mut w = limited(c.try_clone().unwrap());
     let rest = sent[n..].to_vec();
     let writer = bounded(move || {
@@ -682,11 +691,12 @@ fn what_waits_in_tarae_goes_before_the_switch() {
     });
     let back = drained(&c);
     writer.join("the writer");
-    assert_eq!(back.0, server_hello(&[7; 32]).len());
+    assert_eq!(back.0, 0, "nothing after the ServerHello");
     assert_eq!(outside.join("the outside"), (N, fnv(&sent)), "every byte, in order");
     let moved = relay::spliced_by(end).expect("its relay ended");
+    // (copied: only what tarae read of the n bytes before it switched)
     if cfg!(target_os = "linux") {
-        assert!(moved >= N - n, "the rest spliced: {moved}");
+        assert!(moved >= N - n, "the rest spliced: {moved} of {}", N - n);
     }
 }
 

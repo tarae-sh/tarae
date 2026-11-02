@@ -92,12 +92,38 @@ pub fn relay(
 static SPLICED: std::sync::Mutex<Vec<(std::net::SocketAddr, Option<usize>)>> =
     std::sync::Mutex::new(Vec::new());
 
+/// Tests: the relays, by their client's peer, that have switched to splicing — nothing waiting in tarae, the rest
+/// the kernel's (`switched_by`).
+#[cfg(test)]
+static SWITCHED: std::sync::Mutex<Vec<std::net::SocketAddr>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: the client's peer of the relay this thread runs (`relay_with`), for `SWITCHED`.
+    static PEER: std::cell::Cell<Option<std::net::SocketAddr>> = const { std::cell::Cell::new(None) };
+}
+
 /// Tests: a relay whose client's peer is `peer` started — an earlier relay's leftover there goes.
 #[cfg(test)]
 pub(super) fn started(peer: std::net::SocketAddr) {
     let mut list = SPLICED.lock().unwrap_or_else(|e| e.into_inner());
     list.retain(|(a, _)| *a != peer);
     list.push((peer, None));
+    SWITCHED.lock().unwrap_or_else(|e| e.into_inner()).retain(|a| *a != peer);
+}
+
+/// Tests (Linux): whether the relay whose client is the test's `end` has switched to splicing, by `PATIENCE` —
+/// from then on nothing either side sends goes through tarae.
+#[cfg(test)]
+pub fn switched_by(end: std::net::SocketAddr) -> bool {
+    let by = Instant::now() + crate::test_results::PATIENCE;
+    while !SWITCHED.lock().unwrap_or_else(|e| e.into_inner()).contains(&end) {
+        if Instant::now() > by {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    true
 }
 
 /// Tests: that relay ended, having spliced `n` bytes.
@@ -152,6 +178,7 @@ pub(super) fn relay_with(
     #[cfg(test)]
     if let Ok(peer) = peer {
         started(peer);
+        PEER.set(Some(peer));
     }
     for s in &sides {
         if s.set_nonblocking(true).is_err() {
@@ -337,7 +364,13 @@ fn pump(
             && let Some(make) = pipes.take()
         {
             match make() {
-                Ok(p) => return splice::run(sides, p, [eof, shut, hup], spliced),
+                Ok(p) => {
+                    #[cfg(test)]
+                    if let Some(peer) = PEER.get() {
+                        SWITCHED.lock().unwrap_or_else(|e| e.into_inner()).push(peer);
+                    }
+                    return splice::run(sides, p, [eof, shut, hup], spliced);
+                }
                 Err(e) => splice::unavailable(&e),
             }
         }

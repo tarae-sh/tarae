@@ -1287,6 +1287,12 @@ const BRANCHES: &[(&str, &str, &str)] = &[
     ("src/sandbox/proxy/relay.rs", "in fn relay_with: if let Ok(peer) = peer {", RECORD),
     ("src/sandbox/proxy/relay.rs", "in fn relay_with: peer", RECORD),
     (
+        "src/sandbox/proxy/relay.rs",
+        "in fn pump: if let Some(peer) = PEER.get() {",
+        "a test's record of the switch to splicing (`switched_by`): kept, never read by the run — the relay's \
+         behaviour unchanged",
+    ),
+    (
         "src/sandbox/proxy/upstream.rs",
         "in fn tls: return Ok(crate::web::fetch::tests::client_without",
         UPSTREAM_TLS,
