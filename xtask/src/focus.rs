@@ -103,9 +103,16 @@ enum Layout {
     Min160,
     Open80,
     Two160,
+    // (the flow plan's baseline widths, the chat open: asked by name, not in the default run)
+    Open120,
+    Open200,
 }
 
 const LAYOUTS: [Layout; 4] = [Layout::Open160, Layout::Min160, Layout::Open80, Layout::Two160];
+
+/// Every layout `--layout` takes by name.
+const NAMED: [Layout; 6] =
+    [Layout::Open160, Layout::Min160, Layout::Open80, Layout::Two160, Layout::Open120, Layout::Open200];
 
 impl Layout {
     fn name(self) -> &'static str {
@@ -114,12 +121,17 @@ impl Layout {
             Layout::Min160 => "160-min",
             Layout::Open80 => "80-open",
             Layout::Two160 => "160-two",
+            Layout::Open120 => "120-open",
+            Layout::Open200 => "200-open",
         }
     }
 
     fn size(self) -> (u16, u16) {
         match self {
             Layout::Open80 => (80, 24),
+            // (160×45's shape)
+            Layout::Open120 => (120, 34),
+            Layout::Open200 => (200, 56),
             _ => (160, 45),
         }
     }
@@ -509,10 +521,10 @@ pub fn run(args: &[String]) -> Result<()> {
             }
             "--layout" => {
                 let l = it.next().ok_or(USAGE)?;
-                let found = LAYOUTS
+                let found = NAMED
                     .iter()
                     .find(|x| x.name() == l)
-                    .ok_or_else(|| format!("no layout `{l}` — {}", LAYOUTS.map(Layout::name).join(" ")))?;
+                    .ok_or_else(|| format!("no layout `{l}` — {}", NAMED.map(Layout::name).join(" ")))?;
                 layouts.push(*found);
             }
             "--bin" => bin = Some(PathBuf::from(it.next().ok_or(USAGE)?)),
